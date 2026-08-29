@@ -6,6 +6,12 @@ import {
 } from "./stage1-clean-acceptance-baseline-executor.mjs";
 
 const VEHICLE_ID = "11111111-1111-4111-8111-111111111111";
+const ADMIN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const CUSTOMER_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const OWNER_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const COST_PROFILE_ID = "44444444-4444-4444-8444-444444444444";
+const LEDGER_ID_1 = "55555555-5555-4555-8555-555555555555";
+const LEDGER_ID_2 = "66666666-6666-4666-8666-666666666666";
 const GENERATED_AT = "2026-08-30T12:00:00.000Z";
 const HASH_SALT = "1".repeat(64);
 const GIT_SHA = "2".repeat(40);
@@ -121,7 +127,7 @@ test("apply serializes, writes parents before children, preserves scalars, and e
       "vehicleListingSourceBinding", "vehicleSalePriceHistory", "vehicleOwnershipPeriod",
       "vehicleAssetCostProfile", "vehicleCostLedgerEntry", "auditLog"
     ]);
-    assert.equal(target.rows.user[0].id, "admin-user");
+    assert.equal(target.rows.user[0].id, ADMIN_ID);
     assert.equal(target.rows.user[0].passwordHash, "argon2-secret-hash");
     assert.equal(target.rows.vehicle[0].createdAt.toISOString(), "2026-01-01T00:00:00.000Z");
     assert.equal(target.rows.auditLog.length, 1);
@@ -146,7 +152,7 @@ test("apply serializes, writes parents before children, preserves scalars, and e
     assert.equal(Object.hasOwn(jsonWrites.vehicleListingProfile[0], "sellingPoints"), false);
     assert.deepEqual(jsonWrites.vehicleListingProfile[0].serviceHighlights, { roadside: true });
     assert.equal(Object.hasOwn(jsonWrites.vehicleInsurancePolicy[0], "snapshot"), false);
-    assert.deepEqual(jsonWrites.vehicleOwnershipPeriod[0].startSnapshot, { ownerId: "owner-1" });
+    assert.deepEqual(jsonWrites.vehicleOwnershipPeriod[0].startSnapshot, { ownerId: OWNER_ID });
     assert.equal(Object.hasOwn(jsonWrites.vehicleOwnershipPeriod[0], "endSnapshot"), false);
     assert.equal(Object.hasOwn(jsonWrites.vehicleAssetCostProfile[0], "snapshot"), false);
     assert.equal(Object.hasOwn(jsonWrites.vehicleCostLedgerEntry[0], "assetOwnerSnapshot"), false);
@@ -226,6 +232,7 @@ test("replay rejects any one-field mutation of the unique baseline audit contrac
       (row) => (row.afterSnapshot.counts = { ...row.afterSnapshot.counts, access: 999 }),
       (row) => (row.afterSnapshot.gitSha = "f".repeat(40)),
       (row) => (row.afterSnapshot.imageRef = `other@sha256:${"f".repeat(64)}`),
+      (row) => (row.afterSnapshot.manifestSha256 = "0".repeat(64)),
       (row) => (row.afterSnapshot.summary = "other"),
       (row) => (row.afterSnapshot.extra = true),
       (row) => delete row.afterSnapshot.counts
@@ -242,6 +249,36 @@ test("replay rejects any one-field mutation of the unique baseline audit contrac
       );
     }
     target.rows.auditLog[0] = pristine;
+  } finally {
+    restoreEnv(previous);
+  }
+});
+
+test("required ownership and cost-ledger JSON rejects null or undefined and rolls back the target transaction", async () => {
+  const cases = [
+    ["vehicleOwnershipPeriod", "startSnapshot", null],
+    ["vehicleOwnershipPeriod", "startSnapshot", undefined],
+    ["vehicleCostLedgerEntry", "responsibilitySnapshot", null],
+    ["vehicleCostLedgerEntry", "responsibilitySnapshot", undefined]
+  ];
+  const previous = process.env[APPLY_ENV];
+  process.env[APPLY_ENV] = "1";
+  try {
+    for (const [delegate, field, value] of cases) {
+      const rows = sourceRows();
+      rows[delegate][0][field] = value;
+      const source = createDatabaseFake("subscription_saas_staging", rows);
+      const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});
+      const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+      await assert.rejects(
+        executeStage1CleanAcceptanceBaseline({
+          ...baseOptions("apply", source, target), approvedManifest: dry.manifest,
+          approvedManifestSha256: dry.manifestSha256
+        }),
+        (error) => error?.message === "MANIFEST_CLASSIFICATION_INVALID"
+      );
+      assert.deepEqual(target.rows, {});
+    }
   } finally {
     restoreEnv(previous);
   }
@@ -310,13 +347,13 @@ function sourceRows() {
     role: [{ id: "role-1", code: "ADMIN", status: "ACTIVE", deletedAt: null }],
     rolePermission: [{ id: "role-permission-1", roleId: "role-1", permissionId: "permission-1", deletedAt: null }],
     roleMenu: [{ id: "role-menu-1", roleId: "role-1", menuId: "menu-1", deletedAt: null }],
-    user: [{ id: "admin-user", username: "keqi_119", name: "Admin", passwordHash: "argon2-secret-hash", status: "ACTIVE", createdAt: at, updatedAt: at, deletedAt: null }],
-    userRole: [{ id: "user-role-1", userId: "admin-user", roleId: "role-1", deletedAt: null }],
-    customer: [{ id: "customer-1", customerNo: "C1", name: "Customer", mobile: "18616570212", status: "ACTIVE", deletedAt: null }],
-    customerAccount: [{ id: "account-1", customerId: "customer-1", phone: "18616570212", accountStatus: "ACTIVE", deletedAt: null }],
-    customerIdentity: [{ id: "identity-1", customerId: "customer-1", deletedAt: null }],
-    customerProfile: [{ id: "profile-1", customerId: "customer-1", deletedAt: null }],
-    customerESignProviderAccount: [{ id: "esign-1", customerId: "customer-1", providerOpenId: "open-1", providerSnapshot: null, registrationStatus: "REGISTERED", realNameStatus: "VERIFIED", certBindingStatus: "BOUND", deletedAt: null }],
+    user: [{ id: ADMIN_ID, username: "keqi_119", name: "Admin", passwordHash: "argon2-secret-hash", status: "ACTIVE", createdAt: at, updatedAt: at, deletedAt: null }],
+    userRole: [{ id: "user-role-1", userId: ADMIN_ID, roleId: "role-1", deletedAt: null }],
+    customer: [{ id: CUSTOMER_ID, customerNo: "C1", name: "Customer", mobile: "18616570212", ownerUserId: ADMIN_ID, status: "ACTIVE", deletedAt: null }],
+    customerAccount: [{ id: "account-1", customerId: CUSTOMER_ID, phone: "18616570212", accountStatus: "ACTIVE", deletedAt: null }],
+    customerIdentity: [{ id: "identity-1", customerId: CUSTOMER_ID, deletedAt: null }],
+    customerProfile: [{ id: "profile-1", customerId: CUSTOMER_ID, deletedAt: null }],
+    customerESignProviderAccount: [{ id: "esign-1", customerId: CUSTOMER_ID, providerOpenId: "open-1", providerSnapshot: null, registrationStatus: "REGISTERED", realNameStatus: "VERIFIED", certBindingStatus: "BOUND", deletedAt: null }],
     depositRule: [{ id: "deposit-1", grade: "A", status: "ACTIVE", effectiveFrom: at, effectiveTo: null, deletedAt: null }],
     product: [{ id: "product-1", productNo: "P1", productType: "SUBSCRIPTION", status: "ACTIVE", deletedAt: null }],
     productVersion: [{ id: "version-1", productId: "product-1", versionNo: "1", status: "ACTIVE", deletedAt: null }],
@@ -328,10 +365,10 @@ function sourceRows() {
     benefitPackage: [{ id: "benefit-1", productId: "product-1", productVersionId: "version-1", status: "ACTIVE", deletedAt: null }],
     subscriptionPlan: [{ id: "plan-1", productId: "product-1", productVersionId: "version-1", vehiclePackageId: "vehicle-package-1", mileagePackageId: "mileage-1", energyPackageId: "energy-1", benefitPackageId: "benefit-1", status: "ACTIVE", effectiveFrom: at, effectiveTo: null, deletedAt: null }],
     productPriceRule: [{ id: "price-1", productVersionId: "version-1", modelDefinitionId: "model-1", status: "ACTIVE", deletedAt: null }],
-    fileObject: ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER", "SUBSCRIPTION_EXTENSION"].map((type, index) => ({ id: `file-${index}`, bucket: "contracts", objectKey: `${type}.pdf`, originalName: `${type}.pdf`, mimeType: "application/pdf", sizeBytes: 10n, contentSha256: "a".repeat(64), createdAt: at })),
-    contractVersion: ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER", "SUBSCRIPTION_EXTENSION"].map((type, index) => ({ id: `contract-version-${index}`, templateType: type, templateName: type, businessType: "SUBSCRIPTION", fileId: `file-${index}`, approvedBy: "admin-user", approvedAt: at, effectiveFrom: at, effectiveTo: null, status: "ACTIVE", deletedAt: null })),
+    fileObject: ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER", "SUBSCRIPTION_EXTENSION"].map((type, index) => ({ id: `file-${index}`, bucket: "contracts", objectKey: `${type}.pdf`, originalName: `${type}.pdf`, mimeType: "application/pdf", sizeBytes: 10n, contentSha256: "a".repeat(64), uploadedBy: ADMIN_ID, createdAt: at })),
+    contractVersion: ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER", "SUBSCRIPTION_EXTENSION"].map((type, index) => ({ id: `contract-version-${index}`, templateType: type, templateName: type, businessType: "SUBSCRIPTION", fileId: `file-${index}`, approvedBy: ADMIN_ID, approvedAt: at, effectiveFrom: at, effectiveTo: null, status: "ACTIVE", deletedAt: null })),
     notificationTemplate: NOTIFICATION_CODES.map((code, index) => ({ id: `notification-${index}`, templateCode: code, templateStatus: "ACTIVE", variables: null, providerConfig: index === 0 ? { provider: "test" } : null, deletedAt: null })),
-    assetOwner: [{ id: "owner-1", ownerNo: "OWNER-1", status: "ACTIVE", onboardingSnapshot: null, createdBy: "admin-user", updatedBy: "admin-user" }],
+    assetOwner: [{ id: OWNER_ID, ownerNo: "OWNER-1", status: "ACTIVE", onboardingSnapshot: null, createdBy: ADMIN_ID, updatedBy: ADMIN_ID }],
     vehicle: [{ id: VEHICLE_ID, vehicleNo: "VEH-1", modelDefinitionId: "model-1", currentSalePriceAmount: 100000n, salePriceStatus: "EFFECTIVE", status: "AVAILABLE", createdAt: at, updatedAt: at, deletedAt: null }],
     vehicleListingProfile: [{ id: "listing-1", vehicleId: VEHICLE_ID, listingStatus: "PUBLISHED", portalVisible: true, sellingPoints: null, customerTags: null, serviceHighlights: { roadside: true }, faqSnapshot: null, deletedAt: null }],
     vehicleListingMedia: [{ id: "media-1", vehicleId: VEHICLE_ID, listingProfileId: "listing-1", deletedAt: null }],
@@ -342,11 +379,11 @@ function sourceRows() {
     vehicleInsuranceCoverage: [{ id: "coverage-1", policyId: "policy-1", deletedAt: null }],
     vehicleListingSourceBinding: [{ id: "binding-1", vehicleId: VEHICLE_ID, documentId: "document-1" }],
     vehicleSalePriceHistory: [{ id: "sale-1", vehicleId: VEHICLE_ID }],
-    vehicleOwnershipPeriod: [{ id: "ownership-1", vehicleId: VEHICLE_ID, assetOwnerId: "owner-1", startSnapshot: { ownerId: "owner-1" }, endSnapshot: null, startConfirmedBy: "admin-user", endConfirmedBy: null, createdBy: "admin-user", endedAt: null }],
-    vehicleAssetCostProfile: [{ id: "cost-profile-1", vehicleId: VEHICLE_ID, profileStatus: "ACTIVE", snapshot: null, deletedAt: null }],
+    vehicleOwnershipPeriod: [{ id: "ownership-1", vehicleId: VEHICLE_ID, assetOwnerId: OWNER_ID, startedAt: at, endedAt: null, startReason: "INITIAL_ACQUISITION", endReason: null, startSourceType: "BASELINE", startSourceId: VEHICLE_ID, startSourceKey: "ownership:start", endSourceType: null, endSourceId: null, endSourceKey: null, startSnapshot: { ownerId: OWNER_ID }, endSnapshot: null, startConfirmedBy: ADMIN_ID, startConfirmedAt: at, endConfirmedBy: null, endConfirmedAt: null, createdAt: at, updatedAt: at, createdBy: ADMIN_ID }],
+    vehicleAssetCostProfile: [{ id: COST_PROFILE_ID, vehicleId: VEHICLE_ID, profileStatus: "ACTIVE", depreciationMethod: "STRAIGHT_LINE", depreciationStartDate: at, usefulLifeMonths: 60, residualValueAmount: 10000n, capitalCostRateBps: null, annualInsuranceCostAmount: null, annualMaintenanceReserveAmount: null, otherMonthlyCostAmount: null, remark: null, snapshot: null, createdAt: at, updatedAt: at, createdBy: null, updatedBy: null, deletedAt: null }],
     vehicleCostLedgerEntry: [
-      { id: "ledger-1", vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: "customer-1", assetOwnerId: "owner-1", workOrderId: null, evidenceId: null, assetOwnerSnapshot: null, evidenceSnapshot: null, responsibilitySnapshot: { party: "PLATFORM" }, confirmedBy: "admin-user", reversalOfEntryId: null },
-      { id: "ledger-2", vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: null, assetOwnerId: "owner-1", workOrderId: null, evidenceId: null, assetOwnerSnapshot: { ownerNo: "OWNER-1" }, evidenceSnapshot: { reason: "reversal" }, responsibilitySnapshot: { party: "PLATFORM" }, confirmedBy: "admin-user", reversalOfEntryId: "ledger-1" }
+      { id: LEDGER_ID_1, vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: CUSTOMER_ID, assetOwnerId: OWNER_ID, workOrderId: null, evidenceId: null, assetOwnerSnapshot: null, evidenceSnapshot: null, responsibilitySnapshot: { party: "PLATFORM" }, entryKind: "ORIGINAL", actionType: "ACTUAL_COST", costCategory: "OTHER", amountCents: 10000n, responsiblePartyType: "PLATFORM", responsiblePartyId: null, occurredOn: at, accountingPeriod: "2026-01", confirmedAt: at, confirmedBy: ADMIN_ID, reversalOfEntryId: null, sourceType: "BASELINE", sourceId: VEHICLE_ID, sourceKey: "cost:original", createdAt: at },
+      { id: LEDGER_ID_2, vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: null, assetOwnerId: OWNER_ID, workOrderId: null, evidenceId: null, assetOwnerSnapshot: { ownerNo: "OWNER-1" }, evidenceSnapshot: { reason: "reversal" }, responsibilitySnapshot: { party: "PLATFORM" }, entryKind: "REVERSAL", actionType: "WRITE_OFF", costCategory: "OTHER", amountCents: -10000n, responsiblePartyType: "PLATFORM", responsiblePartyId: null, occurredOn: at, accountingPeriod: "2026-01", confirmedAt: at, confirmedBy: ADMIN_ID, reversalOfEntryId: LEDGER_ID_1, sourceType: "BASELINE", sourceId: VEHICLE_ID, sourceKey: "cost:reversal", createdAt: at }
     ]
   };
   return rows;
@@ -480,6 +517,21 @@ function validateFakeCreateInput(delegate, row, rows, batch) {
     if (row[field] === null || row[field] === undefined) throw new TypeError(`${delegate}.${field} is required`);
   }
 
+  if (delegate === "vehicleAssetCostProfile") {
+    requireNonEmptyString(row.depreciationMethod, `${delegate}.depreciationMethod`);
+    requireDate(row.depreciationStartDate, `${delegate}.depreciationStartDate`);
+    if (!Number.isInteger(row.usefulLifeMonths)) throw new TypeError(`${delegate}.usefulLifeMonths is required`);
+    if (typeof row.residualValueAmount !== "bigint") throw new TypeError(`${delegate}.residualValueAmount is required`);
+  }
+  if (delegate === "vehicleCostLedgerEntry") {
+    for (const field of ["entryKind", "actionType", "costCategory", "responsiblePartyType", "accountingPeriod", "sourceType", "sourceId", "sourceKey"]) {
+      requireNonEmptyString(row[field], `${delegate}.${field}`);
+    }
+    if (typeof row.amountCents !== "bigint") throw new TypeError(`${delegate}.amountCents is required`);
+    requireDate(row.occurredOn, `${delegate}.occurredOn`);
+    requireDate(row.confirmedAt, `${delegate}.confirmedAt`);
+  }
+
   const has = (target, id) => (rows[target] ?? []).some((item) => item.id === id);
   const optional = (target, id) => id == null || has(target, id);
   if (delegate === "productVersion" && !optional("user", row.approvedBy)) throw new Error("dangling ProductVersion.approvedBy");
@@ -493,6 +545,14 @@ function validateFakeCreateInput(delegate, row, rows, batch) {
       throw new Error("dangling cost ledger endpoint");
     }
   }
+}
+
+function requireNonEmptyString(value, field) {
+  if (typeof value !== "string" || value.length === 0) throw new TypeError(`${field} is required`);
+}
+
+function requireDate(value, field) {
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) throw new TypeError(`${field} is required`);
 }
 
 function normalizeFakeStoredRow(delegate, row) {

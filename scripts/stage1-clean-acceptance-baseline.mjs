@@ -26,6 +26,7 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
   const deps = dependencies(injected);
   let args;
   let reportPath;
+  let approvedPath;
   let sourcePrisma;
   let targetPrisma;
   let interrupted = false;
@@ -33,7 +34,7 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
   try {
     try {
       args = parseStage1CleanAcceptanceArgs(argv);
-      reportPath = deps.assertEvidencePath(args.outputPath, deps.repoRoot);
+      reportPath = deps.assertEvidencePath(args.outputPath, deps.repoRoot, { ...deps.evidenceSecurity, intent: "create" });
       requireEnvironment(deps.env, args.mode);
     } catch (error) {
       emitError(deps, error);
@@ -43,7 +44,10 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
     let approvedManifest;
     if (args.mode !== "dry-run") {
       try {
-        const approvedPath = deps.assertEvidencePath(args.approvedManifestPath, deps.repoRoot);
+        approvedPath = deps.assertEvidencePath(args.approvedManifestPath, deps.repoRoot, { ...deps.evidenceSecurity, intent: "read" });
+        if (sameCanonicalPath(reportPath, approvedPath, deps.platform)) {
+          throw Object.assign(new Error("EVIDENCE_PATH_COLLISION"), { code: "EVIDENCE_PATH_COLLISION" });
+        }
         approvedManifest = readApprovedStage1AcceptanceManifest(
           await deps.readTextFile(approvedPath, "utf8"),
           args.approvedManifestSha256,
@@ -104,7 +108,13 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
       });
       if (interrupted) throw cliExecutionError("STAGE1_ACCEPTANCE_INTERRUPTED");
       const manifest = result.manifest ?? approvedManifest;
-      const report = { manifest, manifestSha256: result.manifestSha256, operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE", result };
+      const report = {
+        manifest,
+        manifestSha256: result.manifestSha256,
+        mode: args.mode,
+        operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+        safe: result.safe === true
+      };
       if (!await writeReport(deps, reportPath, report)) return 5;
       emitSummary(deps, {
         errorCode: result.safe === true ? undefined : result.manifest?.exceptions?.[0]?.code ?? "MANIFEST_CLASSIFICATION_INVALID",
@@ -125,24 +135,31 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
 }
 
 function dependencies(injected) {
-  return {
+  const deps = {
     assertDatabasePair: assertStage1AcceptanceDatabasePair,
     assertEvidencePath: assertControlledEvidencePath,
     createPrismaClient: createStage1AcceptancePrismaClient,
     discoverCandidates: discoverStage1CleanAcceptanceVehicleCandidates,
+    evidenceSecurity: {},
     env: process.env,
     executeBaseline: executeStage1CleanAcceptanceBaseline,
     hashManifest: hashStage1CleanAcceptanceManifest,
     installSignalHandler: (handler) => { process.once("SIGINT", handler); return () => process.off("SIGINT", handler); },
     now: () => new Date(),
+    platform: process.platform,
     randomBytes,
     readTextFile: readFile,
     repoRoot,
-    writeJsonFile: writeControlledJsonFile,
     writeStderr: (value) => process.stderr.write(value),
     writeStdout: (value) => process.stdout.write(value),
     ...injected
   };
+  deps.writeJsonFile ??= (path, value) => writeControlledJsonFile(path, value, undefined, {
+    ...deps.evidenceSecurity,
+    platform: deps.platform,
+    repoRoot: deps.repoRoot
+  });
+  return deps;
 }
 
 function requireEnvironment(env, mode) {
@@ -194,6 +211,11 @@ function isGateError(error) {
 
 function digest(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function sameCanonicalPath(left, right, platform) {
+  const normalize = (value) => platform === "win32" ? value.replaceAll("/", "\\").toLowerCase() : value;
+  return normalize(left) === normalize(right);
 }
 
 if (isMainModule(import.meta.url, process.argv[1])) {

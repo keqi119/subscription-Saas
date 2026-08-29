@@ -1,8 +1,9 @@
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import * as pathDefault from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -45,24 +46,45 @@ export function parseStage1CleanAcceptanceTargetValidatorArgs(argv) {
   return { approvedManifestPath, approvedManifestSha256, outputPath };
 }
 
-export function assertControlledEvidencePath(outputPath, repoRoot) {
+export function assertControlledEvidencePath(outputPath, repoRoot, options = {}) {
   if (typeof outputPath !== "string" || outputPath.length === 0) cliFail("EVIDENCE_OUTPUT_REQUIRED");
-  const resolvedOutput = resolve(outputPath);
-  const resolvedRepo = resolve(repoRoot);
-  if (isWithin(resolvedOutput, resolvedRepo)) cliFail("EVIDENCE_PATH_INSIDE_REPOSITORY");
-  const parent = dirname(resolvedOutput);
-  if (!existsSync(parent) || !statSync(parent).isDirectory()) cliFail("EVIDENCE_PARENT_INVALID");
-  const actualParent = realpathSync(parent);
-  if (isWithin(actualParent, resolvedRepo)) cliFail("EVIDENCE_PATH_INSIDE_REPOSITORY");
-  if (existsSync(resolvedOutput)) {
-    const target = lstatSync(resolvedOutput);
+  const intent = options.intent ?? "create";
+  if (!new Set(["create", "read"]).has(intent)) cliFail("EVIDENCE_INTENT_INVALID");
+  const pathApi = options.pathApi ?? pathDefault;
+  const fsSync = options.fsSync ?? { existsSync, lstatSync, realpathSync };
+  const platform = options.platform ?? process.platform;
+  const resolvedOutput = pathApi.resolve(outputPath);
+  const resolvedRepo = pathApi.resolve(repoRoot);
+  if (isWithin(resolvedOutput, resolvedRepo, pathApi, platform)) cliFail("EVIDENCE_PATH_INSIDE_REPOSITORY");
+  const resolvedParent = pathApi.resolve(pathApi.dirname(resolvedOutput));
+  if (!fsSync.existsSync(resolvedParent)) cliFail("EVIDENCE_PARENT_INVALID");
+  const parentStat = fsSync.lstatSync(resolvedParent);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) cliFail("EVIDENCE_PARENT_INVALID");
+  const actualParent = pathApi.resolve(fsSync.realpathSync(resolvedParent));
+  if (!sameCanonicalSpelling(actualParent, resolvedParent, pathApi)) cliFail("EVIDENCE_PARENT_INVALID");
+  if (isWithin(actualParent, resolvedRepo, pathApi, platform)) cliFail("EVIDENCE_PATH_INSIDE_REPOSITORY");
+  assertControlledDirectory(actualParent, parentStat, platform, options.verifyWindowsAcl, pathApi);
+
+  const canonicalOutput = pathApi.join(actualParent, pathApi.basename(resolvedOutput));
+  const targetExists = fsSync.existsSync(canonicalOutput);
+  if (intent === "create" && targetExists) cliFail("EVIDENCE_TARGET_EXISTS");
+  if (intent === "read") {
+    if (!targetExists) cliFail("EVIDENCE_TARGET_INVALID");
+    const target = fsSync.lstatSync(canonicalOutput);
     if (target.isDirectory() || target.isSymbolicLink() || !target.isFile()) cliFail("EVIDENCE_TARGET_INVALID");
+    const actualTarget = pathApi.resolve(fsSync.realpathSync(canonicalOutput));
+    if (!sameCanonicalSpelling(actualTarget, canonicalOutput, pathApi)) cliFail("EVIDENCE_TARGET_INVALID");
   }
-  return resolvedOutput;
+  return canonicalOutput;
 }
 
-export async function writeControlledJsonFile(outputPath, value, fsApi = fsPromises) {
-  const tempPath = resolve(dirname(outputPath), `.${basename(outputPath)}.${process.pid}.${randomUUID()}.tmp`);
+export async function writeControlledJsonFile(outputPath, value, fsApi = fsPromises, security = {}) {
+  if (!security.repoRoot) cliFail("EVIDENCE_SECURITY_CONTEXT_REQUIRED");
+  const canonicalOutput = assertControlledEvidencePath(outputPath, security.repoRoot, {
+    ...security,
+    intent: "create"
+  });
+  const tempPath = resolve(dirname(canonicalOutput), `.${basename(canonicalOutput)}.${process.pid}.${randomUUID()}.tmp`);
   let handle;
   try {
     handle = await fsApi.open(tempPath, "wx", 0o600);
@@ -70,7 +92,13 @@ export async function writeControlledJsonFile(outputPath, value, fsApi = fsPromi
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await fsApi.rename(tempPath, outputPath);
+    assertControlledEvidencePath(canonicalOutput, security.repoRoot, {
+      ...security,
+      intent: "create"
+    });
+    if (typeof fsApi.link !== "function") cliFail("EVIDENCE_NO_REPLACE_UNSUPPORTED");
+    await fsApi.link(tempPath, canonicalOutput);
+    await fsApi.unlink(tempPath);
   } catch (cause) {
     try { await handle?.close(); } catch {}
     try { await fsApi.unlink(tempPath); } catch {}
@@ -92,7 +120,7 @@ export async function createStage1AcceptancePrismaClient(databaseUrl, _label, op
     import(pathToFileURL(requireFromApi.resolve("@prisma/adapter-pg")).href),
     import(pathToFileURL(requireFromApi.resolve("@prisma/client")).href)
   ]);
-  return new PrismaClient({ adapter: new PrismaPg(databaseUrl), log: ["warn", "error"] });
+  return new PrismaClient({ adapter: new PrismaPg(databaseUrl) });
 }
 
 export function readApprovedStage1AcceptanceManifest(text, approvedSha256, hashManifest) {
@@ -102,9 +130,10 @@ export function readApprovedStage1AcceptanceManifest(text, approvedSha256, hashM
   } catch {
     cliFail("APPROVED_MANIFEST_INVALID");
   }
-  const manifest = report?.manifest ?? report;
+  const wrapped = Object.hasOwn(report ?? {}, "manifest");
+  if (wrapped && !validApprovedWrapperShape(report, approvedSha256)) cliFail("APPROVED_MANIFEST_INVALID");
+  const manifest = wrapped ? report.manifest : report;
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) cliFail("APPROVED_MANIFEST_INVALID");
-  if (report?.manifest && report.manifestSha256 !== approvedSha256) cliFail("APPROVED_MANIFEST_SHA_MISMATCH");
   if (hashManifest(manifest) !== approvedSha256) cliFail("APPROVED_MANIFEST_SHA_MISMATCH");
   if (!validApprovedManifestShape(manifest)) cliFail("APPROVED_MANIFEST_INVALID");
   return manifest;
@@ -166,9 +195,11 @@ function optionalSingleValue(parsed, name) {
   return parsed.values.get(name)?.[0];
 }
 
-function isWithin(candidate, root) {
-  const pathFromRoot = relative(root, candidate);
-  return pathFromRoot === "" || (!pathFromRoot.startsWith("..") && !isAbsolute(pathFromRoot));
+function isWithin(candidate, root, pathApi, platform) {
+  const normalizedCandidate = normalizePath(candidate, platform);
+  const normalizedRoot = normalizePath(root, platform);
+  const pathFromRoot = pathApi.relative(normalizedRoot, normalizedCandidate);
+  return pathFromRoot === "" || (!pathFromRoot.startsWith("..") && !pathApi.isAbsolute(pathFromRoot));
 }
 
 function jsonReplacer(_key, value) {
@@ -177,6 +208,10 @@ function jsonReplacer(_key, value) {
 
 function validApprovedManifestShape(manifest) {
   const domains = ["access", "catalog", "customer", "templates", "vehicle"];
+  const topLevelKeys = [
+    "counts", "exceptions", "generatedAt", "gitSha", "hashSalt", "imageRef", "operation",
+    "rowDigests", "safeToApply", "schemaVersion", "selection", "source", "target"
+  ];
   const exactDomains = (value, predicate) =>
     value &&
     typeof value === "object" &&
@@ -188,7 +223,9 @@ function validApprovedManifestShape(manifest) {
     Object.keys(value).sort().join("|") === "databaseDigest|migrationCatalogDigest|schemaDigest" &&
     Object.values(value).every((digestValue) => SHA256.test(digestValue));
   const generatedAt = manifest.generatedAt;
+  const vehicleDigests = manifest.selection?.vehicleDigests;
   return (
+    exactKeys(manifest, topLevelKeys) &&
     manifest.schemaVersion === 1 &&
     manifest.operation === "STAGE1_CLEAN_ACCEPTANCE_BASELINE" &&
     /^[0-9a-f]{40}$/.test(manifest.gitSha ?? "") &&
@@ -200,15 +237,58 @@ function validApprovedManifestShape(manifest) {
     digestContext(manifest.source) &&
     digestContext(manifest.target) &&
     manifest.selection &&
+    exactKeys(manifest.selection, ["adminDigest", "customerDigest", "vehicleDigests"]) &&
     SHA256.test(manifest.selection.adminDigest ?? "") &&
     SHA256.test(manifest.selection.customerDigest ?? "") &&
-    Array.isArray(manifest.selection.vehicleDigests) &&
-    manifest.selection.vehicleDigests.length > 0 &&
-    manifest.selection.vehicleDigests.every((value) => SHA256.test(value)) &&
+    Array.isArray(vehicleDigests) &&
+    vehicleDigests.length > 0 &&
+    vehicleDigests.every((value) => SHA256.test(value)) &&
+    new Set(vehicleDigests).size === vehicleDigests.length &&
+    vehicleDigests.every((value, index) => index === 0 || vehicleDigests[index - 1] < value) &&
     exactDomains(manifest.counts, (value) => Number.isSafeInteger(value) && value >= 0) &&
     exactDomains(manifest.rowDigests, (value) => SHA256.test(value)) &&
     Array.isArray(manifest.exceptions) &&
     manifest.exceptions.length === 0 &&
     manifest.safeToApply === true
   );
+}
+
+function validApprovedWrapperShape(report, approvedSha256) {
+  return (
+    exactKeys(report, ["manifest", "manifestSha256", "mode", "operation", "safe"]) &&
+    report.manifestSha256 === approvedSha256 &&
+    report.mode === "dry-run" &&
+    report.operation === "STAGE1_CLEAN_ACCEPTANCE_BASELINE" &&
+    report.safe === true
+  );
+}
+
+function exactKeys(value, expected) {
+  return Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join("|") === [...expected].sort().join("|");
+}
+
+function assertControlledDirectory(parent, stat, platform, verifyWindowsAcl, pathApi) {
+  if (platform === "win32") {
+    const proof = typeof verifyWindowsAcl === "function" ? verifyWindowsAcl(parent, stat) : undefined;
+    if (!proof || proof.safe !== true || typeof proof.canonicalPath !== "string") {
+      cliFail("EVIDENCE_DIRECTORY_NOT_CONTROLLED");
+    }
+    if (!sameCanonicalSpelling(pathApi.resolve(proof.canonicalPath), parent, pathApi)) {
+      cliFail("EVIDENCE_PARENT_INVALID");
+    }
+    return;
+  }
+  if (stat.uid !== 0 || (stat.mode & 0o777) !== 0o700) cliFail("EVIDENCE_DIRECTORY_NOT_CONTROLLED");
+}
+
+function sameCanonicalSpelling(left, right, pathApi) {
+  return pathApi.normalize(left) === pathApi.normalize(right);
+}
+
+function normalizePath(value, platform) {
+  const normalized = String(value).replaceAll("/", platform === "win32" ? "\\" : "/");
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
 }

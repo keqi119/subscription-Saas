@@ -31,8 +31,11 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
     let approvedManifest;
     try {
       args = parseStage1CleanAcceptanceTargetValidatorArgs(argv);
-      reportPath = deps.assertEvidencePath(args.outputPath, deps.repoRoot);
-      const approvedPath = deps.assertEvidencePath(args.approvedManifestPath, deps.repoRoot);
+      reportPath = deps.assertEvidencePath(args.outputPath, deps.repoRoot, { ...deps.evidenceSecurity, intent: "create" });
+      const approvedPath = deps.assertEvidencePath(args.approvedManifestPath, deps.repoRoot, { ...deps.evidenceSecurity, intent: "read" });
+      if (sameCanonicalPath(reportPath, approvedPath, deps.platform)) {
+        throw Object.assign(new Error("EVIDENCE_PATH_COLLISION"), { code: "EVIDENCE_PATH_COLLISION" });
+      }
       if (!deps.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL || !deps.env.STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME) {
         throw Object.assign(new Error("DEDICATED_DATABASE_URL_REQUIRED"), { code: "DEDICATED_DATABASE_URL_REQUIRED" });
       }
@@ -83,21 +86,33 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
 }
 
 function dependencies(injected) {
-  return {
+  const deps = {
     assertEvidencePath: assertControlledEvidencePath,
     assertTargetDatabase,
     createPrismaClient: createStage1AcceptancePrismaClient,
+    evidenceSecurity: {},
     env: process.env,
     hashManifest: hashStage1CleanAcceptanceManifest,
     installSignalHandler: (handler) => { process.once("SIGINT", handler); return () => process.off("SIGINT", handler); },
+    platform: process.platform,
     readTextFile: readFile,
     repoRoot,
     validateTarget: validateStage1CleanAcceptanceTargetBaseline,
-    writeJsonFile: writeControlledJsonFile,
     writeStderr: (value) => process.stderr.write(value),
     writeStdout: (value) => process.stdout.write(value),
     ...injected
   };
+  deps.writeJsonFile ??= (path, value) => writeControlledJsonFile(path, value, undefined, {
+    ...deps.evidenceSecurity,
+    platform: deps.platform,
+    repoRoot: deps.repoRoot
+  });
+  return deps;
+}
+
+function sameCanonicalPath(left, right, platform) {
+  const normalize = (value) => platform === "win32" ? value.replaceAll("/", "\\").toLowerCase() : value;
+  return normalize(left) === normalize(right);
 }
 
 function assertTargetDatabase(targetUrl, allowedHostname) {

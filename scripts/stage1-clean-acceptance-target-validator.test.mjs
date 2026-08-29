@@ -17,7 +17,7 @@ const APPROVED = {
   rowDigests: { access: SHA, catalog: SHA, customer: SHA, templates: SHA, vehicle: SHA },
   safeToApply: true,
   schemaVersion: 1,
-  selection: { adminDigest: SHA, customerDigest: SHA, vehicleDigests: [SHA] },
+  selection: { adminDigest: SHA, customerDigest: SHA, vehicleDigests: [SHA, "b".repeat(64)] },
   source: { databaseDigest: SHA, migrationCatalogDigest: SHA, schemaDigest: SHA },
   target: { databaseDigest: SHA, migrationCatalogDigest: SHA, schemaDigest: SHA }
 };
@@ -61,6 +61,14 @@ test("target validator rejects approval/input before connecting and never reads 
     "--approved-manifest-sha256", SHA
   ], mismatch.deps), 2);
   assert.deepEqual(mismatch.factoryUrls, []);
+
+  const samePath = createValidatorHarness();
+  assert.equal(await validatorMain([
+    "--output", "D:/evidence/dry.json",
+    "--approved-manifest", "D:/evidence/dry.json",
+    "--approved-manifest-sha256", SHA
+  ], samePath.deps), 2);
+  assert.deepEqual(samePath.factoryUrls, []);
 });
 
 test("target validator maps invariant, connection, write, and SIGINT failures and always disconnects created clients", async () => {
@@ -112,7 +120,7 @@ function createValidatorHarness({ canonicalManifestSha = SHA, env, scenario } = 
     },
     hashManifest: () => canonicalManifestSha,
     installSignalHandler: (handler) => { signalHandler = handler; return () => {}; },
-    readTextFile: async () => JSON.stringify({ manifest: APPROVED, manifestSha256: SHA }),
+    readTextFile: async () => JSON.stringify({ manifest: APPROVED, manifestSha256: SHA, mode: "dry-run", operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE", safe: true }),
     repoRoot: "D:/repo",
     validateTarget: async (_tx, options) => {
       validateCalls.push(options);

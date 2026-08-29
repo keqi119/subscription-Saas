@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   assertControlledEvidencePath,
   buildPublicStage1AcceptanceSummary,
+  createStage1AcceptancePrismaClient,
   parseStage1CleanAcceptanceArgs,
   writeControlledJsonFile
 } from "./stage1-clean-acceptance-cli-core.mjs";
@@ -55,50 +56,199 @@ test("controlled evidence paths stay outside the repository and reject missing p
   await mkdir(evidence);
   t.after(() => rm(root, { force: true, recursive: true }));
 
-  assert.equal(assertControlledEvidencePath(join(evidence, "report.json"), repo), resolve(evidence, "report.json"));
-  assert.throws(() => assertControlledEvidencePath(join(repo, "report.json"), repo), /EVIDENCE_PATH_INSIDE_REPOSITORY/);
-  assert.throws(() => assertControlledEvidencePath(join(root, "missing", "report.json"), repo), /EVIDENCE_PARENT_INVALID/);
-  assert.throws(() => assertControlledEvidencePath(evidence, repo), /EVIDENCE_TARGET_INVALID/);
+  const createSecurity = { intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence) };
+  const readSecurity = { intent: "read", platform: "win32", verifyWindowsAcl: windowsAcl(evidence) };
+  assert.equal(assertControlledEvidencePath(join(evidence, "report.json"), repo, createSecurity), resolve(evidence, "report.json"));
+  assert.throws(() => assertControlledEvidencePath(join(repo, "report.json"), repo, createSecurity), /EVIDENCE_PATH_INSIDE_REPOSITORY/);
+  assert.throws(() => assertControlledEvidencePath(join(root, "missing", "report.json"), repo, createSecurity), /EVIDENCE_PARENT_INVALID/);
+  assert.throws(() => assertControlledEvidencePath(evidence, repo, {
+    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(root)
+  }), /EVIDENCE_TARGET_EXISTS/);
 
   const realFile = join(evidence, "existing.json");
   const linkFile = join(evidence, "linked.json");
   await writeFile(realFile, "existing");
+  assert.equal(assertControlledEvidencePath(realFile, repo, readSecurity), resolve(realFile));
+  assert.throws(() => assertControlledEvidencePath(realFile, repo, createSecurity), /EVIDENCE_TARGET_EXISTS/);
+  assert.throws(() => assertControlledEvidencePath(join(evidence, "missing.json"), repo, readSecurity), /EVIDENCE_TARGET_INVALID/);
   try {
     await import("node:fs/promises").then(({ symlink }) => symlink(realFile, linkFile));
-    assert.throws(() => assertControlledEvidencePath(linkFile, repo), /EVIDENCE_TARGET_INVALID/);
+    assert.throws(() => assertControlledEvidencePath(linkFile, repo, readSecurity), /EVIDENCE_TARGET_INVALID/);
   } catch (error) {
     if (process.platform !== "win32" || error?.code !== "EPERM") throw error;
   }
 });
 
+test("controlled evidence directories reject aliases, unsafe ownership/mode/ACL, and case-insensitive repository paths", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "stage1-cli-security-"));
+  const repo = join(root, "repo");
+  const evidence = join(root, "repo-evidence");
+  await mkdir(repo);
+  await mkdir(evidence);
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const output = join(evidence, "report.json");
+
+  assert.equal(assertControlledEvidencePath(output, repo, {
+    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence)
+  }), resolve(output), "an adjacent repository prefix is not inside the repository");
+  assert.equal(assertControlledEvidencePath(resolve(output).replaceAll("\\", "/"), repo, {
+    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence)
+  }), resolve(output), "separator normalization preserves the canonical path");
+  assert.throws(() => assertControlledEvidencePath(output.toUpperCase(), repo, {
+    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence)
+  }), /EVIDENCE_PARENT_INVALID/);
+  assert.throws(() => assertControlledEvidencePath(join(repo, "inside.json"), repo.toUpperCase(), {
+    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(repo)
+  }), /EVIDENCE_PATH_INSIDE_REPOSITORY/);
+  assert.throws(() => assertControlledEvidencePath(output, repo, {
+    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence, false)
+  }), /EVIDENCE_DIRECTORY_NOT_CONTROLLED/);
+  assert.throws(() => assertControlledEvidencePath(output, repo, {
+    intent: "create", platform: "win32"
+  }), /EVIDENCE_DIRECTORY_NOT_CONTROLLED/);
+
+  const actualFs = await import("node:fs");
+  const baseStat = actualFs.lstatSync(evidence);
+  const fsWithParent = (overrides = {}, realpath = evidence) => ({
+    existsSync: actualFs.existsSync,
+    lstatSync(path) {
+      const stat = actualFs.lstatSync(path);
+      if (resolve(path) !== resolve(evidence)) return stat;
+      return {
+        ...stat,
+        ...overrides,
+        isDirectory: () => overrides.isDirectory ?? true,
+        isFile: () => false,
+        isSymbolicLink: () => overrides.isSymbolicLink ?? false
+      };
+    },
+    realpathSync(path) { return resolve(path) === resolve(evidence) ? realpath : actualFs.realpathSync(path); }
+  });
+  assert.throws(() => assertControlledEvidencePath(output, repo, {
+    fsSync: fsWithParent({ uid: 1000, mode: 0o40700 }), intent: "create", platform: "linux"
+  }), /EVIDENCE_DIRECTORY_NOT_CONTROLLED/);
+  assert.throws(() => assertControlledEvidencePath(output, repo, {
+    fsSync: fsWithParent({ uid: 0, mode: 0o40755 }), intent: "create", platform: "linux"
+  }), /EVIDENCE_DIRECTORY_NOT_CONTROLLED/);
+  assert.throws(() => assertControlledEvidencePath(output, repo, {
+    fsSync: fsWithParent({ isSymbolicLink: true }), intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence)
+  }), /EVIDENCE_PARENT_INVALID/);
+  assert.throws(() => assertControlledEvidencePath(output, repo, {
+    fsSync: fsWithParent({}, join(root, "elsewhere")), intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence)
+  }), /EVIDENCE_PARENT_INVALID/);
+  assert.ok(baseStat.isDirectory());
+});
+
 test("controlled JSON writing is same-directory atomic, private on Unix, and cleans only its own temp on failure", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "stage1-cli-write-"));
+  const repo = join(root, "repo");
+  await mkdir(repo);
   t.after(() => rm(root, { force: true, recursive: true }));
   const output = join(root, "report.json");
-  await writeControlledJsonFile(output, { ok: true });
+  const security = { platform: "win32", repoRoot: repo, verifyWindowsAcl: windowsAcl(root) };
+  await writeControlledJsonFile(output, { ok: true }, undefined, security);
   assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { ok: true });
   if (process.platform !== "win32") assert.equal((await lstat(output)).mode & 0o777, 0o600);
 
   const existing = join(root, "existing.json");
   await writeFile(existing, "keep");
+  await assert.rejects(writeControlledJsonFile(existing, { replace: true }, undefined, security), /EVIDENCE_TARGET_EXISTS/);
+  assert.equal(await readFile(existing, "utf8"), "keep");
+
+  const failedOutput = join(root, "failed.json");
   const calls = [];
   const fsApi = {
-    async open(path) {
-      calls.push(["open", path]);
+    async open(path, flag, mode) {
+      calls.push(["open", path, flag, mode]);
       return {
         async writeFile() { throw new Error("disk full"); },
         async sync() {},
         async close() { calls.push(["close", path]); }
       };
     },
-    async rename() { calls.push(["rename"]); },
+    async link() { calls.push(["link"]); },
     async unlink(path) { calls.push(["unlink", path]); }
   };
-  await assert.rejects(writeControlledJsonFile(existing, { replace: true }, fsApi), /EVIDENCE_WRITE_FAILED/);
+  await assert.rejects(writeControlledJsonFile(failedOutput, { replace: true }, fsApi, security), /EVIDENCE_WRITE_FAILED/);
   assert.equal(await readFile(existing, "utf8"), "keep");
-  assert.equal(calls.some(([operation]) => operation === "rename"), false);
+  assert.equal(calls.some(([operation]) => operation === "link"), false);
   assert.equal(calls.filter(([operation]) => operation === "unlink").length, 1);
-  assert.equal(dirname(calls.find(([operation]) => operation === "open")[1]), root);
+  const openCall = calls.find(([operation]) => operation === "open");
+  assert.equal(dirname(openCall[1]), root);
+  assert.deepEqual(openCall.slice(2), ["wx", 0o600]);
+
+  const unsupportedOutput = join(root, "unsupported.json");
+  const unsupportedCalls = [];
+  await assert.rejects(writeControlledJsonFile(unsupportedOutput, { ok: true }, {
+    async open(path, flag, mode) {
+      unsupportedCalls.push(["open", path, flag, mode]);
+      return {
+        async writeFile() { unsupportedCalls.push(["write"]); },
+        async sync() { unsupportedCalls.push(["sync"]); },
+        async close() { unsupportedCalls.push(["close"]); }
+      };
+    },
+    async unlink(path) { unsupportedCalls.push(["unlink", path]); }
+  }, security), /EVIDENCE_WRITE_FAILED/);
+  assert.deepEqual(unsupportedCalls[0].slice(2), ["wx", 0o600]);
+  assert.equal(unsupportedCalls.some(([operation]) => operation === "unlink"), true);
+  await assert.rejects(readFile(unsupportedOutput, "utf8"));
+
+  const concurrentOutput = join(root, "concurrent.json");
+  const settled = await Promise.allSettled([
+    writeControlledJsonFile(concurrentOutput, { writer: 1 }, undefined, security),
+    writeControlledJsonFile(concurrentOutput, { writer: 2 }, undefined, security)
+  ]);
+  assert.equal(settled.filter(({ status }) => status === "fulfilled").length, 1);
+  assert.equal(settled.filter(({ status }) => status === "rejected").length, 1);
+  assert.ok([1, 2].includes(JSON.parse(await readFile(concurrentOutput, "utf8")).writer));
+});
+
+test("the real generated Prisma client emits no sensitive validation log without connecting to a database", async () => {
+  const sensitive = ["HASH_SECRET", "PHONE_SECRET", "OBJECT_KEY_SECRET", "INVOCATION_SECRET"];
+  let stdout = "";
+  let stderr = "";
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  process.stdout.write = function (chunk, ...args) { stdout += String(chunk); return true; };
+  process.stderr.write = function (chunk, ...args) { stderr += String(chunk); return true; };
+  let client;
+  let validationError;
+  try {
+    client = await createStage1AcceptancePrismaClient(
+      "postgresql://unused:unused@127.0.0.1:1/no_connection",
+      "probe",
+      { repoRoot: resolve(".") }
+    );
+    await assert.rejects(
+      client.user.create({
+        data: {
+          username: "PII_USER",
+          passwordHash: "HASH_SECRET",
+          notAField: {
+            invocation: "INVOCATION_SECRET",
+            objectKey: "OBJECT_KEY_SECRET",
+            phone: "PHONE_SECRET"
+          }
+        }
+      }),
+      (error) => {
+        validationError = error;
+        return error?.name === "PrismaClientValidationError";
+      }
+    );
+  } finally {
+    await client?.$disconnect();
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
+  for (const value of sensitive) {
+    assert.equal(stdout.includes(value), false, `stdout leaked ${value}`);
+    assert.equal(stderr.includes(value), false, `stderr leaked ${value}`);
+  }
+  assert.equal(stdout.includes("prisma.user.create"), false);
+  assert.equal(stderr.includes("prisma.user.create"), false);
+  assert.equal(validationError?.name, "PrismaClientValidationError");
 });
 
 test("public summaries allow only fixed non-sensitive fields", () => {
@@ -174,6 +324,38 @@ test("apply reuses approved generatedAt/salt and verifies the canonical manifest
     "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
   ], noConfirmation.deps), 2);
   assert.equal(noConfirmation.clients.length, 0);
+
+  const approvalCases = [
+    { ...approved, rawSecret: "TOP_LEVEL_SECRET" },
+    { ...approved, selection: { ...approved.selection, rawCustomerPhone: "18616570212" } },
+    { ...approved, selection: { ...approved.selection, vehicleDigests: [SHA, SHA] } },
+    { ...approved, selection: { ...approved.selection, vehicleDigests: ["b".repeat(64), SHA] } }
+  ];
+  for (const rejected of approvalCases) {
+    const invalid = createBaselineHarness({ approved: rejected });
+    assert.equal(await baselineMain([
+      "--apply", "--output", "D:/evidence/apply.json", "--vehicle-id", VEHICLE,
+      "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
+    ], invalid.deps), 2);
+    assert.equal(invalid.clients.length, 0);
+  }
+
+  const wrapper = { manifest: approved, manifestSha256: SHA, mode: "dry-run", operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE", safe: true };
+  for (const rejectedReport of [{ ...wrapper, rawSecret: "WRAPPER_SECRET" }, { ...wrapper, result: { rawPhone: "18616570212" } }]) {
+    const invalid = createBaselineHarness({ approved, approvedReport: rejectedReport });
+    assert.equal(await baselineMain([
+      "--apply", "--output", "D:/evidence/apply.json", "--vehicle-id", VEHICLE,
+      "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
+    ], invalid.deps), 2);
+    assert.equal(invalid.clients.length, 0);
+  }
+
+  const samePath = createBaselineHarness({ approved });
+  assert.equal(await baselineMain([
+    "--apply", "--output", "D:/evidence/dry.json", "--vehicle-id", VEHICLE,
+    "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
+  ], samePath.deps), 2);
+  assert.equal(samePath.clients.length, 0);
 });
 
 test("discovery writes minimal candidates, exposes only count/digest, and exits with the stable selection gate", async () => {
@@ -223,13 +405,17 @@ function approvedManifest() {
     rowDigests: { access: SHA, catalog: SHA, customer: SHA, templates: SHA, vehicle: SHA },
     safeToApply: true,
     schemaVersion: 1,
-    selection: { adminDigest: SHA, customerDigest: SHA, vehicleDigests: [SHA] },
+    selection: { adminDigest: SHA, customerDigest: SHA, vehicleDigests: [SHA, "b".repeat(64)] },
     source: { databaseDigest: SHA, migrationCatalogDigest: SHA, schemaDigest: SHA },
     target: { databaseDigest: SHA, migrationCatalogDigest: SHA, schemaDigest: SHA }
   };
 }
 
-function createBaselineHarness({ approved = approvedManifest(), candidates = [], canonicalManifestSha = SHA, env = BASE_ENV, scenario } = {}) {
+function windowsAcl(canonicalPath, safe = true) {
+  return () => ({ canonicalPath: resolve(canonicalPath), safe });
+}
+
+function createBaselineHarness({ approved = approvedManifest(), approvedReport, candidates = [], canonicalManifestSha = SHA, env = BASE_ENV, scenario } = {}) {
   const clients = [];
   const executeCalls = [];
   const reports = [];
@@ -269,7 +455,7 @@ function createBaselineHarness({ approved = approvedManifest(), candidates = [],
     installSignalHandler: (handler) => { signalHandler = handler; return () => {}; },
     now: () => new Date("2026-08-30T12:34:56.000Z"),
     randomBytes: () => Buffer.alloc(32, 0x11),
-    readTextFile: async () => JSON.stringify({ manifest: approved, manifestSha256: SHA }),
+    readTextFile: async () => JSON.stringify(approvedReport ?? { manifest: approved, manifestSha256: SHA, mode: "dry-run", operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE", safe: true }),
     repoRoot: "D:/repo",
     writeJsonFile: async (path, value) => {
       if (scenario === "write") throw new Error("disk path secret");

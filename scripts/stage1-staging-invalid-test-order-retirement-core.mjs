@@ -364,16 +364,31 @@ function digestEvidence(snapshot) {
     ]),
     blockingCounts: safeEntity(snapshot.blockingCounts, BLOCKING_COUNT_FIELDS),
     evidenceReferences: {
-      contracts: safeRecords(snapshot.evidenceReferences?.contracts, ["id", "status"]),
-      eSignTasks: safeRecords(snapshot.evidenceReferences?.eSignTasks, ["id", "taskStatus"]),
+      contracts: safeRecords(snapshot.evidenceReferences?.contracts, [
+        "deletedAt",
+        "id",
+        "orderId",
+        "status"
+      ]),
+      eSignTasks: safeRecords(snapshot.evidenceReferences?.eSignTasks, [
+        "contractId",
+        "deletedAt",
+        "id",
+        "orderId",
+        "taskStatus"
+      ]),
       handovers: safeRecords(snapshot.evidenceReferences?.handovers, [
         "archiveStatus",
+        "deletedAt",
         "id",
+        "orderId",
         "status"
       ]),
       handoverWorkflowJobs: safeRecords(snapshot.evidenceReferences?.handoverWorkflowJobs, [
+        "handoverId",
         "id",
-        "jobStatus"
+        "jobStatus",
+        "workOrderId"
       ])
     },
     lease: safeEntity(snapshot.lease, ["activatedAt", "deletedAt", "id", "orderId", "status"]),

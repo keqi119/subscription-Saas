@@ -253,6 +253,19 @@ test("evidence digest is deterministic and public classification is credential s
   assert.doesNotMatch(publicReport, /objectKey|signedDocumentObjectKey|DATABASE_URL|mobile/);
 });
 
+test("evidence digest changes when an evidence row is deleted or re-associated", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  const baseline = cleanSnapshot();
+  const deleted = structuredClone(baseline);
+  deleted.evidenceReferences.contracts[0].deletedAt = "2026-08-29T00:00:00.000Z";
+  const reassociated = structuredClone(baseline);
+  reassociated.evidenceReferences.eSignTasks[0].contractId =
+    "99999999-9999-4999-8999-999999999999";
+
+  assert.notEqual(classify(deleted).evidenceDigest, classify(baseline).evidenceDigest);
+  assert.notEqual(classify(reassociated).evidenceDigest, classify(baseline).evidenceDigest);
+});
+
 test("recognizes only a complete matching four-audit replay", () => {
   const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
   const before = classify(cleanSnapshot());
@@ -309,13 +322,18 @@ function cleanSnapshot(overrides = {}) {
       contracts: [
         {
           id: "00000000-0000-4000-8000-000000000001",
+          deletedAt: null,
           objectKey: "private/original-contract.pdf",
+          orderId: selectors.orderId,
           status: "SIGNED"
         }
       ],
       eSignTasks: [
         {
           id: "00000000-0000-4000-8000-000000000003",
+          contractId: "00000000-0000-4000-8000-000000000001",
+          deletedAt: null,
+          orderId: selectors.orderId,
           signedDocumentObjectKey: "private/signed-contract.pdf",
           taskStatus: "COMPLETED"
         }

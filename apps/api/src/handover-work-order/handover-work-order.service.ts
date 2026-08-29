@@ -3092,6 +3092,7 @@ export class HandoverWorkOrderService {
       `);
 
       const workOrder = await this.getWorkOrderOrThrow(workOrderId, tx);
+      await this.assertOrderAllowsHandoverJourneyProgress(workOrder.orderId, tx);
       assertCanReconcileArchivedStage2Evidence(workOrder);
       if (!workOrder.handoverId) {
         throw new ConflictException("STAGE2_HANDOVER_ARCHIVE_BINDING_INVALID");
@@ -3209,6 +3210,8 @@ export class HandoverWorkOrderService {
         handoverType: VehicleHandoverType.DELIVERY_OUTBOUND,
         order: {
           is: {
+            deletedAt: null,
+            orderStatus: { not: OrderStatus.CANCELLED },
             subscriptionJourney: {
               is: {
                 currentStepCode:
@@ -3260,6 +3263,7 @@ export class HandoverWorkOrderService {
   async markOpsReviewPending(id: string, actorId?: string) {
     return this.runSerializableTransaction(async (tx) => {
       const workOrder = await this.getWorkOrderOrThrow(id, tx);
+      await this.assertOrderAllowsHandoverJourneyProgress(workOrder.orderId, tx);
       assertCanMarkOpsReviewPending(workOrder);
       const evidencePackage = await this.buildCurrentEvidencePackage(
         workOrder,
@@ -4095,6 +4099,19 @@ export class HandoverWorkOrderService {
       throw new NotFoundException("交付工单不存在。");
     }
     return workOrder;
+  }
+
+  private async assertOrderAllowsHandoverJourneyProgress(
+    orderId: string,
+    db: Prisma.TransactionClient
+  ) {
+    const order = await db.subscriptionOrder.findUnique({
+      select: { deletedAt: true, orderStatus: true },
+      where: { id: orderId }
+    });
+    if (!order || order.deletedAt || order.orderStatus === OrderStatus.CANCELLED) {
+      throw new BadRequestException("已取消或不存在的订单不能重新推进交付 Journey。");
+    }
   }
 
   private async getOrderOrThrow(orderId: string) {

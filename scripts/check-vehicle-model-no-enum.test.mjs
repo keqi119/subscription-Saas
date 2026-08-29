@@ -18,7 +18,7 @@ test("accepts string compatibility fields without Prisma enum dependencies", () 
       `,
       [
         {
-          content: 'export type VehicleSummary = { vehicleModel?: string | null };',
+          content: "export type VehicleSummary = { vehicleModel?: string | null };",
           path: "apps/api/src/vehicle/vehicle.service.ts"
         }
       ]
@@ -119,7 +119,10 @@ test("rejects VehicleModel references through a named Prisma import", () => {
           path: "apps/api/src/vehicle/vehicle.service.ts"
         }
       ],
-      { category: "PRISMA_VEHICLE_MODEL_NAMESPACE", path: "apps/api/src/vehicle/vehicle.service.ts" }
+      {
+        category: "PRISMA_VEHICLE_MODEL_NAMESPACE",
+        path: "apps/api/src/vehicle/vehicle.service.ts"
+      }
     );
   }
 });
@@ -211,7 +214,10 @@ test("rejects CommonJS namespace require VehicleModel dependencies", () => {
           path: "apps/api/src/vehicle/vehicle.service.ts"
         }
       ],
-      { category: "PRISMA_VEHICLE_MODEL_NAMESPACE", path: "apps/api/src/vehicle/vehicle.service.ts" }
+      {
+        category: "PRISMA_VEHICLE_MODEL_NAMESPACE",
+        path: "apps/api/src/vehicle/vehicle.service.ts"
+      }
     );
   }
 });
@@ -309,7 +315,7 @@ test("ignores Prisma VehicleModel imports inside string and template literals", 
     assertVehicleModelEnumRemoved("model Vehicle { vehicleModel String? }", [
       {
         content: [
-          'const namedImportFixture = \'import { VehicleModel } from "@prisma/client";\';',
+          "const namedImportFixture = 'import { VehicleModel } from \"@prisma/client\";';",
           'const namespaceFixture = `import * as PrismaClient from "@prisma/client";',
           "type LegacyModel = PrismaClient.VehicleModel;`;"
         ].join("\n"),
@@ -335,20 +341,17 @@ test("release check runs the no-enum guard directly without a package script", (
 
   assert.match(
     releaseCheck,
-    /\["VehicleModel no-enum guard", "node", \["scripts\/check-vehicle-model-no-enum\.mjs"\]\]/
+    /\[\s*"VehicleModel no-enum guard"\s*,\s*"node"\s*,\s*\[\s*"scripts\/check-vehicle-model-no-enum\.mjs"\s*\]\s*\]/
   );
   assert.match(
     releaseCheck,
-    /\["VehicleModel no-enum guard tests", "node", \["--test", "scripts\/check-vehicle-model-no-enum\.test\.mjs"\]\]/
+    /\[\s*"VehicleModel no-enum guard tests"\s*,\s*"node"\s*,\s*\[\s*"--test"\s*,\s*"scripts\/check-vehicle-model-no-enum\.test\.mjs"\s*\]\s*\]/
   );
   assert.doesNotMatch(releaseCheck, /vehicle-model:enum-freeze/);
 });
 
 test("no-enum guard scans executable model backfill scripts", () => {
-  const source = readFileSync(
-    resolve(currentDirectory, "check-vehicle-model-no-enum.mjs"),
-    "utf8"
-  );
+  const source = readFileSync(resolve(currentDirectory, "check-vehicle-model-no-enum.mjs"), "utf8");
 
   assert.doesNotMatch(
     source,

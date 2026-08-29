@@ -18,10 +18,13 @@
 pnpm prisma:validate
 pnpm prisma:migrate:status
 pnpm prisma:migrate:checksum:verify
+$env:STAGE1_P0_CLOSURE_RECONCILIATION_DATABASE_URL = $env:DATABASE_URL
 pnpm stage1:p0-closure:reconcile
+Remove-Item Env:STAGE1_P0_CLOSURE_RECONCILIATION_DATABASE_URL
 ```
 
 `validate/status` 不能替代 checksum、drift 或下列 12 个只读 SQL 段。validator 会冻结 SQL、API、权限和 package script inventory，并对实际文本做 mutation test。
+实时 SQL 核对只读取显式的 `STAGE1_P0_CLOSURE_RECONCILIATION_DATABASE_URL`，不会继承普通 `DATABASE_URL`；数据库名只允许专用 Local 测试库或 `subscription_saas_staging`，避免 CI 或操作终端误连其他数据库。未提供该变量时仍执行全部静态 inventory 与 mutation 测试，但跳过实时 SQL。
 
 依赖域需同时参照 [Stage 1C 周期事实](./stage1c-period-facts-rollout.zh-CN.md)、[Stage 1C 资产运营](./stage1c-asset-operations-rollout.zh-CN.md) 与 [Stage 1C 资产会计](./stage1c-asset-accounting-rollout.zh-CN.md) 的停止条件；本手册不会覆盖它们的结论。
 

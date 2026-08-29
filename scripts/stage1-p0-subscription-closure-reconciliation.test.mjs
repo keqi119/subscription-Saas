@@ -17,6 +17,9 @@ const controllerPath = resolve(
 const sharedAuthPath = resolve(repoRoot, "packages/shared/src/auth.ts");
 const accessCorePath = resolve(repoRoot, "scripts/stage1-p0-closure-access-core.mjs");
 const packagePath = resolve(repoRoot, "package.json");
+const reconciliationDatabaseUrl =
+  process.env.STAGE1_P0_CLOSURE_RECONCILIATION_DATABASE_URL?.trim() ?? null;
+if (reconciliationDatabaseUrl) assertSafeReconciliationDatabaseUrl(reconciliationDatabaseUrl);
 
 const sqlBlockOrder = [
   "01-migration-catalog",
@@ -49,16 +52,36 @@ const permissionCodes = [
 const routeInventory = [
   "GET ",
   "GET :id",
+  "GET :id/evidence-packages/:exportId/download",
+  "GET :id/return-evidence/:linkId/download",
+  "GET :id/return-evidence/:linkId/preview",
+  "GET :id/return-manifest/signed-document/preview",
   "GET by-order/:orderId",
+  "POST :id/approval-requests",
+  "POST :id/approvals/:approvalId/decision",
+  "POST :id/customer-no-response",
+  "POST :id/disputes/:disputeId/decision",
   "POST :id/early-termination/cancel",
   "POST :id/early-termination/execute",
+  "POST :id/evidence-packages",
+  "POST :id/financial-proofs/upload",
   "POST :id/inspection",
   "POST :id/inventory-release",
+  "POST :id/legal-collection",
+  "POST :id/legal-collection/events",
+  "POST :id/operational-completion",
+  "POST :id/pricing",
+  "POST :id/receivable-dispositions",
   "POST :id/recovery/actions",
   "POST :id/recovery/approval-requests",
   "POST :id/recovery/approvals/:approvalId/decision",
   "POST :id/recovery/execute",
   "POST :id/recovery/execution-records",
+  "POST :id/return-checklists",
+  "POST :id/return-deltas",
+  "POST :id/return-deltas/confirm",
+  "POST :id/return-evidence/upload",
+  "POST :id/return-manifest-signing/cancel",
   "POST :id/settlements/finalize",
   "POST :id/settlements/propose",
   "POST :id/settlements/settle",
@@ -134,8 +157,6 @@ const requiredSqlFragments = {
 
 const expectedCountValues = {
   "01-migration-catalog": {
-    applied_migration_count: "105",
-    rolled_back_migration_count: "1",
     failed_or_incomplete_migration_count: "0",
     expected_stage1_p0_applied_count: "8"
   },
@@ -222,7 +243,23 @@ function validateSanitizedCounts(name, row) {
     }
   }
   if (name === "01-migration-catalog") {
+    assert.match(row.applied_migration_count, /^\d+$/);
+    assert.ok(
+      Number(row.applied_migration_count) >= Number(row.expected_stage1_p0_applied_count),
+      "01-migration-catalog.applied_migration_count cannot be below the required Stage 1 P0 set"
+    );
+    assert.match(row.rolled_back_migration_count, /^\d+$/);
     assert.match(row.migration_catalog_fingerprint, /^[0-9a-f]{32}$/);
+  }
+}
+
+function assertSafeReconciliationDatabaseUrl(value) {
+  const databaseName = decodeURIComponent(new URL(value).pathname.slice(1));
+  if (
+    databaseName !== "subscription_saas_staging" &&
+    !/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(databaseName)
+  ) {
+    throw new Error("STAGE1_P0_CLOSURE_RECONCILIATION_DATABASE_REQUIRED");
   }
 }
 
@@ -303,14 +340,58 @@ test("mutation-tests the actual SQL and exact API/permission inventories", async
   );
 });
 
+test("validates the migration catalog as an append-only inventory", () => {
+  assert.doesNotThrow(() =>
+    validateSanitizedCounts("01-migration-catalog", {
+      applied_migration_count: "124",
+      expected_stage1_p0_applied_count: "8",
+      failed_or_incomplete_migration_count: "0",
+      migration_catalog_fingerprint: "a".repeat(32),
+      rolled_back_migration_count: "0"
+    })
+  );
+  assert.throws(
+    () =>
+      validateSanitizedCounts("01-migration-catalog", {
+        applied_migration_count: "7",
+        expected_stage1_p0_applied_count: "8",
+        failed_or_incomplete_migration_count: "0",
+        migration_catalog_fingerprint: "a".repeat(32),
+        rolled_back_migration_count: "0"
+      }),
+    /cannot be below the required Stage 1 P0 set/
+  );
+});
+
+test("requires an explicit Local/Staging database for live reconciliation", () => {
+  for (const database of [
+    "subscription_saas_test",
+    "subscription_saas_codex",
+    "subscription_saas_staging"
+  ]) {
+    assert.doesNotThrow(() =>
+      assertSafeReconciliationDatabaseUrl(
+        `postgresql://postgres:postgres@localhost:5432/${database}?schema=public`
+      )
+    );
+  }
+  assert.throws(
+    () =>
+      assertSafeReconciliationDatabaseUrl(
+        "postgresql://postgres:postgres@localhost:5432/subscription_saas?schema=public"
+      ),
+    /STAGE1_P0_CLOSURE_RECONCILIATION_DATABASE_REQUIRED/
+  );
+});
+
 test(
   "executes every marked block verbatim and emits sanitized counts only",
-  { skip: !process.env.DATABASE_URL },
+  { skip: !reconciliationDatabaseUrl },
   async (context) => {
     const runbook = await readRequired(runbookPath);
     const blocks = validateRunbookSql(runbook);
     const { Client } = requireFromApi("pg");
-    const client = new Client({ connectionString: process.env.DATABASE_URL });
+    const client = new Client({ connectionString: reconciliationDatabaseUrl });
     await client.connect();
     try {
       for (const name of sqlBlockOrder) {

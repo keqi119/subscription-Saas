@@ -198,6 +198,44 @@ export class StorageService {
     return this.putPrivateObject(key, input);
   }
 
+  async putSubscriptionReturnEvidence(
+    input: Omit<UploadObjectInput, "key"> & {
+      closureCaseId: string;
+      objectIdentity: string;
+    }
+  ): Promise<{ bucket: string; objectKey: string; stored: StoredObject }> {
+    const key =
+      `subscription-closure/${sanitizeKeyPart(input.closureCaseId)}/return-evidence/` +
+      `${sanitizeKeyPart(input.objectIdentity)}-${sanitizeKeyPart(input.originalName ?? "evidence")}`;
+    return this.putPrivateObject(key, input);
+  }
+
+  async putSubscriptionClosureEvidencePackage(
+    input: Omit<UploadObjectInput, "key"> & {
+      closureCaseId: string;
+      objectIdentity: string;
+      version: number;
+    }
+  ): Promise<{ bucket: string; objectKey: string; stored: StoredObject }> {
+    const key =
+      `subscription-closure/${sanitizeKeyPart(input.closureCaseId)}/evidence-package/` +
+      `v${input.version}-${sanitizeKeyPart(input.objectIdentity)}-` +
+      `${sanitizeKeyPart(input.originalName ?? "bundle.json")}`;
+    return this.putPrivateObject(key, input);
+  }
+
+  async putSubscriptionClosureFinancialProof(
+    input: Omit<UploadObjectInput, "key"> & {
+      closureCaseId: string;
+      objectIdentity: string;
+    }
+  ): Promise<{ bucket: string; objectKey: string; stored: StoredObject }> {
+    const key =
+      `subscription-closure/${sanitizeKeyPart(input.closureCaseId)}/financial-proof/` +
+      `${sanitizeKeyPart(input.objectIdentity)}-${sanitizeKeyPart(input.originalName ?? "proof")}`;
+    return this.putPrivateObject(key, input);
+  }
+
   getCustomerProfileMaterialStream(
     bucket: string,
     objectKey: string

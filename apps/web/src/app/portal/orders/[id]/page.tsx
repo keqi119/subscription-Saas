@@ -21,6 +21,7 @@ import { PortalOrderDetail, PortalPaymentOrder, PortalVehicleDocument } from "..
 import { loadPortalSubscriptionClosureByOrder } from "../../../../lib/subscription-closure-api";
 import type { CustomerSubscriptionClosureView } from "../../../../lib/subscription-closure-view-model";
 import { PortalJourneyNextActionCard } from "../../../../components/portal/portal-journey-next-action-card";
+import { PortalReturnSettlementPanel } from "../../../../components/subscription-closure/portal-return-settlement-panel";
 
 export default function PortalOrderDetailPage() {
   const params = useParams<{ id: string }>();
@@ -62,11 +63,14 @@ export default function PortalOrderDetailPage() {
     void loadOrder();
   }, [loadOrder]);
 
-  async function createPaymentOrder() {
+  async function createPaymentOrder(allowedBillIds: string[] = []) {
     if (!order) {
       return;
     }
-    const billIds = order.billingSummary.bills.filter((bill) => bill.canPay).map((bill) => bill.billId);
+    const allowed = new Set(allowedBillIds);
+    const billIds = order.billingSummary.bills
+      .filter((bill) => bill.canPay && (allowed.size === 0 || allowed.has(bill.billId)))
+      .map((bill) => bill.billId);
     if (!billIds.length) {
       void message.info("当前订单暂无待支付账单");
       return;
@@ -144,52 +148,14 @@ export default function PortalOrderDetailPage() {
           </section>
         ) : null}
 
-        {subscriptionClosure ? (
-          <section style={sectionStyle}>
-            <Typography.Title level={4} style={{ marginTop: 0 }}>
-              退车与结算进度
-            </Typography.Title>
-            <Descriptions
-              column={1}
-              items={[
-                { label: "闭环编号", children: subscriptionClosure.caseNo },
-                { label: "当前状态", children: subscriptionClosure.status },
-                { label: "下一步", children: subscriptionClosure.nextAction },
-                {
-                  label: "退车预约",
-                  children: subscriptionClosure.returnAppointment
-                    ? `${formatTime(subscriptionClosure.returnAppointment.scheduledAt)} · ${subscriptionClosure.returnAppointment.location ?? "地点待确认"}`
-                    : "待安排"
-                },
-                {
-                  label: "结算结果",
-                  children: subscriptionClosure.settlement
-                    ? `${subscriptionClosure.settlement.stage} · 应付 ${subscriptionClosure.settlement.amountDueCents} 分 · 应退 ${subscriptionClosure.settlement.amountRefundableCents} 分`
-                    : "待结算"
-                }
-              ]}
-            />
-            <Typography.Title level={5}>已签文件</Typography.Title>
-            <List
-              dataSource={subscriptionClosure.signedReferences}
-              locale={{ emptyText: "暂无已签文件" }}
-              renderItem={(item) => (
-                <List.Item>
-                  {item.documentType} · {item.stage} · <Typography.Text code>{item.fileId}</Typography.Text>
-                </List.Item>
-              )}
-            />
-            <Typography.Title level={5}>检查凭证</Typography.Title>
-            <List
-              dataSource={subscriptionClosure.evidenceReferences}
-              locale={{ emptyText: "暂无检查凭证" }}
-              renderItem={(item) => (
-                <List.Item>
-                  {item.evidenceType} · <Typography.Text code>{item.fileId}</Typography.Text>
-                </List.Item>
-              )}
-            />
-          </section>
+        {subscriptionClosure?.returnThreeStageEnabled ? (
+          <PortalReturnSettlementPanel
+            closure={subscriptionClosure}
+            onChanged={loadOrder}
+            onPay={createPaymentOrder}
+            orderId={params.id}
+            paying={paying}
+          />
         ) : null}
 
         <section style={sectionStyle}>
@@ -286,15 +252,21 @@ export default function PortalOrderDetailPage() {
                   查看合同
                 </Button>
               ) : null}
-              <Button
-                disabled={order.billingSummary.payableBillCount === 0}
-                icon={<PayCircleOutlined />}
-                loading={paying}
-                onClick={createPaymentOrder}
-                type="primary"
-              >
-                去支付
-              </Button>
+              {!subscriptionClosure?.returnThreeStageEnabled || !subscriptionClosure.settlement ? (
+                <Button
+                  disabled={order.billingSummary.payableBillCount === 0}
+                  icon={<PayCircleOutlined />}
+                  loading={paying}
+                  onClick={() => void createPaymentOrder()}
+                  type="primary"
+                >
+                  去支付
+                </Button>
+              ) : (
+                <Typography.Text type="secondary">
+                  退车相关账单请在上方结算区按可支付范围处理
+                </Typography.Text>
+              )}
             </Space>
           </Flex>
           <Descriptions

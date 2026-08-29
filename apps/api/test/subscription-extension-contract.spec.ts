@@ -266,6 +266,9 @@ interface PrismaHarness {
     findUnique: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
   };
+  contractChargeClauseSnapshot: {
+    createMany: ReturnType<typeof vi.fn>;
+  };
   contractVersion: {
     findFirst: ReturnType<typeof vi.fn>;
     findUnique: ReturnType<typeof vi.fn>;
@@ -467,6 +470,9 @@ function contractHarness(options: HarnessOptions = {}) {
         Object.assign(createdContract, args.data);
         return { ...createdContract };
       })
+    },
+    contractChargeClauseSnapshot: {
+      createMany: vi.fn(async ({ data }: { data: unknown[] }) => ({ count: data.length }))
     },
     contractVersion: {
       findFirst: vi.fn(async () => template),

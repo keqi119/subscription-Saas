@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 
 import {
@@ -393,8 +394,181 @@ describe("subscription order and contract rules", () => {
     expect(preview).toMatchObject({
       filename: "CON-TEST.pdf",
       mimeType: "application/pdf",
-      sizeBytes: 17
+      sizeBytes: 15
     });
+  });
+
+  it("archives a manual signed contract only after persisting the object SHA-256 authority", async () => {
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" })
+    });
+    const generated = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { id: string };
+    await harness.service.signContract(generated.id, harness.user, harness.context);
+    await harness.service.archiveContract(
+      generated.id,
+      { fileId: "generated-file-1" },
+      harness.user,
+      harness.context
+    );
+    const expectedHash = createHash("sha256")
+      .update(Buffer.from("%PDF-1.4\n%%EOF\n"))
+      .digest("hex");
+    expect(harness.fileState.contentSha256).toBe(expectedHash);
+    expect(harness.auditService.write).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        after: expect.objectContaining({ signedPdfHash: expectedHash })
+      }),
+      harness.tx
+    );
+  });
+
+  it("rolls back the contract archive and file authority when the archive audit fails", async () => {
+    const harness = createOrderServiceHarness({
+      archiveAuditWriteError: new Error("injected archive audit failure"),
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" })
+    });
+    const generated = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { id: string };
+    await harness.service.signContract(generated.id, harness.user, harness.context);
+
+    await expect(
+      harness.service.archiveContract(
+        generated.id,
+        { fileId: "generated-file-1" },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("injected archive audit failure");
+    expect(harness.fileState.contentSha256).toBeNull();
+    expect(harness.state.contracts[0]).toMatchObject({
+      archivedAt: null,
+      fileId: "generated-file-1",
+      status: ContractStatus.SIGNED
+    });
+  });
+
+  it("rejects archiving a file that is not the contract signing artifact", async () => {
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" })
+    });
+    const generated = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { id: string };
+    await harness.service.signContract(generated.id, harness.user, harness.context);
+
+    await expect(
+      harness.service.archiveContract(
+        generated.id,
+        { fileId: "another-file" },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("仅允许归档当前合同关联的签署 PDF");
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized or non-PDF contract artifacts before hashing", async () => {
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" })
+    });
+    const generated = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { id: string };
+    await harness.service.signContract(generated.id, harness.user, harness.context);
+    const findFile = harness.prisma.fileObject.findUnique as ReturnType<typeof vi.fn>;
+    findFile.mockResolvedValueOnce({
+      bucket: "application-materials",
+      contentSha256: null,
+      id: "generated-file-1",
+      mimeType: "video/mp4",
+      objectKey: "contracts/contract-1/generated/not-a-pdf.mp4",
+      originalName: "not-a-pdf.mp4",
+      sizeBytes: 17n,
+      uploadedBy: harness.user.id
+    });
+    await expect(
+      harness.service.archiveContract(
+        generated.id,
+        { fileId: "generated-file-1" },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("归档合同文件必须为 PDF");
+
+    findFile.mockResolvedValueOnce({
+      bucket: "application-materials",
+      contentSha256: null,
+      id: "generated-file-1",
+      mimeType: "application/pdf",
+      objectKey: "contracts/contract-1/generated/too-large.pdf",
+      originalName: "too-large.pdf",
+      sizeBytes: 20n * 1024n * 1024n + 1n,
+      uploadedBy: harness.user.id
+    });
+    await expect(
+      harness.service.archiveContract(
+        generated.id,
+        { fileId: "generated-file-1" },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("不得超过 20 MiB");
+    expect(harness.storageService.getObject).not.toHaveBeenCalled();
+  });
+
+  it("rejects a contract artifact whose stored bytes are not a bounded PDF", async () => {
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" })
+    });
+    const generated = (await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { id: string };
+    await harness.service.signContract(generated.id, harness.user, harness.context);
+    harness.storageService.getObject.mockResolvedValueOnce({
+      contentLength: 15,
+      contentType: "application/pdf",
+      stream: Readable.from([Buffer.from("not a pdf......")])
+    });
+
+    await expect(
+      harness.service.archiveContract(
+        generated.id,
+        { fileId: "generated-file-1" },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("归档合同文件内容不是有效 PDF");
+
+    harness.storageService.getObject.mockResolvedValueOnce({
+      contentType: "application/pdf",
+      stream: Readable.from([Buffer.alloc(20 * 1024 * 1024 + 1, 1)])
+    });
+    await expect(
+      harness.service.archiveContract(
+        generated.id,
+        { fileId: "generated-file-1" },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("不得超过 20 MiB");
   });
 
   it("blocks Stage 1 PDF generation when the subscriber ID number is missing", async () => {
@@ -877,6 +1051,7 @@ function contractListUser(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 function createOrderServiceHarness(options: {
+  archiveAuditWriteError?: Error;
   artifactGenerationEnabled?: boolean;
   artifactWriter?: ReturnType<typeof createArtifactWriterMock>;
   contractFileUpdateError?: Error;
@@ -935,6 +1110,7 @@ function createOrderServiceHarness(options: {
     updatedBy: user.id,
     versionNo: "V1.0"
   };
+  const fileState: { contentSha256: string | null } = { contentSha256: null };
 
   function buildVehicle() {
     return {
@@ -1134,6 +1310,27 @@ function createOrderServiceHarness(options: {
         return buildContract(contract);
       })
     },
+    contractChargeClauseSnapshot: {
+      createMany: vi.fn(async ({ data }) => ({ count: data.length }))
+    },
+    fileObject: {
+      findUnique: vi.fn(async ({ where }) =>
+        where.id === "generated-file-1"
+          ? { contentSha256: fileState.contentSha256, id: "generated-file-1" }
+          : null
+      ),
+      updateMany: vi.fn(async ({ data, where }) => {
+        if (where.id !== "generated-file-1") return { count: 0 };
+        if (
+          fileState.contentSha256 !== null &&
+          fileState.contentSha256 !== data.contentSha256
+        ) {
+          return { count: 0 };
+        }
+        fileState.contentSha256 = data.contentSha256;
+        return { count: 1 };
+      })
+    },
     subscriptionOrder: {
       create: vi.fn(async ({ data }) => {
         if (data.orderStatus) {
@@ -1172,7 +1369,21 @@ function createOrderServiceHarness(options: {
   };
 
   const prisma = {
-    $transaction: vi.fn(async (callback) => callback(tx)),
+    $transaction: vi.fn(async (callback) => {
+      const stateSnapshot = structuredClone(state);
+      const fileHashSnapshot = fileState.contentSha256;
+      try {
+        return await callback(tx);
+      } catch (error) {
+        state.contractId = stateSnapshot.contractId;
+        state.contracts.splice(0, state.contracts.length, ...stateSnapshot.contracts);
+        state.orderStatus = stateSnapshot.orderStatus;
+        state.quoteSnapshot = stateSnapshot.quoteSnapshot;
+        state.vehicleStatus = stateSnapshot.vehicleStatus;
+        fileState.contentSha256 = fileHashSnapshot;
+        throw error;
+      }
+    }),
     contract: {
       findUnique: vi.fn(async ({ where }) => {
         const contract = state.contracts.find((item) => item.id === where.id);
@@ -1194,12 +1405,13 @@ function createOrderServiceHarness(options: {
         }
         return {
           bucket: "application-materials",
+          contentSha256: fileState.contentSha256,
           createdAt: now,
           id: "generated-file-1",
           mimeType: "application/pdf",
           objectKey: "contracts/contract-1/generated/CON-TEST.pdf",
           originalName: "CON-TEST.pdf",
-          sizeBytes: 17n,
+          sizeBytes: 15n,
           uploadedBy: user.id
         };
       })
@@ -1226,7 +1438,13 @@ function createOrderServiceHarness(options: {
       findUnique: vi.fn(async () => buildOrder())
     }
   };
-  const auditService = { write: vi.fn(async () => undefined) };
+  const auditService = {
+    write: vi.fn(async (input: { after?: Record<string, unknown> }) => {
+      if (input.after?.signedPdfHash && options.archiveAuditWriteError) {
+        throw options.archiveAuditWriteError;
+      }
+    })
+  };
   const artifactWriter = options.artifactWriter ?? createArtifactWriterMock();
   const configService = {
     get: vi.fn((key: string) => {
@@ -1237,11 +1455,17 @@ function createOrderServiceHarness(options: {
     })
   };
   const storageService = {
-    getObject: vi.fn(async () => ({
-      contentLength: 17,
-      contentType: "application/pdf",
-      stream: Readable.from([Buffer.from("%PDF-1.4\n%%EOF\n")])
-    }))
+    getObject: vi.fn(
+      async (): Promise<{
+        contentLength?: number;
+        contentType?: string;
+        stream: Readable;
+      }> => ({
+        contentLength: 15,
+        contentType: "application/pdf",
+        stream: Readable.from([Buffer.from("%PDF-1.4\n%%EOF\n")])
+      })
+    )
   };
   const service = new OrderService(
     auditService as never,
@@ -1251,7 +1475,7 @@ function createOrderServiceHarness(options: {
     storageService as never
   );
 
-  return { artifactWriter, auditService, context, orderId, prisma, quoteId, service, state, storageService, template, tx, user, vehicleId };
+  return { artifactWriter, auditService, context, fileState, orderId, prisma, quoteId, service, state, storageService, template, tx, user, vehicleId };
 }
 
 function createArtifactWriterMock(options: {

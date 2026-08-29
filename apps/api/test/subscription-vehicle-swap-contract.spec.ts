@@ -275,6 +275,9 @@ function contractHarness(options: HarnessOptions = {}) {
         return contract;
       })
     },
+    contractChargeClauseSnapshot: {
+      createMany: vi.fn(async ({ data }: { data: unknown[] }) => ({ count: data.length }))
+    },
     contractVersion: {
       findFirst: vi.fn(async () => ({
         businessType: BusinessType.SUBSCRIPTION,

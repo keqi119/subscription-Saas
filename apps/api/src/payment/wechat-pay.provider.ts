@@ -10,6 +10,8 @@ import {
   verifyWechatPaySignature
 } from "./wechat-pay.crypto";
 import {
+  ClosePaymentInput,
+  ClosePaymentResult,
   CreatePaymentInput,
   CreatePaymentResult,
   PaymentProvider,
@@ -25,6 +27,52 @@ export class WeChatPayProvider implements PaymentProvider {
 
   constructor(private readonly configService: ConfigService) {
     this.certificateStore = new WeChatPayCertificateStore(configService);
+  }
+
+  async closePayment(input: ClosePaymentInput): Promise<ClosePaymentResult> {
+    if (!this.enabled) {
+      throw new ServiceUnavailableException("WECHAT_PAY_DISABLED");
+    }
+    const merchantId = this.requiredConfig("WECHAT_PAY_MCH_ID");
+    const body = JSON.stringify({ mchid: merchantId });
+    const path = `/v3/pay/transactions/out-trade-no/${encodeURIComponent(
+      input.providerTradeNo
+    )}/close`;
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const nonce = createWechatPayNonce();
+    const authorization = buildWechatPayAuthorizationHeader({
+      body,
+      merchantId,
+      method: "POST",
+      nonce,
+      privateKeyPem: this.readPrivateKey(),
+      serialNo: this.requiredConfig("WECHAT_PAY_MERCHANT_SERIAL_NO"),
+      timestamp,
+      urlPathWithQuery: path
+    });
+    const response = await fetch(`${WECHAT_PAY_API_BASE_URL}${path}`, {
+      body,
+      headers: {
+        Accept: "application/json",
+        Authorization: authorization,
+        "Content-Type": "application/json",
+        "User-Agent": "subscription-saas"
+      },
+      method: "POST"
+    });
+    const rawResponse = await safeParseJson(response);
+    if (!response.ok) {
+      const wechatCode = asRecord(rawResponse).code;
+      if (wechatCode === "ORDER_NOT_EXIST" || wechatCode === "ORDERCLOSED") {
+        return { providerTradeNo: input.providerTradeNo, rawResponse };
+      }
+      throw new BadRequestException({
+        code: "WECHAT_PAY_CLOSE_FAILED",
+        status: response.status,
+        wechatCode
+      });
+    }
+    return { providerTradeNo: input.providerTradeNo, rawResponse };
   }
 
   async createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult> {

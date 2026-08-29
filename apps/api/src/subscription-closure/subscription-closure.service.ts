@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, Optional } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import {
   AssetWorkOrderStatus,
   AuditAction,
@@ -71,6 +72,7 @@ import {
   hashSubscriptionClosureSnapshot,
   recoveryAssessmentAvailableAt
 } from "./subscription-closure.domain";
+import { acceptedDisputeRepricingDeltaItemIds } from "./subscription-closure-pricing.service";
 import {
   SubscriptionClosureRepository,
   SUBSCRIPTION_CLOSURE_ERROR_CODE,
@@ -121,6 +123,7 @@ export const SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE = {
   SETTLEMENT_CHRONOLOGY_INVALID: "SUBSCRIPTION_CLOSURE_SETTLEMENT_CHRONOLOGY_INVALID",
   SETTLEMENT_FACT_DRIFT: "SUBSCRIPTION_CLOSURE_SETTLEMENT_FACT_DRIFT",
   SETTLEMENT_NOT_RESOLVED: "SUBSCRIPTION_CLOSURE_SETTLEMENT_NOT_RESOLVED",
+  SETTLEMENT_PRICING_NOT_GOVERNED: "SUBSCRIPTION_CLOSURE_SETTLEMENT_PRICING_NOT_GOVERNED",
   SETTLEMENT_STATUS_CONFLICT: "SUBSCRIPTION_CLOSURE_SETTLEMENT_STATUS_CONFLICT",
   RECOVERY_CLIENT_AUTHORITY_FORBIDDEN: "SUBSCRIPTION_CLOSURE_RECOVERY_CLIENT_AUTHORITY_FORBIDDEN",
   RECOVERY_JOB_AUTHORITY_INVALID: "SUBSCRIPTION_CLOSURE_RECOVERY_JOB_AUTHORITY_INVALID",
@@ -245,13 +248,40 @@ export type CompleteManagedReturnInput = PrepareManagedReturnInput &
 
 export type ConfirmManagedPhysicalReceiptInput = Readonly<{
   actorId: string;
-  checklist: Readonly<Record<string, unknown>>;
+  checklist?: Readonly<Record<string, unknown>>;
+  checklistManifestHash?: string;
+  checklistRevisionId?: string;
   damages: readonly Readonly<{
+    checklistItemId?: string;
     damageLevel: string;
     damageType: string;
     description: string;
+    evidenceIds?: readonly string[];
     estimatedRepairAmount?: bigint | number | string;
     photoUrls?: readonly string[];
+    responsibleParty?: string;
+  }>[];
+  orderId: string;
+  physicalControlMode: "VOLUNTARY_RETURN" | "RECOVERY";
+  remark: string | null;
+  returnMileageKm: number;
+  returnType: "NORMAL_RETURN" | "EARLY_TERMINATION";
+  returnedAt: Date;
+}>;
+
+type NormalizedConfirmManagedPhysicalReceiptInput = Readonly<{
+  actorId: string;
+  checklist: Readonly<Record<string, unknown>> | null;
+  checklistManifestHash: string | null;
+  checklistRevisionId: string | null;
+  damages: readonly Readonly<{
+    checklistItemId: string | null;
+    damageLevel: string;
+    damageType: string;
+    description: string;
+    evidenceIds: readonly string[];
+    estimatedRepairAmount?: bigint | number | string;
+    photoUrls: readonly string[];
     responsibleParty?: string;
   }>[];
   orderId: string;
@@ -369,7 +399,8 @@ export class SubscriptionClosureService {
     @Optional() private readonly assetFacts?: AssetFactsService,
     @Optional() private readonly assetAccounting?: AssetAccountingService,
     @Optional() private readonly vehicleMileage?: VehicleMileageService,
-    @Optional() private readonly settlementResolver?: SubscriptionClosureSettlementResolver
+    @Optional() private readonly settlementResolver?: SubscriptionClosureSettlementResolver,
+    @Optional() private readonly config?: ConfigService
   ) {}
 
   async prepareNormalExpiryInTransaction(
@@ -2906,6 +2937,12 @@ export class SubscriptionClosureService {
       throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
     }
     const command = normalizePhysicalReceiptInput(input);
+    if (
+      this.config?.get<string>("SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED") === "true" &&
+      (!command.checklistManifestHash || !command.checklistRevisionId)
+    ) {
+      throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
+    }
     return this.prisma.$transaction(
       async (tx) => this.confirmManagedPhysicalReceiptInTransaction(tx, command, context),
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
@@ -2914,7 +2951,7 @@ export class SubscriptionClosureService {
 
   private async confirmManagedPhysicalReceiptInTransaction(
     tx: Prisma.TransactionClient,
-    command: ConfirmManagedPhysicalReceiptInput,
+    command: NormalizedConfirmManagedPhysicalReceiptInput,
     context: Readonly<{ ipAddress?: string; userAgent?: string }>
   ) {
     const observed = await loadPhysicalReceiptAuthority(tx, command.orderId);
@@ -3470,9 +3507,13 @@ export class SubscriptionClosureService {
       }
     }
     assertPhysicalReceiptObservedAuthority(locked, command);
+    const governedChecklist =
+      command.checklistRevisionId && command.checklistManifestHash
+        ? await assertGovernedReturnChecklistAuthority(tx, locked, command)
+        : null;
     if (command.physicalControlMode === "RECOVERY") {
       assertArchivedRecoveryAuthority(locked, command);
-    } else {
+    } else if (!governedChecklist || governedChecklist.attestationMode === "CUSTOMER_SIGNED") {
       const manifestRevisions = await tx.subscriptionClosureDocumentRevision.findMany({
         orderBy: [{ revisionNumber: "asc" }, { id: "asc" }],
         where: {
@@ -3623,7 +3664,16 @@ export class SubscriptionClosureService {
       closureCase.status === "RETURN_INSPECTION" &&
       !command.evidence.some(({ action }) => action !== "REMOVE")
     ) {
-      throw serviceConflict("AUTHORITY_MISMATCH");
+      const governedInspectionReady =
+        Boolean(closureCase.currentChecklistRevisionId) &&
+        Boolean(closureCase.currentDeltaRevisionId) &&
+        (await tx.vehicleConditionDeltaItem.count({
+          where: {
+            responsibility: "UNDETERMINED",
+            revisionId: closureCase.currentDeltaRevisionId ?? undefined
+          }
+        })) === 0;
+      if (!governedInspectionReady) throw serviceConflict("AUTHORITY_MISMATCH");
     }
     if (command.costs.some(({ actionType }) => actionType !== VehicleCostActionType.ACTUAL_COST)) {
       throw serviceConflict("AUTHORITY_MISMATCH");
@@ -3925,6 +3975,13 @@ export class SubscriptionClosureService {
     });
     assertSettlementCase(observedCase, observedResolution);
     assertSettlementPredecessor(targetStage, observedCase, observedResolution);
+    if (
+      targetStage !== "PROPOSED" &&
+      (Boolean(observedCase?.currentChecklistRevisionId) ||
+        Boolean(observedCase?.currentDeltaRevisionId))
+    ) {
+      await assertGovernedSettlementReadiness(tx, observedCase!, targetStage);
+    }
     if (targetStage === "SETTLED" && !observedResolution.obligationsResolved) {
       throw serviceConflict("SETTLEMENT_NOT_RESOLVED");
     }
@@ -4276,6 +4333,46 @@ export class SubscriptionClosureService {
     const closureCase = await tx.subscriptionClosureCase.findUnique({
       where: { id: command.closureCaseId }
     });
+    const inventorySource = physicalSource(command.closureCaseId, "inventory-release");
+    const inventoryReplay = await tx.subscriptionClosureEvent.findUnique({
+      where: {
+        sourceType_sourceId_sourceKey: {
+          sourceId: inventorySource.id,
+          sourceKey: inventorySource.key,
+          sourceType: inventorySource.type
+        }
+      }
+    });
+    if (closureCase && inventoryReplay) {
+      const [vehicle, releasedRestriction] = await Promise.all([
+        tx.vehicle.findUnique({ where: { id: closureCase.vehicleId } }),
+        tx.vehicleOperationalRestriction.findFirst({
+          where: {
+            releaseSourceId: closureCase.id,
+            releaseSourceKey: "inspection-restriction-release",
+            releaseSourceType: "SUBSCRIPTION_CLOSURE",
+            restrictionType: VehicleOperationalRestrictionType.RETURN_INSPECTION_PENDING,
+            status: "RELEASED"
+          }
+        })
+      ]);
+      const detail = jsonObject(inventoryReplay.detailSnapshot);
+      if (
+        inventoryReplay.closureCaseId !== closureCase.id ||
+        inventoryReplay.eventType !== "INVENTORY_RELEASED" ||
+        inventoryReplay.actorId !== command.actorId ||
+        inventoryReplay.occurredAt.getTime() !== command.occurredAt.getTime() ||
+        detail.vehicleId !== closureCase.vehicleId ||
+        !releasedRestriction ||
+        releasedRestriction.vehicleId !== closureCase.vehicleId ||
+        releasedRestriction.releaseReason !== command.releaseReason ||
+        releasedRestriction.releasedAt?.getTime() !== command.occurredAt.getTime() ||
+        vehicle?.status !== VehicleStatus.AVAILABLE
+      ) {
+        throw closureSourceConflict();
+      }
+      return Object.freeze({ closureCaseId: closureCase.id, vehicleId: vehicle.id });
+    }
     if (
       !closureCase ||
       !["PENDING_SETTLEMENT", "COMPLETED", "TERMINATED"].includes(closureCase.status)
@@ -4321,7 +4418,6 @@ export class SubscriptionClosureService {
       throw serviceConflict("AUTHORITY_MISMATCH");
     }
     const restrictionSource = physicalSource(closureCase.id, "inspection-restriction-release");
-    const inventorySource = physicalSource(closureCase.id, "inventory-release");
     let restrictionCapability: AssetOperationsTransactionCapability | undefined;
     let inventoryCapability: PreparedClosureSourceCapability | undefined;
     const preparations = [
@@ -6499,7 +6595,7 @@ type PhysicalReceiptAuthority = Awaited<ReturnType<typeof loadPhysicalReceiptAut
 
 function assertPhysicalReceiptAuthorityShape(
   authority: PhysicalReceiptAuthority,
-  command: ConfirmManagedPhysicalReceiptInput
+  command: NormalizedConfirmManagedPhysicalReceiptInput
 ) {
   const {
     closureCase,
@@ -6579,7 +6675,7 @@ function assertPhysicalReceiptAuthorityShape(
 
 function assertPhysicalReceiptObservedAuthority(
   authority: PhysicalReceiptAuthority,
-  command: ConfirmManagedPhysicalReceiptInput
+  command: NormalizedConfirmManagedPhysicalReceiptInput
 ) {
   const {
     closureCase,
@@ -6688,18 +6784,144 @@ function assertPhysicalReceiptObservedAuthority(
       !vehicleReturn.batteryCheckedConfirmed ||
       !vehicleReturn.mileageConfirmed ||
       !vehicleReturn.violationCheckedConfirmed ||
-      !checklist ||
-      (!replay &&
-        canonicalSubscriptionClosureJson(checklist as never) !==
-          canonicalSubscriptionClosureJson(command.checklist as never)))
+      !checklist)
   ) {
     throw serviceConflict("AUTHORITY_MISMATCH");
   }
 }
 
+const GOVERNED_RETURN_REQUIRED_ITEM_CODES = new Set([
+  "ACCESSORIES",
+  "BATTERY",
+  "CHARGING_EQUIPMENT",
+  "CUSTOMER_ITEMS",
+  "KEY",
+  "MILEAGE",
+  "REGISTRATION_CERTIFICATE",
+  "VEHICLE_EXTERIOR",
+  "VEHICLE_INTERIOR"
+]);
+
+async function assertGovernedReturnChecklistAuthority(
+  tx: Prisma.TransactionClient,
+  authority: PhysicalReceiptAuthority,
+  command: NormalizedConfirmManagedPhysicalReceiptInput
+) {
+  if (!command.checklistRevisionId || !command.checklistManifestHash) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const closureCase = authority.closureCase!;
+  const revision = await tx.vehicleReturnChecklistRevision.findUnique({
+    include: { items: true },
+    where: { id: command.checklistRevisionId }
+  });
+  if (
+    !revision ||
+    closureCase.currentChecklistRevisionId !== revision.id ||
+    revision.closureCaseId !== closureCase.id ||
+    revision.vehicleReturnId !== authority.vehicleReturn!.id ||
+    revision.manifestHash !== command.checklistManifestHash ||
+    revision.items.some(({ state }) => state === "PENDING_VERIFICATION")
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const itemCodes = new Set(revision.items.map(({ itemCode }) => itemCode));
+  if ([...GOVERNED_RETURN_REQUIRED_ITEM_CODES].some((code) => !itemCodes.has(code))) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const mileageItem = revision.items.find(({ itemCode }) => itemCode === "MILEAGE");
+  if (mileageItem?.returnedQuantity !== command.returnMileageKm) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  if (
+    revision.attestationMode !== "CUSTOMER_SIGNED" &&
+    (!revision.attestationSnapshot ||
+      typeof revision.attestationSnapshot !== "object" ||
+      Array.isArray(revision.attestationSnapshot))
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const links = await tx.vehicleReturnEvidenceLink.findMany({
+    where: {
+      closureCaseId: closureCase.id,
+      evidenceId: { not: null },
+      visibility: "CUSTOMER_VISIBLE"
+    }
+  });
+  const superseded = new Set(
+    links.map(({ supersedesLinkId }) => supersedesLinkId).filter((id): id is string => Boolean(id))
+  );
+  const activeLinks = links.filter(({ id }) => !superseded.has(id));
+  if (
+    revision.attestationMode !== "CUSTOMER_SIGNED" &&
+    !activeLinks.some(
+      ({ checklistItemId, evidencePurpose, sourceId, sourceKey, sourceType }) =>
+        checklistItemId === null &&
+        evidencePurpose === "UNILATERAL_ATTESTATION_SEAL" &&
+        sourceId === closureCase.id &&
+        sourceKey === `unilateral-attestation:${revision.id}` &&
+        sourceType === "SUBSCRIPTION_CLOSURE_RETURN"
+    )
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const evidenceByItemId = new Map<string, Set<string>>();
+  for (const link of activeLinks) {
+    if (!link.checklistItemId || !link.evidenceId) continue;
+    const itemEvidence = evidenceByItemId.get(link.checklistItemId) ?? new Set<string>();
+    itemEvidence.add(link.evidenceId);
+    evidenceByItemId.set(link.checklistItemId, itemEvidence);
+  }
+  const requiredEvidenceItems = revision.items.filter(
+    ({ itemCode, state }) =>
+      ["KEY", "REGISTRATION_CERTIFICATE", "VEHICLE_EXTERIOR", "VEHICLE_INTERIOR"].includes(
+        itemCode
+      ) || state === "DAMAGED" || state === "MISSING"
+  );
+  if (requiredEvidenceItems.some(({ id }) => (evidenceByItemId.get(id)?.size ?? 0) === 0)) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const itemById = new Map(revision.items.map((item) => [item.id, item]));
+  const damageItemIds = new Set<string>();
+  for (const damage of command.damages) {
+    const checklistItem = damage.checklistItemId
+      ? itemById.get(damage.checklistItemId)
+      : undefined;
+    const itemEvidenceIds = checklistItem ? evidenceByItemId.get(checklistItem.id) : undefined;
+    if (
+      !checklistItem ||
+      checklistItem.state !== "DAMAGED" ||
+      damageItemIds.has(checklistItem.id) ||
+      damage.damageType !== expectedDamageTypeForChecklistItem(checklistItem.itemCode) ||
+      damage.evidenceIds.length === 0 ||
+      new Set(damage.evidenceIds).size !== damage.evidenceIds.length ||
+      damage.evidenceIds.some((id) => !itemEvidenceIds?.has(id))
+    ) {
+      throw serviceConflict("AUTHORITY_MISMATCH");
+    }
+    damageItemIds.add(checklistItem.id);
+  }
+  if (
+    revision.items.some(
+      ({ id, state }) => state === "DAMAGED" && !damageItemIds.has(id)
+    )
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  return revision;
+}
+
+function expectedDamageTypeForChecklistItem(itemCode: string) {
+  if (itemCode === "VEHICLE_EXTERIOR") return "EXTERIOR";
+  if (itemCode === "VEHICLE_INTERIOR") return "INTERIOR";
+  if (itemCode === "BATTERY") return "BATTERY";
+  if (itemCode === "ACCESSORIES" || itemCode === "CHARGING_EQUIPMENT") return "EQUIPMENT";
+  return "OTHER";
+}
+
 function assertArchivedReturnManifestAuthority(
   authority: PhysicalReceiptAuthority,
-  command: ConfirmManagedPhysicalReceiptInput
+  command: NormalizedConfirmManagedPhysicalReceiptInput
 ) {
   const revision = authority.currentDocument?.documentRevision;
   const closureCase = authority.closureCase!;
@@ -6739,6 +6961,8 @@ function assertArchivedReturnManifestAuthority(
     snapshot.vehicleId !== authority.order!.vehicleId ||
     snapshot.vehicleReturnId !== vehicleReturn.id ||
     snapshot.returnChecklistSnapshotHash !== checklistHash ||
+    (command.checklistManifestHash !== null &&
+      snapshot.returnChecklistSnapshotHash !== command.checklistManifestHash) ||
     !authority.sourceFile ||
     !authority.signedFile ||
     !authority.esignTask ||
@@ -6764,7 +6988,7 @@ function assertArchivedReturnManifestAuthority(
 
 function assertArchivedRecoveryAuthority(
   authority: PhysicalReceiptAuthority,
-  command: ConfirmManagedPhysicalReceiptInput
+  command: NormalizedConfirmManagedPhysicalReceiptInput
 ) {
   const revision = authority.currentDocument?.documentRevision;
   const closureCase = authority.closureCase!;
@@ -7067,22 +7291,45 @@ function physicalReceiptAuthorityIdentity(authority: PhysicalReceiptAuthority) {
   } as never);
 }
 
-function physicalReceiptPayload(command: ConfirmManagedPhysicalReceiptInput) {
-  const checklistSnapshot = structuredClone(command.checklist);
+function physicalReceiptPayload(command: NormalizedConfirmManagedPhysicalReceiptInput) {
+  if (!command.checklistRevisionId || !command.checklistManifestHash) {
+    const checklistSnapshot = structuredClone(command.checklist ?? {});
+    return {
+      checklistSnapshot,
+      checklistSnapshotHash: createHash("sha256")
+        .update(canonicalSubscriptionClosureJson(checklistSnapshot))
+        .digest("hex"),
+      damages: command.damages.map((damage) => ({
+        damageLevel: damage.damageLevel,
+        damageType: damage.damageType,
+        description: damage.description,
+        estimatedRepairAmount:
+          damage.estimatedRepairAmount === undefined
+            ? null
+            : BigInt(damage.estimatedRepairAmount).toString(),
+        photoUrls: [...damage.photoUrls],
+        responsibleParty: damage.responsibleParty ?? "UNKNOWN"
+      })),
+      physicalControlMode: command.physicalControlMode,
+      remark: command.remark,
+      returnMileageKm: command.returnMileageKm,
+      returnedAt: command.returnedAt.toISOString(),
+      returnType: command.returnType
+    };
+  }
   return {
-    checklistSnapshot,
-    checklistSnapshotHash: createHash("sha256")
-      .update(canonicalSubscriptionClosureJson(checklistSnapshot))
-      .digest("hex"),
+    checklistManifestHash: command.checklistManifestHash,
+    checklistRevisionId: command.checklistRevisionId,
     damages: command.damages.map((damage) => ({
+      checklistItemId: damage.checklistItemId,
       damageLevel: damage.damageLevel,
       damageType: damage.damageType,
       description: damage.description,
+      evidenceIds: [...damage.evidenceIds].sort(bytewiseCompare),
       estimatedRepairAmount:
         damage.estimatedRepairAmount === undefined
           ? null
           : BigInt(damage.estimatedRepairAmount).toString(),
-      photoUrls: [...(damage.photoUrls ?? [])],
       responsibleParty: damage.responsibleParty ?? "UNKNOWN"
     })),
     physicalControlMode: command.physicalControlMode,
@@ -7100,11 +7347,12 @@ function hashPhysicalReceiptPayload(payload: ReturnType<typeof physicalReceiptPa
 async function assertExactPhysicalReceiptReplay(
   tx: Prisma.TransactionClient,
   authority: PhysicalReceiptAuthority,
-  command: ConfirmManagedPhysicalReceiptInput,
+  command: NormalizedConfirmManagedPhysicalReceiptInput,
   source: SubscriptionClosureSource
 ) {
   const expectedPayload = physicalReceiptPayload(command);
   const expectedPayloadHash = hashPhysicalReceiptPayload(expectedPayload);
+  const legacyPayload = "checklistSnapshot" in expectedPayload;
   const event = authority.receiptEvent;
   const receipt = event?.commandReceipt;
   const detail = event?.detailSnapshot;
@@ -7141,7 +7389,9 @@ async function assertExactPhysicalReceiptReplay(
       description: damage.description,
       estimatedRepairAmount: damage.estimatedRepairAmount?.toString() ?? null,
       orderId: damage.orderId,
-      photoUrls: Array.isArray(damage.photoUrls) ? damage.photoUrls : [],
+      ...(legacyPayload
+        ? { photoUrls: Array.isArray(damage.photoUrls) ? damage.photoUrls : [] }
+        : {}),
       responsibleParty: damage.responsibleParty,
       returnId: damage.returnId,
       status: damage.status,
@@ -7157,9 +7407,14 @@ async function assertExactPhysicalReceiptReplay(
   const expectedDamagePayloads = expectedPayload.damages
     .map((damage) => ({
       createdBy: command.actorId,
-      ...damage,
+      damageLevel: damage.damageLevel,
+      damageType: damage.damageType,
       deletedAt: null,
+      description: damage.description,
+      estimatedRepairAmount: damage.estimatedRepairAmount,
       orderId: authority.order!.id,
+      ...(legacyPayload && "photoUrls" in damage ? { photoUrls: damage.photoUrls } : {}),
+      responsibleParty: damage.responsibleParty,
       returnId: authority.vehicleReturn!.id,
       status: "RECORDED",
       updatedBy: command.actorId,
@@ -7332,6 +7587,7 @@ async function assertExactPhysicalReceiptReplay(
     vehicleReturn.remark !== command.remark ||
     vehicleReturn.damageFound !== expectedPayload.damages.length > 0 ||
     (command.physicalControlMode === "VOLUNTARY_RETURN" &&
+      "checklistSnapshot" in expectedPayload &&
       !sameCanonicalReceiptValue(
         vehicleReturn.checklistSnapshot,
         expectedPayload.checklistSnapshot
@@ -7386,7 +7642,11 @@ async function assertExactPhysicalReceiptSuccessorReplay(
   const receipt = event?.commandReceipt;
   const detail = jsonObject(event?.detailSnapshot);
   const payload = jsonObject(detail.receiptPayload);
-  const checklist = jsonObject(payload.checklistSnapshot);
+  const checklistRevisionId = payload.checklistRevisionId;
+  const checklistManifestHash = payload.checklistManifestHash;
+  const governedPayload =
+    typeof checklistRevisionId === "string" && typeof checklistManifestHash === "string";
+  const checklist = governedPayload ? null : jsonObject(payload.checklistSnapshot);
   const damagePayloads = payload.damages;
   if (
     authority.closureCase?.id !== closureCase.id ||
@@ -7394,6 +7654,7 @@ async function assertExactPhysicalReceiptSuccessorReplay(
     !receipt ||
     !Array.isArray(damagePayloads) ||
     payload.physicalControlMode !== closureCase.physicalControlMode ||
+    (governedPayload && !/^[0-9a-f]{64}$/.test(checklistManifestHash)) ||
     (payload.remark !== null && typeof payload.remark !== "string") ||
     !Number.isSafeInteger(payload.returnMileageKm) ||
     typeof payload.returnedAt !== "string" ||
@@ -7403,33 +7664,45 @@ async function assertExactPhysicalReceiptSuccessorReplay(
   }
   const damages = damagePayloads.map((candidate) => {
     const damage = jsonObject(candidate);
+    const checklistItemId = damage.checklistItemId;
     const estimatedRepairAmount = damage.estimatedRepairAmount;
+    const evidenceIds = damage.evidenceIds;
     const photoUrls = damage.photoUrls;
     if (
       typeof damage.damageLevel !== "string" ||
       typeof damage.damageType !== "string" ||
       typeof damage.description !== "string" ||
+      (governedPayload && typeof checklistItemId !== "string") ||
       (estimatedRepairAmount !== null && typeof estimatedRepairAmount !== "string") ||
-      !Array.isArray(photoUrls) ||
-      !photoUrls.every((photoUrl) => typeof photoUrl === "string") ||
+      (governedPayload &&
+        (!Array.isArray(evidenceIds) ||
+          evidenceIds.length === 0 ||
+          !evidenceIds.every((evidenceId) => typeof evidenceId === "string"))) ||
+      (!governedPayload &&
+        (!Array.isArray(photoUrls) ||
+          !photoUrls.every((photoUrl) => typeof photoUrl === "string"))) ||
       typeof damage.responsibleParty !== "string"
     ) {
       throw closureSourceConflict();
     }
     return {
+      checklistItemId: governedPayload ? (checklistItemId as string) : null,
       damageLevel: damage.damageLevel,
       damageType: damage.damageType,
       description: damage.description,
       ...(estimatedRepairAmount === null ? {} : { estimatedRepairAmount }),
-      photoUrls,
+      evidenceIds: governedPayload ? (evidenceIds as string[]) : [],
+      photoUrls: governedPayload ? [] : (photoUrls as string[]),
       responsibleParty: damage.responsibleParty
     };
   });
   const returnedAt = new Date(payload.returnedAt);
   if (Number.isNaN(returnedAt.getTime())) throw closureSourceConflict();
-  const command: ConfirmManagedPhysicalReceiptInput = {
+  const command: NormalizedConfirmManagedPhysicalReceiptInput = {
     actorId: receipt.actorId,
     checklist,
+    checklistManifestHash: governedPayload ? checklistManifestHash : null,
+    checklistRevisionId: governedPayload ? checklistRevisionId : null,
     damages,
     orderId: closureCase.orderId,
     physicalControlMode: closureCase.physicalControlMode,
@@ -8456,7 +8729,7 @@ function sameCanonicalReceiptValue(left: unknown, right: unknown) {
 async function applyPhysicalReceiptFacts(
   tx: Prisma.TransactionClient,
   authority: PhysicalReceiptAuthority,
-  command: ConfirmManagedPhysicalReceiptInput,
+  command: NormalizedConfirmManagedPhysicalReceiptInput,
   context: Readonly<{ ipAddress?: string; userAgent?: string }>,
   auditService: AuditService,
   mileageReading: Awaited<ReturnType<VehicleMileageService["appendPreparedReadingInTransaction"]>>
@@ -8498,13 +8771,31 @@ async function applyPhysicalReceiptFacts(
             ? null
             : BigInt(damage.estimatedRepairAmount as string | number | bigint),
         orderId: authority.order!.id,
-        photoUrls: (damage.photoUrls ?? Prisma.JsonNull) as never,
+        photoUrls:
+          command.checklistRevisionId && command.checklistManifestHash
+            ? Prisma.JsonNull
+            : (damage.photoUrls as Prisma.InputJsonValue),
         responsibleParty: (damage.responsibleParty ?? "UNKNOWN") as never,
         returnId: vehicleReturn.id,
         status: "RECORDED",
         updatedBy: command.actorId,
         vehicleId: authority.vehicle!.id
       }
+    });
+    await tx.vehicleReturnEvidenceLink.createMany({
+      data: damage.evidenceIds.map((evidenceId) => ({
+        closureCaseId: authority.closureCase!.id,
+        damageId: createdDamage.id,
+        evidenceId,
+        evidencePurpose: "DAMAGE_PROOF",
+        recordedAt: command.returnedAt,
+        recordedBy: command.actorId,
+        sourceId: authority.closureCase!.id,
+        sourceKey: `physical-damage:${createdDamage.id}:${evidenceId}`,
+        sourceType: "SUBSCRIPTION_CLOSURE_PHYSICAL_RECEIPT",
+        visibility: "CUSTOMER_VISIBLE"
+      })),
+      skipDuplicates: true
     });
     await auditService.write(
       {
@@ -8587,16 +8878,177 @@ function physicalAuditSnapshot(value: unknown): unknown {
   );
 }
 
+async function assertGovernedSettlementReadiness(
+  tx: Prisma.TransactionClient,
+  closureCase: Readonly<{
+    contractId: string;
+    currentDeltaRevisionId: string | null;
+    currentSettlementRevision: Readonly<{
+      id: string;
+      resultHash: string;
+      stage: string;
+      supersedesRevisionId: string | null;
+    }> | null;
+    id: string;
+    orderId: string;
+  }>,
+  targetStage: "FINALIZED" | "SETTLED"
+) {
+  const currentSettlement = closureCase.currentSettlementRevision;
+  const pricingRevisionId =
+    targetStage === "FINALIZED"
+      ? currentSettlement?.id
+      : currentSettlement?.supersedesRevisionId;
+  if (!currentSettlement || !pricingRevisionId || !closureCase.currentDeltaRevisionId) {
+    throw serviceConflict("SETTLEMENT_PRICING_NOT_GOVERNED");
+  }
+  const [delta, chargeLines, customerDamages, acceptedDisputeDecisions] = await Promise.all([
+    tx.vehicleConditionDeltaRevision.findUnique({
+      include: { items: true },
+      where: { id: closureCase.currentDeltaRevisionId }
+    }),
+    tx.subscriptionClosureChargeLine.findMany({
+      where: { closureCaseId: closureCase.id, settlementRevisionId: pricingRevisionId }
+    }),
+    tx.vehicleReturnDamage.count({
+      where: {
+        deletedAt: null,
+        orderId: closureCase.orderId,
+        responsibleParty: "CUSTOMER",
+        status: "RECORDED"
+      }
+    }),
+    tx.subscriptionClosureChargeDisputeDecision.findMany({
+      include: { dispute: { include: { chargeLine: true } } },
+      where: { closureCaseId: closureCase.id, decision: "ACCEPTED_BY_PLATFORM" }
+    })
+  ]);
+  if (!delta || delta.closureCaseId !== closureCase.id) {
+    throw serviceConflict("SETTLEMENT_PRICING_NOT_GOVERNED");
+  }
+  const finalLines = chargeLines.filter(({ status }) => status === "FINAL");
+  const acceptedDeltaItemIds = new Set(
+    acceptedDisputeDecisions
+      .map(({ dispute }) => dispute.chargeLine.deltaItemId)
+      .filter((id): id is string => Boolean(id))
+  );
+  const customerDeltaItemIds = new Set(
+    delta.items
+      .filter(
+        ({ responsibility, wearClassification }) =>
+          responsibility === "CUSTOMER" &&
+          wearClassification !== "UNCHANGED"
+      )
+      .filter(({ id }) => !acceptedDeltaItemIds.has(id))
+      .map(({ id }) => id)
+  );
+  const pricedDeltaItemIds = new Set(
+    finalLines.map(({ deltaItemId }) => deltaItemId).filter((id): id is string => Boolean(id))
+  );
+  const repricedAcceptedDeltaItemIds = acceptedDisputeRepricingDeltaItemIds(
+    [...pricedDeltaItemIds],
+    [...acceptedDeltaItemIds]
+  );
+  const hasUnresolvedResponsibility = delta.items.some(
+    ({ responsibility }) => responsibility === "UNDETERMINED"
+  );
+  const supersededLineIds = new Set(
+    chargeLines
+      .map(({ supersedesLineId }) => supersedesLineId)
+      .filter((id): id is string => Boolean(id))
+  );
+  const hasPricingException = chargeLines.some(
+    ({ id, status }) => status === "PRICING_EXCEPTION" && !supersededLineIds.has(id)
+  );
+  const customerChargeWithoutBill = finalLines.some(
+    ({ amountCents, billId, responsibility }) =>
+      responsibility === "CUSTOMER" && amountCents > 0n && !billId
+  );
+  const lineWithoutAuthority = finalLines.some((line) => {
+    const evidence = jsonObject(line.evidenceSnapshot);
+    return (
+      line.contractId !== closureCase.contractId ||
+      !line.clauseSnapshotId ||
+      !line.deltaItemId ||
+      line.deltaRevisionId !== closureCase.currentDeltaRevisionId ||
+      !Array.isArray(evidence.evidenceIds) ||
+      evidence.evidenceIds.length === 0
+    );
+  });
+  if (
+    hasUnresolvedResponsibility ||
+    hasPricingException ||
+    customerChargeWithoutBill ||
+    lineWithoutAuthority ||
+    repricedAcceptedDeltaItemIds.length > 0 ||
+    [...customerDeltaItemIds].some((id) => !pricedDeltaItemIds.has(id)) ||
+    (customerDamages > 0 &&
+      customerDeltaItemIds.size > 0 &&
+      !finalLines.some(({ responsibility }) => responsibility === "CUSTOMER"))
+  ) {
+    throw serviceConflict("SETTLEMENT_PRICING_NOT_GOVERNED");
+  }
+  if (targetStage === "SETTLED") {
+    const [response, openDisputeCount, acceptedDisputeCount] = await Promise.all([
+      tx.subscriptionClosureCustomerResponse.findFirst({
+        orderBy: [{ respondedAt: "desc" }, { id: "desc" }],
+        where: { closureCaseId: closureCase.id }
+      }),
+      tx.subscriptionClosureChargeDispute.count({
+        where: { closureCaseId: closureCase.id, decision: null, status: "OPEN" }
+      }),
+      tx.subscriptionClosureChargeDisputeDecision.count({
+        where: {
+          closureCaseId: closureCase.id,
+          decision: "ACCEPTED_BY_PLATFORM",
+          dispute: { customerResponse: { settlementRevisionId: currentSettlement.id } }
+        }
+      })
+    ]);
+    if (
+      !response ||
+      response.settlementRevisionId !== currentSettlement.id ||
+      response.settlementHash !== currentSettlement.resultHash ||
+      response.status === "PENDING" ||
+      openDisputeCount > 0 ||
+      acceptedDisputeCount > 0
+    ) {
+      throw serviceConflict("SETTLEMENT_PRICING_NOT_GOVERNED");
+    }
+  }
+}
+
 function normalizePhysicalReceiptInput(
   input: ConfirmManagedPhysicalReceiptInput
-): ConfirmManagedPhysicalReceiptInput {
+): NormalizedConfirmManagedPhysicalReceiptInput {
   if (!Number.isSafeInteger(input.returnMileageKm) || input.returnMileageKm < 0) {
+    throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
+  }
+  const checklistManifestHash = input.checklistManifestHash?.trim().toLowerCase() ?? null;
+  const checklistRevisionId = input.checklistRevisionId
+    ? canonicalUuid(input.checklistRevisionId)
+    : null;
+  const usesGovernedChecklist = Boolean(checklistManifestHash || checklistRevisionId);
+  if (
+    (usesGovernedChecklist &&
+      (!checklistManifestHash ||
+        !checklistRevisionId ||
+        !/^[0-9a-f]{64}$/.test(checklistManifestHash))) ||
+    (!usesGovernedChecklist && !input.checklist)
+  ) {
     throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
   }
   return deepFreezeReceipt({
     actorId: canonicalUuid(input.actorId),
-    checklist: structuredClone(input.checklist),
-    damages: structuredClone(input.damages),
+    checklist: input.checklist ? structuredClone(input.checklist) : null,
+    checklistManifestHash,
+    checklistRevisionId,
+    damages: input.damages.map((damage) => ({
+      ...structuredClone(damage),
+      checklistItemId: damage.checklistItemId ? canonicalUuid(damage.checklistItemId) : null,
+      evidenceIds: [...(damage.evidenceIds ?? [])],
+      photoUrls: [...(damage.photoUrls ?? [])]
+    })),
     orderId: canonicalUuid(input.orderId),
     physicalControlMode: input.physicalControlMode,
     remark: input.remark?.trim() || null,
@@ -13017,6 +13469,7 @@ async function validateProducedReturnManifestSuccessorChain(
         signers: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] }
       },
       where: {
+        deletedAt: null,
         OR: [
           { id: { in: [generated.contractESignTaskId, signed.contractESignTaskId] } },
           {
@@ -13207,7 +13660,8 @@ async function validateProducedReturnManifestSuccessorChain(
     task.sourceId === taskSource.id &&
     task.sourceKey === taskSource.key &&
     taskSource.type === "SUBSCRIPTION_CLOSURE_ESIGN" &&
-    taskSource.key === "return-manifest-esign" &&
+    typeof taskSource.key === "string" &&
+    taskSource.key.startsWith("return-manifest-esign") &&
     taskSource.id === closureCase.id &&
     request.documentType === "RETURN_MANIFEST" &&
     request.closureCaseId === closureCase.id &&

@@ -5,6 +5,7 @@ import {
   NotFoundException,
   Optional
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { randomUUID } from "node:crypto";
 import {
   AuditAction,
@@ -254,7 +255,9 @@ export class FinanceService {
     private readonly auditService: AuditService,
     private readonly prisma: PrismaService,
     @Optional()
-    private readonly journeySignal?: SubscriptionJourneySignalService
+    private readonly journeySignal?: SubscriptionJourneySignalService,
+    @Optional()
+    private readonly config?: ConfigService
   ) {}
 
   async settlePaymentOrder(input: SettlePaymentOrderInput) {
@@ -312,6 +315,10 @@ export class FinanceService {
           paymentOrder.paymentStatus !== PaymentOrderStatus.CREATED &&
           paymentOrder.paymentStatus !== PaymentOrderStatus.PENDING &&
           !(
+            input.callbackLogId &&
+            paymentOrder.paymentStatus === PaymentOrderStatus.CLOSED
+          ) &&
+          !(
             input.debitAttempt &&
             paymentOrder.paymentStatus === PaymentOrderStatus.FAILED
           )
@@ -355,6 +362,7 @@ export class FinanceService {
           where: { deletedAt: null, id: { in: billIds } }
         });
         const billById = new Map(bills.map((bill) => [bill.id, bill]));
+        const blockedClosureBillIds = await closurePaymentBlockedBillIds(tx, billIds);
         const payment = await tx.paymentRecord.create({
           data: {
             createdBy: input.operatorId ?? undefined,
@@ -382,7 +390,11 @@ export class FinanceService {
         const settledBillIds: string[] = [];
         for (const item of paymentOrder.items) {
           const bill = billById.get(item.billId);
-          if (!bill || bill.billStatus === BillStatus.CANCELLED) {
+          if (
+            !bill ||
+            bill.billStatus === BillStatus.CANCELLED ||
+            blockedClosureBillIds.has(item.billId)
+          ) {
             continue;
           }
           if (
@@ -518,6 +530,14 @@ export class FinanceService {
               input.callbackPayload === undefined
                 ? undefined
                 : toJsonValue(input.callbackPayload),
+            errorSnapshot:
+              blockedClosureBillIds.size === 0
+                ? undefined
+                : toJsonValue({
+                    blockedBillIds: [...blockedClosureBillIds].sort(),
+                    code: "PAYMENT_ALLOCATION_BLOCKED_BY_CLOSURE",
+                    resolution: "REFUND_OR_MANUAL_REVIEW_REQUIRED"
+                  }),
             paidAmount: input.paidAmount,
             paidAt: input.paidAt,
             paymentRecordId: payment.id,
@@ -1163,6 +1183,15 @@ export class FinanceService {
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrderFinance(order, user);
     ensureOrderCanGenerateDamageFeeBill(order);
+    const governedClosure = await this.prisma.subscriptionClosureCase.findFirst({
+      select: { id: true },
+      where: { orderId, retiredAt: null }
+    });
+    if (governedClosure) {
+      throw new BadRequestException(
+        "受管退车闭环必须通过合同收费明细生成账单，不能使用旧损伤费用入口。"
+      );
+    }
 
     const result = await withUniqueBusinessNoRetry(() =>
       this.prisma.$transaction(async (tx) => {
@@ -3500,6 +3529,42 @@ export function calculateWriteOffAmount(
   return [itemAmount, billRemainingAmount, paymentRemainingAmount].reduce(
     (minimum, value) => (value < minimum ? value : minimum)
   );
+}
+
+async function closurePaymentBlockedBillIds(
+  tx: Prisma.TransactionClient,
+  billIds: readonly string[]
+) {
+  if (billIds.length === 0) return new Set<string>();
+  const [disputes, legalCases, dispositions] = await Promise.all([
+    tx.subscriptionClosureChargeDispute.findMany({
+      select: { chargeLine: { select: { billId: true } } },
+      where: {
+        chargeLine: { billId: { in: [...billIds] } },
+        OR: [
+          { decision: null, status: "OPEN" },
+          { decision: { decision: "ACCEPTED_BY_PLATFORM" } }
+        ]
+      }
+    }),
+    tx.subscriptionClosureLegalCollectionCase.findMany({
+      select: { billId: true },
+      where: { billId: { in: [...billIds] }, closedAt: null }
+    }),
+    tx.subscriptionClosureReceivableDisposition.findMany({
+      select: { billId: true },
+      where: {
+        billId: { in: [...billIds] },
+        disposition: { in: ["DISPUTED", "LEGAL_COLLECTION"] },
+        supersededBy: null
+      }
+    })
+  ]);
+  return new Set([
+    ...disputes.map(({ chargeLine }) => chargeLine.billId).filter(Boolean),
+    ...legalCases.map(({ billId }) => billId),
+    ...dispositions.map(({ billId }) => billId)
+  ]);
 }
 
 async function lockSubscriptionOrders(

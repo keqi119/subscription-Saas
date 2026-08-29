@@ -90,21 +90,22 @@ export class ClosureCaseQueryDto {
 }
 
 export class ClosureDamageDto {
+  @IsUUID("4") checklistItemId!: string;
   @IsEnum(VehicleDamageLevel) damageLevel!: string;
   @IsEnum(VehicleDamageType) damageType!: string;
   @Trimmed(1, 2000) description!: string;
   @IsOptional() @Validate(ClosureInt64Constraint) estimatedRepairAmount?: string;
-  @IsOptional()
   @IsArray()
+  @ArrayNotEmpty()
   @ArrayMaxSize(20)
-  @IsString({ each: true })
-  @MaxLength(1024, { each: true })
-  photoUrls?: string[];
+  @IsUUID("4", { each: true })
+  evidenceIds!: string[];
   @IsOptional() @IsEnum(VehicleDamageResponsibleParty) responsibleParty?: string;
 }
 
 export class ConfirmClosurePhysicalReceiptDto {
-  @IsDefined() @IsObject() @Validate(ClosureJsonConstraint) checklist!: Record<string, unknown>;
+  @IsUUID("4") checklistRevisionId!: string;
+  @Matches(LOWERCASE_SHA256) checklistManifestHash!: string;
   @IsArray()
   @ArrayMaxSize(100)
   @ValidateNested({ each: true })
@@ -115,6 +116,239 @@ export class ConfirmClosurePhysicalReceiptDto {
   @IsInt() @Min(0) @Max(10_000_000) returnMileageKm!: number;
   @IsIn(["NORMAL_RETURN", "EARLY_TERMINATION"]) returnType!: "NORMAL_RETURN" | "EARLY_TERMINATION";
   @IsISO8601({ strict: true, strictSeparator: true }) returnedAt!: string;
+}
+
+export class ReturnChecklistItemDto {
+  @Trimmed(1, 64) itemCode!: string;
+  @IsIn(["NORMAL", "MISSING", "DAMAGED", "NOT_APPLICABLE", "PENDING_VERIFICATION"])
+  state!: "NORMAL" | "MISSING" | "DAMAGED" | "NOT_APPLICABLE" | "PENDING_VERIFICATION";
+  @IsOptional() @IsInt() @Min(0) @Max(10_000_000) expectedQuantity?: number | null;
+  @IsOptional() @IsInt() @Min(0) @Max(10_000_000) returnedQuantity?: number | null;
+  @IsOptional() @Trimmed(1, 2000) remark?: string | null;
+}
+
+export class CaptureReturnChecklistDto {
+  @IsIn(["CUSTOMER_SIGNED", "CUSTOMER_REFUSED", "CUSTOMER_ABSENT"])
+  attestationMode!: "CUSTOMER_SIGNED" | "CUSTOMER_REFUSED" | "CUSTOMER_ABSENT";
+  @IsOptional() @Trimmed(1, 2000) attestationReason?: string | null;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUUID("4", { each: true })
+  attestationEvidenceIds?: string[];
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsString({ each: true })
+  @MaxLength(120, { each: true })
+  witnesses?: string[];
+  @IsOptional() @Trimmed(1, 2000) customerComments?: string | null;
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => ReturnChecklistItemDto)
+  items!: ReturnChecklistItemDto[];
+  @IsISO8601({ strict: true, strictSeparator: true }) capturedAt!: string;
+}
+
+export class CancelReturnManifestSigningDto {
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @Trimmed(2, 2000) reason!: string;
+}
+
+export class UploadReturnEvidenceDto {
+  @IsISO8601({ strict: true, strictSeparator: true }) capturedAt!: string;
+  @IsEnum(AssetWorkOrderEvidenceType) evidenceType!: AssetWorkOrderEvidenceType;
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @IsUUID("4") targetId!: string;
+  @IsIn(["CHECKLIST_ITEM", "DAMAGE", "CASE_ATTESTATION"])
+  targetType!: "CHECKLIST_ITEM" | "DAMAGE" | "CASE_ATTESTATION";
+  @IsOptional() @IsUUID("4") supersedesEvidenceId?: string | null;
+  @IsIn(["CUSTOMER_VISIBLE", "INTERNAL_ONLY"])
+  visibility!: "CUSTOMER_VISIBLE" | "INTERNAL_ONLY";
+}
+
+export class GenerateReturnDeltaDto {
+  @Trimmed(1, 180) idempotencyKey!: string;
+}
+
+export class ReturnDeltaResponsibilityDecisionDto {
+  @Trimmed(1, 2000) decisionReason!: string;
+  @IsUUID("4") itemId!: string;
+  @IsIn(["CUSTOMER", "PLATFORM", "THIRD_PARTY", "NORMAL_WEAR"])
+  responsibility!: "CUSTOMER" | "PLATFORM" | "THIRD_PARTY" | "NORMAL_WEAR";
+}
+
+export class ConfirmReturnDeltaDto {
+  @IsUUID("4") baseRevisionId!: string;
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => ReturnDeltaResponsibilityDecisionDto)
+  decisions!: ReturnDeltaResponsibilityDecisionDto[];
+  @Trimmed(1, 180) idempotencyKey!: string;
+}
+
+export class ClosurePricingLineDto {
+  @Trimmed(1, 64) chargeType!: string;
+  @IsOptional() @IsUUID("4") clauseSnapshotId?: string | null;
+  @IsOptional() @IsUUID("4") deltaItemId?: string | null;
+  @IsOptional() @IsUUID("4") exceptionApprovalId?: string | null;
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUUID("4", { each: true })
+  evidenceIds!: string[];
+  @Trimmed(1, 64) lineCode!: string;
+  @IsOptional() @Trimmed(1, 2000) manualBasis?: string | null;
+  @IsOptional() @Validate(ClosureInt64Constraint) manualUnitPriceCents?: string | null;
+  @IsInt() @Min(0) @Max(1_000_000) quantity!: number;
+  @IsIn(["CUSTOMER", "PLATFORM", "THIRD_PARTY", "NORMAL_WEAR", "UNDETERMINED"])
+  responsibility!: "CUSTOMER" | "PLATFORM" | "THIRD_PARTY" | "NORMAL_WEAR" | "UNDETERMINED";
+}
+
+export class CreateClosurePricingDto {
+  @IsBoolean() finalize!: boolean;
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @IsArray()
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => ClosurePricingLineDto)
+  lines!: ClosurePricingLineDto[];
+  @IsUUID("4") settlementRevisionId!: string;
+}
+
+export class RequestClosureApprovalDto {
+  @IsIn(["PRICING_OVERRIDE", "WAIVER", "WRITE_OFF", "REGISTRATION_DOCUMENT_MISSING"])
+  approvalType!: "PRICING_OVERRIDE" | "WAIVER" | "WRITE_OFF" | "REGISTRATION_DOCUMENT_MISSING";
+  @IsOptional() @IsUUID("4") billId?: string;
+  @IsOptional() @IsUUID("4") checklistItemId?: string;
+  @IsOptional() @IsUUID("4") clauseSnapshotId?: string;
+  @IsOptional() @IsUUID("4") deltaItemId?: string;
+  @IsArray() @ArrayMaxSize(20) @IsUUID("4", { each: true }) evidenceIds!: string[];
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @IsOptional() @Trimmed(1, 2000) manualBasis?: string;
+  @IsOptional() @Validate(ClosureInt64Constraint) manualUnitPriceCents?: string;
+  @Trimmed(1, 2000) requestReason!: string;
+  @IsOptional() @IsUUID("4") settlementRevisionId?: string;
+}
+
+export class DecideClosureApprovalDto {
+  @IsIn(["APPROVED", "REJECTED"])
+  decision!: "APPROVED" | "REJECTED";
+  @Trimmed(1, 2000) decisionComment!: string;
+  @IsInt() @Min(0) expectedVersion!: number;
+  @Trimmed(1, 180) idempotencyKey!: string;
+}
+
+export class ClosureCustomerDisputeDto {
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUUID("4", { each: true })
+  evidenceIds!: string[];
+  @IsUUID("4") chargeLineId!: string;
+  @Trimmed(1, 2000) reason!: string;
+}
+
+export class ClosureCustomerResponseDto {
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @IsIn(["ACCEPTED", "PARTIALLY_DISPUTED", "DISPUTED"])
+  status!: "ACCEPTED" | "PARTIALLY_DISPUTED" | "DISPUTED";
+  @IsUUID("4") settlementRevisionId!: string;
+  @Matches(LOWERCASE_SHA256) settlementHash!: string;
+  @IsArray()
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => ClosureCustomerDisputeDto)
+  disputes!: ClosureCustomerDisputeDto[];
+}
+
+export class RecordClosureNoResponseDto {
+  @IsISO8601({ strict: true, strictSeparator: true }) deadlineAt!: string;
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @IsUUID("4") settlementRevisionId!: string;
+  @Matches(LOWERCASE_SHA256) settlementHash!: string;
+}
+
+export class DecideClosureDisputeDto {
+  @IsIn(["ACCEPTED_BY_PLATFORM", "REJECTED_BY_PLATFORM"])
+  decision!: "ACCEPTED_BY_PLATFORM" | "REJECTED_BY_PLATFORM";
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUUID("4", { each: true })
+  evidenceIds!: string[];
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @IsISO8601({ strict: true, strictSeparator: true }) occurredAt!: string;
+  @Trimmed(1, 2000) rationale!: string;
+}
+
+export class RecordClosureDispositionDto {
+  @IsOptional() @IsUUID("4") approvalId?: string | null;
+  @IsUUID("4") billId!: string;
+  @IsOptional() @IsUUID("4") chargeLineId?: string | null;
+  @IsIn([
+    "OPEN",
+    "MANUAL_PAYMENT_CONFIRMED",
+    "WAIVED",
+    "WRITTEN_OFF",
+    "DISPUTED",
+    "COLLECTION_PENDING"
+  ])
+  disposition!:
+    | "OPEN"
+    | "MANUAL_PAYMENT_CONFIRMED"
+    | "WAIVED"
+    | "WRITTEN_OFF"
+    | "DISPUTED"
+    | "COLLECTION_PENDING";
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @Trimmed(1, 32) ownerType!: string;
+  @IsOptional() @IsUUID("4") ownerId?: string | null;
+  @IsOptional() @IsUUID("4") proofFileId?: string | null;
+  @IsDefined() @IsObject() @Validate(ClosureJsonConstraint) detail!: Record<string, unknown>;
+}
+
+export class TransferClosureLegalCollectionDto {
+  @IsUUID("4") billId!: string;
+  @Matches(LOWERCASE_SHA256) evidencePackageHash!: string;
+  @IsOptional() @Trimmed(1, 255) externalReference?: string | null;
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @IsUUID("4") ownerId!: string;
+  @Trimmed(1, 32) ownerType!: string;
+  @IsISO8601({ strict: true, strictSeparator: true }) openedAt!: string;
+}
+
+export class RecordClosureLegalEventDto {
+  @IsUUID("4") legalCaseId!: string;
+  @IsIn([
+    "NOTICE_SENT",
+    "CLAIM_FILED",
+    "JUDGMENT_RECORDED",
+    "SETTLEMENT_RECORDED",
+    "EXECUTION_RECEIVED",
+    "CLOSED"
+  ])
+  eventType!:
+    | "NOTICE_SENT"
+    | "CLAIM_FILED"
+    | "JUDGMENT_RECORDED"
+    | "SETTLEMENT_RECORDED"
+    | "EXECUTION_RECEIVED"
+    | "CLOSED";
+  @IsOptional()
+  @Matches(CANONICAL_POSITIVE_INT64)
+  @Validate(ClosureInt64Constraint)
+  amountCents?: string | null;
+  @IsDefined() @IsObject() @Validate(ClosureJsonConstraint) detail!: Record<string, unknown>;
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @IsISO8601({ strict: true, strictSeparator: true }) occurredAt!: string;
+  @IsOptional() @IsUUID("4") proofFileId?: string | null;
+}
+
+export class CompleteClosureOperationsDto {
+  @Trimmed(1, 180) idempotencyKey!: string;
+  @IsISO8601({ strict: true, strictSeparator: true }) occurredAt!: string;
 }
 
 export class ClosureEvidenceDto {

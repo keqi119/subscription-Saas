@@ -972,6 +972,21 @@ describe("billing finance minimum backend loop", () => {
 });
 
 describe("deposit settlement backend loop", () => {
+  it("blocks the legacy DAMAGE_FEE writer once a governed closure exists", async () => {
+    const harness = createFinanceHarness();
+    harness.prisma.subscriptionClosureCase.findFirst.mockResolvedValueOnce({ id: "closure-1" });
+    addVehicleReturn(harness);
+    addReturnDamage(harness, {
+      estimatedRepairAmount: 80000n,
+      responsibleParty: VehicleDamageResponsibleParty.CUSTOMER
+    });
+
+    await expect(
+      harness.service.generateDamageFeeBill(harness.orderId, harness.user, harness.context)
+    ).rejects.toThrow("受管退车闭环");
+    expect(harness.state.bills).toHaveLength(0);
+  });
+
   it("rejects DAMAGE_FEE bill generation when no billable customer damage exists", async () => {
     const harness = createFinanceHarness();
     addVehicleReturn(harness);
@@ -1970,6 +1985,9 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
     subscriptionOrder: {
       findMany: vi.fn(async ({ where }) => filterOrders(state.orders, where)),
       findUnique: vi.fn(async ({ where }) => state.orders.find((order) => order.id === where.id) ?? null)
+    },
+    subscriptionClosureCase: {
+      findFirst: vi.fn(async (): Promise<{ id: string } | null> => null)
     },
     subscriptionAutomationJob: {
       updateMany: vi.fn(async ({ data, where }) => {

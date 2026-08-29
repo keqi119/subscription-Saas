@@ -245,6 +245,7 @@ export class FadadaSignedArtifactService {
           const file = await tx.fileObject.create({
             data: {
               bucket: stored.bucket,
+              contentSha256: signedPdfHash,
               mimeType: "application/pdf",
               objectKey: stored.objectKey,
               originalName,
@@ -757,6 +758,7 @@ export class FadadaSignedArtifactService {
       const fileObject = await tx.fileObject.create({
         data: {
           bucket: input.signedArtifact.bucket,
+          contentSha256: input.signedPdfHash,
           mimeType: "application/pdf",
           objectKey: input.signedArtifact.objectKey,
           originalName: input.originalName,

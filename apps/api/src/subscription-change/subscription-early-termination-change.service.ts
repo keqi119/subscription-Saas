@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import { AuditService } from "../audit/audit.service";
 import type { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo } from "../common/business-number";
+import { persistContractChargeClausesInTransaction } from "../contract/contract-charge-clause";
 import { ContractPdfArtifactWriterService } from "../contract/contract-pdf-artifact-writer.service";
 import type { ContractPdfArtifactWriteResult } from "../contract/contract-pdf-artifact.types";
 import {
@@ -1089,28 +1090,29 @@ export class SubscriptionEarlyTerminationChangeService {
           "No active subscription supplement template is available."
         );
       }
+      const contractSnapshot = jsonValue({
+        agreementFacts: earlyTerminationAgreementFacts(detail),
+        authority: "CUSTOMER_PROVIDER_ESIGN",
+        changeOrderId: change.id,
+        closureCaseId: detail.closureCaseId,
+        contentTemplate: template.contentTemplate,
+        estimate: persistedEstimate(detail),
+        estimateRevision: detail.estimatedSettlementRevision,
+        generatedAt: generatedAt.toISOString(),
+        sourceContractId: baseContract.id,
+        sourceContractNo: baseContract.contractNo,
+        template: {
+          id: template.id,
+          name: template.templateName,
+          type: template.templateType,
+          version: template.versionNo
+        }
+      });
       const contract = await tx.contract.create({
         data: {
           businessType: BusinessType.SUBSCRIPTION,
           contractNo: createBusinessNo("CON"),
-          contractSnapshot: jsonValue({
-            agreementFacts: earlyTerminationAgreementFacts(detail),
-            authority: "CUSTOMER_PROVIDER_ESIGN",
-            changeOrderId: change.id,
-            closureCaseId: detail.closureCaseId,
-            contentTemplate: template.contentTemplate,
-            estimate: persistedEstimate(detail),
-            estimateRevision: detail.estimatedSettlementRevision,
-            generatedAt: generatedAt.toISOString(),
-            sourceContractId: baseContract.id,
-            sourceContractNo: baseContract.contractNo,
-            template: {
-              id: template.id,
-              name: template.templateName,
-              type: template.templateType,
-              version: template.versionNo
-            }
-          }),
+          contractSnapshot,
           contractTitle: `提前结束补充协议 ${change.changeNo}`,
           contractVersionId: template.id,
           createdBy: actor.id,
@@ -1119,6 +1121,11 @@ export class SubscriptionEarlyTerminationChangeService {
           status: ContractStatus.GENERATED,
           updatedBy: actor.id
         }
+      });
+      await persistContractChargeClausesInTransaction(tx, {
+        actorId: actor.id,
+        contractId: contract.id,
+        contractSnapshot
       });
       await tx.subscriptionEarlyTerminationChangeDetail.update({
         data: { agreementContractId: contract.id },

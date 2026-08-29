@@ -34,7 +34,7 @@ describe("WeChatPayProvider", () => {
       subject: "测试账单支付"
     });
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string) as AnyRecord;
 
     expect(url).toBe("https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi");
@@ -50,6 +50,63 @@ describe("WeChatPayProvider", () => {
     expect(result.providerPrepayId).toBe("wx_prepay_1");
     expect(result.jsapiParams?.package).toBe("prepay_id=wx_prepay_1");
     expect(JSON.stringify(result.jsapiParams)).not.toContain(fixture.apiV3Key);
+
+    fixture.cleanup();
+  });
+
+  it("closes an unpaid transaction through the authenticated API v3 endpoint", async () => {
+    const fixture = createWechatFixture();
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new WeChatPayProvider(fixture.configService as never);
+
+    await expect(
+      provider.closePayment({ providerTradeNo: "PYO202606170001" })
+    ).resolves.toMatchObject({ providerTradeNo: "PYO202606170001" });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(
+      "https://api.mch.weixin.qq.com/v3/pay/transactions/out-trade-no/PYO202606170001/close"
+    );
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ mchid: "1900000001" });
+    expect((init.headers as Record<string, string>).Authorization).toContain(
+      "WECHATPAY2-SHA256-RSA2048"
+    );
+
+    fixture.cleanup();
+  });
+
+  it("does not report a provider close as successful when WeChat rejects it", async () => {
+    const fixture = createWechatFixture();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ code: "ORDERPAID" }), { status: 400 })
+      )
+    );
+    const provider = new WeChatPayProvider(fixture.configService as never);
+
+    await expect(
+      provider.closePayment({ providerTradeNo: "PYO202606170001" })
+    ).rejects.toMatchObject({ response: { code: "WECHAT_PAY_CLOSE_FAILED" } });
+
+    fixture.cleanup();
+  });
+
+  it("treats a missing remote transaction as an idempotent close", async () => {
+    const fixture = createWechatFixture();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ code: "ORDER_NOT_EXIST" }), { status: 404 })
+      )
+    );
+    const provider = new WeChatPayProvider(fixture.configService as never);
+
+    await expect(
+      provider.closePayment({ providerTradeNo: "PYO202606170001" })
+    ).resolves.toMatchObject({ providerTradeNo: "PYO202606170001" });
 
     fixture.cleanup();
   });

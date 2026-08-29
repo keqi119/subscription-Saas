@@ -1,6 +1,8 @@
 import { ConfigService } from "@nestjs/config";
 
 import {
+  ClosePaymentInput,
+  ClosePaymentResult,
   CreatePaymentInput,
   CreatePaymentResult,
   PaymentProvider,
@@ -9,6 +11,13 @@ import {
 
 export class MockPaymentProvider implements PaymentProvider {
   constructor(private readonly configService: ConfigService) {}
+
+  async closePayment(input: ClosePaymentInput): Promise<ClosePaymentResult> {
+    return {
+      providerTradeNo: input.providerTradeNo,
+      rawResponse: { closed: true, mock: true }
+    };
+  }
 
   async createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult> {
     const cashierUrl = this.buildMockCashierUrl(input.paymentOrderId);

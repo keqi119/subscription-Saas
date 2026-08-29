@@ -31,6 +31,13 @@ const approvalCommentMigrationPath = resolve(
 const approvalCommentMigration = existsSync(approvalCommentMigrationPath)
   ? readFileSync(approvalCommentMigrationPath, "utf8")
   : "";
+const pricingApprovalMigrationPath = resolve(
+  apiRoot,
+  "prisma/migrations/20260826036000_stage1_closure_pricing_approval/migration.sql"
+);
+const pricingApprovalMigration = existsSync(pricingApprovalMigrationPath)
+  ? readFileSync(pricingApprovalMigrationPath, "utf8")
+  : "";
 const migrationPrefix = `${migration}\n${hardeningMigration}`;
 const finalMigration = `${migrationPrefix}\n${reversalPeriodMigration}\n${approvalCommentMigration}`;
 
@@ -52,7 +59,22 @@ function enumValues(name: string) {
 
 function migrationEnumValues(name: string) {
   const body = migration.match(new RegExp(`CREATE TYPE "${name}" AS ENUM \\(([^;]+)\\);`))?.[1];
-  return body ? Array.from(body.matchAll(/'([^']+)'/g), (match) => match[1]) : [];
+  const values = body ? Array.from(body.matchAll(/'([^']+)'/g), (match) => match[1]) : [];
+  const additions = Array.from(
+    pricingApprovalMigration.matchAll(
+      new RegExp(
+        `ALTER TYPE "${name}"[\\s\\S]*?ADD VALUE(?: IF NOT EXISTS)? '([^']+)'(?: (BEFORE|AFTER) '([^']+)')?;`,
+        "g"
+      )
+    )
+  );
+  for (const [, value, position, anchor] of additions) {
+    if (!value || values.includes(value)) continue;
+    const anchorIndex = anchor ? values.indexOf(anchor) : -1;
+    if (anchorIndex < 0) values.push(value);
+    else values.splice(position === "AFTER" ? anchorIndex + 1 : anchorIndex, 0, value);
+  }
+  return values;
 }
 
 function migrationFunction(name: string) {
@@ -536,6 +558,7 @@ const enumContracts = [
     values: [
       "VEHICLE_REGISTRATION_DOCUMENT_MISSING",
       "HANDOVER_EVIDENCE_EXCEPTION",
+      "SETTLEMENT_PRICING_EXCEPTION",
       "SETTLEMENT_WAIVER",
       "SETTLEMENT_WRITE_OFF",
       "RECOVERY_EXECUTION_APPROVAL"

@@ -38,6 +38,12 @@ describe("SubscriptionClosureController governed boundary", () => {
       [PermissionCode.SUBSCRIPTION_CLOSURE_RECEIVE]
     ],
     [
+      "cancelReturnManifestSigning",
+      ":id/return-manifest-signing/cancel",
+      RequestMethod.POST,
+      [PermissionCode.SUBSCRIPTION_CLOSURE_RECEIVE]
+    ],
+    [
       "recordInspection",
       ":id/inspection",
       RequestMethod.POST,
@@ -66,6 +72,30 @@ describe("SubscriptionClosureController governed boundary", () => {
       ":id/settlements/settle",
       RequestMethod.POST,
       [PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE]
+    ],
+    [
+      "recordCustomerNoResponse",
+      ":id/customer-no-response",
+      RequestMethod.POST,
+      [PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE]
+    ],
+    [
+      "decideChargeDispute",
+      ":id/disputes/:disputeId/decision",
+      RequestMethod.POST,
+      [PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE]
+    ],
+    [
+      "requestClosureApproval",
+      ":id/approval-requests",
+      RequestMethod.POST,
+      [PermissionCode.BUSINESS_EXCEPTION_REQUEST]
+    ],
+    [
+      "decideClosureApproval",
+      ":id/approvals/:approvalId/decision",
+      RequestMethod.POST,
+      [PermissionCode.BUSINESS_EXCEPTION_APPROVE]
     ],
     [
       "actOnRecovery",
@@ -138,21 +168,43 @@ describe("SubscriptionClosureController governed boundary", () => {
     expect(handlers).toEqual([
       "actOnRecovery",
       "cancelEarlyTermination",
+      "cancelReturnManifestSigning",
+      "captureReturnChecklist",
+      "completeOperations",
       "confirmPhysicalReceipt",
+      "confirmReturnDelta",
+      "createPricing",
+      "decideChargeDispute",
+      "decideClosureApproval",
       "decideRecoveryApproval",
+      "downloadEvidencePackage",
+      "downloadReturnEvidence",
       "executeEarlyTermination",
       "executeRecovery",
+      "exportEvidencePackage",
       "finalizeSettlement",
+      "generateReturnDelta",
       "getByOrder",
       "getCase",
+      "governance",
       "initiateEarlyTermination",
       "listCases",
+      "packages",
+      "previewReturnEvidence",
+      "previewSignedReturnManifest",
       "proposeSettlement",
+      "recordCustomerNoResponse",
+      "recordDisposition",
       "recordInspection",
+      "recordLegalCollectionEvent",
       "recordRecoveryExecution",
       "releaseInventory",
+      "requestClosureApproval",
       "requestRecoveryApproval",
-      "settle"
+      "settle",
+      "transferLegalCollection",
+      "uploadFinancialProof",
+      "uploadReturnEvidence"
     ]);
   });
 

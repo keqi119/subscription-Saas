@@ -94,6 +94,7 @@ describe("ContractPdfArtifactWriterService", () => {
     expect(fileObjectCreate).toHaveBeenCalledWith({
       data: {
         bucket: "application-materials",
+        contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         mimeType: "application/pdf",
         objectKey: "contracts/contract-1/generated/CON-TEST-001.pdf",
         originalName: "CON-TEST-001.pdf",

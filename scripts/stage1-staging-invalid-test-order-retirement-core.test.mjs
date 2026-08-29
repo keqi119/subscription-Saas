@@ -176,6 +176,15 @@ test("rejects target identity, lifecycle, delivery, return, occupation, and pric
       { vehicle: { ...cleanSnapshot().vehicle, activeOtherLeases: [{ id: "other-lease" }] } }
     ],
     [
+      "VEHICLE_ACTIVE_SUBSCRIPTION_PERIOD",
+      {
+        vehicle: {
+          ...cleanSnapshot().vehicle,
+          activeSubscriptionPeriods: [{ id: "active-period", orderId: "other-order" }]
+        }
+      }
+    ],
+    [
       "VEHICLE_ACTIVE_RESTRICTION",
       { vehicle: { ...cleanSnapshot().vehicle, activeRestrictions: [{ id: "restriction" }] } }
     ],
@@ -232,6 +241,22 @@ test("requires one active ADMIN operator and terminal background evidence", () =
       ({ code }) => code === "NONTERMINAL_HANDOVER_WORKFLOW_JOB"
     )
   );
+
+  const recoverableDeadLetter = cleanSnapshot();
+  recoverableDeadLetter.evidenceReferences.handoverWorkflowJobs[0].jobStatus = "DEAD_LETTER";
+  assert.ok(
+    classify(recoverableDeadLetter).blockers.some(
+      ({ code }) => code === "NONTERMINAL_HANDOVER_WORKFLOW_JOB"
+    )
+  );
+
+  const activeHandoverWorkOrder = cleanSnapshot();
+  activeHandoverWorkOrder.evidenceReferences.handoverWorkOrders[0].status = "SIGNING";
+  assert.ok(
+    classify(activeHandoverWorkOrder).blockers.some(
+      ({ code }) => code === "NONTERMINAL_HANDOVER_WORK_ORDER"
+    )
+  );
 });
 
 test("evidence digest is deterministic and public classification is credential safe", () => {
@@ -248,6 +273,21 @@ test("evidence digest is deterministic and public classification is credential s
   const left = classify(first);
   const right = classify(second);
   assert.equal(left.evidenceDigest, right.evidenceDigest);
+  assert.deepEqual(left.review.relatedCounts, emptyBlockingCounts());
+  assert.deepEqual(left.review.vehicleAvailability, {
+    activeOtherLeases: 0,
+    activeOtherOrders: 0,
+    activeRestrictions: 0,
+    activeSubscriptionPeriods: 0
+  });
+  assert.deepEqual(left.review.evidence.handoverWorkOrders, [
+    {
+      handoverId: "bfc5a943-0000-4000-8000-000000000000",
+      id: "00000000-0000-4000-8000-000000000005",
+      orderId: selectors.orderId,
+      status: "FIELD_COMPLETED"
+    }
+  ]);
   const publicReport = JSON.stringify(left);
   assert.doesNotMatch(publicReport, /private\//);
   assert.doesNotMatch(publicReport, /objectKey|signedDocumentObjectKey|DATABASE_URL|mobile/);
@@ -427,7 +467,7 @@ function cleanSnapshot(overrides = {}) {
           handoverId: "bfc5a943-0000-4000-8000-000000000000",
           id: "00000000-0000-4000-8000-000000000005",
           orderId: selectors.orderId,
-          status: "COMPLETED"
+          status: "FIELD_COMPLETED"
         }
       ],
       handoverWorkflowJobs: [
@@ -475,6 +515,7 @@ function cleanSnapshot(overrides = {}) {
       activeOtherLeases: [],
       activeOtherOrders: [],
       activeRestrictions: [],
+      activeSubscriptionPeriods: [],
       currentSalePriceAmount: 18500000n,
       deletedAt: null,
       id: selectors.vehicleId,

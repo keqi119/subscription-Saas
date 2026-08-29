@@ -93,6 +93,7 @@ test("snapshot loader reads only the hard-coded target and classifier facts", as
   assert.deepEqual(snapshot.vehicle.activeOtherOrders, []);
   assert.deepEqual(snapshot.vehicle.activeOtherLeases, []);
   assert.deepEqual(snapshot.vehicle.activeRestrictions, []);
+  assert.deepEqual(snapshot.vehicle.activeSubscriptionPeriods, []);
   assert.deepEqual(snapshot.evidenceReferences.handoverWorkflowJobs, [
     {
       eSignTaskId: "00000000-0000-4000-8000-000000000003",
@@ -124,6 +125,13 @@ test("snapshot loader reads only the hard-coded target and classifier facts", as
     ([model, method]) => model === "lease" && method === "findMany"
   );
   assert.deepEqual(otherLeaseRead[2].where.status, { not: "COMPLETED" });
+  const activePeriodRead = calls.find(
+    ([model, method]) => model === "vehicleSubscriptionPeriod" && method === "findMany"
+  );
+  assert.deepEqual(activePeriodRead[2].where, {
+    endedAt: null,
+    vehicleId: TARGET.vehicleId
+  });
   const userRead = calls.find(([model, method]) => model === "user" && method === "findUnique");
   assert.deepEqual(userRead[2].where, { id: operatorId });
   const evidenceFileRead = calls.find(
@@ -188,6 +196,8 @@ test("apply updates four states and creates four correlated audits atomically", 
   assert.equal(harness.state.order.actualReturnAt, null);
   assert.equal(harness.state.order.actualDeliveryAt.toISOString(), "2026-07-31T03:01:04.000Z");
   assert.equal(harness.state.auditLogs.length, 4);
+  assert.ok(harness.calls.includes("database.identity"));
+  assert.ok(harness.calls.includes("relations.lock"));
   assert.deepEqual(
     [...new Set(harness.state.auditLogs.map(({ afterSnapshot }) => afterSnapshot.correlationId))],
     [correlationId]
@@ -229,6 +239,22 @@ test("blocked apply locks and reclassifies but performs zero business writes", a
   });
   assert.equal(harness.calls.filter((call) => call.endsWith("updateMany")).length, 0);
   assert.equal(harness.state.auditLogs.length, 0);
+});
+
+test("apply rejects a non-staging database before relation locks or business writes", async () => {
+  const harness = createApplyHarness({ databaseName: "subscription_saas_prod" });
+  await assert.rejects(
+    executeApply(harness),
+    /STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_DATABASE_IDENTITY_MISMATCH/
+  );
+
+  assert.ok(harness.calls.includes("database.identity"));
+  assert.equal(harness.calls.includes("relations.lock"), false);
+  assert.equal(
+    harness.calls.some((call) => call.endsWith("updateMany")),
+    false
+  );
+  assert.deepEqual(harness.state.order.orderStatus, "ACTIVE");
 });
 
 test("apply rejects a stale dry-run evidence digest before any update", async () => {
@@ -317,7 +343,11 @@ async function executeApply(harness, overrides = {}) {
   });
 }
 
-function createApplyHarness({ failure = null, serializeTransactions = false } = {}) {
+function createApplyHarness({
+  databaseName = "subscription_saas_staging",
+  failure = null,
+  serializeTransactions = false
+} = {}) {
   const state = cleanSnapshot();
   const calls = [];
   let auditAttempts = 0;
@@ -341,7 +371,12 @@ function createApplyHarness({ failure = null, serializeTransactions = false } = 
     calls.push("transaction.begin");
     const tx = {
       $queryRawUnsafe: async (query) => {
-        if (query.includes("pg_advisory_xact_lock")) calls.push("advisory.lock");
+        if (query.includes("current_database()")) {
+          calls.push("database.identity");
+          return [{ databaseName }];
+        }
+        if (query.startsWith("LOCK TABLE")) calls.push("relations.lock");
+        else if (query.includes("pg_advisory_xact_lock")) calls.push("advisory.lock");
         else if (query.includes("FOR UPDATE")) calls.push("row.lock");
         else throw new Error(`UNEXPECTED_LOCK_QUERY:${query}`);
         return [];
@@ -612,7 +647,10 @@ function snapshotDatabase() {
     },
     vehicleReturn: { count: count("vehicleReturn") },
     vehicleReturnDamage: { count: count("vehicleReturnDamage") },
-    vehicleSubscriptionPeriod: { count: count("vehicleSubscriptionPeriod") }
+    vehicleSubscriptionPeriod: {
+      count: count("vehicleSubscriptionPeriod"),
+      findMany: record("vehicleSubscriptionPeriod", "findMany", [])
+    }
   };
   return { calls, db, maxConcurrentReads: () => maximumConcurrentReads };
 }
@@ -704,7 +742,7 @@ function cleanSnapshot() {
           handoverId: "bfc5a943-0000-4000-8000-000000000000",
           id: "00000000-0000-4000-8000-000000000005",
           orderId: TARGET.orderId,
-          status: "COMPLETED"
+          status: "FIELD_COMPLETED"
         }
       ],
       handoverWorkflowJobs: [
@@ -746,6 +784,7 @@ function cleanSnapshot() {
       activeOtherLeases: [],
       activeOtherOrders: [],
       activeRestrictions: [],
+      activeSubscriptionPeriods: [],
       currentSalePriceAmount: 18500000n,
       deletedAt: null,
       id: TARGET.vehicleId,

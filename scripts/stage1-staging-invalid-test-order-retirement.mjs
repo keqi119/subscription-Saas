@@ -7,17 +7,30 @@ import { parseStage1StagingInvalidTestOrderRetirementArgs } from "./stage1-stagi
 import { executeStage1StagingInvalidTestOrderRetirement } from "./stage1-staging-invalid-test-order-retirement-executor.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const STAGING_DATABASE_NAME = "subscription_saas_staging";
 const requireFromApi = createRequire(resolve(repoRoot, "apps/api/package.json"));
 let directPrisma;
 
 export function assertStage1StagingInvalidTestOrderRetirementApplyEnvironment(mode, env) {
   if (mode !== "apply") return;
-  const environment = String(env.DEPLOYMENT_ENV ?? env.APP_ENV ?? "").toLowerCase();
-  if (environment !== "staging") {
+  const environments = [env.DEPLOYMENT_ENV, env.APP_ENV]
+    .filter((value) => value !== undefined && value !== null && String(value).trim() !== "")
+    .map((value) => String(value).trim().toLowerCase());
+  if (environments.length === 0 || environments.some((value) => value !== "staging")) {
     throw new Error("STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_STAGING_REQUIRED");
   }
   if (env.STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_APPLY !== "1") {
     throw new Error("STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_APPLY_CONFIRMATION_REQUIRED");
+  }
+}
+
+export function assertStage1StagingInvalidTestOrderRetirementDatabaseIdentity(rows) {
+  if (
+    !Array.isArray(rows) ||
+    rows.length !== 1 ||
+    rows[0]?.databaseName !== STAGING_DATABASE_NAME
+  ) {
+    throw new Error("STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_DATABASE_IDENTITY_MISMATCH");
   }
 }
 
@@ -33,6 +46,10 @@ export async function runStage1StagingInvalidTestOrderRetirementCli({
     parseStage1StagingInvalidTestOrderRetirementArgs(args);
   assertStage1StagingInvalidTestOrderRetirementApplyEnvironment(mode, env);
   const prisma = await createPrisma();
+  if (mode === "apply") {
+    const identity = await prisma.$queryRawUnsafe('SELECT current_database() AS "databaseName"');
+    assertStage1StagingInvalidTestOrderRetirementDatabaseIdentity(identity);
+  }
   const result = await execute({ expectedEvidenceDigest, mode, operatorId, prisma });
   const json = `${JSON.stringify(result.report, null, 2)}\n`;
   await writeStdout(json);

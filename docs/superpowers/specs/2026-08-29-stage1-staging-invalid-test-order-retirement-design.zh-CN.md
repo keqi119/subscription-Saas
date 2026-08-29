@@ -71,13 +71,14 @@ CLI 仍要求操作者逐项传入订单和车辆选择器，并与代码内固�
 
 apply 必须同时满足：
 
-- `DEPLOYMENT_ENV` 或 `APP_ENV` 规范化后严格等于 `staging`；
+- `DEPLOYMENT_ENV` 或 `APP_ENV` 至少提供一个；已提供的值规范化后必须全部严格等于 `staging`，两个信号冲突时 fail-closed；
+- 连接后、读取任何业务事实前，`current_database()` 必须严格等于 `subscription_saas_staging`；
 - `STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_APPLY=1`；
 - CLI 传入的全部目标选择器与固定白名单一致；
 - CLI 传入有效的内部操作人 UUID；该用户未删除、状态有效且具有系统管理员角色；
 - CLI 传入 dry-run 报告中的 `evidenceDigest`，且 apply 事务内重算结果完全一致。
 
-任一条件不满足时只输出稳定错误码，不连接或不写入业务表。
+环境、确认变量或选择器不满足时只输出稳定错误码且不创建 Prisma；数据库身份不满足时在元数据查询后立即失败。两类失败均不读取或写入业务表。
 
 ## 5. 工具结构与接口
 
@@ -129,9 +130,11 @@ node scripts/stage1-staging-invalid-test-order-retirement.mjs \
 - `VehicleSubscriptionPeriod`；
 - 退车、退车损伤、退车清单、差异修订、结算案件；
 - 与该订单或车辆关联的资产工单、有效运营限制；
-- 车辆上的其他非终态订单或有效 Lease。
+- 车辆上的其他非终态订单、有效 Lease 或任意 `endedAt IS NULL` 的订阅周期。
 
 已有主合同、电子签任务、文件对象、Stage 2 交接及其证据允许存在，但只参与摘要，不允许修改。任何新增、删除、状态或关联变化都会改变 `evidenceDigest`，使旧 dry-run 计划在 apply 时失效。
+
+已有交接工单只允许 `FIELD_COMPLETED/OPS_REVIEWED/VOIDED/CANCELLED`；交接 workflow job 只允许 `COMPLETED/CANCELLED`。`DEAD_LETTER` 仍可通过恢复入口重试，因此不是终态，必须先受管取消或隔离，不能随订单一起退役。
 
 ### 6.3 分类结果
 
@@ -148,7 +151,7 @@ node scripts/stage1-staging-invalid-test-order-retirement.mjs \
 apply 使用单个 Serializable 事务：
 
 1. 获取专用 PostgreSQL transaction advisory lock；
-2. 按稳定顺序锁定目标订单、Lease、BillingSchedule、车辆及所有阻断关联行；
+2. 对完整快照涉及的关系按固定清单获取 `SHARE ROW EXCLUSIVE` 表锁，再按稳定顺序锁定目标订单、Lease、BillingSchedule 和车辆行；该锁会阻断普通 API/worker 并发插入、更新或删除关联事实；
 3. 重新加载完整快照并重跑分类器；
 4. 校验 apply 参数中的 `expectedEvidenceDigest`；
 5. 使用同一个数据库事务时间和同一个 `correlationId` 执行：
@@ -204,7 +207,7 @@ apply 使用单个 Serializable 事务：
 
 1. 完成脚本单元、执行器、CLI、runtime 媒体及全量质量门槛测试；
 2. 合并并部署包含工具的新 API 镜像；
-3. 暂停 Staging 验收写操作；
+3. 暂停 Staging 验收写操作，停止并排空 billing、handover、journey、subscription-change worker，并确认目标订单没有进行中的业务事务或 job；
 4. 创建新的 PostgreSQL 备份并记录路径、时间、镜像版本和 SHA-256；
 5. 在已发布 API 容器中执行 dry-run，保存报告；
 6. 人工核对唯一候选、零阻断及证据摘要；
@@ -260,7 +263,8 @@ apply 使用单个 Serializable 事务：
 ### 12.2 执行器
 
 - dry-run 使用只读事务且零写入；
-- apply 使用 Serializable、advisory lock 和行锁；
+- apply 使用 Serializable、advisory lock、快照关系表锁和目标行锁；
+- 真实 PostgreSQL 双并发只允许一笔提交；竞争事务可以 `40001` 回滚，随后 replay 必须为 `UNCHANGED`；
 - apply 事务内重新分类并拒绝陈旧摘要；
 - 四个状态转换、时间、版本、操作人和审计一致；
 - 任一步骤注入失败时全部回滚；
@@ -269,8 +273,9 @@ apply 使用单个 Serializable 事务：
 
 ### 12.3 CLI 与运行时
 
-- 参数严格解析；apply 环境、确认变量、操作人和摘要缺一不可；
-- 非 Staging apply 在创建业务连接或执行写入前失败；
+- 参数严格解析；apply 环境、数据库身份、确认变量、操作人和摘要缺一不可；
+- 环境信号非 Staging 时在创建 Prisma 前失败；数据库身份不匹配时在任何业务读取或写入前失败；
+- dry-run 报告包含脱敏的全部禁止关联计数、车辆占用计数，以及合同、电子签、交接、证据和文件引用集合，支持独立人工复核；
 - stdout、文件报告及 stderr 公开错误不泄露连接串、客户或文件凭证；
 - `Dockerfile.api` 包含脚本及直接依赖；runtime 媒体测试在容器构建上下文中验证路径。
 

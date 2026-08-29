@@ -6,16 +6,48 @@ const runReleaseSmoke = process.env.RUN_RELEASE_SMOKE === "1";
 const requiredSteps = [
   ["Prisma validate", "pnpm", ["prisma:validate"]],
   ["Prisma generate", "pnpm", ["prisma:generate"]],
-  ["VehicleModel no-enum guard syntax", "node", ["--check", "scripts/check-vehicle-model-no-enum.mjs"]],
+  [
+    "VehicleModel no-enum guard syntax",
+    "node",
+    ["--check", "scripts/check-vehicle-model-no-enum.mjs"]
+  ],
   ["VehicleModel no-enum guard", "node", ["scripts/check-vehicle-model-no-enum.mjs"]],
-  ["VehicleModel no-enum guard tests", "node", ["--test", "scripts/check-vehicle-model-no-enum.test.mjs"]],
-  ["VehicleModel no-compatibility guard syntax", "node", ["--check", "scripts/check-vehicle-model-no-compatibility.mjs"]],
-  ["VehicleModel no-compatibility guard tests", "node", ["--test", "scripts/check-vehicle-model-no-compatibility.test.mjs"]],
-  ["VehicleModel no-compatibility guard", "node", ["scripts/check-vehicle-model-no-compatibility.mjs"]],
-  ["VehicleModel removal readiness syntax", "node", ["--check", "scripts/vehicle-model-removal-readiness.mjs"]],
-  ["VehicleModel removal readiness core syntax", "node", ["--check", "scripts/vehicle-model-removal-readiness-core.mjs"]],
+  [
+    "VehicleModel no-enum guard tests",
+    "node",
+    ["--test", "scripts/check-vehicle-model-no-enum.test.mjs"]
+  ],
+  [
+    "VehicleModel no-compatibility guard syntax",
+    "node",
+    ["--check", "scripts/check-vehicle-model-no-compatibility.mjs"]
+  ],
+  [
+    "VehicleModel no-compatibility guard tests",
+    "node",
+    ["--test", "scripts/check-vehicle-model-no-compatibility.test.mjs"]
+  ],
+  [
+    "VehicleModel no-compatibility guard",
+    "node",
+    ["scripts/check-vehicle-model-no-compatibility.mjs"]
+  ],
+  [
+    "VehicleModel removal readiness syntax",
+    "node",
+    ["--check", "scripts/vehicle-model-removal-readiness.mjs"]
+  ],
+  [
+    "VehicleModel removal readiness core syntax",
+    "node",
+    ["--check", "scripts/vehicle-model-removal-readiness-core.mjs"]
+  ],
   ["VehicleModel removal readiness tests", "pnpm", ["vehicle-model:removal-readiness:test"]],
-  ["VehicleModel external contract governance syntax", "node", ["--check", "scripts/vehicle-model-contract-governance.mjs"]],
+  [
+    "VehicleModel external contract governance syntax",
+    "node",
+    ["--check", "scripts/vehicle-model-contract-governance.mjs"]
+  ],
   ["VehicleModel external contract governance", "pnpm", ["vehicle-model:contract-governance"]],
   ["Workspace lint", "pnpm", ["-r", "lint"]],
   ["API typecheck", "pnpm", ["--filter", "@subscription-saas/api", "typecheck"]],
@@ -25,17 +57,60 @@ const requiredSteps = [
   ["Smoke script syntax", "node", ["--check", "scripts/api-smoke.mjs"]],
   ["Portal route smoke syntax", "node", ["--check", "scripts/portal-route-smoke.mjs"]],
   ["Portal API smoke syntax", "node", ["--check", "scripts/portal-api-smoke.mjs"]],
-  ["WeChat Official Account smoke syntax", "node", ["--check", "scripts/wechat-official-account-smoke.mjs"]],
+  [
+    "WeChat Official Account smoke syntax",
+    "node",
+    ["--check", "scripts/wechat-official-account-smoke.mjs"]
+  ],
   ["WeChat Official Account menu syntax", "node", ["--check", "scripts/wechat-menu.mjs"]],
-  ["WeChat Official Account menu dry-run syntax", "node", ["--check", "scripts/wechat-menu-dry-run.mjs"]],
-  ["WeChat Pay certificate downloader syntax", "node", ["--check", "scripts/wechat-pay-download-platform-certs.mjs"]],
-  ["Fadada sandbox upload/signUrl smoke syntax", "node", ["--check", "scripts/fadada-sandbox-upload-signurl-smoke.mjs"]],
-  ["Fadada sandbox upload/signUrl smoke tests", "pnpm", ["fadada:sandbox-upload-signurl-smoke:test"]],
-  ["Fadada test signer real-name prep syntax", "node", ["--check", "scripts/fadada-production-test-signer-realname.mjs"]],
-  ["Fadada production upload/signUrl smoke syntax", "node", ["--check", "scripts/fadada-production-upload-signurl-smoke.mjs"]],
+  [
+    "WeChat Official Account menu dry-run syntax",
+    "node",
+    ["--check", "scripts/wechat-menu-dry-run.mjs"]
+  ],
+  [
+    "WeChat Pay certificate downloader syntax",
+    "node",
+    ["--check", "scripts/wechat-pay-download-platform-certs.mjs"]
+  ],
+  [
+    "Fadada sandbox upload/signUrl smoke syntax",
+    "node",
+    ["--check", "scripts/fadada-sandbox-upload-signurl-smoke.mjs"]
+  ],
+  [
+    "Fadada sandbox upload/signUrl smoke tests",
+    "pnpm",
+    ["fadada:sandbox-upload-signurl-smoke:test"]
+  ],
+  [
+    "Fadada test signer real-name prep syntax",
+    "node",
+    ["--check", "scripts/fadada-production-test-signer-realname.mjs"]
+  ],
+  [
+    "Fadada production upload/signUrl smoke syntax",
+    "node",
+    ["--check", "scripts/fadada-production-upload-signurl-smoke.mjs"]
+  ],
   ["Fadada production upload/signUrl smoke tests", "pnpm", ["fadada:upload-signurl:test"]],
   ["Stage 1 Golden Path preflight tests", "pnpm", ["stage1:golden-path:preflight:test"]],
-  ["Stage 1 Golden Path production image guard", "node", ["scripts/stage1-golden-path-production-preflight.mjs", "--check-examples"]],
+  [
+    "Stage 1 Golden Path production image guard",
+    "node",
+    ["scripts/stage1-golden-path-production-preflight.mjs", "--check-examples"]
+  ],
+  [
+    "Stage 1 invalid Staging order retirement tests",
+    "pnpm",
+    ["stage1:staging-invalid-test-order-retirement:test"]
+  ],
+  [
+    "Stage 1C asset accounting reconciliation",
+    "node",
+    ["--test", "scripts/stage1c-asset-accounting-reconciliation.test.mjs"]
+  ],
+  ["Stage 1 closure reconciliation", "pnpm", ["stage1:p0-closure:reconcile"]],
   ["Scenario seed syntax", "node", ["--check", "apps/api/prisma/seed-scenario.mjs"]]
 ];
 

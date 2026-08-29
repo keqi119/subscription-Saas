@@ -38,6 +38,11 @@ test("apply requires staging and the exact narrowly named confirmation", () => {
   for (const env of [
     {},
     {
+      APP_ENV: "production",
+      DEPLOYMENT_ENV: "staging",
+      STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_APPLY: "1"
+    },
+    {
       DEPLOYMENT_ENV: "production",
       STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_APPLY: "1"
     },
@@ -53,6 +58,21 @@ test("apply requires staging and the exact narrowly named confirmation", () => {
     assert.throws(
       () => validate("apply", env),
       /STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_(STAGING|APPLY_CONFIRMATION)_REQUIRED/
+    );
+  }
+});
+
+test("apply accepts only the deployed staging database identity", () => {
+  const validate = required("assertStage1StagingInvalidTestOrderRetirementDatabaseIdentity");
+  assert.doesNotThrow(() => validate([{ databaseName: "subscription_saas_staging" }]));
+  for (const rows of [
+    [],
+    [{ databaseName: "subscription_saas_prod" }],
+    [{ databaseName: "subscription_saas_staging" }, { databaseName: "subscription_saas_staging" }]
+  ]) {
+    assert.throws(
+      () => validate(rows),
+      /STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_DATABASE_IDENTITY_MISMATCH/
     );
   }
 });
@@ -195,7 +215,7 @@ test("package scripts expose dry-run, apply, and test entry points", async () =>
   );
   assert.equal(
     packageJson.scripts["stage1:staging-invalid-test-order-retirement:test"],
-    "node --test scripts/stage1-staging-invalid-test-order-retirement-core.test.mjs scripts/stage1-staging-invalid-test-order-retirement-executor.test.mjs scripts/stage1-staging-invalid-test-order-retirement.test.mjs"
+    "node --test scripts/stage1-staging-invalid-test-order-retirement-core.test.mjs scripts/stage1-staging-invalid-test-order-retirement-executor.test.mjs scripts/stage1-staging-invalid-test-order-retirement-postgres.integration.test.mjs scripts/stage1-staging-invalid-test-order-retirement.test.mjs"
   );
 });
 

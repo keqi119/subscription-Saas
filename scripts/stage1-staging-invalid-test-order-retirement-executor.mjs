@@ -9,6 +9,53 @@ const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 120_000 };
 const RETIREMENT_MODULE = "STAGE1_STAGING_TEST_DATA_RETIREMENT";
 const RETIREMENT_REASON = "STAGING_INVALID_TEST_DATA_RETIREMENT";
 const APPLY_LOCK_KEY = "stage1-staging-invalid-test-order-retirement:apply";
+const STAGING_DATABASE_NAME = "subscription_saas_staging";
+const SNAPSHOT_RELATIONS = Object.freeze([
+  "asset_work_order",
+  "audit_log",
+  "billing_schedule",
+  "collection_action",
+  "collection_case",
+  "collection_case_bill",
+  "contract",
+  "contract_esign_task",
+  "debit_attempt",
+  "deposit_ledger",
+  "file_object",
+  "insurance_claim",
+  "lease",
+  "order_change",
+  "order_entitlement_account",
+  "order_entitlement_grant",
+  "order_entitlement_usage",
+  "order_mileage_review",
+  "payment_mandate",
+  "payment_order",
+  "payment_record",
+  "payment_write_off",
+  "receivable_bill",
+  "renewal_consideration",
+  "revenue_right_assignment",
+  "service_case",
+  "subscription_automation_job",
+  "subscription_change_order",
+  "subscription_closure_case",
+  "subscription_contract_segment",
+  "subscription_order",
+  "vehicle",
+  "vehicle_cost_ledger_entry",
+  "vehicle_delivery",
+  "vehicle_delivery_evidence_file",
+  "vehicle_delivery_evidence_item",
+  "vehicle_delivery_handover",
+  "vehicle_handover_work_order",
+  "vehicle_handover_workflow_job",
+  "vehicle_mileage_reading",
+  "vehicle_operational_restriction",
+  "vehicle_return",
+  "vehicle_return_damage",
+  "vehicle_subscription_period"
+]);
 const NONTERMINAL_ORDER_STATUSES = [
   "PENDING_REVIEW",
   "PENDING_CUSTOMER_CONFIRMATION",
@@ -55,6 +102,7 @@ const COUNT_QUERIES = [
 ];
 
 export async function executeStage1StagingInvalidTestOrderRetirement({
+  assertDatabaseIdentity = assertStagingDatabase,
   classify = classifyStage1StagingInvalidTestOrderRetirement,
   expectedEvidenceDigest,
   generatedAt = new Date().toISOString(),
@@ -88,7 +136,9 @@ export async function executeStage1StagingInvalidTestOrderRetirement({
 
   const outcome = await prisma.$transaction(
     async (tx) => {
+      await assertDatabaseIdentity(tx);
       await lockApply(tx);
+      await lockSnapshotRelations(tx);
       await lockTargetRows(tx);
       const snapshot = await loadSnapshot(tx, { operatorId });
       const classification = classify(snapshot);
@@ -304,6 +354,11 @@ export async function loadStage1StagingInvalidTestOrderRetirementSnapshot(db, { 
     select: { id: true, restrictionType: true, severity: true, status: true },
     where: { status: "ACTIVE", vehicleId: TARGET.vehicleId }
   });
+  const activeSubscriptionPeriods = await db.vehicleSubscriptionPeriod.findMany({
+    orderBy: { id: "asc" },
+    select: { id: true, orderId: true },
+    where: { endedAt: null, vehicleId: TARGET.vehicleId }
+  });
 
   const handoverWorkflowJobs = await db.vehicleHandoverWorkflowJob.findMany({
     orderBy: { id: "asc" },
@@ -386,7 +441,13 @@ export async function loadStage1StagingInvalidTestOrderRetirementSnapshot(db, { 
     operator: normalizeOperator(operatorRow),
     order,
     vehicle: vehicle
-      ? { ...vehicle, activeOtherLeases, activeOtherOrders, activeRestrictions }
+      ? {
+          ...vehicle,
+          activeOtherLeases,
+          activeOtherOrders,
+          activeRestrictions,
+          activeSubscriptionPeriods
+        }
       : null,
     vehicleDeliveries
   };
@@ -409,6 +470,22 @@ function normalizeOperator(operator) {
 
 async function lockApply(tx) {
   await tx.$queryRawUnsafe("SELECT pg_advisory_xact_lock(hashtext($1))", APPLY_LOCK_KEY);
+}
+
+async function assertStagingDatabase(tx) {
+  const rows = await tx.$queryRawUnsafe('SELECT current_database() AS "databaseName"');
+  if (
+    !Array.isArray(rows) ||
+    rows.length !== 1 ||
+    rows[0]?.databaseName !== STAGING_DATABASE_NAME
+  ) {
+    throw new Error("STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_DATABASE_IDENTITY_MISMATCH");
+  }
+}
+
+async function lockSnapshotRelations(tx) {
+  const relations = SNAPSHOT_RELATIONS.map((relation) => `"${relation}"`).join(", ");
+  await tx.$queryRawUnsafe(`LOCK TABLE ${relations} IN SHARE ROW EXCLUSIVE MODE`);
 }
 
 async function lockTargetRows(tx) {

@@ -50,7 +50,13 @@ const EXPECTED_AUDITS = [
   ["vehicle", "vehicle", "LEASED", "AVAILABLE"]
 ];
 const TERMINAL_ESIGN_TASK_STATUSES = new Set(["COMPLETED", "FAILED", "CANCELLED", "EXPIRED"]);
-const TERMINAL_HANDOVER_JOB_STATUSES = new Set(["COMPLETED", "DEAD_LETTER", "CANCELLED"]);
+const TERMINAL_HANDOVER_JOB_STATUSES = new Set(["COMPLETED", "CANCELLED"]);
+const TERMINAL_HANDOVER_WORK_ORDER_STATUSES = new Set([
+  "FIELD_COMPLETED",
+  "OPS_REVIEWED",
+  "VOIDED",
+  "CANCELLED"
+]);
 const SELECTOR_OPTIONS = new Map([
   ["--order-id", "orderId"],
   ["--order-no", "orderNo"],
@@ -226,6 +232,9 @@ function inspectStableIdentityAndForbiddenFacts(snapshot) {
   if (array(vehicle?.activeOtherLeases).length > 0) {
     blockers.push({ code: "VEHICLE_OTHER_ACTIVE_LEASE" });
   }
+  if (array(vehicle?.activeSubscriptionPeriods).length > 0) {
+    blockers.push({ code: "VEHICLE_ACTIVE_SUBSCRIPTION_PERIOD" });
+  }
   if (array(vehicle?.activeRestrictions).length > 0) {
     blockers.push({ code: "VEHICLE_ACTIVE_RESTRICTION" });
   }
@@ -248,6 +257,14 @@ function inspectStableIdentityAndForbiddenFacts(snapshot) {
       blockers.push({
         code: "NONTERMINAL_HANDOVER_WORKFLOW_JOB",
         entityId: job?.id ?? null
+      });
+    }
+  }
+  for (const workOrder of array(snapshot.evidenceReferences?.handoverWorkOrders)) {
+    if (!TERMINAL_HANDOVER_WORK_ORDER_STATUSES.has(workOrder?.status)) {
+      blockers.push({
+        code: "NONTERMINAL_HANDOVER_WORK_ORDER",
+        entityId: workOrder?.id ?? null
       });
     }
   }
@@ -350,8 +367,89 @@ function classificationResult({ blockers, candidate, disposition, evidenceDigest
     candidate,
     disposition,
     evidenceDigest,
+    review: publicEvidenceReview(snapshot),
     summary: { blockers: blockers.length, inspectedOrders: snapshot.order ? 1 : 0 }
   };
+}
+
+function publicEvidenceReview(snapshot) {
+  const evidence = snapshot.evidenceReferences ?? {};
+  return canonical({
+    evidence: {
+      contracts: safeRecords(evidence.contracts, [
+        "contractVersionId",
+        "deletedAt",
+        "fileId",
+        "id",
+        "orderId",
+        "status"
+      ]),
+      eSignTasks: safeRecords(evidence.eSignTasks, [
+        "contractId",
+        "deletedAt",
+        "id",
+        "orderId",
+        "sourceId",
+        "sourceType",
+        "taskStatus"
+      ]),
+      evidenceFiles: safeRecords(evidence.evidenceFiles, [
+        "evidenceItemId",
+        "fileId",
+        "id",
+        "lifecycleStatus",
+        "replacedById"
+      ]),
+      evidenceItems: safeRecords(evidence.evidenceItems, [
+        "handoverId",
+        "id",
+        "orderId",
+        "reviewStatus",
+        "status",
+        "vehicleDeliveryId"
+      ]),
+      fileObjects: safeRecords(evidence.fileObjects, [
+        "contentSha256",
+        "createdAt",
+        "id",
+        "sizeBytes"
+      ]),
+      handovers: safeRecords(evidence.handovers, [
+        "archiveStatus",
+        "deletedAt",
+        "handoverContractId",
+        "handoverESignTaskId",
+        "id",
+        "orderId",
+        "signedDocumentFileId",
+        "sourceDocumentFileId",
+        "stage1ContractId",
+        "status"
+      ]),
+      handoverWorkOrders: safeRecords(evidence.handoverWorkOrders, [
+        "handoverId",
+        "id",
+        "orderId",
+        "status"
+      ]),
+      handoverWorkflowJobs: safeRecords(evidence.handoverWorkflowJobs, [
+        "eSignTaskId",
+        "handoverId",
+        "id",
+        "jobStatus",
+        "workOrderId"
+      ])
+    },
+    relatedCounts: Object.fromEntries(
+      BLOCKING_COUNT_FIELDS.map((field) => [field, snapshot.blockingCounts?.[field] ?? null])
+    ),
+    vehicleAvailability: {
+      activeOtherLeases: array(snapshot.vehicle?.activeOtherLeases).length,
+      activeOtherOrders: array(snapshot.vehicle?.activeOtherOrders).length,
+      activeRestrictions: array(snapshot.vehicle?.activeRestrictions).length,
+      activeSubscriptionPeriods: array(snapshot.vehicle?.activeSubscriptionPeriods).length
+    }
+  });
 }
 
 function digestEvidence(snapshot) {
@@ -474,6 +572,10 @@ function digestEvidence(snapshot) {
         "restrictionType",
         "severity",
         "status"
+      ]),
+      activeSubscriptionPeriods: safeRecords(snapshot.vehicle?.activeSubscriptionPeriods, [
+        "id",
+        "orderId"
       ])
     },
     vehicleDeliveries: safeRecords(snapshot.vehicleDeliveries, [

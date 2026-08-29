@@ -93,7 +93,7 @@ describe("Admin Stage 2 handover review order page", () => {
     );
 
     expect(source).toContain("Stage2RegistrationExceptionActions");
-    expect(source).toContain("VEHICLE_REGISTRATION_DOCUMENT_MISSING");
+    expect(source).toContain("shouldShowAdminStage2RegistrationException(status)");
     expect(source).toContain('permissions.has("business_exception:request")');
     expect(source).toContain('permissions.has("business_exception:approve")');
     expect(component).toContain("申请例外审批");

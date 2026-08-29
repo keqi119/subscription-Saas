@@ -49,6 +49,34 @@ describe("attachment correction boundaries", () => {
     expect(assertDeleteMaterialFileInput("重复上传")).toBe("重复上传");
   });
 
+  it("fails closed for every application material mutation after formal order creation", () => {
+    const customerService = source("customer/customer.service.ts");
+    const guardedMethods = [
+      methodSource(customerService, "async uploadMaterial", "async previewMaterial"),
+      methodSource(customerService, "async reviewMaterial(", "async reviewMaterialGroup"),
+      methodSource(customerService, "async reviewMaterialGroup", "async deleteMaterialFile"),
+      methodSource(customerService, "async deleteMaterialFile", "async needMoreInfo")
+    ];
+
+    for (const method of guardedMethods) {
+      expect(method).toContain("assertApplicationHasNoOrder(application)");
+    }
+  });
+
+  it("fails closed for every public application workflow mutation after formal order creation", () => {
+    const customerService = source("customer/customer.service.ts");
+    const guardedMethods = [
+      methodSource(customerService, "async updateApplication", "async submitApplication"),
+      methodSource(customerService, "async submitApplication", "async uploadMaterial"),
+      methodSource(customerService, "async needMoreInfo", "async approveApplication"),
+      methodSource(customerService, "async approveApplication", "async rejectApplication")
+    ];
+
+    for (const method of guardedMethods) {
+      expect(method).toContain("assertApplicationHasNoOrder(before)");
+    }
+  });
+
   it("soft-deletes vehicle documents without deleting stored objects and guards bindings", () => {
     const method = methodSource(
       source("vehicle-insurance/vehicle-insurance.service.ts"),

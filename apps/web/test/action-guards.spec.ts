@@ -9,6 +9,7 @@ import {
   canGenerateContract,
   canRunSubscriptionChangeAction,
   canRunSubscriptionJourneyAction,
+  isApplicationWorkspaceReadOnly,
   shouldHideLegacyJourneyAction
 } from "../src/lib/action-guards";
 
@@ -180,6 +181,11 @@ describe("action guards", () => {
         new Set(["order:create", "quote:create"])
       )
     ).toEqual({ allowed: false, reason: "请先确认最终方案" });
+  });
+
+  it("makes an application workspace read-only after a formal order exists", () => {
+    expect(isApplicationWorkspaceReadOnly({ orders: [] })).toBe(false);
+    expect(isApplicationWorkspaceReadOnly({ orders: [{ id: "order-1" }] })).toBe(true);
   });
 
   it("disables generating contracts outside PENDING_CONTRACT", () => {

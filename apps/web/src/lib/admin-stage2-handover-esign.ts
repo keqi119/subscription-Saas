@@ -176,6 +176,23 @@ export interface AdminStage2DeliveryVerification {
     | "NOT_SIGNED";
 }
 
+export function shouldShowAdminStage2RegistrationException(
+  status?: AdminStage2HandoverESignStatus | null
+) {
+  const registrationDocumentMissing = Boolean(
+    status?.blockers.some(
+      (blocker) => blocker.code === "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
+    )
+  );
+  if (!registrationDocumentMissing) {
+    return false;
+  }
+
+  const archived =
+    status?.archiveStatus === "ARCHIVED" && status.signedArtifactAvailable === true;
+  return !archived && !stage2SigningCompleted(status);
+}
+
 const BLOCKER_MESSAGES: Record<string, string> = {
   VEHICLE_REGISTRATION_DOCUMENT_MISSING:
     "缺少行驶证资料，需补录或完成管理员例外审批",

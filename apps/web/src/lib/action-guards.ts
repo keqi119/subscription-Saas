@@ -212,6 +212,12 @@ export function shouldHideLegacyJourneyAction(
   return journeyManaged && CONFLICTING_LEGACY_JOURNEY_ACTIONS.has(action);
 }
 
+export function isApplicationWorkspaceReadOnly(
+  application: Pick<ApplicationActionState, "orders"> | null | undefined
+) {
+  return (application?.orders?.length ?? 0) > 0;
+}
+
 export function canGenerateApplicationQuote(
   application: ApplicationActionState | null | undefined,
   permissions: PermissionCollection

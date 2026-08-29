@@ -162,8 +162,8 @@ function completeSnapshot(overrides = {}) {
       tableCounts: { customer: 0, user: 0, vehicle: 0 }
     },
     templates: {
-      contractVersions: CONTRACT_TEMPLATE_FIXTURES.map((fixture) => contractVersion(fixture)),
-      fileObjects: CONTRACT_TEMPLATE_FIXTURES.map((fixture) => fileObject(fixture)),
+      contractVersions: CONTRACT_TEMPLATE_FIXTURES.map((fixture) => contractVersion(fixture, { approvedBy: "admin-user" })),
+      fileObjects: CONTRACT_TEMPLATE_FIXTURES.map((fixture) => fileObject(fixture, { uploadedBy: "admin-user" })),
       notificationTemplates: [notificationTemplate()],
       requiredContractTemplateTypes: REQUIRED_CONTRACT_TEMPLATE_TYPES,
       requiredNotificationTemplateCodes: ["CONTRACT_PENDING_IN_APP"]
@@ -188,7 +188,38 @@ function completeSnapshot(overrides = {}) {
         }
       ],
       vehicleAssetCostProfiles: [{ id: "cost-profile-1", vehicleId: VEHICLE_A }],
-      vehicleCostLedgerEntries: [{ id: "cost-ledger-1", vehicleId: VEHICLE_A }],
+      vehicleCostLedgerEntries: [
+        {
+          assetOwnerId: "owner-1",
+          assetOwnerSnapshot: null,
+          confirmedBy: "admin-user",
+          contractId: null,
+          customerId: "customer-1",
+          evidenceId: null,
+          evidenceSnapshot: null,
+          id: "cost-ledger-1",
+          orderId: null,
+          responsibilitySnapshot: { responsibleParty: "PLATFORM" },
+          reversalOfEntryId: null,
+          vehicleId: VEHICLE_A,
+          workOrderId: null
+        },
+        {
+          assetOwnerId: "owner-1",
+          assetOwnerSnapshot: { ownerNo: "OWNER-1" },
+          confirmedBy: "admin-user",
+          contractId: null,
+          customerId: null,
+          evidenceId: null,
+          evidenceSnapshot: { source: "reversal" },
+          id: "cost-ledger-2",
+          orderId: null,
+          responsibilitySnapshot: { responsibleParty: "PLATFORM" },
+          reversalOfEntryId: "cost-ledger-1",
+          vehicleId: VEHICLE_A,
+          workOrderId: null
+        }
+      ],
       vehicleDocumentBatches: [{ id: "document-batch-1", vehicleId: VEHICLE_A }],
       vehicleDocuments: [{ batchId: "document-batch-1", id: "document-1", policyId: null, vehicleId: VEHICLE_A }],
       vehicleInsuranceCoverages: [{ id: "coverage-1", policyId: "policy-1" }],
@@ -299,6 +330,57 @@ test("classification closes the complete fixed baseline and marks it safe", () =
   assert.equal(result.rows.customer.customers[0].id, "customer-1");
   assert.equal(result.rows.vehicle.vehicles[0].id, VEHICLE_A);
   assert.deepEqual(result.targetForbiddenCounts, { auditLog: 0, subscriptionOrder: 0 });
+});
+
+test("whitelist cross-domain user foreign keys must resolve to the retained administrator", () => {
+  const mutations = [
+    (snapshot) => (snapshot.customer.customers[0].ownerUserId = "unretained-user"),
+    (snapshot) => (snapshot.catalog.productVersions[0].approvedBy = "unretained-user"),
+    (snapshot) => (snapshot.templates.contractVersions[0].approvedBy = "unretained-user"),
+    (snapshot) => (snapshot.templates.fileObjects[0].uploadedBy = "unretained-user"),
+    (snapshot) => (snapshot.vehicle.assetOwners[0].createdBy = "unretained-user"),
+    (snapshot) => (snapshot.vehicle.assetOwners[0].updatedBy = "unretained-user"),
+    (snapshot) => (snapshot.vehicle.vehicleOwnershipPeriods[0].startConfirmedBy = "unretained-user"),
+    (snapshot) => (snapshot.vehicle.vehicleOwnershipPeriods[0].endConfirmedBy = "unretained-user"),
+    (snapshot) => (snapshot.vehicle.vehicleOwnershipPeriods[0].createdBy = "unretained-user")
+  ];
+  for (const mutate of mutations) {
+    const snapshot = completeSnapshot();
+    mutate(snapshot);
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "WHITELIST_REFERENCE_NOT_CLOSED"));
+  }
+});
+
+test("cost ledger closes retained customer owner user and reversal endpoints and forbids historical FK domains", () => {
+  const baseline = classifyStage1CleanAcceptanceBaseline(completeSnapshot(), selection());
+  assert.equal(baseline.safeToApply, true);
+  assert.deepEqual(
+    baseline.rows.vehicle.vehicleCostLedgerEntries.map(({ id, reversalOfEntryId }) => ({ id, reversalOfEntryId })),
+    [
+      { id: "cost-ledger-1", reversalOfEntryId: null },
+      { id: "cost-ledger-2", reversalOfEntryId: "cost-ledger-1" }
+    ]
+  );
+
+  const mutations = [
+    (row) => (row.customerId = "unretained-customer"),
+    (row) => (row.assetOwnerId = "unretained-owner"),
+    (row) => (row.confirmedBy = "unretained-user"),
+    (row) => (row.reversalOfEntryId = "unretained-ledger"),
+    (row) => (row.orderId = "forbidden-order"),
+    (row) => (row.contractId = "forbidden-contract"),
+    (row) => (row.workOrderId = "forbidden-work-order"),
+    (row) => (row.evidenceId = "forbidden-evidence")
+  ];
+  for (const mutate of mutations) {
+    const snapshot = completeSnapshot();
+    mutate(snapshot.vehicle.vehicleCostLedgerEntries[0]);
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "WHITELIST_REFERENCE_NOT_CLOSED"));
+  }
 });
 
 test("classification retains the real Prisma catalog, customer, and vehicle whitelist closures losslessly", () => {
@@ -599,7 +681,21 @@ test("vehicle closure keeps each explicitly selected vehicle and its one-to-many
   snapshot.vehicle.vehicleSalePriceHistories.push({ id: "sale-price-2", vehicleId: VEHICLE_B });
   snapshot.vehicle.vehicleOwnershipPeriods.push({ assetOwnerId: "owner-1", endedAt: null, endReason: null, id: "ownership-2", startReason: "INITIAL_ACQUISITION", vehicleId: VEHICLE_B });
   snapshot.vehicle.vehicleAssetCostProfiles.push({ id: "cost-profile-2", vehicleId: VEHICLE_B });
-  snapshot.vehicle.vehicleCostLedgerEntries.push({ id: "cost-ledger-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleCostLedgerEntries.push({
+    assetOwnerId: "owner-1",
+    assetOwnerSnapshot: null,
+    confirmedBy: "admin-user",
+    contractId: null,
+    customerId: "customer-1",
+    evidenceId: null,
+    evidenceSnapshot: null,
+    id: "cost-ledger-3",
+    orderId: null,
+    responsibilitySnapshot: { responsibleParty: "PLATFORM" },
+    reversalOfEntryId: null,
+    vehicleId: VEHICLE_B,
+    workOrderId: null
+  });
 
   const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection([VEHICLE_A, VEHICLE_B]));
   assert.equal(result.safeToApply, true);
@@ -864,7 +960,7 @@ test("manifest rejects malformed context and classification and salts every publ
   assert.match(manifest.exceptions[0].subjectDigest, /^[0-9a-f]{64}$/);
   assert.notEqual(manifest.rowDigests.vehicle, classification.rowDigests.vehicle);
   assert.notEqual(manifest.exceptions[0].subjectDigest, "a".repeat(64));
-  assert.equal(manifest.rowDigests.vehicle, "a7fc09f4c2b882978d4165eb5b8b82a8e43501d2bb098f3ee2f5120fda9e6507");
+  assert.equal(manifest.rowDigests.vehicle, "da317e75b98bee2c83e5ff9759634314a70f90c1e3752035fd9f6e8283916a65");
   assert.equal(manifest.exceptions[0].subjectDigest, "dd881d6b5f32438dfc1e23709a232088240e855697d0d5baa0789e32fb27833e");
 });
 
@@ -907,7 +1003,7 @@ test("manifest canonicalizes object keys and arrays before producing a stable SH
   });
 
   assert.equal(hashStage1CleanAcceptanceManifest(manifest), hashStage1CleanAcceptanceManifest(shuffledManifest));
-  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "f7eb7e175149d17fb3f2f342ccaed15b2f7ae6ebd006778f27915d886c91464c");
+  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "2a95a812001be3c9f103c566ad2448cea6c530f4181e18073482e603bf8c74b3");
   assert.deepEqual(manifest.selection.vehicleDigests, [...manifest.selection.vehicleDigests].sort());
 });
 

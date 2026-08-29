@@ -71,7 +71,7 @@ async function execute(options) {
       });
     }, { isolationLevel: "Serializable" });
 
-    await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256);
+    await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256, options);
     return result("apply", options.approvedManifestSha256, total(manifest.counts), 1);
   }
 
@@ -79,7 +79,7 @@ async function execute(options) {
     await advisoryLock(tx);
     const lockedTarget = await readTargetWithinTransaction(tx);
     assertReplayForbiddenCounts(lockedTarget.snapshot);
-    const audit = await loadBaselineAudit(tx, options.approvedManifestSha256);
+    const audit = await loadBaselineAudit(tx, manifest, options.approvedManifestSha256, options);
     if (audit.length !== 1) fail("MANIFEST_STALE");
     const targetRows = await loadStage1CleanAcceptanceSourceSnapshot(
       tx,
@@ -94,7 +94,7 @@ async function execute(options) {
     assertApprovedManifest(replayClassification, replayContext, options.approvedManifestSha256);
   }, { isolationLevel: "Serializable" });
 
-  await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256);
+  await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256, options);
   return result("replay", options.approvedManifestSha256, 0, 0);
 }
 
@@ -119,12 +119,12 @@ export async function applyStage1CleanAcceptanceBaseline(tx, classification, con
   await insert(tx.customerAccount, customer.customerAccounts);
   await insert(tx.customerIdentity, customer.customerIdentities);
   await insert(tx.customerProfile, customer.customerProfiles);
-  await insert(tx.customerESignProviderAccount, customer.customerESignProviderAccounts);
+  await insert(tx.customerESignProviderAccount, customer.customerESignProviderAccounts, adaptCustomerESignProviderAccount);
 
   await insert(tx.depositRule, catalog.depositRules);
   await insert(tx.product, catalog.products);
   await insert(tx.productVersion, catalog.productVersions);
-  await insert(tx.vehicleModelDefinition, vehicle.vehicleModelDefinitions);
+  await insert(tx.vehicleModelDefinition, vehicle.vehicleModelDefinitions, adaptVehicleModelDefinition);
   await insert(tx.vehiclePackage, catalog.vehiclePackages);
   await insert(tx.vehiclePackageModelMember, catalog.vehiclePackageModelMembers);
   await insert(tx.mileagePackage, catalog.mileagePackages);
@@ -135,22 +135,22 @@ export async function applyStage1CleanAcceptanceBaseline(tx, classification, con
 
   await insert(tx.fileObject, templates.fileObjects);
   await insert(tx.contractVersion, templates.contractVersions);
-  await insert(tx.notificationTemplate, templates.notificationTemplates);
+  await insert(tx.notificationTemplate, templates.notificationTemplates, adaptNotificationTemplate);
 
-  await insert(tx.assetOwner, vehicle.assetOwners);
+  await insert(tx.assetOwner, vehicle.assetOwners, adaptAssetOwner);
   await insert(tx.vehicle, vehicle.vehicles);
-  await insert(tx.vehicleListingProfile, vehicle.vehicleListingProfiles);
+  await insert(tx.vehicleListingProfile, vehicle.vehicleListingProfiles, adaptVehicleListingProfile);
   await insert(tx.vehicleListingMedia, vehicle.vehicleListingMedia);
   await insert(tx.vehicleListingPlan, vehicle.vehicleListingPlans);
   await insert(tx.vehicleDocumentBatch, vehicle.vehicleDocumentBatches);
-  await insert(tx.vehicleInsurancePolicy, vehicle.vehicleInsurancePolicies);
+  await insert(tx.vehicleInsurancePolicy, vehicle.vehicleInsurancePolicies, adaptVehicleInsurancePolicy);
   await insert(tx.vehicleDocument, vehicle.vehicleDocuments);
   await insert(tx.vehicleInsuranceCoverage, vehicle.vehicleInsuranceCoverages);
   await insert(tx.vehicleListingSourceBinding, vehicle.vehicleListingSourceBindings);
   await insert(tx.vehicleSalePriceHistory, vehicle.vehicleSalePriceHistories);
-  await insert(tx.vehicleOwnershipPeriod, vehicle.vehicleOwnershipPeriods);
-  await insert(tx.vehicleAssetCostProfile, vehicle.vehicleAssetCostProfiles);
-  await insert(tx.vehicleCostLedgerEntry, vehicle.vehicleCostLedgerEntries);
+  await insert(tx.vehicleOwnershipPeriod, vehicle.vehicleOwnershipPeriods, adaptVehicleOwnershipPeriod);
+  await insert(tx.vehicleAssetCostProfile, vehicle.vehicleAssetCostProfiles, adaptVehicleAssetCostProfile);
+  await insert(tx.vehicleCostLedgerEntry, vehicle.vehicleCostLedgerEntries, adaptVehicleCostLedgerEntry);
 
   await tx.auditLog.create({
     data: {
@@ -162,7 +162,6 @@ export async function applyStage1CleanAcceptanceBaseline(tx, classification, con
         manifestSha256: context.manifestSha256,
         summary: "STAGE1_CLEAN_ACCEPTANCE_BASELINE"
       },
-      beforeSnapshot: null,
       entityId: null,
       entityType: "stage1_acceptance_baseline",
       module: "stage1_acceptance_baseline"
@@ -193,23 +192,49 @@ async function readTargetWithinTransaction(tx) {
   return { context: digestContext(databaseName, snapshot), snapshot };
 }
 
-async function verifyCommittedTarget(prisma, manifest, manifestSha256) {
+async function verifyCommittedTarget(prisma, manifest, manifestSha256, context) {
   await prisma.$transaction(async (tx) => {
     await readOnly(tx);
     const snapshot = await loadStage1CleanAcceptanceTargetSnapshot(tx);
     assertAllowedCounts(snapshot.tableCounts, manifest.counts);
     assertReplayForbiddenCounts(snapshot);
-    const audit = await loadBaselineAudit(tx, manifestSha256);
+    const audit = await loadBaselineAudit(tx, manifest, manifestSha256, context);
     if (audit.length !== 1) fail("MANIFEST_STALE");
   }, { isolationLevel: "RepeatableRead" });
 }
 
-async function loadBaselineAudit(tx, manifestSha256) {
+async function loadBaselineAudit(tx, manifest, manifestSha256, context) {
   const rows = await tx.auditLog.findMany({
-    select: { action: true, afterSnapshot: true, entityType: true },
-    where: { action: "CREATE", entityType: "stage1_acceptance_baseline" }
+    select: {
+      action: true,
+      afterSnapshot: true,
+      beforeSnapshot: true,
+      entityId: true,
+      entityType: true,
+      ipAddress: true,
+      module: true,
+      operatorId: true,
+      userAgent: true
+    }
   });
-  return rows.filter((row) => row?.afterSnapshot?.manifestSha256 === manifestSha256);
+  const expected = {
+    action: "CREATE",
+    afterSnapshot: {
+      counts: manifest.counts,
+      gitSha: context.gitSha,
+      imageRef: context.imageRef,
+      manifestSha256,
+      summary: "STAGE1_CLEAN_ACCEPTANCE_BASELINE"
+    },
+    beforeSnapshot: null,
+    entityId: null,
+    entityType: "stage1_acceptance_baseline",
+    ipAddress: null,
+    module: "stage1_acceptance_baseline",
+    operatorId: null,
+    userAgent: null
+  };
+  return rows.filter((row) => stableJson(row) === stableJson(expected));
 }
 
 function assertApprovedManifest(classification, context, approvedSha256) {
@@ -275,8 +300,81 @@ function assertAllowedCounts(actual, domainCounts) {
   if (total(actual) !== expectedTotal) fail("MANIFEST_STALE");
 }
 
-async function insert(delegate, rows) {
-  if (rows.length > 0) await delegate.createMany({ data: rows });
+async function insert(delegate, rows, adapt = identity) {
+  if (rows.length > 0) await delegate.createMany({ data: rows.map(adapt) });
+}
+
+function identity(row) {
+  return row;
+}
+
+function adaptCustomerESignProviderAccount(row) {
+  const { providerSnapshot, ...data } = row;
+  return providerSnapshot == null ? data : { ...data, providerSnapshot };
+}
+
+function adaptVehicleModelDefinition(row) {
+  const { snapshot, ...data } = row;
+  return snapshot == null ? data : { ...data, snapshot };
+}
+
+function adaptNotificationTemplate(row) {
+  const { providerConfig, variables, ...data } = row;
+  return {
+    ...data,
+    ...(variables == null ? {} : { variables }),
+    ...(providerConfig == null ? {} : { providerConfig })
+  };
+}
+
+function adaptAssetOwner(row) {
+  const { onboardingSnapshot, ...data } = row;
+  return onboardingSnapshot == null ? data : { ...data, onboardingSnapshot };
+}
+
+function adaptVehicleListingProfile(row) {
+  const { customerTags, faqSnapshot, sellingPoints, serviceHighlights, ...data } = row;
+  return {
+    ...data,
+    ...(sellingPoints == null ? {} : { sellingPoints }),
+    ...(customerTags == null ? {} : { customerTags }),
+    ...(serviceHighlights == null ? {} : { serviceHighlights }),
+    ...(faqSnapshot == null ? {} : { faqSnapshot })
+  };
+}
+
+function adaptVehicleInsurancePolicy(row) {
+  const { snapshot, ...data } = row;
+  return snapshot == null ? data : { ...data, snapshot };
+}
+
+function adaptVehicleOwnershipPeriod(row) {
+  const { endSnapshot, startSnapshot, ...data } = row;
+  return {
+    ...data,
+    startSnapshot: requiredJson(startSnapshot),
+    ...(endSnapshot == null ? {} : { endSnapshot })
+  };
+}
+
+function adaptVehicleAssetCostProfile(row) {
+  const { snapshot, ...data } = row;
+  return snapshot == null ? data : { ...data, snapshot };
+}
+
+function adaptVehicleCostLedgerEntry(row) {
+  const { assetOwnerSnapshot, evidenceSnapshot, responsibilitySnapshot, ...data } = row;
+  return {
+    ...data,
+    responsibilitySnapshot: requiredJson(responsibilitySnapshot),
+    ...(assetOwnerSnapshot == null ? {} : { assetOwnerSnapshot }),
+    ...(evidenceSnapshot == null ? {} : { evidenceSnapshot })
+  };
+}
+
+function requiredJson(value) {
+  if (value === null || value === undefined) fail("MANIFEST_CLASSIFICATION_INVALID");
+  return value;
 }
 
 async function readOnly(tx) {

@@ -49,7 +49,8 @@ const STABLE_ERROR_CODES = new Set([
   "VEHICLE_ID_INVALID",
   "VEHICLE_NOT_ELIGIBLE",
   "VEHICLE_REFERENCE_NOT_CLOSED",
-  "VEHICLE_SELECTION_REQUIRED"
+  "VEHICLE_SELECTION_REQUIRED",
+  "WHITELIST_REFERENCE_NOT_CLOSED"
 ]);
 const STABLE_EXCEPTION_DOMAINS = new Set([
   "access",
@@ -133,6 +134,9 @@ export function classifyStage1CleanAcceptanceBaseline(snapshot = {}, inputSelect
   classifyTarget(snapshot.target, targetCountEvidence, exceptions);
 
   const rows = { access, customer, catalog, templates, vehicle };
+  if (!whitelistReferencesClosed(rows)) {
+    exception(exceptions, "WHITELIST_REFERENCE_NOT_CLOSED", "manifest", "whitelist-references");
+  }
   const counts = Object.fromEntries(
     Object.entries(rows).map(([domain, value]) => [domain, countRows(value)])
   );
@@ -604,6 +608,76 @@ function completeMenuParentChains(menus) {
     }
   }
   return true;
+}
+
+function whitelistReferencesClosed(rows) {
+  const { access, customer, catalog, templates, vehicle } = rows;
+  const one = (items, id) => nonEmpty(id) && array(items).filter((row) => row?.id === id).length === 1;
+  const optional = (items, id) => id == null || one(items, id);
+  const every = (items, predicate) => array(items).every(predicate);
+
+  return (
+    every(access.menus, (row) => optional(access.menus, row.parentId)) &&
+    every(access.rolePermissions, (row) => one(access.roles, row.roleId) && one(access.permissions, row.permissionId)) &&
+    every(access.roleMenus, (row) => one(access.roles, row.roleId) && one(access.menus, row.menuId)) &&
+    every(access.userRoles, (row) => one(access.users, row.userId) && one(access.roles, row.roleId)) &&
+
+    every(customer.customers, (row) => optional(access.users, row.ownerUserId)) &&
+    every(customer.customerAccounts, (row) => one(customer.customers, row.customerId)) &&
+    every(customer.customerIdentities, (row) => one(customer.customers, row.customerId)) &&
+    every(customer.customerProfiles, (row) => one(customer.customers, row.customerId)) &&
+    every(customer.customerESignProviderAccounts, (row) => one(customer.customers, row.customerId)) &&
+
+    every(catalog.productVersions, (row) => one(catalog.products, row.productId) && optional(access.users, row.approvedBy)) &&
+    every(catalog.vehiclePackages, (row) => one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId) && one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)) &&
+    every(catalog.vehiclePackageModelMembers, (row) => one(catalog.vehiclePackages, row.vehiclePackageId) && one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)) &&
+    every(catalog.mileagePackages, (row) => one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId)) &&
+    every(catalog.energyPackages, (row) => one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId)) &&
+    every(catalog.benefitPackages, (row) => one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId)) &&
+    every(catalog.subscriptionPlans, (row) =>
+      one(catalog.products, row.productId) &&
+      one(catalog.productVersions, row.productVersionId) &&
+      one(catalog.vehiclePackages, row.vehiclePackageId) &&
+      one(catalog.mileagePackages, row.mileagePackageId) &&
+      one(catalog.energyPackages, row.energyPackageId) &&
+      optional(catalog.benefitPackages, row.benefitPackageId)
+    ) &&
+    every(catalog.productPriceRules, (row) => one(catalog.productVersions, row.productVersionId) && one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)) &&
+
+    every(templates.fileObjects, (row) => optional(access.users, row.uploadedBy)) &&
+    every(templates.contractVersions, (row) => one(templates.fileObjects, row.fileId) && optional(access.users, row.approvedBy)) &&
+
+    every(vehicle.assetOwners, (row) => optional(access.users, row.createdBy) && optional(access.users, row.updatedBy)) &&
+    every(vehicle.vehicles, (row) => one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)) &&
+    every(vehicle.vehicleListingProfiles, (row) => one(vehicle.vehicles, row.vehicleId)) &&
+    every(vehicle.vehicleListingMedia, (row) => one(vehicle.vehicles, row.vehicleId) && optional(vehicle.vehicleListingProfiles, row.listingProfileId)) &&
+    every(vehicle.vehicleListingPlans, (row) => one(vehicle.vehicles, row.vehicleId) && optional(vehicle.vehicleListingProfiles, row.listingProfileId) && one(catalog.subscriptionPlans, row.subscriptionPlanId)) &&
+    every(vehicle.vehicleDocumentBatches, (row) => one(vehicle.vehicles, row.vehicleId)) &&
+    every(vehicle.vehicleInsurancePolicies, (row) => one(vehicle.vehicles, row.vehicleId)) &&
+    every(vehicle.vehicleDocuments, (row) => one(vehicle.vehicles, row.vehicleId) && optional(vehicle.vehicleDocumentBatches, row.batchId) && optional(vehicle.vehicleInsurancePolicies, row.policyId)) &&
+    every(vehicle.vehicleInsuranceCoverages, (row) => one(vehicle.vehicleInsurancePolicies, row.policyId)) &&
+    every(vehicle.vehicleListingSourceBindings, (row) => one(vehicle.vehicles, row.vehicleId) && one(vehicle.vehicleDocuments, row.documentId)) &&
+    every(vehicle.vehicleSalePriceHistories, (row) => one(vehicle.vehicles, row.vehicleId)) &&
+    every(vehicle.vehicleOwnershipPeriods, (row) =>
+      one(vehicle.vehicles, row.vehicleId) &&
+      one(vehicle.assetOwners, row.assetOwnerId) &&
+      optional(access.users, row.startConfirmedBy) &&
+      optional(access.users, row.endConfirmedBy) &&
+      optional(access.users, row.createdBy)
+    ) &&
+    every(vehicle.vehicleAssetCostProfiles, (row) => one(vehicle.vehicles, row.vehicleId)) &&
+    every(vehicle.vehicleCostLedgerEntries, (row) =>
+      one(vehicle.vehicles, row.vehicleId) &&
+      row.orderId == null &&
+      row.contractId == null &&
+      optional(customer.customers, row.customerId) &&
+      optional(vehicle.assetOwners, row.assetOwnerId) &&
+      row.workOrderId == null &&
+      row.evidenceId == null &&
+      one(access.users, row.confirmedBy) &&
+      optional(vehicle.vehicleCostLedgerEntries, row.reversalOfEntryId)
+    )
+  );
 }
 
 function catalogModelDefinitionIds(catalog = {}) {

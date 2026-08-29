@@ -118,7 +118,8 @@ test("apply serializes, writes parents before children, preserves scalars, and e
       "fileObject", "contractVersion", "notificationTemplate", "assetOwner", "vehicle",
       "vehicleListingProfile", "vehicleListingMedia", "vehicleListingPlan",
       "vehicleDocumentBatch", "vehicleInsurancePolicy", "vehicleDocument", "vehicleInsuranceCoverage",
-      "vehicleListingSourceBinding", "vehicleSalePriceHistory", "vehicleOwnershipPeriod", "auditLog"
+      "vehicleListingSourceBinding", "vehicleSalePriceHistory", "vehicleOwnershipPeriod",
+      "vehicleAssetCostProfile", "vehicleCostLedgerEntry", "auditLog"
     ]);
     assert.equal(target.rows.user[0].id, "admin-user");
     assert.equal(target.rows.user[0].passwordHash, "argon2-secret-hash");
@@ -133,6 +134,24 @@ test("apply serializes, writes parents before children, preserves scalars, and e
     assert.equal(JSON.stringify(result).includes("passwordHash"), false);
     assert.equal(JSON.stringify(result).includes("rowDigests"), false);
     assert.equal(JSON.stringify(result).includes(HASH_SALT), false);
+    const jsonWrites = Object.fromEntries(
+      writeTx.calls
+        .filter((call) => call.operation === "createMany")
+        .map((call) => [call.delegate, call.data])
+    );
+    assert.equal(Object.hasOwn(jsonWrites.customerESignProviderAccount[0], "providerSnapshot"), false);
+    assert.equal(Object.hasOwn(jsonWrites.notificationTemplate[0], "variables"), false);
+    assert.deepEqual(jsonWrites.notificationTemplate[0].providerConfig, { provider: "test" });
+    assert.equal(Object.hasOwn(jsonWrites.assetOwner[0], "onboardingSnapshot"), false);
+    assert.equal(Object.hasOwn(jsonWrites.vehicleListingProfile[0], "sellingPoints"), false);
+    assert.deepEqual(jsonWrites.vehicleListingProfile[0].serviceHighlights, { roadside: true });
+    assert.equal(Object.hasOwn(jsonWrites.vehicleInsurancePolicy[0], "snapshot"), false);
+    assert.deepEqual(jsonWrites.vehicleOwnershipPeriod[0].startSnapshot, { ownerId: "owner-1" });
+    assert.equal(Object.hasOwn(jsonWrites.vehicleOwnershipPeriod[0], "endSnapshot"), false);
+    assert.equal(Object.hasOwn(jsonWrites.vehicleAssetCostProfile[0], "snapshot"), false);
+    assert.equal(Object.hasOwn(jsonWrites.vehicleCostLedgerEntry[0], "assetOwnerSnapshot"), false);
+    assert.equal(Object.hasOwn(jsonWrites.vehicleCostLedgerEntry[0], "evidenceSnapshot"), false);
+    assert.deepEqual(jsonWrites.vehicleCostLedgerEntry[0].responsibilitySnapshot, { party: "PLATFORM" });
     assert.deepEqual(result, {
       auditCreated: 1,
       deleted: 0,
@@ -178,6 +197,51 @@ test("replay proves the approved target without any writer or repair call", asyn
       (error) => error?.message === "MANIFEST_STALE"
     );
     assert.equal(target.calls.some((call) => ["update", "upsert", "delete"].includes(call.operation)), false);
+  } finally {
+    restoreEnv(previous);
+  }
+});
+
+test("replay rejects any one-field mutation of the unique baseline audit contract", async () => {
+  const source = createDatabaseFake("subscription_saas_staging", sourceRows());
+  const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});
+  const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+  const previous = process.env[APPLY_ENV];
+  process.env[APPLY_ENV] = "1";
+  try {
+    await executeStage1CleanAcceptanceBaseline({
+      ...baseOptions("apply", source, target), approvedManifest: dry.manifest,
+      approvedManifestSha256: dry.manifestSha256
+    });
+    const pristine = structuredClone(target.rows.auditLog[0]);
+    const mutations = [
+      (row) => (row.module = "other"),
+      (row) => (row.entityType = "other"),
+      (row) => (row.action = "UPDATE"),
+      (row) => (row.entityId = "11111111-1111-4111-8111-111111111111"),
+      (row) => (row.operatorId = "22222222-2222-4222-8222-222222222222"),
+      (row) => (row.ipAddress = "127.0.0.1"),
+      (row) => (row.userAgent = "tampered"),
+      (row) => (row.beforeSnapshot = {}),
+      (row) => (row.afterSnapshot.counts = { ...row.afterSnapshot.counts, access: 999 }),
+      (row) => (row.afterSnapshot.gitSha = "f".repeat(40)),
+      (row) => (row.afterSnapshot.imageRef = `other@sha256:${"f".repeat(64)}`),
+      (row) => (row.afterSnapshot.summary = "other"),
+      (row) => (row.afterSnapshot.extra = true),
+      (row) => delete row.afterSnapshot.counts
+    ];
+    for (const mutate of mutations) {
+      target.rows.auditLog[0] = structuredClone(pristine);
+      mutate(target.rows.auditLog[0]);
+      await assert.rejects(
+        executeStage1CleanAcceptanceBaseline({
+          ...baseOptions("replay", source, target), approvedManifest: dry.manifest,
+          approvedManifestSha256: dry.manifestSha256
+        }),
+        (error) => error?.message === "MANIFEST_STALE"
+      );
+    }
+    target.rows.auditLog[0] = pristine;
   } finally {
     restoreEnv(previous);
   }
@@ -252,11 +316,11 @@ function sourceRows() {
     customerAccount: [{ id: "account-1", customerId: "customer-1", phone: "18616570212", accountStatus: "ACTIVE", deletedAt: null }],
     customerIdentity: [{ id: "identity-1", customerId: "customer-1", deletedAt: null }],
     customerProfile: [{ id: "profile-1", customerId: "customer-1", deletedAt: null }],
-    customerESignProviderAccount: [{ id: "esign-1", customerId: "customer-1", providerOpenId: "open-1", registrationStatus: "REGISTERED", realNameStatus: "VERIFIED", certBindingStatus: "BOUND", deletedAt: null }],
+    customerESignProviderAccount: [{ id: "esign-1", customerId: "customer-1", providerOpenId: "open-1", providerSnapshot: null, registrationStatus: "REGISTERED", realNameStatus: "VERIFIED", certBindingStatus: "BOUND", deletedAt: null }],
     depositRule: [{ id: "deposit-1", grade: "A", status: "ACTIVE", effectiveFrom: at, effectiveTo: null, deletedAt: null }],
     product: [{ id: "product-1", productNo: "P1", productType: "SUBSCRIPTION", status: "ACTIVE", deletedAt: null }],
     productVersion: [{ id: "version-1", productId: "product-1", versionNo: "1", status: "ACTIVE", deletedAt: null }],
-    vehicleModelDefinition: [model],
+    vehicleModelDefinition: [{ ...model, snapshot: null }],
     vehiclePackage: [{ id: "vehicle-package-1", productId: "product-1", productVersionId: "version-1", modelDefinitionId: "model-1", status: "ACTIVE", deletedAt: null }],
     vehiclePackageModelMember: [{ id: "member-1", vehiclePackageId: "vehicle-package-1", modelDefinitionId: "model-1" }],
     mileagePackage: [{ id: "mileage-1", productId: "product-1", productVersionId: "version-1", status: "ACTIVE", deletedAt: null }],
@@ -266,20 +330,24 @@ function sourceRows() {
     productPriceRule: [{ id: "price-1", productVersionId: "version-1", modelDefinitionId: "model-1", status: "ACTIVE", deletedAt: null }],
     fileObject: ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER", "SUBSCRIPTION_EXTENSION"].map((type, index) => ({ id: `file-${index}`, bucket: "contracts", objectKey: `${type}.pdf`, originalName: `${type}.pdf`, mimeType: "application/pdf", sizeBytes: 10n, contentSha256: "a".repeat(64), createdAt: at })),
     contractVersion: ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER", "SUBSCRIPTION_EXTENSION"].map((type, index) => ({ id: `contract-version-${index}`, templateType: type, templateName: type, businessType: "SUBSCRIPTION", fileId: `file-${index}`, approvedBy: "admin-user", approvedAt: at, effectiveFrom: at, effectiveTo: null, status: "ACTIVE", deletedAt: null })),
-    notificationTemplate: NOTIFICATION_CODES.map((code, index) => ({ id: `notification-${index}`, templateCode: code, templateStatus: "ACTIVE", deletedAt: null })),
-    assetOwner: [{ id: "owner-1", ownerNo: "OWNER-1", status: "ACTIVE" }],
+    notificationTemplate: NOTIFICATION_CODES.map((code, index) => ({ id: `notification-${index}`, templateCode: code, templateStatus: "ACTIVE", variables: null, providerConfig: index === 0 ? { provider: "test" } : null, deletedAt: null })),
+    assetOwner: [{ id: "owner-1", ownerNo: "OWNER-1", status: "ACTIVE", onboardingSnapshot: null, createdBy: "admin-user", updatedBy: "admin-user" }],
     vehicle: [{ id: VEHICLE_ID, vehicleNo: "VEH-1", modelDefinitionId: "model-1", currentSalePriceAmount: 100000n, salePriceStatus: "EFFECTIVE", status: "AVAILABLE", createdAt: at, updatedAt: at, deletedAt: null }],
-    vehicleListingProfile: [{ id: "listing-1", vehicleId: VEHICLE_ID, listingStatus: "PUBLISHED", portalVisible: true, deletedAt: null }],
+    vehicleListingProfile: [{ id: "listing-1", vehicleId: VEHICLE_ID, listingStatus: "PUBLISHED", portalVisible: true, sellingPoints: null, customerTags: null, serviceHighlights: { roadside: true }, faqSnapshot: null, deletedAt: null }],
     vehicleListingMedia: [{ id: "media-1", vehicleId: VEHICLE_ID, listingProfileId: "listing-1", deletedAt: null }],
     vehicleListingPlan: [{ id: "listing-plan-1", vehicleId: VEHICLE_ID, listingProfileId: "listing-1", subscriptionPlanId: "plan-1", deletedAt: null }],
     vehicleDocumentBatch: [{ id: "batch-1", vehicleId: VEHICLE_ID }],
-    vehicleInsurancePolicy: [{ id: "policy-1", vehicleId: VEHICLE_ID, deletedAt: null }],
+    vehicleInsurancePolicy: [{ id: "policy-1", vehicleId: VEHICLE_ID, snapshot: null, deletedAt: null }],
     vehicleDocument: [{ id: "document-1", vehicleId: VEHICLE_ID, batchId: "batch-1", policyId: "policy-1", deletedAt: null }],
     vehicleInsuranceCoverage: [{ id: "coverage-1", policyId: "policy-1", deletedAt: null }],
     vehicleListingSourceBinding: [{ id: "binding-1", vehicleId: VEHICLE_ID, documentId: "document-1" }],
     vehicleSalePriceHistory: [{ id: "sale-1", vehicleId: VEHICLE_ID }],
-    vehicleOwnershipPeriod: [{ id: "ownership-1", vehicleId: VEHICLE_ID, assetOwnerId: "owner-1", endedAt: null }],
-    vehicleAssetCostProfile: [], vehicleCostLedgerEntry: []
+    vehicleOwnershipPeriod: [{ id: "ownership-1", vehicleId: VEHICLE_ID, assetOwnerId: "owner-1", startSnapshot: { ownerId: "owner-1" }, endSnapshot: null, startConfirmedBy: "admin-user", endConfirmedBy: null, createdBy: "admin-user", endedAt: null }],
+    vehicleAssetCostProfile: [{ id: "cost-profile-1", vehicleId: VEHICLE_ID, profileStatus: "ACTIVE", snapshot: null, deletedAt: null }],
+    vehicleCostLedgerEntry: [
+      { id: "ledger-1", vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: "customer-1", assetOwnerId: "owner-1", workOrderId: null, evidenceId: null, assetOwnerSnapshot: null, evidenceSnapshot: null, responsibilitySnapshot: { party: "PLATFORM" }, confirmedBy: "admin-user", reversalOfEntryId: null },
+      { id: "ledger-2", vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: null, assetOwnerId: "owner-1", workOrderId: null, evidenceId: null, assetOwnerSnapshot: { ownerNo: "OWNER-1" }, evidenceSnapshot: { reason: "reversal" }, responsibilitySnapshot: { party: "PLATFORM" }, confirmedBy: "admin-user", reversalOfEntryId: "ledger-1" }
+    ]
   };
   return rows;
 }
@@ -361,13 +429,23 @@ function createClient(getRows, calls, options) {
         async createMany({ data }) {
           calls.push({ data: structuredClone(data), delegate: property, operation: "createMany" });
           if (options.failCreateMany === property) throw new Error(`injected ${property} failure`);
-          getRows()[property] = [...(getRows()[property] ?? []), ...structuredClone(data)];
+          for (const row of data) validateFakeCreateInput(property, row, getRows(), data);
+          getRows()[property] = [
+            ...(getRows()[property] ?? []),
+            ...data.map((row) => normalizeFakeStoredRow(property, row))
+          ];
           return { count: data.length };
         },
         async create({ data }) {
           calls.push({ data: structuredClone(data), delegate: property, operation: "create" });
-          getRows()[property] = [...(getRows()[property] ?? []), structuredClone(data)];
-          return structuredClone(data);
+          if (property === "auditLog" && Object.hasOwn(data, "beforeSnapshot")) {
+            throw new TypeError("AuditLog.beforeSnapshot must be omitted for database null");
+          }
+          const stored = property === "auditLog"
+            ? { entityId: null, operatorId: null, ipAddress: null, userAgent: null, beforeSnapshot: null, ...structuredClone(data) }
+            : structuredClone(data);
+          getRows()[property] = [...(getRows()[property] ?? []), stored];
+          return structuredClone(stored);
         },
         async update() { calls.push({ delegate: property, operation: "update" }); },
         async upsert() { calls.push({ delegate: property, operation: "upsert" }); },
@@ -375,6 +453,65 @@ function createClient(getRows, calls, options) {
       };
     }
   });
+}
+
+function validateFakeCreateInput(delegate, row, rows, batch) {
+  const nullableJsonFields = {
+    assetOwner: ["onboardingSnapshot"],
+    customerESignProviderAccount: ["providerSnapshot"],
+    notificationTemplate: ["variables", "providerConfig"],
+    vehicleAssetCostProfile: ["snapshot"],
+    vehicleCostLedgerEntry: ["assetOwnerSnapshot", "evidenceSnapshot"],
+    vehicleInsurancePolicy: ["snapshot"],
+    vehicleListingProfile: ["sellingPoints", "customerTags", "serviceHighlights", "faqSnapshot"],
+    vehicleModelDefinition: ["snapshot"],
+    vehicleOwnershipPeriod: ["endSnapshot"]
+  }[delegate] ?? [];
+  for (const field of nullableJsonFields) {
+    if (Object.hasOwn(row, field) && row[field] === null) {
+      throw new TypeError(`${delegate}.${field} top-level null is not a Prisma JSON create input`);
+    }
+  }
+  const requiredJsonFields = {
+    vehicleCostLedgerEntry: ["responsibilitySnapshot"],
+    vehicleOwnershipPeriod: ["startSnapshot"]
+  }[delegate] ?? [];
+  for (const field of requiredJsonFields) {
+    if (row[field] === null || row[field] === undefined) throw new TypeError(`${delegate}.${field} is required`);
+  }
+
+  const has = (target, id) => (rows[target] ?? []).some((item) => item.id === id);
+  const optional = (target, id) => id == null || has(target, id);
+  if (delegate === "productVersion" && !optional("user", row.approvedBy)) throw new Error("dangling ProductVersion.approvedBy");
+  if (delegate === "contractVersion" && !optional("user", row.approvedBy)) throw new Error("dangling ContractVersion.approvedBy");
+  if (delegate === "vehicleListingSourceBinding" && !has("vehicleDocument", row.documentId)) throw new Error("dangling binding document");
+  if (delegate === "vehicleCostLedgerEntry") {
+    const ledgerIds = new Set([...(rows.vehicleCostLedgerEntry ?? []).map(({ id }) => id), ...batch.map(({ id }) => id)]);
+    if (!has("vehicle", row.vehicleId) || !optional("customer", row.customerId) || !optional("assetOwner", row.assetOwnerId) ||
+        !has("user", row.confirmedBy) || (row.reversalOfEntryId != null && !ledgerIds.has(row.reversalOfEntryId)) ||
+        [row.orderId, row.contractId, row.workOrderId, row.evidenceId].some((value) => value != null)) {
+      throw new Error("dangling cost ledger endpoint");
+    }
+  }
+}
+
+function normalizeFakeStoredRow(delegate, row) {
+  const stored = structuredClone(row);
+  const nullableJsonFields = {
+    assetOwner: ["onboardingSnapshot"],
+    customerESignProviderAccount: ["providerSnapshot"],
+    notificationTemplate: ["variables", "providerConfig"],
+    vehicleAssetCostProfile: ["snapshot"],
+    vehicleCostLedgerEntry: ["assetOwnerSnapshot", "evidenceSnapshot"],
+    vehicleInsurancePolicy: ["snapshot"],
+    vehicleListingProfile: ["sellingPoints", "customerTags", "serviceHighlights", "faqSnapshot"],
+    vehicleModelDefinition: ["snapshot"],
+    vehicleOwnershipPeriod: ["endSnapshot"]
+  }[delegate] ?? [];
+  for (const field of nullableJsonFields) {
+    if (!Object.hasOwn(stored, field)) stored[field] = null;
+  }
+  return stored;
 }
 
 function isWrite(call) {

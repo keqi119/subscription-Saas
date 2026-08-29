@@ -5,6 +5,60 @@ const CUSTOMER_PHONE = "18616570212";
 const SOURCE_DATABASE_NAME = "subscription_saas_staging";
 const TARGET_DATABASE_NAME = /^subscription_saas_staging_acceptance_[a-z0-9_]+$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const GIT_SHA = /^[0-9a-f]{40}$/;
+const IMAGE_REF = /^.+@sha256:[0-9a-f]{64}$/;
+const STABLE_ERROR_CODES = new Set([
+  "ADMIN_AMBIGUOUS",
+  "ADMIN_NOT_FOUND",
+  "ADMIN_ROLE_INCOMPLETE",
+  "CATALOG_ACTIVE_SET_EMPTY",
+  "CATALOG_REFERENCE_NOT_CLOSED",
+  "CONTRACT_TEMPLATE_AMBIGUOUS",
+  "CONTRACT_TEMPLATE_FILE_INVALID",
+  "CONTRACT_TEMPLATE_REQUIRED",
+  "CUSTOMER_AMBIGUOUS",
+  "CUSTOMER_ESIGN_BINDING_INVALID",
+  "CUSTOMER_NOT_FOUND",
+  "DATABASE_ALLOWED_HOSTNAME_REQUIRED",
+  "DATABASE_HOSTNAME_MISMATCH",
+  "DATABASE_HOSTNAME_NOT_ALLOWED",
+  "DATABASE_IDENTITY_INVALID",
+  "DATABASE_PAIR_SAME_DATABASE",
+  "DATABASE_PORT_MISMATCH",
+  "DATABASE_PROTOCOL_MISMATCH",
+  "DATABASE_TLS_POLICY_MISMATCH",
+  "DATABASE_USERNAME_MISMATCH",
+  "FORBIDDEN_DOMAIN_NOT_EMPTY",
+  "IDENTITY_SELECTION_NOT_ALLOWED",
+  "MANIFEST_CLASSIFICATION_INVALID",
+  "MANIFEST_CONTEXT_INVALID",
+  "MANIFEST_STALE",
+  "NOTIFICATION_TEMPLATE_REQUIRED",
+  "SOURCE_DATABASE_NOT_ALLOWED",
+  "STAGE1_ACCEPTANCE_ERROR",
+  "TARGET_COUNT_EVIDENCE_INVALID",
+  "TARGET_DATABASE_NOT_ALLOWED",
+  "TARGET_NOT_EMPTY",
+  "TARGET_SCHEMA_NOT_CANONICAL",
+  "VEHICLE_ID_INVALID",
+  "VEHICLE_NOT_ELIGIBLE",
+  "VEHICLE_REFERENCE_NOT_CLOSED",
+  "VEHICLE_SELECTION_REQUIRED"
+]);
+const STABLE_EXCEPTION_DOMAINS = new Set([
+  "access",
+  "catalog",
+  "customer",
+  "database",
+  "manifest",
+  "selection",
+  "target",
+  "templates",
+  "unknown",
+  "vehicle"
+]);
+const CLASSIFICATION_DOMAINS = ["access", "customer", "catalog", "templates", "vehicle"];
 
 export function parseStage1CleanAcceptanceSelection(input = {}) {
   if (input.adminUsername !== ADMIN_USERNAME || input.customerPhone !== CUSTOMER_PHONE) {
@@ -69,8 +123,9 @@ export function classifyStage1CleanAcceptanceBaseline(snapshot = {}, inputSelect
   const catalog = classifyCatalog(snapshot.catalog, exceptions);
   const templates = classifyTemplates(snapshot.templates, exceptions);
   const vehicle = classifyVehicle(snapshot.vehicle, selection, exceptions);
-  const targetForbiddenCounts = canonical(snapshot.target?.forbiddenCounts ?? {});
-  classifyTarget(snapshot.target, targetForbiddenCounts, exceptions);
+  const targetCountEvidence = copyTargetCountEvidence(snapshot.target);
+  const targetForbiddenCounts = canonical(targetCountEvidence.forbiddenCounts ?? {});
+  classifyTarget(snapshot.target, targetCountEvidence, exceptions);
 
   const rows = { access, customer, catalog, templates, vehicle };
   const counts = Object.fromEntries(
@@ -88,12 +143,14 @@ export function classifyStage1CleanAcceptanceBaseline(snapshot = {}, inputSelect
     counts,
     rowDigests,
     exceptions: sortedExceptions,
-    targetForbiddenCounts
+    targetForbiddenCounts,
+    targetCountEvidence
   };
 }
 
 export function buildStage1CleanAcceptanceManifest(classification, context = {}) {
   requireContext(context);
+  requireClassification(classification);
   const selection = parseStage1CleanAcceptanceSelection(classification?.selection);
   return canonical({
     schemaVersion: 1,
@@ -110,8 +167,8 @@ export function buildStage1CleanAcceptanceManifest(classification, context = {})
         .sort()
     },
     counts: classification.counts ?? {},
-    rowDigests: classification.rowDigests ?? {},
-    exceptions: array(classification.exceptions).map(redactException),
+    rowDigests: buildManifestRowDigests(classification.rows, context.hashSalt),
+    exceptions: array(classification.exceptions).map((value) => redactException(value, context.hashSalt)),
     safeToApply: isStage1CleanAcceptanceBaselineSafe(classification),
     generatedAt: context.generatedAt,
     hashSalt: context.hashSalt
@@ -126,13 +183,16 @@ export function isStage1CleanAcceptanceBaselineSafe(classification = {}) {
   return (
     classification.safeToApply === true &&
     array(classification.exceptions).length === 0 &&
-    allZero(classification.targetForbiddenCounts ?? {})
+    validTargetCountEvidence(classification.targetCountEvidence) &&
+    sameCounts(classification.targetForbiddenCounts, classification.targetCountEvidence.forbiddenCounts) &&
+    allZero(classification.targetCountEvidence.forbiddenCounts) &&
+    allZero(classification.targetCountEvidence.tableCounts)
   );
 }
 
 export function redactStage1CleanAcceptanceError(error) {
   const code = typeof error?.code === "string" ? error.code : typeof error?.message === "string" ? error.message : "STAGE1_ACCEPTANCE_ERROR";
-  return { code: /^[A-Z0-9_]+$/.test(code) ? code : "STAGE1_ACCEPTANCE_ERROR" };
+  return { code: stableCode(code) };
 }
 
 function classifyAccess(access = {}, selection, exceptions) {
@@ -202,46 +262,96 @@ function classifyCatalog(catalog = {}, exceptions) {
 
 function classifyTemplates(templates = {}, exceptions) {
   const contractVersions = active(array(templates.contractVersions));
-  const fileObjects = array(templates.fileObjects);
+  const allFileObjects = array(templates.fileObjects);
   const notificationTemplates = active(array(templates.notificationTemplates));
-  const duplicate = new Set();
-  for (const row of contractVersions) {
-    if (duplicate.has(row.templateCode)) exception(exceptions, "CONTRACT_TEMPLATE_AMBIGUOUS", "templates", row.templateCode);
-    duplicate.add(row.templateCode);
-    const file = fileObjects.find((item) => item.id === row.fileId);
-    if (!file || file.mimeType !== "application/pdf" || !nonEmpty(file.objectKey) || !positive(file.sizeBytes)) {
-      exception(exceptions, "CONTRACT_TEMPLATE_FILE_INVALID", "templates", row.id);
-    }
+  const requiredContractCodes = requiredCodes(templates.requiredContractTemplateCodes);
+  const requiredNotificationCodes = requiredCodes(templates.requiredNotificationTemplateCodes);
+  const selectedContractVersions = [];
+  const selectedFiles = [];
+  const selectedNotifications = [];
+  if (requiredContractCodes.length === 0) {
+    exception(exceptions, "CONTRACT_TEMPLATE_REQUIRED", "templates", "required-contract-codes");
   }
-  return sortRows({ contractVersions, fileObjects: fileObjects.filter((file) => contractVersions.some((row) => row.fileId === file.id)), notificationTemplates });
+  if (requiredNotificationCodes.length === 0) {
+    exception(exceptions, "NOTIFICATION_TEMPLATE_REQUIRED", "templates", "required-notification-codes");
+  }
+  for (const code of requiredContractCodes) {
+    const versions = contractVersions.filter((row) => row.templateCode === code);
+    if (versions.length !== 1) {
+      exception(
+        exceptions,
+        versions.length > 1 ? "CONTRACT_TEMPLATE_AMBIGUOUS" : "CONTRACT_TEMPLATE_REQUIRED",
+        "templates",
+        code
+      );
+      continue;
+    }
+    const row = versions[0];
+    const files = allFileObjects.filter((item) => item?.id === row.fileId);
+    if (files.length !== 1 || !active(files).length || !validPdfFile(files[0])) {
+      exception(exceptions, "CONTRACT_TEMPLATE_FILE_INVALID", "templates", row.id);
+      continue;
+    }
+    selectedContractVersions.push(row);
+    selectedFiles.push(files[0]);
+  }
+  for (const code of requiredNotificationCodes) {
+    const notifications = notificationTemplates.filter((row) => row.code === code);
+    if (notifications.length !== 1) {
+      exception(exceptions, "NOTIFICATION_TEMPLATE_REQUIRED", "templates", code);
+      continue;
+    }
+    selectedNotifications.push(notifications[0]);
+  }
+  return sortRows({
+    contractVersions: selectedContractVersions,
+    fileObjects: selectedFiles,
+    notificationTemplates: selectedNotifications
+  });
 }
 
 function classifyVehicle(vehicle = {}, selection, exceptions) {
+  const closure = {
+    assetOwners: [],
+    vehicleListingProfiles: [],
+    vehicleModelDefinitions: [],
+    vehicles: []
+  };
   if (selection.vehicleIds.length === 0) {
     exception(exceptions, "VEHICLE_SELECTION_REQUIRED", "vehicle", "selection");
-    return [];
+    return closure;
   }
   const vehicles = array(vehicle.vehicles);
-  const selected = [];
   for (const vehicleId of selection.vehicleIds) {
-    const item = vehicles.find((row) => row.id === vehicleId);
-    if (!item || item.status !== "AVAILABLE" || item.deletedAt != null) {
+    const matches = vehicles.filter((row) => row?.id === vehicleId);
+    if (matches.length !== 1 || matches[0].status !== "AVAILABLE" || matches[0].deletedAt != null) {
       exception(exceptions, "VEHICLE_NOT_ELIGIBLE", "vehicle", vehicleId);
       continue;
     }
-    const owner = active(array(vehicle.assetOwners)).find((row) => row.id === item.assetOwnerId);
-    const model = active(array(vehicle.vehicleModelDefinitions)).find((row) => row.id === item.vehicleModelDefinitionId);
-    const profile = active(array(vehicle.vehicleListingProfiles)).find((row) => row.id === item.listingProfileId && row.vehicleId === item.id);
-    if (!owner || !model || !profile) exception(exceptions, "VEHICLE_REFERENCE_NOT_CLOSED", "vehicle", item.id);
-    selected.push(item);
+    const item = matches[0];
+    const owners = active(array(vehicle.assetOwners)).filter((row) => row.id === item.assetOwnerId);
+    const models = active(array(vehicle.vehicleModelDefinitions)).filter((row) => row.id === item.vehicleModelDefinitionId);
+    const profiles = active(array(vehicle.vehicleListingProfiles)).filter((row) => row.id === item.listingProfileId && row.vehicleId === item.id);
+    if (owners.length !== 1 || models.length !== 1 || profiles.length !== 1) {
+      exception(exceptions, "VEHICLE_REFERENCE_NOT_CLOSED", "vehicle", item.id);
+      continue;
+    }
+    closure.vehicles.push(item);
+    closure.assetOwners.push(owners[0]);
+    closure.vehicleModelDefinitions.push(models[0]);
+    closure.vehicleListingProfiles.push(profiles[0]);
   }
-  return sortRows(selected);
+  return sortRows(closure);
 }
 
-function classifyTarget(target = {}, forbiddenCounts, exceptions) {
+function classifyTarget(target = {}, countEvidence, exceptions) {
   if (target.schemaCanonical !== true) exception(exceptions, "TARGET_SCHEMA_NOT_CANONICAL", "target", "schema");
-  if (!allZero(target.tableCounts ?? {})) exception(exceptions, "TARGET_NOT_EMPTY", "target", "rows");
-  if (!allZero(forbiddenCounts)) exception(exceptions, "FORBIDDEN_DOMAIN_NOT_EMPTY", "target", "forbidden");
+  if (!validTargetCountEvidence(countEvidence)) {
+    exception(exceptions, "TARGET_COUNT_EVIDENCE_INVALID", "target", "counts");
+    return;
+  }
+  if (!allZero(countEvidence.tableCounts)) exception(exceptions, "TARGET_NOT_EMPTY", "target", "rows");
+  if (!allZero(countEvidence.forbiddenCounts)) exception(exceptions, "FORBIDDEN_DOMAIN_NOT_EMPTY", "target", "forbidden");
 }
 
 function digestContext(context) {
@@ -253,30 +363,64 @@ function digestContext(context) {
 }
 
 function requireContext(context) {
-  if (!nonEmpty(context.gitSha) || !nonEmpty(context.imageRef) || !nonEmpty(context.generatedAt) || !nonEmpty(context.hashSalt)) {
-    fail("MANIFEST_CONTEXT_INVALID");
-  }
-  if (!context.source || !context.target) fail("MANIFEST_CONTEXT_INVALID");
+  if (
+    !GIT_SHA.test(context.gitSha ?? "") ||
+    !IMAGE_REF.test(context.imageRef ?? "") ||
+    !validIsoTimestamp(context.generatedAt) ||
+    !SHA256.test(context.hashSalt ?? "") ||
+    !validDigestContext(context.source) ||
+    !validDigestContext(context.target)
+  ) fail("MANIFEST_CONTEXT_INVALID");
 }
 
-function redactException(value) {
+function requireClassification(classification) {
+  if (!classification || typeof classification !== "object" || typeof classification.safeToApply !== "boolean") {
+    fail("MANIFEST_CLASSIFICATION_INVALID");
+  }
+  try {
+    parseStage1CleanAcceptanceSelection(classification.selection);
+  } catch {
+    fail("MANIFEST_CLASSIFICATION_INVALID");
+  }
+  if (!hasExactKeys(classification.rows, CLASSIFICATION_DOMAINS)) {
+    fail("MANIFEST_CLASSIFICATION_INVALID");
+  }
+  if (!validDomainCounts(classification.counts) || !validDomainDigests(classification.rowDigests) || !Array.isArray(classification.exceptions)) {
+    fail("MANIFEST_CLASSIFICATION_INVALID");
+  }
+  if (!validTargetCountEvidence(classification.targetCountEvidence) || !sameCounts(classification.targetForbiddenCounts, classification.targetCountEvidence.forbiddenCounts)) {
+    fail("MANIFEST_CLASSIFICATION_INVALID");
+  }
+  if (classification.safeToApply && !isStage1CleanAcceptanceBaselineSafe(classification)) {
+    fail("MANIFEST_CLASSIFICATION_INVALID");
+  }
+}
+
+function redactException(value, hashSalt) {
+  const code = stableCode(value?.code);
+  const domain = stableDomain(value?.domain);
+  const sourceDigest = SHA256.test(value?.subjectDigest ?? "") ? value.subjectDigest : digest("stage1-acceptance:exception:unknown:", "invalid");
   return {
-    code: typeof value?.code === "string" ? value.code : "STAGE1_ACCEPTANCE_ERROR",
-    domain: typeof value?.domain === "string" ? value.domain : "unknown",
-    subjectDigest: typeof value?.subjectDigest === "string" ? value.subjectDigest : digest("stage1-acceptance:subject:", "unknown")
+    code,
+    domain,
+    subjectDigest: saltedDigest(`stage1-acceptance:exception:${domain}:`, sourceDigest, hashSalt)
   };
 }
 
 function exception(exceptions, code, domain, subject) {
-  exceptions.push({ code, domain, subjectDigest: digest(`stage1-acceptance:${domain}:`, String(subject)) });
+  exceptions.push({
+    code: stableCode(code),
+    domain: stableDomain(domain),
+    subjectDigest: digest(`stage1-acceptance:exception:${stableDomain(domain)}:`, String(subject))
+  });
 }
 
 function active(rows) {
-  return rows.filter((row) => row && row.deletedAt == null && row.status !== "INACTIVE" && row.status !== "DISABLED");
+  return rows.filter((row) => row && row.deletedAt == null && row.status === "ACTIVE");
 }
 
 function sortRows(value) {
-  if (Array.isArray(value)) return [...value].sort(compareValue);
+  if (Array.isArray(value)) return [...value].sort(compareBusinessRow);
   return Object.fromEntries(Object.entries(value).map(([key, rows]) => [key, sortRows(rows)]));
 }
 
@@ -323,8 +467,22 @@ function compareException(left, right) {
   return `${left.code}|${left.domain}|${left.subjectDigest}`.localeCompare(`${right.code}|${right.domain}|${right.subjectDigest}`);
 }
 
+function compareBusinessRow(left, right) {
+  const leftKey = businessKey(left);
+  const rightKey = businessKey(right);
+  return leftKey.localeCompare(rightKey) || compareValue(left, right);
+}
+
+function businessKey(row) {
+  if (!row || typeof row !== "object") return stableJson(row);
+  for (const key of ["id", "code", "username", "phone", "templateCode", "vehicleId", "roleId", "permissionId", "menuId"]) {
+    if (typeof row[key] === "string") return `${key}:${row[key]}`;
+  }
+  return stableJson(row);
+}
+
 function allZero(counts) {
-  return Object.values(counts).every((count) => count === 0);
+  return validCountMap(counts, Object.keys(counts)) && Object.values(counts).every((count) => count === 0);
 }
 
 function array(value) {
@@ -337,6 +495,87 @@ function nonEmpty(value) {
 
 function positive(value) {
   return (typeof value === "number" && value > 0) || (typeof value === "bigint" && value > 0n);
+}
+
+function requiredCodes(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.some((code) => !nonEmpty(code))) return [];
+  return [...new Set(value)].sort();
+}
+
+function validPdfFile(file) {
+  return Boolean(file) && file.mimeType === "application/pdf" && nonEmpty(file.objectKey) && positive(file.sizeBytes);
+}
+
+function copyTargetCountEvidence(target = {}) {
+  return {
+    forbiddenCountKeys: array(target.forbiddenCountKeys),
+    forbiddenCounts: target.forbiddenCounts,
+    tableCountKeys: array(target.tableCountKeys),
+    tableCounts: target.tableCounts
+  };
+}
+
+function validTargetCountEvidence(value) {
+  return Boolean(value) &&
+    validCountMap(value.forbiddenCounts, value.forbiddenCountKeys) &&
+    validCountMap(value.tableCounts, value.tableCountKeys);
+}
+
+function validCountMap(counts, countKeys) {
+  if (!counts || typeof counts !== "object" || Array.isArray(counts) || !Array.isArray(countKeys) || countKeys.length === 0) return false;
+  const actualKeys = Object.keys(counts).sort();
+  const expectedKeys = [...countKeys].sort();
+  return (
+    new Set(expectedKeys).size === expectedKeys.length &&
+    expectedKeys.every((key) => nonEmpty(key)) &&
+    actualKeys.length === expectedKeys.length &&
+    actualKeys.every((key, index) => key === expectedKeys[index]) &&
+    actualKeys.every((key) => Number.isSafeInteger(counts[key]) && counts[key] >= 0)
+  );
+}
+
+function sameCounts(left, right) {
+  return stableJson(left) === stableJson(right);
+}
+
+function validDigestContext(value) {
+  return Boolean(value) && [value.databaseDigest, value.migrationCatalogDigest, value.schemaDigest].every((digestValue) => SHA256.test(digestValue ?? ""));
+}
+
+function validIsoTimestamp(value) {
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
+function validDomainCounts(value) {
+  return hasExactKeys(value, CLASSIFICATION_DOMAINS) && CLASSIFICATION_DOMAINS.every((domain) => Number.isSafeInteger(value[domain]) && value[domain] >= 0);
+}
+
+function validDomainDigests(value) {
+  return hasExactKeys(value, CLASSIFICATION_DOMAINS) && CLASSIFICATION_DOMAINS.every((domain) => SHA256.test(value[domain] ?? ""));
+}
+
+function hasExactKeys(value, expectedKeys) {
+  return Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    stableJson(Object.keys(value).sort()) === stableJson([...expectedKeys].sort());
+}
+
+function buildManifestRowDigests(rows, hashSalt) {
+  return Object.fromEntries(
+    CLASSIFICATION_DOMAINS.map((domain) => [
+      domain,
+      saltedDigest(`stage1-acceptance:row:${domain}:`, stableJson(rows[domain]), hashSalt)
+    ])
+  );
+}
+
+function stableCode(value) {
+  return STABLE_ERROR_CODES.has(value) ? value : "STAGE1_ACCEPTANCE_ERROR";
+}
+
+function stableDomain(value) {
+  return STABLE_EXCEPTION_DOMAINS.has(value) ? value : "unknown";
 }
 
 function fail(code) {

@@ -103,4 +103,91 @@ describe("payment settlement allocation", () => {
       type: "PAYMENT_SETTLED"
     });
   });
+
+  it("records a late provider receipt as unallocated when closure authority blocks the bill", async () => {
+    const paymentOrder = {
+      amount: 1000n,
+      customerId: "customer-1",
+      deletedAt: null,
+      id: "payment-order-1",
+      items: [{ amount: 1000n, billId: "bill-1", createdAt: new Date(), deletedAt: null }],
+      orderId: "order-1",
+      paidAmount: 0n,
+      paymentChannel: PaymentChannel.WECHAT_JSAPI,
+      paymentOrderNo: "PYO-1",
+      paymentRecordId: null,
+      paymentStatus: PaymentOrderStatus.PENDING,
+      provider: PaymentProviderType.WECHAT_PAY,
+      providerTradeNo: "trade-1",
+      providerTransactionId: null
+    };
+    const bill = {
+      billStatus: "PENDING",
+      customerId: "customer-1",
+      deletedAt: null,
+      dueDate: new Date("2026-08-01T00:00:00.000Z"),
+      id: "bill-1",
+      orderId: "order-1",
+      paidAmount: 0n,
+      remainingAmount: 1000n
+    };
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      collectionCase: { findMany: vi.fn(async () => []) },
+      paymentCallbackLog: { update: vi.fn() },
+      paymentOrder: {
+        findFirst: vi.fn(async () => null),
+        findUnique: vi.fn(async () => paymentOrder),
+        update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          ...paymentOrder,
+          ...data
+        }))
+      },
+      paymentRecord: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          ...data,
+          id: "payment-record-1",
+          paymentNo: "PAY-1"
+        }))
+      },
+      paymentWriteOff: { create: vi.fn() },
+      receivableBill: {
+        findFirst: vi.fn(async () => bill),
+        findMany: vi.fn(async () => [bill])
+      },
+      subscriptionClosureChargeDispute: {
+        findMany: vi.fn(async () => [{ chargeLine: { billId: "bill-1" } }])
+      },
+      subscriptionClosureLegalCollectionCase: { findMany: vi.fn(async () => []) },
+      subscriptionClosureReceivableDisposition: { findMany: vi.fn(async () => []) }
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (client: unknown) => unknown) => operation(tx))
+    };
+    const service = new FinanceService(
+      { write: vi.fn(async () => undefined) } as never,
+      prisma as never
+    );
+
+    await expect(
+      service.settlePaymentOrder({
+        operatorId: null,
+        paidAmount: 1000n,
+        paidAt: new Date("2026-08-06T08:00:00.000Z"),
+        paymentOrderId: paymentOrder.id,
+        providerTransactionId: "wechat-transaction-late"
+      })
+    ).resolves.toMatchObject({ allocatedAmount: 0n, unallocatedAmount: 1000n });
+    expect(tx.paymentWriteOff.create).not.toHaveBeenCalled();
+    expect(tx.paymentOrder.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          errorSnapshot: expect.objectContaining({
+            code: "PAYMENT_ALLOCATION_BLOCKED_BY_CLOSURE",
+            blockedBillIds: ["bill-1"]
+          })
+        })
+      })
+    );
+  });
 });

@@ -249,9 +249,9 @@ describe("Stage 1 P0 subscription closure persistence contract", () => {
     expect(closureCase).toContain('@@map("subscription_closure_case")');
     expect(closureCase).toContain("orderId");
     expect(closureCase).not.toMatch(/orderId String @unique/);
-    expect(closureCase).toContain("retiredAt DateTime?");
-    expect(closureCase).toContain("retiredBy String?");
-    expect(closureCase).toContain("retirer User?");
+    expect(closureCase).toMatch(/retiredAt\s+DateTime\?/);
+    expect(closureCase).toMatch(/retiredBy\s+String\?/);
+    expect(closureCase).toMatch(/retirer\s+User\?/);
     expect(closureCase).toContain("@@index([orderId]");
     expect(order).toContain("closureCases");
     expect(user).toContain("retiredSubscriptionClosureCases");
@@ -1184,7 +1184,117 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
       await client.query("ROLLBACK");
     }
   });
+
+  it("rejects non-positive governed return revisions and current checklist rollback", async () => {
+    const fixture = createAuthorityFixtureIds();
+    const actorId = fixture.actorId;
+    const caseId = fixture.caseId;
+    const checklistV1 = randomUUID();
+    const checklistV2 = randomUUID();
+    const vehicleReturnId = fixture.vehicleReturnId;
+    const hash = "d".repeat(64);
+    const insertChecklist = `INSERT INTO "vehicle_return_checklist_revision" (
+      "id", "closure_case_id", "vehicle_return_id", "revision_number", "manifest_hash",
+      "attestation_mode", "captured_at", "captured_by", "source_type", "source_id",
+      "source_key", "supersedes_revision_id", "created_at"
+    ) VALUES (
+      $1::uuid, $2::uuid, $3::uuid, $4, $5, 'CUSTOMER_SIGNED', clock_timestamp(),
+      $6::uuid, 'P0_SCHEMA_TEST', $7::uuid, $8, $9::uuid, clock_timestamp()
+    )`;
+
+    await client.query("BEGIN");
+    try {
+      await insertAuthorityFixtureParents(client, fixture);
+      await client.query("SET LOCAL session_replication_role = origin");
+      await insertAuthorityClosureCase(client, fixture);
+      await client.query("SET LOCAL session_replication_role = replica");
+      await expectPgError(
+        client,
+        insertChecklist,
+        [randomUUID(), caseId, vehicleReturnId, 0, hash, actorId, randomUUID(), `p0-checklist-zero:${randomUUID()}`, null],
+        "23514",
+        "vehicle_return_checklist_revision_number_positive_check"
+      );
+      await expectPgError(
+        client,
+        `INSERT INTO "vehicle_condition_delta_revision" (
+          "id", "closure_case_id", "revision_number", "delivery_document_revision_id",
+          "delivery_document_hash", "return_checklist_revision_id", "return_manifest_hash",
+          "result_hash", "source_type", "source_id", "source_key", "created_by", "created_at"
+        ) VALUES (
+          $1::uuid, $2::uuid, -1, $3::uuid, $4, $5::uuid, $4, $4,
+          'P0_SCHEMA_TEST', $6::uuid, $7, $8::uuid, clock_timestamp()
+        )`,
+        [randomUUID(), caseId, randomUUID(), hash, randomUUID(), randomUUID(), `p0-delta-negative:${randomUUID()}`, actorId],
+        "23514",
+        "vehicle_condition_delta_revision_number_positive_check"
+      );
+      await client.query("SET LOCAL session_replication_role = origin");
+      await client.query(insertChecklist, [checklistV1, caseId, vehicleReturnId, 1, hash, actorId, randomUUID(), `p0-checklist-v1:${randomUUID()}`, null]);
+      await client.query(
+        `UPDATE "subscription_closure_case"
+            SET "current_checklist_revision_id" = $2::uuid, "version" = "version" + 1
+          WHERE "id" = $1::uuid`,
+        [caseId, checklistV1]
+      );
+      await client.query(insertChecklist, [checklistV2, caseId, vehicleReturnId, 2, hash, actorId, randomUUID(), `p0-checklist-v2:${randomUUID()}`, checklistV1]);
+      await expect(
+        client.query(
+          `UPDATE "subscription_closure_case"
+              SET "current_checklist_revision_id" = $2::uuid, "version" = "version" + 1
+            WHERE "id" = $1::uuid`,
+          [caseId, checklistV2]
+        )
+      ).resolves.toMatchObject({ rowCount: 1 });
+      await expectPgError(
+        client,
+        `UPDATE "subscription_closure_case"
+            SET "current_checklist_revision_id" = $2::uuid, "version" = "version" + 1
+          WHERE "id" = $1::uuid`,
+        [caseId, checklistV1],
+        "P0001"
+      );
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
 });
+
+async function insertAuthorityClosureCase(client: Client, fixture: AuthorityFixture) {
+  const hash = "d".repeat(64);
+  await client.query(
+    `INSERT INTO "subscription_closure_case" (
+      "id", "case_no", "order_id", "vehicle_id", "customer_id", "contract_id",
+      "vehicle_return_id", "return_handover_work_order_id", "return_asset_work_order_id",
+      "closure_type", "physical_control_mode", "final_disposition", "status",
+      "authority_snapshot", "authority_snapshot_hash", "effective_at", "version",
+      "create_source_type", "create_source_id", "create_source_key", "created_by", "updated_by",
+      "created_at", "updated_at"
+    ) VALUES (
+      $1::uuid, $2, $3::uuid, $4::uuid, $5::uuid, $6::uuid,
+      $7::uuid, $8::uuid, $9::uuid,
+      'EARLY_TERMINATION', 'VOLUNTARY_RETURN', 'TERMINATE', 'PREPARING_RETURN',
+      '{}'::jsonb, $10, clock_timestamp(), 0,
+      'P0_SCHEMA_AUTHORITY', $11::uuid, $12, $13::uuid, $13::uuid,
+      clock_timestamp(), clock_timestamp()
+    )`,
+    [
+      fixture.caseId,
+      `P0-LINEAGE-${fixture.caseId}`,
+      fixture.orderId,
+      fixture.vehicleId,
+      fixture.customerId,
+      fixture.contractId,
+      fixture.vehicleReturnId,
+      fixture.handoverWorkOrderId,
+      fixture.returnAssetWorkOrderId,
+      hash,
+      randomUUID(),
+      `p0-schema:lineage:${fixture.caseId}`,
+      fixture.actorId
+    ]
+  );
+}
 
 async function insertCase(
   client: Client,
@@ -1570,14 +1680,14 @@ async function insertSettlementRevision(
        "input_snapshot_hash", "cost_total_cents", "receivable_total_cents", "paid_total_cents",
        "write_off_total_cents", "waiver_total_cents", "deposit_applied_cents", "deposit_refund_cents",
        "amount_due_cents", "amount_refundable_cents", "result_snapshot", "result_hash",
-       "supersedes_revision_id", "finalized_by", "finalized_at", "settled_by", "settled_at",
+       "supersedes_revision_id", "finalized_by", "finalized_at", "published_at", "publication_snapshot", "settled_by", "settled_at",
        "source_type", "source_id", "source_key", "created_by", "created_at"
      ) VALUES (
        $1::uuid, $2::uuid, $3, 'FINAL', $4::subscription_closure_settlement_stage,
        '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
        $5, 0, 0, 0, 0, 0, 0, 0, 0, 0, '{}'::jsonb, $5,
-       $6::uuid, $7::uuid, $8::timestamptz, $9::uuid, $10::timestamptz,
-       'P0_SCHEMA_AUTHORITY', $11::uuid, $12, $13::uuid, clock_timestamp()
+       $6::uuid, $7::uuid, $8::timestamptz, $9::timestamptz, $10::jsonb, $11::uuid, $12::timestamptz,
+       'P0_SCHEMA_AUTHORITY', $13::uuid, $14, $15::uuid, clock_timestamp()
      )`,
     [
       input.revisionId,
@@ -1588,6 +1698,15 @@ async function insertSettlementRevision(
       input.supersedesRevisionId ?? null,
       isFinalized ? input.actorId : null,
       finalizedAt,
+      input.stage === "FINALIZED" ? finalizedAt : null,
+      input.stage === "FINALIZED"
+        ? JSON.stringify({
+            channel: "PORTAL",
+            publicationId: input.revisionId,
+            publishedAt: finalizedAt?.toISOString(),
+            resultHash: hash
+          })
+        : null,
       isSettled ? input.actorId : null,
       isSettled ? databaseClock : null,
       randomUUID(),
@@ -1671,3 +1790,111 @@ function isLoopbackHostname(hostname: string) {
     octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
   );
 }
+
+describe("stage 1 governed return schema", () => {
+  it("models immutable checklist, evidence, delta, pricing, response and disposition facts", () => {
+    for (const modelName of [
+      "VehicleReturnChecklistRevision",
+      "VehicleReturnChecklistItem",
+      "VehicleReturnEvidenceLink",
+      "VehicleConditionDeltaRevision",
+      "VehicleConditionDeltaItem",
+      "ContractChargeClauseSnapshot",
+      "SubscriptionClosureChargeLine",
+      "SubscriptionClosureCustomerResponse",
+      "SubscriptionClosureChargeDispute",
+      "SubscriptionClosureChargeDisputeDecision",
+      "SubscriptionClosureReceivableDisposition",
+      "SubscriptionClosureLegalCollectionCase",
+      "SubscriptionClosureEvidencePackageExport"
+    ]) {
+      expect(schema).toContain(`model ${modelName} {`);
+    }
+    for (const fieldName of [
+      "currentChecklistRevisionId",
+      "currentDeltaRevisionId",
+      "financialStatus",
+      "operationalCompletedAt"
+    ]) {
+      expect(schema).toContain(fieldName);
+    }
+  });
+
+  it("enforces evidence owner shape, attestation completeness and append-only history", () => {
+    const governedReturnMigration = readFileSync(
+      resolve(
+        apiRoot,
+        "prisma/migrations/20260826030000_stage1_return_evidence/migration.sql"
+      ),
+      "utf8"
+    );
+    expect(governedReturnMigration).toContain("vehicle_return_evidence_link_owner_check");
+    expect(governedReturnMigration).toContain("vehicle_return_evidence_link_authority_check");
+    expect(governedReturnMigration).toContain("vehicle_return_checklist_revision_attestation_check");
+    expect(governedReturnMigration).toContain("stage1_return_append_only_guard");
+    expect(governedReturnMigration).not.toMatch(/UPDATE\s+"vehicle_return_damage"/i);
+  });
+
+  it("enforces publication, export finalization and cross-case lineage at the database boundary", () => {
+    const governanceMigration = readFileSync(
+      resolve(
+        apiRoot,
+        "prisma/migrations/20260826035000_stage1_closure_receivable_disposition/migration.sql"
+      ),
+      "utf8"
+    );
+    expect(governanceMigration).toContain("subscription_closure_settlement_publication_check");
+    expect(governanceMigration).toContain("stage1_evidence_export_immutability_guard");
+    expect(governanceMigration).toContain("stage1_closure_lineage_guard");
+    expect(governanceMigration).toContain("closure disposition approval lineage mismatch");
+    expect(governanceMigration).toContain("current settlement revision belongs to another closure case");
+    expect(governanceMigration).toContain("return checklist revision chain mismatch");
+    expect(governanceMigration).toContain("condition delta revision chain mismatch");
+    expect(governanceMigration).toContain("settlement revision chain mismatch");
+    expect(governanceMigration).toContain(
+      "vehicle_return_checklist_revision_number_positive_check"
+    );
+    expect(governanceMigration).toContain(
+      "vehicle_condition_delta_revision_number_positive_check"
+    );
+    expect(governanceMigration).toContain("current checklist revision is not the chain head");
+    expect(governanceMigration).toContain("current delta revision is not the chain head");
+    expect(governanceMigration).toContain("current settlement revision is not the chain head");
+    expect(governanceMigration).toContain('d."archive_status" = \'ARCHIVED\'');
+    expect(governanceMigration).toContain('d."archived_at" IS NOT NULL');
+    expect(governanceMigration).toContain('d."signed_document_file_id" IS NOT NULL');
+    expect(governanceMigration).toContain(
+      'f."id" = d."signed_document_file_id"'
+    );
+    expect(schema).toContain("publicationSnapshot");
+    expect(schema).toContain("approvalId");
+    expect(schema).toContain("fileSha256");
+    expect(schema).toContain("contentSha256");
+    const fileAuthorityMigration = readFileSync(
+      resolve(
+        apiRoot,
+        "prisma/migrations/20260826036500_stage1_file_content_authority/migration.sql"
+      ),
+      "utf8"
+    );
+    expect(fileAuthorityMigration).toContain("file_object_content_sha256_check");
+  });
+
+  it("serializes formal pricing and customer response roots at the database boundary", () => {
+    const concurrencyMigration = readFileSync(
+      resolve(
+        apiRoot,
+        "prisma/migrations/20260826035500_stage1_closure_concurrency_guards/migration.sql"
+      ),
+      "utf8"
+    );
+    expect(concurrencyMigration).toContain(
+      "subscription_closure_charge_line_revision_delta_status_key"
+    );
+    expect(concurrencyMigration).toContain(
+      "subscription_closure_customer_response_settlement_key"
+    );
+    expect(schema).toContain("@@unique([settlementRevisionId, deltaItemId, status]");
+    expect(schema).toContain("@@unique([settlementRevisionId]");
+  });
+});

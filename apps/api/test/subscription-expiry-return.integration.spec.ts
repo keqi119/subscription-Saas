@@ -4438,7 +4438,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const reserved = await prisma.contractESignTask.findFirstOrThrow({
         where: {
           sourceId: scenario.closureCase.id,
-          sourceKey: "return-manifest-esign",
+          sourceKey: { startsWith: "return-manifest-esign:" },
           sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
         }
       });
@@ -4626,15 +4626,15 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
 
   it("rolls back finalization when the shared replay validator detects audit drift", async () => {
     const prepared = await prepareTask7ManifestSuccessorRace(prisma);
-    const task = await prisma.contractESignTask.findFirstOrThrow({
-      where: {
-        sourceId: prepared.scenario.closureCase.id,
-        sourceKey: "return-manifest-esign",
-        sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
-      }
-    });
     const extraAuditId = randomUUID();
     try {
+      const task = await prisma.contractESignTask.findFirstOrThrow({
+        where: {
+          sourceId: prepared.scenario.closureCase.id,
+          sourceKey: { startsWith: "return-manifest-esign:" },
+          sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
+        }
+      });
       await prisma.auditLog.create({
         data: {
           action: "UPDATE",
@@ -4688,7 +4688,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const signedReceipt = await prisma.subscriptionClosureCommandReceipt.findFirstOrThrow({
         where: {
           closureCaseId: scenario.closureCase.id,
-          sourceKey: "return-manifest-esign:signed"
+          sourceKey: { endsWith: ":signed", startsWith: "return-manifest-esign:" }
         }
       });
       const signedEvent = await prisma.subscriptionClosureEvent.findUniqueOrThrow({
@@ -4704,7 +4704,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const signedRevision = await prisma.subscriptionClosureDocumentRevision.findFirstOrThrow({
         where: {
           closureCaseId: scenario.closureCase.id,
-          sourceKey: "return-manifest-esign:signed"
+          sourceKey: { endsWith: ":signed", startsWith: "return-manifest-esign:" }
         }
       });
       const signedTask = await prisma.contractESignTask.findUniqueOrThrow({

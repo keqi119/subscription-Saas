@@ -3,11 +3,45 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  acceptedDisputeDeltaItemIds,
   buildAdminSubscriptionClosureView,
   buildCustomerSubscriptionClosureView
 } from "../src/lib/subscription-closure-view-model";
 
 describe("subscription closure view model", () => {
+  it("keeps accepted disputes excluded after a successor pricing draft is created", () => {
+    expect(
+      acceptedDisputeDeltaItemIds({
+        chargeLines: [
+          {
+            amountCents: "1000",
+            billId: "bill-1",
+            chargeType: "DAMAGE_VEHICLE_EXTERIOR",
+            clauseSnapshotId: "clause-1",
+            deltaItemId: "delta-accepted",
+            exceptionApprovalId: null,
+            id: "old-final-line",
+            lineCode: "RETURN_VEHICLE_EXTERIOR",
+            quantity: "1",
+            responsibility: "CUSTOMER",
+            settlementRevisionId: "old-final-pricing",
+            status: "FINAL",
+            unitPriceCents: "1000"
+          }
+        ],
+        currentDeltaItemIds: ["delta-accepted", "delta-chargeable"],
+        disputes: [
+          {
+            chargeLineId: "old-final-line",
+            customerReason: "车况与交付时一致",
+            id: "dispute-1",
+            status: "ACCEPTED_BY_PLATFORM"
+          }
+        ]
+      })
+    ).toEqual(new Set(["delta-accepted"]));
+  });
+
   it("builds the complete admin workspace without exposing raw envelopes", () => {
     const view = buildAdminSubscriptionClosureView(
       {
@@ -25,6 +59,7 @@ describe("subscription closure view model", () => {
         closureCase: {
           caseNo: "SC-1",
           closureType: "RECOVERY",
+          id: "closure-1",
           finalDisposition: "TERMINATE",
           physicalControlMode: "RECOVERY",
           status: "RECOVERY_APPROVED"
@@ -37,6 +72,7 @@ describe("subscription closure view model", () => {
             amountDueCents: "1200",
             amountRefundableCents: "0",
             id: "settlement-1",
+            resultHash: "hash-1",
             revisionNumber: 1,
             stage: "FINALIZED"
           }
@@ -72,28 +108,42 @@ describe("subscription closure view model", () => {
   it("keeps the portal projection deliberately small and formats money as cents", () => {
     const view = buildCustomerSubscriptionClosureView({
       caseNo: "SC-2",
+      closureCaseId: "closure-2",
       closureType: "EARLY_TERMINATION",
       evidenceReferences: [
         { evidenceType: "INSPECTION_REPORT", fileId: "evidence-file", id: "evidence-1" }
       ],
       nextAction: "等待最终结算",
       returnAppointment: { location: "Depot", scheduledAt: "2026-08-24T02:00:00.000Z" },
-      settlement: { amountDueCents: "2500", amountRefundableCents: "0", stage: "FINALIZED" },
+      settlement: {
+        amountDueCents: "2500",
+        amountRefundableCents: "0",
+        id: "settlement-2",
+        resultHash: "hash-2",
+        stage: "FINALIZED"
+      },
       signedReferences: [
         { documentType: "RETURN_MANIFEST", fileId: "signed-file", stage: "ARCHIVED" }
       ],
       status: "PENDING_SETTLEMENT"
     });
 
-    expect(view).toEqual({
+    expect(view).toMatchObject({
       caseNo: "SC-2",
+      closureCaseId: "closure-2",
       closureType: "EARLY_TERMINATION",
       evidenceReferences: [
         { evidenceType: "INSPECTION_REPORT", fileId: "evidence-file", id: "evidence-1" }
       ],
       nextAction: "等待最终结算",
       returnAppointment: { location: "Depot", scheduledAt: "2026-08-24T02:00:00.000Z" },
-      settlement: { amountDueCents: "2500", amountRefundableCents: "0", stage: "FINALIZED" },
+      settlement: {
+        amountDueCents: "2500",
+        amountRefundableCents: "0",
+        id: "settlement-2",
+        resultHash: "hash-2",
+        stage: "FINALIZED"
+      },
       signedReferences: [
         { documentType: "RETURN_MANIFEST", fileId: "signed-file", stage: "ARCHIVED" }
       ],
@@ -116,6 +166,7 @@ describe("subscription closure view model", () => {
         closureCase: {
           caseNo: "SC-PAUSED",
           closureType: "RECOVERY",
+          id: "closure-paused",
           finalDisposition: "TERMINATE",
           physicalControlMode: "RECOVERY",
           status: "PAUSED"
@@ -134,6 +185,13 @@ describe("subscription closure view model", () => {
       join(repoRoot, "apps/web/src/app/portal/orders/[id]/page.tsx"),
       "utf8"
     );
+    const portalReturnPanel = readFileSync(
+      join(
+        repoRoot,
+        "apps/web/src/components/subscription-closure/portal-return-settlement-panel.tsx"
+      ),
+      "utf8"
+    );
 
     for (const label of [
       "退车 / 追回 / 整备工单",
@@ -145,8 +203,8 @@ describe("subscription closure view model", () => {
     ]) {
       expect(admin).toContain(label);
     }
-    for (const label of ["退车与结算进度", "退车预约", "结算结果", "已签文件", "检查凭证"]) {
-      expect(portal).toContain(label);
+    for (const label of ["退车、车况与结算确认", "现场退车确认清单", "现场证据", "合同收费明细"]) {
+      expect(portalReturnPanel).toContain(label);
     }
     expect(portal).not.toContain("approvalComment");
     expect(portal).not.toContain("commandEnvelope");

@@ -256,11 +256,27 @@ export interface AutoSealTaskResult {
   status: "COMPLETED" | "PENDING" | "FAILED";
 }
 
+export interface CancelReturnManifestProviderTaskInput {
+  providerEnvelopeId: string;
+  providerTaskId: string;
+  taskId: string;
+  taskNo: string;
+}
+
+export interface CancelReturnManifestProviderTaskResult {
+  cancelled: boolean;
+  rawResponse?: unknown;
+  replayed?: boolean;
+}
+
 export interface ESignProvider {
   autoSealTask?(input: AutoSealTaskInput): Promise<AutoSealTaskResult>;
   completeReturnManifestTask?(
     input: CompleteReturnManifestProviderTaskInput
   ): Promise<CompleteReturnManifestProviderTaskResult>;
+  cancelReturnManifestTask?(
+    input: CancelReturnManifestProviderTaskInput
+  ): Promise<CancelReturnManifestProviderTaskResult>;
   createReturnManifestTask?(
     input: ReturnManifestProviderTaskInput
   ): Promise<ReturnManifestProviderTaskResult>;

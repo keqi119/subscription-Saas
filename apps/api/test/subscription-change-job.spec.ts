@@ -73,6 +73,8 @@ describe("SubscriptionChangeJobService recovery assessment dispatch", () => {
         actorId: "20000000-0000-4000-8000-000000000004",
         closureCaseId: "20000000-0000-4000-8000-000000000005",
         generatedRevisionId: "20000000-0000-4000-8000-000000000002",
+        idempotencyKey:
+          "20000000-0000-4000-8000-000000000002:checklist:20000000-0000-4000-8000-000000000006",
         ignoredClientHash: "f".repeat(64)
       }
     } as never;
@@ -88,7 +90,39 @@ describe("SubscriptionChangeJobService recovery assessment dispatch", () => {
     expect(returnManifest.reconcile).toHaveBeenCalledWith({
       actorId: "20000000-0000-4000-8000-000000000004",
       closureCaseId: "20000000-0000-4000-8000-000000000005",
-      idempotencyKey: "20000000-0000-4000-8000-000000000002"
+      idempotencyKey:
+        "20000000-0000-4000-8000-000000000002:checklist:20000000-0000-4000-8000-000000000006"
+    });
+  });
+
+  it("keeps legacy return-manifest jobs compatible when no attempt key is persisted", async () => {
+    const returnManifest = { reconcile: vi.fn(async () => ({ wrote: false })) };
+    const service = new SubscriptionChangeJobService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { assessRecoveryJob: vi.fn() } as never,
+      returnManifest as never
+    );
+
+    await service.handle({
+      id: "20000000-0000-4000-8000-000000000011",
+      idempotencyKey: "legacy-job",
+      jobType: SubscriptionAutomationJobType.CLOSURE_RETURN_MANIFEST_ESIGN,
+      orderId: "20000000-0000-4000-8000-000000000013",
+      payload: {
+        actorId: "20000000-0000-4000-8000-000000000014",
+        closureCaseId: "20000000-0000-4000-8000-000000000015",
+        generatedRevisionId: "20000000-0000-4000-8000-000000000012"
+      }
+    } as never);
+
+    expect(returnManifest.reconcile).toHaveBeenCalledWith({
+      actorId: "20000000-0000-4000-8000-000000000014",
+      closureCaseId: "20000000-0000-4000-8000-000000000015",
+      idempotencyKey: "20000000-0000-4000-8000-000000000012"
     });
   });
 });

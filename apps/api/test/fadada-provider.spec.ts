@@ -114,6 +114,103 @@ describe("Fadada provider configuration", () => {
 });
 
 describe("Fadada provider B2-A flow", () => {
+  it("retires a return-manifest task only after Fadada reports the exact transaction as revoked", async () => {
+    const querySignResult = vi.fn(async () => ({
+      contractId: "RETURN-MANIFEST-1",
+      providerContractId: "RETURN-MANIFEST-1",
+      providerCustomerId: "fadada-customer-1",
+      providerTransactionId: "RETURNMANIFESTC1",
+      raw: { result: "3002" },
+      resultCode: "3002",
+      resultDesc: "已撤销",
+      status: "FAILED" as const,
+      transactionId: "RETURNMANIFESTC1"
+    }));
+    const prisma = {
+      contractESignTask: {
+        findUnique: vi.fn(async () => ({
+          documentType: "RETURN_MANIFEST",
+          id: "task-1",
+          provider: ESignProviderType.FADADA,
+          providerEnvelopeId: "RETURN-MANIFEST-1",
+          providerTaskId: "RETURNMANIFESTC1",
+          signers: [{
+            deletedAt: null,
+            providerSignerId: "fadada-customer-1",
+            providerTransactionId: "RETURNMANIFESTC1",
+            signerType: "CUSTOMER"
+          }],
+          taskNo: "RETURN-MANIFEST-1"
+        }))
+      }
+    };
+    const provider = new FadadaESignProvider(
+      loadFadadaConfig(configService()),
+      { querySignResult } as never,
+      undefined,
+      prisma as never
+    );
+
+    await expect(provider.cancelReturnManifestTask?.({
+      providerEnvelopeId: "RETURN-MANIFEST-1",
+      providerTaskId: "RETURNMANIFESTC1",
+      taskId: "task-1",
+      taskNo: "RETURN-MANIFEST-1"
+    })).resolves.toMatchObject({
+      cancelled: true,
+      rawResponse: { resultCode: "3002" }
+    });
+    expect(querySignResult).toHaveBeenCalledWith({
+      contractId: "RETURN-MANIFEST-1",
+      customerId: "fadada-customer-1",
+      transactionId: "RETURNMANIFESTC1"
+    });
+  });
+
+  it("keeps a return-manifest task active when the Fadada revocation identity is incomplete", async () => {
+    const prisma = {
+      contractESignTask: {
+        findUnique: vi.fn(async () => ({
+          documentType: "RETURN_MANIFEST",
+          id: "task-1",
+          provider: ESignProviderType.FADADA,
+          providerEnvelopeId: "RETURN-MANIFEST-1",
+          providerTaskId: "RETURNMANIFESTC1",
+          signers: [{
+            deletedAt: null,
+            providerSignerId: "fadada-customer-1",
+            providerTransactionId: "RETURNMANIFESTC1",
+            signerType: "CUSTOMER"
+          }],
+          taskNo: "RETURN-MANIFEST-1"
+        }))
+      }
+    };
+    const provider = new FadadaESignProvider(
+      loadFadadaConfig(configService()),
+      { querySignResult: vi.fn(async () => ({
+        contractId: "RETURN-MANIFEST-1",
+        providerContractId: "RETURN-MANIFEST-1",
+        providerCustomerId: undefined,
+        providerTransactionId: "RETURNMANIFESTC1",
+        raw: { result: "3002" },
+        resultCode: "3002",
+        resultDesc: "已撤销",
+        status: "FAILED" as const,
+        transactionId: "RETURNMANIFESTC1"
+      })) } as never,
+      undefined,
+      prisma as never
+    );
+
+    await expect(provider.cancelReturnManifestTask?.({
+      providerEnvelopeId: "RETURN-MANIFEST-1",
+      providerTaskId: "RETURNMANIFESTC1",
+      taskId: "task-1",
+      taskNo: "RETURN-MANIFEST-1"
+    })).resolves.toMatchObject({ cancelled: false });
+  });
+
   it("rejects Stage 1 customer mapping before upload when required customer slot data is incomplete", async () => {
     const apiClient = {
       createExternalSignUrl: vi.fn(),

@@ -7,7 +7,7 @@ import {
   PaymentOrderStatus
 } from "@prisma/client";
 import { Type } from "class-transformer";
-import { IsEnum, IsInt, IsOptional, IsUUID, Max, Min } from "class-validator";
+import { IsEnum, IsISO8601, IsInt, IsOptional, IsUUID, Max, MaxLength, Min, MinLength } from "class-validator";
 
 export class PortalPageQueryDto {
   @IsOptional()
@@ -22,6 +22,18 @@ export class PortalPageQueryDto {
   @Min(1)
   @Max(100)
   pageSize?: number;
+}
+
+export class PortalClosureDisputeEvidenceDto {
+  @IsISO8601({ strict: true, strictSeparator: true })
+  capturedAt!: string;
+
+  @IsUUID("4")
+  chargeLineId!: string;
+
+  @MinLength(1)
+  @MaxLength(180)
+  idempotencyKey!: string;
 }
 
 export class PortalOrdersQueryDto extends PortalPageQueryDto {

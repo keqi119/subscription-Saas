@@ -65,6 +65,9 @@ import {
 } from "../../../components/order-workspace/order-workspace";
 import { SubscriptionJourneyCard } from "../../../components/order-workspace/subscription-journey-card";
 import { ProtectedShell } from "../../../components/protected-shell";
+import { ReturnEvidenceStage } from "../../../components/subscription-closure/return-evidence-stage";
+import { ReturnPricingStage } from "../../../components/subscription-closure/return-pricing-stage";
+import { ReturnSettlementStage } from "../../../components/subscription-closure/return-settlement-stage";
 import {
   BILL_STATUS_LABELS,
   BILL_TYPE_LABELS,
@@ -5710,6 +5713,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
 
   const generateDamageFeeBillDisabledReason = !order
     ? "数据加载完成后才可操作"
+    : subscriptionClosure?.returnThreeStageEnabled
+      ? "受管退车闭环须在车辆交接页按合同收费明细生成账单"
     : !orderReturned
       ? "订单尚未完成退车，不能生成损伤费用账单"
       : depositSettlementLoading
@@ -8200,13 +8205,47 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 workOrders={handoverWorkOrders}
               />
             ) : null}
-            {hasReturnViewPermission && vehicleReturnWorkspaceState === "ENTRY" ? (
+            {hasReturnViewPermission && subscriptionClosure?.returnThreeStageEnabled ? (
+              <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                <ReturnEvidenceStage
+                  canApproveApproval={permissions.has("business_exception:approve")}
+                  canRequestApproval={permissions.has("business_exception:request")}
+                  closure={subscriptionClosure}
+                  currentUserId={me?.user.id ?? null}
+                  onChanged={loadOrder}
+                  orderId={order.id}
+                />
+                {subscriptionClosure.delta ||
+                subscriptionClosure.allowedActions.some(({ key }) =>
+                  ["GENERATE_CONDITION_DELTA", "RECORD_RETURN_INSPECTION"].includes(key)
+                ) ? <ReturnPricingStage
+                  canApproveApproval={permissions.has("business_exception:approve")}
+                  canRequestApproval={permissions.has("business_exception:request")}
+                  closure={subscriptionClosure}
+                  currentUserId={me?.user.id ?? null}
+                  onChanged={loadOrder}
+                /> : null}
+                {subscriptionClosure.settlementRevisions.some((settlement) =>
+                  ["FINALIZED", "SETTLED"].includes(settlement.stage)
+                ) ? <ReturnSettlementStage
+                  canApproveApproval={permissions.has("business_exception:approve")}
+                  canRequestApproval={permissions.has("business_exception:request")}
+                  closure={subscriptionClosure}
+                  currentUserId={me?.user.id ?? null}
+                  onChanged={loadOrder}
+                /> : null}
+              </Space>
+            ) : null}
+            {hasReturnViewPermission &&
+            (!subscriptionClosure || !subscriptionClosure.returnThreeStageEnabled) &&
+            vehicleReturnWorkspaceState === "ENTRY" ? (
               <VehicleReturnEntry
                 onOpenPrepare={openPrepareReturnModal}
                 prepareAvailability={prepareReturnAvailability}
               />
             ) : null}
             {hasReturnViewPermission &&
+            (!subscriptionClosure || !subscriptionClosure.returnThreeStageEnabled) &&
             (vehicleReturnWorkspaceState === "WORKFLOW" ||
               vehicleReturnWorkspaceState === "COMPLETED") ? (
               <ReturnPanel

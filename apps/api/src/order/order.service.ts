@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Readable } from "node:stream";
 
 import {
@@ -63,6 +64,7 @@ import { resolveVehicleInsuranceCoverage } from "../common/vehicle-insurance-cov
 import { vehiclePackageSupportsModel } from "../common/vehicle-package-membership";
 import { buildVehicleModelSnapshot } from "../common/vehicle-model-snapshot";
 import { ContractPdfArtifactWriterService } from "../contract/contract-pdf-artifact-writer.service";
+import { persistContractChargeClausesInTransaction } from "../contract/contract-charge-clause";
 import type { ContractPdfArtifactWriteResult } from "../contract/contract-pdf-artifact.types";
 import {
   ContractPdfAppendixRow,
@@ -139,6 +141,7 @@ const CUSTOMER_ORDER_VEHICLE_UNAVAILABLE_MESSAGE = "所选车辆当前不可租�
 
 const CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED_ENV = "CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED";
 const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
+const CONTRACT_ARCHIVE_PDF_MAX_BYTES = 20 * 1024 * 1024;
 const STAGE1_PARTY_B_ID_NUMBER_MISSING = "STAGE1_PARTY_B_ID_NUMBER_MISSING";
 
 const PRE_CONTRACT_CHANGE_STATUSES = new Set<OrderStatus>([
@@ -519,6 +522,11 @@ export class OrderService {
         status: ContractStatus.GENERATED,
         updatedBy: actorId
       }
+    });
+    await persistContractChargeClausesInTransaction(tx, {
+      actorId,
+      contractId: created.id,
+      contractSnapshot
     });
     await tx.subscriptionOrder.update({
       data: {
@@ -2927,6 +2935,11 @@ export class OrderService {
                 updatedBy: user.id
               }
             });
+            await persistContractChargeClausesInTransaction(tx, {
+              actorId: user.id,
+              contractId: created.id,
+              contractSnapshot
+            });
             await tx.subscriptionOrder.update({
               data: {
                 contractId: created.id,
@@ -2985,6 +2998,11 @@ export class OrderService {
             status: ContractStatus.GENERATED,
             updatedBy: user.id
           }
+        });
+        await persistContractChargeClausesInTransaction(tx, {
+          actorId: user.id,
+          contractId: created.id,
+          contractSnapshot
         });
         return tx.contract.findUniqueOrThrow({
           include: contractInclude,
@@ -3149,25 +3167,95 @@ export class OrderService {
     if (before.status !== ContractStatus.SIGNED) {
       throw new BadRequestException("仅已签署合同可以归档。");
     }
-    const contract = await this.prisma.contract.update({
-      data: {
-        archivedAt: new Date(),
-        fileId: dto.fileId,
-        status: ContractStatus.ARCHIVED,
-        updatedBy: user.id
-      },
-      include: contractInclude,
-      where: { id }
+    if (!this.storageService) {
+      throw new Error("CONTRACT_ARCHIVE_STORAGE_MISSING: storage service is unavailable");
+    }
+    const fileId = dto.fileId?.trim();
+    if (!fileId || fileId !== before.fileId) {
+      throw new BadRequestException("仅允许归档当前合同关联的签署 PDF。");
+    }
+    const fileObject = await this.prisma.fileObject.findUnique({ where: { id: fileId } });
+    if (!fileObject) throw new BadRequestException("归档合同文件不存在。");
+    assertContractArchivePdfMetadata(fileObject);
+    const stored = await this.storageService.getObject(fileObject.bucket, fileObject.objectKey);
+    if (
+      stored.contentType &&
+      stored.contentType.toLowerCase().split(";", 1)[0]?.trim() !== "application/pdf"
+    ) {
+      throw new BadRequestException("归档合同文件存储类型必须为 PDF。");
+    }
+    if (
+      stored.contentLength !== undefined &&
+      (!Number.isSafeInteger(stored.contentLength) ||
+        stored.contentLength <= 0 ||
+        stored.contentLength > CONTRACT_ARCHIVE_PDF_MAX_BYTES)
+    ) {
+      throw new BadRequestException("归档合同文件不得超过 20 MiB。");
+    }
+    const fileBytes = await readableToBuffer(stored.stream, CONTRACT_ARCHIVE_PDF_MAX_BYTES);
+    if (
+      fileBytes.length !== Number(fileObject.sizeBytes) ||
+      (stored.contentLength !== undefined && fileBytes.length !== stored.contentLength)
+    ) {
+      throw new ConflictException("归档合同文件实际大小与文件记录不一致。");
+    }
+    if (!isPdfBytes(fileBytes)) {
+      throw new BadRequestException("归档合同文件内容不是有效 PDF。");
+    }
+    const signedPdfHash = createHash("sha256").update(fileBytes).digest("hex");
+    if (fileObject.contentSha256 && fileObject.contentSha256 !== signedPdfHash) {
+      throw new ConflictException("归档合同文件哈希与已有权威记录不一致。");
+    }
+    const contract = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "contract" WHERE "id" = ${id}::uuid FOR UPDATE
+      `);
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "file_object" WHERE "id" = ${fileId}::uuid FOR UPDATE
+      `);
+      const [current, currentFile] = await Promise.all([
+        tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id } }),
+        tx.fileObject.findUnique({ where: { id: fileId } })
+      ]);
+      if (current.status !== ContractStatus.SIGNED) {
+        throw new ConflictException("合同状态已变更，无法归档。");
+      }
+      if (!currentFile) throw new BadRequestException("归档合同文件不存在。");
+      if (currentFile.contentSha256 && currentFile.contentSha256 !== signedPdfHash) {
+        throw new ConflictException("归档合同文件哈希与已有权威记录不一致。");
+      }
+      const persisted = await tx.fileObject.updateMany({
+        data: { contentSha256: signedPdfHash },
+        where: {
+          id: fileId,
+          OR: [{ contentSha256: null }, { contentSha256: signedPdfHash }]
+        }
+      });
+      if (persisted.count !== 1) {
+        throw new ConflictException("归档合同文件哈希并发写入冲突。");
+      }
+      const archived = await tx.contract.update({
+        data: {
+          archivedAt: new Date(),
+          fileId,
+          status: ContractStatus.ARCHIVED,
+          updatedBy: user.id
+        },
+        include: contractInclude,
+        where: { id }
+      });
+      await this.writeAudit(
+        AuditAction.UPDATE,
+        "contract",
+        id,
+        toContractView(before),
+        { ...toContractView(archived), signedPdfHash },
+        user,
+        context,
+        tx
+      );
+      return archived;
     });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "contract",
-      id,
-      toContractView(before),
-      toContractView(contract),
-      user,
-      context
-    );
     return toContractView(contract);
   }
 
@@ -3946,9 +4034,10 @@ export class OrderService {
     before: unknown,
     after: unknown,
     user: RequestUser,
-    context: RequestContext
+    context: RequestContext,
+    client?: Prisma.TransactionClient
   ) {
-    await this.auditService.write({
+    const input = {
       action,
       after,
       before,
@@ -3958,7 +4047,12 @@ export class OrderService {
       module: entityType.startsWith("contract") ? "contract" : "order",
       operatorId: user.id,
       userAgent: context.userAgent
-    });
+    };
+    if (client) {
+      await this.auditService.write(input, client);
+      return;
+    }
+    await this.auditService.write(input);
   }
 
   private async writeDeliveryAudit(
@@ -4026,6 +4120,44 @@ export class OrderService {
       userAgent: context.userAgent
     });
   }
+}
+
+function assertContractArchivePdfMetadata(file: Readonly<{
+  mimeType: string | null;
+  originalName: string;
+  sizeBytes: bigint;
+}>) {
+  if (
+    file.mimeType?.toLowerCase().split(";", 1)[0]?.trim() !== "application/pdf" ||
+    !file.originalName.toLowerCase().endsWith(".pdf")
+  ) {
+    throw new BadRequestException("归档合同文件必须为 PDF。");
+  }
+  if (file.sizeBytes <= 0n || file.sizeBytes > BigInt(CONTRACT_ARCHIVE_PDF_MAX_BYTES)) {
+    throw new BadRequestException("归档合同文件不得超过 20 MiB。");
+  }
+}
+
+function isPdfBytes(bytes: Buffer) {
+  return (
+    bytes.length >= 10 &&
+    bytes.subarray(0, 5).equals(Buffer.from("%PDF-", "ascii")) &&
+    bytes.subarray(Math.max(0, bytes.length - 1024)).includes(Buffer.from("%%EOF", "ascii"))
+  );
+}
+
+async function readableToBuffer(stream: NodeJS.ReadableStream, maxBytes: number) {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += bytes.length;
+    if (total > maxBytes) {
+      throw new BadRequestException("归档合同文件不得超过 20 MiB。");
+    }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks, total);
 }
 
 type SnapshotRecord = Record<string, unknown>;

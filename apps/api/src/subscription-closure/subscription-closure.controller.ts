@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Optional,
   Param,
   ParseUUIDPipe,
@@ -9,11 +10,15 @@ import {
   Query,
   Req,
   ServiceUnavailableException,
+  StreamableFile,
+  UploadedFiles,
   UseGuards,
+  UseInterceptors,
   UsePipes,
   ValidationPipe
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { AnyFilesInterceptor } from "@nestjs/platform-express";
 import { PermissionCode } from "@subscription-saas/shared";
 
 import { RequirePermissions } from "../auth/auth.decorators";
@@ -23,23 +28,41 @@ import type { AppendCostServiceCommand } from "../asset-accounting/asset-account
 import type { AssetAccountingSnapshotObject } from "../asset-accounting/asset-accounting.types";
 import type { AppendEvidenceServiceCommand } from "../asset-operations/asset-operations.service";
 import type { AssetOperationSnapshot } from "../asset-operations/asset-operations.types";
+import type { UploadedMaterialFile } from "../customer/customer.service";
+import { createUtf8MultipartOptions } from "../upload/multipart-upload-options";
 import {
+  CaptureReturnChecklistDto,
+  CancelReturnManifestSigningDto,
   CancelEarlyTerminationDto,
   ClosureCaseQueryDto,
+  CompleteClosureOperationsDto,
+  CreateClosurePricingDto,
   ClosureInspectionDto,
+  ConfirmReturnDeltaDto,
   ConfirmClosurePhysicalReceiptDto,
   DecideRecoveryApprovalDto,
+  DecideClosureApprovalDto,
+  DecideClosureDisputeDto,
   ExecuteEarlyTerminationDto,
   ExecuteRecoveryDto,
+  GenerateReturnDeltaDto,
   InitiateEarlyTerminationDto,
   ManagedSettlementDto,
   RecordRecoveryExecutionDto,
+  RecordClosureDispositionDto,
+  RecordClosureLegalEventDto,
+  RecordClosureNoResponseDto,
   RecoveryActionDto,
   ReleaseClosureInventoryDto,
-  RequestRecoveryApprovalDto
+  RequestRecoveryApprovalDto,
+  RequestClosureApprovalDto,
+  TransferClosureLegalCollectionDto,
+  UploadReturnEvidenceDto
 } from "./subscription-closure.dto";
+import { SubscriptionClosureEvidencePackageService } from "./subscription-closure-evidence-package.service";
 import { SubscriptionClosureProjectionService } from "./subscription-closure.projection";
 import { SubscriptionClosureService } from "./subscription-closure.service";
+import { SubscriptionReturnGovernanceService } from "./subscription-return-governance.service";
 
 @Controller("subscription-closures")
 @UseGuards(AuthGuard, PermissionsGuard)
@@ -48,7 +71,9 @@ export class SubscriptionClosureController {
   constructor(
     private readonly service: SubscriptionClosureService,
     private readonly projection: SubscriptionClosureProjectionService,
-    @Optional() private readonly config?: ConfigService
+    @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly returnGovernance?: SubscriptionReturnGovernanceService,
+    @Optional() private readonly evidencePackages?: SubscriptionClosureEvidencePackageService
   ) {}
 
   @Get(":id")
@@ -69,17 +94,393 @@ export class SubscriptionClosureController {
     return this.projection.listAdmin(query);
   }
 
+  @Post(":id/return-checklists")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_RECEIVE)
+  captureReturnChecklist(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: CaptureReturnChecklistDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().captureChecklist(
+      closureCaseId,
+      {
+        attestationEvidenceIds: dto.attestationEvidenceIds ?? [],
+        attestationMode: dto.attestationMode,
+        attestationReason: dto.attestationReason ?? null,
+        capturedAt: new Date(dto.capturedAt),
+        customerComments: dto.customerComments ?? null,
+        idempotencyKey: dto.idempotencyKey,
+        items: dto.items,
+        witnesses: dto.witnesses ?? []
+      },
+      request.user.id
+    );
+  }
+
+  @Post(":id/return-manifest-signing/cancel")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_RECEIVE)
+  cancelReturnManifestSigning(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: CancelReturnManifestSigningDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().cancelReturnManifestSigning(
+      closureCaseId,
+      {
+        idempotencyKey: dto.idempotencyKey,
+        reason: dto.reason
+      },
+      request.user.id
+    );
+  }
+
+  @Post(":id/return-evidence/upload")
+  @UseInterceptors(
+    AnyFilesInterceptor(createUtf8MultipartOptions({ limits: { files: 1, fileSize: 20 * 1024 * 1024 } }))
+  )
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_RECEIVE)
+  uploadReturnEvidence(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: UploadReturnEvidenceDto,
+    @UploadedFiles() files: UploadedMaterialFile[] | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    const uploaded = (files ?? [])[0];
+    const file =
+      uploaded?.buffer && uploaded.mimetype && uploaded.originalname && uploaded.size !== undefined
+        ? {
+            buffer: uploaded.buffer,
+            mimetype: uploaded.mimetype,
+            originalname: uploaded.originalname,
+            size: uploaded.size
+          }
+        : undefined;
+    return this.governance().uploadEvidence(
+      closureCaseId,
+      {
+        capturedAt: new Date(dto.capturedAt),
+        evidenceType: dto.evidenceType,
+        idempotencyKey: dto.idempotencyKey,
+        supersedesEvidenceId: dto.supersedesEvidenceId ?? null,
+        targetId: dto.targetId,
+        targetType: dto.targetType,
+        visibility: dto.visibility
+      },
+      file,
+      request.user.id
+    );
+  }
+
+  @Post(":id/financial-proofs/upload")
+  @UseInterceptors(
+    AnyFilesInterceptor(createUtf8MultipartOptions({ limits: { files: 1, fileSize: 20 * 1024 * 1024 } }))
+  )
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
+  uploadFinancialProof(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @UploadedFiles() files: UploadedMaterialFile[] | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    const uploaded = (files ?? [])[0];
+    const file =
+      uploaded?.buffer && uploaded.mimetype && uploaded.originalname && uploaded.size !== undefined
+        ? {
+            buffer: uploaded.buffer,
+            mimetype: uploaded.mimetype,
+            originalname: uploaded.originalname,
+            size: uploaded.size
+          }
+        : undefined;
+    return this.governance().uploadFinancialProof(
+      closureCaseId,
+      file,
+      request.user.id
+    );
+  }
+
+  @Get(":id/return-evidence/:linkId/preview")
+  @Header("X-Content-Type-Options", "nosniff")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_VIEW)
+  async previewReturnEvidence(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Param("linkId", uuidPipe()) linkId: string
+  ) {
+    const file = await this.governance().getEvidenceObject(closureCaseId, linkId);
+    return streamFile(file, "inline");
+  }
+
+  @Get(":id/return-evidence/:linkId/download")
+  @Header("X-Content-Type-Options", "nosniff")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_VIEW)
+  async downloadReturnEvidence(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Param("linkId", uuidPipe()) linkId: string
+  ) {
+    const file = await this.governance().getEvidenceObject(closureCaseId, linkId);
+    return streamFile(file, "attachment");
+  }
+
+  @Post(":id/return-deltas")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_INSPECT)
+  generateReturnDelta(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: GenerateReturnDeltaDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().generateDelta(
+      closureCaseId,
+      {
+        idempotencyKey: dto.idempotencyKey
+      },
+      request.user.id
+    );
+  }
+
+  @Post(":id/return-deltas/confirm")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_INSPECT)
+  confirmReturnDelta(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: ConfirmReturnDeltaDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().confirmDelta(
+      closureCaseId,
+      {
+        baseRevisionId: dto.baseRevisionId,
+        decisions: dto.decisions,
+        idempotencyKey: dto.idempotencyKey
+      },
+      request.user.id
+    );
+  }
+
+  @Post(":id/pricing")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
+  createPricing(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: CreateClosurePricingDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().createPricing(
+      closureCaseId,
+      {
+        finalize: dto.finalize,
+        idempotencyKey: dto.idempotencyKey,
+        lines: dto.lines.map((line) => ({
+          chargeType: line.chargeType,
+          clauseSnapshotId: line.clauseSnapshotId ?? null,
+          deltaItemId: line.deltaItemId ?? null,
+          evidenceIds: line.evidenceIds,
+          exceptionApprovalId: line.exceptionApprovalId ?? null,
+          lineCode: line.lineCode,
+          manualBasis: line.manualBasis ?? null,
+          manualUnitPriceCents: line.manualUnitPriceCents ?? null,
+          quantity: line.quantity,
+          responsibility: line.responsibility
+        })),
+        settlementRevisionId: dto.settlementRevisionId
+      },
+      request.user.id
+    );
+  }
+
+  @Post(":id/approval-requests")
+  @RequirePermissions(PermissionCode.BUSINESS_EXCEPTION_REQUEST)
+  requestClosureApproval(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: RequestClosureApprovalDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().requestApproval(
+      closureCaseId,
+      dto,
+      request.user,
+      requestContext(request)
+    );
+  }
+
+  @Post(":id/approvals/:approvalId/decision")
+  @RequirePermissions(PermissionCode.BUSINESS_EXCEPTION_APPROVE)
+  decideClosureApproval(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Param("approvalId", uuidPipe()) approvalId: string,
+    @Body() dto: DecideClosureApprovalDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().decideApproval(
+      closureCaseId,
+      approvalId,
+      dto,
+      request.user,
+      requestContext(request)
+    );
+  }
+
+  @Post(":id/receivable-dispositions")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
+  recordDisposition(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: RecordClosureDispositionDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().recordDisposition(
+      closureCaseId,
+      {
+        approvalId: dto.approvalId ?? null,
+        billId: dto.billId,
+        chargeLineId: dto.chargeLineId ?? null,
+        detail: dto.detail,
+        disposition: dto.disposition,
+        idempotencyKey: dto.idempotencyKey,
+        ownerId: dto.ownerId ?? null,
+        ownerType: dto.ownerType,
+        proofFileId: dto.proofFileId ?? null
+      },
+      request.user.id
+    );
+  }
+
+  @Post(":id/customer-no-response")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
+  recordCustomerNoResponse(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: RecordClosureNoResponseDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().recordNoResponse(
+      closureCaseId,
+      {
+        deadlineAt: new Date(dto.deadlineAt),
+        idempotencyKey: dto.idempotencyKey,
+        settlementHash: dto.settlementHash,
+        settlementRevisionId: dto.settlementRevisionId
+      },
+      request.user.id
+    );
+  }
+
+  @Post(":id/disputes/:disputeId/decision")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
+  decideChargeDispute(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Param("disputeId", uuidPipe()) disputeId: string,
+    @Body() dto: DecideClosureDisputeDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().decideDispute(
+      closureCaseId,
+      disputeId,
+      {
+        decision: dto.decision,
+        evidenceIds: dto.evidenceIds,
+        idempotencyKey: dto.idempotencyKey,
+        occurredAt: new Date(dto.occurredAt),
+        rationale: dto.rationale
+      },
+      request.user.id
+    );
+  }
+
+  @Post(":id/legal-collection")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
+  transferLegalCollection(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: TransferClosureLegalCollectionDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().transferLegalCollection(
+      closureCaseId,
+      {
+        billId: dto.billId,
+        evidencePackageHash: dto.evidencePackageHash,
+        externalReference: dto.externalReference ?? null,
+        idempotencyKey: dto.idempotencyKey,
+        openedAt: new Date(dto.openedAt),
+        ownerId: dto.ownerId,
+        ownerType: dto.ownerType
+      },
+      request.user.id
+    );
+  }
+
+  @Post(":id/legal-collection/events")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
+  recordLegalCollectionEvent(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: RecordClosureLegalEventDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().recordLegalCollectionEvent(
+      closureCaseId,
+      {
+        amountCents: dto.amountCents ? BigInt(dto.amountCents) : null,
+        detail: dto.detail,
+        eventType: dto.eventType,
+        idempotencyKey: dto.idempotencyKey,
+        legalCaseId: dto.legalCaseId,
+        occurredAt: new Date(dto.occurredAt),
+        proofFileId: dto.proofFileId ?? null
+      },
+      request.user.id
+    );
+  }
+
+  @Post(":id/operational-completion")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
+  completeOperations(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Body() dto: CompleteClosureOperationsDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.governance().completeOperations(
+      closureCaseId,
+      { idempotencyKey: dto.idempotencyKey, occurredAt: new Date(dto.occurredAt) },
+      request.user.id
+    );
+  }
+
+  @Post(":id/evidence-packages")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
+  async exportEvidencePackage(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    await this.governance().assertThreeStageWriteAllowed(closureCaseId);
+    return this.packages().export(closureCaseId, request.user.id);
+  }
+
+  @Get(":id/evidence-packages/:exportId/download")
+  @Header("X-Content-Type-Options", "nosniff")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_VIEW)
+  async downloadEvidencePackage(
+    @Param("id", uuidPipe()) closureCaseId: string,
+    @Param("exportId", uuidPipe()) exportId: string
+  ) {
+    const file = await this.packages().getObject(closureCaseId, exportId);
+    return streamFile(file, "attachment");
+  }
+
+  @Get(":id/return-manifest/signed-document/preview")
+  @Header("X-Content-Type-Options", "nosniff")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_VIEW)
+  async previewSignedReturnManifest(@Param("id", uuidPipe()) closureCaseId: string) {
+    const file = await this.governance().getSignedReturnManifestObject(closureCaseId);
+    return streamFile(file, "inline");
+  }
+
   @Post("orders/:orderId/physical-receipt")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_RECEIVE)
-  confirmPhysicalReceipt(
+  async confirmPhysicalReceipt(
     @Param("orderId", uuidPipe()) orderId: string,
     @Body() dto: ConfirmClosurePhysicalReceiptDto,
     @Req() request: AuthenticatedRequest
   ) {
+    await this.governance().assertThreeStageWriteAllowedByOrder(orderId);
     return this.service.confirmManagedPhysicalReceipt(
       {
         actorId: request.user.id,
-        checklist: dto.checklist,
+        checklistManifestHash: dto.checklistManifestHash,
+        checklistRevisionId: dto.checklistRevisionId,
         damages: dto.damages,
         orderId,
         physicalControlMode: dto.physicalControlMode,
@@ -94,11 +495,12 @@ export class SubscriptionClosureController {
 
   @Post(":id/inspection")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_INSPECT)
-  recordInspection(
+  async recordInspection(
     @Param("id", uuidPipe()) closureCaseId: string,
     @Body() dto: ClosureInspectionDto,
     @Req() request: AuthenticatedRequest
   ) {
+    await this.governance().assertThreeStageWriteAllowed(closureCaseId);
     return this.service.recordManagedReturnInspection(
       {
         accepted: dto.accepted,
@@ -115,11 +517,12 @@ export class SubscriptionClosureController {
 
   @Post(":id/inventory-release")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
-  releaseInventory(
+  async releaseInventory(
     @Param("id", uuidPipe()) closureCaseId: string,
     @Body() dto: ReleaseClosureInventoryDto,
     @Req() request: AuthenticatedRequest
   ) {
+    await this.governance().assertThreeStageWriteAllowed(closureCaseId);
     return this.service.releaseManagedReturnInventory(
       {
         actorId: request.user.id,
@@ -133,31 +536,34 @@ export class SubscriptionClosureController {
 
   @Post(":id/settlements/propose")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
-  proposeSettlement(
+  async proposeSettlement(
     @Param("id", uuidPipe()) id: string,
     @Body() dto: ManagedSettlementDto,
     @Req() request: AuthenticatedRequest
   ) {
+    await this.governance().assertThreeStageWriteAllowed(id);
     return this.service.proposeManagedSettlement(settlementInput(id, dto, request));
   }
 
   @Post(":id/settlements/finalize")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
-  finalizeSettlement(
+  async finalizeSettlement(
     @Param("id", uuidPipe()) id: string,
     @Body() dto: ManagedSettlementDto,
     @Req() request: AuthenticatedRequest
   ) {
+    await this.governance().assertThreeStageWriteAllowed(id);
     return this.service.finalizeManagedSettlement(settlementInput(id, dto, request));
   }
 
   @Post(":id/settlements/settle")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CLOSURE_SETTLE)
-  settle(
+  async settle(
     @Param("id", uuidPipe()) id: string,
     @Body() dto: ManagedSettlementDto,
     @Req() request: AuthenticatedRequest
   ) {
+    await this.governance().assertThreeStageWriteAllowed(id);
     return this.service.settleManagedSettlement(settlementInput(id, dto, request));
   }
 
@@ -285,6 +691,16 @@ export class SubscriptionClosureController {
       closureCaseId
     });
   }
+
+  private governance() {
+    if (!this.returnGovernance) throw new ServiceUnavailableException("Return governance unavailable.");
+    return this.returnGovernance;
+  }
+
+  private packages() {
+    if (!this.evidencePackages) throw new ServiceUnavailableException("Evidence package unavailable.");
+    return this.evidencePackages;
+  }
 }
 
 function assertLegacyEarlyTerminationEnabled(config?: ConfigService) {
@@ -362,4 +778,20 @@ function requestContext(request: AuthenticatedRequest) {
 
 function uuidPipe() {
   return new ParseUUIDPipe({ version: "4" });
+}
+
+function streamFile(
+  file: Readonly<{
+    contentLength: number;
+    mimeType: string;
+    originalName: string;
+    stream: import("node:stream").Readable;
+  }>,
+  disposition: "attachment" | "inline"
+) {
+  return new StreamableFile(file.stream, {
+    disposition: `${disposition}; filename*=UTF-8''${encodeURIComponent(file.originalName)}`,
+    length: file.contentLength,
+    type: file.mimeType
+  });
 }

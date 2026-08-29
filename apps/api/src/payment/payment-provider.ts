@@ -30,6 +30,15 @@ export interface CreatePaymentResult {
   rawResponse?: unknown;
 }
 
+export interface ClosePaymentInput {
+  providerTradeNo: string;
+}
+
+export interface ClosePaymentResult {
+  providerTradeNo: string;
+  rawResponse?: unknown;
+}
+
 export interface VerifyPaymentCallbackResult {
   errorMessage?: string;
   eventType?: string;
@@ -42,6 +51,7 @@ export interface VerifyPaymentCallbackResult {
 }
 
 export interface PaymentProvider {
+  closePayment(input: ClosePaymentInput): Promise<ClosePaymentResult>;
   createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult>;
   verifyCallback(
     payload: unknown,

@@ -3,6 +3,8 @@ import { ConfigService } from "@nestjs/config";
 import {
   AutoSealTaskInput,
   AutoSealTaskResult,
+  CancelReturnManifestProviderTaskInput,
+  CancelReturnManifestProviderTaskResult,
   CompleteReturnManifestProviderTaskInput,
   CompleteReturnManifestProviderTaskResult,
   CreateSignTaskInput,
@@ -25,6 +27,26 @@ export class MockESignProvider implements ESignProvider {
   private readonly signerUrls = new Map<string, MockSignerUrl>();
 
   constructor(private readonly configService: ConfigService) {}
+
+  async cancelReturnManifestTask(
+    input: CancelReturnManifestProviderTaskInput
+  ): Promise<CancelReturnManifestProviderTaskResult> {
+    const existing = this.returnManifestTasks.get(input.providerTaskId);
+    if (!existing) return { cancelled: true, replayed: true };
+    if (
+      existing.result.providerEnvelopeId !== input.providerEnvelopeId ||
+      existing.result.providerTaskId !== input.providerTaskId ||
+      existing.taskId !== input.taskId ||
+      existing.taskNo !== input.taskNo
+    ) {
+      throw new Error("MOCK_RETURN_MANIFEST_PROVIDER_CANCELLATION_CONFLICT");
+    }
+    this.returnManifestTasks.delete(input.providerTaskId);
+    return {
+      cancelled: true,
+      rawResponse: { providerTaskId: input.providerTaskId, status: "CANCELLED" }
+    };
+  }
 
   async createReturnManifestTask(
     input: ReturnManifestProviderTaskInput

@@ -1,4 +1,11 @@
-import { ConflictException, Inject, Injectable } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   AuditAction,
@@ -31,6 +38,7 @@ import {
 } from "../subscription-closure/subscription-closure.repository";
 import { validateExactReturnManifestSuccessorChain } from "../subscription-closure/subscription-closure.service";
 import type { SubscriptionClosureSource } from "../subscription-closure/subscription-closure.types";
+import { extractReturnManifestPdfFacts } from "../subscription-closure/subscription-return-manifest-model";
 import {
   ESIGN_PROVIDER_CLIENT,
   type ESignProvider,
@@ -73,6 +81,8 @@ export type ReturnManifestVerifiedCallback = Readonly<{
 
 type ResolvedManifestAuthority = Awaited<ReturnType<typeof resolveManifestAuthority>>;
 
+const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
+
 @Injectable()
 export class ReturnManifestESignService {
   constructor(
@@ -84,7 +94,181 @@ export class ReturnManifestESignService {
     @Inject(ESIGN_PROVIDER_CLIENT) private readonly provider: ESignProvider
   ) {}
 
+  async getPortalSigning(closureCaseId: string, customerId: string) {
+    const closureCase = await this.prisma.subscriptionClosureCase.findUnique({
+      select: { customerId: true },
+      where: { id: closureCaseId }
+    });
+    if (!closureCase || closureCase.customerId !== customerId) {
+      throw new NotFoundException("Return manifest signing task not found.");
+    }
+    const task = await this.prisma.contractESignTask.findFirst({
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      select: {
+        id: true,
+        provider: true,
+        signUrl: true,
+        signUrlExpiresAt: true,
+        taskStatus: true
+      },
+      where: {
+        customerId,
+        deletedAt: null,
+        documentType: ESignDocumentType.RETURN_MANIFEST,
+        signingStage: ESignSigningStage.STAGE6_RETURN_MANIFEST,
+        sourceId: closureCaseId,
+        sourceKey: { startsWith: "return-manifest-esign" },
+        sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
+      }
+    });
+    return task
+      ? Object.freeze({
+          expiresAt: task.signUrlExpiresAt,
+          mock: task.provider === ESignProviderType.MOCK,
+          provider: task.provider,
+          signUrl: task.signUrl,
+          taskId: task.id,
+          taskStatus: task.taskStatus
+        })
+      : null;
+  }
+
+  async mockSignForPortal(closureCaseId: string, taskId: string, customerId: string) {
+    if (
+      this.providerType() !== ESignProviderType.MOCK ||
+      this.config.get<string>("ESIGN_MOCK_ENABLED") !== "true"
+    ) {
+      throw new ForbiddenException("当前环境未开启 Mock 退车清单电子签署。");
+    }
+    const signing = await this.getPortalSigning(closureCaseId, customerId);
+    if (!signing || signing.taskId !== taskId) {
+      throw new NotFoundException("Return manifest signing task not found.");
+    }
+    if (signing.taskStatus === ESignTaskStatus.COMPLETED) {
+      return Object.freeze({ taskId, taskStatus: signing.taskStatus, wrote: false });
+    }
+    if (!signing.signUrl) {
+      throw new BadRequestException("退车清单电子签署链接尚未就绪。");
+    }
+    const task = await this.prisma.contractESignTask.findUnique({
+      select: { providerTaskId: true },
+      where: { id: taskId }
+    });
+    if (!task?.providerTaskId) throw sourceConflict();
+    const payload = {
+      eventType: "RETURN_MANIFEST_SIGN_COMPLETED",
+      providerTaskId: task.providerTaskId,
+      taskId
+    };
+    const result = await this.handleVerifiedCallback({
+      eventType: payload.eventType,
+      payload,
+      provider: ESignProviderType.MOCK,
+      providerContractId: null,
+      providerTaskId: task.providerTaskId,
+      resultCode: "SUCCESS",
+      verification: {
+        eventType: payload.eventType,
+        payload,
+        providerTaskId: task.providerTaskId,
+        resultCode: "SUCCESS",
+        verified: true
+      }
+    });
+    return Object.freeze({ ...result, taskStatus: ESignTaskStatus.COMPLETED });
+  }
+
   async reconcile(input: ReturnManifestESignInput) {
+    const closureCase = await this.prisma.subscriptionClosureCase.findUnique({
+      select: { currentChecklistRevisionId: true, orderId: true },
+      where: { id: input.closureCaseId }
+    });
+    if (
+      this.config.get<string>("SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED") === "true" ||
+      Boolean(closureCase?.currentChecklistRevisionId)
+    ) {
+      if (!closureCase?.currentChecklistRevisionId) {
+        return Object.freeze({
+          action: "WAITING_RETURN_CHECKLIST",
+          reason: "退车清单尚未完成。",
+          wrote: false
+        });
+      }
+      const checklist = await this.prisma.vehicleReturnChecklistRevision.findUnique({
+        include: { items: true },
+        where: { id: closureCase.currentChecklistRevisionId }
+      });
+      if (!checklist) throw sourceConflict();
+      const currentAttemptJob = await this.prisma.subscriptionAutomationJob.findFirst({
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        where: {
+          jobType: "CLOSURE_RETURN_MANIFEST_ESIGN",
+          orderId: closureCase.orderId,
+          payload: { path: ["checklistRevisionId"], equals: checklist.id }
+        }
+      });
+      const currentAttemptKey = stringValue(objectValue(currentAttemptJob?.payload).idempotencyKey);
+      if (currentAttemptKey && currentAttemptKey !== input.idempotencyKey) {
+        return Object.freeze({
+          action: "SUPERSEDED_RETURN_MANIFEST_ESIGN_ATTEMPT",
+          checklistRevisionId: checklist.id,
+          wrote: false
+        });
+      }
+      const evidenceLinks = await this.prisma.vehicleReturnEvidenceLink.findMany({
+        where: {
+          closureCaseId: input.closureCaseId,
+          evidenceId: { not: null },
+          visibility: "CUSTOMER_VISIBLE"
+        }
+      });
+      const registrationItem = checklist.items.find(
+        (item) => item.itemCode === "REGISTRATION_CERTIFICATE"
+      );
+      const registrationApproval = registrationItem
+        ? await this.prisma.businessExceptionApproval.findFirst({
+            orderBy: [{ requestedAt: "desc" }, { id: "desc" }],
+            where: {
+              decision: "APPROVED",
+              exceptionType: "VEHICLE_REGISTRATION_DOCUMENT_MISSING",
+              expiredAt: null,
+              status: "APPROVED",
+              subjectField: `returnRegistrationDocument:${registrationItem.id}`,
+              subjectId: input.closureCaseId,
+              subjectType: "SETTLEMENT_CASE"
+            }
+          })
+        : null;
+      const approvedRegistrationExceptionItemIds = new Set<string>();
+      if (
+        registrationItem &&
+        registrationApproval &&
+        isCurrentRegistrationDocumentApproval({
+          approval: registrationApproval,
+          checklist,
+          closureCaseId: input.closureCaseId,
+          evidenceLinks,
+          registrationItem
+        })
+      ) {
+        approvedRegistrationExceptionItemIds.add(registrationItem.id);
+      }
+      const missingEvidenceCodes = returnManifestMissingEvidenceCodes(
+        checklist.items,
+        evidenceLinks,
+        approvedRegistrationExceptionItemIds
+      );
+      if (missingEvidenceCodes.length > 0) {
+        return Object.freeze({
+          action: "WAITING_RETURN_EVIDENCE",
+          missingEvidenceCodes,
+          wrote: false
+        });
+      }
+      if (checklist.attestationMode !== "CUSTOMER_SIGNED") {
+        return this.sealUnilateralAttestation(input);
+      }
+    }
     const started = await this.start(input);
     const task = await this.prisma.contractESignTask.findUnique({
       select: { taskStatus: true },
@@ -92,6 +276,193 @@ export class ReturnManifestESignService {
     });
     if (task?.taskStatus !== ESignTaskStatus.COMPLETED) return started;
     return this.finalize(input);
+  }
+
+  private async sealUnilateralAttestation(input: ReturnManifestESignInput) {
+    const authority = await this.prisma.subscriptionClosureCase.findUnique({
+      include: {
+        currentChecklistRevision: { include: { items: { orderBy: { itemCode: "asc" } } } }
+      },
+      where: { id: input.closureCaseId }
+    });
+    const checklist = authority?.currentChecklistRevision;
+    if (
+      !authority?.returnAssetWorkOrderId ||
+      !checklist ||
+      checklist.attestationMode === "CUSTOMER_SIGNED"
+    ) {
+      throw sourceConflict();
+    }
+    const returnAssetWorkOrderId = authority.returnAssetWorkOrderId;
+    const source = {
+      id: authority.id,
+      key: `unilateral-attestation:${checklist.id}`,
+      type: "SUBSCRIPTION_CLOSURE_RETURN"
+    };
+    const existing = await this.prisma.vehicleReturnEvidenceLink.findUnique({
+      include: { evidence: true },
+      where: {
+        sourceType_sourceId_sourceKey: {
+          sourceId: source.id,
+          sourceKey: source.key,
+          sourceType: source.type
+        }
+      }
+    });
+    if (existing?.evidence) {
+      return Object.freeze({
+        action: "UNILATERAL_ATTESTATION_SEALED",
+        checklistRevisionId: checklist.id,
+        evidenceId: existing.evidence.id,
+        evidenceLinkId: existing.id,
+        wrote: false
+      });
+    }
+    const snapshot = {
+      attestationMode: checklist.attestationMode,
+      attestationSnapshot: checklist.attestationSnapshot,
+      capturedAt: checklist.capturedAt.toISOString(),
+      checklistItems: checklist.items.map((item) => ({
+        expectedQuantity: item.expectedQuantity,
+        itemCode: item.itemCode,
+        remark: item.remark,
+        returnedQuantity: item.returnedQuantity,
+        state: item.state
+      })),
+      checklistManifestHash: checklist.manifestHash,
+      checklistRevisionId: checklist.id,
+      checklistRevisionNumber: checklist.revisionNumber,
+      closureCaseId: authority.id,
+      sealType: "PLATFORM_UNILATERAL_RETURN_ATTESTATION",
+      sealVersion: 1
+    };
+    const snapshotHash = sha256(
+      Buffer.from(canonicalSubscriptionClosureJson(snapshot as never), "utf8")
+    );
+    const pdf = await renderUnilateralAttestationPdf(
+      snapshot,
+      snapshotHash,
+      checklist.capturedAt,
+      this.config.get<string>(CONTRACT_PDF_CJK_FONT_PATH_ENV)
+    );
+    const contentSha256 = sha256(pdf);
+    const stableCommand = { ...input, idempotencyKey: checklist.id };
+    const originalName = `${authority.caseNo}-return-unilateral-attestation-r${checklist.revisionNumber}.pdf`;
+    const stored = await this.storage.putReturnManifestArtifact({
+      buffer: pdf,
+      closureCaseId: authority.id,
+      contentType: "application/pdf",
+      metadata: {
+        checklistManifestHash: checklist.manifestHash,
+        contentSha256,
+        snapshotHash,
+        type: "RETURN_UNILATERAL_ATTESTATION"
+      },
+      objectIdentity: stableId(stableCommand, "unilateral-attestation-pdf"),
+      originalName
+    });
+    try {
+      const created = await this.prisma.$transaction(async (tx) => {
+        const replay = await tx.vehicleReturnEvidenceLink.findUnique({
+          include: { evidence: true },
+          where: {
+            sourceType_sourceId_sourceKey: {
+              sourceId: source.id,
+              sourceKey: source.key,
+              sourceType: source.type
+            }
+          }
+        });
+        if (replay?.evidence) return { evidence: replay.evidence, link: replay, wrote: false };
+        const file =
+          (await tx.fileObject.findFirst({
+            where: { bucket: stored.bucket, objectKey: stored.objectKey }
+          })) ??
+          (await tx.fileObject.create({
+            data: {
+              bucket: stored.bucket,
+              id: stableId(stableCommand, "unilateral-attestation-file"),
+              mimeType: "application/pdf",
+              objectKey: stored.objectKey,
+              originalName,
+              sizeBytes: BigInt(pdf.length),
+              uploadedBy: input.actorId
+            }
+          }));
+        if (
+          file.mimeType !== "application/pdf" ||
+          file.sizeBytes !== BigInt(pdf.length)
+        ) {
+          throw sourceConflict();
+        }
+        const evidence = await tx.assetWorkOrderEvidence.create({
+          data: {
+            action: "ATTACH",
+            actorId: input.actorId,
+            captureMetadata: {
+              checklistManifestHash: checklist.manifestHash,
+              platformSeal: true,
+              snapshotHash
+            },
+            capturedAt: checklist.capturedAt,
+            contentSha256,
+            evidenceType: "DOCUMENT",
+            fileBucket: stored.bucket,
+            fileId: file.id,
+            fileMimeType: "application/pdf",
+            fileObjectKey: stored.objectKey,
+            fileSizeBytes: BigInt(pdf.length),
+            id: stableId(stableCommand, "unilateral-attestation-evidence"),
+            sourceId: source.id,
+            sourceKey: source.key,
+            sourceType: source.type,
+            workOrderId: returnAssetWorkOrderId
+          }
+        });
+        const link = await tx.vehicleReturnEvidenceLink.create({
+          data: {
+            closureCaseId: authority.id,
+            evidenceId: evidence.id,
+            evidencePurpose: "UNILATERAL_ATTESTATION_SEAL",
+            id: stableId(stableCommand, "unilateral-attestation-link"),
+            recordedBy: input.actorId,
+            sourceId: source.id,
+            sourceKey: source.key,
+            sourceType: source.type,
+            visibility: "CUSTOMER_VISIBLE"
+          }
+        });
+        return { evidence, link, wrote: true };
+      });
+      return Object.freeze({
+        action: "UNILATERAL_ATTESTATION_SEALED",
+        checklistRevisionId: checklist.id,
+        evidenceId: created.evidence.id,
+        evidenceLinkId: created.link.id,
+        wrote: created.wrote
+      });
+    } catch (error) {
+      const winner = await this.prisma.vehicleReturnEvidenceLink.findUnique({
+        include: { evidence: true },
+        where: {
+          sourceType_sourceId_sourceKey: {
+            sourceId: source.id,
+            sourceKey: source.key,
+            sourceType: source.type
+          }
+        }
+      });
+      if (winner?.evidence?.contentSha256 === contentSha256) {
+        return Object.freeze({
+          action: "UNILATERAL_ATTESTATION_SEALED",
+          checklistRevisionId: checklist.id,
+          evidenceId: winner.evidence.id,
+          evidenceLinkId: winner.id,
+          wrote: false
+        });
+      }
+      throw error;
+    }
   }
 
   async start(input: ReturnManifestESignInput): Promise<ReturnManifestESignStart> {
@@ -123,7 +494,8 @@ export class ReturnManifestESignService {
     const providerPdf = await renderReturnManifestPdf(
       documentSnapshot,
       observed.vehicleReturn.checklistSnapshot,
-      observed.generated.generatedAt
+      observed.generated.generatedAt,
+      this.config.get<string>(CONTRACT_PDF_CJK_FONT_PATH_ENV)
     );
     const sourceFileHash = sha256(sourceBytes);
     const providerPdfHash = sha256(providerPdf);
@@ -155,6 +527,17 @@ export class ReturnManifestESignService {
           assertReservedAuthority(locked, command, sources, this.providerType());
           return locked;
         }
+        const activeTaskForCase = await tx.contractESignTask.findFirst({
+          select: { id: true },
+          where: {
+            deletedAt: null,
+            documentType: ESignDocumentType.RETURN_MANIFEST,
+            signingStage: ESignSigningStage.STAGE6_RETURN_MANIFEST,
+            sourceId: locked.closureCase.id,
+            sourceType: sources.task.type
+          }
+        });
+        if (activeTaskForCase) throw sourceConflict();
         if (
           !sameJson(returnManifestSuccessorSnapshot(locked), documentSnapshot) ||
           !sameJson(
@@ -363,6 +746,7 @@ export class ReturnManifestESignService {
               ]
             : [])
         ],
+        deletedAt: null,
         provider: input.provider,
         requestSnapshot: { equals: "RETURN_MANIFEST", path: ["documentType"] },
         sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
@@ -799,7 +1183,10 @@ export class ReturnManifestESignService {
     command: ReturnManifestESignInput,
     authority: ResolvedManifestAuthority
   ) {
-    const artifacts = await materializeReservedArtifacts(authority);
+    const artifacts = await materializeReservedArtifacts(
+      authority,
+      this.config.get<string>(CONTRACT_PDF_CJK_FONT_PATH_ENV)
+    );
     const storedSource = await this.storage.putReturnManifestArtifact({
       buffer: artifacts.sourceBytes,
       closureCaseId: command.closureCaseId,
@@ -1046,6 +1433,14 @@ function normalizeInput(input: ReturnManifestESignInput): ReturnManifestESignInp
 }
 
 function returnManifestSources(command: ReturnManifestESignInput) {
+  const legacyGeneratedRevisionId =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      command.idempotencyKey
+    );
+  const attemptSuffix = legacyGeneratedRevisionId
+    ? ""
+    : `:${createHash("sha256").update(command.idempotencyKey).digest("hex").slice(0, 24)}`;
+  const baseKey = `return-manifest-esign${attemptSuffix}`;
   const make = (key: string): SubscriptionClosureSource =>
     Object.freeze({
       id: command.closureCaseId,
@@ -1053,9 +1448,9 @@ function returnManifestSources(command: ReturnManifestESignInput) {
       type: "SUBSCRIPTION_CLOSURE_ESIGN"
     });
   return Object.freeze({
-    archived: make("return-manifest-esign:archived"),
-    signed: make("return-manifest-esign:signed"),
-    task: make("return-manifest-esign")
+    archived: make(`${baseKey}:archived`),
+    signed: make(`${baseKey}:signed`),
+    task: make(baseKey)
   });
 }
 
@@ -1105,19 +1500,50 @@ async function resolveManifestAuthority(
   ) {
     throw sourceConflict();
   }
-  const [vehicleReturn, customer, sourceFile, order, contract] = await Promise.all([
+  const [
+    vehicleReturn,
+    customer,
+    sourceFile,
+    order,
+    contract,
+    currentChecklist,
+    evidenceLinks
+  ] = await Promise.all([
     tx.vehicleReturn.findUniqueOrThrow({ where: { id: closureCase.vehicleReturnId } }),
     tx.customer.findUniqueOrThrow({ where: { id: closureCase.customerId } }),
     tx.fileObject.findUniqueOrThrow({ where: { id: generated.sourceFileId } }),
     tx.subscriptionOrder.findUniqueOrThrow({ where: { id: closureCase.orderId } }),
-    tx.contract.findUniqueOrThrow({ where: { id: closureCase.contractId } })
+    tx.contract.findUniqueOrThrow({ where: { id: closureCase.contractId } }),
+    closureCase.currentChecklistRevisionId
+      ? tx.vehicleReturnChecklistRevision.findUnique({
+          include: { items: { orderBy: { itemCode: "asc" } } },
+          where: { id: closureCase.currentChecklistRevisionId }
+        })
+      : null,
+    tx.vehicleReturnEvidenceLink.findMany({
+      orderBy: [{ recordedAt: "asc" }, { id: "asc" }],
+      where: { closureCaseId: closureCase.id, evidenceId: { not: null } }
+    })
   ]);
+  const evidence = await tx.assetWorkOrderEvidence.findMany({
+    orderBy: [{ recordedAt: "asc" }, { id: "asc" }],
+    where: {
+      id: {
+        in: evidenceLinks
+          .map(({ evidenceId }) => evidenceId)
+          .filter((id): id is string => Boolean(id))
+      }
+    }
+  });
   return Object.freeze({
     actor,
     closureCase,
     contract,
     current,
+    currentChecklist,
     customer,
+    evidence,
+    evidenceLinks,
     generated,
     order,
     revisions,
@@ -1127,12 +1553,96 @@ async function resolveManifestAuthority(
   });
 }
 
+const RETURN_MANIFEST_REQUIRED_EVIDENCE_CODES = new Set([
+  "KEY",
+  "REGISTRATION_CERTIFICATE",
+  "VEHICLE_EXTERIOR",
+  "VEHICLE_INTERIOR"
+]);
+
+function returnManifestMissingEvidenceCodes(
+  items: readonly Readonly<{ id: string; itemCode: string; state: string }>[],
+  links: readonly Readonly<{
+    checklistItemId: string | null;
+    id: string;
+    supersedesLinkId: string | null;
+  }>[],
+  approvedExceptionItemIds: ReadonlySet<string> = new Set()
+) {
+  const superseded = new Set(
+    links.map(({ supersedesLinkId }) => supersedesLinkId).filter((id): id is string => Boolean(id))
+  );
+  const activeItemIds = new Set(
+    links
+      .filter(({ id }) => !superseded.has(id))
+      .map(({ checklistItemId }) => checklistItemId)
+      .filter((id): id is string => Boolean(id))
+  );
+  return items
+    .filter(({ id, itemCode, state }) => {
+      if (
+        itemCode === "REGISTRATION_CERTIFICATE" &&
+        ["MISSING", "DAMAGED", "PENDING_VERIFICATION"].includes(state)
+      ) {
+        return !approvedExceptionItemIds.has(id);
+      }
+      return (
+        (RETURN_MANIFEST_REQUIRED_EVIDENCE_CODES.has(itemCode) ||
+          state === "MISSING" ||
+          state === "DAMAGED") &&
+        !activeItemIds.has(id)
+      );
+    })
+    .map(({ itemCode }) => itemCode);
+}
+
+function arrayOfStrings(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+}
+
 function returnManifestSuccessorSnapshot(authority: ResolvedManifestAuthority) {
+  const supersededLinkIds = new Set(
+    authority.evidenceLinks
+      .map(({ supersedesLinkId }) => supersedesLinkId)
+      .filter((id): id is string => Boolean(id))
+  );
+  const evidenceById = new Map(authority.evidence.map((item) => [item.id, item]));
+  const evidence = authority.evidenceLinks
+    .filter(({ id, visibility }) => !supersededLinkIds.has(id) && visibility === "CUSTOMER_VISIBLE")
+    .map((link) => {
+      const item = link.evidenceId ? evidenceById.get(link.evidenceId) : null;
+      if (!item?.contentSha256 || !item.fileId) throw sourceConflict();
+      return {
+        capturedAt: item.capturedAt?.toISOString() ?? null,
+        checklistItemId: link.checklistItemId,
+        contentSha256: item.contentSha256,
+        damageId: link.damageId,
+        evidenceId: item.id,
+        evidencePurpose: link.evidencePurpose,
+        evidenceType: item.evidenceType,
+        fileId: item.fileId,
+        linkId: link.id
+      };
+    });
   return Object.freeze({
     ...(authority.generated.documentSnapshot as Prisma.JsonObject),
+    ...(authority.currentChecklist
+      ? {
+          returnChecklistAttestationMode: authority.currentChecklist.attestationMode,
+          returnChecklistManifestHash: authority.currentChecklist.manifestHash,
+          returnChecklistRevisionId: authority.currentChecklist.id,
+          returnChecklistRevisionNumber: authority.currentChecklist.revisionNumber,
+          returnEvidence: evidence
+        }
+      : {}),
+    returnChecklistSnapshot: authority.vehicleReturn.checklistSnapshot ?? {},
     returnChecklistSnapshotHash: hashSubscriptionClosureSnapshot(
       authority.vehicleReturn.checklistSnapshot ?? {}
-    )
+    ),
+    returnLocation: authority.vehicleReturn.returnLocation,
+    returnScheduledAt: authority.vehicleReturn.scheduledAt?.toISOString() ?? null
   });
 }
 
@@ -1170,6 +1680,48 @@ function requestSnapshot(input: {
     taskSource: input.taskSource,
     version: 1
   } as const;
+}
+
+export function isCurrentRegistrationDocumentApproval(input: Readonly<{
+  approval: Readonly<Record<string, unknown>>;
+  checklist: Readonly<{ id: string; manifestHash: string }>;
+  closureCaseId: string;
+  evidenceLinks: readonly Readonly<{
+    checklistItemId: string | null;
+    evidenceId: string | null;
+  }>[];
+  registrationItem: Readonly<{ id: string; state: string }>;
+}>) {
+  const snapshot = objectValue(input.approval.subjectSnapshot);
+  const evidenceIds = arrayOfStrings(snapshot.evidenceIds);
+  const exactEvidenceIds = new Set(
+    input.evidenceLinks
+      .filter((link) => link.checklistItemId === input.registrationItem.id)
+      .map((link) => link.evidenceId)
+      .filter((id): id is string => typeof id === "string")
+  );
+  const expectedSnapshotHash = createHash("sha256")
+    .update(canonicalSubscriptionClosureJson(snapshot as never))
+    .digest("hex");
+  return (
+    input.approval.status === "APPROVED" &&
+    input.approval.decision === "APPROVED" &&
+    input.approval.exceptionType === "VEHICLE_REGISTRATION_DOCUMENT_MISSING" &&
+    input.approval.subjectType === "SETTLEMENT_CASE" &&
+    input.approval.subjectId === input.closureCaseId &&
+    input.approval.subjectField === `returnRegistrationDocument:${input.registrationItem.id}` &&
+    input.approval.expiredAt == null &&
+    input.approval.decidedAt != null &&
+    input.approval.requestedBy !== input.approval.decidedBy &&
+    input.approval.subjectSnapshotHash === expectedSnapshotHash &&
+    snapshot.closureCaseId === input.closureCaseId &&
+    snapshot.checklistRevisionId === input.checklist.id &&
+    snapshot.checklistManifestHash === input.checklist.manifestHash &&
+    snapshot.checklistItemId === input.registrationItem.id &&
+    snapshot.checklistItemState === input.registrationItem.state &&
+    evidenceIds.length > 0 &&
+    evidenceIds.every((id) => exactEvidenceIds.has(id))
+  );
 }
 
 function assertReservedAuthority(
@@ -1575,7 +2127,10 @@ async function databaseClock(tx: Prisma.TransactionClient) {
   return row.clock;
 }
 
-async function materializeReservedArtifacts(authority: ResolvedManifestAuthority) {
+async function materializeReservedArtifacts(
+  authority: ResolvedManifestAuthority,
+  cjkFontPath?: string
+) {
   if (!authority.task) throw sourceConflict();
   const request = objectValue(authority.task.requestSnapshot);
   const sourceFile = fileSnapshot(request.sourceFile);
@@ -1589,7 +2144,8 @@ async function materializeReservedArtifacts(authority: ResolvedManifestAuthority
   const providerPdf = await renderReturnManifestPdf(
     request.documentSnapshot,
     request.checklistSnapshot,
-    renderedAt
+    renderedAt,
+    cjkFontPath
   );
   const sourceFileHash = sha256(sourceBytes);
   const providerPdfHash = sha256(providerPdf);
@@ -1614,7 +2170,8 @@ async function materializeReservedArtifacts(authority: ResolvedManifestAuthority
 async function renderReturnManifestPdf(
   documentSnapshot: unknown,
   checklistSnapshot: unknown,
-  renderedAt: Date
+  renderedAt: Date,
+  cjkFontPath?: string
 ) {
   const doc = new PDFDocument({
     autoFirstPage: true,
@@ -1635,14 +2192,92 @@ async function renderReturnManifestPdf(
     doc.once("end", () => resolve(Buffer.concat(chunks)));
     doc.once("error", reject);
   });
+  if (cjkFontPath?.trim()) doc.font(cjkFontPath.trim());
+  const facts = extractReturnManifestPdfFacts(documentSnapshot, checklistSnapshot);
+  const writeField = (label: string, value: string | number | null) => {
+    doc.fontSize(9).text(`${label}: ${value === null || value === "" ? "-" : value}`);
+  };
   doc.fontSize(18).text("Return Manifest", { align: "center" });
-  doc
-    .moveDown()
-    .fontSize(9)
-    .text(canonicalSubscriptionClosureJson(documentSnapshot as never));
-  doc.moveDown().text(canonicalSubscriptionClosureJson(checklistSnapshot as never));
+  doc.moveDown().fontSize(12).text("Return and attestation summary");
+  writeField("Return location", facts.returnLocation);
+  writeField("Scheduled return time", facts.returnScheduledAt);
+  writeField("Checklist revision", facts.checklistRevisionNumber);
+  writeField("Checklist revision ID", facts.checklistRevisionId);
+  writeField("Checklist manifest SHA-256", facts.checklistManifestHash);
+  writeField("Attestation mode", facts.attestationMode);
+  writeField("Customer comments", facts.customerComments);
+
+  doc.moveDown().fontSize(12).text("Vehicle condition and returned property");
+  if (facts.items.length === 0) {
+    doc.fontSize(9).text("No governed return checklist was recorded.");
+  }
+  for (const item of facts.items) {
+    doc.moveDown(0.35).fontSize(10).text(item.itemCode || "UNKNOWN_ITEM");
+    writeField("State", item.state);
+    writeField("Expected quantity", item.expectedQuantity);
+    writeField("Returned quantity", item.returnedQuantity);
+    writeField("Remark", item.remark);
+  }
+
+  doc.moveDown().fontSize(12).text("Evidence integrity index");
+  if (facts.evidence.length === 0) doc.fontSize(9).text("No customer-visible evidence.");
+  for (const evidence of facts.evidence) {
+    doc.moveDown(0.35).fontSize(9).text(
+      `${evidence.evidencePurpose || "EVIDENCE"} / ${evidence.evidenceType || "UNKNOWN"}`
+    );
+    writeField("File ID", evidence.fileId);
+    writeField("SHA-256", evidence.contentSha256);
+  }
+
+  doc.moveDown().fontSize(7).text("Canonical signed snapshot (audit copy)");
+  doc.text(canonicalSubscriptionClosureJson(documentSnapshot as never));
   doc.moveDown(2).text("RETURN_MANIFEST_CUSTOMER_SIGNATURE");
   doc.moveDown(2).text("RETURN_MANIFEST_PLATFORM_SEAL");
+  doc.end();
+  return completed;
+}
+
+async function renderUnilateralAttestationPdf(
+  snapshot: unknown,
+  snapshotHash: string,
+  sealedAt: Date,
+  cjkFontPath?: string
+) {
+  const doc = new PDFDocument({
+    autoFirstPage: true,
+    compress: false,
+    info: {
+      CreationDate: sealedAt,
+      Creator: "subscription-closure",
+      ModDate: sealedAt,
+      Producer: "subscription-closure",
+      Title: "Platform Unilateral Return Attestation"
+    },
+    margin: 48,
+    size: "A4"
+  });
+  const chunks: Buffer[] = [];
+  doc.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+  const completed = new Promise<Buffer>((resolve, reject) => {
+    doc.once("end", () => resolve(Buffer.concat(chunks)));
+    doc.once("error", reject);
+  });
+  if (cjkFontPath?.trim()) doc.font(cjkFontPath.trim());
+  const facts = objectValue(snapshot);
+  doc.fontSize(17).text("Platform Unilateral Return Attestation", { align: "center" });
+  doc.moveDown().fontSize(10).text(
+    "Customer refusal or absence was recorded under the governed return process. " +
+      "This platform-sealed copy preserves the checklist, witness attestation and evidence authority without representing customer agreement."
+  );
+  doc.moveDown().fontSize(9).text(`Closure case ID: ${stringValue(facts.closureCaseId)}`);
+  doc.text(`Checklist revision ID: ${stringValue(facts.checklistRevisionId)}`);
+  doc.text(`Checklist manifest SHA-256: ${stringValue(facts.checklistManifestHash)}`);
+  doc.text(`Attestation mode: ${stringValue(facts.attestationMode)}`);
+  doc.text(`Canonical snapshot SHA-256: ${snapshotHash}`);
+  doc.moveDown().fontSize(8).text("Canonical platform-sealed snapshot");
+  doc.fontSize(7).text(canonicalSubscriptionClosureJson(snapshot as never));
+  doc.moveDown(2).fontSize(9).text("RETURN_MANIFEST_PLATFORM_UNILATERAL_SEAL");
+  doc.text(`Seal timestamp authority: ${sealedAt.toISOString()}`);
   doc.end();
   return completed;
 }

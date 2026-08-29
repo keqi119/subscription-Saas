@@ -18,6 +18,7 @@ import type { Contract, ContractVersion } from "@prisma/client";
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo } from "../common/business-number";
+import { persistContractChargeClausesInTransaction } from "../contract/contract-charge-clause";
 import { ContractPdfArtifactWriterService } from "../contract/contract-pdf-artifact-writer.service";
 import type { ContractPdfArtifactWriteResult } from "../contract/contract-pdf-artifact.types";
 import {
@@ -386,6 +387,11 @@ export class SubscriptionExtensionContractService {
               status: ContractStatus.GENERATED,
               updatedBy: actor.id
             }
+          });
+          await persistContractChargeClausesInTransaction(tx, {
+            actorId: actor.id,
+            contractId: contract.id,
+            contractSnapshot
           });
           await tx.subscriptionChangeOrder.update({
             data: { contractId: contract.id, updatedBy: actor.id },

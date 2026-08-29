@@ -117,6 +117,75 @@ export class PaymentOrderService {
     private readonly prisma: PrismaService
   ) {}
 
+  async closeActivePaymentOrdersForBills(billIds: readonly string[], reason: string) {
+    const normalizedBillIds = uniqueStrings([...billIds]);
+    if (normalizedBillIds.length === 0) {
+      return { closedPaymentOrderIds: [] as string[] };
+    }
+    const activeOrders = await this.prisma.paymentOrder.findMany({
+      include: paymentOrderInclude,
+      orderBy: { createdAt: "asc" },
+      where: {
+        debitAttempt: { is: null },
+        deletedAt: null,
+        items: { some: { billId: { in: normalizedBillIds }, deletedAt: null } },
+        paymentStatus: { in: REUSABLE_PAYMENT_ORDER_STATUSES }
+      }
+    });
+    const closedPaymentOrderIds: string[] = [];
+    for (const paymentOrder of activeOrders) {
+      const closed = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM "payment_order" WHERE "id" = ${paymentOrder.id}::uuid FOR UPDATE`
+        );
+        const locked = await tx.paymentOrder.findFirst({
+          select: {
+            cashierUrl: true,
+            id: true,
+            paymentOrderNo: true,
+            paymentStatus: true,
+            provider: true,
+            providerPrepayId: true,
+            providerTradeNo: true
+          },
+          where: { deletedAt: null, id: paymentOrder.id }
+        });
+        if (!locked) return false;
+        if (locked.paymentStatus === PaymentOrderStatus.PAID) {
+          throw new BadRequestException("PAYMENT_SETTLED_DURING_CLOSE");
+        }
+        if (!REUSABLE_PAYMENT_ORDER_STATUSES.includes(locked.paymentStatus)) return false;
+        if (locked.provider !== this.providerType) {
+          throw new BadRequestException("PAYMENT_PROVIDER_CLOSE_UNAVAILABLE");
+        }
+        const remoteTransactionExists = !(
+          locked.paymentStatus === PaymentOrderStatus.CREATED &&
+          !locked.providerTradeNo &&
+          !locked.providerPrepayId &&
+          !locked.cashierUrl
+        );
+        if (remoteTransactionExists) {
+          await this.provider.closePayment({
+            providerTradeNo: locked.providerTradeNo ?? locked.paymentOrderNo
+          });
+        }
+        await tx.paymentOrder.update({
+          data: {
+            cashierUrl: null,
+            cashierUrlExpiresAt: null,
+            closedAt: new Date(),
+            errorSnapshot: toJsonValue({ code: "GOVERNED_PAYMENT_ORDER_CLOSED", reason }),
+            paymentStatus: PaymentOrderStatus.CLOSED
+          },
+          where: { id: locked.id }
+        });
+        return true;
+      });
+      if (closed) closedPaymentOrderIds.push(paymentOrder.id);
+    }
+    return { closedPaymentOrderIds: closedPaymentOrderIds.sort() };
+  }
+
   async listPayableBills(currentCustomer: CurrentCustomer, query: PortalPayableBillsQueryDto) {
     const bills = await this.prisma.receivableBill.findMany({
       include: {
@@ -125,6 +194,22 @@ export class PaymentOrderService {
       orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
       where: {
         billStatus: { in: PAYABLE_BILL_STATUSES },
+        closureChargeLines: {
+          none: {
+            disputes: {
+              some: {
+                OR: [
+                  { decision: null, status: "OPEN" },
+                  { decision: { decision: "ACCEPTED_BY_PLATFORM" } }
+                ]
+              }
+            }
+          }
+        },
+        closureLegalCollectionCases: { none: { closedAt: null } },
+        closureReceivableDispositions: {
+          none: { disposition: "LEGAL_COLLECTION", supersededBy: null }
+        },
         customerId: currentCustomer.customerId,
         deletedAt: null,
         orderId: query.orderId,
@@ -146,6 +231,40 @@ export class PaymentOrderService {
 
     const bills = await this.loadPayableBillsForPayment(currentCustomer.customerId, billIds);
     this.assertBillsCanCreatePaymentOrder(bills, billIds);
+    const blockedDispute = await this.prisma.subscriptionClosureChargeDispute.findFirst({
+      select: { chargeLineId: true },
+      where: {
+        chargeLine: { billId: { in: billIds } },
+        OR: [
+          { decision: null },
+          { decision: { decision: "ACCEPTED_BY_PLATFORM" } }
+        ]
+      }
+    });
+    if (blockedDispute) {
+      throw new BadRequestException(
+        "Disputed closure bills cannot be paid until the platform rejects the dispute or publishes an adjusted successor settlement."
+      );
+    }
+    const [governedDisposition, openLegalCase] = await Promise.all([
+      this.prisma.subscriptionClosureReceivableDisposition.findFirst({
+        select: { id: true },
+        where: {
+          billId: { in: billIds },
+          disposition: "LEGAL_COLLECTION",
+          supersededBy: null
+        }
+      }),
+      this.prisma.subscriptionClosureLegalCollectionCase.findFirst({
+        select: { id: true },
+        where: { billId: { in: billIds }, closedAt: null }
+      })
+    ]);
+    if (governedDisposition || openLegalCase) {
+      throw new BadRequestException(
+        "Bills transferred to legal collection cannot be paid through the customer portal."
+      );
+    }
 
     const existing = await this.findReusablePaymentOrder(currentCustomer.customerId, billIds, paymentChannel);
     if (existing) {
@@ -155,41 +274,110 @@ export class PaymentOrderService {
       return this.refreshProviderPayment(existing.id, context, currentCustomer);
     }
 
-    const orderId = assertSingleOrder(bills);
-    const amount = bills.reduce((sum, bill) => sum + bill.remainingAmount, 0n);
-    const subject = buildPaymentSubject(bills);
-    const description = buildPaymentDescription(bills);
-
-    const paymentOrder = await withUniqueBusinessNoRetry(() =>
-      this.prisma.paymentOrder.create({
-        data: {
-          amount,
-          clientIp: context.ipAddress,
-          customerId: currentCustomer.customerId,
-          description,
-          items: {
-            create: bills.map((bill) => ({
-              amount: bill.remainingAmount,
-              billId: bill.id
-            }))
-          },
-          orderId,
-          paymentChannel,
-          paymentOrderNo: createBusinessNo("PYO"),
-          paymentStatus: PaymentOrderStatus.CREATED,
-          provider: this.providerType,
-          requestSnapshot: toJsonValue({
-            billIds,
-            channel: paymentChannel,
+    const paymentOrderResult = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const sortedBillIds = [...billIds].sort();
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM "receivable_bill" WHERE "id" IN (${Prisma.join(
+            sortedBillIds.map((id) => Prisma.sql`${id}::uuid`)
+          )}) ORDER BY "id" FOR UPDATE`
+        );
+        const lockedBills = await tx.receivableBill.findMany({
+          include: { order: { select: { id: true, orderNo: true, orderStatus: true } } },
+          orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
+          where: {
             customerId: currentCustomer.customerId,
-            source: "portal"
+            deletedAt: null,
+            id: { in: billIds }
+          }
+        });
+        this.assertBillsCanCreatePaymentOrder(lockedBills, billIds);
+        const [lockedDispute, lockedLegalDisposition, lockedLegalCase] = await Promise.all([
+          tx.subscriptionClosureChargeDispute.findFirst({
+            select: { id: true },
+            where: {
+              chargeLine: { billId: { in: billIds } },
+              OR: [{ decision: null }, { decision: { decision: "ACCEPTED_BY_PLATFORM" } }]
+            }
           }),
-          subject,
-          userAgent: context.userAgent
-        },
-        include: paymentOrderInclude
+          tx.subscriptionClosureReceivableDisposition.findFirst({
+            select: { id: true },
+            where: {
+              billId: { in: billIds },
+              disposition: "LEGAL_COLLECTION",
+              supersededBy: null
+            }
+          }),
+          tx.subscriptionClosureLegalCollectionCase.findFirst({
+            select: { id: true },
+            where: { billId: { in: billIds }, closedAt: null }
+          })
+        ]);
+        if (lockedDispute || lockedLegalDisposition || lockedLegalCase) {
+          throw new BadRequestException(
+            "The selected closure bills are under dispute or legal collection and cannot be paid through the customer portal."
+          );
+        }
+        const reusableCandidates = await tx.paymentOrder.findMany({
+          include: paymentOrderInclude,
+          orderBy: { createdAt: "desc" },
+          where: {
+            customerId: currentCustomer.customerId,
+            debitAttempt: { is: null },
+            deletedAt: null,
+            paymentChannel,
+            paymentStatus: { in: REUSABLE_PAYMENT_ORDER_STATUSES }
+          }
+        });
+        const reusable = reusableCandidates.find((candidate) =>
+          arraysEqual(
+            sortedBillIds,
+            candidate.items.map((item) => item.billId).sort()
+          )
+        );
+        if (reusable) return { created: false, paymentOrder: reusable };
+
+        const orderId = assertSingleOrder(lockedBills);
+        const amount = lockedBills.reduce((sum, bill) => sum + bill.remainingAmount, 0n);
+        const paymentOrder = await tx.paymentOrder.create({
+          data: {
+            amount,
+            clientIp: context.ipAddress,
+            customerId: currentCustomer.customerId,
+            description: buildPaymentDescription(lockedBills),
+            items: {
+              create: lockedBills.map((bill) => ({
+                amount: bill.remainingAmount,
+                billId: bill.id
+              }))
+            },
+            orderId,
+            paymentChannel,
+            paymentOrderNo: createBusinessNo("PYO"),
+            paymentStatus: PaymentOrderStatus.CREATED,
+            provider: this.providerType,
+            requestSnapshot: toJsonValue({
+              billIds,
+              channel: paymentChannel,
+              customerId: currentCustomer.customerId,
+              source: "portal"
+            }),
+            subject: buildPaymentSubject(lockedBills),
+            userAgent: context.userAgent
+          },
+          include: paymentOrderInclude
+        });
+        return { created: true, paymentOrder };
       })
     );
+    const paymentOrder = paymentOrderResult.paymentOrder;
+
+    if (!paymentOrderResult.created) {
+      if (paymentOrder.cashierUrl && isFuture(paymentOrder.cashierUrlExpiresAt)) {
+        return toPaymentOrderView(paymentOrder);
+      }
+      return this.refreshProviderPayment(paymentOrder.id, context, currentCustomer);
+    }
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -288,6 +476,33 @@ export class PaymentOrderService {
     }
     if (!PAYABLE_PAYMENT_ORDER_STATUSES.has(paymentOrder.paymentStatus)) {
       throw new BadRequestException("当前支付单状态不允许继续支付。");
+    }
+    const billIds = paymentOrder.items.map((item) => item.billId);
+    const [blockedDispute, governedDisposition, openLegalCase] = await Promise.all([
+      this.prisma.subscriptionClosureChargeDispute.findFirst({
+        select: { id: true },
+        where: {
+          chargeLine: { billId: { in: billIds } },
+          OR: [{ decision: null }, { decision: { decision: "ACCEPTED_BY_PLATFORM" } }]
+        }
+      }),
+      this.prisma.subscriptionClosureReceivableDisposition.findFirst({
+        select: { id: true },
+        where: {
+          billId: { in: billIds },
+          disposition: "LEGAL_COLLECTION",
+          supersededBy: null
+        }
+      }),
+      this.prisma.subscriptionClosureLegalCollectionCase.findFirst({
+        select: { id: true },
+        where: { billId: { in: billIds }, closedAt: null }
+      })
+    ]);
+    if (blockedDispute || governedDisposition || openLegalCase) {
+      throw new BadRequestException(
+        "The selected closure bills are under dispute or legal collection and cannot be paid through the customer portal."
+      );
     }
     if (paymentOrder.cashierUrl && isFuture(paymentOrder.cashierUrlExpiresAt)) {
       return toPaymentOrderView(paymentOrder);
@@ -435,19 +650,42 @@ export class PaymentOrderService {
       subject: paymentOrder.subject ?? undefined
     });
 
-    const updated = await this.prisma.paymentOrder.update({
-      data: {
-        cashierUrl: result.cashierUrl,
-        cashierUrlExpiresAt: result.cashierUrlExpiresAt,
-        providerPrepayId: result.providerPrepayId,
-        providerTradeNo: result.providerTradeNo,
-        paymentStatus: PaymentOrderStatus.PENDING,
-        responseSnapshot: result.rawResponse === undefined ? undefined : toJsonValue(result.rawResponse),
-        updatedAt: new Date()
-      },
-      include: paymentOrderInclude,
-      where: { id: paymentOrder.id }
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "payment_order" WHERE "id" = ${paymentOrder.id}::uuid FOR UPDATE`
+      );
+      const current = await tx.paymentOrder.findFirst({
+        include: paymentOrderInclude,
+        where: { deletedAt: null, id: paymentOrder.id }
+      });
+      if (
+        !current ||
+        current.paymentStatus !== paymentOrder.paymentStatus ||
+        current.updatedAt.getTime() !== paymentOrder.updatedAt.getTime()
+      ) {
+        return null;
+      }
+      return tx.paymentOrder.update({
+        data: {
+          cashierUrl: result.cashierUrl,
+          cashierUrlExpiresAt: result.cashierUrlExpiresAt,
+          providerPrepayId: result.providerPrepayId,
+          providerTradeNo: result.providerTradeNo,
+          paymentStatus: PaymentOrderStatus.PENDING,
+          responseSnapshot:
+            result.rawResponse === undefined ? undefined : toJsonValue(result.rawResponse),
+          updatedAt: new Date()
+        },
+        include: paymentOrderInclude,
+        where: { id: paymentOrder.id }
+      });
     });
+    if (!updated) {
+      await this.provider.closePayment({
+        providerTradeNo: result.providerTradeNo ?? paymentOrder.paymentOrderNo
+      });
+      throw new BadRequestException("PAYMENT_ORDER_CLOSED_DURING_PROVIDER_CREATE");
+    }
 
     return toPaymentOrderView(updated, { jsapiParams: result.jsapiParams });
   }
@@ -472,7 +710,10 @@ export class PaymentOrderService {
       }
       return toPaymentOrderView(paymentOrder);
     }
-    if (!PAYABLE_PAYMENT_ORDER_STATUSES.has(paymentOrder.paymentStatus)) {
+    if (
+      !PAYABLE_PAYMENT_ORDER_STATUSES.has(paymentOrder.paymentStatus) &&
+      !(options.callbackLogId && paymentOrder.paymentStatus === PaymentOrderStatus.CLOSED)
+    ) {
       throw new BadRequestException("当前支付单状态不允许完成支付。");
     }
 

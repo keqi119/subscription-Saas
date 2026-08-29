@@ -676,6 +676,9 @@ function createOrderChangeHarness(options: HarnessOptions = {}) {
         return buildContract();
       })
     },
+    contractChargeClauseSnapshot: {
+      createMany: vi.fn(async ({ data }) => ({ count: data.length }))
+    },
     orderChange: {
       findUnique: vi.fn(async () => buildChange()),
       update: vi.fn(async ({ data }) => {

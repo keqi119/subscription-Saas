@@ -82,6 +82,222 @@ describe("portal payment foundation", () => {
     ).rejects.toThrow("账单不存在或不属于当前客户");
   });
 
+  it("rejects payment for a closure bill with an open or accepted dispute", async () => {
+    const harness = createPaymentHarness();
+    harness.addBill({ id: "bill_disputed", remainingAmount: 1000n });
+    harness.closureDisputeRepository.findFirst.mockResolvedValueOnce({
+      chargeLineId: "charge-line-1"
+    });
+
+    await expect(
+      harness.service.createPortalPaymentOrder(
+        { billIds: ["bill_disputed"], paymentChannel: PaymentChannel.MOCK },
+        harness.currentCustomer("customer_a"),
+        harness.context
+      )
+    ).rejects.toThrow("Disputed closure bills cannot be paid");
+  });
+
+  it("rejects payment for a bill transferred to legal collection", async () => {
+    const harness = createPaymentHarness();
+    harness.addBill({ id: "bill_legal", remainingAmount: 1000n });
+    harness.closureDispositionRepository.findFirst.mockResolvedValueOnce({ id: "legal-1" });
+
+    await expect(
+      harness.service.createPortalPaymentOrder(
+        { billIds: ["bill_legal"], paymentChannel: PaymentChannel.MOCK },
+        harness.currentCustomer("customer_a"),
+        harness.context
+      )
+    ).rejects.toThrow("legal collection");
+  });
+
+  it("rejects payment when an open legal case exists even if disposition projection is stale", async () => {
+    const harness = createPaymentHarness();
+    harness.addBill({ id: "bill_legal_case", remainingAmount: 1000n });
+    harness.closureLegalCaseRepository.findFirst.mockResolvedValueOnce({ id: "legal-case-1" });
+
+    await expect(
+      harness.service.createPortalPaymentOrder(
+        { billIds: ["bill_legal_case"], paymentChannel: PaymentChannel.MOCK },
+        harness.currentCustomer("customer_a"),
+        harness.context
+      )
+    ).rejects.toThrow("legal collection");
+  });
+
+  it("closes provider and local payment orders before a governed bill is resolved", async () => {
+    const closePayment = vi.fn(async ({ providerTradeNo }: { providerTradeNo: string }) => ({
+      providerTradeNo
+    }));
+    const harness = createPaymentHarness({
+      provider: {
+        closePayment,
+        createPayment: vi.fn(),
+        verifyCallback: vi.fn()
+      } as never
+    });
+    harness.addBill({ id: "bill_closure", remainingAmount: 1000n });
+    harness.addPaymentOrder({
+      id: "payment_order_closure",
+      items: [{ amount: 1000n, billId: "bill_closure", deletedAt: null }],
+      paymentStatus: PaymentOrderStatus.PENDING,
+      providerTradeNo: "PYO-CLOSURE-1"
+    });
+
+    const result = await harness.service.closeActivePaymentOrdersForBills(
+      ["bill_closure"],
+      "closure-dispute"
+    );
+
+    expect(closePayment).toHaveBeenCalledWith({ providerTradeNo: "PYO-CLOSURE-1" });
+    expect(result).toMatchObject({ closedPaymentOrderIds: ["payment_order_closure"] });
+    expect(harness.state.paymentOrders[0]?.paymentStatus).toBe(PaymentOrderStatus.CLOSED);
+    expect(harness.state.paymentOrders[0]?.cashierUrl).toBeNull();
+  });
+
+  it("closes a local CREATED order without calling a provider transaction that was never created", async () => {
+    const closePayment = vi.fn();
+    const harness = createPaymentHarness({
+      provider: {
+        closePayment,
+        createPayment: vi.fn(),
+        verifyCallback: vi.fn()
+      } as never
+    });
+    harness.addBill({ id: "bill_unbound_wechat", remainingAmount: 1000n });
+    harness.addPaymentOrder({
+      id: "payment_order_unbound_wechat",
+      items: [{ amount: 1000n, billId: "bill_unbound_wechat", deletedAt: null }],
+      paymentStatus: PaymentOrderStatus.CREATED,
+      providerPrepayId: null,
+      providerTradeNo: null
+    });
+
+    await expect(
+      harness.service.closeActivePaymentOrdersForBills(
+        ["bill_unbound_wechat"],
+        "closure-dispute"
+      )
+    ).resolves.toMatchObject({
+      closedPaymentOrderIds: ["payment_order_unbound_wechat"]
+    });
+    expect(closePayment).not.toHaveBeenCalled();
+    expect(harness.state.paymentOrders[0]?.paymentStatus).toBe(PaymentOrderStatus.CLOSED);
+  });
+
+  it("persists each successful provider close before a later payment order fails", async () => {
+    const closePayment = vi.fn(async ({ providerTradeNo }: { providerTradeNo: string }) => {
+      if (providerTradeNo === "PYO-CLOSE-2") throw new Error("provider unavailable");
+      return { providerTradeNo };
+    });
+    const harness = createPaymentHarness({
+      provider: {
+        closePayment,
+        createPayment: vi.fn(),
+        verifyCallback: vi.fn()
+      } as never
+    });
+    harness.addBill({ id: "bill_partial_close", remainingAmount: 2000n });
+    for (const [index, providerTradeNo] of ["PYO-CLOSE-1", "PYO-CLOSE-2"].entries()) {
+      harness.addPaymentOrder({
+        createdAt: new Date(Date.parse("2026-08-01T00:00:00Z") + index * 60_000),
+        id: `payment_order_close_${index + 1}`,
+        items: [{ amount: 1000n, billId: "bill_partial_close", deletedAt: null }],
+        paymentStatus: PaymentOrderStatus.PENDING,
+        providerTradeNo
+      });
+    }
+
+    await expect(
+      harness.service.closeActivePaymentOrdersForBills(
+        ["bill_partial_close"],
+        "closure-dispute"
+      )
+    ).rejects.toThrow("provider unavailable");
+    expect(harness.state.paymentOrders.map(({ paymentStatus }) => paymentStatus)).toEqual([
+      PaymentOrderStatus.CLOSED,
+      PaymentOrderStatus.PENDING
+    ]);
+
+    closePayment.mockResolvedValueOnce({ providerTradeNo: "PYO-CLOSE-2" });
+    await expect(
+      harness.service.closeActivePaymentOrdersForBills(
+        ["bill_partial_close"],
+        "closure-dispute"
+      )
+    ).resolves.toMatchObject({ closedPaymentOrderIds: ["payment_order_close_2"] });
+    expect(closePayment.mock.calls.map(([input]) => input.providerTradeNo)).toEqual([
+      "PYO-CLOSE-1",
+      "PYO-CLOSE-2",
+      "PYO-CLOSE-2"
+    ]);
+  });
+
+  it("closes a remote trade created concurrently after governance already closed the local order", async () => {
+    let releaseProvider!: () => void;
+    let markProviderStarted!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+    const providerRelease = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const closePayment = vi.fn(async () => ({}));
+    const provider = {
+      closePayment,
+      createPayment: vi.fn(async (input: AnyRecord) => {
+        markProviderStarted();
+        await providerRelease;
+        return {
+          jsapiParams: {
+            appId: "wx_test_app",
+            nonceStr: "nonce",
+            package: "prepay_id=late_prepay",
+            paySign: "signature",
+            signType: "RSA",
+            timeStamp: "1710000000"
+          },
+          providerPrepayId: "late_prepay",
+          providerTradeNo: input.paymentOrderNo
+        };
+      }),
+      verifyCallback: vi.fn()
+    };
+    const harness = createPaymentHarness({
+      config: {
+        PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PROVIDER: "wechat_pay",
+        WECHAT_PAY_ENABLED: "true"
+      },
+      provider,
+      wechatOpenId: "openid_customer_a"
+    });
+    harness.addBill({ id: "bill_concurrent_close", remainingAmount: 1000n });
+
+    const creating = harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_concurrent_close"] },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+    await providerStarted;
+    const paymentOrder = harness.state.paymentOrders[0]!;
+    await expect(
+      harness.service.closeActivePaymentOrdersForBills(
+        ["bill_concurrent_close"],
+        "governed disposition"
+      )
+    ).resolves.toMatchObject({ closedPaymentOrderIds: [paymentOrder.id] });
+    releaseProvider();
+
+    await expect(creating).rejects.toThrow("PAYMENT_ORDER_CLOSED_DURING_PROVIDER_CREATE");
+    expect(paymentOrder.paymentStatus).toBe(PaymentOrderStatus.CLOSED);
+    expect(closePayment).toHaveBeenCalledWith({
+      providerTradeNo: paymentOrder.paymentOrderNo
+    });
+  });
+
   it("mock-pay creates PaymentRecord, writes off bills, and is idempotent", async () => {
     const harness = createPaymentHarness();
     harness.addBill({ id: "bill_deposit", billType: BillType.DEPOSIT, remainingAmount: 100000n });
@@ -574,7 +790,7 @@ describe("portal payment foundation", () => {
 
 function createPaymentHarness(options: {
   config?: Record<string, string>;
-  provider?: MockPaymentProvider;
+  provider?: MockPaymentProvider | Record<string, unknown>;
   wechatOpenId?: string | null;
 } = {}) {
   const state = {
@@ -594,6 +810,7 @@ function createPaymentHarness(options: {
   };
 
   const prisma: AnyRecord = {
+    $queryRaw: vi.fn(async () => []),
     $transaction: vi.fn(async (callback: (tx: AnyRecord) => unknown) => callback(prisma)),
     autoDebitMandate: {
       findFirst: vi.fn(async () => null)
@@ -681,6 +898,13 @@ function createPaymentHarness(options: {
         const paymentOrder = state.paymentOrders.find((item) => item.id === where.id);
         Object.assign(paymentOrder!, data, { updatedAt: new Date() });
         return includePaymentOrder(state, paymentOrder!);
+      }),
+      updateMany: vi.fn(async ({ data, where }: AnyRecord) => {
+        const matches = state.paymentOrders.filter((item) => matchesPaymentOrder(item, where));
+        matches.forEach((paymentOrder) =>
+          Object.assign(paymentOrder, data, { updatedAt: new Date() })
+        );
+        return { count: matches.length };
       })
     },
     receivableBill: {
@@ -704,6 +928,15 @@ function createPaymentHarness(options: {
           return !bill.deletedAt;
         }).map((bill) => includeBillOrder(bill))
       )
+    },
+    subscriptionClosureChargeDispute: {
+      findFirst: vi.fn(async () => null)
+    },
+    subscriptionClosureReceivableDisposition: {
+      findFirst: vi.fn(async () => null)
+    },
+    subscriptionClosureLegalCollectionCase: {
+      findFirst: vi.fn(async () => null)
     },
     user: {
       findFirst: vi.fn(async ({ where }: AnyRecord = {}) =>
@@ -824,6 +1057,9 @@ function createPaymentHarness(options: {
 
   return {
     autoDebitMandateRepository: prisma.autoDebitMandate,
+    closureDisputeRepository: prisma.subscriptionClosureChargeDispute,
+    closureDispositionRepository: prisma.subscriptionClosureReceivableDisposition,
+    closureLegalCaseRepository: prisma.subscriptionClosureLegalCollectionCase,
     addBill(input: Partial<AnyRecord>) {
       const orderId = input.orderId ?? "order_a";
       state.bills.push({
@@ -923,10 +1159,11 @@ function includeBillOrder(bill: AnyRecord) {
 }
 
 function matchesPaymentOrder(paymentOrder: AnyRecord, where: AnyRecord) {
+  if (where.id?.in && !where.id.in.includes(paymentOrder.id)) return false;
   if (where.deletedAt === null && paymentOrder.deletedAt !== null) {
     return false;
   }
-  if (where.id && paymentOrder.id !== where.id) {
+  if (typeof where.id === "string" && paymentOrder.id !== where.id) {
     return false;
   }
   if (where.customerId && paymentOrder.customerId !== where.customerId) {

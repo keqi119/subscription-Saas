@@ -21,6 +21,7 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo } from "../common/business-number";
+import { persistContractChargeClausesInTransaction } from "../contract/contract-charge-clause";
 import { ContractPdfArtifactWriterService } from "../contract/contract-pdf-artifact-writer.service";
 import type { ContractPdfArtifactWriteResult } from "../contract/contract-pdf-artifact.types";
 import {
@@ -326,22 +327,23 @@ export class SubscriptionVehicleSwapContractService {
         );
       }
       const snapshot = buildVehicleSwapContractSnapshot(change);
+      const contractSnapshot = toJsonValue({
+        ...snapshot,
+        changeOrderId: change.id,
+        contentTemplate: template.contentTemplate,
+        generatedAt: generatedAt.toISOString(),
+        template: {
+          id: template.id,
+          name: template.templateName,
+          type: template.templateType,
+          version: template.versionNo
+        }
+      });
       const contract = await tx.contract.create({
         data: {
           businessType: BusinessType.SUBSCRIPTION,
           contractNo: createBusinessNo("CON"),
-          contractSnapshot: toJsonValue({
-            ...snapshot,
-            changeOrderId: change.id,
-            contentTemplate: template.contentTemplate,
-            generatedAt: generatedAt.toISOString(),
-            template: {
-              id: template.id,
-              name: template.templateName,
-              type: template.templateType,
-              version: template.versionNo
-            }
-          }),
+          contractSnapshot,
           contractTitle: `换车补充协议 ${template.versionNo}`,
           contractVersionId: template.id,
           createdBy: actor.id,
@@ -350,6 +352,11 @@ export class SubscriptionVehicleSwapContractService {
           status: ContractStatus.GENERATED,
           updatedBy: actor.id
         }
+      });
+      await persistContractChargeClausesInTransaction(tx, {
+        actorId: actor.id,
+        contractId: contract.id,
+        contractSnapshot
       });
       await tx.subscriptionChangeOrder.update({
         data: { contractId: contract.id, updatedBy: actor.id },

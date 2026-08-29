@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { PrismaService } from "../prisma/prisma.service";
@@ -104,6 +105,7 @@ export class ContractPdfArtifactWriterService {
       const fileObject = await this.prisma.fileObject.create({
         data: {
           bucket: stored.bucket,
+          contentSha256: createHash("sha256").update(renderResult.buffer).digest("hex"),
           mimeType: stored.contentType,
           objectKey: stored.objectKey,
           originalName: stored.originalName,

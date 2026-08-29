@@ -141,7 +141,9 @@ export class SubscriptionChangeJobService {
         return this.returnManifest.reconcile({
           actorId: payloadString(job.payload, "actorId"),
           closureCaseId: payloadString(job.payload, "closureCaseId"),
-          idempotencyKey: payloadString(job.payload, "generatedRevisionId")
+          idempotencyKey:
+            payloadOptionalString(job.payload, "idempotencyKey") ??
+            payloadString(job.payload, "generatedRevisionId")
         });
       default:
         throw new Error("Unsupported subscription change job type.");

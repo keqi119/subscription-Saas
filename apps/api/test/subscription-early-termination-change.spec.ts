@@ -730,6 +730,9 @@ function serviceHarness(
       }),
       updateMany: vi.fn(async () => ({ count: 1 }))
     },
+    contractChargeClauseSnapshot: {
+      createMany: vi.fn(async ({ data }: { data: unknown[] }) => ({ count: data.length }))
+    },
     contractESignTask: {
       updateMany: vi.fn(async () => ({ count: 1 }))
     },

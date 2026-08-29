@@ -10,6 +10,8 @@ import {
 import {
   AutoSealTaskInput,
   AutoSealTaskResult,
+  CancelReturnManifestProviderTaskInput,
+  CancelReturnManifestProviderTaskResult,
   CompleteReturnManifestProviderTaskInput,
   CompleteReturnManifestProviderTaskResult,
   CreateSignTaskInput,
@@ -76,6 +78,56 @@ export class FadadaESignProvider implements ESignProvider {
     private readonly pdfArtifactService?: ContractPdfArtifactService,
     private readonly prisma?: PrismaService
   ) {}
+
+  async cancelReturnManifestTask(
+    input: CancelReturnManifestProviderTaskInput
+  ): Promise<CancelReturnManifestProviderTaskResult> {
+    if (!this.apiClient || !this.prisma) {
+      throw new Error(
+        `${FADADA_PROVIDER_DEPENDENCY_MISSING}: return-manifest cancellation verification is not wired`
+      );
+    }
+    const task = await this.prisma.contractESignTask.findUnique({
+      include: { signers: true },
+      where: { id: input.taskId }
+    });
+    const customer = task?.signers.find(
+      (signer) => signer.signerType === "CUSTOMER" && signer.deletedAt === null
+    );
+    if (
+      !task ||
+      task.documentType !== "RETURN_MANIFEST" ||
+      task.provider !== ESignProviderType.FADADA ||
+      task.providerEnvelopeId !== input.providerEnvelopeId ||
+      task.providerTaskId !== input.providerTaskId ||
+      task.taskNo !== input.taskNo ||
+      !customer?.providerSignerId ||
+      !customer.providerTransactionId ||
+      customer.providerTransactionId !== input.providerTaskId
+    ) {
+      throw new Error("FADADA_RETURN_MANIFEST_CANCELLATION_AUTHORITY_MISMATCH");
+    }
+    const result = await this.apiClient.querySignResult({
+      contractId: input.providerEnvelopeId,
+      customerId: customer.providerSignerId,
+      transactionId: customer.providerTransactionId
+    });
+    const identityMatches =
+      result.providerContractId === input.providerEnvelopeId &&
+      result.providerCustomerId === customer.providerSignerId &&
+      result.providerTransactionId === customer.providerTransactionId;
+    return {
+      cancelled: result.resultCode === "3002" && identityMatches,
+      rawResponse: {
+        providerContractId: result.providerContractId,
+        providerCustomerId: result.providerCustomerId,
+        providerTransactionId: result.providerTransactionId,
+        resultCode: result.resultCode,
+        resultDescription: result.resultDesc,
+        status: result.status
+      }
+    };
+  }
 
   async createReturnManifestTask(
     input: ReturnManifestProviderTaskInput

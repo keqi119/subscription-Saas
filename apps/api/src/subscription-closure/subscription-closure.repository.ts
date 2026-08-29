@@ -9,6 +9,7 @@ import {
   type SubscriptionClosureSettlementType,
   type SubscriptionClosureStatus
 } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 
 import {
   assertSubscriptionClosureEscalation,
@@ -1137,6 +1138,20 @@ export class SubscriptionClosureRepository {
         ledger: command.ledgerInputSnapshot,
         responsibility: command.responsibilitySnapshot
       };
+      const revisionId = randomUUID();
+      const resultHash = hashSubscriptionClosureSnapshot(command.resultSnapshot);
+      const publicationSnapshot =
+        command.stage === "FINALIZED" && command.finalizedAt
+          ? {
+              channel: "PORTAL",
+              closureCaseId: currentCase.id,
+              deliveryFact: "PUBLISHED_WITH_SETTLEMENT_TRANSACTION",
+              publicationId: revisionId,
+              publishedAt: command.finalizedAt.toISOString(),
+              resultHash,
+              route: `/portal/orders/${currentCase.orderId}`
+            }
+          : null;
       const created = await tx.subscriptionClosureSettlementRevision.create({
         data: {
           amountDueCents: command.amountDueCents,
@@ -1150,13 +1165,19 @@ export class SubscriptionClosureRepository {
           depositRefundCents: command.depositRefundCents,
           finalizedAt: command.finalizedAt,
           finalizedBy: command.finalizedBy,
+          id: revisionId,
           inputSnapshotHash: hashSubscriptionClosureSnapshot(inputSnapshot),
           ledgerInputSnapshot: jsonInput(command.ledgerInputSnapshot),
           paidTotalCents: command.paidTotalCents,
           createdAt: command.recordedAt ?? repositoryClock,
           receivableTotalCents: command.receivableTotalCents,
           responsibilitySnapshot: jsonInput(command.responsibilitySnapshot),
-          resultHash: hashSubscriptionClosureSnapshot(command.resultSnapshot),
+          publicationSnapshot:
+            publicationSnapshot === null
+              ? Prisma.DbNull
+              : (publicationSnapshot as Prisma.InputJsonValue),
+          publishedAt: command.stage === "FINALIZED" ? command.finalizedAt : null,
+          resultHash,
           resultSnapshot: jsonInput(command.resultSnapshot),
           revisionNumber: (predecessor?.revisionNumber ?? 0) + 1,
           settledAt: command.settledAt,

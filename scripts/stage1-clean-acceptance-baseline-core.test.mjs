@@ -15,6 +15,17 @@ import {
 const VEHICLE_A = "11111111-1111-4111-8111-111111111111";
 const VEHICLE_B = "22222222-2222-4222-8222-222222222222";
 const HASH_SALT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const SNAPSHOT_AS_OF = new Date("2026-08-30T12:00:00.000Z");
+const REQUIRED_CONTRACT_TEMPLATE_TYPES = [
+  "SUBSCRIPTION_STANDARD",
+  "DELIVERY_HANDOVER",
+  "SUBSCRIPTION_EXTENSION"
+];
+const CONTRACT_TEMPLATE_FIXTURES = [
+  ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "SUBSCRIPTION_STANDARD", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1"],
+  ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2", "DELIVERY_HANDOVER", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"],
+  ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3", "SUBSCRIPTION_EXTENSION", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3"]
+];
 
 function expectCode(callback, code) {
   assert.throws(callback, (error) => error?.message === code);
@@ -28,8 +39,79 @@ function selection(vehicleIds = [VEHICLE_A]) {
   });
 }
 
+function contractVersion([id, templateType, fileId], overrides = {}) {
+  return {
+    approvedAt: new Date("2026-01-02T08:00:00.000Z"),
+    approvedBy: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    businessType: "SUBSCRIPTION",
+    contentTemplate: `content:${templateType}`,
+    createdAt: new Date("2026-01-01T08:00:00.000Z"),
+    createdBy: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    deletedAt: null,
+    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+    effectiveTo: null,
+    fileId,
+    id,
+    status: "ACTIVE",
+    templateName: templateType,
+    templateType,
+    updatedAt: new Date("2026-01-02T08:00:00.000Z"),
+    updatedBy: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    versionNo: "1.0",
+    ...overrides
+  };
+}
+
+function fileObject([, templateType, id], overrides = {}) {
+  return {
+    bucket: "stage1-contracts",
+    contentSha256: "a".repeat(64),
+    createdAt: new Date("2026-01-01T08:00:00.000Z"),
+    id,
+    mimeType: "application/pdf",
+    objectKey: `contracts/${templateType.toLowerCase()}.pdf`,
+    originalName: `${templateType.toLowerCase()}.pdf`,
+    sizeBytes: 1n,
+    uploadedBy: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    ...overrides
+  };
+}
+
+function notificationTemplate(overrides = {}) {
+  return {
+    channel: "IN_APP",
+    content: "Contract pending",
+    createdAt: new Date("2026-01-01T08:00:00.000Z"),
+    createdBy: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    deletedAt: null,
+    description: null,
+    id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    providerConfig: null,
+    providerTemplateId: null,
+    templateCode: "CONTRACT_PENDING_IN_APP",
+    templateStatus: "ACTIVE",
+    templateType: "CONTRACT_PENDING",
+    title: "Contract pending",
+    updatedAt: new Date("2026-01-01T08:00:00.000Z"),
+    updatedBy: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    variables: null,
+    ...overrides
+  };
+}
+
+function addFictitiousTemplateFields(snapshot) {
+  snapshot.templates.requiredContractTemplateCodes = [...REQUIRED_CONTRACT_TEMPLATE_TYPES];
+  for (const row of snapshot.templates.contractVersions) row.templateCode = row.templateType;
+  for (const row of snapshot.templates.notificationTemplates) {
+    row.code = row.templateCode;
+    row.status = row.templateStatus;
+  }
+  return snapshot;
+}
+
 function completeSnapshot(overrides = {}) {
   const snapshot = {
+    asOf: SNAPSHOT_AS_OF,
     access: {
       menus: [{ id: "menu-admin", status: "ACTIVE" }],
       permissions: [{ code: "acceptance:read", id: "permission-read", status: "ACTIVE" }],
@@ -80,13 +162,11 @@ function completeSnapshot(overrides = {}) {
       tableCounts: { customer: 0, user: 0, vehicle: 0 }
     },
     templates: {
-      contractVersions: [
-        { fileId: "file-1", id: "contract-version-1", status: "ACTIVE", templateCode: "STAGE1_SUBSCRIPTION" }
-      ],
-      fileObjects: [{ bucket: "stage1-contracts", contentSha256: "a".repeat(64), id: "file-1", mimeType: "application/pdf", objectKey: "contracts/template.pdf", originalName: "stage1-subscription.pdf", sizeBytes: 1 }],
-      notificationTemplates: [{ code: "STAGE1_NOTICE", id: "notification-1", status: "ACTIVE" }],
-      requiredContractTemplateCodes: ["STAGE1_SUBSCRIPTION"],
-      requiredNotificationTemplateCodes: ["STAGE1_NOTICE"]
+      contractVersions: CONTRACT_TEMPLATE_FIXTURES.map((fixture) => contractVersion(fixture)),
+      fileObjects: CONTRACT_TEMPLATE_FIXTURES.map((fixture) => fileObject(fixture)),
+      notificationTemplates: [notificationTemplate()],
+      requiredContractTemplateTypes: REQUIRED_CONTRACT_TEMPLATE_TYPES,
+      requiredNotificationTemplateCodes: ["CONTRACT_PENDING_IN_APP"]
     },
     vehicle: {
       assetOwners: [{ id: "owner-1", status: "ACTIVE" }],
@@ -449,42 +529,169 @@ test("classification fails closed when target count evidence is missing, partial
   }
 });
 
-test("classification requires explicit active template and notification closure with a unique active PDF file", () => {
-  const cases = [
-    [completeSnapshot({ templates: { contractVersions: [] } }), "CONTRACT_TEMPLATE_REQUIRED"],
-    [completeSnapshot({ templates: { notificationTemplates: [] } }), "NOTIFICATION_TEMPLATE_REQUIRED"],
-    [completeSnapshot({ templates: { fileObjects: [{ deletedAt: new Date(), id: "file-1", mimeType: "application/pdf", objectKey: "contracts/template.pdf", sizeBytes: 1, status: "ACTIVE" }] } }), "CONTRACT_TEMPLATE_FILE_INVALID"],
-    [completeSnapshot({ templates: { fileObjects: [{ id: "file-1", mimeType: "application/pdf", objectKey: "contracts/template.pdf", sizeBytes: 1, status: "ACTIVE" }, { deletedAt: new Date(), id: "file-1", mimeType: "application/pdf", objectKey: "contracts/retired.pdf", sizeBytes: 1, status: "ACTIVE" }] } }), "CONTRACT_TEMPLATE_FILE_INVALID"],
-    [completeSnapshot({ templates: { fileObjects: [{ id: "file-1", mimeType: "application/pdf", objectKey: "contracts/template.pdf", sizeBytes: 1, status: "ACTIVE" }, { id: "file-1", mimeType: "application/pdf", objectKey: "contracts/template-copy.pdf", sizeBytes: 1, status: "ACTIVE" }] } }), "CONTRACT_TEMPLATE_FILE_INVALID"]
+test("classification requires exactly the three real contract template types", () => {
+  const invalidRequiredSets = [
+    [],
+    ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER"],
+    [
+      "SUBSCRIPTION_STANDARD",
+      "DELIVERY_HANDOVER",
+      "SUBSCRIPTION_EXTENSION",
+      "SUBSCRIPTION_RENEWAL",
+      "VEHICLE_SWAP",
+      "EARLY_TERMINATION",
+      "MANAGED_OTHER"
+    ]
   ];
-  for (const [snapshot, code] of cases) {
+  for (const requiredContractTemplateTypes of invalidRequiredSets) {
+    const result = classifyStage1CleanAcceptanceBaseline(
+      addFictitiousTemplateFields(
+        completeSnapshot({ templates: { requiredContractTemplateTypes } })
+      ),
+      selection()
+    );
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "CONTRACT_TEMPLATE_REQUIRED"));
+  }
+});
+
+test("classification uses real ContractVersion fields and returns raw scalar rows", () => {
+  const snapshot = completeSnapshot();
+  const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+  assert.equal(result.safeToApply, true);
+  assert.deepEqual(result.rows.templates.contractVersions, snapshot.templates.contractVersions);
+  assert.deepEqual(
+    result.rows.templates.contractVersions.map(({ templateType }) => templateType).sort(),
+    [...REQUIRED_CONTRACT_TEMPLATE_TYPES].sort()
+  );
+  assert.equal("templateCode" in result.rows.templates.contractVersions[0], false);
+});
+
+test("fictitious ContractVersion.templateCode cannot satisfy a required type", () => {
+  const snapshot = addFictitiousTemplateFields(completeSnapshot());
+  delete snapshot.templates.contractVersions[0].templateType;
+  const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+  assert.equal(result.safeToApply, false);
+  assert.ok(result.exceptions.some(({ code }) => code === "CONTRACT_TEMPLATE_REQUIRED"));
+});
+
+test("classification requires exactly one usable ContractVersion per required type", () => {
+  const missing = completeSnapshot();
+  missing.templates.contractVersions.shift();
+  const duplicate = completeSnapshot();
+  duplicate.templates.contractVersions.push(
+    contractVersion(
+      ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4", "SUBSCRIPTION_STANDARD", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1"],
+      { versionNo: "2.0" }
+    )
+  );
+  for (const [snapshot, code] of [
+    [missing, "CONTRACT_TEMPLATE_REQUIRED"],
+    [duplicate, "CONTRACT_TEMPLATE_AMBIGUOUS"]
+  ]) {
     const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
     assert.equal(result.safeToApply, false);
     assert.ok(result.exceptions.some((exception) => exception.code === code));
   }
 });
 
-test("classification accepts the actual FileObject scalar shape when its contract file is complete", () => {
-  const result = classifyStage1CleanAcceptanceBaseline(
-    completeSnapshot({
-      templates: {
-        fileObjects: [
-          {
-            bucket: "stage1-contracts",
-            contentSha256: "a".repeat(64),
-            id: "file-1",
-            mimeType: "application/pdf",
-            objectKey: "contracts/template.pdf",
-            originalName: "stage1-subscription.pdf",
-            sizeBytes: 1
-          }
-        ]
-      }
-    }),
-    selection()
+test("inactive, deleted, unapproved, wrong-business, and out-of-window contract versions are unusable", () => {
+  const mutations = [
+    (row) => (row.status = "INACTIVE"),
+    (row) => (row.deletedAt = new Date("2026-08-01T00:00:00.000Z")),
+    (row) => delete row.deletedAt,
+    (row) => (row.approvedAt = null),
+    (row) => (row.approvedAt = new Date("2026-08-31T00:00:00.000Z")),
+    (row) => (row.approvedBy = null),
+    (row) => (row.businessType = "RENT_TO_OWN"),
+    (row) => (row.effectiveFrom = new Date("2026-08-31T00:00:00.000Z")),
+    (row) => (row.effectiveTo = new Date("2026-08-29T00:00:00.000Z"))
+  ];
+  for (const mutate of mutations) {
+    const snapshot = addFictitiousTemplateFields(completeSnapshot());
+    mutate(snapshot.templates.contractVersions[0]);
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "CONTRACT_TEMPLATE_REQUIRED"));
+  }
+});
+
+test("contract effectiveness is evaluated only at caller-provided snapshot.asOf", () => {
+  const missingAsOf = addFictitiousTemplateFields(completeSnapshot());
+  delete missingAsOf.asOf;
+  const invalidAsOf = addFictitiousTemplateFields(
+    completeSnapshot({ asOf: new Date(Number.NaN) })
   );
+  const beforeWindow = addFictitiousTemplateFields(
+    completeSnapshot({ asOf: new Date("2025-12-31T23:59:59.999Z") })
+  );
+  for (const snapshot of [missingAsOf, invalidAsOf, beforeWindow]) {
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "CONTRACT_TEMPLATE_REQUIRED"));
+  }
+});
+
+test("each selected contract version requires exactly one valid referenced PDF FileObject", () => {
+  const missing = completeSnapshot();
+  missing.templates.fileObjects.shift();
+  const invalidMime = completeSnapshot();
+  invalidMime.templates.fileObjects[0].mimeType = "text/plain";
+  const invalidDigest = completeSnapshot();
+  invalidDigest.templates.fileObjects[0].contentSha256 = "not-a-sha256";
+  const duplicate = completeSnapshot();
+  duplicate.templates.fileObjects.push({ ...duplicate.templates.fileObjects[0] });
+  for (const snapshot of [missing, invalidMime, invalidDigest, duplicate]) {
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "CONTRACT_TEMPLATE_FILE_INVALID"));
+  }
+});
+
+test("classification accepts and preserves the real FileObject scalar shape", () => {
+  const snapshot = completeSnapshot();
+  const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
   assert.equal(result.safeToApply, true);
-  assert.equal(result.rows.templates.fileObjects[0].bucket, "stage1-contracts");
+  assert.deepEqual(result.rows.templates.fileObjects, snapshot.templates.fileObjects);
+  assert.equal(typeof result.rows.templates.fileObjects[0].sizeBytes, "bigint");
+  assert.equal("status" in result.rows.templates.fileObjects[0], false);
+  assert.equal("deletedAt" in result.rows.templates.fileObjects[0], false);
+});
+
+test("notifications match real templateCode and templateStatus fields exactly once", () => {
+  const baseline = completeSnapshot();
+  const baselineResult = classifyStage1CleanAcceptanceBaseline(baseline, selection());
+  assert.equal(baselineResult.safeToApply, true);
+  assert.deepEqual(baselineResult.rows.templates.notificationTemplates, baseline.templates.notificationTemplates);
+  assert.equal("code" in baselineResult.rows.templates.notificationTemplates[0], false);
+  assert.equal("status" in baselineResult.rows.templates.notificationTemplates[0], false);
+
+  const missing = completeSnapshot({ templates: { notificationTemplates: [] } });
+  const inactive = completeSnapshot();
+  inactive.templates.notificationTemplates[0].templateStatus = "INACTIVE";
+  const deleted = completeSnapshot();
+  deleted.templates.notificationTemplates[0].deletedAt = new Date("2026-08-01T00:00:00.000Z");
+  const missingDeletedAt = completeSnapshot();
+  delete missingDeletedAt.templates.notificationTemplates[0].deletedAt;
+  const duplicate = completeSnapshot();
+  duplicate.templates.notificationTemplates.push(
+    notificationTemplate({ id: "dddddddd-dddd-4ddd-8ddd-ddddddddddd1" })
+  );
+  for (const snapshot of [missing, inactive, deleted, missingDeletedAt, duplicate]) {
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "NOTIFICATION_TEMPLATE_REQUIRED"));
+  }
+});
+
+test("fictitious NotificationTemplate.status and code cannot satisfy a required code", () => {
+  const snapshot = addFictitiousTemplateFields(completeSnapshot());
+  const row = snapshot.templates.notificationTemplates[0];
+  delete row.templateCode;
+  delete row.templateStatus;
+  const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+  assert.equal(result.safeToApply, false);
+  assert.ok(result.exceptions.some(({ code }) => code === "NOTIFICATION_TEMPLATE_REQUIRED"));
 });
 
 test("classification rejects unknown statuses and includes the complete selected vehicle closure", () => {
@@ -587,7 +794,7 @@ test("manifest canonicalizes object keys and arrays before producing a stable SH
   });
 
   assert.equal(hashStage1CleanAcceptanceManifest(manifest), hashStage1CleanAcceptanceManifest(shuffledManifest));
-  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "f710accae398276e6855dc6ed5c0384eb45fa225620c56889c505c63934ae948");
+  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "a4ca4fb3e1d392aed486ab247223b653079f2b769e275d4ef5da170166c84fba");
   assert.deepEqual(manifest.selection.vehicleDigests, [...manifest.selection.vehicleDigests].sort());
 });
 

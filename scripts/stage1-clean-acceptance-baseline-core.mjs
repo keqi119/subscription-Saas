@@ -8,6 +8,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const SHA256 = /^[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const IMAGE_REF = /^.+@sha256:[0-9a-f]{64}$/;
+const REQUIRED_CONTRACT_TEMPLATE_TYPES = [
+  "DELIVERY_HANDOVER",
+  "SUBSCRIPTION_EXTENSION",
+  "SUBSCRIPTION_STANDARD"
+];
 const STABLE_ERROR_CODES = new Set([
   "ADMIN_AMBIGUOUS",
   "ADMIN_NOT_FOUND",
@@ -121,7 +126,7 @@ export function classifyStage1CleanAcceptanceBaseline(snapshot = {}, inputSelect
   const access = classifyAccess(snapshot.access, selection, exceptions);
   const customer = classifyCustomer(snapshot.customer, selection, exceptions);
   const catalog = classifyCatalog(snapshot.catalog, exceptions);
-  const templates = classifyTemplates(snapshot.templates, exceptions);
+  const templates = classifyTemplates(snapshot.templates, snapshot.asOf, exceptions);
   const vehicle = classifyVehicle(snapshot.vehicle, selection, catalog, exceptions);
   const targetCountEvidence = copyTargetCountEvidence(snapshot.target);
   const targetForbiddenCounts = canonical(targetCountEvidence.forbiddenCounts ?? {});
@@ -296,29 +301,41 @@ function classifyCatalog(catalog = {}, exceptions) {
   });
 }
 
-function classifyTemplates(templates = {}, exceptions) {
-  const contractVersions = active(array(templates.contractVersions));
+function classifyTemplates(templates = {}, snapshotAsOf, exceptions) {
+  const contractVersions = array(templates.contractVersions);
   const allFileObjects = array(templates.fileObjects);
-  const notificationTemplates = active(array(templates.notificationTemplates));
-  const requiredContractCodes = requiredCodes(templates.requiredContractTemplateCodes);
+  const notificationTemplates = array(templates.notificationTemplates).filter(
+    (row) => row?.deletedAt === null && row.templateStatus === "ACTIVE"
+  );
+  const requiredContractTypes = requiredCodes(templates.requiredContractTemplateTypes);
   const requiredNotificationCodes = requiredCodes(templates.requiredNotificationTemplateCodes);
   const selectedContractVersions = [];
   const selectedFiles = [];
   const selectedNotifications = [];
-  if (requiredContractCodes.length === 0) {
-    exception(exceptions, "CONTRACT_TEMPLATE_REQUIRED", "templates", "required-contract-codes");
+  const hasRequiredContractTypes = sameStringSet(
+    requiredContractTypes,
+    REQUIRED_CONTRACT_TEMPLATE_TYPES
+  );
+  const asOfTime = validDate(snapshotAsOf) ? snapshotAsOf.getTime() : undefined;
+  if (!hasRequiredContractTypes) {
+    exception(exceptions, "CONTRACT_TEMPLATE_REQUIRED", "templates", "required-contract-template-types");
+  }
+  if (asOfTime === undefined) {
+    exception(exceptions, "CONTRACT_TEMPLATE_REQUIRED", "templates", "snapshot-as-of");
   }
   if (requiredNotificationCodes.length === 0) {
     exception(exceptions, "NOTIFICATION_TEMPLATE_REQUIRED", "templates", "required-notification-codes");
   }
-  for (const code of requiredContractCodes) {
-    const versions = contractVersions.filter((row) => row.templateCode === code);
+  for (const templateType of hasRequiredContractTypes && asOfTime !== undefined ? requiredContractTypes : []) {
+    const versions = contractVersions.filter(
+      (row) => row.templateType === templateType && usableContractVersion(row, asOfTime)
+    );
     if (versions.length !== 1) {
       exception(
         exceptions,
         versions.length > 1 ? "CONTRACT_TEMPLATE_AMBIGUOUS" : "CONTRACT_TEMPLATE_REQUIRED",
         "templates",
-        code
+        templateType
       );
       continue;
     }
@@ -329,10 +346,10 @@ function classifyTemplates(templates = {}, exceptions) {
       continue;
     }
     selectedContractVersions.push(row);
-    selectedFiles.push(files[0]);
+    pushUniqueRow(selectedFiles, files[0]);
   }
   for (const code of requiredNotificationCodes) {
-    const notifications = notificationTemplates.filter((row) => row.code === code);
+    const notifications = notificationTemplates.filter((row) => row.templateCode === code);
     if (notifications.length !== 1) {
       exception(exceptions, "NOTIFICATION_TEMPLATE_REQUIRED", "templates", code);
       continue;
@@ -605,6 +622,34 @@ function positive(value) {
 function requiredCodes(value) {
   if (!Array.isArray(value) || value.length === 0 || value.some((code) => !nonEmpty(code))) return [];
   return [...new Set(value)].sort();
+}
+
+function sameStringSet(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function validDate(value) {
+  return value instanceof Date && Number.isFinite(value.getTime());
+}
+
+function usableContractVersion(row, asOfTime) {
+  if (
+    !row ||
+    row.businessType !== "SUBSCRIPTION" ||
+    row.status !== "ACTIVE" ||
+    row.deletedAt !== null ||
+    !nonEmpty(row.approvedBy) ||
+    !validDate(row.approvedAt) ||
+    !validDate(row.effectiveFrom) ||
+    (row.effectiveTo !== null && !validDate(row.effectiveTo))
+  ) {
+    return false;
+  }
+  return (
+    row.approvedAt.getTime() <= asOfTime &&
+    row.effectiveFrom.getTime() <= asOfTime &&
+    (row.effectiveTo === null || row.effectiveTo.getTime() >= asOfTime)
+  );
 }
 
 function validPdfFile(file) {

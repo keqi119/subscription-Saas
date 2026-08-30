@@ -119,32 +119,28 @@ export class SubscriptionClosureProjectionService {
   }
 
   private async adminProjection(closureCase: AggregateRecord) {
-    const [audits, approvals, governedResult] = await Promise.all([
-      this.prisma.auditLog.findMany({
-        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        where: {
-          OR: [
-            { entityId: closureCase.id },
-            { entityId: { in: closureCase.events.map(({ id }) => id) } }
-          ]
-        }
-      }),
-      this.prisma.businessExceptionApproval.findMany({
-        orderBy: [{ requestedAt: "asc" }, { id: "asc" }],
-        where: {
-          subjectId: closureCase.id,
-          subjectType: { in: ["RECOVERY_CASE", "SETTLEMENT_CASE"] }
-        }
-      }),
-      this.governedProjection(
-        closureCase.id,
-        closureCase.contractId,
-        closureCase.orderId,
-        closureCase.currentChecklistRevisionId,
-        closureCase.currentDeltaRevisionId,
-        false
-      )
-    ]);
+    const [audits, approvals, governedResult] = await Promise.all([this.prisma.auditLog.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      where: {
+        OR: [
+          { entityId: closureCase.id },
+          { entityId: { in: closureCase.events.map(({ id }) => id) } }
+        ]
+      }
+    }), this.prisma.businessExceptionApproval.findMany({
+      orderBy: [{ requestedAt: "asc" }, { id: "asc" }],
+      where: {
+        subjectId: closureCase.id,
+        subjectType: { in: ["RECOVERY_CASE", "SETTLEMENT_CASE"] }
+      }
+    }), this.governedProjection(
+      closureCase.id,
+      closureCase.contractId,
+      closureCase.orderId,
+      closureCase.currentChecklistRevisionId,
+      closureCase.currentDeltaRevisionId,
+      false
+    )]);
     const { returnThreeStageContinuation, ...governed } = governedResult;
     return projectSubscriptionClosureAdmin({
       ...toAggregate(closureCase),
@@ -185,7 +181,8 @@ export class SubscriptionClosureProjectionService {
       evidencePackages,
       receivableBills,
       returnManifestTask,
-      businessExceptionApprovalCount
+      businessExceptionApprovalCount,
+      evidenceLinkCount
     ] = await Promise.all([
       this.prisma.vehicleReturnChecklistRevision.findMany({
         include: { items: { orderBy: { itemCode: "asc" as const } } },
@@ -269,7 +266,8 @@ export class SubscriptionClosureProjectionService {
       }),
       this.prisma.businessExceptionApproval.count({
         where: { subjectId: closureCaseId, subjectType: "SETTLEMENT_CASE" }
-      })
+      }),
+      this.prisma.vehicleReturnEvidenceLink.count({ where: { closureCaseId } })
     ]);
     return {
       chargeLines,
@@ -290,7 +288,7 @@ export class SubscriptionClosureProjectionService {
         currentChecklistRevisionId,
         currentDeltaRevisionId,
         customerResponses,
-        evidenceLinks,
+        evidenceLinks: evidenceLinkCount,
         evidencePackages,
         legalCases,
         receivableDispositions: dispositions,
@@ -321,22 +319,23 @@ export function projectSubscriptionClosureCustomer(value: unknown) {
   const settlement =
     latestSettlement && ["FINALIZED", "SETTLED"].includes(String(latestSettlement.stage))
       ? latestSettlement
-      : ([...settlementRevisions]
+      : [...settlementRevisions]
           .reverse()
-          .find((entry) => ["FINALIZED", "SETTLED"].includes(String(entry.stage))) ?? null);
+          .find((entry) => ["FINALIZED", "SETTLED"].includes(String(entry.stage))) ?? null;
   const finalizedSettlement =
     settlement?.stage === "SETTLED"
-      ? (settlementRevisions.find((entry) => entry.id === settlement.supersedesRevisionId) ?? null)
+      ? settlementRevisions.find((entry) => entry.id === settlement.supersedesRevisionId) ?? null
       : settlement?.stage === "FINALIZED"
         ? settlement
         : null;
-  const pricingSettlementRevisionId = finalizedSettlement?.supersedesRevisionId;
+  const pricingSettlementRevisionId =
+    finalizedSettlement?.supersedesRevisionId;
   const checklist = asRecordArray(aggregate.checklistRevisions).at(-1) ?? null;
   const hasUnpublishedSuccessor =
     latestSettlement?.stage === "PROPOSED" && latestSettlement.id !== settlement?.id;
   const delta = hasUnpublishedSuccessor
     ? null
-    : (asRecordArray(aggregate.deltaRevisions).at(-1) ?? null);
+    : asRecordArray(aggregate.deltaRevisions).at(-1) ?? null;
   const responseSettlementId =
     settlement?.stage === "SETTLED" ? settlement.supersedesRevisionId : settlement?.id;
   const customerResponse =
@@ -405,7 +404,10 @@ export function projectSubscriptionClosureCustomer(value: unknown) {
       .filter((id): id is string => typeof id === "string")
   );
   const undisputedPayableBillIds = [...payableBillIds]
-    .filter((billId) => !blockingDisputeBillIds.has(billId) && !legalCollectionBillIds.has(billId))
+    .filter(
+      (billId) =>
+        !blockingDisputeBillIds.has(billId) && !legalCollectionBillIds.has(billId)
+    )
     .sort();
   return sanitizeSubscriptionClosurePublic({
     allowedActions: customerAllowedActions({
@@ -554,7 +556,9 @@ export function governedAllowedActions(
   const currentSettlement = asRecord(closureCase.currentSettlementRevision);
   const settlementStage = String(currentSettlement.stage ?? "");
   const responseSettlementId =
-    settlementStage === "SETTLED" ? currentSettlement.supersedesRevisionId : currentSettlement.id;
+    settlementStage === "SETTLED"
+      ? currentSettlement.supersedesRevisionId
+      : currentSettlement.id;
   const responses = asRecordArray(governed.customerResponses);
   const response = [...responses]
     .reverse()
@@ -683,7 +687,9 @@ export function governedAllowedActions(
     }
     const legalCases = asRecordArray(governed.legalCases);
     const activeLegalBillIds = new Set(
-      legalCases.filter((item) => !item.closedAt).map((item) => String(item.billId))
+      legalCases
+        .filter((item) => !item.closedAt)
+        .map((item) => String(item.billId))
     );
     if (
       asRecordArray(governed.evidencePackages).length > 0 &&

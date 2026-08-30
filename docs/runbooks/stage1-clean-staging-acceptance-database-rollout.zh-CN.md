@@ -1,6 +1,6 @@
 # Stage 1 干净 Staging 验收数据库发布、候选验证、切换与回滚手册
 
-> 状态：**仅供未来另行明确批准的 Staging 执行窗口使用**。合并、部署、批准设计/计划/PR 或阅读本手册均不构成执行批准。本手册当前还包含一个不可豁免的 candidate API 硬停止；在对应源码缺口修复且本手册经独立评审前，流程不能到达切换。
+> 状态：**仅供未来另行明确批准的 Staging 执行窗口使用**。合并、部署、批准设计/计划/PR 或阅读本手册均不构成执行批准。candidate API 只能按本手册的可执行启动、验收和停止 fence 运行，且必须在正式切换前停止并删除。
 
 ## 1. 不变量与人工职责
 
@@ -678,20 +678,11 @@ chmod 0600 "$EVIDENCE_DIR/target-validator.json"
 assert_private_file "$EVIDENCE_DIR/target-validator.json"
 ```
 
-## 6. Candidate API 静态 worker/timer 证明与硬停止
+## 6. Candidate API 可复现启动、只读验收与停止边界
 
-预期 candidate 约束是：独立容器名、只绑定 `127.0.0.1` 备用端口、`DATABASE_URL` 指向新库、不接入 Nginx、不创建业务数据，并显式设置：
+candidate 必须由下面的 executable fence 启动：独立容器名、只绑定 `127.0.0.1` 备用端口、`DATABASE_URL` 精确指向新库、不接入 Nginx、不创建业务数据，并显式设置八个 worker/journey/return gate：
 
-```text
-SUBSCRIPTION_JOURNEY_ENABLED=false
-SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false
-SUBSCRIPTION_CHANGE_WORKER_ENABLED=false
-SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false
-BILLING_AUTOMATION_WORKER_ENABLED=false
-FIELD_VIDEO_UPLOAD_WORKER_ENABLED=false
-STAGE2_HANDOVER_WORKER_ENABLED=false
-MILEAGE_REVIEW_WORKER_ENABLED=false
-```
+`SUBSCRIPTION_JOURNEY_ENABLED=false`、`SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false`、`BILLING_AUTOMATION_WORKER_ENABLED=false`、`FIELD_VIDEO_UPLOAD_WORKER_ENABLED=false`、`STAGE2_HANDOVER_WORKER_ENABLED=false`、`MILEAGE_REVIEW_WORKER_ENABLED=false`、`SUBSCRIPTION_CHANGE_WORKER_ENABLED=false` 与 `SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false`。
 
 静态核查依据（本手册编写时的目标源码）：
 
@@ -704,7 +695,122 @@ MILEAGE_REVIEW_WORKER_ENABLED=false
 - `apps/api/src/subscription-change/subscription-change.worker.ts` 的 `onModuleInit()` 仅在 `workerEnabled()` 为 true 后调度；该 getter 只接受精确字符串 `SUBSCRIPTION_CHANGE_WORKER_ENABLED=true`。false 或缺失值都不会启动轮询，`subscription-change-worker.spec.ts` 覆盖了该 fail-closed 契约。
 - `SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED` 是新退车受管写入的准入门；只有精确字符串 `true` 才允许新的三阶段 case。false 或缺失值必须拒绝无既有受管事实的写入，而既有清单/差异/费用、法催和退车确认单电子签事实继续可读。
 
-因此 candidate 必须显式覆盖这两个新准入/worker flag 为 false，不能依赖 env 缺省值。candidate 仍要求独立容器、loopback 备用端口、不接 Nginx、全部 worker/timer 静默；只验证 `/health`、admin/portal 既有 token、RBAC 菜单、产品/车辆列表以及空进件/订单列表。不提交进件、不锁车、不签合同、不触发短信、电子签或支付。既有 token 只能留在浏览器/秘密环境，不得进命令、日志或证据。
+以下 fence 不读取或输出 `.env` 全文，也不检查 `.Config.Env`；它用只读的 `docker exec` 精确比较候选容器中已知 gate、`DATABASE_URL` 与 target URL，且不显示任何 URL/凭据。候选容器使用 compose 的 postgres 网络以访问 target database，但不使用 Compose service、没有 Nginx link、仅发布 loopback 备用端口；host 的 Nginx 只拥有 80/443，无法路由到该候选端口。任何启动或 inspection 失败都会删除候选容器并停止。
+
+<!-- STAGE1_CANDIDATE_API_EXECUTABLE_BEGIN -->
+
+```bash
+readonly CANDIDATE_API_CONTAINER="subauto-staging-stage1-candidate-api"
+readonly CANDIDATE_API_HOST_PORT=3181
+readonly CANDIDATE_API_NETWORK="${COMPOSE_PROJECT}_default"
+readonly CANDIDATE_API_LAUNCH_EVIDENCE="$EVIDENCE_DIR/candidate-api.launch.safe.state"
+
+candidate_cleanup() {
+  if docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1; then
+    docker rm -f "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1
+  fi
+}
+
+candidate_fail() {
+  candidate_cleanup || { printf '%s\n' 'STOP: CANDIDATE_CLEANUP_FAILED'; exit 1; }
+  printf '%s\n' 'STOP: CANDIDATE_API_ISOLATION_FAILED'
+  exit 1
+}
+
+if docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1; then
+  printf '%s\n' 'STOP: CANDIDATE_API_ALREADY_EXISTS'
+  exit 1
+fi
+assert_new_evidence_path "$CANDIDATE_API_LAUNCH_EVIDENCE"
+
+if ! CANDIDATE_API_CONTAINER_ID="$(docker run -d --name "$CANDIDATE_API_CONTAINER" \
+  --network "$CANDIDATE_API_NETWORK" \
+  --publish "127.0.0.1:${CANDIDATE_API_HOST_PORT}:3001" \
+  --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" \
+  --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" \
+  --env TARGET_DB="$TARGET_DB" \
+  --env PORT=3001 \
+  --env SUBSCRIPTION_JOURNEY_ENABLED=false \
+  --env SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false \
+  --env BILLING_AUTOMATION_WORKER_ENABLED=false \
+  --env FIELD_VIDEO_UPLOAD_WORKER_ENABLED=false \
+  --env STAGE2_HANDOVER_WORKER_ENABLED=false \
+  --env MILEAGE_REVIEW_WORKER_ENABLED=false \
+  --env SUBSCRIPTION_CHANGE_WORKER_ENABLED=false \
+  --env SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false \
+  "$APPROVED_API_IMAGE_ID" 2>/dev/null)"; then
+  candidate_fail
+fi
+[[ "$CANDIDATE_API_CONTAINER_ID" =~ ^[0-9a-f]{64}$ ]] || candidate_fail
+test "$(docker inspect --format '{{.Id}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_CONTAINER_ID" || candidate_fail
+test "$(docker inspect --format '{{.Image}}' "$CANDIDATE_API_CONTAINER")" = "$APPROVED_API_IMAGE_ID" || candidate_fail
+test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$CANDIDATE_API_CONTAINER")" = "$APPROVED_RELEASE_SHA" || candidate_fail
+test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_NETWORK" || candidate_fail
+test "$(docker inspect --format '{{json .HostConfig.Links}}' "$CANDIDATE_API_CONTAINER")" = 'null' || candidate_fail
+test "$(docker inspect --format '{{range $network, $_ := .NetworkSettings.Networks}}{{println $network}}{{end}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_NETWORK" || candidate_fail
+test "$(docker port "$CANDIDATE_API_CONTAINER" 3001/tcp)" = "127.0.0.1:${CANDIDATE_API_HOST_PORT}" || candidate_fail
+
+if ! docker exec "$CANDIDATE_API_CONTAINER" node -e '
+const expected = {
+  BILLING_AUTOMATION_WORKER_ENABLED: "false",
+  FIELD_VIDEO_UPLOAD_WORKER_ENABLED: "false",
+  MILEAGE_REVIEW_WORKER_ENABLED: "false",
+  STAGE2_HANDOVER_WORKER_ENABLED: "false",
+  SUBSCRIPTION_CHANGE_WORKER_ENABLED: "false",
+  SUBSCRIPTION_JOURNEY_ENABLED: "false",
+  SUBSCRIPTION_JOURNEY_WORKER_ENABLED: "false",
+  SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "false"
+};
+if (process.env.DATABASE_URL !== process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL) process.exit(1);
+if (new URL(process.env.DATABASE_URL).pathname !== `/${process.env.TARGET_DB}`) process.exit(1);
+if (Object.entries(expected).some(([key, value]) => process.env[key] !== value)) process.exit(1);
+' >/dev/null 2>&1; then
+  candidate_fail
+fi
+
+for _candidate_health_attempt in $(seq 1 45); do
+  if test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$CANDIDATE_API_CONTAINER")" = 'healthy'; then
+    break
+  fi
+  sleep 2
+done
+test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$CANDIDATE_API_CONTAINER")" = 'healthy' || candidate_fail
+test "$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:${CANDIDATE_API_HOST_PORT}/api/health")" = '200' || candidate_fail
+printf 'candidate_container_id=%s\ncandidate_image_id=%s\ncandidate_target_database=%s\ncandidate_loopback_port=%s\ncandidate_worker_gates=false\n' \
+  "$CANDIDATE_API_CONTAINER_ID" "$APPROVED_API_IMAGE_ID" "$TARGET_DB" "$CANDIDATE_API_HOST_PORT" \
+  | publish_private_evidence "$CANDIDATE_API_LAUNCH_EVIDENCE"
+assert_private_file "$CANDIDATE_API_LAUNCH_EVIDENCE"
+```
+
+<!-- STAGE1_CANDIDATE_API_EXECUTABLE_END -->
+
+启动 fence 全绿后，candidate 仍只能执行只读 `/health`、浏览器已有 token 的 RBAC 菜单、产品/车辆列表与空进件/订单 count 验收；不提交进件、不锁车、不签合同、不触发短信、电子签或支付。浏览器 token 只能留在浏览器/秘密环境，不得进入命令、日志或证据。人工验收可以写 root-owned、`0600` 的 `$EVIDENCE_DIR/candidate-api.accepted`，但该文件不是启动或 gate 配置的替代品。
+
+<!-- STAGE1_CANDIDATE_API_STOP_EXECUTABLE_BEGIN -->
+
+```bash
+test -f "$EVIDENCE_DIR/candidate-api.accepted" \
+  || { printf '%s\n' 'STOP: CANDIDATE_ACCEPTANCE_MISSING'; exit 1; }
+assert_private_file "$EVIDENCE_DIR/candidate-api.accepted"
+readonly candidate_stop_container="subauto-staging-stage1-candidate-api"
+readonly candidate_stop_evidence="$EVIDENCE_DIR/candidate-api.stopped.safe.state"
+assert_new_evidence_path "$candidate_stop_evidence"
+docker container inspect "$candidate_stop_container" >/dev/null 2>&1 \
+  || { printf '%s\n' 'STOP: CANDIDATE_API_MISSING_BEFORE_STOP'; exit 1; }
+docker stop "$candidate_stop_container" >/dev/null 2>&1 \
+  || { printf '%s\n' 'STOP: CANDIDATE_API_STOP_FAILED'; exit 1; }
+docker rm "$candidate_stop_container" >/dev/null 2>&1 \
+  || { printf '%s\n' 'STOP: CANDIDATE_API_REMOVE_FAILED'; exit 1; }
+if docker container inspect "$candidate_stop_container" >/dev/null 2>&1; then
+  printf '%s\n' 'STOP: CANDIDATE_API_STILL_EXISTS'
+  exit 1
+fi
+printf '%s\n' 'candidate_stopped_and_removed=true' \
+  | publish_private_evidence "$candidate_stop_evidence"
+assert_private_file "$candidate_stop_evidence"
+```
+
+<!-- STAGE1_CANDIDATE_API_STOP_EXECUTABLE_END -->
 
 Billing maintenance 观察能力现在由 append-only `BillingMaintenanceCycleFact` 与镜像内 `billing-maintenance-cycle-evidence.mjs` 提供。切换只启用一次随机 evidence run；CLI 有界轮询数据库，只有查询到 sequence 1/2 两行真实 `COMPLETED` 事实并逐项验证不同 cycle ID、同一 release/image/database/set binding、时间不重叠、`blockedCount=0`、`dryRun=false`、完整禁止域键集/非负计数、前后 canonical hash 与计数一致、safe reconciliation/enqueue summary 时才输出 public-safe canonical JSON。等待或 timeout 本身不能生成成功，禁止手写 billing JSON。
 
@@ -712,12 +818,19 @@ Billing maintenance 观察能力现在由 append-only `BillingMaintenanceCycleFa
 
 ## 7. API 数据库 URL 单字段切换批准与执行
 
-本节仍受上一节 candidate timer isolation 硬停止约束。修复该独立缺口后，必须先产生 root-owned、`0600` 的 `$EVIDENCE_DIR/candidate-api.accepted`，内容只能是 candidate health/RBAC/list/count 和静默 worker 证明；没有该文件立即停止：
+本节受上一节 candidate 启动、只读验收和停止 fence 约束。正式 env 准备前必须已有 root-owned、`0600` 的 `$EVIDENCE_DIR/candidate-api.accepted` 与 `$EVIDENCE_DIR/candidate-api.stopped.safe.state`；候选容器不得仍存在，任何缺项立即停止：
 
 ```bash
 test -f "$EVIDENCE_DIR/candidate-api.accepted" \
   || { printf '%s\n' 'STOP: CANDIDATE_ACCEPTANCE_MISSING'; exit 1; }
 assert_private_file "$EVIDENCE_DIR/candidate-api.accepted"
+test -f "$EVIDENCE_DIR/candidate-api.stopped.safe.state" \
+  || { printf '%s\n' 'STOP: CANDIDATE_STOP_EVIDENCE_MISSING'; exit 1; }
+assert_private_file "$EVIDENCE_DIR/candidate-api.stopped.safe.state"
+if docker container inspect 'subauto-staging-stage1-candidate-api' >/dev/null 2>&1; then
+  printf '%s\n' 'STOP: CANDIDATE_API_STILL_EXISTS'
+  exit 1
+fi
 ```
 
 先对 `.env.staging.images` 做 root-only、no-clobber 备份并生成 SHA-256；不得显示内容。切换前同时保存旧库安全指纹和 API 当前 restart count：

@@ -704,6 +704,7 @@ read() {
   fi
   builtin read "$@"
 }
+
 ${evidenceHelpers}
 ${cutover}
 `;
@@ -746,6 +747,128 @@ ${cutover}
     assert.ok(
       resolvedDirectory.startsWith(`${resolvedTemp}${sep}`) &&
         basename(resolvedDirectory).startsWith("stage1-cutover-contract-")
+    );
+    rmSync(resolvedDirectory, { force: true, recursive: true });
+  }
+}
+
+function runCandidate(candidate, candidateStop, scenario = "success") {
+  const hostDirectory = mkdtempSync(join(tmpdir(), "stage1-candidate-contract-"));
+  const directory = toGitBashPath(hostDirectory);
+  const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
+  const binDirectory = join(hostDirectory, "fake-bin");
+  mkdirSync(binDirectory);
+  writeFakeCommand(
+    binDirectory,
+    "curl",
+    `printf '%s\\n' candidate-health >>"$TRACE_FILE"
+printf 200`
+  );
+  writeFakeCommand(
+    binDirectory,
+    "docker",
+    `args="$*"
+state="$HARNESS_DIR/candidate-state"
+case "$args" in
+  *'container inspect '*)
+    test -f "$state" || exit 1
+    printf '%s\\n' ${CONTAINER_ID}
+    ;;
+  *'run -d --name '*)
+    printf '%s\\n' candidate-run >>"$TRACE_FILE"
+    printf '%s\\n' "$args" >"$HARNESS_DIR/candidate-run-argv"
+    test "$FAILURE_SCENARIO" != launch || exit 71
+    printf running >"$state"
+    printf '%s\\n' ${CONTAINER_ID}
+    ;;
+  *'inspect --format {{.Id}}'*) printf '%s\\n' ${CONTAINER_ID} ;;
+  *'inspect --format {{.Image}}'*)
+    if test "$FAILURE_SCENARIO" = image_drift; then printf '%s\\n' sha256:${"f".repeat(64)}; else printf '%s\\n' ${IMAGE_ID}; fi
+    ;;
+  *'org.opencontainers.image.revision'*) printf '%s\\n' ${RELEASE_SHA} ;;
+  *'inspect --format {{.HostConfig.NetworkMode}}'*)
+    if test "$FAILURE_SCENARIO" = network_drift; then printf '%s\\n' bridge; else printf '%s\\n' subauto-staging_default; fi
+    ;;
+  *'inspect --format {{json .HostConfig.Links}}'*) printf '%s\\n' null ;;
+  *'NetworkSettings.Networks'*)
+    if test "$FAILURE_SCENARIO" = network_drift; then printf '%s\\n' bridge; else printf '%s\\n' subauto-staging_default; fi
+    ;;
+  *'inspect --format {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}'*) printf '%s\\n' healthy ;;
+  *'port '*)
+    if test "$FAILURE_SCENARIO" = port_drift; then printf '%s\\n' 0.0.0.0:3181; else printf '%s\\n' 127.0.0.1:3181; fi
+    ;;
+  *'exec '*' node -e '*)
+    printf '%s\\n' candidate-runtime-env-checked >>"$TRACE_FILE"
+    if [[ "$args" != *'DATABASE_URL !== process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL'* \\
+      || "$args" != *'SUBSCRIPTION_CHANGE_WORKER_ENABLED'* \\
+      || "$args" != *'SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED'* ]]; then
+      printf '%s\\n' candidate-runtime-env-contract-missing >>"$TRACE_FILE"
+      exit 96
+    fi
+    case "$FAILURE_SCENARIO" in env_missing|env_drift) exit 72 ;; esac
+    ;;
+  *'stop '*)
+    printf '%s\\n' candidate-stop >>"$TRACE_FILE"
+    test -f "$state"
+    printf stopped >"$state"
+    ;;
+  *'rm '*)
+    printf '%s\\n' candidate-rm >>"$TRACE_FILE"
+    rm -f "$state"
+    ;;
+  *) printf '%s\\n' "UNHANDLED_DOCKER_COMMAND:$args" >>"$TRACE_FILE"; exit 97 ;;
+esac`
+  );
+  const wrapper = `set -Eeuo pipefail
+HARNESS_DIR=${JSON.stringify(directory)}
+TRACE_FILE="$HARNESS_DIR/trace"
+FAILURE_SCENARIO=${JSON.stringify(scenario)}
+export HARNESS_DIR TRACE_FILE FAILURE_SCENARIO
+PATH=${JSON.stringify(toGitBashPath(binDirectory))}:"$PATH"
+export PATH
+EVIDENCE_DIR="$HARNESS_DIR/evidence"
+mkdir -p "$EVIDENCE_DIR"
+APPROVED_API_IMAGE_ID=${IMAGE_ID}
+APPROVED_RELEASE_SHA=${RELEASE_SHA}
+COMPOSE_PROJECT=subauto-staging
+STAGE1_ACCEPTANCE_TARGET_DATABASE_URL=secret-target-url
+TARGET_DB=subscription_saas_staging_acceptance_20260830t120000z
+assert_new_evidence_path() { test ! -e "$1" && test ! -L "$1"; }
+assert_private_file() { test -f "$1" && test ! -L "$1"; }
+publish_private_evidence() { cat >"$1"; chmod 0600 "$1"; }
+${candidate}
+if test "$FAILURE_SCENARIO" = success; then
+  printf '%s\\n' accepted >"$EVIDENCE_DIR/candidate-api.accepted"
+  chmod 0600 "$EVIDENCE_DIR/candidate-api.accepted"
+  ${candidateStop}
+fi
+`;
+  try {
+    const scriptPath = join(hostDirectory, "candidate-contract.sh");
+    writeFileSync(scriptPath, wrapper, "utf8");
+    const result = spawnSync(bash, [toGitBashPath(scriptPath)], {
+      encoding: "utf8",
+      timeout: 15000
+    });
+    const tracePath = join(hostDirectory, "trace");
+    const argvPath = join(hostDirectory, "candidate-run-argv");
+    return {
+      candidateExists: existsSync(join(hostDirectory, "candidate-state")),
+      candidateRunArgv: existsSync(argvPath) ? readFileSync(argvPath, "utf8") : "",
+      result,
+      trace: existsSync(tracePath)
+        ? readFileSync(tracePath, "utf8")
+            .trim()
+            .split(/\\r?\\n/)
+            .filter(Boolean)
+        : []
+    };
+  } finally {
+    const resolvedDirectory = resolve(hostDirectory);
+    const resolvedTemp = resolve(tmpdir());
+    assert.ok(
+      resolvedDirectory.startsWith(`${resolvedTemp}${sep}`) &&
+        basename(resolvedDirectory).startsWith("stage1-candidate-contract-")
     );
     rmSync(resolvedDirectory, { force: true, recursive: true });
   }
@@ -1452,6 +1575,55 @@ test("pins candidate worker isolation and forbids business writes", async () => 
     "只有精确字符串 `true` 才允许新的三阶段 case",
     "不提交进件、不锁车、不签合同、不触发短信、电子签或支付"
   ]);
+});
+
+test("candidate executable injects exact disabled gates, verifies isolation, and cleans up before cutover", async () => {
+  const contents = await readRunbook();
+  const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
+  const candidateStop = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_STOP_EXECUTABLE");
+  const green = runCandidate(candidate, candidateStop);
+
+  assert.equal(
+    green.result.status,
+    0,
+    `${green.result.stdout}\n${green.result.stderr}\n${green.trace.join("\n")}`
+  );
+  assert.equal(green.candidateExists, false, "candidate must be removed before cutover");
+  assert.match(green.trace.join("\n"), /candidate-health/);
+  assert.match(green.trace.join("\n"), /candidate-runtime-env-checked/);
+  assert.match(green.trace.join("\n"), /candidate-stop/);
+  assert.match(green.trace.join("\n"), /candidate-rm/);
+  assert.doesNotMatch(green.candidateRunArgv, /(?:--network|--link)\s+nginx\b/);
+  for (const flag of [
+    "SUBSCRIPTION_JOURNEY_ENABLED",
+    "SUBSCRIPTION_JOURNEY_WORKER_ENABLED",
+    "BILLING_AUTOMATION_WORKER_ENABLED",
+    "FIELD_VIDEO_UPLOAD_WORKER_ENABLED",
+    "STAGE2_HANDOVER_WORKER_ENABLED",
+    "MILEAGE_REVIEW_WORKER_ENABLED",
+    "SUBSCRIPTION_CHANGE_WORKER_ENABLED",
+    "SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED"
+  ]) {
+    assert.match(green.candidateRunArgv, new RegExp(`--env ${flag}=false`));
+  }
+  assert.ok(
+    contents.indexOf("<!-- STAGE1_CANDIDATE_API_STOP_EXECUTABLE_BEGIN -->") <
+      contents.indexOf("<!-- STAGE1_ENV_TRANSFORM_EXECUTABLE_BEGIN -->"),
+    "candidate stop fence must precede the formal switch preparation"
+  );
+
+  for (const scenario of [
+    "image_drift",
+    "port_drift",
+    "network_drift",
+    "env_missing",
+    "env_drift"
+  ]) {
+    const outcome = runCandidate(candidate, candidateStop, scenario);
+    assert.notEqual(outcome.result.status, 0, `${scenario} must fail closed`);
+    assert.equal(outcome.candidateExists, false, `${scenario} must clean up the candidate`);
+    assert.match(outcome.trace.join("\n"), /candidate-rm/, `${scenario} must remove the candidate`);
+  }
 });
 
 test("limits cutover and rollback to pathname-only env switch and API recreate", async () => {

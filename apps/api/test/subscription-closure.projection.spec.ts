@@ -394,11 +394,33 @@ describe("subscription closure public projections", () => {
       returnThreeStageEnabled: false
     });
   });
+
+  it("continues the portal three-stage UI for internal-only governed evidence without exposing it", async () => {
+    const projection = projectionFixture({
+      configValue: "false",
+      evidenceLinks: [
+        {
+          id: "internal-evidence-link-1",
+          internalMarker: "must-not-reach-customer",
+          visibility: "INTERNAL_ONLY"
+        }
+      ]
+    });
+
+    const customer = await projection.getCustomerByOrder("order-1", "customer-1");
+
+    expect(customer).toMatchObject({
+      evidenceLinks: [],
+      returnThreeStageEnabled: true
+    });
+    expect(JSON.stringify(customer)).not.toContain("must-not-reach-customer");
+  });
 });
 
 function projectionFixture(input: {
   configValue: string;
   currentChecklistRevisionId?: string;
+  evidenceLinks?: readonly Record<string, unknown>[];
   legalCases?: readonly Record<string, unknown>[];
   returnManifestTask?: Record<string, unknown>;
 }) {
@@ -410,10 +432,25 @@ function projectionFixture(input: {
     contractESignTask: { findFirst: vi.fn().mockResolvedValue(input.returnManifestTask ?? null) },
     receivableBill: { findMany },
     subscriptionClosureCase: {
+      findFirst: vi.fn().mockResolvedValue({
+        commandReceipts: [],
+        contractId: "contract-1",
+        currentChecklistRevisionId: input.currentChecklistRevisionId ?? null,
+        currentDeltaRevisionId: null,
+        customerId: "customer-1",
+        currentSettlementRevision: null,
+        documentRevisions: [],
+        events: [],
+        id: "closure-1",
+        orderId: "order-1",
+        settlementRevisions: [],
+        vehicleReturn: null
+      }),
       findUnique: vi.fn().mockResolvedValue({
         commandReceipts: [],
         contractId: "contract-1",
         currentChecklistRevisionId: input.currentChecklistRevisionId ?? null,
+        currentDeltaRevisionId: null,
         currentSettlementRevision: null,
         documentRevisions: [],
         events: [],
@@ -433,7 +470,18 @@ function projectionFixture(input: {
     subscriptionClosureReceivableDisposition: { findMany },
     vehicleConditionDeltaRevision: { findMany },
     vehicleReturnChecklistRevision: { findMany },
-    vehicleReturnEvidenceLink: { findMany }
+    vehicleReturnEvidenceLink: {
+      count: vi.fn().mockResolvedValue(input.evidenceLinks?.length ?? 0),
+      findMany: vi
+        .fn()
+        .mockImplementation(({ where }) =>
+          Promise.resolve(
+            (input.evidenceLinks ?? []).filter(
+              (link) => where.visibility === undefined || link.visibility === where.visibility
+            )
+          )
+        )
+    }
   };
   return new SubscriptionClosureProjectionService(
     prisma as never,

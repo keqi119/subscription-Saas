@@ -45,4 +45,30 @@ describe("API runtime media contract", () => {
       expect(dockerfile).toContain(`COPY --from=build /app/scripts/${script} ./scripts/${script}`);
     }
   });
+
+  it("packages the Stage 1 clean-acceptance database tooling", () => {
+    const dockerfile = readFileSync(join(repoRoot, "Dockerfile.api"), "utf8");
+
+    expect(dockerfile).toContain(
+      "COPY --from=build /app/apps/api/prisma-env-policy.ts ./apps/api/prisma-env-policy.ts"
+    );
+
+    for (const script of [
+      "stage1-clean-acceptance-baseline-core.mjs",
+      "stage1-clean-acceptance-baseline-snapshot.mjs",
+      "stage1-clean-acceptance-baseline-executor.mjs",
+      "stage1-clean-acceptance-cli-core.mjs",
+      "stage1-clean-acceptance-baseline.mjs",
+      "stage1-clean-acceptance-target-validator.mjs",
+      "prisma-migration-checksums.mjs"
+    ]) {
+      expect(dockerfile).toContain(`COPY --from=build /app/scripts/${script} ./scripts/${script}`);
+    }
+
+    const runtime = dockerfile.slice(dockerfile.indexOf("FROM base AS runtime"));
+    expect(runtime).not.toMatch(/COPY --from=build \/app\/scripts\s+\.\/scripts/);
+    expect(runtime).not.toMatch(
+      /COPY[^\n]*(?:\/(?:\.superpowers|tests?|reports?|tmp|output|credentials?)(?:\/|\s)|\/\.env(?:[./\s]))/i
+    );
+  });
 });

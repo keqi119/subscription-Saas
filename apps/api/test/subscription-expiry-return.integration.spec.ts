@@ -8874,6 +8874,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
   it("returns stable NOWAIT while the production extension archive owns the empty-probe parent", async () => {
     const scenario = await setupTask6PendingAssessment(prisma);
     const barrier = createBarrier();
+    let writer: Promise<unknown> | null = null;
     try {
       const extension = await seedTask6ExtensionArchivePrerequisites(prisma, scenario.fixture);
       const hooked = hookTransaction(
@@ -8884,13 +8885,13 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         "after"
       );
       const archive = new Stage3ExtensionArchiveService(hooked, new AuditService(prisma));
-      const writer = archive.finalizeArchivedContract({
+      writer = archive.finalizeArchivedContract({
         completedAt: extension.completedAt,
         contractId: scenario.fixture.contractId,
         source: "CALLBACK",
         taskId: extension.taskId
       });
-      await barrier.entered;
+      await waitForTask6BarrierEntry(barrier, [writer], "extension archive writer");
       for (let attempt = 0; attempt < 2; attempt += 1) {
         await expect(
           scenario.closure.assessRecoveryJob(scenario.assessmentInput)
@@ -8911,6 +8912,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       });
     } finally {
       barrier.release();
+      await Promise.allSettled([writer].filter((value) => value !== null));
       await cleanupManagedExpiryFixture(prisma, scenario.fixture);
     }
   }, 30_000);
@@ -8997,7 +8999,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         assessment = createTask6ClosureService(hooked).closure.assessRecoveryJob(
           scenario.assessmentInput
         );
-        await barrier.entered;
+        await waitForTask6BarrierEntry(barrier, [assessment], "recovery assessment holder");
 
         if (writerKind === "PAYMENT") {
           const now = await prisma.$transaction((tx) => databaseNow(tx));
@@ -10833,6 +10835,8 @@ async function seedTask6ExtensionArchivePrerequisites(
   const quoteId = randomUUID();
   const taskId = randomUUID();
   const completedAt = new Date("2026-08-22T00:00:00.000Z");
+  const databaseClock = await readTestDatabaseClock(prisma);
+  const completionDeadlineAt = new Date(databaseClock.getTime() + 24 * 60 * 60 * 1_000);
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw(Prisma.sql`
@@ -10846,7 +10850,7 @@ async function seedTask6ExtensionArchivePrerequisites(
         ${fixture.segmentId}::uuid,
         'EXTENSION_IN_PROGRESS',
         '2026-08-03T00:00:00Z'::timestamptz,
-        '2026-08-30T00:00:00Z'::timestamptz,
+        ${completionDeadlineAt},
         clock_timestamp(),
         clock_timestamp()
       )
@@ -10868,7 +10872,7 @@ async function seedTask6ExtensionArchivePrerequisites(
         ${fixture.contractId}::uuid,
         '2026-08-21'::date,
         '2027-02-20'::date,
-        '2026-08-30T00:00:00Z'::timestamptz,
+        ${completionDeadlineAt},
         clock_timestamp(),
         clock_timestamp()
       )
@@ -10934,7 +10938,24 @@ async function seedTask6ExtensionArchivePrerequisites(
       )
     `);
   });
-  return { completedAt, taskId };
+  const [currentDatabaseClock, consideration, changeOrder] = await Promise.all([
+    readTestDatabaseClock(prisma),
+    prisma.renewalConsideration.findUniqueOrThrow({
+      select: { completionDeadlineAt: true },
+      where: { id: considerationId }
+    }),
+    prisma.subscriptionChangeOrder.findUniqueOrThrow({
+      select: { completionDeadlineAt: true },
+      where: { id: changeId }
+    })
+  ]);
+  if (
+    consideration.completionDeadlineAt.getTime() <= currentDatabaseClock.getTime() ||
+    changeOrder.completionDeadlineAt.getTime() <= currentDatabaseClock.getTime()
+  ) {
+    throw new Error("Task 6 extension fixture requires future completion deadlines");
+  }
+  return { completedAt, completionDeadlineAt, taskId };
 }
 
 async function runManagedPrepare(
@@ -12438,6 +12459,28 @@ function createBarrier() {
     release = resolve;
   });
   return { enter, entered, release, released };
+}
+
+async function waitForTask6BarrierEntry(
+  barrier: ReturnType<typeof createBarrier>,
+  inFlight: readonly Promise<unknown>[],
+  operation: string
+) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const outcome = await Promise.race([
+    barrier.entered.then(() => "ENTERED" as const),
+    Promise.race(inFlight.map(observeSettlement)).then(() => "SETTLED" as const),
+    new Promise<"TIMED_OUT">((resolve) => {
+      timeout = setTimeout(() => resolve("TIMED_OUT"), 5_000);
+    })
+  ]);
+  if (timeout) clearTimeout(timeout);
+  if (outcome === "SETTLED") {
+    throw new Error(`Expected ${operation} to enter the test barrier before settling`);
+  }
+  if (outcome === "TIMED_OUT") {
+    throw new Error(`Timed out waiting for ${operation} to enter the test barrier`);
+  }
 }
 
 type Task6AuthorityMutationTarget = Readonly<{

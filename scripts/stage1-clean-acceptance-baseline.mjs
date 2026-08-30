@@ -169,6 +169,7 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
         mode: args.mode,
         operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
         safe: result.safe === true,
+        ...(args.mode === "dry-run" ? { targetCountEvidence: result.targetCountEvidence } : {}),
         ...(args.mode === "dry-run" ? {} : writeCounts(result))
       };
       if (!(await writeReport(deps, reportPath, report))) return 5;

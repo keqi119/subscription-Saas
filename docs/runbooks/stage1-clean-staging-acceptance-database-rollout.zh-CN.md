@@ -70,18 +70,19 @@ postgres_target_query() {
   postgres_exec psql -X -v ON_ERROR_STOP=1 -U "$STAGE1_ACCEPTANCE_DATABASE_OWNER" -d "$TARGET_DB" "$@"
 }
 target_node() {
-  docker run --rm -i --network "${COMPOSE_PROJECT}_default" \
+  docker run --rm -i --network "${COMPOSE_PROJECT}_default" --volume "$EVIDENCE_DIR:/evidence:ro" \
     --env APPROVED_RELEASE_SHA --env STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL \
     --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL --env STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME \
-    --env STAGE1_ACCEPTANCE_DATABASE_OWNER \
-    --env TARGET_DB "$APPROVED_API_IMAGE" node "$@"
+    --env STAGE1_ACCEPTANCE_DATABASE_OWNER --env STAGE1_ACCEPTANCE_IMAGE_REF \
+    --env TARGET_DB "$APPROVED_API_IMAGE_ID" node "$@"
 }
 target_api() {
-  docker run --rm --network "${COMPOSE_PROJECT}_default" \
+  docker run --rm -i --network "${COMPOSE_PROJECT}_default" \
     --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" \
     --env STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
     --env STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME --env STAGE1_ACCEPTANCE_GIT_SHA="$APPROVED_RELEASE_SHA" \
-    --volume "$EVIDENCE_DIR:/evidence" "$APPROVED_API_IMAGE" "$@"
+    --env STAGE1_ACCEPTANCE_IMAGE_REF --env APPROVED_VEHICLE_UUID \
+    --volume "$EVIDENCE_DIR:/evidence" "$APPROVED_API_IMAGE_ID" "$@"
 }
 check_public_http_200() {
   local status
@@ -97,18 +98,22 @@ readonly API_CONTAINER_ID="$(docker compose --project-name "$COMPOSE_PROJECT" --
 test -n "$API_CONTAINER_ID"
 readonly CURRENT_ONLINE_API_IMAGE="$(docker inspect --format '{{.Image}}' "$API_CONTAINER_ID")"
 readonly CURRENT_ONLINE_API_REVISION="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$API_CONTAINER_ID")"
-readonly APPROVED_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$APPROVED_API_IMAGE")"
+readonly APPROVED_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$APPROVED_API_IMAGE")"
+readonly APPROVED_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$APPROVED_API_IMAGE_ID")"
 readonly APPROVED_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$APPROVED_API_IMAGE")"
 [[ "$APPROVED_API_IMAGE_DIGEST" =~ @sha256:[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_DIGEST_INVALID'; exit 1; }
 [[ "$APPROVED_API_IMAGE_REVISION" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_REVISION_INVALID'; exit 1; }
 test "$APPROVED_API_IMAGE_REVISION" = "$APPROVED_RELEASE_SHA" || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_REVISION_MISMATCH'; exit 1; }
+readonly STAGE1_ACCEPTANCE_IMAGE_REF="$APPROVED_API_IMAGE_DIGEST"
 
 assert_private_directory "$EVIDENCE_PARENT"
 test ! -e "$EVIDENCE_DIR" && test ! -L "$EVIDENCE_DIR"
 install -d -o root -g root -m 0700 "$EVIDENCE_DIR"
 assert_private_directory "$EVIDENCE_DIR"
 {
-  printf 'current_online_api_observed=1\n'
+  printf 'current_online_image_id=%s\n' "$CURRENT_ONLINE_API_IMAGE"
+  printf 'current_online_revision=%s\n' "${CURRENT_ONLINE_API_REVISION:-missing}"
+  printf 'approved_target_image_id=%s\n' "$APPROVED_API_IMAGE_ID"
   printf 'approved_target_revision=%s\n' "$APPROVED_API_IMAGE_REVISION"
   printf 'approved_target_digest=%s\n' "$APPROVED_API_IMAGE_DIGEST"
 } | publish_private_evidence "$EVIDENCE_DIR/preflight.safe.state"
@@ -118,16 +123,8 @@ check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL"
 check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"
 printf '%s\n' 'public_api=200 public_admin=200 public_portal=200' | publish_private_evidence "$EVIDENCE_DIR/public-health.state"
 
-target_node - <<'NODE'
-const source = new URL(process.env.STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL);
-const target = new URL(process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL);
-if (source.pathname !== "/subscription_saas_staging") process.exit(21);
-if (target.pathname !== `/${process.env.TARGET_DB}`) process.exit(22);
-if (source.hostname !== process.env.STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME || target.hostname !== source.hostname) process.exit(23);
-for (const key of ["protocol", "host", "port", "username", "password", "search", "hash"]) if (source[key] !== target[key]) process.exit(24);
-if (source.username !== process.env.STAGE1_ACCEPTANCE_DATABASE_OWNER) process.exit(25);
-NODE
-postgres_admin_query -XAtq -c 'SELECT current_user = current_setting('"'"'role'"'"', true) OR current_user = current_user' >/dev/null
+target_node scripts/stage1-task9-preflight-governance.mjs validate-pair || { printf '%s\n' 'STOP: DATABASE_IDENTITY_INVALID'; exit 1; }
+test "$(postgres_admin_query -XAtq -c 'SELECT current_user;')" = "$STAGE1_ACCEPTANCE_DATABASE_OWNER" || { printf '%s\n' 'STOP: COMPOSE_DATABASE_ROLE_INVALID'; exit 1; }
 test "$(postgres_admin_query -XAtq --set=target_db="$TARGET_DB" -c 'SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'"'"'target_db'"'"');')" = 'f' || { printf '%s\n' 'STOP: TARGET_DATABASE_ALREADY_EXISTS'; exit 1; }
 postgres_admin_query --set=target_db="$TARGET_DB" --set=owner_role="$STAGE1_ACCEPTANCE_DATABASE_OWNER" <<'SQL'
 SELECT format('CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L', :'target_db', :'owner_role', 'UTF8') \gexec
@@ -155,6 +152,16 @@ const { execFileSync } = require('node:child_process');
 const result = JSON.parse(execFileSync('pnpm', ['prisma:migrate:checksum:verify'], { cwd: '/app', encoding: 'utf8' }));
 if (!result.safe || result.localMigrationCount !== 124 || result.appliedMigrationCount !== 124 || result.duplicateAppliedNames.length || result.mismatchedNames.length || result.missingFromDatabase.length || result.missingLocally.length) process.exit(31);
 NODE
+set +e
+target_api sh -lc 'cd /app/apps/api && pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' >/dev/null 2>&1
+DRIFT_EXIT="$?"
+set -e
+test "$DRIFT_EXIT" -eq 0 || { printf '%s\n' 'STOP: MIGRATION_DRIFT_DETECTED'; exit 1; }
+test "$(postgres_target_query -XAtq <<'SQL'
+WITH duplicate_names AS (SELECT migration_name FROM _prisma_migrations GROUP BY migration_name HAVING count(*) > 1)
+SELECT count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL), count(*) FILTER (WHERE rolled_back_at IS NOT NULL), count(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL), (SELECT count(*) FROM duplicate_names) FROM _prisma_migrations;
+SQL
+)" = '124|0|0|0' || { printf '%s\n' 'STOP: MIGRATION_COUNTS_INVALID'; exit 1; }
 postgres_target_query -X -v ON_ERROR_STOP=1 <<'SQL'
 DO $$ DECLARE item record; row_count bigint; BEGIN
   FOR item IN SELECT relname FROM pg_class JOIN pg_namespace ON pg_namespace.oid = relnamespace WHERE nspname = 'public' AND relkind = 'r' AND relname <> '_prisma_migrations' LOOP
@@ -165,28 +172,28 @@ END $$;
 SQL
 printf '%s\n' 'post_migration_business_nonzero_tables=0' | publish_private_evidence "$EVIDENCE_DIR/post-migration-business-counts.state"
 
-target_api sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --discover-vehicles --output /evidence/vehicle-discovery.json' >/dev/null
+set +e
+DISCOVERY_SUMMARY="$(target_api sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --discover-vehicles --output /evidence/vehicle-discovery.json')"
+DISCOVERY_EXIT="$?"
+set -e
+test "$DISCOVERY_EXIT" = '3' || { printf '%s\n' 'STOP: DISCOVERY_FAILED'; exit 1; }
+test -z "$DISCOVERY_SUMMARY" || printf '%s\n' 'discovery_summary=received' | publish_private_evidence "$EVIDENCE_DIR/discovery-summary.state"
+chmod 0600 "$EVIDENCE_DIR/vehicle-discovery.json"
+assert_private_file "$EVIDENCE_DIR/vehicle-discovery.json"
 read -r -s -p "Approved vehicle UUID (hidden): " APPROVED_VEHICLE_UUID
 printf '\n'
 export APPROVED_VEHICLE_UUID
 readonly APPROVED_VEHICLE_UUID
+target_node scripts/stage1-task9-preflight-governance.mjs validate-selection /evidence/vehicle-discovery.json "$APPROVED_VEHICLE_UUID" || { printf '%s\n' 'STOP: VEHICLE_SELECTION_INVALID'; exit 1; }
 target_api sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --vehicle-id "$APPROVED_VEHICLE_UUID" --output /evidence/baseline-dry-run.json' >/dev/null
 readonly DRY_RUN_REPORT="$EVIDENCE_DIR/baseline-dry-run.json"
-target_node - "$DRY_RUN_REPORT" <<'NODE'
-const fs = require('node:fs'); const crypto = require('node:crypto');
-const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-const forbiddenCounts = Object.values(report.manifest?.counts?.forbiddenDomains ?? {});
-const exceptions = report.manifest?.exceptions ?? [];
-const safeToApply = report.manifest?.safeToApply;
-if (report.safe !== true || safeToApply !== true || exceptions.length !== 0 || !forbiddenCounts.every((count) => count === 0)) process.exit(41);
-const manifestBytes = JSON.stringify(report.manifest, Object.keys(report.manifest).sort());
-if (!/^[0-9a-f]{64}$/.test(report.manifestSha256) || crypto.createHash('sha256').update(manifestBytes).digest('hex') !== report.manifestSha256) process.exit(42);
-NODE
-readonly INDEPENDENT_MANIFEST_SHA="$(target_node - "$DRY_RUN_REPORT" <<'NODE'
-const fs = require('node:fs'); const crypto = require('node:crypto'); const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')); process.stdout.write(crypto.createHash('sha256').update(JSON.stringify(report.manifest, Object.keys(report.manifest).sort())).digest('hex'));
-NODE
-)"
-printf 'manifest_sha256=%s\n' "$INDEPENDENT_MANIFEST_SHA" | publish_private_evidence "$EVIDENCE_DIR/baseline-approval.safe.json"
+set +e
+APPROVAL_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs approval-summary /evidence/baseline-dry-run.json)"
+APPROVAL_EXIT="$?"
+set -e
+test "$APPROVAL_EXIT" -eq 0 || { printf '%s\n' 'STOP: FORMAL_DRY_RUN_INVALID'; exit 1; }
+readonly APPROVAL_SUMMARY
+printf '%s\n' "$APPROVAL_SUMMARY" | publish_private_evidence "$EVIDENCE_DIR/baseline-approval.safe.json"
 printf '%s\n' 'STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL'
 exit 0
 ```

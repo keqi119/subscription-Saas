@@ -68,6 +68,7 @@ COPY --from=build /app/scripts/stage1-clean-acceptance-baseline-executor.mjs ./s
 COPY --from=build /app/scripts/stage1-clean-acceptance-cli-core.mjs ./scripts/stage1-clean-acceptance-cli-core.mjs
 COPY --from=build /app/scripts/stage1-clean-acceptance-baseline.mjs ./scripts/stage1-clean-acceptance-baseline.mjs
 COPY --from=build /app/scripts/stage1-clean-acceptance-target-validator.mjs ./scripts/stage1-clean-acceptance-target-validator.mjs
+COPY --from=build /app/scripts/stage1-task9-preflight-governance.mjs ./scripts/stage1-task9-preflight-governance.mjs
 COPY --from=build /app/scripts/stage1-active-source-facts-repair-core.mjs ./scripts/stage1-active-source-facts-repair-core.mjs
 COPY --from=build /app/scripts/stage1-active-source-facts-repair-executor.mjs ./scripts/stage1-active-source-facts-repair-executor.mjs
 COPY --from=build /app/scripts/stage1-active-source-facts-repair.mjs ./scripts/stage1-active-source-facts-repair.mjs

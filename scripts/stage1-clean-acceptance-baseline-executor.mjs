@@ -52,7 +52,8 @@ async function execute(options) {
       manifest,
       manifestSha256,
       mode: "dry-run",
-      safe: manifest.safeToApply === true
+      safe: manifest.safeToApply === true,
+      targetCountEvidence: classification.targetCountEvidence
     };
   }
   if (manifestSha256 !== options.approvedManifestSha256) fail("MANIFEST_STALE");

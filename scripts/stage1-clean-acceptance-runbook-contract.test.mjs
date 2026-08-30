@@ -160,7 +160,7 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     'readonly COMPOSE_FILE="/opt/subscription-saas/docker-compose.staging.images.example.yml"',
     'readonly COMPOSE_PROJECT="subauto-staging"',
     "readonly APPROVED_API_IMAGE",
-    '"$APPROVED_API_IMAGE" node',
+    '"$APPROVED_API_IMAGE_ID" node',
     "docker image inspect --format",
     "org.opencontainers.image.revision",
     "STOP: APPROVED_API_IMAGE_DIGEST_INVALID",
@@ -175,10 +175,10 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     "empty-new-database.pre-migration",
     "prisma migrate deploy",
     "post_migration_business_nonzero_tables=0",
-    "safeToApply !== true",
-    "exceptions.length !== 0",
-    "forbiddenCounts.every((count) => count === 0)",
-    "INDEPENDENT_MANIFEST_SHA",
+    "stage1-task9-preflight-governance.mjs approval-summary",
+    "stage1-task9-preflight-governance.mjs validate-selection",
+    "prisma migrate diff",
+    "MIGRATION_COUNTS_INVALID",
     "STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL"
   ]);
   assert.doesNotMatch(preflight, /docker compose[^\n]+run[^\n]+\bapi\b/);
@@ -200,14 +200,14 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
       "docker-compose.staging.images.example.yml",
       "docker-compose.staging.images.yml"
     ),
-    contents.replace('"$APPROVED_API_IMAGE" node', '"$CURRENT_ONLINE_API_IMAGE" node'),
+    contents.replace('"$APPROVED_API_IMAGE_ID" node', '"$CURRENT_ONLINE_API_IMAGE" node'),
     contents.replace('check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"', ":"),
     contents.replaceAll("empty-new-database.pre-migration", "migration-backup"),
     contents.replace(
       "post_migration_business_nonzero_tables=0",
       "post_migration_business_nonzero_tables=unchecked"
     ),
-    contents.replace("forbiddenCounts.every((count) => count === 0)", "forbiddenCounts.length >= 0")
+    contents.replace("stage1-task9-preflight-governance.mjs approval-summary", "node -e true")
   ];
   if (checkMutations) {
     for (const [index, mutation] of mutations.entries()) {
@@ -542,6 +542,7 @@ ${cutover}
       encoding: "utf8",
       env: {
         ...process.env,
+        APPROVED_API_IMAGE: "registry.test/api:approved",
         STAGE1_CUTOVER_API_RECREATE_FN: "true",
         STAGE1_CUTOVER_POST_SWITCH_GATES_FN: "true"
       },
@@ -806,6 +807,61 @@ test("pins compose, release image, and fixed preflight identities", async () => 
 test("Task 9 preflight uses only the approved target image and reaches the approval stop through executable fences", async () => {
   const preflight = validateTask9PreflightContracts(await readRunbook());
   assert.ok(preflight.length > 0);
+});
+
+test("Task 9 executable helpers route target work through fake Docker when host database and JSON tools are unavailable", async () => {
+  const preflight = extractExecutableFence(
+    await readRunbook(),
+    "STAGE1_TASK9_PREFLIGHT_EXECUTABLE"
+  );
+  const functions = preflight.slice(0, preflight.indexOf('test -f "$COMPOSE_FILE"'));
+  const directory = mkdtempSync(join(tmpdir(), "task9-preflight-executable-"));
+  const bin = join(directory, "bin");
+  mkdirSync(bin);
+  writeFakeCommand(bin, "docker", 'printf "%s\\n" "$*" >>"$TRACE_FILE"');
+  for (const name of ["jq", "node", "psql", "pg_dump"]) {
+    writeFakeCommand(bin, name, `printf 'host-${name}-invoked\\n' >>"$TRACE_FILE"; exit 97`);
+  }
+  const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
+  const result = spawnSync(
+    bash,
+    [
+      "-c",
+      `${functions}
+target_node scripts/stage1-task9-preflight-governance.mjs validate-pair
+target_api sh -lc true`
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        APPROVED_API_IMAGE: "registry.test/api:approved",
+        APPROVED_API_IMAGE_ID: IMAGE_ID,
+        APPROVED_RELEASE_SHA: RELEASE_SHA,
+        COMPOSE_PROJECT: "subauto-staging",
+        EVIDENCE_DIR: directory,
+        STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME: "postgres",
+        STAGE1_ACCEPTANCE_DATABASE_OWNER: "subscription_saas",
+        STAGE1_ACCEPTANCE_IMAGE_REF: `registry.test/api@${IMAGE_ID}`,
+        STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL: "admin-health",
+        STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL: "api-health",
+        STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL: "portal-health",
+        STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL:
+          "postgresql://subscription_saas:x@postgres:5432/subscription_saas_staging",
+        STAGE1_ACCEPTANCE_TARGET_DATABASE_URL:
+          "postgresql://subscription_saas:x@postgres:5432/subscription_saas_staging_acceptance_20260830t120000z",
+        TARGET_DB: "subscription_saas_staging_acceptance_20260830t120000z",
+        TRACE_FILE: toGitBashPath(join(directory, "trace")),
+        PATH: `${toGitBashPath(bin)}:${process.env.PATH}`
+      }
+    }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const tracePath = join(directory, "trace");
+  const trace = readFileSync(tracePath, "utf8");
+  rmSync(directory, { recursive: true, force: true });
+  assert.match(trace, new RegExp(`run --rm -i .*${IMAGE_ID}`));
+  assert.doesNotMatch(trace, /host-(?:jq|node|psql|pg_dump)-invoked/);
 });
 
 test("requires discovery, explicit UUID, approvals, apply/replay, and target validator", async () => {

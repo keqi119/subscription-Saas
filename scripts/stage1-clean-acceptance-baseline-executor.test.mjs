@@ -114,6 +114,33 @@ test("apply rejects a source snapshot changed since the approved manifest withou
   }
 });
 
+test("apply first transaction SQL locks through a materialized CTE returning a supported scalar", async () => {
+  const source = createDatabaseFake("subscription_saas_staging", sourceRows());
+  const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});
+  const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+  const previous = process.env[APPLY_ENV];
+  process.env[APPLY_ENV] = "1";
+  try {
+    await executeStage1CleanAcceptanceBaseline({
+      ...baseOptions("apply", source, target),
+      approvedManifest: dry.manifest,
+      approvedManifestSha256: dry.manifestSha256
+    });
+
+    const writeTx = target.transactions.find((entry) => entry.isolationLevel === "Serializable");
+    assert.ok(writeTx);
+    const firstCall = writeTx.calls[0];
+    assert.equal(firstCall.operation, "$queryRaw");
+    assert.equal(
+      firstCall.sql.replace(/\s+/g, " ").trim(),
+      "WITH lock_call AS MATERIALIZED ( SELECT pg_advisory_xact_lock(hashtext(?)) ) SELECT 1::int AS locked FROM lock_call"
+    );
+    assert.deepEqual(firstCall.values, ["stage1-clean-acceptance-baseline:apply"]);
+  } finally {
+    restoreEnv(previous);
+  }
+});
+
 test("apply serializes, writes parents before children, preserves scalars, and emits one redacted audit", async () => {
   const source = createDatabaseFake("subscription_saas_staging", sourceRows());
   const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});
@@ -129,10 +156,7 @@ test("apply serializes, writes parents before children, preserves scalars, and e
 
     const writeTx = target.transactions.find((entry) => entry.isolationLevel === "Serializable");
     assert.ok(writeTx);
-    assert.match(
-      writeTx.calls[0].sql,
-      /pg_advisory_xact_lock\(hashtext\('stage1-clean-acceptance-baseline:apply'\)\)/
-    );
+    assert.match(writeTx.calls[0].sql, /pg_advisory_xact_lock\(hashtext\(\?\)\)/);
     assertOrder(writeTx.calls, [
       "permission",
       "menu",
@@ -1140,9 +1164,9 @@ function createDatabaseFake(databaseName, initialRows, options = {}) {
 
 function createClient(getRows, calls, options) {
   const own = {
-    async $queryRaw(strings) {
+    async $queryRaw(strings, ...values) {
       const sql = strings.raw ? strings.raw.join("?") : strings.join("?");
-      calls.push({ operation: "$queryRaw", sql });
+      calls.push({ operation: "$queryRaw", sql, values: structuredClone(values) });
       if (/current_database/i.test(sql)) return [{ databaseName: this.__databaseName }];
       if (/_prisma_migrations/i.test(sql))
         return structuredClone(

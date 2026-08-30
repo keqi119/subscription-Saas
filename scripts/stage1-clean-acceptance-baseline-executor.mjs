@@ -590,7 +590,13 @@ async function readOnly(tx) {
 }
 
 async function advisoryLock(tx) {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('stage1-clean-acceptance-baseline:apply'))`;
+  await tx.$queryRaw`
+    WITH lock_call AS MATERIALIZED (
+      SELECT pg_advisory_xact_lock(hashtext(${"stage1-clean-acceptance-baseline:apply"}))
+    )
+    SELECT 1::int AS locked
+    FROM lock_call
+  `;
 }
 
 async function loadDatabaseName(tx) {

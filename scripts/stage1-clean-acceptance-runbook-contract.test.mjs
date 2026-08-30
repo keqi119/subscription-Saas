@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
@@ -10,6 +18,11 @@ const runbookUrl = new URL(
   "../docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
   import.meta.url
 );
+const SHA256 = "a".repeat(64);
+const RELEASE_SHA = "b".repeat(40);
+const IMAGE_ID = `sha256:${"c".repeat(64)}`;
+const CONTAINER_ID = "e".repeat(64);
+const NONCE = "d".repeat(64);
 
 async function readRunbook() {
   return readFile(runbookUrl, "utf8").catch(() => "");
@@ -53,35 +66,54 @@ function extractExecutableFence(contents, name) {
 }
 
 function validateExecutableContracts(contents) {
+  const evidenceHelpers = extractExecutableFence(contents, "STAGE1_EVIDENCE_HELPERS_EXECUTABLE");
   const transformer = extractExecutableFence(contents, "STAGE1_ENV_TRANSFORM_EXECUTABLE");
   const cutover = extractExecutableFence(contents, "STAGE1_CUTOVER_EXECUTABLE");
   assert.match(transformer, /^import \{ buildStage1AcceptanceDatabaseEnvSwitch \}/m);
   assert.match(transformer, /^const after = buildStage1AcceptanceDatabaseEnvSwitch\($/m);
   assert.doesNotMatch(transformer, /^\s*(?:#|\/\/).*buildStage1AcceptanceDatabaseEnvSwitch/m);
+  assertContainsAll(evidenceHelpers, [
+    "assert_private_directory() {",
+    "assert_new_evidence_path() {",
+    "assert_private_file() {",
+    "publish_private_evidence() {",
+    'test -d "$path" || return 1',
+    'test ! -e "$path" || return 1',
+    'test -f "$path" || return 1',
+    'test ! -L "$path" || return 1'
+  ]);
 
   const trapIndex = cutover.indexOf("trap 'rollback_after_switch_error' ERR");
   const activeIndex = cutover.indexOf("SWITCH_ACTIVE=1");
   const renameIndex = cutover.indexOf('mv -f -- "$ENV_TEMP" "$ENV_FILE"');
   assert.ok(trapIndex >= 0 && trapIndex < activeIndex && activeIndex < renameIndex);
-  assert.match(cutover, /^"\$CUTOVER_POST_SWITCH_GATES_FN"$/m);
-  assert.match(cutover, /^if ! "\$CUTOVER_BROWSER_FACT_VALIDATOR_FN" \\/m);
+  assert.match(cutover, /^post_switch_database_gates$/m);
+  assert.match(cutover, /^if ! validate_browser_acceptance_fact \\/m);
+  assert.match(cutover, /^if ! cutover_api_recreate api; then/m);
+  assert.doesNotMatch(cutover, /STAGE1_CUTOVER_|CUTOVER_[A-Z_]+_FN/);
   assert.doesNotMatch(
     cutover,
-    /^\s*#.*(?:CUTOVER_POST_SWITCH_GATES_FN|rollback_after_switch_error)/m
+    /^\s*#.*(?:post_switch_database_gates|rollback_after_switch_error)/m
   );
   assertContainsAll(cutover, [
-    '"runUtc"',
-    '"manifestSha256"',
+    "revalidate_switched_api_identity() {",
+    "{{.Id}}",
+    "{{.Image}}",
+    "org.opencontainers.image.revision",
+    ".services.api.image",
+    'test "$switched_image_id" = "$API_IMAGE_ID"',
+    'test "$switched_release_sha" = "$RELEASE_SHA"',
+    'test "$compose_image_id" = "$API_IMAGE_ID"',
     '"releaseSha"',
     '"imageId"',
     '"switchedContainerId"',
-    '"switchStartedAtUtc"',
-    '"logObservationStartedAtUtc"',
     '"challengeCreatedAtUtc"',
     '"nonce"',
     "isDeepStrictEqual(fact.challenge, challenge)",
-    "Number.isFinite(completedAt)",
-    "completedAt > switchedAtMillis",
+    "Number.isFinite(millis)",
+    "completedAt >= challengeCreatedAt",
+    "completedAt <= receivedAt",
+    "completedAt <= challengeCreatedAt + timeoutSeconds * 1000",
     "allDomains(fact.entryPoints",
     "allDomains(fact.rawEnumerations",
     "fact.console.errorCount === 0",
@@ -92,20 +124,22 @@ function validateExecutableContracts(contents) {
     "BROWSER_ACCEPTANCE_REJECTED",
     "BROWSER_ACCEPTANCE_FACT_INVALID"
   ]);
-  const activeCutover = cutover.slice(trapIndex);
-  assertStrictOrder(activeCutover, [
+  assertStrictOrder(cutover.slice(trapIndex), [
     "SWITCH_ACTIVE=1",
     'mv -f -- "$ENV_TEMP" "$ENV_FILE"',
+    "cutover_api_recreate api",
+    "revalidate_switched_api_identity",
     "write_browser_acceptance_challenge",
-    '"$CUTOVER_POST_SWITCH_GATES_FN"',
+    "post_switch_database_gates",
     "BROWSER_ACCEPTANCE_TIMEOUT_SECONDS",
     "BROWSER_ACCEPTANCE_PAYLOAD",
-    '"$CUTOVER_PUBLISH_EVIDENCE_FN" "$BROWSER_FACT_PATH"',
-    '"$CUTOVER_BROWSER_FACT_VALIDATOR_FN"',
+    "BROWSER_ACCEPTANCE_RECEIVED_AT_UTC",
+    'publish_private_evidence "$BROWSER_FACT_PATH"',
+    "validate_browser_acceptance_fact",
     "SWITCH_ACTIVE=0",
     "trap - ERR"
   ]);
-  return { cutover, transformer };
+  return { cutover, evidenceHelpers, transformer };
 }
 
 function toGitBashPath(path) {
@@ -114,27 +148,214 @@ function toGitBashPath(path) {
     .replaceAll("\\", "/");
 }
 
-function runCutoverFailure(cutover, scenario) {
-  const hostDirectory = mkdtempSync(join(tmpdir(), "stage1-cutover-contract-"));
-  const directory = toGitBashPath(hostDirectory);
-  const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
+function writeFakeCommand(binDirectory, name, contents) {
+  const path = join(binDirectory, name);
+  writeFileSync(path, `#!/usr/bin/env bash\nset -euo pipefail\n${contents}\n`, "utf8");
+  chmodSync(path, 0o755);
+}
+
+function installLeafFakes(hostDirectory) {
+  const binDirectory = join(hostDirectory, "fake-bin");
+  mkdirSync(binDirectory);
+  writeFakeCommand(
+    binDirectory,
+    "date",
+    `counter="$HARNESS_DIR/date-count"
+count=0
+test ! -f "$counter" || IFS= read -r count <"$counter"
+count=$((count + 1))
+printf '%s\\n' "$count" >"$counter"
+case "$count" in
+  1) printf '%s\\n' 2026-08-30T12:00:00Z ;;
+  2) printf '%s\\n' 2026-08-30T12:00:01Z ;;
+  3) printf '%s\\n' 2026-08-30T12:00:02Z ;;
+  *) printf '%s\\n' 2026-08-30T12:00:10Z ;;
+esac`
+  );
+  writeFakeCommand(binDirectory, "openssl", `printf '%s\\n' ${NONCE}`);
+  writeFakeCommand(
+    binDirectory,
+    "stat",
+    `target="\${!#}"
+if test "$FAILURE_SCENARIO" = browser_validator_permission && [[ "$target" = *browser-acceptance.fact.json ]]; then
+  counter="$HARNESS_DIR/browser-fact-stat-count"
+  count=0
+  test ! -f "$counter" || IFS= read -r count <"$counter"
+  count=$((count + 1))
+  printf '%s\\n' "$count" >"$counter"
+  if test "$count" -ge 2; then printf '%s\\n' '0:0:644'; exit 0; fi
+fi
+if test -d "$target"; then printf '%s\\n' '0:0:700'; else printf '%s\\n' '0:0:600'; fi`
+  );
+  writeFakeCommand(binDirectory, "chown", ":");
+  writeFakeCommand(
+    binDirectory,
+    "sync",
+    `printf '%s\\n' gate:filesystem-sync >>"$TRACE_FILE"
+if test "$FAILURE_SCENARIO" = filesystem_sync && test "$(<"$ENV_FILE")" = target; then exit 71; fi`
+  );
+  writeFakeCommand(binDirectory, "sha256sum", `printf '%s\\n' 'deadbeef  -'`);
+  writeFakeCommand(
+    binDirectory,
+    "curl",
+    `url="\${!#}"
+state="$(<"$ENV_FILE")"
+if test "$state" = old; then
+  printf '%s\\n' old-public-health >>"$TRACE_FILE"
+  printf '%s' 200
+  exit 0
+fi
+case "$url" in
+  api-health) gate=public-api; scenario=public_api ;;
+  admin-health) gate=public-admin; scenario=public_admin ;;
+  portal-health) gate=public-portal; scenario=public_portal ;;
+  *) printf '%s\\n' UNHANDLED_CURL_COMMAND >>"$TRACE_FILE"; exit 97 ;;
+esac
+printf 'gate:%s\\n' "$gate" >>"$TRACE_FILE"
+if test "$FAILURE_SCENARIO" = "$scenario"; then printf '%s' 500; else printf '%s' 200; fi`
+  );
+  writeFakeCommand(
+    binDirectory,
+    "psql",
+    `case "$*" in
+  *secret-target-url*)
+    printf '%s\\n' gate:migration-count >>"$TRACE_FILE"
+    if test "$FAILURE_SCENARIO" = migration_count; then printf '%s\\n' '123|0|0|0'; else printf '%s\\n' '124|0|0|0'; fi
+    ;;
+  *secret-database-url*)
+    printf '%s\\n' old-database-fingerprint >>"$TRACE_FILE"
+    printf '%s\\n' fingerprint-input
+    ;;
+  *) printf '%s\\n' UNHANDLED_PSQL_COMMAND >>"$TRACE_FILE"; exit 97 ;;
+esac`
+  );
+  writeFakeCommand(
+    binDirectory,
+    "jq",
+    `args="$*"
+case "$args" in
+  *services.api.image*)
+    while IFS= read -r _line; do :; done || true
+    printf '%s\\n' approved-api
+    ;;
+  *localMigrationCount*)
+    while IFS= read -r _line; do :; done || true
+    printf '%s\\n' gate:checksum-assert >>"$TRACE_FILE"
+    test "$FAILURE_SCENARIO" != checksum
+    ;;
+  *billing-completed-cycles.json*)
+    printf '%s\\n' gate:billing >>"$TRACE_FILE"
+    test "$FAILURE_SCENARIO" != billing
+    ;;
+  *) : ;;
+esac`
+  );
+  writeFakeCommand(
+    binDirectory,
+    "docker",
+    `args="$*"
+state="$(<"$ENV_FILE")"
+case "$args" in
+  *' up -d --no-deps --force-recreate api'*)
+    printf '%s\\n' recreate:api >>"$TRACE_FILE"
+    if [[ "$FAILURE_SCENARIO" = api_recreate || "$FAILURE_SCENARIO" = rollback_health ]] \
+      && test "$state" = target; then exit 70; fi
+    ;;
+  *' ps -q api'*) printf '%s\\n' ${CONTAINER_ID} ;;
+  'image inspect --format {{.Id}} approved-api')
+    printf '%s\\n' gate:compose-image >>"$TRACE_FILE"
+    if test "$FAILURE_SCENARIO" = compose_image_drift; then printf '%s\\n' sha256:${"f".repeat(64)}; else printf '%s\\n' ${IMAGE_ID}; fi
+    ;;
+  *' config --format json'*) printf '%s\\n' '{"services":{"api":{"image":"approved-api"}}}' ;;
+  *'inspect --format {{.Id}}'*)
+    printf '%s\\n' gate:container-id >>"$TRACE_FILE"
+    if test "$FAILURE_SCENARIO" = container_id_drift && test "$state" = target; then printf '%s\\n' ${"f".repeat(64)}; else printf '%s\\n' ${CONTAINER_ID}; fi
+    ;;
+  *'inspect --format {{.Image}}'*)
+    printf '%s\\n' gate:container-image >>"$TRACE_FILE"
+    if test "$FAILURE_SCENARIO" = image_drift && test "$state" = target; then printf '%s\\n' sha256:${"f".repeat(64)}; else printf '%s\\n' ${IMAGE_ID}; fi
+    ;;
+  *'org.opencontainers.image.revision'*)
+    printf '%s\\n' gate:container-revision >>"$TRACE_FILE"
+    if test "$FAILURE_SCENARIO" = revision_drift && test "$state" = target; then printf '%s\\n' ${"f".repeat(40)}; else printf '%s\\n' ${RELEASE_SHA}; fi
+    ;;
+  *'inspect --format {{.State.Running}}'*)
+    printf '%s\\n' gate:container-running >>"$TRACE_FILE"
+    if test "$FAILURE_SCENARIO" = container_running && test "$state" = target; then printf '%s\\n' false; else printf '%s\\n' true; fi
+    ;;
+  *'inspect --format {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}'*)
+    if test "$state" = target; then printf '%s\\n' gate:container-health >>"$TRACE_FILE"; fi
+    if { test "$FAILURE_SCENARIO" = container_health && test "$state" = target; } \
+      || { test "$FAILURE_SCENARIO" = rollback_health && test "$state" = old; }; then
+      printf '%s\\n' unhealthy
+    else
+      printf '%s\\n' healthy
+    fi
+    ;;
+  *'inspect --format {{.RestartCount}}'*)
+    printf '%s\\n' gate:restart-count >>"$TRACE_FILE"
+    if test "$FAILURE_SCENARIO" = restart_count; then printf '%s\\n' 1; else printf '%s\\n' 0; fi
+    ;;
+  *'prisma migrate status'*)
+    printf '%s\\n' gate:migration-status >>"$TRACE_FILE"
+    test "$FAILURE_SCENARIO" != migration_status
+    ;;
+  *'prisma:migrate:checksum:verify'*)
+    printf '%s\\n' gate:checksum >>"$TRACE_FILE"
+    printf '%s\\n' '{"safe":true,"localMigrationCount":124,"appliedMigrationCount":124,"duplicateAppliedNames":[],"mismatchedNames":[],"missingFromDatabase":[],"missingLocally":[]}'
+    ;;
+  *'prisma migrate diff'*)
+    printf '%s\\n' gate:drift >>"$TRACE_FILE"
+    test "$FAILURE_SCENARIO" != drift
+    ;;
+  *'stage1-clean-acceptance-target-validator.mjs'*)
+    printf '%s\\n' gate:validator >>"$TRACE_FILE"
+    test "$FAILURE_SCENARIO" != validator || exit 72
+    printf '%s\\n' '{"safe":true,"mode":"target-validator","manifestSha256":"${SHA256}"}' >"$EVIDENCE_DIR/target-validator.post-switch.json"
+    ;;
+  *'exec '*' node -e '*)
+    printf '%s\\n' gate:runtime-flags >>"$TRACE_FILE"
+    test "$FAILURE_SCENARIO" != runtime_flags
+    ;;
+  'logs --since '*)
+    printf '%s\\n' gate:docker-logs >>"$TRACE_FILE"
+    case "$FAILURE_SCENARIO" in
+      log_read) exit 73 ;;
+      log_error) printf '%s\\n' 'ERROR stable-test-event' ;;
+      log_pii) printf '%s\\n' 'bearer stable-test-event' ;;
+      *) printf '%s\\n' 'INFO stable-test-event' ;;
+    esac
+    ;;
+  *) printf '%s\\n' UNHANDLED_DOCKER_COMMAND >>"$TRACE_FILE"; exit 97 ;;
+esac`
+  );
+  return binDirectory;
+}
+
+function browserFactFor(scenario) {
   const challenge = {
     schemaVersion: 1,
     runUtc: "20260830T120000Z",
-    manifestSha256: "a".repeat(64),
-    releaseSha: "b".repeat(40),
-    imageId: `sha256:${"c".repeat(64)}`,
-    switchedContainerId: "e".repeat(64),
+    manifestSha256: SHA256,
+    releaseSha: RELEASE_SHA,
+    imageId: IMAGE_ID,
+    switchedContainerId: CONTAINER_ID,
     switchStartedAtUtc: "2026-08-30T12:00:01Z",
-    logObservationStartedAtUtc: "2026-08-30T12:00:01Z",
-    challengeCreatedAtUtc: "2026-08-30T12:00:01Z",
-    nonce: "d".repeat(64)
+    logObservationStartedAtUtc: "2026-08-30T12:00:00Z",
+    challengeCreatedAtUtc: "2026-08-30T12:00:02Z",
+    nonce: NONCE
   };
-  const validBrowserFact = JSON.stringify({
+  const completedAtUtc =
+    {
+      browser_before_challenge: "2026-08-30T12:00:01Z",
+      browser_after_window: "2026-08-30T12:00:04Z",
+      browser_future: "2026-08-30T12:00:11Z"
+    }[scenario] ?? "2026-08-30T12:00:03Z";
+  return {
     schemaVersion: 1,
     decision: "accepted",
     challenge,
-    completedAtUtc: "2026-08-30T12:00:02Z",
+    completedAtUtc,
     publicHealth: { api: 200, admin: 200, portal: 200 },
     auth: true,
     rbac: true,
@@ -168,81 +389,77 @@ function runCutoverFailure(cutover, scenario) {
     console: { errorCount: 0, warnCount: 0 },
     visualReview: { admin: true, portal: true, responsive: true },
     businessWrites: 0
-  });
-  const wrapper = `
-set -Eeuo pipefail
+  };
+}
+
+function runCutover(cutover, evidenceHelpers, scenario) {
+  const hostDirectory = mkdtempSync(join(tmpdir(), "stage1-cutover-contract-"));
+  const directory = toGitBashPath(hostDirectory);
+  const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
+  const binDirectory = toGitBashPath(installLeafFakes(hostDirectory));
+  const wrapper = `set -Eeuo pipefail
 HARNESS_DIR=${JSON.stringify(directory)}
+TRACE_FILE="$HARNESS_DIR/trace"
+FAILURE_SCENARIO=${JSON.stringify(scenario)}
+export HARNESS_DIR TRACE_FILE FAILURE_SCENARIO
+PATH=${JSON.stringify(binDirectory)}:"$PATH"
+export PATH
 EVIDENCE_DIR="$HARNESS_DIR/evidence"
 ENV_FILE="$HARNESS_DIR/live.env"
 ENV_BACKUP="$HARNESS_DIR/old.env"
 ENV_TEMP="$HARNESS_DIR/target.env"
-TRACE_FILE="$HARNESS_DIR/trace"
+export EVIDENCE_DIR ENV_FILE
 mkdir -p "$EVIDENCE_DIR"
 printf '%s\\n' old >"$ENV_FILE"
 printf '%s\\n' old >"$ENV_BACKUP"
 printf '%s\\n' target >"$ENV_TEMP"
 printf '%s\\n' deadbeef >"$EVIDENCE_DIR/old-database.fingerprint.sha256"
+printf '%s\\n' '{"schemaVersion":1,"cycles":[{"completedCycleId":"one","state":"completed","blockedCount":0},{"completedCycleId":"two","state":"completed","blockedCount":0}],"forbiddenDomainCountsBeforeSha256":"same","forbiddenDomainCountsAfterSha256":"same"}' >"$EVIDENCE_DIR/billing-completed-cycles.json"
+chmod 0600 "$EVIDENCE_DIR/old-database.fingerprint.sha256" "$EVIDENCE_DIR/billing-completed-cycles.json"
 RUN_UTC=20260830T120000Z
-MANIFEST_SHA=${"a".repeat(64)}
-RELEASE_SHA=${"b".repeat(40)}
-API_IMAGE_ID=sha256:${"c".repeat(64)}
+MANIFEST_SHA=${SHA256}
+RELEASE_SHA=${RELEASE_SHA}
+API_IMAGE_ID=${IMAGE_ID}
 COMPOSE_FILE=fake-compose
-STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL=secret-health-url
+STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL=api-health
+STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL=admin-health
+STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL=portal-health
 STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL=secret-database-url
+STAGE1_ACCEPTANCE_TARGET_DATABASE_URL=secret-target-url
+STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME=fake-host
 BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=1
-FAILURE_SCENARIO=${JSON.stringify(scenario)}
-BROWSER_INPUT=${JSON.stringify(validBrowserFact)}
-test "$FAILURE_SCENARIO" = browser_reject && BROWSER_INPUT=REJECT
-test "$FAILURE_SCENARIO" = browser_timeout && BROWSER_INPUT=__TIMEOUT__
-test "$FAILURE_SCENARIO" = browser_invalid && BROWSER_INPUT='{}'
-test "$FAILURE_SCENARIO" = browser_preseed && printf '%s\n' stale >"$EVIDENCE_DIR/browser-acceptance.fact.json"
-test "$FAILURE_SCENARIO" = challenge_preseed && printf '%s\n' stale >"$EVIDENCE_DIR/browser-acceptance.challenge.json"
-
-assert_new_evidence_path() { test ! -e "$1" && test ! -L "$1"; }
-assert_private_file() { test -f "$1" && test ! -L "$1"; }
-publish_private_evidence() { local target="$1"; assert_new_evidence_path "$target"; ( set -o noclobber; cat >"$target" ); chmod 0600 "$target"; }
-fake_secure_file() { chmod 0600 "$1"; }
-fake_sync_directory() { :; }
-fake_utc_now() { printf '%s\\n' 2026-08-30T12:00:01Z; }
-fake_nonce() { printf '%s\\n' ${"d".repeat(64)}; }
-fake_container_id() { printf '%s\\n' ${"e".repeat(64)}; }
-fake_api_recreate() {
-  printf 'recreate:%s\\n' "$1" >>"$TRACE_FILE"
-  if test "$FAILURE_SCENARIO" = api_recreate && test ! -e "$HARNESS_DIR/api-failed"; then
-    : >"$HARNESS_DIR/api-failed"
-    return 1
-  fi
-}
-fake_post_switch_gates() { printf '%s\\n' post-switch >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != post_switch; }
-fake_public_health() { printf '%s\\n' old-public-health >>"$TRACE_FILE"; }
-fake_old_fingerprint() { printf '%s\\n' old-database-fingerprint >>"$TRACE_FILE"; printf '%s\\n' deadbeef; }
-fake_after_rename() { test "$FAILURE_SCENARIO" != unexpected_after_rename; }
-read() {
-  local destination="\${@: -1}"
-  test "$BROWSER_INPUT" != __TIMEOUT__ || return 1
-  printf -v "$destination" '%s' "$BROWSER_INPUT"
-}
-
-STAGE1_CUTOVER_API_RECREATE_FN=fake_api_recreate
-STAGE1_CUTOVER_POST_SWITCH_GATES_FN=fake_post_switch_gates
-STAGE1_CUTOVER_PUBLIC_HEALTH_FN=fake_public_health
-STAGE1_CUTOVER_OLD_FINGERPRINT_FN=fake_old_fingerprint
-STAGE1_CUTOVER_CONTAINER_ID_FN=fake_container_id
-STAGE1_CUTOVER_NONCE_FN=fake_nonce
-STAGE1_CUTOVER_UTC_NOW_FN=fake_utc_now
-STAGE1_CUTOVER_SECURE_FILE_FN=fake_secure_file
-STAGE1_CUTOVER_SYNC_FN=fake_sync_directory
-STAGE1_CUTOVER_AFTER_RENAME_HOOK_FN=fake_after_rename
-STAGE1_CUTOVER_PUBLISH_EVIDENCE_FN=publish_private_evidence
-STAGE1_CUTOVER_ASSERT_PRIVATE_FILE_FN=assert_private_file
-STAGE1_CUTOVER_ASSERT_NEW_PATH_FN=assert_new_evidence_path
+test "$FAILURE_SCENARIO" = timeout_901 && BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=901
+test "$FAILURE_SCENARIO" = timeout_9999 && BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=9999
+test "$FAILURE_SCENARIO" = browser_preseed && printf '%s\\n' stale >"$EVIDENCE_DIR/browser-acceptance.fact.json"
+test "$FAILURE_SCENARIO" = challenge_preseed && printf '%s\\n' stale >"$EVIDENCE_DIR/browser-acceptance.challenge.json"
+${evidenceHelpers}
 ${cutover}
 `;
   try {
-    const result = spawnSync(bash, ["-s"], { encoding: "utf8", input: wrapper });
+    const scriptPath = join(hostDirectory, "cutover-contract.sh");
+    writeFileSync(scriptPath, wrapper, "utf8");
+    const input =
+      scenario === "browser_timeout"
+        ? ""
+        : scenario === "browser_reject"
+          ? "REJECT\n"
+          : scenario === "browser_invalid"
+            ? "{}\n"
+            : `${JSON.stringify(browserFactFor(scenario))}\n`;
+    const result = spawnSync(bash, [toGitBashPath(scriptPath)], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        STAGE1_CUTOVER_API_RECREATE_FN: "true",
+        STAGE1_CUTOVER_POST_SWITCH_GATES_FN: "true"
+      },
+      input,
+      timeout: 15000
+    });
     const tracePath = join(hostDirectory, "trace");
     return {
       env: readFileSync(join(hostDirectory, "live.env"), "utf8"),
+      evidenceFiles: readdirSync(join(hostDirectory, "evidence")),
       result,
       trace: readFileSync(tracePath, "utf8").trim().split(/\r?\n/).filter(Boolean)
     };
@@ -257,13 +474,71 @@ ${cutover}
   }
 }
 
+function assertRollback(outcome, scenario, expectedTrace) {
+  assert.notEqual(outcome.result.status, 0, `${scenario} must exit nonzero`);
+  assert.equal(outcome.result.signal, null, `${scenario} must not hang`);
+  assert.equal(outcome.env, "old\n", `${scenario} must restore the old env`);
+  assert.ok(outcome.trace.includes(expectedTrace), `${scenario} must reach ${expectedTrace}`);
+  assert.ok(outcome.trace.includes("old-public-health"), `${scenario} must verify old health`);
+  assert.ok(
+    outcome.trace.includes("old-database-fingerprint"),
+    `${scenario} must verify old database fingerprint`
+  );
+  const recreates = outcome.trace.filter((entry) => entry.startsWith("recreate:"));
+  assert.equal(
+    recreates.length,
+    scenario === "filesystem_sync" ? 1 : 2,
+    `${scenario} must perform every reached API recreate plus rollback recreate`
+  );
+  assert.ok(
+    recreates.every((entry) => entry === "recreate:api"),
+    `${scenario} recreates api only`
+  );
+  assert.equal(
+    outcome.trace.some((entry) => entry.startsWith("UNHANDLED_")),
+    false,
+    `${scenario} may not reach an unfaked service command`
+  );
+  assert.doesNotMatch(
+    `${outcome.result.stdout}\n${outcome.result.stderr}`,
+    /secret-(?:target|database)-url/
+  );
+}
+
+const COMPLETE_GATE_TRACE = [
+  "gate:container-id",
+  "gate:container-image",
+  "gate:container-revision",
+  "gate:compose-image",
+  "gate:container-running",
+  "gate:container-health",
+  "gate:restart-count",
+  "gate:migration-status",
+  "gate:checksum",
+  "gate:checksum-assert",
+  "gate:drift",
+  "gate:migration-count",
+  "gate:validator",
+  "gate:runtime-flags",
+  "gate:public-api",
+  "gate:public-admin",
+  "gate:public-portal",
+  "gate:billing",
+  "gate:docker-logs"
+];
+
+function assertCompleteGateTrace(outcome) {
+  for (const entry of COMPLETE_GATE_TRACE) {
+    assert.ok(outcome.trace.includes(entry), `real post-switch gate must reach ${entry}`);
+  }
+}
+
 test("requires two independent, exact human approval stops", async () => {
   const contents = await readRunbook();
   const markers = [
     "STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL",
     "STOP FOR HUMAN APPROVAL: API_DATABASE_SWITCH_APPROVAL"
   ];
-
   for (const marker of markers) {
     assert.equal(contents.split(marker).length - 1, 1, `${marker} must occur exactly once`);
   }
@@ -273,26 +548,26 @@ test("requires two independent, exact human approval stops", async () => {
     "--replay --vehicle-id",
     "stage1-clean-acceptance-target-validator.mjs",
     "STOP: CANDIDATE_API_TIMER_ISOLATION_UNPROVEN",
+    "STOP: BILLING_COMPLETED_CYCLE_EVIDENCE_UNAVAILABLE",
     markers[1],
     'mv -f -- "$ENV_TEMP" "$ENV_FILE"'
   ]);
 });
 
-test("defines idempotent rollback before rename and routes every switched failure through it", async () => {
-  const contents = await readRunbook();
-  const { cutover } = validateExecutableContracts(contents);
+test("defines fixed idempotent rollback before rename and routes switched failures through it", async () => {
+  const { cutover } = validateExecutableContracts(await readRunbook());
   assertStrictOrder(cutover, [
     "rollback_api_database_switch() {",
     "rollback_and_stop() {",
     "trap 'rollback_after_switch_error' ERR",
     "SWITCH_ACTIVE=1",
     'mv -f -- "$ENV_TEMP" "$ENV_FILE"',
-    '"$CUTOVER_POST_SWITCH_GATES_FN"',
+    "post_switch_database_gates",
     "SWITCH_ACTIVE=0"
   ]);
   assert.match(
     cutover,
-    /if\s+!\s+"\$CUTOVER_API_RECREATE_FN"\s+api;\s+then\s+rollback_and_stop\s+'API_RECREATE_FAILED'/
+    /if\s+!\s+cutover_api_recreate\s+api;\s+then\s+rollback_and_stop\s+'API_RECREATE_FAILED'/
   );
   assert.match(
     cutover,
@@ -307,11 +582,11 @@ test("defines idempotent rollback before rename and routes every switched failur
   ]);
 });
 
-test("never infers completed billing cycles from elapsed time", async () => {
+test("never infers billing completion and keeps both source-code hard stops", async () => {
   const contents = await readRunbook();
-  assert.doesNotMatch(contents, /\bsleep\s+130\b/);
-  assert.doesNotMatch(contents, /billing_cycles_observed=2/);
+  assert.doesNotMatch(contents, /\bsleep\s+130\b|billing_cycles_observed=2/);
   assertStrictOrder(contents, [
+    "STOP: CANDIDATE_API_TIMER_ISOLATION_UNPROVEN",
     "STOP: BILLING_COMPLETED_CYCLE_EVIDENCE_UNAVAILABLE",
     "STOP FOR HUMAN APPROVAL: API_DATABASE_SWITCH_APPROVAL"
   ]);
@@ -326,13 +601,9 @@ test("never infers completed billing cycles from elapsed time", async () => {
   assert.doesNotMatch(contents, /docker logs[^\n]*(?:\n[^\n]*){0,3}\|\| true/);
 });
 
-test("runs complete post-switch gates under rollback protection", async () => {
-  const contents = await readRunbook();
-  const { cutover } = validateExecutableContracts(contents);
-  const start = indexOfUnique(cutover, "post_switch_database_gates() {");
-  const end = cutover.indexOf("SWITCH_ACTIVE=0", start);
-  assert.notEqual(end, -1);
-  const body = cutover.slice(start, end);
+test("keeps complete database, runtime, public, billing, and log gates", async () => {
+  const { cutover } = validateExecutableContracts(await readRunbook());
+  const body = cutover.slice(indexOfUnique(cutover, "post_switch_database_gates() {"));
   assertContainsAll(body, [
     "stage1-clean-acceptance-target-validator.mjs",
     "prisma migrate status",
@@ -357,7 +628,7 @@ test("runs complete post-switch gates under rollback protection", async () => {
   ]);
 });
 
-test("uses the tested env transformer and binds approved source and target before rename", async () => {
+test("binds approved source and target with the real env transformer before approval", async () => {
   const contents = await readRunbook();
   const { transformer } = validateExecutableContracts(contents);
   assertContainsAll(transformer, [
@@ -365,10 +636,12 @@ test("uses the tested env transformer and binds approved source and target befor
     "STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL",
     "STAGE1_ACCEPTANCE_TARGET_DATABASE_URL"
   ]);
-  const transformerEnd = contents.indexOf("<!-- STAGE1_ENV_TRANSFORM_EXECUTABLE_END -->");
-  const approval = contents.indexOf("STOP FOR HUMAN APPROVAL: API_DATABASE_SWITCH_APPROVAL");
-  const cutoverBegin = contents.indexOf("<!-- STAGE1_CUTOVER_EXECUTABLE_BEGIN -->");
-  assert.ok(transformerEnd < approval && approval < cutoverBegin);
+  assert.ok(
+    contents.indexOf("<!-- STAGE1_ENV_TRANSFORM_EXECUTABLE_END -->") <
+      contents.indexOf("STOP FOR HUMAN APPROVAL: API_DATABASE_SWITCH_APPROVAL") &&
+      contents.indexOf("STOP FOR HUMAN APPROVAL: API_DATABASE_SWITCH_APPROVAL") <
+        contents.indexOf("<!-- STAGE1_CUTOVER_EXECUTABLE_BEGIN -->")
+  );
 });
 
 test("requires replay zero-write evidence before candidate and switch", async () => {
@@ -380,7 +653,7 @@ test("requires replay zero-write evidence before candidate and switch", async ()
   ]);
 });
 
-test("makes evidence creation immutable and records complete backup metadata", async () => {
+test("makes evidence immutable/private and records complete backup metadata", async () => {
   const contents = await readRunbook();
   assertStrictOrder(contents, [
     'test ! -e "$EVIDENCE_DIR"',
@@ -402,9 +675,8 @@ test("makes evidence creation immutable and records complete backup metadata", a
   ]);
 });
 
-test("keeps the old database read-only and makes backup and migration gates fail closed", async () => {
+test("keeps old database read-only and migration/backup gates fail closed", async () => {
   const contents = await readRunbook();
-
   assertContainsAll(contents, [
     "旧库全程只读",
     "禁止 repair",
@@ -417,27 +689,21 @@ test("keeps the old database read-only and makes backup and migration gates fail
     'DRIFT_EXIT="$?"',
     'test "$DRIFT_EXIT" -eq 0',
     "124 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate",
-    "install -d -o root -g root -m 0700",
-    "chmod 0600",
-    "sha256sum",
     "先备份旧库，再备份空新库"
   ]);
   assert.doesNotMatch(contents, /^\s*(?:migrate\s+resolve|migrate\s+reset|repair\b)/im);
 });
 
-test("pins migration execution to the release image and records the fixed preflight", async () => {
+test("pins compose, release image, and fixed preflight identities", async () => {
   const contents = await readRunbook();
-
   assertContainsAll(contents, [
     'readonly COMPOSE_FILE="/opt/subscription-saas/docker-compose.staging.images.yml"',
     'readonly ENV_FILE="/opt/subscription-saas/.env.staging.images"',
     'readonly API_CONTAINER_ID="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"',
-    'test -n "$API_CONTAINER_ID"',
     "org.opencontainers.image.revision",
     'readonly RUN_UTC="$(date -u +%Y%m%dT%H%M%SZ)"',
     'readonly EVIDENCE_DIR="/opt/subscription-saas/reports/stage1-clean-acceptance-${RUN_UTC}"',
     'readonly TARGET_DB="subscription_saas_staging_acceptance_${RUN_UTC,,}"',
-    'install -d -o root -g root -m 0700 "$EVIDENCE_DIR"',
     "docker compose config --services",
     "docker compose ps",
     "目标 API 镜像只运行一次 migration deploy",
@@ -445,9 +711,8 @@ test("pins migration execution to the release image and records the fixed prefli
   ]);
 });
 
-test("requires discovery, explicit UUID dry-run, manifest approval, apply, replay, and validator", async () => {
+test("requires discovery, explicit UUID, approvals, apply/replay, and target validator", async () => {
   const contents = await readRunbook();
-
   assertContainsAll(contents, [
     "--discover-vehicles",
     '--vehicle-id "$APPROVED_VEHICLE_UUID"',
@@ -464,7 +729,6 @@ test("requires discovery, explicit UUID dry-run, manifest approval, apply, repla
 
 test("fails closed on candidate worker isolation and forbids business writes", async () => {
   const contents = await readRunbook();
-
   assertContainsAll(contents, [
     "127.0.0.1",
     "不接入 Nginx",
@@ -483,15 +747,13 @@ test("fails closed on candidate worker isolation and forbids business writes", a
   ]);
 });
 
-test("limits cutover and rollback to an atomic DATABASE_URL pathname change and API-only recreate", async () => {
+test("limits cutover and rollback to pathname-only env switch and API recreate", async () => {
   const contents = await readRunbook();
-
   assertContainsAll(contents, [
     "cp --preserve=mode,ownership,timestamps",
     "仅 pathname 不同",
     "保留 protocol/host/port/user/password/query",
     "同目录临时文件",
-    "chmod 600",
     "原子 rename",
     "只重建 API service",
     "恢复旧 env",
@@ -504,9 +766,8 @@ test("limits cutover and rollback to an atomic DATABASE_URL pathname change and 
   ]);
 });
 
-test("prohibits secret and identity output", async () => {
+test("prohibits secrets and identities in output", async () => {
   const contents = await readRunbook();
-
   assertContainsAll(contents, [
     "不得输出 URL、凭据、环境文件内容、客户/车辆身份或 token",
     "只输出 hash、计数、稳定状态、固定证据路径、Git/image 身份"
@@ -520,109 +781,157 @@ test("prohibits secret and identity output", async () => {
   );
 });
 
-test("all executable bash fences are syntactically valid without executing them", async () => {
+test("all executable bash fences parse without executing them", async () => {
   const contents = await readRunbook();
   const blocks = [...contents.matchAll(/```bash\r?\n([\s\S]*?)```/g)].map((match) => match[1]);
-  assert.ok(blocks.length > 0);
   const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
+  assert.ok(blocks.length > 0);
   for (const [index, block] of blocks.entries()) {
     const result = spawnSync(bash, ["-n"], { encoding: "utf8", input: block });
     assert.equal(result.status, 0, `bash fence ${index + 1} must parse: ${result.stderr}`);
   }
 });
 
-test("parses only designated executable fences and rejects critical control-flow mutations", async () => {
+test("designated fences reject transformer, gate, trap, identity, and browser mutations", async () => {
   const contents = await readRunbook();
-  const { cutover, transformer } = validateExecutableContracts(contents);
-  assert.throws(() =>
-    validateExecutableContracts(
-      contents.replace(
-        "const after = buildStage1AcceptanceDatabaseEnvSwitch(",
-        "// const after = buildStage1AcceptanceDatabaseEnvSwitch("
-      )
+  const { cutover, evidenceHelpers, transformer } = validateExecutableContracts(contents);
+  const mutations = [
+    contents.replace(
+      "const after = buildStage1AcceptanceDatabaseEnvSwitch(",
+      "// const after = buildStage1AcceptanceDatabaseEnvSwitch("
+    ),
+    contents.replace("post_switch_database_gates", "# post_switch_database_gates"),
+    contents
+      .replace("trap 'rollback_after_switch_error' ERR", "# trap moved")
+      .replace(
+        'mv -f -- "$ENV_TEMP" "$ENV_FILE"',
+        'mv -f -- "$ENV_TEMP" "$ENV_FILE"\ntrap \'rollback_after_switch_error\' ERR'
+      ),
+    contents.replace('test "$switched_image_id" = "$API_IMAGE_ID"', ":"),
+    contents.replace('test "$switched_release_sha" = "$RELEASE_SHA"', ":"),
+    contents.replace('test "$compose_image_id" = "$API_IMAGE_ID"', ":"),
+    contents.replace("fact.console.warnCount === 0", "fact.console.warnCount >= 0"),
+    contents.replace(
+      "completedAt <= challengeCreatedAt + timeoutSeconds * 1000",
+      "completedAt >= challengeCreatedAt"
     )
-  );
-  assert.throws(() =>
-    validateExecutableContracts(
-      contents.replace('"$CUTOVER_POST_SWITCH_GATES_FN"', '# "$CUTOVER_POST_SWITCH_GATES_FN"')
-    )
-  );
-  assert.throws(() =>
-    validateExecutableContracts(
-      contents
-        .replace("trap 'rollback_after_switch_error' ERR", "# trap moved")
-        .replace(
-          'mv -f -- "$ENV_TEMP" "$ENV_FILE"',
-          'mv -f -- "$ENV_TEMP" "$ENV_FILE"\ntrap \'rollback_after_switch_error\' ERR'
-        )
-    )
-  );
-  assert.throws(() =>
-    validateExecutableContracts(
-      contents.replace('"challengeCreatedAtUtc":"%s","nonce":"%s"', '"challengeCreatedAtUtc":"%s"')
-    )
-  );
-  assert.throws(() =>
-    validateExecutableContracts(
-      contents.replace("fact.console.warnCount === 0", "fact.console.warnCount >= 0")
-    )
-  );
-  assert.throws(() =>
-    validateExecutableContracts(
-      contents.replace("completedAt > switchedAtMillis", "fact.completedAtUtc > switchedAt")
-    )
-  );
-  assert.ok(transformer.length > 0 && cutover.length > 0);
-});
-
-test("executes the designated cutover locally and rolls back every injected failure", async () => {
-  const contents = await readRunbook();
-  const { cutover } = validateExecutableContracts(contents);
-  const scenarios = [
-    "api_recreate",
-    "post_switch",
-    "browser_reject",
-    "browser_timeout",
-    "browser_invalid",
-    "browser_preseed",
-    "challenge_preseed",
-    "unexpected_after_rename"
   ];
-  for (const scenario of scenarios) {
-    const outcome = runCutoverFailure(cutover, scenario);
-    assert.notEqual(outcome.result.status, 0, `${scenario} must exit nonzero`);
-    assert.equal(outcome.env, "old\n", `${scenario} must restore the old env`);
-    assert.ok(
-      outcome.trace.includes("old-public-health"),
-      `${scenario} must verify old public health`
-    );
-    assert.ok(
-      outcome.trace.includes("old-database-fingerprint"),
-      `${scenario} must verify old database fingerprint`
-    );
-    const recreates = outcome.trace.filter((entry) => entry.startsWith("recreate:"));
-    assert.equal(
-      recreates.length,
-      scenario === "unexpected_after_rename" ? 1 : 2,
-      `${scenario} must recreate once for switch when reached and once for rollback`
-    );
-    assert.equal(
-      recreates.every((entry) => entry === "recreate:api"),
-      true,
-      `${scenario} may recreate only api`
-    );
-    assert.doesNotMatch(
-      `${outcome.result.stdout}\n${outcome.result.stderr}`,
-      /secret-(?:health|database)-url/
-    );
-  }
+  for (const mutation of mutations) assert.throws(() => validateExecutableContracts(mutation));
+  assert.ok(cutover.length > 0 && evidenceHelpers.length > 0 && transformer.length > 0);
 });
 
-test("clears rollback protection only after the injected browser fact validator succeeds", async () => {
-  const contents = await readRunbook();
-  const { cutover } = validateExecutableContracts(contents);
-  const outcome = runCutoverFailure(cutover, "success");
-  assert.equal(outcome.result.status, 0);
+const MATERIAL_GATE_FAILURES = new Map([
+  ["api_recreate", "recreate:api"],
+  ["filesystem_sync", "gate:filesystem-sync"],
+  ["container_id_drift", "gate:container-id"],
+  ["image_drift", "gate:container-image"],
+  ["revision_drift", "gate:container-revision"],
+  ["compose_image_drift", "gate:compose-image"],
+  ["container_running", "gate:container-running"],
+  ["container_health", "gate:container-health"],
+  ["restart_count", "gate:restart-count"],
+  ["migration_status", "gate:migration-status"],
+  ["checksum", "gate:checksum-assert"],
+  ["drift", "gate:drift"],
+  ["migration_count", "gate:migration-count"],
+  ["validator", "gate:validator"],
+  ["runtime_flags", "gate:runtime-flags"],
+  ["public_api", "gate:public-api"],
+  ["public_admin", "gate:public-admin"],
+  ["public_portal", "gate:public-portal"],
+  ["billing", "gate:billing"],
+  ["log_read", "gate:docker-logs"],
+  ["log_error", "gate:docker-logs"],
+  ["log_pii", "gate:docker-logs"]
+]);
+
+for (const [scenario, expectedTrace] of MATERIAL_GATE_FAILURES) {
+  test(`real ${scenario} failure rolls back through fixed production control flow`, async () => {
+    const { cutover, evidenceHelpers } = validateExecutableContracts(await readRunbook());
+    const outcome = runCutover(cutover, evidenceHelpers, scenario);
+    assertRollback(outcome, scenario, expectedTrace);
+    if (
+      ["container_id_drift", "image_drift", "revision_drift", "compose_image_drift"].includes(
+        scenario
+      )
+    ) {
+      assert.equal(
+        outcome.evidenceFiles.includes("browser-acceptance.challenge.json"),
+        false,
+        `${scenario} must roll back before challenge publication`
+      );
+    }
+  });
+}
+
+test("rollback rejects an unhealthy restored API instead of overwriting the failed check", async () => {
+  const { cutover, evidenceHelpers } = validateExecutableContracts(await readRunbook());
+  const outcome = runCutover(cutover, evidenceHelpers, "rollback_health");
+  assert.notEqual(outcome.result.status, 0);
+  assert.equal(outcome.env, "old\n");
+  assert.match(outcome.result.stdout, /STOP: ROLLBACK_PUBLIC_HEALTH_FAILED/);
+  assert.match(outcome.result.stdout, /rollback_state=failed/);
+});
+
+const BROWSER_FAILURES = new Map([
+  ["browser_reject", "gate:docker-logs"],
+  ["browser_timeout", "gate:docker-logs"],
+  ["browser_invalid", "gate:docker-logs"],
+  ["browser_preseed", "gate:compose-image"],
+  ["challenge_preseed", "gate:compose-image"],
+  ["browser_before_challenge", "gate:docker-logs"],
+  ["browser_after_window", "gate:docker-logs"],
+  ["browser_future", "gate:docker-logs"],
+  ["browser_validator_permission", "gate:docker-logs"],
+  ["timeout_901", "gate:docker-logs"],
+  ["timeout_9999", "gate:docker-logs"]
+]);
+
+for (const [scenario, expectedTrace] of BROWSER_FAILURES) {
+  test(`browser acceptance rejects ${scenario} and rolls back`, async () => {
+    const { cutover, evidenceHelpers } = validateExecutableContracts(await readRunbook());
+    assertRollback(runCutover(cutover, evidenceHelpers, scenario), scenario, expectedTrace);
+  });
+}
+
+test("real gate cannot early-return and unhandled service commands are poisoned locally", async () => {
+  const { cutover, evidenceHelpers } = validateExecutableContracts(await readRunbook());
+  const earlyReturn = cutover.replace(
+    "post_switch_database_gates() {",
+    "post_switch_database_gates() {\n  return 0"
+  );
+  const earlyOutcome = runCutover(earlyReturn, evidenceHelpers, "success");
+  assert.equal(earlyOutcome.result.status, 0);
+  assert.throws(() => assertCompleteGateTrace(earlyOutcome));
+
+  const poisoned = cutover.replace(
+    "\npost_switch_database_gates\n",
+    "\ndocker unexpected-service-command\npost_switch_database_gates\n"
+  );
+  const poisonOutcome = runCutover(poisoned, evidenceHelpers, "success");
+  assert.notEqual(poisonOutcome.result.status, 0);
+  assert.ok(poisonOutcome.trace.includes("UNHANDLED_DOCKER_COMMAND"));
+  assert.equal(poisonOutcome.env, "old\n");
+  assert.ok(poisonOutcome.trace.includes("old-public-health"));
+  assert.ok(poisonOutcome.trace.includes("old-database-fingerprint"));
+});
+
+test("success traverses the real gate, ignores ambient overrides, and validates browser window", async () => {
+  const { cutover, evidenceHelpers } = validateExecutableContracts(await readRunbook());
+  const outcome = runCutover(cutover, evidenceHelpers, "success");
+  assert.equal(
+    outcome.result.status,
+    0,
+    JSON.stringify({
+      stderr: outcome.result.stderr,
+      stdout: outcome.result.stdout,
+      trace: outcome.trace
+    })
+  );
   assert.equal(outcome.env, "target\n");
-  assert.deepEqual(outcome.trace, ["recreate:api", "post-switch"]);
+  assertCompleteGateTrace(outcome);
+  assert.ok(outcome.evidenceFiles.includes("browser-acceptance.challenge.json"));
+  assert.ok(outcome.evidenceFiles.includes("browser-acceptance.fact.json"));
+  assert.ok(outcome.evidenceFiles.includes("api-switch.state"));
+  assert.equal(outcome.trace.filter((entry) => entry === "recreate:api").length, 1);
 });

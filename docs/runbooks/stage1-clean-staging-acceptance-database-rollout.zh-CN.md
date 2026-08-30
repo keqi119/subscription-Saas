@@ -31,25 +31,32 @@ readonly RUN_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
 readonly EVIDENCE_PARENT="/opt/subscription-saas/reports"
 readonly EVIDENCE_DIR="/opt/subscription-saas/reports/stage1-clean-acceptance-${RUN_UTC}"
 readonly TARGET_DB="subscription_saas_staging_acceptance_${RUN_UTC,,}"
+```
+
+以下证据 helper 是后续 cutover 实际复用的固定实现；测试抽取并执行这一原始 fence，不允许从环境选择替代函数：
+
+<!-- STAGE1_EVIDENCE_HELPERS_EXECUTABLE_BEGIN -->
+
+```bash
 
 assert_private_directory() {
   local path="$1"
-  test -d "$path"
-  test ! -L "$path"
-  test "$(stat -c '%u:%g:%a' "$path")" = '0:0:700'
+  test -d "$path" || return 1
+  test ! -L "$path" || return 1
+  test "$(stat -c '%u:%g:%a' "$path")" = '0:0:700' || return 1
 }
 
 assert_new_evidence_path() {
   local path="$1"
-  test ! -e "$path"
-  test ! -L "$path"
+  test ! -e "$path" || return 1
+  test ! -L "$path" || return 1
 }
 
 assert_private_file() {
   local path="$1"
-  test -f "$path"
-  test ! -L "$path"
-  test "$(stat -c '%u:%g:%a' "$path")" = '0:0:600'
+  test -f "$path" || return 1
+  test ! -L "$path" || return 1
+  test "$(stat -c '%u:%g:%a' "$path")" = '0:0:600' || return 1
 }
 
 publish_private_evidence() {
@@ -64,6 +71,13 @@ publish_private_evidence() {
   rm -f -- "$temporary"
   assert_private_file "$target"
 }
+```
+
+<!-- STAGE1_EVIDENCE_HELPERS_EXECUTABLE_END -->
+
+创建当次全新证据目录；目标已存在或为符号链接时失败关闭：
+
+```bash
 
 assert_private_directory "$EVIDENCE_PARENT"
 test ! -e "$EVIDENCE_DIR"
@@ -542,7 +556,7 @@ assert_private_file "$ENV_TEMP"
 
 ```bash
 cutover_api_recreate() {
-  test "$1" = 'api'
+  test "$1" = 'api' || return 1
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api \
     >/dev/null 2>&1
 }
@@ -553,12 +567,13 @@ cutover_api_container_id() {
 
 cutover_verify_public_health() {
   local container_id health_code
-  container_id="$(cutover_api_container_id)"
-  test -n "$container_id"
-  test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_id")" = 'healthy'
+  container_id="$(cutover_api_container_id)" || return 1
+  test -n "$container_id" || return 1
+  test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_id")" = 'healthy' \
+    || return 1
   health_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-    "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL")"
-  test "$health_code" = '200'
+    "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL")" || return 1
+  test "$health_code" = '200' || return 1
 }
 
 cutover_old_database_fingerprint() {
@@ -568,8 +583,8 @@ cutover_old_database_fingerprint() {
 }
 
 cutover_secure_file() {
-  chown root:root "$1"
-  chmod 0600 "$1"
+  chown root:root "$1" || return 1
+  chmod 0600 "$1" || return 1
   assert_private_file "$1"
 }
 
@@ -585,57 +600,38 @@ cutover_nonce() {
   openssl rand -hex 32
 }
 
-cutover_after_rename_hook() {
-  :
-}
-
-CUTOVER_API_RECREATE_FN="${STAGE1_CUTOVER_API_RECREATE_FN:-cutover_api_recreate}"
-CUTOVER_POST_SWITCH_GATES_FN="${STAGE1_CUTOVER_POST_SWITCH_GATES_FN:-post_switch_database_gates}"
-CUTOVER_PUBLIC_HEALTH_FN="${STAGE1_CUTOVER_PUBLIC_HEALTH_FN:-cutover_verify_public_health}"
-CUTOVER_OLD_FINGERPRINT_FN="${STAGE1_CUTOVER_OLD_FINGERPRINT_FN:-cutover_old_database_fingerprint}"
-CUTOVER_CONTAINER_ID_FN="${STAGE1_CUTOVER_CONTAINER_ID_FN:-cutover_api_container_id}"
-CUTOVER_NONCE_FN="${STAGE1_CUTOVER_NONCE_FN:-cutover_nonce}"
-CUTOVER_UTC_NOW_FN="${STAGE1_CUTOVER_UTC_NOW_FN:-cutover_utc_now}"
-CUTOVER_SECURE_FILE_FN="${STAGE1_CUTOVER_SECURE_FILE_FN:-cutover_secure_file}"
-CUTOVER_SYNC_FN="${STAGE1_CUTOVER_SYNC_FN:-cutover_sync_directory}"
-CUTOVER_AFTER_RENAME_HOOK_FN="${STAGE1_CUTOVER_AFTER_RENAME_HOOK_FN:-cutover_after_rename_hook}"
-CUTOVER_BROWSER_FACT_VALIDATOR_FN="${STAGE1_CUTOVER_BROWSER_FACT_VALIDATOR_FN:-validate_browser_acceptance_fact}"
-CUTOVER_PUBLISH_EVIDENCE_FN="${STAGE1_CUTOVER_PUBLISH_EVIDENCE_FN:-publish_private_evidence}"
-CUTOVER_ASSERT_PRIVATE_FILE_FN="${STAGE1_CUTOVER_ASSERT_PRIVATE_FILE_FN:-assert_private_file}"
-CUTOVER_ASSERT_NEW_PATH_FN="${STAGE1_CUTOVER_ASSERT_NEW_PATH_FN:-assert_new_evidence_path}"
-
 rollback_api_database_switch() {
   local failed=0 rollback_temp
   local expected_old_fingerprint observed_old_fingerprint
   set +e
 
-  if ! cmp --silent "$ENV_FILE" "$ENV_BACKUP" || ! "$CUTOVER_ASSERT_PRIVATE_FILE_FN" "$ENV_FILE"; then
+  if ! cmp --silent "$ENV_FILE" "$ENV_BACKUP" || ! assert_private_file "$ENV_FILE"; then
     rollback_temp="$(mktemp --tmpdir="$(dirname "$ENV_FILE")" '.env.staging.images.rollback.XXXXXX')" || failed=1
     if test "$failed" -eq 0; then
       cp --preserve=mode,ownership,timestamps "$ENV_BACKUP" "$rollback_temp" \
-        && "$CUTOVER_SECURE_FILE_FN" "$rollback_temp" \
+        && cutover_secure_file "$rollback_temp" \
         && test ! -L "$rollback_temp" \
         && mv -f -- "$rollback_temp" "$ENV_FILE" \
-        && "$CUTOVER_SYNC_FN" "$(dirname "$ENV_FILE")" \
+        && cutover_sync_directory "$(dirname "$ENV_FILE")" \
         || failed=1
     fi
   fi
-  if ! cmp --silent "$ENV_FILE" "$ENV_BACKUP" || ! "$CUTOVER_ASSERT_PRIVATE_FILE_FN" "$ENV_FILE"; then
+  if ! cmp --silent "$ENV_FILE" "$ENV_BACKUP" || ! assert_private_file "$ENV_FILE"; then
     printf '%s\n' 'STOP: ROLLBACK_ENV_RESTORE_FAILED'
     failed=1
   fi
 
-  if ! "$CUTOVER_API_RECREATE_FN" api; then
+  if ! cutover_api_recreate api; then
     printf '%s\n' 'STOP: ROLLBACK_API_RECREATE_FAILED'
     failed=1
   fi
-  if ! "$CUTOVER_PUBLIC_HEALTH_FN"; then
+  if ! cutover_verify_public_health; then
     printf '%s\n' 'STOP: ROLLBACK_PUBLIC_HEALTH_FAILED'
     failed=1
   fi
 
   expected_old_fingerprint="$(awk 'NF {print $1; exit}' "$EVIDENCE_DIR/old-database.fingerprint.sha256")"
-  observed_old_fingerprint="$("$CUTOVER_OLD_FINGERPRINT_FN")"
+  observed_old_fingerprint="$(cutover_old_database_fingerprint)"
   if test -z "$expected_old_fingerprint" || test "$observed_old_fingerprint" != "$expected_old_fingerprint"; then
     printf '%s\n' 'STOP: ROLLBACK_OLD_DATABASE_FINGERPRINT_FAILED'
     failed=1
@@ -668,12 +664,33 @@ rollback_after_switch_error() {
   exit "$status"
 }
 
+revalidate_switched_api_identity() {
+  local requested_container_id="$1"
+  local full_container_id switched_image_id switched_release_sha compose_image compose_image_id
+  [[ "$requested_container_id" =~ ^[0-9a-f]{64}$ ]] || return 1
+  full_container_id="$(docker inspect --format '{{.Id}}' "$requested_container_id")" || return 1
+  switched_image_id="$(docker inspect --format '{{.Image}}' "$requested_container_id")" || return 1
+  switched_release_sha="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$requested_container_id")" \
+    || return 1
+  compose_image="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --format json \
+    | jq -er '.services.api.image')" || return 1
+  compose_image_id="$(docker image inspect --format '{{.Id}}' "$compose_image")" || return 1
+  test "$full_container_id" = "$requested_container_id" || return 1
+  test "$switched_image_id" = "$API_IMAGE_ID" || return 1
+  test "$switched_release_sha" = "$RELEASE_SHA" || return 1
+  test "$compose_image_id" = "$API_IMAGE_ID" || return 1
+  SWITCHED_API_CONTAINER_ID="$full_container_id"
+  SWITCHED_API_IMAGE_ID="$switched_image_id"
+  SWITCHED_RELEASE_SHA="$switched_release_sha"
+}
+
 write_browser_acceptance_challenge() {
-  local target="$1" nonce="$2" switched_container_id="$3" challenge_created_at_utc="$4"
+  local target="$1" nonce="$2" switched_container_id="$3" switched_image_id="$4"
+  local switched_release_sha="$5" challenge_created_at_utc="$6"
   [[ "$RUN_UTC" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
   [[ "$MANIFEST_SHA" =~ ^[0-9a-f]{64}$ ]]
-  [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-  [[ "$API_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+  [[ "$switched_release_sha" =~ ^[0-9a-f]{40}$ ]]
+  [[ "$switched_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
   [[ "$switched_container_id" =~ ^[0-9a-f]{64}$ ]]
   [[ "$nonce" =~ ^[0-9a-f]{64}$ ]]
   [[ "$SWITCH_STARTED_AT_UTC" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
@@ -682,25 +699,32 @@ write_browser_acceptance_challenge() {
   {
     printf '{"schemaVersion":1,"runUtc":"%s","manifestSha256":"%s",' "$RUN_UTC" "$MANIFEST_SHA"
     printf '"releaseSha":"%s","imageId":"%s","switchedContainerId":"%s",' \
-      "$RELEASE_SHA" "$API_IMAGE_ID" "$switched_container_id"
+      "$switched_release_sha" "$switched_image_id" "$switched_container_id"
     printf '"switchStartedAtUtc":"%s","logObservationStartedAtUtc":"%s",' \
       "$SWITCH_STARTED_AT_UTC" "$LOG_GATE_STARTED_AT"
     printf '"challengeCreatedAtUtc":"%s","nonce":"%s"}\n' "$challenge_created_at_utc" "$nonce"
-  } | "$CUTOVER_PUBLISH_EVIDENCE_FN" "$target"
+  } | publish_private_evidence "$target"
 }
 
 validate_browser_acceptance_fact() {
   local fact_path="$1" challenge_path="$2" switch_started_at_utc="$3"
-  "$CUTOVER_ASSERT_PRIVATE_FILE_FN" "$fact_path"
-  "$CUTOVER_ASSERT_PRIVATE_FILE_FN" "$challenge_path"
-  node - "$fact_path" "$challenge_path" "$switch_started_at_utc" >/dev/null 2>&1 <<'NODE'
+  local received_at_utc="$4" approved_timeout_seconds="$5"
+  assert_private_file "$fact_path" || return 1
+  assert_private_file "$challenge_path" || return 1
+  node - "$fact_path" "$challenge_path" "$switch_started_at_utc" \
+    "$received_at_utc" "$approved_timeout_seconds" >/dev/null 2>&1 <<'NODE'
 const fs = require("node:fs");
 const { isDeepStrictEqual } = require("node:util");
-const [factPath, challengePath, switchedAt] = process.argv.slice(2);
+const [factPath, challengePath, switchedAt, receivedAtUtc, timeoutText] = process.argv.slice(2);
 const fact = JSON.parse(fs.readFileSync(factPath, "utf8"));
 const challenge = JSON.parse(fs.readFileSync(challengePath, "utf8"));
 const completedAt = Date.parse(fact.completedAtUtc);
 const switchedAtMillis = Date.parse(switchedAt);
+const challengeCreatedAt = Date.parse(challenge.challengeCreatedAtUtc);
+const receivedAt = Date.parse(receivedAtUtc);
+const timeoutSeconds = Number(timeoutText);
+const canonicalUtc = (value, millis) => Number.isFinite(millis) &&
+  new Date(millis).toISOString().replace(".000Z", "Z") === value;
 const domainKeys = ["applications", "billing", "contracts", "orders", "returns", "subscriptionChanges"];
 const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value) &&
   Object.keys(value).sort().join("|") === [...keys].sort().join("|");
@@ -714,10 +738,12 @@ const safe =
   fact.schemaVersion === 1 && fact.decision === "accepted" &&
   isDeepStrictEqual(fact.challenge, challenge) &&
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(fact.completedAtUtc) &&
-  Number.isFinite(completedAt) && Number.isFinite(switchedAtMillis) &&
-  new Date(completedAt).toISOString().replace(".000Z", "Z") === fact.completedAtUtc &&
-  new Date(switchedAtMillis).toISOString().replace(".000Z", "Z") === switchedAt &&
-  completedAt > switchedAtMillis &&
+  Number.isInteger(timeoutSeconds) && timeoutSeconds >= 1 && timeoutSeconds <= 900 &&
+  canonicalUtc(fact.completedAtUtc, completedAt) && canonicalUtc(switchedAt, switchedAtMillis) &&
+  canonicalUtc(challenge.challengeCreatedAtUtc, challengeCreatedAt) &&
+  canonicalUtc(receivedAtUtc, receivedAt) && challengeCreatedAt >= switchedAtMillis &&
+  completedAt >= challengeCreatedAt && completedAt <= receivedAt &&
+  completedAt <= challengeCreatedAt + timeoutSeconds * 1000 &&
   fact.publicHealth.api === 200 && fact.publicHealth.admin === 200 && fact.publicHealth.portal === 200 &&
   fact.auth === true && fact.rbac === true && fact.profile === true && fact.eSign === true &&
   Object.values(fact.catalog).every((value) => value === true) &&
@@ -857,35 +883,42 @@ set -E
 trap 'rollback_after_switch_error' ERR
 SWITCH_ACTIVE=1
 export SWITCH_ACTIVE
-readonly LOG_GATE_STARTED_AT="$("$CUTOVER_UTC_NOW_FN")"
-readonly SWITCH_STARTED_AT_UTC="$("$CUTOVER_UTC_NOW_FN")"
+readonly LOG_GATE_STARTED_AT="$(cutover_utc_now)"
+readonly SWITCH_STARTED_AT_UTC="$(cutover_utc_now)"
 mv -f -- "$ENV_TEMP" "$ENV_FILE"
-"$CUTOVER_SYNC_FN" "$(dirname "$ENV_FILE")"
-"$CUTOVER_AFTER_RENAME_HOOK_FN"
+cutover_sync_directory "$(dirname "$ENV_FILE")"
 
-if ! "$CUTOVER_API_RECREATE_FN" api; then rollback_and_stop 'API_RECREATE_FAILED'; fi
+if ! cutover_api_recreate api; then rollback_and_stop 'API_RECREATE_FAILED'; fi
 
-readonly SWITCHED_API_CONTAINER_ID="$("$CUTOVER_CONTAINER_ID_FN")"
+SWITCHED_API_CONTAINER_ID="$(cutover_api_container_id)"
 [[ "$SWITCHED_API_CONTAINER_ID" =~ ^[0-9a-f]{64}$ ]] \
   || rollback_and_stop 'SWITCHED_API_CONTAINER_ID_INVALID'
+if ! revalidate_switched_api_identity "$SWITCHED_API_CONTAINER_ID"; then
+  rollback_and_stop 'SWITCHED_API_IDENTITY_MISMATCH'
+fi
+readonly SWITCHED_API_CONTAINER_ID SWITCHED_API_IMAGE_ID SWITCHED_RELEASE_SHA
 readonly BROWSER_CHALLENGE_PATH="$EVIDENCE_DIR/browser-acceptance.challenge.json"
 readonly BROWSER_FACT_PATH="$EVIDENCE_DIR/browser-acceptance.fact.json"
-"$CUTOVER_ASSERT_NEW_PATH_FN" "$BROWSER_CHALLENGE_PATH"
-"$CUTOVER_ASSERT_NEW_PATH_FN" "$BROWSER_FACT_PATH"
-readonly BROWSER_CHALLENGE_NONCE="$("$CUTOVER_NONCE_FN")"
-readonly BROWSER_CHALLENGE_CREATED_AT_UTC="$("$CUTOVER_UTC_NOW_FN")"
+assert_new_evidence_path "$BROWSER_CHALLENGE_PATH"
+assert_new_evidence_path "$BROWSER_FACT_PATH"
+readonly BROWSER_CHALLENGE_NONCE="$(cutover_nonce)"
+readonly BROWSER_CHALLENGE_CREATED_AT_UTC="$(cutover_utc_now)"
 write_browser_acceptance_challenge \
   "$BROWSER_CHALLENGE_PATH" \
   "$BROWSER_CHALLENGE_NONCE" \
   "$SWITCHED_API_CONTAINER_ID" \
+  "$SWITCHED_API_IMAGE_ID" \
+  "$SWITCHED_RELEASE_SHA" \
   "$BROWSER_CHALLENGE_CREATED_AT_UTC"
-"$CUTOVER_ASSERT_PRIVATE_FILE_FN" "$BROWSER_CHALLENGE_PATH"
+assert_private_file "$BROWSER_CHALLENGE_PATH"
 
-"$CUTOVER_POST_SWITCH_GATES_FN"
+post_switch_database_gates
 
 readonly BROWSER_ACCEPTANCE_TIMEOUT_SECONDS="${BROWSER_ACCEPTANCE_TIMEOUT_SECONDS:-900}"
-[[ "$BROWSER_ACCEPTANCE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]{0,3}$ ]] \
-  || rollback_and_stop 'BROWSER_ACCEPTANCE_TIMEOUT_INVALID'
+if ! [[ "$BROWSER_ACCEPTANCE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
+  || (( BROWSER_ACCEPTANCE_TIMEOUT_SECONDS > 900 )); then
+  rollback_and_stop 'BROWSER_ACCEPTANCE_TIMEOUT_INVALID'
+fi
 printf 'browser_acceptance_challenge=%s timeout_seconds=%s\n' \
   "$BROWSER_CHALLENGE_PATH" "$BROWSER_ACCEPTANCE_TIMEOUT_SECONDS"
 if ! IFS= read -r -s -t "$BROWSER_ACCEPTANCE_TIMEOUT_SECONDS" BROWSER_ACCEPTANCE_PAYLOAD; then
@@ -896,15 +929,17 @@ if test "$BROWSER_ACCEPTANCE_PAYLOAD" = 'REJECT'; then
   unset BROWSER_ACCEPTANCE_PAYLOAD
   rollback_and_stop 'BROWSER_ACCEPTANCE_REJECTED'
 fi
+readonly BROWSER_ACCEPTANCE_RECEIVED_AT_UTC="$(cutover_utc_now)"
 printf '%s\n' "$BROWSER_ACCEPTANCE_PAYLOAD" \
-  | "$CUTOVER_PUBLISH_EVIDENCE_FN" "$BROWSER_FACT_PATH"
+  | publish_private_evidence "$BROWSER_FACT_PATH"
 unset BROWSER_ACCEPTANCE_PAYLOAD
-if ! "$CUTOVER_BROWSER_FACT_VALIDATOR_FN" \
-  "$BROWSER_FACT_PATH" "$BROWSER_CHALLENGE_PATH" "$SWITCH_STARTED_AT_UTC"; then
+if ! validate_browser_acceptance_fact \
+  "$BROWSER_FACT_PATH" "$BROWSER_CHALLENGE_PATH" "$SWITCH_STARTED_AT_UTC" \
+  "$BROWSER_ACCEPTANCE_RECEIVED_AT_UTC" "$BROWSER_ACCEPTANCE_TIMEOUT_SECONDS"; then
   rollback_and_stop 'BROWSER_ACCEPTANCE_FACT_INVALID'
 fi
 printf '%s\n' 'READ_ONLY_AUTH_RBAC_PROFILE_CATALOG_EMPTY_DOMAINS=verified browser_challenge=matched' \
-  | "$CUTOVER_PUBLISH_EVIDENCE_FN" "$EVIDENCE_DIR/read-only-browser.state"
+  | publish_private_evidence "$EVIDENCE_DIR/read-only-browser.state"
 
 SWITCH_ACTIVE=0
 export SWITCH_ACTIVE
@@ -914,9 +949,9 @@ printf '%s\n' 'api_switch=verified' | publish_private_evidence "$EVIDENCE_DIR/ap
 
 <!-- STAGE1_CUTOVER_EXECUTABLE_END -->
 
-浏览器验收必须由已有登录会话在上述隐藏输入的有界等待期间完成，不把 token 复制到 shell。challenge 只能由切换后当前 shell 以 create-once 方式生成，并绑定 `RUN_UTC`、manifest SHA、release SHA、image SHA、切换后 container ID、switch/log observation UTC 与随机 nonce；fact 目标在 challenge 创建前必须不存在。预置或旧 JSON 无法匹配本次 nonce/container/time，且主 shell 只会把本次隐藏输入通过 no-clobber publisher 写成 root/`0600` fact。
+浏览器验收必须由已有登录会话在上述隐藏输入的有界等待期间完成，不把 token 复制到 shell。API recreate 后先从 compose 结果取得切换后 container ID，再由该 ID 重新读取完整 `.Id`、`.Image` 与 revision label，并重新解析固定 compose 的 API image；完整 `.Id` 必须等于 compose 返回值，`.Image`、revision 和 compose image ID 必须分别精确匹配已批准的 image/release 身份，否则在 trap 内回滚。challenge 只能由本次复核后的 switched container/image/release 事实、`RUN_UTC`、manifest SHA、switch/log observation UTC 与随机 nonce 以 create-once 方式生成；fact 目标在 challenge 创建前必须不存在。预置或旧 JSON 无法匹配本次 nonce/container/time，且主 shell 只会把本次隐藏输入通过 no-clobber publisher 写成 root/`0600` fact。
 
-浏览器执行者必须逐项验证公共 API/Admin/Portal、既有 auth、RBAC、profile/e-sign、产品/车辆/套餐/合同模板 catalog、application/order/contract/billing/subscription-change/return 全部空域；同时保存这些空域入口 absent、原始枚举为空、console error/warn 均为 0，以及 Admin/Portal/响应式视觉复验。fact 只能含 challenge、安全布尔值/计数、完成 UTC 和稳定状态，不得含截图、URL/query、token 或客户/车辆身份。输入 `REJECT`、事实校验失败或最多 900 秒无输入都会在 `SWITCH_ACTIVE=1` 且 ERR trap 有效时实际调用 `rollback_and_stop`；仅全部通过后才清除 trap。
+浏览器执行者必须逐项验证公共 API/Admin/Portal、既有 auth、RBAC、profile/e-sign、产品/车辆/套餐/合同模板 catalog、application/order/contract/billing/subscription-change/return 全部空域；同时保存这些空域入口 absent、原始枚举为空、console error/warn 均为 0，以及 Admin/Portal/响应式视觉复验。fact 只能含 challenge、安全布尔值/计数、完成 UTC 和稳定状态，不得含截图、URL/query、token 或客户/车辆身份。timeout 只接受整数 `1..900`；fact 完成 UTC 不得早于 challenge 创建 UTC，不得晚于主 shell 收到 payload 后生成的受信任 UTC，也不得晚于 challenge 创建 UTC 加批准 timeout。输入 `REJECT`、事实校验失败或最多 900 秒无输入都会在 `SWITCH_ACTIVE=1` 且 ERR trap 有效时实际调用 `rollback_and_stop`；仅全部通过后才清除 trap。
 
 不提交进件、不锁车、不签合同、不发送短信、不触发电子签或支付。
 

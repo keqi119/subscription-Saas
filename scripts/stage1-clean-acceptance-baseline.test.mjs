@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   assertControlledEvidencePath,
   buildPublicStage1AcceptanceSummary,
+  buildStage1AcceptanceDatabaseEnvSwitch,
   createStage1AcceptancePrismaClient,
   parseStage1CleanAcceptanceArgs,
   writeControlledJsonFile
@@ -256,25 +257,66 @@ test("the real generated Prisma client emits no sensitive validation log without
 
 test("public summaries allow only fixed non-sensitive fields", () => {
   const summary = buildPublicStage1AcceptanceSummary({
+    auditCreated: 0,
     candidateCount: 2,
     candidateDigest: "d".repeat(64),
+    deleted: 0,
     hashSalt: SHA,
+    inserted: 0,
     manifestSha256: "e".repeat(64),
     mode: "dry-run",
     reportPath: "D:/evidence/report.json",
     rowDigests: { access: "secret" },
     safe: true,
+    updated: 0,
     customerPhone: "18616570212",
     url: SOURCE_URL
   });
   assert.deepEqual(summary, {
+    auditCreated: 0,
     candidateCount: 2,
     candidateDigest: "d".repeat(64),
+    deleted: 0,
+    inserted: 0,
     manifestSha256: "e".repeat(64),
     mode: "dry-run",
     reportPath: "D:/evidence/report.json",
-    safe: true
+    safe: true,
+    updated: 0
   });
+});
+
+test("database env switch binds the real env URL to approved source and target semantics", () => {
+  const source = "postgresql://stage1:p%40ss@db.internal:5432/subscription_saas_staging?schema=public&sslmode=require";
+  const target = "postgresql://stage1:p%40ss@db.internal:5432/subscription_saas_staging_acceptance_20260830t010203z?schema=public&sslmode=require";
+
+  for (const quote of ["", "'", '"']) {
+    const input = `A=1\nDATABASE_URL=${quote}${source}${quote}\nB=2\n`;
+    const output = buildStage1AcceptanceDatabaseEnvSwitch(input, source, target);
+    assert.equal(output, `A=1\nDATABASE_URL=${quote}${target}${quote}\nB=2\n`);
+    assert.equal(output.includes("p@ss"), false, "percent-encoded credentials stay encoded");
+  }
+
+  const invalidSources = [
+    source.replace("subscription_saas_staging", "wrong_database"),
+    source.replace("db.internal", "other.internal"),
+    source.replace("p%40ss", "wrong"),
+    source.replace("schema=public", "schema=other")
+  ];
+  for (const actual of invalidSources) {
+    assert.throws(
+      () => buildStage1AcceptanceDatabaseEnvSwitch(`DATABASE_URL=${actual}\n`, source, target),
+      (error) => error.message === "ENV_DATABASE_URL_SOURCE_MISMATCH" && !error.message.includes(source)
+    );
+  }
+  assert.throws(
+    () => buildStage1AcceptanceDatabaseEnvSwitch(`DATABASE_URL=${source}\n`, source, target.replace("db.internal", "other.internal")),
+    /APPROVED_DATABASE_URL_PAIR_INVALID/
+  );
+  assert.throws(
+    () => buildStage1AcceptanceDatabaseEnvSwitch(`DATABASE_URL=${source}\nDATABASE_URL=${source}\n`, source, target),
+    /ENV_DATABASE_URL_COUNT_INVALID/
+  );
 });
 
 test("baseline help is deterministic, non-sensitive, and bypasses environment and database processing", async () => {
@@ -402,6 +444,29 @@ test("apply reuses approved generatedAt/salt and verifies the canonical manifest
     "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
   ], samePath.deps), 2);
   assert.equal(samePath.clients.length, 0);
+});
+
+test("replay report and public summary expose exact zero write counts", async () => {
+  const harness = createBaselineHarness({ approved: approvedManifest() });
+  const code = await baselineMain([
+    "--replay", "--output", "D:/evidence/replay.json", "--vehicle-id", VEHICLE,
+    "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
+  ], harness.deps);
+
+  assert.equal(code, 0);
+  const expectedCounts = { auditCreated: 0, deleted: 0, inserted: 0, updated: 0 };
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(expectedCounts).map((key) => [key, harness.reports[0].value[key]])),
+    expectedCounts
+  );
+  const summary = JSON.parse(harness.stdout[0]);
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(expectedCounts).map((key) => [key, summary[key]])),
+    expectedCounts
+  );
+  for (const forbidden of [SOURCE_URL, TARGET_URL, VEHICLE, "18616570212"]) {
+    assert.equal(harness.stdout[0].includes(forbidden), false);
+  }
 });
 
 test("discovery writes minimal candidates, exposes only count/digest, and exits with the stable selection gate", async () => {
@@ -575,7 +640,15 @@ function createBaselineHarness({ approved = approvedManifest(), approvedReport, 
       if (scenario === "unsafe") return { manifest: { exceptions: [{ code: "VEHICLE_NOT_ELIGIBLE" }], generatedAt: options.generatedAt, hashSalt: options.hashSalt }, manifestSha256: SHA, mode: "dry-run", safe: false };
       return options.mode === "dry-run"
         ? { manifest: { generatedAt: options.generatedAt, hashSalt: options.hashSalt, rowDigests: { access: "x" } }, manifestSha256: SHA, mode: "dry-run", safe: true }
-        : { manifestSha256: SHA, mode: options.mode, safe: true };
+        : {
+            auditCreated: options.mode === "replay" ? 0 : 1,
+            deleted: 0,
+            inserted: options.mode === "replay" ? 0 : 5,
+            manifestSha256: SHA,
+            mode: options.mode,
+            safe: true,
+            updated: 0
+          };
     },
     hashManifest: () => canonicalManifestSha,
     installSignalHandler: (handler) => { signalHandler = handler; return () => {}; },

@@ -135,7 +135,8 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
         manifestSha256: result.manifestSha256,
         mode: args.mode,
         operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
-        safe: result.safe === true
+        safe: result.safe === true,
+        ...(args.mode === "dry-run" ? {} : writeCounts(result))
       };
       if (!await writeReport(deps, reportPath, report)) return 5;
       emitSummary(deps, {
@@ -143,7 +144,8 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
         manifestSha256: result.manifestSha256,
         mode: args.mode,
         reportPath,
-        safe: result.safe === true
+        safe: result.safe === true,
+        ...(args.mode === "dry-run" ? {} : writeCounts(result))
       });
       return result.safe === true ? 0 : 3;
     } catch (error) {
@@ -237,6 +239,16 @@ function isGateError(error) {
 
 function digest(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function writeCounts(result) {
+  const counts = Object.fromEntries(
+    ["auditCreated", "deleted", "inserted", "updated"].map((key) => [key, result[key]])
+  );
+  if (Object.values(counts).some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw cliExecutionError("BASELINE_WRITE_COUNTS_INVALID");
+  }
+  return counts;
 }
 
 function sameCanonicalPath(left, right, platform) {

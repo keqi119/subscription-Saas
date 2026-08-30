@@ -110,8 +110,41 @@ export async function writeControlledJsonFile(outputPath, value, fsApi = fsPromi
 
 export function buildPublicStage1AcceptanceSummary(result = {}) {
   return Object.fromEntries([
-    "candidateCount", "candidateDigest", "errorCode", "manifestSha256", "mode", "reportPath", "safe"
+    "auditCreated", "candidateCount", "candidateDigest", "deleted", "errorCode", "inserted",
+    "manifestSha256", "mode", "reportPath", "safe", "updated"
   ].filter((key) => result[key] !== undefined).map((key) => [key, result[key]]));
+}
+
+export function buildStage1AcceptanceDatabaseEnvSwitch(contents, approvedSourceUrl, approvedTargetUrl) {
+  const source = parseApprovedUrl(approvedSourceUrl);
+  const target = parseApprovedUrl(approvedTargetUrl);
+  const stableKeys = ["protocol", "hostname", "port", "username", "password", "search", "hash"];
+  if (source.pathname === target.pathname || stableKeys.some((key) => source[key] !== target[key])) {
+    cliFail("APPROVED_DATABASE_URL_PAIR_INVALID");
+  }
+
+  const newline = String(contents).includes("\r\n") ? "\r\n" : "\n";
+  const lines = String(contents).split(/\r?\n/);
+  const indexes = lines.flatMap((line, index) => /^DATABASE_URL=/.test(line) ? [index] : []);
+  if (indexes.length !== 1) cliFail("ENV_DATABASE_URL_COUNT_INVALID");
+
+  const index = indexes[0];
+  const encoded = lines[index].slice("DATABASE_URL=".length);
+  const quote = encoded.startsWith('"') && encoded.endsWith('"') ? '"'
+    : encoded.startsWith("'") && encoded.endsWith("'") ? "'" : "";
+  const raw = quote ? encoded.slice(1, -1) : encoded;
+  const before = parseEnvUrl(raw);
+  const allKeys = [...stableKeys, "pathname"];
+  if (allKeys.some((key) => before[key] !== source[key])) {
+    cliFail("ENV_DATABASE_URL_SOURCE_MISMATCH");
+  }
+
+  lines[index] = `DATABASE_URL=${quote}${target.toString()}${quote}`;
+  const written = parseEnvUrl(target.toString());
+  if (allKeys.some((key) => written[key] !== target[key])) {
+    cliFail("ENV_DATABASE_URL_TARGET_MISMATCH");
+  }
+  return lines.join(newline);
 }
 
 export async function createStage1AcceptancePrismaClient(databaseUrl, _label, options = {}) {
@@ -159,6 +192,26 @@ export function cliFail(code) {
   const error = new Error(code);
   error.code = code;
   throw error;
+}
+
+function parseApprovedUrl(value) {
+  try {
+    const parsed = new URL(value);
+    if (!new Set(["postgres:", "postgresql:"]).has(parsed.protocol)) throw new Error();
+    return parsed;
+  } catch {
+    cliFail("APPROVED_DATABASE_URL_PAIR_INVALID");
+  }
+}
+
+function parseEnvUrl(value) {
+  try {
+    const parsed = new URL(value);
+    if (!new Set(["postgres:", "postgresql:"]).has(parsed.protocol)) throw new Error();
+    return parsed;
+  } catch {
+    cliFail("ENV_DATABASE_URL_SOURCE_MISMATCH");
+  }
 }
 
 function parseArgv(argv, allowed) {

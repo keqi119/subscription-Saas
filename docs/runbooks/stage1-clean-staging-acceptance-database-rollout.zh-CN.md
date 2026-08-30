@@ -28,9 +28,49 @@ readonly API_CONTAINER_ID="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_
 test -n "$API_CONTAINER_ID"
 readonly RELEASE_SHA="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$API_CONTAINER_ID")"
 readonly RUN_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
+readonly EVIDENCE_PARENT="/opt/subscription-saas/reports"
 readonly EVIDENCE_DIR="/opt/subscription-saas/reports/stage1-clean-acceptance-${RUN_UTC}"
 readonly TARGET_DB="subscription_saas_staging_acceptance_${RUN_UTC,,}"
-install -d -m 0700 "$EVIDENCE_DIR"
+
+assert_private_directory() {
+  local path="$1"
+  test -d "$path"
+  test ! -L "$path"
+  test "$(stat -c '%u:%g:%a' "$path")" = '0:0:700'
+}
+
+assert_new_evidence_path() {
+  local path="$1"
+  test ! -e "$path"
+  test ! -L "$path"
+}
+
+assert_private_file() {
+  local path="$1"
+  test -f "$path"
+  test ! -L "$path"
+  test "$(stat -c '%u:%g:%a' "$path")" = '0:0:600'
+}
+
+publish_private_evidence() {
+  local target="$1"
+  local temporary
+  assert_new_evidence_path "$target"
+  temporary="$(mktemp --tmpdir="$EVIDENCE_DIR" '.evidence.XXXXXX')"
+  if ! cat >"$temporary"; then rm -f -- "$temporary"; return 1; fi
+  chown root:root "$temporary"
+  chmod 0600 "$temporary"
+  if ! ln -- "$temporary" "$target"; then rm -f -- "$temporary"; return 1; fi
+  rm -f -- "$temporary"
+  assert_private_file "$target"
+}
+
+assert_private_directory "$EVIDENCE_PARENT"
+test ! -e "$EVIDENCE_DIR"
+test ! -L "$EVIDENCE_DIR"
+install -d -o root -g root -m 0700 "$EVIDENCE_DIR"
+assert_private_directory "$EVIDENCE_DIR"
+printf '%s\n' 'uid=0 gid=0 mode=0700' | publish_private_evidence "$EVIDENCE_DIR/directory-security.state"
 ```
 
 固定对象验证；必须用 `docker compose config --services` 和 `docker compose ps` 的等价固定文件调用确认。若 `api` 不存在、不是唯一运行实例或固定路径不存在，停止，不改变量猜测：
@@ -44,7 +84,7 @@ test "$(grep -Fxc 'api' <<<"$COMPOSE_SERVICES")" -eq 1
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps --format json \
   | jq '[.[] | {Health,Service,State}]' \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/compose-ps.safe.json"
+  | publish_private_evidence "$EVIDENCE_DIR/compose-ps.safe.json"
 
 readonly OBSERVED_API_CONTAINER_ID="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
 test "$OBSERVED_API_CONTAINER_ID" = "$API_CONTAINER_ID"
@@ -61,6 +101,9 @@ test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{e
 : "${STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL:?root-owned source URL is required}"
 : "${STAGE1_ACCEPTANCE_TARGET_DATABASE_URL:?root-owned target URL is required}"
 : "${STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME:?approved database hostname is required}"
+: "${STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL:?approved public API health URL is required}"
+: "${STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL:?approved public Admin health URL is required}"
+: "${STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL:?approved public Portal health URL is required}"
 
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: RELEASE_SHA_INVALID'; exit 1; }
 [[ "$APPROVED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: APPROVED_RELEASE_SHA_INVALID'; exit 1; }
@@ -78,19 +121,19 @@ test "$COMPOSE_API_IMAGE_ID" = "$API_IMAGE_ID"
 
 df -Pk /opt/subscription-saas \
   | awk 'NR==1 || NR==2 {print $2, $3, $4, $5}' \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/disk-counts.txt"
+  | publish_private_evidence "$EVIDENCE_DIR/disk-counts.txt"
 docker stats --no-stream --format '{{.MemUsage}}' "$API_CONTAINER_ID" \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/api-memory.txt"
+  | publish_private_evidence "$EVIDENCE_DIR/api-memory.txt"
 psql "$STAGE1_ACCEPTANCE_ADMIN_DATABASE_URL" -XAtq \
   -c 'SELECT count(*) FROM pg_stat_activity' \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/database-connection-count.txt"
+  | publish_private_evidence "$EVIDENCE_DIR/database-connection-count.txt"
 
 {
   printf 'git_sha=%s\n' "$RELEASE_SHA"
   printf 'image_ref=%s\n' "$API_IMAGE_REF"
   printf 'api_state=running\napi_health=healthy\n'
   printf 'evidence_dir=%s\n' "$EVIDENCE_DIR"
-} | install -m 0600 /dev/stdin "$EVIDENCE_DIR/preflight.safe.env"
+} | publish_private_evidence "$EVIDENCE_DIR/preflight.safe.env"
 ```
 
 不得运行会展开环境文件的命令，也不得检查容器 `.Config.Env`。到这里仍然只是只读服务器预检；没有创建或修改数据库。
@@ -133,13 +176,34 @@ SQL
 readonly OLD_DB_BACKUP="$EVIDENCE_DIR/old-database.pre-apply.dump"
 readonly EMPTY_NEW_DB_BACKUP="$EVIDENCE_DIR/empty-new-database.pre-migration.dump"
 
-pg_dump "$STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL" --format=custom --file="$OLD_DB_BACKUP"
-chmod 0600 "$OLD_DB_BACKUP"
-sha256sum "$OLD_DB_BACKUP" | install -m 0600 /dev/stdin "$EVIDENCE_DIR/old-database.pre-apply.sha256"
+backup_database() {
+  local database_url="$1"
+  local backup_path="$2"
+  local evidence_stem="$3"
+  local backup_started_at_utc backup_completed_at_utc backup_size_bytes
+  assert_new_evidence_path "$backup_path"
+  assert_new_evidence_path "$EVIDENCE_DIR/${evidence_stem}.sha256"
+  assert_new_evidence_path "$EVIDENCE_DIR/${evidence_stem}.metadata"
+  backup_started_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ( set -o noclobber; pg_dump "$database_url" --format=custom >"$backup_path" )
+  chown root:root "$backup_path"
+  chmod 0600 "$backup_path"
+  assert_private_file "$backup_path"
+  backup_completed_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  backup_size_bytes="$(stat -c '%s' "$backup_path")"
+  [[ "$backup_size_bytes" =~ ^[1-9][0-9]*$ ]]
+  sha256sum "$backup_path" | publish_private_evidence "$EVIDENCE_DIR/${evidence_stem}.sha256"
+  {
+    printf 'backup_file_token=%s.dump\n' "$evidence_stem"
+    printf 'backup_started_at_utc=%s\n' "$backup_started_at_utc"
+    printf 'backup_completed_at_utc=%s\n' "$backup_completed_at_utc"
+    printf 'backup_size_bytes=%s\n' "$backup_size_bytes"
+    printf '%s\n' 'uid=0 gid=0 mode=0600'
+  } | publish_private_evidence "$EVIDENCE_DIR/${evidence_stem}.metadata"
+}
 
-pg_dump "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" --format=custom --file="$EMPTY_NEW_DB_BACKUP"
-chmod 0600 "$EMPTY_NEW_DB_BACKUP"
-sha256sum "$EMPTY_NEW_DB_BACKUP" | install -m 0600 /dev/stdin "$EVIDENCE_DIR/empty-new-database.pre-migration.sha256"
+backup_database "$STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL" "$OLD_DB_BACKUP" 'old-database.pre-apply'
+backup_database "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" "$EMPTY_NEW_DB_BACKUP" 'empty-new-database.pre-migration'
 ```
 
 以下四个 migration 检查均在目标 API 镜像的一次性容器内运行；不得进入在线 API 容器。目标 API 镜像只运行一次 migration deploy。所有原始输出被抑制或解析为安全计数，任意非零立即停止：
@@ -151,7 +215,7 @@ if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   sh -lc 'cd /app/apps/api && pnpm exec prisma migrate deploy --schema prisma/schema.prisma' \
   >/dev/null 2>&1; then
   printf '%s\n' 'migration_deploy=applied_once' \
-    | install -m 0600 /dev/stdin "$EVIDENCE_DIR/migration-deploy.state"
+    | publish_private_evidence "$EVIDENCE_DIR/migration-deploy.state"
 else
   printf '%s\n' 'STOP: MIGRATION_DEPLOY_FAILED'
   exit 1
@@ -162,7 +226,7 @@ if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   sh -lc 'cd /app/apps/api && pnpm exec prisma migrate status --schema prisma/schema.prisma' \
   >/dev/null 2>&1; then
   printf '%s\n' 'migrate_status=up_to_date' \
-    | install -m 0600 /dev/stdin "$EVIDENCE_DIR/migrate-status.state"
+    | publish_private_evidence "$EVIDENCE_DIR/migrate-status.state"
 else
   printf '%s\n' 'STOP: MIGRATE_STATUS_FAILED'
   exit 1
@@ -175,7 +239,7 @@ jq -e '.safe == true and .localMigrationCount == 124 and .appliedMigrationCount 
   <<<"$CHECKSUM_RESULT" >/dev/null
 jq '{appliedMigrationCount,duplicateCount:(.duplicateAppliedNames|length),localMigrationCount,mismatchCount:(.mismatchedNames|length),missingDatabaseCount:(.missingFromDatabase|length),missingLocalCount:(.missingLocally|length),safe}' \
   <<<"$CHECKSUM_RESULT" \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/migration-checksum.safe.json"
+  | publish_private_evidence "$EVIDENCE_DIR/migration-checksum.safe.json"
 unset CHECKSUM_RESULT
 ```
 
@@ -192,7 +256,7 @@ set -e
 readonly DRIFT_EXIT
 test "$DRIFT_EXIT" -eq 0
 printf 'drift_exit=%s\n' "$DRIFT_EXIT" \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/migration-diff.state"
+  | publish_private_evidence "$EVIDENCE_DIR/migration-diff.state"
 ```
 
 最后直接读取 `_prisma_migrations` 的安全计数；pending 同时由 `migrate status` 与 checksum 的 missing count 证明为零：
@@ -212,7 +276,7 @@ SQL
 )"
 test "$MIGRATION_COUNTS" = '124|0|0|0'
 printf '%s\n' '124 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate' \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/migration-counts.state"
+  | publish_private_evidence "$EVIDENCE_DIR/migration-counts.state"
 ```
 
 ## 4. Discovery、正式 dry-run 与 baseline 批准
@@ -241,9 +305,10 @@ test "$DISCOVERY_EXIT" -eq 3
 jq -e '.safe == false and .mode == "dry-run" and .errorCode == "VEHICLE_SELECTION_REQUIRED" and (.candidateCount >= 1) and (.candidateDigest|test("^[0-9a-f]{64}$"))' \
   <<<"$DISCOVERY_SUMMARY" >/dev/null
 jq '{candidateCount,candidateDigest,errorCode,mode,safe}' <<<"$DISCOVERY_SUMMARY" \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/vehicle-discovery.safe.json"
+  | publish_private_evidence "$EVIDENCE_DIR/vehicle-discovery.safe.json"
 unset DISCOVERY_SUMMARY
 chmod 0600 "$EVIDENCE_DIR/vehicle-discovery.json"
+assert_private_file "$EVIDENCE_DIR/vehicle-discovery.json"
 ```
 
 候选原始文件包含 vehicle UUID，因此不得输出、复制到日志或发送到聊天。授权执行者在 root-only 受控会话中完成选择，以隐藏输入录入显式 UUID，并验证 UUID 确实来自 discovery；本手册不会显示该值：
@@ -274,6 +339,7 @@ readonly DRY_RUN_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_F
   --env APPROVED_VEHICLE_UUID api \
   sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --vehicle-id "$APPROVED_VEHICLE_UUID" --output /evidence/baseline-dry-run.json')"
 chmod 0600 "$DRY_RUN_REPORT"
+assert_private_file "$DRY_RUN_REPORT"
 jq -e '.safe == true and .mode == "dry-run" and (.manifestSha256|test("^[0-9a-f]{64}$"))' \
   <<<"$DRY_RUN_SUMMARY" >/dev/null
 jq -e '.safe == true and .manifest.safeToApply == true and .manifest.exceptions == []' \
@@ -290,7 +356,7 @@ export MANIFEST_SHA
 
 jq '{counts:.manifest.counts,exceptionsCount:(.manifest.exceptions|length),manifestSha256,safeToApply:.manifest.safeToApply,vehicleSummary:.manifest.selection.vehicleDigests}' \
   "$DRY_RUN_REPORT" \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/baseline-approval.safe.json"
+  | publish_private_evidence "$EVIDENCE_DIR/baseline-approval.safe.json"
 ```
 
 批准报告只含 SHA、脱敏计数与车辆摘要（salted digest，不含 UUID），不得附客户、车辆或 token 身份。
@@ -318,6 +384,7 @@ readonly APPLY_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FIL
 jq -e '.safe == true and .mode == "apply" and .manifestSha256 == $sha' --arg sha "$MANIFEST_SHA" \
   <<<"$APPLY_SUMMARY" >/dev/null
 chmod 0600 "$EVIDENCE_DIR/baseline-apply.json"
+assert_private_file "$EVIDENCE_DIR/baseline-apply.json"
 
 readonly REPLAY_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --user 0:0 --volume "$EVIDENCE_DIR:/evidence" \
@@ -330,9 +397,12 @@ readonly REPLAY_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FI
   --env MANIFEST_SHA \
   --env STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY=1 api \
   sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --replay --vehicle-id "$APPROVED_VEHICLE_UUID" --approved-manifest /evidence/baseline-dry-run.json --approved-manifest-sha256 "$MANIFEST_SHA" --output /evidence/baseline-replay.json')"
-jq -e '.safe == true and .mode == "replay" and .manifestSha256 == $sha' --arg sha "$MANIFEST_SHA" \
+jq -e '.safe == true and .mode == "replay" and .manifestSha256 == $sha and .auditCreated == 0 and .inserted == 0 and .updated == 0 and .deleted == 0' --arg sha "$MANIFEST_SHA" \
   <<<"$REPLAY_SUMMARY" >/dev/null
 chmod 0600 "$EVIDENCE_DIR/baseline-replay.json"
+assert_private_file "$EVIDENCE_DIR/baseline-replay.json"
+jq -e '.auditCreated == 0 and .inserted == 0 and .updated == 0 and .deleted == 0' \
+  "$EVIDENCE_DIR/baseline-replay.json" >/dev/null
 
 readonly VALIDATOR_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --user 0:0 --volume "$EVIDENCE_DIR:/evidence" \
@@ -343,6 +413,7 @@ readonly VALIDATOR_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE
 jq -e '.safe == true and .mode == "target-validator" and .manifestSha256 == $sha' --arg sha "$MANIFEST_SHA" \
   <<<"$VALIDATOR_SUMMARY" >/dev/null
 chmod 0600 "$EVIDENCE_DIR/target-validator.json"
+assert_private_file "$EVIDENCE_DIR/target-validator.json"
 ```
 
 ## 6. Candidate API 静态 worker/timer 证明与硬停止
@@ -379,69 +450,78 @@ exit 1
 
 缺口修复后的新版手册仍必须要求 candidate：独立容器、loopback 备用端口、不接 Nginx、全部 worker/timer 静默；只验证 `/health`、admin/portal 既有 token、RBAC 菜单、产品/车辆列表以及空进件/订单列表。不提交进件、不锁车、不签合同、不触发短信、电子签或支付。既有 token 只能留在浏览器/秘密环境，不得进命令、日志或证据。
 
+另一个独立缺口来自 `apps/api/src/billing-automation/billing-automation.worker.ts`：`runMaintenanceIfDue()` 只在 blocked 时记录 `BILLING_SCHEDULE_RECONCILIATION_BLOCKED`，成功完成 reconciliation/enqueue 时没有 completed cycle ID 或 `blockedCount=0` 的机器可验证事实。等待 60 秒或 130 秒只能证明时间经过，不能证明一次 maintenance cycle 完成。因此在另行批准的治理观测能力提供两个不同的 completed cycle ID、每周期 `blockedCount=0`、禁止写域前后计数摘要一致之前，流程还有以下不可豁免停止：
+
+```bash
+printf '%s\n' 'STOP: BILLING_COMPLETED_CYCLE_EVIDENCE_UNAVAILABLE'
+exit 1
+```
+
+该能力必须另行批准；不得为本手册修改 billing worker 或伪造观测结果。未来证据还必须在两个 completed cycle 前后证明禁止写域计数未变，并对完整观察窗执行 `ERROR|FATAL|Unhandled|PrismaClientKnownRequestError|HTTP 5` 与 PII 扫描。读取 Docker 日志失败必须关闭门禁（`DOCKER_LOG_READ_FAILED`），扫描通过才允许记录 `PII_LOG_SCAN_CLEAR`。
+
 ## 7. API 数据库 URL 单字段切换批准与执行
 
-本节在当前源码状态不可到达。未来修订版必须先产生 root-owned、`0600` 的 `$EVIDENCE_DIR/candidate-api.accepted`，内容只能是 candidate health/RBAC/list/count 和静默 worker 证明；没有该文件立即停止：
+本节因上一节两个硬停止在当前源码状态不可到达。未来修订版必须先产生 root-owned、`0600` 的 `$EVIDENCE_DIR/candidate-api.accepted`，内容只能是 candidate health/RBAC/list/count 和静默 worker 证明；没有该文件立即停止：
 
 ```bash
 test -f "$EVIDENCE_DIR/candidate-api.accepted" \
   || { printf '%s\n' 'STOP: CANDIDATE_ACCEPTANCE_MISSING'; exit 1; }
-test "$(stat -c '%u:%a' "$EVIDENCE_DIR/candidate-api.accepted")" = '0:600'
+assert_private_file "$EVIDENCE_DIR/candidate-api.accepted"
 ```
 
-先对 `.env.staging.images` 做 root-only 备份并生成 SHA-256；不得显示内容：
+先对 `.env.staging.images` 做 root-only、no-clobber 备份并生成 SHA-256；不得显示内容。切换前同时保存旧库安全指纹和 API 当前 restart count：
 
 ```bash
 readonly ENV_BACKUP="$EVIDENCE_DIR/.env.staging.images.pre-switch"
 readonly ENV_TEMP="${ENV_FILE}.stage1-clean-acceptance-${RUN_UTC}.tmp"
-cp --preserve=mode,ownership,timestamps "$ENV_FILE" "$ENV_BACKUP"
+assert_new_evidence_path "$ENV_BACKUP"
+assert_new_evidence_path "$EVIDENCE_DIR/env.pre-switch.sha256"
+cp --no-clobber --preserve=mode,ownership,timestamps "$ENV_FILE" "$ENV_BACKUP"
+chown root:root "$ENV_BACKUP"
 chmod 0600 "$ENV_BACKUP"
-test "$(stat -c '%u:%a' "$ENV_BACKUP")" = '0:600'
-sha256sum "$ENV_BACKUP" \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/env.pre-switch.sha256"
-test ! -e "$ENV_TEMP"
+assert_private_file "$ENV_BACKUP"
+sha256sum "$ENV_BACKUP" | publish_private_evidence "$EVIDENCE_DIR/env.pre-switch.sha256"
+assert_new_evidence_path "$ENV_TEMP"
 
 psql "$STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL" -XAtq \
   -c "SELECT current_database(), current_schema(), count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL), count(*) FILTER (WHERE rolled_back_at IS NOT NULL) FROM _prisma_migrations GROUP BY current_database(), current_schema()" \
   | sha256sum | awk '{print $1}' \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/old-database.fingerprint.sha256"
+  | publish_private_evidence "$EVIDENCE_DIR/old-database.fingerprint.sha256"
+readonly PRE_SWITCH_API_RESTART_COUNT="$(docker inspect --format '{{.RestartCount}}' "$API_CONTAINER_ID")"
+[[ "$PRE_SWITCH_API_RESTART_COUNT" =~ ^[0-9]+$ ]]
+printf 'pre_switch_restart_count=%s\n' "$PRE_SWITCH_API_RESTART_COUNT" \
+  | publish_private_evidence "$EVIDENCE_DIR/pre-switch-restart-count.state"
 ```
 
-以下受控脚本解析恰好一个 `DATABASE_URL`，只替换 DATABASE_URL 的 pathname 为目标 database name，并断言保留 protocol/host/port/user/password/query。它把完整环境写入同目录临时文件、`chmod 600`，无 stdout；不在参数、报告或日志中暴露 URL：
+以下脚本在固定目标镜像的一次性容器内调用已被单元测试覆盖的 `buildStage1AcceptanceDatabaseEnvSwitch`。它要求实际 env 的 before 与批准 source URL 全语义一致、after 与批准 target URL 全语义一致，且批准 pair 仅 pathname 不同并保留 protocol/host/port/user/password/query；错误 pathname/host/credential/query、引号或 percent encoding 均按 URL 语义处理。`ENV_DATABASE_URL_SOURCE_MISMATCH`、`APPROVED_DATABASE_URL_PAIR_INVALID` 等错误只作为稳定错误码，不输出 URL。完整环境写入同目录临时文件（必须是新文件）并 `chmod 600`：
 
 ```bash
-ENV_FILE="$ENV_FILE" ENV_TEMP="$ENV_TEMP" TARGET_DB="$TARGET_DB" node <<'NODE'
-const fs = require("node:fs");
-const sourcePath = process.env.ENV_FILE;
-const tempPath = process.env.ENV_TEMP;
-const targetDb = process.env.TARGET_DB;
-const text = fs.readFileSync(sourcePath, "utf8");
-const newline = text.includes("\r\n") ? "\r\n" : "\n";
-const lines = text.split(/\r?\n/);
-const indexes = lines.flatMap((line, index) => /^DATABASE_URL=/.test(line) ? [index] : []);
-if (indexes.length !== 1) process.exit(31);
-const index = indexes[0];
-const encoded = lines[index].slice("DATABASE_URL=".length);
-const quote = encoded.startsWith('"') && encoded.endsWith('"') ? '"'
-  : encoded.startsWith("'") && encoded.endsWith("'") ? "'" : "";
-const raw = quote ? encoded.slice(1, -1) : encoded;
-const before = new URL(raw);
-const after = new URL(raw);
-after.pathname = `/${targetDb}`;
-for (const key of ["protocol", "hostname", "port", "username", "password", "search", "hash"]) {
-  if (before[key] !== after[key]) process.exit(32);
-}
-lines[index] = `DATABASE_URL=${quote}${after.toString()}${quote}`;
+if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps -T \
+  --user 0:0 --volume '/opt/subscription-saas:/host' \
+  --env RUN_UTC="$RUN_UTC" \
+  --env STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL \
+  --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL api \
+  sh -lc 'cd /app && node --input-type=module' >/dev/null 2>&1 <<'NODE'
+import fs from "node:fs";
+import { buildStage1AcceptanceDatabaseEnvSwitch } from "./scripts/stage1-clean-acceptance-cli-core.mjs";
+const sourcePath = "/host/.env.staging.images";
+const tempPath = `/host/.env.staging.images.stage1-clean-acceptance-${process.env.RUN_UTC}.tmp`;
+const before = fs.readFileSync(sourcePath, "utf8");
+const after = buildStage1AcceptanceDatabaseEnvSwitch(
+  before,
+  process.env.STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL,
+  process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL
+);
 const fd = fs.openSync(tempPath, "wx", 0o600);
-try {
-  fs.writeFileSync(fd, lines.join(newline), "utf8");
-  fs.fsyncSync(fd);
-} finally {
-  fs.closeSync(fd);
-}
+try { fs.writeFileSync(fd, after, "utf8"); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+fs.chownSync(tempPath, 0, 0);
 fs.chmodSync(tempPath, 0o600);
 NODE
-test "$(stat -c '%u:%a' "$ENV_TEMP")" = '0:600'
+then
+  printf '%s\n' 'STOP: ENV_DATABASE_URL_TRANSFORM_FAILED'
+  exit 1
+fi
+assert_private_file "$ENV_TEMP"
 ```
 
 该临时文件还没有影响在线 API。此时记录固定证据路径、备份 hash、目标 Git/image 身份和 candidate 安全计数，不记录 URL。
@@ -453,45 +533,236 @@ test "$(stat -c '%u:%a' "$ENV_TEMP")" = '0:600'
 收到批准后才执行原子 rename，并只重建 API service。不得重建 postgres/web，不得修改或 reload Nginx：
 
 ```bash
-mv -f -- "$ENV_TEMP" "$ENV_FILE"
-sync -f "$(dirname "$ENV_FILE")"
+rollback_api_database_switch() {
+  local failed=0 rollback_temp rollback_api_container_id rollback_health_code
+  local expected_old_fingerprint observed_old_fingerprint
+  set +e
 
-if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api \
-  >/dev/null 2>&1; then
-  printf '%s\n' 'api_recreate=complete' \
-    | install -m 0600 /dev/stdin "$EVIDENCE_DIR/api-switch.state"
-else
-  printf '%s\n' 'STOP: API_RECREATE_FAILED; START ROLLBACK'
+  if ! cmp --silent "$ENV_FILE" "$ENV_BACKUP" || ! assert_private_file "$ENV_FILE"; then
+    rollback_temp="$(mktemp --tmpdir="$(dirname "$ENV_FILE")" '.env.staging.images.rollback.XXXXXX')" || failed=1
+    if test "$failed" -eq 0; then
+      cp --preserve=mode,ownership,timestamps "$ENV_BACKUP" "$rollback_temp" \
+        && chown root:root "$rollback_temp" \
+        && chmod 0600 "$rollback_temp" \
+        && test ! -L "$rollback_temp" \
+        && mv -f -- "$rollback_temp" "$ENV_FILE" \
+        && sync -f "$(dirname "$ENV_FILE")" \
+        || failed=1
+    fi
+  fi
+  if ! cmp --silent "$ENV_FILE" "$ENV_BACKUP" || ! assert_private_file "$ENV_FILE"; then
+    printf '%s\n' 'STOP: ROLLBACK_ENV_RESTORE_FAILED'
+    failed=1
+  fi
+
+  if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api \
+    >/dev/null 2>&1; then
+    printf '%s\n' 'STOP: ROLLBACK_API_RECREATE_FAILED'
+    failed=1
+  fi
+  rollback_api_container_id="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
+  rollback_health_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL")"
+  if test -z "$rollback_api_container_id" \
+    || test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$rollback_api_container_id")" != 'healthy' \
+    || test "$rollback_health_code" != '200'; then
+    printf '%s\n' 'STOP: ROLLBACK_PUBLIC_HEALTH_FAILED'
+    failed=1
+  fi
+
+  expected_old_fingerprint="$(awk 'NF {print $1; exit}' "$EVIDENCE_DIR/old-database.fingerprint.sha256")"
+  observed_old_fingerprint="$(psql "$STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL" -XAtq \
+    -c "SELECT current_database(), current_schema(), count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL), count(*) FILTER (WHERE rolled_back_at IS NOT NULL) FROM _prisma_migrations GROUP BY current_database(), current_schema()" \
+    | sha256sum | awk '{print $1}')"
+  if test -z "$expected_old_fingerprint" || test "$observed_old_fingerprint" != "$expected_old_fingerprint"; then
+    printf '%s\n' 'STOP: ROLLBACK_OLD_DATABASE_FINGERPRINT_FAILED'
+    failed=1
+  fi
+  if test "$failed" -ne 0; then
+    printf '%s\n' 'STOP: ROLLBACK_FAILED'
+    set -e
+    return 1
+  fi
+  set -e
+  return 0
+}
+
+rollback_and_stop() {
+  local reason="$1"
+  trap - ERR
+  if rollback_api_database_switch; then
+    printf 'STOP: %s; rollback_state=verified\n' "$reason"
+  else
+    printf 'STOP: %s; rollback_state=failed\n' "$reason"
+  fi
   exit 1
-fi
+}
+
+rollback_after_switch_error() {
+  local status="$?"
+  if test "${SWITCH_ACTIVE:-0}" -eq 1; then
+    rollback_and_stop 'POST_SWITCH_GATE_FAILED'
+  fi
+  exit "$status"
+}
 ```
 
 ## 8. 切换后门禁与浏览器验收
 
-只验证公共 health 的状态码，不显示 body、headers 或 URL；随后等待并覆盖连续两个 billing maintenance cycle（源码间隔 60 秒，使用 130 秒观察窗）：
+切换后的每一个 gate 都在 rollback 保护内。函数内重新运行 target validator、migration status/checksum/diff/count，检查新 API 没有 restart，精确验证六个 worker/journey flags 和四个 subscription-change flags，验证公共 API/Admin/Portal health，并消费另行批准的只读浏览器验收与 billing completed-cycle 事实。所有 curl 丢弃 body/headers 且不输出 URL：
 
 ```bash
-readonly SWITCHED_API_CONTAINER_ID="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
-test -n "$SWITCHED_API_CONTAINER_ID"
-test "$(docker inspect --format '{{.State.Running}}' "$SWITCHED_API_CONTAINER_ID")" = 'true'
-test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$SWITCHED_API_CONTAINER_ID")" = 'healthy'
-readonly HEALTH_CODE="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3101/api/health)"
-test "$HEALTH_CODE" = '200'
+post_switch_database_gates() {
+  local switched_api_container_id restart_count status_code checksum_result drift_exit migration_counts
+  local billing_facts read_only_facts
+  local -a log_pipeline_status
+  switched_api_container_id="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
+  test -n "$switched_api_container_id"
+  test "$(docker inspect --format '{{.State.Running}}' "$switched_api_container_id")" = 'true'
+  test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$switched_api_container_id")" = 'healthy'
+  restart_count="$(docker inspect --format '{{.RestartCount}}' "$switched_api_container_id")"
+  test "$restart_count" = '0'
+
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
+    --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
+    sh -lc 'cd /app/apps/api && pnpm exec prisma migrate status --schema prisma/schema.prisma' \
+    >/dev/null 2>&1
+  checksum_result="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
+    --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
+    sh -lc 'cd /app && pnpm prisma:migrate:checksum:verify')"
+  jq -e '.safe == true and .localMigrationCount == 124 and .appliedMigrationCount == 124 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
+    <<<"$checksum_result" >/dev/null
+  set +e
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
+    --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
+    sh -lc 'cd /app/apps/api && pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' \
+    >/dev/null 2>&1
+  drift_exit="$?"
+  set -e
+  test "$drift_exit" -eq 0
+  migration_counts="$(psql "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" -XAtq <<'SQL'
+WITH duplicate_names AS (
+  SELECT migration_name FROM _prisma_migrations GROUP BY migration_name HAVING count(*) > 1
+)
+SELECT count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL),
+  count(*) FILTER (WHERE rolled_back_at IS NOT NULL),
+  count(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL),
+  (SELECT count(*) FROM duplicate_names)
+FROM _prisma_migrations;
+SQL
+)"
+  test "$migration_counts" = '124|0|0|0'
+  printf '%s\n' '124 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate' \
+    | publish_private_evidence "$EVIDENCE_DIR/post-switch-migration-counts.state"
+
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
+    --user 0:0 --volume "$EVIDENCE_DIR:/evidence" \
+    --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
+    --env STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME \
+    --env MANIFEST_SHA api \
+    sh -lc 'cd /app && node scripts/stage1-clean-acceptance-target-validator.mjs --approved-manifest /evidence/baseline-dry-run.json --approved-manifest-sha256 "$MANIFEST_SHA" --output /evidence/target-validator.post-switch.json' \
+    >/dev/null
+  chown root:root "$EVIDENCE_DIR/target-validator.post-switch.json"
+  chmod 0600 "$EVIDENCE_DIR/target-validator.post-switch.json"
+  assert_private_file "$EVIDENCE_DIR/target-validator.post-switch.json"
+  jq -e '.safe == true and .mode == "target-validator" and .manifestSha256 == $sha' \
+    --arg sha "$MANIFEST_SHA" "$EVIDENCE_DIR/target-validator.post-switch.json" >/dev/null
+
+  docker exec "$switched_api_container_id" node -e '
+    const expected = {
+      SUBSCRIPTION_JOURNEY_ENABLED: "true",
+      SUBSCRIPTION_JOURNEY_WORKER_ENABLED: "true",
+      BILLING_AUTOMATION_WORKER_ENABLED: "true",
+      FIELD_VIDEO_UPLOAD_WORKER_ENABLED: "true",
+      STAGE2_HANDOVER_WORKER_ENABLED: "true",
+      MILEAGE_REVIEW_WORKER_ENABLED: "true",
+      SUBSCRIPTION_EXTENSION_ENABLED: "true",
+      SUBSCRIPTION_VEHICLE_SWAP_ENABLED: "true",
+      SUBSCRIPTION_EARLY_TERMINATION_ENABLED: "true",
+      SUBSCRIPTION_MANAGED_OTHER_ENABLED: "true"
+    };
+    if (Object.entries(expected).some(([key, value]) => process.env[key] !== value)) process.exit(1);
+  '
+  printf 'post_switch_restart_count=%s\nruntime_flags=verified\n' "$restart_count" \
+    | publish_private_evidence "$EVIDENCE_DIR/post-switch-runtime.state"
+
+  for health_url_name in STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL; do
+    status_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "${!health_url_name}")"
+    test "$status_code" = '200'
+  done
+  printf '%s\n' 'PUBLIC_API_HEALTH=200 PUBLIC_ADMIN_HEALTH=200 PUBLIC_PORTAL_HEALTH=200' \
+    | publish_private_evidence "$EVIDENCE_DIR/public-health.state"
+
+  read_only_facts="$EVIDENCE_DIR/read-only-browser-acceptance.json"
+  assert_private_file "$read_only_facts"
+  jq -e '
+    .auth == true and .rbac == true and .profile == true and .eSign == true and
+    .catalog.products == true and .catalog.vehicles == true and .catalog.packages == true and
+    .catalog.contractTemplates == true and
+    .emptyDomains.applications == 0 and .emptyDomains.orders == 0 and
+    .emptyDomains.contracts == 0 and .emptyDomains.billing == 0 and
+    .emptyDomains.subscriptionChanges == 0 and .emptyDomains.returns == 0 and
+    .businessWrites == 0
+  ' \
+    "$read_only_facts" >/dev/null
+  printf '%s\n' 'READ_ONLY_AUTH_RBAC_PROFILE_CATALOG_EMPTY_DOMAINS=verified' \
+    | publish_private_evidence "$EVIDENCE_DIR/read-only-browser.state"
+
+  billing_facts="$EVIDENCE_DIR/billing-completed-cycles.json"
+  assert_private_file "$billing_facts"
+  jq -e '
+    .schemaVersion == 1 and
+    (.cycles | length) == 2 and
+    .cycles[0].completedCycleId != .cycles[1].completedCycleId and
+    ([.cycles[].state] | all(. == "completed")) and
+    ([.cycles[].blockedCount] | all(. == 0)) and
+    .forbiddenDomainCountsBeforeSha256 == .forbiddenDomainCountsAfterSha256
+  ' "$billing_facts" >/dev/null
+  printf '%s\n' 'billing_completed_cycles=2 blockedCount=0 禁止写域前后计数摘要一致' \
+    | publish_private_evidence "$EVIDENCE_DIR/billing-cycle-gate.state"
+
+  set +e
+  docker logs --since "$LOG_GATE_STARTED_AT" "$switched_api_container_id" 2>&1 \
+    | awk '
+      tolower($0) ~ /(error|fatal|unhandled|prismaclient|http 5[0-9][0-9]|status(code)?["=: ]+5[0-9][0-9])/ { unsafe_error=1 }
+      tolower($0) ~ /(authorization|cookie|bearer[[:space:]]|token|password|postgres(ql)?:\/\/|customer(id|name)|vehicle(id|vin)|e-?mail)/ { pii=1 }
+      /1[3-9][0-9]{9}/ { pii=1 }
+      END { if (unsafe_error) exit 41; if (pii) exit 42 }
+    ' >/dev/null
+  log_pipeline_status=("${PIPESTATUS[@]}")
+  set -e
+  if test "${log_pipeline_status[0]}" -ne 0; then
+    printf '%s\n' 'STOP: DOCKER_LOG_READ_FAILED'
+    return 1
+  fi
+  if test "${log_pipeline_status[1]}" -eq 41; then
+    printf '%s\n' 'STOP: POST_SWITCH_ERROR_LOG_SCAN_FAILED'
+    return 1
+  fi
+  if test "${log_pipeline_status[1]}" -eq 42; then
+    printf '%s\n' 'STOP: POST_SWITCH_PII_LOG_SCAN_FAILED'
+    return 1
+  fi
+  test "${log_pipeline_status[1]}" -eq 0
+  printf '%s\n' 'PII_LOG_SCAN_CLEAR errors=0 http_5xx=0 prisma_errors=0' \
+    | publish_private_evidence "$EVIDENCE_DIR/log-scan.state"
+}
+
+set -E
+trap 'rollback_after_switch_error' ERR
+SWITCH_ACTIVE=1
+export SWITCH_ACTIVE
 readonly LOG_GATE_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-sleep 130
-```
+mv -f -- "$ENV_TEMP" "$ENV_FILE"
+sync -f "$(dirname "$ENV_FILE")"
 
-日志门禁只计数固定错误/成功状态，不落原始日志：
-
-```bash
-readonly BILLING_ERROR_COUNT="$(docker logs --since "$LOG_GATE_STARTED_AT" "$SWITCHED_API_CONTAINER_ID" 2>&1 \
-  | grep -Ec 'BILLING_AUTOMATION_POLL|BILLING_CONFIGURATION_ERROR|BILLING_EXECUTION_ERROR' || true)"
-test "$BILLING_ERROR_COUNT" -eq 0
-{
-  printf 'billing_cycles_observed=2\n'
-  printf 'billing_error_count=%s\n' "$BILLING_ERROR_COUNT"
-  printf 'health_code=%s\n' "$HEALTH_CODE"
-} | install -m 0600 /dev/stdin "$EVIDENCE_DIR/post-switch-gates.state"
+if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api \
+  >/dev/null 2>&1; then rollback_and_stop 'API_RECREATE_FAILED'; fi
+post_switch_database_gates;
+SWITCH_ACTIVE=0
+export SWITCH_ACTIVE
+trap - ERR
+printf '%s\n' 'api_switch=verified' | publish_private_evidence "$EVIDENCE_DIR/api-switch.state"
 ```
 
 浏览器验收必须由已有登录会话完成，不把 token 复制到 shell：
@@ -502,44 +773,30 @@ test "$BILLING_ERROR_COUNT" -eq 0
 4. 不提交进件、不锁车、不签合同、不发送短信、不触发电子签或支付。
 5. 验收证据只记页面状态、计数和 hash，不截图/记录客户或车辆身份、token、URL query。
 
-任一 health、日志门禁、两个连续 maintenance cycle 或浏览器验收失败，立即执行回滚。
+连续两个 billing maintenance cycle 必须各有不同的 completed cycle ID，且来自另行批准的机器事实，不得由 elapsed time 推断。任一 health、migration/validator、restart/flag、完整日志门禁、周期、禁止写域计数或浏览器只读验收失败，都会由上面的显式分支或 ERR trap 调用回滚。
 
 ## 9. 回滚
 
-回滚只恢复旧 env 并只重建 API。保留新库与证据；不 DROP、不合并回旧库，也不对旧库 repair：
-
-```bash
-readonly ENV_ROLLBACK_TEMP="${ENV_FILE}.rollback-${RUN_UTC}.tmp"
-test ! -e "$ENV_ROLLBACK_TEMP"
-cp --preserve=mode,ownership,timestamps "$ENV_BACKUP" "$ENV_ROLLBACK_TEMP"
-chmod 0600 "$ENV_ROLLBACK_TEMP"
-test "$(stat -c '%u:%a' "$ENV_ROLLBACK_TEMP")" = '0:600'
-mv -f -- "$ENV_ROLLBACK_TEMP" "$ENV_FILE"
-sync -f "$(dirname "$ENV_FILE")"
-
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api \
-  >/dev/null 2>&1
-readonly ROLLED_BACK_API_CONTAINER_ID="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
-test -n "$ROLLED_BACK_API_CONTAINER_ID"
-test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$ROLLED_BACK_API_CONTAINER_ID")" = 'healthy'
-test "$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3101/api/health)" = '200'
-```
-
-旧库指纹只由数据库名、schema 与 migration 安全计数生成 hash，不输出这些原始值。应在切换前把同一查询 hash 保存为 `$EVIDENCE_DIR/old-database.fingerprint.sha256`，回滚后复算并逐字节比较：
-
-```bash
-psql "$STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL" -XAtq \
-  -c "SELECT current_database(), current_schema(), count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL), count(*) FILTER (WHERE rolled_back_at IS NOT NULL) FROM _prisma_migrations GROUP BY current_database(), current_schema()" \
-  | sha256sum | awk '{print $1}' \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/old-database.rollback.fingerprint.sha256"
-cmp --silent "$EVIDENCE_DIR/old-database.fingerprint.sha256" "$EVIDENCE_DIR/old-database.rollback.fingerprint.sha256"
-printf '%s\n' 'rollback_state=old_env_restored_api_only_new_database_preserved' \
-  | install -m 0600 /dev/stdin "$EVIDENCE_DIR/rollback.state"
-```
+回滚函数在 rename 前定义并可幂等重入：它恢复旧 env；若 env 已与备份相同则不重复替换，但仍重新验证 env、API-only recreate、公共 health 和旧库指纹。它保留新库与证据；不 DROP、不合并回旧库，也不对旧库 repair。任一 rollback 子步骤失败会保留对应稳定 STOP 和总括 `ROLLBACK_FAILED`，不得把仅打印“开始回滚”视为成功。
 
 ## 10. 关闭窗口
 
-- 核对证据目录仍为 `0700`、所有文件为 `0600` 且 root 所有。
+- 核对证据目录仍为 `0700`、所有普通证据文件为 `0600` 且 root 所有；拒绝符号链接、子目录和其他 owner/mode。扫描失败硬停止：
+
+```bash
+if ! assert_private_directory "$EVIDENCE_DIR" \
+  || find "$EVIDENCE_DIR" -mindepth 1 ! -type f -print -quit | grep -q '^'; then
+  printf '%s\n' 'STOP: EVIDENCE_PERMISSION_SCAN_FAILED'
+  exit 1
+fi
+while IFS= read -r -d '' evidence_file; do
+  if ! assert_private_file "$evidence_file"; then
+    printf '%s\n' 'STOP: EVIDENCE_PERMISSION_SCAN_FAILED'
+    exit 1
+  fi
+done < <(find "$EVIDENCE_DIR" -mindepth 1 -maxdepth 1 -type f -print0)
+```
+
 - 报告只引用固定证据路径、hash、计数、稳定状态与 Git/image identity；不得粘贴原始日志、URL、env、token 或客户/车辆身份。
 - 成功窗口保留旧库 pre-apply backup、空新库 pre-migration backup、manifest、apply/replay/validator 和 env backup。
 - 回滚窗口额外保留新库与全部证据，交由后续另行批准的调查处理；不得删除新库。

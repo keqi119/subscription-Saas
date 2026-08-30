@@ -477,6 +477,8 @@ async function loadCatalog(tx, asOf) {
     },
     productVersion: {
       deletedAt: null,
+      effectiveFrom: { lte: asOf },
+      OR: [{ effectiveTo: null }, { effectiveTo: { gte: asOf } }],
       status: "ACTIVE"
     },
     status: "ACTIVE"
@@ -491,7 +493,9 @@ async function loadCatalog(tx, asOf) {
   });
   const productVersions = await find(tx, "productVersion", {
     deletedAt: null,
+    effectiveFrom: { lte: asOf },
     id: { in: productVersionIds },
+    OR: [{ effectiveTo: null }, { effectiveTo: { gte: asOf } }],
     productId: { in: productIds },
     status: "ACTIVE"
   });
@@ -719,7 +723,7 @@ async function loadVehicle(tx, vehicleIds, asOf, evaluationDate, catalog) {
       (row) => row.policyType === "COMPULSORY_TRAFFIC"
     ).length;
   }
-  const vehicleDocuments = await find(tx, "vehicleDocument", {
+  const vehicleLicenseDocuments = await find(tx, "vehicleDocument", {
     AND: [
       { OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: evaluationDate } }] },
       { OR: [{ effectiveTo: null }, { effectiveTo: { gte: evaluationDate } }] }
@@ -727,18 +731,42 @@ async function loadVehicle(tx, vehicleIds, asOf, evaluationDate, catalog) {
     customerVisible: true,
     deletedAt: null,
     documentStatus: "ACTIVE",
-    documentType: {
-      in: ["COMMERCIAL_INSURANCE_POLICY", "COMPULSORY_INSURANCE_POLICY", "VEHICLE_LICENSE"]
-    },
+    documentType: "VEHICLE_LICENSE",
     vehicleId: { in: vehicleIds }
   });
-  const vehicleDocumentBatches = await find(tx, "vehicleDocumentBatch", {
-    id: { in: compactIds(vehicleDocuments, "batchId") },
-    vehicleId: { in: vehicleIds }
+  const insuranceDocumentReferences = vehicleInsurancePolicies.map((policy) => ({
+    documentType:
+      policy.policyType === "COMPULSORY_TRAFFIC"
+        ? "COMPULSORY_INSURANCE_POLICY"
+        : "COMMERCIAL_INSURANCE_POLICY",
+    policyId: policy.id,
+    vehicleId: policy.vehicleId
+  }));
+  const vehicleInsuranceDocuments = await find(tx, "vehicleDocument", {
+    AND: [
+      { OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: evaluationDate } }] },
+      { OR: [{ effectiveTo: null }, { effectiveTo: { gte: evaluationDate } }] }
+    ],
+    customerVisible: true,
+    deletedAt: null,
+    documentStatus: "ACTIVE",
+    OR: insuranceDocumentReferences
   });
   const vehicleListingSourceBindings = await find(tx, "vehicleListingSourceBinding", {
-    documentId: { in: ids(vehicleDocuments) },
     vehicleId: { in: vehicleIds }
+  });
+  const vehicleListingSourceDocuments = await find(tx, "vehicleDocument", {
+    id: { in: ids(vehicleListingSourceBindings, "documentId") }
+  });
+  const vehicleDocuments = sortById(
+    [
+      ...vehicleLicenseDocuments,
+      ...vehicleInsuranceDocuments,
+      ...vehicleListingSourceDocuments
+    ].filter((row, index, rows) => rows.findIndex((candidate) => candidate.id === row.id) === index)
+  );
+  const vehicleDocumentBatches = await find(tx, "vehicleDocumentBatch", {
+    id: { in: compactIds(vehicleDocuments, "batchId") }
   });
   const vehicleSalePriceHistories = await find(tx, "vehicleSalePriceHistory", {
     effectiveFrom: { lte: evaluationDate },

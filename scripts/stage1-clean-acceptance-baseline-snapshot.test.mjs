@@ -371,7 +371,13 @@ test("source loader uses complete explicit scalar selects and fixed whitelist fi
   assert.equal(planWhere.product.productType, "SUBSCRIPTION");
   assert.equal(planWhere.product.status, "ACTIVE");
   assert.equal(planWhere.productVersion.status, "ACTIVE");
+  assert.equal(planWhere.productVersion.effectiveFrom.lte, snapshot.evaluationDate);
+  assert.equal(planWhere.productVersion.OR[1].effectiveTo.gte, snapshot.evaluationDate);
   assert.equal(planWhere.effectiveFrom.lte, snapshot.evaluationDate);
+
+  const productVersionWhere = findCall(fake, "productVersion").args.where;
+  assert.equal(productVersionWhere.effectiveFrom.lte, snapshot.evaluationDate);
+  assert.equal(productVersionWhere.OR[1].effectiveTo.gte, snapshot.evaluationDate);
 
   const contractWhere = findCall(fake, "contractVersion").args.where;
   assert.deepEqual(contractWhere.templateType.in, REQUIRED_CONTRACT_TEMPLATE_TYPES);
@@ -392,7 +398,7 @@ test("source loader uses one date-only evaluation day while preserving approvedA
 
   assert.equal(snapshot.asOf.toISOString(), "2026-08-30T12:34:56.000Z");
   assert.equal(snapshot.evaluationDate.toISOString(), "2026-08-30T00:00:00.000Z");
-  for (const delegate of ["subscriptionPlan", "depositRule", "contractVersion"]) {
+  for (const delegate of ["subscriptionPlan", "productVersion", "depositRule", "contractVersion"]) {
     const call = findCall(fake, delegate);
     assert.equal(call.args.where.effectiveFrom.lte.toISOString(), "2026-08-30T00:00:00.000Z");
     assert.equal(call.args.where.OR[1].effectiveTo.gte.toISOString(), "2026-08-30T00:00:00.000Z");

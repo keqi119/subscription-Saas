@@ -844,7 +844,15 @@ function sourceRows() {
       }
     ],
     productVersion: [
-      { id: "version-1", productId: "product-1", versionNo: "1", status: "ACTIVE", deletedAt: null }
+      {
+        deletedAt: null,
+        effectiveFrom: at,
+        effectiveTo: new Date("2026-12-31T00:00:00.000Z"),
+        id: "version-1",
+        productId: "product-1",
+        status: "ACTIVE",
+        versionNo: "1"
+      }
     ],
     vehicleModelDefinition: [{ ...model, snapshot: null }],
     vehiclePackage: [
@@ -1002,7 +1010,14 @@ function sourceRows() {
         visible: true
       }
     ],
-    vehicleDocumentBatch: [{ id: "batch-1", vehicleId: VEHICLE_ID }],
+    vehicleDocumentBatch: [
+      { documentType: "VEHICLE_LICENSE", id: "batch-1", vehicleId: VEHICLE_ID },
+      {
+        documentType: "VEHICLE_CONFIGURATION_SHEET",
+        id: "batch-configuration",
+        vehicleId: VEHICLE_ID
+      }
+    ],
     vehicleInsurancePolicy: [
       {
         deletedAt: null,
@@ -1037,6 +1052,45 @@ function sourceRows() {
         effectiveFrom: at,
         effectiveTo: new Date("2026-12-31T00:00:00.000Z"),
         policyId: null
+      },
+      {
+        batchId: null,
+        customerVisible: true,
+        deletedAt: null,
+        documentStatus: "ACTIVE",
+        documentType: "COMPULSORY_INSURANCE_POLICY",
+        effectiveFrom: at,
+        effectiveTo: new Date("2026-12-31T00:00:00.000Z"),
+        id: "document-policy-1",
+        policyId: "policy-1",
+        vehicleId: VEHICLE_ID
+      },
+      {
+        batchId: null,
+        customerVisible: true,
+        deletedAt: null,
+        documentStatus: "ACTIVE",
+        documentType: "COMMERCIAL_INSURANCE_POLICY",
+        effectiveFrom: at,
+        effectiveTo: new Date("2026-12-31T00:00:00.000Z"),
+        id: "document-policy-2",
+        policyId: "policy-2",
+        vehicleId: VEHICLE_ID
+      },
+      {
+        batchId: "batch-configuration",
+        bucket: "acceptance",
+        customerVisible: true,
+        deletedAt: null,
+        documentStatus: "ACTIVE",
+        documentType: "VEHICLE_CONFIGURATION_SHEET",
+        effectiveFrom: at,
+        effectiveTo: new Date("2026-12-31T00:00:00.000Z"),
+        id: "document-configuration",
+        mimeType: "image/jpeg",
+        objectKey: "vehicle/configuration.jpg",
+        policyId: null,
+        vehicleId: VEHICLE_ID
       }
     ],
     vehicleInsuranceCoverage: [
@@ -1044,7 +1098,12 @@ function sourceRows() {
       { id: "coverage-2", policyId: "policy-2", deletedAt: null }
     ],
     vehicleListingSourceBinding: [
-      { id: "binding-1", vehicleId: VEHICLE_ID, documentId: "document-1" }
+      {
+        documentId: "document-configuration",
+        id: "binding-1",
+        section: "CONFIGURATION_SHEET",
+        vehicleId: VEHICLE_ID
+      }
     ],
     vehicleSalePriceHistory: [
       {

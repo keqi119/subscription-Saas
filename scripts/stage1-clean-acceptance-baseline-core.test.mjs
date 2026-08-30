@@ -167,7 +167,15 @@ function completeSnapshot(overrides = {}) {
         }
       ],
       products: [{ id: "product-1", status: "ACTIVE" }],
-      productVersions: [{ id: "product-version-1", productId: "product-1", status: "ACTIVE" }],
+      productVersions: [
+        {
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "product-version-1",
+          productId: "product-1",
+          status: "ACTIVE"
+        }
+      ],
       productPriceRules: [
         {
           id: "price-rule-1",
@@ -307,7 +315,29 @@ function completeSnapshot(overrides = {}) {
           workOrderId: null
         }
       ],
-      vehicleDocumentBatches: [{ id: "document-batch-1", vehicleId: VEHICLE_A }],
+      vehicleDocumentBatches: [
+        { documentType: "VEHICLE_LICENSE", id: "document-batch-1", vehicleId: VEHICLE_A },
+        {
+          documentType: "COMPULSORY_INSURANCE_POLICY",
+          id: "document-batch-compulsory",
+          vehicleId: VEHICLE_A
+        },
+        {
+          documentType: "COMMERCIAL_INSURANCE_POLICY",
+          id: "document-batch-commercial",
+          vehicleId: VEHICLE_A
+        },
+        {
+          documentType: "VEHICLE_CONFIGURATION_SHEET",
+          id: "document-batch-configuration",
+          vehicleId: VEHICLE_A
+        },
+        {
+          documentType: "VEHICLE_INSPECTION_REPORT",
+          id: "document-batch-condition",
+          vehicleId: VEHICLE_A
+        }
+      ],
       vehicleDocuments: [
         {
           batchId: "document-batch-1",
@@ -318,6 +348,60 @@ function completeSnapshot(overrides = {}) {
           effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
           effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
           id: "document-1",
+          policyId: null,
+          vehicleId: VEHICLE_A
+        },
+        {
+          batchId: "document-batch-compulsory",
+          customerVisible: true,
+          deletedAt: null,
+          documentStatus: "ACTIVE",
+          documentType: "COMPULSORY_INSURANCE_POLICY",
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "document-policy-compulsory",
+          policyId: "policy-1",
+          vehicleId: VEHICLE_A
+        },
+        {
+          batchId: "document-batch-commercial",
+          customerVisible: true,
+          deletedAt: null,
+          documentStatus: "ACTIVE",
+          documentType: "COMMERCIAL_INSURANCE_POLICY",
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "document-policy-commercial",
+          policyId: "policy-2",
+          vehicleId: VEHICLE_A
+        },
+        {
+          batchId: "document-batch-configuration",
+          bucket: "acceptance",
+          customerVisible: true,
+          deletedAt: null,
+          documentStatus: "ACTIVE",
+          documentType: "VEHICLE_CONFIGURATION_SHEET",
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "document-configuration",
+          mimeType: "image/jpeg",
+          objectKey: "vehicle/configuration.jpg",
+          policyId: null,
+          vehicleId: VEHICLE_A
+        },
+        {
+          batchId: "document-batch-condition",
+          bucket: "acceptance",
+          customerVisible: true,
+          deletedAt: null,
+          documentStatus: "ACTIVE",
+          documentType: "VEHICLE_INSPECTION_REPORT",
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "document-condition",
+          mimeType: "image/png",
+          objectKey: "vehicle/condition.png",
           policyId: null,
           vehicleId: VEHICLE_A
         }
@@ -369,7 +453,18 @@ function completeSnapshot(overrides = {}) {
         { id: "listing-1", listingStatus: "PUBLISHED", portalVisible: true, vehicleId: VEHICLE_A }
       ],
       vehicleListingSourceBindings: [
-        { documentId: "document-1", id: "source-binding-1", vehicleId: VEHICLE_A }
+        {
+          documentId: "document-configuration",
+          id: "source-binding-configuration",
+          section: "CONFIGURATION_SHEET",
+          vehicleId: VEHICLE_A
+        },
+        {
+          documentId: "document-condition",
+          id: "source-binding-condition",
+          section: "CONDITION_REPORT",
+          vehicleId: VEHICLE_A
+        }
       ],
       vehicleModelDefinitions: [{ enabled: true, id: "model-1", portalVisible: true }],
       vehicleOwnershipPeriods: [
@@ -869,6 +964,23 @@ test("vehicle date-only windows include the evaluation date even when snapshot a
   }
 });
 
+test("catalog rejects ProductVersion outside the inclusive evaluation date", () => {
+  const boundary = completeSnapshot();
+  boundary.asOf = new Date("2026-08-30T23:59:59.999Z");
+  assert.equal(classifyStage1CleanAcceptanceBaseline(boundary, selection()).safeToApply, true);
+
+  for (const mutate of [
+    (row) => (row.effectiveFrom = new Date("2026-08-31T00:00:00.000Z")),
+    (row) => (row.effectiveTo = new Date("2026-08-29T00:00:00.000Z"))
+  ]) {
+    const snapshot = completeSnapshot();
+    mutate(snapshot.catalog.productVersions[0]);
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "CATALOG_REFERENCE_NOT_CLOSED"));
+  }
+});
+
 test("vehicle classifier rejects non-minimal or superseded row closure", () => {
   const mutations = [
     (snapshot) =>
@@ -995,7 +1107,9 @@ test("vehicle media and plans must bind the published profile", () => {
 test("vehicle documents allow null batches and require exact non-null batch and policy closure", () => {
   const batchless = completeSnapshot();
   batchless.vehicle.vehicleDocuments[0].batchId = null;
-  batchless.vehicle.vehicleDocumentBatches = [];
+  batchless.vehicle.vehicleDocumentBatches = batchless.vehicle.vehicleDocumentBatches.filter(
+    ({ id }) => id !== "document-batch-1"
+  );
   const batchlessResult = classifyStage1CleanAcceptanceBaseline(batchless, selection());
   assert.equal(batchlessResult.safeToApply, true);
   assert.equal(batchlessResult.rows.vehicle.vehicleDocuments[0].batchId, null);
@@ -1004,6 +1118,7 @@ test("vehicle documents allow null batches and require exact non-null batch and 
     (snapshot) => (snapshot.vehicle.vehicleDocuments[0].batchId = "missing-batch"),
     (snapshot) =>
       snapshot.vehicle.vehicleDocumentBatches.push({
+        documentType: "VEHICLE_LICENSE",
         id: "document-batch-1",
         vehicleId: VEHICLE_A
       }),
@@ -1021,6 +1136,42 @@ test("vehicle source bindings require their document to be in the selected vehic
   for (const documentId of [undefined, "missing-document"]) {
     const snapshot = completeSnapshot();
     snapshot.vehicle.vehicleListingSourceBindings[0].documentId = documentId;
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "VEHICLE_REFERENCE_NOT_CLOSED"));
+  }
+});
+
+test("vehicle insurance documents close only through one matching retained policy document", () => {
+  const mutations = [
+    (snapshot) => (snapshot.vehicle.vehicleDocuments[1].policyId = null),
+    (snapshot) => (snapshot.vehicle.vehicleDocuments[1].policyId = "policy-2"),
+    (snapshot) =>
+      snapshot.vehicle.vehicleDocuments.push({
+        ...snapshot.vehicle.vehicleDocuments[1],
+        id: "document-policy-compulsory-duplicate"
+      })
+  ];
+  for (const mutate of mutations) {
+    const snapshot = completeSnapshot();
+    mutate(snapshot);
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "VEHICLE_REFERENCE_NOT_CLOSED"));
+  }
+});
+
+test("vehicle source bindings enforce production section mapping and supported image documents", () => {
+  const mutations = [
+    (snapshot) => (snapshot.vehicle.vehicleListingSourceBindings[0].section = "CONDITION_REPORT"),
+    (snapshot) => (snapshot.vehicle.vehicleDocuments[3].mimeType = "application/pdf"),
+    (snapshot) => (snapshot.vehicle.vehicleDocuments[3].bucket = null),
+    (snapshot) => (snapshot.vehicle.vehicleDocuments[3].objectKey = null),
+    (snapshot) => (snapshot.vehicle.vehicleDocuments[3].vehicleId = VEHICLE_B)
+  ];
+  for (const mutate of mutations) {
+    const snapshot = completeSnapshot();
+    mutate(snapshot);
     const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
     assert.equal(result.safeToApply, false);
     assert.ok(result.exceptions.some(({ code }) => code === "VEHICLE_REFERENCE_NOT_CLOSED"));
@@ -1087,7 +1238,11 @@ test("vehicle closure keeps each explicitly selected vehicle and its one-to-many
     visible: true,
     vehicleId: VEHICLE_B
   });
-  snapshot.vehicle.vehicleDocumentBatches.push({ id: "document-batch-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleDocumentBatches.push({
+    documentType: "VEHICLE_LICENSE",
+    id: "document-batch-2",
+    vehicleId: VEHICLE_B
+  });
   snapshot.vehicle.vehicleDocuments.push({
     batchId: "document-batch-2",
     customerVisible: true,
@@ -1100,11 +1255,32 @@ test("vehicle closure keeps each explicitly selected vehicle and its one-to-many
     policyId: null,
     vehicleId: VEHICLE_B
   });
-  snapshot.vehicle.vehicleListingSourceBindings.push({
-    documentId: "document-2",
-    id: "source-binding-2",
-    vehicleId: VEHICLE_B
-  });
+  snapshot.vehicle.vehicleDocuments.push(
+    {
+      batchId: null,
+      customerVisible: true,
+      deletedAt: null,
+      documentStatus: "ACTIVE",
+      documentType: "COMPULSORY_INSURANCE_POLICY",
+      effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+      effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+      id: "document-policy-b1",
+      policyId: "policy-b1",
+      vehicleId: VEHICLE_B
+    },
+    {
+      batchId: null,
+      customerVisible: true,
+      deletedAt: null,
+      documentStatus: "ACTIVE",
+      documentType: "COMMERCIAL_INSURANCE_POLICY",
+      effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+      effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+      id: "document-policy-b2",
+      policyId: "policy-b2",
+      vehicleId: VEHICLE_B
+    }
+  );
   snapshot.vehicle.vehicleInsurancePolicies.push(
     {
       deletedAt: null,
@@ -1489,7 +1665,7 @@ test("manifest rejects malformed context and classification and salts every publ
   assert.notEqual(manifest.exceptions[0].subjectDigest, "a".repeat(64));
   assert.equal(
     manifest.rowDigests.vehicle,
-    "465cc6e4428edeff1699a6960b60bf1c71bb8e93dee224e7bd189df29e8798eb"
+    "0a8beafd5c677426852d02c824d916aa547e59a34ca13d80a4405e5d181fb69a"
   );
   assert.equal(
     manifest.exceptions[0].subjectDigest,
@@ -1579,7 +1755,7 @@ test("manifest canonicalizes object keys and arrays before producing a stable SH
   );
   assert.equal(
     hashStage1CleanAcceptanceManifest(manifest),
-    "b10595613e79641e8b575a10cbf81a9af50b3fc06bf773b17a1b4c5560c75cd1"
+    "325297b8d2d67341472de821683adafe501fe4f47242e4ced5b49d478ff112e9"
   );
   assert.deepEqual(
     manifest.selection.vehicleDigests,

@@ -13,6 +13,15 @@ const REQUIRED_CONTRACT_TEMPLATE_TYPES = [
   "SUBSCRIPTION_EXTENSION",
   "SUBSCRIPTION_STANDARD"
 ];
+const INSURANCE_DOCUMENT_TYPE_BY_POLICY_TYPE = Object.freeze({
+  COMMERCIAL: "COMMERCIAL_INSURANCE_POLICY",
+  COMPULSORY_TRAFFIC: "COMPULSORY_INSURANCE_POLICY"
+});
+const LISTING_SOURCE_DOCUMENT_TYPE_BY_SECTION = Object.freeze({
+  CONDITION_REPORT: "VEHICLE_INSPECTION_REPORT",
+  CONFIGURATION_SHEET: "VEHICLE_CONFIGURATION_SHEET"
+});
+const LISTING_SOURCE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const STABLE_ERROR_CODES = new Set([
   "ADMIN_AMBIGUOUS",
   "ADMIN_NOT_FOUND",
@@ -127,10 +136,10 @@ export function assertStage1AcceptanceDatabasePair(sourceUrl, targetUrl, options
 export function classifyStage1CleanAcceptanceBaseline(snapshot = {}, inputSelection = {}) {
   const selection = parseStage1CleanAcceptanceSelection(inputSelection);
   const exceptions = [];
+  const evaluationDate = acceptanceEvaluationDate(snapshot.evaluationDate ?? snapshot.asOf);
   const access = classifyAccess(snapshot.access, selection, exceptions);
   const customer = classifyCustomer(snapshot.customer, selection, exceptions);
-  const catalog = classifyCatalog(snapshot.catalog, snapshot.vehicle, exceptions);
-  const evaluationDate = acceptanceEvaluationDate(snapshot.evaluationDate ?? snapshot.asOf);
+  const catalog = classifyCatalog(snapshot.catalog, snapshot.vehicle, evaluationDate, exceptions);
   const templates = classifyTemplates(
     snapshot.templates,
     snapshot.asOf,
@@ -341,9 +350,11 @@ function classifyCustomer(customer = {}, selection, exceptions) {
   });
 }
 
-function classifyCatalog(catalog = {}, vehicle = {}, exceptions) {
+function classifyCatalog(catalog = {}, vehicle = {}, evaluationDate, exceptions) {
   const products = active(array(catalog.products));
-  const productVersions = active(array(catalog.productVersions));
+  const productVersions = active(array(catalog.productVersions)).filter((row) =>
+    dateWindowIncludes(row, evaluationDate)
+  );
   const depositRules = active(array(catalog.depositRules));
   const vehiclePackages = active(array(catalog.vehiclePackages));
   const vehiclePackageModelMembers = array(catalog.vehiclePackageModelMembers);
@@ -583,9 +594,57 @@ function classifyVehicle(vehicle = {}, selection, catalog, evaluationDate, excep
         row?.deletedAt === null &&
         row.documentStatus === "ACTIVE" &&
         row.documentType === "VEHICLE_LICENSE" &&
+        row.policyId === null &&
         row.customerVisible === true &&
         nullableDateWindowIncludes(row, evaluationDate)
     );
+    const selectedInsuranceDocuments = documents.filter((row) =>
+      Object.values(INSURANCE_DOCUMENT_TYPE_BY_POLICY_TYPE).includes(row?.documentType)
+    );
+    const insuranceDocumentsClosed =
+      currentPolicies.every((policy) => {
+        const expectedType = INSURANCE_DOCUMENT_TYPE_BY_POLICY_TYPE[policy.policyType];
+        return (
+          nonEmpty(expectedType) &&
+          selectedInsuranceDocuments.filter(
+            (document) => document.policyId === policy.id && document.documentType === expectedType
+          ).length === 1
+        );
+      }) && selectedInsuranceDocuments.length === currentPolicies.length;
+    const sourceDocumentIds = new Set();
+    const sourceSections = new Set();
+    const sourceBindingsClosed = sourceBindings.every((binding) => {
+      const expectedType = LISTING_SOURCE_DOCUMENT_TYPE_BY_SECTION[binding?.section];
+      const matches = documents.filter((document) => document.id === binding?.documentId);
+      if (
+        binding?.vehicleId !== item.id ||
+        !nonEmpty(expectedType) ||
+        sourceSections.has(binding.section) ||
+        matches.length !== 1
+      ) {
+        return false;
+      }
+      const document = matches[0];
+      sourceSections.add(binding.section);
+      sourceDocumentIds.add(document.id);
+      return (
+        document.vehicleId === item.id &&
+        document.policyId === null &&
+        document.deletedAt === null &&
+        document.documentStatus === "ACTIVE" &&
+        document.documentType === expectedType &&
+        document.customerVisible === true &&
+        nullableDateWindowIncludes(document, evaluationDate) &&
+        LISTING_SOURCE_IMAGE_MIME_TYPES.has(document.mimeType) &&
+        nonEmpty(document.bucket) &&
+        nonEmpty(document.objectKey)
+      );
+    });
+    const selectedDocumentIds = new Set([
+      ...currentLicenses.map(({ id }) => id),
+      ...selectedInsuranceDocuments.map(({ id }) => id),
+      ...sourceDocumentIds
+    ]);
     const currentSalePrices = rowsForVehicle(vehicle.vehicleSalePriceHistories, item.id).filter(
       (row) => dateWindowIncludes(row, evaluationDate)
     );
@@ -624,6 +683,10 @@ function classifyVehicle(vehicle = {}, selection, catalog, evaluationDate, excep
         (policy) => !selectedCoverages.some((coverage) => coverage.policyId === policy.id)
       ) ||
       currentLicenses.length !== 1 ||
+      !insuranceDocumentsClosed ||
+      !sourceBindingsClosed ||
+      selectedDocumentIds.size !== documents.length ||
+      !documents.every((row) => selectedDocumentIds.has(row.id)) ||
       !documents.every(
         (row) =>
           row?.deletedAt === null &&
@@ -634,12 +697,14 @@ function classifyVehicle(vehicle = {}, selection, catalog, evaluationDate, excep
       !documents.every(
         (row) =>
           (row.batchId === null ||
-            documentBatches.filter((batch) => batch.id === row.batchId).length === 1) &&
+            documentBatches.filter(
+              (batch) =>
+                batch.id === row.batchId &&
+                batch.vehicleId === item.id &&
+                batch.documentType === row.documentType
+            ).length === 1) &&
           (row.policyId === null ||
             insurancePolicies.filter((policy) => policy.id === row.policyId).length === 1)
-      ) ||
-      !sourceBindings.every(
-        (binding) => documents.filter((document) => document.id === binding.documentId).length === 1
       ) ||
       !documentBatches.every((batch) => referencedBatchIds.has(batch.id)) ||
       currentSalePrices.length !== 1 ||

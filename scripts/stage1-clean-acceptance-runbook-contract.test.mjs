@@ -14,6 +14,12 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 import test from "node:test";
 
+import { hashStage1CleanAcceptanceManifest } from "./stage1-clean-acceptance-baseline-core.mjs";
+import {
+  STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES,
+  STAGE1_ACCEPTANCE_WHITELIST_DELEGATES
+} from "./stage1-clean-acceptance-baseline-snapshot.mjs";
+
 const runbookUrl = new URL(
   "../docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
   import.meta.url
@@ -166,6 +172,7 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     "STOP: APPROVED_API_IMAGE_DIGEST_INVALID",
     "STOP: APPROVED_API_IMAGE_REVISION_INVALID",
     "STOP: APPROVED_API_IMAGE_REVISION_MISMATCH",
+    "export TARGET_DB",
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL"',
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL"',
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"',
@@ -865,6 +872,61 @@ target_api sh -lc true`
   assert.doesNotMatch(trace, /host-(?:jq|node|psql|pg_dump)-invoked/);
 });
 
+function task9FormalReport(nonzeroForbidden = false) {
+  const manifest = {
+    counts: { access: 0, catalog: 0, customer: 0, templates: 0, vehicle: 0 },
+    exceptions: [],
+    generatedAt: "2026-08-30T12:00:00.000Z",
+    gitSha: RELEASE_SHA,
+    hashSalt: "f".repeat(64),
+    imageRef: `registry.test/api@sha256:${"a".repeat(64)}`,
+    operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+    rowDigests: {
+      access: SHA256,
+      catalog: SHA256,
+      customer: SHA256,
+      templates: SHA256,
+      vehicle: SHA256
+    },
+    safeToApply: true,
+    schemaVersion: 1,
+    selection: {
+      adminDigest: SHA256,
+      customerDigest: SHA256,
+      vehicleDigests: ["f".repeat(64)]
+    },
+    source: {
+      databaseDigest: SHA256,
+      migrationCatalogDigest: SHA256,
+      schemaDigest: SHA256
+    },
+    target: {
+      databaseDigest: SHA256,
+      migrationCatalogDigest: SHA256,
+      schemaDigest: SHA256
+    }
+  };
+  const forbiddenCounts = Object.fromEntries(
+    STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES.map((key, index) => [
+      key,
+      nonzeroForbidden && index === 0 ? 1 : 0
+    ])
+  );
+  return {
+    manifest,
+    manifestSha256: hashStage1CleanAcceptanceManifest(manifest),
+    mode: "dry-run",
+    operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+    safe: true,
+    targetCountEvidence: {
+      forbiddenCountKeys: [...STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES],
+      forbiddenCounts,
+      tableCountKeys: [...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES],
+      tableCounts: Object.fromEntries(STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.map((key) => [key, 0]))
+    }
+  };
+}
+
 function runTask9Preflight(preflight, scenario = "success") {
   const host = mkdtempSync(join(tmpdir(), "task9-full-fence-"));
   mkdirSync(join(host, "reports"));
@@ -875,6 +937,12 @@ function runTask9Preflight(preflight, scenario = "success") {
   mkdirSync(bin);
   const evidence = toGitBashPath(join(host, "reports", "stage1-clean-acceptance-20260830T120000Z"));
   const trace = toGitBashPath(join(host, "trace"));
+  const governanceScript = toGitBashPath(resolve("scripts/stage1-task9-preflight-governance.mjs"));
+  const realNode = toGitBashPath(process.execPath);
+  const formalZero = join(host, "formal-zero.json");
+  const formalNonzero = join(host, "formal-nonzero.json");
+  writeFileSync(formalZero, `${JSON.stringify(task9FormalReport())}\n`);
+  writeFileSync(formalNonzero, `${JSON.stringify(task9FormalReport(true))}\n`);
   writeFakeCommand(bin, "date", "printf '%s\\n' 20260830T120000Z");
   writeFakeCommand(bin, "install", 'printf "%s\\n" install >>"$TRACE_FILE"; mkdir -p "${!#}"');
   writeFakeCommand(bin, "chown", 'printf "%s\\n" chown >>"$TRACE_FILE"');
@@ -900,11 +968,12 @@ if [[ "$*" == *'%u:%g:%a'* ]]; then target="\${!#}"; if test -d "$target"; then 
     "curl",
     `printf '%s\\n' curl >>"$TRACE_FILE"
 case "\${!#}" in
-  api) failed_scenario=health_api ;;
-  admin) failed_scenario=health_admin ;;
-  portal) failed_scenario=health_portal ;;
+  api) failed_scenario=health_api; gate=health-api ;;
+  admin) failed_scenario=health_admin; gate=health-admin ;;
+  portal) failed_scenario=health_portal; gate=health-portal ;;
   *) exit 96 ;;
 esac
+printf 'gate:%s\\n' "$gate" >>"$TRACE_FILE"
 test "$FAILURE_SCENARIO" != "$failed_scenario"
 printf 200`
   );
@@ -918,35 +987,46 @@ case "$args" in
   *'ps -q api'*) printf '%s\\n' ${CONTAINER_ID} ;;
   *'inspect --format {{.Image}}'*) printf '%s\\n' ${IMAGE_ID} ;;
   *'image inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*)
-    printf '%s\\n' gate:image-revision >>"$TRACE_FILE"
     case "$FAILURE_SCENARIO" in
-      image_revision_missing) printf '\\n' ;;
-      image_revision_malformed) printf '%s\\n' malformed ;;
-      image_revision_mismatch) printf '%s\\n' ${"f".repeat(40)} ;;
+      image_revision_missing) printf '%s\\n' gate:image-revision-missing >>"$TRACE_FILE"; printf '\\n' ;;
+      image_revision_malformed) printf '%s\\n' gate:image-revision-malformed >>"$TRACE_FILE"; printf '%s\\n' malformed ;;
+      image_revision_mismatch) printf '%s\\n' gate:image-revision-mismatch >>"$TRACE_FILE"; printf '%s\\n' ${"f".repeat(40)} ;;
       *) printf '%s\\n' ${RELEASE_SHA} ;;
     esac ;;
   *'inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*) printf '%s\\n' ${RELEASE_SHA} ;;
-  *'image inspect --format {{.Id}}'*) test "$FAILURE_SCENARIO" != image_id || { printf '%s\\n' bad; exit 0; }; printf '%s\\n' ${IMAGE_ID} ;;
-  *'image inspect --format {{index .RepoDigests 0}}'*) test "$FAILURE_SCENARIO" != image_digest || { printf '%s\\n' bad; exit 0; }; printf '%s\\n' registry.test/api@sha256:${"a".repeat(64)} ;;
+  *'image inspect --format {{.Id}}'*) test "$FAILURE_SCENARIO" != image_id || { printf '%s\\n' gate:image-id >>"$TRACE_FILE"; printf '%s\\n' bad; exit 0; }; printf '%s\\n' ${IMAGE_ID} ;;
+  *'image inspect --format {{index .RepoDigests 0}}'*) test "$FAILURE_SCENARIO" != image_digest || { printf '%s\\n' gate:image-digest >>"$TRACE_FILE"; printf '%s\\n' bad; exit 0; }; printf '%s\\n' registry.test/api@sha256:${"a".repeat(64)} ;;
   *'current_user;'*) printf '%s\\n' subscription_saas ;;
   *'pg_control_system'*) printf '%s\\n' server-id ;;
-  *'SELECT EXISTS'*) test "$FAILURE_SCENARIO" != target_exists && printf f || printf t ;;
-  *'information_schema.tables'*) test "$FAILURE_SCENARIO" != target_nonempty && printf 0 || printf 1 ;;
-  *'_prisma_migrations'*) test "$FAILURE_SCENARIO" != migration_count && printf '124|0|0|0' || printf '123|0|0|0' ;;
-  *'pg_dump'*) test "$FAILURE_SCENARIO" != backup && printf dump || exit 71 ;;
-  *' -d subscription_saas_staging_acceptance_'*' -XAtq') test "$FAILURE_SCENARIO" != migration_count && printf '124|0|0|0' || printf '123|0|0|0' ;;
-  *' -d subscription_saas_staging_acceptance_'*' -X -v ON_ERROR_STOP=1') test "$FAILURE_SCENARIO" != post_migration_nonempty || exit 72 ;;
-  *'server-identity'*) test "$FAILURE_SCENARIO" != server_identity && printf '${SHA256}' || exit 73 ;;
-  *'validate-pair'*) printf '%s\\n' gate:url-pair >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != url_identity && test "$FAILURE_SCENARIO" != source_name_mismatch && test "$FAILURE_SCENARIO" != url_semantics_mismatch || exit 74 ;;
-  *'prisma migrate deploy'*) test "$FAILURE_SCENARIO" != migrate_deploy || exit 75 ;;
-  *'prisma migrate status'*) test "$FAILURE_SCENARIO" != migrate_status || exit 76 ;;
-  *' node -'*) test "$FAILURE_SCENARIO" != checksum || exit 77 ;;
-  *'prisma:migrate:checksum:verify'*) test "$FAILURE_SCENARIO" != checksum || exit 77 ;;
-  *'prisma migrate diff'*) test "$FAILURE_SCENARIO" != drift || exit 78 ;;
-  *'--discover-vehicles'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{}' >"$HARNESS_EVIDENCE/vehicle-discovery.json"; test "$FAILURE_SCENARIO" != discovery || exit 4; exit 3 ;;
-  *'validate-selection'*) test "$FAILURE_SCENARIO" != uuid || exit 79 ;;
-  *'--vehicle-id'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{"safe":true,"manifest":{"safeToApply":true,"exceptions":[]},"manifestSha256":"${SHA256}","targetCountEvidence":{"forbiddenCounts":{"applications":1}}}' >"$HARNESS_EVIDENCE/baseline-dry-run.json"; test "$FAILURE_SCENARIO" != formal_nonzero || exit 80 ;;
-  *'approval-summary'*) printf '%s\\n' gate:approval-summary >>"$TRACE_FILE"; if test "$FAILURE_SCENARIO" = approval_publication; then printf '{"safe":true}'; else printf '{"safe":true}'; fi ;;
+  *'SELECT EXISTS'*) test "$FAILURE_SCENARIO" != target_exists || printf '%s\\n' gate:target-exists >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != target_exists && printf f || printf t ;;
+  *'information_schema.tables'*) test "$FAILURE_SCENARIO" != target_nonempty || printf '%s\\n' gate:target-empty >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != target_nonempty && printf 0 || printf 1 ;;
+  *'_prisma_migrations'*) test "$FAILURE_SCENARIO" != migration_count || printf '%s\\n' gate:migration-count >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != migration_count && printf '124|0|0|0' || printf '123|0|0|0' ;;
+  *'pg_dump'*) test "$FAILURE_SCENARIO" != backup || { printf '%s\\n' gate:backup >>"$TRACE_FILE"; exit 71; }; printf dump ;;
+  *' -d subscription_saas_staging_acceptance_'*' -XAtq') test "$FAILURE_SCENARIO" != migration_count || printf '%s\\n' gate:migration-count >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != migration_count && printf '124|0|0|0' || printf '123|0|0|0' ;;
+  *' -d subscription_saas_staging_acceptance_'*' -X -v ON_ERROR_STOP=1') test "$FAILURE_SCENARIO" != post_migration_nonempty || { printf '%s\\n' gate:post-migration-business-count >>"$TRACE_FILE"; exit 72; } ;;
+  *'source-server-identity'*) if test "$FAILURE_SCENARIO" = server_identity; then printf '%s\\n' gate:server-identity-different-cluster >>"$TRACE_FILE"; printf '%s\\n' '${"d".repeat(64)}'; else printf '%s\\n' '${SHA256}'; fi ;;
+  *'target-server-identity'*) printf '%s\\n' '${SHA256}' ;;
+  *'validate-pair'*)
+    case "$FAILURE_SCENARIO" in
+      source_name_mismatch)
+        printf '%s\\n' gate:url-source-database >>"$TRACE_FILE"
+        export STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL='postgresql://subscription_saas:x@postgres:5432/not_the_source?schema=public'
+        ;;
+      url_semantics_mismatch)
+        printf '%s\\n' gate:url-semantics >>"$TRACE_FILE"
+        export STAGE1_ACCEPTANCE_TARGET_DATABASE_URL='postgresql://subscription_saas:x@postgres:5432/subscription_saas_staging_acceptance_20260830t120000z?schema=other'
+        ;;
+    esac
+    "$REAL_NODE" "$TASK9_GOVERNANCE_SCRIPT" validate-pair ;;
+  *'prisma migrate deploy'*) test "$FAILURE_SCENARIO" != migrate_deploy || { printf '%s\\n' gate:migration-deploy >>"$TRACE_FILE"; exit 75; } ;;
+  *'prisma migrate status'*) test "$FAILURE_SCENARIO" != migrate_status || { printf '%s\\n' gate:migration-status >>"$TRACE_FILE"; exit 76; } ;;
+  *' node -'*) test "$FAILURE_SCENARIO" != checksum || { printf '%s\\n' gate:migration-checksum >>"$TRACE_FILE"; exit 77; } ;;
+  *'prisma:migrate:checksum:verify'*) test "$FAILURE_SCENARIO" != checksum || { printf '%s\\n' gate:migration-checksum >>"$TRACE_FILE"; exit 77; } ;;
+  *'prisma migrate diff'*) test "$FAILURE_SCENARIO" != drift || { printf '%s\\n' gate:migration-drift >>"$TRACE_FILE"; exit 78; } ;;
+  *'--discover-vehicles'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{}' >"$HARNESS_EVIDENCE/vehicle-discovery.json"; test "$FAILURE_SCENARIO" != discovery || { printf '%s\\n' gate:discovery >>"$TRACE_FILE"; exit 4; }; exit 3 ;;
+  *'validate-selection'*) test "$FAILURE_SCENARIO" != uuid || { printf '%s\\n' gate:vehicle-selection >>"$TRACE_FILE"; exit 79; } ;;
+  *'--vehicle-id'*) mkdir -p "$HARNESS_EVIDENCE"; if test "$FAILURE_SCENARIO" = formal_nonzero; then /usr/bin/cp "$FORMAL_NONZERO_REPORT" "$HARNESS_EVIDENCE/baseline-dry-run.json"; else /usr/bin/cp "$FORMAL_ZERO_REPORT" "$HARNESS_EVIDENCE/baseline-dry-run.json"; fi ;;
+  *'approval-summary'*) if test "$FAILURE_SCENARIO" = formal_nonzero; then printf '%s\\n' gate:approval-summary-nonzero >>"$TRACE_FILE"; else printf '%s\\n' gate:approval-summary >>"$TRACE_FILE"; fi; "$REAL_NODE" "$TASK9_GOVERNANCE_SCRIPT" approval-summary "$HARNESS_EVIDENCE/baseline-dry-run.json" ;;
   *) : ;;
 esac`
   );
@@ -965,7 +1045,11 @@ ${preflight
       APPROVED_API_IMAGE: "registry.test/api:tag",
       APPROVED_RELEASE_SHA: RELEASE_SHA,
       FAILURE_SCENARIO: scenario,
+      FORMAL_NONZERO_REPORT: toGitBashPath(formalNonzero),
+      FORMAL_ZERO_REPORT: toGitBashPath(formalZero),
       HARNESS_EVIDENCE: evidence,
+      REAL_NODE: realNode,
+      TASK9_GOVERNANCE_SCRIPT: governanceScript,
       TRACE_FILE: trace,
       STAGE1_ACCEPTANCE_DATABASE_OWNER: "subscription_saas",
       STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL:
@@ -985,51 +1069,91 @@ ${preflight
   return { result, output, calls };
 }
 
-test("Task 9 complete executable fence reaches approval only when every stateful gate is green", async () => {
-  const preflight = extractExecutableFence(
-    await readRunbook(),
-    "STAGE1_TASK9_PREFLIGHT_EXECUTABLE"
-  );
-  const green = runTask9Preflight(preflight);
-  assert.equal(green.result.status, 0, `${green.output}\n${green.calls}`);
-  assert.match(green.output, /STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL/);
-  assert.doesNotMatch(green.calls, /HOST_(?:jq|node|psql|pg_dump)/);
-  const failureScenarios = [
-    "health_api",
-    "health_admin",
-    "health_portal",
-    "image_id",
-    "image_digest",
-    "image_revision_missing",
-    "image_revision_malformed",
-    "image_revision_mismatch",
-    "source_name_mismatch",
-    "url_semantics_mismatch",
-    "server_identity",
-    "target_exists",
-    "target_nonempty",
-    "backup",
-    "migrate_deploy",
-    "migrate_status",
-    "checksum",
-    "drift",
-    "migration_count",
-    "post_migration_nonempty",
-    "discovery",
-    "uuid",
-    "formal_nonzero",
-    "approval_publication"
-  ];
-  for (const scenario of failureScenarios) {
-    const outcome = runTask9Preflight(preflight, scenario);
-    assert.notEqual(outcome.result.status, 0, `${scenario} must stop`);
-    assert.doesNotMatch(outcome.output, /BASELINE_APPLY_APPROVAL/, `${scenario} must not approve`);
-    if (scenario.startsWith("image_revision")) assert.match(outcome.calls, /gate:image-revision/);
-    if (["source_name_mismatch", "url_semantics_mismatch"].includes(scenario))
-      assert.match(outcome.calls, /gate:url-pair/);
-    if (scenario === "approval_publication") assert.match(outcome.calls, /gate:approval-summary/);
+test(
+  "Task 9 complete executable fence reaches approval only when every stateful gate is green",
+  { concurrency: 4 },
+  async (t) => {
+    const preflight = extractExecutableFence(
+      await readRunbook(),
+      "STAGE1_TASK9_PREFLIGHT_EXECUTABLE"
+    );
+    const green = runTask9Preflight(preflight);
+    assert.equal(green.result.status, 0, `${green.output}\n${green.calls}`);
+    assert.match(green.output, /STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL/);
+    assert.doesNotMatch(green.calls, /HOST_(?:jq|node|psql|pg_dump)/);
+    const allFailureScenarios = [
+      "health_api",
+      "health_admin",
+      "health_portal",
+      "image_id",
+      "image_digest",
+      "image_revision_missing",
+      "image_revision_malformed",
+      "image_revision_mismatch",
+      "source_name_mismatch",
+      "url_semantics_mismatch",
+      "server_identity",
+      "target_exists",
+      "target_nonempty",
+      "backup",
+      "migrate_deploy",
+      "migrate_status",
+      "checksum",
+      "drift",
+      "migration_count",
+      "post_migration_nonempty",
+      "discovery",
+      "uuid",
+      "formal_nonzero",
+      "approval_publication"
+    ];
+    const expectedLastGate = {
+      approval_publication: "gate:approval-publication",
+      backup: "gate:backup",
+      checksum: "gate:migration-checksum",
+      discovery: "gate:discovery",
+      drift: "gate:migration-drift",
+      formal_nonzero: "gate:approval-summary-nonzero",
+      health_admin: "gate:health-admin",
+      health_api: "gate:health-api",
+      health_portal: "gate:health-portal",
+      image_digest: "gate:image-digest",
+      image_id: "gate:image-id",
+      image_revision_malformed: "gate:image-revision-malformed",
+      image_revision_mismatch: "gate:image-revision-mismatch",
+      image_revision_missing: "gate:image-revision-missing",
+      migrate_deploy: "gate:migration-deploy",
+      migrate_status: "gate:migration-status",
+      migration_count: "gate:migration-count",
+      post_migration_nonempty: "gate:post-migration-business-count",
+      server_identity: "gate:server-identity-different-cluster",
+      source_name_mismatch: "gate:url-source-database",
+      target_exists: "gate:target-exists",
+      target_nonempty: "gate:target-empty",
+      url_semantics_mismatch: "gate:url-semantics",
+      uuid: "gate:vehicle-selection"
+    };
+    await Promise.all(
+      allFailureScenarios.map((scenario) =>
+        t.test(scenario, () => {
+          const outcome = runTask9Preflight(preflight, scenario);
+          assert.notEqual(outcome.result.status, 0, `${scenario} must stop`);
+          assert.doesNotMatch(
+            outcome.output,
+            /BASELINE_APPLY_APPROVAL/,
+            `${scenario} must not approve`
+          );
+          const reachedGates = outcome.calls.match(/^gate:[^\r\n]+/gm) ?? [];
+          assert.equal(
+            reachedGates.at(-1),
+            expectedLastGate[scenario],
+            `${scenario} must stop at its uniquely mapped gate\n${outcome.calls}`
+          );
+        })
+      )
+    );
   }
-});
+);
 
 test("requires discovery, explicit UUID, approvals, apply/replay, and target validator", async () => {
   const contents = await readRunbook();

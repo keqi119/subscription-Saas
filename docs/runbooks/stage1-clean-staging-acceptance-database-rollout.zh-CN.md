@@ -47,6 +47,7 @@ readonly EVIDENCE_PARENT="/opt/subscription-saas/reports"
 readonly EVIDENCE_DIR="${EVIDENCE_PARENT}/stage1-clean-acceptance-${RUN_UTC}"
 readonly OLD_DB_BACKUP="${EVIDENCE_DIR}/old-database.pre-apply.dump"
 readonly EMPTY_NEW_DB_BACKUP="${EVIDENCE_DIR}/empty-new-database.pre-migration.dump"
+export TARGET_DB
 
 assert_private_directory() { test -d "$1" && test ! -L "$1" && test "$(stat -c '%u:%g:%a' "$1")" = '0:0:700'; }
 assert_new_evidence_path() { test ! -e "$1" && test ! -L "$1"; }

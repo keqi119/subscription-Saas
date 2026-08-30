@@ -277,7 +277,7 @@ const SELECT = Object.freeze({
   )
 });
 
-const STAGE1_ACCEPTANCE_WHITELIST_DELEGATES = Object.freeze(Object.keys(SELECT).sort());
+export const STAGE1_ACCEPTANCE_WHITELIST_DELEGATES = Object.freeze(Object.keys(SELECT).sort());
 
 export async function loadStage1CleanAcceptanceSourceSnapshot(tx, inputSelection, options = {}) {
   const selection = parseStage1CleanAcceptanceSelection(inputSelection);

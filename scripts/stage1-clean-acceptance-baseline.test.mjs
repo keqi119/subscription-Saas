@@ -15,6 +15,10 @@ import {
   writeControlledJsonFile
 } from "./stage1-clean-acceptance-cli-core.mjs";
 import { main as baselineMain } from "./stage1-clean-acceptance-baseline.mjs";
+import {
+  STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES,
+  STAGE1_ACCEPTANCE_WHITELIST_DELEGATES
+} from "./stage1-clean-acceptance-baseline-snapshot.mjs";
 
 const VEHICLE = "11111111-1111-4111-8111-111111111111";
 const SHA = "a".repeat(64);
@@ -690,7 +694,8 @@ test("apply reuses approved generatedAt/salt and verifies the canonical manifest
     manifestSha256: SHA,
     mode: "dry-run",
     operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
-    safe: true
+    safe: true,
+    targetCountEvidence: approvedTargetCountEvidence()
   };
   for (const rejectedReport of [
     { ...wrapper, rawSecret: "WRAPPER_SECRET" },
@@ -736,6 +741,47 @@ test("apply reuses approved generatedAt/salt and verifies the canonical manifest
     2
   );
   assert.equal(samePath.clients.length, 0);
+});
+
+test("apply and replay reject noncanonical approved target-count key universes before connecting", async () => {
+  const approved = approvedManifest();
+  for (const mode of ["apply", "replay"]) {
+    const harness = createBaselineHarness({
+      approved,
+      approvedReport: {
+        manifest: approved,
+        manifestSha256: SHA,
+        mode: "dry-run",
+        operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+        safe: true,
+        targetCountEvidence: {
+          forbiddenCountKeys: ["arbitraryForbidden"],
+          forbiddenCounts: { arbitraryForbidden: 0 },
+          tableCountKeys: ["arbitraryTable"],
+          tableCounts: { arbitraryTable: 0 }
+        }
+      }
+    });
+    assert.equal(
+      await baselineMain(
+        [
+          `--${mode}`,
+          "--output",
+          `D:/evidence/${mode}.json`,
+          "--vehicle-id",
+          VEHICLE,
+          "--approved-manifest",
+          "D:/evidence/dry.json",
+          "--approved-manifest-sha256",
+          SHA
+        ],
+        harness.deps
+      ),
+      2,
+      mode
+    );
+    assert.equal(harness.clients.length, 0, mode);
+  }
 });
 
 test("replay report and public summary expose exact zero write counts", async () => {
@@ -845,6 +891,17 @@ function approvedManifest() {
     selection: { adminDigest: SHA, customerDigest: SHA, vehicleDigests: [SHA, "b".repeat(64)] },
     source: { databaseDigest: SHA, migrationCatalogDigest: SHA, schemaDigest: SHA },
     target: { databaseDigest: SHA, migrationCatalogDigest: SHA, schemaDigest: SHA }
+  };
+}
+
+function approvedTargetCountEvidence() {
+  return {
+    forbiddenCountKeys: [...STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES],
+    forbiddenCounts: Object.fromEntries(
+      STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES.map((key) => [key, 0])
+    ),
+    tableCountKeys: [...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES],
+    tableCounts: Object.fromEntries(STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.map((key) => [key, 0]))
   };
 }
 
@@ -1031,7 +1088,8 @@ function createBaselineHarness({
           manifestSha256: SHA,
           mode: "dry-run",
           operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
-          safe: true
+          safe: true,
+          targetCountEvidence: approvedTargetCountEvidence()
         }
       ),
     repoRoot: "D:/repo",

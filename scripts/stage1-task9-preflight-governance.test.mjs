@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { hashStage1CleanAcceptanceManifest } from "./stage1-clean-acceptance-baseline-core.mjs";
-import { STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES } from "./stage1-clean-acceptance-baseline-snapshot.mjs";
+import {
+  STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES,
+  STAGE1_ACCEPTANCE_WHITELIST_DELEGATES
+} from "./stage1-clean-acceptance-baseline-snapshot.mjs";
 import { readApprovedStage1AcceptanceManifest } from "./stage1-clean-acceptance-cli-core.mjs";
 import {
   buildTask9ApprovalSummary,
@@ -47,6 +50,26 @@ test("validates the exact source/target pair without exposing malformed credenti
       "subscription_saas_staging_acceptance_20260830t120001z"
     ).code,
     "TARGET_DATABASE_INVALID"
+  );
+  assert.equal(
+    validateTask9DatabasePair(
+      source.replace("/subscription_saas_staging?", "/not_the_source?"),
+      target,
+      "postgres",
+      "subscription_saas",
+      "subscription_saas_staging_acceptance_20260830t120000z"
+    ).code,
+    "SOURCE_DATABASE_INVALID"
+  );
+  assert.equal(
+    validateTask9DatabasePair(
+      source,
+      target.replace("schema=public", "schema=other"),
+      "postgres",
+      "subscription_saas",
+      "subscription_saas_staging_acceptance_20260830t120000z"
+    ).code,
+    "DATABASE_URL_SEMANTICS_INVALID"
   );
 });
 
@@ -101,8 +124,8 @@ test("keeps Task 9 dry-run target-count evidence compatible with the approved-ma
     targetCountEvidence: {
       forbiddenCountKeys: Object.keys(expectedForbiddenCounts()),
       forbiddenCounts: expectedForbiddenCounts(),
-      tableCountKeys: ["user"],
-      tableCounts: { user: 0 }
+      tableCountKeys: [...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES],
+      tableCounts: expectedTableCounts()
     }
   };
   assert.deepEqual(
@@ -121,15 +144,44 @@ test("rejects malformed or nonzero approved target-count evidence", () => {
   const valid = {
     forbiddenCountKeys: Object.keys(expectedForbiddenCounts()),
     forbiddenCounts: expectedForbiddenCounts(),
-    tableCountKeys: ["user"],
-    tableCounts: { user: 0 }
+    tableCountKeys: [...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES],
+    tableCounts: expectedTableCounts()
   };
   for (const evidence of [
     { ...valid, forbiddenCountKeys: [...valid.forbiddenCountKeys, valid.forbiddenCountKeys[0]] },
+    {
+      ...valid,
+      forbiddenCountKeys: valid.forbiddenCountKeys.slice(1),
+      forbiddenCounts: Object.fromEntries(Object.entries(valid.forbiddenCounts).slice(1))
+    },
+    {
+      ...valid,
+      forbiddenCountKeys: ["replacementForbidden", ...valid.forbiddenCountKeys.slice(1)],
+      forbiddenCounts: {
+        replacementForbidden: 0,
+        ...Object.fromEntries(Object.entries(valid.forbiddenCounts).slice(1))
+      }
+    },
     { ...valid, forbiddenCounts: { ...valid.forbiddenCounts, extra: 0 } },
+    {
+      ...valid,
+      tableCountKeys: valid.tableCountKeys.slice(1),
+      tableCounts: Object.fromEntries(Object.entries(valid.tableCounts).slice(1))
+    },
+    {
+      ...valid,
+      tableCountKeys: ["replacementTable", ...valid.tableCountKeys.slice(1)],
+      tableCounts: {
+        replacementTable: 0,
+        ...Object.fromEntries(Object.entries(valid.tableCounts).slice(1))
+      }
+    },
     { ...valid, tableCounts: [] },
-    { ...valid, tableCounts: { user: 0.5 } },
-    { ...valid, tableCounts: { user: 1 } }
+    {
+      ...valid,
+      tableCounts: { ...valid.tableCounts, [valid.tableCountKeys[0]]: 0.5 }
+    },
+    { ...valid, tableCounts: { ...valid.tableCounts, [valid.tableCountKeys[0]]: 1 } }
   ]) {
     assert.throws(() =>
       readApprovedStage1AcceptanceManifest(
@@ -148,8 +200,37 @@ test("rejects malformed or nonzero approved target-count evidence", () => {
   }
 });
 
+test("rejects self-consistent arbitrary approved target-count key universes", () => {
+  const manifest = validManifest();
+  const hash = hashStage1CleanAcceptanceManifest(manifest);
+  const arbitraryEvidence = {
+    forbiddenCountKeys: ["arbitraryForbiddenDomain"],
+    forbiddenCounts: { arbitraryForbiddenDomain: 0 },
+    tableCountKeys: ["arbitraryTable"],
+    tableCounts: { arbitraryTable: 0 }
+  };
+  assert.throws(() =>
+    readApprovedStage1AcceptanceManifest(
+      JSON.stringify({
+        manifest,
+        manifestSha256: hash,
+        mode: "dry-run",
+        operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+        safe: true,
+        targetCountEvidence: arbitraryEvidence
+      }),
+      hash,
+      hashStage1CleanAcceptanceManifest
+    )
+  );
+});
+
 function expectedForbiddenCounts() {
   return Object.fromEntries(STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES.map((key) => [key, 0]));
+}
+
+function expectedTableCounts() {
+  return Object.fromEntries(STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.map((key) => [key, 0]));
 }
 
 function validManifest() {

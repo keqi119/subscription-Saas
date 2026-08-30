@@ -6,6 +6,11 @@ import * as pathDefault from "node:path";
 import { basename, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES,
+  STAGE1_ACCEPTANCE_WHITELIST_DELEGATES
+} from "./stage1-clean-acceptance-baseline-snapshot.mjs";
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
@@ -412,11 +417,10 @@ function validApprovedWrapperShape(report, approvedSha256) {
 }
 
 function validApprovedTargetCountEvidence(value) {
-  const validKeys = (keys) =>
+  const exactCanonicalKeys = (keys, expected) =>
     Array.isArray(keys) &&
-    keys.length > 0 &&
-    keys.every((key) => typeof key === "string" && key.length > 0) &&
-    new Set(keys).size === keys.length;
+    keys.length === expected.length &&
+    keys.every((key, index) => key === expected[index]);
   const validCounts = (keys, counts) =>
     counts &&
     typeof counts === "object" &&
@@ -431,10 +435,10 @@ function validApprovedTargetCountEvidence(value) {
     );
   return (
     exactKeys(value, ["forbiddenCountKeys", "forbiddenCounts", "tableCountKeys", "tableCounts"]) &&
-    validKeys(value.forbiddenCountKeys) &&
-    validKeys(value.tableCountKeys) &&
-    validCounts(value.forbiddenCountKeys, value.forbiddenCounts) &&
-    validCounts(value.tableCountKeys, value.tableCounts)
+    exactCanonicalKeys(value.forbiddenCountKeys, STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES) &&
+    exactCanonicalKeys(value.tableCountKeys, STAGE1_ACCEPTANCE_WHITELIST_DELEGATES) &&
+    validCounts(STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES, value.forbiddenCounts) &&
+    validCounts(STAGE1_ACCEPTANCE_WHITELIST_DELEGATES, value.tableCounts)
   );
 }
 

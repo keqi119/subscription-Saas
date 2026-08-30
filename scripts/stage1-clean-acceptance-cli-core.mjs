@@ -395,11 +395,29 @@ function validApprovedManifestShape(manifest) {
 
 function validApprovedWrapperShape(report, approvedSha256) {
   return (
-    exactKeys(report, ["manifest", "manifestSha256", "mode", "operation", "safe"]) &&
+    exactKeys(report, [
+      "manifest",
+      "manifestSha256",
+      "mode",
+      "operation",
+      "safe",
+      "targetCountEvidence"
+    ]) &&
     report.manifestSha256 === approvedSha256 &&
     report.mode === "dry-run" &&
     report.operation === "STAGE1_CLEAN_ACCEPTANCE_BASELINE" &&
-    report.safe === true
+    report.safe === true &&
+    validApprovedTargetCountEvidence(report.targetCountEvidence)
+  );
+}
+
+function validApprovedTargetCountEvidence(value) {
+  return (
+    exactKeys(value, ["forbiddenCountKeys", "forbiddenCounts", "tableCountKeys", "tableCounts"]) &&
+    Array.isArray(value.forbiddenCountKeys) &&
+    Array.isArray(value.tableCountKeys) &&
+    value.forbiddenCountKeys.length > 0 &&
+    value.tableCountKeys.length > 0
   );
 }
 

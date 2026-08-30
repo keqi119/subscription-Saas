@@ -1,11 +1,12 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 
 import { hashStage1CleanAcceptanceManifest } from "./stage1-clean-acceptance-baseline-core.mjs";
 import { STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES } from "./stage1-clean-acceptance-baseline-snapshot.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-export function validateTask9DatabasePair(sourceText, targetText, hostname, owner) {
+export function validateTask9DatabasePair(sourceText, targetText, hostname, owner, targetDb) {
   try {
     const source = new URL(sourceText);
     const target = new URL(targetText);
@@ -18,8 +19,7 @@ export function validateTask9DatabasePair(sourceText, targetText, hostname, owne
     for (const key of ["protocol", "host", "port", "username", "password", "search", "hash"]) {
       if (source[key] !== target[key]) return { code: "DATABASE_URL_SEMANTICS_INVALID" };
     }
-    if (!/^\/subscription_saas_staging_acceptance_[0-9]{8}t[0-9]{6}z$/.test(target.pathname))
-      return { code: "TARGET_DATABASE_INVALID" };
+    if (target.pathname !== `/${targetDb}`) return { code: "TARGET_DATABASE_INVALID" };
     return { code: "OK" };
   } catch {
     return { code: "DATABASE_URL_INVALID" };
@@ -70,6 +70,31 @@ export function buildTask9ApprovalSummary(report) {
   };
 }
 
+async function targetServerIdentity() {
+  const { PrismaClient } = await import("@prisma/client");
+  const { PrismaPg } = await import("@prisma/adapter-pg");
+  const adapter = new PrismaPg({
+    connectionString: process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL
+  });
+  const prisma = new PrismaClient({ adapter });
+  try {
+    const [row] = await prisma.$queryRawUnsafe(
+      "SELECT (pg_control_system()).system_identifier::text AS system_identifier, current_user AS role_name, current_database() AS database_name"
+    );
+    if (
+      row?.database_name !== process.env.TARGET_DB ||
+      row?.role_name !== process.env.STAGE1_ACCEPTANCE_DATABASE_OWNER
+    )
+      process.exitCode = 1;
+    else
+      process.stdout.write(
+        `${createHash("sha256").update(String(row.system_identifier)).digest("hex")}\n`
+      );
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
 async function main() {
   const [command, reportPath, vehicleId] = process.argv.slice(2);
   try {
@@ -86,7 +111,8 @@ async function main() {
         process.env.STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL,
         process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL,
         process.env.STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME,
-        process.env.STAGE1_ACCEPTANCE_DATABASE_OWNER
+        process.env.STAGE1_ACCEPTANCE_DATABASE_OWNER,
+        process.env.TARGET_DB
       );
       if (result.code !== "OK") process.exitCode = 1;
       return;
@@ -95,6 +121,10 @@ async function main() {
       const result = buildTask9ApprovalSummary(JSON.parse(await readFile(reportPath, "utf8")));
       if (result.code) process.exitCode = 1;
       else process.stdout.write(`${JSON.stringify(result)}\n`);
+      return;
+    }
+    if (command === "server-identity") {
+      await targetServerIdentity();
       return;
     }
     process.exitCode = 2;

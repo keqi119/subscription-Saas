@@ -73,7 +73,7 @@ target_node() {
   docker run --rm -i --network "${COMPOSE_PROJECT}_default" --volume "$EVIDENCE_DIR:/evidence:ro" \
     --env APPROVED_RELEASE_SHA --env STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL \
     --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL --env STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME \
-    --env STAGE1_ACCEPTANCE_DATABASE_OWNER --env STAGE1_ACCEPTANCE_IMAGE_REF \
+    --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" --env STAGE1_ACCEPTANCE_DATABASE_OWNER --env STAGE1_ACCEPTANCE_IMAGE_REF \
     --env TARGET_DB "$APPROVED_API_IMAGE_ID" node "$@"
 }
 target_api() {
@@ -100,11 +100,13 @@ readonly CURRENT_ONLINE_API_IMAGE="$(docker inspect --format '{{.Image}}' "$API_
 readonly CURRENT_ONLINE_API_REVISION="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$API_CONTAINER_ID")"
 readonly APPROVED_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$APPROVED_API_IMAGE")"
 readonly APPROVED_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$APPROVED_API_IMAGE_ID")"
-readonly APPROVED_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$APPROVED_API_IMAGE")"
+readonly APPROVED_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$APPROVED_API_IMAGE_ID")"
+[[ "$APPROVED_API_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_ID_INVALID'; exit 1; }
 [[ "$APPROVED_API_IMAGE_DIGEST" =~ @sha256:[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_DIGEST_INVALID'; exit 1; }
 [[ "$APPROVED_API_IMAGE_REVISION" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_REVISION_INVALID'; exit 1; }
 test "$APPROVED_API_IMAGE_REVISION" = "$APPROVED_RELEASE_SHA" || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_REVISION_MISMATCH'; exit 1; }
 readonly STAGE1_ACCEPTANCE_IMAGE_REF="$APPROVED_API_IMAGE_DIGEST"
+export STAGE1_ACCEPTANCE_IMAGE_REF
 
 assert_private_directory "$EVIDENCE_PARENT"
 test ! -e "$EVIDENCE_DIR" && test ! -L "$EVIDENCE_DIR"
@@ -125,6 +127,14 @@ printf '%s\n' 'public_api=200 public_admin=200 public_portal=200' | publish_priv
 
 target_node scripts/stage1-task9-preflight-governance.mjs validate-pair || { printf '%s\n' 'STOP: DATABASE_IDENTITY_INVALID'; exit 1; }
 test "$(postgres_admin_query -XAtq -c 'SELECT current_user;')" = "$STAGE1_ACCEPTANCE_DATABASE_OWNER" || { printf '%s\n' 'STOP: COMPOSE_DATABASE_ROLE_INVALID'; exit 1; }
+readonly COMPOSE_SERVER_IDENTITY_SHA256="$(postgres_admin_query -XAtq -c 'SELECT (pg_control_system()).system_identifier::text;' | sha256sum | awk '{print $1}')"
+set +e
+TARGET_SERVER_IDENTITY_SHA256="$(target_node scripts/stage1-task9-preflight-governance.mjs server-identity)"
+TARGET_SERVER_IDENTITY_EXIT="$?"
+set -e
+test "$TARGET_SERVER_IDENTITY_EXIT" -eq 0 || { printf '%s\n' 'STOP: TARGET_SERVER_IDENTITY_UNAVAILABLE'; exit 1; }
+readonly TARGET_SERVER_IDENTITY_SHA256
+test "$COMPOSE_SERVER_IDENTITY_SHA256" = "$TARGET_SERVER_IDENTITY_SHA256" || { printf '%s\n' 'STOP: DATABASE_SERVER_IDENTITY_MISMATCH'; exit 1; }
 test "$(postgres_admin_query -XAtq --set=target_db="$TARGET_DB" -c 'SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'"'"'target_db'"'"');')" = 'f' || { printf '%s\n' 'STOP: TARGET_DATABASE_ALREADY_EXISTS'; exit 1; }
 postgres_admin_query --set=target_db="$TARGET_DB" --set=owner_role="$STAGE1_ACCEPTANCE_DATABASE_OWNER" <<'SQL'
 SELECT format('CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L', :'target_db', :'owner_role', 'UTF8') \gexec

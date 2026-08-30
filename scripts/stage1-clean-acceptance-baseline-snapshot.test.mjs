@@ -1,14 +1,29 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256,
   STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES,
   countStage1CleanAcceptanceForbiddenDomains,
   discoverStage1CleanAcceptanceVehicleCandidates,
   loadStage1CleanAcceptanceSourceSnapshot,
   loadStage1CleanAcceptanceTargetSnapshot
 } from "./stage1-clean-acceptance-baseline-snapshot.mjs";
+import { loadLocalMigrationChecksums } from "./prisma-migration-checksums.mjs";
+
+const CANONICAL_MIGRATIONS = await loadLocalMigrationChecksums();
+
+function appliedMigrationRows(migrations = CANONICAL_MIGRATIONS) {
+  return migrations.map((row, index) => ({
+    appliedStepsCount: 1,
+    checksum: row.checksum,
+    finishedAt: new Date("2026-08-30T00:00:00.000Z"),
+    id: `migration-${String(index).padStart(3, "0")}`,
+    migrationName: row.migrationName,
+    rolledBackAt: null,
+    startedAt: new Date("2026-08-30T00:00:00.000Z")
+  }));
+}
 
 const VEHICLE_A = "11111111-1111-4111-8111-111111111111";
 
@@ -356,18 +371,18 @@ test("source loader uses complete explicit scalar selects and fixed whitelist fi
   assert.equal(planWhere.product.productType, "SUBSCRIPTION");
   assert.equal(planWhere.product.status, "ACTIVE");
   assert.equal(planWhere.productVersion.status, "ACTIVE");
-  assert.equal(planWhere.effectiveFrom.lte, snapshot.asOf);
+  assert.equal(planWhere.effectiveFrom.lte, snapshot.evaluationDate);
 
   const contractWhere = findCall(fake, "contractVersion").args.where;
   assert.deepEqual(contractWhere.templateType.in, REQUIRED_CONTRACT_TEMPLATE_TYPES);
   assert.equal(contractWhere.approvedAt.lte, snapshot.asOf);
-  assert.equal(contractWhere.effectiveFrom.lte, snapshot.asOf);
+  assert.equal(contractWhere.effectiveFrom.lte, snapshot.evaluationDate);
   const notificationWhere = findCall(fake, "notificationTemplate").args.where;
   assert.deepEqual(notificationWhere.templateCode.in, REQUIRED_NOTIFICATION_TEMPLATE_CODES);
   assert.equal(notificationWhere.templateStatus, "ACTIVE");
 });
 
-test("source loader reuses an explicit approved instant for every effective-window query", async () => {
+test("source loader uses one date-only evaluation day while preserving approvedAt as an instant", async () => {
   const fake = createPrismaFake();
   const approvedAsOf = new Date("2026-08-30T12:34:56.000Z");
 
@@ -376,11 +391,16 @@ test("source loader reuses an explicit approved instant for every effective-wind
   });
 
   assert.equal(snapshot.asOf.toISOString(), "2026-08-30T12:34:56.000Z");
+  assert.equal(snapshot.evaluationDate.toISOString(), "2026-08-30T00:00:00.000Z");
   for (const delegate of ["subscriptionPlan", "depositRule", "contractVersion"]) {
     const call = findCall(fake, delegate);
-    assert.equal(call.args.where.effectiveFrom.lte.toISOString(), "2026-08-30T12:34:56.000Z");
-    assert.equal(call.args.where.OR[1].effectiveTo.gte.toISOString(), "2026-08-30T12:34:56.000Z");
+    assert.equal(call.args.where.effectiveFrom.lte.toISOString(), "2026-08-30T00:00:00.000Z");
+    assert.equal(call.args.where.OR[1].effectiveTo.gte.toISOString(), "2026-08-30T00:00:00.000Z");
   }
+  assert.equal(
+    findCall(fake, "contractVersion").args.where.approvedAt.lte.toISOString(),
+    "2026-08-30T12:34:56.000Z"
+  );
 
   await assert.rejects(
     loadStage1CleanAcceptanceSourceSnapshot(fake.tx, selection([]), { asOf: new Date("invalid") }),
@@ -398,9 +418,12 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
               {
                 _count: {
                   assetWorkOrders: 0,
+                  documents: 1,
                   deliveries: 0,
                   operationalRestrictions: 0,
                   orders: 0,
+                  insurancePolicies: 2,
+                  listingPlans: 1,
                   returns: 0,
                   serviceCases: 0,
                   subscriptionPeriods: 0
@@ -413,7 +436,27 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
             ]
           : callIndex === 1
             ? [{ id: VEHICLE_A }]
-            : [vehicleRow]
+            : [vehicleRow],
+      vehicleInsurancePolicy: [
+        completeScalarRow("vehicleInsurancePolicy", {
+          deletedAt: null,
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "policy-commercial",
+          policyStatus: "ACTIVE",
+          policyType: "COMMERCIAL",
+          vehicleId: VEHICLE_A
+        }),
+        completeScalarRow("vehicleInsurancePolicy", {
+          deletedAt: null,
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "policy-compulsory",
+          policyStatus: "ACTIVE",
+          policyType: "COMPULSORY_TRAFFIC",
+          vehicleId: VEHICLE_A
+        })
+      ]
     }
   });
   const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(
@@ -424,15 +467,21 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
   assert.deepEqual(snapshot.vehicle.eligibilityEvidence, {
     [VEHICLE_A]: {
       blockingRestrictionCount: 0,
+      activeApplicationCount: 0,
       activeAssetWorkOrderCount: 0,
+      activeReviewReservationCount: 0,
       activeServiceCaseCount: 0,
+      currentCommercialPolicyCount: 1,
+      currentCompulsoryTrafficPolicyCount: 1,
+      currentLicenseCount: 1,
       currentSalePricePositive: true,
       deliveryCount: 0,
       orderCount: 0,
       overlappingSubscriptionPeriodCount: 0,
       requiredDocumentsAndInsuranceReady: true,
       returnCount: 0,
-      salePriceStatusEffective: true
+      salePriceStatusEffective: true,
+      visibleRetainedListingPlanCount: 1
     }
   });
   const [diagnostic, guarded] = eligible.calls.filter(
@@ -464,20 +513,22 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
   assert.equal(guarded.args.where.documents.some.deletedAt, null);
   assert.equal(guarded.args.where.documents.some.documentStatus, "ACTIVE");
   assert.equal(guarded.args.where.documents.some.documentType, "VEHICLE_LICENSE");
-  assert.deepEqual(guarded.args.where.insurancePolicies, {
-    some: {
-      coverages: { some: { deletedAt: null } },
-      deletedAt: null,
-      effectiveFrom: { lte: snapshot.asOf },
-      effectiveTo: { gte: snapshot.asOf },
-      policyStatus: "ACTIVE"
-    }
-  });
+  assert.deepEqual(
+    guarded.args.where.AND.map(({ insurancePolicies }) => insurancePolicies.some.policyType),
+    ["COMMERCIAL", "COMPULSORY_TRAFFIC"]
+  );
   assert.deepEqual(guarded.args.where.modelDefinition, {
     is: { deletedAt: null, enabled: true, portalVisible: true }
   });
   assert.deepEqual(guarded.args.where.listingProfile, {
-    is: { deletedAt: null, listingStatus: "PUBLISHED", portalVisible: true }
+    is: {
+      deletedAt: null,
+      listingStatus: "PUBLISHED",
+      plans: {
+        some: { deletedAt: null, subscriptionPlanId: { in: [] }, visible: true }
+      },
+      portalVisible: true
+    }
   });
 
   const partial = createPrismaFake({
@@ -605,7 +656,14 @@ test("vehicle discovery reuses the strict guard without an id filter and returns
     is: { deletedAt: null, enabled: true, portalVisible: true }
   });
   assert.deepEqual(discovery.args.where.listingProfile, {
-    is: { deletedAt: null, listingStatus: "PUBLISHED", portalVisible: true }
+    is: {
+      deletedAt: null,
+      listingStatus: "PUBLISHED",
+      plans: {
+        some: { deletedAt: null, subscriptionPlanId: { in: [] }, visible: true }
+      },
+      portalVisible: true
+    }
   });
   assert.deepEqual(discovery.args.where.operationalRestrictions.none.startedAt, { lte: asOf });
   assert.deepEqual(discovery.args.where.subscriptionPeriods.none.startedAt, { lte: asOf });
@@ -1421,57 +1479,22 @@ test("source loader drops a fixed-phone account and children when its Customer e
   }
 });
 
-test("target loader counts exact whitelist and forbidden delegates with parameterized fingerprints", async () => {
+test("target loader counts exact whitelist and verifies the fixed local canonical facts", async () => {
   assert.deepEqual(STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES, EXPECTED_FORBIDDEN_DELEGATES);
   assert.equal(Object.isFrozen(STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES), true);
 
   const fake = createPrismaFake({
     counts: { auditLog: 0, customer: 2, subscriptionOrder: 3, vehicle: 1 },
     rawResults: [
+      appliedMigrationRows(),
       [
         {
-          appliedStepsCount: 1,
-          checksum: "a".repeat(64),
-          finishedAt: new Date("2026-08-30T00:00:00.000Z"),
-          id: "migration-a",
-          migrationName: "20260830000000_acceptance",
-          rolledBackAt: null,
-          startedAt: new Date("2026-08-30T00:00:00.000Z")
-        }
-      ],
-      [
-        {
-          columnDefault: null,
-          columnName: "id",
-          dataType: "uuid",
-          isNullable: "NO",
-          ordinalPosition: 1,
-          tableName: "user",
-          udtName: "uuid"
+          schemaFingerprintSha256: STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256
         }
       ]
     ]
   });
-  const target = await loadStage1CleanAcceptanceTargetSnapshot(fake.tx, {
-    canonicalMigrationChecksums: [
-      { checksum: "a".repeat(64), migrationName: "20260830000000_acceptance" }
-    ],
-    canonicalSchemaFingerprintSha256: createHash("sha256")
-      .update(
-        JSON.stringify([
-          {
-            columnDefault: null,
-            columnName: "id",
-            dataType: "uuid",
-            isNullable: "NO",
-            ordinalPosition: 1,
-            tableName: "user",
-            udtName: "uuid"
-          }
-        ])
-      )
-      .digest("hex")
-  });
+  const target = await loadStage1CleanAcceptanceTargetSnapshot(fake.tx);
 
   assert.deepEqual(target.forbiddenCountKeys, EXPECTED_FORBIDDEN_DELEGATES);
   assert.deepEqual(Object.keys(target.forbiddenCounts), EXPECTED_FORBIDDEN_DELEGATES);
@@ -1481,8 +1504,11 @@ test("target loader counts exact whitelist and forbidden delegates with paramete
   assert.equal(target.tableCounts.customer, 2);
   assert.equal(target.tableCounts.vehicle, 1);
   assert.equal(target.schemaCanonical, true);
-  assert.equal(target.migrationCatalog[0].migrationName, "20260830000000_acceptance");
-  assert.equal(target.schemaFingerprint[0].tableName, "user");
+  assert.equal(target.migrationCatalog.length, 124);
+  assert.equal(
+    target.schemaFingerprint[0].schemaFingerprintSha256,
+    STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256
+  );
 
   const countCalls = fake.calls.filter(({ operation }) => operation === "count");
   assert.deepEqual(
@@ -1523,42 +1549,38 @@ test("target loader counts exact whitelist and forbidden delegates with paramete
 });
 
 test("target loader rejects missing, unknown, duplicate, mismatched, and drifted canonical facts", async () => {
-  const migration = {
-    appliedStepsCount: 1,
-    checksum: "a".repeat(64),
-    finishedAt: new Date("2026-08-30T00:00:00.000Z"),
-    id: "migration-a",
-    migrationName: "20260830000000_acceptance",
-    rolledBackAt: null,
-    startedAt: new Date("2026-08-30T00:00:00.000Z")
-  };
-  const schema = {
-    columnDefault: null,
-    columnName: "id",
-    dataType: "uuid",
-    isNullable: "NO",
-    ordinalPosition: 1,
-    tableName: "user",
-    udtName: "uuid"
-  };
-  const canonical = {
-    canonicalMigrationChecksums: [
-      { checksum: "a".repeat(64), migrationName: migration.migrationName }
-    ],
-    canonicalSchemaFingerprintSha256: createHash("sha256")
-      .update(JSON.stringify([schema]))
-      .digest("hex")
-  };
+  const migrations = appliedMigrationRows();
   const cases = [
     { name: "missing", migrations: [] },
-    { name: "unknown", migrations: [{ ...migration, migrationName: "unknown" }] },
-    { name: "duplicate", migrations: [migration, { ...migration, id: "migration-b" }] },
-    { name: "mismatch", migrations: [{ ...migration, checksum: "wrong" }] },
-    { name: "drift", migrations: [migration], schema: [{ ...schema, columnName: "changed" }] }
+    {
+      name: "unknown",
+      migrations: migrations.map((row, index) =>
+        index === 0 ? { ...row, migrationName: "unknown" } : row
+      )
+    },
+    { name: "duplicate", migrations: [...migrations, { ...migrations[0], id: "migration-x" }] },
+    {
+      name: "mismatch",
+      migrations: migrations.map((row, index) =>
+        index === 0 ? { ...row, checksum: "0".repeat(64) } : row
+      )
+    },
+    {
+      name: "drift",
+      migrations,
+      schema: [{ schemaFingerprintSha256: "0".repeat(64) }]
+    }
   ];
   for (const item of cases) {
-    const fake = createPrismaFake({ rawResults: [item.migrations, item.schema ?? [schema]] });
-    const snapshot = await loadStage1CleanAcceptanceTargetSnapshot(fake.tx, canonical);
+    const fake = createPrismaFake({
+      rawResults: [
+        item.migrations,
+        item.schema ?? [
+          { schemaFingerprintSha256: STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256 }
+        ]
+      ]
+    });
+    const snapshot = await loadStage1CleanAcceptanceTargetSnapshot(fake.tx);
     assert.equal(snapshot.schemaCanonical, false, item.name);
   }
 });
@@ -1591,7 +1613,7 @@ function createPrismaFake({ counts = {}, rawResults = [], rows = {} } = {}) {
     tx[delegate] = {
       async count(args) {
         calls.push({ args, delegate, operation: "count" });
-        return { _all: counts[delegate] ?? 0 };
+        return args?.select ? { _all: counts[delegate] ?? 0 } : (counts[delegate] ?? 0);
       },
       async findMany(args) {
         const callIndex = findManyCallIndex++;

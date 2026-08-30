@@ -31,36 +31,64 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
     let approvedManifest;
     try {
       args = parseStage1CleanAcceptanceTargetValidatorArgs(argv);
-      reportPath = deps.assertEvidencePath(args.outputPath, deps.repoRoot, { ...deps.evidenceSecurity, intent: "create" });
-      const approvedPath = deps.assertEvidencePath(args.approvedManifestPath, deps.repoRoot, { ...deps.evidenceSecurity, intent: "read" });
+      reportPath = deps.assertEvidencePath(args.outputPath, deps.repoRoot, {
+        ...deps.evidenceSecurity,
+        intent: "create"
+      });
+      const approvedPath = deps.assertEvidencePath(args.approvedManifestPath, deps.repoRoot, {
+        ...deps.evidenceSecurity,
+        intent: "read"
+      });
       if (sameCanonicalPath(reportPath, approvedPath, deps.platform)) {
-        throw Object.assign(new Error("EVIDENCE_PATH_COLLISION"), { code: "EVIDENCE_PATH_COLLISION" });
+        throw Object.assign(new Error("EVIDENCE_PATH_COLLISION"), {
+          code: "EVIDENCE_PATH_COLLISION"
+        });
       }
-      if (!deps.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL || !deps.env.STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME) {
-        throw Object.assign(new Error("DEDICATED_DATABASE_URL_REQUIRED"), { code: "DEDICATED_DATABASE_URL_REQUIRED" });
+      if (
+        !deps.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL ||
+        !deps.env.STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME
+      ) {
+        throw Object.assign(new Error("DEDICATED_DATABASE_URL_REQUIRED"), {
+          code: "DEDICATED_DATABASE_URL_REQUIRED"
+        });
       }
       approvedManifest = readApprovedStage1AcceptanceManifest(
         await deps.readTextFile(approvedPath, "utf8"),
         args.approvedManifestSha256,
         deps.hashManifest
       );
-      deps.assertTargetDatabase(deps.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL, deps.env.STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME);
+      deps.assertTargetDatabase(
+        deps.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL,
+        deps.env.STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME
+      );
     } catch (error) {
       emitError(deps, error);
       return 2;
     }
 
     try {
-      targetPrisma = await deps.createPrismaClient(deps.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL, "target", { repoRoot: deps.repoRoot });
-      removeSignalHandler = deps.installSignalHandler(() => { interrupted = true; });
-      const result = await targetPrisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SET TRANSACTION READ ONLY`;
-        return deps.validateTarget(tx, {
-          approvedManifest,
-          approvedManifestSha256: args.approvedManifestSha256
+      targetPrisma = await deps.createPrismaClient(
+        deps.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL,
+        "target",
+        { repoRoot: deps.repoRoot }
+      );
+      removeSignalHandler = deps.installSignalHandler(() => {
+        interrupted = true;
+      });
+      const result = await targetPrisma.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SET TRANSACTION READ ONLY`;
+          return deps.validateTarget(tx, {
+            approvedManifest,
+            approvedManifestSha256: args.approvedManifestSha256
+          });
+        },
+        { isolationLevel: "RepeatableRead" }
+      );
+      if (interrupted)
+        throw Object.assign(new Error("STAGE1_ACCEPTANCE_INTERRUPTED"), {
+          code: "STAGE1_ACCEPTANCE_INTERRUPTED"
         });
-      }, { isolationLevel: "RepeatableRead" });
-      if (interrupted) throw Object.assign(new Error("STAGE1_ACCEPTANCE_INTERRUPTED"), { code: "STAGE1_ACCEPTANCE_INTERRUPTED" });
       const report = {
         approvedManifest,
         approvedManifestSha256: args.approvedManifestSha256,
@@ -70,10 +98,21 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
       try {
         await deps.writeJsonFile(reportPath, report);
       } catch (error) {
-        emitError(deps, Object.assign(new Error("EVIDENCE_WRITE_FAILED"), { code: "EVIDENCE_WRITE_FAILED", cause: error }));
+        emitError(
+          deps,
+          Object.assign(new Error("EVIDENCE_WRITE_FAILED"), {
+            code: "EVIDENCE_WRITE_FAILED",
+            cause: error
+          })
+        );
         return 5;
       }
-      emitSummary(deps, { manifestSha256: result.manifestSha256, mode: "target-validator", reportPath, safe: result.safe === true });
+      emitSummary(deps, {
+        manifestSha256: result.manifestSha256,
+        mode: "target-validator",
+        reportPath,
+        safe: result.safe === true
+      });
       return result.safe === true ? 0 : 3;
     } catch (error) {
       emitError(deps, error);
@@ -93,7 +132,10 @@ function dependencies(injected) {
     evidenceSecurity: {},
     env: process.env,
     hashManifest: hashStage1CleanAcceptanceManifest,
-    installSignalHandler: (handler) => { process.once("SIGINT", handler); return () => process.off("SIGINT", handler); },
+    installSignalHandler: (handler) => {
+      process.once("SIGINT", handler);
+      return () => process.off("SIGINT", handler);
+    },
     platform: process.platform,
     readTextFile: readFile,
     repoRoot,
@@ -102,16 +144,18 @@ function dependencies(injected) {
     writeStdout: (value) => process.stdout.write(value),
     ...injected
   };
-  deps.writeJsonFile ??= (path, value) => writeControlledJsonFile(path, value, undefined, {
-    ...deps.evidenceSecurity,
-    platform: deps.platform,
-    repoRoot: deps.repoRoot
-  });
+  deps.writeJsonFile ??= (path, value) =>
+    writeControlledJsonFile(path, value, undefined, {
+      ...deps.evidenceSecurity,
+      platform: deps.platform,
+      repoRoot: deps.repoRoot
+    });
   return deps;
 }
 
 function sameCanonicalPath(left, right, platform) {
-  const normalize = (value) => platform === "win32" ? value.replaceAll("/", "\\").toLowerCase() : value;
+  const normalize = (value) =>
+    platform === "win32" ? value.replaceAll("/", "\\").toLowerCase() : value;
   return normalize(left) === normalize(right);
 }
 
@@ -123,8 +167,12 @@ function assertTargetDatabase(targetUrl, allowedHostname) {
 
 function isInvariantError(error) {
   return [
-    "FORBIDDEN_DOMAIN_NOT_EMPTY", "MANIFEST_CLASSIFICATION_INVALID", "MANIFEST_STALE",
-    "TARGET_NOT_EMPTY", "TARGET_SCHEMA_NOT_CANONICAL", "VEHICLE_NOT_ELIGIBLE",
+    "FORBIDDEN_DOMAIN_NOT_EMPTY",
+    "MANIFEST_CLASSIFICATION_INVALID",
+    "MANIFEST_STALE",
+    "TARGET_NOT_EMPTY",
+    "TARGET_SCHEMA_NOT_CANONICAL",
+    "VEHICLE_NOT_ELIGIBLE",
     "WHITELIST_REFERENCE_NOT_CLOSED"
   ].includes(error?.code ?? error?.message);
 }

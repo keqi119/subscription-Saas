@@ -124,6 +124,7 @@ function addFictitiousTemplateFields(snapshot) {
 function completeSnapshot(overrides = {}) {
   const snapshot = {
     asOf: SNAPSHOT_AS_OF,
+    evaluationDate: new Date("2026-08-30T00:00:00.000Z"),
     access: {
       menus: [{ id: "menu-admin", status: "ACTIVE" }],
       permissions: [{ code: "acceptance:read", id: "permission-read", status: "ACTIVE" }],
@@ -247,12 +248,18 @@ function completeSnapshot(overrides = {}) {
       eligibilityEvidence: {
         [VEHICLE_A]: {
           activeAssetWorkOrderCount: 0,
+          activeApplicationCount: 0,
+          activeReviewReservationCount: 0,
           activeServiceCaseCount: 0,
           blockingRestrictionCount: 0,
           currentSalePricePositive: true,
           deliveryCount: 0,
           orderCount: 0,
           overlappingSubscriptionPeriodCount: 0,
+          currentCommercialPolicyCount: 1,
+          currentCompulsoryTrafficPolicyCount: 1,
+          currentLicenseCount: 1,
+          visibleRetainedListingPlanCount: 1,
           requiredDocumentsAndInsuranceReady: true,
           returnCount: 0,
           salePriceStatusEffective: true
@@ -302,16 +309,59 @@ function completeSnapshot(overrides = {}) {
       ],
       vehicleDocumentBatches: [{ id: "document-batch-1", vehicleId: VEHICLE_A }],
       vehicleDocuments: [
-        { batchId: "document-batch-1", id: "document-1", policyId: null, vehicleId: VEHICLE_A }
+        {
+          batchId: "document-batch-1",
+          customerVisible: true,
+          deletedAt: null,
+          documentStatus: "ACTIVE",
+          documentType: "VEHICLE_LICENSE",
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "document-1",
+          policyId: null,
+          vehicleId: VEHICLE_A
+        }
       ],
-      vehicleInsuranceCoverages: [{ id: "coverage-1", policyId: "policy-1" }],
-      vehicleInsurancePolicies: [{ id: "policy-1", vehicleId: VEHICLE_A }],
-      vehicleListingMedia: [{ id: "media-1", listingProfileId: "listing-1", vehicleId: VEHICLE_A }],
+      vehicleInsuranceCoverages: [
+        { deletedAt: null, id: "coverage-1", policyId: "policy-1" },
+        { deletedAt: null, id: "coverage-2", policyId: "policy-2" }
+      ],
+      vehicleInsurancePolicies: [
+        {
+          deletedAt: null,
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "policy-1",
+          policyStatus: "ACTIVE",
+          policyType: "COMPULSORY_TRAFFIC",
+          vehicleId: VEHICLE_A
+        },
+        {
+          deletedAt: null,
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "policy-2",
+          policyStatus: "ACTIVE",
+          policyType: "COMMERCIAL",
+          vehicleId: VEHICLE_A
+        }
+      ],
+      vehicleListingMedia: [
+        {
+          customerVisible: true,
+          deletedAt: null,
+          id: "media-1",
+          listingProfileId: "listing-1",
+          vehicleId: VEHICLE_A
+        }
+      ],
       vehicleListingPlans: [
         {
           id: "listing-plan-1",
           listingProfileId: "listing-1",
           subscriptionPlanId: "plan-1",
+          deletedAt: null,
+          visible: true,
           vehicleId: VEHICLE_A
         }
       ],
@@ -332,7 +382,15 @@ function completeSnapshot(overrides = {}) {
           vehicleId: VEHICLE_A
         }
       ],
-      vehicleSalePriceHistories: [{ id: "sale-price-1", vehicleId: VEHICLE_A }]
+      vehicleSalePriceHistories: [
+        {
+          afterSalePriceAmount: 100,
+          effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+          effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+          id: "sale-price-1",
+          vehicleId: VEHICLE_A
+        }
+      ]
     }
   };
   return deepMerge(snapshot, overrides);
@@ -473,7 +531,7 @@ test("classification requires an explicit vehicle selection and never chooses a 
 test("classification closes the complete fixed baseline and marks it safe", () => {
   const result = classifyStage1CleanAcceptanceBaseline(completeSnapshot(), selection());
   assert.equal(isStage1CleanAcceptanceBaselineSafe(result), true);
-  assert.equal(result.safeToApply, true);
+  assert.equal(result.safeToApply, true, JSON.stringify(result.exceptions));
   assert.deepEqual(result.exceptions, []);
   assert.equal(result.rows.access.users[0].id, "admin-user");
   assert.equal(result.rows.customer.customers[0].id, "customer-1");
@@ -619,6 +677,7 @@ test("catalog model references close through the union of package, member, price
   snapshot.catalog.vehiclePackages[0].modelDefinitionId = "model-package";
   snapshot.catalog.vehiclePackageModelMembers[0].modelDefinitionId = "model-member";
   snapshot.catalog.productPriceRules[0].modelDefinitionId = "model-price";
+  snapshot.vehicle.vehicles[0].modelDefinitionId = "model-member";
   snapshot.vehicle.vehicleModelDefinitions.push(
     { deletedAt: null, enabled: true, id: "model-package", portalVisible: true },
     { deletedAt: null, enabled: true, id: "model-member", portalVisible: true },
@@ -629,7 +688,7 @@ test("catalog model references close through the union of package, member, price
   assert.equal(selected.safeToApply, true);
   assert.deepEqual(
     selected.rows.vehicle.vehicleModelDefinitions.map(({ id }) => id),
-    ["model-1", "model-member", "model-package", "model-price"]
+    ["model-member", "model-package", "model-price"]
   );
 
   const discovery = classifyStage1CleanAcceptanceBaseline(snapshot, selection([]));
@@ -732,14 +791,20 @@ test("vehicle eligibility requires a published and portal-visible listing profil
 
 test("vehicle eligibility consumes every process, document, and insurance fact", () => {
   const mutations = [
+    ["activeApplicationCount", 1],
     ["activeAssetWorkOrderCount", 1],
+    ["activeReviewReservationCount", 1],
     ["activeServiceCaseCount", 1],
     ["blockingRestrictionCount", 1],
     ["deliveryCount", 1],
     ["orderCount", 1],
     ["overlappingSubscriptionPeriodCount", 1],
+    ["currentCommercialPolicyCount", 0],
+    ["currentCompulsoryTrafficPolicyCount", 0],
+    ["currentLicenseCount", 0],
     ["requiredDocumentsAndInsuranceReady", false],
-    ["returnCount", 1]
+    ["returnCount", 1],
+    ["visibleRetainedListingPlanCount", 0]
   ];
   for (const [field, value] of mutations) {
     const snapshot = completeSnapshot();
@@ -750,6 +815,89 @@ test("vehicle eligibility consumes every process, document, and insurance fact",
       result.exceptions.some(({ code }) => code === "VEHICLE_NOT_ELIGIBLE"),
       field
     );
+  }
+});
+
+test("vehicle eligibility requires one current policy of each production resolver type with coverage", () => {
+  for (const mutate of [
+    (snapshot) => snapshot.vehicle.vehicleInsurancePolicies.splice(1, 1),
+    (snapshot) => snapshot.vehicle.vehicleInsurancePolicies.splice(0, 1),
+    (snapshot) => snapshot.vehicle.vehicleInsuranceCoverages.splice(1, 1),
+    (snapshot) =>
+      snapshot.vehicle.vehicleInsurancePolicies.push({
+        ...snapshot.vehicle.vehicleInsurancePolicies[1],
+        id: "policy-commercial-duplicate"
+      })
+  ]) {
+    const snapshot = completeSnapshot();
+    mutate(snapshot);
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "VEHICLE_REFERENCE_NOT_CLOSED"));
+  }
+});
+
+test("vehicle closure requires a visible retained compatible plan bound to the published profile", () => {
+  for (const mutate of [
+    (snapshot) => snapshot.vehicle.vehicleListingPlans.splice(0),
+    (snapshot) => (snapshot.vehicle.vehicleListingPlans[0].visible = false),
+    (snapshot) => (snapshot.vehicle.vehicleListingPlans[0].listingProfileId = null),
+    (snapshot) => (snapshot.vehicle.vehicleListingPlans[0].subscriptionPlanId = "missing-plan")
+  ]) {
+    const snapshot = completeSnapshot();
+    mutate(snapshot);
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "VEHICLE_REFERENCE_NOT_CLOSED"));
+  }
+});
+
+test("vehicle date-only windows include the evaluation date even when snapshot asOf is midday", () => {
+  const snapshot = completeSnapshot();
+  snapshot.asOf = new Date("2026-08-30T23:59:59.999Z");
+  const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+  assert.equal(result.safeToApply, true, JSON.stringify(result.exceptions));
+
+  for (const mutate of [
+    (item) => (item.effectiveFrom = new Date("2026-08-31T00:00:00.000Z")),
+    (item) => (item.effectiveTo = new Date("2026-08-29T00:00:00.000Z"))
+  ]) {
+    const changed = completeSnapshot();
+    mutate(changed.vehicle.vehicleInsurancePolicies[0]);
+    const changedResult = classifyStage1CleanAcceptanceBaseline(changed, selection());
+    assert.equal(changedResult.safeToApply, false);
+  }
+});
+
+test("vehicle classifier rejects non-minimal or superseded row closure", () => {
+  const mutations = [
+    (snapshot) =>
+      snapshot.vehicle.vehicleListingMedia.push({
+        customerVisible: false,
+        deletedAt: null,
+        id: "hidden-media",
+        listingProfileId: "listing-1",
+        vehicleId: VEHICLE_A
+      }),
+    (snapshot) =>
+      snapshot.vehicle.vehicleDocuments.push({
+        ...snapshot.vehicle.vehicleDocuments[0],
+        customerVisible: false,
+        id: "noncustomer-document"
+      }),
+    (snapshot) =>
+      snapshot.vehicle.vehicleSalePriceHistories.push({
+        ...snapshot.vehicle.vehicleSalePriceHistories[0],
+        effectiveTo: new Date("2026-08-29T00:00:00.000Z"),
+        id: "superseded-price"
+      })
+  ];
+  for (const mutate of mutations) {
+    const snapshot = completeSnapshot();
+    mutate(snapshot);
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "VEHICLE_REFERENCE_NOT_CLOSED"));
   }
 });
 
@@ -797,15 +945,25 @@ test("vehicle profile is resolved by its unique vehicle FK", () => {
   assert.ok(result.exceptions.some(({ code }) => code === "VEHICLE_REFERENCE_NOT_CLOSED"));
 });
 
-test("vehicle media and plans use required vehicle FKs while nullable profile FKs remain valid", () => {
+test("vehicle media and plans must bind the published profile", () => {
   const withoutProfileReferences = completeSnapshot({
     vehicle: {
-      vehicleListingMedia: [{ id: "media-1", listingProfileId: null, vehicleId: VEHICLE_A }],
+      vehicleListingMedia: [
+        {
+          customerVisible: true,
+          deletedAt: null,
+          id: "media-1",
+          listingProfileId: "listing-1",
+          vehicleId: VEHICLE_A
+        }
+      ],
       vehicleListingPlans: [
         {
           id: "listing-plan-1",
-          listingProfileId: null,
+          listingProfileId: "listing-1",
           subscriptionPlanId: "plan-1",
+          deletedAt: null,
+          visible: true,
           vehicleId: VEHICLE_A
         }
       ]
@@ -837,6 +995,7 @@ test("vehicle media and plans use required vehicle FKs while nullable profile FK
 test("vehicle documents allow null batches and require exact non-null batch and policy closure", () => {
   const batchless = completeSnapshot();
   batchless.vehicle.vehicleDocuments[0].batchId = null;
+  batchless.vehicle.vehicleDocumentBatches = [];
   const batchlessResult = classifyStage1CleanAcceptanceBaseline(batchless, selection());
   assert.equal(batchlessResult.safeToApply, true);
   assert.equal(batchlessResult.rows.vehicle.vehicleDocuments[0].batchId, null);
@@ -883,16 +1042,22 @@ test("vehicle listing plans and insurance coverages close their remaining requir
 test("vehicle closure keeps each explicitly selected vehicle and its one-to-many rows", () => {
   const snapshot = completeSnapshot();
   snapshot.vehicle.eligibilityEvidence[VEHICLE_B] = {
+    activeApplicationCount: 0,
     activeAssetWorkOrderCount: 0,
+    activeReviewReservationCount: 0,
     activeServiceCaseCount: 0,
     blockingRestrictionCount: 0,
     currentSalePricePositive: true,
+    currentCommercialPolicyCount: 1,
+    currentCompulsoryTrafficPolicyCount: 1,
+    currentLicenseCount: 1,
     deliveryCount: 0,
     orderCount: 0,
     overlappingSubscriptionPeriodCount: 0,
     requiredDocumentsAndInsuranceReady: true,
     returnCount: 0,
-    salePriceStatusEffective: true
+    salePriceStatusEffective: true,
+    visibleRetainedListingPlanCount: 1
   };
   snapshot.vehicle.vehicles.push({
     currentSalePriceAmount: 200,
@@ -908,19 +1073,29 @@ test("vehicle closure keeps each explicitly selected vehicle and its one-to-many
     vehicleId: VEHICLE_B
   });
   snapshot.vehicle.vehicleListingMedia.push({
+    customerVisible: true,
+    deletedAt: null,
     id: "media-2",
     listingProfileId: "listing-2",
     vehicleId: VEHICLE_B
   });
   snapshot.vehicle.vehicleListingPlans.push({
+    deletedAt: null,
     id: "listing-plan-2",
     listingProfileId: "listing-2",
     subscriptionPlanId: "plan-1",
+    visible: true,
     vehicleId: VEHICLE_B
   });
   snapshot.vehicle.vehicleDocumentBatches.push({ id: "document-batch-2", vehicleId: VEHICLE_B });
   snapshot.vehicle.vehicleDocuments.push({
     batchId: "document-batch-2",
+    customerVisible: true,
+    deletedAt: null,
+    documentStatus: "ACTIVE",
+    documentType: "VEHICLE_LICENSE",
+    effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+    effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
     id: "document-2",
     policyId: null,
     vehicleId: VEHICLE_B
@@ -930,9 +1105,37 @@ test("vehicle closure keeps each explicitly selected vehicle and its one-to-many
     id: "source-binding-2",
     vehicleId: VEHICLE_B
   });
-  snapshot.vehicle.vehicleInsurancePolicies.push({ id: "policy-2", vehicleId: VEHICLE_B });
-  snapshot.vehicle.vehicleInsuranceCoverages.push({ id: "coverage-2", policyId: "policy-2" });
-  snapshot.vehicle.vehicleSalePriceHistories.push({ id: "sale-price-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleInsurancePolicies.push(
+    {
+      deletedAt: null,
+      effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+      effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+      id: "policy-b1",
+      policyStatus: "ACTIVE",
+      policyType: "COMPULSORY_TRAFFIC",
+      vehicleId: VEHICLE_B
+    },
+    {
+      deletedAt: null,
+      effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+      effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+      id: "policy-b2",
+      policyStatus: "ACTIVE",
+      policyType: "COMMERCIAL",
+      vehicleId: VEHICLE_B
+    }
+  );
+  snapshot.vehicle.vehicleInsuranceCoverages.push(
+    { deletedAt: null, id: "coverage-b1", policyId: "policy-b1" },
+    { deletedAt: null, id: "coverage-b2", policyId: "policy-b2" }
+  );
+  snapshot.vehicle.vehicleSalePriceHistories.push({
+    afterSalePriceAmount: 200,
+    effectiveFrom: new Date("2026-08-30T00:00:00.000Z"),
+    effectiveTo: new Date("2026-08-30T00:00:00.000Z"),
+    id: "sale-price-2",
+    vehicleId: VEHICLE_B
+  });
   snapshot.vehicle.vehicleOwnershipPeriods.push({
     assetOwnerId: "owner-1",
     endedAt: null,
@@ -974,7 +1177,7 @@ test("vehicle closure keeps each explicitly selected vehicle and its one-to-many
   );
   assert.deepEqual(
     result.rows.vehicle.vehicleInsuranceCoverages.map(({ id }) => id),
-    ["coverage-1", "coverage-2"]
+    ["coverage-1", "coverage-2", "coverage-b1", "coverage-b2"]
   );
 });
 
@@ -1286,7 +1489,7 @@ test("manifest rejects malformed context and classification and salts every publ
   assert.notEqual(manifest.exceptions[0].subjectDigest, "a".repeat(64));
   assert.equal(
     manifest.rowDigests.vehicle,
-    "da317e75b98bee2c83e5ff9759634314a70f90c1e3752035fd9f6e8283916a65"
+    "465cc6e4428edeff1699a6960b60bf1c71bb8e93dee224e7bd189df29e8798eb"
   );
   assert.equal(
     manifest.exceptions[0].subjectDigest,
@@ -1376,7 +1579,7 @@ test("manifest canonicalizes object keys and arrays before producing a stable SH
   );
   assert.equal(
     hashStage1CleanAcceptanceManifest(manifest),
-    "2a95a812001be3c9f103c566ad2448cea6c530f4181e18073482e603bf8c74b3"
+    "b10595613e79641e8b575a10cbf81a9af50b3fc06bf773b17a1b4c5560c75cd1"
   );
   assert.deepEqual(
     manifest.selection.vehicleDigests,

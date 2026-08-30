@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
@@ -7,6 +6,18 @@ import {
   executeStage1CleanAcceptanceBaseline,
   validateStage1CleanAcceptanceTargetBaseline
 } from "./stage1-clean-acceptance-baseline-executor.mjs";
+import { STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256 } from "./stage1-clean-acceptance-baseline-snapshot.mjs";
+import { loadLocalMigrationChecksums } from "./prisma-migration-checksums.mjs";
+
+const CANONICAL_MIGRATIONS = (await loadLocalMigrationChecksums()).map((row, index) => ({
+  appliedStepsCount: 1,
+  checksum: row.checksum,
+  finishedAt: new Date(1),
+  id: `migration-${String(index).padStart(3, "0")}`,
+  migrationName: row.migrationName,
+  rolledBackAt: null,
+  startedAt: new Date(0)
+}));
 
 const VEHICLE_ID = "11111111-1111-4111-8111-111111111111";
 const ADMIN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -21,21 +32,7 @@ const GIT_SHA = "2".repeat(40);
 const IMAGE_REF = `registry.example/api@sha256:${"3".repeat(64)}`;
 const APPLY_ENV = "STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY";
 const TEST_SCHEMA_ROW = {
-  tableName: "user",
-  columnName: "id",
-  dataType: "uuid",
-  isNullable: "NO",
-  ordinalPosition: 1,
-  columnDefault: null,
-  udtName: "uuid"
-};
-const TEST_CANONICAL_METADATA = {
-  canonicalMigrationChecksums: [
-    { checksum: "a".repeat(64), migrationName: "20260830000000_acceptance" }
-  ],
-  canonicalSchemaFingerprintSha256: createHash("sha256")
-    .update(JSON.stringify([TEST_SCHEMA_ROW]))
-    .digest("hex")
+  schemaFingerprintSha256: STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256
 };
 
 const NOTIFICATION_CODES = [
@@ -58,16 +55,20 @@ const NOTIFICATION_CODES = [
   "SERVICE_CASE_UPDATE_WECHAT"
 ];
 
-test("canonical metadata injection is unavailable outside the Node test runner", async () => {
+test("forged test environment and programmatic metadata cannot override canonical facts", async () => {
   const source = createDatabaseFake("subscription_saas_staging", sourceRows());
   const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});
   const previous = process.env.NODE_TEST_CONTEXT;
-  delete process.env.NODE_TEST_CONTEXT;
+  process.env.NODE_TEST_CONTEXT = "forged";
   try {
-    await assert.rejects(
-      executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target)),
-      (error) => error?.message === "MANIFEST_CONTEXT_INVALID"
-    );
+    const result = await executeStage1CleanAcceptanceBaseline({
+      ...baseOptions("dry-run", source, target),
+      canonicalMetadata: {
+        canonicalMigrationChecksums: [],
+        canonicalSchemaFingerprintSha256: "0".repeat(64)
+      }
+    });
+    assert.equal(result.safe, true);
   } finally {
     if (previous === undefined) delete process.env.NODE_TEST_CONTEXT;
     else process.env.NODE_TEST_CONTEXT = previous;
@@ -339,17 +340,7 @@ test("replay proves the approved target without any writer or repair call", asyn
 
 test("target-only validation proves per-table rows, fingerprints, forbidden domains, and the exact audit", async () => {
   const metadata = {
-    migrationRows: [
-      {
-        id: "migration-1",
-        checksum: "a".repeat(64),
-        migrationName: "20260830000000_acceptance",
-        startedAt: new Date(0),
-        finishedAt: new Date(1),
-        rolledBackAt: null,
-        appliedStepsCount: 1
-      }
-    ],
+    migrationRows: CANONICAL_MIGRATIONS,
     schemaRows: [TEST_SCHEMA_ROW]
   };
   const source = createDatabaseFake("subscription_saas_staging", sourceRows());
@@ -368,8 +359,7 @@ test("target-only validation proves per-table rows, fingerprints, forbidden doma
       (tx) =>
         validateStage1CleanAcceptanceTargetBaseline(tx, {
           approvedManifest: dry.manifest,
-          approvedManifestSha256: dry.manifestSha256,
-          canonicalMetadata: TEST_CANONICAL_METADATA
+          approvedManifestSha256: dry.manifestSha256
         }),
       { isolationLevel: "RepeatableRead" }
     );
@@ -431,8 +421,7 @@ test("target-only validation proves per-table rows, fingerprints, forbidden doma
         caseTarget.client.$transaction((tx) =>
           validateStage1CleanAcceptanceTargetBaseline(tx, {
             approvedManifest: caseDry.manifest,
-            approvedManifestSha256: caseDry.manifestSha256,
-            canonicalMetadata: TEST_CANONICAL_METADATA
+            approvedManifestSha256: caseDry.manifestSha256
           })
         ),
         (error) => error?.message === "MANIFEST_STALE"
@@ -762,7 +751,6 @@ test("apply bounds serialization recovery to three fresh transactions", async ()
 
 function baseOptions(mode, source, target) {
   return {
-    canonicalMetadata: TEST_CANONICAL_METADATA,
     generatedAt: GENERATED_AT,
     gitSha: GIT_SHA,
     hashSalt: HASH_SALT,
@@ -996,7 +984,13 @@ function sourceRows() {
       }
     ],
     vehicleListingMedia: [
-      { id: "media-1", vehicleId: VEHICLE_ID, listingProfileId: "listing-1", deletedAt: null }
+      {
+        customerVisible: true,
+        deletedAt: null,
+        id: "media-1",
+        listingProfileId: "listing-1",
+        vehicleId: VEHICLE_ID
+      }
     ],
     vehicleListingPlan: [
       {
@@ -1004,27 +998,63 @@ function sourceRows() {
         vehicleId: VEHICLE_ID,
         listingProfileId: "listing-1",
         subscriptionPlanId: "plan-1",
-        deletedAt: null
+        deletedAt: null,
+        visible: true
       }
     ],
     vehicleDocumentBatch: [{ id: "batch-1", vehicleId: VEHICLE_ID }],
     vehicleInsurancePolicy: [
-      { id: "policy-1", vehicleId: VEHICLE_ID, snapshot: null, deletedAt: null }
+      {
+        deletedAt: null,
+        effectiveFrom: at,
+        effectiveTo: new Date("2026-12-31T00:00:00.000Z"),
+        id: "policy-1",
+        policyStatus: "ACTIVE",
+        policyType: "COMPULSORY_TRAFFIC",
+        snapshot: null,
+        vehicleId: VEHICLE_ID
+      },
+      {
+        deletedAt: null,
+        effectiveFrom: at,
+        effectiveTo: new Date("2026-12-31T00:00:00.000Z"),
+        id: "policy-2",
+        policyStatus: "ACTIVE",
+        policyType: "COMMERCIAL",
+        snapshot: null,
+        vehicleId: VEHICLE_ID
+      }
     ],
     vehicleDocument: [
       {
         id: "document-1",
         vehicleId: VEHICLE_ID,
         batchId: "batch-1",
-        policyId: "policy-1",
-        deletedAt: null
+        customerVisible: true,
+        deletedAt: null,
+        documentStatus: "ACTIVE",
+        documentType: "VEHICLE_LICENSE",
+        effectiveFrom: at,
+        effectiveTo: new Date("2026-12-31T00:00:00.000Z"),
+        policyId: null
       }
     ],
-    vehicleInsuranceCoverage: [{ id: "coverage-1", policyId: "policy-1", deletedAt: null }],
+    vehicleInsuranceCoverage: [
+      { id: "coverage-1", policyId: "policy-1", deletedAt: null },
+      { id: "coverage-2", policyId: "policy-2", deletedAt: null }
+    ],
     vehicleListingSourceBinding: [
       { id: "binding-1", vehicleId: VEHICLE_ID, documentId: "document-1" }
     ],
-    vehicleSalePriceHistory: [{ id: "sale-1", vehicleId: VEHICLE_ID }],
+    vehicleSalePriceHistory: [
+      {
+        afterSalePriceAmount: 100000n,
+        effectiveFrom: at,
+        effectiveTo: null,
+        id: "sale-1",
+        vehicleId: VEHICLE_ID
+      }
+    ],
     vehicleOwnershipPeriod: [
       {
         id: "ownership-1",
@@ -1196,19 +1226,7 @@ function createClient(getRows, calls, options) {
       calls.push({ operation: "$queryRaw", sql, values: structuredClone(values) });
       if (/current_database/i.test(sql)) return [{ databaseName: this.__databaseName }];
       if (/_prisma_migrations/i.test(sql))
-        return structuredClone(
-          options.migrationRows ?? [
-            {
-              id: "migration-1",
-              checksum: "a".repeat(64),
-              migrationName: "20260830000000_acceptance",
-              startedAt: new Date(0),
-              finishedAt: new Date(1),
-              rolledBackAt: null,
-              appliedStepsCount: 1
-            }
-          ]
-        );
+        return structuredClone(options.migrationRows ?? CANONICAL_MIGRATIONS);
       if (/information_schema\.columns/i.test(sql))
         return structuredClone(options.schemaRows ?? [TEST_SCHEMA_ROW]);
       return [];
@@ -1223,9 +1241,11 @@ function createClient(getRows, calls, options) {
       if (Reflect.has(target, property) || typeof property !== "string")
         return Reflect.get(target, property, receiver);
       return {
-        async count() {
+        async count(args) {
           calls.push({ delegate: property, operation: "count" });
-          return { _all: (getRows()[property] ?? []).length };
+          return args?.select
+            ? { _all: (getRows()[property] ?? []).length }
+            : (getRows()[property] ?? []).length;
         },
         async findMany(args = {}) {
           calls.push({ args, delegate: property, operation: "findMany" });
@@ -1238,7 +1258,10 @@ function createClient(getRows, calls, options) {
               currentSalePriceAmount: row.currentSalePriceAmount,
               _count: {
                 assetWorkOrders: 0,
+                documents: 1,
                 deliveries: 0,
+                insurancePolicies: 2,
+                listingPlans: 1,
                 operationalRestrictions: 0,
                 orders: 0,
                 returns: 0,

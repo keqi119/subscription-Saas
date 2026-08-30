@@ -28,7 +28,6 @@ export async function executeStage1CleanAcceptanceBaseline(options = {}) {
 
 async function execute(options) {
   requireOptions(options);
-  requireTestRunnerForCanonicalMetadata(options.canonicalMetadata);
   const approved = requireApproval(options);
   const generatedAt = approved?.generatedAt ?? options.generatedAt;
   const hashSalt = approved?.hashSalt ?? options.hashSalt;
@@ -36,13 +35,8 @@ async function execute(options) {
     fail("MANIFEST_STALE");
   const asOf = parseInstant(generatedAt);
 
-  const source = await readSource(
-    options.sourcePrisma,
-    options.selection,
-    asOf,
-    options.canonicalMetadata
-  );
-  const target = await readTarget(options.targetPrisma, options.canonicalMetadata);
+  const source = await readSource(options.sourcePrisma, options.selection, asOf);
+  const target = await readTarget(options.targetPrisma);
   const targetForManifest =
     options.mode === "replay" ? emptyTargetEvidence(target.snapshot) : target.snapshot;
   const classification = classifyStage1CleanAcceptanceBaseline(
@@ -66,12 +60,7 @@ async function execute(options) {
   if (options.mode === "apply") {
     await applyWithFreshTransactionRecovery(options, source, generatedAt, hashSalt, manifest);
 
-    await verifyCommittedTarget(
-      options.targetPrisma,
-      manifest,
-      options.approvedManifestSha256,
-      options.canonicalMetadata
-    );
+    await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256);
     return result("apply", options.approvedManifestSha256, total(manifest.counts), 1);
   }
 
@@ -80,19 +69,13 @@ async function execute(options) {
       await advisoryLock(tx);
       await validateStage1CleanAcceptanceTargetBaseline(tx, {
         approvedManifest: manifest,
-        approvedManifestSha256: options.approvedManifestSha256,
-        canonicalMetadata: options.canonicalMetadata
+        approvedManifestSha256: options.approvedManifestSha256
       });
     },
     { isolationLevel: "Serializable" }
   );
 
-  await verifyCommittedTarget(
-    options.targetPrisma,
-    manifest,
-    options.approvedManifestSha256,
-    options.canonicalMetadata
-  );
+  await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256);
   return result("replay", options.approvedManifestSha256, 0, 0);
 }
 
@@ -102,7 +85,7 @@ async function applyWithFreshTransactionRecovery(options, source, generatedAt, h
       await options.targetPrisma.$transaction(
         async (tx) => {
           await advisoryLock(tx);
-          const lockedTarget = await readTargetWithinTransaction(tx, options.canonicalMetadata);
+          const lockedTarget = await readTargetWithinTransaction(tx);
           const lockedClassification = classifyStage1CleanAcceptanceBaseline(
             { ...source.snapshot, target: lockedTarget.snapshot },
             options.selection
@@ -127,8 +110,7 @@ async function applyWithFreshTransactionRecovery(options, source, generatedAt, h
         await targetMatchesApprovedBaseline(
           options.targetPrisma,
           manifest,
-          options.approvedManifestSha256,
-          options.canonicalMetadata
+          options.approvedManifestSha256
         )
       ) {
         fail("MANIFEST_STALE");
@@ -139,9 +121,9 @@ async function applyWithFreshTransactionRecovery(options, source, generatedAt, h
   }
 }
 
-async function targetMatchesApprovedBaseline(prisma, manifest, manifestSha256, canonicalMetadata) {
+async function targetMatchesApprovedBaseline(prisma, manifest, manifestSha256) {
   try {
-    await verifyCommittedTarget(prisma, manifest, manifestSha256, canonicalMetadata);
+    await verifyCommittedTarget(prisma, manifest, manifestSha256);
     return true;
   } catch (error) {
     if (error?.message === "MANIFEST_STALE") return false;
@@ -272,7 +254,6 @@ export async function applyStage1CleanAcceptanceBaseline(tx, classification, con
 }
 
 export async function validateStage1CleanAcceptanceTargetBaseline(tx, options = {}) {
-  requireTestRunnerForCanonicalMetadata(options.canonicalMetadata);
   const approvedManifest = options.approvedManifest;
   const approvedManifestSha256 = options.approvedManifestSha256;
   if (
@@ -296,11 +277,13 @@ export async function validateStage1CleanAcceptanceTargetBaseline(tx, options = 
     vehicleIds
   };
   const databaseName = await loadDatabaseName(tx);
-  const targetSnapshot = await loadStage1CleanAcceptanceTargetSnapshot(
-    tx,
-    options.canonicalMetadata
-  );
-  const targetRows = await loadStage1CleanAcceptanceSourceSnapshot(tx, selection, { asOf });
+  const targetSnapshot = await loadStage1CleanAcceptanceTargetSnapshot(tx);
+  let targetRows;
+  try {
+    targetRows = await loadStage1CleanAcceptanceSourceSnapshot(tx, selection, { asOf });
+  } catch {
+    fail("MANIFEST_STALE");
+  }
   const classification = classifyStage1CleanAcceptanceBaseline(
     { ...targetRows, target: emptyTargetEvidence(targetSnapshot) },
     selection
@@ -337,49 +320,42 @@ export async function validateStage1CleanAcceptanceTargetBaseline(tx, options = 
   };
 }
 
-function requireTestRunnerForCanonicalMetadata(canonicalMetadata) {
-  if (canonicalMetadata !== undefined && process.env.NODE_TEST_CONTEXT === undefined) {
-    fail("MANIFEST_CONTEXT_INVALID");
-  }
-}
-
-async function readSource(prisma, selection, asOf, canonicalMetadata) {
+async function readSource(prisma, selection, asOf) {
   return prisma.$transaction(
     async (tx) => {
       await readOnly(tx);
       const databaseName = await loadDatabaseName(tx);
       const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(tx, selection, { asOf });
-      const metadata = await loadStage1CleanAcceptanceTargetSnapshot(tx, canonicalMetadata);
+      const metadata = await loadStage1CleanAcceptanceTargetSnapshot(tx);
       return { context: digestContext(databaseName, metadata), snapshot };
     },
     { isolationLevel: "RepeatableRead" }
   );
 }
 
-async function readTarget(prisma, canonicalMetadata) {
+async function readTarget(prisma) {
   return prisma.$transaction(
     async (tx) => {
       await readOnly(tx);
-      return readTargetWithinTransaction(tx, canonicalMetadata);
+      return readTargetWithinTransaction(tx);
     },
     { isolationLevel: "RepeatableRead" }
   );
 }
 
-async function readTargetWithinTransaction(tx, canonicalMetadata) {
+async function readTargetWithinTransaction(tx) {
   const databaseName = await loadDatabaseName(tx);
-  const snapshot = await loadStage1CleanAcceptanceTargetSnapshot(tx, canonicalMetadata);
+  const snapshot = await loadStage1CleanAcceptanceTargetSnapshot(tx);
   return { context: digestContext(databaseName, snapshot), snapshot };
 }
 
-async function verifyCommittedTarget(prisma, manifest, manifestSha256, canonicalMetadata) {
+async function verifyCommittedTarget(prisma, manifest, manifestSha256) {
   await prisma.$transaction(
     async (tx) => {
       await readOnly(tx);
       await validateStage1CleanAcceptanceTargetBaseline(tx, {
         approvedManifest: manifest,
-        approvedManifestSha256: manifestSha256,
-        canonicalMetadata
+        approvedManifestSha256: manifestSha256
       });
     },
     { isolationLevel: "RepeatableRead" }

@@ -130,8 +130,14 @@ export function classifyStage1CleanAcceptanceBaseline(snapshot = {}, inputSelect
   const access = classifyAccess(snapshot.access, selection, exceptions);
   const customer = classifyCustomer(snapshot.customer, selection, exceptions);
   const catalog = classifyCatalog(snapshot.catalog, snapshot.vehicle, exceptions);
-  const templates = classifyTemplates(snapshot.templates, snapshot.asOf, exceptions);
-  const vehicle = classifyVehicle(snapshot.vehicle, selection, catalog, exceptions);
+  const evaluationDate = acceptanceEvaluationDate(snapshot.evaluationDate ?? snapshot.asOf);
+  const templates = classifyTemplates(
+    snapshot.templates,
+    snapshot.asOf,
+    evaluationDate,
+    exceptions
+  );
+  const vehicle = classifyVehicle(snapshot.vehicle, selection, catalog, evaluationDate, exceptions);
   const targetCountEvidence = copyTargetCountEvidence(snapshot.target);
   const targetForbiddenCounts = canonical(targetCountEvidence.forbiddenCounts ?? {});
   classifyTarget(snapshot.target, targetCountEvidence, exceptions);
@@ -401,7 +407,7 @@ function classifyCatalog(catalog = {}, vehicle = {}, exceptions) {
   });
 }
 
-function classifyTemplates(templates = {}, snapshotAsOf, exceptions) {
+function classifyTemplates(templates = {}, snapshotAsOf, evaluationDate, exceptions) {
   const contractVersions = array(templates.contractVersions);
   const allFileObjects = array(templates.fileObjects);
   const notificationTemplates = array(templates.notificationTemplates).filter(
@@ -440,7 +446,8 @@ function classifyTemplates(templates = {}, snapshotAsOf, exceptions) {
     ? requiredContractTypes
     : []) {
     const versions = contractVersions.filter(
-      (row) => row.templateType === templateType && usableContractVersion(row, asOfTime)
+      (row) =>
+        row.templateType === templateType && usableContractVersion(row, asOfTime, evaluationDate)
     );
     if (versions.length !== 1) {
       exception(
@@ -475,7 +482,7 @@ function classifyTemplates(templates = {}, snapshotAsOf, exceptions) {
   });
 }
 
-function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
+function classifyVehicle(vehicle = {}, selection, catalog, evaluationDate, exceptions) {
   const closure = {
     assetOwners: [],
     vehicleAssetCostProfiles: [],
@@ -557,15 +564,72 @@ function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
     const documents = rowsForVehicle(vehicle.vehicleDocuments, item.id);
     const sourceBindings = rowsForVehicle(vehicle.vehicleListingSourceBindings, item.id);
     const coverages = allInsuranceCoverages.filter((row) => insurancePolicyIds.has(row?.policyId));
+    const currentPolicies = insurancePolicies.filter(
+      (row) =>
+        row?.deletedAt === null &&
+        row.policyStatus === "ACTIVE" &&
+        dateWindowIncludes(row, evaluationDate)
+    );
+    const compulsoryPolicies = currentPolicies.filter(
+      (row) => row.policyType === "COMPULSORY_TRAFFIC"
+    );
+    const commercialPolicies = currentPolicies.filter((row) => row.policyType === "COMMERCIAL");
+    const selectedPolicyIds = new Set(currentPolicies.map(({ id }) => id));
+    const selectedCoverages = coverages.filter(
+      (row) => row?.deletedAt === null && selectedPolicyIds.has(row.policyId)
+    );
+    const currentLicenses = documents.filter(
+      (row) =>
+        row?.deletedAt === null &&
+        row.documentStatus === "ACTIVE" &&
+        row.documentType === "VEHICLE_LICENSE" &&
+        row.customerVisible === true &&
+        nullableDateWindowIncludes(row, evaluationDate)
+    );
+    const currentSalePrices = rowsForVehicle(vehicle.vehicleSalePriceHistories, item.id).filter(
+      (row) => dateWindowIncludes(row, evaluationDate)
+    );
+    const catalogPlans = array(catalog?.subscriptionPlans);
+    const retainedListingPlans = listingPlans.filter(
+      (row) =>
+        row?.deletedAt === null &&
+        row.visible === true &&
+        row.listingProfileId === profile.id &&
+        catalogPlans.some(
+          (plan) =>
+            plan.id === row.subscriptionPlanId &&
+            catalogPlanSupportsModel(plan, item.modelDefinitionId, catalog)
+        )
+    );
+    const referencedBatchIds = new Set(
+      documents.map(({ batchId }) => batchId).filter((id) => typeof id === "string")
+    );
     if (
       !listingMedia.every(
-        (row) => row.listingProfileId === null || row.listingProfileId === profile.id
-      ) ||
-      !listingPlans.every(
         (row) =>
-          (row.listingProfileId === null || row.listingProfileId === profile.id) &&
-          array(catalog?.subscriptionPlans).filter((plan) => plan.id === row.subscriptionPlanId)
-            .length === 1
+          row?.deletedAt === null &&
+          row.customerVisible === true &&
+          row.listingProfileId === profile.id
+      ) ||
+      listingPlans.length === 0 ||
+      retainedListingPlans.length !== listingPlans.length ||
+      currentPolicies.length !== 2 ||
+      compulsoryPolicies.length !== 1 ||
+      commercialPolicies.length !== 1 ||
+      selectedCoverages.length !== coverages.length ||
+      compulsoryPolicies.some(
+        (policy) => !selectedCoverages.some((coverage) => coverage.policyId === policy.id)
+      ) ||
+      commercialPolicies.some(
+        (policy) => !selectedCoverages.some((coverage) => coverage.policyId === policy.id)
+      ) ||
+      currentLicenses.length !== 1 ||
+      !documents.every(
+        (row) =>
+          row?.deletedAt === null &&
+          row.documentStatus === "ACTIVE" &&
+          row.customerVisible === true &&
+          nullableDateWindowIncludes(row, evaluationDate)
       ) ||
       !documents.every(
         (row) =>
@@ -577,6 +641,11 @@ function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
       !sourceBindings.every(
         (binding) => documents.filter((document) => document.id === binding.documentId).length === 1
       ) ||
+      !documentBatches.every((batch) => referencedBatchIds.has(batch.id)) ||
+      currentSalePrices.length !== 1 ||
+      currentSalePrices.length !==
+        rowsForVehicle(vehicle.vehicleSalePriceHistories, item.id).length ||
+      currentSalePrices[0]?.afterSalePriceAmount !== item.currentSalePriceAmount ||
       !insuranceCoverageReferencesClosed
     ) {
       exception(exceptions, "VEHICLE_REFERENCE_NOT_CLOSED", "vehicle", item.id);
@@ -593,9 +662,7 @@ function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
     closure.vehicleListingSourceBindings.push(...sourceBindings);
     closure.vehicleInsurancePolicies.push(...insurancePolicies);
     closure.vehicleInsuranceCoverages.push(...coverages);
-    closure.vehicleSalePriceHistories.push(
-      ...rowsForVehicle(vehicle.vehicleSalePriceHistories, item.id)
-    );
+    closure.vehicleSalePriceHistories.push(...currentSalePrices);
     closure.vehicleOwnershipPeriods.push(currentOwnership);
     closure.vehicleAssetCostProfiles.push(
       ...rowsForVehicle(vehicle.vehicleAssetCostProfiles, item.id)
@@ -994,7 +1061,7 @@ function validDate(value) {
   return value instanceof Date && Number.isFinite(value.getTime());
 }
 
-function usableContractVersion(row, asOfTime) {
+function usableContractVersion(row, asOfTime, evaluationDate) {
   if (
     !row ||
     row.businessType !== "SUBSCRIPTION" ||
@@ -1007,11 +1074,7 @@ function usableContractVersion(row, asOfTime) {
   ) {
     return false;
   }
-  return (
-    row.approvedAt.getTime() <= asOfTime &&
-    row.effectiveFrom.getTime() <= asOfTime &&
-    (row.effectiveTo === null || row.effectiveTo.getTime() >= asOfTime)
-  );
+  return row.approvedAt.getTime() <= asOfTime && dateWindowIncludes(row, evaluationDate);
 }
 
 function validPdfFile(file) {
@@ -1044,16 +1107,61 @@ function eligibleVehicle(vehicle, evidence) {
     vehicle.status === "AVAILABLE" &&
     vehicle.currentSalePriceAmount > 0 &&
     vehicle.salePriceStatus === "EFFECTIVE" &&
+    evidence?.activeApplicationCount === 0 &&
     evidence?.activeAssetWorkOrderCount === 0 &&
+    evidence?.activeReviewReservationCount === 0 &&
     evidence?.activeServiceCaseCount === 0 &&
     evidence?.blockingRestrictionCount === 0 &&
     evidence?.overlappingSubscriptionPeriodCount === 0 &&
+    evidence?.currentCommercialPolicyCount === 1 &&
+    evidence?.currentCompulsoryTrafficPolicyCount === 1 &&
+    evidence?.currentLicenseCount === 1 &&
     evidence?.deliveryCount === 0 &&
     evidence?.orderCount === 0 &&
     evidence?.requiredDocumentsAndInsuranceReady === true &&
     evidence?.returnCount === 0 &&
     evidence?.currentSalePricePositive === true &&
-    evidence?.salePriceStatusEffective === true
+    evidence?.salePriceStatusEffective === true &&
+    evidence?.visibleRetainedListingPlanCount > 0
+  );
+}
+
+function acceptanceEvaluationDate(value) {
+  if (!validDate(value)) return undefined;
+  return new Date(`${value.toISOString().slice(0, 10)}T00:00:00.000Z`);
+}
+
+function dateWindowIncludes(row, evaluationDate) {
+  return (
+    validDate(evaluationDate) &&
+    validDate(row?.effectiveFrom) &&
+    row.effectiveFrom.getTime() <= evaluationDate.getTime() &&
+    (row.effectiveTo === null ||
+      (validDate(row.effectiveTo) && row.effectiveTo.getTime() >= evaluationDate.getTime()))
+  );
+}
+
+function nullableDateWindowIncludes(row, evaluationDate) {
+  return (
+    validDate(evaluationDate) &&
+    (row?.effectiveFrom === null ||
+      (validDate(row?.effectiveFrom) && row.effectiveFrom.getTime() <= evaluationDate.getTime())) &&
+    (row?.effectiveTo === null ||
+      (validDate(row?.effectiveTo) && row.effectiveTo.getTime() >= evaluationDate.getTime()))
+  );
+}
+
+function catalogPlanSupportsModel(plan, modelDefinitionId, catalog) {
+  const packages = array(catalog?.vehiclePackages).filter(
+    (item) => item.id === plan?.vehiclePackageId
+  );
+  if (packages.length !== 1) return false;
+  return (
+    packages[0].modelDefinitionId === modelDefinitionId ||
+    array(catalog?.vehiclePackageModelMembers).some(
+      (member) =>
+        member.vehiclePackageId === packages[0].id && member.modelDefinitionId === modelDefinitionId
+    )
   );
 }
 

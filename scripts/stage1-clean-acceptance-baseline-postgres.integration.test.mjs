@@ -74,7 +74,16 @@ const IDS = Object.freeze({
   ownershipPeriod: uuid(35),
   costProfile: uuid(36),
   costOriginal: uuid(37),
-  costReversal: uuid(38)
+  costReversal: uuid(38),
+  compulsoryPolicy: uuid(39),
+  compulsoryCoverage: uuid(40),
+  reviewApplication: uuid(41),
+  hiddenMedia: uuid(42),
+  expiredPolicy: uuid(43),
+  expiredCoverage: uuid(44),
+  noncustomerBatch: uuid(45),
+  noncustomerDocument: uuid(46),
+  supersededPrice: uuid(47)
 });
 
 const NOTIFICATION_CODES = Object.freeze([
@@ -401,13 +410,19 @@ integrationTest(
   { timeout: 240_000 },
   async (t) => {
     return withApplyConfirmation(async () => {
+      let phase = "HARNESS_CREATE";
       try {
         const harness = await createPostgresHarness(adminDatabaseUrl);
         t.after(() => harness.close());
+        phase = "MIGRATE";
         await harness.migrateBoth();
         await harness.assertCanonicalMigrations();
+        phase = "SEED";
         await harness.seedSource();
+        phase = "ELIGIBILITY_NEGATIVES";
+        await harness.assertVehicleEligibilityNegatives();
 
+        phase = "DRY_RUN";
         const beforeDryRun = await harness.businessCounts();
         assertAllWhitelistDelegatesPresent(beforeDryRun.source);
         assertEmptyDatabaseCounts(beforeDryRun.target);
@@ -417,6 +432,7 @@ integrationTest(
         assert.match(dryRun.manifestSha256, /^[a-f0-9]{64}$/);
         assert.deepEqual(await harness.businessCounts(), beforeDryRun);
 
+        phase = "STALE_SOURCE";
         await harness.mutateAndRestoreSourceFact(async () => {
           await assert.rejects(
             harness.execute("apply", dryRun),
@@ -424,9 +440,11 @@ integrationTest(
           );
           assertEmptyDatabaseCounts((await harness.businessCounts()).target);
         });
+        phase = "FOREIGN_KEY_ROLLBACK";
         await harness.assertForeignKeyRollback();
         assertEmptyDatabaseCounts((await harness.businessCounts()).target);
 
+        phase = "CONCURRENT_APPLY";
         const concurrent = await harness.concurrentApply(dryRun);
         const fulfilled = concurrent.filter((result) => result.status === "fulfilled");
         const rejected = concurrent.filter((result) => result.status === "rejected");
@@ -435,14 +453,18 @@ integrationTest(
         assert.equal(rejected[0].reason?.message, "MANIFEST_STALE");
         assert.equal(fulfilled[0].value.auditCreated, 1);
 
+        phase = "COPIED_BASELINE";
         await harness.assertCopiedBaseline(dryRun);
         const beforeReplay = await harness.businessCounts();
+        phase = "REPLAY";
         const replay = await harness.execute("replay", dryRun);
         assert.equal(replay.inserted, 0);
         assert.equal(replay.auditCreated, 0);
         assert.deepEqual(await harness.businessCounts(), beforeReplay);
+        phase = "VALIDATE_TARGET";
         await harness.validateTarget(dryRun);
 
+        phase = "FORBIDDEN_ROW";
         await harness.withForbiddenRow(async () => {
           await assert.rejects(
             harness.execute("replay", dryRun),
@@ -455,7 +477,7 @@ integrationTest(
         });
         await harness.validateTarget(dryRun);
       } catch (error) {
-        throw new Error(safeIntegrationError(error));
+        throw new Error(`INTEGRATION_${phase}_${safeIntegrationError(error)}`);
       }
     });
   }
@@ -494,6 +516,7 @@ async function createPostgresHarness(connectionString) {
     assertCanonicalMigrations,
     assertCopiedBaseline,
     assertForeignKeyRollback,
+    assertVehicleEligibilityNegatives,
     businessCounts,
     close: cleanup,
     concurrentApply,
@@ -842,6 +865,16 @@ async function createPostgresHarness(connectionString) {
         isCover: true
       }
     });
+    await prisma.vehicleListingMedia.create({
+      data: {
+        customerVisible: false,
+        fileName: "internal.jpg",
+        id: IDS.hiddenMedia,
+        listingProfileId: IDS.listingProfile,
+        mediaCategory: "OTHER",
+        vehicleId: IDS.vehicle
+      }
+    });
     await prisma.vehicleListingPlan.create({
       data: {
         id: IDS.listingPlan,
@@ -872,12 +905,34 @@ async function createPostgresHarness(connectionString) {
         effectiveTo: new Date("2027-12-31T00:00:00.000Z")
       }
     });
+    await prisma.vehicleInsurancePolicy.create({
+      data: {
+        effectiveFrom,
+        effectiveTo: new Date("2026-08-29T00:00:00.000Z"),
+        id: IDS.expiredPolicy,
+        policyNo: "ACCEPTANCE-EXPIRED-POLICY",
+        policyStatus: "EXPIRED",
+        policyType: "OTHER",
+        vehicleId: IDS.vehicle
+      }
+    });
+    await prisma.vehicleInsurancePolicy.create({
+      data: {
+        id: IDS.compulsoryPolicy,
+        policyNo: "ACCEPTANCE-COMPULSORY-POLICY",
+        vehicleId: IDS.vehicle,
+        policyType: "COMPULSORY_TRAFFIC",
+        policyStatus: "ACTIVE",
+        effectiveFrom,
+        effectiveTo: new Date("2027-12-31T00:00:00.000Z")
+      }
+    });
     await prisma.vehicleDocument.create({
       data: {
         id: IDS.vehicleDocument,
         vehicleId: IDS.vehicle,
         batchId: IDS.documentBatch,
-        policyId: IDS.insurancePolicy,
+        policyId: null,
         documentType: "VEHICLE_LICENSE",
         documentStatus: "ACTIVE",
         fileName: "license.pdf",
@@ -892,6 +947,42 @@ async function createPostgresHarness(connectionString) {
         id: IDS.insuranceCoverage,
         policyId: IDS.insurancePolicy,
         coverageType: "VEHICLE_DAMAGE",
+        insuredAmount: 18000000n
+      }
+    });
+    await prisma.vehicleInsuranceCoverage.create({
+      data: {
+        coverageType: "OTHER",
+        id: IDS.expiredCoverage,
+        policyId: IDS.expiredPolicy
+      }
+    });
+    await prisma.vehicleDocumentBatch.create({
+      data: {
+        documentType: "OTHER",
+        id: IDS.noncustomerBatch,
+        vehicleId: IDS.vehicle,
+        versionNo: 1
+      }
+    });
+    await prisma.vehicleDocument.create({
+      data: {
+        batchId: IDS.noncustomerBatch,
+        customerVisible: false,
+        documentStatus: "ARCHIVED",
+        documentType: "OTHER",
+        effectiveFrom,
+        effectiveTo: new Date("2026-08-29T00:00:00.000Z"),
+        fileName: "internal.pdf",
+        id: IDS.noncustomerDocument,
+        vehicleId: IDS.vehicle
+      }
+    });
+    await prisma.vehicleInsuranceCoverage.create({
+      data: {
+        id: IDS.compulsoryCoverage,
+        policyId: IDS.compulsoryPolicy,
+        coverageType: "COMPULSORY_TRAFFIC",
         insuredAmount: 18000000n
       }
     });
@@ -912,6 +1003,18 @@ async function createPostgresHarness(connectionString) {
         reviewType: "INITIAL_POOL",
         effectiveFrom,
         reason: "acceptance"
+      }
+    });
+    await prisma.vehicleSalePriceHistory.create({
+      data: {
+        afterSalePriceAmount: 17000000n,
+        beforeSalePriceAmount: null,
+        effectiveFrom,
+        effectiveTo: new Date("2026-08-29T00:00:00.000Z"),
+        id: IDS.supersededPrice,
+        reason: "superseded acceptance fixture",
+        reviewType: "INITIAL_POOL",
+        vehicleId: IDS.vehicle
       }
     });
     await prisma.vehicleOwnershipPeriod.create({
@@ -993,6 +1096,106 @@ async function createPostgresHarness(connectionString) {
       source: { forbidden: source.forbiddenCounts, whitelist: source.tableCounts },
       target: { forbidden: target.forbiddenCounts, whitelist: target.tableCounts }
     };
+  }
+
+  async function assertVehicleEligibilityNegatives() {
+    const prisma = clients[0];
+    const expectRejected = async (name, mutate, restore) => {
+      await mutate();
+      try {
+        try {
+          await execute("dry-run");
+          throw new Error(`NEGATIVE_${name}_ACCEPTED`);
+        } catch (error) {
+          if (error?.message !== "VEHICLE_NOT_ELIGIBLE") throw error;
+        }
+      } finally {
+        await restore();
+      }
+    };
+    await expectRejected(
+      "COMMERCIAL_ONLY",
+      () =>
+        prisma.vehicleInsurancePolicy.update({
+          data: { policyStatus: "EXPIRED" },
+          where: { id: IDS.compulsoryPolicy }
+        }),
+      () =>
+        prisma.vehicleInsurancePolicy.update({
+          data: { policyStatus: "ACTIVE" },
+          where: { id: IDS.compulsoryPolicy }
+        })
+    );
+    await expectRejected(
+      "COMPULSORY_ONLY",
+      () =>
+        prisma.vehicleInsurancePolicy.update({
+          data: { policyStatus: "EXPIRED" },
+          where: { id: IDS.insurancePolicy }
+        }),
+      () =>
+        prisma.vehicleInsurancePolicy.update({
+          data: { policyStatus: "ACTIVE" },
+          where: { id: IDS.insurancePolicy }
+        })
+    );
+    await expectRejected(
+      "MISSING_COVERAGE",
+      () =>
+        prisma.vehicleInsuranceCoverage.update({
+          data: { deletedAt: new Date(GENERATED_AT) },
+          where: { id: IDS.insuranceCoverage }
+        }),
+      () =>
+        prisma.vehicleInsuranceCoverage.update({
+          data: { deletedAt: null },
+          where: { id: IDS.insuranceCoverage }
+        })
+    );
+    await expectRejected(
+      "ZERO_PLAN",
+      () =>
+        prisma.vehicleListingPlan.update({
+          data: { deletedAt: new Date(GENERATED_AT) },
+          where: { id: IDS.listingPlan }
+        }),
+      () =>
+        prisma.vehicleListingPlan.update({
+          data: { deletedAt: null },
+          where: { id: IDS.listingPlan }
+        })
+    );
+    await expectRejected(
+      "INVISIBLE_PLAN",
+      () =>
+        prisma.vehicleListingPlan.update({
+          data: { visible: false },
+          where: { id: IDS.listingPlan }
+        }),
+      () =>
+        prisma.vehicleListingPlan.update({
+          data: { visible: true },
+          where: { id: IDS.listingPlan }
+        })
+    );
+    await expectRejected(
+      "ACTIVE_REVIEW_RESERVATION",
+      () =>
+        prisma.application.create({
+          data: {
+            applicationNo: "ACCEPTANCE-REVIEW-RESERVATION",
+            customerId: IDS.customer,
+            id: IDS.reviewApplication,
+            salesUserId: IDS.admin,
+            softReservationExpiresAt: new Date("2026-08-31T12:00:00.000Z"),
+            softReservedAt: new Date(GENERATED_AT),
+            softReservedVehicleId: IDS.vehicle,
+            status: "SUBMITTED",
+            vehicleReviewStatus: "PENDING"
+          }
+        }),
+      () => prisma.application.delete({ where: { id: IDS.reviewApplication } })
+    );
   }
 
   async function execute(mode, approved, pairIndex = 0) {
@@ -1100,7 +1303,16 @@ async function createPostgresHarness(connectionString) {
 
   async function assertCopiedBaseline(approved) {
     const counts = await businessCounts();
-    assert.deepEqual(counts.target.whitelist, counts.source.whitelist);
+    const expectedTarget = {
+      ...counts.source.whitelist,
+      vehicleDocument: counts.source.whitelist.vehicleDocument - 1,
+      vehicleDocumentBatch: counts.source.whitelist.vehicleDocumentBatch - 1,
+      vehicleInsuranceCoverage: counts.source.whitelist.vehicleInsuranceCoverage - 1,
+      vehicleInsurancePolicy: counts.source.whitelist.vehicleInsurancePolicy - 1,
+      vehicleListingMedia: counts.source.whitelist.vehicleListingMedia - 1,
+      vehicleSalePriceHistory: counts.source.whitelist.vehicleSalePriceHistory - 1
+    };
+    assert.deepEqual(counts.target.whitelist, expectedTarget);
     assert.equal(counts.target.whitelist.fileObject, 3);
     assert.equal(counts.target.whitelist.contractVersion, 3);
     assert.equal(counts.target.whitelist.notificationTemplate, NOTIFICATION_CODES.length);
@@ -1130,11 +1342,21 @@ async function createPostgresHarness(connectionString) {
       targetRows.vehicle.vehicleCostLedgerEntries[1].reversalOfEntryId,
       IDS.costOriginal
     );
-    assert.equal(targetRows.vehicle.vehicleDocuments[0].policyId, IDS.insurancePolicy);
+    assert.equal(targetRows.vehicle.vehicleDocuments[0].policyId, null);
     assert.equal(
       targetRows.vehicle.vehicleListingSourceBindings[0].documentId,
       IDS.vehicleDocument
     );
+    for (const [delegate, id] of [
+      ["vehicleListingMedia", IDS.hiddenMedia],
+      ["vehicleInsurancePolicy", IDS.expiredPolicy],
+      ["vehicleInsuranceCoverage", IDS.expiredCoverage],
+      ["vehicleDocumentBatch", IDS.noncustomerBatch],
+      ["vehicleDocument", IDS.noncustomerDocument],
+      ["vehicleSalePriceHistory", IDS.supersededPrice]
+    ]) {
+      assert.equal(await clients[1][delegate].findUnique({ where: { id } }), null, delegate);
+    }
 
     const sqlNull = await clients[1].$queryRawUnsafe(
       `

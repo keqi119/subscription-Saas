@@ -5,7 +5,8 @@ import test from "node:test";
 import { main as validatorMain } from "./stage1-clean-acceptance-target-validator.mjs";
 
 const SHA = "a".repeat(64);
-const TARGET_URL = "postgresql://stage1:secret@db.internal:5432/subscription_saas_staging_acceptance_test?sslmode=require";
+const TARGET_URL =
+  "postgresql://stage1:secret@db.internal:5432/subscription_saas_staging_acceptance_test?sslmode=require";
 const APPROVED = {
   counts: { access: 1, catalog: 1, customer: 1, templates: 1, vehicle: 1 },
   exceptions: [],
@@ -24,11 +25,17 @@ const APPROVED = {
 
 test("target validator uses only its dedicated target URL, starts READ ONLY, writes a redacted report, and disconnects", async () => {
   const harness = createValidatorHarness();
-  const code = await validatorMain([
-    "--output", "D:/evidence/validator.json",
-    "--approved-manifest", "D:/evidence/dry.json",
-    "--approved-manifest-sha256", SHA
-  ], harness.deps);
+  const code = await validatorMain(
+    [
+      "--output",
+      "D:/evidence/validator.json",
+      "--approved-manifest",
+      "D:/evidence/dry.json",
+      "--approved-manifest-sha256",
+      SHA
+    ],
+    harness.deps
+  );
   assert.equal(code, 0);
   assert.deepEqual(harness.factoryUrls, [TARGET_URL]);
   assert.match(harness.calls[0].sql, /SET TRANSACTION READ ONLY/);
@@ -47,38 +54,76 @@ test("target validator rejects approval/input before connecting and never reads 
       STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME: "db.internal"
     }
   });
-  assert.equal(await validatorMain([
-    "--output", "D:/evidence/validator.json",
-    "--approved-manifest", "D:/evidence/dry.json",
-    "--approved-manifest-sha256", SHA
-  ], harness.deps), 2);
+  assert.equal(
+    await validatorMain(
+      [
+        "--output",
+        "D:/evidence/validator.json",
+        "--approved-manifest",
+        "D:/evidence/dry.json",
+        "--approved-manifest-sha256",
+        SHA
+      ],
+      harness.deps
+    ),
+    2
+  );
   assert.deepEqual(harness.factoryUrls, []);
 
   const mismatch = createValidatorHarness({ canonicalManifestSha: "c".repeat(64) });
-  assert.equal(await validatorMain([
-    "--output", "D:/evidence/validator.json",
-    "--approved-manifest", "D:/evidence/dry.json",
-    "--approved-manifest-sha256", SHA
-  ], mismatch.deps), 2);
+  assert.equal(
+    await validatorMain(
+      [
+        "--output",
+        "D:/evidence/validator.json",
+        "--approved-manifest",
+        "D:/evidence/dry.json",
+        "--approved-manifest-sha256",
+        SHA
+      ],
+      mismatch.deps
+    ),
+    2
+  );
   assert.deepEqual(mismatch.factoryUrls, []);
 
   const samePath = createValidatorHarness();
-  assert.equal(await validatorMain([
-    "--output", "D:/evidence/dry.json",
-    "--approved-manifest", "D:/evidence/dry.json",
-    "--approved-manifest-sha256", SHA
-  ], samePath.deps), 2);
+  assert.equal(
+    await validatorMain(
+      [
+        "--output",
+        "D:/evidence/dry.json",
+        "--approved-manifest",
+        "D:/evidence/dry.json",
+        "--approved-manifest-sha256",
+        SHA
+      ],
+      samePath.deps
+    ),
+    2
+  );
   assert.deepEqual(samePath.factoryUrls, []);
 });
 
 test("target validator maps invariant, connection, write, and SIGINT failures and always disconnects created clients", async () => {
-  for (const [scenario, expected] of [["validate", 3], ["connect", 4], ["write", 5], ["sigint", 4]]) {
+  for (const [scenario, expected] of [
+    ["validate", 3],
+    ["connect", 4],
+    ["write", 5],
+    ["sigint", 4]
+  ]) {
     const harness = createValidatorHarness({ scenario });
-    const code = await validatorMain([
-      "--output", "D:/evidence/validator.json",
-      "--approved-manifest", "D:/evidence/dry.json",
-      "--approved-manifest-sha256", SHA
-    ], harness.deps);
+    const code = await validatorMain(
+      [
+        "--output",
+        "D:/evidence/validator.json",
+        "--approved-manifest",
+        "D:/evidence/dry.json",
+        "--approved-manifest-sha256",
+        SHA
+      ],
+      harness.deps
+    );
     assert.equal(code, expected, scenario);
     if (scenario !== "connect") assert.equal(harness.client.disconnects, 1, scenario);
     assert.equal(harness.stderr.join("\n").includes("secret"), false, scenario);
@@ -95,7 +140,9 @@ function createValidatorHarness({ canonicalManifestSha = SHA, env, scenario } = 
   let signalHandler;
   const client = {
     disconnects: 0,
-    async $disconnect() { this.disconnects += 1; },
+    async $disconnect() {
+      this.disconnects += 1;
+    },
     async $transaction(callback) {
       return callback({
         async $queryRaw(strings) {
@@ -119,14 +166,33 @@ function createValidatorHarness({ canonicalManifestSha = SHA, env, scenario } = 
       STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME: "db.internal"
     },
     hashManifest: () => canonicalManifestSha,
-    installSignalHandler: (handler) => { signalHandler = handler; return () => {}; },
-    readTextFile: async () => JSON.stringify({ manifest: APPROVED, manifestSha256: SHA, mode: "dry-run", operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE", safe: true }),
+    installSignalHandler: (handler) => {
+      signalHandler = handler;
+      return () => {};
+    },
+    readTextFile: async () =>
+      JSON.stringify({
+        manifest: APPROVED,
+        manifestSha256: SHA,
+        mode: "dry-run",
+        operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+        safe: true
+      }),
     repoRoot: "D:/repo",
     validateTarget: async (_tx, options) => {
       validateCalls.push(options);
       if (scenario === "sigint") signalHandler();
       if (scenario === "validate") throw new Error("MANIFEST_STALE");
-      return { counts: { access: 7 }, manifestSha256: SHA, safe: true, target: { databaseDigest: "d".repeat(64), migrationCatalogDigest: "e".repeat(64), schemaDigest: "f".repeat(64) } };
+      return {
+        counts: { access: 7 },
+        manifestSha256: SHA,
+        safe: true,
+        target: {
+          databaseDigest: "d".repeat(64),
+          migrationCatalogDigest: "e".repeat(64),
+          schemaDigest: "f".repeat(64)
+        }
+      };
     },
     writeJsonFile: async (path, value) => {
       if (scenario === "write") throw new Error("secret path");

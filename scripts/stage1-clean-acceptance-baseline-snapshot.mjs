@@ -1,10 +1,8 @@
-import { createHash } from "node:crypto";
-
 import { parseStage1CleanAcceptanceSelection } from "./stage1-clean-acceptance-baseline-core.mjs";
 import { loadLocalMigrationChecksums } from "./prisma-migration-checksums.mjs";
 
-const CANONICAL_SCHEMA_FINGERPRINT_SHA256 =
-  "8009ca8f4b366d34dc08738cb5f9543fd9c3e9b2453865fff465435531084503";
+export const STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256 =
+  "e5a2aceeb49026f97d359acb785b608138a98ed8b5f3382b28a910e82613f7e3";
 
 const REQUIRED_CONTRACT_TEMPLATE_TYPES = Object.freeze([
   "DELIVERY_HANDOVER",
@@ -284,28 +282,38 @@ const STAGE1_ACCEPTANCE_WHITELIST_DELEGATES = Object.freeze(Object.keys(SELECT).
 export async function loadStage1CleanAcceptanceSourceSnapshot(tx, inputSelection, options = {}) {
   const selection = parseStage1CleanAcceptanceSelection(inputSelection);
   const asOf = resolveAsOf(options.asOf);
+  const evaluationDate = acceptanceEvaluationDate(asOf);
   const access = await loadAccess(tx);
   const customer = await loadCustomer(tx);
-  const catalog = await loadCatalog(tx, asOf);
-  const templates = await loadTemplates(tx, asOf);
-  const vehicle = await loadVehicle(
-    tx,
-    selection.vehicleIds,
-    asOf,
-    catalogModelDefinitionIds(catalog)
-  );
-  return { access, asOf, catalog, customer, templates, vehicle };
+  const catalog = await loadCatalog(tx, evaluationDate);
+  const templates = await loadTemplates(tx, asOf, evaluationDate);
+  const vehicle = await loadVehicle(tx, selection.vehicleIds, asOf, evaluationDate, catalog);
+  return { access, asOf, catalog, customer, evaluationDate, templates, vehicle };
 }
 
 export async function discoverStage1CleanAcceptanceVehicleCandidates(tx, options = {}) {
   const asOf = resolveAsOf(options.asOf);
-  const { guardedWhere } = vehicleEligibilityFilters(asOf);
-  return sortById(
+  const evaluationDate = acceptanceEvaluationDate(asOf);
+  const catalog = await loadCatalog(tx, evaluationDate);
+  const { guardedWhere } = vehicleEligibilityFilters(
+    asOf,
+    evaluationDate,
+    ids(catalog.subscriptionPlans)
+  );
+  const candidates = sortById(
     await tx.vehicle.findMany({
       select: { id: true, salePriceStatus: true, status: true },
       where: guardedWhere
     })
   );
+  const unblocked = [];
+  for (const candidate of candidates) {
+    const blockers = await applicationBlockerCounts(tx, candidate.id, asOf);
+    if (blockers.activeApplicationCount === 0 && blockers.activeReviewReservationCount === 0) {
+      unblocked.push(candidate);
+    }
+  }
+  return unblocked;
 }
 
 function resolveAsOf(value) {
@@ -316,11 +324,15 @@ function resolveAsOf(value) {
   return new Date(value.getTime());
 }
 
+function acceptanceEvaluationDate(asOf) {
+  return new Date(`${asOf.toISOString().slice(0, 10)}T00:00:00.000Z`);
+}
+
 export async function countStage1CleanAcceptanceForbiddenDomains(tx) {
   return countDelegates(tx, STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES);
 }
 
-export async function loadStage1CleanAcceptanceTargetSnapshot(tx, options = {}) {
+export async function loadStage1CleanAcceptanceTargetSnapshot(tx) {
   const tableCountKeys = [...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES];
   const forbiddenCountKeys = [...STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES];
   const tableCounts = await countDelegates(tx, tableCountKeys);
@@ -340,29 +352,28 @@ export async function loadStage1CleanAcceptanceTargetSnapshot(tx, options = {}) 
     ORDER BY "migration_name" ASC, "id" ASC
   `
   );
-  const schemaFingerprint = sortMetadata(
-    await tx.$queryRaw`
-    SELECT
-      table_name AS "tableName",
-      column_name AS "columnName",
-      data_type AS "dataType",
-      is_nullable AS "isNullable",
-      ordinal_position AS "ordinalPosition",
-      column_default AS "columnDefault",
-      udt_name AS "udtName"
+  const schemaFingerprint = await tx.$queryRaw`
+    SELECT encode(
+      sha256(convert_to(COALESCE(jsonb_agg(jsonb_build_object(
+        'columnDefault', column_default,
+        'columnName', column_name,
+        'dataType', data_type,
+        'isNullable', is_nullable,
+        'ordinalPosition', ordinal_position,
+        'tableName', table_name,
+        'udtName', udt_name
+      ) ORDER BY table_name ASC, ordinal_position ASC)::text, '[]'), 'UTF8')),
+      'hex'
+    ) AS "schemaFingerprintSha256"
     FROM information_schema.columns
     WHERE table_schema = ${"public"}
-    ORDER BY table_name ASC, ordinal_position ASC
-  `
-  );
-  const canonicalMigrationChecksums =
-    options.canonicalMigrationChecksums ?? (await loadLocalMigrationChecksums());
-  const canonicalSchemaFingerprintSha256 =
-    options.canonicalSchemaFingerprintSha256 ?? CANONICAL_SCHEMA_FINGERPRINT_SHA256;
+  `;
+  const canonicalMigrationChecksums = await loadLocalMigrationChecksums();
   const schemaCanonical =
     exactCanonicalMigrationCatalog(migrationCatalog, canonicalMigrationChecksums) &&
-    /^[0-9a-f]{64}$/.test(canonicalSchemaFingerprintSha256) &&
-    hashCanonicalMetadata(schemaFingerprint) === canonicalSchemaFingerprintSha256;
+    schemaFingerprint.length === 1 &&
+    schemaFingerprint[0]?.schemaFingerprintSha256 ===
+      STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256;
   return {
     forbiddenCountKeys,
     forbiddenCounts,
@@ -532,14 +543,14 @@ async function loadCatalog(tx, asOf) {
   };
 }
 
-async function loadTemplates(tx, asOf) {
+async function loadTemplates(tx, asOf, evaluationDate) {
   const contractVersions = await find(tx, "contractVersion", {
     approvedAt: { lte: asOf },
     approvedBy: { not: null },
     businessType: "SUBSCRIPTION",
     deletedAt: null,
-    effectiveFrom: { lte: asOf },
-    OR: [{ effectiveTo: null }, { effectiveTo: { gte: asOf } }],
+    effectiveFrom: { lte: evaluationDate },
+    OR: [{ effectiveTo: null }, { effectiveTo: { gte: evaluationDate } }],
     status: "ACTIVE",
     templateType: { in: [...REQUIRED_CONTRACT_TEMPLATE_TYPES] }
   });
@@ -560,24 +571,36 @@ async function loadTemplates(tx, asOf) {
   };
 }
 
-async function loadVehicle(tx, vehicleIds, asOf, catalogModelIds) {
+async function loadVehicle(tx, vehicleIds, asOf, evaluationDate, catalog) {
+  const catalogPlanIds = ids(catalog.subscriptionPlans);
   const {
     activeAssetWorkOrderWhere,
     activeServiceCaseWhere,
     blockingRestrictionWhere,
     guardedWhere,
     historicalVehicleRelationWhere,
-    overlappingSubscriptionPeriodWhere
-  } = vehicleEligibilityFilters(asOf);
+    overlappingSubscriptionPeriodWhere,
+    currentCommercialPolicyWhere,
+    currentCompulsoryTrafficPolicyWhere,
+    currentVehicleLicenseWhere,
+    visibleRetainedListingPlanWhere
+  } = vehicleEligibilityFilters(asOf, evaluationDate, catalogPlanIds);
   const diagnostics = sortById(
     await tx.vehicle.findMany({
       select: {
         _count: {
           select: {
             assetWorkOrders: { where: activeAssetWorkOrderWhere },
+            documents: { where: currentVehicleLicenseWhere },
             deliveries: { where: historicalVehicleRelationWhere },
             operationalRestrictions: { where: blockingRestrictionWhere },
             orders: { where: historicalVehicleRelationWhere },
+            insurancePolicies: {
+              where: {
+                OR: [currentCommercialPolicyWhere, currentCompulsoryTrafficPolicyWhere]
+              }
+            },
+            listingPlans: { where: visibleRetainedListingPlanWhere },
             returns: { where: historicalVehicleRelationWhere },
             serviceCases: { where: activeServiceCaseWhere },
             subscriptionPeriods: { where: overlappingSubscriptionPeriodWhere }
@@ -603,22 +626,38 @@ async function loadVehicle(tx, vehicleIds, asOf, catalogModelIds) {
   if (!sameIds(diagnostics, vehicleIds) || !sameIds(guardedVehicles, vehicleIds)) {
     throw new Error("VEHICLE_NOT_ELIGIBLE");
   }
+  const applicationCounts = {};
+  for (const vehicleId of vehicleIds) {
+    applicationCounts[vehicleId] = await applicationBlockerCounts(tx, vehicleId, asOf);
+    if (
+      applicationCounts[vehicleId].activeApplicationCount !== 0 ||
+      applicationCounts[vehicleId].activeReviewReservationCount !== 0
+    ) {
+      throw new Error("VEHICLE_NOT_ELIGIBLE");
+    }
+  }
   const vehicles = await find(tx, "vehicle", { id: { in: vehicleIds } });
   if (!sameIds(vehicles, vehicleIds)) throw new Error("VEHICLE_NOT_ELIGIBLE");
   const eligibilityEvidence = Object.fromEntries(
     diagnostics.map((row) => [
       row.id,
       {
+        activeApplicationCount: applicationCounts[row.id].activeApplicationCount,
         activeAssetWorkOrderCount: row._count.assetWorkOrders,
+        activeReviewReservationCount: applicationCounts[row.id].activeReviewReservationCount,
         activeServiceCaseCount: row._count.serviceCases,
         blockingRestrictionCount: row._count.operationalRestrictions,
         currentSalePricePositive: row.currentSalePriceAmount > 0,
         deliveryCount: row._count.deliveries,
         orderCount: row._count.orders,
         overlappingSubscriptionPeriodCount: row._count.subscriptionPeriods,
+        currentCommercialPolicyCount: 0,
+        currentCompulsoryTrafficPolicyCount: 0,
+        currentLicenseCount: row._count.documents,
         requiredDocumentsAndInsuranceReady: guardedVehicles.some(({ id }) => id === row.id),
         returnCount: row._count.returns,
-        salePriceStatusEffective: row.salePriceStatus === "EFFECTIVE"
+        salePriceStatusEffective: row.salePriceStatus === "EFFECTIVE",
+        visibleRetainedListingPlanCount: row._count.listingPlans
       }
     ])
   );
@@ -633,7 +672,11 @@ async function loadVehicle(tx, vehicleIds, asOf, catalogModelIds) {
   const vehicleModelDefinitions = await find(tx, "vehicleModelDefinition", {
     deletedAt: null,
     enabled: true,
-    id: { in: [...new Set([...catalogModelIds, ...ids(vehicles, "modelDefinitionId")])].sort() },
+    id: {
+      in: [
+        ...new Set([...catalogModelDefinitionIds(catalog), ...ids(vehicles, "modelDefinitionId")])
+      ].sort()
+    },
     portalVisible: true
   });
   const vehicleListingProfiles = await find(tx, "vehicleListingProfile", {
@@ -643,32 +686,63 @@ async function loadVehicle(tx, vehicleIds, asOf, catalogModelIds) {
     vehicleId: { in: vehicleIds }
   });
   const vehicleListingMedia = await find(tx, "vehicleListingMedia", {
+    customerVisible: true,
     deletedAt: null,
+    listingProfileId: { in: ids(vehicleListingProfiles) },
     vehicleId: { in: vehicleIds }
   });
   const vehicleListingPlans = await find(tx, "vehicleListingPlan", {
     deletedAt: null,
-    vehicleId: { in: vehicleIds }
-  });
-  const vehicleDocumentBatches = await find(tx, "vehicleDocumentBatch", {
+    listingProfileId: { in: ids(vehicleListingProfiles) },
+    subscriptionPlanId: { in: catalogPlanIds },
+    visible: true,
     vehicleId: { in: vehicleIds }
   });
   const vehicleInsurancePolicies = await find(tx, "vehicleInsurancePolicy", {
     deletedAt: null,
+    effectiveFrom: { lte: evaluationDate },
+    effectiveTo: { gte: evaluationDate },
+    policyStatus: "ACTIVE",
+    policyType: { in: ["COMMERCIAL", "COMPULSORY_TRAFFIC"] },
     vehicleId: { in: vehicleIds }
   });
   const vehicleInsuranceCoverages = await find(tx, "vehicleInsuranceCoverage", {
     deletedAt: null,
     policyId: { in: ids(vehicleInsurancePolicies) }
   });
+  for (const vehicleId of vehicleIds) {
+    const policies = vehicleInsurancePolicies.filter((row) => row.vehicleId === vehicleId);
+    eligibilityEvidence[vehicleId].currentCommercialPolicyCount = policies.filter(
+      (row) => row.policyType === "COMMERCIAL"
+    ).length;
+    eligibilityEvidence[vehicleId].currentCompulsoryTrafficPolicyCount = policies.filter(
+      (row) => row.policyType === "COMPULSORY_TRAFFIC"
+    ).length;
+  }
   const vehicleDocuments = await find(tx, "vehicleDocument", {
+    AND: [
+      { OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: evaluationDate } }] },
+      { OR: [{ effectiveTo: null }, { effectiveTo: { gte: evaluationDate } }] }
+    ],
+    customerVisible: true,
     deletedAt: null,
+    documentStatus: "ACTIVE",
+    documentType: {
+      in: ["COMMERCIAL_INSURANCE_POLICY", "COMPULSORY_INSURANCE_POLICY", "VEHICLE_LICENSE"]
+    },
+    vehicleId: { in: vehicleIds }
+  });
+  const vehicleDocumentBatches = await find(tx, "vehicleDocumentBatch", {
+    id: { in: compactIds(vehicleDocuments, "batchId") },
     vehicleId: { in: vehicleIds }
   });
   const vehicleListingSourceBindings = await find(tx, "vehicleListingSourceBinding", {
+    documentId: { in: ids(vehicleDocuments) },
     vehicleId: { in: vehicleIds }
   });
   const vehicleSalePriceHistories = await find(tx, "vehicleSalePriceHistory", {
+    effectiveFrom: { lte: evaluationDate },
+    OR: [{ effectiveTo: null }, { effectiveTo: { gte: evaluationDate } }],
     vehicleId: { in: vehicleIds }
   });
   const vehicleAssetCostProfiles = await find(tx, "vehicleAssetCostProfile", {
@@ -699,7 +773,7 @@ async function loadVehicle(tx, vehicleIds, asOf, catalogModelIds) {
   };
 }
 
-function vehicleEligibilityFilters(asOf) {
+function vehicleEligibilityFilters(asOf, evaluationDate, catalogPlanIds = []) {
   const activeAssetWorkOrderWhere = {
     status: { notIn: ["CANCELLED", "CLOSED"] }
   };
@@ -719,20 +793,34 @@ function vehicleEligibilityFilters(asOf) {
   };
   const historicalVehicleRelationWhere = { deletedAt: null };
   const currentVehicleLicenseWhere = {
+    customerVisible: true,
     deletedAt: null,
     documentStatus: "ACTIVE",
     documentType: "VEHICLE_LICENSE",
     AND: [
-      { OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: asOf } }] },
-      { OR: [{ effectiveTo: null }, { effectiveTo: { gte: asOf } }] }
+      { OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: evaluationDate } }] },
+      { OR: [{ effectiveTo: null }, { effectiveTo: { gte: evaluationDate } }] }
     ]
   };
   const currentInsurancePolicyWhere = {
     coverages: { some: { deletedAt: null } },
     deletedAt: null,
-    effectiveFrom: { lte: asOf },
-    effectiveTo: { gte: asOf },
+    effectiveFrom: { lte: evaluationDate },
+    effectiveTo: { gte: evaluationDate },
     policyStatus: "ACTIVE"
+  };
+  const currentCommercialPolicyWhere = {
+    ...currentInsurancePolicyWhere,
+    policyType: "COMMERCIAL"
+  };
+  const currentCompulsoryTrafficPolicyWhere = {
+    ...currentInsurancePolicyWhere,
+    policyType: "COMPULSORY_TRAFFIC"
+  };
+  const visibleRetainedListingPlanWhere = {
+    deletedAt: null,
+    subscriptionPlanId: { in: catalogPlanIds },
+    visible: true
   };
   return {
     activeAssetWorkOrderWhere,
@@ -744,9 +832,17 @@ function vehicleEligibilityFilters(asOf) {
       deletedAt: null,
       deliveries: { none: historicalVehicleRelationWhere },
       documents: { some: currentVehicleLicenseWhere },
-      insurancePolicies: { some: currentInsurancePolicyWhere },
+      AND: [
+        { insurancePolicies: { some: currentCommercialPolicyWhere } },
+        { insurancePolicies: { some: currentCompulsoryTrafficPolicyWhere } }
+      ],
       listingProfile: {
-        is: { deletedAt: null, listingStatus: "PUBLISHED", portalVisible: true }
+        is: {
+          deletedAt: null,
+          listingStatus: "PUBLISHED",
+          plans: { some: visibleRetainedListingPlanWhere },
+          portalVisible: true
+        }
       },
       modelDefinition: {
         is: { deletedAt: null, enabled: true, portalVisible: true }
@@ -760,8 +856,37 @@ function vehicleEligibilityFilters(asOf) {
       subscriptionPeriods: { none: overlappingSubscriptionPeriodWhere }
     },
     historicalVehicleRelationWhere,
-    overlappingSubscriptionPeriodWhere
+    overlappingSubscriptionPeriodWhere,
+    currentCommercialPolicyWhere,
+    currentCompulsoryTrafficPolicyWhere,
+    currentVehicleLicenseWhere,
+    visibleRetainedListingPlanWhere
   };
+}
+
+async function applicationBlockerCounts(tx, vehicleId, asOf) {
+  const activeStatus = { notIn: ["CANCELLED", "REJECTED"] };
+  const activeApplicationCount = await tx.application.count({
+    where: {
+      deletedAt: null,
+      OR: [
+        { finalVehicleId: vehicleId },
+        { intentVehicleId: vehicleId },
+        { softReservedVehicleId: vehicleId }
+      ],
+      status: activeStatus
+    }
+  });
+  const activeReviewReservationCount = await tx.application.count({
+    where: {
+      deletedAt: null,
+      softReservationExpiresAt: { gt: asOf },
+      softReservedVehicleId: vehicleId,
+      status: activeStatus,
+      vehicleReviewStatus: { in: ["APPROVED", "NEED_MORE_INFO", "PENDING"] }
+    }
+  });
+  return { activeApplicationCount, activeReviewReservationCount };
 }
 
 function exactCanonicalMigrationCatalog(applied, canonical) {
@@ -791,12 +916,6 @@ function exactCanonicalMigrationCatalog(applied, canonical) {
       row.appliedStepsCount === 1
     );
   });
-}
-
-function hashCanonicalMetadata(rows) {
-  return createHash("sha256")
-    .update(JSON.stringify(sortMetadata(rows)))
-    .digest("hex");
 }
 
 async function find(tx, delegate, where) {

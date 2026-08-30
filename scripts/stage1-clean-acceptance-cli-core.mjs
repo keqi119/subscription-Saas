@@ -238,15 +238,21 @@ export function readApprovedStage1AcceptanceManifest(text, approvedSha256, hashM
   } catch {
     cliFail("APPROVED_MANIFEST_INVALID");
   }
-  const wrapped = Object.hasOwn(report ?? {}, "manifest");
-  if (wrapped && !validApprovedWrapperShape(report, approvedSha256))
-    cliFail("APPROVED_MANIFEST_INVALID");
-  const manifest = wrapped ? report.manifest : report;
-  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest))
-    cliFail("APPROVED_MANIFEST_INVALID");
-  if (hashManifest(manifest) !== approvedSha256) cliFail("APPROVED_MANIFEST_SHA_MISMATCH");
-  if (!validApprovedManifestShape(manifest)) cliFail("APPROVED_MANIFEST_INVALID");
-  return manifest;
+  return validateApprovedStage1AcceptanceWrapper(report, approvedSha256, hashManifest).manifest;
+}
+
+export function validateApprovedStage1AcceptanceWrapper(report, approvedSha256, hashManifest) {
+  if (!validApprovedWrapperShape(report, approvedSha256)) cliFail("APPROVED_MANIFEST_INVALID");
+  if (hashManifest(report.manifest) !== approvedSha256) cliFail("APPROVED_MANIFEST_SHA_MISMATCH");
+  if (!validApprovedManifestShape(report.manifest)) cliFail("APPROVED_MANIFEST_INVALID");
+  return {
+    manifest: report.manifest,
+    manifestSha256: report.manifestSha256,
+    mode: report.mode,
+    operation: report.operation,
+    safe: report.safe,
+    targetCountEvidence: report.targetCountEvidence
+  };
 }
 
 export function publicStage1AcceptanceError(error) {

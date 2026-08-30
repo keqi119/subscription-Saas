@@ -108,36 +108,25 @@ test("target validator rejects approval/input before connecting and never reads 
   );
   assert.deepEqual(samePath.factoryUrls, []);
 
-  const arbitraryCounts = createValidatorHarness({
-    approvedReport: {
-      manifest: APPROVED,
-      manifestSha256: SHA,
-      mode: "dry-run",
-      operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
-      safe: true,
-      targetCountEvidence: {
-        forbiddenCountKeys: ["arbitraryForbidden"],
-        forbiddenCounts: { arbitraryForbidden: 0 },
-        tableCountKeys: ["arbitraryTable"],
-        tableCounts: { arbitraryTable: 0 }
-      }
-    }
-  });
-  assert.equal(
-    await validatorMain(
-      [
-        "--output",
-        "D:/evidence/validator.json",
-        "--approved-manifest",
-        "D:/evidence/dry.json",
-        "--approved-manifest-sha256",
-        SHA
-      ],
-      arbitraryCounts.deps
-    ),
-    2
-  );
-  assert.deepEqual(arbitraryCounts.factoryUrls, []);
+  for (const [caseName, approvedReport] of invalidApprovedReports()) {
+    const invalid = createValidatorHarness({ approvedReport });
+    assert.equal(
+      await validatorMain(
+        [
+          "--output",
+          "D:/evidence/validator.json",
+          "--approved-manifest",
+          "D:/evidence/dry.json",
+          "--approved-manifest-sha256",
+          SHA
+        ],
+        invalid.deps
+      ),
+      2,
+      caseName
+    );
+    assert.deepEqual(invalid.factoryUrls, [], caseName);
+  }
 });
 
 test("target validator maps invariant, connection, write, and SIGINT failures and always disconnects created clients", async () => {
@@ -256,4 +245,73 @@ function approvedTargetCountEvidence() {
     tableCountKeys: [...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES],
     tableCounts: Object.fromEntries(STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.map((key) => [key, 0]))
   };
+}
+
+function invalidApprovedReports() {
+  const wrapper = {
+    manifest: APPROVED,
+    manifestSha256: SHA,
+    mode: "dry-run",
+    operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+    safe: true,
+    targetCountEvidence: approvedTargetCountEvidence()
+  };
+  const missingMode = structuredClone(wrapper);
+  delete missingMode.mode;
+  const missingOperation = structuredClone(wrapper);
+  delete missingOperation.operation;
+  const missingTableCounts = structuredClone(wrapper);
+  delete missingTableCounts.targetCountEvidence.tableCounts;
+  return [
+    ["missing-mode", missingMode],
+    ["wrong-mode", { ...structuredClone(wrapper), mode: "apply" }],
+    ["missing-operation", missingOperation],
+    ["wrong-operation", { ...structuredClone(wrapper), operation: "OTHER" }],
+    [
+      "incomplete-manifest",
+      { ...structuredClone(wrapper), manifest: { safeToApply: true, exceptions: [] } }
+    ],
+    [
+      "arbitrary-count-keys",
+      {
+        ...structuredClone(wrapper),
+        targetCountEvidence: {
+          forbiddenCountKeys: ["arbitraryForbidden"],
+          forbiddenCounts: { arbitraryForbidden: 0 },
+          tableCountKeys: ["arbitraryTable"],
+          tableCounts: { arbitraryTable: 0 }
+        }
+      }
+    ],
+    [
+      "replaced-table-key",
+      {
+        ...structuredClone(wrapper),
+        targetCountEvidence: {
+          ...approvedTargetCountEvidence(),
+          tableCountKeys: ["replacementTable", ...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.slice(1)],
+          tableCounts: {
+            replacementTable: 0,
+            ...Object.fromEntries(
+              STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.slice(1).map((key) => [key, 0])
+            )
+          }
+        }
+      }
+    ],
+    ["missing-table-counts", missingTableCounts],
+    [
+      "nonzero-table-count",
+      {
+        ...structuredClone(wrapper),
+        targetCountEvidence: {
+          ...approvedTargetCountEvidence(),
+          tableCounts: {
+            ...approvedTargetCountEvidence().tableCounts,
+            [STAGE1_ACCEPTANCE_WHITELIST_DELEGATES[0]]: 1
+          }
+        }
+      }
+    ]
+  ];
 }

@@ -743,44 +743,31 @@ test("apply reuses approved generatedAt/salt and verifies the canonical manifest
   assert.equal(samePath.clients.length, 0);
 });
 
-test("apply and replay reject noncanonical approved target-count key universes before connecting", async () => {
+test("apply and replay reject every strict approved-wrapper violation before connecting", async () => {
   const approved = approvedManifest();
   for (const mode of ["apply", "replay"]) {
-    const harness = createBaselineHarness({
-      approved,
-      approvedReport: {
-        manifest: approved,
-        manifestSha256: SHA,
-        mode: "dry-run",
-        operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
-        safe: true,
-        targetCountEvidence: {
-          forbiddenCountKeys: ["arbitraryForbidden"],
-          forbiddenCounts: { arbitraryForbidden: 0 },
-          tableCountKeys: ["arbitraryTable"],
-          tableCounts: { arbitraryTable: 0 }
-        }
-      }
-    });
-    assert.equal(
-      await baselineMain(
-        [
-          `--${mode}`,
-          "--output",
-          `D:/evidence/${mode}.json`,
-          "--vehicle-id",
-          VEHICLE,
-          "--approved-manifest",
-          "D:/evidence/dry.json",
-          "--approved-manifest-sha256",
-          SHA
-        ],
-        harness.deps
-      ),
-      2,
-      mode
-    );
-    assert.equal(harness.clients.length, 0, mode);
+    for (const [caseName, approvedReport] of invalidApprovedReports(approved)) {
+      const harness = createBaselineHarness({ approved, approvedReport });
+      assert.equal(
+        await baselineMain(
+          [
+            `--${mode}`,
+            "--output",
+            `D:/evidence/${mode}.json`,
+            "--vehicle-id",
+            VEHICLE,
+            "--approved-manifest",
+            "D:/evidence/dry.json",
+            "--approved-manifest-sha256",
+            SHA
+          ],
+          harness.deps
+        ),
+        2,
+        `${mode}:${caseName}`
+      );
+      assert.equal(harness.clients.length, 0, `${mode}:${caseName}`);
+    }
   }
 });
 
@@ -903,6 +890,75 @@ function approvedTargetCountEvidence() {
     tableCountKeys: [...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES],
     tableCounts: Object.fromEntries(STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.map((key) => [key, 0]))
   };
+}
+
+function invalidApprovedReports(manifest) {
+  const wrapper = {
+    manifest,
+    manifestSha256: SHA,
+    mode: "dry-run",
+    operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+    safe: true,
+    targetCountEvidence: approvedTargetCountEvidence()
+  };
+  const missingMode = structuredClone(wrapper);
+  delete missingMode.mode;
+  const missingOperation = structuredClone(wrapper);
+  delete missingOperation.operation;
+  const missingTableCounts = structuredClone(wrapper);
+  delete missingTableCounts.targetCountEvidence.tableCounts;
+  return [
+    ["missing-mode", missingMode],
+    ["wrong-mode", { ...structuredClone(wrapper), mode: "apply" }],
+    ["missing-operation", missingOperation],
+    ["wrong-operation", { ...structuredClone(wrapper), operation: "OTHER" }],
+    [
+      "incomplete-manifest",
+      { ...structuredClone(wrapper), manifest: { safeToApply: true, exceptions: [] } }
+    ],
+    [
+      "arbitrary-count-keys",
+      {
+        ...structuredClone(wrapper),
+        targetCountEvidence: {
+          forbiddenCountKeys: ["arbitraryForbidden"],
+          forbiddenCounts: { arbitraryForbidden: 0 },
+          tableCountKeys: ["arbitraryTable"],
+          tableCounts: { arbitraryTable: 0 }
+        }
+      }
+    ],
+    [
+      "replaced-table-key",
+      {
+        ...structuredClone(wrapper),
+        targetCountEvidence: {
+          ...approvedTargetCountEvidence(),
+          tableCountKeys: ["replacementTable", ...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.slice(1)],
+          tableCounts: {
+            replacementTable: 0,
+            ...Object.fromEntries(
+              STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.slice(1).map((key) => [key, 0])
+            )
+          }
+        }
+      }
+    ],
+    ["missing-table-counts", missingTableCounts],
+    [
+      "nonzero-table-count",
+      {
+        ...structuredClone(wrapper),
+        targetCountEvidence: {
+          ...approvedTargetCountEvidence(),
+          tableCounts: {
+            ...approvedTargetCountEvidence().tableCounts,
+            [STAGE1_ACCEPTANCE_WHITELIST_DELEGATES[0]]: 1
+          }
+        }
+      }
+    ]
+  ];
 }
 
 function hostEvidenceSecurity(parent, intent) {

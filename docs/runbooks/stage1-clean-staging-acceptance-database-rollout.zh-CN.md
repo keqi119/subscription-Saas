@@ -47,6 +47,14 @@ readonly EVIDENCE_PARENT="/opt/subscription-saas/reports"
 readonly EVIDENCE_DIR="${EVIDENCE_PARENT}/stage1-clean-acceptance-${RUN_UTC}"
 readonly OLD_DB_BACKUP="${EVIDENCE_DIR}/old-database.pre-apply.dump"
 readonly EMPTY_NEW_DB_BACKUP="${EVIDENCE_DIR}/empty-new-database.pre-migration.dump"
+# 本轮新增的保守 Task 9 门槛：磁盘至少 10 GiB 可用；API 必须保持 compose 固定的
+# 512 MiB limit 且至少保留 128 MiB；PostgreSQL 必须保持 max_connections=30
+# 且至少保留 10 个连接。边界值允许通过，任一事实不可解析即失败关闭。
+readonly MIN_HOST_DISK_AVAILABLE_KB=10485760
+readonly EXPECTED_API_MEMORY_LIMIT_BYTES=536870912
+readonly MIN_API_MEMORY_HEADROOM_BYTES=134217728
+readonly EXPECTED_POSTGRES_MAX_CONNECTIONS=30
+readonly MIN_POSTGRES_CONNECTION_HEADROOM=10
 export TARGET_DB
 
 assert_private_directory() { test -d "$1" && test ! -L "$1" && test "$(stat -c '%u:%g:%a' "$1")" = '0:0:700'; }
@@ -75,7 +83,9 @@ target_node() {
     --env APPROVED_RELEASE_SHA --env STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL \
     --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL --env STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME \
     --env STAGE1_ACCEPTANCE_DATABASE_OWNER --env STAGE1_ACCEPTANCE_IMAGE_REF \
-    --env TARGET_DB "$APPROVED_API_IMAGE_ID" node "$@"
+    --env TARGET_DB --env APPROVED_VEHICLE_UUID --env TASK9_DISK_AVAILABLE_KB \
+    --env TASK9_API_MEMORY_STATE --env TASK9_POSTGRES_CONNECTION_STATE \
+    "$APPROVED_API_IMAGE_ID" node "$@"
 }
 target_api() {
   docker run --rm -i --network "${COMPOSE_PROJECT}_default" \
@@ -95,8 +105,19 @@ test -f "$COMPOSE_FILE" && test -f "$ENV_FILE"
 [[ "$TARGET_DB" =~ ^subscription_saas_staging_acceptance_[0-9]{8}t[0-9]{6}z$ ]] || { printf '%s\n' 'STOP: TARGET_DB_REGEX_INVALID'; exit 1; }
 [[ "$APPROVED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: APPROVED_RELEASE_SHA_INVALID'; exit 1; }
 
-readonly API_CONTAINER_ID="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
-test -n "$API_CONTAINER_ID"
+readonly COMPOSE_SERVICES="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --services)"
+if test "$(printf '%s\n' "$COMPOSE_SERVICES" | grep -c .)" -ne 3 \
+  || test "$(printf '%s\n' "$COMPOSE_SERVICES" | grep -Fxc postgres)" -ne 1 \
+  || test "$(printf '%s\n' "$COMPOSE_SERVICES" | grep -Fxc api)" -ne 1 \
+  || test "$(printf '%s\n' "$COMPOSE_SERVICES" | grep -Fxc web)" -ne 1; then
+  printf '%s\n' 'STOP: COMPOSE_SERVICE_SET_INVALID'
+  exit 1
+fi
+readonly API_CONTAINER_IDS="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
+[[ "$API_CONTAINER_IDS" =~ ^[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: API_CONTAINER_COUNT_INVALID'; exit 1; }
+readonly API_CONTAINER_ID="$API_CONTAINER_IDS"
+test "$(docker inspect --format '{{.State.Running}}' "$API_CONTAINER_ID")" = 'true' || { printf '%s\n' 'STOP: API_CONTAINER_NOT_RUNNING'; exit 1; }
+test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$API_CONTAINER_ID")" = 'healthy' || { printf '%s\n' 'STOP: API_CONTAINER_NOT_HEALTHY'; exit 1; }
 readonly CURRENT_ONLINE_API_IMAGE="$(docker inspect --format '{{.Image}}' "$API_CONTAINER_ID")"
 readonly CURRENT_ONLINE_API_REVISION="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$API_CONTAINER_ID")"
 readonly APPROVED_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$APPROVED_API_IMAGE")"
@@ -120,7 +141,32 @@ assert_private_directory "$EVIDENCE_DIR"
   printf 'approved_target_image_id=%s\n' "$APPROVED_API_IMAGE_ID"
   printf 'approved_target_revision=%s\n' "$APPROVED_API_IMAGE_REVISION"
   printf 'approved_target_digest=%s\n' "$APPROVED_API_IMAGE_DIGEST"
+  printf '%s\n' 'compose_services=api,postgres,web'
+  printf '%s\n' 'api_state=running api_health=healthy'
 } | publish_private_evidence "$EVIDENCE_DIR/preflight.safe.state"
+
+readonly TASK9_DISK_AVAILABLE_KB="$(df -Pk /opt/subscription-saas | awk 'NR == 2 { print $4 }')"
+readonly TASK9_API_MEMORY_STATE="$(docker stats --no-stream --format '{{.MemUsage}}' "$API_CONTAINER_ID")"
+readonly TASK9_POSTGRES_CONNECTION_STATE="$(postgres_admin_query -XAtq -c "SELECT count(*)::bigint || '|' || current_setting('max_connections')::bigint FROM pg_stat_activity;")"
+export TASK9_DISK_AVAILABLE_KB TASK9_API_MEMORY_STATE TASK9_POSTGRES_CONNECTION_STATE
+if ! DISK_RESOURCE_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs resource-disk "$MIN_HOST_DISK_AVAILABLE_KB")"; then
+  printf '%s\n' 'STOP: DISK_AVAILABLE_STATE_INVALID'
+  exit 1
+fi
+readonly DISK_RESOURCE_SUMMARY
+printf '%s\n' "$DISK_RESOURCE_SUMMARY" | publish_private_evidence "$EVIDENCE_DIR/disk-resource.safe.json"
+if ! API_MEMORY_RESOURCE_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs resource-memory "$EXPECTED_API_MEMORY_LIMIT_BYTES" "$MIN_API_MEMORY_HEADROOM_BYTES")"; then
+  printf '%s\n' 'STOP: API_MEMORY_STATE_INVALID'
+  exit 1
+fi
+readonly API_MEMORY_RESOURCE_SUMMARY
+printf '%s\n' "$API_MEMORY_RESOURCE_SUMMARY" | publish_private_evidence "$EVIDENCE_DIR/api-memory-resource.safe.json"
+if ! POSTGRES_CONNECTION_RESOURCE_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs resource-postgres-connections "$EXPECTED_POSTGRES_MAX_CONNECTIONS" "$MIN_POSTGRES_CONNECTION_HEADROOM")"; then
+  printf '%s\n' 'STOP: POSTGRES_CONNECTION_STATE_INVALID'
+  exit 1
+fi
+readonly POSTGRES_CONNECTION_RESOURCE_SUMMARY
+printf '%s\n' "$POSTGRES_CONNECTION_RESOURCE_SUMMARY" | publish_private_evidence "$EVIDENCE_DIR/postgres-connections.safe.json"
 
 check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL"
 check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL"
@@ -204,7 +250,7 @@ read -r -s -p "Approved vehicle UUID (hidden): " APPROVED_VEHICLE_UUID
 printf '\n'
 export APPROVED_VEHICLE_UUID
 readonly APPROVED_VEHICLE_UUID
-target_node scripts/stage1-task9-preflight-governance.mjs validate-selection /evidence/vehicle-discovery.json "$APPROVED_VEHICLE_UUID" || { printf '%s\n' 'STOP: VEHICLE_SELECTION_INVALID'; exit 1; }
+target_node scripts/stage1-task9-preflight-governance.mjs validate-selection /evidence/vehicle-discovery.json || { printf '%s\n' 'STOP: VEHICLE_SELECTION_INVALID'; exit 1; }
 target_api sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --vehicle-id "$APPROVED_VEHICLE_UUID" --output /evidence/baseline-dry-run.json' >/dev/null
 readonly DRY_RUN_REPORT="$EVIDENCE_DIR/baseline-dry-run.json"
 set +e

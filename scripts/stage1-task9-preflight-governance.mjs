@@ -3,9 +3,17 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 
 import { hashStage1CleanAcceptanceManifest } from "./stage1-clean-acceptance-baseline-core.mjs";
-import { STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES } from "./stage1-clean-acceptance-baseline-snapshot.mjs";
+import { validateApprovedStage1AcceptanceWrapper } from "./stage1-clean-acceptance-cli-core.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const DECIMAL_INTEGER = /^(?:0|[1-9][0-9]*)$/;
+const IEC_SIZE = /^(0|[1-9][0-9]*(?:\.[0-9]+)?)(B|KiB|MiB|GiB)$/;
+
+export const TASK9_MIN_HOST_DISK_AVAILABLE_KB = 10 * 1024 * 1024;
+export const TASK9_EXPECTED_API_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024;
+export const TASK9_MIN_API_MEMORY_HEADROOM_BYTES = 128 * 1024 * 1024;
+export const TASK9_EXPECTED_POSTGRES_MAX_CONNECTIONS = 30;
+export const TASK9_MIN_POSTGRES_CONNECTION_HEADROOM = 10;
 
 export function validateTask9DatabasePair(sourceText, targetText, hostname, owner, targetDb) {
   try {
@@ -36,39 +44,59 @@ export function validateTask9DiscoverySelection(report, vehicleId) {
 }
 
 export function buildTask9ApprovalSummary(report) {
-  const evidence = report?.targetCountEvidence;
-  const forbidden = evidence?.forbiddenCounts;
-  const expected = [...STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES].sort();
-  const actual = forbidden && typeof forbidden === "object" ? Object.keys(forbidden).sort() : [];
-  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index]))
-    return { code: "FORBIDDEN_COUNTS_INVALID" };
-  if (
-    !actual.every(
-      (key) => Number.isSafeInteger(forbidden[key]) && forbidden[key] >= 0 && forbidden[key] === 0
-    )
-  )
-    return { code: "FORBIDDEN_COUNTS_INVALID" };
-  const manifest = report?.manifest;
-  const manifestSha256 = report?.manifestSha256;
-  if (
-    report?.safe !== true ||
-    manifest?.safeToApply !== true ||
-    !Array.isArray(manifest?.exceptions) ||
-    manifest.exceptions.length !== 0
-  )
-    return { code: "DRY_RUN_UNSAFE" };
-  if (
-    !/^[0-9a-f]{64}$/.test(manifestSha256 ?? "") ||
-    hashStage1CleanAcceptanceManifest(manifest) !== manifestSha256
-  )
-    return { code: "MANIFEST_SHA_INVALID" };
-  return {
-    safe: true,
-    safeToApply: true,
-    exceptionsCount: 0,
-    forbiddenCounts: forbidden,
-    manifestSha256
-  };
+  try {
+    const validated = validateApprovedStage1AcceptanceWrapper(
+      report,
+      report?.manifestSha256,
+      hashStage1CleanAcceptanceManifest
+    );
+    return {
+      safe: validated.safe,
+      safeToApply: validated.manifest.safeToApply,
+      exceptionsCount: validated.manifest.exceptions.length,
+      forbiddenCounts: validated.targetCountEvidence.forbiddenCounts,
+      manifestSha256: validated.manifestSha256
+    };
+  } catch (error) {
+    return { code: error?.code ?? "APPROVED_MANIFEST_INVALID" };
+  }
+}
+
+export function validateTask9DiskAvailableKb(value) {
+  const availableKb = parseSafeInteger(value);
+  if (availableKb === null) return { code: "DISK_STATE_INVALID" };
+  if (availableKb < TASK9_MIN_HOST_DISK_AVAILABLE_KB) return { code: "DISK_HEADROOM_LOW" };
+  return { availableKb, code: "OK" };
+}
+
+export function validateTask9ApiMemoryState(value) {
+  const match = /^([^ ]+) \/ ([^ ]+)$/.exec(value ?? "");
+  if (!match) return { code: "API_MEMORY_STATE_INVALID" };
+  const usageBytes = parseIecBytes(match[1]);
+  const limitBytes = parseIecBytes(match[2]);
+  if (usageBytes === null || limitBytes === null || usageBytes > limitBytes)
+    return { code: "API_MEMORY_STATE_INVALID" };
+  if (limitBytes !== TASK9_EXPECTED_API_MEMORY_LIMIT_BYTES)
+    return { code: "API_MEMORY_LIMIT_INVALID" };
+  const headroomBytes = limitBytes - usageBytes;
+  if (headroomBytes < TASK9_MIN_API_MEMORY_HEADROOM_BYTES)
+    return { code: "API_MEMORY_HEADROOM_LOW" };
+  return { code: "OK", headroomBytes, limitBytes, usageBytes };
+}
+
+export function validateTask9PostgresConnectionState(value) {
+  const match = /^([^|]+)\|([^|]+)$/.exec(value ?? "");
+  if (!match) return { code: "POSTGRES_CONNECTION_STATE_INVALID" };
+  const activeConnections = parseSafeInteger(match[1]);
+  const maxConnections = parseSafeInteger(match[2]);
+  if (activeConnections === null || maxConnections === null || activeConnections > maxConnections)
+    return { code: "POSTGRES_CONNECTION_STATE_INVALID" };
+  if (maxConnections !== TASK9_EXPECTED_POSTGRES_MAX_CONNECTIONS)
+    return { code: "POSTGRES_MAX_CONNECTIONS_INVALID" };
+  const headroomConnections = maxConnections - activeConnections;
+  if (headroomConnections < TASK9_MIN_POSTGRES_CONNECTION_HEADROOM)
+    return { code: "POSTGRES_CONNECTION_HEADROOM_LOW" };
+  return { activeConnections, code: "OK", headroomConnections, maxConnections };
 }
 
 const apiRequire = createRequire(new URL("../apps/api/package.json", import.meta.url));
@@ -99,12 +127,12 @@ async function databaseServerIdentity(databaseUrl, expectedDatabase) {
 }
 
 async function main() {
-  const [command, reportPath, vehicleId] = process.argv.slice(2);
+  const [command, reportPath, resourceThreshold] = process.argv.slice(2);
   try {
     if (command === "validate-selection") {
       const result = validateTask9DiscoverySelection(
         JSON.parse(await readFile(reportPath, "utf8")),
-        vehicleId
+        process.env.APPROVED_VEHICLE_UUID
       );
       if (result.code !== "OK") process.exitCode = 1;
       return;
@@ -124,6 +152,38 @@ async function main() {
       const result = buildTask9ApprovalSummary(JSON.parse(await readFile(reportPath, "utf8")));
       if (result.code) process.exitCode = 1;
       else process.stdout.write(`${JSON.stringify(result)}\n`);
+      return;
+    }
+    if (command === "resource-disk") {
+      if (reportPath !== String(TASK9_MIN_HOST_DISK_AVAILABLE_KB)) {
+        process.exitCode = 1;
+        return;
+      }
+      writeResourceSummary(validateTask9DiskAvailableKb(process.env.TASK9_DISK_AVAILABLE_KB));
+      return;
+    }
+    if (command === "resource-memory") {
+      if (
+        reportPath !== String(TASK9_EXPECTED_API_MEMORY_LIMIT_BYTES) ||
+        resourceThreshold !== String(TASK9_MIN_API_MEMORY_HEADROOM_BYTES)
+      ) {
+        process.exitCode = 1;
+        return;
+      }
+      writeResourceSummary(validateTask9ApiMemoryState(process.env.TASK9_API_MEMORY_STATE));
+      return;
+    }
+    if (command === "resource-postgres-connections") {
+      if (
+        reportPath !== String(TASK9_EXPECTED_POSTGRES_MAX_CONNECTIONS) ||
+        resourceThreshold !== String(TASK9_MIN_POSTGRES_CONNECTION_HEADROOM)
+      ) {
+        process.exitCode = 1;
+        return;
+      }
+      writeResourceSummary(
+        validateTask9PostgresConnectionState(process.env.TASK9_POSTGRES_CONNECTION_STATE)
+      );
       return;
     }
     if (command === "source-server-identity") {
@@ -152,3 +212,26 @@ if (
     new URL(`file://${process.argv[1].replaceAll("\\", "/")}`).pathname
 )
   main();
+
+function parseSafeInteger(value) {
+  if (!DECIMAL_INTEGER.test(value ?? "")) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function parseIecBytes(value) {
+  const match = IEC_SIZE.exec(value ?? "");
+  if (!match) return null;
+  const multipliers = { B: 1, KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3 };
+  const parsed = Number(match[1]) * multipliers[match[2]];
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function writeResourceSummary(result) {
+  if (result.code !== "OK") {
+    process.exitCode = 1;
+    return;
+  }
+  const { code: _code, ...safeCounts } = result;
+  process.stdout.write(`${JSON.stringify({ ...safeCounts, state: "ok" })}\n`);
+}

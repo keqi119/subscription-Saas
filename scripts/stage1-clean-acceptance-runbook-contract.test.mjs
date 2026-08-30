@@ -173,6 +173,19 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     "STOP: APPROVED_API_IMAGE_REVISION_INVALID",
     "STOP: APPROVED_API_IMAGE_REVISION_MISMATCH",
     "export TARGET_DB",
+    "readonly MIN_HOST_DISK_AVAILABLE_KB=10485760",
+    "readonly EXPECTED_API_MEMORY_LIMIT_BYTES=536870912",
+    "readonly MIN_API_MEMORY_HEADROOM_BYTES=134217728",
+    "readonly EXPECTED_POSTGRES_MAX_CONNECTIONS=30",
+    "readonly MIN_POSTGRES_CONNECTION_HEADROOM=10",
+    'docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --services',
+    "STOP: COMPOSE_SERVICE_SET_INVALID",
+    "STOP: API_CONTAINER_COUNT_INVALID",
+    "STOP: API_CONTAINER_NOT_RUNNING",
+    "STOP: API_CONTAINER_NOT_HEALTHY",
+    "STOP: DISK_AVAILABLE_STATE_INVALID",
+    "STOP: API_MEMORY_STATE_INVALID",
+    "STOP: POSTGRES_CONNECTION_STATE_INVALID",
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL"',
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL"',
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"',
@@ -188,9 +201,17 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     "MIGRATION_COUNTS_INVALID",
     "STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL"
   ]);
+  assert.match(preflight, /--env APPROVED_VEHICLE_UUID/);
+  assert.doesNotMatch(preflight, /validate-selection[^\n]*["']?\$APPROVED_VEHICLE_UUID/);
   assert.doesNotMatch(preflight, /docker compose[^\n]+run[^\n]+\bapi\b/);
   assert.doesNotMatch(preflight, /^\s*(?:jq|node|psql|pg_dump)\b/m);
   assertStrictOrder(preflight, [
+    "config --services",
+    "API_CONTAINER_NOT_RUNNING",
+    "API_CONTAINER_NOT_HEALTHY",
+    'stage1-task9-preflight-governance.mjs resource-disk "$MIN_HOST_DISK_AVAILABLE_KB"',
+    'stage1-task9-preflight-governance.mjs resource-memory "$EXPECTED_API_MEMORY_LIMIT_BYTES" "$MIN_API_MEMORY_HEADROOM_BYTES"',
+    'stage1-task9-preflight-governance.mjs resource-postgres-connections "$EXPECTED_POSTGRES_MAX_CONNECTIONS" "$MIN_POSTGRES_CONNECTION_HEADROOM"',
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL"',
     "CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L",
     "empty-new-database.pre-migration",
@@ -795,19 +816,19 @@ test("keeps old database read-only and migration/backup gates fail closed", asyn
 });
 
 test("pins compose, release image, and fixed preflight identities", async () => {
-  const contents = await readRunbook();
-  assertContainsAll(contents, [
-    'readonly COMPOSE_FILE="/opt/subscription-saas/docker-compose.staging.images.yml"',
+  const preflight = validateTask9PreflightContracts(await readRunbook());
+  assertContainsAll(preflight, [
+    'readonly COMPOSE_FILE="/opt/subscription-saas/docker-compose.staging.images.example.yml"',
     'readonly ENV_FILE="/opt/subscription-saas/.env.staging.images"',
-    'readonly API_CONTAINER_ID="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"',
+    'readonly COMPOSE_PROJECT="subauto-staging"',
     "org.opencontainers.image.revision",
     'readonly RUN_UTC="$(date -u +%Y%m%dT%H%M%SZ)"',
-    'readonly EVIDENCE_DIR="/opt/subscription-saas/reports/stage1-clean-acceptance-${RUN_UTC}"',
+    'readonly EVIDENCE_DIR="${EVIDENCE_PARENT}/stage1-clean-acceptance-${RUN_UTC}"',
     'readonly TARGET_DB="subscription_saas_staging_acceptance_${RUN_UTC,,}"',
-    "docker compose config --services",
-    "docker compose ps",
-    "目标 API 镜像只运行一次 migration deploy",
-    "磁盘、内存、连接数、容器 health、Git/image SHA"
+    "config --services",
+    'resource-disk "$MIN_HOST_DISK_AVAILABLE_KB"',
+    'resource-memory "$EXPECTED_API_MEMORY_LIMIT_BYTES" "$MIN_API_MEMORY_HEADROOM_BYTES"',
+    'resource-postgres-connections "$EXPECTED_POSTGRES_MAX_CONNECTIONS" "$MIN_POSTGRES_CONNECTION_HEADROOM"'
   ]);
 });
 
@@ -965,6 +986,18 @@ if [[ "$*" == *'%u:%g:%a'* ]]; then target="\${!#}"; if test -d "$target"; then 
   );
   writeFakeCommand(
     bin,
+    "df",
+    `printf '%s\\n' df >>"$TRACE_FILE"
+printf '%s\\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on'
+case "$FAILURE_SCENARIO" in
+  disk_below) printf '%s\\n' gate:disk-headroom >>"$TRACE_FILE"; available=10485759 ;;
+  disk_malformed) printf '%s\\n' gate:disk-parse >>"$TRACE_FILE"; available=not-a-count ;;
+  *) available=10485760 ;;
+esac
+printf 'fake 41943040 0 %s 0%% /opt/subscription-saas\\n' "$available"`
+  );
+  writeFakeCommand(
+    bin,
     "curl",
     `printf '%s\\n' curl >>"$TRACE_FILE"
 case "\${!#}" in
@@ -983,8 +1016,23 @@ printf 200`
     bin,
     "docker",
     `args="$*"; printf '%s\\n' docker >>"$TRACE_FILE"
+if [[ "$args" == *"$UUID_SENTINEL"* ]]; then printf '%s\\n' gate:vehicle-uuid-argv-leak >>"$TRACE_FILE"; exit 82; fi
 case "$args" in
-  *'ps -q api'*) printf '%s\\n' ${CONTAINER_ID} ;;
+  *'config --services'*)
+    if test "$FAILURE_SCENARIO" = compose_services; then printf '%s\\n' gate:compose-services >>"$TRACE_FILE"; printf '%s\\n' postgres api; else printf '%s\\n' postgres api web; fi ;;
+  *'ps -q api'*)
+    if test "$FAILURE_SCENARIO" = api_container_unique; then printf '%s\\n' gate:api-container-unique >>"$TRACE_FILE"; printf '%s\\n%s\\n' ${CONTAINER_ID} '${"d".repeat(64)}'; else printf '%s\\n' ${CONTAINER_ID}; fi ;;
+  *'inspect --format {{.State.Running}}'*)
+    if test "$FAILURE_SCENARIO" = api_not_running; then printf '%s\\n' gate:api-running >>"$TRACE_FILE"; printf false; else printf true; fi ;;
+  *'inspect --format {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}'*)
+    if test "$FAILURE_SCENARIO" = api_unhealthy; then printf '%s\\n' gate:api-health >>"$TRACE_FILE"; printf unhealthy; else printf healthy; fi ;;
+  *'stats --no-stream --format {{.MemUsage}}'*)
+    case "$FAILURE_SCENARIO" in
+      api_memory_limit) printf '%s\\n' gate:api-memory-limit >>"$TRACE_FILE"; printf '%s\\n' '402653184B / 536870911B' ;;
+      api_memory_headroom) printf '%s\\n' gate:api-memory-headroom >>"$TRACE_FILE"; printf '%s\\n' '402653185B / 536870912B' ;;
+      api_memory_malformed) printf '%s\\n' gate:api-memory-parse >>"$TRACE_FILE"; printf '%s\\n' 'malformed' ;;
+      *) printf '%s\\n' '402653184B / 536870912B' ;;
+    esac ;;
   *'inspect --format {{.Image}}'*) printf '%s\\n' ${IMAGE_ID} ;;
   *'image inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*)
     case "$FAILURE_SCENARIO" in
@@ -996,6 +1044,13 @@ case "$args" in
   *'inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*) printf '%s\\n' ${RELEASE_SHA} ;;
   *'image inspect --format {{.Id}}'*) test "$FAILURE_SCENARIO" != image_id || { printf '%s\\n' gate:image-id >>"$TRACE_FILE"; printf '%s\\n' bad; exit 0; }; printf '%s\\n' ${IMAGE_ID} ;;
   *'image inspect --format {{index .RepoDigests 0}}'*) test "$FAILURE_SCENARIO" != image_digest || { printf '%s\\n' gate:image-digest >>"$TRACE_FILE"; printf '%s\\n' bad; exit 0; }; printf '%s\\n' registry.test/api@sha256:${"a".repeat(64)} ;;
+  *'pg_stat_activity'*)
+    case "$FAILURE_SCENARIO" in
+      postgres_max_connections) printf '%s\\n' gate:postgres-max-connections >>"$TRACE_FILE"; printf '%s\\n' '20|31' ;;
+      postgres_headroom) printf '%s\\n' gate:postgres-connection-headroom >>"$TRACE_FILE"; printf '%s\\n' '21|30' ;;
+      postgres_connections_malformed) printf '%s\\n' gate:postgres-connection-parse >>"$TRACE_FILE"; printf '%s\\n' 'twenty|30' ;;
+      *) printf '%s\\n' '20|30' ;;
+    esac ;;
   *'current_user;'*) printf '%s\\n' subscription_saas ;;
   *'pg_control_system'*) printf '%s\\n' server-id ;;
   *'SELECT EXISTS'*) test "$FAILURE_SCENARIO" != target_exists || printf '%s\\n' gate:target-exists >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != target_exists && printf f || printf t ;;
@@ -1023,8 +1078,13 @@ case "$args" in
   *' node -'*) test "$FAILURE_SCENARIO" != checksum || { printf '%s\\n' gate:migration-checksum >>"$TRACE_FILE"; exit 77; } ;;
   *'prisma:migrate:checksum:verify'*) test "$FAILURE_SCENARIO" != checksum || { printf '%s\\n' gate:migration-checksum >>"$TRACE_FILE"; exit 77; } ;;
   *'prisma migrate diff'*) test "$FAILURE_SCENARIO" != drift || { printf '%s\\n' gate:migration-drift >>"$TRACE_FILE"; exit 78; } ;;
-  *'--discover-vehicles'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{}' >"$HARNESS_EVIDENCE/vehicle-discovery.json"; test "$FAILURE_SCENARIO" != discovery || { printf '%s\\n' gate:discovery >>"$TRACE_FILE"; exit 4; }; exit 3 ;;
-  *'validate-selection'*) test "$FAILURE_SCENARIO" != uuid || { printf '%s\\n' gate:vehicle-selection >>"$TRACE_FILE"; exit 79; } ;;
+  *'--discover-vehicles'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{"candidates":[{"id":"%s"}]}' "$UUID_SENTINEL" >"$HARNESS_EVIDENCE/vehicle-discovery.json"; test "$FAILURE_SCENARIO" != discovery || { printf '%s\\n' gate:discovery >>"$TRACE_FILE"; exit 4; }; exit 3 ;;
+  *'resource-disk'*) "$REAL_NODE" "$TASK9_GOVERNANCE_SCRIPT" resource-disk "\${@: -1}" ;;
+  *'resource-memory'*) "$REAL_NODE" "$TASK9_GOVERNANCE_SCRIPT" resource-memory "\${@: -2:1}" "\${@: -1}" ;;
+  *'resource-postgres-connections'*) "$REAL_NODE" "$TASK9_GOVERNANCE_SCRIPT" resource-postgres-connections "\${@: -2:1}" "\${@: -1}" ;;
+  *'validate-selection'*)
+    test "$FAILURE_SCENARIO" != uuid || { printf '%s\\n' gate:vehicle-selection >>"$TRACE_FILE"; export APPROVED_VEHICLE_UUID='223e4567-e89b-42d3-a456-426614174000'; }
+    "$REAL_NODE" "$TASK9_GOVERNANCE_SCRIPT" validate-selection "$HARNESS_EVIDENCE/vehicle-discovery.json" ;;
   *'--vehicle-id'*) mkdir -p "$HARNESS_EVIDENCE"; if test "$FAILURE_SCENARIO" = formal_nonzero; then /usr/bin/cp "$FORMAL_NONZERO_REPORT" "$HARNESS_EVIDENCE/baseline-dry-run.json"; else /usr/bin/cp "$FORMAL_ZERO_REPORT" "$HARNESS_EVIDENCE/baseline-dry-run.json"; fi ;;
   *'approval-summary'*) if test "$FAILURE_SCENARIO" = formal_nonzero; then printf '%s\\n' gate:approval-summary-nonzero >>"$TRACE_FILE"; else printf '%s\\n' gate:approval-summary >>"$TRACE_FILE"; fi; "$REAL_NODE" "$TASK9_GOVERNANCE_SCRIPT" approval-summary "$HARNESS_EVIDENCE/baseline-dry-run.json" ;;
   *) : ;;
@@ -1051,6 +1111,7 @@ ${preflight
       REAL_NODE: realNode,
       TASK9_GOVERNANCE_SCRIPT: governanceScript,
       TRACE_FILE: trace,
+      UUID_SENTINEL: "123e4567-e89b-42d3-a456-426614174000",
       STAGE1_ACCEPTANCE_DATABASE_OWNER: "subscription_saas",
       STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL:
         "postgresql://subscription_saas:x@postgres:5432/subscription_saas_staging",
@@ -1081,7 +1142,20 @@ test(
     assert.equal(green.result.status, 0, `${green.output}\n${green.calls}`);
     assert.match(green.output, /STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL/);
     assert.doesNotMatch(green.calls, /HOST_(?:jq|node|psql|pg_dump)/);
+    assert.doesNotMatch(green.calls, /vehicle-uuid-argv-leak/);
     const allFailureScenarios = [
+      "compose_services",
+      "api_container_unique",
+      "api_not_running",
+      "api_unhealthy",
+      "disk_below",
+      "disk_malformed",
+      "api_memory_limit",
+      "api_memory_headroom",
+      "api_memory_malformed",
+      "postgres_max_connections",
+      "postgres_headroom",
+      "postgres_connections_malformed",
       "health_api",
       "health_admin",
       "health_portal",
@@ -1108,10 +1182,19 @@ test(
       "approval_publication"
     ];
     const expectedLastGate = {
+      api_container_unique: "gate:api-container-unique",
+      api_memory_headroom: "gate:api-memory-headroom",
+      api_memory_limit: "gate:api-memory-limit",
+      api_memory_malformed: "gate:api-memory-parse",
+      api_not_running: "gate:api-running",
+      api_unhealthy: "gate:api-health",
       approval_publication: "gate:approval-publication",
       backup: "gate:backup",
       checksum: "gate:migration-checksum",
+      compose_services: "gate:compose-services",
       discovery: "gate:discovery",
+      disk_below: "gate:disk-headroom",
+      disk_malformed: "gate:disk-parse",
       drift: "gate:migration-drift",
       formal_nonzero: "gate:approval-summary-nonzero",
       health_admin: "gate:health-admin",
@@ -1126,6 +1209,9 @@ test(
       migrate_status: "gate:migration-status",
       migration_count: "gate:migration-count",
       post_migration_nonempty: "gate:post-migration-business-count",
+      postgres_connections_malformed: "gate:postgres-connection-parse",
+      postgres_headroom: "gate:postgres-connection-headroom",
+      postgres_max_connections: "gate:postgres-max-connections",
       server_identity: "gate:server-identity-different-cluster",
       source_name_mismatch: "gate:url-source-database",
       target_exists: "gate:target-exists",

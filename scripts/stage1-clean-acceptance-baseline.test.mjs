@@ -15,6 +15,10 @@ import {
   writeControlledJsonFile
 } from "./stage1-clean-acceptance-cli-core.mjs";
 import { main as baselineMain } from "./stage1-clean-acceptance-baseline.mjs";
+import {
+  STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES,
+  STAGE1_ACCEPTANCE_WHITELIST_DELEGATES
+} from "./stage1-clean-acceptance-baseline-snapshot.mjs";
 
 const VEHICLE = "11111111-1111-4111-8111-111111111111";
 const SHA = "a".repeat(64);
@@ -690,7 +694,8 @@ test("apply reuses approved generatedAt/salt and verifies the canonical manifest
     manifestSha256: SHA,
     mode: "dry-run",
     operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
-    safe: true
+    safe: true,
+    targetCountEvidence: approvedTargetCountEvidence()
   };
   for (const rejectedReport of [
     { ...wrapper, rawSecret: "WRAPPER_SECRET" },
@@ -736,6 +741,34 @@ test("apply reuses approved generatedAt/salt and verifies the canonical manifest
     2
   );
   assert.equal(samePath.clients.length, 0);
+});
+
+test("apply and replay reject every strict approved-wrapper violation before connecting", async () => {
+  const approved = approvedManifest();
+  for (const mode of ["apply", "replay"]) {
+    for (const [caseName, approvedReport] of invalidApprovedReports(approved)) {
+      const harness = createBaselineHarness({ approved, approvedReport });
+      assert.equal(
+        await baselineMain(
+          [
+            `--${mode}`,
+            "--output",
+            `D:/evidence/${mode}.json`,
+            "--vehicle-id",
+            VEHICLE,
+            "--approved-manifest",
+            "D:/evidence/dry.json",
+            "--approved-manifest-sha256",
+            SHA
+          ],
+          harness.deps
+        ),
+        2,
+        `${mode}:${caseName}`
+      );
+      assert.equal(harness.clients.length, 0, `${mode}:${caseName}`);
+    }
+  }
 });
 
 test("replay report and public summary expose exact zero write counts", async () => {
@@ -846,6 +879,86 @@ function approvedManifest() {
     source: { databaseDigest: SHA, migrationCatalogDigest: SHA, schemaDigest: SHA },
     target: { databaseDigest: SHA, migrationCatalogDigest: SHA, schemaDigest: SHA }
   };
+}
+
+function approvedTargetCountEvidence() {
+  return {
+    forbiddenCountKeys: [...STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES],
+    forbiddenCounts: Object.fromEntries(
+      STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES.map((key) => [key, 0])
+    ),
+    tableCountKeys: [...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES],
+    tableCounts: Object.fromEntries(STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.map((key) => [key, 0]))
+  };
+}
+
+function invalidApprovedReports(manifest) {
+  const wrapper = {
+    manifest,
+    manifestSha256: SHA,
+    mode: "dry-run",
+    operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+    safe: true,
+    targetCountEvidence: approvedTargetCountEvidence()
+  };
+  const missingMode = structuredClone(wrapper);
+  delete missingMode.mode;
+  const missingOperation = structuredClone(wrapper);
+  delete missingOperation.operation;
+  const missingTableCounts = structuredClone(wrapper);
+  delete missingTableCounts.targetCountEvidence.tableCounts;
+  return [
+    ["missing-mode", missingMode],
+    ["wrong-mode", { ...structuredClone(wrapper), mode: "apply" }],
+    ["missing-operation", missingOperation],
+    ["wrong-operation", { ...structuredClone(wrapper), operation: "OTHER" }],
+    [
+      "incomplete-manifest",
+      { ...structuredClone(wrapper), manifest: { safeToApply: true, exceptions: [] } }
+    ],
+    [
+      "arbitrary-count-keys",
+      {
+        ...structuredClone(wrapper),
+        targetCountEvidence: {
+          forbiddenCountKeys: ["arbitraryForbidden"],
+          forbiddenCounts: { arbitraryForbidden: 0 },
+          tableCountKeys: ["arbitraryTable"],
+          tableCounts: { arbitraryTable: 0 }
+        }
+      }
+    ],
+    [
+      "replaced-table-key",
+      {
+        ...structuredClone(wrapper),
+        targetCountEvidence: {
+          ...approvedTargetCountEvidence(),
+          tableCountKeys: ["replacementTable", ...STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.slice(1)],
+          tableCounts: {
+            replacementTable: 0,
+            ...Object.fromEntries(
+              STAGE1_ACCEPTANCE_WHITELIST_DELEGATES.slice(1).map((key) => [key, 0])
+            )
+          }
+        }
+      }
+    ],
+    ["missing-table-counts", missingTableCounts],
+    [
+      "nonzero-table-count",
+      {
+        ...structuredClone(wrapper),
+        targetCountEvidence: {
+          ...approvedTargetCountEvidence(),
+          tableCounts: {
+            ...approvedTargetCountEvidence().tableCounts,
+            [STAGE1_ACCEPTANCE_WHITELIST_DELEGATES[0]]: 1
+          }
+        }
+      }
+    ]
+  ];
 }
 
 function hostEvidenceSecurity(parent, intent) {
@@ -1031,7 +1144,8 @@ function createBaselineHarness({
           manifestSha256: SHA,
           mode: "dry-run",
           operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
-          safe: true
+          safe: true,
+          targetCountEvidence: approvedTargetCountEvidence()
         }
       ),
     repoRoot: "D:/repo",

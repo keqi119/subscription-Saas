@@ -19,7 +19,254 @@
 
 首先由 root shell 注入已批准的 `APPROVED_RELEASE_SHA` 以及数据库相关秘密变量；不得启用 `set -x`。下列初始化块固定使用指定 compose 文件和 `api` service：
 
+> 本节以下标记的 Task 9 fence 是唯一可执行的预检/建库/dry-run 流程；其后的旧示例仅为已废弃的历史记录，**不得执行**。
+
+<!-- STAGE1_TASK9_PREFLIGHT_EXECUTABLE_BEGIN -->
+
 ```bash
+set -euo pipefail
+umask 077
+
+: "${APPROVED_RELEASE_SHA:?root-owned approved release SHA is required}"
+: "${APPROVED_API_IMAGE:?root-owned approved target API image is required}"
+: "${STAGE1_ACCEPTANCE_DATABASE_OWNER:?root-owned database owner is required}"
+: "${STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL:?root-owned source URL is required}"
+: "${STAGE1_ACCEPTANCE_TARGET_DATABASE_URL:?root-owned target URL is required}"
+: "${STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME:?approved database hostname is required}"
+: "${STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL:?approved public API health URL is required}"
+: "${STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL:?approved public Admin health URL is required}"
+: "${STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL:?approved public Portal health URL is required}"
+
+readonly COMPOSE_FILE="/opt/subscription-saas/docker-compose.staging.images.example.yml"
+readonly COMPOSE_PROJECT="subauto-staging"
+readonly ENV_FILE="/opt/subscription-saas/.env.staging.images"
+readonly APPROVED_API_IMAGE
+readonly RUN_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
+readonly TARGET_DB="subscription_saas_staging_acceptance_${RUN_UTC,,}"
+readonly EVIDENCE_PARENT="/opt/subscription-saas/reports"
+readonly EVIDENCE_DIR="${EVIDENCE_PARENT}/stage1-clean-acceptance-${RUN_UTC}"
+readonly OLD_DB_BACKUP="${EVIDENCE_DIR}/old-database.pre-apply.dump"
+readonly EMPTY_NEW_DB_BACKUP="${EVIDENCE_DIR}/empty-new-database.pre-migration.dump"
+# 本轮新增的保守 Task 9 门槛：磁盘至少 10 GiB 可用；API 必须保持 compose 固定的
+# 512 MiB limit 且至少保留 128 MiB；PostgreSQL 必须保持 max_connections=30
+# 且至少保留 10 个连接。边界值允许通过，任一事实不可解析即失败关闭。
+readonly MIN_HOST_DISK_AVAILABLE_KB=10485760
+readonly EXPECTED_API_MEMORY_LIMIT_BYTES=536870912
+readonly MIN_API_MEMORY_HEADROOM_BYTES=134217728
+readonly EXPECTED_POSTGRES_MAX_CONNECTIONS=30
+readonly MIN_POSTGRES_CONNECTION_HEADROOM=10
+export TARGET_DB
+
+assert_private_directory() { test -d "$1" && test ! -L "$1" && test "$(stat -c '%u:%g:%a' "$1")" = '0:0:700'; }
+assert_new_evidence_path() { test ! -e "$1" && test ! -L "$1"; }
+assert_private_file() { test -f "$1" && test ! -L "$1" && test "$(stat -c '%u:%g:%a' "$1")" = '0:0:600'; }
+publish_private_evidence() {
+  local target="$1" temporary
+  assert_new_evidence_path "$target"
+  temporary="$(mktemp --tmpdir="$EVIDENCE_DIR" '.evidence.XXXXXX')"
+  if ! cat >"$temporary"; then rm -f -- "$temporary"; return 1; fi
+  chown root:root "$temporary" && chmod 0600 "$temporary"
+  ln -- "$temporary" "$target" && rm -f -- "$temporary"
+  assert_private_file "$target"
+}
+postgres_exec() {
+  docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres "$@"
+}
+postgres_admin_query() {
+  postgres_exec psql -X -v ON_ERROR_STOP=1 -U "$STAGE1_ACCEPTANCE_DATABASE_OWNER" -d postgres "$@"
+}
+postgres_target_query() {
+  postgres_exec psql -X -v ON_ERROR_STOP=1 -U "$STAGE1_ACCEPTANCE_DATABASE_OWNER" -d "$TARGET_DB" "$@"
+}
+target_node() {
+  docker run --rm -i --network "${COMPOSE_PROJECT}_default" --volume "$EVIDENCE_DIR:/evidence:ro" \
+    --env APPROVED_RELEASE_SHA --env STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL \
+    --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL --env STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME \
+    --env STAGE1_ACCEPTANCE_DATABASE_OWNER --env STAGE1_ACCEPTANCE_IMAGE_REF \
+    --env TARGET_DB --env APPROVED_VEHICLE_UUID --env TASK9_DISK_AVAILABLE_KB \
+    --env TASK9_API_MEMORY_STATE --env TASK9_POSTGRES_CONNECTION_STATE \
+    "$APPROVED_API_IMAGE_ID" node "$@"
+}
+target_api() {
+  docker run --rm -i --network "${COMPOSE_PROJECT}_default" \
+    --env DATABASE_URL \
+    --env STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
+    --env STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME --env STAGE1_ACCEPTANCE_GIT_SHA="$APPROVED_RELEASE_SHA" \
+    --env STAGE1_ACCEPTANCE_IMAGE_REF --env APPROVED_VEHICLE_UUID \
+    --volume "$EVIDENCE_DIR:/evidence" "$APPROVED_API_IMAGE_ID" "$@"
+}
+check_public_http_200() {
+  local status
+  status="$(curl --fail --silent --show-error --output /dev/null --dump-header /dev/null --write-out '%{http_code}' "$1")" || return 1
+  test "$status" = '200'
+}
+
+test -f "$COMPOSE_FILE" && test -f "$ENV_FILE"
+[[ "$TARGET_DB" =~ ^subscription_saas_staging_acceptance_[0-9]{8}t[0-9]{6}z$ ]] || { printf '%s\n' 'STOP: TARGET_DB_REGEX_INVALID'; exit 1; }
+[[ "$APPROVED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: APPROVED_RELEASE_SHA_INVALID'; exit 1; }
+
+readonly COMPOSE_SERVICES="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --services)"
+if test "$(printf '%s\n' "$COMPOSE_SERVICES" | grep -c .)" -ne 3 \
+  || test "$(printf '%s\n' "$COMPOSE_SERVICES" | grep -Fxc postgres)" -ne 1 \
+  || test "$(printf '%s\n' "$COMPOSE_SERVICES" | grep -Fxc api)" -ne 1 \
+  || test "$(printf '%s\n' "$COMPOSE_SERVICES" | grep -Fxc web)" -ne 1; then
+  printf '%s\n' 'STOP: COMPOSE_SERVICE_SET_INVALID'
+  exit 1
+fi
+readonly API_CONTAINER_IDS="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
+[[ "$API_CONTAINER_IDS" =~ ^[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: API_CONTAINER_COUNT_INVALID'; exit 1; }
+readonly API_CONTAINER_ID="$API_CONTAINER_IDS"
+test "$(docker inspect --format '{{.State.Running}}' "$API_CONTAINER_ID")" = 'true' || { printf '%s\n' 'STOP: API_CONTAINER_NOT_RUNNING'; exit 1; }
+test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$API_CONTAINER_ID")" = 'healthy' || { printf '%s\n' 'STOP: API_CONTAINER_NOT_HEALTHY'; exit 1; }
+readonly CURRENT_ONLINE_API_IMAGE="$(docker inspect --format '{{.Image}}' "$API_CONTAINER_ID")"
+readonly CURRENT_ONLINE_API_REVISION="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$API_CONTAINER_ID")"
+readonly APPROVED_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$APPROVED_API_IMAGE")"
+readonly APPROVED_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$APPROVED_API_IMAGE_ID")"
+readonly APPROVED_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$APPROVED_API_IMAGE_ID")"
+[[ "$APPROVED_API_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_ID_INVALID'; exit 1; }
+[[ "$APPROVED_API_IMAGE_DIGEST" =~ @sha256:[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_DIGEST_INVALID'; exit 1; }
+[[ "$APPROVED_API_IMAGE_REVISION" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_REVISION_INVALID'; exit 1; }
+test "$APPROVED_API_IMAGE_REVISION" = "$APPROVED_RELEASE_SHA" || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_REVISION_MISMATCH'; exit 1; }
+readonly STAGE1_ACCEPTANCE_IMAGE_REF="$APPROVED_API_IMAGE_DIGEST"
+export STAGE1_ACCEPTANCE_IMAGE_REF
+export DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL"
+
+assert_private_directory "$EVIDENCE_PARENT"
+test ! -e "$EVIDENCE_DIR" && test ! -L "$EVIDENCE_DIR"
+install -d -o root -g root -m 0700 "$EVIDENCE_DIR"
+assert_private_directory "$EVIDENCE_DIR"
+{
+  printf 'current_online_image_id=%s\n' "$CURRENT_ONLINE_API_IMAGE"
+  printf 'current_online_revision=%s\n' "${CURRENT_ONLINE_API_REVISION:-missing}"
+  printf 'approved_target_image_id=%s\n' "$APPROVED_API_IMAGE_ID"
+  printf 'approved_target_revision=%s\n' "$APPROVED_API_IMAGE_REVISION"
+  printf 'approved_target_digest=%s\n' "$APPROVED_API_IMAGE_DIGEST"
+  printf '%s\n' 'compose_services=api,postgres,web'
+  printf '%s\n' 'api_state=running api_health=healthy'
+} | publish_private_evidence "$EVIDENCE_DIR/preflight.safe.state"
+
+readonly TASK9_DISK_AVAILABLE_KB="$(df -Pk /opt/subscription-saas | awk 'NR == 2 { print $4 }')"
+readonly TASK9_API_MEMORY_STATE="$(docker stats --no-stream --format '{{.MemUsage}}' "$API_CONTAINER_ID")"
+readonly TASK9_POSTGRES_CONNECTION_STATE="$(postgres_admin_query -XAtq -c "SELECT count(*)::bigint || '|' || current_setting('max_connections')::bigint FROM pg_stat_activity;")"
+export TASK9_DISK_AVAILABLE_KB TASK9_API_MEMORY_STATE TASK9_POSTGRES_CONNECTION_STATE
+if ! DISK_RESOURCE_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs resource-disk "$MIN_HOST_DISK_AVAILABLE_KB")"; then
+  printf '%s\n' 'STOP: DISK_AVAILABLE_STATE_INVALID'
+  exit 1
+fi
+readonly DISK_RESOURCE_SUMMARY
+printf '%s\n' "$DISK_RESOURCE_SUMMARY" | publish_private_evidence "$EVIDENCE_DIR/disk-resource.safe.json"
+if ! API_MEMORY_RESOURCE_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs resource-memory "$EXPECTED_API_MEMORY_LIMIT_BYTES" "$MIN_API_MEMORY_HEADROOM_BYTES")"; then
+  printf '%s\n' 'STOP: API_MEMORY_STATE_INVALID'
+  exit 1
+fi
+readonly API_MEMORY_RESOURCE_SUMMARY
+printf '%s\n' "$API_MEMORY_RESOURCE_SUMMARY" | publish_private_evidence "$EVIDENCE_DIR/api-memory-resource.safe.json"
+if ! POSTGRES_CONNECTION_RESOURCE_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs resource-postgres-connections "$EXPECTED_POSTGRES_MAX_CONNECTIONS" "$MIN_POSTGRES_CONNECTION_HEADROOM")"; then
+  printf '%s\n' 'STOP: POSTGRES_CONNECTION_STATE_INVALID'
+  exit 1
+fi
+readonly POSTGRES_CONNECTION_RESOURCE_SUMMARY
+printf '%s\n' "$POSTGRES_CONNECTION_RESOURCE_SUMMARY" | publish_private_evidence "$EVIDENCE_DIR/postgres-connections.safe.json"
+
+check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL"
+check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL"
+check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"
+printf '%s\n' 'public_api=200 public_admin=200 public_portal=200' | publish_private_evidence "$EVIDENCE_DIR/public-health.state"
+
+target_node scripts/stage1-task9-preflight-governance.mjs validate-pair || { printf '%s\n' 'STOP: DATABASE_IDENTITY_INVALID'; exit 1; }
+test "$(postgres_admin_query -XAtq -c 'SELECT current_user;')" = "$STAGE1_ACCEPTANCE_DATABASE_OWNER" || { printf '%s\n' 'STOP: COMPOSE_DATABASE_ROLE_INVALID'; exit 1; }
+readonly COMPOSE_SERVER_IDENTITY="$(postgres_admin_query -XAtq -c 'SELECT (pg_control_system()).system_identifier::text;')"
+readonly COMPOSE_SERVER_IDENTITY_SHA256="$(printf %s "$COMPOSE_SERVER_IDENTITY" | sha256sum | awk '{print $1}')"
+set +e
+SOURCE_SERVER_IDENTITY_SHA256="$(target_node scripts/stage1-task9-preflight-governance.mjs source-server-identity)"
+SOURCE_SERVER_IDENTITY_EXIT="$?"
+set -e
+test "$SOURCE_SERVER_IDENTITY_EXIT" -eq 0 || { printf '%s\n' 'STOP: SOURCE_SERVER_IDENTITY_UNAVAILABLE'; exit 1; }
+readonly SOURCE_SERVER_IDENTITY_SHA256
+test "$COMPOSE_SERVER_IDENTITY_SHA256" = "$SOURCE_SERVER_IDENTITY_SHA256" || { printf '%s\n' 'STOP: DATABASE_SERVER_IDENTITY_MISMATCH'; exit 1; }
+test "$(postgres_admin_query -XAtq --set=target_db="$TARGET_DB" -c 'SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'"'"'target_db'"'"');')" = 'f' || { printf '%s\n' 'STOP: TARGET_DATABASE_ALREADY_EXISTS'; exit 1; }
+postgres_admin_query --set=target_db="$TARGET_DB" --set=owner_role="$STAGE1_ACCEPTANCE_DATABASE_OWNER" <<'SQL'
+SELECT format('CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L', :'target_db', :'owner_role', 'UTF8') \gexec
+SQL
+set +e
+TARGET_SERVER_IDENTITY_SHA256="$(target_node scripts/stage1-task9-preflight-governance.mjs target-server-identity)"
+TARGET_SERVER_IDENTITY_EXIT="$?"
+set -e
+test "$TARGET_SERVER_IDENTITY_EXIT" -eq 0 || { printf '%s\n' 'STOP: TARGET_SERVER_IDENTITY_UNAVAILABLE'; exit 1; }
+readonly TARGET_SERVER_IDENTITY_SHA256
+test "$COMPOSE_SERVER_IDENTITY_SHA256" = "$TARGET_SERVER_IDENTITY_SHA256" || { printf '%s\n' 'STOP: DATABASE_SERVER_IDENTITY_MISMATCH'; exit 1; }
+test "$(postgres_target_query -XAtq -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';")" = '0' || { printf '%s\n' 'STOP: TARGET_DATABASE_NOT_EMPTY'; exit 1; }
+printf '%s\n' 'target_user_tables=0' | publish_private_evidence "$EVIDENCE_DIR/target-empty-pre-migration.state"
+
+backup_database() {
+  local database_name="$1" backup_path="$2" stem="$3"
+  assert_new_evidence_path "$backup_path"
+  (set -o noclobber; postgres_exec pg_dump -U "$STAGE1_ACCEPTANCE_DATABASE_OWNER" -d "$database_name" --format=custom >"$backup_path")
+  chown root:root "$backup_path" && chmod 0600 "$backup_path" && assert_private_file "$backup_path"
+  sha256sum "$backup_path" | publish_private_evidence "$EVIDENCE_DIR/${stem}.sha256"
+  printf 'backup_file_token=%s.dump\nuid=0 gid=0 mode=0600\n' "$stem" | publish_private_evidence "$EVIDENCE_DIR/${stem}.metadata"
+}
+backup_database 'subscription_saas_staging' "$OLD_DB_BACKUP" 'old-database.pre-apply'
+backup_database "$TARGET_DB" "$EMPTY_NEW_DB_BACKUP" 'empty-new-database.pre-migration'
+
+if target_api sh -lc 'cd /app/apps/api && pnpm exec prisma migrate deploy --schema prisma/schema.prisma' >/dev/null 2>&1; then
+  printf '%s\n' 'migration_deploy=applied_once' | publish_private_evidence "$EVIDENCE_DIR/migration-deploy.state"
+else printf '%s\n' 'STOP: MIGRATION_DEPLOY_FAILED'; exit 1; fi
+target_api sh -lc 'cd /app/apps/api && pnpm exec prisma migrate status --schema prisma/schema.prisma' >/dev/null 2>&1 || { printf '%s\n' 'STOP: MIGRATE_STATUS_FAILED'; exit 1; }
+target_api node - <<'NODE'
+const { execFileSync } = require('node:child_process');
+const result = JSON.parse(execFileSync('pnpm', ['prisma:migrate:checksum:verify'], { cwd: '/app', encoding: 'utf8' }));
+if (!result.safe || result.localMigrationCount !== 124 || result.appliedMigrationCount !== 124 || result.duplicateAppliedNames.length || result.mismatchedNames.length || result.missingFromDatabase.length || result.missingLocally.length) process.exit(31);
+NODE
+set +e
+target_api sh -lc 'cd /app/apps/api && pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' >/dev/null 2>&1
+DRIFT_EXIT="$?"
+set -e
+test "$DRIFT_EXIT" -eq 0 || { printf '%s\n' 'STOP: MIGRATION_DRIFT_DETECTED'; exit 1; }
+test "$(postgres_target_query -XAtq <<'SQL'
+WITH duplicate_names AS (SELECT migration_name FROM _prisma_migrations GROUP BY migration_name HAVING count(*) > 1)
+SELECT count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL), count(*) FILTER (WHERE rolled_back_at IS NOT NULL), count(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL), (SELECT count(*) FROM duplicate_names) FROM _prisma_migrations;
+SQL
+)" = '124|0|0|0' || { printf '%s\n' 'STOP: MIGRATION_COUNTS_INVALID'; exit 1; }
+postgres_target_query -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $$ DECLARE item record; row_count bigint; BEGIN
+  FOR item IN SELECT relname FROM pg_class JOIN pg_namespace ON pg_namespace.oid = relnamespace WHERE nspname = 'public' AND relkind = 'r' AND relname <> '_prisma_migrations' LOOP
+    EXECUTE format('SELECT count(*) FROM public.%I', item.relname) INTO row_count;
+    IF row_count <> 0 THEN RAISE EXCEPTION 'business table is nonempty'; END IF;
+  END LOOP;
+END $$;
+SQL
+printf '%s\n' 'post_migration_business_nonzero_tables=0' | publish_private_evidence "$EVIDENCE_DIR/post-migration-business-counts.state"
+
+set +e
+DISCOVERY_SUMMARY="$(target_api sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --discover-vehicles --output /evidence/vehicle-discovery.json')"
+DISCOVERY_EXIT="$?"
+set -e
+test "$DISCOVERY_EXIT" = '3' || { printf '%s\n' 'STOP: DISCOVERY_FAILED'; exit 1; }
+test -z "$DISCOVERY_SUMMARY" || printf '%s\n' 'discovery_summary=received' | publish_private_evidence "$EVIDENCE_DIR/discovery-summary.state"
+chmod 0600 "$EVIDENCE_DIR/vehicle-discovery.json"
+assert_private_file "$EVIDENCE_DIR/vehicle-discovery.json"
+read -r -s -p "Approved vehicle UUID (hidden): " APPROVED_VEHICLE_UUID
+printf '\n'
+export APPROVED_VEHICLE_UUID
+readonly APPROVED_VEHICLE_UUID
+target_node scripts/stage1-task9-preflight-governance.mjs validate-selection /evidence/vehicle-discovery.json || { printf '%s\n' 'STOP: VEHICLE_SELECTION_INVALID'; exit 1; }
+target_api sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --vehicle-id "$APPROVED_VEHICLE_UUID" --output /evidence/baseline-dry-run.json' >/dev/null
+readonly DRY_RUN_REPORT="$EVIDENCE_DIR/baseline-dry-run.json"
+set +e
+APPROVAL_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs approval-summary /evidence/baseline-dry-run.json)"
+APPROVAL_EXIT="$?"
+set -e
+test "$APPROVAL_EXIT" -eq 0 || { printf '%s\n' 'STOP: FORMAL_DRY_RUN_INVALID'; exit 1; }
+readonly APPROVAL_SUMMARY
+printf '%s\n' "$APPROVAL_SUMMARY" | publish_private_evidence "$EVIDENCE_DIR/baseline-approval.safe.json"
+printf '%s\n' 'STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL'
+exit 0
+```
+
+<!-- STAGE1_TASK9_PREFLIGHT_EXECUTABLE_END -->
+
+```text
 set -euo pipefail
 umask 077
 readonly COMPOSE_FILE="/opt/subscription-saas/docker-compose.staging.images.yml"
@@ -156,7 +403,7 @@ psql "$STAGE1_ACCEPTANCE_ADMIN_DATABASE_URL" -XAtq \
 
 先以 Node URL parser 静默断言源/目标 hostname 相同、目标 pathname 精确等于 `TARGET_DB`，并保留目标 URL 的 protocol/host/port/user/password/query；该检查无 stdout：
 
-```bash
+```text
 TARGET_DB="$TARGET_DB" node <<'NODE'
 const source = new URL(process.env.STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL);
 const target = new URL(process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL);
@@ -171,7 +418,7 @@ NODE
 
 只把受控 shell 变量作为 `psql` identifier 参数，再由 PostgreSQL `format('%I', ...)` quote；禁止 shell SQL 字符串拼接：
 
-```bash
+```text
 psql "$STAGE1_ACCEPTANCE_ADMIN_DATABASE_URL" \
   --set=target_db="$TARGET_DB" \
   --set=owner_role="$STAGE1_ACCEPTANCE_DATABASE_OWNER" <<'SQL'
@@ -186,7 +433,7 @@ SQL
 
 创建后立刻证明新库为空。先备份旧库，再备份空新库；两份 backup 都发生在任何 migration 或 baseline apply 之前，备份前后不得对旧库执行写事务：
 
-```bash
+```text
 readonly OLD_DB_BACKUP="$EVIDENCE_DIR/old-database.pre-apply.dump"
 readonly EMPTY_NEW_DB_BACKUP="$EVIDENCE_DIR/empty-new-database.pre-migration.dump"
 
@@ -222,7 +469,7 @@ backup_database "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" "$EMPTY_NEW_DB_BACKUP" 
 
 以下四个 migration 检查均在目标 API 镜像的一次性容器内运行；不得进入在线 API 容器。目标 API 镜像只运行一次 migration deploy。所有原始输出被抑制或解析为安全计数，任意非零立即停止：
 
-```bash
+```text
 if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
@@ -259,7 +506,7 @@ unset CHECKSUM_RESULT
 
 真实 drift 检查必须保留 Prisma 原始退出码，并在 API 包目录运行。退出码 `2` 是 drift，`1` 是命令失败；两者都停止，不能用 pipeline 或 workspace wrapper 归一化：
 
-```bash
+```text
 set +e
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
@@ -275,7 +522,7 @@ printf 'drift_exit=%s\n' "$DRIFT_EXIT" \
 
 最后直接读取 `_prisma_migrations` 的安全计数；pending 同时由 `migrate status` 与 checksum 的 missing count 证明为零：
 
-```bash
+```text
 readonly MIGRATION_COUNTS="$(psql "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" -XAtq <<'SQL'
 WITH duplicate_names AS (
   SELECT migration_name FROM _prisma_migrations GROUP BY migration_name HAVING count(*) > 1
@@ -297,7 +544,7 @@ printf '%s\n' '124 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate'
 
 将证据目录以相同绝对语义挂入目标镜像；一次性容器以 root 写入 `0600` 文件。先运行 `--discover-vehicles`。该模式按设计以退出码 `3` 返回 `VEHICLE_SELECTION_REQUIRED`，只允许打印脱敏 count/digest：
 
-```bash
+```text
 export STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL
 export STAGE1_ACCEPTANCE_TARGET_DATABASE_URL
 export STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME
@@ -327,7 +574,7 @@ assert_private_file "$EVIDENCE_DIR/vehicle-discovery.json"
 
 候选原始文件包含 vehicle UUID，因此不得输出、复制到日志或发送到聊天。授权执行者在 root-only 受控会话中完成选择，以隐藏输入录入显式 UUID，并验证 UUID 确实来自 discovery；本手册不会显示该值：
 
-```bash
+```text
 read -r -s -p 'Approved vehicle UUID (hidden): ' APPROVED_VEHICLE_UUID
 printf '\n'
 [[ "$APPROVED_VEHICLE_UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] \
@@ -341,7 +588,7 @@ export APPROVED_VEHICLE_UUID
 
 使用显式 UUID 生成正式 dry-run：
 
-```bash
+```text
 readonly DRY_RUN_REPORT="$EVIDENCE_DIR/baseline-dry-run.json"
 readonly DRY_RUN_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --user 0:0 --volume "$EVIDENCE_DIR:/evidence" \
@@ -375,7 +622,7 @@ jq '{counts:.manifest.counts,exceptionsCount:(.manifest.exceptions|length),manif
 
 批准报告只含 SHA、脱敏计数与车辆摘要（salted digest，不含 UUID），不得附客户、车辆或 token 身份。
 
-**STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL**
+**Historical approval boundary (superseded; never execute):**
 
 到此必须停止，等待本次窗口对 `MANIFEST_SHA` 的独立明确批准。之前的设计、计划、PR、部署或服务器预检批准都不能替代它。没有批准不得设置 apply confirmation，不得运行下一节。
 
@@ -383,7 +630,7 @@ jq '{counts:.manifest.counts,exceptionsCount:(.manifest.exceptions|length),manif
 
 收到批准后，仅对批准的 dry-run manifest 执行一次 apply，随后立即 replay 和 validator。三者都使用同一目标镜像、同一 manifest SHA，并只打印公共安全摘要：
 
-```bash
+```text
 readonly APPLY_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --user 0:0 --volume "$EVIDENCE_DIR:/evidence" \
   --env STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL \

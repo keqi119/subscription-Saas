@@ -911,6 +911,10 @@ git commit -m "fix: harden clean acceptance rollout safety"
 
 ### Step 1: 执行只读预检
 
+**2026-08-30 binding remediation (supersedes the Task 9 execution notes below):** use only `/opt/subscription-saas/docker-compose.staging.images.example.yml` with project `subauto-staging`. Read and record the current online API only; every Task 9 migration, baseline, JSON, and URL one-shot operation uses the separately root-approved `APPROVED_API_IMAGE`, whose immutable repo digest and exact 40-lowercase-hex `org.opencontainers.image.revision` must equal `APPROVED_RELEASE_SHA`. Do not rely on host `psql`, `pg_dump`, `node`, or `jq`; use the compose `postgres` service for database commands and the approved target image for URL/JSON work. Require all three public HTTP 200 checks before creating the database.
+
+The required order is: preflight; create a brand-new `template0` target and prove zero user tables; source fresh backup then empty-target pre-migration backup; approved-target migration and canonical gates; exact zero counts for every public business table except `_prisma_migrations`; discovery; explicit UUID; formal dry-run asserting `safe`, `safeToApply`, empty exceptions, zero forbidden counts, and independent canonical manifest SHA equality; then stop at `BASELINE_APPLY_APPROVAL`. Source must be exactly `subscription_saas_staging`; target must not exist and source/target URLs preserve protocol, host, port, user, password, and query while changing only pathname. Preserve root-owned non-link `0700`/create-once `0600` evidence and never emit secrets or raw identities.
+
 按 runbook 核对：
 
 - 当前公共 API/Admin/Portal 健康；

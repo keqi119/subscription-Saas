@@ -6,6 +6,11 @@ import * as pathDefault from "node:path";
 import { basename, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES,
+  STAGE1_ACCEPTANCE_WHITELIST_DELEGATES
+} from "./stage1-clean-acceptance-baseline-snapshot.mjs";
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
@@ -233,15 +238,21 @@ export function readApprovedStage1AcceptanceManifest(text, approvedSha256, hashM
   } catch {
     cliFail("APPROVED_MANIFEST_INVALID");
   }
-  const wrapped = Object.hasOwn(report ?? {}, "manifest");
-  if (wrapped && !validApprovedWrapperShape(report, approvedSha256))
-    cliFail("APPROVED_MANIFEST_INVALID");
-  const manifest = wrapped ? report.manifest : report;
-  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest))
-    cliFail("APPROVED_MANIFEST_INVALID");
-  if (hashManifest(manifest) !== approvedSha256) cliFail("APPROVED_MANIFEST_SHA_MISMATCH");
-  if (!validApprovedManifestShape(manifest)) cliFail("APPROVED_MANIFEST_INVALID");
-  return manifest;
+  return validateApprovedStage1AcceptanceWrapper(report, approvedSha256, hashManifest).manifest;
+}
+
+export function validateApprovedStage1AcceptanceWrapper(report, approvedSha256, hashManifest) {
+  if (!validApprovedWrapperShape(report, approvedSha256)) cliFail("APPROVED_MANIFEST_INVALID");
+  if (hashManifest(report.manifest) !== approvedSha256) cliFail("APPROVED_MANIFEST_SHA_MISMATCH");
+  if (!validApprovedManifestShape(report.manifest)) cliFail("APPROVED_MANIFEST_INVALID");
+  return {
+    manifest: report.manifest,
+    manifestSha256: report.manifestSha256,
+    mode: report.mode,
+    operation: report.operation,
+    safe: report.safe,
+    targetCountEvidence: report.targetCountEvidence
+  };
 }
 
 export function publicStage1AcceptanceError(error) {
@@ -395,11 +406,45 @@ function validApprovedManifestShape(manifest) {
 
 function validApprovedWrapperShape(report, approvedSha256) {
   return (
-    exactKeys(report, ["manifest", "manifestSha256", "mode", "operation", "safe"]) &&
+    exactKeys(report, [
+      "manifest",
+      "manifestSha256",
+      "mode",
+      "operation",
+      "safe",
+      "targetCountEvidence"
+    ]) &&
     report.manifestSha256 === approvedSha256 &&
     report.mode === "dry-run" &&
     report.operation === "STAGE1_CLEAN_ACCEPTANCE_BASELINE" &&
-    report.safe === true
+    report.safe === true &&
+    validApprovedTargetCountEvidence(report.targetCountEvidence)
+  );
+}
+
+function validApprovedTargetCountEvidence(value) {
+  const exactCanonicalKeys = (keys, expected) =>
+    Array.isArray(keys) &&
+    keys.length === expected.length &&
+    keys.every((key, index) => key === expected[index]);
+  const validCounts = (keys, counts) =>
+    counts &&
+    typeof counts === "object" &&
+    !Array.isArray(counts) &&
+    Object.keys(counts).length === keys.length &&
+    keys.every(
+      (key) =>
+        Object.hasOwn(counts, key) &&
+        Number.isSafeInteger(counts[key]) &&
+        counts[key] >= 0 &&
+        counts[key] === 0
+    );
+  return (
+    exactKeys(value, ["forbiddenCountKeys", "forbiddenCounts", "tableCountKeys", "tableCounts"]) &&
+    exactCanonicalKeys(value.forbiddenCountKeys, STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES) &&
+    exactCanonicalKeys(value.tableCountKeys, STAGE1_ACCEPTANCE_WHITELIST_DELEGATES) &&
+    validCounts(STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES, value.forbiddenCounts) &&
+    validCounts(STAGE1_ACCEPTANCE_WHITELIST_DELEGATES, value.tableCounts)
   );
 }
 

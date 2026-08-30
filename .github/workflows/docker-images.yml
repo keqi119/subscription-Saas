@@ -101,7 +101,22 @@ jobs:
           context: .
           file: Dockerfile.api
           push: true
+          build-args: |
+            API_SOURCE_REVISION=${{ github.sha }}
           tags: ${{ env.API_IMAGE }}
+
+      - name: Verify API image revision
+        shell: bash
+        env:
+          API_IMAGE: ${{ env.API_IMAGE }}
+        run: |
+          set -euo pipefail
+          docker pull "$API_IMAGE"
+          actual_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$API_IMAGE")"
+          if [ "$actual_revision" != "${GITHUB_SHA}" ]; then
+            echo "API image revision label does not match the workflow commit"
+            exit 1
+          fi
 
       - name: Build and push Web image
         uses: docker/build-push-action@v6

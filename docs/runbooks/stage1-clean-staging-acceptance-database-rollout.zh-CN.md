@@ -495,6 +495,8 @@ printf 'pre_switch_restart_count=%s\n' "$PRE_SWITCH_API_RESTART_COUNT" \
 
 以下脚本在固定目标镜像的一次性容器内调用已被单元测试覆盖的 `buildStage1AcceptanceDatabaseEnvSwitch`。它要求实际 env 的 before 与批准 source URL 全语义一致、after 与批准 target URL 全语义一致，且批准 pair 仅 pathname 不同并保留 protocol/host/port/user/password/query；错误 pathname/host/credential/query、引号或 percent encoding 均按 URL 语义处理。`ENV_DATABASE_URL_SOURCE_MISMATCH`、`APPROVED_DATABASE_URL_PAIR_INVALID` 等错误只作为稳定错误码，不输出 URL。完整环境写入同目录临时文件（必须是新文件）并 `chmod 600`：
 
+<!-- STAGE1_ENV_TRANSFORM_EXECUTABLE_BEGIN -->
+
 ```bash
 if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps -T \
   --user 0:0 --volume '/opt/subscription-saas:/host' \
@@ -524,56 +526,116 @@ fi
 assert_private_file "$ENV_TEMP"
 ```
 
+<!-- STAGE1_ENV_TRANSFORM_EXECUTABLE_END -->
+
 该临时文件还没有影响在线 API。此时记录固定证据路径、备份 hash、目标 Git/image 身份和 candidate 安全计数，不记录 URL。
 
 **STOP FOR HUMAN APPROVAL: API_DATABASE_SWITCH_APPROVAL**
 
 等待与 baseline apply 分离的明确切换批准；没有批准不得 rename、不得 recreate。
 
-收到批准后才执行原子 rename，并只重建 API service。不得重建 postgres/web，不得修改或 reload Nginx：
+## 8. 切换、即时门禁与浏览器验收
+
+收到批准后才执行原子 rename，并只重建 API service。不得重建 postgres/web，不得修改或 reload Nginx。下面是唯一完整 cutover executable fence；契约测试只抽取该 fence，以纯本地依赖注入验证失败回滚，不从 prose 或 shell comments 推断控制流。函数内重新运行 target validator、migration status/checksum/diff/count，检查新 API 没有 restart，精确验证六个 worker/journey flags 和四个 subscription-change flags，验证公共 API/Admin/Portal health，并消费另行批准的 billing completed-cycle 事实。所有 curl 丢弃 body/headers且不输出 URL：
+
+<!-- STAGE1_CUTOVER_EXECUTABLE_BEGIN -->
 
 ```bash
+cutover_api_recreate() {
+  test "$1" = 'api'
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api \
+    >/dev/null 2>&1
+}
+
+cutover_api_container_id() {
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api
+}
+
+cutover_verify_public_health() {
+  local container_id health_code
+  container_id="$(cutover_api_container_id)"
+  test -n "$container_id"
+  test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_id")" = 'healthy'
+  health_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL")"
+  test "$health_code" = '200'
+}
+
+cutover_old_database_fingerprint() {
+  psql "$STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL" -XAtq \
+    -c "SELECT current_database(), current_schema(), count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL), count(*) FILTER (WHERE rolled_back_at IS NOT NULL) FROM _prisma_migrations GROUP BY current_database(), current_schema()" \
+    | sha256sum | awk '{print $1}'
+}
+
+cutover_secure_file() {
+  chown root:root "$1"
+  chmod 0600 "$1"
+  assert_private_file "$1"
+}
+
+cutover_sync_directory() {
+  sync -f "$1"
+}
+
+cutover_utc_now() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+cutover_nonce() {
+  openssl rand -hex 32
+}
+
+cutover_after_rename_hook() {
+  :
+}
+
+CUTOVER_API_RECREATE_FN="${STAGE1_CUTOVER_API_RECREATE_FN:-cutover_api_recreate}"
+CUTOVER_POST_SWITCH_GATES_FN="${STAGE1_CUTOVER_POST_SWITCH_GATES_FN:-post_switch_database_gates}"
+CUTOVER_PUBLIC_HEALTH_FN="${STAGE1_CUTOVER_PUBLIC_HEALTH_FN:-cutover_verify_public_health}"
+CUTOVER_OLD_FINGERPRINT_FN="${STAGE1_CUTOVER_OLD_FINGERPRINT_FN:-cutover_old_database_fingerprint}"
+CUTOVER_CONTAINER_ID_FN="${STAGE1_CUTOVER_CONTAINER_ID_FN:-cutover_api_container_id}"
+CUTOVER_NONCE_FN="${STAGE1_CUTOVER_NONCE_FN:-cutover_nonce}"
+CUTOVER_UTC_NOW_FN="${STAGE1_CUTOVER_UTC_NOW_FN:-cutover_utc_now}"
+CUTOVER_SECURE_FILE_FN="${STAGE1_CUTOVER_SECURE_FILE_FN:-cutover_secure_file}"
+CUTOVER_SYNC_FN="${STAGE1_CUTOVER_SYNC_FN:-cutover_sync_directory}"
+CUTOVER_AFTER_RENAME_HOOK_FN="${STAGE1_CUTOVER_AFTER_RENAME_HOOK_FN:-cutover_after_rename_hook}"
+CUTOVER_BROWSER_FACT_VALIDATOR_FN="${STAGE1_CUTOVER_BROWSER_FACT_VALIDATOR_FN:-validate_browser_acceptance_fact}"
+CUTOVER_PUBLISH_EVIDENCE_FN="${STAGE1_CUTOVER_PUBLISH_EVIDENCE_FN:-publish_private_evidence}"
+CUTOVER_ASSERT_PRIVATE_FILE_FN="${STAGE1_CUTOVER_ASSERT_PRIVATE_FILE_FN:-assert_private_file}"
+CUTOVER_ASSERT_NEW_PATH_FN="${STAGE1_CUTOVER_ASSERT_NEW_PATH_FN:-assert_new_evidence_path}"
+
 rollback_api_database_switch() {
-  local failed=0 rollback_temp rollback_api_container_id rollback_health_code
+  local failed=0 rollback_temp
   local expected_old_fingerprint observed_old_fingerprint
   set +e
 
-  if ! cmp --silent "$ENV_FILE" "$ENV_BACKUP" || ! assert_private_file "$ENV_FILE"; then
+  if ! cmp --silent "$ENV_FILE" "$ENV_BACKUP" || ! "$CUTOVER_ASSERT_PRIVATE_FILE_FN" "$ENV_FILE"; then
     rollback_temp="$(mktemp --tmpdir="$(dirname "$ENV_FILE")" '.env.staging.images.rollback.XXXXXX')" || failed=1
     if test "$failed" -eq 0; then
       cp --preserve=mode,ownership,timestamps "$ENV_BACKUP" "$rollback_temp" \
-        && chown root:root "$rollback_temp" \
-        && chmod 0600 "$rollback_temp" \
+        && "$CUTOVER_SECURE_FILE_FN" "$rollback_temp" \
         && test ! -L "$rollback_temp" \
         && mv -f -- "$rollback_temp" "$ENV_FILE" \
-        && sync -f "$(dirname "$ENV_FILE")" \
+        && "$CUTOVER_SYNC_FN" "$(dirname "$ENV_FILE")" \
         || failed=1
     fi
   fi
-  if ! cmp --silent "$ENV_FILE" "$ENV_BACKUP" || ! assert_private_file "$ENV_FILE"; then
+  if ! cmp --silent "$ENV_FILE" "$ENV_BACKUP" || ! "$CUTOVER_ASSERT_PRIVATE_FILE_FN" "$ENV_FILE"; then
     printf '%s\n' 'STOP: ROLLBACK_ENV_RESTORE_FAILED'
     failed=1
   fi
 
-  if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api \
-    >/dev/null 2>&1; then
+  if ! "$CUTOVER_API_RECREATE_FN" api; then
     printf '%s\n' 'STOP: ROLLBACK_API_RECREATE_FAILED'
     failed=1
   fi
-  rollback_api_container_id="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
-  rollback_health_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-    "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL")"
-  if test -z "$rollback_api_container_id" \
-    || test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$rollback_api_container_id")" != 'healthy' \
-    || test "$rollback_health_code" != '200'; then
+  if ! "$CUTOVER_PUBLIC_HEALTH_FN"; then
     printf '%s\n' 'STOP: ROLLBACK_PUBLIC_HEALTH_FAILED'
     failed=1
   fi
 
   expected_old_fingerprint="$(awk 'NF {print $1; exit}' "$EVIDENCE_DIR/old-database.fingerprint.sha256")"
-  observed_old_fingerprint="$(psql "$STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL" -XAtq \
-    -c "SELECT current_database(), current_schema(), count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL), count(*) FILTER (WHERE rolled_back_at IS NOT NULL) FROM _prisma_migrations GROUP BY current_database(), current_schema()" \
-    | sha256sum | awk '{print $1}')"
+  observed_old_fingerprint="$("$CUTOVER_OLD_FINGERPRINT_FN")"
   if test -z "$expected_old_fingerprint" || test "$observed_old_fingerprint" != "$expected_old_fingerprint"; then
     printf '%s\n' 'STOP: ROLLBACK_OLD_DATABASE_FINGERPRINT_FAILED'
     failed=1
@@ -605,19 +667,77 @@ rollback_after_switch_error() {
   fi
   exit "$status"
 }
-```
 
-## 8. 切换后门禁与浏览器验收
+write_browser_acceptance_challenge() {
+  local target="$1" nonce="$2" switched_container_id="$3" challenge_created_at_utc="$4"
+  [[ "$RUN_UTC" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
+  [[ "$MANIFEST_SHA" =~ ^[0-9a-f]{64}$ ]]
+  [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+  [[ "$API_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+  [[ "$switched_container_id" =~ ^[0-9a-f]{64}$ ]]
+  [[ "$nonce" =~ ^[0-9a-f]{64}$ ]]
+  [[ "$SWITCH_STARTED_AT_UTC" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+  [[ "$LOG_GATE_STARTED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+  [[ "$challenge_created_at_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+  {
+    printf '{"schemaVersion":1,"runUtc":"%s","manifestSha256":"%s",' "$RUN_UTC" "$MANIFEST_SHA"
+    printf '"releaseSha":"%s","imageId":"%s","switchedContainerId":"%s",' \
+      "$RELEASE_SHA" "$API_IMAGE_ID" "$switched_container_id"
+    printf '"switchStartedAtUtc":"%s","logObservationStartedAtUtc":"%s",' \
+      "$SWITCH_STARTED_AT_UTC" "$LOG_GATE_STARTED_AT"
+    printf '"challengeCreatedAtUtc":"%s","nonce":"%s"}\n' "$challenge_created_at_utc" "$nonce"
+  } | "$CUTOVER_PUBLISH_EVIDENCE_FN" "$target"
+}
 
-切换后的每一个 gate 都在 rollback 保护内。函数内重新运行 target validator、migration status/checksum/diff/count，检查新 API 没有 restart，精确验证六个 worker/journey flags 和四个 subscription-change flags，验证公共 API/Admin/Portal health，并消费另行批准的只读浏览器验收与 billing completed-cycle 事实。所有 curl 丢弃 body/headers 且不输出 URL：
+validate_browser_acceptance_fact() {
+  local fact_path="$1" challenge_path="$2" switch_started_at_utc="$3"
+  "$CUTOVER_ASSERT_PRIVATE_FILE_FN" "$fact_path"
+  "$CUTOVER_ASSERT_PRIVATE_FILE_FN" "$challenge_path"
+  node - "$fact_path" "$challenge_path" "$switch_started_at_utc" >/dev/null 2>&1 <<'NODE'
+const fs = require("node:fs");
+const { isDeepStrictEqual } = require("node:util");
+const [factPath, challengePath, switchedAt] = process.argv.slice(2);
+const fact = JSON.parse(fs.readFileSync(factPath, "utf8"));
+const challenge = JSON.parse(fs.readFileSync(challengePath, "utf8"));
+const completedAt = Date.parse(fact.completedAtUtc);
+const switchedAtMillis = Date.parse(switchedAt);
+const domainKeys = ["applications", "billing", "contracts", "orders", "returns", "subscriptionChanges"];
+const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value) &&
+  Object.keys(value).sort().join("|") === [...keys].sort().join("|");
+const allDomains = (value, predicate) => exactKeys(value, domainKeys) && domainKeys.every((key) => predicate(value[key]));
+const safe =
+  exactKeys(fact, ["auth", "businessWrites", "catalog", "challenge", "completedAtUtc", "console", "decision", "eSign", "emptyDomains", "entryPoints", "profile", "publicHealth", "rawEnumerations", "rbac", "schemaVersion", "visualReview"]) &&
+  exactKeys(fact.publicHealth, ["admin", "api", "portal"]) &&
+  exactKeys(fact.catalog, ["contractTemplates", "packages", "products", "vehicles"]) &&
+  exactKeys(fact.console, ["errorCount", "warnCount"]) &&
+  exactKeys(fact.visualReview, ["admin", "portal", "responsive"]) &&
+  fact.schemaVersion === 1 && fact.decision === "accepted" &&
+  isDeepStrictEqual(fact.challenge, challenge) &&
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(fact.completedAtUtc) &&
+  Number.isFinite(completedAt) && Number.isFinite(switchedAtMillis) &&
+  new Date(completedAt).toISOString().replace(".000Z", "Z") === fact.completedAtUtc &&
+  new Date(switchedAtMillis).toISOString().replace(".000Z", "Z") === switchedAt &&
+  completedAt > switchedAtMillis &&
+  fact.publicHealth.api === 200 && fact.publicHealth.admin === 200 && fact.publicHealth.portal === 200 &&
+  fact.auth === true && fact.rbac === true && fact.profile === true && fact.eSign === true &&
+  Object.values(fact.catalog).every((value) => value === true) &&
+  allDomains(fact.emptyDomains, (value) => value === 0) &&
+  allDomains(fact.entryPoints, (value) => value === "absent") &&
+  allDomains(fact.rawEnumerations, (value) => Array.isArray(value) && value.length === 0) &&
+  fact.console.errorCount === 0 && fact.console.warnCount === 0 &&
+  fact.visualReview.admin === true && fact.visualReview.portal === true &&
+  fact.visualReview.responsive === true && fact.businessWrites === 0;
+if (!safe) process.exit(1);
+NODE
+}
 
-```bash
 post_switch_database_gates() {
   local switched_api_container_id restart_count status_code checksum_result drift_exit migration_counts
-  local billing_facts read_only_facts
+  local billing_facts
   local -a log_pipeline_status
   switched_api_container_id="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
   test -n "$switched_api_container_id"
+  test "$switched_api_container_id" = "$SWITCHED_API_CONTAINER_ID"
   test "$(docker inspect --format '{{.State.Running}}' "$switched_api_container_id")" = 'true'
   test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$switched_api_container_id")" = 'healthy'
   restart_count="$(docker inspect --format '{{.RestartCount}}' "$switched_api_container_id")"
@@ -693,21 +813,6 @@ SQL
   printf '%s\n' 'PUBLIC_API_HEALTH=200 PUBLIC_ADMIN_HEALTH=200 PUBLIC_PORTAL_HEALTH=200' \
     | publish_private_evidence "$EVIDENCE_DIR/public-health.state"
 
-  read_only_facts="$EVIDENCE_DIR/read-only-browser-acceptance.json"
-  assert_private_file "$read_only_facts"
-  jq -e '
-    .auth == true and .rbac == true and .profile == true and .eSign == true and
-    .catalog.products == true and .catalog.vehicles == true and .catalog.packages == true and
-    .catalog.contractTemplates == true and
-    .emptyDomains.applications == 0 and .emptyDomains.orders == 0 and
-    .emptyDomains.contracts == 0 and .emptyDomains.billing == 0 and
-    .emptyDomains.subscriptionChanges == 0 and .emptyDomains.returns == 0 and
-    .businessWrites == 0
-  ' \
-    "$read_only_facts" >/dev/null
-  printf '%s\n' 'READ_ONLY_AUTH_RBAC_PROFILE_CATALOG_EMPTY_DOMAINS=verified' \
-    | publish_private_evidence "$EVIDENCE_DIR/read-only-browser.state"
-
   billing_facts="$EVIDENCE_DIR/billing-completed-cycles.json"
   assert_private_file "$billing_facts"
   jq -e '
@@ -752,26 +857,68 @@ set -E
 trap 'rollback_after_switch_error' ERR
 SWITCH_ACTIVE=1
 export SWITCH_ACTIVE
-readonly LOG_GATE_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+readonly LOG_GATE_STARTED_AT="$("$CUTOVER_UTC_NOW_FN")"
+readonly SWITCH_STARTED_AT_UTC="$("$CUTOVER_UTC_NOW_FN")"
 mv -f -- "$ENV_TEMP" "$ENV_FILE"
-sync -f "$(dirname "$ENV_FILE")"
+"$CUTOVER_SYNC_FN" "$(dirname "$ENV_FILE")"
+"$CUTOVER_AFTER_RENAME_HOOK_FN"
 
-if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api \
-  >/dev/null 2>&1; then rollback_and_stop 'API_RECREATE_FAILED'; fi
-post_switch_database_gates;
+if ! "$CUTOVER_API_RECREATE_FN" api; then rollback_and_stop 'API_RECREATE_FAILED'; fi
+
+readonly SWITCHED_API_CONTAINER_ID="$("$CUTOVER_CONTAINER_ID_FN")"
+[[ "$SWITCHED_API_CONTAINER_ID" =~ ^[0-9a-f]{64}$ ]] \
+  || rollback_and_stop 'SWITCHED_API_CONTAINER_ID_INVALID'
+readonly BROWSER_CHALLENGE_PATH="$EVIDENCE_DIR/browser-acceptance.challenge.json"
+readonly BROWSER_FACT_PATH="$EVIDENCE_DIR/browser-acceptance.fact.json"
+"$CUTOVER_ASSERT_NEW_PATH_FN" "$BROWSER_CHALLENGE_PATH"
+"$CUTOVER_ASSERT_NEW_PATH_FN" "$BROWSER_FACT_PATH"
+readonly BROWSER_CHALLENGE_NONCE="$("$CUTOVER_NONCE_FN")"
+readonly BROWSER_CHALLENGE_CREATED_AT_UTC="$("$CUTOVER_UTC_NOW_FN")"
+write_browser_acceptance_challenge \
+  "$BROWSER_CHALLENGE_PATH" \
+  "$BROWSER_CHALLENGE_NONCE" \
+  "$SWITCHED_API_CONTAINER_ID" \
+  "$BROWSER_CHALLENGE_CREATED_AT_UTC"
+"$CUTOVER_ASSERT_PRIVATE_FILE_FN" "$BROWSER_CHALLENGE_PATH"
+
+"$CUTOVER_POST_SWITCH_GATES_FN"
+
+readonly BROWSER_ACCEPTANCE_TIMEOUT_SECONDS="${BROWSER_ACCEPTANCE_TIMEOUT_SECONDS:-900}"
+[[ "$BROWSER_ACCEPTANCE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]{0,3}$ ]] \
+  || rollback_and_stop 'BROWSER_ACCEPTANCE_TIMEOUT_INVALID'
+printf 'browser_acceptance_challenge=%s timeout_seconds=%s\n' \
+  "$BROWSER_CHALLENGE_PATH" "$BROWSER_ACCEPTANCE_TIMEOUT_SECONDS"
+if ! IFS= read -r -s -t "$BROWSER_ACCEPTANCE_TIMEOUT_SECONDS" BROWSER_ACCEPTANCE_PAYLOAD; then
+  rollback_and_stop 'BROWSER_ACCEPTANCE_TIMEOUT'
+fi
+printf '\n'
+if test "$BROWSER_ACCEPTANCE_PAYLOAD" = 'REJECT'; then
+  unset BROWSER_ACCEPTANCE_PAYLOAD
+  rollback_and_stop 'BROWSER_ACCEPTANCE_REJECTED'
+fi
+printf '%s\n' "$BROWSER_ACCEPTANCE_PAYLOAD" \
+  | "$CUTOVER_PUBLISH_EVIDENCE_FN" "$BROWSER_FACT_PATH"
+unset BROWSER_ACCEPTANCE_PAYLOAD
+if ! "$CUTOVER_BROWSER_FACT_VALIDATOR_FN" \
+  "$BROWSER_FACT_PATH" "$BROWSER_CHALLENGE_PATH" "$SWITCH_STARTED_AT_UTC"; then
+  rollback_and_stop 'BROWSER_ACCEPTANCE_FACT_INVALID'
+fi
+printf '%s\n' 'READ_ONLY_AUTH_RBAC_PROFILE_CATALOG_EMPTY_DOMAINS=verified browser_challenge=matched' \
+  | "$CUTOVER_PUBLISH_EVIDENCE_FN" "$EVIDENCE_DIR/read-only-browser.state"
+
 SWITCH_ACTIVE=0
 export SWITCH_ACTIVE
 trap - ERR
 printf '%s\n' 'api_switch=verified' | publish_private_evidence "$EVIDENCE_DIR/api-switch.state"
 ```
 
-浏览器验收必须由已有登录会话完成，不把 token 复制到 shell：
+<!-- STAGE1_CUTOVER_EXECUTABLE_END -->
 
-1. 公共 `/health` 正常；admin 与 portal 既有 token 仍有效。
-2. RBAC 菜单与权限边界符合已批准角色。
-3. 产品与所选车辆列表可读；进件与订单列表为空。
-4. 不提交进件、不锁车、不签合同、不发送短信、不触发电子签或支付。
-5. 验收证据只记页面状态、计数和 hash，不截图/记录客户或车辆身份、token、URL query。
+浏览器验收必须由已有登录会话在上述隐藏输入的有界等待期间完成，不把 token 复制到 shell。challenge 只能由切换后当前 shell 以 create-once 方式生成，并绑定 `RUN_UTC`、manifest SHA、release SHA、image SHA、切换后 container ID、switch/log observation UTC 与随机 nonce；fact 目标在 challenge 创建前必须不存在。预置或旧 JSON 无法匹配本次 nonce/container/time，且主 shell 只会把本次隐藏输入通过 no-clobber publisher 写成 root/`0600` fact。
+
+浏览器执行者必须逐项验证公共 API/Admin/Portal、既有 auth、RBAC、profile/e-sign、产品/车辆/套餐/合同模板 catalog、application/order/contract/billing/subscription-change/return 全部空域；同时保存这些空域入口 absent、原始枚举为空、console error/warn 均为 0，以及 Admin/Portal/响应式视觉复验。fact 只能含 challenge、安全布尔值/计数、完成 UTC 和稳定状态，不得含截图、URL/query、token 或客户/车辆身份。输入 `REJECT`、事实校验失败或最多 900 秒无输入都会在 `SWITCH_ACTIVE=1` 且 ERR trap 有效时实际调用 `rollback_and_stop`；仅全部通过后才清除 trap。
+
+不提交进件、不锁车、不签合同、不发送短信、不触发电子签或支付。
 
 连续两个 billing maintenance cycle 必须各有不同的 completed cycle ID，且来自另行批准的机器事实，不得由 elapsed time 推断。任一 health、migration/validator、restart/flag、完整日志门禁、周期、禁止写域计数或浏览器只读验收失败，都会由上面的显式分支或 ERR trap 调用回滚。
 

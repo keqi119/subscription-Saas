@@ -18,8 +18,10 @@ import { main as baselineMain } from "./stage1-clean-acceptance-baseline.mjs";
 
 const VEHICLE = "11111111-1111-4111-8111-111111111111";
 const SHA = "a".repeat(64);
-const SOURCE_URL = "postgresql://stage1:secret@db.internal:5432/subscription_saas_staging?sslmode=require";
-const TARGET_URL = "postgresql://stage1:secret@db.internal:5432/subscription_saas_staging_acceptance_test?sslmode=require";
+const SOURCE_URL =
+  "postgresql://stage1:secret@db.internal:5432/subscription_saas_staging?sslmode=require";
+const TARGET_URL =
+  "postgresql://stage1:secret@db.internal:5432/subscription_saas_staging_acceptance_test?sslmode=require";
 const BASE_ENV = {
   STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY: "1",
   STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME: "db.internal",
@@ -31,24 +33,84 @@ const BASE_ENV = {
 
 test("argument parsing requires exactly one mode and an explicit output", () => {
   assert.throws(() => parseStage1CleanAcceptanceArgs([]), /CLI_MODE_REQUIRED/);
-  assert.throws(() => parseStage1CleanAcceptanceArgs(["--dry-run", "--apply", "--output", "x"]), /CLI_MODE_REQUIRED/);
-  assert.throws(() => parseStage1CleanAcceptanceArgs(["--dry-run", "--vehicle-id", VEHICLE]), /EVIDENCE_OUTPUT_REQUIRED/);
-  assert.throws(() => parseStage1CleanAcceptanceArgs(["--dry-run", "--output", "x", "--generated-at", "2026-01-01T00:00:00.000Z"]), /CLI_ARGUMENT_UNKNOWN/);
-  assert.throws(() => parseStage1CleanAcceptanceArgs(["--dry-run", "--output", "x", "--hash-salt", SHA]), /CLI_ARGUMENT_UNKNOWN/);
+  assert.throws(
+    () => parseStage1CleanAcceptanceArgs(["--dry-run", "--apply", "--output", "x"]),
+    /CLI_MODE_REQUIRED/
+  );
+  assert.throws(
+    () => parseStage1CleanAcceptanceArgs(["--dry-run", "--vehicle-id", VEHICLE]),
+    /EVIDENCE_OUTPUT_REQUIRED/
+  );
+  assert.throws(
+    () =>
+      parseStage1CleanAcceptanceArgs([
+        "--dry-run",
+        "--output",
+        "x",
+        "--generated-at",
+        "2026-01-01T00:00:00.000Z"
+      ]),
+    /CLI_ARGUMENT_UNKNOWN/
+  );
+  assert.throws(
+    () => parseStage1CleanAcceptanceArgs(["--dry-run", "--output", "x", "--hash-salt", SHA]),
+    /CLI_ARGUMENT_UNKNOWN/
+  );
 });
 
 test("argument parsing normalizes vehicle ids and makes discovery dry-run only", () => {
   assert.deepEqual(
-    parseStage1CleanAcceptanceArgs(["--dry-run", "--output", "report.json", "--vehicle-id", VEHICLE.toUpperCase(), "--vehicle-id", VEHICLE]),
-    { approvedManifestPath: undefined, approvedManifestSha256: undefined, discoverVehicles: false, mode: "dry-run", outputPath: "report.json", vehicleIds: [VEHICLE] }
+    parseStage1CleanAcceptanceArgs([
+      "--dry-run",
+      "--output",
+      "report.json",
+      "--vehicle-id",
+      VEHICLE.toUpperCase(),
+      "--vehicle-id",
+      VEHICLE
+    ]),
+    {
+      approvedManifestPath: undefined,
+      approvedManifestSha256: undefined,
+      discoverVehicles: false,
+      mode: "dry-run",
+      outputPath: "report.json",
+      vehicleIds: [VEHICLE]
+    }
   );
   assert.deepEqual(
     parseStage1CleanAcceptanceArgs(["--dry-run", "--discover-vehicles", "--output", "report.json"]),
-    { approvedManifestPath: undefined, approvedManifestSha256: undefined, discoverVehicles: true, mode: "dry-run", outputPath: "report.json", vehicleIds: [] }
+    {
+      approvedManifestPath: undefined,
+      approvedManifestSha256: undefined,
+      discoverVehicles: true,
+      mode: "dry-run",
+      outputPath: "report.json",
+      vehicleIds: []
+    }
   );
-  assert.throws(() => parseStage1CleanAcceptanceArgs(["--apply", "--discover-vehicles", "--output", "x", "--approved-manifest", "m", "--approved-manifest-sha256", SHA]), /VEHICLE_SELECTION_REQUIRED/);
-  assert.throws(() => parseStage1CleanAcceptanceArgs(["--dry-run", "--output", "x"]), /VEHICLE_SELECTION_REQUIRED/);
-  assert.throws(() => parseStage1CleanAcceptanceArgs(["--apply", "--output", "x", "--vehicle-id", VEHICLE]), /APPROVED_MANIFEST_REQUIRED/);
+  assert.throws(
+    () =>
+      parseStage1CleanAcceptanceArgs([
+        "--apply",
+        "--discover-vehicles",
+        "--output",
+        "x",
+        "--approved-manifest",
+        "m",
+        "--approved-manifest-sha256",
+        SHA
+      ]),
+    /VEHICLE_SELECTION_REQUIRED/
+  );
+  assert.throws(
+    () => parseStage1CleanAcceptanceArgs(["--dry-run", "--output", "x"]),
+    /VEHICLE_SELECTION_REQUIRED/
+  );
+  assert.throws(
+    () => parseStage1CleanAcceptanceArgs(["--apply", "--output", "x", "--vehicle-id", VEHICLE]),
+    /APPROVED_MANIFEST_REQUIRED/
+  );
 });
 
 test("controlled evidence paths stay outside the repository and reject missing parents, directories, and symlinks", async (t) => {
@@ -61,20 +123,41 @@ test("controlled evidence paths stay outside the repository and reject missing p
 
   const createSecurity = hostEvidenceSecurity(evidence, "create");
   const readSecurity = hostEvidenceSecurity(evidence, "read");
-  assert.equal(assertControlledEvidencePath(join(evidence, "report.json"), repo, createSecurity), resolve(evidence, "report.json"));
-  assert.throws(() => assertControlledEvidencePath(join(repo, "report.json"), repo, createSecurity), /EVIDENCE_PATH_INSIDE_REPOSITORY/);
-  assert.throws(() => assertControlledEvidencePath(join(root, "missing", "report.json"), repo, createSecurity), /EVIDENCE_PARENT_INVALID/);
-  assert.throws(() => assertControlledEvidencePath(evidence, repo, hostEvidenceSecurity(root, "create")), /EVIDENCE_TARGET_EXISTS/);
+  assert.equal(
+    assertControlledEvidencePath(join(evidence, "report.json"), repo, createSecurity),
+    resolve(evidence, "report.json")
+  );
+  assert.throws(
+    () => assertControlledEvidencePath(join(repo, "report.json"), repo, createSecurity),
+    /EVIDENCE_PATH_INSIDE_REPOSITORY/
+  );
+  assert.throws(
+    () => assertControlledEvidencePath(join(root, "missing", "report.json"), repo, createSecurity),
+    /EVIDENCE_PARENT_INVALID/
+  );
+  assert.throws(
+    () => assertControlledEvidencePath(evidence, repo, hostEvidenceSecurity(root, "create")),
+    /EVIDENCE_TARGET_EXISTS/
+  );
 
   const realFile = join(evidence, "existing.json");
   const linkFile = join(evidence, "linked.json");
   await writeFile(realFile, "existing");
   assert.equal(assertControlledEvidencePath(realFile, repo, readSecurity), resolve(realFile));
-  assert.throws(() => assertControlledEvidencePath(realFile, repo, createSecurity), /EVIDENCE_TARGET_EXISTS/);
-  assert.throws(() => assertControlledEvidencePath(join(evidence, "missing.json"), repo, readSecurity), /EVIDENCE_TARGET_INVALID/);
+  assert.throws(
+    () => assertControlledEvidencePath(realFile, repo, createSecurity),
+    /EVIDENCE_TARGET_EXISTS/
+  );
+  assert.throws(
+    () => assertControlledEvidencePath(join(evidence, "missing.json"), repo, readSecurity),
+    /EVIDENCE_TARGET_INVALID/
+  );
   try {
     await import("node:fs/promises").then(({ symlink }) => symlink(realFile, linkFile));
-    assert.throws(() => assertControlledEvidencePath(linkFile, repo, readSecurity), /EVIDENCE_TARGET_INVALID/);
+    assert.throws(
+      () => assertControlledEvidencePath(linkFile, repo, readSecurity),
+      /EVIDENCE_TARGET_INVALID/
+    );
   } catch (error) {
     if (process.platform !== "win32" || error?.code !== "EPERM") throw error;
   }
@@ -92,7 +175,10 @@ test("virtual Win32 paths enforce case-insensitive containment, canonical parent
     verifyWindowsAcl: windowsAcl(evidence, true, path.win32)
   };
 
-  assert.throws(() => assertControlledEvidencePath("c:\\ACCEPTANCE\\REPO\\inside.json", repo, createSecurity), /EVIDENCE_PATH_INSIDE_REPOSITORY/);
+  assert.throws(
+    () => assertControlledEvidencePath("c:\\ACCEPTANCE\\REPO\\inside.json", repo, createSecurity),
+    /EVIDENCE_PATH_INSIDE_REPOSITORY/
+  );
   assert.equal(
     assertControlledEvidencePath(`${evidence}\\report.json`, repo, createSecurity),
     `${evidence}\\report.json`,
@@ -103,21 +189,50 @@ test("virtual Win32 paths enforce case-insensitive containment, canonical parent
     `${evidence}\\report.json`,
     "Win32 separator normalization preserves the canonical path"
   );
-  assert.throws(() => assertControlledEvidencePath("C:\\acceptance\\evidence-alias\\report.json", repo, createSecurity), /EVIDENCE_PARENT_INVALID/);
-  assert.throws(() => assertControlledEvidencePath("C:\\acceptance\\evidence-junction\\report.json", repo, createSecurity), /EVIDENCE_PARENT_INVALID/);
-  assert.throws(() => assertControlledEvidencePath(`${evidence}\\report.json`, repo, {
-    ...createSecurity, verifyWindowsAcl: undefined
-  }), /EVIDENCE_DIRECTORY_NOT_CONTROLLED/);
-  assert.throws(() => assertControlledEvidencePath(`${evidence}\\report.json`, repo, {
-    ...createSecurity, verifyWindowsAcl: windowsAcl(evidence, false, path.win32)
-  }), /EVIDENCE_DIRECTORY_NOT_CONTROLLED/);
+  assert.throws(
+    () =>
+      assertControlledEvidencePath(
+        "C:\\acceptance\\evidence-alias\\report.json",
+        repo,
+        createSecurity
+      ),
+    /EVIDENCE_PARENT_INVALID/
+  );
+  assert.throws(
+    () =>
+      assertControlledEvidencePath(
+        "C:\\acceptance\\evidence-junction\\report.json",
+        repo,
+        createSecurity
+      ),
+    /EVIDENCE_PARENT_INVALID/
+  );
+  assert.throws(
+    () =>
+      assertControlledEvidencePath(`${evidence}\\report.json`, repo, {
+        ...createSecurity,
+        verifyWindowsAcl: undefined
+      }),
+    /EVIDENCE_DIRECTORY_NOT_CONTROLLED/
+  );
+  assert.throws(
+    () =>
+      assertControlledEvidencePath(`${evidence}\\report.json`, repo, {
+        ...createSecurity,
+        verifyWindowsAcl: windowsAcl(evidence, false, path.win32)
+      }),
+    /EVIDENCE_DIRECTORY_NOT_CONTROLLED/
+  );
 
   const readSecurity = { ...createSecurity, intent: "read" };
   assert.equal(
     assertControlledEvidencePath(`${evidence}\\existing.json`, repo, readSecurity),
     `${evidence}\\existing.json`
   );
-  assert.throws(() => assertControlledEvidencePath(`${evidence}\\linked.json`, repo, readSecurity), /EVIDENCE_TARGET_INVALID/);
+  assert.throws(
+    () => assertControlledEvidencePath(`${evidence}\\linked.json`, repo, readSecurity),
+    /EVIDENCE_TARGET_INVALID/
+  );
 });
 
 test("virtual POSIX paths require a root-owned mode-0700 evidence directory", () => {
@@ -156,7 +271,10 @@ test("controlled JSON writing is same-directory atomic, private on Unix, and cle
 
   const existing = join(root, "existing.json");
   await writeFile(existing, "keep");
-  await assert.rejects(writeControlledJsonFile(existing, { replace: true }, undefined, security), /EVIDENCE_TARGET_EXISTS/);
+  await assert.rejects(
+    writeControlledJsonFile(existing, { replace: true }, undefined, security),
+    /EVIDENCE_TARGET_EXISTS/
+  );
   assert.equal(await readFile(existing, "utf8"), "keep");
 
   const failedOutput = join(root, "failed.json");
@@ -165,17 +283,31 @@ test("controlled JSON writing is same-directory atomic, private on Unix, and cle
     async open(path, flag, mode) {
       calls.push(["open", path, flag, mode]);
       return {
-        async writeFile() { throw new Error("disk full"); },
+        async writeFile() {
+          throw new Error("disk full");
+        },
         async sync() {},
-        async close() { calls.push(["close", path]); }
+        async close() {
+          calls.push(["close", path]);
+        }
       };
     },
-    async link() { calls.push(["link"]); },
-    async unlink(path) { calls.push(["unlink", path]); }
+    async link() {
+      calls.push(["link"]);
+    },
+    async unlink(path) {
+      calls.push(["unlink", path]);
+    }
   };
-  await assert.rejects(writeControlledJsonFile(failedOutput, { replace: true }, fsApi, security), /EVIDENCE_WRITE_FAILED/);
+  await assert.rejects(
+    writeControlledJsonFile(failedOutput, { replace: true }, fsApi, security),
+    /EVIDENCE_WRITE_FAILED/
+  );
   assert.equal(await readFile(existing, "utf8"), "keep");
-  assert.equal(calls.some(([operation]) => operation === "link"), false);
+  assert.equal(
+    calls.some(([operation]) => operation === "link"),
+    false
+  );
   assert.equal(calls.filter(([operation]) => operation === "unlink").length, 1);
   const openCall = calls.find(([operation]) => operation === "open");
   assert.equal(dirname(openCall[1]), root);
@@ -183,19 +315,38 @@ test("controlled JSON writing is same-directory atomic, private on Unix, and cle
 
   const unsupportedOutput = join(root, "unsupported.json");
   const unsupportedCalls = [];
-  await assert.rejects(writeControlledJsonFile(unsupportedOutput, { ok: true }, {
-    async open(path, flag, mode) {
-      unsupportedCalls.push(["open", path, flag, mode]);
-      return {
-        async writeFile() { unsupportedCalls.push(["write"]); },
-        async sync() { unsupportedCalls.push(["sync"]); },
-        async close() { unsupportedCalls.push(["close"]); }
-      };
-    },
-    async unlink(path) { unsupportedCalls.push(["unlink", path]); }
-  }, security), /EVIDENCE_WRITE_FAILED/);
+  await assert.rejects(
+    writeControlledJsonFile(
+      unsupportedOutput,
+      { ok: true },
+      {
+        async open(path, flag, mode) {
+          unsupportedCalls.push(["open", path, flag, mode]);
+          return {
+            async writeFile() {
+              unsupportedCalls.push(["write"]);
+            },
+            async sync() {
+              unsupportedCalls.push(["sync"]);
+            },
+            async close() {
+              unsupportedCalls.push(["close"]);
+            }
+          };
+        },
+        async unlink(path) {
+          unsupportedCalls.push(["unlink", path]);
+        }
+      },
+      security
+    ),
+    /EVIDENCE_WRITE_FAILED/
+  );
   assert.deepEqual(unsupportedCalls[0].slice(2), ["wx", 0o600]);
-  assert.equal(unsupportedCalls.some(([operation]) => operation === "unlink"), true);
+  assert.equal(
+    unsupportedCalls.some(([operation]) => operation === "unlink"),
+    true
+  );
   await assert.rejects(readFile(unsupportedOutput, "utf8"));
 
   const concurrentOutput = join(root, "concurrent.json");
@@ -214,8 +365,14 @@ test("the real generated Prisma client emits no sensitive validation log without
   let stderr = "";
   const originalStdoutWrite = process.stdout.write;
   const originalStderrWrite = process.stderr.write;
-  process.stdout.write = function (chunk, ...args) { stdout += String(chunk); return true; };
-  process.stderr.write = function (chunk, ...args) { stderr += String(chunk); return true; };
+  process.stdout.write = function (chunk, ...args) {
+    stdout += String(chunk);
+    return true;
+  };
+  process.stderr.write = function (chunk, ...args) {
+    stderr += String(chunk);
+    return true;
+  };
   let client;
   let validationError;
   try {
@@ -287,8 +444,10 @@ test("public summaries allow only fixed non-sensitive fields", () => {
 });
 
 test("database env switch binds the real env URL to approved source and target semantics", () => {
-  const source = "postgresql://stage1:p%40ss@db.internal:5432/subscription_saas_staging?schema=public&sslmode=require";
-  const target = "postgresql://stage1:p%40ss@db.internal:5432/subscription_saas_staging_acceptance_20260830t010203z?schema=public&sslmode=require";
+  const source =
+    "postgresql://stage1:p%40ss@db.internal:5432/subscription_saas_staging?schema=public&sslmode=require";
+  const target =
+    "postgresql://stage1:p%40ss@db.internal:5432/subscription_saas_staging_acceptance_20260830t010203z?schema=public&sslmode=require";
 
   for (const quote of ["", "'", '"']) {
     const input = `A=1\nDATABASE_URL=${quote}${source}${quote}\nB=2\n`;
@@ -306,15 +465,26 @@ test("database env switch binds the real env URL to approved source and target s
   for (const actual of invalidSources) {
     assert.throws(
       () => buildStage1AcceptanceDatabaseEnvSwitch(`DATABASE_URL=${actual}\n`, source, target),
-      (error) => error.message === "ENV_DATABASE_URL_SOURCE_MISMATCH" && !error.message.includes(source)
+      (error) =>
+        error.message === "ENV_DATABASE_URL_SOURCE_MISMATCH" && !error.message.includes(source)
     );
   }
   assert.throws(
-    () => buildStage1AcceptanceDatabaseEnvSwitch(`DATABASE_URL=${source}\n`, source, target.replace("db.internal", "other.internal")),
+    () =>
+      buildStage1AcceptanceDatabaseEnvSwitch(
+        `DATABASE_URL=${source}\n`,
+        source,
+        target.replace("db.internal", "other.internal")
+      ),
     /APPROVED_DATABASE_URL_PAIR_INVALID/
   );
   assert.throws(
-    () => buildStage1AcceptanceDatabaseEnvSwitch(`DATABASE_URL=${source}\nDATABASE_URL=${source}\n`, source, target),
+    () =>
+      buildStage1AcceptanceDatabaseEnvSwitch(
+        `DATABASE_URL=${source}\nDATABASE_URL=${source}\n`,
+        source,
+        target
+      ),
     /ENV_DATABASE_URL_COUNT_INVALID/
   );
 });
@@ -322,39 +492,56 @@ test("database env switch binds the real env URL to approved source and target s
 test("baseline help is deterministic, non-sensitive, and bypasses environment and database processing", async () => {
   const stdout = [];
   const stderr = [];
-  const environment = new Proxy({}, {
-    get() { throw new Error("help must not read environment"); }
-  });
+  const environment = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("help must not read environment");
+      }
+    }
+  );
   const deps = {
-    assertEvidencePath() { throw new Error("help must not inspect evidence paths"); },
-    createPrismaClient() { throw new Error("help must not create Prisma clients"); },
+    assertEvidencePath() {
+      throw new Error("help must not inspect evidence paths");
+    },
+    createPrismaClient() {
+      throw new Error("help must not create Prisma clients");
+    },
     env: environment,
     writeStderr: (value) => stderr.push(value),
     writeStdout: (value) => stdout.push(value)
   };
-  const expected = [
-    "Usage: stage1-clean-acceptance-baseline.mjs --dry-run|--apply|--replay --output <controlled-evidence-file> [options]",
-    "Arguments:",
-    "--dry-run: generate a baseline manifest without applying it.",
-    "--apply: apply an approved baseline manifest.",
-    "--replay: replay an approved baseline manifest.",
-    "--discover-vehicles: dry-run vehicle candidate discovery only.",
-    "--output <value>: controlled evidence output.",
-    "--vehicle-id <uuid>: repeatable selected vehicle identifier.",
-    "--approved-manifest <value>: approved manifest input.",
-    "--approved-manifest-sha256 <sha256>: approved manifest digest.",
-    "Constraints:",
-    "CLI_MODE_REQUIRED: exactly one mode is required.",
-    "EVIDENCE_OUTPUT_REQUIRED: --output is required.",
-    "VEHICLE_SELECTION_REQUIRED: select vehicles or use dry-run discovery.",
-    "APPROVED_MANIFEST_REQUIRED: apply and replay require approved manifest evidence.",
-    "BASELINE_APPLY_CONFIRMATION_REQUIRED: apply requires explicit confirmation."
-  ].join("\n") + "\n";
+  const expected =
+    [
+      "Usage: stage1-clean-acceptance-baseline.mjs --dry-run|--apply|--replay --output <controlled-evidence-file> [options]",
+      "Arguments:",
+      "--dry-run: generate a baseline manifest without applying it.",
+      "--apply: apply an approved baseline manifest.",
+      "--replay: replay an approved baseline manifest.",
+      "--discover-vehicles: dry-run vehicle candidate discovery only.",
+      "--output <value>: controlled evidence output.",
+      "--vehicle-id <uuid>: repeatable selected vehicle identifier.",
+      "--approved-manifest <value>: approved manifest input.",
+      "--approved-manifest-sha256 <sha256>: approved manifest digest.",
+      "Constraints:",
+      "CLI_MODE_REQUIRED: exactly one mode is required.",
+      "EVIDENCE_OUTPUT_REQUIRED: --output is required.",
+      "VEHICLE_SELECTION_REQUIRED: select vehicles or use dry-run discovery.",
+      "APPROVED_MANIFEST_REQUIRED: apply and replay require approved manifest evidence.",
+      "BASELINE_APPLY_CONFIRMATION_REQUIRED: apply requires explicit confirmation."
+    ].join("\n") + "\n";
 
   assert.equal(await baselineMain(["--help"], deps), 0);
   assert.deepEqual(stdout, [expected]);
   assert.deepEqual(stderr, []);
-  for (const sensitive of [SOURCE_URL, TARGET_URL, "keqi_119", "18616570212", "secret", "D:/evidence"]) {
+  for (const sensitive of [
+    SOURCE_URL,
+    TARGET_URL,
+    "keqi_119",
+    "18616570212",
+    "secret",
+    "D:/evidence"
+  ]) {
     assert.equal(expected.includes(sensitive), false);
   }
 
@@ -364,13 +551,19 @@ test("baseline help is deterministic, non-sensitive, and bypasses environment an
 
 test("baseline dry-run generates canonical time/salt, writes a controlled manifest, and always disconnects both clients", async () => {
   const harness = createBaselineHarness();
-  const code = await baselineMain(["--dry-run", "--output", "D:/evidence/dry.json", "--vehicle-id", VEHICLE], harness.deps);
+  const code = await baselineMain(
+    ["--dry-run", "--output", "D:/evidence/dry.json", "--vehicle-id", VEHICLE],
+    harness.deps
+  );
   assert.equal(code, 0);
   assert.equal(harness.executeCalls.length, 1);
   assert.equal(harness.executeCalls[0].generatedAt, "2026-08-30T12:34:56.000Z");
   assert.equal(harness.executeCalls[0].hashSalt, "11".repeat(32));
   assert.equal(harness.reports.length, 1);
-  assert.equal(harness.clients.every((client) => client.disconnects === 1), true);
+  assert.equal(
+    harness.clients.every((client) => client.disconnects === 1),
+    true
+  );
   assert.equal(harness.stdout.length, 1);
   assert.equal(harness.stdout[0].includes("hashSalt"), false);
   assert.equal(harness.stdout[0].includes("rowDigests"), false);
@@ -379,38 +572,89 @@ test("baseline dry-run generates canonical time/salt, writes a controlled manife
 test("apply reuses approved generatedAt/salt and verifies the canonical manifest SHA before execution", async () => {
   const approved = approvedManifest();
   const harness = createBaselineHarness({ approved });
-  const code = await baselineMain([
-    "--apply", "--output", "D:/evidence/apply.json", "--vehicle-id", VEHICLE,
-    "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
-  ], harness.deps);
+  const code = await baselineMain(
+    [
+      "--apply",
+      "--output",
+      "D:/evidence/apply.json",
+      "--vehicle-id",
+      VEHICLE,
+      "--approved-manifest",
+      "D:/evidence/dry.json",
+      "--approved-manifest-sha256",
+      SHA
+    ],
+    harness.deps
+  );
   assert.equal(code, 0);
   assert.equal(harness.executeCalls[0].generatedAt, approved.generatedAt);
   assert.equal(harness.executeCalls[0].hashSalt, approved.hashSalt);
   assert.deepEqual(harness.executeCalls[0].approvedManifest, approved);
 
   const mismatch = createBaselineHarness({ approved, canonicalManifestSha: "f".repeat(64) });
-  assert.equal(await baselineMain([
-    "--apply", "--output", "D:/evidence/apply.json", "--vehicle-id", VEHICLE,
-    "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
-  ], mismatch.deps), 2);
+  assert.equal(
+    await baselineMain(
+      [
+        "--apply",
+        "--output",
+        "D:/evidence/apply.json",
+        "--vehicle-id",
+        VEHICLE,
+        "--approved-manifest",
+        "D:/evidence/dry.json",
+        "--approved-manifest-sha256",
+        SHA
+      ],
+      mismatch.deps
+    ),
+    2
+  );
   assert.equal(mismatch.executeCalls.length, 0);
   assert.equal(mismatch.clients.length, 0);
 
-  const malformed = createBaselineHarness({ approved: { ...approved, generatedAt: "not-an-instant" } });
-  assert.equal(await baselineMain([
-    "--apply", "--output", "D:/evidence/apply.json", "--vehicle-id", VEHICLE,
-    "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
-  ], malformed.deps), 2);
+  const malformed = createBaselineHarness({
+    approved: { ...approved, generatedAt: "not-an-instant" }
+  });
+  assert.equal(
+    await baselineMain(
+      [
+        "--apply",
+        "--output",
+        "D:/evidence/apply.json",
+        "--vehicle-id",
+        VEHICLE,
+        "--approved-manifest",
+        "D:/evidence/dry.json",
+        "--approved-manifest-sha256",
+        SHA
+      ],
+      malformed.deps
+    ),
+    2
+  );
   assert.equal(malformed.executeCalls.length, 0);
   assert.equal(malformed.clients.length, 0);
 
   const noConfirmationEnv = { ...BASE_ENV };
   delete noConfirmationEnv.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY;
   const noConfirmation = createBaselineHarness({ approved, env: noConfirmationEnv });
-  assert.equal(await baselineMain([
-    "--apply", "--output", "D:/evidence/apply.json", "--vehicle-id", VEHICLE,
-    "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
-  ], noConfirmation.deps), 2);
+  assert.equal(
+    await baselineMain(
+      [
+        "--apply",
+        "--output",
+        "D:/evidence/apply.json",
+        "--vehicle-id",
+        VEHICLE,
+        "--approved-manifest",
+        "D:/evidence/dry.json",
+        "--approved-manifest-sha256",
+        SHA
+      ],
+      noConfirmation.deps
+    ),
+    2
+  );
   assert.equal(noConfirmation.clients.length, 0);
 
   const approvalCases = [
@@ -421,42 +665,102 @@ test("apply reuses approved generatedAt/salt and verifies the canonical manifest
   ];
   for (const rejected of approvalCases) {
     const invalid = createBaselineHarness({ approved: rejected });
-    assert.equal(await baselineMain([
-      "--apply", "--output", "D:/evidence/apply.json", "--vehicle-id", VEHICLE,
-      "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
-    ], invalid.deps), 2);
+    assert.equal(
+      await baselineMain(
+        [
+          "--apply",
+          "--output",
+          "D:/evidence/apply.json",
+          "--vehicle-id",
+          VEHICLE,
+          "--approved-manifest",
+          "D:/evidence/dry.json",
+          "--approved-manifest-sha256",
+          SHA
+        ],
+        invalid.deps
+      ),
+      2
+    );
     assert.equal(invalid.clients.length, 0);
   }
 
-  const wrapper = { manifest: approved, manifestSha256: SHA, mode: "dry-run", operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE", safe: true };
-  for (const rejectedReport of [{ ...wrapper, rawSecret: "WRAPPER_SECRET" }, { ...wrapper, result: { rawPhone: "18616570212" } }]) {
+  const wrapper = {
+    manifest: approved,
+    manifestSha256: SHA,
+    mode: "dry-run",
+    operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+    safe: true
+  };
+  for (const rejectedReport of [
+    { ...wrapper, rawSecret: "WRAPPER_SECRET" },
+    { ...wrapper, result: { rawPhone: "18616570212" } }
+  ]) {
     const invalid = createBaselineHarness({ approved, approvedReport: rejectedReport });
-    assert.equal(await baselineMain([
-      "--apply", "--output", "D:/evidence/apply.json", "--vehicle-id", VEHICLE,
-      "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
-    ], invalid.deps), 2);
+    assert.equal(
+      await baselineMain(
+        [
+          "--apply",
+          "--output",
+          "D:/evidence/apply.json",
+          "--vehicle-id",
+          VEHICLE,
+          "--approved-manifest",
+          "D:/evidence/dry.json",
+          "--approved-manifest-sha256",
+          SHA
+        ],
+        invalid.deps
+      ),
+      2
+    );
     assert.equal(invalid.clients.length, 0);
   }
 
   const samePath = createBaselineHarness({ approved });
-  assert.equal(await baselineMain([
-    "--apply", "--output", "D:/evidence/dry.json", "--vehicle-id", VEHICLE,
-    "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
-  ], samePath.deps), 2);
+  assert.equal(
+    await baselineMain(
+      [
+        "--apply",
+        "--output",
+        "D:/evidence/dry.json",
+        "--vehicle-id",
+        VEHICLE,
+        "--approved-manifest",
+        "D:/evidence/dry.json",
+        "--approved-manifest-sha256",
+        SHA
+      ],
+      samePath.deps
+    ),
+    2
+  );
   assert.equal(samePath.clients.length, 0);
 });
 
 test("replay report and public summary expose exact zero write counts", async () => {
   const harness = createBaselineHarness({ approved: approvedManifest() });
-  const code = await baselineMain([
-    "--replay", "--output", "D:/evidence/replay.json", "--vehicle-id", VEHICLE,
-    "--approved-manifest", "D:/evidence/dry.json", "--approved-manifest-sha256", SHA
-  ], harness.deps);
+  const code = await baselineMain(
+    [
+      "--replay",
+      "--output",
+      "D:/evidence/replay.json",
+      "--vehicle-id",
+      VEHICLE,
+      "--approved-manifest",
+      "D:/evidence/dry.json",
+      "--approved-manifest-sha256",
+      SHA
+    ],
+    harness.deps
+  );
 
   assert.equal(code, 0);
   const expectedCounts = { auditCreated: 0, deleted: 0, inserted: 0, updated: 0 };
   assert.deepEqual(
-    Object.fromEntries(Object.keys(expectedCounts).map((key) => [key, harness.reports[0].value[key]])),
+    Object.fromEntries(
+      Object.keys(expectedCounts).map((key) => [key, harness.reports[0].value[key]])
+    ),
     expectedCounts
   );
   const summary = JSON.parse(harness.stdout[0]);
@@ -470,21 +774,30 @@ test("replay report and public summary expose exact zero write counts", async ()
 });
 
 test("discovery writes minimal candidates, exposes only count/digest, and exits with the stable selection gate", async () => {
-  const harness = createBaselineHarness({ candidates: [
-    { id: VEHICLE, salePriceStatus: "EFFECTIVE", status: "AVAILABLE" }
-  ] });
-  const code = await baselineMain(["--dry-run", "--discover-vehicles", "--output", "D:/evidence/candidates.json"], harness.deps);
+  const harness = createBaselineHarness({
+    candidates: [{ id: VEHICLE, salePriceStatus: "EFFECTIVE", status: "AVAILABLE" }]
+  });
+  const code = await baselineMain(
+    ["--dry-run", "--discover-vehicles", "--output", "D:/evidence/candidates.json"],
+    harness.deps
+  );
   assert.equal(code, 3);
   assert.equal(harness.executeCalls.length, 0);
   assert.equal(harness.reports[0].value.candidates[0].id, VEHICLE);
   assert.equal(harness.stdout[0].includes(VEHICLE), false);
   assert.equal(harness.stdout[0].includes("VEHICLE_SELECTION_REQUIRED"), true);
-  assert.equal(harness.clients.every((client) => client.disconnects === 1), true);
+  assert.equal(
+    harness.clients.every((client) => client.disconnects === 1),
+    true
+  );
 });
 
 test("an unsafe dry-run writes evidence and exposes only its stable gate code", async () => {
   const harness = createBaselineHarness({ scenario: "unsafe" });
-  const code = await baselineMain(["--dry-run", "--output", "D:/evidence/unsafe.json", "--vehicle-id", VEHICLE], harness.deps);
+  const code = await baselineMain(
+    ["--dry-run", "--output", "D:/evidence/unsafe.json", "--vehicle-id", VEHICLE],
+    harness.deps
+  );
   assert.equal(code, 3);
   assert.equal(harness.reports.length, 1);
   assert.equal(harness.stdout[0].includes("VEHICLE_NOT_ELIGIBLE"), true);
@@ -493,14 +806,27 @@ test("an unsafe dry-run writes evidence and exposes only its stable gate code", 
 
 test("baseline never falls back to DATABASE_URL and disconnects on partial connect, execution, write, and SIGINT paths", async () => {
   const missing = createBaselineHarness({ env: { DATABASE_URL: SOURCE_URL } });
-  assert.equal(await baselineMain(["--dry-run", "--output", "D:/evidence/x.json", "--vehicle-id", VEHICLE], missing.deps), 2);
+  assert.equal(
+    await baselineMain(
+      ["--dry-run", "--output", "D:/evidence/x.json", "--vehicle-id", VEHICLE],
+      missing.deps
+    ),
+    2
+  );
   assert.equal(missing.clients.length, 0);
 
   for (const scenario of ["target-connect", "execute", "gate", "write", "sigint"]) {
     const harness = createBaselineHarness({ scenario });
-    const code = await baselineMain(["--dry-run", "--output", "D:/evidence/x.json", "--vehicle-id", VEHICLE], harness.deps);
+    const code = await baselineMain(
+      ["--dry-run", "--output", "D:/evidence/x.json", "--vehicle-id", VEHICLE],
+      harness.deps
+    );
     assert.equal(code, scenario === "write" ? 5 : scenario === "gate" ? 3 : 4, scenario);
-    assert.equal(harness.clients.every((client) => client.disconnects === 1), true, scenario);
+    assert.equal(
+      harness.clients.every((client) => client.disconnects === 1),
+      true,
+      scenario
+    );
   }
 });
 
@@ -554,14 +880,22 @@ function virtualWindowsFs() {
   const entries = new Map();
   const add = (entryPath, kind, realpath = entryPath) => {
     const canonicalPath = path.win32.normalize(entryPath);
-    entries.set(canonicalPath.toLowerCase(), { canonicalPath, kind, realpath: path.win32.normalize(realpath) });
+    entries.set(canonicalPath.toLowerCase(), {
+      canonicalPath,
+      kind,
+      realpath: path.win32.normalize(realpath)
+    });
   };
   add("C:\\acceptance\\repo", "directory");
   add("C:\\acceptance\\repo-evidence", "directory");
   add("C:\\acceptance\\evidence-alias", "directory", "C:\\acceptance\\repo-evidence");
   add("C:\\acceptance\\evidence-junction", "junction", "C:\\acceptance\\repo-evidence");
   add("C:\\acceptance\\repo-evidence\\existing.json", "file");
-  add("C:\\acceptance\\repo-evidence\\linked.json", "symlink", "C:\\acceptance\\repo-evidence\\existing.json");
+  add(
+    "C:\\acceptance\\repo-evidence\\linked.json",
+    "symlink",
+    "C:\\acceptance\\repo-evidence\\existing.json"
+  );
 
   const entry = (candidate) => entries.get(path.win32.normalize(candidate).toLowerCase());
   return {
@@ -589,7 +923,8 @@ function virtualPosixDirectoryFs(parent, uid, mode) {
   return {
     existsSync: (candidate) => path.posix.normalize(candidate) === parent,
     lstatSync(candidate) {
-      if (path.posix.normalize(candidate) !== parent) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      if (path.posix.normalize(candidate) !== parent)
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       return {
         mode,
         uid,
@@ -606,7 +941,14 @@ function windowsAcl(canonicalPath, safe = true, pathApi = path) {
   return () => ({ canonicalPath: pathApi.resolve(canonicalPath), safe });
 }
 
-function createBaselineHarness({ approved = approvedManifest(), approvedReport, candidates = [], canonicalManifestSha = SHA, env = BASE_ENV, scenario } = {}) {
+function createBaselineHarness({
+  approved = approvedManifest(),
+  approvedReport,
+  candidates = [],
+  canonicalManifestSha = SHA,
+  env = BASE_ENV,
+  scenario
+} = {}) {
   const clients = [];
   const executeCalls = [];
   const reports = [];
@@ -616,12 +958,18 @@ function createBaselineHarness({ approved = approvedManifest(), approvedReport, 
   const deps = {
     assertEvidencePath: (path) => resolve(path),
     createPrismaClient: async (_url, label) => {
-      if (scenario === "target-connect" && label === "target") throw new Error("connection contains secret");
+      if (scenario === "target-connect" && label === "target")
+        throw new Error("connection contains secret");
       const client = {
         disconnects: 0,
-        async $disconnect() { this.disconnects += 1; },
+        async $disconnect() {
+          this.disconnects += 1;
+        },
         async $transaction(callback) {
-          return callback({ $queryRaw: async () => [], vehicle: { findMany: async () => candidates } });
+          return callback({
+            $queryRaw: async () => [],
+            vehicle: { findMany: async () => candidates }
+          });
         }
       };
       clients.push(client);
@@ -637,9 +985,28 @@ function createBaselineHarness({ approved = approvedManifest(), approvedReport, 
       if (scenario === "sigint") signalHandler();
       if (scenario === "execute") throw new Error("database secret leaked");
       if (scenario === "gate") throw new Error("MANIFEST_STALE");
-      if (scenario === "unsafe") return { manifest: { exceptions: [{ code: "VEHICLE_NOT_ELIGIBLE" }], generatedAt: options.generatedAt, hashSalt: options.hashSalt }, manifestSha256: SHA, mode: "dry-run", safe: false };
+      if (scenario === "unsafe")
+        return {
+          manifest: {
+            exceptions: [{ code: "VEHICLE_NOT_ELIGIBLE" }],
+            generatedAt: options.generatedAt,
+            hashSalt: options.hashSalt
+          },
+          manifestSha256: SHA,
+          mode: "dry-run",
+          safe: false
+        };
       return options.mode === "dry-run"
-        ? { manifest: { generatedAt: options.generatedAt, hashSalt: options.hashSalt, rowDigests: { access: "x" } }, manifestSha256: SHA, mode: "dry-run", safe: true }
+        ? {
+            manifest: {
+              generatedAt: options.generatedAt,
+              hashSalt: options.hashSalt,
+              rowDigests: { access: "x" }
+            },
+            manifestSha256: SHA,
+            mode: "dry-run",
+            safe: true
+          }
         : {
             auditCreated: options.mode === "replay" ? 0 : 1,
             deleted: 0,
@@ -651,10 +1018,22 @@ function createBaselineHarness({ approved = approvedManifest(), approvedReport, 
           };
     },
     hashManifest: () => canonicalManifestSha,
-    installSignalHandler: (handler) => { signalHandler = handler; return () => {}; },
+    installSignalHandler: (handler) => {
+      signalHandler = handler;
+      return () => {};
+    },
     now: () => new Date("2026-08-30T12:34:56.000Z"),
     randomBytes: () => Buffer.alloc(32, 0x11),
-    readTextFile: async () => JSON.stringify(approvedReport ?? { manifest: approved, manifestSha256: SHA, mode: "dry-run", operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE", safe: true }),
+    readTextFile: async () =>
+      JSON.stringify(
+        approvedReport ?? {
+          manifest: approved,
+          manifestSha256: SHA,
+          mode: "dry-run",
+          operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+          safe: true
+        }
+      ),
     repoRoot: "D:/repo",
     writeJsonFile: async (path, value) => {
       if (scenario === "write") throw new Error("disk path secret");

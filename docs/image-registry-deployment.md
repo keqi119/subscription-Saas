@@ -67,9 +67,12 @@ Example commands:
 export REGISTRY="<REGISTRY>"
 export NAMESPACE="<NAMESPACE>"
 export TAG="rc-20260613-stage9"
+export API_SOURCE_REVISION="<full-40-lowercase-git-sha>"
 export WEB_API_BASE_URL="https://staging-api.subauto.keybox.cloud/api"
 
-docker build -f Dockerfile.api -t "$REGISTRY/$NAMESPACE/subscription-api:$TAG" .
+docker build -f Dockerfile.api \
+  --build-arg API_SOURCE_REVISION="$API_SOURCE_REVISION" \
+  -t "$REGISTRY/$NAMESPACE/subscription-api:$TAG" .
 docker build -f Dockerfile.web \
   --build-arg NEXT_PUBLIC_API_BASE_URL="$WEB_API_BASE_URL" \
   -t "$REGISTRY/$NAMESPACE/subscription-web:$TAG" .

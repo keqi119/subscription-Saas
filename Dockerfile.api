@@ -22,6 +22,7 @@ RUN pnpm --filter @subscription-saas/api build
 
 FROM base AS runtime
 
+ARG API_SOURCE_REVISION
 ARG SOURCE_HAN_SANS_VERSION=2.005R
 ARG SOURCE_HAN_SANS_SC_ZIP_URL=https://github.com/adobe-fonts/source-han-sans/releases/download/2.005R/09_SourceHanSansSC.zip
 ARG SOURCE_HAN_SANS_SC_ZIP_SHA256=ef7364f7ac2564be1ae9c1d74276de2653fe38b73449070398c4fc0b7e032ff1
@@ -29,6 +30,11 @@ ARG SOURCE_HAN_SANS_SC_ZIP_SHA256=ef7364f7ac2564be1ae9c1d74276de2653fe38b7344907
 ENV NODE_ENV=production
 ENV PORT=3001
 ENV CONTRACT_PDF_CJK_FONT_PATH=/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf
+
+RUN test "${#API_SOURCE_REVISION}" -eq 40 \
+  && printf '%s' "$API_SOURCE_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+
+LABEL org.opencontainers.image.revision="${API_SOURCE_REVISION}"
 
 WORKDIR /app
 

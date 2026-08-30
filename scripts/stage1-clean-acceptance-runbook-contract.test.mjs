@@ -154,6 +154,73 @@ function validateExecutableContracts(contents) {
   return { cutover, evidenceHelpers, transformer };
 }
 
+function validateTask9PreflightContracts(contents, checkMutations = true) {
+  const preflight = extractExecutableFence(contents, "STAGE1_TASK9_PREFLIGHT_EXECUTABLE");
+  assertContainsAll(preflight, [
+    'readonly COMPOSE_FILE="/opt/subscription-saas/docker-compose.staging.images.example.yml"',
+    'readonly COMPOSE_PROJECT="subauto-staging"',
+    "readonly APPROVED_API_IMAGE",
+    '"$APPROVED_API_IMAGE" node',
+    "docker image inspect --format",
+    "org.opencontainers.image.revision",
+    "STOP: APPROVED_API_IMAGE_DIGEST_INVALID",
+    "STOP: APPROVED_API_IMAGE_REVISION_INVALID",
+    "STOP: APPROVED_API_IMAGE_REVISION_MISMATCH",
+    'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL"',
+    'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL"',
+    'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"',
+    "CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L",
+    "TARGET_DATABASE_ALREADY_EXISTS",
+    "EMPTY_NEW_DB_BACKUP",
+    "empty-new-database.pre-migration",
+    "prisma migrate deploy",
+    "post_migration_business_nonzero_tables=0",
+    "safeToApply !== true",
+    "exceptions.length !== 0",
+    "forbiddenCounts.every((count) => count === 0)",
+    "INDEPENDENT_MANIFEST_SHA",
+    "STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL"
+  ]);
+  assert.doesNotMatch(preflight, /docker compose[^\n]+run[^\n]+\bapi\b/);
+  assert.doesNotMatch(preflight, /^\s*(?:jq|node|psql|pg_dump)\b/m);
+  assertStrictOrder(preflight, [
+    'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL"',
+    "CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L",
+    "empty-new-database.pre-migration",
+    "prisma migrate deploy",
+    "post_migration_business_nonzero_tables=0",
+    "--discover-vehicles",
+    'read -r -s -p "Approved vehicle UUID (hidden): " APPROVED_VEHICLE_UUID',
+    "--dry-run --vehicle-id",
+    "STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL"
+  ]);
+
+  const mutations = [
+    contents.replace(
+      "docker-compose.staging.images.example.yml",
+      "docker-compose.staging.images.yml"
+    ),
+    contents.replace('"$APPROVED_API_IMAGE" node', '"$CURRENT_ONLINE_API_IMAGE" node'),
+    contents.replace('check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"', ":"),
+    contents.replaceAll("empty-new-database.pre-migration", "migration-backup"),
+    contents.replace(
+      "post_migration_business_nonzero_tables=0",
+      "post_migration_business_nonzero_tables=unchecked"
+    ),
+    contents.replace("forbiddenCounts.every((count) => count === 0)", "forbiddenCounts.length >= 0")
+  ];
+  if (checkMutations) {
+    for (const [index, mutation] of mutations.entries()) {
+      assert.throws(
+        () => validateTask9PreflightContracts(mutation, false),
+        undefined,
+        `mutation ${index}`
+      );
+    }
+  }
+  return preflight;
+}
+
 function toGitBashPath(path) {
   return path
     .replace(/^([A-Za-z]):/, (_match, drive) => `/${drive.toLowerCase()}`)
@@ -734,6 +801,11 @@ test("pins compose, release image, and fixed preflight identities", async () => 
     "目标 API 镜像只运行一次 migration deploy",
     "磁盘、内存、连接数、容器 health、Git/image SHA"
   ]);
+});
+
+test("Task 9 preflight uses only the approved target image and reaches the approval stop through executable fences", async () => {
+  const preflight = validateTask9PreflightContracts(await readRunbook());
+  assert.ok(preflight.length > 0);
 });
 
 test("requires discovery, explicit UUID, approvals, apply/replay, and target validator", async () => {

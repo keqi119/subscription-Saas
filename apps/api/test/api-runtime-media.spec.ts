@@ -71,4 +71,13 @@ describe("API runtime media contract", () => {
       /COPY[^\n]*(?:\/(?:\.superpowers|tests?|reports?|tmp|output|credentials?)(?:\/|\s)|\/\.env(?:[./\s]))/i
     );
   });
+
+  it("requires and publishes an immutable API source revision label", () => {
+    const dockerfile = readFileSync(join(repoRoot, "Dockerfile.api"), "utf8");
+    const runtime = dockerfile.slice(dockerfile.indexOf("FROM base AS runtime"));
+
+    expect(runtime).toMatch(/ARG\s+API_SOURCE_REVISION/);
+    expect(runtime).toContain('RUN test "${#API_SOURCE_REVISION}" -eq 40');
+    expect(runtime).toContain('LABEL org.opencontainers.image.revision="${API_SOURCE_REVISION}"');
+  });
 });

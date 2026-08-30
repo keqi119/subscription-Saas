@@ -45,8 +45,24 @@ describe("Web deployment versioning", () => {
     expect(checkStep).toContain("DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}");
     expect(checkStep).toContain("CHECK_ARGS=(");
     expect(checkStep).toContain('if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ]; then');
-    expect(checkStep).toContain('CHECK_ARGS+=(--must-not-contain "staging-api.subauto.keybox.cloud")');
+    expect(checkStep).toContain(
+      'CHECK_ARGS+=(--must-not-contain "staging-api.subauto.keybox.cloud")'
+    );
     expect(checkStep).toContain('"${CHECK_ARGS[@]}"');
+  });
+
+  it("builds and verifies the API image revision label against the full workflow SHA", () => {
+    const workflow = read(".github/workflows/docker-images.yml");
+    const apiBuild = workflow.slice(
+      workflow.indexOf("- name: Build and push API image"),
+      workflow.indexOf("- name: Build and push Web image")
+    );
+    const verification = workflow.slice(workflow.indexOf("- name: Verify API image revision"));
+
+    expect(apiBuild).toContain("API_SOURCE_REVISION=${{ github.sha }}");
+    expect(verification).toContain('docker pull "$API_IMAGE"');
+    expect(verification).toContain("org.opencontainers.image.revision");
+    expect(verification).toContain('"${GITHUB_SHA}"');
   });
 });
 

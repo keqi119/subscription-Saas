@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 
 import { BillingAutomationHandlers } from "./billing-automation.handlers";
 import { BillingAutomationRepository } from "./billing-automation.repository";
-import { BillingAutomationService } from "./billing-automation.service";
+import { BillingMaintenanceEvidenceService } from "./billing-maintenance-evidence.service";
 import {
   BillingAutomationError,
   BillingAutomationFailure,
@@ -27,7 +27,7 @@ export class BillingAutomationWorker implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly repository: BillingAutomationRepository,
-    private readonly service: BillingAutomationService,
+    private readonly maintenance: BillingMaintenanceEvidenceService,
     private readonly handlers: BillingAutomationHandlers,
     private readonly config: ConfigService
   ) {}
@@ -67,7 +67,7 @@ export class BillingAutomationWorker implements OnModuleInit, OnModuleDestroy {
 
     this.nextMaintenanceAt = now + MAINTENANCE_INTERVAL_MS;
     try {
-      const reconciliation = await this.service.reconcileSchedules({ dryRun: false });
+      const reconciliation = await this.maintenance.runMaintenance();
       if (reconciliation.blockedCount > 0) {
         this.logger.warn({
           blockedCount: reconciliation.blockedCount,
@@ -82,7 +82,6 @@ export class BillingAutomationWorker implements OnModuleInit, OnModuleDestroy {
           operation: "BILLING_SCHEDULE_RECONCILIATION_BLOCKED"
         });
       }
-      await this.service.enqueueDueSchedules();
     } catch (error) {
       this.nextMaintenanceAt = 0;
       throw error;

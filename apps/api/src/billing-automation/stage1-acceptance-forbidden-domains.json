@@ -1,0 +1,182 @@
+{
+  "version": "stage1-acceptance-forbidden-domains/v1",
+  "domains": [
+    { "delegate": "customerVerificationCode", "table": "customer_verification_code" },
+    { "delegate": "smsSendLog", "table": "sms_send_log" },
+    { "delegate": "fieldOperatorOtp", "table": "field_operator_otp" },
+    { "delegate": "fieldOperatorSession", "table": "field_operator_session" },
+    { "delegate": "fieldOperatorAuditLog", "table": "field_operator_audit_log" },
+    { "delegate": "customerProfileMaterial", "table": "customer_profile_material" },
+    { "delegate": "customerFollowup", "table": "customer_followup" },
+    { "delegate": "application", "table": "application" },
+    { "delegate": "applicationMaterial", "table": "application_material" },
+    { "delegate": "applicationMaterialGroup", "table": "application_material_group" },
+    { "delegate": "applicationMaterialFile", "table": "application_material_file" },
+    { "delegate": "applicationActionLog", "table": "application_action_log" },
+    { "delegate": "riskResult", "table": "risk_result" },
+    { "delegate": "subscriptionQuote", "table": "subscription_quote" },
+    { "delegate": "subscriptionOrder", "table": "subscription_order" },
+    { "delegate": "subscriptionJourney", "table": "subscription_journey" },
+    { "delegate": "subscriptionJourneyStep", "table": "subscription_journey_step" },
+    { "delegate": "subscriptionJourneyJob", "table": "subscription_journey_job" },
+    { "delegate": "subscriptionJourneyManualTask", "table": "subscription_journey_manual_task" },
+    { "delegate": "subscriptionJourneyEvent", "table": "subscription_journey_event" },
+    { "delegate": "subscriptionJourneyException", "table": "subscription_journey_exception" },
+    { "delegate": "subscriptionJourneyOutbox", "table": "subscription_journey_outbox" },
+    { "delegate": "orderEntitlementAccount", "table": "order_entitlement_account" },
+    { "delegate": "orderEntitlementGrant", "table": "order_entitlement_grant" },
+    { "delegate": "orderEntitlementUsage", "table": "order_entitlement_usage" },
+    { "delegate": "receivableBill", "table": "receivable_bill" },
+    { "delegate": "billingSchedule", "table": "billing_schedule" },
+    { "delegate": "subscriptionAutomationJob", "table": "subscription_automation_job" },
+    { "delegate": "paymentMandate", "table": "payment_mandate" },
+    { "delegate": "debitAttempt", "table": "debit_attempt" },
+    { "delegate": "paymentRecord", "table": "payment_record" },
+    { "delegate": "paymentOrder", "table": "payment_order" },
+    { "delegate": "paymentOrderItem", "table": "payment_order_item" },
+    { "delegate": "paymentCallbackLog", "table": "payment_callback_log" },
+    { "delegate": "paymentWriteOff", "table": "payment_write_off" },
+    { "delegate": "depositLedger", "table": "deposit_ledger" },
+    { "delegate": "collectionCase", "table": "collection_case" },
+    { "delegate": "collectionCaseBill", "table": "collection_case_bill" },
+    { "delegate": "collectionAction", "table": "collection_action" },
+    { "delegate": "serviceCase", "table": "service_case" },
+    { "delegate": "serviceCaseAttachment", "table": "service_case_attachment" },
+    { "delegate": "serviceCaseAction", "table": "service_case_action" },
+    { "delegate": "notificationRecord", "table": "notification_record" },
+    { "delegate": "notificationEvent", "table": "notification_event" },
+    { "delegate": "lease", "table": "lease" },
+    { "delegate": "vehicleDelivery", "table": "vehicle_delivery" },
+    { "delegate": "vehicleDeliveryHandover", "table": "vehicle_delivery_handover" },
+    { "delegate": "vehicleHandoverWorkOrder", "table": "vehicle_handover_work_order" },
+    { "delegate": "vehicleHandoverWorkflowJob", "table": "vehicle_handover_workflow_job" },
+    { "delegate": "vehicleHandoverReviewAttempt", "table": "vehicle_handover_review_attempt" },
+    { "delegate": "vehicleHandoverEvent", "table": "vehicle_handover_event" },
+    { "delegate": "vehicleDeliveryEvidenceItem", "table": "vehicle_delivery_evidence_item" },
+    { "delegate": "vehicleDeliveryEvidenceFile", "table": "vehicle_delivery_evidence_file" },
+    {
+      "delegate": "fieldEvidenceVideoUploadSession",
+      "table": "field_evidence_video_upload_session"
+    },
+    { "delegate": "fieldEvidenceVideoUploadPart", "table": "field_evidence_video_upload_part" },
+    { "delegate": "vehicleInspection", "table": "vehicle_inspection" },
+    { "delegate": "vehicleReturn", "table": "vehicle_return" },
+    { "delegate": "vehicleReturnDamage", "table": "vehicle_return_damage" },
+    { "delegate": "contract", "table": "contract" },
+    { "delegate": "contractESignTask", "table": "contract_esign_task" },
+    { "delegate": "contractESignSigner", "table": "contract_esign_signer" },
+    { "delegate": "contractESignCallbackLog", "table": "contract_esign_callback_log" },
+    { "delegate": "subscriptionChangeOrder", "table": "subscription_change_order" },
+    {
+      "delegate": "subscriptionExtensionChangeDetail",
+      "table": "subscription_extension_change_detail"
+    },
+    {
+      "delegate": "subscriptionVehicleSwapChangeDetail",
+      "table": "subscription_vehicle_swap_change_detail"
+    },
+    {
+      "delegate": "subscriptionEarlyTerminationChangeDetail",
+      "table": "subscription_early_termination_change_detail"
+    },
+    {
+      "delegate": "subscriptionManagedOtherChangeDetail",
+      "table": "subscription_managed_other_change_detail"
+    },
+    { "delegate": "subscriptionChangeQuote", "table": "subscription_change_quote" },
+    { "delegate": "subscriptionChangeCommand", "table": "subscription_change_command" },
+    { "delegate": "subscriptionContractSegment", "table": "subscription_contract_segment" },
+    { "delegate": "renewalConsideration", "table": "renewal_consideration" },
+    { "delegate": "renewalReminder", "table": "renewal_reminder" },
+    { "delegate": "orderChange", "table": "order_change" },
+    { "delegate": "subscriptionClosureCase", "table": "subscription_closure_case" },
+    { "delegate": "subscriptionClosureEvent", "table": "subscription_closure_event" },
+    {
+      "delegate": "subscriptionClosureDocumentRevision",
+      "table": "subscription_closure_document_revision"
+    },
+    {
+      "delegate": "subscriptionClosureCurrentDocument",
+      "table": "subscription_closure_current_document"
+    },
+    {
+      "delegate": "subscriptionClosureSettlementRevision",
+      "table": "subscription_closure_settlement_revision"
+    },
+    { "delegate": "vehicleReturnChecklistRevision", "table": "vehicle_return_checklist_revision" },
+    { "delegate": "vehicleReturnChecklistItem", "table": "vehicle_return_checklist_item" },
+    { "delegate": "vehicleReturnEvidenceLink", "table": "vehicle_return_evidence_link" },
+    { "delegate": "vehicleConditionDeltaRevision", "table": "vehicle_condition_delta_revision" },
+    { "delegate": "vehicleConditionDeltaItem", "table": "vehicle_condition_delta_item" },
+    { "delegate": "contractChargeClauseSnapshot", "table": "contract_charge_clause_snapshot" },
+    { "delegate": "subscriptionClosureChargeLine", "table": "subscription_closure_charge_line" },
+    {
+      "delegate": "subscriptionClosureCustomerResponse",
+      "table": "subscription_closure_customer_response"
+    },
+    {
+      "delegate": "subscriptionClosureChargeDispute",
+      "table": "subscription_closure_charge_dispute"
+    },
+    {
+      "delegate": "subscriptionClosureChargeDisputeDecision",
+      "table": "subscription_closure_charge_dispute_decision"
+    },
+    {
+      "delegate": "subscriptionClosureReceivableDisposition",
+      "table": "subscription_closure_receivable_disposition"
+    },
+    {
+      "delegate": "subscriptionClosureLegalCollectionCase",
+      "table": "subscription_closure_legal_collection_case"
+    },
+    {
+      "delegate": "subscriptionClosureLegalCollectionEvent",
+      "table": "subscription_closure_legal_collection_event"
+    },
+    {
+      "delegate": "subscriptionClosureEvidencePackageExport",
+      "table": "subscription_closure_evidence_package_export"
+    },
+    {
+      "delegate": "subscriptionClosureCommandReceipt",
+      "table": "subscription_closure_command_receipt"
+    },
+    { "delegate": "assetAccountingCommandReceipt", "table": "asset_accounting_command_receipt" },
+    { "delegate": "vehicleSubscriptionPeriod", "table": "vehicle_subscription_period" },
+    { "delegate": "vehicleConditionReport", "table": "vehicle_condition_report" },
+    { "delegate": "vehicleConditionReportItem", "table": "vehicle_condition_report_item" },
+    { "delegate": "vehicleMileageReading", "table": "vehicle_mileage_reading" },
+    { "delegate": "orderMileageReview", "table": "order_mileage_review" },
+    { "delegate": "orderMileageReviewEvidence", "table": "order_mileage_review_evidence" },
+    { "delegate": "assetWorkOrder", "table": "asset_work_order" },
+    { "delegate": "assetWorkOrderEvent", "table": "asset_work_order_event" },
+    { "delegate": "assetWorkOrderEvidence", "table": "asset_work_order_evidence" },
+    { "delegate": "vehicleOperationalRestriction", "table": "vehicle_operational_restriction" },
+    { "delegate": "businessExceptionApproval", "table": "business_exception_approval" },
+    { "delegate": "insuranceClaim", "table": "insurance_claim" },
+    { "delegate": "vehicleBaasContract", "table": "vehicle_baas_contract" },
+    { "delegate": "vehicleBaasContractAttachment", "table": "vehicle_baas_contract_attachment" },
+    { "delegate": "vehicleBaasCostRecord", "table": "vehicle_baas_cost_record" },
+    { "delegate": "vehicleDepreciationPolicy", "table": "vehicle_depreciation_policy" },
+    { "delegate": "vehicleDepreciationSchedule", "table": "vehicle_depreciation_schedule" },
+    { "delegate": "vehicleDepreciationRecord", "table": "vehicle_depreciation_record" },
+    { "delegate": "marketPriceImportBatch", "table": "market_price_import_batch" },
+    { "delegate": "vehicleMarketPriceObservation", "table": "vehicle_market_price_observation" },
+    { "delegate": "vehicleResidualCurve", "table": "vehicle_residual_curve" },
+    { "delegate": "vehicleResidualCurvePoint", "table": "vehicle_residual_curve_point" },
+    { "delegate": "vehicleResidualForecast", "table": "vehicle_residual_forecast" },
+    { "delegate": "vehicleResidualForecastPoint", "table": "vehicle_residual_forecast_point" },
+    { "delegate": "vehicleValuationReview", "table": "vehicle_valuation_review" },
+    { "delegate": "residualModelRun", "table": "residual_model_run" },
+    { "delegate": "residualModelRunOutput", "table": "residual_model_run_output" },
+    { "delegate": "vehicleCapitalEvent", "table": "vehicle_capital_event" },
+    { "delegate": "financingInstrument", "table": "financing_instrument" },
+    { "delegate": "financingInstrumentVehicle", "table": "financing_instrument_vehicle" },
+    { "delegate": "vehicleAssetPool", "table": "vehicle_asset_pool" },
+    { "delegate": "vehicleAssetPoolVehicle", "table": "vehicle_asset_pool_vehicle" },
+    { "delegate": "revenueRightAssignment", "table": "revenue_right_assignment" },
+    { "delegate": "revenueShareRule", "table": "revenue_share_rule" },
+    { "delegate": "auditLog", "table": "audit_log" }
+  ]
+}

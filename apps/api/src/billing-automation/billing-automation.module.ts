@@ -12,6 +12,8 @@ import { BillingAutomationHandlers } from "./billing-automation.handlers";
 import { BillingAutomationRepository } from "./billing-automation.repository";
 import { BillingAutomationService } from "./billing-automation.service";
 import { BillingAutomationWorker } from "./billing-automation.worker";
+import { BillingMaintenanceEvidenceRepository } from "./billing-maintenance-evidence.repository";
+import { BillingMaintenanceEvidenceService } from "./billing-maintenance-evidence.service";
 
 @Module({
   controllers: [BillingAutomationController],
@@ -29,6 +31,8 @@ import { BillingAutomationWorker } from "./billing-automation.worker";
     BillingAutomationHandlers,
     BillingAutomationRepository,
     BillingAutomationService,
+    BillingMaintenanceEvidenceRepository,
+    BillingMaintenanceEvidenceService,
     BillingAutomationWorker
   ]
 })

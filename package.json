@@ -37,6 +37,7 @@
     "stage1:clean-acceptance:replay": "node scripts/stage1-clean-acceptance-baseline.mjs --replay",
     "stage1:clean-acceptance:validate": "node scripts/stage1-clean-acceptance-target-validator.mjs",
     "stage1:clean-acceptance:test": "node --test scripts/stage1-clean-acceptance-baseline-core.test.mjs scripts/stage1-clean-acceptance-baseline-snapshot.test.mjs scripts/stage1-clean-acceptance-baseline-executor.test.mjs scripts/stage1-clean-acceptance-baseline.test.mjs scripts/stage1-clean-acceptance-target-validator.test.mjs scripts/stage1-clean-acceptance-baseline-postgres.integration.test.mjs",
+    "stage1:clean-acceptance:runbook:test": "node --test scripts/stage1-clean-acceptance-runbook-contract.test.mjs",
     "subscription-renewals:reconcile": "node scripts/subscription-renewal-reconcile.mjs",
     "subscription-extension:smoke": "node scripts/subscription-extension-smoke.mjs",
     "wechat-pay:download-platform-certs": "node scripts/wechat-pay-download-platform-certs.mjs",

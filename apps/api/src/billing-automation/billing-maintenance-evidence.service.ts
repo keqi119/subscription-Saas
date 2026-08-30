@@ -53,7 +53,7 @@ export class BillingMaintenanceEvidenceService {
       };
       const existing = await this.repository.findCompletedFacts(tx, source.evidenceRunId);
       const sequence = nextSequence(existing, source);
-      if (sequence === null) return null;
+      if (sequence === null) return this.runOrdinaryMaintenance();
 
       const cycleStartedAt = await this.repository.readDatabaseTime(tx);
       const beforeCounts = await this.repository.loadForbiddenCounts(tx);
@@ -83,7 +83,7 @@ export class BillingMaintenanceEvidenceService {
       return reconciliation;
     });
 
-    return captured ?? this.runOrdinaryMaintenance();
+    return captured;
   }
 
   private async runOrdinaryMaintenance() {

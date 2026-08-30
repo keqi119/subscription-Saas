@@ -103,23 +103,32 @@ export class BillingMaintenanceEvidenceRepository {
     const rows = await tx.$queryRaw<Array<{ count: bigint; delegate: string }>>(
       Prisma.sql`${Prisma.join(statements, " UNION ALL ")}`
     );
-    if (rows.length !== BILLING_MAINTENANCE_FORBIDDEN_DOMAINS.length) {
+    const allowedDelegates = new Set(
+      BILLING_MAINTENANCE_FORBIDDEN_DOMAINS.map(({ delegate }) => delegate)
+    );
+    const countsByDelegate = new Map<string, number>();
+    for (const row of rows) {
+      const count = Number(row?.count);
+      if (
+        !row ||
+        !allowedDelegates.has(row.delegate) ||
+        !Number.isSafeInteger(count) ||
+        count < 0 ||
+        countsByDelegate.has(row.delegate)
+      ) {
+        databaseResponseInvalid();
+      }
+      countsByDelegate.set(row.delegate, count);
+    }
+    if (countsByDelegate.size !== BILLING_MAINTENANCE_FORBIDDEN_DOMAINS.length) {
       databaseResponseInvalid();
     }
 
     const counts: Record<string, number> = {};
-    for (const [index, definition] of BILLING_MAINTENANCE_FORBIDDEN_DOMAINS.entries()) {
-      const row = rows[index];
-      const count = Number(row?.count);
-      if (
-        row?.delegate !== definition.delegate ||
-        !Number.isSafeInteger(count) ||
-        count < 0 ||
-        Object.hasOwn(counts, definition.delegate)
-      ) {
-        databaseResponseInvalid();
-      }
-      counts[definition.delegate] = count;
+    for (const { delegate } of BILLING_MAINTENANCE_FORBIDDEN_DOMAINS) {
+      const count = countsByDelegate.get(delegate);
+      if (count === undefined) databaseResponseInvalid();
+      counts[delegate] = count;
     }
     return counts;
   }

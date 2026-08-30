@@ -100,6 +100,7 @@ IMMUTABLE
 PARALLEL SAFE
 AS $$
 DECLARE
+  "blocker_code_value" JSONB;
   "current_blocker_code" TEXT;
   "normalized_codes" JSONB;
 BEGIN
@@ -130,10 +131,19 @@ BEGIN
     RETURN FALSE;
   END IF;
 
+  FOR "blocker_code_value" IN
+    SELECT jsonb_array_elements("value" -> 'blockerCodes')
+  LOOP
+    IF jsonb_typeof("blocker_code_value") <> 'string' THEN
+      RETURN FALSE;
+    END IF;
+  END LOOP;
+
   FOR "current_blocker_code" IN
     SELECT jsonb_array_elements_text("value" -> 'blockerCodes')
   LOOP
-    IF "current_blocker_code" !~ '^[A-Z][A-Z0-9_]{0,127}$' THEN
+    IF "current_blocker_code" IS NULL
+      OR "current_blocker_code" !~ '^[A-Z][A-Z0-9_]{0,127}$' THEN
       RETURN FALSE;
     END IF;
   END LOOP;

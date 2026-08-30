@@ -12,7 +12,8 @@ import {
 } from "../src/billing-automation/billing-maintenance-evidence.types";
 import {
   BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_SHA256,
-  BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_VERSION
+  BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_VERSION,
+  BILLING_MAINTENANCE_FORBIDDEN_DOMAINS
 } from "../src/billing-automation/billing-maintenance-forbidden-domains";
 
 const RUN_ID = "a".repeat(64);
@@ -226,7 +227,7 @@ describe("BillingMaintenanceEvidenceService", () => {
     expect(harness.repository.loadForbiddenCounts).not.toHaveBeenCalled();
   });
 
-  it("runs ordinary maintenance after two facts without taking expensive snapshots or inserting a third", async () => {
+  it("runs third-cycle maintenance while still holding the run lock without taking expensive snapshots", async () => {
     const harness = createHarness({
       enabled: "true",
       facts: [completedFact(1), completedFact(2)]
@@ -239,6 +240,15 @@ describe("BillingMaintenanceEvidenceService", () => {
     expect(harness.repository.loadForbiddenCounts).not.toHaveBeenCalled();
     expect(harness.repository.readDatabaseTime).not.toHaveBeenCalled();
     expect(harness.repository.insertCompletedFact).not.toHaveBeenCalled();
+    expect(harness.calls).toEqual([
+      "observation.begin",
+      "advisory.lock",
+      "database.identity",
+      "facts.load",
+      "reconcile",
+      "enqueue",
+      "observation.end"
+    ]);
   });
 
   it.each(["beforeSnapshot", "reconciliation", "enqueue", "afterSnapshot", "insert"] as const)(
@@ -257,6 +267,43 @@ describe("BillingMaintenanceEvidenceService", () => {
       }
     }
   );
+});
+
+describe("BillingMaintenanceEvidenceRepository", () => {
+  it("maps re-ordered count rows by delegate and returns authority order", async () => {
+    const rows = validForbiddenCountRows().reverse();
+    const repository = new BillingMaintenanceEvidenceRepository({} as never);
+    const tx = { $queryRaw: vi.fn().mockResolvedValue(rows) };
+
+    const counts = await repository.loadForbiddenCounts(tx as never);
+
+    expect(Object.keys(counts)).toEqual(
+      BILLING_MAINTENANCE_FORBIDDEN_DOMAINS.map(({ delegate }) => delegate)
+    );
+    expect(counts.customerVerificationCode).toBe(11);
+    expect(counts.smsSendLog).toBe(22);
+    expect(counts.auditLog).toBe(33);
+  });
+
+  it.each([
+    ["missing", () => validForbiddenCountRows().slice(1)],
+    [
+      "duplicate",
+      () => {
+        const rows = validForbiddenCountRows();
+        rows[1] = rows[0]!;
+        return rows;
+      }
+    ],
+    ["extra", () => [...validForbiddenCountRows(), { count: 0n, delegate: "unexpectedDelegate" }]]
+  ])("rejects %s count rows", async (_case, rows) => {
+    const repository = new BillingMaintenanceEvidenceRepository({} as never);
+    const tx = { $queryRaw: vi.fn().mockResolvedValue(rows()) };
+
+    await expect(repository.loadForbiddenCounts(tx as never)).rejects.toMatchObject({
+      code: "BILLING_MAINTENANCE_DATABASE_RESPONSE_INVALID"
+    });
+  });
 });
 
 function createHarness(options: {
@@ -371,6 +418,21 @@ function completedFact(sequence: 1 | 2) {
     sequence,
     status: "COMPLETED" as const
   };
+}
+
+function validForbiddenCountRows() {
+  return BILLING_MAINTENANCE_FORBIDDEN_DOMAINS.map(({ delegate }) => ({
+    count: BigInt(
+      delegate === "customerVerificationCode"
+        ? 11
+        : delegate === "smsSendLog"
+          ? 22
+          : delegate === "auditLog"
+            ? 33
+            : 0
+    ),
+    delegate
+  }));
 }
 
 function sha256(value: string) {

@@ -65,6 +65,8 @@ describe("billing maintenance evidence schema", () => {
     expect(migration).toContain("billing_maintenance_cycle_fact_append_only_trg");
     expect(migration).toContain("ERRCODE = '55000'");
     expect(migration).toContain("BEFORE UPDATE OR DELETE");
+    expect(migration).toContain("jsonb_typeof(\"blocker_code_value\") <> 'string'");
+    expect(migration).toContain('"current_blocker_code" IS NULL');
   });
 
   it("loads the same forbidden-domain asset from the compiled API runtime layout", async () => {

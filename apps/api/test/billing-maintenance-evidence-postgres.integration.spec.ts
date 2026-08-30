@@ -111,6 +111,28 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
     });
   });
 
+  it.each([[null], [1], [true], [{ nested: "not-a-code" }]])(
+    "rejects non-string blocker code array element %j",
+    async (invalidCode) => {
+      const summary = {
+        blockedCount: 1,
+        blockerCodes: [invalidCode],
+        createdCount: 0,
+        eligibleCount: 0,
+        existingCount: 0,
+        leaseActivationCount: 0
+      };
+      const [row] = await prisma.$queryRaw<Array<{ valid: boolean }>>(Prisma.sql`
+        SELECT billing_maintenance_reconciliation_summary_is_valid(
+          ${JSON.stringify(summary)}::jsonb,
+          1
+        ) AS "valid"
+      `);
+
+      expect(row?.valid).toBe(false);
+    }
+  );
+
   it("serializes concurrent producers on the run lock and allocates only sequence 1 then 2", async () => {
     const evidenceRunId = randomRunId();
     const firstReconciliationStarted = deferred<void>();
@@ -150,9 +172,52 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
     ).toBe(true);
   });
 
+  it("serializes concurrent third-cycle maintenance under the run lock without new snapshots", async () => {
+    const evidenceRunId = randomRunId();
+    await evidenceService(billingDouble(), evidenceRunId).runMaintenance();
+    await evidenceService(billingDouble(), evidenceRunId).runMaintenance();
+    const firstReconciliationStarted = deferred<void>();
+    const releaseFirstReconciliation = deferred<void>();
+    let reconciliationCalls = 0;
+    const billing = billingDouble(async () => {
+      reconciliationCalls += 1;
+      if (reconciliationCalls === 1) {
+        firstReconciliationStarted.resolve();
+        await releaseFirstReconciliation.promise;
+      }
+    });
+    const first = evidenceService(billing, evidenceRunId);
+    const second = evidenceService(billing, evidenceRunId);
+
+    const firstResult = first.runMaintenance();
+    await firstReconciliationStarted.promise;
+    const secondResult = second.runMaintenance();
+    const observedAdvisoryWait = await waitForAdvisoryWait(prisma);
+    const callsBeforeRelease = reconciliationCalls;
+    releaseFirstReconciliation.resolve();
+    await Promise.all([firstResult, secondResult]);
+
+    expect(observedAdvisoryWait).toBe(true);
+    expect(callsBeforeRelease).toBe(1);
+    await expect(
+      prisma.billingMaintenanceCycleFact.count({ where: { evidenceRunId } })
+    ).resolves.toBe(2);
+  });
+
   it("rolls back an invalid final insert after independently completed business calls", async () => {
     const evidenceRunId = randomRunId();
-    const billing = billingDouble();
+    const businessRecordId = randomRunId();
+    await prisma.$executeRawUnsafe(`
+      CREATE UNLOGGED TABLE "billing_maintenance_evidence_business_commit_test" (
+        "id" VARCHAR(64) PRIMARY KEY
+      )
+    `);
+    const billing = billingDouble(async () => {
+      await prisma.$executeRaw`
+        INSERT INTO "billing_maintenance_evidence_business_commit_test" ("id")
+        VALUES (${businessRecordId})
+      `;
+    });
     const invalidRepository = Object.create(repository) as BillingMaintenanceEvidenceRepository;
     invalidRepository.insertCompletedFact = vi.fn(async (tx, input) =>
       tx.billingMaintenanceCycleFact.create({
@@ -168,13 +233,25 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
       evidenceConfig(evidenceRunId)
     );
 
-    await expectDatabaseCode(service.runMaintenance(), "23514");
+    try {
+      await expectDatabaseCode(service.runMaintenance(), "23514");
 
-    expect(billing.reconcileSchedules).toHaveBeenCalledOnce();
-    expect(billing.enqueueDueSchedules).toHaveBeenCalledOnce();
-    await expect(
-      prisma.billingMaintenanceCycleFact.count({ where: { evidenceRunId } })
-    ).resolves.toBe(0);
+      expect(billing.reconcileSchedules).toHaveBeenCalledOnce();
+      expect(billing.enqueueDueSchedules).toHaveBeenCalledOnce();
+      await expect(
+        prisma.billingMaintenanceCycleFact.count({ where: { evidenceRunId } })
+      ).resolves.toBe(0);
+      const [businessWrite] = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+        SELECT COUNT(*)::bigint AS "count"
+        FROM "billing_maintenance_evidence_business_commit_test"
+        WHERE "id" = ${businessRecordId}
+      `);
+      expect(Number(businessWrite?.count)).toBe(1);
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'DROP TABLE IF EXISTS "billing_maintenance_evidence_business_commit_test"'
+      );
+    }
   });
 
   it("enforces uniqueness, sequence, source, time, JSON-object, privacy, and append-only constraints", async () => {
@@ -218,6 +295,20 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
       fact.id,
       randomRunId(),
       Prisma.sql`"reconciliation_summary" || '{"items":[]}'::jsonb`,
+      "summary"
+    );
+    await expectCloneConstraint(
+      prisma,
+      fact.id,
+      randomRunId(),
+      Prisma.sql`${JSON.stringify({
+        blockedCount: 1,
+        blockerCodes: [null],
+        createdCount: 0,
+        eligibleCount: 0,
+        existingCount: 0,
+        leaseActivationCount: 0
+      })}::jsonb`,
       "summary"
     );
 

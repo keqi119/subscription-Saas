@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,6 +15,14 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 import test from "node:test";
 
+import {
+  BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_SHA256,
+  BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_VERSION,
+  BILLING_MAINTENANCE_FORBIDDEN_KEYS,
+  buildBillingMaintenanceCycleEvidence,
+  canonicalBillingMaintenanceEvidenceJson,
+  hashBillingMaintenanceEvidenceValue
+} from "./billing-maintenance-cycle-evidence-core.mjs";
 import { hashStage1CleanAcceptanceManifest } from "./stage1-clean-acceptance-baseline-core.mjs";
 import {
   STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES,
@@ -29,6 +38,67 @@ const RELEASE_SHA = "b".repeat(40);
 const IMAGE_ID = `sha256:${"c".repeat(64)}`;
 const CONTAINER_ID = "e".repeat(64);
 const NONCE = "d".repeat(64);
+const BILLING_NOT_BEFORE = "2026-08-30T12:00:01Z";
+const BILLING_FAKE_EVIDENCE_DOCUMENT = buildFakeBillingEvidenceDocument();
+const BILLING_FAKE_EVIDENCE = canonicalBillingMaintenanceEvidenceJson(
+  BILLING_FAKE_EVIDENCE_DOCUMENT
+);
+const OLD_ENV_CONTENT = [
+  "old",
+  "BILLING_MAINTENANCE_EVIDENCE_ENABLED=true",
+  `BILLING_MAINTENANCE_EVIDENCE_RUN_ID=${"1".repeat(64)}`,
+  `BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA=${"2".repeat(40)}`,
+  `BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST=sha256:${"3".repeat(64)}`,
+  `BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256=${"4".repeat(64)}`,
+  ""
+].join("\n");
+
+function buildFakeBillingEvidenceDocument() {
+  const zeroCounts = Object.fromEntries(BILLING_MAINTENANCE_FORBIDDEN_KEYS.map((key) => [key, 0]));
+  const countsSha256 = hashBillingMaintenanceEvidenceValue(zeroCounts);
+  const facts = [1, 2].map((sequence) => {
+    const startSecond = sequence === 1 ? 2 : 6;
+    const utc = (second) => new Date(`2026-08-30T12:00:${String(second).padStart(2, "0")}.000Z`);
+    return {
+      afterCounts: { ...zeroCounts },
+      afterCountsSha256: countsSha256,
+      beforeCounts: { ...zeroCounts },
+      beforeCountsSha256: countsSha256,
+      blockedCount: 0,
+      completedAt: utc(startSecond + 3),
+      cycleStartedAt: utc(startSecond),
+      databaseIdentitySha256: SHA256,
+      enqueueCompletedAt: utc(startSecond + 2),
+      enqueueSummary: { dueCount: 0, enqueuedCount: 0 },
+      evidenceRunId: NONCE,
+      forbiddenDomainSetSha256: BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_SHA256,
+      forbiddenDomainSetVersion: BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_VERSION,
+      id: `00000000-0000-4000-8000-00000000000${sequence}`,
+      imageDigest: IMAGE_ID,
+      reconciliationCompletedAt: utc(startSecond + 1),
+      reconciliationSummary: {
+        blockedCount: 0,
+        blockerCodes: [],
+        createdCount: 0,
+        dryRun: false,
+        eligibleCount: 0,
+        existingCount: 0,
+        leaseActivationCount: 0
+      },
+      releaseSha: RELEASE_SHA,
+      sequence,
+      status: "COMPLETED"
+    };
+  });
+  return buildBillingMaintenanceCycleEvidence(facts, {
+    expectedDatabaseIdentitySha256: SHA256,
+    expectedImageDigest: IMAGE_ID,
+    expectedReleaseSha: RELEASE_SHA,
+    notBefore: BILLING_NOT_BEFORE,
+    runId: NONCE,
+    timeoutSeconds: 180
+  });
+}
 
 async function readRunbook() {
   return readFile(runbookUrl, "utf8").catch(() => "");
@@ -137,7 +207,9 @@ function validateExecutableContracts(contents) {
     "disable_billing_maintenance_evidence() {",
     "billing-maintenance-cycle-evidence.mjs",
     'publish_private_evidence "$EVIDENCE_DIR/billing-completed-cycles.json"',
-    "BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS=180"
+    "BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS=180",
+    "BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS=190",
+    "timeout --signal=TERM --kill-after=5s"
   ]);
   assert.match(
     cutover,
@@ -191,6 +263,8 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     "STOP: DISK_AVAILABLE_STATE_INVALID",
     "STOP: API_MEMORY_STATE_INVALID",
     "STOP: POSTGRES_CONNECTION_STATE_INVALID",
+    "STOP: TIMEOUT_WATCHDOG_UNAVAILABLE",
+    "command -v timeout",
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL"',
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL"',
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"',
@@ -320,7 +394,7 @@ fi`
     binDirectory,
     "curl",
     `url="\${!#}"
-state="$(<"$ENV_FILE")"
+IFS= read -r state <"$ENV_FILE"
 if test "$state" = old; then
   printf '%s\\n' old-public-health >>"$TRACE_FILE"
   printf '%s' 200
@@ -385,11 +459,26 @@ esac`
     binDirectory,
     "docker",
     `args="$*"
-state="$(<"$ENV_FILE")"
+IFS= read -r state <"$ENV_FILE"
+effective_env_value() {
+  local key="$1"
+  if [[ -v "$key" ]]; then
+    printf '%s' "\${!key}"
+  else
+    awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$ENV_FILE"
+  fi
+}
 case "$args" in
   *' up -d --no-deps --force-recreate api'*)
     printf '%s\\n' recreate:api >>"$TRACE_FILE"
-    if test "$state" = old && test "\${BILLING_MAINTENANCE_EVIDENCE_ENABLED:-}" != false; then exit 98; fi
+    if test "$state" = old; then
+      test "$(effective_env_value BILLING_MAINTENANCE_EVIDENCE_ENABLED)" = false
+      test -z "$(effective_env_value BILLING_MAINTENANCE_EVIDENCE_RUN_ID)"
+      test -z "$(effective_env_value BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA)"
+      test -z "$(effective_env_value BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST)"
+      test -z "$(effective_env_value BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256)"
+      printf '%s\\n' rollback-evidence-env-scrubbed >>"$TRACE_FILE"
+    fi
     if [[ "$FAILURE_SCENARIO" = api_recreate || "$FAILURE_SCENARIO" = rollback_health ]] \
       && test "$state" = target; then exit 70; fi
     ;;
@@ -447,6 +536,16 @@ case "$args" in
     ;;
   *'billing-maintenance-cycle-evidence.mjs'*)
     printf '%s\\n' gate:billing-exporter >>"$TRACE_FILE"
+    expected_args='exec ${CONTAINER_ID} node /app/scripts/billing-maintenance-cycle-evidence.mjs --run-id ${NONCE} --expected-release-sha ${RELEASE_SHA} --expected-image-digest ${IMAGE_ID} --expected-database-identity-sha256 ${SHA256} --not-before ${BILLING_NOT_BEFORE} --timeout-seconds 180'
+    if test "$args" != "$expected_args"; then
+      printf '%s\\n' BILLING_CLI_ARGV_INVALID >>"$TRACE_FILE"
+      exit 97
+    fi
+    printf '%s\\n' gate:billing-cli-argv-verified >>"$TRACE_FILE"
+    if test "$FAILURE_SCENARIO" = billing_hang; then
+      trap '' TERM
+      while :; do sleep 1; done
+    fi
     case "$FAILURE_SCENARIO" in
       billing_timeout) code=BILLING_MAINTENANCE_EVIDENCE_TIMEOUT ;;
       billing_binding) code=BILLING_MAINTENANCE_SOURCE_BINDING_MISMATCH ;;
@@ -456,11 +555,20 @@ case "$args" in
       *) code= ;;
     esac
     if test -n "$code"; then printf '{"error":{"code":"%s"}}\\n' "$code" >&2; exit 74; fi
-    printf '%s\\n' '{"cycles":[{"afterCounts":{"auditLog":0},"afterCountsSha256":"same","beforeCounts":{"auditLog":0},"beforeCountsSha256":"same","blockedCount":0,"cycleId":"00000000-0000-4000-8000-000000000001","reconciliationSummary":{"dryRun":false},"sequence":1,"status":"COMPLETED"},{"afterCounts":{"auditLog":0},"afterCountsSha256":"same","beforeCounts":{"auditLog":0},"beforeCountsSha256":"same","blockedCount":0,"cycleId":"00000000-0000-4000-8000-000000000002","reconciliationSummary":{"dryRun":false},"sequence":2,"status":"COMPLETED"}],"operation":"BILLING_MAINTENANCE_CYCLE_EVIDENCE","safe":true,"schemaVersion":1,"source":{"databaseIdentitySha256":"${SHA256}","evidenceRunId":"${NONCE}","imageDigest":"${IMAGE_ID}","notBeforeUtc":"2026-08-30T12:00:01Z","releaseSha":"${RELEASE_SHA}"}}'
+    printf '%s\\n' '${BILLING_FAKE_EVIDENCE}'
     ;;
   *'exec '*' node -e '*)
-    printf '%s\\n' gate:runtime-flags >>"$TRACE_FILE"
-    test "$FAILURE_SCENARIO" != runtime_flags
+    if test "$state" = old; then
+      test "$(effective_env_value BILLING_MAINTENANCE_EVIDENCE_ENABLED)" = false
+      test -z "$(effective_env_value BILLING_MAINTENANCE_EVIDENCE_RUN_ID)"
+      test -z "$(effective_env_value BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA)"
+      test -z "$(effective_env_value BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST)"
+      test -z "$(effective_env_value BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256)"
+      printf '%s\\n' gate:rollback-evidence-disabled >>"$TRACE_FILE"
+    else
+      printf '%s\\n' gate:runtime-flags >>"$TRACE_FILE"
+      test "$FAILURE_SCENARIO" != runtime_flags
+    fi
     ;;
   'logs --since '*)
     printf '%s\\n' gate:docker-logs >>"$TRACE_FILE"
@@ -537,7 +645,7 @@ function browserFactFor(scenario) {
   };
 }
 
-function runCutover(cutover, evidenceHelpers, scenario) {
+function runCutover(cutover, evidenceHelpers, scenario, options = {}) {
   const hostDirectory = mkdtempSync(join(tmpdir(), "stage1-cutover-contract-"));
   const directory = toGitBashPath(hostDirectory);
   const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
@@ -555,8 +663,15 @@ ENV_BACKUP="$HARNESS_DIR/old.env"
 ENV_TEMP="$HARNESS_DIR/target.env"
 export EVIDENCE_DIR ENV_FILE
 mkdir -p "$EVIDENCE_DIR"
-printf '%s\\n' old >"$ENV_FILE"
-printf '%s\\n' old >"$ENV_BACKUP"
+printf '%s\\n' \
+  old \
+  'BILLING_MAINTENANCE_EVIDENCE_ENABLED=true' \
+  'BILLING_MAINTENANCE_EVIDENCE_RUN_ID=${"1".repeat(64)}' \
+  'BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA=${"2".repeat(40)}' \
+  'BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST=sha256:${"3".repeat(64)}' \
+  'BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256=${"4".repeat(64)}' \
+  >"$ENV_FILE"
+cp "$ENV_FILE" "$ENV_BACKUP"
 printf '%s\\n' target >"$ENV_TEMP"
 printf '%s\\n' deadbeef >"$EVIDENCE_DIR/old-database.fingerprint.sha256"
 chmod 0600 "$EVIDENCE_DIR/old-database.fingerprint.sha256"
@@ -609,10 +724,14 @@ ${cutover}
         STAGE1_CUTOVER_POST_SWITCH_GATES_FN: "true"
       },
       input,
-      timeout: 15000
+      timeout: options.timeoutMilliseconds ?? 15000
     });
     const tracePath = join(hostDirectory, "trace");
+    const billingEvidencePath = join(hostDirectory, "evidence", "billing-completed-cycles.json");
     return {
+      billingEvidenceText: existsSync(billingEvidencePath)
+        ? readFileSync(billingEvidencePath, "utf8")
+        : null,
       env: readFileSync(join(hostDirectory, "live.env"), "utf8"),
       evidenceFiles: readdirSync(join(hostDirectory, "evidence")),
       result,
@@ -632,9 +751,24 @@ ${cutover}
 function assertRollback(outcome, scenario, expectedTrace) {
   assert.notEqual(outcome.result.status, 0, `${scenario} must exit nonzero`);
   assert.equal(outcome.result.signal, null, `${scenario} must not hang`);
-  assert.equal(outcome.env, "old\n", `${scenario} must restore the old env`);
+  assert.equal(outcome.env, OLD_ENV_CONTENT, `${scenario} must restore the old env`);
   assert.ok(outcome.trace.includes(expectedTrace), `${scenario} must reach ${expectedTrace}`);
-  assert.ok(outcome.trace.includes("old-public-health"), `${scenario} must verify old health`);
+  assert.ok(
+    outcome.trace.includes("old-public-health"),
+    `${scenario} must verify old health: ${JSON.stringify({
+      stderr: outcome.result.stderr,
+      stdout: outcome.result.stdout,
+      trace: outcome.trace
+    })}`
+  );
+  assert.ok(
+    outcome.trace.includes("rollback-evidence-env-scrubbed"),
+    `${scenario} must override historical evidence values during rollback recreate`
+  );
+  assert.ok(
+    outcome.trace.includes("gate:rollback-evidence-disabled"),
+    `${scenario} must verify the restored container has disabled and empty evidence bindings`
+  );
   assert.ok(
     outcome.trace.includes("old-database-fingerprint"),
     `${scenario} must verify old database fingerprint`
@@ -1417,6 +1551,64 @@ const MATERIAL_GATE_FAILURES = new Map([
   ["log_pii", "gate:docker-logs"]
 ]);
 
+test(
+  "host watchdog terminates a truly hung billing exporter and reaches rollback",
+  { timeout: 20_000 },
+  async () => {
+    const contents = await readRunbook();
+    const cutover = extractExecutableFence(contents, "STAGE1_CUTOVER_EXECUTABLE");
+    const evidenceHelpers = extractExecutableFence(contents, "STAGE1_EVIDENCE_HELPERS_EXECUTABLE");
+    const shortenedWatchdog = cutover
+      .replace(
+        "readonly BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS=190",
+        "readonly BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS=1"
+      )
+      .replace("--kill-after=5s", "--kill-after=1s");
+    const startedAt = Date.now();
+    const outcome = runCutover(shortenedWatchdog, evidenceHelpers, "billing_hang", {
+      timeoutMilliseconds: 12_000
+    });
+
+    assertRollback(outcome, "billing_hang", "gate:billing-exporter");
+    assert.ok(Date.now() - startedAt < 12_000, "watchdog rollback must beat the harness limit");
+    assert.equal(outcome.billingEvidenceText, null);
+  }
+);
+
+test("rollback scrubs historical evidence bindings and verifies the restored container", async () => {
+  const contents = await readRunbook();
+  const cutover = extractExecutableFence(contents, "STAGE1_CUTOVER_EXECUTABLE");
+  const evidenceHelpers = extractExecutableFence(contents, "STAGE1_EVIDENCE_HELPERS_EXECUTABLE");
+  const outcome = runCutover(cutover, evidenceHelpers, "public_api");
+
+  assertRollback(outcome, "historical_evidence_env", "gate:public-api");
+});
+
+test("billing exporter fake rejects CLI argument drift before publishing evidence", async () => {
+  const contents = await readRunbook();
+  const cutover = extractExecutableFence(contents, "STAGE1_CUTOVER_EXECUTABLE");
+  const evidenceHelpers = extractExecutableFence(contents, "STAGE1_EVIDENCE_HELPERS_EXECUTABLE");
+  const wrongTimeout = cutover.replace(
+    '--timeout-seconds "$BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS"',
+    "--timeout-seconds 179"
+  );
+  const outcome = runCutover(wrongTimeout, evidenceHelpers, "success");
+
+  assertRollback(outcome, "billing_argv", "gate:billing-exporter");
+  assert.ok(outcome.trace.includes("BILLING_CLI_ARGV_INVALID"));
+  assert.equal(outcome.billingEvidenceText, null);
+});
+
+test("billing exporter fake emits the complete document produced by the tested builder", async () => {
+  const contents = await readRunbook();
+  const cutover = extractExecutableFence(contents, "STAGE1_CUTOVER_EXECUTABLE");
+  const evidenceHelpers = extractExecutableFence(contents, "STAGE1_EVIDENCE_HELPERS_EXECUTABLE");
+  const outcome = runCutover(cutover, evidenceHelpers, "success");
+
+  assert.equal(outcome.result.status, 0, outcome.result.stderr);
+  assert.deepEqual(JSON.parse(outcome.billingEvidenceText), BILLING_FAKE_EVIDENCE_DOCUMENT);
+});
+
 for (const [scenario, expectedTrace] of MATERIAL_GATE_FAILURES) {
   test(`real ${scenario} failure rolls back through fixed production control flow`, async () => {
     const { cutover, evidenceHelpers } = validateExecutableContracts(await readRunbook());
@@ -1440,7 +1632,7 @@ test("rollback rejects an unhealthy restored API instead of overwriting the fail
   const { cutover, evidenceHelpers } = validateExecutableContracts(await readRunbook());
   const outcome = runCutover(cutover, evidenceHelpers, "rollback_health");
   assert.notEqual(outcome.result.status, 0);
-  assert.equal(outcome.env, "old\n");
+  assert.equal(outcome.env, OLD_ENV_CONTENT);
   assert.match(outcome.result.stdout, /STOP: ROLLBACK_PUBLIC_HEALTH_FAILED/);
   assert.match(outcome.result.stdout, /rollback_state=failed/);
 });
@@ -1502,7 +1694,7 @@ test("real gate cannot early-return and unhandled service commands are poisoned 
   const poisonOutcome = runCutover(poisoned, evidenceHelpers, "success");
   assert.notEqual(poisonOutcome.result.status, 0);
   assert.ok(poisonOutcome.trace.includes("UNHANDLED_DOCKER_COMMAND"));
-  assert.equal(poisonOutcome.env, "old\n");
+  assert.equal(poisonOutcome.env, OLD_ENV_CONTENT);
   assert.ok(poisonOutcome.trace.includes("old-public-health"));
   assert.ok(poisonOutcome.trace.includes("old-database-fingerprint"));
 });
@@ -1525,4 +1717,6 @@ test("success traverses the real gate, ignores ambient overrides, and validates 
   assert.ok(outcome.evidenceFiles.includes("browser-acceptance.fact.json"));
   assert.ok(outcome.evidenceFiles.includes("api-switch.state"));
   assert.equal(outcome.trace.filter((entry) => entry === "recreate:api").length, 1);
+  assert.ok(outcome.trace.includes("gate:billing-cli-argv-verified"));
+  assert.deepEqual(JSON.parse(outcome.billingEvidenceText), BILLING_FAKE_EVIDENCE_DOCUMENT);
 });

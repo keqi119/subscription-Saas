@@ -10,6 +10,10 @@ import {
   pollBillingMaintenanceCycleEvidence,
   validateBillingMaintenanceCycleEvidenceOptions
 } from "./billing-maintenance-cycle-evidence-core.mjs";
+import {
+  main as billingMaintenanceEvidenceMain,
+  queryBillingMaintenanceCycleFacts
+} from "./billing-maintenance-cycle-evidence.mjs";
 
 const RUN_ID = "a".repeat(64);
 const RELEASE_SHA = "b".repeat(40);
@@ -287,6 +291,172 @@ test("bounded polling times out without manufacturing evidence", async () => {
   assert.ok(queries >= 1);
 });
 
+test("database query that never resolves is rejected by the remaining deadline", async () => {
+  let deadlineTimers = 0;
+  const polling = pollBillingMaintenanceCycleEvidence({
+    ...OPTIONS,
+    clearTimer: () => undefined,
+    now: () => 0,
+    queryFacts: () => new Promise(() => undefined),
+    setTimer: (callback) => {
+      deadlineTimers += 1;
+      queueMicrotask(callback);
+      return deadlineTimers;
+    },
+    timeoutSeconds: 1
+  }).then(
+    () => ({ kind: "resolved" }),
+    (error) => ({ error, kind: "rejected" })
+  );
+
+  const outcome = await Promise.race([
+    polling,
+    new Promise((resolve) => setTimeout(() => resolve({ kind: "hung" }), 100))
+  ]);
+
+  assert.equal(outcome.kind, "rejected");
+  assert.equal(outcome.error?.code, "BILLING_MAINTENANCE_EVIDENCE_TIMEOUT");
+  assert.equal(deadlineTimers, 1);
+});
+
+test("database rows returned exactly at the deadline are not accepted", async () => {
+  const observedTimes = [0, 1_000];
+  await assert.rejects(
+    pollBillingMaintenanceCycleEvidence({
+      ...OPTIONS,
+      clearTimer: () => undefined,
+      now: () => observedTimes.shift() ?? 1_000,
+      queryFacts: async () => [completedFact(1), completedFact(2)],
+      setTimer: () => ({ pending: true }),
+      timeoutSeconds: 1
+    }),
+    (error) => error?.code === "BILLING_MAINTENANCE_EVIDENCE_TIMEOUT"
+  );
+});
+
+test("database rows resolving after the query deadline cannot become evidence", async () => {
+  let queryResolved = false;
+  const rows = new Promise((resolve) => {
+    setTimeout(() => {
+      queryResolved = true;
+      resolve([completedFact(1), completedFact(2)]);
+    }, 20);
+  });
+
+  await assert.rejects(
+    pollBillingMaintenanceCycleEvidence({
+      ...OPTIONS,
+      clearTimer: clearTimeout,
+      now: () => 0,
+      queryFacts: () => rows,
+      setTimer: (callback) => setTimeout(callback, 5),
+      timeoutSeconds: 1
+    }),
+    (error) => error?.code === "BILLING_MAINTENANCE_EVIDENCE_TIMEOUT"
+  );
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(queryResolved, true);
+});
+
+test("successful database query clears its deadline timer", async () => {
+  const activeTimers = new Set();
+  let timersCreated = 0;
+  const evidence = await pollBillingMaintenanceCycleEvidence({
+    ...OPTIONS,
+    clearTimer: (handle) => activeTimers.delete(handle),
+    now: () => 0,
+    queryFacts: async () => [completedFact(1), completedFact(2)],
+    setTimer: (callback) => {
+      const handle = { callback };
+      timersCreated += 1;
+      activeTimers.add(handle);
+      return handle;
+    }
+  });
+
+  assert.equal(evidence.cycles.length, 2);
+  assert.equal(timersCreated, 1);
+  assert.equal(activeTimers.size, 0);
+});
+
+test("database query uses a transaction and statement timeout below its remaining budget", async () => {
+  const calls = [];
+  const rows = [completedFact(1), completedFact(2)];
+  const transactionClient = {
+    $executeRawUnsafe: async (...args) => calls.push({ args, type: "statement-timeout" }),
+    billingMaintenanceCycleFact: {
+      findMany: async (args) => {
+        calls.push({ args, type: "find-many" });
+        return rows;
+      }
+    }
+  };
+  const prisma = {
+    $transaction: async (operation, options) => {
+      calls.push({ options, type: "transaction" });
+      return operation(transactionClient);
+    }
+  };
+
+  const result = await queryBillingMaintenanceCycleFacts(prisma, RUN_ID, 900);
+
+  assert.equal(result, rows);
+  assert.equal(calls[0].type, "transaction");
+  assert.equal(calls[0].options.timeout, 900);
+  assert.ok(calls[0].options.maxWait > 0 && calls[0].options.maxWait <= 900);
+  assert.equal(calls[1].args[0], "SELECT set_config('statement_timeout', $1, true)");
+  assert.ok(Number(calls[1].args[1]) > 0 && Number(calls[1].args[1]) < 900);
+  assert.equal(calls[2].type, "find-many");
+  assert.deepEqual(calls[2].args.where, { evidenceRunId: RUN_ID });
+});
+
+test("database transaction timeout is exposed as the stable exporter timeout", async () => {
+  const prisma = {
+    $transaction: async () => {
+      const error = new Error("Transaction already closed: timeout");
+      error.code = "P2028";
+      throw error;
+    }
+  };
+
+  await assert.rejects(
+    queryBillingMaintenanceCycleFacts(prisma, RUN_ID, 900),
+    (error) => error?.code === "BILLING_MAINTENANCE_EVIDENCE_TIMEOUT"
+  );
+});
+
+test("CLI returns without partial stdout when disconnect never resolves", async () => {
+  const rows = [completedFact(1), completedFact(2)];
+  const transactionClient = {
+    $executeRawUnsafe: async () => 1,
+    billingMaintenanceCycleFact: { findMany: async () => rows }
+  };
+  const prisma = {
+    $disconnect: () => new Promise(() => undefined),
+    $transaction: async (operation) => operation(transactionClient),
+    billingMaintenanceCycleFact: { findMany: async () => rows }
+  };
+  let stdout = "";
+  let stderr = "";
+  const execution = billingMaintenanceEvidenceMain(cliArguments(), {
+    createPrismaClient: async () => prisma,
+    databaseUrl: "postgresql://local:local@127.0.0.1:5432/local",
+    disconnectTimeoutMilliseconds: 5,
+    writeStderr: (value) => (stderr += value),
+    writeStdout: (value) => (stdout += value)
+  });
+
+  const outcome = await Promise.race([
+    execution.then((code) => ({ code, kind: "returned" })),
+    new Promise((resolve) => setTimeout(() => resolve({ kind: "hung" }), 100))
+  ]);
+
+  assert.equal(outcome.kind, "returned");
+  assert.equal(outcome.code, 0);
+  assert.equal(stderr, "");
+  assert.equal(JSON.parse(stdout).cycles.length, 2);
+});
+
 for (const [label, mutation] of [
   ["run id", { runId: "A".repeat(64) }],
   ["release SHA", { expectedReleaseSha: "b".repeat(39) }],
@@ -338,6 +508,23 @@ function completedFact(sequence) {
     sequence,
     status: "COMPLETED"
   };
+}
+
+function cliArguments() {
+  return [
+    "--run-id",
+    RUN_ID,
+    "--expected-release-sha",
+    RELEASE_SHA,
+    "--expected-image-digest",
+    IMAGE_DIGEST,
+    "--expected-database-identity-sha256",
+    DATABASE_IDENTITY_SHA256,
+    "--not-before",
+    NOT_BEFORE,
+    "--timeout-seconds",
+    "1"
+  ];
 }
 
 function independentHash(value) {

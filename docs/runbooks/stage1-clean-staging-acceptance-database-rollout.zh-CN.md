@@ -102,6 +102,7 @@ check_public_http_200() {
 }
 
 test -f "$COMPOSE_FILE" && test -f "$ENV_FILE"
+command -v timeout >/dev/null 2>&1 || { printf '%s\n' 'STOP: TIMEOUT_WATCHDOG_UNAVAILABLE'; exit 1; }
 [[ "$TARGET_DB" =~ ^subscription_saas_staging_acceptance_[0-9]{8}t[0-9]{6}z$ ]] || { printf '%s\n' 'STOP: TARGET_DB_REGEX_INVALID'; exit 1; }
 [[ "$APPROVED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: APPROVED_RELEASE_SHA_INVALID'; exit 1; }
 
@@ -857,10 +858,35 @@ cutover_billing_database_identity_sha256() {
 
 disable_billing_maintenance_evidence() {
   export BILLING_MAINTENANCE_EVIDENCE_ENABLED=false
-  unset BILLING_MAINTENANCE_EVIDENCE_RUN_ID
-  unset BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA
-  unset BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST
-  unset BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256
+  export BILLING_MAINTENANCE_EVIDENCE_RUN_ID=
+  export BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA=
+  export BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST=
+  export BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256=
+}
+
+cutover_api_recreate_billing_disabled() {
+  BILLING_MAINTENANCE_EVIDENCE_ENABLED=false \
+  BILLING_MAINTENANCE_EVIDENCE_RUN_ID= \
+  BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA= \
+  BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST= \
+  BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256= \
+    cutover_api_recreate "$1"
+}
+
+cutover_verify_billing_maintenance_evidence_disabled() {
+  local container_id
+  container_id="$(cutover_api_container_id)" || return 1
+  test -n "$container_id" || return 1
+  docker exec "$container_id" node -e '
+    const bindings = [
+      "BILLING_MAINTENANCE_EVIDENCE_RUN_ID",
+      "BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA",
+      "BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST",
+      "BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256"
+    ];
+    if (process.env.BILLING_MAINTENANCE_EVIDENCE_ENABLED !== "false") process.exit(1);
+    if (bindings.some((key) => (process.env[key] || "") !== "")) process.exit(1);
+  '
 }
 
 rollback_api_database_switch() {
@@ -885,8 +911,12 @@ rollback_api_database_switch() {
   fi
 
   disable_billing_maintenance_evidence
-  if ! cutover_api_recreate api; then
+  if ! cutover_api_recreate_billing_disabled api; then
     printf '%s\n' 'STOP: ROLLBACK_API_RECREATE_FAILED'
+    failed=1
+  fi
+  if ! cutover_verify_billing_maintenance_evidence_disabled; then
+    printf '%s\n' 'STOP: ROLLBACK_BILLING_EVIDENCE_DISABLE_FAILED'
     failed=1
   fi
   if ! cutover_verify_public_health; then
@@ -1110,7 +1140,9 @@ SQL
 
   billing_facts_path="$EVIDENCE_DIR/billing-completed-cycles.json"
   assert_new_evidence_path "$billing_facts_path"
-  billing_facts="$(docker exec "$switched_api_container_id" \
+  billing_facts="$(timeout --signal=TERM --kill-after=5s \
+    "${BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS}s" \
+    docker exec "$switched_api_container_id" \
     node /app/scripts/billing-maintenance-cycle-evidence.mjs \
     --run-id "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" \
     --expected-release-sha "$SWITCHED_RELEASE_SHA" \
@@ -1178,6 +1210,7 @@ BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256="$(cutover_billing_databas
 BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA="$RELEASE_SHA"
 BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST="$API_IMAGE_ID"
 readonly BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS=180
+readonly BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS=190
 [[ "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" =~ ^[0-9a-f]{64}$ ]]
 [[ "$BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256" =~ ^[0-9a-f]{64}$ ]]
 export BILLING_MAINTENANCE_EVIDENCE_RUN_ID

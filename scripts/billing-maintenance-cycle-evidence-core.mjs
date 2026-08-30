@@ -134,10 +134,14 @@ export async function pollBillingMaintenanceCycleEvidence(options) {
   const now = options.now ?? Date.now;
   const wait =
     options.wait ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const setTimer = options.setTimer ?? setTimeout;
+  const clearTimer = options.clearTimer ?? clearTimeout;
   const pollIntervalMs = options.pollIntervalMs ?? 1_000;
   if (
     typeof now !== "function" ||
     typeof wait !== "function" ||
+    typeof setTimer !== "function" ||
+    typeof clearTimer !== "function" ||
     !Number.isSafeInteger(pollIntervalMs) ||
     pollIntervalMs < 1 ||
     pollIntervalMs > 60_000
@@ -148,15 +152,71 @@ export async function pollBillingMaintenanceCycleEvidence(options) {
   const deadline = startedAt + expected.timeoutSeconds * 1_000;
 
   while (true) {
-    const facts = await options.queryFacts(expected.runId);
+    const beforeQuery = readMonotonicTime(now);
+    if (beforeQuery >= deadline) fail("BILLING_MAINTENANCE_EVIDENCE_TIMEOUT");
+    const remainingMilliseconds = deadline - beforeQuery;
+    const databaseQueryTimeoutMilliseconds = Math.max(
+      1,
+      Math.min(30_000, remainingMilliseconds - 100)
+    );
+    const facts = await settleBeforeDeadline(
+      () =>
+        options.queryFacts(expected.runId, databaseQueryTimeoutMilliseconds, remainingMilliseconds),
+      remainingMilliseconds,
+      setTimer,
+      clearTimer
+    );
+    const current = readMonotonicTime(now);
+    if (current >= deadline) fail("BILLING_MAINTENANCE_EVIDENCE_TIMEOUT");
     const normalized = validateFacts(facts, expected, false);
     if (normalized.length === 2) {
       return buildBillingMaintenanceCycleEvidence(normalized, expected);
     }
-    const current = readMonotonicTime(now);
-    if (current >= deadline) fail("BILLING_MAINTENANCE_EVIDENCE_TIMEOUT");
     await wait(Math.min(pollIntervalMs, deadline - current));
   }
+}
+
+function settleBeforeDeadline(operation, remainingMilliseconds, setTimer, clearTimer) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timerHandle;
+    const timeout = () => {
+      if (settled) return;
+      settled = true;
+      reject(new BillingMaintenanceCycleEvidenceError("BILLING_MAINTENANCE_EVIDENCE_TIMEOUT"));
+    };
+    try {
+      timerHandle = setTimer(timeout, remainingMilliseconds);
+    } catch {
+      fail("BILLING_MAINTENANCE_OPTIONS_INVALID");
+    }
+    Promise.resolve()
+      .then(operation)
+      .then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          try {
+            clearTimer(timerHandle);
+          } catch {
+            reject(new BillingMaintenanceCycleEvidenceError("BILLING_MAINTENANCE_OPTIONS_INVALID"));
+            return;
+          }
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          try {
+            clearTimer(timerHandle);
+          } catch {
+            reject(new BillingMaintenanceCycleEvidenceError("BILLING_MAINTENANCE_OPTIONS_INVALID"));
+            return;
+          }
+          reject(error);
+        }
+      );
+  });
 }
 
 function validateFacts(facts, expected, requireComplete) {

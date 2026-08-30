@@ -864,6 +864,153 @@ target_api sh -lc true`
   assert.doesNotMatch(trace, /host-(?:jq|node|psql|pg_dump)-invoked/);
 });
 
+function runTask9Preflight(preflight, scenario = "success") {
+  const host = mkdtempSync(join(tmpdir(), "task9-full-fence-"));
+  mkdirSync(join(host, "reports"));
+  writeFileSync(join(host, "docker-compose.staging.images.example.yml"), "services: {}\n");
+  writeFileSync(join(host, ".env.staging.images"), "POSTGRES_USER=subscription_saas\n");
+  const posix = toGitBashPath(host);
+  const bin = join(host, "bin");
+  mkdirSync(bin);
+  const evidence = toGitBashPath(join(host, "reports", "stage1-clean-acceptance-20260830T120000Z"));
+  const trace = toGitBashPath(join(host, "trace"));
+  writeFakeCommand(bin, "date", "printf '%s\\n' 20260830T120000Z");
+  writeFakeCommand(bin, "install", 'printf "%s\\n" install >>"$TRACE_FILE"; mkdir -p "${!#}"');
+  writeFakeCommand(bin, "chown", 'printf "%s\\n" chown >>"$TRACE_FILE"');
+  writeFakeCommand(bin, "chmod", 'printf "%s\\n" chmod >>"$TRACE_FILE"');
+  writeFakeCommand(
+    bin,
+    "stat",
+    `printf '%s\\n' stat >>"$TRACE_FILE"
+if [[ "$*" == *'%u:%g:%a'* ]]; then target="\${!#}"; if test -d "$target"; then printf '%s\\n' '0:0:700'; else printf '%s\\n' '0:0:600'; fi; else printf '%s\\n' 1; fi`
+  );
+  writeFakeCommand(
+    bin,
+    "sha256sum",
+    `printf '%s\\n' sha256sum >>"$TRACE_FILE"; printf '%s\\n' '${SHA256}  -'`
+  );
+  writeFakeCommand(
+    bin,
+    "curl",
+    `printf '%s\\n' curl >>"$TRACE_FILE"
+case "\${!#}" in
+  api) failed_scenario=health_api ;;
+  admin) failed_scenario=health_admin ;;
+  portal) failed_scenario=health_portal ;;
+  *) exit 96 ;;
+esac
+test "$FAILURE_SCENARIO" != "$failed_scenario"
+printf 200`
+  );
+  for (const name of ["jq", "node", "psql", "pg_dump"])
+    writeFakeCommand(bin, name, `printf 'HOST_${name}\\n' >>"$TRACE_FILE"; exit 97`);
+  writeFakeCommand(
+    bin,
+    "docker",
+    `args="$*"; printf '%s\\n' docker >>"$TRACE_FILE"
+case "$args" in
+  *'ps -q api'*) printf '%s\\n' ${CONTAINER_ID} ;;
+  *'inspect --format {{.Image}}'*) printf '%s\\n' ${IMAGE_ID} ;;
+  *'image inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*) test "$FAILURE_SCENARIO" != image_revision || { printf '%s\\n' ${"f".repeat(40)}; exit 0; }; printf '%s\\n' ${RELEASE_SHA} ;;
+  *'inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*) printf '%s\\n' ${RELEASE_SHA} ;;
+  *'image inspect --format {{.Id}}'*) test "$FAILURE_SCENARIO" != image_id || { printf '%s\\n' bad; exit 0; }; printf '%s\\n' ${IMAGE_ID} ;;
+  *'image inspect --format {{index .RepoDigests 0}}'*) test "$FAILURE_SCENARIO" != image_digest || { printf '%s\\n' bad; exit 0; }; printf '%s\\n' registry.test/api@sha256:${"a".repeat(64)} ;;
+  *'current_user;'*) printf '%s\\n' subscription_saas ;;
+  *'pg_control_system'*) printf '%s\\n' server-id ;;
+  *'SELECT EXISTS'*) test "$FAILURE_SCENARIO" != target_exists && printf f || printf t ;;
+  *'information_schema.tables'*) test "$FAILURE_SCENARIO" != target_nonempty && printf 0 || printf 1 ;;
+  *'_prisma_migrations'*) test "$FAILURE_SCENARIO" != migration_count && printf '124|0|0|0' || printf '123|0|0|0' ;;
+  *'pg_dump'*) test "$FAILURE_SCENARIO" != backup && printf dump || exit 71 ;;
+  *' -d subscription_saas_staging_acceptance_'*' -XAtq') test "$FAILURE_SCENARIO" != migration_count && printf '124|0|0|0' || printf '123|0|0|0' ;;
+  *' -d subscription_saas_staging_acceptance_'*' -X -v ON_ERROR_STOP=1') test "$FAILURE_SCENARIO" != post_migration_nonempty || exit 72 ;;
+  *'server-identity'*) test "$FAILURE_SCENARIO" != server_identity && printf '${SHA256}' || exit 73 ;;
+  *'validate-pair'*) test "$FAILURE_SCENARIO" != url_identity || exit 74 ;;
+  *'prisma migrate deploy'*) test "$FAILURE_SCENARIO" != migrate_deploy || exit 75 ;;
+  *'prisma migrate status'*) test "$FAILURE_SCENARIO" != migrate_status || exit 76 ;;
+  *' node -'*) test "$FAILURE_SCENARIO" != checksum || exit 77 ;;
+  *'prisma:migrate:checksum:verify'*) test "$FAILURE_SCENARIO" != checksum || exit 77 ;;
+  *'prisma migrate diff'*) test "$FAILURE_SCENARIO" != drift || exit 78 ;;
+  *'--discover-vehicles'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{}' >"$HARNESS_EVIDENCE/vehicle-discovery.json"; test "$FAILURE_SCENARIO" != discovery || exit 4; exit 3 ;;
+  *'validate-selection'*) test "$FAILURE_SCENARIO" != uuid || exit 79 ;;
+  *'--vehicle-id'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{}' >"$HARNESS_EVIDENCE/baseline-dry-run.json"; test "$FAILURE_SCENARIO" != formal || exit 80 ;;
+  *'approval-summary'*) if test "$FAILURE_SCENARIO" = approval; then exit 81; fi; printf '{"safe":true}' ;;
+  *) : ;;
+esac`
+  );
+  const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
+  const rewritten = `PATH=${JSON.stringify(toGitBashPath(bin))}:"$PATH"; export PATH
+${preflight
+  .replaceAll("/opt/subscription-saas", posix)
+  .replaceAll("20260830T120000Z", "20260830T120000Z")}`;
+  const scriptPath = join(host, "task9-preflight.sh");
+  writeFileSync(scriptPath, rewritten, "utf8");
+  const result = spawnSync(bash, [toGitBashPath(scriptPath)], {
+    encoding: "utf8",
+    input: `${"123e4567-e89b-42d3-a456-426614174000"}\n`,
+    env: {
+      ...process.env,
+      APPROVED_API_IMAGE: "registry.test/api:tag",
+      APPROVED_RELEASE_SHA: RELEASE_SHA,
+      FAILURE_SCENARIO: scenario,
+      HARNESS_EVIDENCE: evidence,
+      TRACE_FILE: trace,
+      STAGE1_ACCEPTANCE_DATABASE_OWNER: "subscription_saas",
+      STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL:
+        "postgresql://subscription_saas:x@postgres:5432/subscription_saas_staging",
+      STAGE1_ACCEPTANCE_TARGET_DATABASE_URL:
+        "postgresql://subscription_saas:x@postgres:5432/subscription_saas_staging_acceptance_20260830t120000z",
+      STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME: "postgres",
+      STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL: "api",
+      STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL: "admin",
+      STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL: "portal",
+      PATH: `${toGitBashPath(bin)}:${process.env.PATH}`
+    }
+  });
+  const output = `${result.stdout}\n${result.stderr}`;
+  const calls = readFileSync(join(host, "trace"), "utf8");
+  rmSync(host, { recursive: true, force: true });
+  return { result, output, calls };
+}
+
+test("Task 9 complete executable fence reaches approval only when every stateful gate is green", async () => {
+  const preflight = extractExecutableFence(
+    await readRunbook(),
+    "STAGE1_TASK9_PREFLIGHT_EXECUTABLE"
+  );
+  const green = runTask9Preflight(preflight);
+  assert.equal(green.result.status, 0, `${green.output}\n${green.calls}`);
+  assert.match(green.output, /STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL/);
+  assert.doesNotMatch(green.calls, /HOST_(?:jq|node|psql|pg_dump)/);
+  const failureScenarios = [
+    "health_api",
+    "health_admin",
+    "health_portal",
+    "image_id",
+    "image_digest",
+    "image_revision",
+    "url_identity",
+    "server_identity",
+    "target_exists",
+    "target_nonempty",
+    "backup",
+    "migrate_deploy",
+    "migrate_status",
+    "checksum",
+    "drift",
+    "migration_count",
+    "post_migration_nonempty",
+    "discovery",
+    "uuid",
+    "formal",
+    "approval"
+  ];
+  for (const scenario of failureScenarios) {
+    const outcome = runTask9Preflight(preflight, scenario);
+    assert.notEqual(outcome.result.status, 0, `${scenario} must stop`);
+    assert.doesNotMatch(outcome.output, /BASELINE_APPLY_APPROVAL/, `${scenario} must not approve`);
+  }
+});
+
 test("requires discovery, explicit UUID, approvals, apply/replay, and target validator", async () => {
   const contents = await readRunbook();
   assertContainsAll(contents, [

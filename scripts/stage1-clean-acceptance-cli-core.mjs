@@ -412,12 +412,29 @@ function validApprovedWrapperShape(report, approvedSha256) {
 }
 
 function validApprovedTargetCountEvidence(value) {
+  const validKeys = (keys) =>
+    Array.isArray(keys) &&
+    keys.length > 0 &&
+    keys.every((key) => typeof key === "string" && key.length > 0) &&
+    new Set(keys).size === keys.length;
+  const validCounts = (keys, counts) =>
+    counts &&
+    typeof counts === "object" &&
+    !Array.isArray(counts) &&
+    Object.keys(counts).length === keys.length &&
+    keys.every(
+      (key) =>
+        Object.hasOwn(counts, key) &&
+        Number.isSafeInteger(counts[key]) &&
+        counts[key] >= 0 &&
+        counts[key] === 0
+    );
   return (
     exactKeys(value, ["forbiddenCountKeys", "forbiddenCounts", "tableCountKeys", "tableCounts"]) &&
-    Array.isArray(value.forbiddenCountKeys) &&
-    Array.isArray(value.tableCountKeys) &&
-    value.forbiddenCountKeys.length > 0 &&
-    value.tableCountKeys.length > 0
+    validKeys(value.forbiddenCountKeys) &&
+    validKeys(value.tableCountKeys) &&
+    validCounts(value.forbiddenCountKeys, value.forbiddenCounts) &&
+    validCounts(value.tableCountKeys, value.tableCounts)
   );
 }
 

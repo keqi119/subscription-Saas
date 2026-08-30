@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 
 import { hashStage1CleanAcceptanceManifest } from "./stage1-clean-acceptance-baseline-core.mjs";
 import { STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES } from "./stage1-clean-acceptance-baseline-snapshot.mjs";
@@ -70,11 +71,13 @@ export function buildTask9ApprovalSummary(report) {
   };
 }
 
-async function targetServerIdentity() {
-  const { PrismaClient } = await import("@prisma/client");
-  const { PrismaPg } = await import("@prisma/adapter-pg");
+const apiRequire = createRequire(new URL("../apps/api/package.json", import.meta.url));
+
+async function databaseServerIdentity(databaseUrl, expectedDatabase) {
+  const { PrismaClient } = apiRequire("@prisma/client");
+  const { PrismaPg } = apiRequire("@prisma/adapter-pg");
   const adapter = new PrismaPg({
-    connectionString: process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL
+    connectionString: databaseUrl
   });
   const prisma = new PrismaClient({ adapter });
   try {
@@ -82,7 +85,7 @@ async function targetServerIdentity() {
       "SELECT (pg_control_system()).system_identifier::text AS system_identifier, current_user AS role_name, current_database() AS database_name"
     );
     if (
-      row?.database_name !== process.env.TARGET_DB ||
+      row?.database_name !== expectedDatabase ||
       row?.role_name !== process.env.STAGE1_ACCEPTANCE_DATABASE_OWNER
     )
       process.exitCode = 1;
@@ -123,8 +126,18 @@ async function main() {
       else process.stdout.write(`${JSON.stringify(result)}\n`);
       return;
     }
-    if (command === "server-identity") {
-      await targetServerIdentity();
+    if (command === "source-server-identity") {
+      await databaseServerIdentity(
+        process.env.STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL,
+        "subscription_saas_staging"
+      );
+      return;
+    }
+    if (command === "target-server-identity") {
+      await databaseServerIdentity(
+        process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL,
+        process.env.TARGET_DB
+      );
       return;
     }
     process.exitCode = 2;

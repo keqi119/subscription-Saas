@@ -807,6 +807,7 @@ test("pins compose, release image, and fixed preflight identities", async () => 
 test("Task 9 preflight uses only the approved target image and reaches the approval stop through executable fences", async () => {
   const preflight = validateTask9PreflightContracts(await readRunbook());
   assert.ok(preflight.length > 0);
+  assert.doesNotMatch(preflight, /--env\s+DATABASE_URL=/);
 });
 
 test("Task 9 executable helpers route target work through fake Docker when host database and JSON tools are unavailable", async () => {
@@ -880,6 +881,11 @@ function runTask9Preflight(preflight, scenario = "success") {
   writeFakeCommand(bin, "chmod", 'printf "%s\\n" chmod >>"$TRACE_FILE"');
   writeFakeCommand(
     bin,
+    "ln",
+    `if test "$FAILURE_SCENARIO" = approval_publication && [[ "$*" = *baseline-approval.safe.json ]]; then printf '%s\\n' gate:approval-publication >>"$TRACE_FILE"; exit 81; fi; /usr/bin/ln "$@"`
+  );
+  writeFakeCommand(
+    bin,
     "stat",
     `printf '%s\\n' stat >>"$TRACE_FILE"
 if [[ "$*" == *'%u:%g:%a'* ]]; then target="\${!#}"; if test -d "$target"; then printf '%s\\n' '0:0:700'; else printf '%s\\n' '0:0:600'; fi; else printf '%s\\n' 1; fi`
@@ -911,7 +917,14 @@ printf 200`
 case "$args" in
   *'ps -q api'*) printf '%s\\n' ${CONTAINER_ID} ;;
   *'inspect --format {{.Image}}'*) printf '%s\\n' ${IMAGE_ID} ;;
-  *'image inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*) test "$FAILURE_SCENARIO" != image_revision || { printf '%s\\n' ${"f".repeat(40)}; exit 0; }; printf '%s\\n' ${RELEASE_SHA} ;;
+  *'image inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*)
+    printf '%s\\n' gate:image-revision >>"$TRACE_FILE"
+    case "$FAILURE_SCENARIO" in
+      image_revision_missing) printf '\\n' ;;
+      image_revision_malformed) printf '%s\\n' malformed ;;
+      image_revision_mismatch) printf '%s\\n' ${"f".repeat(40)} ;;
+      *) printf '%s\\n' ${RELEASE_SHA} ;;
+    esac ;;
   *'inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*) printf '%s\\n' ${RELEASE_SHA} ;;
   *'image inspect --format {{.Id}}'*) test "$FAILURE_SCENARIO" != image_id || { printf '%s\\n' bad; exit 0; }; printf '%s\\n' ${IMAGE_ID} ;;
   *'image inspect --format {{index .RepoDigests 0}}'*) test "$FAILURE_SCENARIO" != image_digest || { printf '%s\\n' bad; exit 0; }; printf '%s\\n' registry.test/api@sha256:${"a".repeat(64)} ;;
@@ -924,7 +937,7 @@ case "$args" in
   *' -d subscription_saas_staging_acceptance_'*' -XAtq') test "$FAILURE_SCENARIO" != migration_count && printf '124|0|0|0' || printf '123|0|0|0' ;;
   *' -d subscription_saas_staging_acceptance_'*' -X -v ON_ERROR_STOP=1') test "$FAILURE_SCENARIO" != post_migration_nonempty || exit 72 ;;
   *'server-identity'*) test "$FAILURE_SCENARIO" != server_identity && printf '${SHA256}' || exit 73 ;;
-  *'validate-pair'*) test "$FAILURE_SCENARIO" != url_identity || exit 74 ;;
+  *'validate-pair'*) printf '%s\\n' gate:url-pair >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != url_identity && test "$FAILURE_SCENARIO" != source_name_mismatch && test "$FAILURE_SCENARIO" != url_semantics_mismatch || exit 74 ;;
   *'prisma migrate deploy'*) test "$FAILURE_SCENARIO" != migrate_deploy || exit 75 ;;
   *'prisma migrate status'*) test "$FAILURE_SCENARIO" != migrate_status || exit 76 ;;
   *' node -'*) test "$FAILURE_SCENARIO" != checksum || exit 77 ;;
@@ -932,8 +945,8 @@ case "$args" in
   *'prisma migrate diff'*) test "$FAILURE_SCENARIO" != drift || exit 78 ;;
   *'--discover-vehicles'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{}' >"$HARNESS_EVIDENCE/vehicle-discovery.json"; test "$FAILURE_SCENARIO" != discovery || exit 4; exit 3 ;;
   *'validate-selection'*) test "$FAILURE_SCENARIO" != uuid || exit 79 ;;
-  *'--vehicle-id'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{}' >"$HARNESS_EVIDENCE/baseline-dry-run.json"; test "$FAILURE_SCENARIO" != formal || exit 80 ;;
-  *'approval-summary'*) if test "$FAILURE_SCENARIO" = approval; then exit 81; fi; printf '{"safe":true}' ;;
+  *'--vehicle-id'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{"safe":true,"manifest":{"safeToApply":true,"exceptions":[]},"manifestSha256":"${SHA256}","targetCountEvidence":{"forbiddenCounts":{"applications":1}}}' >"$HARNESS_EVIDENCE/baseline-dry-run.json"; test "$FAILURE_SCENARIO" != formal_nonzero || exit 80 ;;
+  *'approval-summary'*) printf '%s\\n' gate:approval-summary >>"$TRACE_FILE"; if test "$FAILURE_SCENARIO" = approval_publication; then printf '{"safe":true}'; else printf '{"safe":true}'; fi ;;
   *) : ;;
 esac`
   );
@@ -987,8 +1000,11 @@ test("Task 9 complete executable fence reaches approval only when every stateful
     "health_portal",
     "image_id",
     "image_digest",
-    "image_revision",
-    "url_identity",
+    "image_revision_missing",
+    "image_revision_malformed",
+    "image_revision_mismatch",
+    "source_name_mismatch",
+    "url_semantics_mismatch",
     "server_identity",
     "target_exists",
     "target_nonempty",
@@ -1001,13 +1017,17 @@ test("Task 9 complete executable fence reaches approval only when every stateful
     "post_migration_nonempty",
     "discovery",
     "uuid",
-    "formal",
-    "approval"
+    "formal_nonzero",
+    "approval_publication"
   ];
   for (const scenario of failureScenarios) {
     const outcome = runTask9Preflight(preflight, scenario);
     assert.notEqual(outcome.result.status, 0, `${scenario} must stop`);
     assert.doesNotMatch(outcome.output, /BASELINE_APPLY_APPROVAL/, `${scenario} must not approve`);
+    if (scenario.startsWith("image_revision")) assert.match(outcome.calls, /gate:image-revision/);
+    if (["source_name_mismatch", "url_semantics_mismatch"].includes(scenario))
+      assert.match(outcome.calls, /gate:url-pair/);
+    if (scenario === "approval_publication") assert.match(outcome.calls, /gate:approval-summary/);
   }
 });
 

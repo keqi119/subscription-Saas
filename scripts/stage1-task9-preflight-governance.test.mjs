@@ -115,6 +115,39 @@ test("keeps Task 9 dry-run target-count evidence compatible with the approved-ma
   );
 });
 
+test("rejects malformed or nonzero approved target-count evidence", () => {
+  const manifest = validManifest();
+  const hash = hashStage1CleanAcceptanceManifest(manifest);
+  const valid = {
+    forbiddenCountKeys: Object.keys(expectedForbiddenCounts()),
+    forbiddenCounts: expectedForbiddenCounts(),
+    tableCountKeys: ["user"],
+    tableCounts: { user: 0 }
+  };
+  for (const evidence of [
+    { ...valid, forbiddenCountKeys: [...valid.forbiddenCountKeys, valid.forbiddenCountKeys[0]] },
+    { ...valid, forbiddenCounts: { ...valid.forbiddenCounts, extra: 0 } },
+    { ...valid, tableCounts: [] },
+    { ...valid, tableCounts: { user: 0.5 } },
+    { ...valid, tableCounts: { user: 1 } }
+  ]) {
+    assert.throws(() =>
+      readApprovedStage1AcceptanceManifest(
+        JSON.stringify({
+          manifest,
+          manifestSha256: hash,
+          mode: "dry-run",
+          operation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE",
+          safe: true,
+          targetCountEvidence: evidence
+        }),
+        hash,
+        hashStage1CleanAcceptanceManifest
+      )
+    );
+  }
+});
+
 function expectedForbiddenCounts() {
   return Object.fromEntries(STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES.map((key) => [key, 0]));
 }

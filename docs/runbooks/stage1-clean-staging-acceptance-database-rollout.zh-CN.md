@@ -685,6 +685,8 @@ assert_private_file "$EVIDENCE_DIR/target-validator.json"
 ```text
 SUBSCRIPTION_JOURNEY_ENABLED=false
 SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false
+SUBSCRIPTION_CHANGE_WORKER_ENABLED=false
+SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false
 BILLING_AUTOMATION_WORKER_ENABLED=false
 FIELD_VIDEO_UPLOAD_WORKER_ENABLED=false
 STAGE2_HANDOVER_WORKER_ENABLED=false
@@ -699,18 +701,10 @@ MILEAGE_REVIEW_WORKER_ENABLED=false
 - 对应 worker 由 `billing-automation.module.ts`、`handover-work-order.module.ts` 和 `mileage-review.module.ts` 注册；因此必须显式传入上列 false，不能依赖缺省值。
 - `apps/api/src/auto-debit/auto-debit.module.ts` 没有 bootstrap timer；`auto-debit.config.ts` 强制 `AUTO_DEBIT_ENABLED=false`、provider `disabled`、mock false。`AutoDebitScheduler` 只是被显式业务调用的 enqueue helper。
 - `stage2-handover-workflow.service.ts` 的 `setInterval` 只在已进入 workflow operation 后做 lease heartbeat；`delivery-handover-evidence-artifact.service.ts` 的 timeout 只包围显式 media child process，二者都不是 bootstrap 定时入口。
-- **缺口：**`apps/api/src/subscription-change/subscription-change.module.ts` 注册 `SubscriptionChangeWorker`；`apps/api/src/subscription-change/subscription-change.worker.ts` 的 `onModuleInit()` 无条件执行 `schedulePoll(0)`。`SUBSCRIPTION_EXTENSION_ENABLED=false` 只跳过 enrollment enqueue，仍会执行 `reconcileActiveChanges()` 和 `claimDue()`。当前没有显式 worker off flag，也没有独立的无 worker bootstrap module。
+- `apps/api/src/subscription-change/subscription-change.worker.ts` 的 `onModuleInit()` 仅在 `workerEnabled()` 为 true 后调度；该 getter 只接受精确字符串 `SUBSCRIPTION_CHANGE_WORKER_ENABLED=true`。false 或缺失值都不会启动轮询，`subscription-change-worker.spec.ts` 覆盖了该 fail-closed 契约。
+- `SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED` 是新退车受管写入的准入门；只有精确字符串 `true` 才允许新的三阶段 case。false 或缺失值必须拒绝无既有受管事实的写入，而既有清单/差异/费用、法催和退车确认单电子签事实继续可读。
 
-因此，不得把不存在的 `SUBSCRIPTION_CHANGE_WORKER_ENABLED` 当作 flag，也不得以人工口头批准绕过。当前证据无法证明 candidate 不执行写入型定时任务：
-
-```bash
-printf '%s\n' 'STOP: CANDIDATE_API_TIMER_ISOLATION_UNPROVEN'
-exit 1
-```
-
-在一个另行批准的代码变更提供明确 off flag 或独立无 worker bootstrap、静态测试覆盖并更新本手册之前，**不得启动 candidate API**，不得创建 candidate acceptance 文件，也不得进入切换准备。
-
-缺口修复后的新版手册仍必须要求 candidate：独立容器、loopback 备用端口、不接 Nginx、全部 worker/timer 静默；只验证 `/health`、admin/portal 既有 token、RBAC 菜单、产品/车辆列表以及空进件/订单列表。不提交进件、不锁车、不签合同、不触发短信、电子签或支付。既有 token 只能留在浏览器/秘密环境，不得进命令、日志或证据。
+因此 candidate 必须显式覆盖这两个新准入/worker flag 为 false，不能依赖 env 缺省值。candidate 仍要求独立容器、loopback 备用端口、不接 Nginx、全部 worker/timer 静默；只验证 `/health`、admin/portal 既有 token、RBAC 菜单、产品/车辆列表以及空进件/订单列表。不提交进件、不锁车、不签合同、不触发短信、电子签或支付。既有 token 只能留在浏览器/秘密环境，不得进命令、日志或证据。
 
 Billing maintenance 观察能力现在由 append-only `BillingMaintenanceCycleFact` 与镜像内 `billing-maintenance-cycle-evidence.mjs` 提供。切换只启用一次随机 evidence run；CLI 有界轮询数据库，只有查询到 sequence 1/2 两行真实 `COMPLETED` 事实并逐项验证不同 cycle ID、同一 release/image/database/set binding、时间不重叠、`blockedCount=0`、`dryRun=false`、完整禁止域键集/非负计数、前后 canonical hash 与计数一致、safe reconciliation/enqueue summary 时才输出 public-safe canonical JSON。等待或 timeout 本身不能生成成功，禁止手写 billing JSON。
 
@@ -793,7 +787,7 @@ assert_private_file "$ENV_TEMP"
 
 ## 8. 切换、即时门禁与浏览器验收
 
-收到批准后才执行原子 rename，并只重建 API service。不得重建 postgres/web，不得修改或 reload Nginx。下面是唯一完整 cutover executable fence；契约测试只抽取该 fence，以纯本地依赖注入验证失败回滚，不从 prose 或 shell comments 推断控制流。函数内重新运行 target validator、migration status/checksum/diff/count，检查新 API 没有 restart，精确验证六个 worker/journey flags、四个 subscription-change flags与受控 billing evidence binding，验证公共 API/Admin/Portal health，并运行数据库支持的 billing exporter。所有 curl 丢弃 body/headers且不输出 URL：
+收到批准后才执行原子 rename，并只重建 API service。不得重建 postgres/web，不得修改或 reload Nginx。下面是唯一完整 cutover executable fence；契约测试只抽取该 fence，以纯本地依赖注入验证失败回滚，不从 prose 或 shell comments 推断控制流。函数内重新运行 target validator、migration status/checksum/diff/count，检查新 API 没有 restart，精确验证 journey、field-video、mileage-review、handover、subscription-change 与 three-stage-return 的目标 flags及受控 billing evidence binding，验证公共 API/Admin/Portal health，并运行数据库支持的 billing exporter。所有 curl 丢弃 body/headers且不输出 URL：
 
 <!-- STAGE1_CUTOVER_EXECUTABLE_BEGIN -->
 
@@ -1112,6 +1106,8 @@ SQL
     const expected = {
       SUBSCRIPTION_JOURNEY_ENABLED: "true",
       SUBSCRIPTION_JOURNEY_WORKER_ENABLED: "true",
+      SUBSCRIPTION_CHANGE_WORKER_ENABLED: "true",
+      SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "true",
       BILLING_AUTOMATION_WORKER_ENABLED: "true",
       BILLING_MAINTENANCE_EVIDENCE_ENABLED: "true",
       FIELD_VIDEO_UPLOAD_WORKER_ENABLED: "true",

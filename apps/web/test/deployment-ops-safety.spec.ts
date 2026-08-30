@@ -46,9 +46,7 @@ describe("Deployment operations safety", () => {
   it("uses an explicit staging project name in image deployment commands", () => {
     const runbook = read("docs/staging-deployment-runbook.md");
     const imageCommands =
-      runbook.match(
-        /^docker compose .*docker-compose\.staging\.images\.example\.yml.*$/gm
-      ) ?? [];
+      runbook.match(/^docker compose .*docker-compose\.staging\.images\.example\.yml.*$/gm) ?? [];
 
     expect(imageCommands.length).toBeGreaterThan(0);
     for (const command of imageCommands) {
@@ -57,10 +55,7 @@ describe("Deployment operations safety", () => {
   });
 
   it("configures the public Stage 2 handover evidence URL for staging", () => {
-    for (const file of [
-      ".env.staging.example",
-      ".env.staging.images.example"
-    ]) {
+    for (const file of [".env.staging.example", ".env.staging.images.example"]) {
       expect(read(file)).toContain(
         "STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL=https://staging-app.subauto.keybox.cloud"
       );
@@ -89,6 +84,41 @@ describe("Deployment operations safety", () => {
     });
   });
 
+  it("declares the Stage 1 post-switch target profile only in the staging image example", () => {
+    const target = parseEnvironment(read(".env.staging.images.example"));
+
+    expect(target).toMatchObject({
+      FIELD_VIDEO_UPLOAD_WORKER_ENABLED: "true",
+      MILEAGE_REVIEW_WORKER_ENABLED: "true",
+      STAGE2_HANDOVER_WORKER_ENABLED: "true",
+      STAGE2_HANDOVER_WORKFLOW_ENABLED: "true",
+      SUBSCRIPTION_CHANGE_WORKER_ENABLED: "true",
+      SUBSCRIPTION_JOURNEY_ENABLED: "true",
+      SUBSCRIPTION_JOURNEY_WORKER_ENABLED: "true",
+      SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "true"
+    });
+    expect(read(".env.staging.images.example")).toContain("目标配置");
+
+    for (const file of [
+      ".env.example",
+      ".env.production.example",
+      ".env.production.images.example",
+      "apps/api/.env.example",
+      "apps/api/.env.production.example"
+    ]) {
+      expect(parseEnvironment(read(file))).toMatchObject({
+        FIELD_VIDEO_UPLOAD_WORKER_ENABLED: "false",
+        MILEAGE_REVIEW_WORKER_ENABLED: "false",
+        STAGE2_HANDOVER_WORKER_ENABLED: "false",
+        STAGE2_HANDOVER_WORKFLOW_ENABLED: "false",
+        SUBSCRIPTION_CHANGE_WORKER_ENABLED: "false",
+        SUBSCRIPTION_JOURNEY_ENABLED: "false",
+        SUBSCRIPTION_JOURNEY_WORKER_ENABLED: "false",
+        SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "false"
+      });
+    }
+  });
+
   it("pins the complete auto-debit retirement policy in source-build env examples", () => {
     for (const file of [".env.production.example", ".env.staging.example"]) {
       const environment = parseEnvironment(read(file));
@@ -102,9 +132,7 @@ describe("Deployment operations safety", () => {
   });
 
   it("passes explicit auto debit defaults from both image Compose files", () => {
-    const staging = parseComposeEnvironment(
-      read("docker-compose.staging.images.example.yml")
-    );
+    const staging = parseComposeEnvironment(read("docker-compose.staging.images.example.yml"));
     const production = parseComposeEnvironment(
       read("docker-compose.production.images.example.yml")
     );
@@ -133,7 +161,10 @@ describe("Deployment operations safety", () => {
   it("documents the fixed release order and auto-debit retirement operations", () => {
     const deployment = read("docs/deployment.md");
     const runbook = read("docs/operations/stage1b-auto-debit-runbook.zh-CN.md");
-    const migration = deployment.indexOf("prisma:migrate:deploy", deployment.indexOf("镜像发布固定顺序"));
+    const migration = deployment.indexOf(
+      "prisma:migrate:deploy",
+      deployment.indexOf("镜像发布固定顺序")
+    );
     const healthy = deployment.indexOf("healthy", migration);
     const publicHealth = deployment.indexOf("staging-api.subauto.keybox.cloud/api/health", healthy);
 
@@ -151,10 +182,7 @@ describe("Deployment operations safety", () => {
   it("routes staging WeChat OAuth through the authorized Portal domain", () => {
     const nginx = read("nginx/staging-app-wechat-oauth.example.conf");
 
-    for (const file of [
-      ".env.staging.example",
-      ".env.staging.images.example"
-    ]) {
+    for (const file of [".env.staging.example", ".env.staging.images.example"]) {
       const environment = read(file);
 
       expect(environment).toContain(
@@ -165,9 +193,7 @@ describe("Deployment operations safety", () => {
       );
     }
     expect(nginx).toContain("location = /api/portal/wechat/oauth/callback");
-    expect(nginx).toContain(
-      "proxy_pass http://127.0.0.1:3101/api/portal/wechat/oauth/callback;"
-    );
+    expect(nginx).toContain("proxy_pass http://127.0.0.1:3101/api/portal/wechat/oauth/callback;");
     expect(nginx).toContain("proxy_set_header Host staging-app.subauto.keybox.cloud;");
     expect(nginx).not.toContain("127.0.0.1:3001");
     expect(nginx).not.toContain("proxy_set_header Host app.subauto.keybox.cloud;");
@@ -181,10 +207,7 @@ describe("Deployment operations safety", () => {
       "ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE=SMS_510815118",
       "ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE=SMS_510795093"
     ];
-    for (const file of [
-      ".env.staging.example",
-      ".env.staging.images.example"
-    ]) {
+    for (const file of [".env.staging.example", ".env.staging.images.example"]) {
       const environment = read(file);
       for (const line of requiredStaging) {
         expect(environment).toContain(line);
@@ -223,9 +246,7 @@ describe("Deployment operations safety", () => {
     expect(dryRun).toBeGreaterThan(migrate);
     expect(workerOn).toBeGreaterThan(dryRun);
     expect(runbook).toContain("STAGE2_HANDOVER_WORKER_CONCURRENCY=1");
-    expect(runbook).toContain(
-      "export COMPOSE_FILE=docker-compose.staging.images.example.yml"
-    );
+    expect(runbook).toContain("export COMPOSE_FILE=docker-compose.staging.images.example.yml");
     expect(runbook).toContain("export ENV_FILE=.env.staging.images");
     expect(runbook).toContain("ORD20260731173351SMF2");
     expect(runbook).toContain("SMS_511185078");
@@ -276,7 +297,8 @@ function parseEnvironment(source: string) {
 
 function parseComposeEnvironment(source: string) {
   const result: Record<string, string> = {};
-  const apiEnvironment = source.match(/\n  api:\n[\s\S]*?\n    environment:\n([\s\S]*?)\n    ports:/)?.[1] ?? "";
+  const apiEnvironment =
+    source.match(/\n  api:\n[\s\S]*?\n    environment:\n([\s\S]*?)\n    ports:/)?.[1] ?? "";
   for (const line of apiEnvironment.split(/\r?\n/)) {
     const variable = /^      ([A-Z0-9_]+): \$\{\1:-([^}]*)\}$/.exec(line);
     const literal = /^      ([A-Z0-9_]+): "([^"]*)"$/.exec(line);

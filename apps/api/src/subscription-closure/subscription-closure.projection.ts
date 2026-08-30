@@ -4,6 +4,10 @@ import { Prisma } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
 import type { ClosureCaseQueryDto } from "./subscription-closure.dto";
+import {
+  hasSubscriptionReturnThreeStageContinuation,
+  isSubscriptionReturnThreeStageEnabled
+} from "./subscription-return-three-stage";
 
 const FORBIDDEN_KEYS = new Set([
   "approvalcomment",
@@ -99,67 +103,64 @@ export class SubscriptionClosureProjectionService {
       where: { customerId, orderId, retiredAt: null }
     });
     if (!closureCase) return null;
-    const governed = await this.governedProjection(
+    const { returnThreeStageContinuation, ...governed } = await this.governedProjection(
       closureCase.id,
       closureCase.contractId,
       closureCase.orderId,
+      closureCase.currentChecklistRevisionId,
+      closureCase.currentDeltaRevisionId,
       true
     );
     return projectSubscriptionClosureCustomer({
       ...toAggregate(closureCase),
       ...governed,
-      returnThreeStageEnabled: this.returnThreeStageEnabled(closureCase, governed)
+      returnThreeStageEnabled: this.returnThreeStageEnabled(returnThreeStageContinuation)
     });
   }
 
   private async adminProjection(closureCase: AggregateRecord) {
-    const [audits, approvals, governed] = await Promise.all([this.prisma.auditLog.findMany({
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      where: {
-        OR: [
-          { entityId: closureCase.id },
-          { entityId: { in: closureCase.events.map(({ id }) => id) } }
-        ]
-      }
-    }), this.prisma.businessExceptionApproval.findMany({
-      orderBy: [{ requestedAt: "asc" }, { id: "asc" }],
-      where: {
-        subjectId: closureCase.id,
-        subjectType: { in: ["RECOVERY_CASE", "SETTLEMENT_CASE"] }
-      }
-    }), this.governedProjection(
-      closureCase.id,
-      closureCase.contractId,
-      closureCase.orderId,
-      false
-    )]);
+    const [audits, approvals, governedResult] = await Promise.all([
+      this.prisma.auditLog.findMany({
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        where: {
+          OR: [
+            { entityId: closureCase.id },
+            { entityId: { in: closureCase.events.map(({ id }) => id) } }
+          ]
+        }
+      }),
+      this.prisma.businessExceptionApproval.findMany({
+        orderBy: [{ requestedAt: "asc" }, { id: "asc" }],
+        where: {
+          subjectId: closureCase.id,
+          subjectType: { in: ["RECOVERY_CASE", "SETTLEMENT_CASE"] }
+        }
+      }),
+      this.governedProjection(
+        closureCase.id,
+        closureCase.contractId,
+        closureCase.orderId,
+        closureCase.currentChecklistRevisionId,
+        closureCase.currentDeltaRevisionId,
+        false
+      )
+    ]);
+    const { returnThreeStageContinuation, ...governed } = governedResult;
     return projectSubscriptionClosureAdmin({
       ...toAggregate(closureCase),
       ...governed,
       allowedActions: governedAllowedActions(closureCase, governed),
       approvals,
       audits,
-      returnThreeStageEnabled: this.returnThreeStageEnabled(closureCase, governed)
+      returnThreeStageEnabled: this.returnThreeStageEnabled(returnThreeStageContinuation)
     });
   }
 
-  private returnThreeStageEnabled(
-    closureCase: AggregateRecord,
-    governed: Readonly<Record<string, unknown>>
-  ) {
+  private returnThreeStageEnabled(returnThreeStageContinuation: boolean) {
     return (
-      this.config?.get<string>("SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED") === "true" ||
-      Boolean(closureCase.currentChecklistRevisionId) ||
-      Boolean(closureCase.currentDeltaRevisionId) ||
-      [
-        "checklistRevisions",
-        "deltaRevisions",
-        "chargeLines",
-        "customerResponses",
-        "receivableDispositions",
-        "evidenceLinks",
-        "evidencePackages"
-      ].some((key) => Array.isArray(governed[key]) && governed[key].length > 0)
+      isSubscriptionReturnThreeStageEnabled(
+        this.config?.get<string>("SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED")
+      ) || returnThreeStageContinuation
     );
   }
 
@@ -167,6 +168,8 @@ export class SubscriptionClosureProjectionService {
     closureCaseId: string,
     contractId: string,
     orderId: string,
+    currentChecklistRevisionId: string | null,
+    currentDeltaRevisionId: string | null,
     customerOnly: boolean
   ) {
     const [
@@ -181,7 +184,8 @@ export class SubscriptionClosureProjectionService {
       legalCases,
       evidencePackages,
       receivableBills,
-      returnManifestTask
+      returnManifestTask,
+      businessExceptionApprovalCount
     ] = await Promise.all([
       this.prisma.vehicleReturnChecklistRevision.findMany({
         include: { items: { orderBy: { itemCode: "asc" as const } } },
@@ -262,6 +266,9 @@ export class SubscriptionClosureProjectionService {
           sourceKey: { startsWith: "return-manifest-esign" },
           sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
         }
+      }),
+      this.prisma.businessExceptionApproval.count({
+        where: { subjectId: closureCaseId, subjectType: "SETTLEMENT_CASE" }
       })
     ]);
     return {
@@ -276,7 +283,19 @@ export class SubscriptionClosureProjectionService {
       legalCases,
       receivableBills,
       receivableDispositions: dispositions,
-      returnManifestTask
+      returnManifestTask,
+      returnThreeStageContinuation: hasSubscriptionReturnThreeStageContinuation({
+        businessExceptionApprovals: businessExceptionApprovalCount,
+        chargeLines,
+        currentChecklistRevisionId,
+        currentDeltaRevisionId,
+        customerResponses,
+        evidenceLinks,
+        evidencePackages,
+        legalCases,
+        receivableDispositions: dispositions,
+        returnManifestTasks: returnManifestTask
+      })
     };
   }
 }
@@ -302,23 +321,22 @@ export function projectSubscriptionClosureCustomer(value: unknown) {
   const settlement =
     latestSettlement && ["FINALIZED", "SETTLED"].includes(String(latestSettlement.stage))
       ? latestSettlement
-      : [...settlementRevisions]
+      : ([...settlementRevisions]
           .reverse()
-          .find((entry) => ["FINALIZED", "SETTLED"].includes(String(entry.stage))) ?? null;
+          .find((entry) => ["FINALIZED", "SETTLED"].includes(String(entry.stage))) ?? null);
   const finalizedSettlement =
     settlement?.stage === "SETTLED"
-      ? settlementRevisions.find((entry) => entry.id === settlement.supersedesRevisionId) ?? null
+      ? (settlementRevisions.find((entry) => entry.id === settlement.supersedesRevisionId) ?? null)
       : settlement?.stage === "FINALIZED"
         ? settlement
         : null;
-  const pricingSettlementRevisionId =
-    finalizedSettlement?.supersedesRevisionId;
+  const pricingSettlementRevisionId = finalizedSettlement?.supersedesRevisionId;
   const checklist = asRecordArray(aggregate.checklistRevisions).at(-1) ?? null;
   const hasUnpublishedSuccessor =
     latestSettlement?.stage === "PROPOSED" && latestSettlement.id !== settlement?.id;
   const delta = hasUnpublishedSuccessor
     ? null
-    : asRecordArray(aggregate.deltaRevisions).at(-1) ?? null;
+    : (asRecordArray(aggregate.deltaRevisions).at(-1) ?? null);
   const responseSettlementId =
     settlement?.stage === "SETTLED" ? settlement.supersedesRevisionId : settlement?.id;
   const customerResponse =
@@ -387,10 +405,7 @@ export function projectSubscriptionClosureCustomer(value: unknown) {
       .filter((id): id is string => typeof id === "string")
   );
   const undisputedPayableBillIds = [...payableBillIds]
-    .filter(
-      (billId) =>
-        !blockingDisputeBillIds.has(billId) && !legalCollectionBillIds.has(billId)
-    )
+    .filter((billId) => !blockingDisputeBillIds.has(billId) && !legalCollectionBillIds.has(billId))
     .sort();
   return sanitizeSubscriptionClosurePublic({
     allowedActions: customerAllowedActions({
@@ -539,9 +554,7 @@ export function governedAllowedActions(
   const currentSettlement = asRecord(closureCase.currentSettlementRevision);
   const settlementStage = String(currentSettlement.stage ?? "");
   const responseSettlementId =
-    settlementStage === "SETTLED"
-      ? currentSettlement.supersedesRevisionId
-      : currentSettlement.id;
+    settlementStage === "SETTLED" ? currentSettlement.supersedesRevisionId : currentSettlement.id;
   const responses = asRecordArray(governed.customerResponses);
   const response = [...responses]
     .reverse()
@@ -670,9 +683,7 @@ export function governedAllowedActions(
     }
     const legalCases = asRecordArray(governed.legalCases);
     const activeLegalBillIds = new Set(
-      legalCases
-        .filter((item) => !item.closedAt)
-        .map((item) => String(item.billId))
+      legalCases.filter((item) => !item.closedAt).map((item) => String(item.billId))
     );
     if (
       asRecordArray(governed.evidencePackages).length > 0 &&

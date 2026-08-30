@@ -2,13 +2,19 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { buildCustomerSubscriptionClosureView } from "../src/lib/subscription-closure-view-model";
+
 const root = join(__dirname, "../../..");
 
 describe("admin subscription return three-stage workspace", () => {
   it("renders governed files, immutable comparison, contract pricing, and independent closure", () => {
-    const evidence = source("apps/web/src/components/subscription-closure/return-evidence-stage.tsx");
+    const evidence = source(
+      "apps/web/src/components/subscription-closure/return-evidence-stage.tsx"
+    );
     const pricing = source("apps/web/src/components/subscription-closure/return-pricing-stage.tsx");
-    const settlement = source("apps/web/src/components/subscription-closure/return-settlement-stage.tsx");
+    const settlement = source(
+      "apps/web/src/components/subscription-closure/return-settlement-stage.tsx"
+    );
     const page = source("apps/web/src/app/orders/[id]/page.tsx");
 
     for (const label of ["车辆外观", "车辆内饰", "车辆钥匙", "行驶证", "随车附件", "上传并绑定"]) {
@@ -22,7 +28,7 @@ describe("admin subscription return three-stage workspace", () => {
     expect(evidence).toContain("return-manifest/signed-document/preview");
     expect(evidence).toContain("closure.capabilities.receive");
     expect(evidence).toContain("const canCaptureChecklist");
-    expect(evidence).toContain("allowedActionKeys.has(\"CAPTURE_RETURN_CHECKLIST\")");
+    expect(evidence).toContain('allowedActionKeys.has("CAPTURE_RETURN_CHECKLIST")');
     expect(evidence).toContain("disabled={!canCaptureChecklist");
     expect(evidence).not.toContain("closure.capabilities.prepare");
     expect(evidence).toContain("确认车辆及随车资料已取回");
@@ -56,7 +62,33 @@ describe("admin subscription return three-stage workspace", () => {
     expect(settlement).toContain("固化并导出证据包");
     expect(page).toContain("!subscriptionClosure.returnThreeStageEnabled");
   });
+
+  it.each([
+    [true, true],
+    ["true", false],
+    ["TRUE", false],
+    [" true", false],
+    [1, false],
+    [undefined, false]
+  ])("only enables the three-stage workspace for boolean true (%j)", (value, expected) => {
+    expect(
+      buildCustomerSubscriptionClosureView(customerClosure(value)).returnThreeStageEnabled
+    ).toBe(expected);
+  });
 });
+
+function customerClosure(returnThreeStageEnabled: unknown) {
+  return {
+    allowedActions: [],
+    caseNo: "SC-STRICT-BOOLEAN",
+    closureCaseId: "closure-1",
+    closureType: "NORMAL_COMPLETION",
+    financialStatus: "DRAFT",
+    nextAction: "等待平台处理",
+    returnThreeStageEnabled,
+    status: "PREPARING_RETURN"
+  };
+}
 
 function source(path: string) {
   return readFileSync(join(root, path), "utf8");

@@ -46,6 +46,10 @@ import {
   applyConditionDeltaDecisions,
   buildConditionDelta
 } from "./subscription-return-delta.service";
+import {
+  hasSubscriptionReturnThreeStageContinuation,
+  isSubscriptionReturnThreeStageEnabled
+} from "./subscription-return-three-stage";
 
 const REQUIRED_ITEM_CODES = [
   "ACCESSORIES",
@@ -88,7 +92,6 @@ export class SubscriptionReturnGovernanceService {
       where: { id: closureCaseId }
     });
     if (!closureCase) throw new NotFoundException("Subscription closure case not found.");
-    if (closureCase.currentChecklistRevisionId || closureCase.currentDeltaRevisionId) return;
     const factCounts = await Promise.all([
       this.prisma.vehicleReturnEvidenceLink.count({ where: { closureCaseId } }),
       this.prisma.subscriptionClosureChargeLine.count({ where: { closureCaseId } }),
@@ -105,11 +108,26 @@ export class SubscriptionReturnGovernanceService {
           documentType: "RETURN_MANIFEST",
           signingStage: "STAGE6_RETURN_MANIFEST",
           sourceId: closureCaseId,
+          sourceKey: { startsWith: "return-manifest-esign" },
           sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
         }
       })
     ]);
-    if (factCounts.some((count) => count > 0)) return;
+    if (
+      hasSubscriptionReturnThreeStageContinuation({
+        businessExceptionApprovals: factCounts[6],
+        chargeLines: factCounts[1],
+        currentChecklistRevisionId: closureCase.currentChecklistRevisionId,
+        currentDeltaRevisionId: closureCase.currentDeltaRevisionId,
+        customerResponses: factCounts[2],
+        evidenceLinks: factCounts[0],
+        evidencePackages: factCounts[4],
+        legalCases: factCounts[5],
+        receivableDispositions: factCounts[3],
+        returnManifestTasks: factCounts[7]
+      })
+    )
+      return;
     throw conflict(
       "SUBSCRIPTION_RETURN_THREE_STAGE_DISABLED",
       "The three-stage return workflow is disabled for cases that have not entered the governed flow."
@@ -127,9 +145,8 @@ export class SubscriptionReturnGovernanceService {
   }
 
   private threeStageWriteGateActive() {
-    return Boolean(
-      this.config &&
-        this.config.get<string>("SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED") !== "true"
+    return !isSubscriptionReturnThreeStageEnabled(
+      this.config?.get<string>("SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED")
     );
   }
 
@@ -464,10 +481,7 @@ export class SubscriptionReturnGovernanceService {
         "当前退车流程不允许取消确认单签署。"
       );
     }
-    if (
-      observedTask?.taskStatus === ESignTaskStatus.COMPLETED ||
-      observedTask?.completedAt
-    ) {
+    if (observedTask?.taskStatus === ESignTaskStatus.COMPLETED || observedTask?.completedAt) {
       throw conflict(
         "RETURN_MANIFEST_SIGNING_ALREADY_COMPLETED",
         "退车确认单已经完成签署，不能取消或覆盖；请继续确认车辆取回，并在后续车况差异与费用核定中记录新发现事项。"
@@ -475,10 +489,7 @@ export class SubscriptionReturnGovernanceService {
     }
     let providerCancellation: unknown = null;
     if (observedTask?.providerTaskId) {
-      if (
-        !observedTask.providerEnvelopeId ||
-        !this.esignProvider?.cancelReturnManifestTask
-      ) {
+      if (!observedTask.providerEnvelopeId || !this.esignProvider?.cancelReturnManifestTask) {
         throw conflict(
           "RETURN_MANIFEST_PROVIDER_CANCELLATION_REQUIRED",
           "电子签平台任务已发出，但当前供应商未配置可核验的撤销能力；为避免双份有效文件，系统未取消本地任务。"
@@ -663,13 +674,16 @@ export class SubscriptionReturnGovernanceService {
     });
     if (existing) {
       const evidence = existing.evidenceId
-        ? await this.prisma.assetWorkOrderEvidence.findUnique({ where: { id: existing.evidenceId } })
+        ? await this.prisma.assetWorkOrderEvidence.findUnique({
+            where: { id: existing.evidenceId }
+          })
         : null;
       const captureMetadata = asRecord(evidence?.captureMetadata);
       if (
         !evidence ||
         evidence.contentSha256 !== contentSha256 ||
-        existing.checklistItemId !== (input.targetType === "CHECKLIST_ITEM" ? input.targetId : null) ||
+        existing.checklistItemId !==
+          (input.targetType === "CHECKLIST_ITEM" ? input.targetId : null) ||
         existing.damageId !== (input.targetType === "DAMAGE" ? input.targetId : null) ||
         captureMetadata.targetId !== input.targetId ||
         captureMetadata.targetType !== input.targetType
@@ -678,7 +692,11 @@ export class SubscriptionReturnGovernanceService {
       }
       return this.projectEvidenceLink(existing, evidence, true);
     }
-    const authority = await this.resolveEvidenceTarget(closureCaseId, input.targetType, input.targetId);
+    const authority = await this.resolveEvidenceTarget(
+      closureCaseId,
+      input.targetType,
+      input.targetId
+    );
     const stored = await this.storage.putSubscriptionReturnEvidence({
       buffer: file!.buffer,
       closureCaseId,
@@ -784,9 +802,9 @@ export class SubscriptionReturnGovernanceService {
                 ? "DAMAGE_PROOF"
                 : input.targetType === "CUSTOMER_DISPUTE"
                   ? "DISPUTE_PROOF"
-                : input.targetType === "CASE_ATTESTATION"
-                  ? "ATTESTATION_PROOF"
-                  : "CHECKLIST_PROOF",
+                  : input.targetType === "CASE_ATTESTATION"
+                    ? "ATTESTATION_PROOF"
+                    : "CHECKLIST_PROOF",
             recordedBy: actorId,
             sourceId: closureCaseId,
             sourceKey: `bind:${sourceKey}`,
@@ -893,10 +911,7 @@ export class SubscriptionReturnGovernanceService {
     };
   }
 
-  async getSignedReturnManifestObject(
-    closureCaseId: string,
-    customerId: string | null = null
-  ) {
+  async getSignedReturnManifestObject(closureCaseId: string, customerId: string | null = null) {
     const closureCase = await this.prisma.subscriptionClosureCase.findUnique({
       select: { customerId: true },
       where: { id: closureCaseId }
@@ -983,11 +998,10 @@ export class SubscriptionReturnGovernanceService {
   ) {
     await this.assertThreeStageWriteAllowed(closureCaseId);
     return this.prisma.$transaction(async (tx) => {
-      const closureCase = await tx.subscriptionClosureCase.findUnique({ where: { id: closureCaseId } });
-      if (
-        !closureCase?.currentChecklistRevisionId ||
-        closureCase.status !== "RETURN_INSPECTION"
-      ) {
+      const closureCase = await tx.subscriptionClosureCase.findUnique({
+        where: { id: closureCaseId }
+      });
+      if (!closureCase?.currentChecklistRevisionId || closureCase.status !== "RETURN_INSPECTION") {
         throw conflict("RETURN_DELTA_CHECKLIST_REQUIRED", "请先完成退车清单确认。");
       }
       const delivery = await tx.vehicleDeliveryHandover.findFirst({
@@ -1108,7 +1122,11 @@ export class SubscriptionReturnGovernanceService {
         include: { items: { orderBy: { itemCode: "asc" } } }
       });
       await tx.subscriptionClosureCase.update({
-        data: { currentDeltaRevisionId: revision.id, updatedBy: actorId, version: { increment: 1 } },
+        data: {
+          currentDeltaRevisionId: revision.id,
+          updatedBy: actorId,
+          version: { increment: 1 }
+        },
         where: { id: closureCase.id }
       });
       return { ...revision, replayed: false };
@@ -1144,10 +1162,7 @@ export class SubscriptionReturnGovernanceService {
         closureCase.currentDeltaRevisionId !== base.id ||
         closureCase.status !== "RETURN_INSPECTION"
       ) {
-        throw conflict(
-          "RETURN_DELTA_BASE_REVISION_MISMATCH",
-          "责任判定必须绑定当前车况差异版本。"
-        );
+        throw conflict("RETURN_DELTA_BASE_REVISION_MISMATCH", "责任判定必须绑定当前车况差异版本。");
       }
       const itemById = new Map(base.items.map((item) => [item.id, item]));
       let resolved: ReturnType<typeof applyConditionDeltaDecisions>;
@@ -1185,10 +1200,7 @@ export class SubscriptionReturnGovernanceService {
       });
       if (replay) {
         if (replay.resultHash !== resolved.resultHash) {
-          throw conflict(
-            "RETURN_DELTA_IDEMPOTENCY_CONFLICT",
-            "幂等键已用于其他责任判定结果。"
-          );
+          throw conflict("RETURN_DELTA_IDEMPOTENCY_CONFLICT", "幂等键已用于其他责任判定结果。");
         }
         return { ...replay, replayed: true };
       }
@@ -1511,13 +1523,10 @@ export class SubscriptionReturnGovernanceService {
                 requested.manualUnitPriceCents !== null &&
                 line.unitPriceCents.toString() !== requested.manualUnitPriceCents) ||
               (requested.manualBasis?.trim() || null) !==
-                (typeof calculation.manualBasis === "string"
-                  ? calculation.manualBasis
-                  : null) ||
+                (typeof calculation.manualBasis === "string" ? calculation.manualBasis : null) ||
               canonicalSubscriptionClosureJson(
                 (Array.isArray(evidence) ? [...evidence].sort() : []) as never
-              ) !==
-                canonicalSubscriptionClosureJson([...requested.evidenceIds].sort() as never)
+              ) !== canonicalSubscriptionClosureJson([...requested.evidenceIds].sort() as never)
             );
           })
         ) {
@@ -1575,8 +1584,7 @@ export class SubscriptionReturnGovernanceService {
           : null;
         if (
           clause &&
-          (clause.contractId !== closureCase.contractId ||
-            clause.chargeType !== line.chargeType)
+          (clause.contractId !== closureCase.contractId || clause.chargeType !== line.chargeType)
         ) {
           throw conflict("CLOSURE_PRICING_CLAUSE_MISMATCH", "收费条款不属于当前合同。");
         }
@@ -1596,12 +1604,7 @@ export class SubscriptionReturnGovernanceService {
         }
         const exceptionApprovalId =
           input.finalize && clause?.status === "MANUAL_CLAUSE_REVIEW_REQUIRED"
-            ? await requireCurrentPricingApproval(
-                tx,
-                closureCase.id,
-                settlement.id,
-                line
-              )
+            ? await requireCurrentPricingApproval(tx, closureCase.id, settlement.id, line)
             : null;
         let governedCharge: ReturnType<typeof governedChargeFactsForDeltaItem>;
         try {
@@ -1641,10 +1644,7 @@ export class SubscriptionReturnGovernanceService {
               }
             })
           : null;
-        if (
-          priorFinalLine?.bill &&
-          priorFinalLine.bill.billStatus !== BillStatus.CANCELLED
-        ) {
+        if (priorFinalLine?.bill && priorFinalLine.bill.billStatus !== BillStatus.CANCELLED) {
           const priorEvidence = asRecord(priorFinalLine.evidenceSnapshot).evidenceIds;
           const priorCalculation = asRecord(priorFinalLine.calculationSnapshot);
           if (
@@ -1725,19 +1725,18 @@ export class SubscriptionReturnGovernanceService {
             : null;
         const priced = priceClosureCharge({
           chargeType: line.chargeType,
-          clause: manualPricing ?? (clause
-            ? {
-                clauseCode: clause.clauseCode,
-                pricingSnapshot: asRecord(clause.pricingSnapshot),
-                status: clause.status
-              }
-            : null),
+          clause:
+            manualPricing ??
+            (clause
+              ? {
+                  clauseCode: clause.clauseCode,
+                  pricingSnapshot: asRecord(clause.pricingSnapshot),
+                  status: clause.status
+                }
+              : null),
           evidenceIds: line.evidenceIds,
           manualBasis: line.manualBasis,
-          priorBilledAmountCents: priorMileageBills.reduce(
-            (sum, bill) => sum + bill.amount,
-            0n
-          ),
+          priorBilledAmountCents: priorMileageBills.reduce((sum, bill) => sum + bill.amount, 0n),
           priorBillIds: priorMileageBills.map(({ id }) => id),
           quantity: line.quantity
         });
@@ -1749,8 +1748,7 @@ export class SubscriptionReturnGovernanceService {
             calculationHash: priced.calculationHash,
             calculationSnapshot: priced.calculationSnapshot,
             chargeType: line.chargeType,
-            clauseSnapshotId:
-              priced.status === "PRICING_EXCEPTION" ? null : (clause?.id ?? null),
+            clauseSnapshotId: priced.status === "PRICING_EXCEPTION" ? null : (clause?.id ?? null),
             closureCaseId,
             contractId: closureCase.contractId,
             createdAt: new Date(),
@@ -1875,7 +1873,11 @@ export class SubscriptionReturnGovernanceService {
     orderId: string,
     customerId: string,
     input: Readonly<{
-      disputes: readonly Readonly<{ chargeLineId: string; evidenceIds: readonly string[]; reason: string }>[];
+      disputes: readonly Readonly<{
+        chargeLineId: string;
+        evidenceIds: readonly string[];
+        reason: string;
+      }>[];
       idempotencyKey: string;
       settlementHash: string;
       settlementRevisionId: string;
@@ -1927,7 +1929,11 @@ export class SubscriptionReturnGovernanceService {
       const settlement = await tx.subscriptionClosureSettlementRevision.findUnique({
         where: { id: input.settlementRevisionId }
       });
-      if (!settlement || settlement.resultHash !== input.settlementHash || settlement.stage !== "FINALIZED") {
+      if (
+        !settlement ||
+        settlement.resultHash !== input.settlementHash ||
+        settlement.stage !== "FINALIZED"
+      ) {
         throw conflict("CLOSURE_RESPONSE_STALE_REVISION", "结算版本或哈希不匹配。");
       }
       const disputeIds = [...new Set(input.disputes.map(({ chargeLineId }) => chargeLineId))];
@@ -2065,8 +2071,7 @@ export class SubscriptionReturnGovernanceService {
       }
       await tx.subscriptionClosureCase.update({
         data: {
-          financialStatus:
-            input.status === "ACCEPTED" ? "AWAITING_CUSTOMER" : "DISPUTED",
+          financialStatus: input.status === "ACCEPTED" ? "AWAITING_CUSTOMER" : "DISPUTED",
           updatedBy: closureCase.updatedBy,
           version: { increment: 1 }
         },
@@ -2115,7 +2120,10 @@ export class SubscriptionReturnGovernanceService {
         !settlement.publishedAt ||
         settlement.resultHash !== input.settlementHash
       ) {
-        throw conflict("CLOSURE_RESPONSE_SETTLEMENT_MISMATCH", "未响应记录必须绑定当前最终结算版本。");
+        throw conflict(
+          "CLOSURE_RESPONSE_SETTLEMENT_MISMATCH",
+          "未响应记录必须绑定当前最终结算版本。"
+        );
       }
       const publication = asRecord(settlement.publicationSnapshot);
       if (
@@ -2140,10 +2148,7 @@ export class SubscriptionReturnGovernanceService {
           `客户确认期尚未结束；服务端截止时间为 ${serverDeadline.toISOString()}。`
         );
       }
-      if (
-        previous?.settlementRevisionId === settlement.id &&
-        previous.status !== "NO_RESPONSE"
-      ) {
+      if (previous?.settlementRevisionId === settlement.id && previous.status !== "NO_RESPONSE") {
         throw conflict("CLOSURE_RESPONSE_ALREADY_RECORDED", "客户已对当前最终方案作出反馈。");
       }
       if (
@@ -2261,13 +2266,19 @@ export class SubscriptionReturnGovernanceService {
       }
       const evidenceIds = [...new Set(input.evidenceIds)].sort();
       if (evidenceIds.length === 0) {
-        throw badRequest("CLOSURE_DISPUTE_DECISION_EVIDENCE_REQUIRED", "争议处理结论必须绑定受管证据。");
+        throw badRequest(
+          "CLOSURE_DISPUTE_DECISION_EVIDENCE_REQUIRED",
+          "争议处理结论必须绑定受管证据。"
+        );
       }
       const links = await tx.vehicleReturnEvidenceLink.findMany({
         where: { closureCaseId, evidenceId: { in: evidenceIds } }
       });
       if (new Set(links.map(({ evidenceId }) => evidenceId)).size !== evidenceIds.length) {
-        throw conflict("CLOSURE_DISPUTE_DECISION_EVIDENCE_MISMATCH", "争议处理证据不属于当前退车闭环。");
+        throw conflict(
+          "CLOSURE_DISPUTE_DECISION_EVIDENCE_MISMATCH",
+          "争议处理证据不属于当前退车闭环。"
+        );
       }
       const created = await tx.subscriptionClosureChargeDisputeDecision.create({
         data: {
@@ -2290,10 +2301,7 @@ export class SubscriptionReturnGovernanceService {
       if (input.decision === "ACCEPTED_BY_PLATFORM") {
         const bill = dispute.chargeLine.bill;
         if (!bill) {
-          throw conflict(
-            "CLOSURE_DISPUTE_BILL_REQUIRED",
-            "被接受的收费争议缺少可调整账单。"
-          );
+          throw conflict("CLOSURE_DISPUTE_BILL_REQUIRED", "被接受的收费争议缺少可调整账单。");
         }
         if (bill.paidAmount > 0n || bill.amount !== bill.remainingAmount) {
           throw conflict(
@@ -2305,11 +2313,7 @@ export class SubscriptionReturnGovernanceService {
           Prisma.sql`SELECT "id" FROM "receivable_bill" WHERE "id" = ${bill.id}::uuid FOR UPDATE`
         );
         const lockedBill = await tx.receivableBill.findUnique({ where: { id: bill.id } });
-        await assertNoActivePaymentOrders(
-          tx,
-          [bill.id],
-          "CLOSURE_DISPUTE_ACTIVE_PAYMENT_ORDER"
-        );
+        await assertNoActivePaymentOrders(tx, [bill.id], "CLOSURE_DISPUTE_ACTIVE_PAYMENT_ORDER");
         if (
           !lockedBill ||
           lockedBill.paidAmount > 0n ||
@@ -2320,10 +2324,7 @@ export class SubscriptionReturnGovernanceService {
             "该争议账单已有收款或余额已变化，必须刷新后按当前事实处理。"
           );
         }
-        if (
-          lockedBill.remainingAmount > 0n &&
-          lockedBill.billStatus !== BillStatus.CANCELLED
-        ) {
+        if (lockedBill.remainingAmount > 0n && lockedBill.billStatus !== BillStatus.CANCELLED) {
           await tx.receivableBill.update({
             data: {
               billStatus: BillStatus.CANCELLED,
@@ -2379,9 +2380,7 @@ export class SubscriptionReturnGovernanceService {
   ) {
     await this.assertThreeStageWriteAllowed(closureCaseId);
     if (
-      ["MANUAL_PAYMENT_CONFIRMED", "WAIVED", "WRITTEN_OFF"].includes(
-        input.disposition
-      ) &&
+      ["MANUAL_PAYMENT_CONFIRMED", "WAIVED", "WRITTEN_OFF"].includes(input.disposition) &&
       this.paymentOrders
     ) {
       await this.paymentOrders.closeActivePaymentOrdersForBills(
@@ -2450,7 +2449,10 @@ export class SubscriptionReturnGovernanceService {
         ["MANUAL_PAYMENT_CONFIRMED", "WAIVED", "WRITTEN_OFF"].includes(input.disposition) &&
         !input.proofFileId
       ) {
-        throw badRequest("CLOSURE_DISPOSITION_PROOF_REQUIRED", "人工核销、减免或核销必须上传证明。");
+        throw badRequest(
+          "CLOSURE_DISPOSITION_PROOF_REQUIRED",
+          "人工核销、减免或核销必须上传证明。"
+        );
       }
       if (input.proofFileId) {
         const proof = await tx.fileObject.findUnique({ where: { id: input.proofFileId } });
@@ -2458,10 +2460,7 @@ export class SubscriptionReturnGovernanceService {
           !proof ||
           !proof.objectKey.startsWith(`subscription-closure/${closureCase.id}/financial-proof/`)
         ) {
-          throw conflict(
-            "CLOSURE_DISPOSITION_PROOF_MISMATCH",
-            "证明文件不属于当前退车闭环。"
-          );
+          throw conflict("CLOSURE_DISPOSITION_PROOF_MISMATCH", "证明文件不属于当前退车闭环。");
         }
       }
       if (
@@ -2506,9 +2505,7 @@ export class SubscriptionReturnGovernanceService {
         return replay;
       }
       if (
-        ["COMPLETED", "TERMINATED", "CANCELLED", "REJECTED"].includes(
-          closureCase.status
-        ) &&
+        ["COMPLETED", "TERMINATED", "CANCELLED", "REJECTED"].includes(closureCase.status) &&
         ["OPEN", "DISPUTED", "COLLECTION_PENDING"].includes(input.disposition)
       ) {
         throw conflict(
@@ -2525,11 +2522,7 @@ export class SubscriptionReturnGovernanceService {
           "该应收已进入法催，通用归口不得覆盖；回款或结案请从法催案件处理。"
         );
       }
-      if (
-        ["MANUAL_PAYMENT_CONFIRMED", "WAIVED", "WRITTEN_OFF"].includes(
-          input.disposition
-        )
-      ) {
+      if (["MANUAL_PAYMENT_CONFIRMED", "WAIVED", "WRITTEN_OFF"].includes(input.disposition)) {
         await assertNoActivePaymentOrders(
           tx,
           [bill.id],
@@ -2594,9 +2587,7 @@ export class SubscriptionReturnGovernanceService {
         );
       }
       if (
-        ["MANUAL_PAYMENT_CONFIRMED", "WAIVED", "WRITTEN_OFF"].includes(
-          input.disposition
-        ) &&
+        ["MANUAL_PAYMENT_CONFIRMED", "WAIVED", "WRITTEN_OFF"].includes(input.disposition) &&
         disposedAmount <= 0n
       ) {
         throw conflict("CLOSURE_DISPOSITION_ALREADY_RESOLVED", "该账单已无可处置余额。");
@@ -2755,191 +2746,189 @@ export class SubscriptionReturnGovernanceService {
       );
     }
     await this.evidencePackages.verifyExport(closureCaseId, evidencePackage.id);
-    const legalCase = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT "id" FROM "subscription_closure_case" WHERE "id" = ${closureCaseId}::uuid FOR UPDATE`
-      );
-      await tx.$queryRaw(
-        Prisma.sql`SELECT "id" FROM "receivable_bill" WHERE "id" = ${input.billId}::uuid FOR UPDATE`
-      );
-      if (
-        (await this.evidencePackages!.currentManifestHashInTransaction(
-          tx,
-          closureCaseId
-        )) !== input.evidencePackageHash
-      ) {
-        throw conflict(
-          "CLOSURE_LEGAL_PACKAGE_STALE",
-          "闭环事实已变化，请重新导出证据包后转法催。"
+    const legalCase = await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM "subscription_closure_case" WHERE "id" = ${closureCaseId}::uuid FOR UPDATE`
         );
-      }
-      const [closureCase, bill] = await Promise.all([
-        tx.subscriptionClosureCase.findUnique({ where: { id: closureCaseId } }),
-        tx.receivableBill.findUnique({ where: { id: input.billId } })
-      ]);
-      if (!closureCase || !bill || bill.orderId !== closureCase.orderId || bill.remainingAmount <= 0n) {
-        throw conflict("CLOSURE_LEGAL_BILL_MISMATCH", "仅当前订单未清应收可转法催。");
-      }
-      const packageManifest = asRecord(evidencePackage.manifestSnapshot);
-      const packageCase = asRecord(packageManifest.case);
-      const packageBills = Array.isArray(packageManifest.receivableBills)
-        ? packageManifest.receivableBills.map(asRecord)
-        : [];
-      const packageSettlements = Array.isArray(packageManifest.settlementRevisions)
-        ? packageManifest.settlementRevisions.map(asRecord)
-        : [];
-      const packageResponses = Array.isArray(packageManifest.customerResponses)
-        ? packageManifest.customerResponses.map(asRecord)
-        : [];
-      const packageDispositions = Array.isArray(packageManifest.dispositions)
-        ? packageManifest.dispositions.map(asRecord)
-        : [];
-      const packageDisputes = Array.isArray(packageManifest.disputes)
-        ? packageManifest.disputes.map(asRecord)
-        : [];
-      const [currentSettlement, currentResponse, currentDisposition, billDisputes] =
-        await Promise.all([
-          closureCase.currentSettlementRevisionId
-            ? tx.subscriptionClosureSettlementRevision.findUnique({
-                where: { id: closureCase.currentSettlementRevisionId }
-              })
-            : Promise.resolve(null),
-          latestCustomerResponse(tx, closureCase.id),
-          latestDisposition(tx, closureCase.id, bill.id),
-          tx.subscriptionClosureChargeDispute.findMany({
-            include: { decision: true },
-            where: { chargeLine: { billId: bill.id }, closureCaseId: closureCase.id }
-          })
-        ]);
-      assertLegalCollectionTransferReady({
-        disposition: currentDisposition,
-        hasBlockingDispute: hasBlockingLegalCollectionDispute(billDisputes),
-        response: currentResponse,
-        settlement: currentSettlement,
-        transferOwnerId,
-        transferOwnerType
-      });
-      const packageBill = packageBills.find((item) => item.id === bill.id);
-      const packageSettlement = packageSettlements.find(
-        (item) => item.id === currentSettlement!.id
-      );
-      if (
-        packageCase.id !== closureCase.id ||
-        Number(packageCase.version) !== closureCase.version ||
-        packageCase.currentChecklistRevisionId !== closureCase.currentChecklistRevisionId ||
-        packageCase.currentDeltaRevisionId !== closureCase.currentDeltaRevisionId ||
-        packageCase.currentSettlementRevisionId !== closureCase.currentSettlementRevisionId ||
-        !packageBill ||
-        String(packageBill.remainingAmount) !== String(bill.remainingAmount) ||
-        !packageSettlement ||
-        packageSettlement.stage !== "FINALIZED" ||
-        packageSettlement.resultHash !== currentSettlement!.resultHash ||
-        !packageResponses.some((item) => item.id === currentResponse!.id) ||
-        !packageDispositions.some(
-          (item) =>
-            item.id === currentDisposition!.id &&
-            item.disposition === "COLLECTION_PENDING" &&
-            item.ownerId === currentDisposition!.ownerId &&
-            item.ownerType === currentDisposition!.ownerType
-        ) ||
-        billDisputes.some(
-          (dispute) => !packageDisputes.some((item) => item.id === dispute.id)
-        )
-      ) {
-        throw conflict(
-          "CLOSURE_LEGAL_PACKAGE_STALE",
-          "The evidence package does not contain the current settlement, response and bill balance; export a new package."
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM "receivable_bill" WHERE "id" = ${input.billId}::uuid FOR UPDATE`
         );
-      }
-      if (this.paymentOrders) {
-        await this.paymentOrders.closeActivePaymentOrdersForBills(
-          [bill.id],
-          "closure-legal-transfer"
-        );
-      }
-      await assertNoActivePaymentOrders(
-        tx,
-        [bill.id],
-        "CLOSURE_LEGAL_ACTIVE_PAYMENT_ORDER"
-      );
-      const existing = await tx.subscriptionClosureLegalCollectionCase.findUnique({
-        include: { events: { orderBy: [{ occurredAt: "asc" }, { id: "asc" }] } },
-        where: { closureCaseId_billId: { billId: bill.id, closureCaseId } }
-      });
-      if (existing) {
-        const transferred = existing.events.find(
-          ({ eventType }) => eventType === "TRANSFERRED"
-        );
-        const transferSnapshot = asRecord(transferred?.eventSnapshot);
         if (
-          existing.evidencePackageHash !== input.evidencePackageHash ||
-          existing.externalReference !== input.externalReference ||
-          existing.openedAt.getTime() !== input.openedAt.getTime() ||
-          existing.ownerId !== transferOwnerId ||
-          existing.ownerType !== transferOwnerType ||
-          transferSnapshot.idempotencyKey !== input.idempotencyKey
+          (await this.evidencePackages!.currentManifestHashInTransaction(tx, closureCaseId)) !==
+          input.evidencePackageHash
         ) {
-          throw conflict("CLOSURE_LEGAL_IDEMPOTENCY_CONFLICT", "该应收已使用其他证据包转法催。");
+          throw conflict(
+            "CLOSURE_LEGAL_PACKAGE_STALE",
+            "闭环事实已变化，请重新导出证据包后转法催。"
+          );
         }
-        return existing;
-      }
-      const created = await tx.subscriptionClosureLegalCollectionCase.create({
-        data: {
-          billId: bill.id,
-          closureCaseId,
-          createdBy: actorId,
-          evidencePackageHash: input.evidencePackageHash,
-          externalReference: input.externalReference,
-          openedAt: input.openedAt,
-          ownerId: transferOwnerId,
-          ownerType: transferOwnerType,
-          transferredAmountCents: bill.remainingAmount,
-          events: {
-            create: {
-              eventSnapshot: {
-                collectionDispositionId: currentDisposition!.id,
-                evidencePackageHash: input.evidencePackageHash,
-                idempotencyKey: input.idempotencyKey,
-                ownerId: transferOwnerId,
-                ownerType: transferOwnerType
-              },
-              eventType: "TRANSFERRED",
-              occurredAt: input.openedAt,
-              recordedBy: actorId,
-              sourceId: closureCase.id,
-              sourceKey: `legal-transfer:${input.idempotencyKey}`,
-              sourceType: "SUBSCRIPTION_CLOSURE_LEGAL"
+        const [closureCase, bill] = await Promise.all([
+          tx.subscriptionClosureCase.findUnique({ where: { id: closureCaseId } }),
+          tx.receivableBill.findUnique({ where: { id: input.billId } })
+        ]);
+        if (
+          !closureCase ||
+          !bill ||
+          bill.orderId !== closureCase.orderId ||
+          bill.remainingAmount <= 0n
+        ) {
+          throw conflict("CLOSURE_LEGAL_BILL_MISMATCH", "仅当前订单未清应收可转法催。");
+        }
+        const packageManifest = asRecord(evidencePackage.manifestSnapshot);
+        const packageCase = asRecord(packageManifest.case);
+        const packageBills = Array.isArray(packageManifest.receivableBills)
+          ? packageManifest.receivableBills.map(asRecord)
+          : [];
+        const packageSettlements = Array.isArray(packageManifest.settlementRevisions)
+          ? packageManifest.settlementRevisions.map(asRecord)
+          : [];
+        const packageResponses = Array.isArray(packageManifest.customerResponses)
+          ? packageManifest.customerResponses.map(asRecord)
+          : [];
+        const packageDispositions = Array.isArray(packageManifest.dispositions)
+          ? packageManifest.dispositions.map(asRecord)
+          : [];
+        const packageDisputes = Array.isArray(packageManifest.disputes)
+          ? packageManifest.disputes.map(asRecord)
+          : [];
+        const [currentSettlement, currentResponse, currentDisposition, billDisputes] =
+          await Promise.all([
+            closureCase.currentSettlementRevisionId
+              ? tx.subscriptionClosureSettlementRevision.findUnique({
+                  where: { id: closureCase.currentSettlementRevisionId }
+                })
+              : Promise.resolve(null),
+            latestCustomerResponse(tx, closureCase.id),
+            latestDisposition(tx, closureCase.id, bill.id),
+            tx.subscriptionClosureChargeDispute.findMany({
+              include: { decision: true },
+              where: { chargeLine: { billId: bill.id }, closureCaseId: closureCase.id }
+            })
+          ]);
+        assertLegalCollectionTransferReady({
+          disposition: currentDisposition,
+          hasBlockingDispute: hasBlockingLegalCollectionDispute(billDisputes),
+          response: currentResponse,
+          settlement: currentSettlement,
+          transferOwnerId,
+          transferOwnerType
+        });
+        const packageBill = packageBills.find((item) => item.id === bill.id);
+        const packageSettlement = packageSettlements.find(
+          (item) => item.id === currentSettlement!.id
+        );
+        if (
+          packageCase.id !== closureCase.id ||
+          Number(packageCase.version) !== closureCase.version ||
+          packageCase.currentChecklistRevisionId !== closureCase.currentChecklistRevisionId ||
+          packageCase.currentDeltaRevisionId !== closureCase.currentDeltaRevisionId ||
+          packageCase.currentSettlementRevisionId !== closureCase.currentSettlementRevisionId ||
+          !packageBill ||
+          String(packageBill.remainingAmount) !== String(bill.remainingAmount) ||
+          !packageSettlement ||
+          packageSettlement.stage !== "FINALIZED" ||
+          packageSettlement.resultHash !== currentSettlement!.resultHash ||
+          !packageResponses.some((item) => item.id === currentResponse!.id) ||
+          !packageDispositions.some(
+            (item) =>
+              item.id === currentDisposition!.id &&
+              item.disposition === "COLLECTION_PENDING" &&
+              item.ownerId === currentDisposition!.ownerId &&
+              item.ownerType === currentDisposition!.ownerType
+          ) ||
+          billDisputes.some((dispute) => !packageDisputes.some((item) => item.id === dispute.id))
+        ) {
+          throw conflict(
+            "CLOSURE_LEGAL_PACKAGE_STALE",
+            "The evidence package does not contain the current settlement, response and bill balance; export a new package."
+          );
+        }
+        if (this.paymentOrders) {
+          await this.paymentOrders.closeActivePaymentOrdersForBills(
+            [bill.id],
+            "closure-legal-transfer"
+          );
+        }
+        await assertNoActivePaymentOrders(tx, [bill.id], "CLOSURE_LEGAL_ACTIVE_PAYMENT_ORDER");
+        const existing = await tx.subscriptionClosureLegalCollectionCase.findUnique({
+          include: { events: { orderBy: [{ occurredAt: "asc" }, { id: "asc" }] } },
+          where: { closureCaseId_billId: { billId: bill.id, closureCaseId } }
+        });
+        if (existing) {
+          const transferred = existing.events.find(({ eventType }) => eventType === "TRANSFERRED");
+          const transferSnapshot = asRecord(transferred?.eventSnapshot);
+          if (
+            existing.evidencePackageHash !== input.evidencePackageHash ||
+            existing.externalReference !== input.externalReference ||
+            existing.openedAt.getTime() !== input.openedAt.getTime() ||
+            existing.ownerId !== transferOwnerId ||
+            existing.ownerType !== transferOwnerType ||
+            transferSnapshot.idempotencyKey !== input.idempotencyKey
+          ) {
+            throw conflict("CLOSURE_LEGAL_IDEMPOTENCY_CONFLICT", "该应收已使用其他证据包转法催。");
+          }
+          return existing;
+        }
+        const created = await tx.subscriptionClosureLegalCollectionCase.create({
+          data: {
+            billId: bill.id,
+            closureCaseId,
+            createdBy: actorId,
+            evidencePackageHash: input.evidencePackageHash,
+            externalReference: input.externalReference,
+            openedAt: input.openedAt,
+            ownerId: transferOwnerId,
+            ownerType: transferOwnerType,
+            transferredAmountCents: bill.remainingAmount,
+            events: {
+              create: {
+                eventSnapshot: {
+                  collectionDispositionId: currentDisposition!.id,
+                  evidencePackageHash: input.evidencePackageHash,
+                  idempotencyKey: input.idempotencyKey,
+                  ownerId: transferOwnerId,
+                  ownerType: transferOwnerType
+                },
+                eventType: "TRANSFERRED",
+                occurredAt: input.openedAt,
+                recordedBy: actorId,
+                sourceId: closureCase.id,
+                sourceKey: `legal-transfer:${input.idempotencyKey}`,
+                sourceType: "SUBSCRIPTION_CLOSURE_LEGAL"
+              }
             }
           }
-        }
-      });
-      const current = await latestDisposition(tx, closureCase.id, bill.id);
-      await tx.subscriptionClosureReceivableDisposition.create({
-        data: {
-          amountCents: bill.remainingAmount,
-          billId: bill.id,
-          closureCaseId,
-          createdBy: actorId,
-          detailSnapshot: { evidencePackageHash: input.evidencePackageHash },
-          disposition: "LEGAL_COLLECTION",
-          ownerId: transferOwnerId,
-          ownerType: transferOwnerType,
-          sourceId: closureCase.id,
-          sourceKey: `legal:${input.idempotencyKey}`,
-          sourceType: "SUBSCRIPTION_CLOSURE_FINANCIAL",
-          supersedesDispositionId: current?.id ?? null
-        }
-      });
-      await tx.subscriptionClosureCase.update({
-        data: {
-          financialStatus: "LEGAL_COLLECTION",
-          updatedBy: actorId,
-          version: { increment: 1 }
-        },
-        where: { id: closureCase.id }
-      });
-      return created;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+        });
+        const current = await latestDisposition(tx, closureCase.id, bill.id);
+        await tx.subscriptionClosureReceivableDisposition.create({
+          data: {
+            amountCents: bill.remainingAmount,
+            billId: bill.id,
+            closureCaseId,
+            createdBy: actorId,
+            detailSnapshot: { evidencePackageHash: input.evidencePackageHash },
+            disposition: "LEGAL_COLLECTION",
+            ownerId: transferOwnerId,
+            ownerType: transferOwnerType,
+            sourceId: closureCase.id,
+            sourceKey: `legal:${input.idempotencyKey}`,
+            sourceType: "SUBSCRIPTION_CLOSURE_FINANCIAL",
+            supersedesDispositionId: current?.id ?? null
+          }
+        });
+        await tx.subscriptionClosureCase.update({
+          data: {
+            financialStatus: "LEGAL_COLLECTION",
+            updatedBy: actorId,
+            version: { increment: 1 }
+          },
+          where: { id: closureCase.id }
+        });
+        return created;
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
+    );
     return legalCase;
   }
 
@@ -3102,8 +3091,7 @@ export class SubscriptionReturnGovernanceService {
         });
         const billUpdate = await tx.receivableBill.updateMany({
           data: {
-            billStatus:
-              remainingAmount === 0n ? BillStatus.PAID : BillStatus.PARTIALLY_PAID,
+            billStatus: remainingAmount === 0n ? BillStatus.PAID : BillStatus.PARTIALLY_PAID,
             paidAmount: { increment: receivedAmount },
             paidAt: remainingAmount === 0n ? input.occurredAt : null,
             remainingAmount,
@@ -3117,11 +3105,7 @@ export class SubscriptionReturnGovernanceService {
             "法催回款入账时应收余额已变化，请刷新案件后重试。"
           );
         }
-        const currentDisposition = await latestDisposition(
-          tx,
-          closureCaseId,
-          legalCase.bill.id
-        );
+        const currentDisposition = await latestDisposition(tx, closureCaseId, legalCase.bill.id);
         await tx.subscriptionClosureReceivableDisposition.create({
           data: {
             amountCents: receivedAmount,
@@ -3290,7 +3274,8 @@ export class SubscriptionReturnGovernanceService {
       const financial = await deriveFinancialFromDatabase(tx, closureCase.id, closureCase.orderId);
       if (
         !mayCompleteOperations(financial, {
-          inventoryReleased: vehicle?.status === VehicleStatus.AVAILABLE && activeRestrictions === 0,
+          inventoryReleased:
+            vehicle?.status === VehicleStatus.AVAILABLE && activeRestrictions === 0,
           physicalReceiptComplete: true
         })
       ) {
@@ -3304,7 +3289,9 @@ export class SubscriptionReturnGovernanceService {
           ? SubscriptionClosureStatus.TERMINATED
           : SubscriptionClosureStatus.COMPLETED;
       const orderStatus =
-        closureCase.finalDisposition === "TERMINATE" ? OrderStatus.TERMINATED : OrderStatus.COMPLETED;
+        closureCase.finalDisposition === "TERMINATE"
+          ? OrderStatus.TERMINATED
+          : OrderStatus.COMPLETED;
       const contractStatus =
         closureCase.finalDisposition === "TERMINATE"
           ? ContractStatus.TERMINATED
@@ -3330,7 +3317,12 @@ export class SubscriptionReturnGovernanceService {
           where: { id: closureCase.id }
         })
       ]);
-      return { closureCaseId, financialStatus: financial.financialStatus, replayed: false, status: targetStatus };
+      return {
+        closureCaseId,
+        financialStatus: financial.financialStatus,
+        replayed: false,
+        status: targetStatus
+      };
     });
   }
 
@@ -3395,16 +3387,18 @@ export class SubscriptionReturnGovernanceService {
   }
 }
 
-function deliveryConditionFacts(workOrder: Readonly<{
-  accessoryItems: Prisma.JsonValue | null;
-  handoverFactSnapshot: Prisma.JsonValue | null;
-  handoverMileageKm: number | null;
-  keyState: string | null;
-  primaryKeyCount: number | null;
-  registrationDocumentState: string | null;
-  spareKeyCount: number | null;
-  vehicleConditionConfirmed: boolean | null;
-}>) {
+function deliveryConditionFacts(
+  workOrder: Readonly<{
+    accessoryItems: Prisma.JsonValue | null;
+    handoverFactSnapshot: Prisma.JsonValue | null;
+    handoverMileageKm: number | null;
+    keyState: string | null;
+    primaryKeyCount: number | null;
+    registrationDocumentState: string | null;
+    spareKeyCount: number | null;
+    vehicleConditionConfirmed: boolean | null;
+  }>
+) {
   const snapshot = asRecord(workOrder.handoverFactSnapshot);
   const rawAccessories = Array.isArray(snapshot.accessoryItems)
     ? snapshot.accessoryItems
@@ -3416,9 +3410,7 @@ function deliveryConditionFacts(workOrder: Readonly<{
     `${String(item.code ?? "")} ${String(item.name ?? "")}`.match(/CHARG|充电/i)
   );
   const accessoryState = conditionState(accessories.map((item) => String(item.state ?? "")));
-  const chargingState = conditionState(
-    chargingAccessories.map((item) => String(item.state ?? ""))
-  );
+  const chargingState = conditionState(chargingAccessories.map((item) => String(item.state ?? "")));
   const primaryKeyCount = integerFact(snapshot.primaryKeyCount, workOrder.primaryKeyCount);
   const spareKeyCount = integerFact(snapshot.spareKeyCount, workOrder.spareKeyCount);
   const keyState = String(snapshot.keyState ?? workOrder.keyState ?? "MISSING");
@@ -3447,7 +3439,12 @@ function deliveryConditionFacts(workOrder: Readonly<{
     {
       itemCode: "REGISTRATION_CERTIFICATE",
       quantity: registrationState === "HANDED_OVER" ? 1 : 0,
-      state: registrationState === "DAMAGED" ? "DAMAGED" : registrationState === "HANDED_OVER" ? "NORMAL" : "MISSING"
+      state:
+        registrationState === "DAMAGED"
+          ? "DAMAGED"
+          : registrationState === "HANDED_OVER"
+            ? "NORMAL"
+            : "MISSING"
     },
     {
       itemCode: "VEHICLE_EXTERIOR",
@@ -3465,7 +3462,7 @@ function deliveryConditionFacts(workOrder: Readonly<{
 function integerFact(preferred: unknown, fallback: number | null) {
   return typeof preferred === "number" && Number.isSafeInteger(preferred) && preferred >= 0
     ? preferred
-    : fallback ?? 0;
+    : (fallback ?? 0);
 }
 
 function sumAccessoryQuantity(items: readonly Record<string, unknown>[]) {
@@ -3715,10 +3712,7 @@ async function requireCurrentPricingApproval(
     !line.manualBasis ||
     !line.manualUnitPriceCents
   ) {
-    throw conflict(
-      "CLOSURE_PRICING_APPROVAL_REQUIRED",
-      "人工定价正式出账前必须完成独立例外审批。"
-    );
+    throw conflict("CLOSURE_PRICING_APPROVAL_REQUIRED", "人工定价正式出账前必须完成独立例外审批。");
   }
   const authority = await resolveClosureApprovalAuthority(tx, closureCaseId, {
     approvalType: "PRICING_OVERRIDE",
@@ -3815,7 +3809,10 @@ function validateEvidenceFile(file: ReturnEvidenceUpload | undefined) {
   }
   const detected = detectMimeType(file.buffer);
   if (!detected || detected !== file.mimetype) {
-    throw badRequest("RETURN_EVIDENCE_FILE_INVALID", "仅支持真实的 JPEG、PNG、WebP、PDF 或 MP4 文件。");
+    throw badRequest(
+      "RETURN_EVIDENCE_FILE_INVALID",
+      "仅支持真实的 JPEG、PNG、WebP、PDF 或 MP4 文件。"
+    );
   }
   return detected;
 }
@@ -3825,7 +3822,10 @@ function detectMimeType(buffer: Buffer) {
     return "image/jpeg";
   if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
     return "image/png";
-  if (buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP")
+  if (
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP"
+  )
     return "image/webp";
   if (buffer.subarray(0, 5).toString("ascii") === "%PDF-") return "application/pdf";
   if (buffer.length >= 12 && buffer.subarray(4, 8).toString("ascii") === "ftyp") return "video/mp4";
@@ -3875,7 +3875,9 @@ async function latestCustomerResponse(tx: Prisma.TransactionClient, closureCaseI
     where: { closureCaseId }
   });
   const superseded = new Set(
-    responses.map(({ supersedesResponseId }) => supersedesResponseId).filter((id): id is string => Boolean(id))
+    responses
+      .map(({ supersedesResponseId }) => supersedesResponseId)
+      .filter((id): id is string => Boolean(id))
   );
   return responses.find(({ id }) => !superseded.has(id)) ?? null;
 }
@@ -3919,10 +3921,9 @@ async function deriveFinancialFromDatabase(
       const current = currentByBill.get(bill.id);
       return {
         billId: bill.id,
-        disposition:
-          (current?.disposition ?? (bill.remainingAmount === 0n ? "PAID" : "OPEN")) as
-            ClosureReceivableFact["disposition"],
-        ownerId: current ? current.ownerId ?? current.ownerType : null,
+        disposition: (current?.disposition ??
+          (bill.remainingAmount === 0n ? "PAID" : "OPEN")) as ClosureReceivableFact["disposition"],
+        ownerId: current ? (current.ownerId ?? current.ownerType) : null,
         paidAmountCents: bill.paidAmount,
         remainingAmountCents: bill.remainingAmount
       };
@@ -3992,32 +3993,31 @@ function badRequest(code: string, message: string) {
   return new BadRequestException({ code, message });
 }
 
-export function assertLegalCollectionTransferReady(input: Readonly<{
-  disposition: Readonly<{
-    disposition: string;
-    id: string;
-    ownerId: string | null;
-    ownerType: string;
-  }> | null;
-  hasBlockingDispute: boolean;
-  response: Readonly<{
-    settlementHash: string;
-    settlementRevisionId: string;
-    status: string;
-  }> | null;
-  settlement: Readonly<{
-    id: string;
-    resultHash: string;
-    stage: string;
-  }> | null;
-  transferOwnerId: string;
-  transferOwnerType: string;
-}>) {
+export function assertLegalCollectionTransferReady(
+  input: Readonly<{
+    disposition: Readonly<{
+      disposition: string;
+      id: string;
+      ownerId: string | null;
+      ownerType: string;
+    }> | null;
+    hasBlockingDispute: boolean;
+    response: Readonly<{
+      settlementHash: string;
+      settlementRevisionId: string;
+      status: string;
+    }> | null;
+    settlement: Readonly<{
+      id: string;
+      resultHash: string;
+      stage: string;
+    }> | null;
+    transferOwnerId: string;
+    transferOwnerType: string;
+  }>
+) {
   if (!input.settlement || input.settlement.stage !== "FINALIZED") {
-    throw conflict(
-      "CLOSURE_LEGAL_FINAL_SETTLEMENT_REQUIRED",
-      "仅已发布的最终结算可转法催。"
-    );
+    throw conflict("CLOSURE_LEGAL_FINAL_SETTLEMENT_REQUIRED", "仅已发布的最终结算可转法催。");
   }
   if (
     !input.response ||

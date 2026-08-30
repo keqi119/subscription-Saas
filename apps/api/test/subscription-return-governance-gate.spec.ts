@@ -3,9 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { SubscriptionReturnGovernanceService } from "../src/subscription-closure/subscription-return-governance.service";
 
 function serviceFixture(input: {
-  enabled: boolean;
+  configValue?: string;
   evidenceLinks?: number;
   checklistRevisionId?: string | null;
+  missingConfigService?: boolean;
 }) {
   const count = vi.fn().mockResolvedValue(0);
   const prisma = {
@@ -34,26 +35,41 @@ function serviceFixture(input: {
     undefined,
     undefined,
     undefined,
-    { get: vi.fn().mockReturnValue(input.enabled ? "true" : "false") } as never
+    input.missingConfigService
+      ? undefined
+      : ({ get: vi.fn().mockReturnValue(input.configValue) } as never)
   );
   return { prisma, service };
 }
 
 describe("subscription return three-stage write gate", () => {
   it("blocks a case with no governed facts while the feature is disabled", async () => {
-    const { service } = serviceFixture({ enabled: false });
+    const { service } = serviceFixture({ configValue: "false" });
+    await expect(service.assertThreeStageWriteAllowed("closure-1")).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "SUBSCRIPTION_RETURN_THREE_STAGE_DISABLED" })
+    });
+  });
+
+  it.each([
+    ["a missing ConfigService", { missingConfigService: true }],
+    ["an undefined config value", {}],
+    ["an empty config value", { configValue: "" }],
+    ["a mixed-case config value", { configValue: "True" }],
+    ["a whitespace-padded config value", { configValue: " true" }]
+  ])("blocks a new governed case with %s", async (_name, fixture) => {
+    const { service } = serviceFixture(fixture);
     await expect(service.assertThreeStageWriteAllowed("closure-1")).rejects.toMatchObject({
       response: expect.objectContaining({ code: "SUBSCRIPTION_RETURN_THREE_STAGE_DISABLED" })
     });
   });
 
   it("lets an existing governed case continue while the feature is disabled", async () => {
-    const { service } = serviceFixture({ enabled: false, evidenceLinks: 1 });
+    const { service } = serviceFixture({ configValue: "false", evidenceLinks: 1 });
     await expect(service.assertThreeStageWriteAllowed("closure-1")).resolves.toBeUndefined();
   });
 
   it("does not query case facts while the feature is enabled", async () => {
-    const { prisma, service } = serviceFixture({ enabled: true });
+    const { prisma, service } = serviceFixture({ configValue: "true" });
     await expect(service.assertThreeStageWriteAllowed("closure-1")).resolves.toBeUndefined();
     expect(prisma.subscriptionClosureCase.findUnique).not.toHaveBeenCalled();
   });

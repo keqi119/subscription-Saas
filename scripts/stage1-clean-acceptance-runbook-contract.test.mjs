@@ -209,7 +209,10 @@ function validateExecutableContracts(contents) {
     'publish_private_evidence "$EVIDENCE_DIR/billing-completed-cycles.json"',
     "BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS=180",
     "BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS=190",
-    "timeout --signal=TERM --kill-after=5s"
+    "timeout --signal=TERM --kill-after=5s",
+    'SUBSCRIPTION_CHANGE_WORKER_ENABLED: "true"',
+    'SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "true"',
+    "if (Object.entries(expected).some(([key, value]) => process.env[key] !== value)) process.exit(1);"
   ]);
   assert.match(
     cutover,
@@ -838,7 +841,8 @@ test("requires two independent, exact human approval stops", async () => {
     "--apply --vehicle-id",
     "--replay --vehicle-id",
     "stage1-clean-acceptance-target-validator.mjs",
-    "STOP: CANDIDATE_API_TIMER_ISOLATION_UNPROVEN",
+    "SUBSCRIPTION_CHANGE_WORKER_ENABLED=false",
+    "SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false",
     markers[1],
     'mv -f -- "$ENV_TEMP" "$ENV_FILE"'
   ]);
@@ -935,11 +939,12 @@ test("binds approved source and target with the real env transformer before appr
   );
 });
 
-test("requires replay zero-write evidence before candidate and switch", async () => {
+test("requires replay zero-write evidence before candidate configuration and switch", async () => {
   const contents = await readRunbook();
   assertStrictOrder(contents, [
     ".auditCreated == 0 and .inserted == 0 and .updated == 0 and .deleted == 0",
-    "STOP: CANDIDATE_API_TIMER_ISOLATION_UNPROVEN",
+    "SUBSCRIPTION_CHANGE_WORKER_ENABLED=false",
+    "SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false",
     "STOP FOR HUMAN APPROVAL: API_DATABASE_SWITCH_APPROVAL"
   ]);
 });
@@ -1427,7 +1432,7 @@ test("requires discovery, explicit UUID, approvals, apply/replay, and target val
   ]);
 });
 
-test("fails closed on candidate worker isolation and forbids business writes", async () => {
+test("pins candidate worker isolation and forbids business writes", async () => {
   const contents = await readRunbook();
   assertContainsAll(contents, [
     "127.0.0.1",
@@ -1438,11 +1443,13 @@ test("fails closed on candidate worker isolation and forbids business writes", a
     "FIELD_VIDEO_UPLOAD_WORKER_ENABLED=false",
     "STAGE2_HANDOVER_WORKER_ENABLED=false",
     "MILEAGE_REVIEW_WORKER_ENABLED=false",
-    "SubscriptionChangeWorker",
+    "SUBSCRIPTION_CHANGE_WORKER_ENABLED=false",
+    "SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false",
     "apps/api/src/subscription-change/subscription-change.worker.ts",
-    "apps/api/src/subscription-change/subscription-change.module.ts",
-    "CANDIDATE_API_TIMER_ISOLATION_UNPROVEN",
-    "不得启动 candidate API",
+    "workerEnabled()",
+    "subscription-change-worker.spec.ts",
+    "false 或缺失值都不会启动轮询",
+    "只有精确字符串 `true` 才允许新的三阶段 case",
     "不提交进件、不锁车、不签合同、不触发短信、电子签或支付"
   ]);
 });
@@ -1515,7 +1522,11 @@ test("designated fences reject transformer, gate, trap, identity, and browser mu
       "completedAt <= challengeCreatedAt + timeoutSeconds * 1000",
       "completedAt >= challengeCreatedAt"
     ),
-    contents.replace("^[1-9][0-9]{0,2}$", "^[1-9][0-9]*$")
+    contents.replace("^[1-9][0-9]{0,2}$", "^[1-9][0-9]*$"),
+    contents.replace(
+      'SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "true"',
+      'SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "false"'
+    )
   ];
   for (const mutation of mutations) assert.throws(() => validateExecutableContracts(mutation));
   assert.ok(cutover.length > 0 && evidenceHelpers.length > 0 && transformer.length > 0);

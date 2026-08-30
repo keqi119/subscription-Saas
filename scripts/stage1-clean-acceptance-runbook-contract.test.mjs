@@ -120,10 +120,19 @@ function validateExecutableContracts(contents) {
     "fact.console.warnCount === 0",
     "fact.visualReview.admin === true",
     "fact.visualReview.portal === true",
+    'if ! IFS= read -r -s -t "$BROWSER_ACCEPTANCE_TIMEOUT_SECONDS" BROWSER_ACCEPTANCE_PAYLOAD; then',
+    '"$BROWSER_ACCEPTANCE_RECEIVED_AT_UTC" "$BROWSER_ACCEPTANCE_TIMEOUT_SECONDS"; then',
+    "const timeoutSeconds = Number(timeoutText);",
+    "Number.isInteger(timeoutSeconds) && timeoutSeconds >= 1 && timeoutSeconds <= 900",
     "BROWSER_ACCEPTANCE_TIMEOUT",
     "BROWSER_ACCEPTANCE_REJECTED",
     "BROWSER_ACCEPTANCE_FACT_INVALID"
   ]);
+  assert.match(
+    cutover,
+    /^if ! \[\[ "\$BROWSER_ACCEPTANCE_TIMEOUT_RAW" =~ \^\[1-9\]\[0-9\]\{0,2\}\$ \]\]; then$/m
+  );
+  assert.doesNotMatch(cutover, /\bread\b[^\n]*BROWSER_ACCEPTANCE_TIMEOUT_RAW/);
   assertStrictOrder(cutover.slice(trapIndex), [
     "SWITCH_ACTIVE=1",
     'mv -f -- "$ENV_TEMP" "$ENV_FILE"',
@@ -131,7 +140,10 @@ function validateExecutableContracts(contents) {
     "revalidate_switched_api_identity",
     "write_browser_acceptance_challenge",
     "post_switch_database_gates",
-    "BROWSER_ACCEPTANCE_TIMEOUT_SECONDS",
+    "BROWSER_ACCEPTANCE_TIMEOUT_RAW",
+    'if ! [[ "$BROWSER_ACCEPTANCE_TIMEOUT_RAW" =~ ^[1-9][0-9]{0,2}$ ]]; then',
+    'BROWSER_ACCEPTANCE_TIMEOUT_SECONDS="$((10#$BROWSER_ACCEPTANCE_TIMEOUT_RAW))"',
+    "BROWSER_ACCEPTANCE_TIMEOUT_SECONDS > 900",
     "BROWSER_ACCEPTANCE_PAYLOAD",
     "BROWSER_ACCEPTANCE_RECEIVED_AT_UTC",
     'publish_private_evidence "$BROWSER_FACT_PATH"',
@@ -430,8 +442,15 @@ STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME=fake-host
 BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=1
 test "$FAILURE_SCENARIO" = timeout_901 && BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=901
 test "$FAILURE_SCENARIO" = timeout_9999 && BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=9999
+test "$FAILURE_SCENARIO" = timeout_uint64_plus_one && BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=18446744073709551617
+test "$FAILURE_SCENARIO" = timeout_uint64_plus_900 && BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=18446744073709552516
+test "$FAILURE_SCENARIO" = timeout_arbitrary_length && BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999
 test "$FAILURE_SCENARIO" = browser_preseed && printf '%s\\n' stale >"$EVIDENCE_DIR/browser-acceptance.fact.json"
 test "$FAILURE_SCENARIO" = challenge_preseed && printf '%s\\n' stale >"$EVIDENCE_DIR/browser-acceptance.challenge.json"
+read() {
+  printf '%s\\n' browser-read-invoked >>"$TRACE_FILE"
+  builtin read "$@"
+}
 ${evidenceHelpers}
 ${cutover}
 `;
@@ -814,7 +833,8 @@ test("designated fences reject transformer, gate, trap, identity, and browser mu
     contents.replace(
       "completedAt <= challengeCreatedAt + timeoutSeconds * 1000",
       "completedAt >= challengeCreatedAt"
-    )
+    ),
+    contents.replace("^[1-9][0-9]{0,2}$", "^[1-9][0-9]*$")
   ];
   for (const mutation of mutations) assert.throws(() => validateExecutableContracts(mutation));
   assert.ok(cutover.length > 0 && evidenceHelpers.length > 0 && transformer.length > 0);
@@ -884,13 +904,32 @@ const BROWSER_FAILURES = new Map([
   ["browser_future", "gate:docker-logs"],
   ["browser_validator_permission", "gate:docker-logs"],
   ["timeout_901", "gate:docker-logs"],
-  ["timeout_9999", "gate:docker-logs"]
+  ["timeout_9999", "gate:docker-logs"],
+  ["timeout_uint64_plus_one", "gate:docker-logs"],
+  ["timeout_uint64_plus_900", "gate:docker-logs"],
+  ["timeout_arbitrary_length", "gate:docker-logs"]
+]);
+
+const TIMEOUT_REJECTED_BEFORE_BROWSER_WAIT = new Set([
+  "timeout_901",
+  "timeout_9999",
+  "timeout_uint64_plus_one",
+  "timeout_uint64_plus_900",
+  "timeout_arbitrary_length"
 ]);
 
 for (const [scenario, expectedTrace] of BROWSER_FAILURES) {
   test(`browser acceptance rejects ${scenario} and rolls back`, async () => {
     const { cutover, evidenceHelpers } = validateExecutableContracts(await readRunbook());
-    assertRollback(runCutover(cutover, evidenceHelpers, scenario), scenario, expectedTrace);
+    const outcome = runCutover(cutover, evidenceHelpers, scenario);
+    assertRollback(outcome, scenario, expectedTrace);
+    if (TIMEOUT_REJECTED_BEFORE_BROWSER_WAIT.has(scenario)) {
+      assert.equal(
+        outcome.trace.includes("browser-read-invoked"),
+        false,
+        `${scenario} must roll back before browser read -t`
+      );
+    }
   });
 }
 

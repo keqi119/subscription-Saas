@@ -125,6 +125,27 @@ test("disposable database names must match the exact source/target test prefixes
   }
 });
 
+test("late rollback accepts only Prisma or PostgreSQL foreign-key violations", () => {
+  for (const error of [
+    { code: "P2003" },
+    { code: "23503" },
+    { cause: { code: "23503" } },
+    { meta: { driverAdapterError: { cause: { originalCode: "23503" } } } }
+  ]) {
+    assert.equal(isForeignKeyViolation(error), true);
+  }
+
+  for (const error of [
+    { code: "P2002" },
+    { code: "23505" },
+    { cause: { code: "23505" } },
+    { meta: { driverAdapterError: { cause: { originalCode: "23505" } } } },
+    new Error()
+  ]) {
+    assert.equal(isForeignKeyViolation(error), false);
+  }
+});
+
 test("cleanup ownership is registered only after CREATE DATABASE succeeds", async () => {
   const name = `subscription_saas_s1_source_${"a".repeat(32)}`;
   for (const scenario of ["collision", "create-failure"]) {
@@ -1072,7 +1093,7 @@ async function createPostgresHarness(connectionString) {
           }),
         { isolationLevel: "Serializable" }
       ),
-      (error) => postgresCode(error) === "23503"
+      isForeignKeyViolation
     );
     assertEmptyDatabaseCounts((await businessCounts()).target);
   }
@@ -1441,6 +1462,10 @@ function quoteDatabaseName(value) {
 
 function postgresCode(error) {
   return error?.code ?? error?.cause?.code ?? error?.meta?.driverAdapterError?.cause?.originalCode;
+}
+
+function isForeignKeyViolation(error) {
+  return error?.code === "P2003" || postgresCode(error) === "23503";
 }
 
 function safeIntegrationError(error) {

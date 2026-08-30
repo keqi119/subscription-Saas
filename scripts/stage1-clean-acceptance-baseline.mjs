@@ -21,9 +21,31 @@ import {
 } from "./stage1-clean-acceptance-cli-core.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const HELP_TEXT = [
+  "Usage: stage1-clean-acceptance-baseline.mjs --dry-run|--apply|--replay --output <controlled-evidence-file> [options]",
+  "Arguments:",
+  "--dry-run: generate a baseline manifest without applying it.",
+  "--apply: apply an approved baseline manifest.",
+  "--replay: replay an approved baseline manifest.",
+  "--discover-vehicles: dry-run vehicle candidate discovery only.",
+  "--output <value>: controlled evidence output.",
+  "--vehicle-id <uuid>: repeatable selected vehicle identifier.",
+  "--approved-manifest <value>: approved manifest input.",
+  "--approved-manifest-sha256 <sha256>: approved manifest digest.",
+  "Constraints:",
+  "CLI_MODE_REQUIRED: exactly one mode is required.",
+  "EVIDENCE_OUTPUT_REQUIRED: --output is required.",
+  "VEHICLE_SELECTION_REQUIRED: select vehicles or use dry-run discovery.",
+  "APPROVED_MANIFEST_REQUIRED: apply and replay require approved manifest evidence.",
+  "BASELINE_APPLY_CONFIRMATION_REQUIRED: apply requires explicit confirmation."
+].join("\n") + "\n";
 
 export async function main(argv = process.argv.slice(2), injected = {}) {
   const deps = dependencies(injected);
+  if (isHelpRequest(argv)) {
+    deps.writeStdout(HELP_TEXT);
+    return 0;
+  }
   let args;
   let reportPath;
   let approvedPath;
@@ -132,6 +154,10 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
     removeSignalHandler();
     await Promise.allSettled([sourcePrisma?.$disconnect(), targetPrisma?.$disconnect()].filter(Boolean));
   }
+}
+
+function isHelpRequest(argv) {
+  return Array.isArray(argv) && argv.length === 1 && argv[0] === "--help";
 }
 
 function dependencies(injected) {

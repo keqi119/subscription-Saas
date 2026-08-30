@@ -277,6 +277,49 @@ test("public summaries allow only fixed non-sensitive fields", () => {
   });
 });
 
+test("baseline help is deterministic, non-sensitive, and bypasses environment and database processing", async () => {
+  const stdout = [];
+  const stderr = [];
+  const environment = new Proxy({}, {
+    get() { throw new Error("help must not read environment"); }
+  });
+  const deps = {
+    assertEvidencePath() { throw new Error("help must not inspect evidence paths"); },
+    createPrismaClient() { throw new Error("help must not create Prisma clients"); },
+    env: environment,
+    writeStderr: (value) => stderr.push(value),
+    writeStdout: (value) => stdout.push(value)
+  };
+  const expected = [
+    "Usage: stage1-clean-acceptance-baseline.mjs --dry-run|--apply|--replay --output <controlled-evidence-file> [options]",
+    "Arguments:",
+    "--dry-run: generate a baseline manifest without applying it.",
+    "--apply: apply an approved baseline manifest.",
+    "--replay: replay an approved baseline manifest.",
+    "--discover-vehicles: dry-run vehicle candidate discovery only.",
+    "--output <value>: controlled evidence output.",
+    "--vehicle-id <uuid>: repeatable selected vehicle identifier.",
+    "--approved-manifest <value>: approved manifest input.",
+    "--approved-manifest-sha256 <sha256>: approved manifest digest.",
+    "Constraints:",
+    "CLI_MODE_REQUIRED: exactly one mode is required.",
+    "EVIDENCE_OUTPUT_REQUIRED: --output is required.",
+    "VEHICLE_SELECTION_REQUIRED: select vehicles or use dry-run discovery.",
+    "APPROVED_MANIFEST_REQUIRED: apply and replay require approved manifest evidence.",
+    "BASELINE_APPLY_CONFIRMATION_REQUIRED: apply requires explicit confirmation."
+  ].join("\n") + "\n";
+
+  assert.equal(await baselineMain(["--help"], deps), 0);
+  assert.deepEqual(stdout, [expected]);
+  assert.deepEqual(stderr, []);
+  for (const sensitive of [SOURCE_URL, TARGET_URL, "keqi_119", "18616570212", "secret", "D:/evidence"]) {
+    assert.equal(expected.includes(sensitive), false);
+  }
+
+  assert.equal(await baselineMain(["--help", "--dry-run"], deps), 2);
+  assert.deepEqual(stderr, ['{"error":{"code":"CLI_ARGUMENT_UNKNOWN"}}\n']);
+});
+
 test("baseline dry-run generates canonical time/salt, writes a controlled manifest, and always disconnects both clients", async () => {
   const harness = createBaselineHarness();
   const code = await baselineMain(["--dry-run", "--output", "D:/evidence/dry.json", "--vehicle-id", VEHICLE], harness.deps);

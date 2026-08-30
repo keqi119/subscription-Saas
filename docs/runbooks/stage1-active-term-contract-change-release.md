@@ -148,10 +148,13 @@ SUBSCRIPTION_EXTENSION_ENABLED=true
 SUBSCRIPTION_VEHICLE_SWAP_ENABLED=true
 SUBSCRIPTION_EARLY_TERMINATION_ENABLED=true
 SUBSCRIPTION_MANAGED_OTHER_ENABLED=true
+SUBSCRIPTION_CHANGE_WORKER_ENABLED=true
 ```
 
-缺失、空值、其他大小写或非布尔字符串均视为 fail-closed。生产环境默认保持 `false`，除非另有
-正式发布批准。
+五个开关缺失、空值、其他大小写或非布尔字符串均视为 fail-closed。`SUBSCRIPTION_CHANGE_WORKER_ENABLED`
+是独立于四个业务功能开关的 worker runtime 开关；只有精确小写 `true` 才会轮询、协调、登记和认领
+受支持的合同变更/关闭任务。将它设为 `false` 会暂停全部此类任务（不只是新建续期），且必须重启 API
+后才生效。生产环境默认保持 `false`，除非另有正式发布批准。
 
 ## 8. 发布后观察与冒烟
 

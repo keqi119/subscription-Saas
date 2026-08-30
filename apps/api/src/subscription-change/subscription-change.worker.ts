@@ -26,6 +26,7 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
+    if (!this.isWorkerEnabled()) return;
     this.schedulePoll(0);
   }
 
@@ -36,6 +37,7 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   async runOnce() {
+    if (!this.isWorkerEnabled()) return;
     await this.runMaintenanceIfDue();
     const claimed = await this.repository.claimDue(
       1,
@@ -99,7 +101,7 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   private schedulePoll(delayMs: number) {
-    if (this.stopping) return;
+    if (this.stopping || !this.isWorkerEnabled()) return;
     this.pollTimer = setTimeout(() => {
       this.pollTimer = undefined;
       this.activePoll = this.runOnce()
@@ -119,6 +121,10 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
 
   private isPublicWriteEnabled() {
     return this.config.get<string>("SUBSCRIPTION_EXTENSION_ENABLED") === "true";
+  }
+
+  private isWorkerEnabled() {
+    return this.config.get<string>("SUBSCRIPTION_CHANGE_WORKER_ENABLED") === "true";
   }
 
   private readPositiveInteger(key: string, fallback: number) {

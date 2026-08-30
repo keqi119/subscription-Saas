@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -170,46 +171,114 @@ const EXPECTED_FORBIDDEN_DELEGATES = [
 ];
 
 const SOURCE_SCALAR_FIELDS = Object.freeze({
-  assetOwner: fields("id ownerNo name legalName registrationIdentifier ownerType status onboardingSnapshot createdAt updatedAt createdBy updatedBy"),
-  benefitPackage: fields("id packageNo packageName productId productVersionId benefitType benefitCount priceAmount description status remark createdAt updatedAt createdBy updatedBy deletedAt"),
-  contractVersion: fields("id templateName versionNo businessType templateType contentTemplate fileId effectiveFrom effectiveTo status approvedBy approvedAt createdAt updatedAt createdBy updatedBy deletedAt"),
-  customer: fields("id customerNo name mobile customerType sourceChannel grade riskScore status ownerUserId remark createdAt updatedAt createdBy updatedBy deletedAt"),
-  customerAccount: fields("id customerId phone phoneVerifiedAt wechatOpenId wechatUnionId accountStatus lastLoginAt lastLoginIp lastUserAgent createdAt updatedAt createdBy updatedBy deletedAt"),
-  customerESignProviderAccount: fields("id customerId provider accountType source providerOpenId providerCustomerId registrationStatus realNameStatus verificationSerialNo verificationTransactionNo verifiedAt realNameProviderStatus realNameProviderStatusSource realNameProviderVerifiedAt certBindingStatus certBindingSource certBoundAt certSerialNo providerStatusLastRefreshedAt readinessBlockingCode readinessBlockingReason lastErrorCode lastErrorMessage providerSnapshot createdAt updatedAt createdBy updatedBy deletedAt"),
-  customerIdentity: fields("id customerId idCardNo idCardFrontFileId idCardBackFileId driverLicenseNo driverLicenseFileId licenseValidUntil realnameVerified verifiedAt createdAt updatedAt createdBy updatedBy deletedAt"),
-  customerProfile: fields("id customerId occupation companyName monthlyIncomeAmount socialSecurityMonths housingFundMonths residenceAddress residenceProvince residenceCity residenceDistrict residenceDetail emergencyContactName emergencyContactMobile createdAt updatedAt createdBy updatedBy deletedAt"),
-  depositRule: fields("id grade depositAmount customerRatio defaultRate effectiveFrom effectiveTo status createdAt updatedAt createdBy updatedBy deletedAt"),
-  energyPackage: fields("id packageNo packageName productId productVersionId monthlyEnergyKwh monthlyEnergyCount priceAmount stationScope serviceDescription status remark createdAt updatedAt createdBy updatedBy deletedAt"),
-  fileObject: fields("id bucket objectKey originalName mimeType sizeBytes contentSha256 uploadedBy createdAt"),
-  menu: fields("id code name path icon sortOrder permissionCode parentId status createdAt updatedAt createdBy updatedBy deletedAt"),
-  mileagePackage: fields("id packageNo packageName productId productVersionId monthlyMileageKm overMileageFeeAmount priceAmount status remark createdAt updatedAt createdBy updatedBy deletedAt"),
-  notificationTemplate: fields("id templateCode channel templateType templateStatus title description providerTemplateId content variables providerConfig createdAt updatedAt createdBy updatedBy deletedAt"),
-  permission: fields("id code name module action description status createdAt updatedAt createdBy updatedBy deletedAt"),
-  product: fields("id productNo name productType status description createdAt updatedAt createdBy updatedBy deletedAt"),
-  productPriceRule: fields("id productVersionId modelDefinitionId monthlyFeeRate minPeriodMonths maxPeriodMonths baseMileageKm overMileageFeeAmount energyLimitKwh energyLimitCount status createdAt updatedAt createdBy updatedBy deletedAt"),
-  productVersion: fields("id productId versionNo effectiveFrom effectiveTo status approvedBy approvedAt createdAt updatedAt createdBy updatedBy deletedAt"),
+  assetOwner: fields(
+    "id ownerNo name legalName registrationIdentifier ownerType status onboardingSnapshot createdAt updatedAt createdBy updatedBy"
+  ),
+  benefitPackage: fields(
+    "id packageNo packageName productId productVersionId benefitType benefitCount priceAmount description status remark createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  contractVersion: fields(
+    "id templateName versionNo businessType templateType contentTemplate fileId effectiveFrom effectiveTo status approvedBy approvedAt createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  customer: fields(
+    "id customerNo name mobile customerType sourceChannel grade riskScore status ownerUserId remark createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  customerAccount: fields(
+    "id customerId phone phoneVerifiedAt wechatOpenId wechatUnionId accountStatus lastLoginAt lastLoginIp lastUserAgent createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  customerESignProviderAccount: fields(
+    "id customerId provider accountType source providerOpenId providerCustomerId registrationStatus realNameStatus verificationSerialNo verificationTransactionNo verifiedAt realNameProviderStatus realNameProviderStatusSource realNameProviderVerifiedAt certBindingStatus certBindingSource certBoundAt certSerialNo providerStatusLastRefreshedAt readinessBlockingCode readinessBlockingReason lastErrorCode lastErrorMessage providerSnapshot createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  customerIdentity: fields(
+    "id customerId idCardNo idCardFrontFileId idCardBackFileId driverLicenseNo driverLicenseFileId licenseValidUntil realnameVerified verifiedAt createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  customerProfile: fields(
+    "id customerId occupation companyName monthlyIncomeAmount socialSecurityMonths housingFundMonths residenceAddress residenceProvince residenceCity residenceDistrict residenceDetail emergencyContactName emergencyContactMobile createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  depositRule: fields(
+    "id grade depositAmount customerRatio defaultRate effectiveFrom effectiveTo status createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  energyPackage: fields(
+    "id packageNo packageName productId productVersionId monthlyEnergyKwh monthlyEnergyCount priceAmount stationScope serviceDescription status remark createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  fileObject: fields(
+    "id bucket objectKey originalName mimeType sizeBytes contentSha256 uploadedBy createdAt"
+  ),
+  menu: fields(
+    "id code name path icon sortOrder permissionCode parentId status createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  mileagePackage: fields(
+    "id packageNo packageName productId productVersionId monthlyMileageKm overMileageFeeAmount priceAmount status remark createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  notificationTemplate: fields(
+    "id templateCode channel templateType templateStatus title description providerTemplateId content variables providerConfig createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  permission: fields(
+    "id code name module action description status createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  product: fields(
+    "id productNo name productType status description createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  productPriceRule: fields(
+    "id productVersionId modelDefinitionId monthlyFeeRate minPeriodMonths maxPeriodMonths baseMileageKm overMileageFeeAmount energyLimitKwh energyLimitCount status createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  productVersion: fields(
+    "id productId versionNo effectiveFrom effectiveTo status approvedBy approvedAt createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
   role: fields("id code name description status createdAt updatedAt createdBy updatedBy deletedAt"),
   roleMenu: fields("id roleId menuId createdAt createdBy deletedAt"),
   rolePermission: fields("id roleId permissionId createdAt createdBy deletedAt"),
-  subscriptionPlan: fields("id planNo planName productId productVersionId vehiclePackageId mileagePackageId energyPackageId benefitPackageId monthlyFeeMode baseMonthlyFeeAmount monthlyFeeRate monthlyFeeCapRate minPeriodMonths maxPeriodMonths status effectiveFrom effectiveTo remark createdAt updatedAt createdBy updatedBy deletedAt"),
-  user: fields("id username name mobile email passwordHash status lastLoginAt createdAt updatedAt createdBy updatedBy deletedAt"),
+  subscriptionPlan: fields(
+    "id planNo planName productId productVersionId vehiclePackageId mileagePackageId energyPackageId benefitPackageId monthlyFeeMode baseMonthlyFeeAmount monthlyFeeRate monthlyFeeCapRate minPeriodMonths maxPeriodMonths status effectiveFrom effectiveTo remark createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  user: fields(
+    "id username name mobile email passwordHash status lastLoginAt createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
   userRole: fields("id userId roleId createdAt createdBy deletedAt"),
-  vehicle: fields("id vehicleNo vin plateNo brand series model modelYear modelDefinitionId batteryCapacityKwh batteryUsageType acquisitionMode purchasePriceAmount purchaseDate currentSalePriceAmount currentSalePriceInitializedAt currentSalePriceReviewedAt nextSalePriceReviewAt salePriceReinitRequiredAt salePriceStatus registrationDate latestRegistrationDate status currentMileageKm assetLocation remark createdAt updatedAt createdBy updatedBy deletedAt"),
-  vehicleAssetCostProfile: fields("id vehicleId profileStatus depreciationMethod depreciationStartDate usefulLifeMonths residualValueAmount capitalCostRateBps annualInsuranceCostAmount annualMaintenanceReserveAmount otherMonthlyCostAmount remark snapshot createdAt updatedAt createdBy updatedBy deletedAt"),
-  vehicleCostLedgerEntry: fields("id vehicleId orderId contractId customerId assetOwnerId workOrderId evidenceId assetOwnerSnapshot evidenceSnapshot responsibilitySnapshot entryKind actionType costCategory amountCents responsiblePartyType responsiblePartyId occurredOn accountingPeriod confirmedAt confirmedBy reversalOfEntryId sourceType sourceId sourceKey createdAt"),
-  vehicleDocument: fields("id vehicleId batchId policyId documentType documentStatus fileName originalName mimeType fileSize bucket objectKey title description effectiveFrom effectiveTo customerVisible createdAt updatedAt uploadedBy deletedAt"),
+  vehicle: fields(
+    "id vehicleNo vin plateNo brand series model modelYear modelDefinitionId batteryCapacityKwh batteryUsageType acquisitionMode purchasePriceAmount purchaseDate currentSalePriceAmount currentSalePriceInitializedAt currentSalePriceReviewedAt nextSalePriceReviewAt salePriceReinitRequiredAt salePriceStatus registrationDate latestRegistrationDate status currentMileageKm assetLocation remark createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  vehicleAssetCostProfile: fields(
+    "id vehicleId profileStatus depreciationMethod depreciationStartDate usefulLifeMonths residualValueAmount capitalCostRateBps annualInsuranceCostAmount annualMaintenanceReserveAmount otherMonthlyCostAmount remark snapshot createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  vehicleCostLedgerEntry: fields(
+    "id vehicleId orderId contractId customerId assetOwnerId workOrderId evidenceId assetOwnerSnapshot evidenceSnapshot responsibilitySnapshot entryKind actionType costCategory amountCents responsiblePartyType responsiblePartyId occurredOn accountingPeriod confirmedAt confirmedBy reversalOfEntryId sourceType sourceId sourceKey createdAt"
+  ),
+  vehicleDocument: fields(
+    "id vehicleId batchId policyId documentType documentStatus fileName originalName mimeType fileSize bucket objectKey title description effectiveFrom effectiveTo customerVisible createdAt updatedAt uploadedBy deletedAt"
+  ),
   vehicleDocumentBatch: fields("id vehicleId documentType versionNo createdAt uploadedBy"),
-  vehicleInsuranceCoverage: fields("id policyId coverageType coverageName insuredAmount deductibleAmount remark createdAt updatedAt deletedAt"),
-  vehicleInsurancePolicy: fields("id policyNo vehicleId policyType policyStatus insurerName policyHolderName insuredName effectiveFrom effectiveTo renewalReminderAt premiumAmount insuredAmount currency remark snapshot createdAt updatedAt createdBy updatedBy deletedAt"),
-  vehicleListingMedia: fields("id vehicleId listingProfileId fileName originalName mimeType fileSize bucket objectKey mediaCategory caption sortOrder isCover customerVisible uploadedBy createdAt updatedAt deletedAt"),
-  vehicleListingPlan: fields("id vehicleId listingProfileId subscriptionPlanId visible recommended sortOrder displayMonthlyFeeAmount displayRemark createdAt updatedAt deletedAt"),
-  vehicleListingProfile: fields("id vehicleId listingStatus portalVisible displayName shortTitle subtitle sellingPoints customerTags highlightSummary conditionGrade conditionSummary hasMajorAccident hasFloodDamage hasFireDamage hasStructuralDamage knownDefectsSummary batteryHealthPercent batteryHealthCheckedAt estimatedRangeKm batteryRemark serviceHighlights feeDescription applicationNotice faqSnapshot sortOrder publishedAt unpublishedAt createdAt updatedAt createdBy updatedBy deletedAt"),
-  vehicleListingSourceBinding: fields("id vehicleId section documentId createdAt createdBy updatedAt updatedBy"),
-  vehicleModelDefinition: fields("id modelCode brand series modelName modelYear variantName displayName customerDisplayName energyType bodyType seatCount driveType batteryCapacityKwh officialRangeKm enabled portalVisible sortOrder remark snapshot createdAt updatedAt createdBy updatedBy deletedAt"),
-  vehicleOwnershipPeriod: fields("id vehicleId assetOwnerId startedAt endedAt startReason endReason startSourceType startSourceId startSourceKey endSourceType endSourceId endSourceKey startSnapshot endSnapshot startConfirmedBy startConfirmedAt endConfirmedBy endConfirmedAt createdAt updatedAt createdBy"),
-  vehiclePackage: fields("id packageNo packageName productId productVersionId modelDefinitionId vehicleModelName brand series configName minPurchasePriceAmount maxPurchasePriceAmount monthlyFeeRate minPeriodMonths maxPeriodMonths status remark createdAt updatedAt createdBy updatedBy deletedAt"),
+  vehicleInsuranceCoverage: fields(
+    "id policyId coverageType coverageName insuredAmount deductibleAmount remark createdAt updatedAt deletedAt"
+  ),
+  vehicleInsurancePolicy: fields(
+    "id policyNo vehicleId policyType policyStatus insurerName policyHolderName insuredName effectiveFrom effectiveTo renewalReminderAt premiumAmount insuredAmount currency remark snapshot createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  vehicleListingMedia: fields(
+    "id vehicleId listingProfileId fileName originalName mimeType fileSize bucket objectKey mediaCategory caption sortOrder isCover customerVisible uploadedBy createdAt updatedAt deletedAt"
+  ),
+  vehicleListingPlan: fields(
+    "id vehicleId listingProfileId subscriptionPlanId visible recommended sortOrder displayMonthlyFeeAmount displayRemark createdAt updatedAt deletedAt"
+  ),
+  vehicleListingProfile: fields(
+    "id vehicleId listingStatus portalVisible displayName shortTitle subtitle sellingPoints customerTags highlightSummary conditionGrade conditionSummary hasMajorAccident hasFloodDamage hasFireDamage hasStructuralDamage knownDefectsSummary batteryHealthPercent batteryHealthCheckedAt estimatedRangeKm batteryRemark serviceHighlights feeDescription applicationNotice faqSnapshot sortOrder publishedAt unpublishedAt createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  vehicleListingSourceBinding: fields(
+    "id vehicleId section documentId createdAt createdBy updatedAt updatedBy"
+  ),
+  vehicleModelDefinition: fields(
+    "id modelCode brand series modelName modelYear variantName displayName customerDisplayName energyType bodyType seatCount driveType batteryCapacityKwh officialRangeKm enabled portalVisible sortOrder remark snapshot createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
+  vehicleOwnershipPeriod: fields(
+    "id vehicleId assetOwnerId startedAt endedAt startReason endReason startSourceType startSourceId startSourceKey endSourceType endSourceId endSourceKey startSnapshot endSnapshot startConfirmedBy startConfirmedAt endConfirmedBy endConfirmedAt createdAt updatedAt createdBy"
+  ),
+  vehiclePackage: fields(
+    "id packageNo packageName productId productVersionId modelDefinitionId vehicleModelName brand series configName minPurchasePriceAmount maxPurchasePriceAmount monthlyFeeRate minPeriodMonths maxPeriodMonths status remark createdAt updatedAt createdBy updatedBy deletedAt"
+  ),
   vehiclePackageModelMember: fields("id vehiclePackageId modelDefinitionId createdAt createdBy"),
-  vehicleSalePriceHistory: fields("id vehicleId beforeSalePriceAmount afterSalePriceAmount reviewType reviewQuarter effectiveFrom effectiveTo reason remark createdAt createdBy")
+  vehicleSalePriceHistory: fields(
+    "id vehicleId beforeSalePriceAmount afterSalePriceAmount reviewType reviewQuarter effectiveFrom effectiveTo reason remark createdAt createdBy"
+  )
 });
 
 const SOURCE_DELEGATES = Object.freeze(Object.keys(SOURCE_SCALAR_FIELDS));
@@ -219,18 +288,38 @@ test("source loader uses complete explicit scalar selects and fixed whitelist fi
   const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(fake.tx, selection([]));
 
   assert.ok(snapshot.asOf instanceof Date);
-  assert.deepEqual(snapshot.templates.requiredContractTemplateTypes, REQUIRED_CONTRACT_TEMPLATE_TYPES);
-  assert.deepEqual(snapshot.templates.requiredNotificationTemplateCodes, REQUIRED_NOTIFICATION_TEMPLATE_CODES);
+  assert.deepEqual(
+    snapshot.templates.requiredContractTemplateTypes,
+    REQUIRED_CONTRACT_TEMPLATE_TYPES
+  );
+  assert.deepEqual(
+    snapshot.templates.requiredNotificationTemplateCodes,
+    REQUIRED_NOTIFICATION_TEMPLATE_CODES
+  );
   assert.deepEqual(Object.keys(snapshot.vehicle.eligibilityEvidence), []);
 
   const findCalls = fake.calls.filter(({ operation }) => operation === "findMany");
-  assert.deepEqual([...new Set(findCalls.map(({ delegate }) => delegate))].sort(), [...SOURCE_DELEGATES].sort());
-  assert.equal(fake.calls.some(({ delegate }) => EXPECTED_FORBIDDEN_DELEGATES.includes(delegate)), false);
-  assert.equal(fake.calls.some(({ operation }) => operation.startsWith("$execute") || operation === "$queryRaw"), false);
+  assert.deepEqual(
+    [...new Set(findCalls.map(({ delegate }) => delegate))].sort(),
+    [...SOURCE_DELEGATES].sort()
+  );
+  assert.equal(
+    fake.calls.some(({ delegate }) => EXPECTED_FORBIDDEN_DELEGATES.includes(delegate)),
+    false
+  );
+  assert.equal(
+    fake.calls.some(
+      ({ operation }) => operation.startsWith("$execute") || operation === "$queryRaw"
+    ),
+    false
+  );
 
   for (const call of findCalls) {
     assert.equal(hasKeyDeep(call.args, "include"), false, `${call.delegate} must not use include`);
-    assert.ok(call.args.select && typeof call.args.select === "object", `${call.delegate} requires select`);
+    assert.ok(
+      call.args.select && typeof call.args.select === "object",
+      `${call.delegate} requires select`
+    );
     if (call.delegate !== "vehicle") {
       assert.deepEqual(Object.keys(call.args.select).sort(), SOURCE_SCALAR_FIELDS[call.delegate]);
     }
@@ -238,7 +327,13 @@ test("source loader uses complete explicit scalar selects and fixed whitelist fi
 
   const vehicleCalls = findCalls.filter(({ delegate }) => delegate === "vehicle");
   assert.equal(vehicleCalls.length, 3);
-  assert.deepEqual(Object.keys(vehicleCalls[0].args.select).sort(), ["_count", "currentSalePriceAmount", "id", "salePriceStatus", "status"]);
+  assert.deepEqual(Object.keys(vehicleCalls[0].args.select).sort(), [
+    "_count",
+    "currentSalePriceAmount",
+    "id",
+    "salePriceStatus",
+    "status"
+  ]);
   assert.deepEqual(Object.keys(vehicleCalls[1].args.select).sort(), ["id"]);
   assert.deepEqual(Object.keys(vehicleCalls[2].args.select).sort(), SOURCE_SCALAR_FIELDS.vehicle);
   assert.equal(hasKeyDeep(vehicleCalls[0].args.select, "vin"), false);
@@ -276,11 +371,9 @@ test("source loader reuses an explicit approved instant for every effective-wind
   const fake = createPrismaFake();
   const approvedAsOf = new Date("2026-08-30T12:34:56.000Z");
 
-  const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(
-    fake.tx,
-    selection([]),
-    { asOf: approvedAsOf }
-  );
+  const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(fake.tx, selection([]), {
+    asOf: approvedAsOf
+  });
 
   assert.equal(snapshot.asOf.toISOString(), "2026-08-30T12:34:56.000Z");
   for (const delegate of ["subscriptionPlan", "depositRule", "contractVersion"]) {
@@ -301,25 +394,44 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
     rows: {
       vehicle: ({ callIndex }) =>
         callIndex === 0
-          ? [{
-              _count: { operationalRestrictions: 0, subscriptionPeriods: 0 },
-              currentSalePriceAmount: 12000000n,
-              id: VEHICLE_A,
-              salePriceStatus: "EFFECTIVE",
-              status: "AVAILABLE"
-            }]
+          ? [
+              {
+                _count: {
+                  assetWorkOrders: 0,
+                  deliveries: 0,
+                  operationalRestrictions: 0,
+                  orders: 0,
+                  returns: 0,
+                  serviceCases: 0,
+                  subscriptionPeriods: 0
+                },
+                currentSalePriceAmount: 12000000n,
+                id: VEHICLE_A,
+                salePriceStatus: "EFFECTIVE",
+                status: "AVAILABLE"
+              }
+            ]
           : callIndex === 1
             ? [{ id: VEHICLE_A }]
             : [vehicleRow]
     }
   });
-  const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(eligible.tx, selection([VEHICLE_A]));
+  const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(
+    eligible.tx,
+    selection([VEHICLE_A])
+  );
   assert.deepEqual(snapshot.vehicle.vehicles, [vehicleRow]);
   assert.deepEqual(snapshot.vehicle.eligibilityEvidence, {
     [VEHICLE_A]: {
       blockingRestrictionCount: 0,
+      activeAssetWorkOrderCount: 0,
+      activeServiceCaseCount: 0,
       currentSalePricePositive: true,
+      deliveryCount: 0,
+      orderCount: 0,
       overlappingSubscriptionPeriodCount: 0,
+      requiredDocumentsAndInsuranceReady: true,
+      returnCount: 0,
       salePriceStatusEffective: true
     }
   });
@@ -342,6 +454,25 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
   assert.deepEqual(guarded.args.where.subscriptionPeriods, {
     none: diagnostic.args.select._count.select.subscriptionPeriods.where
   });
+  for (const relation of ["orders", "deliveries", "returns", "assetWorkOrders", "serviceCases"]) {
+    assert.deepEqual(
+      guarded.args.where[relation],
+      { none: diagnostic.args.select._count.select[relation].where },
+      `${relation} must fail closed`
+    );
+  }
+  assert.equal(guarded.args.where.documents.some.deletedAt, null);
+  assert.equal(guarded.args.where.documents.some.documentStatus, "ACTIVE");
+  assert.equal(guarded.args.where.documents.some.documentType, "VEHICLE_LICENSE");
+  assert.deepEqual(guarded.args.where.insurancePolicies, {
+    some: {
+      coverages: { some: { deletedAt: null } },
+      deletedAt: null,
+      effectiveFrom: { lte: snapshot.asOf },
+      effectiveTo: { gte: snapshot.asOf },
+      policyStatus: "ACTIVE"
+    }
+  });
   assert.deepEqual(guarded.args.where.modelDefinition, {
     is: { deletedAt: null, enabled: true, portalVisible: true }
   });
@@ -355,14 +486,30 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
         callIndex === 0
           ? [
               {
-                _count: { operationalRestrictions: 0, subscriptionPeriods: 0 },
+                _count: {
+                  assetWorkOrders: 0,
+                  deliveries: 0,
+                  operationalRestrictions: 0,
+                  orders: 0,
+                  returns: 0,
+                  serviceCases: 0,
+                  subscriptionPeriods: 0
+                },
                 currentSalePriceAmount: 12000000n,
                 id: VEHICLE_A,
                 salePriceStatus: "EFFECTIVE",
                 status: "AVAILABLE"
               },
               {
-                _count: { operationalRestrictions: 1, subscriptionPeriods: 0 },
+                _count: {
+                  assetWorkOrders: 0,
+                  deliveries: 0,
+                  operationalRestrictions: 1,
+                  orders: 0,
+                  returns: 0,
+                  serviceCases: 0,
+                  subscriptionPeriods: 0
+                },
                 currentSalePriceAmount: 12000000n,
                 id: "22222222-2222-4222-8222-222222222222",
                 salePriceStatus: "EFFECTIVE",
@@ -382,6 +529,51 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
     (error) => error?.message === "VEHICLE_NOT_ELIGIBLE"
   );
   assert.equal(partial.calls.filter(({ delegate }) => delegate === "vehicle").length, 2);
+});
+
+test("vehicle eligibility rejects every governed process blocker", async () => {
+  for (const blocker of [
+    "assetWorkOrders",
+    "deliveries",
+    "operationalRestrictions",
+    "orders",
+    "returns",
+    "serviceCases",
+    "subscriptionPeriods"
+  ]) {
+    const counts = Object.fromEntries(
+      [
+        "assetWorkOrders",
+        "deliveries",
+        "operationalRestrictions",
+        "orders",
+        "returns",
+        "serviceCases",
+        "subscriptionPeriods"
+      ].map((name) => [name, name === blocker ? 1 : 0])
+    );
+    const fake = createPrismaFake({
+      rows: {
+        vehicle: ({ callIndex }) =>
+          callIndex === 0
+            ? [
+                {
+                  _count: counts,
+                  currentSalePriceAmount: 12000000n,
+                  id: VEHICLE_A,
+                  salePriceStatus: "EFFECTIVE",
+                  status: "AVAILABLE"
+                }
+              ]
+            : []
+      }
+    });
+    await assert.rejects(
+      loadStage1CleanAcceptanceSourceSnapshot(fake.tx, selection([VEHICLE_A])),
+      (error) => error?.message === "VEHICLE_NOT_ELIGIBLE",
+      blocker
+    );
+  }
 });
 
 test("vehicle discovery reuses the strict guard without an id filter and returns only stable minimal fields", async () => {
@@ -473,122 +665,677 @@ test("source loader returns endpoint-closed access/customer rows and catalog mod
   });
   const dataset = {
     user: [
-      completeScalarRow("user", { createdAt: now, deletedAt: null, id: "user-admin", name: "Admin", passwordHash: "hash", status: "ACTIVE", updatedAt: now, username: "keqi_119" }),
-      completeScalarRow("user", { createdAt: now, deletedAt: now, id: "user-deleted", name: "Deleted", passwordHash: "hash", status: "ACTIVE", updatedAt: now, username: "deleted" })
+      completeScalarRow("user", {
+        createdAt: now,
+        deletedAt: null,
+        id: "user-admin",
+        name: "Admin",
+        passwordHash: "hash",
+        status: "ACTIVE",
+        updatedAt: now,
+        username: "keqi_119"
+      }),
+      completeScalarRow("user", {
+        createdAt: now,
+        deletedAt: now,
+        id: "user-deleted",
+        name: "Deleted",
+        passwordHash: "hash",
+        status: "ACTIVE",
+        updatedAt: now,
+        username: "deleted"
+      })
     ],
     role: [
-      completeScalarRow("role", { code: "ADMIN", createdAt: now, deletedAt: null, id: "role-admin", name: "Admin", status: "ACTIVE", updatedAt: now }),
-      completeScalarRow("role", { code: "OPERATIONS", createdAt: now, deletedAt: null, id: "role-inactive", name: "Inactive", status: "INACTIVE", updatedAt: now }),
-      completeScalarRow("role", { code: "DELETED", createdAt: now, deletedAt: now, id: "role-deleted", name: "Deleted", status: "ACTIVE", updatedAt: now })
+      completeScalarRow("role", {
+        code: "ADMIN",
+        createdAt: now,
+        deletedAt: null,
+        id: "role-admin",
+        name: "Admin",
+        status: "ACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("role", {
+        code: "OPERATIONS",
+        createdAt: now,
+        deletedAt: null,
+        id: "role-inactive",
+        name: "Inactive",
+        status: "INACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("role", {
+        code: "DELETED",
+        createdAt: now,
+        deletedAt: now,
+        id: "role-deleted",
+        name: "Deleted",
+        status: "ACTIVE",
+        updatedAt: now
+      })
     ],
     permission: [
-      completeScalarRow("permission", { action: "read", code: "permission:b", createdAt: now, deletedAt: null, id: "permission-b", module: "acceptance", name: "B", status: "ACTIVE", updatedAt: now }),
-      completeScalarRow("permission", { action: "read", code: "permission:a", createdAt: now, deletedAt: null, id: "permission-a", module: "acceptance", name: "A", status: "ACTIVE", updatedAt: now }),
-      completeScalarRow("permission", { action: "read", code: "permission:old", createdAt: now, deletedAt: null, id: "permission-inactive", module: "acceptance", name: "Old", status: "INACTIVE", updatedAt: now }),
-      completeScalarRow("permission", { action: "read", code: "permission:deleted", createdAt: now, deletedAt: now, id: "permission-deleted", module: "acceptance", name: "Deleted", status: "ACTIVE", updatedAt: now })
+      completeScalarRow("permission", {
+        action: "read",
+        code: "permission:b",
+        createdAt: now,
+        deletedAt: null,
+        id: "permission-b",
+        module: "acceptance",
+        name: "B",
+        status: "ACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("permission", {
+        action: "read",
+        code: "permission:a",
+        createdAt: now,
+        deletedAt: null,
+        id: "permission-a",
+        module: "acceptance",
+        name: "A",
+        status: "ACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("permission", {
+        action: "read",
+        code: "permission:old",
+        createdAt: now,
+        deletedAt: null,
+        id: "permission-inactive",
+        module: "acceptance",
+        name: "Old",
+        status: "INACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("permission", {
+        action: "read",
+        code: "permission:deleted",
+        createdAt: now,
+        deletedAt: now,
+        id: "permission-deleted",
+        module: "acceptance",
+        name: "Deleted",
+        status: "ACTIVE",
+        updatedAt: now
+      })
     ],
     menu: [
-      completeScalarRow("menu", { code: "menu:child", createdAt: now, deletedAt: null, id: "menu-b", name: "Child", parentId: "menu-a", path: "/child", sortOrder: 2, status: "ACTIVE", updatedAt: now }),
-      completeScalarRow("menu", { code: "menu:root", createdAt: now, deletedAt: null, id: "menu-a", name: "Root", parentId: null, path: "/", sortOrder: 1, status: "ACTIVE", updatedAt: now }),
-      completeScalarRow("menu", { code: "menu:old", createdAt: now, deletedAt: null, id: "menu-inactive", name: "Old", parentId: null, path: "/old", sortOrder: 3, status: "INACTIVE", updatedAt: now }),
-      completeScalarRow("menu", { code: "menu:deleted", createdAt: now, deletedAt: now, id: "menu-deleted", name: "Deleted", parentId: null, path: "/deleted", sortOrder: 4, status: "ACTIVE", updatedAt: now })
+      completeScalarRow("menu", {
+        code: "menu:child",
+        createdAt: now,
+        deletedAt: null,
+        id: "menu-b",
+        name: "Child",
+        parentId: "menu-a",
+        path: "/child",
+        sortOrder: 2,
+        status: "ACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("menu", {
+        code: "menu:root",
+        createdAt: now,
+        deletedAt: null,
+        id: "menu-a",
+        name: "Root",
+        parentId: null,
+        path: "/",
+        sortOrder: 1,
+        status: "ACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("menu", {
+        code: "menu:old",
+        createdAt: now,
+        deletedAt: null,
+        id: "menu-inactive",
+        name: "Old",
+        parentId: null,
+        path: "/old",
+        sortOrder: 3,
+        status: "INACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("menu", {
+        code: "menu:deleted",
+        createdAt: now,
+        deletedAt: now,
+        id: "menu-deleted",
+        name: "Deleted",
+        parentId: null,
+        path: "/deleted",
+        sortOrder: 4,
+        status: "ACTIVE",
+        updatedAt: now
+      })
     ],
     userRole: [
-      completeScalarRow("userRole", { createdAt: now, deletedAt: null, id: "user-role-valid", roleId: "role-admin", userId: "user-admin" }),
-      completeScalarRow("userRole", { createdAt: now, deletedAt: null, id: "user-role-dangling", roleId: "role-inactive", userId: "user-admin" })
+      completeScalarRow("userRole", {
+        createdAt: now,
+        deletedAt: null,
+        id: "user-role-valid",
+        roleId: "role-admin",
+        userId: "user-admin"
+      }),
+      completeScalarRow("userRole", {
+        createdAt: now,
+        deletedAt: null,
+        id: "user-role-dangling",
+        roleId: "role-inactive",
+        userId: "user-admin"
+      })
     ],
     rolePermission: [
-      completeScalarRow("rolePermission", { createdAt: now, deletedAt: null, id: "grant-b", permissionId: "permission-b", roleId: "role-admin" }),
-      completeScalarRow("rolePermission", { createdAt: now, deletedAt: null, id: "grant-a", permissionId: "permission-a", roleId: "role-admin" }),
-      completeScalarRow("rolePermission", { createdAt: now, deletedAt: null, id: "grant-dangling", permissionId: "permission-inactive", roleId: "role-inactive" })
+      completeScalarRow("rolePermission", {
+        createdAt: now,
+        deletedAt: null,
+        id: "grant-b",
+        permissionId: "permission-b",
+        roleId: "role-admin"
+      }),
+      completeScalarRow("rolePermission", {
+        createdAt: now,
+        deletedAt: null,
+        id: "grant-a",
+        permissionId: "permission-a",
+        roleId: "role-admin"
+      }),
+      completeScalarRow("rolePermission", {
+        createdAt: now,
+        deletedAt: null,
+        id: "grant-dangling",
+        permissionId: "permission-inactive",
+        roleId: "role-inactive"
+      })
     ],
     roleMenu: [
-      completeScalarRow("roleMenu", { createdAt: now, deletedAt: null, id: "role-menu-b", menuId: "menu-b", roleId: "role-admin" }),
-      completeScalarRow("roleMenu", { createdAt: now, deletedAt: null, id: "role-menu-a", menuId: "menu-a", roleId: "role-admin" }),
-      completeScalarRow("roleMenu", { createdAt: now, deletedAt: null, id: "role-menu-dangling", menuId: "menu-inactive", roleId: "role-inactive" })
+      completeScalarRow("roleMenu", {
+        createdAt: now,
+        deletedAt: null,
+        id: "role-menu-b",
+        menuId: "menu-b",
+        roleId: "role-admin"
+      }),
+      completeScalarRow("roleMenu", {
+        createdAt: now,
+        deletedAt: null,
+        id: "role-menu-a",
+        menuId: "menu-a",
+        roleId: "role-admin"
+      }),
+      completeScalarRow("roleMenu", {
+        createdAt: now,
+        deletedAt: null,
+        id: "role-menu-dangling",
+        menuId: "menu-inactive",
+        roleId: "role-inactive"
+      })
     ],
     customerAccount: [
-      completeScalarRow("customerAccount", { accountStatus: "ACTIVE", createdAt: now, customerId: "customer-active", deletedAt: null, id: "account-active", phone: "18616570212", updatedAt: now }),
-      completeScalarRow("customerAccount", { accountStatus: "DISABLED", createdAt: now, customerId: "customer-inactive", deletedAt: null, id: "account-disabled", phone: "18600000000", updatedAt: now })
+      completeScalarRow("customerAccount", {
+        accountStatus: "ACTIVE",
+        createdAt: now,
+        customerId: "customer-active",
+        deletedAt: null,
+        id: "account-active",
+        phone: "18616570212",
+        updatedAt: now
+      }),
+      completeScalarRow("customerAccount", {
+        accountStatus: "DISABLED",
+        createdAt: now,
+        customerId: "customer-inactive",
+        deletedAt: null,
+        id: "account-disabled",
+        phone: "18600000000",
+        updatedAt: now
+      })
     ],
     customer: [
-      completeScalarRow("customer", { createdAt: now, customerNo: "CUS-1", customerType: "PERSONAL", deletedAt: null, id: "customer-active", mobile: "18616570212", name: "Active", status: "ACTIVE", updatedAt: now }),
-      completeScalarRow("customer", { createdAt: now, customerNo: "CUS-2", customerType: "PERSONAL", deletedAt: null, id: "customer-inactive", mobile: "18600000000", name: "Inactive", status: "FROZEN", updatedAt: now })
+      completeScalarRow("customer", {
+        createdAt: now,
+        customerNo: "CUS-1",
+        customerType: "PERSONAL",
+        deletedAt: null,
+        id: "customer-active",
+        mobile: "18616570212",
+        name: "Active",
+        status: "ACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("customer", {
+        createdAt: now,
+        customerNo: "CUS-2",
+        customerType: "PERSONAL",
+        deletedAt: null,
+        id: "customer-inactive",
+        mobile: "18600000000",
+        name: "Inactive",
+        status: "FROZEN",
+        updatedAt: now
+      })
     ],
     customerIdentity: [
-      completeScalarRow("customerIdentity", { createdAt: now, customerId: "customer-active", deletedAt: null, id: "identity-b", realnameVerified: true, updatedAt: now }),
-      completeScalarRow("customerIdentity", { createdAt: now, customerId: "customer-inactive", deletedAt: null, id: "identity-dangling", realnameVerified: true, updatedAt: now })
+      completeScalarRow("customerIdentity", {
+        createdAt: now,
+        customerId: "customer-active",
+        deletedAt: null,
+        id: "identity-b",
+        realnameVerified: true,
+        updatedAt: now
+      }),
+      completeScalarRow("customerIdentity", {
+        createdAt: now,
+        customerId: "customer-inactive",
+        deletedAt: null,
+        id: "identity-dangling",
+        realnameVerified: true,
+        updatedAt: now
+      })
     ],
     customerProfile: [
-      completeScalarRow("customerProfile", { createdAt: now, customerId: "customer-active", deletedAt: null, id: "profile-b", updatedAt: now }),
-      completeScalarRow("customerProfile", { createdAt: now, customerId: "customer-inactive", deletedAt: null, id: "profile-dangling", updatedAt: now })
+      completeScalarRow("customerProfile", {
+        createdAt: now,
+        customerId: "customer-active",
+        deletedAt: null,
+        id: "profile-b",
+        updatedAt: now
+      }),
+      completeScalarRow("customerProfile", {
+        createdAt: now,
+        customerId: "customer-inactive",
+        deletedAt: null,
+        id: "profile-dangling",
+        updatedAt: now
+      })
     ],
     customerESignProviderAccount: [
-      completeScalarRow("customerESignProviderAccount", { accountType: "PERSONAL", certBindingSource: "CALLBACK", certBindingStatus: "BOUND", createdAt: now, customerId: "customer-active", deletedAt: null, id: "esign-b", provider: "FADADA", providerOpenId: "open-active", realNameProviderStatusSource: "CALLBACK", realNameStatus: "VERIFIED", registrationStatus: "REGISTERED", source: "SYSTEM_REGISTER", updatedAt: now }),
-      completeScalarRow("customerESignProviderAccount", { accountType: "PERSONAL", certBindingSource: "CALLBACK", certBindingStatus: "BOUND", createdAt: now, customerId: "customer-inactive", deletedAt: null, id: "esign-dangling", provider: "FADADA", providerOpenId: "open-inactive", realNameProviderStatusSource: "CALLBACK", realNameStatus: "VERIFIED", registrationStatus: "REGISTERED", source: "SYSTEM_REGISTER", updatedAt: now }),
-      completeScalarRow("customerESignProviderAccount", { accountType: "PERSONAL", certBindingSource: "CALLBACK", certBindingStatus: "UNBOUND", createdAt: now, customerId: "customer-active", deletedAt: null, id: "esign-inactive", provider: "FADADA", providerOpenId: "open-unbound", realNameProviderStatusSource: "CALLBACK", realNameStatus: "VERIFIED", registrationStatus: "REGISTERED", source: "SYSTEM_REGISTER", updatedAt: now }),
-      completeScalarRow("customerESignProviderAccount", { accountType: "PERSONAL", certBindingSource: "CALLBACK", certBindingStatus: "BOUND", createdAt: now, customerId: "customer-active", deletedAt: now, id: "esign-deleted", provider: "FADADA", providerOpenId: "open-deleted", realNameProviderStatusSource: "CALLBACK", realNameStatus: "VERIFIED", registrationStatus: "REGISTERED", source: "SYSTEM_REGISTER", updatedAt: now })
+      completeScalarRow("customerESignProviderAccount", {
+        accountType: "PERSONAL",
+        certBindingSource: "CALLBACK",
+        certBindingStatus: "BOUND",
+        createdAt: now,
+        customerId: "customer-active",
+        deletedAt: null,
+        id: "esign-b",
+        provider: "FADADA",
+        providerOpenId: "open-active",
+        realNameProviderStatusSource: "CALLBACK",
+        realNameStatus: "VERIFIED",
+        registrationStatus: "REGISTERED",
+        source: "SYSTEM_REGISTER",
+        updatedAt: now
+      }),
+      completeScalarRow("customerESignProviderAccount", {
+        accountType: "PERSONAL",
+        certBindingSource: "CALLBACK",
+        certBindingStatus: "BOUND",
+        createdAt: now,
+        customerId: "customer-inactive",
+        deletedAt: null,
+        id: "esign-dangling",
+        provider: "FADADA",
+        providerOpenId: "open-inactive",
+        realNameProviderStatusSource: "CALLBACK",
+        realNameStatus: "VERIFIED",
+        registrationStatus: "REGISTERED",
+        source: "SYSTEM_REGISTER",
+        updatedAt: now
+      }),
+      completeScalarRow("customerESignProviderAccount", {
+        accountType: "PERSONAL",
+        certBindingSource: "CALLBACK",
+        certBindingStatus: "UNBOUND",
+        createdAt: now,
+        customerId: "customer-active",
+        deletedAt: null,
+        id: "esign-inactive",
+        provider: "FADADA",
+        providerOpenId: "open-unbound",
+        realNameProviderStatusSource: "CALLBACK",
+        realNameStatus: "VERIFIED",
+        registrationStatus: "REGISTERED",
+        source: "SYSTEM_REGISTER",
+        updatedAt: now
+      }),
+      completeScalarRow("customerESignProviderAccount", {
+        accountType: "PERSONAL",
+        certBindingSource: "CALLBACK",
+        certBindingStatus: "BOUND",
+        createdAt: now,
+        customerId: "customer-active",
+        deletedAt: now,
+        id: "esign-deleted",
+        provider: "FADADA",
+        providerOpenId: "open-deleted",
+        realNameProviderStatusSource: "CALLBACK",
+        realNameStatus: "VERIFIED",
+        registrationStatus: "REGISTERED",
+        source: "SYSTEM_REGISTER",
+        updatedAt: now
+      })
     ],
     subscriptionPlan: [
       subscriptionPlan,
-      { ...subscriptionPlan, id: "plan-inactive-package", planName: "Inactive package", planNo: "PLAN-2", vehiclePackageId: "package-inactive" },
-      { ...subscriptionPlan, id: "plan-deleted-package", planName: "Deleted package", planNo: "PLAN-3", vehiclePackageId: "package-deleted" }
+      {
+        ...subscriptionPlan,
+        id: "plan-inactive-package",
+        planName: "Inactive package",
+        planNo: "PLAN-2",
+        vehiclePackageId: "package-inactive"
+      },
+      {
+        ...subscriptionPlan,
+        id: "plan-deleted-package",
+        planName: "Deleted package",
+        planNo: "PLAN-3",
+        vehiclePackageId: "package-deleted"
+      }
     ],
     product: [product],
     productVersion: [productVersion],
-    depositRule: [completeScalarRow("depositRule", { createdAt: now, defaultRate: 0.1, deletedAt: null, depositAmount: 1000n, effectiveFrom: new Date("2026-01-01T00:00:00.000Z"), effectiveTo: null, grade: "A", id: "deposit-1", status: "ACTIVE", updatedAt: now })],
-    vehiclePackage: [
-      completeScalarRow("vehiclePackage", { createdAt: now, deletedAt: null, id: "package-1", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-package", packageName: "Package", packageNo: "PKG-1", productId: product.id, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now }),
-      completeScalarRow("vehiclePackage", { createdAt: now, deletedAt: null, id: "package-inactive", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-inactive", packageName: "Inactive", packageNo: "PKG-2", productId: product.id, productVersionId: productVersion.id, status: "INACTIVE", updatedAt: now }),
-      completeScalarRow("vehiclePackage", { createdAt: now, deletedAt: now, id: "package-deleted", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-deleted", packageName: "Deleted", packageNo: "PKG-3", productId: product.id, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now })
+    depositRule: [
+      completeScalarRow("depositRule", {
+        createdAt: now,
+        defaultRate: 0.1,
+        deletedAt: null,
+        depositAmount: 1000n,
+        effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+        effectiveTo: null,
+        grade: "A",
+        id: "deposit-1",
+        status: "ACTIVE",
+        updatedAt: now
+      })
     ],
-    vehiclePackageModelMember: [completeScalarRow("vehiclePackageModelMember", { createdAt: now, id: "member-1", modelDefinitionId: "model-member", vehiclePackageId: "package-1" })],
-    mileagePackage: [completeScalarRow("mileagePackage", { createdAt: now, deletedAt: null, id: "mileage-1", monthlyMileageKm: 1000, overMileageFeeAmount: 1n, packageName: "Mileage", packageNo: "MILE-1", priceAmount: 1n, productId: product.id, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now })],
-    energyPackage: [completeScalarRow("energyPackage", { createdAt: now, deletedAt: null, id: "energy-1", packageName: "Energy", packageNo: "ENERGY-1", priceAmount: 1n, productId: product.id, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now })],
-    benefitPackage: [completeScalarRow("benefitPackage", { benefitType: "OTHER", createdAt: now, deletedAt: null, id: "benefit-1", packageName: "Benefit", packageNo: "BEN-1", priceAmount: 1n, productId: product.id, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now })],
+    vehiclePackage: [
+      completeScalarRow("vehiclePackage", {
+        createdAt: now,
+        deletedAt: null,
+        id: "package-1",
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: "model-package",
+        packageName: "Package",
+        packageNo: "PKG-1",
+        productId: product.id,
+        productVersionId: productVersion.id,
+        status: "ACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("vehiclePackage", {
+        createdAt: now,
+        deletedAt: null,
+        id: "package-inactive",
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: "model-inactive",
+        packageName: "Inactive",
+        packageNo: "PKG-2",
+        productId: product.id,
+        productVersionId: productVersion.id,
+        status: "INACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("vehiclePackage", {
+        createdAt: now,
+        deletedAt: now,
+        id: "package-deleted",
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: "model-deleted",
+        packageName: "Deleted",
+        packageNo: "PKG-3",
+        productId: product.id,
+        productVersionId: productVersion.id,
+        status: "ACTIVE",
+        updatedAt: now
+      })
+    ],
+    vehiclePackageModelMember: [
+      completeScalarRow("vehiclePackageModelMember", {
+        createdAt: now,
+        id: "member-1",
+        modelDefinitionId: "model-member",
+        vehiclePackageId: "package-1"
+      })
+    ],
+    mileagePackage: [
+      completeScalarRow("mileagePackage", {
+        createdAt: now,
+        deletedAt: null,
+        id: "mileage-1",
+        monthlyMileageKm: 1000,
+        overMileageFeeAmount: 1n,
+        packageName: "Mileage",
+        packageNo: "MILE-1",
+        priceAmount: 1n,
+        productId: product.id,
+        productVersionId: productVersion.id,
+        status: "ACTIVE",
+        updatedAt: now
+      })
+    ],
+    energyPackage: [
+      completeScalarRow("energyPackage", {
+        createdAt: now,
+        deletedAt: null,
+        id: "energy-1",
+        packageName: "Energy",
+        packageNo: "ENERGY-1",
+        priceAmount: 1n,
+        productId: product.id,
+        productVersionId: productVersion.id,
+        status: "ACTIVE",
+        updatedAt: now
+      })
+    ],
+    benefitPackage: [
+      completeScalarRow("benefitPackage", {
+        benefitType: "OTHER",
+        createdAt: now,
+        deletedAt: null,
+        id: "benefit-1",
+        packageName: "Benefit",
+        packageNo: "BEN-1",
+        priceAmount: 1n,
+        productId: product.id,
+        productVersionId: productVersion.id,
+        status: "ACTIVE",
+        updatedAt: now
+      })
+    ],
     productPriceRule: [
-      completeScalarRow("productPriceRule", { baseMileageKm: 1000, createdAt: now, deletedAt: null, id: "price-1", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-price", monthlyFeeRate: 0.1, overMileageFeeAmount: 1n, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now }),
-      completeScalarRow("productPriceRule", { baseMileageKm: 1000, createdAt: now, deletedAt: null, id: "price-deleted-model", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-deleted", monthlyFeeRate: 0.1, overMileageFeeAmount: 1n, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now }),
-      completeScalarRow("productPriceRule", { baseMileageKm: 1000, createdAt: now, deletedAt: null, id: "price-inactive", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-inactive", monthlyFeeRate: 0.1, overMileageFeeAmount: 1n, productVersionId: productVersion.id, status: "INACTIVE", updatedAt: now }),
-      completeScalarRow("productPriceRule", { baseMileageKm: 1000, createdAt: now, deletedAt: now, id: "price-deleted", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-deleted", monthlyFeeRate: 0.1, overMileageFeeAmount: 1n, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now })
+      completeScalarRow("productPriceRule", {
+        baseMileageKm: 1000,
+        createdAt: now,
+        deletedAt: null,
+        id: "price-1",
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: "model-price",
+        monthlyFeeRate: 0.1,
+        overMileageFeeAmount: 1n,
+        productVersionId: productVersion.id,
+        status: "ACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("productPriceRule", {
+        baseMileageKm: 1000,
+        createdAt: now,
+        deletedAt: null,
+        id: "price-deleted-model",
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: "model-deleted",
+        monthlyFeeRate: 0.1,
+        overMileageFeeAmount: 1n,
+        productVersionId: productVersion.id,
+        status: "ACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("productPriceRule", {
+        baseMileageKm: 1000,
+        createdAt: now,
+        deletedAt: null,
+        id: "price-inactive",
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: "model-inactive",
+        monthlyFeeRate: 0.1,
+        overMileageFeeAmount: 1n,
+        productVersionId: productVersion.id,
+        status: "INACTIVE",
+        updatedAt: now
+      }),
+      completeScalarRow("productPriceRule", {
+        baseMileageKm: 1000,
+        createdAt: now,
+        deletedAt: now,
+        id: "price-deleted",
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: "model-deleted",
+        monthlyFeeRate: 0.1,
+        overMileageFeeAmount: 1n,
+        productVersionId: productVersion.id,
+        status: "ACTIVE",
+        updatedAt: now
+      })
     ],
     vehicleModelDefinition: [
-      completeScalarRow("vehicleModelDefinition", { brand: "NIO", createdAt: now, deletedAt: null, displayName: "Member", enabled: true, id: "model-member", modelCode: "MEMBER", modelName: "Member", portalVisible: true, sortOrder: 2, updatedAt: now }),
-      completeScalarRow("vehicleModelDefinition", { brand: "NIO", createdAt: now, deletedAt: null, displayName: "Package", enabled: true, id: "model-package", modelCode: "PACKAGE", modelName: "Package", portalVisible: true, sortOrder: 1, updatedAt: now }),
-      completeScalarRow("vehicleModelDefinition", { brand: "NIO", createdAt: now, deletedAt: null, displayName: "Price", enabled: true, id: "model-price", modelCode: "PRICE", modelName: "Price", portalVisible: true, sortOrder: 3, updatedAt: now }),
-      completeScalarRow("vehicleModelDefinition", { brand: "NIO", createdAt: now, deletedAt: null, displayName: "Inactive", enabled: false, id: "model-inactive", modelCode: "INACTIVE", modelName: "Inactive", portalVisible: true, sortOrder: 4, updatedAt: now }),
-      completeScalarRow("vehicleModelDefinition", { brand: "NIO", createdAt: now, deletedAt: now, displayName: "Deleted", enabled: true, id: "model-deleted", modelCode: "DELETED", modelName: "Deleted", portalVisible: true, sortOrder: 5, updatedAt: now })
+      completeScalarRow("vehicleModelDefinition", {
+        brand: "NIO",
+        createdAt: now,
+        deletedAt: null,
+        displayName: "Member",
+        enabled: true,
+        id: "model-member",
+        modelCode: "MEMBER",
+        modelName: "Member",
+        portalVisible: true,
+        sortOrder: 2,
+        updatedAt: now
+      }),
+      completeScalarRow("vehicleModelDefinition", {
+        brand: "NIO",
+        createdAt: now,
+        deletedAt: null,
+        displayName: "Package",
+        enabled: true,
+        id: "model-package",
+        modelCode: "PACKAGE",
+        modelName: "Package",
+        portalVisible: true,
+        sortOrder: 1,
+        updatedAt: now
+      }),
+      completeScalarRow("vehicleModelDefinition", {
+        brand: "NIO",
+        createdAt: now,
+        deletedAt: null,
+        displayName: "Price",
+        enabled: true,
+        id: "model-price",
+        modelCode: "PRICE",
+        modelName: "Price",
+        portalVisible: true,
+        sortOrder: 3,
+        updatedAt: now
+      }),
+      completeScalarRow("vehicleModelDefinition", {
+        brand: "NIO",
+        createdAt: now,
+        deletedAt: null,
+        displayName: "Inactive",
+        enabled: false,
+        id: "model-inactive",
+        modelCode: "INACTIVE",
+        modelName: "Inactive",
+        portalVisible: true,
+        sortOrder: 4,
+        updatedAt: now
+      }),
+      completeScalarRow("vehicleModelDefinition", {
+        brand: "NIO",
+        createdAt: now,
+        deletedAt: now,
+        displayName: "Deleted",
+        enabled: true,
+        id: "model-deleted",
+        modelCode: "DELETED",
+        modelName: "Deleted",
+        portalVisible: true,
+        sortOrder: 5,
+        updatedAt: now
+      })
     ]
   };
   const fake = createPrismaFake({ rows: dataset });
   const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(fake.tx, selection([]));
 
-  assert.deepEqual(snapshot.access.users.map(({ id }) => id), ["user-admin"]);
-  assert.deepEqual(snapshot.access.roles.map(({ id }) => id), ["role-admin"]);
-  assert.deepEqual(snapshot.access.permissions.map(({ id }) => id), ["permission-a", "permission-b"]);
-  assert.deepEqual(snapshot.access.menus.map(({ id }) => id), ["menu-a", "menu-b"]);
-  assert.deepEqual(snapshot.access.userRoles.map(({ id }) => id), ["user-role-valid"]);
-  assert.deepEqual(snapshot.access.rolePermissions.map(({ id }) => id), ["grant-a", "grant-b"]);
-  assert.deepEqual(snapshot.access.roleMenus.map(({ id }) => id), ["role-menu-a", "role-menu-b"]);
-  assert.deepEqual(snapshot.customer.customers.map(({ id }) => id), ["customer-active"]);
-  assert.deepEqual(snapshot.customer.customerIdentities.map(({ id }) => id), ["identity-b"]);
-  assert.deepEqual(snapshot.customer.customerProfiles.map(({ id }) => id), ["profile-b"]);
-  assert.deepEqual(snapshot.customer.customerESignProviderAccounts.map(({ id }) => id), ["esign-b"]);
-  assert.deepEqual(snapshot.catalog.subscriptionPlans.map(({ id }) => id), [
-    "plan-1",
-    "plan-deleted-package",
-    "plan-inactive-package"
-  ]);
-  assert.deepEqual(snapshot.catalog.vehiclePackages.map(({ id }) => id), ["package-1"]);
-  assert.deepEqual(snapshot.catalog.productPriceRules.map(({ id }) => id), [
-    "price-1",
-    "price-deleted-model"
-  ]);
-  assert.deepEqual(snapshot.vehicle.vehicleModelDefinitions.map(({ id }) => id), [
-    "model-member",
-    "model-package",
-    "model-price"
-  ]);
+  assert.deepEqual(
+    snapshot.access.users.map(({ id }) => id),
+    ["user-admin"]
+  );
+  assert.deepEqual(
+    snapshot.access.roles.map(({ id }) => id),
+    ["role-admin"]
+  );
+  assert.deepEqual(
+    snapshot.access.permissions.map(({ id }) => id),
+    ["permission-a", "permission-b"]
+  );
+  assert.deepEqual(
+    snapshot.access.menus.map(({ id }) => id),
+    ["menu-a", "menu-b"]
+  );
+  assert.deepEqual(
+    snapshot.access.userRoles.map(({ id }) => id),
+    ["user-role-valid"]
+  );
+  assert.deepEqual(
+    snapshot.access.rolePermissions.map(({ id }) => id),
+    ["grant-a", "grant-b"]
+  );
+  assert.deepEqual(
+    snapshot.access.roleMenus.map(({ id }) => id),
+    ["role-menu-a", "role-menu-b"]
+  );
+  assert.deepEqual(
+    snapshot.customer.customers.map(({ id }) => id),
+    ["customer-active"]
+  );
+  assert.deepEqual(
+    snapshot.customer.customerIdentities.map(({ id }) => id),
+    ["identity-b"]
+  );
+  assert.deepEqual(
+    snapshot.customer.customerProfiles.map(({ id }) => id),
+    ["profile-b"]
+  );
+  assert.deepEqual(
+    snapshot.customer.customerESignProviderAccounts.map(({ id }) => id),
+    ["esign-b"]
+  );
+  assert.deepEqual(
+    snapshot.catalog.subscriptionPlans.map(({ id }) => id),
+    ["plan-1", "plan-deleted-package", "plan-inactive-package"]
+  );
+  assert.deepEqual(
+    snapshot.catalog.vehiclePackages.map(({ id }) => id),
+    ["package-1"]
+  );
+  assert.deepEqual(
+    snapshot.catalog.productPriceRules.map(({ id }) => id),
+    ["price-1", "price-deleted-model"]
+  );
+  assert.deepEqual(
+    snapshot.vehicle.vehicleModelDefinitions.map(({ id }) => id),
+    ["model-member", "model-package", "model-price"]
+  );
 });
 
 test("source loader drops a fixed-phone account and children when its Customer endpoint is inactive or deleted", async () => {
@@ -599,57 +1346,67 @@ test("source loader drops a fixed-phone account and children when its Customer e
   ]) {
     const fake = createPrismaFake({
       rows: {
-        customer: [completeScalarRow("customer", {
-          createdAt: now,
-          customerNo: `CUS-${endpoint.id}`,
-          customerType: "PERSONAL",
-          deletedAt: endpoint.deletedAt,
-          id: endpoint.id,
-          mobile: "18616570212",
-          name: endpoint.id,
-          status: endpoint.status,
-          updatedAt: now
-        })],
-        customerAccount: [completeScalarRow("customerAccount", {
-          accountStatus: "ACTIVE",
-          createdAt: now,
-          customerId: endpoint.id,
-          deletedAt: null,
-          id: `account-${endpoint.id}`,
-          phone: "18616570212",
-          updatedAt: now
-        })],
-        customerESignProviderAccount: [completeScalarRow("customerESignProviderAccount", {
-          accountType: "PERSONAL",
-          certBindingSource: "CALLBACK",
-          certBindingStatus: "BOUND",
-          createdAt: now,
-          customerId: endpoint.id,
-          deletedAt: null,
-          id: `esign-${endpoint.id}`,
-          provider: "FADADA",
-          providerOpenId: `open-${endpoint.id}`,
-          realNameProviderStatusSource: "CALLBACK",
-          realNameStatus: "VERIFIED",
-          registrationStatus: "REGISTERED",
-          source: "SYSTEM_REGISTER",
-          updatedAt: now
-        })],
-        customerIdentity: [completeScalarRow("customerIdentity", {
-          createdAt: now,
-          customerId: endpoint.id,
-          deletedAt: null,
-          id: `identity-${endpoint.id}`,
-          realnameVerified: true,
-          updatedAt: now
-        })],
-        customerProfile: [completeScalarRow("customerProfile", {
-          createdAt: now,
-          customerId: endpoint.id,
-          deletedAt: null,
-          id: `profile-${endpoint.id}`,
-          updatedAt: now
-        })]
+        customer: [
+          completeScalarRow("customer", {
+            createdAt: now,
+            customerNo: `CUS-${endpoint.id}`,
+            customerType: "PERSONAL",
+            deletedAt: endpoint.deletedAt,
+            id: endpoint.id,
+            mobile: "18616570212",
+            name: endpoint.id,
+            status: endpoint.status,
+            updatedAt: now
+          })
+        ],
+        customerAccount: [
+          completeScalarRow("customerAccount", {
+            accountStatus: "ACTIVE",
+            createdAt: now,
+            customerId: endpoint.id,
+            deletedAt: null,
+            id: `account-${endpoint.id}`,
+            phone: "18616570212",
+            updatedAt: now
+          })
+        ],
+        customerESignProviderAccount: [
+          completeScalarRow("customerESignProviderAccount", {
+            accountType: "PERSONAL",
+            certBindingSource: "CALLBACK",
+            certBindingStatus: "BOUND",
+            createdAt: now,
+            customerId: endpoint.id,
+            deletedAt: null,
+            id: `esign-${endpoint.id}`,
+            provider: "FADADA",
+            providerOpenId: `open-${endpoint.id}`,
+            realNameProviderStatusSource: "CALLBACK",
+            realNameStatus: "VERIFIED",
+            registrationStatus: "REGISTERED",
+            source: "SYSTEM_REGISTER",
+            updatedAt: now
+          })
+        ],
+        customerIdentity: [
+          completeScalarRow("customerIdentity", {
+            createdAt: now,
+            customerId: endpoint.id,
+            deletedAt: null,
+            id: `identity-${endpoint.id}`,
+            realnameVerified: true,
+            updatedAt: now
+          })
+        ],
+        customerProfile: [
+          completeScalarRow("customerProfile", {
+            createdAt: now,
+            customerId: endpoint.id,
+            deletedAt: null,
+            id: `profile-${endpoint.id}`,
+            updatedAt: now
+          })
+        ]
       }
     });
 
@@ -671,11 +1428,50 @@ test("target loader counts exact whitelist and forbidden delegates with paramete
   const fake = createPrismaFake({
     counts: { auditLog: 0, customer: 2, subscriptionOrder: 3, vehicle: 1 },
     rawResults: [
-      [{ appliedStepsCount: 1, checksum: "checksum-a", finishedAt: new Date("2026-08-30T00:00:00.000Z"), id: "migration-a", migrationName: "20260830000000_acceptance", rolledBackAt: null, startedAt: new Date("2026-08-30T00:00:00.000Z") }],
-      [{ columnDefault: null, columnName: "id", dataType: "uuid", isNullable: "NO", ordinalPosition: 1, tableName: "user", udtName: "uuid" }]
+      [
+        {
+          appliedStepsCount: 1,
+          checksum: "a".repeat(64),
+          finishedAt: new Date("2026-08-30T00:00:00.000Z"),
+          id: "migration-a",
+          migrationName: "20260830000000_acceptance",
+          rolledBackAt: null,
+          startedAt: new Date("2026-08-30T00:00:00.000Z")
+        }
+      ],
+      [
+        {
+          columnDefault: null,
+          columnName: "id",
+          dataType: "uuid",
+          isNullable: "NO",
+          ordinalPosition: 1,
+          tableName: "user",
+          udtName: "uuid"
+        }
+      ]
     ]
   });
-  const target = await loadStage1CleanAcceptanceTargetSnapshot(fake.tx);
+  const target = await loadStage1CleanAcceptanceTargetSnapshot(fake.tx, {
+    canonicalMigrationChecksums: [
+      { checksum: "a".repeat(64), migrationName: "20260830000000_acceptance" }
+    ],
+    canonicalSchemaFingerprintSha256: createHash("sha256")
+      .update(
+        JSON.stringify([
+          {
+            columnDefault: null,
+            columnName: "id",
+            dataType: "uuid",
+            isNullable: "NO",
+            ordinalPosition: 1,
+            tableName: "user",
+            udtName: "uuid"
+          }
+        ])
+      )
+      .digest("hex")
+  });
 
   assert.deepEqual(target.forbiddenCountKeys, EXPECTED_FORBIDDEN_DELEGATES);
   assert.deepEqual(Object.keys(target.forbiddenCounts), EXPECTED_FORBIDDEN_DELEGATES);
@@ -689,23 +1485,82 @@ test("target loader counts exact whitelist and forbidden delegates with paramete
   assert.equal(target.schemaFingerprint[0].tableName, "user");
 
   const countCalls = fake.calls.filter(({ operation }) => operation === "count");
-  assert.deepEqual([...new Set(countCalls.map(({ delegate }) => delegate))].sort(), [
-    ...new Set([...SOURCE_DELEGATES, ...EXPECTED_FORBIDDEN_DELEGATES])
-  ].sort());
-  assert.ok(countCalls.every(({ args }) => assert.deepEqual(args, { select: { _all: true } }) === undefined));
+  assert.deepEqual(
+    [...new Set(countCalls.map(({ delegate }) => delegate))].sort(),
+    [...new Set([...SOURCE_DELEGATES, ...EXPECTED_FORBIDDEN_DELEGATES])].sort()
+  );
+  assert.ok(
+    countCalls.every(({ args }) => assert.deepEqual(args, { select: { _all: true } }) === undefined)
+  );
 
   const rawCalls = fake.calls.filter(({ operation }) => operation === "$queryRaw");
   assert.equal(rawCalls.length, 2);
   assert.ok(rawCalls.every(({ strings }) => Array.isArray(strings) && Array.isArray(strings.raw)));
-  assert.deepEqual(rawCalls.map(({ values }) => values), [["%"], ["public"]]);
-  assert.equal(rawCalls.some(({ strings }) => strings.join("?").includes("SELECT *")), false);
-  assert.equal(fake.calls.some(({ operation }) => operation.startsWith("create") || operation.startsWith("update") || operation.startsWith("delete") || operation === "$executeRaw"), false);
+  assert.deepEqual(
+    rawCalls.map(({ values }) => values),
+    [["%"], ["public"]]
+  );
+  assert.equal(
+    rawCalls.some(({ strings }) => strings.join("?").includes("SELECT *")),
+    false
+  );
+  assert.equal(
+    fake.calls.some(
+      ({ operation }) =>
+        operation.startsWith("create") ||
+        operation.startsWith("update") ||
+        operation.startsWith("delete") ||
+        operation === "$executeRaw"
+    ),
+    false
+  );
 
   const forbiddenOnly = createPrismaFake({ counts: { auditLog: 1 } });
   const forbiddenCounts = await countStage1CleanAcceptanceForbiddenDomains(forbiddenOnly.tx);
   assert.deepEqual(Object.keys(forbiddenCounts), EXPECTED_FORBIDDEN_DELEGATES);
   assert.equal(forbiddenCounts.auditLog, 1);
   assert.equal(forbiddenOnly.calls.length, EXPECTED_FORBIDDEN_DELEGATES.length);
+});
+
+test("target loader rejects missing, unknown, duplicate, mismatched, and drifted canonical facts", async () => {
+  const migration = {
+    appliedStepsCount: 1,
+    checksum: "a".repeat(64),
+    finishedAt: new Date("2026-08-30T00:00:00.000Z"),
+    id: "migration-a",
+    migrationName: "20260830000000_acceptance",
+    rolledBackAt: null,
+    startedAt: new Date("2026-08-30T00:00:00.000Z")
+  };
+  const schema = {
+    columnDefault: null,
+    columnName: "id",
+    dataType: "uuid",
+    isNullable: "NO",
+    ordinalPosition: 1,
+    tableName: "user",
+    udtName: "uuid"
+  };
+  const canonical = {
+    canonicalMigrationChecksums: [
+      { checksum: "a".repeat(64), migrationName: migration.migrationName }
+    ],
+    canonicalSchemaFingerprintSha256: createHash("sha256")
+      .update(JSON.stringify([schema]))
+      .digest("hex")
+  };
+  const cases = [
+    { name: "missing", migrations: [] },
+    { name: "unknown", migrations: [{ ...migration, migrationName: "unknown" }] },
+    { name: "duplicate", migrations: [migration, { ...migration, id: "migration-b" }] },
+    { name: "mismatch", migrations: [{ ...migration, checksum: "wrong" }] },
+    { name: "drift", migrations: [migration], schema: [{ ...schema, columnName: "changed" }] }
+  ];
+  for (const item of cases) {
+    const fake = createPrismaFake({ rawResults: [item.migrations, item.schema ?? [schema]] });
+    const snapshot = await loadStage1CleanAcceptanceTargetSnapshot(fake.tx, canonical);
+    assert.equal(snapshot.schemaCanonical, false, item.name);
+  }
 });
 
 function fields(value) {
@@ -762,7 +1617,9 @@ function createPrismaFake({ counts = {}, rawResults = [], rows = {} } = {}) {
 }
 
 function findCall(fake, delegate) {
-  const call = fake.calls.find((item) => item.delegate === delegate && item.operation === "findMany");
+  const call = fake.calls.find(
+    (item) => item.delegate === delegate && item.operation === "findMany"
+  );
   assert.ok(call, `missing ${delegate}.findMany`);
   return call;
 }
@@ -797,7 +1654,8 @@ function matchesWhere(row, where) {
     if (expected === null || typeof expected !== "object" || expected instanceof Date) {
       return sameScalar(actual, expected);
     }
-    if (Object.hasOwn(expected, "in")) return expected.in.some((value) => sameScalar(actual, value));
+    if (Object.hasOwn(expected, "in"))
+      return expected.in.some((value) => sameScalar(actual, value));
     if (Object.hasOwn(expected, "not")) return actual != null && !sameScalar(actual, expected.not);
     const comparisons = [];
     if (Object.hasOwn(expected, "lte")) comparisons.push(actual <= expected.lte);

@@ -111,7 +111,10 @@ export function assertStage1AcceptanceDatabasePair(sourceUrl, targetUrl, options
     fail("DATABASE_ALLOWED_HOSTNAME_REQUIRED");
   }
   if (source.hostname !== target.hostname) fail("DATABASE_HOSTNAME_MISMATCH");
-  if (source.hostname !== options.allowedHostname.toLowerCase() || target.hostname !== options.allowedHostname.toLowerCase()) {
+  if (
+    source.hostname !== options.allowedHostname.toLowerCase() ||
+    target.hostname !== options.allowedHostname.toLowerCase()
+  ) {
     fail("DATABASE_HOSTNAME_NOT_ALLOWED");
   }
   if (source.protocol !== target.protocol) fail("DATABASE_PROTOCOL_MISMATCH");
@@ -141,7 +144,10 @@ export function classifyStage1CleanAcceptanceBaseline(snapshot = {}, inputSelect
     Object.entries(rows).map(([domain, value]) => [domain, countRows(value)])
   );
   const rowDigests = Object.fromEntries(
-    Object.entries(rows).map(([domain, value]) => [domain, digest(`stage1-acceptance:rows:${domain}:`, stableJson(value))])
+    Object.entries(rows).map(([domain, value]) => [
+      domain,
+      digest(`stage1-acceptance:rows:${domain}:`, stableJson(value))
+    ])
   );
   const sortedExceptions = exceptions.sort(compareException);
   const safeToApply = sortedExceptions.length === 0 && allZero(targetForbiddenCounts);
@@ -169,15 +175,25 @@ export function buildStage1CleanAcceptanceManifest(classification, context = {})
     source: digestContext(context.source),
     target: digestContext(context.target),
     selection: {
-      adminDigest: saltedDigest("stage1-acceptance:admin:", selection.adminUsername, context.hashSalt),
-      customerDigest: saltedDigest("stage1-acceptance:customer:", selection.customerPhone, context.hashSalt),
+      adminDigest: saltedDigest(
+        "stage1-acceptance:admin:",
+        selection.adminUsername,
+        context.hashSalt
+      ),
+      customerDigest: saltedDigest(
+        "stage1-acceptance:customer:",
+        selection.customerPhone,
+        context.hashSalt
+      ),
       vehicleDigests: selection.vehicleIds
         .map((vehicleId) => saltedDigest("stage1-acceptance:vehicle:", vehicleId, context.hashSalt))
         .sort()
     },
     counts: classification.counts ?? {},
     rowDigests: buildManifestRowDigests(classification.rows, context.hashSalt),
-    exceptions: array(classification.exceptions).map((value) => redactException(value, context.hashSalt)),
+    exceptions: array(classification.exceptions).map((value) =>
+      redactException(value, context.hashSalt)
+    ),
     safeToApply: isStage1CleanAcceptanceBaselineSafe(classification),
     generatedAt: context.generatedAt,
     hashSalt: context.hashSalt
@@ -193,20 +209,31 @@ export function isStage1CleanAcceptanceBaselineSafe(classification = {}) {
     classification.safeToApply === true &&
     array(classification.exceptions).length === 0 &&
     validTargetCountEvidence(classification.targetCountEvidence) &&
-    sameCounts(classification.targetForbiddenCounts, classification.targetCountEvidence.forbiddenCounts) &&
+    sameCounts(
+      classification.targetForbiddenCounts,
+      classification.targetCountEvidence.forbiddenCounts
+    ) &&
     allZero(classification.targetCountEvidence.forbiddenCounts) &&
     allZero(classification.targetCountEvidence.tableCounts)
   );
 }
 
 export function redactStage1CleanAcceptanceError(error) {
-  const code = typeof error?.code === "string" ? error.code : typeof error?.message === "string" ? error.message : "STAGE1_ACCEPTANCE_ERROR";
+  const code =
+    typeof error?.code === "string"
+      ? error.code
+      : typeof error?.message === "string"
+        ? error.message
+        : "STAGE1_ACCEPTANCE_ERROR";
   return { code: stableCode(code) };
 }
 
 function classifyAccess(access = {}, selection, exceptions) {
-  const users = active(array(access.users).filter((row) => row.username === selection.adminUsername));
-  if (users.length === 0) exception(exceptions, "ADMIN_NOT_FOUND", "access", selection.adminUsername);
+  const users = active(
+    array(access.users).filter((row) => row.username === selection.adminUsername)
+  );
+  if (users.length === 0)
+    exception(exceptions, "ADMIN_NOT_FOUND", "access", selection.adminUsername);
   if (users.length > 1) exception(exceptions, "ADMIN_AMBIGUOUS", "access", selection.adminUsername);
   const admin = users.length === 1 ? users[0] : undefined;
   const roles = active(array(access.roles));
@@ -222,7 +249,9 @@ function classifyAccess(access = {}, selection, exceptions) {
     : [];
   const assignedRoleIds = new Set(userRoles.map((row) => row.roleId));
   const assignedRoles = roles.filter((row) => assignedRoleIds.has(row.id));
-  const adminRoleIds = new Set(assignedRoles.filter((row) => row.code === "ADMIN").map((row) => row.id));
+  const adminRoleIds = new Set(
+    assignedRoles.filter((row) => row.code === "ADMIN").map((row) => row.id)
+  );
   const rolePermissions = array(access.rolePermissions).filter(
     (row) =>
       row?.deletedAt == null &&
@@ -261,18 +290,40 @@ function classifyAccess(access = {}, selection, exceptions) {
 
 function classifyCustomer(customer = {}, selection, exceptions) {
   const accounts = array(customer.customerAccounts).filter(
-    (row) => row?.phone === selection.customerPhone && row.deletedAt == null && row.accountStatus === "ACTIVE"
+    (row) =>
+      row?.phone === selection.customerPhone &&
+      row.deletedAt == null &&
+      row.accountStatus === "ACTIVE"
   );
-  if (accounts.length === 0) exception(exceptions, "CUSTOMER_NOT_FOUND", "customer", selection.customerPhone);
-  if (accounts.length > 1) exception(exceptions, "CUSTOMER_AMBIGUOUS", "customer", selection.customerPhone);
+  if (accounts.length === 0)
+    exception(exceptions, "CUSTOMER_NOT_FOUND", "customer", selection.customerPhone);
+  if (accounts.length > 1)
+    exception(exceptions, "CUSTOMER_AMBIGUOUS", "customer", selection.customerPhone);
   const account = accounts.length === 1 ? accounts[0] : undefined;
-  const customers = account ? active(array(customer.customers).filter((row) => row.id === account.customerId)) : [];
-  if (account && customers.length !== 1) exception(exceptions, customers.length === 0 ? "CUSTOMER_NOT_FOUND" : "CUSTOMER_AMBIGUOUS", "customer", account.customerId);
+  const customers = account
+    ? active(array(customer.customers).filter((row) => row.id === account.customerId))
+    : [];
+  if (account && customers.length !== 1)
+    exception(
+      exceptions,
+      customers.length === 0 ? "CUSTOMER_NOT_FOUND" : "CUSTOMER_AMBIGUOUS",
+      "customer",
+      account.customerId
+    );
   const customerId = customers[0]?.id;
-  const identities = array(customer.customerIdentities).filter((row) => row?.customerId === customerId && row.deletedAt == null);
-  const profiles = array(customer.customerProfiles).filter((row) => row?.customerId === customerId && row.deletedAt == null);
-  const eSignAccounts = array(customer.customerESignProviderAccounts).filter((row) => row?.customerId === customerId && validCustomerESignAccount(row));
-  if (customerId && (identities.length !== 1 || profiles.length !== 1 || eSignAccounts.length !== 1)) {
+  const identities = array(customer.customerIdentities).filter(
+    (row) => row?.customerId === customerId && row.deletedAt == null
+  );
+  const profiles = array(customer.customerProfiles).filter(
+    (row) => row?.customerId === customerId && row.deletedAt == null
+  );
+  const eSignAccounts = array(customer.customerESignProviderAccounts).filter(
+    (row) => row?.customerId === customerId && validCustomerESignAccount(row)
+  );
+  if (
+    customerId &&
+    (identities.length !== 1 || profiles.length !== 1 || eSignAccounts.length !== 1)
+  ) {
     exception(exceptions, "CUSTOMER_ESIGN_BINDING_INVALID", "customer", customerId);
   }
   return sortRows({
@@ -296,12 +347,19 @@ function classifyCatalog(catalog = {}, vehicle = {}, exceptions) {
   const subscriptionPlans = active(array(catalog.subscriptionPlans));
   const productPriceRules = active(array(catalog.productPriceRules));
   const vehicleModelDefinitions = array(vehicle.vehicleModelDefinitions);
-  if (products.length === 0 || productVersions.length === 0 || depositRules.length === 0 || vehiclePackages.length === 0 || subscriptionPlans.length === 0) {
+  if (
+    products.length === 0 ||
+    productVersions.length === 0 ||
+    depositRules.length === 0 ||
+    vehiclePackages.length === 0 ||
+    subscriptionPlans.length === 0
+  ) {
     exception(exceptions, "CATALOG_ACTIVE_SET_EMPTY", "catalog", "active");
   }
   const byId = (rows, id) => rows.filter((row) => row.id === id).length === 1;
   const closesProductVersion = (row) => byId(products, row.productId);
-  const closesProductVersionBoundRow = (row) => byId(products, row.productId) && byId(productVersions, row.productVersionId);
+  const closesProductVersionBoundRow = (row) =>
+    byId(products, row.productId) && byId(productVersions, row.productVersionId);
   const closesVehicleModel = (row) =>
     nonEmpty(row.modelDefinitionId) &&
     vehicleModelDefinitions.filter(
@@ -310,11 +368,15 @@ function classifyCatalog(catalog = {}, vehicle = {}, exceptions) {
   const closed =
     productVersions.every(closesProductVersion) &&
     vehiclePackages.every((row) => closesProductVersionBoundRow(row) && closesVehicleModel(row)) &&
-    vehiclePackageModelMembers.every((row) => byId(vehiclePackages, row.vehiclePackageId) && closesVehicleModel(row)) &&
+    vehiclePackageModelMembers.every(
+      (row) => byId(vehiclePackages, row.vehiclePackageId) && closesVehicleModel(row)
+    ) &&
     mileagePackages.every(closesProductVersionBoundRow) &&
     energyPackages.every(closesProductVersionBoundRow) &&
     benefitPackages.every(closesProductVersionBoundRow) &&
-    productPriceRules.every((row) => byId(productVersions, row.productVersionId) && closesVehicleModel(row)) &&
+    productPriceRules.every(
+      (row) => byId(productVersions, row.productVersionId) && closesVehicleModel(row)
+    ) &&
     subscriptionPlans.every(
       (row) =>
         byId(products, row.productId) &&
@@ -356,15 +418,27 @@ function classifyTemplates(templates = {}, snapshotAsOf, exceptions) {
   );
   const asOfTime = validDate(snapshotAsOf) ? snapshotAsOf.getTime() : undefined;
   if (!hasRequiredContractTypes) {
-    exception(exceptions, "CONTRACT_TEMPLATE_REQUIRED", "templates", "required-contract-template-types");
+    exception(
+      exceptions,
+      "CONTRACT_TEMPLATE_REQUIRED",
+      "templates",
+      "required-contract-template-types"
+    );
   }
   if (asOfTime === undefined) {
     exception(exceptions, "CONTRACT_TEMPLATE_REQUIRED", "templates", "snapshot-as-of");
   }
   if (requiredNotificationCodes.length === 0) {
-    exception(exceptions, "NOTIFICATION_TEMPLATE_REQUIRED", "templates", "required-notification-codes");
+    exception(
+      exceptions,
+      "NOTIFICATION_TEMPLATE_REQUIRED",
+      "templates",
+      "required-notification-codes"
+    );
   }
-  for (const templateType of hasRequiredContractTypes && asOfTime !== undefined ? requiredContractTypes : []) {
+  for (const templateType of hasRequiredContractTypes && asOfTime !== undefined
+    ? requiredContractTypes
+    : []) {
     const versions = contractVersions.filter(
       (row) => row.templateType === templateType && usableContractVersion(row, asOfTime)
     );
@@ -434,7 +508,8 @@ function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
   const allInsurancePolicies = array(vehicle.vehicleInsurancePolicies);
   const allInsuranceCoverages = array(vehicle.vehicleInsuranceCoverages);
   const insuranceCoverageReferencesClosed = allInsuranceCoverages.every(
-    (coverage) => allInsurancePolicies.filter((policy) => policy.id === coverage?.policyId).length === 1
+    (coverage) =>
+      allInsurancePolicies.filter((policy) => policy.id === coverage?.policyId).length === 1
   );
   for (const vehicleId of selection.vehicleIds) {
     const matches = vehicles.filter((row) => row?.id === vehicleId);
@@ -447,7 +522,8 @@ function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
     const currentOwnershipPeriods = rowsForVehicle(vehicle.vehicleOwnershipPeriods, item.id).filter(
       (row) => row?.endedAt === null
     );
-    const currentOwnership = currentOwnershipPeriods.length === 1 ? currentOwnershipPeriods[0] : undefined;
+    const currentOwnership =
+      currentOwnershipPeriods.length === 1 ? currentOwnershipPeriods[0] : undefined;
     const owners = currentOwnership
       ? array(vehicle.assetOwners).filter(
           (row) => row?.id === currentOwnership.assetOwnerId && row.status === "ACTIVE"
@@ -463,7 +539,12 @@ function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
         row.listingStatus === "PUBLISHED" &&
         row.portalVisible === true
     );
-    if (currentOwnershipPeriods.length !== 1 || owners.length !== 1 || models.length !== 1 || profiles.length !== 1) {
+    if (
+      currentOwnershipPeriods.length !== 1 ||
+      owners.length !== 1 ||
+      models.length !== 1 ||
+      profiles.length !== 1
+    ) {
       exception(exceptions, "VEHICLE_REFERENCE_NOT_CLOSED", "vehicle", item.id);
       continue;
     }
@@ -477,16 +558,21 @@ function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
     const sourceBindings = rowsForVehicle(vehicle.vehicleListingSourceBindings, item.id);
     const coverages = allInsuranceCoverages.filter((row) => insurancePolicyIds.has(row?.policyId));
     if (
-      !listingMedia.every((row) => row.listingProfileId === null || row.listingProfileId === profile.id) ||
+      !listingMedia.every(
+        (row) => row.listingProfileId === null || row.listingProfileId === profile.id
+      ) ||
       !listingPlans.every(
         (row) =>
           (row.listingProfileId === null || row.listingProfileId === profile.id) &&
-          array(catalog?.subscriptionPlans).filter((plan) => plan.id === row.subscriptionPlanId).length === 1
+          array(catalog?.subscriptionPlans).filter((plan) => plan.id === row.subscriptionPlanId)
+            .length === 1
       ) ||
       !documents.every(
         (row) =>
-          (row.batchId === null || documentBatches.filter((batch) => batch.id === row.batchId).length === 1) &&
-          (row.policyId === null || insurancePolicies.filter((policy) => policy.id === row.policyId).length === 1)
+          (row.batchId === null ||
+            documentBatches.filter((batch) => batch.id === row.batchId).length === 1) &&
+          (row.policyId === null ||
+            insurancePolicies.filter((policy) => policy.id === row.policyId).length === 1)
       ) ||
       !sourceBindings.every(
         (binding) => documents.filter((document) => document.id === binding.documentId).length === 1
@@ -507,22 +593,31 @@ function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
     closure.vehicleListingSourceBindings.push(...sourceBindings);
     closure.vehicleInsurancePolicies.push(...insurancePolicies);
     closure.vehicleInsuranceCoverages.push(...coverages);
-    closure.vehicleSalePriceHistories.push(...rowsForVehicle(vehicle.vehicleSalePriceHistories, item.id));
+    closure.vehicleSalePriceHistories.push(
+      ...rowsForVehicle(vehicle.vehicleSalePriceHistories, item.id)
+    );
     closure.vehicleOwnershipPeriods.push(currentOwnership);
-    closure.vehicleAssetCostProfiles.push(...rowsForVehicle(vehicle.vehicleAssetCostProfiles, item.id));
-    closure.vehicleCostLedgerEntries.push(...rowsForVehicle(vehicle.vehicleCostLedgerEntries, item.id));
+    closure.vehicleAssetCostProfiles.push(
+      ...rowsForVehicle(vehicle.vehicleAssetCostProfiles, item.id)
+    );
+    closure.vehicleCostLedgerEntries.push(
+      ...rowsForVehicle(vehicle.vehicleCostLedgerEntries, item.id)
+    );
   }
   return sortRows(closure);
 }
 
 function classifyTarget(target = {}, countEvidence, exceptions) {
-  if (target.schemaCanonical !== true) exception(exceptions, "TARGET_SCHEMA_NOT_CANONICAL", "target", "schema");
+  if (target.schemaCanonical !== true)
+    exception(exceptions, "TARGET_SCHEMA_NOT_CANONICAL", "target", "schema");
   if (!validTargetCountEvidence(countEvidence)) {
     exception(exceptions, "TARGET_COUNT_EVIDENCE_INVALID", "target", "counts");
     return;
   }
-  if (!allZero(countEvidence.tableCounts)) exception(exceptions, "TARGET_NOT_EMPTY", "target", "rows");
-  if (!allZero(countEvidence.forbiddenCounts)) exception(exceptions, "FORBIDDEN_DOMAIN_NOT_EMPTY", "target", "forbidden");
+  if (!allZero(countEvidence.tableCounts))
+    exception(exceptions, "TARGET_NOT_EMPTY", "target", "rows");
+  if (!allZero(countEvidence.forbiddenCounts))
+    exception(exceptions, "FORBIDDEN_DOMAIN_NOT_EMPTY", "target", "forbidden");
 }
 
 function digestContext(context) {
@@ -541,11 +636,16 @@ function requireContext(context) {
     !SHA256.test(context.hashSalt ?? "") ||
     !validDigestContext(context.source) ||
     !validDigestContext(context.target)
-  ) fail("MANIFEST_CONTEXT_INVALID");
+  )
+    fail("MANIFEST_CONTEXT_INVALID");
 }
 
 function requireClassification(classification) {
-  if (!classification || typeof classification !== "object" || typeof classification.safeToApply !== "boolean") {
+  if (
+    !classification ||
+    typeof classification !== "object" ||
+    typeof classification.safeToApply !== "boolean"
+  ) {
     fail("MANIFEST_CLASSIFICATION_INVALID");
   }
   try {
@@ -556,10 +656,20 @@ function requireClassification(classification) {
   if (!hasExactKeys(classification.rows, CLASSIFICATION_DOMAINS)) {
     fail("MANIFEST_CLASSIFICATION_INVALID");
   }
-  if (!validDomainCounts(classification.counts) || !validDomainDigests(classification.rowDigests) || !Array.isArray(classification.exceptions)) {
+  if (
+    !validDomainCounts(classification.counts) ||
+    !validDomainDigests(classification.rowDigests) ||
+    !Array.isArray(classification.exceptions)
+  ) {
     fail("MANIFEST_CLASSIFICATION_INVALID");
   }
-  if (!validTargetCountEvidence(classification.targetCountEvidence) || !sameCounts(classification.targetForbiddenCounts, classification.targetCountEvidence.forbiddenCounts)) {
+  if (
+    !validTargetCountEvidence(classification.targetCountEvidence) ||
+    !sameCounts(
+      classification.targetForbiddenCounts,
+      classification.targetCountEvidence.forbiddenCounts
+    )
+  ) {
     fail("MANIFEST_CLASSIFICATION_INVALID");
   }
   if (classification.safeToApply && !isStage1CleanAcceptanceBaselineSafe(classification)) {
@@ -570,7 +680,9 @@ function requireClassification(classification) {
 function redactException(value, hashSalt) {
   const code = stableCode(value?.code);
   const domain = stableDomain(value?.domain);
-  const sourceDigest = SHA256.test(value?.subjectDigest ?? "") ? value.subjectDigest : digest("stage1-acceptance:exception:unknown:", "invalid");
+  const sourceDigest = SHA256.test(value?.subjectDigest ?? "")
+    ? value.subjectDigest
+    : digest("stage1-acceptance:exception:unknown:", "invalid");
   return {
     code,
     domain,
@@ -612,80 +724,157 @@ function completeMenuParentChains(menus) {
 
 function whitelistReferencesClosed(rows) {
   const { access, customer, catalog, templates, vehicle } = rows;
-  const one = (items, id) => nonEmpty(id) && array(items).filter((row) => row?.id === id).length === 1;
+  const one = (items, id) =>
+    nonEmpty(id) && array(items).filter((row) => row?.id === id).length === 1;
   const optional = (items, id) => id == null || one(items, id);
   const every = (items, predicate) => array(items).every(predicate);
 
   return (
     every(access.menus, (row) => optional(access.menus, row.parentId)) &&
-    every(access.rolePermissions, (row) => one(access.roles, row.roleId) && one(access.permissions, row.permissionId)) &&
-    every(access.roleMenus, (row) => one(access.roles, row.roleId) && one(access.menus, row.menuId)) &&
-    every(access.userRoles, (row) => one(access.users, row.userId) && one(access.roles, row.roleId)) &&
-
+    every(
+      access.rolePermissions,
+      (row) => one(access.roles, row.roleId) && one(access.permissions, row.permissionId)
+    ) &&
+    every(
+      access.roleMenus,
+      (row) => one(access.roles, row.roleId) && one(access.menus, row.menuId)
+    ) &&
+    every(
+      access.userRoles,
+      (row) => one(access.users, row.userId) && one(access.roles, row.roleId)
+    ) &&
     every(customer.customers, (row) => optional(access.users, row.ownerUserId)) &&
     every(customer.customerAccounts, (row) => one(customer.customers, row.customerId)) &&
     every(customer.customerIdentities, (row) => one(customer.customers, row.customerId)) &&
     every(customer.customerProfiles, (row) => one(customer.customers, row.customerId)) &&
-    every(customer.customerESignProviderAccounts, (row) => one(customer.customers, row.customerId)) &&
-
-    every(catalog.productVersions, (row) => one(catalog.products, row.productId) && optional(access.users, row.approvedBy)) &&
-    every(catalog.vehiclePackages, (row) => one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId) && one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)) &&
-    every(catalog.vehiclePackageModelMembers, (row) => one(catalog.vehiclePackages, row.vehiclePackageId) && one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)) &&
-    every(catalog.mileagePackages, (row) => one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId)) &&
-    every(catalog.energyPackages, (row) => one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId)) &&
-    every(catalog.benefitPackages, (row) => one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId)) &&
-    every(catalog.subscriptionPlans, (row) =>
-      one(catalog.products, row.productId) &&
-      one(catalog.productVersions, row.productVersionId) &&
-      one(catalog.vehiclePackages, row.vehiclePackageId) &&
-      one(catalog.mileagePackages, row.mileagePackageId) &&
-      one(catalog.energyPackages, row.energyPackageId) &&
-      optional(catalog.benefitPackages, row.benefitPackageId)
+    every(customer.customerESignProviderAccounts, (row) =>
+      one(customer.customers, row.customerId)
     ) &&
-    every(catalog.productPriceRules, (row) => one(catalog.productVersions, row.productVersionId) && one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)) &&
-
+    every(
+      catalog.productVersions,
+      (row) => one(catalog.products, row.productId) && optional(access.users, row.approvedBy)
+    ) &&
+    every(
+      catalog.vehiclePackages,
+      (row) =>
+        one(catalog.products, row.productId) &&
+        one(catalog.productVersions, row.productVersionId) &&
+        one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)
+    ) &&
+    every(
+      catalog.vehiclePackageModelMembers,
+      (row) =>
+        one(catalog.vehiclePackages, row.vehiclePackageId) &&
+        one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)
+    ) &&
+    every(
+      catalog.mileagePackages,
+      (row) =>
+        one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId)
+    ) &&
+    every(
+      catalog.energyPackages,
+      (row) =>
+        one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId)
+    ) &&
+    every(
+      catalog.benefitPackages,
+      (row) =>
+        one(catalog.products, row.productId) && one(catalog.productVersions, row.productVersionId)
+    ) &&
+    every(
+      catalog.subscriptionPlans,
+      (row) =>
+        one(catalog.products, row.productId) &&
+        one(catalog.productVersions, row.productVersionId) &&
+        one(catalog.vehiclePackages, row.vehiclePackageId) &&
+        one(catalog.mileagePackages, row.mileagePackageId) &&
+        one(catalog.energyPackages, row.energyPackageId) &&
+        optional(catalog.benefitPackages, row.benefitPackageId)
+    ) &&
+    every(
+      catalog.productPriceRules,
+      (row) =>
+        one(catalog.productVersions, row.productVersionId) &&
+        one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)
+    ) &&
     every(templates.fileObjects, (row) => optional(access.users, row.uploadedBy)) &&
-    every(templates.contractVersions, (row) => one(templates.fileObjects, row.fileId) && optional(access.users, row.approvedBy)) &&
-
-    every(vehicle.assetOwners, (row) => optional(access.users, row.createdBy) && optional(access.users, row.updatedBy)) &&
+    every(
+      templates.contractVersions,
+      (row) => one(templates.fileObjects, row.fileId) && optional(access.users, row.approvedBy)
+    ) &&
+    every(
+      vehicle.assetOwners,
+      (row) => optional(access.users, row.createdBy) && optional(access.users, row.updatedBy)
+    ) &&
     every(vehicle.vehicles, (row) => one(vehicle.vehicleModelDefinitions, row.modelDefinitionId)) &&
     every(vehicle.vehicleListingProfiles, (row) => one(vehicle.vehicles, row.vehicleId)) &&
-    every(vehicle.vehicleListingMedia, (row) => one(vehicle.vehicles, row.vehicleId) && optional(vehicle.vehicleListingProfiles, row.listingProfileId)) &&
-    every(vehicle.vehicleListingPlans, (row) => one(vehicle.vehicles, row.vehicleId) && optional(vehicle.vehicleListingProfiles, row.listingProfileId) && one(catalog.subscriptionPlans, row.subscriptionPlanId)) &&
+    every(
+      vehicle.vehicleListingMedia,
+      (row) =>
+        one(vehicle.vehicles, row.vehicleId) &&
+        optional(vehicle.vehicleListingProfiles, row.listingProfileId)
+    ) &&
+    every(
+      vehicle.vehicleListingPlans,
+      (row) =>
+        one(vehicle.vehicles, row.vehicleId) &&
+        optional(vehicle.vehicleListingProfiles, row.listingProfileId) &&
+        one(catalog.subscriptionPlans, row.subscriptionPlanId)
+    ) &&
     every(vehicle.vehicleDocumentBatches, (row) => one(vehicle.vehicles, row.vehicleId)) &&
     every(vehicle.vehicleInsurancePolicies, (row) => one(vehicle.vehicles, row.vehicleId)) &&
-    every(vehicle.vehicleDocuments, (row) => one(vehicle.vehicles, row.vehicleId) && optional(vehicle.vehicleDocumentBatches, row.batchId) && optional(vehicle.vehicleInsurancePolicies, row.policyId)) &&
-    every(vehicle.vehicleInsuranceCoverages, (row) => one(vehicle.vehicleInsurancePolicies, row.policyId)) &&
-    every(vehicle.vehicleListingSourceBindings, (row) => one(vehicle.vehicles, row.vehicleId) && one(vehicle.vehicleDocuments, row.documentId)) &&
+    every(
+      vehicle.vehicleDocuments,
+      (row) =>
+        one(vehicle.vehicles, row.vehicleId) &&
+        optional(vehicle.vehicleDocumentBatches, row.batchId) &&
+        optional(vehicle.vehicleInsurancePolicies, row.policyId)
+    ) &&
+    every(vehicle.vehicleInsuranceCoverages, (row) =>
+      one(vehicle.vehicleInsurancePolicies, row.policyId)
+    ) &&
+    every(
+      vehicle.vehicleListingSourceBindings,
+      (row) => one(vehicle.vehicles, row.vehicleId) && one(vehicle.vehicleDocuments, row.documentId)
+    ) &&
     every(vehicle.vehicleSalePriceHistories, (row) => one(vehicle.vehicles, row.vehicleId)) &&
-    every(vehicle.vehicleOwnershipPeriods, (row) =>
-      one(vehicle.vehicles, row.vehicleId) &&
-      one(vehicle.assetOwners, row.assetOwnerId) &&
-      optional(access.users, row.startConfirmedBy) &&
-      optional(access.users, row.endConfirmedBy) &&
-      optional(access.users, row.createdBy)
+    every(
+      vehicle.vehicleOwnershipPeriods,
+      (row) =>
+        one(vehicle.vehicles, row.vehicleId) &&
+        one(vehicle.assetOwners, row.assetOwnerId) &&
+        optional(access.users, row.startConfirmedBy) &&
+        optional(access.users, row.endConfirmedBy) &&
+        optional(access.users, row.createdBy)
     ) &&
     every(vehicle.vehicleAssetCostProfiles, (row) => one(vehicle.vehicles, row.vehicleId)) &&
-    every(vehicle.vehicleCostLedgerEntries, (row) =>
-      one(vehicle.vehicles, row.vehicleId) &&
-      row.orderId == null &&
-      row.contractId == null &&
-      optional(customer.customers, row.customerId) &&
-      optional(vehicle.assetOwners, row.assetOwnerId) &&
-      row.workOrderId == null &&
-      row.evidenceId == null &&
-      one(access.users, row.confirmedBy) &&
-      optional(vehicle.vehicleCostLedgerEntries, row.reversalOfEntryId)
+    every(
+      vehicle.vehicleCostLedgerEntries,
+      (row) =>
+        one(vehicle.vehicles, row.vehicleId) &&
+        row.orderId == null &&
+        row.contractId == null &&
+        optional(customer.customers, row.customerId) &&
+        optional(vehicle.assetOwners, row.assetOwnerId) &&
+        row.workOrderId == null &&
+        row.evidenceId == null &&
+        one(access.users, row.confirmedBy) &&
+        optional(vehicle.vehicleCostLedgerEntries, row.reversalOfEntryId)
     )
   );
 }
 
 function catalogModelDefinitionIds(catalog = {}) {
-  return [...new Set([
-    ...array(catalog.vehiclePackages).map((row) => row?.modelDefinitionId),
-    ...array(catalog.vehiclePackageModelMembers).map((row) => row?.modelDefinitionId),
-    ...array(catalog.productPriceRules).map((row) => row?.modelDefinitionId)
-  ].filter(nonEmpty))].sort();
+  return [
+    ...new Set(
+      [
+        ...array(catalog.vehiclePackages).map((row) => row?.modelDefinitionId),
+        ...array(catalog.vehiclePackageModelMembers).map((row) => row?.modelDefinitionId),
+        ...array(catalog.productPriceRules).map((row) => row?.modelDefinitionId)
+      ].filter(nonEmpty)
+    )
+  ].sort();
 }
 
 function usableVehicleModelDefinition(row) {
@@ -698,7 +887,9 @@ function sortRows(value) {
 }
 
 function countRows(value) {
-  return Array.isArray(value) ? value.length : Object.values(value).reduce((total, rows) => total + countRows(rows), 0);
+  return Array.isArray(value)
+    ? value.length
+    : Object.values(value).reduce((total, rows) => total + countRows(rows), 0);
 }
 
 function tlsPolicy(url) {
@@ -726,7 +917,11 @@ function canonical(value) {
   if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(canonical).sort(compareValue);
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical(value[key])])
+    );
   }
   if (typeof value === "bigint") return value.toString();
   return value;
@@ -737,7 +932,9 @@ function compareValue(left, right) {
 }
 
 function compareException(left, right) {
-  return `${left.code}|${left.domain}|${left.subjectDigest}`.localeCompare(`${right.code}|${right.domain}|${right.subjectDigest}`);
+  return `${left.code}|${left.domain}|${left.subjectDigest}`.localeCompare(
+    `${right.code}|${right.domain}|${right.subjectDigest}`
+  );
 }
 
 function compareBusinessRow(left, right) {
@@ -748,14 +945,27 @@ function compareBusinessRow(left, right) {
 
 function businessKey(row) {
   if (!row || typeof row !== "object") return stableJson(row);
-  for (const key of ["id", "code", "username", "phone", "templateCode", "vehicleId", "roleId", "permissionId", "menuId"]) {
+  for (const key of [
+    "id",
+    "code",
+    "username",
+    "phone",
+    "templateCode",
+    "vehicleId",
+    "roleId",
+    "permissionId",
+    "menuId"
+  ]) {
     if (typeof row[key] === "string") return `${key}:${row[key]}`;
   }
   return stableJson(row);
 }
 
 function allZero(counts) {
-  return validCountMap(counts, Object.keys(counts)) && Object.values(counts).every((count) => count === 0);
+  return (
+    validCountMap(counts, Object.keys(counts)) &&
+    Object.values(counts).every((count) => count === 0)
+  );
 }
 
 function array(value) {
@@ -771,7 +981,8 @@ function positive(value) {
 }
 
 function requiredCodes(value) {
-  if (!Array.isArray(value) || value.length === 0 || value.some((code) => !nonEmpty(code))) return [];
+  if (!Array.isArray(value) || value.length === 0 || value.some((code) => !nonEmpty(code)))
+    return [];
   return [...new Set(value)].sort();
 }
 
@@ -804,7 +1015,8 @@ function usableContractVersion(row, asOfTime) {
 }
 
 function validPdfFile(file) {
-  return Boolean(file) &&
+  return (
+    Boolean(file) &&
     nonEmpty(file.id) &&
     nonEmpty(file.bucket) &&
     nonEmpty(file.objectKey) &&
@@ -812,7 +1024,8 @@ function validPdfFile(file) {
     typeof file.mimeType === "string" &&
     file.mimeType.toLowerCase().split(";", 1)[0].trim() === "application/pdf" &&
     positive(file.sizeBytes) &&
-    SHA256.test(file.contentSha256 ?? "");
+    SHA256.test(file.contentSha256 ?? "")
+  );
 }
 
 function validCustomerESignAccount(row) {
@@ -831,8 +1044,14 @@ function eligibleVehicle(vehicle, evidence) {
     vehicle.status === "AVAILABLE" &&
     vehicle.currentSalePriceAmount > 0 &&
     vehicle.salePriceStatus === "EFFECTIVE" &&
+    evidence?.activeAssetWorkOrderCount === 0 &&
+    evidence?.activeServiceCaseCount === 0 &&
     evidence?.blockingRestrictionCount === 0 &&
     evidence?.overlappingSubscriptionPeriodCount === 0 &&
+    evidence?.deliveryCount === 0 &&
+    evidence?.orderCount === 0 &&
+    evidence?.requiredDocumentsAndInsuranceReady === true &&
+    evidence?.returnCount === 0 &&
     evidence?.currentSalePricePositive === true &&
     evidence?.salePriceStatusEffective === true
   );
@@ -856,13 +1075,22 @@ function copyTargetCountEvidence(target = {}) {
 }
 
 function validTargetCountEvidence(value) {
-  return Boolean(value) &&
+  return (
+    Boolean(value) &&
     validCountMap(value.forbiddenCounts, value.forbiddenCountKeys) &&
-    validCountMap(value.tableCounts, value.tableCountKeys);
+    validCountMap(value.tableCounts, value.tableCountKeys)
+  );
 }
 
 function validCountMap(counts, countKeys) {
-  if (!counts || typeof counts !== "object" || Array.isArray(counts) || !Array.isArray(countKeys) || countKeys.length === 0) return false;
+  if (
+    !counts ||
+    typeof counts !== "object" ||
+    Array.isArray(counts) ||
+    !Array.isArray(countKeys) ||
+    countKeys.length === 0
+  )
+    return false;
   const actualKeys = Object.keys(counts).sort();
   const expectedKeys = [...countKeys].sort();
   return (
@@ -879,26 +1107,45 @@ function sameCounts(left, right) {
 }
 
 function validDigestContext(value) {
-  return Boolean(value) && [value.databaseDigest, value.migrationCatalogDigest, value.schemaDigest].every((digestValue) => SHA256.test(digestValue ?? ""));
+  return (
+    Boolean(value) &&
+    [value.databaseDigest, value.migrationCatalogDigest, value.schemaDigest].every((digestValue) =>
+      SHA256.test(digestValue ?? "")
+    )
+  );
 }
 
 function validIsoTimestamp(value) {
-  return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+  return (
+    typeof value === "string" &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value
+  );
 }
 
 function validDomainCounts(value) {
-  return hasExactKeys(value, CLASSIFICATION_DOMAINS) && CLASSIFICATION_DOMAINS.every((domain) => Number.isSafeInteger(value[domain]) && value[domain] >= 0);
+  return (
+    hasExactKeys(value, CLASSIFICATION_DOMAINS) &&
+    CLASSIFICATION_DOMAINS.every(
+      (domain) => Number.isSafeInteger(value[domain]) && value[domain] >= 0
+    )
+  );
 }
 
 function validDomainDigests(value) {
-  return hasExactKeys(value, CLASSIFICATION_DOMAINS) && CLASSIFICATION_DOMAINS.every((domain) => SHA256.test(value[domain] ?? ""));
+  return (
+    hasExactKeys(value, CLASSIFICATION_DOMAINS) &&
+    CLASSIFICATION_DOMAINS.every((domain) => SHA256.test(value[domain] ?? ""))
+  );
 }
 
 function hasExactKeys(value, expectedKeys) {
-  return Boolean(value) &&
+  return (
+    Boolean(value) &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    stableJson(Object.keys(value).sort()) === stableJson([...expectedKeys].sort());
+    stableJson(Object.keys(value).sort()) === stableJson([...expectedKeys].sort())
+  );
 }
 
 function buildManifestRowDigests(rows, hashSalt) {

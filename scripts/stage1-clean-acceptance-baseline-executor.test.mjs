@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
@@ -19,6 +20,23 @@ const HASH_SALT = "1".repeat(64);
 const GIT_SHA = "2".repeat(40);
 const IMAGE_REF = `registry.example/api@sha256:${"3".repeat(64)}`;
 const APPLY_ENV = "STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY";
+const TEST_SCHEMA_ROW = {
+  tableName: "user",
+  columnName: "id",
+  dataType: "uuid",
+  isNullable: "NO",
+  ordinalPosition: 1,
+  columnDefault: null,
+  udtName: "uuid"
+};
+const TEST_CANONICAL_METADATA = {
+  canonicalMigrationChecksums: [
+    { checksum: "a".repeat(64), migrationName: "20260830000000_acceptance" }
+  ],
+  canonicalSchemaFingerprintSha256: createHash("sha256")
+    .update(JSON.stringify([TEST_SCHEMA_ROW]))
+    .digest("hex")
+};
 
 const NOTIFICATION_CODES = [
   "APPLICATION_SUBMITTED_IN_APP",
@@ -39,6 +57,22 @@ const NOTIFICATION_CODES = [
   "SERVICE_CASE_UPDATE_IN_APP",
   "SERVICE_CASE_UPDATE_WECHAT"
 ];
+
+test("canonical metadata injection is unavailable outside the Node test runner", async () => {
+  const source = createDatabaseFake("subscription_saas_staging", sourceRows());
+  const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});
+  const previous = process.env.NODE_TEST_CONTEXT;
+  delete process.env.NODE_TEST_CONTEXT;
+  try {
+    await assert.rejects(
+      executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target)),
+      (error) => error?.message === "MANIFEST_CONTEXT_INVALID"
+    );
+  } finally {
+    if (previous === undefined) delete process.env.NODE_TEST_CONTEXT;
+    else process.env.NODE_TEST_CONTEXT = previous;
+  }
+});
 
 test("dry-run starts a RepeatableRead source transaction with tagged READ ONLY and makes zero writes", async () => {
   const source = createDatabaseFake("subscription_saas_staging", sourceRows());
@@ -308,25 +342,15 @@ test("target-only validation proves per-table rows, fingerprints, forbidden doma
     migrationRows: [
       {
         id: "migration-1",
-        checksum: "checksum",
-        migrationName: "0001",
+        checksum: "a".repeat(64),
+        migrationName: "20260830000000_acceptance",
         startedAt: new Date(0),
         finishedAt: new Date(1),
         rolledBackAt: null,
         appliedStepsCount: 1
       }
     ],
-    schemaRows: [
-      {
-        tableName: "user",
-        columnName: "id",
-        dataType: "uuid",
-        isNullable: "NO",
-        ordinalPosition: 1,
-        columnDefault: null,
-        udtName: "uuid"
-      }
-    ]
+    schemaRows: [TEST_SCHEMA_ROW]
   };
   const source = createDatabaseFake("subscription_saas_staging", sourceRows());
   const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {}, metadata);
@@ -344,7 +368,8 @@ test("target-only validation proves per-table rows, fingerprints, forbidden doma
       (tx) =>
         validateStage1CleanAcceptanceTargetBaseline(tx, {
           approvedManifest: dry.manifest,
-          approvedManifestSha256: dry.manifestSha256
+          approvedManifestSha256: dry.manifestSha256,
+          canonicalMetadata: TEST_CANONICAL_METADATA
         }),
       { isolationLevel: "RepeatableRead" }
     );
@@ -406,7 +431,8 @@ test("target-only validation proves per-table rows, fingerprints, forbidden doma
         caseTarget.client.$transaction((tx) =>
           validateStage1CleanAcceptanceTargetBaseline(tx, {
             approvedManifest: caseDry.manifest,
-            approvedManifestSha256: caseDry.manifestSha256
+            approvedManifestSha256: caseDry.manifestSha256,
+            canonicalMetadata: TEST_CANONICAL_METADATA
           })
         ),
         (error) => error?.message === "MANIFEST_STALE"
@@ -736,6 +762,7 @@ test("apply bounds serialization recovery to three fresh transactions", async ()
 
 function baseOptions(mode, source, target) {
   return {
+    canonicalMetadata: TEST_CANONICAL_METADATA,
     generatedAt: GENERATED_AT,
     gitSha: GIT_SHA,
     hashSalt: HASH_SALT,
@@ -1173,8 +1200,8 @@ function createClient(getRows, calls, options) {
           options.migrationRows ?? [
             {
               id: "migration-1",
-              checksum: "checksum",
-              migrationName: "0001",
+              checksum: "a".repeat(64),
+              migrationName: "20260830000000_acceptance",
               startedAt: new Date(0),
               finishedAt: new Date(1),
               rolledBackAt: null,
@@ -1183,19 +1210,7 @@ function createClient(getRows, calls, options) {
           ]
         );
       if (/information_schema\.columns/i.test(sql))
-        return structuredClone(
-          options.schemaRows ?? [
-            {
-              tableName: "user",
-              columnName: "id",
-              dataType: "uuid",
-              isNullable: "NO",
-              ordinalPosition: 1,
-              columnDefault: null,
-              udtName: "uuid"
-            }
-          ]
-        );
+        return structuredClone(options.schemaRows ?? [TEST_SCHEMA_ROW]);
       return [];
     },
     async $executeRaw() {
@@ -1221,7 +1236,15 @@ function createClient(getRows, calls, options) {
               status: row.status,
               salePriceStatus: row.salePriceStatus,
               currentSalePriceAmount: row.currentSalePriceAmount,
-              _count: { operationalRestrictions: 0, subscriptionPeriods: 0 }
+              _count: {
+                assetWorkOrders: 0,
+                deliveries: 0,
+                operationalRestrictions: 0,
+                orders: 0,
+                returns: 0,
+                serviceCases: 0,
+                subscriptionPeriods: 0
+              }
             }));
           }
           if (

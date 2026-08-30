@@ -811,7 +811,7 @@ SQL
   chown root:root "$EVIDENCE_DIR/target-validator.post-switch.json"
   chmod 0600 "$EVIDENCE_DIR/target-validator.post-switch.json"
   assert_private_file "$EVIDENCE_DIR/target-validator.post-switch.json"
-  jq -e '.safe == true and .mode == "target-validator" and .manifestSha256 == $sha' \
+  jq -e '.operation == "STAGE1_CLEAN_ACCEPTANCE_TARGET_VALIDATOR" and .result.safe == true and .result.manifestSha256 == $sha' \
     --arg sha "$MANIFEST_SHA" "$EVIDENCE_DIR/target-validator.post-switch.json" >/dev/null
 
   docker exec "$switched_api_container_id" node -e '

@@ -259,6 +259,12 @@ case "$args" in
     printf '%s\\n' gate:billing >>"$TRACE_FILE"
     test "$FAILURE_SCENARIO" != billing
     ;;
+  *target-validator.post-switch.json*)
+    printf '%s\\n' gate:validator-evidence >>"$TRACE_FILE"
+    [[ "$args" = *'.operation == "STAGE1_CLEAN_ACCEPTANCE_TARGET_VALIDATOR"'* ]]
+    [[ "$args" = *'.result.safe == true'* ]]
+    [[ "$args" = *'.result.manifestSha256 == $sha'* ]]
+    ;;
   *) : ;;
 esac`
   );
@@ -323,7 +329,7 @@ case "$args" in
   *'stage1-clean-acceptance-target-validator.mjs'*)
     printf '%s\\n' gate:validator >>"$TRACE_FILE"
     test "$FAILURE_SCENARIO" != validator || exit 72
-    printf '%s\\n' '{"safe":true,"mode":"target-validator","manifestSha256":"${SHA256}"}' >"$EVIDENCE_DIR/target-validator.post-switch.json"
+    printf '%s\\n' '{"approvedManifest":{},"approvedManifestSha256":"${SHA256}","operation":"STAGE1_CLEAN_ACCEPTANCE_TARGET_VALIDATOR","result":{"safe":true,"manifestSha256":"${SHA256}","mode":"target-validator"}}' >"$EVIDENCE_DIR/target-validator.post-switch.json"
     ;;
   *'exec '*' node -e '*)
     printf '%s\\n' gate:runtime-flags >>"$TRACE_FILE"

@@ -22,9 +22,21 @@ const REQUIRED_CONTRACT_TEMPLATE_TYPES = [
   "SUBSCRIPTION_EXTENSION"
 ];
 const CONTRACT_TEMPLATE_FIXTURES = [
-  ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "SUBSCRIPTION_STANDARD", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1"],
-  ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2", "DELIVERY_HANDOVER", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"],
-  ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3", "SUBSCRIPTION_EXTENSION", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3"]
+  [
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+    "SUBSCRIPTION_STANDARD",
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1"
+  ],
+  [
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+    "DELIVERY_HANDOVER",
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"
+  ],
+  [
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+    "SUBSCRIPTION_EXTENSION",
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3"
+  ]
 ];
 
 function expectCode(callback, code) {
@@ -128,27 +140,85 @@ function completeSnapshot(overrides = {}) {
       ]
     },
     catalog: {
-      benefitPackages: [{ id: "benefit-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }],
+      benefitPackages: [
+        {
+          id: "benefit-1",
+          productId: "product-1",
+          productVersionId: "product-version-1",
+          status: "ACTIVE"
+        }
+      ],
       depositRules: [{ grade: "A", id: "deposit-1", status: "ACTIVE" }],
-      energyPackages: [{ id: "energy-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }],
-      mileagePackages: [{ id: "mileage-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }],
+      energyPackages: [
+        {
+          id: "energy-1",
+          productId: "product-1",
+          productVersionId: "product-version-1",
+          status: "ACTIVE"
+        }
+      ],
+      mileagePackages: [
+        {
+          id: "mileage-1",
+          productId: "product-1",
+          productVersionId: "product-version-1",
+          status: "ACTIVE"
+        }
+      ],
       products: [{ id: "product-1", status: "ACTIVE" }],
-      productVersions: [
-        { id: "product-version-1", productId: "product-1", status: "ACTIVE" }
+      productVersions: [{ id: "product-version-1", productId: "product-1", status: "ACTIVE" }],
+      productPriceRules: [
+        {
+          id: "price-rule-1",
+          modelDefinitionId: "model-1",
+          productVersionId: "product-version-1",
+          status: "ACTIVE"
+        }
       ],
-      productPriceRules: [{ id: "price-rule-1", modelDefinitionId: "model-1", productVersionId: "product-version-1", status: "ACTIVE" }],
       subscriptionPlans: [
-        { benefitPackageId: "benefit-1", energyPackageId: "energy-1", id: "plan-1", mileagePackageId: "mileage-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE", vehiclePackageId: "package-1" }
+        {
+          benefitPackageId: "benefit-1",
+          energyPackageId: "energy-1",
+          id: "plan-1",
+          mileagePackageId: "mileage-1",
+          productId: "product-1",
+          productVersionId: "product-version-1",
+          status: "ACTIVE",
+          vehiclePackageId: "package-1"
+        }
       ],
-      vehiclePackageModelMembers: [{ id: "package-member-1", modelDefinitionId: "model-1", vehiclePackageId: "package-1" }],
-      vehiclePackages: [{ id: "package-1", modelDefinitionId: "model-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }]
+      vehiclePackageModelMembers: [
+        { id: "package-member-1", modelDefinitionId: "model-1", vehiclePackageId: "package-1" }
+      ],
+      vehiclePackages: [
+        {
+          id: "package-1",
+          modelDefinitionId: "model-1",
+          productId: "product-1",
+          productVersionId: "product-version-1",
+          status: "ACTIVE"
+        }
+      ]
     },
     customer: {
       customerAccounts: [
-        { accountStatus: "ACTIVE", customerId: "customer-1", id: "customer-account-1", phone: "18616570212" }
+        {
+          accountStatus: "ACTIVE",
+          customerId: "customer-1",
+          id: "customer-account-1",
+          phone: "18616570212"
+        }
       ],
       customerESignProviderAccounts: [
-        { certBindingStatus: "BOUND", customerId: "customer-1", id: "esign-1", provider: "FADADA", providerOpenId: "provider-open-id-1", realNameStatus: "VERIFIED", registrationStatus: "REGISTERED" }
+        {
+          certBindingStatus: "BOUND",
+          customerId: "customer-1",
+          id: "esign-1",
+          provider: "FADADA",
+          providerOpenId: "provider-open-id-1",
+          realNameStatus: "VERIFIED",
+          registrationStatus: "REGISTERED"
+        }
       ],
       customerIdentities: [{ customerId: "customer-1", id: "identity-1", realnameVerified: true }],
       customerProfiles: [{ customerId: "customer-1", id: "profile-1" }],
@@ -162,8 +232,12 @@ function completeSnapshot(overrides = {}) {
       tableCounts: { customer: 0, user: 0, vehicle: 0 }
     },
     templates: {
-      contractVersions: CONTRACT_TEMPLATE_FIXTURES.map((fixture) => contractVersion(fixture, { approvedBy: "admin-user" })),
-      fileObjects: CONTRACT_TEMPLATE_FIXTURES.map((fixture) => fileObject(fixture, { uploadedBy: "admin-user" })),
+      contractVersions: CONTRACT_TEMPLATE_FIXTURES.map((fixture) =>
+        contractVersion(fixture, { approvedBy: "admin-user" })
+      ),
+      fileObjects: CONTRACT_TEMPLATE_FIXTURES.map((fixture) =>
+        fileObject(fixture, { uploadedBy: "admin-user" })
+      ),
       notificationTemplates: [notificationTemplate()],
       requiredContractTemplateTypes: REQUIRED_CONTRACT_TEMPLATE_TYPES,
       requiredNotificationTemplateCodes: ["CONTRACT_PENDING_IN_APP"]
@@ -172,9 +246,15 @@ function completeSnapshot(overrides = {}) {
       assetOwners: [{ id: "owner-1", status: "ACTIVE" }],
       eligibilityEvidence: {
         [VEHICLE_A]: {
+          activeAssetWorkOrderCount: 0,
+          activeServiceCaseCount: 0,
           blockingRestrictionCount: 0,
           currentSalePricePositive: true,
+          deliveryCount: 0,
+          orderCount: 0,
           overlappingSubscriptionPeriodCount: 0,
+          requiredDocumentsAndInsuranceReady: true,
+          returnCount: 0,
           salePriceStatusEffective: true
         }
       },
@@ -184,7 +264,7 @@ function completeSnapshot(overrides = {}) {
           id: VEHICLE_A,
           modelDefinitionId: "model-1",
           salePriceStatus: "EFFECTIVE",
-          status: "AVAILABLE",
+          status: "AVAILABLE"
         }
       ],
       vehicleAssetCostProfiles: [{ id: "cost-profile-1", vehicleId: VEHICLE_A }],
@@ -221,15 +301,37 @@ function completeSnapshot(overrides = {}) {
         }
       ],
       vehicleDocumentBatches: [{ id: "document-batch-1", vehicleId: VEHICLE_A }],
-      vehicleDocuments: [{ batchId: "document-batch-1", id: "document-1", policyId: null, vehicleId: VEHICLE_A }],
+      vehicleDocuments: [
+        { batchId: "document-batch-1", id: "document-1", policyId: null, vehicleId: VEHICLE_A }
+      ],
       vehicleInsuranceCoverages: [{ id: "coverage-1", policyId: "policy-1" }],
       vehicleInsurancePolicies: [{ id: "policy-1", vehicleId: VEHICLE_A }],
       vehicleListingMedia: [{ id: "media-1", listingProfileId: "listing-1", vehicleId: VEHICLE_A }],
-      vehicleListingPlans: [{ id: "listing-plan-1", listingProfileId: "listing-1", subscriptionPlanId: "plan-1", vehicleId: VEHICLE_A }],
-      vehicleListingProfiles: [{ id: "listing-1", listingStatus: "PUBLISHED", portalVisible: true, vehicleId: VEHICLE_A }],
-      vehicleListingSourceBindings: [{ documentId: "document-1", id: "source-binding-1", vehicleId: VEHICLE_A }],
+      vehicleListingPlans: [
+        {
+          id: "listing-plan-1",
+          listingProfileId: "listing-1",
+          subscriptionPlanId: "plan-1",
+          vehicleId: VEHICLE_A
+        }
+      ],
+      vehicleListingProfiles: [
+        { id: "listing-1", listingStatus: "PUBLISHED", portalVisible: true, vehicleId: VEHICLE_A }
+      ],
+      vehicleListingSourceBindings: [
+        { documentId: "document-1", id: "source-binding-1", vehicleId: VEHICLE_A }
+      ],
       vehicleModelDefinitions: [{ enabled: true, id: "model-1", portalVisible: true }],
-      vehicleOwnershipPeriods: [{ assetOwnerId: "owner-1", endedAt: null, endReason: null, id: "ownership-1", startReason: "INITIAL_ACQUISITION", vehicleId: VEHICLE_A }],
+      vehicleOwnershipPeriods: [
+        {
+          assetOwnerId: "owner-1",
+          endedAt: null,
+          endReason: null,
+          id: "ownership-1",
+          startReason: "INITIAL_ACQUISITION",
+          vehicleId: VEHICLE_A
+        }
+      ],
       vehicleSalePriceHistories: [{ id: "sale-price-1", vehicleId: VEHICLE_A }]
     }
   };
@@ -247,11 +349,21 @@ function deepMerge(target, source) {
 
 test("selection rejects identities outside the fixed acceptance pair", () => {
   expectCode(
-    () => parseStage1CleanAcceptanceSelection({ adminUsername: "other", customerPhone: "18616570212", vehicleIds: [] }),
+    () =>
+      parseStage1CleanAcceptanceSelection({
+        adminUsername: "other",
+        customerPhone: "18616570212",
+        vehicleIds: []
+      }),
     "IDENTITY_SELECTION_NOT_ALLOWED"
   );
   expectCode(
-    () => parseStage1CleanAcceptanceSelection({ adminUsername: "keqi_119", customerPhone: "13800000000", vehicleIds: [] }),
+    () =>
+      parseStage1CleanAcceptanceSelection({
+        adminUsername: "keqi_119",
+        customerPhone: "13800000000",
+        vehicleIds: []
+      }),
     "IDENTITY_SELECTION_NOT_ALLOWED"
   );
 });
@@ -267,7 +379,12 @@ test("selection normalizes UUIDs by lexical order and removes exact duplicates",
 test("selection rejects blank and malformed vehicle UUIDs", () => {
   for (const vehicleIds of [[""], ["  "], ["not-a-uuid"]]) {
     expectCode(
-      () => parseStage1CleanAcceptanceSelection({ adminUsername: "keqi_119", customerPhone: "18616570212", vehicleIds }),
+      () =>
+        parseStage1CleanAcceptanceSelection({
+          adminUsername: "keqi_119",
+          customerPhone: "18616570212",
+          vehicleIds
+        }),
       "VEHICLE_ID_INVALID"
     );
   }
@@ -275,7 +392,9 @@ test("selection rejects blank and malformed vehicle UUIDs", () => {
 
 test("database identity exposes only comparable non-secret fields", () => {
   assert.deepEqual(
-    parseStage1AcceptanceDatabaseIdentity("postgresql://operator:super-secret@db.internal:5544/subscription_saas_staging?sslmode=verify-full"),
+    parseStage1AcceptanceDatabaseIdentity(
+      "postgresql://operator:super-secret@db.internal:5544/subscription_saas_staging?sslmode=verify-full"
+    ),
     {
       databaseName: "subscription_saas_staging",
       hostname: "db.internal",
@@ -288,17 +407,44 @@ test("database identity exposes only comparable non-secret fields", () => {
 });
 
 test("database pair rejects unsafe identities without echoing URLs or passwords", () => {
-  const source = "postgresql://operator:source-password@db.internal:5432/subscription_saas_staging?sslmode=require";
-  const target = "postgresql://operator:target-password@db.internal:5432/subscription_saas_staging_acceptance_20260830?sslmode=require";
+  const source =
+    "postgresql://operator:source-password@db.internal:5432/subscription_saas_staging?sslmode=require";
+  const target =
+    "postgresql://operator:target-password@db.internal:5432/subscription_saas_staging_acceptance_20260830?sslmode=require";
   const cases = [
-    [source.replace("subscription_saas_staging?", "other?"), target, {}, "SOURCE_DATABASE_NOT_ALLOWED"],
+    [
+      source.replace("subscription_saas_staging?", "other?"),
+      target,
+      {},
+      "SOURCE_DATABASE_NOT_ALLOWED"
+    ],
     [source, target.replace("acceptance_20260830", "wrong"), {}, "TARGET_DATABASE_NOT_ALLOWED"],
     [source, source, { allowedHostname: "db.internal" }, "DATABASE_PAIR_SAME_DATABASE"],
-    [source, target.replace("db.internal", "other.internal"), { allowedHostname: "db.internal" }, "DATABASE_HOSTNAME_MISMATCH"],
+    [
+      source,
+      target.replace("db.internal", "other.internal"),
+      { allowedHostname: "db.internal" },
+      "DATABASE_HOSTNAME_MISMATCH"
+    ],
     [source, target, { allowedHostname: "other.internal" }, "DATABASE_HOSTNAME_NOT_ALLOWED"],
-    [source, target.replace(":5432", ":5433"), { allowedHostname: "db.internal" }, "DATABASE_PORT_MISMATCH"],
-    [source, target.replace("operator:", "reader:"), { allowedHostname: "db.internal" }, "DATABASE_USERNAME_MISMATCH"],
-    [source, target.replace("sslmode=require", "sslmode=disable"), { allowedHostname: "db.internal" }, "DATABASE_TLS_POLICY_MISMATCH"],
+    [
+      source,
+      target.replace(":5432", ":5433"),
+      { allowedHostname: "db.internal" },
+      "DATABASE_PORT_MISMATCH"
+    ],
+    [
+      source,
+      target.replace("operator:", "reader:"),
+      { allowedHostname: "db.internal" },
+      "DATABASE_USERNAME_MISMATCH"
+    ],
+    [
+      source,
+      target.replace("sslmode=require", "sslmode=disable"),
+      { allowedHostname: "db.internal" },
+      "DATABASE_TLS_POLICY_MISMATCH"
+    ],
     [source, target, {}, "DATABASE_ALLOWED_HOSTNAME_REQUIRED"]
   ];
 
@@ -318,7 +464,10 @@ test("classification requires an explicit vehicle selection and never chooses a 
   const result = classifyStage1CleanAcceptanceBaseline(completeSnapshot(), selection([]));
   assert.equal(result.safeToApply, false);
   assert.deepEqual(result.rows.vehicle.vehicles, []);
-  assert.deepEqual(result.exceptions.map(({ code }) => code), ["VEHICLE_SELECTION_REQUIRED"]);
+  assert.deepEqual(
+    result.exceptions.map(({ code }) => code),
+    ["VEHICLE_SELECTION_REQUIRED"]
+  );
 });
 
 test("classification closes the complete fixed baseline and marks it safe", () => {
@@ -340,7 +489,8 @@ test("whitelist cross-domain user foreign keys must resolve to the retained admi
     (snapshot) => (snapshot.templates.fileObjects[0].uploadedBy = "unretained-user"),
     (snapshot) => (snapshot.vehicle.assetOwners[0].createdBy = "unretained-user"),
     (snapshot) => (snapshot.vehicle.assetOwners[0].updatedBy = "unretained-user"),
-    (snapshot) => (snapshot.vehicle.vehicleOwnershipPeriods[0].startConfirmedBy = "unretained-user"),
+    (snapshot) =>
+      (snapshot.vehicle.vehicleOwnershipPeriods[0].startConfirmedBy = "unretained-user"),
     (snapshot) => (snapshot.vehicle.vehicleOwnershipPeriods[0].endConfirmedBy = "unretained-user"),
     (snapshot) => (snapshot.vehicle.vehicleOwnershipPeriods[0].createdBy = "unretained-user")
   ];
@@ -357,7 +507,10 @@ test("cost ledger closes retained customer owner user and reversal endpoints and
   const baseline = classifyStage1CleanAcceptanceBaseline(completeSnapshot(), selection());
   assert.equal(baseline.safeToApply, true);
   assert.deepEqual(
-    baseline.rows.vehicle.vehicleCostLedgerEntries.map(({ id, reversalOfEntryId }) => ({ id, reversalOfEntryId })),
+    baseline.rows.vehicle.vehicleCostLedgerEntries.map(({ id, reversalOfEntryId }) => ({
+      id,
+      reversalOfEntryId
+    })),
     [
       { id: "cost-ledger-1", reversalOfEntryId: null },
       { id: "cost-ledger-2", reversalOfEntryId: "cost-ledger-1" }
@@ -400,7 +553,10 @@ test("classification retains the real Prisma catalog, customer, and vehicle whit
     "vehiclePackages"
   ]);
   assert.equal(result.rows.customer.customerAccounts[0].accountStatus, "ACTIVE");
-  assert.equal(result.rows.customer.customerESignProviderAccounts[0].providerOpenId, "provider-open-id-1");
+  assert.equal(
+    result.rows.customer.customerESignProviderAccounts[0].providerOpenId,
+    "provider-open-id-1"
+  );
   assert.equal("providerAccountId" in result.rows.customer.customerESignProviderAccounts[0], false);
   assert.deepEqual(Object.keys(result.rows.vehicle).sort(), [
     "assetOwners",
@@ -435,8 +591,18 @@ test("catalog accepts a null benefit-package FK and requires exactly one match f
   for (const benefitPackages of [
     [],
     [
-      { id: "benefit-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" },
-      { id: "benefit-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }
+      {
+        id: "benefit-1",
+        productId: "product-1",
+        productVersionId: "product-version-1",
+        status: "ACTIVE"
+      },
+      {
+        id: "benefit-1",
+        productId: "product-1",
+        productVersionId: "product-version-1",
+        status: "ACTIVE"
+      }
     ]
   ]) {
     const result = classifyStage1CleanAcceptanceBaseline(
@@ -461,27 +627,28 @@ test("catalog model references close through the union of package, member, price
 
   const selected = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
   assert.equal(selected.safeToApply, true);
-  assert.deepEqual(selected.rows.vehicle.vehicleModelDefinitions.map(({ id }) => id), [
-    "model-1",
-    "model-member",
-    "model-package",
-    "model-price"
-  ]);
+  assert.deepEqual(
+    selected.rows.vehicle.vehicleModelDefinitions.map(({ id }) => id),
+    ["model-1", "model-member", "model-package", "model-price"]
+  );
 
   const discovery = classifyStage1CleanAcceptanceBaseline(snapshot, selection([]));
   assert.equal(discovery.safeToApply, false);
-  assert.deepEqual(discovery.exceptions.map(({ code }) => code), ["VEHICLE_SELECTION_REQUIRED"]);
-  assert.deepEqual(discovery.rows.vehicle.vehicleModelDefinitions.map(({ id }) => id), [
-    "model-member",
-    "model-package",
-    "model-price"
-  ]);
+  assert.deepEqual(
+    discovery.exceptions.map(({ code }) => code),
+    ["VEHICLE_SELECTION_REQUIRED"]
+  );
+  assert.deepEqual(
+    discovery.rows.vehicle.vehicleModelDefinitions.map(({ id }) => id),
+    ["model-member", "model-package", "model-price"]
+  );
 
   for (const mutate of [
     (value) => value.vehicle.vehicleModelDefinitions.splice(1, 1),
     (value) => (value.vehicle.vehicleModelDefinitions[1].enabled = false),
     (value) => (value.vehicle.vehicleModelDefinitions[1].portalVisible = false),
-    (value) => (value.vehicle.vehicleModelDefinitions[1].deletedAt = new Date("2026-08-01T00:00:00.000Z"))
+    (value) =>
+      (value.vehicle.vehicleModelDefinitions[1].deletedAt = new Date("2026-08-01T00:00:00.000Z"))
   ]) {
     const invalid = structuredClone(snapshot);
     mutate(invalid);
@@ -518,8 +685,14 @@ test("administrator access covers every active permission and menu with a comple
     selection()
   );
   assert.equal(valid.safeToApply, true);
-  assert.deepEqual(valid.rows.access.menus.map(({ id }) => id), ["menu-child", "menu-root"]);
-  assert.deepEqual(valid.rows.access.permissions.map(({ id }) => id), ["permission-a", "permission-b"]);
+  assert.deepEqual(
+    valid.rows.access.menus.map(({ id }) => id),
+    ["menu-child", "menu-root"]
+  );
+  assert.deepEqual(
+    valid.rows.access.permissions.map(({ id }) => id),
+    ["permission-a", "permission-b"]
+  );
 
   const cases = [];
   const missingPermissionGrant = structuredClone(completeAccess);
@@ -537,10 +710,7 @@ test("administrator access covers every active permission and menu with a comple
   cyclicParents.menus[1].parentId = "menu-child";
   cases.push(cyclicParents);
   for (const access of cases) {
-    const result = classifyStage1CleanAcceptanceBaseline(
-      completeSnapshot({ access }),
-      selection()
-    );
+    const result = classifyStage1CleanAcceptanceBaseline(completeSnapshot({ access }), selection());
     assert.equal(result.safeToApply, false);
     assert.ok(result.exceptions.some(({ code }) => code === "ADMIN_ROLE_INCOMPLETE"));
   }
@@ -560,11 +730,40 @@ test("vehicle eligibility requires a published and portal-visible listing profil
   }
 });
 
+test("vehicle eligibility consumes every process, document, and insurance fact", () => {
+  const mutations = [
+    ["activeAssetWorkOrderCount", 1],
+    ["activeServiceCaseCount", 1],
+    ["blockingRestrictionCount", 1],
+    ["deliveryCount", 1],
+    ["orderCount", 1],
+    ["overlappingSubscriptionPeriodCount", 1],
+    ["requiredDocumentsAndInsuranceReady", false],
+    ["returnCount", 1]
+  ];
+  for (const [field, value] of mutations) {
+    const snapshot = completeSnapshot();
+    snapshot.vehicle.eligibilityEvidence[VEHICLE_A][field] = value;
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false, field);
+    assert.ok(
+      result.exceptions.some(({ code }) => code === "VEHICLE_NOT_ELIGIBLE"),
+      field
+    );
+  }
+});
+
 test("vehicle resolves its active owner through exactly one current ownership period", () => {
   const baseline = classifyStage1CleanAcceptanceBaseline(completeSnapshot(), selection());
   assert.equal(baseline.safeToApply, true);
-  assert.deepEqual(baseline.rows.vehicle.vehicleOwnershipPeriods.map(({ id }) => id), ["ownership-1"]);
-  assert.deepEqual(baseline.rows.vehicle.assetOwners.map(({ id }) => id), ["owner-1"]);
+  assert.deepEqual(
+    baseline.rows.vehicle.vehicleOwnershipPeriods.map(({ id }) => id),
+    ["ownership-1"]
+  );
+  assert.deepEqual(
+    baseline.rows.vehicle.assetOwners.map(({ id }) => id),
+    ["owner-1"]
+  );
 
   const closedPeriod = completeSnapshot();
   closedPeriod.vehicle.vehicleOwnershipPeriods[0].endedAt = new Date("2026-08-29T00:00:00.000Z");
@@ -602,13 +801,29 @@ test("vehicle media and plans use required vehicle FKs while nullable profile FK
   const withoutProfileReferences = completeSnapshot({
     vehicle: {
       vehicleListingMedia: [{ id: "media-1", listingProfileId: null, vehicleId: VEHICLE_A }],
-      vehicleListingPlans: [{ id: "listing-plan-1", listingProfileId: null, subscriptionPlanId: "plan-1", vehicleId: VEHICLE_A }]
+      vehicleListingPlans: [
+        {
+          id: "listing-plan-1",
+          listingProfileId: null,
+          subscriptionPlanId: "plan-1",
+          vehicleId: VEHICLE_A
+        }
+      ]
     }
   });
-  const nullableResult = classifyStage1CleanAcceptanceBaseline(withoutProfileReferences, selection());
+  const nullableResult = classifyStage1CleanAcceptanceBaseline(
+    withoutProfileReferences,
+    selection()
+  );
   assert.equal(nullableResult.safeToApply, true);
-  assert.deepEqual(nullableResult.rows.vehicle.vehicleListingMedia.map(({ id }) => id), ["media-1"]);
-  assert.deepEqual(nullableResult.rows.vehicle.vehicleListingPlans.map(({ id }) => id), ["listing-plan-1"]);
+  assert.deepEqual(
+    nullableResult.rows.vehicle.vehicleListingMedia.map(({ id }) => id),
+    ["media-1"]
+  );
+  assert.deepEqual(
+    nullableResult.rows.vehicle.vehicleListingPlans.map(({ id }) => id),
+    ["listing-plan-1"]
+  );
 
   for (const relation of ["vehicleListingMedia", "vehicleListingPlans"]) {
     const mismatched = completeSnapshot();
@@ -628,7 +843,11 @@ test("vehicle documents allow null batches and require exact non-null batch and 
 
   for (const mutate of [
     (snapshot) => (snapshot.vehicle.vehicleDocuments[0].batchId = "missing-batch"),
-    (snapshot) => snapshot.vehicle.vehicleDocumentBatches.push({ id: "document-batch-1", vehicleId: VEHICLE_A }),
+    (snapshot) =>
+      snapshot.vehicle.vehicleDocumentBatches.push({
+        id: "document-batch-1",
+        vehicleId: VEHICLE_A
+      }),
     (snapshot) => (snapshot.vehicle.vehicleDocuments[0].policyId = "missing-policy")
   ]) {
     const snapshot = completeSnapshot();
@@ -664,22 +883,64 @@ test("vehicle listing plans and insurance coverages close their remaining requir
 test("vehicle closure keeps each explicitly selected vehicle and its one-to-many rows", () => {
   const snapshot = completeSnapshot();
   snapshot.vehicle.eligibilityEvidence[VEHICLE_B] = {
+    activeAssetWorkOrderCount: 0,
+    activeServiceCaseCount: 0,
     blockingRestrictionCount: 0,
     currentSalePricePositive: true,
+    deliveryCount: 0,
+    orderCount: 0,
     overlappingSubscriptionPeriodCount: 0,
+    requiredDocumentsAndInsuranceReady: true,
+    returnCount: 0,
     salePriceStatusEffective: true
   };
-  snapshot.vehicle.vehicles.push({ currentSalePriceAmount: 200, id: VEHICLE_B, modelDefinitionId: "model-1", salePriceStatus: "EFFECTIVE", status: "AVAILABLE" });
-  snapshot.vehicle.vehicleListingProfiles.push({ id: "listing-2", listingStatus: "PUBLISHED", portalVisible: true, vehicleId: VEHICLE_B });
-  snapshot.vehicle.vehicleListingMedia.push({ id: "media-2", listingProfileId: "listing-2", vehicleId: VEHICLE_B });
-  snapshot.vehicle.vehicleListingPlans.push({ id: "listing-plan-2", listingProfileId: "listing-2", subscriptionPlanId: "plan-1", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicles.push({
+    currentSalePriceAmount: 200,
+    id: VEHICLE_B,
+    modelDefinitionId: "model-1",
+    salePriceStatus: "EFFECTIVE",
+    status: "AVAILABLE"
+  });
+  snapshot.vehicle.vehicleListingProfiles.push({
+    id: "listing-2",
+    listingStatus: "PUBLISHED",
+    portalVisible: true,
+    vehicleId: VEHICLE_B
+  });
+  snapshot.vehicle.vehicleListingMedia.push({
+    id: "media-2",
+    listingProfileId: "listing-2",
+    vehicleId: VEHICLE_B
+  });
+  snapshot.vehicle.vehicleListingPlans.push({
+    id: "listing-plan-2",
+    listingProfileId: "listing-2",
+    subscriptionPlanId: "plan-1",
+    vehicleId: VEHICLE_B
+  });
   snapshot.vehicle.vehicleDocumentBatches.push({ id: "document-batch-2", vehicleId: VEHICLE_B });
-  snapshot.vehicle.vehicleDocuments.push({ batchId: "document-batch-2", id: "document-2", policyId: null, vehicleId: VEHICLE_B });
-  snapshot.vehicle.vehicleListingSourceBindings.push({ documentId: "document-2", id: "source-binding-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleDocuments.push({
+    batchId: "document-batch-2",
+    id: "document-2",
+    policyId: null,
+    vehicleId: VEHICLE_B
+  });
+  snapshot.vehicle.vehicleListingSourceBindings.push({
+    documentId: "document-2",
+    id: "source-binding-2",
+    vehicleId: VEHICLE_B
+  });
   snapshot.vehicle.vehicleInsurancePolicies.push({ id: "policy-2", vehicleId: VEHICLE_B });
   snapshot.vehicle.vehicleInsuranceCoverages.push({ id: "coverage-2", policyId: "policy-2" });
   snapshot.vehicle.vehicleSalePriceHistories.push({ id: "sale-price-2", vehicleId: VEHICLE_B });
-  snapshot.vehicle.vehicleOwnershipPeriods.push({ assetOwnerId: "owner-1", endedAt: null, endReason: null, id: "ownership-2", startReason: "INITIAL_ACQUISITION", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleOwnershipPeriods.push({
+    assetOwnerId: "owner-1",
+    endedAt: null,
+    endReason: null,
+    id: "ownership-2",
+    startReason: "INITIAL_ACQUISITION",
+    vehicleId: VEHICLE_B
+  });
   snapshot.vehicle.vehicleAssetCostProfiles.push({ id: "cost-profile-2", vehicleId: VEHICLE_B });
   snapshot.vehicle.vehicleCostLedgerEntries.push({
     assetOwnerId: "owner-1",
@@ -699,19 +960,44 @@ test("vehicle closure keeps each explicitly selected vehicle and its one-to-many
 
   const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection([VEHICLE_A, VEHICLE_B]));
   assert.equal(result.safeToApply, true);
-  assert.deepEqual(result.rows.vehicle.vehicles.map(({ id }) => id), [VEHICLE_A, VEHICLE_B]);
-  assert.deepEqual(result.rows.vehicle.assetOwners.map(({ id }) => id), ["owner-1"]);
-  assert.deepEqual(result.rows.vehicle.vehicleModelDefinitions.map(({ id }) => id), ["model-1"]);
-  assert.deepEqual(result.rows.vehicle.vehicleInsuranceCoverages.map(({ id }) => id), ["coverage-1", "coverage-2"]);
+  assert.deepEqual(
+    result.rows.vehicle.vehicles.map(({ id }) => id),
+    [VEHICLE_A, VEHICLE_B]
+  );
+  assert.deepEqual(
+    result.rows.vehicle.assetOwners.map(({ id }) => id),
+    ["owner-1"]
+  );
+  assert.deepEqual(
+    result.rows.vehicle.vehicleModelDefinitions.map(({ id }) => id),
+    ["model-1"]
+  );
+  assert.deepEqual(
+    result.rows.vehicle.vehicleInsuranceCoverages.map(({ id }) => id),
+    ["coverage-1", "coverage-2"]
+  );
 });
 
 test("classification blocks exceptions, ambiguity, target rows, schema drift, and incomplete vehicle closure", () => {
   const cases = [
     [completeSnapshot({ access: { users: [] } }), "ADMIN_NOT_FOUND"],
-    [completeSnapshot({ access: { users: [{ id: "admin-2", status: "ACTIVE", username: "keqi_119" }, { id: "admin-1", status: "ACTIVE", username: "keqi_119" }] } }), "ADMIN_AMBIGUOUS"],
+    [
+      completeSnapshot({
+        access: {
+          users: [
+            { id: "admin-2", status: "ACTIVE", username: "keqi_119" },
+            { id: "admin-1", status: "ACTIVE", username: "keqi_119" }
+          ]
+        }
+      }),
+      "ADMIN_AMBIGUOUS"
+    ],
     [completeSnapshot({ target: { tableCounts: { user: 1 } } }), "TARGET_NOT_EMPTY"],
     [completeSnapshot({ target: { schemaCanonical: false } }), "TARGET_SCHEMA_NOT_CANONICAL"],
-    [completeSnapshot({ target: { forbiddenCounts: { auditLog: 1 } } }), "FORBIDDEN_DOMAIN_NOT_EMPTY"],
+    [
+      completeSnapshot({ target: { forbiddenCounts: { auditLog: 1 } } }),
+      "FORBIDDEN_DOMAIN_NOT_EMPTY"
+    ],
     [completeSnapshot({ vehicle: { vehicleListingProfiles: [] } }), "VEHICLE_REFERENCE_NOT_CLOSED"]
   ];
   for (const [snapshot, code] of cases) {
@@ -790,7 +1076,11 @@ test("classification requires exactly one usable ContractVersion per required ty
   const duplicate = completeSnapshot();
   duplicate.templates.contractVersions.push(
     contractVersion(
-      ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4", "SUBSCRIPTION_STANDARD", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1"],
+      [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
+        "SUBSCRIPTION_STANDARD",
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1"
+      ],
       { versionNo: "2.0" }
     )
   );
@@ -828,9 +1118,7 @@ test("inactive, deleted, unapproved, wrong-business, and out-of-window contract 
 test("contract effectiveness is evaluated only at caller-provided snapshot.asOf", () => {
   const missingAsOf = addFictitiousTemplateFields(completeSnapshot());
   delete missingAsOf.asOf;
-  const invalidAsOf = addFictitiousTemplateFields(
-    completeSnapshot({ asOf: new Date(Number.NaN) })
-  );
+  const invalidAsOf = addFictitiousTemplateFields(completeSnapshot({ asOf: new Date(Number.NaN) }));
   const beforeWindow = addFictitiousTemplateFields(
     completeSnapshot({ asOf: new Date("2025-12-31T23:59:59.999Z") })
   );
@@ -871,7 +1159,10 @@ test("notifications match real templateCode and templateStatus fields exactly on
   const baseline = completeSnapshot();
   const baselineResult = classifyStage1CleanAcceptanceBaseline(baseline, selection());
   assert.equal(baselineResult.safeToApply, true);
-  assert.deepEqual(baselineResult.rows.templates.notificationTemplates, baseline.templates.notificationTemplates);
+  assert.deepEqual(
+    baselineResult.rows.templates.notificationTemplates,
+    baseline.templates.notificationTemplates
+  );
   assert.equal("code" in baselineResult.rows.templates.notificationTemplates[0], false);
   assert.equal("status" in baselineResult.rows.templates.notificationTemplates[0], false);
 
@@ -912,7 +1203,14 @@ test("classification rejects unknown statuses and includes the complete selected
   assert.ok(unknownStatus.exceptions.some(({ code }) => code === "ADMIN_NOT_FOUND"));
 
   const duplicatedOwner = classifyStage1CleanAcceptanceBaseline(
-    completeSnapshot({ vehicle: { assetOwners: [{ id: "owner-1", status: "ACTIVE" }, { id: "owner-1", status: "ACTIVE" }] } }),
+    completeSnapshot({
+      vehicle: {
+        assetOwners: [
+          { id: "owner-1", status: "ACTIVE" },
+          { id: "owner-1", status: "ACTIVE" }
+        ]
+      }
+    }),
     selection()
   );
   assert.equal(duplicatedOwner.safeToApply, false);
@@ -920,10 +1218,15 @@ test("classification rejects unknown statuses and includes the complete selected
 
   const baseline = classifyStage1CleanAcceptanceBaseline(completeSnapshot(), selection());
   const changedOwner = classifyStage1CleanAcceptanceBaseline(
-    completeSnapshot({ vehicle: { assetOwners: [{ id: "owner-1", ownerNo: "changed-owner", status: "ACTIVE" }] } }),
+    completeSnapshot({
+      vehicle: { assetOwners: [{ id: "owner-1", ownerNo: "changed-owner", status: "ACTIVE" }] }
+    }),
     selection()
   );
-  assert.deepEqual(baseline.rows.vehicle.assetOwners.map(({ id }) => id), ["owner-1"]);
+  assert.deepEqual(
+    baseline.rows.vehicle.assetOwners.map(({ id }) => id),
+    ["owner-1"]
+  );
   assert.notEqual(baseline.rowDigests.vehicle, changedOwner.rowDigests.vehicle);
 });
 
@@ -940,49 +1243,107 @@ test("manifest rejects malformed context and classification and salts every publ
   ]) {
     const invalid = structuredClone(context);
     mutate(invalid);
-    expectCode(() => buildStage1CleanAcceptanceManifest(classification, invalid), "MANIFEST_CONTEXT_INVALID");
+    expectCode(
+      () => buildStage1CleanAcceptanceManifest(classification, invalid),
+      "MANIFEST_CONTEXT_INVALID"
+    );
   }
-  expectCode(() => buildStage1CleanAcceptanceManifest({ ...classification, rows: {} }, context), "MANIFEST_CLASSIFICATION_INVALID");
   expectCode(
-    () => buildStage1CleanAcceptanceManifest({ ...classification, rows: { ...classification.rows, unexpected: [] } }, context),
+    () => buildStage1CleanAcceptanceManifest({ ...classification, rows: {} }, context),
     "MANIFEST_CLASSIFICATION_INVALID"
   );
   expectCode(
-    () => buildStage1CleanAcceptanceManifest({ ...classification, selection: { ...classification.selection, vehicleIds: ["not-a-uuid"] } }, context),
+    () =>
+      buildStage1CleanAcceptanceManifest(
+        { ...classification, rows: { ...classification.rows, unexpected: [] } },
+        context
+      ),
+    "MANIFEST_CLASSIFICATION_INVALID"
+  );
+  expectCode(
+    () =>
+      buildStage1CleanAcceptanceManifest(
+        {
+          ...classification,
+          selection: { ...classification.selection, vehicleIds: ["not-a-uuid"] }
+        },
+        context
+      ),
     "MANIFEST_CLASSIFICATION_INVALID"
   );
 
   const manifest = buildStage1CleanAcceptanceManifest(
-    { ...classification, exceptions: [{ code: "TARGET_NOT_EMPTY", domain: "target", subjectDigest: "a".repeat(64) }], safeToApply: false },
+    {
+      ...classification,
+      exceptions: [{ code: "TARGET_NOT_EMPTY", domain: "target", subjectDigest: "a".repeat(64) }],
+      safeToApply: false
+    },
     context
   );
   assert.match(manifest.rowDigests.vehicle, /^[0-9a-f]{64}$/);
   assert.match(manifest.exceptions[0].subjectDigest, /^[0-9a-f]{64}$/);
   assert.notEqual(manifest.rowDigests.vehicle, classification.rowDigests.vehicle);
   assert.notEqual(manifest.exceptions[0].subjectDigest, "a".repeat(64));
-  assert.equal(manifest.rowDigests.vehicle, "da317e75b98bee2c83e5ff9759634314a70f90c1e3752035fd9f6e8283916a65");
-  assert.equal(manifest.exceptions[0].subjectDigest, "dd881d6b5f32438dfc1e23709a232088240e855697d0d5baa0789e32fb27833e");
+  assert.equal(
+    manifest.rowDigests.vehicle,
+    "da317e75b98bee2c83e5ff9759634314a70f90c1e3752035fd9f6e8283916a65"
+  );
+  assert.equal(
+    manifest.exceptions[0].subjectDigest,
+    "dd881d6b5f32438dfc1e23709a232088240e855697d0d5baa0789e32fb27833e"
+  );
 });
 
 test("error and manifest exception redaction collapse undeclared code, domain, and digest input", () => {
-  assert.deepEqual(redactStage1CleanAcceptanceError({ code: "UNDECLARED_CODE" }), { code: "STAGE1_ACCEPTANCE_ERROR" });
+  assert.deepEqual(redactStage1CleanAcceptanceError({ code: "UNDECLARED_CODE" }), {
+    code: "STAGE1_ACCEPTANCE_ERROR"
+  });
   const classification = classifyStage1CleanAcceptanceBaseline(completeSnapshot(), selection());
   const manifest = buildStage1CleanAcceptanceManifest(
-    { ...classification, exceptions: [{ code: "UNDECLARED_CODE", domain: "unapproved", subjectDigest: "not-a-digest" }], safeToApply: false },
+    {
+      ...classification,
+      exceptions: [
+        { code: "UNDECLARED_CODE", domain: "unapproved", subjectDigest: "not-a-digest" }
+      ],
+      safeToApply: false
+    },
     validManifestContext()
   );
-  assert.deepEqual(manifest.exceptions.map(({ code, domain }) => ({ code, domain })), [
-    { code: "STAGE1_ACCEPTANCE_ERROR", domain: "unknown" }
-  ]);
+  assert.deepEqual(
+    manifest.exceptions.map(({ code, domain }) => ({ code, domain })),
+    [{ code: "STAGE1_ACCEPTANCE_ERROR", domain: "unknown" }]
+  );
 });
 
 test("row digests preserve distinct Prisma timestamp values", () => {
   const earlier = classifyStage1CleanAcceptanceBaseline(
-    completeSnapshot({ access: { users: [{ createdAt: new Date("2026-08-30T00:00:00.000Z"), id: "admin-user", status: "ACTIVE", username: "keqi_119" }] } }),
+    completeSnapshot({
+      access: {
+        users: [
+          {
+            createdAt: new Date("2026-08-30T00:00:00.000Z"),
+            id: "admin-user",
+            status: "ACTIVE",
+            username: "keqi_119"
+          }
+        ]
+      }
+    }),
     selection()
   );
   const later = classifyStage1CleanAcceptanceBaseline(
-    completeSnapshot({ access: { users: [{ createdAt: new Date("2026-08-31T00:00:00.000Z"), id: "admin-user", status: "ACTIVE", username: "keqi_119" }] } }),
+    completeSnapshot({
+      access: {
+        users: [
+          {
+            createdAt: new Date("2026-08-31T00:00:00.000Z"),
+            id: "admin-user",
+            status: "ACTIVE",
+            username: "keqi_119"
+          }
+        ]
+      }
+    }),
     selection()
   );
   assert.notEqual(earlier.rowDigests.access, later.rowDigests.access);
@@ -994,22 +1355,52 @@ test("manifest canonicalizes object keys and arrays before producing a stable SH
   const shuffled = {
     ...classification,
     exceptions: [...classification.exceptions].reverse(),
-    selection: { ...classification.selection, vehicleIds: [...classification.selection.vehicleIds].reverse() }
+    selection: {
+      ...classification.selection,
+      vehicleIds: [...classification.selection.vehicleIds].reverse()
+    }
   };
   const manifest = buildStage1CleanAcceptanceManifest(classification, context);
   const shuffledManifest = buildStage1CleanAcceptanceManifest(shuffled, {
     ...context,
-    source: { migrationCatalogDigest: "a".repeat(64), databaseDigest: "b".repeat(64), schemaDigest: "c".repeat(64) }
+    source: {
+      migrationCatalogDigest: "a".repeat(64),
+      databaseDigest: "b".repeat(64),
+      schemaDigest: "c".repeat(64)
+    }
   });
 
-  assert.equal(hashStage1CleanAcceptanceManifest(manifest), hashStage1CleanAcceptanceManifest(shuffledManifest));
-  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "2a95a812001be3c9f103c566ad2448cea6c530f4181e18073482e603bf8c74b3");
-  assert.deepEqual(manifest.selection.vehicleDigests, [...manifest.selection.vehicleDigests].sort());
+  assert.equal(
+    hashStage1CleanAcceptanceManifest(manifest),
+    hashStage1CleanAcceptanceManifest(shuffledManifest)
+  );
+  assert.equal(
+    hashStage1CleanAcceptanceManifest(manifest),
+    "2a95a812001be3c9f103c566ad2448cea6c530f4181e18073482e603bf8c74b3"
+  );
+  assert.deepEqual(
+    manifest.selection.vehicleDigests,
+    [...manifest.selection.vehicleDigests].sort()
+  );
 });
 
 test("manifest contains salted domain digests but no identity, VIN, plate, or object key", () => {
   const classification = classifyStage1CleanAcceptanceBaseline(
-    completeSnapshot({ vehicle: { vehicles: [{ currentSalePriceAmount: 100, id: VEHICLE_A, modelDefinitionId: "model-1", plateNo: "沪A12345", salePriceStatus: "EFFECTIVE", status: "AVAILABLE", vin: "VIN-SECRET" }] } }),
+    completeSnapshot({
+      vehicle: {
+        vehicles: [
+          {
+            currentSalePriceAmount: 100,
+            id: VEHICLE_A,
+            modelDefinitionId: "model-1",
+            plateNo: "沪A12345",
+            salePriceStatus: "EFFECTIVE",
+            status: "AVAILABLE",
+            vin: "VIN-SECRET"
+          }
+        ]
+      }
+    }),
     selection()
   );
   const manifest = buildStage1CleanAcceptanceManifest(classification, validManifestContext());
@@ -1017,7 +1408,13 @@ test("manifest contains salted domain digests but no identity, VIN, plate, or ob
   assert.equal(manifest.selection.adminDigest.length, 64);
   assert.equal(manifest.selection.customerDigest.length, 64);
   assert.equal(manifest.selection.vehicleDigests[0].length, 64);
-  for (const secret of ["keqi_119", "18616570212", "VIN-SECRET", "沪A12345", "contracts/template.pdf"]) {
+  for (const secret of [
+    "keqi_119",
+    "18616570212",
+    "VIN-SECRET",
+    "沪A12345",
+    "contracts/template.pdf"
+  ]) {
     assert.equal(serialized.includes(secret), false);
   }
 });
@@ -1034,7 +1431,15 @@ function validManifestContext() {
     gitSha: "a".repeat(40),
     hashSalt: HASH_SALT,
     imageRef: `registry.example/api@sha256:${"b".repeat(64)}`,
-    source: { databaseDigest: "b".repeat(64), migrationCatalogDigest: "a".repeat(64), schemaDigest: "c".repeat(64) },
-    target: { databaseDigest: "e".repeat(64), migrationCatalogDigest: "d".repeat(64), schemaDigest: "f".repeat(64) }
+    source: {
+      databaseDigest: "b".repeat(64),
+      migrationCatalogDigest: "a".repeat(64),
+      schemaDigest: "c".repeat(64)
+    },
+    target: {
+      databaseDigest: "e".repeat(64),
+      migrationCatalogDigest: "d".repeat(64),
+      schemaDigest: "f".repeat(64)
+    }
   };
 }

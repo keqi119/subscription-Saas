@@ -132,7 +132,12 @@ function validateExecutableContracts(contents) {
     "Number.isInteger(timeoutSeconds) && timeoutSeconds >= 1 && timeoutSeconds <= 900",
     "BROWSER_ACCEPTANCE_TIMEOUT",
     "BROWSER_ACCEPTANCE_REJECTED",
-    "BROWSER_ACCEPTANCE_FACT_INVALID"
+    "BROWSER_ACCEPTANCE_FACT_INVALID",
+    "cutover_billing_database_identity_sha256() {",
+    "disable_billing_maintenance_evidence() {",
+    "billing-maintenance-cycle-evidence.mjs",
+    'publish_private_evidence "$EVIDENCE_DIR/billing-completed-cycles.json"',
+    "BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS=180"
   ]);
   assert.match(
     cutover,
@@ -301,7 +306,16 @@ if test -d "$target"; then printf '%s\\n' '0:0:700'; else printf '%s\\n' '0:0:60
     `printf '%s\\n' gate:filesystem-sync >>"$TRACE_FILE"
 if test "$FAILURE_SCENARIO" = filesystem_sync && test "$(<"$ENV_FILE")" = target; then exit 71; fi`
   );
-  writeFakeCommand(binDirectory, "sha256sum", `printf '%s\\n' 'deadbeef  -'`);
+  writeFakeCommand(
+    binDirectory,
+    "sha256sum",
+    `input="$(cat)"
+if [[ "$input" = '{"databaseName":'* ]]; then
+  printf '%s\\n' '${SHA256}  -'
+else
+  printf '%s\\n' 'deadbeef  -'
+fi`
+  );
   writeFakeCommand(
     binDirectory,
     "curl",
@@ -325,6 +339,10 @@ if test "$FAILURE_SCENARIO" = "$scenario"; then printf '%s' 500; else printf '%s
     binDirectory,
     "psql",
     `case "$*" in
+  *pg_control_system*)
+    printf '%s\\n' gate:billing-database-identity >>"$TRACE_FILE"
+    printf '%s\\n' 'subscription_saas_staging_acceptance_20260830t120000z|7541900280213006521'
+    ;;
   *secret-target-url*)
     printf '%s\\n' gate:migration-count >>"$TRACE_FILE"
     if test "$FAILURE_SCENARIO" = migration_count; then printf '%s\\n' '123|0|0|0'; else printf '%s\\n' '124|0|0|0'; fi
@@ -352,7 +370,7 @@ case "$args" in
     ;;
   *billing-completed-cycles.json*)
     printf '%s\\n' gate:billing >>"$TRACE_FILE"
-    test "$FAILURE_SCENARIO" != billing
+    test "$FAILURE_SCENARIO" != billing_assert
     ;;
   *target-validator.post-switch.json*)
     printf '%s\\n' gate:validator-evidence >>"$TRACE_FILE"
@@ -371,6 +389,7 @@ state="$(<"$ENV_FILE")"
 case "$args" in
   *' up -d --no-deps --force-recreate api'*)
     printf '%s\\n' recreate:api >>"$TRACE_FILE"
+    if test "$state" = old && test "\${BILLING_MAINTENANCE_EVIDENCE_ENABLED:-}" != false; then exit 98; fi
     if [[ "$FAILURE_SCENARIO" = api_recreate || "$FAILURE_SCENARIO" = rollback_health ]] \
       && test "$state" = target; then exit 70; fi
     ;;
@@ -425,6 +444,19 @@ case "$args" in
     printf '%s\\n' gate:validator >>"$TRACE_FILE"
     test "$FAILURE_SCENARIO" != validator || exit 72
     printf '%s\\n' '{"approvedManifest":{},"approvedManifestSha256":"${SHA256}","operation":"STAGE1_CLEAN_ACCEPTANCE_TARGET_VALIDATOR","result":{"safe":true,"manifestSha256":"${SHA256}","mode":"target-validator"}}' >"$EVIDENCE_DIR/target-validator.post-switch.json"
+    ;;
+  *'billing-maintenance-cycle-evidence.mjs'*)
+    printf '%s\\n' gate:billing-exporter >>"$TRACE_FILE"
+    case "$FAILURE_SCENARIO" in
+      billing_timeout) code=BILLING_MAINTENANCE_EVIDENCE_TIMEOUT ;;
+      billing_binding) code=BILLING_MAINTENANCE_SOURCE_BINDING_MISMATCH ;;
+      billing_hash) code=BILLING_MAINTENANCE_COUNTS_INVALID ;;
+      billing_blocked) code=BILLING_MAINTENANCE_BLOCKED ;;
+      billing_cli) code=BILLING_MAINTENANCE_DATABASE_QUERY_FAILED ;;
+      *) code= ;;
+    esac
+    if test -n "$code"; then printf '{"error":{"code":"%s"}}\\n' "$code" >&2; exit 74; fi
+    printf '%s\\n' '{"cycles":[{"afterCounts":{"auditLog":0},"afterCountsSha256":"same","beforeCounts":{"auditLog":0},"beforeCountsSha256":"same","blockedCount":0,"cycleId":"00000000-0000-4000-8000-000000000001","reconciliationSummary":{"dryRun":false},"sequence":1,"status":"COMPLETED"},{"afterCounts":{"auditLog":0},"afterCountsSha256":"same","beforeCounts":{"auditLog":0},"beforeCountsSha256":"same","blockedCount":0,"cycleId":"00000000-0000-4000-8000-000000000002","reconciliationSummary":{"dryRun":false},"sequence":2,"status":"COMPLETED"}],"operation":"BILLING_MAINTENANCE_CYCLE_EVIDENCE","safe":true,"schemaVersion":1,"source":{"databaseIdentitySha256":"${SHA256}","evidenceRunId":"${NONCE}","imageDigest":"${IMAGE_ID}","notBeforeUtc":"2026-08-30T12:00:01Z","releaseSha":"${RELEASE_SHA}"}}'
     ;;
   *'exec '*' node -e '*)
     printf '%s\\n' gate:runtime-flags >>"$TRACE_FILE"
@@ -527,8 +559,7 @@ printf '%s\\n' old >"$ENV_FILE"
 printf '%s\\n' old >"$ENV_BACKUP"
 printf '%s\\n' target >"$ENV_TEMP"
 printf '%s\\n' deadbeef >"$EVIDENCE_DIR/old-database.fingerprint.sha256"
-printf '%s\\n' '{"schemaVersion":1,"cycles":[{"completedCycleId":"one","state":"completed","blockedCount":0},{"completedCycleId":"two","state":"completed","blockedCount":0}],"forbiddenDomainCountsBeforeSha256":"same","forbiddenDomainCountsAfterSha256":"same"}' >"$EVIDENCE_DIR/billing-completed-cycles.json"
-chmod 0600 "$EVIDENCE_DIR/old-database.fingerprint.sha256" "$EVIDENCE_DIR/billing-completed-cycles.json"
+chmod 0600 "$EVIDENCE_DIR/old-database.fingerprint.sha256"
 RUN_UTC=20260830T120000Z
 MANIFEST_SHA=${SHA256}
 RELEASE_SHA=${RELEASE_SHA}
@@ -540,6 +571,7 @@ STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL=portal-health
 STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL=secret-database-url
 STAGE1_ACCEPTANCE_TARGET_DATABASE_URL=secret-target-url
 STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME=fake-host
+TARGET_DB=subscription_saas_staging_acceptance_20260830t120000z
 BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=1
 test "$FAILURE_SCENARIO" = timeout_901 && BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=901
 test "$FAILURE_SCENARIO" = timeout_9999 && BROWSER_ACCEPTANCE_TIMEOUT_SECONDS=9999
@@ -549,7 +581,9 @@ test "$FAILURE_SCENARIO" = timeout_arbitrary_length && BROWSER_ACCEPTANCE_TIMEOU
 test "$FAILURE_SCENARIO" = browser_preseed && printf '%s\\n' stale >"$EVIDENCE_DIR/browser-acceptance.fact.json"
 test "$FAILURE_SCENARIO" = challenge_preseed && printf '%s\\n' stale >"$EVIDENCE_DIR/browser-acceptance.challenge.json"
 read() {
-  printf '%s\\n' browser-read-invoked >>"$TRACE_FILE"
+  if [[ " $* " = *' -t '* ]]; then
+    printf '%s\\n' browser-read-invoked >>"$TRACE_FILE"
+  fi
   builtin read "$@"
 }
 ${evidenceHelpers}
@@ -627,6 +661,7 @@ function assertRollback(outcome, scenario, expectedTrace) {
 }
 
 const COMPLETE_GATE_TRACE = [
+  "gate:billing-database-identity",
   "gate:container-id",
   "gate:container-image",
   "gate:container-revision",
@@ -644,6 +679,7 @@ const COMPLETE_GATE_TRACE = [
   "gate:public-api",
   "gate:public-admin",
   "gate:public-portal",
+  "gate:billing-exporter",
   "gate:billing",
   "gate:docker-logs"
 ];
@@ -669,7 +705,6 @@ test("requires two independent, exact human approval stops", async () => {
     "--replay --vehicle-id",
     "stage1-clean-acceptance-target-validator.mjs",
     "STOP: CANDIDATE_API_TIMER_ISOLATION_UNPROVEN",
-    "STOP: BILLING_COMPLETED_CYCLE_EVIDENCE_UNAVAILABLE",
     markers[1],
     'mv -f -- "$ENV_TEMP" "$ENV_FILE"'
   ]);
@@ -703,18 +738,19 @@ test("defines fixed idempotent rollback before rename and routes switched failur
   ]);
 });
 
-test("never infers billing completion and keeps both source-code hard stops", async () => {
+test("uses only the database-backed exporter for bounded billing completion evidence", async () => {
   const contents = await readRunbook();
   assert.doesNotMatch(contents, /\bsleep\s+130\b|billing_cycles_observed=2/);
-  assertStrictOrder(contents, [
-    "STOP: CANDIDATE_API_TIMER_ISOLATION_UNPROVEN",
-    "STOP: BILLING_COMPLETED_CYCLE_EVIDENCE_UNAVAILABLE",
-    "STOP FOR HUMAN APPROVAL: API_DATABASE_SWITCH_APPROVAL"
-  ]);
+  assert.doesNotMatch(contents, /STOP: BILLING_COMPLETED_CYCLE_EVIDENCE_UNAVAILABLE/);
   assertContainsAll(contents, [
-    "两个不同的 completed cycle ID",
-    "blockedCount=0",
-    "禁止写域前后计数摘要一致",
+    "billing-maintenance-cycle-evidence.mjs",
+    "--run-id",
+    "--expected-release-sha",
+    "--expected-image-digest",
+    "--expected-database-identity-sha256",
+    "--not-before",
+    "--timeout-seconds",
+    'publish_private_evidence "$EVIDENCE_DIR/billing-completed-cycles.json"',
     "ERROR|FATAL|Unhandled|PrismaClientKnownRequestError|HTTP 5",
     "PII_LOG_SCAN_CLEAR",
     "DOCKER_LOG_READ_FAILED"
@@ -1370,7 +1406,12 @@ const MATERIAL_GATE_FAILURES = new Map([
   ["public_api", "gate:public-api"],
   ["public_admin", "gate:public-admin"],
   ["public_portal", "gate:public-portal"],
-  ["billing", "gate:billing"],
+  ["billing_timeout", "gate:billing-exporter"],
+  ["billing_binding", "gate:billing-exporter"],
+  ["billing_hash", "gate:billing-exporter"],
+  ["billing_blocked", "gate:billing-exporter"],
+  ["billing_cli", "gate:billing-exporter"],
+  ["billing_assert", "gate:billing"],
   ["log_read", "gate:docker-logs"],
   ["log_error", "gate:docker-logs"],
   ["log_pii", "gate:docker-logs"]

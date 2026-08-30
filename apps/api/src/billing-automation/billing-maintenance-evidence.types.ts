@@ -38,6 +38,7 @@ export interface BillingMaintenanceReconciliationSummary {
   blockedCount: number;
   blockerCodes: string[];
   createdCount: number;
+  dryRun: false;
   eligibleCount: number;
   existingCount: number;
   leaseActivationCount: number;

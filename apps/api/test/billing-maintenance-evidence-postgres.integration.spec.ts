@@ -63,6 +63,7 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
           blockedCount: 0,
           blockerCodes: [],
           createdCount: 0,
+          dryRun: false,
           eligibleCount: 0,
           existingCount: 0,
           leaseActivationCount: 0
@@ -78,11 +79,11 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
         ) AS "enqueueValid",
         jsonb_typeof(value) = 'object' AS "objectValid",
         value ?& ARRAY[
-          'blockedCount', 'blockerCodes', 'createdCount', 'eligibleCount',
+          'blockedCount', 'blockerCodes', 'createdCount', 'dryRun', 'eligibleCount',
           'existingCount', 'leaseActivationCount'
         ] AS "requiredKeysValid",
         (value - ARRAY[
-          'blockedCount', 'blockerCodes', 'createdCount', 'eligibleCount',
+          'blockedCount', 'blockerCodes', 'createdCount', 'dryRun', 'eligibleCount',
           'existingCount', 'leaseActivationCount'
         ]) = '{}'::jsonb AS "extraKeysValid",
         billing_maintenance_json_nonnegative_integer(value -> 'blockedCount')
@@ -111,6 +112,32 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
     });
   });
 
+  it.each([
+    ["missing", undefined],
+    ["true", true],
+    ["string", "false"],
+    ["null", null]
+  ])("rejects a reconciliation summary whose dryRun proof is %s", async (_label, dryRun) => {
+    const summary: Record<string, unknown> = {
+      blockedCount: 0,
+      blockerCodes: [],
+      createdCount: 0,
+      eligibleCount: 0,
+      existingCount: 0,
+      leaseActivationCount: 0
+    };
+    if (dryRun !== undefined) summary.dryRun = dryRun;
+
+    const [row] = await prisma.$queryRaw<Array<{ valid: boolean }>>(Prisma.sql`
+      SELECT billing_maintenance_reconciliation_summary_is_valid(
+        ${JSON.stringify(summary)}::jsonb,
+        0
+      ) AS "valid"
+    `);
+
+    expect(row?.valid).toBe(false);
+  });
+
   it.each([[null], [1], [true], [{ nested: "not-a-code" }]])(
     "rejects non-string blocker code array element %j",
     async (invalidCode) => {
@@ -118,6 +145,7 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
         blockedCount: 1,
         blockerCodes: [invalidCode],
         createdCount: 0,
+        dryRun: false,
         eligibleCount: 0,
         existingCount: 0,
         leaseActivationCount: 0
@@ -305,6 +333,7 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
         blockedCount: 1,
         blockerCodes: [null],
         createdCount: 0,
+        dryRun: false,
         eligibleCount: 0,
         existingCount: 0,
         leaseActivationCount: 0

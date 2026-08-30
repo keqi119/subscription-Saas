@@ -67,6 +67,9 @@ describe("billing maintenance evidence schema", () => {
     expect(migration).toContain("BEFORE UPDATE OR DELETE");
     expect(migration).toContain("jsonb_typeof(\"blocker_code_value\") <> 'string'");
     expect(migration).toContain('"current_blocker_code" IS NULL');
+    expect(migration).toContain("'dryRun'");
+    expect(migration).toContain("jsonb_typeof(\"value\" -> 'dryRun') <> 'boolean'");
+    expect(migration).toContain("(\"value\" ->> 'dryRun')::BOOLEAN IS DISTINCT FROM FALSE");
   });
 
   it("loads the same forbidden-domain asset from the compiled API runtime layout", async () => {

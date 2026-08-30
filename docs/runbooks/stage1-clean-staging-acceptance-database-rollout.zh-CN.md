@@ -711,18 +711,13 @@ exit 1
 
 缺口修复后的新版手册仍必须要求 candidate：独立容器、loopback 备用端口、不接 Nginx、全部 worker/timer 静默；只验证 `/health`、admin/portal 既有 token、RBAC 菜单、产品/车辆列表以及空进件/订单列表。不提交进件、不锁车、不签合同、不触发短信、电子签或支付。既有 token 只能留在浏览器/秘密环境，不得进命令、日志或证据。
 
-另一个独立缺口来自 `apps/api/src/billing-automation/billing-automation.worker.ts`：`runMaintenanceIfDue()` 只在 blocked 时记录 `BILLING_SCHEDULE_RECONCILIATION_BLOCKED`，成功完成 reconciliation/enqueue 时没有 completed cycle ID 或 `blockedCount=0` 的机器可验证事实。等待 60 秒或 130 秒只能证明时间经过，不能证明一次 maintenance cycle 完成。因此在另行批准的治理观测能力提供两个不同的 completed cycle ID、每周期 `blockedCount=0`、禁止写域前后计数摘要一致之前，流程还有以下不可豁免停止：
+Billing maintenance 观察能力现在由 append-only `BillingMaintenanceCycleFact` 与镜像内 `billing-maintenance-cycle-evidence.mjs` 提供。切换只启用一次随机 evidence run；CLI 有界轮询数据库，只有查询到 sequence 1/2 两行真实 `COMPLETED` 事实并逐项验证不同 cycle ID、同一 release/image/database/set binding、时间不重叠、`blockedCount=0`、`dryRun=false`、完整禁止域键集/非负计数、前后 canonical hash 与计数一致、safe reconciliation/enqueue summary 时才输出 public-safe canonical JSON。等待或 timeout 本身不能生成成功，禁止手写 billing JSON。
 
-```bash
-printf '%s\n' 'STOP: BILLING_COMPLETED_CYCLE_EVIDENCE_UNAVAILABLE'
-exit 1
-```
-
-该能力必须另行批准；不得为本手册修改 billing worker 或伪造观测结果。未来证据还必须在两个 completed cycle 前后证明禁止写域计数未变，并对完整观察窗执行 `ERROR|FATAL|Unhandled|PrismaClientKnownRequestError|HTTP 5` 与 PII 扫描。读取 Docker 日志失败必须关闭门禁（`DOCKER_LOG_READ_FAILED`），扫描通过才允许记录 `PII_LOG_SCAN_CLEAR`。
+两个 completed cycle 的完整观察窗仍必须独立执行 `ERROR|FATAL|Unhandled|PrismaClientKnownRequestError|HTTP 5` 与 PII 扫描。读取 Docker 日志失败必须关闭门禁（`DOCKER_LOG_READ_FAILED`），扫描通过才允许记录 `PII_LOG_SCAN_CLEAR`。
 
 ## 7. API 数据库 URL 单字段切换批准与执行
 
-本节因上一节两个硬停止在当前源码状态不可到达。未来修订版必须先产生 root-owned、`0600` 的 `$EVIDENCE_DIR/candidate-api.accepted`，内容只能是 candidate health/RBAC/list/count 和静默 worker 证明；没有该文件立即停止：
+本节仍受上一节 candidate timer isolation 硬停止约束。修复该独立缺口后，必须先产生 root-owned、`0600` 的 `$EVIDENCE_DIR/candidate-api.accepted`，内容只能是 candidate health/RBAC/list/count 和静默 worker 证明；没有该文件立即停止：
 
 ```bash
 test -f "$EVIDENCE_DIR/candidate-api.accepted" \
@@ -797,7 +792,7 @@ assert_private_file "$ENV_TEMP"
 
 ## 8. 切换、即时门禁与浏览器验收
 
-收到批准后才执行原子 rename，并只重建 API service。不得重建 postgres/web，不得修改或 reload Nginx。下面是唯一完整 cutover executable fence；契约测试只抽取该 fence，以纯本地依赖注入验证失败回滚，不从 prose 或 shell comments 推断控制流。函数内重新运行 target validator、migration status/checksum/diff/count，检查新 API 没有 restart，精确验证六个 worker/journey flags 和四个 subscription-change flags，验证公共 API/Admin/Portal health，并消费另行批准的 billing completed-cycle 事实。所有 curl 丢弃 body/headers且不输出 URL：
+收到批准后才执行原子 rename，并只重建 API service。不得重建 postgres/web，不得修改或 reload Nginx。下面是唯一完整 cutover executable fence；契约测试只抽取该 fence，以纯本地依赖注入验证失败回滚，不从 prose 或 shell comments 推断控制流。函数内重新运行 target validator、migration status/checksum/diff/count，检查新 API 没有 restart，精确验证六个 worker/journey flags、四个 subscription-change flags与受控 billing evidence binding，验证公共 API/Admin/Portal health，并运行数据库支持的 billing exporter。所有 curl 丢弃 body/headers且不输出 URL：
 
 <!-- STAGE1_CUTOVER_EXECUTABLE_BEGIN -->
 
@@ -847,6 +842,27 @@ cutover_nonce() {
   openssl rand -hex 32
 }
 
+cutover_billing_database_identity_sha256() {
+  local identity database_name system_identifier extra
+  identity="$(psql "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" -XAtq -F '|' \
+    -c 'SELECT current_database(), (pg_control_system()).system_identifier::text')" || return 1
+  IFS='|' read -r database_name system_identifier extra <<<"$identity"
+  test -z "$extra" || return 1
+  test "$database_name" = "$TARGET_DB" || return 1
+  [[ "$system_identifier" =~ ^[0-9]+$ ]] || return 1
+  printf '{"databaseName":"%s","systemIdentifier":"%s","version":"billing-maintenance-database-identity/v1"}' \
+    "$database_name" "$system_identifier" \
+    | sha256sum | awk '{print $1}'
+}
+
+disable_billing_maintenance_evidence() {
+  export BILLING_MAINTENANCE_EVIDENCE_ENABLED=false
+  unset BILLING_MAINTENANCE_EVIDENCE_RUN_ID
+  unset BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA
+  unset BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST
+  unset BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256
+}
+
 rollback_api_database_switch() {
   local failed=0 rollback_temp
   local expected_old_fingerprint observed_old_fingerprint
@@ -868,6 +884,7 @@ rollback_api_database_switch() {
     failed=1
   fi
 
+  disable_billing_maintenance_evidence
   if ! cutover_api_recreate api; then
     printf '%s\n' 'STOP: ROLLBACK_API_RECREATE_FAILED'
     failed=1
@@ -1006,7 +1023,7 @@ NODE
 
 post_switch_database_gates() {
   local switched_api_container_id restart_count status_code checksum_result drift_exit migration_counts
-  local billing_facts
+  local billing_facts billing_facts_path
   local -a log_pipeline_status
   switched_api_container_id="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
   test -n "$switched_api_container_id"
@@ -1066,6 +1083,7 @@ SQL
       SUBSCRIPTION_JOURNEY_ENABLED: "true",
       SUBSCRIPTION_JOURNEY_WORKER_ENABLED: "true",
       BILLING_AUTOMATION_WORKER_ENABLED: "true",
+      BILLING_MAINTENANCE_EVIDENCE_ENABLED: "true",
       FIELD_VIDEO_UPLOAD_WORKER_ENABLED: "true",
       STAGE2_HANDOVER_WORKER_ENABLED: "true",
       MILEAGE_REVIEW_WORKER_ENABLED: "true",
@@ -1075,6 +1093,10 @@ SQL
       SUBSCRIPTION_MANAGED_OTHER_ENABLED: "true"
     };
     if (Object.entries(expected).some(([key, value]) => process.env[key] !== value)) process.exit(1);
+    if (!/^[0-9a-f]{64}$/.test(process.env.BILLING_MAINTENANCE_EVIDENCE_RUN_ID || "")) process.exit(1);
+    if (!/^[0-9a-f]{40}$/.test(process.env.BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA || "")) process.exit(1);
+    if (!/^sha256:[0-9a-f]{64}$/.test(process.env.BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST || "")) process.exit(1);
+    if (!/^[0-9a-f]{64}$/.test(process.env.BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256 || "")) process.exit(1);
   '
   printf 'post_switch_restart_count=%s\nruntime_flags=verified\n' "$restart_count" \
     | publish_private_evidence "$EVIDENCE_DIR/post-switch-runtime.state"
@@ -1086,17 +1108,36 @@ SQL
   printf '%s\n' 'PUBLIC_API_HEALTH=200 PUBLIC_ADMIN_HEALTH=200 PUBLIC_PORTAL_HEALTH=200' \
     | publish_private_evidence "$EVIDENCE_DIR/public-health.state"
 
-  billing_facts="$EVIDENCE_DIR/billing-completed-cycles.json"
-  assert_private_file "$billing_facts"
+  billing_facts_path="$EVIDENCE_DIR/billing-completed-cycles.json"
+  assert_new_evidence_path "$billing_facts_path"
+  billing_facts="$(docker exec "$switched_api_container_id" \
+    node /app/scripts/billing-maintenance-cycle-evidence.mjs \
+    --run-id "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" \
+    --expected-release-sha "$SWITCHED_RELEASE_SHA" \
+    --expected-image-digest "$SWITCHED_API_IMAGE_ID" \
+    --expected-database-identity-sha256 "$BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256" \
+    --not-before "$SWITCH_STARTED_AT_UTC" \
+    --timeout-seconds "$BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS")" || return 1
+  printf '%s\n' "$billing_facts" | publish_private_evidence "$EVIDENCE_DIR/billing-completed-cycles.json"
+  unset billing_facts
+  assert_private_file "$billing_facts_path"
   jq -e '
-    .schemaVersion == 1 and
-    (.cycles | length) == 2 and
-    .cycles[0].completedCycleId != .cycles[1].completedCycleId and
-    ([.cycles[].state] | all(. == "completed")) and
+    .schemaVersion == 1 and .operation == "BILLING_MAINTENANCE_CYCLE_EVIDENCE" and .safe == true and
+    .source.evidenceRunId == $run and .source.releaseSha == $release and
+    .source.imageDigest == $image and .source.databaseIdentitySha256 == $database and
+    .source.notBeforeUtc == $notBefore and (.cycles | length) == 2 and
+    [.cycles[].sequence] == [1, 2] and .cycles[0].cycleId != .cycles[1].cycleId and
+    ([.cycles[].status] | all(. == "COMPLETED")) and
     ([.cycles[].blockedCount] | all(. == 0)) and
-    .forbiddenDomainCountsBeforeSha256 == .forbiddenDomainCountsAfterSha256
-  ' "$billing_facts" >/dev/null
-  printf '%s\n' 'billing_completed_cycles=2 blockedCount=0 禁止写域前后计数摘要一致' \
+    ([.cycles[].reconciliationSummary.dryRun] | all(. == false)) and
+    ([.cycles[] | .beforeCounts == .afterCounts] | all) and
+    ([.cycles[] | .beforeCountsSha256 == .afterCountsSha256] | all)
+  ' --arg run "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" \
+    --arg release "$SWITCHED_RELEASE_SHA" \
+    --arg image "$SWITCHED_API_IMAGE_ID" \
+    --arg database "$BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256" \
+    --arg notBefore "$SWITCH_STARTED_AT_UTC" "$billing_facts_path" >/dev/null
+  printf '%s\n' 'billing_completed_cycles=2 blockedCount=0 dryRun=false 禁止写域前后计数摘要一致' \
     | publish_private_evidence "$EVIDENCE_DIR/billing-cycle-gate.state"
 
   set +e
@@ -1132,6 +1173,18 @@ SWITCH_ACTIVE=1
 export SWITCH_ACTIVE
 readonly LOG_GATE_STARTED_AT="$(cutover_utc_now)"
 readonly SWITCH_STARTED_AT_UTC="$(cutover_utc_now)"
+BILLING_MAINTENANCE_EVIDENCE_RUN_ID="$(cutover_nonce)"
+BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256="$(cutover_billing_database_identity_sha256)"
+BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA="$RELEASE_SHA"
+BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST="$API_IMAGE_ID"
+readonly BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS=180
+[[ "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" =~ ^[0-9a-f]{64}$ ]]
+[[ "$BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+export BILLING_MAINTENANCE_EVIDENCE_RUN_ID
+export BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256
+export BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA
+export BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST
+export BILLING_MAINTENANCE_EVIDENCE_ENABLED=true
 mv -f -- "$ENV_TEMP" "$ENV_FILE"
 cutover_sync_directory "$(dirname "$ENV_FILE")"
 

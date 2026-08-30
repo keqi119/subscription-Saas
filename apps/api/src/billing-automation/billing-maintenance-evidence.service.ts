@@ -155,11 +155,13 @@ function nextSequence(
 function safeReconciliationSummary(input: {
   blockedCount: number;
   createdCount: number;
+  dryRun: boolean;
   eligibleCount: number;
   existingCount: number;
   items: Array<{ action: string; blockerCode: string | null }>;
   leaseActivationCount: number;
 }): BillingMaintenanceReconciliationSummary {
+  if (input.dryRun !== false) responseInvalid();
   const summary = {
     blockedCount: safeCount(input.blockedCount),
     blockerCodes: [
@@ -174,6 +176,7 @@ function safeReconciliationSummary(input: {
       )
     ].sort(),
     createdCount: safeCount(input.createdCount),
+    dryRun: false as const,
     eligibleCount: safeCount(input.eligibleCount),
     existingCount: safeCount(input.existingCount),
     leaseActivationCount: safeCount(input.leaseActivationCount)

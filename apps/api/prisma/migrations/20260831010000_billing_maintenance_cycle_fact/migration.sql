@@ -109,6 +109,7 @@ BEGIN
       'blockedCount',
       'blockerCodes',
       'createdCount',
+      'dryRun',
       'eligibleCount',
       'existingCount',
       'leaseActivationCount'
@@ -117,12 +118,15 @@ BEGIN
       'blockedCount',
       'blockerCodes',
       'createdCount',
+      'dryRun',
       'eligibleCount',
       'existingCount',
       'leaseActivationCount'
     ]) <> '{}'::JSONB
     OR NOT "billing_maintenance_json_nonnegative_integer"("value" -> 'blockedCount')
     OR NOT "billing_maintenance_json_nonnegative_integer"("value" -> 'createdCount')
+    OR jsonb_typeof("value" -> 'dryRun') <> 'boolean'
+    OR ("value" ->> 'dryRun')::BOOLEAN IS DISTINCT FROM FALSE
     OR NOT "billing_maintenance_json_nonnegative_integer"("value" -> 'eligibleCount')
     OR NOT "billing_maintenance_json_nonnegative_integer"("value" -> 'existingCount')
     OR NOT "billing_maintenance_json_nonnegative_integer"("value" -> 'leaseActivationCount')

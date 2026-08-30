@@ -60,6 +60,8 @@ describe("API runtime media contract", () => {
       "stage1-clean-acceptance-cli-core.mjs",
       "stage1-clean-acceptance-baseline.mjs",
       "stage1-clean-acceptance-target-validator.mjs",
+      "billing-maintenance-cycle-evidence-core.mjs",
+      "billing-maintenance-cycle-evidence.mjs",
       "prisma-migration-checksums.mjs"
     ]) {
       expect(dockerfile).toContain(`COPY --from=build /app/scripts/${script} ./scripts/${script}`);

@@ -140,6 +140,7 @@ describe("BillingMaintenanceEvidenceService", () => {
       blockedCount: 3,
       blockerCodes: ["A_BLOCKER", "Z_BLOCKER"],
       createdCount: 1,
+      dryRun: false,
       eligibleCount: 4,
       existingCount: 0,
       leaseActivationCount: 2
@@ -174,6 +175,26 @@ describe("BillingMaintenanceEvidenceService", () => {
     ).toBe(
       '{"databaseName":"subscription_saas_stage1_task2","systemIdentifier":"7541900280213006521","version":"billing-maintenance-database-identity/v1"}'
     );
+  });
+
+  it("rejects a reconciliation response that does not explicitly prove dryRun=false", async () => {
+    const harness = createHarness({
+      enabled: "true",
+      reconciliation: {
+        blockedCount: 0,
+        createdCount: 0,
+        dryRun: true,
+        eligibleCount: 0,
+        existingCount: 0,
+        items: [],
+        leaseActivationCount: 0
+      }
+    });
+
+    await expect(harness.service.runMaintenance()).rejects.toMatchObject({
+      code: "BILLING_MAINTENANCE_DATABASE_RESPONSE_INVALID"
+    });
+    expect(harness.repository.insertCompletedFact).not.toHaveBeenCalled();
   });
 
   it.each([

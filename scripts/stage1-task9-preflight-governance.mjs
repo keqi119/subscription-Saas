@@ -7,7 +7,7 @@ import { validateApprovedStage1AcceptanceWrapper } from "./stage1-clean-acceptan
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DECIMAL_INTEGER = /^(?:0|[1-9][0-9]*)$/;
-const IEC_SIZE = /^(0|[1-9][0-9]*(?:\.[0-9]+)?)(B|KiB|MiB|GiB)$/;
+const IEC_SIZE = /^(0|[1-9][0-9]*)(?:\.([0-9]+))?(B|KiB|MiB|GiB)$/;
 
 export const TASK9_MIN_HOST_DISK_AVAILABLE_KB = 10 * 1024 * 1024;
 export const TASK9_EXPECTED_API_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024;
@@ -72,8 +72,8 @@ export function validateTask9DiskAvailableKb(value) {
 export function validateTask9ApiMemoryState(value) {
   const match = /^([^ ]+) \/ ([^ ]+)$/.exec(value ?? "");
   if (!match) return { code: "API_MEMORY_STATE_INVALID" };
-  const usageBytes = parseIecBytes(match[1]);
-  const limitBytes = parseIecBytes(match[2]);
+  const usageBytes = parseIecBytes(match[1], "ceil");
+  const limitBytes = parseIecBytes(match[2], "floor");
   if (usageBytes === null || limitBytes === null || usageBytes > limitBytes)
     return { code: "API_MEMORY_STATE_INVALID" };
   if (limitBytes !== TASK9_EXPECTED_API_MEMORY_LIMIT_BYTES)
@@ -219,12 +219,22 @@ function parseSafeInteger(value) {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function parseIecBytes(value) {
+function parseIecBytes(value, rounding) {
+  if (typeof value !== "string" || value.length > 64) return null;
   const match = IEC_SIZE.exec(value ?? "");
   if (!match) return null;
-  const multipliers = { B: 1, KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3 };
-  const parsed = Number(match[1]) * multipliers[match[2]];
-  return Number.isSafeInteger(parsed) ? parsed : null;
+  const fractionalDigits = match[2] ?? "";
+  const decimalScale = 10n ** BigInt(fractionalDigits.length);
+  const scaledQuantity =
+    BigInt(match[1]) * decimalScale + BigInt(fractionalDigits.length > 0 ? fractionalDigits : 0);
+  const multipliers = { B: 1n, KiB: 1024n, MiB: 1024n ** 2n, GiB: 1024n ** 3n };
+  const exactNumerator = scaledQuantity * multipliers[match[3]];
+  const roundedBytes =
+    rounding === "ceil"
+      ? (exactNumerator + decimalScale - 1n) / decimalScale
+      : exactNumerator / decimalScale;
+  if (roundedBytes > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(roundedBytes);
 }
 
 function writeResourceSummary(result) {

@@ -98,18 +98,38 @@ test("Task 9 resource gates accept exact boundaries and fail closed one unit bel
   assert.equal(governance.validateTask9DiskAvailableKb("10485759").code, "DISK_HEADROOM_LOW");
   assert.equal(governance.validateTask9DiskAvailableKb("10GiB").code, "DISK_STATE_INVALID");
 
-  assert.deepEqual(governance.validateTask9ApiMemoryState("402653184B / 536870912B"), {
+  assert.deepEqual(governance.validateTask9ApiMemoryState("115.1MiB / 512MiB"), {
+    code: "OK",
+    headroomBytes: 416179814,
+    limitBytes: 536870912,
+    usageBytes: 120691098
+  });
+  assert.deepEqual(governance.validateTask9ApiMemoryState("24.72MiB / 512MiB"), {
+    code: "OK",
+    headroomBytes: 510950113,
+    limitBytes: 536870912,
+    usageBytes: 25920799
+  });
+  assert.deepEqual(governance.validateTask9ApiMemoryState("384MiB / 512MiB"), {
     code: "OK",
     headroomBytes: 134217728,
     limitBytes: 536870912,
     usageBytes: 402653184
   });
   assert.equal(
-    governance.validateTask9ApiMemoryState("402653185B / 536870912B").code,
+    governance.validateTask9ApiMemoryState("384.1MiB / 512MiB").code,
     "API_MEMORY_HEADROOM_LOW"
   );
   assert.equal(
     governance.validateTask9ApiMemoryState("384MiB / unlimited").code,
+    "API_MEMORY_STATE_INVALID"
+  );
+  assert.equal(
+    governance.validateTask9ApiMemoryState("9007199254740992B / 512MiB").code,
+    "API_MEMORY_STATE_INVALID"
+  );
+  assert.equal(
+    governance.validateTask9ApiMemoryState("513MiB / 512MiB").code,
     "API_MEMORY_STATE_INVALID"
   );
 

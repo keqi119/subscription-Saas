@@ -1028,10 +1028,10 @@ case "$args" in
     if test "$FAILURE_SCENARIO" = api_unhealthy; then printf '%s\\n' gate:api-health >>"$TRACE_FILE"; printf unhealthy; else printf healthy; fi ;;
   *'stats --no-stream --format {{.MemUsage}}'*)
     case "$FAILURE_SCENARIO" in
-      api_memory_limit) printf '%s\\n' gate:api-memory-limit >>"$TRACE_FILE"; printf '%s\\n' '402653184B / 536870911B' ;;
-      api_memory_headroom) printf '%s\\n' gate:api-memory-headroom >>"$TRACE_FILE"; printf '%s\\n' '402653185B / 536870912B' ;;
+      api_memory_limit) printf '%s\\n' gate:api-memory-limit >>"$TRACE_FILE"; printf '%s\\n' '115.1MiB / 511.999999MiB' ;;
+      api_memory_headroom) printf '%s\\n' gate:api-memory-headroom >>"$TRACE_FILE"; printf '%s\\n' '384.1MiB / 512MiB' ;;
       api_memory_malformed) printf '%s\\n' gate:api-memory-parse >>"$TRACE_FILE"; printf '%s\\n' 'malformed' ;;
-      *) printf '%s\\n' '402653184B / 536870912B' ;;
+      *) printf '%s\\n' '115.1MiB / 512MiB' ;;
     esac ;;
   *'inspect --format {{.Image}}'*) printf '%s\\n' ${IMAGE_ID} ;;
   *'image inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*)

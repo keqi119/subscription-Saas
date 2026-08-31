@@ -10,7 +10,8 @@ import { BillingMaintenanceEvidenceService } from "../src/billing-automation/bil
 import { hashBillingMaintenanceDatabaseIdentity } from "../src/billing-automation/billing-maintenance-evidence.types";
 import { PrismaService } from "../src/prisma/prisma.service";
 
-const DATABASE_URL = requiredDisposableDatabaseUrl();
+const BILLING_DATABASE = requiredDisposableDatabase();
+const DATABASE_URL = BILLING_DATABASE.databaseUrl;
 const RELEASE_SHA = "b".repeat(40);
 const IMAGE_DIGEST = `sha256:${"c".repeat(64)}`;
 
@@ -38,7 +39,7 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
       repository.loadDatabaseIdentity(tx)
     );
 
-    expect(identity.databaseName).toBe("subscription_saas_stage1_task2_20260831_01");
+    expect(identity.databaseName).toBe(BILLING_DATABASE.databaseName);
     expect(identity.systemIdentifier).toMatch(/^[0-9]+$/);
   });
 
@@ -463,18 +464,26 @@ function randomRunId() {
   return randomBytes(32).toString("hex");
 }
 
-function requiredDisposableDatabaseUrl(value = process.env.DATABASE_URL) {
+function requiredDisposableDatabase(
+  value = process.env.BILLING_MAINTENANCE_EVIDENCE_TEST_DATABASE_URL ?? process.env.DATABASE_URL
+) {
   if (!value) throw new Error("DATABASE_URL is required for billing evidence integration tests");
   const url = new URL(value);
   if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
     throw new Error("Billing evidence integration tests require a loopback database");
   }
   const databaseName = decodeURIComponent(url.pathname.slice(1));
-  if (databaseName !== "subscription_saas_stage1_task2_20260831_01") {
+  if (["postgres", "subscription_saas_codex"].includes(databaseName)) {
+    throw new Error("Billing evidence integration tests reject default and historical databases");
+  }
+  if (
+    databaseName !== "subscription_saas_test" &&
+    !/^subscription_saas_stage1_task5_20260831_[0-9]{2}$/.test(databaseName)
+  ) {
     throw new Error(
-      "Billing evidence integration tests require subscription_saas_stage1_task2_20260831_01"
+      "Billing evidence integration tests require subscription_saas_test or a uniquely named Task 5 database"
     );
   }
   if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
+  return { databaseName, databaseUrl: url.toString() };
 }

@@ -13,7 +13,8 @@ import {
 } from "./billing-maintenance-cycle-evidence-core.mjs";
 import { createStage1AcceptancePrismaClient } from "./stage1-clean-acceptance-cli-core.mjs";
 
-const DATABASE_URL = requiredDisposableDatabaseUrl();
+const BILLING_DATABASE = requiredDisposableDatabase();
+const DATABASE_URL = BILLING_DATABASE.databaseUrl;
 const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CLI_PATH = fileURLToPath(
   new URL("./billing-maintenance-cycle-evidence.mjs", import.meta.url)
@@ -30,7 +31,7 @@ test("exports two real migrated facts and fails closed on mutation and source dr
     const [identity] = await prisma.$queryRawUnsafe(
       'SELECT current_database() AS "databaseName", (pg_control_system()).system_identifier::text AS "systemIdentifier"'
     );
-    assert.equal(identity.databaseName, "subscription_saas_stage1_task2_20260831_01");
+    assert.equal(identity.databaseName, BILLING_DATABASE.databaseName);
     assert.match(identity.systemIdentifier, /^[0-9]+$/);
     const databaseIdentitySha256 = hashBillingMaintenanceEvidenceDatabaseIdentity(identity);
     const beforeCounts = Object.fromEntries(
@@ -170,18 +171,26 @@ function collectStrings(value, seen = new WeakSet()) {
   return Object.values(value).flatMap((child) => collectStrings(child, seen));
 }
 
-function requiredDisposableDatabaseUrl(value = process.env.DATABASE_URL) {
+function requiredDisposableDatabase(
+  value = process.env.BILLING_MAINTENANCE_EVIDENCE_TEST_DATABASE_URL ?? process.env.DATABASE_URL
+) {
   if (!value) throw new Error("DATABASE_URL is required for billing exporter integration tests");
   const url = new URL(value);
   if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
     throw new Error("Billing exporter integration tests require a loopback database");
   }
   const databaseName = decodeURIComponent(url.pathname.slice(1));
-  if (databaseName !== "subscription_saas_stage1_task2_20260831_01") {
+  if (["postgres", "subscription_saas_codex"].includes(databaseName)) {
+    throw new Error("Billing exporter integration tests reject default and historical databases");
+  }
+  if (
+    databaseName !== "subscription_saas_test" &&
+    !/^subscription_saas_stage1_task5_20260831_[0-9]{2}$/.test(databaseName)
+  ) {
     throw new Error(
-      "Billing exporter integration tests require subscription_saas_stage1_task2_20260831_01"
+      "Billing exporter integration tests require subscription_saas_test or a uniquely named Task 5 database"
     );
   }
   if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
+  return { databaseName, databaseUrl: url.toString() };
 }

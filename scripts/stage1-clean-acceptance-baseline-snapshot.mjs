@@ -38,7 +38,7 @@ export function loadStage1AcceptanceForbiddenDomainDefinition(moduleUrl = import
 }
 
 export const STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256 =
-  "e5a2aceeb49026f97d359acb785b608138a98ed8b5f3382b28a910e82613f7e3";
+  "6264cda46cd5d17b5c2bd14bb8d2da95fc6420e7c066bf474dcb030c672613be";
 
 const REQUIRED_CONTRACT_TEMPLATE_TYPES = Object.freeze([
   "DELIVERY_HANDOVER",

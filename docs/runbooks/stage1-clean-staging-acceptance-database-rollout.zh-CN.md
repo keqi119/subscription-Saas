@@ -122,12 +122,24 @@ test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{e
 readonly CURRENT_ONLINE_API_IMAGE="$(docker inspect --format '{{.Image}}' "$API_CONTAINER_ID")"
 readonly CURRENT_ONLINE_API_REVISION="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$API_CONTAINER_ID")"
 readonly APPROVED_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$APPROVED_API_IMAGE")"
-readonly APPROVED_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$APPROVED_API_IMAGE_ID")"
+readonly APPROVED_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$APPROVED_API_IMAGE")"
 readonly APPROVED_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$APPROVED_API_IMAGE_ID")"
 [[ "$APPROVED_API_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_ID_INVALID'; exit 1; }
 [[ "$APPROVED_API_IMAGE_DIGEST" =~ @sha256:[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_DIGEST_INVALID'; exit 1; }
 [[ "$APPROVED_API_IMAGE_REVISION" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_REVISION_INVALID'; exit 1; }
 test "$APPROVED_API_IMAGE_REVISION" = "$APPROVED_RELEASE_SHA" || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_REVISION_MISMATCH'; exit 1; }
+test "$CURRENT_ONLINE_API_IMAGE" = "$APPROVED_API_IMAGE_ID" || { printf '%s\n' 'STOP: CURRENT_ONLINE_API_IMAGE_ID_MISMATCH'; exit 1; }
+readonly CURRENT_ONLINE_API_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$CURRENT_ONLINE_API_IMAGE")"
+test "$CURRENT_ONLINE_API_DIGEST" = "$APPROVED_API_IMAGE_DIGEST" || { printf '%s\n' 'STOP: CURRENT_ONLINE_API_IMAGE_DIGEST_MISMATCH'; exit 1; }
+test "$CURRENT_ONLINE_API_REVISION" = "$APPROVED_API_IMAGE_REVISION" || { printf '%s\n' 'STOP: CURRENT_ONLINE_API_IMAGE_REVISION_MISMATCH'; exit 1; }
+readonly COMPOSE_API_IMAGE="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --images api)"
+test "$(printf '%s\n' "$COMPOSE_API_IMAGE" | grep -c .)" -eq 1 || { printf '%s\n' 'STOP: COMPOSE_API_IMAGE_COUNT_INVALID'; exit 1; }
+readonly COMPOSE_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$COMPOSE_API_IMAGE")"
+readonly COMPOSE_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$COMPOSE_API_IMAGE")"
+readonly COMPOSE_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$COMPOSE_API_IMAGE_ID")"
+test "$COMPOSE_API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID" || { printf '%s\n' 'STOP: COMPOSE_API_IMAGE_ID_MISMATCH'; exit 1; }
+test "$COMPOSE_API_IMAGE_DIGEST" = "$APPROVED_API_IMAGE_DIGEST" || { printf '%s\n' 'STOP: COMPOSE_API_IMAGE_DIGEST_MISMATCH'; exit 1; }
+test "$COMPOSE_API_IMAGE_REVISION" = "$APPROVED_API_IMAGE_REVISION" || { printf '%s\n' 'STOP: COMPOSE_API_IMAGE_REVISION_MISMATCH'; exit 1; }
 readonly STAGE1_ACCEPTANCE_IMAGE_REF="$APPROVED_API_IMAGE_DIGEST"
 export STAGE1_ACCEPTANCE_IMAGE_REF
 export DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL"
@@ -138,7 +150,11 @@ install -d -o root -g root -m 0700 "$EVIDENCE_DIR"
 assert_private_directory "$EVIDENCE_DIR"
 {
   printf 'current_online_image_id=%s\n' "$CURRENT_ONLINE_API_IMAGE"
+  printf 'current_online_digest=%s\n' "$CURRENT_ONLINE_API_DIGEST"
   printf 'current_online_revision=%s\n' "${CURRENT_ONLINE_API_REVISION:-missing}"
+  printf 'compose_api_image_id=%s\n' "$COMPOSE_API_IMAGE_ID"
+  printf 'compose_api_digest=%s\n' "$COMPOSE_API_IMAGE_DIGEST"
+  printf 'compose_api_revision=%s\n' "$COMPOSE_API_IMAGE_REVISION"
   printf 'approved_target_image_id=%s\n' "$APPROVED_API_IMAGE_ID"
   printf 'approved_target_revision=%s\n' "$APPROVED_API_IMAGE_REVISION"
   printf 'approved_target_digest=%s\n' "$APPROVED_API_IMAGE_DIGEST"
@@ -377,9 +393,17 @@ readonly API_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$API_CONTAINER_ID
 readonly API_IMAGE_REF="$(docker image inspect --format '{{index .RepoDigests 0}}' "$API_IMAGE_ID")"
 [[ "$API_IMAGE_REF" =~ @sha256:[0-9a-f]{64}$ ]] \
   || { printf '%s\n' 'STOP: API_IMAGE_DIGEST_INVALID'; exit 1; }
-readonly COMPOSE_API_IMAGE="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --format json | jq -er '.services.api.image')"
+readonly COMPOSE_API_IMAGE="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --images api)"
+test "$(printf '%s\n' "$COMPOSE_API_IMAGE" | grep -c .)" -eq 1
 readonly COMPOSE_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$COMPOSE_API_IMAGE")"
-test "$COMPOSE_API_IMAGE_ID" = "$API_IMAGE_ID"
+readonly COMPOSE_API_IMAGE_REF="$(docker image inspect --format '{{index .RepoDigests 0}}' "$COMPOSE_API_IMAGE")"
+readonly COMPOSE_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$COMPOSE_API_IMAGE_ID")"
+test "$API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID"
+test "$API_IMAGE_REF" = "$APPROVED_API_IMAGE_DIGEST"
+test "$RELEASE_SHA" = "$APPROVED_API_IMAGE_REVISION"
+test "$COMPOSE_API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID"
+test "$COMPOSE_API_IMAGE_REF" = "$APPROVED_API_IMAGE_DIGEST"
+test "$COMPOSE_API_IMAGE_REVISION" = "$APPROVED_API_IMAGE_REVISION"
 
 df -Pk /opt/subscription-saas \
   | awk 'NR==1 || NR==2 {print $2, $3, $4, $5}' \
@@ -550,7 +574,7 @@ export STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL
 export STAGE1_ACCEPTANCE_TARGET_DATABASE_URL
 export STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME
 export STAGE1_ACCEPTANCE_GIT_SHA="$RELEASE_SHA"
-export STAGE1_ACCEPTANCE_IMAGE_REF="$API_IMAGE_REF"
+export STAGE1_ACCEPTANCE_IMAGE_REF="$APPROVED_API_IMAGE_DIGEST"
 
 set +e
 DISCOVERY_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
@@ -1333,21 +1357,33 @@ rollback_after_switch_error() {
 
 revalidate_switched_api_identity() {
   local requested_container_id="$1"
-  local full_container_id switched_image_id switched_release_sha compose_image compose_image_id
+  local full_container_id switched_image_id switched_image_digest switched_release_sha
+  local compose_image compose_image_id compose_image_digest compose_image_revision
   [[ "$requested_container_id" =~ ^[0-9a-f]{64}$ ]] || return 1
   full_container_id="$(docker inspect --format '{{.Id}}' "$requested_container_id")" || return 1
+  test "$full_container_id" = "$requested_container_id" || return 1
   switched_image_id="$(docker inspect --format '{{.Image}}' "$requested_container_id")" || return 1
+  test "$switched_image_id" = "$APPROVED_API_IMAGE_ID" || return 1
+  switched_image_digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$switched_image_id")" \
+    || return 1
+  test "$switched_image_digest" = "$APPROVED_API_IMAGE_DIGEST" || return 1
   switched_release_sha="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$requested_container_id")" \
     || return 1
+  test "$switched_release_sha" = "$APPROVED_API_IMAGE_REVISION" || return 1
+  test "$switched_release_sha" = "$APPROVED_RELEASE_SHA" || return 1
   compose_image="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --format json \
     | jq -er '.services.api.image')" || return 1
   compose_image_id="$(docker image inspect --format '{{.Id}}' "$compose_image")" || return 1
-  test "$full_container_id" = "$requested_container_id" || return 1
-  test "$switched_image_id" = "$API_IMAGE_ID" || return 1
-  test "$switched_release_sha" = "$RELEASE_SHA" || return 1
-  test "$compose_image_id" = "$API_IMAGE_ID" || return 1
+  test "$compose_image_id" = "$APPROVED_API_IMAGE_ID" || return 1
+  compose_image_digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$compose_image")" \
+    || return 1
+  test "$compose_image_digest" = "$APPROVED_API_IMAGE_DIGEST" || return 1
+  compose_image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$compose_image_id")" \
+    || return 1
+  test "$compose_image_revision" = "$APPROVED_API_IMAGE_REVISION" || return 1
   SWITCHED_API_CONTAINER_ID="$full_container_id"
   SWITCHED_API_IMAGE_ID="$switched_image_id"
+  SWITCHED_API_IMAGE_DIGEST="$switched_image_digest"
   SWITCHED_RELEASE_SHA="$switched_release_sha"
 }
 
@@ -1520,8 +1556,8 @@ SQL
     docker exec "$switched_api_container_id" \
     node /app/scripts/billing-maintenance-cycle-evidence.mjs \
     --run-id "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" \
-    --expected-release-sha "$SWITCHED_RELEASE_SHA" \
-    --expected-image-digest "$SWITCHED_API_IMAGE_ID" \
+    --expected-release-sha "$APPROVED_RELEASE_SHA" \
+    --expected-image-digest "$APPROVED_API_IMAGE_ID" \
     --expected-database-identity-sha256 "$BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256" \
     --not-before "$SWITCH_STARTED_AT_UTC" \
     --timeout-seconds "$BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS")" || return 1
@@ -1540,8 +1576,8 @@ SQL
     ([.cycles[] | .beforeCounts == .afterCounts] | all) and
     ([.cycles[] | .beforeCountsSha256 == .afterCountsSha256] | all)
   ' --arg run "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" \
-    --arg release "$SWITCHED_RELEASE_SHA" \
-    --arg image "$SWITCHED_API_IMAGE_ID" \
+    --arg release "$APPROVED_RELEASE_SHA" \
+    --arg image "$APPROVED_API_IMAGE_ID" \
     --arg database "$BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256" \
     --arg notBefore "$SWITCH_STARTED_AT_UTC" "$billing_facts_path" >/dev/null
   printf '%s\n' 'billing_completed_cycles=2 blockedCount=0 dryRun=false 禁止写域前后计数摘要一致' \
@@ -1582,8 +1618,8 @@ readonly LOG_GATE_STARTED_AT="$(cutover_utc_now)"
 readonly SWITCH_STARTED_AT_UTC="$(cutover_utc_now)"
 BILLING_MAINTENANCE_EVIDENCE_RUN_ID="$(cutover_nonce)"
 BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256="$(cutover_billing_database_identity_sha256)"
-BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA="$RELEASE_SHA"
-BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST="$API_IMAGE_ID"
+BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA="$APPROVED_RELEASE_SHA"
+BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST="$APPROVED_API_IMAGE_ID"
 readonly BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS=180
 readonly BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS=190
 [[ "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" =~ ^[0-9a-f]{64}$ ]]
@@ -1604,7 +1640,7 @@ SWITCHED_API_CONTAINER_ID="$(cutover_api_container_id)"
 if ! revalidate_switched_api_identity "$SWITCHED_API_CONTAINER_ID"; then
   rollback_and_stop 'SWITCHED_API_IDENTITY_MISMATCH'
 fi
-readonly SWITCHED_API_CONTAINER_ID SWITCHED_API_IMAGE_ID SWITCHED_RELEASE_SHA
+readonly SWITCHED_API_CONTAINER_ID SWITCHED_API_IMAGE_ID SWITCHED_API_IMAGE_DIGEST SWITCHED_RELEASE_SHA
 readonly BROWSER_CHALLENGE_PATH="$EVIDENCE_DIR/browser-acceptance.challenge.json"
 readonly BROWSER_FACT_PATH="$EVIDENCE_DIR/browser-acceptance.fact.json"
 assert_new_evidence_path "$BROWSER_CHALLENGE_PATH"

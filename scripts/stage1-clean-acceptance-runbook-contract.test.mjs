@@ -36,6 +36,9 @@ const runbookUrl = new URL(
 const SHA256 = "a".repeat(64);
 const RELEASE_SHA = "b".repeat(40);
 const IMAGE_ID = `sha256:${"c".repeat(64)}`;
+const UNAPPROVED_IMAGE_ID = `sha256:${"f".repeat(64)}`;
+const APPROVED_IMAGE_DIGEST = `registry.test/api@sha256:${"a".repeat(64)}`;
+const UNAPPROVED_IMAGE_DIGEST = `registry.test/api@sha256:${"f".repeat(64)}`;
 const CONTAINER_ID = "e".repeat(64);
 const NONCE = "d".repeat(64);
 const BILLING_NOT_BEFORE = "2026-08-30T12:00:01Z";
@@ -181,9 +184,13 @@ function validateExecutableContracts(contents) {
     "{{.Image}}",
     "org.opencontainers.image.revision",
     ".services.api.image",
-    'test "$switched_image_id" = "$API_IMAGE_ID"',
-    'test "$switched_release_sha" = "$RELEASE_SHA"',
-    'test "$compose_image_id" = "$API_IMAGE_ID"',
+    'test "$switched_image_id" = "$APPROVED_API_IMAGE_ID"',
+    'test "$switched_image_digest" = "$APPROVED_API_IMAGE_DIGEST"',
+    'test "$switched_release_sha" = "$APPROVED_API_IMAGE_REVISION"',
+    'test "$switched_release_sha" = "$APPROVED_RELEASE_SHA"',
+    'test "$compose_image_id" = "$APPROVED_API_IMAGE_ID"',
+    'test "$compose_image_digest" = "$APPROVED_API_IMAGE_DIGEST"',
+    'test "$compose_image_revision" = "$APPROVED_API_IMAGE_REVISION"',
     '"releaseSha"',
     '"imageId"',
     '"switchedContainerId"',
@@ -210,6 +217,10 @@ function validateExecutableContracts(contents) {
     "cutover_billing_database_identity_sha256() {",
     "disable_billing_maintenance_evidence() {",
     "billing-maintenance-cycle-evidence.mjs",
+    '--expected-release-sha "$APPROVED_RELEASE_SHA"',
+    '--expected-image-digest "$APPROVED_API_IMAGE_ID"',
+    'BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA="$APPROVED_RELEASE_SHA"',
+    'BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST="$APPROVED_API_IMAGE_ID"',
     'publish_private_evidence "$EVIDENCE_DIR/billing-completed-cycles.json"',
     "BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS=180",
     "BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS=190",
@@ -256,6 +267,13 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     "STOP: APPROVED_API_IMAGE_DIGEST_INVALID",
     "STOP: APPROVED_API_IMAGE_REVISION_INVALID",
     "STOP: APPROVED_API_IMAGE_REVISION_MISMATCH",
+    'test "$CURRENT_ONLINE_API_IMAGE" = "$APPROVED_API_IMAGE_ID"',
+    'test "$CURRENT_ONLINE_API_DIGEST" = "$APPROVED_API_IMAGE_DIGEST"',
+    'test "$CURRENT_ONLINE_API_REVISION" = "$APPROVED_API_IMAGE_REVISION"',
+    "config --images api",
+    'test "$COMPOSE_API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID"',
+    'test "$COMPOSE_API_IMAGE_DIGEST" = "$APPROVED_API_IMAGE_DIGEST"',
+    'test "$COMPOSE_API_IMAGE_REVISION" = "$APPROVED_API_IMAGE_REVISION"',
     "export TARGET_DB",
     "readonly MIN_HOST_DISK_AVAILABLE_KB=10485760",
     "readonly EXPECTED_API_MEMORY_LIMIT_BYTES=536870912",
@@ -295,6 +313,10 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     "config --services",
     "API_CONTAINER_NOT_RUNNING",
     "API_CONTAINER_NOT_HEALTHY",
+    'test "$CURRENT_ONLINE_API_IMAGE" = "$APPROVED_API_IMAGE_ID"',
+    'test "$CURRENT_ONLINE_API_DIGEST" = "$APPROVED_API_IMAGE_DIGEST"',
+    'test "$COMPOSE_API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID"',
+    'test "$COMPOSE_API_IMAGE_DIGEST" = "$APPROVED_API_IMAGE_DIGEST"',
     'stage1-task9-preflight-governance.mjs resource-disk "$MIN_HOST_DISK_AVAILABLE_KB"',
     'stage1-task9-preflight-governance.mjs resource-memory "$EXPECTED_API_MEMORY_LIMIT_BYTES" "$MIN_API_MEMORY_HEADROOM_BYTES"',
     'stage1-task9-preflight-governance.mjs resource-postgres-connections "$EXPECTED_POSTGRES_MAX_CONNECTIONS" "$MIN_POSTGRES_CONNECTION_HEADROOM"',
@@ -494,6 +516,14 @@ case "$args" in
     printf '%s\\n' gate:compose-image >>"$TRACE_FILE"
     if test "$FAILURE_SCENARIO" = compose_image_drift; then printf '%s\\n' sha256:${"f".repeat(64)}; else printf '%s\\n' ${IMAGE_ID}; fi
     ;;
+  'image inspect --format {{index .RepoDigests 0}} ${IMAGE_ID}')
+    printf '%s\\n' gate:container-image-digest >>"$TRACE_FILE"
+    if test "$FAILURE_SCENARIO" = image_digest_drift; then printf '%s\\n' ${UNAPPROVED_IMAGE_DIGEST}; else printf '%s\\n' ${APPROVED_IMAGE_DIGEST}; fi
+    ;;
+  'image inspect --format {{index .RepoDigests 0}} approved-api')
+    printf '%s\\n' gate:compose-image-digest >>"$TRACE_FILE"
+    if test "$FAILURE_SCENARIO" = compose_image_digest_drift; then printf '%s\\n' ${UNAPPROVED_IMAGE_DIGEST}; else printf '%s\\n' ${APPROVED_IMAGE_DIGEST}; fi
+    ;;
   *' config --format json'*) printf '%s\\n' '{"services":{"api":{"image":"approved-api"}}}' ;;
   *'inspect --format {{.Id}}'*)
     printf '%s\\n' gate:container-id >>"$TRACE_FILE"
@@ -686,6 +716,10 @@ RUN_UTC=20260830T120000Z
 MANIFEST_SHA=${SHA256}
 RELEASE_SHA=${RELEASE_SHA}
 API_IMAGE_ID=${IMAGE_ID}
+APPROVED_RELEASE_SHA=${RELEASE_SHA}
+APPROVED_API_IMAGE_ID=${IMAGE_ID}
+APPROVED_API_IMAGE_DIGEST=${APPROVED_IMAGE_DIGEST}
+APPROVED_API_IMAGE_REVISION=${RELEASE_SHA}
 COMPOSE_FILE=fake-compose
 STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL=api-health
 STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL=admin-health
@@ -1632,6 +1666,25 @@ test("pins compose, release image, and fixed preflight identities", async () => 
   ]);
 });
 
+test("approved image identity directly binds formal acceptance, cutover, and billing evidence", async () => {
+  const contents = await readRunbook();
+  assertContainsAll(contents, [
+    'test "$CURRENT_ONLINE_API_IMAGE" = "$APPROVED_API_IMAGE_ID"',
+    'test "$CURRENT_ONLINE_API_DIGEST" = "$APPROVED_API_IMAGE_DIGEST"',
+    'test "$API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID"',
+    'test "$API_IMAGE_REF" = "$APPROVED_API_IMAGE_DIGEST"',
+    'test "$COMPOSE_API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID"',
+    'test "$COMPOSE_API_IMAGE_REF" = "$APPROVED_API_IMAGE_DIGEST"',
+    'export STAGE1_ACCEPTANCE_IMAGE_REF="$APPROVED_API_IMAGE_DIGEST"',
+    'test "$switched_image_id" = "$APPROVED_API_IMAGE_ID"',
+    'test "$switched_image_digest" = "$APPROVED_API_IMAGE_DIGEST"',
+    'BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA="$APPROVED_RELEASE_SHA"',
+    'BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST="$APPROVED_API_IMAGE_ID"',
+    '--expected-release-sha "$APPROVED_RELEASE_SHA"',
+    '--expected-image-digest "$APPROVED_API_IMAGE_ID"'
+  ]);
+});
+
 test("Task 9 preflight uses only the approved target image and reaches the approval stop through executable fences", async () => {
   const preflight = validateTask9PreflightContracts(await readRunbook());
   assert.ok(preflight.length > 0);
@@ -1833,7 +1886,11 @@ case "$args" in
       api_memory_malformed) printf '%s\\n' gate:api-memory-parse >>"$TRACE_FILE"; printf '%s\\n' 'malformed' ;;
       *) printf '%s\\n' '115.1MiB / 512MiB' ;;
     esac ;;
-  *'inspect --format {{.Image}}'*) printf '%s\\n' ${IMAGE_ID} ;;
+  *'inspect --format {{.Image}}'*)
+    case "$FAILURE_SCENARIO" in
+      approved_online_identity_mismatch) printf '%s\\n' ${UNAPPROVED_IMAGE_ID} ;;
+      *) printf '%s\\n' ${IMAGE_ID} ;;
+    esac ;;
   *'image inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*)
     case "$FAILURE_SCENARIO" in
       image_revision_missing) printf '%s\\n' gate:image-revision-missing >>"$TRACE_FILE"; printf '\\n' ;;
@@ -1842,8 +1899,22 @@ case "$args" in
       *) printf '%s\\n' ${RELEASE_SHA} ;;
     esac ;;
   *'inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*) printf '%s\\n' ${RELEASE_SHA} ;;
-  *'image inspect --format {{.Id}}'*) test "$FAILURE_SCENARIO" != image_id || { printf '%s\\n' gate:image-id >>"$TRACE_FILE"; printf '%s\\n' bad; exit 0; }; printf '%s\\n' ${IMAGE_ID} ;;
-  *'image inspect --format {{index .RepoDigests 0}}'*) test "$FAILURE_SCENARIO" != image_digest || { printf '%s\\n' gate:image-digest >>"$TRACE_FILE"; printf '%s\\n' bad; exit 0; }; printf '%s\\n' registry.test/api@sha256:${"a".repeat(64)} ;;
+  *'config --images api'*) printf '%s\\n' registry.test/api:online ;;
+  *'image inspect --format {{.Id}}'*)
+    test "$FAILURE_SCENARIO" != image_id || { printf '%s\\n' gate:image-id >>"$TRACE_FILE"; printf '%s\\n' bad; exit 0; }
+    if test "$FAILURE_SCENARIO" = approved_online_identity_mismatch && [[ "$args" = *registry.test/api:online ]]; then
+      printf '%s\\n' ${UNAPPROVED_IMAGE_ID}
+    else
+      printf '%s\\n' ${IMAGE_ID}
+    fi ;;
+  *'image inspect --format {{index .RepoDigests 0}}'*)
+    test "$FAILURE_SCENARIO" != image_digest || { printf '%s\\n' gate:image-digest >>"$TRACE_FILE"; printf '%s\\n' bad; exit 0; }
+    if { test "$FAILURE_SCENARIO" = approved_online_identity_mismatch || test "$FAILURE_SCENARIO" = approved_online_digest_mismatch; } \\
+      && [[ "$args" != *registry.test/api:tag ]]; then
+      printf '%s\\n' ${UNAPPROVED_IMAGE_DIGEST}
+    else
+      printf '%s\\n' ${APPROVED_IMAGE_DIGEST}
+    fi ;;
   *'pg_stat_activity'*)
     case "$FAILURE_SCENARIO" in
       postgres_max_connections) printf '%s\\n' gate:postgres-max-connections >>"$TRACE_FILE"; printf '%s\\n' '20|31' ;;
@@ -1853,7 +1924,7 @@ case "$args" in
     esac ;;
   *'current_user;'*) printf '%s\\n' subscription_saas ;;
   *'pg_control_system'*) printf '%s\\n' server-id ;;
-  *'SELECT EXISTS'*) test "$FAILURE_SCENARIO" != target_exists || printf '%s\\n' gate:target-exists >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != target_exists && printf f || printf t ;;
+  *'SELECT EXISTS'*) printf '%s\\n' gate:target-exists >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != target_exists && printf f || printf t ;;
   *'information_schema.tables'*) test "$FAILURE_SCENARIO" != target_nonempty || printf '%s\\n' gate:target-empty >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != target_nonempty && printf 0 || printf 1 ;;
   *'_prisma_migrations'*) test "$FAILURE_SCENARIO" != migration_count || printf '%s\\n' gate:migration-count >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != migration_count && printf '125|0|0|0' || printf '124|0|0|0' ;;
   *'pg_dump'*) test "$FAILURE_SCENARIO" != backup || { printf '%s\\n' gate:backup >>"$TRACE_FILE"; exit 71; }; printf dump ;;
@@ -1929,6 +2000,23 @@ ${preflight
   rmSync(host, { recursive: true, force: true });
   return { result, output, calls };
 }
+
+test("Task 9 preflight rejects approved image ID and digest drift before database state changes", async () => {
+  const preflight = extractExecutableFence(
+    await readRunbook(),
+    "STAGE1_TASK9_PREFLIGHT_EXECUTABLE"
+  );
+  for (const scenario of ["approved_online_identity_mismatch", "approved_online_digest_mismatch"]) {
+    const outcome = runTask9Preflight(preflight, scenario);
+    assert.notEqual(outcome.result.status, 0, `${scenario} must stop`);
+    assert.doesNotMatch(
+      outcome.calls,
+      /^gate:target-exists$/m,
+      `${scenario} must stop before target database lookup/create`
+    );
+    assert.doesNotMatch(outcome.output, /BASELINE_APPLY_APPROVAL/);
+  }
+});
 
 test(
   "Task 9 complete executable fence reaches approval only when every stateful gate is green",
@@ -2622,9 +2710,11 @@ test("designated fences reject transformer, gate, trap, identity, and browser mu
         'mv -f -- "$ENV_TEMP" "$ENV_FILE"',
         'mv -f -- "$ENV_TEMP" "$ENV_FILE"\ntrap \'rollback_after_switch_error\' ERR'
       ),
-    contents.replace('test "$switched_image_id" = "$API_IMAGE_ID"', ":"),
-    contents.replace('test "$switched_release_sha" = "$RELEASE_SHA"', ":"),
-    contents.replace('test "$compose_image_id" = "$API_IMAGE_ID"', ":"),
+    contents.replace('test "$switched_image_id" = "$APPROVED_API_IMAGE_ID"', ":"),
+    contents.replace('test "$switched_image_digest" = "$APPROVED_API_IMAGE_DIGEST"', ":"),
+    contents.replace('test "$switched_release_sha" = "$APPROVED_API_IMAGE_REVISION"', ":"),
+    contents.replace('test "$compose_image_id" = "$APPROVED_API_IMAGE_ID"', ":"),
+    contents.replace('test "$compose_image_digest" = "$APPROVED_API_IMAGE_DIGEST"', ":"),
     contents.replace("fact.console.warnCount === 0", "fact.console.warnCount >= 0"),
     contents.replace(
       "completedAt <= challengeCreatedAt + timeoutSeconds * 1000",
@@ -2645,8 +2735,10 @@ const MATERIAL_GATE_FAILURES = new Map([
   ["filesystem_sync", "gate:filesystem-sync"],
   ["container_id_drift", "gate:container-id"],
   ["image_drift", "gate:container-image"],
+  ["image_digest_drift", "gate:container-image-digest"],
   ["revision_drift", "gate:container-revision"],
   ["compose_image_drift", "gate:compose-image"],
+  ["compose_image_digest_drift", "gate:compose-image-digest"],
   ["container_running", "gate:container-running"],
   ["container_health", "gate:container-health"],
   ["restart_count", "gate:restart-count"],
@@ -2734,9 +2826,14 @@ for (const [scenario, expectedTrace] of MATERIAL_GATE_FAILURES) {
     const outcome = runCutover(cutover, evidenceHelpers, scenario);
     assertRollback(outcome, scenario, expectedTrace);
     if (
-      ["container_id_drift", "image_drift", "revision_drift", "compose_image_drift"].includes(
-        scenario
-      )
+      [
+        "container_id_drift",
+        "image_drift",
+        "image_digest_drift",
+        "revision_drift",
+        "compose_image_drift",
+        "compose_image_digest_drift"
+      ].includes(scenario)
     ) {
       assert.equal(
         outcome.evidenceFiles.includes("browser-acceptance.challenge.json"),

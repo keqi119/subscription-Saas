@@ -680,7 +680,7 @@ assert_private_file "$EVIDENCE_DIR/target-validator.json"
 
 ## 6. Candidate API 可复现启动、只读验收与停止边界
 
-candidate 必须由下面的 executable fence 启动：独立容器名、只绑定 `127.0.0.1` 备用端口、`DATABASE_URL` 精确指向新库、不接入 Nginx、不创建业务数据，并显式设置八个 worker/journey/return gate：
+candidate 必须由下面的 executable fence 启动：独立容器名与专属 Docker network、无主机端口发布、`DATABASE_URL` 精确指向新库、不接入 Nginx、不创建业务数据，并显式设置八个 worker/journey/return gate：
 
 `SUBSCRIPTION_JOURNEY_ENABLED=false`、`SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false`、`BILLING_AUTOMATION_WORKER_ENABLED=false`、`FIELD_VIDEO_UPLOAD_WORKER_ENABLED=false`、`STAGE2_HANDOVER_WORKER_ENABLED=false`、`MILEAGE_REVIEW_WORKER_ENABLED=false`、`SUBSCRIPTION_CHANGE_WORKER_ENABLED=false` 与 `SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false`。
 
@@ -695,39 +695,104 @@ candidate 必须由下面的 executable fence 启动：独立容器名、只绑�
 - `apps/api/src/subscription-change/subscription-change.worker.ts` 的 `onModuleInit()` 仅在 `workerEnabled()` 为 true 后调度；该 getter 只接受精确字符串 `SUBSCRIPTION_CHANGE_WORKER_ENABLED=true`。false 或缺失值都不会启动轮询，`subscription-change-worker.spec.ts` 覆盖了该 fail-closed 契约。
 - `SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED` 是新退车受管写入的准入门；只有精确字符串 `true` 才允许新的三阶段 case。false 或缺失值必须拒绝无既有受管事实的写入，而既有清单/差异/费用、法催和退车确认单电子签事实继续可读。
 
-以下 fence 不读取或输出 `.env` 全文，也不检查 `.Config.Env`；它用只读的 `docker exec` 精确比较候选容器中已知 gate、`DATABASE_URL` 与 target URL，且不显示任何 URL/凭据。候选容器使用 compose 的 postgres 网络以访问 target database，但不使用 Compose service、没有 Nginx link、仅发布 loopback 备用端口；host 的 Nginx 只拥有 80/443，无法路由到该候选端口。任何启动或 inspection 失败都会删除候选容器并停止。
+以下 fence 不读取或输出 `.env` 全文，也不检查 `.Config.Env`；`DATABASE_URL` 与 target URL 只作为已导出的进程环境，通过 Docker 的 `--env NAME` 传递，绝不作为 Docker argv 的 `NAME=value` 字面量。候选每次创建专属 Docker network，临时只将运行中的 compose `postgres` 容器以已在 preflight 验证的数据库 hostname alias 接入；该 network 的成员必须精确只有该 postgres 与 candidate，因而不会与 edge proxy/Nginx 共网。
+
+candidate **不发布主机端口**，只在容器内执行 `/api/health` 的只读 smoke；本过程不读取、修改或 reload Nginx，也不存在 Nginx 可路由的 candidate 地址。浏览器已有 token 的 RBAC 菜单、产品/车辆列表、空进件/订单 count 和视觉验收只在正式切换后的既有浏览器门禁执行，不是 candidate 启动的前置条件。任何启动、health、证据发布/权限断言或停止失败都由 trap 清理 candidate、临时 postgres attachment 与专属 network；collision 一律 fail closed，绝不删除本次运行未创建的资源。
 
 <!-- STAGE1_CANDIDATE_API_EXECUTABLE_BEGIN -->
 
 ```bash
 readonly CANDIDATE_API_CONTAINER="subauto-staging-stage1-candidate-api"
-readonly CANDIDATE_API_HOST_PORT=3181
-readonly CANDIDATE_API_NETWORK="${COMPOSE_PROJECT}_default"
+readonly CANDIDATE_API_NETWORK="${COMPOSE_PROJECT}-stage1-candidate-${RUN_UTC,,}"
+readonly CANDIDATE_API_DATABASE_ALIAS="$STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME"
 readonly CANDIDATE_API_LAUNCH_EVIDENCE="$EVIDENCE_DIR/candidate-api.launch.safe.state"
+readonly CANDIDATE_API_OWNERSHIP_EVIDENCE="$EVIDENCE_DIR/candidate-api.ownership.safe.state"
+CANDIDATE_API_CREATED=0
+CANDIDATE_NETWORK_CREATED=0
+CANDIDATE_POSTGRES_ATTACHED=0
+
+candidate_expected_network_members() {
+  printf '%s\n' "$@" | LC_ALL=C sort
+}
+
+candidate_network_members() {
+  docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "$CANDIDATE_API_NETWORK" | LC_ALL=C sort
+}
 
 candidate_cleanup() {
-  if docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1; then
-    docker rm -f "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1
+  local cleanup_failed=0
+  if test "$CANDIDATE_API_CREATED" = 1; then
+    if docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1; then
+      docker rm -f "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1 || cleanup_failed=1
+    fi
+    docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1 && cleanup_failed=1
   fi
+  if test "$CANDIDATE_POSTGRES_ATTACHED" = 1; then
+    if docker network inspect "$CANDIDATE_API_NETWORK" >/dev/null 2>&1; then
+      docker network disconnect "$CANDIDATE_API_NETWORK" "$CANDIDATE_POSTGRES_CONTAINER_ID" >/dev/null 2>&1 || cleanup_failed=1
+    fi
+  fi
+  if test "$CANDIDATE_NETWORK_CREATED" = 1; then
+    if docker network inspect "$CANDIDATE_API_NETWORK" >/dev/null 2>&1; then
+      docker network rm "$CANDIDATE_API_NETWORK" >/dev/null 2>&1 || cleanup_failed=1
+    fi
+    docker network inspect "$CANDIDATE_API_NETWORK" >/dev/null 2>&1 && cleanup_failed=1
+  fi
+  return "$cleanup_failed"
+}
+
+candidate_trap_cleanup() {
+  local status=$?
+  trap - ERR EXIT HUP INT TERM
+  if ! candidate_cleanup; then
+    printf '%s\n' 'STOP: CANDIDATE_CLEANUP_FAILED'
+    return 1
+  fi
+  return "$status"
 }
 
 candidate_fail() {
-  candidate_cleanup || { printf '%s\n' 'STOP: CANDIDATE_CLEANUP_FAILED'; exit 1; }
   printf '%s\n' 'STOP: CANDIDATE_API_ISOLATION_FAILED'
   exit 1
 }
+
+trap 'candidate_trap_cleanup' ERR EXIT HUP INT TERM
+
+: "${DATABASE_URL:?}"
+: "${STAGE1_ACCEPTANCE_TARGET_DATABASE_URL:?}"
+test "$DATABASE_URL" = "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" || candidate_fail
+export DATABASE_URL STAGE1_ACCEPTANCE_TARGET_DATABASE_URL
+[[ "$CANDIDATE_API_DATABASE_ALIAS" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || candidate_fail
 
 if docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1; then
   printf '%s\n' 'STOP: CANDIDATE_API_ALREADY_EXISTS'
   exit 1
 fi
+if docker network inspect "$CANDIDATE_API_NETWORK" >/dev/null 2>&1; then
+  printf '%s\n' 'STOP: CANDIDATE_NETWORK_ALREADY_EXISTS'
+  exit 1
+fi
 assert_new_evidence_path "$CANDIDATE_API_LAUNCH_EVIDENCE"
+assert_new_evidence_path "$CANDIDATE_API_OWNERSHIP_EVIDENCE"
+if ! CANDIDATE_POSTGRES_CONTAINER_ID="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q postgres)"; then
+  candidate_fail
+fi
+[[ "$CANDIDATE_POSTGRES_CONTAINER_ID" =~ ^[0-9a-f]{64}$ ]] || candidate_fail
+if ! CANDIDATE_POSTGRES_FULL_ID="$(docker inspect --format '{{.Id}}' "$CANDIDATE_POSTGRES_CONTAINER_ID")"; then
+  candidate_fail
+fi
+test "$CANDIDATE_POSTGRES_FULL_ID" = "$CANDIDATE_POSTGRES_CONTAINER_ID" || candidate_fail
+
+docker network create "$CANDIDATE_API_NETWORK" >/dev/null
+CANDIDATE_NETWORK_CREATED=1
+docker network connect --alias "$CANDIDATE_API_DATABASE_ALIAS" "$CANDIDATE_API_NETWORK" "$CANDIDATE_POSTGRES_CONTAINER_ID" >/dev/null
+CANDIDATE_POSTGRES_ATTACHED=1
+test "$(candidate_network_members)" = "$(candidate_expected_network_members "$CANDIDATE_POSTGRES_FULL_ID")" || candidate_fail
 
 if ! CANDIDATE_API_CONTAINER_ID="$(docker run -d --name "$CANDIDATE_API_CONTAINER" \
   --network "$CANDIDATE_API_NETWORK" \
-  --publish "127.0.0.1:${CANDIDATE_API_HOST_PORT}:3001" \
-  --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" \
-  --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" \
+  --env DATABASE_URL \
+  --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
   --env TARGET_DB="$TARGET_DB" \
   --env PORT=3001 \
   --env SUBSCRIPTION_JOURNEY_ENABLED=false \
@@ -741,14 +806,15 @@ if ! CANDIDATE_API_CONTAINER_ID="$(docker run -d --name "$CANDIDATE_API_CONTAINE
   "$APPROVED_API_IMAGE_ID" 2>/dev/null)"; then
   candidate_fail
 fi
+CANDIDATE_API_CREATED=1
 [[ "$CANDIDATE_API_CONTAINER_ID" =~ ^[0-9a-f]{64}$ ]] || candidate_fail
 test "$(docker inspect --format '{{.Id}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_CONTAINER_ID" || candidate_fail
 test "$(docker inspect --format '{{.Image}}' "$CANDIDATE_API_CONTAINER")" = "$APPROVED_API_IMAGE_ID" || candidate_fail
 test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$CANDIDATE_API_CONTAINER")" = "$APPROVED_RELEASE_SHA" || candidate_fail
 test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_NETWORK" || candidate_fail
-test "$(docker inspect --format '{{json .HostConfig.Links}}' "$CANDIDATE_API_CONTAINER")" = 'null' || candidate_fail
 test "$(docker inspect --format '{{range $network, $_ := .NetworkSettings.Networks}}{{println $network}}{{end}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_NETWORK" || candidate_fail
-test "$(docker port "$CANDIDATE_API_CONTAINER" 3001/tcp)" = "127.0.0.1:${CANDIDATE_API_HOST_PORT}" || candidate_fail
+test "$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$CANDIDATE_API_CONTAINER")" = 'null' || candidate_fail
+test "$(candidate_network_members)" = "$(candidate_expected_network_members "$CANDIDATE_POSTGRES_FULL_ID" "$CANDIDATE_API_CONTAINER_ID")" || candidate_fail
 
 if ! docker exec "$CANDIDATE_API_CONTAINER" node -e '
 const expected = {
@@ -775,37 +841,115 @@ for _candidate_health_attempt in $(seq 1 45); do
   sleep 2
 done
 test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$CANDIDATE_API_CONTAINER")" = 'healthy' || candidate_fail
-test "$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:${CANDIDATE_API_HOST_PORT}/api/health")" = '200' || candidate_fail
-printf 'candidate_container_id=%s\ncandidate_image_id=%s\ncandidate_target_database=%s\ncandidate_loopback_port=%s\ncandidate_worker_gates=false\n' \
-  "$CANDIDATE_API_CONTAINER_ID" "$APPROVED_API_IMAGE_ID" "$TARGET_DB" "$CANDIDATE_API_HOST_PORT" \
+if ! docker exec "$CANDIDATE_API_CONTAINER" node -e '
+fetch("http://127.0.0.1:3001/api/health")
+  .then((response) => process.exit(response.status === 200 ? 0 : 1))
+  .catch(() => process.exit(1));
+' >/dev/null 2>&1; then
+  candidate_fail
+fi
+printf 'candidate_container_id=%s\ncandidate_image_id=%s\ncandidate_target_database=%s\ncandidate_network=%s\ncandidate_internal_health=200\ncandidate_worker_gates=false\n' \
+  "$CANDIDATE_API_CONTAINER_ID" "$APPROVED_API_IMAGE_ID" "$TARGET_DB" "$CANDIDATE_API_NETWORK" \
   | publish_private_evidence "$CANDIDATE_API_LAUNCH_EVIDENCE"
 assert_private_file "$CANDIDATE_API_LAUNCH_EVIDENCE"
+printf 'candidate_container_id=%s\ncandidate_network=%s\ncandidate_postgres_container_id=%s\n' \
+  "$CANDIDATE_API_CONTAINER_ID" "$CANDIDATE_API_NETWORK" "$CANDIDATE_POSTGRES_FULL_ID" \
+  | publish_private_evidence "$CANDIDATE_API_OWNERSHIP_EVIDENCE"
+assert_private_file "$CANDIDATE_API_OWNERSHIP_EVIDENCE"
 ```
 
 <!-- STAGE1_CANDIDATE_API_EXECUTABLE_END -->
 
-启动 fence 全绿后，candidate 仍只能执行只读 `/health`、浏览器已有 token 的 RBAC 菜单、产品/车辆列表与空进件/订单 count 验收；不提交进件、不锁车、不签合同、不触发短信、电子签或支付。浏览器 token 只能留在浏览器/秘密环境，不得进入命令、日志或证据。人工验收可以写 root-owned、`0600` 的 `$EVIDENCE_DIR/candidate-api.accepted`，但该文件不是启动或 gate 配置的替代品。
+启动 fence 全绿后，candidate 只允许其容器内 `/health` smoke；不提交进件、不锁车、不签合同、不触发短信、电子签或支付。浏览器 token 只能留在正式切换后的浏览器/秘密环境，不得进入命令、日志或证据。candidate 不再接受浏览器/RBAC/list/视觉验收文件，因它没有 host route；这些人工验收仍由正式切换后的既有浏览器 gate 承担。
 
 <!-- STAGE1_CANDIDATE_API_STOP_EXECUTABLE_BEGIN -->
 
 ```bash
-test -f "$EVIDENCE_DIR/candidate-api.accepted" \
-  || { printf '%s\n' 'STOP: CANDIDATE_ACCEPTANCE_MISSING'; exit 1; }
-assert_private_file "$EVIDENCE_DIR/candidate-api.accepted"
+test -f "$EVIDENCE_DIR/candidate-api.launch.safe.state" \
+  || { printf '%s\n' 'STOP: CANDIDATE_LAUNCH_EVIDENCE_MISSING'; exit 1; }
+assert_private_file "$EVIDENCE_DIR/candidate-api.launch.safe.state"
+readonly candidate_stop_ownership="$EVIDENCE_DIR/candidate-api.ownership.safe.state"
+test -f "$candidate_stop_ownership" \
+  || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_MISSING'; exit 1; }
+assert_private_file "$candidate_stop_ownership"
+candidate_stop_container_id=""
+candidate_stop_network=""
+candidate_stop_postgres_id=""
+candidate_ownership_lines=0
+while IFS='=' read -r ownership_key ownership_value; do
+  case "$ownership_key" in
+    candidate_container_id)
+      test -z "$candidate_stop_container_id" || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
+      candidate_stop_container_id="$ownership_value"
+      ;;
+    candidate_network)
+      test -z "$candidate_stop_network" || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
+      candidate_stop_network="$ownership_value"
+      ;;
+    candidate_postgres_container_id)
+      test -z "$candidate_stop_postgres_id" || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
+      candidate_stop_postgres_id="$ownership_value"
+      ;;
+    *)
+      printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'
+      exit 1
+      ;;
+  esac
+  candidate_ownership_lines=$((candidate_ownership_lines + 1))
+done <"$candidate_stop_ownership"
+if test "$candidate_ownership_lines" -ne 3 \
+  || test -z "$candidate_stop_container_id" \
+  || test -z "$candidate_stop_network" \
+  || test -z "$candidate_stop_postgres_id"; then
+  printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'
+  exit 1
+fi
+[[ "$candidate_stop_container_id" =~ ^[0-9a-f]{64}$ ]] \
+  && [[ "$candidate_stop_postgres_id" =~ ^[0-9a-f]{64}$ ]] \
+  && [[ "$candidate_stop_network" =~ ^[a-z0-9][a-z0-9_.-]+$ ]] \
+  || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
 readonly candidate_stop_container="subauto-staging-stage1-candidate-api"
 readonly candidate_stop_evidence="$EVIDENCE_DIR/candidate-api.stopped.safe.state"
 assert_new_evidence_path "$candidate_stop_evidence"
 docker container inspect "$candidate_stop_container" >/dev/null 2>&1 \
   || { printf '%s\n' 'STOP: CANDIDATE_API_MISSING_BEFORE_STOP'; exit 1; }
-docker stop "$candidate_stop_container" >/dev/null 2>&1 \
-  || { printf '%s\n' 'STOP: CANDIDATE_API_STOP_FAILED'; exit 1; }
-docker rm "$candidate_stop_container" >/dev/null 2>&1 \
-  || { printf '%s\n' 'STOP: CANDIDATE_API_REMOVE_FAILED'; exit 1; }
-if docker container inspect "$candidate_stop_container" >/dev/null 2>&1; then
-  printf '%s\n' 'STOP: CANDIDATE_API_STILL_EXISTS'
-  exit 1
-fi
-printf '%s\n' 'candidate_stopped_and_removed=true' \
+test "$(docker inspect --format '{{.Id}}' "$candidate_stop_container")" = "$candidate_stop_container_id" \
+  || { printf '%s\n' 'STOP: CANDIDATE_API_OWNERSHIP_MISMATCH'; exit 1; }
+candidate_stop_members="$(docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "$candidate_stop_network" | LC_ALL=C sort)" \
+  || { printf '%s\n' 'STOP: CANDIDATE_NETWORK_MISSING_BEFORE_STOP'; exit 1; }
+candidate_stop_expected_members="$(printf '%s\n%s\n' "$candidate_stop_container_id" "$candidate_stop_postgres_id" | LC_ALL=C sort)"
+test "$candidate_stop_members" = "$candidate_stop_expected_members" \
+  || { printf '%s\n' 'STOP: CANDIDATE_NETWORK_MEMBERSHIP_MISMATCH'; exit 1; }
+CANDIDATE_STOP_OWNERSHIP_VERIFIED=1
+candidate_stop_cleanup() {
+  local cleanup_failed=0
+  if test "$CANDIDATE_STOP_OWNERSHIP_VERIFIED" = 1 \
+    && docker container inspect "$candidate_stop_container" >/dev/null 2>&1; then
+    test "$(docker inspect --format '{{.Id}}' "$candidate_stop_container")" = "$candidate_stop_container_id" \
+      && docker rm -f "$candidate_stop_container" >/dev/null 2>&1 || cleanup_failed=1
+  fi
+  if docker network inspect "$candidate_stop_network" >/dev/null 2>&1; then
+    candidate_stop_members="$(docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "$candidate_stop_network" | LC_ALL=C sort)" || cleanup_failed=1
+    test "$candidate_stop_members" = "$candidate_stop_postgres_id" || cleanup_failed=1
+    if test "$cleanup_failed" = 0; then
+      docker network disconnect "$candidate_stop_network" "$candidate_stop_postgres_id" >/dev/null 2>&1 || cleanup_failed=1
+      docker network rm "$candidate_stop_network" >/dev/null 2>&1 || cleanup_failed=1
+    fi
+  fi
+  docker container inspect "$candidate_stop_container" >/dev/null 2>&1 && cleanup_failed=1
+  docker network inspect "$candidate_stop_network" >/dev/null 2>&1 && cleanup_failed=1
+  return "$cleanup_failed"
+}
+candidate_stop_trap_cleanup() {
+  local status=$?
+  trap - ERR EXIT HUP INT TERM
+  candidate_stop_cleanup || { printf '%s\n' 'STOP: CANDIDATE_CLEANUP_FAILED'; return 1; }
+  return "$status"
+}
+trap 'candidate_stop_trap_cleanup' ERR EXIT HUP INT TERM
+candidate_stop_cleanup || { printf '%s\n' 'STOP: CANDIDATE_CLEANUP_FAILED'; exit 1; }
+trap - ERR EXIT HUP INT TERM
+printf '%s\n' 'candidate_stopped_network_removed_and_postgres_detached=true' \
   | publish_private_evidence "$candidate_stop_evidence"
 assert_private_file "$candidate_stop_evidence"
 ```
@@ -818,17 +962,25 @@ Billing maintenance 观察能力现在由 append-only `BillingMaintenanceCycleFa
 
 ## 7. API 数据库 URL 单字段切换批准与执行
 
-本节受上一节 candidate 启动、只读验收和停止 fence 约束。正式 env 准备前必须已有 root-owned、`0600` 的 `$EVIDENCE_DIR/candidate-api.accepted` 与 `$EVIDENCE_DIR/candidate-api.stopped.safe.state`；候选容器不得仍存在，任何缺项立即停止：
+本节受上一节 candidate 启动、内部只读 smoke 与停止 fence 约束。正式 env 准备前必须已有 root-owned、`0600` 的 launch、ownership 与 stopped evidence；候选容器和专属 network 都不得仍存在，任何缺项立即停止：
 
 ```bash
-test -f "$EVIDENCE_DIR/candidate-api.accepted" \
-  || { printf '%s\n' 'STOP: CANDIDATE_ACCEPTANCE_MISSING'; exit 1; }
-assert_private_file "$EVIDENCE_DIR/candidate-api.accepted"
+test -f "$EVIDENCE_DIR/candidate-api.launch.safe.state" \
+  || { printf '%s\n' 'STOP: CANDIDATE_LAUNCH_EVIDENCE_MISSING'; exit 1; }
+assert_private_file "$EVIDENCE_DIR/candidate-api.launch.safe.state"
+test -f "$EVIDENCE_DIR/candidate-api.ownership.safe.state" \
+  || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_MISSING'; exit 1; }
+assert_private_file "$EVIDENCE_DIR/candidate-api.ownership.safe.state"
 test -f "$EVIDENCE_DIR/candidate-api.stopped.safe.state" \
   || { printf '%s\n' 'STOP: CANDIDATE_STOP_EVIDENCE_MISSING'; exit 1; }
 assert_private_file "$EVIDENCE_DIR/candidate-api.stopped.safe.state"
 if docker container inspect 'subauto-staging-stage1-candidate-api' >/dev/null 2>&1; then
   printf '%s\n' 'STOP: CANDIDATE_API_STILL_EXISTS'
+  exit 1
+fi
+candidate_switch_network="${COMPOSE_PROJECT}-stage1-candidate-${RUN_UTC,,}"
+if docker network inspect "$candidate_switch_network" >/dev/null 2>&1; then
+  printf '%s\n' 'STOP: CANDIDATE_NETWORK_STILL_EXISTS'
   exit 1
 fi
 ```

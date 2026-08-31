@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -39,6 +39,7 @@ const IMAGE_ID = `sha256:${"c".repeat(64)}`;
 const CONTAINER_ID = "e".repeat(64);
 const NONCE = "d".repeat(64);
 const BILLING_NOT_BEFORE = "2026-08-30T12:00:01Z";
+const CANDIDATE_HARNESS_COMPLETION_TIMEOUT_MS = 15_000;
 const BILLING_FAKE_EVIDENCE_DOCUMENT = buildFakeBillingEvidenceDocument();
 const BILLING_FAKE_EVIDENCE = canonicalBillingMaintenanceEvidenceJson(
   BILLING_FAKE_EVIDENCE_DOCUMENT
@@ -752,73 +753,297 @@ ${cutover}
   }
 }
 
-function runCandidate(candidate, candidateStop, scenario = "success") {
+function waitForCandidateHarnessCompletion(child) {
+  return new Promise((resolve) => {
+    let stderr = "";
+    let stdout = "";
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, CANDIDATE_HARNESS_COMPLETION_TIMEOUT_MS);
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      resolve({ error: error.message, signal: null, status: null, stderr, stdout });
+    });
+    child.once("close", (status, signal) => {
+      clearTimeout(timeout);
+      resolve({
+        error: timedOut
+          ? `candidate harness did not exit within ${CANDIDATE_HARNESS_COMPLETION_TIMEOUT_MS}ms`
+          : null,
+        signal,
+        status,
+        stderr,
+        stdout
+      });
+    });
+  });
+}
+
+async function runCandidate(candidate, candidateStop, scenario = "success") {
   const hostDirectory = mkdtempSync(join(tmpdir(), "stage1-candidate-contract-"));
   const directory = toGitBashPath(hostDirectory);
   const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
   const binDirectory = join(hostDirectory, "fake-bin");
   mkdirSync(binDirectory);
-  writeFakeCommand(
-    binDirectory,
-    "curl",
-    `printf '%s\\n' candidate-health >>"$TRACE_FILE"
-printf 200`
-  );
-  writeFakeCommand(
-    binDirectory,
-    "docker",
-    `args="$*"
+  const fakeDocker = `set -Eeuo pipefail
+readonly CANDIDATE_ID=${CONTAINER_ID}
+readonly POSTGRES_ID=${"f".repeat(64)}
 state="$HARNESS_DIR/candidate-state"
-case "$args" in
-  *'container inspect '*)
-    test -f "$state" || exit 1
-    printf '%s\\n' ${CONTAINER_ID}
-    ;;
-  *'run -d --name '*)
-    printf '%s\\n' candidate-run >>"$TRACE_FILE"
-    printf '%s\\n' "$args" >"$HARNESS_DIR/candidate-run-argv"
-    test "$FAILURE_SCENARIO" != launch || exit 71
-    printf running >"$state"
-    printf '%s\\n' ${CONTAINER_ID}
-    ;;
-  *'inspect --format {{.Id}}'*) printf '%s\\n' ${CONTAINER_ID} ;;
-  *'inspect --format {{.Image}}'*)
-    if test "$FAILURE_SCENARIO" = image_drift; then printf '%s\\n' sha256:${"f".repeat(64)}; else printf '%s\\n' ${IMAGE_ID}; fi
-    ;;
-  *'org.opencontainers.image.revision'*) printf '%s\\n' ${RELEASE_SHA} ;;
-  *'inspect --format {{.HostConfig.NetworkMode}}'*)
-    if test "$FAILURE_SCENARIO" = network_drift; then printf '%s\\n' bridge; else printf '%s\\n' subauto-staging_default; fi
-    ;;
-  *'inspect --format {{json .HostConfig.Links}}'*) printf '%s\\n' null ;;
-  *'NetworkSettings.Networks'*)
-    if test "$FAILURE_SCENARIO" = network_drift; then printf '%s\\n' bridge; else printf '%s\\n' subauto-staging_default; fi
-    ;;
-  *'inspect --format {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}'*) printf '%s\\n' healthy ;;
-  *'port '*)
-    if test "$FAILURE_SCENARIO" = port_drift; then printf '%s\\n' 0.0.0.0:3181; else printf '%s\\n' 127.0.0.1:3181; fi
-    ;;
-  *'exec '*' node -e '*)
-    printf '%s\\n' candidate-runtime-env-checked >>"$TRACE_FILE"
-    if [[ "$args" != *'DATABASE_URL !== process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL'* \\
-      || "$args" != *'SUBSCRIPTION_CHANGE_WORKER_ENABLED'* \\
-      || "$args" != *'SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED'* ]]; then
-      printf '%s\\n' candidate-runtime-env-contract-missing >>"$TRACE_FILE"
-      exit 96
+meta="$HARNESS_DIR/candidate-meta"
+network_state="$HARNESS_DIR/candidate-network"
+network_members="$HARNESS_DIR/candidate-network-members"
+network_alias="$HARNESS_DIR/candidate-network-alias"
+
+trace() { printf '%s\\n' "$1" >>"$TRACE_FILE"; }
+load_meta() { test -f "$meta" && source "$meta"; }
+require_candidate() { test -f "$state" && test -f "$meta"; }
+network_exists() { test -f "$network_state"; }
+network_name() { cat "$network_state"; }
+network_has_member() { grep -Fqx "$1" "$network_members"; }
+network_add_member() { network_has_member "$1" || printf '%s\\n' "$1" >>"$network_members"; }
+network_remove_member() { grep -Fvx "$1" "$network_members" >"$network_members.tmp" || true; mv "$network_members.tmp" "$network_members"; }
+
+case "\${1-}" in
+  compose)
+    if [[ "$*" == *' ps -q postgres'* ]]; then
+      printf '%s\\n' "$POSTGRES_ID"
+      exit 0
     fi
-    case "$FAILURE_SCENARIO" in env_missing|env_drift) exit 72 ;; esac
     ;;
-  *'stop '*)
-    printf '%s\\n' candidate-stop >>"$TRACE_FILE"
-    test -f "$state"
-    printf stopped >"$state"
+  container)
+    if test "\${2-}" = inspect; then
+      test -f "$state" || exit 1
+      exit 0
+    fi
     ;;
-  *'rm '*)
-    printf '%s\\n' candidate-rm >>"$TRACE_FILE"
-    rm -f "$state"
+  network)
+    case "\${2-}" in
+      create)
+        candidate_network="\${3-}"
+        test -n "$candidate_network" && ! network_exists || exit 1
+        test "$FAILURE_SCENARIO" != network_create_failure || exit 75
+        printf '%s' "$candidate_network" >"$network_state"
+        : >"$network_members"
+        trace candidate-network-create
+        exit 0
+        ;;
+      inspect)
+        shift 2
+        network_format=""
+        if test "\${1-}" = --format; then
+          network_format="\${2-}"
+          shift 2
+        fi
+        test "\${1-}" = "$(network_name 2>/dev/null)" || exit 1
+        if [[ "$network_format" == *'.Containers'* ]]; then
+          cat "$network_members"
+        fi
+        exit 0
+        ;;
+      connect)
+        shift 2
+        test "\${1-}" = --alias || exit 97
+        candidate_alias="\${2-}"
+        candidate_network="\${3-}"
+        candidate_postgres="\${4-}"
+        test "$candidate_network" = "$(network_name 2>/dev/null)" && test "$candidate_postgres" = "$POSTGRES_ID" || exit 1
+        test "$FAILURE_SCENARIO" != postgres_attach_failure || exit 76
+        printf '%s' "$candidate_alias" >"$network_alias"
+        network_add_member "$POSTGRES_ID"
+        trace candidate-network-connect-postgres
+        exit 0
+        ;;
+      disconnect)
+        shift 2
+        candidate_network="\${1-}"
+        candidate_postgres="\${2-}"
+        test "$candidate_network" = "$(network_name 2>/dev/null)" && test "$candidate_postgres" = "$POSTGRES_ID" || exit 1
+        test "$FAILURE_SCENARIO" != cleanup_failure || { trace candidate-cleanup-failure; exit 77; }
+        network_has_member "$POSTGRES_ID" || exit 1
+        network_remove_member "$POSTGRES_ID"
+        trace candidate-network-disconnect-postgres
+        exit 0
+        ;;
+      rm)
+        candidate_network="\${3-}"
+        test "$candidate_network" = "$(network_name 2>/dev/null)" || exit 1
+        test ! -s "$network_members" || exit 1
+        rm -f "$network_state" "$network_members" "$network_alias"
+        trace candidate-network-rm
+        exit 0
+        ;;
+    esac
     ;;
-  *) printf '%s\\n' "UNHANDLED_DOCKER_COMMAND:$args" >>"$TRACE_FILE"; exit 97 ;;
-esac`
-  );
+  inspect)
+    shift
+    inspect_format=""
+    if test "\${1-}" = --format; then
+      inspect_format="\${2-}"
+      shift 2
+    fi
+    inspect_target="\${1-}"
+    if test "$inspect_target" = "$POSTGRES_ID"; then
+      test "$inspect_format" = '{{.Id}}' || exit 97
+      printf '%s\\n' "$POSTGRES_ID"
+      exit 0
+    fi
+    require_candidate || exit 1
+    load_meta
+    test "$inspect_target" = "$candidate_name" || exit 1
+    case "$inspect_format" in
+      '{{.Id}}') printf '%s\\n' "$CANDIDATE_ID" ;;
+      '{{.Image}}') printf '%s\\n' "$candidate_image" ;;
+      *'org.opencontainers.image.revision'*) printf '%s\\n' ${RELEASE_SHA} ;;
+      '{{.HostConfig.NetworkMode}}') printf '%s\\n' "$candidate_network" ;;
+      *'NetworkSettings.Networks'*) printf '%s\\n' "$candidate_network" ;;
+      '{{json .HostConfig.PortBindings}}')
+        if test -n "$candidate_publish"; then printf '%s\\n' '{"3001/tcp":["published"]}'; else printf '%s\\n' null; fi
+        ;;
+      *'.State.Health'*)
+        trace candidate-health-inspect
+        if test "$FAILURE_SCENARIO" = health_failure; then printf '%s\\n' unhealthy; else printf '%s\\n' healthy; fi
+        ;;
+      *) trace "UNHANDLED_INSPECT_FORMAT:$inspect_format"; exit 97 ;;
+    esac
+    exit 0
+    ;;
+  run)
+    run_argv="$*"
+    shift
+    candidate_name=""
+    candidate_network=""
+    candidate_image=""
+    candidate_publish=""
+    env_database_url=""
+    env_target_database_url=""
+    env_target_db=""
+    env_subscription_journey=""
+    env_subscription_journey_worker=""
+    env_billing=""
+    env_field_video=""
+    env_handover=""
+    env_mileage=""
+    env_change=""
+    env_return=""
+    while test "$#" -gt 0; do
+      case "$1" in
+        -d) shift ;;
+        --name) candidate_name="\${2-}"; shift 2 ;;
+        --network) candidate_network="\${2-}"; shift 2 ;;
+        --publish|-p) candidate_publish="\${2-}"; shift 2 ;;
+        --env)
+          env_spec="\${2-}"
+          env_key="\${env_spec%%=*}"
+          if [[ "$env_spec" == *=* ]]; then env_value="\${env_spec#*=}"; else env_value="\${!env_key-}"; fi
+          case "$env_key" in
+            DATABASE_URL) env_database_url="$env_value" ;;
+            STAGE1_ACCEPTANCE_TARGET_DATABASE_URL) env_target_database_url="$env_value" ;;
+            TARGET_DB) env_target_db="$env_value" ;;
+            SUBSCRIPTION_JOURNEY_ENABLED) env_subscription_journey="$env_value" ;;
+            SUBSCRIPTION_JOURNEY_WORKER_ENABLED) env_subscription_journey_worker="$env_value" ;;
+            BILLING_AUTOMATION_WORKER_ENABLED) env_billing="$env_value" ;;
+            FIELD_VIDEO_UPLOAD_WORKER_ENABLED) env_field_video="$env_value" ;;
+            STAGE2_HANDOVER_WORKER_ENABLED) env_handover="$env_value" ;;
+            MILEAGE_REVIEW_WORKER_ENABLED) env_mileage="$env_value" ;;
+            SUBSCRIPTION_CHANGE_WORKER_ENABLED) env_change="$env_value" ;;
+            SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED) env_return="$env_value" ;;
+          esac
+          shift 2
+          ;;
+        *) candidate_image="$1"; shift ;;
+      esac
+    done
+    printf '%s\\n' "$run_argv" >"$HARNESS_DIR/candidate-run-argv"
+    test -n "$candidate_name" && test -n "$candidate_network" && test -n "$candidate_image" || exit 97
+    if [[ "$run_argv" == *'postgresql://'* ]]; then
+      trace candidate-secret-literal-argv
+      exit 78
+    fi
+    test "$FAILURE_SCENARIO" != launch || exit 71
+    test "$candidate_network" = "$(network_name 2>/dev/null)" || exit 1
+    {
+      printf 'candidate_name=%q\\n' "$candidate_name"
+      printf 'candidate_network=%q\\n' "$candidate_network"
+      printf 'candidate_image=%q\\n' "$candidate_image"
+      printf 'candidate_publish=%q\\n' "$candidate_publish"
+      printf 'env_database_url=%q\\n' "$env_database_url"
+      printf 'env_target_database_url=%q\\n' "$env_target_database_url"
+      printf 'env_target_db=%q\\n' "$env_target_db"
+      printf 'env_subscription_journey=%q\\n' "$env_subscription_journey"
+      printf 'env_subscription_journey_worker=%q\\n' "$env_subscription_journey_worker"
+      printf 'env_billing=%q\\n' "$env_billing"
+      printf 'env_field_video=%q\\n' "$env_field_video"
+      printf 'env_handover=%q\\n' "$env_handover"
+      printf 'env_mileage=%q\\n' "$env_mileage"
+      printf 'env_change=%q\\n' "$env_change"
+      printf 'env_return=%q\\n' "$env_return"
+    } >"$meta"
+    printf running >"$state"
+    if test "$candidate_network" = "$(network_name)"; then network_add_member "$CANDIDATE_ID"; fi
+    if test "$FAILURE_SCENARIO" = network_membership_drift; then
+      network_add_member ${"d".repeat(64)}
+    fi
+    trace candidate-run
+    printf '%s\\n' "$CANDIDATE_ID"
+    exit 0
+    ;;
+  exec)
+    requested_candidate_name="\${2-}"
+    require_candidate || exit 1
+    load_meta
+    test "$requested_candidate_name" = "$candidate_name" || exit 1
+    args="$*"
+    if [[ "$args" == *'DATABASE_URL !== process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL'* ]]; then
+      trace candidate-runtime-env-checked
+      if ! test "$env_database_url" = "$env_target_database_url" && test "$env_target_db" = "$TARGET_DB"; then
+        trace candidate-runtime-env-database-mismatch
+        exit 72
+      fi
+      for candidate_gate in env_subscription_journey env_subscription_journey_worker env_billing env_field_video env_handover env_mileage env_change env_return; do
+        if ! test "\${!candidate_gate}" = false; then
+          trace "candidate-runtime-env-gate-mismatch:$candidate_gate"
+          exit 72
+        fi
+      done
+      exit 0
+    fi
+    if [[ "$args" == *'fetch('* ]]; then
+      trace candidate-internal-health
+      test -z "$candidate_publish" || exit 79
+      test "$FAILURE_SCENARIO" != internal_health_failure || exit 80
+      exit 0
+    fi
+    trace candidate-runtime-command-unrecognized
+    exit 96
+    ;;
+  rm)
+    shift
+    test "\${1-}" = -f && shift
+    requested_candidate_name="\${1-}"
+    require_candidate || exit 1
+    load_meta
+    test "$requested_candidate_name" = "$candidate_name" || exit 1
+    rm -f "$state" "$meta"
+    if network_exists && network_has_member "$CANDIDATE_ID"; then network_remove_member "$CANDIDATE_ID"; fi
+    trace candidate-rm
+    exit 0
+    ;;
+esac
+trace "UNHANDLED_DOCKER_COMMAND:$*"
+exit 97`;
+  writeFakeCommand(binDirectory, "docker", fakeDocker);
+  writeFakeCommand(binDirectory, "sleep", "exit 0");
   const wrapper = `set -Eeuo pipefail
 HARNESS_DIR=${JSON.stringify(directory)}
 TRACE_FILE="$HARNESS_DIR/trace"
@@ -826,35 +1051,56 @@ FAILURE_SCENARIO=${JSON.stringify(scenario)}
 export HARNESS_DIR TRACE_FILE FAILURE_SCENARIO
 PATH=${JSON.stringify(toGitBashPath(binDirectory))}:"$PATH"
 export PATH
+docker() (
+${fakeDocker}
+)
 EVIDENCE_DIR="$HARNESS_DIR/evidence"
 mkdir -p "$EVIDENCE_DIR"
 APPROVED_API_IMAGE_ID=${IMAGE_ID}
 APPROVED_RELEASE_SHA=${RELEASE_SHA}
 COMPOSE_PROJECT=subauto-staging
-STAGE1_ACCEPTANCE_TARGET_DATABASE_URL=secret-target-url
+COMPOSE_FILE=/fixture/docker-compose.yml
+ENV_FILE=/fixture/.env.staging.images
+RUN_UTC=20260831T120000Z
+STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME=postgres
+STAGE1_ACCEPTANCE_TARGET_DATABASE_URL=postgresql://subscription:secret-password@postgres:5432/subscription_saas_staging_acceptance_20260830t120000z
+DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL"
 TARGET_DB=subscription_saas_staging_acceptance_20260830t120000z
 assert_new_evidence_path() { test ! -e "$1" && test ! -L "$1"; }
-assert_private_file() { test -f "$1" && test ! -L "$1"; }
-publish_private_evidence() { cat >"$1"; chmod 0600 "$1"; }
+assert_private_file() { test "$FAILURE_SCENARIO" != assert_failure && test -f "$1" && test ! -L "$1"; }
+publish_private_evidence() { test "$FAILURE_SCENARIO" != evidence_failure && cat >"$1" && chmod 0600 "$1"; }
+if test "$FAILURE_SCENARIO" = candidate_collision; then
+  printf running >"$HARNESS_DIR/candidate-state"
+fi
+if test "$FAILURE_SCENARIO" = network_collision; then
+  printf '%s' "subauto-staging-stage1-candidate-20260831t120000z" >"$HARNESS_DIR/candidate-network"
+  : >"$HARNESS_DIR/candidate-network-members"
+fi
 ${candidate}
 if test "$FAILURE_SCENARIO" = success; then
-  printf '%s\\n' accepted >"$EVIDENCE_DIR/candidate-api.accepted"
-  chmod 0600 "$EVIDENCE_DIR/candidate-api.accepted"
+  printf '%s\\n' candidate-stop-fence-enter >>"$TRACE_FILE"
   ${candidateStop}
+  printf '%s\\n' candidate-stop-fence-exit >>"$TRACE_FILE"
 fi
 `;
   try {
     const scriptPath = join(hostDirectory, "candidate-contract.sh");
     writeFileSync(scriptPath, wrapper, "utf8");
-    const result = spawnSync(bash, [toGitBashPath(scriptPath)], {
-      encoding: "utf8",
-      timeout: 15000
-    });
+    const result = await waitForCandidateHarnessCompletion(
+      spawn(bash, [toGitBashPath(scriptPath)], { stdio: ["ignore", "pipe", "pipe"] })
+    );
     const tracePath = join(hostDirectory, "trace");
     const argvPath = join(hostDirectory, "candidate-run-argv");
     return {
       candidateExists: existsSync(join(hostDirectory, "candidate-state")),
+      candidateNetworkExists: existsSync(join(hostDirectory, "candidate-network")),
+      postgresAttached:
+        existsSync(join(hostDirectory, "candidate-network-members")) &&
+        readFileSync(join(hostDirectory, "candidate-network-members"), "utf8").includes(
+          "f".repeat(64)
+        ),
       candidateRunArgv: existsSync(argvPath) ? readFileSync(argvPath, "utf8") : "",
+      error: result.error,
       result,
       trace: existsSync(tracePath)
         ? readFileSync(tracePath, "utf8")
@@ -1558,8 +1804,9 @@ test("requires discovery, explicit UUID, approvals, apply/replay, and target val
 test("pins candidate worker isolation and forbids business writes", async () => {
   const contents = await readRunbook();
   assertContainsAll(contents, [
-    "127.0.0.1",
-    "不接入 Nginx",
+    "candidate **不发布主机端口**",
+    "不读取、修改或 reload Nginx",
+    "正式切换后的既有浏览器 gate",
     "SUBSCRIPTION_JOURNEY_ENABLED=false",
     "SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false",
     "BILLING_AUTOMATION_WORKER_ENABLED=false",
@@ -1577,23 +1824,52 @@ test("pins candidate worker isolation and forbids business writes", async () => 
   ]);
 });
 
+test("candidate executable keeps database secrets out of argv and proves a dedicated no-host-route boundary", async () => {
+  const contents = await readRunbook();
+  const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
+
+  assert.match(candidate, /export DATABASE_URL STAGE1_ACCEPTANCE_TARGET_DATABASE_URL/);
+  assert.match(candidate, /--env DATABASE_URL(?:\s|\\)/);
+  assert.match(candidate, /--env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL(?:\s|\\)/);
+  assert.doesNotMatch(candidate, /--env\s+(?:DATABASE_URL|STAGE1_ACCEPTANCE_TARGET_DATABASE_URL)=/);
+  assert.doesNotMatch(candidate, /(?:--publish|docker port|curl[^\n]+127\.0\.0\.1:)/);
+  assert.match(candidate, /docker network create "\$CANDIDATE_API_NETWORK"/);
+  assert.match(candidate, /docker network connect --alias/);
+  assert.match(candidate, /docker network inspect --format/);
+  assert.match(candidate, /docker exec "\$CANDIDATE_API_CONTAINER" node -e/);
+  assert.match(candidate, /trap 'candidate_trap_cleanup' ERR EXIT HUP INT TERM/);
+  assert.match(candidate, /docker network disconnect/);
+  assert.match(candidate, /docker network rm/);
+});
+
 test("candidate executable injects exact disabled gates, verifies isolation, and cleans up before cutover", async () => {
   const contents = await readRunbook();
   const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
   const candidateStop = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_STOP_EXECUTABLE");
-  const green = runCandidate(candidate, candidateStop);
+  const green = await runCandidate(candidate, candidateStop);
 
   assert.equal(
     green.result.status,
     0,
-    `${green.result.stdout}\n${green.result.stderr}\n${green.trace.join("\n")}`
+    `${green.result.stdout}\n${green.result.stderr}\n${green.error}\n${green.trace.join("\n")}`
   );
   assert.equal(green.candidateExists, false, "candidate must be removed before cutover");
-  assert.match(green.trace.join("\n"), /candidate-health/);
+  assert.equal(
+    green.candidateNetworkExists,
+    false,
+    "candidate network must be removed before cutover"
+  );
+  assert.equal(green.postgresAttached, false, "postgres must be detached before cutover");
+  assert.match(green.trace.join("\n"), /candidate-internal-health/);
   assert.match(green.trace.join("\n"), /candidate-runtime-env-checked/);
-  assert.match(green.trace.join("\n"), /candidate-stop/);
   assert.match(green.trace.join("\n"), /candidate-rm/);
+  assert.match(green.trace.join("\n"), /candidate-network-disconnect-postgres/);
+  assert.match(green.trace.join("\n"), /candidate-network-rm/);
   assert.doesNotMatch(green.candidateRunArgv, /(?:--network|--link)\s+nginx\b/);
+  assert.doesNotMatch(green.candidateRunArgv, /(?:--publish|-p)\s/);
+  assert.doesNotMatch(green.candidateRunArgv, /postgresql:\/\//);
+  assert.match(green.candidateRunArgv, /--env DATABASE_URL(?:\s|$)/);
+  assert.match(green.candidateRunArgv, /--env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL(?:\s|$)/);
   for (const flag of [
     "SUBSCRIPTION_JOURNEY_ENABLED",
     "SUBSCRIPTION_JOURNEY_WORKER_ENABLED",
@@ -1611,19 +1887,137 @@ test("candidate executable injects exact disabled gates, verifies isolation, and
       contents.indexOf("<!-- STAGE1_ENV_TRANSFORM_EXECUTABLE_BEGIN -->"),
     "candidate stop fence must precede the formal switch preparation"
   );
+  const mutatedCandidates = [
+    ["image_drift", candidate.replace('"$APPROVED_API_IMAGE_ID"', `"sha256:${"a".repeat(64)}"`)],
+    [
+      "port_drift",
+      candidate.replace(
+        / {2}--network "\$CANDIDATE_API_NETWORK" \\\r?\n/,
+        '$&  --publish "127.0.0.1:3181:3001" \\\n'
+      )
+    ],
+    ["network_drift", candidate.replace('--network "$CANDIDATE_API_NETWORK"', "--network bridge")],
+    ["target_db_missing", candidate.replace(/ {2}--env DATABASE_URL \\\r?\n/, "")],
+    [
+      "env_missing",
+      candidate.replace(/ {2}--env SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false \\\r?\n/, "")
+    ],
+    [
+      "env_drift",
+      candidate.replace(
+        "--env SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false",
+        "--env SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=true"
+      )
+    ],
+    [
+      "literal_secret_argv",
+      candidate.replace(
+        "--env DATABASE_URL",
+        "--env DATABASE_URL=postgresql://subscription:secret-password@postgres:5432/target"
+      )
+    ]
+  ];
+  for (const [scenario, mutatedCandidate] of mutatedCandidates) {
+    const outcome = await runCandidate(mutatedCandidate, candidateStop);
+    assert.notEqual(outcome.result.status, 0, `${scenario} must fail closed`);
+    assert.equal(outcome.candidateExists, false, `${scenario} must remove the candidate`);
+    assert.equal(
+      outcome.candidateNetworkExists,
+      false,
+      `${scenario} must remove the candidate network`
+    );
+    assert.equal(outcome.postgresAttached, false, `${scenario} must detach postgres`);
+    if (outcome.trace.includes("candidate-run")) {
+      assert.match(
+        outcome.trace.join("\n"),
+        /candidate-rm/,
+        `${scenario} must remove the candidate`
+      );
+    }
+  }
 
-  for (const scenario of [
-    "image_drift",
-    "port_drift",
-    "network_drift",
-    "env_missing",
-    "env_drift"
-  ]) {
-    const outcome = runCandidate(candidate, candidateStop, scenario);
+  for (const scenario of ["evidence_failure", "assert_failure", "internal_health_failure"]) {
+    const outcome = await runCandidate(candidate, candidateStop, scenario);
     assert.notEqual(outcome.result.status, 0, `${scenario} must fail closed`);
     assert.equal(outcome.candidateExists, false, `${scenario} must clean up the candidate`);
+    assert.equal(outcome.candidateNetworkExists, false, `${scenario} must clean up the network`);
+    assert.equal(outcome.postgresAttached, false, `${scenario} must detach postgres`);
     assert.match(outcome.trace.join("\n"), /candidate-rm/, `${scenario} must remove the candidate`);
   }
+
+  const membershipDrift = await runCandidate(candidate, candidateStop, "network_membership_drift");
+  assert.notEqual(membershipDrift.result.status, 0, "network membership drift must fail closed");
+  assert.equal(membershipDrift.candidateExists, false, "membership drift must remove candidate");
+  assert.equal(membershipDrift.postgresAttached, false, "membership drift must detach postgres");
+  assert.equal(
+    membershipDrift.candidateNetworkExists,
+    true,
+    "membership drift must not delete a network occupied by an unknown member"
+  );
+  assert.match(membershipDrift.trace.join("\n"), /candidate-rm/);
+
+  const cleanupFailure = await runCandidate(candidate, candidateStop, "cleanup_failure");
+  assert.notEqual(cleanupFailure.result.status, 0, "cleanup failure must fail closed");
+  assert.match(cleanupFailure.trace.join("\n"), /candidate-cleanup-failure/);
+  assert.equal(
+    cleanupFailure.candidateNetworkExists,
+    true,
+    "cleanup failure must not claim network absence"
+  );
+  assert.equal(
+    cleanupFailure.postgresAttached,
+    true,
+    "cleanup failure must not claim postgres detached"
+  );
+
+  const candidateCollision = await runCandidate(candidate, candidateStop, "candidate_collision");
+  assert.notEqual(candidateCollision.result.status, 0, "candidate collision must fail closed");
+  assert.equal(
+    candidateCollision.candidateExists,
+    true,
+    "candidate collision must preserve non-owned container"
+  );
+  assert.equal(
+    candidateCollision.trace.includes("candidate-rm"),
+    false,
+    "collision must not remove non-owned container"
+  );
+
+  const networkCollision = await runCandidate(candidate, candidateStop, "network_collision");
+  assert.notEqual(networkCollision.result.status, 0, "network collision must fail closed");
+  assert.equal(
+    networkCollision.candidateNetworkExists,
+    true,
+    "network collision must preserve non-owned network"
+  );
+  assert.equal(
+    networkCollision.trace.includes("candidate-network-rm"),
+    false,
+    "collision must not remove non-owned network"
+  );
+});
+
+test("candidate harness waits for observed child completion instead of a fixed three-second deadline", async () => {
+  const contents = await readRunbook();
+  const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
+  const candidateStop = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_STOP_EXECUTABLE");
+  const delayedCandidate = candidate.replace(
+    'assert_private_file "$CANDIDATE_API_OWNERSHIP_EVIDENCE"',
+    'assert_private_file "$CANDIDATE_API_OWNERSHIP_EVIDENCE"\n/usr/bin/sleep 4'
+  );
+  const outcome = await runCandidate(delayedCandidate, candidateStop);
+
+  assert.equal(outcome.result.status, 0, `${outcome.error}\n${outcome.result.stderr}`);
+  assert.equal(
+    outcome.candidateExists,
+    false,
+    "candidate cleanup must finish before the harness returns"
+  );
+  assert.equal(
+    outcome.candidateNetworkExists,
+    false,
+    "candidate network cleanup must finish before the harness returns"
+  );
 });
 
 test("limits cutover and rollback to pathname-only env switch and API recreate", async () => {

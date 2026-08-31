@@ -40,6 +40,9 @@ const CONTAINER_ID = "e".repeat(64);
 const NONCE = "d".repeat(64);
 const BILLING_NOT_BEFORE = "2026-08-30T12:00:01Z";
 const CANDIDATE_HARNESS_COMPLETION_TIMEOUT_MS = 15_000;
+const CANDIDATE_HARNESS_GRACEFUL_TERMINATION_TIMEOUT_MS = 1_000;
+const CANDIDATE_HARNESS_FINAL_SETTLE_TIMEOUT_MS = 2_000;
+const CANDIDATE_HARNESS_PROCESS_SNAPSHOT_TIMEOUT_MS = 5_000;
 const BILLING_FAKE_EVIDENCE_DOCUMENT = buildFakeBillingEvidenceDocument();
 const BILLING_FAKE_EVIDENCE = canonicalBillingMaintenanceEvidenceJson(
   BILLING_FAKE_EVIDENCE_DOCUMENT
@@ -753,15 +756,153 @@ ${cutover}
   }
 }
 
-function waitForCandidateHarnessCompletion(child) {
+function candidateHarnessWindowsProcessTreePids(rootPid) {
+  if (process.platform !== "win32" || !Number.isInteger(rootPid) || rootPid <= 0) {
+    return [];
+  }
+  const script = [
+    `$root = ${rootPid}`,
+    "$children = @{}",
+    "Get-CimInstance Win32_Process | ForEach-Object {",
+    "  $parent = [int]$_.ParentProcessId",
+    "  if (-not $children.ContainsKey($parent)) { $children[$parent] = @() }",
+    "  $children[$parent] += [int]$_.ProcessId",
+    "}",
+    "function Get-Descendants([int]$processId) {",
+    "  Write-Output $processId",
+    "  if ($children.ContainsKey($processId)) { foreach ($child in $children[$processId]) { Get-Descendants $child } }",
+    "}",
+    "Get-Descendants $root"
+  ].join("; ");
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: CANDIDATE_HARNESS_PROCESS_SNAPSHOT_TIMEOUT_MS
+    }
+  );
+  if (result.status !== 0) return [rootPid];
+  return [
+    ...new Set(
+      result.stdout
+        .split(/\r?\n/)
+        .map((value) => Number.parseInt(value.trim(), 10))
+        .filter((pid) => Number.isInteger(pid) && pid > 0)
+    )
+  ];
+}
+
+function forceTerminateCandidateHarnessTree(child, processTreePids = []) {
+  const pids = [
+    ...new Set([...processTreePids, child.pid].filter((pid) => Number.isInteger(pid) && pid > 0))
+  ];
+  if (process.platform === "win32") {
+    for (const pid of pids) {
+      spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        timeout: CANDIDATE_HARNESS_FINAL_SETTLE_TIMEOUT_MS
+      });
+    }
+    return;
+  }
+  if (!Number.isInteger(child.pid) || child.pid <= 0) return;
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+}
+
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processIsAlive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return !processIsAlive(pid);
+}
+
+function waitForCandidateHarnessCompletion(child, options = {}) {
+  const completionTimeoutMs =
+    options.completionTimeoutMs ?? CANDIDATE_HARNESS_COMPLETION_TIMEOUT_MS;
+  const startupTimeoutMs = options.startupTimeoutMs ?? completionTimeoutMs;
+  const gracefulTerminationTimeoutMs =
+    options.gracefulTerminationTimeoutMs ?? CANDIDATE_HARNESS_GRACEFUL_TERMINATION_TIMEOUT_MS;
+  const finalSettleTimeoutMs =
+    options.finalSettleTimeoutMs ?? CANDIDATE_HARNESS_FINAL_SETTLE_TIMEOUT_MS;
+  const timeoutReadyPath = options.timeoutReadyPath ?? null;
   return new Promise((resolve) => {
     let stderr = "";
     let stdout = "";
     let timedOut = false;
-    const timeout = setTimeout(() => {
+    let forceTerminated = false;
+    let settled = false;
+    let completionTimer;
+    let forceTerminationTimer;
+    let finalSettleTimer;
+    let readinessPollTimer;
+    let startupTimer;
+    let terminationProcessTreePids = [];
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(completionTimer);
+      clearTimeout(forceTerminationTimer);
+      clearTimeout(finalSettleTimer);
+      clearTimeout(readinessPollTimer);
+      clearTimeout(startupTimer);
+      resolve(result);
+    };
+    const beginTimeout = () => {
       timedOut = true;
-      child.kill();
-    }, CANDIDATE_HARNESS_COMPLETION_TIMEOUT_MS);
+      terminationProcessTreePids = candidateHarnessWindowsProcessTreePids(child.pid);
+      child.kill("SIGTERM");
+      forceTerminationTimer = setTimeout(() => {
+        forceTerminated = true;
+        forceTerminateCandidateHarnessTree(child, terminationProcessTreePids);
+        finalSettleTimer = setTimeout(() => {
+          settle({
+            error: `candidate harness did not exit within ${completionTimeoutMs}ms`,
+            forceTerminated,
+            signal: child.signalCode ?? null,
+            status: child.exitCode ?? null,
+            stderr,
+            terminationProcessTreePids,
+            stdout
+          });
+        }, finalSettleTimeoutMs);
+      }, gracefulTerminationTimeoutMs);
+    };
+    const beginCompletionTimeout = () => {
+      completionTimer = setTimeout(beginTimeout, completionTimeoutMs);
+    };
+    const waitForTimeoutReady = () => {
+      if (existsSync(timeoutReadyPath)) {
+        beginCompletionTimeout();
+        return;
+      }
+      readinessPollTimer = setTimeout(waitForTimeoutReady, 25);
+    };
+
+    if (timeoutReadyPath) {
+      startupTimer = setTimeout(beginTimeout, startupTimeoutMs);
+      waitForTimeoutReady();
+    } else {
+      beginCompletionTimeout();
+    }
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -772,25 +913,31 @@ function waitForCandidateHarnessCompletion(child) {
       stderr += chunk;
     });
     child.once("error", (error) => {
-      clearTimeout(timeout);
-      resolve({ error: error.message, signal: null, status: null, stderr, stdout });
+      settle({
+        error: error.message,
+        forceTerminated,
+        signal: null,
+        status: null,
+        stderr,
+        terminationProcessTreePids,
+        stdout
+      });
     });
     child.once("close", (status, signal) => {
-      clearTimeout(timeout);
-      resolve({
-        error: timedOut
-          ? `candidate harness did not exit within ${CANDIDATE_HARNESS_COMPLETION_TIMEOUT_MS}ms`
-          : null,
+      settle({
+        error: timedOut ? `candidate harness did not exit within ${completionTimeoutMs}ms` : null,
+        forceTerminated,
         signal,
         status,
         stderr,
+        terminationProcessTreePids,
         stdout
       });
     });
   });
 }
 
-async function runCandidate(candidate, candidateStop, scenario = "success") {
+async function runCandidate(candidate, candidateStop, scenario = "success", harnessOptions = {}) {
   const hostDirectory = mkdtempSync(join(tmpdir(), "stage1-candidate-contract-"));
   const directory = toGitBashPath(hostDirectory);
   const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
@@ -799,20 +946,47 @@ async function runCandidate(candidate, candidateStop, scenario = "success") {
   const fakeDocker = `set -Eeuo pipefail
 readonly CANDIDATE_ID=${CONTAINER_ID}
 readonly POSTGRES_ID=${"f".repeat(64)}
+readonly NETWORK_ID=${"a".repeat(64)}
+readonly REPLACEMENT_CANDIDATE_ID=${"b".repeat(64)}
+readonly REPLACEMENT_NETWORK_ID=${"c".repeat(64)}
 state="$HARNESS_DIR/candidate-state"
 meta="$HARNESS_DIR/candidate-meta"
+candidate_id_state="$HARNESS_DIR/candidate-id"
 network_state="$HARNESS_DIR/candidate-network"
+network_id_state="$HARNESS_DIR/candidate-network-id"
 network_members="$HARNESS_DIR/candidate-network-members"
 network_alias="$HARNESS_DIR/candidate-network-alias"
+signal_sent="$HARNESS_DIR/candidate-signal-sent"
 
 trace() { printf '%s\\n' "$1" >>"$TRACE_FILE"; }
 load_meta() { test -f "$meta" && source "$meta"; }
-require_candidate() { test -f "$state" && test -f "$meta"; }
+require_candidate() { test -f "$state" && test -f "$meta" && test -f "$candidate_id_state"; }
+candidate_id() { cat "$candidate_id_state"; }
 network_exists() { test -f "$network_state"; }
 network_name() { cat "$network_state"; }
+network_id() { cat "$network_id_state"; }
 network_has_member() { grep -Fqx "$1" "$network_members"; }
 network_add_member() { network_has_member "$1" || printf '%s\\n' "$1" >>"$network_members"; }
 network_remove_member() { grep -Fvx "$1" "$network_members" >"$network_members.tmp" || true; mv "$network_members.tmp" "$network_members"; }
+replace_candidate() {
+  printf '%s' "$REPLACEMENT_CANDIDATE_ID" >"$candidate_id_state"
+  network_remove_member "$CANDIDATE_ID"
+  network_add_member "$REPLACEMENT_CANDIDATE_ID"
+  trace candidate-replaced
+}
+replace_network() {
+  printf '%s' "$REPLACEMENT_NETWORK_ID" >"$network_id_state"
+  trace candidate-network-replaced
+}
+send_candidate_signal() {
+  test -n "\${SIGNAL_PARENT_PID-}" && test ! -e "$signal_sent" || return 0
+  : >"$signal_sent"
+  case "$FAILURE_SCENARIO" in
+    signal_hup) trace candidate-signal-hup; kill -HUP "$SIGNAL_PARENT_PID" ;;
+    signal_int) trace candidate-signal-int; kill -INT "$SIGNAL_PARENT_PID" ;;
+    signal_term) trace candidate-signal-term; kill -TERM "$SIGNAL_PARENT_PID" ;;
+  esac
+}
 
 case "\${1-}" in
   compose)
@@ -834,8 +1008,10 @@ case "\${1-}" in
         test -n "$candidate_network" && ! network_exists || exit 1
         test "$FAILURE_SCENARIO" != network_create_failure || exit 75
         printf '%s' "$candidate_network" >"$network_state"
+        printf '%s' "$NETWORK_ID" >"$network_id_state"
         : >"$network_members"
         trace candidate-network-create
+        printf '%s\\n' "$NETWORK_ID"
         exit 0
         ;;
       inspect)
@@ -846,9 +1022,10 @@ case "\${1-}" in
           shift 2
         fi
         test "\${1-}" = "$(network_name 2>/dev/null)" || exit 1
-        if [[ "$network_format" == *'.Containers'* ]]; then
-          cat "$network_members"
-        fi
+        case "$network_format" in
+          '{{.Id}}') network_id ;;
+          *'.Containers'*) cat "$network_members" ;;
+        esac
         exit 0
         ;;
       connect)
@@ -879,7 +1056,7 @@ case "\${1-}" in
         candidate_network="\${3-}"
         test "$candidate_network" = "$(network_name 2>/dev/null)" || exit 1
         test ! -s "$network_members" || exit 1
-        rm -f "$network_state" "$network_members" "$network_alias"
+        rm -f "$network_state" "$network_id_state" "$network_members" "$network_alias"
         trace candidate-network-rm
         exit 0
         ;;
@@ -902,17 +1079,16 @@ case "\${1-}" in
     load_meta
     test "$inspect_target" = "$candidate_name" || exit 1
     case "$inspect_format" in
-      '{{.Id}}') printf '%s\\n' "$CANDIDATE_ID" ;;
+      '{{.Id}}')
+        send_candidate_signal
+        printf '%s\\n' "$(candidate_id)"
+        ;;
       '{{.Image}}') printf '%s\\n' "$candidate_image" ;;
       *'org.opencontainers.image.revision'*) printf '%s\\n' ${RELEASE_SHA} ;;
       '{{.HostConfig.NetworkMode}}') printf '%s\\n' "$candidate_network" ;;
       *'NetworkSettings.Networks'*) printf '%s\\n' "$candidate_network" ;;
       '{{json .HostConfig.PortBindings}}')
         if test -n "$candidate_publish"; then printf '%s\\n' '{"3001/tcp":["published"]}'; else printf '%s\\n' null; fi
-        ;;
-      *'.State.Health'*)
-        trace candidate-health-inspect
-        if test "$FAILURE_SCENARIO" = health_failure; then printf '%s\\n' unhealthy; else printf '%s\\n' healthy; fi
         ;;
       *) trace "UNHANDLED_INSPECT_FORMAT:$inspect_format"; exit 97 ;;
     esac
@@ -970,7 +1146,7 @@ case "\${1-}" in
       trace candidate-secret-literal-argv
       exit 78
     fi
-    test "$FAILURE_SCENARIO" != launch || exit 71
+    test "$FAILURE_SCENARIO" != launch && test "$FAILURE_SCENARIO" != launch_failure || exit 71
     test "$candidate_network" = "$(network_name 2>/dev/null)" || exit 1
     {
       printf 'candidate_name=%q\\n' "$candidate_name"
@@ -990,11 +1166,24 @@ case "\${1-}" in
       printf 'env_return=%q\\n' "$env_return"
     } >"$meta"
     printf running >"$state"
+    printf '%s' "$CANDIDATE_ID" >"$candidate_id_state"
     if test "$candidate_network" = "$(network_name)"; then network_add_member "$CANDIDATE_ID"; fi
     if test "$FAILURE_SCENARIO" = network_membership_drift; then
       network_add_member ${"d".repeat(64)}
     fi
     trace candidate-run
+    if test "$FAILURE_SCENARIO" = harness_timeout; then
+      trace candidate-harness-timeout
+      CANDIDATE_TIMEOUT_PID_FILE="$HARNESS_DIR/candidate-timeout-sleep.pid" \
+        node -e 'require("node:fs").writeFileSync(process.env.CANDIDATE_TIMEOUT_PID_FILE, String(process.pid)); setTimeout(() => {}, 60_000)' &
+      for _candidate_timeout_pid_attempt in $(seq 1 100); do
+        test -s "$HARNESS_DIR/candidate-timeout-sleep.pid" && break
+        /usr/bin/sleep 0.01
+      done
+      test -s "$HARNESS_DIR/candidate-timeout-sleep.pid" || exit 98
+      : >"$HARNESS_DIR/candidate-timeout-ready"
+      wait "$!"
+    fi
     printf '%s\\n' "$CANDIDATE_ID"
     exit 0
     ;;
@@ -1006,7 +1195,17 @@ case "\${1-}" in
     args="$*"
     if [[ "$args" == *'DATABASE_URL !== process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL'* ]]; then
       trace candidate-runtime-env-checked
-      if ! test "$env_database_url" = "$env_target_database_url" && test "$env_target_db" = "$TARGET_DB"; then
+      if test "$FAILURE_SCENARIO" = container_replacement; then
+        replace_candidate
+        exit 81
+      fi
+      if test "$FAILURE_SCENARIO" = network_replacement; then
+        replace_network
+        exit 82
+      fi
+      if ! test "$env_database_url" = "$env_target_database_url" \
+        || ! test -n "$env_target_db" \
+        || ! test "$env_target_db" = "$TARGET_DB"; then
         trace candidate-runtime-env-database-mismatch
         exit 72
       fi
@@ -1021,7 +1220,7 @@ case "\${1-}" in
     if [[ "$args" == *'fetch('* ]]; then
       trace candidate-internal-health
       test -z "$candidate_publish" || exit 79
-      test "$FAILURE_SCENARIO" != internal_health_failure || exit 80
+      test "$FAILURE_SCENARIO" != internal_health_failure && test "$FAILURE_SCENARIO" != health_failure || exit 80
       exit 0
     fi
     trace candidate-runtime-command-unrecognized
@@ -1034,8 +1233,9 @@ case "\${1-}" in
     require_candidate || exit 1
     load_meta
     test "$requested_candidate_name" = "$candidate_name" || exit 1
-    rm -f "$state" "$meta"
-    if network_exists && network_has_member "$CANDIDATE_ID"; then network_remove_member "$CANDIDATE_ID"; fi
+    current_candidate_id="$(candidate_id)"
+    rm -f "$state" "$meta" "$candidate_id_state"
+    if network_exists && network_has_member "$current_candidate_id"; then network_remove_member "$current_candidate_id"; fi
     trace candidate-rm
     exit 0
     ;;
@@ -1048,7 +1248,8 @@ exit 97`;
 HARNESS_DIR=${JSON.stringify(directory)}
 TRACE_FILE="$HARNESS_DIR/trace"
 FAILURE_SCENARIO=${JSON.stringify(scenario)}
-export HARNESS_DIR TRACE_FILE FAILURE_SCENARIO
+SIGNAL_PARENT_PID=$$
+export HARNESS_DIR TRACE_FILE FAILURE_SCENARIO SIGNAL_PARENT_PID
 PATH=${JSON.stringify(toGitBashPath(binDirectory))}:"$PATH"
 export PATH
 docker() (
@@ -1085,12 +1286,24 @@ fi
 `;
   try {
     const scriptPath = join(hostDirectory, "candidate-contract.sh");
+    const candidateHarnessOptions = {
+      ...harnessOptions,
+      timeoutReadyPath: harnessOptions.awaitTimeoutReady
+        ? join(hostDirectory, "candidate-timeout-ready")
+        : harnessOptions.timeoutReadyPath
+    };
+    delete candidateHarnessOptions.awaitTimeoutReady;
     writeFileSync(scriptPath, wrapper, "utf8");
     const result = await waitForCandidateHarnessCompletion(
-      spawn(bash, [toGitBashPath(scriptPath)], { stdio: ["ignore", "pipe", "pipe"] })
+      spawn(bash, [toGitBashPath(scriptPath)], {
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"]
+      }),
+      candidateHarnessOptions
     );
     const tracePath = join(hostDirectory, "trace");
     const argvPath = join(hostDirectory, "candidate-run-argv");
+    const timeoutSleepPidPath = join(hostDirectory, "candidate-timeout-sleep.pid");
     return {
       candidateExists: existsSync(join(hostDirectory, "candidate-state")),
       candidateNetworkExists: existsSync(join(hostDirectory, "candidate-network")),
@@ -1100,6 +1313,9 @@ fi
           "f".repeat(64)
         ),
       candidateRunArgv: existsSync(argvPath) ? readFileSync(argvPath, "utf8") : "",
+      timeoutSleepPid: existsSync(timeoutSleepPidPath)
+        ? Number.parseInt(readFileSync(timeoutSleepPidPath, "utf8").trim(), 10)
+        : null,
       error: result.error,
       result,
       trace: existsSync(tracePath)
@@ -1837,9 +2053,161 @@ test("candidate executable keeps database secrets out of argv and proves a dedic
   assert.match(candidate, /docker network connect --alias/);
   assert.match(candidate, /docker network inspect --format/);
   assert.match(candidate, /docker exec "\$CANDIDATE_API_CONTAINER" node -e/);
-  assert.match(candidate, /trap 'candidate_trap_cleanup' ERR EXIT HUP INT TERM/);
+  assert.match(candidate, /trap 'candidate_exit_trap_cleanup' ERR EXIT/);
+  assert.match(candidate, /trap 'candidate_signal_trap_cleanup 129' HUP/);
+  assert.match(candidate, /trap 'candidate_signal_trap_cleanup 130' INT/);
+  assert.match(candidate, /trap 'candidate_signal_trap_cleanup 143' TERM/);
+  assert.match(candidate, /CANDIDATE_API_NETWORK_ID="\$\(docker network create/);
   assert.match(candidate, /docker network disconnect/);
   assert.match(candidate, /docker network rm/);
+});
+
+test("candidate health uses the actual in-container endpoint without an image HEALTHCHECK", async () => {
+  const contents = await readRunbook();
+  const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
+  const candidateStop = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_STOP_EXECUTABLE");
+  const outcome = await runCandidate(candidate, candidateStop, "health_failure");
+
+  assert.doesNotMatch(candidate, /\.State\.Health/);
+  assert.equal(
+    outcome.error,
+    null,
+    "health failure must be a bounded candidate failure, not a harness error"
+  );
+  assert.notEqual(outcome.result.status, 0, "failed in-container health must fail closed");
+  assert.equal(outcome.result.signal, null, "failed in-container health must exit normally");
+  assert.match(outcome.trace.join("\n"), /candidate-internal-health/);
+  assert.doesNotMatch(outcome.trace.join("\n"), /candidate-health-inspect/);
+  assert.equal(outcome.candidateExists, false, "failed in-container health must clean candidate");
+  assert.equal(
+    outcome.candidateNetworkExists,
+    false,
+    "failed in-container health must clean network"
+  );
+});
+
+test("candidate signals exit nonzero after cleanup and cannot continue the launch", async () => {
+  const contents = await readRunbook();
+  const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
+  const candidateStop = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_STOP_EXECUTABLE");
+
+  for (const [scenario, expectedStatus] of [
+    ["signal_hup", 129],
+    ["signal_int", 130],
+    ["signal_term", 143]
+  ]) {
+    const outcome = await runCandidate(candidate, candidateStop, scenario);
+    assert.equal(
+      outcome.error,
+      null,
+      `${scenario} must be a candidate failure, not a harness error`
+    );
+    assert.equal(
+      outcome.result.signal,
+      null,
+      `${scenario} must translate signal to an explicit exit`
+    );
+    assert.equal(
+      outcome.result.status,
+      expectedStatus,
+      `${scenario} must exit after cleanup; trace=${outcome.trace.join(",")}; stdout=${outcome.result.stdout}; stderr=${outcome.result.stderr}`
+    );
+    assert.equal(outcome.candidateExists, false, `${scenario} must clean candidate`);
+    assert.equal(outcome.candidateNetworkExists, false, `${scenario} must clean network`);
+    assert.equal(outcome.postgresAttached, false, `${scenario} must detach postgres`);
+    assert.doesNotMatch(
+      outcome.trace.join("\n"),
+      /candidate-runtime-env-checked|candidate-internal-health|candidate-stop-fence-enter/,
+      `${scenario} must not continue after the signal`
+    );
+  }
+});
+
+test("candidate cleanup refuses container and network replacements by name", async () => {
+  const contents = await readRunbook();
+  const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
+  const candidateStop = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_STOP_EXECUTABLE");
+
+  for (const [scenario, expectedResource] of [
+    ["container_replacement", "container"],
+    ["network_replacement", "network"]
+  ]) {
+    const outcome = await runCandidate(candidate, candidateStop, scenario);
+    assert.equal(
+      outcome.error,
+      null,
+      `${scenario} must be a candidate failure, not a harness error`
+    );
+    assert.notEqual(outcome.result.status, 0, `${scenario} must fail closed`);
+    assert.equal(
+      expectedResource === "container" ? outcome.candidateExists : outcome.candidateNetworkExists,
+      true,
+      `${scenario} must preserve the replacement rather than delete by name`
+    );
+    assert.doesNotMatch(
+      outcome.trace.join("\n"),
+      expectedResource === "container" ? /candidate-rm/ : /candidate-network-rm/,
+      `${scenario} must not remove the replacement`
+    );
+  }
+});
+
+test("candidate fake drives every launch failure from actual command state and bounds a hung harness", async () => {
+  const contents = await readRunbook();
+  const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
+  const candidateStop = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_STOP_EXECUTABLE");
+  const targetDbMissing = candidate.replace(/ {2}--env TARGET_DB="\$TARGET_DB" \\\r?\n/, "");
+
+  for (const [scenario, runnableCandidate] of [
+    ["target_db_missing", targetDbMissing],
+    ["network_create_failure", candidate],
+    ["postgres_attach_failure", candidate],
+    ["launch_failure", candidate],
+    ["health_failure", candidate]
+  ]) {
+    const outcome = await runCandidate(runnableCandidate, candidateStop, scenario);
+    assert.equal(
+      outcome.error,
+      null,
+      `${scenario} must be a business failure, not a harness error`
+    );
+    assert.notEqual(outcome.result.status, 0, `${scenario} must fail closed`);
+    assert.equal(outcome.result.signal, null, `${scenario} must exit normally`);
+  }
+
+  const startedAt = Date.now();
+  const timeout = await runCandidate(candidate, candidateStop, "harness_timeout", {
+    awaitTimeoutReady: true,
+    completionTimeoutMs: 100,
+    gracefulTerminationTimeoutMs: 100,
+    finalSettleTimeoutMs: 500,
+    startupTimeoutMs: 30_000
+  });
+  assert.notEqual(timeout.error, null, "a hung harness must report a harness timeout");
+  assert.equal(
+    timeout.result.forceTerminated,
+    true,
+    "a hung harness must escalate from TERM to process-tree KILL"
+  );
+  assert.ok(
+    Number.isInteger(timeout.timeoutSleepPid) && timeout.timeoutSleepPid > 0,
+    "the timeout fake must expose the actual child PID used to prove process-tree cleanup"
+  );
+  if (process.platform === "win32") {
+    assert.ok(
+      timeout.result.terminationProcessTreePids.includes(timeout.timeoutSleepPid),
+      "the Windows termination snapshot must include the real timed-out child before TERM"
+    );
+  }
+  assert.equal(
+    await waitForProcessExit(timeout.timeoutSleepPid, 1_000),
+    true,
+    "TERM then process-tree KILL must remove the timed-out child rather than leaving it orphaned"
+  );
+  assert.ok(
+    Date.now() - startedAt < 35_000,
+    "a hung harness must settle after TERM then process-tree KILL"
+  );
 });
 
 test("candidate executable injects exact disabled gates, verifies isolation, and cleans up before cutover", async () => {
@@ -1897,7 +2265,7 @@ test("candidate executable injects exact disabled gates, verifies isolation, and
       )
     ],
     ["network_drift", candidate.replace('--network "$CANDIDATE_API_NETWORK"', "--network bridge")],
-    ["target_db_missing", candidate.replace(/ {2}--env DATABASE_URL \\\r?\n/, "")],
+    ["target_db_missing", candidate.replace(/ {2}--env TARGET_DB="\$TARGET_DB" \\\r?\n/, "")],
     [
       "env_missing",
       candidate.replace(/ {2}--env SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false \\\r?\n/, "")
@@ -1919,6 +2287,11 @@ test("candidate executable injects exact disabled gates, verifies isolation, and
   ];
   for (const [scenario, mutatedCandidate] of mutatedCandidates) {
     const outcome = await runCandidate(mutatedCandidate, candidateStop);
+    assert.equal(
+      outcome.error,
+      null,
+      `${scenario} must be a candidate failure, not a harness error`
+    );
     assert.notEqual(outcome.result.status, 0, `${scenario} must fail closed`);
     assert.equal(outcome.candidateExists, false, `${scenario} must remove the candidate`);
     assert.equal(
@@ -1938,6 +2311,11 @@ test("candidate executable injects exact disabled gates, verifies isolation, and
 
   for (const scenario of ["evidence_failure", "assert_failure", "internal_health_failure"]) {
     const outcome = await runCandidate(candidate, candidateStop, scenario);
+    assert.equal(
+      outcome.error,
+      null,
+      `${scenario} must be a candidate failure, not a harness error`
+    );
     assert.notEqual(outcome.result.status, 0, `${scenario} must fail closed`);
     assert.equal(outcome.candidateExists, false, `${scenario} must clean up the candidate`);
     assert.equal(outcome.candidateNetworkExists, false, `${scenario} must clean up the network`);
@@ -1946,6 +2324,7 @@ test("candidate executable injects exact disabled gates, verifies isolation, and
   }
 
   const membershipDrift = await runCandidate(candidate, candidateStop, "network_membership_drift");
+  assert.equal(membershipDrift.error, null, "network membership drift must be a candidate failure");
   assert.notEqual(membershipDrift.result.status, 0, "network membership drift must fail closed");
   assert.equal(membershipDrift.candidateExists, false, "membership drift must remove candidate");
   assert.equal(membershipDrift.postgresAttached, false, "membership drift must detach postgres");
@@ -1957,6 +2336,7 @@ test("candidate executable injects exact disabled gates, verifies isolation, and
   assert.match(membershipDrift.trace.join("\n"), /candidate-rm/);
 
   const cleanupFailure = await runCandidate(candidate, candidateStop, "cleanup_failure");
+  assert.equal(cleanupFailure.error, null, "cleanup failure must be a candidate failure");
   assert.notEqual(cleanupFailure.result.status, 0, "cleanup failure must fail closed");
   assert.match(cleanupFailure.trace.join("\n"), /candidate-cleanup-failure/);
   assert.equal(
@@ -1971,6 +2351,7 @@ test("candidate executable injects exact disabled gates, verifies isolation, and
   );
 
   const candidateCollision = await runCandidate(candidate, candidateStop, "candidate_collision");
+  assert.equal(candidateCollision.error, null, "candidate collision must be a candidate failure");
   assert.notEqual(candidateCollision.result.status, 0, "candidate collision must fail closed");
   assert.equal(
     candidateCollision.candidateExists,
@@ -1984,6 +2365,7 @@ test("candidate executable injects exact disabled gates, verifies isolation, and
   );
 
   const networkCollision = await runCandidate(candidate, candidateStop, "network_collision");
+  assert.equal(networkCollision.error, null, "network collision must be a candidate failure");
   assert.notEqual(networkCollision.result.status, 0, "network collision must fail closed");
   assert.equal(
     networkCollision.candidateNetworkExists,

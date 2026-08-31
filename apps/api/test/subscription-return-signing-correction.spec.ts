@@ -126,7 +126,9 @@ function correctionHarness(taskStatus: ESignTaskStatus, started = false) {
     contractESignTask: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         if (where.deletedAt === null) return task.deletedAt === null ? task : null;
-        return task.deletedAt !== null && task.taskStatus === ESignTaskStatus.CANCELLED ? task : null;
+        return task.deletedAt !== null && task.taskStatus === ESignTaskStatus.CANCELLED
+          ? task
+          : null;
       }),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         Object.assign(task, data);
@@ -144,16 +146,26 @@ function correctionHarness(taskStatus: ESignTaskStatus, started = false) {
     }
   };
   const prisma = {
+    businessExceptionApproval: { count: vi.fn(async () => 0) },
     contractESignTask: {
+      count: vi.fn(async () => 1),
       findFirst: vi.fn(async () => (task.deletedAt === null ? task : null))
     },
+    subscriptionClosureChargeLine: { count: vi.fn(async () => 0) },
     subscriptionClosureCase: {
       findUnique: vi.fn(async () => ({
+        currentChecklistRevisionId: null,
+        currentDeltaRevisionId: null,
         id: closureCaseId,
         retiredAt: null,
         status: SubscriptionClosureStatus.PREPARING_RETURN
       }))
     },
+    subscriptionClosureCustomerResponse: { count: vi.fn(async () => 0) },
+    subscriptionClosureEvidencePackageExport: { count: vi.fn(async () => 0) },
+    subscriptionClosureLegalCollectionCase: { count: vi.fn(async () => 0) },
+    subscriptionClosureReceivableDisposition: { count: vi.fn(async () => 0) },
+    vehicleReturnEvidenceLink: { count: vi.fn(async () => 0) },
     $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx))
   };
   return {
@@ -162,12 +174,9 @@ function correctionHarness(taskStatus: ESignTaskStatus, started = false) {
     closureCaseId,
     jobUpdate,
     providerCancel,
-    service: new SubscriptionReturnGovernanceService(
-      prisma as never,
-      {} as never,
-      undefined,
-      { cancelReturnManifestTask: providerCancel } as never
-    ),
+    service: new SubscriptionReturnGovernanceService(prisma as never, {} as never, undefined, {
+      cancelReturnManifestTask: providerCancel
+    } as never),
     signerUpdate,
     task
   };

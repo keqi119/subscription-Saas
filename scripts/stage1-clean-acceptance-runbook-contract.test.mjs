@@ -270,7 +270,8 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     'test "$CURRENT_ONLINE_API_IMAGE" = "$APPROVED_API_IMAGE_ID"',
     'test "$CURRENT_ONLINE_API_DIGEST" = "$APPROVED_API_IMAGE_DIGEST"',
     'test "$CURRENT_ONLINE_API_REVISION" = "$APPROVED_API_IMAGE_REVISION"',
-    "config --images api",
+    "config --format json",
+    "config.services?.api?.image",
     'test "$COMPOSE_API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID"',
     'test "$COMPOSE_API_IMAGE_DIGEST" = "$APPROVED_API_IMAGE_DIGEST"',
     'test "$COMPOSE_API_IMAGE_REVISION" = "$APPROVED_API_IMAGE_REVISION"',
@@ -306,6 +307,7 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     "STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL"
   ]);
   assert.match(preflight, /--env APPROVED_VEHICLE_UUID/);
+  assert.doesNotMatch(preflight, /config --images api/);
   assert.doesNotMatch(preflight, /validate-selection[^\n]*["']?\$APPROVED_VEHICLE_UUID/);
   assert.doesNotMatch(preflight, /docker compose[^\n]+run[^\n]+\bapi\b/);
   assert.doesNotMatch(preflight, /^\s*(?:jq|node|psql|pg_dump)\b/m);
@@ -336,7 +338,7 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
       "docker-compose.staging.images.example.yml",
       "docker-compose.staging.images.yml"
     ),
-    contents.replace('"$APPROVED_API_IMAGE_ID" node', '"$CURRENT_ONLINE_API_IMAGE" node'),
+    contents.replaceAll('"$APPROVED_API_IMAGE_ID" node', '"$CURRENT_ONLINE_API_IMAGE" node'),
     contents.replace('check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"', ":"),
     contents.replaceAll("empty-new-database.pre-migration", "migration-backup"),
     contents.replace(
@@ -1899,9 +1901,23 @@ case "$args" in
       *) printf '%s\\n' ${RELEASE_SHA} ;;
     esac ;;
   *'inspect --format {{ index .Config.Labels "org.opencontainers.image.revision" }}'*) printf '%s\\n' ${RELEASE_SHA} ;;
-  *'config --images api'*) printf '%s\\n' registry.test/api:online ;;
+  *'config --format json'*)
+    if test "$FAILURE_SCENARIO" = compose_api_missing; then
+      printf '%s\\n' gate:compose-api-image >>"$TRACE_FILE"
+      printf '%s\\n' '{"services":{"postgres":{"image":"postgres:17"},"web":{"image":"registry.test/web:online"}}}'
+    else
+      printf '%s\\n' '{"services":{"api":{"image":"registry.test/api:online"},"postgres":{"image":"postgres:17"},"web":{"image":"registry.test/web:online"}}}'
+    fi ;;
+  *'run --rm -i '*' node -e '*) "$REAL_NODE" "\${@: -2}" ;;
   *'image inspect --format {{.Id}}'*)
     test "$FAILURE_SCENARIO" != image_id || { printf '%s\\n' gate:image-id >>"$TRACE_FILE"; printf '%s\\n' bad; exit 0; }
+    if [[ "$args" = *registry.test/api:online* ]]; then
+      printf '%s\\n' gate:compose-api-image-selected >>"$TRACE_FILE"
+    elif [[ "$args" = *registry.test/web:online* || "$args" = *postgres:17* ]]; then
+      printf '%s\\n' gate:compose-non-api-image-selected >>"$TRACE_FILE"
+      printf '%s\\n' ${UNAPPROVED_IMAGE_ID}
+      exit 0
+    fi
     if test "$FAILURE_SCENARIO" = approved_online_identity_mismatch && [[ "$args" = *registry.test/api:online ]]; then
       printf '%s\\n' ${UNAPPROVED_IMAGE_ID}
     else
@@ -2031,8 +2047,11 @@ test(
     assert.match(green.output, /STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL/);
     assert.doesNotMatch(green.calls, /HOST_(?:jq|node|psql|pg_dump)/);
     assert.doesNotMatch(green.calls, /vehicle-uuid-argv-leak/);
+    assert.match(green.calls, /^gate:compose-api-image-selected$/m);
+    assert.doesNotMatch(green.calls, /^gate:compose-non-api-image-selected$/m);
     const allFailureScenarios = [
       "compose_services",
+      "compose_api_missing",
       "api_container_unique",
       "api_not_running",
       "api_unhealthy",
@@ -2079,6 +2098,7 @@ test(
       approval_publication: "gate:approval-publication",
       backup: "gate:backup",
       checksum: "gate:migration-checksum",
+      compose_api_missing: "gate:compose-api-image",
       compose_services: "gate:compose-services",
       discovery: "gate:discovery",
       disk_below: "gate:disk-headroom",

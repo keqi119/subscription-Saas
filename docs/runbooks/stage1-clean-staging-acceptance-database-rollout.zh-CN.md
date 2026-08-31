@@ -707,9 +707,8 @@ readonly CANDIDATE_API_NETWORK="${COMPOSE_PROJECT}-stage1-candidate-${RUN_UTC,,}
 readonly CANDIDATE_API_DATABASE_ALIAS="$STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME"
 readonly CANDIDATE_API_LAUNCH_EVIDENCE="$EVIDENCE_DIR/candidate-api.launch.safe.state"
 readonly CANDIDATE_API_OWNERSHIP_EVIDENCE="$EVIDENCE_DIR/candidate-api.ownership.safe.state"
-CANDIDATE_API_CREATED=0
-CANDIDATE_NETWORK_CREATED=0
-CANDIDATE_POSTGRES_ATTACHED=0
+readonly CANDIDATE_OWNERSHIP_LABEL="com.subauto.stage1.candidate.owner"
+readonly CANDIDATE_OWNERSHIP_TOKEN="$(LC_ALL=C head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 CANDIDATE_API_CONTAINER_ID=""
 CANDIDATE_API_NETWORK_ID=""
 CANDIDATE_POSTGRES_CONTAINER_ID=""
@@ -720,40 +719,64 @@ candidate_expected_network_members() {
 }
 
 candidate_network_members() {
-  docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "$CANDIDATE_API_NETWORK" | LC_ALL=C sort
+  docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "${1:-$CANDIDATE_API_NETWORK}" | LC_ALL=C sort
 }
 
-candidate_container_id_matches() {
-  test -n "$CANDIDATE_API_CONTAINER_ID" \
-    && test "$(docker inspect --format '{{.Id}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_CONTAINER_ID"
+candidate_owned_id_from_snapshot() {
+  local candidate_snapshot="$1"
+  local candidate_owned_id=""
+  local candidate_owned_token=""
+  local candidate_snapshot_extra=""
+  IFS='|' read -r candidate_owned_id candidate_owned_token candidate_snapshot_extra <<<"$candidate_snapshot"
+  test -z "$candidate_snapshot_extra" \
+    && [[ "$candidate_owned_id" =~ ^[0-9a-f]{64}$ ]] \
+    && test "$candidate_owned_token" = "$CANDIDATE_OWNERSHIP_TOKEN" \
+    || return 1
+  printf '%s\n' "$candidate_owned_id"
 }
 
-candidate_network_id_matches() {
-  test -n "$CANDIDATE_API_NETWORK_ID" \
-    && test "$(docker network inspect --format '{{.Id}}' "$CANDIDATE_API_NETWORK")" = "$CANDIDATE_API_NETWORK_ID"
+candidate_owned_container_id() {
+  local candidate_snapshot=""
+  candidate_snapshot="$(docker inspect --format '{{.Id}}|{{ index .Config.Labels "com.subauto.stage1.candidate.owner" }}' "$CANDIDATE_API_CONTAINER")" \
+    || return 1
+  candidate_owned_id_from_snapshot "$candidate_snapshot"
+}
+
+candidate_owned_network_id() {
+  local candidate_snapshot=""
+  candidate_snapshot="$(docker network inspect --format '{{.Id}}|{{ index .Labels "com.subauto.stage1.candidate.owner" }}' "$CANDIDATE_API_NETWORK")" \
+    || return 1
+  candidate_owned_id_from_snapshot "$candidate_snapshot"
 }
 
 candidate_cleanup() {
   local cleanup_failed=0
-  if test "$CANDIDATE_API_CREATED" = 1; then
-    if candidate_container_id_matches; then
-      candidate_container_id_matches \
-        && docker rm -f "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1 || cleanup_failed=1
+  local candidate_owned_container=""
+  local candidate_owned_network=""
+  local candidate_members=""
+  if docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1; then
+    if candidate_owned_container="$(candidate_owned_container_id)"; then
+      docker rm -f "$candidate_owned_container" >/dev/null 2>&1 || cleanup_failed=1
     else
       cleanup_failed=1
     fi
     docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1 && cleanup_failed=1
   fi
-  if test "$CANDIDATE_NETWORK_CREATED" = 1; then
-    if ! candidate_network_id_matches; then
+  if test "$cleanup_failed" = 0 && docker network inspect "$CANDIDATE_API_NETWORK" >/dev/null 2>&1; then
+    if ! candidate_owned_network="$(candidate_owned_network_id)"; then
       cleanup_failed=1
     else
-      if test "$CANDIDATE_POSTGRES_ATTACHED" = 1; then
-        candidate_network_id_matches \
-          && docker network disconnect "$CANDIDATE_API_NETWORK" "$CANDIDATE_POSTGRES_CONTAINER_ID" >/dev/null 2>&1 || cleanup_failed=1
+      candidate_members="$(candidate_network_members "$candidate_owned_network")" || cleanup_failed=1
+      if test "$cleanup_failed" = 0 && test -n "$candidate_members"; then
+        if grep -Fqx "$CANDIDATE_POSTGRES_FULL_ID" <<<"$candidate_members"; then
+          docker network disconnect "$candidate_owned_network" "$CANDIDATE_POSTGRES_FULL_ID" >/dev/null 2>&1 || cleanup_failed=1
+          candidate_members="$(candidate_network_members "$candidate_owned_network")" || cleanup_failed=1
+        fi
+        test -z "$candidate_members" || cleanup_failed=1
       fi
-      candidate_network_id_matches \
-        && docker network rm "$CANDIDATE_API_NETWORK" >/dev/null 2>&1 || cleanup_failed=1
+      if test "$cleanup_failed" = 0; then
+        docker network rm "$candidate_owned_network" >/dev/null 2>&1 || cleanup_failed=1
+      fi
     fi
     docker network inspect "$CANDIDATE_API_NETWORK" >/dev/null 2>&1 && cleanup_failed=1
   fi
@@ -785,6 +808,8 @@ candidate_fail() {
   exit 1
 }
 
+[[ "$CANDIDATE_OWNERSHIP_TOKEN" =~ ^[0-9a-f]{32}$ ]] || candidate_fail
+
 trap 'candidate_exit_trap_cleanup' ERR EXIT
 trap 'candidate_signal_trap_cleanup 129' HUP
 trap 'candidate_signal_trap_cleanup 130' INT
@@ -815,17 +840,16 @@ if ! CANDIDATE_POSTGRES_FULL_ID="$(docker inspect --format '{{.Id}}' "$CANDIDATE
 fi
 test "$CANDIDATE_POSTGRES_FULL_ID" = "$CANDIDATE_POSTGRES_CONTAINER_ID" || candidate_fail
 
-if ! CANDIDATE_API_NETWORK_ID="$(docker network create "$CANDIDATE_API_NETWORK")"; then
+if ! CANDIDATE_API_NETWORK_ID="$(docker network create --label "$CANDIDATE_OWNERSHIP_LABEL=$CANDIDATE_OWNERSHIP_TOKEN" "$CANDIDATE_API_NETWORK")"; then
   candidate_fail
 fi
 [[ "$CANDIDATE_API_NETWORK_ID" =~ ^[0-9a-f]{64}$ ]] || candidate_fail
-CANDIDATE_NETWORK_CREATED=1
-candidate_network_id_matches || candidate_fail
+test "$(candidate_owned_network_id)" = "$CANDIDATE_API_NETWORK_ID" || candidate_fail
 docker network connect --alias "$CANDIDATE_API_DATABASE_ALIAS" "$CANDIDATE_API_NETWORK" "$CANDIDATE_POSTGRES_CONTAINER_ID" >/dev/null
-CANDIDATE_POSTGRES_ATTACHED=1
 test "$(candidate_network_members)" = "$(candidate_expected_network_members "$CANDIDATE_POSTGRES_FULL_ID")" || candidate_fail
 
 if ! CANDIDATE_API_CONTAINER_ID="$(docker run -d --name "$CANDIDATE_API_CONTAINER" \
+  --label "$CANDIDATE_OWNERSHIP_LABEL=$CANDIDATE_OWNERSHIP_TOKEN" \
   --network "$CANDIDATE_API_NETWORK" \
   --env DATABASE_URL \
   --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
@@ -842,15 +866,14 @@ if ! CANDIDATE_API_CONTAINER_ID="$(docker run -d --name "$CANDIDATE_API_CONTAINE
   "$APPROVED_API_IMAGE_ID" 2>/dev/null)"; then
   candidate_fail
 fi
-CANDIDATE_API_CREATED=1
 [[ "$CANDIDATE_API_CONTAINER_ID" =~ ^[0-9a-f]{64}$ ]] || candidate_fail
-candidate_container_id_matches || candidate_fail
+test "$(candidate_owned_container_id)" = "$CANDIDATE_API_CONTAINER_ID" || candidate_fail
 test "$(docker inspect --format '{{.Image}}' "$CANDIDATE_API_CONTAINER")" = "$APPROVED_API_IMAGE_ID" || candidate_fail
 test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$CANDIDATE_API_CONTAINER")" = "$APPROVED_RELEASE_SHA" || candidate_fail
 test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_NETWORK" || candidate_fail
 test "$(docker inspect --format '{{range $network, $_ := .NetworkSettings.Networks}}{{println $network}}{{end}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_NETWORK" || candidate_fail
 test "$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$CANDIDATE_API_CONTAINER")" = 'null' || candidate_fail
-candidate_network_id_matches || candidate_fail
+test "$(candidate_owned_network_id)" = "$CANDIDATE_API_NETWORK_ID" || candidate_fail
 test "$(candidate_network_members)" = "$(candidate_expected_network_members "$CANDIDATE_POSTGRES_FULL_ID" "$CANDIDATE_API_CONTAINER_ID")" || candidate_fail
 
 if ! docker exec "$CANDIDATE_API_CONTAINER" node -e '
@@ -892,8 +915,8 @@ printf 'candidate_container_id=%s\ncandidate_image_id=%s\ncandidate_target_datab
   "$CANDIDATE_API_CONTAINER_ID" "$APPROVED_API_IMAGE_ID" "$TARGET_DB" "$CANDIDATE_API_NETWORK" \
   | publish_private_evidence "$CANDIDATE_API_LAUNCH_EVIDENCE"
 assert_private_file "$CANDIDATE_API_LAUNCH_EVIDENCE"
-printf 'candidate_container_id=%s\ncandidate_network=%s\ncandidate_network_id=%s\ncandidate_postgres_container_id=%s\n' \
-  "$CANDIDATE_API_CONTAINER_ID" "$CANDIDATE_API_NETWORK" "$CANDIDATE_API_NETWORK_ID" "$CANDIDATE_POSTGRES_FULL_ID" \
+printf 'candidate_container_id=%s\ncandidate_network=%s\ncandidate_network_id=%s\ncandidate_postgres_container_id=%s\ncandidate_ownership_token=%s\n' \
+  "$CANDIDATE_API_CONTAINER_ID" "$CANDIDATE_API_NETWORK" "$CANDIDATE_API_NETWORK_ID" "$CANDIDATE_POSTGRES_FULL_ID" "$CANDIDATE_OWNERSHIP_TOKEN" \
   | publish_private_evidence "$CANDIDATE_API_OWNERSHIP_EVIDENCE"
 assert_private_file "$CANDIDATE_API_OWNERSHIP_EVIDENCE"
 ```
@@ -916,6 +939,7 @@ candidate_stop_container_id=""
 candidate_stop_network=""
 candidate_stop_network_id=""
 candidate_stop_postgres_id=""
+candidate_stop_ownership_token=""
 candidate_ownership_lines=0
 while IFS='=' read -r ownership_key ownership_value; do
   case "$ownership_key" in
@@ -935,6 +959,10 @@ while IFS='=' read -r ownership_key ownership_value; do
       test -z "$candidate_stop_postgres_id" || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
       candidate_stop_postgres_id="$ownership_value"
       ;;
+    candidate_ownership_token)
+      test -z "$candidate_stop_ownership_token" || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
+      candidate_stop_ownership_token="$ownership_value"
+      ;;
     *)
       printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'
       exit 1
@@ -942,11 +970,12 @@ while IFS='=' read -r ownership_key ownership_value; do
   esac
   candidate_ownership_lines=$((candidate_ownership_lines + 1))
 done <"$candidate_stop_ownership"
-if test "$candidate_ownership_lines" -ne 4 \
+if test "$candidate_ownership_lines" -ne 5 \
   || test -z "$candidate_stop_container_id" \
   || test -z "$candidate_stop_network" \
   || test -z "$candidate_stop_network_id" \
-  || test -z "$candidate_stop_postgres_id"; then
+  || test -z "$candidate_stop_postgres_id" \
+  || test -z "$candidate_stop_ownership_token"; then
   printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'
   exit 1
 fi
@@ -954,51 +983,65 @@ fi
   && [[ "$candidate_stop_postgres_id" =~ ^[0-9a-f]{64}$ ]] \
   && [[ "$candidate_stop_network_id" =~ ^[0-9a-f]{64}$ ]] \
   && [[ "$candidate_stop_network" =~ ^[a-z0-9][a-z0-9_.-]+$ ]] \
+  && [[ "$candidate_stop_ownership_token" =~ ^[0-9a-f]{32}$ ]] \
   || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
 readonly candidate_stop_container="subauto-staging-stage1-candidate-api"
 readonly candidate_stop_evidence="$EVIDENCE_DIR/candidate-api.stopped.safe.state"
 assert_new_evidence_path "$candidate_stop_evidence"
-docker container inspect "$candidate_stop_container" >/dev/null 2>&1 \
-  || { printf '%s\n' 'STOP: CANDIDATE_API_MISSING_BEFORE_STOP'; exit 1; }
-test "$(docker inspect --format '{{.Id}}' "$candidate_stop_container")" = "$candidate_stop_container_id" \
+candidate_stop_owned_id_from_snapshot() {
+  local candidate_stop_snapshot="$1"
+  local candidate_stop_observed_id=""
+  local candidate_stop_observed_token=""
+  local candidate_stop_snapshot_extra=""
+  IFS='|' read -r candidate_stop_observed_id candidate_stop_observed_token candidate_stop_snapshot_extra <<<"$candidate_stop_snapshot"
+  test -z "$candidate_stop_snapshot_extra" \
+    && [[ "$candidate_stop_observed_id" =~ ^[0-9a-f]{64}$ ]] \
+    && test "$candidate_stop_observed_token" = "$candidate_stop_ownership_token" \
+    || return 1
+  printf '%s\n' "$candidate_stop_observed_id"
+}
+candidate_stop_owned_container_id() {
+  local candidate_stop_snapshot=""
+  candidate_stop_snapshot="$(docker inspect --format '{{.Id}}|{{ index .Config.Labels "com.subauto.stage1.candidate.owner" }}' "$candidate_stop_container")" \
+    || return 1
+  candidate_stop_owned_id_from_snapshot "$candidate_stop_snapshot"
+}
+candidate_stop_owned_network_id() {
+  local candidate_stop_snapshot=""
+  candidate_stop_snapshot="$(docker network inspect --format '{{.Id}}|{{ index .Labels "com.subauto.stage1.candidate.owner" }}' "$candidate_stop_network")" \
+    || return 1
+  candidate_stop_owned_id_from_snapshot "$candidate_stop_snapshot"
+}
+test "$(candidate_stop_owned_container_id)" = "$candidate_stop_container_id" \
   || { printf '%s\n' 'STOP: CANDIDATE_API_OWNERSHIP_MISMATCH'; exit 1; }
-test "$(docker network inspect --format '{{.Id}}' "$candidate_stop_network")" = "$candidate_stop_network_id" \
+test "$(candidate_stop_owned_network_id)" = "$candidate_stop_network_id" \
   || { printf '%s\n' 'STOP: CANDIDATE_NETWORK_OWNERSHIP_MISMATCH'; exit 1; }
-candidate_stop_members="$(docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "$candidate_stop_network" | LC_ALL=C sort)" \
+candidate_stop_members="$(docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "$candidate_stop_network_id" | LC_ALL=C sort)" \
   || { printf '%s\n' 'STOP: CANDIDATE_NETWORK_MISSING_BEFORE_STOP'; exit 1; }
 candidate_stop_expected_members="$(printf '%s\n%s\n' "$candidate_stop_container_id" "$candidate_stop_postgres_id" | LC_ALL=C sort)"
 test "$candidate_stop_members" = "$candidate_stop_expected_members" \
   || { printf '%s\n' 'STOP: CANDIDATE_NETWORK_MEMBERSHIP_MISMATCH'; exit 1; }
-CANDIDATE_STOP_OWNERSHIP_VERIFIED=1
-candidate_stop_container_id_matches() {
-  test "$(docker inspect --format '{{.Id}}' "$candidate_stop_container")" = "$candidate_stop_container_id"
-}
-candidate_stop_network_id_matches() {
-  test "$(docker network inspect --format '{{.Id}}' "$candidate_stop_network")" = "$candidate_stop_network_id"
-}
 candidate_stop_cleanup() {
   local cleanup_failed=0
-  if test "$CANDIDATE_STOP_OWNERSHIP_VERIFIED" = 1; then
-    candidate_stop_container_id_matches \
-      && docker rm -f "$candidate_stop_container" >/dev/null 2>&1 || cleanup_failed=1
-  else
+  if ! test "$(candidate_stop_owned_container_id)" = "$candidate_stop_container_id"; then
     cleanup_failed=1
   fi
-  if candidate_stop_network_id_matches; then
-    candidate_stop_members="$(docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "$candidate_stop_network" | LC_ALL=C sort)" || cleanup_failed=1
-    test "$candidate_stop_members" = "$candidate_stop_postgres_id" || cleanup_failed=1
-    if test "$cleanup_failed" = 0; then
-      candidate_stop_network_id_matches \
-        && docker network disconnect "$candidate_stop_network" "$candidate_stop_postgres_id" >/dev/null 2>&1 || cleanup_failed=1
-    fi
-    if test "$cleanup_failed" = 0; then
-      candidate_stop_network_id_matches \
-        && docker network rm "$candidate_stop_network" >/dev/null 2>&1 || cleanup_failed=1
-    fi
-  else
-    cleanup_failed=1
+  if test "$cleanup_failed" = 0; then
+    docker rm -f "$candidate_stop_container_id" >/dev/null 2>&1 || cleanup_failed=1
   fi
   docker container inspect "$candidate_stop_container" >/dev/null 2>&1 && cleanup_failed=1
+  if test "$cleanup_failed" = 0 && test "$(candidate_stop_owned_network_id)" = "$candidate_stop_network_id"; then
+    candidate_stop_members="$(docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "$candidate_stop_network_id" | LC_ALL=C sort)" || cleanup_failed=1
+    test "$candidate_stop_members" = "$candidate_stop_postgres_id" || cleanup_failed=1
+    if test "$cleanup_failed" = 0; then
+      docker network disconnect "$candidate_stop_network_id" "$candidate_stop_postgres_id" >/dev/null 2>&1 || cleanup_failed=1
+    fi
+    if test "$cleanup_failed" = 0; then
+      docker network rm "$candidate_stop_network_id" >/dev/null 2>&1 || cleanup_failed=1
+    fi
+  else
+    cleanup_failed=1
+  fi
   docker network inspect "$candidate_stop_network" >/dev/null 2>&1 && cleanup_failed=1
   return "$cleanup_failed"
 }

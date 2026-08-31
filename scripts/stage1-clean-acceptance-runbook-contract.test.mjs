@@ -952,8 +952,10 @@ readonly REPLACEMENT_NETWORK_ID=${"c".repeat(64)}
 state="$HARNESS_DIR/candidate-state"
 meta="$HARNESS_DIR/candidate-meta"
 candidate_id_state="$HARNESS_DIR/candidate-id"
+candidate_owner_state="$HARNESS_DIR/candidate-owner"
 network_state="$HARNESS_DIR/candidate-network"
 network_id_state="$HARNESS_DIR/candidate-network-id"
+network_owner_state="$HARNESS_DIR/candidate-network-owner"
 network_members="$HARNESS_DIR/candidate-network-members"
 network_alias="$HARNESS_DIR/candidate-network-alias"
 signal_sent="$HARNESS_DIR/candidate-signal-sent"
@@ -962,20 +964,24 @@ trace() { printf '%s\\n' "$1" >>"$TRACE_FILE"; }
 load_meta() { test -f "$meta" && source "$meta"; }
 require_candidate() { test -f "$state" && test -f "$meta" && test -f "$candidate_id_state"; }
 candidate_id() { cat "$candidate_id_state"; }
+candidate_owner() { cat "$candidate_owner_state"; }
 network_exists() { test -f "$network_state"; }
 network_name() { cat "$network_state"; }
 network_id() { cat "$network_id_state"; }
+network_owner() { cat "$network_owner_state"; }
 network_has_member() { grep -Fqx "$1" "$network_members"; }
 network_add_member() { network_has_member "$1" || printf '%s\\n' "$1" >>"$network_members"; }
 network_remove_member() { grep -Fvx "$1" "$network_members" >"$network_members.tmp" || true; mv "$network_members.tmp" "$network_members"; }
 replace_candidate() {
   printf '%s' "$REPLACEMENT_CANDIDATE_ID" >"$candidate_id_state"
+  printf '%s' unowned-replacement >"$candidate_owner_state"
   network_remove_member "$CANDIDATE_ID"
   network_add_member "$REPLACEMENT_CANDIDATE_ID"
   trace candidate-replaced
 }
 replace_network() {
   printf '%s' "$REPLACEMENT_NETWORK_ID" >"$network_id_state"
+  printf '%s' unowned-replacement >"$network_owner_state"
   trace candidate-network-replaced
 }
 send_candidate_signal() {
@@ -985,6 +991,8 @@ send_candidate_signal() {
     signal_hup) trace candidate-signal-hup; kill -HUP "$SIGNAL_PARENT_PID" ;;
     signal_int) trace candidate-signal-int; kill -INT "$SIGNAL_PARENT_PID" ;;
     signal_term) trace candidate-signal-term; kill -TERM "$SIGNAL_PARENT_PID" ;;
+    signal_after_network_create) trace candidate-signal-after-network-create; kill -TERM "$SIGNAL_PARENT_PID" ;;
+    signal_after_container_run) trace candidate-signal-after-container-run; kill -TERM "$SIGNAL_PARENT_PID" ;;
   esac
 }
 
@@ -1004,13 +1012,21 @@ case "\${1-}" in
   network)
     case "\${2-}" in
       create)
-        candidate_network="\${3-}"
+        shift 2
+        candidate_network_owner=""
+        if test "\${1-}" = --label; then
+          candidate_network_owner="\${2#*=}"
+          shift 2
+        fi
+        candidate_network="\${1-}"
         test -n "$candidate_network" && ! network_exists || exit 1
         test "$FAILURE_SCENARIO" != network_create_failure || exit 75
         printf '%s' "$candidate_network" >"$network_state"
         printf '%s' "$NETWORK_ID" >"$network_id_state"
+        printf '%s' "$candidate_network_owner" >"$network_owner_state"
         : >"$network_members"
         trace candidate-network-create
+        if test "$FAILURE_SCENARIO" = signal_after_network_create; then send_candidate_signal; fi
         printf '%s\\n' "$NETWORK_ID"
         exit 0
         ;;
@@ -1021,9 +1037,10 @@ case "\${1-}" in
           network_format="\${2-}"
           shift 2
         fi
-        test "\${1-}" = "$(network_name 2>/dev/null)" || exit 1
+        test "\${1-}" = "$(network_name 2>/dev/null)" || test "\${1-}" = "$(network_id 2>/dev/null)" || exit 1
         case "$network_format" in
           '{{.Id}}') network_id ;;
+          *'com.subauto.stage1.candidate.owner'*) printf '%s|%s\\n' "$(network_id)" "$(network_owner)" ;;
           *'.Containers'*) cat "$network_members" ;;
         esac
         exit 0
@@ -1045,7 +1062,12 @@ case "\${1-}" in
         shift 2
         candidate_network="\${1-}"
         candidate_postgres="\${2-}"
-        test "$candidate_network" = "$(network_name 2>/dev/null)" && test "$candidate_postgres" = "$POSTGRES_ID" || exit 1
+        { test "$candidate_network" = "$(network_name 2>/dev/null)" || test "$candidate_network" = "$(network_id 2>/dev/null)"; } && test "$candidate_postgres" = "$POSTGRES_ID" || exit 1
+        if { test "$FAILURE_SCENARIO" = network_toctou_replacement || test "$FAILURE_SCENARIO" = stop_network_toctou_replacement; } && test "$candidate_network" = "$NETWORK_ID"; then
+          replace_network
+          trace candidate-network-disconnect-old-id-rejected
+          exit 83
+        fi
         test "$FAILURE_SCENARIO" != cleanup_failure || { trace candidate-cleanup-failure; exit 77; }
         network_has_member "$POSTGRES_ID" || exit 1
         network_remove_member "$POSTGRES_ID"
@@ -1054,9 +1076,9 @@ case "\${1-}" in
         ;;
       rm)
         candidate_network="\${3-}"
-        test "$candidate_network" = "$(network_name 2>/dev/null)" || exit 1
+        test "$candidate_network" = "$(network_name 2>/dev/null)" || test "$candidate_network" = "$(network_id 2>/dev/null)" || exit 1
         test ! -s "$network_members" || exit 1
-        rm -f "$network_state" "$network_id_state" "$network_members" "$network_alias"
+        rm -f "$network_state" "$network_id_state" "$network_owner_state" "$network_members" "$network_alias"
         trace candidate-network-rm
         exit 0
         ;;
@@ -1077,11 +1099,15 @@ case "\${1-}" in
     fi
     require_candidate || exit 1
     load_meta
-    test "$inspect_target" = "$candidate_name" || exit 1
+    test "$inspect_target" = "$candidate_name" || test "$inspect_target" = "$(candidate_id)" || exit 1
     case "$inspect_format" in
       '{{.Id}}')
         send_candidate_signal
         printf '%s\\n' "$(candidate_id)"
+        ;;
+      *'com.subauto.stage1.candidate.owner'*)
+        send_candidate_signal
+        printf '%s|%s\\n' "$(candidate_id)" "$(candidate_owner)"
         ;;
       '{{.Image}}') printf '%s\\n' "$candidate_image" ;;
       *'org.opencontainers.image.revision'*) printf '%s\\n' ${RELEASE_SHA} ;;
@@ -1101,6 +1127,7 @@ case "\${1-}" in
     candidate_network=""
     candidate_image=""
     candidate_publish=""
+    candidate_owner=""
     env_database_url=""
     env_target_database_url=""
     env_target_db=""
@@ -1117,6 +1144,7 @@ case "\${1-}" in
         -d) shift ;;
         --name) candidate_name="\${2-}"; shift 2 ;;
         --network) candidate_network="\${2-}"; shift 2 ;;
+        --label) candidate_owner="\${2#*=}"; shift 2 ;;
         --publish|-p) candidate_publish="\${2-}"; shift 2 ;;
         --env)
           env_spec="\${2-}"
@@ -1153,6 +1181,7 @@ case "\${1-}" in
       printf 'candidate_network=%q\\n' "$candidate_network"
       printf 'candidate_image=%q\\n' "$candidate_image"
       printf 'candidate_publish=%q\\n' "$candidate_publish"
+      printf 'candidate_owner=%q\\n' "$candidate_owner"
       printf 'env_database_url=%q\\n' "$env_database_url"
       printf 'env_target_database_url=%q\\n' "$env_target_database_url"
       printf 'env_target_db=%q\\n' "$env_target_db"
@@ -1167,11 +1196,13 @@ case "\${1-}" in
     } >"$meta"
     printf running >"$state"
     printf '%s' "$CANDIDATE_ID" >"$candidate_id_state"
+    printf '%s' "$candidate_owner" >"$candidate_owner_state"
     if test "$candidate_network" = "$(network_name)"; then network_add_member "$CANDIDATE_ID"; fi
     if test "$FAILURE_SCENARIO" = network_membership_drift; then
       network_add_member ${"d".repeat(64)}
     fi
     trace candidate-run
+    if test "$FAILURE_SCENARIO" = signal_after_container_run; then send_candidate_signal; fi
     if test "$FAILURE_SCENARIO" = harness_timeout; then
       trace candidate-harness-timeout
       CANDIDATE_TIMEOUT_PID_FILE="$HARNESS_DIR/candidate-timeout-sleep.pid" \
@@ -1232,9 +1263,14 @@ case "\${1-}" in
     requested_candidate_name="\${1-}"
     require_candidate || exit 1
     load_meta
-    test "$requested_candidate_name" = "$candidate_name" || exit 1
+    test "$requested_candidate_name" = "$candidate_name" || test "$requested_candidate_name" = "$(candidate_id)" || exit 1
+    if { test "$FAILURE_SCENARIO" = container_toctou_replacement || test "$FAILURE_SCENARIO" = stop_container_toctou_replacement; } && test "$requested_candidate_name" = "$CANDIDATE_ID"; then
+      replace_candidate
+      trace candidate-rm-old-id-rejected
+      exit 84
+    fi
     current_candidate_id="$(candidate_id)"
-    rm -f "$state" "$meta" "$candidate_id_state"
+    rm -f "$state" "$meta" "$candidate_id_state" "$candidate_owner_state"
     if network_exists && network_has_member "$current_candidate_id"; then network_remove_member "$current_candidate_id"; fi
     trace candidate-rm
     exit 0
@@ -1278,7 +1314,7 @@ if test "$FAILURE_SCENARIO" = network_collision; then
   : >"$HARNESS_DIR/candidate-network-members"
 fi
 ${candidate}
-if test "$FAILURE_SCENARIO" = success; then
+if test "$FAILURE_SCENARIO" = success || [[ "$FAILURE_SCENARIO" = stop_* ]]; then
   printf '%s\\n' candidate-stop-fence-enter >>"$TRACE_FILE"
   ${candidateStop}
   printf '%s\\n' candidate-stop-fence-exit >>"$TRACE_FILE"
@@ -1303,6 +1339,7 @@ fi
     );
     const tracePath = join(hostDirectory, "trace");
     const argvPath = join(hostDirectory, "candidate-run-argv");
+    const launchEvidencePath = join(hostDirectory, "evidence", "candidate-api.launch.safe.state");
     const timeoutSleepPidPath = join(hostDirectory, "candidate-timeout-sleep.pid");
     return {
       candidateExists: existsSync(join(hostDirectory, "candidate-state")),
@@ -1313,6 +1350,9 @@ fi
           "f".repeat(64)
         ),
       candidateRunArgv: existsSync(argvPath) ? readFileSync(argvPath, "utf8") : "",
+      candidateLaunchEvidence: existsSync(launchEvidencePath)
+        ? readFileSync(launchEvidencePath, "utf8")
+        : "",
       timeoutSleepPid: existsSync(timeoutSleepPidPath)
         ? Number.parseInt(readFileSync(timeoutSleepPidPath, "utf8").trim(), 10)
         : null,
@@ -2049,7 +2089,16 @@ test("candidate executable keeps database secrets out of argv and proves a dedic
   assert.match(candidate, /--env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL(?:\s|\\)/);
   assert.doesNotMatch(candidate, /--env\s+(?:DATABASE_URL|STAGE1_ACCEPTANCE_TARGET_DATABASE_URL)=/);
   assert.doesNotMatch(candidate, /(?:--publish|docker port|curl[^\n]+127\.0\.0\.1:)/);
-  assert.match(candidate, /docker network create "\$CANDIDATE_API_NETWORK"/);
+  assert.match(candidate, /CANDIDATE_OWNERSHIP_TOKEN=.*urandom/);
+  assert.match(
+    candidate,
+    /docker network create --label "\$CANDIDATE_OWNERSHIP_LABEL=\$CANDIDATE_OWNERSHIP_TOKEN" "\$CANDIDATE_API_NETWORK"/
+  );
+  assert.match(
+    candidate,
+    /docker run -d --name "\$CANDIDATE_API_CONTAINER"[\s\S]+?--label "\$CANDIDATE_OWNERSHIP_LABEL=\$CANDIDATE_OWNERSHIP_TOKEN"/
+  );
+  assert.doesNotMatch(candidate, /CANDIDATE_(?:API_)?CREATED|CANDIDATE_POSTGRES_ATTACHED/);
   assert.match(candidate, /docker network connect --alias/);
   assert.match(candidate, /docker network inspect --format/);
   assert.match(candidate, /docker exec "\$CANDIDATE_API_CONTAINER" node -e/);
@@ -2119,6 +2168,107 @@ test("candidate signals exit nonzero after cleanup and cannot continue the launc
       outcome.trace.join("\n"),
       /candidate-runtime-env-checked|candidate-internal-health|candidate-stop-fence-enter/,
       `${scenario} must not continue after the signal`
+    );
+  }
+});
+
+test("candidate cleanup owns resources acquired before a post-create signal", async () => {
+  const contents = await readRunbook();
+  const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
+  const candidateStop = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_STOP_EXECUTABLE");
+
+  for (const [scenario, forbiddenTrace] of [
+    ["signal_after_network_create", /candidate-network-connect-postgres|candidate-run/],
+    ["signal_after_container_run", /candidate-runtime-env-checked|candidate-internal-health/]
+  ]) {
+    const outcome = await runCandidate(candidate, candidateStop, scenario);
+    assert.equal(
+      outcome.error,
+      null,
+      `${scenario} must be a candidate failure, not a harness error`
+    );
+    assert.equal(
+      outcome.result.status,
+      143,
+      `${scenario} must exit through the TERM handler; trace=${outcome.trace.join(",")}; stdout=${outcome.result.stdout}; stderr=${outcome.result.stderr}`
+    );
+    assert.equal(
+      outcome.candidateExists,
+      false,
+      `${scenario} must remove only the owned candidate`
+    );
+    assert.equal(
+      outcome.candidateNetworkExists,
+      false,
+      `${scenario} must remove only the owned network`
+    );
+    assert.equal(outcome.postgresAttached, false, `${scenario} must detach postgres when attached`);
+    assert.doesNotMatch(
+      outcome.trace.join("\n"),
+      forbiddenTrace,
+      `${scenario} must not continue after cleanup`
+    );
+  }
+});
+
+test("candidate cleanup uses immutable IDs after ownership inspection to preserve TOCTOU replacements", async () => {
+  const contents = await readRunbook();
+  const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
+  const candidateStop = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_STOP_EXECUTABLE");
+
+  for (const [scenario, expectedTrace] of [
+    ["container_toctou_replacement", /candidate-rm-old-id-rejected/],
+    ["network_toctou_replacement", /candidate-network-disconnect-old-id-rejected/]
+  ]) {
+    const outcome = await runCandidate(candidate, candidateStop, scenario);
+    assert.equal(
+      outcome.error,
+      null,
+      `${scenario} must be a candidate failure, not a harness error`
+    );
+    assert.notEqual(outcome.result.status, 0, `${scenario} must fail closed`);
+    assert.match(
+      outcome.trace.join("\n"),
+      expectedTrace,
+      `${scenario} must direct its destructive operation at the original immutable ID`
+    );
+    assert.equal(
+      scenario === "container_toctou_replacement"
+        ? outcome.candidateExists
+        : outcome.candidateNetworkExists,
+      true,
+      `${scenario} must preserve the same-name replacement`
+    );
+  }
+});
+
+test("candidate stop fence uses immutable IDs after ownership inspection to preserve TOCTOU replacements", async () => {
+  const contents = await readRunbook();
+  const candidate = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_EXECUTABLE");
+  const candidateStop = extractExecutableFence(contents, "STAGE1_CANDIDATE_API_STOP_EXECUTABLE");
+
+  for (const [scenario, expectedTrace] of [
+    ["stop_container_toctou_replacement", /candidate-rm-old-id-rejected/],
+    ["stop_network_toctou_replacement", /candidate-network-disconnect-old-id-rejected/]
+  ]) {
+    const outcome = await runCandidate(candidate, candidateStop, scenario);
+    assert.equal(
+      outcome.error,
+      null,
+      `${scenario} must be a candidate failure, not a harness error`
+    );
+    assert.notEqual(outcome.result.status, 0, `${scenario} must fail closed`);
+    assert.match(
+      outcome.trace.join("\n"),
+      expectedTrace,
+      `${scenario} must direct its destructive operation at the original immutable ID`
+    );
+    assert.equal(
+      scenario === "stop_container_toctou_replacement"
+        ? outcome.candidateExists
+        : outcome.candidateNetworkExists,
+      true,
+      `${scenario} must preserve the same-name replacement`
     );
   }
 });
@@ -2236,6 +2386,16 @@ test("candidate executable injects exact disabled gates, verifies isolation, and
   assert.doesNotMatch(green.candidateRunArgv, /(?:--network|--link)\s+nginx\b/);
   assert.doesNotMatch(green.candidateRunArgv, /(?:--publish|-p)\s/);
   assert.doesNotMatch(green.candidateRunArgv, /postgresql:\/\//);
+  assert.doesNotMatch(
+    green.candidateLaunchEvidence,
+    /candidate_ownership_token=/,
+    "the non-sensitive ownership token belongs only in private ownership evidence"
+  );
+  assert.doesNotMatch(
+    `${green.result.stdout}\n${green.result.stderr}`,
+    /[0-9a-f]{32}/,
+    "candidate stdout/stderr must not publish the ownership token"
+  );
   assert.match(green.candidateRunArgv, /--env DATABASE_URL(?:\s|$)/);
   assert.match(green.candidateRunArgv, /--env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL(?:\s|$)/);
   for (const flag of [

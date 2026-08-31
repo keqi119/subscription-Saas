@@ -343,7 +343,7 @@ test("mutation-tests the actual SQL and exact API/permission inventories", async
 test("validates the migration catalog as an append-only inventory", () => {
   assert.doesNotThrow(() =>
     validateSanitizedCounts("01-migration-catalog", {
-      applied_migration_count: "125",
+      applied_migration_count: "126",
       expected_stage1_p0_applied_count: "8",
       failed_or_incomplete_migration_count: "0",
       migration_catalog_fingerprint: "a".repeat(32),

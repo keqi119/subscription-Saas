@@ -572,7 +572,7 @@ async function createPostgresHarness(connectionString) {
 
   async function assertCanonicalMigrations() {
     const expected = canonicalMigrationCatalog();
-    assert.equal(expected.length, 125);
+    assert.equal(expected.length, 126);
     for (const prisma of [clients[0], clients[1]]) {
       const actual = await prisma.$queryRawUnsafe(`
         SELECT migration_name AS "migrationName", checksum, finished_at AS "finishedAt",

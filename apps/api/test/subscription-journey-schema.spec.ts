@@ -69,7 +69,10 @@ const JOURNEY_FIELDS: Record<string, FieldContract[]> = {
     f("updatedAt", "DateTime"),
     f("jobs", "SubscriptionJourneyJob", "list", undefined, "implicit"),
     f("manualTasks", "SubscriptionJourneyManualTask", "list", undefined, "implicit"),
-    f("exceptions", "SubscriptionJourneyException", "list", undefined, "implicit")
+    f("exceptions", "SubscriptionJourneyException", "list", undefined, "implicit"),
+    f("jobsByStepId", "SubscriptionJourneyJob", "list", undefined, "implicit"),
+    f("manualTasksByStepId", "SubscriptionJourneyManualTask", "list", undefined, "implicit"),
+    f("exceptionsByStepId", "SubscriptionJourneyException", "list", undefined, "implicit")
   ],
   SubscriptionJourneyJob: [
     f("id", "String", "required", "cuid()"),
@@ -77,6 +80,7 @@ const JOURNEY_FIELDS: Record<string, FieldContract[]> = {
     f("journey", "SubscriptionJourney", "required", undefined, "journeyId->id"),
     f("stepId", "String"),
     f("step", "SubscriptionJourneyStep", "required", undefined, "stepId,journeyId->id,journeyId"),
+    f("stepById", "SubscriptionJourneyStep", "required", undefined, "stepId->id"),
     f("jobType", "SubscriptionJourneyJobType"),
     f("status", "SubscriptionJourneyJobStatus", "required", "PENDING"),
     f("sourceKey", "String"),
@@ -91,7 +95,8 @@ const JOURNEY_FIELDS: Record<string, FieldContract[]> = {
     f("completedAt", "DateTime", "optional"),
     f("createdAt", "DateTime", "required", "now()"),
     f("updatedAt", "DateTime"),
-    f("exceptions", "SubscriptionJourneyException", "list", undefined, "implicit")
+    f("exceptions", "SubscriptionJourneyException", "list", undefined, "implicit"),
+    f("exceptionsByJobId", "SubscriptionJourneyException", "list", undefined, "implicit")
   ],
   SubscriptionJourneyManualTask: [
     f("id", "String", "required", "cuid()"),
@@ -99,6 +104,7 @@ const JOURNEY_FIELDS: Record<string, FieldContract[]> = {
     f("journey", "SubscriptionJourney", "required", undefined, "journeyId->id"),
     f("stepId", "String"),
     f("step", "SubscriptionJourneyStep", "required", undefined, "stepId,journeyId->id,journeyId"),
+    f("stepById", "SubscriptionJourneyStep", "required", undefined, "stepId->id"),
     f("taskType", "SubscriptionJourneyManualTaskType"),
     f("status", "SubscriptionJourneyManualTaskStatus", "required", "OPEN"),
     f("decision", "SubscriptionJourneyManualDecision", "optional"),
@@ -128,6 +134,7 @@ const JOURNEY_FIELDS: Record<string, FieldContract[]> = {
     f("journey", "SubscriptionJourney", "required", undefined, "journeyId->id"),
     f("stepId", "String"),
     f("step", "SubscriptionJourneyStep", "required", undefined, "stepId,journeyId->id,journeyId"),
+    f("stepById", "SubscriptionJourneyStep", "required", undefined, "stepId->id"),
     f("jobId", "String", "optional"),
     f(
       "job",
@@ -136,6 +143,7 @@ const JOURNEY_FIELDS: Record<string, FieldContract[]> = {
       undefined,
       "jobId,stepId,journeyId->id,stepId,journeyId"
     ),
+    f("jobById", "SubscriptionJourneyJob", "optional", undefined, "jobId->id"),
     f("status", "SubscriptionJourneyExceptionStatus", "required", "OPEN"),
     f("code", "String"),
     f("message", "String"),

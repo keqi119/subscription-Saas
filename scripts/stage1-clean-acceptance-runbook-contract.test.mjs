@@ -463,7 +463,7 @@ if test "$FAILURE_SCENARIO" = "$scenario"; then printf '%s' 500; else printf '%s
     ;;
   *secret-target-url*)
     printf '%s\\n' gate:migration-count >>"$TRACE_FILE"
-    if test "$FAILURE_SCENARIO" = migration_count; then printf '%s\\n' '124|0|0|0'; else printf '%s\\n' '125|0|0|0'; fi
+    if test "$FAILURE_SCENARIO" = migration_count; then printf '%s\\n' '125|0|0|0'; else printf '%s\\n' '126|0|0|0'; fi
     ;;
   *secret-database-url*)
     printf '%s\\n' old-database-fingerprint >>"$TRACE_FILE"
@@ -575,7 +575,7 @@ case "$args" in
     ;;
   *'prisma-migration-checksums.mjs'*)
     printf '%s\\n' gate:checksum >>"$TRACE_FILE"
-    printf '%s\\n' '{"safe":true,"localMigrationCount":125,"appliedMigrationCount":125,"duplicateAppliedNames":[],"mismatchedNames":[],"missingFromDatabase":[],"missingLocally":[]}'
+    printf '%s\\n' '{"safe":true,"localMigrationCount":126,"appliedMigrationCount":126,"duplicateAppliedNames":[],"mismatchedNames":[],"missingFromDatabase":[],"missingLocally":[]}'
     ;;
   *'prisma migrate diff'*)
     printf '%s\\n' gate:drift >>"$TRACE_FILE"
@@ -1578,7 +1578,7 @@ test("keeps complete database, runtime, public, billing, and log gates", async (
     "./node_modules/.bin/prisma migrate status",
     "node scripts/prisma-migration-checksums.mjs",
     "./node_modules/.bin/prisma migrate diff",
-    "125 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate",
+    "126 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate",
     "RestartCount",
     "SUBSCRIPTION_JOURNEY_ENABLED",
     "SUBSCRIPTION_JOURNEY_WORKER_ENABLED",
@@ -1658,7 +1658,7 @@ test("keeps old database read-only and migration/backup gates fail closed", asyn
     "./node_modules/.bin/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code",
     'DRIFT_EXIT="$?"',
     'test "$DRIFT_EXIT" -eq 0',
-    "125 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate",
+    "126 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate",
     "先备份旧库，再备份空新库"
   ]);
   assert.doesNotMatch(contents, /^\s*(?:migrate\s+resolve|migrate\s+reset|repair\b)/im);
@@ -1964,9 +1964,9 @@ case "$args $stdin_payload" in
     esac ;;
   *'information_schema.tables'*) test "$FAILURE_SCENARIO" != target_nonempty || printf '%s\\n' gate:target-empty >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != target_nonempty && printf 0 || printf 1 ;;
   *'business table is nonempty'*) test "$FAILURE_SCENARIO" != post_migration_nonempty || { printf '%s\\n' gate:post-migration-business-count >>"$TRACE_FILE"; exit 72; } ;;
-  *'_prisma_migrations'*) test "$FAILURE_SCENARIO" != migration_count || printf '%s\\n' gate:migration-count >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != migration_count && printf '125|0|0|0' || printf '124|0|0|0' ;;
+  *'_prisma_migrations'*) test "$FAILURE_SCENARIO" != migration_count || printf '%s\\n' gate:migration-count >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != migration_count && printf '126|0|0|0' || printf '125|0|0|0' ;;
   *'pg_dump'*) test "$FAILURE_SCENARIO" != backup || { printf '%s\\n' gate:backup >>"$TRACE_FILE"; exit 71; }; printf dump ;;
-  *' -d subscription_saas_staging_acceptance_'*' -XAtq'*) test "$FAILURE_SCENARIO" != migration_count || printf '%s\\n' gate:migration-count >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != migration_count && printf '125|0|0|0' || printf '124|0|0|0' ;;
+  *' -d subscription_saas_staging_acceptance_'*' -XAtq'*) test "$FAILURE_SCENARIO" != migration_count || printf '%s\\n' gate:migration-count >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != migration_count && printf '126|0|0|0' || printf '125|0|0|0' ;;
   *' -d subscription_saas_staging_acceptance_'*' -X -v ON_ERROR_STOP=1'*) test "$FAILURE_SCENARIO" != post_migration_nonempty || { printf '%s\\n' gate:post-migration-business-count >>"$TRACE_FILE"; exit 72; } ;;
   *'source-server-identity'*) if test "$FAILURE_SCENARIO" = server_identity; then printf '%s\\n' gate:server-identity-different-cluster >>"$TRACE_FILE"; printf '%s\\n' '${"d".repeat(64)}'; else printf '%s\\n' '${SHA256}'; fi ;;
   *'target-server-identity'*) printf '%s\\n' '${SHA256}' ;;

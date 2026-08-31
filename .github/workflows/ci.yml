@@ -85,6 +85,9 @@ jobs:
       - name: Migration status
         run: pnpm --filter @subscription-saas/api prisma:migrate:status
 
+      - name: Schema drift check
+        run: pnpm --filter @subscription-saas/api exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
+
       - name: API tests
         run: pnpm --filter @subscription-saas/api test
 

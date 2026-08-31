@@ -87,6 +87,8 @@ COPY --from=build /app/scripts/stage1c-period-backfill.mjs ./scripts/stage1c-per
 COPY --from=build /app/scripts/subscription-segment-bootstrap-core.mjs ./scripts/subscription-segment-bootstrap-core.mjs
 COPY --from=build /app/scripts/subscription-segment-bootstrap.mjs ./scripts/subscription-segment-bootstrap.mjs
 
+RUN cd /app/apps/api && ./node_modules/.bin/prisma --version >/dev/null
+
 RUN mkdir -p /app/uploads /app/apps/api/uploads
 
 EXPOSE 3001

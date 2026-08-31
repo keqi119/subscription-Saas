@@ -417,7 +417,8 @@ export class OrderService {
                 is: { status: query.journeyStatus }
               }
             }
-          : {})
+          : {}),
+        ...(query.orderStatus ? { orderStatus: query.orderStatus } : {})
       }
     });
     return orders.map(toOrderView);

@@ -8,6 +8,10 @@ import {
   ApplicationJourneyActions
 } from "../src/components/subscription-journey/application-journey-actions";
 import {
+  buildAdminOrderListApiPath,
+  parseAdminOrderListFilters
+} from "../src/lib/admin-order-workspace";
+import {
   SubscriptionJourneyExceptionActions,
   requireJourneyCancelReason,
   runJourneyMutation
@@ -213,7 +217,6 @@ describe("subscription journey Admin UI", () => {
     );
     const applicationSource = source("../src/app/applications/[id]/page.tsx");
     const orderSource = source("../src/app/orders/[id]/page.tsx");
-    const ordersSource = source("../src/app/orders/page.tsx");
     const contractSource = source("../src/app/contracts/[id]/page.tsx");
 
     expect(retryHtml).toContain("法大大签署与归档");
@@ -225,8 +228,10 @@ describe("subscription journey Admin UI", () => {
     expect(orderSource).toContain("历史只读字段");
     expect(contractSource).toContain("订阅 Golden Path 托管");
     expect(contractSource).toContain("archiveStatus.canArchive && !journey");
-    expect(ordersSource).toContain('searchParams.get("journeyStatus")');
-    expect(ordersSource).toContain("移除异常筛选");
+    const journeyFilters = parseAdminOrderListFilters(
+      new URLSearchParams({ journeyStatus: "EXCEPTION" })
+    );
+    expect(buildAdminOrderListApiPath(journeyFilters)).toBe("/orders?journeyStatus=EXCEPTION");
   });
 });
 

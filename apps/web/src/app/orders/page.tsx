@@ -13,6 +13,10 @@ import { ProtectedShell } from "../../components/protected-shell";
 import { ORDER_STATUS_LABELS, STATUS_LABELS, labelOf } from "../../constants/labels";
 import { canGenerateContract } from "../../lib/action-guards";
 import { apiFetch, ApiError } from "../../lib/api";
+import {
+  buildAdminOrderListApiPath,
+  parseAdminOrderListFilters
+} from "../../lib/admin-order-workspace";
 import type { AuthMeResponse } from "../../lib/auth";
 
 interface OrderRow {
@@ -55,15 +59,13 @@ function OrdersPageContent() {
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
-  const journeyStatus = searchParams.get("journeyStatus") === "EXCEPTION" ? "EXCEPTION" : null;
+  const { journeyStatus, orderStatus } = parseAdminOrderListFilters(searchParams);
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
       const [nextOrders, nextMe] = await Promise.all([
-        apiFetch<OrderRow[]>(
-          journeyStatus ? `/orders?journeyStatus=${encodeURIComponent(journeyStatus)}` : "/orders"
-        ),
+        apiFetch<OrderRow[]>(buildAdminOrderListApiPath({ journeyStatus, orderStatus })),
         apiFetch<AuthMeResponse>("/auth/me")
       ]);
       setOrders(nextOrders);
@@ -73,7 +75,7 @@ function OrdersPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [journeyStatus, message]);
+  }, [journeyStatus, message, orderStatus]);
 
   useEffect(() => {
     void loadOrders();
@@ -176,10 +178,22 @@ function OrdersPageContent() {
             color="red"
             onClose={(event) => {
               event.preventDefault();
-              router.replace("/orders");
+              router.replace(buildAdminOrderListApiPath({ journeyStatus: null, orderStatus }));
             }}
           >
             Journey 异常 · 移除异常筛选
+          </Tag>
+        ) : null}
+        {orderStatus ? (
+          <Tag
+            closable
+            color="blue"
+            onClose={(event) => {
+              event.preventDefault();
+              router.replace(buildAdminOrderListApiPath({ journeyStatus, orderStatus: null }));
+            }}
+          >
+            在租订单 · 移除状态筛选
           </Tag>
         ) : null}
         <Table columns={columns} dataSource={orders} loading={loading} rowKey="id" scroll={{ x: 1600 }} />

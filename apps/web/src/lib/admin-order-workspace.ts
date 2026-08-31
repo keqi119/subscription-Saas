@@ -10,6 +10,11 @@ export const ORDER_WORKSPACE_TAB_KEYS = [
 
 export type OrderWorkspaceTabKey = (typeof ORDER_WORKSPACE_TAB_KEYS)[number];
 
+export type AdminOrderListFilters = {
+  journeyStatus: "EXCEPTION" | null;
+  orderStatus: "ACTIVE" | null;
+};
+
 export type OrderWorkspaceState =
   | "BLOCKED"
   | "ACTION_REQUIRED"
@@ -48,6 +53,27 @@ export type OrderWorkspaceActionCode =
   | "change.retry";
 
 const ORDER_WORKSPACE_TAB_KEY_SET = new Set<string>(ORDER_WORKSPACE_TAB_KEYS);
+
+export function parseAdminOrderListFilters(
+  searchParams: Pick<URLSearchParams, "get">
+): AdminOrderListFilters {
+  return {
+    journeyStatus: searchParams.get("journeyStatus") === "EXCEPTION" ? "EXCEPTION" : null,
+    orderStatus: searchParams.get("orderStatus") === "ACTIVE" ? "ACTIVE" : null
+  };
+}
+
+export function buildAdminOrderListApiPath(filters: AdminOrderListFilters): string {
+  const searchParams = new URLSearchParams();
+  if (filters.journeyStatus) {
+    searchParams.set("journeyStatus", filters.journeyStatus);
+  }
+  if (filters.orderStatus) {
+    searchParams.set("orderStatus", filters.orderStatus);
+  }
+  const query = searchParams.toString();
+  return query ? `/orders?${query}` : "/orders";
+}
 
 const ORDER_WORKSPACE_TAB_PERMISSIONS = {
   change: ["order_change:view", "subscription_change:view"],

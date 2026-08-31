@@ -132,8 +132,30 @@ test "$CURRENT_ONLINE_API_IMAGE" = "$APPROVED_API_IMAGE_ID" || { printf '%s\n' '
 readonly CURRENT_ONLINE_API_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$CURRENT_ONLINE_API_IMAGE")"
 test "$CURRENT_ONLINE_API_DIGEST" = "$APPROVED_API_IMAGE_DIGEST" || { printf '%s\n' 'STOP: CURRENT_ONLINE_API_IMAGE_DIGEST_MISMATCH'; exit 1; }
 test "$CURRENT_ONLINE_API_REVISION" = "$APPROVED_API_IMAGE_REVISION" || { printf '%s\n' 'STOP: CURRENT_ONLINE_API_IMAGE_REVISION_MISMATCH'; exit 1; }
-readonly COMPOSE_API_IMAGE="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --images api)"
-test "$(printf '%s\n' "$COMPOSE_API_IMAGE" | grep -c .)" -eq 1 || { printf '%s\n' 'STOP: COMPOSE_API_IMAGE_COUNT_INVALID'; exit 1; }
+# Compose 2.27 的 `config --images` 始终返回全部 service 镜像，尾随 `api` 不是服务过滤器。
+# 完整 config 只通过管道交给已批准镜像内的 Node 解析器，stdout 仅保留 api image reference。
+if ! COMPOSE_API_IMAGE="$(
+  docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --format json \
+    | docker run --rm -i "$APPROVED_API_IMAGE_ID" node -e '
+      let input = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { input += chunk; });
+      process.stdin.on("end", () => {
+        try {
+          const config = JSON.parse(input);
+          const image = config.services?.api?.image;
+          if (typeof image !== "string" || image.length === 0 || image.includes("\n")) process.exit(1);
+          process.stdout.write(image);
+        } catch {
+          process.exit(1);
+        }
+      });
+    '
+)"; then
+  printf '%s\n' 'STOP: COMPOSE_API_IMAGE_INVALID'
+  exit 1
+fi
+readonly COMPOSE_API_IMAGE
 readonly COMPOSE_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$COMPOSE_API_IMAGE")"
 readonly COMPOSE_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$COMPOSE_API_IMAGE")"
 readonly COMPOSE_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$COMPOSE_API_IMAGE_ID")"
@@ -393,8 +415,7 @@ readonly API_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$API_CONTAINER_ID
 readonly API_IMAGE_REF="$(docker image inspect --format '{{index .RepoDigests 0}}' "$API_IMAGE_ID")"
 [[ "$API_IMAGE_REF" =~ @sha256:[0-9a-f]{64}$ ]] \
   || { printf '%s\n' 'STOP: API_IMAGE_DIGEST_INVALID'; exit 1; }
-readonly COMPOSE_API_IMAGE="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --images api)"
-test "$(printf '%s\n' "$COMPOSE_API_IMAGE" | grep -c .)" -eq 1
+readonly COMPOSE_API_IMAGE="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --format json | jq -er '.services.api.image')"
 readonly COMPOSE_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$COMPOSE_API_IMAGE")"
 readonly COMPOSE_API_IMAGE_REF="$(docker image inspect --format '{{index .RepoDigests 0}}' "$COMPOSE_API_IMAGE")"
 readonly COMPOSE_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$COMPOSE_API_IMAGE_ID")"

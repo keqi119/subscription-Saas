@@ -223,7 +223,16 @@ set -e
 test "$SOURCE_SERVER_IDENTITY_EXIT" -eq 0 || { printf '%s\n' 'STOP: SOURCE_SERVER_IDENTITY_UNAVAILABLE'; exit 1; }
 readonly SOURCE_SERVER_IDENTITY_SHA256
 test "$COMPOSE_SERVER_IDENTITY_SHA256" = "$SOURCE_SERVER_IDENTITY_SHA256" || { printf '%s\n' 'STOP: DATABASE_SERVER_IDENTITY_MISMATCH'; exit 1; }
-test "$(postgres_admin_query -XAtq --set=target_db="$TARGET_DB" -c 'SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'"'"'target_db'"'"');')" = 'f' || { printf '%s\n' 'STOP: TARGET_DATABASE_ALREADY_EXISTS'; exit 1; }
+if ! TARGET_DATABASE_EXISTS="$(
+  postgres_admin_query -XAtq --set=target_db="$TARGET_DB" <<'SQL'
+SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'target_db');
+SQL
+)"; then
+  printf '%s\n' 'STOP: TARGET_DATABASE_EXISTENCE_CHECK_FAILED'
+  exit 1
+fi
+readonly TARGET_DATABASE_EXISTS
+test "$TARGET_DATABASE_EXISTS" = 'f' || { printf '%s\n' 'STOP: TARGET_DATABASE_ALREADY_EXISTS'; exit 1; }
 postgres_admin_query --set=target_db="$TARGET_DB" --set=owner_role="$STAGE1_ACCEPTANCE_DATABASE_OWNER" <<'SQL'
 SELECT format('CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L', :'target_db', :'owner_role', 'UTF8') \gexec
 SQL

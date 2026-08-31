@@ -295,6 +295,7 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL"',
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"',
     "CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L",
+    "STOP: TARGET_DATABASE_EXISTENCE_CHECK_FAILED",
     "TARGET_DATABASE_ALREADY_EXISTS",
     "EMPTY_NEW_DB_BACKUP",
     "empty-new-database.pre-migration",
@@ -308,6 +309,11 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
   ]);
   assert.match(preflight, /--env APPROVED_VEHICLE_UUID/);
   assert.doesNotMatch(preflight, /config --images api/);
+  assert.match(
+    preflight,
+    /if ! TARGET_DATABASE_EXISTS="\$\(\s*postgres_admin_query -XAtq --set=target_db="\$TARGET_DB" <<'SQL'\s*SELECT EXISTS \(SELECT 1 FROM pg_database WHERE datname = :'target_db'\);\s*SQL\s*\)"; then/
+  );
+  assert.doesNotMatch(preflight, /--set=target_db="\$TARGET_DB" -c /);
   assert.doesNotMatch(preflight, /validate-selection[^\n]*["']?\$APPROVED_VEHICLE_UUID/);
   assert.doesNotMatch(preflight, /docker compose[^\n]+run[^\n]+\bapi\b/);
   assert.doesNotMatch(preflight, /^\s*(?:jq|node|psql|pg_dump)\b/m);
@@ -1871,8 +1877,10 @@ printf 200`
     bin,
     "docker",
     `args="$*"; printf '%s\\n' docker >>"$TRACE_FILE"
+stdin_payload=""
+if [[ "$args" == *'exec -T postgres psql'* && "$args" != *' -c '* ]]; then stdin_payload="$(cat)"; fi
 if [[ "$args" == *"$UUID_SENTINEL"* ]]; then printf '%s\\n' gate:vehicle-uuid-argv-leak >>"$TRACE_FILE"; exit 82; fi
-case "$args" in
+case "$args $stdin_payload" in
   *'config --services'*)
     if test "$FAILURE_SCENARIO" = compose_services; then printf '%s\\n' gate:compose-services >>"$TRACE_FILE"; printf '%s\\n' postgres api; else printf '%s\\n' postgres api web; fi ;;
   *'ps -q api'*)
@@ -1940,12 +1948,18 @@ case "$args" in
     esac ;;
   *'current_user;'*) printf '%s\\n' subscription_saas ;;
   *'pg_control_system'*) printf '%s\\n' server-id ;;
-  *'SELECT EXISTS'*) printf '%s\\n' gate:target-exists >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != target_exists && printf f || printf t ;;
+  *'SELECT EXISTS'*)
+    case "$FAILURE_SCENARIO" in
+      target_exists_query) printf '%s\\n' gate:target-exists-query >>"$TRACE_FILE"; exit 79 ;;
+      target_exists) printf '%s\\n' gate:target-exists >>"$TRACE_FILE"; printf t ;;
+      *) printf f ;;
+    esac ;;
   *'information_schema.tables'*) test "$FAILURE_SCENARIO" != target_nonempty || printf '%s\\n' gate:target-empty >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != target_nonempty && printf 0 || printf 1 ;;
+  *'business table is nonempty'*) test "$FAILURE_SCENARIO" != post_migration_nonempty || { printf '%s\\n' gate:post-migration-business-count >>"$TRACE_FILE"; exit 72; } ;;
   *'_prisma_migrations'*) test "$FAILURE_SCENARIO" != migration_count || printf '%s\\n' gate:migration-count >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != migration_count && printf '125|0|0|0' || printf '124|0|0|0' ;;
   *'pg_dump'*) test "$FAILURE_SCENARIO" != backup || { printf '%s\\n' gate:backup >>"$TRACE_FILE"; exit 71; }; printf dump ;;
-  *' -d subscription_saas_staging_acceptance_'*' -XAtq') test "$FAILURE_SCENARIO" != migration_count || printf '%s\\n' gate:migration-count >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != migration_count && printf '125|0|0|0' || printf '124|0|0|0' ;;
-  *' -d subscription_saas_staging_acceptance_'*' -X -v ON_ERROR_STOP=1') test "$FAILURE_SCENARIO" != post_migration_nonempty || { printf '%s\\n' gate:post-migration-business-count >>"$TRACE_FILE"; exit 72; } ;;
+  *' -d subscription_saas_staging_acceptance_'*' -XAtq'*) test "$FAILURE_SCENARIO" != migration_count || printf '%s\\n' gate:migration-count >>"$TRACE_FILE"; test "$FAILURE_SCENARIO" != migration_count && printf '125|0|0|0' || printf '124|0|0|0' ;;
+  *' -d subscription_saas_staging_acceptance_'*' -X -v ON_ERROR_STOP=1'*) test "$FAILURE_SCENARIO" != post_migration_nonempty || { printf '%s\\n' gate:post-migration-business-count >>"$TRACE_FILE"; exit 72; } ;;
   *'source-server-identity'*) if test "$FAILURE_SCENARIO" = server_identity; then printf '%s\\n' gate:server-identity-different-cluster >>"$TRACE_FILE"; printf '%s\\n' '${"d".repeat(64)}'; else printf '%s\\n' '${SHA256}'; fi ;;
   *'target-server-identity'*) printf '%s\\n' '${SHA256}' ;;
   *'validate-pair'*)
@@ -2074,6 +2088,7 @@ test(
       "source_name_mismatch",
       "url_semantics_mismatch",
       "server_identity",
+      "target_exists_query",
       "target_exists",
       "target_nonempty",
       "backup",
@@ -2122,6 +2137,7 @@ test(
       postgres_max_connections: "gate:postgres-max-connections",
       server_identity: "gate:server-identity-different-cluster",
       source_name_mismatch: "gate:url-source-database",
+      target_exists_query: "gate:target-exists-query",
       target_exists: "gate:target-exists",
       target_nonempty: "gate:target-empty",
       url_semantics_mismatch: "gate:url-semantics",

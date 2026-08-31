@@ -2,7 +2,7 @@
 
 ## 安全边界
 
-- 生产默认保持 `SUBSCRIPTION_EXTENSION_ENABLED=false`。
+- 生产默认保持 `SUBSCRIPTION_EXTENSION_ENABLED=false` 和 `SUBSCRIPTION_CHANGE_WORKER_ENABLED=false`。
 - 不修改历史 migration，不执行 `prisma migrate reset`，不删除已签合同、分段、报价、通知或审计记录。
 - BASE 引导和续订补录只使用已存在的事实；缺失日期、归档主合同、套餐/报价快照时进入异常清单，禁止猜值。
 - BASE 引导不创建考虑期、不发站内信或短信。续订补录只写考虑期、提醒和 outbox 任务，不直接调用短信供应商。
@@ -41,7 +41,8 @@
 
 ## 2. 部署但保持功能关闭
 
-1. 部署 API/Web 镜像，确认 `SUBSCRIPTION_EXTENSION_ENABLED=false`。
+1. 部署 API/Web 镜像，确认 `SUBSCRIPTION_EXTENSION_ENABLED=false` 和
+   `SUBSCRIPTION_CHANGE_WORKER_ENABLED=false`。
 2. 等待容器 readiness/health 全绿。
 3. 从公网入口验证 API `/api/health`、后台登录、Portal 首页和静态资源；随后运行 `pnpm api:smoke`。
 
@@ -107,7 +108,9 @@ portalPath
 
 ## 6. Staging 开关与 smoke
 
-1. 仅在 staging 设置 `SUBSCRIPTION_EXTENSION_ENABLED=true` 并重启 API/worker。
+1. 仅在 staging 设置 `SUBSCRIPTION_EXTENSION_ENABLED=true` 和
+   `SUBSCRIPTION_CHANGE_WORKER_ENABLED=true`，然后重启 API。后者是独立的 runtime 开关，只有精确小写
+   `true` 才会轮询、协调、登记和认领受支持的合同变更/关闭任务。
 2. 使用准备好的订单场景 JSON（可包含 `orderId`、`considerationId`、`changeId`、`contractId`）运行只读 smoke：
 
    ```text
@@ -124,8 +127,11 @@ portalPath
 
 ## 8. 回滚
 
-1. 立即将 `SUBSCRIPTION_EXTENSION_ENABLED=false` 并滚动重启 API/worker，阻止新续期和新考虑期。
+1. 立即将 `SUBSCRIPTION_EXTENSION_ENABLED=false` 并滚动重启 API，阻止新续期和新考虑期。若要暂停全部
+   受支持的合同变更/关闭任务，将独立的 `SUBSCRIPTION_CHANGE_WORKER_ENABLED=false` 并重启 API；此操作
+   也会暂停已有任务的认领和完成，直到重新精确设置为 `true`。
 2. 保留新增表、枚举、BASE/EXTENSION 分段、已签合同、报价、通知、任务和审计；不得删除或回写原合同期限。
-3. 已 SCHEDULED 的续期由兼容 worker 继续完成，或进入人工接管；不得取消已归档补充协议。
+3. 未关闭 worker 时，已 SCHEDULED 的续期由兼容 worker 继续完成，或进入人工接管；不得取消已归档
+   补充协议。关闭 worker 时，记录暂停范围并安排后续恢复或人工接管。
 4. 回滚前后运行 `pnpm subscription-renewals:reconcile`，核对分段、账单、权益和到期任务。合法已生成账单与支付委托继续按原规则处理。
 5. 记录回滚时间、Git SHA、镜像、开关、受影响订单和所有异常行，待根因修复后重新走完整发布顺序。

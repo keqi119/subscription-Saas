@@ -155,11 +155,19 @@ SUBSCRIPTION_EXTENSION_ENABLED=true
 SUBSCRIPTION_VEHICLE_SWAP_ENABLED=true
 SUBSCRIPTION_EARLY_TERMINATION_ENABLED=true
 SUBSCRIPTION_MANAGED_OTHER_ENABLED=true
+SUBSCRIPTION_CHANGE_WORKER_ENABLED=true
+SUBSCRIPTION_CHANGE_WORKER_POLL_INTERVAL_MS=5000
+SUBSCRIPTION_CHANGE_WORKER_LEASE_MS=120000
 ```
 
 The four contract-change flags are independent and fail closed. Before Stage 1 contract-change
 acceptance, follow `docs/runbooks/stage1-active-term-contract-change-release.md` and complete its
 dry-run/apply/dry-run bootstrap sequence against the confirmed Staging database.
+
+`SUBSCRIPTION_CHANGE_WORKER_ENABLED` is a separate worker runtime switch and must be exact lowercase
+`true` for polling, reconciliation, enrollment, and claiming to run. Changing it requires an API
+restart. Setting it to `false` pauses every supported contract-change/closure job, including already
+scheduled work; it is not equivalent to disabling only new extension enrollment.
 
 Do not use `ADMIN_ALLOWED_IPS` in this stage.
 The staging admin console is not IP-restricted.

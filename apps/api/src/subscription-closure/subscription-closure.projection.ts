@@ -4,6 +4,10 @@ import { Prisma } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
 import type { ClosureCaseQueryDto } from "./subscription-closure.dto";
+import {
+  hasSubscriptionReturnThreeStageContinuation,
+  isSubscriptionReturnThreeStageEnabled
+} from "./subscription-return-three-stage";
 
 const FORBIDDEN_KEYS = new Set([
   "approvalcomment",
@@ -99,21 +103,23 @@ export class SubscriptionClosureProjectionService {
       where: { customerId, orderId, retiredAt: null }
     });
     if (!closureCase) return null;
-    const governed = await this.governedProjection(
+    const { returnThreeStageContinuation, ...governed } = await this.governedProjection(
       closureCase.id,
       closureCase.contractId,
       closureCase.orderId,
+      closureCase.currentChecklistRevisionId,
+      closureCase.currentDeltaRevisionId,
       true
     );
     return projectSubscriptionClosureCustomer({
       ...toAggregate(closureCase),
       ...governed,
-      returnThreeStageEnabled: this.returnThreeStageEnabled(closureCase, governed)
+      returnThreeStageEnabled: this.returnThreeStageEnabled(returnThreeStageContinuation)
     });
   }
 
   private async adminProjection(closureCase: AggregateRecord) {
-    const [audits, approvals, governed] = await Promise.all([this.prisma.auditLog.findMany({
+    const [audits, approvals, governedResult] = await Promise.all([this.prisma.auditLog.findMany({
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       where: {
         OR: [
@@ -131,35 +137,26 @@ export class SubscriptionClosureProjectionService {
       closureCase.id,
       closureCase.contractId,
       closureCase.orderId,
+      closureCase.currentChecklistRevisionId,
+      closureCase.currentDeltaRevisionId,
       false
     )]);
+    const { returnThreeStageContinuation, ...governed } = governedResult;
     return projectSubscriptionClosureAdmin({
       ...toAggregate(closureCase),
       ...governed,
       allowedActions: governedAllowedActions(closureCase, governed),
       approvals,
       audits,
-      returnThreeStageEnabled: this.returnThreeStageEnabled(closureCase, governed)
+      returnThreeStageEnabled: this.returnThreeStageEnabled(returnThreeStageContinuation)
     });
   }
 
-  private returnThreeStageEnabled(
-    closureCase: AggregateRecord,
-    governed: Readonly<Record<string, unknown>>
-  ) {
+  private returnThreeStageEnabled(returnThreeStageContinuation: boolean) {
     return (
-      this.config?.get<string>("SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED") === "true" ||
-      Boolean(closureCase.currentChecklistRevisionId) ||
-      Boolean(closureCase.currentDeltaRevisionId) ||
-      [
-        "checklistRevisions",
-        "deltaRevisions",
-        "chargeLines",
-        "customerResponses",
-        "receivableDispositions",
-        "evidenceLinks",
-        "evidencePackages"
-      ].some((key) => Array.isArray(governed[key]) && governed[key].length > 0)
+      isSubscriptionReturnThreeStageEnabled(
+        this.config?.get<string>("SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED")
+      ) || returnThreeStageContinuation
     );
   }
 
@@ -167,6 +164,8 @@ export class SubscriptionClosureProjectionService {
     closureCaseId: string,
     contractId: string,
     orderId: string,
+    currentChecklistRevisionId: string | null,
+    currentDeltaRevisionId: string | null,
     customerOnly: boolean
   ) {
     const [
@@ -181,7 +180,9 @@ export class SubscriptionClosureProjectionService {
       legalCases,
       evidencePackages,
       receivableBills,
-      returnManifestTask
+      returnManifestTask,
+      businessExceptionApprovalCount,
+      evidenceLinkCount
     ] = await Promise.all([
       this.prisma.vehicleReturnChecklistRevision.findMany({
         include: { items: { orderBy: { itemCode: "asc" as const } } },
@@ -262,7 +263,11 @@ export class SubscriptionClosureProjectionService {
           sourceKey: { startsWith: "return-manifest-esign" },
           sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
         }
-      })
+      }),
+      this.prisma.businessExceptionApproval.count({
+        where: { subjectId: closureCaseId, subjectType: "SETTLEMENT_CASE" }
+      }),
+      this.prisma.vehicleReturnEvidenceLink.count({ where: { closureCaseId } })
     ]);
     return {
       chargeLines,
@@ -276,7 +281,19 @@ export class SubscriptionClosureProjectionService {
       legalCases,
       receivableBills,
       receivableDispositions: dispositions,
-      returnManifestTask
+      returnManifestTask,
+      returnThreeStageContinuation: hasSubscriptionReturnThreeStageContinuation({
+        businessExceptionApprovals: businessExceptionApprovalCount,
+        chargeLines,
+        currentChecklistRevisionId,
+        currentDeltaRevisionId,
+        customerResponses,
+        evidenceLinks: evidenceLinkCount,
+        evidencePackages,
+        legalCases,
+        receivableDispositions: dispositions,
+        returnManifestTasks: returnManifestTask
+      })
     };
   }
 }

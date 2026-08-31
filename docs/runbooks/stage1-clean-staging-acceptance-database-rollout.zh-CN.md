@@ -1,6 +1,6 @@
 # Stage 1 干净 Staging 验收数据库发布、候选验证、切换与回滚手册
 
-> 状态：**仅供未来另行明确批准的 Staging 执行窗口使用**。合并、部署、批准设计/计划/PR 或阅读本手册均不构成执行批准。本手册当前还包含一个不可豁免的 candidate API 硬停止；在对应源码缺口修复且本手册经独立评审前，流程不能到达切换。
+> 状态：**仅供未来另行明确批准的 Staging 执行窗口使用**。合并、部署、批准设计/计划/PR 或阅读本手册均不构成执行批准。candidate API 只能按本手册的可执行启动、验收和停止 fence 运行，且必须在正式切换前停止并删除。
 
 ## 1. 不变量与人工职责
 
@@ -102,6 +102,7 @@ check_public_http_200() {
 }
 
 test -f "$COMPOSE_FILE" && test -f "$ENV_FILE"
+command -v timeout >/dev/null 2>&1 || { printf '%s\n' 'STOP: TIMEOUT_WATCHDOG_UNAVAILABLE'; exit 1; }
 [[ "$TARGET_DB" =~ ^subscription_saas_staging_acceptance_[0-9]{8}t[0-9]{6}z$ ]] || { printf '%s\n' 'STOP: TARGET_DB_REGEX_INVALID'; exit 1; }
 [[ "$APPROVED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: APPROVED_RELEASE_SHA_INVALID'; exit 1; }
 
@@ -121,12 +122,24 @@ test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{e
 readonly CURRENT_ONLINE_API_IMAGE="$(docker inspect --format '{{.Image}}' "$API_CONTAINER_ID")"
 readonly CURRENT_ONLINE_API_REVISION="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$API_CONTAINER_ID")"
 readonly APPROVED_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$APPROVED_API_IMAGE")"
-readonly APPROVED_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$APPROVED_API_IMAGE_ID")"
+readonly APPROVED_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$APPROVED_API_IMAGE")"
 readonly APPROVED_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$APPROVED_API_IMAGE_ID")"
 [[ "$APPROVED_API_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_ID_INVALID'; exit 1; }
 [[ "$APPROVED_API_IMAGE_DIGEST" =~ @sha256:[0-9a-f]{64}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_DIGEST_INVALID'; exit 1; }
 [[ "$APPROVED_API_IMAGE_REVISION" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_REVISION_INVALID'; exit 1; }
 test "$APPROVED_API_IMAGE_REVISION" = "$APPROVED_RELEASE_SHA" || { printf '%s\n' 'STOP: APPROVED_API_IMAGE_REVISION_MISMATCH'; exit 1; }
+test "$CURRENT_ONLINE_API_IMAGE" = "$APPROVED_API_IMAGE_ID" || { printf '%s\n' 'STOP: CURRENT_ONLINE_API_IMAGE_ID_MISMATCH'; exit 1; }
+readonly CURRENT_ONLINE_API_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$CURRENT_ONLINE_API_IMAGE")"
+test "$CURRENT_ONLINE_API_DIGEST" = "$APPROVED_API_IMAGE_DIGEST" || { printf '%s\n' 'STOP: CURRENT_ONLINE_API_IMAGE_DIGEST_MISMATCH'; exit 1; }
+test "$CURRENT_ONLINE_API_REVISION" = "$APPROVED_API_IMAGE_REVISION" || { printf '%s\n' 'STOP: CURRENT_ONLINE_API_IMAGE_REVISION_MISMATCH'; exit 1; }
+readonly COMPOSE_API_IMAGE="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --images api)"
+test "$(printf '%s\n' "$COMPOSE_API_IMAGE" | grep -c .)" -eq 1 || { printf '%s\n' 'STOP: COMPOSE_API_IMAGE_COUNT_INVALID'; exit 1; }
+readonly COMPOSE_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$COMPOSE_API_IMAGE")"
+readonly COMPOSE_API_IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$COMPOSE_API_IMAGE")"
+readonly COMPOSE_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$COMPOSE_API_IMAGE_ID")"
+test "$COMPOSE_API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID" || { printf '%s\n' 'STOP: COMPOSE_API_IMAGE_ID_MISMATCH'; exit 1; }
+test "$COMPOSE_API_IMAGE_DIGEST" = "$APPROVED_API_IMAGE_DIGEST" || { printf '%s\n' 'STOP: COMPOSE_API_IMAGE_DIGEST_MISMATCH'; exit 1; }
+test "$COMPOSE_API_IMAGE_REVISION" = "$APPROVED_API_IMAGE_REVISION" || { printf '%s\n' 'STOP: COMPOSE_API_IMAGE_REVISION_MISMATCH'; exit 1; }
 readonly STAGE1_ACCEPTANCE_IMAGE_REF="$APPROVED_API_IMAGE_DIGEST"
 export STAGE1_ACCEPTANCE_IMAGE_REF
 export DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL"
@@ -137,7 +150,11 @@ install -d -o root -g root -m 0700 "$EVIDENCE_DIR"
 assert_private_directory "$EVIDENCE_DIR"
 {
   printf 'current_online_image_id=%s\n' "$CURRENT_ONLINE_API_IMAGE"
+  printf 'current_online_digest=%s\n' "$CURRENT_ONLINE_API_DIGEST"
   printf 'current_online_revision=%s\n' "${CURRENT_ONLINE_API_REVISION:-missing}"
+  printf 'compose_api_image_id=%s\n' "$COMPOSE_API_IMAGE_ID"
+  printf 'compose_api_digest=%s\n' "$COMPOSE_API_IMAGE_DIGEST"
+  printf 'compose_api_revision=%s\n' "$COMPOSE_API_IMAGE_REVISION"
   printf 'approved_target_image_id=%s\n' "$APPROVED_API_IMAGE_ID"
   printf 'approved_target_revision=%s\n' "$APPROVED_API_IMAGE_REVISION"
   printf 'approved_target_digest=%s\n' "$APPROVED_API_IMAGE_DIGEST"
@@ -216,7 +233,7 @@ target_api sh -lc 'cd /app/apps/api && pnpm exec prisma migrate status --schema 
 target_api node - <<'NODE'
 const { execFileSync } = require('node:child_process');
 const result = JSON.parse(execFileSync('pnpm', ['prisma:migrate:checksum:verify'], { cwd: '/app', encoding: 'utf8' }));
-if (!result.safe || result.localMigrationCount !== 124 || result.appliedMigrationCount !== 124 || result.duplicateAppliedNames.length || result.mismatchedNames.length || result.missingFromDatabase.length || result.missingLocally.length) process.exit(31);
+if (!result.safe || result.localMigrationCount !== 125 || result.appliedMigrationCount !== 125 || result.duplicateAppliedNames.length || result.mismatchedNames.length || result.missingFromDatabase.length || result.missingLocally.length) process.exit(31);
 NODE
 set +e
 target_api sh -lc 'cd /app/apps/api && pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' >/dev/null 2>&1
@@ -227,7 +244,7 @@ test "$(postgres_target_query -XAtq <<'SQL'
 WITH duplicate_names AS (SELECT migration_name FROM _prisma_migrations GROUP BY migration_name HAVING count(*) > 1)
 SELECT count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL), count(*) FILTER (WHERE rolled_back_at IS NOT NULL), count(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL), (SELECT count(*) FROM duplicate_names) FROM _prisma_migrations;
 SQL
-)" = '124|0|0|0' || { printf '%s\n' 'STOP: MIGRATION_COUNTS_INVALID'; exit 1; }
+)" = '125|0|0|0' || { printf '%s\n' 'STOP: MIGRATION_COUNTS_INVALID'; exit 1; }
 postgres_target_query -X -v ON_ERROR_STOP=1 <<'SQL'
 DO $$ DECLARE item record; row_count bigint; BEGIN
   FOR item IN SELECT relname FROM pg_class JOIN pg_namespace ON pg_namespace.oid = relnamespace WHERE nspname = 'public' AND relkind = 'r' AND relname <> '_prisma_migrations' LOOP
@@ -376,9 +393,17 @@ readonly API_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$API_CONTAINER_ID
 readonly API_IMAGE_REF="$(docker image inspect --format '{{index .RepoDigests 0}}' "$API_IMAGE_ID")"
 [[ "$API_IMAGE_REF" =~ @sha256:[0-9a-f]{64}$ ]] \
   || { printf '%s\n' 'STOP: API_IMAGE_DIGEST_INVALID'; exit 1; }
-readonly COMPOSE_API_IMAGE="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --format json | jq -er '.services.api.image')"
+readonly COMPOSE_API_IMAGE="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --images api)"
+test "$(printf '%s\n' "$COMPOSE_API_IMAGE" | grep -c .)" -eq 1
 readonly COMPOSE_API_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$COMPOSE_API_IMAGE")"
-test "$COMPOSE_API_IMAGE_ID" = "$API_IMAGE_ID"
+readonly COMPOSE_API_IMAGE_REF="$(docker image inspect --format '{{index .RepoDigests 0}}' "$COMPOSE_API_IMAGE")"
+readonly COMPOSE_API_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$COMPOSE_API_IMAGE_ID")"
+test "$API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID"
+test "$API_IMAGE_REF" = "$APPROVED_API_IMAGE_DIGEST"
+test "$RELEASE_SHA" = "$APPROVED_API_IMAGE_REVISION"
+test "$COMPOSE_API_IMAGE_ID" = "$APPROVED_API_IMAGE_ID"
+test "$COMPOSE_API_IMAGE_REF" = "$APPROVED_API_IMAGE_DIGEST"
+test "$COMPOSE_API_IMAGE_REVISION" = "$APPROVED_API_IMAGE_REVISION"
 
 df -Pk /opt/subscription-saas \
   | awk 'NR==1 || NR==2 {print $2, $3, $4, $5}' \
@@ -496,7 +521,7 @@ fi
 CHECKSUM_RESULT="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
   sh -lc 'cd /app && pnpm prisma:migrate:checksum:verify')"
-jq -e '.safe == true and .localMigrationCount == 124 and .appliedMigrationCount == 124 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
+jq -e '.safe == true and .localMigrationCount == 125 and .appliedMigrationCount == 125 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
   <<<"$CHECKSUM_RESULT" >/dev/null
 jq '{appliedMigrationCount,duplicateCount:(.duplicateAppliedNames|length),localMigrationCount,mismatchCount:(.mismatchedNames|length),missingDatabaseCount:(.missingFromDatabase|length),missingLocalCount:(.missingLocally|length),safe}' \
   <<<"$CHECKSUM_RESULT" \
@@ -535,8 +560,8 @@ SELECT
 FROM _prisma_migrations;
 SQL
 )"
-test "$MIGRATION_COUNTS" = '124|0|0|0'
-printf '%s\n' '124 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate' \
+test "$MIGRATION_COUNTS" = '125|0|0|0'
+printf '%s\n' '125 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate' \
   | publish_private_evidence "$EVIDENCE_DIR/migration-counts.state"
 ```
 
@@ -549,7 +574,7 @@ export STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL
 export STAGE1_ACCEPTANCE_TARGET_DATABASE_URL
 export STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME
 export STAGE1_ACCEPTANCE_GIT_SHA="$RELEASE_SHA"
-export STAGE1_ACCEPTANCE_IMAGE_REF="$API_IMAGE_REF"
+export STAGE1_ACCEPTANCE_IMAGE_REF="$APPROVED_API_IMAGE_DIGEST"
 
 set +e
 DISCOVERY_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
@@ -677,18 +702,11 @@ chmod 0600 "$EVIDENCE_DIR/target-validator.json"
 assert_private_file "$EVIDENCE_DIR/target-validator.json"
 ```
 
-## 6. Candidate API 静态 worker/timer 证明与硬停止
+## 6. Candidate API 可复现启动、只读验收与停止边界
 
-预期 candidate 约束是：独立容器名、只绑定 `127.0.0.1` 备用端口、`DATABASE_URL` 指向新库、不接入 Nginx、不创建业务数据，并显式设置：
+candidate 必须由下面的 executable fence 启动：独立容器名与专属 Docker network、无主机端口发布、`DATABASE_URL` 精确指向新库、不接入 Nginx、不创建业务数据，并显式设置八个 worker/journey/return gate：
 
-```text
-SUBSCRIPTION_JOURNEY_ENABLED=false
-SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false
-BILLING_AUTOMATION_WORKER_ENABLED=false
-FIELD_VIDEO_UPLOAD_WORKER_ENABLED=false
-STAGE2_HANDOVER_WORKER_ENABLED=false
-MILEAGE_REVIEW_WORKER_ENABLED=false
-```
+`SUBSCRIPTION_JOURNEY_ENABLED=false`、`SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false`、`BILLING_AUTOMATION_WORKER_ENABLED=false`、`FIELD_VIDEO_UPLOAD_WORKER_ENABLED=false`、`STAGE2_HANDOVER_WORKER_ENABLED=false`、`MILEAGE_REVIEW_WORKER_ENABLED=false`、`SUBSCRIPTION_CHANGE_WORKER_ENABLED=false` 与 `SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false`。
 
 静态核查依据（本手册编写时的目标源码）：
 
@@ -698,36 +716,411 @@ MILEAGE_REVIEW_WORKER_ENABLED=false
 - 对应 worker 由 `billing-automation.module.ts`、`handover-work-order.module.ts` 和 `mileage-review.module.ts` 注册；因此必须显式传入上列 false，不能依赖缺省值。
 - `apps/api/src/auto-debit/auto-debit.module.ts` 没有 bootstrap timer；`auto-debit.config.ts` 强制 `AUTO_DEBIT_ENABLED=false`、provider `disabled`、mock false。`AutoDebitScheduler` 只是被显式业务调用的 enqueue helper。
 - `stage2-handover-workflow.service.ts` 的 `setInterval` 只在已进入 workflow operation 后做 lease heartbeat；`delivery-handover-evidence-artifact.service.ts` 的 timeout 只包围显式 media child process，二者都不是 bootstrap 定时入口。
-- **缺口：**`apps/api/src/subscription-change/subscription-change.module.ts` 注册 `SubscriptionChangeWorker`；`apps/api/src/subscription-change/subscription-change.worker.ts` 的 `onModuleInit()` 无条件执行 `schedulePoll(0)`。`SUBSCRIPTION_EXTENSION_ENABLED=false` 只跳过 enrollment enqueue，仍会执行 `reconcileActiveChanges()` 和 `claimDue()`。当前没有显式 worker off flag，也没有独立的无 worker bootstrap module。
+- `apps/api/src/subscription-change/subscription-change.worker.ts` 的 `onModuleInit()` 仅在 `workerEnabled()` 为 true 后调度；该 getter 只接受精确字符串 `SUBSCRIPTION_CHANGE_WORKER_ENABLED=true`。false 或缺失值都不会启动轮询，`subscription-change-worker.spec.ts` 覆盖了该 fail-closed 契约。
+- `SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED` 是新退车受管写入的准入门；只有精确字符串 `true` 才允许新的三阶段 case。false 或缺失值必须拒绝无既有受管事实的写入，而既有清单/差异/费用、法催和退车确认单电子签事实继续可读。
 
-因此，不得把不存在的 `SUBSCRIPTION_CHANGE_WORKER_ENABLED` 当作 flag，也不得以人工口头批准绕过。当前证据无法证明 candidate 不执行写入型定时任务：
+以下 fence 不读取或输出 `.env` 全文，也不检查 `.Config.Env`；`DATABASE_URL` 与 target URL 只作为已导出的进程环境，通过 Docker 的 `--env NAME` 传递，绝不作为 Docker argv 的 `NAME=value` 字面量。候选每次创建专属 Docker network，临时只将运行中的 compose `postgres` 容器以已在 preflight 验证的数据库 hostname alias 接入；该 network 的成员必须精确只有该 postgres 与 candidate，因而不会与 edge proxy/Nginx 共网。
 
-```bash
-printf '%s\n' 'STOP: CANDIDATE_API_TIMER_ISOLATION_UNPROVEN'
-exit 1
-```
+candidate **不发布主机端口**，只在容器内执行 `/api/health` 的只读 smoke；本过程不读取、修改或 reload Nginx，也不存在 Nginx 可路由的 candidate 地址。浏览器已有 token 的 RBAC 菜单、产品/车辆列表、空进件/订单 count 和视觉验收只在正式切换后的既有浏览器门禁执行，不是 candidate 启动的前置条件。任何启动、health、证据发布/权限断言或停止失败都由 trap 清理 candidate、临时 postgres attachment 与专属 network；collision 一律 fail closed，绝不删除本次运行未创建的资源。
 
-在一个另行批准的代码变更提供明确 off flag 或独立无 worker bootstrap、静态测试覆盖并更新本手册之前，**不得启动 candidate API**，不得创建 candidate acceptance 文件，也不得进入切换准备。
-
-缺口修复后的新版手册仍必须要求 candidate：独立容器、loopback 备用端口、不接 Nginx、全部 worker/timer 静默；只验证 `/health`、admin/portal 既有 token、RBAC 菜单、产品/车辆列表以及空进件/订单列表。不提交进件、不锁车、不签合同、不触发短信、电子签或支付。既有 token 只能留在浏览器/秘密环境，不得进命令、日志或证据。
-
-另一个独立缺口来自 `apps/api/src/billing-automation/billing-automation.worker.ts`：`runMaintenanceIfDue()` 只在 blocked 时记录 `BILLING_SCHEDULE_RECONCILIATION_BLOCKED`，成功完成 reconciliation/enqueue 时没有 completed cycle ID 或 `blockedCount=0` 的机器可验证事实。等待 60 秒或 130 秒只能证明时间经过，不能证明一次 maintenance cycle 完成。因此在另行批准的治理观测能力提供两个不同的 completed cycle ID、每周期 `blockedCount=0`、禁止写域前后计数摘要一致之前，流程还有以下不可豁免停止：
+<!-- STAGE1_CANDIDATE_API_EXECUTABLE_BEGIN -->
 
 ```bash
-printf '%s\n' 'STOP: BILLING_COMPLETED_CYCLE_EVIDENCE_UNAVAILABLE'
-exit 1
+readonly CANDIDATE_API_CONTAINER="subauto-staging-stage1-candidate-api"
+readonly CANDIDATE_API_NETWORK="${COMPOSE_PROJECT}-stage1-candidate-${RUN_UTC,,}"
+readonly CANDIDATE_API_DATABASE_ALIAS="$STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME"
+readonly CANDIDATE_API_LAUNCH_EVIDENCE="$EVIDENCE_DIR/candidate-api.launch.safe.state"
+readonly CANDIDATE_API_OWNERSHIP_EVIDENCE="$EVIDENCE_DIR/candidate-api.ownership.safe.state"
+readonly CANDIDATE_OWNERSHIP_LABEL="com.subauto.stage1.candidate.owner"
+readonly CANDIDATE_OWNERSHIP_TOKEN="$(LC_ALL=C head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+CANDIDATE_API_CONTAINER_ID=""
+CANDIDATE_API_NETWORK_ID=""
+CANDIDATE_POSTGRES_CONTAINER_ID=""
+CANDIDATE_POSTGRES_FULL_ID=""
+
+candidate_expected_network_members() {
+  printf '%s\n' "$@" | LC_ALL=C sort
+}
+
+candidate_network_members() {
+  docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "${1:-$CANDIDATE_API_NETWORK}" | LC_ALL=C sort
+}
+
+candidate_owned_id_from_snapshot() {
+  local candidate_snapshot="$1"
+  local candidate_owned_id=""
+  local candidate_owned_token=""
+  local candidate_snapshot_extra=""
+  IFS='|' read -r candidate_owned_id candidate_owned_token candidate_snapshot_extra <<<"$candidate_snapshot"
+  test -z "$candidate_snapshot_extra" \
+    && [[ "$candidate_owned_id" =~ ^[0-9a-f]{64}$ ]] \
+    && test "$candidate_owned_token" = "$CANDIDATE_OWNERSHIP_TOKEN" \
+    || return 1
+  printf '%s\n' "$candidate_owned_id"
+}
+
+candidate_owned_container_id() {
+  local candidate_snapshot=""
+  candidate_snapshot="$(docker inspect --format '{{.Id}}|{{ index .Config.Labels "com.subauto.stage1.candidate.owner" }}' "$CANDIDATE_API_CONTAINER")" \
+    || return 1
+  candidate_owned_id_from_snapshot "$candidate_snapshot"
+}
+
+candidate_owned_network_id() {
+  local candidate_snapshot=""
+  candidate_snapshot="$(docker network inspect --format '{{.Id}}|{{ index .Labels "com.subauto.stage1.candidate.owner" }}' "$CANDIDATE_API_NETWORK")" \
+    || return 1
+  candidate_owned_id_from_snapshot "$candidate_snapshot"
+}
+
+candidate_cleanup() {
+  local cleanup_failed=0
+  local candidate_owned_container=""
+  local candidate_owned_network=""
+  local candidate_members=""
+  if docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1; then
+    if candidate_owned_container="$(candidate_owned_container_id)"; then
+      docker rm -f "$candidate_owned_container" >/dev/null 2>&1 || cleanup_failed=1
+    else
+      cleanup_failed=1
+    fi
+    docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1 && cleanup_failed=1
+  fi
+  if test "$cleanup_failed" = 0 && docker network inspect "$CANDIDATE_API_NETWORK" >/dev/null 2>&1; then
+    if ! candidate_owned_network="$(candidate_owned_network_id)"; then
+      cleanup_failed=1
+    else
+      candidate_members="$(candidate_network_members "$candidate_owned_network")" || cleanup_failed=1
+      if test "$cleanup_failed" = 0 && test -n "$candidate_members"; then
+        if grep -Fqx "$CANDIDATE_POSTGRES_FULL_ID" <<<"$candidate_members"; then
+          docker network disconnect "$candidate_owned_network" "$CANDIDATE_POSTGRES_FULL_ID" >/dev/null 2>&1 || cleanup_failed=1
+          candidate_members="$(candidate_network_members "$candidate_owned_network")" || cleanup_failed=1
+        fi
+        test -z "$candidate_members" || cleanup_failed=1
+      fi
+      if test "$cleanup_failed" = 0; then
+        docker network rm "$candidate_owned_network" >/dev/null 2>&1 || cleanup_failed=1
+      fi
+    fi
+    docker network inspect "$CANDIDATE_API_NETWORK" >/dev/null 2>&1 && cleanup_failed=1
+  fi
+  return "$cleanup_failed"
+}
+
+candidate_exit_trap_cleanup() {
+  local status=$?
+  trap - ERR EXIT HUP INT TERM
+  if ! candidate_cleanup; then
+    printf '%s\n' 'STOP: CANDIDATE_CLEANUP_FAILED'
+    exit 1
+  fi
+  return "$status"
+}
+
+candidate_signal_trap_cleanup() {
+  local signal_status="$1"
+  trap - ERR EXIT HUP INT TERM
+  if ! candidate_cleanup; then
+    printf '%s\n' 'STOP: CANDIDATE_CLEANUP_FAILED'
+    exit 1
+  fi
+  exit "$signal_status"
+}
+
+candidate_fail() {
+  printf '%s\n' 'STOP: CANDIDATE_API_ISOLATION_FAILED'
+  exit 1
+}
+
+[[ "$CANDIDATE_OWNERSHIP_TOKEN" =~ ^[0-9a-f]{32}$ ]] || candidate_fail
+
+trap 'candidate_exit_trap_cleanup' ERR EXIT
+trap 'candidate_signal_trap_cleanup 129' HUP
+trap 'candidate_signal_trap_cleanup 130' INT
+trap 'candidate_signal_trap_cleanup 143' TERM
+
+: "${DATABASE_URL:?}"
+: "${STAGE1_ACCEPTANCE_TARGET_DATABASE_URL:?}"
+test "$DATABASE_URL" = "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" || candidate_fail
+export DATABASE_URL STAGE1_ACCEPTANCE_TARGET_DATABASE_URL
+[[ "$CANDIDATE_API_DATABASE_ALIAS" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || candidate_fail
+
+if docker container inspect "$CANDIDATE_API_CONTAINER" >/dev/null 2>&1; then
+  printf '%s\n' 'STOP: CANDIDATE_API_ALREADY_EXISTS'
+  exit 1
+fi
+if docker network inspect "$CANDIDATE_API_NETWORK" >/dev/null 2>&1; then
+  printf '%s\n' 'STOP: CANDIDATE_NETWORK_ALREADY_EXISTS'
+  exit 1
+fi
+assert_new_evidence_path "$CANDIDATE_API_LAUNCH_EVIDENCE"
+assert_new_evidence_path "$CANDIDATE_API_OWNERSHIP_EVIDENCE"
+if ! CANDIDATE_POSTGRES_CONTAINER_ID="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q postgres)"; then
+  candidate_fail
+fi
+[[ "$CANDIDATE_POSTGRES_CONTAINER_ID" =~ ^[0-9a-f]{64}$ ]] || candidate_fail
+if ! CANDIDATE_POSTGRES_FULL_ID="$(docker inspect --format '{{.Id}}' "$CANDIDATE_POSTGRES_CONTAINER_ID")"; then
+  candidate_fail
+fi
+test "$CANDIDATE_POSTGRES_FULL_ID" = "$CANDIDATE_POSTGRES_CONTAINER_ID" || candidate_fail
+
+if ! CANDIDATE_API_NETWORK_ID="$(docker network create --label "$CANDIDATE_OWNERSHIP_LABEL=$CANDIDATE_OWNERSHIP_TOKEN" "$CANDIDATE_API_NETWORK")"; then
+  candidate_fail
+fi
+[[ "$CANDIDATE_API_NETWORK_ID" =~ ^[0-9a-f]{64}$ ]] || candidate_fail
+test "$(candidate_owned_network_id)" = "$CANDIDATE_API_NETWORK_ID" || candidate_fail
+docker network connect --alias "$CANDIDATE_API_DATABASE_ALIAS" "$CANDIDATE_API_NETWORK" "$CANDIDATE_POSTGRES_CONTAINER_ID" >/dev/null
+test "$(candidate_network_members)" = "$(candidate_expected_network_members "$CANDIDATE_POSTGRES_FULL_ID")" || candidate_fail
+
+if ! CANDIDATE_API_CONTAINER_ID="$(docker run -d --name "$CANDIDATE_API_CONTAINER" \
+  --label "$CANDIDATE_OWNERSHIP_LABEL=$CANDIDATE_OWNERSHIP_TOKEN" \
+  --network "$CANDIDATE_API_NETWORK" \
+  --env DATABASE_URL \
+  --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
+  --env TARGET_DB="$TARGET_DB" \
+  --env PORT=3001 \
+  --env SUBSCRIPTION_JOURNEY_ENABLED=false \
+  --env SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false \
+  --env BILLING_AUTOMATION_WORKER_ENABLED=false \
+  --env FIELD_VIDEO_UPLOAD_WORKER_ENABLED=false \
+  --env STAGE2_HANDOVER_WORKER_ENABLED=false \
+  --env MILEAGE_REVIEW_WORKER_ENABLED=false \
+  --env SUBSCRIPTION_CHANGE_WORKER_ENABLED=false \
+  --env SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED=false \
+  "$APPROVED_API_IMAGE_ID" 2>/dev/null)"; then
+  candidate_fail
+fi
+[[ "$CANDIDATE_API_CONTAINER_ID" =~ ^[0-9a-f]{64}$ ]] || candidate_fail
+test "$(candidate_owned_container_id)" = "$CANDIDATE_API_CONTAINER_ID" || candidate_fail
+test "$(docker inspect --format '{{.Image}}' "$CANDIDATE_API_CONTAINER")" = "$APPROVED_API_IMAGE_ID" || candidate_fail
+test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$CANDIDATE_API_CONTAINER")" = "$APPROVED_RELEASE_SHA" || candidate_fail
+test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_NETWORK" || candidate_fail
+test "$(docker inspect --format '{{range $network, $_ := .NetworkSettings.Networks}}{{println $network}}{{end}}' "$CANDIDATE_API_CONTAINER")" = "$CANDIDATE_API_NETWORK" || candidate_fail
+test "$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$CANDIDATE_API_CONTAINER")" = 'null' || candidate_fail
+test "$(candidate_owned_network_id)" = "$CANDIDATE_API_NETWORK_ID" || candidate_fail
+test "$(candidate_network_members)" = "$(candidate_expected_network_members "$CANDIDATE_POSTGRES_FULL_ID" "$CANDIDATE_API_CONTAINER_ID")" || candidate_fail
+
+if ! docker exec "$CANDIDATE_API_CONTAINER" node -e '
+const expected = {
+  BILLING_AUTOMATION_WORKER_ENABLED: "false",
+  FIELD_VIDEO_UPLOAD_WORKER_ENABLED: "false",
+  MILEAGE_REVIEW_WORKER_ENABLED: "false",
+  STAGE2_HANDOVER_WORKER_ENABLED: "false",
+  SUBSCRIPTION_CHANGE_WORKER_ENABLED: "false",
+  SUBSCRIPTION_JOURNEY_ENABLED: "false",
+  SUBSCRIPTION_JOURNEY_WORKER_ENABLED: "false",
+  SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "false"
+};
+if (process.env.DATABASE_URL !== process.env.STAGE1_ACCEPTANCE_TARGET_DATABASE_URL) process.exit(1);
+if (new URL(process.env.DATABASE_URL).pathname !== `/${process.env.TARGET_DB}`) process.exit(1);
+if (Object.entries(expected).some(([key, value]) => process.env[key] !== value)) process.exit(1);
+' >/dev/null 2>&1; then
+  candidate_fail
+fi
+
+candidate_internal_health() {
+  docker exec "$CANDIDATE_API_CONTAINER" node -e '
+fetch("http://127.0.0.1:3001/api/health")
+  .then((response) => process.exit(response.status === 200 ? 0 : 1))
+  .catch(() => process.exit(1));
+'
+}
+
+candidate_health_ready=0
+for _candidate_health_attempt in $(seq 1 45); do
+  if candidate_internal_health; then
+    candidate_health_ready=1
+    break
+  fi
+  sleep 2
+done
+test "$candidate_health_ready" = 1 || candidate_fail
+printf 'candidate_container_id=%s\ncandidate_image_id=%s\ncandidate_target_database=%s\ncandidate_network=%s\ncandidate_internal_health=200\ncandidate_worker_gates=false\n' \
+  "$CANDIDATE_API_CONTAINER_ID" "$APPROVED_API_IMAGE_ID" "$TARGET_DB" "$CANDIDATE_API_NETWORK" \
+  | publish_private_evidence "$CANDIDATE_API_LAUNCH_EVIDENCE"
+assert_private_file "$CANDIDATE_API_LAUNCH_EVIDENCE"
+printf 'candidate_container_id=%s\ncandidate_network=%s\ncandidate_network_id=%s\ncandidate_postgres_container_id=%s\ncandidate_ownership_token=%s\n' \
+  "$CANDIDATE_API_CONTAINER_ID" "$CANDIDATE_API_NETWORK" "$CANDIDATE_API_NETWORK_ID" "$CANDIDATE_POSTGRES_FULL_ID" "$CANDIDATE_OWNERSHIP_TOKEN" \
+  | publish_private_evidence "$CANDIDATE_API_OWNERSHIP_EVIDENCE"
+assert_private_file "$CANDIDATE_API_OWNERSHIP_EVIDENCE"
 ```
 
-该能力必须另行批准；不得为本手册修改 billing worker 或伪造观测结果。未来证据还必须在两个 completed cycle 前后证明禁止写域计数未变，并对完整观察窗执行 `ERROR|FATAL|Unhandled|PrismaClientKnownRequestError|HTTP 5` 与 PII 扫描。读取 Docker 日志失败必须关闭门禁（`DOCKER_LOG_READ_FAILED`），扫描通过才允许记录 `PII_LOG_SCAN_CLEAR`。
+<!-- STAGE1_CANDIDATE_API_EXECUTABLE_END -->
+
+启动 fence 全绿后，candidate 只允许其容器内 `/health` smoke；不提交进件、不锁车、不签合同、不触发短信、电子签或支付。浏览器 token 只能留在正式切换后的浏览器/秘密环境，不得进入命令、日志或证据。candidate 不再接受浏览器/RBAC/list/视觉验收文件，因它没有 host route；这些人工验收仍由正式切换后的既有浏览器 gate 承担。
+
+<!-- STAGE1_CANDIDATE_API_STOP_EXECUTABLE_BEGIN -->
+
+```bash
+test -f "$EVIDENCE_DIR/candidate-api.launch.safe.state" \
+  || { printf '%s\n' 'STOP: CANDIDATE_LAUNCH_EVIDENCE_MISSING'; exit 1; }
+assert_private_file "$EVIDENCE_DIR/candidate-api.launch.safe.state"
+readonly candidate_stop_ownership="$EVIDENCE_DIR/candidate-api.ownership.safe.state"
+test -f "$candidate_stop_ownership" \
+  || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_MISSING'; exit 1; }
+assert_private_file "$candidate_stop_ownership"
+candidate_stop_container_id=""
+candidate_stop_network=""
+candidate_stop_network_id=""
+candidate_stop_postgres_id=""
+candidate_stop_ownership_token=""
+candidate_ownership_lines=0
+while IFS='=' read -r ownership_key ownership_value; do
+  case "$ownership_key" in
+    candidate_container_id)
+      test -z "$candidate_stop_container_id" || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
+      candidate_stop_container_id="$ownership_value"
+      ;;
+    candidate_network)
+      test -z "$candidate_stop_network" || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
+      candidate_stop_network="$ownership_value"
+      ;;
+    candidate_network_id)
+      test -z "$candidate_stop_network_id" || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
+      candidate_stop_network_id="$ownership_value"
+      ;;
+    candidate_postgres_container_id)
+      test -z "$candidate_stop_postgres_id" || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
+      candidate_stop_postgres_id="$ownership_value"
+      ;;
+    candidate_ownership_token)
+      test -z "$candidate_stop_ownership_token" || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
+      candidate_stop_ownership_token="$ownership_value"
+      ;;
+    *)
+      printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'
+      exit 1
+      ;;
+  esac
+  candidate_ownership_lines=$((candidate_ownership_lines + 1))
+done <"$candidate_stop_ownership"
+if test "$candidate_ownership_lines" -ne 5 \
+  || test -z "$candidate_stop_container_id" \
+  || test -z "$candidate_stop_network" \
+  || test -z "$candidate_stop_network_id" \
+  || test -z "$candidate_stop_postgres_id" \
+  || test -z "$candidate_stop_ownership_token"; then
+  printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'
+  exit 1
+fi
+[[ "$candidate_stop_container_id" =~ ^[0-9a-f]{64}$ ]] \
+  && [[ "$candidate_stop_postgres_id" =~ ^[0-9a-f]{64}$ ]] \
+  && [[ "$candidate_stop_network_id" =~ ^[0-9a-f]{64}$ ]] \
+  && [[ "$candidate_stop_network" =~ ^[a-z0-9][a-z0-9_.-]+$ ]] \
+  && [[ "$candidate_stop_ownership_token" =~ ^[0-9a-f]{32}$ ]] \
+  || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_INVALID'; exit 1; }
+readonly candidate_stop_container="subauto-staging-stage1-candidate-api"
+readonly candidate_stop_evidence="$EVIDENCE_DIR/candidate-api.stopped.safe.state"
+assert_new_evidence_path "$candidate_stop_evidence"
+candidate_stop_owned_id_from_snapshot() {
+  local candidate_stop_snapshot="$1"
+  local candidate_stop_observed_id=""
+  local candidate_stop_observed_token=""
+  local candidate_stop_snapshot_extra=""
+  IFS='|' read -r candidate_stop_observed_id candidate_stop_observed_token candidate_stop_snapshot_extra <<<"$candidate_stop_snapshot"
+  test -z "$candidate_stop_snapshot_extra" \
+    && [[ "$candidate_stop_observed_id" =~ ^[0-9a-f]{64}$ ]] \
+    && test "$candidate_stop_observed_token" = "$candidate_stop_ownership_token" \
+    || return 1
+  printf '%s\n' "$candidate_stop_observed_id"
+}
+candidate_stop_owned_container_id() {
+  local candidate_stop_snapshot=""
+  candidate_stop_snapshot="$(docker inspect --format '{{.Id}}|{{ index .Config.Labels "com.subauto.stage1.candidate.owner" }}' "$candidate_stop_container")" \
+    || return 1
+  candidate_stop_owned_id_from_snapshot "$candidate_stop_snapshot"
+}
+candidate_stop_owned_network_id() {
+  local candidate_stop_snapshot=""
+  candidate_stop_snapshot="$(docker network inspect --format '{{.Id}}|{{ index .Labels "com.subauto.stage1.candidate.owner" }}' "$candidate_stop_network")" \
+    || return 1
+  candidate_stop_owned_id_from_snapshot "$candidate_stop_snapshot"
+}
+test "$(candidate_stop_owned_container_id)" = "$candidate_stop_container_id" \
+  || { printf '%s\n' 'STOP: CANDIDATE_API_OWNERSHIP_MISMATCH'; exit 1; }
+test "$(candidate_stop_owned_network_id)" = "$candidate_stop_network_id" \
+  || { printf '%s\n' 'STOP: CANDIDATE_NETWORK_OWNERSHIP_MISMATCH'; exit 1; }
+candidate_stop_members="$(docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "$candidate_stop_network_id" | LC_ALL=C sort)" \
+  || { printf '%s\n' 'STOP: CANDIDATE_NETWORK_MISSING_BEFORE_STOP'; exit 1; }
+candidate_stop_expected_members="$(printf '%s\n%s\n' "$candidate_stop_container_id" "$candidate_stop_postgres_id" | LC_ALL=C sort)"
+test "$candidate_stop_members" = "$candidate_stop_expected_members" \
+  || { printf '%s\n' 'STOP: CANDIDATE_NETWORK_MEMBERSHIP_MISMATCH'; exit 1; }
+candidate_stop_cleanup() {
+  local cleanup_failed=0
+  if ! test "$(candidate_stop_owned_container_id)" = "$candidate_stop_container_id"; then
+    cleanup_failed=1
+  fi
+  if test "$cleanup_failed" = 0; then
+    docker rm -f "$candidate_stop_container_id" >/dev/null 2>&1 || cleanup_failed=1
+  fi
+  docker container inspect "$candidate_stop_container" >/dev/null 2>&1 && cleanup_failed=1
+  if test "$cleanup_failed" = 0 && test "$(candidate_stop_owned_network_id)" = "$candidate_stop_network_id"; then
+    candidate_stop_members="$(docker network inspect --format '{{range $id, $_ := .Containers}}{{println $id}}{{end}}' "$candidate_stop_network_id" | LC_ALL=C sort)" || cleanup_failed=1
+    test "$candidate_stop_members" = "$candidate_stop_postgres_id" || cleanup_failed=1
+    if test "$cleanup_failed" = 0; then
+      docker network disconnect "$candidate_stop_network_id" "$candidate_stop_postgres_id" >/dev/null 2>&1 || cleanup_failed=1
+    fi
+    if test "$cleanup_failed" = 0; then
+      docker network rm "$candidate_stop_network_id" >/dev/null 2>&1 || cleanup_failed=1
+    fi
+  else
+    cleanup_failed=1
+  fi
+  docker network inspect "$candidate_stop_network" >/dev/null 2>&1 && cleanup_failed=1
+  return "$cleanup_failed"
+}
+candidate_stop_exit_trap_cleanup() {
+  local status=$?
+  trap - ERR EXIT HUP INT TERM
+  candidate_stop_cleanup || { printf '%s\n' 'STOP: CANDIDATE_CLEANUP_FAILED'; exit 1; }
+  return "$status"
+}
+candidate_stop_signal_trap_cleanup() {
+  local signal_status="$1"
+  trap - ERR EXIT HUP INT TERM
+  candidate_stop_cleanup || { printf '%s\n' 'STOP: CANDIDATE_CLEANUP_FAILED'; exit 1; }
+  exit "$signal_status"
+}
+trap 'candidate_stop_exit_trap_cleanup' ERR EXIT
+trap 'candidate_stop_signal_trap_cleanup 129' HUP
+trap 'candidate_stop_signal_trap_cleanup 130' INT
+trap 'candidate_stop_signal_trap_cleanup 143' TERM
+candidate_stop_cleanup || { printf '%s\n' 'STOP: CANDIDATE_CLEANUP_FAILED'; exit 1; }
+trap - ERR EXIT HUP INT TERM
+printf '%s\n' 'candidate_stopped_network_removed_and_postgres_detached=true' \
+  | publish_private_evidence "$candidate_stop_evidence"
+assert_private_file "$candidate_stop_evidence"
+```
+
+<!-- STAGE1_CANDIDATE_API_STOP_EXECUTABLE_END -->
+
+Billing maintenance 观察能力现在由 append-only `BillingMaintenanceCycleFact` 与镜像内 `billing-maintenance-cycle-evidence.mjs` 提供。切换只启用一次随机 evidence run；CLI 有界轮询数据库，只有查询到 sequence 1/2 两行真实 `COMPLETED` 事实并逐项验证不同 cycle ID、同一 release/image/database/set binding、时间不重叠、`blockedCount=0`、`dryRun=false`、完整禁止域键集/非负计数、前后 canonical hash 与计数一致、safe reconciliation/enqueue summary 时才输出 public-safe canonical JSON。等待或 timeout 本身不能生成成功，禁止手写 billing JSON。
+
+两个 completed cycle 的完整观察窗仍必须独立执行 `ERROR|FATAL|Unhandled|PrismaClientKnownRequestError|HTTP 5` 与 PII 扫描。读取 Docker 日志失败必须关闭门禁（`DOCKER_LOG_READ_FAILED`），扫描通过才允许记录 `PII_LOG_SCAN_CLEAR`。
 
 ## 7. API 数据库 URL 单字段切换批准与执行
 
-本节因上一节两个硬停止在当前源码状态不可到达。未来修订版必须先产生 root-owned、`0600` 的 `$EVIDENCE_DIR/candidate-api.accepted`，内容只能是 candidate health/RBAC/list/count 和静默 worker 证明；没有该文件立即停止：
+本节受上一节 candidate 启动、内部只读 smoke 与停止 fence 约束。正式 env 准备前必须已有 root-owned、`0600` 的 launch、ownership 与 stopped evidence；候选容器和专属 network 都不得仍存在，任何缺项立即停止：
 
 ```bash
-test -f "$EVIDENCE_DIR/candidate-api.accepted" \
-  || { printf '%s\n' 'STOP: CANDIDATE_ACCEPTANCE_MISSING'; exit 1; }
-assert_private_file "$EVIDENCE_DIR/candidate-api.accepted"
+test -f "$EVIDENCE_DIR/candidate-api.launch.safe.state" \
+  || { printf '%s\n' 'STOP: CANDIDATE_LAUNCH_EVIDENCE_MISSING'; exit 1; }
+assert_private_file "$EVIDENCE_DIR/candidate-api.launch.safe.state"
+test -f "$EVIDENCE_DIR/candidate-api.ownership.safe.state" \
+  || { printf '%s\n' 'STOP: CANDIDATE_OWNERSHIP_EVIDENCE_MISSING'; exit 1; }
+assert_private_file "$EVIDENCE_DIR/candidate-api.ownership.safe.state"
+test -f "$EVIDENCE_DIR/candidate-api.stopped.safe.state" \
+  || { printf '%s\n' 'STOP: CANDIDATE_STOP_EVIDENCE_MISSING'; exit 1; }
+assert_private_file "$EVIDENCE_DIR/candidate-api.stopped.safe.state"
+if docker container inspect 'subauto-staging-stage1-candidate-api' >/dev/null 2>&1; then
+  printf '%s\n' 'STOP: CANDIDATE_API_STILL_EXISTS'
+  exit 1
+fi
+candidate_switch_network="${COMPOSE_PROJECT}-stage1-candidate-${RUN_UTC,,}"
+if docker network inspect "$candidate_switch_network" >/dev/null 2>&1; then
+  printf '%s\n' 'STOP: CANDIDATE_NETWORK_STILL_EXISTS'
+  exit 1
+fi
 ```
 
 先对 `.env.staging.images` 做 root-only、no-clobber 备份并生成 SHA-256；不得显示内容。切换前同时保存旧库安全指纹和 API 当前 restart count：
@@ -797,7 +1190,7 @@ assert_private_file "$ENV_TEMP"
 
 ## 8. 切换、即时门禁与浏览器验收
 
-收到批准后才执行原子 rename，并只重建 API service。不得重建 postgres/web，不得修改或 reload Nginx。下面是唯一完整 cutover executable fence；契约测试只抽取该 fence，以纯本地依赖注入验证失败回滚，不从 prose 或 shell comments 推断控制流。函数内重新运行 target validator、migration status/checksum/diff/count，检查新 API 没有 restart，精确验证六个 worker/journey flags 和四个 subscription-change flags，验证公共 API/Admin/Portal health，并消费另行批准的 billing completed-cycle 事实。所有 curl 丢弃 body/headers且不输出 URL：
+收到批准后才执行原子 rename，并只重建 API service。不得重建 postgres/web，不得修改或 reload Nginx。下面是唯一完整 cutover executable fence；契约测试只抽取该 fence，以纯本地依赖注入验证失败回滚，不从 prose 或 shell comments 推断控制流。函数内重新运行 target validator、migration status/checksum/diff/count，检查新 API 没有 restart，精确验证 journey、field-video、mileage-review、handover、subscription-change 与 three-stage-return 的目标 flags及受控 billing evidence binding，验证公共 API/Admin/Portal health，并运行数据库支持的 billing exporter。所有 curl 丢弃 body/headers且不输出 URL：
 
 <!-- STAGE1_CUTOVER_EXECUTABLE_BEGIN -->
 
@@ -847,6 +1240,52 @@ cutover_nonce() {
   openssl rand -hex 32
 }
 
+cutover_billing_database_identity_sha256() {
+  local identity database_name system_identifier extra
+  identity="$(psql "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" -XAtq -F '|' \
+    -c 'SELECT current_database(), (pg_control_system()).system_identifier::text')" || return 1
+  IFS='|' read -r database_name system_identifier extra <<<"$identity"
+  test -z "$extra" || return 1
+  test "$database_name" = "$TARGET_DB" || return 1
+  [[ "$system_identifier" =~ ^[0-9]+$ ]] || return 1
+  printf '{"databaseName":"%s","systemIdentifier":"%s","version":"billing-maintenance-database-identity/v1"}' \
+    "$database_name" "$system_identifier" \
+    | sha256sum | awk '{print $1}'
+}
+
+disable_billing_maintenance_evidence() {
+  export BILLING_MAINTENANCE_EVIDENCE_ENABLED=false
+  export BILLING_MAINTENANCE_EVIDENCE_RUN_ID=
+  export BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA=
+  export BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST=
+  export BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256=
+}
+
+cutover_api_recreate_billing_disabled() {
+  BILLING_MAINTENANCE_EVIDENCE_ENABLED=false \
+  BILLING_MAINTENANCE_EVIDENCE_RUN_ID= \
+  BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA= \
+  BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST= \
+  BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256= \
+    cutover_api_recreate "$1"
+}
+
+cutover_verify_billing_maintenance_evidence_disabled() {
+  local container_id
+  container_id="$(cutover_api_container_id)" || return 1
+  test -n "$container_id" || return 1
+  docker exec "$container_id" node -e '
+    const bindings = [
+      "BILLING_MAINTENANCE_EVIDENCE_RUN_ID",
+      "BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA",
+      "BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST",
+      "BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256"
+    ];
+    if (process.env.BILLING_MAINTENANCE_EVIDENCE_ENABLED !== "false") process.exit(1);
+    if (bindings.some((key) => (process.env[key] || "") !== "")) process.exit(1);
+  '
+}
+
 rollback_api_database_switch() {
   local failed=0 rollback_temp
   local expected_old_fingerprint observed_old_fingerprint
@@ -868,8 +1307,13 @@ rollback_api_database_switch() {
     failed=1
   fi
 
-  if ! cutover_api_recreate api; then
+  disable_billing_maintenance_evidence
+  if ! cutover_api_recreate_billing_disabled api; then
     printf '%s\n' 'STOP: ROLLBACK_API_RECREATE_FAILED'
+    failed=1
+  fi
+  if ! cutover_verify_billing_maintenance_evidence_disabled; then
+    printf '%s\n' 'STOP: ROLLBACK_BILLING_EVIDENCE_DISABLE_FAILED'
     failed=1
   fi
   if ! cutover_verify_public_health; then
@@ -913,21 +1357,33 @@ rollback_after_switch_error() {
 
 revalidate_switched_api_identity() {
   local requested_container_id="$1"
-  local full_container_id switched_image_id switched_release_sha compose_image compose_image_id
+  local full_container_id switched_image_id switched_image_digest switched_release_sha
+  local compose_image compose_image_id compose_image_digest compose_image_revision
   [[ "$requested_container_id" =~ ^[0-9a-f]{64}$ ]] || return 1
   full_container_id="$(docker inspect --format '{{.Id}}' "$requested_container_id")" || return 1
+  test "$full_container_id" = "$requested_container_id" || return 1
   switched_image_id="$(docker inspect --format '{{.Image}}' "$requested_container_id")" || return 1
+  test "$switched_image_id" = "$APPROVED_API_IMAGE_ID" || return 1
+  switched_image_digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$switched_image_id")" \
+    || return 1
+  test "$switched_image_digest" = "$APPROVED_API_IMAGE_DIGEST" || return 1
   switched_release_sha="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$requested_container_id")" \
     || return 1
+  test "$switched_release_sha" = "$APPROVED_API_IMAGE_REVISION" || return 1
+  test "$switched_release_sha" = "$APPROVED_RELEASE_SHA" || return 1
   compose_image="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --format json \
     | jq -er '.services.api.image')" || return 1
   compose_image_id="$(docker image inspect --format '{{.Id}}' "$compose_image")" || return 1
-  test "$full_container_id" = "$requested_container_id" || return 1
-  test "$switched_image_id" = "$API_IMAGE_ID" || return 1
-  test "$switched_release_sha" = "$RELEASE_SHA" || return 1
-  test "$compose_image_id" = "$API_IMAGE_ID" || return 1
+  test "$compose_image_id" = "$APPROVED_API_IMAGE_ID" || return 1
+  compose_image_digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$compose_image")" \
+    || return 1
+  test "$compose_image_digest" = "$APPROVED_API_IMAGE_DIGEST" || return 1
+  compose_image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$compose_image_id")" \
+    || return 1
+  test "$compose_image_revision" = "$APPROVED_API_IMAGE_REVISION" || return 1
   SWITCHED_API_CONTAINER_ID="$full_container_id"
   SWITCHED_API_IMAGE_ID="$switched_image_id"
+  SWITCHED_API_IMAGE_DIGEST="$switched_image_digest"
   SWITCHED_RELEASE_SHA="$switched_release_sha"
 }
 
@@ -1006,7 +1462,7 @@ NODE
 
 post_switch_database_gates() {
   local switched_api_container_id restart_count status_code checksum_result drift_exit migration_counts
-  local billing_facts
+  local billing_facts billing_facts_path
   local -a log_pipeline_status
   switched_api_container_id="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q api)"
   test -n "$switched_api_container_id"
@@ -1023,7 +1479,7 @@ post_switch_database_gates() {
   checksum_result="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
     --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
     sh -lc 'cd /app && pnpm prisma:migrate:checksum:verify')"
-  jq -e '.safe == true and .localMigrationCount == 124 and .appliedMigrationCount == 124 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
+  jq -e '.safe == true and .localMigrationCount == 125 and .appliedMigrationCount == 125 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
     <<<"$checksum_result" >/dev/null
   set +e
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
@@ -1044,8 +1500,8 @@ SELECT count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL
 FROM _prisma_migrations;
 SQL
 )"
-  test "$migration_counts" = '124|0|0|0'
-  printf '%s\n' '124 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate' \
+  test "$migration_counts" = '125|0|0|0'
+  printf '%s\n' '125 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate' \
     | publish_private_evidence "$EVIDENCE_DIR/post-switch-migration-counts.state"
 
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
@@ -1065,7 +1521,10 @@ SQL
     const expected = {
       SUBSCRIPTION_JOURNEY_ENABLED: "true",
       SUBSCRIPTION_JOURNEY_WORKER_ENABLED: "true",
+      SUBSCRIPTION_CHANGE_WORKER_ENABLED: "true",
+      SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "true",
       BILLING_AUTOMATION_WORKER_ENABLED: "true",
+      BILLING_MAINTENANCE_EVIDENCE_ENABLED: "true",
       FIELD_VIDEO_UPLOAD_WORKER_ENABLED: "true",
       STAGE2_HANDOVER_WORKER_ENABLED: "true",
       MILEAGE_REVIEW_WORKER_ENABLED: "true",
@@ -1075,6 +1534,10 @@ SQL
       SUBSCRIPTION_MANAGED_OTHER_ENABLED: "true"
     };
     if (Object.entries(expected).some(([key, value]) => process.env[key] !== value)) process.exit(1);
+    if (!/^[0-9a-f]{64}$/.test(process.env.BILLING_MAINTENANCE_EVIDENCE_RUN_ID || "")) process.exit(1);
+    if (!/^[0-9a-f]{40}$/.test(process.env.BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA || "")) process.exit(1);
+    if (!/^sha256:[0-9a-f]{64}$/.test(process.env.BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST || "")) process.exit(1);
+    if (!/^[0-9a-f]{64}$/.test(process.env.BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256 || "")) process.exit(1);
   '
   printf 'post_switch_restart_count=%s\nruntime_flags=verified\n' "$restart_count" \
     | publish_private_evidence "$EVIDENCE_DIR/post-switch-runtime.state"
@@ -1086,17 +1549,38 @@ SQL
   printf '%s\n' 'PUBLIC_API_HEALTH=200 PUBLIC_ADMIN_HEALTH=200 PUBLIC_PORTAL_HEALTH=200' \
     | publish_private_evidence "$EVIDENCE_DIR/public-health.state"
 
-  billing_facts="$EVIDENCE_DIR/billing-completed-cycles.json"
-  assert_private_file "$billing_facts"
+  billing_facts_path="$EVIDENCE_DIR/billing-completed-cycles.json"
+  assert_new_evidence_path "$billing_facts_path"
+  billing_facts="$(timeout --signal=TERM --kill-after=5s \
+    "${BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS}s" \
+    docker exec "$switched_api_container_id" \
+    node /app/scripts/billing-maintenance-cycle-evidence.mjs \
+    --run-id "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" \
+    --expected-release-sha "$APPROVED_RELEASE_SHA" \
+    --expected-image-digest "$APPROVED_API_IMAGE_ID" \
+    --expected-database-identity-sha256 "$BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256" \
+    --not-before "$SWITCH_STARTED_AT_UTC" \
+    --timeout-seconds "$BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS")" || return 1
+  printf '%s\n' "$billing_facts" | publish_private_evidence "$EVIDENCE_DIR/billing-completed-cycles.json"
+  unset billing_facts
+  assert_private_file "$billing_facts_path"
   jq -e '
-    .schemaVersion == 1 and
-    (.cycles | length) == 2 and
-    .cycles[0].completedCycleId != .cycles[1].completedCycleId and
-    ([.cycles[].state] | all(. == "completed")) and
+    .schemaVersion == 1 and .operation == "BILLING_MAINTENANCE_CYCLE_EVIDENCE" and .safe == true and
+    .source.evidenceRunId == $run and .source.releaseSha == $release and
+    .source.imageDigest == $image and .source.databaseIdentitySha256 == $database and
+    .source.notBeforeUtc == $notBefore and (.cycles | length) == 2 and
+    [.cycles[].sequence] == [1, 2] and .cycles[0].cycleId != .cycles[1].cycleId and
+    ([.cycles[].status] | all(. == "COMPLETED")) and
     ([.cycles[].blockedCount] | all(. == 0)) and
-    .forbiddenDomainCountsBeforeSha256 == .forbiddenDomainCountsAfterSha256
-  ' "$billing_facts" >/dev/null
-  printf '%s\n' 'billing_completed_cycles=2 blockedCount=0 禁止写域前后计数摘要一致' \
+    ([.cycles[].reconciliationSummary.dryRun] | all(. == false)) and
+    ([.cycles[] | .beforeCounts == .afterCounts] | all) and
+    ([.cycles[] | .beforeCountsSha256 == .afterCountsSha256] | all)
+  ' --arg run "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" \
+    --arg release "$APPROVED_RELEASE_SHA" \
+    --arg image "$APPROVED_API_IMAGE_ID" \
+    --arg database "$BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256" \
+    --arg notBefore "$SWITCH_STARTED_AT_UTC" "$billing_facts_path" >/dev/null
+  printf '%s\n' 'billing_completed_cycles=2 blockedCount=0 dryRun=false 禁止写域前后计数摘要一致' \
     | publish_private_evidence "$EVIDENCE_DIR/billing-cycle-gate.state"
 
   set +e
@@ -1132,6 +1616,19 @@ SWITCH_ACTIVE=1
 export SWITCH_ACTIVE
 readonly LOG_GATE_STARTED_AT="$(cutover_utc_now)"
 readonly SWITCH_STARTED_AT_UTC="$(cutover_utc_now)"
+BILLING_MAINTENANCE_EVIDENCE_RUN_ID="$(cutover_nonce)"
+BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256="$(cutover_billing_database_identity_sha256)"
+BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA="$APPROVED_RELEASE_SHA"
+BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST="$APPROVED_API_IMAGE_ID"
+readonly BILLING_MAINTENANCE_EVIDENCE_TIMEOUT_SECONDS=180
+readonly BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS=190
+[[ "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" =~ ^[0-9a-f]{64}$ ]]
+[[ "$BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+export BILLING_MAINTENANCE_EVIDENCE_RUN_ID
+export BILLING_MAINTENANCE_EVIDENCE_DATABASE_IDENTITY_SHA256
+export BILLING_MAINTENANCE_EVIDENCE_RELEASE_SHA
+export BILLING_MAINTENANCE_EVIDENCE_IMAGE_DIGEST
+export BILLING_MAINTENANCE_EVIDENCE_ENABLED=true
 mv -f -- "$ENV_TEMP" "$ENV_FILE"
 cutover_sync_directory "$(dirname "$ENV_FILE")"
 
@@ -1143,7 +1640,7 @@ SWITCHED_API_CONTAINER_ID="$(cutover_api_container_id)"
 if ! revalidate_switched_api_identity "$SWITCHED_API_CONTAINER_ID"; then
   rollback_and_stop 'SWITCHED_API_IDENTITY_MISMATCH'
 fi
-readonly SWITCHED_API_CONTAINER_ID SWITCHED_API_IMAGE_ID SWITCHED_RELEASE_SHA
+readonly SWITCHED_API_CONTAINER_ID SWITCHED_API_IMAGE_ID SWITCHED_API_IMAGE_DIGEST SWITCHED_RELEASE_SHA
 readonly BROWSER_CHALLENGE_PATH="$EVIDENCE_DIR/browser-acceptance.challenge.json"
 readonly BROWSER_FACT_PATH="$EVIDENCE_DIR/browser-acceptance.fact.json"
 assert_new_evidence_path "$BROWSER_CHALLENGE_PATH"

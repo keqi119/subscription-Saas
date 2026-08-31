@@ -46,6 +46,10 @@ import {
   applyConditionDeltaDecisions,
   buildConditionDelta
 } from "./subscription-return-delta.service";
+import {
+  hasSubscriptionReturnThreeStageContinuation,
+  isSubscriptionReturnThreeStageEnabled
+} from "./subscription-return-three-stage";
 
 const REQUIRED_ITEM_CODES = [
   "ACCESSORIES",
@@ -88,7 +92,6 @@ export class SubscriptionReturnGovernanceService {
       where: { id: closureCaseId }
     });
     if (!closureCase) throw new NotFoundException("Subscription closure case not found.");
-    if (closureCase.currentChecklistRevisionId || closureCase.currentDeltaRevisionId) return;
     const factCounts = await Promise.all([
       this.prisma.vehicleReturnEvidenceLink.count({ where: { closureCaseId } }),
       this.prisma.subscriptionClosureChargeLine.count({ where: { closureCaseId } }),
@@ -105,11 +108,26 @@ export class SubscriptionReturnGovernanceService {
           documentType: "RETURN_MANIFEST",
           signingStage: "STAGE6_RETURN_MANIFEST",
           sourceId: closureCaseId,
+          sourceKey: { startsWith: "return-manifest-esign" },
           sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
         }
       })
     ]);
-    if (factCounts.some((count) => count > 0)) return;
+    if (
+      hasSubscriptionReturnThreeStageContinuation({
+        businessExceptionApprovals: factCounts[6],
+        chargeLines: factCounts[1],
+        currentChecklistRevisionId: closureCase.currentChecklistRevisionId,
+        currentDeltaRevisionId: closureCase.currentDeltaRevisionId,
+        customerResponses: factCounts[2],
+        evidenceLinks: factCounts[0],
+        evidencePackages: factCounts[4],
+        legalCases: factCounts[5],
+        receivableDispositions: factCounts[3],
+        returnManifestTasks: factCounts[7]
+      })
+    )
+      return;
     throw conflict(
       "SUBSCRIPTION_RETURN_THREE_STAGE_DISABLED",
       "The three-stage return workflow is disabled for cases that have not entered the governed flow."
@@ -127,9 +145,8 @@ export class SubscriptionReturnGovernanceService {
   }
 
   private threeStageWriteGateActive() {
-    return Boolean(
-      this.config &&
-        this.config.get<string>("SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED") !== "true"
+    return !isSubscriptionReturnThreeStageEnabled(
+      this.config?.get<string>("SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED")
     );
   }
 

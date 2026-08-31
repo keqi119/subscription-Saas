@@ -438,6 +438,12 @@ enum BillingScheduleStatus {
   @@map("billing_schedule_status")
 }
 
+enum BillingMaintenanceCycleFactStatus {
+  COMPLETED
+
+  @@map("billing_maintenance_cycle_fact_status")
+}
+
 enum SubscriptionAutomationJobType {
   GENERATE_MONTHLY_RENT_BILL
   SEND_BILL_DUE_NOTICE
@@ -6869,6 +6875,35 @@ model SubscriptionAutomationJob {
   @@index([renewalConsiderationId, createdAt])
   @@index([leaseExpiresAt])
   @@map("subscription_automation_job")
+}
+
+model BillingMaintenanceCycleFact {
+  id                           String                                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  status                       BillingMaintenanceCycleFactStatus       @default(COMPLETED)
+  evidenceRunId                String                                  @map("evidence_run_id") @db.VarChar(64)
+  sequence                     Int                                     @db.SmallInt
+  releaseSha                   String                                  @map("release_sha") @db.VarChar(40)
+  imageDigest                  String                                  @map("image_digest") @db.VarChar(71)
+  databaseIdentitySha256       String                                  @map("database_identity_sha256") @db.VarChar(64)
+  forbiddenDomainSetVersion    String                                  @map("forbidden_domain_set_version") @db.VarChar(96)
+  forbiddenDomainSetSha256     String                                  @map("forbidden_domain_set_sha256") @db.VarChar(64)
+  cycleStartedAt               DateTime                                @map("cycle_started_at") @db.Timestamptz(6)
+  reconciliationCompletedAt    DateTime                                @map("reconciliation_completed_at") @db.Timestamptz(6)
+  enqueueCompletedAt           DateTime                                @map("enqueue_completed_at") @db.Timestamptz(6)
+  completedAt                  DateTime                                @map("completed_at") @db.Timestamptz(6)
+  blockedCount                 Int                                     @map("blocked_count")
+  reconciliationSummary        Json                                    @map("reconciliation_summary")
+  enqueueSummary               Json                                    @map("enqueue_summary")
+  beforeCounts                 Json                                    @map("before_counts")
+  beforeCountsSha256           String                                  @map("before_counts_sha256") @db.VarChar(64)
+  afterCounts                  Json                                    @map("after_counts")
+  afterCountsSha256            String                                  @map("after_counts_sha256") @db.VarChar(64)
+  createdAt                    DateTime                                @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([evidenceRunId, sequence])
+  @@index([evidenceRunId, completedAt])
+  @@index([completedAt])
+  @@map("billing_maintenance_cycle_fact")
 }
 
 model PaymentMandate {

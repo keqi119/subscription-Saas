@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BillingAutomationHandlers } from "../src/billing-automation/billing-automation.handlers";
 import { BillingAutomationRepository } from "../src/billing-automation/billing-automation.repository";
 import { BillingAutomationService } from "../src/billing-automation/billing-automation.service";
+import { BillingMaintenanceEvidenceService } from "../src/billing-automation/billing-maintenance-evidence.service";
 import {
   BillingAutomationError,
   ClaimedBillingAutomationJob
@@ -39,7 +40,7 @@ describe("BillingAutomationWorker", () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(harness.repository.claimDue).not.toHaveBeenCalled();
-    expect(harness.service.reconcileSchedules).not.toHaveBeenCalled();
+    expect(harness.maintenance.runMaintenance).not.toHaveBeenCalled();
     await harness.worker.onModuleDestroy();
   });
 
@@ -62,10 +63,7 @@ describe("BillingAutomationWorker", () => {
 
     await harness.worker.runOnce();
 
-    expect(harness.service.reconcileSchedules).toHaveBeenCalledWith({
-      dryRun: false
-    });
-    expect(harness.service.enqueueDueSchedules).toHaveBeenCalledTimes(1);
+    expect(harness.maintenance.runMaintenance).toHaveBeenCalledOnce();
     expect(harness.handlers.handle).toHaveBeenCalledWith(job);
     expect(harness.repository.complete).toHaveBeenCalledWith(job.id, job.leaseToken, {
       action: "COMPLETED"
@@ -76,7 +74,7 @@ describe("BillingAutomationWorker", () => {
     const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
     const job = claimedJob();
     const harness = createWorkerHarness({ jobs: [job] });
-    harness.service.reconcileSchedules.mockResolvedValueOnce({
+    harness.maintenance.runMaintenance.mockResolvedValueOnce({
       blockedCount: 1,
       createdCount: 1,
       dryRun: false,
@@ -95,7 +93,7 @@ describe("BillingAutomationWorker", () => {
 
     await harness.worker.runOnce();
 
-    expect(harness.service.enqueueDueSchedules).toHaveBeenCalledTimes(1);
+    expect(harness.maintenance.runMaintenance).toHaveBeenCalledTimes(1);
     expect(harness.repository.claimDue).toHaveBeenCalledTimes(1);
     expect(harness.handlers.handle).toHaveBeenCalledWith(job);
     expect(harness.repository.complete).toHaveBeenCalledTimes(1);
@@ -105,6 +103,20 @@ describe("BillingAutomationWorker", () => {
       blockerCodes: ["CONTRACT_SEGMENT_NOT_FOUND"],
       operation: "BILLING_SCHEDULE_RECONCILIATION_BLOCKED"
     });
+  });
+
+  it("does not claim jobs after maintenance failure and retries maintenance immediately", async () => {
+    const harness = createWorkerHarness();
+    harness.maintenance.runMaintenance.mockRejectedValueOnce(
+      new Error("synthetic maintenance failure")
+    );
+
+    await expect(harness.worker.runOnce()).rejects.toThrow("synthetic maintenance failure");
+    expect(harness.repository.claimDue).not.toHaveBeenCalled();
+
+    await harness.worker.runOnce();
+    expect(harness.maintenance.runMaintenance).toHaveBeenCalledTimes(2);
+    expect(harness.repository.claimDue).toHaveBeenCalledOnce();
   });
 
   it("uses 1m, 5m, 15m, 1h, and 6h retry delays", async () => {
@@ -314,18 +326,15 @@ function createWorkerHarness(
     defer: vi.fn().mockResolvedValue(true),
     reschedule: vi.fn().mockResolvedValue(true)
   };
-  const service = {
-    enqueueDueSchedules: vi.fn().mockResolvedValue({
-      dueCount: 0,
-      enqueuedCount: 0
-    }),
-    reconcileSchedules: vi.fn().mockResolvedValue({
+  const maintenance = {
+    runMaintenance: vi.fn().mockResolvedValue({
       blockedCount: 0,
       createdCount: 0,
       dryRun: false,
       eligibleCount: 0,
       existingCount: 0,
-      items: []
+      items: [],
+      leaseActivationCount: 0
     })
   };
   const handlers = {
@@ -351,12 +360,12 @@ function createWorkerHarness(
   });
   const worker = new BillingAutomationWorker(
     repository as unknown as BillingAutomationRepository,
-    service as unknown as BillingAutomationService,
+    maintenance as unknown as BillingMaintenanceEvidenceService,
     handlers as unknown as BillingAutomationHandlers,
     config
   );
 
-  return { handlers, repository, service, worker };
+  return { handlers, maintenance, repository, worker };
 }
 
 function claimedJob(

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  SubscriptionClosureProjectionService,
   governedAllowedActions,
   projectSubscriptionClosureAdmin,
   projectSubscriptionClosureCustomer,
   sanitizeSubscriptionClosurePublic
 } from "../src/subscription-closure/subscription-closure.projection";
+import { vi } from "vitest";
 
 describe("subscription closure public projections", () => {
   it("recursively removes approval comments, command envelopes, provider payloads, and BigInt", () => {
@@ -165,9 +167,7 @@ describe("subscription closure public projections", () => {
 
   it("keeps portal charge lines bound to the proposed pricing revision after settlement", () => {
     const customer = projectSubscriptionClosureCustomer({
-      chargeLines: [
-        { id: "line-1", settlementRevisionId: "proposal-1", status: "FINAL" }
-      ],
+      chargeLines: [{ id: "line-1", settlementRevisionId: "proposal-1", status: "FINAL" }],
       closureCase: {
         caseNo: "SC-SETTLED",
         closureType: "NORMAL_COMPLETION",
@@ -182,9 +182,7 @@ describe("subscription closure public projections", () => {
     });
 
     expect(customer).toMatchObject({
-      chargeLines: [
-        { id: "line-1", settlementRevisionId: "proposal-1", status: "FINAL" }
-      ],
+      chargeLines: [{ id: "line-1", settlementRevisionId: "proposal-1", status: "FINAL" }],
       settlement: {
         id: "settled-1",
         pricingSettlementRevisionId: "proposal-1",
@@ -303,9 +301,7 @@ describe("subscription closure public projections", () => {
           status: "REJECTED_BY_PLATFORM"
         }
       ],
-      receivableBills: [
-        { billStatus: "PENDING", id: "bill-1", remainingAmount: 1000n }
-      ],
+      receivableBills: [{ billStatus: "PENDING", id: "bill-1", remainingAmount: 1000n }],
       settlementRevisions: [
         { id: "proposal-1", stage: "PROPOSED" },
         {
@@ -359,4 +355,136 @@ describe("subscription closure public projections", () => {
     expect(actions).not.toContain("SETTLE_FINANCIAL");
     expect(actions).not.toContain("COMPLETE_OPERATIONS");
   });
+
+  it.each([
+    ["the exact true flag for a new case", { configValue: "true" }],
+    [
+      "a legacy checklist revision while the flag is false",
+      {
+        configValue: "false",
+        currentChecklistRevisionId: "checklist-1"
+      }
+    ],
+    [
+      "a legal collection case while the flag is false",
+      {
+        configValue: "false",
+        legalCases: [{ id: "legal-case-1" }]
+      }
+    ],
+    [
+      "a return-manifest e-sign task while the flag is false",
+      {
+        configValue: "false",
+        returnManifestTask: { id: "return-manifest-task-1" }
+      }
+    ]
+  ])("projects the three-stage UI for %s", async (_name, fixture) => {
+    const projection = projectionFixture(fixture);
+
+    await expect(projection.getAdminById("closure-1")).resolves.toMatchObject({
+      returnThreeStageEnabled: true
+    });
+  });
+
+  it("does not project three-stage UI for a new case while the flag is false", async () => {
+    const projection = projectionFixture({ configValue: "false" });
+
+    await expect(projection.getAdminById("closure-1")).resolves.toMatchObject({
+      returnThreeStageEnabled: false
+    });
+  });
+
+  it("continues the portal three-stage UI for internal-only governed evidence without exposing it", async () => {
+    const projection = projectionFixture({
+      configValue: "false",
+      evidenceLinks: [
+        {
+          id: "internal-evidence-link-1",
+          internalMarker: "must-not-reach-customer",
+          visibility: "INTERNAL_ONLY"
+        }
+      ]
+    });
+
+    const customer = await projection.getCustomerByOrder("order-1", "customer-1");
+
+    expect(customer).toMatchObject({
+      evidenceLinks: [],
+      returnThreeStageEnabled: true
+    });
+    expect(JSON.stringify(customer)).not.toContain("must-not-reach-customer");
+  });
 });
+
+function projectionFixture(input: {
+  configValue: string;
+  currentChecklistRevisionId?: string;
+  evidenceLinks?: readonly Record<string, unknown>[];
+  legalCases?: readonly Record<string, unknown>[];
+  returnManifestTask?: Record<string, unknown>;
+}) {
+  const findMany = vi.fn().mockResolvedValue([]);
+  const prisma = {
+    auditLog: { findMany },
+    businessExceptionApproval: { count: vi.fn().mockResolvedValue(0), findMany },
+    contractChargeClauseSnapshot: { findMany },
+    contractESignTask: { findFirst: vi.fn().mockResolvedValue(input.returnManifestTask ?? null) },
+    receivableBill: { findMany },
+    subscriptionClosureCase: {
+      findFirst: vi.fn().mockResolvedValue({
+        commandReceipts: [],
+        contractId: "contract-1",
+        currentChecklistRevisionId: input.currentChecklistRevisionId ?? null,
+        currentDeltaRevisionId: null,
+        customerId: "customer-1",
+        currentSettlementRevision: null,
+        documentRevisions: [],
+        events: [],
+        id: "closure-1",
+        orderId: "order-1",
+        settlementRevisions: [],
+        vehicleReturn: null
+      }),
+      findUnique: vi.fn().mockResolvedValue({
+        commandReceipts: [],
+        contractId: "contract-1",
+        currentChecklistRevisionId: input.currentChecklistRevisionId ?? null,
+        currentDeltaRevisionId: null,
+        currentSettlementRevision: null,
+        documentRevisions: [],
+        events: [],
+        id: "closure-1",
+        orderId: "order-1",
+        settlementRevisions: [],
+        vehicleReturn: null
+      })
+    },
+    subscriptionClosureChargeDispute: { findMany },
+    subscriptionClosureChargeLine: { findMany },
+    subscriptionClosureCustomerResponse: { findMany },
+    subscriptionClosureEvidencePackageExport: { findMany },
+    subscriptionClosureLegalCollectionCase: {
+      findMany: vi.fn().mockResolvedValue(input.legalCases ?? [])
+    },
+    subscriptionClosureReceivableDisposition: { findMany },
+    vehicleConditionDeltaRevision: { findMany },
+    vehicleReturnChecklistRevision: { findMany },
+    vehicleReturnEvidenceLink: {
+      count: vi.fn().mockResolvedValue(input.evidenceLinks?.length ?? 0),
+      findMany: vi
+        .fn()
+        .mockImplementation(({ where }) =>
+          Promise.resolve(
+            (input.evidenceLinks ?? []).filter(
+              (link) => where.visibility === undefined || link.visibility === where.visibility
+            )
+          )
+        )
+    }
+  };
+  return new SubscriptionClosureProjectionService(
+    prisma as never,
+    { get: vi.fn().mockReturnValue(input.configValue) } as never
+  );
+}

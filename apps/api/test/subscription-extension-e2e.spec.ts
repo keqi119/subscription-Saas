@@ -122,13 +122,21 @@ describe("subscription extension release orchestration", () => {
     const firstWorker = new SubscriptionChangeWorker(
       repository as never,
       jobs as never,
-      { get: vi.fn(() => "false") } as never
+      {
+        get: vi.fn((key: string) =>
+          key === "SUBSCRIPTION_CHANGE_WORKER_ENABLED" ? "true" : "false"
+        )
+      } as never
     );
     await firstWorker.runOnce();
     const restartedWorker = new SubscriptionChangeWorker(
       repository as never,
       jobs as never,
-      { get: vi.fn(() => "false") } as never
+      {
+        get: vi.fn((key: string) =>
+          key === "SUBSCRIPTION_CHANGE_WORKER_ENABLED" ? "true" : "false"
+        )
+      } as never
     );
     await restartedWorker.runOnce();
 

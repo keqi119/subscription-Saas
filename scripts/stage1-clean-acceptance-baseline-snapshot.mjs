@@ -1,8 +1,44 @@
+import { existsSync, readFileSync } from "node:fs";
+
 import { parseStage1CleanAcceptanceSelection } from "./stage1-clean-acceptance-baseline-core.mjs";
 import { loadLocalMigrationChecksums } from "./prisma-migration-checksums.mjs";
 
+const FORBIDDEN_DOMAIN_DEFINITION = loadStage1AcceptanceForbiddenDomainDefinition();
+
+export function loadStage1AcceptanceForbiddenDomainDefinition(moduleUrl = import.meta.url) {
+  const candidates = [
+    new URL(
+      "../apps/api/src/billing-automation/stage1-acceptance-forbidden-domains.json",
+      moduleUrl
+    ),
+    new URL(
+      "../apps/api/dist/src/billing-automation/stage1-acceptance-forbidden-domains.json",
+      moduleUrl
+    )
+  ];
+  const asset = candidates.find((candidate) => existsSync(candidate));
+  if (!asset) throw new Error("STAGE1_ACCEPTANCE_FORBIDDEN_DOMAIN_DEFINITION_MISSING");
+  const parsed = JSON.parse(readFileSync(asset, "utf8"));
+  if (
+    typeof parsed?.version !== "string" ||
+    !/^stage1-acceptance-forbidden-domains\/v[1-9][0-9]*$/.test(parsed.version) ||
+    !Array.isArray(parsed.domains) ||
+    parsed.domains.length === 0 ||
+    parsed.domains.some(
+      (domain) =>
+        typeof domain?.delegate !== "string" ||
+        !/^[a-z][A-Za-z0-9]*$/.test(domain.delegate) ||
+        typeof domain?.table !== "string" ||
+        !/^[a-z][a-z0-9_]*$/.test(domain.table)
+    )
+  ) {
+    throw new Error("STAGE1_ACCEPTANCE_FORBIDDEN_DOMAIN_DEFINITION_INVALID");
+  }
+  return parsed;
+}
+
 export const STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256 =
-  "e5a2aceeb49026f97d359acb785b608138a98ed8b5f3382b28a910e82613f7e3";
+  "6264cda46cd5d17b5c2bd14bb8d2da95fc6420e7c066bf474dcb030c672613be";
 
 const REQUIRED_CONTRACT_TEMPLATE_TYPES = Object.freeze([
   "DELIVERY_HANDOVER",
@@ -30,137 +66,9 @@ const REQUIRED_NOTIFICATION_TEMPLATE_CODES = Object.freeze([
   "SERVICE_CASE_UPDATE_WECHAT"
 ]);
 
-export const STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES = Object.freeze([
-  "customerVerificationCode",
-  "smsSendLog",
-  "fieldOperatorOtp",
-  "fieldOperatorSession",
-  "fieldOperatorAuditLog",
-  "customerProfileMaterial",
-  "customerFollowup",
-  "application",
-  "applicationMaterial",
-  "applicationMaterialGroup",
-  "applicationMaterialFile",
-  "applicationActionLog",
-  "riskResult",
-  "subscriptionQuote",
-  "subscriptionOrder",
-  "subscriptionJourney",
-  "subscriptionJourneyStep",
-  "subscriptionJourneyJob",
-  "subscriptionJourneyManualTask",
-  "subscriptionJourneyEvent",
-  "subscriptionJourneyException",
-  "subscriptionJourneyOutbox",
-  "orderEntitlementAccount",
-  "orderEntitlementGrant",
-  "orderEntitlementUsage",
-  "receivableBill",
-  "billingSchedule",
-  "subscriptionAutomationJob",
-  "paymentMandate",
-  "debitAttempt",
-  "paymentRecord",
-  "paymentOrder",
-  "paymentOrderItem",
-  "paymentCallbackLog",
-  "paymentWriteOff",
-  "depositLedger",
-  "collectionCase",
-  "collectionCaseBill",
-  "collectionAction",
-  "serviceCase",
-  "serviceCaseAttachment",
-  "serviceCaseAction",
-  "notificationRecord",
-  "notificationEvent",
-  "lease",
-  "vehicleDelivery",
-  "vehicleDeliveryHandover",
-  "vehicleHandoverWorkOrder",
-  "vehicleHandoverWorkflowJob",
-  "vehicleHandoverReviewAttempt",
-  "vehicleHandoverEvent",
-  "vehicleDeliveryEvidenceItem",
-  "vehicleDeliveryEvidenceFile",
-  "fieldEvidenceVideoUploadSession",
-  "fieldEvidenceVideoUploadPart",
-  "vehicleInspection",
-  "vehicleReturn",
-  "vehicleReturnDamage",
-  "contract",
-  "contractESignTask",
-  "contractESignSigner",
-  "contractESignCallbackLog",
-  "subscriptionChangeOrder",
-  "subscriptionExtensionChangeDetail",
-  "subscriptionVehicleSwapChangeDetail",
-  "subscriptionEarlyTerminationChangeDetail",
-  "subscriptionManagedOtherChangeDetail",
-  "subscriptionChangeQuote",
-  "subscriptionChangeCommand",
-  "subscriptionContractSegment",
-  "renewalConsideration",
-  "renewalReminder",
-  "orderChange",
-  "subscriptionClosureCase",
-  "subscriptionClosureEvent",
-  "subscriptionClosureDocumentRevision",
-  "subscriptionClosureCurrentDocument",
-  "subscriptionClosureSettlementRevision",
-  "vehicleReturnChecklistRevision",
-  "vehicleReturnChecklistItem",
-  "vehicleReturnEvidenceLink",
-  "vehicleConditionDeltaRevision",
-  "vehicleConditionDeltaItem",
-  "contractChargeClauseSnapshot",
-  "subscriptionClosureChargeLine",
-  "subscriptionClosureCustomerResponse",
-  "subscriptionClosureChargeDispute",
-  "subscriptionClosureChargeDisputeDecision",
-  "subscriptionClosureReceivableDisposition",
-  "subscriptionClosureLegalCollectionCase",
-  "subscriptionClosureLegalCollectionEvent",
-  "subscriptionClosureEvidencePackageExport",
-  "subscriptionClosureCommandReceipt",
-  "assetAccountingCommandReceipt",
-  "vehicleSubscriptionPeriod",
-  "vehicleConditionReport",
-  "vehicleConditionReportItem",
-  "vehicleMileageReading",
-  "orderMileageReview",
-  "orderMileageReviewEvidence",
-  "assetWorkOrder",
-  "assetWorkOrderEvent",
-  "assetWorkOrderEvidence",
-  "vehicleOperationalRestriction",
-  "businessExceptionApproval",
-  "insuranceClaim",
-  "vehicleBaasContract",
-  "vehicleBaasContractAttachment",
-  "vehicleBaasCostRecord",
-  "vehicleDepreciationPolicy",
-  "vehicleDepreciationSchedule",
-  "vehicleDepreciationRecord",
-  "marketPriceImportBatch",
-  "vehicleMarketPriceObservation",
-  "vehicleResidualCurve",
-  "vehicleResidualCurvePoint",
-  "vehicleResidualForecast",
-  "vehicleResidualForecastPoint",
-  "vehicleValuationReview",
-  "residualModelRun",
-  "residualModelRunOutput",
-  "vehicleCapitalEvent",
-  "financingInstrument",
-  "financingInstrumentVehicle",
-  "vehicleAssetPool",
-  "vehicleAssetPoolVehicle",
-  "revenueRightAssignment",
-  "revenueShareRule",
-  "auditLog"
-]);
+export const STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES = Object.freeze(
+  FORBIDDEN_DOMAIN_DEFINITION.domains.map(({ delegate }) => delegate)
+);
 
 const SELECT = Object.freeze({
   assetOwner: scalarSelect(

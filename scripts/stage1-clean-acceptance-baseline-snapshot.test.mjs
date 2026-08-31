@@ -467,7 +467,8 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
   });
   const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(
     eligible.tx,
-    selection([VEHICLE_A])
+    selection([VEHICLE_A]),
+    { asOf: new Date("2026-08-30T12:00:00.000Z") }
   );
   assert.deepEqual(snapshot.vehicle.vehicles, [vehicleRow]);
   assert.deepEqual(snapshot.vehicle.eligibilityEvidence, {
@@ -1510,10 +1511,10 @@ test("target loader counts exact whitelist and verifies the fixed local canonica
   assert.equal(target.tableCounts.customer, 2);
   assert.equal(target.tableCounts.vehicle, 1);
   assert.equal(target.schemaCanonical, true);
-  assert.equal(target.migrationCatalog.length, 124);
+  assert.equal(target.migrationCatalog.length, 125);
   assert.equal(
     target.schemaFingerprint[0].schemaFingerprintSha256,
-    STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256
+    "6264cda46cd5d17b5c2bd14bb8d2da95fc6420e7c066bf474dcb030c672613be"
   );
 
   const countCalls = fake.calls.filter(({ operation }) => operation === "count");

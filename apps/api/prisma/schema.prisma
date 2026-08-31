@@ -3087,15 +3087,15 @@ model CustomerESignProviderAccount {
   updatedBy                     String?                           @map("updated_by") @db.Uuid
   deletedAt                     DateTime?                         @map("deleted_at") @db.Timestamptz(6)
 
-  @@unique([provider, customerId, accountType])
+  @@unique([provider, customerId, accountType], map: "customer_esign_provider_account_provider_customer_id_account_ty")
   @@unique([provider, providerOpenId])
-  @@unique([provider, providerCustomerId])
+  @@unique([provider, providerCustomerId], map: "customer_esign_provider_account_provider_provider_customer_id_k")
   @@index([customerId])
   @@index([provider])
   @@index([registrationStatus])
   @@index([realNameStatus])
   @@index([certBindingStatus])
-  @@index([providerStatusLastRefreshedAt])
+  @@index([providerStatusLastRefreshedAt], map: "customer_esign_provider_account_provider_status_last_refreshed_")
   @@map("customer_esign_provider_account")
 }
 
@@ -4945,7 +4945,7 @@ model VehicleMileageReading {
   recordedAt                DateTime                    @map("recorded_at") @db.Timestamptz(6)
   mileageKm                 Int                         @map("mileage_km")
   previousReadingId         String?                     @map("previous_reading_id") @db.Uuid
-  previousReading           VehicleMileageReading?      @relation("VehicleMileageReadingChain", fields: [previousReadingId], references: [id])
+  previousReading           VehicleMileageReading?      @relation("VehicleMileageReadingChain", fields: [previousReadingId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "vehicle_mileage_reading_previous_reading_id_fkey")
   nextReadings              VehicleMileageReading[]     @relation("VehicleMileageReadingChain")
   deltaKm                   Int                         @map("delta_km")
   status                    VehicleMileageReadingStatus @default(ACTIVE)
@@ -6522,6 +6522,9 @@ model SubscriptionJourneyStep {
   jobs                  SubscriptionJourneyJob[]
   manualTasks           SubscriptionJourneyManualTask[]
   exceptions            SubscriptionJourneyException[]
+  jobsByStepId          SubscriptionJourneyJob[]        @relation("SubscriptionJourneyJobStepId")
+  manualTasksByStepId   SubscriptionJourneyManualTask[] @relation("SubscriptionJourneyManualTaskStepId")
+  exceptionsByStepId    SubscriptionJourneyException[]  @relation("SubscriptionJourneyExceptionStepId")
 
   @@unique([journeyId, code], map: "subscription_journey_step_code_key")
   @@unique([id, journeyId], map: "subscription_journey_step_id_journey_id_key")
@@ -6530,26 +6533,28 @@ model SubscriptionJourneyStep {
 }
 
 model SubscriptionJourneyJob {
-  id               String                         @id @default(cuid())
-  journeyId        String                         @map("journey_id")
-  journey          SubscriptionJourney            @relation(fields: [journeyId], references: [id])
-  stepId           String                         @map("step_id")
-  step             SubscriptionJourneyStep        @relation(fields: [stepId, journeyId], references: [id, journeyId])
-  jobType          SubscriptionJourneyJobType     @map("job_type")
-  status           SubscriptionJourneyJobStatus   @default(PENDING)
-  sourceKey        String                         @unique @map("source_key") @db.VarChar(128)
-  payload          Json?
-  attemptCount     Int                            @default(0) @map("attempt_count")
-  maxAttempts      Int                            @default(5) @map("max_attempts")
-  availableAt      DateTime                       @default(now()) @map("available_at") @db.Timestamptz(6)
-  leaseToken       String?                        @map("lease_token") @db.VarChar(128)
-  leaseExpiresAt   DateTime?                      @map("lease_expires_at") @db.Timestamptz(6)
-  lastErrorCode    String?                        @map("last_error_code") @db.VarChar(64)
-  lastErrorMessage String?                        @map("last_error_message") @db.Text
-  completedAt      DateTime?                      @map("completed_at") @db.Timestamptz(6)
-  createdAt        DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
-  exceptions       SubscriptionJourneyException[]
+  id                String                         @id @default(cuid())
+  journeyId         String                         @map("journey_id")
+  journey           SubscriptionJourney            @relation(fields: [journeyId], references: [id])
+  stepId            String                         @map("step_id")
+  step              SubscriptionJourneyStep        @relation(fields: [stepId, journeyId], references: [id, journeyId], map: "subscription_journey_job_step_journey_fkey")
+  stepById          SubscriptionJourneyStep        @relation("SubscriptionJourneyJobStepId", fields: [stepId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_journey_job_step_id_fkey")
+  jobType           SubscriptionJourneyJobType     @map("job_type")
+  status            SubscriptionJourneyJobStatus   @default(PENDING)
+  sourceKey         String                         @unique @map("source_key") @db.VarChar(128)
+  payload           Json?
+  attemptCount      Int                            @default(0) @map("attempt_count")
+  maxAttempts       Int                            @default(5) @map("max_attempts")
+  availableAt       DateTime                       @default(now()) @map("available_at") @db.Timestamptz(6)
+  leaseToken        String?                        @map("lease_token") @db.VarChar(128)
+  leaseExpiresAt    DateTime?                      @map("lease_expires_at") @db.Timestamptz(6)
+  lastErrorCode     String?                        @map("last_error_code") @db.VarChar(64)
+  lastErrorMessage  String?                        @map("last_error_message") @db.Text
+  completedAt       DateTime?                      @map("completed_at") @db.Timestamptz(6)
+  createdAt         DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  exceptions        SubscriptionJourneyException[]
+  exceptionsByJobId SubscriptionJourneyException[] @relation("SubscriptionJourneyExceptionJobId")
 
   @@unique([id, stepId, journeyId], map: "subscription_journey_job_identity_key")
   @@index([status, availableAt, leaseExpiresAt], map: "subscription_journey_job_claim_idx")
@@ -6563,7 +6568,8 @@ model SubscriptionJourneyManualTask {
   journeyId     String                              @map("journey_id")
   journey       SubscriptionJourney                 @relation(fields: [journeyId], references: [id])
   stepId        String                              @map("step_id")
-  step          SubscriptionJourneyStep             @relation(fields: [stepId, journeyId], references: [id, journeyId])
+  step          SubscriptionJourneyStep             @relation(fields: [stepId, journeyId], references: [id, journeyId], map: "subscription_journey_manual_task_step_journey_fkey")
+  stepById      SubscriptionJourneyStep             @relation("SubscriptionJourneyManualTaskStepId", fields: [stepId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_journey_manual_task_step_id_fkey")
   taskType      SubscriptionJourneyManualTaskType   @map("task_type")
   status        SubscriptionJourneyManualTaskStatus @default(OPEN)
   decision      SubscriptionJourneyManualDecision?
@@ -6602,9 +6608,11 @@ model SubscriptionJourneyException {
   journeyId       String                             @map("journey_id")
   journey         SubscriptionJourney                @relation(fields: [journeyId], references: [id])
   stepId          String                             @map("step_id")
-  step            SubscriptionJourneyStep            @relation(fields: [stepId, journeyId], references: [id, journeyId])
+  step            SubscriptionJourneyStep            @relation(fields: [stepId, journeyId], references: [id, journeyId], map: "subscription_journey_exception_step_journey_fkey")
+  stepById        SubscriptionJourneyStep            @relation("SubscriptionJourneyExceptionStepId", fields: [stepId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_journey_exception_step_id_fkey")
   jobId           String?                            @map("job_id")
-  job             SubscriptionJourneyJob?            @relation(fields: [jobId, stepId, journeyId], references: [id, stepId, journeyId], onDelete: Restrict)
+  job             SubscriptionJourneyJob?            @relation(fields: [jobId, stepId, journeyId], references: [id, stepId, journeyId], onDelete: Restrict, map: "subscription_journey_exception_job_identity_fkey")
+  jobById         SubscriptionJourneyJob?            @relation("SubscriptionJourneyExceptionJobId", fields: [jobId], references: [id], onDelete: SetNull, onUpdate: Cascade, map: "subscription_journey_exception_job_id_fkey")
   status          SubscriptionJourneyExceptionStatus @default(OPEN)
   code            String                             @db.VarChar(64)
   message         String                             @db.Text
@@ -7686,10 +7694,10 @@ model VehicleHandoverReviewAttempt {
   adminAcknowledgedBy          User?                              @relation("HandoverReviewAttemptAdminAcknowledgedBy", fields: [adminAcknowledgedById], references: [id])
   resubmissionRequestedAt      DateTime?                          @map("resubmission_requested_at") @db.Timestamptz(6)
   resubmissionRequestedById    String?                            @map("resubmission_requested_by_id") @db.Uuid
-  resubmissionRequestedBy      User?                              @relation("HandoverReviewAttemptResubmissionRequestedBy", fields: [resubmissionRequestedById], references: [id])
+  resubmissionRequestedBy      User?                              @relation("HandoverReviewAttemptResubmissionRequestedBy", fields: [resubmissionRequestedById], references: [id], map: "vehicle_handover_review_attempt_resubmission_requested_by_id_fk")
   sentBackToCustomerReviewAt   DateTime?                          @map("sent_back_to_customer_review_at") @db.Timestamptz(6)
   sentBackToCustomerReviewById String?                            @map("sent_back_to_customer_review_by_id") @db.Uuid
-  sentBackToCustomerReviewBy   User?                              @relation("HandoverReviewAttemptSentBackBy", fields: [sentBackToCustomerReviewById], references: [id])
+  sentBackToCustomerReviewBy   User?                              @relation("HandoverReviewAttemptSentBackBy", fields: [sentBackToCustomerReviewById], references: [id], map: "vehicle_handover_review_attempt_sent_back_to_customer_review_by")
   resolvedAt                   DateTime?                          @map("resolved_at") @db.Timestamptz(6)
   resolvedById                 String?                            @map("resolved_by_id") @db.Uuid
   resolvedBy                   User?                              @relation("HandoverReviewAttemptResolvedBy", fields: [resolvedById], references: [id])
@@ -7706,8 +7714,8 @@ model VehicleHandoverReviewAttempt {
   @@index([customerObjectedAt])
   @@index([adminStatus])
   @@index([adminAcknowledgedById])
-  @@index([resubmissionRequestedById])
-  @@index([sentBackToCustomerReviewById])
+  @@index([resubmissionRequestedById], map: "vehicle_handover_review_attempt_resubmission_requested_by_id_id")
+  @@index([sentBackToCustomerReviewById], map: "vehicle_handover_review_attempt_sent_back_to_customer_revie_idx")
   @@index([resolvedById])
   @@map("vehicle_handover_review_attempt")
 }
@@ -7842,7 +7850,7 @@ model FieldEvidenceVideoUploadSession {
   workOrder             VehicleHandoverWorkOrder        @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
   evidenceItem          VehicleDeliveryEvidenceItem     @relation(fields: [evidenceItemId], references: [id], onDelete: Cascade)
   createdBySession      FieldOperatorSession?           @relation(fields: [createdBySessionId], references: [id], onDelete: SetNull)
-  replaceEvidenceFile   VehicleDeliveryEvidenceFile?    @relation(fields: [replaceEvidenceFileId], references: [id], onDelete: SetNull)
+  replaceEvidenceFile   VehicleDeliveryEvidenceFile?    @relation(fields: [replaceEvidenceFileId], references: [id], onDelete: SetNull, map: "field_evidence_video_upload_session_replace_evidence_file_id_fk")
   parts                 FieldEvidenceVideoUploadPart[]
 
   @@index([workOrderId, status])
@@ -8210,7 +8218,7 @@ model SubscriptionChangeOrder {
   @@index([status])
   @@index([completionDeadlineAt])
   @@index([priceOverrideApprovedBy])
-  @@index([customerConfirmationPublishedAt])
+  @@index([customerConfirmationPublishedAt], map: "subscription_change_order_customer_confirmation_published_at_id")
   @@index([manualTakeoverBy])
   @@map("subscription_change_order")
 }
@@ -8358,7 +8366,7 @@ model SubscriptionChangeCommand {
   updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   completedAt    DateTime? @map("completed_at") @db.Timestamptz(6)
 
-  @@unique([actorId, operation, idempotencyKey])
+  @@unique([actorId, operation, idempotencyKey], map: "subscription_change_command_actor_id_operation_idempotency_key_")
   @@index([resourceType, resourceId])
   @@index([createdAt])
   @@map("subscription_change_command")

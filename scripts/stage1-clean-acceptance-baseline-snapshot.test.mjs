@@ -1511,10 +1511,10 @@ test("target loader counts exact whitelist and verifies the fixed local canonica
   assert.equal(target.tableCounts.customer, 2);
   assert.equal(target.tableCounts.vehicle, 1);
   assert.equal(target.schemaCanonical, true);
-  assert.equal(target.migrationCatalog.length, 125);
+  assert.equal(target.migrationCatalog.length, 126);
   assert.equal(
     target.schemaFingerprint[0].schemaFingerprintSha256,
-    "6264cda46cd5d17b5c2bd14bb8d2da95fc6420e7c066bf474dcb030c672613be"
+    "42b3239c093e79c4c9a048316abb22943310093216526819a0399c8cec4751e0"
   );
 
   const countCalls = fake.calls.filter(({ operation }) => operation === "count");

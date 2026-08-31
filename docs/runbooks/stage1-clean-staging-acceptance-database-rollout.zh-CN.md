@@ -264,7 +264,7 @@ target_api sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate status
 target_api node - <<'NODE'
 const { execFileSync } = require('node:child_process');
 const result = JSON.parse(execFileSync('node', ['scripts/prisma-migration-checksums.mjs'], { cwd: '/app', encoding: 'utf8' }));
-if (!result.safe || result.localMigrationCount !== 125 || result.appliedMigrationCount !== 125 || result.duplicateAppliedNames.length || result.mismatchedNames.length || result.missingFromDatabase.length || result.missingLocally.length) process.exit(31);
+if (!result.safe || result.localMigrationCount !== 126 || result.appliedMigrationCount !== 126 || result.duplicateAppliedNames.length || result.mismatchedNames.length || result.missingFromDatabase.length || result.missingLocally.length) process.exit(31);
 NODE
 set +e
 target_api sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' >/dev/null 2>&1
@@ -275,7 +275,7 @@ test "$(postgres_target_query -XAtq <<'SQL'
 WITH duplicate_names AS (SELECT migration_name FROM _prisma_migrations GROUP BY migration_name HAVING count(*) > 1)
 SELECT count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL), count(*) FILTER (WHERE rolled_back_at IS NOT NULL), count(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL), (SELECT count(*) FROM duplicate_names) FROM _prisma_migrations;
 SQL
-)" = '125|0|0|0' || { printf '%s\n' 'STOP: MIGRATION_COUNTS_INVALID'; exit 1; }
+)" = '126|0|0|0' || { printf '%s\n' 'STOP: MIGRATION_COUNTS_INVALID'; exit 1; }
 postgres_target_query -X -v ON_ERROR_STOP=1 <<'SQL'
 DO $$ DECLARE item record; row_count bigint; BEGIN
   FOR item IN SELECT relname FROM pg_class JOIN pg_namespace ON pg_namespace.oid = relnamespace WHERE nspname = 'public' AND relkind = 'r' AND relname <> '_prisma_migrations' LOOP
@@ -551,7 +551,7 @@ fi
 CHECKSUM_RESULT="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
   sh -lc 'cd /app && node scripts/prisma-migration-checksums.mjs')"
-jq -e '.safe == true and .localMigrationCount == 125 and .appliedMigrationCount == 125 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
+jq -e '.safe == true and .localMigrationCount == 126 and .appliedMigrationCount == 126 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
   <<<"$CHECKSUM_RESULT" >/dev/null
 jq '{appliedMigrationCount,duplicateCount:(.duplicateAppliedNames|length),localMigrationCount,mismatchCount:(.mismatchedNames|length),missingDatabaseCount:(.missingFromDatabase|length),missingLocalCount:(.missingLocally|length),safe}' \
   <<<"$CHECKSUM_RESULT" \
@@ -590,8 +590,8 @@ SELECT
 FROM _prisma_migrations;
 SQL
 )"
-test "$MIGRATION_COUNTS" = '125|0|0|0'
-printf '%s\n' '125 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate' \
+test "$MIGRATION_COUNTS" = '126|0|0|0'
+printf '%s\n' '126 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate' \
   | publish_private_evidence "$EVIDENCE_DIR/migration-counts.state"
 ```
 
@@ -1509,7 +1509,7 @@ post_switch_database_gates() {
   checksum_result="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
     --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
     sh -lc 'cd /app && node scripts/prisma-migration-checksums.mjs')"
-  jq -e '.safe == true and .localMigrationCount == 125 and .appliedMigrationCount == 125 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
+  jq -e '.safe == true and .localMigrationCount == 126 and .appliedMigrationCount == 126 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
     <<<"$checksum_result" >/dev/null
   set +e
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
@@ -1530,8 +1530,8 @@ SELECT count(*) FILTER (WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL
 FROM _prisma_migrations;
 SQL
 )"
-  test "$migration_counts" = '125|0|0|0'
-  printf '%s\n' '125 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate' \
+  test "$migration_counts" = '126|0|0|0'
+  printf '%s\n' '126 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate' \
     | publish_private_evidence "$EVIDENCE_DIR/post-switch-migration-counts.state"
 
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \

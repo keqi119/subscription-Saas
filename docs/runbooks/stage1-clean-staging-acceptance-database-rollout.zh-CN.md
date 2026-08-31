@@ -257,17 +257,17 @@ backup_database() {
 backup_database 'subscription_saas_staging' "$OLD_DB_BACKUP" 'old-database.pre-apply'
 backup_database "$TARGET_DB" "$EMPTY_NEW_DB_BACKUP" 'empty-new-database.pre-migration'
 
-if target_api sh -lc 'cd /app/apps/api && pnpm exec prisma migrate deploy --schema prisma/schema.prisma' >/dev/null 2>&1; then
+if target_api sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate deploy --schema prisma/schema.prisma' >/dev/null 2>&1; then
   printf '%s\n' 'migration_deploy=applied_once' | publish_private_evidence "$EVIDENCE_DIR/migration-deploy.state"
 else printf '%s\n' 'STOP: MIGRATION_DEPLOY_FAILED'; exit 1; fi
-target_api sh -lc 'cd /app/apps/api && pnpm exec prisma migrate status --schema prisma/schema.prisma' >/dev/null 2>&1 || { printf '%s\n' 'STOP: MIGRATE_STATUS_FAILED'; exit 1; }
+target_api sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate status --schema prisma/schema.prisma' >/dev/null 2>&1 || { printf '%s\n' 'STOP: MIGRATE_STATUS_FAILED'; exit 1; }
 target_api node - <<'NODE'
 const { execFileSync } = require('node:child_process');
-const result = JSON.parse(execFileSync('pnpm', ['prisma:migrate:checksum:verify'], { cwd: '/app', encoding: 'utf8' }));
+const result = JSON.parse(execFileSync('node', ['scripts/prisma-migration-checksums.mjs'], { cwd: '/app', encoding: 'utf8' }));
 if (!result.safe || result.localMigrationCount !== 125 || result.appliedMigrationCount !== 125 || result.duplicateAppliedNames.length || result.mismatchedNames.length || result.missingFromDatabase.length || result.missingLocally.length) process.exit(31);
 NODE
 set +e
-target_api sh -lc 'cd /app/apps/api && pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' >/dev/null 2>&1
+target_api sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' >/dev/null 2>&1
 DRIFT_EXIT="$?"
 set -e
 test "$DRIFT_EXIT" -eq 0 || { printf '%s\n' 'STOP: MIGRATION_DRIFT_DETECTED'; exit 1; }
@@ -528,7 +528,7 @@ backup_database "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" "$EMPTY_NEW_DB_BACKUP" 
 if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-  sh -lc 'cd /app/apps/api && pnpm exec prisma migrate deploy --schema prisma/schema.prisma' \
+  sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate deploy --schema prisma/schema.prisma' \
   >/dev/null 2>&1; then
   printf '%s\n' 'migration_deploy=applied_once' \
     | publish_private_evidence "$EVIDENCE_DIR/migration-deploy.state"
@@ -539,7 +539,7 @@ fi
 
 if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-  sh -lc 'cd /app/apps/api && pnpm exec prisma migrate status --schema prisma/schema.prisma' \
+  sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate status --schema prisma/schema.prisma' \
   >/dev/null 2>&1; then
   printf '%s\n' 'migrate_status=up_to_date' \
     | publish_private_evidence "$EVIDENCE_DIR/migrate-status.state"
@@ -550,7 +550,7 @@ fi
 
 CHECKSUM_RESULT="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-  sh -lc 'cd /app && pnpm prisma:migrate:checksum:verify')"
+  sh -lc 'cd /app && node scripts/prisma-migration-checksums.mjs')"
 jq -e '.safe == true and .localMigrationCount == 125 and .appliedMigrationCount == 125 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
   <<<"$CHECKSUM_RESULT" >/dev/null
 jq '{appliedMigrationCount,duplicateCount:(.duplicateAppliedNames|length),localMigrationCount,mismatchCount:(.mismatchedNames|length),missingDatabaseCount:(.missingFromDatabase|length),missingLocalCount:(.missingLocally|length),safe}' \
@@ -565,7 +565,7 @@ unset CHECKSUM_RESULT
 set +e
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-  sh -lc 'cd /app/apps/api && pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' \
+  sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' \
   >/dev/null 2>&1
 DRIFT_EXIT="$?"
 set -e
@@ -1504,17 +1504,17 @@ post_switch_database_gates() {
 
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
     --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-    sh -lc 'cd /app/apps/api && pnpm exec prisma migrate status --schema prisma/schema.prisma' \
+    sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate status --schema prisma/schema.prisma' \
     >/dev/null 2>&1
   checksum_result="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
     --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-    sh -lc 'cd /app && pnpm prisma:migrate:checksum:verify')"
+    sh -lc 'cd /app && node scripts/prisma-migration-checksums.mjs')"
   jq -e '.safe == true and .localMigrationCount == 125 and .appliedMigrationCount == 125 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
     <<<"$checksum_result" >/dev/null
   set +e
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
     --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-    sh -lc 'cd /app/apps/api && pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' \
+    sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' \
     >/dev/null 2>&1
   drift_exit="$?"
   set -e

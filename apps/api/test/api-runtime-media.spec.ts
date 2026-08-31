@@ -72,6 +72,9 @@ describe("API runtime media contract", () => {
     expect(runtime).not.toMatch(
       /COPY[^\n]*(?:\/(?:\.superpowers|tests?|reports?|tmp|output|credentials?)(?:\/|\s)|\/\.env(?:[./\s]))/i
     );
+    expect(runtime).toContain(
+      "RUN cd /app/apps/api && ./node_modules/.bin/prisma --version >/dev/null"
+    );
   });
 
   it("requires and publishes an immutable API source revision label", () => {

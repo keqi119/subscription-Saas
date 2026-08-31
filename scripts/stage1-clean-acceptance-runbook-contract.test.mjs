@@ -299,11 +299,13 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     "TARGET_DATABASE_ALREADY_EXISTS",
     "EMPTY_NEW_DB_BACKUP",
     "empty-new-database.pre-migration",
-    "prisma migrate deploy",
+    "./node_modules/.bin/prisma migrate deploy",
+    "./node_modules/.bin/prisma migrate status",
+    "scripts/prisma-migration-checksums.mjs",
     "post_migration_business_nonzero_tables=0",
     "stage1-task9-preflight-governance.mjs approval-summary",
     "stage1-task9-preflight-governance.mjs validate-selection",
-    "prisma migrate diff",
+    "./node_modules/.bin/prisma migrate diff",
     "MIGRATION_COUNTS_INVALID",
     "STOP FOR HUMAN APPROVAL: BASELINE_APPLY_APPROVAL"
   ]);
@@ -314,6 +316,11 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     /if ! TARGET_DATABASE_EXISTS="\$\(\s*postgres_admin_query -XAtq --set=target_db="\$TARGET_DB" <<'SQL'\s*SELECT EXISTS \(SELECT 1 FROM pg_database WHERE datname = :'target_db'\);\s*SQL\s*\)"; then/
   );
   assert.doesNotMatch(preflight, /--set=target_db="\$TARGET_DB" -c /);
+  assert.doesNotMatch(preflight, /pnpm (?:exec prisma|prisma:migrate:checksum:verify)/);
+  assert.match(
+    preflight,
+    /execFileSync\('node', \['scripts\/prisma-migration-checksums\.mjs'\], \{ cwd: '\/app', encoding: 'utf8' \}\)/
+  );
   assert.doesNotMatch(preflight, /validate-selection[^\n]*["']?\$APPROVED_VEHICLE_UUID/);
   assert.doesNotMatch(preflight, /docker compose[^\n]+run[^\n]+\bapi\b/);
   assert.doesNotMatch(preflight, /^\s*(?:jq|node|psql|pg_dump)\b/m);
@@ -331,7 +338,7 @@ function validateTask9PreflightContracts(contents, checkMutations = true) {
     'check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_API_HEALTH_URL"',
     "CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L",
     "empty-new-database.pre-migration",
-    "prisma migrate deploy",
+    "./node_modules/.bin/prisma migrate deploy",
     "post_migration_business_nonzero_tables=0",
     "--discover-vehicles",
     'read -r -s -p "Approved vehicle UUID (hidden): " APPROVED_VEHICLE_UUID',
@@ -566,7 +573,7 @@ case "$args" in
     printf '%s\\n' gate:migration-status >>"$TRACE_FILE"
     test "$FAILURE_SCENARIO" != migration_status
     ;;
-  *'prisma:migrate:checksum:verify'*)
+  *'prisma-migration-checksums.mjs'*)
     printf '%s\\n' gate:checksum >>"$TRACE_FILE"
     printf '%s\\n' '{"safe":true,"localMigrationCount":125,"appliedMigrationCount":125,"duplicateAppliedNames":[],"mismatchedNames":[],"missingFromDatabase":[],"missingLocally":[]}'
     ;;
@@ -1568,9 +1575,9 @@ test("keeps complete database, runtime, public, billing, and log gates", async (
   const body = cutover.slice(indexOfUnique(cutover, "post_switch_database_gates() {"));
   assertContainsAll(body, [
     "stage1-clean-acceptance-target-validator.mjs",
-    "prisma migrate status",
-    "prisma:migrate:checksum:verify",
-    "prisma migrate diff",
+    "./node_modules/.bin/prisma migrate status",
+    "node scripts/prisma-migration-checksums.mjs",
+    "./node_modules/.bin/prisma migrate diff",
     "125 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate",
     "RestartCount",
     "SUBSCRIPTION_JOURNEY_ENABLED",
@@ -1645,16 +1652,17 @@ test("keeps old database read-only and migration/backup gates fail closed", asyn
     "禁止 repair",
     "TEMPLATE template0",
     "TARGET_DB_REGEX_INVALID",
-    "migration deploy",
-    "migrate status",
-    "prisma:migrate:checksum:verify",
-    "prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code",
+    "./node_modules/.bin/prisma migrate deploy",
+    "./node_modules/.bin/prisma migrate status",
+    "node scripts/prisma-migration-checksums.mjs",
+    "./node_modules/.bin/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code",
     'DRIFT_EXIT="$?"',
     'test "$DRIFT_EXIT" -eq 0',
     "125 applied / 0 rolled-back / 0 pending / 0 failed / 0 duplicate",
     "先备份旧库，再备份空新库"
   ]);
   assert.doesNotMatch(contents, /^\s*(?:migrate\s+resolve|migrate\s+reset|repair\b)/im);
+  assert.doesNotMatch(contents, /pnpm (?:exec prisma|prisma:migrate:checksum:verify)/);
 });
 
 test("pins compose, release image, and fixed preflight identities", async () => {
@@ -1977,7 +1985,7 @@ case "$args $stdin_payload" in
   *'prisma migrate deploy'*) test "$FAILURE_SCENARIO" != migrate_deploy || { printf '%s\\n' gate:migration-deploy >>"$TRACE_FILE"; exit 75; } ;;
   *'prisma migrate status'*) test "$FAILURE_SCENARIO" != migrate_status || { printf '%s\\n' gate:migration-status >>"$TRACE_FILE"; exit 76; } ;;
   *' node -'*) test "$FAILURE_SCENARIO" != checksum || { printf '%s\\n' gate:migration-checksum >>"$TRACE_FILE"; exit 77; } ;;
-  *'prisma:migrate:checksum:verify'*) test "$FAILURE_SCENARIO" != checksum || { printf '%s\\n' gate:migration-checksum >>"$TRACE_FILE"; exit 77; } ;;
+  *'prisma-migration-checksums.mjs'*) test "$FAILURE_SCENARIO" != checksum || { printf '%s\\n' gate:migration-checksum >>"$TRACE_FILE"; exit 77; } ;;
   *'prisma migrate diff'*) test "$FAILURE_SCENARIO" != drift || { printf '%s\\n' gate:migration-drift >>"$TRACE_FILE"; exit 78; } ;;
   *'--discover-vehicles'*) mkdir -p "$HARNESS_EVIDENCE"; printf '{"candidates":[{"id":"%s"}]}' "$UUID_SENTINEL" >"$HARNESS_EVIDENCE/vehicle-discovery.json"; test "$FAILURE_SCENARIO" != discovery || { printf '%s\\n' gate:discovery >>"$TRACE_FILE"; exit 4; }; exit 3 ;;
   *'resource-disk'*) "$REAL_NODE" "$TASK9_GOVERNANCE_SCRIPT" resource-disk "\${@: -1}" ;;

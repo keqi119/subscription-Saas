@@ -7,6 +7,7 @@ import {
   runSourceDatabaseGate,
   requiredReleaseDatabaseTestContext,
   selectManifestSuites,
+  sha256Bytes,
   sha256Canonical,
   suiteDatabaseName
 } from "../src/index.mjs";
@@ -292,18 +293,21 @@ test("manifest refuses a suite report from another assignment", async () => {
 });
 
 test("database test context resolves only the assigned runtime secret reference", () => {
+  const password = "runtime-private-password";
   const context = {
     schemaVersion: "release-database-test-context.v1",
     allowedFiles: ["release/test-fixtures/database-launcher-fixture.postgres.test.mjs"],
     databaseName: "s1ci_aaaaaaaaaaaaaaaaaaaaaaaa",
     databaseOid: "19001",
     targetFingerprint: digest,
+    runtimeCredentialFingerprint: sha256Bytes(Buffer.from(password, "utf8")),
+    migrationCredentialFingerprint: `sha256:${"c".repeat(64)}`,
     containerId: "a".repeat(64),
     runtimeSecretReference: ".release-local/runs/run-1/release.launcher.fixture/runtime-test.json"
   };
   const secret = {
     username: "s1r_aaaaaaaaaaaaaaaaaaaaaaaa",
-    password: "runtime-private-password",
+    password,
     database: context.databaseName,
     host: "127.0.0.1",
     port: 54321,
@@ -327,6 +331,77 @@ test("database test context resolves only the assigned runtime secret reference"
   assert.equal(result.databaseName, context.databaseName);
   assert.match(result.databaseUrl, /^postgresql:\/\//);
   assert.equal(result.runtimeCredential.username, secret.username);
+});
+
+test("database test context resolves two distinct launcher-assigned runtime databases", () => {
+  const runtime = (name, letter, reference) => {
+    const password = `runtime-private-password-${letter}`;
+    return {
+      context: {
+        databaseName: name,
+        databaseOid: letter === "a" ? "19001" : "19002",
+        targetFingerprint: digest,
+        runtimeSecretReference: reference,
+        runtimeCredentialFingerprint: sha256Bytes(Buffer.from(password, "utf8")),
+        migrationCredentialFingerprint: `sha256:${letter.repeat(64)}`
+      },
+      secret: {
+        username: `s1r_${letter.repeat(24)}`,
+        password,
+        database: name,
+        host: "127.0.0.1",
+        port: 54321,
+        tlsMode: "disable"
+      }
+    };
+  };
+  const source = runtime(
+    "s1ci_aaaaaaaaaaaaaaaaaaaaaaaa",
+    "b",
+    ".release-local/runs/run-1/release.launcher.fixture/source/runtime-test.json"
+  );
+  const target = runtime(
+    "s1ci_cccccccccccccccccccccccc",
+    "d",
+    ".release-local/runs/run-1/release.launcher.fixture/runtime-test.json"
+  );
+  const context = {
+    schemaVersion: "release-database-test-context.v1",
+    allowedFiles: ["release/test-fixtures/database-launcher-fixture.postgres.test.mjs"],
+    containerId: "a".repeat(64),
+    ...target.context,
+    namedDatabases: { source: source.context, target: target.context }
+  };
+  const byReference = new Map([
+    [source.context.runtimeSecretReference, source.secret],
+    [target.context.runtimeSecretReference, target.secret]
+  ]);
+  const result = requiredReleaseDatabaseTestContext(
+    new URL(
+      "../../../release/test-fixtures/database-launcher-fixture.postgres.test.mjs",
+      import.meta.url
+    ).href,
+    {
+      environment: {
+        S1_RELEASE_DATABASE_TEST: "1",
+        S1_RELEASE_DATABASE_CONTEXT:
+          ".release-local/runs/run-1/release.launcher.fixture/context.json"
+      },
+      repoRoot: process.cwd(),
+      loadJson: (filePath) => {
+        if (filePath.endsWith("context.json")) return context;
+        const normalized = filePath.replaceAll("\\", "/");
+        const reference = [...byReference.keys()].find((item) => normalized.endsWith(item));
+        return byReference.get(reference);
+      }
+    }
+  );
+  assert.equal(result.namedDatabases.source.databaseUrl.includes(source.secret.database), true);
+  assert.equal(result.namedDatabases.target.databaseUrl.includes(target.secret.database), true);
+  assert.notEqual(
+    result.namedDatabases.source.runtimeCredentialFingerprint,
+    result.namedDatabases.target.runtimeCredentialFingerprint
+  );
 });
 
 test("database test context fails closed without launcher or with path traversal", () => {

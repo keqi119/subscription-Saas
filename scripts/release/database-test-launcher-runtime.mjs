@@ -16,6 +16,8 @@ import {
   redactEvidence,
   runDatabaseManifest,
   runDatabaseSuite,
+  runRuntimeSeedFixture,
+  runSchemaFixture,
   runSourceDatabaseGate,
   selectManifestSuites,
   sha256Canonical,
@@ -256,13 +258,18 @@ async function removeSuccessfulCluster(cluster, runId) {
 }
 
 async function createSecretStore(execution, cluster) {
-  const suiteRoot = path.join(
-    repoRoot,
-    ".release-local",
-    "runs",
-    execution.runId,
-    execution.suiteId
-  );
+  const migratePath = path.resolve(repoRoot, execution.assignment.secretReferences.migrate);
+  const runtimePath = path.resolve(repoRoot, execution.assignment.secretReferences["runtime-test"]);
+  const suiteRoot = path.dirname(migratePath);
+  const allowedRoot = path.resolve(repoRoot, ".release-local", "runs", execution.runId);
+  const relative = path.relative(allowedRoot, suiteRoot);
+  if (
+    relative.startsWith("..") ||
+    path.isAbsolute(relative) ||
+    path.dirname(runtimePath) !== suiteRoot
+  ) {
+    throw runtimeError("DATABASE_LAUNCHER_SECRET_REFERENCE_INVALID");
+  }
   await mkdir(suiteRoot, { recursive: true });
   return {
     suiteRoot,
@@ -325,6 +332,24 @@ async function prismaCommand(secret, arguments_, timeoutMs) {
       expiryDisposition: "review"
     }
   );
+}
+
+async function generatePrismaClient() {
+  const result = await runProcess(
+    "pnpm",
+    ["--filter", "@subscription-saas/api", "prisma:generate"],
+    {
+      timeoutMs: 120000,
+      environment: sanitizedEnvironment({
+        STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV: "1"
+      })
+    }
+  );
+  if (result.code !== 0 || result.signal) {
+    throw runtimeError("DATABASE_LAUNCHER_PRISMA_GENERATE_FAILED", {
+      exitCode: result.code
+    });
+  }
 }
 
 function tapCount(output, label) {
@@ -466,8 +491,10 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
   if (mode === "suite" && selections.length !== 1) {
     throw runtimeError("DATABASE_LAUNCHER_SUITE_SELECTION_INVALID");
   }
+  await generatePrismaClient();
   const cluster = await startCluster(runId, inputs.imageContract, inputs.policy);
   const observations = new Map();
+  const fixtureObservations = new Map();
   let completed = false;
   try {
     const admin = ({ databaseName, sql }) =>
@@ -481,75 +508,230 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
     const manifestReport = await runDatabaseManifest({
       selections,
       executeSuite: async (execution) => {
-        const secretStore = await createSecretStore(execution, cluster);
+        const resources = [];
         let provisionedRecord;
         return runDatabaseSuite({
           execution,
           operationId: randomUUID(),
           provision: async () => {
-            provisionedRecord = await provisionSuiteDatabase({
-              target: cluster.target,
-              policy: inputs.policy,
-              runId: execution.runId,
-              suiteId: execution.suiteId,
-              shard: execution.assignment.shard,
-              executeAdmin: admin,
-              secretStore
-            });
+            const assignmentExecutions = [
+              { name: "target", execution },
+              ...execution.additionalAssignments.map((assignment) => ({
+                name: assignment.name,
+                execution: {
+                  ...execution,
+                  suiteId: assignment.suiteIdentity,
+                  assignment,
+                  additionalAssignments: []
+                }
+              }))
+            ];
+            for (const item of assignmentExecutions) {
+              const secretStore = await createSecretStore(item.execution, cluster);
+              const record = await provisionSuiteDatabase({
+                target: cluster.target,
+                policy: inputs.policy,
+                runId: item.execution.runId,
+                suiteId: item.execution.suiteId,
+                shard: item.execution.assignment.shard,
+                executeAdmin: admin,
+                secretStore
+              });
+              resources.push({ ...item, record, secretStore });
+            }
+            const primary = resources[0].record;
+            provisionedRecord = {
+              ...primary,
+              additionalDatabases: resources.slice(1).map(({ name, record }) => ({
+                ...record,
+                name
+              }))
+            };
             return provisionedRecord;
           },
           deployMigrations: async () => {
-            const secret = await readSecret(provisionedRecord.secretReferences.migrate);
-            await prismaCommand(
-              secret,
-              ["migrate", "deploy", "--schema", "prisma/schema.prisma"],
-              execution.timeoutMs
-            );
-            const migrationStatus = await prismaCommand(
-              secret,
-              ["migrate", "status", "--schema", "prisma/schema.prisma"],
-              execution.timeoutMs
-            );
-            const schemaDiff = await prismaCommand(
-              secret,
-              [
-                "migrate",
-                "diff",
-                "--from-config-datasource",
-                "--to-schema",
-                "prisma/schema.prisma",
-                "--exit-code"
-              ],
-              execution.timeoutMs
-            );
+            const databaseObservations = [];
+            for (const resource of resources) {
+              const secret = await readSecret(resource.record.secretReferences.migrate);
+              await prismaCommand(
+                secret,
+                ["migrate", "deploy", "--schema", "prisma/schema.prisma"],
+                execution.timeoutMs
+              );
+              const migrationStatus = await prismaCommand(
+                secret,
+                ["migrate", "status", "--schema", "prisma/schema.prisma"],
+                execution.timeoutMs
+              );
+              const schemaDiff = await prismaCommand(
+                secret,
+                [
+                  "migrate",
+                  "diff",
+                  "--from-config-datasource",
+                  "--to-schema",
+                  "prisma/schema.prisma",
+                  "--exit-code"
+                ],
+                execution.timeoutMs
+              );
+              databaseObservations.push({
+                name: resource.name,
+                migrationStatusDigest: sha256Canonical(migrationStatus),
+                schemaDiffDigest: sha256Canonical(schemaDiff)
+              });
+            }
             observations.set(execution.suiteId, {
-              migrationStatusDigest: sha256Canonical(migrationStatus),
-              schemaDiffDigest: sha256Canonical(schemaDiff)
+              migrationStatusDigest: sha256Canonical(
+                databaseObservations.map(({ name, migrationStatusDigest }) => ({
+                  name,
+                  migrationStatusDigest
+                }))
+              ),
+              schemaDiffDigest: sha256Canonical(
+                databaseObservations.map(({ name, schemaDiffDigest }) => ({
+                  name,
+                  schemaDiffDigest
+                }))
+              )
             });
           },
-          grantRuntimeAccess: async () =>
-            grantRuntimeEquivalentAccess({
-              databaseName: provisionedRecord.databaseName,
-              migrationRole: provisionedRecord.roles.migrate,
-              runtimeRole: provisionedRecord.roles["runtime-test"],
-              executeDatabase: admin
-            }),
+          grantRuntimeAccess: async () => {
+            const suiteFixtures = [];
+            for (const resource of resources) {
+              await grantRuntimeEquivalentAccess({
+                databaseName: resource.record.databaseName,
+                migrationRole: resource.record.roles.migrate,
+                runtimeRole: resource.record.roles["runtime-test"],
+                executeDatabase: admin
+              });
+              if (!execution.fixtures) continue;
+              const migrationSecret = await readSecret(resource.record.secretReferences.migrate);
+              const runtimeSecret = await readSecret(
+                resource.record.secretReferences["runtime-test"]
+              );
+              const migrationFingerprint = sha256Bytes(
+                Buffer.from(migrationSecret.password, "utf8")
+              );
+              const runtimeFingerprint = sha256Bytes(Buffer.from(runtimeSecret.password, "utf8"));
+              const migration = await runSchemaFixture({
+                credentialRef: resource.record.secretReferences.migrate,
+                credentialFingerprint: migrationFingerprint,
+                counterpartCredentialFingerprint: runtimeFingerprint,
+                fixturePath: execution.fixtures.schema,
+                runtimeRole: resource.record.roles["runtime-test"],
+                executeSql: ({ credentialRef, sql }) => {
+                  if (credentialRef !== resource.record.secretReferences.migrate) {
+                    throw runtimeError("DATABASE_FIXTURE_CAPABILITY_MISMATCH");
+                  }
+                  return executePsql({
+                    containerId: cluster.containerId,
+                    credential: migrationSecret,
+                    databaseName: resource.record.databaseName,
+                    sql
+                  });
+                }
+              });
+              const runtime = await runRuntimeSeedFixture({
+                credentialRef: resource.record.secretReferences["runtime-test"],
+                credentialFingerprint: runtimeFingerprint,
+                counterpartCredentialFingerprint: migrationFingerprint,
+                fixturePath: execution.fixtures.seed,
+                executeSql: ({ credentialRef, sql }) => {
+                  if (credentialRef !== resource.record.secretReferences["runtime-test"]) {
+                    throw runtimeError("DATABASE_FIXTURE_CAPABILITY_MISMATCH");
+                  }
+                  return executePsql({
+                    containerId: cluster.containerId,
+                    credential: runtimeSecret,
+                    databaseName: resource.record.databaseName,
+                    sql
+                  });
+                }
+              });
+              const roleBoundaryResult = await executePsql({
+                containerId: cluster.containerId,
+                credential: runtimeSecret,
+                databaseName: resource.record.databaseName,
+                sql: [
+                  'SELECT r.rolsuper AS "superuser",',
+                  '       r.rolcreatedb AS "createdb",',
+                  '       r.rolcreaterole AS "createrole",',
+                  '       r.rolbypassrls AS "bypassrls",',
+                  "       has_database_privilege(current_user, current_database(), 'CREATE') AS \"canCreateSchema\",",
+                  '       EXISTS (SELECT 1 FROM pg_namespace WHERE nspowner = r.oid) AS "schemaOwner",',
+                  '       EXISTS (SELECT 1 FROM pg_class WHERE relowner = r.oid) AS "objectOwner"',
+                  "FROM pg_roles AS r WHERE r.rolname = current_user;"
+                ].join("\n"),
+                columns: [
+                  "superuser",
+                  "createdb",
+                  "createrole",
+                  "bypassrls",
+                  "canCreateSchema",
+                  "schemaOwner",
+                  "objectOwner"
+                ]
+              });
+              const boundary = roleBoundaryResult.rows[0];
+              if (!boundary || Object.values(boundary).some((value) => value !== "f")) {
+                throw runtimeError("DATABASE_TEST_RUNTIME_ROLE_BOUNDARY_FAILED", {
+                  database: resource.name
+                });
+              }
+              suiteFixtures.push({
+                database: resource.name,
+                migration,
+                runtime,
+                roleBoundary: Object.freeze(
+                  Object.fromEntries(Object.keys(boundary).map((key) => [key, false]))
+                )
+              });
+            }
+            if (suiteFixtures.length > 0) {
+              fixtureObservations.set(execution.suiteId, Object.freeze(suiteFixtures));
+            }
+          },
           executeTest: async () => {
+            const contextDatabases = {};
+            for (const resource of resources) {
+              const runtimeSecret = await readSecret(
+                resource.record.secretReferences["runtime-test"]
+              );
+              const migrationSecret = await readSecret(resource.record.secretReferences.migrate);
+              contextDatabases[resource.name] = {
+                databaseName: resource.record.databaseName,
+                databaseOid: resource.record.databaseOid,
+                targetFingerprint: resource.record.targetFingerprint,
+                runtimeSecretReference: resource.record.secretReferences["runtime-test"],
+                runtimeCredentialFingerprint: sha256Bytes(
+                  Buffer.from(runtimeSecret.password, "utf8")
+                ),
+                migrationCredentialFingerprint: sha256Bytes(
+                  Buffer.from(migrationSecret.password, "utf8")
+                )
+              };
+            }
+            const primaryContext = contextDatabases.target;
+            const primaryResource = resources[0];
             const runtimeSecret = await readSecret(
-              provisionedRecord.secretReferences["runtime-test"]
+              primaryResource.record.secretReferences["runtime-test"]
             );
-            const contextPath = path.join(secretStore.suiteRoot, "context.json");
+            const contextPath = path.join(primaryResource.secretStore.suiteRoot, "context.json");
             await writeFile(
               contextPath,
               `${JSON.stringify(
                 {
                   schemaVersion: "release-database-test-context.v1",
                   allowedFiles: execution.files,
-                  databaseName: provisionedRecord.databaseName,
-                  databaseOid: provisionedRecord.databaseOid,
-                  targetFingerprint: provisionedRecord.targetFingerprint,
+                  databaseName: primaryContext.databaseName,
+                  databaseOid: primaryContext.databaseOid,
+                  targetFingerprint: primaryContext.targetFingerprint,
                   containerId: cluster.containerId,
-                  runtimeSecretReference: provisionedRecord.secretReferences["runtime-test"]
+                  runtimeSecretReference: primaryContext.runtimeSecretReference,
+                  runtimeCredentialFingerprint: primaryContext.runtimeCredentialFingerprint,
+                  migrationCredentialFingerprint: primaryContext.migrationCredentialFingerprint,
+                  ...(resources.length > 1 ? { namedDatabases: contextDatabases } : {})
                 },
                 null,
                 2
@@ -584,10 +766,26 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
                 exitCode: result.code
               });
             }
+            if (counts.failed > 0) {
+              process.stderr.write(
+                `${JSON.stringify({
+                  schemaVersion: "database-test-sanitized-diagnostic.v1",
+                  suiteId: execution.suiteId,
+                  stdout: acceptedLog.stdout,
+                  stderr: acceptedLog.stderr
+                })}\n`
+              );
+            }
             if (runtimeSecret.database !== execution.assignment.databaseName) {
               throw runtimeError("DATABASE_TEST_RUNTIME_SECRET_MISMATCH");
             }
-            return { counts, sanitizedLogDigest: sha256Canonical(acceptedLog) };
+            return {
+              counts,
+              sanitizedLogDigest: sha256Canonical(acceptedLog),
+              ...(fixtureObservations.has(execution.suiteId)
+                ? { fixtureObservations: fixtureObservations.get(execution.suiteId) }
+                : {})
+            };
           },
           custody: ({ report }) =>
             custodyEvidence({
@@ -606,12 +804,14 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
             if (custodyReceipt.contentDigest !== custodyReceipt.readbackDigest) {
               throw runtimeError("DATABASE_TEST_CUSTODY_INCOMPLETE");
             }
-            await cleanupSuiteDatabase(provisionedRecord, {
-              target: cluster.target,
-              policy: inputs.policy,
-              executeAdmin: admin
-            });
-            await rm(secretStore.suiteRoot, { recursive: true, force: true });
+            for (const resource of [...resources].reverse()) {
+              await cleanupSuiteDatabase(resource.record, {
+                target: cluster.target,
+                policy: inputs.policy,
+                executeAdmin: admin
+              });
+              await rm(resource.secretStore.suiteRoot, { recursive: true, force: true });
+            }
           }
         });
       }

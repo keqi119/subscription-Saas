@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import test from "node:test";
+
+import {
+  requiredReleaseDatabaseTestContext,
+  runRuntimeSeedFixture
+} from "../packages/release-foundation/src/index.mjs";
 
 import {
   STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_TARGET as TARGET,
@@ -14,16 +18,12 @@ const repoRoot = resolve(import.meta.dirname, "..");
 const requireFromApi = createRequire(resolve(repoRoot, "apps/api/package.json"));
 const { Pool } = requireFromApi("pg");
 const operatorId = "11111111-1111-4111-8111-111111111111";
-const databaseUrl = process.env.STAGE1_RETIREMENT_TEST_DATABASE_URL?.trim() ?? null;
-if (databaseUrl) assertSafeTestDatabaseUrl(databaseUrl);
-const integrationTest = databaseUrl ? test : test.skip;
+const databaseContext = requiredReleaseDatabaseTestContext(import.meta.url);
+const databaseUrl = databaseContext.databaseUrl;
+assertSafeTestDatabaseUrl(databaseUrl);
 
 test("integration database guard only accepts explicitly named test databases", () => {
-  for (const database of [
-    "subscription_saas_test",
-    "subscription_saas_codex",
-    "subscription_saas_retirement_verify_20260829"
-  ]) {
+  for (const database of ["s1ci_000000000000000000000000", "s1ci_aaaaaaaaaaaaaaaaaaaaaaaa"]) {
     assert.doesNotThrow(() =>
       assertSafeTestDatabaseUrl(
         `postgresql://postgres:postgres@localhost:5432/${database}?schema=public`
@@ -31,7 +31,12 @@ test("integration database guard only accepts explicitly named test databases", 
     );
   }
 
-  for (const database of ["subscription_saas_staging", "subscription_saas", "postgres"]) {
+  for (const database of [
+    "subscription_saas_test",
+    "subscription_saas_staging",
+    "subscription_saas",
+    "postgres"
+  ]) {
     assert.throws(
       () =>
         assertSafeTestDatabaseUrl(
@@ -42,64 +47,43 @@ test("integration database guard only accepts explicitly named test databases", 
   }
 });
 
-integrationTest(
-  "real PostgreSQL serializes apply/replay and rolls back audit failure",
-  async (t) => {
-    const harness = await createPostgresHarness(databaseUrl);
-    t.after(() => harness.close());
+test("real PostgreSQL serializes apply/replay and rolls back audit failure", async (t) => {
+  const harness = await createPostgresHarness(databaseUrl);
+  t.after(() => harness.close());
 
-    const initial = await harness.snapshot();
-    const evidenceDigest = classify(initial).evidenceDigest;
-    const concurrent = await Promise.allSettled([
-      harness.apply(evidenceDigest),
-      harness.apply(evidenceDigest)
-    ]);
-    const fulfilled = concurrent.filter(({ status }) => status === "fulfilled");
-    const rejected = concurrent.filter(({ status }) => status === "rejected");
-    assert.equal(fulfilled.length, 1);
-    assert.equal(fulfilled[0].value.report.applied.ordersUpdated, 1);
-    assert.equal(rejected.length, 1);
-    assert.equal(rejected[0].reason.code, "40001");
-    assert.equal((await harness.snapshot()).auditLogs.length, 4);
-    const replay = await harness.apply(evidenceDigest);
-    assert.equal(replay.report.classification.disposition, "UNCHANGED");
-    assert.equal(replay.report.applied.skippedUnchanged, 1);
+  const initial = await harness.snapshot();
+  const evidenceDigest = classify(initial).evidenceDigest;
+  const concurrent = await Promise.allSettled([
+    harness.apply(evidenceDigest),
+    harness.apply(evidenceDigest)
+  ]);
+  const fulfilled = concurrent.filter(({ status }) => status === "fulfilled");
+  const rejected = concurrent.filter(({ status }) => status === "rejected");
+  assert.equal(fulfilled.length, 1);
+  assert.equal(fulfilled[0].value.report.applied.ordersUpdated, 1);
+  assert.equal(rejected.length, 1);
+  assert.equal(rejected[0].reason.code, "40001");
+  assert.equal((await harness.snapshot()).auditLogs.length, 4);
+  const replay = await harness.apply(evidenceDigest);
+  assert.equal(replay.report.classification.disposition, "UNCHANGED");
+  assert.equal(replay.report.applied.skippedUnchanged, 1);
 
-    await harness.reset();
-    harness.failAuditAt(4);
-    await assert.rejects(harness.apply(evidenceDigest), /INJECTED_POSTGRES_AUDIT_FAILURE/);
-    const rolledBack = await harness.snapshot();
-    assert.equal(rolledBack.order.orderStatus, "ACTIVE");
-    assert.equal(rolledBack.lease.status, "ACTIVE");
-    assert.equal(rolledBack.billingSchedule.status, "PAUSED");
-    assert.equal(rolledBack.vehicle.status, "LEASED");
-    assert.equal(rolledBack.auditLogs.length, 0);
-  }
-);
+  await harness.reset();
+  harness.failAuditAt(4);
+  await assert.rejects(harness.apply(evidenceDigest), /INJECTED_POSTGRES_AUDIT_FAILURE/);
+  const rolledBack = await harness.snapshot();
+  assert.equal(rolledBack.order.orderStatus, "ACTIVE");
+  assert.equal(rolledBack.lease.status, "ACTIVE");
+  assert.equal(rolledBack.billingSchedule.status, "PAUSED");
+  assert.equal(rolledBack.vehicle.status, "LEASED");
+  assert.equal(rolledBack.auditLogs.length, 0);
+});
 
 async function createPostgresHarness(connectionString) {
   const pool = new Pool({ connectionString, max: 4 });
-  const schema = `retirement_test_${randomUUID().replaceAll("-", "")}`;
+  const schema = "stage1_invalid_order_retirement";
   const quotedSchema = quoteIdentifier(schema);
   let failAt = null;
-
-  await pool.query(`CREATE SCHEMA ${quotedSchema}`);
-  await pool.query(`
-    CREATE TABLE ${quotedSchema}.target_state (
-      entity text PRIMARY KEY,
-      status text NOT NULL,
-      version integer NOT NULL DEFAULT 0,
-      cancelled_at timestamptz,
-      pause_reason text
-    )
-  `);
-  await pool.query(`
-    CREATE TABLE ${quotedSchema}.retirement_audit (
-      id bigserial PRIMARY KEY,
-      data jsonb NOT NULL
-    )
-  `);
-  await reset();
 
   return {
     apply,
@@ -131,20 +115,16 @@ async function createPostgresHarness(connectionString) {
 
   async function reset() {
     failAt = null;
-    await pool.query(`TRUNCATE ${quotedSchema}.retirement_audit`);
-    await pool.query(`TRUNCATE ${quotedSchema}.target_state`);
-    await pool.query(
-      `INSERT INTO ${quotedSchema}.target_state (entity, status, version, pause_reason)
-       VALUES
-         ('billing_schedule', 'PAUSED', 0, 'legacy-test-order'),
-         ('lease', 'ACTIVE', 0, NULL),
-         ('subscription_order', 'ACTIVE', 0, NULL),
-         ('vehicle', 'LEASED', 0, NULL)`
-    );
+    await runRuntimeSeedFixture({
+      credentialRef: databaseContext.runtimeSecretReference,
+      credentialFingerprint: databaseContext.runtimeCredentialFingerprint,
+      counterpartCredentialFingerprint: databaseContext.migrationCredentialFingerprint,
+      fixturePath: "release/test-fixtures/stage1-invalid-order-retirement.seed.sql",
+      executeSql: ({ sql }) => pool.query(sql)
+    });
   }
 
   async function close() {
-    await pool.query(`DROP SCHEMA ${quotedSchema} CASCADE`);
     await pool.end();
   }
 }
@@ -356,11 +336,7 @@ function quoteIdentifier(value) {
 
 function assertSafeTestDatabaseUrl(value) {
   const database = decodeURIComponent(new URL(value).pathname.slice(1));
-  if (
-    database !== "subscription_saas_test" &&
-    database !== "subscription_saas_codex" &&
-    !database.startsWith("subscription_saas_retirement_verify_")
-  ) {
+  if (!/^s1ci_[0-9a-f]{24}$/.test(database)) {
     throw new Error("STAGE1_RETIREMENT_INTEGRATION_TEST_DATABASE_REQUIRED");
   }
 }

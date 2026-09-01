@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { assertCustodyComplete } from "./evidence-custody.mjs";
-import { sha256Canonical } from "./digest.mjs";
+import { sha256Bytes, sha256Canonical } from "./digest.mjs";
 import { validateContract } from "./schema-registry.mjs";
 import { suiteDatabaseName } from "./database-target.mjs";
 
@@ -146,6 +146,21 @@ export function selectManifestSuites({
       }
       const databaseName = suiteDatabaseName(runId, suiteId, index);
       const referenceRoot = `${secretRootRef.replaceAll("\\", "/")}/${suiteId}`;
+      const additionalAssignments =
+        suite.databaseTopology === "source-target"
+          ? [
+              Object.freeze({
+                name: "source",
+                suiteIdentity: `${suiteId}.source`,
+                databaseName: suiteDatabaseName(runId, `${suiteId}.source`, index + 1000),
+                shard: index + 1000,
+                secretReferences: Object.freeze({
+                  migrate: `${referenceRoot}/source/migrate.json`,
+                  "runtime-test": `${referenceRoot}/source/runtime-test.json`
+                })
+              })
+            ]
+          : [];
       return Object.freeze({
         suiteId,
         runId,
@@ -161,10 +176,12 @@ export function selectManifestSuites({
             "runtime-test": `${referenceRoot}/runtime-test.json`
           })
         }),
+        additionalAssignments: Object.freeze(additionalAssignments),
         command: commandFor(suite),
         timeoutMs: suite.timeoutMs,
         barrier: suite.barrier,
-        expectedCountPolicy: Object.freeze({ ...suite.expectedCountPolicy })
+        expectedCountPolicy: Object.freeze({ ...suite.expectedCountPolicy }),
+        fixtures: suite.fixtures ? Object.freeze({ ...suite.fixtures }) : undefined
       });
     })
   );
@@ -211,6 +228,60 @@ function assertProvisioned(execution, provisioned) {
   ) {
     throw launcherError("DATABASE_TEST_ASSIGNMENT_MISMATCH");
   }
+  const additional = provisioned.additionalDatabases ?? [];
+  if (
+    additional.length !== execution.additionalAssignments.length ||
+    additional.some((database, index) => {
+      const expected = execution.additionalAssignments[index];
+      return (
+        database.name !== expected.name ||
+        database.databaseName !== expected.databaseName ||
+        database.secretReferences?.migrate !== expected.secretReferences.migrate ||
+        database.secretReferences?.["runtime-test"] !== expected.secretReferences["runtime-test"] ||
+        !/^[0-9]+$/.test(database.databaseOid ?? "") ||
+        !/^sha256:[0-9a-f]{64}$/.test(database.targetFingerprint ?? "")
+      );
+    })
+  ) {
+    throw launcherError("DATABASE_TEST_ADDITIONAL_ASSIGNMENT_MISMATCH");
+  }
+}
+
+function assertFixtureObservations(execution, observations) {
+  if (!execution.fixtures) {
+    if (observations !== undefined) {
+      throw launcherError("DATABASE_TEST_FIXTURE_OBSERVATION_UNEXPECTED");
+    }
+    return;
+  }
+  const expectedNames = ["target", ...execution.additionalAssignments.map(({ name }) => name)];
+  const boundaryKeys = [
+    "bypassrls",
+    "canCreateSchema",
+    "createdb",
+    "createrole",
+    "objectOwner",
+    "schemaOwner",
+    "superuser"
+  ];
+  if (
+    !Array.isArray(observations) ||
+    observations.length !== expectedNames.length ||
+    observations.some(
+      (entry, index) =>
+        entry?.database !== expectedNames[index] ||
+        entry?.migration?.schemaVersion !== "fixture-observation.v1" ||
+        entry.migration.capability !== "migration" ||
+        entry?.runtime?.schemaVersion !== "fixture-observation.v1" ||
+        entry.runtime.capability !== "runtime-test" ||
+        entry.migration.credentialFingerprint === entry.runtime.credentialFingerprint ||
+        JSON.stringify(Object.keys(entry.roleBoundary ?? {}).sort()) !==
+          JSON.stringify(boundaryKeys) ||
+        Object.values(entry.roleBoundary ?? {}).some((value) => value !== false)
+    )
+  ) {
+    throw launcherError("DATABASE_TEST_FIXTURE_OBSERVATION_INVALID");
+  }
 }
 
 export async function runDatabaseSuite({
@@ -241,6 +312,7 @@ export async function runDatabaseSuite({
   await grantRuntimeAccess({ execution, provisioned });
   const result = await executeTest({ execution, provisioned });
   const counts = normalizeDatabaseTestCounts(result?.counts, execution.expectedCountPolicy);
+  assertFixtureObservations(execution, result?.fixtureObservations);
   if (!/^sha256:[0-9a-f]{64}$/.test(result?.sanitizedLogDigest ?? "")) {
     throw launcherError("DATABASE_TEST_LOG_DIGEST_INVALID");
   }
@@ -257,7 +329,24 @@ export async function runDatabaseSuite({
       databaseOid: provisioned.databaseOid,
       targetFingerprint: provisioned.targetFingerprint
     }),
+    ...(provisioned.additionalDatabases?.length
+      ? {
+          additionalDatabases: Object.freeze(
+            provisioned.additionalDatabases.map((database) =>
+              Object.freeze({
+                name: database.name,
+                databaseName: database.databaseName,
+                databaseOid: database.databaseOid,
+                targetFingerprint: database.targetFingerprint
+              })
+            )
+          )
+        }
+      : {}),
     counts,
+    ...(result.fixtureObservations
+      ? { fixtureObservations: Object.freeze([...result.fixtureObservations]) }
+      : {}),
     sanitizedLogDigest: result.sanitizedLogDigest,
     terminalStatus: counts.failed === 0 ? "PASSED" : "FAILED"
   });
@@ -280,6 +369,7 @@ function addCounts(reports) {
 }
 
 function assertSuiteReportMatches(selection, report) {
+  const additionalReports = report?.additionalDatabases ?? [];
   if (
     report?.schemaVersion !== "database-suite-report.v1" ||
     report.runId !== selection.runId ||
@@ -287,7 +377,12 @@ function assertSuiteReportMatches(selection, report) {
     report.chain !== selection.chain ||
     report.manifestDigest !== selection.manifestDigest ||
     report.discoveryDigest !== selection.discoveryDigest ||
-    report.target?.databaseName !== selection.assignment.databaseName
+    report.target?.databaseName !== selection.assignment.databaseName ||
+    additionalReports.length !== selection.additionalAssignments.length ||
+    additionalReports.some((database, index) => {
+      const expected = selection.additionalAssignments[index];
+      return database.name !== expected.name || database.databaseName !== expected.databaseName;
+    })
   ) {
     throw launcherError("DATABASE_TEST_SUITE_REPORT_MISMATCH", {
       suiteId: selection.suiteId
@@ -404,6 +499,41 @@ function databaseUrl(secret) {
   return `postgresql://${encodeURIComponent(secret.username)}:${encodeURIComponent(secret.password)}@${secret.host}:${secret.port}/${encodeURIComponent(secret.database)}?sslmode=${encodeURIComponent(secret.tlsMode)}`;
 }
 
+function loadRuntimeDatabase({ context, repoRoot, loadJson }) {
+  const secretPath = resolvedLocalReference(
+    repoRoot,
+    context.runtimeSecretReference,
+    /\/runtime-test\.json$/
+  );
+  const secret = loadJson(secretPath);
+  if (
+    !/^s1ci_[0-9a-f]{24}$/.test(context.databaseName ?? "") ||
+    !/^[0-9]+$/.test(context.databaseOid ?? "") ||
+    !/^sha256:[0-9a-f]{64}$/.test(context.targetFingerprint ?? "") ||
+    !/^sha256:[0-9a-f]{64}$/.test(context.runtimeCredentialFingerprint ?? "") ||
+    !/^sha256:[0-9a-f]{64}$/.test(context.migrationCredentialFingerprint ?? "") ||
+    context.runtimeCredentialFingerprint === context.migrationCredentialFingerprint ||
+    typeof secret?.username !== "string" ||
+    !/^s1r_[0-9a-f]{24}$/.test(secret.username) ||
+    typeof secret.password !== "string" ||
+    secret.password.length < 16 ||
+    sha256Bytes(Buffer.from(secret.password, "utf8")) !== context.runtimeCredentialFingerprint ||
+    secret.database !== context.databaseName ||
+    secret.host !== "127.0.0.1" ||
+    !Number.isInteger(secret.port) ||
+    secret.port < 1 ||
+    secret.port > 65535 ||
+    secret.tlsMode !== "disable"
+  ) {
+    throw launcherError("RELEASE_DATABASE_TEST_SECRET_INVALID");
+  }
+  return Object.freeze({
+    ...context,
+    databaseUrl: databaseUrl(secret),
+    runtimeCredential: Object.freeze({ username: secret.username, password: secret.password })
+  });
+}
+
 export function requiredReleaseDatabaseTestContext(
   moduleUrl,
   { environment = process.env, repoRoot = process.cwd(), loadJson = defaultLoadJson } = {}
@@ -421,9 +551,6 @@ export function requiredReleaseDatabaseTestContext(
     context?.schemaVersion !== "release-database-test-context.v1" ||
     !Array.isArray(context.allowedFiles) ||
     context.allowedFiles.length === 0 ||
-    !/^s1ci_[0-9a-f]{24}$/.test(context.databaseName ?? "") ||
-    !/^[0-9]+$/.test(context.databaseOid ?? "") ||
-    !/^sha256:[0-9a-f]{64}$/.test(context.targetFingerprint ?? "") ||
     !/^[0-9a-f]{12,64}$/.test(context.containerId ?? "")
   ) {
     throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
@@ -432,29 +559,35 @@ export function requiredReleaseDatabaseTestContext(
   if (!context.allowedFiles.some((file) => caller.endsWith(`/${file}`))) {
     throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_CALLER_FORBIDDEN");
   }
-  const secretPath = resolvedLocalReference(
-    repoRoot,
-    context.runtimeSecretReference,
-    /\/runtime-test\.json$/
-  );
-  const secret = loadJson(secretPath);
+  const primary = loadRuntimeDatabase({ context, repoRoot, loadJson });
+  if (context.namedDatabases === undefined) return primary;
   if (
-    typeof secret?.username !== "string" ||
-    !/^s1r_[0-9a-f]{24}$/.test(secret.username) ||
-    typeof secret.password !== "string" ||
-    secret.password.length < 16 ||
-    secret.database !== context.databaseName ||
-    secret.host !== "127.0.0.1" ||
-    !Number.isInteger(secret.port) ||
-    secret.port < 1 ||
-    secret.port > 65535 ||
-    secret.tlsMode !== "disable"
+    context.namedDatabases === null ||
+    typeof context.namedDatabases !== "object" ||
+    Array.isArray(context.namedDatabases) ||
+    JSON.stringify(Object.keys(context.namedDatabases).sort()) !==
+      JSON.stringify(["source", "target"])
   ) {
-    throw launcherError("RELEASE_DATABASE_TEST_SECRET_INVALID");
+    throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
   }
-  return Object.freeze({
-    ...context,
-    databaseUrl: databaseUrl(secret),
-    runtimeCredential: Object.freeze({ username: secret.username, password: secret.password })
-  });
+  const namedDatabases = Object.freeze(
+    Object.fromEntries(
+      Object.entries(context.namedDatabases).map(([name, database]) => [
+        name,
+        loadRuntimeDatabase({ context: database, repoRoot, loadJson })
+      ])
+    )
+  );
+  if (
+    namedDatabases.target.databaseName !== primary.databaseName ||
+    namedDatabases.target.databaseOid !== primary.databaseOid ||
+    namedDatabases.target.targetFingerprint !== primary.targetFingerprint ||
+    namedDatabases.target.runtimeCredentialFingerprint !== primary.runtimeCredentialFingerprint ||
+    namedDatabases.source.databaseName === namedDatabases.target.databaseName ||
+    namedDatabases.source.runtimeCredentialFingerprint ===
+      namedDatabases.target.runtimeCredentialFingerprint
+  ) {
+    throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
+  }
+  return Object.freeze({ ...primary, namedDatabases });
 }

@@ -13,6 +13,7 @@
     "packages/release-foundation/src/evidence-custody.mjs",
     "packages/release-foundation/src/index.mjs",
     "packages/release-foundation/src/migration-global-object-scan.mjs",
+    "packages/release-foundation/src/node-database-test-runner.mjs",
     "packages/release-foundation/src/schema-registry.mjs",
     "release/contracts/database-target-policies.v1.json",
     "release/contracts/database-test-discovery.v1.json",

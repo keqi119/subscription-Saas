@@ -63,7 +63,7 @@
       "expectedCountPolicy": { "mode": "complete" }
     },
     {
-      "suiteId": "node.clean-acceptance.postgres",
+      "suiteId": "script.stage1-clean-acceptance.postgres",
       "runner": "node-test",
       "files": ["scripts/stage1-clean-acceptance-baseline-postgres.integration.test.mjs"],
       "chainApplicability": {
@@ -76,7 +76,12 @@
       "barrier": "database",
       "externalDependency": "none",
       "owner": "release-engineering",
-      "expectedCountPolicy": { "mode": "complete" }
+      "expectedCountPolicy": { "mode": "complete" },
+      "databaseTopology": "source-target",
+      "fixtures": {
+        "schema": "release/test-fixtures/stage1-clean-acceptance.schema.sql",
+        "seed": "release/test-fixtures/stage1-clean-acceptance.seed.sql"
+      }
     },
     {
       "suiteId": "node.closure-reconciliation.postgres",
@@ -95,7 +100,7 @@
       "expectedCountPolicy": { "mode": "complete" }
     },
     {
-      "suiteId": "node.invalid-order-retirement.postgres",
+      "suiteId": "script.stage1-invalid-order-retirement.postgres",
       "runner": "node-test",
       "files": [
         "scripts/stage1-staging-invalid-test-order-retirement-postgres.integration.test.mjs"
@@ -110,7 +115,12 @@
       "barrier": "database",
       "externalDependency": "none",
       "owner": "release-engineering",
-      "expectedCountPolicy": { "mode": "complete" }
+      "expectedCountPolicy": { "mode": "complete" },
+      "databaseTopology": "single",
+      "fixtures": {
+        "schema": "release/test-fixtures/stage1-invalid-order-retirement.schema.sql",
+        "seed": "release/test-fixtures/stage1-invalid-order-retirement.seed.sql"
+      }
     },
     {
       "suiteId": "node.release-database-lifecycle.postgres",

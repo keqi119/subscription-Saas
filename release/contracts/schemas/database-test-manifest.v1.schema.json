@@ -120,7 +120,23 @@
         "barrier": { "$ref": "#/$defs/nonEmpty" },
         "externalDependency": { "$ref": "#/$defs/nonEmpty" },
         "owner": { "$ref": "#/$defs/nonEmpty" },
-        "expectedCountPolicy": { "$ref": "#/$defs/expectedCountPolicy" }
+        "expectedCountPolicy": { "$ref": "#/$defs/expectedCountPolicy" },
+        "databaseTopology": { "enum": ["single", "source-target"] },
+        "fixtures": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "seed"],
+          "properties": {
+            "schema": {
+              "type": "string",
+              "pattern": "^release/test-fixtures/[a-z0-9][a-z0-9.-]*\\.schema\\.sql$"
+            },
+            "seed": {
+              "type": "string",
+              "pattern": "^release/test-fixtures/[a-z0-9][a-z0-9.-]*\\.seed\\.sql$"
+            }
+          }
+        }
       }
     }
   }

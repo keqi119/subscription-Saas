@@ -1,0 +1,23 @@
+{
+  "contractVersion": "repository-contract-files.v1",
+  "files": [
+    "packages/release-foundation/package.json",
+    "packages/release-foundation/src/canonical-json.mjs",
+    "packages/release-foundation/src/catalogs.mjs",
+    "packages/release-foundation/src/digest.mjs",
+    "packages/release-foundation/src/index.mjs",
+    "packages/release-foundation/src/schema-registry.mjs",
+    "release/contracts/postgres-image.v1.json",
+    "release/contracts/repository-contract-files.v1.json",
+    "release/contracts/schemas/baseline-environment-manifest.v1.schema.json",
+    "release/contracts/schemas/build-proof.v1.schema.json",
+    "release/contracts/schemas/controlled-target-record.v1.schema.json",
+    "release/contracts/schemas/custody-receipt.v1.schema.json",
+    "release/contracts/schemas/execution-proof.v1.schema.json",
+    "release/contracts/schemas/launch-attestation.v1.schema.json",
+    "release/contracts/schemas/post-state-observation.v1.schema.json",
+    "release/contracts/schemas/postgres-image.v1.schema.json",
+    "release/contracts/schemas/release-aggregate-proof.v1.schema.json",
+    "release/contracts/schemas/source-gate-evidence.v1.schema.json"
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "execution-proof.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "operationId",
+    "attemptId",
+    "phase",
+    "predecessorProofDigest",
+    "status",
+    "buildProofDigest",
+    "baselineManifestIdentityDigest",
+    "baselineManifestDigest",
+    "executionScope",
+    "command",
+    "databaseIdentityFingerprint",
+    "inputDigest",
+    "planDigest",
+    "outputDigest",
+    "postconditionsStatus",
+    "postStateObservationDigest",
+    "timing",
+    "toolVersion",
+    "error",
+    "references"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "execution-proof.v1" },
+    "operationId": { "type": "string", "format": "uuid" },
+    "attemptId": { "type": "string", "format": "uuid" },
+    "phase": { "enum": ["dry-run", "apply", "replay", "reconcile", "verify", "evidence"] },
+    "predecessorProofDigest": { "$ref": "#/$defs/nullableDigest" },
+    "status": { "enum": ["PREFLIGHT_REJECTED", "SUCCEEDED", "FAILED", "INTERRUPTED_UNKNOWN"] },
+    "buildProofDigest": { "$ref": "#/$defs/digest" },
+    "baselineManifestIdentityDigest": { "$ref": "#/$defs/digest" },
+    "baselineManifestDigest": { "$ref": "#/$defs/digest" },
+    "executionScope": {
+      "enum": ["full-rc", "migration-schema", "verify", "repair", "fixture", "evidence"]
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "capability", "approvalMode"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "version": { "$ref": "#/$defs/nonEmpty" },
+        "capability": { "enum": ["verify", "migrate", "repair", "fixture", "evidence"] },
+        "approvalMode": { "enum": ["none", "ci-policy", "human"] }
+      }
+    },
+    "databaseIdentityFingerprint": { "$ref": "#/$defs/digest" },
+    "inputDigest": { "$ref": "#/$defs/digest" },
+    "planDigest": { "$ref": "#/$defs/digest" },
+    "outputDigest": { "$ref": "#/$defs/digest" },
+    "postconditionsStatus": { "enum": ["PASSED", "FAILED", "UNKNOWN"] },
+    "postStateObservationDigest": { "$ref": "#/$defs/digest" },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startedAt", "completedAt"],
+      "properties": {
+        "startedAt": { "$ref": "#/$defs/timestamp" },
+        "completedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "toolVersion": { "$ref": "#/$defs/nonEmpty" },
+    "error": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["classification", "messageDigest"],
+          "properties": {
+            "classification": { "$ref": "#/$defs/nonEmpty" },
+            "messageDigest": { "$ref": "#/$defs/digest" }
+          }
+        }
+      ]
+    },
+    "references": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["launcher", "policy", "approval"],
+      "properties": {
+        "launcher": { "$ref": "#/$defs/nonEmpty" },
+        "policy": { "$ref": "#/$defs/nonEmpty" },
+        "approval": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/nonEmpty" }]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "nullableDigest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "nonEmpty": { "type": "string", "minLength": 1 }
+  }
+}

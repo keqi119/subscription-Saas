@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "build-proof.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "identity", "provenance"],
+  "properties": {
+    "schemaVersion": { "const": "build-proof.v1" },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "images",
+        "sourceSha",
+        "migrationCatalogDigest",
+        "repositoryContractDigest"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "build-proof.identity.v1" },
+        "images": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["api", "web", "runner"],
+          "properties": {
+            "api": { "$ref": "#/$defs/image" },
+            "web": { "$ref": "#/$defs/image" },
+            "runner": { "$ref": "#/$defs/image" }
+          }
+        },
+        "sourceSha": { "$ref": "#/$defs/sourceSha" },
+        "migrationCatalogDigest": { "$ref": "#/$defs/digest" },
+        "repositoryContractDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generatedAt",
+        "ciRunRef",
+        "attestationRef",
+        "checkoutRef",
+        "baseImages",
+        "materials",
+        "registryResolutionEvidenceDigest"
+      ],
+      "properties": {
+        "generatedAt": { "$ref": "#/$defs/timestamp" },
+        "ciRunRef": { "$ref": "#/$defs/nonEmpty" },
+        "attestationRef": { "$ref": "#/$defs/nonEmpty" },
+        "checkoutRef": { "$ref": "#/$defs/sourceSha" },
+        "baseImages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "resolvedDigest"],
+            "properties": {
+              "name": { "$ref": "#/$defs/nonEmpty" },
+              "resolvedDigest": { "$ref": "#/$defs/digest" }
+            }
+          }
+        },
+        "materials": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "reference"],
+            "properties": {
+              "name": { "$ref": "#/$defs/nonEmpty" },
+              "reference": { "$ref": "#/$defs/nonEmpty" }
+            }
+          }
+        },
+        "registryResolutionEvidenceDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "registry", "platform", "imageDigest", "sourceRevision"],
+      "properties": {
+        "name": { "enum": ["api", "web", "runner"] },
+        "registry": { "$ref": "#/$defs/nonEmpty" },
+        "platform": { "const": "linux/amd64" },
+        "imageDigest": { "$ref": "#/$defs/digest" },
+        "sourceRevision": { "$ref": "#/$defs/sourceSha" }
+      }
+    }
+  }
+}

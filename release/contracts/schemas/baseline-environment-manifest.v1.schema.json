@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "baseline-environment-manifest.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "identity", "provenance"],
+  "properties": {
+    "schemaVersion": { "const": "baseline-environment-manifest.v1" },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "environmentClass",
+        "buildProofDigest",
+        "sourceSha",
+        "migrationCatalogDigest",
+        "repositoryContractDigest",
+        "targetPolicyRef",
+        "secretReferenceFingerprint",
+        "databaseIdentityFingerprint",
+        "databaseNameFingerprint",
+        "databaseRole",
+        "databaseSchema",
+        "postgresServerVersionNum",
+        "preMigrationHead",
+        "preSchemaDigest",
+        "configurationFingerprint"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "baseline-environment-manifest.identity.v1" },
+        "environmentClass": { "enum": ["ci-fresh", "ci-snapshot", "staging", "production"] },
+        "buildProofDigest": { "$ref": "#/$defs/digest" },
+        "sourceSha": { "$ref": "#/$defs/sourceSha" },
+        "migrationCatalogDigest": { "$ref": "#/$defs/digest" },
+        "repositoryContractDigest": { "$ref": "#/$defs/digest" },
+        "targetPolicyRef": { "$ref": "#/$defs/nonEmpty" },
+        "secretReferenceFingerprint": { "$ref": "#/$defs/digest" },
+        "databaseIdentityFingerprint": { "$ref": "#/$defs/digest" },
+        "databaseNameFingerprint": { "$ref": "#/$defs/digest" },
+        "databaseRole": { "$ref": "#/$defs/nonEmpty" },
+        "databaseSchema": { "$ref": "#/$defs/nonEmpty" },
+        "postgresServerVersionNum": { "type": "string", "pattern": "^17[0-9]{4}$" },
+        "preMigrationHead": {
+          "anyOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9]{14}_[a-z0-9_]+$" }]
+        },
+        "preSchemaDigest": { "$ref": "#/$defs/digest" },
+        "configurationFingerprint": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generatedAt", "launcherRef", "launchAttestationDigest", "toolVersion", "runId"],
+      "properties": {
+        "generatedAt": { "$ref": "#/$defs/timestamp" },
+        "launcherRef": { "$ref": "#/$defs/nonEmpty" },
+        "launchAttestationDigest": { "$ref": "#/$defs/digest" },
+        "toolVersion": { "$ref": "#/$defs/nonEmpty" },
+        "runId": { "type": "string", "format": "uuid" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "nonEmpty": { "type": "string", "minLength": 1 }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "release-aggregate-proof.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "buildProofDigest",
+    "sourceGateEvidence",
+    "finalArtifactExecutions",
+    "composeEvidenceDigest",
+    "apiReadinessEvidenceDigest",
+    "webClientEvidenceDigest",
+    "aggregatedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "release-aggregate-proof.v1" },
+    "buildProofDigest": { "$ref": "#/$defs/digest" },
+    "sourceGateEvidence": { "$ref": "#/$defs/chains" },
+    "finalArtifactExecutions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fresh", "snapshot"],
+      "properties": {
+        "fresh": { "$ref": "#/$defs/execution" },
+        "snapshot": { "$ref": "#/$defs/execution" }
+      }
+    },
+    "composeEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "apiReadinessEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "webClientEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "aggregatedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "chains": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fresh", "snapshot"],
+      "properties": {
+        "fresh": { "$ref": "#/$defs/digest" },
+        "snapshot": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifestDigest",
+        "manifestIdentityDigest",
+        "postStateObservationDigest",
+        "executionProofDigest"
+      ],
+      "properties": {
+        "manifestDigest": { "$ref": "#/$defs/digest" },
+        "manifestIdentityDigest": { "$ref": "#/$defs/digest" },
+        "postStateObservationDigest": { "$ref": "#/$defs/digest" },
+        "executionProofDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

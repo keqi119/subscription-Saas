@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 const imageTag = process.env.IMAGE_TAG?.trim() ?? "";
-const apiBaseUrl = process.env.API_BASE_URL?.trim() ?? "";
+const rawApiBaseUrl = process.env.API_BASE_URL ?? "";
+const apiBaseUrl = rawApiBaseUrl.trim();
 const deploymentEnvironment = process.env.DEPLOYMENT_ENVIRONMENT?.trim() ?? "";
 
 if (!imageTag) {
@@ -10,6 +11,14 @@ if (!imageTag) {
 
 if (!apiBaseUrl) {
   fail("apiBaseUrl is required");
+}
+
+if (rawApiBaseUrl !== apiBaseUrl) {
+  fail("apiBaseUrl must not include leading or trailing whitespace");
+}
+
+if (!apiBaseUrl.endsWith("/api")) {
+  fail("apiBaseUrl must end with exactly /api");
 }
 
 if (!["staging", "production"].includes(deploymentEnvironment)) {

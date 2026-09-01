@@ -23,10 +23,13 @@
 - The trusted launcher validates build proof, registry-resolved Runner digest, command, execution scope, environment policy, target metadata, and capability/secret-reference binding before passing the credential file to the Runner.
 - `full-rc` and `migration-schema` always reference the same complete build proof. `migration-schema` may omit starting Web, but never creates a promotable partial bundle.
 - Every `ci-policy` or human approval binds the build-proof digest, baseline Manifest identity/full digest, database identity, command ID/version, operation ID, input digest, and deterministic plan digest. Any change requires a new dry-run and approval.
+- Every non-none approval also requires the launcher to fetch the latest policy-pinned, attested revocation artifact itself and pass monotonic-sequence, freshness, policy-binding, custody, and anti-rollback checks before credential access. Callers cannot provide or select a revocation set.
 - RFC 8785 canonical JSON uses UTF-8 and SHA-256 lowercase hexadecimal digests. Timestamps are RFC 3339 with an explicit UTC offset; money, bigint, and exact decimals are decimal strings.
 - A post-state observation never references an execution-proof digest. Generate and custody the observation first, then create the execution proof that references the observation digest.
 - Evidence enters a content-addressed, non-overwritable GitHub Actions artifact before database cleanup or release aggregation. Default retention is 180 days; secrets, raw URLs, phone numbers, tokens, customer identifiers, and raw Staging data are prohibited.
 - The snapshot export runs only in the protected `stage1-snapshot-export` GitHub environment. Ordinary CI receives only the final immutable sanitized artifact plus its contract, owner mapping, scan evidence, and digest.
+- The snapshot Staging source identity is strictly read-only. Sanitization DML runs only in an isolated ephemeral copy; source privilege/fingerprint drift or any raw/partial publication fails closed.
+- Database test Schema fixtures use the migration role; seed/reset and scenario DML use only the runtime-equivalent test role. The roles never share a credential, and the runtime role never becomes an object owner.
 - During command migration, old and Runner write entry points may coexist in test images only. At most one entry receives an active credential in any real environment. Behavior equivalence uses two independent databases restored from the same baseline.
 - API runtime extraction is complete only when `/app/scripts` governance entry points, Prisma CLI, `psql`, and direct governance package scripts are unavailable while the API still starts and queries PostgreSQL through Prisma Client.
 - Every task is a separate review/commit boundary. Do not combine adjacent database-suite, command-adapter, proof, snapshot, build, or final-gate tasks merely to reduce PR count. Stop if a task exceeds approximately 1,500 production lines or 25 production files and split it for approval.
@@ -117,6 +120,16 @@ Write the resolved linux/amd64 platform digest, repository, tag, platform, and `
 - [ ] **Step 4: Implement the minimal exact-target bootstrap**
 
 ```js
+import { createHash, randomUUID } from "node:crypto";
+
+function task0Error(code) {
+  return Object.assign(new Error(code), { code });
+}
+
+function task0Sha256Text(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
 export async function bootstrapControlledPostgres({
   environment,
   imageContract,
@@ -124,9 +137,9 @@ export async function bootstrapControlledPostgres({
   outputDirectory,
   docker
 }) {
-  if (environment.DATABASE_URL) throw codeError("AMBIENT_DATABASE_URL_FORBIDDEN");
-  const runId = crypto.randomUUID();
-  const databaseName = `s1dev_${sha256Text(`${runId}:${repoRoot}`).slice(0, 24)}`;
+  if (environment.DATABASE_URL) throw task0Error("AMBIENT_DATABASE_URL_FORBIDDEN");
+  const runId = randomUUID();
+  const databaseName = `s1dev_${task0Sha256Text(`${runId}:${repoRoot}`).slice(0, 24)}`;
   return docker.createExactTarget({
     image: `${imageContract.repository}@${imageContract.resolvedDigest}`,
     databaseName,
@@ -134,6 +147,8 @@ export async function bootstrapControlledPostgres({
   });
 }
 ```
+
+Keep `task0Error` and `task0Sha256Text` private to `bootstrap-controlled-postgres.mjs`. Task 0 must not import Task 1's not-yet-created release-foundation package; Task 1 later introduces the canonical shared digest/error boundary for subsequent tasks.
 
 Start one digest-pinned container with a unique `subscription-s1-controlled/v1` label. Generate one-use bootstrap, migration, verify, and runtime-test credentials into `.release-local/secrets/` with owner-only permissions. Create only the exact database and marker comment; cleanup accepts the complete record, never a prefix or glob.
 
@@ -720,8 +735,10 @@ git commit -m "test: add unified database test launcher"
 
 **Files:**
 
-- Create: `release/test-fixtures/stage1-clean-acceptance.sql`
-- Create: `release/test-fixtures/stage1-invalid-order-retirement.sql`
+- Create: `release/test-fixtures/stage1-clean-acceptance.schema.sql`
+- Create: `release/test-fixtures/stage1-clean-acceptance.seed.sql`
+- Create: `release/test-fixtures/stage1-invalid-order-retirement.schema.sql`
+- Create: `release/test-fixtures/stage1-invalid-order-retirement.seed.sql`
 - Create: `packages/release-foundation/src/node-database-test-runner.mjs`
 - Create: `packages/release-foundation/test/node-database-test-runner.test.mjs`
 - Modify: `scripts/stage1-clean-acceptance-baseline-postgres.integration.test.mjs`
@@ -731,8 +748,8 @@ git commit -m "test: add unified database test launcher"
 
 **Interfaces:**
 
-- Consumes: provisioned source/target database secret files and fixture paths from Task 3.
-- Produces: one normalized `database-test-report.v1` per suite with full Node test counts.
+- Consumes: separate migration-role and runtime-equivalent-test-role secret references from Task 3 plus the four task-local role-specific fixture files.
+- Produces: `runSchemaFixture(input): Promise<FixtureObservationV1>`, `runRuntimeSeedFixture(input): Promise<FixtureObservationV1>`, and one normalized `database-test-report.v1` per suite with full Node test counts.
 
 - [ ] **Step 1: Write a failing static test that forbids framework skips**
 
@@ -745,19 +762,39 @@ test("database candidates contain no conditional skip or only", async () => {
 
 Expected RED findings are exactly the current `integrationTest = value ? test : test.skip` declarations in the two script test files.
 
-- [ ] **Step 2: Split fixture setup from test execution**
+- [ ] **Step 2: Split Schema setup from runtime-equivalent seed/reset**
 
-Move DDL/setup into the two SQL fixture files, executed by the migration role before test start. The test processes receive only their declared test capability and cannot create/drop databases or Schemas.
+Move only `CREATE/ALTER/GRANT` Schema, object initialization, and runtime-equivalent DML grants into the two `.schema.sql` files executed by the migration role. Move business seed/reset into the two `.seed.sql` files executed by the runtime-equivalent test role. Replace the existing `TRUNCATE` reset with ordered, bounded `DELETE` plus `INSERT`; remove the test harness's `DROP SCHEMA` cleanup and let Task 3's provisioner retire the exact ephemeral database after evidence custody. Do not grant `TRUNCATE`, ownership, or Schema creation merely to preserve the old harness implementation.
 
 ```js
-const sourceUrl = requiredSecretFile("S1_TEST_SOURCE_DATABASE_URL_FILE");
-const targetUrl = requiredSecretFile("S1_TEST_TARGET_DATABASE_URL_FILE");
-test("real PostgreSQL applies and replays", async () => runScenario({ sourceUrl, targetUrl }));
+await runSchemaFixture({
+  credentialRef: migrationCredentialRef,
+  fixturePath: "release/test-fixtures/stage1-invalid-order-retirement.schema.sql"
+});
+await runRuntimeSeedFixture({
+  credentialRef: runtimeTestCredentialRef,
+  fixturePath: "release/test-fixtures/stage1-invalid-order-retirement.seed.sql"
+});
 ```
 
-Missing files must throw `RELEASE_DATABASE_SECRET_FILE_REQUIRED`; never substitute `DATABASE_URL`.
+The integration process receives only the runtime-equivalent credential. Missing role-specific secret files throw `RELEASE_DATABASE_SECRET_FILE_REQUIRED`; never substitute `DATABASE_URL` and never place both credentials in one process environment.
 
-- [ ] **Step 3: Remove `test.skip` and make standalone misuse fail**
+- [ ] **Step 3: Add role-boundary and statement-class negative tests**
+
+```js
+await assert.rejects(
+  () => runSchemaFixture({ ...fixture, sql: "INSERT INTO target_state(entity) VALUES ('x')" }),
+  /MIGRATION_FIXTURE_BUSINESS_DML_FORBIDDEN/
+);
+await assert.rejects(
+  () => runRuntimeSeedFixture({ ...fixture, sql: "CREATE SCHEMA escaped" }),
+  /RUNTIME_FIXTURE_DDL_FORBIDDEN/
+);
+```
+
+Also assert that the runtime-equivalent role cannot create/drop Schema, cannot own the test Schema or its objects, and that both loaders reject a combined/same credential fingerprint with `FIXTURE_CAPABILITY_CREDENTIAL_REUSE`. Capture statement logs to prove the migration loader performs no `INSERT/UPDATE/DELETE/TRUNCATE`, while the runtime loader performs no DDL or ownership change.
+
+- [ ] **Step 4: Remove `test.skip` and make standalone misuse fail**
 
 ```js
 if (process.env.S1_RELEASE_DATABASE_TEST !== "1") {
@@ -767,16 +804,16 @@ if (process.env.S1_RELEASE_DATABASE_TEST !== "1") {
 
 The source-gate launcher sets this marker only after target policy, marker, and role verification.
 
-- [ ] **Step 4: Run both suites through the source-gate runner**
+- [ ] **Step 5: Run both suites through the source-gate runner**
 
 ```powershell
 node scripts/release/run-database-suite.mjs --suite-id script.stage1-clean-acceptance.postgres --chain fresh
 node scripts/release/run-database-suite.mjs --suite-id script.stage1-invalid-order-retirement.postgres --chain fresh
 ```
 
-Expected: both reports have `skipped=0`, `todo=0`, `filtered=0`, `cancelled=0`, `failed=0`; the second execution of each suite uses a distinct database identity.
+Expected: both reports have `skipped=0`, `todo=0`, `filtered=0`, `cancelled=0`, `failed=0`; the second execution of each suite uses a distinct database identity. The report contains separate migration/runtime fixture observations and proves the runtime identity is not an object owner.
 
-- [ ] **Step 5: Commit the explicit database tests**
+- [ ] **Step 6: Commit the explicit database tests**
 
 ```powershell
 node scripts/release/discover-database-tests.mjs --mode verify
@@ -1135,18 +1172,24 @@ git commit -m "build: add capability scoped release runner"
 - Create: `release/contracts/schemas/approval-revocations.v1.schema.json`
 - Create: `release/contracts/approval-policies.v1.json`
 - Create: `packages/release-foundation/src/approval.mjs`
+- Create: `packages/release-foundation/src/approval-revocations.mjs`
 - Create: `packages/release-foundation/test/approval.test.mjs`
+- Create: `packages/release-foundation/test/approval-revocations.test.mjs`
+- Create: `scripts/release/publish-approval-revocations.mjs`
+- Create: `scripts/release/fetch-latest-approval-revocations.mjs`
 - Create: `scripts/release/trusted-launch-runner.mjs`
 - Create: `scripts/release/trusted-launch-runner.test.mjs`
 - Create: `.github/workflows/release-operation-approval.yml`
+- Create: `.github/workflows/release-approval-revocations.yml`
 - Modify: `apps/release-runner/src/preflight.mjs`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 
 **Interfaces:**
 
-- Produces: `verifyApproval(input): ApprovalDecision` and the only supported launcher path for approved Runner execution.
+- Produces: `publishRevocationArtifact(input): Promise<CustodyReceiptV1>`, `fetchLatestTrustedRevocations(input): Promise<VerifiedRevocationSet>`, `verifyRevocationArtifact(input): VerifiedRevocationSet`, `verifyApproval(input): ApprovalDecision`, and the only supported launcher path for approved Runner execution.
 - `ApprovalRecordV1` binds `approvalId`, `approvalMode`, approver authority, issued/not-after times, build-proof digest, baseline Manifest identity/full digest, database identity, command ID/version, execution scope, operation ID, input digest, plan digest, approval-policy digest, and attestation subject digest.
 - `ApprovalDecision` is an immutable `{ status: "verified", approvalRecordDigest, authority, expiresAt }`; Runner preflight accepts this decision plus the attested record, never a boolean `approved` flag.
+- `ApprovalRevocationsV1` contains `issuer`, repository, workflow path/ref, workflow run ID, `runAttempt: 1`, `policyDigest`, monotonically increasing `sequence`, `previousArtifactDigest`, `issuedAt`, `notAfter`, and ordered entries `{ approvalId, approvalRecordDigest, reason, revokedAt }`. `VerifiedRevocationSet` contains only the validated artifact digest, policy digest, sequence, validity window, and immutable revoked-ID/digest indexes; raw caller-supplied revocation JSON is never accepted by `verifyApproval`.
 
 - [ ] **Step 1: Write RED binding, authority, expiry, and revocation tests**
 
@@ -1177,17 +1220,38 @@ Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `approval.mjs`.
 
 `none` is valid only for a registry-declared read-only command and has no approval record. `ci-policy` records are emitted by the protected Release workflow identity. `human` records are emitted only after the protected `s1-database-operation-approval` GitHub environment records an allowed reviewer. Both non-none modes store an immutable record and GitHub artifact attestation whose subject is the canonical record digest.
 
-The policy pins repository, workflow path/ref, environment, issuer, allowed team/role references, maximum lifetime, and permitted command/environment/impact tuples. Application RBAC is not consulted.
+The policy pins repository, workflow path/ref, environment, issuer, allowed team/role references, maximum lifetime, permitted command/environment/impact tuples, and a revocation source contract: protected repository/workflow/ref, artifact name prefix, attestation issuer, maximum publication delay, maximum artifact lifetime, minimum accepted workflow run number, and the corresponding chain-checkpoint artifact digest. Application RBAC is not consulted.
 
-- [ ] **Step 3: Implement strict approval verification**
+- [ ] **Step 3: Implement attested revocation publication and anti-rollback retrieval**
+
+The protected `release-approval-revocations.yml` workflow uses an environment concurrency group, explicit `contents: read`, `actions: read`, `id-token: write`, and `attestations: write` permissions, and accepts only a first-attempt run on the protected ref. It sets `sequence` to the monotonic GitHub `run_number`, reads the preceding valid artifact selected by the same policy locator, binds `previousArtifactDigest`, validates the approval-policy digest, publishes the canonical artifact through Task 4 custody, and attaches an artifact attestation whose subject is the artifact digest. A rerun cannot rewrite a sequence; it must dispatch a new workflow run. The workflow also publishes periodic heartbeat sets so the newest valid artifact cannot age past the policy's maximum publication delay.
+
+`fetchLatestTrustedRevocations` uses the trusted launch job's short-lived, job-scoped GitHub token with only `actions: read` and `attestations: read` to query every page of successful runs for the exact policy-pinned workflow/ref, selects the highest `run_number`, and fetches the exact policy-named artifact from that run; it does not accept an artifact URL, file, sequence, workflow, ref, or prefix from the operation request. Starting at the policy checkpoint, it verifies run-number monotonicity, the complete `previousArtifactDigest` chain, custody receipt/readback, attestation subject and issuer, policy digest, and time window. The highest workflow run observed by the API is the minimum acceptable sequence for this launch; a lower artifact is a rollback. Repository/workflow policy denies artifact deletion during retention. Missing/inaccessible or incompletely paginated API results, missing set, expired/stale set, invalid attestation, policy mismatch, broken chain, or a sequence below the observed head returns `PREFLIGHT_REJECTED` before any capability/database secret access.
 
 ```js
-export async function verifyApproval({ record, policy, attestation, revocations, expected, now }) {
+const verifiedRevocations = await fetchLatestTrustedRevocations({
+  policy,
+  githubClient: trustedLauncherGithubClient,
+  now
+});
+```
+
+- [ ] **Step 4: Implement strict approval verification**
+
+```js
+export async function verifyApproval({
+  record,
+  policy,
+  attestation,
+  verifiedRevocations,
+  expected,
+  now
+}) {
   validateContract("approval-record.v1", record);
   verifyAttestationSubject(attestation, sha256Canonical(record));
   verifyTrustedAuthority(attestation, policy);
   verifyAllBindings(record.bindings, expected);
-  verifyLifetimeAndRevocation(record, revocations, now);
+  verifyLifetimeAndRevocation(record, verifiedRevocations, now);
   return Object.freeze({
     status: "verified",
     approvalRecordDigest: sha256Canonical(record),
@@ -1197,28 +1261,56 @@ export async function verifyApproval({ record, policy, attestation, revocations,
 }
 ```
 
-- [ ] **Step 4: Put approval verification in the launcher before credential handoff**
+- [ ] **Step 5: Put approval and revocation verification in the launcher before credential handoff**
 
-The trusted launcher verifies build/Runner/target intent, then approval policy/record/attestation/revocations, and only then resolves the capability secret reference. Wrong mode, wrong signer, wrong build/Manifest/database/command/operation/input/plan, expired record, stale revocation set, or invalid attestation returns a specific `PREFLIGHT_REJECTED` reason with zero secret reads and zero database connections.
+For every `ci-policy` or `human` execution, the trusted launcher verifies build/Runner/target intent, fetches and validates the latest revocation artifact itself, verifies approval policy/record/attestation against the resulting `VerifiedRevocationSet`, and only then resolves the capability secret reference. Wrong mode, wrong signer, wrong build/Manifest/database/command/operation/input/plan, expired record, missing/stale/inaccessible/downgraded revocation artifact, policy mismatch, or invalid attestation returns a specific `PREFLIGHT_REJECTED` reason with zero secret reads and zero database connections. A registry-approved `none` command has no approval record and cannot be upgraded to a write capability.
 
-- [ ] **Step 5: Test policy issuance and revocation workflow contracts**
+- [ ] **Step 6: Test revocation provenance, freshness, and anti-rollback failures**
+
+```js
+for (const expectedCode of [
+  "APPROVAL_REVOCATIONS_MISSING",
+  "APPROVAL_REVOCATIONS_ATTESTATION_INVALID",
+  "APPROVAL_REVOCATIONS_ISSUER_UNTRUSTED",
+  "APPROVAL_REVOCATIONS_EXPIRED",
+  "APPROVAL_REVOCATIONS_POLICY_MISMATCH",
+  "APPROVAL_REVOCATIONS_ROLLBACK",
+  "APPROVAL_REVOCATIONS_LIST_INCOMPLETE",
+  "APPROVAL_REVOCATIONS_UNAVAILABLE"
+]) {
+  test(`fails closed before credentials: ${expectedCode}`, async () => {
+    await assert.rejects(() => launch(revocationFailure(expectedCode)), new RegExp(expectedCode));
+    assert.equal(secretReads, 0);
+    assert.equal(databaseConnections, 0);
+  });
+}
+```
+
+The rollback case first observes sequence 12, then replays a validly attested empty sequence 11 artifact and requires `APPROVAL_REVOCATIONS_ROLLBACK`. Also reject a same-sequence artifact with a different digest or broken `previousArtifactDigest` chain.
+
+Run: `pnpm --filter @subscription-saas/release-foundation test -- approval-revocations.test.mjs`
+
+Expected: PASS for the current attested head and every named fail-closed case, with zero capability-secret reads and zero database connections on rejection.
+
+- [ ] **Step 7: Test policy issuance and approval workflow contracts**
 
 Run: `node --test scripts/release/trusted-launch-runner.test.mjs`
 
-Expected: PASS for `none`, protected `ci-policy`, and protected `human` fixtures; FAIL with `APPROVAL_AUTHORITY_UNTRUSTED`, `APPROVAL_BINDING_MISMATCH`, `APPROVAL_EXPIRED`, or `APPROVAL_REVOKED` in their respective cases.
+Expected: PASS for `none`, protected `ci-policy`, and protected `human` fixtures; FAIL with `APPROVAL_AUTHORITY_UNTRUSTED`, `APPROVAL_BINDING_MISMATCH`, `APPROVAL_EXPIRED`, or `APPROVAL_REVOKED` in their respective cases. For both non-none modes, a valid, fresh, latest attested revocation artifact and custody receipt are mandatory.
 
-- [ ] **Step 6: Run repository contract and discovery gates**
+- [ ] **Step 8: Run repository contract and discovery gates**
 
 ```powershell
+pnpm --filter @subscription-saas/release-foundation test
 pnpm release:contracts:verify
 node scripts/release/discover-database-tests.mjs --mode verify
 git diff --check
 ```
 
-- [ ] **Step 7: Commit approval as its own trust boundary**
+- [ ] **Step 9: Commit approval as its own trust boundary**
 
 ```powershell
-git add release/contracts/schemas/approval-policy.v1.schema.json release/contracts/schemas/approval-record.v1.schema.json release/contracts/schemas/approval-revocations.v1.schema.json release/contracts/approval-policies.v1.json release/contracts/repository-contract-files.v1.json packages/release-foundation/src/approval.mjs packages/release-foundation/test/approval.test.mjs scripts/release/trusted-launch-runner.mjs scripts/release/trusted-launch-runner.test.mjs apps/release-runner/src/preflight.mjs .github/workflows/release-operation-approval.yml
+git add release/contracts/schemas/approval-policy.v1.schema.json release/contracts/schemas/approval-record.v1.schema.json release/contracts/schemas/approval-revocations.v1.schema.json release/contracts/approval-policies.v1.json release/contracts/repository-contract-files.v1.json packages/release-foundation/src/approval.mjs packages/release-foundation/src/approval-revocations.mjs packages/release-foundation/test/approval.test.mjs packages/release-foundation/test/approval-revocations.test.mjs scripts/release/publish-approval-revocations.mjs scripts/release/fetch-latest-approval-revocations.mjs scripts/release/trusted-launch-runner.mjs scripts/release/trusted-launch-runner.test.mjs apps/release-runner/src/preflight.mjs .github/workflows/release-operation-approval.yml .github/workflows/release-approval-revocations.yml
 git commit -m "build: verify release operation approvals"
 ```
 
@@ -1317,8 +1409,10 @@ git commit -m "build: add release execution proof state machine"
 - Create: `release/contracts/schemas/snapshot-metadata.v1.schema.json`
 - Create: `release/contracts/sanitization-contract.v1.json`
 - Create: `packages/release-foundation/src/snapshot/export-sanitized.mjs`
+- Create: `packages/release-foundation/src/snapshot/source-readonly-guard.mjs`
 - Create: `packages/release-foundation/src/snapshot/scan-artifact.mjs`
 - Create: `packages/release-foundation/test/snapshot-export.test.mjs`
+- Create: `packages/release-foundation/test/snapshot-source-readonly-guard.test.mjs`
 - Create: `scripts/release/export-sanitized-snapshot.mjs`
 - Create: `.github/workflows/sanitized-snapshot.yml`
 - Create: `docs/operations/stage1-s1-sanitized-snapshot.md`
@@ -1326,46 +1420,64 @@ git commit -m "build: add release execution proof state machine"
 
 **Interfaces:**
 
-- Consumes: a protected `stage1-snapshot-export` secret reference and `SanitizationContractV1`; raw Staging data never leaves that protected boundary.
-- Produces: `exportSanitizedSnapshot(input): Promise<SnapshotMetadataV1>` and `scanSanitizedArtifact(input): Promise<SanitizationScanV1>`.
-- The immutable output binds sanitized dump digest, source migration head, export/scan tool versions, sanitization contract digest, scan digest, creation/expiry metadata, owner, and access policy. It is source-governance evidence, not a build proof, Manifest, or Runner proof.
+- Consumes: a protected `stage1-snapshot-export` read-only Staging secret reference and `SanitizationContractV1`; raw Staging data never leaves that protected boundary and no source write credential is accepted.
+- Produces: `assertReadOnlySnapshotSource(input): Promise<SourcePrivilegeObservationV1>`, `fingerprintSourceSnapshot(input): Promise<SourceFingerprintV1>`, `exportSanitizedSnapshot(input): Promise<SnapshotMetadataV1>`, and `scanSanitizedArtifact(input): Promise<SanitizationScanV1>`.
+- The immutable output binds sanitized dump digest, source migration head, source privilege/fingerprint observation digests, export/scan tool versions, sanitization contract digest, scan digest, creation/expiry metadata, owner, and access policy. It is source-governance evidence, not a build proof, Manifest, or Runner proof.
 
 - [ ] **Step 1: Write RED field-transformation and secret-scan tests**
 
-Create fixtures containing known phone numbers, identity numbers, access tokens, URLs with credentials, and secret-shaped strings.
+Create fixtures containing known phone numbers, identity numbers, access tokens, URLs with credentials, and secret-shaped strings. Add source-role fixtures with table `INSERT/UPDATE/DELETE/TRUNCATE`, Schema `CREATE`, ownership, `SUPERUSER`, `CREATEDB`, `CREATEROLE`, or `BYPASSRLS` capability, plus a transformer fixture that attempts source DML.
 
 Run: `node --test packages/release-foundation/test/snapshot-export.test.mjs`
 
 Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `export-sanitized.mjs`.
 
-- [ ] **Step 2: Implement protected export and deterministic metadata**
+- [ ] **Step 2: Enforce a read-only source identity before export**
 
-The protected source executor applies every versioned field transformation before export, scans the final artifact, computes its digest, and publishes only the immutable sanitized artifact and evidence. Timestamp provenance is recorded but does not alter artifact identity.
+`assertReadOnlySnapshotSource` connects only through the source secret reference and rejects any role with write/table-truncate/Schema-create/ownership or cluster-level elevated capability. Begin `REPEATABLE READ, READ ONLY, DEFERRABLE`, export its PostgreSQL snapshot identifier, and record a pre-export fingerprint containing migration head, normalized key table counts/checksums, database identity, role identity, privilege observation, and transaction snapshot digest.
 
-- [ ] **Step 3: Reject incomplete or expired snapshot metadata**
+```js
+await assert.rejects(
+  () => assertReadOnlySnapshotSource(writeCapableSource),
+  /SNAPSHOT_SOURCE_WRITE_CAPABILITY_FORBIDDEN/
+);
+await assert.rejects(
+  () => exportSanitizedSnapshot(sourceDmlTransformer),
+  /SNAPSHOT_SOURCE_DML_FORBIDDEN/
+);
+```
 
-Reject failed scans, missing owner/review/expiry data, expired artifacts, changed contract digests, unknown source migration heads, or a dump digest that does not match the scanned subject.
+- [ ] **Step 3: Transform only outside the Staging source database**
 
-- [ ] **Step 4: Verify the protected workflow cannot publish raw input**
+Use the held read-only PostgreSQL snapshot to stream/export source rows into the isolated protected workspace and restore them into a newly provisioned ephemeral sanitization database. Apply versioned transformation DML only in that ephemeral database, then export and scan the final sanitized dump. The source connection wrapper permits only catalog/read queries and PostgreSQL `COPY TO STDOUT`; it rejects `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, DDL, writable functions, and transaction mode changes. Raw source dumps and the temporary sanitization database are never uploaded and are destroyed in the protected job's unconditional cleanup.
 
-The workflow uploads only the final dump, metadata, scan proof, and custody receipt. Its raw dump path is inside an isolated job workspace with `if: always()` secure deletion and no artifact upload step. Ordinary PR/CI jobs cannot request the protected environment.
+Before closing the held source transaction, recompute the source fingerprint against the same exported MVCC snapshot and require an exact match. `SNAPSHOT_SOURCE_FINGERPRINT_CHANGED` prevents publication. Timestamp provenance is recorded but does not alter artifact identity.
 
-- [ ] **Step 5: Run export contract and custody tests**
+- [ ] **Step 4: Reject incomplete or expired snapshot metadata**
+
+Reject failed scans, missing owner/review/expiry data, expired artifacts, changed contract digests, unknown source migration heads, missing privilege/fingerprint observations, a changed post-export source fingerprint, or a dump digest that does not match the scanned subject.
+
+- [ ] **Step 5: Verify the protected workflow cannot publish raw or partial input**
+
+The workflow uploads only the final dump, metadata, source privilege/fingerprint observations, scan proof, and custody receipt after every gate succeeds. Its raw dump path is inside an isolated job workspace with `if: always()` secure deletion and no artifact upload step. Ordinary PR/CI jobs cannot request the protected environment. Fault injection after raw export, during transformation, after a source-fingerprint mismatch, and during scanning must leave zero uploaded raw, partial, or nominally sanitized artifacts and return `SNAPSHOT_PUBLICATION_INCOMPLETE_FORBIDDEN`.
+
+- [ ] **Step 6: Run export contract, source safety, and custody tests**
 
 ```powershell
 node --test packages/release-foundation/test/snapshot-export.test.mjs
+node --test packages/release-foundation/test/snapshot-source-readonly-guard.test.mjs
 node --test scripts/release/custody-evidence.test.mjs
 pnpm release:contracts:verify
 node scripts/release/discover-database-tests.mjs --mode verify
 ```
 
-Expected: sanitization and custody tests pass; the new test is explicitly classified; repository contract includes both snapshot Schemas and the sanitization contract.
+Expected: sanitization, source read-only, no-partial-upload, and custody tests pass; the new tests are explicitly classified; repository contract includes both snapshot Schemas and the sanitization contract.
 
-- [ ] **Step 6: Commit protected snapshot export**
+- [ ] **Step 7: Commit protected snapshot export**
 
 ```powershell
 git diff --check
-git add release/contracts/schemas/sanitization-contract.v1.schema.json release/contracts/schemas/snapshot-metadata.v1.schema.json release/contracts/sanitization-contract.v1.json release/contracts/repository-contract-files.v1.json packages/release-foundation/src/snapshot/export-sanitized.mjs packages/release-foundation/src/snapshot/scan-artifact.mjs packages/release-foundation/test/snapshot-export.test.mjs scripts/release/export-sanitized-snapshot.mjs .github/workflows/sanitized-snapshot.yml docs/operations/stage1-s1-sanitized-snapshot.md
+git add release/contracts/schemas/sanitization-contract.v1.schema.json release/contracts/schemas/snapshot-metadata.v1.schema.json release/contracts/sanitization-contract.v1.json release/contracts/repository-contract-files.v1.json packages/release-foundation/src/snapshot/export-sanitized.mjs packages/release-foundation/src/snapshot/source-readonly-guard.mjs packages/release-foundation/src/snapshot/scan-artifact.mjs packages/release-foundation/test/snapshot-export.test.mjs packages/release-foundation/test/snapshot-source-readonly-guard.test.mjs scripts/release/export-sanitized-snapshot.mjs .github/workflows/sanitized-snapshot.yml docs/operations/stage1-s1-sanitized-snapshot.md
 git commit -m "ci: produce protected sanitized snapshot"
 ```
 
@@ -2471,22 +2583,23 @@ Open the final S1 review with the exact source SHA, build-proof digest, API/Web/
 
 ## Specification Coverage Matrix
 
-| Approved S1 requirement                                                        | Implementation tasks |
-| ------------------------------------------------------------------------------ | -------------------- |
-| Offline-safe implementation target; no ambient database                        | 0-3                  |
-| A+ immutable three-image bundle and external trust root                        | 1, 10-12, 27-30      |
-| Build identity/provenance and capability-scoped execution                      | 1, 10-12, 27-28      |
-| Closed JSON command registry, handler parity, one credential profile           | 10, 16-25            |
-| Verifiable approval authority, binding, expiry and revocation                  | 11, 16, 19-25        |
-| Stable baseline Manifest, deterministic plans, TOCTOU, UNKNOWN recovery        | 10-12, 16-25         |
-| Content-addressed proof custody and 180-day governance                         | 4, 13, 28, 30        |
-| Full-repository database discovery, unified launcher, isolation and zero skips | 2-9                  |
-| PostgreSQL 17 fresh and sanitized snapshot upgrade chains                      | 0, 3-9, 13-14, 29-30 |
-| Snapshot sanitization, ownership normalization, expiry and scanning            | 13-14                |
-| Bidirectional API tooling inventory and per-command behavior equivalence       | 15-25                |
-| API runtime extraction and negative allowlist                                  | 26                   |
-| Final Compose, exact API database session identity and real Web/API request    | 29                   |
-| Release aggregation, retry rules and S1 exit audit                             | 30                   |
+| Approved S1 requirement                                                                     | Implementation tasks |
+| ------------------------------------------------------------------------------------------- | -------------------- |
+| Offline-safe implementation target; no ambient database                                     | 0-3                  |
+| A+ immutable three-image bundle and external trust root                                     | 1, 10-12, 27-30      |
+| Build identity/provenance and capability-scoped execution                                   | 1, 10-12, 27-28      |
+| Closed JSON command registry, handler parity, one credential profile                        | 10, 16-25            |
+| Verifiable approval authority, binding, expiry, attested revocation and rollback prevention | 11, 16, 19-25        |
+| Stable baseline Manifest, deterministic plans, TOCTOU, UNKNOWN recovery                     | 10-12, 16-25         |
+| Content-addressed proof custody and 180-day governance                                      | 4, 13, 28, 30        |
+| Full-repository database discovery, unified launcher, isolation and zero skips              | 2-9                  |
+| Migration/runtime fixture credential and DDL/DML separation                                 | 3, 5-9               |
+| PostgreSQL 17 fresh and sanitized snapshot upgrade chains                                   | 0, 3-9, 13-14, 29-30 |
+| Read-only-source snapshot sanitization, ownership normalization, expiry and scanning        | 13-14                |
+| Bidirectional API tooling inventory and per-command behavior equivalence                    | 15-25                |
+| API runtime extraction and negative allowlist                                               | 26                   |
+| Final Compose, exact API database session identity and real Web/API request                 | 29                   |
+| Release aggregation, retry rules and S1 exit audit                                          | 30                   |
 
 ## Stop and Rollback Rules
 
@@ -2496,6 +2609,9 @@ Open the final S1 review with the exact source SHA, build-proof digest, API/Web/
 | Ambient `DATABASE_URL` or repository `.env` would be used                                         | Stop before process launch; use Task 0/controlled-target wrapper only                                                                              |
 | A task exceeds the approved size bound or reveals a new business semantic decision                | Split the task and obtain plan/spec approval                                                                                                       |
 | Proof/digest/target/capability mismatch                                                           | Fail before credential read or database connection; launcher records `PREFLIGHT_REJECTED`                                                          |
+| Latest trusted approval-revocation artifact is missing, stale, inaccessible or downgraded         | Fail before credential read; do not accept a caller-provided fallback or historical empty set                                                      |
+| Test fixture mixes migration/runtime credentials or migration setup contains business DML         | Reject the fixture before execution; do not broaden the migration or runtime role                                                                  |
+| Snapshot source role can write, source fingerprint changes, or export is partial                  | Stop publication, retain only redacted failure evidence, and destroy raw workspace/temporary copy                                                  |
 | Approved plan changes before apply                                                                | Refuse apply with `PLAN_CHANGED_SINCE_APPROVAL`; repeat dry-run and approval                                                                       |
 | Process loss with uncertain commit                                                                | Record `INTERRUPTED_UNKNOWN`; forbid new apply; reconcile with the same idempotency key                                                            |
 | Evidence custody upload/readback failure                                                          | Keep the database and evidence workspace; do not aggregate or clean up                                                                             |

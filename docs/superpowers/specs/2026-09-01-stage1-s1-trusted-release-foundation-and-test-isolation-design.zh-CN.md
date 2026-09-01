@@ -13,7 +13,7 @@
 
 ## 决策摘要
 
-S1 采用 A+ 架构：单一仓库、单一 source SHA、一次可信构建运行生成 API、Web、Runner 三个不可变镜像及统一构建证明。Runner 是独立镜像、独立运行身份、独立凭证和独立执行生命周期，但不是可单独替换的发布单元。环境迁移、验证和受控写操作只能通过与构建证明匹配的封闭 Runner 命令执行。
+S1 采用 A+ 架构：单一仓库、单一 source SHA、一次可信构建运行生成 API、Web、Runner 三个不可变镜像及统一构建证明。Runner 是独立镜像、独立运行身份、独立凭证和独立执行生命周期，但不是可单独替换的发布单元。候选环境、最终发布物 Compose 和 Staging/Production 等长期环境中的迁移、验证及受控写操作，只能通过与构建证明匹配的封闭 Runner 命令执行。镜像构建前的 CI 临时数据库门禁使用受信源码执行器，只产生 source-gate evidence，并由最终 Runner 在构建后重复等价验证。
 
 S1 同时建立：
 
@@ -81,6 +81,26 @@ Release bundle 是以下不可拆分集合：
 - `build-proof.v1` 及其 digest。
 
 Tag 只用于发现。Staging 和后续环境只允许按 digest 提升；禁止重新构建、使用 mutable tag 作为身份，或替换 bundle 中的单个镜像。Runner 变化也必须形成新的完整 bundle 和构建证明。
+
+### 能力范围执行
+
+执行范围分为：
+
+- `full-rc`：完整候选版本提升与验收，必须验证并匹配 API、Web、Runner 三个镜像 digest；
+- `migration-schema`：只执行迁移、Schema diff、checksum 或数据库 catalog 验证，只要求启动与该能力相关的 Runner，并验证同一 build proof 中的 API Schema、Runner、迁移目录和 repository contract；Web 不要求已经部署或启动。
+
+两种范围都必须引用同一个完整 build proof，不能替换、重建或省略 bundle 的组成部分。`migration-schema` 只放宽“本次需要启动哪些制品”，不产生可提升的部分 bundle，也不能作为完整 RC 成功证明。执行证明必须记录 `executionScope`；命令注册表声明允许的 scope，运行参数不得扩大范围。
+
+### 受信源码执行器
+
+镜像构建前的数据库双链由受保护 CI 在固定 checkout 上使用受信源码执行器完成。该执行器：
+
+- 只允许访问本次 CI 的临时 PostgreSQL 集群；
+- 不持有 Staging/Production 或其他长期环境凭证；
+- 使用与后续 Runner 命令相同的迁移目录、repository contract 和规范化结果 Schema；
+- 只能输出 `source-gate-evidence.v1`，不能签发 build proof、Environment Manifest 或正式 execution proof。
+
+最终镜像构建后，Runner 必须在 fresh 与 snapshot Compose 链重复执行迁移和 Schema 验证，并将规范化结果与对应 source-gate evidence 比较。源码执行器通过不能代替最终 Runner 验证。
 
 ### 可信启动方
 
@@ -185,6 +205,7 @@ Runner 注册命令分为五类 capability：
 - capability 类别和所需数据库角色；
 - 数据影响等级：只读、DDL 或受控 DML；
 - `approvalMode: none | ci-policy | human`；
+- `allowedExecutionScopes: full-rc | migration-schema`；
 - 允许环境、禁止环境和未声明环境的处理；
 - 输入、计划和输出 Schema；
 - 是否支持 dry-run、apply、replay 或 reconcile；
@@ -199,7 +220,7 @@ Runner 注册命令分为五类 capability：
 - 锁顺序或事务边界；
 - 幂等、取消或恢复行为；
 - 后置条件或证据 Schema；
-- 允许环境或 capability profile。
+- 允许环境、execution scope 或 capability profile。
 
 已经发布的 `commandId@version` 不得原地改变语义，只能增加新版本或标记退役。命令注册表进入 repository contract digest。
 
@@ -228,7 +249,7 @@ Runner 在取得原始凭证和连接数据库前必须依次验证：
 
 数据库身份按以下规范化对象计算 SHA-256：受信基础设施登记或本次 ephemeral marker 的 `clusterIdentityRefDigest`、`current_database`、`pg_database.oid`、`server_version_num`、TLS 状态和目标环境 ID。证明只保存最终 fingerprint 及非敏感环境 ID；原始 hostname、database 名和基础设施内部标识只在受控执行日志中短暂使用并脱敏。任一组成值变化都会产生新的数据库身份，不能沿用旧批准。
 
-核对通过后才冻结本次 Environment Manifest。原始连接串、密码、token、手机号或客户标识不得进入 Manifest 或证明。
+核对通过后，dry-run 才能冻结本次批准前基线 Environment Manifest。apply 和 replay/reconcile 复用该不可变基线，不重新生成审批身份。原始连接串、密码、token、手机号或客户标识不得进入 Manifest 或证明。
 
 ## 批准策略和执行状态机
 
@@ -249,11 +270,13 @@ Runner 在取得原始凭证和连接数据库前必须依次验证：
 - 目标对象集合；
 - 预期逐表写入范围；
 - 关键前后状态；
-- 命令版本、数据库身份和 Manifest digest。
+- 命令版本、数据库身份、基线 Manifest identity digest 和完整 Manifest digest。
 
-批准策略绑定 build proof、Manifest、数据库身份、命令版本和 `planDigest`。
+批准策略绑定 build proof、基线 Manifest identity/full digest、数据库身份、命令版本和 `planDigest`。
 
-apply 必须在声明的锁和事务边界内重新读取事实、重新计算计划，并要求新 digest 与已批准值一致。无法全程锁定的对象必须通过版本或 CAS 防止 TOCTOU。任何输入、目标、角色、数据库身份或计划变化都必须重新 dry-run 和批准。
+apply 不生成新的基线 Manifest。它必须在声明的锁和事务边界内重新读取并核对基线 identity 字段、重新计算计划，并要求新 plan digest 与已批准值一致。无法全程锁定的对象必须通过版本或 CAS 防止 TOCTOU。任何输入、目标、角色、数据库身份、基线字段或计划变化都必须重新 dry-run 和批准。
+
+apply 合法改变的 migration head、Schema、数据状态和配置观测进入独立 `post-state-observation.v1`，不反向改写基线 Manifest。post-state observation 必须引用 apply execution proof、记录预期/实际后置条件和自身 digest。
 
 ### 中断与不确定终态
 
@@ -264,7 +287,7 @@ apply 必须在声明的锁和事务边界内重新读取事实、重新计算�
 - `FAILED`：Runner 可确定失败且输出证明；
 - `INTERRUPTED_UNKNOWN`：进程丢失或提交结果不明，由启动方记录。
 
-`INTERRUPTED_UNKNOWN` 下禁止重新 apply。只能使用相同幂等键调用注册的 reconcile/replay，通过数据库事实和后置条件判定最终结果。
+`INTERRUPTED_UNKNOWN` 下禁止重新 apply。只能使用相同幂等键调用注册的 reconcile/replay，通过数据库事实和后置条件判定最终结果。reconcile/replay 必须同时引用批准前基线 Manifest、前序 execution proof 和已有 post-state observation；若前序 post-state 缺失，则以数据库事实生成恢复观测并与原计划后置条件核对。
 
 dry-run、apply、replay/reconcile 分别生成执行证明，使用相同 `operationId` 和前序 proof digest 串联。旧失败或未知证明不可覆盖、删除或改写。
 
@@ -279,7 +302,7 @@ Fixture 命令只能调用注册的领域夹具工厂，并记录夹具规格版
 
 Repair 命令必须绑定：
 
-`同一 build proof + 同一 Manifest + 同一数据库身份 + 同一 dry-run plan digest + 同一批准策略记录`
+`同一 build proof + 同一基线 Manifest + 同一数据库身份 + 同一 dry-run plan digest + 同一批准策略记录`
 
 任一项变化都要求重新 dry-run。修复不能跨批准目标扩大 DML 范围，也不能把合同变更 bootstrap 等 S0 排除能力带入 Stage 1 基础验收。
 
@@ -301,28 +324,39 @@ Repair 命令必须绑定：
 
 ### Environment Manifest
 
-Environment Manifest 在连接后核对通过时生成并冻结。至少包含：
+受控写命令的 dry-run 在连接后核对通过时生成并冻结 `baseline-environment-manifest.v1`。Manifest 分为：
+
+`identity`：
 
 - `schemaVersion` 和 environment class；
 - build-proof digest；
-- source、migration 和 repository contract digest；
+- source、migration catalog 和 repository contract digest；
 - 目标策略引用和 secret reference 指纹；
 - 数据库不可逆身份指纹、数据库名指纹、角色和 Schema；
-- PostgreSQL 版本和 migration head；
-- 环境开关的非敏感配置指纹；
-- 生成时间和启动方身份引用。
+- PostgreSQL 版本、批准前 migration head 和批准前 Schema digest；
+- 环境开关的非敏感配置指纹。
 
-Manifest 不进入 build proof。fresh 与 snapshot 必须分别生成独立 Manifest，不能共用。
+`provenance`：
+
+- 生成时间；
+- 启动方和 launch attestation 引用；
+- Manifest 生成工具版本和执行 run 引用。
+
+分别计算 `manifestIdentityDigest` 和覆盖 identity/provenance 的完整 `manifestDigest`。批准记录同时绑定两者；apply 复用原始 Manifest，并重新核对 identity，不因重新读取当前时间生成新 digest。
+
+apply 后生成独立 `post-state-observation.v1`，记录新的 migration head、Schema digest、配置观测、数据库身份、后置条件和引用的 execution proof。replay/reconcile 引用原基线 Manifest 和前序 post-state proof，不把合法 post-state 当作基线漂移。
+
+只读 `verify/evidence` 命令可以为单次执行生成自己的 Manifest 和 post-state observation，但不使用 apply/replay。Manifest 不进入 build proof。fresh 与 snapshot 必须分别生成独立基线 Manifest、post-state observation 和证明，不能共用。
 
 ### Execution proof
 
 最终 Runner 在 Compose 或环境执行中输出 `execution-proof.v1`，至少包含：
 
 - `operationId`、阶段、前序 proof digest 和终态；
-- build-proof 和 Manifest digest；
+- build-proof、基线 Manifest identity/full digest 和 execution scope；
 - command ID/version、capability 和 approval mode；
 - 数据库身份、输入、计划和输出 digest；
-- 后置条件结果；
+- 后置条件结果和 post-state observation digest；
 - 开始/完成时间、版本信息和脱敏错误分类；
 - 启动方、策略和批准引用。
 
@@ -334,10 +368,46 @@ Release 聚合证明同时引用：
 
 - build proof；
 - fresh/snapshot 的 source-gate evidence；
-- fresh/snapshot 的 Environment Manifest 和 execution proof；
+- fresh/snapshot 的 Environment Manifest、post-state observation 和 execution proof；
 - API/Web/Runner Compose、API readiness 和 Web 真实客户端证据。
 
 聚合时必须验证 source SHA、migration catalog、repository contract、测试清单和 snapshot 版本一致。不同输入版本的成功证明不得拼接。
+
+## 证据保管协议
+
+### 可信存储
+
+所有证明、Manifest、post-state observation、启动方记录、脱敏日志和聚合索引必须进入受控、按内容寻址且在保留期内不可改写的制品存储。普通 Runner 文件系统、临时 CI workspace、控制台输出或数据库本身都不是可信证据存储。
+
+上传协议固定为：
+
+1. 在产生方计算规范化 digest 和大小；
+2. 以 digest 作为不可覆盖对象身份上传；
+3. 存储端返回包含对象身份、大小、时间和保留策略的 receipt；
+4. 独立回读对象或可信存储元数据，重新验证 digest 和大小；
+5. 将 receipt digest 写入后续证明或 Release 聚合索引。
+
+只有上传、receipt 和回读校验全部成功，证据才进入 `CUSTODY_CONFIRMED`。临时数据库只能在所需证据全部 `CUSTODY_CONFIRMED` 后回收；Release 聚合也只能引用已确认保管的对象。上传失败不得通过复制控制台文本人工补签。
+
+### Owner、访问和脱敏责任
+
+| 证据类别                                                 | owner              | 写入者                                 | 读取权限                                    |
+| -------------------------------------------------------- | ------------------ | -------------------------------------- | ------------------------------------------- |
+| build proof、source-gate evidence、Release 聚合          | Release 工程负责人 | 受保护 CI 身份                         | Release、QA、安全和审计只读                 |
+| launch attestation、Manifest、execution/post-state proof | 数据库发布负责人   | 可信启动方和对应单 capability Runner   | Release、数据库发布、安全和审计只读         |
+| snapshot、sanitization、owner mapping 和 ownership proof | 数据治理负责人     | 受控脱敏流水线、restore/provision 身份 | 数据治理、Release、安全和审计按最小范围只读 |
+| Web 网络、API readiness、Compose 和工具版本证据          | Release 验证负责人 | 受保护 CI/真实客户端验证身份           | Release、QA、安全和审计只读                 |
+
+各 owner 负责访问复核、脱敏规则和到期处置。写入身份不能覆盖既有 digest 对象，也不能删除保留期内记录；人工批准者不自动获得原始日志或 snapshot 读取权限。
+
+### 保留期和到期处置
+
+- 执行、失败、`PREFLIGHT_REJECTED` 和 `INTERRUPTED_UNKNOWN` 证明默认保留 180 日；
+- active bundle 的 build proof、Release 聚合及其必需引用至少保留到 bundle 退出所有环境后 180 日；
+- snapshot 及其 sanitization/ownership 证明至少保留到 snapshot 失效后 180 日；
+- 法务、合规或事故调查需要延长时，必须有独立 legal hold/retention 批准。
+
+“不可覆盖”只表示批准保留期内的内容不可变，不等于永久保存。到期后由 owner 按批准策略安全删除或转入更长期合规存储，并生成删除/转存 receipt；是否永久保留必须另行审批。失败和 UNKNOWN 证明与成功证明使用相同保管、访问和到期规则。
 
 ## Release 数据库测试发现全集
 
@@ -388,6 +458,20 @@ Release 数据库门禁统一使用按 digest 固定的 PostgreSQL 17，并记�
 
 快照恢复若需要额外权限，只能使用独立 restore profile。测试不得借用 migration role 掩盖运行时权限缺口。
 
+### Snapshot ownership normalization
+
+Sanitized snapshot 必须携带版本化 owner mapping，列出源 owner 到目标 owner 的允许映射。恢复协议固定为：
+
+1. provisioner 创建目标 database、migration role、runtime-equivalent test role 和只服务本次恢复的 restore executor；
+2. dump 不恢复源环境 owner/ACL，等价使用 `--no-owner --no-acl`；
+3. restore executor 只在本次目标 database 内获得临时、可审计的 `SET ROLE migration_role` 能力，使新建 Schema、表、序列、函数、类型和 `_prisma_migrations` 直接归 migration role；
+4. 恢复结束后运行 ownership inventory，逐类验证对象 owner 与 owner mapping 一致，拒绝未知 owner、跨目标对象和 runtime-equivalent test role ownership；
+5. provisioner 在迁移前撤销 restore executor 对 migration role 的临时成员关系并吊销 restore 凭证；
+6. migration role 重新连接并验证自己拥有目标 Schema、迁移表及迁移需管理的对象；runtime-equivalent test role 只获得已批准运行时权限；
+7. ownership normalization proof 上传并确认后，才允许开始前向迁移。
+
+Restore 和 ownership normalization 不得使用 `SUPERUSER`、跨 database owner 修改或未知 cluster-global 权限。无法按 owner mapping 交接的 snapshot 直接失效，不能通过临时提升 migration/runtime 角色绕过。
+
 ### 隔离单位
 
 默认每个测试套件或并行 shard 使用独立 database 和独立 runtime-equivalent test role。只有证明迁移、扩展、Raw SQL、搜索路径和数据库级对象完全 Schema-safe 后，单个套件才能申请唯一 Schema 隔离。
@@ -398,6 +482,8 @@ Release 数据库门禁统一使用按 digest 固定的 PostgreSQL 17，并记�
 
 ## 双升级证据链
 
+本节描述镜像构建前由受信源码执行器运行的 source-gate 双链；它们只生成 source-gate evidence。最终镜像构建后，Compose 门禁必须使用同一 build proof 中的 Runner 重新执行等价的迁移、ownership 和 Schema 验证，并对比规范化结果。
+
 ### Fresh 链
 
 1. provisioner 在批准临时集群创建精确命名 database 和 ephemeral marker；
@@ -405,18 +491,19 @@ Release 数据库门禁统一使用按 digest 固定的 PostgreSQL 17，并记�
 3. verify role 检查 checksum、migration status 和 Schema diff；
 4. runtime-equivalent test role 执行清单适用测试；
 5. 输出 source-gate evidence；
-6. 输出证明后精确回收 database。
+6. 证明完成可信保管后精确回收 database。
 
 ### Sanitized snapshot 链
 
 1. 校验 snapshot artifact、sanitization contract 和失效时间；
 2. provisioner 创建独立空 database 和 ephemeral marker；
-3. restore profile 恢复最终脱敏制品；
-4. migration role 执行前向迁移；
-5. verify role执行 checksum、migration status 和 Schema diff；
-6. runtime-equivalent test role 执行清单适用测试；
-7. 输出独立 source-gate evidence；
-8. 输出证明后精确回收 database。
+3. restore profile 按 owner mapping 恢复最终脱敏制品；
+4. 执行 ownership inventory，撤销 restore 临时成员关系和凭证，确认 migration role 为目标 owner；
+5. migration role 执行前向迁移；
+6. verify role 执行 checksum、migration status 和 Schema diff；
+7. runtime-equivalent test role 执行清单适用测试；
+8. 输出独立 source-gate evidence；
+9. 证明完成可信保管后精确回收 database。
 
 ### Snapshot sanitization contract
 
@@ -425,6 +512,7 @@ Release 数据库门禁统一使用按 digest 固定的 PostgreSQL 17，并记�
 - 来源 Schema 和 migration head；
 - 生成流水线和工具版本；
 - sanitization contract digest；
+- owner mapping digest 和 ownership normalization contract 版本；
 - 自动敏感字段和秘密扫描结果；
 - 创建时间、owner、复核日期和失效时间；
 - 存储位置、访问策略和 artifact digest。
@@ -466,7 +554,7 @@ Provision 和 cleanup 前必须验证：
 - hostname、TLS 和环境类别符合临时目标策略；
 - 目标不是 production、Staging 或未知集群。
 
-回收只接受精确 database 名，不接受通配符、前缀批量删除或运行时拼接的删除清单。必须先输出测试证明再回收；回收失败视为基础设施失败并保留目标指纹和人工处置记录。
+回收只接受精确 database 名，不接受通配符、前缀批量删除或运行时拼接的删除清单。必须先完成测试证明的可信保管和 digest 回读确认再回收；保管失败时不得清理数据库，改为保留 ephemeral marker、限制访问并进入有时限的基础设施处置。回收失败视为基础设施失败并保留目标指纹和人工处置记录。
 
 ## 五阶段 Release CI
 
@@ -480,12 +568,12 @@ Provision 和 cleanup 前必须验证：
 
 ### 阶段 2：数据库双链门禁
 
-- 在固定 PostgreSQL 17 digest 上运行 fresh 与 snapshot；
+- 受信源码执行器在固定 PostgreSQL 17 digest 上运行 fresh 与 snapshot；
 - 使用分离身份；
 - 验证完整执行等式、Schema diff 和迁移状态；
 - 分别输出 source-gate evidence。
 
-阶段 1、2 在镜像构建前发生，不能输出绑定 Runner digest 的正式执行证明。
+阶段 1、2 在镜像构建前发生，不能输出绑定 Runner digest 的正式执行证明，也不能操作候选或长期环境。
 
 ### 阶段 3：一次可信构建运行
 
@@ -501,7 +589,7 @@ Compose 不允许 build、mutable tag、source mount、entrypoint override、容
 
 1. 可信启动方验证 build proof 和实际 Runner digest；
 2. provisioner/restore 准备独立数据库；
-3. Runner 使用 migration profile 完成迁移后退出；
+3. Runner 使用 migration profile 冻结基线 Manifest、完成迁移、输出 post-state observation 后退出；
 4. Runner 使用 verify profile 执行真实 Prisma、`psql`、Schema diff 和数据库身份核对后退出；
 5. API 使用真正 runtime identity 启动；
 6. `/api/health` 仅作为 liveness；另调用现有只读 `GET /api/portal/catalog/model-definitions`，证明 API 实际完成数据库查询；
@@ -509,17 +597,18 @@ Compose 不允许 build、mutable tag、source mount、entrypoint override、容
 8. 无头浏览器或等价真实客户端执行 Web 产物的请求逻辑，捕获请求目标；
 9. 对比实际请求目标、Web 内嵌 API Base 和 Environment Manifest；验证路径与 CORS；
 10. 记录 Runner 内 Node、Prisma、`psql` 和数据库 `server_version_num`；
-11. 输出该链独立的 Manifest、`operationId` 和 execution proof。
+11. 将 migration/Schema 规范化结果与同一 source SHA 的 source-gate evidence 对比；
+12. 输出该链独立的基线 Manifest、post-state observation、`operationId` 和 execution proof。
 
 该门禁只验证连通性和构建配置；视觉和人工业务验收仍归 S3。
 
 ### 阶段 5：Release 聚合门禁
 
-聚合并核对：
+以 `full-rc` scope 聚合并核对：
 
 - build proof；
 - fresh/snapshot source-gate evidence；
-- fresh/snapshot Manifest 和 execution proof；
+- fresh/snapshot 基线 Manifest、post-state observation 和 execution proof；
 - API/Web/Runner digest、OCI revision 和 Compose 证据；
 - 数据库测试计数、Schema diff、API readiness 和 Web 请求证据。
 
@@ -534,7 +623,7 @@ Compose 不允许 build、mutable tag、source mount、entrypoint override、容
 - 不覆盖、删除或修改旧证明；
 - Release 聚合只选择同一 build proof、contract digest、测试清单和 snapshot 版本的一组成功证明。
 
-禁止替换单个镜像、修改旧证明或拼接不同输入版本的证据。失败不会永久污染 bundle，但会永久保留该次失败尝试。
+禁止替换单个镜像、修改旧证明或拼接不同输入版本的证据。失败不会永久污染 bundle；该次失败尝试在批准保留期内不可覆盖，并与成功证明采用相同保管规则，不自动永久保存。
 
 ## 负向门禁责任
 
@@ -649,9 +738,9 @@ S1 规格批准后，实施计划至少拆成可独立评审的工作流，而�
 
 1. 数据库测试发现、清单与隔离基础设施；
 2. 逐套迁移数据库测试和完整计数门禁；
-3. sanitized snapshot contract 与双升级链；
+3. sanitized snapshot contract、ownership normalization 与双升级链；
 4. Runner 镜像、命令注册表和 capability 边界；
-5. 构建证明、Manifest 和执行证明；
+5. 构建证明、基线 Manifest、post-state、执行证明和证据保管；
 6. 最终镜像 Compose 与真实 Web/API 门禁；
 7. API runtime 双向盘点和逐命令迁出。
 
@@ -662,15 +751,18 @@ S1 规格批准后，实施计划至少拆成可独立评审的工作流，而�
 S1 只有在以下条件全部满足时才能关闭：
 
 - release bundle、可信构建运行和信任根通过正向及负向验证；
+- `full-rc` 与 `migration-schema` scope 都从同一完整 build proof 执行，且 scoped 操作不能生成可提升的部分 bundle；
 - 五类 capability 协议和权限边界实现；只为 S1 实际命令配置身份；
 - 命令注册表不可变版本规则、批准策略、TOCTOU 防护和 UNKNOWN 恢复通过验证；
-- source-gate evidence、build proof、Manifest 和 execution proof 分层清晰并可复核；
+- 受信源码执行器只操作临时数据库，其 source-gate 结果已由最终 Runner 等价复核；
+- source-gate evidence、build proof、基线 Manifest、post-state observation 和 execution proof 分层清晰并可复核；
 - 数据库测试发现全集、例外、双升级链和完整执行等式通过；
-- PostgreSQL 17 digest、实际版本、角色隔离和精确回收证据齐备；
+- PostgreSQL 17 digest、实际版本、角色隔离、snapshot ownership normalization 和精确回收证据齐备；
 - API/Web/Runner 按 digest 分别通过 fresh 和 snapshot Compose；
 - API 数据库 readiness 和 Web 真实客户端公共 API 请求通过；
 - API runtime 的双向矩阵完整，已迁出治理入口具备零调用方证明；
 - API 镜像不包含治理 `/scripts`、非必要 Prisma CLI、`psql` 或任意治理入口；
+- 所有必需证据完成可信上传、receipt、digest 回读确认，并具有 owner、访问控制和与 S0 对齐的保留/到期处置；
 - 所有证明、日志和 Manifest 不含秘密、原始连接串或客户敏感数据；
 - S1 没有改变客户可见行为、应用 API 契约或领域语义。
 
@@ -680,12 +772,17 @@ S1 只有在以下条件全部满足时才能关闭：
 
 - Runner 需要任意 Shell、Docker socket 或多 capability 超级凭证；
 - 构建证明由 Runner 自签发、自验证，或只依赖 tag/source SHA；
+- scoped migration/schema 操作脱离完整 build proof、替换 bundle 组成或被当作可提升部分 bundle；
+- 受信源码执行器持有长期环境凭证，或 source-gate evidence 没有被最终 Runner 等价复核；
 - 数据库测试仍共享未知数据库、存在 framework skip 或发现全集未分类；
-- fresh/snapshot 证据共用 Manifest、数据库身份或 `operationId`；
+- fresh/snapshot 证据共用基线 Manifest、post-state、数据库身份或 `operationId`；
+- apply 重新生成基线 Manifest，或合法 post-state 被当作审批身份漂移；
 - apply 不重新计算计划，或无法通过锁/CAS 防止 TOCTOU；
+- snapshot 恢复后存在未知 owner、restore 凭证未撤销或 runtime-equivalent test role 成为对象 owner；
 - 旧 API 写入口和 Runner 写入口可以同时获得凭证；
 - 为了迁出脚本而改变业务 API、领域语义、已应用迁移或客户数据；
 - 证明可以被覆盖、不同输入版本可以被拼接，或秘密进入日志；
+- 临时数据库在证据进入可信存储并完成 digest 回读前被回收，或证明没有 owner/保留期；
 - 任一 P1 未闭环但准备启动 S2/S3。
 
 S1 关闭前，S2 规格可以阅读已批准的 S0 权威模型，但不得生成实施计划或施工；S3 继续保持阻断。

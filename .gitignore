@@ -5,6 +5,7 @@ dist/
 coverage/
 *.tsbuildinfo
 .tmp/
+.release-local/
 
 .env
 .env.*

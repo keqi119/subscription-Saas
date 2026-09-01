@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "controlled-target-record.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "recordVersion",
+    "sourceSha",
+    "image",
+    "container",
+    "cluster",
+    "database",
+    "roles",
+    "secretFiles"
+  ],
+  "properties": {
+    "recordVersion": { "const": "controlled-target-record.v1" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "resolvedDigest", "platform"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "resolvedDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "platform": { "const": "linux/amd64" }
+      }
+    },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "markerLabel", "runId"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9a-f]{12,64}$" },
+        "markerLabel": { "const": "subscription-s1-controlled/v1" },
+        "runId": { "type": "string", "format": "uuid" }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "serverVersionNum", "tlsMode"],
+      "properties": {
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "serverVersionNum": { "type": "string", "pattern": "^17[0-9]{4}$" },
+        "tlsMode": { "enum": ["disable", "require", "verify-ca", "verify-full"] }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "oid", "marker", "migrationHead"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^s1dev_[0-9a-f]{24}$" },
+        "oid": { "type": "string", "pattern": "^[0-9]+$" },
+        "marker": {
+          "type": "string",
+          "pattern": "^subscription-s1-controlled/[0-9a-f-]{36}$"
+        },
+        "migrationHead": {
+          "anyOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9]{14}_[a-z0-9_]+$" }]
+        }
+      }
+    },
+    "roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bootstrap", "migrate", "verify", "runtime-test"],
+      "properties": {
+        "bootstrap": { "type": "string", "pattern": "^s1_bootstrap_[0-9a-f]{8}$" },
+        "migrate": { "type": "string", "pattern": "^s1_migrate_[0-9a-f]{8}$" },
+        "verify": { "type": "string", "pattern": "^s1_verify_[0-9a-f]{8}$" },
+        "runtime-test": {
+          "type": "string",
+          "pattern": "^s1_runtime_test_[0-9a-f]{8}$"
+        }
+      }
+    },
+    "secretFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bootstrap", "migrate", "verify", "runtime-test"],
+      "properties": {
+        "bootstrap": {
+          "type": "string",
+          "pattern": "^\\.release-local[\\\\/]secrets[\\\\/]bootstrap\\.json$"
+        },
+        "migrate": {
+          "type": "string",
+          "pattern": "^\\.release-local[\\\\/]secrets[\\\\/]migrate\\.json$"
+        },
+        "verify": {
+          "type": "string",
+          "pattern": "^\\.release-local[\\\\/]secrets[\\\\/]verify\\.json$"
+        },
+        "runtime-test": {
+          "type": "string",
+          "pattern": "^\\.release-local[\\\\/]secrets[\\\\/]runtime-test\\.json$"
+        }
+      }
+    }
+  }
+}

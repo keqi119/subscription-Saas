@@ -155,7 +155,7 @@ Migration catalog 对按路径排序的迁移清单计算规范化 digest。每�
 
 Repository contract 对版本化契约目录计算 digest，至少覆盖：
 
-- 构建证明、Manifest、执行证明和 source-gate evidence Schema；
+- 构建证明、Manifest、`post-state-observation.v1`、执行证明和 source-gate evidence Schema；
 - Runner 命令注册表；
 - 数据库测试清单、发现规则和批准例外；
 - snapshot sanitization contract；
@@ -276,7 +276,14 @@ Runner 在取得原始凭证和连接数据库前必须依次验证：
 
 apply 不生成新的基线 Manifest。它必须在声明的锁和事务边界内重新读取并核对基线 identity 字段、重新计算计划，并要求新 plan digest 与已批准值一致。无法全程锁定的对象必须通过版本或 CAS 防止 TOCTOU。任何输入、目标、角色、数据库身份、基线字段或计划变化都必须重新 dry-run 和批准。
 
-apply 合法改变的 migration head、Schema、数据状态和配置观测进入独立 `post-state-observation.v1`，不反向改写基线 Manifest。post-state observation 必须引用 apply execution proof、记录预期/实际后置条件和自身 digest。
+apply 合法改变的 migration head、Schema、数据状态和配置观测进入独立 `post-state-observation.v1`，不反向改写基线 Manifest。证明生成顺序固定为：
+
+1. post-state observation 记录 `operationId`、attempt/run ID、基线 Manifest identity/full digest、command ID/version、plan digest、数据库身份以及预期/实际后置条件；它不得引用尚未生成的 execution proof digest；
+2. 对规范化的 post-state observation 计算 digest 并完成可信保管；
+3. 生成 execution proof，并由它引用 post-state observation digest；
+4. 后续 replay/reconcile 和 Release 聚合引用 execution proof digest，并可沿该 proof 查到 post-state observation digest。
+
+该顺序是单向内容寻址链；post-state observation 与 execution proof 不得互相按 digest 引用。
 
 ### 中断与不确定终态
 
@@ -344,7 +351,7 @@ Repair 命令必须绑定：
 
 分别计算 `manifestIdentityDigest` 和覆盖 identity/provenance 的完整 `manifestDigest`。批准记录同时绑定两者；apply 复用原始 Manifest，并重新核对 identity，不因重新读取当前时间生成新 digest。
 
-apply 后生成独立 `post-state-observation.v1`，记录新的 migration head、Schema digest、配置观测、数据库身份、后置条件和引用的 execution proof。replay/reconcile 引用原基线 Manifest 和前序 post-state proof，不把合法 post-state 当作基线漂移。
+apply 后先生成独立 `post-state-observation.v1`，记录新的 migration head、Schema digest、配置观测、数据库身份、后置条件以及本次 operation/attempt、command 和 plan 身份，不引用 execution proof digest。完成 observation digest 后再生成引用它的 execution proof。replay/reconcile 引用原基线 Manifest、前序 execution proof digest 和由该 proof 引用的 post-state observation digest，不把合法 post-state 当作基线漂移。
 
 只读 `verify/evidence` 命令可以为单次执行生成自己的 Manifest 和 post-state observation，但不使用 apply/replay。Manifest 不进入 build proof。fresh 与 snapshot 必须分别生成独立基线 Manifest、post-state observation 和证明，不能共用。
 

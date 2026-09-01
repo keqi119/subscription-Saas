@@ -106,6 +106,7 @@
     "release:contracts:test": "pnpm --filter @subscription-saas/release-foundation test",
     "release:contracts:verify": "node scripts/release/verify-contracts.mjs",
     "release:database-tests:discover": "node scripts/release/discover-database-tests.mjs --mode verify",
+    "release:postgres:contract": "node scripts/release/run-postgres-contract-tests.mjs --suite database-lifecycle",
     "release:check": "node scripts/release-check.mjs",
     "seed:scenario": "pnpm --filter @subscription-saas/api exec node prisma/seed-scenario.mjs"
   },

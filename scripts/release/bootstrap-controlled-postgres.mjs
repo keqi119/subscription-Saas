@@ -12,7 +12,7 @@ function task0Sha256Text(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-async function hardenOwnerOnlyFile(filePath) {
+export async function hardenOwnerOnlyFile(filePath) {
   if (process.platform !== "win32") {
     await chmod(filePath, 0o600);
     return;
@@ -52,7 +52,7 @@ function sqlLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-async function defaultExecuteDocker({ args, environment = {}, input }) {
+export async function executeDockerCommand({ args, environment = {}, input }) {
   return new Promise((resolve, reject) => {
     const child = spawn("docker", args, {
       env: { ...process.env, ...environment },
@@ -124,7 +124,7 @@ function digestFromRepoDigests(stdout, expectedDigest) {
   return match.slice(match.lastIndexOf("@") + 1);
 }
 
-export function createDockerCli({ executeDocker = defaultExecuteDocker, wait = defaultWait } = {}) {
+export function createDockerCli({ executeDocker = executeDockerCommand, wait = defaultWait } = {}) {
   return {
     async createExactTarget({ image, databaseName, runId, outputDirectory, credentials }) {
       const expectedDigest = image.slice(image.lastIndexOf("@") + 1);

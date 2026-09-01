@@ -247,6 +247,13 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "packages/release-foundation/test/database-test-discovery.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises repository discovery against isolated temporary Git fixtures and never connects to PostgreSQL.",
+      "scope": "source-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "scripts/release/bootstrap-controlled-postgres.mjs",
       "owner": "release-engineering",
       "reason": "This is the controlled target implementation, not a test entrypoint.",

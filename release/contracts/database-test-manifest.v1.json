@@ -105,6 +105,21 @@
       "barrier": "database",
       "externalDependency": "none",
       "owner": "release-engineering"
+    },
+    {
+      "suiteId": "node.release-database-lifecycle.postgres",
+      "runner": "node-test",
+      "files": ["packages/release-foundation/test/database-lifecycle.postgres.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 600000,
+      "barrier": "isolated-postgres-cluster",
+      "externalDependency": "none",
+      "owner": "release-engineering"
     }
   ]
 }

@@ -18,10 +18,15 @@ import { BillingAutomationRepository } from "../src/billing-automation/billing-a
 import { BillingAutomationService } from "../src/billing-automation/billing-automation.service";
 import { buildMileageReviewCycle } from "../src/mileage-review/mileage-review.calendar";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import {
+  insertRuntimeOrderGraph,
+  insertRuntimeOrderPrerequisites
+} from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgresql://subscription:subscription@127.0.0.1:5432/subscription_saas?schema=public";
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/billing-automation.integration.spec.ts"
+).databaseUrl;
 const KEY_PREFIX = "billing-automation-integration:";
 
 describe("BillingAutomationRepository PostgreSQL integration", () => {
@@ -124,7 +129,11 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
     const scheduleId = randomUUID();
     const orderId = randomUUID();
     await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await insertRuntimeOrderGraph(tx, {
+        label: "BILLING-PAUSED-SCHEDULE",
+        orderId,
+        vehicleId: null
+      });
       await tx.$executeRaw`
         INSERT INTO "billing_schedule" (
           "id",
@@ -179,6 +188,7 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
     async (_label, reviewStatus, overdue) => {
       const ids = {
         application: randomUUID(),
+        baselineReading: randomUUID(),
         customer: randomUUID(),
         order: randomUUID(),
         quote: randomUUID(),
@@ -187,6 +197,9 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
         vehicle: randomUUID()
       };
       const actualDeliveryAt = new Date("2026-07-10T02:00:00.000Z");
+      const modelDefinitionId = randomUUID();
+      const productId = randomUUID();
+      const productVersionId = randomUUID();
       const cycle = buildBillingCycleForDelivery(actualDeliveryAt, 1);
       const reviewCycle = buildMileageReviewCycle({
         actualDeliveryAt,
@@ -252,7 +265,6 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
 
       try {
         await prisma.$transaction(async (tx) => {
-          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
           await tx.$executeRaw`
             INSERT INTO "customer" (
               "id", "customer_no", "name", "mobile", "status", "created_at", "updated_at"
@@ -266,6 +278,16 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
               clock_timestamp()
             )
           `;
+          await insertRuntimeOrderPrerequisites(tx, {
+            applicationId: ids.application,
+            customerId: ids.customer,
+            label: "BILLING-MILEAGE-REVIEW",
+            modelDefinitionId,
+            productId,
+            productVersionId,
+            quoteId: ids.quote,
+            vehicleId: ids.vehicle
+          });
           await tx.$executeRaw`
             INSERT INTO "subscription_order" (
               "id", "order_no", "customer_id", "application_id", "quote_id",
@@ -282,15 +304,15 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
               ${ids.application}::uuid,
               ${ids.quote}::uuid,
               ${ids.vehicle}::uuid,
-              ${randomUUID()}::uuid,
-              ${randomUUID()}::uuid,
+              ${productId}::uuid,
+              ${productVersionId}::uuid,
               20000000,
               300000,
               100000,
               12,
               1500,
               100,
-              ${randomUUID()}::uuid,
+              ${modelDefinitionId}::uuid,
               'NIO_ET5_2024',
               'NIO ET5',
               '{}'::jsonb,
@@ -298,6 +320,16 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
               ${actualDeliveryAt},
               clock_timestamp(),
               clock_timestamp()
+            )
+          `;
+          await tx.$executeRaw`
+            INSERT INTO "vehicle_mileage_reading" (
+              "id", "vehicle_id", "order_id", "source_type", "source_record_id",
+              "recorded_at", "mileage_km", "delta_km", "status", "updated_at"
+            ) VALUES (
+              ${ids.baselineReading}::uuid, ${ids.vehicle}::uuid, ${ids.order}::uuid,
+              'DELIVERY_BASELINE', ${`billing:${ids.order}:baseline`}, ${actualDeliveryAt},
+              1000, 0, 'ACTIVE', clock_timestamp()
             )
           `;
           await tx.$executeRaw`
@@ -350,7 +382,7 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
               ${reviewCycle.scheduledReviewAt},
               ${overdue ? reviewCycle.dueAt : new Date("2027-08-01T00:00:00.000Z")},
               ${reviewStatus}::order_mileage_review_status,
-              ${randomUUID()}::uuid,
+              ${ids.baselineReading}::uuid,
               1000,
               ${hasSubmission ? 1250 : null},
               ${hasSubmission ? reviewCycle.scheduledReviewAt : null},
@@ -424,8 +456,6 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
         await prisma.lease.deleteMany({ where: { orderId: ids.order } });
         await prisma.receivableBill.deleteMany({ where: { orderId: ids.order } });
         await prisma.auditLog.deleteMany({ where: { entityId: { in: entityIds } } });
-        await prisma.subscriptionOrder.deleteMany({ where: { id: ids.order } });
-        await prisma.customer.deleteMany({ where: { id: ids.customer } });
       }
     }
   );

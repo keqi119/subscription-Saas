@@ -1,23 +1,16 @@
 import { ConfigService } from "@nestjs/config";
 import { SmsSendStatus } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  vi
-} from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { PrismaService } from "../src/prisma/prisma.service";
 import { SmsProvider } from "../src/sms/sms-provider";
 import { SmsService } from "../src/sms/sms.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
 
-const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgresql://subscription:subscription@127.0.0.1:5432/subscription_saas?schema=public";
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/sms.integration.spec.ts"
+).databaseUrl;
 
 describe("SmsService PostgreSQL acceptance boundary", () => {
   const keys = new Set<string>();
@@ -41,10 +34,7 @@ describe("SmsService PostgreSQL acceptance boundary", () => {
   });
 
   afterAll(async () => {
-    await Promise.all([
-      firstClient.onModuleDestroy(),
-      secondClient.onModuleDestroy()
-    ]);
+    await Promise.all([firstClient.onModuleDestroy(), secondClient.onModuleDestroy()]);
   });
 
   it("allows only one provider call across two independent clients", async () => {
@@ -82,15 +72,9 @@ describe("SmsService PostgreSQL acceptance boundary", () => {
     const failingClient = {
       smsSendLog: {
         create: firstClient.smsSendLog.create.bind(firstClient.smsSendLog),
-        findUnique:
-          firstClient.smsSendLog.findUnique.bind(firstClient.smsSendLog),
-        updateMany: async (
-          args: Parameters<typeof firstClient.smsSendLog.updateMany>[0]
-        ) => {
-          if (
-            failAcceptedFinalization &&
-            args.data.sendStatus === SmsSendStatus.SENT
-          ) {
+        findUnique: firstClient.smsSendLog.findUnique.bind(firstClient.smsSendLog),
+        updateMany: async (args: Parameters<typeof firstClient.smsSendLog.updateMany>[0]) => {
+          if (failAcceptedFinalization && args.data.sendStatus === SmsSendStatus.SENT) {
             failAcceptedFinalization = false;
             throw new Error("simulated commit interruption");
           }
@@ -102,8 +86,7 @@ describe("SmsService PostgreSQL acceptance boundary", () => {
     const retryService = smsService(secondClient, provider);
     const input = businessInput("accepted-finalization-failure");
 
-    const interrupted =
-      await interruptedService.sendStage2CustomerReady(input);
+    const interrupted = await interruptedService.sendStage2CustomerReady(input);
     const retry = await retryService.sendStage2CustomerReady(input);
 
     expect(interrupted.sendStatus).toBe(SmsSendStatus.UNCERTAIN);
@@ -135,12 +118,9 @@ async function connectClient() {
 function smsService(prisma: PrismaService, provider: SmsProvider) {
   return new SmsService(
     new ConfigService({
-      ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE:
-        "SMS_CUSTOMER_READY",
-      ALIYUN_SMS_FIELD_HANDOVER_ASSIGNED_TEMPLATE_CODE:
-        "SMS_FIELD_ASSIGNED",
-      ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE:
-        "SMS_FIELD_READY",
+      ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE: "SMS_CUSTOMER_READY",
+      ALIYUN_SMS_FIELD_HANDOVER_ASSIGNED_TEMPLATE_CODE: "SMS_FIELD_ASSIGNED",
+      ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE: "SMS_FIELD_READY",
       FIELD_OPERATOR_SMS_ENABLED: "true",
       FIELD_OPERATOR_SMS_PROVIDER: "mock",
       PORTAL_SMS_ENABLED: "true",

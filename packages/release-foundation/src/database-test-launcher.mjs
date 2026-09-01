@@ -18,6 +18,10 @@ const countKeys = Object.freeze([
   "skipped",
   "todo"
 ]);
+const defaultRepositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../.."
+);
 
 function launcherError(code, details) {
   return Object.assign(new Error(code), { code, details });
@@ -86,6 +90,13 @@ function commandFor(suite) {
     });
   }
   if (suite.runner === "vitest") {
+    const packageFiles = suite.files.map((file) => {
+      const prefix = "apps/api/";
+      if (!file.startsWith(prefix)) {
+        throw launcherError("DATABASE_TEST_VITEST_FILE_OUTSIDE_API", { file });
+      }
+      return file.slice(prefix.length);
+    });
     return Object.freeze({
       executable: "pnpm",
       arguments: Object.freeze([
@@ -96,7 +107,8 @@ function commandFor(suite) {
         "run",
         "--config",
         "vitest.config.ts",
-        ...suite.files
+        "--reporter=json",
+        ...packageFiles
       ])
     });
   }
@@ -180,6 +192,7 @@ export function selectManifestSuites({
         command: commandFor(suite),
         timeoutMs: suite.timeoutMs,
         barrier: suite.barrier,
+        parallelism: Object.freeze({ ...suite.parallelism }),
         expectedCountPolicy: Object.freeze({ ...suite.expectedCountPolicy }),
         fixtures: suite.fixtures ? Object.freeze({ ...suite.fixtures }) : undefined
       });
@@ -284,6 +297,37 @@ function assertFixtureObservations(execution, observations) {
   }
 }
 
+function assertRoleBoundaries(execution, observations) {
+  const expectedNames = ["target", ...execution.additionalAssignments.map(({ name }) => name)];
+  const attributeKeys = ["bypassrls", "createdb", "createrole", "superuser"];
+  if (
+    !Array.isArray(observations) ||
+    observations.length !== expectedNames.length ||
+    observations.some(
+      (entry, index) =>
+        entry?.database !== expectedNames[index] ||
+        JSON.stringify(Object.keys(entry.roleAttributes ?? {}).sort()) !==
+          JSON.stringify(attributeKeys) ||
+        Object.values(entry.roleAttributes ?? {}).some((value) => value !== false) ||
+        entry.canCreateSchema !== false ||
+        entry.schemaOwner !== false ||
+        entry.objectOwner !== false
+    )
+  ) {
+    throw launcherError("DATABASE_TEST_RUNTIME_ROLE_BOUNDARY_INVALID");
+  }
+  return new Map(observations.map((entry) => [entry.database, entry]));
+}
+
+function roleBoundaryReport(entry) {
+  return {
+    roleAttributes: entry.roleAttributes,
+    canCreateSchema: entry.canCreateSchema,
+    schemaOwner: entry.schemaOwner,
+    objectOwner: entry.objectOwner
+  };
+}
+
 export async function runDatabaseSuite({
   execution,
   provision,
@@ -313,6 +357,7 @@ export async function runDatabaseSuite({
   const result = await executeTest({ execution, provisioned });
   const counts = normalizeDatabaseTestCounts(result?.counts, execution.expectedCountPolicy);
   assertFixtureObservations(execution, result?.fixtureObservations);
+  const roleBoundaries = assertRoleBoundaries(execution, result?.roleBoundaries);
   if (!/^sha256:[0-9a-f]{64}$/.test(result?.sanitizedLogDigest ?? "")) {
     throw launcherError("DATABASE_TEST_LOG_DIGEST_INVALID");
   }
@@ -327,7 +372,8 @@ export async function runDatabaseSuite({
     target: Object.freeze({
       databaseName: provisioned.databaseName,
       databaseOid: provisioned.databaseOid,
-      targetFingerprint: provisioned.targetFingerprint
+      targetFingerprint: provisioned.targetFingerprint,
+      ...roleBoundaryReport(roleBoundaries.get("target"))
     }),
     ...(provisioned.additionalDatabases?.length
       ? {
@@ -337,7 +383,8 @@ export async function runDatabaseSuite({
                 name: database.name,
                 databaseName: database.databaseName,
                 databaseOid: database.databaseOid,
-                targetFingerprint: database.targetFingerprint
+                targetFingerprint: database.targetFingerprint,
+                ...roleBoundaryReport(roleBoundaries.get(database.name))
               })
             )
           )
@@ -390,8 +437,16 @@ function assertSuiteReportMatches(selection, report) {
   }
 }
 
-export async function runDatabaseManifest({ selections, executeSuite }) {
-  if (!Array.isArray(selections) || selections.length === 0 || typeof executeSuite !== "function") {
+export async function runDatabaseManifest({ selections, executeSuite, concurrency = 1 }) {
+  if (
+    !Array.isArray(selections) ||
+    selections.length === 0 ||
+    typeof executeSuite !== "function" ||
+    !Number.isInteger(concurrency) ||
+    concurrency < 1 ||
+    concurrency > 4 ||
+    (concurrency > 1 && selections.some(({ parallelism }) => parallelism?.mode !== "parallel"))
+  ) {
     throw launcherError("DATABASE_TEST_MANIFEST_EXECUTION_INVALID");
   }
   const [first] = selections;
@@ -406,11 +461,28 @@ export async function runDatabaseManifest({ selections, executeSuite }) {
   ) {
     throw launcherError("DATABASE_TEST_MANIFEST_SELECTION_MISMATCH");
   }
-  const suiteReports = [];
-  for (const selection of selections) {
-    const report = await executeSuite(selection);
-    assertSuiteReportMatches(selection, report);
-    suiteReports.push(report);
+  const suiteReports = new Array(selections.length);
+  const failures = [];
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < selections.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        const report = await executeSuite(selections[index]);
+        assertSuiteReportMatches(selections[index], report);
+        suiteReports[index] = report;
+      } catch (error) {
+        failures.push({ index, error });
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, selections.length) }, () => worker())
+  );
+  if (failures.length > 0) {
+    failures.sort((left, right) => left.index - right.index);
+    throw failures[0].error;
   }
   const counts = addCounts(suiteReports);
   const report = {
@@ -536,7 +608,7 @@ function loadRuntimeDatabase({ context, repoRoot, loadJson }) {
 
 export function requiredReleaseDatabaseTestContext(
   moduleUrl,
-  { environment = process.env, repoRoot = process.cwd(), loadJson = defaultLoadJson } = {}
+  { environment = process.env, repoRoot = defaultRepositoryRoot, loadJson = defaultLoadJson } = {}
 ) {
   if (environment.S1_RELEASE_DATABASE_TEST !== "1") {
     throw launcherError("RELEASE_DATABASE_TEST_LAUNCHER_REQUIRED");
@@ -555,7 +627,11 @@ export function requiredReleaseDatabaseTestContext(
   ) {
     throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
   }
-  const caller = fileURLToPath(moduleUrl).replaceAll("\\", "/");
+  const caller = (
+    String(moduleUrl).startsWith("file:")
+      ? fileURLToPath(moduleUrl)
+      : path.resolve(repoRoot, String(moduleUrl))
+  ).replaceAll("\\", "/");
   if (!context.allowedFiles.some((file) => caller.endsWith(`/${file}`))) {
     throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_CALLER_FORBIDDEN");
   }

@@ -352,6 +352,51 @@ async function generatePrismaClient() {
   }
 }
 
+async function observeRuntimeRoleBoundary({ cluster, resource, runtimeSecret }) {
+  const result = await executePsql({
+    containerId: cluster.containerId,
+    credential: runtimeSecret,
+    databaseName: resource.record.databaseName,
+    sql: [
+      'SELECT r.rolsuper AS "superuser",',
+      '       r.rolcreatedb AS "createdb",',
+      '       r.rolcreaterole AS "createrole",',
+      '       r.rolbypassrls AS "bypassrls",',
+      "       has_database_privilege(current_user, current_database(), 'CREATE') AS \"canCreateSchema\",",
+      '       EXISTS (SELECT 1 FROM pg_namespace WHERE nspowner = r.oid) AS "schemaOwner",',
+      '       EXISTS (SELECT 1 FROM pg_class WHERE relowner = r.oid) AS "objectOwner"',
+      "FROM pg_roles AS r WHERE r.rolname = current_user;"
+    ].join("\n"),
+    columns: [
+      "superuser",
+      "createdb",
+      "createrole",
+      "bypassrls",
+      "canCreateSchema",
+      "schemaOwner",
+      "objectOwner"
+    ]
+  });
+  const boundary = result.rows[0];
+  if (!boundary || Object.values(boundary).some((value) => value !== "f")) {
+    throw runtimeError("DATABASE_TEST_RUNTIME_ROLE_BOUNDARY_FAILED", {
+      database: resource.name
+    });
+  }
+  return Object.freeze({
+    database: resource.name,
+    roleAttributes: Object.freeze({
+      superuser: false,
+      createdb: false,
+      createrole: false,
+      bypassrls: false
+    }),
+    canCreateSchema: false,
+    schemaOwner: false,
+    objectOwner: false
+  });
+}
+
 function tapCount(output, label) {
   const matches = [...output.matchAll(new RegExp(`^# ${label} ([0-9]+)$`, "gm"))];
   const value = Number(matches.at(-1)?.[1]);
@@ -374,6 +419,44 @@ function tapCounts(output) {
     filtered: 0,
     cancelled: tapCount(output, "cancelled")
   };
+}
+
+function testCounts(output) {
+  const trimmed = output.trim();
+  const jsonReport = trimmed
+    .split(/\r?\n/)
+    .reverse()
+    .find((line) => line.startsWith("{") && line.includes('"numTotalTests"'));
+  if (jsonReport) {
+    let report;
+    try {
+      report = JSON.parse(jsonReport);
+    } catch {
+      throw runtimeError("DATABASE_TEST_COUNT_INCOMPLETE", { reporter: "vitest-json" });
+    }
+    const values = [
+      report.numTotalTests,
+      report.numPassedTests,
+      report.numFailedTests,
+      report.numPendingTests,
+      report.numTodoTests
+    ];
+    if (values.some((value) => !Number.isInteger(value) || value < 0)) {
+      throw runtimeError("DATABASE_TEST_COUNT_INCOMPLETE", { reporter: "vitest-json" });
+    }
+    return {
+      collected: report.numTotalTests,
+      selected: report.numTotalTests,
+      executed: report.numPassedTests + report.numFailedTests,
+      passed: report.numPassedTests,
+      failed: report.numFailedTests,
+      skipped: report.numPendingTests,
+      todo: report.numTodoTests,
+      filtered: 0,
+      cancelled: 0
+    };
+  }
+  return tapCounts(output);
 }
 
 function localCustodyStorage() {
@@ -473,7 +556,6 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
   ) {
     throw runtimeError("DATABASE_LAUNCHER_REQUEST_INVALID");
   }
-  if (concurrency !== 1) throw runtimeError("DATABASE_LAUNCHER_CONCURRENCY_NOT_IMPLEMENTED");
   const sourceSha = mode === "source-gate" ? await gitSourceSha() : undefined;
   const inputs = await loadSelectionInputs();
   if (!inputs.policy) throw runtimeError("DATABASE_LAUNCHER_POLICY_MISSING");
@@ -495,6 +577,7 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
   const cluster = await startCluster(runId, inputs.imageContract, inputs.policy);
   const observations = new Map();
   const fixtureObservations = new Map();
+  const roleBoundaryObservations = new Map();
   let completed = false;
   try {
     const admin = ({ databaseName, sql }) =>
@@ -507,6 +590,7 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
       });
     const manifestReport = await runDatabaseManifest({
       selections,
+      concurrency,
       executeSuite: async (execution) => {
         const resources = [];
         let provisionedRecord;
@@ -598,6 +682,7 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
           },
           grantRuntimeAccess: async () => {
             const suiteFixtures = [];
+            const suiteRoleBoundaries = [];
             for (const resource of resources) {
               await grantRuntimeEquivalentAccess({
                 databaseName: resource.record.databaseName,
@@ -605,11 +690,17 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
                 runtimeRole: resource.record.roles["runtime-test"],
                 executeDatabase: admin
               });
-              if (!execution.fixtures) continue;
-              const migrationSecret = await readSecret(resource.record.secretReferences.migrate);
               const runtimeSecret = await readSecret(
                 resource.record.secretReferences["runtime-test"]
               );
+              const roleBoundary = await observeRuntimeRoleBoundary({
+                cluster,
+                resource,
+                runtimeSecret
+              });
+              suiteRoleBoundaries.push(roleBoundary);
+              if (!execution.fixtures) continue;
+              const migrationSecret = await readSecret(resource.record.secretReferences.migrate);
               const migrationFingerprint = sha256Bytes(
                 Buffer.from(migrationSecret.password, "utf8")
               );
@@ -649,45 +740,19 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
                   });
                 }
               });
-              const roleBoundaryResult = await executePsql({
-                containerId: cluster.containerId,
-                credential: runtimeSecret,
-                databaseName: resource.record.databaseName,
-                sql: [
-                  'SELECT r.rolsuper AS "superuser",',
-                  '       r.rolcreatedb AS "createdb",',
-                  '       r.rolcreaterole AS "createrole",',
-                  '       r.rolbypassrls AS "bypassrls",',
-                  "       has_database_privilege(current_user, current_database(), 'CREATE') AS \"canCreateSchema\",",
-                  '       EXISTS (SELECT 1 FROM pg_namespace WHERE nspowner = r.oid) AS "schemaOwner",',
-                  '       EXISTS (SELECT 1 FROM pg_class WHERE relowner = r.oid) AS "objectOwner"',
-                  "FROM pg_roles AS r WHERE r.rolname = current_user;"
-                ].join("\n"),
-                columns: [
-                  "superuser",
-                  "createdb",
-                  "createrole",
-                  "bypassrls",
-                  "canCreateSchema",
-                  "schemaOwner",
-                  "objectOwner"
-                ]
-              });
-              const boundary = roleBoundaryResult.rows[0];
-              if (!boundary || Object.values(boundary).some((value) => value !== "f")) {
-                throw runtimeError("DATABASE_TEST_RUNTIME_ROLE_BOUNDARY_FAILED", {
-                  database: resource.name
-                });
-              }
               suiteFixtures.push({
                 database: resource.name,
                 migration,
                 runtime,
-                roleBoundary: Object.freeze(
-                  Object.fromEntries(Object.keys(boundary).map((key) => [key, false]))
-                )
+                roleBoundary: Object.freeze({
+                  ...roleBoundary.roleAttributes,
+                  canCreateSchema: roleBoundary.canCreateSchema,
+                  schemaOwner: roleBoundary.schemaOwner,
+                  objectOwner: roleBoundary.objectOwner
+                })
               });
             }
+            roleBoundaryObservations.set(execution.suiteId, Object.freeze(suiteRoleBoundaries));
             if (suiteFixtures.length > 0) {
               fixtureObservations.set(execution.suiteId, Object.freeze(suiteFixtures));
             }
@@ -759,8 +824,16 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
                 expiryDisposition: "review"
               }
             );
-            const counts = tapCounts(result.stdout);
+            const counts = testCounts(result.stdout);
             if (result.signal || (result.code !== 0 && counts.failed === 0)) {
+              process.stderr.write(
+                `${JSON.stringify({
+                  schemaVersion: "database-test-sanitized-diagnostic.v1",
+                  suiteId: execution.suiteId,
+                  stdout: acceptedLog.stdout,
+                  stderr: acceptedLog.stderr
+                })}\n`
+              );
               throw runtimeError("DATABASE_TEST_PROCESS_FAILED", {
                 suiteId: execution.suiteId,
                 exitCode: result.code
@@ -784,7 +857,8 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
               sanitizedLogDigest: sha256Canonical(acceptedLog),
               ...(fixtureObservations.has(execution.suiteId)
                 ? { fixtureObservations: fixtureObservations.get(execution.suiteId) }
-                : {})
+                : {}),
+              roleBoundaries: roleBoundaryObservations.get(execution.suiteId)
             };
           },
           custody: ({ report }) =>

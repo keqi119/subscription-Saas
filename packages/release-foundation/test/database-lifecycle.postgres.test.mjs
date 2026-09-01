@@ -389,6 +389,26 @@ export async function runDatabaseLifecyclePostgresContract() {
       { code: "CLEANUP_IDENTITY_MISMATCH" }
     );
 
+    const interruptedRecord = provisioned.shift();
+    const siblingRecord = provisioned[0];
+    await cleanupSuiteDatabase(interruptedRecord, { target, policy, executeAdmin });
+    const interruptedResidue = await executePsql({
+      containerId,
+      credential: provisioner,
+      databaseName: "postgres",
+      sql: `SELECT COUNT(*)::text FROM pg_database WHERE datname = '${interruptedRecord.databaseName}';`,
+      columns: ["count"]
+    });
+    assert.equal(interruptedResidue.rows[0]?.count, "0");
+    const sibling = await executePsql({
+      containerId,
+      credential: credentials.get(`${siblingRecord.databaseName}:runtime-test`),
+      databaseName: siblingRecord.databaseName,
+      sql: "SELECT current_database() AS database_name;",
+      columns: ["databaseName"]
+    });
+    assert.equal(sibling.rows[0]?.databaseName, siblingRecord.databaseName);
+
     for (const record of provisioned) {
       await cleanupSuiteDatabase(record, { target, policy, executeAdmin });
     }

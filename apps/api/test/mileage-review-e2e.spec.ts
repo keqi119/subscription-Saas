@@ -24,10 +24,12 @@ import { MileageReviewService } from "../src/mileage-review/mileage-review.servi
 import { PrismaService } from "../src/prisma/prisma.service";
 import { StorageService } from "../src/storage/storage.service";
 import { VehicleMileageService } from "../src/vehicle-mileage/vehicle-mileage.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import { insertRuntimeOrderPrerequisites } from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgresql://subscription:subscription@127.0.0.1:5432/subscription_saas?schema=public";
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/mileage-review-e2e.spec.ts"
+).databaseUrl;
 
 describe("monthly mileage review PostgreSQL end-to-end", () => {
   let prisma: PrismaService;
@@ -100,7 +102,17 @@ describe("monthly mileage review PostgreSQL end-to-end", () => {
         }
       });
       await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await insertRuntimeOrderPrerequisites(tx, {
+          applicationId: ids.application,
+          customerId: ids.customer,
+          label: "MILEAGE-REVIEW-E2E",
+          modelDefinitionId: ids.modelDefinition,
+          productId: ids.product,
+          productVersionId: ids.productVersion,
+          quoteId: ids.quote,
+          salesUserId: ids.user,
+          vehicleId: null
+        });
         await tx.$executeRaw`
           INSERT INTO "vehicle" (
             "id", "vehicle_no", "vin", "plate_no", "brand",
@@ -476,38 +488,6 @@ describe("monthly mileage review PostgreSQL end-to-end", () => {
         })
       ).resolves.toMatchObject({ version: 2 });
     } finally {
-      const files = await prisma.fileObject
-        .findMany({
-          select: { id: true },
-          where: { objectKey: { startsWith: "mileage-e2e/" } }
-        })
-        .catch(() => []);
-      await prisma.orderMileageReviewEvidence.deleteMany({
-        where: { review: { orderId: ids.order } }
-      });
-      await prisma.orderMileageReview.deleteMany({
-        where: { orderId: ids.order }
-      });
-      await prisma.orderEntitlementUsage.deleteMany({
-        where: { orderId: ids.order }
-      });
-      await prisma.orderEntitlementGrant.deleteMany({
-        where: { orderId: ids.order }
-      });
-      await prisma.orderEntitlementAccount.deleteMany({
-        where: { orderId: ids.order }
-      });
-      await prisma.receivableBill.deleteMany({ where: { orderId: ids.order } });
-      await prisma.vehicleMileageReading.deleteMany({
-        where: { orderId: ids.order }
-      });
-      await prisma.fileObject.deleteMany({
-        where: { id: { in: files.map((file) => file.id) } }
-      });
-      await prisma.subscriptionOrder.deleteMany({ where: { id: ids.order } });
-      await prisma.vehicle.deleteMany({ where: { id: ids.vehicle } });
-      await prisma.customer.deleteMany({ where: { id: ids.customer } });
-      await prisma.user.deleteMany({ where: { id: ids.user } });
       vi.useRealTimers();
     }
   }, 20_000);

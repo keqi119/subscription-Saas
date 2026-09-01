@@ -13,6 +13,17 @@ import {
 } from "../src/index.mjs";
 
 const digest = `sha256:${"a".repeat(64)}`;
+const leastPrivilegeBoundary = Object.freeze({
+  roleAttributes: Object.freeze({
+    superuser: false,
+    createdb: false,
+    createrole: false,
+    bypassrls: false
+  }),
+  canCreateSchema: false,
+  schemaOwner: false,
+  objectOwner: false
+});
 const manifest = {
   schemaVersion: "database-test-manifest.v1",
   batches: [{ batchId: "launcher-fixture", suiteIds: ["release.launcher.fixture"] }],
@@ -102,6 +113,50 @@ test("suite, batch, and source-gate selection share one manifest selector", () =
   });
 });
 
+test("vitest commands translate repository paths to the filtered API package", () => {
+  const vitestManifest = {
+    ...manifest,
+    batches: [{ batchId: "api-fixture", suiteIds: ["api.fixture.postgres"] }],
+    suites: [
+      {
+        ...manifest.suites[0],
+        files: ["apps/api/test/fixture.integration.spec.ts"],
+        runner: "vitest",
+        suiteId: "api.fixture.postgres"
+      }
+    ]
+  };
+
+  const [selection] = select({
+    batchId: "api-fixture",
+    manifest: vitestManifest
+  });
+
+  assert.deepEqual(selection.command.arguments.slice(-2), [
+    "--reporter=json",
+    "test/fixture.integration.spec.ts"
+  ]);
+});
+
+test("vitest commands reject files outside the filtered API package", () => {
+  assert.throws(
+    () =>
+      select({
+        manifest: {
+          ...manifest,
+          suites: [
+            {
+              ...manifest.suites[0],
+              files: ["packages/release-foundation/test/fixture.postgres.test.mjs"],
+              runner: "vitest"
+            }
+          ]
+        }
+      }),
+    { code: "DATABASE_TEST_VITEST_FILE_OUTSIDE_API" }
+  );
+});
+
 test("selector rejects unknown ids, unclassified discovery, duplicates, and caller file paths", () => {
   assert.throws(() => select({ suiteIds: ["unknown"] }), {
     code: "DATABASE_TEST_SUITE_UNKNOWN"
@@ -169,7 +224,11 @@ test("runs one suite in provision, migration, runtime, custody, cleanup order", 
     grantRuntimeAccess: async () => events.push("grant"),
     executeTest: async () => {
       events.push("test");
-      return { counts: completeCounts(), sanitizedLogDigest: digest };
+      return {
+        counts: completeCounts(),
+        sanitizedLogDigest: digest,
+        roleBoundaries: [{ database: "target", ...leastPrivilegeBoundary }]
+      };
     },
     custody: async ({ digest: subjectDigest }) => {
       events.push("custody");
@@ -236,7 +295,8 @@ test("manifest and source-gate reports aggregate the same selected suite", async
     target: {
       databaseName: selections[0].assignment.databaseName,
       databaseOid: "19001",
-      targetFingerprint: digest
+      targetFingerprint: digest,
+      ...leastPrivilegeBoundary
     },
     counts: completeCounts(),
     sanitizedLogDigest: digest,

@@ -94,6 +94,17 @@
         "objectOwner": { "const": false }
       }
     },
+    "roleAttributes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["superuser", "createdb", "createrole", "bypassrls"],
+      "properties": {
+        "superuser": { "const": false },
+        "createdb": { "const": false },
+        "createrole": { "const": false },
+        "bypassrls": { "const": false }
+      }
+    },
     "counts": {
       "type": "object",
       "additionalProperties": false,
@@ -147,11 +158,23 @@
         "target": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["databaseName", "databaseOid", "targetFingerprint"],
+          "required": [
+            "databaseName",
+            "databaseOid",
+            "targetFingerprint",
+            "roleAttributes",
+            "canCreateSchema",
+            "schemaOwner",
+            "objectOwner"
+          ],
           "properties": {
             "databaseName": { "type": "string", "pattern": "^s1ci_[0-9a-f]{24}$" },
             "databaseOid": { "type": "string", "pattern": "^[0-9]+$" },
-            "targetFingerprint": { "$ref": "#/$defs/digest" }
+            "targetFingerprint": { "$ref": "#/$defs/digest" },
+            "roleAttributes": { "$ref": "#/$defs/roleAttributes" },
+            "canCreateSchema": { "const": false },
+            "schemaOwner": { "const": false },
+            "objectOwner": { "const": false }
           }
         },
         "additionalDatabases": {
@@ -160,12 +183,25 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["name", "databaseName", "databaseOid", "targetFingerprint"],
+            "required": [
+              "name",
+              "databaseName",
+              "databaseOid",
+              "targetFingerprint",
+              "roleAttributes",
+              "canCreateSchema",
+              "schemaOwner",
+              "objectOwner"
+            ],
             "properties": {
               "name": { "$ref": "#/$defs/nonEmpty" },
               "databaseName": { "type": "string", "pattern": "^s1ci_[0-9a-f]{24}$" },
               "databaseOid": { "type": "string", "pattern": "^[0-9]+$" },
-              "targetFingerprint": { "$ref": "#/$defs/digest" }
+              "targetFingerprint": { "$ref": "#/$defs/digest" },
+              "roleAttributes": { "$ref": "#/$defs/roleAttributes" },
+              "canCreateSchema": { "const": false },
+              "schemaOwner": { "const": false },
+              "objectOwner": { "const": false }
             }
           }
         },

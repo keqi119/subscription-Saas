@@ -11,6 +11,7 @@
     "packages/release-foundation/src/database-test-launcher.mjs",
     "packages/release-foundation/src/digest.mjs",
     "packages/release-foundation/src/evidence-custody.mjs",
+    "packages/release-foundation/src/index.d.mts",
     "packages/release-foundation/src/index.mjs",
     "packages/release-foundation/src/migration-global-object-scan.mjs",
     "packages/release-foundation/src/node-database-test-runner.mjs",

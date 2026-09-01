@@ -31,8 +31,16 @@ import type {
   OpenSubscriptionPeriodInput
 } from "../src/asset-facts/asset-facts.types";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import {
+  insertRuntimeAssetOwner,
+  insertRuntimeOrderGraph,
+  insertRuntimeVehicle
+} from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL = requiredTestDatabaseUrl();
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/asset-facts.repository.integration.spec.ts"
+).databaseUrl;
 const FIXTURE_PREFIX = `stage1c_asset_facts_${randomUUID().replaceAll("-", "")}`;
 const REPOSITORY_FIXTURE_PREFIX = `S1C${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 
@@ -45,11 +53,7 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
   });
 
   afterAll(async () => {
-    try {
-      await deleteFixturesIfTablesExist(prisma);
-    } finally {
-      await prisma.onModuleDestroy();
-    }
+    await prisma.onModuleDestroy();
   });
 
   it("keeps the named exclusion constraints and partial unique open-period indexes", async () => {
@@ -317,11 +321,7 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
   });
 
   afterAll(async () => {
-    try {
-      await deleteRepositoryFixtures(prisma);
-    } finally {
-      await prisma.onModuleDestroy();
-    }
+    await prisma.onModuleDestroy();
   });
 
   it("rejects the root Prisma client because consecutive probes use distinct autocommit transactions", async () => {
@@ -887,58 +887,29 @@ async function createRepositoryFixture(prisma: PrismaService): Promise<Repositor
   const otherVehicleId = randomUUID();
   const ownerId = randomUUID();
   const vehicleId = randomUUID();
-  const token = randomUUID().replaceAll("-", "").slice(0, 12);
-
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "customer" (
-        "id", "customer_no", "name", "mobile", "status", "created_at", "updated_at"
-      ) VALUES (
-        ${customerId}::uuid, ${`${REPOSITORY_FIXTURE_PREFIX}C${token}`},
-        'Stage 1C Repository', '13800000000', 'ACTIVE', clock_timestamp(), clock_timestamp()
-      )
-    `);
-    for (const [index, id] of [vehicleId, otherVehicleId].entries()) {
-      await tx.$executeRaw(Prisma.sql`
-        INSERT INTO "vehicle" (
-          "id", "vehicle_no", "plate_no", "brand", "model_definition_id",
-          "purchase_price_amount", "status", "created_at", "updated_at"
-        ) VALUES (
-          ${id}::uuid, ${`${REPOSITORY_FIXTURE_PREFIX}V${token}${index}`},
-          ${`沪T${token.slice(0, 6)}${index}`}, 'NIO', ${randomUUID()}::uuid,
-          20000000, 'LEASED', clock_timestamp(), clock_timestamp()
-        )
-      `);
-    }
-    for (const [index, id] of [ownerId, otherOwnerId].entries()) {
-      await tx.$executeRaw(Prisma.sql`
-        INSERT INTO "asset_owner" (
-          "id", "owner_no", "name", "owner_type", "status", "created_at", "updated_at"
-        ) VALUES (
-          ${id}::uuid, ${`${REPOSITORY_FIXTURE_PREFIX}A${token}${index}`},
-          ${`Stage 1C Owner ${index}`}, 'PLATFORM', 'ACTIVE', clock_timestamp(), clock_timestamp()
-        )
-      `);
-    }
-    for (const [index, id] of [orderId, otherOrderId].entries()) {
-      const assignedVehicleId = index === 0 ? vehicleId : otherVehicleId;
-      await tx.$executeRaw(Prisma.sql`
-        INSERT INTO "subscription_order" (
-          "id", "order_no", "customer_id", "application_id", "quote_id", "vehicle_id",
-          "product_id", "product_version_id", "vehicle_purchase_price_amount", "monthly_fee_amount",
-          "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
-          "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
-          "quote_snapshot", "order_status", "created_at", "updated_at"
-        ) VALUES (
-          ${id}::uuid, ${`${REPOSITORY_FIXTURE_PREFIX}O${token}${index}`}, ${customerId}::uuid,
-          ${randomUUID()}::uuid, ${randomUUID()}::uuid, ${assignedVehicleId}::uuid,
-          ${randomUUID()}::uuid, ${randomUUID()}::uuid, 20000000, 100, 0, 6, 1500, 100,
-          ${randomUUID()}::uuid, 'NIO_ET5_2024', 'NIO ET5', '{}'::jsonb,
-          'ACTIVE', clock_timestamp(), clock_timestamp()
-        )
-      `);
-    }
+    await insertRuntimeOrderGraph(tx, {
+      customerId,
+      label: "ASSET-FACTS-PRIMARY",
+      orderId,
+      vehicleId
+    });
+    await insertRuntimeOrderGraph(tx, {
+      customerId,
+      label: "ASSET-FACTS-OTHER",
+      orderId: otherOrderId,
+      vehicleId: otherVehicleId
+    });
+    await insertRuntimeAssetOwner(tx, ownerId, "ASSET-FACTS-PRIMARY");
+    await insertRuntimeAssetOwner(tx, otherOwnerId, "ASSET-FACTS-OTHER");
+    await tx.vehicle.updateMany({
+      data: { status: "LEASED" },
+      where: { id: { in: [vehicleId, otherVehicleId] } }
+    });
+    await tx.subscriptionOrder.updateMany({
+      data: { orderStatus: "ACTIVE" },
+      where: { id: { in: [orderId, otherOrderId] } }
+    });
   });
 
   return {
@@ -1382,7 +1353,13 @@ async function subscriptionStartSourceConflict(prisma: PrismaService) {
   const original = await readCommitted(prisma, (tx) =>
     repositoryOpen(new AssetFactsRepository(), tx, "subscription", input)
   );
-  await relocatePeriodAggregate(prisma, "subscription", original.id);
+  await relocatePeriodAggregate(
+    prisma,
+    "subscription",
+    original.id,
+    fixture.otherVehicleId,
+    fixture.otherOrderId
+  );
   return readCommitted(prisma, (tx) =>
     repositoryOpen(new AssetFactsRepository(), tx, "subscription", input)
   );
@@ -1409,7 +1386,23 @@ async function subscriptionEndSourceConflict(prisma: PrismaService) {
   );
   const closeInput = closeRepositoryInput("subscription", first.id, "subscription-end-source");
   await readCommitted(prisma, (tx) => repositoryClose(repository, tx, "subscription", closeInput));
-  await relocatePeriodAggregate(prisma, "subscription", first.id);
+  const relocatedOrderId = randomUUID();
+  const relocatedVehicleId = randomUUID();
+  await prisma.$transaction((tx) =>
+    insertRuntimeOrderGraph(tx, {
+      customerId: fixture.customerId,
+      label: "ASSET-FACTS-END-SOURCE",
+      orderId: relocatedOrderId,
+      vehicleId: relocatedVehicleId
+    })
+  );
+  await relocatePeriodAggregate(
+    prisma,
+    "subscription",
+    first.id,
+    relocatedVehicleId,
+    relocatedOrderId
+  );
   return readCommitted(prisma, (tx) =>
     repositoryClose(repository, tx, "subscription", { ...closeInput, periodId: second.id })
   );
@@ -1520,7 +1513,13 @@ async function ownershipStartSourceConflict(prisma: PrismaService) {
   const original = await readCommitted(prisma, (tx) =>
     repositoryOpen(new AssetFactsRepository(), tx, "ownership", input)
   );
-  await relocatePeriodAggregate(prisma, "ownership", original.id);
+  await relocatePeriodAggregate(
+    prisma,
+    "ownership",
+    original.id,
+    fixture.otherVehicleId,
+    fixture.otherOrderId
+  );
   return readCommitted(prisma, (tx) =>
     repositoryOpen(new AssetFactsRepository(), tx, "ownership", input)
   );
@@ -1547,7 +1546,17 @@ async function ownershipEndSourceConflict(prisma: PrismaService) {
   );
   const closeInput = closeRepositoryInput("ownership", first.id, "ownership-end-source");
   await readCommitted(prisma, (tx) => repositoryClose(repository, tx, "ownership", closeInput));
-  await relocatePeriodAggregate(prisma, "ownership", first.id);
+  const relocatedVehicleId = randomUUID();
+  await prisma.$transaction((tx) =>
+    insertRuntimeVehicle(tx, relocatedVehicleId, "ASSET-FACTS-END-SOURCE")
+  );
+  await relocatePeriodAggregate(
+    prisma,
+    "ownership",
+    first.id,
+    relocatedVehicleId,
+    fixture.otherOrderId
+  );
   return readCommitted(prisma, (tx) =>
     repositoryClose(repository, tx, "ownership", { ...closeInput, periodId: second.id })
   );
@@ -1633,21 +1642,22 @@ async function ownershipRangeConflict(prisma: PrismaService) {
 async function relocatePeriodAggregate(
   prisma: PrismaService,
   periodKind: RepositoryPeriodKind,
-  periodId: string
+  periodId: string,
+  vehicleId: string,
+  orderId: string
 ) {
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     if (periodKind === "subscription") {
       await tx.$executeRaw(Prisma.sql`
         UPDATE "vehicle_subscription_period"
-        SET "vehicle_id" = ${randomUUID()}::uuid, "order_id" = ${randomUUID()}::uuid
+        SET "vehicle_id" = ${vehicleId}::uuid, "order_id" = ${orderId}::uuid
         WHERE "id" = ${periodId}::uuid
       `);
       return;
     }
     await tx.$executeRaw(Prisma.sql`
       UPDATE "vehicle_ownership_period"
-      SET "vehicle_id" = ${randomUUID()}::uuid
+      SET "vehicle_id" = ${vehicleId}::uuid
       WHERE "id" = ${periodId}::uuid
     `);
   });
@@ -1675,7 +1685,12 @@ async function insertSubscriptionPeriod(prisma: PrismaService, input: Subscripti
   const sourceType = input.sourceType ?? "STAGE1C_TEST";
 
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await insertRuntimeOrderGraph(tx, {
+      customerId,
+      label: "ASSET-FACTS-PERIOD",
+      orderId: input.orderId,
+      vehicleId: input.vehicleId
+    });
     await tx.$executeRaw`
       INSERT INTO "vehicle_subscription_period" (
         "id", "vehicle_id", "order_id", "customer_id", "started_at", "ended_at",
@@ -1698,7 +1713,8 @@ async function insertOwnershipPeriod(prisma: PrismaService, input: OwnershipPeri
   const sourceType = input.sourceType ?? "STAGE1C_TEST";
 
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await insertRuntimeVehicle(tx, input.vehicleId, "ASSET-FACTS-OWNERSHIP");
+    await insertRuntimeAssetOwner(tx, input.assetOwnerId, "ASSET-FACTS-OWNERSHIP");
     await tx.$executeRaw`
       INSERT INTO "vehicle_ownership_period" (
         "id", "vehicle_id", "asset_owner_id", "started_at", "ended_at", "start_reason",
@@ -1756,7 +1772,6 @@ async function deleteFixturesIfTablesExist(prisma: PrismaService) {
 
 async function deleteRepositoryFixtures(prisma: PrismaService) {
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw`
       DELETE FROM "audit_log"
       WHERE "module" = 'asset_facts'
@@ -1820,38 +1835,5 @@ function databaseErrorCode(error: unknown) {
     candidate.meta?.code ??
     candidate.code ??
     candidate.cause?.code
-  );
-}
-
-function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
-  if (!value) {
-    throw new Error("DATABASE_URL is required for asset fact integration tests");
-  }
-  const url = new URL(value);
-  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
-    throw new Error("Asset fact integration tests require PostgreSQL");
-  }
-  if (!isLoopbackHostname(url.hostname)) {
-    throw new Error("Asset fact integration tests require a loopback PostgreSQL host");
-  }
-  const databaseName = decodeURIComponent(url.pathname.slice(1));
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(databaseName)) {
-    throw new Error("Asset fact integration tests require a test-only database");
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
-}
-
-function isLoopbackHostname(hostname: string) {
-  if (hostname === "localhost" || hostname === "[::1]") return true;
-  const octets = hostname.split(".");
-  return (
-    octets.length === 4 &&
-    octets[0] === "127" &&
-    octets.every((octet) => {
-      if (!/^\d{1,3}$/.test(octet)) return false;
-      const value = Number(octet);
-      return value >= 0 && value <= 255;
-    })
   );
 }

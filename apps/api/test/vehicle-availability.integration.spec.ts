@@ -38,9 +38,16 @@ import { ProductService } from "../src/product/product.service";
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
 import { SubscriptionJourneyService } from "../src/subscription-journey/subscription-journey.service";
 import { ContractSegmentService } from "../src/subscription-change/contract-segment.service";
-import { requiredVehicleAvailabilityTestDatabaseUrl } from "./helpers/test-database-url";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import {
+  insertRuntimeCustomer,
+  insertRuntimeOrderGraph,
+  insertRuntimeUser
+} from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL = requiredVehicleAvailabilityTestDatabaseUrl(process.env.DATABASE_URL);
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/vehicle-availability.integration.spec.ts"
+).databaseUrl;
 const FIXTURE_PREFIX = `S1CBA${randomUUID().replaceAll("-", "").slice(0, 10)}`;
 const AS_OF = new Date("2026-08-20T06:00:00.000Z");
 
@@ -110,11 +117,7 @@ describe("authoritative vehicle availability PostgreSQL boundaries", () => {
   });
 
   afterAll(async () => {
-    try {
-      await deleteFixtures(prisma);
-    } finally {
-      await prisma.onModuleDestroy();
-    }
+    await prisma.onModuleDestroy();
   });
 
   it.each(purposeCases)(
@@ -657,7 +660,6 @@ async function createVehicleFixture(prisma: PrismaService, status: VehicleStatus
   const modelDefinitionId = randomUUID();
   const token = randomUUID().replaceAll("-", "").slice(0, 8);
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "vehicle_model_definition" (
         "id", "model_code", "brand", "model_name", "display_name",
@@ -686,14 +688,17 @@ async function createVehicleFixture(prisma: PrismaService, status: VehicleStatus
 async function createOpenPeriod(prisma: PrismaService, vehicleId: string, orderId: string) {
   const id = randomUUID();
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    const order = await tx.subscriptionOrder.findUniqueOrThrow({
+      select: { customerId: true },
+      where: { id: orderId }
+    });
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "vehicle_subscription_period" (
         "id", "vehicle_id", "order_id", "customer_id", "started_at", "start_reason",
         "start_source_type", "start_source_id", "start_source_key", "start_snapshot",
         "created_at", "updated_at"
       ) VALUES (
-        ${id}::uuid, ${vehicleId}::uuid, ${orderId}::uuid, ${randomUUID()}::uuid,
+        ${id}::uuid, ${vehicleId}::uuid, ${orderId}::uuid, ${order.customerId}::uuid,
         clock_timestamp() - interval '1 hour', 'DELIVERY_CONFIRMED'::"vehicle_subscription_period_start_reason",
         'STAGE1C_TASK6_TEST', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:period:${id}`},
         '{}'::jsonb, clock_timestamp(), clock_timestamp()
@@ -704,27 +709,13 @@ async function createOpenPeriod(prisma: PrismaService, vehicleId: string, orderI
 
 async function createHandoverFixture(prisma: PrismaService, vehicleId: string) {
   const orderId = randomUUID();
-  const applicationId = randomUUID();
   const workOrderId = randomUUID();
-  const suffix = randomUUID().replaceAll("-", "").slice(0, 8);
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "subscription_order" (
-        "id", "order_no", "customer_id", "application_id", "quote_id",
-        "product_id", "product_version_id", "vehicle_id",
-        "vehicle_purchase_price_amount", "monthly_fee_amount", "deposit_amount",
-        "period_months", "mileage_limit_km", "over_mileage_fee_amount",
-        "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
-        "quote_snapshot", "created_at", "updated_at"
-      ) VALUES (
-        ${orderId}::uuid, ${`${FIXTURE_PREFIX}-order-${suffix}`}, ${randomUUID()}::uuid,
-        ${applicationId}::uuid, ${randomUUID()}::uuid, ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid, ${vehicleId}::uuid, 20000000, 500000, 1000000,
-        12, 20000, 100, ${randomUUID()}::uuid, 'S1CB', 'Stage 1C-B fixture',
-        '{}'::jsonb, clock_timestamp(), clock_timestamp()
-      )
-    `);
+  const facts = await prisma.$transaction(async (tx) => {
+    const created = await insertRuntimeOrderGraph(tx, {
+      label: "VEHICLE-AVAILABILITY-HANDOVER",
+      orderId,
+      vehicleId
+    });
     await tx.vehicleHandoverWorkOrder.create({
       data: {
         externalOperatorName: "Task 6 Field Operator",
@@ -738,8 +729,9 @@ async function createHandoverFixture(prisma: PrismaService, vehicleId: string) {
         status: "DRAFT"
       }
     });
+    return created;
   });
-  return { applicationId, orderId, workOrderId };
+  return { applicationId: facts.applicationId, orderId, workOrderId };
 }
 
 async function createActivationJourneyFixture(
@@ -750,16 +742,14 @@ async function createActivationJourneyFixture(
 ) {
   const suffix = randomUUID().replaceAll("-", "").slice(0, 8);
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "application" (
-        "id", "application_no", "customer_id", "sales_user_id", "final_plan_revision",
-        "created_at", "updated_at"
-      ) VALUES (
-        ${applicationId}::uuid, ${`${FIXTURE_PREFIX}-application-${suffix}`}, ${randomUUID()}::uuid,
-        ${salesUserId}::uuid, 7, clock_timestamp(), clock_timestamp()
-      )
-    `);
+    await tx.application.update({
+      data: {
+        applicationNo: `${FIXTURE_PREFIX}-application-${suffix}`,
+        finalPlanRevision: 7,
+        salesUserId
+      },
+      where: { id: applicationId }
+    });
   });
   const created = await prisma.subscriptionJourney.create({
     data: {
@@ -1251,7 +1241,8 @@ async function createRawApplicationFixture(
   label: string
 ) {
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await insertRuntimeCustomer(tx, customerId, `VEHICLE-AVAILABILITY-${label}`);
+    await insertRuntimeUser(tx, salesUserId, `VEHICLE-AVAILABILITY-${label}`);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "application" (
         "id", "application_no", "customer_id", "sales_user_id", "created_at", "updated_at"
@@ -1259,6 +1250,11 @@ async function createRawApplicationFixture(
         ${applicationId}::uuid, ${`${FIXTURE_PREFIX}-application-${label}-${randomUUID().slice(0, 8)}`},
         ${customerId}::uuid, ${salesUserId}::uuid, clock_timestamp(), clock_timestamp()
       )
+      ON CONFLICT ("id") DO UPDATE SET
+        "application_no" = EXCLUDED."application_no",
+        "customer_id" = EXCLUDED."customer_id",
+        "sales_user_id" = EXCLUDED."sales_user_id",
+        "updated_at" = clock_timestamp()
     `);
   });
 }
@@ -1556,7 +1552,6 @@ async function waitForVehicleAuthorityLock(prisma: PrismaService) {
 
 async function deleteFixtures(prisma: PrismaService) {
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw`
       DELETE FROM "subscription_journey_outbox"
       WHERE "journey_id" IN (

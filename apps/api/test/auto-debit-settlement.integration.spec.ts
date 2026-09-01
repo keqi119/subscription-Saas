@@ -28,10 +28,12 @@ import { PaymentMandateService } from "../src/auto-debit/payment-mandate.service
 import { ClaimedBillingAutomationJob } from "../src/billing-automation/billing-automation.types";
 import { FinanceService } from "../src/finance/finance.service";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import { insertRuntimeOrderPrerequisites } from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgresql://subscription:subscription@127.0.0.1:5432/subscription_saas?schema=public";
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/auto-debit-settlement.integration.spec.ts"
+).databaseUrl;
 
 describe("auto debit atomic settlement PostgreSQL integration", () => {
   let prisma: PrismaService;
@@ -95,10 +97,21 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
         })
       ]);
 
-      const [bill, attempt, paymentOrders, payments, writeOffs, jobs, collectionCase, collectionActions] = await Promise.all([
+      const [
+        bill,
+        attempt,
+        paymentOrders,
+        payments,
+        writeOffs,
+        jobs,
+        collectionCase,
+        collectionActions
+      ] = await Promise.all([
         prisma.receivableBill.findUniqueOrThrow({ where: { id: ids.bill } }),
         prisma.debitAttempt.findUniqueOrThrow({ where: { id: ids.attempt } }),
-        prisma.paymentOrder.findMany({ where: { id: { in: [ids.paymentOrderA, ids.paymentOrderB] } } }),
+        prisma.paymentOrder.findMany({
+          where: { id: { in: [ids.paymentOrderA, ids.paymentOrderB] } }
+        }),
         prisma.paymentRecord.findMany({ where: { orderId: ids.order } }),
         prisma.paymentWriteOff.findMany({ where: { billId: ids.bill } }),
         prisma.subscriptionAutomationJob.findMany({ where: { billId: ids.bill } }),
@@ -115,7 +128,9 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
         status: DebitAttemptStatus.SUCCEEDED
       });
       expect(paymentOrders).toHaveLength(2);
-      expect(paymentOrders.every((item) => item.paymentStatus === PaymentOrderStatus.PAID)).toBe(true);
+      expect(paymentOrders.every((item) => item.paymentStatus === PaymentOrderStatus.PAID)).toBe(
+        true
+      );
       expect(payments).toHaveLength(2);
       expect(writeOffs).toHaveLength(1);
       expect(writeOffs[0]?.writeOffAmount).toBe(1n);
@@ -146,12 +161,8 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
         paymentOrderId: ids.paymentOrderA,
         providerTransactionId: `txn-${ids.paymentOrderA}`
       });
-      await expect(
-        prisma.paymentRecord.count({ where: { orderId: ids.order } })
-      ).resolves.toBe(2);
-      await expect(
-        prisma.paymentWriteOff.count({ where: { billId: ids.bill } })
-      ).resolves.toBe(1);
+      await expect(prisma.paymentRecord.count({ where: { orderId: ids.order } })).resolves.toBe(2);
+      await expect(prisma.paymentWriteOff.count({ where: { billId: ids.bill } })).resolves.toBe(1);
     } finally {
       await cleanupSettlementFixture(prisma, ids);
     }
@@ -175,12 +186,7 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
     const providerTransactionId = `shared-txn-${randomUUID()}`;
 
     try {
-      await seedSettlementFixture(
-        prisma,
-        ids,
-        uniqueNo("PYOA"),
-        uniqueNo("PYOB")
-      );
+      await seedSettlementFixture(prisma, ids, uniqueNo("PYOA"), uniqueNo("PYOB"));
 
       const results = await Promise.allSettled(
         [ids.paymentOrderA, ids.paymentOrderB].map((paymentOrderId) =>
@@ -196,12 +202,10 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
 
       expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(1);
       expect(results.filter((item) => item.status === "rejected")).toHaveLength(1);
-      await expect(
-        prisma.paymentOrder.count({ where: { providerTransactionId } })
-      ).resolves.toBe(1);
-      await expect(
-        prisma.paymentRecord.count({ where: { orderId: ids.order } })
-      ).resolves.toBe(1);
+      await expect(prisma.paymentOrder.count({ where: { providerTransactionId } })).resolves.toBe(
+        1
+      );
+      await expect(prisma.paymentRecord.count({ where: { orderId: ids.order } })).resolves.toBe(1);
     } finally {
       await cleanupSettlementFixture(prisma, ids);
     }
@@ -214,26 +218,15 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
     const service = new DebitAttemptService(prisma, provider, finance);
 
     try {
-      await seedSettlementFixture(
-        prisma,
-        ids,
-        uniqueNo("PYOA"),
-        uniqueNo("PYOB")
-      );
+      await seedSettlementFixture(prisma, ids, uniqueNo("PYOA"), uniqueNo("PYOB"));
       await resetFixtureForDebitSubmission(prisma, ids);
 
       await Promise.all([
-        service.submitBillDebit(
-          claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.DUE)
-        ),
-        service.submitBillDebit(
-          claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.D1)
-        )
+        service.submitBillDebit(claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.DUE)),
+        service.submitBillDebit(claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.D1))
       ]);
 
-      await expect(
-        prisma.debitAttempt.count({ where: { billId: ids.bill } })
-      ).resolves.toBe(1);
+      await expect(prisma.debitAttempt.count({ where: { billId: ids.bill } })).resolves.toBe(1);
       await expect(
         prisma.paymentOrder.count({
           where: { debitAttempt: { isNot: null }, orderId: ids.order }
@@ -262,12 +255,7 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
     const service = new DebitAttemptService(prisma, provider, finance);
 
     try {
-      await seedSettlementFixture(
-        prisma,
-        ids,
-        uniqueNo("PYOA"),
-        uniqueNo("PYOB")
-      );
+      await seedSettlementFixture(prisma, ids, uniqueNo("PYOA"), uniqueNo("PYOB"));
       await resetFixtureForDebitSubmission(prisma, ids);
 
       const staleSubmission = service.submitBillDebit(
@@ -278,9 +266,7 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
         where: { billId: ids.bill }
       });
 
-      await service.queryDebitAttempt(
-        claimedQueryJob(ids.bill, ids.order, attempt.id)
-      );
+      await service.queryDebitAttempt(claimedQueryJob(ids.bill, ids.order, attempt.id));
       submitGate.resolve();
       await staleSubmission;
 
@@ -311,17 +297,10 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
     const service = new DebitAttemptService(prisma, provider, finance);
 
     try {
-      await seedSettlementFixture(
-        prisma,
-        ids,
-        uniqueNo("PYOA"),
-        uniqueNo("PYOB")
-      );
+      await seedSettlementFixture(prisma, ids, uniqueNo("PYOA"), uniqueNo("PYOB"));
       await resetFixtureForDebitSubmission(prisma, ids);
 
-      await service.submitBillDebit(
-        claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.DUE)
-      );
+      await service.submitBillDebit(claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.DUE));
       const attempt = await prisma.debitAttempt.findFirstOrThrow({
         where: { billId: ids.bill }
       });
@@ -331,9 +310,7 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
       });
 
       await expect(
-        service.queryDebitAttempt(
-          claimedQueryJob(ids.bill, ids.order, attempt.id)
-        )
+        service.queryDebitAttempt(claimedQueryJob(ids.bill, ids.order, attempt.id))
       ).resolves.toMatchObject({
         action: "RESOLVED",
         status: DebitAttemptStatus.CANCELLED
@@ -382,26 +359,11 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
     };
 
     try {
-      await seedSettlementFixture(
-        prisma,
-        ids,
-        uniqueNo("PYOA"),
-        uniqueNo("PYOB")
-      );
+      await seedSettlementFixture(prisma, ids, uniqueNo("PYOA"), uniqueNo("PYOB"));
 
-      const staleSync = service.syncAdminMandate(
-        ids.mandate,
-        { reason: "并发同步" },
-        admin,
-        {}
-      );
+      const staleSync = service.syncAdminMandate(ids.mandate, { reason: "并发同步" }, admin, {});
       await queryStarted.promise;
-      await service.revokeAdminMandate(
-        ids.mandate,
-        { reason: "客户要求解约" },
-        admin,
-        {}
-      );
+      await service.revokeAdminMandate(ids.mandate, { reason: "客户要求解约" }, admin, {});
       queryGate.resolve();
       await expect(staleSync).resolves.toMatchObject({
         status: "REVOKED"
@@ -442,14 +404,16 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function processingProvider(options: {
-  onSubmit?: () => void;
-  queryDebitNotFound?: boolean;
-  queryGate?: ReturnType<typeof deferred<void>>;
-  queryStarted?: ReturnType<typeof deferred<void>>;
-  submitGate?: ReturnType<typeof deferred<void>>;
-  submitStarted?: ReturnType<typeof deferred<void>>;
-} = {}): MandateDebitProvider {
+function processingProvider(
+  options: {
+    onSubmit?: () => void;
+    queryDebitNotFound?: boolean;
+    queryGate?: ReturnType<typeof deferred<void>>;
+    queryStarted?: ReturnType<typeof deferred<void>>;
+    submitGate?: ReturnType<typeof deferred<void>>;
+    submitStarted?: ReturnType<typeof deferred<void>>;
+  } = {}
+): MandateDebitProvider {
   return {
     async createMandate(): Promise<MandateProviderResult> {
       throw new Error("not used");
@@ -577,8 +541,10 @@ async function seedSettlementFixture(
   paymentOrderNoA: string,
   paymentOrderNoB: string
 ) {
+  const modelDefinitionId = randomUUID();
+  const productId = randomUUID();
+  const productVersionId = randomUUID();
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw`
       INSERT INTO "customer" (
         "id", "customer_no", "name", "mobile", "status", "created_at", "updated_at"
@@ -588,6 +554,16 @@ async function seedSettlementFixture(
         clock_timestamp(), clock_timestamp()
       )
     `;
+    await insertRuntimeOrderPrerequisites(tx, {
+      applicationId: ids.application,
+      customerId: ids.customer,
+      label: "AUTO-DEBIT-SETTLEMENT",
+      modelDefinitionId,
+      productId,
+      productVersionId,
+      quoteId: ids.quote,
+      vehicleId: ids.vehicle
+    });
     await tx.$executeRaw`
       INSERT INTO "subscription_order" (
         "id", "order_no", "customer_id", "application_id", "quote_id",
@@ -600,8 +576,8 @@ async function seedSettlementFixture(
       ) VALUES (
         ${ids.order}::uuid, ${uniqueNo("ORD")}, ${ids.customer}::uuid,
         ${ids.application}::uuid, ${ids.quote}::uuid, ${ids.vehicle}::uuid,
-        ${randomUUID()}::uuid, ${randomUUID()}::uuid,
-        20000000, 1, 0, 12, 1500, 100, ${randomUUID()}::uuid,
+        ${productId}::uuid, ${productVersionId}::uuid,
+        20000000, 1, 0, 12, 1500, 100, ${modelDefinitionId}::uuid,
         'NIO_ET5_2024', 'NIO ET5', '{}'::jsonb, 'ACTIVE',
         clock_timestamp(), clock_timestamp()
       )
@@ -742,52 +718,9 @@ async function cleanupSettlementFixture(
     paymentOrderB: string;
   }
 ) {
-  const paymentOrderIds = (
-    await prisma.paymentOrder.findMany({
-      select: { id: true },
-      where: { orderId: ids.order }
-    })
-  ).map((item) => item.id);
-  const payments = await prisma.paymentRecord.findMany({
-    select: { id: true },
-    where: { orderId: ids.order }
-  });
-  const collectionActions = await prisma.collectionAction.findMany({
-    select: { id: true },
-    where: { caseId: ids.collectionCase }
-  });
-  await prisma.collectionAction.deleteMany({ where: { caseId: ids.collectionCase } });
-  await prisma.collectionCaseBill.deleteMany({ where: { caseId: ids.collectionCase } });
-  await prisma.collectionCase.deleteMany({ where: { id: ids.collectionCase } });
-  const writeOffs = await prisma.paymentWriteOff.findMany({
-    select: { id: true },
-    where: { paymentId: { in: payments.map((item) => item.id) } }
-  });
-  await prisma.paymentCallbackLog.deleteMany({ where: { paymentOrderId: { in: paymentOrderIds } } });
-  await prisma.debitAttempt.deleteMany({ where: { paymentOrderId: { in: paymentOrderIds } } });
-  await prisma.paymentOrderItem.deleteMany({ where: { paymentOrderId: { in: paymentOrderIds } } });
-  await prisma.paymentOrder.deleteMany({ where: { id: { in: paymentOrderIds } } });
-  await prisma.paymentWriteOff.deleteMany({ where: { paymentId: { in: payments.map((item) => item.id) } } });
-  await prisma.paymentRecord.deleteMany({ where: { id: { in: payments.map((item) => item.id) } } });
-  await prisma.paymentMandate.deleteMany({ where: { id: ids.mandate } });
-  await prisma.subscriptionAutomationJob.deleteMany({ where: { billId: ids.bill } });
-  await prisma.receivableBill.deleteMany({ where: { id: ids.bill } });
-  await prisma.auditLog.deleteMany({
-    where: {
-      entityId: {
-        in: [
-          ...paymentOrderIds,
-          ...payments.map((item) => item.id),
-          ...writeOffs.map((item) => item.id),
-          ...collectionActions.map((item) => item.id),
-          ids.bill,
-          ids.collectionCase
-        ]
-      }
-    }
-  });
-  await prisma.subscriptionOrder.deleteMany({ where: { id: ids.order } });
-  await prisma.customer.deleteMany({ where: { id: ids.customer } });
+  void prisma;
+  void ids;
+  // The Launcher destroys the exact per-suite database after the process exits.
 }
 
 function uniqueNo(prefix: string) {

@@ -329,7 +329,10 @@ function emptyApplyResult({ blocked, skippedUnchanged }) {
 }
 
 async function lockApply(tx) {
-  await tx.$queryRawUnsafe("SELECT pg_advisory_xact_lock(hashtext($1))", APPLY_LOCK_KEY);
+  await tx.$queryRawUnsafe(
+    "SELECT TRUE AS locked FROM pg_advisory_xact_lock(hashtext($1))",
+    APPLY_LOCK_KEY
+  );
 }
 
 async function lockTables(tx) {

@@ -121,6 +121,22 @@ test("apply locks, reloads, updates authority, and audits atomically", async () 
   assert.match(serializedAudits, /evidenceDigest/);
 });
 
+test("apply returns a Prisma-deserializable boolean advisory lock row", async () => {
+  const harness = createApplyHarness();
+
+  await requiredExport(
+    executor,
+    "executeStage1ActiveSourceFactsRepair"
+  )({
+    loadSnapshot: async () => harness.snapshot(),
+    mode: "apply",
+    prisma: harness.prisma
+  });
+
+  assert.equal(harness.advisoryLockQueries.length, 1);
+  assert.match(harness.advisoryLockQueries[0], /SELECT TRUE AS locked FROM pg_advisory_xact_lock/);
+});
+
 test("a stale conditional update aborts and rolls back every earlier write", async () => {
   const harness = createApplyHarness({ staleOrderUpdate: true });
 
@@ -320,6 +336,7 @@ function createApplyHarness({
     order: baseOrder(),
     task: baseTask()
   };
+  const advisoryLockQueries = [];
   const calls = [];
   let tail = Promise.resolve();
   let auditAttempts = 0;
@@ -338,10 +355,12 @@ function createApplyHarness({
     const before = structuredClone(state);
     const tx = {
       $queryRawUnsafe: async (query) => {
-        if (query.includes("pg_advisory_xact_lock")) calls.push("advisory.lock");
-        else if (query.includes("LOCK TABLE")) calls.push("tables.lock");
+        if (query.includes("pg_advisory_xact_lock")) {
+          advisoryLockQueries.push(query);
+          calls.push("advisory.lock");
+        } else if (query.includes("LOCK TABLE")) calls.push("tables.lock");
         else throw new Error(`Unexpected lock query: ${query}`);
-        return [];
+        return query.includes("pg_advisory_xact_lock") ? [{ locked: true }] : [];
       },
       auditLog: {
         create: async ({ data }) => {
@@ -383,6 +402,7 @@ function createApplyHarness({
   }
 
   return {
+    advisoryLockQueries,
     calls,
     prisma: { $transaction: run },
     snapshot: () => ({

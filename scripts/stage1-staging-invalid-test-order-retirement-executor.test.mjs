@@ -242,6 +242,16 @@ test("apply updates four states and creates four correlated audits atomically", 
   assert.match(audits, new RegExp(evidenceDigest));
 });
 
+test("apply returns a Prisma-deserializable boolean advisory lock row", async () => {
+  const harness = createApplyHarness();
+  const evidenceDigest = classify(harness.snapshot()).evidenceDigest;
+
+  await executeApply(harness, { evidenceDigest });
+
+  assert.equal(harness.advisoryLockQueries.length, 1);
+  assert.match(harness.advisoryLockQueries[0], /SELECT TRUE AS locked FROM pg_advisory_xact_lock/);
+});
+
 test("blocked apply locks and reclassifies but performs zero business writes", async () => {
   const harness = createApplyHarness();
   harness.state.blockingCounts.receivableBills = 1;
@@ -371,6 +381,7 @@ function createApplyHarness({
   serializeTransactions = false
 } = {}) {
   const state = cleanSnapshot();
+  const advisoryLockQueries = [];
   const calls = [];
   let auditAttempts = 0;
   let tail = Promise.resolve();
@@ -399,8 +410,11 @@ function createApplyHarness({
         }
         if (query.startsWith("LOCK TABLE")) {
           calls.push("relations.lock", query);
-        } else if (query.includes("pg_advisory_xact_lock")) calls.push("advisory.lock");
-        else if (query.includes("FOR UPDATE")) calls.push("row.lock");
+        } else if (query.includes("pg_advisory_xact_lock")) {
+          advisoryLockQueries.push(query);
+          calls.push("advisory.lock");
+          return [{ locked: true }];
+        } else if (query.includes("FOR UPDATE")) calls.push("row.lock");
         else throw new Error(`UNEXPECTED_LOCK_QUERY:${query}`);
         return [];
       },
@@ -462,6 +476,7 @@ function createApplyHarness({
   }
 
   return {
+    advisoryLockQueries,
     businessState: () => ({
       billingSchedule: structuredClone(state.billingSchedule),
       lease: structuredClone(state.lease),

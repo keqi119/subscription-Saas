@@ -705,19 +705,20 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
     const fixture = await createManagedExpiryFixture(prisma);
     const { closure } = createTask6ClosureService(prisma);
     try {
+      const futureWindow = await task7FutureAuthorityWindow(prisma);
       await prisma.$transaction([
         prisma.subscriptionOrder.update({
-          data: { endDate: new Date("2026-09-02T00:00:00.000Z") },
+          data: { endDate: futureWindow.endDate },
           where: { id: fixture.orderId }
         }),
         prisma.subscriptionContractSegment.update({
-          data: { endDate: new Date("2026-09-02T00:00:00.000Z") },
+          data: { endDate: futureWindow.endDate },
           where: { id: fixture.segmentId }
         })
       ]);
       const created = await closure.initiateEarlyTermination({
         actorId: fixture.actorId,
-        effectiveAt: new Date("2026-09-01T08:00:00.000Z"),
+        effectiveAt: futureWindow.effectiveAt,
         evidence: [{ reference: "customer-request-43", type: "CUSTOMER_REQUEST" }],
         idempotencyKey: "task-7-cancel-init",
         orderId: fixture.orderId,
@@ -1510,13 +1511,14 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
     const fixture = await createManagedExpiryFixture(prisma);
     const barrier = createBarrier();
     try {
+      const futureWindow = await task7FutureAuthorityWindow(prisma);
       await prisma.$transaction([
         prisma.subscriptionOrder.update({
-          data: { endDate: new Date("2026-09-02T00:00:00.000Z") },
+          data: { endDate: futureWindow.endDate },
           where: { id: fixture.orderId }
         }),
         prisma.subscriptionContractSegment.update({
-          data: { endDate: new Date("2026-09-02T00:00:00.000Z") },
+          data: { endDate: futureWindow.endDate },
           where: { id: fixture.segmentId }
         })
       ]);
@@ -1531,7 +1533,7 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       const expiry = createGovernedExpiryService(prisma);
       const initiation = early.initiateEarlyTermination({
         actorId: fixture.actorId,
-        effectiveAt: new Date("2026-09-01T08:00:00.000Z"),
+        effectiveAt: futureWindow.effectiveAt,
         evidence: [{ reference: "customer-request-48", type: "CUSTOMER_REQUEST" }],
         idempotencyKey: "task-7-expiry-race-init",
         orderId: fixture.orderId,
@@ -1539,7 +1541,7 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       });
       await barrier.entered;
       await expect(
-        expiry.expireSegment(fixture.segmentId, new Date("2026-09-02T16:00:00.000Z"))
+        expiry.expireSegment(fixture.segmentId, futureWindow.expiryDecisionAt)
       ).rejects.toMatchObject({
         response: { code: "SUBSCRIPTION_EXPIRY_AUTHORITY_BUSY" },
         status: 409
@@ -1547,7 +1549,7 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       barrier.release();
       await expect(initiation).resolves.toMatchObject({ wrote: true });
       await expect(
-        expiry.expireSegment(fixture.segmentId, new Date("2026-09-02T16:00:00.000Z"))
+        expiry.expireSegment(fixture.segmentId, futureWindow.expiryDecisionAt)
       ).rejects.toMatchObject({
         response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
         status: 409
@@ -1579,19 +1581,20 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       const barrier = createBarrier();
       const closure = createTask6ClosureService(prisma).closure;
       try {
+        const futureWindow = await task7FutureAuthorityWindow(prisma);
         await prisma.$transaction([
           prisma.subscriptionOrder.update({
-            data: { endDate: new Date("2026-09-02T00:00:00.000Z") },
+            data: { endDate: futureWindow.endDate },
             where: { id: fixture.orderId }
           }),
           prisma.subscriptionContractSegment.update({
-            data: { endDate: new Date("2026-09-02T00:00:00.000Z") },
+            data: { endDate: futureWindow.endDate },
             where: { id: fixture.segmentId }
           })
         ]);
         const retiredInput = {
           actorId: fixture.actorId,
-          effectiveAt: new Date("2026-09-01T08:00:00.000Z"),
+          effectiveAt: futureWindow.effectiveAt,
           evidence: [{ reference: `task-7-retired-race-${winner}`, type: "CUSTOMER_REQUEST" }],
           idempotencyKey: `task-7-retired-race-${winner}-first`,
           orderId: fixture.orderId,
@@ -1625,7 +1628,7 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
           const expiryResultPromise = observeSettlement(
             createGovernedExpiryService(concurrentPrisma).expireSegment(
               fixture.segmentId,
-              new Date("2026-09-02T16:00:00.000Z")
+              futureWindow.expiryDecisionAt
             )
           );
           await new Promise<void>((resolve) => setTimeout(resolve, 100));
@@ -12307,6 +12310,16 @@ async function readTestDatabaseClock(prisma: PrismaService) {
   )[0]?.now;
   if (!now) throw new Error("Database clock unavailable");
   return now;
+}
+
+async function task7FutureAuthorityWindow(prisma: PrismaService) {
+  const now = await readTestDatabaseClock(prisma);
+  const endDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 7));
+  return Object.freeze({
+    effectiveAt: new Date(now.getTime() + 60_000),
+    endDate,
+    expiryDecisionAt: new Date(endDate.getTime() + 16 * 60 * 60 * 1_000)
+  });
 }
 
 function compareTestText(left: string, right: string) {

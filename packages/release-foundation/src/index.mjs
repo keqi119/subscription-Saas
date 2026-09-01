@@ -17,3 +17,9 @@ export { assertApprovedEphemeralTarget, suiteDatabaseName } from "./database-tar
 export { cleanupSuiteDatabase, provisionSuiteDatabase } from "./database-lifecycle.mjs";
 export { grantRuntimeEquivalentAccess } from "./database-roles.mjs";
 export { scanMigrationGlobalObjects } from "./migration-global-object-scan.mjs";
+export {
+  assertCustodyComplete,
+  assertCustodyDeletionAllowed,
+  custodyEvidence,
+  redactEvidence
+} from "./evidence-custody.mjs";

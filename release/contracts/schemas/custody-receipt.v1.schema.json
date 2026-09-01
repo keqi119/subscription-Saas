@@ -10,6 +10,7 @@
     "contentSizeBytes",
     "storeRef",
     "uploadedAt",
+    "readbackAt",
     "readbackDigest",
     "owner",
     "readers",
@@ -24,6 +25,7 @@
     "contentSizeBytes": { "type": "integer", "minimum": 0 },
     "storeRef": { "$ref": "#/$defs/nonEmpty" },
     "uploadedAt": { "$ref": "#/$defs/timestamp" },
+    "readbackAt": { "$ref": "#/$defs/timestamp" },
     "readbackDigest": { "$ref": "#/$defs/digest" },
     "owner": { "$ref": "#/$defs/nonEmpty" },
     "readers": {

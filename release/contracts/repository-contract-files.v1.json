@@ -9,6 +9,7 @@
     "packages/release-foundation/src/database-target.mjs",
     "packages/release-foundation/src/database-test-discovery.mjs",
     "packages/release-foundation/src/digest.mjs",
+    "packages/release-foundation/src/evidence-custody.mjs",
     "packages/release-foundation/src/index.mjs",
     "packages/release-foundation/src/migration-global-object-scan.mjs",
     "packages/release-foundation/src/schema-registry.mjs",

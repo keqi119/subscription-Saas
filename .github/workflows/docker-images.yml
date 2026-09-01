@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       apiBaseUrl:
-        description: "Build-time public API base URL for the Web image"
+        description: "Build-time public API base URL for the Web image; must end with exactly /api"
         required: true
         type: string
       environment:
@@ -48,36 +48,11 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Validate image build inputs
-        shell: bash
         env:
           API_BASE_URL: ${{ inputs.apiBaseUrl }}
           DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
           IMAGE_TAG: ${{ inputs.imageTag }}
-        run: |
-          set -euo pipefail
-
-          if [ -z "$IMAGE_TAG" ]; then
-            echo "imageTag is required"
-            exit 1
-          fi
-
-          if [ -z "$API_BASE_URL" ]; then
-            echo "apiBaseUrl is required"
-            exit 1
-          fi
-
-          case "$DEPLOYMENT_ENVIRONMENT" in
-            staging|production) ;;
-            *)
-              echo "environment must be staging or production"
-              exit 1
-              ;;
-          esac
-
-          if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ] && echo "$API_BASE_URL" | grep -qi "staging"; then
-            echo "Production build cannot use staging API base URL"
-            exit 1
-          fi
+        run: node scripts/validate-image-build-inputs.mjs
 
       - name: Login to GitHub Container Registry
         if: inputs.registry == 'ghcr.io'

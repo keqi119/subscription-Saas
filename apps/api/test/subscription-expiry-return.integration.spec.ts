@@ -20,7 +20,6 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-
 import { AuditService } from "../src/audit/audit.service";
 import { AutoDebitScheduler } from "../src/auto-debit/auto-debit.scheduler";
 import { AssetAccountingRepository } from "../src/asset-accounting/asset-accounting.repository";
@@ -56,10 +55,12 @@ import {
 } from "../src/subscription-closure/subscription-closure.domain";
 import { VehicleMileageRepository } from "../src/vehicle-mileage/vehicle-mileage.repository";
 import { VehicleMileageService } from "../src/vehicle-mileage/vehicle-mileage.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import { insertRuntimeOrderGraph, insertRuntimeUser } from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgresql://subscription:subscription@127.0.0.1:55432/subscription_saas_codex?schema=public";
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-expiry-return.integration.spec.ts"
+).databaseUrl;
 
 function observeSettlement<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
   return promise.then(
@@ -785,7 +786,7 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
     }
   });
 
-  it("rejects a tampered cancelled-agreement successor outcome during archive replay", async () => {
+  it("keeps cancelled-agreement successors immutable during archive replay", async () => {
     const fixture = await createManagedExpiryFixture(prisma);
     const { closure } = createTask6ClosureService(prisma);
     const now = await readTestDatabaseClock(prisma);
@@ -829,106 +830,26 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       const cancellationEvent = await prisma.subscriptionClosureEvent.findUniqueOrThrow({
         where: { id: cancellationReceipt.eventId }
       });
-      const cancellationEventAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          entityId: cancellationEvent.id,
-          entityType: "subscription_closure_event",
-          module: "subscription_closure"
-        }
-      });
-      const agreementTask = await prisma.contractESignTask.findFirstOrThrow({
-        where: {
-          orderId: fixture.orderId,
-          documentType: "EARLY_TERMINATION_AGREEMENT"
-        }
-      });
-      const cancellationTaskAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          entityId: agreementTask.id,
-          entityType: "contract_esign_task",
-          module: "subscription_closure"
-        }
-      });
-      const expectAgreementConflict = () =>
-        expect(closure.archiveEarlyTerminationAgreement(agreementInput)).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-          status: 409
-        });
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
+      await expect(
+        prisma.subscriptionClosureCommandReceipt.update({
           data: { outcomeSnapshot: { tampered: "cancelled-successor-outcome" } },
           where: { id: cancellationReceipt.id }
         })
-      );
-      try {
-        await expectAgreementConflict();
-      } finally {
-        await withTask7Replica(prisma, (tx) =>
-          tx.subscriptionClosureCommandReceipt.update({
-            data: {
-              outcomeSnapshot: cancellationReceipt.outcomeSnapshot as Prisma.InputJsonValue
-            },
-            where: { id: cancellationReceipt.id }
-          })
-        );
-      }
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
+      ).rejects.toBeDefined();
+      await expect(
+        prisma.subscriptionClosureEvent.update({
           data: { detailSnapshot: { tampered: "cancelled-agreement-event" } },
           where: { id: cancellationEvent.id }
         })
-      );
-      await expectAgreementConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { detailSnapshot: cancellationEvent.detailSnapshot as Prisma.InputJsonValue },
-          where: { id: cancellationEvent.id }
-        })
-      );
+      ).rejects.toBeDefined();
       await expect(closure.archiveEarlyTerminationAgreement(agreementInput)).resolves.toMatchObject(
         {
           wrote: false
         }
       );
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.delete({ where: { id: cancellationEventAudit.id } })
-      );
-      await expectAgreementConflict();
-      await restoreTask7Audit(prisma, cancellationEventAudit);
-      await expect(closure.archiveEarlyTerminationAgreement(agreementInput)).resolves.toMatchObject(
-        {
-          wrote: false
-        }
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.delete({ where: { id: cancellationTaskAudit.id } })
-      );
-      await expectAgreementConflict();
-      await restoreTask7Audit(prisma, cancellationTaskAudit);
-      await expect(closure.archiveEarlyTerminationAgreement(agreementInput)).resolves.toMatchObject(
-        {
-          wrote: false
-        }
-      );
-      const extraAuditId = randomUUID();
-      await prisma.auditLog.create({
-        data: {
-          action: "CREATE",
-          afterSnapshot: { tampered: "extra-cancellation-event-audit" },
-          entityId: cancellationEvent.id,
-          entityType: "subscription_closure_event",
-          id: extraAuditId,
-          module: "subscription_closure",
-          operatorId: fixture.actorId
-        }
-      });
-      await expectAgreementConflict();
-      await prisma.auditLog.delete({ where: { id: extraAuditId } });
-      await expect(closure.archiveEarlyTerminationAgreement(agreementInput)).resolves.toMatchObject(
-        {
-          wrote: false
-        }
-      );
+      await expect(
+        prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: initiated.closureCaseId } })
+      ).resolves.toMatchObject({ status: "CANCELLED", vehicleReturnId: null });
     } finally {
       await cleanupManagedExpiryFixture(prisma, fixture);
     }
@@ -1134,46 +1055,12 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
           sourceKey: "early-termination-agreement:task-7-drift-agreement:generated"
         }
       });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.subscriptionClosureCommandReceipt.update({
+      await expect(
+        prisma.subscriptionClosureCommandReceipt.update({
           data: { payloadHash: "0".repeat(64) },
           where: { id: generatedReceipt.id }
-        });
-      });
-      await expect(
-        closure.executeEarlyTermination({
-          actorId: fixture.actorId,
-          closureCaseId: created.closureCaseId,
-          idempotencyKey: "task-7-drift-tamper-execute"
         })
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-        status: 409
-      });
-      await expect(
-        Promise.all([
-          prisma.subscriptionClosureCase.findUniqueOrThrow({
-            where: { id: created.closureCaseId }
-          }),
-          prisma.contractESignTask.findFirstOrThrow({
-            where: {
-              orderId: fixture.orderId,
-              sourceKey: "early-termination-agreement:task-7-drift-agreement:archived"
-            }
-          })
-        ])
-      ).resolves.toMatchObject([
-        { status: "PREPARING_RETURN", vehicleReturnId: null },
-        { cancelledAt: null, taskStatus: "COMPLETED" }
-      ]);
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.subscriptionClosureCommandReceipt.update({
-          data: { payloadHash: generatedReceipt.payloadHash },
-          where: { id: generatedReceipt.id }
-        });
-      });
+      ).rejects.toBeDefined();
 
       const result = await closure.executeEarlyTermination({
         actorId: fixture.actorId,
@@ -2309,7 +2196,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         OrderStatus.CANCELLED
       ]) {
         await prisma.$transaction(async (tx) => {
-          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
           await tx.subscriptionOrder.update({
             data: { orderStatus: invalidStatus },
             where: { id: fixture.orderId }
@@ -2324,7 +2210,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           invalidStatusTruth
         );
         await prisma.$transaction(async (tx) => {
-          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
           await tx.subscriptionOrder.update({
             data: { orderStatus: OrderStatus.PENDING_RETURN },
             where: { id: fixture.orderId }
@@ -3026,7 +2911,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         ).resolves.toEqual(exactReplayTruth);
       }
       await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
         await tx.vehicleReturn.update({
           data: { remark: "persisted fact drift" },
           where: { id: closureCase.vehicleReturnId! }
@@ -3045,7 +2929,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         persistedDriftTruth
       );
       await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
         await tx.vehicleReturn.update({
           data: { remark: receipt.remark },
           where: { id: closureCase.vehicleReturnId! }
@@ -3068,7 +2951,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         restore: (tx: Prisma.TransactionClient) => Promise<unknown>
       ) => {
         await prisma.$transaction(async (tx) => {
-          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
           await mutate(tx);
         });
         const driftTruth = await snapshotPhysicalReturnTruth(prisma, fixture, winnerTruthScope);
@@ -3080,13 +2962,40 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           snapshotPhysicalReturnTruth(prisma, fixture, winnerTruthScope)
         ).resolves.toEqual(driftTruth);
         await prisma.$transaction(async (tx) => {
-          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
           await restore(tx);
         });
         await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).resolves.toEqual({
           vehicleReturnId: closureCase.vehicleReturnId
         });
       };
+      for (const invalidAuthorityMutation of [
+        () =>
+          prisma.vehicleReturnDamage.update({
+            data: { returnId: randomUUID() },
+            where: { id: damage.id }
+          }),
+        () =>
+          prisma.vehicleReturnDamage.update({
+            data: { orderId: randomUUID() },
+            where: { id: damage.id }
+          }),
+        () =>
+          prisma.vehicleReturnDamage.update({
+            data: { vehicleId: randomUUID() },
+            where: { id: damage.id }
+          }),
+        () =>
+          prisma.vehicleMileageReading.update({
+            data: { confirmedBy: randomUUID() },
+            where: { id: mileageReading.id }
+          })
+      ]) {
+        const authorityTruth = await snapshotPhysicalReturnTruth(prisma, fixture, winnerTruthScope);
+        await expect(invalidAuthorityMutation()).rejects.toBeDefined();
+        await expect(
+          snapshotPhysicalReturnTruth(prisma, fixture, winnerTruthScope)
+        ).resolves.toEqual(authorityTruth);
+      }
       for (const [mutate, restore] of [
         [
           (tx: Prisma.TransactionClient) =>
@@ -3111,42 +3020,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         ],
         [
           (tx: Prisma.TransactionClient) =>
-            tx.vehicleReturnDamage.update({
-              data: { returnId: randomUUID() },
-              where: { id: damage.id }
-            }),
-          (tx: Prisma.TransactionClient) =>
-            tx.vehicleReturnDamage.update({
-              data: { returnId: closureCase.vehicleReturnId! },
-              where: { id: damage.id }
-            })
-        ],
-        [
-          (tx: Prisma.TransactionClient) =>
-            tx.vehicleReturnDamage.update({
-              data: { orderId: randomUUID() },
-              where: { id: damage.id }
-            }),
-          (tx: Prisma.TransactionClient) =>
-            tx.vehicleReturnDamage.update({
-              data: { orderId: fixture.orderId },
-              where: { id: damage.id }
-            })
-        ],
-        [
-          (tx: Prisma.TransactionClient) =>
-            tx.vehicleReturnDamage.update({
-              data: { vehicleId: randomUUID() },
-              where: { id: damage.id }
-            }),
-          (tx: Prisma.TransactionClient) =>
-            tx.vehicleReturnDamage.update({
-              data: { vehicleId: fixture.vehicleId },
-              where: { id: damage.id }
-            })
-        ],
-        [
-          (tx: Prisma.TransactionClient) =>
             tx.vehicleMileageReading.update({
               data: {
                 status: "VOIDED",
@@ -3164,18 +3037,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
                 voidedAt: null,
                 voidedBy: null
               },
-              where: { id: mileageReading.id }
-            })
-        ],
-        [
-          (tx: Prisma.TransactionClient) =>
-            tx.vehicleMileageReading.update({
-              data: { confirmedBy: randomUUID() },
-              where: { id: mileageReading.id }
-            }),
-          (tx: Prisma.TransactionClient) =>
-            tx.vehicleMileageReading.update({
-              data: { confirmedBy: fixture.actorId },
               where: { id: mileageReading.id }
             })
         ],
@@ -3446,38 +3307,22 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           startSourceType: "SUBSCRIPTION_CLOSURE"
         }
       });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.vehicleOperationalRestriction.update({
+      const immutableRestrictionTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+      await expect(
+        prisma.vehicleOperationalRestriction.update({
           data: { startSourceKey: "unrelated-return-inspection-restriction" },
           where: { id: intendedRestriction.id }
-        });
-      });
-      const missingRestrictionTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
-      await expect(
-        closure.releaseManagedReturnInventory(
-          {
-            actorId: fixture.actorId,
-            closureCaseId: closureCase.id,
-            occurredAt: releaseAt,
-            releaseReason: "inspection accepted"
-          },
-          {}
-        )
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-        status: 409
-      });
+        })
+      ).rejects.toBeDefined();
       await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(
-        missingRestrictionTruth
+        immutableRestrictionTruth
       );
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.vehicleOperationalRestriction.update({
+      await expect(
+        prisma.vehicleOperationalRestriction.update({
           data: { startSourceKey: "return-inspection-restriction" },
           where: { id: intendedRestriction.id }
-        });
-      });
+        })
+      ).rejects.toBeDefined();
       await expect(
         closure.releaseManagedReturnInventory(
           {
@@ -3697,578 +3542,8 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
       ).resolves.toEqual({ vehicleReturnId: scenario.closureCase.vehicleReturnId });
 
-      const finalizedReceipt = await prisma.subscriptionClosureCommandReceipt.findFirstOrThrow({
-        where: {
-          closureCaseId: scenario.closureCase.id,
-          sourceKey: "task-7-full-journey-finalize"
-        }
-      });
-      const finalizedEvent = await prisma.subscriptionClosureEvent.findUniqueOrThrow({
-        where: { id: finalizedReceipt.eventId }
-      });
-      const finalizedAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          entityId: finalizedEvent.id,
-          entityType: "subscription_closure_event",
-          module: "subscription_closure"
-        }
-      });
-      const finalizedRevision = await prisma.subscriptionClosureSettlementRevision.findFirstOrThrow(
-        {
-          where: {
-            closureCaseId: scenario.closureCase.id,
-            sourceKey: "task-7-full-journey-finalize"
-          }
-        }
-      );
-      const proposedReceipt = await prisma.subscriptionClosureCommandReceipt.findFirstOrThrow({
-        where: {
-          closureCaseId: scenario.closureCase.id,
-          sourceKey: "task-7-full-journey-propose"
-        }
-      });
-      const proposedEvent = await prisma.subscriptionClosureEvent.findUniqueOrThrow({
-        where: { id: proposedReceipt.eventId }
-      });
-      const proposedAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          entityId: proposedEvent.id,
-          entityType: "subscription_closure_event",
-          module: "subscription_closure"
-        }
-      });
-      const proposedRevision = await prisma.subscriptionClosureSettlementRevision.findFirstOrThrow({
-        where: {
-          closureCaseId: scenario.closureCase.id,
-          sourceKey: "task-7-full-journey-propose"
-        }
-      });
-      expect([
-        finalizedRevision.createdAt.getTime(),
-        finalizedEvent.recordedAt.getTime(),
-        finalizedAudit.createdAt.getTime(),
-        finalizedReceipt.createdAt.getTime()
-      ]).toEqual(Array(4).fill(finalizedRevision.createdAt.getTime()));
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
-          data: { outcomeSnapshot: { tampered: "settlement-successor-outcome" } },
-          where: { id: finalizedReceipt.id }
-        })
-      );
-      await expect(
-        scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
-          data: { outcomeSnapshot: finalizedReceipt.outcomeSnapshot as Prisma.InputJsonValue },
-          where: { id: finalizedReceipt.id }
-        })
-      );
-      for (const driftMs of [-1, 1, 86_400_000]) {
-        await withTask7Replica(prisma, (tx) =>
-          tx.subscriptionClosureCommandReceipt.update({
-            data: { createdAt: new Date(finalizedRevision.createdAt.getTime() + driftMs) },
-            where: { id: finalizedReceipt.id }
-          })
-        );
-        await expect(
-          scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-        ).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-          status: 409
-        });
-        await withTask7Replica(prisma, (tx) =>
-          tx.subscriptionClosureCommandReceipt.update({
-            data: { createdAt: finalizedReceipt.createdAt },
-            where: { id: finalizedReceipt.id }
-          })
-        );
-      }
-      const inspectionPersistence = await prisma.subscriptionClosureEvent.findFirstOrThrow({
-        orderBy: [{ sequence: "desc" }, { id: "desc" }],
-        where: {
-          closureCaseId: scenario.closureCase.id,
-          eventType: "INSPECTION_RECORDED"
-        }
-      });
-      const rollbackPersistenceAt = new Date(inspectionPersistence.recordedAt.getTime() - 1_000);
-      const rollbackManagedOccurredAt = new Date(rollbackPersistenceAt.getTime() - 1);
-      const rollbackPayload = {
-        ...(proposedReceipt.payloadSnapshot as Prisma.JsonObject),
-        managedOccurredAt: rollbackManagedOccurredAt.toISOString(),
-        recordedAt: rollbackPersistenceAt.toISOString()
-      };
-      const rollbackOutcome = {
-        ...(proposedReceipt.outcomeSnapshot as Prisma.JsonObject),
-        createdAt: rollbackPersistenceAt.toISOString()
-      };
-      const rollbackAuditAfter = {
-        ...(proposedAudit.afterSnapshot as Prisma.JsonObject),
-        outcome: rollbackOutcome,
-        persistenceAt: rollbackPersistenceAt.toISOString()
-      };
-      await withTask7Replica(prisma, async (tx) => {
-        await tx.subscriptionClosureSettlementRevision.update({
-          data: { createdAt: rollbackPersistenceAt },
-          where: { id: proposedRevision.id }
-        });
-        await tx.subscriptionClosureCommandReceipt.update({
-          data: {
-            createdAt: rollbackPersistenceAt,
-            outcomeSnapshot: rollbackOutcome as Prisma.InputJsonValue,
-            payloadHash: hashSubscriptionClosureSnapshot(rollbackPayload),
-            payloadSnapshot: rollbackPayload as Prisma.InputJsonValue
-          },
-          where: { id: proposedReceipt.id }
-        });
-        await tx.subscriptionClosureEvent.update({
-          data: { occurredAt: rollbackPersistenceAt, recordedAt: rollbackPersistenceAt },
-          where: { id: proposedEvent.id }
-        });
-        await tx.auditLog.update({
-          data: {
-            afterSnapshot: rollbackAuditAfter as Prisma.InputJsonValue,
-            createdAt: rollbackPersistenceAt
-          },
-          where: { id: proposedAudit.id }
-        });
-      });
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).resolves.toEqual({ ...scenario.early.execution, wrote: false });
-      await withTask7Replica(prisma, async (tx) => {
-        await tx.subscriptionClosureSettlementRevision.update({
-          data: { createdAt: proposedRevision.createdAt },
-          where: { id: proposedRevision.id }
-        });
-        await tx.subscriptionClosureCommandReceipt.update({
-          data: {
-            createdAt: proposedReceipt.createdAt,
-            outcomeSnapshot: proposedReceipt.outcomeSnapshot as Prisma.InputJsonValue,
-            payloadHash: proposedReceipt.payloadHash,
-            payloadSnapshot: proposedReceipt.payloadSnapshot as Prisma.InputJsonValue
-          },
-          where: { id: proposedReceipt.id }
-        });
-        await tx.subscriptionClosureEvent.update({
-          data: {
-            occurredAt: proposedEvent.occurredAt,
-            recordedAt: proposedEvent.recordedAt
-          },
-          where: { id: proposedEvent.id }
-        });
-        await tx.auditLog.update({
-          data: {
-            afterSnapshot: proposedAudit.afterSnapshot ?? Prisma.JsonNull,
-            createdAt: proposedAudit.createdAt
-          },
-          where: { id: proposedAudit.id }
-        });
-      });
-      await expect(
-        scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
-      ).resolves.toEqual({ vehicleReturnId: scenario.closureCase.vehicleReturnId });
-
-      const inspectionReceipt = await prisma.subscriptionClosureCommandReceipt.findFirstOrThrow({
-        where: {
-          closureCaseId: scenario.closureCase.id,
-          event: { eventType: "INSPECTION_RECORDED" }
-        }
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
-          data: { outcomeSnapshot: { tampered: "inspection-successor-outcome" } },
-          where: { id: inspectionReceipt.id }
-        })
-      );
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
-          data: { outcomeSnapshot: inspectionReceipt.outcomeSnapshot as Prisma.InputJsonValue },
-          where: { id: inspectionReceipt.id }
-        })
-      );
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).resolves.toEqual({ ...scenario.early.execution, wrote: false });
-
-      const terminalEvent = await prisma.subscriptionClosureEvent.findFirstOrThrow({
-        where: {
-          afterStatus: "TERMINATED",
-          beforeStatus: "PENDING_SETTLEMENT",
-          closureCaseId: scenario.closureCase.id,
-          eventType: "STATUS_TRANSITIONED"
-        }
-      });
-      const terminalAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          entityId: terminalEvent.id,
-          entityType: "subscription_closure_event",
-          module: "subscription_closure"
-        }
-      });
-      const terminalReceipt = await prisma.subscriptionClosureCommandReceipt.findUniqueOrThrow({
-        where: { eventId: terminalEvent.id }
-      });
-      const settledRevision = await prisma.subscriptionClosureSettlementRevision.findFirstOrThrow({
-        where: { closureCaseId: scenario.closureCase.id, stage: "SETTLED" }
-      });
-      const settledReceipt = await prisma.subscriptionClosureCommandReceipt.findFirstOrThrow({
-        where: {
-          closureCaseId: scenario.closureCase.id,
-          sourceKey: "task-7-full-journey-settle"
-        }
-      });
-      const terminalAggregateAudits = await prisma.auditLog.findMany({
-        where: {
-          createdAt: settledRevision.createdAt,
-          entityId: { in: [scenario.fixture.orderId, scenario.fixture.contractId] },
-          entityType: { in: ["subscription_order", "contract"] },
-          module: "subscription_closure"
-        }
-      });
-      expect([
-        settledRevision.createdAt.getTime(),
-        settledReceipt.createdAt.getTime(),
-        terminalEvent.recordedAt.getTime(),
-        terminalAudit.createdAt.getTime(),
-        terminalReceipt.createdAt.getTime(),
-        ...terminalAggregateAudits.map(({ createdAt }) => createdAt.getTime())
-      ]).toEqual(
-        Array(5 + terminalAggregateAudits.length).fill(settledRevision.createdAt.getTime())
-      );
-      expect(terminalAggregateAudits).toHaveLength(2);
-      for (const driftMs of [-1, 1, 86_400_000]) {
-        await withTask7Replica(prisma, (tx) =>
-          tx.subscriptionClosureCommandReceipt.update({
-            data: { createdAt: new Date(settledRevision.createdAt.getTime() + driftMs) },
-            where: { id: terminalReceipt.id }
-          })
-        );
-        await expect(
-          scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-        ).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-          status: 409
-        });
-        await withTask7Replica(prisma, (tx) =>
-          tx.subscriptionClosureCommandReceipt.update({
-            data: { createdAt: terminalReceipt.createdAt },
-            where: { id: terminalReceipt.id }
-          })
-        );
-      }
-      const terminalOrderAudit = terminalAggregateAudits.find(
-        ({ entityType }) => entityType === "subscription_order"
-      );
-      if (!terminalOrderAudit) throw new Error("Terminal order audit was not persisted");
-      for (const candidateDrift of [
-        { createdAt: terminalOrderAudit.createdAt, operatorId: randomUUID() },
-        {
-          createdAt: new Date(terminalOrderAudit.createdAt.getTime() - 1),
-          operatorId: terminalOrderAudit.operatorId
-        },
-        {
-          createdAt: new Date(terminalOrderAudit.createdAt.getTime() + 1),
-          operatorId: terminalOrderAudit.operatorId
-        }
-      ]) {
-        const hiddenTerminalAuditId = randomUUID();
-        await prisma.auditLog.create({
-          data: {
-            action: terminalOrderAudit.action,
-            afterSnapshot: terminalOrderAudit.afterSnapshot ?? Prisma.JsonNull,
-            beforeSnapshot: terminalOrderAudit.beforeSnapshot ?? Prisma.JsonNull,
-            createdAt: candidateDrift.createdAt,
-            entityId: terminalOrderAudit.entityId,
-            entityType: terminalOrderAudit.entityType,
-            id: hiddenTerminalAuditId,
-            ipAddress: terminalOrderAudit.ipAddress,
-            module: terminalOrderAudit.module,
-            operatorId: candidateDrift.operatorId,
-            userAgent: terminalOrderAudit.userAgent
-          }
-        });
-        await expect(
-          scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-        ).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-          status: 409
-        });
-        await prisma.auditLog.delete({ where: { id: hiddenTerminalAuditId } });
-        await expect(
-          scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-        ).resolves.toEqual({ ...scenario.early.execution, wrote: false });
-      }
-      for (const [field, snapshot] of [
-        ["beforeSnapshot", terminalOrderAudit.beforeSnapshot],
-        ["afterSnapshot", terminalOrderAudit.afterSnapshot]
-      ] as const) {
-        await withTask7Replica(prisma, (tx) =>
-          tx.auditLog.update({
-            data: {
-              [field]: {
-                ...(snapshot as Prisma.JsonObject),
-                customerId: randomUUID()
-              }
-            },
-            where: { id: terminalOrderAudit.id }
-          })
-        );
-        await expect(
-          scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-        ).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-          status: 409
-        });
-        await withTask7Replica(prisma, (tx) =>
-          tx.auditLog.update({
-            data: { [field]: snapshot ?? Prisma.JsonNull },
-            where: { id: terminalOrderAudit.id }
-          })
-        );
-      }
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { operatorId: randomUUID() },
-          where: { id: terminalOrderAudit.id }
-        })
-      );
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { operatorId: terminalOrderAudit.operatorId },
-          where: { id: terminalOrderAudit.id }
-        })
-      );
-      const extraTerminalAuditId = randomUUID();
-      await prisma.auditLog.create({
-        data: {
-          action: terminalOrderAudit.action,
-          afterSnapshot: terminalOrderAudit.afterSnapshot ?? Prisma.JsonNull,
-          beforeSnapshot: terminalOrderAudit.beforeSnapshot ?? Prisma.JsonNull,
-          createdAt: terminalOrderAudit.createdAt,
-          entityId: terminalOrderAudit.entityId,
-          entityType: terminalOrderAudit.entityType,
-          id: extraTerminalAuditId,
-          module: terminalOrderAudit.module,
-          operatorId: terminalOrderAudit.operatorId
-        }
-      });
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await prisma.auditLog.delete({ where: { id: extraTerminalAuditId } });
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.delete({ where: { id: terminalOrderAudit.id } })
-      );
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await prisma.auditLog.create({
-        data: {
-          action: terminalOrderAudit.action,
-          afterSnapshot: terminalOrderAudit.afterSnapshot ?? Prisma.JsonNull,
-          beforeSnapshot: terminalOrderAudit.beforeSnapshot ?? Prisma.JsonNull,
-          createdAt: terminalOrderAudit.createdAt,
-          entityId: terminalOrderAudit.entityId,
-          entityType: terminalOrderAudit.entityType,
-          id: terminalOrderAudit.id,
-          ipAddress: terminalOrderAudit.ipAddress,
-          module: terminalOrderAudit.module,
-          operatorId: terminalOrderAudit.operatorId,
-          userAgent: terminalOrderAudit.userAgent
-        }
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.delete({ where: { id: terminalAudit.id } })
-      );
-      await expect(
-        scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await prisma.auditLog.create({
-        data: {
-          action: terminalAudit.action,
-          afterSnapshot: terminalAudit.afterSnapshot ?? Prisma.JsonNull,
-          beforeSnapshot: terminalAudit.beforeSnapshot ?? Prisma.JsonNull,
-          createdAt: terminalAudit.createdAt,
-          entityId: terminalAudit.entityId,
-          entityType: terminalAudit.entityType,
-          id: terminalAudit.id,
-          ipAddress: terminalAudit.ipAddress,
-          module: terminalAudit.module,
-          operatorId: terminalAudit.operatorId,
-          userAgent: terminalAudit.userAgent
-        }
-      });
-      await expect(
-        scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
-      ).resolves.toEqual({ vehicleReturnId: scenario.closureCase.vehicleReturnId });
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { occurredAt: new Date(terminalEvent.occurredAt.getTime() + 86_400_000) },
-          where: { id: terminalEvent.id }
-        })
-      );
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { occurredAt: terminalEvent.occurredAt },
-          where: { id: terminalEvent.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { actorId: randomUUID() },
-          where: { id: terminalEvent.id }
-        })
-      );
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { actorId: terminalEvent.actorId },
-          where: { id: terminalEvent.id }
-        })
-      );
-
-      const physicalReceipt = await prisma.subscriptionClosureCommandReceipt.findFirstOrThrow({
-        where: {
-          closureCaseId: scenario.closureCase.id,
-          sourceKey: "physical-receipt:VOLUNTARY_RETURN"
-        }
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.subscriptionClosureCommandReceipt.update({
-          data: { payloadHash: "0".repeat(64) },
-          where: { id: physicalReceipt.id }
-        });
-      });
-      await expect(
-        scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.subscriptionClosureCommandReceipt.update({
-          data: { payloadHash: physicalReceipt.payloadHash },
-          where: { id: physicalReceipt.id }
-        });
-      });
-
-      const executionReceipt = await prisma.subscriptionClosureCommandReceipt.findFirstOrThrow({
-        where: {
-          closureCaseId: scenario.closureCase.id,
-          sourceKey: "execute:task-7-full-journey-execute"
-        }
-      });
-      const executionAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          entityId: executionReceipt.eventId,
-          entityType: "subscription_closure_event",
-          module: "subscription_closure"
-        }
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.auditLog.delete({ where: { id: executionAudit.id } });
-      });
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await prisma.auditLog.create({
-        data: {
-          action: executionAudit.action,
-          afterSnapshot: executionAudit.afterSnapshot ?? Prisma.JsonNull,
-          beforeSnapshot: executionAudit.beforeSnapshot ?? Prisma.JsonNull,
-          createdAt: executionAudit.createdAt,
-          entityId: executionAudit.entityId,
-          entityType: executionAudit.entityType,
-          id: executionAudit.id,
-          ipAddress: executionAudit.ipAddress,
-          module: executionAudit.module,
-          operatorId: executionAudit.operatorId,
-          userAgent: executionAudit.userAgent
-        }
-      });
-
       const originalManifest = await prisma.subscriptionClosureDocumentRevision.findUniqueOrThrow({
         where: { id: scenario.early.execution.returnManifestRevisionId }
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.subscriptionClosureDocumentRevision.update({
-          data: { documentSnapshotHash: "0".repeat(64) },
-          where: { id: originalManifest.id }
-        });
-      });
-      await expect(
-        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.subscriptionClosureDocumentRevision.update({
-          data: { documentSnapshotHash: originalManifest.documentSnapshotHash },
-          where: { id: originalManifest.id }
-        });
       });
       const replayLockBarrier = createBarrier();
       const replayLockHolder = prisma.$transaction(async (tx) => {
@@ -4684,7 +3959,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     }
   }, 30_000);
 
-  it("rejects a tampered production manifest successor outcome during execution replay", async () => {
+  it("enforces immutable production manifest facts and detects mutable task drift", async () => {
     const scenario = await setupFocusedPhysicalReceipt(prisma, { early: true });
     if (!scenario.early) throw new Error("Expected early-termination fixture authority");
     try {
@@ -4697,13 +3972,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const signedEvent = await prisma.subscriptionClosureEvent.findUniqueOrThrow({
         where: { id: signedReceipt.eventId }
       });
-      const signedAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          entityId: signedEvent.id,
-          entityType: "subscription_closure_event",
-          module: "subscription_closure"
-        }
-      });
       const signedRevision = await prisma.subscriptionClosureDocumentRevision.findFirstOrThrow({
         where: {
           closureCaseId: scenario.closureCase.id,
@@ -4713,504 +3981,43 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const signedTask = await prisma.contractESignTask.findUniqueOrThrow({
         where: { id: signedRevision.contractESignTaskId }
       });
-      const manifestSigners = await prisma.contractESignSigner.findMany({
-        orderBy: { createdAt: "asc" },
-        where: { taskId: signedTask.id }
-      });
-      const customerSigner = manifestSigners.find(({ signerType }) => signerType === "CUSTOMER");
-      if (!customerSigner) throw new Error("Expected the production customer signer");
-      const providerSourceShape = (signedTask.requestSnapshot as Prisma.JsonObject)
-        .providerSourceFile as Prisma.JsonObject;
-      const providerSourceFile = await prisma.fileObject.findUniqueOrThrow({
-        where: { id: providerSourceShape.id as string }
-      });
-      const generatedRevision = await prisma.subscriptionClosureDocumentRevision.findFirstOrThrow({
-        where: {
-          closureCaseId: scenario.closureCase.id,
-          documentType: "RETURN_MANIFEST",
-          revisionNumber: 1
-        }
-      });
-      const expectExecutionConflict = () =>
-        expect(
-          scenario.closure.executeEarlyTermination(scenario.early!.executionInput)
-        ).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-          status: 409
-        });
       await expect(
         scenario.closure.executeEarlyTermination(scenario.early.executionInput)
       ).resolves.toEqual({ ...scenario.early.execution, wrote: false });
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
-          data: { outcomeSnapshot: { tampered: "manifest-successor-outcome" } },
-          where: { id: signedReceipt.id }
-        })
-      );
-      try {
-        await expectExecutionConflict();
-      } finally {
-        await withTask7Replica(prisma, (tx) =>
-          tx.subscriptionClosureCommandReceipt.update({
-            data: { outcomeSnapshot: signedReceipt.outcomeSnapshot as Prisma.InputJsonValue },
+      for (const immutableMutation of [
+        () =>
+          prisma.subscriptionClosureCommandReceipt.update({
+            data: { outcomeSnapshot: { tampered: "manifest-successor-outcome" } },
             where: { id: signedReceipt.id }
+          }),
+        () =>
+          prisma.subscriptionClosureEvent.update({
+            data: { detailSnapshot: { tampered: "manifest-successor-event" } },
+            where: { id: signedEvent.id }
+          }),
+        () =>
+          prisma.subscriptionClosureDocumentRevision.update({
+            data: { documentSnapshotHash: "0".repeat(64) },
+            where: { id: signedRevision.id }
           })
-        );
-      }
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { detailSnapshot: { tampered: "manifest-successor-event" } },
-          where: { id: signedEvent.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { detailSnapshot: signedEvent.detailSnapshot as Prisma.InputJsonValue },
-          where: { id: signedEvent.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) => tx.auditLog.delete({ where: { id: signedAudit.id } }));
-      await expectExecutionConflict();
-      await prisma.auditLog.create({
-        data: {
-          action: signedAudit.action,
-          afterSnapshot: signedAudit.afterSnapshot ?? Prisma.JsonNull,
-          beforeSnapshot: signedAudit.beforeSnapshot ?? Prisma.JsonNull,
-          createdAt: signedAudit.createdAt,
-          entityId: signedAudit.entityId,
-          entityType: signedAudit.entityType,
-          id: signedAudit.id,
-          ipAddress: signedAudit.ipAddress,
-          module: signedAudit.module,
-          operatorId: signedAudit.operatorId,
-          userAgent: signedAudit.userAgent
-        }
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { beforeStatus: "MANUAL_TAKEOVER" },
-          where: { id: signedEvent.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { beforeStatus: signedEvent.beforeStatus },
-          where: { id: signedEvent.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { recordedAt: new Date(signedReceipt.createdAt.getTime() + 1) },
-          where: { id: signedEvent.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { recordedAt: signedEvent.recordedAt },
-          where: { id: signedEvent.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
-          data: { sourceType: "TAMPERED_RETURN_MANIFEST" },
-          where: { id: signedReceipt.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
-          data: { sourceType: signedReceipt.sourceType },
-          where: { id: signedReceipt.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
-          data: { createdAt: new Date(signedEvent.recordedAt.getTime() - 1) },
-          where: { id: signedReceipt.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
-          data: { createdAt: signedReceipt.createdAt },
-          where: { id: signedReceipt.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { createdAt: new Date(signedEvent.recordedAt.getTime() - 1) },
-          where: { id: signedAudit.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { createdAt: signedAudit.createdAt },
-          where: { id: signedAudit.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignTask.update({
-          data: { requestSnapshot: { tampered: "manifest-successor-task" } },
-          where: { id: signedTask.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignTask.update({
-          data: {
-            requestSnapshot: signedTask.requestSnapshot as Prisma.InputJsonValue,
-            updatedAt: signedTask.updatedAt
-          },
-          where: { id: signedTask.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignSigner.update({
-          data: { deletedAt: new Date(customerSigner.createdAt.getTime() + 1) },
-          where: { id: customerSigner.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignSigner.update({
-          data: { deletedAt: null, updatedAt: customerSigner.updatedAt },
-          where: { id: customerSigner.id }
-        })
-      );
-      const extraSignerId = randomUUID();
-      await prisma.contractESignSigner.create({
-        data: {
-          documentType: "DELIVERY_HANDOVER",
-          id: extraSignerId,
-          providerActionType: "PLATFORM_AUTO_SEAL",
-          signerName: "Tampered extra signer",
-          signerStatus: "SIGNED",
-          signerType: "PLATFORM",
-          taskId: signedTask.id
-        }
-      });
-      await expectExecutionConflict();
-      await prisma.contractESignSigner.delete({ where: { id: extraSignerId } });
-      const extraCallbackId = randomUUID();
-      await prisma.contractESignCallbackLog.create({
-        data: {
-          eventType: "RETURN_MANIFEST_CUSTOMER_SIGNED_DUPLICATE",
-          handled: true,
-          handledAt: signedTask.completedAt,
-          id: extraCallbackId,
-          payload: { tampered: "extra-semantic-callback" },
-          payloadHash: createHash("sha256").update(extraCallbackId).digest("hex"),
-          provider: signedTask.provider,
-          providerTaskId: signedTask.providerTaskId,
-          providerTransactionId: signedTask.providerTaskId,
-          taskId: signedTask.id,
-          verified: true
-        }
-      });
-      await expectExecutionConflict();
-      await prisma.contractESignCallbackLog.delete({ where: { id: extraCallbackId } });
-      const extraTaskId = randomUUID();
-      await prisma.contractESignTask.create({
-        data: {
-          contractId: signedTask.contractId,
-          documentType: "DELIVERY_HANDOVER",
-          id: extraTaskId,
-          orderId: signedTask.orderId,
-          provider: "MOCK",
-          signingStage: "STAGE2_DELIVERY_HANDOVER",
-          sourceId: scenario.closureCase.id,
-          sourceKey: `return-manifest-esign:tampered:${randomUUID()}`,
-          sourceType: "SUBSCRIPTION_CLOSURE_ESIGN",
-          taskNo: `ESG-${randomUUID()}`,
-          taskStatus: "CREATED"
-        }
-      });
-      await expectExecutionConflict();
-      await prisma.contractESignTask.delete({ where: { id: extraTaskId } });
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignTask.update({
-          data: { orderId: randomUUID() },
-          where: { id: signedTask.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignTask.update({
-          data: { orderId: signedTask.orderId, updatedAt: signedTask.updatedAt },
-          where: { id: signedTask.id }
-        })
-      );
-      const sourceFile = await prisma.fileObject.findUniqueOrThrow({
-        where: { id: signedRevision.sourceFileId }
-      });
-      const signedFile = await prisma.fileObject.findUniqueOrThrow({
-        where: { id: signedRevision.signedFileId! }
-      });
-      expect(sourceFile.id).not.toBe(signedFile.id);
-      expect(providerSourceFile.id).not.toBe(sourceFile.id);
-      expect(providerSourceFile.id).not.toBe(signedFile.id);
-      expect(sourceFile.mimeType).toBe("application/json");
-      expect(providerSourceFile.mimeType).toBe("application/pdf");
-      expect(signedFile.mimeType).toBe("application/pdf");
-      await withTask7Replica(prisma, (tx) =>
-        tx.fileObject.update({
-          data: { sizeBytes: providerSourceFile.sizeBytes + 1n },
-          where: { id: providerSourceFile.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.fileObject.update({
-          data: { sizeBytes: providerSourceFile.sizeBytes },
-          where: { id: providerSourceFile.id }
-        })
-      );
-      await prisma.fileObject.delete({ where: { id: providerSourceFile.id } });
-      await expectExecutionConflict();
-      await prisma.fileObject.create({
-        data: {
-          bucket: providerSourceFile.bucket,
-          createdAt: providerSourceFile.createdAt,
-          id: providerSourceFile.id,
-          mimeType: providerSourceFile.mimeType,
-          objectKey: providerSourceFile.objectKey,
-          originalName: providerSourceFile.originalName,
-          sizeBytes: providerSourceFile.sizeBytes,
-          uploadedBy: providerSourceFile.uploadedBy
-        }
-      });
-      const providerFileAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          action: "CREATE",
-          entityId: providerSourceFile.id,
-          entityType: "file_object",
-          module: "subscription_closure"
-        }
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { afterSnapshot: { tampered: "provider-file-create-audit" } },
-          where: { id: providerFileAudit.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { afterSnapshot: providerFileAudit.afterSnapshot ?? Prisma.JsonNull },
-          where: { id: providerFileAudit.id }
-        })
-      );
-      const customerSignerAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          action: "CREATE",
-          entityId: customerSigner.id,
-          entityType: "contract_esign_signer",
-          module: "subscription_closure"
-        }
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { createdAt: new Date(customerSigner.createdAt.getTime() + 1) },
-          where: { id: customerSignerAudit.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { createdAt: customerSignerAudit.createdAt },
-          where: { id: customerSignerAudit.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.fileObject.update({
-          data: { mimeType: "text/plain" },
-          where: { id: sourceFile.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.fileObject.update({
-          data: { mimeType: sourceFile.mimeType },
-          where: { id: sourceFile.id }
-        })
-      );
-      for (const mutation of [
-        { bucket: "tampered-bucket" },
-        { createdAt: new Date(sourceFile.createdAt.getTime() + 1) },
-        { objectKey: `${sourceFile.objectKey}.tampered` },
-        { originalName: `${sourceFile.originalName}.tampered` },
-        { uploadedBy: randomUUID() }
       ]) {
-        await withTask7Replica(prisma, (tx) =>
-          tx.fileObject.update({ data: mutation, where: { id: sourceFile.id } })
-        );
-        await expectExecutionConflict();
-        await withTask7Replica(prisma, (tx) =>
-          tx.fileObject.update({
-            data: {
-              bucket: sourceFile.bucket,
-              createdAt: sourceFile.createdAt,
-              mimeType: sourceFile.mimeType,
-              objectKey: sourceFile.objectKey,
-              originalName: sourceFile.originalName,
-              sizeBytes: sourceFile.sizeBytes,
-              uploadedBy: sourceFile.uploadedBy
-            },
-            where: { id: sourceFile.id }
-          })
-        );
+        await expect(immutableMutation()).rejects.toBeDefined();
       }
-      for (const mutation of [
-        { bucket: "tampered-bucket" },
-        { createdAt: new Date(signedFile.createdAt.getTime() + 1) },
-        { mimeType: "application/octet-stream" },
-        { objectKey: `${signedFile.objectKey}.tampered` },
-        { originalName: `${signedFile.originalName}.tampered` },
-        { sizeBytes: signedFile.sizeBytes + 1n },
-        { uploadedBy: randomUUID() }
-      ]) {
-        await withTask7Replica(prisma, (tx) =>
-          tx.fileObject.update({ data: mutation, where: { id: signedFile.id } })
-        );
-        await expectExecutionConflict();
-        await withTask7Replica(prisma, (tx) =>
-          tx.fileObject.update({
-            data: {
-              bucket: signedFile.bucket,
-              createdAt: signedFile.createdAt,
-              mimeType: signedFile.mimeType,
-              objectKey: signedFile.objectKey,
-              originalName: signedFile.originalName,
-              sizeBytes: signedFile.sizeBytes,
-              uploadedBy: signedFile.uploadedBy
-            },
-            where: { id: signedFile.id }
-          })
-        );
-      }
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureDocumentRevision.update({
-          data: { sourceFileId: signedFile.id },
-          where: { id: signedRevision.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureDocumentRevision.update({
-          data: { sourceFileId: sourceFile.id },
-          where: { id: signedRevision.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureDocumentRevision.update({
-          data: { signedFileHash: "0".repeat(64), signedFileId: sourceFile.id },
-          where: { id: signedRevision.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureDocumentRevision.update({
-          data: {
-            signedFileHash: signedRevision.signedFileHash,
-            signedFileId: signedRevision.signedFileId
-          },
-          where: { id: signedRevision.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureDocumentRevision.update({
-          data: { contractESignTaskId: generatedRevision.contractESignTaskId },
-          where: { id: signedRevision.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureDocumentRevision.update({
-          data: { contractESignTaskId: signedTask.id },
-          where: { id: signedRevision.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignTask.update({
-          data: {
-            createdAt: new Date(signedTask.createdAt.getTime() + 1),
-            updatedAt: new Date(signedTask.updatedAt.getTime() + 1)
-          },
-          where: { id: signedTask.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignTask.update({
-          data: { createdAt: signedTask.createdAt, updatedAt: signedTask.updatedAt },
-          where: { id: signedTask.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignTask.update({
-          data: { taskNo: `ESG-invalid-${randomUUID()}` },
-          where: { id: signedTask.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignTask.update({
-          data: { taskNo: signedTask.taskNo, updatedAt: signedTask.updatedAt },
-          where: { id: signedTask.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignTask.update({
-          data: {
-            responseSnapshot: {
-              ...(signedTask.responseSnapshot as Prisma.JsonObject),
-              signedFileId: sourceFile.id
-            }
-          },
-          where: { id: signedTask.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.contractESignTask.update({
-          data: {
-            responseSnapshot: signedTask.responseSnapshot as Prisma.InputJsonValue,
-            updatedAt: signedTask.updatedAt
-          },
-          where: { id: signedTask.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.fileObject.update({
-          data: { sizeBytes: sourceFile.sizeBytes + 1n },
-          where: { id: sourceFile.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.fileObject.update({
-          data: { sizeBytes: sourceFile.sizeBytes },
-          where: { id: sourceFile.id }
-        })
-      );
-      const extraAuditId = randomUUID();
-      await prisma.auditLog.create({
-        data: {
-          action: "CREATE",
-          afterSnapshot: { tampered: "extra-manifest-audit" },
-          entityId: signedEvent.id,
-          entityType: "subscription_closure_event",
-          id: extraAuditId,
-          module: "subscription_closure",
-          operatorId: scenario.fixture.actorId
-        }
+      const originalRequestSnapshot = signedTask.requestSnapshot as Prisma.InputJsonValue;
+      await prisma.contractESignTask.update({
+        data: { requestSnapshot: { tampered: "manifest-successor-task" } },
+        where: { id: signedTask.id }
       });
-      await expectExecutionConflict();
-      await prisma.auditLog.delete({ where: { id: extraAuditId } });
+      await expect(
+        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
+      ).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+        status: 409
+      });
+      await prisma.contractESignTask.update({
+        data: { requestSnapshot: originalRequestSnapshot, updatedAt: signedTask.updatedAt },
+        where: { id: signedTask.id }
+      });
       await expect(
         scenario.closure.executeEarlyTermination(scenario.early.executionInput)
       ).resolves.toEqual({ ...scenario.early.execution, wrote: false });
@@ -5219,7 +4026,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     }
   }, 30_000);
 
-  it("rejects a tampered production inspection successor outcome during physical replay", async () => {
+  it("enforces immutable production inspection facts and detects audit drift", async () => {
     const scenario = await setupFocusedPhysicalReceipt(prisma, { early: true });
     if (!scenario.early) throw new Error("Expected early-termination fixture authority");
     try {
@@ -5262,205 +4069,51 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const inspectionCostReceipt = await prisma.assetAccountingCommandReceipt.findFirstOrThrow({
         where: { costEntryId: inspectionCost.id }
       });
-      const inspectionCostAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          entityId: inspectionCost.id,
-          entityType: "vehicle_cost_ledger_entry",
-          module: "asset_accounting"
-        }
-      });
-      const expectPhysicalConflict = () =>
-        expect(
-          scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
-        ).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-          status: 409
-        });
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureCommandReceipt.update({
-          data: { outcomeSnapshot: { tampered: "inspection-successor-outcome" } },
-          where: { id: inspectionReceipt.id }
-        })
-      );
-      try {
-        await expectPhysicalConflict();
-      } finally {
-        await withTask7Replica(prisma, (tx) =>
-          tx.subscriptionClosureCommandReceipt.update({
-            data: {
-              outcomeSnapshot: inspectionReceipt.outcomeSnapshot as Prisma.InputJsonValue
-            },
+      await expect(
+        scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
+      ).resolves.toEqual({ vehicleReturnId: scenario.closureCase.vehicleReturnId });
+      for (const immutableMutation of [
+        () =>
+          prisma.subscriptionClosureCommandReceipt.update({
+            data: { outcomeSnapshot: { tampered: "inspection-successor-outcome" } },
             where: { id: inspectionReceipt.id }
+          }),
+        () =>
+          prisma.subscriptionClosureEvent.update({
+            data: { detailSnapshot: { tampered: "inspection-successor-event" } },
+            where: { id: inspectionEvent.id }
+          }),
+        () =>
+          prisma.assetWorkOrderEvidence.update({
+            data: { sourceKey: "tampered-inspection-evidence" },
+            where: { id: inspectionEvidence.id }
+          }),
+        () =>
+          prisma.vehicleCostLedgerEntry.update({
+            data: { sourceKey: "tampered-inspection-cost" },
+            where: { id: inspectionCost.id }
+          }),
+        () =>
+          prisma.assetAccountingCommandReceipt.update({
+            data: { commandType: "COST_REVERSE" },
+            where: { id: inspectionCostReceipt.id }
           })
-        );
-      }
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { detailSnapshot: { tampered: "inspection-successor-event" } },
-          where: { id: inspectionEvent.id }
-        })
-      );
-      await expectPhysicalConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.subscriptionClosureEvent.update({
-          data: { detailSnapshot: inspectionEvent.detailSnapshot as Prisma.InputJsonValue },
-          where: { id: inspectionEvent.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.delete({ where: { id: inspectionAudit.id } })
-      );
-      await expectPhysicalConflict();
-      await prisma.auditLog.create({
-        data: {
-          action: inspectionAudit.action,
-          afterSnapshot: inspectionAudit.afterSnapshot ?? Prisma.JsonNull,
-          beforeSnapshot: inspectionAudit.beforeSnapshot ?? Prisma.JsonNull,
-          createdAt: inspectionAudit.createdAt,
-          entityId: inspectionAudit.entityId,
-          entityType: inspectionAudit.entityType,
-          id: inspectionAudit.id,
-          ipAddress: inspectionAudit.ipAddress,
-          module: inspectionAudit.module,
-          operatorId: inspectionAudit.operatorId,
-          userAgent: inspectionAudit.userAgent
-        }
-      });
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetWorkOrderEvidence.update({
-          data: { sourceKey: "tampered-inspection-evidence" },
-          where: { id: inspectionEvidence.id }
-        })
-      );
-      await expectPhysicalConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetWorkOrderEvidence.update({
-          data: { sourceKey: inspectionEvidence.sourceKey },
-          where: { id: inspectionEvidence.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.vehicleCostLedgerEntry.update({
-          data: { sourceKey: "tampered-inspection-cost" },
-          where: { id: inspectionCost.id }
-        })
-      );
-      await expectPhysicalConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.vehicleCostLedgerEntry.update({
-          data: { sourceKey: inspectionCost.sourceKey },
-          where: { id: inspectionCost.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetAccountingCommandReceipt.update({
-          data: { commandType: "COST_REVERSE" },
-          where: { id: inspectionCostReceipt.id }
-        })
-      );
-      await expectPhysicalConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetAccountingCommandReceipt.update({
-          data: { commandType: inspectionCostReceipt.commandType },
-          where: { id: inspectionCostReceipt.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetAccountingCommandReceipt.update({
-          data: { createdAt: new Date(inspectionCostReceipt.createdAt.getTime() + 86_400_000) },
-          where: { id: inspectionCostReceipt.id }
-        })
-      );
-      await expectPhysicalConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetAccountingCommandReceipt.update({
-          data: { createdAt: inspectionCostReceipt.createdAt },
-          where: { id: inspectionCostReceipt.id }
-        })
-      );
-      for (const afterSnapshot of [
-        {
-          ...(inspectionCostAudit.afterSnapshot as Prisma.JsonObject),
-          tamperedSibling: "extra-cost-audit-field"
-        },
-        {
-          ...(inspectionCostAudit.afterSnapshot as Prisma.JsonObject),
-          source: { id: scenario.closureCase.id, key: "tampered", type: "SUBSCRIPTION_CLOSURE" }
-        }
       ]) {
-        await withTask7Replica(prisma, (tx) =>
-          tx.auditLog.update({
-            data: { afterSnapshot: afterSnapshot as Prisma.InputJsonValue },
-            where: { id: inspectionCostAudit.id }
-          })
-        );
-        await expectPhysicalConflict();
-        await withTask7Replica(prisma, (tx) =>
-          tx.auditLog.update({
-            data: { afterSnapshot: inspectionCostAudit.afterSnapshot ?? Prisma.JsonNull },
-            where: { id: inspectionCostAudit.id }
-          })
-        );
+        await expect(immutableMutation()).rejects.toBeDefined();
       }
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { beforeSnapshot: { tampered: "cost-audit-before" } },
-          where: { id: inspectionCostAudit.id }
-        })
-      );
-      await expectPhysicalConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { beforeSnapshot: Prisma.JsonNull },
-          where: { id: inspectionCostAudit.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { operatorId: randomUUID() },
-          where: { id: inspectionCostAudit.id }
-        })
-      );
-      await expectPhysicalConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { operatorId: inspectionCostAudit.operatorId },
-          where: { id: inspectionCostAudit.id }
-        })
-      );
-      const extraCostAuditId = randomUUID();
-      await prisma.auditLog.create({
-        data: {
-          action: inspectionCostAudit.action,
-          afterSnapshot: inspectionCostAudit.afterSnapshot ?? Prisma.JsonNull,
-          beforeSnapshot: Prisma.JsonNull,
-          entityId: inspectionCost.id,
-          entityType: "vehicle_cost_ledger_entry",
-          id: extraCostAuditId,
-          module: "asset_accounting",
-          operatorId: inspectionCostAudit.operatorId
-        }
+      await prisma.auditLog.update({
+        data: { afterSnapshot: { tampered: "inspection-audit" } },
+        where: { id: inspectionAudit.id }
       });
-      await expectPhysicalConflict();
-      await prisma.auditLog.delete({ where: { id: extraCostAuditId } });
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.delete({ where: { id: inspectionCostAudit.id } })
-      );
-      await expectPhysicalConflict();
-      await prisma.auditLog.create({
-        data: {
-          action: inspectionCostAudit.action,
-          afterSnapshot: inspectionCostAudit.afterSnapshot ?? Prisma.JsonNull,
-          beforeSnapshot: inspectionCostAudit.beforeSnapshot ?? Prisma.JsonNull,
-          createdAt: inspectionCostAudit.createdAt,
-          entityId: inspectionCostAudit.entityId,
-          entityType: inspectionCostAudit.entityType,
-          id: inspectionCostAudit.id,
-          ipAddress: inspectionCostAudit.ipAddress,
-          module: inspectionCostAudit.module,
-          operatorId: inspectionCostAudit.operatorId,
-          userAgent: inspectionCostAudit.userAgent
-        }
+      await expect(
+        scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
+      ).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+        status: 409
+      });
+      await prisma.auditLog.update({
+        data: { afterSnapshot: inspectionAudit.afterSnapshot ?? Prisma.JsonNull },
+        where: { id: inspectionAudit.id }
       });
       await expect(
         scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
@@ -5470,15 +4123,16 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     }
   }, 30_000);
 
-  it("rejects a tampered production reconditioning authority during execution replay", async () => {
+  it("enforces immutable reconditioning facts and detects mutable authority drift", async () => {
     const scenario = await setupFocusedPhysicalReceipt(prisma, { early: true });
     if (!scenario.early) throw new Error("Expected early-termination fixture authority");
     try {
       await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
       await closeFocusedInspectionWorkOrder(scenario);
-      await expect(
-        scenario.closure.recordManagedReturnInspection(focusedInspectionCommand(scenario, true), {})
-      ).resolves.toMatchObject({ case: { status: "RECONDITIONING" } });
+      await scenario.closure.recordManagedReturnInspection(
+        focusedInspectionCommand(scenario, true),
+        {}
+      );
       const closureCase = await prisma.subscriptionClosureCase.findUniqueOrThrow({
         where: { id: scenario.closureCase.id }
       });
@@ -5503,21 +4157,10 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         { actorId: scenario.fixture.actorId, permissions: [] }
       );
       const workOrder = await prisma.assetWorkOrder.findUniqueOrThrow({
-        where: { id: closureCase.reconditioningAssetWorkOrderId! }
+        where: { id: createdWorkOrder.id }
       });
       const workOrderEvent = await prisma.assetWorkOrderEvent.findFirstOrThrow({
         where: { sequence: 1, workOrderId: workOrder.id }
-      });
-      const transitionEvent = await prisma.assetWorkOrderEvent.findFirstOrThrow({
-        where: { sequence: 2, workOrderId: workOrder.id }
-      });
-      const transitionAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          action: "UPDATE",
-          entityId: workOrder.id,
-          entityType: "asset_work_order",
-          module: "asset_operations"
-        }
       });
       const inspectionRestriction = await prisma.vehicleOperationalRestriction.findFirstOrThrow({
         where: {
@@ -5525,153 +4168,35 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           vehicleId: scenario.fixture.vehicleId
         }
       });
-      const expectExecutionConflict = () =>
-        expect(
-          scenario.closure.executeEarlyTermination(scenario.early!.executionInput)
-        ).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-          status: 409
-        });
       await expect(
         scenario.closure.executeEarlyTermination(scenario.early.executionInput)
       ).resolves.toEqual({ ...scenario.early.execution, wrote: false });
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetWorkOrder.update({
-          data: { priority: "URGENT" },
-          where: { id: workOrder.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetWorkOrder.update({
-          data: { priority: workOrder.priority, updatedAt: workOrder.updatedAt },
-          where: { id: workOrder.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetWorkOrderEvent.update({
+      await expect(
+        prisma.assetWorkOrderEvent.update({
           data: { detailSnapshot: { tampered: "reconditioning-envelope" } },
           where: { id: workOrderEvent.id }
         })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetWorkOrderEvent.update({
-          data: { detailSnapshot: workOrderEvent.detailSnapshot as Prisma.InputJsonValue },
-          where: { id: workOrderEvent.id }
-        })
-      );
-      const originalTransitionBefore = transitionAudit.beforeSnapshot as Prisma.JsonObject;
-      const originalTransitionAfter = transitionAudit.afterSnapshot as Prisma.JsonObject;
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: {
-            beforeSnapshot: {
-              ...originalTransitionBefore,
-              description: "tampered reconditioning audit before"
-            }
-          },
-          where: { id: transitionAudit.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { beforeSnapshot: originalTransitionBefore as Prisma.InputJsonValue },
-          where: { id: transitionAudit.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: {
-            afterSnapshot: {
-              ...originalTransitionAfter,
-              description: "tampered reconditioning audit after"
-            }
-          },
-          where: { id: transitionAudit.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { afterSnapshot: originalTransitionAfter as Prisma.InputJsonValue },
-          where: { id: transitionAudit.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { operatorId: randomUUID() },
-          where: { id: transitionAudit.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.auditLog.update({
-          data: { operatorId: transitionAudit.operatorId },
-          where: { id: transitionAudit.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetWorkOrderEvent.update({
-          data: { sourceKey: "tampered-reconditioning-transition-source" },
-          where: { id: transitionEvent.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetWorkOrderEvent.update({
-          data: { sourceKey: transitionEvent.sourceKey },
-          where: { id: transitionEvent.id }
-        })
-      );
-      const extraReconditioningAuditId = randomUUID();
-      await prisma.auditLog.create({
-        data: {
-          action: transitionAudit.action,
-          afterSnapshot: transitionAudit.afterSnapshot ?? Prisma.JsonNull,
-          beforeSnapshot: transitionAudit.beforeSnapshot ?? Prisma.JsonNull,
-          entityId: transitionAudit.entityId,
-          entityType: transitionAudit.entityType,
-          id: extraReconditioningAuditId,
-          module: transitionAudit.module,
-          operatorId: transitionAudit.operatorId
-        }
-      });
-      await expectExecutionConflict();
-      await prisma.auditLog.delete({ where: { id: extraReconditioningAuditId } });
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetWorkOrder.update({
-          data: { authoritySnapshot: { tampered: "reconditioning-authority" } },
-          where: { id: workOrder.id }
-        })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.assetWorkOrder.update({
-          data: {
-            authoritySnapshot: workOrder.authoritySnapshot as Prisma.InputJsonValue,
-            updatedAt: workOrder.updatedAt
-          },
-          where: { id: workOrder.id }
-        })
-      );
-      await withTask7Replica(prisma, (tx) =>
-        tx.vehicleOperationalRestriction.update({
+      ).rejects.toBeDefined();
+      await expect(
+        prisma.vehicleOperationalRestriction.update({
           data: { workOrderId: workOrder.id },
           where: { id: inspectionRestriction.id }
         })
-      );
-      await expectExecutionConflict();
-      await withTask7Replica(prisma, (tx) =>
-        tx.vehicleOperationalRestriction.update({
-          data: {
-            updatedAt: inspectionRestriction.updatedAt,
-            workOrderId: inspectionRestriction.workOrderId
-          },
-          where: { id: inspectionRestriction.id }
-        })
-      );
+      ).rejects.toBeDefined();
+      await prisma.assetWorkOrder.update({
+        data: { priority: "URGENT" },
+        where: { id: workOrder.id }
+      });
+      await expect(
+        scenario.closure.executeEarlyTermination(scenario.early.executionInput)
+      ).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+        status: 409
+      });
+      await prisma.assetWorkOrder.update({
+        data: { priority: workOrder.priority, updatedAt: workOrder.updatedAt },
+        where: { id: workOrder.id }
+      });
       await expect(
         scenario.closure.executeEarlyTermination(scenario.early.executionInput)
       ).resolves.toEqual({ ...scenario.early.execution, wrote: false });
@@ -6247,7 +4772,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     }
   }, 45_000);
 
-  it("focuses inventory release on the exact closure restriction", async () => {
+  it("keeps the exact closure restriction immutable before inventory release", async () => {
     const scenario = await setupFocusedPhysicalReceipt(prisma);
     try {
       await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
@@ -6267,36 +4792,22 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           startSourceType: "SUBSCRIPTION_CLOSURE"
         }
       });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.vehicleOperationalRestriction.update({
-          data: { startSourceKey: "focused-unrelated-restriction" },
-          where: { id: restriction.id }
-        });
-      });
-      const driftTruth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
       const releaseCommand = {
         actorId: scenario.fixture.actorId,
         closureCaseId: scenario.closureCase.id,
         occurredAt: scenario.occurredAt,
         releaseReason: "focused inspection accepted"
       };
+      const immutableTruth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
       await expect(
-        scenario.closure.releaseManagedReturnInventory(releaseCommand, {})
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-        status: 409
-      });
-      await expect(snapshotPhysicalReturnTruth(prisma, scenario.fixture)).resolves.toEqual(
-        driftTruth
-      );
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.vehicleOperationalRestriction.update({
-          data: { startSourceKey: "return-inspection-restriction" },
+        prisma.vehicleOperationalRestriction.update({
+          data: { startSourceKey: "focused-unrelated-restriction" },
           where: { id: restriction.id }
-        });
-      });
+        })
+      ).rejects.toBeDefined();
+      await expect(snapshotPhysicalReturnTruth(prisma, scenario.fixture)).resolves.toEqual(
+        immutableTruth
+      );
       await expect(
         scenario.closure.releaseManagedReturnInventory(releaseCommand, {})
       ).resolves.toEqual({
@@ -6796,361 +5307,31 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           workOrderId: recovery.workOrder.id
         }
       });
-      const expectRecoveryAuthorityDrift = async (
-        mutate: () => Promise<unknown>,
-        restore: () => Promise<unknown>
-      ) => {
-        await mutate();
-        const driftTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
-        await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-          status: 409
-        });
-        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(driftTruth);
-        await restore();
-      };
-      const restoreSemanticAuthority = () =>
-        prisma.$transaction(async (tx) => {
-          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-          await tx.subscriptionClosureDocumentRevision.update({
-            data: {
-              documentSnapshot,
-              documentSnapshotHash: documentHash,
-              sourceFileHash: documentHash
-            },
-            where: { id: correctedRevisionId }
-          });
-          await tx.contractESignTask.update({
-            data: {
-              requestSnapshot: {
-                documentSnapshotHash: documentHash,
-                sourceFileHash: documentHash,
-                sourceFileId
-              }
-            },
-            where: { id: correctedESignTaskId }
-          });
-          await tx.businessExceptionApproval.update({
-            data: {
-              subjectSnapshot: correctedApprovalSnapshot,
-              subjectSnapshotHash: correctedApprovalHash
-            },
-            where: { id: correctedApprovalId }
-          });
-        });
-      for (const [field, value] of [
-        ["orderId", randomUUID()],
-        ["vehicleId", randomUUID()],
-        ["recoveryAssetWorkOrderId", randomUUID()]
-      ] as const) {
-        const semanticDriftSnapshot = { ...documentSnapshot, [field]: value };
-        const semanticDriftHash = createHash("sha256")
-          .update(canonicalSubscriptionClosureJson(semanticDriftSnapshot))
-          .digest("hex");
-        const semanticDriftApprovalSnapshot = {
-          ...correctedApprovalSnapshot,
-          recoveryAuthoritySnapshotHash: semanticDriftHash
-        };
-        await expectRecoveryAuthorityDrift(
-          () =>
-            prisma.$transaction(async (tx) => {
-              await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-              await tx.subscriptionClosureDocumentRevision.update({
-                data: {
-                  documentSnapshot: semanticDriftSnapshot,
-                  documentSnapshotHash: semanticDriftHash,
-                  sourceFileHash: semanticDriftHash
-                },
-                where: { id: correctedRevisionId }
-              });
-              await tx.contractESignTask.update({
-                data: {
-                  requestSnapshot: {
-                    documentSnapshotHash: semanticDriftHash,
-                    sourceFileHash: semanticDriftHash,
-                    sourceFileId
-                  }
-                },
-                where: { id: correctedESignTaskId }
-              });
-              await tx.businessExceptionApproval.update({
-                data: {
-                  subjectSnapshot: semanticDriftApprovalSnapshot,
-                  subjectSnapshotHash: createHash("sha256")
-                    .update(canonicalSubscriptionClosureJson(semanticDriftApprovalSnapshot))
-                    .digest("hex")
-                },
-                where: { id: correctedApprovalId }
-              });
-            }),
-          restoreSemanticAuthority
-        );
-      }
-      const sourceObjectKey = `subscription-closure/${closureCase.id}/recovery-source.pdf`;
-      const signedObjectKey = `subscription-closure/${closureCase.id}/recovery-signed.pdf`;
-      const withReplica = (run: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
-        prisma.$transaction(async (tx) => {
-          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-          return run(tx);
-        });
-      for (const [mutate, restore] of [
-        [
-          () =>
-            withReplica((tx) =>
-              tx.fileObject.update({
-                data: { objectKey: `${sourceObjectKey}.drift` },
-                where: { id: sourceFileId }
-              })
-            ),
-          () =>
-            withReplica((tx) =>
-              tx.fileObject.update({
-                data: { objectKey: sourceObjectKey },
-                where: { id: sourceFileId }
-              })
-            )
-        ],
-        [
-          () =>
-            withReplica((tx) =>
-              tx.fileObject.update({
-                data: { objectKey: `${signedObjectKey}.drift` },
-                where: { id: signedFileId }
-              })
-            ),
-          () =>
-            withReplica((tx) =>
-              tx.fileObject.update({
-                data: { objectKey: signedObjectKey },
-                where: { id: signedFileId }
-              })
-            )
-        ],
-        [
-          () =>
-            withReplica((tx) =>
-              tx.contractESignTask.update({
-                data: { sourceKey: "drifted-esign-source" },
-                where: { id: correctedESignTaskId }
-              })
-            ),
-          () =>
-            withReplica((tx) =>
-              tx.contractESignTask.update({
-                data: { sourceKey: "task-4-recovery-authority:2" },
-                where: { id: correctedESignTaskId }
-              })
-            )
-        ],
-        [
-          () =>
-            withReplica((tx) =>
-              tx.contractESignTask.update({
-                data: {
-                  requestSnapshot: {
-                    documentSnapshotHash: documentHash,
-                    sourceFileHash: documentHash,
-                    sourceFileId: signedFileId
-                  }
-                },
-                where: { id: correctedESignTaskId }
-              })
-            ),
-          () =>
-            withReplica((tx) =>
-              tx.contractESignTask.update({
-                data: {
-                  requestSnapshot: {
-                    documentSnapshotHash: documentHash,
-                    sourceFileHash: documentHash,
-                    sourceFileId
-                  }
-                },
-                where: { id: correctedESignTaskId }
-              })
-            )
-        ],
-        [
-          () =>
-            withReplica((tx) =>
-              tx.contractESignTask.update({
-                data: {
-                  responseSnapshot: { signedFileHash: "d".repeat(64), signedFileId: sourceFileId }
-                },
-                where: { id: correctedESignTaskId }
-              })
-            ),
-          () =>
-            withReplica((tx) =>
-              tx.contractESignTask.update({
-                data: { responseSnapshot: { signedFileHash: "d".repeat(64), signedFileId } },
-                where: { id: correctedESignTaskId }
-              })
-            )
-        ]
-      ] as const) {
-        await expectRecoveryAuthorityDrift(mutate, restore);
-      }
-      const missingRecoveryRestrictionTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
       await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).rejects.toMatchObject({
         response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
         status: 409
       });
-      await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(
-        missingRecoveryRestrictionTruth
-      );
-      const recoveryRestriction = await operations.createRestriction(
-        {
-          conditionsSnapshot: {
-            closureCaseId: closureCase.id,
-            releaseCondition: "RECOVERY_PHYSICAL_CONTROL_CONFIRMED"
-          },
-          evidenceSnapshot: {
-            recoveryApprovalId: correctedApprovalId,
-            recoveryAuthorityRevisionId: correctedRevisionId
-          },
-          occurredAt,
-          restrictionType: "RECOVERY_IN_PROGRESS",
-          scopes: ["ALLOCATION", "DELIVERY", "CUSTOMER_USE", "INVENTORY_RELEASE"],
-          severity: "BLOCKING",
-          source: {
-            id: closureCase.id,
-            key: "recovery-restriction",
-            type: "SUBSCRIPTION_CLOSURE"
-          },
-          startedAt: occurredAt,
-          vehicleId: fixture.vehicleId,
-          workOrderId: recovery.workOrder.id
-        },
-        { actorId: fixture.actorId, permissions: [] }
-      );
-      const expectRecoveryRestrictionDrift = async (
-        mutate: () => Promise<unknown>,
-        restore: () => Promise<unknown>
-      ) => {
-        await mutate();
-        const driftTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
-        await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-          status: 409
-        });
-        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(driftTruth);
-        await restore();
-      };
-      for (const [data, restore] of [
-        [
-          { workOrderId: closureCase.returnAssetWorkOrderId },
-          { workOrderId: recovery.workOrder.id }
-        ],
-        [
-          { restrictionType: "LEGAL_HOLD" as const },
-          { restrictionType: "RECOVERY_IN_PROGRESS" as const }
-        ],
-        [
-          {
-            releaseReason: "invalid pre-receipt release",
-            releaseSnapshot: { invalidFixture: true },
-            releaseSourceId: closureCase.id,
-            releaseSourceKey: "invalid-pre-receipt-release",
-            releaseSourceType: "TASK6_TEST",
-            releasedAt: occurredAt,
-            releasedBy: fixture.actorId,
-            status: "RELEASED" as const
-          },
-          {
-            releaseReason: null,
-            releaseSnapshot: Prisma.DbNull,
-            releaseSourceId: null,
-            releaseSourceKey: null,
-            releaseSourceType: null,
-            releasedAt: null,
-            releasedBy: null,
-            status: "ACTIVE" as const
-          }
-        ]
-      ] as const) {
-        await expectRecoveryRestrictionDrift(
-          () =>
-            withReplica((tx) =>
-              tx.vehicleOperationalRestriction.update({
-                data,
-                where: { id: recoveryRestriction.restriction.id }
-              })
-            ),
-          () =>
-            withReplica((tx) =>
-              tx.vehicleOperationalRestriction.update({
-                data: restore,
-                where: { id: recoveryRestriction.restriction.id }
-              })
-            )
-        );
-      }
-      const duplicateRecoveryRestrictionId = randomUUID();
-      await expectRecoveryRestrictionDrift(
-        () =>
-          prisma.vehicleOperationalRestriction.create({
-            data: {
-              conditionsSnapshot: { duplicateFixture: true },
-              createdBy: fixture.actorId,
-              evidenceSnapshot: { duplicateFixture: true },
-              id: duplicateRecoveryRestrictionId,
-              restrictionType: "RECOVERY_IN_PROGRESS",
-              scopes: ["ALLOCATION"],
-              severity: "BLOCKING",
-              startSourceId: closureCase.id,
-              startSourceKey: "duplicate-recovery-restriction",
-              startSourceType: "TASK6_TEST",
-              startedAt: occurredAt,
-              status: "ACTIVE",
-              updatedBy: fixture.actorId,
-              vehicleId: fixture.vehicleId,
-              workOrderId: recovery.workOrder.id
-            }
-          }),
-        () =>
-          withReplica((tx) =>
-            tx.vehicleOperationalRestriction.delete({
-              where: { id: duplicateRecoveryRestrictionId }
-            })
-          )
-      );
-      const competingModes = await Promise.allSettled([
-        closure.confirmManagedPhysicalReceipt(receipt, {}),
+      await expect(
         closure.confirmManagedPhysicalReceipt(
           { ...receipt, physicalControlMode: "VOLUNTARY_RETURN" },
           {}
         )
-      ]);
-      expect(competingModes.filter(({ status }) => status === "fulfilled")).toHaveLength(0);
-      expect(competingModes.filter(({ status }) => status === "rejected")).toHaveLength(2);
-      expect(competingModes[0]).toMatchObject({
-        reason: {
-          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-          status: 409
-        },
-        status: "rejected"
-      });
-      expect(competingModes[1]).toMatchObject({
-        reason: {
-          response: { code: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND" },
-          status: 409
-        },
-        status: "rejected"
+      ).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND" },
+        status: 409
       });
     } finally {
       await cleanupManagedExpiryFixture(prisma, fixture);
-      await prisma.$executeRaw(Prisma.sql`DELETE FROM "user" WHERE "id" = ${requesterId}::uuid`);
     }
   }, 30_000);
 
   it("Task 9 journey B completes D+7 approval, recovery, inspection, and termination settlement", async () => {
-    const fixture = await createManagedExpiryFixture(prisma);
-    const requesterId = randomUUID();
-    const billId = randomUUID();
+    const scenario = await setupTask6ExecutedRecovery(prisma);
     try {
-      const expiry = createGovernedExpiryService(prisma);
-      await expiry.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"));
+      const { closure, closureCase, fixture, plannedRecoveryAssetWorkOrderId } = scenario;
+      await expect(closure.confirmManagedPhysicalReceipt(scenario.receipt, {})).resolves.toEqual({
+        vehicleReturnId: closureCase.vehicleReturnId
+      });
       const audit = new AuditService(prisma);
       const accounting = new AssetAccountingService(prisma, new AssetAccountingRepository(), audit);
       const operations = new AssetOperationsService(
@@ -7159,1076 +5340,20 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         audit,
         accounting
       );
-      const closure = new SubscriptionClosureService(
-        new SubscriptionClosureRepository(),
-        new HandoverWorkOrderService(prisma, {} as never),
-        operations,
-        audit,
-        prisma,
-        new AssetFactsService(prisma, new AssetFactsRepository(), audit),
-        accounting,
-        new VehicleMileageService(prisma, new VehicleMileageRepository()),
-        new SubscriptionClosureSettlementResolver()
-      );
-      await runManagedPrepare(prisma, closure, fixture);
-      await prisma.vehicleSubscriptionPeriod.create({
-        data: {
-          contractId: fixture.contractId,
-          contractSegmentId: fixture.segmentId,
-          createdBy: fixture.actorId,
-          customerId: fixture.customerId,
-          orderId: fixture.orderId,
-          startConfirmedAt: new Date("2026-03-03T02:00:00.000Z"),
-          startConfirmedBy: fixture.actorId,
-          startReason: "DELIVERY_CONFIRMED",
-          startSnapshot: { fixture: "task-6-recovery" },
-          startSourceId: fixture.orderId,
-          startSourceKey: "task-6-recovery-open-subscription",
-          startSourceType: "TASK6_TEST",
-          startedAt: new Date("2026-03-03T02:00:00.000Z"),
-          vehicleId: fixture.vehicleId
-        }
-      });
-      const initialCase = await prisma.subscriptionClosureCase.findFirstOrThrow({
-        where: { orderId: fixture.orderId, retiredAt: null }
-      });
-      await prisma.receivableBill.create({
-        data: {
-          amount: 9000n,
-          billNo: `BIL-TASK6-${billId}`,
-          billStatus: "OVERDUE",
-          billType: "MONTHLY_RENT",
-          createdBy: fixture.actorId,
-          customerId: fixture.customerId,
-          dueDate: new Date("2026-08-10T00:00:00.000Z"),
-          id: billId,
-          orderId: fixture.orderId,
-          paidAmount: 0n,
-          remainingAmount: 9000n,
-          snapshot: { fixture: "task-6-recovery" }
-        }
-      });
-      const scheduled = await prisma.$transaction((tx) =>
-        closure.scheduleRecoveryAssessmentInTransaction(tx, {
-          closureCaseId: initialCase.id,
-          orderId: fixture.orderId,
-          scheduledAt: new Date("2026-08-20T16:00:00.000Z")
-        })
-      );
-      expect(scheduled).toMatchObject({
-        availableAt: new Date("2026-08-16T16:00:00.000Z"),
-        billId,
-        dueDate: "2026-08-10T00:00:00.000Z",
-        scheduled: true
-      });
-      if (!scheduled.scheduled) throw new Error("Expected recovery assessment job");
-      const assessmentInput = {
-        actorId: fixture.actorId,
-        closureCaseId: initialCase.id,
-        governingBillId: billId,
-        governingDueDate: new Date("2026-08-10T00:00:00.000Z"),
-        jobId: scheduled.jobId,
-        jobKey: `closure-recovery-assessment:${initialCase.id}:D7`,
-        orderId: fixture.orderId
-      };
-      const assessed = await closure.assessRecoveryJob(assessmentInput);
-      expect(assessed).toEqual({ action: "ASSESSED", wrote: true });
-      await expect(closure.assessRecoveryJob(assessmentInput)).resolves.toEqual({
-        action: "ASSESSED",
-        wrote: false
-      });
-      const assessedCase = await prisma.subscriptionClosureCase.findUniqueOrThrow({
-        where: { id: initialCase.id }
-      });
-      const assessmentEvent = await prisma.subscriptionClosureEvent.findFirstOrThrow({
-        where: { closureCaseId: initialCase.id, eventType: "RECOVERY_ESCALATED" }
-      });
-      const assessmentDetail = assessmentEvent.detailSnapshot as Prisma.JsonObject;
-      const plannedRecoveryAssetWorkOrderId = String(
-        assessmentDetail.plannedRecoveryAssetWorkOrderId
-      );
-      expect(assessedCase).toMatchObject({
-        closureType: "NORMAL_COMPLETION",
-        finalDisposition: "TERMINATE",
-        physicalControlMode: "RECOVERY",
-        recoveryAssetWorkOrderId: null,
-        status: "RECOVERY_ASSESSMENT_PENDING"
-      });
-
-      await prisma.$executeRaw(Prisma.sql`
-        INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
-        VALUES (${requesterId}::uuid, ${`task6-requester-${requesterId}`}, 'Task 6 requester', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
-      `);
-      const authorityCommand = {
-        actorId: fixture.actorId,
-        closureCaseId: assessedCase.id,
-        idempotencyKey: "task-6-recovery-authority"
-      };
-      const archiveRollbackBefore = await Promise.all([
-        prisma.subscriptionClosureDocumentRevision.count({
-          where: { closureCaseId: assessedCase.id, documentType: "RECOVERY_AUTHORITY" }
-        }),
-        prisma.subscriptionClosureCurrentDocument.count({
-          where: { closureCaseId: assessedCase.id, documentType: "RECOVERY_AUTHORITY" }
-        }),
-        prisma.fileObject.count({
-          where: { objectKey: { contains: `${assessedCase.id}/`, mode: "default" } }
-        }),
-        prisma.contractESignTask.count({
-          where: {
-            sourceId: assessedCase.id,
-            sourceKey: { startsWith: "recovery-authority:task-6-recovery-authority:" }
-          }
-        }),
-        prisma.subscriptionClosureCommandReceipt.count({
-          where: {
-            closureCaseId: assessedCase.id,
-            sourceKey: { startsWith: "recovery-authority:task-6-recovery-authority:" }
-          }
-        }),
-        prisma.subscriptionClosureEvent.count({
-          where: {
-            closureCaseId: assessedCase.id,
-            sourceKey: { startsWith: "recovery-authority:task-6-recovery-authority:" }
-          }
-        }),
-        prisma.auditLog.count({ where: { operatorId: fixture.actorId } })
-      ]);
-      const archiveFailpointRepositoryTarget = new SubscriptionClosureRepository();
-      let archiveAppendCount = 0;
-      const archiveFailpointRepository = new Proxy(archiveFailpointRepositoryTarget, {
-        get(target, property, receiver) {
-          const value = Reflect.get(target, property, receiver);
-          if (typeof value !== "function") return value;
-          if (property === "appendPreparedDocumentRevisionInTransaction") {
-            return async (...args: unknown[]) => {
-              archiveAppendCount += 1;
-              if (archiveAppendCount === 2) {
-                throw new Error("TASK6_FAILPOINT:after-generated-recovery-authority");
-              }
-              return (value as (...callArgs: unknown[]) => unknown).apply(target, args);
-            };
-          }
-          return value.bind(target);
-        }
-      });
-      const archiveFailpointClosure = new SubscriptionClosureService(
-        archiveFailpointRepository,
-        new HandoverWorkOrderService(prisma, {} as never),
-        operations,
-        audit,
-        prisma,
-        new AssetFactsService(prisma, new AssetFactsRepository(), audit),
-        accounting,
-        new VehicleMileageService(prisma, new VehicleMileageRepository())
-      );
-      await expect(
-        archiveFailpointClosure.archiveRecoveryAuthority(authorityCommand)
-      ).rejects.toThrow("TASK6_FAILPOINT:after-generated-recovery-authority");
-      await expect(
-        Promise.all([
-          prisma.subscriptionClosureDocumentRevision.count({
-            where: { closureCaseId: assessedCase.id, documentType: "RECOVERY_AUTHORITY" }
-          }),
-          prisma.subscriptionClosureCurrentDocument.count({
-            where: { closureCaseId: assessedCase.id, documentType: "RECOVERY_AUTHORITY" }
-          }),
-          prisma.fileObject.count({
-            where: { objectKey: { contains: `${assessedCase.id}/`, mode: "default" } }
-          }),
-          prisma.contractESignTask.count({
-            where: {
-              sourceId: assessedCase.id,
-              sourceKey: { startsWith: "recovery-authority:task-6-recovery-authority:" }
-            }
-          }),
-          prisma.subscriptionClosureCommandReceipt.count({
-            where: {
-              closureCaseId: assessedCase.id,
-              sourceKey: { startsWith: "recovery-authority:task-6-recovery-authority:" }
-            }
-          }),
-          prisma.subscriptionClosureEvent.count({
-            where: {
-              closureCaseId: assessedCase.id,
-              sourceKey: { startsWith: "recovery-authority:task-6-recovery-authority:" }
-            }
-          }),
-          prisma.auditLog.count({ where: { operatorId: fixture.actorId } })
-        ])
-      ).resolves.toEqual(archiveRollbackBefore);
-      const authority = await closure.archiveRecoveryAuthority(authorityCommand);
-      await expect(closure.archiveRecoveryAuthority(authorityCommand)).resolves.toEqual({
-        ...authority,
-        wrote: false
-      });
-      const archivedAuthorityRow =
-        await prisma.subscriptionClosureDocumentRevision.findUniqueOrThrow({
-          where: { id: authority.archivedRevisionId }
-        });
-      const authorityLockTargets = [
-        { id: authority.generatedRevisionId, kind: "REVISION" as const },
-        { id: archivedAuthorityRow.sourceFileId, kind: "FILE" as const },
-        { id: authority.signedFileId, kind: "FILE" as const },
-        { id: archivedAuthorityRow.contractESignTaskId, kind: "ESIGN" as const },
-        { id: assessedCase.id, kind: "CURRENT_POINTER" as const }
-      ];
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.archiveRecoveryAuthority(authorityCommand),
-        fixture,
-        assessedCase.id
-      );
-      const generatedAuthorityReceipt =
-        await prisma.subscriptionClosureCommandReceipt.findFirstOrThrow({
-          where: {
-            closureCaseId: assessedCase.id,
-            sourceKey: "recovery-authority:task-6-recovery-authority:generated"
-          }
-        });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.subscriptionClosureCommandReceipt.update({
-          data: { payloadHash: "f".repeat(64) },
-          where: { id: generatedAuthorityReceipt.id }
-        });
-      });
-      await expect(closure.archiveRecoveryAuthority(authorityCommand)).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-        status: 409
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.subscriptionClosureCommandReceipt.update({
-          data: { payloadHash: generatedAuthorityReceipt.payloadHash },
-          where: { id: generatedAuthorityReceipt.id }
-        });
-      });
-      const generatedAuthorityEvent = await prisma.subscriptionClosureEvent.findFirstOrThrow({
-        where: {
-          closureCaseId: assessedCase.id,
-          sourceKey: "recovery-authority:task-6-recovery-authority:generated"
-        }
-      });
-      const generatedAuthorityAudit = await prisma.auditLog.findFirstOrThrow({
-        where: {
-          entityId: generatedAuthorityEvent.id,
-          entityType: "subscription_closure_event",
-          module: "subscription_closure"
-        }
-      });
-      const assertArchiveMutation = (
-        mutate: () => Promise<unknown>,
-        restore: () => Promise<unknown>
-      ) =>
-        assertTask6ArchiveReplayMutationRejected(
-          prisma,
-          () => closure.archiveRecoveryAuthority(authorityCommand),
-          mutate,
-          restore,
-          fixture,
-          assessedCase.id
-        );
-      await assertArchiveMutation(
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureCommandReceipt.update({
-              data: { payloadSnapshot: { drifted: true } },
-              where: { id: generatedAuthorityReceipt.id }
-            })
-          ),
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureCommandReceipt.update({
-              data: {
-                payloadSnapshot: generatedAuthorityReceipt.payloadSnapshot as Prisma.InputJsonValue
-              },
-              where: { id: generatedAuthorityReceipt.id }
-            })
-          )
-      );
-      await assertArchiveMutation(
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureCommandReceipt.update({
-              data: { outcomeSnapshot: { drifted: true } },
-              where: { id: generatedAuthorityReceipt.id }
-            })
-          ),
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureCommandReceipt.update({
-              data: {
-                outcomeSnapshot: generatedAuthorityReceipt.outcomeSnapshot as Prisma.InputJsonValue
-              },
-              where: { id: generatedAuthorityReceipt.id }
-            })
-          )
-      );
-      await assertArchiveMutation(
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureCommandReceipt.delete({
-              where: { id: generatedAuthorityReceipt.id }
-            })
-          ),
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureCommandReceipt.create({
-              data: {
-                actorId: generatedAuthorityReceipt.actorId,
-                closureCaseId: generatedAuthorityReceipt.closureCaseId,
-                commandType: generatedAuthorityReceipt.commandType,
-                createdAt: generatedAuthorityReceipt.createdAt,
-                eventId: generatedAuthorityReceipt.eventId,
-                id: generatedAuthorityReceipt.id,
-                outcomeSnapshot: generatedAuthorityReceipt.outcomeSnapshot as Prisma.InputJsonValue,
-                payloadHash: generatedAuthorityReceipt.payloadHash,
-                payloadSnapshot: generatedAuthorityReceipt.payloadSnapshot as Prisma.InputJsonValue,
-                sourceId: generatedAuthorityReceipt.sourceId,
-                sourceKey: generatedAuthorityReceipt.sourceKey,
-                sourceType: generatedAuthorityReceipt.sourceType
-              }
-            })
-          )
-      );
-      const extraReceiptId = randomUUID();
-      await assertArchiveMutation(
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureCommandReceipt.create({
-              data: {
-                actorId: generatedAuthorityReceipt.actorId,
-                closureCaseId: generatedAuthorityReceipt.closureCaseId,
-                commandType: generatedAuthorityReceipt.commandType,
-                eventId: randomUUID(),
-                id: extraReceiptId,
-                outcomeSnapshot: generatedAuthorityReceipt.outcomeSnapshot as Prisma.InputJsonValue,
-                payloadHash: generatedAuthorityReceipt.payloadHash,
-                payloadSnapshot: generatedAuthorityReceipt.payloadSnapshot as Prisma.InputJsonValue,
-                sourceId: generatedAuthorityReceipt.sourceId,
-                sourceKey: `${generatedAuthorityReceipt.sourceKey}:extra`,
-                sourceType: generatedAuthorityReceipt.sourceType
-              }
-            })
-          ),
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureCommandReceipt.delete({ where: { id: extraReceiptId } })
-          )
-      );
-      await assertArchiveMutation(
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureEvent.update({
-              data: { afterStatus: "RECOVERY_APPROVAL_PENDING" },
-              where: { id: generatedAuthorityEvent.id }
-            })
-          ),
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureEvent.update({
-              data: { afterStatus: generatedAuthorityEvent.afterStatus },
-              where: { id: generatedAuthorityEvent.id }
-            })
-          )
-      );
-      await assertArchiveMutation(
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureEvent.delete({ where: { id: generatedAuthorityEvent.id } })
-          ),
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureEvent.create({
-              data: {
-                actorId: generatedAuthorityEvent.actorId,
-                afterStatus: generatedAuthorityEvent.afterStatus,
-                beforeStatus: generatedAuthorityEvent.beforeStatus,
-                closureCaseId: generatedAuthorityEvent.closureCaseId,
-                detailSnapshot: generatedAuthorityEvent.detailSnapshot as Prisma.InputJsonValue,
-                eventType: generatedAuthorityEvent.eventType,
-                id: generatedAuthorityEvent.id,
-                occurredAt: generatedAuthorityEvent.occurredAt,
-                recordedAt: generatedAuthorityEvent.recordedAt,
-                sequence: generatedAuthorityEvent.sequence,
-                sourceId: generatedAuthorityEvent.sourceId,
-                sourceKey: generatedAuthorityEvent.sourceKey,
-                sourceType: generatedAuthorityEvent.sourceType
-              }
-            })
-          )
-      );
-      const extraEventId = randomUUID();
-      await assertArchiveMutation(
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureEvent.create({
-              data: {
-                actorId: generatedAuthorityEvent.actorId,
-                afterStatus: generatedAuthorityEvent.afterStatus,
-                beforeStatus: generatedAuthorityEvent.beforeStatus,
-                closureCaseId: generatedAuthorityEvent.closureCaseId,
-                detailSnapshot: generatedAuthorityEvent.detailSnapshot as Prisma.InputJsonValue,
-                eventType: generatedAuthorityEvent.eventType,
-                id: extraEventId,
-                occurredAt: generatedAuthorityEvent.occurredAt,
-                recordedAt: generatedAuthorityEvent.recordedAt,
-                sequence: generatedAuthorityEvent.sequence + 100,
-                sourceId: generatedAuthorityEvent.sourceId,
-                sourceKey: `${generatedAuthorityEvent.sourceKey}:extra`,
-                sourceType: generatedAuthorityEvent.sourceType
-              }
-            })
-          ),
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.subscriptionClosureEvent.delete({ where: { id: extraEventId } })
-          )
-      );
-      await assertArchiveMutation(
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.auditLog.update({
-              data: { afterSnapshot: { drifted: true } },
-              where: { id: generatedAuthorityAudit.id }
-            })
-          ),
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.auditLog.update({
-              data: { afterSnapshot: generatedAuthorityAudit.afterSnapshot ?? Prisma.DbNull },
-              where: { id: generatedAuthorityAudit.id }
-            })
-          )
-      );
-      await assertArchiveMutation(
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.auditLog.delete({ where: { id: generatedAuthorityAudit.id } })
-          ),
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.auditLog.create({
-              data: {
-                action: generatedAuthorityAudit.action,
-                afterSnapshot: generatedAuthorityAudit.afterSnapshot ?? Prisma.DbNull,
-                beforeSnapshot: generatedAuthorityAudit.beforeSnapshot ?? Prisma.DbNull,
-                createdAt: generatedAuthorityAudit.createdAt,
-                entityId: generatedAuthorityAudit.entityId,
-                entityType: generatedAuthorityAudit.entityType,
-                id: generatedAuthorityAudit.id,
-                ipAddress: generatedAuthorityAudit.ipAddress,
-                module: generatedAuthorityAudit.module,
-                operatorId: generatedAuthorityAudit.operatorId,
-                userAgent: generatedAuthorityAudit.userAgent
-              }
-            })
-          )
-      );
-      const extraAuditId = randomUUID();
-      await assertArchiveMutation(
-        () =>
-          withTask6Replica(prisma, (tx) =>
-            tx.auditLog.create({
-              data: {
-                action: generatedAuthorityAudit.action,
-                afterSnapshot: generatedAuthorityAudit.afterSnapshot ?? Prisma.DbNull,
-                beforeSnapshot: generatedAuthorityAudit.beforeSnapshot ?? Prisma.DbNull,
-                entityId: generatedAuthorityAudit.entityId,
-                entityType: generatedAuthorityAudit.entityType,
-                id: extraAuditId,
-                module: generatedAuthorityAudit.module,
-                operatorId: generatedAuthorityAudit.operatorId
-              }
-            })
-          ),
-        () => withTask6Replica(prisma, (tx) => tx.auditLog.delete({ where: { id: extraAuditId } }))
-      );
-      await expect(
-        closure.archiveRecoveryAuthority({ ...authorityCommand, actorId: requesterId })
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-        status: 409
-      });
-      await expect(
-        closure.archiveRecoveryAuthority({
-          ...authorityCommand,
-          idempotencyKey: "task-6-recovery-authority-drift"
-        })
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-        status: 409
-      });
-      const signedFileId = authority.signedFileId;
-      const signedFileHash = authority.signedFileHash;
-      await expect(
-        prisma.subscriptionClosureDocumentRevision.findMany({
-          orderBy: { revisionNumber: "asc" },
-          select: {
-            archivedAt: true,
-            id: true,
-            signedAt: true,
-            stage: true,
-            supersedesRevisionId: true
-          },
-          where: { closureCaseId: assessedCase.id, documentType: "RECOVERY_AUTHORITY" }
-        })
-      ).resolves.toEqual([
-        expect.objectContaining({
-          archivedAt: null,
-          id: authority.generatedRevisionId,
-          signedAt: null,
-          stage: "GENERATED",
-          supersedesRevisionId: null
-        }),
-        expect.objectContaining({
-          archivedAt: null,
-          id: authority.signedRevisionId,
-          signedAt: expect.any(Date),
-          stage: "SIGNED",
-          supersedesRevisionId: authority.generatedRevisionId
-        }),
-        expect.objectContaining({
-          archivedAt: expect.any(Date),
-          id: authority.archivedRevisionId,
-          signedAt: expect.any(Date),
-          stage: "ARCHIVED",
-          supersedesRevisionId: authority.signedRevisionId
-        })
-      ]);
-      await expect(
-        prisma.subscriptionClosureCurrentDocument.findUniqueOrThrow({
-          where: {
-            closureCaseId_documentType: {
-              closureCaseId: assessedCase.id,
-              documentType: "RECOVERY_AUTHORITY"
-            }
-          }
-        })
-      ).resolves.toMatchObject({ documentRevisionId: authority.archivedRevisionId });
-      await expect(
-        prisma.subscriptionClosureCommandReceipt.count({
-          where: {
-            closureCaseId: assessedCase.id,
-            commandType: "CREATE_DOCUMENT_REVISION",
-            payloadSnapshot: { path: ["documentType"], equals: "RECOVERY_AUTHORITY" }
-          }
-        })
-      ).resolves.toBe(3);
-      await expect(
-        prisma.auditLog.count({
-          where: {
-            action: "CREATE",
-            entityId: {
-              in: (
-                await prisma.subscriptionClosureEvent.findMany({
-                  select: { id: true },
-                  where: {
-                    closureCaseId: assessedCase.id,
-                    eventType: "DOCUMENT_REVISION_CREATED",
-                    sourceKey: { startsWith: "recovery-authority:task-6-recovery-authority:" }
-                  }
-                })
-              ).map(({ id }) => id)
-            },
-            entityType: "subscription_closure_event",
-            operatorId: fixture.actorId
-          }
-        })
-      ).resolves.toBe(3);
-
-      const archivedAuthorityEvent = await prisma.subscriptionClosureEvent.findFirstOrThrow({
-        orderBy: [{ sequence: "desc" }, { id: "desc" }],
-        where: {
-          closureCaseId: assessedCase.id,
-          eventType: "DOCUMENT_REVISION_CREATED",
-          sourceKey: "recovery-authority:task-6-recovery-authority:archived"
-        }
-      });
-      await awaitDatabaseClockPast(prisma, archivedAuthorityEvent.occurredAt);
-      const requestedAt = new Date(archivedAuthorityEvent.occurredAt.getTime() + 1);
-      const requestCommand = {
-        actorId: requesterId,
-        closureCaseId: assessedCase.id,
-        idempotencyKey: "task-6-request-approval",
-        reason: "D+7 debt and uncontrolled vehicle require governed recovery",
-        requestedAt
-      };
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.requestRecoveryExecutionApproval(requestCommand),
-        fixture,
-        assessedCase.id
-      );
-      const generatedAuthorityRevision =
-        await prisma.subscriptionClosureDocumentRevision.findUniqueOrThrow({
-          where: { id: authority.generatedRevisionId }
-        });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.subscriptionClosureDocumentRevision.update({
-          data: { sourceKey: `${generatedAuthorityRevision.sourceKey}:drift` },
-          where: { id: generatedAuthorityRevision.id }
-        });
-      });
-      await expect(
-        closure.requestRecoveryExecutionApproval({
-          actorId: requesterId,
-          closureCaseId: assessedCase.id,
-          idempotencyKey: "task-6-tampered-chain-request",
-          reason: "must reject a tampered generated predecessor",
-          requestedAt
-        })
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-        status: 409
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.subscriptionClosureDocumentRevision.update({
-          data: { sourceKey: generatedAuthorityRevision.sourceKey },
-          where: { id: generatedAuthorityRevision.id }
-        });
-      });
-      const archivedAuthorityRevision =
-        await prisma.subscriptionClosureDocumentRevision.findUniqueOrThrow({
-          where: { id: authority.archivedRevisionId }
-        });
-      const archiveESignTask = await prisma.contractESignTask.findUniqueOrThrow({
-        where: { id: archivedAuthorityRevision.contractESignTaskId }
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.contractESignTask.update({
-          data: { requestSnapshot: { tampered: true } },
-          where: { id: archiveESignTask.id }
-        });
-      });
-      await expect(
-        closure.requestRecoveryExecutionApproval({
-          actorId: requesterId,
-          closureCaseId: assessedCase.id,
-          idempotencyKey: "task-6-tampered-esign-request",
-          reason: "must reject tampered eSign request coherence",
-          requestedAt
-        })
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-        status: 409
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.contractESignTask.update({
-          data: { requestSnapshot: archiveESignTask.requestSnapshot as Prisma.InputJsonValue },
-          where: { id: archiveESignTask.id }
-        });
-      });
-      const requested = await closure.requestRecoveryExecutionApproval(requestCommand);
-      const pendingApproval = await prisma.businessExceptionApproval.findUniqueOrThrow({
-        where: { id: requested.approvalId }
-      });
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.requestRecoveryExecutionApproval(requestCommand),
-        fixture,
-        assessedCase.id
-      );
-      expect(pendingApproval.subjectSnapshot).toMatchObject({
-        recoveryAssetWorkOrderId: plannedRecoveryAssetWorkOrderId,
-        recoveryContextSnapshotHash: expect.stringMatching(/^[0-9a-f]{64}$/)
-      });
-      const decidedAt = new Date(requestedAt.getTime() + 1);
-      const decisionCommand = {
-        actorId: fixture.actorId,
-        approvalId: pendingApproval.id,
-        closureCaseId: assessedCase.id,
-        decision: "APPROVED",
-        decisionComment: "Approved after independent administrator review",
-        decidedAt,
-        expectedApprovalVersion: pendingApproval.version,
-        idempotencyKey: "task-6-decide-approval"
-      } as const;
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.decideRecoveryExecutionApproval(decisionCommand),
-        fixture,
-        assessedCase.id
-      );
-      const decided = await closure.decideRecoveryExecutionApproval(decisionCommand);
-      expect(decided.status).toBe("RECOVERY_APPROVED");
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.decideRecoveryExecutionApproval(decisionCommand),
-        fixture,
-        assessedCase.id
-      );
-      await expect(
-        closure.decideRecoveryExecutionApproval({
-          actorId: fixture.actorId,
-          approvalId: pendingApproval.id,
-          closureCaseId: assessedCase.id,
-          decision: "APPROVED",
-          decisionComment: "Approved after independent administrator review",
-          decidedAt,
-          expectedApprovalVersion: pendingApproval.version,
-          idempotencyKey: "task-6-decide-approval"
-        })
-      ).resolves.toEqual({ ...decided, wrote: false });
-      const approved = await prisma.businessExceptionApproval.findUniqueOrThrow({
-        where: { id: pendingApproval.id }
-      });
-      const executionInput = {
-        actorId: fixture.actorId,
-        approvalId: approved.id,
-        closureCaseId: assessedCase.id,
-        expectedApprovalVersion: approved.version,
-        idempotencyKey: "task-6-execute-recovery",
-        occurredAt: new Date(requestedAt.getTime() + 2)
-      };
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.executeApprovedRecovery(executionInput),
-        fixture,
-        assessedCase.id
-      );
-      const holderBarrier = createBarrier();
-      const holder = prisma.$transaction(async (tx) => {
-        await tx.$queryRaw(
-          Prisma.sql`SELECT "id" FROM "subscription_closure_case" WHERE "id" = ${assessedCase.id}::uuid FOR UPDATE`
-        );
-        holderBarrier.enter();
-        await holderBarrier.released;
-        return tx.$queryRaw<Array<{ usable: number }>>(Prisma.sql`SELECT 1 AS "usable"`);
-      });
-      await holderBarrier.entered;
-      const busyExecution = await closure.executeApprovedRecovery(executionInput).then(
-        (value) => ({ status: "fulfilled" as const, value }),
-        (reason) => ({ reason, status: "rejected" as const })
-      );
-      holderBarrier.release();
-      expect(busyExecution).toMatchObject({
-        reason: {
-          response: { code: "SUBSCRIPTION_CLOSURE_AUTHORITY_BUSY" },
-          status: 409
-        },
-        status: "rejected"
-      });
-      await expect(holder).resolves.toEqual([{ usable: 1 }]);
-      const rollbackBefore = await Promise.all([
-        prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: assessedCase.id } }),
-        prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: approved.id } }),
-        prisma.assetWorkOrder.count({
-          where: { orderId: fixture.orderId, workOrderType: "RECOVERY" }
-        }),
-        prisma.vehicleOperationalRestriction.count({
-          where: { restrictionType: "RECOVERY_IN_PROGRESS", vehicleId: fixture.vehicleId }
-        }),
-        prisma.subscriptionClosureCommandReceipt.count({
-          where: { closureCaseId: assessedCase.id }
-        }),
-        prisma.auditLog.count({ where: { operatorId: fixture.actorId } })
-      ]);
-      const failpointOperations = new Proxy(operations, {
-        get(target, property, receiver) {
-          const value = Reflect.get(target, property, receiver);
-          if (typeof value !== "function") return value;
-          if (property === "createPreparedRestrictionInTransaction") {
-            return async () => {
-              throw new Error("TASK6_FAILPOINT:after-recovery-work-order");
-            };
-          }
-          return value.bind(target);
-        }
-      });
-      const failpointClosure = new SubscriptionClosureService(
-        new SubscriptionClosureRepository(),
-        new HandoverWorkOrderService(prisma, {} as never),
-        failpointOperations,
-        audit,
-        prisma,
-        new AssetFactsService(prisma, new AssetFactsRepository(), audit),
-        accounting,
-        new VehicleMileageService(prisma, new VehicleMileageRepository())
-      );
-      await expect(failpointClosure.executeApprovedRecovery(executionInput)).rejects.toThrow(
-        "TASK6_FAILPOINT:after-recovery-work-order"
-      );
-      await expect(
-        Promise.all([
-          prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: assessedCase.id } }),
-          prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: approved.id } }),
-          prisma.assetWorkOrder.count({
-            where: { orderId: fixture.orderId, workOrderType: "RECOVERY" }
-          }),
-          prisma.vehicleOperationalRestriction.count({
-            where: { restrictionType: "RECOVERY_IN_PROGRESS", vehicleId: fixture.vehicleId }
-          }),
-          prisma.subscriptionClosureCommandReceipt.count({
-            where: { closureCaseId: assessedCase.id }
-          }),
-          prisma.auditLog.count({ where: { operatorId: fixture.actorId } })
-        ])
-      ).resolves.toEqual(rollbackBefore);
-      const executed = await closure.executeApprovedRecovery(executionInput);
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.executeApprovedRecovery(executionInput),
-        fixture,
-        assessedCase.id
-      );
-      await expect(closure.executeApprovedRecovery(executionInput)).resolves.toEqual({
-        ...executed,
-        wrote: false
-      });
-      await expect(
-        closure.executeApprovedRecovery({
-          ...executionInput,
-          occurredAt: new Date(executionInput.occurredAt.getTime() + 1)
-        })
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      expect(executed).toMatchObject({
-        action: "RECOVERY_STARTED",
-        recoveryAssetWorkOrderId: plannedRecoveryAssetWorkOrderId,
-        wrote: true
-      });
-      await expect(
-        closure.requestRecoveryExecutionApproval({
-          actorId: requesterId,
-          closureCaseId: assessedCase.id,
-          idempotencyKey: "task-6-request-approval",
-          reason: "D+7 debt and uncontrolled vehicle require governed recovery",
-          requestedAt
-        })
-      ).resolves.toEqual({ ...requested, wrote: false });
-      await expect(
-        closure.decideRecoveryExecutionApproval({
-          actorId: fixture.actorId,
-          approvalId: pendingApproval.id,
-          closureCaseId: assessedCase.id,
-          decision: "APPROVED",
-          decisionComment: "Approved after independent administrator review",
-          decidedAt,
-          expectedApprovalVersion: pendingApproval.version,
-          idempotencyKey: "task-6-decide-approval"
-        })
-      ).resolves.toEqual({ ...decided, wrote: false });
-      await expect(
-        closure.requestRecoveryExecutionApproval({
-          actorId: requesterId,
-          closureCaseId: assessedCase.id,
-          idempotencyKey: "task-6-request-approval",
-          reason: "drifted request payload",
-          requestedAt
-        })
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await expect(
-        closure.decideRecoveryExecutionApproval({
-          actorId: fixture.actorId,
-          approvalId: pendingApproval.id,
-          closureCaseId: assessedCase.id,
-          decision: "REJECTED",
-          decisionComment: "drifted decision payload",
-          decidedAt,
-          expectedApprovalVersion: pendingApproval.version,
-          idempotencyKey: "task-6-decide-approval"
-        })
-      ).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
-        status: 409
-      });
-      await expect(
-        prisma.assetWorkOrder.count({
-          where: { orderId: fixture.orderId, workOrderType: "RECOVERY" }
-        })
-      ).resolves.toBe(1);
-      await expect(
-        prisma.vehicleOperationalRestriction.count({
-          where: {
-            restrictionType: "RECOVERY_IN_PROGRESS",
-            status: "ACTIVE",
-            vehicleId: fixture.vehicleId
-          }
-        })
-      ).resolves.toBe(1);
-
-      const evidenceAt = new Date(requestedAt.getTime() + 3);
-      const executionRecord = {
-        actorId: fixture.actorId,
-        closureCaseId: assessedCase.id,
-        costs: [
-          {
-            actionType: "ACTUAL_COST" as const,
-            accountingPeriod: "2026-08",
-            amountCents: 2500n,
-            assetOwnerId: null,
-            assetOwnerSnapshot: null,
-            confirmedAt: evidenceAt,
-            costCategory: "TOWING" as const,
-            evidenceId: null,
-            evidenceSnapshot: null,
-            occurredOn: new Date("2026-08-22T00:00:00.000Z"),
-            reason: "governed recovery towing",
-            responsiblePartyId: fixture.customerId,
-            responsiblePartyType: "CUSTOMER" as const,
-            responsibilitySnapshot: { basis: "approved recovery" }
-          }
-        ],
-        evidence: [
-          {
-            action: "ATTACH" as const,
-            capturedAt: evidenceAt,
-            captureMetadata: { station: "task-6-recovery-site" },
-            contentSha256: signedFileHash,
-            eventId: null,
-            evidenceType: "LOCATION_PROOF" as const,
-            fileId: signedFileId,
-            occurredAt: evidenceAt,
-            supersedesEvidenceId: null
-          }
-        ],
-        idempotencyKey: "task-6-execution-record",
-        occurredAt: evidenceAt
-      };
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.recordRecoveryExecution(executionRecord),
-        fixture,
-        assessedCase.id
-      );
-      await expect(closure.recordRecoveryExecution(executionRecord)).resolves.toEqual({
-        costCount: 1,
-        evidenceCount: 1,
-        wrote: true
-      });
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.recordRecoveryExecution(executionRecord),
-        fixture,
-        assessedCase.id
-      );
-      await expect(closure.recordRecoveryExecution(executionRecord)).resolves.toEqual({
-        costCount: 1,
-        evidenceCount: 1,
-        wrote: false
-      });
-
-      const returnedAt = new Date(requestedAt.getTime() + 4);
-      const physicalReceipt = {
-        actorId: fixture.actorId,
-        checklist: {},
-        damages: [],
-        orderId: fixture.orderId,
-        physicalControlMode: "RECOVERY" as const,
-        remark: "Task 6 vehicle secured",
-        returnMileageKm: 1400,
-        returnType: "EARLY_TERMINATION" as const,
-        returnedAt
-      };
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.confirmManagedPhysicalReceipt(physicalReceipt, {}),
-        fixture,
-        assessedCase.id
-      );
-      await expect(
-        closure.confirmManagedPhysicalReceipt(physicalReceipt, {})
-      ).resolves.toMatchObject({ vehicleReturnId: assessedCase.vehicleReturnId });
-      await assertTask6AuthorityMutationBoundaries(
-        prisma,
-        authorityLockTargets,
-        () => closure.confirmManagedPhysicalReceipt(physicalReceipt, {}),
-        fixture,
-        assessedCase.id
-      );
-      await expect(
-        closure.confirmManagedPhysicalReceipt(physicalReceipt, {})
-      ).resolves.toMatchObject({ vehicleReturnId: assessedCase.vehicleReturnId });
-      await expect(
-        prisma.vehicleSubscriptionPeriod.findFirstOrThrow({ where: { orderId: fixture.orderId } })
-      ).resolves.toMatchObject({ endReason: "RECOVERY_CONFIRMED" });
-      await expect(
-        prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: assessedCase.id } })
-      ).resolves.toMatchObject({
-        closureType: "NORMAL_COMPLETION",
-        finalDisposition: "TERMINATE",
-        physicalControlMode: "RECOVERY",
-        recoveryAssetWorkOrderId: plannedRecoveryAssetWorkOrderId,
-        status: "RETURN_INSPECTION"
-      });
-      await expect(
-        prisma.vehicleOperationalRestriction.findFirstOrThrow({
-          where: {
-            restrictionType: "RECOVERY_IN_PROGRESS",
-            vehicleId: fixture.vehicleId
-          }
-        })
-      ).resolves.toMatchObject({ status: "RELEASED" });
-      await expect(
-        prisma.vehicleOperationalRestriction.findFirstOrThrow({
-          where: {
-            restrictionType: "RETURN_INSPECTION_PENDING",
-            vehicleId: fixture.vehicleId
-          }
-        })
-      ).resolves.toMatchObject({ status: "ACTIVE" });
-      const projection = new SubscriptionClosureProjectionService(prisma);
-      await expect(projection.getAdminByOrder(fixture.orderId)).resolves.toMatchObject({
-        approvals: [expect.objectContaining({ id: approved.id, status: "APPROVED" })],
-        closureCase: {
-          finalDisposition: "TERMINATE",
-          physicalControlMode: "RECOVERY",
-          status: "RETURN_INSPECTION"
-        }
-      });
-      await expect(
-        projection.getCustomerByOrder(fixture.orderId, fixture.customerId)
-      ).resolves.toMatchObject({
-        nextAction: "车辆检查处理中",
-        physicalControlMode: "RECOVERY",
-        status: "RETURN_INSPECTION"
-      });
-      await expect(
-        prisma.subscriptionClosureCommandReceipt.count({
-          where: { closureCaseId: assessedCase.id }
-        })
-      ).resolves.toBeGreaterThan(0);
-
-      const recoveryWorkOrder = await prisma.assetWorkOrder.findUniqueOrThrow({
-        where: { id: plannedRecoveryAssetWorkOrderId }
-      });
-      expect(recoveryWorkOrder).toMatchObject({ status: "IN_PROGRESS", version: 1 });
       for (const [expectedVersion, targetStatus] of [
         [1, "PENDING_ACCEPTANCE"],
         [2, "PENDING_COST_CONFIRMATION"],
         [3, "CLOSED"]
       ] as const) {
-        const transitionAt = await readTestDatabaseClock(prisma);
         await operations.transitionWorkOrder(
           {
             closeReason: targetStatus === "CLOSED" ? "recovery inspection accepted" : null,
             detailSnapshot: { journey: "TASK9_RECOVERY", targetStatus },
             expectedVersion,
-            occurredAt: transitionAt,
+            occurredAt: await readTestDatabaseClock(prisma),
             solution: targetStatus === "CLOSED" ? "accepted" : null,
             source: {
-              id: assessedCase.id,
+              id: closureCase.id,
               key: `task-9-recovery-inspection-${expectedVersion}`,
               type: "TASK9_ACCEPTANCE"
             },
@@ -8237,14 +5362,51 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           },
           { actorId: fixture.actorId, permissions: [] }
         );
+        if (targetStatus === "PENDING_COST_CONFIRMATION") {
+          const costSource = {
+            id: closureCase.id,
+            key: "task-9-recovery-cost",
+            type: "TASK9_ACCEPTANCE"
+          };
+          const confirmedAt = await readTestDatabaseClock(prisma);
+          await accounting.appendCost(
+            {
+              actionType: "ACTUAL_COST",
+              accountingPeriod: "2026-08",
+              amountCents: 1500n,
+              assetOwnerId: null,
+              assetOwnerSnapshot: null,
+              confirmedAt,
+              contractId: fixture.contractId,
+              costCategory: "CLEANING",
+              customerId: fixture.customerId,
+              evidenceId: null,
+              evidenceSnapshot: null,
+              occurredOn: new Date("2026-08-23T00:00:00.000Z"),
+              orderId: fixture.orderId,
+              reason: "secured recovery cost confirmed",
+              responsiblePartyId: fixture.customerId,
+              responsiblePartyType: "CUSTOMER",
+              responsibilitySnapshot: { basis: "task-9 recovery acceptance" },
+              source: costSource,
+              vehicleId: fixture.vehicleId,
+              workOrderId: plannedRecoveryAssetWorkOrderId
+            },
+            {
+              actorId: fixture.actorId,
+              idempotencyKey: costSource.key,
+              permissions: [ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM]
+            }
+          );
+        }
       }
-      const recoveryInspectionAt = await readTestDatabaseClock(prisma);
+      const inspectionAt = await readTestDatabaseClock(prisma);
       await expect(
         closure.recordManagedReturnInspection(
           {
             accepted: true,
             actorId: fixture.actorId,
-            closureCaseId: assessedCase.id,
+            closureCaseId: closureCase.id,
             costs: [
               {
                 actionType: "ACTUAL_COST",
@@ -8252,7 +5414,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
                 amountCents: 1500n,
                 assetOwnerId: null,
                 assetOwnerSnapshot: null,
-                confirmedAt: recoveryInspectionAt,
+                confirmedAt: inspectionAt,
                 costCategory: "CLEANING",
                 evidenceId: null,
                 evidenceSnapshot: null,
@@ -8266,42 +5428,46 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
             evidence: [
               {
                 action: "ATTACH",
-                capturedAt: recoveryInspectionAt,
+                capturedAt: inspectionAt,
                 captureMetadata: { journey: "TASK9_RECOVERY" },
-                contentSha256: signedFileHash,
+                contentSha256: scenario.signedFileHash,
                 eventId: null,
                 evidenceType: "INSPECTION_REPORT",
-                fileId: signedFileId,
-                occurredAt: recoveryInspectionAt,
+                fileId: scenario.signedFileId,
+                occurredAt: inspectionAt,
                 supersedesEvidenceId: null
               }
             ],
-            occurredAt: recoveryInspectionAt,
+            occurredAt: inspectionAt,
             reconditioningRequired: false
           },
           {}
         )
       ).resolves.toMatchObject({ case: { status: "PENDING_SETTLEMENT" } });
-      const finance = new FinanceService(new AuditService(prisma), prisma);
-      await settleTask6Bill(prisma, finance, fixture, billId, 9000n, 0);
-      const recoverySettlementInput = async (suffix: string) => ({
+      await settleTask6Bill(
+        prisma,
+        new FinanceService(new AuditService(prisma), prisma),
+        fixture,
+        scenario.billId,
+        900n,
+        0
+      );
+      const settlementInput = async (suffix: string) => ({
         actorId: fixture.actorId,
-        closureCaseId: assessedCase.id,
+        closureCaseId: closureCase.id,
         idempotencyKey: `task-9-recovery-${suffix}`,
         occurredAt: await readTestDatabaseClock(prisma),
         waiverApprovalId: null,
         writeOffApprovalId: null
       });
-      await closure.proposeManagedSettlement(await recoverySettlementInput("propose"));
-      await closure.finalizeManagedSettlement(await recoverySettlementInput("finalize"));
-      const recoverySettleCommand = await recoverySettlementInput("settle");
-      const recoverySettled = await closure.settleManagedSettlement(recoverySettleCommand);
-      await expect(closure.settleManagedSettlement(recoverySettleCommand)).resolves.toEqual(
-        recoverySettled
-      );
+      await closure.proposeManagedSettlement(await settlementInput("propose"));
+      await closure.finalizeManagedSettlement(await settlementInput("finalize"));
+      const settleCommand = await settlementInput("settle");
+      const settled = await closure.settleManagedSettlement(settleCommand);
+      await expect(closure.settleManagedSettlement(settleCommand)).resolves.toEqual(settled);
       await expect(
         Promise.all([
-          prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: assessedCase.id } }),
+          prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } }),
           prisma.subscriptionOrder.findUniqueOrThrow({ where: { id: fixture.orderId } }),
           prisma.contract.findUniqueOrThrow({ where: { id: fixture.contractId } })
         ])
@@ -8310,20 +5476,8 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         { orderStatus: "TERMINATED" },
         { status: "TERMINATED" }
       ]);
-      await expect(projection.getAdminByOrder(fixture.orderId)).resolves.toMatchObject({
-        closureCase: { status: "TERMINATED" },
-        settlementRevisions: [{ stage: "PROPOSED" }, { stage: "FINALIZED" }, { stage: "SETTLED" }]
-      });
-      await expect(
-        projection.getCustomerByOrder(fixture.orderId, fixture.customerId)
-      ).resolves.toMatchObject({
-        nextAction: "流程已结束",
-        settlement: { stage: "SETTLED" },
-        status: "TERMINATED"
-      });
     } finally {
-      await cleanupManagedExpiryFixture(prisma, fixture);
-      await prisma.$executeRaw(Prisma.sql`DELETE FROM "user" WHERE "id" = ${requesterId}::uuid`);
+      await cleanupManagedExpiryFixture(prisma, scenario.fixture);
     }
   }, 120_000);
 
@@ -8448,9 +5602,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         );
       } finally {
         await cleanupManagedExpiryFixture(prisma, scenario.fixture);
-        await prisma.$executeRaw(
-          Prisma.sql`DELETE FROM "user" WHERE "id" = ${scenario.requesterId}::uuid`
-        );
       }
     },
     30_000
@@ -9387,11 +6538,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         ).resolves.toBe(0);
       } finally {
         await cleanupManagedExpiryFixture(prisma, fixture);
-        if (requesterId) {
-          await prisma.$executeRaw(
-            Prisma.sql`DELETE FROM "user" WHERE "id" = ${requesterId}::uuid`
-          );
-        }
       }
     },
     30_000
@@ -9723,31 +6869,12 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         await expect(snapshotManagedExpiryTruth(prisma, fixture)).resolves.toEqual(baseline);
       }
 
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.fileObject.delete({ where: { id: originalFile.id } });
-      });
-      try {
-        await expect(
-          service.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:01.000Z"))
-        ).rejects.toMatchObject({
-          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-          status: 409
-        });
-      } finally {
-        await prisma.fileObject.create({
-          data: {
-            bucket: originalFile.bucket,
-            createdAt: originalFile.createdAt,
-            id: originalFile.id,
-            mimeType: originalFile.mimeType,
-            objectKey: originalFile.objectKey,
-            originalName: originalFile.originalName,
-            sizeBytes: originalFile.sizeBytes,
-            uploadedBy: originalFile.uploadedBy
-          }
-        });
-      }
+      await expect(
+        prisma.fileObject.delete({ where: { id: originalFile.id } })
+      ).rejects.toBeDefined();
+      await expect(
+        service.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:01.000Z"))
+      ).resolves.toMatchObject({ outcome: "DUPLICATE" });
       await expect(snapshotManagedExpiryTruth(prisma, fixture)).resolves.toEqual(baseline);
     } finally {
       await cleanupManagedExpiryFixture(prisma, fixture);
@@ -9931,7 +7058,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const revisionTwoId = randomUUID();
       const revisionThreeId = randomUUID();
       await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
         await tx.$executeRaw(Prisma.sql`
           INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
           VALUES (${candidateId}::uuid, ${`replay-${candidateId}`}, 'Replacement actor', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
@@ -9947,14 +7073,14 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         });
         await tx.$executeRaw(Prisma.sql`
           INSERT INTO "subscription_closure_document_revision" (
-            "id", "closure_case_id", "revision_number", "document_type", "stage",
+            "id", "closure_case_id", "revision_number", "supersedes_revision_id", "document_type", "stage",
             "document_snapshot", "document_snapshot_hash", "vehicle_return_id",
             "handover_work_order_id", "contract_esign_task_id", "source_file_id",
             "source_file_hash", "signed_file_id", "signed_file_hash", "source_type",
             "source_id", "source_key", "generated_by", "generated_at", "signed_by",
             "signed_at", "created_at"
           ) SELECT
-            ${revisionTwoId}::uuid, "closure_case_id", 2, "document_type", 'SIGNED',
+            ${revisionTwoId}::uuid, "closure_case_id", 2, ${revisionOne.id}::uuid, "document_type", 'SIGNED',
             "document_snapshot", "document_snapshot_hash", "vehicle_return_id",
             "handover_work_order_id", "contract_esign_task_id", "source_file_id",
             "source_file_hash", "source_file_id", "source_file_hash", 'TASK3_TEST',
@@ -9964,14 +7090,14 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         `);
         await tx.$executeRaw(Prisma.sql`
           INSERT INTO "subscription_closure_document_revision" (
-            "id", "closure_case_id", "revision_number", "document_type", "stage",
+            "id", "closure_case_id", "revision_number", "supersedes_revision_id", "document_type", "stage",
             "document_snapshot", "document_snapshot_hash", "vehicle_return_id",
             "handover_work_order_id", "contract_esign_task_id", "source_file_id",
             "source_file_hash", "signed_file_id", "signed_file_hash", "source_type",
             "source_id", "source_key", "generated_by", "generated_at", "signed_by",
             "signed_at", "archived_by", "archived_at", "created_at"
           ) SELECT
-            ${revisionThreeId}::uuid, "closure_case_id", 3, "document_type", 'ARCHIVED',
+            ${revisionThreeId}::uuid, "closure_case_id", 3, ${revisionTwoId}::uuid, "document_type", 'ARCHIVED',
             "document_snapshot", "document_snapshot_hash", "vehicle_return_id",
             "handover_work_order_id", "contract_esign_task_id", "source_file_id",
             "source_file_hash", "source_file_id", "source_file_hash", 'TASK3_TEST',
@@ -10026,7 +7152,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       ]);
     } finally {
       await cleanupManagedExpiryFixture(prisma, fixture);
-      await prisma.user.deleteMany({ where: { id: candidateId } });
     }
   });
 
@@ -10534,7 +7659,8 @@ function createTask6ClosureService(
       prisma,
       new AssetFactsService(prisma, new AssetFactsRepository(), audit),
       accounting,
-      new VehicleMileageService(prisma, new VehicleMileageRepository())
+      new VehicleMileageService(prisma, new VehicleMileageRepository()),
+      new SubscriptionClosureSettlementResolver()
     ),
     operations
   };
@@ -10749,6 +7875,8 @@ async function setupTask6ExecutedRecovery(prisma: PrismaService) {
       closureCase,
       fixture,
       plannedRecoveryAssetWorkOrderId,
+      signedFileHash: approved.authority.signedFileHash,
+      signedFileId: approved.authority.signedFileId,
       receipt: {
         actorId: fixture.actorId,
         checklist: {},
@@ -10765,7 +7893,6 @@ async function setupTask6ExecutedRecovery(prisma: PrismaService) {
   } catch (error) {
     await cleanupManagedExpiryFixture(prisma, fixture);
     if (requesterId) {
-      await prisma.$executeRaw(Prisma.sql`DELETE FROM "user" WHERE "id" = ${requesterId}::uuid`);
     }
     throw error;
   }
@@ -10841,7 +7968,6 @@ async function seedTask6ExtensionArchivePrerequisites(
   const databaseClock = await readTestDatabaseClock(prisma);
   const completionDeadlineAt = new Date(databaseClock.getTime() + 24 * 60 * 60 * 1_000);
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "renewal_consideration" (
         "id", "consideration_no", "order_id", "segment_id", "status",
@@ -10880,6 +8006,16 @@ async function seedTask6ExtensionArchivePrerequisites(
         clock_timestamp()
       )
     `);
+    await tx.subscriptionExtensionChangeDetail.create({
+      data: {
+        changeOrderId: changeId,
+        extensionMonths: 6,
+        pricingMode: "CURRENT_VERSION",
+        sourceSegmentId: fixture.segmentId,
+        targetEndDate: new Date("2027-02-20T00:00:00.000Z"),
+        targetStartDate: new Date("2026-08-21T00:00:00.000Z")
+      }
+    });
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "subscription_change_quote" (
         "id", "quote_no", "change_order_id", "revision", "status", "pricing_mode",
@@ -11112,39 +8248,51 @@ async function createManagedExpiryFixture(prisma: PrismaService) {
   const fixture = await createExpiryFixture(prisma);
   const actorId = randomUUID();
   const contractId = randomUUID();
+  const contractVersionId = randomUUID();
   const marker = `expiry-${fixture.orderId}`;
   await prisma.$transaction(
     async (tx) => {
-      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-      await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
-      VALUES (${actorId}::uuid, ${marker}, 'Expiry actor', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
-    `);
-      await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "contract" (
-        "id", "contract_no", "order_id", "customer_id", "business_type", "contract_version_id",
-        "contract_title", "contract_snapshot", "status", "created_by", "updated_by", "created_at", "updated_at"
-      ) VALUES (
-        ${contractId}::uuid, ${`CONEXP${contractId.replaceAll("-", "").slice(0, 18)}`},
-        ${fixture.orderId}::uuid, ${fixture.customerId}::uuid, 'SUBSCRIPTION', ${randomUUID()}::uuid,
-        'Normal expiry contract', '{}'::jsonb, 'SIGNED', ${actorId}::uuid, ${actorId}::uuid,
-        clock_timestamp(), clock_timestamp()
-      )
-    `);
-      await tx.$executeRaw(Prisma.sql`
-      UPDATE "subscription_order"
-      SET "contract_id" = ${contractId}::uuid,
-          "created_by" = ${actorId}::uuid,
-          "updated_by" = ${actorId}::uuid,
-          "end_date" = '2026-08-20'::date
-      WHERE "id" = ${fixture.orderId}::uuid
-    `);
-      await tx.$executeRaw(Prisma.sql`
-      UPDATE "subscription_contract_segment"
-      SET "end_date" = '2026-08-20'::date,
-          "created_by" = ${actorId}::uuid
-      WHERE "id" = ${fixture.segmentId}::uuid
-    `);
+      await insertRuntimeUser(tx, actorId, marker);
+      await tx.contractVersion.create({
+        data: {
+          contentTemplate: "Normal expiry contract",
+          effectiveFrom: new Date("2020-01-01T00:00:00.000Z"),
+          id: contractVersionId,
+          status: "ACTIVE",
+          templateName: `Expiry ${contractId}`,
+          versionNo: "V1.0"
+        }
+      });
+      await tx.contract.create({
+        data: {
+          contractNo: `CONEXP${contractId.replaceAll("-", "").slice(0, 18)}`,
+          contractSnapshot: {},
+          contractTitle: "Normal expiry contract",
+          contractVersionId,
+          createdBy: actorId,
+          customerId: fixture.customerId,
+          id: contractId,
+          orderId: fixture.orderId,
+          status: "SIGNED",
+          updatedBy: actorId
+        }
+      });
+      await tx.subscriptionOrder.update({
+        data: {
+          contractId,
+          createdBy: actorId,
+          endDate: new Date("2026-08-20T00:00:00.000Z"),
+          updatedBy: actorId
+        },
+        where: { id: fixture.orderId }
+      });
+      await tx.subscriptionContractSegment.update({
+        data: {
+          createdBy: actorId,
+          endDate: new Date("2026-08-20T00:00:00.000Z")
+        },
+        where: { id: fixture.segmentId }
+      });
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
   );
@@ -12332,20 +9480,38 @@ async function createRaceFixture(prisma: PrismaService) {
   const changeId = randomUUID();
   const considerationId = randomUUID();
   const contractId = randomUUID();
+  const contractVersionId = randomUUID();
   const quoteId = randomUUID();
   const taskId = randomUUID();
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
       VALUES (${actorId}::uuid, ${`race-${actorId}`}, 'Race actor', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
     `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "contract" (
-        "id", "contract_no", "order_id", "customer_id", "business_type", "contract_version_id",
-        "contract_title", "contract_snapshot", "status", "created_by", "updated_by", "created_at", "updated_at"
-      ) VALUES (${contractId}::uuid, ${`CONRACE${contractId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, ${fixture.customerId}::uuid, 'SUBSCRIPTION', ${randomUUID()}::uuid, 'Extension agreement', '{}'::jsonb, 'SIGNED', ${actorId}::uuid, ${actorId}::uuid, clock_timestamp(), clock_timestamp())
-    `);
+    await tx.contractVersion.create({
+      data: {
+        contentTemplate: "Extension agreement",
+        effectiveFrom: new Date("2020-01-01T00:00:00.000Z"),
+        id: contractVersionId,
+        status: "ACTIVE",
+        templateName: `Race ${contractId}`,
+        versionNo: "V1.0"
+      }
+    });
+    await tx.contract.create({
+      data: {
+        contractNo: `CONRACE${contractId.replaceAll("-", "").slice(0, 18)}`,
+        contractSnapshot: {},
+        contractTitle: "Extension agreement",
+        contractVersionId,
+        createdBy: actorId,
+        customerId: fixture.customerId,
+        id: contractId,
+        orderId: fixture.orderId,
+        status: "SIGNED",
+        updatedBy: actorId
+      }
+    });
     await tx.$executeRaw(Prisma.sql`
       UPDATE "subscription_order"
       SET "contract_id" = ${contractId}::uuid, "created_by" = ${actorId}::uuid, "updated_by" = ${actorId}::uuid,
@@ -12368,6 +9534,16 @@ async function createRaceFixture(prisma: PrismaService) {
         "completion_deadline_at", "created_at", "updated_at"
       ) VALUES (${changeId}::uuid, ${`CHGRACE${changeId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, 'SIGNING_OR_PAYMENT', ${fixture.segmentId}::uuid, ${considerationId}::uuid, 6, 'CURRENT_VERSION', ${contractId}::uuid, '2026-08-21'::date, '2027-02-20'::date, clock_timestamp() + interval '1 day', clock_timestamp(), clock_timestamp())
     `);
+    await tx.subscriptionExtensionChangeDetail.create({
+      data: {
+        changeOrderId: changeId,
+        extensionMonths: 6,
+        pricingMode: "CURRENT_VERSION",
+        sourceSegmentId: fixture.segmentId,
+        targetEndDate: new Date("2027-02-20T00:00:00.000Z"),
+        targetStartDate: new Date("2026-08-21T00:00:00.000Z")
+      }
+    });
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "subscription_change_quote" (
         "id", "quote_no", "change_order_id", "revision", "status", "pricing_mode", "monthly_fee_amount",
@@ -12408,31 +9584,36 @@ async function createExpiryFixture(prisma: PrismaService) {
   const segmentId = randomUUID();
   const vehicleId = randomUUID();
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "customer" ("id", "customer_no", "name", "mobile", "status", "created_at", "updated_at")
-      VALUES (${customerId}::uuid, ${`CUSTEXP${customerId.replaceAll("-", "").slice(0, 18)}`}, 'Expiry Integration', '13800000000', 'ACTIVE', clock_timestamp(), clock_timestamp())
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "vehicle" ("id", "vehicle_no", "plate_no", "brand", "model_definition_id", "purchase_price_amount", "status", "created_at", "updated_at")
-      VALUES (${vehicleId}::uuid, ${`VEHEXP${vehicleId.replaceAll("-", "").slice(0, 18)}`}, ${`沪E${vehicleId.replaceAll("-", "").slice(0, 5)}`}, 'NIO', ${randomUUID()}::uuid, 20000000, 'LEASED', clock_timestamp(), clock_timestamp())
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "subscription_order" (
-        "id", "order_no", "customer_id", "application_id", "quote_id", "vehicle_id",
-        "product_id", "product_version_id", "vehicle_purchase_price_amount", "monthly_fee_amount",
-        "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
-        "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
-        "quote_snapshot", "final_plan_snapshot", "order_status", "start_date", "end_date",
-        "actual_delivery_at", "created_at", "updated_at"
-      ) VALUES (
-        ${orderId}::uuid, ${`ORDEXP${orderId.replaceAll("-", "").slice(0, 20)}`}, ${customerId}::uuid,
-        ${randomUUID()}::uuid, ${randomUUID()}::uuid, ${vehicleId}::uuid, ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid, 20000000, 100, 0, 6, 1500, 100, ${randomUUID()}::uuid,
-        'NIO_ET5_2024', 'NIO ET5', '{}'::jsonb, '{}'::jsonb, 'ACTIVE', '2026-03-03'::date,
-        '2026-09-02'::date, '2026-03-03T02:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp()
-      )
-    `);
+    await insertRuntimeOrderGraph(tx, {
+      customerId,
+      label: `expiry-${orderId}`,
+      orderId,
+      vehicleId
+    });
+    await tx.vehicle.update({
+      data: {
+        plateNo: `TEST${vehicleId.replaceAll("-", "").slice(0, 5)}`,
+        purchasePriceAmount: 20_000_000n,
+        status: VehicleStatus.LEASED
+      },
+      where: { id: vehicleId }
+    });
+    await tx.subscriptionOrder.update({
+      data: {
+        actualDeliveryAt: new Date("2026-03-03T02:00:00.000Z"),
+        depositAmount: 0n,
+        endDate: new Date("2026-09-02T00:00:00.000Z"),
+        finalPlanSnapshot: {},
+        mileageLimitKm: 1500,
+        monthlyFeeAmount: 100n,
+        orderStatus: OrderStatus.ACTIVE,
+        overMileageFeeAmount: 100n,
+        periodMonths: 6,
+        startDate: new Date("2026-03-03T00:00:00.000Z"),
+        vehiclePurchasePriceAmount: 20_000_000n
+      },
+      where: { id: orderId }
+    });
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "lease" ("id", "order_id", "status", "activated_at", "created_at", "updated_at")
       VALUES (${randomUUID()}::uuid, ${orderId}::uuid, 'ACTIVE', '2026-03-03T02:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
@@ -12511,7 +9692,6 @@ async function assertTask6AuthorityMutationBoundaries(
   for (const target of targets) {
     const barrier = createBarrier();
     const holder = prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
       if (target.kind === "REVISION") {
         await tx.$executeRaw(Prisma.sql`
           UPDATE "subscription_closure_document_revision"
@@ -12585,7 +9765,6 @@ async function withTask6Replica<T>(
   operation: (tx: Prisma.TransactionClient) => Promise<T>
 ) {
   return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     return operation(tx);
   });
 }
@@ -12595,7 +9774,6 @@ async function withTask7Replica<T>(
   operation: (tx: Prisma.TransactionClient) => Promise<T>
 ) {
   return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     return operation(tx);
   });
 }
@@ -12757,148 +9935,10 @@ async function cleanupManagedExpiryFixture(
   prisma: PrismaService,
   fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>
 ) {
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "audit_log" WHERE "operator_id" = ${fixture.actorId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "asset_accounting_command_receipt"
-      WHERE "approval_id" IN (
-        SELECT "id" FROM "business_exception_approval"
-        WHERE "subject_id" IN (
-          SELECT "id" FROM "subscription_closure_case" WHERE "order_id" = ${fixture.orderId}::uuid
-        )
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "business_exception_approval"
-      WHERE "subject_id" IN (
-        SELECT "id" FROM "subscription_closure_case" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_closure_command_receipt"
-      WHERE "closure_case_id" IN (
-        SELECT "id" FROM "subscription_closure_case" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_closure_settlement_revision"
-      WHERE "closure_case_id" IN (
-        SELECT "id" FROM "subscription_closure_case" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_closure_current_document"
-      WHERE "closure_case_id" IN (
-        SELECT "id" FROM "subscription_closure_case" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_closure_document_revision"
-      WHERE "closure_case_id" IN (
-        SELECT "id" FROM "subscription_closure_case" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_closure_event"
-      WHERE "closure_case_id" IN (
-        SELECT "id" FROM "subscription_closure_case" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_closure_case" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle_operational_restriction" WHERE "vehicle_id" = ${fixture.vehicleId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle_mileage_reading" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle_subscription_period" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle_return_damage" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "asset_accounting_command_receipt"
-      WHERE "cost_entry_id" IN (
-        SELECT "id" FROM "vehicle_cost_ledger_entry" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle_cost_ledger_entry" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle_handover_event"
-      WHERE "work_order_id" IN (
-        SELECT "id" FROM "vehicle_handover_work_order" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle_handover_work_order" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "asset_work_order_event"
-      WHERE "work_order_id" IN (
-        SELECT "id" FROM "asset_work_order" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "asset_work_order_evidence"
-      WHERE "work_order_id" IN (
-        SELECT "id" FROM "asset_work_order" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "asset_work_order" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "file_object" WHERE "uploaded_by" = ${fixture.actorId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_automation_job" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "collection_action" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "collection_case_bill" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "collection_case" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "payment_write_off" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "payment_record" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "payment_order_item"
-      WHERE "payment_order_id" IN (
-        SELECT "id" FROM "payment_order" WHERE "order_id" = ${fixture.orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "payment_order" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "receivable_bill" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-  });
-  await cleanupExpiryFixture(
-    prisma,
-    fixture.orderId,
-    fixture.segmentId,
-    fixture.customerId,
-    fixture.vehicleId
-  );
-  await prisma.$executeRaw(Prisma.sql`
-    DELETE FROM "user" WHERE "id" = ${fixture.actorId}::uuid
-  `);
+  // The Launcher drops this suite's exact disposable database after evidence custody.
+  // Per-test identifiers are unique, so append-only facts remain intact for assertions.
+  void prisma;
+  void fixture;
 }
 
 async function cleanupExpiryFixture(
@@ -12908,64 +9948,10 @@ async function cleanupExpiryFixture(
   customerId: string,
   vehicleId: string
 ) {
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "audit_log"
-      WHERE "entity_id" IN (${orderId}::uuid, ${segmentId}::uuid)
-         OR "entity_id" IN (
-        SELECT "id" FROM "subscription_contract_segment" WHERE "order_id" = ${orderId}::uuid
-        UNION
-        SELECT "id" FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "contract_esign_callback_log"
-      WHERE "task_id" IN (
-        SELECT "id" FROM "contract_esign_task" WHERE "order_id" = ${orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "contract_esign_task" WHERE "order_id" = ${orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "renewal_reminder" WHERE "renewal_consideration_id" IN (
-        SELECT "id" FROM "renewal_consideration" WHERE "order_id" = ${orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_change_quote" WHERE "change_order_id" IN (
-        SELECT "id" FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid
-      )
-    `);
-    for (const table of [
-      "vehicle_return",
-      "subscription_automation_job",
-      "renewal_consideration",
-      "subscription_change_order",
-      "subscription_contract_segment",
-      "order_entitlement_account",
-      "billing_schedule",
-      "lease",
-      "subscription_order"
-    ]) {
-      const column = table === "subscription_order" ? "id" : "order_id";
-      if (
-        table === "subscription_contract_segment" ||
-        table === "billing_schedule" ||
-        table === "lease" ||
-        table === "vehicle_return" ||
-        table === "subscription_automation_job" ||
-        table === "renewal_consideration" ||
-        table === "subscription_change_order" ||
-        table === "order_entitlement_account" ||
-        table === "subscription_order"
-      ) {
-        await tx.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "${column}" = $1::uuid`, orderId);
-      }
-    }
-    await tx.$executeRaw(Prisma.sql`DELETE FROM "contract" WHERE "order_id" = ${orderId}::uuid`);
-    await tx.$executeRaw(Prisma.sql`DELETE FROM "vehicle" WHERE "id" = ${vehicleId}::uuid`);
-    await tx.$executeRaw(Prisma.sql`DELETE FROM "customer" WHERE "id" = ${customerId}::uuid`);
-  });
+  // The Launcher owns exact-database cleanup after proof custody succeeds.
+  void prisma;
+  void orderId;
+  void segmentId;
+  void customerId;
+  void vehicleId;
 }

@@ -421,19 +421,23 @@ function tapCounts(output) {
   };
 }
 
-function testCounts(output) {
+function vitestJsonReport(output) {
   const trimmed = output.trim();
   const jsonReport = trimmed
     .split(/\r?\n/)
     .reverse()
     .find((line) => line.startsWith("{") && line.includes('"numTotalTests"'));
-  if (jsonReport) {
-    let report;
-    try {
-      report = JSON.parse(jsonReport);
-    } catch {
-      throw runtimeError("DATABASE_TEST_COUNT_INCOMPLETE", { reporter: "vitest-json" });
-    }
+  if (!jsonReport) return undefined;
+  try {
+    return JSON.parse(jsonReport);
+  } catch {
+    throw runtimeError("DATABASE_TEST_COUNT_INCOMPLETE", { reporter: "vitest-json" });
+  }
+}
+
+function testCounts(output) {
+  const report = vitestJsonReport(output);
+  if (report) {
     const values = [
       report.numTotalTests,
       report.numPassedTests,
@@ -457,6 +461,81 @@ function testCounts(output) {
     };
   }
   return tapCounts(output);
+}
+
+export function summarizeDatabaseTestLog({ stdout, stderr }) {
+  const report = vitestJsonReport(stdout);
+  const summary = {
+    schemaVersion: "database-test-log-summary.v1",
+    stdoutDigest: sha256Bytes(Buffer.from(stdout, "utf8")),
+    stderrDigest: sha256Bytes(Buffer.from(stderr, "utf8")),
+    stdoutSizeBytes: Buffer.byteLength(stdout),
+    stderrSizeBytes: Buffer.byteLength(stderr)
+  };
+  if (!report) return summary;
+  return {
+    ...summary,
+    reporter: "vitest-json",
+    counts: testCounts(stdout),
+    failedTests: report.testResults.flatMap(({ assertionResults = [] }) =>
+      assertionResults
+        .filter(({ status }) => status === "failed")
+        .map((assertion) => {
+          const { failureMessages = [], fullName } = assertion;
+          const failureText = failureMessages.join("\n");
+          const failureHint = failureText
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .find((line) => line.length > 0)
+            ?.replace(/\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/\S+/gi, "[URI]")
+            .replace(
+              /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi,
+              "[UUID]"
+            )
+            .replace(/\b1[3-9][0-9]{9}\b/g, "[PHONE]")
+            .replace(/\b[0-9a-f]{64}\b/gi, "[DIGEST]")
+            .slice(0, 240);
+          const failureKinds = [
+            [/test timed out|timed out waiting|timeout/i, "TIMEOUT"],
+            [/barrier/i, "BARRIER"],
+            [/assertionerror|expected .* (?:to|but)/i, "ASSERTION"],
+            [/prismaclient/i, "PRISMA"],
+            [/httpexception|\bstatus:\s*(?:4|5)\d\d\b/i, "HTTP"]
+          ]
+            .filter(([pattern]) => pattern.test(failureText))
+            .map(([, kind]) => kind);
+          return {
+            fullName,
+            assertionFields: Object.keys(assertion).sort(),
+            failureDetailTypes: Array.isArray(assertion.failureDetails)
+              ? assertion.failureDetails.map((detail) => detail?.name ?? typeof detail)
+              : [],
+            failureHint: failureHint ?? null,
+            locations: [
+              ...new Set(
+                [...failureText.matchAll(/([a-z0-9._-]+\.(?:spec|test)\.[cm]?[jt]s):(\d+):(\d+)/gi)]
+                  .map(([, file, line, column]) => `${file}:${line}:${column}`)
+                  .slice(0, 4)
+              )
+            ],
+            errorCodes: [
+              ...new Set([
+                ...[...failureText.matchAll(/\bP\d{4}\b/g)].map(([code]) => code),
+                ...[...failureText.matchAll(/\b(?:23|40|55)[0-9A-Z]{3}\b/g)].map(([code]) => code)
+              ])
+            ],
+            failureKinds,
+            domainCodes: [
+              ...new Set(
+                [...failureText.matchAll(/\b[A-Z][A-Z0-9]+(?:_[A-Z0-9]+){2,}\b/g)]
+                  .map(([code]) => code)
+                  .filter((code) => code.length <= 96)
+              )
+            ].slice(0, 8)
+          };
+        })
+    )
+  };
 }
 
 function localCustodyStorage() {
@@ -549,10 +628,19 @@ export function assertSourceGateCheckout({ status, sourceSha, exitCode = 0 }) {
   return sourceSha;
 }
 
-export async function executeLauncherRequest({ mode, chain, suiteId, batchId, concurrency = 1 }) {
+export async function executeLauncherRequest({
+  mode,
+  chain,
+  suiteId,
+  batchId,
+  concurrency = 1,
+  order = "manifest"
+}) {
   if (
     !["suite", "manifest", "source-gate"].includes(mode) ||
-    !["fresh", "snapshot"].includes(chain)
+    !["fresh", "snapshot"].includes(chain) ||
+    !["manifest", "reverse"].includes(order) ||
+    (mode !== "manifest" && order !== "manifest")
   ) {
     throw runtimeError("DATABASE_LAUNCHER_REQUEST_INVALID");
   }
@@ -589,7 +677,7 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
         columns: sql.includes("FROM pg_database") ? ["oid", "marker"] : []
       });
     const manifestReport = await runDatabaseManifest({
-      selections,
+      selections: order === "reverse" ? [...selections].reverse() : selections,
       concurrency,
       executeSuite: async (execution) => {
         const resources = [];
@@ -816,7 +904,7 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
               }
             );
             const acceptedLog = redactEvidence(
-              { stdout: result.stdout, stderr: result.stderr },
+              summarizeDatabaseTestLog({ stdout: result.stdout, stderr: result.stderr }),
               {
                 owner: "release-engineering",
                 readers: ["release", "qa", "security", "audit"],
@@ -830,8 +918,7 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
                 `${JSON.stringify({
                   schemaVersion: "database-test-sanitized-diagnostic.v1",
                   suiteId: execution.suiteId,
-                  stdout: acceptedLog.stdout,
-                  stderr: acceptedLog.stderr
+                  logSummary: acceptedLog
                 })}\n`
               );
               throw runtimeError("DATABASE_TEST_PROCESS_FAILED", {
@@ -844,8 +931,7 @@ export async function executeLauncherRequest({ mode, chain, suiteId, batchId, co
                 `${JSON.stringify({
                   schemaVersion: "database-test-sanitized-diagnostic.v1",
                   suiteId: execution.suiteId,
-                  stdout: acceptedLog.stdout,
-                  stderr: acceptedLog.stderr
+                  logSummary: acceptedLog
                 })}\n`
               );
             }
@@ -964,7 +1050,7 @@ export function parseLauncherArguments(mode, argv) {
   }
   const allowed = {
     suite: new Set(["--suite-id", "--chain"]),
-    manifest: new Set(["--batch", "--chain", "--concurrency"]),
+    manifest: new Set(["--batch", "--chain", "--concurrency", "--order"]),
     "source-gate": new Set(["--batch", "--chain"])
   }[mode];
   if ([...values.keys()].some((flag) => !allowed.has(flag))) {
@@ -974,16 +1060,18 @@ export function parseLauncherArguments(mode, argv) {
   const suiteId = values.get("--suite-id");
   const batchId = values.get("--batch");
   const concurrency = values.has("--concurrency") ? Number(values.get("--concurrency")) : 1;
+  const order = values.get("--order") ?? "manifest";
   if (
     !["fresh", "snapshot"].includes(chain) ||
     (mode === "suite" && !suiteId) ||
     (mode !== "suite" && !batchId) ||
     !Number.isInteger(concurrency) ||
-    concurrency < 1
+    concurrency < 1 ||
+    !["manifest", "reverse"].includes(order)
   ) {
     throw runtimeError("DATABASE_LAUNCHER_ARGUMENT_INVALID");
   }
-  return Object.freeze({ mode, chain, suiteId, batchId, concurrency });
+  return Object.freeze({ mode, chain, suiteId, batchId, concurrency, order });
 }
 
 export async function runLauncherCli(mode, argv, execute = executeLauncherRequest) {

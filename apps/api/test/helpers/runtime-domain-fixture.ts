@@ -140,6 +140,7 @@ export async function insertRuntimeVehicle(tx: Tx, vehicleId: string, label: str
 export async function insertRuntimeOrderGraph(
   tx: Tx,
   input: {
+    applicationId?: string;
     customerId?: string;
     label: string;
     orderId: string;
@@ -147,7 +148,7 @@ export async function insertRuntimeOrderGraph(
     vehicleId?: string | null;
   }
 ) {
-  const applicationId = randomUUID();
+  const applicationId = input.applicationId ?? randomUUID();
   const customerId = input.customerId ?? randomUUID();
   const modelDefinitionId = randomUUID();
   const productId = randomUUID();
@@ -195,6 +196,7 @@ export async function insertRuntimeOrderGraph(
       ${applicationId}::uuid, ${`${token}-APPLICATION`}, ${customerId}::uuid,
       ${salesUserId}::uuid, 'APPROVED', clock_timestamp()
     )
+    ON CONFLICT ("id") DO NOTHING
   `);
   await tx.$executeRaw(Prisma.sql`
     INSERT INTO "subscription_quote" (

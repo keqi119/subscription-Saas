@@ -34,8 +34,12 @@ import { PrismaService } from "../src/prisma/prisma.service";
 import { JOURNEY_STEP_SEQUENCE } from "../src/subscription-journey/subscription-journey-state-machine";
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
 import { SubscriptionJourneySignalService } from "../src/subscription-journey/subscription-journey-signal.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import { insertRuntimeOrderGraph } from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL = requiredTestDatabaseUrl();
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-journey-golden-path.e2e-spec.ts"
+).databaseUrl;
 const ROLLBACK = new Error("ROLL_BACK_GOLDEN_PATH_FIXTURE");
 const FINAL_PLAN_COMMERCIAL_HASH = `sha256:${"a".repeat(64)}`;
 
@@ -67,10 +71,7 @@ describe("Stage 1 subscription Journey Golden Path", () => {
     expect(portal.stepCodes).toEqual(JOURNEY_STEP_SEQUENCE);
     expect(admin.stepCodes).toEqual(portal.stepCodes);
     expect(admin.manualTaskTypes).toEqual(portal.manualTaskTypes);
-    expect(portal.manualTaskTypes).toEqual([
-      "FINAL_PLAN_DECISION",
-      "DELIVERY_EVIDENCE_DECISION"
-    ]);
+    expect(portal.manualTaskTypes).toEqual(["FINAL_PLAN_DECISION", "DELIVERY_EVIDENCE_DECISION"]);
     expect(stripEntrySpecificFacts(admin)).toEqual(stripEntrySpecificFacts(portal));
   });
 });
@@ -200,16 +201,16 @@ async function driveGoldenPath(
   });
 
   const persisted = await tx.subscriptionJourney.findUniqueOrThrow({
-      include: { manualTasks: { orderBy: { createdAt: "asc" } }, steps: true },
-      where: { id: journey.id }
-    });
+    include: { manualTasks: { orderBy: { createdAt: "asc" } }, steps: true },
+    where: { id: journey.id }
+  });
   const orderCount = await tx.subscriptionOrder.count({
     where: { applicationId: ids.applicationId }
   });
   const contracts = await tx.contract.findMany({
-      include: { esignTasks: true },
-      where: { orderId: ids.orderId }
-    });
+    include: { esignTasks: true },
+    where: { orderId: ids.orderId }
+  });
   const leases = await tx.lease.count({
     where: { orderId: ids.orderId, status: LeaseStatus.ACTIVE }
   });
@@ -277,8 +278,9 @@ async function driveGoldenPath(
     scheduleCount: schedules,
     source,
     stepCodes: persisted.steps
-      .sort((left, right) =>
-        JOURNEY_STEP_SEQUENCE.indexOf(left.code) - JOURNEY_STEP_SEQUENCE.indexOf(right.code)
+      .sort(
+        (left, right) =>
+          JOURNEY_STEP_SEQUENCE.indexOf(left.code) - JOURNEY_STEP_SEQUENCE.indexOf(right.code)
       )
       .map(({ code }) => code),
     writeOffCount: writeOffs
@@ -286,30 +288,30 @@ async function driveGoldenPath(
 }
 
 class DeterministicExternalAdapter {
-  constructor(private readonly tx: Tx, private readonly ids: ReturnType<typeof fixtureIds>) {}
+  constructor(
+    private readonly tx: Tx,
+    private readonly ids: ReturnType<typeof fixtureIds>
+  ) {}
 
   async createOrderAndContract(source: ApplicationSource) {
-    await this.tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await this.tx.$executeRaw`
-      INSERT INTO "subscription_order" (
-        "id", "order_no", "customer_id", "application_id", "quote_id",
-        "product_id", "product_version_id", "model_definition_id_snapshot",
-        "model_code_snapshot", "model_display_name_snapshot",
-        "vehicle_purchase_price_amount", "monthly_fee_amount", "deposit_amount",
-        "period_months", "mileage_limit_km", "over_mileage_fee_amount",
-        "quote_snapshot", "order_source", "created_at", "updated_at"
-      ) VALUES (
-        ${this.ids.orderId}::uuid, ${`${this.ids.prefix}-ORDER`},
-        ${this.ids.customerId}::uuid, ${this.ids.applicationId}::uuid,
-        ${randomUUID()}::uuid, ${randomUUID()}::uuid, ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid, 'GOLDEN-EV', 'Golden Path EV',
-        10000000, 100000, 500000, 12, 20000, 10000,
-        '{"revision":1}'::jsonb,
-        ${source === ApplicationSource.SELF_SERVICE ? OrderSource.CUSTOMER_SELF_SERVICE : OrderSource.SALES_ASSISTED}::"order_source",
-        now(), now()
-      )
-    `;
-    await this.tx.$executeRaw`SET LOCAL session_replication_role = origin`;
+    await insertRuntimeOrderGraph(this.tx, {
+      applicationId: this.ids.applicationId,
+      customerId: this.ids.customerId,
+      label: this.ids.prefix,
+      orderId: this.ids.orderId,
+      salesUserId: this.ids.userId,
+      vehicleId: this.ids.vehicleId
+    });
+    await this.tx.subscriptionOrder.update({
+      data: {
+        orderSource:
+          source === ApplicationSource.SELF_SERVICE
+            ? OrderSource.CUSTOMER_SELF_SERVICE
+            : OrderSource.SALES_ASSISTED,
+        quoteSnapshot: { revision: 1 }
+      },
+      where: { id: this.ids.orderId }
+    });
 
     const version = await this.tx.contractVersion.create({
       data: {
@@ -332,13 +334,10 @@ class DeterministicExternalAdapter {
         status: ContractStatus.GENERATED
       }
     });
-    await this.tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await this.tx.$executeRaw`
-      UPDATE "subscription_order"
-      SET "contract_id" = ${this.ids.contractId}::uuid, "updated_at" = now()
-      WHERE "id" = ${this.ids.orderId}::uuid
-    `;
-    await this.tx.$executeRaw`SET LOCAL session_replication_role = origin`;
+    await this.tx.subscriptionOrder.update({
+      data: { contractId: this.ids.contractId },
+      where: { id: this.ids.orderId }
+    });
   }
 
   async signSealAndArchiveWithFadada() {
@@ -544,13 +543,13 @@ class DeterministicExternalAdapter {
         orderId: this.ids.orderId
       }
     });
-    await this.tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await this.tx.$executeRaw`
-      UPDATE "subscription_order"
-      SET "order_status" = 'ACTIVE', "start_date" = DATE '2026-08-06', "updated_at" = now()
-      WHERE "id" = ${this.ids.orderId}::uuid
-    `;
-    await this.tx.$executeRaw`SET LOCAL session_replication_role = origin`;
+    await this.tx.subscriptionOrder.update({
+      data: {
+        orderStatus: "ACTIVE",
+        startDate: new Date("2026-08-06T00:00:00.000Z")
+      },
+      where: { id: this.ids.orderId }
+    });
   }
 }
 
@@ -702,30 +701,5 @@ async function rolledBack<T>(prisma: PrismaService, work: (tx: Tx) => Promise<T>
 }
 
 function stripEntrySpecificFacts(snapshot: FlowSnapshot) {
-  return Object.fromEntries(
-    Object.entries(snapshot).filter(([key]) => key !== "source")
-  );
-}
-
-function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
-  if (!value) throw new Error("DATABASE_URL is required for Golden Path E2E tests");
-  const url = new URL(value);
-  if (!isLoopbackHostname(url.hostname)) {
-    throw new Error("Golden Path E2E tests require a loopback PostgreSQL host");
-  }
-  const databaseName = decodeURIComponent(url.pathname.slice(1));
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(databaseName)) {
-    throw new Error("Golden Path E2E tests require a test-only database");
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
-}
-
-function isLoopbackHostname(hostname: string) {
-  if (hostname === "localhost" || hostname === "[::1]") return true;
-  const octets = hostname.split(".");
-  return octets.length === 4 && octets[0] === "127" && octets.every((octet) => {
-    const value = Number(octet);
-    return /^\d{1,3}$/.test(octet) && value >= 0 && value <= 255;
-  });
+  return Object.fromEntries(Object.entries(snapshot).filter(([key]) => key !== "source"));
 }

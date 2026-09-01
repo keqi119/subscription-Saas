@@ -17,8 +17,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
 import { SubscriptionJourneyService } from "../src/subscription-journey/subscription-journey.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import { insertRuntimeOrderGraph } from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL = requiredTestDatabaseUrl();
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-journey-failure-recovery.e2e-spec.ts"
+).databaseUrl;
 const ROLLBACK = new Error("ROLL_BACK_JOURNEY_RECOVERY_FIXTURE");
 const BUSINESS_WAIT_RECONCILIATION_MODULE = pathToFileURL(
   resolve(__dirname, "../../../scripts/stage1-journey-business-wait-reconcile.mjs")
@@ -514,23 +518,13 @@ function recoveryService(tx: Tx, repository: SubscriptionJourneyRepository) {
 
 async function createRawOrder(tx: Tx, fixture: Awaited<ReturnType<typeof createFixture>>) {
   const orderId = randomUUID();
-  await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-  await tx.$executeRaw`
-    INSERT INTO "subscription_order" (
-      "id", "order_no", "customer_id", "application_id", "quote_id",
-      "product_id", "product_version_id", "model_definition_id_snapshot",
-      "model_code_snapshot", "model_display_name_snapshot",
-      "vehicle_purchase_price_amount", "monthly_fee_amount", "deposit_amount",
-      "period_months", "mileage_limit_km", "over_mileage_fee_amount",
-      "quote_snapshot", "created_at", "updated_at"
-    ) VALUES (
-      ${orderId}::uuid, ${`${fixture.prefix}-ORDER`}, ${fixture.customerId}::uuid,
-      ${fixture.applicationId}::uuid, ${randomUUID()}::uuid, ${randomUUID()}::uuid,
-      ${randomUUID()}::uuid, ${randomUUID()}::uuid, 'RECOVERY-EV', 'Recovery EV',
-      10000000, 100000, 500000, 12, 20000, 10000, '{}'::jsonb, now(), now()
-    )
-  `;
-  await tx.$executeRaw`SET LOCAL session_replication_role = origin`;
+  await insertRuntimeOrderGraph(tx, {
+    applicationId: fixture.applicationId,
+    customerId: fixture.customerId,
+    label: fixture.prefix,
+    orderId,
+    salesUserId: fixture.userId
+  });
   return orderId;
 }
 
@@ -587,31 +581,4 @@ async function rolledBack<T>(prisma: PrismaService, work: (tx: Tx) => Promise<T>
     if (error !== ROLLBACK) throw error;
   }
   return result;
-}
-
-function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
-  if (!value) throw new Error("DATABASE_URL is required for Journey recovery E2E tests");
-  const url = new URL(value);
-  if (!isLoopbackHostname(url.hostname)) {
-    throw new Error("Journey recovery E2E tests require a loopback PostgreSQL host");
-  }
-  const databaseName = decodeURIComponent(url.pathname.slice(1));
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(databaseName)) {
-    throw new Error("Journey recovery E2E tests require a test-only database");
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
-}
-
-function isLoopbackHostname(hostname: string) {
-  if (hostname === "localhost" || hostname === "[::1]") return true;
-  const octets = hostname.split(".");
-  return (
-    octets.length === 4 &&
-    octets[0] === "127" &&
-    octets.every((octet) => {
-      const value = Number(octet);
-      return /^\d{1,3}$/.test(octet) && value >= 0 && value <= 255;
-    })
-  );
 }

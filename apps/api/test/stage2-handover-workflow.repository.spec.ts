@@ -5,22 +5,16 @@ import {
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi
-} from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import { insertRuntimeOrderGraph } from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgresql://subscription:subscription@127.0.0.1:5432/subscription_saas?schema=public";
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/stage2-handover-workflow.repository.spec.ts"
+).databaseUrl;
 
 describe("Stage2HandoverWorkflowRepository", () => {
   const workOrderId = randomUUID();
@@ -39,23 +33,17 @@ describe("Stage2HandoverWorkflowRepository", () => {
     repository = new Stage2HandoverWorkflowRepository(prisma);
 
     await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-      await tx.$executeRaw`
-        INSERT INTO "vehicle_handover_work_order" (
-          "id",
-          "order_id",
-          "handover_type",
-          "created_at",
-          "updated_at"
-        )
-        VALUES (
-          ${workOrderId}::uuid,
-          ${missingOrderId}::uuid,
-          'DELIVERY_OUTBOUND',
-          now(),
-          now()
-        )
-      `;
+      await insertRuntimeOrderGraph(tx, {
+        label: `stage2-workflow-${workOrderId}`,
+        orderId: missingOrderId
+      });
+      await tx.vehicleHandoverWorkOrder.create({
+        data: {
+          handoverType: "DELIVERY_OUTBOUND",
+          id: workOrderId,
+          orderId: missingOrderId
+        }
+      });
     });
   });
 
@@ -133,22 +121,16 @@ describe("Stage2HandoverWorkflowRepository", () => {
       ...workflowJobInput("unsupported-next-step"),
       jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY
     });
-    const supported = await repository.enqueue(
-      prisma,
-      workflowJobInput("supported-source-pdf")
-    );
+    const supported = await repository.enqueue(prisma, workflowJobInput("supported-source-pdf"));
 
     const claimDueWithSupportedTypes = repository.claimDue as unknown as (
       limit: number,
       leaseMs: number,
       supportedJobTypes: readonly VehicleHandoverWorkflowJobType[]
     ) => ReturnType<Stage2HandoverWorkflowRepository["claimDue"]>;
-    const claimed = await claimDueWithSupportedTypes.call(
-      repository,
-      1,
-      120_000,
-      [VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF]
-    );
+    const claimed = await claimDueWithSupportedTypes.call(repository, 1, 120_000, [
+      VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF
+    ]);
 
     expect(claimed.map((job) => job.id)).toEqual([supported.id]);
     await expect(
@@ -243,10 +225,9 @@ describe("Stage2HandoverWorkflowRepository", () => {
       })
     ).resolves.toBe(true);
 
-    const rescheduled =
-      await prisma.vehicleHandoverWorkflowJob.findUniqueOrThrow({
-        where: { id: secondJob.id }
-      });
+    const rescheduled = await prisma.vehicleHandoverWorkflowJob.findUniqueOrThrow({
+      where: { id: secondJob.id }
+    });
     expect(rescheduled).toMatchObject({
       attemptCount: 1,
       jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
@@ -260,15 +241,10 @@ describe("Stage2HandoverWorkflowRepository", () => {
   });
 
   it("renews only a live matching lease", async () => {
-    const job = await repository.enqueue(
-      prisma,
-      workflowJobInput("guard-renew")
-    );
+    const job = await repository.enqueue(prisma, workflowJobInput("guard-renew"));
     const [claim] = await repository.claimDue(1, 120_000);
 
-    await expect(
-      repository.renewLease(job.id, claim!.leaseToken, 120_000)
-    ).resolves.toBe(true);
+    await expect(repository.renewLease(job.id, claim!.leaseToken, 120_000)).resolves.toBe(true);
     await prisma.$executeRaw`
       UPDATE "vehicle_handover_workflow_job"
       SET "lease_expires_at" = now() - interval '1 second'
@@ -280,9 +256,7 @@ describe("Stage2HandoverWorkflowRepository", () => {
       WHERE "id" = ${job.id}::uuid
     `;
     expect(expired?.expired).toBe(true);
-    await expect(
-      repository.renewLease(job.id, claim!.leaseToken, 120_000)
-    ).resolves.toBe(false);
+    await expect(repository.renewLease(job.id, claim!.leaseToken, 120_000)).resolves.toBe(false);
   });
 
   function workflowJobInput(suffix: string) {

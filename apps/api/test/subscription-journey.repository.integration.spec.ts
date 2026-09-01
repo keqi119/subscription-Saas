@@ -9,19 +9,15 @@ import {
   SubscriptionJourneyStepStatus
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it
-} from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { PrismaService } from "../src/prisma/prisma.service";
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
 
-const TEST_DATABASE_URL = requiredTestDatabaseUrl();
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-journey.repository.integration.spec.ts"
+).databaseUrl;
 const FIXTURE_PREFIX = `task2_claim_${randomUUID().replaceAll("-", "")}`;
 const suffix = FIXTURE_PREFIX.slice("task2_claim_".length);
 const fixture = {
@@ -112,9 +108,7 @@ describe("SubscriptionJourneyRepository PostgreSQL leases", () => {
       WHERE "id" = ${job.id}
     `;
 
-    const [claimed] = await prisma.$transaction((tx) =>
-      repository.claimJobs(tx, 1, 120_000)
-    );
+    const [claimed] = await prisma.$transaction((tx) => repository.claimJobs(tx, 1, 120_000));
     const [databaseClock] = await prisma.$queryRaw<Array<{ now: Date }>>`
       SELECT clock_timestamp() AS "now"
     `;
@@ -124,9 +118,7 @@ describe("SubscriptionJourneyRepository PostgreSQL leases", () => {
       status: SubscriptionJourneyJobStatus.PROCESSING
     });
     expect(claimed?.leaseToken).not.toBe(oldLeaseToken);
-    expect(claimed?.leaseExpiresAt.getTime()).toBeGreaterThan(
-      databaseClock!.now.getTime()
-    );
+    expect(claimed?.leaseExpiresAt.getTime()).toBeGreaterThan(databaseClock!.now.getTime());
   });
 
   it.each(["complete", "reschedule", "dead-letter"] as const)(
@@ -452,12 +444,8 @@ describe("SubscriptionJourneyRepository PostgreSQL leases", () => {
       stepId: step.id
     };
 
-    const first = await prisma.$transaction((tx) =>
-      repository.openManualTask(tx, input)
-    );
-    const second = await prisma.$transaction((tx) =>
-      repository.openManualTask(tx, input)
-    );
+    const first = await prisma.$transaction((tx) => repository.openManualTask(tx, input));
+    const second = await prisma.$transaction((tx) => repository.openManualTask(tx, input));
     const [journey, taskCount, eventCount, outboxCount] = await Promise.all([
       prisma.subscriptionJourney.findUniqueOrThrow({
         where: { id: fixture.journeyId }
@@ -517,27 +505,19 @@ describe("SubscriptionJourneyRepository PostgreSQL leases", () => {
       where: { id: { in: [signal.id, notification.id] } }
     });
     expect(persistedRows).toHaveLength(2);
-    expect(
-      persistedRows.find(({ id }) => id === notification.id)
-    ).toMatchObject({
+    expect(persistedRows.find(({ id }) => id === notification.id)).toMatchObject({
       aggregateType: "JOURNEY_NOTIFICATION",
       status: SubscriptionJourneyOutboxStatus.PENDING
     });
 
     const [signals, notifications] = await Promise.all([
-      prisma.$transaction((tx) =>
-        repository.claimSignalOutbox(tx, 10, 120_000)
-      ),
-      prisma.$transaction((tx) =>
-        repository.claimNotificationOutbox(tx, 10, 120_000)
-      )
+      prisma.$transaction((tx) => repository.claimSignalOutbox(tx, 10, 120_000)),
+      prisma.$transaction((tx) => repository.claimNotificationOutbox(tx, 10, 120_000))
     ]);
 
     expect(signals.map(({ id }) => id)).toEqual([signal.id]);
     expect(notifications.map(({ id }) => id)).toEqual([notification.id]);
-    expect(signals[0]?.leaseToken).not.toBe(
-      `${FIXTURE_PREFIX}:stale-signal-lease`
-    );
+    expect(signals[0]?.leaseToken).not.toBe(`${FIXTURE_PREFIX}:stale-signal-lease`);
   });
 });
 
@@ -720,37 +700,4 @@ function assertFixturePrefix() {
   if (!/^task2_claim_[a-f0-9]{32}$/.test(FIXTURE_PREFIX)) {
     throw new Error("Refusing to mutate an unexpected journey test fixture.");
   }
-}
-
-function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
-  if (!value) {
-    throw new Error("DATABASE_URL is required for journey repository integration tests");
-  }
-  const url = new URL(value);
-  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
-    throw new Error("Journey repository integration tests require PostgreSQL");
-  }
-  if (!isLoopbackHostname(url.hostname)) {
-    throw new Error("Journey repository integration tests require a loopback host");
-  }
-  const databaseName = decodeURIComponent(url.pathname.slice(1));
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(databaseName)) {
-    throw new Error("Journey repository integration tests require a test-only database");
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
-}
-
-function isLoopbackHostname(hostname: string) {
-  if (hostname === "localhost" || hostname === "[::1]") return true;
-  const octets = hostname.split(".");
-  return (
-    octets.length === 4 &&
-    octets[0] === "127" &&
-    octets.every((octet) => {
-      if (!/^\d{1,3}$/.test(octet)) return false;
-      const value = Number(octet);
-      return value >= 0 && value <= 255;
-    })
-  );
 }

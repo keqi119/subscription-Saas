@@ -254,6 +254,13 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "packages/release-foundation/test/database-batch-b.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Validates Batch B manifest and source isolation contracts without opening a database connection.",
+      "scope": "source-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "packages/release-foundation/test/database-test-discovery.test.mjs",
       "owner": "release-engineering",
       "reason": "Exercises repository discovery against isolated temporary Git fixtures and never connects to PostgreSQL.",

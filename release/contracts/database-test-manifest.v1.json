@@ -15,6 +15,19 @@
         "api.sms.postgres"
       ]
     },
+    {
+      "batchId": "batch-b",
+      "suiteIds": [
+        "api.stage2-handover-pdf.postgres",
+        "api.stage2-handover-provider-reconciliation.postgres",
+        "api.stage2-handover-workflow.postgres",
+        "api.subscription-expiry-return.postgres",
+        "api.subscription-journey-failure-recovery.postgres",
+        "api.subscription-journey-golden-path.postgres",
+        "api.subscription-journey-integrity.postgres",
+        "api.subscription-journey-repository.postgres"
+      ]
+    },
     { "batchId": "launcher-fixture", "suiteIds": ["release.launcher.fixture"] }
   ],
   "suites": [
@@ -23,20 +36,12 @@
       "runner": "vitest",
       "files": [
         "apps/api/test/billing-maintenance-evidence-postgres.integration.spec.ts",
-        "apps/api/test/stage2-handover-pdf.integration.spec.ts",
-        "apps/api/test/stage2-handover-provider-reconciliation.integration.spec.ts",
-        "apps/api/test/stage2-handover-workflow.repository.spec.ts",
         "apps/api/test/subscription-change-active-order.e2e-spec.ts",
         "apps/api/test/subscription-change-migration.integration.spec.ts",
         "apps/api/test/subscription-closure.repository.integration.spec.ts",
         "apps/api/test/subscription-closure.schema.spec.ts",
         "apps/api/test/subscription-early-termination-change.e2e-spec.ts",
-        "apps/api/test/subscription-expiry-return.integration.spec.ts",
         "apps/api/test/subscription-extension.integration.spec.ts",
-        "apps/api/test/subscription-journey-failure-recovery.e2e-spec.ts",
-        "apps/api/test/subscription-journey-golden-path.e2e-spec.ts",
-        "apps/api/test/subscription-journey-integrity.integration.spec.ts",
-        "apps/api/test/subscription-journey.repository.integration.spec.ts",
         "apps/api/test/subscription-vehicle-swap-failure-injection.spec.ts",
         "apps/api/test/subscription-vehicle-swap.e2e-spec.ts",
         "apps/api/test/subscription-vehicle-swap.integration.spec.ts"
@@ -47,6 +52,134 @@
       },
       "databaseRole": "runtime-equivalent-test",
       "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.stage2-handover-pdf.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/stage2-handover-pdf.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.stage2-handover-provider-reconciliation.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/stage2-handover-provider-reconciliation.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.stage2-handover-workflow.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/stage2-handover-workflow.repository.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-expiry-return.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-expiry-return.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-journey-failure-recovery.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-journey-failure-recovery.e2e-spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-journey-golden-path.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-journey-golden-path.e2e-spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-journey-integrity.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-journey-integrity.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-journey-repository.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-journey.repository.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
       "timeoutMs": 900000,
       "barrier": "database",
       "externalDependency": "none",

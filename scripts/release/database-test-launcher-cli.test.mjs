@@ -8,7 +8,8 @@ import {
 import {
   assertSourceGateCheckout,
   parseLauncherArguments,
-  runLauncherCli
+  runLauncherCli,
+  summarizeDatabaseTestLog
 } from "./database-test-launcher-runtime.mjs";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -112,9 +113,42 @@ test("thin adapter forwards only normalized request fields", async () => {
     chain: "fresh",
     suiteId: "release.launcher.fixture",
     batchId: undefined,
-    concurrency: 1
+    concurrency: 1,
+    order: "manifest"
   });
   assert.equal(result, report);
+});
+
+test("manifest adapter accepts only manifest and reverse execution order", () => {
+  assert.equal(
+    parseLauncherArguments("manifest", [
+      "--batch",
+      "launcher-fixture",
+      "--chain",
+      "fresh",
+      "--concurrency",
+      "1",
+      "--order",
+      "reverse"
+    ]).order,
+    "reverse"
+  );
+  assert.equal(
+    parseLauncherArguments("manifest", ["--batch", "launcher-fixture", "--chain", "fresh"]).order,
+    "manifest"
+  );
+  assert.throws(
+    () =>
+      parseLauncherArguments("manifest", [
+        "--batch",
+        "launcher-fixture",
+        "--chain",
+        "fresh",
+        "--order",
+        "random"
+      ]),
+    { code: "DATABASE_LAUNCHER_ARGUMENT_INVALID" }
+  );
 });
 
 test("source gate refuses to combine a dirty checkout with the current HEAD", () => {
@@ -127,4 +161,41 @@ test("source gate refuses to combine a dirty checkout with the current HEAD", ()
     { code: "DATABASE_LAUNCHER_SOURCE_CHECKOUT_DIRTY" }
   );
   assert.equal(assertSourceGateCheckout({ status: "", sourceSha: "a".repeat(40) }), "a".repeat(40));
+});
+
+test("database diagnostics retain failed test names without retaining failure messages", () => {
+  const stdout = `${JSON.stringify({
+    numTotalTests: 1,
+    numPassedTests: 0,
+    numFailedTests: 1,
+    numPendingTests: 0,
+    numTodoTests: 0,
+    testResults: [
+      {
+        assertionResults: [
+          {
+            fullName: "runtime role rejects immutable drift",
+            status: "failed",
+            failureMessages: ["postgresql://runtime:must-not-be-retained@127.0.0.1/test"]
+          }
+        ]
+      }
+    ]
+  })}\n`;
+  const summary = summarizeDatabaseTestLog({ stdout, stderr: "" });
+  assert.deepEqual(summary.failedTests, [
+    {
+      assertionFields: ["failureMessages", "fullName", "status"],
+      domainCodes: [],
+      errorCodes: [],
+      failureDetailTypes: [],
+      failureHint: "[URI]",
+      failureKinds: [],
+      fullName: "runtime role rejects immutable drift",
+      locations: []
+    }
+  ]);
+  assert.equal(JSON.stringify(summary).includes("must-not-be-retained"), false);
+  assert.match(summary.stdoutDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(summary.counts.failed, 1);
 });

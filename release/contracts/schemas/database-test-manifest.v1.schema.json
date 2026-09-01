@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "database-test-manifest.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "suites"],
+  "properties": {
+    "schemaVersion": { "const": "database-test-manifest.v1" },
+    "suites": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/suite" }
+    }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "applicability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": { "status": { "const": "required" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "owner", "reason", "approvalRef", "reviewDate"],
+          "properties": {
+            "status": { "const": "approved-na" },
+            "owner": { "$ref": "#/$defs/nonEmpty" },
+            "reason": { "$ref": "#/$defs/nonEmpty" },
+            "approvalRef": { "$ref": "#/$defs/nonEmpty" },
+            "reviewDate": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+          }
+        }
+      ]
+    },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "suiteId",
+        "runner",
+        "files",
+        "chainApplicability",
+        "databaseRole",
+        "parallelism",
+        "timeoutMs",
+        "barrier",
+        "externalDependency",
+        "owner"
+      ],
+      "properties": {
+        "suiteId": { "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$" },
+        "runner": { "enum": ["vitest", "node-test"] },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[^\\\\]+$" }
+        },
+        "chainApplicability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fresh", "snapshot"],
+          "properties": {
+            "fresh": { "$ref": "#/$defs/applicability" },
+            "snapshot": { "$ref": "#/$defs/applicability" }
+          }
+        },
+        "databaseRole": { "const": "runtime-equivalent-test" },
+        "parallelism": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "maxShards"],
+          "properties": {
+            "mode": { "enum": ["serial", "parallel"] },
+            "maxShards": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "timeoutMs": { "type": "integer", "minimum": 1 },
+        "barrier": { "$ref": "#/$defs/nonEmpty" },
+        "externalDependency": { "$ref": "#/$defs/nonEmpty" },
+        "owner": { "$ref": "#/$defs/nonEmpty" }
+      }
+    }
+  }
+}

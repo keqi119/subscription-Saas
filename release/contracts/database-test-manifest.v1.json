@@ -1,0 +1,110 @@
+{
+  "schemaVersion": "database-test-manifest.v1",
+  "suites": [
+    {
+      "suiteId": "api.database.release",
+      "runner": "vitest",
+      "files": [
+        "apps/api/test/asset-accounting.repository.integration.spec.ts",
+        "apps/api/test/asset-facts.repository.integration.spec.ts",
+        "apps/api/test/asset-operations.repository.integration.spec.ts",
+        "apps/api/test/auto-debit-settlement.integration.spec.ts",
+        "apps/api/test/billing-automation.integration.spec.ts",
+        "apps/api/test/billing-maintenance-evidence-postgres.integration.spec.ts",
+        "apps/api/test/contract-segment.integration.spec.ts",
+        "apps/api/test/mileage-review-e2e.spec.ts",
+        "apps/api/test/sms.integration.spec.ts",
+        "apps/api/test/stage2-handover-pdf.integration.spec.ts",
+        "apps/api/test/stage2-handover-provider-reconciliation.integration.spec.ts",
+        "apps/api/test/stage2-handover-workflow.repository.spec.ts",
+        "apps/api/test/subscription-change-active-order.e2e-spec.ts",
+        "apps/api/test/subscription-change-migration.integration.spec.ts",
+        "apps/api/test/subscription-closure.repository.integration.spec.ts",
+        "apps/api/test/subscription-closure.schema.spec.ts",
+        "apps/api/test/subscription-early-termination-change.e2e-spec.ts",
+        "apps/api/test/subscription-expiry-return.integration.spec.ts",
+        "apps/api/test/subscription-extension.integration.spec.ts",
+        "apps/api/test/subscription-journey-failure-recovery.e2e-spec.ts",
+        "apps/api/test/subscription-journey-golden-path.e2e-spec.ts",
+        "apps/api/test/subscription-journey-integrity.integration.spec.ts",
+        "apps/api/test/subscription-journey.repository.integration.spec.ts",
+        "apps/api/test/subscription-vehicle-swap-failure-injection.spec.ts",
+        "apps/api/test/subscription-vehicle-swap.e2e-spec.ts",
+        "apps/api/test/subscription-vehicle-swap.integration.spec.ts",
+        "apps/api/test/vehicle-availability.integration.spec.ts"
+      ],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test"
+    },
+    {
+      "suiteId": "node.billing-maintenance-evidence.postgres",
+      "runner": "node-test",
+      "files": ["scripts/billing-maintenance-cycle-evidence-postgres.integration.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 300000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering"
+    },
+    {
+      "suiteId": "node.clean-acceptance.postgres",
+      "runner": "node-test",
+      "files": ["scripts/stage1-clean-acceptance-baseline-postgres.integration.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 1800000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering"
+    },
+    {
+      "suiteId": "node.closure-reconciliation.postgres",
+      "runner": "node-test",
+      "files": ["scripts/stage1-p0-subscription-closure-reconciliation.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 300000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering"
+    },
+    {
+      "suiteId": "node.invalid-order-retirement.postgres",
+      "runner": "node-test",
+      "files": [
+        "scripts/stage1-staging-invalid-test-order-retirement-postgres.integration.test.mjs"
+      ],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 300000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "external-validation-applicability.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "records"],
+  "properties": {
+    "schemaVersion": { "const": "external-validation-applicability.v1" },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "applicabilityId",
+          "relatedSuiteId",
+          "status",
+          "owner",
+          "reason",
+          "reviewDate"
+        ],
+        "properties": {
+          "applicabilityId": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+          },
+          "relatedSuiteId": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+          },
+          "status": {
+            "enum": ["must-automate", "must-external-verify", "must-human-verify", "not-applicable"]
+          },
+          "owner": { "$ref": "#/$defs/nonEmpty" },
+          "reason": { "$ref": "#/$defs/nonEmpty" },
+          "approvalRef": { "$ref": "#/$defs/nonEmpty" },
+          "reviewDate": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "status": { "const": "not-applicable" } } },
+            "then": {
+              "properties": {
+                "approvalRef": { "$ref": "#/$defs/nonEmpty" }
+              },
+              "required": ["approvalRef"]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": { "nonEmpty": { "type": "string", "minLength": 1 } }
+}

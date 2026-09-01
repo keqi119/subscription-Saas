@@ -7,3 +7,9 @@ export {
   verifyMigrationCatalog
 } from "./catalogs.mjs";
 export { compileAllSchemas, validateContract } from "./schema-registry.mjs";
+export {
+  candidateReasons,
+  classifyDatabaseTests,
+  discoverDatabaseTestCandidates,
+  trackedTestUniverse
+} from "./database-test-discovery.mjs";

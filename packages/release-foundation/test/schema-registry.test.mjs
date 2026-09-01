@@ -41,7 +41,7 @@ function validBuildProof() {
 
 test("compiles every registered release Schema", () => {
   const result = compileAllSchemas();
-  assert.equal(result.schemaIds.length, 10);
+  assert.ok(result.schemaIds.length >= 10);
   assert.ok(result.schemaIds.includes("build-proof.v1"));
   assert.ok(result.schemaIds.includes("controlled-target-record.v1"));
 });

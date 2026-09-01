@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import databaseTestManifest from "../../../release/contracts/database-test-manifest.v1.json";
 import config from "../vitest.config";
 
 type ProjectConfig = {
@@ -14,6 +15,22 @@ type ProjectConfig = {
 };
 
 describe("API Vitest project boundaries", () => {
+  it("uses every manifested Vitest file exactly once in both project boundaries", () => {
+    const projects = (config.test?.projects ?? []) as ProjectConfig[];
+    const databaseProject = projects.find((project) => project.test?.name === "database");
+    const unitProject = projects.find((project) => project.test?.name === "unit");
+    const expected = databaseTestManifest.suites
+      .filter((suite) => suite.runner === "vitest")
+      .flatMap((suite) => suite.files)
+      .map((file) => file.replace(/^apps\/api\//, ""))
+      .sort();
+
+    expect(databaseProject?.test?.include).toEqual(expected);
+    expect(unitProject?.test?.exclude).toEqual(expected);
+    expect(new Set(databaseProject?.test?.include).size).toBe(expected.length);
+    expect(new Set(unitProject?.test?.exclude).size).toBe(expected.length);
+  });
+
   it("gives serialized database tests a realistic timeout budget", () => {
     const projects = (config.test?.projects ?? []) as ProjectConfig[];
     const databaseProject = projects.find((project) => project.test?.name === "database");

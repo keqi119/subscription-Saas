@@ -1,33 +1,15 @@
+import { relative, resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 
-const databaseTestFiles = [
-  "test/subscription-closure.schema.spec.ts",
-  "test/subscription-closure.repository.integration.spec.ts",
-  "test/asset-accounting.repository.integration.spec.ts",
-  "test/asset-facts.repository.integration.spec.ts",
-  "test/asset-operations.repository.integration.spec.ts",
-  "test/auto-debit-settlement.integration.spec.ts",
-  "test/billing-automation.integration.spec.ts",
-  "test/contract-segment.integration.spec.ts",
-  "test/vehicle-availability.integration.spec.ts",
-  "test/mileage-review-e2e.spec.ts",
-  "test/sms.integration.spec.ts",
-  "test/stage2-handover-pdf.integration.spec.ts",
-  "test/stage2-handover-provider-reconciliation.integration.spec.ts",
-  "test/stage2-handover-workflow.repository.spec.ts",
-  "test/subscription-expiry-return.integration.spec.ts",
-  "test/subscription-change-active-order.e2e-spec.ts",
-  "test/subscription-change-migration.integration.spec.ts",
-  "test/subscription-journey-failure-recovery.e2e-spec.ts",
-  "test/subscription-journey-golden-path.e2e-spec.ts",
-  "test/subscription-journey-integrity.integration.spec.ts",
-  "test/subscription-journey.repository.integration.spec.ts",
-  "test/subscription-extension.integration.spec.ts",
-  "test/subscription-early-termination-change.e2e-spec.ts",
-  "test/subscription-vehicle-swap.integration.spec.ts",
-  "test/subscription-vehicle-swap.e2e-spec.ts",
-  "test/subscription-vehicle-swap-failure-injection.spec.ts"
-];
+import databaseTestManifest from "../../release/contracts/database-test-manifest.v1.json";
+
+const repoRoot = resolve(__dirname, "../..");
+const apiRoot = resolve(repoRoot, "apps/api");
+const databaseTestFiles = databaseTestManifest.suites
+  .filter((suite) => suite.runner === "vitest")
+  .flatMap((suite) => suite.files)
+  .map((file) => relative(apiRoot, resolve(repoRoot, file)).replaceAll("\\", "/"))
+  .sort();
 
 export default defineConfig({
   test: {

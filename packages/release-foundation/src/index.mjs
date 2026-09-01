@@ -18,6 +18,14 @@ export { cleanupSuiteDatabase, provisionSuiteDatabase } from "./database-lifecyc
 export { grantRuntimeEquivalentAccess } from "./database-roles.mjs";
 export { scanMigrationGlobalObjects } from "./migration-global-object-scan.mjs";
 export {
+  normalizeDatabaseTestCounts,
+  requiredReleaseDatabaseTestContext,
+  runDatabaseManifest,
+  runDatabaseSuite,
+  runSourceDatabaseGate,
+  selectManifestSuites
+} from "./database-test-launcher.mjs";
+export {
   assertCustodyComplete,
   assertCustodyDeletionAllowed,
   custodyEvidence,

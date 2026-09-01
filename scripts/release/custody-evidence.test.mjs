@@ -23,7 +23,7 @@ function storageFixture({ mutateRead, omitReceipt } = {}) {
     trustPolicy: "immutable-content-addressed/v1",
     writerIdentity: "protected-ci-writer",
     auditReaderIdentity: "audit-reader",
-    async createOnly({ key, bytes, retainUntil }) {
+    async createOnly({ key, bytes, requestedAt, retainUntil }) {
       if (objects.has(key)) {
         throw Object.assign(new Error("EVIDENCE_OVERWRITE_REFUSED"), {
           code: "EVIDENCE_OVERWRITE_REFUSED"
@@ -34,7 +34,7 @@ function storageFixture({ mutateRead, omitReceipt } = {}) {
         created: true,
         storeRef: `artifact://release/${key}`,
         contentSizeBytes: Buffer.byteLength(bytes),
-        storedAt: now.toISOString(),
+        storedAt: requestedAt,
         retainUntil
       };
     },

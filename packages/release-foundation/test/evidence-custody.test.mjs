@@ -28,7 +28,7 @@ function memoryStore(overrides = {}) {
     auditReaderIdentity: "audit-reader",
     objects,
     reads,
-    async createOnly({ key, bytes, retainUntil }) {
+    async createOnly({ key, bytes, requestedAt, retainUntil }) {
       if (objects.has(key)) {
         throw Object.assign(new Error("EVIDENCE_OVERWRITE_REFUSED"), {
           code: "EVIDENCE_OVERWRITE_REFUSED"
@@ -39,7 +39,7 @@ function memoryStore(overrides = {}) {
         storeRef: `memory://${key}`,
         created: true,
         contentSizeBytes: Buffer.byteLength(bytes),
-        storedAt: fixedNow.toISOString(),
+        storedAt: requestedAt,
         retainUntil
       };
     },

@@ -1,5 +1,6 @@
 {
   "schemaVersion": "database-test-manifest.v1",
+  "batches": [{ "batchId": "launcher-fixture", "suiteIds": ["release.launcher.fixture"] }],
   "suites": [
     {
       "suiteId": "api.database.release",
@@ -42,7 +43,8 @@
       "timeoutMs": 900000,
       "barrier": "database",
       "externalDependency": "none",
-      "owner": "api-database-test"
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
     },
     {
       "suiteId": "node.billing-maintenance-evidence.postgres",
@@ -57,7 +59,8 @@
       "timeoutMs": 300000,
       "barrier": "database",
       "externalDependency": "none",
-      "owner": "release-engineering"
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
     },
     {
       "suiteId": "node.clean-acceptance.postgres",
@@ -72,7 +75,8 @@
       "timeoutMs": 1800000,
       "barrier": "database",
       "externalDependency": "none",
-      "owner": "release-engineering"
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
     },
     {
       "suiteId": "node.closure-reconciliation.postgres",
@@ -87,7 +91,8 @@
       "timeoutMs": 300000,
       "barrier": "database",
       "externalDependency": "none",
-      "owner": "release-engineering"
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
     },
     {
       "suiteId": "node.invalid-order-retirement.postgres",
@@ -104,7 +109,8 @@
       "timeoutMs": 300000,
       "barrier": "database",
       "externalDependency": "none",
-      "owner": "release-engineering"
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
     },
     {
       "suiteId": "node.release-database-lifecycle.postgres",
@@ -119,7 +125,24 @@
       "timeoutMs": 600000,
       "barrier": "isolated-postgres-cluster",
       "externalDependency": "none",
-      "owner": "release-engineering"
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "release.launcher.fixture",
+      "runner": "node-test",
+      "files": ["release/test-fixtures/database-launcher-fixture.postgres.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 120000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "exact", "collected": 1 }
     }
   ]
 }

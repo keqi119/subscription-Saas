@@ -158,6 +158,7 @@ export async function custodyEvidence({
       key: contentKey,
       bytes: contentBytes,
       contentDigest,
+      requestedAt: uploadStartedAt.toISOString(),
       retainUntil
     }),
     { expectedSize: contentBytes.byteLength, expectedRetainUntil: retainUntil }
@@ -199,6 +200,7 @@ export async function custodyEvidence({
       key: receiptKey,
       bytes: receiptBytes,
       contentDigest: receiptDigest,
+      requestedAt: uploadStartedAt.toISOString(),
       retainUntil
     }),
     { expectedSize: receiptBytes.byteLength, expectedRetainUntil: retainUntil }

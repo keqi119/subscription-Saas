@@ -254,6 +254,13 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "apps/release-runner/test/stage1-billing-maintenance-evidence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises bounded read-only evidence collection and immutable custody with deterministic database adapter doubles and never connects to PostgreSQL.",
+      "scope": "runner-command-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "apps/release-runner/test/stage1-target-task9-verify.integration.test.mjs",
       "owner": "release-engineering",
       "reason": "Exercises read-only Stage1 command adapters with deterministic transaction and resource doubles and never connects to PostgreSQL.",

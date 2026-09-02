@@ -149,6 +149,33 @@
       "exitCondition": "retire after the clean acceptance baseline is no longer an active release gate"
     },
     {
+      "commandId": "stage1.billing-maintenance.evidence",
+      "commandVersion": "1",
+      "category": "evidence",
+      "dataImpact": "read-only",
+      "capabilityProfile": "evidence",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot", "staging"],
+      "prohibitedEnvironments": ["production"],
+      "approvalMode": "none",
+      "allowedExecutionScopes": ["evidence", "full-rc"],
+      "supports": { "dryRun": false, "apply": false, "replay": false },
+      "lock": "none",
+      "timeoutMs": 900000,
+      "postconditions": [
+        "two-completed-sequences-observed",
+        "source-binding-matches",
+        "blocked-count-zero",
+        "cycles-do-not-overlap",
+        "forbidden-domain-counts-unchanged",
+        "statement-log-read-only",
+        "evidence-public-safe",
+        "custody-complete"
+      ],
+      "evidenceSchema": "execution-proof.v1",
+      "owner": "release-engineering",
+      "exitCondition": "retire after Stage1 billing-maintenance evidence is no longer an active acceptance gate"
+    },
+    {
       "commandId": "stage1.task9.preflight",
       "commandVersion": "1",
       "category": "verify",

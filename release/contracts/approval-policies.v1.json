@@ -114,6 +114,27 @@
     },
     {
       "approvalMode": "ci-policy",
+      "commandId": "stage1.invalid-test-order.retire",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.invalid-test-order.retire",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "stage1.invalid-test-order.retire",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
       "commandId": "stage1.period.backfill",
       "commandVersion": "1",
       "environmentClass": "ci-fresh",

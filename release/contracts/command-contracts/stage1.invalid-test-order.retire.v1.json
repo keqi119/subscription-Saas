@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "stage1.invalid-test-order.retire",
+  "commandVersion": "1",
+  "interface": {
+    "plan": "planInvalidTestOrderRetirement(context,input):Promise<InvalidOrderRetirementPlanV1>",
+    "apply": "applyInvalidTestOrderRetirement(context,approved):Promise<PostStateObservationV1>",
+    "reconcile": "reconcileInvalidTestOrderRetirement(context,prior):Promise<ReconcileResultV1>"
+  },
+  "capabilityProfile": "repair",
+  "databaseRole": "repair",
+  "dataImpact": "controlled-dml",
+  "approvalByEnvironment": {
+    "ci-fresh": "ci-policy",
+    "ci-snapshot": "ci-policy",
+    "staging": "human"
+  },
+  "allowedExecutionScopes": ["full-rc", "repair"],
+  "inputSchema": "stage1-invalid-test-order-retirement-input.v1",
+  "planSchema": "deterministic-plan.v1#stage1-invalid-test-order-retirement-plan.v1",
+  "outputSchema": "post-state-observation.v1",
+  "selection": "exact allowlist only: order c392fa54-4784-4e04-ad4a-bfe2fd7e2d10 / ORD20260726073922TFHF owning vehicle 70565059-1841-4c97-a32c-7bd09ce0b90f / VEH20260713140950K4BT / TESTVINET50000001; any other identity or valid business facts fail INVALID_TEST_ORDER_TARGET_REFUSED before writes",
+  "lock": {
+    "id": "stage1-staging-invalid-test-order-retirement:apply",
+    "order": [
+      "transaction advisory lock",
+      "snapshot relation locks",
+      "target order",
+      "target lease",
+      "target billing schedule",
+      "target vehicle"
+    ],
+    "transactionBoundary": "serializable transaction; reload and reclassify the exact target before conditional writes"
+  },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 300000,
+  "cancellation": "cancel before commit; committed-result-unproved requires same-operation reconcile",
+  "idempotency": "the exact terminal tuple and four correlated audits classify as UNCHANGED; replay never repeats release or audit writes",
+  "checksums": "evidence digest binds operator, order-to-vehicle ownership, billing schedule version, exact target state, forbidden related facts, PAUSED-to-CANCELLED schedule write, ACTIVE-to-COMPLETED lease write, ACTIVE-to-CANCELLED order write, LEASED-to-AVAILABLE vehicle release, exactly four correlated audits, refusal classes and terminal replay state",
+  "postconditions": [
+    "approved-exact-target-recomputed-under-lock",
+    "order-vehicle-ownership-and-version-unchanged",
+    "exact-close-and-release-effects-applied",
+    "exactly-four-correlated-audits-present",
+    "statement-log-has-no-ddl",
+    "replay-has-no-duplicate-side-effects"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after the registered invalid Stage1 test order has been closed and all supported environments no longer contain it"
+}

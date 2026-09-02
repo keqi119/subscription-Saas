@@ -121,7 +121,8 @@ export async function executeStage1StagingInvalidTestOrderRetirement({
   now = () => new Date(),
   operatorId,
   prisma,
-  randomUuid = randomUUID
+  randomUuid = randomUUID,
+  statementLog
 }) {
   if (mode === "dry-run") {
     const classification = await prisma.$transaction(
@@ -146,11 +147,12 @@ export async function executeStage1StagingInvalidTestOrderRetirement({
 
   const outcome = await prisma.$transaction(
     async (tx) => {
-      await assertDatabaseIdentity(tx);
-      await lockApply(tx);
-      await lockSnapshotRelations(tx);
-      await lockTargetRows(tx);
-      const snapshot = await loadSnapshot(tx, { operatorId });
+      const operationTx = retirementStatementLoggingTransaction(tx, statementLog);
+      await assertDatabaseIdentity(operationTx);
+      await lockApply(operationTx);
+      await lockSnapshotRelations(operationTx);
+      await lockTargetRows(operationTx);
+      const snapshot = await loadSnapshot(operationTx, { operatorId });
       const classification = classify(snapshot);
       if (classification.disposition === "BLOCKED") {
         return {
@@ -172,17 +174,17 @@ export async function executeStage1StagingInvalidTestOrderRetirement({
 
       const changedAt = now();
       const correlationId = randomUuid();
-      await cancelBillingSchedule(tx, snapshot, changedAt);
-      await completeLease(tx, snapshot, operatorId);
-      await cancelOrder(tx, snapshot, operatorId);
-      await releaseVehicle(tx, snapshot, operatorId);
-      await createRetirementAudits(tx, snapshot, {
+      await cancelBillingSchedule(operationTx, snapshot, changedAt);
+      await completeLease(operationTx, snapshot, operatorId);
+      await cancelOrder(operationTx, snapshot, operatorId);
+      await releaseVehicle(operationTx, snapshot, operatorId);
+      await createRetirementAudits(operationTx, snapshot, {
         changedAt,
         correlationId,
         evidenceDigest: classification.evidenceDigest,
         operatorId
       });
-      await assertPostconditions(tx, {
+      await assertPostconditions(operationTx, {
         classify,
         evidenceDigest: classification.evidenceDigest,
         loadSnapshot,
@@ -210,6 +212,40 @@ export async function executeStage1StagingInvalidTestOrderRetirement({
     exitCode: outcome.safeToApply ? 0 : 1,
     report: { ...outcome, generatedAt, mode }
   };
+}
+
+function retirementStatementLoggingTransaction(tx, statementLog) {
+  if (!Array.isArray(statementLog)) return tx;
+  const writeMethods = new Map([
+    ["auditLog.create", 'INSERT INTO "audit_log"'],
+    ["billingSchedule.updateMany", 'UPDATE "billing_schedule"'],
+    ["lease.updateMany", 'UPDATE "lease"'],
+    ["subscriptionOrder.updateMany", 'UPDATE "subscription_order"'],
+    ["vehicle.updateMany", 'UPDATE "vehicle"']
+  ]);
+  return new Proxy(tx, {
+    get(target, property, receiver) {
+      if (property === "$queryRawUnsafe") {
+        return async (sql, ...params) => {
+          statementLog.push(String(sql));
+          return target.$queryRawUnsafe(sql, ...params);
+        };
+      }
+      const model = Reflect.get(target, property, receiver);
+      if (!model || typeof model !== "object") return model;
+      return new Proxy(model, {
+        get(modelTarget, method, modelReceiver) {
+          const value = Reflect.get(modelTarget, method, modelReceiver);
+          const statement = writeMethods.get(`${String(property)}.${String(method)}`);
+          if (!statement || typeof value !== "function") return value;
+          return async (...args) => {
+            statementLog.push(statement);
+            return value.apply(modelTarget, args);
+          };
+        }
+      });
+    }
+  });
 }
 
 export async function loadStage1StagingInvalidTestOrderRetirementSnapshot(db, { operatorId }) {

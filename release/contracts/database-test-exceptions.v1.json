@@ -282,6 +282,13 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "apps/release-runner/test/stage1-invalid-test-order-retire-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares exact-target legacy and Runner retirement behavior with independent deterministic database doubles; runner.stage1-invalid-test-order-retire retains the real PostgreSQL transaction, replay and rollback coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "apps/release-runner/test/stage1-return-closure-backfill-dml-equivalence.integration.test.mjs",
       "owner": "release-engineering",
       "reason": "Compares legacy and Runner return-closure DML on independent deterministic database doubles; the legacy backfill suite retains concrete Prisma CAS and batch-transaction coverage.",

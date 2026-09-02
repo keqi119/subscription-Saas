@@ -593,7 +593,7 @@
         "scripts/stage1-staging-invalid-test-order-retirement.mjs"
       ],
       "runnerCommandId": "stage1.invalid-test-order.retire@1",
-      "runnerRegistrationStatus": "planned",
+      "runnerRegistrationStatus": "registered",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [

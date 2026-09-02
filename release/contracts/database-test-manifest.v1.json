@@ -559,7 +559,7 @@
       }
     },
     {
-      "suiteId": "script.stage1-invalid-order-retirement.postgres",
+      "suiteId": "runner.stage1-invalid-test-order-retire",
       "runner": "node-test",
       "files": [
         "scripts/stage1-staging-invalid-test-order-retirement-postgres.integration.test.mjs"

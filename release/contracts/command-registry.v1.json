@@ -227,6 +227,32 @@
       "exitCondition": "retire after the Stage1 clean acceptance baseline is no longer required"
     },
     {
+      "commandId": "stage1.invalid-test-order.retire",
+      "commandVersion": "1",
+      "category": "repair",
+      "dataImpact": "controlled-dml",
+      "capabilityProfile": "repair",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot", "staging"],
+      "prohibitedEnvironments": ["production"],
+      "approvalMode": "human",
+      "approvalModeOverrides": { "ci-fresh": "ci-policy", "ci-snapshot": "ci-policy" },
+      "allowedExecutionScopes": ["full-rc", "repair"],
+      "supports": { "dryRun": true, "apply": true, "replay": true },
+      "lock": "stage1-staging-invalid-test-order-retirement:apply",
+      "timeoutMs": 300000,
+      "postconditions": [
+        "approved-exact-target-recomputed-under-lock",
+        "order-vehicle-ownership-and-version-unchanged",
+        "exact-close-and-release-effects-applied",
+        "exactly-four-correlated-audits-present",
+        "statement-log-has-no-ddl",
+        "replay-has-no-duplicate-side-effects"
+      ],
+      "evidenceSchema": "execution-proof.v1",
+      "owner": "release-engineering",
+      "exitCondition": "retire after the registered invalid Stage1 test order has been closed and all supported environments no longer contain it"
+    },
+    {
       "commandId": "stage1.period.backfill",
       "commandVersion": "1",
       "category": "repair",

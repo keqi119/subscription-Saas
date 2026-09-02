@@ -172,6 +172,12 @@ export function classifyStage1StagingInvalidTestOrderRetirement(snapshot = {}) {
   });
 }
 
+export function hashStage1StagingInvalidTestOrderRetirementClassification(classification) {
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(canonical(classification)))
+    .digest("hex")}`;
+}
+
 function inspectCandidateSnapshot(snapshot) {
   const blockers = inspectStableIdentityAndForbiddenFacts(snapshot);
   const { billingSchedule, lease, order, vehicle } = snapshot;
@@ -415,6 +421,10 @@ function retirementCandidate(snapshot) {
   return {
     billingScheduleId: snapshot.billingSchedule.id,
     leaseId: snapshot.lease.id,
+    ownership: {
+      orderId: snapshot.order.id,
+      vehicleId: snapshot.order.vehicleId
+    },
     orderId: snapshot.order.id,
     transitions: {
       billingSchedule: ["PAUSED", "CANCELLED"],
@@ -422,7 +432,10 @@ function retirementCandidate(snapshot) {
       order: ["ACTIVE", "CANCELLED"],
       vehicle: ["LEASED", "AVAILABLE"]
     },
-    vehicleId: snapshot.vehicle.id
+    vehicleId: snapshot.vehicle.id,
+    versions: {
+      billingSchedule: snapshot.billingSchedule.version
+    }
   };
 }
 

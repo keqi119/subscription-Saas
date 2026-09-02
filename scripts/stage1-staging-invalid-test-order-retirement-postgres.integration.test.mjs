@@ -4,9 +4,16 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import {
+  deterministicPlanDigest,
   requiredReleaseDatabaseTestContext,
   runRuntimeSeedFixture
 } from "../packages/release-foundation/src/index.mjs";
+
+import {
+  applyInvalidTestOrderRetirement,
+  planInvalidTestOrderRetirement,
+  reconcileInvalidTestOrderRetirement
+} from "../apps/release-runner/src/commands/stage1-invalid-test-order-retire.mjs";
 
 import {
   STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_TARGET as TARGET,
@@ -20,6 +27,20 @@ const { Pool } = requireFromApi("pg");
 const operatorId = "11111111-1111-4111-8111-111111111111";
 const databaseContext = requiredReleaseDatabaseTestContext(import.meta.url);
 const databaseUrl = databaseContext.databaseUrl;
+const digest = (character) => `sha256:${character.repeat(64)}`;
+const runnerInput = Object.freeze({
+  operationId: "25d422be-1036-470c-a844-fe24735222cf",
+  attemptId: "49101a87-aece-4c51-9be0-30233466510b",
+  runId: "56f4ad5b-d7d3-4682-a835-0659a961c413",
+  baselineManifestIdentityDigest: digest("1"),
+  baselineManifestDigest: digest("2"),
+  databaseIdentityFingerprint: digest("3"),
+  generatedAt: "2026-09-02T09:00:00.000Z",
+  operatorId,
+  postMigrationHead: "20260831010000_billing_maintenance_cycle_fact",
+  expectedSchemaDigest: digest("4"),
+  target: TARGET
+});
 assertSafeTestDatabaseUrl(databaseUrl);
 
 test("integration database guard only accepts explicitly named test databases", () => {
@@ -79,6 +100,44 @@ test("real PostgreSQL serializes apply/replay and rolls back audit failure", asy
   assert.equal(rolledBack.auditLogs.length, 0);
 });
 
+test("Runner matches the legacy PostgreSQL retirement and reconciles without duplicate writes", async (t) => {
+  const harness = await createPostgresHarness(databaseUrl);
+  t.after(() => harness.close());
+
+  const initial = await harness.snapshot();
+  const evidenceDigest = classify(initial).evidenceDigest;
+  await harness.apply(evidenceDigest);
+  const legacyState = await harness.snapshot();
+
+  await harness.reset();
+  const context = harness.runnerContext();
+  const plan = await planInvalidTestOrderRetirement(context, runnerInput);
+  const planDigest = deterministicPlanDigest(plan);
+  const observation = await applyInvalidTestOrderRetirement(context, {
+    input: runnerInput,
+    planDigest
+  });
+  const runnerState = await harness.snapshot();
+
+  assert.deepEqual(runnerState, legacyState);
+  assert.equal(
+    observation.postconditions.every(({ status }) => status === "PASSED"),
+    true
+  );
+  assert.equal(
+    context.statementLog.some((sql) => /\b(?:ALTER|CREATE|DROP)\b/iu.test(sql)),
+    false
+  );
+  const beforeReconcile = structuredClone(runnerState);
+  const reconciliation = await reconcileInvalidTestOrderRetirement(context, {
+    input: runnerInput,
+    planDigest,
+    approvedPlan: plan
+  });
+  assert.equal(reconciliation.terminalStatus, "PASSED");
+  assert.deepEqual(await harness.snapshot(), beforeReconcile);
+});
+
 async function createPostgresHarness(connectionString) {
   const pool = new Pool({ connectionString, max: 4 });
   const schema = "stage1_invalid_order_retirement";
@@ -92,8 +151,24 @@ async function createPostgresHarness(connectionString) {
       failAt = value;
     },
     reset,
+    runnerContext,
     snapshot: () => readSnapshot(pool, quotedSchema)
   };
+
+  function runnerContext() {
+    return {
+      assertDatabaseIdentity: async (tx) => {
+        const rows = await tx.$queryRawUnsafe('SELECT current_database() AS "databaseName"');
+        assert.equal(rows[0]?.databaseName, new URL(connectionString).pathname.slice(1));
+      },
+      databaseIdentityFingerprint: runnerInput.databaseIdentityFingerprint,
+      loadRetirementSnapshot: (tx) => readSnapshot(tx.$testClient, quotedSchema),
+      now: () => new Date("2026-08-29T00:00:00.000Z"),
+      prisma: postgresPrisma(pool, quotedSchema, () => null),
+      randomUuid: () => "22222222-2222-4222-8222-222222222222",
+      statementLog: []
+    };
+  }
 
   async function apply(evidenceDigest) {
     return execute({
@@ -132,10 +207,12 @@ async function createPostgresHarness(connectionString) {
 function postgresPrisma(pool, schema, getFailAt) {
   return {
     async $transaction(work, options) {
-      assert.equal(options.isolationLevel, "Serializable");
+      assert.ok(["RepeatableRead", "Serializable"].includes(options.isolationLevel));
       const client = await pool.connect();
       try {
-        await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+        const isolation =
+          options.isolationLevel === "Serializable" ? "SERIALIZABLE" : "REPEATABLE READ";
+        await client.query(`BEGIN ISOLATION LEVEL ${isolation}`);
         const result = await work(postgresTransaction(client, schema, getFailAt));
         await client.query("COMMIT");
         return result;

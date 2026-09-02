@@ -112,6 +112,30 @@ async function defaultWait(milliseconds) {
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+export async function pullExactPostgresImage({
+  image,
+  executeDocker = executeDockerCommand,
+  wait = defaultWait
+}) {
+  if (!/@sha256:[0-9a-f]{64}$/u.test(image ?? "")) {
+    throw task0Error("POSTGRES_IMAGE_DIGEST_REQUIRED");
+  }
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await executeDocker({
+        purpose: "pull",
+        args: ["pull", "--platform", "linux/amd64", image]
+      });
+    } catch (error) {
+      if (error?.code !== "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED" || attempt === 3) {
+        throw error;
+      }
+      await wait(attempt * 1000);
+    }
+  }
+  throw task0Error("CONTROLLED_TARGET_DOCKER_COMMAND_FAILED");
+}
+
 function digestFromRepoDigests(stdout, expectedDigest) {
   let repoDigests;
   try {
@@ -139,10 +163,7 @@ export function createDockerCli({ executeDocker = executeDockerCommand, wait = d
       await hardenOwnerOnlyFile(bootstrapPasswordPath);
       let containerId = null;
       try {
-        await executeDocker({
-          purpose: "pull",
-          args: ["pull", "--platform", "linux/amd64", image]
-        });
+        await pullExactPostgresImage({ image, executeDocker, wait });
 
         const repoDigests = await executeDocker({
           purpose: "image-inspect",

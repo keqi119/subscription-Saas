@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { bootstrapControlledPostgres } from "./bootstrap-controlled-postgres.mjs";
+import {
+  bootstrapControlledPostgres,
+  pullExactPostgresImage
+} from "./bootstrap-controlled-postgres.mjs";
 import { runWithControlledTarget } from "./with-controlled-target.mjs";
 
 function controlledTargetRecord() {
@@ -47,6 +50,67 @@ function controlledTargetRecord() {
     }
   };
 }
+
+test("retries only the pre-state digest-pinned PostgreSQL pull", async () => {
+  const image = `docker.io/library/postgres@sha256:${"1".repeat(64)}`;
+  const calls = [];
+  const waits = [];
+  await pullExactPostgresImage({
+    image,
+    executeDocker: async (input) => {
+      calls.push(input);
+      if (calls.length < 3) {
+        throw Object.assign(new Error("transient pull failure"), {
+          code: "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED"
+        });
+      }
+      return "pulled";
+    },
+    wait: async (milliseconds) => waits.push(milliseconds)
+  });
+  assert.deepEqual(
+    calls.map(({ purpose, args }) => ({ purpose, args })),
+    Array.from({ length: 3 }, () => ({
+      purpose: "pull",
+      args: ["pull", "--platform", "linux/amd64", image]
+    }))
+  );
+  assert.deepEqual(waits, [1000, 2000]);
+
+  let nonPullAttempts = 0;
+  await assert.rejects(
+    pullExactPostgresImage({
+      image,
+      executeDocker: async () => {
+        nonPullAttempts += 1;
+        throw Object.assign(new Error("policy failure"), { code: "IMAGE_POLICY_REJECTED" });
+      },
+      wait: async () => {
+        throw new Error("must not wait for a non-pull failure");
+      }
+    }),
+    { code: "IMAGE_POLICY_REJECTED" }
+  );
+  assert.equal(nonPullAttempts, 1);
+
+  let exhaustedAttempts = 0;
+  const exhaustedWaits = [];
+  await assert.rejects(
+    pullExactPostgresImage({
+      image,
+      executeDocker: async () => {
+        exhaustedAttempts += 1;
+        throw Object.assign(new Error("persistent pull failure"), {
+          code: "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED"
+        });
+      },
+      wait: async (milliseconds) => exhaustedWaits.push(milliseconds)
+    }),
+    { code: "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED" }
+  );
+  assert.equal(exhaustedAttempts, 3);
+  assert.deepEqual(exhaustedWaits, [1000, 2000]);
+});
 
 function matchingInspection(record, profile = "verify") {
   return {

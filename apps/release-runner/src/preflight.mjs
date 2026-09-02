@@ -5,6 +5,7 @@ import {
 } from "@subscription-saas/release-foundation";
 
 import { runnerError } from "./error-codes.mjs";
+import { commandApprovalMode } from "./command-registry.mjs";
 
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
 
@@ -28,6 +29,9 @@ export function verifyPreflight({ command, request, policy }) {
   }
   if (command.capabilityProfile !== request.capabilityProfile) {
     throw runnerError("RUNNER_CAPABILITY_MISMATCH");
+  }
+  if (!command.allowedExecutionScopes?.includes(request.executionScope)) {
+    throw runnerError("RUNNER_EXECUTION_SCOPE_PROHIBITED");
   }
   const proofRunner = request.buildProof.identity.images.runner;
   if (
@@ -63,13 +67,15 @@ export function verifyPreflight({ command, request, policy }) {
     status: "verified",
     commandKey: `${command.commandId}@${command.commandVersion}`,
     capabilityProfile: command.capabilityProfile,
+    approvalMode: commandApprovalMode(command, request.environmentClass, request.phase),
     targetIntent: Object.freeze({ ...request.target })
   });
 }
 
-function verifyApprovalRequirement(command, approvalDecision) {
-  if (command.approvalMode === "none") {
-    if (command.dataImpact !== "read-only" || approvalDecision !== undefined) {
+function verifyApprovalRequirement(command, request, decision, approvalDecision) {
+  if (decision.approvalMode === "none") {
+    const readOnlyDryRun = request.phase === "dry-run" && command.supports?.dryRun === true;
+    if ((command.dataImpact !== "read-only" && !readOnlyDryRun) || approvalDecision !== undefined) {
       throw runnerError("RUNNER_APPROVAL_MODE_INVALID");
     }
     return;
@@ -92,7 +98,7 @@ export async function executeRegisteredCommand({
   approvalDecision
 }) {
   const decision = verifyPreflight({ command, request, policy });
-  verifyApprovalRequirement(command, approvalDecision);
+  verifyApprovalRequirement(command, request, decision, approvalDecision);
   const credential = await readCredential(credentialFileReference);
   const database = await connectDatabase({ credential, target: decision.targetIntent });
   const observed = await database.observeIdentity();

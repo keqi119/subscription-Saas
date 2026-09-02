@@ -191,7 +191,7 @@ function managedCaller(command, callerType) {
   };
 }
 
-export function buildApiGovernanceInventory(surface) {
+export function buildApiGovernanceInventory(surface, { registeredCommandKeys = new Set() } = {}) {
   const commandByEntrypoint = new Map(
     surface.entrypoints.map(({ entrypoint, dependencyClosure: closure }) => {
       const policy = commandPolicies[entrypoint];
@@ -203,6 +203,9 @@ export function buildApiGovernanceInventory(surface) {
           entrypoint,
           dependencyClosure: closure,
           runnerCommandId,
+          runnerRegistrationStatus: registeredCommandKeys.has(runnerCommandId)
+            ? "registered"
+            : "planned",
           capabilityProfile,
           migrationOwner: "release-engineering",
           callers: []
@@ -319,7 +322,13 @@ export function verifyApiGovernanceInventory(inventory, surface) {
 async function main() {
   const repoRoot = process.cwd();
   const surface = await discoverApiGovernanceSurface(repoRoot);
-  const generated = buildApiGovernanceInventory(surface);
+  const registry = JSON.parse(
+    await readFile(path.join(repoRoot, "release/contracts/command-registry.v1.json"), "utf8")
+  );
+  const registeredCommandKeys = new Set(
+    registry.commands.map(({ commandId, commandVersion }) => `${commandId}@${commandVersion}`)
+  );
+  const generated = buildApiGovernanceInventory(surface, { registeredCommandKeys });
   if (process.argv.includes("--check")) {
     const inventory = JSON.parse(
       await readFile(

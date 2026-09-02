@@ -43,6 +43,27 @@
       "dataImpact": "ddl"
     },
     {
+      "approvalMode": "ci-policy",
+      "commandId": "db.migrate.deploy",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "db.migrate.deploy",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "db.migrate.deploy",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "ddl"
+    },
+    {
       "approvalMode": "human",
       "commandId": "repair.execute",
       "commandVersion": "1",

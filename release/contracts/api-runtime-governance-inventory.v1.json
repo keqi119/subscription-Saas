@@ -271,6 +271,7 @@
         "scripts/stage1-clean-acceptance-cli-core.mjs"
       ],
       "runnerCommandId": "stage1.billing-maintenance.evidence@1",
+      "runnerRegistrationStatus": "planned",
       "capabilityProfile": "evidence",
       "migrationOwner": "release-engineering",
       "callers": [
@@ -312,6 +313,7 @@
       "entrypoint": "scripts/prisma-migration-checksums.mjs",
       "dependencyClosure": ["scripts/prisma-migration-checksums.mjs"],
       "runnerCommandId": "db.schema.verify@1",
+      "runnerRegistrationStatus": "registered",
       "capabilityProfile": "verify",
       "migrationOwner": "release-engineering",
       "callers": [
@@ -357,6 +359,7 @@
         "scripts/stage1-active-source-facts-repair.mjs"
       ],
       "runnerCommandId": "stage1.active-source-facts.repair@1",
+      "runnerRegistrationStatus": "planned",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [
@@ -405,6 +408,7 @@
         "scripts/stage1-clean-acceptance-cli-core.mjs"
       ],
       "runnerCommandId": "stage1.clean-acceptance.baseline@1",
+      "runnerRegistrationStatus": "planned",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [
@@ -453,6 +457,7 @@
         "scripts/stage1-clean-acceptance-target-validator.mjs"
       ],
       "runnerCommandId": "stage1.acceptance.target.verify@1",
+      "runnerRegistrationStatus": "planned",
       "capabilityProfile": "verify",
       "migrationOwner": "release-engineering",
       "callers": [
@@ -498,6 +503,7 @@
         "scripts/subscription-segment-bootstrap-core.mjs"
       ],
       "runnerCommandId": "stage1.contract-change.bootstrap@1",
+      "runnerRegistrationStatus": "planned",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [
@@ -542,6 +548,7 @@
         "scripts/stage1-return-closure-backfill.mjs"
       ],
       "runnerCommandId": "stage1.return-closure.backfill@1",
+      "runnerRegistrationStatus": "planned",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [
@@ -579,6 +586,7 @@
         "scripts/stage1-staging-invalid-test-order-retirement.mjs"
       ],
       "runnerCommandId": "stage1.invalid-test-order.retire@1",
+      "runnerRegistrationStatus": "planned",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [
@@ -618,6 +626,7 @@
         "scripts/stage1-task9-preflight-governance.mjs"
       ],
       "runnerCommandId": "stage1.task9.preflight@1",
+      "runnerRegistrationStatus": "planned",
       "capabilityProfile": "verify",
       "migrationOwner": "release-engineering",
       "callers": [
@@ -655,6 +664,7 @@
         "scripts/stage1c-period-backfill.mjs"
       ],
       "runnerCommandId": "stage1.period.backfill@1",
+      "runnerRegistrationStatus": "planned",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [
@@ -699,6 +709,7 @@
         "scripts/subscription-segment-bootstrap.mjs"
       ],
       "runnerCommandId": "subscription.segment.bootstrap@1",
+      "runnerRegistrationStatus": "planned",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [

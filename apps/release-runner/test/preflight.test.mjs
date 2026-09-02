@@ -18,7 +18,8 @@ function fixture(overrides = {}) {
     capabilityProfile: "verify",
     allowedEnvironments: ["ci-fresh", "ci-snapshot", "staging"],
     prohibitedEnvironments: ["production"],
-    approvalMode: "none"
+    approvalMode: "none",
+    allowedExecutionScopes: ["full-rc", "verify"]
   };
   const buildProof = {
     schemaVersion: "build-proof.v1",
@@ -124,6 +125,11 @@ for (const [name, mutate, code] of [
     "RUNNER_ENVIRONMENT_UNKNOWN"
   ],
   ["capability", (f) => (f.request.capabilityProfile = "repair"), "RUNNER_CAPABILITY_MISMATCH"],
+  [
+    "execution scope",
+    (f) => (f.request.executionScope = "repair"),
+    "RUNNER_EXECUTION_SCOPE_PROHIBITED"
+  ],
   [
     "mutable image identity",
     (f) => (f.request.actualRunnerDigest = "runner:latest"),

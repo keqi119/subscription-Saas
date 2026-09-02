@@ -39,6 +39,7 @@
         "allowedEnvironments",
         "prohibitedEnvironments",
         "approvalMode",
+        "allowedExecutionScopes",
         "supports",
         "lock",
         "timeoutMs",
@@ -66,6 +67,24 @@
           "items": { "$ref": "#/$defs/environment" }
         },
         "approvalMode": { "enum": ["none", "ci-policy", "human"] },
+        "approvalModeOverrides": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ci-fresh": { "enum": ["none", "ci-policy", "human"] },
+            "ci-snapshot": { "enum": ["none", "ci-policy", "human"] },
+            "staging": { "enum": ["none", "ci-policy", "human"] },
+            "production": { "enum": ["none", "ci-policy", "human"] }
+          }
+        },
+        "allowedExecutionScopes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["full-rc", "migration-schema", "verify", "repair", "fixture", "evidence"]
+          }
+        },
         "supports": {
           "type": "object",
           "additionalProperties": false,

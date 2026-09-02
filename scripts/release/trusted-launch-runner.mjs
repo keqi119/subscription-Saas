@@ -51,7 +51,7 @@ async function appendLauncherState(journal, state) {
   }
 }
 
-function approvalExpected({ command, request, approvalPolicy }) {
+function approvalExpected({ command, request, approvalPolicy, approvalMode }) {
   const required = [
     "baselineManifestIdentityDigest",
     "baselineManifestDigest",
@@ -75,7 +75,7 @@ function approvalExpected({ command, request, approvalPolicy }) {
     inputDigest: request.inputDigest,
     planDigest: request.planDigest,
     approvalPolicyDigest: sha256Canonical(approvalPolicy),
-    approvalMode: command.approvalMode,
+    approvalMode,
     environmentClass: request.environmentClass,
     dataImpact: command.dataImpact
   });
@@ -132,8 +132,9 @@ export async function trustedLaunchRunner({
   }
 
   // This trust-root and target-intent check intentionally happens before any approval or secret I/O.
+  let preflightDecision;
   try {
-    verifyPreflight({ command, request, policy: targetPolicy });
+    preflightDecision = verifyPreflight({ command, request, policy: targetPolicy });
   } catch (error) {
     const rejected = transitionExecution(executionState, {
       type: "PREFLIGHT_REJECTED",
@@ -146,9 +147,10 @@ export async function trustedLaunchRunner({
   }
 
   let approvalDecision;
-  if (command.approvalMode === "none") {
+  if (preflightDecision.approvalMode === "none") {
+    const readOnlyDryRun = request.phase === "dry-run" && command.supports?.dryRun === true;
     if (
-      command.dataImpact !== "read-only" ||
+      (command.dataImpact !== "read-only" && !readOnlyDryRun) ||
       approvalRecord !== undefined ||
       approvalAttestation !== undefined ||
       githubClient !== undefined
@@ -156,7 +158,7 @@ export async function trustedLaunchRunner({
       throw launchError("RUNNER_APPROVAL_MODE_INVALID");
     }
   } else {
-    if (approvalRecord?.approvalMode !== command.approvalMode) {
+    if (approvalRecord?.approvalMode !== preflightDecision.approvalMode) {
       throw launchError("APPROVAL_MODE_MISMATCH");
     }
     if (
@@ -188,7 +190,12 @@ export async function trustedLaunchRunner({
       attestationVerifier: approvalAttestationVerifier,
       custodyReceipt: approvalCustodyReceipt,
       verifiedRevocations,
-      expected: approvalExpected({ command, request, approvalPolicy }),
+      expected: approvalExpected({
+        command,
+        request,
+        approvalPolicy,
+        approvalMode: preflightDecision.approvalMode
+      }),
       now
     });
   }

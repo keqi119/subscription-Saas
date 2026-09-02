@@ -58,6 +58,11 @@ test("every discovered formal caller is owned and routed to one fixed Runner com
       true
     );
   }
+  assert.equal(
+    inventory.commands.find(({ runnerCommandId }) => runnerCommandId === "db.schema.verify@1")
+      ?.runnerRegistrationStatus,
+    "registered"
+  );
 });
 
 test("source-only assets are non-executable and the target API allowlist rejects governance tools", async () => {

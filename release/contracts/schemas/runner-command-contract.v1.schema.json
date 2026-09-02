@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runner-command-contract.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "commandId",
+    "commandVersion",
+    "interface",
+    "capabilityProfile",
+    "databaseRole",
+    "dataImpact",
+    "approvalByEnvironment",
+    "allowedExecutionScopes",
+    "inputSchema",
+    "planSchema",
+    "outputSchema",
+    "lock",
+    "tools",
+    "timeoutMs",
+    "cancellation",
+    "idempotency",
+    "postconditions",
+    "evidenceSchema",
+    "owner",
+    "exitCondition"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "runner-command-contract.v1" },
+    "commandId": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" },
+    "commandVersion": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "interface": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "capabilityProfile": { "enum": ["verify", "migrate", "repair", "fixture", "evidence"] },
+    "databaseRole": { "type": "string", "minLength": 1 },
+    "dataImpact": { "enum": ["read-only", "ddl", "controlled-dml", "test-fixture"] },
+    "approvalByEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ci-fresh", "ci-snapshot", "staging"],
+      "properties": {
+        "ci-fresh": { "enum": ["none", "ci-policy", "human"] },
+        "ci-snapshot": { "enum": ["none", "ci-policy", "human"] },
+        "staging": { "enum": ["none", "ci-policy", "human"] }
+      }
+    },
+    "allowedExecutionScopes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["full-rc", "migration-schema", "verify", "repair", "fixture", "evidence"]
+      }
+    },
+    "inputSchema": { "type": "string", "minLength": 1 },
+    "planSchema": { "type": ["string", "null"] },
+    "outputSchema": { "type": "string", "minLength": 1 },
+    "selection": { "type": "string", "minLength": 1 },
+    "lock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "order", "transactionBoundary"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "order": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "transactionBoundary": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prisma", "psql", "postgresql"],
+      "properties": {
+        "prisma": { "type": "string", "minLength": 1 },
+        "psql": { "type": "string", "minLength": 1 },
+        "postgresql": { "type": "string", "minLength": 1 }
+      }
+    },
+    "timeoutMs": { "type": "integer", "minimum": 1 },
+    "cancellation": { "type": "string", "minLength": 1 },
+    "idempotency": { "type": "string", "minLength": 1 },
+    "checksums": { "type": "string", "minLength": 1 },
+    "postconditions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "evidenceSchema": { "type": "string", "minLength": 1 },
+    "owner": { "type": "string", "minLength": 1 },
+    "exitCondition": { "type": "string", "minLength": 1 }
+  }
+}

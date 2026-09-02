@@ -46,6 +46,11 @@ export function registeredCommand(registry, commandKey) {
   return command;
 }
 
+export function commandApprovalMode(command, environmentClass, phase) {
+  if (phase === "dry-run" && command.supports?.dryRun === true) return "none";
+  return command.approvalModeOverrides?.[environmentClass] ?? command.approvalMode;
+}
+
 export function assertCommandVersionEvolution(previous, next) {
   const previousByKey = new Map(
     previous.commands.map((command) => [

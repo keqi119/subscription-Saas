@@ -7,6 +7,7 @@ import {
   transitionExecution
 } from "../../packages/release-foundation/src/index.mjs";
 import {
+  commandApprovalMode,
   loadCommandRegistry,
   loadTargetPolicies
 } from "../../apps/release-runner/src/command-registry.mjs";
@@ -239,7 +240,7 @@ async function launchFixture({
     approvalPolicyDigest: sha256Canonical(policy)
   };
   let record = approvalRecord(policy, { bindings });
-  if (command.approvalMode === "human") {
+  if (commandApprovalMode(command, request.environmentClass, request.phase) === "human") {
     const authority = policy.authorities.human;
     record = approvalRecord(policy, {
       approvalMode: "human",

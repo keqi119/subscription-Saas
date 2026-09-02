@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "db.schema.verify",
+  "commandVersion": "1",
+  "interface": {
+    "verify": "verifySchema(context,input):Promise<SchemaObservationV1>"
+  },
+  "capabilityProfile": "verify",
+  "databaseRole": "verify",
+  "dataImpact": "read-only",
+  "approvalByEnvironment": {
+    "ci-fresh": "none",
+    "ci-snapshot": "none",
+    "staging": "none"
+  },
+  "allowedExecutionScopes": ["full-rc", "migration-schema"],
+  "inputSchema": "schema-verification-input.v1",
+  "planSchema": null,
+  "outputSchema": "schema-observation.v1",
+  "lock": { "id": "none", "order": [], "transactionBoundary": "read-only observation" },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 300000,
+  "cancellation": "cancel read-only statements and emit a failed proof",
+  "idempotency": "repeated observations have no database side effect",
+  "postconditions": [
+    "migration-head-equals-catalog-head",
+    "migration-checksums-match",
+    "schema-diff-zero",
+    "schema-owner-matches",
+    "extensions-allowed",
+    "statement-log-read-only"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "permanent release verification capability"
+}

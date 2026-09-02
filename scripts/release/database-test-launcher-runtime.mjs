@@ -619,6 +619,10 @@ async function prismaCommand(secret, arguments_, timeoutMs, { snapshotSchemaDiff
   );
 }
 
+export function prismaPostSchemaArguments() {
+  return ["migrate", "diff", "--from-empty", "--to-config-datasource", "--script"];
+}
+
 async function generatePrismaClient() {
   const result = await runProcess(
     "pnpm",
@@ -1172,15 +1176,7 @@ export async function executeLauncherRequest({
               );
               const schemaScript = await prismaCommand(
                 secret,
-                [
-                  "migrate",
-                  "diff",
-                  "--from-empty",
-                  "--to-config-datasource",
-                  "--script",
-                  "--schema",
-                  "prisma/schema.prisma"
-                ],
+                prismaPostSchemaArguments(),
                 execution.timeoutMs
               );
               databaseObservations.push({

@@ -128,6 +128,17 @@ test("launcher resolves the repository independently from the caller working dir
   assert.equal(resolveLauncherRepositoryRoot(moduleUrl), repositoryRoot);
 });
 
+test("post-schema observation emits Prisma 7 compatible migrate diff arguments", async () => {
+  const runtime = await import("./database-test-launcher-runtime.mjs");
+  assert.deepEqual(runtime.prismaPostSchemaArguments(), [
+    "migrate",
+    "diff",
+    "--from-empty",
+    "--to-config-datasource",
+    "--script"
+  ]);
+});
+
 test("adapters reject caller paths, missing values, duplicates, and unsupported concurrency", async () => {
   for (const argv of [
     ["--suite-id", "release.launcher.fixture", "--chain"],

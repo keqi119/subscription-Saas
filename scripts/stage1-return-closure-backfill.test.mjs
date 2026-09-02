@@ -31,9 +31,7 @@ test("classifies legacy URLs without fabricating file hashes and compiles exact 
     "https://legacy.test/a.jpg?token=secret#fragment"
   );
   assert.equal(Object.hasOwn(report.legacyEvidenceLinks[0], "contentSha256"), false);
-  const mileageClause = report.clauseSnapshots.find(
-    (item) => item.clauseCode === "OVER_MILEAGE"
-  );
+  const mileageClause = report.clauseSnapshots.find((item) => item.clauseCode === "OVER_MILEAGE");
   assert.deepEqual(mileageClause.pricingSnapshot, {
     includedQuantity: 18000,
     monthlyIncludedQuantity: 1500,
@@ -41,11 +39,7 @@ test("classifies legacy URLs without fabricating file hashes and compiles exact 
     unitPriceCents: 125
   });
   assert.equal(mileageClause.status, "EXECUTABLE");
-  assert.ok(
-    report.clauseSnapshots.some(
-      (item) => item.clauseCode === "DAMAGE_VEHICLE_EXTERIOR"
-    )
-  );
+  assert.ok(report.clauseSnapshots.some((item) => item.clauseCode === "DAMAGE_VEHICLE_EXTERIOR"));
   assert.equal(report.financialUpdates[0].to, "COLLECTION_PENDING");
   assert.deepEqual(
     report.manualReview.map((item) => item.code),
@@ -57,9 +51,7 @@ test("missing exact price inputs is manual review rather than a default price", 
   const snapshot = fixture();
   snapshot.contracts[0].contractSnapshot = { contentTemplate: "损伤费用另行确认", order: {} };
   const report = classifyStage1ReturnClosureBackfill(snapshot);
-  const mileageClause = report.clauseSnapshots.find(
-    (item) => item.clauseCode === "OVER_MILEAGE"
-  );
+  const mileageClause = report.clauseSnapshots.find((item) => item.clauseCode === "OVER_MILEAGE");
   assert.equal(mileageClause.status, "MANUAL_CLAUSE_REVIEW_REQUIRED");
   assert.equal(mileageClause.pricingSnapshot.unitPriceCents, undefined);
   assert.ok(report.manualReview.some((item) => item.code === "MANUAL_CLAUSE_REVIEW_REQUIRED"));
@@ -153,7 +145,9 @@ test("apply quarantines manual-review closures while applying clean closure fact
     appliedClassification.financialUpdates.map((item) => item.closureCaseId),
     ["closure-2"]
   );
-  assert.ok(appliedClassification.clauseSnapshots.every((item) => item.contractId === "contract-2"));
+  assert.ok(
+    appliedClassification.clauseSnapshots.every((item) => item.contractId === "contract-2")
+  );
   assert.deepEqual(result.report.applied, { safeClosures: ["closure-2"] });
 });
 
@@ -201,9 +195,7 @@ test("quarantines a closure when its signed contract file has no trusted hash", 
   snapshot.audits = [];
   const report = classifyStage1ReturnClosureBackfill(snapshot);
   assert.ok(
-    report.manualReview.some(
-      (item) => item.code === "MISSING_SIGNED_CONTRACT_FILE_AUTHORITY"
-    )
+    report.manualReview.some((item) => item.code === "MISSING_SIGNED_CONTRACT_FILE_AUTHORITY")
   );
   assert.deepEqual(report.quarantinedClosureIds, ["closure-1"]);
 });
@@ -213,9 +205,7 @@ test("does not trust a generated draft hash without an archived-contract audit",
   snapshot.audits = [];
   const report = classifyStage1ReturnClosureBackfill(snapshot);
   assert.ok(
-    report.manualReview.some(
-      (item) => item.code === "MISSING_SIGNED_CONTRACT_FILE_AUTHORITY"
-    )
+    report.manualReview.some((item) => item.code === "MISSING_SIGNED_CONTRACT_FILE_AUTHORITY")
   );
   assert.deepEqual(report.quarantinedClosureIds, ["closure-1"]);
 });
@@ -225,9 +215,7 @@ test("does not trust a signed-contract audit attached to another contract", () =
   snapshot.audits[0].entityId = "another-contract";
   const report = classifyStage1ReturnClosureBackfill(snapshot);
   assert.ok(
-    report.manualReview.some(
-      (item) => item.code === "MISSING_SIGNED_CONTRACT_FILE_AUTHORITY"
-    )
+    report.manualReview.some((item) => item.code === "MISSING_SIGNED_CONTRACT_FILE_AUTHORITY")
   );
 });
 
@@ -247,9 +235,7 @@ test("uses a trusted signed-contract audit hash as an explicit file authority up
   });
   const report = classifyStage1ReturnClosureBackfill(snapshot);
   assert.equal(
-    report.manualReview.some(
-      (item) => item.code === "MISSING_SIGNED_CONTRACT_FILE_AUTHORITY"
-    ),
+    report.manualReview.some((item) => item.code === "MISSING_SIGNED_CONTRACT_FILE_AUTHORITY"),
     false
   );
   assert.deepEqual(report.fileAuthorityUpdates, [
@@ -283,6 +269,32 @@ test("apply preflights every historical publication before the first write", asy
     /STAGE1_RETURN_CLOSURE_BACKFILL_PUBLICATION_PREFLIGHT_FAILED/
   );
   assert.equal(writes, 0);
+});
+
+test("the DML backfill never validates the publication constraint", async () => {
+  let ddlCalls = 0;
+  const client = {
+    $executeRawUnsafe: async () => {
+      ddlCalls += 1;
+      throw new Error("DDL_MUST_NOT_RUN");
+    },
+    $queryRawUnsafe: async () => [{ missingCount: 0 }]
+  };
+  const result = await applyClassification(client, {
+    clauseSnapshots: [],
+    fileAuthorityUpdates: [],
+    financialUpdates: [],
+    legacyEvidenceLinks: [],
+    publicationValidationReady: true
+  });
+  assert.equal(ddlCalls, 0);
+  assert.deepEqual(result, {
+    batchSize: 100,
+    clauses: 0,
+    fileAuthorities: 0,
+    financial: 0,
+    legacyLinks: 0
+  });
 });
 
 test("apply persists a trusted contract audit hash with compare-and-set semantics", async () => {
@@ -322,20 +334,21 @@ test("apply rejects a concurrent legacy evidence link with the same source but d
   const client = {
     $queryRawUnsafe: async () => [{ missingCount: 0 }],
     $executeRawUnsafe: async () => undefined,
-    $transaction: async (callback) => callback({
-      vehicleReturnEvidenceLink: {
-        findUnique: async () => ({
-          closureCaseId: "different-closure",
-          damageId: "damage-1",
-          evidencePurpose: "LEGACY_EXTERNAL_REFERENCE",
-          legacyExternalReference: "https://legacy.test/a.jpg",
-          sourceId: "damage-1",
-          sourceKey: "legacy-photo:0",
-          sourceType: "VEHICLE_RETURN_DAMAGE",
-          visibility: "CUSTOMER_VISIBLE"
-        })
-      }
-    })
+    $transaction: async (callback) =>
+      callback({
+        vehicleReturnEvidenceLink: {
+          findUnique: async () => ({
+            closureCaseId: "different-closure",
+            damageId: "damage-1",
+            evidencePurpose: "LEGACY_EXTERNAL_REFERENCE",
+            legacyExternalReference: "https://legacy.test/a.jpg",
+            sourceId: "damage-1",
+            sourceKey: "legacy-photo:0",
+            sourceType: "VEHICLE_RETURN_DAMAGE",
+            visibility: "CUSTOMER_VISIBLE"
+          })
+        }
+      })
   };
 
   await assert.rejects(
@@ -368,23 +381,26 @@ test("apply rejects a financial projection when bill authority changed after cla
   const client = {
     $queryRawUnsafe: async () => [{ missingCount: 0 }],
     $executeRawUnsafe: async () => undefined,
-    $transaction: async (callback) => callback({
-      receivableBill: {
-        findMany: async () => [{
-          deletedAt: null,
-          id: "bill-1",
-          orderId: "order-1",
-          paidAmount: 500,
-          remainingAmount: 500
-        }]
-      },
-      subscriptionClosureCase: {
-        findUnique: async () => ({ orderId: "order-1", version: 3 })
-      },
-      subscriptionClosureReceivableDisposition: {
-        findMany: async () => clean.dispositions
-      }
-    })
+    $transaction: async (callback) =>
+      callback({
+        receivableBill: {
+          findMany: async () => [
+            {
+              deletedAt: null,
+              id: "bill-1",
+              orderId: "order-1",
+              paidAmount: 500,
+              remainingAmount: 500
+            }
+          ]
+        },
+        subscriptionClosureCase: {
+          findUnique: async () => ({ orderId: "order-1", version: 3 })
+        },
+        subscriptionClosureReceivableDisposition: {
+          findMany: async () => clean.dispositions
+        }
+      })
   };
   await assert.rejects(
     applyClassification(client, {

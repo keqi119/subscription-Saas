@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "stage1.return-closure.backfill",
+  "commandVersion": "1",
+  "interface": {
+    "plan": "planReturnClosureBackfill(context,input):Promise<ReturnClosurePlanV1>",
+    "apply": "applyReturnClosureBackfill(context,approved):Promise<PostStateObservationV1>",
+    "reconcile": "reconcileReturnClosureBackfill(context,prior):Promise<ReconcileResultV1>"
+  },
+  "capabilityProfile": "repair",
+  "databaseRole": "repair",
+  "dataImpact": "controlled-dml",
+  "approvalByEnvironment": {
+    "ci-fresh": "ci-policy",
+    "ci-snapshot": "ci-policy",
+    "staging": "human"
+  },
+  "allowedExecutionScopes": ["full-rc", "repair"],
+  "inputSchema": "stage1-return-closure-backfill-input.v1",
+  "planSchema": "deterministic-plan.v1#stage1-return-closure-backfill-plan.v1",
+  "outputSchema": "post-state-observation.v1",
+  "selection": "all deterministic non-quarantined return Closure evidence, clause, file-authority and financial-projection candidates",
+  "lock": {
+    "id": "stage1-return-closure-backfill:batched-cas",
+    "order": ["publication readiness read", "batches of 100 item-level lookup/CAS operations"],
+    "transactionBoundary": "one repeatable-read transaction per deterministic batch; earlier batches remain committed if a later batch fails"
+  },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 300000,
+  "cancellation": "cancel before each batch commit; interruption after apply begins is outcome-unknown and requires same-operation reconcile",
+  "idempotency": "source keys, clause keys, file hash CAS and Closure version plus financial-authority fingerprints prevent duplicate or stale DML",
+  "checksums": "classification digest binds exact Closure, order, return evidence, clause, file, expected version and bill/disposition authority facts",
+  "postconditions": [
+    "approved-classification-recomputed-before-write",
+    "exact-dml-effects-applied",
+    "financial-authority-fingerprints-preserved",
+    "payment-writeoff-authority-unchanged",
+    "statement-log-has-no-ddl",
+    "replay-has-no-duplicate-side-effects"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after historical return Closure facts no longer require Stage1 backfill"
+}

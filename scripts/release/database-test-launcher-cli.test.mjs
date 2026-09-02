@@ -200,6 +200,34 @@ test("source database launcher explicitly pulls the pinned image before a pull-d
   ]);
 });
 
+test("source database launcher classifies a missing local image without exposing Docker stderr", async () => {
+  const imageContract = {
+    repository: "docker.io/library/postgres",
+    resolvedDigest: `sha256:${"2".repeat(64)}`,
+    platform: "linux/amd64"
+  };
+  let calls = 0;
+
+  await assert.rejects(
+    startCluster("missing-local-image-test", imageContract, {}, {
+      executeDocker: async ({ args }) => {
+        calls += 1;
+        if (args[0] === "pull") return "pulled";
+        throw Object.assign(new Error("redacted"), {
+          code: "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED",
+          diagnostic: `Unable to find image '${imageContract.repository}@${imageContract.resolvedDigest}' locally`
+        });
+      }
+    }),
+    (error) => {
+      assert.equal(error.code, "DATABASE_LAUNCHER_CONTAINER_IMAGE_NOT_LOCAL");
+      assert.equal(JSON.stringify(error).includes(imageContract.resolvedDigest), false);
+      return true;
+    }
+  );
+  assert.equal(calls, 2);
+});
+
 test("post-schema observation emits Prisma 7 compatible migrate diff arguments", async () => {
   const runtime = await import("./database-test-launcher-runtime.mjs");
   assert.deepEqual(runtime.prismaPostSchemaArguments(), [

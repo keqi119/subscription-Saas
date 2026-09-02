@@ -161,6 +161,24 @@ async function waitForPostgres(containerId, username) {
   throw runtimeError("DATABASE_LAUNCHER_POSTGRES_NOT_READY");
 }
 
+function classifiedContainerStartError(error) {
+  if (error?.code !== "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED") return error;
+  const diagnostic = typeof error.diagnostic === "string" ? error.diagnostic.toLowerCase() : "";
+  if (/unable to find image|no such image/u.test(diagnostic)) {
+    return runtimeError("DATABASE_LAUNCHER_CONTAINER_IMAGE_NOT_LOCAL");
+  }
+  if (/invalid mount config|bind source path does not exist|mounts denied/u.test(diagnostic)) {
+    return runtimeError("DATABASE_LAUNCHER_CONTAINER_SECRET_MOUNT_FAILED");
+  }
+  if (/port is already allocated|address already in use/u.test(diagnostic)) {
+    return runtimeError("DATABASE_LAUNCHER_CONTAINER_PORT_BIND_FAILED");
+  }
+  if (/unknown flag.*--pull|invalid value.*--pull/u.test(diagnostic)) {
+    return runtimeError("DATABASE_LAUNCHER_CONTAINER_PULL_POLICY_UNSUPPORTED");
+  }
+  return runtimeError("DATABASE_LAUNCHER_CONTAINER_START_FAILED");
+}
+
 export async function startCluster(
   runId,
   imageContract,
@@ -181,8 +199,9 @@ export async function startCluster(
   let containerId;
   try {
     await pullExactPostgresImage({ image, executeDocker });
-    containerId = (
-      await executeDocker({
+    let containerOutput;
+    try {
+      containerOutput = await executeDocker({
         purpose: "run",
         args: [
           "run",
@@ -208,8 +227,11 @@ export async function startCluster(
           "127.0.0.1::5432",
           image
         ]
-      })
-    ).trim();
+      });
+    } catch (error) {
+      throw classifiedContainerStartError(error);
+    }
+    containerId = containerOutput.trim();
     if (!/^[0-9a-f]{64}$/.test(containerId)) {
       throw runtimeError("DATABASE_LAUNCHER_CONTAINER_ID_INVALID");
     }

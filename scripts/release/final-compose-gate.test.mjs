@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { sha256Canonical } from "../../packages/release-foundation/src/index.mjs";
+
 import {
   API_DATABASE_SESSION_SQL,
   assertIndependentChainEvidence,
@@ -123,6 +125,10 @@ function evidence(chain, character) {
       }
     ],
     webClient: {
+      schemaVersion: "web-public-api-evidence.v1",
+      operationId: uuid(character === "9" ? "a" : "b"),
+      buildProofDigest: sha256Canonical(proof),
+      manifestDigest: digest(character),
       webOrigin: "https://release-web.example.test",
       publicApiBase: "https://release-api.example.test/api",
       embeddedApiBase: "https://release-api.example.test/api",
@@ -130,6 +136,9 @@ function evidence(chain, character) {
       corsAllowOrigin: "https://release-web.example.test",
       responseStatus: 200,
       bundleContainsEmbeddedApiBase: true,
+      mockedNetwork: false,
+      traceDigest: digest(chain === "fresh" ? "d" : "f"),
+      observedAt: "2026-09-03T01:00:00.000Z",
       evidenceDigest: digest(chain === "fresh" ? "8" : "c")
     },
     custodyReceiptDigests:
@@ -332,7 +341,8 @@ test("records a pre-write infrastructure failure and permits only a full retry o
     () =>
       assertLegalFinalComposeRetry(previous, {
         ...current,
-        buildProofDigest: digest("0")
+        buildProofDigest: digest("0"),
+        webClient: { ...current.webClient, buildProofDigest: digest("0") }
       }),
     { code: "FINAL_COMPOSE_RETRY_INPUT_MISMATCH" }
   );

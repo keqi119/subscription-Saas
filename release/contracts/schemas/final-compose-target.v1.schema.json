@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "final-compose-target.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "chain",
+    "hostname",
+    "hostAccessHostname",
+    "port",
+    "databaseName",
+    "databaseOid",
+    "databaseIdentityFingerprint",
+    "apiRuntimeRole",
+    "testRuntimeRole",
+    "migrationRole",
+    "verifyRole",
+    "apiRuntimeCredentialFingerprint",
+    "testRuntimeCredentialFingerprint",
+    "verifyCredentialFingerprint",
+    "marker",
+    "tlsMode"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "final-compose-target.v1" },
+    "chain": { "enum": ["fresh", "snapshot"] },
+    "hostname": { "const": "postgres" },
+    "hostAccessHostname": { "const": "127.0.0.1" },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "databaseName": { "type": "string", "pattern": "^s1ci_[0-9a-f]{24}$" },
+    "databaseOid": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "databaseIdentityFingerprint": { "$ref": "#/$defs/digest" },
+    "apiRuntimeRole": { "type": "string", "pattern": "^s1a_[0-9a-f]{24}$" },
+    "testRuntimeRole": { "type": "string", "pattern": "^s1r_[0-9a-f]{24}$" },
+    "migrationRole": { "type": "string", "pattern": "^s1m_[0-9a-f]{24}$" },
+    "verifyRole": { "type": "string", "pattern": "^s1v_[0-9a-f]{24}$" },
+    "apiRuntimeCredentialFingerprint": { "$ref": "#/$defs/digest" },
+    "testRuntimeCredentialFingerprint": { "$ref": "#/$defs/digest" },
+    "verifyCredentialFingerprint": { "$ref": "#/$defs/digest" },
+    "marker": { "type": "string", "pattern": "^subscription-s1-ephemeral/v1:" },
+    "tlsMode": { "const": "require" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

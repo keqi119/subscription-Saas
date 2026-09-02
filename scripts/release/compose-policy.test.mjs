@@ -44,6 +44,7 @@ function validConfig() {
         profiles: ["api"],
         environment: {
           RELEASE_FINAL_GATE: "true",
+          DATABASE_URL: "postgresql://runtime:policy-only@postgres:5432/release_gate",
           DATABASE_MANIFEST_ID: "manifest-ab12",
           DATABASE_SESSION_NONCE: "session-cd34"
         },
@@ -160,6 +161,24 @@ test("rejects capability injection into the closed database-test execution mode"
   assert.throws(() => verifyComposeConfig(config, { expectedImages: images }), {
     code: "COMPOSE_RUNNER_EXECUTION_MODE_INVALID"
   });
+});
+
+test("rejects governance credentials on API, Web or browser services", () => {
+  for (const [service, key] of [
+    ["api", "MIGRATION_DATABASE_PASSWORD"],
+    ["web", "DATABASE_URL"],
+    ["playwright", "RUNNER_CAPABILITY_SECRET"]
+  ]) {
+    const config = validConfig();
+    config.services[service].environment ??= {};
+    config.services[service].environment[key] = "forbidden";
+    assert.throws(() => verifyComposeConfig(config, { expectedImages: images }), {
+      code:
+        service === "api"
+          ? "COMPOSE_API_SESSION_IDENTITY_MISSING"
+          : "COMPOSE_APPLICATION_CREDENTIAL_SCOPE_INVALID"
+    });
+  }
 });
 
 test("rejects an incomplete final release bundle", () => {

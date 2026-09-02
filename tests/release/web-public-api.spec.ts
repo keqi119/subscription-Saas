@@ -12,12 +12,21 @@ function digest(value: unknown) {
   return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 }
 
+function requiredRaw(name: string) {
+  const value = process.env[name];
+  if (!value) throw new Error(`RELEASE_CLIENT_GATE_INPUT_MISSING:${name}`);
+  return value;
+}
+
 test("built portal calls the Manifest public API base through its embedded client", async ({
   page
 }) => {
   const webBase = required("RELEASE_GATE_WEB_BASE");
   const publicApiBase = required("RELEASE_GATE_PUBLIC_API_BASE");
   const embeddedApiBase = required("RELEASE_GATE_EMBEDDED_API_BASE");
+  const operationId = requiredRaw("RELEASE_GATE_OPERATION_ID");
+  const buildProofDigest = requiredRaw("RELEASE_GATE_BUILD_PROOF_DIGEST");
+  const manifestDigest = requiredRaw("RELEASE_GATE_MANIFEST_DIGEST");
   const expectedWebOrigin = new URL(webBase).origin;
   const expectedCatalogUrl = new URL(
     "portal/catalog/model-definitions",
@@ -59,6 +68,9 @@ test("built portal calls the Manifest public API base through its embedded clien
 
   const evidence = {
     schemaVersion: "web-public-api-evidence.v1",
+    operationId,
+    buildProofDigest,
+    manifestDigest,
     webOrigin: expectedWebOrigin,
     publicApiBase,
     embeddedApiBase,
@@ -66,6 +78,7 @@ test("built portal calls the Manifest public API base through its embedded clien
     corsAllowOrigin: expectedWebOrigin,
     responseStatus: catalogResponse.status(),
     bundleContainsEmbeddedApiBase: true,
+    mockedNetwork: false,
     scriptSetDigest: digest(scriptUrls.sort()),
     networkSetDigest: digest([...new Set(requests)].sort()),
     observedAt: new Date().toISOString()

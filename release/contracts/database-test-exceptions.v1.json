@@ -261,6 +261,20 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "apps/release-runner/test/database-runtime-adapter.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises fixed Prisma command, migration and schema observation behavior with an injected deterministic database adapter; the protected final gate provides real PostgreSQL coverage.",
+      "scope": "runner-command-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/database-test-entrypoint.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises the closed database-test launch envelope and role-boundary enforcement with injected connectors; the protected final gate executes the same fixed manifest against real PostgreSQL.",
+      "scope": "runner-command-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "apps/release-runner/test/stage1-billing-maintenance-evidence.integration.test.mjs",
       "owner": "release-engineering",
       "reason": "Exercises bounded read-only evidence collection and immutable custody with deterministic database adapter doubles and never connects to PostgreSQL.",

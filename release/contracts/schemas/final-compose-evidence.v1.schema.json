@@ -134,6 +134,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "schemaVersion",
+        "operationId",
+        "buildProofDigest",
+        "manifestDigest",
         "publicApiBase",
         "webOrigin",
         "embeddedApiBase",
@@ -141,9 +145,16 @@
         "corsAllowOrigin",
         "responseStatus",
         "bundleContainsEmbeddedApiBase",
+        "mockedNetwork",
+        "traceDigest",
+        "observedAt",
         "evidenceDigest"
       ],
       "properties": {
+        "schemaVersion": { "const": "web-public-api-evidence.v1" },
+        "operationId": { "type": "string", "format": "uuid" },
+        "buildProofDigest": { "$ref": "#/$defs/digest" },
+        "manifestDigest": { "$ref": "#/$defs/digest" },
         "publicApiBase": { "$ref": "#/$defs/httpsUrl" },
         "webOrigin": { "$ref": "#/$defs/httpsUrl" },
         "embeddedApiBase": { "$ref": "#/$defs/httpsUrl" },
@@ -151,6 +162,11 @@
         "corsAllowOrigin": { "$ref": "#/$defs/httpsUrl" },
         "responseStatus": { "const": 200 },
         "bundleContainsEmbeddedApiBase": { "const": true },
+        "mockedNetwork": { "const": false },
+        "traceDigest": { "$ref": "#/$defs/digest" },
+        "observedAt": { "$ref": "#/$defs/timestamp" },
+        "scriptSetDigest": { "$ref": "#/$defs/digest" },
+        "networkSetDigest": { "$ref": "#/$defs/digest" },
         "evidenceDigest": { "$ref": "#/$defs/digest" }
       }
     },

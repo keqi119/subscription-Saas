@@ -194,10 +194,30 @@ export function verifyComposeConfig(config, { expectedImages = {}, expectedSourc
   const apiEnvironment = environmentMap(config.services.api.environment);
   if (
     apiEnvironment.RELEASE_FINAL_GATE !== "true" ||
+    !apiEnvironment.DATABASE_URL ||
     !apiEnvironment.DATABASE_MANIFEST_ID ||
-    !apiEnvironment.DATABASE_SESSION_NONCE
+    !apiEnvironment.DATABASE_SESSION_NONCE ||
+    Object.keys(apiEnvironment).some(
+      (key) =>
+        key !== "DATABASE_URL" &&
+        /(?:DATABASE|CREDENTIAL|RUNNER|MIGRATION|VERIFY|TEST).*?(?:URL|SECRET|PASSWORD|CREDENTIAL)/iu.test(
+          key
+        )
+    )
   ) {
     throw policyError("COMPOSE_API_SESSION_IDENTITY_MISSING");
+  }
+  for (const serviceName of ["web", "playwright"]) {
+    const environment = environmentMap(config.services[serviceName].environment);
+    if (
+      Object.keys(environment).some((key) =>
+        /(?:DATABASE|CREDENTIAL|PASSWORD|SECRET|RUNNER_CAPABILITY)/iu.test(key)
+      )
+    ) {
+      throw policyError("COMPOSE_APPLICATION_CREDENTIAL_SCOPE_INVALID", {
+        service: serviceName
+      });
+    }
   }
 
   return Object.freeze({

@@ -102,7 +102,7 @@ function assertTestCounts(counts) {
   }
 }
 
-function assertWebClient(input) {
+function assertWebClient(input, expected = {}) {
   const expectedRequest = new URL(
     "portal/catalog/model-definitions",
     `${input.publicApiBase.replace(/\/$/u, "")}/`
@@ -112,7 +112,14 @@ function assertWebClient(input) {
     input.actualRequestUrl !== expectedRequest ||
     input.corsAllowOrigin !== input.webOrigin ||
     input.responseStatus !== 200 ||
-    input.bundleContainsEmbeddedApiBase !== true
+    input.bundleContainsEmbeddedApiBase !== true ||
+    input.mockedNetwork !== false ||
+    !digestPattern.test(input.traceDigest ?? "") ||
+    !Number.isFinite(Date.parse(input.observedAt ?? "")) ||
+    Object.hasOwn(input, "terminalStatus") ||
+    (expected.operationId && input.operationId !== expected.operationId) ||
+    (expected.buildProofDigest && input.buildProofDigest !== expected.buildProofDigest) ||
+    (expected.manifestDigest && input.manifestDigest !== expected.manifestDigest)
   ) {
     throw gateError("WEB_PUBLIC_API_IDENTITY_MISMATCH");
   }
@@ -122,7 +129,11 @@ export function buildFinalComposeEvidence(input) {
   if (!chainNames.includes(input.chain)) throw gateError("FINAL_COMPOSE_CHAIN_INVALID");
   const releaseImages = releaseImageReferences(input.buildProof);
   assertTestCounts(input.databaseTests?.counts);
-  assertWebClient(input.webClient);
+  assertWebClient(input.webClient, {
+    operationId: input.operationId,
+    buildProofDigest: sha256Canonical(input.buildProof),
+    manifestDigest: input.manifestDigest
+  });
   const expectedApplicationName = `subscription-api/${input.apiManifestId}/${input.apiSessionNonce}`;
   if (input.apiReadiness?.applicationName !== expectedApplicationName) {
     throw gateError("API_DATABASE_SESSION_IDENTITY_MISMATCH");
@@ -180,7 +191,11 @@ export function buildFinalComposeEvidence(input) {
 export function validateFinalComposeEvidence(evidence) {
   validateContract("final-compose-evidence.v1", evidence);
   assertTestCounts(evidence.databaseTests.counts);
-  assertWebClient(evidence.webClient);
+  assertWebClient(evidence.webClient, {
+    operationId: evidence.operationId,
+    buildProofDigest: evidence.buildProofDigest,
+    manifestDigest: evidence.manifestDigest
+  });
   return true;
 }
 
@@ -388,6 +403,8 @@ export async function runFinalComposeCli(
     }
   }
   const composeConfigDigest = sha256Canonical(composeConfig);
+  const playwrightReference = composeConfig.services?.playwright?.image ?? "";
+  const playwrightImageDigest = playwrightReference.slice(playwrightReference.lastIndexOf("@") + 1);
   if (composePolicy.serviceCount < 1) throw gateError("FINAL_COMPOSE_POLICY_EMPTY");
   const initial = deepFreeze({
     chain,
@@ -410,7 +427,12 @@ export async function runFinalComposeCli(
     operationId: createId(),
     runId: createId(),
     attemptId: createId(),
-    compose: { projectName: `s1-final-${chain}`, configDigest: composeConfigDigest },
+    compose: {
+      projectName: `s1-final-${chain}`,
+      configDigest: composeConfigDigest,
+      playwrightImageDigest,
+      playwrightVersion: "1.62.1"
+    },
     composeFile,
     workspace: { launchRoot, evidenceRoot },
     priorFailureProofDigests: []

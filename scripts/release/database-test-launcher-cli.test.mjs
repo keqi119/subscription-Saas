@@ -13,6 +13,7 @@ import {
   resolveLauncherRepositoryRoot,
   runLauncherCli,
   sourceGateProvenance,
+  startCluster,
   summarizeDatabaseTestLog
 } from "./database-test-launcher-runtime.mjs";
 
@@ -155,6 +156,48 @@ test("launcher resolves the repository independently from the caller working dir
     path.join(repositoryRoot, "scripts/release/database-test-launcher-runtime.mjs")
   ).href;
   assert.equal(resolveLauncherRepositoryRoot(moduleUrl), repositoryRoot);
+});
+
+test("source database launcher explicitly pulls the pinned image before a pull-disabled run", async () => {
+  const calls = [];
+  const imageContract = {
+    repository: "docker.io/library/postgres",
+    resolvedDigest: `sha256:${"1".repeat(64)}`,
+    platform: "linux/amd64"
+  };
+
+  await assert.rejects(
+    startCluster("explicit-pull-test", imageContract, {}, {
+      executeDocker: async (input) => {
+        calls.push(input);
+        if (input.args[0] === "run") {
+          throw Object.assign(new Error("stop after observing the run contract"), {
+            code: "TEST_STOP_AFTER_RUN"
+          });
+        }
+        return "pulled";
+      }
+    }),
+    { code: "TEST_STOP_AFTER_RUN" }
+  );
+
+  assert.deepEqual(calls[0], {
+    purpose: "pull",
+    args: [
+      "pull",
+      "--platform",
+      "linux/amd64",
+      `${imageContract.repository}@${imageContract.resolvedDigest}`
+    ]
+  });
+  const runCall = calls.find(({ args }) => args[0] === "run");
+  assert.ok(runCall);
+  assert.deepEqual(runCall.args.slice(0, 4), [
+    "run",
+    "--pull=never",
+    "--detach",
+    "--platform"
+  ]);
 });
 
 test("post-schema observation emits Prisma 7 compatible migrate diff arguments", async () => {

@@ -27,7 +27,11 @@ import {
   sha256Bytes,
   sqlIdentifier
 } from "../../packages/release-foundation/src/index.mjs";
-import { executeDockerCommand, hardenOwnerOnlyFile } from "./bootstrap-controlled-postgres.mjs";
+import {
+  executeDockerCommand,
+  hardenOwnerOnlyFile,
+  pullExactPostgresImage
+} from "./bootstrap-controlled-postgres.mjs";
 
 export function resolveLauncherRepositoryRoot(moduleUrl = import.meta.url) {
   return path.resolve(path.dirname(fileURLToPath(moduleUrl)), "../..");
@@ -157,7 +161,12 @@ async function waitForPostgres(containerId, username) {
   throw runtimeError("DATABASE_LAUNCHER_POSTGRES_NOT_READY");
 }
 
-async function startCluster(runId, imageContract, policy) {
+export async function startCluster(
+  runId,
+  imageContract,
+  policy,
+  { executeDocker = executeDockerCommand } = {}
+) {
   const clusterRoot = path.join(repoRoot, ".release-local", "runs", runId, "cluster");
   await mkdir(clusterRoot, { recursive: true });
   const bootstrapPassword = randomBytes(24).toString("hex");
@@ -171,10 +180,13 @@ async function startCluster(runId, imageContract, policy) {
   const image = `${imageContract.repository}@${imageContract.resolvedDigest}`;
   let containerId;
   try {
+    await pullExactPostgresImage({ image, executeDocker });
     containerId = (
-      await executeDockerCommand({
+      await executeDocker({
+        purpose: "run",
         args: [
           "run",
+          "--pull=never",
           "--detach",
           "--platform",
           imageContract.platform,
@@ -236,7 +248,7 @@ async function startCluster(runId, imageContract, policy) {
     return { clusterRoot, containerId, hostPort, provisioner, image, target };
   } catch (error) {
     if (containerId && /^[0-9a-f]{64}$/.test(containerId)) {
-      await executeDockerCommand({ args: ["rm", "--force", containerId] }).catch(() => {});
+      await executeDocker({ args: ["rm", "--force", containerId] }).catch(() => {});
     }
     await rm(clusterRoot, { recursive: true, force: true });
     throw error;

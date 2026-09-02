@@ -762,13 +762,22 @@ export function summarizeDatabaseTestLog({ stdout, stderr }) {
     stderrSizeBytes: Buffer.byteLength(stderr)
   };
   if (!report) {
+    const releaseCodes = [
+      ...stdout.matchAll(
+        /\b(?:AMBIENT_DATABASE_URL|CLEANUP|CONTROLLED_TARGET|DATABASE|POSTGRES_IMAGE)_[A-Z0-9_]{3,96}\b/g
+      )
+    ].map(([code]) => code);
     const domainCodes = [
-      ...new Set([...stdout.matchAll(/\bINTEGRATION_[A-Z0-9_]{3,96}\b/g)].map(([code]) => code))
+      ...new Set([
+        ...[...stdout.matchAll(/\bINTEGRATION_[A-Z0-9_]{3,96}\b/g)].map(([code]) => code),
+        ...releaseCodes
+      ])
     ].slice(0, 8);
     const failureHints = [
-      ...new Set(
-        [...stdout.matchAll(/\bINTEGRATION_[A-Za-z0-9_.-]{3,240}\b/g)].map(([hint]) => hint)
-      )
+      ...new Set([
+        ...[...stdout.matchAll(/\bINTEGRATION_[A-Za-z0-9_.-]{3,240}\b/g)].map(([hint]) => hint),
+        ...releaseCodes
+      ])
     ].slice(0, 8);
     return {
       ...summary,

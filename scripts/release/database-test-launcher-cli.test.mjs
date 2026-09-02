@@ -317,6 +317,25 @@ test("TAP diagnostics retain only bounded integration error codes", () => {
   assert.equal(JSON.stringify(summary).includes("18616570212"), false);
 });
 
+test("TAP diagnostics retain bounded release database failure codes", () => {
+  const stdout = [
+    "TAP version 13",
+    "not ok 1 - provisions, migrates, isolates, and exactly cleans concurrent PostgreSQL databases",
+    "  error: 'DATABASE_LIFECYCLE_CHILD_FAILED private detail must not be retained'",
+    "  code: 'DATABASE_LIFECYCLE_CHILD_FAILED'",
+    "# tests 1",
+    "# pass 0",
+    "# fail 1",
+    "# cancelled 0",
+    "# skipped 0",
+    "# todo 0"
+  ].join("\n");
+  const summary = summarizeDatabaseTestLog({ stdout, stderr: "" });
+  assert.deepEqual(summary.domainCodes, ["DATABASE_LIFECYCLE_CHILD_FAILED"]);
+  assert.deepEqual(summary.failureHints, ["DATABASE_LIFECYCLE_CHILD_FAILED"]);
+  assert.equal(JSON.stringify(summary).includes("private detail"), false);
+});
+
 test("Vitest diagnostics retain bounded repository source stack locations", () => {
   const stdout = `${JSON.stringify({
     numTotalTests: 1,

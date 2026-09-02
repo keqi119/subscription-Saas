@@ -15,7 +15,8 @@ import {
 } from "../src/index.mjs";
 import {
   executeDockerCommand,
-  hardenOwnerOnlyFile
+  hardenOwnerOnlyFile,
+  pullExactPostgresImage
 } from "../../../scripts/release/bootstrap-controlled-postgres.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -201,7 +202,7 @@ export async function runDatabaseLifecyclePostgresContract() {
   let containerId;
   const provisioned = [];
   try {
-    await executeDockerCommand({ args: ["pull", "--platform", "linux/amd64", image] });
+    await pullExactPostgresImage({ image });
     const repoDigests = JSON.parse(
       await executeDockerCommand({
         args: ["image", "inspect", image, "--format", "{{json .RepoDigests}}"]

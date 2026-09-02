@@ -137,23 +137,92 @@ export async function insertRuntimeVehicle(tx: Tx, vehicleId: string, label: str
   return { modelDefinitionId };
 }
 
+export async function insertRuntimeSubscriptionPlan(
+  tx: Tx,
+  input: {
+    baseMonthlyFeeAmount?: bigint;
+    energyPackageId?: string;
+    label: string;
+    mileagePackageId?: string;
+    modelDefinitionId: string;
+    planId: string;
+    productId: string;
+    productVersionId: string;
+    vehiclePackageId: string;
+  }
+) {
+  const energyPackageId = input.energyPackageId ?? randomUUID();
+  const mileagePackageId = input.mileagePackageId ?? randomUUID();
+  const token = fixtureToken(input.label);
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "vehicle_package" (
+      "id", "package_no", "package_name", "product_id", "product_version_id",
+      "model_definition_id", "min_period_months", "max_period_months", "updated_at"
+    ) VALUES (
+      ${input.vehiclePackageId}::uuid, ${`${token}-VEHICLE-PACKAGE`},
+      'Runtime test vehicle package', ${input.productId}::uuid,
+      ${input.productVersionId}::uuid, ${input.modelDefinitionId}::uuid, 1, 36,
+      clock_timestamp()
+    )
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "mileage_package" (
+      "id", "package_no", "package_name", "product_id", "product_version_id",
+      "monthly_mileage_km", "over_mileage_fee_amount", "updated_at"
+    ) VALUES (
+      ${mileagePackageId}::uuid, ${`${token}-MILEAGE-PACKAGE`},
+      'Runtime test mileage package', ${input.productId}::uuid,
+      ${input.productVersionId}::uuid, 1500, 100, clock_timestamp()
+    )
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "energy_package" (
+      "id", "package_no", "package_name", "product_id", "product_version_id",
+      "monthly_energy_kwh", "updated_at"
+    ) VALUES (
+      ${energyPackageId}::uuid, ${`${token}-ENERGY-PACKAGE`},
+      'Runtime test energy package', ${input.productId}::uuid,
+      ${input.productVersionId}::uuid, 100, clock_timestamp()
+    )
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "subscription_plan" (
+      "id", "plan_no", "plan_name", "product_id", "product_version_id",
+      "vehicle_package_id", "mileage_package_id", "energy_package_id",
+      "base_monthly_fee_amount", "min_period_months", "max_period_months",
+      "status", "effective_from", "updated_at"
+    ) VALUES (
+      ${input.planId}::uuid, ${`${token}-PLAN`}, 'Runtime test subscription plan',
+      ${input.productId}::uuid, ${input.productVersionId}::uuid,
+      ${input.vehiclePackageId}::uuid, ${mileagePackageId}::uuid,
+      ${energyPackageId}::uuid, ${input.baseMonthlyFeeAmount ?? 10000n}, 1, 36,
+      'ACTIVE', DATE '2026-01-01', clock_timestamp()
+    )
+  `);
+  return { energyPackageId, mileagePackageId };
+}
+
 export async function insertRuntimeOrderGraph(
   tx: Tx,
   input: {
     applicationId?: string;
     customerId?: string;
     label: string;
+    modelDefinitionId?: string;
     orderId: string;
+    productId?: string;
+    productVersionId?: string;
+    quoteId?: string;
     salesUserId?: string;
     vehicleId?: string | null;
   }
 ) {
   const applicationId = input.applicationId ?? randomUUID();
   const customerId = input.customerId ?? randomUUID();
-  const modelDefinitionId = randomUUID();
-  const productId = randomUUID();
-  const productVersionId = randomUUID();
-  const quoteId = randomUUID();
+  const modelDefinitionId = input.modelDefinitionId ?? randomUUID();
+  const productId = input.productId ?? randomUUID();
+  const productVersionId = input.productVersionId ?? randomUUID();
+  const quoteId = input.quoteId ?? randomUUID();
   const salesUserId = input.salesUserId ?? randomUUID();
   const token = fixtureToken(input.label);
 
@@ -237,4 +306,48 @@ export async function insertRuntimeOrderGraph(
     quoteId,
     salesUserId
   };
+}
+
+export async function insertRuntimeContract(
+  tx: Tx,
+  input: {
+    contractId: string;
+    contractVersionId?: string;
+    customerId: string;
+    label: string;
+    orderId: string;
+    status?: "GENERATED" | "SIGNING" | "SIGNED" | "ARCHIVED";
+  }
+) {
+  const contractVersionId = input.contractVersionId ?? randomUUID();
+  const token = fixtureToken(input.label);
+  const status = input.status ?? "ARCHIVED";
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "contract_version" (
+      "id", "template_name", "version_no", "content_template", "effective_from", "status",
+      "updated_at"
+    ) VALUES (
+      ${contractVersionId}::uuid, ${`${token}-CONTRACT`}, '1', 'Runtime test contract',
+      DATE '2026-01-01', 'ACTIVE', clock_timestamp()
+    )
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "contract" (
+      "id", "contract_no", "order_id", "customer_id", "contract_version_id",
+      "contract_title", "contract_snapshot", "status", "signed_at", "archived_at", "updated_at"
+    ) VALUES (
+      ${input.contractId}::uuid, ${`${token}-CONTRACT`}, ${input.orderId}::uuid,
+      ${input.customerId}::uuid, ${contractVersionId}::uuid, 'Runtime test contract', '{}'::jsonb,
+      ${status}::contract_status,
+      CASE WHEN ${status} IN ('SIGNED', 'ARCHIVED') THEN clock_timestamp() ELSE NULL END,
+      CASE WHEN ${status} = 'ARCHIVED' THEN clock_timestamp() ELSE NULL END,
+      clock_timestamp()
+    )
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "subscription_order"
+       SET "contract_id" = ${input.contractId}::uuid, "updated_at" = clock_timestamp()
+     WHERE "id" = ${input.orderId}::uuid
+  `);
+  return { contractVersionId };
 }

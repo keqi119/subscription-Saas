@@ -1,6 +1,6 @@
 import { ConfigService } from "@nestjs/config";
 import { Prisma } from "@prisma/client";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { BillingAutomationService } from "../src/billing-automation/billing-automation.service";
@@ -9,8 +9,11 @@ import { BillingMaintenanceEvidenceRepository } from "../src/billing-automation/
 import { BillingMaintenanceEvidenceService } from "../src/billing-automation/billing-maintenance-evidence.service";
 import { hashBillingMaintenanceDatabaseIdentity } from "../src/billing-automation/billing-maintenance-evidence.types";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
 
-const BILLING_DATABASE = requiredDisposableDatabase();
+const BILLING_DATABASE = requiredReleaseDatabaseTestContext(
+  "apps/api/test/billing-maintenance-evidence-postgres.integration.spec.ts"
+);
 const DATABASE_URL = BILLING_DATABASE.databaseUrl;
 const RELEASE_SHA = "b".repeat(40);
 const IMAGE_DIGEST = `sha256:${"c".repeat(64)}`;
@@ -235,17 +238,16 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
 
   it("rolls back an invalid final insert after independently completed business calls", async () => {
     const evidenceRunId = randomRunId();
-    const businessRecordId = randomRunId();
-    await prisma.$executeRawUnsafe(`
-      CREATE UNLOGGED TABLE "billing_maintenance_evidence_business_commit_test" (
-        "id" VARCHAR(64) PRIMARY KEY
-      )
-    `);
+    const businessRecordId = randomUUID();
     const billing = billingDouble(async () => {
-      await prisma.$executeRaw`
-        INSERT INTO "billing_maintenance_evidence_business_commit_test" ("id")
-        VALUES (${businessRecordId})
-      `;
+      await prisma.product.create({
+        data: {
+          id: businessRecordId,
+          name: "Billing evidence independent business commit",
+          productNo: `BILLING-EVIDENCE-${businessRecordId}`,
+          status: "ACTIVE"
+        }
+      });
     });
     const invalidRepository = Object.create(repository) as BillingMaintenanceEvidenceRepository;
     invalidRepository.insertCompletedFact = vi.fn(async (tx, input) =>
@@ -270,16 +272,9 @@ describe("BillingMaintenanceEvidence PostgreSQL behavior", () => {
       await expect(
         prisma.billingMaintenanceCycleFact.count({ where: { evidenceRunId } })
       ).resolves.toBe(0);
-      const [businessWrite] = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
-        SELECT COUNT(*)::bigint AS "count"
-        FROM "billing_maintenance_evidence_business_commit_test"
-        WHERE "id" = ${businessRecordId}
-      `);
-      expect(Number(businessWrite?.count)).toBe(1);
+      await expect(prisma.product.count({ where: { id: businessRecordId } })).resolves.toBe(1);
     } finally {
-      await prisma.$executeRawUnsafe(
-        'DROP TABLE IF EXISTS "billing_maintenance_evidence_business_commit_test"'
-      );
+      await prisma.product.deleteMany({ where: { id: businessRecordId } });
     }
   });
 
@@ -462,28 +457,4 @@ function deferred<T>() {
 
 function randomRunId() {
   return randomBytes(32).toString("hex");
-}
-
-function requiredDisposableDatabase(
-  value = process.env.BILLING_MAINTENANCE_EVIDENCE_TEST_DATABASE_URL ?? process.env.DATABASE_URL
-) {
-  if (!value) throw new Error("DATABASE_URL is required for billing evidence integration tests");
-  const url = new URL(value);
-  if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
-    throw new Error("Billing evidence integration tests require a loopback database");
-  }
-  const databaseName = decodeURIComponent(url.pathname.slice(1));
-  if (["postgres", "subscription_saas_codex"].includes(databaseName)) {
-    throw new Error("Billing evidence integration tests reject default and historical databases");
-  }
-  if (
-    databaseName !== "subscription_saas_test" &&
-    !/^subscription_saas_stage1_task5_20260831_[0-9]{2}$/.test(databaseName)
-  ) {
-    throw new Error(
-      "Billing evidence integration tests require subscription_saas_test or a uniquely named Task 5 database"
-    );
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return { databaseName, databaseUrl: url.toString() };
 }

@@ -34,8 +34,17 @@ import {
   SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE,
   SubscriptionClosureService
 } from "../src/subscription-closure/subscription-closure.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import {
+  insertRuntimeAssetOwner,
+  insertRuntimeContract,
+  insertRuntimeOrderGraph,
+  insertRuntimeUser
+} from "./helpers/runtime-domain-fixture";
 
-const DATABASE_URL = requiredTestDatabaseUrl();
+const DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-closure.repository.integration.spec.ts"
+).databaseUrl;
 const NOW = new Date("2026-08-21T03:00:00.000Z");
 const HASH = "a".repeat(64);
 
@@ -49,12 +58,7 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
   });
 
   afterAll(async () => {
-    try {
-      for (const fixture of fixtures.reverse()) await deleteFixture(prisma, fixture);
-      await expect(expectFixtureResidue(prisma, fixtures)).resolves.toBe(0);
-    } finally {
-      await prisma.onModuleDestroy();
-    }
+    await prisma.onModuleDestroy();
   });
 
   async function fixture() {
@@ -3119,61 +3123,54 @@ async function createFixture(prisma: PrismaService) {
     vehicleReturnId: randomUUID()
   };
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe("SET LOCAL session_replication_role = replica");
-    await tx.$executeRaw`
-      INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
-      VALUES (${fixture.actorId}::uuid, ${marker}, 'P0 repository actor', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
-    `;
-    await tx.$executeRaw`
-      INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
-      VALUES (${fixture.reviewerId}::uuid, ${`${marker}-reviewer`}, 'P0 repository reviewer', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
-    `;
-    await tx.$executeRaw`
-      INSERT INTO "customer" ("id", "customer_no", "name", "mobile", "status", "created_at", "updated_at")
-      VALUES (${fixture.customerId}::uuid, ${`C-${marker}`}, 'P0 repository customer', ${marker.slice(0, 16)}, 'ACTIVE', clock_timestamp(), clock_timestamp())
-    `;
-    await tx.$executeRaw`
-      INSERT INTO "vehicle" ("id", "vehicle_no", "brand", "model_definition_id", "purchase_price_amount", "status", "current_mileage_km", "created_at", "updated_at")
-      VALUES (${fixture.vehicleId}::uuid, ${`V-${marker}`}, 'P0', ${randomUUID()}::uuid, 1, 'LEASED', 0, clock_timestamp(), clock_timestamp())
-    `;
-    await tx.$executeRaw`
-      INSERT INTO "asset_owner" ("id", "owner_no", "name", "owner_type", "status", "created_at", "updated_at")
-      VALUES (${fixture.assetOwnerId}::uuid, ${`AO-${marker}`}, 'P0 repository owner', 'EXTERNAL_COMPANY', 'ACTIVE', clock_timestamp(), clock_timestamp())
-    `;
-    await tx.$executeRaw`
-      INSERT INTO "application" ("id", "application_no", "customer_id", "sales_user_id", "status", "created_at", "updated_at")
-      VALUES (${fixture.applicationId}::uuid, ${`A-${marker}`}, ${fixture.customerId}::uuid, ${fixture.actorId}::uuid, 'APPROVED', clock_timestamp(), clock_timestamp())
-    `;
-    await tx.$executeRaw`
-      INSERT INTO "subscription_quote" (
-        "id", "quote_no", "application_id", "customer_id", "product_id", "product_version_id",
-        "vehicle_purchase_price_amount", "monthly_fee_rate", "monthly_fee_amount", "deposit_amount",
-        "period_months", "mileage_limit_km", "over_mileage_fee_amount", "model_definition_id_snapshot",
-        "model_code_snapshot", "model_display_name_snapshot", "status", "created_at", "updated_at"
-      ) VALUES (
-        ${fixture.quoteId}::uuid, ${`Q-${marker}`}, ${fixture.applicationId}::uuid, ${fixture.customerId}::uuid,
-        ${fixture.productId}::uuid, ${fixture.productVersionId}::uuid, 1, 0.010000, 1, 0, 6, 1000, 1,
-        ${randomUUID()}::uuid, 'P0', 'P0', 'CONFIRMED', clock_timestamp(), clock_timestamp()
-      )
-    `;
-    await tx.$executeRaw`
-      INSERT INTO "contract" ("id", "contract_no", "order_id", "customer_id", "contract_version_id", "contract_title", "contract_snapshot", "status", "created_at", "updated_at")
-      VALUES (${fixture.contractId}::uuid, ${`K-${marker}`}, ${fixture.orderId}::uuid, ${fixture.customerId}::uuid, ${randomUUID()}::uuid, 'P0 repository contract', '{}'::jsonb, 'ARCHIVED', clock_timestamp(), clock_timestamp())
-    `;
-    await tx.$executeRaw`
-      INSERT INTO "subscription_order" (
-        "id", "order_no", "customer_id", "application_id", "quote_id", "contract_id", "vehicle_id",
-        "product_id", "product_version_id", "vehicle_purchase_price_amount", "monthly_fee_amount",
-        "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
-        "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
-        "quote_snapshot", "order_status", "created_at", "updated_at"
-      ) VALUES (
-        ${fixture.orderId}::uuid, ${`O-${marker}`}, ${fixture.customerId}::uuid, ${fixture.applicationId}::uuid,
-        ${fixture.quoteId}::uuid, ${fixture.contractId}::uuid, ${fixture.vehicleId}::uuid, ${fixture.productId}::uuid,
-        ${fixture.productVersionId}::uuid, 1, 1, 0, 6, 1000, 1, ${randomUUID()}::uuid, 'P0', 'P0', '{}'::jsonb,
-        'PENDING_RETURN', clock_timestamp(), clock_timestamp()
-      )
-    `;
+    await insertRuntimeOrderGraph(tx, {
+      applicationId: fixture.applicationId,
+      customerId: fixture.customerId,
+      label: marker,
+      orderId: fixture.orderId,
+      productId: fixture.productId,
+      productVersionId: fixture.productVersionId,
+      quoteId: fixture.quoteId,
+      salesUserId: fixture.actorId,
+      vehicleId: fixture.vehicleId
+    });
+    await insertRuntimeUser(tx, fixture.reviewerId, `${marker}-reviewer`);
+    await insertRuntimeAssetOwner(tx, fixture.assetOwnerId, marker);
+    await insertRuntimeContract(tx, {
+      contractId: fixture.contractId,
+      customerId: fixture.customerId,
+      label: marker,
+      orderId: fixture.orderId
+    });
+    await tx.subscriptionOrder.update({
+      data: {
+        depositAmount: 0n,
+        mileageLimitKm: 1000,
+        monthlyFeeAmount: 1n,
+        orderStatus: "PENDING_RETURN",
+        overMileageFeeAmount: 1n,
+        vehiclePurchasePriceAmount: 1n
+      },
+      where: { id: fixture.orderId }
+    });
+    await tx.subscriptionQuote.update({
+      data: {
+        depositAmount: 0n,
+        mileageLimitKm: 1000,
+        monthlyFeeAmount: 1n,
+        overMileageFeeAmount: 1n,
+        vehiclePurchasePriceAmount: 1n
+      },
+      where: { id: fixture.quoteId }
+    });
+    await tx.vehicle.update({
+      data: { purchasePriceAmount: 1n, status: "LEASED" },
+      where: { id: fixture.vehicleId }
+    });
+    await tx.contract.update({
+      data: { archivedAt: null, signedAt: null },
+      where: { id: fixture.contractId }
+    });
     await tx.$executeRaw`
       INSERT INTO "vehicle_return" ("id", "return_no", "order_id", "vehicle_id", "customer_id", "return_type", "return_status", "created_at", "updated_at")
       VALUES (${fixture.vehicleReturnId}::uuid, ${`R-${marker}`}, ${fixture.orderId}::uuid, ${fixture.vehicleId}::uuid, ${fixture.customerId}::uuid, 'NORMAL_RETURN', 'PENDING', clock_timestamp(), clock_timestamp())
@@ -3195,75 +3192,8 @@ async function createFixture(prisma: PrismaService) {
         VALUES (${id}::uuid, 'p0-test', ${`${marker}/${suffix}.pdf`}, ${`${suffix}.pdf`}, 1, clock_timestamp())
       `;
     }
-    await tx.$executeRawUnsafe("SET LOCAL session_replication_role = origin");
   });
   return fixture;
-}
-
-async function deleteFixture(prisma: PrismaService, fixture: Fixture) {
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe("SET LOCAL session_replication_role = replica");
-    const cases = await tx.subscriptionClosureCase.findMany({
-      select: { id: true },
-      where: { orderId: fixture.orderId }
-    });
-    const ids = cases.map(({ id }) => id);
-    fixture.closureCaseIds.push(...ids);
-    if (ids.length > 0) {
-      await tx.subscriptionClosureCommandReceipt.deleteMany({
-        where: { closureCaseId: { in: ids } }
-      });
-      await tx.subscriptionClosureCurrentDocument.deleteMany({
-        where: { closureCaseId: { in: ids } }
-      });
-      await tx.subscriptionClosureEvent.deleteMany({ where: { closureCaseId: { in: ids } } });
-      await tx.subscriptionClosureDocumentRevision.deleteMany({
-        where: { closureCaseId: { in: ids } }
-      });
-      await tx.subscriptionClosureCase.updateMany({
-        data: { currentSettlementRevisionId: null },
-        where: { id: { in: ids } }
-      });
-      await tx.subscriptionClosureSettlementRevision.deleteMany({
-        where: { closureCaseId: { in: ids } }
-      });
-      await tx.subscriptionClosureCase.deleteMany({ where: { id: { in: ids } } });
-    }
-    await tx.assetAccountingCommandReceipt.deleteMany({
-      where: { actorId: { in: [fixture.actorId, fixture.reviewerId] } }
-    });
-    if (ids.length > 0) {
-      await tx.businessExceptionApproval.deleteMany({
-        where: { subjectId: { in: ids }, subjectType: "SETTLEMENT_CASE" }
-      });
-    }
-    await tx.depositLedger.deleteMany({ where: { orderId: fixture.orderId } });
-    await tx.paymentWriteOff.deleteMany({ where: { orderId: fixture.orderId } });
-    await tx.paymentRecord.deleteMany({ where: { orderId: fixture.orderId } });
-    await tx.receivableBill.deleteMany({ where: { orderId: fixture.orderId } });
-    await tx.vehicleCostLedgerEntry.deleteMany({ where: { orderId: fixture.orderId } });
-    await tx.auditLog.deleteMany({ where: { operatorId: fixture.actorId } });
-    await tx.vehicleHandoverEvent.deleteMany({ where: { orderId: fixture.orderId } });
-    await tx.assetWorkOrderEvent.deleteMany({
-      where: { workOrderId: { in: fixture.assetWorkOrderIds } }
-    });
-    await tx.contractESignTask.deleteMany({ where: { id: fixture.contractESignTaskId } });
-    await tx.assetWorkOrder.deleteMany({ where: { id: { in: fixture.assetWorkOrderIds } } });
-    await tx.fileObject.deleteMany({
-      where: { id: { in: [fixture.sourceFileId, fixture.signedFileId] } }
-    });
-    await tx.vehicleReturn.deleteMany({ where: { id: fixture.vehicleReturnId } });
-    await tx.vehicleHandoverWorkOrder.deleteMany({ where: { orderId: fixture.orderId } });
-    await tx.subscriptionOrder.deleteMany({ where: { id: fixture.orderId } });
-    await tx.contract.deleteMany({ where: { id: fixture.contractId } });
-    await tx.assetOwner.deleteMany({ where: { id: fixture.assetOwnerId } });
-    await tx.subscriptionQuote.deleteMany({ where: { id: fixture.quoteId } });
-    await tx.application.deleteMany({ where: { id: fixture.applicationId } });
-    await tx.vehicle.deleteMany({ where: { id: fixture.vehicleId } });
-    await tx.customer.deleteMany({ where: { id: fixture.customerId } });
-    await tx.user.deleteMany({ where: { id: { in: [fixture.actorId, fixture.reviewerId] } } });
-    await tx.$executeRawUnsafe("SET LOCAL session_replication_role = origin");
-  });
 }
 
 async function createFixtureWorkOrder(
@@ -3290,68 +3220,6 @@ async function createFixtureWorkOrder(
     }
   });
   return id;
-}
-
-async function expectFixtureResidue(prisma: PrismaService, fixtures: readonly Fixture[]) {
-  if (fixtures.length === 0) return 0;
-  const orderIds = fixtures.map(({ orderId }) => orderId);
-  const actorIds = fixtures.flatMap(({ actorId, reviewerId }) => [actorId, reviewerId]);
-  const assetWorkOrderIds = fixtures.flatMap(({ assetWorkOrderIds }) => assetWorkOrderIds);
-  const closureCaseIds = fixtures.flatMap(({ closureCaseIds }) => closureCaseIds);
-  const contractIds = fixtures.map(({ contractId }) => contractId);
-  const esignIds = fixtures.map(({ contractESignTaskId }) => contractESignTaskId);
-  const fileIds = fixtures.flatMap(({ signedFileId, sourceFileId }) => [
-    signedFileId,
-    sourceFileId
-  ]);
-  const markerIds = fixtures.map(({ marker }) => marker);
-  const returnIds = fixtures.map(({ vehicleReturnId }) => vehicleReturnId);
-  const vehicleIds = fixtures.map(({ vehicleId }) => vehicleId);
-  const applicationIds = fixtures.map(({ applicationId }) => applicationId);
-  const assetOwnerIds = fixtures.map(({ assetOwnerId }) => assetOwnerId);
-  const quoteIds = fixtures.map(({ quoteId }) => quoteId);
-  const counts = await Promise.all([
-    prisma.subscriptionClosureCase.count({ where: { orderId: { in: orderIds } } }),
-    prisma.subscriptionClosureEvent.count({ where: { closureCaseId: { in: closureCaseIds } } }),
-    prisma.subscriptionClosureCommandReceipt.count({
-      where: { closureCaseId: { in: closureCaseIds } }
-    }),
-    prisma.subscriptionClosureCurrentDocument.count({
-      where: { closureCaseId: { in: closureCaseIds } }
-    }),
-    prisma.subscriptionClosureDocumentRevision.count({
-      where: { closureCaseId: { in: closureCaseIds } }
-    }),
-    prisma.subscriptionClosureSettlementRevision.count({
-      where: { closureCaseId: { in: closureCaseIds } }
-    }),
-    prisma.assetAccountingCommandReceipt.count({ where: { actorId: { in: actorIds } } }),
-    prisma.businessExceptionApproval.count({
-      where: { subjectId: { in: closureCaseIds }, subjectType: "SETTLEMENT_CASE" }
-    }),
-    prisma.vehicleCostLedgerEntry.count({ where: { orderId: { in: orderIds } } }),
-    prisma.receivableBill.count({ where: { orderId: { in: orderIds } } }),
-    prisma.paymentRecord.count({ where: { orderId: { in: orderIds } } }),
-    prisma.paymentWriteOff.count({ where: { orderId: { in: orderIds } } }),
-    prisma.depositLedger.count({ where: { orderId: { in: orderIds } } }),
-    prisma.assetWorkOrder.count({ where: { id: { in: assetWorkOrderIds } } }),
-    prisma.assetWorkOrderEvent.count({ where: { workOrderId: { in: assetWorkOrderIds } } }),
-    prisma.auditLog.count({ where: { operatorId: { in: actorIds } } }),
-    prisma.contractESignTask.count({ where: { id: { in: esignIds } } }),
-    prisma.fileObject.count({ where: { id: { in: fileIds } } }),
-    prisma.vehicleReturn.count({ where: { id: { in: returnIds } } }),
-    prisma.vehicleHandoverEvent.count({ where: { orderId: { in: orderIds } } }),
-    prisma.vehicleHandoverWorkOrder.count({ where: { orderId: { in: orderIds } } }),
-    prisma.subscriptionOrder.count({ where: { id: { in: orderIds } } }),
-    prisma.subscriptionQuote.count({ where: { id: { in: quoteIds } } }),
-    prisma.application.count({ where: { id: { in: applicationIds } } }),
-    prisma.assetOwner.count({ where: { id: { in: assetOwnerIds } } }),
-    prisma.contract.count({ where: { id: { in: contractIds } } }),
-    prisma.vehicle.count({ where: { id: { in: vehicleIds } } }),
-    prisma.user.count({ where: { id: { in: actorIds } } }),
-    prisma.customer.count({ where: { customerNo: { in: markerIds.map((id) => `C-${id}`) } } })
-  ]);
-  return counts.reduce((total, count) => total + count, 0);
 }
 
 async function countCaseFacts(prisma: PrismaService, orderId: string) {
@@ -3393,22 +3261,6 @@ async function databaseTimestamp(prisma: PrismaService) {
   );
   if (!row) throw new Error("PostgreSQL clock query returned no row");
   return row.now;
-}
-
-function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
-  if (!value) throw new Error("DATABASE_URL is required for subscription closure repository tests");
-  const url = new URL(value);
-  if (!isLoopback(url.hostname)) throw new Error("A loopback PostgreSQL database is required");
-  const database = decodeURIComponent(url.pathname.slice(1));
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(database)) {
-    throw new Error("A dedicated test/codex database is required");
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
-}
-
-function isLoopback(hostname: string) {
-  return hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
 
 async function expectCode(promise: Promise<unknown>, expected: string) {

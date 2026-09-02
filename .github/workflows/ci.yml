@@ -12,25 +12,8 @@ jobs:
   quality-gate:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: subscription_saas_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U postgres"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
-
     env:
       NODE_ENV: test
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/subscription_saas_test?schema=public
-      STAGE1_RETIREMENT_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/subscription_saas_test?schema=public
       DATABASE_POOL_MAX: 10
       DATABASE_POOL_CONNECTION_TIMEOUT_MS: 10000
       DATABASE_POOL_IDLE_TIMEOUT_MS: 30000
@@ -79,16 +62,7 @@ jobs:
       - name: Web tests
         run: pnpm --filter @subscription-saas/web test
 
-      - name: Apply migrations
-        run: pnpm --filter @subscription-saas/api prisma:migrate:deploy
-
-      - name: Migration status
-        run: pnpm --filter @subscription-saas/api prisma:migrate:status
-
-      - name: Schema drift check
-        run: pnpm --filter @subscription-saas/api exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
-
-      - name: API tests
+      - name: Run complete API test gate
         run: pnpm --filter @subscription-saas/api test
 
       - name: Release check

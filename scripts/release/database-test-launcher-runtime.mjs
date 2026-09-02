@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { open, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   assertApprovedEphemeralTarget,
@@ -25,7 +26,11 @@ import {
 } from "../../packages/release-foundation/src/index.mjs";
 import { executeDockerCommand, hardenOwnerOnlyFile } from "./bootstrap-controlled-postgres.mjs";
 
-const repoRoot = process.cwd();
+export function resolveLauncherRepositoryRoot(moduleUrl = import.meta.url) {
+  return path.resolve(path.dirname(fileURLToPath(moduleUrl)), "../..");
+}
+
+const repoRoot = resolveLauncherRepositoryRoot();
 
 function runtimeError(code, details) {
   return Object.assign(new Error(code), { code, details });
@@ -798,6 +803,7 @@ export async function executeLauncherRequest({
                 credentialFingerprint: migrationFingerprint,
                 counterpartCredentialFingerprint: runtimeFingerprint,
                 fixturePath: execution.fixtures.schema,
+                repoRoot,
                 runtimeRole: resource.record.roles["runtime-test"],
                 executeSql: ({ credentialRef, sql }) => {
                   if (credentialRef !== resource.record.secretReferences.migrate) {
@@ -816,6 +822,7 @@ export async function executeLauncherRequest({
                 credentialFingerprint: runtimeFingerprint,
                 counterpartCredentialFingerprint: migrationFingerprint,
                 fixturePath: execution.fixtures.seed,
+                repoRoot,
                 executeSql: ({ credentialRef, sql }) => {
                   if (credentialRef !== resource.record.secretReferences["runtime-test"]) {
                     throw runtimeError("DATABASE_FIXTURE_CAPABILITY_MISMATCH");
@@ -1056,7 +1063,7 @@ export function parseLauncherArguments(mode, argv) {
   if ([...values.keys()].some((flag) => !allowed.has(flag))) {
     throw runtimeError("DATABASE_LAUNCHER_ARGUMENT_INVALID");
   }
-  const chain = values.get("--chain");
+  const chain = values.get("--chain") ?? (mode === "source-gate" ? "fresh" : undefined);
   const suiteId = values.get("--suite-id");
   const batchId = values.get("--batch");
   const concurrency = values.has("--concurrency") ? Number(values.get("--concurrency")) : 1;
@@ -1064,7 +1071,7 @@ export function parseLauncherArguments(mode, argv) {
   if (
     !["fresh", "snapshot"].includes(chain) ||
     (mode === "suite" && !suiteId) ||
-    (mode !== "suite" && !batchId) ||
+    (mode === "manifest" && !batchId) ||
     !Number.isInteger(concurrency) ||
     concurrency < 1 ||
     !["manifest", "reverse"].includes(order)

@@ -49,10 +49,7 @@ import { SubscriptionClosureRepository } from "../src/subscription-closure/subsc
 import { SubscriptionClosureProjectionService } from "../src/subscription-closure/subscription-closure.projection";
 import { SubscriptionClosureSettlementResolver } from "../src/subscription-closure/subscription-closure.settlement-resolver";
 import { SubscriptionClosureService } from "../src/subscription-closure/subscription-closure.service";
-import {
-  canonicalSubscriptionClosureJson,
-  hashSubscriptionClosureSnapshot
-} from "../src/subscription-closure/subscription-closure.domain";
+import { canonicalSubscriptionClosureJson } from "../src/subscription-closure/subscription-closure.domain";
 import { VehicleMileageRepository } from "../src/vehicle-mileage/vehicle-mileage.repository";
 import { VehicleMileageService } from "../src/vehicle-mileage/vehicle-mileage.service";
 import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
@@ -1011,14 +1008,16 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       await prisma.$queryRaw<Array<{ now: Date }>>(Prisma.sql`SELECT clock_timestamp() AS "now"`)
     )[0]?.now;
     if (!now) throw new Error("Database clock unavailable");
+    const originalAuthorityEnd = new Date(now.getTime() + 86_400_000);
+    const driftedAuthorityEnd = new Date(now.getTime() + 43_200_000);
     try {
       await prisma.$transaction([
         prisma.subscriptionOrder.update({
-          data: { endDate: new Date("2026-09-02T00:00:00.000Z") },
+          data: { endDate: originalAuthorityEnd },
           where: { id: fixture.orderId }
         }),
         prisma.subscriptionContractSegment.update({
-          data: { endDate: new Date("2026-09-02T00:00:00.000Z") },
+          data: { endDate: originalAuthorityEnd },
           where: { id: fixture.segmentId }
         })
       ]);
@@ -1037,7 +1036,7 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
         syntheticTestEvidence: true
       });
       await prisma.subscriptionContractSegment.update({
-        data: { endDate: new Date("2026-09-01T00:00:00.000Z") },
+        data: { endDate: driftedAuthorityEnd },
         where: { id: fixture.segmentId }
       });
       await awaitDatabaseClockPast(
@@ -6397,7 +6396,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const fixture = await createManagedExpiryFixture(prisma);
       const governingBillId = randomUUID();
       const driftBillId = randomUUID();
-      let requesterId: string | null = null;
+      let requesterId: string;
       try {
         const expiry = createGovernedExpiryService(prisma);
         await expiry.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"));
@@ -7759,7 +7758,7 @@ async function seedTask6RecoveryApproval(
 async function setupTask6ExecutedRecovery(prisma: PrismaService) {
   const fixture = await createManagedExpiryFixture(prisma);
   const billId = randomUUID();
-  let requesterId: string | null = null;
+  let requesterId: string;
   try {
     await createGovernedExpiryService(prisma).expireSegment(
       fixture.segmentId,
@@ -7892,8 +7891,6 @@ async function setupTask6ExecutedRecovery(prisma: PrismaService) {
     };
   } catch (error) {
     await cleanupManagedExpiryFixture(prisma, fixture);
-    if (requesterId) {
-    }
     throw error;
   }
 }
@@ -9674,151 +9671,6 @@ async function waitForTask6BarrierEntry(
   }
   if (outcome === "TIMED_OUT") {
     throw new Error(`Timed out waiting for ${operation} to enter the test barrier`);
-  }
-}
-
-type Task6AuthorityMutationTarget = Readonly<{
-  id: string;
-  kind: "CURRENT_POINTER" | "ESIGN" | "FILE" | "REVISION";
-}>;
-
-async function assertTask6AuthorityMutationBoundaries(
-  prisma: PrismaService,
-  targets: readonly Task6AuthorityMutationTarget[],
-  operation: () => Promise<unknown>,
-  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>,
-  closureCaseId: string
-) {
-  for (const target of targets) {
-    const barrier = createBarrier();
-    const holder = prisma.$transaction(async (tx) => {
-      if (target.kind === "REVISION") {
-        await tx.$executeRaw(Prisma.sql`
-          UPDATE "subscription_closure_document_revision"
-          SET "source_key" = "source_key"
-          WHERE "id" = ${target.id}::uuid
-        `);
-      } else if (target.kind === "FILE") {
-        await tx.$executeRaw(Prisma.sql`
-          UPDATE "file_object"
-          SET "object_key" = "object_key"
-          WHERE "id" = ${target.id}::uuid
-        `);
-      } else if (target.kind === "ESIGN") {
-        await tx.$executeRaw(Prisma.sql`
-          UPDATE "contract_esign_task"
-          SET "request_snapshot" = "request_snapshot"
-          WHERE "id" = ${target.id}::uuid
-        `);
-      } else {
-        await tx.$executeRaw(Prisma.sql`
-          UPDATE "subscription_closure_current_document"
-          SET "document_revision_id" = "document_revision_id"
-          WHERE "closure_case_id" = ${target.id}::uuid
-            AND "document_type" = 'RECOVERY_AUTHORITY'::"subscription_closure_document_type"
-        `);
-      }
-      barrier.enter();
-      await barrier.released;
-      await expect(tx.$queryRaw(Prisma.sql`SELECT 1 AS "usable"`)).resolves.toEqual([
-        { usable: 1 }
-      ]);
-      throw new Error(`TASK6_EXPECTED_HOLDER_ROLLBACK:${target.kind}`);
-    });
-    await barrier.entered;
-    const before = await snapshotTask6RecoveryBoundaryTruth(prisma, fixture, closureCaseId);
-    try {
-      await expect(operation()).rejects.toMatchObject({
-        response: { code: "SUBSCRIPTION_CLOSURE_AUTHORITY_BUSY" },
-        status: 409
-      });
-      await expect(
-        snapshotTask6RecoveryBoundaryTruth(prisma, fixture, closureCaseId)
-      ).resolves.toEqual(before);
-    } finally {
-      barrier.release();
-    }
-    await expect(holder).rejects.toThrow(`TASK6_EXPECTED_HOLDER_ROLLBACK:${target.kind}`);
-  }
-}
-
-async function snapshotTask6RecoveryBoundaryTruth(
-  prisma: PrismaService,
-  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>,
-  closureCaseId: string
-) {
-  return Promise.all([
-    snapshotPhysicalReturnTruth(prisma, fixture),
-    prisma.businessExceptionApproval.findMany({
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      where: { subjectId: closureCaseId, subjectType: "RECOVERY_CASE" }
-    }),
-    prisma.subscriptionClosureDocumentRevision.findMany({
-      orderBy: [{ revisionNumber: "asc" }, { id: "asc" }],
-      where: { closureCaseId, documentType: "RECOVERY_AUTHORITY" }
-    })
-  ]);
-}
-
-async function withTask6Replica<T>(
-  prisma: PrismaService,
-  operation: (tx: Prisma.TransactionClient) => Promise<T>
-) {
-  return prisma.$transaction(async (tx) => {
-    return operation(tx);
-  });
-}
-
-async function withTask7Replica<T>(
-  prisma: PrismaService,
-  operation: (tx: Prisma.TransactionClient) => Promise<T>
-) {
-  return prisma.$transaction(async (tx) => {
-    return operation(tx);
-  });
-}
-
-async function restoreTask7Audit(
-  prisma: PrismaService,
-  audit: Prisma.AuditLogGetPayload<Record<string, never>>
-) {
-  await prisma.auditLog.create({
-    data: {
-      action: audit.action,
-      afterSnapshot: audit.afterSnapshot ?? Prisma.JsonNull,
-      beforeSnapshot: audit.beforeSnapshot ?? Prisma.JsonNull,
-      createdAt: audit.createdAt,
-      entityId: audit.entityId,
-      entityType: audit.entityType,
-      id: audit.id,
-      ipAddress: audit.ipAddress,
-      module: audit.module,
-      operatorId: audit.operatorId,
-      userAgent: audit.userAgent
-    }
-  });
-}
-
-async function assertTask6ArchiveReplayMutationRejected(
-  prisma: PrismaService,
-  replay: () => Promise<unknown>,
-  mutate: () => Promise<unknown>,
-  restore: () => Promise<unknown>,
-  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>,
-  closureCaseId: string
-) {
-  await mutate();
-  const driftTruth = await snapshotTask6RecoveryBoundaryTruth(prisma, fixture, closureCaseId);
-  try {
-    await expect(replay()).rejects.toMatchObject({
-      response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
-      status: 409
-    });
-    await expect(
-      snapshotTask6RecoveryBoundaryTruth(prisma, fixture, closureCaseId)
-    ).resolves.toEqual(driftTruth);
-  } finally {
-    await restore();
   }
 }
 

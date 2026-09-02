@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { OrderService } from "../src/order/order.service";
 import { SubscriptionChangeController } from "../src/subscription-change/subscription-change.controller";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+
+requiredReleaseDatabaseTestContext("apps/api/test/subscription-change-active-order.e2e-spec.ts");
 
 describe("ACTIVE order contract-change entry boundary", () => {
   it.each([

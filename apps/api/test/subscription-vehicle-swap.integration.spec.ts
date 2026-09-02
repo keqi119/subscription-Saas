@@ -7,8 +7,16 @@ import { AssetOperationsRepository } from "../src/asset-operations/asset-operati
 import { AssetOperationsService } from "../src/asset-operations/asset-operations.service";
 import { AuditService } from "../src/audit/audit.service";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import {
+  insertRuntimeOrderGraph,
+  insertRuntimeSubscriptionPlan,
+  insertRuntimeVehicle
+} from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL = requiredTestDatabaseUrl(process.env.DATABASE_URL);
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-vehicle-swap.integration.spec.ts"
+).databaseUrl;
 
 describe("vehicle-swap target reservation PostgreSQL integration", () => {
   let prisma: PrismaService;
@@ -95,31 +103,42 @@ describe("vehicle-swap target reservation PostgreSQL integration", () => {
 });
 
 async function createFixture(prisma: PrismaService) {
+  const orderIds = [randomUUID(), randomUUID()];
+  const sourceVehicleIds = [randomUUID(), randomUUID()];
   const vehicleId = randomUUID();
+  const targetPlanId = randomUUID();
+  const vehiclePackageId = randomUUID();
   const changeIds = [randomUUID(), randomUUID()];
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "vehicle" (
-        "id", "vehicle_no", "brand", "model_definition_id",
-        "purchase_price_amount", "current_sale_price_amount",
-        "current_sale_price_initialized_at", "current_sale_price_reviewed_at",
-        "sale_price_status", "status", "created_at", "updated_at"
-      ) VALUES (
-        ${vehicleId}::uuid,
-        ${`VEHSWAP${vehicleId.replaceAll("-", "").slice(0, 20)}`},
-        'NIO',
-        ${randomUUID()}::uuid,
-        20000000,
-        20000000,
-        clock_timestamp(),
-        clock_timestamp(),
-        'EFFECTIVE',
-        'AVAILABLE',
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
+    const orderGraphs = [];
+    for (const [index, orderId] of orderIds.entries()) {
+      orderGraphs.push(
+        await insertRuntimeOrderGraph(tx, {
+          label: `SWAP-RESERVATION-${index}`,
+          orderId,
+          vehicleId: sourceVehicleIds[index]!
+        })
+      );
+    }
+    const targetVehicle = await insertRuntimeVehicle(tx, vehicleId, "SWAP-RESERVATION-TARGET");
+    await tx.vehicle.update({
+      data: {
+        currentSalePriceAmount: 20000000n,
+        currentSalePriceInitializedAt: new Date("2026-08-01T00:00:00.000Z"),
+        currentSalePriceReviewedAt: new Date("2026-08-01T00:00:00.000Z"),
+        salePriceStatus: "EFFECTIVE",
+        status: "AVAILABLE"
+      },
+      where: { id: vehicleId }
+    });
+    await insertRuntimeSubscriptionPlan(tx, {
+      label: "SWAP-RESERVATION",
+      modelDefinitionId: targetVehicle.modelDefinitionId,
+      planId: targetPlanId,
+      productId: orderGraphs[0]!.productId,
+      productVersionId: orderGraphs[0]!.productVersionId,
+      vehiclePackageId
+    });
     for (const [index, changeId] of changeIds.entries()) {
       await tx.$executeRaw(Prisma.sql`
         INSERT INTO "subscription_change_order" (
@@ -128,7 +147,7 @@ async function createFixture(prisma: PrismaService) {
         ) VALUES (
           ${changeId}::uuid,
           ${`SCOSWAP${changeId.replaceAll("-", "").slice(0, 18)}`},
-          ${randomUUID()}::uuid,
+          ${orderIds[index]}::uuid,
           'VEHICLE_SWAP',
           'QUOTED',
           '2026-09-15T02:00:00.000Z'::timestamptz,
@@ -145,10 +164,10 @@ async function createFixture(prisma: PrismaService) {
         ) VALUES (
           ${randomUUID()}::uuid,
           ${changeId}::uuid,
-          ${randomUUID()}::uuid,
+          ${sourceVehicleIds[index]}::uuid,
           ${vehicleId}::uuid,
-          ${randomUUID()}::uuid,
-          ${randomUUID()}::uuid,
+          ${targetPlanId}::uuid,
+          ${vehiclePackageId}::uuid,
           ${new Date(`2026-09-${15 + index}T02:00:00.000Z`)},
           ${JSON.stringify({ stage: "integration", version: index + 1 })}::jsonb,
           ${String(index + 1).repeat(64)},
@@ -165,14 +184,9 @@ async function cleanupFixture(
   prisma: PrismaService,
   fixture: { changeIds: string[]; vehicleId: string }
 ) {
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.subscriptionVehicleSwapChangeDetail.deleteMany({
-      where: { changeOrderId: { in: fixture.changeIds } }
-    });
-    await tx.subscriptionChangeOrder.deleteMany({ where: { id: { in: fixture.changeIds } } });
-    await tx.vehicle.deleteMany({ where: { id: fixture.vehicleId } });
-  });
+  if (!prisma || !fixture)
+    throw new Error("Vehicle reservation cleanup requires its suite fixture");
+  // The release database launcher drops the exact disposable database after the suite.
 }
 
 function errorCode(error: unknown) {
@@ -181,19 +195,4 @@ function errorCode(error: unknown) {
   return response && typeof response === "object" && "code" in response
     ? (response as { code: unknown }).code
     : undefined;
-}
-
-function requiredTestDatabaseUrl(value: string | undefined) {
-  if (!value) throw new Error("DATABASE_URL is required for vehicle-swap integration tests");
-  const url = new URL(value);
-  if (url.protocol !== "postgresql:" && url.protocol !== "postgres:") {
-    throw new Error("Vehicle-swap integration tests require PostgreSQL");
-  }
-  if (!new Set(["127.0.0.1", "localhost", "::1"]).has(url.hostname)) {
-    throw new Error("Vehicle-swap integration tests require a loopback PostgreSQL host");
-  }
-  if (!url.pathname.toLowerCase().includes("test")) {
-    throw new Error("Vehicle-swap integration tests require a test-only database");
-  }
-  return value;
 }

@@ -1750,66 +1750,6 @@ async function findSubscriptionPeriod(
   return period;
 }
 
-async function deleteFixturesIfTablesExist(prisma: PrismaService) {
-  const tables = await prisma.$queryRaw<Array<{ tableName: string | null }>>`
-    SELECT to_regclass('public.vehicle_subscription_period')::text AS "tableName"
-    UNION ALL
-    SELECT to_regclass('public.vehicle_ownership_period')::text AS "tableName"
-  `;
-  if (tables[0]?.tableName) {
-    await prisma.$executeRaw`
-      DELETE FROM "vehicle_subscription_period"
-      WHERE "start_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-  }
-  if (tables[1]?.tableName) {
-    await prisma.$executeRaw`
-      DELETE FROM "vehicle_ownership_period"
-      WHERE "start_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-  }
-}
-
-async function deleteRepositoryFixtures(prisma: PrismaService) {
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`
-      DELETE FROM "audit_log"
-      WHERE "module" = 'asset_facts'
-        AND "entity_id" IN (
-          SELECT "id" FROM "vehicle_subscription_period"
-          WHERE "start_source_key" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
-          UNION ALL
-          SELECT "id" FROM "vehicle_ownership_period"
-          WHERE "start_source_key" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
-        )
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "vehicle_subscription_period"
-      WHERE "start_source_key" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "vehicle_ownership_period"
-      WHERE "start_source_key" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "subscription_order"
-      WHERE "order_no" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "asset_owner"
-      WHERE "owner_no" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "vehicle"
-      WHERE "vehicle_no" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "customer"
-      WHERE "customer_no" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
-    `;
-  });
-}
-
 function rejectedReason(results: PromiseSettledResult<unknown>[]) {
   const rejected = results.find(
     (result): result is PromiseRejectedResult => result.status === "rejected"

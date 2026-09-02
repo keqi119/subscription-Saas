@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   selectManifestSuites,
@@ -8,11 +10,13 @@ import {
 import {
   assertSourceGateCheckout,
   parseLauncherArguments,
+  resolveLauncherRepositoryRoot,
   runLauncherCli,
   summarizeDatabaseTestLog
 } from "./database-test-launcher-runtime.mjs";
 
 const digest = `sha256:${"a".repeat(64)}`;
+const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const manifest = {
   schemaVersion: "database-test-manifest.v1",
   batches: [{ batchId: "launcher-fixture", suiteIds: ["release.launcher.fixture"] }],
@@ -69,6 +73,26 @@ test("suite, manifest, and source gate adapters share one selector", () => {
   assert.deepEqual(suite, manifestSelection);
   assert.deepEqual(sourceGate, manifestSelection);
   assert.equal(sourceGate[0].manifestDigest, sha256Canonical(manifest));
+});
+
+test("source gate defaults to the complete fresh manifest", () => {
+  const request = parseLauncherArguments("source-gate", []);
+  assert.deepEqual(request, {
+    mode: "source-gate",
+    chain: "fresh",
+    suiteId: undefined,
+    batchId: undefined,
+    concurrency: 1,
+    order: "manifest"
+  });
+  assert.deepEqual(selections(request), selections({ ...request, batchId: "launcher-fixture" }));
+});
+
+test("launcher resolves the repository independently from the caller working directory", () => {
+  const moduleUrl = pathToFileURL(
+    path.join(repositoryRoot, "scripts/release/database-test-launcher-runtime.mjs")
+  ).href;
+  assert.equal(resolveLauncherRepositoryRoot(moduleUrl), repositoryRoot);
 });
 
 test("adapters reject caller paths, missing values, duplicates, and unsupported concurrency", async () => {

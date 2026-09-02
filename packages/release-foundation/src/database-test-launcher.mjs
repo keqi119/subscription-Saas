@@ -521,6 +521,20 @@ export function runSourceDatabaseGate({
       causeCode: error?.code
     });
   }
+  const counts = normalizeDatabaseTestCounts(manifestReport.counts);
+  const aggregateCounts = addCounts(manifestReport.suiteReports);
+  if (sha256Canonical(counts) !== sha256Canonical(aggregateCounts)) {
+    throw launcherError("DATABASE_TEST_COUNT_EQUATION_FAILED", {
+      counts,
+      aggregateCounts
+    });
+  }
+  if (counts.failed !== 0 || manifestReport.terminalStatus !== "PASSED") {
+    throw launcherError("DATABASE_TEST_SOURCE_GATE_FAILED", {
+      counts,
+      terminalStatus: manifestReport.terminalStatus
+    });
+  }
   const evidence = {
     schemaVersion: "source-gate-evidence.v1",
     sourceSha,
@@ -530,7 +544,7 @@ export function runSourceDatabaseGate({
     databaseTestDiscoveryDigest: manifestReport.discoveryDigest,
     postgres,
     chain: manifestReport.chain,
-    counts: manifestReport.counts,
+    counts,
     terminalStatus: manifestReport.terminalStatus,
     schemaDiffDigest,
     migrationStatusDigest,

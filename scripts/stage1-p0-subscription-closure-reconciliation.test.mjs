@@ -4,6 +4,8 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import test from "node:test";
 
+import { requiredReleaseDatabaseTestContext } from "../packages/release-foundation/src/index.mjs";
+
 const repoRoot = resolve(import.meta.dirname, "..");
 const requireFromApi = createRequire(resolve(repoRoot, "apps/api/package.json"));
 const runbookPath = resolve(
@@ -17,9 +19,8 @@ const controllerPath = resolve(
 const sharedAuthPath = resolve(repoRoot, "packages/shared/src/auth.ts");
 const accessCorePath = resolve(repoRoot, "scripts/stage1-p0-closure-access-core.mjs");
 const packagePath = resolve(repoRoot, "package.json");
-const reconciliationDatabaseUrl =
-  process.env.STAGE1_P0_CLOSURE_RECONCILIATION_DATABASE_URL?.trim() ?? null;
-if (reconciliationDatabaseUrl) assertSafeReconciliationDatabaseUrl(reconciliationDatabaseUrl);
+const reconciliationDatabaseUrl = requiredReleaseDatabaseTestContext(import.meta.url).databaseUrl;
+assertSafeReconciliationDatabaseUrl(reconciliationDatabaseUrl);
 
 const sqlBlockOrder = [
   "01-migration-catalog",
@@ -255,10 +256,7 @@ function validateSanitizedCounts(name, row) {
 
 function assertSafeReconciliationDatabaseUrl(value) {
   const databaseName = decodeURIComponent(new URL(value).pathname.slice(1));
-  if (
-    databaseName !== "subscription_saas_staging" &&
-    !/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(databaseName)
-  ) {
+  if (!/^s1ci_[a-f0-9]{24}$/.test(databaseName)) {
     throw new Error("STAGE1_P0_CLOSURE_RECONCILIATION_DATABASE_REQUIRED");
   }
 }
@@ -363,12 +361,8 @@ test("validates the migration catalog as an append-only inventory", () => {
   );
 });
 
-test("requires an explicit Local/Staging database for live reconciliation", () => {
-  for (const database of [
-    "subscription_saas_test",
-    "subscription_saas_codex",
-    "subscription_saas_staging"
-  ]) {
+test("requires a launcher-owned ephemeral database for live reconciliation", () => {
+  for (const database of ["s1ci_000000000000000000000000", "s1ci_aaaaaaaaaaaaaaaaaaaaaaaa"]) {
     assert.doesNotThrow(() =>
       assertSafeReconciliationDatabaseUrl(
         `postgresql://postgres:postgres@localhost:5432/${database}?schema=public`
@@ -384,29 +378,25 @@ test("requires an explicit Local/Staging database for live reconciliation", () =
   );
 });
 
-test(
-  "executes every marked block verbatim and emits sanitized counts only",
-  { skip: !reconciliationDatabaseUrl },
-  async (context) => {
-    const runbook = await readRequired(runbookPath);
-    const blocks = validateRunbookSql(runbook);
-    const { Client } = requireFromApi("pg");
-    const client = new Client({ connectionString: reconciliationDatabaseUrl });
-    await client.connect();
-    try {
-      for (const name of sqlBlockOrder) {
-        const result = await client.query(blocks.get(name));
-        const results = Array.isArray(result) ? result : [result];
-        const selected = results.find((entry) => entry.command === "SELECT");
-        assert.ok(selected, `${name} returned no SELECT result`);
-        assert.equal(selected.rows.length, 1, `${name} must return one sanitized count row`);
-        validateSanitizedCounts(name, selected.rows[0]);
-        context.diagnostic(`${name}: rows=1 fields=${selected.fields.length}`);
-      }
-    } finally {
-      await client.end();
+test("executes every marked block verbatim and emits sanitized counts only", async (context) => {
+  const runbook = await readRequired(runbookPath);
+  const blocks = validateRunbookSql(runbook);
+  const { Client } = requireFromApi("pg");
+  const client = new Client({ connectionString: reconciliationDatabaseUrl });
+  await client.connect();
+  try {
+    for (const name of sqlBlockOrder) {
+      const result = await client.query(blocks.get(name));
+      const results = Array.isArray(result) ? result : [result];
+      const selected = results.find((entry) => entry.command === "SELECT");
+      assert.ok(selected, `${name} returned no SELECT result`);
+      assert.equal(selected.rows.length, 1, `${name} must return one sanitized count row`);
+      validateSanitizedCounts(name, selected.rows[0]);
+      context.diagnostic(`${name}: rows=1 fields=${selected.fields.length}`);
     }
+  } finally {
+    await client.end();
   }
-);
+});
 
 export { extractMarkedSqlBlocks, validateApiInventory, validateRunbookSql };

@@ -72,6 +72,35 @@ test("binds promotable source evidence only to this protected main workflow run"
   );
 });
 
+test("marks the ordinary CI source gate as nonpromotable while binding its exact run", () => {
+  const sourceSha = "a".repeat(40);
+  assert.equal(
+    sourceGateProvenance(sourceSha, {
+      GITHUB_ACTIONS: "true",
+      GITHUB_REPOSITORY: "keqi119/subscription-Saas",
+      GITHUB_REF: "refs/pull/314/merge",
+      GITHUB_SHA: sourceSha,
+      GITHUB_RUN_ID: "902",
+      GITHUB_RUN_ATTEMPT: "3",
+      GITHUB_WORKFLOW_REF: "keqi119/subscription-Saas/.github/workflows/ci.yml@refs/pull/314/merge"
+    }).ciRunRef,
+    "github-nonpromotable://keqi119/subscription-Saas/actions/runs/902/attempts/3"
+  );
+  assert.throws(
+    () =>
+      sourceGateProvenance(sourceSha, {
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "keqi119/subscription-Saas",
+        GITHUB_REF: "refs/pull/314/merge",
+        GITHUB_SHA: sourceSha,
+        GITHUB_RUN_ID: "902",
+        GITHUB_RUN_ATTEMPT: "3",
+        GITHUB_WORKFLOW_REF: "keqi119/subscription-Saas/.github/workflows/ci.yml@refs/heads/main"
+      }),
+    { code: "DATABASE_LAUNCHER_SOURCE_PROVENANCE_UNTRUSTED" }
+  );
+});
+
 function selections(request) {
   return selectManifestSuites({
     manifest,

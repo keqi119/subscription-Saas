@@ -160,7 +160,10 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
       throw rejectedReason(attempts);
     }
     expect(successfulAttempts).toHaveLength(1);
-    expect(databaseErrorCode(rejectedReason(attempts))).toBe("23P01");
+    // Both the partial unique index and the exclusion constraint reject this open state.
+    // PostgreSQL is free to report either constraint first, so assert the invariant rather than
+    // implementation-specific constraint evaluation order.
+    expect(["23505", "23P01"]).toContain(databaseErrorCode(rejectedReason(attempts)));
   });
 
   it("rejects a second open subscription period for one order on another vehicle", async () => {
@@ -795,7 +798,7 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
     ],
     [
       "open-vehicle collision",
-      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OVERLAP,
+      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OPEN_VEHICLE,
       subscriptionOpenVehicleConflict
     ],
     [
@@ -829,7 +832,7 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
     ],
     [
       "open-vehicle collision",
-      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OVERLAP,
+      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OPEN_VEHICLE,
       ownershipOpenVehicleConflict
     ],
     ["period exclusion", ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OVERLAP, ownershipOverlapConflict],

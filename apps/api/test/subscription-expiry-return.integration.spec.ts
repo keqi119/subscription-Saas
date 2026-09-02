@@ -1020,7 +1020,10 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       await prisma.$queryRaw<Array<{ now: Date }>>(Prisma.sql`SELECT clock_timestamp() AS "now"`)
     )[0]?.now;
     if (!now) throw new Error("Database clock unavailable");
-    const originalAuthorityEnd = new Date(now.getTime() + 86_400_000);
+    // Both Order.endDate and SubscriptionContractSegment.endDate are PostgreSQL DATE values.
+    // Keep the two facts more than 24 hours apart so database truncation cannot collapse the
+    // intended drift onto the same calendar date at some times of day.
+    const originalAuthorityEnd = new Date(now.getTime() + 259_200_000);
     const driftedAuthorityEnd = new Date(now.getTime() + 43_200_000);
     try {
       await prisma.$transaction([

@@ -997,16 +997,33 @@ export function sourceGateProvenance(sourceSha, environment = process.env) {
       executorVersion: "source-database-gate.v1"
     });
   }
-  if (
+  const githubIdentityInvalid =
     environment.GITHUB_REPOSITORY !== "keqi119/subscription-Saas" ||
-    environment.GITHUB_REF !== "refs/heads/main" ||
     environment.GITHUB_SHA !== sourceSha ||
     !/^[1-9][0-9]*$/u.test(environment.GITHUB_RUN_ID ?? "") ||
-    !/^[1-9][0-9]*$/u.test(environment.GITHUB_RUN_ATTEMPT ?? "") ||
-    environment.GITHUB_WORKFLOW_REF !==
-      "keqi119/subscription-Saas/.github/workflows/release-candidate-gate.yml@refs/heads/main"
-  ) {
+    !/^[1-9][0-9]*$/u.test(environment.GITHUB_RUN_ATTEMPT ?? "");
+  if (githubIdentityInvalid) {
     throw runtimeError("DATABASE_LAUNCHER_SOURCE_PROVENANCE_UNTRUSTED");
+  }
+  const protectedReleaseCandidate =
+    environment.GITHUB_REF === "refs/heads/main" &&
+    environment.GITHUB_WORKFLOW_REF ===
+      "keqi119/subscription-Saas/.github/workflows/release-candidate-gate.yml@refs/heads/main";
+  if (!protectedReleaseCandidate) {
+    const ordinaryCiRef = environment.GITHUB_REF ?? "";
+    const ordinaryCi =
+      (ordinaryCiRef === "refs/heads/main" ||
+        /^refs\/pull\/[1-9][0-9]*\/merge$/u.test(ordinaryCiRef)) &&
+      environment.GITHUB_WORKFLOW_REF ===
+        `keqi119/subscription-Saas/.github/workflows/ci.yml@${ordinaryCiRef}`;
+    if (!ordinaryCi) {
+      throw runtimeError("DATABASE_LAUNCHER_SOURCE_PROVENANCE_UNTRUSTED");
+    }
+    return Object.freeze({
+      generatedAt: new Date().toISOString(),
+      ciRunRef: `github-nonpromotable://${environment.GITHUB_REPOSITORY}/actions/runs/${environment.GITHUB_RUN_ID}/attempts/${environment.GITHUB_RUN_ATTEMPT}`,
+      executorVersion: "source-database-gate.v1"
+    });
   }
   return Object.freeze({
     generatedAt: new Date().toISOString(),

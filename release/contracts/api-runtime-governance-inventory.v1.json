@@ -408,7 +408,7 @@
         "scripts/stage1-clean-acceptance-cli-core.mjs"
       ],
       "runnerCommandId": "stage1.clean-acceptance.baseline@1",
-      "runnerRegistrationStatus": "planned",
+      "runnerRegistrationStatus": "registered",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [

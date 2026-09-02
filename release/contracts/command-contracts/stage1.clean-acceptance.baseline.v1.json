@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "stage1.clean-acceptance.baseline",
+  "commandVersion": "1",
+  "interface": {
+    "plan": "planCleanAcceptanceBaseline(context,input):Promise<CleanAcceptancePlanV1>",
+    "apply": "applyCleanAcceptanceBaseline(context,approved):Promise<PostStateObservationV1>",
+    "reconcile": "reconcileCleanAcceptanceBaseline(context,prior):Promise<ReconcileResultV1>"
+  },
+  "capabilityProfile": "repair",
+  "databaseRole": "repair",
+  "dataImpact": "controlled-dml",
+  "approvalByEnvironment": {
+    "ci-fresh": "ci-policy",
+    "ci-snapshot": "ci-policy",
+    "staging": "human"
+  },
+  "allowedExecutionScopes": ["full-rc", "repair"],
+  "inputSchema": "stage1-clean-acceptance-baseline-input.v1",
+  "planSchema": "deterministic-plan.v1#stage1-clean-acceptance-baseline-plan.v1",
+  "outputSchema": "post-state-observation.v1",
+  "selection": "fixed approved admin and customer identities plus exact vehicle IDs and exact source/target database fingerprints",
+  "lock": {
+    "id": "stage1-clean-acceptance-baseline:apply",
+    "order": ["target advisory transaction lock", "target baseline rows"],
+    "transactionBoundary": "serializable target transaction; recompute the approved manifest after the advisory lock before any insert"
+  },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 1800000,
+  "cancellation": "cancel before commit; a lost process after commit is outcome-unknown and only registered reconcile may determine the result",
+  "idempotency": "apply inserts one exact baseline and one audit fact; replay validates the exact committed manifest with zero additional writes",
+  "checksums": "plan binds source/target identities, input, exact manifest, per-domain row digests and expected per-table write totals",
+  "postconditions": [
+    "approved-plan-recomputed",
+    "target-baseline-exact",
+    "forbidden-domains-empty",
+    "one-baseline-audit-created",
+    "replay-has-no-duplicate-side-effects"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after the Stage1 clean acceptance baseline is no longer required"
+}

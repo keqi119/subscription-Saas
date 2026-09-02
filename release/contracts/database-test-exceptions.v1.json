@@ -261,6 +261,13 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "apps/release-runner/test/clean-acceptance-baseline-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares legacy and Runner baseline behavior on independent deterministic database doubles; the existing script.stage1-clean-acceptance.postgres suite provides the real source-target PostgreSQL coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "apps/release-runner/test/stage1-target-task9-verify.integration.test.mjs",
       "owner": "release-engineering",
       "reason": "Exercises read-only Stage1 command adapters with deterministic transaction and resource doubles and never connects to PostgreSQL.",

@@ -414,7 +414,12 @@ function requireOptions(options) {
 
 function requireApproval(options) {
   if (options.mode === "dry-run") return undefined;
-  if (process.env[APPLY_CONFIRMATION] !== "1") fail("MANIFEST_CONTEXT_INVALID");
+  if (
+    process.env[APPLY_CONFIRMATION] !== "1" &&
+    options.runnerConfirmation !== APPLY_CONFIRMATION
+  ) {
+    fail("MANIFEST_CONTEXT_INVALID");
+  }
   if (
     !options.approvedManifest ||
     typeof options.approvedManifest !== "object" ||

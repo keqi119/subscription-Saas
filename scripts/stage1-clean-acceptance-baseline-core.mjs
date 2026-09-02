@@ -243,6 +243,43 @@ export function redactStage1CleanAcceptanceError(error) {
   return { code: stableCode(code) };
 }
 
+export function normalizeStage1CleanAcceptanceExecutionResult(value = {}) {
+  const expectedKeys = [
+    "auditCreated",
+    "deleted",
+    "inserted",
+    "manifestSha256",
+    "mode",
+    "safe",
+    "updated"
+  ];
+  if (
+    !hasExactKeys(value, expectedKeys) ||
+    !["apply", "replay"].includes(value.mode) ||
+    value.safe !== true ||
+    !SHA256.test(value.manifestSha256 ?? "") ||
+    ![value.auditCreated, value.deleted, value.inserted, value.updated].every(
+      (count) => Number.isSafeInteger(count) && count >= 0
+    ) ||
+    (value.mode === "apply" && value.auditCreated !== 1) ||
+    (value.mode === "replay" &&
+      [value.auditCreated, value.deleted, value.inserted, value.updated].some(
+        (count) => count !== 0
+      ))
+  ) {
+    fail("STAGE1_ACCEPTANCE_ERROR");
+  }
+  return {
+    auditCreated: value.auditCreated,
+    deleted: value.deleted,
+    inserted: value.inserted,
+    manifestSha256: value.manifestSha256,
+    mode: value.mode,
+    safe: true,
+    updated: value.updated
+  };
+}
+
 function classifyAccess(access = {}, selection, exceptions) {
   const users = active(
     array(access.users).filter((row) => row.username === selection.adminUsername)

@@ -6,6 +6,13 @@ import { sha256Bytes, sha256Canonical } from "./digest.mjs";
 
 const CONTRACT_MANIFEST_PATH = "release/contracts/repository-contract-files.v1.json";
 const MIGRATION_PATH = "apps/api/prisma/migrations";
+const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
+  "docker-compose.release-gate.yml",
+  "playwright.release.config.ts",
+  "scripts/release/run-final-compose-gate.mjs",
+  "scripts/release/verify-compose-policy.mjs",
+  "tests/release/web-public-api.spec.ts"
+]);
 
 function codeError(code, details) {
   return Object.assign(new Error(code), { code, details });
@@ -62,7 +69,18 @@ async function discoverRepositoryContractFiles(repoRoot) {
       if (error?.code !== "ENOENT") throw error;
     }
   }
-  return [...new Set([...contractFiles, ...existingFoundationFiles])].sort(comparePaths);
+  const existingReleaseGateEntryPoints = [];
+  for (const relativePath of RELEASE_GATE_ENTRY_POINTS) {
+    try {
+      await readFile(path.join(repoRoot, ...relativePath.split("/")));
+      existingReleaseGateEntryPoints.push(relativePath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  return [
+    ...new Set([...contractFiles, ...existingFoundationFiles, ...existingReleaseGateEntryPoints])
+  ].sort(comparePaths);
 }
 
 export async function loadContractFileManifest(repoRoot) {

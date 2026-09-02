@@ -157,3 +157,20 @@ test("repository digest changes when a declared contract changes", async () => {
     assert.ok(bytes.length > 0);
   });
 });
+
+test("repository contract binds the final release gate entry points", async () => {
+  await withTempRepo(async (root) => {
+    const manifestPath = "release/contracts/repository-contract-files.v1.json";
+    const composePath = "docker-compose.release-gate.yml";
+    await writeRepositoryContractFixture(root, [
+      composePath,
+      manifestPath,
+      "release/contracts/schemas/example.json"
+    ]);
+    await writeFile(path.join(root, composePath), "services: {}\n", "utf8");
+    const before = await computeRepositoryContract(root);
+    await writeFile(path.join(root, composePath), "services: { api: {} }\n", "utf8");
+    const after = await computeRepositoryContract(root);
+    assert.notEqual(after.digest, before.digest);
+  });
+});

@@ -114,12 +114,16 @@
     "release:database:manifest": "node scripts/release/run-database-manifest.mjs",
     "release:database:source-gate": "node scripts/release/run-source-database-gate.mjs",
     "release:postgres:contract": "node scripts/release/run-postgres-contract-tests.mjs --suite database-lifecycle",
+    "release:compose:policy": "node scripts/release/verify-compose-policy.mjs docker-compose.release-gate.yml",
+    "release:compose:gate": "node scripts/release/run-final-compose-gate.mjs",
+    "release:web-client:verify": "playwright test --config playwright.release.config.ts",
     "release:check": "node scripts/release-check.mjs",
     "seed:scenario": "pnpm --filter @subscription-saas/api exec node prisma/seed-scenario.mjs"
   },
   "devDependencies": {
-    "@next/eslint-plugin-next": "^16.2.6",
     "@eslint/js": "^10.0.1",
+    "@next/eslint-plugin-next": "^16.2.6",
+    "@playwright/test": "1.62.1",
     "@types/node": "^25.9.1",
     "eslint": "^10.4.0",
     "eslint-config-prettier": "^10.1.8",

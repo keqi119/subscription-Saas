@@ -53,11 +53,41 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
 function createPoolConfig(databaseUrl: string, configService: ConfigService): PoolConfig {
   return {
+    application_name: resolveDatabaseApplicationName(configService),
     connectionString: normalizeLocalhostDatabaseUrl(databaseUrl),
-    connectionTimeoutMillis: readNumber(configService, "DATABASE_POOL_CONNECTION_TIMEOUT_MS", 10_000),
+    connectionTimeoutMillis: readNumber(
+      configService,
+      "DATABASE_POOL_CONNECTION_TIMEOUT_MS",
+      10_000
+    ),
     idleTimeoutMillis: readNumber(configService, "DATABASE_POOL_IDLE_TIMEOUT_MS", 30_000),
     max: readNumber(configService, "DATABASE_POOL_MAX", 10)
   };
+}
+
+export function resolveDatabaseApplicationName(configService: Pick<ConfigService, "get">) {
+  if (configService.get<string>("RELEASE_FINAL_GATE") !== "true") {
+    return "subscription-api";
+  }
+  const manifestId = configService.get<string>("DATABASE_MANIFEST_ID");
+  const sessionNonce = configService.get<string>("DATABASE_SESSION_NONCE");
+  if (!manifestId || !sessionNonce) {
+    throw new Error("DATABASE_SESSION_IDENTITY_REQUIRED");
+  }
+  return buildDatabaseApplicationName(manifestId, sessionNonce);
+}
+
+export function buildDatabaseApplicationName(manifestId: string, sessionNonce: string) {
+  const componentPattern = /^[a-z0-9][a-z0-9-]{1,39}$/;
+  const applicationName = `subscription-api/${manifestId}/${sessionNonce}`;
+  if (
+    !componentPattern.test(manifestId) ||
+    !componentPattern.test(sessionNonce) ||
+    Buffer.byteLength(applicationName, "utf8") > 63
+  ) {
+    throw new Error("DATABASE_SESSION_IDENTITY_INVALID");
+  }
+  return applicationName;
 }
 
 export function normalizeLocalhostDatabaseUrl(databaseUrl: string) {

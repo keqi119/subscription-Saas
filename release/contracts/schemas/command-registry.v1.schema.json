@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "command-registry.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "capabilityProfiles", "configuredProfiles", "commands"],
+  "properties": {
+    "schemaVersion": { "const": "command-registry.v1" },
+    "capabilityProfiles": { "const": ["verify", "migrate", "repair", "fixture", "evidence"] },
+    "configuredProfiles": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["verify", "migrate", "repair", "evidence"] },
+      "allOf": [
+        { "contains": { "const": "verify" } },
+        { "contains": { "const": "migrate" } },
+        { "contains": { "const": "repair" } },
+        { "contains": { "const": "evidence" } }
+      ]
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/command" }
+    }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "environment": { "enum": ["ci-fresh", "ci-snapshot", "staging", "production"] },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commandId",
+        "commandVersion",
+        "category",
+        "dataImpact",
+        "capabilityProfile",
+        "allowedEnvironments",
+        "prohibitedEnvironments",
+        "approvalMode",
+        "supports",
+        "lock",
+        "timeoutMs",
+        "postconditions",
+        "evidenceSchema",
+        "owner",
+        "exitCondition"
+      ],
+      "properties": {
+        "commandId": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" },
+        "commandVersion": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "category": { "enum": ["verify", "migrate", "repair", "fixture", "evidence"] },
+        "dataImpact": { "enum": ["read-only", "ddl", "controlled-dml", "test-fixture"] },
+        "capabilityProfile": { "enum": ["verify", "migrate", "repair", "fixture", "evidence"] },
+        "allowedEnvironments": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/environment" }
+        },
+        "prohibitedEnvironments": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/environment" }
+        },
+        "approvalMode": { "enum": ["none", "ci-policy", "human"] },
+        "supports": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dryRun", "apply", "replay"],
+          "properties": {
+            "dryRun": { "type": "boolean" },
+            "apply": { "type": "boolean" },
+            "replay": { "type": "boolean" }
+          }
+        },
+        "lock": { "$ref": "#/$defs/nonEmpty" },
+        "timeoutMs": { "type": "integer", "minimum": 1 },
+        "postconditions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        },
+        "evidenceSchema": { "$ref": "#/$defs/nonEmpty" },
+        "owner": { "$ref": "#/$defs/nonEmpty" },
+        "exitCondition": { "$ref": "#/$defs/nonEmpty" }
+      }
+    }
+  }
+}

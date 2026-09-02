@@ -16,6 +16,7 @@
     "packages/release-foundation/src/migration-global-object-scan.mjs",
     "packages/release-foundation/src/node-database-test-runner.mjs",
     "packages/release-foundation/src/schema-registry.mjs",
+    "release/contracts/command-registry.v1.json",
     "release/contracts/database-target-policies.v1.json",
     "release/contracts/database-test-discovery.v1.json",
     "release/contracts/database-test-exceptions.v1.json",
@@ -26,6 +27,7 @@
     "release/contracts/repository-contract-files.v1.json",
     "release/contracts/schemas/baseline-environment-manifest.v1.schema.json",
     "release/contracts/schemas/build-proof.v1.schema.json",
+    "release/contracts/schemas/command-registry.v1.schema.json",
     "release/contracts/schemas/controlled-target-record.v1.schema.json",
     "release/contracts/schemas/custody-receipt.v1.schema.json",
     "release/contracts/schemas/database-target-policy.v1.schema.json",
@@ -39,6 +41,8 @@
     "release/contracts/schemas/post-state-observation.v1.schema.json",
     "release/contracts/schemas/postgres-image.v1.schema.json",
     "release/contracts/schemas/release-aggregate-proof.v1.schema.json",
-    "release/contracts/schemas/source-gate-evidence.v1.schema.json"
+    "release/contracts/schemas/source-gate-evidence.v1.schema.json",
+    "release/contracts/schemas/target-policy.v1.schema.json",
+    "release/contracts/target-policies.v1.json"
   ]
 }

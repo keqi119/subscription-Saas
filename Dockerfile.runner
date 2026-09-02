@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS deps
+FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS deps
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
@@ -11,7 +11,7 @@ COPY apps/release-runner/package.json apps/release-runner/package.json
 COPY packages/release-foundation/package.json packages/release-foundation/package.json
 RUN pnpm install --frozen-lockfile --filter @subscription-saas/release-runner...
 
-FROM postgres:17.11-bookworm AS runtime
+FROM postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0 AS runtime
 
 ARG RUNNER_SOURCE_REVISION
 ENV NODE_ENV=production
@@ -30,10 +30,46 @@ COPY --from=deps /app/packages/release-foundation/node_modules ./packages/releas
 COPY apps/release-runner ./apps/release-runner
 COPY packages/release-foundation ./packages/release-foundation
 COPY release/contracts ./release/contracts
+COPY apps/api/prisma/schema.prisma ./apps/api/prisma/schema.prisma
+COPY apps/api/prisma/migrations ./apps/api/prisma/migrations
+COPY apps/api/src/billing-automation/stage1-acceptance-forbidden-domains.json ./apps/api/src/billing-automation/stage1-acceptance-forbidden-domains.json
+COPY scripts/billing-maintenance-cycle-evidence-core.mjs \
+  scripts/billing-maintenance-cycle-evidence.mjs \
+  scripts/prisma-migration-checksums.mjs \
+  scripts/stage1-active-source-facts-repair-core.mjs \
+  scripts/stage1-active-source-facts-repair-executor.mjs \
+  scripts/stage1-active-source-facts-repair.mjs \
+  scripts/stage1-clean-acceptance-baseline-core.mjs \
+  scripts/stage1-clean-acceptance-baseline-executor.mjs \
+  scripts/stage1-clean-acceptance-baseline-snapshot.mjs \
+  scripts/stage1-clean-acceptance-baseline.mjs \
+  scripts/stage1-clean-acceptance-cli-core.mjs \
+  scripts/stage1-clean-acceptance-target-validator.mjs \
+  scripts/stage1-contract-change-bootstrap-core.mjs \
+  scripts/stage1-contract-change-bootstrap.mjs \
+  scripts/stage1-return-closure-backfill-core.mjs \
+  scripts/stage1-return-closure-backfill.mjs \
+  scripts/stage1-staging-invalid-test-order-retirement-core.mjs \
+  scripts/stage1-staging-invalid-test-order-retirement-executor.mjs \
+  scripts/stage1-staging-invalid-test-order-retirement.mjs \
+  scripts/stage1-task9-preflight-governance.mjs \
+  scripts/stage1c-period-backfill-core.mjs \
+  scripts/stage1c-period-backfill-executor.mjs \
+  scripts/stage1c-period-backfill.mjs \
+  scripts/subscription-segment-bootstrap-core.mjs \
+  scripts/subscription-segment-bootstrap.mjs \
+  ./scripts/
 
 RUN node --version \
   && psql --version \
   && ./apps/release-runner/node_modules/.bin/prisma --version \
-  && test -f /app/apps/release-runner/src/cli.mjs
+  && test -f /app/apps/release-runner/src/cli.mjs \
+  && sh -c 'cli_output="$(node /app/apps/release-runner/src/cli.mjs unsupported 2>&1)"; \
+    cli_status="$?"; \
+    cli_last_line="$(printf "%s\n" "$cli_output" | tail -n 1)"; \
+    if test "$cli_status" -ne 1 || test "$cli_last_line" != "RUNNER_COMMAND_NOT_REGISTERED"; then \
+      printf "Runner negative check failed (status=%s):\n%s\n" "$cli_status" "$cli_output" >&2; \
+      exit 1; \
+    fi'
 
 ENTRYPOINT ["node", "/app/apps/release-runner/src/cli.mjs"]

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "build-material-policy.v1",
+  "trustedBuild": {
+    "workflow": ".github/workflows/docker-images.yml",
+    "eventName": "workflow_dispatch",
+    "ref": "refs/heads/main",
+    "runAttempt": 1,
+    "platform": "linux/amd64",
+    "protectedEnvironment": "trusted-image-build"
+  },
+  "requiredImages": ["api", "web", "runner"],
+  "externalActions": {
+    "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
+    "docker/build-push-action": "10e90e3645eae34f1e60eeb005ba3a3d33f178e8",
+    "docker/login-action": "c94ce9fb468520275223c153574b00df6fe4bcc9",
+    "docker/setup-buildx-action": "8d2750c68a42422c14e847fe6c8ac0403b4cbd6f"
+  },
+  "baseImages": {
+    "node:22-bookworm-slim": "sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3",
+    "postgres:17.11-bookworm": "sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0"
+  },
+  "requiredBaseImagesByArtifact": {
+    "api": ["node:22-bookworm-slim"],
+    "web": ["node:22-bookworm-slim"],
+    "runner": ["node:22-bookworm-slim", "postgres:17.11-bookworm"]
+  },
+  "requiredRunnerAssets": [
+    "apps/api/prisma/migrations",
+    "apps/api/prisma/schema.prisma",
+    "apps/api/src/billing-automation/stage1-acceptance-forbidden-domains.json"
+  ],
+  "requireRegistryDigest": true,
+  "requireBuildAttestation": true,
+  "requireBuilderProvenance": true
+}

@@ -5,6 +5,14 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(process.cwd(), "..", "..");
 
+function runtimeStage(dockerfile: string) {
+  const marker = /^FROM\s+node:22-bookworm-slim@sha256:[0-9a-f]{64}\s+AS\s+runtime\s*$/m.exec(
+    dockerfile
+  );
+  expect(marker).not.toBeNull();
+  return dockerfile.slice(marker!.index);
+}
+
 describe("API runtime media contract", () => {
   it("packages ffmpeg and ffprobe in the API runtime image", () => {
     const dockerfile = readFileSync(join(repoRoot, "Dockerfile.api"), "utf8");
@@ -25,7 +33,7 @@ describe("API runtime media contract", () => {
 
   it("keeps Prisma Client but excludes governance tooling from the API runtime", () => {
     const dockerfile = readFileSync(join(repoRoot, "Dockerfile.api"), "utf8");
-    const runtime = dockerfile.slice(dockerfile.indexOf("FROM node:22-bookworm-slim AS runtime"));
+    const runtime = runtimeStage(dockerfile);
     expect(runtime).not.toMatch(/COPY[^\n]*(?:\/app\/)?scripts(?:\/|\s)/);
     expect(runtime).not.toMatch(
       /COPY[^\n]*(?:\/(?:\.superpowers|tests?|reports?|tmp|output|credentials?)(?:\/|\s)|\/\.env(?:[./\s]))/i
@@ -39,7 +47,7 @@ describe("API runtime media contract", () => {
 
   it("requires and publishes an immutable API source revision label", () => {
     const dockerfile = readFileSync(join(repoRoot, "Dockerfile.api"), "utf8");
-    const runtime = dockerfile.slice(dockerfile.indexOf("FROM node:22-bookworm-slim AS runtime"));
+    const runtime = runtimeStage(dockerfile);
 
     expect(runtime).toMatch(/ARG\s+API_SOURCE_REVISION/);
     expect(runtime).toContain('RUN test "${#API_SOURCE_REVISION}" -eq 40');

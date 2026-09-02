@@ -179,6 +179,15 @@ function classifiedContainerStartError(error) {
   return runtimeError("DATABASE_LAUNCHER_CONTAINER_START_FAILED");
 }
 
+function classifiedClusterPhaseError(error, phase) {
+  if (error?.code !== "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED") return error;
+  const code = {
+    inspect: "DATABASE_LAUNCHER_CONTAINER_INSPECT_FAILED",
+    version: "DATABASE_LAUNCHER_VERSION_QUERY_FAILED"
+  }[phase];
+  return runtimeError(code ?? "DATABASE_LAUNCHER_CLUSTER_DOCKER_FAILED");
+}
+
 export async function startCluster(
   runId,
   imageContract,
@@ -197,8 +206,10 @@ export async function startCluster(
   };
   const image = `${imageContract.repository}@${imageContract.resolvedDigest}`;
   let containerId;
+  let phase = "pull";
   try {
     await pullExactPostgresImage({ image, executeDocker });
+    phase = "run";
     let containerOutput;
     try {
       containerOutput = await executeDocker({
@@ -235,7 +246,9 @@ export async function startCluster(
     if (!/^[0-9a-f]{64}$/.test(containerId)) {
       throw runtimeError("DATABASE_LAUNCHER_CONTAINER_ID_INVALID");
     }
+    phase = "readiness";
     await waitForPostgres(containerId, provisioner.username);
+    phase = "inspect";
     const [inspected] = JSON.parse(await executeDockerCommand({ args: ["inspect", containerId] }));
     if (
       inspected?.Id !== containerId ||
@@ -249,6 +262,7 @@ export async function startCluster(
     if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) {
       throw runtimeError("DATABASE_LAUNCHER_PORT_INVALID");
     }
+    phase = "version";
     const version = await executePsql({
       containerId,
       credential: provisioner,
@@ -266,14 +280,16 @@ export async function startCluster(
       imageDigest: imageContract.resolvedDigest,
       serverVersionNum
     };
+    phase = "policy";
     assertApprovedEphemeralTarget(target, policy);
     return { clusterRoot, containerId, hostPort, provisioner, image, target };
   } catch (error) {
+    const classifiedError = classifiedClusterPhaseError(error, phase);
     if (containerId && /^[0-9a-f]{64}$/.test(containerId)) {
       await executeDocker({ args: ["rm", "--force", containerId] }).catch(() => {});
     }
     await rm(clusterRoot, { recursive: true, force: true });
-    throw error;
+    throw classifiedError;
   }
 }
 

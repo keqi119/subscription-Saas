@@ -1998,27 +1998,30 @@ git commit -m "build: migrate subscription segment bootstrap command"
 
 ---
 
-### Task 23: Migrate `stage1.return-closure.backfill@1`
+### Task 23A: Migrate the DML-only `stage1.return-closure.backfill@1`
 
 **Files:**
 
 - Create: `apps/release-runner/src/commands/stage1-return-closure-backfill.mjs`
-- Create: `apps/release-runner/test/stage1-return-closure-backfill-equivalence.integration.test.mjs`
+- Create: `apps/release-runner/test/stage1-return-closure-backfill-dml-equivalence.integration.test.mjs`
 - Create: `release/contracts/command-contracts/stage1.return-closure.backfill.v1.json`
 - Modify: `apps/release-runner/src/command-handlers.mjs`
 - Modify: `release/contracts/command-registry.v1.json`
+- Modify: `release/contracts/approval-policies.v1.json`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 - Modify: `release/contracts/api-runtime-governance-inventory.v1.json`
 - Modify: `scripts/stage1-return-closure-backfill-core.mjs`
+- Modify: `scripts/stage1-return-closure-backfill.mjs`
 
 **Interfaces:**
 
 - Produces: `planReturnClosureBackfill(context, input): Promise<ReturnClosurePlanV1>`, `applyReturnClosureBackfill(context, approved): Promise<PostStateObservationV1>`, and `reconcileReturnClosureBackfill(context, prior): Promise<ReconcileResultV1>`.
 - The adapter calls existing `classifyStage1ReturnClosureBackfill`, `applicableStage1ReturnClassification`, and `executeStage1ReturnClosureBackfill`; payment/write-off authority remains external.
+- This command is permanently `repair / controlled-dml`. It may read publication readiness, but neither the legacy entry nor the Runner handler may issue `ALTER`, `CREATE`, `DROP`, or any other DDL. Constraint validation moves exclusively to Task 23B.
 
 - [ ] **Step 1: Add the v1 contract and digest entry**
 
-Freeze exact order/Closure/return evidence identities, expected versions, financial-authority fingerprint, exact writes, lock/transaction boundary, audit/error classes, idempotency and postconditions.
+Freeze exact order/Closure/return evidence identities, expected versions, financial-authority fingerprint, exact DML writes, existing batch/transaction boundaries, audit/error classes, idempotency and postconditions. Register `repair / controlled-dml`, Staging `human`, CI temporary databases `ci-policy`, and explicitly prohibit DDL in both the command contract and statement policy.
 
 - [ ] **Step 2: Write and run the paired-database RED test**
 
@@ -2028,28 +2031,108 @@ Expected: FAIL with `RUNNER_HANDLER_MISSING:stage1.return-closure.backfill@1`.
 
 - [ ] **Step 3: Implement minimal adapter and normalized equivalence**
 
-Compare exact target IDs, return/Closure facts, financial fingerprint, audit events, postconditions, and refusal classes on independent A/B databases.
+Compare exact target IDs, return/Closure facts, financial fingerprint, audit events, postconditions, refusal classes, and payment/write-off facts on independent A/B databases. The normalized statement log must contain only reads plus the approved Closure/evidence/clause/file-authority DML and must prove zero DDL.
 
 - [ ] **Step 4: Test stale financial facts, replay, and UNKNOWN**
 
 Change one bill/disposition after dry-run and require `PLAN_CHANGED_SINCE_APPROVAL`; replay and same-key reconcile must not create another Closure or overwrite payment authority.
 
-- [ ] **Step 5: Run all command gates**
+- [ ] **Step 5: Remove validation DDL from the old combined entry and add negative capability tests**
+
+Delete the `ALTER TABLE ... VALIDATE CONSTRAINT` path from `scripts/stage1-return-closure-backfill.mjs`. Preserve its DML classifications and effects, but make the old entry incapable of validating the constraint. Reject a DML command whose statement evidence contains DDL, a wrong capability, or a credential profile containing migration/DDL privileges.
+
+- [ ] **Step 6: Run all DML command gates**
 
 ```powershell
 pnpm --filter @subscription-saas/release-runner test -- stage1-return-closure-backfill
+node --test scripts/stage1-return-closure-backfill.test.mjs
 pnpm release:contracts:verify
 node scripts/release/discover-database-tests.mjs --mode verify
 node scripts/release/verify-api-governance-inventory.mjs
 git diff --check
 ```
 
-- [ ] **Step 6: Commit this command only**
+- [ ] **Step 7: Commit the DML command only**
 
 ```powershell
-git add apps/release-runner/src/commands/stage1-return-closure-backfill.mjs apps/release-runner/src/command-handlers.mjs apps/release-runner/test/stage1-return-closure-backfill-equivalence.integration.test.mjs release/contracts/command-contracts/stage1.return-closure.backfill.v1.json release/contracts/command-registry.v1.json release/contracts/repository-contract-files.v1.json release/contracts/api-runtime-governance-inventory.v1.json scripts/stage1-return-closure-backfill-core.mjs
-git commit -m "build: migrate return closure backfill command"
+git add apps/release-runner/src/commands/stage1-return-closure-backfill.mjs apps/release-runner/src/command-handlers.mjs apps/release-runner/test/stage1-return-closure-backfill-dml-equivalence.integration.test.mjs release/contracts/command-contracts/stage1.return-closure.backfill.v1.json release/contracts/command-registry.v1.json release/contracts/approval-policies.v1.json release/contracts/repository-contract-files.v1.json release/contracts/api-runtime-governance-inventory.v1.json scripts/stage1-return-closure-backfill-core.mjs scripts/stage1-return-closure-backfill.mjs
+git commit -m "build: migrate return closure dml backfill command"
 ```
+
+---
+
+### Task 23B: Extract `stage1.return-closure.publication-constraint.validate@1`
+
+**Files:**
+
+- Create: `apps/release-runner/src/commands/stage1-return-closure-publication-constraint-validate.mjs`
+- Create: `apps/release-runner/test/stage1-return-closure-publication-constraint-validate.integration.test.mjs`
+- Create: `apps/release-runner/test/stage1-return-closure-composite-equivalence.integration.test.mjs`
+- Create: `release/contracts/command-contracts/stage1.return-closure.publication-constraint.validate.v1.json`
+- Modify: `apps/release-runner/src/command-handlers.mjs`
+- Modify: `release/contracts/command-registry.v1.json`
+- Modify: `release/contracts/approval-policies.v1.json`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+- Modify: `release/contracts/api-runtime-governance-inventory.v1.json`
+
+**Interfaces:**
+
+- Produces: `planReturnClosurePublicationConstraintValidation(context, input): Promise<ConstraintValidationPlanV1>`, `applyReturnClosurePublicationConstraintValidation(context, approved): Promise<PostStateObservationV1>`, and `reconcileReturnClosurePublicationConstraintValidation(context, prior): Promise<ReconcileResultV1>`.
+- This command is permanently `migrate / ddl`. It may read catalog and exact violation counts and may execute only `ALTER TABLE "subscription_closure_settlement_revision" VALIDATE CONSTRAINT "subscription_closure_settlement_publication_check"`; business DML is prohibited.
+- Its input must reference the successfully stored Task 23A apply execution-proof digest and post-state-observation digest plus the successful replay/reconcile execution-proof digest. The full proof chain must match the same build proof, baseline Manifest identity/digest, database identity, source SHA, command/version, approved plan and completed DML operation. Task 23B cannot plan or obtain approval until Task 23A apply plus replay/reconcile has passed and every referenced proof has completed custody readback.
+
+- [ ] **Step 1: Add the DDL contract, approval tuples, registry entry, handler parity, digest, and exit-inventory mappings**
+
+Register `migrate / ddl`, Staging `human`, and CI temporary databases `ci-policy`. Freeze the exact table, constraint name, expected check definition hash and OID, DML proof dependencies, global migration/schema lock plus table-lock order, `lock_timeout`, `statement_timeout`, one allowed DDL statement, evidence Schema, idempotency and UNKNOWN recovery. Do not add a migration, model, enum, RBAC permission, feature flag, or application behavior.
+
+- [ ] **Step 2: Write the DDL RED and dependency-order tests**
+
+Run: `node scripts/release/run-database-suite.mjs --suite-id runner.stage1-return-closure-publication-constraint --chain fresh`
+
+Expected: FAIL with `RUNNER_HANDLER_MISSING:stage1.return-closure.publication-constraint.validate@1`.
+
+Also require preflight rejection before credential read when the DML proof or observation is absent, not in trusted custody, failed, belongs to a different build/Manifest/database, or was generated for another command. Prohibit generating the DML and DDL plans or approvals as one batch.
+
+- [ ] **Step 3: Implement the deterministic DDL plan after DML custody**
+
+The dry-run reads `pg_constraint` and the exact target table to bind table/constraint OIDs, `pg_get_constraintdef(...)` hash, `convalidated`, and the exact count of rows violating the existing check predicate. It succeeds only when the constraint exists with the approved definition and the violation count is zero. If already validated, the plan records a read-only no-op. The plan identity includes the Task 23A apply execution-proof, post-state-observation and replay/reconcile execution-proof digests plus the shared build, Manifest, database, source, repository-contract and migration-catalog identities.
+
+- [ ] **Step 4: Implement locked apply, replay, and UNKNOWN reconciliation**
+
+Use a fixed order: acquire the same global database-migration advisory lock used by Schema operations, set fixed local `lock_timeout` and `statement_timeout`, acquire the exact table's approved Schema lock, then re-read OIDs, definition hash, `convalidated`, and violation count. Any drift rejects before DDL. Execute only the fixed validation statement. A validated constraint is a read-only no-op.
+
+If the process is interrupted after validation may have started, record `INTERRUPTED_UNKNOWN`; do not invoke apply again. Reconcile with the same idempotency key by checking `pg_constraint.convalidated`, the definition hash/OIDs, and violation count. A DDL failure never rolls back or invalidates the already successful and stored Task 23A DML proof; the constraint remains `NOT VALID` unless PostgreSQL proves validation committed, and a later apply requires a new DDL dry-run and independent approval.
+
+- [ ] **Step 5: Prove capability separation and old/new composite equivalence**
+
+On independent databases from one baseline, compare:
+
+1. reference A: the captured pre-split legacy sequence of DML plus the one constraint validation;
+2. candidate B: Task 23A dry-run/approval/apply/replay and proof custody, followed by Task 23B dry-run/independent approval/apply/replay.
+
+Compare final Closure/evidence/clause/file-authority/payment/write-off facts, exact constraint definition and `convalidated`, audit facts, and absence of duplicate effects. Separately prove DML equivalence and DDL validation. Negative tests must reject wrong capability, a combined migration/repair credential, DDL in Task 23A statement evidence, and business DML in Task 23B statement evidence.
+
+- [ ] **Step 6: Run all DDL and composite gates**
+
+```powershell
+pnpm --filter @subscription-saas/release-runner test -- stage1-return-closure
+pnpm release:contracts:verify
+node scripts/release/discover-database-tests.mjs --mode verify
+node scripts/release/verify-api-governance-inventory.mjs
+node --test scripts/release/approval-workflows.test.mjs
+git diff --check
+```
+
+- [ ] **Step 7: Commit the DDL extraction only**
+
+```powershell
+git add apps/release-runner/src/commands/stage1-return-closure-publication-constraint-validate.mjs apps/release-runner/src/command-handlers.mjs apps/release-runner/test/stage1-return-closure-publication-constraint-validate.integration.test.mjs apps/release-runner/test/stage1-return-closure-composite-equivalence.integration.test.mjs release/contracts/command-contracts/stage1.return-closure.publication-constraint.validate.v1.json release/contracts/command-registry.v1.json release/contracts/approval-policies.v1.json release/contracts/repository-contract-files.v1.json release/contracts/api-runtime-governance-inventory.v1.json
+git commit -m "build: extract return closure constraint validation command"
+```
+
+Task 23 closes only when both commits pass independently and the enforced operational sequence is:
+
+`DML dry-run → DML approval → DML apply → DML replay/reconcile → DML proof custody → DDL dry-run → independent DDL approval → DDL apply → DDL replay/reconcile`.
 
 ---
 
@@ -2195,7 +2278,7 @@ git commit -m "build: migrate ephemeral contract change bootstrap command"
 
 - [ ] **Step 1: Prove every caller has a migration disposition**
 
-Run the inventory against package scripts, CI, Compose, deployment configuration, both listed Runbooks, external automation sign-offs, and manual operation records. Refuse extraction while any caller is `unowned`, `unknown`, or still invokes an API-container script.
+Run the inventory against package scripts, CI, Compose, deployment configuration, both listed Runbooks, external automation sign-offs, and manual operation records. Refuse extraction while any caller is `unowned`, `unknown`, or still invokes an API-container script. The former return/closure combined entry must map to both Task 23A and Task 23B dispositions, and no supported caller may retain the old DML-plus-DDL sequence.
 
 - [ ] **Step 2: Change formal package and Runbook entries to the trusted launcher**
 
@@ -2206,6 +2289,8 @@ Replace direct write commands with fixed wrappers that select an exact registere
   "stage1:clean-acceptance:dry-run": "node scripts/release/trusted-launch-runner.mjs --command stage1.clean-acceptance.baseline@1 --phase dry-run --request-file .release-inputs/clean-acceptance.json"
 }
 ```
+
+For return/closure maintenance, the formal Runbook and wrappers must enforce the complete Task 23A proof-custody boundary before permitting Task 23B planning. They must use separate capability credentials, operation IDs, request files, plans, approvals and execution proofs; no wrapper may pre-approve or batch both operations.
 
 - [ ] **Step 3: Add RED API-runtime negative tests**
 
@@ -2224,7 +2309,7 @@ Delete all governed script `COPY` rules from `Dockerfile.api`, install/copy the 
 
 - [ ] **Step 5: Verify caller cutover and old-entry denial**
 
-Build the API and Runner images. Expected: every registered command succeeds through Runner equivalence tests; the API image cannot execute old commands; old entries cannot obtain any active capability credential; no deployment config mounts repository scripts into API.
+Build the API and Runner images. Expected: every registered command succeeds through Runner equivalence tests; the API image cannot execute old commands; old entries cannot obtain any active capability credential; no deployment config mounts repository scripts into API. The audit must also prove the Task 23A DML handler cannot execute DDL, the Task 23B DDL handler cannot execute business DML, and the retired combined entry cannot obtain either credential.
 
 - [ ] **Step 6: Validate the rollback matrix**
 
@@ -2542,6 +2627,7 @@ The audit must verify:
 - Postgres 17 digest/version, role separation, exact cleanup, and snapshot ownership/sanitization evidence pass;
 - Runner proof/capability/approval/TOCTOU/UNKNOWN/custody contracts pass;
 - all current API-image governance files and command callers have migrated or have an approved non-executable disposition;
+- return/closure maintenance has separate Task 23A repair and Task 23B migration identities, plans, approvals, credentials, operation IDs and proofs; stored DML proof custody precedes DDL planning, statement logs prove capability separation, and the old combined entry is unavailable;
 - API runtime negative allowlist/SBOM, catalog query, and exact Manifest/session `pg_stat_activity` database identity evidence pass;
 - one build proof covers API/Web/Runner; final Compose and real-client API-base checks pass;
 - no S1 change adds business models, enums, RBAC permissions, migrations, feature flags, customer/API/domain semantic changes, or S2/S3 behavior.
@@ -2583,23 +2669,23 @@ Open the final S1 review with the exact source SHA, build-proof digest, API/Web/
 
 ## Specification Coverage Matrix
 
-| Approved S1 requirement                                                                     | Implementation tasks |
-| ------------------------------------------------------------------------------------------- | -------------------- |
-| Offline-safe implementation target; no ambient database                                     | 0-3                  |
-| A+ immutable three-image bundle and external trust root                                     | 1, 10-12, 27-30      |
-| Build identity/provenance and capability-scoped execution                                   | 1, 10-12, 27-28      |
-| Closed JSON command registry, handler parity, one credential profile                        | 10, 16-25            |
-| Verifiable approval authority, binding, expiry, attested revocation and rollback prevention | 11, 16, 19-25        |
-| Stable baseline Manifest, deterministic plans, TOCTOU, UNKNOWN recovery                     | 10-12, 16-25         |
-| Content-addressed proof custody and 180-day governance                                      | 4, 13, 28, 30        |
-| Full-repository database discovery, unified launcher, isolation and zero skips              | 2-9                  |
-| Migration/runtime fixture credential and DDL/DML separation                                 | 3, 5-9               |
-| PostgreSQL 17 fresh and sanitized snapshot upgrade chains                                   | 0, 3-9, 13-14, 29-30 |
-| Read-only-source snapshot sanitization, ownership normalization, expiry and scanning        | 13-14                |
-| Bidirectional API tooling inventory and per-command behavior equivalence                    | 15-25                |
-| API runtime extraction and negative allowlist                                               | 26                   |
-| Final Compose, exact API database session identity and real Web/API request                 | 29                   |
-| Release aggregation, retry rules and S1 exit audit                                          | 30                   |
+| Approved S1 requirement                                                                     | Implementation tasks                                   |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Offline-safe implementation target; no ambient database                                     | 0-3                                                    |
+| A+ immutable three-image bundle and external trust root                                     | 1, 10-12, 27-30                                        |
+| Build identity/provenance and capability-scoped execution                                   | 1, 10-12, 27-28                                        |
+| Closed JSON command registry, handler parity, one credential profile                        | 10, 16-25, including 23A/23B                           |
+| Verifiable approval authority, binding, expiry, attested revocation and rollback prevention | 11, 16, 19-25, including independent 23A/23B approvals |
+| Stable baseline Manifest, deterministic plans, TOCTOU, UNKNOWN recovery                     | 10-12, 16-25, including 23A/23B proof ordering         |
+| Content-addressed proof custody and 180-day governance                                      | 4, 13, 28, 30                                          |
+| Full-repository database discovery, unified launcher, isolation and zero skips              | 2-9                                                    |
+| Migration/runtime fixture credential and DDL/DML separation                                 | 3, 5-9                                                 |
+| PostgreSQL 17 fresh and sanitized snapshot upgrade chains                                   | 0, 3-9, 13-14, 29-30                                   |
+| Read-only-source snapshot sanitization, ownership normalization, expiry and scanning        | 13-14                                                  |
+| Bidirectional API tooling inventory and per-command behavior equivalence                    | 15-25                                                  |
+| API runtime extraction and negative allowlist                                               | 26                                                     |
+| Final Compose, exact API database session identity and real Web/API request                 | 29                                                     |
+| Release aggregation, retry rules and S1 exit audit                                          | 30                                                     |
 
 ## Stop and Rollback Rules
 

@@ -12,8 +12,12 @@ import {
   validateContract,
   verifyApproval
 } from "../../packages/release-foundation/src/index.mjs";
-import { commandHandlers } from "../../apps/release-runner/src/command-handlers.mjs";
 import {
+  commandDependencyVerifiers,
+  commandHandlers
+} from "../../apps/release-runner/src/command-handlers.mjs";
+import {
+  assertRegistryDependencyVerifierParity,
   assertRegistryHandlerParity,
   loadCommandRegistry,
   loadTargetPolicies,
@@ -95,6 +99,7 @@ export async function trustedLaunchRunner({
   readCredential,
   connectDatabase,
   credentialFileReference,
+  commandDependencyArtifacts,
   handler,
   registry: suppliedRegistry,
   targetPolicies: suppliedTargetPolicies,
@@ -112,6 +117,7 @@ export async function trustedLaunchRunner({
   ]);
   validateContract("approval-policy.v1", approvalPolicy, { repoRoot });
   assertRegistryHandlerParity(registry, commandHandlers);
+  assertRegistryDependencyVerifierParity(registry, commandDependencyVerifiers);
   const command = registeredCommand(registry, commandKey);
   const targetPolicy = targetPolicies.policies.find(
     ({ policyId }) => policyId === request.targetPolicyId
@@ -207,6 +213,9 @@ export async function trustedLaunchRunner({
       policy: targetPolicy,
       approvalDecision,
       handler: handler ?? commandHandlers.get(commandKey),
+      verifyCommandDependencies: commandDependencyVerifiers.get(commandKey),
+      commandDependencyArtifacts,
+      executionState,
       readCredential,
       connectDatabase,
       credentialFileReference

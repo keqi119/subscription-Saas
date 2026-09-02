@@ -24,7 +24,16 @@ const commandPolicies = Object.freeze({
     "repair"
   ],
   "scripts/stage1-contract-change-bootstrap.mjs": ["stage1.contract-change.bootstrap@1", "repair"],
-  "scripts/stage1-return-closure-backfill.mjs": ["stage1.return-closure.backfill@1", "repair"],
+  "scripts/stage1-return-closure-backfill.mjs": [
+    "stage1.return-closure.backfill@1",
+    "repair",
+    [
+      {
+        runnerCommandId: "stage1.return-closure.publication-constraint.validate@1",
+        capabilityProfile: "migrate"
+      }
+    ]
+  ],
   "scripts/stage1-staging-invalid-test-order-retirement.mjs": [
     "stage1.invalid-test-order.retire@1",
     "repair"
@@ -196,7 +205,7 @@ export function buildApiGovernanceInventory(surface, { registeredCommandKeys = n
     surface.entrypoints.map(({ entrypoint, dependencyClosure: closure }) => {
       const policy = commandPolicies[entrypoint];
       if (!policy) throw codeError("API_GOVERNANCE_COMMAND_POLICY_MISSING", { entrypoint });
-      const [runnerCommandId, capabilityProfile] = policy;
+      const [runnerCommandId, capabilityProfile, additionalRunnerCommands = []] = policy;
       return [
         entrypoint,
         {
@@ -207,6 +216,16 @@ export function buildApiGovernanceInventory(surface, { registeredCommandKeys = n
             ? "registered"
             : "planned",
           capabilityProfile,
+          ...(additionalRunnerCommands.length > 0
+            ? {
+                additionalRunnerCommands: additionalRunnerCommands.map((additional) => ({
+                  ...additional,
+                  runnerRegistrationStatus: registeredCommandKeys.has(additional.runnerCommandId)
+                    ? "registered"
+                    : "planned"
+                }))
+              }
+            : {}),
           migrationOwner: "release-engineering",
           callers: []
         }

@@ -107,6 +107,87 @@ test("validates the complete pre-connection trust binding", () => {
   assert.equal(verifyPreflight(fixture()).status, "verified");
 });
 
+test("verifies registered command dependencies before capability credential access", async () => {
+  const input = fixture();
+  input.command.dependencyContract = "stage1-return-closure-dml-proof-chain.v1";
+  let dependencyChecks = 0;
+  let secretReads = 0;
+  let databaseConnections = 0;
+  await assert.rejects(
+    () =>
+      executeRegisteredCommand({
+        ...input,
+        verifyCommandDependencies: async () => {
+          dependencyChecks += 1;
+          throw Object.assign(new Error("RETURN_CLOSURE_DML_PROOF_CUSTODY_REQUIRED"), {
+            code: "RETURN_CLOSURE_DML_PROOF_CUSTODY_REQUIRED"
+          });
+        },
+        readCredential: async () => {
+          secretReads += 1;
+        },
+        connectDatabase: async () => {
+          databaseConnections += 1;
+        }
+      }),
+    { code: "RETURN_CLOSURE_DML_PROOF_CUSTODY_REQUIRED" }
+  );
+  assert.equal(dependencyChecks, 1);
+  assert.equal(secretReads, 0);
+  assert.equal(databaseConnections, 0);
+});
+
+test("refuses direct apply after an UNKNOWN attempt before dependency or credential access", async () => {
+  const input = fixture();
+  input.request.phase = "apply";
+  input.request.operationId = "f1fe589f-79f8-429e-9b09-d2f777b1431e";
+  input.request.idempotencyKey = "task23b-operation-key";
+  let secretReads = 0;
+  let dependencyChecks = 0;
+  await assert.rejects(
+    () =>
+      executeRegisteredCommand({
+        ...input,
+        executionState: {
+          operationId: input.request.operationId,
+          idempotencyKey: input.request.idempotencyKey,
+          status: "INTERRUPTED_UNKNOWN"
+        },
+        verifyCommandDependencies: async () => {
+          dependencyChecks += 1;
+        },
+        readCredential: async () => {
+          secretReads += 1;
+        },
+        connectDatabase: async () => assert.fail("database must not be reached")
+      }),
+    { code: "UNKNOWN_REQUIRES_RECONCILE" }
+  );
+  assert.equal(dependencyChecks, 0);
+  assert.equal(secretReads, 0);
+});
+
+test("permits only reconcile, not replay, after an UNKNOWN attempt", async () => {
+  const input = fixture();
+  input.request.phase = "replay";
+  input.request.operationId = "f1fe589f-79f8-429e-9b09-d2f777b1431e";
+  input.request.idempotencyKey = "task23b-operation-key";
+  await assert.rejects(
+    () =>
+      executeRegisteredCommand({
+        ...input,
+        executionState: {
+          operationId: input.request.operationId,
+          idempotencyKey: input.request.idempotencyKey,
+          status: "INTERRUPTED_UNKNOWN"
+        },
+        readCredential: async () => assert.fail("credential must not be reached"),
+        connectDatabase: async () => assert.fail("database must not be reached")
+      }),
+    { code: "UNKNOWN_REQUIRES_RECONCILE" }
+  );
+});
+
 for (const [name, mutate, code] of [
   [
     "build proof digest",

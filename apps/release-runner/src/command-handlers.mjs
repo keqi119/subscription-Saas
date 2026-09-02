@@ -6,6 +6,10 @@ import { stage1BillingMaintenanceEvidenceHandler } from "./commands/stage1-billi
 import { stage1CleanAcceptanceBaselineHandler } from "./commands/stage1-clean-acceptance-baseline.mjs";
 import { stage1PeriodBackfillHandler } from "./commands/stage1-period-backfill.mjs";
 import { stage1ReturnClosureBackfillHandler } from "./commands/stage1-return-closure-backfill.mjs";
+import {
+  stage1ReturnClosurePublicationConstraintValidateHandler,
+  verifyReturnClosureDmlProofDependencies
+} from "./commands/stage1-return-closure-publication-constraint-validate.mjs";
 import { stage1Task9PreflightHandler } from "./commands/stage1-task9-preflight.mjs";
 import { subscriptionSegmentBootstrapHandler } from "./commands/subscription-segment-bootstrap.mjs";
 
@@ -22,6 +26,17 @@ export const commandHandlers = new Map([
   ["stage1.clean-acceptance.baseline@1", stage1CleanAcceptanceBaselineHandler],
   ["stage1.period.backfill@1", stage1PeriodBackfillHandler],
   ["stage1.return-closure.backfill@1", stage1ReturnClosureBackfillHandler],
+  [
+    "stage1.return-closure.publication-constraint.validate@1",
+    stage1ReturnClosurePublicationConstraintValidateHandler
+  ],
   ["stage1.task9.preflight@1", stage1Task9PreflightHandler],
   ["subscription.segment.bootstrap@1", subscriptionSegmentBootstrapHandler]
+]);
+
+export const commandDependencyVerifiers = new Map([
+  [
+    "stage1.return-closure.publication-constraint.validate@1",
+    verifyReturnClosureDmlProofDependencies
+  ]
 ]);

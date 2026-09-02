@@ -550,6 +550,13 @@
       "runnerCommandId": "stage1.return-closure.backfill@1",
       "runnerRegistrationStatus": "registered",
       "capabilityProfile": "repair",
+      "additionalRunnerCommands": [
+        {
+          "runnerCommandId": "stage1.return-closure.publication-constraint.validate@1",
+          "capabilityProfile": "migrate",
+          "runnerRegistrationStatus": "registered"
+        }
+      ],
       "migrationOwner": "release-engineering",
       "callers": [
         {

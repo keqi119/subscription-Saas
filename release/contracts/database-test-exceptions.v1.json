@@ -289,6 +289,20 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "apps/release-runner/test/stage1-return-closure-composite-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares the captured legacy DML-plus-constraint sequence with the two independently approved Runner commands on isolated deterministic states; the release Compose gate retains final PostgreSQL migration-identity coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/stage1-return-closure-publication-constraint-validate.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises exact PostgreSQL 17 catalog, lock, DDL, proof-custody and UNKNOWN-reconciliation contracts with a deterministic Prisma adapter; the release Compose gate retains final PostgreSQL migration-identity coverage.",
+      "scope": "runner-command-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "apps/release-runner/test/stage1-target-task9-verify.integration.test.mjs",
       "owner": "release-engineering",
       "reason": "Exercises read-only Stage1 command adapters with deterministic transaction and resource doubles and never connects to PostgreSQL.",

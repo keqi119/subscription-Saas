@@ -38,6 +38,20 @@ export function assertRegistryHandlerParity(registry, handlers) {
   }
 }
 
+export function assertRegistryDependencyVerifierParity(registry, verifiers) {
+  const declared = registry.commands
+    .filter(({ dependencyContract }) => dependencyContract)
+    .map(({ commandId, commandVersion }) => `${commandId}@${commandVersion}`)
+    .sort();
+  const implemented = [...verifiers.keys()].sort();
+  if (!isDeepStrictEqual(declared, implemented)) {
+    throw runnerError("RUNNER_REGISTRY_DEPENDENCY_VERIFIER_DRIFT", {
+      declared,
+      implemented
+    });
+  }
+}
+
 export function registeredCommand(registry, commandKey) {
   const command = registry.commands.find(
     ({ commandId, commandVersion }) => `${commandId}@${commandVersion}` === commandKey

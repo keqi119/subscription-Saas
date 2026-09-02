@@ -43,9 +43,31 @@
       ]
     },
     { "batchId": "launcher-fixture", "suiteIds": ["release.launcher.fixture"] },
-    { "batchId": "snapshot-chain", "suiteIds": ["release.snapshot-chain"] }
+    { "batchId": "snapshot-chain", "suiteIds": ["release.snapshot-chain"] },
+    {
+      "batchId": "runner-ddl-boundary",
+      "suiteIds": ["runner.stage1-return-closure-publication-constraint"]
+    }
   ],
   "suites": [
+    {
+      "suiteId": "runner.stage1-return-closure-publication-constraint",
+      "runner": "node-test",
+      "files": [
+        "scripts/stage1-return-closure-publication-constraint-postgres.integration.test.mjs"
+      ],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 300000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
     {
       "suiteId": "api.database.release",
       "runner": "vitest",

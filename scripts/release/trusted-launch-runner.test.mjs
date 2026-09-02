@@ -64,11 +64,16 @@ function requestFor(command, overrides = {}) {
   const proof = buildProof();
   const environmentClass = command === "repair.execute" ? "staging" : "ci-fresh";
   const capabilityProfile =
-    command === "repair.execute" ? "repair" : command === "schema.migrate" ? "migrate" : "verify";
+    command === "repair.execute"
+      ? "repair"
+      : command === "schema.migrate" ||
+          command === "stage1.return-closure.publication-constraint.validate"
+        ? "migrate"
+        : "verify";
   const executionScope =
     command === "repair.execute"
       ? "repair"
-      : command === "schema.migrate"
+      : capabilityProfile === "migrate"
         ? "migration-schema"
         : "verify";
   const request = {
@@ -98,9 +103,10 @@ function requestFor(command, overrides = {}) {
     operationId: "f1fe589f-79f8-429e-9b09-d2f777b1431e",
     attemptId: "01710f65-23f7-4c66-b6bb-14f557fdac6e",
     idempotencyKey: "operation-launch-key-1",
-    phase: command === "schema.migrate" || command === "repair.execute" ? "apply" : "verify",
+    phase: capabilityProfile === "migrate" || command === "repair.execute" ? "apply" : "verify",
     inputDigest: digest("8"),
-    planDigest: digest("f")
+    planDigest: digest("f"),
+    input: {}
   };
   const [commandId, commandVersion] = `${command}@1`.split("@");
   request.launchAttestation = {
@@ -217,9 +223,19 @@ async function launchFixture({
   checkpointStore,
   executionState,
   executionJournal,
-  handler
+  handler,
+  commandDependencyArtifacts
 } = {}) {
   const policy = approvalPolicy();
+  if (commandKey === "stage1.return-closure.publication-constraint.validate@1") {
+    policy.permittedOperations.push({
+      approvalMode: "ci-policy",
+      commandId: "stage1.return-closure.publication-constraint.validate",
+      commandVersion: "1",
+      environmentClass: "ci-fresh",
+      dataImpact: "ddl"
+    });
+  }
   const request = requestFor(commandKey.split("@")[0]);
   const registry = await loadCommandRegistry();
   const targetPolicies = await loadTargetPolicies();
@@ -328,6 +344,7 @@ async function launchFixture({
       },
       credentialFileReference: "C:/run/secrets/capability.json",
       handler,
+      commandDependencyArtifacts,
       now
     });
   return {
@@ -340,6 +357,16 @@ async function launchFixture({
     targetPolicies
   };
 }
+
+test("rejects a return-closure DDL launch without custodied DML proofs before credentials", async () => {
+  const fixture = await launchFixture({
+    commandKey: "stage1.return-closure.publication-constraint.validate@1"
+  });
+  await assert.rejects(fixture.launch(), {
+    code: "RETURN_CLOSURE_DML_PROOF_CHAIN_INVALID"
+  });
+  assert.deepEqual(fixture.counts(), { secretReads: 0, databaseConnections: 0 });
+});
 
 test("launches a protected ci-policy command only after approval and revocation verification", async () => {
   const fixture = await launchFixture();

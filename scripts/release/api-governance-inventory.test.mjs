@@ -33,7 +33,7 @@ test("inventory covers every API runtime governance file and executable in both 
   assert.equal(result.unmappedDependencies.length, 0);
 });
 
-test("every discovered formal caller is owned and routed to one fixed Runner command", async () => {
+test("every discovered formal caller is owned and routed to fixed Runner commands", async () => {
   const [inventory, surface] = await Promise.all([
     loadJson("release/contracts/api-runtime-governance-inventory.v1.json"),
     discoverApiGovernanceSurface(repoRoot)
@@ -62,6 +62,18 @@ test("every discovered formal caller is owned and routed to one fixed Runner com
     inventory.commands.find(({ runnerCommandId }) => runnerCommandId === "db.schema.verify@1")
       ?.runnerRegistrationStatus,
     "registered"
+  );
+  assert.deepEqual(
+    inventory.commands.find(
+      ({ entrypoint }) => entrypoint === "scripts/stage1-return-closure-backfill.mjs"
+    )?.additionalRunnerCommands,
+    [
+      {
+        runnerCommandId: "stage1.return-closure.publication-constraint.validate@1",
+        runnerRegistrationStatus: "registered",
+        capabilityProfile: "migrate"
+      }
+    ]
   );
 });
 

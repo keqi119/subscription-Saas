@@ -280,6 +280,33 @@
       "exitCondition": "retire after historical return Closure facts no longer require Stage1 backfill"
     },
     {
+      "commandId": "stage1.return-closure.publication-constraint.validate",
+      "commandVersion": "1",
+      "category": "migrate",
+      "dataImpact": "ddl",
+      "capabilityProfile": "migrate",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot", "staging"],
+      "prohibitedEnvironments": ["production"],
+      "approvalMode": "human",
+      "approvalModeOverrides": { "ci-fresh": "ci-policy", "ci-snapshot": "ci-policy" },
+      "allowedExecutionScopes": ["full-rc", "migration-schema"],
+      "supports": { "dryRun": true, "apply": true, "replay": true },
+      "lock": "stage1-return-closure-publication-constraint:validate",
+      "dependencyContract": "stage1-return-closure-dml-proof-chain.v1",
+      "timeoutMs": 300000,
+      "postconditions": [
+        "dml-proof-chain-custody-complete",
+        "approved-constraint-identity-recomputed-under-lock",
+        "constraint-violation-count-zero",
+        "constraint-validated",
+        "statement-log-has-one-allowed-ddl-and-no-business-dml",
+        "replay-is-read-only-no-op"
+      ],
+      "evidenceSchema": "execution-proof.v1",
+      "owner": "release-engineering",
+      "exitCondition": "retire after the publication constraint is validated on every supported environment"
+    },
+    {
       "commandId": "stage1.task9.preflight",
       "commandVersion": "1",
       "category": "verify",

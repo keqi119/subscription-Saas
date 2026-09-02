@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "stage1.return-closure.publication-constraint.validate",
+  "commandVersion": "1",
+  "interface": {
+    "plan": "planReturnClosurePublicationConstraintValidation(context,input):Promise<ConstraintValidationPlanV1>",
+    "apply": "applyReturnClosurePublicationConstraintValidation(context,approved):Promise<PostStateObservationV1>",
+    "reconcile": "reconcileReturnClosurePublicationConstraintValidation(context,prior):Promise<ReconcileResultV1>"
+  },
+  "capabilityProfile": "migrate",
+  "databaseRole": "migration",
+  "dataImpact": "ddl",
+  "approvalByEnvironment": {
+    "ci-fresh": "ci-policy",
+    "ci-snapshot": "ci-policy",
+    "staging": "human"
+  },
+  "allowedExecutionScopes": ["full-rc", "migration-schema"],
+  "inputSchema": "stage1-return-closure-publication-constraint-input.v1",
+  "planSchema": "deterministic-plan.v1#stage1-return-closure-publication-constraint-plan.v1",
+  "outputSchema": "post-state-observation.v1",
+  "selection": "the existing public.subscription_closure_settlement_revision publication check constraint after successful return-closure DML proof custody",
+  "lock": {
+    "id": "stage1-return-closure-publication-constraint:validate",
+    "order": [
+      "global database-migration advisory lock",
+      "subscription_closure_settlement_revision SHARE UPDATE EXCLUSIVE lock"
+    ],
+    "transactionBoundary": "one transaction with fixed local lock and statement timeouts; re-observe exact constraint and violations before the single allowed VALIDATE CONSTRAINT statement"
+  },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 300000,
+  "cancellation": "interruption after validation starts is outcome-unknown; direct apply retry is forbidden and same-operation reconcile reads convalidated, definition identity and violations",
+  "idempotency": "an already validated exact constraint is a read-only no-op",
+  "checksums": "plan binds DML apply/observation/replay proof digests, build/Manifest/database identity, table and constraint OIDs, normalized pg_get_constraintdef hash sha256:b5392a8226c41e0cff31766254e9e6d4d1fd1b03e8d35854548863768436f2e1, validation flag and violation count",
+  "postconditions": [
+    "dml-proof-chain-custody-complete",
+    "approved-constraint-identity-recomputed-under-lock",
+    "constraint-violation-count-zero",
+    "constraint-validated",
+    "statement-log-has-one-allowed-ddl-and-no-business-dml",
+    "replay-is-read-only-no-op"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after the publication constraint is validated on every supported environment"
+}

@@ -9,8 +9,9 @@ import {
   sha256Canonical
 } from "@subscription-saas/release-foundation";
 
-import { commandHandlers } from "./command-handlers.mjs";
+import { commandDependencyVerifiers, commandHandlers } from "./command-handlers.mjs";
 import {
+  assertRegistryDependencyVerifierParity,
   assertRegistryHandlerParity,
   loadCommandRegistry,
   loadTargetPolicies,
@@ -39,6 +40,7 @@ async function defaultExecute({ commandKey, requestFile }) {
     readFile(path.resolve(requestFile), "utf8")
   ]);
   assertRegistryHandlerParity(registry, commandHandlers);
+  assertRegistryDependencyVerifierParity(registry, commandDependencyVerifiers);
   const command = registeredCommand(registry, commandKey);
   const request = JSON.parse(raw);
   const policy = policies.policies.find(({ policyId }) => policyId === request.targetPolicyId);

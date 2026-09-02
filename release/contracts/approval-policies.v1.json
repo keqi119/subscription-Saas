@@ -156,6 +156,27 @@
     },
     {
       "approvalMode": "ci-policy",
+      "commandId": "stage1.return-closure.publication-constraint.validate",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.return-closure.publication-constraint.validate",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "stage1.return-closure.publication-constraint.validate",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "ci-policy",
       "commandId": "subscription.segment.bootstrap",
       "commandVersion": "1",
       "environmentClass": "ci-fresh",

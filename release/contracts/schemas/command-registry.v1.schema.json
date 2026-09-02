@@ -96,6 +96,7 @@
           }
         },
         "lock": { "$ref": "#/$defs/nonEmpty" },
+        "dependencyContract": { "$ref": "#/$defs/nonEmpty" },
         "timeoutMs": { "type": "integer", "minimum": 1 },
         "postconditions": {
           "type": "array",

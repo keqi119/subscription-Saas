@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   assertCommandVersionEvolution,
+  assertRegistryDependencyVerifierParity,
   assertRegistryHandlerParity,
   loadCommandRegistry
 } from "../src/command-registry.mjs";
@@ -35,4 +36,18 @@ test("published command semantics require a commandVersion increment", async () 
   });
   changed.commands[0].commandVersion = "2";
   assert.doesNotThrow(() => assertCommandVersionEvolution(previous, changed));
+});
+
+test("dependency contracts and pre-credential verifiers have exact parity", async () => {
+  const registry = await loadCommandRegistry();
+  const expected = new Map(
+    registry.commands
+      .filter(({ dependencyContract }) => dependencyContract)
+      .map(({ commandId, commandVersion }) => [`${commandId}@${commandVersion}`, async () => ({})])
+  );
+  assert.doesNotThrow(() => assertRegistryDependencyVerifierParity(registry, expected));
+  expected.clear();
+  assert.throws(() => assertRegistryDependencyVerifierParity(registry, expected), {
+    code: "RUNNER_REGISTRY_DEPENDENCY_VERIFIER_DRIFT"
+  });
 });

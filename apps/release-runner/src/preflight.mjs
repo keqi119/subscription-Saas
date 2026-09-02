@@ -95,10 +95,33 @@ export async function executeRegisteredCommand({
   readCredential,
   connectDatabase,
   credentialFileReference,
-  approvalDecision
+  approvalDecision,
+  verifyCommandDependencies,
+  commandDependencyArtifacts,
+  executionState
 }) {
   const decision = verifyPreflight({ command, request, policy });
   verifyApprovalRequirement(command, request, decision, approvalDecision);
+  if (executionState?.status === "INTERRUPTED_UNKNOWN") {
+    if (executionState.operationId !== request.operationId) {
+      throw runnerError("EXECUTION_OPERATION_MISMATCH");
+    }
+    if (executionState.idempotencyKey !== request.idempotencyKey) {
+      throw runnerError("EXECUTION_IDEMPOTENCY_KEY_MISMATCH");
+    }
+    if (request.phase !== "reconcile") throw runnerError("UNKNOWN_REQUIRES_RECONCILE");
+  }
+  if (command.dependencyContract && typeof verifyCommandDependencies !== "function") {
+    throw runnerError("RUNNER_COMMAND_DEPENDENCY_VERIFIER_MISSING");
+  }
+  const commandDependencies = verifyCommandDependencies
+    ? await verifyCommandDependencies({
+        command,
+        request,
+        decision,
+        artifacts: commandDependencyArtifacts
+      })
+    : undefined;
   const credential = await readCredential(credentialFileReference);
   const database = await connectDatabase({ credential, target: decision.targetIntent });
   const observed = await database.observeIdentity();
@@ -119,5 +142,5 @@ export async function executeRegisteredCommand({
     extensions: Object.freeze([...(observed.extensions ?? [])]),
     migrationHead: observed.migrationHead ?? null
   });
-  return handler({ baseline, command, decision, request, database });
+  return handler({ baseline, command, commandDependencies, decision, request, database });
 }

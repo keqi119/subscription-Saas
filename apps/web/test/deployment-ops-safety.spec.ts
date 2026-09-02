@@ -162,7 +162,7 @@ describe("Deployment operations safety", () => {
     const deployment = read("docs/deployment.md");
     const runbook = read("docs/operations/stage1b-auto-debit-runbook.zh-CN.md");
     const migration = deployment.indexOf(
-      "prisma:migrate:deploy",
+      "db.migrate.deploy@1",
       deployment.indexOf("镜像发布固定顺序")
     );
     const healthy = deployment.indexOf("healthy", migration);

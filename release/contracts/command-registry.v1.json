@@ -126,6 +126,32 @@
       "exitCondition": "permanent release verification capability"
     },
     {
+      "commandId": "stage1.active-source-facts.repair",
+      "commandVersion": "1",
+      "category": "repair",
+      "dataImpact": "controlled-dml",
+      "capabilityProfile": "repair",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot", "staging"],
+      "prohibitedEnvironments": ["production"],
+      "approvalMode": "human",
+      "approvalModeOverrides": { "ci-fresh": "ci-policy", "ci-snapshot": "ci-policy" },
+      "allowedExecutionScopes": ["full-rc", "repair"],
+      "supports": { "dryRun": true, "apply": true, "replay": true },
+      "lock": "stage1-active-source-facts-repair:apply",
+      "timeoutMs": 300000,
+      "postconditions": [
+        "approved-candidate-set-recomputed-under-lock",
+        "expected-contract-updates-applied",
+        "expected-order-updates-applied",
+        "expected-audits-created",
+        "candidate-set-clean-after-apply",
+        "replay-has-no-duplicate-side-effects"
+      ],
+      "evidenceSchema": "execution-proof.v1",
+      "owner": "release-engineering",
+      "exitCondition": "retire after active source facts no longer require Stage1 repair"
+    },
+    {
       "commandId": "stage1.acceptance.target.verify",
       "commandVersion": "1",
       "category": "verify",

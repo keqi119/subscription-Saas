@@ -137,6 +137,31 @@ test("apply returns a Prisma-deserializable boolean advisory lock row", async ()
   assert.match(harness.advisoryLockQueries[0], /SELECT TRUE AS locked FROM pg_advisory_xact_lock/);
 });
 
+test("apply rejects an approved candidate digest changed under the transaction locks", async () => {
+  const harness = createApplyHarness();
+  await assert.rejects(
+    requiredExport(
+      executor,
+      "executeStage1ActiveSourceFactsRepair"
+    )({
+      expectedClassificationDigest: `sha256:${"f".repeat(64)}`,
+      loadSnapshot: async () => harness.snapshot(),
+      mode: "apply",
+      prisma: harness.prisma
+    }),
+    { code: "STAGE1_ACTIVE_SOURCE_FACTS_REPAIR_PLAN_CHANGED" }
+  );
+  assert.deepEqual(harness.calls, [
+    "transaction.begin",
+    "advisory.lock",
+    "tables.lock",
+    "transaction.rollback"
+  ]);
+  assert.equal(harness.state.audits.length, 0);
+  assert.equal(harness.state.contract.status, "SIGNED");
+  assert.equal(harness.state.order.contractId, null);
+});
+
 test("a stale conditional update aborts and rolls back every earlier write", async () => {
   const harness = createApplyHarness({ staleOrderUpdate: true });
 

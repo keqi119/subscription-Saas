@@ -135,6 +135,10 @@ export function classifyStage1ActiveSourceFactsRepair(snapshot = {}) {
   };
 }
 
+export function hashStage1ActiveSourceFactsRepairClassification(classification) {
+  return `sha256:${createHash("sha256").update(stableJson(classification), "utf8").digest("hex")}`;
+}
+
 function resolveActivationEvidence(order) {
   const deliveries = array(order.deliveries).filter(
     (delivery) => delivery && delivery.deletedAt == null && delivery.deliveryStatus === "DELIVERED"

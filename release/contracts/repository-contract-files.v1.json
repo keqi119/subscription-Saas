@@ -31,6 +31,7 @@
     "release/contracts/command-contracts/db.migrate.deploy.v1.json",
     "release/contracts/command-contracts/db.schema.verify.v1.json",
     "release/contracts/command-contracts/stage1.acceptance.target.verify.v1.json",
+    "release/contracts/command-contracts/stage1.active-source-facts.repair.v1.json",
     "release/contracts/command-contracts/stage1.billing-maintenance.evidence.v1.json",
     "release/contracts/command-contracts/stage1.clean-acceptance.baseline.v1.json",
     "release/contracts/command-contracts/stage1.task9.preflight.v1.json",

@@ -25,8 +25,16 @@ export async function runTrustedEntrypoint({ envelopeFile, argv = [], adapters }
   if (argv.length > 0) throw runnerError("RUNNER_ENTRYPOINT_OVERRIDE_REJECTED");
   if (!envelopeFile) throw runnerError("RUNNER_LAUNCH_ENVELOPE_REQUIRED");
   requireAdapter(adapters, "readEnvelope");
-  requireAdapter(adapters, "launch");
   const envelope = await adapters.readEnvelope(envelopeFile);
+  if (envelope?.executionMode === "database-test") {
+    requireAdapter(adapters, "runDatabaseTests");
+    validateContract("database-test-launch-envelope.v1", envelope);
+    if (containsRawSecret(envelope)) {
+      throw runnerError("RUNNER_LAUNCH_ENVELOPE_SECRET_FORBIDDEN");
+    }
+    return adapters.runDatabaseTests(envelope);
+  }
+  requireAdapter(adapters, "launch");
   validateContract("runner-launch-envelope.v1", envelope);
   if (containsRawSecret(envelope)) {
     throw runnerError("RUNNER_LAUNCH_ENVELOPE_SECRET_FORBIDDEN");

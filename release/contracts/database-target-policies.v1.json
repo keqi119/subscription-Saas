@@ -3,6 +3,17 @@
   "policies": [
     {
       "schemaVersion": "database-target-policy.v1",
+      "policyId": "s1-release-compose-ephemeral",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot"],
+      "allowedHosts": ["127.0.0.1"],
+      "requiredClusterMarker": "subscription-s1-controlled/v1",
+      "requiredEphemeralMarker": "subscription-s1-ephemeral/v1",
+      "requiredImageDigest": "sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6",
+      "requiredServerVersionMajor": 17,
+      "databaseNamePattern": "^s1ci_[0-9a-f]{24}$"
+    },
+    {
+      "schemaVersion": "database-target-policy.v1",
       "policyId": "s1-release-ephemeral",
       "allowedEnvironments": ["ci", "local-controlled"],
       "allowedHosts": ["127.0.0.1", "localhost", "::1"],

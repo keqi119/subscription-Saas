@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -276,7 +277,8 @@ export async function executeFinalComposeGate(input, adapters) {
     "startApplications",
     "verifyApi",
     "verifyWebClient",
-    "custody"
+    "custody",
+    "cleanupTarget"
   ];
   for (const stage of stages) {
     if (typeof adapters?.[stage] !== "function") {
@@ -315,34 +317,53 @@ export async function executeFinalComposeGate(input, adapters) {
   return deepFreeze(context);
 }
 
-function argument(name) {
-  const index = process.argv.indexOf(name);
-  return index >= 0 ? process.argv[index + 1] : undefined;
+function argument(argv, name) {
+  const index = argv.indexOf(name);
+  return index >= 0 ? argv[index + 1] : undefined;
 }
 
-async function main() {
-  const chain = argument("--chain");
-  const buildProofFile = argument("--build-proof-file");
-  const evidenceInputFile =
-    argument("--evidence-input-file") ?? `.release-inputs/${chain}-final-compose-input.json`;
+export async function runFinalComposeCli(
+  argv,
+  {
+    createProductionAdapters = async (input) => {
+      const module = await import("./final-compose-production-adapters.mjs");
+      return module.createFinalComposeProductionAdapters(input);
+    },
+    createId = randomUUID,
+    loadJson = (file) => readFile(path.resolve(file), "utf8").then(JSON.parse),
+    loadCompose = readComposeConfig,
+    writeEvidence = async (file, evidence) => {
+      await mkdir(path.dirname(path.resolve(file)), { recursive: true });
+      await writeFile(path.resolve(file), canonicalJson(evidence), { flag: "wx" });
+    }
+  } = {}
+) {
+  if (!argv.includes("--execute") || argv.includes("--evidence-input-file")) {
+    throw gateError("FINAL_COMPOSE_EXECUTION_MODE_REQUIRED");
+  }
+  const chain = argument(argv, "--chain");
+  const buildProofFile = argument(argv, "--build-proof-file");
   const sourceGateEvidenceFile =
-    argument("--source-gate-evidence-file") ?? `.release-inputs/${chain}-source-gate-evidence.json`;
+    argument(argv, "--source-gate-evidence-file") ??
+    `.release-inputs/${chain}-source-gate-evidence.json`;
   const outputFile =
-    argument("--output-file") ?? `.release-evidence/${chain}/final-compose-evidence.v1.json`;
+    argument(argv, "--output-file") ?? `.release-evidence/${chain}/final-compose-evidence.v1.json`;
   const snapshotMetadataFile =
-    argument("--snapshot-metadata-file") ?? ".release-inputs/snapshot-metadata.json";
-  const composeFile = argument("--compose-file") ?? "docker-compose.release-gate.yml";
-  if (!chain || !buildProofFile) {
+    argument(argv, "--snapshot-metadata-file") ?? ".release-inputs/snapshot-metadata.json";
+  const composeFile = argument(argv, "--compose-file") ?? "docker-compose.release-gate.yml";
+  const launchRoot = argument(argv, "--launch-root");
+  const evidenceRoot = argument(argv, "--evidence-root");
+  if (!chainNames.includes(chain) || !buildProofFile || !launchRoot || !evidenceRoot) {
     throw gateError("FINAL_COMPOSE_ARGUMENT_REQUIRED");
   }
-  const [buildProof, evidenceInput, sourceGateEvidence] = await Promise.all([
-    readFile(path.resolve(buildProofFile), "utf8").then(JSON.parse),
-    readFile(path.resolve(evidenceInputFile), "utf8").then(JSON.parse),
-    readFile(path.resolve(sourceGateEvidenceFile), "utf8").then(JSON.parse)
+  const [buildProof, sourceGateEvidence] = await Promise.all([
+    loadJson(buildProofFile),
+    loadJson(sourceGateEvidenceFile)
   ]);
+  validateContract("build-proof.v1", buildProof);
   validateContract("source-gate-evidence.v1", sourceGateEvidence);
   const expectedImages = releaseImageReferences(buildProof);
-  const composeConfig = readComposeConfig(composeFile);
+  const composeConfig = loadCompose(composeFile);
   const composePolicy = verifyComposeConfig(composeConfig, {
     expectedImages,
     expectedSourceSha: buildProof.identity.sourceSha
@@ -356,9 +377,10 @@ async function main() {
   ) {
     throw gateError("FINAL_COMPOSE_SOURCE_GATE_MISMATCH");
   }
+  let snapshotMetadata = null;
   let snapshotMetadataDigest = null;
   if (chain === "snapshot") {
-    const snapshotMetadata = JSON.parse(await readFile(path.resolve(snapshotMetadataFile), "utf8"));
+    snapshotMetadata = await loadJson(snapshotMetadataFile);
     validateContract("snapshot-metadata.v1", snapshotMetadata);
     snapshotMetadataDigest = sha256Canonical(snapshotMetadata);
     if (sourceGateEvidence.snapshot?.snapshotMetadataDigest !== snapshotMetadataDigest) {
@@ -366,29 +388,47 @@ async function main() {
     }
   }
   const composeConfigDigest = sha256Canonical(composeConfig);
-  if (
-    evidenceInput.compose?.configDigest &&
-    evidenceInput.compose.configDigest !== composeConfigDigest
-  ) {
-    throw gateError("FINAL_COMPOSE_CONFIG_DIGEST_MISMATCH");
-  }
-  const evidence = buildFinalComposeEvidence({
-    ...evidenceInput,
+  if (composePolicy.serviceCount < 1) throw gateError("FINAL_COMPOSE_POLICY_EMPTY");
+  const initial = deepFreeze({
     chain,
     buildProof,
+    buildProofDigest: sha256Canonical(buildProof),
+    sourceEvidence: sourceGateEvidence,
     sourceGateEvidenceDigest: sha256Canonical(sourceGateEvidence),
+    releaseImages: expectedImages,
+    contracts: {
+      migrationCatalogDigest: buildProof.identity.migrationCatalogDigest,
+      repositoryContractDigest: buildProof.identity.repositoryContractDigest,
+      databaseTestManifestDigest: sourceGateEvidence.databaseTestManifestDigest,
+      postgresImageDigest: sourceGateEvidence.postgres.imageDigest,
+      snapshotMetadataDigest
+    },
     databaseTestManifestDigest: sourceGateEvidence.databaseTestManifestDigest,
     postgresImageDigest: sourceGateEvidence.postgres.imageDigest,
     snapshotMetadataDigest,
-    compose: {
-      ...evidenceInput.compose,
-      configDigest: composeConfigDigest
-    }
+    snapshotMetadata,
+    operationId: createId(),
+    runId: createId(),
+    attemptId: createId(),
+    compose: { projectName: `s1-final-${chain}`, configDigest: composeConfigDigest },
+    composeFile,
+    workspace: { launchRoot, evidenceRoot },
+    priorFailureProofDigests: []
   });
-  if (composePolicy.serviceCount < 1) throw gateError("FINAL_COMPOSE_POLICY_EMPTY");
-  await mkdir(path.dirname(path.resolve(outputFile)), { recursive: true });
-  await writeFile(path.resolve(outputFile), canonicalJson(evidence), { flag: "wx" });
+  const adapters = await createProductionAdapters({
+    ...initial,
+    compose: { ...initial.compose, policy: composePolicy }
+  });
+  const result = await executeFinalComposeGate(initial, adapters);
+  const evidence = result.custody?.evidence;
+  validateFinalComposeEvidence(evidence);
+  await writeEvidence(outputFile, evidence);
   process.stdout.write(`${JSON.stringify({ evidenceDigest: sha256Canonical(evidence) })}\n`);
+  return evidence;
+}
+
+async function main() {
+  return runFinalComposeCli(process.argv.slice(2));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

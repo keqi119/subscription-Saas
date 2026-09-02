@@ -629,11 +629,14 @@ function loadRuntimeDatabase({ context, repoRoot, loadJson }) {
     secret.password.length < 16 ||
     sha256Bytes(Buffer.from(secret.password, "utf8")) !== context.runtimeCredentialFingerprint ||
     secret.database !== context.databaseName ||
-    secret.host !== "127.0.0.1" ||
+    !["127.0.0.1", "postgres"].includes(secret.host) ||
     !Number.isInteger(secret.port) ||
     secret.port < 1 ||
     secret.port > 65535 ||
-    secret.tlsMode !== "disable"
+    !(
+      (secret.host === "127.0.0.1" && secret.tlsMode === "disable") ||
+      (secret.host === "postgres" && secret.tlsMode === "require")
+    )
   ) {
     throw launcherError("RELEASE_DATABASE_TEST_SECRET_INVALID");
   }

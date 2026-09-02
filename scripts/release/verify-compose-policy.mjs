@@ -6,15 +6,14 @@ import { pathToFileURL } from "node:url";
 
 const immutableImagePattern = /^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/i;
 const runnerServices = Object.freeze({
-  "runner-database-test": "database-test",
   "runner-migration": "migrate",
-  "runner-provision": "provision",
-  "runner-restore": "restore",
   "runner-verify": "verify"
 });
+const closedRunnerServices = Object.freeze(["runner-database-test"]);
 const requiredServices = Object.freeze([
   "postgres",
   ...Object.keys(runnerServices),
+  ...closedRunnerServices,
   "api",
   "web",
   "playwright"
@@ -51,7 +50,23 @@ function assertServiceSafety(serviceName, service) {
   if (service.entrypoint !== undefined && service.entrypoint !== null) {
     throw policyError("COMPOSE_ENTRYPOINT_OVERRIDE_FORBIDDEN", { service: serviceName });
   }
-  if (service.command !== undefined && service.command !== null) {
+  const postgresTlsCommand = [
+    "postgres",
+    "-c",
+    "ssl=on",
+    "-c",
+    "ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem",
+    "-c",
+    "ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key"
+  ];
+  if (
+    service.command !== undefined &&
+    service.command !== null &&
+    !(
+      serviceName === "postgres" &&
+      JSON.stringify(service.command) === JSON.stringify(postgresTlsCommand)
+    )
+  ) {
     throw policyError("COMPOSE_COMMAND_OVERRIDE_FORBIDDEN", { service: serviceName });
   }
   if (
@@ -141,9 +156,31 @@ export function verifyComposeConfig(config, { expectedImages = {}, expectedSourc
     }
     capabilities.push(capability);
   }
+  const databaseTest = config.services["runner-database-test"];
+  assertExpectedImage("runner-database-test", databaseTest.image, expectedImages.runner);
+  const databaseTestEnvironment = environmentMap(databaseTest.environment);
+  if (
+    databaseTest.image !== config.services["runner-verify"].image ||
+    databaseTestEnvironment.RUNNER_CAPABILITY_PROFILE !== undefined ||
+    databaseTestEnvironment.RUNNER_LAUNCH_ENVELOPE_FILE !==
+      "/run/launch/runner-launch-envelope.v1.json" ||
+    !Array.isArray(databaseTest.profiles) ||
+    databaseTest.profiles.length !== 1 ||
+    databaseTest.profiles[0] !== "runner-database-test" ||
+    databaseTest.restart !== "no"
+  ) {
+    throw policyError("COMPOSE_RUNNER_EXECUTION_MODE_INVALID", {
+      service: "runner-database-test"
+    });
+  }
 
   if (expectedSourceSha) {
-    for (const serviceName of ["api", "web", ...Object.keys(runnerServices)]) {
+    for (const serviceName of [
+      "api",
+      "web",
+      ...Object.keys(runnerServices),
+      ...closedRunnerServices
+    ]) {
       if (
         labelMap(config.services[serviceName].labels)[
           "com.subscription.release.source-revision"
@@ -174,8 +211,8 @@ export function readComposeConfig(file, { environment = process.env } = {}) {
     RELEASE_API_DATABASE_URL:
       "postgresql://runtime:policy-only@postgres:5432/release_gate?sslmode=require",
     RELEASE_API_IMAGE: `ghcr.io/policy/subscription-api@sha256:${"a".repeat(64)}`,
-    RELEASE_DATABASE_NAME: "release_gate_policy",
     RELEASE_DATABASE_TEST_CREDENTIAL_FILE: "/run/policy/database-test",
+    RELEASE_DATABASE_TEST_SOURCE_CREDENTIAL_FILE: "/run/policy/database-test-source",
     RELEASE_MANIFEST_ID: "manifest-policy",
     RELEASE_MIGRATION_CREDENTIAL_FILE: "/run/policy/migrate",
     RELEASE_POSTGRES_PASSWORD_FILE: "/run/policy/postgres",

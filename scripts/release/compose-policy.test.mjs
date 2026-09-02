@@ -19,6 +19,15 @@ function validConfig() {
       postgres: {
         image: `postgres@${digest("e")}`,
         profiles: ["database"],
+        command: [
+          "postgres",
+          "-c",
+          "ssl=on",
+          "-c",
+          "ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem",
+          "-c",
+          "ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key"
+        ],
         volumes: [
           {
             type: "volume",
@@ -27,11 +36,9 @@ function validConfig() {
           }
         ]
       },
-      "runner-provision": runner("provision"),
-      "runner-restore": runner("restore"),
       "runner-migration": runner("migrate"),
       "runner-verify": runner("verify"),
-      "runner-database-test": runner("database-test"),
+      "runner-database-test": databaseTestRunner(),
       api: {
         image: images.api,
         profiles: ["api"],
@@ -68,12 +75,24 @@ function runner(capability) {
   };
 }
 
+function databaseTestRunner() {
+  return {
+    image: images.runner,
+    profiles: ["runner-database-test"],
+    restart: "no",
+    environment: {
+      RUNNER_LAUNCH_ENVELOPE_FILE: "/run/launch/runner-launch-envelope.v1.json"
+    },
+    labels: { "com.subscription.release.source-revision": sourceSha }
+  };
+}
+
 test("accepts digest-pinned capability-separated final gate services", () => {
   assert.deepEqual(
     verifyComposeConfig(validConfig(), { expectedImages: images, expectedSourceSha: sourceSha }),
     {
-      serviceCount: 9,
-      runnerCapabilities: ["database-test", "migrate", "provision", "restore", "verify"]
+      serviceCount: 7,
+      runnerCapabilities: ["migrate", "verify"]
     }
   );
 });
@@ -132,6 +151,14 @@ test("rejects a Runner service with a combined capability identity", () => {
   config.services["runner-verify"].environment.RUNNER_CAPABILITY_PROFILE = "verify,migrate";
   assert.throws(() => verifyComposeConfig(config, { expectedImages: images }), {
     code: "COMPOSE_RUNNER_CAPABILITY_INVALID"
+  });
+});
+
+test("rejects capability injection into the closed database-test execution mode", () => {
+  const config = validConfig();
+  config.services["runner-database-test"].environment.RUNNER_CAPABILITY_PROFILE = "runtime-test";
+  assert.throws(() => verifyComposeConfig(config, { expectedImages: images }), {
+    code: "COMPOSE_RUNNER_EXECUTION_MODE_INVALID"
   });
 });
 

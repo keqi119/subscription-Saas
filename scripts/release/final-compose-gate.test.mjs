@@ -8,6 +8,7 @@ import {
   buildFinalComposeEvidence,
   executeFinalComposeGate,
   releaseImageReferences,
+  runFinalComposeCli,
   verifyApiDatabaseSession
 } from "./run-final-compose-gate.mjs";
 
@@ -262,6 +263,7 @@ test("runs final stages in order and retains an infrastructure failure before le
     verifyApi: async () => calls.push("api"),
     verifyWebClient: async () => calls.push("web"),
     custody: async () => calls.push("custody"),
+    cleanupTarget: async () => calls.push("cleanup"),
     recordFailure: async () => assert.fail("failure recorder must not run on success")
   };
   await executeFinalComposeGate(
@@ -277,7 +279,8 @@ test("runs final stages in order and retains an infrastructure failure before le
     "applications",
     "api",
     "web",
-    "custody"
+    "custody",
+    "cleanup"
   ]);
 });
 
@@ -301,6 +304,7 @@ test("records a pre-write infrastructure failure and permits only a full retry o
     verifyApi: async () => {},
     verifyWebClient: async () => {},
     custody: async () => {},
+    cleanupTarget: async () => {},
     recordFailure: async (failure) => ({ ...failure, failureProofDigest })
   };
   await assert.rejects(executeFinalComposeGate(input, adapters), (error) => {
@@ -331,5 +335,12 @@ test("records a pre-write infrastructure failure and permits only a full retry o
         buildProofDigest: digest("0")
       }),
     { code: "FINAL_COMPOSE_RETRY_INPUT_MISMATCH" }
+  );
+});
+
+test("production CLI refuses a precomputed final evidence input", async () => {
+  await assert.rejects(
+    runFinalComposeCli(["--execute", "--evidence-input-file", "precomputed.json"]),
+    { code: "FINAL_COMPOSE_EXECUTION_MODE_REQUIRED" }
   );
 });

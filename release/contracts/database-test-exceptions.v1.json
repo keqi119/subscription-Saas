@@ -254,6 +254,13 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "apps/release-runner/test/runtime-adapters.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises fixed-root launch, credential, journal and custody adapters with temporary files and injected database connectors; it never opens a PostgreSQL connection.",
+      "scope": "mock-runtime-boundary",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "apps/release-runner/test/stage1-billing-maintenance-evidence.integration.test.mjs",
       "owner": "release-engineering",
       "reason": "Exercises bounded read-only evidence collection and immutable custody with deterministic database adapter doubles and never connects to PostgreSQL.",

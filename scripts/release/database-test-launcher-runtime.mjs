@@ -720,7 +720,7 @@ function vitestJsonReport(output) {
   }
 }
 
-function testCounts(output) {
+export function databaseTestCounts(output) {
   const report = vitestJsonReport(output);
   if (report) {
     const values = [
@@ -777,7 +777,7 @@ export function summarizeDatabaseTestLog({ stdout, stderr }) {
   return {
     ...summary,
     reporter: "vitest-json",
-    counts: testCounts(stdout),
+    counts: databaseTestCounts(stdout),
     failedTests: report.testResults.flatMap(({ assertionResults = [] }) =>
       assertionResults
         .filter(({ status }) => status === "failed")
@@ -1314,7 +1314,7 @@ export async function executeLauncherRequest({
                 expiryDisposition: "review"
               }
             );
-            const counts = testCounts(result.stdout);
+            const counts = databaseTestCounts(result.stdout);
             if (result.signal || (result.code !== 0 && counts.failed === 0)) {
               process.stderr.write(
                 `${JSON.stringify({

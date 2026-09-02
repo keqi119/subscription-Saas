@@ -65,19 +65,31 @@ export async function verifyAttestedLaunchEnvelope({
   let envelope;
   try {
     envelope = JSON.parse(bytes.toString("utf8"));
-    validateContract("runner-launch-envelope.v1", envelope);
-    validateContract("build-proof.v1", envelope.request.buildProof);
+    validateContract(
+      envelope.executionMode === "database-test"
+        ? "database-test-launch-envelope.v1"
+        : "runner-launch-envelope.v1",
+      envelope
+    );
+    validateContract(
+      "build-proof.v1",
+      envelope.executionMode === "database-test" ? envelope.buildProof : envelope.request.buildProof
+    );
   } catch (error) {
     throw launchError("RUNNER_LAUNCH_ENVELOPE_INVALID", { cause: error?.code });
   }
+  const buildProof =
+    envelope.executionMode === "database-test" ? envelope.buildProof : envelope.request.buildProof;
+  const registeredIdentityValid =
+    envelope.executionMode === "database-test" ||
+    (envelope.requestDigest === sha256Canonical(envelope.request) &&
+      envelope.buildProofDigest === envelope.request.buildProofDigest &&
+      envelope.actualRunnerDigest === envelope.request.actualRunnerDigest &&
+      envelope.launchAttestationDigest === sha256Canonical(envelope.request.launchAttestation));
   if (
-    envelope.requestDigest !== sha256Canonical(envelope.request) ||
-    envelope.buildProofDigest !== sha256Canonical(envelope.request.buildProof) ||
-    envelope.buildProofDigest !== envelope.request.buildProofDigest ||
-    envelope.actualRunnerDigest !== envelope.request.actualRunnerDigest ||
-    envelope.actualRunnerDigest !==
-      envelope.request.buildProof.identity.images.runner.imageDigest ||
-    envelope.launchAttestationDigest !== sha256Canonical(envelope.request.launchAttestation)
+    !registeredIdentityValid ||
+    envelope.buildProofDigest !== sha256Canonical(buildProof) ||
+    envelope.actualRunnerDigest !== buildProof.identity.images.runner.imageDigest
   ) {
     throw launchError("RUNNER_LAUNCH_ENVELOPE_IDENTITY_MISMATCH");
   }
@@ -90,7 +102,7 @@ export async function verifyAttestedLaunchEnvelope({
     "--signer-workflow",
     trustedSignerWorkflow,
     "--source-digest",
-    envelope.request.buildProof.identity.sourceSha,
+    buildProof.identity.sourceSha,
     "--format",
     "json"
   ]);
@@ -142,7 +154,10 @@ async function executeRunnerContainer({
   const observation = await inspectImage(expectedRunnerImage);
   if (
     !observation?.repoDigests?.includes(expectedRunnerImage) ||
-    observation.sourceRevision !== envelope.request.buildProof.identity.sourceSha
+    observation.sourceRevision !==
+      (envelope.executionMode === "database-test"
+        ? envelope.buildProof.identity.sourceSha
+        : envelope.request.buildProof.identity.sourceSha)
   ) {
     throw launchError("RUNNER_CONTAINER_DIGEST_MISMATCH");
   }

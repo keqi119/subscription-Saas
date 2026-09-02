@@ -13,11 +13,11 @@ x-runner-common: &runner-common
 
 services:
   postgres:
-    image: postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
+    image: postgres:17-bookworm@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6
     profiles: [database]
     restart: "no"
     environment:
-      POSTGRES_DB: ${RELEASE_DATABASE_NAME:?RELEASE_DATABASE_NAME is required}
+      POSTGRES_DB: postgres
       POSTGRES_USER: release_provisioner
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
     secrets:
@@ -27,26 +27,22 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
+      - -c
+      - ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+    ports:
+      - 127.0.0.1:${RELEASE_GATE_DATABASE_PORT:-35432}:5432
     volumes:
       - type: volume
         source: release-gate-db
         target: /var/lib/postgresql/data
     networks:
       - release-gate
-
-  runner-provision:
-    <<: *runner-common
-    profiles: [runner-provision]
-    environment:
-      RUNNER_CAPABILITY_PROFILE: provision
-      RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
-
-  runner-restore:
-    <<: *runner-common
-    profiles: [runner-restore]
-    environment:
-      RUNNER_CAPABILITY_PROFILE: restore
-      RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
 
   runner-migration:
     <<: *runner-common
@@ -74,12 +70,13 @@ services:
     <<: *runner-common
     profiles: [runner-database-test]
     environment:
-      RUNNER_CAPABILITY_PROFILE: database-test
       RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
       RUNNER_CREDENTIAL_FILE: /run/secrets/database-credential
     secrets:
       - source: database-test-credential
         target: database-credential
+      - source: database-test-source-credential
+        target: source-database-credential
 
   api:
     image: ${RELEASE_API_IMAGE:?RELEASE_API_IMAGE must be a registry-resolved linux/amd64 digest}
@@ -144,3 +141,5 @@ secrets:
     file: ${RELEASE_VERIFY_CREDENTIAL_FILE:?RELEASE_VERIFY_CREDENTIAL_FILE is required}
   database-test-credential:
     file: ${RELEASE_DATABASE_TEST_CREDENTIAL_FILE:?RELEASE_DATABASE_TEST_CREDENTIAL_FILE is required}
+  database-test-source-credential:
+    file: ${RELEASE_DATABASE_TEST_SOURCE_CREDENTIAL_FILE:?RELEASE_DATABASE_TEST_SOURCE_CREDENTIAL_FILE is required}

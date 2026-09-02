@@ -227,10 +227,7 @@ test("Runner image and Compose keep a fixed entrypoint and read-only launch enve
     readFile("docker-compose.release-gate.yml", "utf8")
   ]);
 
-  assert.match(
-    dockerfile,
-    /COPY scripts\/release\/trusted-launch-runner\.mjs \\\s+scripts\/release\/trusted-launch-production-adapters\.mjs \\\s+\.\/scripts\/release\//u
-  );
+  assert.match(dockerfile, /COPY scripts \.\/scripts/u);
   assert.match(dockerfile, /ENTRYPOINT \["node", "\/app\/apps\/release-runner\/src\/cli\.mjs"\]/u);
   assert.match(dockerfile, /RUNNER_ENTRYPOINT_OVERRIDE_REJECTED/u);
   assert.match(dockerfile, /RUNNER_LAUNCH_ENVELOPE_REQUIRED/u);

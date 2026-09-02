@@ -10,41 +10,27 @@ import {
 
 import { trustedLaunchRunner } from "../../../scripts/release/trusted-launch-runner.mjs";
 import { createReadOnceCredentialReader } from "./credential-file.mjs";
+import {
+  executeDatabaseTestEnvelope,
+  executeFinalDatabaseManifest
+} from "./database-test-entrypoint.mjs";
+import { createDatabaseRuntimeAdapter } from "./database-runtime-adapter.mjs";
 import { runnerError } from "./error-codes.mjs";
 import { createPostgresConnector } from "./postgres-connector.mjs";
+import { resolveRunnerReference } from "./reference-paths.mjs";
 
-const referenceKinds = Object.freeze([
-  ["launch-file:///run/launch/", "launch"],
-  ["secret-file:///run/secrets/", "secrets"],
-  ["evidence-file:///evidence/", "evidence"]
-]);
+export { resolveRunnerReference } from "./reference-paths.mjs";
 
-function relativeReference(reference, prefix) {
-  const relative = reference.slice(prefix.length);
-  if (
-    !relative ||
-    relative.includes("\\") ||
-    relative.includes("%") ||
-    relative.split("/").some((segment) => !segment || segment === "." || segment === "..")
-  ) {
-    throw runnerError("RUNNER_REFERENCE_FORBIDDEN");
-  }
-  return relative;
-}
+const postgresConnector = createPostgresConnector();
 
-export function resolveRunnerReference(reference, roots) {
-  if (typeof reference !== "string") throw runnerError("RUNNER_REFERENCE_FORBIDDEN");
-  for (const [prefix, rootName] of referenceKinds) {
-    if (!reference.startsWith(prefix)) continue;
-    const root = path.resolve(roots?.[rootName] ?? "");
-    const absolute = path.resolve(root, ...relativeReference(reference, prefix).split("/"));
-    const relative = path.relative(root, absolute);
-    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-      throw runnerError("RUNNER_REFERENCE_FORBIDDEN");
-    }
-    return absolute;
-  }
-  throw runnerError("RUNNER_REFERENCE_FORBIDDEN");
+async function connectProductionDatabase(input) {
+  const database = await postgresConnector(input);
+  return createDatabaseRuntimeAdapter({
+    database,
+    credential: input.credential,
+    target: input.target,
+    repoRoot: process.cwd()
+  });
 }
 
 function assertFileWithin(file, root) {
@@ -226,7 +212,9 @@ export function createRuntimeAdapters({
     evidence: "/evidence"
   },
   trustedLaunch = trustedLaunchRunner,
-  connectDatabase = createPostgresConnector()
+  connectDatabase = connectProductionDatabase,
+  executeDatabaseManifest = (input) =>
+    executeFinalDatabaseManifest({ ...input, connectDatabase: postgresConnector })
 } = {}) {
   if (typeof trustedLaunch !== "function") {
     throw runnerError("RUNNER_TRUSTED_ADAPTER_MISSING", { adapter: "trustedLaunch" });
@@ -236,6 +224,14 @@ export function createRuntimeAdapters({
     trustPolicy: "runner-runtime-adapters/v1",
     async readEnvelope(file) {
       return JSON.parse(await readFile(assertFileWithin(file, roots.launch), "utf8"));
+    },
+    async runDatabaseTests(envelope) {
+      return executeDatabaseTestEnvelope({
+        envelope,
+        roots,
+        readCredential: credentialReader,
+        executeManifest: executeDatabaseManifest
+      });
     },
     async launch({ commandKey, request, envelope }) {
       const custodyPolicy = await readIntegrityBoundJson(

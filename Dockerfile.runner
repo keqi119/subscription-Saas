@@ -6,16 +6,29 @@ WORKDIR /app
 
 RUN corepack enable && corepack prepare pnpm@11.4.0 --activate
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY apps/api/package.json apps/api/package.json
 COPY apps/release-runner/package.json apps/release-runner/package.json
 COPY packages/release-foundation/package.json packages/release-foundation/package.json
-RUN pnpm install --frozen-lockfile --filter @subscription-saas/release-runner...
+COPY packages/shared/package.json packages/shared/package.json
+RUN pnpm install --frozen-lockfile \
+  --filter @subscription-saas/release-runner... \
+  --filter @subscription-saas/api... \
+  --filter @subscription-saas/shared...
+
+FROM deps AS test-build
+
+COPY apps/api ./apps/api
+COPY packages/shared ./packages/shared
+RUN pnpm --filter @subscription-saas/shared build \
+  && pnpm --filter @subscription-saas/api prisma:generate
 
 FROM postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0 AS runtime
 
 ARG RUNNER_SOURCE_REVISION
 ENV NODE_ENV=production
-ENV PATH="/usr/lib/postgresql/17/bin:$PATH"
+ENV PNPM_HOME="/pnpm"
+ENV PATH="/pnpm:/usr/lib/postgresql/17/bin:$PATH"
 WORKDIR /app
 
 RUN test "${#RUNNER_SOURCE_REVISION}" -eq 40 \
@@ -24,44 +37,21 @@ RUN test "${#RUNNER_SOURCE_REVISION}" -eq 40 \
 LABEL org.opencontainers.image.revision="${RUNNER_SOURCE_REVISION}"
 
 COPY --from=deps /usr/local/bin/node /usr/local/bin/node
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/apps/release-runner/node_modules ./apps/release-runner/node_modules
-COPY --from=deps /app/packages/release-foundation/node_modules ./packages/release-foundation/node_modules
+COPY --from=deps /pnpm /pnpm
+COPY --from=test-build /app/node_modules ./node_modules
+COPY --from=test-build /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=test-build /app/apps/release-runner/node_modules ./apps/release-runner/node_modules
+COPY --from=test-build /app/packages/release-foundation/node_modules ./packages/release-foundation/node_modules
+COPY --from=test-build /app/packages/shared/node_modules ./packages/shared/node_modules
+COPY --from=test-build /app/packages/shared/dist ./packages/shared/dist
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY apps/api ./apps/api
 COPY apps/release-runner ./apps/release-runner
 COPY packages/release-foundation ./packages/release-foundation
-COPY release/contracts ./release/contracts
-COPY apps/api/prisma/schema.prisma ./apps/api/prisma/schema.prisma
-COPY apps/api/prisma/migrations ./apps/api/prisma/migrations
-COPY apps/api/src/billing-automation/stage1-acceptance-forbidden-domains.json ./apps/api/src/billing-automation/stage1-acceptance-forbidden-domains.json
-COPY scripts/release/trusted-launch-runner.mjs \
-  scripts/release/trusted-launch-production-adapters.mjs \
-  ./scripts/release/
-COPY scripts/billing-maintenance-cycle-evidence-core.mjs \
-  scripts/billing-maintenance-cycle-evidence.mjs \
-  scripts/prisma-migration-checksums.mjs \
-  scripts/stage1-active-source-facts-repair-core.mjs \
-  scripts/stage1-active-source-facts-repair-executor.mjs \
-  scripts/stage1-active-source-facts-repair.mjs \
-  scripts/stage1-clean-acceptance-baseline-core.mjs \
-  scripts/stage1-clean-acceptance-baseline-executor.mjs \
-  scripts/stage1-clean-acceptance-baseline-snapshot.mjs \
-  scripts/stage1-clean-acceptance-baseline.mjs \
-  scripts/stage1-clean-acceptance-cli-core.mjs \
-  scripts/stage1-clean-acceptance-target-validator.mjs \
-  scripts/stage1-contract-change-bootstrap-core.mjs \
-  scripts/stage1-contract-change-bootstrap.mjs \
-  scripts/stage1-return-closure-backfill-core.mjs \
-  scripts/stage1-return-closure-backfill.mjs \
-  scripts/stage1-staging-invalid-test-order-retirement-core.mjs \
-  scripts/stage1-staging-invalid-test-order-retirement-executor.mjs \
-  scripts/stage1-staging-invalid-test-order-retirement.mjs \
-  scripts/stage1-task9-preflight-governance.mjs \
-  scripts/stage1c-period-backfill-core.mjs \
-  scripts/stage1c-period-backfill-executor.mjs \
-  scripts/stage1c-period-backfill.mjs \
-  scripts/subscription-segment-bootstrap-core.mjs \
-  scripts/subscription-segment-bootstrap.mjs \
-  ./scripts/
+COPY packages/shared ./packages/shared
+COPY release ./release
+COPY scripts ./scripts
+COPY docs/runbooks ./docs/runbooks
 
 RUN node --version \
   && psql --version \

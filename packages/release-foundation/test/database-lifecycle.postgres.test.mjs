@@ -63,27 +63,37 @@ async function runCommand(executable, args, { environment = process.env } = {}) 
 }
 
 async function runMigration(secret) {
-  const pnpmCli = path.join(path.dirname(process.execPath), "node_modules/corepack/dist/pnpm.js");
-  await runCommand(
-    process.execPath,
-    [
-      pnpmCli,
-      "--filter",
-      "@subscription-saas/api",
-      "exec",
-      "prisma",
-      "migrate",
-      "deploy",
-      "--schema",
-      "prisma/schema.prisma"
-    ],
-    {
-      environment: controlledChildEnvironment({
-        DATABASE_URL: databaseUrl(secret),
-        STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV: "1"
-      })
-    }
-  );
+  const command = migrationPackageManagerCommand();
+  await runCommand(command.executable, command.arguments, {
+    environment: controlledChildEnvironment({
+      DATABASE_URL: databaseUrl(secret),
+      STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV: "1"
+    })
+  });
+}
+
+export function migrationPackageManagerCommand(
+  platform = process.platform,
+  executablePath = process.execPath
+) {
+  const arguments_ = [
+    "--filter",
+    "@subscription-saas/api",
+    "exec",
+    "prisma",
+    "migrate",
+    "deploy",
+    "--schema",
+    "prisma/schema.prisma"
+  ];
+  if (platform !== "win32") return { executable: "pnpm", arguments: arguments_ };
+  return {
+    executable: executablePath,
+    arguments: [
+      path.join(path.dirname(executablePath), "node_modules/corepack/dist/pnpm.js"),
+      ...arguments_
+    ]
+  };
 }
 
 function rowsFromOutput(output, columns) {
@@ -440,3 +450,33 @@ test(
     await runDatabaseLifecyclePostgresContract();
   }
 );
+
+test("uses the platform package-manager entrypoint for lifecycle migrations", () => {
+  assert.deepEqual(migrationPackageManagerCommand("linux", "/opt/node/bin/node"), {
+    executable: "pnpm",
+    arguments: [
+      "--filter",
+      "@subscription-saas/api",
+      "exec",
+      "prisma",
+      "migrate",
+      "deploy",
+      "--schema",
+      "prisma/schema.prisma"
+    ]
+  });
+  assert.deepEqual(migrationPackageManagerCommand("win32", "C:\\node\\node.exe"), {
+    executable: "C:\\node\\node.exe",
+    arguments: [
+      "C:\\node\\node_modules\\corepack\\dist\\pnpm.js",
+      "--filter",
+      "@subscription-saas/api",
+      "exec",
+      "prisma",
+      "migrate",
+      "deploy",
+      "--schema",
+      "prisma/schema.prisma"
+    ]
+  });
+});

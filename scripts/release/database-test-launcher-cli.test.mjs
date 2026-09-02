@@ -379,6 +379,39 @@ test("TAP diagnostics retain bounded release database failure codes", () => {
   assert.equal(JSON.stringify(summary).includes("private detail"), false);
 });
 
+test("TAP diagnostics retain the failed test name and repository source location", () => {
+  const stdout = [
+    "TAP version 13",
+    "not ok 1 - provisions, migrates, isolates, and exactly cleans concurrent PostgreSQL databases",
+    "  ---",
+    "  location: '/home/runner/work/subscription-Saas/subscription-Saas/packages/release-foundation/test/database-lifecycle.postgres.test.mjs:445:1'",
+    "  failureType: 'testCodeFailure'",
+    "  error: 'expected runtime role not to own the schema'",
+    "  code: 'ERR_ASSERTION'",
+    "  name: 'AssertionError'",
+    "  ...",
+    "# tests 2",
+    "# pass 1",
+    "# fail 1",
+    "# cancelled 0",
+    "# skipped 0",
+    "# todo 0"
+  ].join("\n");
+
+  const summary = summarizeDatabaseTestLog({ stdout, stderr: "" });
+  assert.deepEqual(summary.failedTests, [
+    {
+      fullName: "provisions, migrates, isolates, and exactly cleans concurrent PostgreSQL databases",
+      errorCodes: ["ERR_ASSERTION"],
+      failureKinds: ["ASSERTION"],
+      sourceLocations: [
+        "packages/release-foundation/test/database-lifecycle.postgres.test.mjs:445:1"
+      ]
+    }
+  ]);
+  assert.equal(JSON.stringify(summary).includes("expected runtime role"), false);
+});
+
 test("Vitest diagnostics retain bounded repository source stack locations", () => {
   const stdout = `${JSON.stringify({
     numTotalTests: 1,

@@ -764,6 +764,61 @@ export function databaseTestCounts(output) {
   return tapCounts(output);
 }
 
+function sanitizedTapTestName(value) {
+  return value
+    .replace(/\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/\S+/giu, "[URI]")
+    .replace(
+      /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/giu,
+      "[UUID]"
+    )
+    .replace(/\b1[3-9][0-9]{9}\b/gu, "[PHONE]")
+    .replace(/\b[0-9a-f]{64}\b/giu, "[DIGEST]")
+    .trim()
+    .slice(0, 240);
+}
+
+function tapFailedTests(output) {
+  const lines = output.split(/\r?\n/u);
+  const failures = [];
+  for (let index = 0; index < lines.length && failures.length < 8; index += 1) {
+    const match = lines[index].match(/^\s*not ok\s+[1-9][0-9]*\s+-\s+(.+)$/u);
+    if (!match) continue;
+    const body = [];
+    for (let bodyIndex = index + 1; bodyIndex < lines.length; bodyIndex += 1) {
+      if (/^\s*(?:not )?ok\s+[1-9][0-9]*\s+-\s+/u.test(lines[bodyIndex])) break;
+      body.push(lines[bodyIndex]);
+    }
+    const failureText = body.join("\n");
+    const errorCodes = [
+      ...new Set([...failureText.matchAll(/\bERR_[A-Z0-9_]{3,96}\b/gu)].map(([code]) => code))
+    ].slice(0, 8);
+    failures.push({
+      fullName: sanitizedTapTestName(match[1]),
+      errorCodes,
+      failureKinds: [
+        ...new Set([
+          ...(/AssertionError|ERR_ASSERTION/u.test(failureText) ? ["ASSERTION"] : []),
+          ...(/testTimeoutFailure|\btimed? ?out\b|\btimeout\b/iu.test(failureText)
+            ? ["TIMEOUT"]
+            : [])
+        ])
+      ],
+      sourceLocations: [
+        ...new Set(
+          [
+            ...failureText.matchAll(
+              /((?:apps|packages|scripts|release)[\\/][a-z0-9._\\/-]+\.(?:spec|test)\.[cm]?[jt]s):(\d+):(\d+)/giu
+            )
+          ].map(([, file, line, column]) =>
+            `${file.replaceAll("\\", "/")}:${line}:${column}`
+          )
+        )
+      ].slice(0, 8)
+    });
+  }
+  return failures;
+}
+
 export function summarizeDatabaseTestLog({ stdout, stderr }) {
   const report = vitestJsonReport(stdout);
   const summary = {
@@ -796,7 +851,8 @@ export function summarizeDatabaseTestLog({ stdout, stderr }) {
       reporter: "node-tap",
       counts: tapCounts(stdout),
       domainCodes,
-      failureHints
+      failureHints,
+      failedTests: tapFailedTests(stdout)
     };
   }
   return {

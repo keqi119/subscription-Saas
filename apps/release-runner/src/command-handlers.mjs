@@ -4,6 +4,7 @@ import { stage1AcceptanceTargetVerifyHandler } from "./commands/stage1-acceptanc
 import { stage1ActiveSourceFactsRepairHandler } from "./commands/stage1-active-source-facts-repair.mjs";
 import { stage1BillingMaintenanceEvidenceHandler } from "./commands/stage1-billing-maintenance-evidence.mjs";
 import { stage1CleanAcceptanceBaselineHandler } from "./commands/stage1-clean-acceptance-baseline.mjs";
+import { stage1PeriodBackfillHandler } from "./commands/stage1-period-backfill.mjs";
 import { stage1Task9PreflightHandler } from "./commands/stage1-task9-preflight.mjs";
 
 export const commandHandlers = new Map([
@@ -17,5 +18,6 @@ export const commandHandlers = new Map([
   ["stage1.active-source-facts.repair@1", stage1ActiveSourceFactsRepairHandler],
   ["stage1.billing-maintenance.evidence@1", stage1BillingMaintenanceEvidenceHandler],
   ["stage1.clean-acceptance.baseline@1", stage1CleanAcceptanceBaselineHandler],
+  ["stage1.period.backfill@1", stage1PeriodBackfillHandler],
   ["stage1.task9.preflight@1", stage1Task9PreflightHandler]
 ]);

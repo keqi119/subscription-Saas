@@ -664,7 +664,7 @@
         "scripts/stage1c-period-backfill.mjs"
       ],
       "runnerCommandId": "stage1.period.backfill@1",
-      "runnerRegistrationStatus": "planned",
+      "runnerRegistrationStatus": "registered",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [

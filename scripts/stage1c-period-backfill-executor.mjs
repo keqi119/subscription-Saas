@@ -1,4 +1,7 @@
-import { classifyStage1cPeriodBackfill } from "./stage1c-period-backfill-core.mjs";
+import {
+  classifyStage1cPeriodBackfill,
+  hashStage1cPeriodBackfillClassification
+} from "./stage1c-period-backfill-core.mjs";
 
 const APPLY_LOCK_KEY = "stage1c-period-backfill:apply";
 const TRANSACTION_OPTIONS = {
@@ -9,6 +12,7 @@ const TRANSACTION_OPTIONS = {
 
 export async function executeStage1cPeriodBackfill({
   classify = classifyStage1cPeriodBackfill,
+  expectedClassificationDigest,
   generatedAt = new Date().toISOString(),
   loadSnapshot = loadStage1cPeriodBackfillSnapshot,
   mode,
@@ -39,6 +43,14 @@ export async function executeStage1cPeriodBackfill({
     await lockStage1cPeriodBackfillTables(tx);
     await lockStage1cPeriodBackfillApply(tx);
     const classification = classify(await loadSnapshot(tx));
+    if (
+      expectedClassificationDigest !== undefined &&
+      hashStage1cPeriodBackfillClassification(classification) !== expectedClassificationDigest
+    ) {
+      throw Object.assign(new Error("STAGE1C_PERIOD_BACKFILL_PLAN_CHANGED"), {
+        code: "STAGE1C_PERIOD_BACKFILL_PLAN_CHANGED"
+      });
+    }
     const safeToApply = isStage1cPeriodBackfillCandidateSetClean(classification);
     const skippedUnchanged = classification.subscriptionPeriods.filter(
       ({ disposition }) => disposition === "UNCHANGED"

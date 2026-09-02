@@ -166,6 +166,31 @@ test("apply locks every source table in one fail-fast NOWAIT statement before sn
   assert.equal(snapshotLoaded, true);
 });
 
+test("apply rejects a candidate digest changed under all period locks", async () => {
+  const calls = [];
+  const prisma = transactionalDatabase({ calls });
+  await assert.rejects(
+    requiredExport(
+      executor,
+      "executeStage1cPeriodBackfill"
+    )({
+      classify: () => cleanReport({ subscriptionPeriods: [candidate("CREATE")] }),
+      expectedClassificationDigest: `sha256:${"f".repeat(64)}`,
+      loadSnapshot: async () => emptySnapshot(),
+      mode: "apply",
+      prisma
+    }),
+    { code: "STAGE1C_PERIOD_BACKFILL_PLAN_CHANGED" }
+  );
+  assert.deepEqual(calls, [
+    "transaction.begin",
+    "fact.lock",
+    "source.lock",
+    "lock",
+    "transaction.rollback"
+  ]);
+});
+
 test("clean apply inserts only CREATE rows, skips UNCHANGED, and audits each insert once", async () => {
   const calls = [];
   const createdRows = [];

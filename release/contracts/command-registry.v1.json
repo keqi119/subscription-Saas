@@ -227,6 +227,33 @@
       "exitCondition": "retire after the Stage1 clean acceptance baseline is no longer required"
     },
     {
+      "commandId": "stage1.period.backfill",
+      "commandVersion": "1",
+      "category": "repair",
+      "dataImpact": "controlled-dml",
+      "capabilityProfile": "repair",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot", "staging"],
+      "prohibitedEnvironments": ["production"],
+      "approvalMode": "human",
+      "approvalModeOverrides": { "ci-fresh": "ci-policy", "ci-snapshot": "ci-policy" },
+      "allowedExecutionScopes": ["full-rc", "repair"],
+      "supports": { "dryRun": true, "apply": true, "replay": true },
+      "lock": "stage1c-period-backfill:apply",
+      "timeoutMs": 300000,
+      "postconditions": [
+        "approved-period-set-recomputed-under-lock",
+        "expected-periods-inserted",
+        "expected-audits-created",
+        "no-period-overlap",
+        "no-multiple-current-period",
+        "candidate-set-unchanged-after-apply",
+        "replay-has-no-duplicate-side-effects"
+      ],
+      "evidenceSchema": "execution-proof.v1",
+      "owner": "release-engineering",
+      "exitCondition": "retire after all supported historical orders have authoritative subscription periods"
+    },
+    {
       "commandId": "stage1.task9.preflight",
       "commandVersion": "1",
       "category": "verify",

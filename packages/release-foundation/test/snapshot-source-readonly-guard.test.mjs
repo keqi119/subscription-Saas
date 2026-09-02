@@ -10,6 +10,9 @@ import {
 // @database-test: classified as a source-safety contract test; no PostgreSQL connection is opened.
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
+const ownershipMap = Object.freeze({
+  sourceOwners: ["subscription", "subscription_saas"]
+});
 
 function safeSource(privilegeOverrides = {}) {
   return {
@@ -28,6 +31,7 @@ function safeSource(privilegeOverrides = {}) {
         tableWritePrivileges: [],
         tableTruncatePrivileges: [],
         writableFunctionExecutePrivileges: [],
+        objectOwners: ["subscription"],
         ...privilegeOverrides
       };
     }
@@ -54,6 +58,7 @@ for (const [name, override] of [
         assertReadOnlySnapshotSource({
           source: safeSource(override),
           secretReference: "secret://stage1-snapshot-export/source",
+          ownershipMap,
           now: new Date("2026-09-02T08:00:00.000Z")
         }),
       { code: "SNAPSHOT_SOURCE_WRITE_CAPABILITY_FORBIDDEN" }
@@ -65,6 +70,7 @@ test("accepts only a protected secret reference and emits no raw role or databas
   const observation = await assertReadOnlySnapshotSource({
     source: safeSource(),
     secretReference: "secret://stage1-snapshot-export/source",
+    ownershipMap,
     now: new Date("2026-09-02T08:00:00.000Z")
   });
   assert.equal(observation.schemaVersion, "source-privilege-observation.v1");
@@ -74,9 +80,22 @@ test("accepts only a protected secret reference and emits no raw role or databas
     () =>
       assertReadOnlySnapshotSource({
         source: safeSource(),
-        secretReference: "postgres://user:password@staging/database"
+        secretReference: "postgres://user:password@staging/database",
+        ownershipMap
       }),
     { code: "SNAPSHOT_SOURCE_SECRET_REFERENCE_INVALID" }
+  );
+});
+
+test("rejects a source object owner absent from the approved owner map", async () => {
+  await assert.rejects(
+    () =>
+      assertReadOnlySnapshotSource({
+        source: safeSource({ objectOwners: ["ambient_staging_owner"] }),
+        secretReference: "secret://stage1-snapshot-export/source",
+        ownershipMap
+      }),
+    { code: "SNAPSHOT_SOURCE_OWNER_UNMAPPED" }
   );
 });
 

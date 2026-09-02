@@ -448,7 +448,7 @@ test(
         assertAllWhitelistDelegatesPresent(beforeDryRun.source);
         assertEmptyDatabaseCounts(beforeDryRun.target);
         const dryRun = await harness.execute("dry-run");
-        assert.equal(dryRun.safe, true);
+        if (!dryRun.safe) throw new Error(dryRunFailureCode(dryRun));
         assert.equal(dryRun.manifest.safeToApply, true);
         assert.match(dryRun.manifestSha256, /^[a-f0-9]{64}$/);
         assert.deepEqual(await harness.businessCounts(), beforeDryRun);
@@ -1918,6 +1918,20 @@ function safeIntegrationError(error) {
   return error?.name === "AssertionError"
     ? "INTEGRATION_ASSERTION_FAILED"
     : "STAGE1_ACCEPTANCE_POSTGRES_INTEGRATION_FAILED";
+}
+
+function dryRunFailureCode(dryRun) {
+  if (dryRun?.targetCountEvidence?.schemaCanonical !== true) {
+    return "TARGET_SCHEMA_NOT_CANONICAL";
+  }
+  const firstException = dryRun?.manifest?.exceptions?.[0]?.code;
+  if (/^[A-Z0-9_]+$/.test(firstException ?? "")) return firstException;
+  const counts = [
+    ...Object.values(dryRun?.targetCountEvidence?.forbiddenCounts ?? {}),
+    ...Object.values(dryRun?.targetCountEvidence?.tableCounts ?? {})
+  ];
+  if (counts.some((value) => value !== 0)) return "TARGET_NOT_EMPTY";
+  return "MANIFEST_CLASSIFICATION_INVALID";
 }
 
 async function withApplyConfirmation(work) {

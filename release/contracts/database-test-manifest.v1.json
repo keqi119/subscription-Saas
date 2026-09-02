@@ -42,7 +42,8 @@
         "api.subscription-vehicle-swap-failure-injection.postgres"
       ]
     },
-    { "batchId": "launcher-fixture", "suiteIds": ["release.launcher.fixture"] }
+    { "batchId": "launcher-fixture", "suiteIds": ["release.launcher.fixture"] },
+    { "batchId": "snapshot-chain", "suiteIds": ["release.snapshot-chain"] }
   ],
   "suites": [
     {
@@ -570,6 +571,22 @@
       "parallelism": { "mode": "serial", "maxShards": 1 },
       "timeoutMs": 600000,
       "barrier": "isolated-postgres-cluster",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "release.snapshot-chain",
+      "runner": "node-test",
+      "files": ["packages/release-foundation/test/snapshot-chain.integration.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 120000,
+      "barrier": "database",
       "externalDependency": "none",
       "owner": "release-engineering",
       "expectedCountPolicy": { "mode": "complete" }

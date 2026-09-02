@@ -41,6 +41,24 @@
     "schemaDiffDigest": { "$ref": "#/$defs/digest" },
     "migrationStatusDigest": { "$ref": "#/$defs/digest" },
     "sanitizedLogDigest": { "$ref": "#/$defs/digest" },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshotMetadataDigest",
+        "snapshotBundleDigest",
+        "sourceMigrationHead",
+        "ownershipMapDigest",
+        "ownershipObservationDigest"
+      ],
+      "properties": {
+        "snapshotMetadataDigest": { "$ref": "#/$defs/digest" },
+        "snapshotBundleDigest": { "$ref": "#/$defs/digest" },
+        "sourceMigrationHead": { "$ref": "#/$defs/migration" },
+        "ownershipMapDigest": { "$ref": "#/$defs/digest" },
+        "ownershipObservationDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
@@ -52,9 +70,19 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "chain": { "const": "snapshot" } }, "required": ["chain"] },
+      "then": { "properties": { "snapshot": true }, "required": ["snapshot"] },
+      "else": {
+        "not": { "properties": { "snapshot": true }, "required": ["snapshot"] }
+      }
+    }
+  ],
   "$defs": {
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "migration": { "type": "string", "pattern": "^[0-9]{14}_[a-z0-9_]+$" },
     "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
     "nonEmpty": { "type": "string", "minLength": 1 },
     "testCounts": {

@@ -15,7 +15,7 @@ export {
 } from "./database-test-discovery.mjs";
 export { assertApprovedEphemeralTarget, suiteDatabaseName } from "./database-target.mjs";
 export { cleanupSuiteDatabase, provisionSuiteDatabase } from "./database-lifecycle.mjs";
-export { grantRuntimeEquivalentAccess } from "./database-roles.mjs";
+export { grantRuntimeEquivalentAccess, sqlIdentifier, sqlLiteral } from "./database-roles.mjs";
 export { scanMigrationGlobalObjects } from "./migration-global-object-scan.mjs";
 export {
   normalizeDatabaseTestCounts,
@@ -56,6 +56,7 @@ export {
 } from "./execution-state-machine.mjs";
 export {
   exportSanitizedSnapshot,
+  snapshotBundleDigest,
   transformRecord,
   verifySnapshotMetadata
 } from "./snapshot/export-sanitized.mjs";
@@ -65,3 +66,8 @@ export {
   createReadOnlySourceExecutor,
   fingerprintSourceSnapshot
 } from "./snapshot/source-readonly-guard.mjs";
+export { normalizeSnapshotOwnership, verifyOwnershipMap } from "./snapshot/normalize-ownership.mjs";
+export {
+  assertSnapshotSchemaDiffResult,
+  restoreSanitizedSnapshot
+} from "./snapshot/restore-sanitized.mjs";

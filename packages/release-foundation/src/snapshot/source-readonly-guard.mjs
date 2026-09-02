@@ -31,6 +31,7 @@ function assertTimestamp(now) {
 export async function assertReadOnlySnapshotSource({
   source,
   secretReference,
+  ownershipMap,
   now = new Date(),
   ...forbidden
 }) {
@@ -44,6 +45,7 @@ export async function assertReadOnlySnapshotSource({
   }
   assertTimestamp(now);
   const privileges = await source.observePrivileges({ secretReference });
+  const objectOwners = [...(privileges?.objectOwners ?? [])].sort();
   if (
     !digestPattern.test(privileges?.roleIdentityFingerprint ?? "") ||
     !digestPattern.test(privileges?.databaseIdentityFingerprint ?? "") ||
@@ -62,6 +64,15 @@ export async function assertReadOnlySnapshotSource({
   ) {
     throw snapshotError("SNAPSHOT_SOURCE_WRITE_CAPABILITY_FORBIDDEN");
   }
+  if (
+    !Array.isArray(privileges.objectOwners) ||
+    new Set(objectOwners).size !== objectOwners.length ||
+    objectOwners.length === 0 ||
+    !Array.isArray(ownershipMap?.sourceOwners) ||
+    objectOwners.some((owner) => !ownershipMap.sourceOwners.includes(owner))
+  ) {
+    throw snapshotError("SNAPSHOT_SOURCE_OWNER_UNMAPPED");
+  }
   return immutable({
     schemaVersion: "source-privilege-observation.v1",
     secretReferenceFingerprint: sha256Canonical({ secretReference }),
@@ -76,7 +87,9 @@ export async function assertReadOnlySnapshotSource({
       canCreateSchema: false,
       tableWritePrivilegeCount: 0,
       tableTruncatePrivilegeCount: 0,
-      writableFunctionExecutePrivilegeCount: 0
+      writableFunctionExecutePrivilegeCount: 0,
+      objectOwnerCount: objectOwners.length,
+      objectOwnerSetDigest: sha256Canonical(objectOwners)
     },
     observedAt: now.toISOString()
   });

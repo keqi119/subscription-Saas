@@ -21,6 +21,8 @@
     "packages/release-foundation/src/proof-builders.mjs",
     "packages/release-foundation/src/schema-registry.mjs",
     "packages/release-foundation/src/snapshot/export-sanitized.mjs",
+    "packages/release-foundation/src/snapshot/normalize-ownership.mjs",
+    "packages/release-foundation/src/snapshot/restore-sanitized.mjs",
     "packages/release-foundation/src/snapshot/scan-artifact.mjs",
     "packages/release-foundation/src/snapshot/source-readonly-guard.mjs",
     "release/contracts/approval-policies.v1.json",
@@ -50,6 +52,7 @@
     "release/contracts/schemas/external-validation-applicability.v1.schema.json",
     "release/contracts/schemas/launch-attestation.v1.schema.json",
     "release/contracts/schemas/migration-global-object-policy.v1.schema.json",
+    "release/contracts/schemas/ownership-map.v1.schema.json",
     "release/contracts/schemas/post-state-observation.v1.schema.json",
     "release/contracts/schemas/postgres-image.v1.schema.json",
     "release/contracts/schemas/release-aggregate-proof.v1.schema.json",
@@ -57,6 +60,7 @@
     "release/contracts/schemas/snapshot-metadata.v1.schema.json",
     "release/contracts/schemas/source-gate-evidence.v1.schema.json",
     "release/contracts/schemas/target-policy.v1.schema.json",
+    "release/contracts/snapshot-ownership-map.v1.json",
     "release/contracts/target-policies.v1.json"
   ]
 }

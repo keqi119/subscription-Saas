@@ -83,7 +83,8 @@ test("source gate defaults to the complete fresh manifest", () => {
     suiteId: undefined,
     batchId: undefined,
     concurrency: 1,
-    order: "manifest"
+    order: "manifest",
+    snapshotMetadataFile: undefined
   });
   assert.deepEqual(selections(request), selections({ ...request, batchId: "launcher-fixture" }));
 });
@@ -138,7 +139,8 @@ test("thin adapter forwards only normalized request fields", async () => {
     suiteId: "release.launcher.fixture",
     batchId: undefined,
     concurrency: 1,
-    order: "manifest"
+    order: "manifest",
+    snapshotMetadataFile: undefined
   });
   assert.equal(result, report);
 });
@@ -216,10 +218,57 @@ test("database diagnostics retain failed test names without retaining failure me
       failureHint: "[URI]",
       failureKinds: [],
       fullName: "runtime role rejects immutable drift",
-      locations: []
+      locations: [],
+      sourceLocations: []
     }
   ]);
   assert.equal(JSON.stringify(summary).includes("must-not-be-retained"), false);
   assert.match(summary.stdoutDigest, /^sha256:[0-9a-f]{64}$/);
   assert.equal(summary.counts.failed, 1);
+});
+
+test("TAP diagnostics retain only bounded integration error codes", () => {
+  const stdout = [
+    "TAP version 13",
+    "not ok 1 - controlled snapshot integration",
+    "  error: 'INTEGRATION_SEED_P2002 customer 18616570212'",
+    "# tests 1",
+    "# pass 0",
+    "# fail 1",
+    "# cancelled 0",
+    "# skipped 0",
+    "# todo 0"
+  ].join("\n");
+  const summary = summarizeDatabaseTestLog({ stdout, stderr: "" });
+  assert.deepEqual(summary.domainCodes, ["INTEGRATION_SEED_P2002"]);
+  assert.deepEqual(summary.failureHints, ["INTEGRATION_SEED_P2002"]);
+  assert.equal(JSON.stringify(summary).includes("18616570212"), false);
+});
+
+test("Vitest diagnostics retain bounded repository source stack locations", () => {
+  const stdout = `${JSON.stringify({
+    numTotalTests: 1,
+    numPassedTests: 0,
+    numFailedTests: 1,
+    numPendingTests: 0,
+    numTodoTests: 0,
+    testResults: [
+      {
+        assertionResults: [
+          {
+            fullName: "governed write rejects an invalid command",
+            status: "failed",
+            failureMessages: [
+              "ConflictException: invalid command\n    at assertDatabaseEventTime (D:/repo/apps/api/src/subscription-closure/subscription-closure.repository.ts:2757:11)\n    at user supplied path (D:/secrets/customer.txt:1:1)"
+            ]
+          }
+        ]
+      }
+    ]
+  })}\n`;
+  const summary = summarizeDatabaseTestLog({ stdout, stderr: "" });
+  assert.deepEqual(summary.failedTests[0]?.sourceLocations, [
+    "apps/api/src/subscription-closure/subscription-closure.repository.ts:2757:11"
+  ]);
+  assert.equal(JSON.stringify(summary).includes("customer.txt"), false);
 });

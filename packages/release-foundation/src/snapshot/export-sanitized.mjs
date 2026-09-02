@@ -94,6 +94,7 @@ export function transformRecord(record, { table, contract, tokenizationKey }) {
 export function verifySnapshotMetadata({
   metadata,
   contract,
+  ownershipMap,
   dump,
   scan,
   knownMigrationHeads = contract?.source?.knownMigrationHeads,
@@ -118,6 +119,12 @@ export function verifySnapshotMetadata({
   }
   if (metadata.sanitizationContractDigest !== sha256Canonical(contract)) {
     throw snapshotError("SNAPSHOT_CONTRACT_DRIFT");
+  }
+  if (
+    metadata.ownershipMapDigest !== sha256Canonical(ownershipMap) ||
+    metadata.ownershipContractVersion !== ownershipMap?.mapVersion
+  ) {
+    throw snapshotError("SNAPSHOT_OWNERSHIP_CONTRACT_DRIFT");
   }
   if (!knownMigrationHeads.includes(metadata.sourceMigrationHead)) {
     throw snapshotError("SNAPSHOT_MIGRATION_HEAD_UNKNOWN");
@@ -146,7 +153,7 @@ export function verifySnapshotMetadata({
   return metadata;
 }
 
-function bundleDigest(bundle) {
+export function snapshotBundleDigest(bundle) {
   return sha256Canonical({
     dumpDigest: sha256Bytes(bundle.dump),
     metadataDigest: sha256Canonical(bundle.metadata),
@@ -158,6 +165,7 @@ function bundleDigest(bundle) {
 
 export async function exportSanitizedSnapshot({
   contract,
+  ownershipMap,
   source,
   workspace,
   publisher,
@@ -187,6 +195,7 @@ export async function exportSanitizedSnapshot({
     throw snapshotError("SNAPSHOT_EXPORT_INPUT_INVALID");
   }
   assertContractSemantics(contract);
+  validateContract("ownership-map.v1", ownershipMap);
   let opened = false;
   let workspaceDestroyed = false;
   let primaryError;
@@ -195,6 +204,7 @@ export async function exportSanitizedSnapshot({
     const privilegeObservation = await assertReadOnlySnapshotSource({
       source,
       secretReference,
+      ownershipMap,
       now: createdAt
     });
     const snapshot = await source.openReadOnlySnapshot({ secretReference });
@@ -245,6 +255,8 @@ export async function exportSanitizedSnapshot({
       sourceFingerprintBeforeDigest: beforeIdentityDigest,
       sourceFingerprintAfterDigest: afterIdentityDigest,
       sanitizationContractDigest: sha256Canonical(contract),
+      ownershipMapDigest: sha256Canonical(ownershipMap),
+      ownershipContractVersion: ownershipMap.mapVersion,
       scanDigest: sha256Canonical(scan),
       scanSubjectDigest: scan.subjectDigest,
       exportToolVersion: contract.tools.exporterVersion,
@@ -260,6 +272,7 @@ export async function exportSanitizedSnapshot({
     verifySnapshotMetadata({
       metadata,
       contract,
+      ownershipMap,
       dump: sanitized,
       scan,
       now: createdAt
@@ -280,7 +293,7 @@ export async function exportSanitizedSnapshot({
       throw snapshotError("SNAPSHOT_SECURE_CLEANUP_FAILED", { cause: error?.code });
     }
     const receipt = await publisher.publishFinalBundle(bundle);
-    const expectedBundleDigest = bundleDigest(bundle);
+    const expectedBundleDigest = snapshotBundleDigest(bundle);
     try {
       assertCustodyComplete(receipt, expectedBundleDigest);
     } catch (error) {

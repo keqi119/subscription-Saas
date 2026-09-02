@@ -61,12 +61,20 @@ function assertAdapters(adapters) {
   }
 }
 
-export async function runProtectedSnapshotExport({ request, contract, adapters, now }) {
+export async function runProtectedSnapshotExport({
+  request,
+  contract,
+  ownershipMap,
+  adapters,
+  now
+}) {
   const acceptedRequest = assertRequest(request);
   validateContract("sanitization-contract.v1", contract);
+  validateContract("ownership-map.v1", ownershipMap);
   assertAdapters(adapters);
   const metadata = await exportSanitizedSnapshot({
     contract,
+    ownershipMap,
     source: adapters.source,
     workspace: adapters.workspace,
     publisher: adapters.publisher,
@@ -140,10 +148,14 @@ async function main() {
     throw commandError("SNAPSHOT_EXPORT_USAGE_INVALID");
   }
   if (!process.env.RUNNER_TEMP) throw commandError("SNAPSHOT_RUNNER_TEMP_REQUIRED");
-  const [request, contract] = await Promise.all([
+  const [request, contract, ownershipMap] = await Promise.all([
     readFile(path.join(process.cwd(), requestPath), "utf8").then(JSON.parse),
     readFile(
       path.join(process.cwd(), "release/contracts/sanitization-contract.v1.json"),
+      "utf8"
+    ).then(JSON.parse),
+    readFile(
+      path.join(process.cwd(), "release/contracts/snapshot-ownership-map.v1.json"),
       "utf8"
     ).then(JSON.parse)
   ]);
@@ -151,7 +163,7 @@ async function main() {
     publicationDirectory: path.resolve(process.cwd(), publicationDirectory),
     workspaceDirectory: path.resolve(process.env.RUNNER_TEMP, "stage1-snapshot-export")
   });
-  await runProtectedSnapshotExport({ request, contract, adapters });
+  await runProtectedSnapshotExport({ request, contract, ownershipMap, adapters });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

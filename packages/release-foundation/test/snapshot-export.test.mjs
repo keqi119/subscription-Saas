@@ -70,6 +70,19 @@ function contract() {
   };
 }
 
+function ownershipMap() {
+  return {
+    schemaVersion: "ownership-map.v1",
+    mapId: "stage1-snapshot-owner-map",
+    mapVersion: "1",
+    sourceOwners: ["subscription", "subscription_saas"],
+    targetOwnerProfile: "migrate",
+    schemas: ["public"],
+    objectClasses: ["schema", "table"],
+    excludedExtensions: ["pgcrypto"]
+  };
+}
+
 test("applies deterministic field transformations without retaining source values", () => {
   const policy = contract();
   const first = transformRecord(
@@ -112,6 +125,7 @@ for (const [name, value] of [
 
 function exportFixture(overrides = {}) {
   const policy = contract();
+  const ownerPolicy = ownershipMap();
   const raw = Buffer.from("raw-staging-dump");
   const sanitized = Buffer.from("sanitized fixture without customer values");
   let fingerprintCalls = 0;
@@ -131,7 +145,8 @@ function exportFixture(overrides = {}) {
         canCreateSchema: false,
         tableWritePrivileges: [],
         tableTruncatePrivileges: [],
-        writableFunctionExecutePrivileges: []
+        writableFunctionExecutePrivileges: [],
+        objectOwners: ["subscription"]
       };
     },
     async openReadOnlySnapshot() {
@@ -210,6 +225,7 @@ function exportFixture(overrides = {}) {
   };
   return {
     contract: policy,
+    ownershipMap: ownerPolicy,
     source,
     workspace,
     publisher,
@@ -303,6 +319,7 @@ test("metadata verification rejects expiry, contract drift, unknown head, and du
         verifySnapshotMetadata({
           metadata,
           contract: input.contract,
+          ownershipMap: input.ownershipMap,
           dump: bundle.dump,
           scan: bundle.scan,
           knownMigrationHeads: input.contract.source.knownMigrationHeads,
@@ -336,6 +353,7 @@ test("protected entrypoint accepts only secret references and a complete publica
   const metadata = await runProtectedSnapshotExport({
     request,
     contract: input.contract,
+    ownershipMap: input.ownershipMap,
     adapters,
     now: input.now
   });
@@ -345,6 +363,7 @@ test("protected entrypoint accepts only secret references and a complete publica
       runProtectedSnapshotExport({
         request: { ...request, databaseUrl: "postgres://writer:secret@staging/data" },
         contract: input.contract,
+        ownershipMap: input.ownershipMap,
         adapters,
         now: input.now
       }),

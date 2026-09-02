@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertApprovedEphemeralTarget,
+  assertSnapshotSchemaDiffResult,
   classifyDatabaseTests,
   cleanupSuiteDatabase,
   computeMigrationCatalog,
@@ -15,6 +16,7 @@ import {
   grantRuntimeEquivalentAccess,
   provisionSuiteDatabase,
   redactEvidence,
+  restoreSanitizedSnapshot,
   runDatabaseManifest,
   runDatabaseSuite,
   runRuntimeSeedFixture,
@@ -22,7 +24,8 @@ import {
   runSourceDatabaseGate,
   selectManifestSuites,
   sha256Canonical,
-  sha256Bytes
+  sha256Bytes,
+  sqlIdentifier
 } from "../../packages/release-foundation/src/index.mjs";
 import { executeDockerCommand, hardenOwnerOnlyFile } from "./bootstrap-controlled-postgres.mjs";
 
@@ -296,6 +299,13 @@ async function createSecretStore(execution, cluster) {
       await writeFile(absolute, `${JSON.stringify(secret, null, 2)}\n`, { mode: 0o600 });
       await hardenOwnerOnlyFile(absolute);
       return { reference: expectedReference, username, password: secret.password };
+    },
+    async revoke(reference) {
+      const absolute = path.resolve(repoRoot, reference);
+      if (path.dirname(absolute) !== suiteRoot) {
+        throw runtimeError("DATABASE_LAUNCHER_SECRET_REFERENCE_INVALID");
+      }
+      await rm(absolute, { force: true });
     }
   };
 }
@@ -310,7 +320,275 @@ async function readSecret(reference) {
   return JSON.parse(await readFile(absolute, "utf8"));
 }
 
-async function prismaCommand(secret, arguments_, timeoutMs) {
+const ownershipInventorySql = [
+  "WITH objects AS (",
+  "  SELECT 'schema'::text AS object_class, n.nspname::text AS schema_name, n.nspname::text AS object_name,",
+  "         pg_get_userbyid(n.nspowner)::text AS owner, NULL::text AS extension_name",
+  "  FROM pg_namespace AS n WHERE n.nspname = 'public'",
+  "  UNION ALL",
+  "  SELECT CASE c.relkind",
+  "           WHEN 'r' THEN 'table' WHEN 'p' THEN 'partitioned-table' WHEN 'S' THEN 'sequence'",
+  "           WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized-view' END,",
+  "         n.nspname, c.relname, pg_get_userbyid(c.relowner), e.extname",
+  "  FROM pg_class AS c",
+  "  JOIN pg_namespace AS n ON n.oid = c.relnamespace",
+  "  LEFT JOIN pg_depend AS d ON d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'",
+  "  LEFT JOIN pg_extension AS e ON e.oid = d.refobjid",
+  "  WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'S', 'v', 'm')",
+  "  UNION ALL",
+  "  SELECT 'function', n.nspname, p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')',",
+  "         pg_get_userbyid(p.proowner), e.extname",
+  "  FROM pg_proc AS p",
+  "  JOIN pg_namespace AS n ON n.oid = p.pronamespace",
+  "  LEFT JOIN pg_depend AS d ON d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'",
+  "  LEFT JOIN pg_extension AS e ON e.oid = d.refobjid",
+  "  WHERE n.nspname = 'public'",
+  "  UNION ALL",
+  "  SELECT 'type', n.nspname, t.typname, pg_get_userbyid(t.typowner), e.extname",
+  "  FROM pg_type AS t",
+  "  JOIN pg_namespace AS n ON n.oid = t.typnamespace",
+  "  LEFT JOIN pg_depend AS d ON d.classid = 'pg_type'::regclass AND d.objid = t.oid AND d.deptype = 'e'",
+  "  LEFT JOIN pg_extension AS e ON e.oid = d.refobjid",
+  "  WHERE n.nspname = 'public' AND t.typisdefined AND t.typelem = 0",
+  ")",
+  "SELECT object_class, schema_name, object_name, owner, COALESCE(extension_name, '')",
+  "FROM objects ORDER BY object_class, schema_name, object_name;"
+].join("\n");
+
+async function readSnapshotOwnershipInventory({ cluster, resource, migrationSecret }) {
+  const result = await executePsql({
+    containerId: cluster.containerId,
+    credential: migrationSecret,
+    databaseName: resource.record.databaseName,
+    sql: ownershipInventorySql,
+    columns: ["objectClass", "schemaName", "objectName", "owner", "extensionName"]
+  });
+  return Object.freeze({
+    databaseIdentityDigest: sha256Canonical({
+      targetFingerprint: resource.record.targetFingerprint,
+      databaseName: resource.record.databaseName,
+      databaseOid: resource.record.databaseOid,
+      marker: resource.record.marker
+    }),
+    objects: result.rows.map((row) =>
+      Object.freeze({
+        ...row,
+        extensionName: row.extensionName || null
+      })
+    )
+  });
+}
+
+async function restoreResourceSnapshot({
+  cluster,
+  resource,
+  snapshotInput,
+  sanitizationContract,
+  ownershipMap,
+  runId
+}) {
+  const restoreReference = resource.record.secretReferences.restore;
+  if (!restoreReference || !resource.record.roles.restore) {
+    throw runtimeError("SNAPSHOT_RESTORE_PROFILE_MISSING");
+  }
+  const [restoreSecret, migrationSecret] = await Promise.all([
+    readSecret(restoreReference),
+    readSecret(resource.record.secretReferences.migrate)
+  ]);
+  const databaseIdentityDigest = sha256Canonical({
+    targetFingerprint: resource.record.targetFingerprint,
+    databaseName: resource.record.databaseName,
+    databaseOid: resource.record.databaseOid,
+    marker: resource.record.marker
+  });
+  const target = Object.freeze({
+    databaseName: resource.record.databaseName,
+    databaseOid: resource.record.databaseOid,
+    databaseIdentityDigest,
+    migrationRole: resource.record.roles.migrate,
+    runtimeRole: resource.record.roles["runtime-test"]
+  });
+  const containerDumpPath = `/tmp/${resource.record.databaseName}.sanitized-snapshot.dump`;
+  const adapters = {
+    trustPolicy: "snapshot-restore-adapters/v1",
+    async grantTemporaryMembership({ restoreRole, migrationRole }) {
+      const boundary = await executePsql({
+        containerId: cluster.containerId,
+        credential: cluster.provisioner,
+        databaseName: "postgres",
+        sql: [
+          'SELECT r.rolsuper AS "superuser", r.rolcreatedb AS "createdb",',
+          '       r.rolcreaterole AS "createrole", r.rolbypassrls AS "bypassrls",',
+          '       EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member = r.oid) AS "hasMembership"',
+          `FROM pg_roles r WHERE r.rolname = '${restoreRole}';`
+        ].join("\n"),
+        columns: ["superuser", "createdb", "createrole", "bypassrls", "hasMembership"]
+      });
+      if (!boundary.rows[0] || Object.values(boundary.rows[0]).some((value) => value !== "f")) {
+        throw runtimeError("RESTORE_IDENTITY_BOUNDARY_INVALID");
+      }
+      await executePsql({
+        containerId: cluster.containerId,
+        credential: cluster.provisioner,
+        databaseName: "postgres",
+        sql: `GRANT ${sqlIdentifier(migrationRole)} TO ${sqlIdentifier(restoreRole)};`
+      });
+    },
+    async restoreDump({ options }) {
+      if (
+        options.noOwner !== true ||
+        options.noAcl !== true ||
+        options.role !== resource.record.roles.migrate
+      ) {
+        throw runtimeError("SNAPSHOT_RESTORE_OPTIONS_INVALID");
+      }
+      await executeDockerCommand({
+        args: ["cp", snapshotInput.dumpPath, `${cluster.containerId}:${containerDumpPath}`]
+      });
+      try {
+        await executeDockerCommand({
+          args: [
+            "exec",
+            "--env",
+            "PGPASSWORD",
+            cluster.containerId,
+            "pg_restore",
+            "--host",
+            "127.0.0.1",
+            "--username",
+            restoreSecret.username,
+            "--dbname",
+            resource.record.databaseName,
+            "--exit-on-error",
+            "--no-owner",
+            "--no-acl",
+            `--role=${resource.record.roles.migrate}`,
+            containerDumpPath
+          ],
+          environment: { PGPASSWORD: restoreSecret.password }
+        });
+      } finally {
+        await executeDockerCommand({
+          args: ["exec", cluster.containerId, "rm", "--force", "--", containerDumpPath]
+        }).catch(() => {});
+      }
+    },
+    readOwnershipInventory: ({ phase }) => {
+      if (!["before", "after"].includes(phase)) {
+        throw runtimeError("SNAPSHOT_OWNERSHIP_PHASE_INVALID");
+      }
+      return readSnapshotOwnershipInventory({ cluster, resource, migrationSecret });
+    },
+    async transferOwnership() {
+      throw runtimeError("SNAPSHOT_OWNER_NORMALIZATION_REQUIRED");
+    },
+    async revokeMembership({ restoreRole, migrationRole }) {
+      await executePsql({
+        containerId: cluster.containerId,
+        credential: cluster.provisioner,
+        databaseName: "postgres",
+        sql: [
+          `REVOKE ${sqlIdentifier(migrationRole)} FROM ${sqlIdentifier(restoreRole)};`,
+          `ALTER ROLE ${sqlIdentifier(restoreRole)} NOLOGIN;`
+        ].join("\n")
+      });
+    },
+    revokeCredential: ({ secretReference }) => resource.secretStore.revoke(secretReference),
+    async canRestoreConnect() {
+      try {
+        await executePsql({
+          containerId: cluster.containerId,
+          credential: restoreSecret,
+          databaseName: resource.record.databaseName,
+          sql: "SELECT 1;",
+          columns: ["connected"]
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    async verifyMigrationReconnect() {
+      const result = await executePsql({
+        containerId: cluster.containerId,
+        credential: migrationSecret,
+        databaseName: resource.record.databaseName,
+        sql: "SELECT current_user;",
+        columns: ["currentUser"]
+      });
+      return result.rows[0]?.currentUser === resource.record.roles.migrate;
+    },
+    async custodyOwnershipProof({ ownershipObservation, ownershipObservationDigest }) {
+      const receipt = await custodyEvidence({
+        value: ownershipObservation,
+        policy: {
+          owner: "release-engineering",
+          readers: ["release", "qa", "security", "audit"],
+          retentionDays: 180,
+          expiryDisposition: "review"
+        },
+        storage: localCustodyStorage(),
+        createReceiptId: randomUUID,
+        attestationRef: `local-controlled-nonpromotable://${runId}/${resource.record.databaseName}/ownership`
+      });
+      return Object.freeze({
+        complete: true,
+        ...receipt,
+        contentDigest: ownershipObservationDigest
+      });
+    }
+  };
+  return restoreSanitizedSnapshot({
+    artifact: snapshotInput.artifact,
+    contract: sanitizationContract,
+    ownershipMap,
+    target,
+    restoreIdentity: {
+      profile: "restore",
+      role: resource.record.roles.restore,
+      secretReference: restoreReference.replaceAll("\\", "/"),
+      superuser: false,
+      createdb: false,
+      createrole: false,
+      bypassrls: false
+    },
+    adapters,
+    now: new Date()
+  });
+}
+
+async function retireUnusedRestoreCapability({ cluster, resource }) {
+  const restoreReference = resource.record.secretReferences.restore;
+  const restoreRole = resource.record.roles.restore;
+  if (!restoreReference || !restoreRole) {
+    throw runtimeError("SNAPSHOT_RESTORE_PROFILE_MISSING");
+  }
+  const restoreSecret = await readSecret(restoreReference);
+  await executePsql({
+    containerId: cluster.containerId,
+    credential: cluster.provisioner,
+    databaseName: "postgres",
+    sql: [
+      `REVOKE CONNECT ON DATABASE ${sqlIdentifier(resource.record.databaseName)} FROM ${sqlIdentifier(restoreRole)};`,
+      `ALTER ROLE ${sqlIdentifier(restoreRole)} NOLOGIN;`
+    ].join("\n")
+  });
+  await resource.secretStore.revoke(restoreReference);
+  try {
+    await executePsql({
+      containerId: cluster.containerId,
+      credential: restoreSecret,
+      databaseName: resource.record.databaseName,
+      sql: "SELECT 1;",
+      columns: ["connected"]
+    });
+  } catch {
+    return;
+  }
+  throw runtimeError("RESTORE_CREDENTIAL_STILL_ACTIVE");
+}
+
+async function prismaCommand(secret, arguments_, timeoutMs, { snapshotSchemaDiff = false } = {}) {
   const result = await runProcess(
     "pnpm",
     ["--filter", "@subscription-saas/api", "exec", "prisma", ...arguments_],
@@ -322,7 +600,9 @@ async function prismaCommand(secret, arguments_, timeoutMs) {
       })
     }
   );
-  if (result.code !== 0 || result.signal) {
+  if (snapshotSchemaDiff) {
+    assertSnapshotSchemaDiffResult({ exitCode: result.code, signal: result.signal });
+  } else if (result.code !== 0 || result.signal) {
     throw runtimeError("DATABASE_LAUNCHER_PRISMA_FAILED", {
       command: arguments_[0],
       exitCode: result.code
@@ -477,7 +757,23 @@ export function summarizeDatabaseTestLog({ stdout, stderr }) {
     stdoutSizeBytes: Buffer.byteLength(stdout),
     stderrSizeBytes: Buffer.byteLength(stderr)
   };
-  if (!report) return summary;
+  if (!report) {
+    const domainCodes = [
+      ...new Set([...stdout.matchAll(/\bINTEGRATION_[A-Z0-9_]{3,96}\b/g)].map(([code]) => code))
+    ].slice(0, 8);
+    const failureHints = [
+      ...new Set(
+        [...stdout.matchAll(/\bINTEGRATION_[A-Za-z0-9_.-]{3,240}\b/g)].map(([hint]) => hint)
+      )
+    ].slice(0, 8);
+    return {
+      ...summary,
+      reporter: "node-tap",
+      counts: tapCounts(stdout),
+      domainCodes,
+      failureHints
+    };
+  }
   return {
     ...summary,
     reporter: "vitest-json",
@@ -521,6 +817,19 @@ export function summarizeDatabaseTestLog({ stdout, stderr }) {
                 [...failureText.matchAll(/([a-z0-9._-]+\.(?:spec|test)\.[cm]?[jt]s):(\d+):(\d+)/gi)]
                   .map(([, file, line, column]) => `${file}:${line}:${column}`)
                   .slice(0, 4)
+              )
+            ],
+            sourceLocations: [
+              ...new Set(
+                [
+                  ...failureText.matchAll(
+                    /(apps[\\/]api[\\/]src[\\/][a-z0-9._\\/-]+\.[cm]?[jt]s):(\d+):(\d+)/gi
+                  )
+                ]
+                  .map(
+                    ([, file, line, column]) => `${file.replaceAll("\\", "/")}:${line}:${column}`
+                  )
+                  .slice(0, 8)
               )
             ],
             errorCodes: [
@@ -583,13 +892,24 @@ function localCustodyStorage() {
 }
 
 async function loadSelectionInputs() {
-  const [manifest, discovery, exceptions, external, imageContract, policies] = await Promise.all([
+  const [
+    manifest,
+    discovery,
+    exceptions,
+    external,
+    imageContract,
+    policies,
+    sanitizationContract,
+    ownershipMap
+  ] = await Promise.all([
     loadJson("release/contracts/database-test-manifest.v1.json"),
     loadJson("release/contracts/database-test-discovery.v1.json"),
     loadJson("release/contracts/database-test-exceptions.v1.json"),
     loadJson("release/contracts/external-validation-applicability.v1.json"),
     loadJson("release/contracts/postgres-image.v1.json"),
-    loadJson("release/contracts/database-target-policies.v1.json")
+    loadJson("release/contracts/database-target-policies.v1.json"),
+    loadJson("release/contracts/sanitization-contract.v1.json"),
+    loadJson("release/contracts/snapshot-ownership-map.v1.json")
   ]);
   const candidates = await discoverDatabaseTestCandidates(repoRoot, discovery);
   const classification = classifyDatabaseTests(
@@ -603,8 +923,50 @@ async function loadSelectionInputs() {
     discoveryDigest: sha256Canonical(discovery),
     discoveryUnclassifiedCount: classification.unclassified.length,
     imageContract,
+    sanitizationContract,
+    ownershipMap,
     policy: policies.policies.find(({ policyId }) => policyId === "s1-release-ephemeral")
   };
+}
+
+function resolvedSnapshotMetadataPath(reference) {
+  if (
+    typeof reference !== "string" ||
+    path.isAbsolute(reference) ||
+    reference.replaceAll("\\", "/") !== ".release-inputs/snapshot-metadata.json"
+  ) {
+    throw runtimeError("SNAPSHOT_METADATA_REFERENCE_INVALID");
+  }
+  return path.resolve(repoRoot, reference);
+}
+
+async function loadSnapshotArtifact(reference) {
+  const metadataPath = resolvedSnapshotMetadataPath(reference);
+  const directory = path.dirname(metadataPath);
+  const [metadata, dump, scan, privilegeObservation, fingerprintObservation, custodyReceipt] =
+    await Promise.all([
+      readFile(metadataPath, "utf8").then(JSON.parse),
+      readFile(path.join(directory, "sanitized-snapshot.dump")),
+      readFile(path.join(directory, "sanitization-scan.v1.json"), "utf8").then(JSON.parse),
+      readFile(path.join(directory, "source-privilege-observation.v1.json"), "utf8").then(
+        JSON.parse
+      ),
+      readFile(path.join(directory, "source-fingerprint.v1.json"), "utf8").then(JSON.parse),
+      readFile(path.join(directory, "custody-receipt.v1.json"), "utf8").then(JSON.parse)
+    ]).catch((error) => {
+      throw runtimeError("SNAPSHOT_ARTIFACT_INPUT_INVALID", { cause: error?.code });
+    });
+  return Object.freeze({
+    artifact: Object.freeze({
+      metadata,
+      dump,
+      scan,
+      privilegeObservation,
+      fingerprintObservation,
+      custodyReceipt
+    }),
+    dumpPath: path.join(directory, "sanitized-snapshot.dump")
+  });
 }
 
 async function gitSourceSha() {
@@ -639,7 +1001,8 @@ export async function executeLauncherRequest({
   suiteId,
   batchId,
   concurrency = 1,
-  order = "manifest"
+  order = "manifest",
+  snapshotMetadataFile
 }) {
   if (
     !["suite", "manifest", "source-gate"].includes(mode) ||
@@ -653,6 +1016,17 @@ export async function executeLauncherRequest({
   const inputs = await loadSelectionInputs();
   if (!inputs.policy) throw runtimeError("DATABASE_LAUNCHER_POLICY_MISSING");
   const runId = randomUUID();
+  const snapshotInput =
+    chain === "snapshot" && snapshotMetadataFile
+      ? await loadSnapshotArtifact(snapshotMetadataFile)
+      : undefined;
+  if (
+    chain === "snapshot" &&
+    !snapshotInput &&
+    !(mode === "suite" && suiteId === "release.snapshot-chain")
+  ) {
+    throw runtimeError("SNAPSHOT_ARTIFACT_INPUT_REQUIRED");
+  }
   const selections = selectManifestSuites({
     manifest: inputs.manifest,
     discoveryDigest: inputs.discoveryDigest,
@@ -671,6 +1045,7 @@ export async function executeLauncherRequest({
   const observations = new Map();
   const fixtureObservations = new Map();
   const roleBoundaryObservations = new Map();
+  const snapshotRestoreRecords = new Map();
   let completed = false;
   try {
     const admin = ({ databaseName, sql }) =>
@@ -712,7 +1087,8 @@ export async function executeLauncherRequest({
                 suiteId: item.execution.suiteId,
                 shard: item.execution.assignment.shard,
                 executeAdmin: admin,
-                secretStore
+                secretStore,
+                enableRestore: chain === "snapshot"
               });
               resources.push({ ...item, record, secretStore });
             }
@@ -728,12 +1104,28 @@ export async function executeLauncherRequest({
           },
           deployMigrations: async () => {
             const databaseObservations = [];
+            const suiteSnapshotRecords = [];
             for (const resource of resources) {
+              if (snapshotInput) {
+                suiteSnapshotRecords.push(
+                  await restoreResourceSnapshot({
+                    cluster,
+                    resource,
+                    snapshotInput,
+                    sanitizationContract: inputs.sanitizationContract,
+                    ownershipMap: inputs.ownershipMap,
+                    runId
+                  })
+                );
+              } else if (chain === "snapshot") {
+                await retireUnusedRestoreCapability({ cluster, resource });
+              }
               const secret = await readSecret(resource.record.secretReferences.migrate);
               await prismaCommand(
                 secret,
                 ["migrate", "deploy", "--schema", "prisma/schema.prisma"],
-                execution.timeoutMs
+                execution.timeoutMs,
+                { snapshotSchemaDiff: chain === "snapshot" }
               );
               const migrationStatus = await prismaCommand(
                 secret,
@@ -772,6 +1164,9 @@ export async function executeLauncherRequest({
                 }))
               )
             });
+            if (suiteSnapshotRecords.length > 0) {
+              snapshotRestoreRecords.set(execution.suiteId, Object.freeze(suiteSnapshotRecords));
+            }
           },
           grantRuntimeAccess: async () => {
             const suiteFixtures = [];
@@ -1007,6 +1402,24 @@ export async function executeLauncherRequest({
         migrationStatusDigest: sha256Canonical(
           observationValues.map(({ migrationStatusDigest }) => migrationStatusDigest)
         ),
+        ...(snapshotInput
+          ? {
+              snapshot: {
+                snapshotMetadataDigest: sha256Canonical(snapshotInput.artifact.metadata),
+                snapshotBundleDigest: snapshotInput.artifact.custodyReceipt.contentDigest,
+                sourceMigrationHead: snapshotInput.artifact.metadata.sourceMigrationHead,
+                ownershipMapDigest: sha256Canonical(inputs.ownershipMap),
+                ownershipObservationDigest: sha256Canonical(
+                  [...snapshotRestoreRecords.entries()].map(([suite, records]) => ({
+                    suite,
+                    records: records.map(
+                      ({ ownershipObservationDigest }) => ownershipObservationDigest
+                    )
+                  }))
+                )
+              }
+            }
+          : {}),
         provenance: {
           generatedAt: new Date().toISOString(),
           ciRunRef: `local-controlled-nonpromotable://${runId}`,
@@ -1056,9 +1469,15 @@ export function parseLauncherArguments(mode, argv) {
     values.set(flag, value);
   }
   const allowed = {
-    suite: new Set(["--suite-id", "--chain"]),
-    manifest: new Set(["--batch", "--chain", "--concurrency", "--order"]),
-    "source-gate": new Set(["--batch", "--chain"])
+    suite: new Set(["--suite-id", "--chain", "--snapshot-metadata-file"]),
+    manifest: new Set([
+      "--batch",
+      "--chain",
+      "--concurrency",
+      "--order",
+      "--snapshot-metadata-file"
+    ]),
+    "source-gate": new Set(["--batch", "--chain", "--snapshot-metadata-file"])
   }[mode];
   if ([...values.keys()].some((flag) => !allowed.has(flag))) {
     throw runtimeError("DATABASE_LAUNCHER_ARGUMENT_INVALID");
@@ -1068,17 +1487,27 @@ export function parseLauncherArguments(mode, argv) {
   const batchId = values.get("--batch");
   const concurrency = values.has("--concurrency") ? Number(values.get("--concurrency")) : 1;
   const order = values.get("--order") ?? "manifest";
+  const snapshotMetadataFile = values.get("--snapshot-metadata-file");
   if (
     !["fresh", "snapshot"].includes(chain) ||
     (mode === "suite" && !suiteId) ||
     (mode === "manifest" && !batchId) ||
     !Number.isInteger(concurrency) ||
     concurrency < 1 ||
+    (chain === "fresh" && snapshotMetadataFile !== undefined) ||
     !["manifest", "reverse"].includes(order)
   ) {
     throw runtimeError("DATABASE_LAUNCHER_ARGUMENT_INVALID");
   }
-  return Object.freeze({ mode, chain, suiteId, batchId, concurrency, order });
+  return Object.freeze({
+    mode,
+    chain,
+    suiteId,
+    batchId,
+    concurrency,
+    order,
+    snapshotMetadataFile
+  });
 }
 
 export async function runLauncherCli(mode, argv, execute = executeLauncherRequest) {

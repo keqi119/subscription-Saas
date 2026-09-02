@@ -6,6 +6,7 @@ coverage/
 *.tsbuildinfo
 .tmp/
 .release-local/
+.release-inputs/
 
 .env
 .env.*

@@ -1514,7 +1514,7 @@ test("target loader counts exact whitelist and verifies the fixed local canonica
   assert.equal(target.migrationCatalog.length, 126);
   assert.equal(
     target.schemaFingerprint[0].schemaFingerprintSha256,
-    "42b3239c093e79c4c9a048316abb22943310093216526819a0399c8cec4751e0"
+    "c73669a688470e5927c59f55e565eab2f0a16933c15dbd9573481fe4113d9a78"
   );
 
   const countCalls = fake.calls.filter(({ operation }) => operation === "count");

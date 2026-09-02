@@ -160,7 +160,7 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
       throw rejectedReason(attempts);
     }
     expect(successfulAttempts).toHaveLength(1);
-    expect(databaseErrorCode(rejectedReason(attempts))).toBe("23505");
+    expect(databaseErrorCode(rejectedReason(attempts))).toBe("23P01");
   });
 
   it("rejects a second open subscription period for one order on another vehicle", async () => {
@@ -286,8 +286,8 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
 
     await insertSubscriptionPeriod(prisma, original);
 
-    await expect(insertSubscriptionPeriod(prisma, original)).rejects.toSatisfy(
-      (error) => databaseErrorCode(error) === "23505"
+    await expect(insertSubscriptionPeriod(prisma, original)).rejects.toSatisfy((error) =>
+      ["23P01", "23505"].includes(databaseErrorCode(error) ?? "")
     );
     const replayed = await findSubscriptionPeriod(prisma, sourceType, sourceId, sourceKey);
     expect(replayed).toMatchObject({
@@ -794,8 +794,8 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
       subscriptionEndSourceConflict
     ],
     [
-      "open-vehicle unique",
-      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OPEN_VEHICLE,
+      "open-vehicle collision",
+      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OVERLAP,
       subscriptionOpenVehicleConflict
     ],
     [
@@ -828,8 +828,8 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
       ownershipEndSourceConflict
     ],
     [
-      "open-vehicle unique",
-      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OPEN_VEHICLE,
+      "open-vehicle collision",
+      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OVERLAP,
       ownershipOpenVehicleConflict
     ],
     ["period exclusion", ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OVERLAP, ownershipOverlapConflict],

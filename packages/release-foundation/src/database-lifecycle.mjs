@@ -7,9 +7,13 @@ function lifecycleError(code, details) {
   return Object.assign(new Error(code), { code, details });
 }
 
-function roleNames(databaseName) {
+function roleNames(databaseName, enableRestore = false) {
   const suffix = sha256Text(databaseName).slice(0, 24);
-  return { migrate: `s1m_${suffix}`, "runtime-test": `s1r_${suffix}` };
+  return {
+    migrate: `s1m_${suffix}`,
+    "runtime-test": `s1r_${suffix}`,
+    ...(enableRestore ? { restore: `s1x_${suffix}` } : {})
+  };
 }
 
 function assertSecret(secret, expectedUsername, profile) {
@@ -44,6 +48,7 @@ async function rollbackPartial({ executeAdmin, databaseName, roles, databaseCrea
     );
   }
   statements.push(
+    ...(roles.restore ? [`DROP ROLE IF EXISTS ${sqlIdentifier(roles.restore)};`] : []),
     `DROP ROLE IF EXISTS ${sqlIdentifier(roles["runtime-test"])};`,
     `DROP ROLE IF EXISTS ${sqlIdentifier(roles.migrate)};`
   );
@@ -58,7 +63,8 @@ export async function provisionSuiteDatabase({
   shard,
   now = () => new Date(),
   executeAdmin,
-  secretStore
+  secretStore,
+  enableRestore = false
 }) {
   assertApprovedEphemeralTarget(target, policy);
   if (!executeAdmin || !secretStore?.create)
@@ -67,7 +73,7 @@ export async function provisionSuiteDatabase({
   if (!new RegExp(policy.databaseNamePattern).test(databaseName)) {
     throw lifecycleError("DATABASE_NAME_POLICY_MISMATCH");
   }
-  const roles = roleNames(databaseName);
+  const roles = roleNames(databaseName, enableRestore);
   const migrateSecret = await secretStore.create({
     profile: "migrate",
     databaseName,
@@ -78,8 +84,16 @@ export async function provisionSuiteDatabase({
     databaseName,
     username: roles["runtime-test"]
   });
+  const restoreSecret = enableRestore
+    ? await secretStore.create({
+        profile: "restore",
+        databaseName,
+        username: roles.restore
+      })
+    : undefined;
   assertSecret(migrateSecret, roles.migrate, "migrate");
   assertSecret(runtimeSecret, roles["runtime-test"], "runtime-test");
+  if (enableRestore) assertSecret(restoreSecret, roles.restore, "restore");
   const createdAt = now().toISOString();
   const marker = markerFor({ policy, runId, suiteId, shard, createdAt });
   let databaseCreated = false;
@@ -89,6 +103,11 @@ export async function provisionSuiteDatabase({
       sql: [
         `CREATE ROLE ${sqlIdentifier(roles.migrate)} LOGIN PASSWORD ${sqlLiteral(migrateSecret.password)} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;`,
         `CREATE ROLE ${sqlIdentifier(roles["runtime-test"])} LOGIN PASSWORD ${sqlLiteral(runtimeSecret.password)} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;`,
+        ...(enableRestore
+          ? [
+              `CREATE ROLE ${sqlIdentifier(roles.restore)} LOGIN PASSWORD ${sqlLiteral(restoreSecret.password)} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;`
+            ]
+          : []),
         `CREATE DATABASE ${sqlIdentifier(databaseName)} OWNER ${sqlIdentifier(roles.migrate)};`
       ].join("\n")
     });
@@ -98,7 +117,18 @@ export async function provisionSuiteDatabase({
       sql: [
         `COMMENT ON DATABASE ${sqlIdentifier(databaseName)} IS ${sqlLiteral(marker)};`,
         `REVOKE CONNECT ON DATABASE ${sqlIdentifier(databaseName)} FROM PUBLIC;`,
-        `GRANT CONNECT ON DATABASE ${sqlIdentifier(databaseName)} TO ${sqlIdentifier(roles.migrate)}, ${sqlIdentifier(roles["runtime-test"])};`
+        `GRANT CONNECT ON DATABASE ${sqlIdentifier(databaseName)} TO ${[
+          sqlIdentifier(roles.migrate),
+          sqlIdentifier(roles["runtime-test"]),
+          ...(enableRestore ? [sqlIdentifier(roles.restore)] : [])
+        ].join(", ")};`
+      ].join("\n")
+    });
+    await executeAdmin({
+      databaseName,
+      sql: [
+        `ALTER SCHEMA public OWNER TO ${sqlIdentifier(roles.migrate)};`,
+        "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
       ].join("\n")
     });
     const identity = await executeAdmin({
@@ -126,7 +156,8 @@ export async function provisionSuiteDatabase({
       roles,
       secretReferences: {
         migrate: migrateSecret.reference,
-        "runtime-test": runtimeSecret.reference
+        "runtime-test": runtimeSecret.reference,
+        ...(enableRestore ? { restore: restoreSecret.reference } : {})
       },
       createdAt
     };
@@ -151,12 +182,16 @@ export async function cleanupSuiteDatabase(record, { target, policy, executeAdmi
     throw lifecycleError("CLEANUP_IDENTITY_MISMATCH");
   }
   const expectedName = suiteDatabaseName(record.runId, record.suiteId, record.shard);
-  const expectedRoles = roleNames(expectedName);
+  const expectedRoles = roleNames(expectedName, Boolean(record.roles?.restore));
   if (
     record.databaseName !== expectedName ||
     record.targetFingerprint !== target.clusterFingerprint ||
     record.roles?.migrate !== expectedRoles.migrate ||
     record.roles?.["runtime-test"] !== expectedRoles["runtime-test"] ||
+    record.roles?.restore !== expectedRoles.restore ||
+    (record.roles?.restore
+      ? typeof record.secretReferences?.restore !== "string"
+      : record.secretReferences?.restore !== undefined) ||
     !/^[0-9]+$/.test(record.databaseOid ?? "") ||
     typeof record.marker !== "string"
   ) {
@@ -180,6 +215,7 @@ export async function cleanupSuiteDatabase(record, { target, policy, executeAdmi
     sql: [
       `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${sqlLiteral(record.databaseName)} AND pid <> pg_backend_pid();`,
       `DROP DATABASE ${sqlIdentifier(record.databaseName)};`,
+      ...(record.roles.restore ? [`DROP ROLE ${sqlIdentifier(record.roles.restore)};`] : []),
       `DROP ROLE ${sqlIdentifier(record.roles["runtime-test"])};`,
       `DROP ROLE ${sqlIdentifier(record.roles.migrate)};`
     ].join("\n")

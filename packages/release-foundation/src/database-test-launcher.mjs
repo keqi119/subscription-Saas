@@ -168,7 +168,10 @@ export function selectManifestSuites({
                 shard: index + 1000,
                 secretReferences: Object.freeze({
                   migrate: `${referenceRoot}/source/migrate.json`,
-                  "runtime-test": `${referenceRoot}/source/runtime-test.json`
+                  "runtime-test": `${referenceRoot}/source/runtime-test.json`,
+                  ...(chain === "snapshot"
+                    ? { restore: `${referenceRoot}/source/restore.json` }
+                    : {})
                 })
               })
             ]
@@ -185,7 +188,8 @@ export function selectManifestSuites({
           shard: index,
           secretReferences: Object.freeze({
             migrate: `${referenceRoot}/migrate.json`,
-            "runtime-test": `${referenceRoot}/runtime-test.json`
+            "runtime-test": `${referenceRoot}/runtime-test.json`,
+            ...(chain === "snapshot" ? { restore: `${referenceRoot}/restore.json` } : {})
           })
         }),
         additionalAssignments: Object.freeze(additionalAssignments),
@@ -236,6 +240,7 @@ function assertProvisioned(execution, provisioned) {
     provisioned?.secretReferences?.migrate !== execution.assignment.secretReferences.migrate ||
     provisioned?.secretReferences?.["runtime-test"] !==
       execution.assignment.secretReferences["runtime-test"] ||
+    provisioned?.secretReferences?.restore !== execution.assignment.secretReferences.restore ||
     !/^[0-9]+$/.test(provisioned?.databaseOid ?? "") ||
     !/^sha256:[0-9a-f]{64}$/.test(provisioned?.targetFingerprint ?? "")
   ) {
@@ -251,6 +256,7 @@ function assertProvisioned(execution, provisioned) {
         database.databaseName !== expected.databaseName ||
         database.secretReferences?.migrate !== expected.secretReferences.migrate ||
         database.secretReferences?.["runtime-test"] !== expected.secretReferences["runtime-test"] ||
+        database.secretReferences?.restore !== expected.secretReferences.restore ||
         !/^[0-9]+$/.test(database.databaseOid ?? "") ||
         !/^sha256:[0-9a-f]{64}$/.test(database.targetFingerprint ?? "")
       );
@@ -512,6 +518,7 @@ export function runSourceDatabaseGate({
   postgres,
   schemaDiffDigest,
   migrationStatusDigest,
+  snapshot,
   provenance
 }) {
   try {
@@ -535,6 +542,22 @@ export function runSourceDatabaseGate({
       terminalStatus: manifestReport.terminalStatus
     });
   }
+  if (
+    (manifestReport.chain === "snapshot" &&
+      (snapshot === null ||
+        typeof snapshot !== "object" ||
+        Array.isArray(snapshot) ||
+        [
+          "snapshotMetadataDigest",
+          "snapshotBundleDigest",
+          "sourceMigrationHead",
+          "ownershipMapDigest",
+          "ownershipObservationDigest"
+        ].some((field) => typeof snapshot[field] !== "string" || snapshot[field].length === 0))) ||
+    (manifestReport.chain === "fresh" && snapshot !== undefined)
+  ) {
+    throw launcherError("DATABASE_TEST_SNAPSHOT_EVIDENCE_INVALID");
+  }
   const evidence = {
     schemaVersion: "source-gate-evidence.v1",
     sourceSha,
@@ -548,6 +571,7 @@ export function runSourceDatabaseGate({
     terminalStatus: manifestReport.terminalStatus,
     schemaDiffDigest,
     migrationStatusDigest,
+    ...(snapshot ? { snapshot } : {}),
     sanitizedLogDigest: manifestReport.sanitizedLogDigest,
     provenance
   };

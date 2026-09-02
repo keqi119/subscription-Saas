@@ -66,6 +66,18 @@ function observeSettlement<T>(promise: Promise<T>): Promise<PromiseSettledResult
   );
 }
 
+function rethrowRecoveryAssessmentIntegrationError(error: unknown): never {
+  const response =
+    typeof error === "object" && error !== null && "response" in error
+      ? (error.response as { code?: unknown })
+      : undefined;
+  const code = typeof response?.code === "string" ? response.code : undefined;
+  if (code && /^[A-Z0-9_]+$/.test(code)) {
+    throw new Error(`INTEGRATION_RECOVERY_ASSESSMENT_${code}`);
+  }
+  throw error;
+}
+
 describe("SubscriptionClosureService Task 7 early-termination initiation", () => {
   let prisma: PrismaService;
 
@@ -5845,10 +5857,10 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           jobKey: `closure-recovery-assessment:${closureCase.id}:D7`,
           orderId: fixture.orderId
         };
-        await expect(closure.assessRecoveryJob(assessmentInput)).resolves.toEqual({
-          action: "NO_OP",
-          reason
-        });
+        const firstAssessment = await closure
+          .assessRecoveryJob(assessmentInput)
+          .catch(rethrowRecoveryAssessmentIntegrationError);
+        expect(firstAssessment).toEqual({ action: "NO_OP", reason });
 
         if (reason === "LIVE_DISPUTE") {
           await prisma.collectionAction.delete({ where: { id: collectionActionId } });
@@ -5859,10 +5871,10 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
             where: { id: fixture.segmentId }
           });
         }
-        await expect(closure.assessRecoveryJob(assessmentInput)).resolves.toEqual({
-          action: "NO_OP",
-          reason
-        });
+        const replayedAssessment = await closure
+          .assessRecoveryJob(assessmentInput)
+          .catch(rethrowRecoveryAssessmentIntegrationError);
+        expect(replayedAssessment).toEqual({ action: "NO_OP", reason });
         await expect(
           prisma.subscriptionClosureCommandReceipt.count({
             where: {
@@ -7701,6 +7713,7 @@ async function seedTask6RecoveryApproval(
   requesterId: string,
   plannedRecoveryAssetWorkOrderId: string
 ) {
+  await awaitDatabaseClockAtOrAfterLatestClosureEvent(prisma, assessedCase.id);
   await prisma.$executeRaw(Prisma.sql`
     INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
     VALUES (${requesterId}::uuid, ${`task6-requester-${requesterId}`}, 'Task 6 requester', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
@@ -8100,7 +8113,7 @@ async function runManagedPrepare(
   fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>,
   barrier?: ReturnType<typeof createBarrier>
 ) {
-  return prisma.$transaction(
+  const result = await prisma.$transaction(
     async (tx) => {
       const input = {
         actorId: fixture.actorId,
@@ -8129,6 +8142,8 @@ async function runManagedPrepare(
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
   );
+  await awaitDatabaseClockAtOrAfterLatestClosureEvent(prisma, undefined, fixture.orderId);
+  return result;
 }
 
 async function databaseNow(tx: Prisma.TransactionClient) {
@@ -8146,6 +8161,41 @@ async function awaitDatabaseClockPast(prisma: PrismaService, occurredAt: Date) {
     const current = await prisma.$transaction((tx) => databaseNow(tx));
     if (current.getTime() >= requiredDatabaseTime) return;
     if (Date.now() >= deadline) throw new Error("Database clock did not pass fixture event time");
+  }
+}
+
+async function awaitDatabaseClockAtOrAfterLatestClosureEvent(
+  prisma: PrismaService,
+  closureCaseId?: string,
+  orderId?: string
+) {
+  if ((closureCaseId === undefined) === (orderId === undefined)) {
+    throw new Error("Exactly one closure-event authority identifier is required");
+  }
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    const [boundary] = await prisma.$queryRaw<
+      Array<{ clockTimestamp: Date; latestOccurredAt: Date | null }>
+    >(Prisma.sql`
+      SELECT clock_timestamp() AS "clockTimestamp",
+             MAX(event."occurred_at") AS "latestOccurredAt"
+      FROM "subscription_closure_event" AS event
+      JOIN "subscription_closure_case" AS closure_case
+        ON closure_case."id" = event."closure_case_id"
+      WHERE (${closureCaseId ?? null}::uuid IS NOT NULL AND closure_case."id" = ${closureCaseId ?? null}::uuid)
+         OR (${orderId ?? null}::uuid IS NOT NULL AND closure_case."order_id" = ${orderId ?? null}::uuid)
+    `);
+    if (
+      boundary &&
+      (boundary.latestOccurredAt === null ||
+        boundary.clockTimestamp.getTime() >= boundary.latestOccurredAt.getTime())
+    ) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("Database clock did not reach the latest closure event");
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
 

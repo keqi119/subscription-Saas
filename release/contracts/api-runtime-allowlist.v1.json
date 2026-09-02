@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "api-runtime-allowlist.v1",
+  "enforcementTask": 26,
+  "allowedCapabilities": [
+    "application-server",
+    "media-processing-runtime",
+    "prisma-client-runtime",
+    "static-assets"
+  ],
+  "forbiddenPaths": ["/app/scripts"],
+  "forbiddenExecutables": ["prisma", "psql"],
+  "forbiddenEntrypoints": ["arbitrary-shell", "node scripts/"],
+  "owner": "release-engineering",
+  "exitCondition": "Task 26 proves the final API image contains only approved runtime capabilities."
+}

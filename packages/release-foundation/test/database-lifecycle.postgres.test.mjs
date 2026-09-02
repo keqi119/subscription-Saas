@@ -91,7 +91,10 @@ export function migrationPackageManagerCommand(
   return {
     executable: executablePath,
     arguments: [
-      path.join(path.dirname(executablePath), "node_modules/corepack/dist/pnpm.js"),
+      path.win32.join(
+        path.win32.dirname(executablePath),
+        "node_modules/corepack/dist/pnpm.js"
+      ),
       ...arguments_
     ]
   };

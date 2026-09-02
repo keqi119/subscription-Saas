@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "approval-revocations.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "issuer",
+    "repository",
+    "workflowPath",
+    "workflowRef",
+    "workflowRunId",
+    "runAttempt",
+    "policyDigest",
+    "sequence",
+    "previousArtifactDigest",
+    "issuedAt",
+    "notAfter",
+    "revocations"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "approval-revocations.v1" },
+    "issuer": { "$ref": "#/$defs/nonEmpty" },
+    "repository": { "$ref": "#/$defs/nonEmpty" },
+    "workflowPath": { "$ref": "#/$defs/nonEmpty" },
+    "workflowRef": { "$ref": "#/$defs/nonEmpty" },
+    "workflowRunId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "runAttempt": { "const": 1 },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "previousArtifactDigest": { "$ref": "#/$defs/digest" },
+    "issuedAt": { "$ref": "#/$defs/timestamp" },
+    "notAfter": { "$ref": "#/$defs/timestamp" },
+    "revocations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["approvalId", "approvalRecordDigest", "reason", "revokedAt"],
+        "properties": {
+          "approvalId": { "type": "string", "format": "uuid" },
+          "approvalRecordDigest": { "$ref": "#/$defs/digest" },
+          "reason": { "$ref": "#/$defs/nonEmpty" },
+          "revokedAt": { "$ref": "#/$defs/timestamp" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "nonEmpty": { "type": "string", "minLength": 1 }
+  }
+}

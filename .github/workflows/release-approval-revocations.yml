@@ -1,0 +1,168 @@
+name: Release approval revocations
+
+on:
+  workflow_dispatch:
+    inputs:
+      revocationsJson:
+        description: Ordered approval revocations; empty array publishes a heartbeat
+        required: true
+        default: "[]"
+        type: string
+  schedule:
+    - cron: "*/20 * * * *"
+
+concurrency:
+  group: release-approval-revocations-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    environment: s1-approval-revocations
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: corepack enable && pnpm install --frozen-lockfile
+
+      - name: Resolve the preceding protected publication
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          previous_run="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/actions/workflows/release-approval-revocations.yml/runs?branch=main&status=success&per_page=100" --jq ".workflow_runs[] | select(.run_attempt == 1 and .run_number < ${GITHUB_RUN_NUMBER}) | [.run_number, .id] | @tsv" | sort -n | tail -1 || true)"
+          if [ -z "$previous_run" ]; then
+            echo "artifact_digest=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          previous_id="$(printf '%s' "$previous_run" | cut -f2)"
+          mkdir -p previous-content previous-receipt
+          gh run download "$previous_id" --repo "$GITHUB_REPOSITORY" --name "approval-revocations-${previous_id}" --dir previous-content
+          gh run download "$previous_id" --repo "$GITHUB_REPOSITORY" --name "approval-revocations-receipt-${previous_id}" --dir previous-receipt
+          gh attestation verify previous-content/approval-revocations.v1.json --repo "$GITHUB_REPOSITORY"
+          node --input-type=module <<'NODE' >> "$GITHUB_OUTPUT"
+          import { readFile } from "node:fs/promises";
+          import { assertCustodyComplete, sha256Bytes } from "./packages/release-foundation/src/index.mjs";
+          const bytes = await readFile("previous-content/approval-revocations.v1.json");
+          const receipt = JSON.parse(await readFile("previous-receipt/approval-revocations.custody-receipt.v1.json", "utf8"));
+          const digest = sha256Bytes(bytes);
+          assertCustodyComplete(receipt, digest);
+          process.stdout.write(`artifact_digest=${digest}\n`);
+          NODE
+
+      - name: Build canonical revocation publication
+        env:
+          PREVIOUS_DIGEST: ${{ steps.previous.outputs.artifact_digest }}
+          REVOCATIONS_JSON: ${{ inputs.revocationsJson || '[]' }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from "node:fs/promises";
+          import { canonicalJson, sha256Canonical, validateContract } from "./packages/release-foundation/src/index.mjs";
+          const policy = JSON.parse(await readFile("release/contracts/approval-policies.v1.json", "utf8"));
+          validateContract("approval-policy.v1", policy);
+          const issuedAt = new Date();
+          const notAfter = new Date(issuedAt.getTime() + policy.revocationSource.maximumArtifactLifetimeSeconds * 1000);
+          const revocations = JSON.parse(process.env.REVOCATIONS_JSON);
+          const artifact = {
+            schemaVersion: "approval-revocations.v1",
+            issuer: policy.revocationSource.attestationIssuer,
+            repository: policy.revocationSource.repository,
+            workflowPath: policy.revocationSource.workflowPath,
+            workflowRef: policy.revocationSource.workflowRef,
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            policyDigest: sha256Canonical(policy),
+            sequence: Number(process.env.GITHUB_RUN_NUMBER),
+            previousArtifactDigest: process.env.PREVIOUS_DIGEST || policy.revocationSource.checkpointArtifactDigest,
+            issuedAt: issuedAt.toISOString(),
+            notAfter: notAfter.toISOString(),
+            revocations
+          };
+          validateContract("approval-revocations.v1", artifact);
+          const ordered = [...revocations].sort((left, right) => `${left.approvalId}\0${left.approvalRecordDigest}`.localeCompare(`${right.approvalId}\0${right.approvalRecordDigest}`));
+          if (canonicalJson(ordered) !== canonicalJson(revocations)) throw new Error("APPROVAL_REVOCATIONS_ORDER_INVALID");
+          await writeFile("approval-revocations.v1.json", canonicalJson(artifact));
+          NODE
+
+      - name: Upload immutable revocation artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: approval-revocations-${{ github.run_id }}
+          path: approval-revocations.v1.json
+          if-no-files-found: error
+          retention-days: 180
+
+      - name: Attest revocation artifact
+        id: attest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: approval-revocations.v1.json
+
+      - name: Read back revocation artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: approval-revocations-${{ github.run_id }}
+          path: revocation-readback
+
+      - name: Verify readback and create custody receipt
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { randomUUID } from "node:crypto";
+          import { readFile, writeFile } from "node:fs/promises";
+          import { canonicalJson, sha256Bytes } from "./packages/release-foundation/src/index.mjs";
+          const original = await readFile("approval-revocations.v1.json");
+          const readback = await readFile("revocation-readback/approval-revocations.v1.json");
+          const digest = sha256Bytes(original);
+          if (sha256Bytes(readback) !== digest) throw new Error("APPROVAL_REVOCATIONS_READBACK_DIGEST_MISMATCH");
+          const uploadedAt = new Date();
+          const retainUntil = new Date(uploadedAt);
+          retainUntil.setUTCDate(retainUntil.getUTCDate() + 180);
+          const receipt = {
+            schemaVersion: "custody-receipt.v1",
+            receiptId: randomUUID(),
+            contentDigest: digest,
+            contentSizeBytes: original.byteLength,
+            storeRef: process.env.ARTIFACT_URL,
+            uploadedAt: uploadedAt.toISOString(),
+            readbackAt: new Date().toISOString(),
+            readbackDigest: digest,
+            owner: "release-engineering",
+            readers: ["release", "qa", "security", "audit"],
+            retainUntil: retainUntil.toISOString(),
+            expiryDisposition: "review",
+            attestationRef: process.env.ATTESTATION_URL
+          };
+          await writeFile("approval-revocations.custody-receipt.v1.json", canonicalJson(receipt));
+          NODE
+
+      - name: Store custody receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: approval-revocations-receipt-${{ github.run_id }}
+          path: approval-revocations.custody-receipt.v1.json
+          if-no-files-found: error
+          retention-days: 180
+
+      - name: Read back custody receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: approval-revocations-receipt-${{ github.run_id }}
+          path: revocation-receipt-readback
+
+      - name: Verify custody receipt readback
+        run: cmp approval-revocations.custody-receipt.v1.json revocation-receipt-readback/approval-revocations.custody-receipt.v1.json

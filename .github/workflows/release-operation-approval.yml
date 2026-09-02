@@ -1,0 +1,128 @@
+name: Release operation approval
+
+on:
+  workflow_dispatch:
+    inputs:
+      approvalMode:
+        description: Registered approval mode
+        required: true
+        type: choice
+        options:
+          - ci-policy
+          - human
+      approvalRecordJson:
+        description: Canonical approval-record.v1 candidate without secrets
+        required: true
+        type: string
+
+concurrency:
+  group: release-operation-approval-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+  attestations: write
+
+jobs:
+  issue:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.approvalMode == 'human' && 's1-database-operation-approval' || 'release' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: corepack enable && pnpm install --frozen-lockfile
+
+      - name: Validate and freeze approval record
+        env:
+          APPROVAL_MODE: ${{ inputs.approvalMode }}
+          APPROVAL_RECORD_JSON: ${{ inputs.approvalRecordJson }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFile } from "node:fs/promises";
+          import { canonicalJson, sha256Canonical, validateContract } from "./packages/release-foundation/src/index.mjs";
+          const record = JSON.parse(process.env.APPROVAL_RECORD_JSON);
+          validateContract("approval-record.v1", record);
+          if (record.approvalMode !== process.env.APPROVAL_MODE) throw new Error("APPROVAL_MODE_MISMATCH");
+          await writeFile("approval-record.v1.json", canonicalJson(record));
+          await writeFile("approval-record.digest", `${sha256Canonical(record)}\n`);
+          NODE
+
+      - name: Upload immutable approval record
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: approval-record-${{ github.run_id }}
+          path: approval-record.v1.json
+          if-no-files-found: error
+          retention-days: 180
+
+      - name: Attest approval record
+        id: attest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: approval-record.v1.json
+
+      - name: Read back immutable approval record
+        uses: actions/download-artifact@v4
+        with:
+          name: approval-record-${{ github.run_id }}
+          path: approval-readback
+
+      - name: Verify readback and create custody receipt
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { randomUUID } from "node:crypto";
+          import { readFile, writeFile } from "node:fs/promises";
+          import { canonicalJson, sha256Bytes } from "./packages/release-foundation/src/index.mjs";
+          const original = await readFile("approval-record.v1.json");
+          const readback = await readFile("approval-readback/approval-record.v1.json");
+          const digest = sha256Bytes(original);
+          if (sha256Bytes(readback) !== digest) throw new Error("APPROVAL_READBACK_DIGEST_MISMATCH");
+          const uploadedAt = new Date();
+          const retainUntil = new Date(uploadedAt);
+          retainUntil.setUTCDate(retainUntil.getUTCDate() + 180);
+          const receipt = {
+            schemaVersion: "custody-receipt.v1",
+            receiptId: randomUUID(),
+            contentDigest: digest,
+            contentSizeBytes: original.byteLength,
+            storeRef: process.env.ARTIFACT_URL,
+            uploadedAt: uploadedAt.toISOString(),
+            readbackAt: new Date().toISOString(),
+            readbackDigest: digest,
+            owner: "release-engineering",
+            readers: ["release", "qa", "security", "audit"],
+            retainUntil: retainUntil.toISOString(),
+            expiryDisposition: "review",
+            attestationRef: process.env.ATTESTATION_URL
+          };
+          await writeFile("approval-record.custody-receipt.v1.json", canonicalJson(receipt));
+          NODE
+
+      - name: Store custody receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: approval-record-receipt-${{ github.run_id }}
+          path: approval-record.custody-receipt.v1.json
+          if-no-files-found: error
+          retention-days: 180
+
+      - name: Read back custody receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: approval-record-receipt-${{ github.run_id }}
+          path: approval-receipt-readback
+
+      - name: Verify custody receipt readback
+        run: cmp approval-record.custody-receipt.v1.json approval-receipt-readback/approval-record.custody-receipt.v1.json

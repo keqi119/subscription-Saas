@@ -1,4 +1,8 @@
-import { validateContract } from "@subscription-saas/release-foundation";
+import {
+  assertApprovalDecision,
+  sha256Canonical,
+  validateContract
+} from "@subscription-saas/release-foundation";
 
 import { runnerError } from "./error-codes.mjs";
 
@@ -10,6 +14,9 @@ export function verifyPreflight({ command, request, policy }) {
   }
   validateContract("build-proof.v1", request.buildProof);
   validateContract("launch-attestation.v1", request.launchAttestation);
+  if (request.buildProofDigest !== sha256Canonical(request.buildProof)) {
+    throw runnerError("RUNNER_BUILD_PROOF_DIGEST_MISMATCH");
+  }
   if (command.prohibitedEnvironments.includes(request.environmentClass)) {
     throw runnerError("RUNNER_ENVIRONMENT_PROHIBITED");
   }
@@ -60,6 +67,20 @@ export function verifyPreflight({ command, request, policy }) {
   });
 }
 
+function verifyApprovalRequirement(command, approvalDecision) {
+  if (command.approvalMode === "none") {
+    if (command.dataImpact !== "read-only" || approvalDecision !== undefined) {
+      throw runnerError("RUNNER_APPROVAL_MODE_INVALID");
+    }
+    return;
+  }
+  try {
+    assertApprovalDecision(approvalDecision);
+  } catch (error) {
+    throw runnerError("RUNNER_APPROVAL_REQUIRED", { cause: error?.code });
+  }
+}
+
 export async function executeRegisteredCommand({
   command,
   request,
@@ -67,9 +88,11 @@ export async function executeRegisteredCommand({
   handler = async ({ baseline }) => ({ baseline, terminalStatus: "PASSED" }),
   readCredential,
   connectDatabase,
-  credentialFileReference
+  credentialFileReference,
+  approvalDecision
 }) {
   const decision = verifyPreflight({ command, request, policy });
+  verifyApprovalRequirement(command, approvalDecision);
   const credential = await readCredential(credentialFileReference);
   const database = await connectDatabase({ credential, target: decision.targetIntent });
   const observed = await database.observeIdentity();

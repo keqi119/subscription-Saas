@@ -36,3 +36,11 @@ export {
   custodyEvidence,
   redactEvidence
 } from "./evidence-custody.mjs";
+export { assertApprovalDecision, verifyApproval } from "./approval.mjs";
+export {
+  assertVerifiedRevocationSet,
+  fetchLatestTrustedRevocations,
+  publishRevocationArtifact,
+  verifyTrustedArtifactAttestation,
+  verifyRevocationArtifact
+} from "./approval-revocations.mjs";

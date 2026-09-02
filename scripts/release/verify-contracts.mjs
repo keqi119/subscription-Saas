@@ -20,7 +20,14 @@ async function main() {
       "utf8"
     )
   );
+  const approvalPolicy = JSON.parse(
+    await readFile(
+      new URL("../../release/contracts/approval-policies.v1.json", import.meta.url),
+      "utf8"
+    )
+  );
   validateContract("postgres-image.v1", postgresContract, { repoRoot });
+  validateContract("approval-policy.v1", approvalPolicy, { repoRoot });
   process.stdout.write(
     `${JSON.stringify({
       migrationCatalogDigest: migrationCatalog.digest,

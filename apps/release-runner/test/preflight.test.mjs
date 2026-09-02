@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { sha256Canonical } from "@subscription-saas/release-foundation";
+
 import { executeRegisteredCommand, verifyPreflight } from "../src/preflight.mjs";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -61,7 +63,7 @@ function fixture(overrides = {}) {
   };
   const request = {
     buildProof,
-    buildProofDigest: digest,
+    buildProofDigest: sha256Canonical(buildProof),
     actualRunnerDigest: runnerDigest,
     environmentClass: "ci-fresh",
     executionScope: "verify",
@@ -75,7 +77,7 @@ function fixture(overrides = {}) {
       issuedAt: "2026-09-02T00:00:00.000Z",
       notAfter: "2026-09-02T01:00:00.000Z",
       sourceSha,
-      buildProofDigest: digest,
+      buildProofDigest: sha256Canonical(buildProof),
       runnerDigest,
       executionScope: "verify",
       environmentClass: "ci-fresh",
@@ -105,6 +107,11 @@ test("validates the complete pre-connection trust binding", () => {
 });
 
 for (const [name, mutate, code] of [
+  [
+    "build proof digest",
+    (f) => (f.request.buildProofDigest = digest),
+    "RUNNER_BUILD_PROOF_DIGEST_MISMATCH"
+  ],
   ["runner digest", (f) => (f.request.actualRunnerDigest = digest), "RUNNER_DIGEST_MISMATCH"],
   [
     "prohibited environment",

@@ -1,6 +1,12 @@
 {
   "contractVersion": "repository-contract-files.v1",
   "files": [
+    "Dockerfile.runner",
+    "apps/release-runner/package.json",
+    "apps/release-runner/src/cli.mjs",
+    "apps/release-runner/src/postgres-connector.mjs",
+    "apps/release-runner/src/runtime-adapters.mjs",
+    "apps/release-runner/src/trusted-entrypoint.mjs",
     "docker-compose.release-gate.yml",
     "packages/release-foundation/package.json",
     "packages/release-foundation/src/approval-revocations.mjs",
@@ -27,6 +33,7 @@
     "packages/release-foundation/src/snapshot/scan-artifact.mjs",
     "packages/release-foundation/src/snapshot/source-readonly-guard.mjs",
     "playwright.release.config.ts",
+    "pnpm-lock.yaml",
     "release/contracts/api-runtime-allowlist.v1.json",
     "release/contracts/api-runtime-governance-inventory.v1.json",
     "release/contracts/approval-policies.v1.json",
@@ -78,6 +85,7 @@
     "release/contracts/schemas/postgres-image.v1.schema.json",
     "release/contracts/schemas/release-aggregate-proof.v1.schema.json",
     "release/contracts/schemas/runner-command-contract.v1.schema.json",
+    "release/contracts/schemas/runner-launch-envelope.v1.schema.json",
     "release/contracts/schemas/sanitization-contract.v1.schema.json",
     "release/contracts/schemas/snapshot-metadata.v1.schema.json",
     "release/contracts/schemas/source-gate-evidence.v1.schema.json",
@@ -85,6 +93,8 @@
     "release/contracts/snapshot-ownership-map.v1.json",
     "release/contracts/target-policies.v1.json",
     "scripts/release/run-final-compose-gate.mjs",
+    "scripts/release/trusted-launch-production-adapters.mjs",
+    "scripts/release/trusted-launch-runner.mjs",
     "scripts/release/verify-compose-policy.mjs",
     "tests/release/web-public-api.spec.ts"
   ]

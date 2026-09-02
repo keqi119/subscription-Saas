@@ -7,6 +7,9 @@ x-runner-common: &runner-common
     - release-gate
   labels:
     com.subscription.release.source-revision: ${RELEASE_SOURCE_REVISION:?RELEASE_SOURCE_REVISION is required}
+  configs:
+    - source: runner-launch-envelope
+      target: /run/launch/runner-launch-envelope.v1.json
 
 services:
   postgres:
@@ -36,18 +39,21 @@ services:
     profiles: [runner-provision]
     environment:
       RUNNER_CAPABILITY_PROFILE: provision
+      RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
 
   runner-restore:
     <<: *runner-common
     profiles: [runner-restore]
     environment:
       RUNNER_CAPABILITY_PROFILE: restore
+      RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
 
   runner-migration:
     <<: *runner-common
     profiles: [runner-migrate]
     environment:
       RUNNER_CAPABILITY_PROFILE: migrate
+      RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
       RUNNER_CREDENTIAL_FILE: /run/secrets/database-credential
     secrets:
       - source: migration-database-credential
@@ -58,6 +64,7 @@ services:
     profiles: [runner-verify]
     environment:
       RUNNER_CAPABILITY_PROFILE: verify
+      RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
       RUNNER_CREDENTIAL_FILE: /run/secrets/database-credential
     secrets:
       - source: verify-database-credential
@@ -68,6 +75,7 @@ services:
     profiles: [runner-database-test]
     environment:
       RUNNER_CAPABILITY_PROFILE: database-test
+      RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
       RUNNER_CREDENTIAL_FILE: /run/secrets/database-credential
     secrets:
       - source: database-test-credential
@@ -122,6 +130,10 @@ networks:
 
 volumes:
   release-gate-db:
+
+configs:
+  runner-launch-envelope:
+    file: ${RELEASE_RUNNER_LAUNCH_ENVELOPE_FILE:?RELEASE_RUNNER_LAUNCH_ENVELOPE_FILE is required}
 
 secrets:
   postgres-password:

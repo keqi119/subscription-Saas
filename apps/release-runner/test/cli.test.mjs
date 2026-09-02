@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { finalizeRunnerExecution, runCli } from "../src/cli.mjs";
+import { finalizeRunnerExecution, runCli, runProductionEntrypoint } from "../src/cli.mjs";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 
@@ -89,4 +89,49 @@ test("Runner finalizes a normal observation before its execution proof", () => {
   assert.equal(result.executionProof.postStateObservationDigest, result.postStateObservationDigest);
   assert.match(result.executionProofDigest, /^sha256:[0-9a-f]{64}$/);
   assert.equal("executionProofInput" in result, false);
+});
+
+test("production process delegates only the fixed launch-envelope path", async () => {
+  const calls = [];
+  const result = await runProductionEntrypoint({
+    argv: [],
+    environment: {
+      RUNNER_LAUNCH_ENVELOPE_FILE: "/run/launch/runner-launch-envelope.v1.json"
+    },
+    adapters: { trustPolicy: "runner-runtime-adapters/v1" },
+    executeTrusted: async (input) => {
+      calls.push(input);
+      return { terminalStatus: "PASSED" };
+    }
+  });
+
+  assert.equal(result.terminalStatus, "PASSED");
+  assert.deepEqual(calls, [
+    {
+      envelopeFile: "/run/launch/runner-launch-envelope.v1.json",
+      argv: [],
+      adapters: { trustPolicy: "runner-runtime-adapters/v1" }
+    }
+  ]);
+});
+
+test("production process constructs runtime adapters when none are injected", async () => {
+  const calls = [];
+  const runtimeAdapters = { trustPolicy: "runner-runtime-adapters/v1" };
+  await runProductionEntrypoint({
+    argv: [],
+    environment: {
+      RUNNER_LAUNCH_ENVELOPE_FILE: "/run/launch/runner-launch-envelope.v1.json"
+    },
+    createAdapters() {
+      calls.push("create-adapters");
+      return runtimeAdapters;
+    },
+    executeTrusted: async ({ adapters }) => {
+      calls.push(adapters);
+      return { terminalStatus: "PASSED" };
+    }
+  });
+
+  assert.deepEqual(calls, ["create-adapters", runtimeAdapters]);
 });

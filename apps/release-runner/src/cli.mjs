@@ -18,6 +18,8 @@ import {
   registeredCommand
 } from "./command-registry.mjs";
 import { runnerError } from "./error-codes.mjs";
+import { createRuntimeAdapters } from "./runtime-adapters.mjs";
+import { runTrustedEntrypoint } from "./trusted-entrypoint.mjs";
 
 function parseInvocation(argv) {
   if (
@@ -55,6 +57,24 @@ export async function runCli(argv, { execute = defaultExecute } = {}) {
   return finalizeRunnerExecution(result);
 }
 
+export async function runProductionEntrypoint({
+  argv = [],
+  environment = process.env,
+  adapters,
+  createAdapters = createRuntimeAdapters,
+  executeTrusted = runTrustedEntrypoint
+} = {}) {
+  const envelopeFile = environment.RUNNER_LAUNCH_ENVELOPE_FILE;
+  const runtimeAdapters =
+    adapters ?? (argv.length === 0 && envelopeFile ? createAdapters() : undefined);
+  const result = await executeTrusted({
+    envelopeFile,
+    argv,
+    adapters: runtimeAdapters
+  });
+  return finalizeRunnerExecution(result);
+}
+
 export function finalizeRunnerExecution(result) {
   const hasObservation = result?.postStateObservationInput !== undefined;
   const hasProof = result?.executionProofInput !== undefined;
@@ -77,7 +97,7 @@ export function finalizeRunnerExecution(result) {
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  runCli(process.argv.slice(2))
+  runProductionEntrypoint({ argv: process.argv.slice(2) })
     .then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))
     .catch((error) => {
       process.stderr.write(`${error?.code ?? "RUNNER_FAILED"}\n`);

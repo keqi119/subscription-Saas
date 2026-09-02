@@ -147,6 +147,9 @@ importers:
       '@subscription-saas/release-foundation':
         specifier: workspace:*
         version: link:../../packages/release-foundation
+      postgres:
+        specifier: 3.4.7
+        version: 3.4.7
       prisma:
         specifier: 7.8.0
         version: 7.8.0(@types/react-dom@19.2.5(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3)

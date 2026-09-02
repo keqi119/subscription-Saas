@@ -98,6 +98,7 @@ export async function executeRegisteredCommand({
   approvalDecision,
   verifyCommandDependencies,
   commandDependencyArtifacts,
+  custody,
   executionState
 }) {
   const decision = verifyPreflight({ command, request, policy });
@@ -123,7 +124,7 @@ export async function executeRegisteredCommand({
       })
     : undefined;
   const credential = await readCredential(credentialFileReference);
-  const database = await connectDatabase({ credential, target: decision.targetIntent });
+  const database = await connectDatabase({ credential, target: decision.targetIntent, custody });
   const observed = await database.observeIdentity();
   if (
     observed.databaseName !== request.target.databaseName ||

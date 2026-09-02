@@ -580,3 +580,57 @@ for (const code of [
     assert.deepEqual(fixture.counts(), { secretReads: 0, databaseConnections: 0 });
   });
 }
+
+test("formal launcher CLI accepts only one fixed Compose service launch", async () => {
+  const module = await import("./trusted-launch-runner.mjs");
+  assert.equal(typeof module.runTrustedLauncherCli, "function");
+  const calls = [];
+  const runnerImage = `ghcr.io/keqi119/subscription-runner@sha256:${"a".repeat(64)}`;
+  const result = await module.runTrustedLauncherCli(
+    [
+      "--launch-envelope-file",
+      ".release-local/launch/fresh/runner-launch-envelope.v1.json",
+      "--compose-file",
+      "docker-compose.release-gate.yml",
+      "--project-name",
+      "stage1-s1-fresh",
+      "--service",
+      "runner-verify",
+      "--expected-runner-image",
+      runnerImage
+    ],
+    {
+      async launchRunnerContainer(input) {
+        calls.push(input);
+        return { terminalStatus: "PASSED" };
+      }
+    }
+  );
+
+  assert.equal(result.terminalStatus, "PASSED");
+  assert.deepEqual(calls, [
+    {
+      launchEnvelopeFile: ".release-local/launch/fresh/runner-launch-envelope.v1.json",
+      composeFile: "docker-compose.release-gate.yml",
+      projectName: "stage1-s1-fresh",
+      service: "runner-verify",
+      expectedRunnerImage: runnerImage
+    }
+  ]);
+});
+
+test("formal launcher CLI rejects extra flags before container launch", async () => {
+  const { runTrustedLauncherCli } = await import("./trusted-launch-runner.mjs");
+  let launches = 0;
+
+  await assert.rejects(
+    () =>
+      runTrustedLauncherCli(["--service", "runner-verify", "--command", "sh"], {
+        async launchRunnerContainer() {
+          launches += 1;
+        }
+      }),
+    { code: "RUNNER_TRUSTED_LAUNCH_ARGUMENTS_INVALID" }
+  );
+  assert.equal(launches, 0);
+});

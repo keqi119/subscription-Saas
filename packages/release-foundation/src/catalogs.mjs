@@ -7,9 +7,18 @@ import { sha256Bytes, sha256Canonical } from "./digest.mjs";
 const CONTRACT_MANIFEST_PATH = "release/contracts/repository-contract-files.v1.json";
 const MIGRATION_PATH = "apps/api/prisma/migrations";
 const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
+  "Dockerfile.runner",
+  "apps/release-runner/package.json",
+  "apps/release-runner/src/cli.mjs",
+  "apps/release-runner/src/postgres-connector.mjs",
+  "apps/release-runner/src/runtime-adapters.mjs",
+  "apps/release-runner/src/trusted-entrypoint.mjs",
   "docker-compose.release-gate.yml",
   "playwright.release.config.ts",
+  "pnpm-lock.yaml",
   "scripts/release/run-final-compose-gate.mjs",
+  "scripts/release/trusted-launch-production-adapters.mjs",
+  "scripts/release/trusted-launch-runner.mjs",
   "scripts/release/verify-compose-policy.mjs",
   "tests/release/web-public-api.spec.ts"
 ]);

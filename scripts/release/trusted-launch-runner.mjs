@@ -27,6 +27,7 @@ import {
   executeRegisteredCommand,
   verifyPreflight
 } from "../../apps/release-runner/src/preflight.mjs";
+import { createTrustedLaunchProductionAdapters } from "./trusted-launch-production-adapters.mjs";
 
 function launchError(code, details) {
   return Object.assign(new Error(code), { code, details });
@@ -99,6 +100,7 @@ export async function trustedLaunchRunner({
   readCredential,
   connectDatabase,
   credentialFileReference,
+  custody,
   commandDependencyArtifacts,
   handler,
   registry: suppliedRegistry,
@@ -218,7 +220,8 @@ export async function trustedLaunchRunner({
       executionState,
       readCredential,
       connectDatabase,
-      credentialFileReference
+      credentialFileReference,
+      custody
     });
   } catch (error) {
     if (error?.outcomeUnknown === true) {
@@ -232,8 +235,40 @@ export async function trustedLaunchRunner({
   }
 }
 
+const trustedLauncherFlags = Object.freeze([
+  "--launch-envelope-file",
+  "--compose-file",
+  "--project-name",
+  "--service",
+  "--expected-runner-image"
+]);
+
+export async function runTrustedLauncherCli(argv, suppliedAdapters) {
+  if (
+    argv.length !== trustedLauncherFlags.length * 2 ||
+    trustedLauncherFlags.some((flag, index) => argv[index * 2] !== flag) ||
+    argv.some((value, index) => index % 2 === 1 && (!value || value.startsWith("--")))
+  ) {
+    throw launchError("RUNNER_TRUSTED_LAUNCH_ARGUMENTS_INVALID");
+  }
+  const values = Object.fromEntries(
+    trustedLauncherFlags.map((flag, index) => [flag, argv[index * 2 + 1]])
+  );
+  const adapters = suppliedAdapters ?? createTrustedLaunchProductionAdapters();
+  if (typeof adapters?.launchRunnerContainer !== "function") {
+    throw launchError("RUNNER_TRUSTED_LAUNCH_ADAPTERS_REQUIRED");
+  }
+  return adapters.launchRunnerContainer({
+    launchEnvelopeFile: values["--launch-envelope-file"],
+    composeFile: values["--compose-file"],
+    projectName: values["--project-name"],
+    service: values["--service"],
+    expectedRunnerImage: values["--expected-runner-image"]
+  });
+}
+
 async function main() {
-  throw launchError("RUNNER_TRUSTED_LAUNCH_ADAPTERS_REQUIRED");
+  return runTrustedLauncherCli(process.argv.slice(2));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

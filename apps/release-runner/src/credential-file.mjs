@@ -30,10 +30,12 @@ export function createReadOnceCredentialReader({
     } catch {
       throw runnerError("RUNNER_CREDENTIAL_INVALID");
     }
+    const keys = Object.keys(credential ?? {}).sort();
     if (
       !credential ||
       typeof credential !== "object" ||
       Array.isArray(credential) ||
+      keys.some((key) => !["capabilityProfile", "password", "username"].includes(key)) ||
       typeof credential.username !== "string" ||
       credential.username.length === 0 ||
       typeof credential.password !== "string" ||
@@ -41,6 +43,12 @@ export function createReadOnceCredentialReader({
     ) {
       throw runnerError("RUNNER_CREDENTIAL_INVALID");
     }
-    return Object.freeze({ username: credential.username, password: credential.password });
+    return Object.freeze({
+      username: credential.username,
+      password: credential.password,
+      ...(credential.capabilityProfile === undefined
+        ? {}
+        : { capabilityProfile: credential.capabilityProfile })
+    });
   };
 }

@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runner-launch-envelope.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "executionMode",
+    "commandKey",
+    "request",
+    "requestDigest",
+    "buildProofDigest",
+    "actualRunnerDigest",
+    "launchAttestationDigest",
+    "capabilitySecretReference",
+    "journalReference",
+    "revocationCheckpointReference",
+    "custodyPolicyReference",
+    "custodyPolicyDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "runner-launch-envelope.v1" },
+    "executionMode": { "const": "registered-command" },
+    "commandKey": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+@[1-9][0-9]*$" },
+    "request": { "type": "object", "minProperties": 1 },
+    "requestDigest": { "$ref": "#/$defs/digest" },
+    "buildProofDigest": { "$ref": "#/$defs/digest" },
+    "actualRunnerDigest": { "$ref": "#/$defs/digest" },
+    "launchAttestationDigest": { "$ref": "#/$defs/digest" },
+    "capabilitySecretReference": {
+      "type": "string",
+      "pattern": "^secret-file:///run/secrets/[A-Za-z0-9._-]+$"
+    },
+    "journalReference": {
+      "type": "string",
+      "pattern": "^evidence-file:///evidence/[A-Za-z0-9._/-]+$"
+    },
+    "revocationCheckpointReference": {
+      "type": "string",
+      "pattern": "^evidence-file:///evidence/[A-Za-z0-9._/-]+$"
+    },
+    "custodyPolicyReference": {
+      "type": "string",
+      "pattern": "^launch-file:///run/launch/[A-Za-z0-9._/-]+$"
+    },
+    "custodyPolicyDigest": { "$ref": "#/$defs/digest" },
+    "approvalRecordReference": { "$ref": "#/$defs/launchReference" },
+    "approvalRecordDigest": { "$ref": "#/$defs/digest" },
+    "approvalAttestationReference": { "$ref": "#/$defs/launchReference" },
+    "approvalAttestationDigest": { "$ref": "#/$defs/digest" },
+    "approvalCustodyReceiptReference": { "$ref": "#/$defs/launchReference" },
+    "approvalCustodyReceiptDigest": { "$ref": "#/$defs/digest" },
+    "revocationHistoryReference": { "$ref": "#/$defs/launchReference" },
+    "revocationHistoryDigest": { "$ref": "#/$defs/digest" },
+    "commandDependencyArtifactsReference": { "$ref": "#/$defs/launchReference" },
+    "commandDependencyArtifactsDigest": { "$ref": "#/$defs/digest" },
+    "trustedAttestationClaims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["attestationDigest", "claims"],
+        "properties": {
+          "attestationDigest": { "$ref": "#/$defs/digest" },
+          "claims": { "type": "object", "minProperties": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "launchReference": {
+      "type": "string",
+      "pattern": "^launch-file:///run/launch/[A-Za-z0-9._/-]+$"
+    }
+  },
+  "dependentRequired": {
+    "approvalRecordReference": [
+      "approvalRecordDigest",
+      "approvalAttestationReference",
+      "approvalAttestationDigest",
+      "approvalCustodyReceiptReference",
+      "approvalCustodyReceiptDigest",
+      "revocationHistoryReference",
+      "revocationHistoryDigest",
+      "trustedAttestationClaims"
+    ],
+    "commandDependencyArtifactsReference": ["commandDependencyArtifactsDigest"]
+  }
+}

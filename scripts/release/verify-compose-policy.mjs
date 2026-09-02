@@ -179,6 +179,7 @@ export function readComposeConfig(file, { environment = process.env } = {}) {
     RELEASE_MANIFEST_ID: "manifest-policy",
     RELEASE_MIGRATION_CREDENTIAL_FILE: "/run/policy/migrate",
     RELEASE_POSTGRES_PASSWORD_FILE: "/run/policy/postgres",
+    RELEASE_RUNNER_LAUNCH_ENVELOPE_FILE: "/run/policy/runner-launch-envelope.v1.json",
     RELEASE_RUNNER_IMAGE: `ghcr.io/policy/subscription-runner@sha256:${"c".repeat(64)}`,
     RELEASE_SESSION_NONCE: "session-policy",
     RELEASE_SOURCE_REVISION: "f".repeat(40),

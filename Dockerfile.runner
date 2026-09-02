@@ -33,6 +33,9 @@ COPY release/contracts ./release/contracts
 COPY apps/api/prisma/schema.prisma ./apps/api/prisma/schema.prisma
 COPY apps/api/prisma/migrations ./apps/api/prisma/migrations
 COPY apps/api/src/billing-automation/stage1-acceptance-forbidden-domains.json ./apps/api/src/billing-automation/stage1-acceptance-forbidden-domains.json
+COPY scripts/release/trusted-launch-runner.mjs \
+  scripts/release/trusted-launch-production-adapters.mjs \
+  ./scripts/release/
 COPY scripts/billing-maintenance-cycle-evidence-core.mjs \
   scripts/billing-maintenance-cycle-evidence.mjs \
   scripts/prisma-migration-checksums.mjs \
@@ -64,11 +67,18 @@ RUN node --version \
   && psql --version \
   && ./apps/release-runner/node_modules/.bin/prisma --version \
   && test -f /app/apps/release-runner/src/cli.mjs \
+  && sh -c 'cli_output="$(node /app/apps/release-runner/src/cli.mjs 2>&1)"; \
+    cli_status="$?"; \
+    cli_last_line="$(printf "%s\n" "$cli_output" | tail -n 1)"; \
+    if test "$cli_status" -ne 1 || test "$cli_last_line" != "RUNNER_LAUNCH_ENVELOPE_REQUIRED"; then \
+      printf "Runner negative check failed (status=%s):\n%s\n" "$cli_status" "$cli_output" >&2; \
+      exit 1; \
+    fi' \
   && sh -c 'cli_output="$(node /app/apps/release-runner/src/cli.mjs unsupported 2>&1)"; \
     cli_status="$?"; \
     cli_last_line="$(printf "%s\n" "$cli_output" | tail -n 1)"; \
-    if test "$cli_status" -ne 1 || test "$cli_last_line" != "RUNNER_COMMAND_NOT_REGISTERED"; then \
-      printf "Runner negative check failed (status=%s):\n%s\n" "$cli_status" "$cli_output" >&2; \
+    if test "$cli_status" -ne 1 || test "$cli_last_line" != "RUNNER_ENTRYPOINT_OVERRIDE_REJECTED"; then \
+      printf "Runner override check failed (status=%s):\n%s\n" "$cli_status" "$cli_output" >&2; \
       exit 1; \
     fi'
 

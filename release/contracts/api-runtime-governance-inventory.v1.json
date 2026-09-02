@@ -709,7 +709,7 @@
         "scripts/subscription-segment-bootstrap.mjs"
       ],
       "runnerCommandId": "subscription.segment.bootstrap@1",
-      "runnerRegistrationStatus": "planned",
+      "runnerRegistrationStatus": "registered",
       "capabilityProfile": "repair",
       "migrationOwner": "release-engineering",
       "callers": [

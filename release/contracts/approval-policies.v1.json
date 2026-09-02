@@ -132,6 +132,27 @@
       "commandVersion": "1",
       "environmentClass": "staging",
       "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "subscription.segment.bootstrap",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "subscription.segment.bootstrap",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "subscription.segment.bootstrap",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "controlled-dml"
     }
   ],
   "revocationSource": {

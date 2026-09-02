@@ -277,6 +277,32 @@
       "evidenceSchema": "execution-proof.v1",
       "owner": "release-engineering",
       "exitCondition": "retire after Task9 preflight is replaced by permanent release policy"
+    },
+    {
+      "commandId": "subscription.segment.bootstrap",
+      "commandVersion": "1",
+      "category": "repair",
+      "dataImpact": "controlled-dml",
+      "capabilityProfile": "repair",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot", "staging"],
+      "prohibitedEnvironments": ["production"],
+      "approvalMode": "human",
+      "approvalModeOverrides": { "ci-fresh": "ci-policy", "ci-snapshot": "ci-policy" },
+      "allowedExecutionScopes": ["full-rc", "repair"],
+      "supports": { "dryRun": true, "apply": true, "replay": true },
+      "lock": "subscription-segment-bootstrap:per-order",
+      "timeoutMs": 300000,
+      "postconditions": [
+        "approved-candidate-set-recomputed-before-apply",
+        "approved-candidate-recomputed-under-lock",
+        "expected-base-segments-present",
+        "expected-audits-created",
+        "no-duplicate-base-segment",
+        "replay-has-no-duplicate-side-effects"
+      ],
+      "evidenceSchema": "execution-proof.v1",
+      "owner": "release-engineering",
+      "exitCondition": "retire after all supported active subscriptions have authoritative BASE contract segments"
     }
   ]
 }

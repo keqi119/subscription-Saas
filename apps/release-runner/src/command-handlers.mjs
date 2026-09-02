@@ -6,6 +6,7 @@ import { stage1BillingMaintenanceEvidenceHandler } from "./commands/stage1-billi
 import { stage1CleanAcceptanceBaselineHandler } from "./commands/stage1-clean-acceptance-baseline.mjs";
 import { stage1PeriodBackfillHandler } from "./commands/stage1-period-backfill.mjs";
 import { stage1Task9PreflightHandler } from "./commands/stage1-task9-preflight.mjs";
+import { subscriptionSegmentBootstrapHandler } from "./commands/subscription-segment-bootstrap.mjs";
 
 export const commandHandlers = new Map([
   ["release.verify@1", async ({ baseline }) => ({ baseline, terminalStatus: "PASSED" })],
@@ -19,5 +20,6 @@ export const commandHandlers = new Map([
   ["stage1.billing-maintenance.evidence@1", stage1BillingMaintenanceEvidenceHandler],
   ["stage1.clean-acceptance.baseline@1", stage1CleanAcceptanceBaselineHandler],
   ["stage1.period.backfill@1", stage1PeriodBackfillHandler],
-  ["stage1.task9.preflight@1", stage1Task9PreflightHandler]
+  ["stage1.task9.preflight@1", stage1Task9PreflightHandler],
+  ["subscription.segment.bootstrap@1", subscriptionSegmentBootstrapHandler]
 ]);

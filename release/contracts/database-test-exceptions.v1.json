@@ -289,6 +289,13 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "apps/release-runner/test/subscription-segment-bootstrap-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares legacy and Runner segment-bootstrap behavior on independent deterministic database doubles; the legacy apply suite retains transaction and database-adapter coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "packages/release-foundation/test/database-batch-a.integration.test.mjs",
       "owner": "release-engineering",
       "reason": "Validates Batch A manifest and source isolation contracts without opening a database connection.",

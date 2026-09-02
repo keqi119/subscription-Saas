@@ -124,6 +124,54 @@
       "evidenceSchema": "execution-proof.v1",
       "owner": "release-engineering",
       "exitCondition": "permanent release verification capability"
+    },
+    {
+      "commandId": "stage1.acceptance.target.verify",
+      "commandVersion": "1",
+      "category": "verify",
+      "dataImpact": "read-only",
+      "capabilityProfile": "verify",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot", "staging"],
+      "prohibitedEnvironments": ["production"],
+      "approvalMode": "none",
+      "allowedExecutionScopes": ["full-rc", "verify"],
+      "supports": { "dryRun": false, "apply": false, "replay": false },
+      "lock": "none",
+      "timeoutMs": 300000,
+      "postconditions": [
+        "target-identity-matches",
+        "target-manifest-current",
+        "forbidden-domains-empty",
+        "statement-log-read-only"
+      ],
+      "evidenceSchema": "execution-proof.v1",
+      "owner": "release-engineering",
+      "exitCondition": "retire after the clean acceptance baseline is no longer an active release gate"
+    },
+    {
+      "commandId": "stage1.task9.preflight",
+      "commandVersion": "1",
+      "category": "verify",
+      "dataImpact": "read-only",
+      "capabilityProfile": "verify",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot", "staging"],
+      "prohibitedEnvironments": ["production"],
+      "approvalMode": "none",
+      "allowedExecutionScopes": ["full-rc", "verify"],
+      "supports": { "dryRun": false, "apply": false, "replay": false },
+      "lock": "none",
+      "timeoutMs": 300000,
+      "postconditions": [
+        "target-identity-matches",
+        "database-pair-valid",
+        "vehicle-selection-valid",
+        "approved-manifest-safe",
+        "resource-headroom-valid",
+        "statement-log-read-only"
+      ],
+      "evidenceSchema": "execution-proof.v1",
+      "owner": "release-engineering",
+      "exitCondition": "retire after Task9 preflight is replaced by permanent release policy"
     }
   ]
 }

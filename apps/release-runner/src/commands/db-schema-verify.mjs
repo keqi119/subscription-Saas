@@ -41,7 +41,7 @@ export function assertAppliedMigrationPrefix(
   }
 }
 
-function assertReadOnlyStatements(statements) {
+export function assertReadOnlyStatements(statements) {
   if (
     !Array.isArray(statements) ||
     statements.some((statement) => {

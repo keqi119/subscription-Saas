@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "stage1.acceptance.target.verify",
+  "commandVersion": "1",
+  "interface": {
+    "verify": "verifyAcceptanceTarget(context,input):Promise<TargetVerificationV1>"
+  },
+  "capabilityProfile": "verify",
+  "databaseRole": "verify",
+  "dataImpact": "read-only",
+  "approvalByEnvironment": {
+    "ci-fresh": "none",
+    "ci-snapshot": "none",
+    "staging": "none"
+  },
+  "allowedExecutionScopes": ["full-rc", "verify"],
+  "inputSchema": "stage1-acceptance-target-verification-input.v1",
+  "planSchema": null,
+  "outputSchema": "stage1-acceptance-target-verification.v1",
+  "lock": { "id": "none", "order": [], "transactionBoundary": "repeatable-read read-only" },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 300000,
+  "cancellation": "cancel the read-only transaction and emit a failed proof",
+  "idempotency": "repeated validation has no database side effect",
+  "postconditions": [
+    "target-identity-matches",
+    "target-manifest-current",
+    "forbidden-domains-empty",
+    "statement-log-read-only"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after the clean acceptance baseline is no longer an active release gate"
+}

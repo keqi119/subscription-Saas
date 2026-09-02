@@ -53,38 +53,38 @@ Copy-Item .env.example .env
 
 核心变量：
 
-| 变量 | 用途 | 备注 |
-| --- | --- | --- |
-| `NODE_ENV` | 运行环境 | 生产使用 `production` |
-| `PORT` | API 监听端口 | API 当前实际读取 `PORT`，默认 `3001` |
-| `API_PORT` | 部署文档端口标识 | 当前应用不直接读取，用于进程管理/文档统一 |
-| `WEB_PORT` | Web 端口标识 | Web scripts 当前默认 `3000` |
-| `DATABASE_URL` | PostgreSQL 连接 | 必填，生产必须使用真实 secret |
-| `DATABASE_POOL_MAX` | PG 连接池最大连接数 | 默认 `10` |
-| `DATABASE_POOL_CONNECTION_TIMEOUT_MS` | PG 连接超时 | 默认 `10000` |
-| `DATABASE_POOL_IDLE_TIMEOUT_MS` | PG idle 超时 | 默认 `30000` |
-| `REDIS_URL` | Redis 连接 | 后续缓存和异步任务使用 |
-| `JWT_SECRET` | JWT 签名密钥 | 生产必须使用长随机 secret |
-| `JWT_EXPIRES_IN` | JWT 过期时间 | 默认 `7d` |
-| `COOKIE_SECRET` | Cookie 签名预留 | 当前代码未直接读取，保留给签名 Cookie 扩展 |
-| `CORS_ORIGIN` | API CORS 白名单 | 多域名用逗号分隔 |
-| `API_JSON_BODY_LIMIT` | API JSON body 限制 | 默认 `5mb` |
-| `LOCAL_FILE_STORAGE_DIR` | 本地文件存储目录 | 生产建议替换为持久化目录或对象存储 |
-| `NEXT_PUBLIC_API_BASE_URL` | Web 浏览器访问 API 地址 | 例如 `https://api.example.com/api` |
-| `SEED_ADMIN_PASSWORD` | seed 默认用户密码 | 生产初始化后应立刻改密 |
+| 变量                                  | 用途                    | 备注                                       |
+| ------------------------------------- | ----------------------- | ------------------------------------------ |
+| `NODE_ENV`                            | 运行环境                | 生产使用 `production`                      |
+| `PORT`                                | API 监听端口            | API 当前实际读取 `PORT`，默认 `3001`       |
+| `API_PORT`                            | 部署文档端口标识        | 当前应用不直接读取，用于进程管理/文档统一  |
+| `WEB_PORT`                            | Web 端口标识            | Web scripts 当前默认 `3000`                |
+| `DATABASE_URL`                        | PostgreSQL 连接         | 必填，生产必须使用真实 secret              |
+| `DATABASE_POOL_MAX`                   | PG 连接池最大连接数     | 默认 `10`                                  |
+| `DATABASE_POOL_CONNECTION_TIMEOUT_MS` | PG 连接超时             | 默认 `10000`                               |
+| `DATABASE_POOL_IDLE_TIMEOUT_MS`       | PG idle 超时            | 默认 `30000`                               |
+| `REDIS_URL`                           | Redis 连接              | 后续缓存和异步任务使用                     |
+| `JWT_SECRET`                          | JWT 签名密钥            | 生产必须使用长随机 secret                  |
+| `JWT_EXPIRES_IN`                      | JWT 过期时间            | 默认 `7d`                                  |
+| `COOKIE_SECRET`                       | Cookie 签名预留         | 当前代码未直接读取，保留给签名 Cookie 扩展 |
+| `CORS_ORIGIN`                         | API CORS 白名单         | 多域名用逗号分隔                           |
+| `API_JSON_BODY_LIMIT`                 | API JSON body 限制      | 默认 `5mb`                                 |
+| `LOCAL_FILE_STORAGE_DIR`              | 本地文件存储目录        | 生产建议替换为持久化目录或对象存储         |
+| `NEXT_PUBLIC_API_BASE_URL`            | Web 浏览器访问 API 地址 | 例如 `https://api.example.com/api`         |
+| `SEED_ADMIN_PASSWORD`                 | seed 默认用户密码       | 生产初始化后应立刻改密                     |
 
 不要把真实 secret、生产数据库地址或云账号凭据提交到 Git。
 
 Upload storage variables added in Stage 9G-A:
 
-| Variable | Purpose | Notes |
-| --- | --- | --- |
-| `UPLOAD_STORAGE_DRIVER` | Upload storage driver | Default `local`; set `oss` after Aliyun OSS validation |
-| `UPLOAD_LOCAL_DIR` | Local upload directory | Used by local provider and as fallback temp storage |
-| `OSS_REGION` / `OSS_BUCKET` / `OSS_ENDPOINT` | Aliyun OSS target | Required only when `UPLOAD_STORAGE_DRIVER=oss` |
-| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | Aliyun OSS credentials | Server secrets only; never commit to Git |
-| `OSS_PREFIX` | Aliyun OSS object key prefix | Example: `subscription-saas/staging` |
-| `OSS_INTERNAL_ENDPOINT` | Optional internal OSS endpoint | Use only when the server can reach OSS over an internal network |
+| Variable                                      | Purpose                        | Notes                                                           |
+| --------------------------------------------- | ------------------------------ | --------------------------------------------------------------- |
+| `UPLOAD_STORAGE_DRIVER`                       | Upload storage driver          | Default `local`; set `oss` after Aliyun OSS validation          |
+| `UPLOAD_LOCAL_DIR`                            | Local upload directory         | Used by local provider and as fallback temp storage             |
+| `OSS_REGION` / `OSS_BUCKET` / `OSS_ENDPOINT`  | Aliyun OSS target              | Required only when `UPLOAD_STORAGE_DRIVER=oss`                  |
+| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | Aliyun OSS credentials         | Server secrets only; never commit to Git                        |
+| `OSS_PREFIX`                                  | Aliyun OSS object key prefix   | Example: `subscription-saas/staging`                            |
+| `OSS_INTERNAL_ENDPOINT`                       | Optional internal OSS endpoint | Use only when the server can reach OSS over an internal network |
 
 ## 4. 安装依赖
 
@@ -100,16 +100,16 @@ pnpm install
 
 ## 5. Prisma migrate deploy
 
-生产和 CI 应使用：
+候选环境和最终制品门禁只允许可信启动方使用与 build proof 匹配的 Runner：
 
 ```powershell
-pnpm --filter @subscription-saas/api exec prisma migrate deploy --schema prisma/schema.prisma
+node scripts/release/trusted-launch-runner.mjs --command db.migrate.deploy@1 --phase apply --request-file .release-inputs/migrate-deploy.json
 ```
 
 迁移后确认：
 
 ```powershell
-pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/schema.prisma
+node scripts/release/trusted-launch-runner.mjs --command db.schema.verify@1 --phase verify --request-file .release-inputs/schema-verify.json
 ```
 
 禁止在生产执行：
@@ -137,8 +137,9 @@ export COMPOSE_FILE=docker-compose.staging.images.example.yml
 export COMPOSE_PROJECT=subauto-staging
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" up -d postgres
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" pull api web
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" run --rm --no-deps api pnpm --filter @subscription-saas/api prisma:migrate:deploy
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" pull api web runner
+# 由可信启动方为固定 Runner command 注入单一 migrate 凭证并执行 db.migrate.deploy@1。
+# 禁止以 docker compose run/exec api 运行 Prisma 或治理脚本。
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" up -d api web
 
 timeout 180 sh -c 'until [ "$(docker inspect --format={{.State.Health.Status}} subauto-staging-api-1 2>/dev/null)" = healthy ] && [ "$(docker inspect --format={{.State.Health.Status}} subauto-staging-web-1 2>/dev/null)" = healthy ]; do sleep 3; done'
@@ -157,10 +158,10 @@ Invoke-WebRequest https://staging-app.subauto.keybox.cloud/portal -UseBasicParsi
 
 ## 7. Seed 策略
 
-默认 seed：
+默认 seed 仅用于本地源码开发，不是 API 镜像的环境操作入口：
 
 ```powershell
-pnpm prisma:seed
+pnpm prisma:seed # local source workspace only
 ```
 
 默认 `pnpm prisma:seed` 只应初始化 baseline master data：
@@ -245,14 +246,14 @@ pnpm smoke
 
 ## 11. 常见故障
 
-| 现象 | 可能原因 | 处理 |
-| --- | --- | --- |
-| `DATABASE_URL is required` | `.env` 未加载或变量缺失 | 检查 `.env` 和进程环境 |
-| migration pending | 未执行 `migrate deploy` | 部署前先执行迁移 |
-| 登录失败 | seed 未执行或密码不一致 | 执行 seed，确认 `SEED_ADMIN_PASSWORD` |
-| 权限菜单缺失 | token 未刷新 | 退出并重新登录 |
-| CORS 报错 | `CORS_ORIGIN` 未包含 Web 域名 | 更新环境变量并重启 API |
-| Web 请求本地 API | `NEXT_PUBLIC_API_BASE_URL` 配置错误 | 重新构建 Web |
+| 现象                       | 可能原因                            | 处理                                  |
+| -------------------------- | ----------------------------------- | ------------------------------------- |
+| `DATABASE_URL is required` | `.env` 未加载或变量缺失             | 检查 `.env` 和进程环境                |
+| migration pending          | 未执行 `migrate deploy`             | 部署前先执行迁移                      |
+| 登录失败                   | seed 未执行或密码不一致             | 执行 seed，确认 `SEED_ADMIN_PASSWORD` |
+| 权限菜单缺失               | token 未刷新                        | 退出并重新登录                        |
+| CORS 报错                  | `CORS_ORIGIN` 未包含 Web 域名       | 更新环境变量并重启 API                |
+| Web 请求本地 API           | `NEXT_PUBLIC_API_BASE_URL` 配置错误 | 重新构建 Web                          |
 
 ## 12. 回滚原则
 
@@ -262,6 +263,8 @@ pnpm smoke
 停止新版本 -> 切回上一版本 artifact/commit -> 重启服务 -> smoke check
 ```
 
-如果已经执行 migration 且出现数据或 schema 问题，优先使用迁移前备份恢复，详见 `docs/backup-restore.md`。
+如果已经执行 migration，先按 operation proof 判断终态并执行注册的 reconcile/replay。只有停止写入、
+明确并批准数据丢失窗口、验证恢复能力后，才把 `docs/backup-restore.md` 的数据库恢复作为最后手段。
+应用镜像单独回滚必须先证明旧 API 与当前 Schema 向后兼容。
 
-不要用 `migrate reset` 或 `db push` 作为生产回滚手段。
+不得改写或逆转已应用迁移，也不要用 `migrate reset` 或 `db push` 作为生产回滚手段。

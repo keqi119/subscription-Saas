@@ -132,7 +132,9 @@
                   "items": { "type": "string", "minLength": 1 }
                 },
                 "owner": { "type": "string", "minLength": 1 },
-                "migrationStatus": { "const": "runner-cutover-required" }
+                "migrationStatus": {
+                  "enum": ["runner-cutover-required", "runner-cutover-complete"]
+                }
               }
             }
           }

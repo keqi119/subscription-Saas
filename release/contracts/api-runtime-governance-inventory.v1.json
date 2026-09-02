@@ -2,8 +2,8 @@
   "schemaVersion": "api-runtime-governance-inventory.v1",
   "source": {
     "dockerfile": "Dockerfile.api",
-    "runtimeCopyCount": 25,
-    "executableEntrypointCount": 11
+    "runtimeCopyCount": 0,
+    "executableEntrypointCount": 0
   },
   "files": [
     {
@@ -20,7 +20,7 @@
       "repositorySource": "scripts/billing-maintenance-cycle-evidence.mjs",
       "dependentCommands": ["scripts/billing-maintenance-cycle-evidence.mjs"],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     },
@@ -35,7 +35,7 @@
         "scripts/stage1-task9-preflight-governance.mjs"
       ],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     },
@@ -62,7 +62,7 @@
       "repositorySource": "scripts/stage1-active-source-facts-repair.mjs",
       "dependentCommands": ["scripts/stage1-active-source-facts-repair.mjs"],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     },
@@ -111,7 +111,7 @@
       "repositorySource": "scripts/stage1-clean-acceptance-baseline.mjs",
       "dependentCommands": ["scripts/stage1-clean-acceptance-baseline.mjs"],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     },
@@ -134,7 +134,7 @@
       "repositorySource": "scripts/stage1-clean-acceptance-target-validator.mjs",
       "dependentCommands": ["scripts/stage1-clean-acceptance-target-validator.mjs"],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     },
@@ -152,7 +152,7 @@
       "repositorySource": "scripts/stage1-contract-change-bootstrap.mjs",
       "dependentCommands": ["scripts/stage1-contract-change-bootstrap.mjs"],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     },
@@ -170,7 +170,7 @@
       "repositorySource": "scripts/stage1-return-closure-backfill.mjs",
       "dependentCommands": ["scripts/stage1-return-closure-backfill.mjs"],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     },
@@ -197,7 +197,7 @@
       "repositorySource": "scripts/stage1-staging-invalid-test-order-retirement.mjs",
       "dependentCommands": ["scripts/stage1-staging-invalid-test-order-retirement.mjs"],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     },
@@ -206,7 +206,7 @@
       "repositorySource": "scripts/stage1-task9-preflight-governance.mjs",
       "dependentCommands": ["scripts/stage1-task9-preflight-governance.mjs"],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     },
@@ -233,7 +233,7 @@
       "repositorySource": "scripts/stage1c-period-backfill.mjs",
       "dependentCommands": ["scripts/stage1c-period-backfill.mjs"],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     },
@@ -254,7 +254,7 @@
       "repositorySource": "scripts/subscription-segment-bootstrap.mjs",
       "dependentCommands": ["scripts/subscription-segment-bootstrap.mjs"],
       "runtimeConsumers": [],
-      "disposition": "retire-after-caller-migration",
+      "disposition": "runner-only",
       "migrationOwner": "release-engineering",
       "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
     }
@@ -281,7 +281,7 @@
           "location": "external-automation://stage1.billing-maintenance.evidence@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:stage1-billing-maintenance-evidence-1",
@@ -289,7 +289,7 @@
           "location": "operations-catalog://stage1.billing-maintenance.evidence@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "package-script:package.json:scripts/billing-maintenance-cycle-evidence.mjs",
@@ -297,7 +297,7 @@
           "location": "package.json",
           "details": ["package-script-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "runbook:docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md:scripts/billing-maintenance-cycle-evidence.mjs",
@@ -305,7 +305,7 @@
           "location": "docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
           "details": ["command-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     },
@@ -323,7 +323,7 @@
           "location": "external-automation://db.schema.verify@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:db-schema-verify-1",
@@ -331,7 +331,7 @@
           "location": "operations-catalog://db.schema.verify@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "package-script:package.json:scripts/prisma-migration-checksums.mjs",
@@ -339,7 +339,7 @@
           "location": "package.json",
           "details": ["package-script-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "runbook:docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md:scripts/prisma-migration-checksums.mjs",
@@ -347,7 +347,7 @@
           "location": "docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
           "details": ["command-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     },
@@ -369,7 +369,7 @@
           "location": "external-automation://stage1.active-source-facts.repair@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:stage1-active-source-facts-repair-1",
@@ -377,7 +377,7 @@
           "location": "operations-catalog://stage1.active-source-facts.repair@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "package-script:package.json:scripts/stage1-active-source-facts-repair.mjs",
@@ -385,7 +385,7 @@
           "location": "package.json",
           "details": ["package-script-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "runbook:docs/runbooks/stage1-active-term-contract-change-release.md:scripts/stage1-active-source-facts-repair.mjs",
@@ -393,7 +393,7 @@
           "location": "docs/runbooks/stage1-active-term-contract-change-release.md",
           "details": ["command-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     },
@@ -418,7 +418,7 @@
           "location": "external-automation://stage1.clean-acceptance.baseline@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:stage1-clean-acceptance-baseline-1",
@@ -426,7 +426,7 @@
           "location": "operations-catalog://stage1.clean-acceptance.baseline@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "package-script:package.json:scripts/stage1-clean-acceptance-baseline.mjs",
@@ -434,7 +434,7 @@
           "location": "package.json",
           "details": ["package-script-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "runbook:docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md:scripts/stage1-clean-acceptance-baseline.mjs",
@@ -442,7 +442,7 @@
           "location": "docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
           "details": ["command-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     },
@@ -467,7 +467,7 @@
           "location": "external-automation://stage1.acceptance.target.verify@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:stage1-acceptance-target-verify-1",
@@ -475,7 +475,7 @@
           "location": "operations-catalog://stage1.acceptance.target.verify@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "package-script:package.json:scripts/stage1-clean-acceptance-target-validator.mjs",
@@ -483,7 +483,7 @@
           "location": "package.json",
           "details": ["package-script-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "runbook:docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md:scripts/stage1-clean-acceptance-target-validator.mjs",
@@ -491,7 +491,7 @@
           "location": "docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
           "details": ["command-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     },
@@ -513,7 +513,7 @@
           "location": "external-automation://stage1.contract-change.bootstrap@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:stage1-contract-change-bootstrap-1",
@@ -521,7 +521,7 @@
           "location": "operations-catalog://stage1.contract-change.bootstrap@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "package-script:package.json:scripts/stage1-contract-change-bootstrap.mjs",
@@ -529,7 +529,7 @@
           "location": "package.json",
           "details": ["package-script-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "runbook:docs/runbooks/stage1-active-term-contract-change-release.md:scripts/stage1-contract-change-bootstrap.mjs",
@@ -537,7 +537,7 @@
           "location": "docs/runbooks/stage1-active-term-contract-change-release.md",
           "details": ["command-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     },
@@ -565,7 +565,7 @@
           "location": "external-automation://stage1.return-closure.backfill@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:stage1-return-closure-backfill-1",
@@ -573,7 +573,7 @@
           "location": "operations-catalog://stage1.return-closure.backfill@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "package-script:package.json:scripts/stage1-return-closure-backfill.mjs",
@@ -581,7 +581,7 @@
           "location": "package.json",
           "details": ["package-script-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     },
@@ -603,7 +603,7 @@
           "location": "external-automation://stage1.invalid-test-order.retire@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:stage1-invalid-test-order-retire-1",
@@ -611,7 +611,7 @@
           "location": "operations-catalog://stage1.invalid-test-order.retire@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "package-script:package.json:scripts/stage1-staging-invalid-test-order-retirement.mjs",
@@ -619,7 +619,7 @@
           "location": "package.json",
           "details": ["package-script-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     },
@@ -643,7 +643,7 @@
           "location": "external-automation://stage1.task9.preflight@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:stage1-task9-preflight-1",
@@ -651,7 +651,7 @@
           "location": "operations-catalog://stage1.task9.preflight@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "runbook:docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md:scripts/stage1-task9-preflight-governance.mjs",
@@ -659,7 +659,7 @@
           "location": "docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
           "details": ["command-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     },
@@ -681,7 +681,7 @@
           "location": "external-automation://stage1.period.backfill@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:stage1-period-backfill-1",
@@ -689,7 +689,7 @@
           "location": "operations-catalog://stage1.period.backfill@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "package-script:package.json:scripts/stage1c-period-backfill.mjs",
@@ -697,7 +697,7 @@
           "location": "package.json",
           "details": ["package-script-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "runbook:docs/runbooks/stage1-active-term-contract-change-release.md:scripts/stage1c-period-backfill.mjs",
@@ -705,7 +705,7 @@
           "location": "docs/runbooks/stage1-active-term-contract-change-release.md",
           "details": ["command-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     },
@@ -726,7 +726,7 @@
           "location": "external-automation://subscription.segment.bootstrap@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "manual:subscription-segment-bootstrap-1",
@@ -734,7 +734,7 @@
           "location": "operations-catalog://subscription.segment.bootstrap@1",
           "details": ["owner-attestation-required"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "package-script:package.json:scripts/subscription-segment-bootstrap.mjs",
@@ -742,7 +742,7 @@
           "location": "package.json",
           "details": ["package-script-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         },
         {
           "callerId": "runbook:docs/runbooks/stage1-active-term-contract-change-release.md:scripts/subscription-segment-bootstrap.mjs",
@@ -750,7 +750,7 @@
           "location": "docs/runbooks/stage1-active-term-contract-change-release.md",
           "details": ["command-reference"],
           "owner": "release-engineering",
-          "migrationStatus": "runner-cutover-required"
+          "migrationStatus": "runner-cutover-complete"
         }
       ]
     }

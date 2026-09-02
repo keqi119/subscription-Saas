@@ -371,13 +371,6 @@
       "reason": "Uses injected process and filesystem doubles; it does not connect to PostgreSQL.",
       "scope": "mock-process-boundary",
       "reviewDate": "2026-12-01"
-    },
-    {
-      "path": "scripts/stage1-clean-acceptance-runbook-contract.test.mjs",
-      "owner": "release-engineering",
-      "reason": "Inspects generated Runbook and shell text, including environment variable names, without connecting.",
-      "scope": "source-contract",
-      "reviewDate": "2026-12-01"
     }
   ]
 }

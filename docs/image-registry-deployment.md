@@ -29,8 +29,9 @@ This also separates deployment concerns:
 Recommended image shape:
 
 ```text
-<REGISTRY>/<NAMESPACE>/subscription-api:<TAG>
-<REGISTRY>/<NAMESPACE>/subscription-web:<TAG>
+<REGISTRY>/<NAMESPACE>/subscription-api@sha256:<DIGEST>
+<REGISTRY>/<NAMESPACE>/subscription-web@sha256:<DIGEST>
+<REGISTRY>/<NAMESPACE>/subscription-runner@sha256:<DIGEST>
 ```
 
 Recommended tag sources:
@@ -39,7 +40,8 @@ Recommended tag sources:
 - short Git SHA;
 - release date.
 
-Use the same tag for API and Web when they come from the same commit.
+Tags are discovery metadata only. A promotable S1 bundle uses registry-resolved API/Web/Runner
+digests from one trusted build run and one fixed checkout; an individual image cannot be replaced.
 
 ## 3. Registry Options
 
@@ -61,13 +63,14 @@ Do not commit those values.
 
 ## 4. Local Build and Push
 
-Example commands:
+The following local commands are development-only and do not create a promotable build proof:
 
 ```bash
 export REGISTRY="<REGISTRY>"
 export NAMESPACE="<NAMESPACE>"
 export TAG="rc-20260613-stage9"
 export API_SOURCE_REVISION="<full-40-lowercase-git-sha>"
+export RUNNER_SOURCE_REVISION="$API_SOURCE_REVISION"
 export WEB_API_BASE_URL="https://staging-api.subauto.keybox.cloud/api"
 
 docker build -f Dockerfile.api \
@@ -76,9 +79,13 @@ docker build -f Dockerfile.api \
 docker build -f Dockerfile.web \
   --build-arg NEXT_PUBLIC_API_BASE_URL="$WEB_API_BASE_URL" \
   -t "$REGISTRY/$NAMESPACE/subscription-web:$TAG" .
+docker build -f Dockerfile.runner \
+  --build-arg RUNNER_SOURCE_REVISION="$RUNNER_SOURCE_REVISION" \
+  -t "$REGISTRY/$NAMESPACE/subscription-runner:$TAG" .
 
 docker push "$REGISTRY/$NAMESPACE/subscription-api:$TAG"
 docker push "$REGISTRY/$NAMESPACE/subscription-web:$TAG"
+docker push "$REGISTRY/$NAMESPACE/subscription-runner:$TAG"
 ```
 
 If the Web public API URL changes, rebuild and push the Web image.
@@ -97,8 +104,9 @@ nano .env.staging.images
 Fill:
 
 ```text
-API_IMAGE=<REGISTRY>/<NAMESPACE>/subscription-api:<TAG>
-WEB_IMAGE=<REGISTRY>/<NAMESPACE>/subscription-web:<TAG>
+API_IMAGE=<REGISTRY>/<NAMESPACE>/subscription-api@sha256:<DIGEST>
+WEB_IMAGE=<REGISTRY>/<NAMESPACE>/subscription-web@sha256:<DIGEST>
+RUNNER_IMAGE=<REGISTRY>/<NAMESPACE>/subscription-runner@sha256:<DIGEST>
 POSTGRES_PASSWORD=<strong password>
 DATABASE_URL=postgresql://subscription_saas:<same password>@postgres:5432/subscription_saas_staging?schema=public
 JWT_SECRET=<strong secret>
@@ -136,7 +144,9 @@ BT / Nginx should proxy public staging domains to those localhost ports.
 
 ## 6. GitHub Actions Option
 
-The optional `docker-images.yml` workflow is manual-only via `workflow_dispatch`.
+The optional `docker-images.yml` workflow is manual-only via `workflow_dispatch`. S1 Task 27
+upgrades it to build all three images from one fixed checkout and Task 28 issues the external
+build proof only after registry digest resolution; until then its output is not promotable.
 It requires registry credentials through GitHub Secrets:
 
 ```text

@@ -1,7 +1,8 @@
 # Stage 1 在租期合同变更发布运行手册
 
 本手册用于发布续期、换车、提前结束和其他受管变更四类能力，并修复既有 ACTIVE
-订单缺失的上游权威事实。所有命令均在目标 API 容器内执行；报告和备份必须落在持久化、受控目录。
+订单缺失的上游权威事实。所有治理命令均由可信启动方调用固定 Runner command；禁止在目标 API
+容器执行 Prisma、psql 或 `node scripts/*.mjs`。报告和备份必须落在持久化、受控目录。
 
 代码、PR、合并或镜像发布批准均不等同于任何业务数据 `apply` 批准。下述三个数据写入步骤
 （源事实、BASE 分段、Stage 1C 车辆期间）必须分别取得人工明确批准。
@@ -25,11 +26,10 @@ mkdir -p "$REPORT_DIR"
 
 ## 2. 迁移与校验和门槛
 
-先确认目标 API/Web 镜像标识、数据库主机和数据库名；证据中不得记录密码或完整连接串。
+先确认 API/Web/Runner 三个 digest 来自同一 build proof，并确认数据库身份；证据中不得记录密码或完整连接串。
 
 ```bash
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api pnpm prisma:migrate:status
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api pnpm prisma:migrate:checksum:verify
+node scripts/release/trusted-launch-runner.mjs --command db.schema.verify@1 --phase verify --request-file .release-inputs/schema-verify.json
 ```
 
 必须同时满足：数据库 schema 已是最新状态、迁移数量符合发布预期、所有已应用迁移校验和一致。
@@ -56,8 +56,7 @@ test -s "$BACKUP_FILE"
 ### 4.1 dry-run（零写入）
 
 ```bash
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
-  node scripts/stage1-active-source-facts-repair.mjs --dry-run \
+node scripts/release/trusted-launch-runner.mjs --command stage1.active-source-facts.repair@1 --phase dry-run --request-file .release-inputs/active-source-facts-repair.json \
   > "$REPORT_DIR/01-source-facts-dry-run.json"
 ```
 
@@ -70,13 +69,10 @@ apply”独立人工批准。
 仅在批准后执行：
 
 ```bash
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T \
-  -e STAGE1_ACTIVE_SOURCE_FACTS_REPAIR_APPLY=1 api \
-  node scripts/stage1-active-source-facts-repair.mjs --apply \
+node scripts/release/trusted-launch-runner.mjs --command stage1.active-source-facts.repair@1 --phase apply --request-file .release-inputs/active-source-facts-repair.json \
   > "$REPORT_DIR/02-source-facts-apply.json"
 
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
-  node scripts/stage1-active-source-facts-repair.mjs --dry-run \
+node scripts/release/trusted-launch-runner.mjs --command stage1.active-source-facts.repair@1 --phase replay --request-file .release-inputs/active-source-facts-repair.json \
   > "$REPORT_DIR/03-source-facts-replay.json"
 ```
 
@@ -86,8 +82,7 @@ replay 必须 `candidates=0`、`exceptions=0`，且全部目标订单为 `unchan
 ## 5. BASE 分段：dry-run、独立批准、apply、replay
 
 ```bash
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
-  node scripts/subscription-segment-bootstrap.mjs --dry-run \
+node scripts/release/trusted-launch-runner.mjs --command subscription.segment.bootstrap@1 --phase dry-run --request-file .release-inputs/subscription-segment-bootstrap.json \
   > "$REPORT_DIR/04-base-segments-dry-run.json"
 ```
 
@@ -95,12 +90,9 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
 批准后执行：
 
 ```bash
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T \
-  -e SUBSCRIPTION_SEGMENT_BOOTSTRAP_APPLY=1 api \
-  node scripts/subscription-segment-bootstrap.mjs --apply \
+node scripts/release/trusted-launch-runner.mjs --command subscription.segment.bootstrap@1 --phase apply --request-file .release-inputs/subscription-segment-bootstrap.json \
   > "$REPORT_DIR/05-base-segments-apply.json"
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
-  node scripts/subscription-segment-bootstrap.mjs --dry-run \
+node scripts/release/trusted-launch-runner.mjs --command subscription.segment.bootstrap@1 --phase replay --request-file .release-inputs/subscription-segment-bootstrap.json \
   > "$REPORT_DIR/06-base-segments-replay.json"
 ```
 
@@ -110,8 +102,7 @@ replay 必须零新增候选；每个实际创建的 BASE 分段必须有且仅�
 ## 6. Stage 1C 车辆期间：dry-run、独立批准、apply、replay
 
 ```bash
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
-  node scripts/stage1c-period-backfill.mjs --dry-run \
+node scripts/release/trusted-launch-runner.mjs --command stage1.period.backfill@1 --phase dry-run --request-file .release-inputs/period-backfill.json \
   > "$REPORT_DIR/07-stage1c-periods-dry-run.json"
 ```
 
@@ -119,13 +110,10 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
 车辆期间 apply”独立人工批准。批准后执行：
 
 ```bash
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T \
-  -e STAGE1C_PERIOD_BACKFILL_APPLY=1 api \
-  node scripts/stage1c-period-backfill.mjs --apply \
+node scripts/release/trusted-launch-runner.mjs --command stage1.period.backfill@1 --phase apply --request-file .release-inputs/period-backfill.json \
   > "$REPORT_DIR/08-stage1c-periods-apply.json"
 
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
-  node scripts/stage1c-period-backfill.mjs --dry-run \
+node scripts/release/trusted-launch-runner.mjs --command stage1.period.backfill@1 --phase replay --request-file .release-inputs/period-backfill.json \
   > "$REPORT_DIR/09-stage1c-periods-replay.json"
 ```
 
@@ -133,11 +121,11 @@ replay 必须零 `CREATE`、零冲突、零遗漏和零不变量异常。
 
 ## 7. 合同变更 bootstrap 与功能旗标门槛
 
-完成前三组 replay 后只运行合同变更 bootstrap dry-run：
+该 bootstrap 只允许 `ci-fresh`/`ci-snapshot` 夹具，Staging/Production 在读取凭证前拒绝。
+完成前三组 replay 后，可在受控 CI 临时数据库运行：
 
 ```bash
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
-  node scripts/stage1-contract-change-bootstrap.mjs --dry-run \
+node scripts/release/trusted-launch-runner.mjs --command stage1.contract-change.bootstrap@1 --phase dry-run --request-file .release-inputs/contract-change-bootstrap.json \
   > "$REPORT_DIR/10-contract-change-bootstrap-dry-run.json"
 ```
 
@@ -156,7 +144,26 @@ SUBSCRIPTION_CHANGE_WORKER_ENABLED=true
 受支持的合同变更/关闭任务。将它设为 `false` 会暂停全部此类任务（不只是新建续期），且必须重启 API
 后才生效。生产环境默认保持 `false`，除非另有正式发布批准。
 
-## 8. 发布后观察与冒烟
+## 8. Return/Closure DML 与约束 DDL 分界
+
+`stage1.return-closure.backfill@1` 使用 repair/controlled-DML 身份；其 dry-run、人工批准、
+apply、replay/reconcile 和证据保管全部完成后，才允许规划
+`stage1.return-closure.publication-constraint.validate@1`。后者使用独立 migrate/DDL 凭证、
+request、`operationId`、plan、批准和 execution proof。禁止批量预批准或共享凭证。
+
+```bash
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.backfill@1 --phase dry-run --request-file .release-inputs/return-closure-backfill.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.backfill@1 --phase apply --request-file .release-inputs/return-closure-backfill.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.backfill@1 --phase reconcile --request-file .release-inputs/return-closure-backfill.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.publication-constraint.validate@1 --phase dry-run --request-file .release-inputs/return-closure-publication-constraint.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.publication-constraint.validate@1 --phase apply --request-file .release-inputs/return-closure-publication-constraint.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.publication-constraint.validate@1 --phase reconcile --request-file .release-inputs/return-closure-publication-constraint.json
+```
+
+DDL 失败不回滚已成功并已证明的 DML；约束保持 `NOT VALID`，保留失败证明，按独立 DDL
+operation reconcile 或重新批准。DML statement log 必须无 DDL，DDL statement log 必须无业务 DML。
+
+## 9. 发布后观察与冒烟
 
 1. 记录 API/Web 镜像不可变标识和健康检查结果。
 2. 连续观察至少两个账单维护周期：允许出现按订单聚合的

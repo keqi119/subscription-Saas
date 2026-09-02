@@ -127,6 +127,7 @@ async function discoverFormalCallers(repoRoot, files, entrypoints) {
     if (callerType === "package-script") {
       const packageJson = JSON.parse(source);
       for (const command of Object.values(packageJson.scripts ?? {})) {
+        if (/^node\s+--test\b/u.test(command)) continue;
         for (const { entrypoint } of entrypoints.filter(({ entrypoint }) =>
           command.includes(entrypoint)
         )) {
@@ -181,7 +182,12 @@ export async function discoverApiGovernanceSurface(repoRootInput) {
       dependencyClosure: dependencyClosure(entrypoint, dependencyGraph)
     }))
     .sort((left, right) => left.entrypoint.localeCompare(right.entrypoint));
-  const callers = await discoverFormalCallers(repoRoot, trackedFiles(repoRoot), entrypoints);
+  const governedEntrypoints = Object.keys(commandPolicies).map((entrypoint) => ({ entrypoint }));
+  const callers = await discoverFormalCallers(
+    repoRoot,
+    trackedFiles(repoRoot),
+    governedEntrypoints
+  );
   return Object.freeze({ imageFiles, entrypoints, callers, dependencyGraph });
 }
 
@@ -296,8 +302,13 @@ export function verifyApiGovernanceInventory(inventory, surface) {
   for (const { repositorySource } of surface.imageFiles) {
     if (!inventoryFiles.has(repositorySource)) unmappedDependencies.push(repositorySource);
   }
-  for (const repositorySource of inventoryFiles.keys()) {
-    if (!surfaceFileSet.has(repositorySource)) unmappedDependencies.push(repositorySource);
+  for (const [repositorySource, file] of inventoryFiles) {
+    if (
+      !surfaceFileSet.has(repositorySource) &&
+      !["runner-only", "source-test-only"].includes(file.disposition)
+    ) {
+      unmappedDependencies.push(repositorySource);
+    }
   }
   for (const { entrypoint, dependencyClosure: discoveredClosure } of surface.entrypoints) {
     const command = inventoryCommands.get(entrypoint);
@@ -309,31 +320,52 @@ export function verifyApiGovernanceInventory(inventory, surface) {
       unmappedDependencies.push(`${entrypoint}:dependency-closure`);
     }
   }
-  for (const entrypoint of inventoryCommands.keys()) {
-    if (!surfaceCommandSet.has(entrypoint)) unmappedDependencies.push(entrypoint);
+  for (const [entrypoint, command] of inventoryCommands) {
+    if (
+      !surfaceCommandSet.has(entrypoint) &&
+      (command.runnerRegistrationStatus !== "registered" ||
+        command.callers.some(
+          ({ migrationStatus }) => migrationStatus !== "runner-cutover-complete"
+        ))
+    ) {
+      unmappedDependencies.push(entrypoint);
+    }
   }
-  const callerIndex = new Map(
-    inventory.commands.flatMap((command) =>
-      command.callers.map((caller) => [caller.callerId, { command, caller }])
-    )
-  );
-  const unownedCallers = surface.callers
-    .filter((caller) => {
-      const record = callerIndex.get(caller.callerId);
-      return !record || !record.caller.owner;
-    })
+  for (const governedEntrypoint of Object.keys(commandPolicies)) {
+    if (!inventoryCommands.has(governedEntrypoint)) {
+      unmappedDependencies.push(`${governedEntrypoint}:historical-inventory`);
+    }
+  }
+  const unownedCallers = inventory.commands
+    .flatMap(({ callers }) => callers)
+    .filter(({ owner }) => !owner)
     .map(({ callerId }) => callerId);
-  if (unmappedDependencies.length > 0 || unownedCallers.length > 0) {
+  const activeLegacyCallers = surface.callers.map(({ callerId }) => callerId);
+  if (
+    inventory.source.runtimeCopyCount !== surface.imageFiles.length ||
+    inventory.source.executableEntrypointCount !== surface.entrypoints.length
+  ) {
+    unmappedDependencies.push("source:runtime-counts");
+  }
+  if (
+    unmappedDependencies.length > 0 ||
+    unownedCallers.length > 0 ||
+    activeLegacyCallers.length > 0
+  ) {
     throw codeError("API_GOVERNANCE_INVENTORY_INCOMPLETE", {
       unmappedDependencies: [...new Set(unmappedDependencies)].sort(),
-      unownedCallers: [...new Set(unownedCallers)].sort()
+      unownedCallers: [...new Set(unownedCallers)].sort(),
+      activeLegacyCallers: [...new Set(activeLegacyCallers)].sort()
     });
   }
   return {
     fileCount: inventory.files.length,
     commandCount: inventory.commands.length,
     formalCallerCount: surface.callers.length,
+    runtimeFileCount: surface.imageFiles.length,
+    runtimeCommandCount: surface.entrypoints.length,
     unownedCallers,
+    activeLegacyCallers,
     unmappedDependencies
   };
 }
@@ -356,7 +388,10 @@ async function main() {
       )
     );
     verifyApiGovernanceInventory(inventory, surface);
-    if (canonicalJson(inventory) !== canonicalJson(generated)) {
+    if (
+      (surface.imageFiles.length > 0 || surface.entrypoints.length > 0) &&
+      canonicalJson(inventory) !== canonicalJson(generated)
+    ) {
       throw codeError("API_GOVERNANCE_INVENTORY_STALE");
     }
     process.stdout.write(

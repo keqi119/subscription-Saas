@@ -2,6 +2,54 @@
 
 > 状态：**仅供未来另行明确批准的 Staging 执行窗口使用**。合并、部署、批准设计/计划/PR 或阅读本手册均不构成执行批准。candidate API 只能按本手册的可执行启动、验收和停止 fence 运行，且必须在正式切换前停止并删除。
 
+> S1 更新：下方历史 Task 9 shell 块已归档且不再是可执行入口。API 镜像不再含 Prisma CLI、
+> psql 或治理脚本；其中旧路径统一改为 `retired-api-source/` 或
+> `retired-api-runtime/`，不得恢复。正式操作只能由可信启动方使用同一 build proof 的
+> Runner digest、单一 capability credential 和以下固定 command/request 组合执行。
+
+## S1 可信 Runner 固定入口
+
+```bash
+node scripts/release/trusted-launch-runner.mjs --command stage1.task9.preflight@1 --phase verify --request-file .release-inputs/task9-preflight.json
+node scripts/release/trusted-launch-runner.mjs --command db.migrate.deploy@1 --phase dry-run --request-file .release-inputs/migrate-deploy.json
+node scripts/release/trusted-launch-runner.mjs --command db.migrate.deploy@1 --phase apply --request-file .release-inputs/migrate-deploy.json
+node scripts/release/trusted-launch-runner.mjs --command db.migrate.deploy@1 --phase replay --request-file .release-inputs/migrate-deploy.json
+node scripts/release/trusted-launch-runner.mjs --command db.schema.verify@1 --phase verify --request-file .release-inputs/schema-verify.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.clean-acceptance.baseline@1 --phase dry-run --request-file .release-inputs/clean-acceptance.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.clean-acceptance.baseline@1 --phase apply --request-file .release-inputs/clean-acceptance.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.clean-acceptance.baseline@1 --phase replay --request-file .release-inputs/clean-acceptance.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.acceptance.target.verify@1 --phase verify --request-file .release-inputs/acceptance-target-verify.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.billing-maintenance.evidence@1 --phase evidence --request-file .release-inputs/billing-maintenance-evidence.json
+```
+
+每个 operation 分别绑定 build proof、基线 Manifest、实际数据库身份、`operationId`、
+input/plan digest、批准记录、post-state observation、execution proof 和 custody receipt。
+Staging 的 DDL/DML 必须 human approval；apply 必须在锁内重算计划。任一输入变化都重新
+dry-run/批准。缺失可信适配器、证明、动态撤销集合、append-only journal 或 evidence custody
+时必须在 secret I/O 和数据库连接前 fail closed，不得退回下方历史脚本。
+
+Return/Closure 固定为两个独立 operation，禁止批量批准、组合凭证或共享 request/plan/proof：
+
+```bash
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.backfill@1 --phase dry-run --request-file .release-inputs/return-closure-backfill.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.backfill@1 --phase apply --request-file .release-inputs/return-closure-backfill.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.backfill@1 --phase reconcile --request-file .release-inputs/return-closure-backfill.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.publication-constraint.validate@1 --phase dry-run --request-file .release-inputs/return-closure-publication-constraint.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.publication-constraint.validate@1 --phase apply --request-file .release-inputs/return-closure-publication-constraint.json
+node scripts/release/trusted-launch-runner.mjs --command stage1.return-closure.publication-constraint.validate@1 --phase reconcile --request-file .release-inputs/return-closure-publication-constraint.json
+```
+
+顺序必须为 DML dry-run → 批准 → apply → replay/reconcile → DML proof 完成不可改写保管，
+之后才可规划 DDL。DDL 使用独立 migrate credential 和 operation。DDL 失败不回滚已成功并已证明的 DML；
+约束保持 `NOT VALID`，保留失败证明后按独立 DDL reconcile/重新批准处理。DML command 的
+statement log 必须证明无 DDL；DDL command 的 statement log 必须证明无业务 DML。
+
+失败/回滚只允许四类：未写入时安全停止；结果可查询时 reconcile/replay；旧 API 与当前
+Schema 兼容证明通过时仅回滚应用镜像；数据库恢复仅作为停止写入、批准损失窗口并已验证
+恢复能力后的最后手段。`UNKNOWN` 禁止再次 apply。不得改写或逆转已应用迁移。
+
+<!-- S1_LEGACY_API_TOOLING_ARCHIVE_BEGIN -->
+
 ## 1. 不变量与人工职责
 
 - 旧库全程只读。创建新库、备份、迁移和 baseline 操作不得向旧库提交写事务；禁止 repair，禁止 `migrate resolve`，禁止 `migrate reset`。
@@ -188,19 +236,19 @@ readonly TASK9_DISK_AVAILABLE_KB="$(df -Pk /opt/subscription-saas | awk 'NR == 2
 readonly TASK9_API_MEMORY_STATE="$(docker stats --no-stream --format '{{.MemUsage}}' "$API_CONTAINER_ID")"
 readonly TASK9_POSTGRES_CONNECTION_STATE="$(postgres_admin_query -XAtq -c "SELECT count(*)::bigint || '|' || current_setting('max_connections')::bigint FROM pg_stat_activity;")"
 export TASK9_DISK_AVAILABLE_KB TASK9_API_MEMORY_STATE TASK9_POSTGRES_CONNECTION_STATE
-if ! DISK_RESOURCE_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs resource-disk "$MIN_HOST_DISK_AVAILABLE_KB")"; then
+if ! DISK_RESOURCE_SUMMARY="$(target_node retired-api-source/stage1-task9-preflight-governance.mjs resource-disk "$MIN_HOST_DISK_AVAILABLE_KB")"; then
   printf '%s\n' 'STOP: DISK_AVAILABLE_STATE_INVALID'
   exit 1
 fi
 readonly DISK_RESOURCE_SUMMARY
 printf '%s\n' "$DISK_RESOURCE_SUMMARY" | publish_private_evidence "$EVIDENCE_DIR/disk-resource.safe.json"
-if ! API_MEMORY_RESOURCE_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs resource-memory "$EXPECTED_API_MEMORY_LIMIT_BYTES" "$MIN_API_MEMORY_HEADROOM_BYTES")"; then
+if ! API_MEMORY_RESOURCE_SUMMARY="$(target_node retired-api-source/stage1-task9-preflight-governance.mjs resource-memory "$EXPECTED_API_MEMORY_LIMIT_BYTES" "$MIN_API_MEMORY_HEADROOM_BYTES")"; then
   printf '%s\n' 'STOP: API_MEMORY_STATE_INVALID'
   exit 1
 fi
 readonly API_MEMORY_RESOURCE_SUMMARY
 printf '%s\n' "$API_MEMORY_RESOURCE_SUMMARY" | publish_private_evidence "$EVIDENCE_DIR/api-memory-resource.safe.json"
-if ! POSTGRES_CONNECTION_RESOURCE_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs resource-postgres-connections "$EXPECTED_POSTGRES_MAX_CONNECTIONS" "$MIN_POSTGRES_CONNECTION_HEADROOM")"; then
+if ! POSTGRES_CONNECTION_RESOURCE_SUMMARY="$(target_node retired-api-source/stage1-task9-preflight-governance.mjs resource-postgres-connections "$EXPECTED_POSTGRES_MAX_CONNECTIONS" "$MIN_POSTGRES_CONNECTION_HEADROOM")"; then
   printf '%s\n' 'STOP: POSTGRES_CONNECTION_STATE_INVALID'
   exit 1
 fi
@@ -212,12 +260,12 @@ check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_ADMIN_HEALTH_URL"
 check_public_http_200 "$STAGE1_ACCEPTANCE_PUBLIC_PORTAL_HEALTH_URL"
 printf '%s\n' 'public_api=200 public_admin=200 public_portal=200' | publish_private_evidence "$EVIDENCE_DIR/public-health.state"
 
-target_node scripts/stage1-task9-preflight-governance.mjs validate-pair || { printf '%s\n' 'STOP: DATABASE_IDENTITY_INVALID'; exit 1; }
+target_node retired-api-source/stage1-task9-preflight-governance.mjs validate-pair || { printf '%s\n' 'STOP: DATABASE_IDENTITY_INVALID'; exit 1; }
 test "$(postgres_admin_query -XAtq -c 'SELECT current_user;')" = "$STAGE1_ACCEPTANCE_DATABASE_OWNER" || { printf '%s\n' 'STOP: COMPOSE_DATABASE_ROLE_INVALID'; exit 1; }
 readonly COMPOSE_SERVER_IDENTITY="$(postgres_admin_query -XAtq -c 'SELECT (pg_control_system()).system_identifier::text;')"
 readonly COMPOSE_SERVER_IDENTITY_SHA256="$(printf %s "$COMPOSE_SERVER_IDENTITY" | sha256sum | awk '{print $1}')"
 set +e
-SOURCE_SERVER_IDENTITY_SHA256="$(target_node scripts/stage1-task9-preflight-governance.mjs source-server-identity)"
+SOURCE_SERVER_IDENTITY_SHA256="$(target_node retired-api-source/stage1-task9-preflight-governance.mjs source-server-identity)"
 SOURCE_SERVER_IDENTITY_EXIT="$?"
 set -e
 test "$SOURCE_SERVER_IDENTITY_EXIT" -eq 0 || { printf '%s\n' 'STOP: SOURCE_SERVER_IDENTITY_UNAVAILABLE'; exit 1; }
@@ -237,7 +285,7 @@ postgres_admin_query --set=target_db="$TARGET_DB" --set=owner_role="$STAGE1_ACCE
 SELECT format('CREATE DATABASE %I OWNER %I TEMPLATE template0 ENCODING %L', :'target_db', :'owner_role', 'UTF8') \gexec
 SQL
 set +e
-TARGET_SERVER_IDENTITY_SHA256="$(target_node scripts/stage1-task9-preflight-governance.mjs target-server-identity)"
+TARGET_SERVER_IDENTITY_SHA256="$(target_node retired-api-source/stage1-task9-preflight-governance.mjs target-server-identity)"
 TARGET_SERVER_IDENTITY_EXIT="$?"
 set -e
 test "$TARGET_SERVER_IDENTITY_EXIT" -eq 0 || { printf '%s\n' 'STOP: TARGET_SERVER_IDENTITY_UNAVAILABLE'; exit 1; }
@@ -257,17 +305,17 @@ backup_database() {
 backup_database 'subscription_saas_staging' "$OLD_DB_BACKUP" 'old-database.pre-apply'
 backup_database "$TARGET_DB" "$EMPTY_NEW_DB_BACKUP" 'empty-new-database.pre-migration'
 
-if target_api sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate deploy --schema prisma/schema.prisma' >/dev/null 2>&1; then
+if target_api sh -lc 'cd /app/apps/api && retired-api-runtime/prisma migrate deploy --schema prisma/schema.prisma' >/dev/null 2>&1; then
   printf '%s\n' 'migration_deploy=applied_once' | publish_private_evidence "$EVIDENCE_DIR/migration-deploy.state"
 else printf '%s\n' 'STOP: MIGRATION_DEPLOY_FAILED'; exit 1; fi
-target_api sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate status --schema prisma/schema.prisma' >/dev/null 2>&1 || { printf '%s\n' 'STOP: MIGRATE_STATUS_FAILED'; exit 1; }
+target_api sh -lc 'cd /app/apps/api && retired-api-runtime/prisma migrate status --schema prisma/schema.prisma' >/dev/null 2>&1 || { printf '%s\n' 'STOP: MIGRATE_STATUS_FAILED'; exit 1; }
 target_api node - <<'NODE'
 const { execFileSync } = require('node:child_process');
-const result = JSON.parse(execFileSync('node', ['scripts/prisma-migration-checksums.mjs'], { cwd: '/app', encoding: 'utf8' }));
+const result = JSON.parse(execFileSync('node', ['retired-api-source/prisma-migration-checksums.mjs'], { cwd: '/app', encoding: 'utf8' }));
 if (!result.safe || result.localMigrationCount !== 126 || result.appliedMigrationCount !== 126 || result.duplicateAppliedNames.length || result.mismatchedNames.length || result.missingFromDatabase.length || result.missingLocally.length) process.exit(31);
 NODE
 set +e
-target_api sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' >/dev/null 2>&1
+target_api sh -lc 'cd /app/apps/api && retired-api-runtime/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' >/dev/null 2>&1
 DRIFT_EXIT="$?"
 set -e
 test "$DRIFT_EXIT" -eq 0 || { printf '%s\n' 'STOP: MIGRATION_DRIFT_DETECTED'; exit 1; }
@@ -287,7 +335,7 @@ SQL
 printf '%s\n' 'post_migration_business_nonzero_tables=0' | publish_private_evidence "$EVIDENCE_DIR/post-migration-business-counts.state"
 
 set +e
-DISCOVERY_SUMMARY="$(target_api sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --discover-vehicles --output /evidence/vehicle-discovery.json')"
+DISCOVERY_SUMMARY="$(target_api sh -lc 'cd /app && node retired-api-source/stage1-clean-acceptance-baseline.mjs --dry-run --discover-vehicles --output /evidence/vehicle-discovery.json')"
 DISCOVERY_EXIT="$?"
 set -e
 test "$DISCOVERY_EXIT" = '3' || { printf '%s\n' 'STOP: DISCOVERY_FAILED'; exit 1; }
@@ -298,11 +346,11 @@ read -r -s -p "Approved vehicle UUID (hidden): " APPROVED_VEHICLE_UUID
 printf '\n'
 export APPROVED_VEHICLE_UUID
 readonly APPROVED_VEHICLE_UUID
-target_node scripts/stage1-task9-preflight-governance.mjs validate-selection /evidence/vehicle-discovery.json || { printf '%s\n' 'STOP: VEHICLE_SELECTION_INVALID'; exit 1; }
-target_api sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --vehicle-id "$APPROVED_VEHICLE_UUID" --output /evidence/baseline-dry-run.json' >/dev/null
+target_node retired-api-source/stage1-task9-preflight-governance.mjs validate-selection /evidence/vehicle-discovery.json || { printf '%s\n' 'STOP: VEHICLE_SELECTION_INVALID'; exit 1; }
+target_api sh -lc 'cd /app && node retired-api-source/stage1-clean-acceptance-baseline.mjs --dry-run --vehicle-id "$APPROVED_VEHICLE_UUID" --output /evidence/baseline-dry-run.json' >/dev/null
 readonly DRY_RUN_REPORT="$EVIDENCE_DIR/baseline-dry-run.json"
 set +e
-APPROVAL_SUMMARY="$(target_node scripts/stage1-task9-preflight-governance.mjs approval-summary /evidence/baseline-dry-run.json)"
+APPROVAL_SUMMARY="$(target_node retired-api-source/stage1-task9-preflight-governance.mjs approval-summary /evidence/baseline-dry-run.json)"
 APPROVAL_EXIT="$?"
 set -e
 test "$APPROVAL_EXIT" -eq 0 || { printf '%s\n' 'STOP: FORMAL_DRY_RUN_INVALID'; exit 1; }
@@ -528,7 +576,7 @@ backup_database "$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" "$EMPTY_NEW_DB_BACKUP" 
 if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-  sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate deploy --schema prisma/schema.prisma' \
+  sh -lc 'cd /app/apps/api && retired-api-runtime/prisma migrate deploy --schema prisma/schema.prisma' \
   >/dev/null 2>&1; then
   printf '%s\n' 'migration_deploy=applied_once' \
     | publish_private_evidence "$EVIDENCE_DIR/migration-deploy.state"
@@ -539,7 +587,7 @@ fi
 
 if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-  sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate status --schema prisma/schema.prisma' \
+  sh -lc 'cd /app/apps/api && retired-api-runtime/prisma migrate status --schema prisma/schema.prisma' \
   >/dev/null 2>&1; then
   printf '%s\n' 'migrate_status=up_to_date' \
     | publish_private_evidence "$EVIDENCE_DIR/migrate-status.state"
@@ -550,7 +598,7 @@ fi
 
 CHECKSUM_RESULT="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-  sh -lc 'cd /app && node scripts/prisma-migration-checksums.mjs')"
+  sh -lc 'cd /app && node retired-api-source/prisma-migration-checksums.mjs')"
 jq -e '.safe == true and .localMigrationCount == 126 and .appliedMigrationCount == 126 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
   <<<"$CHECKSUM_RESULT" >/dev/null
 jq '{appliedMigrationCount,duplicateCount:(.duplicateAppliedNames|length),localMigrationCount,mismatchCount:(.mismatchedNames|length),missingDatabaseCount:(.missingFromDatabase|length),missingLocalCount:(.missingLocally|length),safe}' \
@@ -565,7 +613,7 @@ unset CHECKSUM_RESULT
 set +e
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
   --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-  sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' \
+  sh -lc 'cd /app/apps/api && retired-api-runtime/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' \
   >/dev/null 2>&1
 DRIFT_EXIT="$?"
 set -e
@@ -614,7 +662,7 @@ DISCOVERY_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ru
   --env STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME \
   --env STAGE1_ACCEPTANCE_GIT_SHA \
   --env STAGE1_ACCEPTANCE_IMAGE_REF api \
-  sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --discover-vehicles --output /evidence/vehicle-discovery.json')"
+  sh -lc 'cd /app && node retired-api-source/stage1-clean-acceptance-baseline.mjs --dry-run --discover-vehicles --output /evidence/vehicle-discovery.json')"
 DISCOVERY_EXIT="$?"
 set -e
 test "$DISCOVERY_EXIT" -eq 3
@@ -653,7 +701,7 @@ readonly DRY_RUN_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_F
   --env STAGE1_ACCEPTANCE_GIT_SHA \
   --env STAGE1_ACCEPTANCE_IMAGE_REF \
   --env APPROVED_VEHICLE_UUID api \
-  sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --dry-run --vehicle-id "$APPROVED_VEHICLE_UUID" --output /evidence/baseline-dry-run.json')"
+  sh -lc 'cd /app && node retired-api-source/stage1-clean-acceptance-baseline.mjs --dry-run --vehicle-id "$APPROVED_VEHICLE_UUID" --output /evidence/baseline-dry-run.json')"
 chmod 0600 "$DRY_RUN_REPORT"
 assert_private_file "$DRY_RUN_REPORT"
 jq -e '.safe == true and .mode == "dry-run" and (.manifestSha256|test("^[0-9a-f]{64}$"))' \
@@ -696,7 +744,7 @@ readonly APPLY_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FIL
   --env APPROVED_VEHICLE_UUID \
   --env MANIFEST_SHA \
   --env STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY=1 api \
-  sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --apply --vehicle-id "$APPROVED_VEHICLE_UUID" --approved-manifest /evidence/baseline-dry-run.json --approved-manifest-sha256 "$MANIFEST_SHA" --output /evidence/baseline-apply.json')"
+  sh -lc 'cd /app && node retired-api-source/stage1-clean-acceptance-baseline.mjs --apply --vehicle-id "$APPROVED_VEHICLE_UUID" --approved-manifest /evidence/baseline-dry-run.json --approved-manifest-sha256 "$MANIFEST_SHA" --output /evidence/baseline-apply.json')"
 jq -e '.safe == true and .mode == "apply" and .manifestSha256 == $sha' --arg sha "$MANIFEST_SHA" \
   <<<"$APPLY_SUMMARY" >/dev/null
 chmod 0600 "$EVIDENCE_DIR/baseline-apply.json"
@@ -712,7 +760,7 @@ readonly REPLAY_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FI
   --env APPROVED_VEHICLE_UUID \
   --env MANIFEST_SHA \
   --env STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY=1 api \
-  sh -lc 'cd /app && node scripts/stage1-clean-acceptance-baseline.mjs --replay --vehicle-id "$APPROVED_VEHICLE_UUID" --approved-manifest /evidence/baseline-dry-run.json --approved-manifest-sha256 "$MANIFEST_SHA" --output /evidence/baseline-replay.json')"
+  sh -lc 'cd /app && node retired-api-source/stage1-clean-acceptance-baseline.mjs --replay --vehicle-id "$APPROVED_VEHICLE_UUID" --approved-manifest /evidence/baseline-dry-run.json --approved-manifest-sha256 "$MANIFEST_SHA" --output /evidence/baseline-replay.json')"
 jq -e '.safe == true and .mode == "replay" and .manifestSha256 == $sha and .auditCreated == 0 and .inserted == 0 and .updated == 0 and .deleted == 0' --arg sha "$MANIFEST_SHA" \
   <<<"$REPLAY_SUMMARY" >/dev/null
 chmod 0600 "$EVIDENCE_DIR/baseline-replay.json"
@@ -725,7 +773,7 @@ readonly VALIDATOR_SUMMARY="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE
   --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
   --env STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME \
   --env MANIFEST_SHA api \
-  sh -lc 'cd /app && node scripts/stage1-clean-acceptance-target-validator.mjs --approved-manifest /evidence/baseline-dry-run.json --approved-manifest-sha256 "$MANIFEST_SHA" --output /evidence/target-validator.json')"
+  sh -lc 'cd /app && node retired-api-source/stage1-clean-acceptance-target-validator.mjs --approved-manifest /evidence/baseline-dry-run.json --approved-manifest-sha256 "$MANIFEST_SHA" --output /evidence/target-validator.json')"
 jq -e '.safe == true and .mode == "target-validator" and .manifestSha256 == $sha' --arg sha "$MANIFEST_SHA" \
   <<<"$VALIDATOR_SUMMARY" >/dev/null
 chmod 0600 "$EVIDENCE_DIR/target-validator.json"
@@ -1504,17 +1552,17 @@ post_switch_database_gates() {
 
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
     --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-    sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate status --schema prisma/schema.prisma' \
+    sh -lc 'cd /app/apps/api && retired-api-runtime/prisma migrate status --schema prisma/schema.prisma' \
     >/dev/null 2>&1
   checksum_result="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
     --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-    sh -lc 'cd /app && node scripts/prisma-migration-checksums.mjs')"
+    sh -lc 'cd /app && node retired-api-source/prisma-migration-checksums.mjs')"
   jq -e '.safe == true and .localMigrationCount == 126 and .appliedMigrationCount == 126 and (.duplicateAppliedNames|length)==0 and (.mismatchedNames|length)==0 and (.missingFromDatabase|length)==0 and (.missingLocally|length)==0' \
     <<<"$checksum_result" >/dev/null
   set +e
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
     --env DATABASE_URL="$STAGE1_ACCEPTANCE_TARGET_DATABASE_URL" api \
-    sh -lc 'cd /app/apps/api && ./node_modules/.bin/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' \
+    sh -lc 'cd /app/apps/api && retired-api-runtime/prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code' \
     >/dev/null 2>&1
   drift_exit="$?"
   set -e
@@ -1539,7 +1587,7 @@ SQL
     --env STAGE1_ACCEPTANCE_TARGET_DATABASE_URL \
     --env STAGE1_ACCEPTANCE_DATABASE_ALLOWED_HOSTNAME \
     --env MANIFEST_SHA api \
-    sh -lc 'cd /app && node scripts/stage1-clean-acceptance-target-validator.mjs --approved-manifest /evidence/baseline-dry-run.json --approved-manifest-sha256 "$MANIFEST_SHA" --output /evidence/target-validator.post-switch.json' \
+    sh -lc 'cd /app && node retired-api-source/stage1-clean-acceptance-target-validator.mjs --approved-manifest /evidence/baseline-dry-run.json --approved-manifest-sha256 "$MANIFEST_SHA" --output /evidence/target-validator.post-switch.json' \
     >/dev/null
   chown root:root "$EVIDENCE_DIR/target-validator.post-switch.json"
   chmod 0600 "$EVIDENCE_DIR/target-validator.post-switch.json"
@@ -1584,7 +1632,7 @@ SQL
   billing_facts="$(timeout --signal=TERM --kill-after=5s \
     "${BILLING_MAINTENANCE_EVIDENCE_WATCHDOG_SECONDS}s" \
     docker exec "$switched_api_container_id" \
-    node /app/scripts/billing-maintenance-cycle-evidence.mjs \
+    node /app/retired-api-source/billing-maintenance-cycle-evidence.mjs \
     --run-id "$BILLING_MAINTENANCE_EVIDENCE_RUN_ID" \
     --expected-release-sha "$APPROVED_RELEASE_SHA" \
     --expected-image-digest "$APPROVED_API_IMAGE_ID" \
@@ -1761,3 +1809,5 @@ done < <(find "$EVIDENCE_DIR" -mindepth 1 -maxdepth 1 -type f -print0)
 - 成功窗口保留旧库 pre-apply backup、空新库 pre-migration backup、manifest、apply/replay/validator 和 env backup。
 - 回滚窗口额外保留新库与全部证据，交由后续另行批准的调查处理；不得删除新库。
 - 无论成功或回滚，都不在在线 API 容器执行任何 `pnpm`、Prisma 或临时诊断命令。
+
+<!-- S1_LEGACY_API_TOOLING_ARCHIVE_END -->

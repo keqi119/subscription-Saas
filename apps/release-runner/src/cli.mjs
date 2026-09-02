@@ -3,6 +3,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  buildExecutionProof,
+  buildPostStateObservation,
+  sha256Canonical
+} from "@subscription-saas/release-foundation";
+
 import { commandHandlers } from "./command-handlers.mjs";
 import {
   assertRegistryHandlerParity,
@@ -43,7 +49,28 @@ async function defaultExecute({ commandKey, requestFile }) {
 }
 
 export async function runCli(argv, { execute = defaultExecute } = {}) {
-  return execute(parseInvocation(argv));
+  const result = await execute(parseInvocation(argv));
+  return finalizeRunnerExecution(result);
+}
+
+export function finalizeRunnerExecution(result) {
+  const hasObservation = result?.postStateObservationInput !== undefined;
+  const hasProof = result?.executionProofInput !== undefined;
+  if (!hasObservation && !hasProof) return result;
+  if (!hasObservation || !hasProof) throw runnerError("RUNNER_PROOF_INPUT_INCOMPLETE");
+  const postStateObservation = buildPostStateObservation(result.postStateObservationInput);
+  const executionProof = buildExecutionProof({
+    postStateObservation,
+    ...result.executionProofInput
+  });
+  const { postStateObservationInput, executionProofInput, ...output } = result;
+  return Object.freeze({
+    ...output,
+    postStateObservation,
+    postStateObservationDigest: sha256Canonical(postStateObservation),
+    executionProof,
+    executionProofDigest: sha256Canonical(executionProof)
+  });
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

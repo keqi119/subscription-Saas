@@ -5,8 +5,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  createExecutionState,
   fetchLatestTrustedRevocations,
   sha256Canonical,
+  transitionExecution,
   validateContract,
   verifyApproval
 } from "../../packages/release-foundation/src/index.mjs";
@@ -24,6 +26,29 @@ import {
 
 function launchError(code, details) {
   return Object.assign(new Error(code), { code, details });
+}
+
+async function appendLauncherState(journal, state) {
+  if (
+    journal?.trustPolicy !== "append-only-execution-state/v1" ||
+    typeof journal.append !== "function"
+  ) {
+    throw launchError("EXECUTION_JOURNAL_UNAVAILABLE");
+  }
+  const stateDigest = sha256Canonical(state);
+  const result = await journal.append({
+    operationId: state.operationId,
+    terminalClass: state.terminalClass,
+    stateDigest,
+    state
+  });
+  if (
+    result?.accepted !== true ||
+    result.stateDigest !== stateDigest ||
+    result.readbackDigest !== stateDigest
+  ) {
+    throw launchError("EXECUTION_JOURNAL_UNAVAILABLE");
+  }
 }
 
 function approvalExpected({ command, request, approvalPolicy }) {
@@ -65,6 +90,8 @@ export async function trustedLaunchRunner({
   approvalCustodyReceipt,
   githubClient,
   revocationCheckpointStore,
+  executionState: suppliedExecutionState,
+  executionJournal,
   readCredential,
   connectDatabase,
   credentialFileReference,
@@ -91,8 +118,32 @@ export async function trustedLaunchRunner({
   );
   if (!targetPolicy) throw launchError("RUNNER_TARGET_POLICY_REJECTED");
 
+  const executionState =
+    suppliedExecutionState ??
+    createExecutionState({
+      operationId: request.operationId,
+      idempotencyKey: request.idempotencyKey
+    });
+  if (
+    executionJournal?.trustPolicy !== "append-only-execution-state/v1" ||
+    typeof executionJournal.append !== "function"
+  ) {
+    throw launchError("EXECUTION_JOURNAL_UNAVAILABLE");
+  }
+
   // This trust-root and target-intent check intentionally happens before any approval or secret I/O.
-  verifyPreflight({ command, request, policy: targetPolicy });
+  try {
+    verifyPreflight({ command, request, policy: targetPolicy });
+  } catch (error) {
+    const rejected = transitionExecution(executionState, {
+      type: "PREFLIGHT_REJECTED",
+      attemptId: request.attemptId,
+      phase: request.phase,
+      reasonCode: error?.code ?? "RUNNER_PREFLIGHT_REJECTED"
+    });
+    await appendLauncherState(executionJournal, rejected);
+    throw error;
+  }
 
   let approvalDecision;
   if (command.approvalMode === "none") {
@@ -142,16 +193,27 @@ export async function trustedLaunchRunner({
     });
   }
 
-  return executeRegisteredCommand({
-    command,
-    request,
-    policy: targetPolicy,
-    approvalDecision,
-    handler: handler ?? commandHandlers.get(commandKey),
-    readCredential,
-    connectDatabase,
-    credentialFileReference
-  });
+  try {
+    return await executeRegisteredCommand({
+      command,
+      request,
+      policy: targetPolicy,
+      approvalDecision,
+      handler: handler ?? commandHandlers.get(commandKey),
+      readCredential,
+      connectDatabase,
+      credentialFileReference
+    });
+  } catch (error) {
+    if (error?.outcomeUnknown === true) {
+      const unknown = transitionExecution(executionState, {
+        type: "PROCESS_LOST",
+        commitState: error.commitState ?? "unknown"
+      });
+      await appendLauncherState(executionJournal, unknown);
+    }
+    throw error;
+  }
 }
 
 async function main() {

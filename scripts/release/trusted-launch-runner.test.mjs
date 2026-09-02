@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { sha256Canonical } from "../../packages/release-foundation/src/index.mjs";
+import {
+  createExecutionState,
+  sha256Canonical,
+  transitionExecution
+} from "../../packages/release-foundation/src/index.mjs";
 import {
   loadCommandRegistry,
   loadTargetPolicies
@@ -90,7 +94,10 @@ function requestFor(command, overrides = {}) {
     baselineManifestIdentityDigest: digest("5"),
     baselineManifestDigest: digest("6"),
     databaseIdentityDigest: digest("7"),
-    operationId: "operation-launch-1",
+    operationId: "f1fe589f-79f8-429e-9b09-d2f777b1431e",
+    attemptId: "01710f65-23f7-4c66-b6bb-14f557fdac6e",
+    idempotencyKey: "operation-launch-key-1",
+    phase: command === "schema.migrate" || command === "repair.execute" ? "apply" : "verify",
     inputDigest: digest("8"),
     planDigest: digest("f")
   };
@@ -206,7 +213,10 @@ async function launchFixture({
   commandKey = "schema.migrate@1",
   recordMutate,
   client,
-  checkpointStore
+  checkpointStore,
+  executionState,
+  executionJournal,
+  handler
 } = {}) {
   const policy = approvalPolicy();
   const request = requestFor(commandKey.split("@")[0]);
@@ -248,6 +258,7 @@ async function launchFixture({
   let secretReads = 0;
   let databaseConnections = 0;
   let checkpoint;
+  const journalEntries = [];
   const monotonicStore = checkpointStore ?? {
     trustPolicy: "append-only-monotonic/v1",
     async read() {
@@ -282,6 +293,18 @@ async function launchFixture({
           ? client({ policy, record })
           : (client ?? revocationClient(policy)),
       revocationCheckpointStore: monotonicStore,
+      executionState,
+      executionJournal: executionJournal ?? {
+        trustPolicy: "append-only-execution-state/v1",
+        async append(entry) {
+          journalEntries.push(entry);
+          return {
+            accepted: true,
+            stateDigest: entry.stateDigest,
+            readbackDigest: entry.stateDigest
+          };
+        }
+      },
       readCredential: async () => {
         secretReads += 1;
         return { username: "runner_role", password: "not-exposed" };
@@ -303,11 +326,13 @@ async function launchFixture({
         };
       },
       credentialFileReference: "C:/run/secrets/capability.json",
+      handler,
       now
     });
   return {
     launch,
     counts: () => ({ secretReads, databaseConnections }),
+    journalEntries,
     policy,
     request,
     registry,
@@ -358,6 +383,12 @@ test("launches approval-none only for a read-only registered command", async () 
       }
     }),
     credentialFileReference: "C:/run/secrets/verify.json",
+    executionJournal: {
+      trustPolicy: "append-only-execution-state/v1",
+      async append() {
+        assert.fail("successful preflight must not append a launcher terminal state");
+      }
+    },
     now
   });
   assert.equal(result.terminalStatus, "PASSED");
@@ -451,6 +482,56 @@ test("rejects an unavailable monotonic checkpoint before credentials", async () 
   await assert.rejects(fixture.launch(), {
     code: "APPROVAL_REVOCATIONS_CHECKPOINT_UNAVAILABLE"
   });
+  assert.deepEqual(fixture.counts(), { secretReads: 0, databaseConnections: 0 });
+});
+
+test("launcher journals a preflight rejection without a database observation", async () => {
+  const fixture = await launchFixture();
+  fixture.request.actualRunnerDigest = digest("0");
+  await assert.rejects(fixture.launch(), { code: "RUNNER_DIGEST_MISMATCH" });
+  assert.deepEqual(fixture.counts(), { secretReads: 0, databaseConnections: 0 });
+  assert.equal(fixture.journalEntries.length, 1);
+  assert.equal(fixture.journalEntries[0].terminalClass, "PREFLIGHT_REJECTED");
+  assert.equal("postStateObservationDigest" in fixture.journalEntries[0].state, false);
+});
+
+test("launcher journals committed-result-unknown and refuses to invent a post-state", async () => {
+  const operationId = "f1fe589f-79f8-429e-9b09-d2f777b1431e";
+  const idempotencyKey = "operation-launch-key-1";
+  let state = transitionExecution(createExecutionState({ operationId, idempotencyKey }), {
+    type: "DRY_RUN_SUCCEEDED",
+    attemptId: "823f76da-41da-4a1d-b29a-7b397471d05a",
+    planDigest: digest("f"),
+    proofDigest: digest("e")
+  });
+  state = transitionExecution(state, {
+    type: "APPLY_STARTED",
+    operationId,
+    idempotencyKey,
+    attemptId: "01710f65-23f7-4c66-b6bb-14f557fdac6e",
+    approvedPlanDigest: digest("f"),
+    recomputedPlanDigest: digest("f")
+  });
+  const fixture = await launchFixture({
+    executionState: state,
+    handler: async () => {
+      throw Object.assign(new Error("RUNNER_PROCESS_LOST"), {
+        code: "RUNNER_PROCESS_LOST",
+        outcomeUnknown: true,
+        commitState: "committed-result-unproved"
+      });
+    }
+  });
+  await assert.rejects(fixture.launch(), { code: "RUNNER_PROCESS_LOST" });
+  assert.deepEqual(fixture.counts(), { secretReads: 1, databaseConnections: 1 });
+  assert.equal(fixture.journalEntries.length, 1);
+  assert.equal(fixture.journalEntries[0].terminalClass, "INTERRUPTED_UNKNOWN");
+  assert.equal("postStateObservationDigest" in fixture.journalEntries[0].state, false);
+});
+
+test("launcher fails closed when its append-only execution journal is unavailable", async () => {
+  const fixture = await launchFixture({ executionJournal: {} });
+  await assert.rejects(fixture.launch(), { code: "EXECUTION_JOURNAL_UNAVAILABLE" });
   assert.deepEqual(fixture.counts(), { secretReads: 0, databaseConnections: 0 });
 });
 

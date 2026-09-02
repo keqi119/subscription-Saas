@@ -44,3 +44,13 @@ export {
   verifyTrustedArtifactAttestation,
   verifyRevocationArtifact
 } from "./approval-revocations.mjs";
+export {
+  buildExecutionProof,
+  buildPostStateObservation,
+  deterministicPlanDigest
+} from "./proof-builders.mjs";
+export {
+  assertApplyAllowed,
+  createExecutionState,
+  transitionExecution
+} from "./execution-state-machine.mjs";

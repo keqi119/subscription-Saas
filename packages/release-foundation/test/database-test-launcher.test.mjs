@@ -314,6 +314,7 @@ test("manifest and source-gate reports aggregate the same selected suite", async
     postgres: { imageDigest: digest, serverVersionNum: "170011" },
     schemaDiffDigest: digest,
     migrationStatusDigest: digest,
+    postSchemaDigest: digest,
     provenance: {
       generatedAt: "2026-09-02T08:00:00.000Z",
       ciRunRef: "local-controlled://run-1",

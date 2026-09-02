@@ -5,8 +5,18 @@ import {
   assertCommandVersionEvolution,
   assertRegistryDependencyVerifierParity,
   assertRegistryHandlerParity,
-  loadCommandRegistry
+  loadCommandRegistry,
+  loadTargetPolicies
 } from "../src/command-registry.mjs";
+
+test("target policies may prohibit stricter environments but always prohibit production", async () => {
+  const targetPolicies = await loadTargetPolicies();
+
+  for (const policy of targetPolicies.policies) {
+    assert.ok(policy.prohibitedEnvironments.includes("production"));
+  }
+  assert.deepEqual(targetPolicies.policies[0].prohibitedEnvironments, ["staging", "production"]);
+});
 
 test("JSON registry is the only policy declaration and has exact handler parity", async () => {
   const registry = await loadCommandRegistry();

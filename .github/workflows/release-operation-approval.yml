@@ -32,11 +32,10 @@ jobs:
     environment:
       name: ${{ inputs.approvalMode == 'human' && 's1-database-operation-approval' || 'release' }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          node-version: "22"
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - run: corepack enable && pnpm install --frozen-lockfile
 
@@ -57,7 +56,7 @@ jobs:
 
       - name: Upload immutable approval record
         id: upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: approval-record-${{ github.run_id }}
           path: approval-record.v1.json
@@ -66,12 +65,12 @@ jobs:
 
       - name: Attest approval record
         id: attest
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: approval-record.v1.json
 
       - name: Read back immutable approval record
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: approval-record-${{ github.run_id }}
           path: approval-readback
@@ -111,7 +110,7 @@ jobs:
           NODE
 
       - name: Store custody receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: approval-record-receipt-${{ github.run_id }}
           path: approval-record.custody-receipt.v1.json
@@ -119,7 +118,7 @@ jobs:
           retention-days: 180
 
       - name: Read back custody receipt
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: approval-record-receipt-${{ github.run_id }}
           path: approval-receipt-readback

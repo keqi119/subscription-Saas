@@ -12,6 +12,7 @@ import {
   parseLauncherArguments,
   resolveLauncherRepositoryRoot,
   runLauncherCli,
+  sourceGateProvenance,
   summarizeDatabaseTestLog
 } from "./database-test-launcher-runtime.mjs";
 
@@ -39,6 +40,37 @@ const manifest = {
     }
   ]
 };
+
+test("binds promotable source evidence only to this protected main workflow run", () => {
+  const sourceSha = "a".repeat(40);
+  assert.equal(
+    sourceGateProvenance(sourceSha, {
+      GITHUB_ACTIONS: "true",
+      GITHUB_REPOSITORY: "keqi119/subscription-Saas",
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_SHA: sourceSha,
+      GITHUB_RUN_ID: "901",
+      GITHUB_RUN_ATTEMPT: "2",
+      GITHUB_WORKFLOW_REF:
+        "keqi119/subscription-Saas/.github/workflows/release-candidate-gate.yml@refs/heads/main"
+    }).ciRunRef,
+    "github://keqi119/subscription-Saas/actions/runs/901/attempts/2"
+  );
+  assert.throws(
+    () =>
+      sourceGateProvenance(sourceSha, {
+        GITHUB_ACTIONS: "true",
+        GITHUB_REPOSITORY: "keqi119/subscription-Saas",
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_SHA: "b".repeat(40),
+        GITHUB_RUN_ID: "901",
+        GITHUB_RUN_ATTEMPT: "2",
+        GITHUB_WORKFLOW_REF:
+          "keqi119/subscription-Saas/.github/workflows/release-candidate-gate.yml@refs/heads/main"
+      }),
+    { code: "DATABASE_LAUNCHER_SOURCE_PROVENANCE_UNTRUSTED" }
+  );
+});
 
 function selections(request) {
   return selectManifestSuites({

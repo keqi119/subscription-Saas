@@ -20,11 +20,10 @@ jobs:
     environment: stage1-snapshot-export
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          node-version: "22"
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - run: corepack enable && pnpm install --frozen-lockfile
 
@@ -55,14 +54,14 @@ jobs:
         run: node scripts/release/export-sanitized-snapshot.mjs --export
 
       - name: Attest the final sanitized dump and metadata
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: |
             .release-output/sanitized-snapshot/sanitized-snapshot.dump
             .release-output/sanitized-snapshot/snapshot-metadata.v1.json
 
       - name: Upload only the complete final publication
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: sanitized-snapshot-${{ github.run_id }}
           path: |

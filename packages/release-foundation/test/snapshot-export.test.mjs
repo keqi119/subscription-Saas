@@ -380,6 +380,10 @@ test("protected workflow exposes no PR trigger or raw artifact upload", async ()
   assert.match(workflow, /runs-on: \[self-hosted, linux, stage1-snapshot-export\]/);
   assert.match(workflow, /if: always\(\)/);
   assert.match(workflow, /node scripts\/release\/export-sanitized-snapshot\.mjs --cleanup/);
+  assert.match(workflow, /actions\/checkout@11d5960a326750d5838078e36cf38b85af677262/);
+  assert.match(workflow, /actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6/);
+  assert.match(workflow, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/);
+  assert.doesNotMatch(workflow, /uses:\s*[^\s]+@(v\d+|main|master|latest)\b/);
   assert.equal(/pull_request:/.test(workflow), false);
   const uploadBlock = workflow.slice(
     workflow.indexOf("Upload only the complete final publication")

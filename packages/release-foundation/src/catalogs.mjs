@@ -7,6 +7,13 @@ import { sha256Bytes, sha256Canonical } from "./digest.mjs";
 const CONTRACT_MANIFEST_PATH = "release/contracts/repository-contract-files.v1.json";
 const MIGRATION_PATH = "apps/api/prisma/migrations";
 const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
+  ".github/workflows/docker-images.yml",
+  ".github/workflows/release-approval-revocations.yml",
+  ".github/workflows/release-candidate-gate.yml",
+  ".github/workflows/release-final-chain.yml",
+  ".github/workflows/release-operation-approval.yml",
+  ".github/workflows/release-owner-attestations.yml",
+  ".github/workflows/sanitized-snapshot.yml",
   "Dockerfile.runner",
   "apps/release-runner/package.json",
   "apps/release-runner/src/cli.mjs",
@@ -19,14 +26,22 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "docker-compose.release-gate.yml",
   "playwright.release.config.ts",
   "pnpm-lock.yaml",
+  "scripts/release/aggregate-release-proof.mjs",
+  "scripts/release/assemble-release-aggregate-input.mjs",
+  "scripts/release/assemble-s1-exit-input.mjs",
+  "scripts/release/create-final-attempt-history.mjs",
+  "scripts/release/export-final-compose-environment.mjs",
   "scripts/release/final-compose-database-adapters.mjs",
   "scripts/release/final-compose-application-adapters.mjs",
   "scripts/release/final-compose-custody-adapters.mjs",
   "scripts/release/final-compose-production-adapters.mjs",
+  "scripts/release/generate-s1-exit-evidence.mjs",
+  "scripts/release/prepare-final-compose-launch.mjs",
   "scripts/release/run-final-compose-gate.mjs",
   "scripts/release/trusted-launch-production-adapters.mjs",
   "scripts/release/trusted-launch-runner.mjs",
   "scripts/release/verify-compose-policy.mjs",
+  "scripts/release/workflow-custody-record.mjs",
   "tests/release/web-public-api.spec.ts"
 ]);
 

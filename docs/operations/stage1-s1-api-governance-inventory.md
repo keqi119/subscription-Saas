@@ -1,6 +1,6 @@
 # Stage 1 S1 API governance runtime inventory
 
-Status: migration baseline for S1 Tasks 16–26  
+Status: migration baseline for S1 Tasks 16–26
 Owner: release engineering
 
 ## Scope

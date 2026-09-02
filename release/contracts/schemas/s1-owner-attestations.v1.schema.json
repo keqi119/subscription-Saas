@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "s1-owner-attestations.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "records"],
+  "properties": {
+    "schemaVersion": { "const": "s1-owner-attestations.v1" },
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["attestation", "custodyReceipt"],
+        "properties": {
+          "attestation": { "$ref": "#/$defs/attestation" },
+          "custodyReceipt": { "$ref": "#/$defs/custodyReceipt" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "attestationId",
+        "subject",
+        "owner",
+        "facts",
+        "validFrom",
+        "notAfter"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "s1-owner-attestation.v1" },
+        "attestationId": { "type": "string", "format": "uuid" },
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["controlId", "sourceSha", "evidenceDigests"],
+          "properties": {
+            "controlId": { "$ref": "#/$defs/nonEmpty" },
+            "sourceSha": { "$ref": "#/$defs/sourceSha" },
+            "evidenceDigests": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/digest" }
+            }
+          }
+        },
+        "owner": { "$ref": "#/$defs/nonEmpty" },
+        "facts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["factId", "value"],
+            "properties": {
+              "factId": { "$ref": "#/$defs/nonEmpty" },
+              "value": {
+                "anyOf": [{ "type": "boolean" }, { "type": "string" }, { "type": "number" }]
+              }
+            }
+          }
+        },
+        "validFrom": { "$ref": "#/$defs/timestamp" },
+        "notAfter": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "custodyReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "receiptId",
+        "contentDigest",
+        "contentSizeBytes",
+        "storeRef",
+        "uploadedAt",
+        "readbackAt",
+        "readbackDigest",
+        "owner",
+        "readers",
+        "retainUntil",
+        "expiryDisposition",
+        "attestationRef"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "custody-receipt.v1" },
+        "receiptId": { "type": "string", "format": "uuid" },
+        "contentDigest": { "$ref": "#/$defs/digest" },
+        "contentSizeBytes": { "type": "integer", "minimum": 0 },
+        "storeRef": { "$ref": "#/$defs/nonEmpty" },
+        "uploadedAt": { "$ref": "#/$defs/timestamp" },
+        "readbackAt": { "$ref": "#/$defs/timestamp" },
+        "readbackDigest": { "$ref": "#/$defs/digest" },
+        "owner": { "const": "release-engineering" },
+        "readers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        },
+        "retainUntil": { "$ref": "#/$defs/timestamp" },
+        "expiryDisposition": { "const": "review" },
+        "attestationRef": { "$ref": "#/$defs/nonEmpty" }
+      }
+    }
+  }
+}

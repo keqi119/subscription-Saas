@@ -1,0 +1,506 @@
+name: Stage1 S1 Release Candidate Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      buildRunId:
+        description: Protected Docker Images run for this exact main SHA
+        required: true
+        type: string
+      buildProofDigestHex:
+        description: Build proof SHA-256 without the sha256 prefix
+        required: true
+        type: string
+      snapshotRunId:
+        description: Protected sanitized snapshot run
+        required: true
+        type: string
+      snapshotArtifactName:
+        description: Immutable sanitized snapshot artifact
+        required: true
+        type: string
+      ownerAttestationRunId:
+        description: Protected narrow owner-attestation run
+        required: true
+        type: string
+      ownerAttestationArtifactName:
+        description: Immutable narrow owner-attestation artifact
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  attestations: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: stage1-s1-release-candidate-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  WORKFLOW_RUN_REF: github://${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+  RC_ARTIFACT_SUFFIX: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  source-static:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    outputs:
+      source-sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - id: source
+        name: Freeze the exact clean main source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Install fixed dependencies
+        run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+
+      - name: Execute source contract gates
+        run: |
+          pnpm release:contracts:verify
+          node scripts/release/discover-database-tests.mjs --mode verify
+          pnpm --filter @subscription-saas/release-foundation test
+          pnpm --filter @subscription-saas/release-runner test
+
+  source-fresh:
+    needs: source-static
+    runs-on: [self-hosted, linux, stage1-release-source]
+    environment: trusted-source-database-gate
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.source-static.outputs.source-sha }}
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+      - name: Execute the complete fresh source database gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release/run-source-database-gate.mjs --chain fresh > "$RUNNER_TEMP/source-fresh.raw.json"
+          mkdir -p .release-output/source-fresh
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from "node:fs/promises";
+          import { canonicalJson, validateContract } from "./packages/release-foundation/src/index.mjs";
+          const value = JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/source-fresh.raw.json`, "utf8"));
+          validateContract("source-gate-evidence.v1", value);
+          await writeFile(".release-output/source-fresh/source-gate-fresh.v1.json", canonicalJson(value), { flag: "wx" });
+          NODE
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-output/source-fresh/source-gate-fresh.v1.json
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-source-fresh-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/source-fresh/source-gate-fresh.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-source-fresh-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-readback/source-fresh
+      - name: Freeze the same-run source custody record
+        env:
+          STORE_REF: ${{ steps.upload.outputs.artifact-url }}
+          ATTESTATION_REF: ${{ steps.attest.outputs.attestation-url }}
+        run: |
+          node scripts/release/workflow-custody-record.mjs \
+            --original-file .release-output/source-fresh/source-gate-fresh.v1.json \
+            --readback-file .release-readback/source-fresh/source-gate-fresh.v1.json \
+            --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$STORE_REF" \
+            --attestation-ref "$ATTESTATION_REF" \
+            --output-file .release-output/source-fresh/source-gate-fresh-custody-record.v1.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-source-fresh-custody-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/source-fresh/source-gate-fresh-custody-record.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+
+  source-snapshot:
+    needs: source-static
+    runs-on: [self-hosted, linux, stage1-release-source]
+    environment: trusted-source-database-gate
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.source-static.outputs.source-sha }}
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.snapshotRunId }}
+          name: ${{ inputs.snapshotArtifactName }}
+          path: ${{ runner.temp }}/snapshot-input
+      - name: Verify the protected snapshot artifact before database access
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SNAPSHOT_ARTIFACT_NAME: ${{ inputs.snapshotArtifactName }}
+          SNAPSHOT_RUN_ID: ${{ inputs.snapshotRunId }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$SNAPSHOT_ARTIFACT_NAME" = "sanitized-snapshot-$SNAPSHOT_RUN_ID"
+          gh attestation verify "$RUNNER_TEMP/snapshot-input/sanitized-snapshot.dump" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow github.com/keqi119/subscription-Saas/.github/workflows/sanitized-snapshot.yml \
+            --source-ref refs/heads/main --format json > "$RUNNER_TEMP/snapshot-dump-attestation.json"
+          gh attestation verify "$RUNNER_TEMP/snapshot-input/snapshot-metadata.v1.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow github.com/keqi119/subscription-Saas/.github/workflows/sanitized-snapshot.yml \
+            --source-ref refs/heads/main --format json > "$RUNNER_TEMP/snapshot-metadata-attestation.json"
+          node --input-type=module <<'NODE'
+          import { readFile } from "node:fs/promises";
+          const metadata = JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/snapshot-input/snapshot-metadata.v1.json`, "utf8"));
+          const expected = `github://${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.SNAPSHOT_RUN_ID}`;
+          if (metadata.workflowRunRef !== expected) throw new Error("SNAPSHOT_WORKFLOW_IDENTITY_MISMATCH");
+          NODE
+      - name: Execute the complete snapshot source database gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release/run-source-database-gate.mjs --chain snapshot \
+            --snapshot-metadata-file "$RUNNER_TEMP/snapshot-input/snapshot-metadata.v1.json" \
+            > "$RUNNER_TEMP/source-snapshot.raw.json"
+          mkdir -p .release-output/source-snapshot
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from "node:fs/promises";
+          import { canonicalJson, validateContract } from "./packages/release-foundation/src/index.mjs";
+          const source = JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/source-snapshot.raw.json`, "utf8"));
+          const snapshot = JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/snapshot-input/snapshot-metadata.v1.json`, "utf8"));
+          validateContract("source-gate-evidence.v1", source);
+          validateContract("snapshot-metadata.v1", snapshot);
+          await writeFile(".release-output/source-snapshot/source-gate-snapshot.v1.json", canonicalJson(source), { flag: "wx" });
+          await writeFile(".release-output/source-snapshot/snapshot-metadata.v1.json", canonicalJson(snapshot), { flag: "wx" });
+          NODE
+      - id: attest-source
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-output/source-snapshot/source-gate-snapshot.v1.json
+      - id: upload-source
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-source-snapshot-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/source-snapshot/source-gate-snapshot.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - id: attest-snapshot
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-output/source-snapshot/snapshot-metadata.v1.json
+      - id: upload-snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-snapshot-metadata-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/source-snapshot/snapshot-metadata.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-source-snapshot-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-readback/source-snapshot
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-snapshot-metadata-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-readback/snapshot-metadata
+      - name: Freeze both snapshot-chain custody records
+        env:
+          SOURCE_STORE_REF: ${{ steps.upload-source.outputs.artifact-url }}
+          SOURCE_ATTESTATION_REF: ${{ steps.attest-source.outputs.attestation-url }}
+          SNAPSHOT_STORE_REF: ${{ steps.upload-snapshot.outputs.artifact-url }}
+          SNAPSHOT_ATTESTATION_REF: ${{ steps.attest-snapshot.outputs.attestation-url }}
+        run: |
+          node scripts/release/workflow-custody-record.mjs \
+            --original-file .release-output/source-snapshot/source-gate-snapshot.v1.json \
+            --readback-file .release-readback/source-snapshot/source-gate-snapshot.v1.json \
+            --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$SOURCE_STORE_REF" \
+            --attestation-ref "$SOURCE_ATTESTATION_REF" \
+            --output-file .release-output/source-snapshot/source-gate-snapshot-custody-record.v1.json
+          node scripts/release/workflow-custody-record.mjs \
+            --original-file .release-output/source-snapshot/snapshot-metadata.v1.json \
+            --readback-file .release-readback/snapshot-metadata/snapshot-metadata.v1.json \
+            --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$SNAPSHOT_STORE_REF" \
+            --attestation-ref "$SNAPSHOT_ATTESTATION_REF" \
+            --output-file .release-output/source-snapshot/snapshot-metadata-custody-record.v1.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-source-snapshot-custody-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: |
+            .release-output/source-snapshot/source-gate-snapshot-custody-record.v1.json
+            .release-output/source-snapshot/snapshot-metadata-custody-record.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+
+  admit-build:
+    needs: [source-fresh, source-snapshot]
+    runs-on: ubuntu-latest
+    environment: trusted-release-candidate
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.buildRunId }}
+          pattern: build-proof*-${{ inputs.buildProofDigestHex }}
+          path: .release-inputs/build
+          merge-multiple: true
+      - name: Verify and admit the exact protected bundle
+        env:
+          EXPECTED_DIGEST: sha256:${{ inputs.buildProofDigestHex }}
+        run: |
+          gh attestation verify .release-inputs/build/build-proof.v1.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow github.com/keqi119/subscription-Saas/.github/workflows/docker-images.yml \
+            --source-digest "$GITHUB_SHA" --format json > "$RUNNER_TEMP/build-attestation.json"
+          node --input-type=module <<'NODE'
+          import { mkdir, readFile, writeFile } from "node:fs/promises";
+          import { assertCustodyComplete, canonicalJson, sha256Canonical, validateContract } from "./packages/release-foundation/src/index.mjs";
+          const proof = JSON.parse(await readFile(".release-inputs/build/build-proof.v1.json", "utf8"));
+          const receipt = JSON.parse(await readFile(".release-inputs/build/build-proof.custody-receipt.v1.json", "utf8"));
+          validateContract("build-proof.v1", proof);
+          const digest = sha256Canonical(proof);
+          if (digest !== process.env.EXPECTED_DIGEST || proof.identity.sourceSha !== process.env.GITHUB_SHA) throw new Error("RC_BUILD_IDENTITY_MISMATCH");
+          assertCustodyComplete(receipt, digest);
+          await mkdir(".release-output/build", { recursive: true });
+          await writeFile(".release-output/build/build-proof.v1.json", canonicalJson(proof), { flag: "wx" });
+          NODE
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-output/build/build-proof.v1.json
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-admitted-build-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/build/build-proof.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-admitted-build-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-readback/build
+      - name: Freeze same-run build custody
+        env:
+          STORE_REF: ${{ steps.upload.outputs.artifact-url }}
+          ATTESTATION_REF: ${{ steps.attest.outputs.attestation-url }}
+        run: |
+          node scripts/release/workflow-custody-record.mjs \
+            --original-file .release-output/build/build-proof.v1.json \
+            --readback-file .release-readback/build/build-proof.v1.json \
+            --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$STORE_REF" \
+            --attestation-ref "$ATTESTATION_REF" \
+            --output-file .release-output/build/build-proof-custody-record.v1.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-admitted-build-custody-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/build/build-proof-custody-record.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+
+  final-fresh:
+    needs: [source-fresh, admit-build]
+    uses: ./.github/workflows/release-final-chain.yml
+    with:
+      chain: fresh
+      artifactSuffix: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      snapshotRunId: ${{ inputs.snapshotRunId }}
+      snapshotArtifactName: ${{ inputs.snapshotArtifactName }}
+    secrets: inherit
+
+  final-snapshot:
+    needs: [source-snapshot, admit-build]
+    uses: ./.github/workflows/release-final-chain.yml
+    with:
+      chain: snapshot
+      artifactSuffix: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      snapshotRunId: ${{ inputs.snapshotRunId }}
+      snapshotArtifactName: ${{ inputs.snapshotArtifactName }}
+    secrets: inherit
+
+  aggregate-proof:
+    needs: [final-fresh, final-snapshot]
+    runs-on: ubuntu-latest
+    environment: trusted-release-candidate
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+      - name: Download only current-run proof and custody nodes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: rc-*-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-inputs/current-run
+          merge-multiple: true
+      - name: Assemble the current-run aggregate input
+        run: node scripts/release/assemble-release-aggregate-input.mjs --input-root .release-inputs/current-run --output-file .release-output/aggregate-input.v1.json
+      - name: Aggregate only the selected same-run proof set
+        run: node scripts/release/aggregate-release-proof.mjs --input-file .release-output/aggregate-input.v1.json --output-file .release-output/release-aggregate-proof.v1.json
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-output/release-aggregate-proof.v1.json
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-aggregate-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/release-aggregate-proof.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-aggregate-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-readback/aggregate
+      - name: Custody the aggregate before exit evidence generation
+        env:
+          STORE_REF: ${{ steps.upload.outputs.artifact-url }}
+          ATTESTATION_REF: ${{ steps.attest.outputs.attestation-url }}
+        run: |
+          node scripts/release/workflow-custody-record.mjs \
+            --original-file .release-output/release-aggregate-proof.v1.json \
+            --readback-file .release-readback/aggregate/release-aggregate-proof.v1.json \
+            --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$STORE_REF" \
+            --attestation-ref "$ATTESTATION_REF" \
+            --output-file .release-output/release-aggregate-custody-record.v1.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-aggregate-custody-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/release-aggregate-custody-record.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+
+  generate-exit-evidence:
+    needs: aggregate-proof
+    runs-on: ubuntu-latest
+    environment: trusted-release-candidate
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-aggregate-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-inputs/aggregate
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-aggregate-custody-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-inputs/aggregate-custody
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.ownerAttestationRunId }}
+          name: ${{ inputs.ownerAttestationArtifactName }}
+          path: .release-inputs/owner-attestations
+      - name: Verify the protected owner-attestation bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER_ATTESTATION_ARTIFACT_NAME: ${{ inputs.ownerAttestationArtifactName }}
+          OWNER_ATTESTATION_RUN_ID: ${{ inputs.ownerAttestationRunId }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$OWNER_ATTESTATION_ARTIFACT_NAME" = "s1-owner-attestations-$GITHUB_SHA-$OWNER_ATTESTATION_RUN_ID"
+          gh attestation verify .release-inputs/owner-attestations/s1-owner-attestations.v1.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow github.com/keqi119/subscription-Saas/.github/workflows/release-owner-attestations.yml \
+            --source-digest "$GITHUB_SHA" --format json > "$RUNNER_TEMP/owner-attestation-verification.json"
+      - name: Derive repository observations and exit input after aggregation
+        run: node scripts/release/assemble-s1-exit-input.mjs --aggregate-file .release-inputs/aggregate/release-aggregate-proof.v1.json --aggregate-custody-file .release-inputs/aggregate-custody/release-aggregate-custody-record.v1.json --owner-attestations-file .release-inputs/owner-attestations/s1-owner-attestations.v1.json --output-file .release-output/s1-exit-input.v1.json
+      - name: Generate the non-audited S1 checkpoint
+        run: node scripts/release/generate-s1-exit-evidence.mjs --input-file .release-output/s1-exit-input.v1.json --output-file .release-output/s1-exit-evidence.v1.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-generated-exit-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/s1-exit-evidence.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+
+  checkpoint-custody:
+    needs: generate-exit-evidence
+    runs-on: ubuntu-latest
+    environment: trusted-release-candidate
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-generated-exit-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-inputs/generated-exit
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-inputs/generated-exit/s1-exit-evidence.v1.json
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-exit-checkpoint-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-inputs/generated-exit/s1-exit-evidence.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-exit-checkpoint-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-readback/exit
+      - name: Verify final checkpoint custody readback
+        env:
+          STORE_REF: ${{ steps.upload.outputs.artifact-url }}
+          ATTESTATION_REF: ${{ steps.attest.outputs.attestation-url }}
+        run: |
+          node scripts/release/workflow-custody-record.mjs \
+            --original-file .release-inputs/generated-exit/s1-exit-evidence.v1.json \
+            --readback-file .release-readback/exit/s1-exit-evidence.v1.json \
+            --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$STORE_REF" \
+            --attestation-ref "$ATTESTATION_REF" \
+            --output-file .release-output/s1-exit-checkpoint-custody-record.v1.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-exit-checkpoint-custody-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/s1-exit-checkpoint-custody-record.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false

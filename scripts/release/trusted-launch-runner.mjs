@@ -268,7 +268,9 @@ export async function runTrustedLauncherCli(argv, suppliedAdapters) {
 }
 
 async function main() {
-  return runTrustedLauncherCli(process.argv.slice(2));
+  const result = await runTrustedLauncherCli(process.argv.slice(2));
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  return result;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

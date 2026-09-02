@@ -104,6 +104,18 @@ test("repository contract rejects an omitted contract file", async () => {
   });
 });
 
+test("repository contract binds every protected release evidence producer", async () => {
+  const manifest = await loadContractFileManifest(repoRoot);
+  for (const workflow of [
+    ".github/workflows/docker-images.yml",
+    ".github/workflows/release-operation-approval.yml",
+    ".github/workflows/release-approval-revocations.yml",
+    ".github/workflows/sanitized-snapshot.yml"
+  ]) {
+    assert.ok(manifest.files.includes(workflow), workflow);
+  }
+});
+
 test("repository manifest rejects duplicate paths", async () => {
   await withTempRepo(async (root) => {
     const manifestPath = "release/contracts/repository-contract-files.v1.json";

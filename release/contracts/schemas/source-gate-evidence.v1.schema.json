@@ -16,6 +16,7 @@
     "terminalStatus",
     "schemaDiffDigest",
     "migrationStatusDigest",
+    "postSchemaDigest",
     "sanitizedLogDigest",
     "provenance"
   ],
@@ -40,6 +41,7 @@
     "terminalStatus": { "enum": ["PASSED", "FAILED"] },
     "schemaDiffDigest": { "$ref": "#/$defs/digest" },
     "migrationStatusDigest": { "$ref": "#/$defs/digest" },
+    "postSchemaDigest": { "$ref": "#/$defs/digest" },
     "sanitizedLogDigest": { "$ref": "#/$defs/digest" },
     "snapshot": {
       "type": "object",

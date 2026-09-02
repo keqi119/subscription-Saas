@@ -985,6 +985,32 @@ async function gitSourceSha() {
   return assertSourceGateCheckout({ status: status.stdout, sourceSha, exitCode: result.code });
 }
 
+export function sourceGateProvenance(sourceSha, environment = process.env) {
+  if (environment.GITHUB_ACTIONS !== "true") {
+    return Object.freeze({
+      generatedAt: new Date().toISOString(),
+      ciRunRef: `local-controlled-nonpromotable://${sourceSha}`,
+      executorVersion: "source-database-gate.v1"
+    });
+  }
+  if (
+    environment.GITHUB_REPOSITORY !== "keqi119/subscription-Saas" ||
+    environment.GITHUB_REF !== "refs/heads/main" ||
+    environment.GITHUB_SHA !== sourceSha ||
+    !/^[1-9][0-9]*$/u.test(environment.GITHUB_RUN_ID ?? "") ||
+    !/^[1-9][0-9]*$/u.test(environment.GITHUB_RUN_ATTEMPT ?? "") ||
+    environment.GITHUB_WORKFLOW_REF !==
+      "keqi119/subscription-Saas/.github/workflows/release-candidate-gate.yml@refs/heads/main"
+  ) {
+    throw runtimeError("DATABASE_LAUNCHER_SOURCE_PROVENANCE_UNTRUSTED");
+  }
+  return Object.freeze({
+    generatedAt: new Date().toISOString(),
+    ciRunRef: `github://${environment.GITHUB_REPOSITORY}/actions/runs/${environment.GITHUB_RUN_ID}/attempts/${environment.GITHUB_RUN_ATTEMPT}`,
+    executorVersion: "source-database-gate.v1"
+  });
+}
+
 export function assertSourceGateCheckout({ status, sourceSha, exitCode = 0 }) {
   if (typeof status !== "string" || status.trim().length > 0) {
     throw runtimeError("DATABASE_LAUNCHER_SOURCE_CHECKOUT_DIRTY");
@@ -1144,10 +1170,24 @@ export async function executeLauncherRequest({
                 ],
                 execution.timeoutMs
               );
+              const schemaScript = await prismaCommand(
+                secret,
+                [
+                  "migrate",
+                  "diff",
+                  "--from-empty",
+                  "--to-config-datasource",
+                  "--script",
+                  "--schema",
+                  "prisma/schema.prisma"
+                ],
+                execution.timeoutMs
+              );
               databaseObservations.push({
                 name: resource.name,
                 migrationStatusDigest: sha256Canonical(migrationStatus),
-                schemaDiffDigest: sha256Canonical(schemaDiff)
+                schemaDiffDigest: sha256Canonical(schemaDiff),
+                postSchemaDigest: sha256Bytes(Buffer.from(schemaScript.stdout, "utf8"))
               });
             }
             observations.set(execution.suiteId, {
@@ -1162,6 +1202,9 @@ export async function executeLauncherRequest({
                   name,
                   schemaDiffDigest
                 }))
+              ),
+              postSchemaDigests: databaseObservations.map(
+                ({ postSchemaDigest }) => postSchemaDigest
               )
             });
             if (suiteSnapshotRecords.length > 0) {
@@ -1387,6 +1430,12 @@ export async function executeLauncherRequest({
         computeRepositoryContract(repoRoot)
       ]);
       const observationValues = [...observations.values()];
+      const postSchemaDigests = new Set(
+        observationValues.flatMap(({ postSchemaDigests }) => postSchemaDigests)
+      );
+      if (postSchemaDigests.size !== 1) {
+        throw runtimeError("DATABASE_LAUNCHER_POST_SCHEMA_IDENTITY_MISMATCH");
+      }
       output = runSourceDatabaseGate({
         manifestReport,
         sourceSha,
@@ -1402,6 +1451,7 @@ export async function executeLauncherRequest({
         migrationStatusDigest: sha256Canonical(
           observationValues.map(({ migrationStatusDigest }) => migrationStatusDigest)
         ),
+        postSchemaDigest: [...postSchemaDigests][0],
         ...(snapshotInput
           ? {
               snapshot: {
@@ -1420,11 +1470,7 @@ export async function executeLauncherRequest({
               }
             }
           : {}),
-        provenance: {
-          generatedAt: new Date().toISOString(),
-          ciRunRef: `local-controlled-nonpromotable://${runId}`,
-          executorVersion: "source-database-gate.v1"
-        }
+        provenance: sourceGateProvenance(sourceSha)
       });
     }
     await removeSuccessfulCluster(cluster, runId);

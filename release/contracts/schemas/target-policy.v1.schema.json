@@ -29,7 +29,13 @@
             "uniqueItems": true,
             "items": { "enum": ["ci-fresh", "ci-snapshot", "staging"] }
           },
-          "prohibitedEnvironments": { "const": ["production"] },
+          "prohibitedEnvironments": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "contains": { "const": "production" },
+            "items": { "enum": ["ci-fresh", "ci-snapshot", "staging", "production"] }
+          },
           "allowedHosts": {
             "type": "array",
             "minItems": 1,

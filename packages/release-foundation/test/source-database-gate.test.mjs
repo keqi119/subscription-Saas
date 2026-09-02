@@ -152,6 +152,7 @@ test("source gate rejects an incomplete aggregate count equation", () => {
         postgres: { imageDigest: digest, serverVersionNum: "170006" },
         schemaDiffDigest: digest,
         migrationStatusDigest: digest,
+        postSchemaDigest: digest,
         provenance: {
           generatedAt: "2026-09-02T08:00:00.000Z",
           ciRunRef: "local-controlled://source-gate-run",

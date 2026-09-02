@@ -3047,13 +3047,37 @@ Do not stage Task 30 exit-audit/report files.
 **Files:**
 
 - Create: `.github/workflows/release-candidate-gate.yml`
+- Create: `.github/workflows/release-final-chain.yml`
+- Create: `.github/workflows/release-owner-attestations.yml`
 - Create: `scripts/release/aggregate-release-proof.mjs`
 - Create: `scripts/release/aggregate-release-proof.test.mjs`
+- Create: `scripts/release/assemble-release-aggregate-input.mjs`
+- Create: `scripts/release/assemble-s1-exit-input.mjs`
+- Create: `scripts/release/create-final-attempt-history.mjs`
+- Create: `scripts/release/export-final-compose-environment.mjs`
 - Create: `scripts/release/generate-s1-exit-evidence.mjs`
 - Create: `scripts/release/generate-s1-exit-evidence.test.mjs`
+- Create: `scripts/release/prepare-final-compose-launch.mjs`
+- Create: `scripts/release/prepare-final-compose-launch.test.mjs`
+- Create: `scripts/release/release-dag-assemblers.test.mjs`
+- Create: `scripts/release/workflow-custody-record.mjs`
+- Create: `scripts/release/workflow-custody-record.test.mjs`
 - Create: `release/contracts/schemas/s1-exit-evidence.v1.schema.json`
+- Create: `release/contracts/schemas/s1-owner-attestations.v1.schema.json`
+- Modify: `.github/workflows/release-operation-approval.yml`
+- Modify: `.github/workflows/release-approval-revocations.yml`
+- Modify: `.github/workflows/sanitized-snapshot.yml`
+- Modify: `apps/release-runner/test/command-registry.test.mjs`
+- Modify: `packages/release-foundation/src/database-test-launcher.mjs`
 - Modify: `packages/release-foundation/src/catalogs.mjs`
+- Modify: `packages/release-foundation/test/catalogs.test.mjs`
+- Modify: `packages/release-foundation/test/snapshot-export.test.mjs`
+- Modify: `release/contracts/schemas/source-gate-evidence.v1.schema.json`
+- Modify: `release/contracts/schemas/target-policy.v1.schema.json`
 - Modify: `release/contracts/repository-contract-files.v1.json`
+- Modify: `scripts/release/approval-workflows.test.mjs`
+- Modify: `scripts/release/database-test-launcher-runtime.mjs`
+- Modify: `scripts/release/trusted-launch-runner.mjs`
 
 **Interfaces:**
 
@@ -3069,6 +3093,8 @@ custody`. Task 29R-D commits and exercises the prefix through generated exit evi
   evidence object.
 - Owner/manual attestations are narrow input facts with their own attestation subject, owner,
   validity window and custody receipt; they cannot claim aggregate/final-gate status.
+- Snapshot and owner inputs are accepted only after their protected producer attestation is verified;
+  artifact names and producer run identities are exact, not caller-defined aliases.
 
 - [ ] **Step 1: Write RED DAG and in-run generation tests**
 
@@ -3124,6 +3150,8 @@ cross-run source evidence, duplicate artifact overwrite and selection of uncusto
 
 ```powershell
 node --test scripts/release/aggregate-release-proof.test.mjs scripts/release/generate-s1-exit-evidence.test.mjs scripts/release/final-compose-gate.test.mjs
+node --test scripts/release/approval-workflows.test.mjs scripts/release/trusted-launch-runner.test.mjs apps/release-runner/test/command-registry.test.mjs
+node --test packages/release-foundation/test/catalogs.test.mjs packages/release-foundation/test/snapshot-export.test.mjs
 pnpm release:contracts:verify
 node scripts/release/verify-compose-policy.mjs docker-compose.release-gate.yml
 git diff --check
@@ -3135,7 +3163,7 @@ inputs and prebuilt result path are absent.
 - [ ] **Step 7: Commit the repaired DAG separately**
 
 ```powershell
-git add .github/workflows/release-candidate-gate.yml scripts/release/aggregate-release-proof.mjs scripts/release/aggregate-release-proof.test.mjs scripts/release/generate-s1-exit-evidence.mjs scripts/release/generate-s1-exit-evidence.test.mjs packages/release-foundation/src/catalogs.mjs release/contracts
+git add .github/workflows/release-candidate-gate.yml .github/workflows/release-final-chain.yml .github/workflows/release-owner-attestations.yml .github/workflows/release-operation-approval.yml .github/workflows/release-approval-revocations.yml .github/workflows/sanitized-snapshot.yml apps/release-runner/test/command-registry.test.mjs docs/superpowers/plans/2026-09-02-stage1-s1-trusted-release-foundation-implementation-plan.md packages/release-foundation/src/catalogs.mjs packages/release-foundation/src/database-test-launcher.mjs packages/release-foundation/test/catalogs.test.mjs packages/release-foundation/test/database-test-launcher.test.mjs packages/release-foundation/test/snapshot-export.test.mjs packages/release-foundation/test/source-database-gate.test.mjs release/contracts scripts/release/aggregate-release-proof.mjs scripts/release/aggregate-release-proof.test.mjs scripts/release/approval-workflows.test.mjs scripts/release/assemble-release-aggregate-input.mjs scripts/release/assemble-s1-exit-input.mjs scripts/release/create-final-attempt-history.mjs scripts/release/database-test-launcher-cli.test.mjs scripts/release/database-test-launcher-runtime.mjs scripts/release/export-final-compose-environment.mjs scripts/release/final-compose-application-adapters.test.mjs scripts/release/final-compose-database-adapters.test.mjs scripts/release/generate-s1-exit-evidence.mjs scripts/release/generate-s1-exit-evidence.test.mjs scripts/release/prepare-final-compose-launch.mjs scripts/release/prepare-final-compose-launch.test.mjs scripts/release/release-dag-assemblers.test.mjs scripts/release/task29r-proof-fixtures.mjs scripts/release/trusted-launch-runner.mjs scripts/release/workflow-custody-record.mjs scripts/release/workflow-custody-record.test.mjs
 git commit -m "fix(release): generate final evidence in one trusted run"
 ```
 

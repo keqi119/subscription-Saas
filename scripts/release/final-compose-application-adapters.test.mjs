@@ -421,6 +421,7 @@ function sourceEvidence(proof) {
     terminalStatus: "PASSED",
     schemaDiffDigest: digest("a"),
     migrationStatusDigest: digest("b"),
+    postSchemaDigest: digest("d"),
     sanitizedLogDigest: digest("c"),
     provenance: {
       generatedAt: "2026-09-03T00:00:00.000Z",

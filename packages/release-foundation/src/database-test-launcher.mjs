@@ -518,6 +518,7 @@ export function runSourceDatabaseGate({
   postgres,
   schemaDiffDigest,
   migrationStatusDigest,
+  postSchemaDigest,
   snapshot,
   provenance
 }) {
@@ -571,6 +572,7 @@ export function runSourceDatabaseGate({
     terminalStatus: manifestReport.terminalStatus,
     schemaDiffDigest,
     migrationStatusDigest,
+    postSchemaDigest,
     ...(snapshot ? { snapshot } : {}),
     sanitizedLogDigest: manifestReport.sanitizedLogDigest,
     provenance

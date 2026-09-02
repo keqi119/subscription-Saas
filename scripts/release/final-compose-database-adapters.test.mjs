@@ -66,6 +66,7 @@ function sourceEvidence(chain, proof) {
     terminalStatus: "PASSED",
     schemaDiffDigest: digest("b"),
     migrationStatusDigest: digest("c"),
+    postSchemaDigest: digest("e"),
     sanitizedLogDigest: digest("d"),
     ...(chain === "snapshot"
       ? {

@@ -28,8 +28,10 @@ test("operation approval workflow uses protected environments, first attempts, a
     "environment:",
     "id-token: write",
     "attestations: write",
-    "actions/attest-build-provenance@v2",
-    "actions/download-artifact@v4",
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "approval-record.custody-receipt.v1.json",
     "retention-days: 180"
   ]) {
@@ -48,11 +50,20 @@ test("revocation workflow publishes protected first-attempt heartbeats without c
     "gh api --paginate",
     "gh attestation verify",
     "previousArtifactDigest:",
-    "actions/attest-build-provenance@v2",
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "approval-revocations.custody-receipt.v1.json"
   ]) {
     assert.match(text, new RegExp(required.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   const inputBlock = text.slice(text.indexOf("workflow_dispatch:"), text.indexOf("schedule:"));
   assert.doesNotMatch(inputBlock, /previousArtifactDigest|artifactUrl|workflowRef|sequence/);
+});
+
+test("approval workflows do not trust mutable action references", async () => {
+  for (const name of ["release-operation-approval.yml", "release-approval-revocations.yml"]) {
+    assert.doesNotMatch(await workflow(name), /uses:\s*[^\s]+@(v\d+|main|master|latest)\b/);
+  }
 });

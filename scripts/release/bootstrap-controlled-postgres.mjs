@@ -127,13 +127,35 @@ export async function pullExactPostgresImage({
         args: ["pull", "--platform", "linux/amd64", image]
       });
     } catch (error) {
-      if (error?.code !== "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED" || attempt === 3) {
+      if (error?.code !== "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED") {
         throw error;
       }
+      if (attempt === 3) throw task0Error(classifyPostgresPullFailure(error));
       await wait(attempt * 1000);
     }
   }
-  throw task0Error("CONTROLLED_TARGET_DOCKER_COMMAND_FAILED");
+  throw task0Error("CONTROLLED_TARGET_POSTGRES_PULL_FAILED");
+}
+
+function classifyPostgresPullFailure(error) {
+  const diagnostic = typeof error?.diagnostic === "string" ? error.diagnostic.toLowerCase() : "";
+  if (/too many requests|toomanyrequests|rate.?limit/u.test(diagnostic)) {
+    return "CONTROLLED_TARGET_POSTGRES_PULL_RATE_LIMITED";
+  }
+  if (/authentication required|denied|unauthorized/u.test(diagnostic)) {
+    return "CONTROLLED_TARGET_POSTGRES_PULL_AUTH_FAILED";
+  }
+  if (/manifest unknown|no matching manifest|not found/u.test(diagnostic)) {
+    return "CONTROLLED_TARGET_POSTGRES_PULL_IMAGE_UNAVAILABLE";
+  }
+  if (
+    /connection reset|context deadline|eof|i\/o timeout|network|resolve|temporary failure|tls handshake timeout/u.test(
+      diagnostic
+    )
+  ) {
+    return "CONTROLLED_TARGET_POSTGRES_PULL_NETWORK_FAILED";
+  }
+  return "CONTROLLED_TARGET_POSTGRES_PULL_FAILED";
 }
 
 function digestFromRepoDigests(stdout, expectedDigest) {

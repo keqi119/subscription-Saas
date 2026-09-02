@@ -106,10 +106,24 @@ test("retries only the pre-state digest-pinned PostgreSQL pull", async () => {
       },
       wait: async (milliseconds) => exhaustedWaits.push(milliseconds)
     }),
-    { code: "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED" }
+    { code: "CONTROLLED_TARGET_POSTGRES_PULL_FAILED" }
   );
   assert.equal(exhaustedAttempts, 3);
   assert.deepEqual(exhaustedWaits, [1000, 2000]);
+
+  await assert.rejects(
+    pullExactPostgresImage({
+      image,
+      executeDocker: async () => {
+        throw Object.assign(new Error("redacted"), {
+          code: "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED",
+          diagnostic: "toomanyrequests: pull rate limit exceeded"
+        });
+      },
+      wait: async () => undefined
+    }),
+    { code: "CONTROLLED_TARGET_POSTGRES_PULL_RATE_LIMITED" }
+  );
 });
 
 function matchingInspection(record, profile = "verify") {

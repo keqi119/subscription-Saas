@@ -50,10 +50,15 @@ async function main() {
         commandId === commandContract.commandId && commandVersion === commandContract.commandVersion
     );
     const approvalByEnvironment = Object.fromEntries(
-      (registered?.allowedEnvironments ?? []).map((environment) => [
-        environment,
-        registered.approvalModeOverrides?.[environment] ?? registered.approvalMode
-      ])
+      ["ci-fresh", "ci-snapshot", "staging"].flatMap((environment) => {
+        if (registered?.prohibitedEnvironments?.includes(environment)) {
+          return [[environment, "prohibited"]];
+        }
+        if (!registered?.allowedEnvironments?.includes(environment)) return [];
+        return [
+          [environment, registered.approvalModeOverrides?.[environment] ?? registered.approvalMode]
+        ];
+      })
     );
     if (
       registered?.capabilityProfile !== commandContract.capabilityProfile ||

@@ -559,6 +559,25 @@
       }
     },
     {
+      "suiteId": "runner.stage1-contract-change-bootstrap",
+      "runner": "node-test",
+      "files": [
+        "apps/release-runner/test/stage1-contract-change-bootstrap-equivalence.integration.test.mjs"
+      ],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 300000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" },
+      "databaseTopology": "single"
+    },
+    {
       "suiteId": "runner.stage1-invalid-test-order-retire",
       "runner": "node-test",
       "files": [

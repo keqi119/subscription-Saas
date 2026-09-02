@@ -227,6 +227,31 @@
       "exitCondition": "retire after the Stage1 clean acceptance baseline is no longer required"
     },
     {
+      "commandId": "stage1.contract-change.bootstrap",
+      "commandVersion": "1",
+      "category": "repair",
+      "dataImpact": "controlled-dml",
+      "capabilityProfile": "repair",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot"],
+      "prohibitedEnvironments": ["staging", "production"],
+      "approvalMode": "ci-policy",
+      "allowedExecutionScopes": ["full-rc", "repair"],
+      "supports": { "dryRun": true, "apply": true, "replay": true },
+      "lock": "stage1-contract-change-bootstrap:per-order-and-change",
+      "timeoutMs": 300000,
+      "postconditions": [
+        "approved-source-plan-recomputed-before-apply",
+        "approved-candidates-recomputed-under-lock",
+        "expected-base-segments-and-audits-created",
+        "expected-extension-details-created",
+        "statement-log-has-no-ddl",
+        "replay-has-no-duplicate-side-effects"
+      ],
+      "evidenceSchema": "execution-proof.v1",
+      "owner": "release-engineering",
+      "exitCondition": "retire after ephemeral acceptance data no longer needs compatibility bootstrap for contract-change facts"
+    },
+    {
       "commandId": "stage1.invalid-test-order.retire",
       "commandVersion": "1",
       "category": "repair",

@@ -34,6 +34,7 @@
     "release/contracts/command-contracts/stage1.active-source-facts.repair.v1.json",
     "release/contracts/command-contracts/stage1.billing-maintenance.evidence.v1.json",
     "release/contracts/command-contracts/stage1.clean-acceptance.baseline.v1.json",
+    "release/contracts/command-contracts/stage1.contract-change.bootstrap.v1.json",
     "release/contracts/command-contracts/stage1.invalid-test-order.retire.v1.json",
     "release/contracts/command-contracts/stage1.period.backfill.v1.json",
     "release/contracts/command-contracts/stage1.return-closure.backfill.v1.json",

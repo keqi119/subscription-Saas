@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "stage1.contract-change.bootstrap",
+  "commandVersion": "1",
+  "interface": {
+    "plan": "planContractChangeBootstrap(context,input):Promise<ContractChangeBootstrapPlanV1>",
+    "apply": "applyContractChangeBootstrap(context,approved):Promise<PostStateObservationV1>",
+    "reconcile": "reconcileContractChangeBootstrap(context,prior):Promise<ReconcileResultV1>"
+  },
+  "capabilityProfile": "repair",
+  "databaseRole": "repair",
+  "dataImpact": "controlled-dml",
+  "approvalByEnvironment": {
+    "ci-fresh": "ci-policy",
+    "ci-snapshot": "ci-policy",
+    "staging": "prohibited"
+  },
+  "allowedExecutionScopes": ["full-rc", "repair"],
+  "inputSchema": "stage1-contract-change-bootstrap-input.v1",
+  "planSchema": "deterministic-plan.v1#stage1-contract-change-bootstrap-plan.v1",
+  "outputSchema": "post-state-observation.v1",
+  "selection": "ephemeral CI acceptance databases only; exact active order, contract, period, change request, BASE segment and extension-detail source fingerprints are frozen and Staging/Production are rejected before credential access",
+  "lock": {
+    "id": "stage1-contract-change-bootstrap:per-order-and-change",
+    "order": ["BASE segment source order", "existing BASE segments", "extension change request"],
+    "transactionBoundary": "one serializable transaction per exact BASE segment or extension-detail candidate with a locked source rebuild before each insert"
+  },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 300000,
+  "cancellation": "cancel before the first transaction; any interruption after candidate execution begins requires same-operation reconcile because earlier per-candidate transactions may have committed",
+  "idempotency": "existing BASE segments and extension details are preserved; reconcile verifies every approved candidate and replay creates no duplicate fact or audit",
+  "checksums": "source-plan and candidate fingerprints bind feature flags, source order/change facts, versions when present, target dates, price inputs, existing facts, planned writes, audit counts and refusal classes",
+  "postconditions": [
+    "approved-source-plan-recomputed-before-apply",
+    "approved-candidates-recomputed-under-lock",
+    "expected-base-segments-and-audits-created",
+    "expected-extension-details-created",
+    "statement-log-has-no-ddl",
+    "replay-has-no-duplicate-side-effects"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after ephemeral acceptance data no longer needs compatibility bootstrap for contract-change facts"
+}

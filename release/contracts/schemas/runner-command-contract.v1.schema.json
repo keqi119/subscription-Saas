@@ -45,7 +45,7 @@
       "properties": {
         "ci-fresh": { "enum": ["none", "ci-policy", "human"] },
         "ci-snapshot": { "enum": ["none", "ci-policy", "human"] },
-        "staging": { "enum": ["none", "ci-policy", "human"] }
+        "staging": { "enum": ["none", "ci-policy", "human", "prohibited"] }
       }
     },
     "allowedExecutionScopes": {

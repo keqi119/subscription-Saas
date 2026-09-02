@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "sanitization-contract.v1",
+  "contractId": "stage1-staging-snapshot",
+  "contractVersion": "1",
+  "source": {
+    "allowedEnvironment": "staging",
+    "keyTables": [
+      "public.application",
+      "public.customer",
+      "public.customer_identity",
+      "public.subscription_order"
+    ],
+    "knownMigrationHeads": ["20260901010000_stage1_schema_drift_convergence"]
+  },
+  "transformations": [
+    {
+      "table": "public.customer",
+      "column": "mobile",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.customer_account",
+      "column": "phone",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.customer_identity",
+      "column": "id_card_no",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.customer_profile",
+      "column": "emergency_contact_mobile",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.vehicle_handover_work_order",
+      "column": "access_token_hash",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.user",
+      "column": "mobile",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.user",
+      "column": "password_hash",
+      "method": "fixed-disabled-value",
+      "fixedValue": "disabled-for-snapshot"
+    }
+  ],
+  "scanRules": [
+    "china-mobile",
+    "china-id-card",
+    "credential-url",
+    "bearer-token",
+    "private-key",
+    "provider-token"
+  ],
+  "tools": {
+    "exporterVersion": "snapshot-export/1",
+    "scannerVersion": "snapshot-scan/1"
+  },
+  "lifecycle": {
+    "owner": "release-engineering",
+    "readers": ["release", "qa", "security", "audit"],
+    "reviewAfterDays": 30,
+    "expiresAfterDays": 30,
+    "accessPolicyRef": "policy://stage1-sanitized-snapshot"
+  }
+}

@@ -54,3 +54,14 @@ export {
   createExecutionState,
   transitionExecution
 } from "./execution-state-machine.mjs";
+export {
+  exportSanitizedSnapshot,
+  transformRecord,
+  verifySnapshotMetadata
+} from "./snapshot/export-sanitized.mjs";
+export { scanSanitizedArtifact } from "./snapshot/scan-artifact.mjs";
+export {
+  assertReadOnlySnapshotSource,
+  createReadOnlySourceExecutor,
+  fingerprintSourceSnapshot
+} from "./snapshot/source-readonly-guard.mjs";

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "build-proof.v1",
+  "identity": {
+    "schemaVersion": "build-proof.identity.v1",
+    "images": {
+      "api": {
+        "name": "api",
+        "registry": "ghcr.io/keqi119/subscription-api",
+        "platform": "linux/amd64",
+        "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "sourceRevision": "1111111111111111111111111111111111111111"
+      },
+      "web": {
+        "name": "web",
+        "registry": "ghcr.io/keqi119/subscription-web",
+        "platform": "linux/amd64",
+        "imageDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "sourceRevision": "1111111111111111111111111111111111111111"
+      },
+      "runner": {
+        "name": "runner",
+        "registry": "ghcr.io/keqi119/subscription-runner",
+        "platform": "linux/amd64",
+        "imageDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "sourceRevision": "1111111111111111111111111111111111111111"
+      }
+    },
+    "sourceSha": "1111111111111111111111111111111111111111",
+    "migrationCatalogDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "repositoryContractDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "provenance": {
+    "generatedAt": "2026-09-02T16:00:00.000Z",
+    "ciRunRef": "github://keqi119/subscription-Saas/actions/runs/2801",
+    "attestationRef": "build-material-attestations:sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "checkoutRef": "1111111111111111111111111111111111111111",
+    "baseImages": [
+      {
+        "name": "node:22-bookworm-slim",
+        "resolvedDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      {
+        "name": "postgres:17.11-bookworm",
+        "resolvedDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      }
+    ],
+    "materials": [
+      {
+        "name": "build-material-observation",
+        "reference": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      {
+        "name": "builder",
+        "reference": "build-material-attestations:sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      }
+    ],
+    "registryResolutionEvidenceDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+  }
+}

@@ -11,7 +11,10 @@ import {
 const sourceSha = "1".repeat(40);
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const actions = Object.freeze({
+  "actions/attest": "1e69f48acb82d1966a394da916b4c1698aa569d6",
   "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
+  "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+  "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   "docker/build-push-action": "10e90e3645eae34f1e60eeb005ba3a3d33f178e8",
   "docker/login-action": "c94ce9fb468520275223c153574b00df6fe4bcc9",
   "docker/setup-buildx-action": "8d2750c68a42422c14e847fe6c8ac0403b4cbd6f"

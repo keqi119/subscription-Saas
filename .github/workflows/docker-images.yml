@@ -264,8 +264,15 @@ jobs:
     runs-on: ubuntu-latest
     environment: trusted-image-build
     permissions:
+      attestations: write
       contents: read
+      id-token: write
       packages: read
+    outputs:
+      build-proof-digest: ${{ steps.proof-identity.outputs.digest }}
+      build-proof-artifact-id: ${{ steps.proof-upload.outputs.artifact-id }}
+      build-proof-receipt-artifact-id: ${{ steps.receipt-upload.outputs.artifact-id }}
+      build-proof-evidence-artifact-id: ${{ steps.evidence-upload.outputs.artifact-id }}
     steps:
       - name: Checkout the frozen source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -419,3 +426,200 @@ jobs:
 
       - name: Verify and freeze the build material observation
         run: node scripts/release/verify-build-materials.mjs --input .release-output/build-material-input.v1.json --output .release-output/build-material-observation.v1.json
+
+      - name: Create the complete three-image build proof
+        id: proof-identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+          node scripts/release/create-build-proof.mjs \
+            --observation .release-output/build-material-observation.v1.json \
+            --generated-at "$generated_at" \
+            --output .release-output/build-proof.v1.json \
+            | tee .release-output/build-proof-create-result.json
+          proof_digest="$(node -e 'const r=require("./.release-output/build-proof-create-result.json"); process.stdout.write(r.buildProofDigest)')"
+          test "$(sha256sum .release-output/build-proof.v1.json | cut -d " " -f 1)" = "${proof_digest#sha256:}"
+          echo "digest=$proof_digest" >> "$GITHUB_OUTPUT"
+          echo "digest-hex=${proof_digest#sha256:}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the protected build proof
+        id: proof-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-output/build-proof.v1.json
+
+      - name: Verify the proof attestation against the protected signer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          gh attestation verify .release-output/build-proof.v1.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/docker-images.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "$SOURCE_SHA" \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \
+            --deny-self-hosted-runners \
+            --format json \
+            > .release-output/build-proof-attestation-verification.json
+          node -e 'const r=require("./.release-output/build-proof-attestation-verification.json"); if(!Array.isArray(r)||r.length===0) process.exit(1)'
+
+      - name: Store the proof under its content digest
+        id: proof-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: build-proof-${{ steps.proof-identity.outputs.digest-hex }}
+          path: .release-output/build-proof.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          compression-level: 0
+          overwrite: false
+
+      - name: Read the stored proof back through the artifact service
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: build-proof-${{ steps.proof-identity.outputs.digest-hex }}
+          path: .release-readback/proof
+
+      - name: Create and validate the proof custody receipt
+        shell: bash
+        env:
+          ATTESTATION_REF: ${{ steps.proof-attestation.outputs.attestation-url }}
+          GH_TOKEN: ${{ github.token }}
+          PROOF_ARTIFACT_ID: ${{ steps.proof-upload.outputs.artifact-id }}
+          PROOF_ARTIFACT_URL: ${{ steps.proof-upload.outputs.artifact-url }}
+          PROOF_DIGEST: ${{ steps.proof-identity.outputs.digest }}
+        run: |
+          set -euo pipefail
+          readback=.release-readback/proof/build-proof.v1.json
+          test -f "$readback"
+          test "$(sha256sum "$readback" | cut -d " " -f 1)" = "${PROOF_DIGEST#sha256:}"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PROOF_ARTIFACT_ID" \
+            > .release-output/build-proof-artifact-metadata.json
+          node --input-type=module <<'NODE'
+          import { randomUUID } from "node:crypto";
+          import { readFile, stat, writeFile } from "node:fs/promises";
+          import { assertCustodyComplete, canonicalJson } from "./packages/release-foundation/src/index.mjs";
+
+          if (!process.env.ATTESTATION_REF || !process.env.PROOF_ARTIFACT_URL) throw new Error("BUILD_PROOF_CUSTODY_REFERENCE_MISSING");
+          const metadata = JSON.parse(await readFile(".release-output/build-proof-artifact-metadata.json", "utf8"));
+          if (String(metadata.id) !== process.env.PROOF_ARTIFACT_ID || metadata.expired !== false) throw new Error("BUILD_PROOF_CUSTODY_STORAGE_METADATA_INVALID");
+          const uploadedAt = new Date(metadata.created_at);
+          const retainUntil = new Date(uploadedAt);
+          retainUntil.setUTCDate(retainUntil.getUTCDate() + 180);
+          if (Number.isNaN(uploadedAt.getTime()) || Date.parse(metadata.expires_at) < retainUntil.getTime()) throw new Error("BUILD_PROOF_CUSTODY_RETENTION_TOO_SHORT");
+          const receipt = {
+            schemaVersion: "custody-receipt.v1",
+            receiptId: randomUUID(),
+            contentDigest: process.env.PROOF_DIGEST,
+            contentSizeBytes: (await stat(".release-output/build-proof.v1.json")).size,
+            storeRef: process.env.PROOF_ARTIFACT_URL,
+            uploadedAt: uploadedAt.toISOString(),
+            readbackAt: new Date().toISOString(),
+            readbackDigest: process.env.PROOF_DIGEST,
+            owner: "release-engineering",
+            readers: ["release", "qa", "security", "audit"],
+            retainUntil: retainUntil.toISOString(),
+            expiryDisposition: "review",
+            attestationRef: process.env.ATTESTATION_REF
+          };
+          assertCustodyComplete(receipt, process.env.PROOF_DIGEST);
+          await writeFile(".release-output/build-proof.custody-receipt.v1.json", canonicalJson(receipt), { flag: "wx" });
+          NODE
+
+      - name: Store the immutable proof custody receipt
+        id: receipt-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: build-proof-receipt-${{ steps.proof-identity.outputs.digest-hex }}
+          path: .release-output/build-proof.custody-receipt.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          compression-level: 0
+          overwrite: false
+
+      - name: Read back and verify the receipt and complete proof trust chain
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: build-proof-receipt-${{ steps.proof-identity.outputs.digest-hex }}
+          path: .release-readback/receipt
+
+      - name: Verify the custodied proof for complete-bundle promotion
+        shell: bash
+        env:
+          ATTESTATION_REF: ${{ steps.proof-attestation.outputs.attestation-url }}
+          PROOF_DIGEST: ${{ steps.proof-identity.outputs.digest }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          cmp .release-output/build-proof.custody-receipt.v1.json .release-readback/receipt/build-proof.custody-receipt.v1.json
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from "node:fs/promises";
+          import { canonicalJson, sha256Bytes } from "./packages/release-foundation/src/index.mjs";
+
+          const [proof, buildMaterialObservation, custodyReceipt, attestationVerificationBytes] = await Promise.all([
+            readFile(".release-output/build-proof.v1.json", "utf8").then(JSON.parse),
+            readFile(".release-output/build-material-observation.v1.json", "utf8").then(JSON.parse),
+            readFile(".release-output/build-proof.custody-receipt.v1.json", "utf8").then(JSON.parse),
+            readFile(".release-output/build-proof-attestation-verification.json")
+          ]);
+          const input = {
+            proof,
+            buildMaterialObservation,
+            executionScope: "full-rc",
+            trustRoot: {
+              issuer: "https://token.actions.githubusercontent.com",
+              repository: process.env.GITHUB_REPOSITORY,
+              workflowPath: ".github/workflows/docker-images.yml",
+              workflowRef: "refs/heads/main",
+              protectedEnvironment: "trusted-image-build",
+              runAttempt: 1,
+              custody: {
+                owner: "release-engineering",
+                readers: ["release", "qa", "security", "audit"],
+                retentionDays: 180,
+                expiryDisposition: "review"
+              }
+            },
+            verifiedAttestation: {
+              subjectDigest: process.env.PROOF_DIGEST,
+              sourceSha: process.env.SOURCE_SHA,
+              issuer: "https://token.actions.githubusercontent.com",
+              repository: process.env.GITHUB_REPOSITORY,
+              workflowPath: ".github/workflows/docker-images.yml",
+              workflowRef: "refs/heads/main",
+              workflowRunId: process.env.GITHUB_RUN_ID,
+              runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              protectedEnvironment: "trusted-image-build",
+              attestationRef: process.env.ATTESTATION_REF,
+              verifier: "gh-attestation-verify",
+              verificationPolicy: "github-artifact-attestation/v1",
+              verificationEvidenceDigest: sha256Bytes(attestationVerificationBytes)
+            },
+            custodyReceipt
+          };
+          await writeFile(".release-output/build-proof-verification-input.v1.json", canonicalJson(input), { flag: "wx" });
+          NODE
+          node scripts/release/verify-build-proof.mjs \
+            --input .release-output/build-proof-verification-input.v1.json \
+            | tee .release-output/build-proof-verification-decision.v1.json
+          node -e 'const d=require("./.release-output/build-proof-verification-decision.v1.json"); if(d.status!=="verified"||d.promotionEligible!==true||d.buildProofDigest!==process.env.PROOF_DIGEST) process.exit(1)'
+
+      - name: Preserve the supporting proof verification evidence
+        id: evidence-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: build-proof-evidence-${{ steps.proof-identity.outputs.digest-hex }}
+          path: |
+            .release-output/build-material-observation.v1.json
+            .release-output/build-proof-artifact-metadata.json
+            .release-output/build-proof-attestation-verification.json
+            .release-output/build-proof.custody-receipt.v1.json
+            .release-output/build-proof-verification-decision.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          compression-level: 0
+          overwrite: false

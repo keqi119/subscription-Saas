@@ -14,6 +14,8 @@
 
 **Previous Plan Baseline:** `1fe77ea2`; its Task 29R/30 proof-continuation wording is superseded by this pending revision.
 
+**Review History:** `4aa90565` was not approved because Producer/RC approval ownership, release-attempt allocation order, and Task 29R-D construction ownership remained ambiguous. This revision is limited to those findings.
+
 **Dependent Plan:** `docs/superpowers/plans/2026-09-03-stage1-s1-execution-infrastructure-implementation-plan.md`; it remains unapproved and must be revised independently after this plan is approved.
 
 **Plan Status:** 待独立复审。本次修订只对齐已批准的 execution-purpose-envelope 拓扑，不授权恢复 Task 29R、Task 30 或任何外部基础设施施工。独立基础设施实施计划也必须完成修订和批准，之后才可申请解除 Task 29R 阻断。
@@ -40,11 +42,11 @@
 - Database test Schema fixtures use the migration role; seed/reset and scenario DML use only the runtime-equivalent test role. The roles never share a credential, and the runtime role never becomes an object owner.
 - During command migration, old and Runner write entry points may coexist in test images only. At most one entry receives an active credential in any real environment. Behavior equivalence uses two independent databases restored from the same baseline.
 - API runtime extraction is complete only when `/app/scripts` governance entry points, Prisma CLI, `psql`, and direct governance package scripts are unavailable while the API still starts and queries PostgreSQL through Prisma Client.
-- Every task is a separate review/commit boundary. Do not combine adjacent database-suite, command-adapter, proof, snapshot, build, or final-gate tasks merely to reduce PR count. Stop if a task exceeds approximately 1,500 production lines or 25 production files and split it for approval.
+- Every implementation task is a separate review/commit boundary. Do not combine adjacent database-suite, command-adapter, proof, snapshot, build, or final-gate tasks merely to reduce PR count. Task 29R-D is the sole exception because it is a no-file dependency-acceptance gate whose implementation is owned by the independent infrastructure plan. Stop if an implementation task exceeds approximately 1,500 production lines or 25 production files and split it for approval.
 - S2 and S3 remain blocked. This plan does not create the S3 mature-order fixture, repair Staging data, promote an RC, or run human Stage 1 acceptance.
 - Published source, execution, and final-compose v1 proofs remain immutable raw evidence. A raw v1 proof cannot enter promotable custody, aggregation, or exit review directly; it must first pass one-to-one purpose claim/envelope processing defined by the approved security addendum.
 - Task 29R is a permanently non-promotable `qualification` attempt and must stop with `TASK_30_AUTHORIZATION_REQUIRED`. Task 30 cannot consume, continue, rewrap, or compare itself against that qualification lineage as an approval input.
-- Task 30 implementation requires a later explicit authorization. After it is reviewed and merged to `main`, the promotable attempt starts again from the new source SHA, build proof, three-image bundle, snapshot producer, `releaseAttemptId`, and RC workflow run. In that run, the Task 29R prefix through the Task 30 audit/final-custody tail shares one `rcWorkflowRunId`.
+- Task 30 implementation requires a later explicit authorization. After it is reviewed and merged to `main`, the promotable sequence is fixed: new source SHA/build proof/three-image bundle → allocate `releaseAttemptId` → issue and verify its `rc-dispatch-authorization.v1` → start the independent Producer and obtain `snapshotRunId` → after Producer success start the RC and obtain `rcWorkflowRunId`. In that RC run, each snapshot consumer establishes its own `oidc-cloud-role`, Environment approval/observation, and KMS Decrypt use proof; the Task 29R prefix through the Task 30 audit/final-custody tail shares that one `rcWorkflowRunId`.
 - Until this upstream plan and the independent execution-infrastructure plan are both approved, Task 29R, Task 30, Runner/Adapter installation, Environment or identity creation, workflow mutation, and external qualification remain blocked.
 
 ## Delivery Topology
@@ -55,7 +57,9 @@ controlled PostgreSQL baseline -> offline contract kernel
   -> Runner trust boundary -> verifiable approval -> proof state machine
   -> protected snapshot export -> ownership-normalized snapshot chain
   -> API tooling inventory -> command adapters -> API runtime extraction
-  -> trusted three-image build -> external build proof -> final Compose/session/browser raw v1 proofs
+  -> trusted three-image build -> external build proof -> releaseAttemptId -> dispatch authorization
+  -> dispatch independent Producer / obtain snapshotRunId -> Producer data approval -> Producer custody approval -> completion
+  -> RC snapshot-consumer approvals -> final Compose/session/browser raw v1 proofs
   -> one-to-one purpose claims/envelopes -> v2 custody/aggregation/exit
   -> qualification stop OR a separately authorized, newly built release-candidate run with Task 30 audit/final custody
 ```
@@ -2604,9 +2608,10 @@ Compose policy, API session identity, real-client assertion and the injectable
 `executeFinalComposeGate(input, adapters)` state machine. It did not establish a supported trusted
 launcher or production adapters: the Runner CLI and `trusted-launch-runner.mjs` still fail closed,
 and the CLI form of `run-final-compose-gate.mjs` can only normalize caller-supplied results. That
-commit is therefore a contract/test seam, not final execution evidence. Tasks 29R-A through 29R-D
-are mandatory remediation. Task 29R remains blocked until both implementation plans are approved; its
-first real run is qualification-only and must stop after the v2 qualification checkpoint. Task 30
+commit is therefore a contract/test seam, not final execution evidence. Tasks 29R-A through 29R-C are
+mandatory upstream remediation; Task 29R-D is only the dependency-acceptance gate for implementation
+owned by the independent infrastructure plan. Task 29R remains blocked until both implementation
+plans are approved; its first real run is qualification-only and must stop after the v2 qualification checkpoint. Task 30
 remains separately blocked even after that run and requires explicit implementation authorization;
 none of the qualification inputs or evidence may be continued into Task 30.
 
@@ -3063,157 +3068,101 @@ Do not stage Task 30 exit-audit/report files.
 
 ---
 
-### Task 29R-D: Integrate purpose envelopes and complete the non-promotable qualification checkpoint
+### Task 29R-D: Accept the independently implemented qualification evidence DAG
 
-**Status and dependency:** Blocked. This task cannot start until this plan and the independent S1
-execution-infrastructure implementation plan are both approved and the latter has implemented the
-approved security addendum. It is not a route for installing infrastructure directly from this plan.
+**Status and unique ownership:** Blocked dependency-acceptance gate. The independently approved S1
+execution-infrastructure implementation plan is the sole owner of all Task 29R-D contracts, code,
+workflows, infrastructure changes, tests, commits, and qualification execution. This upstream task
+owns no files, makes no commit, and cannot be executed as a parallel implementation path.
 
-**Integration surface (not independent change authorization):**
-
-The independently approved infrastructure plan assigns the concrete review commits for every file
-below. An implementation agent must not execute this Task 29R-D list as a second, parallel file owner
-or use it to bypass that plan's checkpoints.
-
-- Create: `.github/workflows/release-candidate-gate.yml`
-- Create: `.github/workflows/release-final-chain.yml`
-- Create: `.github/workflows/release-owner-attestations.yml`
-- Create: `scripts/release/aggregate-release-proof.mjs`
-- Create: `scripts/release/aggregate-release-proof.test.mjs`
-- Create: `scripts/release/assemble-release-aggregate-input.mjs`
-- Create: `scripts/release/assemble-s1-exit-input.mjs`
-- Create: `scripts/release/create-final-attempt-history.mjs`
-- Create: `scripts/release/export-final-compose-environment.mjs`
-- Create: `scripts/release/generate-s1-exit-evidence.mjs`
-- Create: `scripts/release/generate-s1-exit-evidence.test.mjs`
-- Create: `scripts/release/prepare-final-compose-launch.mjs`
-- Create: `scripts/release/prepare-final-compose-launch.test.mjs`
-- Create: `scripts/release/release-dag-assemblers.test.mjs`
-- Create: `scripts/release/workflow-custody-record.mjs`
-- Create: `scripts/release/workflow-custody-record.test.mjs`
-- Create: `release/contracts/schemas/s1-owner-attestations.v1.schema.json`
-- Modify: `.github/workflows/release-operation-approval.yml`
-- Modify: `.github/workflows/release-approval-revocations.yml`
-- Modify: `.github/workflows/sanitized-snapshot.yml`
-- Modify: `apps/release-runner/test/command-registry.test.mjs`
-- Modify: `packages/release-foundation/src/database-test-launcher.mjs`
-- Modify: `packages/release-foundation/src/catalogs.mjs`
-- Modify: `packages/release-foundation/test/catalogs.test.mjs`
-- Modify: `packages/release-foundation/test/snapshot-export.test.mjs`
-- Modify: `release/contracts/repository-contract-files.v1.json`
-- Modify: `scripts/release/approval-workflows.test.mjs`
-- Modify: `scripts/release/database-test-launcher-runtime.mjs`
-- Modify: `scripts/release/trusted-launch-runner.mjs`
-
-**Required contracts supplied by the independently approved infrastructure plan:**
+**Required delivered contracts and proofs:**
 
 - `rc-dispatch-authorization.v1`;
 - `exact-capability-approval.v1` with mutually exclusive `publisher-sts`, `oidc-cloud-role`, and
   `jit-registration` variants plus their mechanism-specific use-proof Schemas;
 - `purpose-claim.v1` and `execution-purpose-envelope.v1`;
-- `custody-receipt.v2`, `release-aggregate-proof.v2`, and `s1-exit-evidence.v2`.
+- `custody-receipt.v2`, `release-aggregate-proof.v2`, and `s1-exit-evidence.v2`;
+- repository-contract membership, tests, trusted custody/readback, and the protected qualification
+  execution package required by the approved security addendum.
 
-This task consumes those contracts and verifies their repository-contract membership; it does not
-publish competing versions or weaken their required fields.
+**Acceptance interfaces:**
 
-**Interfaces:**
+- Before either protected workflow is dispatched, the trusted build proof and bundle exist, a unique
+  `releaseAttemptId` is allocated, and a matching `rc-dispatch-authorization.v1` is signed, verified,
+  and placed in trusted custody. Dispatch authorization must not precede or generate the attempt ID.
+- The independent Producer is dispatched only after dispatch authorization succeeds; its GitHub run
+  allocates `snapshotRunId`. Inside that Producer run, `snapshot-data` receives its own
+  `publisher-sts` and `jit-registration` approvals/readbacks followed by its Environment approval and
+  observation. After data, encrypted-object, and destruction proofs are stored, `snapshot-custody`
+  receives a distinct `oidc-cloud-role` approval/readback followed by a second Environment approval
+  and observation. Producer custody verifies only ciphertext/proofs and has no KMS Decrypt permission.
+- Only after Producer completion succeeds may the RC workflow start and allocate `rcWorkflowRunId`.
+  Every RC job that consumes the encrypted snapshot receives its own RC-lane `oidc-cloud-role`, exact
+  pending-deployment approval/readback, Environment approval, post-approval observation, and
+  mechanism-specific credential-use proof before KMS Decrypt. No Producer approval, observation,
+  role, credential, or use proof may satisfy the RC consumer gate.
+- Within that qualification RC run, source/execution/final-compose raw v1 proofs are validated and
+  read back, then follow the one-to-one purpose claim/envelope → v2 custody → v2 aggregate → v2 exit
+  chain. Purpose comes only from the fixed workflow and dispatch authorization. Raw v1 direct input,
+  cross-run evidence, missing/mixed purpose, or a second claim for one raw digest fails closed.
+- The qualification terminal state is `TASK_30_AUTHORIZATION_REQUIRED`. Its Producer, raw proofs,
+  envelopes, custody, aggregate, exit, attempt IDs, and run IDs are historical infrastructure evidence
+  only and are never inputs to Task 30 or a release-candidate attempt.
 
-- The qualification DAG is exactly `qualification dispatch authorization -> independent sanitized
-snapshot producer -> qualification RC source/final raw v1 proofs -> one-to-one purpose
-claims/envelopes -> v2 custody -> v2 aggregate -> v2 exit ->
-TASK_30_AUTHORIZATION_REQUIRED`.
-- Source, execution, and final-compose v1 objects remain raw proof formats. Each raw proof is validated
-  and read back before a normalized, content-addressed `execution-purpose-envelope.v1` is created.
-  Raw v1 proof is never a direct v2 aggregate input.
-- Purpose is inherited only when the workflow's static purpose, fixed path/ref/blob digest, and the
-  matching `rc-dispatch-authorization.v1` purpose agree; no CLI, environment variable, workflow input,
-  filename, or caller JSON may set it. One raw digest gets one create-only claim and one envelope for
-  its lifetime.
-- `aggregateReleaseProofV2(input)` selects only read-back v2 custody receipts that bind both the
-  envelope and `purposeClaimDigest`, all with `executionPurpose=qualification` and the same
-  qualification `releaseAttemptId`, source/build/contracts, `rcWorkflowRunId`, and attempt.
-- `generateS1ExitEvidenceV2(...)` creates only a qualification checkpoint. It cannot claim promotion
-  eligibility, cannot run the S1 exit audit, and cannot be supplied later to Task 30.
-- The external-input allowlist is limited to the matching protected snapshot producer completion and
-  encrypted sanitized snapshot, same-source trusted build proof, and narrow owner/manual
-  attestations. Source/final raw proofs, envelopes, v2 aggregate, and v2 exit must be generated inside
-  the qualification `rcWorkflowRunId`.
+- [ ] **Step 1: Verify the dependency is eligible for acceptance**
 
-- [ ] **Step 1: Write RED DAG, claim, envelope, and promotion-rejection tests**
+Require independent approval of the execution-infrastructure plan, reviewed implementation commits
+for its complete repository and infrastructure scope, exact approved addendum baseline `8366d87d`,
+and a clean source SHA. Any missing approval, unreviewed external change, Task 30 stash mutation, or
+unreconciled UNKNOWN keeps this task blocked.
 
-Assert the workflow has no `finalExecutionRunId`, `finalExecutionArtifactName`,
-`exitEvidenceRunId`, `exitEvidenceArtifactName`, raw final proof, purpose envelope, aggregate, or exit
-evidence input. Reject raw v1 direct aggregation, missing/mixed purpose, a caller-selected purpose,
-multiple claims for one raw digest, cross-run source/final evidence, and any attempt to interpret
-qualification evidence as release-candidate evidence.
+- [ ] **Step 2: Verify release-attempt and workflow-run allocation order**
 
-- [ ] **Step 2: Verify all three approval layers and capability branches before evidence wrapping**
+Inspect the qualification execution proofs and require this exact sequence:
 
-Require the qualification RC dispatch authorization before producer/RC creation; require the exact
-capability approval only for external cloud/snapshot/JIT use and verify the selected
-`capabilityKind`; require `approval-record.v1` only for a registered database command whose
-`approvalMode` is `ci-policy` or `human`. Fresh migration/verify/test using only Runner database roles
-must instead bind launch attestation, database-role observation, command policy and applicable command
-approval. Reject a generic approval object, cross-variant fields, combined credentials, or a cloud-role
-placeholder for a database-only command.
-
-- [ ] **Step 3: Build the qualification workflow around actual Task 29R adapters**
-
-The independent qualification snapshot producer must finish before the qualification RC run starts.
-The RC run generates current source evidence, admits the exact build proof for the same source, and
-calls `run-final-compose-gate.mjs --execute` for fresh and snapshot. It must use separate Environment
-approvals and observations for producer data and custody jobs as specified by the infrastructure plan.
-It never downloads another run's source/final/aggregate/exit evidence and preserves every
-failed/UNKNOWN attempt.
-
-- [ ] **Step 4: Wrap each raw proof and create the v2 qualification lineage in the only legal order**
-
-For every raw v1 proof: validate and read back the raw object, deterministically compute its envelope,
-conditionally create and read back the unique purpose claim, then create and read back v2 custody that
-binds the envelope and claim. Only after all required v2 custody receipts succeed may the workflow
-create `release-aggregate-proof.v2`, followed by `s1-exit-evidence.v2`. Owner/manual facts remain narrow
-attested inputs and cannot claim source, final, aggregate, audit, or promotion status.
-
-- [ ] **Step 5: Prove UNKNOWN and retry behavior cannot splice or rewrap evidence**
-
-An unknown claim/envelope/custody outcome retains the raw proof and failure record and permits only the
-registered read-only reconcile for the same operation. It cannot overwrite, rewrap, or change purpose.
-If reconcile cannot establish a safe terminal state, that attempt is permanently non-promotable; a
-legal retry uses a new operation/run and new raw proof while preserving the old lineage.
-
-- [ ] **Step 6: Run workflow, purpose, aggregate, and generator tests**
-
-```powershell
-node --test scripts/release/aggregate-release-proof.test.mjs scripts/release/generate-s1-exit-evidence.test.mjs scripts/release/final-compose-gate.test.mjs
-node --test scripts/release/approval-workflows.test.mjs scripts/release/trusted-launch-runner.test.mjs apps/release-runner/test/command-registry.test.mjs
-node --test packages/release-foundation/test/execution-purpose.test.mjs packages/release-foundation/test/catalogs.test.mjs packages/release-foundation/test/snapshot-export.test.mjs
-pnpm release:contracts:verify
-node scripts/release/verify-compose-policy.mjs docker-compose.release-gate.yml
-git diff --check
+```text
+trusted build proof/bundle
+  -> allocate releaseAttemptId
+  -> sign/verify/custody rc-dispatch-authorization.v1
+  -> dispatch Producer and obtain snapshotRunId
+  -> complete Producer
+  -> dispatch RC and obtain rcWorkflowRunId
 ```
 
-Expected: PASS; contract tests prove raw v1 formats are unchanged, every selected raw proof has exactly
-one claim/envelope/v2-custody path, qualification is machine-rejected by promotion checks, and the
-prohibited external-evidence inputs are absent.
+Reject authorization without the final attempt ID, Producer before authorization, RC before Producer
+success, caller-supplied run IDs, or reuse of an ID from any prior attempt.
 
-- [ ] **Step 7: Commit Task 29R-D without Task 30 implementation**
+- [ ] **Step 3: Verify Producer-local data and custody approvals**
 
-```powershell
-git add .github/workflows/release-candidate-gate.yml .github/workflows/release-final-chain.yml .github/workflows/release-owner-attestations.yml .github/workflows/release-operation-approval.yml .github/workflows/release-approval-revocations.yml .github/workflows/sanitized-snapshot.yml apps/release-runner/test/command-registry.test.mjs packages/release-foundation release/contracts scripts/release
-git commit -m "fix(release): bind qualification evidence to purpose envelopes"
-```
+Require two distinct Producer pending deployments, Environment approvals, observations, and terminal
+proofs. Confirm data has separate `publisher-sts` and `jit-registration` capabilities; custody has a
+Producer-lane `oidc-cloud-role` limited to ciphertext/proof readback and attestation; publisher STS is
+issued only after data approval/observation and the Adapter receiver is ready; and custody cannot call
+KMS Decrypt or access plaintext.
 
-Do not stage Task 30 audit code, apply/pop/drop the frozen Task 30 stash, or create an S1 completion
-report.
+- [ ] **Step 4: Verify the RC snapshot-consumer authorization chain**
 
-- [ ] **Step 8: Run one protected infrastructure qualification and stop**
+For each source/final RC job that decrypts the snapshot, require an RC-lane `oidc-cloud-role` bound to
+the exact `rcWorkflowRunId`, attempt, job, pending deployment, object version/digest, and KMS context.
+Verify prerequisite role/policy readback occurs before that job's Environment approval, a fresh
+post-approval observation occurs before credential use, and its KMS Decrypt proof is distinct from
+both Producer jobs. Reject combined or reused approvals/credentials.
 
-After Tasks 29R-A through 29R-D and the independently approved infrastructure plan are merged, create
-one qualification-specific source/build/bundle/producer/attempt/RC lineage and run the real fresh and
-snapshot chains. Require qualification purpose claims/envelopes, v2 custody, aggregate and exit to
-succeed. Store their digests as historical infrastructure-validation evidence, emit
-`TASK_30_AUTHORIZATION_REQUIRED`, and stop. This run cannot satisfy Task 30, cannot be promoted, and
-cannot be an input to any later release-candidate attempt.
+- [ ] **Step 5: Verify the purpose-envelope and qualification stop evidence**
+
+Run the contract, approval, workflow, purpose, aggregation, and final-compose test commands defined by
+the independently approved infrastructure plan. Confirm all raw v1 formats remain unchanged, each
+selected raw proof has one claim/envelope/v2-custody path, no external final/aggregate/exit input is
+accepted, qualification is machine-rejected by promotion checks, and the terminal evidence records
+`TASK_30_AUTHORIZATION_REQUIRED` without running the Task 30 audit or final custody.
+
+- [ ] **Step 6: Record the dependency-acceptance decision without a repository commit**
+
+The reviewer records the accepted implementation commit range, build proof, `releaseAttemptId`,
+dispatch authorization, `snapshotRunId`, both Producer approval/observation lineages,
+`rcWorkflowRunId`, every RC consumer authorization lineage, purpose claims/envelopes, v2
+custody/aggregate/exit digests, failure/reconcile records, and the unchanged Task 30 stash fingerprint.
+This evidence package closes Task 29R-D only; it does not modify the repository or authorize Task 30.
 
 ---
 
@@ -3240,8 +3189,9 @@ the release-candidate evidence run described below begins.
 - Task 30 accepts no qualification proof, claim, envelope, custody, aggregate, exit, producer, build
   proof, bundle, `releaseAttemptId`, `snapshotRunId`, or `rcWorkflowRunId` as an execution input.
 - After Task 30 is merged, a new release-candidate lineage starts from the new `main` source SHA and a
-  new trusted build proof, complete API/Web/Runner bundle, protected snapshot producer,
-  `releaseAttemptId`, and RC workflow run.
+  new trusted build proof and complete API/Web/Runner bundle. It then allocates `releaseAttemptId`,
+  signs and verifies the matching dispatch authorization, completes a new protected Producer, and only
+  then starts the RC workflow.
 - The release-candidate aggregate selects only v2 custody receipts for purpose envelopes whose raw
   source/execution/final-compose v1 proofs were generated by the same new RC workflow run and whose
   source SHA, migration catalog, repository contract, test manifest, PostgreSQL image contract, and
@@ -3318,9 +3268,18 @@ review and required CI succeed.
 - [ ] **Step 5: Freeze a wholly new release-candidate attempt from merged `main`**
 
 From the new merged `main` SHA, run one trusted build to produce a new build proof and immutable
-API/Web/Runner bundle. Issue a new `release-candidate` RC dispatch authorization, run a new independent
-protected sanitized-snapshot producer to completion, and allocate a new `releaseAttemptId`,
-`snapshotRunId`, and `rcWorkflowRunId`. None may equal or reference its qualification counterpart.
+API/Web/Runner bundle. Allocate a new `releaseAttemptId`; then sign, verify, and custody a
+`release-candidate` RC dispatch authorization that binds that exact ID. Only then dispatch a new
+independent protected sanitized-snapshot Producer and record its assigned `snapshotRunId`. Complete
+both Producer-local deployments and their separate approval/observation lineages. After Producer
+completion is verified, dispatch the RC and record its assigned `rcWorkflowRunId`. None of these
+identities or proofs may equal or reference its qualification counterpart.
+
+For every RC source/final job that needs the encrypted snapshot, first allocate its pending deployment,
+then create and read back a separate RC-lane `oidc-cloud-role`, obtain that job's Environment approval
+and fresh post-approval observation, and finally record the credential-use/KMS Decrypt proof. These RC
+consumer capabilities are not Producer `snapshot-custody` capabilities and cannot reuse the Producer's
+approval, observation, credential, role, or proof.
 
 The fixed run order is:
 
@@ -3369,7 +3328,7 @@ Do not mark S1 complete until this final evidence set and review are explicitly 
 | Closed JSON command registry, handler parity, one credential profile                        | 10, 16-25, including 23A/23B                           |
 | Verifiable approval authority, binding, expiry, attested revocation and rollback prevention | 11, 16, 19-25, including independent 23A/23B approvals |
 | Stable baseline Manifest, deterministic plans, TOCTOU, UNKNOWN recovery                     | 10-12, 16-25, including 23A/23B proof ordering         |
-| Content-addressed raw-proof custody, purpose claim/envelope and v2 lineage governance       | 4, 13, 28, 29R-D, 30                                   |
+| Content-addressed raw-proof custody, purpose claim/envelope and v2 lineage governance       | 4, 13, 28, 29R-D dependency acceptance, 30             |
 | Full-repository database discovery, unified launcher, isolation and zero skips              | 2-9                                                    |
 | Migration/runtime fixture credential and DDL/DML separation                                 | 3, 5-9                                                 |
 | PostgreSQL 17 fresh and sanitized snapshot upgrade chains                                   | 0, 3-9, 13-14, 29-30                                   |
@@ -3378,29 +3337,32 @@ Do not mark S1 complete until this final evidence set and review are explicitly 
 | API runtime extraction and negative allowlist                                               | 26                                                     |
 | Fixed trusted launch, real final Runner execution and closed database-test mode             | 29R-A, 29R-B                                           |
 | Final Compose, exact API database session identity and real Web/API request                 | 29, 29R-B, 29R-C                                       |
-| Qualification isolation; same-run purpose DAG; new-RC aggregation, retry and S1 exit audit  | 29R-D, 30                                              |
+| Qualification isolation; same-run purpose DAG; new-RC aggregation, retry and S1 exit audit  | 29R-D dependency acceptance, 30                        |
 
 ## Stop and Rollback Rules
 
-| Condition                                                                                         | Required response                                                                                                                                  |
-| ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Pending migration, Schema drift, unknown database/cluster identity, or dirty overlapping worktree | Stop before the task; do not mutate the target                                                                                                     |
-| Ambient `DATABASE_URL` or repository `.env` would be used                                         | Stop before process launch; use Task 0/controlled-target wrapper only                                                                              |
-| A task exceeds the approved size bound or reveals a new business semantic decision                | Split the task and obtain plan/spec approval                                                                                                       |
-| Proof/digest/target/capability mismatch                                                           | Fail before credential read or database connection; launcher records `PREFLIGHT_REJECTED`                                                          |
-| Latest trusted approval-revocation artifact is missing, stale, inaccessible or downgraded         | Fail before credential read; do not accept a caller-provided fallback or historical empty set                                                      |
-| Test fixture mixes migration/runtime credentials or migration setup contains business DML         | Reject the fixture before execution; do not broaden the migration or runtime role                                                                  |
-| Snapshot source role can write, source fingerprint changes, or export is partial                  | Stop publication, retain only redacted failure evidence, and destroy raw workspace/temporary copy                                                  |
-| Approved plan changes before apply                                                                | Refuse apply with `PLAN_CHANGED_SINCE_APPROVAL`; repeat dry-run and approval                                                                       |
-| Process loss with uncertain commit                                                                | Record `INTERRUPTED_UNKNOWN`; forbid new apply; reconcile with the same idempotency key                                                            |
-| Evidence custody upload/readback failure                                                          | Keep the database and evidence workspace; do not aggregate or clean up                                                                             |
-| Final gate failure caused by infrastructure                                                       | Preserve failure proof; rerun the complete failed stage with a new operation/run ID against the same bundle                                        |
-| Runner CLI or trusted launcher still requires caller-injected production adapters                 | Stop at Task 29R; do not accept fixture/prebuilt evidence and do not resume Task 30                                                                |
-| Raw v1 proof is supplied directly to v2 aggregate/exit, or one raw digest has another purpose     | Reject before evidence selection; preserve the existing claim and never rewrap, overwrite or reinterpret it                                        |
-| Qualification evidence is offered to Task 30 or any promotion check                               | Reject before evidence selection; start a new main/build/bundle/producer/attempt/RC lineage after Task 30 is merged                                |
-| Final, purpose-envelope, aggregate or S1-exit evidence is supplied by another RC workflow run     | Reject the input; regenerate raw proof through final custody inside the current trusted DAG                                                        |
-| Image or contract input must change                                                               | Invalidate the attempted Release set and produce a new trusted build proof                                                                         |
-| API rollback requested after migration                                                            | Allow only with compatibility proof; database restore requires stopped writes, verified restore, explicit loss window, and separate human approval |
+| Condition                                                                                                                           | Required response                                                                                                                                  |
+| ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pending migration, Schema drift, unknown database/cluster identity, or dirty overlapping worktree                                   | Stop before the task; do not mutate the target                                                                                                     |
+| Ambient `DATABASE_URL` or repository `.env` would be used                                                                           | Stop before process launch; use Task 0/controlled-target wrapper only                                                                              |
+| A task exceeds the approved size bound or reveals a new business semantic decision                                                  | Split the task and obtain plan/spec approval                                                                                                       |
+| Proof/digest/target/capability mismatch                                                                                             | Fail before credential read or database connection; launcher records `PREFLIGHT_REJECTED`                                                          |
+| Latest trusted approval-revocation artifact is missing, stale, inaccessible or downgraded                                           | Fail before credential read; do not accept a caller-provided fallback or historical empty set                                                      |
+| Test fixture mixes migration/runtime credentials or migration setup contains business DML                                           | Reject the fixture before execution; do not broaden the migration or runtime role                                                                  |
+| Snapshot source role can write, source fingerprint changes, or export is partial                                                    | Stop publication, retain only redacted failure evidence, and destroy raw workspace/temporary copy                                                  |
+| Approved plan changes before apply                                                                                                  | Refuse apply with `PLAN_CHANGED_SINCE_APPROVAL`; repeat dry-run and approval                                                                       |
+| Process loss with uncertain commit                                                                                                  | Record `INTERRUPTED_UNKNOWN`; forbid new apply; reconcile with the same idempotency key                                                            |
+| Evidence custody upload/readback failure                                                                                            | Keep the database and evidence workspace; do not aggregate or clean up                                                                             |
+| Final gate failure caused by infrastructure                                                                                         | Preserve failure proof; rerun the complete failed stage with a new operation/run ID against the same bundle                                        |
+| Runner CLI or trusted launcher still requires caller-injected production adapters                                                   | Stop at Task 29R; do not accept fixture/prebuilt evidence and do not resume Task 30                                                                |
+| Dispatch authorization exists before `releaseAttemptId`, Producer starts before authorization, or RC starts before Producer success | Reject the attempt; do not infer or repair IDs after dispatch and do not reuse any resulting run                                                   |
+| Producer data/custody approvals are reused by an RC snapshot consumer, or the consumer lacks its own OIDC/Environment/KMS chain     | Reject before snapshot access; never broaden or reuse Producer roles, observations, credentials or proofs                                          |
+| Task 29R-D implementation is attempted from this upstream plan rather than the independently approved infrastructure plan           | Stop without changing files; Task 29R-D is a dependency-acceptance gate with one external implementation owner                                     |
+| Raw v1 proof is supplied directly to v2 aggregate/exit, or one raw digest has another purpose                                       | Reject before evidence selection; preserve the existing claim and never rewrap, overwrite or reinterpret it                                        |
+| Qualification evidence is offered to Task 30 or any promotion check                                                                 | Reject before evidence selection; start a new main/build/bundle/producer/attempt/RC lineage after Task 30 is merged                                |
+| Final, purpose-envelope, aggregate or S1-exit evidence is supplied by another RC workflow run                                       | Reject the input; regenerate raw proof through final custody inside the current trusted DAG                                                        |
+| Image or contract input must change                                                                                                 | Invalidate the attempted Release set and produce a new trusted build proof                                                                         |
+| API rollback requested after migration                                                                                              | Allow only with compatibility proof; database restore requires stopped writes, verified restore, explicit loss window, and separate human approval |
 
 ## S1 Completion Boundary
 

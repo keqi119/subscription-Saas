@@ -6,7 +6,7 @@
 
 **Goal:** 实现已批准的方案 A 执行基础设施，使独立 sanitized snapshot producer 能在 public repository 条件下安全运行，并让唯一 RC workflow 在 GitHub-hosted 临时机上完成 source、final、aggregate 与 exit 证明链，从而解除 Task 29R 的基础设施阻断。
 
-**Architecture:** 仓库内只保存版本化契约、可测试的构建源码和无秘密策略模板；GitHub Environment、Aliyun OSS/KMS/RAM、Staging SSH/数据库身份及 WSL root policy 均由受控执行器按 `plan → approval policy → apply → readback proof` 建立。Snapshot 数据 job 只调用预安装、root-owned、digest 固定的单一入口；加密 snapshot 进入独立私有 OSS custody，随后由精确绑定 `snapshotRunId` 或 `rcWorkflowRunId` 的短期身份消费。可信 build/bundle 之后才分配 `releaseAttemptId` 和 dispatch 授权；独立 Producer 成功后才启动唯一 RC run。RC 内先产生不可变 raw v1 proof，再形成一对一 purpose claim/envelope、v2 custody/aggregate/exit；qualification 在 Task 30 前强制停止且不可提升。
+**Architecture:** 仓库内只保存版本化契约、可测试的构建源码和无秘密策略模板；GitHub Environment、Aliyun OSS/KMS/RAM、Staging SSH/数据库身份及 WSL root policy 均由受控执行器按 `plan → approval policy → apply → readback proof` 建立。Snapshot 数据 job 只调用预安装、root-owned、digest 固定的单一入口；加密 snapshot 与 purpose lineage 分别进入独立私有 OSS namespace，并由精确绑定 `snapshotRunId` 或 `rcWorkflowRunId` 的短期、单能力身份读写。准确 merged-main SHA 的 API/Web/Runner bundle 经独立计划、批准、构建和保管后才分配 `releaseAttemptId` 与 dispatch 授权；独立 Producer 成功后才启动唯一 RC run。RC 内先产生不可变 raw v1 proof，再形成一对一 purpose claim/envelope、v2 custody/aggregate/exit；qualification 在 Task 30 前强制停止且不可提升。
 
 **Tech Stack:** Node.js 22.23.2、pnpm 11.4.0、Node ESM/`node:test`、PostgreSQL 17、GitHub Actions/JIT ephemeral Runner、WSL2 Ubuntu 24.04、LUKS2、OpenSSH、Docker Buildx/Compose、Aliyun OSS、Alibaba Cloud KMS/RAM/STS、AES-256-GCM、Playwright 1.62.1。
 
@@ -27,7 +27,7 @@
 - Alibaba RAM OIDC Provider 固定名称 `github-actions-subscription-saas-stage1`、issuer `https://token.actions.githubusercontent.com`、唯一 client ID/audience `sts.aliyuncs.com`、Earliest Issuance Time Allowed `1 hour`。Provider 计划固定独立验证的 HTTPS CA fingerprints，readback 必须记录 Provider ARN、实际 fingerprint 集合和 issuance limit；任何漂移均拒绝 STS。
 - Dedicated custody bucket 的名称由 `subscription-saas-stage1-snapshot-${sha256(accountId).slice(0, 12)}-cn-shanghai` 确定性生成。Bucket 必须保持 versioning disabled，使用 `x-oss-forbid-overwrite=true`，并锁定 210 日 BucketWorm；30 日 snapshot 有效期加失效后 180 日保留由此覆盖。
 - KMS key alias 固定为 `alias/stage1-snapshot-custody`。Producer 使用 `GenerateDataKey(AES_256)`；consumer 只对 admission 指定的 wrapped DEK 调用 `Decrypt`。KEK 不离开 KMS，明文 DEK 只短暂存在于独立 crypto process 内存。
-- Snapshot publisher、snapshot custody reader、RC decrypt consumer、retention operator 是四个不同 RAM capability。每次只发放一种短期凭证；禁止组合凭证、通用 OSS 列举、跨 attempt 读取或 KMS 管理权限。
+- Snapshot payload 使用 `snapshot-publisher`、`snapshot-custody-reader`、`rc-decrypt-consumer`、`snapshot-retention-operator` 四个互斥 RAM profile；purpose lineage 使用 `lineage-create-only-writer`、`lineage-readback-reader`、`lineage-retention-operator` 三个额外互斥 profile。每次进程只能获得一个 profile 的短期凭证；禁止组合凭证、通用 OSS 列举、跨 attempt/run 访问或 KMS 管理权限。Lineage writer/reader 的 GitHub OIDC 身份仍使用已批准的 `oidc-cloud-role` 机制，不新增第四种 `capabilityKind`；如果施工发现必须新增身份机制或放宽现有 kind，立即停止并重新评审安全附录。
 - GitHub OIDC subject 固定包含 immutable repository identity、`workflow_ref`、`workflow_sha`、`ref`、`environment`、`actor_id`、`run_id`、`run_attempt`、`event_name` 和 `runner_environment`。每个 snapshot/RC consumer role 的 trust policy 对本次完整 subject 做精确匹配，不使用 run ID 通配符。
 - Repository OIDC customization 是 repo-wide 外部状态。必须先创建并 read back Alibaba OIDC Provider、为预计的新 subject 建立精确 canary RAM trust condition，再切换 GitHub subject template；若当前配置已被其他云角色依赖、无法安全迁移，或 Alibaba RAM 无法对完整 `sub` 做精确比较，立即停止方案 A 并回到设计评审。
 - GitHub repository 固定为 `keqi119/subscription-Saas`、repository ID `1253231368`；允许 actor/reviewer 固定为 user ID `275060624`。名称或 login 不能替代 immutable ID。
@@ -44,16 +44,17 @@
 - GitHub-hosted source/final job 固定使用 `ubuntu-24.04`，并记录 runner image、kernel、CPU、Docker、Buildx 和 Compose 实际版本。`ubuntu-latest` 不能作为身份或容量保证。
 - 每条 source/final chain 在 pull、restore 或 Compose 写入前生成 `capacity-plan.v1`，满足 `requiredUpperBound + max(3 GiB, totalDisk × 20%) <= availableDisk`。不满足时停止，不删未知 Docker 数据、不减测试；专用 ephemeral VM 需要另行实施计划。
 - 明文 sanitized dump、raw 数据、DEK、tokenization key、数据库/SSH凭证不得进入 Actions artifact、cache、log、命令行、环境变量、core dump 或公共 release asset。Actions artifact 只保管非敏感 proof/reference/digest/attestation。
-- 每个 qualification 或 release-candidate 尝试必须先取得同一固定 source SHA 的可信 build proof 与不可拆分 API/Web/Runner bundle；随后分配新的 `releaseAttemptId`，签发并核验绑定该 ID 的 `rc-dispatch-authorization.v1`，再依次启动 Producer 取得 `snapshotRunId`、完成 Producer、启动 RC 取得 `rcWorkflowRunId`。任何 run ID 不得在 dispatch 授权中预先虚构。
+- 每个 qualification 或 release-candidate 尝试必须先由独立受保护 build task 对同一准确 merged-main SHA 生成可信 build proof 与不可拆分 API/Web/Runner bundle，并完成 registry digest、attestation 与 custody readback；随后才分配新的 `releaseAttemptId`，签发并核验绑定该 ID 的 `rc-dispatch-authorization.v1`，再依次启动 Producer 取得 `snapshotRunId`、完成 Producer、启动 RC 取得 `rcWorkflowRunId`。任何 run ID 不得在 dispatch 授权中预先虚构。
 - Snapshot producer 必须先完成并取得 `snapshotRunId=success`、私有 OSS object readback、proof/log custody 和 destruction receipt；之后才能 dispatch RC workflow。
 - Snapshot producer 的 `run_attempt` 固定为 `1`；GitHub rerun 不可复用原 admission、route nonce、JIT 配置或 cloud role，失败后必须新建 producer run 和 `releaseAttemptId`。
 - RC workflow 不接受 `finalExecutionRunId`、`exitEvidenceRunId` 或任何外部 final/aggregate/exit object。Source fresh/snapshot、final fresh/snapshot、final custody、aggregate、generated exit 和 Task 30 tail 必须来自同一 `rcWorkflowRunId`；本计划只做到 Task 29R checkpoint，不执行 Task 30 tail。
 - Infrastructure Tasks I16–I24 form one non-promotable Task 29R qualification release attempt; its producer and RC run only prove the infrastructure prefix and cannot be continued, reused or spliced into the final S1 proof after Task 30 approval. After Task 30 is separately approved, implemented and merged, a new source SHA, build proof, bundle, Producer, `releaseAttemptId` and RC run must execute “new Producer → new single complete RC run”, and that complete RC run must execute its own Task 30 audit and final custody.
 - Published source/execution/final-compose v1 raw proofs remain immutable and are validated first. Each selected raw digest is then bound exactly once by `purpose-claim.v1` and `execution-purpose-envelope.v1`; only read-back v2 custody of both claim and envelope may enter `release-aggregate-proof.v2` and `s1-exit-evidence.v2`. Raw v1 proof may not enter aggregate/exit directly and may not be rewrapped for another purpose.
 - `executionPurpose` is inherited only from a fixed workflow and an approved `rc-dispatch-authorization.v1`; CLI, workflow input, environment variable and caller JSON may not choose it. Qualification lineage is permanently non-promotable; Task 30 must reject it before selecting any input.
-- Dispatch authorization, exact external-capability approval and database command approval are three separate contracts. `exact-capability-approval.v1` is a closed `capabilityKind` union: `publisher-sts`, `oidc-cloud-role` or `jit-registration`; cross-kind fields and combined credentials are forbidden. Runner-database-role execution uses launch/database observations and the applicable existing `approval-record.v1`, never a synthetic cloud approval.
-- The self-hosted publisher uses a 15-minute STS session assumed by a root-only local credential broker. I16 establishes and reads back the publisher role only; the broker may issue the credential only after the `snapshot-data` deployment is separately approved, its fresh observation passes, the JIT Runner owns the job and the root-owned Adapter child is ready on a sealed FD. The broker has no OSS/KMS/data permission and the resulting single-capability credential never enters workflow environment/secret/argv/workspace.
-- `snapshot-data` and the dependent `snapshot-custody` job require two independent pending deployments, exact-capability approvals, prerequisite readbacks, human Environment approvals and post-approval observations. Producer custody validates ciphertext/proofs/destruction only and never receives KMS Decrypt; each RC snapshot consumer establishes its own `oidc-cloud-role` approval/readback/Environment observation and is the only party allowed to decrypt its exact object version.
+- Dispatch authorization, exact external-capability approval and database command approval are three separate contracts. `exact-capability-approval.v1` is a closed `capabilityKind` union: `publisher-sts`, `oidc-cloud-role` or `jit-registration`; cross-kind fields and combined credentials are forbidden. Every exact capability follows `pending deployment → independent prerequisite-change approval → apply/readback → exact-capability approval binding that actual readback → Environment approval → post-approval observation → credential use`. Runner-database-role execution uses launch/database observations and the applicable existing `approval-record.v1`, never a synthetic cloud approval.
+- The self-hosted publisher uses a 15-minute STS session assumed by a root-only local credential broker. I17 establishes and reads back the publisher role only; the broker may issue the credential only after the `snapshot-data` deployment is separately approved, its fresh observation passes, the JIT Runner owns the job and the root-owned Adapter child is ready on a sealed FD. The broker has no OSS/KMS/data permission and the resulting single-capability credential never enters workflow environment/secret/argv/workspace.
+- `snapshot-data` and the dependent `snapshot-custody` job require two independent pending deployments; for each capability its independent prerequisite change approval/apply/readback precedes the exact-capability approval, which in turn precedes human Environment approval and post-approval observation. Producer custody validates ciphertext/proofs/destruction only and never receives KMS Decrypt; each RC snapshot consumer establishes its own ordered `oidc-cloud-role` chain and is the only party allowed to decrypt its exact object version.
+- Purpose claim、envelope、v2 custody、aggregate 与 exit 只能写入私有 content-addressed lineage namespace。固定 RC custody jobs 使用现有 `oidc-cloud-role` mechanism 下相互排斥的 create-only writer 与 exact readback reader policy；每个写入/读回 phase 各自完成 prerequisite plan/change approval/apply/readback、exact-capability approval、Environment approval/observation、use proof 与 terminal revoke。Retention operator 不参加日常 RC 执行，只能在保留期或 legal hold 结束后按独立计划和批准处置并生成 receipt。
 - 任何 identity、digest、approval、capacity、source privilege、fingerprint、custody、destruction 或 same-run 约束不满足，均 fail closed。禁止通过 mock JSON、手工“通过”、公共 artifact、常驻 Runner 或服务器 Compose 替代。
 
 ## Fixed Names and Derivations
@@ -79,6 +80,7 @@
 | OSS region                | `oss-cn-shanghai`                                                                      |
 | Custody bucket            | `subscription-saas-stage1-snapshot-${sha256(accountId).slice(0, 12)}-cn-shanghai`      |
 | Snapshot object key       | `v1/${releaseAttemptId}/${ciphertextDigest.slice(7)}/snapshot.enc`                     |
+| Purpose lineage namespace | `evidence/v1/${releaseAttemptId}/${rcWorkflowRunId}/${objectType}/${digest.slice(7)}`  |
 | KMS alias                 | `alias/stage1-snapshot-custody`                                                        |
 | Aliyun OIDC Provider      | `github-actions-subscription-saas-stage1`                                              |
 | OIDC issuer / audience    | `https://token.actions.githubusercontent.com` / `sts.aliyuncs.com`                     |
@@ -92,21 +94,21 @@
 
 ## Planned File Map
 
-| Area               | Files and responsibility                                                                                                                                                                                       |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Plan dependency    | Approved upstream S1 plan `a63a39c8`: verify immutable Task 29R-D ownership handoff and Task 30 block; this plan never edits it                                                                                |
-| Routing contracts  | `release/contracts/schemas/environment-policy-*.json`, `snapshot-admission.v1`, `snapshot-admission-verification.v1`, `snapshot-jit-launch-proof.v1`, `snapshot-producer-completion.v1`                        |
-| Custody contracts  | `release/contracts/schemas/snapshot-encryption-envelope.v1.schema.json`, `snapshot-private-custody.v1.schema.json`, `snapshot-destruction-receipt.v1.schema.json`, `snapshot-retention-receipt.v1.schema.json` |
-| Shared logic       | `packages/release-foundation/src/snapshot/**`: policy/digest checks, envelope crypto, capacity calculation and proof builders                                                                                  |
-| Root-owned adapter | `apps/snapshot-adapter/**`: fixed CLI, GitHub API verifier, JIT lifecycle, SSH/PostgreSQL snapshot pipeline, crypto subprocess, OSS/KMS adapters                                                               |
-| Bundle             | `scripts/release/build-snapshot-adapter.mjs`, `verify-snapshot-adapter-bundle.mjs`, `.github/workflows/snapshot-adapter-build.yml`, Adapter build/custody proof contracts                                      |
-| Host policy        | `infrastructure/stage1-snapshot/wsl/**`, `infrastructure/stage1-snapshot/server/**`: WSL, LUKS, egress, sshd and loopback database endpoint configuration                                                      |
-| Cloud policy       | `infrastructure/stage1-snapshot/aliyun/**`, `scripts/release/manage-snapshot-cloud-custody.mjs`: OSS/KMS/RAM policy documents and closed plan/apply/readback/reconcile operations                              |
-| GitHub bootstrap   | `scripts/release/bootstrap-snapshot-environment.mjs`, `bootstrap-snapshot-launcher-app.mjs`, `bootstrap-aliyun-oidc-provider.mjs`, `manage-exact-run-capability.mjs` and tests                                 |
-| Qualification      | Three distinct approvals; immutable raw v1 proof → one-to-one purpose claim/envelope → v2 custody/aggregate/exit; qualification remains permanently non-promotable                                             |
-| Workflows          | `.github/workflows/sanitized-snapshot.yml`, `release-candidate-gate.yml`, `release-final-chain.yml`                                                                                                            |
-| Capacity           | `release/contracts/schemas/capacity-plan.v1.schema.json`, `packages/release-foundation/src/capacity-plan.mjs`, `scripts/release/collect-capacity-plan.mjs`                                                     |
-| Operations         | `docs/operations/stage1-s1-execution-infrastructure-runbook.md`, bootstrap/attempt evidence templates and failure matrix                                                                                       |
+| Area               | Files and responsibility                                                                                                                                                                                          |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plan dependency    | Approved upstream S1 plan `a63a39c8`: verify immutable Task 29R-D ownership handoff and Task 30 block; this plan never edits it                                                                                   |
+| Routing contracts  | `release/contracts/schemas/environment-policy-*.json`, `snapshot-admission.v1`, `snapshot-admission-verification.v1`, `snapshot-jit-launch-proof.v1`, `snapshot-producer-completion.v1`                           |
+| Custody contracts  | Snapshot encryption/private/destruction/retention Schemas plus `evidence-lineage-storage-policy.v1`, lineage access/readback/retention and v2 custody contracts                                                   |
+| Shared logic       | `packages/release-foundation/src/snapshot/**`: policy/digest checks, envelope crypto, capacity calculation and proof builders                                                                                     |
+| Root-owned adapter | `apps/snapshot-adapter/**`: fixed CLI, GitHub API verifier, JIT lifecycle, SSH/PostgreSQL snapshot pipeline, crypto subprocess, OSS/KMS adapters                                                                  |
+| Bundle producers   | Adapter: `build/verify-snapshot-adapter-*`, `.github/workflows/snapshot-adapter-build.yml`; three-image RC bundle: `create-three-image-bundle-build-plan.mjs`, verifier and `.github/workflows/docker-images.yml` |
+| Host policy        | `infrastructure/stage1-snapshot/wsl/**`, `infrastructure/stage1-snapshot/server/**`: WSL, LUKS, egress, sshd and loopback database endpoint configuration                                                         |
+| Cloud policy       | `infrastructure/stage1-snapshot/aliyun/**`, `manage-snapshot-cloud-custody.mjs`, lineage custody adapters: OSS/KMS/RAM snapshot and evidence policies plus closed lifecycle operations                            |
+| GitHub bootstrap   | `scripts/release/bootstrap-snapshot-environment.mjs`, `bootstrap-snapshot-launcher-app.mjs`, `bootstrap-aliyun-oidc-provider.mjs`, `manage-exact-run-capability.mjs` and tests                                    |
+| Qualification      | Three distinct approvals; immutable raw v1 proof → one-to-one purpose claim/envelope → v2 custody/aggregate/exit; qualification remains permanently non-promotable                                                |
+| Workflows          | `.github/workflows/sanitized-snapshot.yml`, `release-candidate-gate.yml`, `release-final-chain.yml`                                                                                                               |
+| Capacity           | `release/contracts/schemas/capacity-plan.v1.schema.json`, `packages/release-foundation/src/capacity-plan.mjs`, `scripts/release/collect-capacity-plan.mjs`                                                        |
+| Operations         | `docs/operations/stage1-s1-execution-infrastructure-runbook.md`, bootstrap/attempt evidence templates and failure matrix                                                                                          |
 
 ---
 
@@ -255,17 +257,21 @@ Expected: no tracked change and no commit. Any upstream-plan change stops implem
 - Create: `release/contracts/schemas/snapshot-producer-completion.v1.schema.json`
 - Create: `release/contracts/schemas/rc-dispatch-authorization.v1.schema.json`
 - Create: `release/contracts/schemas/infrastructure-change.v1.schema.json`
+- Create: `release/contracts/schemas/external-change-approval.v1.schema.json`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 - Modify: `packages/release-foundation/src/schema-registry.mjs`
+- Modify: `packages/release-foundation/src/index.mjs`
+- Create: `packages/release-foundation/src/external-change-approval.mjs`
+- Create: `packages/release-foundation/test/external-change-approval.test.mjs`
 - Create: `packages/release-foundation/test/snapshot-routing-contracts.test.mjs`
 - Create: `scripts/release/create-infrastructure-change.mjs`
 - Create: `scripts/release/create-infrastructure-change.test.mjs`
 
 **Interfaces:**
 
-- Produces: eight strict JSON Schemas registered in `validateContract(name, value)` and included in `repositoryContractDigest`, plus a closed infrastructure-change record generator that is deliberately distinct from a release attempt.
+- Produces: nine strict JSON Schemas registered in `validateContract(name, value)` and included in `repositoryContractDigest`, plus a closed infrastructure-change record generator that is deliberately distinct from a release attempt.
 - Stable identity: `EnvironmentPolicyIdentityV1`; dynamic provenance: `EnvironmentPolicyObservationV1`.
-- Producer proof order: verified dispatch-authorization digest → untrusted admission digest → root-signed admission-verification digest → data exact-capability approvals/readbacks → data Environment approval/observation → publisher/JIT use proofs → encrypted object/destruction custody → separate custody exact-capability approval/readback → separate custody Environment approval/observation → custody use proof → producer-completion digest.
+- Producer proof order: verified dispatch-authorization digest → untrusted admission digest → root-signed admission-verification digest → data prerequisite plans/change approvals/apply/readbacks → exact-capability approvals binding those readbacks → data Environment approval/observation → publisher/JIT use proofs → encrypted object/destruction custody → separate custody prerequisite plan/change approval/apply/readback → custody exact-capability approval → separate custody Environment approval/observation → custody use proof → producer-completion digest.
 
 - [ ] **Step 1: Write RED schema strictness tests**
 
@@ -309,24 +315,30 @@ Require exactly: schema version, identity digest, `observedAt`, API response dig
 
 `infrastructure-change.v1` requires a random 128-bit lowercase hexadecimal `infrastructureChangeId`, exact merged main SHA, repository contract digest, `changeScope=execution-infrastructure-bootstrap`, `createdAt` and owner ID. `create-infrastructure-change.mjs --main-sha --owner-id --output` recomputes the repository contract digest from the registered manifest and generates the record once with `crypto.randomBytes(16)`, exclusive-create semantics and canonical JSON. It MUST NOT contain `executionPurpose`, `releaseAttemptId`, `snapshotRunId` or `rcWorkflowRunId`; those identities are allocated only after a trusted build/bundle exists in Infrastructure Task I16.
 
-- [ ] **Step 6: Register every Schema in the contract digest**
+`external-change-approval.v1` is the independent approval for an infrastructure prerequisite mutation. It binds exactly one operation ID, bootstrap or release-attempt identity, target/resource kind, canonical plan digest, expected pre-state digest, approver immutable ID, issuance/expiry, revocation policy and custody reference. It cannot approve Environment deployment, issue a runtime credential or substitute for dispatch, exact-capability or database-command approval.
+
+- [ ] **Step 6: Implement the trusted external-change approval verifier**
+
+`verifyExternalChangeApproval` validates the protected issuer/signature/attestation, subject digest, immutable approver ID, current revocation artifact, expiry, operation/target/plan/pre-state bindings and custody readback before any credential lookup or external connection. Missing, inaccessible, stale, revoked or mismatched approval fails closed. The verifier never signs an approval and cannot treat a plan author or workflow actor as the approver.
+
+- [ ] **Step 7: Register every Schema in the contract digest**
 
 Update both `schema-registry.mjs` and `repository-contract-files.v1.json`; registry keys and filenames must be one-to-one.
 
-- [ ] **Step 7: Run contract and digest tests**
+- [ ] **Step 8: Run contract and digest tests**
 
 ```powershell
-node --test packages/release-foundation/test/snapshot-routing-contracts.test.mjs packages/release-foundation/test/schema-registry.test.mjs packages/release-foundation/test/catalogs.test.mjs scripts/release/create-infrastructure-change.test.mjs
+node --test packages/release-foundation/test/snapshot-routing-contracts.test.mjs packages/release-foundation/test/external-change-approval.test.mjs packages/release-foundation/test/schema-registry.test.mjs packages/release-foundation/test/catalogs.test.mjs scripts/release/create-infrastructure-change.test.mjs
 pnpm release:contracts:verify
 git diff --check
 ```
 
 Expected: PASS; removing any new Schema from the contract-file manifest fails `release:contracts:verify`.
 
-- [ ] **Step 8: Commit the routing contracts**
+- [ ] **Step 9: Commit the routing contracts**
 
 ```powershell
-git add release/contracts packages/release-foundation/src/schema-registry.mjs packages/release-foundation/test/snapshot-routing-contracts.test.mjs scripts/release/create-infrastructure-change.mjs scripts/release/create-infrastructure-change.test.mjs
+git add release/contracts packages/release-foundation/src/schema-registry.mjs packages/release-foundation/src/index.mjs packages/release-foundation/src/external-change-approval.mjs packages/release-foundation/test/snapshot-routing-contracts.test.mjs packages/release-foundation/test/external-change-approval.test.mjs scripts/release/create-infrastructure-change.mjs scripts/release/create-infrastructure-change.test.mjs
 git commit -m "build: define snapshot routing proof contracts"
 ```
 
@@ -425,7 +437,7 @@ git commit -m "build: verify snapshot environment and admission identity"
 
 ---
 
-### Task 4: Define private snapshot encryption, custody and retention contracts
+### Task 4: Define private snapshot and purpose-lineage custody contracts
 
 **Files:**
 
@@ -435,6 +447,10 @@ git commit -m "build: verify snapshot environment and admission identity"
 - Create: `release/contracts/schemas/snapshot-retention-receipt.v1.schema.json`
 - Create: `release/contracts/schemas/snapshot-cloud-policy.v1.schema.json`
 - Create: `release/contracts/snapshot-cloud-policy.v1.json`
+- Create: `release/contracts/schemas/evidence-lineage-storage-policy.v1.schema.json`
+- Create: `release/contracts/schemas/evidence-lineage-access-readback.v1.schema.json`
+- Create: `release/contracts/schemas/evidence-lineage-retention-receipt.v1.schema.json`
+- Create: `release/contracts/evidence-lineage-storage-policy.v1.json`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 - Modify: `packages/release-foundation/src/schema-registry.mjs`
 - Create: `packages/release-foundation/test/snapshot-custody-contracts.test.mjs`
@@ -444,6 +460,7 @@ git commit -m "build: verify snapshot environment and admission identity"
 - `snapshot-encryption-envelope.v1` describes AES-256-GCM ciphertext, wrapped DEK, KMS parameters and authenticated-data digest; it never accepts a plaintext key.
 - `snapshot-private-custody.v1` binds OSS bucket fingerprint, exact object key/version or ETag, ciphertext digest/size, WORM readback, access-policy digest and expiry.
 - Destruction and retention receipts are distinct: the first proves local attempt-volume key invalidation; the second proves post-retention object/key-access disposition.
+- `evidence-lineage-storage-policy.v1` fixes the private `evidence/v1/${releaseAttemptId}/${rcWorkflowRunId}/` namespace and three mutually exclusive RAM profiles: create-only writer, exact readback reader and delayed retention operator. It is a storage policy under the existing `oidc-cloud-role` identity mechanism, not a new `capabilityKind`.
 
 - [ ] **Step 1: Write RED secret-exclusion and lifecycle tests**
 
@@ -477,15 +494,17 @@ Require: `algorithm=AES-256-GCM`, unique 96-bit nonce, 128-bit tag, ciphertext S
 
 - [ ] **Step 3: Define the cloud policy contract**
 
-`snapshot-cloud-policy.v1.json` fixes region `oss-cn-shanghai`, bucket derivation version, versioning disabled, forbid-overwrite true, BucketWorm 210 days, KMS alias and four mutually exclusive capabilities: `publisher`, `custody-reader`, `rc-consumer`, `retention`. The repository contract stores logical policy and digests, not account ID, bucket name, access keys or endpoints containing credentials.
+`snapshot-cloud-policy.v1.json` fixes region `oss-cn-shanghai`, bucket derivation version, versioning disabled, forbid-overwrite true, BucketWorm 210 days, KMS alias and four mutually exclusive snapshot-payload profiles: `publisher`, `custody-reader`, `rc-consumer`, `retention`. `evidence-lineage-storage-policy.v1.json` fixes three additional, non-combinable purpose-lineage profiles and deterministic namespace/key derivation. The repository contracts store logical policy and digests, not account ID, bucket name, access keys or endpoints containing credentials.
 
 - [ ] **Step 4: Define custody and disposition receipts**
 
 Custody requires a successful conditional create, HEAD/readback digest, private ACL, WORM locked state, retention-until time, publisher policy digest and a proof that the writer cannot Get/List/Delete. Destruction receipt requires volume identity, mapper close, key invalidation method and residual mount scan. Retention receipt requires object key/version, prior custody digest, disposition `DELETED` or `TRANSFERRED`, operator identity digest, approved policy and terminal readback.
 
+Purpose-lineage access readback additionally binds repository/run/attempt, exact namespace, policy/role ARN and digest, allowed verbs, denied verbs, subject, issued/expires time and terminal revoke/expiry. Writer is limited to conditional create under one namespace and cannot Get/HEAD/List/Delete/KMS; reader is limited to HEAD/Get of the exact signed key set and cannot Put/List/Delete/KMS; retention can act only after the latest lineage retain-until/legal-hold boundary under a separate approved disposition plan. No one process or credential may satisfy two profiles.
+
 - [ ] **Step 5: Register all contracts and add semantic validators**
 
-Add `validateSnapshotCustody`, `validateSnapshotDestructionReceipt` and `validateSnapshotRetentionReceipt` to `packages/release-foundation/src/snapshot/custody-contracts.mjs`; register the file itself in Task 5 when created. At this step the test may define a local semantic validator fixture, but every JSON Schema must already enter `repository-contract-files.v1.json`.
+Add `validateSnapshotCustody`, `validateSnapshotDestructionReceipt`, `validateSnapshotRetentionReceipt`, `validateLineageStoragePolicy`, `validateLineageAccessReadback` and `validateLineageRetentionReceipt` to `packages/release-foundation/src/snapshot/custody-contracts.mjs`; register the file itself in Task 5 when created. At this step the test may define a local semantic validator fixture, but every JSON Schema must already enter `repository-contract-files.v1.json`.
 
 - [ ] **Step 6: Run contract verification**
 
@@ -596,11 +615,13 @@ git commit -m "build: add isolated snapshot envelope crypto"
 - Create: `apps/snapshot-adapter/src/cloud/aliyun-oss.mjs`
 - Create: `apps/snapshot-adapter/src/cloud/aliyun-sts.mjs`
 - Create: `apps/snapshot-adapter/src/cloud/aliyun-publisher-broker.mjs`
+- Create: `apps/snapshot-adapter/src/cloud/aliyun-lineage-custody.mjs`
 - Create: `apps/snapshot-adapter/src/cloud/policy-generator.mjs`
 - Create: `apps/snapshot-adapter/test/aliyun-kms.test.mjs`
 - Create: `apps/snapshot-adapter/test/aliyun-oss.test.mjs`
 - Create: `apps/snapshot-adapter/test/aliyun-policy.test.mjs`
 - Create: `apps/snapshot-adapter/test/aliyun-publisher-broker.test.mjs`
+- Create: `apps/snapshot-adapter/test/aliyun-lineage-custody.test.mjs`
 - Create: `infrastructure/stage1-snapshot/aliyun/snapshot-cloud-policy-input.v1.json`
 - Create: `scripts/release/manage-snapshot-cloud-custody.mjs`
 - Create: `scripts/release/manage-snapshot-cloud-custody.test.mjs`
@@ -609,7 +630,7 @@ git commit -m "build: add isolated snapshot envelope crypto"
 **Interfaces:**
 
 - Dependencies pin exactly `ali-oss@6.23.0`, `@alicloud/credentials@2.4.7`, `@alicloud/kms20160120@3.3.0` and `@alicloud/sts20150401@1.2.0`.
-- Produces: `AliyunKmsDataKeyClient`, `AliyunOssWriteOncePublisher`, `AliyunOssExactReader`, `AliyunPublisherCredentialBroker` and `buildAttemptRamPolicies(input)`.
+- Produces: `AliyunKmsDataKeyClient`, `AliyunOssWriteOncePublisher`, `AliyunOssExactReader`, `AliyunPublisherCredentialBroker`, `AliyunLineageCreateOnlyWriter`, `AliyunLineageExactReader`, `AliyunLineageRetentionOperator` and `buildAttemptRamPolicies(input)`.
 - The adapter accepts credentials as open file descriptors or injected SDK credential objects in tests; it never discovers credentials from environment variables or user home files.
 
 - [ ] **Step 1: Scaffold the package and write RED credential-discovery tests**
@@ -639,17 +660,19 @@ Allow only key alias `alias/stage1-snapshot-custody`, `AES_256`, approved region
 
 Reader only accepts the object key/digest/version from an attested custody record and cannot list prefixes. Retention adapter is a separate constructor and credential profile; it rejects objects whose retain-until or snapshot-expiry-plus-180-days time has not elapsed.
 
+The lineage adapters accept only the deterministic attempt/run namespace and a signed exact-key plan. Writer always sends `x-oss-forbid-overwrite=true` and exposes no read/list/delete method; reader exposes HEAD/Get for the planned keys and no write/list/delete method; retention requires the whole-lineage expiry/legal-hold observation plus an independently approved disposition digest. Each adapter rejects a credential whose policy digest or role purpose belongs to another profile.
+
 - [ ] **Step 5: Implement the root-only publisher credential broker**
 
 The broker reads its assume-role-only principal from a root-opened descriptor, validates the approved exact role ARN/policy/readback/attempt binding, requests a 900-second STS session and writes the resulting publisher-only credential to a sealed child descriptor. The broker principal has no OSS/KMS permission, cannot assume custody/consumer/retention roles and never enters the Runner process, workflow environment, argv, disk or proof.
 
 - [ ] **Step 6: Generate mutually exclusive RAM policies**
 
-`buildAttemptRamPolicies` emits four canonical policy documents. Publisher permits only KMS GenerateDataKey and OSS PutObject for one exact key. Custody reader permits HEAD/Get for the exact encrypted object and narrow proof objects without KMS Decrypt. RC consumer permits exact Get plus KMS Decrypt. Retention permits post-retention delete and receipt write; no profile can manage bucket/KMS or assume another role.
+`buildAttemptRamPolicies` emits seven canonical policy documents. The four snapshot-payload policies retain their existing separation: publisher permits only KMS GenerateDataKey and OSS PutObject for one exact key; custody reader permits HEAD/Get for the exact encrypted object and narrow proof objects without KMS Decrypt; RC consumer permits exact Get plus KMS Decrypt; snapshot retention permits post-retention disposition and receipt write. The three lineage policies are create-only Put for one attempt/run namespace, exact-key HEAD/Get readback, and post-retention disposition respectively. No profile can combine snapshot and lineage access, manage bucket/KMS, assume another role or use a wildcard run/attempt prefix.
 
 - [ ] **Step 7: Implement the closed cloud-resource lifecycle CLI**
 
-`manage-snapshot-cloud-custody.mjs` exposes only `plan`, `apply`, `readback` and `reconcile`, with required `--resource base-custody|retention-lock`. `base-custody` covers the private bucket, KMS key/alias, non-WORM access policy and root broker principal; `retention-lock` covers only the separately approved 210-day BucketWorm transition. Each resource has an independent `operationId`, plan digest, approval, execution proof and readback. An UNKNOWN apply must reconcile by exact resource ID and may not run apply again. The CLI rejects credentials before plan/approval verification and never combines the irreversible WORM operation with reversible creation.
+`manage-snapshot-cloud-custody.mjs` exposes only `plan`, `apply`, `readback` and `reconcile`, with required `--resource base-custody|retention-lock`. `base-custody` covers the private bucket, KMS key/alias, snapshot and lineage namespace policies, inactive retention identities and root broker principal; it does not issue a per-run credential. `retention-lock` covers only the separately approved 210-day BucketWorm transition. Each resource has an independent `operationId`, plan digest, approval, execution proof and readback. An UNKNOWN apply must reconcile by exact resource ID and may not run apply again. The CLI rejects credentials before plan/approval verification and never combines the irreversible WORM operation with reversible creation.
 
 - [ ] **Step 8: Prove exact OIDC subject generation**
 
@@ -822,7 +845,7 @@ The unit runs under root only for registration/cleanup orchestration, sets `NoNe
 
 - [ ] **Step 7: Add a closed host plan/apply/readback interface**
 
-`manage-snapshot-wsl-host.mjs` exposes `plan`, `apply`, `readback` and `reconcile` for exactly one `--resource distro|admission-signer|adapter-install`. Each resource uses a separate operation ID and approval. `distro` creates only the dedicated WSL boundary; `admission-signer` creates a non-exportable root-held Ed25519 key and records only its public-key digest; `adapter-install` accepts only the attested OCI digest/custody proof produced by Task 17. Apply is delegated to the root-owned fixed scripts through a protected descriptor. UNKNOWN state requires readback/reconcile and never permits blind uninstall/reinstall.
+`manage-snapshot-wsl-host.mjs` exposes `plan`, `apply`, `readback` and `reconcile` for exactly one `--resource distro|admission-signer|adapter-install`. Each resource uses a separate operation ID and approval. `distro` creates only the dedicated WSL boundary; `admission-signer` creates a non-exportable root-held Ed25519 key and records only its public-key digest; `adapter-install` accepts only the attested OCI digest/custody proof produced by Task 17A. Apply is delegated to the root-owned fixed scripts through a protected descriptor. UNKNOWN state requires readback/reconcile and never permits blind uninstall/reinstall.
 
 - [ ] **Step 8: Run static and contract gates**
 
@@ -1189,9 +1212,9 @@ git commit -m "build: gate release chains on measured capacity"
 - `bootstrap-github-oidc-subject.mjs` exposes the same closed lifecycle for repository subject customization and refuses `apply` unless Provider plus future-subject canary role readbacks are valid.
 - `apply` accepts only a plan digest and human approval record through file descriptors; `readback` emits stable identity separately from observation provenance.
 - `prepare-snapshot-run` and `prepare-rc-snapshot-consumer-role` emit mechanism-specific capability plans bound to one exact run, job, pending deployment and attempt; they never create roles themselves.
-- `bootstrap-aliyun-oidc-provider.mjs` and `manage-exact-run-capability.mjs` each expose only `plan`, `apply`, `readback` and `reconcile`; the capability tool additionally exposes `revoke`. Apply/revoke require a bound approval record and create separate execution proofs.
+- `bootstrap-aliyun-oidc-provider.mjs` and `manage-exact-run-capability.mjs` each expose only `plan`, `apply`, `readback` and `reconcile`; the capability tool additionally exposes `revoke`. Prerequisite apply/revoke requires an `external-change-approval.v1` bound to its plan and creates separate execution proofs/readbacks; this infrastructure-change approval never authorizes capability use.
 - `exact-capability-approval.v1` is an `additionalProperties=false` tagged union over `lane=producer|rc` and exactly one `capabilityKind=publisher-sts|oidc-cloud-role|jit-registration`; it binds stable Environment identity and pending deployment but never a not-yet-created post-approval observation.
-- `create-exact-capability-approval.mjs` accepts only an already allocated run/job/pending-deployment observation, verified dispatch authorization, the canonical mechanism-prerequisite plan plus already-existing base Provider/broker/App readbacks, and a protected signer descriptor. It derives lane/kind from the registered workflow job and exclusive-creates a signed, short-lived, revocable approval containing issuer, validity, revocation and custody bindings; lane, kind and purpose are not caller-selectable strings. The per-run prerequisite apply/readback happens after this approval, and the later use proof must bind both approval and actual readback.
+- `create-exact-capability-approval.mjs` accepts only an already allocated run/job/pending-deployment observation, verified dispatch authorization, the canonical mechanism-prerequisite plan, its independently approved apply proof, the actual per-run prerequisite readback, already-existing base Provider/broker/App readbacks and a protected signer descriptor. It derives lane/kind/profile from the registered workflow job and exclusive-creates a signed, short-lived, revocable approval containing issuer, validity, revocation and custody bindings; lane, kind, profile and purpose are not caller-selectable strings. Missing, UNKNOWN, stale or plan-mismatched prerequisite readback fails before approval creation. The later use proof must bind the same approval and actual readback.
 - Every token/key reference is a protected file descriptor or secret-manager reference, never a command argument or environment variable.
 
 - [ ] **Step 1: Write RED tests for the currently absent Environment**
@@ -1223,18 +1246,19 @@ The apply path verifies plan digest, repository identity, immutable reviewer ide
 Implement and validate the closed matrix from the approved addendum:
 
 - `publisher-sts` is allowed only for `producer/snapshot-data`; it binds root broker/publisher role readback, exact attempt object namespace/KMS context, `maxSessionSeconds=900` and sealed-FD contract. It forbids OIDC, GitHub App/JIT fields and Get/List/Delete/KMS data permissions.
-- `oidc-cloud-role` is allowed only for `producer/snapshot-custody` or an exact RC snapshot-consumer job. It computes the full subject from allocated run/job/attempt, exact workflow SHA/ref, event, Environment and runner environment. Producer custody can read ciphertext/proofs only and MUST NOT receive KMS Decrypt; RC source-snapshot and final-snapshot consumers each receive their own role/approval/observation/use proof and may decrypt only the exact object/version/context. It forbids broker/FD/JIT fields and publisher write permission.
+- `oidc-cloud-role` is the existing mechanism for `producer/snapshot-custody`, exact RC snapshot-consumer jobs and the fixed RC purpose-lineage custody jobs listed below. It computes the full subject from allocated run/job/attempt, exact workflow SHA/ref, event, Environment and runner environment. Producer custody can read ciphertext/proofs only and MUST NOT receive KMS Decrypt; RC source-snapshot and final-snapshot consumers each receive their own role/approval/observation/use proof and may decrypt only the exact object/version/context. Every permission profile forbids broker/FD/JIT fields and any write outside its explicitly approved namespace.
+- Purpose-lineage custody jobs also use the existing `oidc-cloud-role` mechanism, with a closed `permissionProfile` of `lineage-create-only-writer|lineage-readback-reader`. The writer may condition-create only under the exact attempt/run namespace and cannot read/list/delete/KMS; the reader may HEAD/Get only the exact signed key set and cannot write/list/delete/KMS. Each phase has its own role, prerequisite change approval/apply/readback, exact-capability approval, credential-use proof and terminal revoke; it cannot reuse a snapshot consumer or Producer custody role. These profiles do not create a new `capabilityKind`.
 - `jit-registration` is allowed only for `producer/snapshot-data`; it binds GitHub App/installation readback, root launcher, repository, route nonce, exact five labels and JIT policy. It forbids any cloud role/STS data permission.
 
-One job that needs publisher and JIT uses two approvals, two prerequisite readbacks and two use proofs. Cross-variant fields, multiple kinds, combined credentials and a kind's proof used as another kind are rejected.
+One job that needs publisher and JIT uses two approvals, two prerequisite readbacks and two use proofs. The lineage DAG uses a fixed ordered list of separate writer and readback jobs; each job runs a fresh child process with one profile credential, and the prior job's credential is revoked/expired before its dependent job starts. Cross-variant fields, multiple kinds in one approval, simultaneous or combined credentials and a kind/profile proof used as another kind/profile are rejected.
 
 - [ ] **Step 8: Implement canary and exact-run lifecycle checks**
 
-The canary workflow is GitHub-hosted `ubuntu-24.04`, main-only, run-attempt 1, under `stage1-snapshot-export`, and requests an OIDC token only after the future subject's RAM role is applied/read back. It uses audience `sts.aliyuncs.com`, calls only `AssumeRoleWithOIDC` and `GetCallerIdentity`, and emits redacted claims/Provider/role/session proof. Exact-run lifecycle is fixed as `run/job allocated and pending deployment observed → exact-capability approval → mechanism prerequisite apply/readback → separate Environment approval → post-approval observation → mechanism-specific credential/JIT use → terminal revoke/readback`; apply/revoke UNKNOWN must reconcile. The use proof must bind approval digest, prerequisite readback and fresh observation.
+The canary workflow is GitHub-hosted `ubuntu-24.04`, main-only, run-attempt 1, under `stage1-snapshot-export`, and requests an OIDC token only after the future subject's RAM role is applied/read back. It uses audience `sts.aliyuncs.com`, calls only `AssumeRoleWithOIDC` and `GetCallerIdentity`, and emits redacted claims/Provider/role/session proof. Exact-run lifecycle is fixed as `run/job allocated and pending deployment observed → prerequisite plan → independent external-change approval → prerequisite apply/readback → exact-capability approval binding the actual readback → separate Environment approval → post-approval observation → mechanism-specific credential/JIT use → terminal revoke/readback`; apply/revoke UNKNOWN must reconcile. The use proof must bind approval digest, prerequisite readback and fresh observation.
 
 - [ ] **Step 9: Add negative tests**
 
-Reject wrong repository/environment/reviewer, tag/ref, workflow SHA, actor, run attempt, self-hosted versus GitHub-hosted mismatch, admin bypass, stale observation, missing approval, wildcard trust, ambient token, Provider issuer/client ID/fingerprint/issuance/ARN mismatch, GitHub subject switch before cloud condition readback, credential/JIT use before Environment approval, role/JIT plan before run/job/pending-deployment allocation, approval containing a future observation, publisher OIDC, producer custody KMS Decrypt, RC consumer reusing producer custody identity, broker with data permission, cross-kind fields, combined credentials, one approval claiming two kinds and terminal without revoke/expiry readback.
+Reject wrong repository/environment/reviewer, tag/ref, workflow SHA, actor, run attempt, self-hosted versus GitHub-hosted mismatch, admin bypass, stale observation, missing approval, wildcard trust, ambient token, Provider issuer/client ID/fingerprint/issuance/ARN mismatch, GitHub subject switch before cloud condition readback, credential/JIT use before Environment approval, role/JIT plan before run/job/pending-deployment allocation, prerequisite apply without independent change approval, exact-capability approval before actual readback, approval carrying a different/UNKNOWN readback, approval containing a future observation, publisher OIDC, producer custody KMS Decrypt, RC consumer reusing producer custody identity, lineage writer with read/list/delete/KMS, lineage reader with write/list/delete/KMS, simultaneous writer/reader credentials, broker with data permission, cross-kind/profile fields, combined credentials, one approval claiming two kinds and terminal without revoke/expiry readback.
 
 - [ ] **Step 10: Verify and commit repository-only tooling**
 
@@ -1265,8 +1289,8 @@ Expected: only deterministic plan/readback tooling exists; no GitHub Environment
 **Workflow contract:**
 
 1. `snapshot-admission` runs on `ubuntu-24.04` before Environment approval, verifies the exact approved main SHA, expected Environment identity contract, owner facts, adapter build proof, target policy and capacity inputs, then publishes only a canonical non-sensitive admission artifact. It has no Environment, OIDC token or attestation authority; the artifact remains untrusted until the root launcher independently verifies and signs it.
-2. `snapshot-data` has its own pending deployment. Only after the separate `publisher-sts` and `jit-registration` approvals plus prerequisite readbacks exist may a human approve this deployment. The job then runs on the exact five-label JIT Runner, has no checkout, `uses`, package-manager, Docker or free-form input, and contains one fixed invocation of the root-owned adapter.
-3. `snapshot-custody` is a later, separately approved deployment on `ubuntu-24.04` under `stage1-snapshot-export`. It cannot become pending until data, encrypted-object and host-destruction proofs are durable; after its own `oidc-cloud-role` approval/readback and second human approval it verifies encrypted OSS object/proofs/destruction receipt, issues a GitHub artifact attestation and emits `snapshot-producer-completion.v1`. It never downloads or decrypts the snapshot and has no KMS Decrypt permission.
+2. `snapshot-data` has its own pending deployment. Only after the separate publisher/JIT prerequisite plans have independent external-change approvals, have been applied/read back, and the resulting readbacks have been bound into separate `publisher-sts` and `jit-registration` approvals may a human approve this deployment. The job then runs on the exact five-label JIT Runner, has no checkout, `uses`, package-manager, Docker or free-form input, and contains one fixed invocation of the root-owned adapter.
+3. `snapshot-custody` is a later, separately approved deployment on `ubuntu-24.04` under `stage1-snapshot-export`. It cannot become pending until data, encrypted-object and host-destruction proofs are durable; its independent cloud-role change is approved/applied/read back first, the actual readback is then bound into its `oidc-cloud-role` approval, and only the second human Environment approval may release the job. It verifies encrypted OSS object/proofs/destruction receipt, issues a GitHub artifact attestation and emits `snapshot-producer-completion.v1`. It never downloads or decrypts the snapshot and has no KMS Decrypt permission.
 
 - [ ] **Step 1: Make existing workflow tests fail on plaintext custody**
 
@@ -1336,7 +1360,7 @@ Fresh and snapshot chains independently collect runner provenance and `capacity-
 
 - [ ] **Step 3: Implement exact-run private snapshot consumption**
 
-For each source-snapshot and final-snapshot job, first allocate the job and pending deployment, then create that job's independent RC-lane `oidc-cloud-role` approval and read back its exact Provider/subject/role/policy. Only after the corresponding Environment receives its own human approval and a fresh post-approval observation passes may the job request OIDC. Each role trust policy matches the current `rcWorkflowRunId`, attempt, job and Environment; no Producer custody approval, role, observation, credential or use proof is reusable. Allow one exact object key/version and one KMS ciphertext context; deny bucket listing and other attempt prefixes. Verify ciphertext digest before decrypt, sanitized content digest while streaming and fail if plaintext is addressable as an Actions artifact/cache.
+For each source-snapshot and final-snapshot job, first allocate the job and pending deployment, generate a deterministic exact-role prerequisite plan, obtain its independent infrastructure-change approval, apply/read back the exact Provider/subject/role/policy, and only then sign that job's RC-lane `oidc-cloud-role` approval binding the readback. After the corresponding Environment receives its own human approval and a fresh post-approval observation passes, the job may request OIDC. Each role trust policy matches the current `rcWorkflowRunId`, attempt, job and Environment; no Producer custody approval, role, observation, credential or use proof is reusable. Allow one exact object key/version and one KMS ciphertext context; deny bucket listing and other attempt prefixes. Verify ciphertext digest before decrypt, sanitized content digest while streaming and fail if plaintext is addressable as an Actions artifact/cache.
 
 - [ ] **Step 4: Run source fresh and source snapshot gates in the same RC run**
 
@@ -1388,12 +1412,12 @@ git commit -m "ci: run release gates on immutable hosted runners"
 **Approval model:**
 
 1. `rc-dispatch-authorization.v1` is signed after build/bundle and `releaseAttemptId` exist but before Producer/RC run creation. It fixes the purpose and immutable expected identities; it cannot contain future run IDs, database, Manifest, command or plan fields.
-2. `exact-capability-approval.v1` is signed only after a target external-capability run/job/pending deployment exists and before that job's Environment approval. It uses exactly one Task 13 `capabilityKind`; it cannot contain a post-approval observation.
+2. `exact-capability-approval.v1` is signed only after a target external-capability run/job/pending deployment exists **and** its separately approved mechanism prerequisite has been applied/read back, but before that job's Environment approval. It binds the actual prerequisite readback digest, uses exactly one Task 13 `capabilityKind`/permission profile and cannot contain a post-approval observation.
 3. Existing `approval-record.v1` is signed only after database identity, baseline Manifest, `commandId@version`, capability and deterministic plan digest exist. It approves only that command and cannot substitute for either earlier approval.
 
 - [ ] **Step 1: Write RED dispatch-order and approval-separation tests**
 
-Reject dispatch authorization before build/bundle, caller-supplied purpose, authorization containing a future run ID, capability approval without pending deployment, capability approval containing observation, command approval without Manifest/plan, and any one record used for two approval roles.
+Reject dispatch authorization before build/bundle, caller-supplied purpose, authorization containing a future run ID, capability approval without pending deployment or actual matching prerequisite readback, capability approval issued before prerequisite apply/readback, capability approval containing observation, command approval without Manifest/plan, and any one record used for two approval roles.
 
 - [ ] **Step 2: Implement closed dispatch authorization creation and verification**
 
@@ -1407,7 +1431,7 @@ Validate each published raw v1 proof first, recompute its canonical digest and v
 - execution: operation, `commandId@version`, profile, database, Manifest, plan, post-state, approval policy and tagged capability binding;
 - final-compose: fresh/snapshot chain, API/Web/Runner digests, database/Manifest, network capture, test equation and final execution digests.
 
-Execution uses exactly one capability branch: `external-capability` binds Task 13 exact approval, kind, prerequisite readback, observation and mechanism use proof; `runner-database-role` binds launch attestation, database-role observation, command policy and the applicable existing `approval-record.v1`, and forbids cloud placeholders.
+Execution uses exactly one capability branch: `external-capability` binds Task 13 exact approval, kind, closed permission profile where applicable, prerequisite readback, observation and mechanism use proof; `runner-database-role` binds launch attestation, database-role observation, command policy and the applicable existing `approval-record.v1`, and forbids cloud placeholders.
 
 - [ ] **Step 4: Derive purpose only from two trusted sources**
 
@@ -1434,15 +1458,18 @@ git commit -m "build: bind release proofs to approved execution purpose"
 - Create: `packages/release-foundation/test/purpose-claim.test.mjs`
 - Modify: `packages/release-foundation/src/evidence-custody.mjs`
 - Modify: `packages/release-foundation/test/evidence-custody.test.mjs`
+- Create: `scripts/release/lineage-custody-adapters.mjs`
+- Create: `scripts/release/lineage-custody-adapters.test.mjs`
 - Create: `scripts/release/custody-purpose-envelope.mjs`
 - Create: `scripts/release/custody-purpose-envelope.test.mjs`
+- Modify: `.github/workflows/release-candidate-gate.yml`
 - Modify: `packages/release-foundation/src/schema-registry.mjs`
 - Modify: `packages/release-foundation/src/index.mjs`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 
 - [ ] **Step 1: Write RED one-to-one and no-cycle tests**
 
-Reject a second purpose or envelope for the same raw digest, altered storage derivation, overwrite/delete/recreate, envelope custody lacking claim readback, claim/custody circular digest references, retention shorter than downstream lineage, and retry that overwrites an earlier failure.
+Reject a second purpose or envelope for the same raw digest, altered storage derivation, overwrite/delete/recreate, envelope custody lacking claim readback, claim/custody circular digest references, retention shorter than downstream lineage, retry that overwrites an earlier failure, a public Actions artifact destination, a missing writer/reader identity, a combined writer+reader credential, a writer that can read/list/delete/KMS, a reader that can write/list/delete/KMS and any new/unregistered capability kind.
 
 - [ ] **Step 2: Implement deterministic claim and storage derivation**
 
@@ -1452,17 +1479,23 @@ Compute the complete envelope and digest first. Derive one create-only claim key
 
 After claim readback, condition-create envelope storage in the approved private, content-addressed evidence store; neither claim nor envelope bytes may enter a public Actions artifact. `custody-receipt.v2` binds envelope digest, `purposeClaimDigest`, derived claim/envelope storage keys and versions, conditional-create receipts, readbacks, write-once publisher/read-only consumer policy, retention/legal-hold policy and raw custody digest. It is calculated only after both objects exist, so the content-addressed graph is acyclic.
 
-- [ ] **Step 4: Preserve UNKNOWN and whole-lineage retention**
+- [ ] **Step 4: Implement mutually exclusive lineage custody identities**
+
+`lineage-custody-adapters.mjs` exposes three constructors only: `createLineageCreateOnlyWriter`, `createLineageExactReadbackReader` and `createLineageRetentionOperator`. Writer and reader derive keys beneath `evidence/v1/${releaseAttemptId}/${rcWorkflowRunId}/`, validate their own Task 4 policy/readback, accept credentials by protected descriptor, and run in separate short-lived child processes. Every lineage node is handled by fixed, sequential RC jobs: a create-only store job and an independent readback job; `custody-receipt.v2`, aggregate and exit each receive their own later store/readback pair after their content exists. Each job uses the already approved `oidc-cloud-role` mechanism with one closed `permissionProfile` and gets its own prerequisite plan, `external-change-approval.v1`, apply/readback, exact-capability approval, Environment approval/observation, use proof and revoke/expiry proof. No job or process ever receives both profiles. The final non-sensitive access/readback receipt may enter Actions proof custody by digest/reference and does not recursively require another lineage object. The retention operator is dormant during RC and can act only through a later exact-key disposition plan, independent human approval and terminal receipt.
+
+`custody-purpose-envelope.mjs` never accepts a bucket, prefix, role ARN, capability kind or credential from a free-form CLI argument. It consumes only the fixed workflow-derived namespace, signed plan/readback descriptors and one active profile FD. If the existing `oidc-cloud-role` contract cannot represent these permission profiles without adding an identity mechanism or weakening a forbidden field, stop with `SECURITY_ADDENDUM_REAPPROVAL_REQUIRED` rather than creating a fourth kind.
+
+- [ ] **Step 5: Preserve UNKNOWN and whole-lineage retention**
 
 If claim/envelope/custody creation is interrupted, retain raw proof and failure record; run only read-only reconcile for the same operation. Unresolved state makes the attempt unusable and requires a new operation/run/raw proof, never rewrapping. Claim storage/retention cannot expire before the latest envelope, custody, aggregate, exit, Task 30 audit, final custody or legal hold.
 
-- [ ] **Step 5: Verify and commit custody separately**
+- [ ] **Step 6: Verify and commit custody separately**
 
 ```powershell
-node --test packages/release-foundation/test/purpose-claim.test.mjs packages/release-foundation/test/evidence-custody.test.mjs scripts/release/custody-purpose-envelope.test.mjs
+node --test packages/release-foundation/test/purpose-claim.test.mjs packages/release-foundation/test/evidence-custody.test.mjs scripts/release/lineage-custody-adapters.test.mjs scripts/release/custody-purpose-envelope.test.mjs
 pnpm release:contracts:verify
 git diff --check
-git add release/contracts packages/release-foundation/src packages/release-foundation/test/purpose-claim.test.mjs packages/release-foundation/test/evidence-custody.test.mjs scripts/release/custody-purpose-envelope.mjs scripts/release/custody-purpose-envelope.test.mjs
+git add .github/workflows/release-candidate-gate.yml release/contracts packages/release-foundation/src packages/release-foundation/test/purpose-claim.test.mjs packages/release-foundation/test/evidence-custody.test.mjs scripts/release/lineage-custody-adapters.mjs scripts/release/lineage-custody-adapters.test.mjs scripts/release/custody-purpose-envelope.mjs scripts/release/custody-purpose-envelope.test.mjs
 git commit -m "build: custody one purpose envelope per raw proof"
 ```
 
@@ -1502,15 +1535,15 @@ The independent Producer may supply only its attested encrypted snapshot/complet
 
 - [ ] **Step 1: Write RED cross-run, direct-v1 and purpose-splice tests**
 
-Reject different RC run/attempt, source/final proof imported from another run, raw v1 selected directly, missing claim or envelope, mismatched producer/build/contract/snapshot, externally supplied aggregate/exit, qualification relabelled release-candidate and any evidence overwrite.
+Reject different RC run/attempt, source/final proof imported from another run, raw v1 selected directly, missing claim or envelope, mismatched producer/build/contract/snapshot, externally supplied aggregate/exit, qualification relabelled release-candidate, public-artifact lineage bytes, aggregate/exit without private create/readback identity proofs, cross-profile credentials and any evidence overwrite.
 
 - [ ] **Step 2: Recompute aggregation from v2 custody lineage**
 
-Read every selected v2 receipt from content-addressed custody, verify its claim/envelope/raw chain and recompute the aggregate. The successful Producer completion is a prerequisite fact, never a source/final execution proof. `release-aggregate-proof.v2` contains only one purpose/dispatch/attempt/run lineage.
+Read every selected v2 receipt from the private content-addressed namespace through an independently attested `lineage-readback-reader`, verify its claim/envelope/raw chain and recompute the aggregate. Store the aggregate by a new create-only writer phase and confirm it with a new exact readback phase; each phase uses one credential and its own approval/readback/use/revoke lineage. The successful Producer completion is a prerequisite fact, never a source/final execution proof. `release-aggregate-proof.v2` contains only one purpose/dispatch/attempt/run lineage.
 
 - [ ] **Step 3: Generate qualification exit evidence inside the RC run**
 
-Remove any `exitEvidenceRunId` or complete exit-evidence download. Generate `s1-exit-evidence.v2` only after aggregate custody, binding `qualification`, the current RC run, dispatch authorization, build/repository/test/snapshot identities, aggregate digest and narrow approved attestations.
+Remove any `exitEvidenceRunId` or complete exit-evidence download. Generate `s1-exit-evidence.v2` only after private aggregate custody/readback, binding `qualification`, the current RC run, dispatch authorization, build/repository/test/snapshot identities, aggregate digest and narrow approved attestations. Store and independently read back exit evidence through fresh lineage writer/reader phases; no lineage bytes or storage credential may enter a public Actions artifact.
 
 - [ ] **Step 4: Keep qualification permanently non-promotable**
 
@@ -1529,7 +1562,7 @@ git commit -m "ci: aggregate purpose-bound stage1 qualification evidence"
 
 ---
 
-### Task 17: Add the trusted main Adapter build, publication and custody producer
+### Task 17A: Add the trusted main Adapter build, publication and custody producer
 
 **Files:**
 
@@ -1599,12 +1632,74 @@ Expected: repository tests prove the producer contract, but no Adapter artifact 
 
 ---
 
+### Task 17B: Bind the API/Web/Runner bundle build to an approved merged-main plan
+
+**Files:**
+
+- Modify: `.github/workflows/docker-images.yml`
+- Create: `release/contracts/schemas/three-image-bundle-build-plan.v1.schema.json`
+- Create: `scripts/release/create-three-image-bundle-build-plan.mjs`
+- Create: `scripts/release/create-three-image-bundle-build-plan.test.mjs`
+- Create: `scripts/release/verify-three-image-bundle-workflow.mjs`
+- Create: `scripts/release/verify-three-image-bundle-workflow.test.mjs`
+- Modify: `packages/release-foundation/src/schema-registry.mjs`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+
+**Interfaces:**
+
+- `create-three-image-bundle-build-plan.mjs` performs read-only GitHub/registry/contract observations and exclusive-creates a canonical plan bound to `infrastructureChangeId`; it never allocates a `releaseAttemptId`.
+- The existing `build-proof.v1` remains the immutable three-image identity. This task does not create a competing bundle fact; it makes the existing manual workflow reject any dispatch that lacks the approved plan for its exact merged-main SHA and inputs.
+- Infrastructure Task I15B is the sole real execution of this producer before qualification I16.
+
+- [ ] **Step 1: Write RED build-admission and workflow tests**
+
+Reject a dispatch without a plan digest/custody reference, PR or non-main source, caller-selected checkout SHA, run attempt other than 1, mutable action/base-image material, tag-only identity, a plan produced for another workflow blob or source SHA, a changed Web public API Base, registry namespace/image coordinate drift, a partial API/Web/Runner set and any build proof not derived from all three registry-resolved platform digests.
+
+- [ ] **Step 2: Define the pre-attempt bundle build plan**
+
+`three-image-bundle-build-plan.v1` binds `infrastructureChangeId`, operation ID, exact merged-main source SHA, repository contract/migration catalog/lockfile digests, workflow path/ref/blob and pinned action digests, protected `trusted-image-build` Environment identity, registry/namespace, exact API/Web/Runner OCI coordinates, Web public API Base, discovery-tag policy, base-image resolution policy, build platform set, no-overwrite rule, attestation policy and expected `build-proof.v1`/custody outputs. It forbids `releaseAttemptId`, Producer/RC run IDs and mutable tags as identity.
+
+- [ ] **Step 3: Require the approved plan before any build**
+
+Keep `workflow_dispatch`, but replace ad hoc manual inputs with a content-addressed plan digest/reference plus the exact source SHA. The protected prepare job independently downloads/verifies plan custody, schema, signature/revocation, workflow blob and `GITHUB_SHA` before dependency download or Docker build. The human approval for its `trusted-image-build` deployment is distinct from plan approval and is allowed only after the pending deployment still matches the plan.
+
+- [ ] **Step 4: Build and aggregate all three immutable images in one run**
+
+The same run may build API/Web/Runner in parallel from one fixed checkout. The final aggregator reads actual registry-resolved platform digests, OCI source revisions, base-image provenance and SBOMs, then generates the one existing `build-proof.v1`. Any missing image, different source, cross-run digest or post-build tag substitution fails the complete-bundle gate; no successful partial bundle is promotable.
+
+- [ ] **Step 5: Attest and read back bundle custody**
+
+Use the protected workflow's existing GitHub attestation and create-only custody path. A separate readback step verifies the build-plan digest, attestation subject, three registry digests, source/workflow/material provenance and custody receipt. Public Actions artifact may contain only the non-secret plan/proof/reference/attestation records; images remain addressed by GHCR digest.
+
+- [ ] **Step 6: Run focused gates**
+
+```powershell
+node --test scripts/release/create-three-image-bundle-build-plan.test.mjs scripts/release/verify-three-image-bundle-workflow.test.mjs scripts/release/build-proof.test.mjs
+node scripts/release/verify-three-image-bundle-workflow.mjs --workflow .github/workflows/docker-images.yml
+pnpm release:contracts:verify
+pnpm prettier --check .github/workflows/docker-images.yml scripts/release release/contracts
+git diff --check
+```
+
+- [ ] **Step 7: Commit without dispatching a build**
+
+```powershell
+git add .github/workflows/docker-images.yml release/contracts packages/release-foundation/src/schema-registry.mjs scripts/release/create-three-image-bundle-build-plan.mjs scripts/release/create-three-image-bundle-build-plan.test.mjs scripts/release/verify-three-image-bundle-workflow.mjs scripts/release/verify-three-image-bundle-workflow.test.mjs
+git commit -m "ci: admit three-image builds from an approved main plan"
+```
+
+Expected: repository checks prove that an arbitrary manual invocation can no longer produce an eligible bundle. No image is built until the merged workflow is separately planned and approved in I15B.
+
+---
+
 ### Task 18: Publish the operational runbook and pass the repository implementation gate
 
 **Files:**
 
 - Create: `docs/operations/stage1-s1-execution-infrastructure-runbook.md`
 - Create: `docs/operations/templates/stage1-snapshot-bootstrap-approval.v1.json`
+- Create: `docs/operations/templates/stage1-external-change-approval.v1.json`
+- Create: `docs/operations/templates/stage1-three-image-bundle-build-plan.v1.json`
 - Create: `docs/operations/templates/stage1-rc-dispatch-authorization-request.v1.json`
 - Create: `docs/operations/templates/stage1-exact-capability-approval.v1.json`
 - Create: `docs/operations/templates/stage1-command-approval.v1.json`
@@ -1620,15 +1715,15 @@ The runbook documents commands that generate plans and readbacks, but every real
 
 - [ ] **Step 1: Document prerequisites and exact identity inventory**
 
-Include approved SHA/spec/plan references, current Environment `ABSENT` baseline, required GitHub/Alibaba/Staging immutable IDs, Task 30 stash fingerprint, expected PostgreSQL 17 datasource verification and the rule that this repository-only checkpoint creates no external state. Explain the separate infrastructure-change identity, later release-attempt allocation, and the non-interchangeable dispatch, exact-capability and command approvals.
+Include approved SHA/spec/plan references, current Environment `ABSENT` baseline, required GitHub/Alibaba/Staging immutable IDs, Task 30 stash fingerprint, expected PostgreSQL 17 datasource verification and the rule that this repository-only checkpoint creates no external state. Explain the separate infrastructure-change identity, I15B three-image build, later release-attempt allocation, and the non-interchangeable infrastructure-change, dispatch, exact-capability and command approvals.
 
 - [ ] **Step 2: Document the ordered external change sequence**
 
-Use exactly the Infrastructure Task I1–I24 order below. Each external mutation section names its plan/apply/readback CLI, proof path, operation ID, independent approval and UNKNOWN boundary; no paragraph may combine separate GitHub, Alibaba, Staging or WSL writes under one approval.
+Use exactly the Infrastructure Task I1–I24 order below, including the mandatory I15B bundle producer between I15 and I16. Each external mutation section names its plan/apply/readback CLI, proof path, operation ID, independent approval and UNKNOWN boundary; no paragraph may combine separate GitHub, Alibaba, Staging or WSL writes under one approval.
 
 - [ ] **Step 3: Add failure and UNKNOWN recovery tables**
 
-Cover Environment partial apply, OIDC drift, JIT route mismatch, cancelled self-hosted job, incomplete OSS upload, KMS denial, source fingerprint drift, LUKS cleanup failure, database result ambiguity, capacity rejection and GitHub-hosted infrastructure outage. UNKNOWN must reconcile; it cannot rerun a write step directly.
+Cover Environment partial apply, OIDC drift, JIT route mismatch, cancelled self-hosted job, incomplete OSS upload, KMS denial, source fingerprint drift, LUKS cleanup failure, database result ambiguity, three-image build/publication ambiguity, capacity rejection, lineage write/readback ambiguity and GitHub-hosted infrastructure outage. UNKNOWN must reconcile; it cannot rerun a write step directly.
 
 - [ ] **Step 4: Add retention and access operations**
 
@@ -1668,7 +1763,7 @@ Deliver the repository gate report, exact merged main SHA, controlled datasource
 
 ## External Infrastructure and Qualification Tasks
 
-Repository Tasks 0–15, 16A–16C, 17–18 must first be merged to `main` with required CI green. The user must then grant a new external-change authorization; plan approval or merge is not authorization to mutate GitHub, Alibaba Cloud, Staging or WSL. External tasks create no repository commits.
+Repository Tasks 0–15, 16A–16C, 17A–17B and 18 must first be merged to `main` with required CI green. The user must then grant a new external-change authorization; plan approval or merge is not authorization to mutate GitHub, Alibaba Cloud, Staging or WSL. External tasks create no repository commits.
 
 Bootstrap Tasks I1–I15 use `infrastructureChangeId`, never `releaseAttemptId`. At I1 create the non-secret change identity:
 
@@ -1706,15 +1801,15 @@ For each bootstrap mutation, create `.release-local/evidence/$stage1Infrastructu
 
 ### Infrastructure Task I5: Create reversible private custody resources
 
-**Operation ID:** `i5-aliyun-base-custody-${infrastructureChangeId}`. Use `manage-snapshot-cloud-custody.mjs --resource base-custody`; approve deterministic private bucket, KMS key/alias, logging, broker and mutually exclusive policies, explicitly excluding WORM. Read back IDs/private ACL/public block/versioning/KMS and prove capability negatives with synthetic ciphertext.
+**Operation ID:** `i5-aliyun-base-custody-${infrastructureChangeId}`. Use `manage-snapshot-cloud-custody.mjs --resource base-custody`; approve deterministic private bucket, KMS key/alias, logging, broker, snapshot-payload policies and the separate lineage create-only writer/readback reader/retention policy templates, explicitly excluding WORM and per-run role/session issuance. Read back IDs/private ACL/public block/versioning/KMS/namespaces/policy digests and prove snapshot/lineage cross-profile negatives with synthetic ciphertext and evidence objects.
 
 ### Infrastructure Task I6: Lock the 210-day retention policy
 
-**Operation ID:** `i6-aliyun-retention-lock-${infrastructureChangeId}`. Use `manage-snapshot-cloud-custody.mjs --resource retention-lock`; re-read I5, plan only irreversible BucketWorm, obtain new approval, apply/read back exact retention ID/state/duration. UNKNOWN reconciles; never repeats lock or recreates bucket.
+**Operation ID:** `i6-aliyun-retention-lock-${infrastructureChangeId}`. Use `manage-snapshot-cloud-custody.mjs --resource retention-lock`; re-read I5, plan only irreversible BucketWorm for both snapshot and evidence namespaces, obtain new approval, apply/read back exact retention ID/state/duration. Confirm lineage retention operator remains inactive and cannot shorten legal hold. UNKNOWN reconciles; never repeats lock or recreates bucket.
 
 ### Infrastructure Task I7: Allocate and provision the OIDC canary identity
 
-**Operation ID:** `i7-oidc-canary-role-${infrastructureChangeId}-${canaryRunId}`. Dispatch canary only to allocate run/job/pending deployment. Create one `oidc-cloud-role` exact-capability approval bound to stable Environment identity and pending deployment, apply/read back exact future subject role, and keep job unapproved. No OIDC token is requested yet.
+**Operation ID:** `i7-oidc-canary-role-${infrastructureChangeId}-${canaryRunId}`. Dispatch canary only to allocate run/job/pending deployment. Generate the exact future-subject role plan, obtain its independent `external-change-approval.v1`, apply/read back the role/policy, and only then create one `oidc-cloud-role` exact-capability approval binding that actual readback. Keep the job unapproved; no OIDC token is requested yet.
 
 ### Infrastructure Task I8: Switch repository subject and complete the canary
 
@@ -1748,7 +1843,20 @@ For each bootstrap mutation, create `.release-local/evidence/$stage1Infrastructu
 
 **Operation ID:** `i15-synthetic-rehearsal-${infrastructureChangeId}`. Invoke the installed fixed rehearsal by request FD against isolated PostgreSQL 17 only. Separately approve its closed suite/fault matrix; prove success and every cancellation/route/SSH/write/sanitizer/KMS/OSS/destruction/cross-run denial; reconcile all UNKNOWN and leave host idle before real data.
 
-I16 begins a distinct qualification release attempt. Its evidence root is `.release-local/evidence/${releaseAttemptId}/`; every operation below has its own plan/approval/apply/readback/custody chain where applicable. `releaseAttemptId` MUST NOT exist before I16 verifies the final source build proof and bundle.
+### Infrastructure Task I15B: Build and custody the exact API/Web/Runner bundle
+
+**CLIs:** `create-three-image-bundle-build-plan.mjs`, exact merged-main `.github/workflows/docker-images.yml`, `verify-three-image-bundle-workflow.mjs`, existing build-proof/custody verifiers.
+
+**Operation ID:** `i15b-three-image-bundle-build-${infrastructureChangeId}-${mainSha}`.
+
+**Required proofs:** signed build plan and revocation readback, protected deployment review/observation, workflow/run identity, three registry-resolved image digests and OCI source revisions, build-proof attestation, custody readback and terminal workflow state.
+
+- [ ] From the merged repository implementation SHA, create and custody the canonical `three-image-bundle-build-plan.v1`; bind exact workflow blob/actions, registry coordinates, API Base, source/repository/migration/lock inputs and no-overwrite policy. Obtain a new independent human approval before dispatch.
+- [ ] Dispatch only `.github/workflows/docker-images.yml@main` with the approved plan digest/reference and exact SHA. Observe the pending `trusted-image-build` deployment, verify plan/Environment identity, then approve that deployment separately. No ad hoc manual build input, PR artifact, local image or rerun is eligible.
+- [ ] Require the same run to build API/Web/Runner from one checkout, resolve all three actual registry platform digests, issue the existing `build-proof.v1` attestation and complete create-only custody/readback. Any missing image, tag-only identity, cross-run source or material mismatch fails the operation.
+- [ ] If build/publication/custody is UNKNOWN, preserve its run and registry facts and reconcile this operation only; never overwrite or substitute one image. I16 remains blocked until one complete I15B proof set is terminal success.
+
+I16 begins a distinct qualification release attempt. Its evidence root is `.release-local/evidence/${releaseAttemptId}/`; every operation below has its own plan/approval/apply/readback/custody chain where applicable. `releaseAttemptId` MUST NOT exist before I16 verifies the final I15B source build proof and bundle.
 
 ### Infrastructure Task I16: Allocate qualification attempt and dispatch authorization
 
@@ -1756,7 +1864,7 @@ I16 begins a distinct qualification release attempt. Its evidence root is `.rele
 
 **Operation ID:** `i16-qualification-dispatch-${releaseAttemptId}`.
 
-- [ ] Verify exact merged main/source SHA, trusted API/Web/Runner build proof and immutable bundle, repository/migration/test/sanitization digests, I1 Adapter custody and I2–I15 readbacks.
+- [ ] Verify exact merged main/source SHA, the I15B trusted API/Web/Runner build proof and immutable bundle, repository/migration/test/sanitization digests, I1 Adapter custody and I2–I15 readbacks.
 - [ ] Only now allocate a new `releaseAttemptId`; generate/sign/custody `rc-dispatch-authorization.v1` with `executionPurpose=qualification`, fixed Producer/RC workflows and expected identities.
 - [ ] Verify issuer, validity, revocation set and custody. The authorization contains no `snapshotRunId`, `rcWorkflowRunId`, database, Manifest, command or plan. Failure stops before any Producer dispatch.
 
@@ -1766,11 +1874,11 @@ I16 begins a distinct qualification release attempt. Its evidence root is `.rele
 
 **Operation IDs:** `i17-producer-dispatch-${releaseAttemptId}-${snapshotRunId}`, `i17-publisher-role-${releaseAttemptId}-${snapshotRunId}`, `i17-jit-prerequisite-${releaseAttemptId}-${snapshotRunId}`.
 
-**Required proofs:** Producer dispatch/run allocation, root-signed admission verification, two exact-capability approvals, publisher-role readback and JIT prerequisite readback. No credential-use proof exists yet.
+**Required proofs:** Producer dispatch/run allocation, root-signed admission verification, two prerequisite plans, two independent external-change approvals/apply proofs/readbacks and two later exact-capability approvals. No credential-use proof exists yet.
 
 - [ ] Dispatch exact Producer from the authorization, obtain `snapshotRunId`/attempt 1, complete admission and observe only the `snapshot-data` pending deployment; custody is dependency-blocked and cannot yet be pending or approved.
-- [ ] Root launcher verifies/signs admission. Create separate `publisher-sts` and `jit-registration` exact-capability approvals for data, each bound to job/pending deployment/stable Environment identity.
-- [ ] Apply/read back publisher role/broker policy and GitHub App/JIT prerequisite separately. Do not issue STS, request JIT config or approve data yet. Any UNKNOWN blocks I18.
+- [ ] Root launcher verifies/signs admission. Generate separate publisher-role/broker and GitHub App/JIT reservation prerequisite plans; obtain separate `external-change-approval.v1` records, apply and read them back. Do not issue STS, request JIT config or approve data. Any UNKNOWN blocks I18.
+- [ ] Only after both actual readbacks pass, create separate `publisher-sts` and `jit-registration` exact-capability approvals for data; each binds job/pending deployment/stable Environment identity and its own prerequisite readback. Keep the deployment pending.
 
 ### Infrastructure Task I18: Separately approve and execute snapshot-data
 
@@ -1793,7 +1901,7 @@ I16 begins a distinct qualification release attempt. Its evidence root is `.rele
 
 **Required proofs:** custody exact-capability approval/prerequisite readback, separate Environment review/observation, OIDC cloud-role use/revocation proof, ciphertext-only custody/attestation and Producer completion.
 
-- [ ] Only after I18 data/object/destruction proofs are durable, observe custody pending deployment; create its independent Producer-lane `oidc-cloud-role` approval and apply/read back exact Provider/subject/role/policy.
+- [ ] Only after I18 data/object/destruction proofs are durable, observe custody pending deployment; plan its exact Provider/subject/role/policy, obtain an independent external-change approval, apply/read back the role, and only then create its Producer-lane `oidc-cloud-role` approval bound to that readback.
 - [ ] Role allows exact ciphertext/proof readback and attestation only; KMS Decrypt, plaintext restore, publisher write and list are denied. Human-approve custody separately, generate its own fresh observation, then request OIDC.
 - [ ] Read back ciphertext/proofs/destruction, attest non-sensitive completion and freeze `snapshot-producer-completion.v1`; revoke/read back custody role and publisher/JIT terminal state. Unresolved UNKNOWN blocks RC dispatch.
 
@@ -1806,7 +1914,7 @@ I16 begins a distinct qualification release attempt. Its evidence root is `.rele
 **Required proofs:** RC allocation/admission, source consumer approval/readback/Environment observation/use/revocation, two source-chain raw v1 proof sets and their database/Manifest/role observations.
 
 - [ ] Verify I19 completion against dispatch authorization, then dispatch the one RC run and obtain `rcWorkflowRunId`/attempt 1. All protected jobs remain pending; workflow accepts no external source/final/aggregate/exit proof.
-- [ ] For source-snapshot only, create an RC-lane `oidc-cloud-role` approval after its job/pending deployment exists, apply/read back exact object/version/KMS-decrypt policy, separately approve `trusted-source-database-gate`, then create a fresh observation before OIDC use.
+- [ ] For source-snapshot only, after its job/pending deployment exists, plan the exact object/version/KMS-decrypt role, obtain an independent external-change approval, apply/read back the role, then create the RC-lane `oidc-cloud-role` approval binding that readback. Separately approve `trusted-source-database-gate`, then create a fresh observation before OIDC use.
 - [ ] Run source fresh/snapshot chains with separate databases, Manifests, operations and raw v1 proofs. Fresh database commands use runner-database-role bindings, not cloud approvals. Revoke/read back source consumer on terminal state.
 
 ### Infrastructure Task I21: Provision final-snapshot consumer and execute final chains
@@ -1817,33 +1925,34 @@ I16 begins a distinct qualification release attempt. Its evidence root is `.rele
 
 **Required proofs:** final consumer approval/readback/Environment observation/use/revocation, final fresh/snapshot raw v1 proof sets, image/session/network/test-equation evidence and failure custody if applicable.
 
-- [ ] Repeat the full RC-lane approval/prerequisite readback/separate `trusted-release-execution` approval/fresh observation sequence for final-snapshot; it cannot reuse I19 or I20 role, approval, observation, credential or use proof.
+- [ ] Repeat the full RC-lane `pending deployment → prerequisite plan/change approval/apply/readback → exact-capability approval → separate trusted-release-execution approval → fresh observation → credential use` sequence for final-snapshot; it cannot reuse I19 or I20 role, approval, observation, credential or use proof.
 - [ ] Run final fresh/snapshot on digest-pinned API/Web/Runner with separate database/Manifest/operation IDs, real API session identity, Playwright network capture and complete zero-skip equation. Fresh database roles use only the runner-database branch.
 - [ ] Preserve failure/UNKNOWN proof, revoke/read back final consumer and never replace a bundle component or import final evidence.
 
 ### Infrastructure Task I22: Wrap and custody every raw v1 proof
 
-**CLIs:** `create-execution-purpose-envelope.mjs`, `custody-purpose-envelope.mjs`.
+**CLIs:** `create-execution-purpose-envelope.mjs`, `custody-purpose-envelope.mjs`, `manage-exact-run-capability.mjs plan|apply|readback|revoke`, fixed lineage store/readback jobs.
 
-**Operation ID:** `i22-purpose-envelope-${releaseAttemptId}-${rcWorkflowRunId}`.
+**Operation IDs:** `i22-purpose-envelope-${releaseAttemptId}-${rcWorkflowRunId}-${rawProofDigest}`, with separate `-claim-envelope-write`, `-claim-envelope-readback`, `-v2-custody-write` and `-v2-custody-readback` capability operations.
 
-**Required proofs:** one raw custody readback, create-only purpose-claim receipt, claim readback, envelope readback and `custody-receipt.v2` for every selected raw proof.
+**Required proofs:** one raw custody readback plus, for every selected raw proof and each fixed storage phase, prerequisite plan/change approval/apply/readback, exact-capability approval, Environment review/observation, profile-specific use/revocation proof, create-only receipt and exact readback; final output is the privately stored/read-back `custody-receipt.v2` plus a non-sensitive access receipt.
 
 - [ ] In the same RC run, validate/read back each raw source/execution/final-compose v1 proof; derive `qualification` only from fixed workflow plus dispatch authorization.
-- [ ] Compute the typed envelope, condition-create/read back its one-to-one purpose claim, then condition-create/read back envelope and `custody-receipt.v2`. Custody binds claim digest and storage key/version.
-- [ ] Reject direct raw-v1 aggregation, second purpose, changed claim, missing type-specific binding, cross-run/attempt and unresolved envelope UNKNOWN.
+- [ ] Compute the typed envelope and deterministic claim/envelope keys. For the fixed create-only job, observe pending deployment, independently approve/apply/read back the `lineage-create-only-writer` prerequisite, then create its `oidc-cloud-role` exact approval before Environment approval/observation and credential use. Condition-create claim and envelope only; revoke/read back the writer.
+- [ ] Run a distinct `lineage-readback-reader` job through the same ordered gates, read back exact claim/envelope bytes and versions, then compute `custody-receipt.v2`. Use a later writer job and later reader job—each with independent role/approval/observation/use/revoke chains—to store and confirm that v2 object. Writer and reader credentials never coexist, and no job can list the namespace.
+- [ ] Reject direct raw-v1 aggregation, second purpose, changed claim, missing type-specific binding, public artifact bytes, cross-profile/combined credentials, cross-run/attempt and unresolved envelope/custody UNKNOWN.
 
 ### Infrastructure Task I23: Aggregate qualification and stop before Task 30
 
-**CLIs:** `aggregate-release-proof.mjs`, `generate-s1-exit-evidence.mjs`, final capability revoke/readback and exact temporary-database cleanup.
+**CLIs:** `aggregate-release-proof.mjs`, `generate-s1-exit-evidence.mjs`, `manage-exact-run-capability.mjs plan|apply|readback|revoke`, fixed lineage store/readback jobs, final capability revoke/readback and exact temporary-database cleanup.
 
 **Operation ID:** `i23-qualification-tail-${releaseAttemptId}-${rcWorkflowRunId}`.
 
-**Required proofs:** same-run aggregate/exit/custody, promotion-rejection result, cloud-session terminal readbacks, evidence-custody confirmation and marker-bound cleanup receipts.
+**Required proofs:** same-run aggregate/exit private store/readback lineages, writer/reader prerequisite-change and exact-capability approval chains, promotion-rejection result, cloud-session terminal readbacks, evidence-custody confirmation and marker-bound cleanup receipts.
 
-- [ ] In the same RC run, aggregate only I22 v2 custody lineages into `release-aggregate-proof.v2`, then generate/custody `s1-exit-evidence.v2`; no external source/final/aggregate/exit is accepted.
+- [ ] In the same RC run, aggregate only I22 privately read-back v2 custody lineages into `release-aggregate-proof.v2`. Store/read back aggregate through separate `lineage-create-only-writer` and `lineage-readback-reader` jobs, then generate `s1-exit-evidence.v2` and repeat a new store/readback pair. Every role prerequisite is independently planned/approved/applied/read back before its exact-capability approval and Environment approval; no external source/final/aggregate/exit is accepted.
 - [ ] Require `assertPromotionEligible` to return `QUALIFICATION_EVIDENCE_NOT_PROMOTABLE`; also reject raw-v1 direct input, missing/mixed purpose and different dispatch/attempt.
-- [ ] Verify all RC cloud sessions revoked/expired and proof custody durable before exact marker-bound database cleanup. Emit `TASK_30_AUTHORIZATION_REQUIRED` and stop.
+- [ ] Verify all RC cloud sessions—including every lineage writer/reader—are revoked/expired and private proof custody is durable before exact marker-bound database cleanup. The inactive lineage retention identity has no issued session; future use requires a separate post-retention plan/approval/readback/receipt. Emit `TASK_30_AUTHORIZATION_REQUIRED` and stop.
 
 ### Infrastructure Task I24: Deliver the Task 29R package and request authorization
 
@@ -1851,7 +1960,7 @@ I16 begins a distinct qualification release attempt. Its evidence root is `.rele
 
 **Required proof:** signed package index and audit report covering every I1-I23 digest plus explicit `TASK_30_AUTHORIZATION_REQUIRED` terminal state.
 
-- [ ] Assemble main/build/bundle/Adapter identities, I2–I15 readbacks, I16 authorization, I19 Producer completion, I20–I23 raw/envelope/custody/aggregate/exit and all failure/reconcile records.
+- [ ] Assemble main/I15B build/bundle/Adapter identities, I2–I15 readbacks, I16 authorization, I19 Producer completion, I20–I23 raw/envelope/custody/aggregate/exit and all failure/reconcile records.
 - [ ] Prove no JIT Runner, unlocked volume, plaintext, active per-run credential or unresolved UNKNOWN remains; Task 30 stash fingerprint is unchanged.
 - [ ] Report manual/N/A evidence, accepted single-operator risk, retained WORM objects and owners. Ask for explicit Task 30 authorization; until granted, do not apply/pop/drop stash, implement Task 30, declare S1 complete or start S2/S3.
 
@@ -1859,24 +1968,25 @@ I16 begins a distinct qualification release attempt. Its evidence root is `.rele
 
 | Approved addendum requirement                          | Implementation tasks                     | Completion evidence                                                                     |
 | ------------------------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------- |
-| Build/bundle before attempt and dispatch authorization | 2, 16A, 17; I1, I16                      | Trusted digests, newly allocated attempt and signed authorization                       |
+| Build/bundle before attempt and dispatch authorization | 2, 16A, 17B; I15B, I16                   | Approved build plan, three registry digests, custody, new attempt and authorization     |
 | Independent Producer, then one same-run RC chain       | 2, 3, 9, 14-16C; I17-I23                 | Admission/JIT/Producer proofs plus same-run DAG checkpoint                              |
 | Public-repository exclusive JIT routing                | 2, 3, 8, 9, 13-14; I3-I4, I7-I8, I12-I19 | Environment identity, route observation, exact labels, terminal cleanup                 |
-| No arbitrary repository code on data host              | 7-9, 14, 17; I1, I12-I15                 | Adapter allowlist/SBOM, workflow structural audit, negative launch tests                |
-| Trusted Adapter main artifact chain                    | 7, 17; I1, I14                           | Approved build plan, OCI digest, attestation, custody and installed-file readback       |
+| No arbitrary repository code on data host              | 7-9, 14, 17A; I1, I12-I15                | Adapter allowlist/SBOM, workflow structural audit, negative launch tests                |
+| Trusted Adapter main artifact chain                    | 7, 17A; I1, I14                          | Approved build plan, OCI digest, attestation, custody and installed-file readback       |
 | Dedicated WSL, LUKS and truthful destruction           | 8; I12-I19                               | Host policy, LUKS lifecycle proof, destruction receipt                                  |
 | Restricted SSH/read-only PostgreSQL source             | 10-11; I9-I11, I17-I19                   | Target policy, privilege negatives, source fingerprints, MVCC proof                     |
 | Valid PostgreSQL 17 snapshot semantics                 | 0, 10-11, 15; I15, I20-I21               | Controlled migration status and three-session MVCC test                                 |
-| Private encrypted custody, not public artifact         | 4-6, 14-16B; I5-I6, I15-I23              | Encryption/private custody plus purpose-claim/envelope custody readbacks                |
+| Private encrypted and purpose-lineage custody          | 4-6, 14-16C; I5-I6, I15-I23              | Snapshot plus create-only writer/read-only reader lineage and retention proofs          |
 | Producer custody never decrypts                        | 6, 13-15; I19-I21                        | Producer KMS-decrypt denial and independent RC consumer decrypt proofs                  |
-| Three approval types and capabilityKind union          | 2, 13, 16A; I7-I8, I16-I21               | Dispatch, exact-capability and command approvals with mutually exclusive use proofs     |
+| Prerequisite readback before exact capability approval | 2, 13-16B; I7-I8, I17-I23                | Change approval/apply/readback precedes exact approval and Environment release          |
+| Three approval types and capabilityKind union          | 2, 13, 16A; I7-I8, I16-I23               | Dispatch, exact-capability and command approvals with mutually exclusive use proofs     |
 | Double Producer Environment approval                   | 3, 13-14; I17-I19                        | Separate data/custody pending deployments, approvals, observations and use proofs       |
 | Environment identity versus observation                | 2-3, 13-14; I3, I7-I8, I17-I21           | Stable identity digest, per-deployment fresh observation and drift negatives            |
-| Capacity and fixed GitHub-hosted identity              | 12, 15, 17; I1, I15, I20-I21             | Capacity plans and runner provenance for every chain                                    |
+| Capacity and fixed GitHub-hosted identity              | 12, 15, 17A-17B; I1, I15-I15B, I20-I23   | Capacity plans and runner provenance for build/source/final/custody chains              |
 | One-to-one raw v1 purpose wrapping                     | 16A-16C; I22-I23                         | Raw custody, create-only claim, typed envelope, v2 custody and no direct-v1 aggregation |
 | Machine-isolated qualification evidence                | 16C; I20-I24                             | Qualification aggregate/exit and expected promotion rejection                           |
-| Snapshot retention and disposition                     | 4, 6, 16B, 17; I5-I6, I15-I24            | 30-day expiry, locked 210-day WORM and whole-lineage retention receipts                 |
-| Failure, cancellation, UNKNOWN and reconcile           | 2-9, 13-18; I1-I24                       | Failure proofs, reconciliation chain and preserved immutable attempts                   |
+| Snapshot and lineage retention/disposition             | 4, 6, 16B, 17A; I5-I6, I15-I24           | 30-day expiry, locked 210-day WORM and whole-lineage disposition receipts               |
+| Failure, cancellation, UNKNOWN and reconcile           | 2-9, 13-18; I1-I24 including I15B        | Failure proofs, reconciliation chain and preserved immutable attempts                   |
 | Task 29R dependency gate; Task 30 blocked              | 1, 16C, 18; I23-I24                      | `TASK_30_AUTHORIZATION_REQUIRED`, non-promotable qualification and stash audit          |
 
 ## External Approval Checkpoints
@@ -1894,14 +2004,15 @@ I16 begins a distinct qualification release attempt. Its evidence root is `.rele
 | I9-I11     | Three separate Staging endpoint/SSH/database changes           | Another resource, export or business write                        |
 | I12-I14    | Distro, signer and Adapter install as separate changes         | JIT registration or data access                                   |
 | I15        | Synthetic rehearsal                                            | Staging credentials/data                                          |
+| I15B       | Exact merged-main API/Web/Runner build plan and protected run  | `releaseAttemptId`, Producer/RC dispatch or partial-bundle use    |
 | I16        | Qualification attempt and dispatch authorization               | Producer/RC dispatch                                              |
 | I17        | Producer dispatch plus publisher/JIT prerequisites             | Data Environment approval or credential/JIT use                   |
 | I18        | Data deployment and one-time publisher/JIT use                 | Custody approval, RC dispatch or retry under ambiguity            |
 | I19        | Separate custody capability/deployment and Producer completion | KMS Decrypt, RC dispatch before terminal readback or changed data |
 | I20        | RC dispatch and independent source-snapshot consumer           | Final consumer, aggregate, promotion or Task 30                   |
 | I21        | Independent final-snapshot consumer and final execution        | External final evidence, promotion or Task 30                     |
-| I22        | One-to-one purpose claim/envelope/custody per raw proof        | Rewrapping, direct-v1 aggregation or purpose change               |
-| I23        | Same-run qualification aggregate/exit and terminal cleanup     | Promotion, Task 30, S1 completion or evidence reuse               |
+| I22        | Per-node lineage writer/readback roles and purpose custody     | Combined credentials, public storage, rewrapping or direct-v1 use |
+| I23        | Aggregate/exit lineage roles, custody and terminal cleanup     | Promotion, Task 30, S1 completion or evidence reuse               |
 | I24        | Review decision                                                | Only a new explicit authorization may resume Task 30              |
 
 ## Stop and Recovery Matrix
@@ -1911,6 +2022,7 @@ I16 begins a distinct qualification release attempt. Its evidence root is `.rele
 | Controlled PostgreSQL 17 migration status fails     | Stop before code implementation and diagnose migrations                        | Treating Prisma validation as migration proof                   |
 | Existing OIDC consumer cannot accept exact subject  | Stop 方案 A，return to infrastructure design                                   | Replacing exact claims with wildcard                            |
 | Environment absent/misconfigured or bypass occurs   | Reject admission; reconcile GitHub state                                       | Manual assertion that approval occurred                         |
+| Exact approval predates prerequisite readback       | Reject approval and keep deployment pending; redo from a new operation         | Reusing the early approval or approving Environment             |
 | Data/custody approval or observation is shared      | Reject Producer attempt and preserve deployment facts                          | Treating sequential jobs as one Environment approval            |
 | Publisher credential is issued before Adapter ready | Revoke/wait expiry; mark attempt unusable                                      | Reusing approval/session or injecting credential into job env   |
 | Producer custody receives KMS Decrypt               | Revoke role and reject Producer completion                                     | Claiming ciphertext verification also required decryption       |
@@ -1930,8 +2042,8 @@ I16 begins a distinct qualification release attempt. Its evidence root is `.rele
 
 This plan is complete only when:
 
-1. Tasks 0-15, 16A-16C and 17-18 have merged to `main` with required CI green; I1 has produced the immutable Adapter build and custody proof from its independently approved build plan.
-2. Each I2-I23 external mutation or execution has its own applicable plan/approval, execution journal, readback/use proof and trusted custody receipt; no UNKNOWN remains unresolved.
+1. Tasks 0-15, 16A-16C, 17A-17B and 18 have merged to `main` with required CI green; I1 has produced the immutable Adapter and I15B has produced the complete API/Web/Runner bundle, each from its own approved plan and protected build/custody run.
+2. Each I2-I23 external mutation or execution, including I15B and every purpose-lineage writer/readback phase, has its own applicable plan/approval, execution journal, readback/use proof and trusted custody receipt; no UNKNOWN remains unresolved.
 3. One real Producer has a successful `snapshot-producer-completion.v1`, and one immutable RC run has completed source/final raw v1 proofs, one-to-one claim/envelope/v2 custody for each, plus same-run `release-aggregate-proof.v2` and `s1-exit-evidence.v2`, all bound to `qualification` and proven non-promotable.
 4. The environment is idle: no JIT Runner, unlocked LUKS volume, plaintext snapshot or active per-run credential remains.
 5. Task 30 stash is unchanged and I24 has stopped at an explicit authorization request.

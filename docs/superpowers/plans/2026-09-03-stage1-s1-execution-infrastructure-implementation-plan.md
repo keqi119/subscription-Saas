@@ -24,16 +24,19 @@
 - Task 0 之前不得读取 ambient `DATABASE_URL`、仓库 `.env` 或任何 Staging 凭证。Task 0 建立受控 PostgreSQL 17 目标后，所有 Prisma/database 检查只通过 `scripts/release/with-controlled-target.mjs` 执行。
 - 当前 `prisma migrate status` 因缺少 datasource URL 未验证。Task 0 必须在代码写入前用受控目标取得 `migrate deploy → migrate status` 成功证据；失败立即停止，不能把 `prisma validate` 替代为迁移状态。
 - Snapshot custody 固定采用 Alibaba Cloud China (Shanghai) 区域的独立私有 OSS bucket、KMS key 和 RAM/STS 身份；不得复用业务上传 bucket、API 的 OSS 身份或生产服务 KMS key。
+- Alibaba RAM OIDC Provider 固定名称 `github-actions-subscription-saas-stage1`、issuer `https://token.actions.githubusercontent.com`、唯一 client ID/audience `sts.aliyuncs.com`、Earliest Issuance Time Allowed `1 hour`。Provider 计划固定独立验证的 HTTPS CA fingerprints，readback 必须记录 Provider ARN、实际 fingerprint 集合和 issuance limit；任何漂移均拒绝 STS。
 - Dedicated custody bucket 的名称由 `subscription-saas-stage1-snapshot-${sha256(accountId).slice(0, 12)}-cn-shanghai` 确定性生成。Bucket 必须保持 versioning disabled，使用 `x-oss-forbid-overwrite=true`，并锁定 210 日 BucketWorm；30 日 snapshot 有效期加失效后 180 日保留由此覆盖。
 - KMS key alias 固定为 `alias/stage1-snapshot-custody`。Producer 使用 `GenerateDataKey(AES_256)`；consumer 只对 admission 指定的 wrapped DEK 调用 `Decrypt`。KEK 不离开 KMS，明文 DEK 只短暂存在于独立 crypto process 内存。
 - Snapshot publisher、snapshot custody reader、RC decrypt consumer、retention operator 是四个不同 RAM capability。每次只发放一种短期凭证；禁止组合凭证、通用 OSS 列举、跨 attempt 读取或 KMS 管理权限。
 - GitHub OIDC subject 固定包含 immutable repository identity、`workflow_ref`、`workflow_sha`、`ref`、`environment`、`actor_id`、`run_id`、`run_attempt`、`event_name` 和 `runner_environment`。每个 snapshot/RC consumer role 的 trust policy 对本次完整 subject 做精确匹配，不使用 run ID 通配符。
-- Repository OIDC customization 是 repo-wide 外部状态。若当前配置已被其他云角色依赖、无法安全迁移，或 Alibaba RAM 无法对完整 `sub` 做精确比较，立即停止方案 A 并回到设计评审。
+- Repository OIDC customization 是 repo-wide 外部状态。必须先创建并 read back Alibaba OIDC Provider、为预计的新 subject 建立精确 canary RAM trust condition，再切换 GitHub subject template；若当前配置已被其他云角色依赖、无法安全迁移，或 Alibaba RAM 无法对完整 `sub` 做精确比较，立即停止方案 A 并回到设计评审。
 - GitHub repository 固定为 `keqi119/subscription-Saas`、repository ID `1253231368`；允许 actor/reviewer 固定为 user ID `275060624`。名称或 login 不能替代 immutable ID。
 - Snapshot Environment 固定为 `stage1-snapshot-export`：唯一 branch rule `main`、无 tag rule、`can_admins_bypass=false`、`prevent_self_review=false`、wait timer `0`。本批准接受的单操作员风险不扩展到其他 Environment。
-- GitHub-hosted RC jobs continue to use the already designed environments `trusted-source-database-gate`, `trusted-release-execution` and `trusted-release-candidate`. Task 13 inventories and freezes their actual IDs/policies; if any is absent or broader than its approved S1 contract, this plan stops for a separate change plan instead of silently creating or widening it.
+- The Adapter producer uses existing Environment `trusted-image-build`; GitHub-hosted RC jobs use `trusted-source-database-gate`, `trusted-release-execution` and `trusted-release-candidate`. Task 13 inventories and freezes their actual IDs and policies; if any is absent or broader than its approved S1 contract, this plan stops for a separate change plan instead of silently creating or widening it.
 - Snapshot job 的完整标签集合必须精确为 GitHub 默认 `self-hosted/linux/x64`、能力标签 `stage1-snapshot-export` 和一次性标签 `stage1-snapshot-export-${snapshotRunId}-${routeNonce}`。Runner 只执行一个 job，随后注销、销毁。
 - Snapshot self-hosted job 不 checkout、不调用 `uses`、不执行 package manager、仓库脚本、任意 Shell/SQL 路径或 Docker。唯一支持入口为 `/opt/subscription-saas/snapshot-adapter/v1/bin/snapshot-job launch --admission-ref`。
+- GitHub-hosted admission job does not reference an Environment and cannot request OIDC or issue a GitHub artifact attestation. It publishes canonical non-secret input only; the root launcher independently re-fetches GitHub run/job/workflow/artifact facts, then signs `snapshot-admission-verification.v1` with a root-held Ed25519 key whose public-key digest is pinned in root policy.
+- GitHub-hosted custody continuation uses `stage1-snapshot-export`, requests only `id-token: write` plus `attestations: write`/read permissions, and issues the GitHub attestation after private object/proof/destruction readback. The data job uses the same Environment but never receives an OIDC token.
 - WSL distro 固定为专用 Ubuntu 24.04 rootfs digest；禁用 Windows interop、Windows PATH 注入、Windows 盘自动挂载和 swap。Runner 用户无 sudo、无 Docker group、无宿主密钥读取权。
 - Raw dump、临时 PostgreSQL、WAL、排序文件、明文 sanitized dump 和 tokenization material 全部位于每 attempt 独立 LUKS2 volume。销毁证明只声明 key invalidation 与 volume 不可解锁，不声明物理擦除。
 - Snapshot source SSH 用户固定为 `stage1_snapshot_tunnel`，数据库角色固定为 `stage1_snapshot_reader`，Staging loopback endpoint 固定为 `127.0.0.1:55432`。禁止复用现有 root SSH key或应用数据库超管身份。
@@ -44,51 +47,59 @@
 - Snapshot producer 必须先完成并取得 `snapshotRunId=success`、私有 OSS object readback、proof/log custody 和 destruction receipt；之后才能 dispatch RC workflow。
 - Snapshot producer 的 `run_attempt` 固定为 `1`；GitHub rerun 不可复用原 admission、route nonce、JIT 配置或 cloud role，失败后必须新建 producer run 和 `releaseAttemptId`。
 - RC workflow 不接受 `finalExecutionRunId`、`exitEvidenceRunId` 或任何外部 final/aggregate/exit object。Source fresh/snapshot、final fresh/snapshot、final custody、aggregate、generated exit 和 Task 30 tail 必须来自同一 `rcWorkflowRunId`；本计划只做到 Task 29R checkpoint，不执行 Task 30 tail。
-- Task 24 是一个不可提升的 Task 29R qualification release attempt；它的 producer 与 RC run 只证明基础设施前缀，不能在 Task 30 获批后继续、复用或拼接为最终 S1 证明。Task 30 后续获批并合并时，必须以新的 `releaseAttemptId` 重跑“新 producer → 新且唯一完整 RC run”，由该完整 RC run 原生执行 exit audit 与最终 custody。
+- Infrastructure Tasks I19–I21 form one non-promotable Task 29R qualification release attempt; its producer and RC run only prove the infrastructure prefix and cannot be continued, reused or spliced into the final S1 proof after Task 30 approval. After Task 30 is separately approved and merged, a new `releaseAttemptId` must rerun “new producer → new single complete RC run”, and that complete RC run must execute its own exit audit and final custody.
+- Qualification approval, aggregate, exit evidence and every custody receipt use versioned v2 contracts with required `executionPurpose=qualification`. Missing purpose and v1 proof are historical/non-promotable; Task 30 must require `executionPurpose=release-candidate` and reject qualification lineage before selecting any evidence.
+- The self-hosted publisher uses a 15-minute STS session assumed by a root-only local credential broker. The broker principal may only assume the exact per-attempt publisher role and has no OSS/KMS/data permission; the resulting single-capability credential is passed through a root-opened descriptor, never workflow environment/secret/argv/workspace.
 - 任何 identity、digest、approval、capacity、source privilege、fingerprint、custody、destruction 或 same-run 约束不满足，均 fail closed。禁止通过 mock JSON、手工“通过”、公共 artifact、常驻 Runner 或服务器 Compose 替代。
 
 ## Fixed Names and Derivations
 
-| Item                     | Fixed value or deterministic derivation                                                |
-| ------------------------ | -------------------------------------------------------------------------------------- |
-| Snapshot Environment     | `stage1-snapshot-export`                                                               |
-| RC source Environment    | `trusted-source-database-gate`, existing identity must be read back                    |
-| RC final Environment     | `trusted-release-execution`, existing identity must be read back                       |
-| RC aggregate Environment | `trusted-release-candidate`, existing identity must be read back                       |
-| Repository               | `keqi119/subscription-Saas`, ID `1253231368`                                           |
-| Actor/reviewer           | `keqi119`, user ID `275060624`                                                         |
-| Snapshot workflow        | `.github/workflows/sanitized-snapshot.yml` on exact `main` SHA                         |
-| RC workflow              | `.github/workflows/release-candidate-gate.yml` on exact `main` SHA                     |
-| Capability label         | `stage1-snapshot-export`                                                               |
-| Unique route label       | `stage1-snapshot-export-${snapshotRunId}-${routeNonce}`                                |
-| Root policy              | `/etc/subscription-saas/snapshot-adapter/v1/root-policy.v1.json`                       |
-| Adapter root             | `/opt/subscription-saas/snapshot-adapter/v1/`                                          |
-| Root secret handoff      | `/run/subscription-saas/snapshot-secrets/${releaseAttemptId}.json`, tmpfs, mode `0400` |
-| LUKS backing file        | `/var/lib/subscription-saas/snapshot-volumes/${releaseAttemptId}.luks`                 |
-| LUKS mapper              | `subscription-s1-${releaseAttemptId}` after strict identifier validation               |
-| OSS region               | `oss-cn-shanghai`                                                                      |
-| Custody bucket           | `subscription-saas-stage1-snapshot-${sha256(accountId).slice(0, 12)}-cn-shanghai`      |
-| Snapshot object key      | `v1/${releaseAttemptId}/${ciphertextDigest.slice(7)}/snapshot.enc`                     |
-| KMS alias                | `alias/stage1-snapshot-custody`                                                        |
-| DB loopback endpoint     | `127.0.0.1:55432` on Staging host                                                      |
-| SSH user                 | `stage1_snapshot_tunnel`                                                               |
-| PostgreSQL role          | `stage1_snapshot_reader`                                                               |
-| Snapshot expiry          | `createdAt + 30 days`                                                                  |
-| OSS WORM                 | locked BucketWorm, 210 days                                                            |
+| Item                      | Fixed value or deterministic derivation                                                |
+| ------------------------- | -------------------------------------------------------------------------------------- |
+| Snapshot Environment      | `stage1-snapshot-export`                                                               |
+| Adapter build Environment | `trusted-image-build`, existing identity must be read back                             |
+| RC source Environment     | `trusted-source-database-gate`, existing identity must be read back                    |
+| RC final Environment      | `trusted-release-execution`, existing identity must be read back                       |
+| RC aggregate Environment  | `trusted-release-candidate`, existing identity must be read back                       |
+| Repository                | `keqi119/subscription-Saas`, ID `1253231368`                                           |
+| Actor/reviewer            | `keqi119`, user ID `275060624`                                                         |
+| Snapshot workflow         | `.github/workflows/sanitized-snapshot.yml` on exact `main` SHA                         |
+| RC workflow               | `.github/workflows/release-candidate-gate.yml` on exact `main` SHA                     |
+| Capability label          | `stage1-snapshot-export`                                                               |
+| Unique route label        | `stage1-snapshot-export-${snapshotRunId}-${routeNonce}`                                |
+| Root policy               | `/etc/subscription-saas/snapshot-adapter/v1/root-policy.v1.json`                       |
+| Adapter root              | `/opt/subscription-saas/snapshot-adapter/v1/`                                          |
+| Root secret handoff       | `/run/subscription-saas/snapshot-secrets/${releaseAttemptId}.json`, tmpfs, mode `0400` |
+| LUKS backing file         | `/var/lib/subscription-saas/snapshot-volumes/${releaseAttemptId}.luks`                 |
+| LUKS mapper               | `subscription-s1-${releaseAttemptId}` after strict identifier validation               |
+| OSS region                | `oss-cn-shanghai`                                                                      |
+| Custody bucket            | `subscription-saas-stage1-snapshot-${sha256(accountId).slice(0, 12)}-cn-shanghai`      |
+| Snapshot object key       | `v1/${releaseAttemptId}/${ciphertextDigest.slice(7)}/snapshot.enc`                     |
+| KMS alias                 | `alias/stage1-snapshot-custody`                                                        |
+| Aliyun OIDC Provider      | `github-actions-subscription-saas-stage1`                                              |
+| OIDC issuer / audience    | `https://token.actions.githubusercontent.com` / `sts.aliyuncs.com`                     |
+| Adapter OCI repository    | `ghcr.io/keqi119/subscription-snapshot-adapter`                                        |
+| Admission signing key     | Ed25519 public-key digest pinned in root policy; private key remains root-held         |
+| DB loopback endpoint      | `127.0.0.1:55432` on Staging host                                                      |
+| SSH user                  | `stage1_snapshot_tunnel`                                                               |
+| PostgreSQL role           | `stage1_snapshot_reader`                                                               |
+| Snapshot expiry           | `createdAt + 30 days`                                                                  |
+| OSS WORM                  | locked BucketWorm, 210 days                                                            |
 
 ## Planned File Map
 
 | Area               | Files and responsibility                                                                                                                                                                                       |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Plan alignment     | Existing S1 implementation plan: remove invalid `DEFERRABLE`, bind Task 29R to this plan, retain Task 30 block                                                                                                 |
-| Routing contracts  | `release/contracts/schemas/environment-policy-*.json`, `snapshot-admission.v1`, `snapshot-jit-launch-proof.v1`, `snapshot-producer-completion.v1`                                                              |
+| Routing contracts  | `release/contracts/schemas/environment-policy-*.json`, `snapshot-admission.v1`, `snapshot-admission-verification.v1`, `snapshot-jit-launch-proof.v1`, `snapshot-producer-completion.v1`                        |
 | Custody contracts  | `release/contracts/schemas/snapshot-encryption-envelope.v1.schema.json`, `snapshot-private-custody.v1.schema.json`, `snapshot-destruction-receipt.v1.schema.json`, `snapshot-retention-receipt.v1.schema.json` |
 | Shared logic       | `packages/release-foundation/src/snapshot/**`: policy/digest checks, envelope crypto, capacity calculation and proof builders                                                                                  |
 | Root-owned adapter | `apps/snapshot-adapter/**`: fixed CLI, GitHub API verifier, JIT lifecycle, SSH/PostgreSQL snapshot pipeline, crypto subprocess, OSS/KMS adapters                                                               |
-| Bundle             | `scripts/release/build-snapshot-adapter.mjs`, `verify-snapshot-adapter-bundle.mjs`, `release/contracts/snapshot-adapter-build.v1.json`                                                                         |
+| Bundle             | `scripts/release/build-snapshot-adapter.mjs`, `verify-snapshot-adapter-bundle.mjs`, `.github/workflows/snapshot-adapter-build.yml`, Adapter build/custody proof contracts                                      |
 | Host policy        | `infrastructure/stage1-snapshot/wsl/**`, `infrastructure/stage1-snapshot/server/**`: WSL, LUKS, egress, sshd and loopback database endpoint configuration                                                      |
-| Cloud policy       | `infrastructure/stage1-snapshot/aliyun/**`: OSS/KMS/RAM policy documents and deterministic policy generator inputs; no credentials                                                                             |
-| GitHub bootstrap   | `scripts/release/bootstrap-snapshot-environment.mjs`, `prepare-snapshot-run.mjs`, `prepare-rc-snapshot-consumer-role.mjs` and tests                                                                            |
+| Cloud policy       | `infrastructure/stage1-snapshot/aliyun/**`, `scripts/release/manage-snapshot-cloud-custody.mjs`: OSS/KMS/RAM policy documents and closed plan/apply/readback/reconcile operations                              |
+| GitHub bootstrap   | `scripts/release/bootstrap-snapshot-environment.mjs`, `bootstrap-snapshot-launcher-app.mjs`, `bootstrap-aliyun-oidc-provider.mjs`, `manage-exact-run-capability.mjs` and tests                                 |
+| Qualification      | v2 approval/custody/aggregate/exit contracts with required `executionPurpose`; v1 remains historical and non-promotable                                                                                        |
 | Workflows          | `.github/workflows/sanitized-snapshot.yml`, `release-candidate-gate.yml`, `release-final-chain.yml`                                                                                                            |
 | Capacity           | `release/contracts/schemas/capacity-plan.v1.schema.json`, `packages/release-foundation/src/capacity-plan.mjs`, `scripts/release/collect-capacity-plan.mjs`                                                     |
 | Operations         | `docs/operations/stage1-s1-execution-infrastructure-runbook.md`, bootstrap/attempt evidence templates and failure matrix                                                                                       |
@@ -258,17 +269,21 @@ git commit -m "docs: align S1 plan with execution infrastructure"
 - Create: `release/contracts/schemas/environment-policy-identity.v1.schema.json`
 - Create: `release/contracts/schemas/environment-policy-observation.v1.schema.json`
 - Create: `release/contracts/schemas/snapshot-admission.v1.schema.json`
+- Create: `release/contracts/schemas/snapshot-admission-verification.v1.schema.json`
 - Create: `release/contracts/schemas/snapshot-jit-launch-proof.v1.schema.json`
 - Create: `release/contracts/schemas/snapshot-producer-completion.v1.schema.json`
+- Create: `release/contracts/schemas/infrastructure-attempt.v1.schema.json`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 - Modify: `packages/release-foundation/src/schema-registry.mjs`
 - Create: `packages/release-foundation/test/snapshot-routing-contracts.test.mjs`
+- Create: `scripts/release/create-infrastructure-attempt.mjs`
+- Create: `scripts/release/create-infrastructure-attempt.test.mjs`
 
 **Interfaces:**
 
-- Produces: five strict JSON Schemas registered in `validateContract(name, value)` and included in `repositoryContractDigest`.
+- Produces: seven strict JSON Schemas registered in `validateContract(name, value)` and included in `repositoryContractDigest`, plus a closed attempt-record generator.
 - Stable identity: `EnvironmentPolicyIdentityV1`; dynamic provenance: `EnvironmentPolicyObservationV1`.
-- Proof order: admission digest → post-approval observation digest → JIT launch proof digest → producer completion digest.
+- Proof order: untrusted admission digest → root-signed admission verification digest → post-approval observation digest → JIT launch proof digest → producer completion digest.
 
 - [ ] **Step 1: Write RED schema strictness tests**
 
@@ -306,26 +321,30 @@ Require exactly: schema version, identity digest, `observedAt`, API response dig
 
 - [ ] **Step 4: Define admission, launch and completion Schemas**
 
-`snapshot-admission.v1` binds source SHA, repository contract digest, workflow blob/action digests, releaseAttemptId, snapshotRunId, route nonce/label, adapter digest and environment identity digest. `snapshot-jit-launch-proof.v1` adds observation digest, actual runner ID/version/binary digest and exact labels. `snapshot-producer-completion.v1` binds private custody, proof/log custody, destruction receipt and GitHub run terminal state.
+`snapshot-admission.v1` binds source SHA, repository contract digest, workflow blob/action digests, releaseAttemptId, snapshotRunId, route nonce/label, adapter digest and environment identity digest, but carries no claim that GitHub attested it. `snapshot-admission-verification.v1` binds that digest to root launcher's independent GitHub API/workflow/artifact observations, root-policy digest, signer public-key digest and Ed25519 signature. `snapshot-jit-launch-proof.v1` adds the verified-admission digest, environment observation digest, actual runner ID/version/binary digest and exact labels. `snapshot-producer-completion.v1` binds private custody, proof/log custody, destruction receipt and GitHub run terminal state.
 
-- [ ] **Step 5: Register every Schema in the contract digest**
+- [ ] **Step 5: Define and generate the infrastructure attempt identity**
+
+`infrastructure-attempt.v1` requires a random 128-bit lowercase hexadecimal `releaseAttemptId`, exact merged main SHA, repository contract digest, `executionPurpose=qualification`, `createdAt` and owner ID. `create-infrastructure-attempt.mjs --main-sha --owner-id --output` recomputes the repository contract digest from the registered manifest and generates the record once with `crypto.randomBytes(16)`, exclusive-create semantics and canonical JSON; it refuses an existing path and has no release-candidate mode.
+
+- [ ] **Step 6: Register every Schema in the contract digest**
 
 Update both `schema-registry.mjs` and `repository-contract-files.v1.json`; registry keys and filenames must be one-to-one.
 
-- [ ] **Step 6: Run contract and digest tests**
+- [ ] **Step 7: Run contract and digest tests**
 
 ```powershell
-node --test packages/release-foundation/test/snapshot-routing-contracts.test.mjs packages/release-foundation/test/schema-registry.test.mjs packages/release-foundation/test/catalogs.test.mjs
+node --test packages/release-foundation/test/snapshot-routing-contracts.test.mjs packages/release-foundation/test/schema-registry.test.mjs packages/release-foundation/test/catalogs.test.mjs scripts/release/create-infrastructure-attempt.test.mjs
 pnpm release:contracts:verify
 git diff --check
 ```
 
 Expected: PASS; removing any new Schema from the contract-file manifest fails `release:contracts:verify`.
 
-- [ ] **Step 7: Commit the routing contracts**
+- [ ] **Step 8: Commit the routing contracts**
 
 ```powershell
-git add release/contracts packages/release-foundation/src/schema-registry.mjs packages/release-foundation/test/snapshot-routing-contracts.test.mjs
+git add release/contracts packages/release-foundation/src/schema-registry.mjs packages/release-foundation/test/snapshot-routing-contracts.test.mjs scripts/release/create-infrastructure-attempt.mjs scripts/release/create-infrastructure-attempt.test.mjs
 git commit -m "build: define snapshot routing proof contracts"
 ```
 
@@ -337,8 +356,10 @@ git commit -m "build: define snapshot routing proof contracts"
 
 - Create: `packages/release-foundation/src/snapshot/environment-policy.mjs`
 - Create: `packages/release-foundation/src/snapshot/snapshot-admission.mjs`
+- Create: `packages/release-foundation/src/snapshot/snapshot-admission-verification.mjs`
 - Create: `packages/release-foundation/test/snapshot-environment-policy.test.mjs`
 - Create: `packages/release-foundation/test/snapshot-admission.test.mjs`
+- Create: `packages/release-foundation/test/snapshot-admission-verification.test.mjs`
 - Modify: `packages/release-foundation/src/index.mjs`
 
 **Interfaces:**
@@ -347,6 +368,7 @@ git commit -m "build: define snapshot routing proof contracts"
 - Produces: `buildEnvironmentPolicyObservation(input): EnvironmentPolicyObservationV1`.
 - Produces: `verifyPostApprovalObservation({ identity, observation, admission, now, maxAgeMs }): void`.
 - Produces: `buildSnapshotAdmission(input): SnapshotAdmissionV1` and `uniqueRouteLabel(runId, nonce): string`.
+- Produces: `verifyAndSignSnapshotAdmission({ admission, githubObservations, rootPolicy, privateKeyFd }): SnapshotAdmissionVerificationV1`; only the root launcher calls it.
 
 - [ ] **Step 1: Write RED identity/provenance tests**
 
@@ -395,20 +417,24 @@ export function uniqueRouteLabel(runId, nonce) {
 
 Admission rejects caller-supplied labels, a rerun attempt, non-main ref, unsupported event or a workflow digest absent from root policy.
 
-- [ ] **Step 5: Add all P1 negative cases**
+- [ ] **Step 5: Implement independent root verification and signing**
 
-Cover Environment 404/ID drift, missing reviewer, wrong branch, any tag rule, bypass, changed self-review setting, wrong actor, stale/missing observation, duplicate queued label, rerun attempt, workflow/action digest drift and admission containing observation provenance.
+Treat `snapshot-admission.v1` as untrusted input. Re-fetch the exact repository/run/job/artifact and workflow blob through the root launcher's GitHub App, recompute all digests/labels, verify the root policy and sign only the canonical verification object with a root-held Ed25519 key descriptor. The admission job cannot supply the verification object, signer identity or signature.
 
-- [ ] **Step 6: Run focused and repository contract tests**
+- [ ] **Step 6: Add all P1 negative cases**
+
+Cover Environment 404/ID drift, missing reviewer, wrong branch, any tag rule, bypass, changed self-review setting, wrong actor, stale/missing observation, duplicate queued label, rerun attempt, workflow/action digest drift, admission containing observation provenance, admission self-signature, wrong root signer, GitHub API/artifact mismatch and attempted verification before the independent re-fetch.
+
+- [ ] **Step 7: Run focused and repository contract tests**
 
 ```powershell
-node --test packages/release-foundation/test/snapshot-environment-policy.test.mjs packages/release-foundation/test/snapshot-admission.test.mjs
+node --test packages/release-foundation/test/snapshot-environment-policy.test.mjs packages/release-foundation/test/snapshot-admission.test.mjs packages/release-foundation/test/snapshot-admission-verification.test.mjs
 pnpm release:contracts:verify
 node scripts/release/discover-database-tests.mjs --mode verify
 git diff --check
 ```
 
-- [ ] **Step 7: Commit the policy kernel**
+- [ ] **Step 8: Commit the policy kernel**
 
 ```powershell
 git add packages/release-foundation/src/snapshot packages/release-foundation/src/index.mjs packages/release-foundation/test/snapshot-environment-policy.test.mjs packages/release-foundation/test/snapshot-admission.test.mjs
@@ -587,17 +613,21 @@ git commit -m "build: add isolated snapshot envelope crypto"
 - Create: `apps/snapshot-adapter/src/cloud/aliyun-kms.mjs`
 - Create: `apps/snapshot-adapter/src/cloud/aliyun-oss.mjs`
 - Create: `apps/snapshot-adapter/src/cloud/aliyun-sts.mjs`
+- Create: `apps/snapshot-adapter/src/cloud/aliyun-publisher-broker.mjs`
 - Create: `apps/snapshot-adapter/src/cloud/policy-generator.mjs`
 - Create: `apps/snapshot-adapter/test/aliyun-kms.test.mjs`
 - Create: `apps/snapshot-adapter/test/aliyun-oss.test.mjs`
 - Create: `apps/snapshot-adapter/test/aliyun-policy.test.mjs`
+- Create: `apps/snapshot-adapter/test/aliyun-publisher-broker.test.mjs`
 - Create: `infrastructure/stage1-snapshot/aliyun/snapshot-cloud-policy-input.v1.json`
+- Create: `scripts/release/manage-snapshot-cloud-custody.mjs`
+- Create: `scripts/release/manage-snapshot-cloud-custody.test.mjs`
 - Modify: `pnpm-lock.yaml`
 
 **Interfaces:**
 
 - Dependencies pin exactly `ali-oss@6.23.0`, `@alicloud/credentials@2.4.7`, `@alicloud/kms20160120@3.3.0` and `@alicloud/sts20150401@1.2.0`.
-- Produces: `AliyunKmsDataKeyClient`, `AliyunOssWriteOncePublisher`, `AliyunOssExactReader` and `buildAttemptRamPolicies(input)`.
+- Produces: `AliyunKmsDataKeyClient`, `AliyunOssWriteOncePublisher`, `AliyunOssExactReader`, `AliyunPublisherCredentialBroker` and `buildAttemptRamPolicies(input)`.
 - The adapter accepts credentials as open file descriptors or injected SDK credential objects in tests; it never discovers credentials from environment variables or user home files.
 
 - [ ] **Step 1: Scaffold the package and write RED credential-discovery tests**
@@ -627,11 +657,19 @@ Allow only key alias `alias/stage1-snapshot-custody`, `AES_256`, approved region
 
 Reader only accepts the object key/digest/version from an attested custody record and cannot list prefixes. Retention adapter is a separate constructor and credential profile; it rejects objects whose retain-until or snapshot-expiry-plus-180-days time has not elapsed.
 
-- [ ] **Step 5: Generate mutually exclusive RAM policies**
+- [ ] **Step 5: Implement the root-only publisher credential broker**
+
+The broker reads its assume-role-only principal from a root-opened descriptor, validates the approved exact role ARN/policy/readback/attempt binding, requests a 900-second STS session and writes the resulting publisher-only credential to a sealed child descriptor. The broker principal has no OSS/KMS permission, cannot assume custody/consumer/retention roles and never enters the Runner process, workflow environment, argv, disk or proof.
+
+- [ ] **Step 6: Generate mutually exclusive RAM policies**
 
 `buildAttemptRamPolicies` emits four canonical policy documents. Publisher permits only KMS GenerateDataKey and OSS PutObject for one exact key. Custody reader permits HEAD/Get for the exact encrypted object and narrow proof objects without KMS Decrypt. RC consumer permits exact Get plus KMS Decrypt. Retention permits post-retention delete and receipt write; no profile can manage bucket/KMS or assume another role.
 
-- [ ] **Step 6: Prove exact OIDC subject generation**
+- [ ] **Step 7: Implement the closed cloud-resource lifecycle CLI**
+
+`manage-snapshot-cloud-custody.mjs` exposes only `plan`, `apply`, `readback` and `reconcile`, with required `--resource base-custody|retention-lock`. `base-custody` covers the private bucket, KMS key/alias, non-WORM access policy and root broker principal; `retention-lock` covers only the separately approved 210-day BucketWorm transition. Each resource has an independent `operationId`, plan digest, approval, execution proof and readback. An UNKNOWN apply must reconcile by exact resource ID and may not run apply again. The CLI rejects credentials before plan/approval verification and never combines the irreversible WORM operation with reversible creation.
+
+- [ ] **Step 8: Prove exact OIDC subject generation**
 
 ```js
 assert.equal(
@@ -642,19 +680,20 @@ assert.equal(
 
 Use the exact `include_claim_keys` order above. A missing claim or wildcard subject fails before emitting policy.
 
-- [ ] **Step 7: Run provider tests and lockfile verification**
+- [ ] **Step 9: Run provider tests and lockfile verification**
 
 ```powershell
 pnpm install --lockfile-only
 pnpm --filter @subscription-saas/snapshot-adapter test
+node --test scripts/release/manage-snapshot-cloud-custody.test.mjs
 pnpm release:contracts:verify
 git diff --check
 ```
 
-- [ ] **Step 8: Commit the cloud provider adapter**
+- [ ] **Step 10: Commit the cloud provider adapter**
 
 ```powershell
-git add apps/snapshot-adapter infrastructure/stage1-snapshot/aliyun pnpm-lock.yaml
+git add apps/snapshot-adapter infrastructure/stage1-snapshot/aliyun scripts/release/manage-snapshot-cloud-custody.mjs scripts/release/manage-snapshot-cloud-custody.test.mjs pnpm-lock.yaml
 git commit -m "build: add private snapshot cloud custody adapter"
 ```
 
@@ -681,12 +720,12 @@ git commit -m "build: add private snapshot cloud custody adapter"
 **Interfaces:**
 
 - Supported Runner-facing command is represented as argv `['launch', '--admission-ref', value]`; `value` must match `^https://api\.github\.com/repos/keqi119/subscription-Saas/actions/artifacts/[1-9][0-9]*$` and is supplied by the trusted root launcher from the protected admission descriptor. No other Runner-facing subcommand exists.
-- Admin-facing installer/launcher binaries are separate root-only entrypoints and cannot be invoked by the Runner user.
+- Admin-facing installer/launcher paths are root-only and cannot be invoked by the Runner user. The only qualification form is the fixed `snapshot-job qualify --suite closed-security-rehearsal-v1 --request-fd 3`; policy rejects every other suite, path or argument and the production JIT route never invokes it.
 - Build output: `.release-output/snapshot-adapter/snapshot-adapter-v1.tar.zst` plus canonical file/digest/ownership manifest.
 
 - [ ] **Step 1: Write RED CLI grammar tests**
 
-Test rejection of arbitrary script path, SQL path, database URL, SSH host, output path, extra argument, stdin data, `--help` execution escape, shell metacharacters and environment credentials.
+Test rejection of arbitrary script path, SQL path, database URL, SSH host, output path, extra argument, stdin data, `--help` execution escape, shell metacharacters and environment credentials. Separately prove that the root qualification form accepts only the single registered suite and cannot be selected from a Runner-facing launch descriptor.
 
 ```js
 for (const argv of [
@@ -752,6 +791,8 @@ git commit -m "build: package the closed snapshot adapter"
 - Create: `infrastructure/stage1-snapshot/wsl/destroy-attempt-volume.sh`
 - Create: `infrastructure/stage1-snapshot/wsl/snapshot-launcher@.service`
 - Create: `infrastructure/stage1-snapshot/wsl/audit-host.ps1`
+- Create: `scripts/release/manage-snapshot-wsl-host.mjs`
+- Create: `scripts/release/manage-snapshot-wsl-host.test.mjs`
 - Create: `scripts/release/snapshot-host-policy.test.mjs`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 
@@ -797,18 +838,23 @@ The policy permits TCP 443 only to current GitHub Actions required domains obtai
 
 The unit runs under root only for registration/cleanup orchestration, sets `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `RestrictSUIDSGID=yes`, `LockPersonality=yes`, `LimitCORE=0`, a bounded timeout and explicit writable paths. The runner subprocess drops to the non-privileged `stage1snapshot` user and never receives root credentials or `/etc` access.
 
-- [ ] **Step 7: Run static and contract gates**
+- [ ] **Step 7: Add a closed host plan/apply/readback interface**
+
+`manage-snapshot-wsl-host.mjs` exposes `plan`, `apply`, `readback` and `reconcile` for exactly one `--resource distro|admission-signer|adapter-install`. Each resource uses a separate operation ID and approval. `distro` creates only the dedicated WSL boundary; `admission-signer` creates a non-exportable root-held Ed25519 key and records only its public-key digest; `adapter-install` accepts only the attested OCI digest/custody proof produced by Task 17. Apply is delegated to the root-owned fixed scripts through a protected descriptor. UNKNOWN state requires readback/reconcile and never permits blind uninstall/reinstall.
+
+- [ ] **Step 8: Run static and contract gates**
 
 ```powershell
 node --test scripts/release/snapshot-host-policy.test.mjs
+node --test scripts/release/manage-snapshot-wsl-host.test.mjs
 pnpm release:contracts:verify
 git diff --check
 ```
 
-- [ ] **Step 8: Commit host policy as code**
+- [ ] **Step 9: Commit host policy as code**
 
 ```powershell
-git add infrastructure/stage1-snapshot/wsl release/contracts scripts/release/snapshot-host-policy.test.mjs
+git add infrastructure/stage1-snapshot/wsl release/contracts scripts/release/snapshot-host-policy.test.mjs scripts/release/manage-snapshot-wsl-host.mjs scripts/release/manage-snapshot-wsl-host.test.mjs
 git commit -m "build: define isolated snapshot WSL host policy"
 ```
 
@@ -833,7 +879,7 @@ git commit -m "build: define isolated snapshot WSL host policy"
 - `verifyQueuedSnapshotJob({ run, jobs, admission, identity, observation }): VerifiedSnapshotJob`.
 - `generateJitConfig({ repositoryId, verifiedJob, labels, githubAppToken }): JitConfig`.
 - `runOneShotRunner({ jitConfigFd, runnerBinary, expectedDigest }): Promise<RunnerTerminalObservation>`.
-- Root launcher accepts only a decimal `snapshotRunId`; label, nonce, workflow path, SHA and job ID come from attested admission/GitHub API.
+- Root launcher accepts only a decimal `snapshotRunId`; label, nonce, workflow path, SHA and job ID come from the independently verified root-signed admission/GitHub API, never from an admission self-attestation.
 
 - [ ] **Step 1: Write RED public-repository route tests**
 
@@ -848,7 +894,7 @@ assert.throws(
 
 - [ ] **Step 2: Fetch and verify workflow content independently**
 
-The root launcher downloads the workflow blob for the exact source SHA through the GitHub API, computes SHA-256, parses `uses` commit pins and compares both against root policy. It does not trust workflow outputs, a local checkout or a caller-provided digest.
+The root launcher downloads the admission artifact, run/job metadata and workflow blob for the exact source SHA through the GitHub API, computes SHA-256, parses `uses` commit pins and compares them against root policy. It then emits the Ed25519-signed `snapshot-admission-verification.v1`; it does not trust workflow outputs, a local checkout, GitHub OIDC/attestation from the admission job or a caller-provided digest.
 
 - [ ] **Step 3: Re-read the protected Environment after approval**
 
@@ -897,6 +943,14 @@ git commit -m "build: enforce exclusive snapshot JIT routing"
 - Create: `apps/snapshot-adapter/src/source/postgres-privileges.mjs`
 - Create: `apps/snapshot-adapter/test/source-boundary.test.mjs`
 - Create: `apps/snapshot-adapter/test/source-boundary.postgres.test.mjs`
+- Create: `scripts/release/provision-snapshot-source-test-target.mjs`
+- Create: `scripts/release/provision-snapshot-source-test-target.test.mjs`
+- Create: `scripts/release/run-snapshot-reader-postgres-test.mjs`
+- Create: `scripts/release/run-snapshot-reader-postgres-test.test.mjs`
+- Create: `scripts/release/verify-snapshot-source-test-target.mjs`
+- Create: `scripts/release/verify-snapshot-source-test-target.test.mjs`
+- Create: `scripts/release/manage-staging-snapshot-boundary.mjs`
+- Create: `scripts/release/manage-staging-snapshot-boundary.test.mjs`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 - Modify: `release/contracts/database-test-manifest.v1.json`
 
@@ -926,21 +980,38 @@ The SQL is an operator-run infrastructure script: create `LOGIN NOSUPERUSER NOCR
 
 Check role attributes/memberships/ownership, database/Schema/table/sequence/function/large-object privileges, PUBLIC-derived capabilities and RLS visibility. Explicit negative statements must fail with read-only/permission errors; unexpected success is `SNAPSHOT_SOURCE_EFFECTIVE_WRITE_CAPABILITY`.
 
-- [ ] **Step 6: Run controlled PostgreSQL tests**
+- [ ] **Step 6: Implement the closed Staging boundary lifecycle CLI**
+
+`manage-staging-snapshot-boundary.mjs` exposes only `plan`, `apply`, `readback` and `reconcile`, with exactly one `--resource loopback-endpoint|ssh-account|database-reader`. Each resource has its own operation ID, human approval, credential descriptor and evidence directory. The CLI validates the server/database identity before reading the capability credential, applies only the fixed committed configuration/SQL, and writes a post-apply proof. UNKNOWN must reconcile exact Docker publish state, account/key fingerprint or PostgreSQL role/grant OIDs; it may not repeat apply or combine server root and database administrator credentials.
+
+- [ ] **Step 7: Provision the test target with isolated identities**
+
+`provision-snapshot-source-test-target.mjs` launches three non-overlapping child processes: the existing bootstrap/provisioner creates the ephemeral database/roles, the migration profile owns/applies Schema-only DDL and exits, then the runtime-test profile performs seed/reset DML and exits. No child receives another profile's secret, and the resulting test descriptor contains only references/digests.
+
+- [ ] **Step 8: Run tests without a migration credential**
 
 ```powershell
-node scripts/release/with-controlled-target.mjs --profile migrate -- pnpm --filter @subscription-saas/snapshot-adapter test
+node --test scripts/release/provision-snapshot-source-test-target.test.mjs scripts/release/run-snapshot-reader-postgres-test.test.mjs scripts/release/verify-snapshot-source-test-target.test.mjs
+node --test scripts/release/manage-staging-snapshot-boundary.test.mjs
+node scripts/release/provision-snapshot-source-test-target.mjs --record .release-local/controlled-target.v1.json --output .release-local/snapshot-source-test-target.v1.json
+node scripts/release/with-controlled-target.mjs --profile runtime-test -- pnpm --filter @subscription-saas/snapshot-adapter test
+node scripts/release/run-snapshot-reader-postgres-test.mjs --target .release-local/snapshot-source-test-target.v1.json --test apps/snapshot-adapter/test/source-boundary.postgres.test.mjs
+node scripts/release/with-controlled-target.mjs --profile verify -- node scripts/release/verify-snapshot-source-test-target.mjs --target .release-local/snapshot-source-test-target.v1.json
 node scripts/release/discover-database-tests.mjs --mode verify
 pnpm release:contracts:verify
 git diff --check
 ```
 
-Expected: runtime-equivalent snapshot role reads approved objects but every write/owner/elevation probe fails.
+Expected: migration credentials are revoked before tests begin; runtime-equivalent and snapshot-reader processes read approved objects but every write/owner/elevation probe fails. Administrator/catalog readback runs as a separate verify process. Statement/process logs prove no test process received provisioner or migration credentials.
 
-- [ ] **Step 7: Commit the source boundary**
+- [ ] **Step 9: Add credential-separation negative tests**
+
+Reject combined secret descriptors, migration credential inherited by a test child, runtime-test role becoming owner, snapshot-reader role running seed/reset, provisioner surviving test setup and catalog readback executed by the test process.
+
+- [ ] **Step 10: Commit the source boundary**
 
 ```powershell
-git add infrastructure/stage1-snapshot/server apps/snapshot-adapter release/contracts
+git add infrastructure/stage1-snapshot/server apps/snapshot-adapter scripts/release/provision-snapshot-source-test-target.mjs scripts/release/provision-snapshot-source-test-target.test.mjs scripts/release/run-snapshot-reader-postgres-test.mjs scripts/release/run-snapshot-reader-postgres-test.test.mjs scripts/release/verify-snapshot-source-test-target.mjs scripts/release/verify-snapshot-source-test-target.test.mjs scripts/release/manage-staging-snapshot-boundary.mjs scripts/release/manage-staging-snapshot-boundary.test.mjs release/contracts
 git commit -m "build: define read only staging snapshot boundary"
 ```
 
@@ -1090,16 +1161,32 @@ git commit -m "build: gate release chains on measured capacity"
 
 ---
 
-### Task 13: Implement plan-only GitHub Environment and OIDC bootstrap tooling
+### Task 13: Implement closed GitHub/Aliyun trust and exact-run capability tooling
 
 **Files:**
 
 - Create: `release/contracts/schemas/github-bootstrap-plan.v1.schema.json`
 - Create: `release/contracts/schemas/github-bootstrap-readback.v1.schema.json`
+- Create: `release/contracts/schemas/aliyun-oidc-provider-plan.v1.schema.json`
+- Create: `release/contracts/schemas/aliyun-oidc-provider-readback.v1.schema.json`
+- Create: `release/contracts/schemas/exact-run-capability-plan.v1.schema.json`
+- Create: `release/contracts/schemas/exact-run-capability-readback.v1.schema.json`
+- Create: `release/contracts/schemas/exact-run-capability-revocation.v1.schema.json`
 - Create: `scripts/release/bootstrap-snapshot-environment.mjs`
 - Create: `scripts/release/bootstrap-snapshot-environment.test.mjs`
+- Create: `scripts/release/bootstrap-snapshot-launcher-app.mjs`
+- Create: `scripts/release/bootstrap-snapshot-launcher-app.test.mjs`
+- Create: `scripts/release/bootstrap-github-oidc-subject.mjs`
+- Create: `scripts/release/bootstrap-github-oidc-subject.test.mjs`
 - Create: `scripts/release/verify-github-oidc-subject.mjs`
 - Create: `scripts/release/verify-github-oidc-subject.test.mjs`
+- Create: `scripts/release/bootstrap-aliyun-oidc-provider.mjs`
+- Create: `scripts/release/bootstrap-aliyun-oidc-provider.test.mjs`
+- Create: `scripts/release/manage-exact-run-capability.mjs`
+- Create: `scripts/release/manage-exact-run-capability.test.mjs`
+- Create: `scripts/release/run-aliyun-oidc-canary.mjs`
+- Create: `scripts/release/run-aliyun-oidc-canary.test.mjs`
+- Create: `.github/workflows/snapshot-oidc-canary.yml`
 - Create: `scripts/release/prepare-snapshot-run.mjs`
 - Create: `scripts/release/prepare-snapshot-run.test.mjs`
 - Create: `scripts/release/prepare-rc-snapshot-consumer-role.mjs`
@@ -1110,42 +1197,57 @@ git commit -m "build: gate release chains on measured capacity"
 **Interfaces:**
 
 - `bootstrap-snapshot-environment.mjs plan` is read-only and emits a deterministic plan from GitHub API readback plus the approved root policy.
+- `bootstrap-snapshot-launcher-app.mjs` exposes `plan`, `apply`, `readback` and `reconcile` for the dedicated App/installation only; private-key delivery to the root broker is a separately attested, descriptor-only step.
+- `bootstrap-github-oidc-subject.mjs` exposes the same closed lifecycle for repository subject customization and refuses `apply` unless Provider plus future-subject canary role readbacks are valid.
 - `apply` accepts only a plan digest and human approval record through file descriptors; `readback` emits stable identity separately from observation provenance.
 - `prepare-snapshot-run` and `prepare-rc-snapshot-consumer-role` emit cloud-role trust-policy plans bound to one exact run and attempt; they never create roles themselves.
+- `bootstrap-aliyun-oidc-provider.mjs` and `manage-exact-run-capability.mjs` each expose only `plan`, `apply`, `readback` and `reconcile`; the capability tool additionally exposes `revoke`. Apply/revoke require a bound approval record and create separate execution proofs.
 - Every token/key reference is a protected file descriptor or secret-manager reference, never a command argument or environment variable.
 
 - [ ] **Step 1: Write RED tests for the currently absent Environment**
 
-Mock the current `404/ABSENT` snapshot Environment state and require `plan` to propose exactly `stage1-snapshot-export`, repository ID `1253231368`, reviewer ID `275060624`, `main` only, `can_admins_bypass=false`, `prevent_self_review=false` and wait timer `0`. Also require read-only inventory records for `trusted-source-database-gate`, `trusted-release-execution` and `trusted-release-candidate`; this plan may not propose creating or widening those RC environments. Absence is a plan input, not an implicit apply authorization.
+Mock the current `404/ABSENT` snapshot Environment state and require `plan` to propose exactly `stage1-snapshot-export`, repository ID `1253231368`, reviewer ID `275060624`, `main` only, `can_admins_bypass=false`, `prevent_self_review=false` and wait timer `0`. Also require read-only inventory records for `trusted-image-build`, `trusted-source-database-gate`, `trusted-release-execution` and `trusted-release-candidate`; this plan may not propose creating or widening them. Absence is a plan input, not an implicit apply authorization.
 
 - [ ] **Step 2: Implement identity/provenance readback**
 
 Normalize immutable Environment and OIDC policy fields into one identity digest per Environment; keep `observedAt`, raw API response digest and review/deployment records in the observation digest. Comparing two observations uses only identity fields for drift and provenance fields for freshness. Snapshot bootstrap can apply only the approved snapshot Environment; RC environment mismatch emits `RC_ENVIRONMENT_CHANGE_PLAN_REQUIRED`.
 
-- [ ] **Step 3: Generate the exact repository OIDC customization plan**
+- [ ] **Step 3: Plan the dedicated launcher GitHub App**
 
-Require the subject template to include repository identity, `workflow_ref`, `workflow_sha`, `ref`, `environment`, `actor_id`, `run_id`, `run_attempt`, `event_name` and `runner_environment`. The plan must first inventory existing OIDC consumers and fail with `OIDC_CONSUMER_MIGRATION_REQUIRED` instead of overwriting a shared policy.
+Generate the exact App/installation permission plan: repository Administration write only for JIT registration, Actions read, Contents read, Deployments read and Metadata read; no source write, workflow write, checks, issues or organization scope. Bind App ID, installation ID, repository ID and key public fingerprint. Apply/readback and private-key delivery are separate proofs; UNKNOWN reconciles the exact installation and never creates a second App.
 
-- [ ] **Step 4: Add apply/readback separation and human-approval checks**
+- [ ] **Step 4: Plan and read back the Aliyun OIDC Provider**
+
+Generate the exact Provider identity: name `github-actions-subscription-saas-stage1`, issuer `https://token.actions.githubusercontent.com`, audience/client ID `sts.aliyuncs.com`, Earliest Issuance Time Allowed `1 hour`, independently computed HTTPS CA fingerprints and account-scoped Provider ARN. `apply` must be idempotent by exact ARN; `readback` verifies every value, and `reconcile` handles uncertain create/update without deleting a pre-existing provider.
+
+- [ ] **Step 5: Generate the exact repository OIDC customization plan**
+
+Require the subject template to include repository identity, `workflow_ref`, `workflow_sha`, `ref`, `environment`, `actor_id`, `run_id`, `run_attempt`, `event_name` and `runner_environment`. The GitHub apply path additionally requires valid Aliyun Provider readback and exact future-subject canary role readback digests; it refuses to switch first. The plan inventories existing OIDC consumers and fails with `OIDC_CONSUMER_MIGRATION_REQUIRED` instead of overwriting a shared policy.
+
+- [ ] **Step 6: Add apply/readback separation and human-approval checks**
 
 The apply path verifies plan digest, repository identity, immutable reviewer identity, approval expiry/revocation and a fresh pre-apply observation before the first write. After each API mutation it reads back the actual policy and stores a content-addressed proof; partial apply is `INTERRUPTED_UNKNOWN` and must reconcile before retry.
 
-- [ ] **Step 5: Bind per-run role plans to exact OIDC subjects**
+- [ ] **Step 7: Bind per-run role plans to exact OIDC subjects**
 
-For snapshot producer and RC consumers, compute the full subject from the already allocated numeric `run_id`, `run_attempt`, exact workflow SHA/ref, event, environment and runner environment. The RC consumer capability is instantiated for exactly two approved jobs: source-snapshot under `trusted-source-database-gate` and final-snapshot under `trusted-release-execution`; each invocation gets its own short-lived credential while both have the same narrow exact-object/decrypt permission profile. Assert every RAM trust clause contains one exact `StringEquals` subject and no wildcard for run, ref, workflow, environment or actor.
+For snapshot custody and RC consumers, compute the full subject from the already allocated numeric `run_id`, `run_attempt`, exact workflow SHA/ref, event, environment and runner environment. The self-hosted publisher plan instead binds the exact broker principal, role ARN, releaseAttemptId/object/KMS context and 900-second maximum session; it does not use GitHub OIDC. The RC consumer capability is instantiated for exactly two approved jobs: source-snapshot under `trusted-source-database-gate` and final-snapshot under `trusted-release-execution`; each invocation gets its own short-lived credential while both have the same narrow exact-object/decrypt permission profile. Assert every OIDC RAM trust clause contains one exact `StringEquals` subject and no wildcard for run, ref, workflow, environment or actor.
 
-- [ ] **Step 6: Add negative tests**
+- [ ] **Step 8: Implement canary and exact-run lifecycle checks**
 
-Reject wrong repository/environment/reviewer, tag/ref, workflow SHA, actor, run attempt, self-hosted versus GitHub-hosted mismatch, admin bypass, stale observation, missing approval, wildcard trust, ambient token, and apply before plan custody.
+The canary workflow is GitHub-hosted `ubuntu-24.04`, main-only, run-attempt 1, under `stage1-snapshot-export`, and requests an OIDC token only after the future subject's RAM role is applied/read back. It uses audience `sts.aliyuncs.com`, calls only `AssumeRoleWithOIDC` and `GetCallerIdentity`, and emits redacted claims/Provider/role/session proof. Exact-run lifecycle is fixed as `run allocated and jobs paused → plan → approval → apply → readback → single capability credential → Environment release → terminal revoke/readback`; apply/revoke UNKNOWN must reconcile.
 
-- [ ] **Step 7: Verify and commit repository-only tooling**
+- [ ] **Step 9: Add negative tests**
+
+Reject wrong repository/environment/reviewer, tag/ref, workflow SHA, actor, run attempt, self-hosted versus GitHub-hosted mismatch, admin bypass, stale observation, missing approval, wildcard trust, ambient token, Provider issuer/client ID/fingerprint/issuance/ARN mismatch, GitHub subject switch before cloud condition readback, OIDC token before Environment approval, publisher OIDC, broker with data permission, role apply before run ID, Environment release before role readback and terminal without revocation readback.
+
+- [ ] **Step 10: Verify and commit repository-only tooling**
 
 ```powershell
-node --test scripts/release/bootstrap-snapshot-environment.test.mjs scripts/release/verify-github-oidc-subject.test.mjs scripts/release/prepare-snapshot-run.test.mjs scripts/release/prepare-rc-snapshot-consumer-role.test.mjs
+node --test scripts/release/bootstrap-snapshot-environment.test.mjs scripts/release/bootstrap-snapshot-launcher-app.test.mjs scripts/release/bootstrap-github-oidc-subject.test.mjs scripts/release/verify-github-oidc-subject.test.mjs scripts/release/bootstrap-aliyun-oidc-provider.test.mjs scripts/release/manage-exact-run-capability.test.mjs scripts/release/run-aliyun-oidc-canary.test.mjs scripts/release/prepare-snapshot-run.test.mjs scripts/release/prepare-rc-snapshot-consumer-role.test.mjs
 pnpm release:contracts:verify
 pnpm prettier --check release/contracts scripts/release package.json
 git diff --check
-git add release/contracts scripts/release package.json
+git add .github/workflows/snapshot-oidc-canary.yml release/contracts scripts/release package.json
 git commit -m "build: plan trusted snapshot environment bootstrap"
 ```
 
@@ -1166,9 +1268,9 @@ Expected: only deterministic plan/readback tooling exists; no GitHub Environment
 
 **Workflow contract:**
 
-1. `snapshot-admission` runs on `ubuntu-24.04`, verifies the exact approved main SHA, Environment identity, owner facts, adapter build proof, target policy and capacity inputs, then publishes only a non-sensitive attested admission artifact.
+1. `snapshot-admission` runs on `ubuntu-24.04` before Environment approval, verifies the exact approved main SHA, expected Environment identity contract, owner facts, adapter build proof, target policy and capacity inputs, then publishes only a canonical non-sensitive admission artifact. It has no Environment, OIDC token or attestation authority; the artifact remains untrusted until the root launcher independently verifies and signs it.
 2. `snapshot-data` runs after Environment approval on the exact five-label JIT Runner, has no checkout, `uses`, package-manager, Docker or free-form input, and contains one fixed invocation of the root-owned adapter.
-3. `snapshot-custody` runs on `ubuntu-24.04`, uses an exact-run read-only custody identity to verify encrypted OSS object/proofs/destruction receipt and emits `snapshot-producer-completion.v1`; it never downloads or decrypts the snapshot.
+3. `snapshot-custody` runs on `ubuntu-24.04` under `stage1-snapshot-export`, uses an exact-run read-only custody identity to verify encrypted OSS object/proofs/destruction receipt, issues a GitHub artifact attestation and emits `snapshot-producer-completion.v1`; it never downloads or decrypts the snapshot.
 
 - [ ] **Step 1: Make existing workflow tests fail on plaintext custody**
 
@@ -1176,7 +1278,7 @@ Assert the workflow contains no plaintext dump upload, public Actions artifact c
 
 - [ ] **Step 2: Implement the admission job**
 
-Use least-privilege permissions (`contents: read`, `actions: read`, `id-token: write`, no write permission) and the fixed Environment policy verifier. Admission output contains only digests, IDs, allowed labels, immutable workflow identity, exact adapter digest, expiry and protected object references.
+Declare only `contents: read` and `actions: read`; omit `id-token` and `attestations`, and do not set `environment`. Admission output contains only digests, IDs, allowed labels, immutable workflow identity, exact adapter digest, expiry and protected object references. The root launcher retrieves it with its GitHub App, verifies run/job/workflow/artifact facts and produces the separate root-signed admission-verification proof before requesting JIT configuration.
 
 - [ ] **Step 3: Implement the single-entry data job**
 
@@ -1184,11 +1286,11 @@ Set `runs-on` to the exact default labels, capability label and derived unique l
 
 - [ ] **Step 4: Implement custody verification**
 
-Verify the private OSS object using `HEAD` and range-read ciphertext hash, KMS/OSS attestation, producer proof, sanitization proof, source fingerprint, GitHub job/runner identity, destruction receipt, 30-day expiry and 210-day retention state. Upload only the small non-sensitive completion proof and references to GitHub Actions.
+Declare `environment: stage1-snapshot-export` and exact permissions `contents: read`, `actions: read`, `id-token: write`, `attestations: write`. Verify the private OSS object using `HEAD` and range-read ciphertext hash, KMS/OSS receipt, root-signed admission verification, producer proof, sanitization proof, source fingerprint, GitHub job/runner identity, destruction receipt, 30-day expiry and 210-day retention state. Then issue a GitHub artifact attestation for only the non-sensitive completion proof/reference and upload that small artifact to GitHub Actions.
 
 - [ ] **Step 5: Add structural and policy negative tests**
 
-Mutate a workflow fixture to add checkout, a second command, mutable label, plaintext upload, Docker, broader token permission, missing Environment or missing custody job; every mutation must fail with a stable code.
+Mutate a workflow fixture to add admission Environment/OIDC/attestation authority, data-job checkout/second command/mutable label/plaintext upload/Docker, custody without `stage1-snapshot-export`, missing `attestations: write`, broader token permission or missing custody job; every mutation must fail with a stable code.
 
 - [ ] **Step 6: Verify and commit without dispatching**
 
@@ -1270,6 +1372,18 @@ git commit -m "ci: run release gates on immutable hosted runners"
 
 **Files:**
 
+- Create: `release/contracts/schemas/approval-record.v2.schema.json`
+- Create: `release/contracts/schemas/custody-receipt.v2.schema.json`
+- Create: `release/contracts/schemas/release-aggregate-proof.v2.schema.json`
+- Create: `release/contracts/schemas/s1-exit-evidence.v2.schema.json`
+- Create: `packages/release-foundation/src/execution-purpose.mjs`
+- Create: `packages/release-foundation/test/execution-purpose.test.mjs`
+- Modify: `packages/release-foundation/src/approval.mjs`
+- Modify: `packages/release-foundation/src/evidence-custody.mjs`
+- Modify: `packages/release-foundation/src/schema-registry.mjs`
+- Modify: `packages/release-foundation/src/index.mjs`
+- Modify: `packages/release-foundation/test/approval.test.mjs`
+- Modify: `packages/release-foundation/test/evidence-custody.test.mjs`
 - Modify: `scripts/release/aggregate-release-proof.mjs`
 - Modify: `scripts/release/generate-s1-exit-evidence.mjs`
 - Modify: `scripts/release/aggregate-release-proof.test.mjs`
@@ -1292,38 +1406,105 @@ independent snapshot producer success and custody
   -X-> Task 30 exit audit and final custody (blocked)
 ```
 
-The independent producer may supply only its attested completion/object references; build proof and narrow owner/manual attestations may also be external inputs. All source, final, aggregate and generated exit-evidence nodes are created in one `rcWorkflowRunId` and one attempt lineage. The independent exit audit and final custody tail remain Task 30 work and are not created here.
+The independent producer may supply only its attested completion/object references; build proof and narrow owner/manual attestations may also be external inputs. All source, final, aggregate and generated exit-evidence nodes are created in one `rcWorkflowRunId` and one attempt lineage. This qualification path uses only v2 proof contracts with `executionPurpose=qualification`; v1 remains readable as historical evidence but is never promotion-eligible. The independent exit audit and final custody tail remain Task 30 work and are not created here.
 
-- [ ] **Step 1: Write RED cross-run splice tests**
+- [ ] **Step 1: Add forward-only execution-purpose contracts**
 
-Reject different RC workflow run/attempt, source evidence imported from another run, final evidence artifact inputs, externally supplied aggregate/exit evidence, mismatched producer completion, changed build/contract/snapshot digest and retry evidence that overwrites an earlier failure.
+Create v2 rather than changing published v1 semantics. `approval-record.v2.bindings`, `custody-receipt.v2`, `release-aggregate-proof.v2` and `s1-exit-evidence.v2` all require `executionPurpose` with enum `qualification|release-candidate`. Every referenced proof/receipt must carry the same value; a missing purpose, v1 object or mismatch is non-promotable.
 
-- [ ] **Step 2: Make aggregation recompute lineage**
+- [ ] **Step 2: Write RED cross-run and purpose-splice tests**
 
-Read every selected proof from this run's content-addressed custody, verify subject/digest/operation lineage and recompute the aggregate rather than trusting a summary JSON. A successful producer completion is a prerequisite fact, not a source/final execution proof.
+Reject different RC workflow run/attempt, source evidence imported from another run, final evidence artifact inputs, externally supplied aggregate/exit evidence, mismatched producer completion, changed build/contract/snapshot digest, retry evidence that overwrites an earlier failure, qualification approval paired with release-candidate custody, missing purpose and any v1 evidence selected for promotion.
 
-- [ ] **Step 3: Generate exit evidence inside the RC run**
+- [ ] **Step 3: Make aggregation recompute lineage**
 
-Remove any `exitEvidenceRunId` or complete exit-evidence download. Generate `s1-exit-evidence.v1` only after the aggregate digest exists, binding the current RC run, build proof, repository contract, test manifest, snapshot version, all custody receipts and approved manual/owner attestations.
+Read every selected proof from this run's content-addressed custody, verify subject/digest/operation/purpose lineage and recompute the v2 aggregate rather than trusting a summary JSON. A successful producer completion is a prerequisite fact, not a source/final execution proof.
 
-- [ ] **Step 4: Keep Task 30 tail disabled**
+- [ ] **Step 4: Generate qualification exit evidence inside the RC run**
 
-The workflow stops after producing the Task 29R checkpoint evidence and an explicit `TASK_30_AUTHORIZATION_REQUIRED` state. It must not restore the stash, run Task 30 commands, mark S1 complete or automatically dispatch a follow-up workflow.
+Remove any `exitEvidenceRunId` or complete exit-evidence download. Generate `s1-exit-evidence.v2` only after the aggregate digest exists, binding `executionPurpose=qualification`, the current RC run, build proof, repository contract, test manifest, snapshot version, all v2 custody receipts and approved manual/owner attestations.
 
-- [ ] **Step 5: Run DAG tests and commit**
+- [ ] **Step 5: Add the promotion-rejection kernel but keep Task 30 disabled**
+
+`assertPromotionEligible` accepts only v2 evidence with `executionPurpose=release-candidate`; it rejects `qualification`, v1, missing/mixed purpose and a different attempt. Add a test named `task30 rejects qualification evidence`, but do not restore or modify the Task 30 stash. The workflow stops after producing the Task 29R checkpoint evidence and an explicit `TASK_30_AUTHORIZATION_REQUIRED` state; it must not run Task 30 commands, mark S1 complete or automatically dispatch a follow-up workflow.
+
+- [ ] **Step 6: Run DAG tests and commit**
 
 ```powershell
-node --test scripts/release/aggregate-release-proof.test.mjs scripts/release/generate-s1-exit-evidence.test.mjs scripts/release/release-dag-assemblers.test.mjs scripts/release/approval-workflows.test.mjs
+node --test packages/release-foundation/test/execution-purpose.test.mjs packages/release-foundation/test/approval.test.mjs packages/release-foundation/test/evidence-custody.test.mjs scripts/release/aggregate-release-proof.test.mjs scripts/release/generate-s1-exit-evidence.test.mjs scripts/release/release-dag-assemblers.test.mjs scripts/release/approval-workflows.test.mjs
 pnpm release:contracts:verify
 pnpm prettier --check .github/workflows/release-candidate-gate.yml scripts/release release/contracts
 git diff --check
-git add .github/workflows/release-candidate-gate.yml scripts/release release/contracts
+git add .github/workflows/release-candidate-gate.yml packages/release-foundation scripts/release release/contracts
 git commit -m "ci: close the stage1 release evidence dag"
 ```
 
 ---
 
-### Task 17: Publish the operational runbook and pass the repository implementation gate
+### Task 17: Add the trusted main Adapter build, publication and custody producer
+
+**Files:**
+
+- Create: `.github/workflows/snapshot-adapter-build.yml`
+- Create: `release/contracts/schemas/snapshot-adapter-build-proof.v1.schema.json`
+- Create: `release/contracts/schemas/snapshot-adapter-artifact-custody.v1.schema.json`
+- Create: `scripts/release/create-snapshot-adapter-build-proof.mjs`
+- Create: `scripts/release/create-snapshot-adapter-build-proof.test.mjs`
+- Create: `scripts/release/verify-snapshot-adapter-build-workflow.mjs`
+- Create: `scripts/release/verify-snapshot-adapter-build-workflow.test.mjs`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+- Modify: `packages/release-foundation/src/schema-registry.mjs`
+- Modify: `scripts/release/build-snapshot-adapter.mjs`
+- Modify: `scripts/release/verify-snapshot-adapter-bundle.mjs`
+
+**Artifact identity:**
+
+- OCI repository: `ghcr.io/keqi119/subscription-snapshot-adapter`.
+- Immutable identity: registry-resolved OCI artifact digest containing the archive, SBOM and metadata; tag is discovery-only.
+- Build proof binds exact `main` SHA, workflow path/blob SHA, run ID/attempt, Adapter archive/SBOM/file-manifest digests, Node.js runtime/version/archive/signing-material digests, dependency lock digest, builder/runner provenance, OCI digest and GitHub attestation subject.
+
+- [ ] **Step 1: Write RED workflow trust tests**
+
+Reject PR/fork/`pull_request_target`/comment/schedule/repository-dispatch/tag/non-main/rerun, mutable checkout/action refs, `ubuntu-latest`, missing `trusted-image-build`, missing `packages: write`/`id-token: write`/`attestations: write`, caller-selected script/archive and any output not bound to the final OCI digest.
+
+- [ ] **Step 2: Implement a protected main-only build workflow**
+
+Use manual `workflow_dispatch` on exact `refs/heads/main`, `run_attempt=1`, repository ID/actor checks and `ubuntu-24.04` under existing `trusted-image-build`. Checkout the exact workflow SHA with credentials disabled, run only the fixed Task 7 build/verify entrypoints and use pinned actions.
+
+- [ ] **Step 3: Publish the dependency-closed Adapter as an OCI artifact**
+
+Push the deterministic archive, SBOM and manifest together to the fixed GHCR repository, resolve the registry platform/artifact digest after upload and reject tag-only identity. Never publish from a PR artifact or local developer build.
+
+- [ ] **Step 4: Issue attestation and complete custody readback**
+
+Use GitHub artifact attestation with the workflow permissions above. Pull metadata by digest in a separate readback job, re-hash the archive/SBOM/manifest, verify source/workflow/runtime provenance and emit `snapshot-adapter-artifact-custody.v1`. Store only the non-sensitive build proof/custody records in Actions artifact; the installable artifact remains digest-addressed in GHCR.
+
+- [ ] **Step 5: Bind admission and root policy to the trusted artifact**
+
+`snapshot-admission.v1` and the installed root policy must reference the Adapter OCI digest plus build-proof/custody digests. A local Task 7 bundle, PR artifact, mutable tag, same archive under a different unattested OCI manifest or proof from another main SHA must fail.
+
+- [ ] **Step 6: Run workflow and proof tests**
+
+```powershell
+node --test scripts/release/create-snapshot-adapter-build-proof.test.mjs scripts/release/verify-snapshot-adapter-build-workflow.test.mjs scripts/release/snapshot-adapter-bundle.test.mjs
+node scripts/release/verify-snapshot-adapter-build-workflow.mjs --workflow .github/workflows/snapshot-adapter-build.yml
+pnpm release:contracts:verify
+pnpm prettier --check .github/workflows/snapshot-adapter-build.yml scripts/release release/contracts
+git diff --check
+```
+
+- [ ] **Step 7: Commit without dispatching the producer**
+
+```powershell
+git add .github/workflows/snapshot-adapter-build.yml packages/release-foundation/src/schema-registry.mjs scripts/release/create-snapshot-adapter-build-proof.mjs scripts/release/create-snapshot-adapter-build-proof.test.mjs scripts/release/verify-snapshot-adapter-build-workflow.mjs scripts/release/verify-snapshot-adapter-build-workflow.test.mjs scripts/release/build-snapshot-adapter.mjs scripts/release/verify-snapshot-adapter-bundle.mjs release/contracts
+git commit -m "ci: publish trusted snapshot adapter artifacts"
+```
+
+Expected: repository tests prove the producer contract, but no Adapter artifact is trusted until this commit is merged to `main` and Infrastructure Task I1 executes the protected workflow.
+
+---
+
+### Task 18: Publish the operational runbook and pass the repository implementation gate
 
 **Files:**
 
@@ -1344,7 +1525,7 @@ Include approved SHA/spec/plan references, current Environment `ABSENT` baseline
 
 - [ ] **Step 2: Document the ordered external change sequence**
 
-Use exactly: GitHub trust bootstrap → private OSS/KMS/RAM custody → Staging SSH/read-only DB source → WSL/adapter install → synthetic rehearsal → real producer attempt → unique RC run. Each section states `plan evidence → human approval → apply → readback proof → custody` and its stop condition.
+Use exactly the Infrastructure Task I1–I22 order below. Each external mutation section names its plan/apply/readback CLI, proof path, operation ID, independent approval and UNKNOWN boundary; no paragraph may combine separate GitHub, Alibaba, Staging or WSL writes under one approval.
 
 - [ ] **Step 3: Add failure and UNKNOWN recovery tables**
 
@@ -1381,334 +1562,319 @@ Use the review checklist against the approved addendum, resolve findings task by
 
 - [ ] **Step 8: Stop at the external-change approval checkpoint**
 
-Deliver the repository gate report, exact merged main SHA, artifact/build-proof digests, controlled datasource migration status and proposed GitHub/Alibaba/Staging plan digests. Obtain a new explicit authorization before Task 18; plan approval or PR merge alone is insufficient.
+Deliver the repository gate report, exact merged main SHA, controlled datasource migration status and proposed GitHub/Alibaba/Staging plan digests. Obtain a new explicit authorization before Infrastructure Task I1; plan approval or PR merge alone is insufficient.
 
 ---
 
-### Task 18: Apply and verify the GitHub trust boundary
+## External Infrastructure and Qualification Tasks
 
-**External systems:** GitHub repository settings, `stage1-snapshot-export` Environment, repository OIDC customization and a dedicated snapshot-launcher GitHub App installation.
+Tasks I1–I22 run only after Tasks 0–18 are merged to `main`, required CI is green and the user grants a new external-change authorization. They do not create repository commits.
 
-**Tracked files:** None. All inputs must come from the merged main SHA produced by Task 17.
+For every mutating task below:
 
-**Required approval:** One human approval record bound to the GitHub bootstrap plan digest, repository ID, Environment identity, OIDC identity, GitHub App permission plan and expiration. This approval does not authorize a JIT Runner registration or workflow dispatch.
+1. Set `releaseAttemptId` and an immutable task-specific `operationId` before planning.
+2. Write the canonical plan to `.release-local/evidence/${releaseAttemptId}/${operationId}/plan.json`.
+3. Place the separately signed human approval in `approval.json`; approval of this plan is never sufficient.
+4. Pass approval and capability credentials only as protected file descriptors to `apply`.
+5. Store `apply-proof.json`, `readback.json` and the trusted-custody receipt before moving to the next task.
+6. On a lost or ambiguous apply response, write `INTERRUPTED_UNKNOWN.json` and run only `reconcile` with the same operation ID. A new apply requires a new plan and approval after reconciliation.
 
-- [ ] **Step 1: Re-read and freeze current GitHub state**
+At the start of I1, create one non-secret attempt record through the registered generator and derive every proof directory consistently:
 
-Run the plan-only bootstrap tool with a short-lived administrator token supplied through a protected file descriptor. Confirm the Environment remains absent or exactly matches the expected identity, inventory all existing OIDC consumers, and compare the newly calculated plan digest with the Task 17 proposal.
+```powershell
+$stage1MainSha = git rev-parse origin/main
+node scripts/release/create-infrastructure-attempt.mjs --main-sha $stage1MainSha --owner-id 275060624 --output .release-local/infrastructure-attempt.v1.json
+$stage1ReleaseAttemptId = (Get-Content -Raw .release-local/infrastructure-attempt.v1.json | ConvertFrom-Json).releaseAttemptId
+```
 
-- [ ] **Step 2: Obtain the bound human approval**
+For each task set `$stage1OperationId` to its declared deterministic value and `$stage1OperationEvidence = ".release-local/evidence/$stage1ReleaseAttemptId/$stage1OperationId"`; the CLI creates only that exact directory. These values are identifiers, not credentials.
 
-Present the normalized changes, immutable repository/reviewer IDs, single-operator risk, branch/bypass/self-review rules, exact OIDC claims, App permissions and rollback limits. Any plan or observation change invalidates the approval and returns to Step 1.
+### Infrastructure Task I1: Produce and custody the trusted Adapter artifact
 
-- [ ] **Step 3: Create and read back the Environment**
+**Command:** `.github/workflows/snapshot-adapter-build.yml` from the exact merged `main` SHA.
 
-Apply exactly `stage1-snapshot-export`: protected `main` deployment branch only, reviewer ID `275060624`, `can_admins_bypass=false`, `prevent_self_review=false`, wait timer `0`. Read back using GitHub API, separately store identity and provenance observations, and fail if the UI/API result is broader.
+**Proof directory:** `.release-local/evidence/${releaseAttemptId}/i1-adapter-build-${mainSha}/`.
 
-- [ ] **Step 4: Apply repository OIDC subject customization**
+- [ ] Dispatch `gh workflow run snapshot-adapter-build.yml --ref main` only after recording the current `mainSha`; do not supply an archive, script path or PR artifact.
+- [ ] Wait for the exact `run_id`/attempt 1, then verify the protected `trusted-image-build` deployment, workflow SHA, runner provenance and successful conclusion.
+- [ ] Resolve `ghcr.io/keqi119/subscription-snapshot-adapter` from the registry to its immutable OCI digest; verify its GitHub attestation, archive/SBOM/file-manifest hashes and source SHA.
+- [ ] Store `snapshot-adapter-build-proof.v1` and `snapshot-adapter-artifact-custody.v1` under the proof directory and re-download/read back both before accepting I1.
+- [ ] Treat a cancelled or ambiguous publication as `INTERRUPTED_UNKNOWN`; inspect workflow and registry state by run ID/digest. Never rebuild locally or overwrite the OCI tag.
 
-Only proceed if every existing cloud consumer has an approved migration. Apply the exact claim set and verify the returned configuration plus a sample token subject from a non-data admission job. A missing claim, mutable login name or wildcard dependency stops the plan.
+### Infrastructure Task I2: Create and read back the Aliyun OIDC Provider
 
-- [ ] **Step 5: Create the dedicated launcher App identity**
+**CLI:** `scripts/release/bootstrap-aliyun-oidc-provider.mjs`.
 
-Configure only repository Administration write, Actions read, Contents read, Deployments read and Metadata read for this repository. Store the App private key in the Windows/root secret broker, never GitHub job secrets, WSL user files or repository settings. Read back installation repository and permissions.
+**Operation ID:** `i2-aliyun-oidc-provider-${releaseAttemptId}`.
 
-- [ ] **Step 6: Store bootstrap proof before proceeding**
+- [ ] Run `node scripts/release/bootstrap-aliyun-oidc-provider.mjs plan --operation-id $stage1OperationId --output $stage1OperationEvidence/plan.json` using read-only account observation.
+- [ ] Review the fixed provider name, issuer, sole audience/client ID `sts.aliyuncs.com`, independently derived CA fingerprints, one-hour issuance limit and target ARN; sign only this plan digest.
+- [ ] Run `node scripts/release/bootstrap-aliyun-oidc-provider.mjs apply --plan $stage1OperationEvidence/plan.json --approval-fd 3 --credential-fd 4 --proof $stage1OperationEvidence/apply-proof.json`, followed by `node scripts/release/bootstrap-aliyun-oidc-provider.mjs readback --operation-id $stage1OperationId --output $stage1OperationEvidence/readback.json`.
+- [ ] Verify every provider field and ARN before any GitHub subject customization. UNKNOWN uses `reconcile`; it must not delete or replace a possibly pre-existing provider.
 
-Upload signed plan, approval, apply journal, final identity/observation, API response digests and owner/access metadata to the approved non-snapshot proof store. Verify content digests and access policy before declaring Task 18 complete.
+### Infrastructure Task I3: Create and read back the snapshot Environment
 
-**Stop/rollback:** If partial apply occurs, disable the Environment from dispatch, reconcile exact GitHub state and issue a new plan. Do not guess rollback by deleting settings that may be shared with other OIDC consumers.
+**CLI:** `scripts/release/bootstrap-snapshot-environment.mjs`.
 
----
+**Operation ID:** `i3-snapshot-environment-${releaseAttemptId}`.
 
-### Task 19: Provision and prove private Aliyun snapshot custody
+- [ ] Run `plan` against repository ID `1253231368` and the current `ABSENT` or readback state; store the plan under the common evidence directory.
+- [ ] Approve only Environment `stage1-snapshot-export`, reviewer ID `275060624`, `main` deployment branch, no tags, `can_admins_bypass=false`, `prevent_self_review=false` and wait timer `0`.
+- [ ] Run `apply` with separate approval/admin descriptors, then `readback`; freeze the stable identity digest separately from observation provenance.
+- [ ] Do not dispatch or approve a workflow in this task. Partial creation is UNKNOWN and must reconcile exact Environment, reviewer and branch-policy IDs.
 
-**External systems:** Dedicated OSS bucket in `oss-cn-shanghai`, dedicated KMS key, four RAM capability families and their audit/log policies.
+### Infrastructure Task I4: Create the dedicated launcher GitHub App
 
-**Tracked files:** None. Generate every plan from the merged policy generator and Task 18 OIDC identity proof.
+**CLI:** `scripts/release/bootstrap-snapshot-launcher-app.mjs`.
 
-**Required approvals:** Separate human approvals for (a) reversible OSS/KMS/RAM creation and (b) irreversible BucketWorm lock. A single approval cannot cover both.
+**Operation ID:** `i4-launcher-app-${releaseAttemptId}`.
 
-- [ ] **Step 1: Discover immutable Alibaba account and region identity**
+- [ ] Run `plan` and approve only repository Administration write, Actions/Contents/Deployments/Metadata read, repository ID `1253231368` and no organization or source-write scope.
+- [ ] Run `apply`, then `readback`; record App ID, installation ID, repository selection, permission digest and public key fingerprint.
+- [ ] Deliver the private key through the approved root secret broker in a separate descriptor-only action and store only its delivery receipt; the workflow and Runner never receive it.
+- [ ] UNKNOWN reconciles the exact App/installation before any retry and must not create a second installation.
 
-Using a protected operator identity, read the Alibaba account ID, region, existing object-store policies, KMS aliases and OIDC provider state. Compute the fixed bucket name from the account ID and reject collision, an existing non-empty bucket or an alias owned by another system.
+### Infrastructure Task I5: Create reversible private custody resources
 
-- [ ] **Step 2: Generate and approve the reversible creation plan**
+**CLI:** `scripts/release/manage-snapshot-cloud-custody.mjs --resource base-custody`.
 
-Plan a private bucket with public ACL disabled, versioning disabled, TLS-only access, access logging and no website/public endpoint. Plan a dedicated symmetric KMS key/alias and distinct publisher, custody-reader, RC-consumer and retention capability families. The RC-consumer family issues separate exact-subject sessions for source-snapshot and final-snapshot jobs; credentials are never shared between jobs. Policies deny bucket listing, unrelated prefixes, KMS administration and mixed capabilities.
+**Operation ID:** `i5-aliyun-base-custody-${releaseAttemptId}`.
 
-- [ ] **Step 3: Apply reversible resources and verify negative access**
+- [ ] Run `plan` after I2 readback; approve the deterministic private bucket, KMS key/alias, access logging, root broker principal and mutually exclusive base capability policies. WORM is explicitly absent from this plan.
+- [ ] Run `apply`, then `readback`; verify account/region/resource IDs, private ACL, public-access block, versioning disabled, KMS state, broker assume-role-only policy and absence of business bucket/key reuse.
+- [ ] Use synthetic ciphertext to prove publisher cannot Get/List/Delete, reader cannot Put or manage KMS, and broker has no OSS/KMS permission.
+- [ ] On UNKNOWN, disable only newly proven principals and run exact-resource reconcile. Do not infer success from resource names.
 
-Create the empty bucket/key/roles, configure `x-oss-forbid-overwrite=true` usage and verify publisher write-only, custody-reader ciphertext/proof read-only, RC consumer one-object plus one-context decrypt, and retention operator lifecycle-only behavior. Cross-attempt, overwrite, list, delete, public read and unauthorized decrypt must fail.
+### Infrastructure Task I6: Lock the 210-day retention policy
 
-- [ ] **Step 4: Exercise envelope encryption with synthetic bytes**
+**CLI:** `scripts/release/manage-snapshot-cloud-custody.mjs --resource retention-lock`.
 
-Run `GenerateDataKey(AES_256)`, encrypt a deterministic non-sensitive payload with AES-256-GCM, upload using conditional create, decrypt using the exact-run test consumer, compare digest and terminate both crypto processes. Scan environment, command line, disk, logs and proof for plaintext DEK/payload leakage.
+**Operation ID:** `i6-aliyun-retention-lock-${releaseAttemptId}`.
 
-- [ ] **Step 5: Plan and separately approve the irreversible WORM lock**
+- [ ] Re-read I5 resources and generate a separate plan containing only the BucketWorm 210-day transition and its irreversible effect.
+- [ ] Obtain a new human approval bound to bucket ID, current empty or synthetic-only state, duration and plan digest; I5 approval is invalid here.
+- [ ] Run `apply`, then `readback`; record server-side retention ID/state/duration and custody receipt.
+- [ ] A lost response is UNKNOWN. Run `reconcile` against the retention ID; never re-run the lock or recreate the bucket.
 
-Read back an empty, private, versioning-disabled bucket and verify the 210-day retention contract. Present the irreversible operation, cost/retention consequences and exact bucket resource ID for a second approval. Do not lock if any property differs.
+### Infrastructure Task I7: Allocate and provision the OIDC canary identity
 
-- [ ] **Step 6: Lock retention and verify custody lifecycle**
+**CLIs:** `gh workflow run snapshot-oidc-canary.yml --ref main` and `scripts/release/manage-exact-run-capability.mjs`.
 
-Lock BucketWorm for 210 days, verify actual policy state and create a synthetic object lifecycle proof covering 30-day validity, invalidation, 180-day post-expiry retention and eventual retention-operator transition/deletion receipt. Do not claim early deletion is possible.
+**Operation ID:** `i7-oidc-canary-role-${releaseAttemptId}-${canaryRunId}`.
 
-- [ ] **Step 7: Store cloud bootstrap proof**
+- [ ] Dispatch the canary workflow only far enough to allocate numeric `canaryRunId`; confirm its token job is paused behind `stage1-snapshot-export` and has not received Environment approval or OIDC.
+- [ ] Generate the exact future customized subject using provider ARN, workflow/ref/SHA, actor/repository IDs, Environment, run ID/attempt 1, event and GitHub-hosted runner claim.
+- [ ] Run capability `plan`, obtain a separate approval, then `apply` and `readback` the exact canary RAM role. Wildcards or a different run/attempt fail.
+- [ ] Keep the canary job paused. UNKNOWN role creation must reconcile before GitHub repository settings can change.
 
-Record resource IDs, stable policy digests, redacted readbacks, audit-log destinations, owners, review date, cost/alert configuration and the two approvals. No access key or decrypted data key may enter proof custody.
+### Infrastructure Task I8: Switch the repository subject and complete the canary
 
-**Stop/rollback:** Before WORM lock, unused reversible resources may be disabled after exact identity verification. After lock, never attempt destructive rollback; disable principals, preserve the bucket until retention permits disposition and file an operator incident if configuration is wrong.
+**CLIs:** `scripts/release/bootstrap-github-oidc-subject.mjs` and `scripts/release/run-aliyun-oidc-canary.mjs`.
 
----
+**Operation ID:** `i8-github-oidc-subject-${releaseAttemptId}`.
 
-### Task 20: Establish the restricted Staging snapshot source boundary
+- [ ] Run subject `plan` with I2 Provider and I7 canary-role readbacks, plus the complete existing-consumer inventory. Stop with `OIDC_CONSUMER_MIGRATION_REQUIRED` if any current consumer cannot match the future subject.
+- [ ] Obtain independent approval, run subject `apply`, then `readback`; compare the exact ordered claim keys and repository identity.
+- [ ] Only after successful readback, approve the pending canary deployment. The job requests audience `sts.aliyuncs.com`, calls `AssumeRoleWithOIDC` and identity readback only, and emits redacted claims/session proof.
+- [ ] Run `manage-exact-run-capability.mjs revoke` for the canary role and read back denial/expiry. Subject-update UNKNOWN must reconcile repository settings before approving the job; do not delete shared settings speculatively.
 
-**External systems:** Staging host SSH configuration, loopback-only PostgreSQL endpoint and database role `stage1_snapshot_reader`.
+### Infrastructure Task I9: Publish the Staging loopback database endpoint
 
-**Tracked files:** None. Operator applies the exact merged infrastructure assets; this task creates no application migration, business row or RBAC permission.
+**CLI:** `scripts/release/manage-staging-snapshot-boundary.mjs --resource loopback-endpoint`.
 
-**Required approval:** Human approval bound to host fingerprint, Compose project/container identity, database name/OID, current network binding, planned loopback binding, SSH/DB role plans, downtime risk and restore point.
+**Operation ID:** `i9-staging-loopback-${releaseAttemptId}`.
 
-- [ ] **Step 1: Read-only host/database discovery**
+- [ ] Run `plan` against the exact Staging host, Compose project/container and current bindings; reject production/unknown host or port collision.
+- [ ] Approve only `127.0.0.1:55432:5432`, apply through the server-admin descriptor, then read back Docker binding/project/container identities and application health.
+- [ ] Verify the port is not externally reachable. UNKNOWN reconciles actual Compose/runtime state before any restart.
 
-Use the existing server administrator path only for discovery. Record host key, Docker/Compose versions, exact PostgreSQL container/project/network, database identity, current published ports, role/ownership topology and health. Abort on an unknown host, production identity or existing public database binding.
+### Infrastructure Task I10: Create the forwarding-only SSH account
 
-- [ ] **Step 2: Verify backup and maintenance boundary**
+**CLI:** `scripts/release/manage-staging-snapshot-boundary.mjs --resource ssh-account`.
 
-Create and test a database/container configuration recovery point before changing port publication. Because a loopback publish change may recreate the PostgreSQL container, obtain a maintenance window and define the exact health/rollback checks; do not conflate configuration rollback with database restore.
+**Operation ID:** `i10-staging-ssh-${releaseAttemptId}`.
 
-- [ ] **Step 3: Apply the loopback-only endpoint**
+- [ ] Plan and approve only user `stage1_snapshot_tunnel`, the dedicated key fingerprint and exact `127.0.0.1:55432` permit-open target.
+- [ ] Apply the committed sshd/authorized_keys policy, validate configuration before reload and read back account, group, key, option and Match-policy state.
+- [ ] Prove Shell, PTY, SFTP, agent/X11, remote/dynamic forwarding and every other destination fail; local forwarding to the exact endpoint succeeds.
+- [ ] UNKNOWN reconciles the exact account/key/config before reload or disable; it never modifies the administrator SSH path.
 
-Apply the fixed fragment so the database is published only at `127.0.0.1:55432`. Verify using Docker inspect and an external connection-negative test. Restore the previous compatible Compose config if health or identity changes; database restore is not the normal rollback.
+### Infrastructure Task I11: Create the read-only Staging database role
 
-- [ ] **Step 4: Create the dedicated SSH forwarding account**
+**CLI:** `scripts/release/manage-staging-snapshot-boundary.mjs --resource database-reader`.
 
-Install a new public key for `stage1_snapshot_tunnel`; do not reuse `D:\139.196.227.195_id_ed25519`. Apply the forced restrictions and `PermitOpen` policy, reload sshd, then prove shell, PTY, agent/X11, remote/dynamic forwarding and every destination except loopback port 55432 fail.
+**Operation ID:** `i11-staging-db-reader-${releaseAttemptId}`.
 
-- [ ] **Step 5: Create and validate the PostgreSQL read-only role**
+- [ ] Plan against the exact database name/OID and store the proposed role/grant delta. Approve only the committed infrastructure SQL; no business DML/DDL or Prisma migration is allowed.
+- [ ] Apply with a database-admin descriptor, revoke that descriptor, then read back role OID/attributes/memberships/ownership/grants/timeouts/RLS through the independent verify identity.
+- [ ] Prove `SELECT` works and every DML, DDL, owner, role, large-object and bypass probe fails. UNKNOWN reconciles catalog facts with the same operation ID.
 
-Execute the approved infrastructure SQL using a one-time database administrator session. Verify exact role OID/attributes, connection limit, timeouts, default read-only transaction, grants, ownership, memberships, RLS behavior and effective negative DML/DDL/role probes. Revoke the setup credential before continuing.
+### Infrastructure Task I12: Create and qualify the dedicated WSL distro
 
-- [ ] **Step 6: Prove a real read-only source session**
+**CLI:** `scripts/release/manage-snapshot-wsl-host.mjs --resource distro`.
 
-Through the restricted SSH tunnel, connect as `stage1_snapshot_reader`, open `REPEATABLE READ READ ONLY`, export a snapshot, compute only approved fingerprints/counts and close. Compare source before/after fingerprints to prove no source change.
+**Operation ID:** `i12-wsl-distro-${releaseAttemptId}`.
 
-- [ ] **Step 7: Store infrastructure proof**
+- [ ] Run host audit and `plan`; bind Windows host facts, pinned Ubuntu rootfs/Runner digests, dedicated import directory, capacity, interop/automount/swap, pagefile/hibernation/crash-dump/device-encryption and egress policy.
+- [ ] Obtain approval, run `apply`, restart only the dedicated distro, then `readback` the distro/kernel/filesystem/network/systemd/non-privileged-user facts.
+- [ ] Prove no Docker group/socket, sudo, Windows mounts/PATH, swap, auto-update or unrelated Runner service exists.
+- [ ] UNKNOWN reconciles exact distro/import/service state; it does not unregister or delete any other distro.
 
-Store the host/database target policy, approval, apply/readback journal, negative-test results, post-change health, recovery-point reference and credential revocation receipt in the approved proof store.
+### Infrastructure Task I13: Create the root admission signer
 
-**Stop/rollback:** Any write-capable privilege, unexpected PUBLIC grant, RLS bypass, non-loopback exposure or unsupported SSH capability disables the account/role and blocks Task 21. Do not loosen a control to make export succeed.
+**CLI:** `scripts/release/manage-snapshot-wsl-host.mjs --resource admission-signer`.
 
----
+**Operation ID:** `i13-admission-signer-${releaseAttemptId}`.
 
-### Task 21: Install the dedicated WSL host and immutable snapshot adapter
+- [ ] Plan the non-exportable root-held Ed25519 key path and public-key digest placement in root policy; obtain a separate approval.
+- [ ] Run `apply`, then `readback`; store the public-key digest and a challenge-signature verification proof, never the private key.
+- [ ] Verify Runner user and workflow cannot read, invoke or replace the key except through the fixed admission-verification operation. UNKNOWN reconciles key/public digest existence and never regenerates over an unknown key.
 
-**External systems:** Dedicated Ubuntu 24.04 WSL distro, encrypted attempt storage, root policy, adapter bundle and local launcher service.
+### Infrastructure Task I14: Install the attested Adapter by digest
 
-**Tracked files:** None. Install only the Task 17 merged artifact whose digest appears in the build proof.
+**CLI:** `scripts/release/manage-snapshot-wsl-host.mjs --resource adapter-install`.
 
-**Required approval:** Human approval bound to Windows host identity, Ubuntu rootfs digest, adapter/SBOM digest, host-policy plan, egress destinations, encryption/storage plan and GitHub App secret reference.
+**Operation ID:** `i14-adapter-install-${releaseAttemptId}`.
 
-- [ ] **Step 1: Audit host suitability before install**
+- [ ] Plan against the I1 OCI/build/custody digests and I12 host-policy readback. A local bundle, tag, PR artifact or different main SHA is rejected.
+- [ ] Obtain approval, pull by OCI digest, verify attestation/archive/SBOM/file manifest, then install the allowlisted files under `/opt/subscription-saas/snapshot-adapter/v1/`.
+- [ ] Read back every path/owner/mode/digest, systemd unit, root-policy digest and absence of mutable package managers/update hooks in the installed runtime.
+- [ ] UNKNOWN reconciles the exact install manifest; it may quarantine the incomplete target but must not overwrite it or fall back to the repository checkout.
 
-Verify supported Windows/WSL versions, device encryption, pagefile/hibernation/crash-dump policy, available physical and WSL virtual-disk capacity, filesystem permissions and outbound network policy. If raw/sanitized plaintext could be paged or hibernated outside the LUKS attempt volume, stop 方案 A。
+### Infrastructure Task I15: Run the closed synthetic qualification rehearsal
 
-- [ ] **Step 2: Import a dedicated Ubuntu 24.04 distro**
+**Command:** `/opt/subscription-saas/snapshot-adapter/v1/bin/snapshot-job qualify --suite closed-security-rehearsal-v1 --request-fd 3`.
 
-Import the pinned rootfs digest under a dedicated path/identity, not an existing developer distro. Apply disabled interop/PATH/automount/swap settings, update WSL, restart the distro and verify effective state from both Windows and Linux.
+**Operation ID:** `i15-synthetic-rehearsal-${releaseAttemptId}`.
 
-- [ ] **Step 3: Create non-privileged identities and directories**
+- [ ] Prepare an isolated PostgreSQL 17 synthetic source containing versioned representative records and unique sanitization canaries; no Staging identity is injected.
+- [ ] Approve the fixed suite, exact labels, synthetic roles/object keys and fault matrix; run each scenario as a fresh sub-operation with its own evidence directory.
+- [ ] Prove success plus cancellation before/after JIT, route collision, SSH/write denial, sanitizer/raw-partial-output rejection, KMS denial, OSS conflict/network ambiguity, destruction failure and custody-consumer cross-run denial.
+- [ ] Reconcile every UNKNOWN, revoke all synthetic per-run identities, prove host idle/non-routable and store retained WORM-object disposition. Any missing scenario blocks I16.
 
-Create separate root launcher and unprivileged runner/adapter processes with no sudo, Docker, Windows mount, SSH-agent or secret-broker access. Install tmpfs handoff, LUKS backing, proof spool and audit directories with fixed owners/modes.
+### Infrastructure Task I16: Allocate the real producer and provision its publisher identity
 
-- [ ] **Step 4: Install and verify the root-owned adapter bundle**
+**CLIs:** `gh workflow run sanitized-snapshot.yml --ref main` and `scripts/release/manage-exact-run-capability.mjs --capability snapshot-publisher`.
 
-Fetch by build-proof digest, verify provenance, SBOM, allowlist and bundle hash, then install atomically to `/opt/subscription-saas/snapshot-adapter/v1/`. Files are root-owned and non-writable by runner/adapter users. Verify the installed digest independently.
+**Operation ID:** `i16-producer-publisher-${releaseAttemptId}-${snapshotRunId}`.
 
-- [ ] **Step 5: Install root policy, egress and launcher service**
+- [ ] Dispatch only the admission portion from exact merged `main`; record numeric `snapshotRunId`, attempt 1 and queued data/custody jobs. Neither job may pass `stage1-snapshot-export` yet.
+- [ ] Verify and sign the non-sensitive admission through the root launcher, then plan the exact broker-assumable publisher role bound to release attempt, object key, KMS context and 900-second maximum session.
+- [ ] Obtain a producer-specific approval, run role `apply` and `readback`, then let the root broker assume and deliver the publisher-only STS credential through the sealed descriptor. Record delivery proof without secret material.
+- [ ] Keep Environment blocked until I17 finishes its independent custody-reader role. UNKNOWN role or STS delivery must reconcile; no new credential may be minted under the same approval after ambiguity.
 
-Apply the approved root policy, nftables/Windows firewall rules and hardened systemd unit. Do not place the GitHub App private key in the distro; the Windows/root broker exposes only a short-lived protected handoff. Container exec, Docker socket and arbitrary entrypoint mechanisms must remain absent.
+### Infrastructure Task I17: Provision producer custody identity and release the real run
 
-- [ ] **Step 6: Exercise LUKS lifecycle with synthetic content**
+**CLI:** `scripts/release/manage-exact-run-capability.mjs --capability snapshot-custody-reader`.
 
-Create one attempt volume, prove raw/temp/plaintext paths resolve inside it, force cancellation, destroy the key and verify the mapper cannot reopen. The receipt records key invalidation and unlock failure, not physical erasure.
+**Operation ID:** `i17-producer-custody-${releaseAttemptId}-${snapshotRunId}`.
 
-- [ ] **Step 7: Audit an idle non-routable host**
+- [ ] Plan the exact GitHub OIDC custody-reader subject for the already allocated run, attempt, workflow, Environment and job. Do not reuse the publisher plan or combine policies.
+- [ ] Obtain a new approval, run `apply` and `readback`, and confirm both publisher-delivery and custody-reader proofs match the same immutable admission.
+- [ ] After both role readbacks and the publisher credential-delivery proof exist, approve the pending `stage1-snapshot-export` Environment deployment once. The root launcher verifies post-approval observation and exclusive route, creates one JIT Runner and executes the fixed export, sanitize, encrypt and write-once path.
+- [ ] The custody job remains ordered by an explicit `needs` dependency until data and host-destruction proofs are durable; it then obtains only its exact OIDC role, performs private readback, attestation and custody, and emits `snapshot-producer-completion.v1`. Environment approval alone cannot bypass that dependency.
+- [ ] Any ambiguous upload, job, Runner or destruction result is UNKNOWN and blocks producer completion until reconciled; never rerun export or upload under this attempt.
 
-Confirm no persistent Actions Runner process/service/registration/token exists, no unique route label is registered, no listening database tunnel remains and no secret/material is present outside approved root locations.
+### Infrastructure Task I18: Revoke producer identities and freeze successful completion
 
-- [ ] **Step 8: Store installation proof**
+**CLI:** `scripts/release/manage-exact-run-capability.mjs revoke|readback`.
 
-Store approval, host identity, rootfs/adapter/policy digests, effective settings, egress test, filesystem/identity audit and synthetic destruction receipt before Task 22.
+**Operation IDs:** the exact I16 publisher and I17 custody operation IDs.
 
-**Stop/rollback:** Remove the idle adapter/distro only after exact installation identity checks. A failed JIT or real data attempt is not repaired by reusing contaminated storage; destroy its volume and create a new attempt.
+- [ ] Revoke both per-run roles through separate revoke proofs, verify the broker can no longer assume publisher and wait or read back expiry of every issued STS session.
+- [ ] Verify GitHub reports the JIT Runner removed, no matching labels or job remain routable, LUKS unlock fails, source before/after fingerprints match and no plaintext, raw or partial artifact exists.
+- [ ] Re-read private OSS/KMS/proof custody and freeze the successful `snapshot-producer-completion.v1`; otherwise mark the attempt unusable and return to I16 with a new `releaseAttemptId`.
+- [ ] UNKNOWN revocation is reconciled before any RC dispatch.
 
----
+### Infrastructure Task I19: Allocate the qualification RC and provision source-snapshot access
 
-### Task 22: Complete a synthetic end-to-end security and failure rehearsal
+**CLIs:** `gh workflow run release-candidate-gate.yml --ref main` and `scripts/release/manage-exact-run-capability.mjs --capability rc-source-snapshot-consumer`.
 
-**Systems:** Installed WSL/adapter, private custody and GitHub trust boundary, but only a synthetic local PostgreSQL 17 database containing generated non-sensitive data.
+**Operation ID:** `i19-rc-source-consumer-${releaseAttemptId}-${rcWorkflowRunId}`.
 
-**Required approval:** CI-policy for synthetic resources plus human authorization to register one synthetic JIT Runner. Staging SSH/DB credentials are not injected.
+- [ ] Freeze a v2 `approval-record` with `executionPurpose=qualification`, exact successful producer completion, main/build proof, API/Web/Runner digests, repository/migration/test/sanitization digests and snapshot digest.
+- [ ] Dispatch one RC run only far enough to allocate numeric `rcWorkflowRunId`; all Environment-protected consumer jobs remain paused and no external final, aggregate or exit input is accepted.
+- [ ] Plan, separately approve, apply and read back the exact source-snapshot consumer role under `trusted-source-database-gate` for this run, attempt and job.
+- [ ] Keep its Environment deployment blocked until I20 provisions the other consumer. UNKNOWN role state reconciles before release.
 
-- [ ] **Step 1: Generate a synthetic producer admission**
+### Infrastructure Task I20: Provision final-snapshot access and release RC execution
 
-Use the exact workflow SHA, Environment and five-label route with a dedicated synthetic `snapshotRunId`. Create exact-run cloud roles and admission proof whose source target policy points only to the synthetic database.
+**CLI:** `scripts/release/manage-exact-run-capability.mjs --capability rc-final-snapshot-consumer`.
 
-- [ ] **Step 2: Test exclusive routing and single-job destruction**
+**Operation ID:** `i20-rc-final-consumer-${releaseAttemptId}-${rcWorkflowRunId}`.
 
-Approve the Environment, create the JIT configuration immediately before launch, run exactly one job, verify GitHub terminal state and destroy the Runner/volume. Submit malicious queued-job fixtures for wrong repo/ref/workflow/actor/labels and prove the launcher refuses registration before credentials or data access.
+- [ ] Plan, independently approve, apply and read back the exact final-snapshot consumer role under `trusted-release-execution`; it may read and decrypt only the I18 snapshot object.
+- [ ] Verify source and final roles have separate credentials and operation IDs, and both exact subjects match the same qualification approval, run, attempt and build proof.
+- [ ] Release the approved source/final Environments. Every job first emits runner provenance and capacity admission; rejection fails the RC without pruning data, skipping tests or moving to self-hosted execution.
+- [ ] Run source fresh/snapshot and final fresh/snapshot chains with separate databases, Manifests, operation IDs and proofs; final gates use digest-pinned images, capability-separated migration/verify/runtime-test identities and real Playwright network capture.
 
-- [ ] **Step 3: Exercise source and crypto failure injection**
+### Infrastructure Task I21: Aggregate the qualification DAG and revoke RC identities
 
-Test write-capable source credential rejection, DML attempt, source fingerprint drift, invalid sanitization rule, KMS denial, wrong encryption context, truncated ciphertext, GCM tag failure, OSS overwrite and partial upload. No plaintext/public artifact may be published.
+**Command:** the fixed same-run tail of `.github/workflows/release-candidate-gate.yml` plus `manage-exact-run-capability.mjs revoke|readback`.
 
-- [ ] **Step 4: Exercise host and cancellation failures**
+**Operation ID:** `i21-qualification-tail-${releaseAttemptId}-${rcWorkflowRunId}`.
 
-Test adapter tampering, root-policy drift, egress violation, insufficient capacity, signal during export/encryption/upload and GitHub cancellation after OSS commit but before proof publication. Each outcome must be `FAILED` or `INTERRUPTED_UNKNOWN` with reconcile instructions and preserved redacted evidence.
+- [ ] In the same `rcWorkflowRunId`, produce v2 custody receipts, `release-aggregate-proof.v2` and `s1-exit-evidence.v2`, all with `executionPurpose=qualification`. Never import a source, final, aggregate or exit proof from another run.
+- [ ] Run `assertPromotionEligible` and require the expected rejection `QUALIFICATION_EVIDENCE_NOT_PROMOTABLE`; also prove v1, missing-purpose, mixed-purpose and cross-attempt evidence are rejected.
+- [ ] Revoke source and final consumer roles separately, read back denial and session expiry, then verify proof custody before deleting only exact marker-bound temporary databases.
+- [ ] Emit `TASK_30_AUTHORIZATION_REQUIRED` and stop. Do not execute exit audit or final custody, apply the Task 30 stash, mark S1 complete or reuse this producer/RC evidence in a future release-candidate run.
 
-- [ ] **Step 5: Exercise a synthetic private-custody consumer**
+### Infrastructure Task I22: Deliver the Task 29R package and request authorization
 
-On `ubuntu-24.04`, use an exact-run RC test identity to read one encrypted synthetic object, decrypt only in process/FIFO, restore and verify content. Cross-run, expired, wrong object, list and second-read requests must fail according to policy.
+**Files:** none unless a separately approved documentation correction is required.
 
-- [ ] **Step 6: Verify retention and clean synthetic resources**
-
-Preserve objects subject to locked WORM as synthetic evidence; disable per-run credentials and record lifecycle disposition rather than attempting early deletion. Destroy all local attempt volumes and prove the host returns to idle/non-routable state.
-
-- [ ] **Step 7: Review the rehearsal evidence**
-
-Require an independent code/security review of all failure results and access logs. Any missing negative test, UNKNOWN without reconcile, secret scan finding or broadened cloud/host policy blocks real Staging use.
-
----
-
-### Task 23: Run one real sanitized snapshot producer attempt
-
-**Systems:** Read-only Staging source, one manually admitted ephemeral JIT Runner and private OSS/KMS custody.
-
-**Required approvals:** A fresh human approval for the exact producer plan and Environment deployment review. Prior bootstrap/rehearsal approvals do not authorize Staging data export.
-
-- [ ] **Step 1: Allocate the immutable producer identity**
-
-Dispatch only the admission job from the exact merged `main` SHA to obtain numeric `snapshotRunId` and `run_attempt`. Freeze workflow/ref/actor/repository/environment observations, route nonce, adapter/build/policy/sanitization digests, source target identity and snapshot expiry.
-
-- [ ] **Step 2: Generate plan and exact-run cloud/route resources**
-
-Create deterministic publisher/custody-reader trust-policy plans for the full OIDC subject, JIT label set and target policy. Perform capacity checks for encrypted output/local LUKS. Store plans and readbacks before approval.
-
-- [ ] **Step 3: Obtain the bound human and Environment approvals**
-
-Present database identity, read-only privilege observation, exact data scope/sanitization contract, object key, KMS context, expected size bounds, route labels, retention and failure handling. Any changed field requires a new attempt rather than editing the approved admission.
-
-- [ ] **Step 4: Start the JIT Runner only after job approval is queued**
-
-The root launcher verifies the queued job through GitHub API, post-approval Environment observation and exact workflow blob, then requests one JIT config. It must not register if another queued job matches the labels or any immutable identity differs.
-
-- [ ] **Step 5: Execute export, sanitization, encryption and conditional publish**
-
-Use the restricted tunnel/role and one read-only repeatable-read exported snapshot. Transform only within the LUKS-isolated pipeline, scan the final sanitized stream, encrypt in the isolated crypto process and upload once with overwrite forbidden. Record source before/after fingerprints and output digests.
-
-- [ ] **Step 6: Destroy local state, then complete producer custody**
-
-After the adapter closes the source session, the root launcher first sends redacted diagnostic/proof records to private proof custody, then stops all attempt processes, unmounts the volume, invalidates the LUKS key, proves unlock failure and confirms the Runner is no longer routable. It publishes the resulting destruction receipt from root-only state. The GitHub-hosted custody job waits for and verifies that receipt together with the encrypted object/attestation, producer/sanitization/source proofs, TTL and WORM state before emitting producer completion. Never publish plaintext to Actions.
-
-- [ ] **Step 7: Reconcile uncertain terminal states**
-
-If cancellation/network loss makes upload/Runner status uncertain, mark the attempt `INTERRUPTED_UNKNOWN`, read OSS object state and GitHub job/Runner terminal state with the same operation ID, then produce a reconciliation proof. Do not rerun export or upload under the same attempt.
-
-- [ ] **Step 8: Approve producer completion or discard the attempt**
-
-Only a fully matched `snapshot-producer-completion.v1` with private readback, proof/log custody and destruction receipt yields `snapshotRunId=success`. Otherwise disable exact-run roles, preserve failure evidence under retention and create a new attempt from Step 1.
-
----
-
-### Task 24: Execute one immutable RC run through the Task 29R evidence checkpoint
-
-**Systems:** GitHub-hosted `ubuntu-24.04` source/final chains, registry digest-pinned API/Web/Runner bundle, controlled fresh and restored snapshot databases.
-
-**Required approval:** Human approval bound to the successful producer completion, exact merged source SHA, build-proof digest, three platform image digests, repository/test/sanitization contract digests and the RC workflow plan. The approval marks this attempt `qualificationOnly=true` and forbids promotion or later evidence reuse.
-
-- [ ] **Step 1: Freeze the qualification candidate and allocate one RC run**
-
-Verify main CI is green, resolve API/Web/Runner platform image digests from the registry and generate the immutable build admission. Dispatch exactly one qualification RC workflow to allocate `rcWorkflowRunId`; create the exact-run custody/decrypt role only for that run/attempt. This producer/RC pair is the sole RC for its `releaseAttemptId` and is permanently non-promotable.
-
-- [ ] **Step 2: Run independent capacity gates**
-
-On each fresh/snapshot source/final job, collect actual runner provenance and capacity before writes. Reject the run if any chain lacks the fixed reserve. Do not prune, downgrade tests or automatically switch to a larger/self-hosted machine; that requires a separate approved plan.
-
-- [ ] **Step 3: Run source fresh and snapshot evidence chains**
-
-Fresh applies all migrations to a new PostgreSQL 17 database. Snapshot downloads one encrypted object through the exact-run role, decrypts in memory/FIFO and restores to a separate temporary database with controlled owner normalization. Each chain gets its own Manifest, database identity, operation ID, execution proof and custody receipt.
-
-- [ ] **Step 4: Run final fresh and snapshot Compose gates**
-
-Start the digest-pinned final images with no builds or repository mounts. Use Runner migration/verify capability profiles, real API runtime identity, runtime-equivalent database test identity and Playwright Web-to-public-API network capture. Record Prisma/psql/PostgreSQL versions and zero-skip test equations.
-
-- [ ] **Step 5: Aggregate only same-run proof nodes**
-
-Verify every source/final/custody proof has the current `rcWorkflowRunId`, build proof, contract/test/snapshot digests and valid lineage. Generate aggregate and `s1-exit-evidence.v1` within the same run; preserve retry failures rather than overwriting them.
-
-- [ ] **Step 6: Stop before the Task 30 exit audit**
-
-Store and read back the generated `s1-exit-evidence.v1` checkpoint, then output `TASK_30_AUTHORIZATION_REQUIRED`, even if every Task 29R check is green. Do not run the independent exit audit or its final custody tail; the workflow must not apply the Task 30 stash, execute Task 30 or mark S1 complete.
-
-- [ ] **Step 7: Retain evidence and clean ephemeral databases**
-
-First verify all execution proofs are in trusted immutable custody. Then drop only exact CI databases bearing this run's ephemeral marker and revoke the exact-run RC role. Never delete using a prefix/glob or touch Staging/source data.
-
----
-
-### Task 25: Deliver the Task 29R review package and request the next authorization
-
-**Files:** None unless reviewers require a separately approved documentation correction PR.
-
-- [ ] **Step 1: Assemble the final review package**
-
-Include merged main SHA, build proof, API/Web/Runner digests, repository/migration/test/sanitization contract digests, GitHub/Alibaba/Staging/WSL bootstrap proofs, successful producer completion, both source/final chain proofs, capacity/runner provenance, aggregate, exit evidence, access logs, retention state and cleanup receipts.
-
-- [ ] **Step 2: Reconcile repository and external state**
-
-Prove the repository worktree is clean, Task 30 stash remains unchanged, Environment/cloud/host identities match approved readbacks, no JIT Runner remains registered, no local plaintext/unlocked volume survives and no per-run credential remains active.
-
-- [ ] **Step 3: Report residual risks and exceptions**
-
-List every accepted N/A/manual/external validation, single-operator Environment risk, retained encrypted/synthetic objects, unsuccessful attempt proof and infrastructure UNKNOWN resolution. No missing proof may be summarized as success.
-
-- [ ] **Step 4: Request explicit Task 30 authorization**
-
-Ask the user/reviewer to approve or reject resuming Task 30 from its frozen stash. Until that explicit authorization, do not apply/pop/drop the stash, implement Task 30, declare S1 complete or start S2/S3.
+- [ ] Assemble merged main SHA, Adapter proof, API/Web/Runner digests, contract digests, I2–I14 infrastructure readbacks, I15 rehearsal, I18 producer completion, I19–I21 source/final/custody/aggregate/qualification-exit proofs and every failure/reconcile record.
+- [ ] Prove no JIT Runner, unlocked LUKS volume, plaintext snapshot, active per-run role/session or unreconciled UNKNOWN remains; verify the Task 30 stash fingerprint is unchanged.
+- [ ] Report accepted manual/N/A evidence, single-operator Environment risk, retained WORM objects and expiry/disposition owners without summarizing missing evidence as success.
+- [ ] Ask for explicit approval or rejection of resuming Task 30. Until granted, do not apply, pop or drop the stash; implement Task 30; declare S1 complete; or start S2/S3.
 
 ## Specification Coverage Matrix
 
-| Approved addendum requirement                          | Implementation tasks      | Completion evidence                                                      |
-| ------------------------------------------------------ | ------------------------- | ------------------------------------------------------------------------ |
-| Independent producer, then one same-run RC chain       | 2, 3, 9, 14–16, 23–24     | Admission/JIT/producer proofs plus same-run DAG checkpoint               |
-| Public-repository exclusive JIT routing                | 2, 3, 8, 9, 14, 18, 21–23 | Environment identity, route observation, exact labels, terminal cleanup  |
-| No arbitrary repository code on data host              | 7–9, 14, 21–22            | Adapter allowlist/SBOM, workflow structural audit, negative launch tests |
-| Dedicated WSL, LUKS and truthful destruction           | 8, 21–23                  | Host policy, LUKS lifecycle proof, destruction receipt                   |
-| Restricted SSH/read-only PostgreSQL source             | 10, 11, 20, 23            | Target policy, privilege negatives, source fingerprints, MVCC proof      |
-| Valid PostgreSQL 17 snapshot semantics                 | 0, 10, 11, 22–24          | Controlled migration status and three-session MVCC test                  |
-| Private encrypted custody, not public artifact         | 4–6, 14–15, 19, 22–24     | Envelope/custody proofs, private OSS/KMS readback, workflow audit        |
-| KEK/DEK lifecycle and isolated crypto                  | 4–6, 19, 22–23            | Synthetic/real crypto proof and leak scan                                |
-| Environment identity versus observation                | 2, 3, 13, 18, 23          | Stable identity digest, fresh observation, drift negatives               |
-| Exact OIDC and least-privilege identities              | 3, 6, 13, 18–19, 23–24    | Exact subject/readback and cross-run/capability denials                  |
-| Capacity and fixed GitHub-hosted identity              | 12, 15, 17, 22, 24        | Capacity plans and runner provenance for every chain                     |
-| Snapshot retention and disposition                     | 4, 6, 17, 19, 22–25       | 30-day expiry, locked 210-day WORM, retention receipts                   |
-| Failure, cancellation, UNKNOWN and reconcile           | 2–9, 14–17, 22–25         | Failure proofs, reconciliation chain, preserved attempts                 |
-| Task 29R allowed only after real gate; Task 30 blocked | 1, 16–17, 24–25           | Exit-evidence state `TASK_30_AUTHORIZATION_REQUIRED` and stash audit     |
+| Approved addendum requirement                          | Implementation tasks                     | Completion evidence                                                          |
+| ------------------------------------------------------ | ---------------------------------------- | ---------------------------------------------------------------------------- |
+| Independent producer, then one same-run RC chain       | 2, 3, 9, 14–16; I16–I21                  | Admission/JIT/producer proofs plus same-run DAG checkpoint                   |
+| Public-repository exclusive JIT routing                | 2, 3, 8, 9, 13–14; I3–I4, I7–I8, I12–I18 | Environment identity, route observation, exact labels, terminal cleanup      |
+| No arbitrary repository code on data host              | 7–9, 14, 17; I1, I12–I15                 | Adapter allowlist/SBOM, workflow structural audit, negative launch tests     |
+| Trusted Adapter main artifact chain                    | 7, 17; I1, I14                           | Protected-main OCI digest, attestation, custody and installed-file readback  |
+| Dedicated WSL, LUKS and truthful destruction           | 8; I12–I18                               | Host policy, LUKS lifecycle proof, destruction receipt                       |
+| Restricted SSH/read-only PostgreSQL source             | 10–11; I9–I11, I16–I18                   | Target policy, privilege negatives, source fingerprints, MVCC proof          |
+| Valid PostgreSQL 17 snapshot semantics                 | 0, 10–11, 15; I15, I20                   | Controlled migration status and three-session MVCC test                      |
+| Private encrypted custody, not public artifact         | 4–6, 14–15; I5–I6, I15–I21               | Envelope/custody proofs, private OSS/KMS readback, workflow audit            |
+| KEK/DEK lifecycle and isolated crypto                  | 4–6; I5, I15–I21                         | Synthetic/real crypto proof and leak scan                                    |
+| Environment identity versus observation                | 2–3, 13–14; I3, I7–I8, I16–I21           | Stable identity digest, fresh observation, drift negatives                   |
+| Exact OIDC and least-privilege identities              | 3, 6, 13; I2, I7–I8, I16–I21             | Provider/readback, exact subject and cross-run/capability denials            |
+| Capacity and fixed GitHub-hosted identity              | 12, 15, 17; I1, I15, I20                 | Capacity plans and runner provenance for every chain                         |
+| Machine-isolated qualification evidence                | 16; I19–I22                              | v2 purpose bindings and expected promotion rejection                         |
+| Snapshot retention and disposition                     | 4, 6, 17; I5–I6, I15–I22                 | 30-day expiry, locked 210-day WORM, retention receipts                       |
+| Failure, cancellation, UNKNOWN and reconcile           | 2–9, 13–18; I1–I22                       | Failure proofs, reconciliation chain, preserved attempts                     |
+| Task 29R allowed only after real gate; Task 30 blocked | 1, 16, 18; I19–I22                       | `TASK_30_AUTHORIZATION_REQUIRED`, non-promotable v2 evidence and stash audit |
 
 ## External Approval Checkpoints
 
-| Checkpoint | Bound plan/change                             | Approval does not authorize                              |
-| ---------- | --------------------------------------------- | -------------------------------------------------------- |
-| A          | Task 18 GitHub Environment/OIDC/App bootstrap | Runner registration, workflow dispatch, cloud/DB changes |
-| B1         | Task 19 reversible OSS/KMS/RAM creation       | BucketWorm lock or Staging export                        |
-| B2         | Task 19 irreversible 210-day WORM lock        | Snapshot production or RC run                            |
-| C          | Task 20 Staging loopback/SSH/read-only role   | Business migration, write role or data repair            |
-| D          | Task 21 WSL/adapter installation              | JIT registration or workflow execution                   |
-| E          | Task 22 synthetic JIT rehearsal               | Staging credentials/data                                 |
-| F          | Task 23 exact real snapshot attempt           | Retry with changed inputs or RC execution                |
-| G          | Task 24 exact RC candidate/run                | Task 30, S1 completion, S2/S3                            |
-| H          | Task 25 review decision                       | Only a new explicit authorization may resume Task 30     |
+| Checkpoint | Bound plan/change                                              | Approval does not authorize                                  |
+| ---------- | -------------------------------------------------------------- | ------------------------------------------------------------ |
+| I1         | Protected-main Adapter producer dispatch                       | Local build substitution, install or infrastructure creation |
+| I2         | Aliyun OIDC Provider exact identity                            | GitHub subject customization or RAM role creation            |
+| I3         | Snapshot Environment creation                                  | Workflow approval, App or cloud changes                      |
+| I4         | Launcher App/installation and private-key delivery             | JIT registration or workflow execution                       |
+| I5         | Reversible OSS/KMS/RAM base custody                            | WORM lock, Staging access or snapshot data                   |
+| I6         | Irreversible 210-day WORM lock                                 | Producer or RC execution                                     |
+| I7         | One exact future-subject canary role                           | Repository subject change or Environment release             |
+| I8         | Repository subject switch and one canary deployment            | Any data workflow                                            |
+| I9         | Staging loopback endpoint                                      | SSH/DB identities or data access                             |
+| I10        | Forwarding-only SSH account                                    | Database role or snapshot export                             |
+| I11        | Read-only database role                                        | Business DML/DDL, migration or export                        |
+| I12        | Dedicated WSL distro                                           | Signer, Adapter install or JIT registration                  |
+| I13        | Root admission signer                                          | Adapter install or workflow execution                        |
+| I14        | Attested Adapter installation                                  | JIT registration or data access                              |
+| I15        | Synthetic qualification rehearsal                              | Staging credentials/data                                     |
+| I16        | Exact real-producer publisher role and one credential delivery | Environment release or RC execution                          |
+| I17        | Exact producer custody role and staged Environment releases    | Retry with changed inputs or RC dispatch                     |
+| I18        | Producer role revocation and completion freeze                 | RC dispatch until revocation readback succeeds               |
+| I19        | Qualification approval/run and exact source consumer role      | Final consumer role, promotion or Task 30                    |
+| I20        | Exact final consumer role and RC source/final execution        | External proof import, promotion or Task 30                  |
+| I21        | Same-run qualification aggregate/exit and role revocation      | Promotion, Task 30, S1 completion or evidence reuse          |
+| I22        | Review decision                                                | Only a new explicit authorization may resume Task 30         |
 
 ## Stop and Recovery Matrix
 
@@ -1732,11 +1898,11 @@ Ask the user/reviewer to approve or reject resuming Task 30 from its frozen stas
 
 This plan is complete only when:
 
-1. Tasks 0–17 have merged to `main` with required CI green and an immutable build proof.
-2. Each Task 18–24 external mutation/execution has its own approved plan, apply journal, readback proof and trusted custody receipt.
-3. One real producer attempt has a successful `snapshot-producer-completion.v1`, and one immutable RC run has completed both source/final chains plus same-run aggregate and generated exit-evidence checkpoint custody.
+1. Tasks 0–18 have merged to `main` with required CI green; I1 has produced the immutable Adapter build and custody proof.
+2. Each I2–I21 external mutation or execution has its own approved plan, apply journal, readback proof and trusted custody receipt; no UNKNOWN remains unresolved.
+3. One real producer attempt has a successful `snapshot-producer-completion.v1`, and one immutable RC run has completed both source/final chains plus same-run `release-aggregate-proof.v2` and `s1-exit-evidence.v2`, all bound to `executionPurpose=qualification` and proven non-promotable.
 4. The environment is idle: no JIT Runner, unlocked LUKS volume, plaintext snapshot or active per-run credential remains.
-5. Task 30 stash is unchanged and Task 25 has stopped at an explicit authorization request.
+5. Task 30 stash is unchanged and I22 has stopped at an explicit authorization request.
 
 Completion of this plan proves the execution infrastructure and Task 29R checkpoint only. It does **not** complete S1, authorize Task 30, approve S2/S3, change product behavior or constitute Stage 1 acceptance.
 
@@ -1745,10 +1911,12 @@ Completion of this plan proves the execution infrastructure and Task 29R checkpo
 - [GitHub: Security hardening for self-hosted runners](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners)
 - [GitHub: Ephemeral self-hosted runners](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
 - [GitHub: OIDC claims and subject customization](https://docs.github.com/en/actions/reference/security/oidc)
+- [GitHub: Artifact attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
 - [GitHub: Environment protection rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
 - [Alibaba Cloud KMS: Envelope encryption](https://www.alibabacloud.com/help/en/kms/key-management-service/use-cases/use-envelope-encryption)
 - [Alibaba Cloud KMS: GenerateDataKey](https://www.alibabacloud.com/help/en/kms/key-management-service/developer-reference/api-kms-2016-01-20-generatedatakey)
 - [Alibaba Cloud RAM: OIDC-based SSO](https://www.alibabacloud.com/help/en/ram/overview-of-oidc-based-sso)
+- [Alibaba Cloud RAM: Manage an OIDC identity provider](https://www.alibabacloud.com/help/en/ram/manage-an-oidc-idp)
 - [Alibaba Cloud OSS: Conditional PutObject](https://www.alibabacloud.com/help/en/oss/developer-reference/putobject)
 - [Alibaba Cloud OSS: Retention policy](https://www.alibabacloud.com/help/en/oss/user-guide/oss-retention-policies)
 - [PostgreSQL 17: Transaction isolation and `DEFERRABLE`](https://www.postgresql.org/docs/17/runtime-config-client.html)

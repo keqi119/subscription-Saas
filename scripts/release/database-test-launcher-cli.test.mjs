@@ -15,7 +15,8 @@ import {
   runLauncherCli,
   sourceGateProvenance,
   startCluster,
-  summarizeDatabaseTestLog
+  summarizeDatabaseTestLog,
+  waitForPostgresVersion
 } from "./database-test-launcher-runtime.mjs";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -56,6 +57,36 @@ test("release check relies on the controlled source database gate instead of amb
     apiPackage.scripts["test:database"],
     "node ../../scripts/release/run-source-database-gate.mjs"
   );
+});
+
+test("database readiness waits for the authenticated TCP version query", async () => {
+  const attempts = [];
+  const serverVersionNum = await waitForPostgresVersion(
+    "a".repeat(64),
+    { username: "controlled", password: "secret" },
+    {
+      queryVersion: async (request) => {
+        attempts.push(request);
+        if (attempts.length === 1) {
+          const error = new Error("temporary bootstrap server is socket-only");
+          error.code = "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED";
+          throw error;
+        }
+        return { rows: [{ serverVersionNum: "170011" }] };
+      },
+      pause: async () => {}
+    }
+  );
+
+  assert.equal(serverVersionNum, "170011");
+  assert.equal(attempts.length, 2);
+  assert.deepEqual(attempts[0], {
+    containerId: "a".repeat(64),
+    credential: { username: "controlled", password: "secret" },
+    databaseName: "postgres",
+    sql: "SHOW server_version_num;",
+    columns: ["serverVersionNum"]
+  });
 });
 
 test("binds promotable source evidence only to this protected main workflow run", () => {

@@ -147,16 +147,29 @@ async function executePsql({ containerId, credential, databaseName, sql, columns
   return { rows: rowsFromOutput(output, columns) };
 }
 
-async function waitForPostgres(containerId, username) {
+export async function waitForPostgresVersion(
+  containerId,
+  credential,
+  {
+    queryVersion = executePsql,
+    pause = () => new Promise((resolve) => setTimeout(resolve, 250))
+  } = {}
+) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     try {
-      await executeDockerCommand({
-        args: ["exec", containerId, "pg_isready", "--username", username, "--dbname", "postgres"]
+      const version = await queryVersion({
+        containerId,
+        credential,
+        databaseName: "postgres",
+        sql: "SHOW server_version_num;",
+        columns: ["serverVersionNum"]
       });
-      return;
+      const serverVersionNum = version.rows[0]?.serverVersionNum;
+      if (/^\d+$/u.test(serverVersionNum ?? "")) return serverVersionNum;
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      // The image entrypoint temporarily accepts socket connections before the final TCP server.
     }
+    if (attempt < 119) await pause();
   }
   throw runtimeError("DATABASE_LAUNCHER_POSTGRES_NOT_READY");
 }
@@ -247,7 +260,7 @@ export async function startCluster(
       throw runtimeError("DATABASE_LAUNCHER_CONTAINER_ID_INVALID");
     }
     phase = "readiness";
-    await waitForPostgres(containerId, provisioner.username);
+    const serverVersionNum = await waitForPostgresVersion(containerId, provisioner);
     phase = "inspect";
     const [inspected] = JSON.parse(await executeDockerCommand({ args: ["inspect", containerId] }));
     if (
@@ -262,15 +275,6 @@ export async function startCluster(
     if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) {
       throw runtimeError("DATABASE_LAUNCHER_PORT_INVALID");
     }
-    phase = "version";
-    const version = await executePsql({
-      containerId,
-      credential: provisioner,
-      databaseName: "postgres",
-      sql: "SHOW server_version_num;",
-      columns: ["serverVersionNum"]
-    });
-    const serverVersionNum = version.rows[0]?.serverVersionNum;
     const target = {
       policyId: policy.policyId,
       environment: "local-controlled",

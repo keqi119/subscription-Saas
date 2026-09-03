@@ -19,9 +19,6 @@ const controllerPath = resolve(
 const sharedAuthPath = resolve(repoRoot, "packages/shared/src/auth.ts");
 const accessCorePath = resolve(repoRoot, "scripts/stage1-p0-closure-access-core.mjs");
 const packagePath = resolve(repoRoot, "package.json");
-const reconciliationDatabaseUrl = requiredReleaseDatabaseTestContext(import.meta.url).databaseUrl;
-assertSafeReconciliationDatabaseUrl(reconciliationDatabaseUrl);
-
 const sqlBlockOrder = [
   "01-migration-catalog",
   "02-permission-matrix",
@@ -226,7 +223,7 @@ function validateApiInventory(controller, sharedAuth, accessCore, packageJsonTex
   const packageJson = JSON.parse(packageJsonText);
   assert.equal(
     packageJson.scripts["stage1:p0-closure:reconcile"],
-    "node --test scripts/stage1-p0-subscription-closure-reconciliation.test.mjs"
+    "pnpm stage1:p0-closure:reconcile:unit && node scripts/release/run-database-suite.mjs --suite-id node.closure-reconciliation.postgres --chain fresh"
   );
 }
 
@@ -379,6 +376,8 @@ test("requires a launcher-owned ephemeral database for live reconciliation", () 
 });
 
 test("executes every marked block verbatim and emits sanitized counts only", async (context) => {
+  const reconciliationDatabaseUrl = requiredReleaseDatabaseTestContext(import.meta.url).databaseUrl;
+  assertSafeReconciliationDatabaseUrl(reconciliationDatabaseUrl);
   const runbook = await readRequired(runbookPath);
   const blocks = validateRunbookSql(runbook);
   const { Client } = requireFromApi("pg");

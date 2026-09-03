@@ -59,6 +59,23 @@ test("release check relies on the controlled source database gate instead of amb
   );
 });
 
+test("keeps closure reconciliation database execution behind the controlled launcher", async () => {
+  const [releaseCheck, rootPackage] = await Promise.all([
+    readFile(path.join(repositoryRoot, "scripts/release-check.mjs"), "utf8"),
+    readFile(path.join(repositoryRoot, "package.json"), "utf8").then(JSON.parse)
+  ]);
+
+  assert.match(releaseCheck, /stage1:p0-closure:reconcile:unit/);
+  assert.equal(
+    rootPackage.scripts["stage1:p0-closure:reconcile:unit"],
+    'node --test --test-name-pattern="^(freezes|mutation-tests|validates|requires)" scripts/stage1-p0-subscription-closure-reconciliation.test.mjs'
+  );
+  assert.equal(
+    rootPackage.scripts["stage1:p0-closure:reconcile"],
+    "pnpm stage1:p0-closure:reconcile:unit && node scripts/release/run-database-suite.mjs --suite-id node.closure-reconciliation.postgres --chain fresh"
+  );
+});
+
 test("database readiness waits for the authenticated TCP version query", async () => {
   const attempts = [];
   const serverVersionNum = await waitForPostgresVersion(

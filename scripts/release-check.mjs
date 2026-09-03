@@ -109,7 +109,7 @@ const requiredSteps = [
     "node",
     ["--test", "scripts/stage1c-asset-accounting-reconciliation.test.mjs"]
   ],
-  ["Stage 1 closure reconciliation", "pnpm", ["stage1:p0-closure:reconcile"]],
+  ["Stage 1 closure reconciliation", "pnpm", ["stage1:p0-closure:reconcile:unit"]],
   ["Scenario seed syntax", "node", ["--check", "apps/api/prisma/seed-scenario.mjs"]]
 ];
 

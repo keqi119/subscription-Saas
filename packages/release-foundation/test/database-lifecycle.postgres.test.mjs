@@ -91,10 +91,7 @@ export function migrationPackageManagerCommand(
   return {
     executable: executablePath,
     arguments: [
-      path.win32.join(
-        path.win32.dirname(executablePath),
-        "node_modules/corepack/dist/pnpm.js"
-      ),
+      path.win32.join(path.win32.dirname(executablePath), "node_modules/corepack/dist/pnpm.js"),
       ...arguments_
     ]
   };
@@ -139,16 +136,22 @@ async function executePsql({ containerId, credential, databaseName, sql, columns
   return { rows: rowsFromOutput(output, columns) };
 }
 
-async function waitForPostgres(containerId, username) {
+async function waitForPostgresVersion(containerId, credential) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     try {
-      await executeDockerCommand({
-        args: ["exec", containerId, "pg_isready", "--username", username, "--dbname", "postgres"]
+      const version = await executePsql({
+        containerId,
+        credential,
+        databaseName: "postgres",
+        sql: "SELECT current_setting('server_version_num');",
+        columns: ["serverVersionNum"]
       });
-      return;
+      const serverVersionNum = version.rows[0]?.serverVersionNum;
+      if (/^17[0-9]{4}$/u.test(serverVersionNum ?? "")) return serverVersionNum;
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      // The image entrypoint may expose its temporary Unix socket before final TCP readiness.
     }
+    if (attempt < 119) await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw contractError("DATABASE_LIFECYCLE_POSTGRES_NOT_READY");
 }
@@ -240,23 +243,13 @@ export async function runDatabaseLifecyclePostgresContract() {
       })
     ).trim();
     assert.match(containerId, /^[0-9a-f]{64}$/);
-    await waitForPostgres(containerId, provisioner.username);
+    const serverVersionNum = await waitForPostgresVersion(containerId, provisioner);
     await assertExactContainer(containerId, runId, image);
     await rm(passwordPath, { force: true });
 
     const portOutput = await executeDockerCommand({ args: ["port", containerId, "5432/tcp"] });
     const port = Number(portOutput.trim().match(/^127\.0\.0\.1:(\d+)$/)?.[1]);
     assert.ok(Number.isInteger(port) && port > 0);
-    const version = await executePsql({
-      containerId,
-      credential: provisioner,
-      databaseName: "postgres",
-      sql: "SELECT current_setting('server_version_num');",
-      columns: ["serverVersionNum"]
-    });
-    const serverVersionNum = version.rows[0]?.serverVersionNum;
-    assert.match(serverVersionNum, /^17[0-9]{4}$/);
-
     const target = {
       policyId: policy.policyId,
       environment: "local-controlled",

@@ -249,24 +249,24 @@ publisher credential 必须是本 attempt、固定 subject 和固定交接 names
 
 ### Capability 准入与双 Environment 批准时序
 
-引用受保护 Environment 的 job 在批准后即可开始，因此 exact capability role 必须在批准 job 之前准备完成，不能把批准后 observation 作为 role 创建的前置输入。每个需要外部 capability 的 job 固定执行：
+引用受保护 Environment 的 job 在批准后即可开始，因此每个 exact capability 的机制专属前置资源和策略必须在批准 job 之前准备完成，不能把批准后 observation 作为创建前置输入。每个需要外部 capability 的 job 固定执行：
 
 ```text
 run/job 分配并出现 pending deployment
-  → exact-capability approval 绑定稳定 Environment identity + pending deployment
-  → role/policy apply + 独立 readback
+  → exact-capability approval 绑定 lane + capabilityKind + 稳定 Environment identity + pending deployment
+  → mechanism-specific prerequisite apply/readback
   → 人工批准该 job 的 Environment deployment
   → 生成 post-approval Environment observation
-  → 核对 approval/role/readback/observation 后才允许取得或使用凭证
+  → 核对 approval/prerequisite readback/observation 后才允许取得或使用该 kind 的凭证
 ```
 
-`exact-capability-approval.v1` 不引用尚未产生的 post-approval observation；后续 credential-use/JIT launch proof 必须同时绑定 exact capability approval digest、role readback digest 和最新 observation digest。固定 workflow 的第一条受信步骤必须完成该核对，随后才允许请求 OIDC 或从 root broker 接收 capability credential。角色不存在、readback 未完成、Environment 被提前批准、observation 缺失/过期或 job/deployment 身份漂移时 fail closed。
+`exact-capability-approval.v1` 不引用尚未产生的 post-approval observation；后续 mechanism-specific credential-use/JIT launch proof 必须同时绑定 exact capability approval digest、该 `capabilityKind` 要求的 readback digest 和最新 observation digest。固定 workflow 或 root launcher 的第一项受信动作必须完成该核对，随后才能按 kind 从 root broker 接收 STS、请求 GitHub OIDC，或申请 JIT configuration。前置资源不存在、readback 未完成、Environment 被提前批准、observation 缺失/过期或 job/deployment 身份漂移时 fail closed。
 
 `snapshot-data` 与依赖其完成的 `snapshot-custody` 是两个顺序 job，也是两个独立 deployment：
 
-1. 先为 `snapshot-data` 完成上述 role apply/readback，再单独批准 data deployment 并生成 data observation；
-2. data、加密对象发布和销毁 proof 入库后，才为 `snapshot-custody` 分配/核对 pending deployment、完成其独立只读 role apply/readback，再第二次人工批准并生成 custody observation；
-3. 第一次 Environment 批准和 observation 不得提前放行或复用于第二个 job，两个 job 的 exact-capability approval、role、credential、deployment 和 observation digest 全部分离。
+1. 先分别完成 `snapshot-data` 所需 `publisher-sts` 与 `jit-registration` approval 及各自 prerequisite readback，再单独批准 data deployment 并生成 data observation；两个 kind 仍是两个批准和两份 use proof，不能合并为组合凭证；
+2. data、加密对象发布和销毁 proof 入库后，才为 `snapshot-custody` 分配/核对 pending deployment，完成其独立 `oidc-cloud-role` approval 与 Provider/role/policy readback，再第二次人工批准并生成 custody observation；
+3. 第一次 Environment 批准和 observation 不得提前放行或复用于第二个 job；两个 job 及三个 capability kind 的 approval、readback、credential、deployment、observation 和 use-proof digest 均按实际机制分离。
 
 Publisher STS 不能在 data job 等待 Environment、JIT Runner 尚未接单或 adapter 接收进程不存在时提前签发。只有 `snapshot-data` 已获批准、data observation 通过、JIT Runner 已分配且 root-owned adapter 子进程已创建并准备从专用 FD 接收凭证后，root broker 才即时签发短期 write-once STS 并通过该 FD 单次交付。凭证不得进入 job 环境、workspace、命令行或日志；超时或接收失败即撤销/等待失效并使用新的 operation/run 重来。
 
@@ -445,7 +445,7 @@ Typed binding 必须使用封闭的 `oneOf`/判别联合，而不是一组大量
 
 每个 tagged capability binding 必须且只能命中一个分支：
 
-- `external-capability`：仅用于实际调用 snapshot object/KMS、OIDC 云端角色、JIT 注册或其他外部受限能力的步骤，强制绑定 `exact-capability-approval.v1`、role/policy readback、post-approval observation 和 credential-use proof digest；
+- `external-capability`：仅用于实际调用 publisher STS、snapshot object/KMS、OIDC 云端角色或 JIT 注册能力的步骤，强制绑定 `exact-capability-approval.v1`、`capabilityKind`、该 kind 的 prerequisite readback、post-approval observation 和 mechanism-specific credential-use/JIT launch proof digest；
 - `runner-database-role`：用于只依赖最终 Runner 内数据库连接角色的 fresh migration/verify/test 等命令，强制绑定可信 launch attestation、实际数据库角色 observation、command policy digest 和对应 execution envelope；该分支禁止 `exact-capability-approval.v1`、OIDC role 或云端 policy 占位。
 
 某一 variant 缺少其必填身份、携带另一 variant 字段、使用 `null` 占位，或 envelope 与原始 proof 内已有身份不一致时，必须 fail closed。Schema、规范化规则和所有 variant 都进入 repository contract digest；任何语义变更只能前向发布新 envelope 版本。
@@ -463,10 +463,21 @@ Purpose claim、条件创建/readback 证明和 storage version 的保留期不�
 三种批准拥有不同的生成时点、subject 和权限语义，禁止复用一个含糊的 `approval-record.v2`：
 
 1. **RC dispatch 授权：`rc-dispatch-authorization.v1`**。在本 purpose 的 snapshot producer 与 RC run 创建前签发，绑定 `executionPurpose`、`releaseAttemptId`、固定 producer/RC workflow path/ref/blob digest、source SHA、build proof、三镜像 bundle、repository contract、预期 snapshot/sanitization/adapter 身份、有效期、签发者和撤销策略；它不预先虚构 producer/RC run ID、实际 producer completion digest、数据库、Manifest、命令或 plan。Producer 完成后，RC 启动门禁再验证实际完成证明与该授权的预期 subject、attempt 和 digest 身份一致。
-2. **精确 capability 身份批准：`exact-capability-approval.v1`**。只适用于实际需要外部 snapshot/cloud/JIT 能力的 job。目标 run/job 已分配并出现 pending deployment 后、Environment 人工批准前签发；它绑定稳定 `environmentPolicyIdentityDigest` 和 pending deployment identity，不绑定尚未产生的 post-approval observation。封闭 variant 区分 producer lane 与 RC lane：producer lane 绑定 dispatch 授权、snapshot admission、purpose、`snapshotRunId`/attempt 和精确 job；RC lane 绑定 dispatch 授权、实际 producer completion proof、purpose、`rcWorkflowRunId`/attempt 和精确 job。两者都必须绑定单一 capability profile、OIDC subject、云端 role/policy 与凭证生命周期；每个批准只能对应一个 run lane 和一种 capability，不能授权数据库命令或扩大为组合 capability。角色完成 apply/readback 后才允许人工批准该 job；后续 credential-use/JIT proof 再绑定本批准、role readback 和批准后 observation。
+2. **精确 capability 身份批准：`exact-capability-approval.v1`**。只适用于实际需要外部 snapshot/cloud/JIT 能力的 job。目标 run/job 已分配并出现 pending deployment 后、Environment 人工批准前签发；公共必填字段绑定 purpose、dispatch 授权、`producer|rc` lane、对应 `snapshotRunId|rcWorkflowRunId`/attempt、精确 job、稳定 `environmentPolicyIdentityDigest`、pending deployment identity、唯一 `capabilityKind`、有效期、签发者、撤销与 custody。它不绑定尚未产生的 post-approval observation，也不含通用 OIDC/role 字段。Lane 下再使用 `additionalProperties=false` 的封闭 `capabilityKind` 判别联合：
+
+   | `capabilityKind`   | 允许 lane/job                                    | 批准前必填身份与 prerequisite readback                                                                                                                                                         | 批准后的唯一 credential-use proof                                                                                                                                                        | 明确禁止                                                                         |
+   | ------------------ | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+   | `publisher-sts`    | `producer/snapshot-data`                         | root broker identity/policy digest、STS issuer、broker 可假设的精确 publisher role/policy readback、attempt object namespace/KMS context、`maxSessionSeconds=900`、FD delivery contract digest | data observation、broker/session subject fingerprint、role/policy readback、issued/expires time、精确 namespace、adapter process identity 和 sealed FD delivery receipt；不得包含 secret | GitHub OIDC subject/provider、GitHub App/JIT 字段、Get/List/Delete/KMS data 权限 |
+   | `oidc-cloud-role`  | `producer/snapshot-custody` 或 `rc` consumer job | OIDC Provider issuer/audience/fingerprint/ARN readback、精确 GitHub subject、云端 role/trust/permission policy readback、唯一对象/KMS action scope                                             | post-approval token claims digest、Provider/role readback、STS session fingerprint、issued/expires time、精确 object/KMS action 与终态 revoke/expiry receipt                             | root broker/FD、GitHub App/JIT 字段、publisher 写权限或通配 subject              |
+   | `jit-registration` | `producer/snapshot-data`                         | GitHub App/installation immutable ID、key public fingerprint、最小 permission/readback、root launcher policy/digest、repository ID、route nonce、精确五标签和 JIT request policy               | data observation、GitHub App installation token request fingerprint、JIT configuration digest、ephemeral runner ID/labels、实际 job assignment，以及注销/销毁 readback；不得包含 token   | OIDC Provider/subject、云端 role/STS 数据权限、publisher/custody/consumer 权限   |
+
+   `producer` lane 可使用上述三个 kind 中与精确 job 匹配的项；`rc` lane 只允许需要对象读取/KMS 解密的 `oidc-cloud-role` consumer。一个 job 同时需要 `publisher-sts` 与 `jit-registration` 时必须使用两个 approval、两个 prerequisite readback 和两个 use proof；禁止一个 approval 声明多个 kind、跨 variant 字段、组合凭证或把某 kind 的 proof 当作另一 kind。每种机制完成 prerequisite apply/readback 后才允许人工批准对应 job；实际凭证或 JIT configuration 只能在批准后 observation 通过时按本 kind 的时序签发。
+
+   `exact-capability-approval.v1` Schema、lane/kind 允许矩阵、三个 variant 的必填/禁止字段、规范化规则及各自 credential-use proof Schema 全部进入 repository contract digest。已发布的 kind 不得原地增加另一种身份机制或放宽字段；任何此类变化只能前向发布新版本并重新批准。
+
 3. **命令执行批准：既有 `approval-record.v1`**。只在数据库身份、基线 Manifest、`commandId@commandVersion`、capability 和确定性 plan digest 产生后签发，并沿用已批准的撤销、时效和 apply 重算规则。它只能批准该命令执行，不能代替 dispatch 或 capability 身份批准，也不修改既有 v1 Schema 的语义。
 
-数据库 execution envelope 必须先通过 dispatch 授权和适用的 command approval binding，再按实际能力来源二选一：使用外部 snapshot/cloud/JIT 能力时，必须绑定 exact-capability approval、role readback、post-approval observation 和 credential-use proof；只使用最终 Runner 数据库角色时，必须绑定 launch attestation、数据库角色 observation 和 command policy，并明确禁止伪造 exact-capability approval。`approvalMode=ci-policy\|human` 时还必须绑定 `approval-record.v1`；`approvalMode=none` 时禁止伪造批准记录。
+数据库 execution envelope 必须先通过 dispatch 授权和适用的 command approval binding，再按实际能力来源二选一：使用外部 snapshot/cloud/JIT 能力时，必须绑定 exact-capability approval、唯一 `capabilityKind`、该机制的 prerequisite readback、post-approval observation 和 mechanism-specific credential-use/JIT launch proof；只使用最终 Runner 数据库角色时，必须绑定 launch attestation、数据库角色 observation 和 command policy，并明确禁止伪造 exact-capability approval。`approvalMode=ci-policy\|human` 时还必须绑定 `approval-record.v1`；`approvalMode=none` 时禁止伪造批准记录。
 
 不直接执行数据库命令的 source/final envelope 不得伪造 command approval；它们通过按顺序引用的 execution envelopes 继承每条命令的数据库角色/外部能力事实，若自身另行调用外部能力才增加对应 exact-capability binding。三类批准各自进入可信保管并以 digest 单向引用，不得相互循环或由 Runner 自签发。
 
@@ -522,28 +533,28 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 
 ## 当前实现到目标的偏差
 
-| 原子事项                | 当前实现                                                                  | 目标                                                                                                       | 阻断路由                     |
-| ----------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| 仓库可见性              | public                                                                    | public 下必须证明 JIT 排他路由；不能则转 private/非 Actions                                                | 本附录实施前 P1              |
-| snapshot environment    | `stage1-snapshot-export` API 404、未创建                                  | 稳定 identity digest 与批准后 observation digest 分层；固定 ID/reviewer/main policy/禁 bypass/单操作员风险 | 环境 bootstrap 后再次批准 P1 |
-| snapshot Runner         | 固定 self-hosted 能力标签，无实例                                         | 每次唯一标签、人工批准后 JIT/ephemeral、单 job 后注销销毁                                                  | 本附录实施前 P1              |
-| snapshot job 代码       | checkout、pnpm、仓库脚本                                                  | self-hosted 数据面不 checkout、不装依赖，只调用 root-owned adapter                                         | 工作流修订 P1                |
-| snapshot adapter        | 固定路径缺失                                                              | root-owned、不可修改、依赖闭包与 digest 固定                                                               | adapter 独立设计/实现 P1     |
-| sanitized snapshot 保管 | public Actions artifact、明文 dump、30 日                                 | 逐 attempt 加密、私有 content-addressed store、分离 publisher/consumer/retention、失效后 180 日            | custody 实施前 P1            |
-| Producer custody/解密   | 现有计划与前版附录曾混淆 producer custody 和 RC consumer                  | producer custody 只读密文/证明且不解密；只有后续 RC snapshot consumer 可取得 KMS Decrypt                   | 本附录复审后修订计划 P1      |
-| Environment job 批准    | data/custody 顺序 job 的 capability 与批准时序尚未落地                    | 角色先 apply/readback；data 与 custody 各自批准/observation；publisher STS 在 data adapter 就绪后即时签发  | 本附录复审后修订计划 P1      |
-| WSL 隔离                | 未建立                                                                    | 专用 distro、非特权身份、无 Docker/interop/Windows mount                                                   | 基础设施实施 P1              |
-| raw 存储                | 未建立                                                                    | 每 attempt 独立加密卷与密钥失效证明                                                                        | 基础设施实施 P1              |
-| SSH                     | 现有 root key 可取得 Shell                                                | snapshot 专用 key，仅固定 Staging DB 本地转发                                                              | 服务器配置 P1                |
-| Staging 数据库身份      | 只有应用超管身份                                                          | snapshot 专用严格只读角色及有效能力证明                                                                    | 数据库配置 P1                |
-| snapshot 事务语义       | 计划、实现和测试要求无效的 `REPEATABLE READ + DEFERRABLE`                 | `REPEATABLE READ READ ONLY` 稳定 MVCC snapshot，并以真实 PostgreSQL 17 集成测试证明                        | Task 29R 前置计划修订 P1     |
-| source/final 主机       | 工作流要求 self-hosted                                                    | GitHub-hosted `ubuntu-24.04` ephemeral VM + 实际版本证明 + 容量预检                                        | 工作流修订 P1                |
-| 容量                    | 未生成 capacity plan                                                      | 每 chain 写前预检，超限切专用 ephemeral VM                                                                 | final gate P1                |
-| Purpose 权威            | v1 原始证明没有 purpose；基础设施计划曾拟以混合 v2 proof 字段解释 purpose | v1 原始证明先验证；由固定 workflow + dispatch 授权继承 purpose；claim/envelope 及其 v2 custody 后才可聚合  | 本附录复审后修订两份计划 P1  |
-| 批准分层                | 基础设施计划曾拟复用含糊 `approval-record.v2`                             | dispatch、外部 exact capability、命令执行分别独立；Runner 数据库身份使用非云端受信分支                     | 本附录复审后修订计划 P1      |
-| Qualification/RC 边界   | Task 29R 尚未真实执行，上游计划仍保留与 Task 30 续接的旧语义              | qualification 永久不可提升；Task 30 合并后以新 main/build/bundle/producer/attempt/run 完整重跑             | 本附录复审后修订两份计划 P1  |
-| Snapshot/RC 运行边界    | Task 29R 尚未真实执行                                                     | 每个 purpose 都由独立 `snapshotRunId` 先完成；对应 RC 内部 source/final/envelope/v2 tail 保持 same-run     | Task 29R-D P1                |
-| Task 30                 | stash 冻结                                                                | qualification 后另行批准、实现并合并；新 RC 的 Task 29R 前缀与 Task 30 tail 全部同一 `rcWorkflowRunId`     | 持续阻断                     |
+| 原子事项                | 当前实现                                                                        | 目标                                                                                                                   | 阻断路由                     |
+| ----------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| 仓库可见性              | public                                                                          | public 下必须证明 JIT 排他路由；不能则转 private/非 Actions                                                            | 本附录实施前 P1              |
+| snapshot environment    | `stage1-snapshot-export` API 404、未创建                                        | 稳定 identity digest 与批准后 observation digest 分层；固定 ID/reviewer/main policy/禁 bypass/单操作员风险             | 环境 bootstrap 后再次批准 P1 |
+| snapshot Runner         | 固定 self-hosted 能力标签，无实例                                               | 每次唯一标签、人工批准后 JIT/ephemeral、单 job 后注销销毁                                                              | 本附录实施前 P1              |
+| snapshot job 代码       | checkout、pnpm、仓库脚本                                                        | self-hosted 数据面不 checkout、不装依赖，只调用 root-owned adapter                                                     | 工作流修订 P1                |
+| snapshot adapter        | 固定路径缺失                                                                    | root-owned、不可修改、依赖闭包与 digest 固定                                                                           | adapter 独立设计/实现 P1     |
+| sanitized snapshot 保管 | public Actions artifact、明文 dump、30 日                                       | 逐 attempt 加密、私有 content-addressed store、分离 publisher/consumer/retention、失效后 180 日                        | custody 实施前 P1            |
+| Producer custody/解密   | 现有计划与前版附录曾混淆 producer custody 和 RC consumer                        | producer custody 只读密文/证明且不解密；只有后续 RC snapshot consumer 可取得 KMS Decrypt                               | 本附录复审后修订计划 P1      |
+| Environment job 批准    | data/custody 顺序 job 的 capability 与批准时序尚未落地                          | 机制专属 prerequisite 先 apply/readback；data 与 custody 各自批准/observation；publisher STS 在 adapter 就绪后即时签发 | 本附录复审后修订计划 P1      |
+| WSL 隔离                | 未建立                                                                          | 专用 distro、非特权身份、无 Docker/interop/Windows mount                                                               | 基础设施实施 P1              |
+| raw 存储                | 未建立                                                                          | 每 attempt 独立加密卷与密钥失效证明                                                                                    | 基础设施实施 P1              |
+| SSH                     | 现有 root key 可取得 Shell                                                      | snapshot 专用 key，仅固定 Staging DB 本地转发                                                                          | 服务器配置 P1                |
+| Staging 数据库身份      | 只有应用超管身份                                                                | snapshot 专用严格只读角色及有效能力证明                                                                                | 数据库配置 P1                |
+| snapshot 事务语义       | 计划、实现和测试要求无效的 `REPEATABLE READ + DEFERRABLE`                       | `REPEATABLE READ READ ONLY` 稳定 MVCC snapshot，并以真实 PostgreSQL 17 集成测试证明                                    | Task 29R 前置计划修订 P1     |
+| source/final 主机       | 工作流要求 self-hosted                                                          | GitHub-hosted `ubuntu-24.04` ephemeral VM + 实际版本证明 + 容量预检                                                    | 工作流修订 P1                |
+| 容量                    | 未生成 capacity plan                                                            | 每 chain 写前预检，超限切专用 ephemeral VM                                                                             | final gate P1                |
+| Purpose 权威            | v1 原始证明没有 purpose；基础设施计划曾拟以混合 v2 proof 字段解释 purpose       | v1 原始证明先验证；由固定 workflow + dispatch 授权继承 purpose；claim/envelope 及其 v2 custody 后才可聚合              | 本附录复审后修订两份计划 P1  |
+| 批准分层                | 基础设施计划曾拟复用含糊 `approval-record.v2`，附录曾把外部机制统一为 OIDC/role | dispatch、exact capability、命令执行分别独立；exact capability 再按三个互斥 kind 分流；Runner 数据库身份使用非云端分支 | 本附录复审后修订计划 P1      |
+| Qualification/RC 边界   | Task 29R 尚未真实执行，上游计划仍保留与 Task 30 续接的旧语义                    | qualification 永久不可提升；Task 30 合并后以新 main/build/bundle/producer/attempt/run 完整重跑                         | 本附录复审后修订两份计划 P1  |
+| Snapshot/RC 运行边界    | Task 29R 尚未真实执行                                                           | 每个 purpose 都由独立 `snapshotRunId` 先完成；对应 RC 内部 source/final/envelope/v2 tail 保持 same-run                 | Task 29R-D P1                |
+| Task 30                 | stash 冻结                                                                      | qualification 后另行批准、实现并合并；新 RC 的 Task 29R 前缀与 Task 30 tail 全部同一 `rcWorkflowRunId`                 | 持续阻断                     |
 
 ## 方案 A 退出条件
 
@@ -559,7 +570,7 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 - 原始数据可能落入未加密磁盘、swap/pagefile、cache、artifact 或日志；
 - 明文 sanitized dump 进入 public Actions artifact，或私有存储、逐 attempt 加密、读写/retention 身份分离及失效后 180 日处置无法证明；
 - producer custody continuation 取得 KMS Decrypt、解包 DEK、下载/产生明文，或 RC snapshot consumer 与 publisher/custody 共用身份；
-- `snapshot-data` 与 `snapshot-custody` 共用一次 Environment 批准/observation，或 capability role 在 job 获批后才 apply/readback；
+- `snapshot-data` 与 `snapshot-custody` 共用一次 Environment 批准/observation，或 mechanism-specific prerequisite 在 job 获批后才 apply/readback；
 - publisher STS 在 data job approval、post-approval observation、JIT 分配和 adapter 接收进程就绪前签发，或通过 FD 以外的 job 环境/workspace 交付；
 - 只能证明普通文件删除，不能证明加密密钥失效；
 - SSH 能取得交互 Shell、任意端口转发或 production 网络路径；
@@ -570,6 +581,7 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 - 原始 v1 proof 未先验证/保管就生成 envelope，envelope 允许 CLI 传入 purpose，或 typed variant 缺少该 proof 类型必需的 Manifest、数据库、命令/能力身份；
 - 同一原始 proof digest 能生成多个 envelope、改变 purpose，或 purpose claim/custody 不具备 create-only、派生 key/version、条件创建/readback 证明与不短于 lineage 的保留期；
 - dispatch、exact capability 和命令执行批准使用同一个含糊对象，或批准生成时点早于其必须绑定的身份；
+- exact capability 缺少唯一 `capabilityKind`、接受跨 variant 字段/组合凭证，或把 Publisher/JIT 强制包装成 OIDC cloud role；
 - 仅使用 Runner 数据库角色的 fresh migration/verify/test 被强制要求或允许伪造云端 exact-capability approval，或缺少 launch attestation、数据库角色 observation 与 command policy；
 - qualification producer、proof、envelope、custody、aggregate 或 exit 被可提升 RC 复用、重新包装或作为输入；
 - 可提升 RC 的 Task 29R 前缀、envelope、v2 custody/aggregate/exit、Task 30 audit 或 final custody 不是来自同一 `rcWorkflowRunId`，或 workflow 重新接受外部完整最终证明输入；
@@ -608,12 +620,13 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 - WSL 原始数据加密、密钥失效、swap/pagefile 和日志保管是否可证明；
 - sanitized snapshot 的逐 attempt 加密、私有对象 ACL、读写/retention 身份分离及失效后 180 日处置是否可证明；
 - producer custody 是否保持密文只读且无 KMS Decrypt，RC snapshot consumer 是否是唯一解密方；
-- data/custody 两个 job 是否分别执行“角色 apply/readback → Environment 批准 → post-approval observation → 凭证使用”，publisher STS 是否只在 adapter 子进程就绪后即时签发；
+- data/custody 两个 job 是否分别执行“机制专属 prerequisite apply/readback → Environment 批准 → post-approval observation → 凭证使用”，publisher STS 是否只在 adapter 子进程就绪后即时签发；
 - KEK/DEK 角色、producer/consumer 明文 DEK 内存边界及进程/VM 销毁语义是否准确；
 - SSH endpoint 与 Staging 角色是否满足有效只读而非自报只读；
 - `REPEATABLE READ READ ONLY` 的真实 PostgreSQL 17 MVCC 测试是否作为 Task 29R 前置门槛；
 - GitHub-hosted 容量公式、停止阈值和专用 VM 回退是否可执行；
 - 三类批准是否具有独立契约、正确生成时点和不可互相替代的权限语义；
+- exact-capability approval 是否在 lane 下使用 `publisher-sts`、`oidc-cloud-role`、`jit-registration` 三个互斥 kind，并分别验证专属 readback/use proof 与禁止字段；
 - 原始 v1 → 一对一 purpose envelope → v2 custody/aggregate/exit 是否无环、内容寻址且可机器验证；
 - v2 custody 是否同时绑定 envelope、purpose claim、派生 key/version、条件创建/readback 证明，且 claim 保留期覆盖完整 lineage；
 - typed envelope 是否按原始 proof 类型强制绑定 Manifest、数据库、命令/能力身份，而非依赖可选字段；

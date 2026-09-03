@@ -102,7 +102,7 @@ const requiredSteps = [
   [
     "Stage 1 invalid Staging order retirement tests",
     "pnpm",
-    ["stage1:staging-invalid-test-order-retirement:test"]
+    ["stage1:staging-invalid-test-order-retirement:test:unit"]
   ],
   [
     "Stage 1C asset accounting reconciliation",

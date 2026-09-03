@@ -201,22 +201,29 @@ test("process errors expose one stable credential-safe JSON object", async () =>
 });
 
 test("package scripts expose dry-run, apply, and test entry points", async () => {
-  const packageJson = JSON.parse(
-    await readFile(new URL("../package.json", import.meta.url), "utf8")
-  );
+  const [packageJson, releaseCheck] = await Promise.all([
+    readFile(new URL("../package.json", import.meta.url), "utf8").then(JSON.parse),
+    readFile(new URL("./release-check.mjs", import.meta.url), "utf8")
+  ]);
 
   assert.equal(
     packageJson.scripts["stage1:staging-invalid-test-order-retirement:dry-run"],
-    "node scripts/stage1-staging-invalid-test-order-retirement.mjs --dry-run"
+    "node scripts/release/trusted-launch-runner.mjs --command stage1.invalid-test-order.retire@1 --phase dry-run --request-file .release-inputs/invalid-test-order-retirement.json"
   );
   assert.equal(
     packageJson.scripts["stage1:staging-invalid-test-order-retirement:apply"],
-    "node scripts/stage1-staging-invalid-test-order-retirement.mjs --apply"
+    "node scripts/release/trusted-launch-runner.mjs --command stage1.invalid-test-order.retire@1 --phase apply --request-file .release-inputs/invalid-test-order-retirement.json"
+  );
+  assert.equal(
+    packageJson.scripts["stage1:staging-invalid-test-order-retirement:test:unit"],
+    "node --test scripts/stage1-staging-invalid-test-order-retirement-core.test.mjs scripts/stage1-staging-invalid-test-order-retirement-executor.test.mjs scripts/stage1-staging-invalid-test-order-retirement.test.mjs"
   );
   assert.equal(
     packageJson.scripts["stage1:staging-invalid-test-order-retirement:test"],
-    "node --test scripts/stage1-staging-invalid-test-order-retirement-core.test.mjs scripts/stage1-staging-invalid-test-order-retirement-executor.test.mjs scripts/stage1-staging-invalid-test-order-retirement-postgres.integration.test.mjs scripts/stage1-staging-invalid-test-order-retirement.test.mjs"
+    "pnpm stage1:staging-invalid-test-order-retirement:test:unit && node scripts/release/run-database-suite.mjs --suite-id runner.stage1-invalid-test-order-retire --chain fresh"
   );
+  assert.match(releaseCheck, /stage1:staging-invalid-test-order-retirement:test:unit/u);
+  assert.doesNotMatch(releaseCheck, /stage1:staging-invalid-test-order-retirement:test"/u);
 });
 
 function dryRunArgs(overrides = {}) {

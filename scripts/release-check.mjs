@@ -53,7 +53,6 @@ const requiredSteps = [
   ["API typecheck", "pnpm", ["--filter", "@subscription-saas/api", "typecheck"]],
   ["Web typecheck", "pnpm", ["--filter", "@subscription-saas/web", "typecheck"]],
   ["API tests", "pnpm", ["--filter", "@subscription-saas/api", "test"]],
-  ["Prisma migrate status", "pnpm", ["prisma:migrate:status"]],
   ["Smoke script syntax", "node", ["--check", "scripts/api-smoke.mjs"]],
   ["Portal route smoke syntax", "node", ["--check", "scripts/portal-route-smoke.mjs"]],
   ["Portal API smoke syntax", "node", ["--check", "scripts/portal-api-smoke.mjs"]],

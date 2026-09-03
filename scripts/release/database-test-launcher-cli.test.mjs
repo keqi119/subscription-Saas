@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -41,6 +42,21 @@ const manifest = {
     }
   ]
 };
+
+test("release check relies on the controlled source database gate instead of ambient migrate status", async () => {
+  const [releaseCheck, apiPackage] = await Promise.all([
+    readFile(path.join(repositoryRoot, "scripts/release-check.mjs"), "utf8"),
+    readFile(path.join(repositoryRoot, "apps/api/package.json"), "utf8").then(JSON.parse)
+  ]);
+
+  assert.equal(releaseCheck.includes('"Prisma migrate status"'), false);
+  assert.equal(releaseCheck.includes('"prisma:migrate:status"'), false);
+  assert.match(apiPackage.scripts.test, /test:database/);
+  assert.equal(
+    apiPackage.scripts["test:database"],
+    "node ../../scripts/release/run-source-database-gate.mjs"
+  );
+});
 
 test("binds promotable source evidence only to this protected main workflow run", () => {
   const sourceSha = "a".repeat(40);

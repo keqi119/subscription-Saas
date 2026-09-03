@@ -214,17 +214,22 @@ test("source database launcher explicitly pulls the pinned image before a pull-d
   };
 
   await assert.rejects(
-    startCluster("explicit-pull-test", imageContract, {}, {
-      executeDocker: async (input) => {
-        calls.push(input);
-        if (input.args[0] === "run") {
-          throw Object.assign(new Error("stop after observing the run contract"), {
-            code: "TEST_STOP_AFTER_RUN"
-          });
+    startCluster(
+      "explicit-pull-test",
+      imageContract,
+      {},
+      {
+        executeDocker: async (input) => {
+          calls.push(input);
+          if (input.args[0] === "run") {
+            throw Object.assign(new Error("stop after observing the run contract"), {
+              code: "TEST_STOP_AFTER_RUN"
+            });
+          }
+          return "pulled";
         }
-        return "pulled";
       }
-    }),
+    ),
     { code: "TEST_STOP_AFTER_RUN" }
   );
 
@@ -239,12 +244,7 @@ test("source database launcher explicitly pulls the pinned image before a pull-d
   });
   const runCall = calls.find(({ args }) => args[0] === "run");
   assert.ok(runCall);
-  assert.deepEqual(runCall.args.slice(0, 4), [
-    "run",
-    "--pull=never",
-    "--detach",
-    "--platform"
-  ]);
+  assert.deepEqual(runCall.args.slice(0, 4), ["run", "--pull=never", "--detach", "--platform"]);
 });
 
 test("source database launcher classifies a missing local image without exposing Docker stderr", async () => {
@@ -256,16 +256,21 @@ test("source database launcher classifies a missing local image without exposing
   let calls = 0;
 
   await assert.rejects(
-    startCluster("missing-local-image-test", imageContract, {}, {
-      executeDocker: async ({ args }) => {
-        calls += 1;
-        if (args[0] === "pull") return "pulled";
-        throw Object.assign(new Error("redacted"), {
-          code: "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED",
-          diagnostic: `Unable to find image '${imageContract.repository}@${imageContract.resolvedDigest}' locally`
-        });
+    startCluster(
+      "missing-local-image-test",
+      imageContract,
+      {},
+      {
+        executeDocker: async ({ args }) => {
+          calls += 1;
+          if (args[0] === "pull") return "pulled";
+          throw Object.assign(new Error("redacted"), {
+            code: "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED",
+            diagnostic: `Unable to find image '${imageContract.repository}@${imageContract.resolvedDigest}' locally`
+          });
+        }
       }
-    }),
+    ),
     (error) => {
       assert.equal(error.code, "DATABASE_LAUNCHER_CONTAINER_IMAGE_NOT_LOCAL");
       assert.equal(JSON.stringify(error).includes(imageContract.resolvedDigest), false);
@@ -476,7 +481,8 @@ test("TAP diagnostics retain the failed test name and repository source location
   const summary = summarizeDatabaseTestLog({ stdout, stderr: "" });
   assert.deepEqual(summary.failedTests, [
     {
-      fullName: "provisions, migrates, isolates, and exactly cleans concurrent PostgreSQL databases",
+      fullName:
+        "provisions, migrates, isolates, and exactly cleans concurrent PostgreSQL databases",
       errorCodes: ["ERR_ASSERTION"],
       failureKinds: ["ASSERTION"],
       sourceLocations: [

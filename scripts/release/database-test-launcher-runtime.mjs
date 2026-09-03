@@ -851,9 +851,7 @@ function tapFailedTests(output) {
             ...failureText.matchAll(
               /((?:apps|packages|scripts|release)[\\/][a-z0-9._\\/-]+\.(?:spec|test)\.[cm]?[jt]s):(\d+):(\d+)/giu
             )
-          ].map(([, file, line, column]) =>
-            `${file.replaceAll("\\", "/")}:${line}:${column}`
-          )
+          ].map(([, file, line, column]) => `${file.replaceAll("\\", "/")}:${line}:${column}`)
         )
       ].slice(0, 8)
     });

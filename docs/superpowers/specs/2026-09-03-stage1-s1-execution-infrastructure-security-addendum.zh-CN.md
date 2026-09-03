@@ -59,7 +59,8 @@
 5. Staging 只通过专用受限 SSH 本地转发和严格只读数据库身份访问；
 6. 原始数据和明文 sanitized dump 只进入本地加密隔离卷；完成脱敏与扫描后，只有按 attempt 独立加密的 snapshot 密文、非敏感证明和受控引用可以离开该边界；
 7. public repository 下的标签匹配不是充分安全证明；必须把环境批准、精确 workflow/job 身份、唯一不可预测标签、JIT 单任务注册和运行后销毁组合为排他路由证明；
-8. 任一排他性、加密处置、只读能力或容量条件不可证明时，方案 A fail closed，转私有仓库或受控非 Actions 快照操作；仅更换为专用 VM 不能消除 public repository 的任务路由风险。
+8. sanitized snapshot 固定由独立受保护的 `snapshotRunId` producer run 先完成；随后才启动唯一 RC workflow run，并在该 RC run 内完成 source、final、aggregate 和 exit 全链；不允许实施时改成可选的 same-run reusable workflow；
+9. 任一排他性、加密处置、只读能力或容量条件不可证明时，方案 A fail closed，转私有仓库或受控非 Actions 快照操作；仅更换为专用 VM 不能消除 public repository 的任务路由风险。
 
 ## 信任边界与威胁模型
 
@@ -89,6 +90,7 @@
 ### 信任根
 
 - GitHub 受保护环境的人工批准记录；
+- root policy 固定的 `environmentPolicyIdentityDigest`，以及批准后独立生成的 `environmentPolicyObservationDigest`；
 - 固定 `main` SHA、workflow path、workflow ref、run ID、run attempt 和 job name；
 - GitHub API 返回并由本地可信启动器复核的 workflow/job/deployment 状态；
 - 由本地 root policy 预先批准的 workflow blob digest、允许的 action commit 清单和 `snapshot-admission.v1` Schema digest；
@@ -103,31 +105,36 @@
 ## 目标执行拓扑
 
 ```text
-GitHub-hosted source admission
-  ├─ 固定 main SHA / workflow digest / repository contract / fresh source gate
-  └─ 生成 releaseAttemptId、route nonce 与 snapshot-admission.v1
-                         │
-                         ▼
-              人工批准 snapshot environment
-                         │
-                         ▼
-本地可信启动器 ──核对 deployment/job── 生成唯一 JIT 配置
-                         │
-                         ▼
-专用 WSL ephemeral Runner（仅一个 snapshot job）
-  ├─ root-owned adapter
-  ├─ 受限 SSH 本地转发
-  ├─ Staging 严格只读事务
-  └─ 加密隔离卷：raw → restore → sanitize → scan
-                         │
-                         ▼
-          encrypted sanitized snapshot + proof + logs
-                         │
-                         ▼
-GitHub-hosted source snapshot + fresh/snapshot final Compose
-                         │
-                         ▼
-             同一 releaseAttemptId 的 Task 30 聚合
+独立 protected snapshot producer run（snapshotRunId）
+  GitHub-hosted snapshot admission
+    ├─ 固定 main SHA / workflow digest / repository contract
+    └─ 生成 releaseAttemptId、route nonce 与 snapshot-admission.v1
+                           │
+                           ▼
+                人工批准 snapshot environment
+                           │
+                           ▼
+  本地可信启动器 ──核对 policy/observation/job── 生成唯一 JIT 配置
+                           │
+                           ▼
+  专用 WSL ephemeral Runner（仅一个 snapshot job）
+    ├─ root-owned adapter
+    ├─ 受限 SSH 本地转发
+    ├─ Staging 严格只读事务
+    └─ 加密隔离卷：raw → restore → sanitize → scan → encrypt
+                           │
+                           ▼
+  private encrypted snapshot + proof/log custody（producer 完成）
+                           │
+                           ▼
+唯一 RC workflow run（rcWorkflowRunId，attempt=1）
+  source fresh + source snapshot
+    → build admission
+    → final fresh + final snapshot
+    → final custody
+    → aggregate
+    → generated exit evidence
+    → Task 30 exit audit/final custody
 ```
 
 production/staging 服务器不能运行 source database test 或 final Compose。WSL snapshot 边界也不能取得 production 凭证、production 网络路径或 Docker 宿主权限。
@@ -146,7 +153,7 @@ GitHub environment 保护规则可以要求人工审批、限制部署分支并�
 
 - repository：`keqi119/subscription-Saas`，immutable repository ID `1253231368`；
 - environment name：`stage1-snapshot-export`；
-- environment ID：当前显式状态为 `ABSENT`；在另行批准的实施步骤创建后，由 GitHub 分配的数字 ID 必须先进入 `environment-policy.v1` 和 WSL root policy 并再次人工批准，之后才允许首次 JIT 注册；删除后以相同名称重建得到的新 ID 视为不同环境，必须重新评审；
+- environment ID：当前显式状态为 `ABSENT`；在另行批准的实施步骤创建后，由 GitHub 分配的数字 ID 必须先进入 `environment-policy-identity.v1` 和 WSL root policy 并再次人工批准，之后才允许首次 JIT 注册；删除后以相同名称重建得到的新 ID 视为不同环境，必须重新评审；
 - required reviewer：GitHub user `keqi119`，immutable user ID `275060624`、node ID `U_kgDOEGUXkA`；禁止 team、可变 login 或仅凭显示名替代；
 - deployment branch/tag policy：使用 selected branches and tags，唯一 branch rule 为精确 `main`，tag rule 数量为零；不得使用“protected branches only”，避免在没有或改变 branch protection 时扩大允许范围；
 - `can_admins_bypass=false`；任何 bypass deployment 均无效；
@@ -156,9 +163,16 @@ GitHub environment 保护规则可以要求人工审批、限制部署分支并�
 
 当前只有一个管理员协作者，因此上述 `prevent_self_review=false` 明确保留“同一操作者 dispatch 并审批”的单操作员风险。批准本附录即表示仅对该固定 workflow、固定 actor/reviewer 和本次 JIT 协议接受该风险；它不等同于独立双人复核，也不得推广到其他环境。若不接受该风险，唯一合法替代是先增加独立 reviewer、将 `prevent_self_review` 改为 `true` 并重新批准 environment policy；实施者不得临场选择。
 
-`environment-policy.v1` 必须使用规范化序列化，至少覆盖上述全部字段、实际 environment ID、reviewer ID、实际 branch policy 对象、workflow blob digest、允许 action 清单、创建/读取时间与 GitHub API 响应 digest。人工批准后、申请 Runner 注册凭证前，可信启动器必须重新读取环境、deployment、review 和 branch policy，冻结 `environmentPolicyDigest` 并绑定 admission、route nonce 和 JIT 配置。
+Environment policy 固定拆成两层，均使用规范化序列化：
 
-下列任一情况必须在取得 JIT 注册凭证前 `PREFLIGHT_REJECTED`：environment `404`/ID 变化、无 required reviewer、reviewer ID 不匹配、branch/tag 规则多于或不同于精确 `main`、`can_admins_bypass=true`、`prevent_self_review` 与获批值不同、dispatch actor 不匹配、批准记录为 bypass、approval 尚未完成、environment policy digest 漂移或 GitHub API 无法读取。负向门禁必须逐项覆盖这些情况。
+- `environment-policy-identity.v1` 只包含稳定规则：immutable repository ID、environment ID/name、required reviewer ID、精确 branch/tag policy、`can_admins_bypass`、`prevent_self_review`、允许 dispatch actor ID、wait timer、workflow blob digest 和允许 action 清单；其 `environmentPolicyIdentityDigest` 由 WSL root policy 固定；
+- `environment-policy-observation.v1` 记录一次具体读取：`environmentPolicyIdentityDigest`、`observedAt`、GitHub API response digest、deployment/run/job identity、实际 approval/review record、queued labels 和读取终态；其 `environmentPolicyObservationDigest` 是运行证明，不反向改变稳定身份。
+
+`snapshot-admission.v1` 在人工批准前生成，只绑定 `environmentPolicyIdentityDigest`、source/workflow identity、`releaseAttemptId` 和 route nonce，不得引用尚不存在的批准后 observation。人工批准后、申请 Runner 注册凭证前，可信启动器重新读取 environment、deployment、review 和 branch policy，从响应中重算稳定 identity 并与 root policy 比较；匹配后才生成 post-approval observation。该 observation 的 `observedAt` 距申请 JIT 配置不得超过 5 分钟；超时必须重新读取并生成新的 observation，不能修改旧记录。
+
+JIT launch proof 同时绑定 `snapshotAdmissionDigest`、`environmentPolicyIdentityDigest` 和最新 `environmentPolicyObservationDigest`。策略漂移只比较 identity digest；审批、queued 状态和时效只检查 observation provenance，二者不得合并成一个自相漂移的 digest。
+
+下列任一情况必须在取得 JIT 注册凭证前 `PREFLIGHT_REJECTED`：environment `404`/ID 变化、无 required reviewer、reviewer ID 不匹配、branch/tag 规则多于或不同于精确 `main`、`can_admins_bypass=true`、`prevent_self_review` 与获批值不同、dispatch actor 不匹配、批准记录为 bypass、approval 尚未完成、identity digest 漂移、observation 超时/缺失/与 admission 不一致，或 GitHub API 无法读取。负向门禁必须逐项覆盖这些情况。
 
 ### 固定事件与运行身份
 
@@ -168,6 +182,7 @@ snapshot admission 只接受：
 - event：人工 `workflow_dispatch`；
 - ref：`refs/heads/main`；
 - source：触发时冻结的 40 位完整 commit SHA；
+- workflow run ID：冻结为不可复用的 `snapshotRunId`；
 - run attempt：`1`；
 - workflow path：固定的 sanitized snapshot workflow；
 - job name：固定的 snapshot export job；
@@ -208,11 +223,13 @@ workflow job 的 `runs-on` 必须精确要求五个标签：GitHub 默认标签 
 
 ### 三段式工作流
 
-后续获批实施时，现有 snapshot workflow 必须拆为：
+后续获批实施时，现有 snapshot workflow 必须拆为下列三个 job，并作为独立 `workflow_dispatch` producer run 完整结束。它不作为 RC run 内的 reusable workflow，RC run 也不得在启动后临时选择内联或外部 snapshot 模式：
 
 1. **GitHub-hosted admission job**：checkout 固定 SHA，计算并记录 workflow digest 和允许 action 清单、验证 repository contracts、生成 route nonce 并 attest `snapshot-admission.v1`；实际 workflow blob 与本地 root policy 的独立一致性判断仍由可信启动器完成；
 2. **self-hosted data job**：不 checkout repository、不运行任何 `uses` action、不运行 `pnpm install`、不加载仓库 Node 模块、不执行仓库 package scripts，只调用固定 root-owned adapter；
 3. **GitHub-hosted custody continuation**：从受控交接位置只接收已完成脱敏和扫描的 artifact/proof，执行 attestation readback 与后续编排。
+
+本附录明确选择独立 `snapshotRunId` producer；S1 实施计划必须在 Task 29R 恢复前按此拓扑局部修订并重新批准。该修订只负责把唯一执行方式写入计划，不授权修改 workflow 或运行 snapshot。
 
 self-hosted 数据 job 的数据处理命令只能是固定入口，例如：
 
@@ -230,12 +247,15 @@ Sanitized 不等于公开。GitHub artifact attestation 只提供来源和完整
 
 方案 A 固定采用“本地逐 attempt 信封加密 + 私有 content-addressed object store”，不能在实施时降级为二选一：
 
-1. adapter 在 WSL 加密隔离卷内完成扫描后，为本 attempt 生成独立 256-bit data-encryption key，以 AES-256-GCM 和本对象唯一的 96-bit nonce 加密 sanitized dump；authenticated data 至少绑定 repository ID、source SHA、`releaseAttemptId`、snapshot digest、sanitization contract digest 和 expiry；nonce、算法和加密信封 Schema 进入 proof，但明文 key 不进入；
-2. data-encryption key 由独立 KMS/等价受控 key-encryption key 包装；明文 key 和可复用解密凭证不离开 root-owned secret broker，也不进入 GitHub secret、workflow environment、artifact 或日志；
-3. write-only publisher 只能向本 attempt 的固定 namespace 以“若对象不存在才创建”的条件写入密文 digest 寻址的新对象和 metadata，不能读取、列举、覆盖或删除；对象存储必须 private，并启用 versioning/等价 object-lock 保留策略，repository read 权限不授予对象读取权；
-4. GitHub-hosted snapshot consumer 使用与 publisher 不同的只读对象身份，并通过受保护的短期 OIDC/KMS identity 只解密 admission 指定的唯一 object version/digest；OIDC 信任策略至少绑定 immutable repository ID、固定 workflow path/ref、`refs/heads/main`、environment、actor ID、`rcWorkflowRunId` 和 run attempt；它不能写、删除、列举其他 attempt 或取得 publisher 权限；
-5. custody continuation 先核对密文 digest、object version、KMS key reference、访问策略 digest、expiry 和 write receipt，再在独立临时目录解密；明文 sanitized dump 只存在于本次 GitHub-hosted ephemeral VM 的受控 snapshot chain，禁止再次上传；
-6. Actions artifact 只允许承载经过字段级审查的非敏感 proof、object reference、digest、attestation 和 custody receipt；任何可恢复明文的 key material、数据库内容或 dump 均不得进入。
+1. adapter 在 WSL 加密隔离卷内完成扫描后，由独立、短生命周期的 producer crypto process 为本 attempt 生成 256-bit data-encryption key，以 AES-256-GCM 和本对象唯一的 96-bit nonce 加密 sanitized dump；authenticated data 至少绑定 repository ID、source SHA、`releaseAttemptId`、snapshot digest、sanitization contract digest 和 expiry；nonce、算法和加密信封 Schema 进入 proof，但明文 key 不进入；
+2. data-encryption key 由 KMS/等价受控系统中的 key-encryption key 包装并与密文共同保存；KEK 永不离开 KMS，wrapped DEK 可以保存，明文 DEK 不得持久化。普通 envelope encryption 不得被描述为“KMS 远程完成整个 dump 解密”；KMS 只负责包装/解包 DEK；
+3. 明文 DEK 只允许短暂存在于获准的 producer 加密进程和 GitHub-hosted consumer 解密进程内存。禁止写入磁盘、swap、pagefile、环境变量、命令行、stdin、日志、artifact、crash/core dump 或其他进程可读的共享区；进程禁用 core dump，并在平台支持时锁定含 key 的内存页；使用完成后立即 best-effort 覆写 key buffer、关闭进程，随后销毁本次 Runner/VM。best-effort 内存清除不得被表述为可证明的物理擦除；
+4. write-only publisher 只能向本 attempt 的固定 namespace 以“若对象不存在才创建”的条件写入密文 digest 寻址的新对象和 metadata，不能读取、列举、覆盖或删除；对象存储必须 private，并启用 versioning/等价 object-lock 保留策略，repository read 权限不授予对象读取权；
+5. GitHub-hosted snapshot consumer 使用与 publisher 不同的只读对象身份，并通过受保护的短期 OIDC/KMS identity 只取得 admission 指定的唯一 object version/digest 与 wrapped DEK；KMS 验证该身份后将解包所得明文 DEK 仅返回给本次短生命周期 consumer crypto process。OIDC 信任策略至少绑定 immutable repository ID、固定 workflow path/ref、`refs/heads/main`、environment、actor ID、`rcWorkflowRunId` 和 run attempt；consumer 不能写、删除、列举其他 attempt 或取得 publisher 权限；
+6. custody continuation 先核对密文 digest、object version、KMS key reference、访问策略 digest、expiry 和 write receipt，再在独立临时目录解密；明文 sanitized dump 只存在于本次 GitHub-hosted ephemeral VM 的受控 snapshot chain，禁止再次上传；
+7. Actions artifact 只允许承载经过字段级审查的非敏感 proof、object reference、digest、attestation 和 custody receipt；任何可恢复明文的 key material、数据库内容或 dump 均不得进入。
+
+上述生命周期采用标准 envelope encryption：producer 和 consumer 都会在各自进程内存中短暂持有明文 DEK，只有 KEK 保持在 KMS 内。参见 [Google Cloud KMS envelope encryption](https://docs.cloud.google.com/kms/docs/envelope-encryption) 和 [AWS KMS data keys](https://docs.aws.amazon.com/kms/latest/developerguide/data-keys.html)。若实现要求“明文 DEK 永不离开本地 broker”，则它不属于本方案，必须另行设计能远程执行完整数据解密的密码服务并重新评审。
 
 snapshot object、wrapped key、sanitization/ownership proof 和必需 custody 记录至少保留至 snapshot 失效后 180 日。到期后只能由独立 retention identity 按批准策略执行：安全删除密文并使 wrapped key/解密授权失效，或转入批准的长期合规存储；两种路径都必须生成包含 object version/digest、策略、操作者身份、时间、key 处置和终态的删除/转存 receipt。receipt 作为执行证据继续按 S1 证据保留策略保存；legal hold 会阻止删除但必须有独立批准。publisher、consumer 均不得拥有 retention 权限。
 
@@ -363,11 +383,16 @@ public repository 的标准 Linux Runner 当前提供 4 CPU、16 GiB 内存和 1
 `releaseAttemptId` 只用于跨受保护 producer 的关联和防重放，不能代替 GitHub workflow run 身份。每个 chain、database、Manifest 和 `operationId` 仍保持独立；同时必须冻结唯一 `rcWorkflowRunId` 和 `rcWorkflowRunAttempt=1`。固定逻辑时序为：
 
 ```text
-GitHub-hosted source-gate admission（static contracts + fresh database chain）
-  → 人工批准 snapshot admission
+独立 protected snapshot producer run：
+  snapshot admission
+  → 人工批准 snapshot environment
   → JIT WSL snapshot export / sanitization / scan
   → encrypted sanitized snapshot + snapshot proof + runner log custody
-  → GitHub-hosted source-gate snapshot chain
+  → producer completion proof
+  → snapshotRunId 终态 success
+
+随后启动唯一 RC workflow run：
+  GitHub-hosted source-gate fresh + snapshot chains
   → build admission
   → GitHub-hosted final fresh execution
   → GitHub-hosted final snapshot execution
@@ -380,9 +405,10 @@ GitHub-hosted source-gate admission（static contracts + fresh database chain）
 
 其中：
 
-- source gate 是同一 `releaseAttemptId` 下的一个逻辑门禁：不依赖 snapshot 的 static/fresh 部分先形成 admission，依赖加密 sanitized snapshot 的 snapshot chain 在 WSL 步骤后完成；两部分必须共同成功，不能只用前半段形成通过结论；
-- snapshot 人工批准必须绑定 source SHA、repository contract digest、releaseAttemptId、adapter digest、route nonce 和 admission digest；
+- snapshot producer 必须先完成且其 `snapshotRunId` 达到 `success` 终态；只有加密 snapshot、窄 proof/custody 和 producer completion proof 全部进入可信保管后，才允许创建或 dispatch RC run；
+- snapshot admission 绑定 source SHA、repository contract digest、`releaseAttemptId`、adapter digest、route nonce、`environmentPolicyIdentityDigest`；JIT launch proof 在人工批准后另行绑定 `environmentPolicyObservationDigest`，不得让 admission 反向引用批准后观察；
 - WSL job 只能消费该批准，不能接收完整最终 evidence；
+- source gate 的 fresh 与 snapshot chains 均在随后启动的唯一 RC run 内生成；RC run 不复用 snapshot producer 的 source-gate evidence，也不得在运行时切换为内联 reusable snapshot workflow；
 - source fresh/snapshot evidence、build admission、final fresh、final snapshot、两者 final custody、aggregate proof、本次生成的 `s1-exit-evidence.v1`、Task 30 exit audit 和最终 custody 必须全部由同一个 `rcWorkflowRunId` 的实际 job 产生或聚合；
 - final fresh/snapshot 只能消费该 RC run 前序 job 新生成的 source evidence 和已准入的窄 producer 输入，不得下载其他 run 的 final execution、final custody、aggregate 或完整 exit evidence；
 - Task 30 只能在两条 final chain 和 custody 成功后恢复；
@@ -390,7 +416,7 @@ GitHub-hosted source-gate admission（static contracts + fresh database chain）
 - 任一步失败使本 attempt 不可提升；合法重试使用新 attempt/run/operation ID，并保留旧失败或 UNKNOWN 证明；
 - 禁止跨 attempt、跨 source SHA、跨 adapter digest、跨 snapshot 或跨 build proof 拼接证据。
 
-允许来自独立受保护 producer run 的外部输入只有三类：加密 sanitized snapshot 及其窄 proof/custody、同一 source SHA 的 build proof、窄 owner/manual attestation。每类必须绑定精确 producer repository/workflow/run/attempt/artifact subject 和 custody digest，并在 RC run 内重新验证。source-gate evidence 不属于外部豁免，必须在 RC run 内生成。
+允许来自独立受保护 producer run 的外部输入只有三类：终态为 `success` 的 `snapshotRunId` 所生成的加密 sanitized snapshot 及其窄 proof/custody、同一 source SHA 的 build proof、窄 owner/manual attestation。每类必须绑定精确 producer repository/workflow/run/attempt/artifact subject 和 custody digest，并在 RC run 内重新验证。source-gate evidence 不属于外部豁免，必须在 RC run 内生成。
 
 RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifactName`、`exitEvidenceRunId`、`exitEvidenceArtifactName` 或等价的外部最终证明定位输入；也不得接受调用方直接提供完整 final evidence、aggregate proof 或 `s1-exit-evidence.v1`。这些对象只能由本次 RC run 根据前序实际结果按固定 DAG 生成。相同 `releaseAttemptId`、文件名或 digest 自报值均不能放宽 same-run 约束。
 
@@ -407,23 +433,23 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 
 ## 当前实现到目标的偏差
 
-| 原子事项                | 当前实现                                                  | 目标                                                                                            | 阻断路由                     |
-| ----------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------- |
-| 仓库可见性              | public                                                    | public 下必须证明 JIT 排他路由；不能则转 private/非 Actions                                     | 本附录实施前 P1              |
-| snapshot environment    | `stage1-snapshot-export` API 404、未创建                  | 固定 environment ID/name、reviewer ID、精确 main policy、禁 bypass 和已批准单操作员风险         | 环境 bootstrap 后再次批准 P1 |
-| snapshot Runner         | 固定 self-hosted 能力标签，无实例                         | 每次唯一标签、人工批准后 JIT/ephemeral、单 job 后注销销毁                                       | 本附录实施前 P1              |
-| snapshot job 代码       | checkout、pnpm、仓库脚本                                  | self-hosted 数据面不 checkout、不装依赖，只调用 root-owned adapter                              | 工作流修订 P1                |
-| snapshot adapter        | 固定路径缺失                                              | root-owned、不可修改、依赖闭包与 digest 固定                                                    | adapter 独立设计/实现 P1     |
-| sanitized snapshot 保管 | public Actions artifact、明文 dump、30 日                 | 逐 attempt 加密、私有 content-addressed store、分离 publisher/consumer/retention、失效后 180 日 | custody 实施前 P1            |
-| WSL 隔离                | 未建立                                                    | 专用 distro、非特权身份、无 Docker/interop/Windows mount                                        | 基础设施实施 P1              |
-| raw 存储                | 未建立                                                    | 每 attempt 独立加密卷与密钥失效证明                                                             | 基础设施实施 P1              |
-| SSH                     | 现有 root key 可取得 Shell                                | snapshot 专用 key，仅固定 Staging DB 本地转发                                                   | 服务器配置 P1                |
-| Staging 数据库身份      | 只有应用超管身份                                          | snapshot 专用严格只读角色及有效能力证明                                                         | 数据库配置 P1                |
-| snapshot 事务语义       | 计划、实现和测试要求无效的 `REPEATABLE READ + DEFERRABLE` | `REPEATABLE READ READ ONLY` 稳定 MVCC snapshot，并以真实 PostgreSQL 17 集成测试证明             | Task 29R 前置计划修订 P1     |
-| source/final 主机       | 工作流要求 self-hosted                                    | GitHub-hosted `ubuntu-24.04` ephemeral VM + 实际版本证明 + 容量预检                             | 工作流修订 P1                |
-| 容量                    | 未生成 capacity plan                                      | 每 chain 写前预检，超限切专用 ephemeral VM                                                      | final gate P1                |
-| RC 证明运行边界         | Task 29R 尚未真实执行                                     | final/custody/aggregate/exit 全部同一 `rcWorkflowRunId`，仅三类窄 producer 输入可跨 run         | Task 29R-D P1                |
-| Task 30                 | stash 冻结                                                | 仅在本 attempt 全链证明和 custody 后恢复                                                        | 持续阻断                     |
+| 原子事项                | 当前实现                                                  | 目标                                                                                                       | 阻断路由                     |
+| ----------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| 仓库可见性              | public                                                    | public 下必须证明 JIT 排他路由；不能则转 private/非 Actions                                                | 本附录实施前 P1              |
+| snapshot environment    | `stage1-snapshot-export` API 404、未创建                  | 稳定 identity digest 与批准后 observation digest 分层；固定 ID/reviewer/main policy/禁 bypass/单操作员风险 | 环境 bootstrap 后再次批准 P1 |
+| snapshot Runner         | 固定 self-hosted 能力标签，无实例                         | 每次唯一标签、人工批准后 JIT/ephemeral、单 job 后注销销毁                                                  | 本附录实施前 P1              |
+| snapshot job 代码       | checkout、pnpm、仓库脚本                                  | self-hosted 数据面不 checkout、不装依赖，只调用 root-owned adapter                                         | 工作流修订 P1                |
+| snapshot adapter        | 固定路径缺失                                              | root-owned、不可修改、依赖闭包与 digest 固定                                                               | adapter 独立设计/实现 P1     |
+| sanitized snapshot 保管 | public Actions artifact、明文 dump、30 日                 | 逐 attempt 加密、私有 content-addressed store、分离 publisher/consumer/retention、失效后 180 日            | custody 实施前 P1            |
+| WSL 隔离                | 未建立                                                    | 专用 distro、非特权身份、无 Docker/interop/Windows mount                                                   | 基础设施实施 P1              |
+| raw 存储                | 未建立                                                    | 每 attempt 独立加密卷与密钥失效证明                                                                        | 基础设施实施 P1              |
+| SSH                     | 现有 root key 可取得 Shell                                | snapshot 专用 key，仅固定 Staging DB 本地转发                                                              | 服务器配置 P1                |
+| Staging 数据库身份      | 只有应用超管身份                                          | snapshot 专用严格只读角色及有效能力证明                                                                    | 数据库配置 P1                |
+| snapshot 事务语义       | 计划、实现和测试要求无效的 `REPEATABLE READ + DEFERRABLE` | `REPEATABLE READ READ ONLY` 稳定 MVCC snapshot，并以真实 PostgreSQL 17 集成测试证明                        | Task 29R 前置计划修订 P1     |
+| source/final 主机       | 工作流要求 self-hosted                                    | GitHub-hosted `ubuntu-24.04` ephemeral VM + 实际版本证明 + 容量预检                                        | 工作流修订 P1                |
+| 容量                    | 未生成 capacity plan                                      | 每 chain 写前预检，超限切专用 ephemeral VM                                                                 | final gate P1                |
+| Snapshot/RC 运行边界    | Task 29R 尚未真实执行                                     | 独立 `snapshotRunId` 先完成；随后 RC 的 source/final/custody/aggregate/exit 全部同一 `rcWorkflowRunId`     | Task 29R-D P1                |
+| Task 30                 | stash 冻结                                                | 仅在本 attempt 全链证明和 custody 后恢复                                                                   | 持续阻断                     |
 
 ## 方案 A 退出条件
 
@@ -431,6 +457,7 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 
 - 不能证明唯一 queued snapshot job 与 JIT Runner 实际接收 job 完全一致；
 - `stage1-snapshot-export` environment 缺失、ID/策略漂移、reviewer 不匹配、允许错误分支或管理员 bypass；
+- environment 稳定身份与运行观察仍使用一个 digest，或 admission 依赖批准后才能生成的 observation；
 - public repository 允许 PR、fork、评论事件、任意 ref 或旧 run 获得相同路由；
 - snapshot workflow 的实际 blob/content digest、action commit 清单或 admission Schema 与本地 root policy 不一致；
 - self-hosted job 必须 checkout/执行仓库任意代码或 package lifecycle script；
@@ -444,6 +471,7 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 - GitHub-hosted capacity plan 不通过或无法获取可信上界；
 - snapshot、source、build、final 或 Task 30 证据不能绑定同一 releaseAttemptId 和固定 source SHA；
 - final execution/custody、aggregate、exit evidence 或 Task 30 tail 不是来自同一 `rcWorkflowRunId`，或 workflow 重新接受外部完整最终证明输入；
+- RC run 在独立 snapshot producer 完成前启动，或实现保留外部 `snapshotRunId` 与 same-run reusable snapshot 的运行时选择；
 - 需要修改业务代码、业务迁移、模型、枚举或应用 RBAC 才能完成基础设施门禁。
 
 退出后的合法选择只有：
@@ -457,7 +485,7 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 ## 本附录批准后的文档顺序
 
 1. 先审批本附录的边界、拓扑、排他路由、加密处置和退出条件；
-2. 再编写独立实施计划，至少拆为：GitHub 路由/environment bootstrap 与策略复核、root-owned adapter、WSL 加密隔离、私有 snapshot custody/KMS 与 180 日处置、SSH/数据库只读身份、PostgreSQL 17 snapshot 事务修正、GitHub-hosted capacity/final gate、same-run 证明 DAG、故障销毁演练；
+2. 再编写独立实施计划，至少拆为：GitHub 路由/environment bootstrap 与 identity/observation 复核、root-owned adapter、WSL 加密隔离、私有 snapshot custody/KMS/DEK 内存生命周期与 180 日处置、独立 snapshot producer 到 RC run 的固定交接、SSH/数据库只读身份、PostgreSQL 17 snapshot 事务修正、GitHub-hosted capacity/final gate、same-run 证明 DAG、故障销毁演练；
 3. 实施计划逐项评审通过后，才允许创建环境身份、安装 adapter、注册首个 JIT Runner或修改工作流；
 4. Task 29R 必须通过真实 protected execution gate 后，才能恢复 Task 30；
 5. Task 30 完成仍不代表 S2/S3 获准。
@@ -468,13 +496,16 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 
 - public repository 下的 JIT 排他路由是否足以实施；
 - environment 当前缺失状态、目标 ID 冻结流程、策略字段和单操作员风险是否被明确接受；
+- environment policy 的稳定 identity、批准后 observation、admission 和 JIT launch proof 是否形成无循环且可判定时效的证明链；
 - self-hosted snapshot job 是否完全退出仓库代码执行面；
 - workflow digest、允许 action 清单、route nonce 生成和本地 root policy 是否形成不可自签发的路由信任链；
 - adapter 信任根、参数面、digest 和安装所有权是否唯一；
 - WSL 原始数据加密、密钥失效、swap/pagefile 和日志保管是否可证明；
 - sanitized snapshot 的逐 attempt 加密、私有对象 ACL、读写/retention 身份分离及失效后 180 日处置是否可证明；
+- KEK/DEK 角色、producer/consumer 明文 DEK 内存边界及进程/VM 销毁语义是否准确；
 - SSH endpoint 与 Staging 角色是否满足有效只读而非自报只读；
 - `REPEATABLE READ READ ONLY` 的真实 PostgreSQL 17 MVCC 测试是否作为 Task 29R 前置门槛；
 - GitHub-hosted 容量公式、停止阈值和专用 VM 回退是否可执行；
 - `releaseAttemptId`、`rcWorkflowRunId` 与现有 S1 证明 DAG 是否无循环、无未批准的跨 run 拼接；
+- 独立 `snapshotRunId` 是否先完成，且实施计划明确禁止切换为 RC run 内 reusable snapshot；
 - 所有安装、数据库和工作流修改仍处于未授权状态，等待独立实施计划批准。

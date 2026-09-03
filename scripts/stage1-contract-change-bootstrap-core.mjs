@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   applySubscriptionSegmentBootstrapPlan,
   buildSubscriptionSegmentBootstrapPlan
@@ -38,8 +40,7 @@ export function validateContractChangeFeatureFlags(environment) {
     }
   }
   if (
-    String(environment.DEPLOYMENT_ENV ?? environment.APP_ENV ?? "").toLowerCase() ===
-      "staging" &&
+    String(environment.DEPLOYMENT_ENV ?? environment.APP_ENV ?? "").toLowerCase() === "staging" &&
     !flags.extension
   ) {
     blockers.push({
@@ -55,7 +56,8 @@ export function buildContractChangeBootstrapPlan(records) {
   const baseSegments = buildSubscriptionSegmentBootstrapPlan(activeOrders);
   const extensionDetails = {
     candidates: [],
-    existing: 0
+    existing: 0,
+    existingIdentities: []
   };
   const exceptions = [...baseSegments.exceptions];
 
@@ -66,6 +68,7 @@ export function buildContractChangeBootstrapPlan(records) {
       if (change.changeType !== "EXTENSION") continue;
       if (change.extensionDetail) {
         extensionDetails.existing += 1;
+        extensionDetails.existingIdentities.push(change.id);
         continue;
       }
       const candidate = extensionDetailCandidate(change);
@@ -83,7 +86,8 @@ export function buildContractChangeBootstrapPlan(records) {
         changeOrderId: change.id,
         data: candidate,
         orderId: order.id,
-        orderNo: order.orderNo
+        orderNo: order.orderNo,
+        sourceFingerprint: contractChangeExtensionSourceFingerprint(change)
       });
     }
   }
@@ -101,8 +105,41 @@ export function buildContractChangeBootstrapPlan(records) {
   };
 }
 
-export async function applyContractChangeBootstrapPlan(prisma, plan) {
-  const baseSegments = await applySubscriptionSegmentBootstrapPlan(prisma, plan.baseSegments);
+export function hashContractChangeBootstrapPlan(plan) {
+  return `sha256:${createHash("sha256").update(stableJson(plan), "utf8").digest("hex")}`;
+}
+
+export function contractChangeExtensionSourceFingerprint(change) {
+  return `sha256:${createHash("sha256")
+    .update(
+      stableJson({
+        changeType: change?.changeType ?? null,
+        extensionMonths: change?.extensionMonths ?? null,
+        id: change?.id ?? null,
+        priceOverrideApprovedAt: change?.priceOverrideApprovedAt ?? null,
+        priceOverrideApprovedBy: change?.priceOverrideApprovedBy ?? null,
+        priceOverrideReason: change?.priceOverrideReason ?? null,
+        pricingMode: change?.pricingMode ?? null,
+        sourceSegmentId: change?.sourceSegmentId ?? null,
+        status: change?.status ?? null,
+        targetEndDate: change?.targetEndDate ?? null,
+        targetStartDate: change?.targetStartDate ?? null,
+        updatedAt: change?.updatedAt ?? null,
+        version: change?.version ?? null
+      }),
+      "utf8"
+    )
+    .digest("hex")}`;
+}
+
+export async function applyContractChangeBootstrapPlan(
+  prisma,
+  plan,
+  { expectedBaseSegmentCandidateDigests } = {}
+) {
+  const baseSegments = await applySubscriptionSegmentBootstrapPlan(prisma, plan.baseSegments, {
+    expectedCandidateDigests: expectedBaseSegmentCandidateDigests
+  });
   const extensionDetails = await applyExtensionDetails(prisma, plan.extensionDetails.candidates);
   return { baseSegments, extensionDetails };
 }
@@ -121,7 +158,11 @@ async function applyExtensionDetails(prisma, plannedCandidates) {
           include: { extensionDetail: true },
           where: { id: planned.changeOrderId }
         });
-        if (!current || current.changeType !== "EXTENSION") {
+        if (
+          !current ||
+          current.changeType !== "EXTENSION" ||
+          contractChangeExtensionSourceFingerprint(current) !== planned.sourceFingerprint
+        ) {
           throw new Error(`CONTRACT_CHANGE_BOOTSTRAP_STALE_PLAN:${planned.changeOrderId}`);
         }
         if (current.extensionDetail) return { created: 0, existing: 1 };
@@ -253,4 +294,24 @@ function sameDate(left, right) {
 function sameOptionalDate(left, right) {
   if (left === null || left === undefined) return right === null || right === undefined;
   return sameDate(left, right);
+}
+
+function stableJson(value) {
+  return JSON.stringify(canonical(value));
+}
+
+function canonical(value) {
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) throw new Error("INVALID_BOOTSTRAP_DATE");
+    return { $date: value.toISOString() };
+  }
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical(value[key])])
+    );
+  }
+  return typeof value === "bigint" ? { $bigint: value.toString() } : value;
 }

@@ -38,7 +38,7 @@ export function loadStage1AcceptanceForbiddenDomainDefinition(moduleUrl = import
 }
 
 export const STAGE1_ACCEPTANCE_CANONICAL_SCHEMA_FINGERPRINT_SHA256 =
-  "42b3239c093e79c4c9a048316abb22943310093216526819a0399c8cec4751e0";
+  "c73669a688470e5927c59f55e565eab2f0a16933c15dbd9573481fe4113d9a78";
 
 const REQUIRED_CONTRACT_TEMPLATE_TYPES = Object.freeze([
   "DELIVERY_HANDOVER",
@@ -261,20 +261,35 @@ export async function loadStage1CleanAcceptanceTargetSnapshot(tx) {
   `
   );
   const schemaFingerprint = await tx.$queryRaw`
+    WITH normalized_columns AS (
+      SELECT
+        column_default,
+        column_name,
+        data_type,
+        is_nullable,
+        ordinal_position,
+        row_number() OVER (
+          PARTITION BY table_name
+          ORDER BY ordinal_position
+        ) AS normalized_ordinal_position,
+        table_name,
+        udt_name
+      FROM information_schema.columns
+      WHERE table_schema = ${"public"}
+    )
     SELECT encode(
       sha256(convert_to(COALESCE(jsonb_agg(jsonb_build_object(
         'columnDefault', column_default,
         'columnName', column_name,
         'dataType', data_type,
         'isNullable', is_nullable,
-        'ordinalPosition', ordinal_position,
+        'ordinalPosition', normalized_ordinal_position,
         'tableName', table_name,
         'udtName', udt_name
       ) ORDER BY table_name ASC, ordinal_position ASC)::text, '[]'), 'UTF8')),
       'hex'
     ) AS "schemaFingerprintSha256"
-    FROM information_schema.columns
-    WHERE table_schema = ${"public"}
+    FROM normalized_columns
   `;
   const canonicalMigrationChecksums = await loadLocalMigrationChecksums();
   const schemaCanonical =

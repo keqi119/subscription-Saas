@@ -2,7 +2,7 @@ import { ConflictException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { AuditAction, Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   ASSET_ACCOUNTING_ERROR_CODE,
@@ -28,8 +28,11 @@ import {
 import { AuditService } from "../src/audit/audit.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { SubscriptionClosureRepository } from "../src/subscription-closure/subscription-closure.repository";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
 
-const TEST_DATABASE_URL = requiredTestDatabaseUrl();
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/asset-accounting.repository.integration.spec.ts"
+).databaseUrl;
 const FIXTURE_PREFIX = `S1CC${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 const CONFIRMED_AT = new Date("2026-08-20T10:00:00.000Z");
 
@@ -40,15 +43,14 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
   beforeAll(async () => {
     prisma = new PrismaService(new ConfigService({ DATABASE_URL: TEST_DATABASE_URL }));
     await prisma.onModuleInit();
+  });
+
+  beforeEach(async () => {
     fixture = await createFixture(prisma);
   });
 
   afterAll(async () => {
-    try {
-      await deleteFixtures(prisma, fixture);
-    } finally {
-      await prisma.onModuleDestroy();
-    }
+    await prisma.onModuleDestroy();
   });
 
   it("rejects a real root client and SERIALIZABLE transaction", async () => {
@@ -447,13 +449,12 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     try {
       await costProbeReturned.promise;
       await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
         await tx.$executeRaw(Prisma.sql`
           INSERT INTO "vehicle" (
             "id", "vehicle_no", "brand", "model_definition_id", "purchase_price_amount", "updated_at"
           ) VALUES (
             ${phantomVehicleId}::uuid, ${`${FIXTURE_PREFIX}-PHANTOM-VEHICLE`}, 'TEST',
-            ${randomUUID()}::uuid, 1000000, CURRENT_TIMESTAMP
+              ${fixture.modelDefinitionId}::uuid, 1000000, CURRENT_TIMESTAMP
           )
         `);
       });
@@ -582,32 +583,24 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
 
     const successorId = randomUUID();
     await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
       await tx.$executeRaw(Prisma.sql`
         INSERT INTO "asset_work_order_evidence" (
           "id", "work_order_id", "action", "evidence_type", "file_id", "file_bucket",
           "file_object_key", "file_size_bytes", "file_mime_type", "content_sha256",
           "supersedes_evidence_id", "source_type", "source_id", "source_key"
         ) VALUES (
-          ${successorId}::uuid, ${fixture.workOrderId}::uuid, 'SUPERSEDE', 'PHOTO', ${randomUUID()}::uuid,
+          ${successorId}::uuid, ${fixture.workOrderId}::uuid, 'SUPERSEDE', 'PHOTO', ${fixture.evidenceFileId}::uuid,
           'fixture', ${`${FIXTURE_PREFIX}/successor.jpg`}, 1, 'image/jpeg', ${"b".repeat(64)},
           ${fixture.evidenceId}::uuid, 'FIXTURE', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:successor`}
         )
       `);
     });
-    try {
-      await expectCode(
-        readCommitted(prisma, (tx) =>
-          repository.appendCostEntry(tx, appendCommand(fixture, "superseded-evidence"))
-        ),
-        ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_LIVE
-      );
-    } finally {
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.assetWorkOrderEvidence.delete({ where: { id: successorId } });
-      });
-    }
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendCostEntry(tx, appendCommand(fixture, "superseded-evidence"))
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_LIVE
+    );
   });
 
   it("accepts effective SUPERSEDE evidence and rejects a REMOVE tombstone", async () => {
@@ -616,17 +609,16 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     const supersedeId = randomUUID();
     const removeId = randomUUID();
     await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
       await tx.$executeRaw(Prisma.sql`
         INSERT INTO "asset_work_order_evidence" (
           "id", "work_order_id", "action", "evidence_type", "file_id", "file_bucket",
           "file_object_key", "file_size_bytes", "file_mime_type", "content_sha256",
           "supersedes_evidence_id", "source_type", "source_id", "source_key"
         ) VALUES
-          (${attachedId}::uuid, ${fixture.workOrderId}::uuid, 'ATTACH', 'PHOTO', ${randomUUID()}::uuid,
+          (${attachedId}::uuid, ${fixture.workOrderId}::uuid, 'ATTACH', 'PHOTO', ${fixture.evidenceFileId}::uuid,
            'fixture', ${`${FIXTURE_PREFIX}/liveness-attach.jpg`}, 1, 'image/jpeg', ${"c".repeat(64)},
            NULL, 'FIXTURE', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:liveness-attach`}),
-          (${supersedeId}::uuid, ${fixture.workOrderId}::uuid, 'SUPERSEDE', 'PHOTO', ${randomUUID()}::uuid,
+          (${supersedeId}::uuid, ${fixture.workOrderId}::uuid, 'SUPERSEDE', 'PHOTO', ${fixture.evidenceFileId}::uuid,
            'fixture', ${`${FIXTURE_PREFIX}/liveness-supercede.jpg`}, 1, 'image/jpeg', ${"d".repeat(64)},
            ${attachedId}::uuid, 'FIXTURE', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:liveness-supercede`})
       `);
@@ -642,7 +634,6 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     expect(effective.outcome.evidenceId).toBe(supersedeId);
 
     await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
       await tx.$executeRaw(Prisma.sql`
         INSERT INTO "asset_work_order_evidence" (
           "id", "work_order_id", "action", "evidence_type", "file_id", "file_bucket",
@@ -724,23 +715,17 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
       ["occurred-on", { occurredOn: new Date("2026-08-18T00:00:00.000Z") }],
       ["accounting-period", { accountingPeriod: "2026-07" }]
     ] as const) {
-      const id = randomUUID();
-      try {
-        await expect(
-          rawReversal(prisma, original.outcome.id, {
-            amountCents: -100n,
-            costCategory: "REPAIR",
-            id,
-            key: `${FIXTURE_PREFIX}:raw:${suffix}`,
-            ...drift
-          })
-        ).rejects.toSatisfy(
-          (error) =>
-            databaseConstraint(error) === "vehicle_cost_ledger_entry_reversal_reference_chk"
-        );
-      } finally {
-        await forceDeleteLedgerEntry(prisma, id);
-      }
+      await expect(
+        rawReversal(prisma, original.outcome.id, {
+          amountCents: -100n,
+          costCategory: "REPAIR",
+          id: randomUUID(),
+          key: `${FIXTURE_PREFIX}:raw:${suffix}`,
+          ...drift
+        })
+      ).rejects.toSatisfy(
+        (error) => databaseConstraint(error) === "vehicle_cost_ledger_entry_reversal_reference_chk"
+      );
     }
 
     const valid = await readCommitted(prisma, (tx) =>
@@ -970,14 +955,13 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
       where: { id: fixture.workOrderId }
     });
     await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
       await tx.$executeRaw(Prisma.sql`
         INSERT INTO "asset_work_order_evidence" (
           "id", "work_order_id", "action", "evidence_type", "file_id", "file_bucket",
           "file_object_key", "file_size_bytes", "file_mime_type", "content_sha256",
           "supersedes_evidence_id", "source_type", "source_id", "source_key"
         ) VALUES (
-          ${successorId}::uuid, ${fixture.workOrderId}::uuid, 'SUPERSEDE', 'PHOTO', ${randomUUID()}::uuid,
+          ${successorId}::uuid, ${fixture.workOrderId}::uuid, 'SUPERSEDE', 'PHOTO', ${fixture.evidenceFileId}::uuid,
           'fixture', ${`${FIXTURE_PREFIX}/historical-successor.jpg`}, 1, 'image/jpeg', ${"f".repeat(64)},
           ${fixture.evidenceId}::uuid, 'FIXTURE', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:historical-successor`}
         )
@@ -1010,10 +994,6 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
       await prisma.assetWorkOrder.update({
         data: { status: "PENDING_COST_CONFIRMATION" },
         where: { id: fixture.workOrderId }
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.assetWorkOrderEvidence.delete({ where: { id: successorId } });
       });
     }
   });
@@ -2513,37 +2493,86 @@ function requireCurrentCommand(
 }
 
 async function createFixture(prisma: PrismaService) {
+  const token = randomUUID().replaceAll("-", "").slice(0, 12);
+  const fixturePrefix = `${FIXTURE_PREFIX}${token}`;
   const fixture = {
+    applicationId: randomUUID(),
     assetOwnerId: randomUUID(),
+    contractVersionId: randomUUID(),
     contractId: randomUUID(),
     customerId: randomUUID(),
     deciderId: randomUUID(),
     evidenceId: randomUUID(),
-    evidenceKey: `${FIXTURE_PREFIX}:evidence`,
+    evidenceFileId: randomUUID(),
+    evidenceKey: `${fixturePrefix}:evidence`,
+    modelDefinitionId: randomUUID(),
     orderId: randomUUID(),
     otherVehicleId: randomUUID(),
-    ownerNo: `${FIXTURE_PREFIX}-OWNER`,
+    ownerNo: `${fixturePrefix}-OWNER`,
+    productId: randomUUID(),
+    productVersionId: randomUUID(),
+    quoteId: randomUUID(),
     userId: randomUUID(),
     vehicleId: randomUUID(),
     workOrderId: randomUUID()
   };
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "user" ("id", "username", "name", "password_hash", "updated_at")
       VALUES
-        (${fixture.userId}::uuid, ${`${FIXTURE_PREFIX.toLowerCase()}_operator`}, 'Stage 1C-C Operator', 'not-used-by-test', CURRENT_TIMESTAMP),
-        (${fixture.deciderId}::uuid, ${`${FIXTURE_PREFIX.toLowerCase()}_decider`}, 'Stage 1C-C Decider', 'not-used-by-test', CURRENT_TIMESTAMP)
+        (${fixture.userId}::uuid, ${`${fixturePrefix.toLowerCase()}_operator`}, 'Stage 1C-C Operator', 'not-used-by-test', CURRENT_TIMESTAMP),
+        (${fixture.deciderId}::uuid, ${`${fixturePrefix.toLowerCase()}_decider`}, 'Stage 1C-C Decider', 'not-used-by-test', CURRENT_TIMESTAMP)
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "vehicle_model_definition" (
+        "id", "model_code", "brand", "model_name", "display_name", "updated_at"
+      ) VALUES (
+        ${fixture.modelDefinitionId}::uuid, ${`${fixturePrefix}-MODEL`}, 'TEST',
+        'Stage 1C-C Model', 'Stage 1C-C Model', CURRENT_TIMESTAMP
+      )
     `);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "vehicle" ("id", "vehicle_no", "brand", "model_definition_id", "purchase_price_amount", "updated_at")
       VALUES
-        (${fixture.vehicleId}::uuid, ${`${FIXTURE_PREFIX}-VEHICLE`}, 'TEST', ${randomUUID()}::uuid, 1000000, CURRENT_TIMESTAMP),
-        (${fixture.otherVehicleId}::uuid, ${`${FIXTURE_PREFIX}-OTHER`}, 'TEST', ${randomUUID()}::uuid, 1000000, CURRENT_TIMESTAMP)
+        (${fixture.vehicleId}::uuid, ${`${fixturePrefix}-VEHICLE`}, 'TEST', ${fixture.modelDefinitionId}::uuid, 1000000, CURRENT_TIMESTAMP),
+        (${fixture.otherVehicleId}::uuid, ${`${fixturePrefix}-OTHER`}, 'TEST', ${fixture.modelDefinitionId}::uuid, 1000000, CURRENT_TIMESTAMP)
     `);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "customer" ("id", "customer_no", "name", "mobile", "updated_at")
-      VALUES (${fixture.customerId}::uuid, ${`${FIXTURE_PREFIX}-CUSTOMER`}, 'Stage 1C-C Customer', '13000000000', CURRENT_TIMESTAMP)
+      VALUES (${fixture.customerId}::uuid, ${`${fixturePrefix}-CUSTOMER`}, 'Stage 1C-C Customer', ${`13${token.padEnd(9, "0").slice(0, 9)}`}, CURRENT_TIMESTAMP)
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "product" ("id", "product_no", "name", "status", "updated_at")
+      VALUES (${fixture.productId}::uuid, ${`${fixturePrefix}-PRODUCT`}, 'Stage 1C-C Product', 'ACTIVE', CURRENT_TIMESTAMP)
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "product_version" (
+        "id", "product_id", "version_no", "effective_from", "status", "updated_at"
+      ) VALUES (
+        ${fixture.productVersionId}::uuid, ${fixture.productId}::uuid, '1', DATE '2026-01-01', 'ACTIVE', CURRENT_TIMESTAMP
+      )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "application" (
+        "id", "application_no", "customer_id", "sales_user_id", "status", "updated_at"
+      ) VALUES (
+        ${fixture.applicationId}::uuid, ${`${fixturePrefix}-APPLICATION`},
+        ${fixture.customerId}::uuid, ${fixture.userId}::uuid, 'APPROVED', CURRENT_TIMESTAMP
+      )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "subscription_quote" (
+        "id", "quote_no", "application_id", "customer_id", "product_id", "product_version_id",
+        "vehicle_id", "vehicle_purchase_price_amount", "monthly_fee_rate", "monthly_fee_amount",
+        "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
+        "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
+        "status", "updated_at"
+      ) VALUES (
+        ${fixture.quoteId}::uuid, ${`${fixturePrefix}-QUOTE`}, ${fixture.applicationId}::uuid,
+        ${fixture.customerId}::uuid, ${fixture.productId}::uuid, ${fixture.productVersionId}::uuid,
+        ${fixture.vehicleId}::uuid, 1000000, 0.010000, 10000, 100000, 6, 10000, 100,
+        ${fixture.modelDefinitionId}::uuid, 'TEST-MODEL', 'Test Model', 'CONFIRMED', CURRENT_TIMESTAMP
+      )
     `);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "subscription_order" (
@@ -2552,18 +2581,26 @@ async function createFixture(prisma: PrismaService) {
         "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
         "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot", "quote_snapshot", "updated_at"
       ) VALUES (
-        ${fixture.orderId}::uuid, ${`${FIXTURE_PREFIX}-ORDER`}, ${fixture.customerId}::uuid,
-        ${randomUUID()}::uuid, ${randomUUID()}::uuid, ${fixture.vehicleId}::uuid,
-        ${randomUUID()}::uuid, ${randomUUID()}::uuid, 1000000, 10000, 100000, 6, 10000, 100,
-        ${randomUUID()}::uuid, 'TEST-MODEL', 'Test Model', '{}'::jsonb, CURRENT_TIMESTAMP
+        ${fixture.orderId}::uuid, ${`${fixturePrefix}-ORDER`}, ${fixture.customerId}::uuid,
+        ${fixture.applicationId}::uuid, ${fixture.quoteId}::uuid, ${fixture.vehicleId}::uuid,
+        ${fixture.productId}::uuid, ${fixture.productVersionId}::uuid, 1000000, 10000, 100000, 6, 10000, 100,
+        ${fixture.modelDefinitionId}::uuid, 'TEST-MODEL', 'Test Model', '{}'::jsonb, CURRENT_TIMESTAMP
+      )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "contract_version" (
+        "id", "template_name", "version_no", "content_template", "effective_from", "status", "updated_at"
+      ) VALUES (
+        ${fixture.contractVersionId}::uuid, ${`${fixturePrefix}-CONTRACT`}, '1',
+        'Stage 1C-C Contract', DATE '2026-01-01', 'ACTIVE', CURRENT_TIMESTAMP
       )
     `);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "contract" (
         "id", "contract_no", "order_id", "customer_id", "contract_version_id", "contract_title", "contract_snapshot", "updated_at"
       ) VALUES (
-        ${fixture.contractId}::uuid, ${`${FIXTURE_PREFIX}-CONTRACT`}, ${fixture.orderId}::uuid,
-        ${fixture.customerId}::uuid, ${randomUUID()}::uuid, 'Stage 1C-C Contract', '{}'::jsonb, CURRENT_TIMESTAMP
+        ${fixture.contractId}::uuid, ${`${fixturePrefix}-CONTRACT`}, ${fixture.orderId}::uuid,
+        ${fixture.customerId}::uuid, ${fixture.contractVersionId}::uuid, 'Stage 1C-C Contract', '{}'::jsonb, CURRENT_TIMESTAMP
       )
     `);
     await tx.$executeRaw(Prisma.sql`
@@ -2580,10 +2617,18 @@ async function createFixture(prisma: PrismaService) {
         "asset_owner_id", "work_order_type", "status", "cost_confirmation_required",
         "create_source_type", "create_source_id", "create_source_key", "authority_snapshot", "updated_at"
       ) VALUES (
-        ${fixture.workOrderId}::uuid, ${`${FIXTURE_PREFIX}-WORK`}, ${fixture.vehicleId}::uuid,
+        ${fixture.workOrderId}::uuid, ${`${fixturePrefix}-WORK`}, ${fixture.vehicleId}::uuid,
         ${fixture.orderId}::uuid, ${fixture.contractId}::uuid, ${fixture.customerId}::uuid,
         ${fixture.assetOwnerId}::uuid, 'MAINTENANCE', 'PENDING_COST_CONFIRMATION', TRUE,
-        'FIXTURE', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:work-order`}, '{}'::jsonb, CURRENT_TIMESTAMP
+        'FIXTURE', ${randomUUID()}::uuid, ${`${fixturePrefix}:work-order`}, '{}'::jsonb, CURRENT_TIMESTAMP
+      )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "file_object" (
+        "id", "bucket", "object_key", "original_name", "mime_type", "size_bytes", "content_sha256"
+      ) VALUES (
+        ${fixture.evidenceFileId}::uuid, 'fixture', ${`${fixturePrefix}/evidence.jpg`},
+        'evidence.jpg', 'image/jpeg', 1, ${"a".repeat(64)}
       )
     `);
     await tx.$executeRaw(Prisma.sql`
@@ -2592,69 +2637,13 @@ async function createFixture(prisma: PrismaService) {
         "file_object_key", "file_size_bytes", "file_mime_type", "content_sha256",
         "source_type", "source_id", "source_key"
       ) VALUES (
-        ${fixture.evidenceId}::uuid, ${fixture.workOrderId}::uuid, 'ATTACH', 'PHOTO', ${randomUUID()}::uuid,
-        'fixture', ${`${FIXTURE_PREFIX}/evidence.jpg`}, 1, 'image/jpeg', ${"a".repeat(64)},
+        ${fixture.evidenceId}::uuid, ${fixture.workOrderId}::uuid, 'ATTACH', 'PHOTO', ${fixture.evidenceFileId}::uuid,
+        'fixture', ${`${fixturePrefix}/evidence.jpg`}, 1, 'image/jpeg', ${"a".repeat(64)},
         'FIXTURE', ${randomUUID()}::uuid, ${fixture.evidenceKey}
       )
     `);
   });
   return fixture;
-}
-
-async function deleteFixtures(prisma: PrismaService, fixtureValue: Fixture) {
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.auditLog.deleteMany({
-      where: {
-        module: "asset_accounting",
-        operatorId: { in: [fixtureValue.userId, fixtureValue.deciderId] }
-      }
-    });
-    await tx.$executeRaw`
-      DELETE FROM "asset_accounting_command_receipt"
-      WHERE "source_key" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "business_exception_approval"
-      WHERE "request_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "vehicle_cost_ledger_entry"
-      WHERE "source_key" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "asset_work_order_evidence"
-      WHERE "source_key" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "asset_work_order"
-      WHERE "create_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "asset_owner"
-      WHERE "owner_no" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "contract"
-      WHERE "contract_no" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "subscription_order"
-      WHERE "order_no" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "customer"
-      WHERE "customer_no" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "vehicle"
-      WHERE "vehicle_no" LIKE ${`${FIXTURE_PREFIX}%`}
-    `;
-    await tx.$executeRaw`
-      DELETE FROM "user"
-      WHERE "username" LIKE ${`${FIXTURE_PREFIX.toLowerCase()}%`}
-    `;
-  });
 }
 
 async function createCostGateWorkOrder(
@@ -2742,15 +2731,6 @@ async function rawReversal(
       'RAW_FIXTURE', ${randomUUID()}::uuid, ${input.key}
     )
   `);
-}
-
-async function forceDeleteLedgerEntry(prisma: PrismaService, entryId: string) {
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(
-      Prisma.sql`DELETE FROM "vehicle_cost_ledger_entry" WHERE "id" = ${entryId}::uuid`
-    );
-  });
 }
 
 async function rawOriginal(
@@ -2988,7 +2968,6 @@ async function deletePhantomAuthorityResidue(
   authority: { userId?: string; vehicleId?: string }
 ) {
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.auditLog.deleteMany({
       where: {
         module: "asset_accounting",
@@ -2998,18 +2977,12 @@ async function deletePhantomAuthorityResidue(
         ]
       }
     });
-    await tx.assetAccountingCommandReceipt.deleteMany({
-      where: { sourceId: source.id, sourceKey: source.key, sourceType: source.type }
-    });
     await tx.businessExceptionApproval.deleteMany({
       where: {
         requestSourceId: source.id,
         requestSourceKey: source.key,
         requestSourceType: source.type
       }
-    });
-    await tx.vehicleCostLedgerEntry.deleteMany({
-      where: { sourceId: source.id, sourceKey: source.key, sourceType: source.type }
     });
     if (authority.vehicleId) {
       await tx.vehicle.deleteMany({ where: { id: authority.vehicleId } });
@@ -3234,21 +3207,4 @@ function collectStrings(value: unknown, seen = new WeakSet<object>()): string[] 
   return Object.values(value as Record<string, unknown>).flatMap((child) =>
     collectStrings(child, seen)
   );
-}
-
-function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
-  if (!value) throw new Error("DATABASE_URL is required for asset-accounting integration tests");
-  const url = new URL(value);
-  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
-    throw new Error("Asset-accounting integration tests require PostgreSQL");
-  }
-  if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
-    throw new Error("Asset-accounting integration tests require a loopback database");
-  }
-  const database = decodeURIComponent(url.pathname.slice(1));
-  if (!["subscription_saas_codex", "subscription_saas_test"].includes(database)) {
-    throw new Error("Asset-accounting integration tests require a dedicated test database");
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
 }

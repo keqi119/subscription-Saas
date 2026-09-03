@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS base
+FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS base
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
@@ -20,7 +20,17 @@ FROM deps AS build
 COPY . .
 RUN pnpm --filter @subscription-saas/api build
 
-FROM base AS runtime
+FROM build AS production-deps
+
+RUN pnpm --filter @subscription-saas/api deploy --prod --legacy --offline /prod/api \
+  && source_client_parent="$(dirname "$(dirname "$(readlink -f /app/apps/api/node_modules/@prisma/client)")")" \
+  && deployed_client_parent="$(dirname "$(dirname "$(readlink -f /prod/api/node_modules/@prisma/client)")")" \
+  && cp -a "$source_client_parent/.prisma" "$deployed_client_parent/.prisma" \
+  && find /prod/api/node_modules \( -path '*/node_modules/prisma' -o -path '*/node_modules/.bin/prisma' \) -prune -exec rm -rf '{}' + \
+  && node -e "const { PrismaClient } = require('/prod/api/node_modules/@prisma/client'); if (typeof PrismaClient !== 'function') process.exit(1)" \
+  && test -z "$(find /prod/api/node_modules \( -path '*/node_modules/prisma' -o -path '*/node_modules/.bin/prisma' \) -print -quit)"
+
+FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS runtime
 
 ARG API_SOURCE_REVISION
 ARG SOURCE_HAN_SANS_VERSION=2.005R
@@ -38,10 +48,16 @@ LABEL org.opencontainers.image.revision="${API_SOURCE_REVISION}"
 
 WORKDIR /app
 
-RUN apt-get -o Acquire::Retries=3 update \
-  && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates curl ffmpeg unzip \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  rm -f /etc/apt/apt.conf.d/docker-clean \
+  && install_attempt=1 \
+  && until apt-get -o Acquire::Retries=3 update \
+    && apt-get -o Acquire::Retries=3 -o Binary::apt::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends ca-certificates curl ffmpeg unzip; do \
+    if [ "$install_attempt" -ge 5 ]; then exit 1; fi; \
+    install_attempt=$((install_attempt + 1)); \
+  done \
   && mkdir -p /usr/share/fonts/opentype/source-han-sans \
-  && curl -fsSL "${SOURCE_HAN_SANS_SC_ZIP_URL}" -o /tmp/source-han-sans-sc.zip \
+  && curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL "${SOURCE_HAN_SANS_SC_ZIP_URL}" -o /tmp/source-han-sans-sc.zip \
   && echo "${SOURCE_HAN_SANS_SC_ZIP_SHA256}  /tmp/source-han-sans-sc.zip" | sha256sum -c - \
   && unzip -j /tmp/source-han-sans-sc.zip "OTF/SimplifiedChinese/SourceHanSansSC-Regular.otf" -d /usr/share/fonts/opentype/source-han-sans \
   && test -f /usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf \
@@ -50,44 +66,13 @@ RUN apt-get -o Acquire::Retries=3 update \
   && rm -f /tmp/source-han-sans-sc.zip \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/apps/api/package.json ./apps/api/package.json
-COPY --from=build /app/apps/api/node_modules ./apps/api/node_modules
-COPY --from=build /app/apps/api/dist ./apps/api/dist
-COPY --from=build /app/apps/api/prisma ./apps/api/prisma
-COPY --from=build /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
-COPY --from=build /app/apps/api/prisma-env-policy.ts ./apps/api/prisma-env-policy.ts
-COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
-COPY --from=build /app/packages/shared/node_modules ./packages/shared/node_modules
-COPY --from=build /app/packages/shared/dist ./packages/shared/dist
-COPY --from=build /app/scripts/prisma-migration-checksums.mjs ./scripts/prisma-migration-checksums.mjs
-COPY --from=build /app/scripts/stage1-clean-acceptance-baseline-core.mjs ./scripts/stage1-clean-acceptance-baseline-core.mjs
-COPY --from=build /app/scripts/stage1-clean-acceptance-baseline-snapshot.mjs ./scripts/stage1-clean-acceptance-baseline-snapshot.mjs
-COPY --from=build /app/scripts/stage1-clean-acceptance-baseline-executor.mjs ./scripts/stage1-clean-acceptance-baseline-executor.mjs
-COPY --from=build /app/scripts/stage1-clean-acceptance-cli-core.mjs ./scripts/stage1-clean-acceptance-cli-core.mjs
-COPY --from=build /app/scripts/stage1-clean-acceptance-baseline.mjs ./scripts/stage1-clean-acceptance-baseline.mjs
-COPY --from=build /app/scripts/stage1-clean-acceptance-target-validator.mjs ./scripts/stage1-clean-acceptance-target-validator.mjs
-COPY --from=build /app/scripts/billing-maintenance-cycle-evidence-core.mjs ./scripts/billing-maintenance-cycle-evidence-core.mjs
-COPY --from=build /app/scripts/billing-maintenance-cycle-evidence.mjs ./scripts/billing-maintenance-cycle-evidence.mjs
-COPY --from=build /app/scripts/stage1-task9-preflight-governance.mjs ./scripts/stage1-task9-preflight-governance.mjs
-COPY --from=build /app/scripts/stage1-active-source-facts-repair-core.mjs ./scripts/stage1-active-source-facts-repair-core.mjs
-COPY --from=build /app/scripts/stage1-active-source-facts-repair-executor.mjs ./scripts/stage1-active-source-facts-repair-executor.mjs
-COPY --from=build /app/scripts/stage1-active-source-facts-repair.mjs ./scripts/stage1-active-source-facts-repair.mjs
-COPY --from=build /app/scripts/stage1-contract-change-bootstrap-core.mjs ./scripts/stage1-contract-change-bootstrap-core.mjs
-COPY --from=build /app/scripts/stage1-contract-change-bootstrap.mjs ./scripts/stage1-contract-change-bootstrap.mjs
-COPY --from=build /app/scripts/stage1-return-closure-backfill-core.mjs ./scripts/stage1-return-closure-backfill-core.mjs
-COPY --from=build /app/scripts/stage1-return-closure-backfill.mjs ./scripts/stage1-return-closure-backfill.mjs
-COPY --from=build /app/scripts/stage1-staging-invalid-test-order-retirement-core.mjs ./scripts/stage1-staging-invalid-test-order-retirement-core.mjs
-COPY --from=build /app/scripts/stage1-staging-invalid-test-order-retirement-executor.mjs ./scripts/stage1-staging-invalid-test-order-retirement-executor.mjs
-COPY --from=build /app/scripts/stage1-staging-invalid-test-order-retirement.mjs ./scripts/stage1-staging-invalid-test-order-retirement.mjs
-COPY --from=build /app/scripts/stage1c-period-backfill-core.mjs ./scripts/stage1c-period-backfill-core.mjs
-COPY --from=build /app/scripts/stage1c-period-backfill-executor.mjs ./scripts/stage1c-period-backfill-executor.mjs
-COPY --from=build /app/scripts/stage1c-period-backfill.mjs ./scripts/stage1c-period-backfill.mjs
-COPY --from=build /app/scripts/subscription-segment-bootstrap-core.mjs ./scripts/subscription-segment-bootstrap-core.mjs
-COPY --from=build /app/scripts/subscription-segment-bootstrap.mjs ./scripts/subscription-segment-bootstrap.mjs
+COPY --from=production-deps /prod/api/node_modules ./apps/api/node_modules
+COPY --from=production-deps /prod/api/dist ./apps/api/dist
 
-RUN cd /app/apps/api && ./node_modules/.bin/prisma --version >/dev/null
+RUN node -e "const { PrismaClient } = require('/app/apps/api/node_modules/@prisma/client'); if (typeof PrismaClient !== 'function') process.exit(1)" \
+  && test ! -e /app/apps/api/node_modules/.bin/prisma \
+  && test ! -e /app/scripts \
+  && ! command -v psql >/dev/null 2>&1
 
 RUN mkdir -p /app/uploads /app/apps/api/uploads
 

@@ -1,0 +1,17 @@
+{
+  "name": "@subscription-saas/release-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "subscription-release-runner": "src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@subscription-saas/release-foundation": "workspace:*",
+    "postgres": "3.4.7",
+    "prisma": "7.8.0"
+  }
+}

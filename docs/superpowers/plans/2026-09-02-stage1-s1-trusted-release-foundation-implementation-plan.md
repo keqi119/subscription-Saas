@@ -1998,27 +1998,30 @@ git commit -m "build: migrate subscription segment bootstrap command"
 
 ---
 
-### Task 23: Migrate `stage1.return-closure.backfill@1`
+### Task 23A: Migrate the DML-only `stage1.return-closure.backfill@1`
 
 **Files:**
 
 - Create: `apps/release-runner/src/commands/stage1-return-closure-backfill.mjs`
-- Create: `apps/release-runner/test/stage1-return-closure-backfill-equivalence.integration.test.mjs`
+- Create: `apps/release-runner/test/stage1-return-closure-backfill-dml-equivalence.integration.test.mjs`
 - Create: `release/contracts/command-contracts/stage1.return-closure.backfill.v1.json`
 - Modify: `apps/release-runner/src/command-handlers.mjs`
 - Modify: `release/contracts/command-registry.v1.json`
+- Modify: `release/contracts/approval-policies.v1.json`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 - Modify: `release/contracts/api-runtime-governance-inventory.v1.json`
 - Modify: `scripts/stage1-return-closure-backfill-core.mjs`
+- Modify: `scripts/stage1-return-closure-backfill.mjs`
 
 **Interfaces:**
 
 - Produces: `planReturnClosureBackfill(context, input): Promise<ReturnClosurePlanV1>`, `applyReturnClosureBackfill(context, approved): Promise<PostStateObservationV1>`, and `reconcileReturnClosureBackfill(context, prior): Promise<ReconcileResultV1>`.
 - The adapter calls existing `classifyStage1ReturnClosureBackfill`, `applicableStage1ReturnClassification`, and `executeStage1ReturnClosureBackfill`; payment/write-off authority remains external.
+- This command is permanently `repair / controlled-dml`. It may read publication readiness, but neither the legacy entry nor the Runner handler may issue `ALTER`, `CREATE`, `DROP`, or any other DDL. Constraint validation moves exclusively to Task 23B.
 
 - [ ] **Step 1: Add the v1 contract and digest entry**
 
-Freeze exact order/Closure/return evidence identities, expected versions, financial-authority fingerprint, exact writes, lock/transaction boundary, audit/error classes, idempotency and postconditions.
+Freeze exact order/Closure/return evidence identities, expected versions, financial-authority fingerprint, exact DML writes, existing batch/transaction boundaries, audit/error classes, idempotency and postconditions. Register `repair / controlled-dml`, Staging `human`, CI temporary databases `ci-policy`, and explicitly prohibit DDL in both the command contract and statement policy.
 
 - [ ] **Step 2: Write and run the paired-database RED test**
 
@@ -2028,28 +2031,108 @@ Expected: FAIL with `RUNNER_HANDLER_MISSING:stage1.return-closure.backfill@1`.
 
 - [ ] **Step 3: Implement minimal adapter and normalized equivalence**
 
-Compare exact target IDs, return/Closure facts, financial fingerprint, audit events, postconditions, and refusal classes on independent A/B databases.
+Compare exact target IDs, return/Closure facts, financial fingerprint, audit events, postconditions, refusal classes, and payment/write-off facts on independent A/B databases. The normalized statement log must contain only reads plus the approved Closure/evidence/clause/file-authority DML and must prove zero DDL.
 
 - [ ] **Step 4: Test stale financial facts, replay, and UNKNOWN**
 
 Change one bill/disposition after dry-run and require `PLAN_CHANGED_SINCE_APPROVAL`; replay and same-key reconcile must not create another Closure or overwrite payment authority.
 
-- [ ] **Step 5: Run all command gates**
+- [ ] **Step 5: Remove validation DDL from the old combined entry and add negative capability tests**
+
+Delete the `ALTER TABLE ... VALIDATE CONSTRAINT` path from `scripts/stage1-return-closure-backfill.mjs`. Preserve its DML classifications and effects, but make the old entry incapable of validating the constraint. Reject a DML command whose statement evidence contains DDL, a wrong capability, or a credential profile containing migration/DDL privileges.
+
+- [ ] **Step 6: Run all DML command gates**
 
 ```powershell
 pnpm --filter @subscription-saas/release-runner test -- stage1-return-closure-backfill
+node --test scripts/stage1-return-closure-backfill.test.mjs
 pnpm release:contracts:verify
 node scripts/release/discover-database-tests.mjs --mode verify
 node scripts/release/verify-api-governance-inventory.mjs
 git diff --check
 ```
 
-- [ ] **Step 6: Commit this command only**
+- [ ] **Step 7: Commit the DML command only**
 
 ```powershell
-git add apps/release-runner/src/commands/stage1-return-closure-backfill.mjs apps/release-runner/src/command-handlers.mjs apps/release-runner/test/stage1-return-closure-backfill-equivalence.integration.test.mjs release/contracts/command-contracts/stage1.return-closure.backfill.v1.json release/contracts/command-registry.v1.json release/contracts/repository-contract-files.v1.json release/contracts/api-runtime-governance-inventory.v1.json scripts/stage1-return-closure-backfill-core.mjs
-git commit -m "build: migrate return closure backfill command"
+git add apps/release-runner/src/commands/stage1-return-closure-backfill.mjs apps/release-runner/src/command-handlers.mjs apps/release-runner/test/stage1-return-closure-backfill-dml-equivalence.integration.test.mjs release/contracts/command-contracts/stage1.return-closure.backfill.v1.json release/contracts/command-registry.v1.json release/contracts/approval-policies.v1.json release/contracts/repository-contract-files.v1.json release/contracts/api-runtime-governance-inventory.v1.json scripts/stage1-return-closure-backfill-core.mjs scripts/stage1-return-closure-backfill.mjs
+git commit -m "build: migrate return closure dml backfill command"
 ```
+
+---
+
+### Task 23B: Extract `stage1.return-closure.publication-constraint.validate@1`
+
+**Files:**
+
+- Create: `apps/release-runner/src/commands/stage1-return-closure-publication-constraint-validate.mjs`
+- Create: `apps/release-runner/test/stage1-return-closure-publication-constraint-validate.integration.test.mjs`
+- Create: `apps/release-runner/test/stage1-return-closure-composite-equivalence.integration.test.mjs`
+- Create: `release/contracts/command-contracts/stage1.return-closure.publication-constraint.validate.v1.json`
+- Modify: `apps/release-runner/src/command-handlers.mjs`
+- Modify: `release/contracts/command-registry.v1.json`
+- Modify: `release/contracts/approval-policies.v1.json`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+- Modify: `release/contracts/api-runtime-governance-inventory.v1.json`
+
+**Interfaces:**
+
+- Produces: `planReturnClosurePublicationConstraintValidation(context, input): Promise<ConstraintValidationPlanV1>`, `applyReturnClosurePublicationConstraintValidation(context, approved): Promise<PostStateObservationV1>`, and `reconcileReturnClosurePublicationConstraintValidation(context, prior): Promise<ReconcileResultV1>`.
+- This command is permanently `migrate / ddl`. It may read catalog and exact violation counts and may execute only `ALTER TABLE "subscription_closure_settlement_revision" VALIDATE CONSTRAINT "subscription_closure_settlement_publication_check"`; business DML is prohibited.
+- Its input must reference the successfully stored Task 23A apply execution-proof digest and post-state-observation digest plus the successful replay/reconcile execution-proof digest. The full proof chain must match the same build proof, baseline Manifest identity/digest, database identity, source SHA, command/version, approved plan and completed DML operation. Task 23B cannot plan or obtain approval until Task 23A apply plus replay/reconcile has passed and every referenced proof has completed custody readback.
+
+- [ ] **Step 1: Add the DDL contract, approval tuples, registry entry, handler parity, digest, and exit-inventory mappings**
+
+Register `migrate / ddl`, Staging `human`, and CI temporary databases `ci-policy`. Freeze the exact table, constraint name, expected check definition hash and OID, DML proof dependencies, global migration/schema lock plus table-lock order, `lock_timeout`, `statement_timeout`, one allowed DDL statement, evidence Schema, idempotency and UNKNOWN recovery. Do not add a migration, model, enum, RBAC permission, feature flag, or application behavior.
+
+- [ ] **Step 2: Write the DDL RED and dependency-order tests**
+
+Run: `node scripts/release/run-database-suite.mjs --suite-id runner.stage1-return-closure-publication-constraint --chain fresh`
+
+Expected: FAIL with `RUNNER_HANDLER_MISSING:stage1.return-closure.publication-constraint.validate@1`.
+
+Also require preflight rejection before credential read when the DML proof or observation is absent, not in trusted custody, failed, belongs to a different build/Manifest/database, or was generated for another command. Prohibit generating the DML and DDL plans or approvals as one batch.
+
+- [ ] **Step 3: Implement the deterministic DDL plan after DML custody**
+
+The dry-run reads `pg_constraint` and the exact target table to bind table/constraint OIDs, `pg_get_constraintdef(...)` hash, `convalidated`, and the exact count of rows violating the existing check predicate. It succeeds only when the constraint exists with the approved definition and the violation count is zero. If already validated, the plan records a read-only no-op. The plan identity includes the Task 23A apply execution-proof, post-state-observation and replay/reconcile execution-proof digests plus the shared build, Manifest, database, source, repository-contract and migration-catalog identities.
+
+- [ ] **Step 4: Implement locked apply, replay, and UNKNOWN reconciliation**
+
+Use a fixed order: acquire the same global database-migration advisory lock used by Schema operations, set fixed local `lock_timeout` and `statement_timeout`, acquire the exact table's approved Schema lock, then re-read OIDs, definition hash, `convalidated`, and violation count. Any drift rejects before DDL. Execute only the fixed validation statement. A validated constraint is a read-only no-op.
+
+If the process is interrupted after validation may have started, record `INTERRUPTED_UNKNOWN`; do not invoke apply again. Reconcile with the same idempotency key by checking `pg_constraint.convalidated`, the definition hash/OIDs, and violation count. A DDL failure never rolls back or invalidates the already successful and stored Task 23A DML proof; the constraint remains `NOT VALID` unless PostgreSQL proves validation committed, and a later apply requires a new DDL dry-run and independent approval.
+
+- [ ] **Step 5: Prove capability separation and old/new composite equivalence**
+
+On independent databases from one baseline, compare:
+
+1. reference A: the captured pre-split legacy sequence of DML plus the one constraint validation;
+2. candidate B: Task 23A dry-run/approval/apply/replay and proof custody, followed by Task 23B dry-run/independent approval/apply/replay.
+
+Compare final Closure/evidence/clause/file-authority/payment/write-off facts, exact constraint definition and `convalidated`, audit facts, and absence of duplicate effects. Separately prove DML equivalence and DDL validation. Negative tests must reject wrong capability, a combined migration/repair credential, DDL in Task 23A statement evidence, and business DML in Task 23B statement evidence.
+
+- [ ] **Step 6: Run all DDL and composite gates**
+
+```powershell
+pnpm --filter @subscription-saas/release-runner test -- stage1-return-closure
+pnpm release:contracts:verify
+node scripts/release/discover-database-tests.mjs --mode verify
+node scripts/release/verify-api-governance-inventory.mjs
+node --test scripts/release/approval-workflows.test.mjs
+git diff --check
+```
+
+- [ ] **Step 7: Commit the DDL extraction only**
+
+```powershell
+git add apps/release-runner/src/commands/stage1-return-closure-publication-constraint-validate.mjs apps/release-runner/src/command-handlers.mjs apps/release-runner/test/stage1-return-closure-publication-constraint-validate.integration.test.mjs apps/release-runner/test/stage1-return-closure-composite-equivalence.integration.test.mjs release/contracts/command-contracts/stage1.return-closure.publication-constraint.validate.v1.json release/contracts/command-registry.v1.json release/contracts/approval-policies.v1.json release/contracts/repository-contract-files.v1.json release/contracts/api-runtime-governance-inventory.v1.json
+git commit -m "build: extract return closure constraint validation command"
+```
+
+Task 23 closes only when both commits pass independently and the enforced operational sequence is:
+
+`DML dry-run → DML approval → DML apply → DML replay/reconcile → DML proof custody → DDL dry-run → independent DDL approval → DDL apply → DDL replay/reconcile`.
 
 ---
 
@@ -2195,7 +2278,7 @@ git commit -m "build: migrate ephemeral contract change bootstrap command"
 
 - [ ] **Step 1: Prove every caller has a migration disposition**
 
-Run the inventory against package scripts, CI, Compose, deployment configuration, both listed Runbooks, external automation sign-offs, and manual operation records. Refuse extraction while any caller is `unowned`, `unknown`, or still invokes an API-container script.
+Run the inventory against package scripts, CI, Compose, deployment configuration, both listed Runbooks, external automation sign-offs, and manual operation records. Refuse extraction while any caller is `unowned`, `unknown`, or still invokes an API-container script. The former return/closure combined entry must map to both Task 23A and Task 23B dispositions, and no supported caller may retain the old DML-plus-DDL sequence.
 
 - [ ] **Step 2: Change formal package and Runbook entries to the trusted launcher**
 
@@ -2206,6 +2289,8 @@ Replace direct write commands with fixed wrappers that select an exact registere
   "stage1:clean-acceptance:dry-run": "node scripts/release/trusted-launch-runner.mjs --command stage1.clean-acceptance.baseline@1 --phase dry-run --request-file .release-inputs/clean-acceptance.json"
 }
 ```
+
+For return/closure maintenance, the formal Runbook and wrappers must enforce the complete Task 23A proof-custody boundary before permitting Task 23B planning. They must use separate capability credentials, operation IDs, request files, plans, approvals and execution proofs; no wrapper may pre-approve or batch both operations.
 
 - [ ] **Step 3: Add RED API-runtime negative tests**
 
@@ -2224,7 +2309,7 @@ Delete all governed script `COPY` rules from `Dockerfile.api`, install/copy the 
 
 - [ ] **Step 5: Verify caller cutover and old-entry denial**
 
-Build the API and Runner images. Expected: every registered command succeeds through Runner equivalence tests; the API image cannot execute old commands; old entries cannot obtain any active capability credential; no deployment config mounts repository scripts into API.
+Build the API and Runner images. Expected: every registered command succeeds through Runner equivalence tests; the API image cannot execute old commands; old entries cannot obtain any active capability credential; no deployment config mounts repository scripts into API. The audit must also prove the Task 23A DML handler cannot execute DDL, the Task 23B DDL handler cannot execute business DML, and the retired combined entry cannot obtain either credential.
 
 - [ ] **Step 6: Validate the rollback matrix**
 
@@ -2386,7 +2471,7 @@ git commit -m "ci: issue trusted three image build proof"
 
 ---
 
-### Task 29: Verify digest-pinned final artifacts with Compose and a real client
+### Task 29: Define digest-pinned final-artifact contracts and injectable gate seams
 
 **Files:**
 
@@ -2469,14 +2554,14 @@ test("built portal calls the manifest API base", async ({ page }) => {
 
 Compare the captured origin/path, Web-bundle embedded API Base, and Manifest value. Also prove CORS and route prefix work. Visual and full business acceptance remain S3.
 
-- [ ] **Step 7: Run independent fresh and snapshot gates**
+- [ ] **Step 7: Exercise independent fresh and snapshot contracts through injected test adapters**
 
-```powershell
-node scripts/release/run-final-compose-gate.mjs --chain fresh --build-proof-file .release-inputs/build-proof.json
-node scripts/release/run-final-compose-gate.mjs --chain snapshot --build-proof-file .release-inputs/build-proof.json --snapshot-metadata-file .release-inputs/snapshot-metadata.json
-```
-
-Expected: both use the same image digests/source/contracts but have separate target identities, Manifests, API session nonces, operation IDs, post-state observations, execution proofs, custody receipts, and complete test counts.
+Use `scripts/release/final-compose-gate.test.mjs` to call
+`executeFinalComposeGate(input, injectedTestAdapters)` for fresh and snapshot. Expected: both use the
+same image digests/source/contracts but have separate target identities, Manifests, API session
+nonces, operation IDs, post-state observations, execution proofs, custody receipts, and complete test
+counts. These are contract/state-machine tests only; they do not prove that a final Runner, API, Web
+or database actually ran and cannot satisfy Task 29R or Task 30.
 
 - [ ] **Step 8: Test wrong-database and legal retry semantics**
 
@@ -2495,19 +2580,617 @@ git add docker-compose.release-gate.yml playwright.release.config.ts tests/relea
 git commit -m "ci: verify final release bundle end to end"
 ```
 
+**As-built review gate:** Task 29's first implementation established the final-evidence contract,
+Compose policy, API session identity, real-client assertion and the injectable
+`executeFinalComposeGate(input, adapters)` state machine. It did not establish a supported trusted
+launcher or production adapters: the Runner CLI and `trusted-launch-runner.mjs` still fail closed,
+and the CLI form of `run-final-compose-gate.mjs` can only normalize caller-supplied results. That
+commit is therefore a contract/test seam, not final execution evidence. Tasks 29R-A through 29R-D
+are mandatory remediation. Task 30 remains paused until one exact digest-pinned bundle passes both
+real chains through those adapters.
+
+---
+
+### Task 29R-A: Implement the fixed trusted-launch handoff
+
+**Files:**
+
+- Create: `release/contracts/schemas/runner-launch-envelope.v1.schema.json`
+- Create: `apps/release-runner/src/trusted-entrypoint.mjs`
+- Create: `apps/release-runner/src/runtime-adapters.mjs`
+- Create: `apps/release-runner/test/trusted-entrypoint.test.mjs`
+- Create: `apps/release-runner/test/runtime-adapters.integration.test.mjs`
+- Create: `scripts/release/trusted-launch-production-adapters.mjs`
+- Create: `scripts/release/trusted-launch-production-adapters.test.mjs`
+- Modify: `apps/release-runner/src/cli.mjs`
+- Modify: `apps/release-runner/test/cli.test.mjs`
+- Modify: `scripts/release/trusted-launch-runner.mjs`
+- Modify: `scripts/release/trusted-launch-runner.test.mjs`
+- Modify: `Dockerfile.runner`
+- Modify: `packages/release-foundation/src/catalogs.mjs`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+
+**Interfaces:**
+
+- `runTrustedEntrypoint({ envelopeFile, adapters }): Promise<FinalizedRunnerResult>` is the only
+  supported Runner process entry. The production entrypoint accepts no caller-selected JavaScript,
+  SQL, shell, Docker socket or entrypoint/command override.
+- `runner-launch-envelope.v1` contains `commandKey`, the registered request, immutable references
+  and digests for build proof, launch attestation, approval/revocation inputs, one capability secret
+  reference, append-only journal reference and custody policy. It contains no raw credential.
+- `createTrustedLaunchProductionAdapters({ envelope, environment }): TrustedLaunchAdapters`
+  constructs the real append-only journal, trusted revocation reader/checkpoint, attestation verifier,
+  one credential-file reader, PostgreSQL connector and custody writer. Missing adapters fail before
+  secret read.
+- `launchRunnerContainer({ composeProject, service, expectedRunnerImage, envelopeFile }): Promise`
+  is owned by the trusted host launcher. It permits only `runner-migration`, `runner-verify` and the
+  closed database-test service introduced in 29R-B; it uses `docker compose run --no-deps` without
+  command arguments and rejects `exec`, socket mounting, entrypoint override and an image digest
+  different from the admitted build proof.
+
+- [ ] **Step 1: Write RED envelope and fixed-entrypoint tests**
+
+Add tests proving that the production CLI:
+
+```js
+await assert.rejects(runTrustedEntrypoint({ envelopeFile: undefined, adapters }), {
+  code: "RUNNER_LAUNCH_ENVELOPE_REQUIRED"
+});
+await assert.rejects(
+  runTrustedEntrypoint({ envelopeFile, argv: ["node", "script.mjs"], adapters }),
+  {
+    code: "RUNNER_ENTRYPOINT_OVERRIDE_REJECTED"
+  }
+);
+```
+
+Also reject an unregistered `commandKey`, raw database URL/credential fields, a launch attestation
+whose Runner digest differs from the build proof, multiple capability references, mutable image
+tags, an untrusted revocation artifact and a journal path outside the mounted evidence root.
+
+- [ ] **Step 2: Run the entrypoint tests and confirm the current fail-closed stub is not executable**
+
+Run:
+
+```powershell
+pnpm --filter @subscription-saas/release-runner exec node --test test/cli.test.mjs test/trusted-entrypoint.test.mjs
+node --test scripts/release/trusted-launch-production-adapters.test.mjs
+```
+
+Expected: FAIL because the envelope Schema, `runTrustedEntrypoint` and production adapter factory do
+not exist; retain one assertion that the old default route reports
+`RUNNER_TRUSTED_LAUNCHER_REQUIRED` until Step 5 replaces it.
+
+- [ ] **Step 3: Add the immutable launch-envelope contract**
+
+Define a closed Schema with these required identity fields:
+
+```json
+{
+  "schemaVersion": "runner-launch-envelope.v1",
+  "executionMode": "registered-command",
+  "commandKey": "db.schema.verify@1",
+  "buildProofDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "actualRunnerDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "requestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "launchAttestationDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "capabilitySecretReference": "secret-file:///run/secrets/database-credential",
+  "journalReference": "evidence-file:///evidence/execution-journal.ndjson",
+  "custodyPolicyDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+}
+```
+
+The implementation resolves only fixed roots `/run/launch`, `/run/secrets` and `/evidence`, uses
+canonical digest checks before credential access, and rejects unknown properties. Add the Schema and
+all production entrypoints to `repository-contract-files.v1.json`.
+
+- [ ] **Step 4: Implement real file-backed trust, journal, revocation and custody adapters**
+
+`runtime-adapters.mjs` must expose narrow adapters instead of a shell escape hatch:
+
+```js
+export function createRuntimeAdapters({ envelope, roots, postgresFactory, clock }) {
+  return Object.freeze({
+    approvalAttestationVerifier,
+    githubClient: createAttestedRevocationArtifactClient(roots.revocations),
+    revocationCheckpointStore: createMonotonicFileCheckpoint(roots.journal),
+    executionJournal: createAppendOnlyExecutionJournal(roots.journal),
+    readCredential: createSingleSecretReader(envelope.capabilitySecretReference),
+    connectDatabase: postgresFactory.connect,
+    custody: createCreateOnlyCustodyWriter(roots.evidence)
+  });
+}
+```
+
+The journal and checkpoint use create-only/append-only semantics plus digest readback. Revocation
+artifacts must already have a trusted GitHub attestation and custody receipt; missing, expired,
+downgraded or mismatched policy inputs cause `PREFLIGHT_REJECTED`. The host adapter verifies the
+registry-resolved Runner digest and GitHub attestation subject before creating the envelope.
+
+- [ ] **Step 5: Replace both production stubs with the fixed handoff**
+
+The Docker image retains exactly:
+
+```dockerfile
+ENTRYPOINT ["node", "/app/apps/release-runner/src/cli.mjs"]
+```
+
+With no process arguments, `cli.mjs` reads the fixed `RUNNER_LAUNCH_ENVELOPE_FILE` reference and calls
+`runTrustedEntrypoint`. Test dependency injection may continue to call `runCli(argv, { execute })`,
+but it is not a supported Release/Staging entry. `trusted-launch-runner.mjs` accepts only a validated
+launch specification and the three allowlisted Compose service names; its production `main()` uses
+`createTrustedLaunchProductionAdapters`, never an arbitrary module path.
+
+- [ ] **Step 6: Prove capability and host-launch separation**
+
+Add negative tests for:
+
+- envelope requests `migrate` but the mounted secret is `verify`;
+- two credential files or a combined credential are visible;
+- `docker compose exec`, a custom command, entrypoint override or Docker socket is requested;
+- launch attestation, build proof and registry-resolved platform digest disagree;
+- journal/custody cannot be written and read back;
+- Runner attempts a second command after its first terminal result.
+
+All must fail before database connection; the host launcher records `PREFLIGHT_REJECTED` or
+`INTERRUPTED_UNKNOWN` as appropriate.
+
+- [ ] **Step 7: Run Task 29R-A verification**
+
+Run:
+
+```powershell
+pnpm --filter @subscription-saas/release-runner test
+node --test scripts/release/trusted-launch-runner.test.mjs scripts/release/trusted-launch-production-adapters.test.mjs
+pnpm release:contracts:verify
+node scripts/release/verify-compose-policy.mjs docker-compose.release-gate.yml
+git diff --check
+```
+
+Expected: PASS, and executing the final Runner with no valid attested envelope fails before secret
+read; a valid unit/integration fixture reaches exactly one registered handler.
+
+- [ ] **Step 8: Commit trusted-launch handoff only**
+
+```powershell
+git add Dockerfile.runner apps/release-runner scripts/release/trusted-launch-runner.mjs scripts/release/trusted-launch-runner.test.mjs scripts/release/trusted-launch-production-adapters.mjs scripts/release/trusted-launch-production-adapters.test.mjs packages/release-foundation/src/catalogs.mjs release/contracts
+git commit -m "fix(release): implement trusted runner launch handoff"
+```
+
+Do not stage Task 30 aggregate/audit/workflow/report files in this commit.
+
+---
+
+### Task 29R-B: Execute fresh and snapshot databases through the final Runner
+
+**Files:**
+
+- Create: `release/contracts/schemas/database-test-launch-envelope.v1.schema.json`
+- Create: `apps/release-runner/src/database-runtime-adapter.mjs`
+- Create: `apps/release-runner/src/database-test-entrypoint.mjs`
+- Create: `apps/release-runner/test/database-runtime-adapter.integration.test.mjs`
+- Create: `apps/release-runner/test/database-test-entrypoint.integration.test.mjs`
+- Create: `scripts/release/final-compose-database-adapters.mjs`
+- Create: `scripts/release/final-compose-database-adapters.test.mjs`
+- Modify: `apps/release-runner/src/cli.mjs`
+- Modify: `scripts/release/run-final-compose-gate.mjs`
+- Modify: `scripts/release/final-compose-gate.test.mjs`
+- Modify: `scripts/release/database-test-launcher-runtime.mjs`
+- Modify: `docker-compose.release-gate.yml`
+- Modify: `scripts/release/verify-compose-policy.mjs`
+- Modify: `scripts/release/compose-policy.test.mjs`
+- Modify: `release/contracts/database-target-policies.v1.json`
+- Modify: `packages/release-foundation/src/catalogs.mjs`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+
+**Interfaces:**
+
+- `createFinalDatabaseAdapters({ chain, buildProof, sourceEvidence, snapshot, workspace }):` returns
+  `prepareTarget`, `runMigration`, `runVerify`, `runDatabaseTests` and `cleanupTarget` adapters that
+  operate only on the exact chain database.
+- `database-test-launch-envelope.v1` is a separate closed execution mode. It references the fixed
+  database-test manifest/digest, runtime-equivalent credential, build proof and target identity; it
+  has no Runner `capabilityProfile` and cannot dispatch a registered command.
+- `createDatabaseRuntimeAdapter(...)` provides only the named functions required by
+  `db.migrate.deploy@1` or `db.schema.verify@1`: migration catalog loading, identity/schema
+  observation, fixed Prisma deployment/schema-diff, fixed `psql` catalog queries, declared locks and
+  tool version capture. It does not expose arbitrary shell or SQL.
+
+- [ ] **Step 1: Write RED production-adapter and execution-mode tests**
+
+Tests must require the actual order:
+
+```js
+assert.deepEqual(events, [
+  "provision-or-restore",
+  "migration:dry-run",
+  "migration:ci-policy-approval",
+  "migration:apply",
+  "migration:replay",
+  "verify",
+  "database-tests",
+  "proof-custody"
+]);
+```
+
+For snapshot, prepend restore and ownership normalization. Prove fresh and snapshot use distinct
+database names/OIDs, credentials, baseline Manifests, session nonces, operation IDs, execution
+proofs and custody receipts while sharing only the admitted build/contracts/test inputs.
+
+- [ ] **Step 2: Run tests and verify the injectable seam cannot yet reach a database**
+
+Run:
+
+```powershell
+node --test scripts/release/final-compose-database-adapters.test.mjs scripts/release/final-compose-gate.test.mjs
+pnpm --filter @subscription-saas/release-runner exec node --test test/database-runtime-adapter.integration.test.mjs test/database-test-entrypoint.integration.test.mjs
+```
+
+Expected: FAIL because the final database adapters and closed database-test entrypoint do not exist.
+
+- [ ] **Step 3: Replace pseudo Runner capabilities with infrastructure identities**
+
+Remove `runner-provision`, `runner-restore` and `RUNNER_CAPABILITY_PROFILE=database-test` from Compose.
+Provision and restore call the existing `provisionSuiteDatabase`/`restoreSanitizedSnapshot` adapters
+under their already-separated infrastructure credentials. The final Runner image is used for:
+
+- registered `db.migrate.deploy@1` with the `migrate` profile;
+- registered `db.schema.verify@1` with the `verify` profile;
+- a fixed `executionMode=database-test` entrypoint using the runtime-equivalent test identity.
+
+The database-test mode loads only `database-test-manifest.v1.json`, verifies its digest and invokes
+the existing unified launcher. It cannot resolve a command registry handler and is not added to
+`capabilityProfiles` or application RBAC.
+
+- [ ] **Step 4: Implement actual migration and Schema adapters inside the Runner image**
+
+Use `node:child_process.spawn` only behind fixed argv builders:
+
+```js
+prismaMigrateDeployArgs({ schema }) === ["migrate", "deploy", "--schema", schema];
+prismaSchemaDiffArgs({ schema, databaseUrlReference }) ===
+  ["migrate", "diff", "--from-config-datasource", "--to-schema", schema, "--exit-code"];
+```
+
+The adapter rejects extra arguments, raw URLs in argv, paths outside `/app/apps/api/prisma`, unknown
+SQL statement IDs and tool versions different from the repository contract. Migration dry-run
+recomputes the deterministic catalog plan; apply re-observes under the registered lock and requires
+the approved digest. Replay is read-only.
+
+- [ ] **Step 5: Execute the fixed database-test manifest in the final Runner**
+
+Reuse `run-database-manifest.mjs` and `database-test-launcher-runtime.mjs`, but inject the already
+provisioned chain identity and only the runtime-equivalent test secret. Require:
+
+`collected = selected = executed = passed + failed`, with failed/skipped/todo/filtered/cancelled all
+zero. Verify the final report's source SHA, test-manifest digest, migration/repository contracts,
+database OID and runtime credential fingerprint before custody.
+
+- [ ] **Step 6: Add a Compose-ephemeral target policy without broadening Staging**
+
+Add one exact policy whose allowed hostname is the fixed internal database service, whose database
+name pattern distinguishes `fresh` and `snapshot`, and whose required image/version/marker match the
+PostgreSQL 17 contract. The policy is limited to `ci-fresh`/`ci-snapshot`. It does not add production
+or Staging hosts. TLS must match the chain Manifest; if the infrastructure image supplies TLS, the
+observed session must be true. A plaintext target cannot be represented as `tlsMode=require`.
+
+- [ ] **Step 7: Make the final-gate CLI execute production database adapters**
+
+Remove `--evidence-input-file`. The CLI receives only admitted identities and attested inputs:
+
+```powershell
+node scripts/release/run-final-compose-gate.mjs --chain fresh --execute `
+  --build-proof-file .release-inputs/build-proof.v1.json `
+  --source-gate-evidence-file .release-inputs/source-gate-fresh.v1.json `
+  --launch-root .release-inputs/launch/fresh `
+  --evidence-root .release-evidence/fresh
+```
+
+`--execute` always calls `executeFinalComposeGate` with
+`createFinalDatabaseAdapters(...)`. There is no production option that accepts precomputed
+migration/verify/test results. Unit tests may call `buildFinalComposeEvidence` directly only with
+test fixtures.
+
+- [ ] **Step 8: Prove wrong role, wrong target, mixed chain and UNKNOWN behavior**
+
+Tests must reject migration with verify credentials, database tests with owner/DDL credentials,
+snapshot restore under the migration role, same database or operation IDs across chains, source
+evidence from another run, plan drift, and cleanup before custody. Kill a migration after commit but
+before output; record `INTERRUPTED_UNKNOWN`, forbid apply, reconcile using the same idempotency key,
+and preserve both attempt proofs.
+
+- [ ] **Step 9: Run controlled PostgreSQL 17 integration verification**
+
+Run the focused unit tests, then use Task 0's exact controlled target:
+
+```powershell
+node scripts/release/with-controlled-target.mjs --profile migrate -- pnpm --filter @subscription-saas/release-runner test
+node scripts/release/with-controlled-target.mjs --profile verify -- node scripts/release/discover-database-tests.mjs --mode verify
+pnpm release:contracts:verify
+node scripts/release/verify-compose-policy.mjs docker-compose.release-gate.yml
+git diff --check
+```
+
+Expected: PASS with PostgreSQL 17, zero unclassified database tests and no combined credential.
+
+- [ ] **Step 10: Commit real database execution separately**
+
+```powershell
+git add apps/release-runner scripts/release/run-final-compose-gate.mjs scripts/release/final-compose-gate.test.mjs scripts/release/final-compose-database-adapters.mjs scripts/release/final-compose-database-adapters.test.mjs scripts/release/database-test-launcher-runtime.mjs docker-compose.release-gate.yml scripts/release/verify-compose-policy.mjs scripts/release/compose-policy.test.mjs packages/release-foundation/src/catalogs.mjs release/contracts
+git commit -m "fix(release): execute final runner database chains"
+```
+
+Do not stage Task 30 aggregation or exit-audit files.
+
+---
+
+### Task 29R-C: Collect real API, Web, browser and failure-custody evidence
+
+**Files:**
+
+- Create: `scripts/release/final-compose-application-adapters.mjs`
+- Create: `scripts/release/final-compose-application-adapters.test.mjs`
+- Create: `scripts/release/final-compose-custody-adapters.mjs`
+- Create: `scripts/release/final-compose-custody-adapters.test.mjs`
+- Modify: `scripts/release/run-final-compose-gate.mjs`
+- Modify: `scripts/release/final-compose-gate.test.mjs`
+- Modify: `tests/release/web-public-api.spec.ts`
+- Modify: `playwright.release.config.ts`
+- Modify: `docker-compose.release-gate.yml`
+- Modify: `scripts/release/verify-compose-policy.mjs`
+- Modify: `packages/release-foundation/src/catalogs.mjs`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+
+**Interfaces:**
+
+- `createFinalApplicationAdapters({ composeProject, chain, manifest, evidenceRoot })` returns
+  `startApplications`, `verifyApi` and `verifyWebClient`; results are observations derived from the
+  running containers and browser trace, never caller-supplied JSON.
+- `createFinalCustodyAdapters({ evidenceRoot, custodyPolicy, uploader })` returns create-only
+  `custody`, `recordFailure` and `readback`. Cleanup is permitted only after every required digest
+  has an accepted, read-back custody receipt.
+
+- [ ] **Step 1: Write RED application and custody adapter tests**
+
+Require HTTP readiness plus a database query, exactly one matching `pg_stat_activity` API session,
+and a browser network observation whose origin/path equals both the Manifest API base and Web bundle
+configuration. Reject a valid catalog response from the wrong database, a static home-page-only
+request, mocked network interception, missing CORS response, caller-provided `PASSED`, and cleanup
+before receipt readback.
+
+- [ ] **Step 2: Run focused tests and observe missing production adapters**
+
+Run:
+
+```powershell
+node --test scripts/release/final-compose-application-adapters.test.mjs scripts/release/final-compose-custody-adapters.test.mjs scripts/release/final-compose-gate.test.mjs
+pnpm exec playwright test --config playwright.release.config.ts
+```
+
+Expected: adapter tests FAIL because production application/custody adapters do not exist. The
+standalone Playwright fixture remains a contract test and cannot count as final evidence.
+
+- [ ] **Step 3: Start digest-pinned API and Web without source mounts**
+
+The trusted launcher starts only the admitted digest references and verifies container image IDs and
+OCI source revisions after creation. API gets the runtime credential plus chain Manifest/session
+nonce. Web receives the API Base already embedded in the admitted image; mismatch causes failure,
+not a runtime rewrite. Neither service receives Runner, migration, verify or test credentials.
+
+- [ ] **Step 4: Capture actual API database identity**
+
+After API health, call `GET /api/portal/catalog/model-definitions`. Using the separate verify
+credential, query the live API session by exact application name and record database OID, role, TLS,
+session state and nonce. Require exactly one matching target; the API response and session
+observation are separately digested and stored.
+
+- [ ] **Step 5: Capture Web's real public API request**
+
+Run Playwright against the built Web container with routing/interception disabled. Persist the trace
+and normalized network observation. Assert:
+
+```ts
+expect(observation.requestUrl).toBe(manifest.expectedCatalogUrl);
+expect(observation.embeddedApiBase).toBe(manifest.publicApiBase);
+expect(observation.responseStatus).toBe(200);
+expect(observation.corsAllowedOrigin).toBe(manifest.webOrigin);
+```
+
+The browser result must be produced in this attempt and bind build proof, chain, Manifest and
+operation ID.
+
+- [ ] **Step 6: Implement create-only success, failure and UNKNOWN custody**
+
+Each stage writes canonical evidence to a fresh attempt directory using `wx`, uploads it through the
+configured custody adapter, downloads it, and verifies its digest before database cleanup. Normal
+errors produce `FAILED`; lost process/unknown commit produces `INTERRUPTED_UNKNOWN`. A retry uses new
+run/operation/attempt IDs, preserves old evidence, and must match the same immutable bundle/source
+contracts/snapshot version.
+
+- [ ] **Step 7: Run the complete real local final gate on both chains**
+
+With digest-pinned images and the protected local launch inputs, run:
+
+```powershell
+node scripts/release/run-final-compose-gate.mjs --chain fresh --execute --build-proof-file .release-inputs/build-proof.v1.json --source-gate-evidence-file .release-inputs/source-gate-fresh.v1.json --launch-root .release-inputs/launch/fresh --evidence-root .release-evidence/fresh
+node scripts/release/run-final-compose-gate.mjs --chain snapshot --execute --build-proof-file .release-inputs/build-proof.v1.json --source-gate-evidence-file .release-inputs/source-gate-snapshot.v1.json --snapshot-metadata-file .release-inputs/snapshot-metadata.v1.json --launch-root .release-inputs/launch/snapshot --evidence-root .release-evidence/snapshot
+```
+
+Expected: each chain actually runs migration, verify, fixed database tests, API query and Playwright;
+all required evidence has custody receipts before exact database cleanup. Synthetic fixture evidence
+does not satisfy this step.
+
+- [ ] **Step 8: Run regressions and negative policy checks**
+
+```powershell
+node --test scripts/release/final-compose-*.test.mjs scripts/release/compose-policy.test.mjs
+pnpm exec playwright test --config playwright.release.config.ts
+pnpm --filter @subscription-saas/release-runner test
+pnpm release:contracts:verify
+node scripts/release/verify-compose-policy.mjs docker-compose.release-gate.yml
+git diff --check
+```
+
+- [ ] **Step 9: Commit application and custody execution separately**
+
+```powershell
+git add scripts/release/run-final-compose-gate.mjs scripts/release/final-compose-gate.test.mjs scripts/release/final-compose-application-adapters.mjs scripts/release/final-compose-application-adapters.test.mjs scripts/release/final-compose-custody-adapters.mjs scripts/release/final-compose-custody-adapters.test.mjs tests/release/web-public-api.spec.ts playwright.release.config.ts docker-compose.release-gate.yml scripts/release/verify-compose-policy.mjs packages/release-foundation/src/catalogs.mjs release/contracts
+git commit -m "fix(release): collect real final application evidence"
+```
+
+Do not stage Task 30 exit-audit/report files.
+
+---
+
+### Task 29R-D: Repair the Release evidence DAG and generate exit evidence in-run
+
+**Files:**
+
+- Create: `.github/workflows/release-candidate-gate.yml`
+- Create: `.github/workflows/release-final-chain.yml`
+- Create: `.github/workflows/release-owner-attestations.yml`
+- Create: `scripts/release/aggregate-release-proof.mjs`
+- Create: `scripts/release/aggregate-release-proof.test.mjs`
+- Create: `scripts/release/assemble-release-aggregate-input.mjs`
+- Create: `scripts/release/assemble-s1-exit-input.mjs`
+- Create: `scripts/release/create-final-attempt-history.mjs`
+- Create: `scripts/release/export-final-compose-environment.mjs`
+- Create: `scripts/release/generate-s1-exit-evidence.mjs`
+- Create: `scripts/release/generate-s1-exit-evidence.test.mjs`
+- Create: `scripts/release/prepare-final-compose-launch.mjs`
+- Create: `scripts/release/prepare-final-compose-launch.test.mjs`
+- Create: `scripts/release/release-dag-assemblers.test.mjs`
+- Create: `scripts/release/workflow-custody-record.mjs`
+- Create: `scripts/release/workflow-custody-record.test.mjs`
+- Create: `release/contracts/schemas/s1-exit-evidence.v1.schema.json`
+- Create: `release/contracts/schemas/s1-owner-attestations.v1.schema.json`
+- Modify: `.github/workflows/release-operation-approval.yml`
+- Modify: `.github/workflows/release-approval-revocations.yml`
+- Modify: `.github/workflows/sanitized-snapshot.yml`
+- Modify: `apps/release-runner/test/command-registry.test.mjs`
+- Modify: `packages/release-foundation/src/database-test-launcher.mjs`
+- Modify: `packages/release-foundation/src/catalogs.mjs`
+- Modify: `packages/release-foundation/test/catalogs.test.mjs`
+- Modify: `packages/release-foundation/test/snapshot-export.test.mjs`
+- Modify: `release/contracts/schemas/source-gate-evidence.v1.schema.json`
+- Modify: `release/contracts/schemas/target-policy.v1.schema.json`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+- Modify: `scripts/release/approval-workflows.test.mjs`
+- Modify: `scripts/release/database-test-launcher-runtime.mjs`
+- Modify: `scripts/release/trusted-launch-runner.mjs`
+
+**Interfaces:**
+
+- The final workflow DAG is exactly `source evidence -> build admission -> final fresh/snapshot
+execution -> final custody -> aggregate proof -> generated S1 exit evidence -> exit audit -> final
+custody`. Task 29R-D commits and exercises the prefix through generated exit evidence. Task 30 may
+  activate only the independent `exit audit -> final custody` tail after the real Task 29R prefix has
+  passed; it may not reorder or replace any prefix node.
+- `aggregateReleaseProof(input)` selects one internally consistent, custodied proof set from this
+  workflow run.
+- `generateS1ExitEvidence({ aggregateProof, repositoryObservations, ownerAttestations, findings })`
+  derives `s1-exit-evidence.v1` after the aggregate digest exists. It does not accept a prebuilt exit
+  evidence object.
+- Owner/manual attestations are narrow input facts with their own attestation subject, owner,
+  validity window and custody receipt; they cannot claim aggregate/final-gate status.
+- Snapshot and owner inputs are accepted only after their protected producer attestation is verified;
+  artifact names and producer run identities are exact, not caller-defined aliases.
+
+- [ ] **Step 1: Write RED DAG and in-run generation tests**
+
+Assert the workflow has no `finalExecutionRunId`, `finalExecutionArtifactName`,
+`exitEvidenceRunId` or `exitEvidenceArtifactName` input. Reject any graph where aggregate precedes
+final custody, exit evidence precedes aggregate, audit precedes generated exit evidence, or final
+cleanup precedes final custody.
+
+- [ ] **Step 2: Write RED exit-evidence derivation tests**
+
+Tests must prove:
+
+```js
+const evidence = generateS1ExitEvidence({
+  aggregateProof,
+  repositoryObservations,
+  ownerAttestations,
+  findings
+});
+assert.equal(evidence.aggregateProofDigest, sha256Canonical(aggregateProof));
+assert.equal(evidence.sourceSha, aggregateProof.sourceSha);
+```
+
+Reject caller-supplied aggregate digests, `PASSED` controls without evidence digests, owner facts
+whose subject/source/expiry/custody do not match, repository observations from another SHA, and any
+input that attempts to provide a complete `s1-exit-evidence.v1`.
+
+- [ ] **Step 3: Build one workflow run around actual Task 29R adapters**
+
+The source jobs generate current source evidence. Build admission downloads only the immutable
+three-image build proof for the exact main SHA. Final jobs receive the admitted build/source inputs
+from earlier jobs in the same run and call `run-final-compose-gate.mjs --execute` for fresh and
+snapshot; they do not download final evidence from another run. Preserve all failed/UNKNOWN attempts.
+Until Task 30 resumes, the workflow ends successfully after the generated exit evidence and its
+checkpoint custody receipt; no placeholder audit is treated as passed.
+
+- [ ] **Step 4: Generate the aggregate and exit evidence in the only legal order**
+
+After both final custody receipts verify, create the aggregate proof. Then collect repository-derived
+scope/inventory/contract facts and separately attested owner/manual facts, generate
+`s1-exit-evidence.v1`, and store the checkpoint in trusted custody. Task 30 later consumes that exact
+aggregate/exit pair in its independent audit and adds the final custody tail. The generator cannot
+set a control to `PASSED` unless the referenced evidence validates and its digest belongs to the
+selected aggregate or allowed owner-attestation input.
+
+- [ ] **Step 5: Prove trusted retries cannot splice evidence**
+
+Permit a full failed stage retry for the same bundle with new attempt/run/operation IDs. Reject
+replacement images, changed source/contracts/test manifest/snapshot, erased failed attempts,
+cross-run source evidence, duplicate artifact overwrite and selection of uncustodied final evidence.
+
+- [ ] **Step 6: Run workflow, aggregate and generator tests**
+
+```powershell
+node --test scripts/release/aggregate-release-proof.test.mjs scripts/release/generate-s1-exit-evidence.test.mjs scripts/release/final-compose-gate.test.mjs
+node --test scripts/release/approval-workflows.test.mjs scripts/release/trusted-launch-runner.test.mjs apps/release-runner/test/command-registry.test.mjs
+node --test packages/release-foundation/test/catalogs.test.mjs packages/release-foundation/test/snapshot-export.test.mjs
+pnpm release:contracts:verify
+node scripts/release/verify-compose-policy.mjs docker-compose.release-gate.yml
+git diff --check
+```
+
+Expected: PASS; a static workflow contract test confirms the four prohibited external-evidence
+inputs and prebuilt result path are absent.
+
+- [ ] **Step 7: Commit the repaired DAG separately**
+
+```powershell
+git add .github/workflows/release-candidate-gate.yml .github/workflows/release-final-chain.yml .github/workflows/release-owner-attestations.yml .github/workflows/release-operation-approval.yml .github/workflows/release-approval-revocations.yml .github/workflows/sanitized-snapshot.yml apps/release-runner/test/command-registry.test.mjs docs/superpowers/plans/2026-09-02-stage1-s1-trusted-release-foundation-implementation-plan.md packages/release-foundation/src/catalogs.mjs packages/release-foundation/src/database-test-launcher.mjs packages/release-foundation/test/catalogs.test.mjs packages/release-foundation/test/database-test-launcher.test.mjs packages/release-foundation/test/snapshot-export.test.mjs packages/release-foundation/test/source-database-gate.test.mjs release/contracts scripts/release/aggregate-release-proof.mjs scripts/release/aggregate-release-proof.test.mjs scripts/release/approval-workflows.test.mjs scripts/release/assemble-release-aggregate-input.mjs scripts/release/assemble-s1-exit-input.mjs scripts/release/create-final-attempt-history.mjs scripts/release/database-test-launcher-cli.test.mjs scripts/release/database-test-launcher-runtime.mjs scripts/release/export-final-compose-environment.mjs scripts/release/final-compose-application-adapters.test.mjs scripts/release/final-compose-database-adapters.test.mjs scripts/release/generate-s1-exit-evidence.mjs scripts/release/generate-s1-exit-evidence.test.mjs scripts/release/prepare-final-compose-launch.mjs scripts/release/prepare-final-compose-launch.test.mjs scripts/release/release-dag-assemblers.test.mjs scripts/release/task29r-proof-fixtures.mjs scripts/release/trusted-launch-runner.mjs scripts/release/workflow-custody-record.mjs scripts/release/workflow-custody-record.test.mjs
+git commit -m "fix(release): generate final evidence in one trusted run"
+```
+
+Do not stage Task 30's audit implementation or review documents.
+
+- [ ] **Step 8: Run the protected real-execution gate before resuming Task 30**
+
+Push the four 29R commits for review and, after their PR is approved and merged, build one exact
+main-source bundle through the protected Docker Images workflow. Start the Release Candidate gate
+with only build proof, snapshot and narrow owner-attestation references. Require both final chains,
+final evidence custody, aggregate and generated exit evidence checkpoint to succeed. Record the
+workflow run, build-proof digest and selected proof digests. If this cannot be executed, or any stage
+uses prebuilt result JSON, Task 29R is not complete and Task 30 remains paused. This checkpoint is not
+the S1 exit audit and cannot mark S1 ready.
+
 ---
 
 ### Task 30: Aggregate Release evidence and audit S1 exit criteria
 
 **Files:**
 
-- Create: `scripts/release/aggregate-release-proof.mjs`
-- Create: `scripts/release/aggregate-release-proof.test.mjs`
 - Create: `scripts/release/audit-s1-exit.mjs`
 - Create: `scripts/release/audit-s1-exit.test.mjs`
-- Create: `.github/workflows/release-candidate-gate.yml`
 - Create: `docs/operations/stage1-s1-release-candidate-gate.md`
 - Create: `docs/acceptance/2026-09-02-stage1-s1-exit-evidence.md`
+- Modify: `scripts/release/generate-s1-exit-evidence.mjs`
+- Modify: `.github/workflows/release-candidate-gate.yml`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 - Modify: `release/contracts/api-runtime-governance-inventory.v1.json`
 
@@ -2520,19 +3203,27 @@ git commit -m "ci: verify final release bundle end to end"
 
 Reject mixed source SHAs, replacement image digests, mismatched migration or repository contracts, differing test manifests, expired snapshot evidence, incomplete custody receipts, partial bundles, count-equation failures, and an unclassified S1 P1.
 
-- [ ] **Step 2: Assemble the five-stage Release workflow**
+- [ ] **Step 2: Re-verify the five-stage Release workflow produced by Task 29R-D**
 
 1. Source static/unit gate.
 2. Source fresh/snapshot database gate producing source-gate evidence.
-3. Trusted three-image build and build proof.
-4. Final Runner fresh/snapshot Compose executions and client gate.
-5. External Release proof aggregation and S1 exit audit.
+3. Trusted three-image build admission and build proof.
+4. Final Runner fresh/snapshot Compose executions, client gate and final evidence custody.
+5. In-run Release proof aggregation, exit-evidence generation, independent S1 exit audit and final
+   custody.
 
 Stage 2 source evidence is not an execution proof; Stage 4 must repeat equivalent migration, Schema, database-test, and final-image checks with the final Runner.
+Task 30 must fail if either Stage 4 chain was not produced by Task 29R's production adapters in the
+same workflow run. It cannot accept a complete final-compose or S1-exit evidence object downloaded
+from another run.
 
 - [ ] **Step 3: Enforce evidence selection and custody before aggregation**
 
 Select one internally consistent successful proof set from the same immutable inputs. Preserve failed/UNKNOWN attempts. A retry may replace only the selected attempt proof, not mutate the bundle or erase history.
+
+After aggregation, regenerate `s1-exit-evidence.v1` from repository observations and narrow attested
+owner/manual facts, compare it byte-for-byte with the Task 29R-D output, then run the independent
+audit. The exit-evidence generator must not accept its own output as an input.
 
 - [ ] **Step 4: Implement the S1 exit audit**
 
@@ -2542,6 +3233,7 @@ The audit must verify:
 - Postgres 17 digest/version, role separation, exact cleanup, and snapshot ownership/sanitization evidence pass;
 - Runner proof/capability/approval/TOCTOU/UNKNOWN/custody contracts pass;
 - all current API-image governance files and command callers have migrated or have an approved non-executable disposition;
+- return/closure maintenance has separate Task 23A repair and Task 23B migration identities, plans, approvals, credentials, operation IDs and proofs; stored DML proof custody precedes DDL planning, statement logs prove capability separation, and the old combined entry is unavailable;
 - API runtime negative allowlist/SBOM, catalog query, and exact Manifest/session `pg_stat_activity` database identity evidence pass;
 - one build proof covers API/Web/Runner; final Compose and real-client API-base checks pass;
 - no S1 change adds business models, enums, RBAC permissions, migrations, feature flags, customer/API/domain semantic changes, or S2/S3 behavior.
@@ -2572,7 +3264,7 @@ Expected: the Task 0 record still identifies the exact controlled target, no mig
 - [ ] **Step 6: Commit the aggregate gate and publish the review report**
 
 ```powershell
-git add .github/workflows/release-candidate-gate.yml scripts/release release/contracts docs/operations docs/acceptance
+git add .github/workflows/release-candidate-gate.yml scripts/release/audit-s1-exit.mjs scripts/release/audit-s1-exit.test.mjs scripts/release/generate-s1-exit-evidence.mjs release/contracts docs/operations docs/acceptance
 git commit -m "ci: aggregate stage1 s1 release evidence"
 git status --short --branch
 ```
@@ -2583,23 +3275,24 @@ Open the final S1 review with the exact source SHA, build-proof digest, API/Web/
 
 ## Specification Coverage Matrix
 
-| Approved S1 requirement                                                                     | Implementation tasks |
-| ------------------------------------------------------------------------------------------- | -------------------- |
-| Offline-safe implementation target; no ambient database                                     | 0-3                  |
-| A+ immutable three-image bundle and external trust root                                     | 1, 10-12, 27-30      |
-| Build identity/provenance and capability-scoped execution                                   | 1, 10-12, 27-28      |
-| Closed JSON command registry, handler parity, one credential profile                        | 10, 16-25            |
-| Verifiable approval authority, binding, expiry, attested revocation and rollback prevention | 11, 16, 19-25        |
-| Stable baseline Manifest, deterministic plans, TOCTOU, UNKNOWN recovery                     | 10-12, 16-25         |
-| Content-addressed proof custody and 180-day governance                                      | 4, 13, 28, 30        |
-| Full-repository database discovery, unified launcher, isolation and zero skips              | 2-9                  |
-| Migration/runtime fixture credential and DDL/DML separation                                 | 3, 5-9               |
-| PostgreSQL 17 fresh and sanitized snapshot upgrade chains                                   | 0, 3-9, 13-14, 29-30 |
-| Read-only-source snapshot sanitization, ownership normalization, expiry and scanning        | 13-14                |
-| Bidirectional API tooling inventory and per-command behavior equivalence                    | 15-25                |
-| API runtime extraction and negative allowlist                                               | 26                   |
-| Final Compose, exact API database session identity and real Web/API request                 | 29                   |
-| Release aggregation, retry rules and S1 exit audit                                          | 30                   |
+| Approved S1 requirement                                                                     | Implementation tasks                                   |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Offline-safe implementation target; no ambient database                                     | 0-3                                                    |
+| A+ immutable three-image bundle and external trust root                                     | 1, 10-12, 27-30                                        |
+| Build identity/provenance and capability-scoped execution                                   | 1, 10-12, 27-28                                        |
+| Closed JSON command registry, handler parity, one credential profile                        | 10, 16-25, including 23A/23B                           |
+| Verifiable approval authority, binding, expiry, attested revocation and rollback prevention | 11, 16, 19-25, including independent 23A/23B approvals |
+| Stable baseline Manifest, deterministic plans, TOCTOU, UNKNOWN recovery                     | 10-12, 16-25, including 23A/23B proof ordering         |
+| Content-addressed proof custody and 180-day governance                                      | 4, 13, 28, 30                                          |
+| Full-repository database discovery, unified launcher, isolation and zero skips              | 2-9                                                    |
+| Migration/runtime fixture credential and DDL/DML separation                                 | 3, 5-9                                                 |
+| PostgreSQL 17 fresh and sanitized snapshot upgrade chains                                   | 0, 3-9, 13-14, 29-30                                   |
+| Read-only-source snapshot sanitization, ownership normalization, expiry and scanning        | 13-14                                                  |
+| Bidirectional API tooling inventory and per-command behavior equivalence                    | 15-25                                                  |
+| API runtime extraction and negative allowlist                                               | 26                                                     |
+| Fixed trusted launch, real final Runner execution and closed database-test mode             | 29R-A, 29R-B                                           |
+| Final Compose, exact API database session identity and real Web/API request                 | 29, 29R-B, 29R-C                                       |
+| Same-run evidence DAG, Release aggregation, retry rules and S1 exit audit                   | 29R-D, 30                                              |
 
 ## Stop and Rollback Rules
 
@@ -2616,6 +3309,8 @@ Open the final S1 review with the exact source SHA, build-proof digest, API/Web/
 | Process loss with uncertain commit                                                                | Record `INTERRUPTED_UNKNOWN`; forbid new apply; reconcile with the same idempotency key                                                            |
 | Evidence custody upload/readback failure                                                          | Keep the database and evidence workspace; do not aggregate or clean up                                                                             |
 | Final gate failure caused by infrastructure                                                       | Preserve failure proof; rerun the complete failed stage with a new operation/run ID against the same bundle                                        |
+| Runner CLI or trusted launcher still requires caller-injected production adapters                 | Stop at Task 29R; do not accept fixture/prebuilt evidence and do not resume Task 30                                                                |
+| Final or S1-exit evidence is supplied by another workflow run                                     | Reject the input; regenerate final evidence, aggregate and exit evidence in the current trusted DAG                                                |
 | Image or contract input must change                                                               | Invalidate the attempted Release set and produce a new trusted build proof                                                                         |
 | API rollback requested after migration                                                            | Allow only with compatibility proof; database restore requires stopped writes, verified restore, explicit loss window, and separate human approval |
 

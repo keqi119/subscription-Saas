@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "final-compose-runtime.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "chain",
+    "manifestReference",
+    "manifestDigest",
+    "targetReference",
+    "targetDigest",
+    "apiRuntimeCredentialReference",
+    "verifyCredentialReference",
+    "custodyPolicyReference",
+    "custodyPolicyDigest",
+    "attestationRef",
+    "apiManifestId",
+    "apiSessionNonce",
+    "apiBase",
+    "webBase",
+    "publicApiBase",
+    "embeddedApiBase",
+    "composeSecretFiles"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "final-compose-runtime.v1" },
+    "chain": { "enum": ["fresh", "snapshot"] },
+    "manifestReference": { "$ref": "#/$defs/launchFile" },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "targetReference": { "$ref": "#/$defs/launchFile" },
+    "targetDigest": { "$ref": "#/$defs/digest" },
+    "apiRuntimeCredentialReference": { "$ref": "#/$defs/launchFile" },
+    "verifyCredentialReference": { "$ref": "#/$defs/launchFile" },
+    "custodyPolicyReference": { "$ref": "#/$defs/launchFile" },
+    "custodyPolicyDigest": { "$ref": "#/$defs/digest" },
+    "attestationRef": { "type": "string", "minLength": 1 },
+    "apiManifestId": { "$ref": "#/$defs/component" },
+    "apiSessionNonce": { "$ref": "#/$defs/component" },
+    "apiBase": { "$ref": "#/$defs/localUrl" },
+    "webBase": { "$ref": "#/$defs/localUrl" },
+    "publicApiBase": { "$ref": "#/$defs/localUrl" },
+    "embeddedApiBase": { "$ref": "#/$defs/localUrl" },
+    "composeSecretFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "postgresPassword",
+        "migrationCredential",
+        "verifyCredential",
+        "databaseTestCredential",
+        "databaseTestSourceCredential"
+      ],
+      "properties": {
+        "postgresPassword": { "$ref": "#/$defs/launchFile" },
+        "migrationCredential": { "$ref": "#/$defs/launchFile" },
+        "verifyCredential": { "$ref": "#/$defs/launchFile" },
+        "databaseTestCredential": { "$ref": "#/$defs/launchFile" },
+        "databaseTestSourceCredential": { "$ref": "#/$defs/launchFile" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "component": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,39}$" },
+    "launchFile": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]+\\.(?:json|secret)$"
+    },
+    "localUrl": {
+      "type": "string",
+      "pattern": "^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}(?:/[^\\s]*)?$"
+    }
+  }
+}

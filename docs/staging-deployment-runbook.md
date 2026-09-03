@@ -229,7 +229,7 @@ the default path for this staging server.
 
 ## 7. Start PostgreSQL
 
-Image-based path:
+Image-based path（由可信启动方执行，API 镜像不含 Prisma CLI）：
 
 ```bash
 docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml up -d postgres
@@ -263,15 +263,15 @@ Run migration from the API container:
 Image-based path:
 
 ```bash
-docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:migrate:deploy
-docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:migrate:status
+node scripts/release/trusted-launch-runner.mjs --command db.migrate.deploy@1 --phase apply --request-file .release-inputs/migrate-deploy.json
+node scripts/release/trusted-launch-runner.mjs --command db.schema.verify@1 --phase verify --request-file .release-inputs/schema-verify.json
 ```
 
-Source-build path:
+Source-build path（只用于受控临时环境，仍通过固定 Runner command）：
 
 ```bash
-docker compose --env-file .env.staging -f docker-compose.staging.example.yml run --rm api pnpm prisma:migrate:deploy
-docker compose --env-file .env.staging -f docker-compose.staging.example.yml run --rm api pnpm prisma:migrate:status
+node scripts/release/trusted-launch-runner.mjs --command db.migrate.deploy@1 --phase apply --request-file .release-inputs/migrate-deploy.json
+node scripts/release/trusted-launch-runner.mjs --command db.schema.verify@1 --phase verify --request-file .release-inputs/schema-verify.json
 ```
 
 Do not run:
@@ -285,17 +285,14 @@ If migration fails, stop the dry run and keep logs.
 
 ## 9. Baseline Seed
 
-Image-based path:
+环境 seed 不再通过 API 镜像执行。下列本地源码命令仅用于开发数据库，不得用于 Staging：
 
 ```bash
-docker compose -p subauto-staging --env-file .env.staging.images -f docker-compose.staging.images.example.yml run --rm api pnpm prisma:seed
+pnpm prisma:seed # local development database only
 ```
 
-Source-build path:
-
-```bash
-docker compose --env-file .env.staging -f docker-compose.staging.example.yml run --rm api pnpm prisma:seed
-```
+Staging 若需要夹具或基线写入，必须先有注册的 Runner fixture/repair command、独立批准和执行证明；
+缺少该命令时 fail closed。
 
 After first login, change the default admin password.
 
@@ -402,7 +399,7 @@ DATABASE_URL="<STAGING_DATABASE_URL>" ./scripts/restore-postgres.example.sh back
 After restore:
 
 ```bash
-pnpm prisma:migrate:status
+node scripts/release/trusted-launch-runner.mjs --command db.schema.verify@1 --phase verify --request-file .release-inputs/schema-verify.json
 pnpm smoke:api
 ```
 
@@ -518,18 +515,18 @@ docs/staging-dry-run-report.md
 
 Minimum table:
 
-| Step | Command | Result | Notes |
-| --- | --- | --- | --- |
-| DNS | `<command / console>` | `<Passed / Failed>` |  |
-| compose config | `docker compose ... config` | `<Passed / Failed>` |  |
-| image build / push | `<local or CI command>` | `<Passed / Failed / N/A>` |  |
-| pull | `docker compose ... pull` | `<Passed / Failed>` |  |
-| up | `docker compose ... up -d` | `<Passed / Failed>` |  |
-| migrate deploy | `pnpm prisma:migrate:deploy` | `<Passed / Failed>` |  |
-| seed | `pnpm prisma:seed` | `<Passed / Failed>` |  |
-| smoke | `pnpm smoke:api` | `<Passed / Failed>` |  |
-| backup | `backup-postgres.example.sh` | `<Passed / Failed>` |  |
-| restore | `restore-postgres.example.sh` | `<Passed / Waived / Failed>` |  |
+| Step               | Command                               | Result                       | Notes |
+| ------------------ | ------------------------------------- | ---------------------------- | ----- |
+| DNS                | `<command / console>`                 | `<Passed / Failed>`          |       |
+| compose config     | `docker compose ... config`           | `<Passed / Failed>`          |       |
+| image build / push | `<local or CI command>`               | `<Passed / Failed / N/A>`    |       |
+| pull               | `docker compose ... pull`             | `<Passed / Failed>`          |       |
+| up                 | `docker compose ... up -d`            | `<Passed / Failed>`          |       |
+| migrate deploy     | Runner `db.migrate.deploy@1`          | `<Passed / Failed>`          |       |
+| seed               | registered Runner fixture/repair only | `<Passed / N/A / Failed>`    |       |
+| smoke              | `pnpm smoke:api`                      | `<Passed / Failed>`          |       |
+| backup             | `backup-postgres.example.sh`          | `<Passed / Failed>`          |       |
+| restore            | `restore-postgres.example.sh`         | `<Passed / Waived / Failed>` |       |
 
 ## 17. Production Cutover Gate
 

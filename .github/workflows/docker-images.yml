@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       imageTag:
-        description: "Image tag, for example rc-20260613-stage9 or a short SHA"
+        description: "Discovery tag for this immutable build; never used as release identity"
         required: true
         type: string
       apiBaseUrl:
@@ -28,35 +28,63 @@ on:
           - staging
           - production
 
+permissions:
+  contents: read
+
 jobs:
-  build-and-push:
+  prepare:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
     runs-on: ubuntu-latest
-
-    env:
-      API_IMAGE: ${{ inputs.registry }}/${{ inputs.namespace }}/subscription-api:${{ inputs.imageTag }}
-      WEB_IMAGE: ${{ inputs.registry }}/${{ inputs.namespace }}/subscription-web:${{ inputs.imageTag }}
-
-    permissions:
-      contents: read
-      packages: write
-
+    environment: trusted-image-build
+    outputs:
+      source-sha: ${{ steps.source.outputs.sha }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout the workflow commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Freeze the trusted source identity
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$GITHUB_SHA"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Validate image build inputs
+      - name: Validate immutable build inputs
         env:
           API_BASE_URL: ${{ inputs.apiBaseUrl }}
           DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
           IMAGE_TAG: ${{ inputs.imageTag }}
         run: node scripts/validate-image-build-inputs.mjs
 
+  build-api:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.identity.outputs.image }}
+      index-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout the frozen source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
       - name: Login to GitHub Container Registry
         if: inputs.registry == 'ghcr.io'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -64,67 +92,534 @@ jobs:
 
       - name: Login to custom registry
         if: inputs.registry != 'ghcr.io'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ${{ inputs.registry }}
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
-      - name: Build and push API image
-        uses: docker/build-push-action@v6
+      - name: Record API image repository
+        id: identity
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.registry }}/${{ inputs.namespace }}/subscription-api
+        run: echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push attested API image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           file: Dockerfile.api
           push: true
-          build-args: |
-            API_SOURCE_REVISION=${{ github.sha }}
-          tags: ${{ env.API_IMAGE }}
+          platforms: linux/amd64
+          provenance: mode=max
+          sbom: true
+          build-args: API_SOURCE_REVISION=${{ needs.prepare.outputs.source-sha }}
+          labels: org.opencontainers.image.revision=${{ needs.prepare.outputs.source-sha }}
+          tags: ${{ steps.identity.outputs.image }}:${{ inputs.imageTag }}
 
-      - name: Verify API image revision
+  build-web:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.identity.outputs.image }}
+      index-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout the frozen source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Login to GitHub Container Registry
+        if: inputs.registry == 'ghcr.io'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Login to custom registry
+        if: inputs.registry != 'ghcr.io'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Record Web image repository
+        id: identity
         shell: bash
         env:
-          API_IMAGE: ${{ env.API_IMAGE }}
-        run: |
-          set -euo pipefail
-          docker pull "$API_IMAGE"
-          actual_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$API_IMAGE")"
-          if [ "$actual_revision" != "${GITHUB_SHA}" ]; then
-            echo "API image revision label does not match the workflow commit"
-            exit 1
-          fi
+          IMAGE: ${{ inputs.registry }}/${{ inputs.namespace }}/subscription-web
+        run: echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push Web image
-        uses: docker/build-push-action@v6
+      - name: Build and push attested Web image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           file: Dockerfile.web
           push: true
+          platforms: linux/amd64
+          provenance: mode=max
+          sbom: true
           build-args: |
+            WEB_SOURCE_REVISION=${{ needs.prepare.outputs.source-sha }}
             NEXT_PUBLIC_API_BASE_URL=${{ inputs.apiBaseUrl }}
             NEXT_DEPLOYMENT_ID=${{ inputs.imageTag }}
-          tags: ${{ env.WEB_IMAGE }}
+          labels: org.opencontainers.image.revision=${{ needs.prepare.outputs.source-sha }}
+          tags: ${{ steps.identity.outputs.image }}:${{ inputs.imageTag }}
 
-      - name: Check Web image API base
+      - name: Check the Web image API base by immutable digest
         shell: bash
         env:
           API_BASE_URL: ${{ inputs.apiBaseUrl }}
           DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
-          WEB_IMAGE: ${{ env.WEB_IMAGE }}
+          WEB_IMAGE: ${{ steps.identity.outputs.image }}@${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-
-          rm -rf tmp-web-next
+          temporary_directory="$(mktemp -d)"
+          container=""
+          cleanup() {
+            if [ -n "$container" ]; then docker rm -f "$container" >/dev/null 2>&1 || true; fi
+            rm -rf -- "$temporary_directory"
+          }
+          trap cleanup EXIT
           docker pull "$WEB_IMAGE"
           container="$(docker create "$WEB_IMAGE")"
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
-          docker cp "$container:/app/apps/web/.next" ./tmp-web-next
-
-          CHECK_ARGS=(
-            --dir ./tmp-web-next
-            --must-contain "$API_BASE_URL"
-          )
+          docker cp "$container:/app/apps/web/.next" "$temporary_directory/next"
+          check_args=(--dir "$temporary_directory/next" --must-contain "$API_BASE_URL")
           if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ]; then
-            CHECK_ARGS+=(--must-not-contain "staging-api.subauto.keybox.cloud")
+            check_args+=(--must-not-contain "staging-api.subauto.keybox.cloud")
           fi
+          node scripts/check-web-bundle-api-base.mjs "${check_args[@]}"
 
-          node scripts/check-web-bundle-api-base.mjs "${CHECK_ARGS[@]}"
+  build-runner:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.identity.outputs.image }}
+      index-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout the frozen source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Login to GitHub Container Registry
+        if: inputs.registry == 'ghcr.io'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Login to custom registry
+        if: inputs.registry != 'ghcr.io'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Record Runner image repository
+        id: identity
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.registry }}/${{ inputs.namespace }}/subscription-runner
+        run: echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push attested Runner image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: Dockerfile.runner
+          push: true
+          platforms: linux/amd64
+          provenance: mode=max
+          sbom: true
+          build-args: RUNNER_SOURCE_REVISION=${{ needs.prepare.outputs.source-sha }}
+          labels: org.opencontainers.image.revision=${{ needs.prepare.outputs.source-sha }}
+          tags: ${{ steps.identity.outputs.image }}:${{ inputs.imageTag }}
+
+  observe-build-materials:
+    needs: [prepare, build-api, build-web, build-runner]
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    environment: trusted-image-build
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: read
+    outputs:
+      build-proof-digest: ${{ steps.proof-identity.outputs.digest }}
+      build-proof-artifact-id: ${{ steps.proof-upload.outputs.artifact-id }}
+      build-proof-receipt-artifact-id: ${{ steps.receipt-upload.outputs.artifact-id }}
+      build-proof-evidence-artifact-id: ${{ steps.evidence-upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout the frozen source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx for registry observation
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Login to GitHub Container Registry
+        if: inputs.registry == 'ghcr.io'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Login to custom registry
+        if: inputs.registry != 'ghcr.io'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Install the fixed repository dependencies
+        run: corepack enable && pnpm install --frozen-lockfile
+
+      - name: Verify repository contracts and compute their digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .release-output
+          pnpm release:contracts:verify | tee .release-output/repository-contract-result.json
+
+      - name: Resolve registry subjects and attestation manifests
+        shell: bash
+        env:
+          API_IMAGE: ${{ needs.build-api.outputs.image }}
+          API_INDEX_DIGEST: ${{ needs.build-api.outputs.index-digest }}
+          WEB_IMAGE: ${{ needs.build-web.outputs.image }}
+          WEB_INDEX_DIGEST: ${{ needs.build-web.outputs.index-digest }}
+          RUNNER_IMAGE: ${{ needs.build-runner.outputs.image }}
+          RUNNER_INDEX_DIGEST: ${{ needs.build-runner.outputs.index-digest }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+          BUILD_EVENT_NAME: ${{ github.event_name }}
+          BUILD_REF: ${{ github.ref }}
+          BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+          BUILD_RUN_REF: github://${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { execFile } from "node:child_process";
+          import { readFile, writeFile } from "node:fs/promises";
+          import { promisify } from "node:util";
+          import { canonicalJson, sha256Canonical } from "./packages/release-foundation/src/index.mjs";
+
+          const run = promisify(execFile);
+          const policy = JSON.parse(await readFile("release/contracts/build-material-policy.v1.json", "utf8"));
+          const contracts = JSON.parse(await readFile(".release-output/repository-contract-result.json", "utf8"));
+          const definitions = [
+            ["api", process.env.API_IMAGE, process.env.API_INDEX_DIGEST],
+            ["web", process.env.WEB_IMAGE, process.env.WEB_INDEX_DIGEST],
+            ["runner", process.env.RUNNER_IMAGE, process.env.RUNNER_INDEX_DIGEST]
+          ];
+          const platformDigest = async (reference, declaredDigest) => {
+            const raw = (await run("docker", ["buildx", "imagetools", "inspect", "--raw", `${reference}@${declaredDigest}`], { maxBuffer: 16 * 1024 * 1024 })).stdout;
+            const manifest = JSON.parse(raw);
+            if (!Array.isArray(manifest.manifests)) return declaredDigest;
+            const platform = manifest.manifests.find((entry) => entry.platform?.os === "linux" && entry.platform?.architecture === "amd64");
+            if (!platform?.digest) throw new Error("BUILD_BASE_IMAGE_UNPROVEN");
+            return platform.digest;
+          };
+          const materialList = (provenance) => provenance.materials ?? provenance.resolvedDependencies ?? provenance.buildDefinition?.resolvedDependencies ?? provenance.predicate?.materials ?? provenance.predicate?.buildDefinition?.resolvedDependencies ?? [];
+          const baseRepository = (baseImage) => {
+            const lastSlash = baseImage.lastIndexOf("/");
+            const lastColon = baseImage.lastIndexOf(":");
+            return lastColon > lastSlash ? baseImage.slice(0, lastColon) : baseImage;
+          };
+          const materialMatches = (material, baseImage, resolvedDigest) => {
+            const repository = baseRepository(baseImage);
+            const uri = String(material?.uri ?? "");
+            const digestValues = Object.values(material?.digest ?? {});
+            return (uri.startsWith(`pkg:docker/${repository}@`) || uri.includes(`/${repository}@`))
+              && (digestValues.includes(resolvedDigest.replace(/^sha256:/u, "")) || uri.includes(resolvedDigest));
+          };
+          const images = [];
+          for (const [name, image, indexDigest] of definitions) {
+            if (!/^sha256:[0-9a-f]{64}$/u.test(indexDigest ?? "")) throw new Error("BUILD_REGISTRY_DIGEST_REQUIRED");
+            const raw = (await run("docker", ["buildx", "imagetools", "inspect", "--raw", `${image}@${indexDigest}`], { maxBuffer: 16 * 1024 * 1024 })).stdout;
+            const index = JSON.parse(raw);
+            const platform = index.manifests?.find((entry) => entry.platform?.os === "linux" && entry.platform?.architecture === "amd64");
+            if (!platform?.digest) throw new Error("BUILD_PLATFORM_SUBJECT_MISSING");
+            const attestation = index.manifests.find((entry) => entry.annotations?.["vnd.docker.reference.type"] === "attestation-manifest" && entry.annotations?.["vnd.docker.reference.digest"] === platform.digest);
+            if (!attestation?.digest) throw new Error("BUILD_ATTESTATION_REQUIRED");
+            const subject = `${image}@${platform.digest}`;
+            const provenanceRaw = (await run("docker", ["buildx", "imagetools", "inspect", `${image}@${indexDigest}`, "--format", "{{json .Provenance.SLSA}}"], { maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
+            const provenance = JSON.parse(provenanceRaw);
+            const materials = materialList(provenance);
+            const builderName = provenance.buildType ?? provenance.predicate?.buildType ?? provenance.runDetails?.builder?.id ?? provenance.builder?.id;
+            if (!Array.isArray(materials) || materials.length === 0 || typeof builderName !== "string" || builderName.length === 0) {
+              throw new Error("BUILD_BUILDER_PROVENANCE_REQUIRED");
+            }
+            const baseImageDigests = [];
+            for (const baseImage of policy.requiredBaseImagesByArtifact[name]) {
+              const declaredDigest = policy.baseImages[baseImage];
+              const digest = await platformDigest(baseImage, declaredDigest);
+              if (!materials.some((material) => materialMatches(material, baseImage, digest))) {
+                throw new Error("BUILD_BASE_IMAGE_UNPROVEN");
+              }
+              baseImageDigests.push({ image: baseImage, declaredDigest, digest });
+            }
+            await run("docker", ["pull", "--platform", "linux/amd64", subject], { maxBuffer: 16 * 1024 * 1024 });
+            const sourceRevision = (await run("docker", ["image", "inspect", "--format", '{{ index .Config.Labels "org.opencontainers.image.revision" }}', subject])).stdout.trim();
+            images.push({
+              name,
+              image,
+              platform: "linux/amd64",
+              digest: platform.digest,
+              sourceRevision,
+              baseImageDigests,
+              builderName,
+              buildAttestationRef: `oci://${subject}#provenance=${attestation.digest}`,
+              registrySubject: subject,
+              buildRunRef: process.env.BUILD_RUN_REF
+            });
+          }
+          const input = {
+            context: {
+              eventName: process.env.BUILD_EVENT_NAME,
+              ref: process.env.BUILD_REF,
+              runAttempt: Number(process.env.BUILD_RUN_ATTEMPT),
+              sourceSha: process.env.SOURCE_SHA,
+              checkoutRef: process.env.SOURCE_SHA,
+              ciRunRef: process.env.BUILD_RUN_REF,
+              protectedEnvironment: policy.trustedBuild.protectedEnvironment
+            },
+            repositoryContractDigest: contracts.repositoryContractDigest,
+            migrationCatalogDigest: contracts.migrationCatalogDigest,
+            images,
+            externalActions: Object.entries(policy.externalActions).map(([name, commitSha]) => ({ name, commitSha })),
+            builder: {
+              name: images[0]?.builderName,
+              provenanceRef: `build-material-attestations:${sha256Canonical(images.map(({ buildAttestationRef }) => buildAttestationRef).sort())}`
+            },
+            observedAt: new Date().toISOString()
+          };
+          await writeFile(".release-output/build-material-input.v1.json", `${canonicalJson(input)}\n`, { flag: "wx" });
+          NODE
+
+      - name: Verify and freeze the build material observation
+        run: node scripts/release/verify-build-materials.mjs --input .release-output/build-material-input.v1.json --output .release-output/build-material-observation.v1.json
+
+      - name: Create the complete three-image build proof
+        id: proof-identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+          node scripts/release/create-build-proof.mjs \
+            --observation .release-output/build-material-observation.v1.json \
+            --generated-at "$generated_at" \
+            --output .release-output/build-proof.v1.json \
+            | tee .release-output/build-proof-create-result.json
+          proof_digest="$(node -e 'const r=require("./.release-output/build-proof-create-result.json"); process.stdout.write(r.buildProofDigest)')"
+          test "$(sha256sum .release-output/build-proof.v1.json | cut -d " " -f 1)" = "${proof_digest#sha256:}"
+          echo "digest=$proof_digest" >> "$GITHUB_OUTPUT"
+          echo "digest-hex=${proof_digest#sha256:}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the protected build proof
+        id: proof-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-output/build-proof.v1.json
+
+      - name: Verify the proof attestation against the protected signer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          gh attestation verify .release-output/build-proof.v1.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/docker-images.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "$SOURCE_SHA" \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \
+            --deny-self-hosted-runners \
+            --format json \
+            > .release-output/build-proof-attestation-verification.json
+          node -e 'const r=require("./.release-output/build-proof-attestation-verification.json"); if(!Array.isArray(r)||r.length===0) process.exit(1)'
+
+      - name: Store the proof under its content digest
+        id: proof-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: build-proof-${{ steps.proof-identity.outputs.digest-hex }}
+          path: .release-output/build-proof.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          compression-level: 0
+          overwrite: false
+
+      - name: Read the stored proof back through the artifact service
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: build-proof-${{ steps.proof-identity.outputs.digest-hex }}
+          path: .release-readback/proof
+
+      - name: Create and validate the proof custody receipt
+        shell: bash
+        env:
+          ATTESTATION_REF: ${{ steps.proof-attestation.outputs.attestation-url }}
+          GH_TOKEN: ${{ github.token }}
+          PROOF_ARTIFACT_ID: ${{ steps.proof-upload.outputs.artifact-id }}
+          PROOF_ARTIFACT_URL: ${{ steps.proof-upload.outputs.artifact-url }}
+          PROOF_DIGEST: ${{ steps.proof-identity.outputs.digest }}
+        run: |
+          set -euo pipefail
+          readback=.release-readback/proof/build-proof.v1.json
+          test -f "$readback"
+          test "$(sha256sum "$readback" | cut -d " " -f 1)" = "${PROOF_DIGEST#sha256:}"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PROOF_ARTIFACT_ID" \
+            > .release-output/build-proof-artifact-metadata.json
+          node --input-type=module <<'NODE'
+          import { randomUUID } from "node:crypto";
+          import { readFile, stat, writeFile } from "node:fs/promises";
+          import { assertCustodyComplete, canonicalJson } from "./packages/release-foundation/src/index.mjs";
+
+          if (!process.env.ATTESTATION_REF || !process.env.PROOF_ARTIFACT_URL) throw new Error("BUILD_PROOF_CUSTODY_REFERENCE_MISSING");
+          const metadata = JSON.parse(await readFile(".release-output/build-proof-artifact-metadata.json", "utf8"));
+          if (String(metadata.id) !== process.env.PROOF_ARTIFACT_ID || metadata.expired !== false) throw new Error("BUILD_PROOF_CUSTODY_STORAGE_METADATA_INVALID");
+          const uploadedAt = new Date(metadata.created_at);
+          const retainUntil = new Date(uploadedAt);
+          retainUntil.setUTCDate(retainUntil.getUTCDate() + 180);
+          if (Number.isNaN(uploadedAt.getTime()) || Date.parse(metadata.expires_at) < retainUntil.getTime()) throw new Error("BUILD_PROOF_CUSTODY_RETENTION_TOO_SHORT");
+          const receipt = {
+            schemaVersion: "custody-receipt.v1",
+            receiptId: randomUUID(),
+            contentDigest: process.env.PROOF_DIGEST,
+            contentSizeBytes: (await stat(".release-output/build-proof.v1.json")).size,
+            storeRef: process.env.PROOF_ARTIFACT_URL,
+            uploadedAt: uploadedAt.toISOString(),
+            readbackAt: new Date().toISOString(),
+            readbackDigest: process.env.PROOF_DIGEST,
+            owner: "release-engineering",
+            readers: ["release", "qa", "security", "audit"],
+            retainUntil: retainUntil.toISOString(),
+            expiryDisposition: "review",
+            attestationRef: process.env.ATTESTATION_REF
+          };
+          assertCustodyComplete(receipt, process.env.PROOF_DIGEST);
+          await writeFile(".release-output/build-proof.custody-receipt.v1.json", canonicalJson(receipt), { flag: "wx" });
+          NODE
+
+      - name: Store the immutable proof custody receipt
+        id: receipt-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: build-proof-receipt-${{ steps.proof-identity.outputs.digest-hex }}
+          path: .release-output/build-proof.custody-receipt.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          compression-level: 0
+          overwrite: false
+
+      - name: Read back and verify the receipt and complete proof trust chain
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: build-proof-receipt-${{ steps.proof-identity.outputs.digest-hex }}
+          path: .release-readback/receipt
+
+      - name: Verify the custodied proof for complete-bundle promotion
+        shell: bash
+        env:
+          ATTESTATION_REF: ${{ steps.proof-attestation.outputs.attestation-url }}
+          PROOF_DIGEST: ${{ steps.proof-identity.outputs.digest }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          cmp .release-output/build-proof.custody-receipt.v1.json .release-readback/receipt/build-proof.custody-receipt.v1.json
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from "node:fs/promises";
+          import { canonicalJson, sha256Bytes } from "./packages/release-foundation/src/index.mjs";
+
+          const [proof, buildMaterialObservation, custodyReceipt, attestationVerificationBytes] = await Promise.all([
+            readFile(".release-output/build-proof.v1.json", "utf8").then(JSON.parse),
+            readFile(".release-output/build-material-observation.v1.json", "utf8").then(JSON.parse),
+            readFile(".release-output/build-proof.custody-receipt.v1.json", "utf8").then(JSON.parse),
+            readFile(".release-output/build-proof-attestation-verification.json")
+          ]);
+          const input = {
+            proof,
+            buildMaterialObservation,
+            executionScope: "full-rc",
+            trustRoot: {
+              issuer: "https://token.actions.githubusercontent.com",
+              repository: process.env.GITHUB_REPOSITORY,
+              workflowPath: ".github/workflows/docker-images.yml",
+              workflowRef: "refs/heads/main",
+              protectedEnvironment: "trusted-image-build",
+              runAttempt: 1,
+              custody: {
+                owner: "release-engineering",
+                readers: ["release", "qa", "security", "audit"],
+                retentionDays: 180,
+                expiryDisposition: "review"
+              }
+            },
+            verifiedAttestation: {
+              subjectDigest: process.env.PROOF_DIGEST,
+              sourceSha: process.env.SOURCE_SHA,
+              issuer: "https://token.actions.githubusercontent.com",
+              repository: process.env.GITHUB_REPOSITORY,
+              workflowPath: ".github/workflows/docker-images.yml",
+              workflowRef: "refs/heads/main",
+              workflowRunId: process.env.GITHUB_RUN_ID,
+              runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              protectedEnvironment: "trusted-image-build",
+              attestationRef: process.env.ATTESTATION_REF,
+              verifier: "gh-attestation-verify",
+              verificationPolicy: "github-artifact-attestation/v1",
+              verificationEvidenceDigest: sha256Bytes(attestationVerificationBytes)
+            },
+            custodyReceipt
+          };
+          await writeFile(".release-output/build-proof-verification-input.v1.json", canonicalJson(input), { flag: "wx" });
+          NODE
+          node scripts/release/verify-build-proof.mjs \
+            --input .release-output/build-proof-verification-input.v1.json \
+            | tee .release-output/build-proof-verification-decision.v1.json
+          node -e 'const d=require("./.release-output/build-proof-verification-decision.v1.json"); if(d.status!=="verified"||d.promotionEligible!==true||d.buildProofDigest!==process.env.PROOF_DIGEST) process.exit(1)'
+
+      - name: Preserve the supporting proof verification evidence
+        id: evidence-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: build-proof-evidence-${{ steps.proof-identity.outputs.digest-hex }}
+          path: |
+            .release-output/build-material-observation.v1.json
+            .release-output/build-proof-artifact-metadata.json
+            .release-output/build-proof-attestation-verification.json
+            .release-output/build-proof.custody-receipt.v1.json
+            .release-output/build-proof-verification-decision.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          compression-level: 0
+          overwrite: false

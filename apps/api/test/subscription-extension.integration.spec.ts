@@ -1,7 +1,5 @@
 import { ConfigService } from "@nestjs/config";
 import {
-  ContractStatus,
-  Prisma,
   RenewalConsiderationStatus,
   RenewalDecision,
   SubscriptionChangePricingMode,
@@ -19,10 +17,12 @@ import { ContractSegmentService } from "../src/subscription-change/contract-segm
 import { SubscriptionChangeRepository } from "../src/subscription-change/subscription-change.repository";
 import { SubscriptionExtensionPricingService } from "../src/subscription-change/subscription-extension-pricing.service";
 import { SubscriptionExtensionService } from "../src/subscription-change/subscription-extension.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import { insertRuntimeContract, insertRuntimeOrderGraph } from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgresql://subscription:subscription@127.0.0.1:55432/subscription_saas_codex?schema=public";
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-extension.integration.spec.ts"
+).databaseUrl;
 
 describe("SubscriptionExtensionService PostgreSQL integration", () => {
   let prisma: PrismaService;
@@ -274,183 +274,57 @@ async function createFixture(prisma: PrismaService) {
   const productId = randomUUID();
   const productVersionId = randomUUID();
   const vehicleId = randomUUID();
+  const applicationId = randomUUID();
+  const quoteId = randomUUID();
 
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "product" (
-        "id", "product_no", "name", "product_type", "status", "created_at", "updated_at"
-      ) VALUES (
-        ${productId}::uuid,
-        ${`PRDEXT${productId.replaceAll("-", "").slice(0, 18)}`},
-        'Extension integration product',
-        'SUBSCRIPTION',
-        'ACTIVE',
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "product_version" (
-        "id", "product_id", "version_no", "effective_from", "status", "created_at", "updated_at"
-      ) VALUES (
-        ${productVersionId}::uuid,
-        ${productId}::uuid,
-        'V1.0',
-        '2026-01-01'::date,
-        'ACTIVE',
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "vehicle" (
-        "id", "vehicle_no", "brand", "model_definition_id", "purchase_price_amount",
-        "current_sale_price_amount", "status", "created_at", "updated_at"
-      ) VALUES (
-        ${vehicleId}::uuid,
-        ${`VEHEXT${vehicleId.replaceAll("-", "").slice(0, 18)}`},
-        'NIO',
-        ${randomUUID()}::uuid,
-        18000000,
-        20000000,
-        'LEASED',
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "subscription_order" (
-        "id", "order_no", "customer_id", "application_id", "quote_id",
-        "contract_id", "vehicle_id", "product_id", "product_version_id",
-        "vehicle_purchase_price_amount", "monthly_fee_amount", "deposit_amount",
-        "period_months", "mileage_limit_km", "over_mileage_fee_amount",
-        "energy_limit_count", "model_definition_id_snapshot", "model_code_snapshot",
-        "model_display_name_snapshot", "quote_snapshot", "final_plan_snapshot",
-        "order_status", "start_date", "end_date", "created_at", "updated_at"
-      ) VALUES (
-        ${orderId}::uuid,
-        ${`ORDEXT${orderId.replaceAll("-", "").slice(0, 20)}`},
-        ${customerId}::uuid,
-        ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid,
-        NULL,
-        ${vehicleId}::uuid,
-        ${productId}::uuid,
-        ${productVersionId}::uuid,
-        20000000,
-        88000,
-        0,
-        6,
-        1500,
-        100,
-        2,
-        ${randomUUID()}::uuid,
-        'NIO_ET5_2024',
-        'NIO ET5',
-        '{"quoteNo":"QUOTE-EXT-1"}'::jsonb,
-        '{"subscriptionPlan":{"planNo":"PLAN-EXT-1"}}'::jsonb,
-        'ACTIVE',
-        '2026-03-03'::date,
-        '2026-09-02'::date,
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "contract" (
-        "id", "contract_no", "order_id", "customer_id", "business_type",
-        "contract_version_id", "contract_title", "contract_snapshot", "status",
-        "archived_at", "created_at", "updated_at"
-      ) VALUES (
-        ${contractId}::uuid,
-        ${`CONEXT${contractId.replaceAll("-", "").slice(0, 20)}`},
-        ${orderId}::uuid,
-        ${customerId}::uuid,
-        'SUBSCRIPTION',
-        ${randomUUID()}::uuid,
-        'Main subscription contract',
-        '{"archivedDocument":"main-contract.pdf"}'::jsonb,
-        ${ContractStatus.ARCHIVED}::contract_status,
-        clock_timestamp(),
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      UPDATE "subscription_order"
-      SET "contract_id" = ${contractId}::uuid
-      WHERE "id" = ${orderId}::uuid
-    `);
+    await insertRuntimeOrderGraph(tx, {
+      applicationId,
+      customerId,
+      label: `EXT-${orderId}`,
+      orderId,
+      productId,
+      productVersionId,
+      quoteId,
+      vehicleId
+    });
+    await insertRuntimeContract(tx, {
+      contractId,
+      customerId,
+      label: `EXT-${orderId}`,
+      orderId,
+      status: "ARCHIVED"
+    });
+    await tx.subscriptionOrder.update({
+      data: {
+        depositAmount: 0n,
+        endDate: new Date("2026-09-02T00:00:00.000Z"),
+        energyLimitCount: 2,
+        finalPlanSnapshot: { subscriptionPlan: { planNo: "PLAN-EXT-1" } },
+        mileageLimitKm: 1500,
+        monthlyFeeAmount: 88000n,
+        orderStatus: "ACTIVE",
+        overMileageFeeAmount: 100n,
+        quoteSnapshot: { quoteNo: "QUOTE-EXT-1" },
+        startDate: new Date("2026-03-03T00:00:00.000Z"),
+        vehiclePurchasePriceAmount: 20000000n
+      },
+      where: { id: orderId }
+    });
+    await tx.vehicle.update({
+      data: {
+        currentSalePriceAmount: 20000000n,
+        purchasePriceAmount: 18000000n,
+        status: "LEASED"
+      },
+      where: { id: vehicleId }
+    });
   });
 
   return { contractId, customerId, orderId, productId, productVersionId, vehicleId };
 }
 
 async function cleanupFixture(prisma: PrismaService, orderId: string) {
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_change_command"
-      WHERE "resource_id" IN (
-        SELECT "id" FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid
-        UNION
-        SELECT q."id" FROM "subscription_change_quote" q
-        JOIN "subscription_change_order" c ON c."id" = q."change_order_id"
-        WHERE c."order_id" = ${orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "audit_log"
-      WHERE "entity_id" IN (
-        SELECT "id" FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid
-        UNION
-        SELECT q."id" FROM "subscription_change_quote" q
-        JOIN "subscription_change_order" c ON c."id" = q."change_order_id"
-        WHERE c."order_id" = ${orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_change_quote"
-      WHERE "change_order_id" IN (
-        SELECT "id" FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_extension_change_detail"
-      WHERE "change_order_id" IN (
-        SELECT "id" FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "renewal_consideration" WHERE "order_id" = ${orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_contract_segment" WHERE "order_id" = ${orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "contract" WHERE "order_id" = ${orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle" WHERE "id" = (
-        SELECT "vehicle_id" FROM "subscription_order" WHERE "id" = ${orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "product_version" WHERE "id" = (
-        SELECT "product_version_id" FROM "subscription_order" WHERE "id" = ${orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "product" WHERE "id" = (
-        SELECT "product_id" FROM "subscription_order" WHERE "id" = ${orderId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_order" WHERE "id" = ${orderId}::uuid
-    `);
-  });
+  void prisma;
+  void orderId;
 }

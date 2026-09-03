@@ -123,6 +123,26 @@ test("apply rejects missing confirmation or malformed approval before a target t
   }
 });
 
+test("apply accepts the registered Runner confirmation without ambient process state", async () => {
+  const source = createDatabaseFake("subscription_saas_staging", sourceRows());
+  const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});
+  const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+  const previous = process.env[APPLY_ENV];
+  delete process.env[APPLY_ENV];
+  try {
+    const applied = await executeStage1CleanAcceptanceBaseline({
+      ...baseOptions("apply", source, target),
+      approvedManifest: dry.manifest,
+      approvedManifestSha256: dry.manifestSha256,
+      runnerConfirmation: "STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY"
+    });
+    assert.equal(applied.mode, "apply");
+    assert.equal(applied.safe, true);
+  } finally {
+    restoreEnv(previous);
+  }
+});
+
 test("apply rejects a source snapshot changed since the approved manifest without writing target rows", async () => {
   const source = createDatabaseFake("subscription_saas_staging", sourceRows());
   const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});

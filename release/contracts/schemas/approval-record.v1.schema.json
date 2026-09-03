@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "approval-record.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "approvalId",
+    "approvalMode",
+    "authority",
+    "issuedAt",
+    "notAfter",
+    "bindings"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "approval-record.v1" },
+    "approvalId": { "type": "string", "format": "uuid" },
+    "approvalMode": { "enum": ["ci-policy", "human"] },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "subject", "repository", "workflowPath", "workflowRef", "environment"],
+      "properties": {
+        "issuer": { "$ref": "#/$defs/nonEmpty" },
+        "subject": { "$ref": "#/$defs/nonEmpty" },
+        "repository": { "$ref": "#/$defs/nonEmpty" },
+        "workflowPath": { "$ref": "#/$defs/nonEmpty" },
+        "workflowRef": { "$ref": "#/$defs/nonEmpty" },
+        "environment": { "$ref": "#/$defs/nonEmpty" }
+      }
+    },
+    "issuedAt": { "$ref": "#/$defs/timestamp" },
+    "notAfter": { "$ref": "#/$defs/timestamp" },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "buildProofDigest",
+        "baselineManifestIdentityDigest",
+        "baselineManifestDigest",
+        "databaseIdentityDigest",
+        "commandId",
+        "commandVersion",
+        "executionScope",
+        "operationId",
+        "inputDigest",
+        "planDigest",
+        "approvalPolicyDigest"
+      ],
+      "properties": {
+        "buildProofDigest": { "$ref": "#/$defs/digest" },
+        "baselineManifestIdentityDigest": { "$ref": "#/$defs/digest" },
+        "baselineManifestDigest": { "$ref": "#/$defs/digest" },
+        "databaseIdentityDigest": { "$ref": "#/$defs/digest" },
+        "commandId": { "$ref": "#/$defs/nonEmpty" },
+        "commandVersion": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "executionScope": {
+          "enum": ["full-rc", "migration-schema", "verify", "repair", "fixture", "evidence"]
+        },
+        "operationId": { "$ref": "#/$defs/nonEmpty" },
+        "inputDigest": { "$ref": "#/$defs/digest" },
+        "planDigest": { "$ref": "#/$defs/digest" },
+        "approvalPolicyDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "nonEmpty": { "type": "string", "minLength": 1 }
+  }
+}

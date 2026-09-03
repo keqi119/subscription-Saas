@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "custody-receipt.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "receiptId",
+    "contentDigest",
+    "contentSizeBytes",
+    "storeRef",
+    "uploadedAt",
+    "readbackAt",
+    "readbackDigest",
+    "owner",
+    "readers",
+    "retainUntil",
+    "expiryDisposition",
+    "attestationRef"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "custody-receipt.v1" },
+    "receiptId": { "type": "string", "format": "uuid" },
+    "contentDigest": { "$ref": "#/$defs/digest" },
+    "contentSizeBytes": { "type": "integer", "minimum": 0 },
+    "storeRef": { "$ref": "#/$defs/nonEmpty" },
+    "uploadedAt": { "$ref": "#/$defs/timestamp" },
+    "readbackAt": { "$ref": "#/$defs/timestamp" },
+    "readbackDigest": { "$ref": "#/$defs/digest" },
+    "owner": { "$ref": "#/$defs/nonEmpty" },
+    "readers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonEmpty" }
+    },
+    "retainUntil": { "$ref": "#/$defs/timestamp" },
+    "expiryDisposition": { "enum": ["delete", "review", "retain-approved"] },
+    "attestationRef": { "$ref": "#/$defs/nonEmpty" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "nonEmpty": { "type": "string", "minLength": 1 }
+  }
+}

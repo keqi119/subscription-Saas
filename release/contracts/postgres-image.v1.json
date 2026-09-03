@@ -1,0 +1,8 @@
+{
+  "contractVersion": "postgres-image.v1",
+  "repository": "docker.io/library/postgres",
+  "tag": "17-bookworm",
+  "platform": "linux/amd64",
+  "resolvedDigest": "sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6",
+  "serverVersionMajor": 17
+}

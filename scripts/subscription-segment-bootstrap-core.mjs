@@ -80,7 +80,19 @@ export function buildSubscriptionSegmentBootstrapPlan(records) {
   };
 }
 
-export async function applySubscriptionSegmentBootstrapPlan(prisma, plan) {
+export function hashSubscriptionSegmentBootstrapCandidate(candidate) {
+  return `sha256:${createHash("sha256").update(stableJson(candidate), "utf8").digest("hex")}`;
+}
+
+export function hashSubscriptionSegmentBootstrapPlan(plan) {
+  return `sha256:${createHash("sha256").update(stableJson(plan), "utf8").digest("hex")}`;
+}
+
+export async function applySubscriptionSegmentBootstrapPlan(
+  prisma,
+  plan,
+  { expectedCandidateDigests } = {}
+) {
   if (plan.candidates.length === 0) {
     return { created: 0, existing: plan.summary.existing };
   }
@@ -112,6 +124,13 @@ export async function applySubscriptionSegmentBootstrapPlan(prisma, plan) {
         const candidate = rebuilt.candidates[0];
         if (!candidate || candidate.orderId !== planned.orderId) {
           throw new Error(`SUBSCRIPTION_SEGMENT_BOOTSTRAP_STALE_PLAN:${planned.orderId}`);
+        }
+        const expectedDigest = expectedCandidateDigests?.[planned.orderId];
+        if (
+          expectedDigest !== undefined &&
+          hashSubscriptionSegmentBootstrapCandidate(candidate) !== expectedDigest
+        ) {
+          throw new Error(`SUBSCRIPTION_SEGMENT_BOOTSTRAP_PLAN_CHANGED:${planned.orderId}`);
         }
         const inserted = await tx.subscriptionContractSegment.createMany({
           data: [candidate.data],
@@ -260,6 +279,10 @@ function stableJson(value) {
 }
 
 function canonical(value) {
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) throw new Error("INVALID_BOOTSTRAP_DATE");
+    return { $date: value.toISOString() };
+  }
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === "object") {
     return Object.fromEntries(
@@ -268,7 +291,7 @@ function canonical(value) {
         .map((key) => [key, canonical(value[key])])
     );
   }
-  return typeof value === "bigint" ? value.toString() : value;
+  return typeof value === "bigint" ? { $bigint: value.toString() } : value;
 }
 
 function iso(value) {

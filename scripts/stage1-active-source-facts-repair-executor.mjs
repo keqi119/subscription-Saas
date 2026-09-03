@@ -1,10 +1,14 @@
-import { classifyStage1ActiveSourceFactsRepair } from "./stage1-active-source-facts-repair-core.mjs";
+import {
+  classifyStage1ActiveSourceFactsRepair,
+  hashStage1ActiveSourceFactsRepairClassification
+} from "./stage1-active-source-facts-repair-core.mjs";
 
 const APPLY_LOCK_KEY = "stage1-active-source-facts-repair:apply";
 const TRANSACTION_BASE = { maxWait: 10_000, timeout: 120_000 };
 
 export async function executeStage1ActiveSourceFactsRepair({
   classify = classifyStage1ActiveSourceFactsRepair,
+  expectedClassificationDigest,
   generatedAt = new Date().toISOString(),
   loadSnapshot = loadStage1ActiveSourceFactsRepairSnapshot,
   mode,
@@ -37,6 +41,15 @@ export async function executeStage1ActiveSourceFactsRepair({
       await lockTables(tx);
       const snapshot = await loadSnapshot(tx);
       const classification = classify(snapshot);
+      if (
+        expectedClassificationDigest !== undefined &&
+        hashStage1ActiveSourceFactsRepairClassification(classification) !==
+          expectedClassificationDigest
+      ) {
+        throw Object.assign(new Error("STAGE1_ACTIVE_SOURCE_FACTS_REPAIR_PLAN_CHANGED"), {
+          code: "STAGE1_ACTIVE_SOURCE_FACTS_REPAIR_PLAN_CHANGED"
+        });
+      }
       const safeToApply = isStage1ActiveSourceFactsRepairCandidateSetClean(classification);
       const skippedUnchanged = classification.unchanged.length;
       if (!safeToApply) {

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "target-policies.v1",
+  "policies": [
+    {
+      "policyId": "s1-runner-compose-ephemeral",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot"],
+      "prohibitedEnvironments": ["staging", "production"],
+      "allowedHosts": ["postgres"],
+      "databaseNamePattern": "^s1ci_[0-9a-f]{24}$",
+      "requiredTlsMode": "require",
+      "secretReferencePattern": "^secret://[a-z0-9][a-z0-9./_-]+$"
+    },
+    {
+      "policyId": "s1-runner-controlled",
+      "allowedEnvironments": ["ci-fresh", "ci-snapshot", "staging"],
+      "prohibitedEnvironments": ["production"],
+      "allowedHosts": ["127.0.0.1", "localhost", "staging-postgres"],
+      "databaseNamePattern": "^(s1ci_[0-9a-f]{24}|subscription_saas_staging)$",
+      "requiredTlsMode": "require",
+      "secretReferencePattern": "^secret://[a-z0-9][a-z0-9./_-]+$"
+    }
+  ]
+}

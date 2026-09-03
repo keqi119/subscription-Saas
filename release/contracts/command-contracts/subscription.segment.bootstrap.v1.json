@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "subscription.segment.bootstrap",
+  "commandVersion": "1",
+  "interface": {
+    "plan": "planSubscriptionSegmentBootstrap(context,input):Promise<SegmentBootstrapPlanV1>",
+    "apply": "applySubscriptionSegmentBootstrap(context,approved):Promise<PostStateObservationV1>",
+    "reconcile": "reconcileSubscriptionSegmentBootstrap(context,prior):Promise<ReconcileResultV1>"
+  },
+  "capabilityProfile": "repair",
+  "databaseRole": "repair",
+  "dataImpact": "controlled-dml",
+  "approvalByEnvironment": {
+    "ci-fresh": "ci-policy",
+    "ci-snapshot": "ci-policy",
+    "staging": "human"
+  },
+  "allowedExecutionScopes": ["full-rc", "repair"],
+  "inputSchema": "subscription-segment-bootstrap-input.v1",
+  "planSchema": "deterministic-plan.v1#subscription-segment-bootstrap-plan.v1",
+  "outputSchema": "post-state-observation.v1",
+  "selection": "all ACTIVE or PENDING_RETURN orders without an existing contract segment and with complete authoritative contract and commercial facts",
+  "lock": {
+    "id": "subscription-segment-bootstrap:per-order",
+    "order": ["subscription_order row", "subscription_contract_segment rows"],
+    "transactionBoundary": "one serializable transaction per deterministic orderId; earlier candidates remain committed if a later candidate fails"
+  },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 300000,
+  "cancellation": "cancel before each per-order commit; interruption after any candidate begins is outcome-unknown and requires same-operation reconcile",
+  "idempotency": "orderId plus sequenceNo createMany conflict handling and exact candidate comparison prevent duplicate BASE segments and audits",
+  "checksums": "candidate digests bind exact order, segment order, dates, commercial amounts, contract identity and snapshots and are recomputed under row locks",
+  "postconditions": [
+    "approved-candidate-set-recomputed-before-apply",
+    "approved-candidate-recomputed-under-lock",
+    "expected-base-segments-present",
+    "expected-audits-created",
+    "no-duplicate-base-segment",
+    "replay-has-no-duplicate-side-effects"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after all supported active subscriptions have authoritative BASE contract segments"
+}

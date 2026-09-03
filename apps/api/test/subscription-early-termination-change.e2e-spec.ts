@@ -24,10 +24,12 @@ import { SubscriptionClosureRepository } from "../src/subscription-closure/subsc
 import { SubscriptionClosureService } from "../src/subscription-closure/subscription-closure.service";
 import { VehicleMileageRepository } from "../src/vehicle-mileage/vehicle-mileage.repository";
 import { VehicleMileageService } from "../src/vehicle-mileage/vehicle-mileage.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import { insertRuntimeContract, insertRuntimeOrderGraph } from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgresql://subscription:subscription@127.0.0.1:55432/subscription_saas_codex?schema=public";
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-early-termination-change.e2e-spec.ts"
+).databaseUrl;
 
 describe("early termination V2 change center with Closure authority", () => {
   let prisma: PrismaService;
@@ -254,7 +256,7 @@ describe("early termination V2 change center with Closure authority", () => {
         })
       ).resolves.toMatchObject({ status: "PREPARING_RETURN" });
 
-      await markClosureOperationallyTerminated(prisma, initiated.closureCaseId);
+      await markClosureOperationallyTerminated(prisma, initiated.closureCaseId, fixture.actorId);
       await expect(service.reconcile(executionChange.id)).resolves.toEqual({
         changeOrderId: executionChange.id,
         outcome: "COMPLETED"
@@ -586,29 +588,21 @@ async function createFixture(prisma: PrismaService) {
   const futureEndDate = shanghaiBusinessDate(now, 180);
   const futurePeriodDate = shanghaiBusinessDate(now, 30);
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "customer" ("id", "customer_no", "name", "mobile", "status", "created_at", "updated_at")
-      VALUES (${customerId}::uuid, ${`CUSTB8${compact(customerId)}`}, 'B8 Early Termination', '13800000000', 'ACTIVE', clock_timestamp(), clock_timestamp())
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
-      VALUES (${actorId}::uuid, ${username}, 'B8 actor', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "vehicle" ("id", "vehicle_no", "plate_no", "brand", "model_definition_id", "purchase_price_amount", "status", "created_at", "updated_at")
-      VALUES (${vehicleId}::uuid, ${`VEHB8${compact(vehicleId)}`}, ${`沪B${compact(vehicleId).slice(0, 5)}`}, 'NIO', ${randomUUID()}::uuid, 20000000, 'LEASED', clock_timestamp(), clock_timestamp())
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "contract_version" (
-        "id", "template_name", "version_no", "business_type", "template_type", "content_template",
-        "effective_from", "status", "created_at", "updated_at"
-      ) VALUES (
-        ${contractVersionId}::uuid, ${`B8-${compact(contractVersionId)}`}, '1', 'SUBSCRIPTION',
-        'SUBSCRIPTION_STANDARD', 'B8 test contract', ${pastStartDate}::date, 'ACTIVE',
-        clock_timestamp(), clock_timestamp()
-      )
-    `);
+    await insertRuntimeOrderGraph(tx, {
+      customerId,
+      label: `B8-${orderId}`,
+      orderId,
+      salesUserId: actorId,
+      vehicleId
+    });
+    await insertRuntimeContract(tx, {
+      contractId,
+      contractVersionId,
+      customerId,
+      label: `B8-${orderId}`,
+      orderId,
+      status: "SIGNED"
+    });
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "contract_version" (
         "id", "template_name", "version_no", "business_type", "template_type", "content_template",
@@ -620,36 +614,36 @@ async function createFixture(prisma: PrismaService) {
         ${pastStartDate}::date, 'ACTIVE', clock_timestamp(), clock_timestamp()
       )
     `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "subscription_order" (
-        "id", "order_no", "customer_id", "application_id", "quote_id", "vehicle_id",
-        "product_id", "product_version_id", "vehicle_purchase_price_amount", "monthly_fee_amount",
-        "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
-        "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
-        "quote_snapshot", "final_plan_snapshot", "order_status", "start_date", "end_date",
-        "actual_delivery_at", "created_by", "updated_by", "created_at", "updated_at"
-      ) VALUES (
-        ${orderId}::uuid, ${`ORDB8${compact(orderId)}`}, ${customerId}::uuid, ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid, ${vehicleId}::uuid, ${randomUUID()}::uuid, ${randomUUID()}::uuid,
-        20000000, 100, 500, 12, 1500, 100, ${randomUUID()}::uuid, 'NIO_ET5_2024', 'NIO ET5',
-        '{}'::jsonb, '{}'::jsonb, 'ACTIVE', ${pastStartDate}::date, ${futureEndDate}::date,
-        clock_timestamp(), ${actorId}::uuid, ${actorId}::uuid, clock_timestamp(), clock_timestamp()
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "contract" (
-        "id", "contract_no", "order_id", "customer_id", "business_type", "contract_version_id",
-        "contract_title", "contract_snapshot", "status", "created_by", "updated_by", "created_at", "updated_at"
-      ) VALUES (
-        ${contractId}::uuid, ${`CONB8${compact(contractId)}`}, ${orderId}::uuid, ${customerId}::uuid,
-        'SUBSCRIPTION', ${contractVersionId}::uuid, 'B8 base contract',
-        '{"earlyTerminationFeeAmount":"300"}'::jsonb, 'SIGNED', ${actorId}::uuid,
-        ${actorId}::uuid, clock_timestamp(), clock_timestamp()
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      UPDATE "subscription_order" SET "contract_id" = ${contractId}::uuid WHERE "id" = ${orderId}::uuid
-    `);
+    await tx.subscriptionOrder.update({
+      data: {
+        actualDeliveryAt: now,
+        createdBy: actorId,
+        depositAmount: 500n,
+        endDate: futureEndDate,
+        finalPlanSnapshot: {},
+        mileageLimitKm: 1500,
+        monthlyFeeAmount: 100n,
+        orderStatus: "ACTIVE",
+        overMileageFeeAmount: 100n,
+        periodMonths: 12,
+        startDate: pastStartDate,
+        updatedBy: actorId,
+        vehiclePurchasePriceAmount: 20000000n
+      },
+      where: { id: orderId }
+    });
+    await tx.vehicle.update({
+      data: { plateNo: `沪B${compact(vehicleId).slice(0, 5)}`, status: "LEASED" },
+      where: { id: vehicleId }
+    });
+    await tx.contract.update({
+      data: {
+        contractSnapshot: { earlyTerminationFeeAmount: "300" },
+        createdBy: actorId,
+        updatedBy: actorId
+      },
+      where: { id: contractId }
+    });
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "lease" ("id", "order_id", "status", "activated_at", "created_by", "updated_by", "created_at", "updated_at")
       VALUES (${randomUUID()}::uuid, ${orderId}::uuid, 'ACTIVE', clock_timestamp(), ${actorId}::uuid, ${actorId}::uuid, clock_timestamp(), clock_timestamp())
@@ -717,8 +711,11 @@ async function createFixture(prisma: PrismaService) {
 }
 
 async function cleanupFixture(prisma: PrismaService, fixture: EarlyTerminationFixture) {
+  // The release launcher destroys this suite's exact disposable database after evidence custody.
+  void prisma;
+  void fixture;
+  return;
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     for (const table of [
       "audit_log",
       "contract_esign_callback_log",
@@ -815,19 +812,112 @@ async function databaseClock(prisma: PrismaService) {
   return rows[0].now;
 }
 
-async function markClosureOperationallyTerminated(prisma: PrismaService, closureCaseId: string) {
+async function markClosureOperationallyTerminated(
+  prisma: PrismaService,
+  closureCaseId: string,
+  actorId: string
+) {
+  const repository = new SubscriptionClosureRepository();
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      UPDATE "subscription_closure_case"
-      SET "status" = 'TERMINATED',
-          "physical_controlled_at" = clock_timestamp(),
-          "settled_at" = clock_timestamp(),
-          "closed_at" = clock_timestamp(),
-          "updated_at" = clock_timestamp()
-      WHERE "id" = ${closureCaseId}::uuid
-    `);
+    for (const transition of [
+      {
+        afterStatus: "RETURN_INSPECTION" as const,
+        eventType: "PHYSICAL_CONTROL_CONFIRMED" as const,
+        expectedStatus: "PREPARING_RETURN" as const
+      },
+      {
+        afterStatus: "PENDING_SETTLEMENT" as const,
+        eventType: "INSPECTION_RECORDED" as const,
+        expectedStatus: "RETURN_INSPECTION" as const
+      },
+      {
+        afterStatus: "TERMINATED" as const,
+        eventType: "STATUS_TRANSITIONED" as const,
+        expectedStatus: "PENDING_SETTLEMENT" as const
+      }
+    ]) {
+      if (transition.afterStatus === "TERMINATED") {
+        await appendResolvedFixtureSettlement(tx, repository, closureCaseId, actorId);
+      }
+      const current = await tx.subscriptionClosureCase.findUniqueOrThrow({
+        select: { status: true, version: true },
+        where: { id: closureCaseId }
+      });
+      if (current.status !== transition.expectedStatus) {
+        throw new Error("B8_CLOSURE_TERMINAL_FIXTURE_STATE_INVALID");
+      }
+      const occurredAt = await databaseClock(prisma);
+      await repository.appendEvent(tx, {
+        actorId,
+        closureCaseId,
+        detailSnapshot: { source: "early-termination-change-test" },
+        occurredAt,
+        source: {
+          id: closureCaseId,
+          key: `b8-test-terminal:${current.version}`,
+          type: "SUBSCRIPTION_CLOSURE"
+        },
+        expectedVersion: current.version,
+        ...transition
+      });
+    }
   });
+}
+
+async function appendResolvedFixtureSettlement(
+  tx: Prisma.TransactionClient,
+  repository: SubscriptionClosureRepository,
+  closureCaseId: string,
+  actorId: string
+) {
+  let currentRevisionId: string | null = null;
+  let finalizedAt: Date | null = null;
+  for (const stage of ["PROPOSED", "FINALIZED", "SETTLED"] as const) {
+    const closureCase = await tx.subscriptionClosureCase.findUniqueOrThrow({
+      select: { version: true },
+      where: { id: closureCaseId }
+    });
+    const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`
+      SELECT clock_timestamp() AS "now"
+    `;
+    if (!clock) throw new Error("B8_DATABASE_CLOCK_MISSING");
+    const occurredAt = clock.now;
+    if (stage === "FINALIZED") finalizedAt = occurredAt;
+    const result = await repository.appendSettlementRevision(tx, {
+      actorId,
+      amountDueCents: 0n,
+      amountRefundableCents: 0n,
+      billInputSnapshot: { bills: [] },
+      closureCaseId,
+      costTotalCents: 0n,
+      depositAppliedCents: 0n,
+      depositInputSnapshot: { disposition: "PENDING" },
+      depositRefundCents: 0n,
+      expectedCurrentRevisionId: currentRevisionId,
+      expectedVersion: closureCase.version,
+      finalizedAt,
+      finalizedBy: stage === "PROPOSED" ? null : actorId,
+      ledgerInputSnapshot: { entries: [] },
+      paidTotalCents: 0n,
+      receivableTotalCents: 0n,
+      responsibilitySnapshot: { parties: [] },
+      resultSnapshot: { balanced: true },
+      settledAt: stage === "SETTLED" ? occurredAt : null,
+      settledBy: stage === "SETTLED" ? actorId : null,
+      settlementType: "FINAL",
+      source: {
+        id: closureCaseId,
+        key: `b8-test-settlement:${stage.toLowerCase()}`,
+        type: "SUBSCRIPTION_CLOSURE"
+      },
+      stage,
+      waiverApprovalId: null,
+      waiverTotalCents: 0n,
+      writeOffApprovalId: null,
+      writeOffTotalCents: 0n
+    });
+    currentRevisionId = result.outcome.id;
+  }
 }
 
 async function waitForDatabaseClock(prisma: PrismaService, target: Date) {

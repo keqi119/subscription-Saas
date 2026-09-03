@@ -1,0 +1,79 @@
+name: Protected sanitized snapshot
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: stage1-snapshot-export
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+  attestations: write
+
+jobs:
+  export:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: [self-hosted, linux, stage1-snapshot-export]
+    environment: stage1-snapshot-export
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - run: corepack enable && pnpm install --frozen-lockfile
+
+      - name: Verify repository snapshot contracts
+        run: pnpm release:contracts:verify
+
+      - name: Freeze source intent without resolving credentials
+        env:
+          WORKFLOW_RUN_REF: github://${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p .release-inputs
+          node --input-type=module <<'NODE'
+          import { writeFile } from "node:fs/promises";
+          import { canonicalJson } from "./packages/release-foundation/src/index.mjs";
+          const request = {
+            environmentClass: "staging",
+            sourceSecretReference: "secret://stage1-snapshot-export/source",
+            tokenizationSecretReference: "secret://stage1-snapshot-export/tokenization-key",
+            workflowRunRef: process.env.WORKFLOW_RUN_REF
+          };
+          await writeFile(
+            ".release-inputs/snapshot-export-request.v1.json",
+            canonicalJson(request)
+          );
+          NODE
+
+      - name: Export, transform, scan, and publish through the protected adapter
+        run: node scripts/release/export-sanitized-snapshot.mjs --export
+
+      - name: Attest the final sanitized dump and metadata
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            .release-output/sanitized-snapshot/sanitized-snapshot.dump
+            .release-output/sanitized-snapshot/snapshot-metadata.v1.json
+
+      - name: Upload only the complete final publication
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sanitized-snapshot-${{ github.run_id }}
+          path: |
+            .release-output/sanitized-snapshot/sanitized-snapshot.dump
+            .release-output/sanitized-snapshot/snapshot-metadata.v1.json
+            .release-output/sanitized-snapshot/source-privilege-observation.v1.json
+            .release-output/sanitized-snapshot/source-fingerprint.v1.json
+            .release-output/sanitized-snapshot/sanitization-scan.v1.json
+            .release-output/sanitized-snapshot/custody-receipt.v1.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove protected workspace and local publication copies
+        if: always()
+        run: node scripts/release/export-sanitized-snapshot.mjs --cleanup

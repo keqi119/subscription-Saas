@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const CURRENT_ORDER_STATUSES = new Set(["ACTIVE", "PENDING_RETURN"]);
 const CLOSED_ORDER_STATUSES = new Set(["COMPLETED", "TERMINATED"]);
 const CREDIBLE_LEASE_STATUSES = new Set(["ACTIVE", "RETURN_DUE", "COMPLETED"]);
@@ -254,6 +256,10 @@ export function classifyStage1cPeriodBackfill(snapshot = {}) {
     },
     subscriptionPeriods: resolved
   };
+}
+
+export function hashStage1cPeriodBackfillClassification(classification) {
+  return `sha256:${createHash("sha256").update(stableJson(classification), "utf8").digest("hex")}`;
 }
 
 function readActivation(order) {

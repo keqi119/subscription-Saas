@@ -1,0 +1,252 @@
+{
+  "schemaVersion": "approval-policy.v1",
+  "policyId": "s1-release-operations",
+  "repository": "keqi119/subscription-Saas",
+  "approvalModes": ["ci-policy", "human"],
+  "authorities": {
+    "ci-policy": {
+      "issuer": "https://token.actions.githubusercontent.com",
+      "workflowPath": ".github/workflows/release-operation-approval.yml",
+      "workflowRef": "refs/heads/main",
+      "environment": "release",
+      "allowedSubjects": ["repo:keqi119/subscription-Saas:ref:refs/heads/main"]
+    },
+    "human": {
+      "issuer": "https://token.actions.githubusercontent.com",
+      "workflowPath": ".github/workflows/release-operation-approval.yml",
+      "workflowRef": "refs/heads/main",
+      "environment": "s1-database-operation-approval",
+      "allowedSubjects": ["team:release-approvers"]
+    }
+  },
+  "maximumLifetimeSeconds": 3600,
+  "permittedOperations": [
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "schema.migrate",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "schema.migrate",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "schema.migrate",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "db.migrate.deploy",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "db.migrate.deploy",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "db.migrate.deploy",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "repair.execute",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.clean-acceptance.baseline",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.clean-acceptance.baseline",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "stage1.clean-acceptance.baseline",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.active-source-facts.repair",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.active-source-facts.repair",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "stage1.active-source-facts.repair",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.contract-change.bootstrap",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.contract-change.bootstrap",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.invalid-test-order.retire",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.invalid-test-order.retire",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "stage1.invalid-test-order.retire",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.period.backfill",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.period.backfill",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "stage1.period.backfill",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.return-closure.backfill",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.return-closure.backfill",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "stage1.return-closure.backfill",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.return-closure.publication-constraint.validate",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "stage1.return-closure.publication-constraint.validate",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "stage1.return-closure.publication-constraint.validate",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "ddl"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "subscription.segment.bootstrap",
+      "commandVersion": "1",
+      "environmentClass": "ci-fresh",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "ci-policy",
+      "commandId": "subscription.segment.bootstrap",
+      "commandVersion": "1",
+      "environmentClass": "ci-snapshot",
+      "dataImpact": "controlled-dml"
+    },
+    {
+      "approvalMode": "human",
+      "commandId": "subscription.segment.bootstrap",
+      "commandVersion": "1",
+      "environmentClass": "staging",
+      "dataImpact": "controlled-dml"
+    }
+  ],
+  "revocationSource": {
+    "repository": "keqi119/subscription-Saas",
+    "workflowPath": ".github/workflows/release-approval-revocations.yml",
+    "workflowRef": "refs/heads/main",
+    "artifactNamePrefix": "approval-revocations-",
+    "attestationIssuer": "https://token.actions.githubusercontent.com",
+    "maximumPublicationDelaySeconds": 1800,
+    "maximumArtifactLifetimeSeconds": 3600,
+    "minimumWorkflowRunNumber": 1,
+    "checkpointArtifactDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "custody": {
+    "owner": "release-engineering",
+    "readers": ["release", "qa", "security", "audit"],
+    "retentionDays": 180,
+    "expiryDisposition": "review"
+  }
+}

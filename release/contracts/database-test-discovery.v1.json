@@ -1,0 +1,18 @@
+{
+  "contractVersion": "database-test-discovery.v1",
+  "candidateRules": {
+    "filenamePatterns": ["[.-](?:integration|e2e(?:-spec)?|postgres|repository|schema)[.-]"],
+    "databaseClientImports": [
+      "import\\s*\\{[^}]*\\bPrismaClient\\b[^}]*\\}\\s*from\\s*['\"]@prisma/client['\"]",
+      "(?:import\\s+(?:\\*\\s+as\\s+\\w+|\\w+|\\{[^}]*\\b(?:Pool|Client)\\b[^}]*\\})\\s+from\\s+|require\\()\\s*['\"](?:pg|postgres)['\"]",
+      "\\b(?:require|requireFrom[A-Za-z0-9_]*)\\(\\s*['\"](?:pg|postgres)['\"]\\s*\\)",
+      "(?:from\\s+|require\\()\\s*['\"]@prisma/adapter-pg['\"]"
+    ],
+    "databaseEnvironmentReads": [
+      "process\\.env\\.(?:[A-Z0-9_]*DATABASE_URL|DIRECT_URL|POSTGRES_URL|PGHOST|PGDATABASE|PGUSER|PGPASSWORD)\\b",
+      "process\\.env\\[(?:['\"](?:[A-Z0-9_]*DATABASE_URL|DIRECT_URL|POSTGRES_URL|PGHOST|PGDATABASE|PGUSER|PGPASSWORD)['\"]|[A-Z0-9_]*DATABASE[A-Z0-9_]*)\\]",
+      "\\{[^}]*\\b(?:DATABASE_URL|DIRECT_URL|POSTGRES_URL|PGHOST|PGDATABASE|PGUSER|PGPASSWORD)\\b[^}]*\\}\\s*=\\s*process\\.env"
+    ],
+    "explicitDatabaseLabels": ["@database-test", "\\brequiresDatabase\\b"]
+  }
+}

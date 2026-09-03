@@ -15,11 +15,13 @@ import {
   connectVehicleSwapTestPrisma,
   createVehicleSwapActivationService,
   createVehicleSwapFixture,
-  markVehicleSwapWorkOrdersReady,
-  requiredVehicleSwapTestDatabaseUrl
+  markVehicleSwapWorkOrdersReady
 } from "./subscription-vehicle-swap-test-support";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
 
-const TEST_DATABASE_URL = requiredVehicleSwapTestDatabaseUrl(process.env.DATABASE_URL);
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-vehicle-swap.e2e-spec.ts"
+).databaseUrl;
 
 describe("vehicle-swap atomic activation PostgreSQL E2E", () => {
   let prisma: PrismaService;

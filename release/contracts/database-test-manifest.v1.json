@@ -1,0 +1,652 @@
+{
+  "schemaVersion": "database-test-manifest.v1",
+  "batches": [
+    {
+      "batchId": "batch-a",
+      "suiteIds": [
+        "api.asset-accounting.postgres",
+        "api.asset-facts.postgres",
+        "api.asset-operations.postgres",
+        "api.auto-debit-settlement.postgres",
+        "api.billing-automation.postgres",
+        "api.contract-segment.postgres",
+        "api.vehicle-availability.postgres",
+        "api.mileage-review.postgres",
+        "api.sms.postgres"
+      ]
+    },
+    {
+      "batchId": "batch-b",
+      "suiteIds": [
+        "api.stage2-handover-pdf.postgres",
+        "api.stage2-handover-provider-reconciliation.postgres",
+        "api.stage2-handover-workflow.postgres",
+        "api.subscription-expiry-return.postgres",
+        "api.subscription-journey-failure-recovery.postgres",
+        "api.subscription-journey-golden-path.postgres",
+        "api.subscription-journey-integrity.postgres",
+        "api.subscription-journey-repository.postgres"
+      ]
+    },
+    {
+      "batchId": "batch-c",
+      "suiteIds": [
+        "api.subscription-closure-schema.postgres",
+        "api.subscription-closure-repository.postgres",
+        "api.subscription-change-active-order.postgres",
+        "api.subscription-change-migration.postgres",
+        "api.subscription-extension.postgres",
+        "api.subscription-early-termination-change.postgres",
+        "api.subscription-vehicle-swap.postgres",
+        "api.subscription-vehicle-swap-e2e.postgres",
+        "api.subscription-vehicle-swap-failure-injection.postgres"
+      ]
+    },
+    { "batchId": "launcher-fixture", "suiteIds": ["release.launcher.fixture"] },
+    { "batchId": "snapshot-chain", "suiteIds": ["release.snapshot-chain"] },
+    {
+      "batchId": "runner-ddl-boundary",
+      "suiteIds": ["runner.stage1-return-closure-publication-constraint"]
+    }
+  ],
+  "suites": [
+    {
+      "suiteId": "runner.stage1-return-closure-publication-constraint",
+      "runner": "node-test",
+      "files": [
+        "scripts/stage1-return-closure-publication-constraint-postgres.integration.test.mjs"
+      ],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 300000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.database.release",
+      "runner": "vitest",
+      "files": ["apps/api/test/billing-maintenance-evidence-postgres.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-closure-schema.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-closure.schema.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-closure-repository.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-closure.repository.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-change-active-order.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-change-active-order.e2e-spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-change-migration.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-change-migration.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-extension.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-extension.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-early-termination-change.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-early-termination-change.e2e-spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-vehicle-swap.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-vehicle-swap.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-vehicle-swap-e2e.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-vehicle-swap.e2e-spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-vehicle-swap-failure-injection.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-vehicle-swap-failure-injection.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.stage2-handover-pdf.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/stage2-handover-pdf.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.stage2-handover-provider-reconciliation.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/stage2-handover-provider-reconciliation.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.stage2-handover-workflow.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/stage2-handover-workflow.repository.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-expiry-return.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-expiry-return.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-journey-failure-recovery.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-journey-failure-recovery.e2e-spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-journey-golden-path.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-journey-golden-path.e2e-spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-journey-integrity.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-journey-integrity.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.subscription-journey-repository.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/subscription-journey.repository.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.asset-accounting.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/asset-accounting.repository.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.asset-facts.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/asset-facts.repository.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.asset-operations.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/asset-operations.repository.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.auto-debit-settlement.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/auto-debit-settlement.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.billing-automation.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/billing-automation.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.contract-segment.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/contract-segment.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.vehicle-availability.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/vehicle-availability.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.mileage-review.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/mileage-review-e2e.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.sms.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/sms.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "node.billing-maintenance-evidence.postgres",
+      "runner": "node-test",
+      "files": ["scripts/billing-maintenance-cycle-evidence-postgres.integration.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 300000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "script.stage1-clean-acceptance.postgres",
+      "runner": "node-test",
+      "files": ["scripts/stage1-clean-acceptance-baseline-postgres.integration.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 1800000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" },
+      "databaseTopology": "source-target",
+      "fixtures": {
+        "schema": "release/test-fixtures/stage1-clean-acceptance.schema.sql",
+        "seed": "release/test-fixtures/stage1-clean-acceptance.seed.sql"
+      }
+    },
+    {
+      "suiteId": "node.closure-reconciliation.postgres",
+      "runner": "node-test",
+      "files": ["scripts/stage1-p0-subscription-closure-reconciliation.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 300000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" },
+      "databaseTopology": "single",
+      "fixtures": {
+        "schema": "release/test-fixtures/stage1-p0-closure-reconciliation.schema.sql",
+        "seed": "release/test-fixtures/stage1-p0-closure-reconciliation.seed.sql"
+      }
+    },
+    {
+      "suiteId": "runner.stage1-contract-change-bootstrap",
+      "runner": "node-test",
+      "files": [
+        "apps/release-runner/test/stage1-contract-change-bootstrap-equivalence.integration.test.mjs"
+      ],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 300000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" },
+      "databaseTopology": "single"
+    },
+    {
+      "suiteId": "runner.stage1-invalid-test-order-retire",
+      "runner": "node-test",
+      "files": [
+        "scripts/stage1-staging-invalid-test-order-retirement-postgres.integration.test.mjs"
+      ],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 300000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" },
+      "databaseTopology": "single",
+      "fixtures": {
+        "schema": "release/test-fixtures/stage1-invalid-order-retirement.schema.sql",
+        "seed": "release/test-fixtures/stage1-invalid-order-retirement.seed.sql"
+      }
+    },
+    {
+      "suiteId": "node.release-database-lifecycle.postgres",
+      "runner": "node-test",
+      "files": ["packages/release-foundation/test/database-lifecycle.postgres.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 600000,
+      "barrier": "isolated-postgres-cluster",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "release.snapshot-chain",
+      "runner": "node-test",
+      "files": ["packages/release-foundation/test/snapshot-chain.integration.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 120000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "release.launcher.fixture",
+      "runner": "node-test",
+      "files": ["release/test-fixtures/database-launcher-fixture.postgres.test.mjs"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "serial", "maxShards": 1 },
+      "timeoutMs": 120000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "release-engineering",
+      "expectedCountPolicy": { "mode": "exact", "collected": 1 }
+    }
+  ]
+}

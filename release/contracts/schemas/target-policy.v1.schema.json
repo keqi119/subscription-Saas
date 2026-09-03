@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "target-policies.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "policies"],
+  "properties": {
+    "schemaVersion": { "const": "target-policies.v1" },
+    "policies": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "policyId",
+          "allowedEnvironments",
+          "prohibitedEnvironments",
+          "allowedHosts",
+          "databaseNamePattern",
+          "requiredTlsMode",
+          "secretReferencePattern"
+        ],
+        "properties": {
+          "policyId": { "type": "string", "minLength": 1 },
+          "allowedEnvironments": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "enum": ["ci-fresh", "ci-snapshot", "staging"] }
+          },
+          "prohibitedEnvironments": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "contains": { "const": "production" },
+            "items": { "enum": ["ci-fresh", "ci-snapshot", "staging", "production"] }
+          },
+          "allowedHosts": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "databaseNamePattern": { "type": "string", "minLength": 1 },
+          "requiredTlsMode": { "const": "require" },
+          "secretReferencePattern": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

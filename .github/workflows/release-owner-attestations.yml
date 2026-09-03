@@ -1,0 +1,147 @@
+name: Stage1 S1 owner attestations
+
+on:
+  workflow_dispatch:
+    inputs:
+      ownerAttestationsJson:
+        description: Canonical JSON array of narrow s1-owner-attestation.v1 facts
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  attestations: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: stage1-s1-owner-attestations-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  issue:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    environment: s1-owner-attestation
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+      - name: Freeze only narrow owner facts for this exact main source
+        env:
+          OWNER_ATTESTATIONS_JSON: ${{ inputs.ownerAttestationsJson }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdir, writeFile } from "node:fs/promises";
+          import { canonicalJson, validateContract } from "./packages/release-foundation/src/index.mjs";
+          const attestations = JSON.parse(process.env.OWNER_ATTESTATIONS_JSON);
+          if (!Array.isArray(attestations) || attestations.length === 0) throw new Error("OWNER_ATTESTATIONS_REQUIRED");
+          const records = attestations.map((attestation) => ({
+            attestation,
+            custodyReceipt: {
+              schemaVersion: "custody-receipt.v1",
+              receiptId: "00000000-0000-4000-8000-000000000000",
+              contentDigest: `sha256:${"0".repeat(64)}`,
+              contentSizeBytes: 0,
+              storeRef: "pending",
+              uploadedAt: "2026-01-01T00:00:00.000Z",
+              readbackAt: "2026-01-01T00:00:00.000Z",
+              readbackDigest: `sha256:${"0".repeat(64)}`,
+              owner: "release-engineering",
+              readers: ["release", "qa", "security", "audit"],
+              retainUntil: "2026-01-01T00:00:00.000Z",
+              expiryDisposition: "review",
+              attestationRef: "pending"
+            }
+          }));
+          validateContract("s1-owner-attestations.v1", { schemaVersion: "s1-owner-attestations.v1", records });
+          const forbidden = /(?:aggregate|final-gate|release|terminal).*(?:status|passed)|(?:status|passed).*(?:aggregate|final-gate|release|terminal)/iu;
+          for (const [index, attestation] of attestations.entries()) {
+            if (attestation.subject.sourceSha !== process.env.GITHUB_SHA) throw new Error("OWNER_ATTESTATION_SOURCE_MISMATCH");
+            if (attestation.facts.some(({ factId, value }) => forbidden.test(factId) || value === "PASSED")) throw new Error("OWNER_ATTESTATION_SCOPE_FORBIDDEN");
+            if (Date.parse(attestation.validFrom) > Date.now() || Date.parse(attestation.notAfter) <= Date.now()) throw new Error("OWNER_ATTESTATION_WINDOW_INVALID");
+            await mkdir(".release-output/owner-individual", { recursive: true });
+            await writeFile(`.release-output/owner-individual/attestation-${index}.json`, canonicalJson(attestation), { flag: "wx" });
+          }
+          NODE
+      - id: attest-individual
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-output/owner-individual/attestation-*.json
+      - id: upload-individual
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: s1-owner-attestation-facts-${{ github.sha }}-${{ github.run_id }}
+          path: .release-output/owner-individual
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: s1-owner-attestation-facts-${{ github.sha }}-${{ github.run_id }}
+          path: .release-readback/owner-individual
+      - name: Build the custodied owner-attestation bundle
+        env:
+          STORE_REF: ${{ steps.upload-individual.outputs.artifact-url }}
+          ATTESTATION_REF: ${{ steps.attest-individual.outputs.attestation-url }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { randomUUID } from "node:crypto";
+          import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+          import { canonicalJson, sha256Bytes, validateContract } from "./packages/release-foundation/src/index.mjs";
+          const names = (await readdir(".release-output/owner-individual")).sort();
+          const uploadedAt = new Date();
+          const retainUntil = new Date(uploadedAt);
+          retainUntil.setUTCDate(retainUntil.getUTCDate() + 180);
+          const records = [];
+          for (const name of names) {
+            const original = await readFile(`.release-output/owner-individual/${name}`);
+            const readback = await readFile(`.release-readback/owner-individual/${name}`);
+            const contentDigest = sha256Bytes(original);
+            if (sha256Bytes(readback) !== contentDigest) throw new Error("OWNER_ATTESTATION_READBACK_MISMATCH");
+            records.push({
+              attestation: JSON.parse(original),
+              custodyReceipt: {
+                schemaVersion: "custody-receipt.v1",
+                receiptId: randomUUID(),
+                contentDigest,
+                contentSizeBytes: original.byteLength,
+                storeRef: process.env.STORE_REF,
+                uploadedAt: uploadedAt.toISOString(),
+                readbackAt: new Date().toISOString(),
+                readbackDigest: contentDigest,
+                owner: "release-engineering",
+                readers: ["release", "qa", "security", "audit"],
+                retainUntil: retainUntil.toISOString(),
+                expiryDisposition: "review",
+                attestationRef: process.env.ATTESTATION_REF
+              }
+            });
+          }
+          const bundle = { schemaVersion: "s1-owner-attestations.v1", records };
+          validateContract("s1-owner-attestations.v1", bundle);
+          await mkdir(".release-output/owner-bundle", { recursive: true });
+          await writeFile(".release-output/owner-bundle/s1-owner-attestations.v1.json", canonicalJson(bundle), { flag: "wx" });
+          NODE
+      - id: attest-bundle
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-output/owner-bundle/s1-owner-attestations.v1.json
+      - id: upload-bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: s1-owner-attestations-${{ github.sha }}-${{ github.run_id }}
+          path: .release-output/owner-bundle/s1-owner-attestations.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: s1-owner-attestations-${{ github.sha }}-${{ github.run_id }}
+          path: .release-readback/owner-bundle
+      - name: Verify immutable bundle readback
+        run: cmp .release-output/owner-bundle/s1-owner-attestations.v1.json .release-readback/owner-bundle/s1-owner-attestations.v1.json

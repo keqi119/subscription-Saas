@@ -1,0 +1,175 @@
+name: Stage1 S1 final chain
+
+on:
+  workflow_call:
+    inputs:
+      chain:
+        required: true
+        type: string
+      artifactSuffix:
+        required: true
+        type: string
+      snapshotRunId:
+        required: true
+        type: string
+      snapshotArtifactName:
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  attestations: write
+  contents: read
+  id-token: write
+
+jobs:
+  execute:
+    if: inputs.chain == 'fresh' || inputs.chain == 'snapshot'
+    runs-on: [self-hosted, linux, stage1-release-execution]
+    environment: trusted-release-execution
+    env:
+      CHAIN: ${{ inputs.chain }}
+      WORKFLOW_RUN_REF: github://${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+      ARTIFACT_SUFFIX: ${{ inputs.artifactSuffix }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-admitted-build-${{ inputs.artifactSuffix }}
+          path: .release-inputs/build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-source-${{ inputs.chain }}-${{ inputs.artifactSuffix }}
+          path: .release-inputs/source
+      - if: inputs.chain == 'snapshot'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.snapshotRunId }}
+          name: ${{ inputs.snapshotArtifactName }}
+          path: ${{ runner.temp }}/snapshot-input
+      - if: inputs.chain == 'snapshot'
+        name: Reverify the protected snapshot before final restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SNAPSHOT_ARTIFACT_NAME: ${{ inputs.snapshotArtifactName }}
+          SNAPSHOT_RUN_ID: ${{ inputs.snapshotRunId }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$SNAPSHOT_ARTIFACT_NAME" = "sanitized-snapshot-$SNAPSHOT_RUN_ID"
+          gh attestation verify "$RUNNER_TEMP/snapshot-input/sanitized-snapshot.dump" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow github.com/keqi119/subscription-Saas/.github/workflows/sanitized-snapshot.yml \
+            --source-ref refs/heads/main --format json > "$RUNNER_TEMP/final-snapshot-dump-attestation.json"
+          gh attestation verify "$RUNNER_TEMP/snapshot-input/snapshot-metadata.v1.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow github.com/keqi119/subscription-Saas/.github/workflows/sanitized-snapshot.yml \
+            --source-ref refs/heads/main --format json > "$RUNNER_TEMP/final-snapshot-metadata-attestation.json"
+          node --input-type=module <<'NODE'
+          import { readFile } from "node:fs/promises";
+          const metadata = JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/snapshot-input/snapshot-metadata.v1.json`, "utf8"));
+          const expected = `github://${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.SNAPSHOT_RUN_ID}`;
+          if (metadata.workflowRunRef !== expected) throw new Error("SNAPSHOT_WORKFLOW_IDENTITY_MISMATCH");
+          NODE
+      - name: Create the target and initial attested launch input
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--phase prepare --chain "$CHAIN" --build-proof-file .release-inputs/build/build-proof.v1.json --source-gate-evidence-file ".release-inputs/source/source-gate-$CHAIN.v1.json" --launch-root ".release-local/launch/$CHAIN" --compose-file docker-compose.release-gate.yml --workflow-run-ref "$WORKFLOW_RUN_REF" --output-file ".release-local/launch/$CHAIN/preparation.v1.json")
+          if [ "$CHAIN" = snapshot ]; then args+=(--snapshot-metadata-file "$RUNNER_TEMP/snapshot-input/snapshot-metadata.v1.json" --snapshot-directory "$RUNNER_TEMP/snapshot-input"); fi
+          node scripts/release/prepare-final-compose-launch.mjs "${args[@]}"
+      - id: attest-dry-run
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-local/launch/${{ inputs.chain }}/migration-dry-run.json
+      - name: Export fixed Compose interpolation without evidence inputs
+        shell: bash
+        run: |
+          node scripts/release/export-final-compose-environment.mjs --chain "$CHAIN" --build-proof-file .release-inputs/build/build-proof.v1.json --launch-root ".release-local/launch/$CHAIN" --github-env-file "$GITHUB_ENV"
+      - name: Execute the attested migration dry-run
+        shell: bash
+        run: |
+          node scripts/release/trusted-launch-runner.mjs \
+            --launch-envelope-file ".release-local/launch/$CHAIN/migration-dry-run.json" \
+            --compose-file docker-compose.release-gate.yml --project-name "s1-final-$CHAIN" \
+            --service runner-migration \
+            --expected-runner-image "$RELEASE_RUNNER_IMAGE" \
+            > ".release-local/launch/$CHAIN/migration-dry-run-result.json"
+      - name: Finalize only plan-bound launch envelopes
+        shell: bash
+        run: |
+          args=(--phase finalize --chain "$CHAIN" --build-proof-file .release-inputs/build/build-proof.v1.json --source-gate-evidence-file ".release-inputs/source/source-gate-$CHAIN.v1.json" --plan-result-file ".release-local/launch/$CHAIN/migration-dry-run-result.json" --launch-root ".release-local/launch/$CHAIN" --compose-file docker-compose.release-gate.yml --workflow-run-ref "$WORKFLOW_RUN_REF" --output-file ".release-local/launch/$CHAIN/finalization.v1.json")
+          if [ "$CHAIN" = snapshot ]; then args+=(--snapshot-metadata-file "$RUNNER_TEMP/snapshot-input/snapshot-metadata.v1.json" --snapshot-directory "$RUNNER_TEMP/snapshot-input"); fi
+          node scripts/release/prepare-final-compose-launch.mjs "${args[@]}"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            .release-local/launch/${{ inputs.chain }}/migration-apply.json
+            .release-local/launch/${{ inputs.chain }}/migration-replay.json
+            .release-local/launch/${{ inputs.chain }}/schema-verify.json
+            .release-local/launch/${{ inputs.chain }}/database-tests.json
+      - name: Execute migration, verification, fixed database tests, API and Web client
+        shell: bash
+        run: |
+          mkdir -p ".release-output/final-$CHAIN" ".release-local/evidence/$CHAIN"
+          args=(--execute --chain "$CHAIN" --build-proof-file .release-inputs/build/build-proof.v1.json --source-gate-evidence-file ".release-inputs/source/source-gate-$CHAIN.v1.json" --launch-root ".release-local/launch/$CHAIN" --evidence-root ".release-local/evidence/$CHAIN" --output-file ".release-output/final-$CHAIN/final-compose-$CHAIN.v1.json")
+          if [ "$CHAIN" = snapshot ]; then args+=(--snapshot-metadata-file "$RUNNER_TEMP/snapshot-input/snapshot-metadata.v1.json"); fi
+          node scripts/release/run-final-compose-gate.mjs "${args[@]}"
+      - name: Preserve failed or UNKNOWN launch facts without making them selectable
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-final-${{ inputs.chain }}-failed-${{ inputs.artifactSuffix }}
+          path: |
+            .release-local/evidence/${{ inputs.chain }}
+            .release-local/launch/${{ inputs.chain }}/*.host-journal.ndjson
+          if-no-files-found: warn
+          retention-days: 180
+          overwrite: false
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-output/final-${{ inputs.chain }}/final-compose-${{ inputs.chain }}.v1.json
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-final-${{ inputs.chain }}-${{ inputs.artifactSuffix }}
+          path: .release-output/final-${{ inputs.chain }}/final-compose-${{ inputs.chain }}.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rc-final-${{ inputs.chain }}-${{ inputs.artifactSuffix }}
+          path: .release-readback/final-${{ inputs.chain }}
+      - name: Freeze final custody and selected-attempt history
+        env:
+          STORE_REF: ${{ steps.upload.outputs.artifact-url }}
+          ATTESTATION_REF: ${{ steps.attest.outputs.attestation-url }}
+        shell: bash
+        run: |
+          node scripts/release/workflow-custody-record.mjs \
+            --original-file ".release-output/final-$CHAIN/final-compose-$CHAIN.v1.json" \
+            --readback-file ".release-readback/final-$CHAIN/final-compose-$CHAIN.v1.json" \
+            --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$STORE_REF" \
+            --attestation-ref "$ATTESTATION_REF" \
+            --output-file ".release-output/final-$CHAIN/final-compose-$CHAIN-custody-record.v1.json"
+          args=(--chain "$CHAIN" --build-proof-file .release-inputs/build/build-proof.v1.json --source-gate-evidence-file ".release-inputs/source/source-gate-$CHAIN.v1.json" --final-evidence-file ".release-output/final-$CHAIN/final-compose-$CHAIN.v1.json" --output-file ".release-output/final-$CHAIN/final-attempt-history-$CHAIN.v1.json")
+          if [ "$CHAIN" = snapshot ]; then args+=(--snapshot-metadata-file "$RUNNER_TEMP/snapshot-input/snapshot-metadata.v1.json"); fi
+          node scripts/release/create-final-attempt-history.mjs "${args[@]}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-final-${{ inputs.chain }}-custody-${{ inputs.artifactSuffix }}
+          path: |
+            .release-output/final-${{ inputs.chain }}/final-compose-${{ inputs.chain }}-custody-record.v1.json
+            .release-output/final-${{ inputs.chain }}/final-attempt-history-${{ inputs.chain }}.v1.json
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false

@@ -5,19 +5,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { PrismaService } from "../src/prisma/prisma.service";
 import { ContractSegmentService } from "../src/subscription-change/contract-segment.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import { insertRuntimeOrderPrerequisites } from "./helpers/runtime-domain-fixture";
 
-const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgresql://subscription:subscription@127.0.0.1:5432/subscription_saas?schema=public";
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/contract-segment.integration.spec.ts"
+).databaseUrl;
 
 describe("ContractSegmentService PostgreSQL integration", () => {
   let prisma: PrismaService;
   let service: ContractSegmentService;
 
   beforeAll(async () => {
-    prisma = new PrismaService(
-      new ConfigService({ DATABASE_URL: TEST_DATABASE_URL })
-    );
+    prisma = new PrismaService(new ConfigService({ DATABASE_URL: TEST_DATABASE_URL }));
     await prisma.onModuleInit();
     service = new ContractSegmentService(prisma);
   });
@@ -28,50 +28,43 @@ describe("ContractSegmentService PostgreSQL integration", () => {
 
   it("persists one BASE segment and resolves it for a period", async () => {
     const fixture = await createFixture(prisma);
-    try {
-      const first = await service.ensureBaseSegment(fixture.orderId);
-      const second = await service.ensureBaseSegment(fixture.orderId);
+    const first = await service.ensureBaseSegment(fixture.orderId);
+    const second = await service.ensureBaseSegment(fixture.orderId);
 
-      expect(first.id).toBe(second.id);
-      expect(first).toMatchObject({
-        orderId: fixture.orderId,
-        segmentType: ContractSegmentType.BASE,
-        sequenceNo: 1,
-        sourceContractId: fixture.contractId
-      });
-      await expect(
-        service.resolveSegmentForPeriod(fixture.orderId, new Date("2026-08-02T00:00:00.000Z"))
-      ).resolves.toMatchObject({
-        segmentId: first.id,
-        monthlyFeeAmount: 1_000n,
-        mileageLimitKm: 1_500
-      });
-      await expect(
-        prisma.subscriptionContractSegment.count({
-          where: { orderId: fixture.orderId, segmentType: ContractSegmentType.BASE }
-        })
-      ).resolves.toBe(1);
-    } finally {
-      await prisma.subscriptionContractSegment.deleteMany({
-        where: { orderId: fixture.orderId }
-      });
-      await prisma.contract.deleteMany({ where: { id: fixture.contractId } });
-      await prisma.subscriptionOrder.deleteMany({ where: { id: fixture.orderId } });
-      await prisma.productVersion.deleteMany({ where: { id: fixture.productVersionId } });
-      await prisma.product.deleteMany({ where: { id: fixture.productId } });
-    }
+    expect(first.id).toBe(second.id);
+    expect(first).toMatchObject({
+      orderId: fixture.orderId,
+      segmentType: ContractSegmentType.BASE,
+      sequenceNo: 1,
+      sourceContractId: fixture.contractId
+    });
+    await expect(
+      service.resolveSegmentForPeriod(fixture.orderId, new Date("2026-08-02T00:00:00.000Z"))
+    ).resolves.toMatchObject({
+      segmentId: first.id,
+      monthlyFeeAmount: 1_000n,
+      mileageLimitKm: 1_500
+    });
+    await expect(
+      prisma.subscriptionContractSegment.count({
+        where: { orderId: fixture.orderId, segmentType: ContractSegmentType.BASE }
+      })
+    ).resolves.toBe(1);
   });
 });
 
 async function createFixture(prisma: PrismaService) {
   const orderId = randomUUID();
+  const applicationId = randomUUID();
   const contractId = randomUUID();
+  const contractVersionId = randomUUID();
   const customerId = randomUUID();
+  const modelDefinitionId = randomUUID();
   const productId = randomUUID();
   const productVersionId = randomUUID();
+  const quoteId = randomUUID();
 
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "product" (
         "id", "product_no", "name", "product_type", "status", "created_at", "updated_at"
@@ -98,6 +91,15 @@ async function createFixture(prisma: PrismaService) {
         clock_timestamp()
       )
     `);
+    await insertRuntimeOrderPrerequisites(tx, {
+      applicationId,
+      customerId,
+      label: "CONTRACT-SEGMENT",
+      modelDefinitionId,
+      productId,
+      productVersionId,
+      quoteId
+    });
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "subscription_order" (
         "id", "order_no", "customer_id", "application_id", "quote_id",
@@ -111,8 +113,8 @@ async function createFixture(prisma: PrismaService) {
         ${orderId}::uuid,
         ${`ORDSEG${orderId.replaceAll("-", "").slice(0, 20)}`},
         ${customerId}::uuid,
-        ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid,
+        ${applicationId}::uuid,
+        ${quoteId}::uuid,
         NULL,
         ${productId}::uuid,
         ${productVersionId}::uuid,
@@ -123,7 +125,7 @@ async function createFixture(prisma: PrismaService) {
         1500,
         100,
         100,
-        ${randomUUID()}::uuid,
+        ${modelDefinitionId}::uuid,
         'NIO_ET5_2024',
         'NIO ET5',
         '{"quoteNo":"QUOTE-SEG-1"}'::jsonb,
@@ -133,6 +135,14 @@ async function createFixture(prisma: PrismaService) {
         '2026-09-02'::date,
         clock_timestamp(),
         clock_timestamp()
+      )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "contract_version" (
+        "id", "template_name", "version_no", "content_template", "effective_from", "status", "updated_at"
+      ) VALUES (
+        ${contractVersionId}::uuid, ${`SEG-${contractVersionId}`}, '1', 'Segment contract',
+        DATE '2026-01-01', 'ACTIVE', clock_timestamp()
       )
     `);
     await tx.$executeRaw(Prisma.sql`
@@ -146,7 +156,7 @@ async function createFixture(prisma: PrismaService) {
         ${orderId}::uuid,
         ${customerId}::uuid,
         'SUBSCRIPTION',
-        ${randomUUID()}::uuid,
+        ${contractVersionId}::uuid,
         'Main subscription contract',
         '{"archivedDocument":"main-contract.pdf"}'::jsonb,
         ${ContractStatus.ARCHIVED}::contract_status,

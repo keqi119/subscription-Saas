@@ -11,11 +11,14 @@ import {
   connectVehicleSwapTestPrisma,
   createVehicleSwapActivationService,
   createVehicleSwapFixture,
-  markVehicleSwapWorkOrdersReady,
-  requiredVehicleSwapTestDatabaseUrl
+  markVehicleSwapWorkOrdersReady
 } from "./subscription-vehicle-swap-test-support";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
 
-const TEST_DATABASE_URL = requiredVehicleSwapTestDatabaseUrl(process.env.DATABASE_URL);
+// @database-test: this suite reaches PostgreSQL through the shared vehicle-swap support module.
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-vehicle-swap-failure-injection.spec.ts"
+).databaseUrl;
 
 describe("vehicle-swap atomic activation failure injection", () => {
   let prisma: PrismaService;

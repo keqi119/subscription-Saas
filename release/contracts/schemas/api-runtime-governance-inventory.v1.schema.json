@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "api-runtime-governance-inventory.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "source", "files", "commands"],
+  "properties": {
+    "schemaVersion": { "const": "api-runtime-governance-inventory.v1" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dockerfile", "runtimeCopyCount", "executableEntrypointCount"],
+      "properties": {
+        "dockerfile": { "const": "Dockerfile.api" },
+        "runtimeCopyCount": { "type": "integer", "minimum": 0 },
+        "executableEntrypointCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "imagePath",
+          "repositorySource",
+          "dependentCommands",
+          "runtimeConsumers",
+          "disposition",
+          "migrationOwner",
+          "exitCondition"
+        ],
+        "properties": {
+          "imagePath": { "type": "string", "pattern": "^/app/scripts/" },
+          "repositorySource": { "type": "string", "pattern": "^scripts/" },
+          "dependentCommands": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^scripts/" }
+          },
+          "runtimeConsumers": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "disposition": {
+            "enum": [
+              "application-runtime",
+              "runner-only",
+              "source-test-only",
+              "retire-after-caller-migration"
+            ]
+          },
+          "migrationOwner": { "type": "string", "minLength": 1 },
+          "exitCondition": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entrypoint",
+          "dependencyClosure",
+          "runnerCommandId",
+          "runnerRegistrationStatus",
+          "capabilityProfile",
+          "migrationOwner",
+          "callers"
+        ],
+        "properties": {
+          "entrypoint": { "type": "string", "pattern": "^scripts/" },
+          "dependencyClosure": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^scripts/" }
+          },
+          "runnerCommandId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9.-]+@[1-9][0-9]*$"
+          },
+          "runnerRegistrationStatus": { "enum": ["planned", "registered"] },
+          "capabilityProfile": { "enum": ["verify", "migrate", "repair", "fixture", "evidence"] },
+          "additionalRunnerCommands": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["runnerCommandId", "runnerRegistrationStatus", "capabilityProfile"],
+              "properties": {
+                "runnerCommandId": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9.-]+@[1-9][0-9]*$"
+                },
+                "runnerRegistrationStatus": { "enum": ["planned", "registered"] },
+                "capabilityProfile": {
+                  "enum": ["verify", "migrate", "repair", "fixture", "evidence"]
+                }
+              }
+            }
+          },
+          "migrationOwner": { "type": "string", "minLength": 1 },
+          "callers": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "callerId",
+                "callerType",
+                "location",
+                "details",
+                "owner",
+                "migrationStatus"
+              ],
+              "properties": {
+                "callerId": { "type": "string", "minLength": 1 },
+                "callerType": {
+                  "enum": ["package-script", "ci", "compose", "runbook", "external", "manual"]
+                },
+                "location": { "type": "string", "minLength": 1 },
+                "details": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "owner": { "type": "string", "minLength": 1 },
+                "migrationStatus": {
+                  "enum": ["runner-cutover-required", "runner-cutover-complete"]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

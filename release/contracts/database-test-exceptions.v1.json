@@ -1,0 +1,397 @@
+{
+  "contractVersion": "database-test-exceptions.v1",
+  "exceptions": [
+    {
+      "path": "apps/api/test/asset-accounting.repository.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Uses in-memory repository doubles and never connects to PostgreSQL.",
+      "scope": "mock-repository",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/asset-accounting.schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/asset-operations.repository.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Uses in-memory repository doubles and never connects to PostgreSQL.",
+      "scope": "mock-repository",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/asset-operations.schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/auto-debit-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/billing-automation-repository.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Uses in-memory repository doubles and never connects to PostgreSQL.",
+      "scope": "mock-repository",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/billing-automation-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/billing-maintenance-evidence-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema and migration text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/customer-application-profile-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/field-video-upload-repository.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Uses in-memory repository doubles and never connects to PostgreSQL.",
+      "scope": "mock-repository",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/field-video-upload-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/fleet-ops.e2e-contract.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Exercises an in-memory contract harness and never connects to PostgreSQL.",
+      "scope": "mock-e2e",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/fleet-ops.integration.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Compiles the module with an overridden PrismaService and never connects to PostgreSQL.",
+      "scope": "mock-integration",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/fleet-ops.no-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects source boundaries for forbidden Schema coupling and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/mileage-review-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/notification.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Injects a placeholder DATABASE_URL for module compilation but never opens a connection.",
+      "scope": "module-compile",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/renewal-consideration.controller.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Injects a placeholder DATABASE_URL for module compilation but never opens a connection.",
+      "scope": "module-compile",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/return-manifest-esign.schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/stage1-schema-drift-convergence.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema and migration text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/stage2-esign-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/stage2-handover-contract-convergence-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema and migration text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/stage2-handover-e2e.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Exercises an in-memory handover harness and never connects to PostgreSQL.",
+      "scope": "mock-e2e",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/stage2-handover-workflow-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/subscription-change-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/subscription-closure.repository.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Uses in-memory repository doubles and never connects to PostgreSQL.",
+      "scope": "mock-repository",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/subscription-extension-e2e.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Exercises mocked orchestration collaborators and never connects to PostgreSQL.",
+      "scope": "mock-e2e",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/subscription-journey-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/subscription-journey.repository.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Uses in-memory repository doubles and never connects to PostgreSQL.",
+      "scope": "mock-repository",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/vehicle-document-workspace-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/vehicle-insurance-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/vehicle-mileage-integration.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Exercises an in-memory Prisma harness and never connects to PostgreSQL.",
+      "scope": "mock-integration",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/vehicle-mileage-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/vehicle-model-canonical-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/vehicle-model-enum-string-schema.spec.ts",
+      "owner": "api-schema-governance",
+      "reason": "Inspects committed Schema text only and never connects to PostgreSQL.",
+      "scope": "schema-text",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/api/test/vehicle-model-integration.spec.ts",
+      "owner": "api-unit-test",
+      "reason": "Exercises an in-memory Prisma harness and never connects to PostgreSQL.",
+      "scope": "mock-integration",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/db-migrate-schema.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises migration and Schema command orchestration with deterministic adapter doubles and never connects to PostgreSQL.",
+      "scope": "runner-command-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/runtime-adapters.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises fixed-root launch, credential, journal and custody adapters with temporary files and injected database connectors; it never opens a PostgreSQL connection.",
+      "scope": "mock-runtime-boundary",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/database-runtime-adapter.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises fixed Prisma command, migration and schema observation behavior with an injected deterministic database adapter; the protected final gate provides real PostgreSQL coverage.",
+      "scope": "runner-command-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/database-test-entrypoint.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises the closed database-test launch envelope and role-boundary enforcement with injected connectors; the protected final gate executes the same fixed manifest against real PostgreSQL.",
+      "scope": "runner-command-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/stage1-billing-maintenance-evidence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises bounded read-only evidence collection and immutable custody with deterministic database adapter doubles and never connects to PostgreSQL.",
+      "scope": "runner-command-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/clean-acceptance-baseline-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares legacy and Runner baseline behavior on independent deterministic database doubles; the existing script.stage1-clean-acceptance.postgres suite provides the real source-target PostgreSQL coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/stage1-active-source-facts-repair-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares legacy and Runner active-source repair behavior with independent deterministic database doubles; legacy executor and PostgreSQL suites retain transaction coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/stage1-period-backfill-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares legacy and Runner period-backfill behavior with independent deterministic database doubles; legacy executor and PostgreSQL suites retain transaction and database coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/stage1-invalid-test-order-retire-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares exact-target legacy and Runner retirement behavior with independent deterministic database doubles; runner.stage1-invalid-test-order-retire retains the real PostgreSQL transaction, replay and rollback coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/stage1-return-closure-backfill-dml-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares legacy and Runner return-closure DML on independent deterministic database doubles; the legacy backfill suite retains concrete Prisma CAS and batch-transaction coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/stage1-return-closure-composite-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares the captured legacy DML-plus-constraint sequence with the two independently approved Runner commands on isolated deterministic states; the release Compose gate retains final PostgreSQL migration-identity coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/stage1-return-closure-publication-constraint-validate.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises exact PostgreSQL 17 catalog, lock, DDL, proof-custody and UNKNOWN-reconciliation contracts with a deterministic Prisma adapter; the release Compose gate retains final PostgreSQL migration-identity coverage.",
+      "scope": "runner-command-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/stage1-target-task9-verify.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises read-only Stage1 command adapters with deterministic transaction and resource doubles and never connects to PostgreSQL.",
+      "scope": "runner-command-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/subscription-segment-bootstrap-equivalence.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Compares legacy and Runner segment-bootstrap behavior on independent deterministic database doubles; the legacy apply suite retains transaction and database-adapter coverage.",
+      "scope": "runner-command-equivalence",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "packages/release-foundation/test/database-batch-a.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Validates Batch A manifest and source isolation contracts without opening a database connection.",
+      "scope": "source-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "packages/release-foundation/test/database-batch-b.integration.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Validates Batch B manifest and source isolation contracts without opening a database connection.",
+      "scope": "source-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "packages/release-foundation/test/database-test-discovery.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises repository discovery against isolated temporary Git fixtures and never connects to PostgreSQL.",
+      "scope": "source-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "packages/release-foundation/test/snapshot-export.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises sanitization, scan, publication, and workflow contracts with protected adapter doubles and never connects to PostgreSQL.",
+      "scope": "mock-protected-boundary",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "packages/release-foundation/test/snapshot-source-readonly-guard.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises source privilege and SQL guard contracts with injected observations and never connects to PostgreSQL.",
+      "scope": "mock-protected-boundary",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "scripts/release/bootstrap-controlled-postgres.mjs",
+      "owner": "release-engineering",
+      "reason": "This is the controlled target implementation, not a test entrypoint.",
+      "scope": "implementation-source",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "scripts/release/bootstrap-controlled-postgres.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Uses injected process and filesystem doubles; it does not connect to PostgreSQL.",
+      "scope": "mock-process-boundary",
+      "reviewDate": "2026-12-01"
+    }
+  ]
+}

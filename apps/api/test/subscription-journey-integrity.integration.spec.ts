@@ -5,12 +5,13 @@ import { resolve } from "node:path";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+
 const apiRoot = resolve(__dirname, "..");
-const baseDatabaseUrl = requiredDatabaseUrl();
-const isolatedDatabaseName = `journey_task1_${randomUUID().replaceAll("-", "")}`;
-const isolatedDatabaseUrl = withDatabase(baseDatabaseUrl, isolatedDatabaseName);
-const cleanupClient = new Client({ connectionString: baseDatabaseUrl });
-const client = new Client({ connectionString: isolatedDatabaseUrl });
+const testDatabase = requiredReleaseDatabaseTestContext(
+  "apps/api/test/subscription-journey-integrity.integration.spec.ts"
+);
+const client = new Client({ connectionString: testDatabase.databaseUrl });
 let firstSeedCounts: Record<string, number>;
 let secondSeedCounts: Record<string, number>;
 
@@ -404,19 +405,6 @@ const JOURNEY_FOREIGN_KEY_CATALOG = {
 
 describe("subscription journey migrated database and seeded RBAC", () => {
   beforeAll(async () => {
-    await cleanupClient.connect();
-    await cleanupClient.query(`CREATE DATABASE "${isolatedDatabaseName}"`);
-
-    const deploy = runCommand([
-      "exec",
-      "prisma",
-      "migrate",
-      "deploy",
-      "--schema",
-      "prisma/schema.prisma"
-    ]);
-    expect(deploy.status, deploy.output).toBe(0);
-
     await client.connect();
 
     const firstSeed = runCommand(["exec", "node", "prisma/seed.mjs"]);
@@ -430,44 +418,38 @@ describe("subscription journey migrated database and seeded RBAC", () => {
 
   afterAll(async () => {
     await client.end();
-    if (!/^journey_task1_[a-f0-9]{32}$/.test(isolatedDatabaseName)) {
-      throw new Error("Refusing to drop an unexpected journey test database.");
-    }
-    await cleanupClient.query(`DROP DATABASE IF EXISTS "${isolatedDatabaseName}" WITH (FORCE)`);
-    await cleanupClient.end();
   });
 
-  it("accepts the CI loopback PostgreSQL URL on port 5432 without connecting to it", () => {
-    const parsed = new URL(
-      requiredDatabaseUrl(
-        "postgresql://ci_user:ci_password@localhost:5432/subscription_saas_test?schema=public"
-      )
+  it("uses only the exact Launcher-assigned database", async () => {
+    const result = await client.query<{ database_name: string }>(
+      "SELECT current_database() AS database_name"
     );
-
-    expect({
-      database: parsed.pathname,
-      hostname: parsed.hostname,
-      port: parsed.port,
-      protocol: parsed.protocol
-    }).toEqual({
-      database: "/subscription_saas_test",
-      hostname: "127.0.0.1",
-      port: "5432",
-      protocol: "postgresql:"
-    });
+    expect(result.rows[0]?.database_name).toBe(testDatabase.databaseName);
   });
 
-  it("rejects non-loopback and production-like database targets", () => {
-    expect(() =>
-      requiredDatabaseUrl(
-        "postgresql://ci_user:ci_password@db.internal:64321/subscription_saas_test"
-      )
-    ).toThrow("loopback PostgreSQL host");
-    expect(() =>
-      requiredDatabaseUrl(
-        "postgresql://ci_user:ci_password@127.0.0.1:15432/subscription_saas"
-      )
-    ).toThrow("test-only database name");
+  it("seeds through a runtime-equivalent role without ownership", async () => {
+    const result = await client.query<{
+      bypassrls: boolean;
+      createdb: boolean;
+      schema_owner: boolean;
+      superuser: boolean;
+    }>(`
+      SELECT
+        r.rolbypassrls AS bypassrls,
+        r.rolcreatedb AS createdb,
+        (n.nspowner = r.oid) AS schema_owner,
+        r.rolsuper AS superuser
+      FROM pg_roles AS r
+      CROSS JOIN pg_namespace AS n
+      WHERE r.rolname = current_user
+        AND n.nspname = current_schema()
+    `);
+    expect(result.rows[0]).toEqual({
+      bypassrls: false,
+      createdb: false,
+      schema_owner: false,
+      superuser: false
+    });
   });
 
   it("migrates the exact journey columns, PostgreSQL types, and nullability", async () => {
@@ -524,10 +506,9 @@ describe("subscription journey migrated database and seeded RBAC", () => {
     });
 
     await expect(
-      client.query(
-        "UPDATE application SET journey_fact_version = -1 WHERE id = $1::uuid",
-        [fixture.applicationA]
-      )
+      client.query("UPDATE application SET journey_fact_version = -1 WHERE id = $1::uuid", [
+        fixture.applicationA
+      ])
     ).rejects.toMatchObject({ code: "23514" });
     await expect(
       client.query(
@@ -543,10 +524,10 @@ describe("subscription journey migrated database and seeded RBAC", () => {
     ).rejects.toMatchObject({ code: "23514" });
 
     await expect(
-      client.query(
-        "UPDATE application SET final_plan_commercial_hash = $1 WHERE id = $2::uuid",
-        [`sha256:${"a".repeat(64)}`, fixture.applicationA]
-      )
+      client.query("UPDATE application SET final_plan_commercial_hash = $1 WHERE id = $2::uuid", [
+        `sha256:${"a".repeat(64)}`,
+        fixture.applicationA
+      ])
     ).resolves.toMatchObject({ rowCount: 1 });
 
     const constraints = await client.query<{ conname: string }>(
@@ -554,11 +535,13 @@ describe("subscription journey migrated database and seeded RBAC", () => {
        FROM pg_constraint
        WHERE conname = ANY($1::text[])
        ORDER BY conname`,
-      [[
-        "application_final_plan_commercial_hash_format",
-        "application_journey_fact_version_nonnegative",
-        "subscription_journey_last_application_fact_version_nonnegative"
-      ]]
+      [
+        [
+          "application_final_plan_commercial_hash_format",
+          "application_journey_fact_version_nonnegative",
+          "subscription_journey_last_application_fact_version_nonnegative"
+        ]
+      ]
     );
     expect(constraints.rows.map((row) => row.conname)).toEqual([
       "application_final_plan_commercial_hash_format",
@@ -933,7 +916,7 @@ function runCommand(args: string[]) {
     encoding: "utf8",
     env: {
       ...process.env,
-      DATABASE_URL: isolatedDatabaseUrl
+      DATABASE_URL: testDatabase.databaseUrl
     },
     maxBuffer: 10 * 1024 * 1024
   });
@@ -941,44 +924,6 @@ function runCommand(args: string[]) {
     output: `${result.stdout ?? ""}\n${result.stderr ?? ""}\n${result.error?.message ?? ""}`,
     status: result.status
   };
-}
-
-function requiredDatabaseUrl(value = process.env.DATABASE_URL) {
-  if (!value) throw new Error("DATABASE_URL is required for journey integration tests");
-  const url = new URL(value);
-  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
-    throw new Error("Journey integration tests require a PostgreSQL URL");
-  }
-  if (!isLoopbackHostname(url.hostname)) {
-    throw new Error("Journey integration tests require a loopback PostgreSQL host");
-  }
-  const databaseName = decodeURIComponent(url.pathname.slice(1));
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(databaseName)) {
-    throw new Error("Journey integration tests require a test-only database name");
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
-}
-
-function isLoopbackHostname(hostname: string) {
-  if (hostname === "localhost" || hostname === "[::1]") return true;
-  const octets = hostname.split(".");
-  return (
-    octets.length === 4 &&
-    octets[0] === "127" &&
-    octets.every((octet) => {
-      if (!/^\d{1,3}$/.test(octet)) return false;
-      const value = Number(octet);
-      return value >= 0 && value <= 255;
-    })
-  );
-}
-
-function withDatabase(value: string, databaseName: string) {
-  const url = new URL(value);
-  url.pathname = `/${databaseName}`;
-  url.searchParams.set("schema", "public");
-  return url.toString();
 }
 
 function camelCase(value: string) {

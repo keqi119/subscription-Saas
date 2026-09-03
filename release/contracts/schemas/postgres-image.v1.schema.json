@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "postgres-image.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "repository",
+    "tag",
+    "platform",
+    "resolvedDigest",
+    "serverVersionMajor"
+  ],
+  "properties": {
+    "contractVersion": { "const": "postgres-image.v1" },
+    "repository": { "type": "string", "minLength": 1 },
+    "tag": { "type": "string", "minLength": 1 },
+    "platform": { "const": "linux/amd64" },
+    "resolvedDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "serverVersionMajor": { "const": 17 }
+  }
+}

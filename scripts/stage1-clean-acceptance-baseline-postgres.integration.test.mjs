@@ -8,6 +8,8 @@ import { resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
+import { requiredReleaseDatabaseTestContext } from "../packages/release-foundation/src/index.mjs";
+
 import { classifyStage1CleanAcceptanceBaseline } from "./stage1-clean-acceptance-baseline-core.mjs";
 import {
   applyStage1CleanAcceptanceBaseline,
@@ -20,7 +22,6 @@ import {
   loadStage1CleanAcceptanceTargetSnapshot
 } from "./stage1-clean-acceptance-baseline-snapshot.mjs";
 
-const ADMIN_DATABASE_URL_ENV = "STAGE1_ACCEPTANCE_INTEGRATION_ADMIN_DATABASE_URL";
 const DATABASE_NAME = /^subscription_saas_s1_(source|target)_[a-f0-9]{32}$/;
 const GENERATED_AT = "2026-08-30T12:00:00.000Z";
 const GIT_SHA = "a".repeat(40);
@@ -33,8 +34,7 @@ const repoRoot = resolve(import.meta.dirname, "..");
 const apiRoot = resolve(repoRoot, "apps/api");
 const requireFromApi = createRequire(resolve(apiRoot, "package.json"));
 const { Pool } = requireFromApi("pg");
-const adminDatabaseUrl = process.env[ADMIN_DATABASE_URL_ENV]?.trim() || null;
-const integrationTest = adminDatabaseUrl ? test : test.skip;
+const databaseContext = requiredReleaseDatabaseTestContext(import.meta.url);
 
 const IDS = Object.freeze({
   admin: uuid(1),
@@ -116,9 +116,16 @@ const NOTIFICATION_CODES = Object.freeze([
   "SERVICE_CASE_UPDATE_WECHAT"
 ]);
 
-test("PostgreSQL integration harness has no generic database URL fallback", () => {
-  assert.equal(ADMIN_DATABASE_URL_ENV, "STAGE1_ACCEPTANCE_INTEGRATION_ADMIN_DATABASE_URL");
-  if (!adminDatabaseUrl) assert.equal(integrationTest, test.skip);
+test("PostgreSQL integration harness requires distinct launcher-assigned runtime databases", () => {
+  assert.deepEqual(Object.keys(databaseContext.namedDatabases).sort(), ["source", "target"]);
+  assert.notEqual(
+    databaseContext.namedDatabases.source.databaseName,
+    databaseContext.namedDatabases.target.databaseName
+  );
+  assert.notEqual(
+    databaseContext.namedDatabases.source.runtimeCredentialFingerprint,
+    databaseContext.namedDatabases.target.runtimeCredentialFingerprint
+  );
 });
 
 test("disposable database names must match the exact source/target test prefixes", () => {
@@ -415,14 +422,14 @@ test("advisory barrier waits for both named apply sessions with a bounded poll",
   );
 });
 
-integrationTest(
+test(
   "real PostgreSQL proves migrations, rollback, stale guards, locking, replay, and validation",
   { timeout: 240_000 },
   async (t) => {
     return withApplyConfirmation(async () => {
       let phase = "HARNESS_CREATE";
       try {
-        const harness = await createPostgresHarness(adminDatabaseUrl);
+        const harness = await createPostgresHarness(databaseContext);
         t.after(() => harness.close());
         phase = "MIGRATE";
         await harness.migrateBoth();
@@ -441,7 +448,7 @@ integrationTest(
         assertAllWhitelistDelegatesPresent(beforeDryRun.source);
         assertEmptyDatabaseCounts(beforeDryRun.target);
         const dryRun = await harness.execute("dry-run");
-        assert.equal(dryRun.safe, true);
+        if (!dryRun.safe) throw new Error(dryRunFailureCode(dryRun));
         assert.equal(dryRun.manifest.safeToApply, true);
         assert.match(dryRun.manifestSha256, /^[a-f0-9]{64}$/);
         assert.deepEqual(await harness.businessCounts(), beforeDryRun);
@@ -497,34 +504,16 @@ integrationTest(
   }
 );
 
-async function createPostgresHarness(connectionString) {
-  const adminPool = new Pool({ connectionString, max: 1 });
-  let adminClient;
-  try {
-    adminClient = await adminPool.connect();
-  } catch {
-    await adminPool.end();
-    throw new Error("INTEGRATION_ADMIN_CONNECTION_FAILED");
-  }
-  const databaseRegistry = createDisposableDatabaseRegistry(adminClient);
+async function createPostgresHarness(context) {
   let closed = false;
   const suffix = randomUUID().replaceAll("-", "");
-  const sourceName = `subscription_saas_s1_source_${suffix}`;
-  const targetName = `subscription_saas_s1_target_${suffix}`;
-  const sourceUrl = databaseUrlFor(connectionString, sourceName);
-  const targetUrl = databaseUrlFor(connectionString, targetName);
+  const sourceUrl = context.namedDatabases.source.databaseUrl;
+  const targetUrl = context.namedDatabases.target.databaseUrl;
   const applyApplicationNames = [
     `stage1_acceptance_apply_a_${suffix.slice(0, 8)}`,
     `stage1_acceptance_apply_b_${suffix.slice(0, 8)}`
   ];
   const clients = [];
-  try {
-    await databaseRegistry.create(sourceName);
-    await databaseRegistry.create(targetName);
-  } catch (error) {
-    await cleanup();
-    throw error;
-  }
 
   return {
     assertCanonicalMigrations,
@@ -538,10 +527,6 @@ async function createPostgresHarness(connectionString) {
     concurrentApply,
     execute,
     migrateBoth: async () => {
-      await assertApplicationEmptyBeforeMigrations(sourceUrl);
-      await assertApplicationEmptyBeforeMigrations(targetUrl);
-      runMigrationDeploy(sourceUrl);
-      runMigrationDeploy(targetUrl);
       clients.push(
         await createPrismaClient(sourceUrl),
         await createPrismaClient(withApplicationName(targetUrl, applyApplicationNames[0])),
@@ -559,15 +544,6 @@ async function createPostgresHarness(connectionString) {
     if (closed) return;
     closed = true;
     await Promise.allSettled(clients.map((client) => client.$disconnect()));
-    let cleanupError;
-    try {
-      await databaseRegistry.dropCreated();
-    } catch (error) {
-      cleanupError = error;
-    }
-    adminClient.release();
-    await adminPool.end();
-    if (cleanupError) throw new Error("INTEGRATION_DATABASE_CLEANUP_FAILED");
   }
 
   async function assertCanonicalMigrations() {
@@ -1931,9 +1907,31 @@ function safeIntegrationError(error) {
   if (/^[A-Z0-9_]+$/.test(message ?? "")) return message;
   const code = postgresCode(error);
   if (/^[0-9A-Z]{5}$/.test(code ?? "")) return `INTEGRATION_POSTGRES_${code}`;
+  const diagnostic = String(message ?? "")
+    .replace(/\bpostgres(?:ql)?:\/\/[^\s]+/gi, "DATABASE_ENDPOINT_REDACTED")
+    .replace(/\b1[3-9][0-9]{9}\b/g, "PHONE_REDACTED")
+    .replace(/\b[0-9a-f]{48,}\b/gi, "OPAQUE_VALUE_REDACTED")
+    .replace(/[^A-Za-z0-9_.-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 240);
+  if (diagnostic.length > 0) return `INTEGRATION_${diagnostic}`;
   return error?.name === "AssertionError"
     ? "INTEGRATION_ASSERTION_FAILED"
     : "STAGE1_ACCEPTANCE_POSTGRES_INTEGRATION_FAILED";
+}
+
+function dryRunFailureCode(dryRun) {
+  if (dryRun?.targetCountEvidence?.schemaCanonical !== true) {
+    return "TARGET_SCHEMA_NOT_CANONICAL";
+  }
+  const firstException = dryRun?.manifest?.exceptions?.[0]?.code;
+  if (/^[A-Z0-9_]+$/.test(firstException ?? "")) return firstException;
+  const counts = [
+    ...Object.values(dryRun?.targetCountEvidence?.forbiddenCounts ?? {}),
+    ...Object.values(dryRun?.targetCountEvidence?.tableCounts ?? {})
+  ];
+  if (counts.some((value) => value !== 0)) return "TARGET_NOT_EMPTY";
+  return "MANIFEST_CLASSIFICATION_INVALID";
 }
 
 async function withApplyConfirmation(work) {

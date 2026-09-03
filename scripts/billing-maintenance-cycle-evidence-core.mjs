@@ -128,6 +128,21 @@ export function buildBillingMaintenanceCycleEvidence(facts, options) {
   };
 }
 
+export function assertPublicBillingMaintenanceCycleEvidence(evidence) {
+  const serialized = canonicalBillingMaintenanceEvidenceJson(evidence);
+  if (
+    /"(?:orderId|orderNo|customerId|customerNo|customerPhone|vehicleId|vehicleVin|token|url|databaseUrl|rawItems|items)"\s*:/iu.test(
+      serialized
+    ) ||
+    /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s"]+/iu.test(serialized) ||
+    /\bBearer\s+[A-Za-z0-9._~+/=-]+/iu.test(serialized) ||
+    /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/u.test(serialized)
+  ) {
+    fail("BILLING_MAINTENANCE_EVIDENCE_UNSAFE");
+  }
+  return evidence;
+}
+
 export async function pollBillingMaintenanceCycleEvidence(options) {
   const expected = validateBillingMaintenanceCycleEvidenceOptions(options);
   if (typeof options.queryFacts !== "function") fail("BILLING_MAINTENANCE_OPTIONS_INVALID");

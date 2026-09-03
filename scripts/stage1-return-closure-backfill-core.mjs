@@ -48,7 +48,10 @@ export function classifyStage1ReturnClosureBackfill(snapshot = {}) {
   const closureById = new Map(closures.map((closure) => [closure.id, closure]));
   const contractById = new Map(contracts.map((contract) => [contract.id, contract]));
   const existingClauseByKey = new Map(
-    clauses.map((clause) => [clauseKey(clause.contractId, clause.clauseCode, clause.clauseVersion), clause])
+    clauses.map((clause) => [
+      clauseKey(clause.contractId, clause.clauseCode, clause.clauseVersion),
+      clause
+    ])
   );
   const existingLinkKeys = new Set(links.map((link) => link.sourceKey));
   const legacyEvidenceLinks = [];
@@ -139,10 +142,14 @@ export function classifyStage1ReturnClosureBackfill(snapshot = {}) {
         /^[a-f0-9]{64}$/i.test(item.signedPdfHash)
     );
     if (!delivery) manualReview.push(issue(closure, "MISSING_SIGNED_DELIVERY_BASELINE"));
-    if (!closure.currentChecklistRevisionId) manualReview.push(issue(closure, "MISSING_RETURN_CHECKLIST"));
-    if (!closure.currentDeltaRevisionId) manualReview.push(issue(closure, "MISSING_CONDITION_DELTA"));
+    if (!closure.currentChecklistRevisionId)
+      manualReview.push(issue(closure, "MISSING_RETURN_CHECKLIST"));
+    if (!closure.currentDeltaRevisionId)
+      manualReview.push(issue(closure, "MISSING_CONDITION_DELTA"));
 
-    for (const damage of damages.filter((item) => item.orderId === closure.orderId && !item.deletedAt)) {
+    for (const damage of damages.filter(
+      (item) => item.orderId === closure.orderId && !item.deletedAt
+    )) {
       for (const [index, url] of urls(damage.photoUrls).entries()) {
         const sourceKey = `legacy-return-url:${damage.id}:${index}:${sha256(url).slice(0, 16)}`;
         legacyEvidenceLinks.push({
@@ -200,14 +207,8 @@ export function classifyStage1ReturnClosureBackfill(snapshot = {}) {
     ) {
       manualReview.push(issue(closure, "MISSING_RECEIVABLE_BILLS"));
     }
-    const closureDispositions = dispositions.filter(
-      (item) => item.closureCaseId === closure.id
-    );
-    const target = deriveFinancialStatus(
-      settlement,
-      closureBills,
-      closureDispositions
-    );
+    const closureDispositions = dispositions.filter((item) => item.closureCaseId === closure.id);
+    const target = deriveFinancialStatus(settlement, closureBills, closureDispositions);
     financialUpdates.push({
       authorityFingerprint: financialAuthorityFingerprint(closureBills, closureDispositions),
       closureCaseId: closure.id,
@@ -220,10 +221,16 @@ export function classifyStage1ReturnClosureBackfill(snapshot = {}) {
   }
 
   legacyEvidenceLinks.sort(bySourceKey);
-  clauseSnapshots.sort((left, right) => clauseKey(left.contractId, left.clauseCode, left.clauseVersion).localeCompare(clauseKey(right.contractId, right.clauseCode, right.clauseVersion)));
+  clauseSnapshots.sort((left, right) =>
+    clauseKey(left.contractId, left.clauseCode, left.clauseVersion).localeCompare(
+      clauseKey(right.contractId, right.clauseCode, right.clauseVersion)
+    )
+  );
   financialUpdates.sort((left, right) => left.closureCaseId.localeCompare(right.closureCaseId));
   fileAuthorityUpdates.sort((left, right) => left.fileId.localeCompare(right.fileId));
-  manualReview.sort((left, right) => `${left.closureCaseId}:${left.code}`.localeCompare(`${right.closureCaseId}:${right.code}`));
+  manualReview.sort((left, right) =>
+    `${left.closureCaseId}:${left.code}`.localeCompare(`${right.closureCaseId}:${right.code}`)
+  );
   const quarantinedClosureIds = [...new Set(manualReview.map((item) => item.closureCaseId))].sort();
   const quarantinedClosureIdSet = new Set(quarantinedClosureIds);
   const quarantinedContractIds = [
@@ -240,7 +247,8 @@ export function classifyStage1ReturnClosureBackfill(snapshot = {}) {
       clauseCreates: clauseSnapshots.filter((item) => item.disposition === "CREATE").length,
       clauseConflicts: clauseSnapshots.filter((item) => item.disposition === "CONFLICT").length,
       financialUpdates: financialUpdates.filter((item) => item.disposition === "UPDATE").length,
-      fileAuthorityUpdates: fileAuthorityUpdates.filter((item) => item.disposition === "UPDATE").length,
+      fileAuthorityUpdates: fileAuthorityUpdates.filter((item) => item.disposition === "UPDATE")
+        .length,
       legacyUrlCreates: legacyEvidenceLinks.filter((item) => item.disposition === "CREATE").length,
       manualReview: manualReview.length,
       scannedClosures: closures.filter((item) => item && !item.retiredAt).length
@@ -281,13 +289,23 @@ export function applicableStage1ReturnClassification(classification) {
 
 export async function executeStage1ReturnClosureBackfill({
   apply,
+  expectedClassificationDigest,
   generatedAt = new Date().toISOString(),
   load,
   mode
 }) {
-  if (!new Set(["dry-run", "apply"]).has(mode)) throw new Error("STAGE1_RETURN_CLOSURE_BACKFILL_MODE_INVALID");
+  if (!new Set(["dry-run", "apply"]).has(mode))
+    throw new Error("STAGE1_RETURN_CLOSURE_BACKFILL_MODE_INVALID");
   const snapshot = await load();
   const classification = classifyStage1ReturnClosureBackfill(snapshot);
+  if (
+    expectedClassificationDigest !== undefined &&
+    hashStage1ReturnClosureClassification(classification) !== expectedClassificationDigest
+  ) {
+    throw Object.assign(new Error("STAGE1_RETURN_CLOSURE_BACKFILL_PLAN_CHANGED"), {
+      code: "STAGE1_RETURN_CLOSURE_BACKFILL_PLAN_CHANGED"
+    });
+  }
   const unsafeToApply = classification.counters.clauseConflicts > 0;
   const blocked = unsafeToApply || classification.counters.manualReview > 0;
   let applied = null;
@@ -307,30 +325,65 @@ export async function executeStage1ReturnClosureBackfill({
   };
 }
 
+export function hashStage1ReturnClosureClassification(classification) {
+  return `sha256:${sha256(canonical(classification))}`;
+}
+
+export function paymentWriteOffAuthorityFingerprint(paymentRecords, paymentWriteOffs) {
+  return sha256(
+    canonical({
+      paymentRecords: array(paymentRecords)
+        .map((item) => ({
+          deletedAt: item.deletedAt ?? null,
+          id: item.id,
+          orderId: item.orderId,
+          paymentAmount: String(item.paymentAmount),
+          paymentStatus: item.paymentStatus,
+          receivedAt: String(item.receivedAt),
+          updatedAt: String(item.updatedAt)
+        }))
+        .sort(byId),
+      paymentWriteOffs: array(paymentWriteOffs)
+        .map((item) => ({
+          billId: item.billId,
+          deletedAt: item.deletedAt ?? null,
+          id: item.id,
+          orderId: item.orderId,
+          paymentId: item.paymentId,
+          writeOffAmount: String(item.writeOffAmount),
+          writeOffAt: String(item.writeOffAt)
+        }))
+        .sort(byId)
+    })
+  );
+}
+
 export function financialAuthorityFingerprint(bills, dispositions) {
-  return sha256(canonical({
-    bills: array(bills)
-      .map((bill) => ({
-        deletedAt: bill.deletedAt ?? null,
-        id: bill.id,
-        orderId: bill.orderId,
-        paidAmount: String(bill.paidAmount ?? 0),
-        remainingAmount: String(bill.remainingAmount ?? 0)
-      }))
-      .sort(byId),
-    dispositions: array(dispositions)
-      .map((item) => ({
-        billId: item.billId,
-        closureCaseId: item.closureCaseId,
-        createdAt: String(item.createdAt),
-        disposition: item.disposition,
-        id: item.id ?? null,
-        supersedesDispositionId: item.supersedesDispositionId ?? null
-      }))
-      .sort((left, right) =>
-        `${left.createdAt}:${left.id ?? ""}`.localeCompare(`${right.createdAt}:${right.id ?? ""}`)
-      )
-  }));
+  return sha256(
+    canonical({
+      bills: array(bills)
+        .map((bill) => ({
+          deletedAt: bill.deletedAt ?? null,
+          id: bill.id,
+          orderId: bill.orderId,
+          paidAmount: String(bill.paidAmount ?? 0),
+          remainingAmount: String(bill.remainingAmount ?? 0)
+        }))
+        .sort(byId),
+      dispositions: array(dispositions)
+        .map((item) => ({
+          billId: item.billId,
+          closureCaseId: item.closureCaseId,
+          createdAt: String(item.createdAt),
+          disposition: item.disposition,
+          id: item.id ?? null,
+          supersedesDispositionId: item.supersedesDispositionId ?? null
+        }))
+        .sort((left, right) =>
+          `${left.createdAt}:${left.id ?? ""}`.localeCompare(`${right.createdAt}:${right.id ?? ""}`)
+        )
+    })
+  );
 }
 
 function compileHistoricalClauses(contract) {
@@ -398,13 +451,13 @@ function manualHistoricalClause(chargeType, sourceText) {
 function deriveFinancialStatus(settlement, bills, dispositions) {
   if (!settlement || !new Set(["FINALIZED", "SETTLED"]).has(settlement.stage)) return "DRAFT";
   if (bills.length === 0) {
-    return BigInt(String(settlement.amountDueCents ?? 0)) === 0n
-      ? "SETTLED"
-      : "AWAITING_CUSTOMER";
+    return BigInt(String(settlement.amountDueCents ?? 0)) === 0n ? "SETTLED" : "AWAITING_CUSTOMER";
   }
   if (bills.every((bill) => BigInt(String(bill.remainingAmount ?? 0)) === 0n)) return "SETTLED";
   const latest = new Map();
-  for (const item of [...dispositions].sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)))) {
+  for (const item of [...dispositions].sort((left, right) =>
+    String(left.createdAt).localeCompare(String(right.createdAt))
+  )) {
     latest.set(item.billId, item.disposition);
   }
   const values = [...latest.values()];
@@ -463,7 +516,11 @@ function validSha256(value) {
 
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  if (value && typeof value === "object")
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
+      .join(",")}}`;
   return JSON.stringify(value);
 }
 

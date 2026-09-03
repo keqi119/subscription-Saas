@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "database-test-manifest-report.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "chain",
+    "manifestDigest",
+    "discoveryDigest",
+    "suiteReports",
+    "counts",
+    "sanitizedLogDigest",
+    "terminalStatus"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "database-test-manifest-report.v1" },
+    "runId": { "$ref": "#/$defs/nonEmpty" },
+    "chain": { "enum": ["fresh", "snapshot"] },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "discoveryDigest": { "$ref": "#/$defs/digest" },
+    "suiteReports": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/suiteReport" }
+    },
+    "counts": { "$ref": "#/$defs/counts" },
+    "sanitizedLogDigest": { "$ref": "#/$defs/digest" },
+    "terminalStatus": { "enum": ["PASSED", "FAILED"] }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "fixtureObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "capability",
+        "credentialFingerprint",
+        "fixturePath",
+        "sqlDigest",
+        "statementClasses"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "fixture-observation.v1" },
+        "capability": { "enum": ["migration", "runtime-test"] },
+        "credentialFingerprint": { "$ref": "#/$defs/digest" },
+        "fixturePath": {
+          "type": "string",
+          "pattern": "^release/test-fixtures/[a-z0-9][a-z0-9.-]*\\.sql$"
+        },
+        "sqlDigest": { "$ref": "#/$defs/digest" },
+        "statementClasses": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "ALTER",
+              "COMMENT",
+              "CREATE",
+              "DELETE",
+              "GRANT",
+              "INSERT",
+              "REVOKE",
+              "SELECT",
+              "UPDATE",
+              "WITH"
+            ]
+          }
+        }
+      }
+    },
+    "roleBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "superuser",
+        "createdb",
+        "createrole",
+        "bypassrls",
+        "canCreateSchema",
+        "schemaOwner",
+        "objectOwner"
+      ],
+      "properties": {
+        "superuser": { "const": false },
+        "createdb": { "const": false },
+        "createrole": { "const": false },
+        "bypassrls": { "const": false },
+        "canCreateSchema": { "const": false },
+        "schemaOwner": { "const": false },
+        "objectOwner": { "const": false }
+      }
+    },
+    "roleAttributes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["superuser", "createdb", "createrole", "bypassrls"],
+      "properties": {
+        "superuser": { "const": false },
+        "createdb": { "const": false },
+        "createrole": { "const": false },
+        "bypassrls": { "const": false }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "collected",
+        "selected",
+        "executed",
+        "passed",
+        "failed",
+        "skipped",
+        "todo",
+        "filtered",
+        "cancelled"
+      ],
+      "properties": {
+        "collected": { "type": "integer", "minimum": 0 },
+        "selected": { "type": "integer", "minimum": 0 },
+        "executed": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "todo": { "type": "integer", "minimum": 0 },
+        "filtered": { "type": "integer", "minimum": 0 },
+        "cancelled": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "suiteReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "operationId",
+        "runId",
+        "suiteId",
+        "chain",
+        "manifestDigest",
+        "discoveryDigest",
+        "target",
+        "counts",
+        "sanitizedLogDigest",
+        "terminalStatus"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "database-suite-report.v1" },
+        "operationId": { "$ref": "#/$defs/nonEmpty" },
+        "runId": { "$ref": "#/$defs/nonEmpty" },
+        "suiteId": { "$ref": "#/$defs/nonEmpty" },
+        "chain": { "enum": ["fresh", "snapshot"] },
+        "manifestDigest": { "$ref": "#/$defs/digest" },
+        "discoveryDigest": { "$ref": "#/$defs/digest" },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "databaseName",
+            "databaseOid",
+            "targetFingerprint",
+            "roleAttributes",
+            "canCreateSchema",
+            "schemaOwner",
+            "objectOwner"
+          ],
+          "properties": {
+            "databaseName": { "type": "string", "pattern": "^s1ci_[0-9a-f]{24}$" },
+            "databaseOid": { "type": "string", "pattern": "^[0-9]+$" },
+            "targetFingerprint": { "$ref": "#/$defs/digest" },
+            "roleAttributes": { "$ref": "#/$defs/roleAttributes" },
+            "canCreateSchema": { "const": false },
+            "schemaOwner": { "const": false },
+            "objectOwner": { "const": false }
+          }
+        },
+        "additionalDatabases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "databaseName",
+              "databaseOid",
+              "targetFingerprint",
+              "roleAttributes",
+              "canCreateSchema",
+              "schemaOwner",
+              "objectOwner"
+            ],
+            "properties": {
+              "name": { "$ref": "#/$defs/nonEmpty" },
+              "databaseName": { "type": "string", "pattern": "^s1ci_[0-9a-f]{24}$" },
+              "databaseOid": { "type": "string", "pattern": "^[0-9]+$" },
+              "targetFingerprint": { "$ref": "#/$defs/digest" },
+              "roleAttributes": { "$ref": "#/$defs/roleAttributes" },
+              "canCreateSchema": { "const": false },
+              "schemaOwner": { "const": false },
+              "objectOwner": { "const": false }
+            }
+          }
+        },
+        "fixtureObservations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["database", "migration", "runtime", "roleBoundary"],
+            "properties": {
+              "database": { "$ref": "#/$defs/nonEmpty" },
+              "migration": { "$ref": "#/$defs/fixtureObservation" },
+              "runtime": { "$ref": "#/$defs/fixtureObservation" },
+              "roleBoundary": { "$ref": "#/$defs/roleBoundary" }
+            }
+          }
+        },
+        "counts": { "$ref": "#/$defs/counts" },
+        "sanitizedLogDigest": { "$ref": "#/$defs/digest" },
+        "terminalStatus": { "enum": ["PASSED", "FAILED"] }
+      }
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "stage1.billing-maintenance.evidence",
+  "commandVersion": "1",
+  "interface": {
+    "collect": "collectBillingMaintenanceEvidence(context,input):Promise<BillingMaintenanceEvidenceV1>"
+  },
+  "capabilityProfile": "evidence",
+  "databaseRole": "evidence",
+  "dataImpact": "read-only",
+  "approvalByEnvironment": {
+    "ci-fresh": "none",
+    "ci-snapshot": "none",
+    "staging": "none"
+  },
+  "allowedExecutionScopes": ["evidence", "full-rc"],
+  "inputSchema": "stage1-billing-maintenance-evidence-input.v1",
+  "planSchema": null,
+  "outputSchema": "stage1-billing-maintenance-evidence-result.v1",
+  "selection": "exact evidenceRunId with exactly two completed sequence 1/2 facts",
+  "lock": {
+    "id": "none",
+    "order": [],
+    "transactionBoundary": "bounded polling with each database query executed read-only"
+  },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 900000,
+  "cancellation": "cancel bounded polling and emit a failed proof; never synthesize evidence",
+  "idempotency": "repeated collection is read-only and content-addressed custody refuses overwrite",
+  "checksums": "canonical hashes bind forbidden-domain counts, release SHA, API image digest and database identity",
+  "postconditions": [
+    "two-completed-sequences-observed",
+    "source-binding-matches",
+    "blocked-count-zero",
+    "cycles-do-not-overlap",
+    "forbidden-domain-counts-unchanged",
+    "statement-log-read-only",
+    "evidence-public-safe",
+    "custody-complete"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after Stage1 billing-maintenance evidence is no longer an active acceptance gate"
+}

@@ -13,31 +13,31 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
-import {
-  afterAll,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  vi
-} from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
 import { DeliveryHandoverPdfRenderModel } from "../src/delivery-handover/delivery-handover-pdf-render-model";
 import { DeliveryHandoverPdfRendererService } from "../src/delivery-handover/delivery-handover-pdf-renderer.service";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
-import { buildBoundHandoverFactSnapshot, buildPhysicalHandoverFactSnapshot } from "../src/handover-work-order/handover-explicit-facts";
+import {
+  buildBoundHandoverFactSnapshot,
+  buildPhysicalHandoverFactSnapshot
+} from "../src/handover-work-order/handover-explicit-facts";
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+import { insertRuntimeOrderGraph } from "./helpers/runtime-domain-fixture";
 import { createDeterministicStage2PdfModel } from "./stage2-handover-pdf-real-render.fixture";
 
-const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ??
-  "postgresql://subscription:subscription@127.0.0.1:5432/subscription_saas?schema=public";
+const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
+  "apps/api/test/stage2-handover-pdf.integration.spec.ts"
+).databaseUrl;
 
 function createHandoverFactBinding() {
   const physical = buildPhysicalHandoverFactSnapshot({
-    accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
+    accessoryItems: [
+      { code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }
+    ],
     handoverFactRevision: 1,
     keyState: "COMPLETE",
     primaryKeyCount: 1,
@@ -79,13 +79,7 @@ describe("Stage 2 source PDF PostgreSQL finalization", () => {
     });
     const renderer = queuedRenderer([loserPdf, winnerPdf]);
     const repository = new Stage2HandoverWorkflowRepository(prisma);
-    const service = createService(
-      prisma,
-      fixture.evidenceChecklist,
-      renderer,
-      storage,
-      repository
-    );
+    const service = createService(prisma, fixture.evidenceChecklist, renderer, storage, repository);
 
     try {
       const losingAttempt = service.ensureStage2HandoverPdf(
@@ -102,11 +96,10 @@ describe("Stage 2 source PDF PostgreSQL finalization", () => {
       const loser = await losingAttempt;
 
       expect(loser.artifactId).toBe(winner.artifactId);
-      const handover =
-        await prisma.vehicleDeliveryHandover.findUniqueOrThrow({
-          include: { handoverContract: true },
-          where: { id: fixture.handoverId }
-        });
+      const handover = await prisma.vehicleDeliveryHandover.findUniqueOrThrow({
+        include: { handoverContract: true },
+        where: { id: fixture.handoverId }
+      });
       const sourceContracts = await prisma.contract.findMany({
         where: {
           id: { not: fixture.stage1ContractId },
@@ -122,19 +115,14 @@ describe("Stage 2 source PDF PostgreSQL finalization", () => {
           }
         }
       });
-      const notifications =
-        await prisma.vehicleHandoverWorkflowJob.findMany({
-          where: {
-            jobType:
-              VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
-            workOrderId: fixture.workOrderId
-          }
-        });
-      const snapshot = handover.handoverContract
-        ?.contractSnapshot as Record<string, unknown>;
-      const artifact = snapshot.stage2HandoverPdfArtifact as
-        | Record<string, unknown>
-        | undefined;
+      const notifications = await prisma.vehicleHandoverWorkflowJob.findMany({
+        where: {
+          jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
+          workOrderId: fixture.workOrderId
+        }
+      });
+      const snapshot = handover.handoverContract?.contractSnapshot as Record<string, unknown>;
+      const artifact = snapshot.stage2HandoverPdfArtifact as Record<string, unknown> | undefined;
 
       expect(sourceContracts).toHaveLength(1);
       expect(sourceFiles).toHaveLength(1);
@@ -161,52 +149,37 @@ describe("Stage 2 source PDF PostgreSQL finalization", () => {
     const repository = new Stage2HandoverWorkflowRepository(prisma);
     const enqueue = repository.enqueue.bind(repository);
     let failNotification = true;
-    vi.spyOn(repository, "enqueue").mockImplementation(
-      async (tx, input) => {
-        const job = await enqueue(tx, input);
-        if (
-          failNotification &&
-          input.jobType ===
-          VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY
-        ) {
-          failNotification = false;
-          throw new Error("synthetic notification enqueue failure");
-        }
-        return job;
+    vi.spyOn(repository, "enqueue").mockImplementation(async (tx, input) => {
+      const job = await enqueue(tx, input);
+      if (
+        failNotification &&
+        input.jobType === VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY
+      ) {
+        failNotification = false;
+        throw new Error("synthetic notification enqueue failure");
       }
-    );
-    const service = createService(
-      prisma,
-      fixture.evidenceChecklist,
-      renderer,
-      storage,
-      repository
-    );
+      return job;
+    });
+    const service = createService(prisma, fixture.evidenceChecklist, renderer, storage, repository);
 
     try {
       await expect(
-        service.ensureStage2HandoverPdf(
-          fixture.workOrderId,
-          fixture.manifestHash
-        )
+        service.ensureStage2HandoverPdf(fixture.workOrderId, fixture.manifestHash)
       ).rejects.toThrow("synthetic notification enqueue failure");
 
       const keysAfterFailure = [...storage.objects.keys()];
       expect(keysAfterFailure).toHaveLength(1);
       const sourceObjectPrefix = sourceObjectKeyPrefix(keysAfterFailure[0]!);
-      await expect(
-        findUnboundSourceFiles(prisma, sourceObjectPrefix)
-      ).resolves.toEqual([]);
+      await expect(findUnboundSourceFiles(prisma, sourceObjectPrefix)).resolves.toEqual([]);
 
       const retry = await service.ensureStage2HandoverPdf(
         fixture.workOrderId,
         fixture.manifestHash
       );
-      const handover =
-        await prisma.vehicleDeliveryHandover.findUniqueOrThrow({
-          include: { handoverContract: true },
-          where: { id: fixture.handoverId }
-        });
+      const handover = await prisma.vehicleDeliveryHandover.findUniqueOrThrow({
+        include: { handoverContract: true },
+        where: { id: fixture.handoverId }
+      });
       const sourceContracts = await prisma.contract.findMany({
         where: {
           id: { not: fixture.stage1ContractId },
@@ -218,23 +191,17 @@ describe("Stage 2 source PDF PostgreSQL finalization", () => {
           objectKey: { startsWith: sourceObjectPrefix }
         }
       });
-      const unboundSourceFiles = await findUnboundSourceFiles(
-        prisma,
-        sourceObjectPrefix
-      );
-      const notifications =
-        await prisma.vehicleHandoverWorkflowJob.findMany({
-          where: {
-            jobType:
-              VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
-            workOrderId: fixture.workOrderId
-          }
-        });
+      const unboundSourceFiles = await findUnboundSourceFiles(prisma, sourceObjectPrefix);
+      const notifications = await prisma.vehicleHandoverWorkflowJob.findMany({
+        where: {
+          jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
+          workOrderId: fixture.workOrderId
+        }
+      });
       const storedKeys = [...storage.objects.keys()];
-      const uploadedKeys =
-        storage.putGeneratedContractPdfArtifactFromPath.mock.calls.map(
-          ([input]) => input.objectKey
-        );
+      const uploadedKeys = storage.putGeneratedContractPdfArtifactFromPath.mock.calls.map(
+        ([input]) => input.objectKey
+      );
       const storedBytes = storage.objects.get(handover.sourceObjectKey!);
 
       expect(retry.artifactId).toBe(handover.sourceDocumentFileId);
@@ -286,51 +253,11 @@ async function createDatabaseFixture(prisma: PrismaService) {
     }
   });
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw`
-      INSERT INTO "subscription_order" (
-        "id",
-        "order_no",
-        "customer_id",
-        "application_id",
-        "quote_id",
-        "product_id",
-        "product_version_id",
-        "model_definition_id_snapshot",
-        "model_code_snapshot",
-        "model_display_name_snapshot",
-        "vehicle_purchase_price_amount",
-        "monthly_fee_amount",
-        "deposit_amount",
-        "period_months",
-        "mileage_limit_km",
-        "over_mileage_fee_amount",
-        "quote_snapshot",
-        "created_at",
-        "updated_at"
-      )
-      VALUES (
-        ${orderId}::uuid,
-        ${`ORD-S2PDF-${suffix}`},
-        ${customerId}::uuid,
-        ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid,
-        'NIO_ES6',
-        'NIO ES6',
-        100000,
-        1000,
-        5000,
-        12,
-        20000,
-        100,
-        ${JSON.stringify({ source: "stage2-pdf-integration" })}::jsonb,
-        now(),
-        now()
-      )
-    `;
+    await insertRuntimeOrderGraph(tx, {
+      customerId,
+      label: `stage2-pdf-${suffix}`,
+      orderId
+    });
   });
   await prisma.contractVersion.create({
     data: {
@@ -367,7 +294,9 @@ async function createDatabaseFixture(prisma: PrismaService) {
   await prisma.vehicleHandoverWorkOrder.create({
     data: {
       accessoryChecklist: { keys: 2 },
-      accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
+      accessoryItems: [
+        { code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }
+      ],
       customerConfirmedAt: new Date(),
       damageDeclared: false,
       deliveryLocation: "Stage 2 integration center",
@@ -377,7 +306,8 @@ async function createDatabaseFixture(prisma: PrismaService) {
       handoverMileageKm: 1200,
       handoverFactHash: evidencePackage.manifest.handoverFacts.physicalFactHash,
       handoverFactRevision: 1,
-      handoverFactSnapshot: evidencePackage.manifest.handoverFacts as unknown as Prisma.InputJsonValue,
+      handoverFactSnapshot: evidencePackage.manifest
+        .handoverFacts as unknown as Prisma.InputJsonValue,
       handoverType: "DELIVERY_OUTBOUND",
       keyState: "COMPLETE",
       id: workOrderId,
@@ -407,38 +337,7 @@ async function createDatabaseFixture(prisma: PrismaService) {
   });
 
   return {
-    async cleanup() {
-      const contracts = await prisma.contract.findMany({
-        select: { fileId: true },
-        where: { orderId }
-      });
-      const fileIds = contracts
-        .map((contract) => contract.fileId)
-        .filter((id): id is string => Boolean(id));
-      await prisma.vehicleHandoverWorkflowJob.deleteMany({
-        where: { workOrderId }
-      });
-      await prisma.vehicleHandoverReviewAttempt.deleteMany({
-        where: { workOrderId }
-      });
-      await prisma.vehicleHandoverWorkOrder.deleteMany({
-        where: { id: workOrderId }
-      });
-      await prisma.vehicleDeliveryHandover.deleteMany({
-        where: { id: handoverId }
-      });
-      await prisma.contract.deleteMany({ where: { orderId } });
-      if (fileIds.length > 0) {
-        await prisma.fileObject.deleteMany({
-          where: { id: { in: fileIds } }
-        });
-      }
-      await prisma.contractVersion.deleteMany({
-        where: { id: templateId }
-      });
-      await prisma.subscriptionOrder.deleteMany({ where: { id: orderId } });
-      await prisma.customer.deleteMany({ where: { id: customerId } });
-    },
+    async cleanup() {},
     evidenceChecklist,
     handoverId,
     manifestHash: evidencePackage.manifestHash,
@@ -486,8 +385,7 @@ function realReservationRenderer() {
           workOrderId: model.workOrderId
         }),
         {
-          evidencePackageUrl:
-            "https://portal.example.test/portal/handover-reviews/integration"
+          evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/integration"
         }
       )
     )
@@ -503,15 +401,11 @@ function queuedRenderer(buffers: Buffer[]) {
       if (!buffer) {
         throw new Error("No queued integration PDF.");
       }
-      const directory = await mkdtemp(
-        path.join(os.tmpdir(), "stage2-pdf-integration-")
-      );
+      const directory = await mkdtemp(path.join(os.tmpdir(), "stage2-pdf-integration-"));
       const filePath = path.join(directory, "handover.pdf");
       await writeFile(filePath, buffer);
       return {
-        cleanup: vi.fn(async () =>
-          rm(directory, { force: true, recursive: true })
-        ),
+        cleanup: vi.fn(async () => rm(directory, { force: true, recursive: true })),
         contentType: "application/pdf" as const,
         diagnostics: {
           evidenceFileCount: 0,
@@ -533,10 +427,7 @@ function queuedRenderer(buffers: Buffer[]) {
   };
 }
 
-async function findUnboundSourceFiles(
-  prisma: PrismaService,
-  objectKeyPrefix: string
-) {
+async function findUnboundSourceFiles(prisma: PrismaService, objectKeyPrefix: string) {
   return prisma.$queryRaw<Array<{ id: string; objectKey: string }>>`
     SELECT
       file_object."id",
@@ -558,11 +449,13 @@ function sourceObjectKeyPrefix(objectKey: string) {
   return objectKey.slice(0, markerIndex + 1);
 }
 
-function coordinatedStorage(options: {
-  blockedBytes?: Buffer;
-  onBlocked?: () => void;
-  releaseBlocked?: Promise<void>;
-} = {}) {
+function coordinatedStorage(
+  options: {
+    blockedBytes?: Buffer;
+    onBlocked?: () => void;
+    releaseBlocked?: Promise<void>;
+  } = {}
+) {
   const objects = new Map<string, Buffer>();
   return {
     deleteObject: vi.fn(async (_bucket: string, objectKey: string) => {

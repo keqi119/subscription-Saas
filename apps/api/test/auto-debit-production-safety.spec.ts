@@ -58,10 +58,24 @@ describe("auto debit deployment safety", () => {
     expect(Reflect.getMetadata("exports", AutoDebitModule)).toEqual([AutoDebitScheduler]);
   });
 
-  it("serializes the PostgreSQL settlement integration with other database suites", () => {
-    const vitestConfig = readFileSync(join(repoRoot, "apps/api/vitest.config.ts"), "utf8");
+  it("isolates the PostgreSQL settlement integration in its own manifested database", () => {
+    const manifest = JSON.parse(
+      readFileSync(join(repoRoot, "release/contracts/database-test-manifest.v1.json"), "utf8")
+    ) as {
+      suites: Array<{
+        files: string[];
+        parallelism: { maxShards: number; mode: string };
+        suiteId: string;
+      }>;
+    };
+    const suite = manifest.suites.find(
+      ({ suiteId }) => suiteId === "api.auto-debit-settlement.postgres"
+    );
 
-    expect(vitestConfig).toContain('"test/auto-debit-settlement.integration.spec.ts"');
+    expect(suite).toMatchObject({
+      files: ["apps/api/test/auto-debit-settlement.integration.spec.ts"],
+      parallelism: { maxShards: 1, mode: "parallel" }
+    });
   });
 });
 

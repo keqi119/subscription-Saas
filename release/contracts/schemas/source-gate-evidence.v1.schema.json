@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "source-gate-evidence.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sourceSha",
+    "migrationCatalogDigest",
+    "repositoryContractDigest",
+    "databaseTestManifestDigest",
+    "databaseTestDiscoveryDigest",
+    "postgres",
+    "chain",
+    "counts",
+    "terminalStatus",
+    "schemaDiffDigest",
+    "migrationStatusDigest",
+    "postSchemaDigest",
+    "sanitizedLogDigest",
+    "provenance"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "source-gate-evidence.v1" },
+    "sourceSha": { "$ref": "#/$defs/sourceSha" },
+    "migrationCatalogDigest": { "$ref": "#/$defs/digest" },
+    "repositoryContractDigest": { "$ref": "#/$defs/digest" },
+    "databaseTestManifestDigest": { "$ref": "#/$defs/digest" },
+    "databaseTestDiscoveryDigest": { "$ref": "#/$defs/digest" },
+    "postgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["imageDigest", "serverVersionNum"],
+      "properties": {
+        "imageDigest": { "$ref": "#/$defs/digest" },
+        "serverVersionNum": { "type": "string", "pattern": "^17[0-9]{4}$" }
+      }
+    },
+    "chain": { "enum": ["fresh", "snapshot"] },
+    "counts": { "$ref": "#/$defs/testCounts" },
+    "terminalStatus": { "enum": ["PASSED", "FAILED"] },
+    "schemaDiffDigest": { "$ref": "#/$defs/digest" },
+    "migrationStatusDigest": { "$ref": "#/$defs/digest" },
+    "postSchemaDigest": { "$ref": "#/$defs/digest" },
+    "sanitizedLogDigest": { "$ref": "#/$defs/digest" },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshotMetadataDigest",
+        "snapshotBundleDigest",
+        "sourceMigrationHead",
+        "ownershipMapDigest",
+        "ownershipObservationDigest"
+      ],
+      "properties": {
+        "snapshotMetadataDigest": { "$ref": "#/$defs/digest" },
+        "snapshotBundleDigest": { "$ref": "#/$defs/digest" },
+        "sourceMigrationHead": { "$ref": "#/$defs/migration" },
+        "ownershipMapDigest": { "$ref": "#/$defs/digest" },
+        "ownershipObservationDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generatedAt", "ciRunRef", "executorVersion"],
+      "properties": {
+        "generatedAt": { "$ref": "#/$defs/timestamp" },
+        "ciRunRef": { "$ref": "#/$defs/nonEmpty" },
+        "executorVersion": { "$ref": "#/$defs/nonEmpty" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "chain": { "const": "snapshot" } }, "required": ["chain"] },
+      "then": { "properties": { "snapshot": true }, "required": ["snapshot"] },
+      "else": {
+        "not": { "properties": { "snapshot": true }, "required": ["snapshot"] }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "migration": { "type": "string", "pattern": "^[0-9]{14}_[a-z0-9_]+$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "testCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "collected",
+        "selected",
+        "executed",
+        "passed",
+        "failed",
+        "skipped",
+        "todo",
+        "filtered",
+        "cancelled"
+      ],
+      "properties": {
+        "collected": { "type": "integer", "minimum": 0 },
+        "selected": { "type": "integer", "minimum": 0 },
+        "executed": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "todo": { "type": "integer", "minimum": 0 },
+        "filtered": { "type": "integer", "minimum": 0 },
+        "cancelled": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

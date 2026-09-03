@@ -122,6 +122,10 @@ test("classifies only the exact empty-history active tuple as a candidate", () =
   assert.deepEqual(result.candidate, {
     billingScheduleId: "36054e6d-5104-4daf-b8a7-cb7e956fc436",
     leaseId: "44444444-4444-4444-8444-444444444444",
+    ownership: {
+      orderId: selectors.orderId,
+      vehicleId: selectors.vehicleId
+    },
     orderId: selectors.orderId,
     transitions: {
       billingSchedule: ["PAUSED", "CANCELLED"],
@@ -129,7 +133,10 @@ test("classifies only the exact empty-history active tuple as a candidate", () =
       order: ["ACTIVE", "CANCELLED"],
       vehicle: ["LEASED", "AVAILABLE"]
     },
-    vehicleId: selectors.vehicleId
+    vehicleId: selectors.vehicleId,
+    versions: {
+      billingSchedule: 0
+    }
   });
   assert.deepEqual(result.summary, { blockers: 0, inspectedOrders: 1 });
 });

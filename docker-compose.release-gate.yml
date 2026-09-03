@@ -1,0 +1,145 @@
+name: stage1-s1-release-gate
+
+x-runner-common: &runner-common
+  image: ${RELEASE_RUNNER_IMAGE:?RELEASE_RUNNER_IMAGE must be a registry-resolved linux/amd64 digest}
+  restart: "no"
+  networks:
+    - release-gate
+  labels:
+    com.subscription.release.source-revision: ${RELEASE_SOURCE_REVISION:?RELEASE_SOURCE_REVISION is required}
+  configs:
+    - source: runner-launch-envelope
+      target: /run/launch/runner-launch-envelope.v1.json
+
+services:
+  postgres:
+    image: postgres:17-bookworm@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6
+    profiles: [database]
+    restart: "no"
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: release_provisioner
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets:
+      - postgres-password
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U release_provisioner -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
+      - -c
+      - ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+    ports:
+      - 127.0.0.1:${RELEASE_GATE_DATABASE_PORT:-35432}:5432
+    volumes:
+      - type: volume
+        source: release-gate-db
+        target: /var/lib/postgresql/data
+    networks:
+      - release-gate
+
+  runner-migration:
+    <<: *runner-common
+    profiles: [runner-migrate]
+    environment:
+      RUNNER_CAPABILITY_PROFILE: migrate
+      RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
+      RUNNER_CREDENTIAL_FILE: /run/secrets/database-credential
+    secrets:
+      - source: migration-database-credential
+        target: database-credential
+
+  runner-verify:
+    <<: *runner-common
+    profiles: [runner-verify]
+    environment:
+      RUNNER_CAPABILITY_PROFILE: verify
+      RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
+      RUNNER_CREDENTIAL_FILE: /run/secrets/database-credential
+    secrets:
+      - source: verify-database-credential
+        target: database-credential
+
+  runner-database-test:
+    <<: *runner-common
+    profiles: [runner-database-test]
+    environment:
+      RUNNER_LAUNCH_ENVELOPE_FILE: /run/launch/runner-launch-envelope.v1.json
+      RUNNER_CREDENTIAL_FILE: /run/secrets/database-credential
+    secrets:
+      - source: database-test-credential
+        target: database-credential
+      - source: database-test-source-credential
+        target: source-database-credential
+
+  api:
+    image: ${RELEASE_API_IMAGE:?RELEASE_API_IMAGE must be a registry-resolved linux/amd64 digest}
+    profiles: [api]
+    restart: "no"
+    labels:
+      com.subscription.release.source-revision: ${RELEASE_SOURCE_REVISION:?RELEASE_SOURCE_REVISION is required}
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      DATABASE_URL: ${RELEASE_API_DATABASE_URL:?RELEASE_API_DATABASE_URL is required}
+      RELEASE_FINAL_GATE: "true"
+      DATABASE_MANIFEST_ID: ${RELEASE_MANIFEST_ID:?RELEASE_MANIFEST_ID is required}
+      DATABASE_SESSION_NONCE: ${RELEASE_SESSION_NONCE:?RELEASE_SESSION_NONCE is required}
+      CORS_ORIGIN: http://127.0.0.1:${RELEASE_GATE_WEB_PORT:-33000}
+    ports:
+      - 127.0.0.1:${RELEASE_GATE_API_PORT:-33001}:3001
+    networks:
+      - release-gate
+
+  web:
+    image: ${RELEASE_WEB_IMAGE:?RELEASE_WEB_IMAGE must be a registry-resolved linux/amd64 digest}
+    profiles: [web]
+    restart: "no"
+    labels:
+      com.subscription.release.source-revision: ${RELEASE_SOURCE_REVISION:?RELEASE_SOURCE_REVISION is required}
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    ports:
+      - 127.0.0.1:${RELEASE_GATE_WEB_PORT:-33000}:3000
+    networks:
+      - release-gate
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:c091b21d9fae78c76e85cd4356431e9b018402f172a214fc7d7a5e9a7e29d8ac
+    profiles: [client]
+    restart: "no"
+    environment:
+      PLAYWRIGHT_VERSION: 1.62.1
+    networks:
+      - release-gate
+
+networks:
+  release-gate:
+    internal: true
+
+volumes:
+  release-gate-db:
+
+configs:
+  runner-launch-envelope:
+    file: ${RELEASE_RUNNER_LAUNCH_ENVELOPE_FILE:?RELEASE_RUNNER_LAUNCH_ENVELOPE_FILE is required}
+
+secrets:
+  postgres-password:
+    file: ${RELEASE_POSTGRES_PASSWORD_FILE:?RELEASE_POSTGRES_PASSWORD_FILE is required}
+  migration-database-credential:
+    file: ${RELEASE_MIGRATION_CREDENTIAL_FILE:?RELEASE_MIGRATION_CREDENTIAL_FILE is required}
+  verify-database-credential:
+    file: ${RELEASE_VERIFY_CREDENTIAL_FILE:?RELEASE_VERIFY_CREDENTIAL_FILE is required}
+  database-test-credential:
+    file: ${RELEASE_DATABASE_TEST_CREDENTIAL_FILE:?RELEASE_DATABASE_TEST_CREDENTIAL_FILE is required}
+  database-test-source-credential:
+    file: ${RELEASE_DATABASE_TEST_SOURCE_CREDENTIAL_FILE:?RELEASE_DATABASE_TEST_SOURCE_CREDENTIAL_FILE is required}

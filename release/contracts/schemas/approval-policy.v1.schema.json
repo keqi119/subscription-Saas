@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "approval-policy.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "policyId",
+    "repository",
+    "approvalModes",
+    "authorities",
+    "maximumLifetimeSeconds",
+    "permittedOperations",
+    "revocationSource",
+    "custody"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "approval-policy.v1" },
+    "policyId": { "$ref": "#/$defs/nonEmpty" },
+    "repository": { "$ref": "#/$defs/repository" },
+    "approvalModes": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": { "enum": ["ci-policy", "human"] }
+    },
+    "authorities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ci-policy", "human"],
+      "properties": {
+        "ci-policy": { "$ref": "#/$defs/authority" },
+        "human": { "$ref": "#/$defs/authority" }
+      }
+    },
+    "maximumLifetimeSeconds": { "type": "integer", "minimum": 60, "maximum": 86400 },
+    "permittedOperations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "approvalMode",
+          "commandId",
+          "commandVersion",
+          "environmentClass",
+          "dataImpact"
+        ],
+        "properties": {
+          "approvalMode": { "enum": ["ci-policy", "human"] },
+          "commandId": { "$ref": "#/$defs/nonEmpty" },
+          "commandVersion": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+          "environmentClass": {
+            "enum": ["ci-fresh", "ci-snapshot", "staging", "production"]
+          },
+          "dataImpact": { "enum": ["read-only", "ddl", "controlled-dml"] }
+        }
+      }
+    },
+    "revocationSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "workflowPath",
+        "workflowRef",
+        "artifactNamePrefix",
+        "attestationIssuer",
+        "maximumPublicationDelaySeconds",
+        "maximumArtifactLifetimeSeconds",
+        "minimumWorkflowRunNumber",
+        "checkpointArtifactDigest"
+      ],
+      "properties": {
+        "repository": { "$ref": "#/$defs/repository" },
+        "workflowPath": { "$ref": "#/$defs/workflowPath" },
+        "workflowRef": { "$ref": "#/$defs/ref" },
+        "artifactNamePrefix": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*-$" },
+        "attestationIssuer": { "$ref": "#/$defs/nonEmpty" },
+        "maximumPublicationDelaySeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 86400
+        },
+        "maximumArtifactLifetimeSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 604800
+        },
+        "minimumWorkflowRunNumber": { "type": "integer", "minimum": 1 },
+        "checkpointArtifactDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "custody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "readers", "retentionDays", "expiryDisposition"],
+      "properties": {
+        "owner": { "$ref": "#/$defs/nonEmpty" },
+        "readers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        },
+        "retentionDays": { "const": 180 },
+        "expiryDisposition": { "enum": ["delete", "review", "retain-approved"] }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+    "workflowPath": {
+      "type": "string",
+      "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$"
+    },
+    "ref": { "type": "string", "pattern": "^refs/(?:heads|tags)/[^\\s]+$" },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "workflowPath", "workflowRef", "environment", "allowedSubjects"],
+      "properties": {
+        "issuer": { "$ref": "#/$defs/nonEmpty" },
+        "workflowPath": { "$ref": "#/$defs/workflowPath" },
+        "workflowRef": { "$ref": "#/$defs/ref" },
+        "environment": { "$ref": "#/$defs/nonEmpty" },
+        "allowedSubjects": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        }
+      }
+    }
+  }
+}

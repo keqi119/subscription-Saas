@@ -4,6 +4,8 @@ import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { requiredReleaseDatabaseTestContext } from "../packages/release-foundation/src/index.mjs";
+
 import {
   BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_SHA256,
   BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_VERSION,
@@ -13,7 +15,7 @@ import {
 } from "./billing-maintenance-cycle-evidence-core.mjs";
 import { createStage1AcceptancePrismaClient } from "./stage1-clean-acceptance-cli-core.mjs";
 
-const BILLING_DATABASE = requiredDisposableDatabase();
+const BILLING_DATABASE = requiredReleaseDatabaseTestContext(import.meta.url);
 const DATABASE_URL = BILLING_DATABASE.databaseUrl;
 const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CLI_PATH = fileURLToPath(
@@ -169,28 +171,4 @@ function collectStrings(value, seen = new WeakSet()) {
   if (!value || typeof value !== "object" || seen.has(value)) return [];
   seen.add(value);
   return Object.values(value).flatMap((child) => collectStrings(child, seen));
-}
-
-function requiredDisposableDatabase(
-  value = process.env.BILLING_MAINTENANCE_EVIDENCE_TEST_DATABASE_URL ?? process.env.DATABASE_URL
-) {
-  if (!value) throw new Error("DATABASE_URL is required for billing exporter integration tests");
-  const url = new URL(value);
-  if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
-    throw new Error("Billing exporter integration tests require a loopback database");
-  }
-  const databaseName = decodeURIComponent(url.pathname.slice(1));
-  if (["postgres", "subscription_saas_codex"].includes(databaseName)) {
-    throw new Error("Billing exporter integration tests reject default and historical databases");
-  }
-  if (
-    databaseName !== "subscription_saas_test" &&
-    !/^subscription_saas_stage1_task5_20260831_[0-9]{2}$/.test(databaseName)
-  ) {
-    throw new Error(
-      "Billing exporter integration tests require subscription_saas_test or a uniquely named Task 5 database"
-    );
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return { databaseName, databaseUrl: url.toString() };
 }

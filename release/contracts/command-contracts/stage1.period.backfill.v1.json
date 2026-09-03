@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "stage1.period.backfill",
+  "commandVersion": "1",
+  "interface": {
+    "plan": "planPeriodBackfill(context,input):Promise<PeriodBackfillPlanV1>",
+    "apply": "applyPeriodBackfill(context,approved):Promise<PostStateObservationV1>",
+    "reconcile": "reconcilePeriodBackfill(context,prior):Promise<ReconcileResultV1>"
+  },
+  "capabilityProfile": "repair",
+  "databaseRole": "repair",
+  "dataImpact": "controlled-dml",
+  "approvalByEnvironment": {
+    "ci-fresh": "ci-policy",
+    "ci-snapshot": "ci-policy",
+    "staging": "human"
+  },
+  "allowedExecutionScopes": ["full-rc", "repair"],
+  "inputSchema": "stage1-period-backfill-input.v1",
+  "planSchema": "deterministic-plan.v1#stage1-period-backfill-plan.v1",
+  "outputSchema": "post-state-observation.v1",
+  "selection": "all exact CREATE subscription-period candidates derived from authoritative order, activation, contract segment and return facts",
+  "lock": {
+    "id": "stage1c-period-backfill:apply",
+    "order": [
+      "vehicle_subscription_period write lock",
+      "source table read locks",
+      "transaction advisory lock"
+    ],
+    "transactionBoundary": "repeatable-read transaction; reload and hash all candidates under locks before inserts"
+  },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 300000,
+  "cancellation": "cancel before commit; committed-result-unproved requires same-operation reconcile",
+  "idempotency": "stable source keys make applied CREATE candidates UNCHANGED; replay never inserts another period or audit",
+  "checksums": "classification digest binds candidate source keys, period bounds, authority snapshots, overlaps, omissions and invariant violations",
+  "postconditions": [
+    "approved-period-set-recomputed-under-lock",
+    "expected-periods-inserted",
+    "expected-audits-created",
+    "no-period-overlap",
+    "no-multiple-current-period",
+    "candidate-set-unchanged-after-apply",
+    "replay-has-no-duplicate-side-effects"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after all supported historical orders have authoritative subscription periods"
+}

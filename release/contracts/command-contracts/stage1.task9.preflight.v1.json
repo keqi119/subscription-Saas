@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "stage1.task9.preflight",
+  "commandVersion": "1",
+  "interface": {
+    "verify": "verifyTask9Preflight(context,input):Promise<Task9VerificationV1>"
+  },
+  "capabilityProfile": "verify",
+  "databaseRole": "verify",
+  "dataImpact": "read-only",
+  "approvalByEnvironment": {
+    "ci-fresh": "none",
+    "ci-snapshot": "none",
+    "staging": "none"
+  },
+  "allowedExecutionScopes": ["full-rc", "verify"],
+  "inputSchema": "stage1-task9-preflight-input.v1",
+  "planSchema": null,
+  "outputSchema": "stage1-task9-preflight-verification.v1",
+  "lock": { "id": "none", "order": [], "transactionBoundary": "read-only observation" },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 300000,
+  "cancellation": "cancel resource and catalog observations and emit a failed proof",
+  "idempotency": "repeated preflight has no database side effect",
+  "postconditions": [
+    "target-identity-matches",
+    "database-pair-valid",
+    "vehicle-selection-valid",
+    "approved-manifest-safe",
+    "resource-headroom-valid",
+    "statement-log-read-only"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after Task9 preflight is replaced by permanent release policy"
+}

@@ -53,7 +53,6 @@ const requiredSteps = [
   ["API typecheck", "pnpm", ["--filter", "@subscription-saas/api", "typecheck"]],
   ["Web typecheck", "pnpm", ["--filter", "@subscription-saas/web", "typecheck"]],
   ["API tests", "pnpm", ["--filter", "@subscription-saas/api", "test"]],
-  ["Prisma migrate status", "pnpm", ["prisma:migrate:status"]],
   ["Smoke script syntax", "node", ["--check", "scripts/api-smoke.mjs"]],
   ["Portal route smoke syntax", "node", ["--check", "scripts/portal-route-smoke.mjs"]],
   ["Portal API smoke syntax", "node", ["--check", "scripts/portal-api-smoke.mjs"]],
@@ -103,14 +102,14 @@ const requiredSteps = [
   [
     "Stage 1 invalid Staging order retirement tests",
     "pnpm",
-    ["stage1:staging-invalid-test-order-retirement:test"]
+    ["stage1:staging-invalid-test-order-retirement:test:unit"]
   ],
   [
     "Stage 1C asset accounting reconciliation",
     "node",
     ["--test", "scripts/stage1c-asset-accounting-reconciliation.test.mjs"]
   ],
-  ["Stage 1 closure reconciliation", "pnpm", ["stage1:p0-closure:reconcile"]],
+  ["Stage 1 closure reconciliation", "pnpm", ["stage1:p0-closure:reconcile:unit"]],
   ["Scenario seed syntax", "node", ["--check", "apps/api/prisma/seed-scenario.mjs"]]
 ];
 

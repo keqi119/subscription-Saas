@@ -1,0 +1,4 @@
+{
+  "schemaVersion": "migration-global-object-policy.v1",
+  "allowedExtensions": ["btree_gist", "pgcrypto"]
+}

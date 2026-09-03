@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "db.migrate.deploy",
+  "commandVersion": "1",
+  "interface": {
+    "plan": "planMigration(context,input):Promise<MigrationPlanV1>",
+    "apply": "applyMigration(context,approved):Promise<PostStateObservationV1>"
+  },
+  "capabilityProfile": "migrate",
+  "databaseRole": "migration",
+  "dataImpact": "ddl",
+  "approvalByEnvironment": {
+    "ci-fresh": "ci-policy",
+    "ci-snapshot": "ci-policy",
+    "staging": "human"
+  },
+  "allowedExecutionScopes": ["full-rc", "migration-schema"],
+  "inputSchema": "migration-command-input.v1",
+  "planSchema": "deterministic-plan.v1#migration-plan.v1",
+  "outputSchema": "post-state-observation.v1",
+  "selection": "ordered migration catalog entries not present in the applied prefix",
+  "lock": {
+    "id": "prisma-migration-lock",
+    "order": ["database-migration-advisory-lock"],
+    "transactionBoundary": "recompute the complete plan under the lock before invoking Prisma migrate deploy"
+  },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 1800000,
+  "cancellation": "cancel before deploy; deployment interruption is outcome-unknown and requires reconcile",
+  "idempotency": "a clean replay performs no DDL and preserves the migration head",
+  "checksums": "all applied migrations must be a checksum-valid prefix of the repository catalog",
+  "postconditions": [
+    "migration-head-equals-catalog-head",
+    "schema-diff-zero",
+    "schema-owner-matches",
+    "extensions-allowed"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "permanent release migration capability"
+}

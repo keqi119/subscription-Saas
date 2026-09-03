@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "ownership-map.v1",
+  "mapId": "stage1-snapshot-owner-map",
+  "mapVersion": "1",
+  "sourceOwners": ["subscription", "subscription_saas"],
+  "targetOwnerProfile": "migrate",
+  "schemas": ["public"],
+  "objectClasses": [
+    "function",
+    "materialized-view",
+    "partitioned-table",
+    "schema",
+    "sequence",
+    "table",
+    "type",
+    "view"
+  ],
+  "excludedExtensions": ["btree_gist", "pgcrypto", "plpgsql"]
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "database-target-policies.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "policies"],
+  "properties": {
+    "schemaVersion": { "const": "database-target-policies.v1" },
+    "policies": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "policyId",
+          "allowedEnvironments",
+          "allowedHosts",
+          "requiredClusterMarker",
+          "requiredEphemeralMarker",
+          "requiredImageDigest",
+          "requiredServerVersionMajor",
+          "databaseNamePattern"
+        ],
+        "properties": {
+          "schemaVersion": { "const": "database-target-policy.v1" },
+          "policyId": { "const": "s1-release-ephemeral" },
+          "allowedEnvironments": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "enum": ["ci", "local-controlled"] },
+            "allOf": [
+              { "contains": { "const": "ci" } },
+              { "contains": { "const": "local-controlled" } }
+            ]
+          },
+          "allowedHosts": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "enum": ["127.0.0.1", "localhost", "::1"] },
+            "contains": { "const": "127.0.0.1" }
+          },
+          "requiredClusterMarker": { "const": "subscription-s1-controlled/v1" },
+          "requiredEphemeralMarker": { "const": "subscription-s1-ephemeral/v1" },
+          "requiredImageDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "requiredServerVersionMajor": { "const": 17 },
+          "databaseNamePattern": { "const": "^s1ci_[0-9a-f]{24}$" }
+        }
+      }
+    }
+  }
+}

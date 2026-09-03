@@ -7,6 +7,15 @@ const migrationName = "20260901010000_stage1_schema_drift_convergence";
 const migrationsRoot = join(process.cwd(), "prisma", "migrations");
 const migrationPath = join(migrationsRoot, migrationName, "migration.sql");
 const ciWorkflowPath = join(process.cwd(), "..", "..", ".github", "workflows", "ci.yml");
+const apiPackagePath = join(process.cwd(), "package.json");
+const databaseLauncherPath = join(
+  process.cwd(),
+  "..",
+  "..",
+  "scripts",
+  "release",
+  "database-test-launcher-runtime.mjs"
+);
 
 describe("Stage 1 schema drift convergence migration", () => {
   it("is the 126th append-only migration", () => {
@@ -42,15 +51,19 @@ describe("Stage 1 schema drift convergence migration", () => {
 
   it("keeps a fresh PostgreSQL schema drift gate in CI", () => {
     const workflow = readFileSync(ciWorkflowPath, "utf8");
-    const migrationStatus = workflow.indexOf("- name: Migration status");
-    const driftGate = workflow.indexOf("- name: Schema drift check");
-    const apiTests = workflow.indexOf("- name: API tests");
+    const apiPackage = JSON.parse(readFileSync(apiPackagePath, "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    const launcher = readFileSync(databaseLauncherPath, "utf8");
 
-    expect(migrationStatus).toBeGreaterThan(-1);
-    expect(driftGate).toBeGreaterThan(migrationStatus);
-    expect(apiTests).toBeGreaterThan(driftGate);
-    expect(workflow).toContain(
-      "pnpm --filter @subscription-saas/api exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code"
-    );
+    expect(workflow).toContain("- name: Run complete API test gate");
+    expect(workflow).toContain("pnpm --filter @subscription-saas/api test");
+    expect(workflow).not.toContain("image: postgres:16");
+    expect(workflow).not.toContain("DATABASE_URL:");
+    expect(apiPackage.scripts["test:database"]).toContain("run-source-database-gate.mjs");
+    expect(apiPackage.scripts.test).toContain("pnpm test:database");
+    expect(launcher).toContain('"migrate", "status"');
+    expect(launcher).toContain('"migrate",\n                  "diff"');
+    expect(launcher).toContain('"--exit-code"');
   });
 });

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "api-runtime-allowlist.v1",
+  "enforcementTask": 26,
+  "allowedCapabilities": [
+    "application-server",
+    "media-processing-runtime",
+    "prisma-client-runtime",
+    "static-assets"
+  ],
+  "requiredPaths": ["/app/apps/api/dist/src/main.js"],
+  "requiredPathFragments": [
+    "/app/apps/api/node_modules/@prisma/client",
+    "/node_modules/.prisma/client"
+  ],
+  "requiredPackageNames": ["@prisma/client"],
+  "forbiddenPaths": ["/app/scripts"],
+  "forbiddenPackageNames": ["prisma"],
+  "forbiddenExecutables": ["docker", "podman", "prisma", "psql"],
+  "forbiddenEntrypoints": ["arbitrary-shell", "node scripts/"],
+  "inspectionPolicy": ["dockerfile-capability-scan", "exported-rootfs", "package-metadata"],
+  "owner": "release-engineering",
+  "exitCondition": "Task 26 proves the final API image contains only approved runtime capabilities."
+}

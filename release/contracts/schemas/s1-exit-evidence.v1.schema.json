@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "s1-exit-evidence.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "terminalStatus",
+    "aggregateProofDigest",
+    "sourceSha",
+    "repositoryContractDigest",
+    "workflowRun",
+    "repositoryObservationsDigest",
+    "ownerAttestations",
+    "controls",
+    "findings",
+    "producedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "s1-exit-evidence.v1" },
+    "terminalStatus": { "const": "CHECKPOINT_EVIDENCED" },
+    "aggregateProofDigest": { "$ref": "#/$defs/digest" },
+    "sourceSha": { "$ref": "#/$defs/sourceSha" },
+    "repositoryContractDigest": { "$ref": "#/$defs/digest" },
+    "workflowRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "workflowPath", "runId", "runAttempt", "sourceSha"],
+      "properties": {
+        "repository": { "const": "keqi119/subscription-Saas" },
+        "workflowPath": { "const": ".github/workflows/release-candidate-gate.yml" },
+        "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "runAttempt": { "type": "integer", "minimum": 1 },
+        "sourceSha": { "$ref": "#/$defs/sourceSha" }
+      }
+    },
+    "repositoryObservationsDigest": { "$ref": "#/$defs/digest" },
+    "ownerAttestations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["controlId", "attestationDigest", "custodyReceiptDigest", "evidenceDigests"],
+        "properties": {
+          "controlId": { "$ref": "#/$defs/nonEmpty" },
+          "attestationDigest": { "$ref": "#/$defs/digest" },
+          "custodyReceiptDigest": { "$ref": "#/$defs/digest" },
+          "evidenceDigests": { "$ref": "#/$defs/digests" }
+        }
+      }
+    },
+    "controls": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["controlId", "source", "status", "evidenceDigests"],
+        "properties": {
+          "controlId": { "$ref": "#/$defs/nonEmpty" },
+          "source": { "enum": ["repository", "owner-attestation"] },
+          "status": { "enum": ["EVIDENCED", "PENDING"] },
+          "evidenceDigests": { "$ref": "#/$defs/digests" }
+        }
+      }
+    },
+    "findings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p0", "p1", "p2"],
+      "properties": {
+        "p0": { "$ref": "#/$defs/strings" },
+        "p1": { "$ref": "#/$defs/strings" },
+        "p2": { "$ref": "#/$defs/strings" }
+      }
+    },
+    "producedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "digests": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" }
+    },
+    "strings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonEmpty" }
+    }
+  }
+}

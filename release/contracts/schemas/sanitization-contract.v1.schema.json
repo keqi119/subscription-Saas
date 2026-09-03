@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sanitization-contract.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contractId",
+    "contractVersion",
+    "source",
+    "transformations",
+    "scanRules",
+    "tools",
+    "lifecycle"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "sanitization-contract.v1" },
+    "contractId": { "$ref": "#/$defs/nonEmpty" },
+    "contractVersion": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedEnvironment", "keyTables", "knownMigrationHeads"],
+      "properties": {
+        "allowedEnvironment": { "const": "staging" },
+        "keyTables": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/table" }
+        },
+        "knownMigrationHeads": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/migration" }
+        }
+      }
+    },
+    "transformations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["table", "column", "method"],
+        "properties": {
+          "table": { "$ref": "#/$defs/table" },
+          "column": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "method": {
+            "enum": ["deterministic-token", "fixed-disabled-value", "null-out", "redact-url"]
+          },
+          "keyReference": { "type": "string", "pattern": "^secret://[a-z0-9][a-z0-9./_-]+$" },
+          "fixedValue": { "type": "string", "minLength": 1, "maxLength": 255 }
+        }
+      }
+    },
+    "scanRules": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "china-mobile",
+          "china-id-card",
+          "credential-url",
+          "bearer-token",
+          "private-key",
+          "provider-token"
+        ]
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exporterVersion", "scannerVersion"],
+      "properties": {
+        "exporterVersion": { "$ref": "#/$defs/nonEmpty" },
+        "scannerVersion": { "$ref": "#/$defs/nonEmpty" }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "readers", "reviewAfterDays", "expiresAfterDays", "accessPolicyRef"],
+      "properties": {
+        "owner": { "$ref": "#/$defs/nonEmpty" },
+        "readers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        },
+        "reviewAfterDays": { "type": "integer", "minimum": 1, "maximum": 90 },
+        "expiresAfterDays": { "type": "integer", "minimum": 1, "maximum": 90 },
+        "accessPolicyRef": { "$ref": "#/$defs/nonEmpty" }
+      }
+    }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "table": { "type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$" },
+    "migration": { "type": "string", "pattern": "^[0-9]{14}_[a-z0-9_]+$" }
+  }
+}

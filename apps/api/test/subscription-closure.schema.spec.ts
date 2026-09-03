@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
+
 const apiRoot = resolve(__dirname, "..");
 const schema = readFileSync(resolve(apiRoot, "prisma/schema.prisma"), "utf8");
 const migrationPath = resolve(
@@ -471,7 +473,11 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
   let client: Client;
 
   beforeAll(async () => {
-    client = new Client({ connectionString: requiredTestDatabaseUrl() });
+    client = new Client({
+      connectionString: requiredReleaseDatabaseTestContext(
+        "apps/api/test/subscription-closure.schema.spec.ts"
+      ).databaseUrl
+    });
     await client.connect();
   });
 
@@ -481,6 +487,13 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
 
   it("enforces legacy active-task and exact source-owned e-sign authorities independently", async () => {
     const contractId = randomUUID();
+    const graph: RuntimeAuthorityGraph = {
+      actorId: randomUUID(),
+      contractId,
+      customerId: randomUUID(),
+      orderId: randomUUID(),
+      vehicleId: randomUUID()
+    };
     const sourceId = randomUUID();
     const legacyTaskId = randomUUID();
     const sourceTaskId = randomUUID();
@@ -494,13 +507,13 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
 
     await client.query("BEGIN");
     try {
-      await client.query("SET LOCAL session_replication_role = replica");
+      await insertRuntimeAuthorityGraph(client, graph);
       await client.query(insertTask, [
         legacyTaskId,
         `P0-LEGACY-${randomUUID()}`,
         contractId,
-        randomUUID(),
-        randomUUID(),
+        graph.orderId,
+        graph.customerId,
         "COMPLETED",
         null,
         null,
@@ -513,8 +526,8 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
           randomUUID(),
           `P0-LEGACY-${randomUUID()}`,
           contractId,
-          randomUUID(),
-          randomUUID(),
+          graph.orderId,
+          graph.customerId,
           "CREATED",
           null,
           null,
@@ -529,8 +542,8 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
         sourceTaskId,
         `P0-SOURCE-${randomUUID()}`,
         contractId,
-        randomUUID(),
-        randomUUID(),
+        graph.orderId,
+        graph.customerId,
         "CREATED",
         "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST",
         sourceId,
@@ -542,9 +555,9 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
         [
           randomUUID(),
           `P0-SOURCE-${randomUUID()}`,
-          randomUUID(),
-          randomUUID(),
-          randomUUID(),
+          contractId,
+          graph.orderId,
+          graph.customerId,
           "CREATED",
           "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST",
           sourceId,
@@ -559,9 +572,9 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
         [
           randomUUID(),
           `P0-PARTIAL-${randomUUID()}`,
-          randomUUID(),
-          randomUUID(),
-          randomUUID(),
+          contractId,
+          graph.orderId,
+          graph.customerId,
           "CREATED",
           "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST",
           null,
@@ -570,7 +583,6 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
         "23514",
         "contract_esign_task_source_tuple_chk"
       );
-      await client.query("SET LOCAL session_replication_role = origin");
       for (const [taskId, sourceType, nextSourceId, nextSourceKey] of [
         [
           legacyTaskId,
@@ -591,7 +603,6 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
           "contract_esign_task_source_tuple_immutable"
         );
       }
-      await client.query("SET LOCAL session_replication_role = replica");
       await expect(
         client.query(
           `UPDATE "contract_esign_task"
@@ -617,37 +628,49 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
     const settlementId = randomUUID();
     const receiptId = randomUUID();
     const hash = "a".repeat(64);
+    const graph: RuntimeAuthorityGraph = {
+      actorId,
+      contractId: randomUUID(),
+      customerId: randomUUID(),
+      orderId,
+      vehicleId: randomUUID()
+    };
+    const otherGraph: RuntimeAuthorityGraph = {
+      actorId,
+      contractId: randomUUID(),
+      customerId: randomUUID(),
+      orderId: randomUUID(),
+      vehicleId: randomUUID()
+    };
+    const contractESignTaskId = randomUUID();
+    const otherContractESignTaskId = randomUUID();
+    const sourceFileId = randomUUID();
+    const otherSourceFileId = randomUUID();
 
     await client.query("BEGIN");
     try {
-      await client.query("SET LOCAL session_replication_role = replica");
-      await client.query(`
-        ALTER TABLE "subscription_closure_case" ENABLE ALWAYS TRIGGER "subscription_closure_case_immutable_initiation";
-        ALTER TABLE "subscription_closure_case" ENABLE ALWAYS TRIGGER "subscription_closure_case_current_revision_integrity";
-        ALTER TABLE "subscription_closure_event" ENABLE ALWAYS TRIGGER "subscription_closure_event_append_only";
-        ALTER TABLE "subscription_closure_document_revision" ENABLE ALWAYS TRIGGER "subscription_closure_document_revision_append_only";
-        ALTER TABLE "subscription_closure_document_revision" ENABLE ALWAYS TRIGGER "subscription_closure_document_revision_chain";
-        ALTER TABLE "subscription_closure_settlement_revision" ENABLE ALWAYS TRIGGER "subscription_closure_settlement_revision_append_only";
-        ALTER TABLE "subscription_closure_settlement_revision" ENABLE ALWAYS TRIGGER "subscription_closure_settlement_revision_chain";
-        ALTER TABLE "subscription_closure_command_receipt" ENABLE ALWAYS TRIGGER "subscription_closure_command_receipt_append_only";
-      `);
-      await client.query(
-        `INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
-         VALUES ($1::uuid, $2, 'P0 schema actor', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())`,
-        [actorId, `p0-schema-${actorId}`]
-      );
+      await insertRuntimeAuthorityGraph(client, graph);
+      await insertRuntimeAuthorityGraph(client, otherGraph);
+      await insertRuntimeDocumentParents(client, {
+        ...graph,
+        contractESignTaskId,
+        sourceFileId
+      });
+      await insertRuntimeDocumentParents(client, {
+        ...otherGraph,
+        contractESignTaskId: otherContractESignTaskId,
+        sourceFileId: otherSourceFileId
+      });
       await insertCase(client, {
-        actorId,
+        ...graph,
         caseId,
         caseNo: `P0-${caseId}`,
-        orderId,
         sourceKey: `p0-schema:${caseId}`
       });
       await insertCase(client, {
-        actorId,
+        ...otherGraph,
         caseId: otherCaseId,
         caseNo: `P0-${otherCaseId}`,
-        orderId: randomUUID(),
         sourceKey: `p0-schema:${otherCaseId}`
       });
 
@@ -668,10 +691,10 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
         [
           randomUUID(),
           `P0-invalid-${randomUUID()}`,
-          randomUUID(),
-          randomUUID(),
-          randomUUID(),
-          randomUUID(),
+          graph.orderId,
+          graph.vehicleId,
+          graph.customerId,
+          graph.contractId,
           hash,
           randomUUID(),
           `p0-schema:invalid:${randomUUID()}`,
@@ -698,9 +721,9 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
           randomUUID(),
           `P0-duplicate-${randomUUID()}`,
           orderId,
-          randomUUID(),
-          randomUUID(),
-          randomUUID(),
+          graph.vehicleId,
+          graph.customerId,
+          graph.contractId,
           hash,
           randomUUID(),
           `p0-schema:duplicate:${randomUUID()}`,
@@ -743,13 +766,17 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
       await insertDocument(client, {
         actorId,
         caseId,
+        contractESignTaskId,
         documentId,
+        sourceFileId,
         sourceKey: `p0-schema:document:${documentId}`
       });
       await insertDocument(client, {
         actorId,
         caseId: otherCaseId,
+        contractESignTaskId: otherContractESignTaskId,
         documentId: otherDocumentId,
+        sourceFileId: otherSourceFileId,
         sourceKey: `p0-schema:document:${otherDocumentId}`
       });
       await insertSettlement(client, {
@@ -842,7 +869,6 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
     await client.query("BEGIN");
     try {
       await insertAuthorityFixtureParents(client, fixture);
-      await client.query("SET LOCAL session_replication_role = origin");
 
       await client.query(
         `INSERT INTO "subscription_closure_case" (
@@ -1205,39 +1231,59 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
     await client.query("BEGIN");
     try {
       await insertAuthorityFixtureParents(client, fixture);
-      await client.query("SET LOCAL session_replication_role = origin");
       await insertAuthorityClosureCase(client, fixture);
-      await client.query("SET LOCAL session_replication_role = replica");
       await expectPgError(
         client,
         insertChecklist,
-        [randomUUID(), caseId, vehicleReturnId, 0, hash, actorId, randomUUID(), `p0-checklist-zero:${randomUUID()}`, null],
+        [
+          randomUUID(),
+          caseId,
+          vehicleReturnId,
+          0,
+          hash,
+          actorId,
+          randomUUID(),
+          `p0-checklist-zero:${randomUUID()}`,
+          null
+        ],
         "23514",
         "vehicle_return_checklist_revision_number_positive_check"
       );
-      await expectPgError(
-        client,
-        `INSERT INTO "vehicle_condition_delta_revision" (
-          "id", "closure_case_id", "revision_number", "delivery_document_revision_id",
-          "delivery_document_hash", "return_checklist_revision_id", "return_manifest_hash",
-          "result_hash", "source_type", "source_id", "source_key", "created_by", "created_at"
-        ) VALUES (
-          $1::uuid, $2::uuid, -1, $3::uuid, $4, $5::uuid, $4, $4,
-          'P0_SCHEMA_TEST', $6::uuid, $7, $8::uuid, clock_timestamp()
-        )`,
-        [randomUUID(), caseId, randomUUID(), hash, randomUUID(), randomUUID(), `p0-delta-negative:${randomUUID()}`, actorId],
-        "23514",
-        "vehicle_condition_delta_revision_number_positive_check"
+      const deltaRevisionConstraint = await client.query<{ definition: string }>(
+        `SELECT pg_get_constraintdef(oid) AS "definition"
+           FROM pg_constraint
+          WHERE conname = 'vehicle_condition_delta_revision_number_positive_check'`
       );
-      await client.query("SET LOCAL session_replication_role = origin");
-      await client.query(insertChecklist, [checklistV1, caseId, vehicleReturnId, 1, hash, actorId, randomUUID(), `p0-checklist-v1:${randomUUID()}`, null]);
+      expect(deltaRevisionConstraint.rows).toHaveLength(1);
+      expect(deltaRevisionConstraint.rows[0]?.definition).toContain("revision_number > 0");
+      await client.query(insertChecklist, [
+        checklistV1,
+        caseId,
+        vehicleReturnId,
+        1,
+        hash,
+        actorId,
+        randomUUID(),
+        `p0-checklist-v1:${randomUUID()}`,
+        null
+      ]);
       await client.query(
         `UPDATE "subscription_closure_case"
             SET "current_checklist_revision_id" = $2::uuid, "version" = "version" + 1
           WHERE "id" = $1::uuid`,
         [caseId, checklistV1]
       );
-      await client.query(insertChecklist, [checklistV2, caseId, vehicleReturnId, 2, hash, actorId, randomUUID(), `p0-checklist-v2:${randomUUID()}`, checklistV1]);
+      await client.query(insertChecklist, [
+        checklistV2,
+        caseId,
+        vehicleReturnId,
+        2,
+        hash,
+        actorId,
+        randomUUID(),
+        `p0-checklist-v2:${randomUUID()}`,
+        checklistV1
+      ]);
       await expect(
         client.query(
           `UPDATE "subscription_closure_case"
@@ -1296,9 +1342,166 @@ async function insertAuthorityClosureCase(client: Client, fixture: AuthorityFixt
   );
 }
 
+type RuntimeAuthorityGraph = {
+  actorId: string;
+  contractId: string;
+  customerId: string;
+  orderId: string;
+  vehicleId: string;
+};
+
+async function insertRuntimeAuthorityGraph(client: Client, input: RuntimeAuthorityGraph) {
+  const applicationId = randomUUID();
+  const contractVersionId = randomUUID();
+  const modelDefinitionId = randomUUID();
+  const productId = randomUUID();
+  const productVersionId = randomUUID();
+  const quoteId = randomUUID();
+  const token = randomUUID().replaceAll("-", "").slice(0, 16);
+  await client.query(
+    `INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "updated_at")
+     VALUES ($1::uuid, $2, 'Runtime schema actor', 'not-used', 'ACTIVE', clock_timestamp())
+     ON CONFLICT ("id") DO NOTHING`,
+    [input.actorId, `runtime-schema-${input.actorId}`]
+  );
+  await client.query(
+    `INSERT INTO "customer" ("id", "customer_no", "name", "mobile", "status", "updated_at")
+     VALUES ($1::uuid, $2, 'Runtime schema customer', $3, 'ACTIVE', clock_timestamp())
+     ON CONFLICT ("id") DO NOTHING`,
+    [input.customerId, `RSC-${token}`, `13${token.slice(0, 9)}`]
+  );
+  await client.query(
+    `INSERT INTO "vehicle_model_definition" (
+       "id", "model_code", "brand", "model_name", "display_name", "enabled", "updated_at"
+     ) VALUES ($1::uuid, $2, 'TEST', 'Runtime schema model', 'Runtime schema model', true, clock_timestamp())`,
+    [modelDefinitionId, `RSM-${token}`]
+  );
+  await client.query(
+    `INSERT INTO "vehicle" (
+       "id", "vehicle_no", "brand", "model_definition_id", "purchase_price_amount",
+       "status", "current_mileage_km", "updated_at"
+     ) VALUES ($1::uuid, $2, 'TEST', $3::uuid, 1000000, 'LEASED', 0, clock_timestamp())`,
+    [input.vehicleId, `RSV-${token}`, modelDefinitionId]
+  );
+  await client.query(
+    `INSERT INTO "product" ("id", "product_no", "name", "status", "updated_at")
+     VALUES ($1::uuid, $2, 'Runtime schema product', 'ACTIVE', clock_timestamp())`,
+    [productId, `RSP-${token}`]
+  );
+  await client.query(
+    `INSERT INTO "product_version" (
+       "id", "product_id", "version_no", "effective_from", "status", "updated_at"
+     ) VALUES ($1::uuid, $2::uuid, '1', DATE '2026-01-01', 'ACTIVE', clock_timestamp())`,
+    [productVersionId, productId]
+  );
+  await client.query(
+    `INSERT INTO "application" (
+       "id", "application_no", "customer_id", "sales_user_id", "status", "updated_at"
+     ) VALUES ($1::uuid, $2, $3::uuid, $4::uuid, 'APPROVED', clock_timestamp())`,
+    [applicationId, `RSA-${token}`, input.customerId, input.actorId]
+  );
+  await client.query(
+    `INSERT INTO "subscription_quote" (
+       "id", "quote_no", "application_id", "customer_id", "product_id", "product_version_id",
+       "vehicle_id", "vehicle_purchase_price_amount", "monthly_fee_rate", "monthly_fee_amount",
+       "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
+       "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
+       "status", "updated_at"
+     ) VALUES (
+       $1::uuid, $2, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7::uuid,
+       1000000, 0.010000, 10000, 100000, 6, 10000, 100,
+       $8::uuid, 'TEST-MODEL', 'Runtime schema model', 'CONFIRMED', clock_timestamp()
+     )`,
+    [
+      quoteId,
+      `RSQ-${token}`,
+      applicationId,
+      input.customerId,
+      productId,
+      productVersionId,
+      input.vehicleId,
+      modelDefinitionId
+    ]
+  );
+  await client.query(
+    `INSERT INTO "subscription_order" (
+       "id", "order_no", "customer_id", "application_id", "quote_id", "vehicle_id",
+       "product_id", "product_version_id", "vehicle_purchase_price_amount", "monthly_fee_amount",
+       "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
+       "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
+       "quote_snapshot", "order_status", "updated_at"
+     ) VALUES (
+       $1::uuid, $2, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8::uuid,
+       1000000, 10000, 100000, 6, 10000, 100, $9::uuid, 'TEST-MODEL',
+       'Runtime schema model', '{}'::jsonb, 'PENDING_RETURN', clock_timestamp()
+     )`,
+    [
+      input.orderId,
+      `RSO-${token}`,
+      input.customerId,
+      applicationId,
+      quoteId,
+      input.vehicleId,
+      productId,
+      productVersionId,
+      modelDefinitionId
+    ]
+  );
+  await client.query(
+    `INSERT INTO "contract_version" (
+       "id", "template_name", "version_no", "content_template", "effective_from", "status", "updated_at"
+     ) VALUES ($1::uuid, $2, '1', 'Runtime schema contract', DATE '2026-01-01', 'ACTIVE', clock_timestamp())`,
+    [contractVersionId, `RSCV-${token}`]
+  );
+  await client.query(
+    `INSERT INTO "contract" (
+       "id", "contract_no", "order_id", "customer_id", "contract_version_id",
+       "contract_title", "contract_snapshot", "status", "archived_at", "updated_at"
+     ) VALUES (
+       $1::uuid, $2, $3::uuid, $4::uuid, $5::uuid,
+       'Runtime schema contract', '{}'::jsonb, 'ARCHIVED', clock_timestamp(), clock_timestamp()
+     )`,
+    [input.contractId, `RSC-${token}`, input.orderId, input.customerId, contractVersionId]
+  );
+  await client.query(
+    `UPDATE "subscription_order" SET "contract_id" = $2::uuid, "updated_at" = clock_timestamp()
+     WHERE "id" = $1::uuid`,
+    [input.orderId, input.contractId]
+  );
+}
+
+async function insertRuntimeDocumentParents(
+  client: Client,
+  input: RuntimeAuthorityGraph & { contractESignTaskId: string; sourceFileId: string }
+) {
+  const token = randomUUID().replaceAll("-", "");
+  await client.query(
+    `INSERT INTO "contract_esign_task" (
+       "id", "task_no", "contract_id", "order_id", "customer_id", "provider",
+       "task_status", "created_at", "updated_at"
+     ) VALUES (
+       $1::uuid, $2, $3::uuid, $4::uuid, $5::uuid, 'MOCK', 'COMPLETED',
+       clock_timestamp(), clock_timestamp()
+     )`,
+    [
+      input.contractESignTaskId,
+      `RSE-${token.slice(0, 20)}`,
+      input.contractId,
+      input.orderId,
+      input.customerId
+    ]
+  );
+  await client.query(
+    `INSERT INTO "file_object" (
+       "id", "bucket", "object_key", "original_name", "size_bytes", "created_at"
+     ) VALUES ($1::uuid, 'runtime-test', $2, 'runtime-test.pdf', 1, clock_timestamp())`,
+    [input.sourceFileId, `runtime-schema/${token}.pdf`]
+  );
+}
+
 async function insertCase(
   client: Client,
-  input: { actorId: string; caseId: string; caseNo: string; orderId: string; sourceKey: string }
+  input: RuntimeAuthorityGraph & { caseId: string; caseNo: string; sourceKey: string }
 ) {
   const hash = "a".repeat(64);
   await client.query(
@@ -1318,9 +1521,9 @@ async function insertCase(
       input.caseId,
       input.caseNo,
       input.orderId,
-      randomUUID(),
-      randomUUID(),
-      randomUUID(),
+      input.vehicleId,
+      input.customerId,
+      input.contractId,
       hash,
       randomUUID(),
       input.sourceKey,
@@ -1331,7 +1534,14 @@ async function insertCase(
 
 async function insertDocument(
   client: Client,
-  input: { actorId: string; caseId: string; documentId: string; sourceKey: string }
+  input: {
+    actorId: string;
+    caseId: string;
+    contractESignTaskId: string;
+    documentId: string;
+    sourceFileId: string;
+    sourceKey: string;
+  }
 ) {
   const hash = "b".repeat(64);
   await client.query(
@@ -1349,8 +1559,8 @@ async function insertDocument(
       input.documentId,
       input.caseId,
       hash,
-      randomUUID(),
-      randomUUID(),
+      input.contractESignTaskId,
+      input.sourceFileId,
       randomUUID(),
       input.sourceKey,
       input.actorId
@@ -1402,71 +1612,23 @@ function createAuthorityFixtureIds() {
 }
 
 async function insertAuthorityFixtureParents(client: Client, fixture: AuthorityFixture) {
-  const wrongOrderId = randomUUID();
-  const wrongVehicleId = randomUUID();
-  const wrongContractId = randomUUID();
-  const wrongCustomerId = randomUUID();
   const otherCaseId = randomUUID();
-
-  await client.query("SET LOCAL session_replication_role = replica");
-  await client.query(
-    `INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
-     VALUES ($1::uuid, $2, 'P0 authority actor', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())`,
-    [fixture.actorId, `p0-authority-${fixture.actorId}`]
-  );
-  await client.query(
-    `INSERT INTO "customer" ("id", "customer_no", "name", "mobile", "status", "created_at", "updated_at")
-     VALUES ($1::uuid, $2, 'P0 authority customer', $3, 'ACTIVE', clock_timestamp(), clock_timestamp())`,
-    [fixture.customerId, `P0-C-${fixture.customerId}`, fixture.customerId.slice(0, 16)]
-  );
-  await client.query(
-    `INSERT INTO "vehicle" (
-       "id", "vehicle_no", "brand", "model_definition_id", "purchase_price_amount",
-       "status", "current_mileage_km", "created_at", "updated_at"
-     ) VALUES ($1::uuid, $2, 'P0', $3::uuid, 1, 'LEASED', 0, clock_timestamp(), clock_timestamp())`,
-    [fixture.vehicleId, `P0-V-${fixture.vehicleId}`, randomUUID()]
-  );
-  await client.query(
-    `INSERT INTO "contract" (
-       "id", "contract_no", "order_id", "customer_id", "contract_version_id",
-       "contract_title", "contract_snapshot", "status", "created_at", "updated_at"
-     ) VALUES (
-       $1::uuid, $2, $3::uuid, $4::uuid, $5::uuid,
-       'P0 authority contract', '{}'::jsonb, 'ARCHIVED', clock_timestamp(), clock_timestamp()
-     )`,
-    [
-      fixture.contractId,
-      `P0-K-${fixture.contractId}`,
-      fixture.orderId,
-      fixture.customerId,
-      randomUUID()
-    ]
-  );
-  await client.query(
-    `INSERT INTO "subscription_order" (
-       "id", "order_no", "customer_id", "application_id", "quote_id", "contract_id", "vehicle_id",
-       "product_id", "product_version_id", "vehicle_purchase_price_amount", "monthly_fee_amount",
-       "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
-       "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
-       "quote_snapshot", "order_status", "created_at", "updated_at"
-     ) VALUES (
-       $1::uuid, $2, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7::uuid,
-       $8::uuid, $9::uuid, 1, 1, 0, 6, 1000, 1,
-       $10::uuid, 'P0', 'P0', '{}'::jsonb, 'PENDING_RETURN', clock_timestamp(), clock_timestamp()
-     )`,
-    [
-      fixture.orderId,
-      `P0-O-${fixture.orderId}`,
-      fixture.customerId,
-      randomUUID(),
-      randomUUID(),
-      fixture.contractId,
-      fixture.vehicleId,
-      randomUUID(),
-      randomUUID(),
-      randomUUID()
-    ]
-  );
+  const primaryGraph: RuntimeAuthorityGraph = {
+    actorId: fixture.actorId,
+    contractId: fixture.contractId,
+    customerId: fixture.customerId,
+    orderId: fixture.orderId,
+    vehicleId: fixture.vehicleId
+  };
+  const wrongGraph: RuntimeAuthorityGraph = {
+    actorId: fixture.actorId,
+    contractId: randomUUID(),
+    customerId: randomUUID(),
+    orderId: randomUUID(),
+    vehicleId: randomUUID()
+  };
+  await insertRuntimeAuthorityGraph(client, primaryGraph);
+  await insertRuntimeAuthorityGraph(client, wrongGraph);
   await client.query(
     `INSERT INTO "vehicle_return" (
        "id", "return_no", "order_id", "vehicle_id", "customer_id", "return_type",
@@ -1501,10 +1663,10 @@ async function insertAuthorityFixtureParents(client: Client, fixture: AuthorityF
     },
     {
       id: fixture.wrongAssetWorkOrderId,
-      orderId: wrongOrderId,
-      vehicleId: wrongVehicleId,
-      contractId: wrongContractId,
-      customerId: wrongCustomerId,
+      orderId: wrongGraph.orderId,
+      vehicleId: wrongGraph.vehicleId,
+      contractId: wrongGraph.contractId,
+      customerId: wrongGraph.customerId,
       type: "RECOVERY"
     }
   ]) {
@@ -1541,9 +1703,9 @@ async function insertAuthorityFixtureParents(client: Client, fixture: AuthorityF
     },
     {
       id: fixture.wrongContractESignTaskId,
-      contractId: wrongContractId,
-      orderId: wrongOrderId,
-      customerId: wrongCustomerId
+      contractId: wrongGraph.contractId,
+      orderId: wrongGraph.orderId,
+      customerId: wrongGraph.customerId
     }
   ]) {
     await client.query(
@@ -1558,6 +1720,12 @@ async function insertAuthorityFixtureParents(client: Client, fixture: AuthorityF
      VALUES ($1::uuid, 'p0-test', $2, 'p0.pdf', 1, clock_timestamp())`,
     [fixture.sourceFileId, `p0-schema/${fixture.sourceFileId}.pdf`]
   );
+  await insertCase(client, {
+    ...wrongGraph,
+    caseId: otherCaseId,
+    caseNo: `P0-AUTH-OTHER-${otherCaseId}`,
+    sourceKey: `p0-schema:other-case:${otherCaseId}`
+  });
   await client.query(
     `INSERT INTO "subscription_closure_event" (
        "id", "closure_case_id", "sequence", "event_type", "after_status", "actor_id", "occurred_at", "recorded_at",
@@ -1764,33 +1932,6 @@ async function expectPgError(
   }
 }
 
-function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
-  if (!value) throw new Error("DATABASE_URL is required for closure schema tests");
-  const url = new URL(value);
-  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
-    throw new Error("Closure schema tests require PostgreSQL");
-  }
-  if (!isLoopbackHostname(url.hostname)) {
-    throw new Error("Closure schema tests require a loopback PostgreSQL host");
-  }
-  const databaseName = decodeURIComponent(url.pathname.slice(1));
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(databaseName)) {
-    throw new Error("Closure schema tests require a test-only database");
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
-}
-
-function isLoopbackHostname(hostname: string) {
-  if (hostname === "localhost" || hostname === "[::1]") return true;
-  const octets = hostname.split(".");
-  return (
-    octets.length === 4 &&
-    octets[0] === "127" &&
-    octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
-  );
-}
-
 describe("stage 1 governed return schema", () => {
   it("models immutable checklist, evidence, delta, pricing, response and disposition facts", () => {
     for (const modelName of [
@@ -1822,15 +1963,14 @@ describe("stage 1 governed return schema", () => {
 
   it("enforces evidence owner shape, attestation completeness and append-only history", () => {
     const governedReturnMigration = readFileSync(
-      resolve(
-        apiRoot,
-        "prisma/migrations/20260826030000_stage1_return_evidence/migration.sql"
-      ),
+      resolve(apiRoot, "prisma/migrations/20260826030000_stage1_return_evidence/migration.sql"),
       "utf8"
     );
     expect(governedReturnMigration).toContain("vehicle_return_evidence_link_owner_check");
     expect(governedReturnMigration).toContain("vehicle_return_evidence_link_authority_check");
-    expect(governedReturnMigration).toContain("vehicle_return_checklist_revision_attestation_check");
+    expect(governedReturnMigration).toContain(
+      "vehicle_return_checklist_revision_attestation_check"
+    );
     expect(governedReturnMigration).toContain("stage1_return_append_only_guard");
     expect(governedReturnMigration).not.toMatch(/UPDATE\s+"vehicle_return_damage"/i);
   });
@@ -1847,25 +1987,23 @@ describe("stage 1 governed return schema", () => {
     expect(governanceMigration).toContain("stage1_evidence_export_immutability_guard");
     expect(governanceMigration).toContain("stage1_closure_lineage_guard");
     expect(governanceMigration).toContain("closure disposition approval lineage mismatch");
-    expect(governanceMigration).toContain("current settlement revision belongs to another closure case");
+    expect(governanceMigration).toContain(
+      "current settlement revision belongs to another closure case"
+    );
     expect(governanceMigration).toContain("return checklist revision chain mismatch");
     expect(governanceMigration).toContain("condition delta revision chain mismatch");
     expect(governanceMigration).toContain("settlement revision chain mismatch");
     expect(governanceMigration).toContain(
       "vehicle_return_checklist_revision_number_positive_check"
     );
-    expect(governanceMigration).toContain(
-      "vehicle_condition_delta_revision_number_positive_check"
-    );
+    expect(governanceMigration).toContain("vehicle_condition_delta_revision_number_positive_check");
     expect(governanceMigration).toContain("current checklist revision is not the chain head");
     expect(governanceMigration).toContain("current delta revision is not the chain head");
     expect(governanceMigration).toContain("current settlement revision is not the chain head");
-    expect(governanceMigration).toContain('d."archive_status" = \'ARCHIVED\'');
+    expect(governanceMigration).toContain("d.\"archive_status\" = 'ARCHIVED'");
     expect(governanceMigration).toContain('d."archived_at" IS NOT NULL');
     expect(governanceMigration).toContain('d."signed_document_file_id" IS NOT NULL');
-    expect(governanceMigration).toContain(
-      'f."id" = d."signed_document_file_id"'
-    );
+    expect(governanceMigration).toContain('f."id" = d."signed_document_file_id"');
     expect(schema).toContain("publicationSnapshot");
     expect(schema).toContain("approvalId");
     expect(schema).toContain("fileSha256");
@@ -1891,9 +2029,7 @@ describe("stage 1 governed return schema", () => {
     expect(concurrencyMigration).toContain(
       "subscription_closure_charge_line_revision_delta_status_key"
     );
-    expect(concurrencyMigration).toContain(
-      "subscription_closure_customer_response_settlement_key"
-    );
+    expect(concurrencyMigration).toContain("subscription_closure_customer_response_settlement_key");
     expect(schema).toContain("@@unique([settlementRevisionId, deltaItemId, status]");
     expect(schema).toContain("@@unique([settlementRevisionId]");
   });

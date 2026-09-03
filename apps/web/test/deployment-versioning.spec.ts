@@ -40,29 +40,39 @@ describe("Web deployment versioning", () => {
 
   it("only forbids the staging API host in production image checks", () => {
     const workflow = read(".github/workflows/docker-images.yml");
-    const checkStep = workflow.slice(workflow.indexOf("- name: Check Web image API base"));
+    const checkStep = workflow.slice(
+      workflow.indexOf("- name: Check the Web image API base by immutable digest")
+    );
 
     expect(checkStep).toContain("DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}");
-    expect(checkStep).toContain("CHECK_ARGS=(");
+    expect(checkStep).toContain("check_args=(");
     expect(checkStep).toContain('if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ]; then');
     expect(checkStep).toContain(
-      'CHECK_ARGS+=(--must-not-contain "staging-api.subauto.keybox.cloud")'
+      'check_args+=(--must-not-contain "staging-api.subauto.keybox.cloud")'
     );
-    expect(checkStep).toContain('"${CHECK_ARGS[@]}"');
+    expect(checkStep).toContain('"${check_args[@]}"');
   });
 
-  it("builds and verifies the API image revision label against the full workflow SHA", () => {
+  it("builds and verifies the API image revision label against the frozen source SHA", () => {
     const workflow = read(".github/workflows/docker-images.yml");
     const apiBuild = workflow.slice(
-      workflow.indexOf("- name: Build and push API image"),
-      workflow.indexOf("- name: Build and push Web image")
+      workflow.indexOf("- name: Build and push attested API image"),
+      workflow.indexOf("- name: Build and push attested Web image")
     );
-    const verification = workflow.slice(workflow.indexOf("- name: Verify API image revision"));
+    const verification = workflow.slice(
+      workflow.indexOf("- name: Resolve registry subjects and attestation manifests")
+    );
 
-    expect(apiBuild).toContain("API_SOURCE_REVISION=${{ github.sha }}");
-    expect(verification).toContain('docker pull "$API_IMAGE"');
+    expect(apiBuild).toContain("API_SOURCE_REVISION=${{ needs.prepare.outputs.source-sha }}");
+    expect(apiBuild).toContain(
+      "labels: org.opencontainers.image.revision=${{ needs.prepare.outputs.source-sha }}"
+    );
+    expect(verification).toContain(
+      'await run("docker", ["pull", "--platform", "linux/amd64", subject]'
+    );
     expect(verification).toContain("org.opencontainers.image.revision");
-    expect(verification).toContain('"${GITHUB_SHA}"');
+    expect(verification).toContain("sourceRevision,");
+    expect(verification).toContain("sourceSha: process.env.SOURCE_SHA");
   });
 });
 

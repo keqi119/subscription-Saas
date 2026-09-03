@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "migration-global-object-policy.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "allowedExtensions"],
+  "properties": {
+    "schemaVersion": { "const": "migration-global-object-policy.v1" },
+    "allowedExtensions": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": { "enum": ["btree_gist", "pgcrypto"] },
+      "allOf": [{ "contains": { "const": "btree_gist" } }, { "contains": { "const": "pgcrypto" } }]
+    }
+  }
+}

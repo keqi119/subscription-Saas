@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "launch-attestation.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "attestationId",
+    "issuer",
+    "issuedAt",
+    "notAfter",
+    "sourceSha",
+    "buildProofDigest",
+    "runnerDigest",
+    "executionScope",
+    "environmentClass",
+    "targetPolicyDigest",
+    "secretReference",
+    "capability",
+    "commandId",
+    "commandVersion"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "launch-attestation.v1" },
+    "attestationId": { "type": "string", "format": "uuid" },
+    "issuer": { "$ref": "#/$defs/nonEmpty" },
+    "issuedAt": { "$ref": "#/$defs/timestamp" },
+    "notAfter": { "$ref": "#/$defs/timestamp" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "buildProofDigest": { "$ref": "#/$defs/digest" },
+    "runnerDigest": { "$ref": "#/$defs/digest" },
+    "executionScope": {
+      "enum": ["full-rc", "migration-schema", "verify", "repair", "fixture", "evidence"]
+    },
+    "environmentClass": { "enum": ["ci-fresh", "ci-snapshot", "staging", "production"] },
+    "targetPolicyDigest": { "$ref": "#/$defs/digest" },
+    "secretReference": { "$ref": "#/$defs/nonEmpty" },
+    "capability": { "enum": ["verify", "migrate", "repair", "fixture", "evidence"] },
+    "commandId": { "$ref": "#/$defs/nonEmpty" },
+    "commandVersion": { "$ref": "#/$defs/nonEmpty" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$" },
+    "nonEmpty": { "type": "string", "minLength": 1 }
+  }
+}

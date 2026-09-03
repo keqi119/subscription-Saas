@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "runner-command-contract.v1",
+  "commandId": "stage1.active-source-facts.repair",
+  "commandVersion": "1",
+  "interface": {
+    "plan": "planActiveSourceFactsRepair(context,input):Promise<ActiveSourceFactsPlanV1>",
+    "apply": "applyActiveSourceFactsRepair(context,approved):Promise<PostStateObservationV1>",
+    "reconcile": "reconcileActiveSourceFactsRepair(context,prior):Promise<ReconcileResultV1>"
+  },
+  "capabilityProfile": "repair",
+  "databaseRole": "repair",
+  "dataImpact": "controlled-dml",
+  "approvalByEnvironment": {
+    "ci-fresh": "ci-policy",
+    "ci-snapshot": "ci-policy",
+    "staging": "human"
+  },
+  "allowedExecutionScopes": ["full-rc", "repair"],
+  "inputSchema": "stage1-active-source-facts-repair-input.v1",
+  "planSchema": "deterministic-plan.v1#stage1-active-source-facts-repair-plan.v1",
+  "outputSchema": "post-state-observation.v1",
+  "selection": "all non-deleted ACTIVE or PENDING_RETURN orders whose authoritative activation and signed contract facts form an exact repair candidate",
+  "lock": {
+    "id": "stage1-active-source-facts-repair:apply",
+    "order": [
+      "transaction advisory lock",
+      "subscription_order/contract/e-sign/file/delivery/lease/segment/period table locks"
+    ],
+    "transactionBoundary": "serializable transaction; reload and hash the complete candidate set under all locks before writes"
+  },
+  "tools": { "prisma": "7.8.0", "psql": "17", "postgresql": "17" },
+  "timeoutMs": 300000,
+  "cancellation": "cancel before commit; after-commit interruption is outcome-unknown and requires same-operation reconcile",
+  "idempotency": "applied candidates become unchanged; replay and reconcile create no duplicate updates or audits",
+  "checksums": "classification digest binds exact order/contract IDs, evidence digests, actions, dates, exceptions, unchanged rows and summary",
+  "postconditions": [
+    "approved-candidate-set-recomputed-under-lock",
+    "expected-contract-updates-applied",
+    "expected-order-updates-applied",
+    "expected-audits-created",
+    "candidate-set-clean-after-apply",
+    "replay-has-no-duplicate-side-effects"
+  ],
+  "evidenceSchema": "execution-proof.v1",
+  "owner": "release-engineering",
+  "exitCondition": "retire after active source facts no longer require Stage1 repair"
+}

@@ -13,6 +13,12 @@ import {
   SubscriptionVehicleSwapActivationService,
   type VehicleSwapActivationFailureInjector
 } from "../src/subscription-change/subscription-vehicle-swap-activation.service";
+import {
+  insertRuntimeContract,
+  insertRuntimeOrderGraph,
+  insertRuntimeSubscriptionPlan,
+  insertRuntimeVehicle
+} from "./helpers/runtime-domain-fixture";
 
 export type VehicleSwapTestFixture = Awaited<ReturnType<typeof createVehicleSwapFixture>>;
 
@@ -83,93 +89,50 @@ export async function createVehicleSwapFixture(
   const futureGrantEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 0));
 
   await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "customer" (
-        "id", "customer_no", "name", "mobile", "status", "created_at", "updated_at"
-      ) VALUES (
-        ${ids.customerId}::uuid,
-        ${businessNo("CUSSWAP", ids.customerId)},
-        'Vehicle swap test customer',
-        ${`139${ids.customerId.replaceAll("-", "").slice(0, 8)}`},
-        'ACTIVE',
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "product" (
-        "id", "product_no", "name", "product_type", "status", "created_at", "updated_at"
-      ) VALUES (
-        ${ids.productId}::uuid,
-        ${businessNo("PRDSWAP", ids.productId)},
-        'Vehicle swap test product',
-        'SUBSCRIPTION',
-        'ACTIVE',
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "product_version" (
-        "id", "product_id", "version_no", "effective_from", "status", "created_at", "updated_at"
-      ) VALUES (
-        ${ids.productVersionId}::uuid,
-        ${ids.productId}::uuid,
-        'V1.0',
-        '2026-01-01'::date,
-        'ACTIVE',
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "subscription_plan" (
-        "id", "plan_no", "plan_name", "product_id", "product_version_id",
-        "vehicle_package_id", "mileage_package_id", "energy_package_id",
-        "base_monthly_fee_amount", "min_period_months", "max_period_months",
-        "status", "effective_from", "created_at", "updated_at"
-      ) VALUES (
-        ${ids.targetPlanId}::uuid,
-        ${businessNo("PLNSWAP", ids.targetPlanId)},
-        'Vehicle swap target plan',
-        ${ids.productId}::uuid,
-        ${ids.productVersionId}::uuid,
-        ${ids.vehiclePackageId}::uuid,
-        ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid,
-        ${targetMonthlyFeeAmount},
-        1,
-        36,
-        'ACTIVE',
-        '2026-01-01'::date,
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
-    for (const [index, vehicleId] of [ids.sourceVehicleId, ids.targetVehicleId].entries()) {
-      await tx.$executeRaw(Prisma.sql`
-        INSERT INTO "vehicle" (
-          "id", "vehicle_no", "brand", "model_definition_id", "purchase_price_amount",
-          "current_sale_price_amount", "current_sale_price_initialized_at",
-          "current_sale_price_reviewed_at", "sale_price_status", "status",
-          "created_at", "updated_at"
-        ) VALUES (
-          ${vehicleId}::uuid,
-          ${businessNo(`VEHSWAP${index}`, vehicleId)},
-          'NIO',
-          ${randomUUID()}::uuid,
-          20000000,
-          22000000,
-          clock_timestamp(),
-          clock_timestamp(),
-          'EFFECTIVE',
-          ${index === 0 ? "LEASED" : "REVIEW_RESERVED"}::vehicle_status,
-          clock_timestamp(),
-          clock_timestamp()
-        )
-      `);
-    }
+    await insertRuntimeOrderGraph(tx, {
+      applicationId: randomUUID(),
+      customerId: ids.customerId,
+      label: "VEHICLE-SWAP-ACTIVATION",
+      orderId: ids.orderId,
+      productId: ids.productId,
+      productVersionId: ids.productVersionId,
+      quoteId: randomUUID(),
+      vehicleId: ids.sourceVehicleId
+    });
+    const targetVehicle = await insertRuntimeVehicle(
+      tx,
+      ids.targetVehicleId,
+      "VEHICLE-SWAP-ACTIVATION-TARGET"
+    );
+    await insertRuntimeSubscriptionPlan(tx, {
+      baseMonthlyFeeAmount: targetMonthlyFeeAmount,
+      label: "VEHICLE-SWAP-ACTIVATION",
+      modelDefinitionId: targetVehicle.modelDefinitionId,
+      planId: ids.targetPlanId,
+      productId: ids.productId,
+      productVersionId: ids.productVersionId,
+      vehiclePackageId: ids.vehiclePackageId
+    });
+    await tx.vehicle.update({
+      data: {
+        currentSalePriceAmount: 22000000n,
+        currentSalePriceInitializedAt: new Date("2026-01-01T00:00:00.000Z"),
+        currentSalePriceReviewedAt: new Date("2026-01-01T00:00:00.000Z"),
+        salePriceStatus: "EFFECTIVE",
+        status: "LEASED"
+      },
+      where: { id: ids.sourceVehicleId }
+    });
+    await tx.vehicle.update({
+      data: {
+        currentSalePriceAmount: 22000000n,
+        currentSalePriceInitializedAt: new Date("2026-01-01T00:00:00.000Z"),
+        currentSalePriceReviewedAt: new Date("2026-01-01T00:00:00.000Z"),
+        salePriceStatus: "EFFECTIVE",
+        status: "REVIEW_RESERVED"
+      },
+      where: { id: ids.targetVehicleId }
+    });
     const fileIds = [
       ids.baseContractFileId,
       ids.supplementContractFileId,
@@ -191,71 +154,41 @@ export async function createVehicleSwapFixture(
         )
       `);
     }
-    await tx.$executeRaw(Prisma.sql`
-      INSERT INTO "subscription_order" (
-        "id", "order_no", "customer_id", "application_id", "quote_id",
-        "contract_id", "vehicle_id", "product_id", "product_version_id",
-        "vehicle_purchase_price_amount", "monthly_fee_amount", "deposit_amount",
-        "period_months", "mileage_limit_km", "over_mileage_fee_amount",
-        "model_definition_id_snapshot", "model_code_snapshot",
-        "model_display_name_snapshot", "quote_snapshot", "final_plan_snapshot",
-        "order_status", "start_date", "end_date", "actual_delivery_at",
-        "created_at", "updated_at"
-      ) VALUES (
-        ${ids.orderId}::uuid,
-        ${businessNo("ORDSWAP", ids.orderId)},
-        ${ids.customerId}::uuid,
-        ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid,
-        NULL,
-        ${ids.sourceVehicleId}::uuid,
-        ${ids.productId}::uuid,
-        ${ids.productVersionId}::uuid,
-        20000000,
-        100000,
-        1000,
-        24,
-        1500,
-        100,
-        ${randomUUID()}::uuid,
-        'NIO_ET5_2026',
-        'NIO ET5',
-        '{"quoteNo":"SWAP-SOURCE"}'::jsonb,
-        '{"mileagePackage":{"monthlyMileageKm":1500}}'::jsonb,
-        'ACTIVE',
-        '2026-01-01'::date,
-        '2027-12-31'::date,
-        '2026-01-01T02:00:00Z'::timestamptz,
-        clock_timestamp(),
-        clock_timestamp()
-      )
-    `);
+    await tx.subscriptionOrder.update({
+      data: {
+        actualDeliveryAt: new Date("2026-01-01T02:00:00.000Z"),
+        depositAmount: 1000n,
+        endDate: new Date("2027-12-31T00:00:00.000Z"),
+        finalPlanSnapshot: { mileagePackage: { monthlyMileageKm: 1500 } },
+        mileageLimitKm: 1500,
+        monthlyFeeAmount: 100000n,
+        orderStatus: "ACTIVE",
+        overMileageFeeAmount: 100n,
+        periodMonths: 24,
+        quoteSnapshot: { quoteNo: "SWAP-SOURCE" },
+        startDate: new Date("2026-01-01T00:00:00.000Z"),
+        vehiclePurchasePriceAmount: 20000000n
+      },
+      where: { id: ids.orderId }
+    });
     for (const [contractId, fileId, title] of [
       [ids.baseContractId, ids.baseContractFileId, "Base subscription contract"],
       [ids.supplementContractId, ids.supplementContractFileId, "Vehicle swap supplement"]
     ] as const) {
-      await tx.$executeRaw(Prisma.sql`
-        INSERT INTO "contract" (
-          "id", "contract_no", "order_id", "customer_id", "business_type",
-          "contract_version_id", "contract_title", "contract_snapshot", "file_id",
-          "status", "signed_at", "archived_at", "created_at", "updated_at"
-        ) VALUES (
-          ${contractId}::uuid,
-          ${businessNo("CONSWAP", contractId)},
-          ${ids.orderId}::uuid,
-          ${ids.customerId}::uuid,
-          'SUBSCRIPTION',
-          ${randomUUID()}::uuid,
-          ${title},
-          ${JSON.stringify({ signedArtifact: `${title}.pdf` })}::jsonb,
-          ${fileId}::uuid,
-          'ARCHIVED',
-          clock_timestamp(),
-          clock_timestamp(),
-          clock_timestamp(),
-          clock_timestamp()
-        )
-      `);
+      await insertRuntimeContract(tx, {
+        contractId,
+        customerId: ids.customerId,
+        label: title,
+        orderId: ids.orderId
+      });
+      await tx.contract.update({
+        data: {
+          contractSnapshot: { signedArtifact: `${title}.pdf` },
+          contractTitle: title,
+          fileId
+        },
+        where: { id: contractId }
+      });
     }
     await tx.$executeRaw(Prisma.sql`
       UPDATE "subscription_order"
@@ -295,7 +228,7 @@ export async function createVehicleSwapFixture(
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "subscription_change_order" (
         "id", "change_no", "order_id", "change_type", "status", "source_segment_id",
-        "current_quote_id", "confirmed_quote_id", "contract_id", "completion_deadline_at",
+        "contract_id", "completion_deadline_at",
         "customer_confirmation_published_at", "version", "created_at", "updated_at"
       ) VALUES (
         ${ids.changeId}::uuid,
@@ -304,8 +237,6 @@ export async function createVehicleSwapFixture(
         'VEHICLE_SWAP',
         'SCHEDULED',
         ${ids.sourceSegmentId}::uuid,
-        ${ids.quoteId}::uuid,
-        ${ids.quoteId}::uuid,
         ${ids.supplementContractId}::uuid,
         ${new Date(now.getTime() + 86_400_000)},
         clock_timestamp(),
@@ -347,6 +278,10 @@ export async function createVehicleSwapFixture(
         clock_timestamp()
       )
     `);
+    await tx.subscriptionChangeOrder.update({
+      data: { confirmedQuoteId: ids.quoteId, currentQuoteId: ids.quoteId },
+      where: { id: ids.changeId }
+    });
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "subscription_vehicle_swap_change_detail" (
         "id", "change_order_id", "source_vehicle_id", "target_vehicle_id",
@@ -526,110 +461,8 @@ export async function cleanupVehicleSwapFixture(
   prisma: PrismaService,
   fixture: VehicleSwapTestFixture
 ) {
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "audit_log"
-      WHERE "entity_id" IN (
-        ${fixture.changeId}::uuid,
-        ${fixture.orderId}::uuid,
-        ${fixture.sourcePeriodId}::uuid,
-        ${fixture.sourceSegmentId}::uuid
-      ) OR "entity_id" IN (
-        SELECT "id" FROM "asset_work_order" WHERE "create_source_id" = ${fixture.changeId}::uuid
-      ) OR "entity_id" IN (
-        SELECT "id" FROM "asset_work_order_event" WHERE "source_id" = ${fixture.changeId}::uuid
-      ) OR "entity_id" IN (
-        SELECT "id" FROM "asset_work_order_evidence" WHERE "source_id" = ${fixture.changeId}::uuid
-      ) OR "entity_id" IN (
-        SELECT "id" FROM "vehicle_operational_restriction" WHERE "start_source_id" = ${fixture.changeId}::uuid
-      ) OR "entity_id" IN (
-        SELECT "id" FROM "subscription_contract_segment" WHERE "source_change_order_id" = ${fixture.changeId}::uuid
-      ) OR "entity_id" IN (
-        SELECT "id" FROM "vehicle_subscription_period" WHERE "start_source_id" = ${fixture.changeId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle_operational_restriction"
-      WHERE "start_source_id" = ${fixture.changeId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "asset_work_order_evidence"
-      WHERE "work_order_id" IN (
-        SELECT "id" FROM "asset_work_order" WHERE "create_source_id" = ${fixture.changeId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "asset_work_order_event"
-      WHERE "work_order_id" IN (
-        SELECT "id" FROM "asset_work_order" WHERE "create_source_id" = ${fixture.changeId}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_vehicle_swap_change_detail"
-      WHERE "change_order_id" = ${fixture.changeId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "asset_work_order" WHERE "create_source_id" = ${fixture.changeId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle_subscription_period" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "order_entitlement_usage" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "order_entitlement_grant" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "order_entitlement_account" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "receivable_bill" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_change_quote" WHERE "change_order_id" = ${fixture.changeId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_contract_segment" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_change_order" WHERE "id" = ${fixture.changeId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "contract" WHERE "order_id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_order" WHERE "id" = ${fixture.orderId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "vehicle"
-      WHERE "id" IN (${fixture.sourceVehicleId}::uuid, ${fixture.targetVehicleId}::uuid)
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "file_object"
-      WHERE "id" IN (
-        ${fixture.baseContractFileId}::uuid,
-        ${fixture.supplementContractFileId}::uuid,
-        ${fixture.conditionFileIds[0]}::uuid,
-        ${fixture.conditionFileIds[1]}::uuid,
-        ${fixture.signedFileIds[0]}::uuid,
-        ${fixture.signedFileIds[1]}::uuid
-      )
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "subscription_plan" WHERE "id" = ${fixture.targetPlanId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "product_version" WHERE "id" = ${fixture.productVersionId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "product" WHERE "id" = ${fixture.productId}::uuid
-    `);
-    await tx.$executeRaw(Prisma.sql`
-      DELETE FROM "customer" WHERE "id" = ${fixture.customerId}::uuid
-    `);
-  });
+  if (!prisma || !fixture) throw new Error("Vehicle-swap cleanup requires its suite fixture");
+  // The release database launcher drops the exact disposable database after the suite.
 }
 
 function businessNo(prefix: string, id: string) {

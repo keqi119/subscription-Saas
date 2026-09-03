@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "database-test-launch-envelope.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "executionMode",
+    "chain",
+    "buildProof",
+    "buildProofDigest",
+    "actualRunnerDigest",
+    "databaseTestManifestReference",
+    "databaseTestManifestDigest",
+    "databaseTestDiscoveryDigest",
+    "capabilitySecretReference",
+    "target",
+    "databaseOid",
+    "databaseIdentityFingerprint",
+    "operationId",
+    "runId",
+    "attemptId",
+    "journalReference",
+    "custodyPolicyReference",
+    "custodyPolicyDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "database-test-launch-envelope.v1" },
+    "executionMode": { "const": "database-test" },
+    "chain": { "enum": ["fresh", "snapshot"] },
+    "buildProof": { "type": "object", "minProperties": 1 },
+    "buildProofDigest": { "$ref": "#/$defs/digest" },
+    "actualRunnerDigest": { "$ref": "#/$defs/digest" },
+    "databaseTestManifestReference": { "$ref": "#/$defs/launchReference" },
+    "databaseTestManifestDigest": { "$ref": "#/$defs/digest" },
+    "databaseTestDiscoveryDigest": { "$ref": "#/$defs/digest" },
+    "capabilitySecretReference": {
+      "type": "string",
+      "pattern": "^secret-file:///run/secrets/[A-Za-z0-9._-]+$"
+    },
+    "sourceCapabilitySecretReference": {
+      "type": "string",
+      "pattern": "^secret-file:///run/secrets/[A-Za-z0-9._-]+$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostname",
+        "databaseName",
+        "tlsMode",
+        "runtimeRole",
+        "runtimeCredentialFingerprint",
+        "migrationCredentialFingerprint"
+      ],
+      "properties": {
+        "hostname": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "databaseName": { "type": "string", "pattern": "^s1ci_[0-9a-f]{24}$" },
+        "tlsMode": { "const": "require" },
+        "runtimeRole": { "type": "string", "pattern": "^s1r_[0-9a-f]{24}$" },
+        "runtimeCredentialFingerprint": { "$ref": "#/$defs/digest" },
+        "migrationCredentialFingerprint": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "databaseOid": { "type": "string", "pattern": "^[0-9]+$" },
+    "databaseIdentityFingerprint": { "$ref": "#/$defs/digest" },
+    "sourceTarget": { "$ref": "#/$defs/targetIdentity" },
+    "operationId": { "type": "string", "format": "uuid" },
+    "runId": { "type": "string", "format": "uuid" },
+    "attemptId": { "type": "string", "format": "uuid" },
+    "journalReference": {
+      "type": "string",
+      "pattern": "^evidence-file:///evidence/[A-Za-z0-9._/-]+$"
+    },
+    "custodyPolicyReference": { "$ref": "#/$defs/launchReference" },
+    "custodyPolicyDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "launchReference": {
+      "type": "string",
+      "pattern": "^launch-file:///run/launch/[A-Za-z0-9._/-]+$"
+    },
+    "targetIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostname",
+        "databaseName",
+        "tlsMode",
+        "runtimeRole",
+        "runtimeCredentialFingerprint",
+        "migrationCredentialFingerprint",
+        "databaseOid",
+        "databaseIdentityFingerprint"
+      ],
+      "properties": {
+        "hostname": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "databaseName": { "type": "string", "pattern": "^s1ci_[0-9a-f]{24}$" },
+        "tlsMode": { "const": "require" },
+        "runtimeRole": { "type": "string", "pattern": "^s1r_[0-9a-f]{24}$" },
+        "runtimeCredentialFingerprint": { "$ref": "#/$defs/digest" },
+        "migrationCredentialFingerprint": { "$ref": "#/$defs/digest" },
+        "databaseOid": { "type": "string", "pattern": "^[0-9]+$" },
+        "databaseIdentityFingerprint": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "dependentRequired": {
+    "sourceTarget": ["sourceCapabilitySecretReference"],
+    "sourceCapabilitySecretReference": ["sourceTarget"]
+  }
+}

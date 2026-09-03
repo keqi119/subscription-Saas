@@ -1,0 +1,758 @@
+{
+  "schemaVersion": "api-runtime-governance-inventory.v1",
+  "source": {
+    "dockerfile": "Dockerfile.api",
+    "runtimeCopyCount": 0,
+    "executableEntrypointCount": 0
+  },
+  "files": [
+    {
+      "imagePath": "/app/scripts/billing-maintenance-cycle-evidence-core.mjs",
+      "repositorySource": "scripts/billing-maintenance-cycle-evidence-core.mjs",
+      "dependentCommands": ["scripts/billing-maintenance-cycle-evidence.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/billing-maintenance-cycle-evidence.mjs",
+      "repositorySource": "scripts/billing-maintenance-cycle-evidence.mjs",
+      "dependentCommands": ["scripts/billing-maintenance-cycle-evidence.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/prisma-migration-checksums.mjs",
+      "repositorySource": "scripts/prisma-migration-checksums.mjs",
+      "dependentCommands": [
+        "scripts/billing-maintenance-cycle-evidence.mjs",
+        "scripts/prisma-migration-checksums.mjs",
+        "scripts/stage1-clean-acceptance-baseline.mjs",
+        "scripts/stage1-clean-acceptance-target-validator.mjs",
+        "scripts/stage1-task9-preflight-governance.mjs"
+      ],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-active-source-facts-repair-core.mjs",
+      "repositorySource": "scripts/stage1-active-source-facts-repair-core.mjs",
+      "dependentCommands": ["scripts/stage1-active-source-facts-repair.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-active-source-facts-repair-executor.mjs",
+      "repositorySource": "scripts/stage1-active-source-facts-repair-executor.mjs",
+      "dependentCommands": ["scripts/stage1-active-source-facts-repair.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-active-source-facts-repair.mjs",
+      "repositorySource": "scripts/stage1-active-source-facts-repair.mjs",
+      "dependentCommands": ["scripts/stage1-active-source-facts-repair.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-clean-acceptance-baseline-core.mjs",
+      "repositorySource": "scripts/stage1-clean-acceptance-baseline-core.mjs",
+      "dependentCommands": [
+        "scripts/billing-maintenance-cycle-evidence.mjs",
+        "scripts/stage1-clean-acceptance-baseline.mjs",
+        "scripts/stage1-clean-acceptance-target-validator.mjs",
+        "scripts/stage1-task9-preflight-governance.mjs"
+      ],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-clean-acceptance-baseline-executor.mjs",
+      "repositorySource": "scripts/stage1-clean-acceptance-baseline-executor.mjs",
+      "dependentCommands": [
+        "scripts/stage1-clean-acceptance-baseline.mjs",
+        "scripts/stage1-clean-acceptance-target-validator.mjs"
+      ],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-clean-acceptance-baseline-snapshot.mjs",
+      "repositorySource": "scripts/stage1-clean-acceptance-baseline-snapshot.mjs",
+      "dependentCommands": [
+        "scripts/billing-maintenance-cycle-evidence.mjs",
+        "scripts/stage1-clean-acceptance-baseline.mjs",
+        "scripts/stage1-clean-acceptance-target-validator.mjs",
+        "scripts/stage1-task9-preflight-governance.mjs"
+      ],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-clean-acceptance-baseline.mjs",
+      "repositorySource": "scripts/stage1-clean-acceptance-baseline.mjs",
+      "dependentCommands": ["scripts/stage1-clean-acceptance-baseline.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-clean-acceptance-cli-core.mjs",
+      "repositorySource": "scripts/stage1-clean-acceptance-cli-core.mjs",
+      "dependentCommands": [
+        "scripts/billing-maintenance-cycle-evidence.mjs",
+        "scripts/stage1-clean-acceptance-baseline.mjs",
+        "scripts/stage1-clean-acceptance-target-validator.mjs",
+        "scripts/stage1-task9-preflight-governance.mjs"
+      ],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-clean-acceptance-target-validator.mjs",
+      "repositorySource": "scripts/stage1-clean-acceptance-target-validator.mjs",
+      "dependentCommands": ["scripts/stage1-clean-acceptance-target-validator.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-contract-change-bootstrap-core.mjs",
+      "repositorySource": "scripts/stage1-contract-change-bootstrap-core.mjs",
+      "dependentCommands": ["scripts/stage1-contract-change-bootstrap.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-contract-change-bootstrap.mjs",
+      "repositorySource": "scripts/stage1-contract-change-bootstrap.mjs",
+      "dependentCommands": ["scripts/stage1-contract-change-bootstrap.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-return-closure-backfill-core.mjs",
+      "repositorySource": "scripts/stage1-return-closure-backfill-core.mjs",
+      "dependentCommands": ["scripts/stage1-return-closure-backfill.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-return-closure-backfill.mjs",
+      "repositorySource": "scripts/stage1-return-closure-backfill.mjs",
+      "dependentCommands": ["scripts/stage1-return-closure-backfill.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-staging-invalid-test-order-retirement-core.mjs",
+      "repositorySource": "scripts/stage1-staging-invalid-test-order-retirement-core.mjs",
+      "dependentCommands": ["scripts/stage1-staging-invalid-test-order-retirement.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-staging-invalid-test-order-retirement-executor.mjs",
+      "repositorySource": "scripts/stage1-staging-invalid-test-order-retirement-executor.mjs",
+      "dependentCommands": ["scripts/stage1-staging-invalid-test-order-retirement.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-staging-invalid-test-order-retirement.mjs",
+      "repositorySource": "scripts/stage1-staging-invalid-test-order-retirement.mjs",
+      "dependentCommands": ["scripts/stage1-staging-invalid-test-order-retirement.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1-task9-preflight-governance.mjs",
+      "repositorySource": "scripts/stage1-task9-preflight-governance.mjs",
+      "dependentCommands": ["scripts/stage1-task9-preflight-governance.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1c-period-backfill-core.mjs",
+      "repositorySource": "scripts/stage1c-period-backfill-core.mjs",
+      "dependentCommands": ["scripts/stage1c-period-backfill.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1c-period-backfill-executor.mjs",
+      "repositorySource": "scripts/stage1c-period-backfill-executor.mjs",
+      "dependentCommands": ["scripts/stage1c-period-backfill.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/stage1c-period-backfill.mjs",
+      "repositorySource": "scripts/stage1c-period-backfill.mjs",
+      "dependentCommands": ["scripts/stage1c-period-backfill.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/subscription-segment-bootstrap-core.mjs",
+      "repositorySource": "scripts/subscription-segment-bootstrap-core.mjs",
+      "dependentCommands": [
+        "scripts/stage1-contract-change-bootstrap.mjs",
+        "scripts/subscription-segment-bootstrap.mjs"
+      ],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    },
+    {
+      "imagePath": "/app/scripts/subscription-segment-bootstrap.mjs",
+      "repositorySource": "scripts/subscription-segment-bootstrap.mjs",
+      "dependentCommands": ["scripts/subscription-segment-bootstrap.mjs"],
+      "runtimeConsumers": [],
+      "disposition": "runner-only",
+      "migrationOwner": "release-engineering",
+      "exitCondition": "All callers use the registered Runner command and the API image allowlist passes."
+    }
+  ],
+  "commands": [
+    {
+      "entrypoint": "scripts/billing-maintenance-cycle-evidence.mjs",
+      "dependencyClosure": [
+        "scripts/billing-maintenance-cycle-evidence-core.mjs",
+        "scripts/billing-maintenance-cycle-evidence.mjs",
+        "scripts/prisma-migration-checksums.mjs",
+        "scripts/stage1-clean-acceptance-baseline-core.mjs",
+        "scripts/stage1-clean-acceptance-baseline-snapshot.mjs",
+        "scripts/stage1-clean-acceptance-cli-core.mjs"
+      ],
+      "runnerCommandId": "stage1.billing-maintenance.evidence@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "evidence",
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:stage1-billing-maintenance-evidence-1",
+          "callerType": "external",
+          "location": "external-automation://stage1.billing-maintenance.evidence@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:stage1-billing-maintenance-evidence-1",
+          "callerType": "manual",
+          "location": "operations-catalog://stage1.billing-maintenance.evidence@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "package-script:package.json:scripts/billing-maintenance-cycle-evidence.mjs",
+          "callerType": "package-script",
+          "location": "package.json",
+          "details": ["package-script-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "runbook:docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md:scripts/billing-maintenance-cycle-evidence.mjs",
+          "callerType": "runbook",
+          "location": "docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
+          "details": ["command-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    },
+    {
+      "entrypoint": "scripts/prisma-migration-checksums.mjs",
+      "dependencyClosure": ["scripts/prisma-migration-checksums.mjs"],
+      "runnerCommandId": "db.schema.verify@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "verify",
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:db-schema-verify-1",
+          "callerType": "external",
+          "location": "external-automation://db.schema.verify@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:db-schema-verify-1",
+          "callerType": "manual",
+          "location": "operations-catalog://db.schema.verify@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "package-script:package.json:scripts/prisma-migration-checksums.mjs",
+          "callerType": "package-script",
+          "location": "package.json",
+          "details": ["package-script-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "runbook:docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md:scripts/prisma-migration-checksums.mjs",
+          "callerType": "runbook",
+          "location": "docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
+          "details": ["command-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    },
+    {
+      "entrypoint": "scripts/stage1-active-source-facts-repair.mjs",
+      "dependencyClosure": [
+        "scripts/stage1-active-source-facts-repair-core.mjs",
+        "scripts/stage1-active-source-facts-repair-executor.mjs",
+        "scripts/stage1-active-source-facts-repair.mjs"
+      ],
+      "runnerCommandId": "stage1.active-source-facts.repair@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "repair",
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:stage1-active-source-facts-repair-1",
+          "callerType": "external",
+          "location": "external-automation://stage1.active-source-facts.repair@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:stage1-active-source-facts-repair-1",
+          "callerType": "manual",
+          "location": "operations-catalog://stage1.active-source-facts.repair@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "package-script:package.json:scripts/stage1-active-source-facts-repair.mjs",
+          "callerType": "package-script",
+          "location": "package.json",
+          "details": ["package-script-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "runbook:docs/runbooks/stage1-active-term-contract-change-release.md:scripts/stage1-active-source-facts-repair.mjs",
+          "callerType": "runbook",
+          "location": "docs/runbooks/stage1-active-term-contract-change-release.md",
+          "details": ["command-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    },
+    {
+      "entrypoint": "scripts/stage1-clean-acceptance-baseline.mjs",
+      "dependencyClosure": [
+        "scripts/prisma-migration-checksums.mjs",
+        "scripts/stage1-clean-acceptance-baseline-core.mjs",
+        "scripts/stage1-clean-acceptance-baseline-executor.mjs",
+        "scripts/stage1-clean-acceptance-baseline-snapshot.mjs",
+        "scripts/stage1-clean-acceptance-baseline.mjs",
+        "scripts/stage1-clean-acceptance-cli-core.mjs"
+      ],
+      "runnerCommandId": "stage1.clean-acceptance.baseline@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "repair",
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:stage1-clean-acceptance-baseline-1",
+          "callerType": "external",
+          "location": "external-automation://stage1.clean-acceptance.baseline@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:stage1-clean-acceptance-baseline-1",
+          "callerType": "manual",
+          "location": "operations-catalog://stage1.clean-acceptance.baseline@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "package-script:package.json:scripts/stage1-clean-acceptance-baseline.mjs",
+          "callerType": "package-script",
+          "location": "package.json",
+          "details": ["package-script-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "runbook:docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md:scripts/stage1-clean-acceptance-baseline.mjs",
+          "callerType": "runbook",
+          "location": "docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
+          "details": ["command-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    },
+    {
+      "entrypoint": "scripts/stage1-clean-acceptance-target-validator.mjs",
+      "dependencyClosure": [
+        "scripts/prisma-migration-checksums.mjs",
+        "scripts/stage1-clean-acceptance-baseline-core.mjs",
+        "scripts/stage1-clean-acceptance-baseline-executor.mjs",
+        "scripts/stage1-clean-acceptance-baseline-snapshot.mjs",
+        "scripts/stage1-clean-acceptance-cli-core.mjs",
+        "scripts/stage1-clean-acceptance-target-validator.mjs"
+      ],
+      "runnerCommandId": "stage1.acceptance.target.verify@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "verify",
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:stage1-acceptance-target-verify-1",
+          "callerType": "external",
+          "location": "external-automation://stage1.acceptance.target.verify@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:stage1-acceptance-target-verify-1",
+          "callerType": "manual",
+          "location": "operations-catalog://stage1.acceptance.target.verify@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "package-script:package.json:scripts/stage1-clean-acceptance-target-validator.mjs",
+          "callerType": "package-script",
+          "location": "package.json",
+          "details": ["package-script-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "runbook:docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md:scripts/stage1-clean-acceptance-target-validator.mjs",
+          "callerType": "runbook",
+          "location": "docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
+          "details": ["command-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    },
+    {
+      "entrypoint": "scripts/stage1-contract-change-bootstrap.mjs",
+      "dependencyClosure": [
+        "scripts/stage1-contract-change-bootstrap-core.mjs",
+        "scripts/stage1-contract-change-bootstrap.mjs",
+        "scripts/subscription-segment-bootstrap-core.mjs"
+      ],
+      "runnerCommandId": "stage1.contract-change.bootstrap@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "repair",
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:stage1-contract-change-bootstrap-1",
+          "callerType": "external",
+          "location": "external-automation://stage1.contract-change.bootstrap@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:stage1-contract-change-bootstrap-1",
+          "callerType": "manual",
+          "location": "operations-catalog://stage1.contract-change.bootstrap@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "package-script:package.json:scripts/stage1-contract-change-bootstrap.mjs",
+          "callerType": "package-script",
+          "location": "package.json",
+          "details": ["package-script-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "runbook:docs/runbooks/stage1-active-term-contract-change-release.md:scripts/stage1-contract-change-bootstrap.mjs",
+          "callerType": "runbook",
+          "location": "docs/runbooks/stage1-active-term-contract-change-release.md",
+          "details": ["command-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    },
+    {
+      "entrypoint": "scripts/stage1-return-closure-backfill.mjs",
+      "dependencyClosure": [
+        "scripts/stage1-return-closure-backfill-core.mjs",
+        "scripts/stage1-return-closure-backfill.mjs"
+      ],
+      "runnerCommandId": "stage1.return-closure.backfill@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "repair",
+      "additionalRunnerCommands": [
+        {
+          "runnerCommandId": "stage1.return-closure.publication-constraint.validate@1",
+          "capabilityProfile": "migrate",
+          "runnerRegistrationStatus": "registered"
+        }
+      ],
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:stage1-return-closure-backfill-1",
+          "callerType": "external",
+          "location": "external-automation://stage1.return-closure.backfill@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:stage1-return-closure-backfill-1",
+          "callerType": "manual",
+          "location": "operations-catalog://stage1.return-closure.backfill@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "package-script:package.json:scripts/stage1-return-closure-backfill.mjs",
+          "callerType": "package-script",
+          "location": "package.json",
+          "details": ["package-script-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    },
+    {
+      "entrypoint": "scripts/stage1-staging-invalid-test-order-retirement.mjs",
+      "dependencyClosure": [
+        "scripts/stage1-staging-invalid-test-order-retirement-core.mjs",
+        "scripts/stage1-staging-invalid-test-order-retirement-executor.mjs",
+        "scripts/stage1-staging-invalid-test-order-retirement.mjs"
+      ],
+      "runnerCommandId": "stage1.invalid-test-order.retire@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "repair",
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:stage1-invalid-test-order-retire-1",
+          "callerType": "external",
+          "location": "external-automation://stage1.invalid-test-order.retire@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:stage1-invalid-test-order-retire-1",
+          "callerType": "manual",
+          "location": "operations-catalog://stage1.invalid-test-order.retire@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "package-script:package.json:scripts/stage1-staging-invalid-test-order-retirement.mjs",
+          "callerType": "package-script",
+          "location": "package.json",
+          "details": ["package-script-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    },
+    {
+      "entrypoint": "scripts/stage1-task9-preflight-governance.mjs",
+      "dependencyClosure": [
+        "scripts/prisma-migration-checksums.mjs",
+        "scripts/stage1-clean-acceptance-baseline-core.mjs",
+        "scripts/stage1-clean-acceptance-baseline-snapshot.mjs",
+        "scripts/stage1-clean-acceptance-cli-core.mjs",
+        "scripts/stage1-task9-preflight-governance.mjs"
+      ],
+      "runnerCommandId": "stage1.task9.preflight@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "verify",
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:stage1-task9-preflight-1",
+          "callerType": "external",
+          "location": "external-automation://stage1.task9.preflight@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:stage1-task9-preflight-1",
+          "callerType": "manual",
+          "location": "operations-catalog://stage1.task9.preflight@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "runbook:docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md:scripts/stage1-task9-preflight-governance.mjs",
+          "callerType": "runbook",
+          "location": "docs/runbooks/stage1-clean-staging-acceptance-database-rollout.zh-CN.md",
+          "details": ["command-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    },
+    {
+      "entrypoint": "scripts/stage1c-period-backfill.mjs",
+      "dependencyClosure": [
+        "scripts/stage1c-period-backfill-core.mjs",
+        "scripts/stage1c-period-backfill-executor.mjs",
+        "scripts/stage1c-period-backfill.mjs"
+      ],
+      "runnerCommandId": "stage1.period.backfill@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "repair",
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:stage1-period-backfill-1",
+          "callerType": "external",
+          "location": "external-automation://stage1.period.backfill@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:stage1-period-backfill-1",
+          "callerType": "manual",
+          "location": "operations-catalog://stage1.period.backfill@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "package-script:package.json:scripts/stage1c-period-backfill.mjs",
+          "callerType": "package-script",
+          "location": "package.json",
+          "details": ["package-script-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "runbook:docs/runbooks/stage1-active-term-contract-change-release.md:scripts/stage1c-period-backfill.mjs",
+          "callerType": "runbook",
+          "location": "docs/runbooks/stage1-active-term-contract-change-release.md",
+          "details": ["command-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    },
+    {
+      "entrypoint": "scripts/subscription-segment-bootstrap.mjs",
+      "dependencyClosure": [
+        "scripts/subscription-segment-bootstrap-core.mjs",
+        "scripts/subscription-segment-bootstrap.mjs"
+      ],
+      "runnerCommandId": "subscription.segment.bootstrap@1",
+      "runnerRegistrationStatus": "registered",
+      "capabilityProfile": "repair",
+      "migrationOwner": "release-engineering",
+      "callers": [
+        {
+          "callerId": "external:subscription-segment-bootstrap-1",
+          "callerType": "external",
+          "location": "external-automation://subscription.segment.bootstrap@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "manual:subscription-segment-bootstrap-1",
+          "callerType": "manual",
+          "location": "operations-catalog://subscription.segment.bootstrap@1",
+          "details": ["owner-attestation-required"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "package-script:package.json:scripts/subscription-segment-bootstrap.mjs",
+          "callerType": "package-script",
+          "location": "package.json",
+          "details": ["package-script-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        },
+        {
+          "callerId": "runbook:docs/runbooks/stage1-active-term-contract-change-release.md:scripts/subscription-segment-bootstrap.mjs",
+          "callerType": "runbook",
+          "location": "docs/runbooks/stage1-active-term-contract-change-release.md",
+          "details": ["command-reference"],
+          "owner": "release-engineering",
+          "migrationStatus": "runner-cutover-complete"
+        }
+      ]
+    }
+  ]
+}

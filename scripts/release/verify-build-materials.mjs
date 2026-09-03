@@ -26,6 +26,29 @@ function deepFreeze(value) {
   return value;
 }
 
+function baseRepository(baseImage) {
+  const lastSlash = baseImage.lastIndexOf("/");
+  const lastColon = baseImage.lastIndexOf(":");
+  return lastColon > lastSlash ? baseImage.slice(0, lastColon) : baseImage;
+}
+
+export function provenanceMaterialMatchesBase({
+  material,
+  baseImage,
+  declaredDigest,
+  resolvedDigest
+}) {
+  const repository = baseRepository(baseImage);
+  const uri = String(material?.uri ?? "");
+  const repositoryMatches =
+    uri.startsWith(`pkg:docker/${repository}@`) || uri.includes(`/${repository}@`);
+  const observedDigests = Object.values(material?.digest ?? {});
+  const expectedDigests = [declaredDigest, resolvedDigest]
+    .filter((value) => digestPattern.test(value ?? ""))
+    .map((value) => value.replace(/^sha256:/u, ""));
+  return repositoryMatches && expectedDigests.some((digest) => observedDigests.includes(digest));
+}
+
 function assertPolicy(policy) {
   const trustedBuild = policy?.trustedBuild;
   if (

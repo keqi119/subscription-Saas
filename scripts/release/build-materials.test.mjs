@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  provenanceMaterialMatchesBase,
   verifyBuildMaterials,
   verifyBuildWorkflow,
   verifyDockerfileBaseImages,
@@ -198,6 +199,36 @@ test("BUILD_BASE_IMAGE_UNPROVEN rejects an unpinned Docker base image", () => {
         dockerfiles: { api: "FROM node:22-bookworm-slim AS runtime" }
       }),
     { code: "BUILD_BASE_IMAGE_UNPROVEN" }
+  );
+});
+
+test("matches BuildKit provenance that records the declared base index digest", () => {
+  assert.equal(
+    provenanceMaterialMatchesBase({
+      material: {
+        uri: `pkg:docker/node@22-bookworm-slim?digest=${digest("a")}&platform=linux%2Famd64`,
+        digest: { sha256: digest("a").replace(/^sha256:/u, "") }
+      },
+      baseImage: "node:22-bookworm-slim",
+      declaredDigest: digest("a"),
+      resolvedDigest: digest("e")
+    }),
+    true
+  );
+});
+
+test("rejects BuildKit provenance for another base repository or digest", () => {
+  assert.equal(
+    provenanceMaterialMatchesBase({
+      material: {
+        uri: `pkg:docker/postgres@17.11-bookworm?digest=${digest("9")}&platform=linux%2Famd64`,
+        digest: { sha256: digest("9").replace(/^sha256:/u, "") }
+      },
+      baseImage: "node:22-bookworm-slim",
+      declaredDigest: digest("a"),
+      resolvedDigest: digest("e")
+    }),
+    false
   );
 });
 

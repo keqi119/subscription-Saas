@@ -330,6 +330,7 @@ jobs:
           import { readFile, writeFile } from "node:fs/promises";
           import { promisify } from "node:util";
           import { canonicalJson, sha256Canonical } from "./packages/release-foundation/src/index.mjs";
+          import { provenanceMaterialMatchesBase } from "./scripts/release/verify-build-materials.mjs";
 
           const run = promisify(execFile);
           const policy = JSON.parse(await readFile("release/contracts/build-material-policy.v1.json", "utf8"));
@@ -348,18 +349,6 @@ jobs:
             return platform.digest;
           };
           const materialList = (provenance) => provenance.materials ?? provenance.resolvedDependencies ?? provenance.buildDefinition?.resolvedDependencies ?? provenance.predicate?.materials ?? provenance.predicate?.buildDefinition?.resolvedDependencies ?? [];
-          const baseRepository = (baseImage) => {
-            const lastSlash = baseImage.lastIndexOf("/");
-            const lastColon = baseImage.lastIndexOf(":");
-            return lastColon > lastSlash ? baseImage.slice(0, lastColon) : baseImage;
-          };
-          const materialMatches = (material, baseImage, resolvedDigest) => {
-            const repository = baseRepository(baseImage);
-            const uri = String(material?.uri ?? "");
-            const digestValues = Object.values(material?.digest ?? {});
-            return (uri.startsWith(`pkg:docker/${repository}@`) || uri.includes(`/${repository}@`))
-              && (digestValues.includes(resolvedDigest.replace(/^sha256:/u, "")) || uri.includes(resolvedDigest));
-          };
           const images = [];
           for (const [name, image, indexDigest] of definitions) {
             if (!/^sha256:[0-9a-f]{64}$/u.test(indexDigest ?? "")) throw new Error("BUILD_REGISTRY_DIGEST_REQUIRED");
@@ -381,7 +370,12 @@ jobs:
             for (const baseImage of policy.requiredBaseImagesByArtifact[name]) {
               const declaredDigest = policy.baseImages[baseImage];
               const digest = await platformDigest(baseImage, declaredDigest);
-              if (!materials.some((material) => materialMatches(material, baseImage, digest))) {
+              if (!materials.some((material) => provenanceMaterialMatchesBase({
+                material,
+                baseImage,
+                declaredDigest,
+                resolvedDigest: digest
+              }))) {
                 throw new Error("BUILD_BASE_IMAGE_UNPROVEN");
               }
               baseImageDigests.push({ image: baseImage, declaredDigest, digest });

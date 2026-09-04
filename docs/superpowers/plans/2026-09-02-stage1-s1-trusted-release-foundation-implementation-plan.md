@@ -10,17 +10,17 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-01-stage1-s1-trusted-release-foundation-and-test-isolation-design.zh-CN.md` at approved baseline `ee9ca6bca41ef3b8ec1403b584b45705301ec5b5`.
 
-**Security Addendum:** `docs/superpowers/specs/2026-09-03-stage1-s1-execution-infrastructure-security-addendum.zh-CN.md`; preserve approved content baseline `380c0edb` and status-only `4f037a5c`. Canary design repair at `155acf6a` is confirmed; its real execution remains unaccepted. The present cross-document security revision is pending review, not an implementation authorization.
+**Security Addendum:** `docs/superpowers/specs/2026-09-03-stage1-s1-execution-infrastructure-security-addendum.zh-CN.md`; approved content baseline `75aaa956`. Preserve historical content `380c0edb` and status-only `4f037a5c`. Canary design repair at `155acf6a` is confirmed; its real execution remains unaccepted. Design approval does not substitute for command or external-operation approval.
 
-**Previous Plan Baseline:** `24799d0c` remains the approved upstream content baseline; status commit `c3afabcc` does not replace it. Preserve earlier `a63a39c8` and original `1fe77ea2` history. Current edits are a separate, unapproved cross-document revision.
+**Approved Plan Baseline:** `f50676c6` is the approved content baseline for the revised dependency and acceptance boundaries. Preserve historical `24799d0c`/status `c3afabcc`, earlier `a63a39c8` and original `1fe77ea2`; approval-status commits do not replace content baselines.
 
-**Review History:** Preserve Producer/RC approval separation, attempt-allocation order, frozen v1/forward v2 capability boundaries, two-job claim/envelope custody, downstream receipts and Task 29R-D's unique dependency-acceptance ownership. This revision aligns the three documents on Producer crypto/slot/terminal proof, source-versus-final proof types, independent authoritative custody, bootstrap ordering and prebuild source-input admission; all revised content requires review.
+**Review History:** Preserve Producer/RC approval separation, attempt-allocation order, frozen v1/forward v2 capability boundaries, two-job claim/envelope custody, downstream receipts and Task 29R-D's unique dependency-acceptance ownership. The 2026-09-04 cross-document review approved alignment on Producer crypto/slot/terminal proof, source-versus-final proof types, independent authoritative custody, bootstrap ordering and prebuild source-input admission; the five P1 and one P2 design/plan findings are closed, not evidence of runtime readiness.
 
-**Dependent Plan:** `docs/superpowers/plans/2026-09-03-stage1-s1-execution-infrastructure-implementation-plan.md`; its coordinated revision remains independently reviewable and unapproved. It alone owns infrastructure contracts, tooling, workflows and operational acceptance, including I0 authoritative-custody bootstrap before I1.
+**Dependent Plan:** `docs/superpowers/plans/2026-09-03-stage1-s1-execution-infrastructure-implementation-plan.md`; content baseline `31cc3e8c` is independently approved as conditionally executable. It alone owns infrastructure contracts, tooling, workflows and operational acceptance, including I0 authoritative-custody bootstrap before I1.
 
-**Approval Record:** 用户于 2026-09-04 批准内容基线 `24799d0c`；本轮仅获准修订设计与计划，旧批准不覆盖本次改动，也不表示 S1 已完成。
+**Approval Record:** 用户于 2026-09-04 批准本计划内容基线 `f50676c6` 的依赖与验收边界，并分别批准安全附录 `75aaa956` 及基础设施计划 `31cc3e8c`。本记录不替代 Task 0 要求的独立签名批准链，也不表示 S1 已完成。
 
-**Plan Status:** 跨文档修订待复审。`24799d0c` 保留为旧批准内容基线；本轮不授权代码、工作流、数据库、基础设施施工或 stash 操作。安全附录与两份实施计划均须按修订内容分别复审；Task 29R、Task 30 及外部操作继续阻断。
+**Plan Status:** 本次修订已批准；可按基础设施计划先完成仓库任务准入及 CI 审查，Task 29R-D 仍为零文件、零提交的依赖验收门禁。I0 私有保管及 canary 实测未完成；I15B 缺少合法构建前快照或独立使用授权时必须停止。外部操作逐项批准；qualification 通过后 Task 30 再单独授权，stash 冻结，S2/S3 不在范围内。
 
 ## Global Constraints
 

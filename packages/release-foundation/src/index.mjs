@@ -75,6 +75,17 @@ export {
 } from "./snapshot/source-readonly-guard.mjs";
 export { normalizeSnapshotOwnership, verifyOwnershipMap } from "./snapshot/normalize-ownership.mjs";
 export {
+  buildEnvironmentPolicyIdentity,
+  buildEnvironmentPolicyObservation,
+  verifyPostApprovalObservation
+} from "./snapshot/environment-policy.mjs";
+export {
+  buildSnapshotAdmission,
+  createUntrustedSnapshotAdmissionInput,
+  uniqueRouteLabel
+} from "./snapshot/snapshot-admission.mjs";
+export { verifyAndSignSnapshotAdmission } from "./snapshot/snapshot-admission-verification.mjs";
+export {
   assertSnapshotSchemaDiffResult,
   restoreSanitizedSnapshot
 } from "./snapshot/restore-sanitized.mjs";

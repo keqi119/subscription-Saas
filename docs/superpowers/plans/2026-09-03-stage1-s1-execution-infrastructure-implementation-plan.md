@@ -977,6 +977,7 @@ git commit -m "build: verify snapshot environment and admission identity"
 - Create: `release/contracts/schemas/producer-crypto-run-authorization.v1.schema.json`
 - Create: `release/contracts/schemas/producer-crypto-use-proof.v1.schema.json`
 - Create: `packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs`
+- Create: `packages/release-foundation/src/snapshot/custody-contracts.mjs`
 - Create: `packages/release-foundation/test/producer-crypto-contracts.test.mjs`
 - Create: `release/contracts/policies/snapshot-object-addressing.v2.json`
 - Create: `packages/release-foundation/test/evidence-archive-contracts.test.mjs`
@@ -1057,12 +1058,12 @@ as successful content readback. These are deterministic contract tests, not clou
 
 - [ ] **Step 5: Register all contracts and add semantic validators**
 
-Add `validateSnapshotCustody`, `validateSnapshotDestructionReceipt`, `validateSnapshotRetentionReceipt`, `validateLineageStoragePolicy`, `validateLineageAccessReadback` and `validateLineageRetentionReceipt` to `packages/release-foundation/src/snapshot/custody-contracts.mjs`; register the file itself in Task 5 when created. At this step the test may define a local semantic validator fixture, but every JSON Schema must already enter `repository-contract-files.v1.json`.
+Create `packages/release-foundation/src/snapshot/custody-contracts.mjs` and implement `validateSnapshotCustody`, `validateSnapshotDestructionReceipt`, `validateSnapshotRetentionReceipt`, `validateLineageStoragePolicy`, `validateLineageAccessReadback` and `validateLineageRetentionReceipt` in that production module. Register the module in `repository-contract-files.v1.json` in this task. The three Task 4 contract suites must import and exercise these production validators; a test-local semantic validator cannot substitute for them.
 
 - [ ] **Step 6: Run contract verification**
 
 ```powershell
-node --test packages/release-foundation/test/snapshot-custody-contracts.test.mjs packages/release-foundation/test/schema-registry.test.mjs
+node --test packages/release-foundation/test/snapshot-custody-contracts.test.mjs packages/release-foundation/test/evidence-archive-contracts.test.mjs packages/release-foundation/test/producer-crypto-contracts.test.mjs packages/release-foundation/test/schema-registry.test.mjs
 pnpm release:contracts:verify
 git diff --check
 ```
@@ -1072,7 +1073,7 @@ Expected: PASS; shortening WORM below 210 days or adding a plaintext field fails
 - [ ] **Step 7: Commit the custody contracts**
 
 ```powershell
-git add release/contracts packages/release-foundation/src/schema-registry.mjs packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs packages/release-foundation/test/snapshot-custody-contracts.test.mjs packages/release-foundation/test/evidence-archive-contracts.test.mjs packages/release-foundation/test/producer-crypto-contracts.test.mjs
+git add release/contracts packages/release-foundation/src/schema-registry.mjs packages/release-foundation/src/snapshot/custody-contracts.mjs packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs packages/release-foundation/test/snapshot-custody-contracts.test.mjs packages/release-foundation/test/evidence-archive-contracts.test.mjs packages/release-foundation/test/producer-crypto-contracts.test.mjs
 git commit -m "build: define private snapshot custody contracts"
 ```
 
@@ -1083,13 +1084,13 @@ git commit -m "build: define private snapshot custody contracts"
 **Files:**
 
 - Create: `packages/release-foundation/src/snapshot/envelope-crypto.mjs`
-- Create: `packages/release-foundation/src/snapshot/custody-contracts.mjs`
 - Create: `packages/release-foundation/test/snapshot-envelope-crypto.test.mjs`
 - Modify: `packages/release-foundation/src/index.mjs`
 - Modify: `release/contracts/repository-contract-files.v1.json`
 
 **Interfaces:**
 
+- Consumes the production custody validators already created, registered and contract-tested by Task 4; Task 5 does not recreate or redefine `custody-contracts.mjs`.
 - Produces: `encryptSnapshotStream({ source, destination, aad, kms }): Promise<SnapshotEncryptionEnvelopeV1>`.
 - Produces: `decryptSnapshotStream({ source, destination, envelope, kms }): Promise<void>`.
 - Produces: `wipeKeyBuffer(buffer): void`; callers must still terminate the short-lived process.

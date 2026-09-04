@@ -42,6 +42,20 @@ export async function verifyExternalChangeApproval({
     approval.approver.immutableId === expected?.workflowActorId
   )
     throw coded("EXTERNAL_CHANGE_APPROVAL_UNTRUSTED");
+  if (
+    typeof trust.approverImmutableId !== "string" ||
+    trust.approverImmutableId.length === 0 ||
+    approval.approver.immutableId !== trust.approverImmutableId
+  ) {
+    throw coded("EXTERNAL_CHANGE_APPROVAL_APPROVER_UNTRUSTED");
+  }
+  if (
+    !expected?.subject ||
+    expected.subjectDigest !== sha256Canonical(expected.subject) ||
+    canonicalJson(approval.subject) !== canonicalJson(expected.subject)
+  ) {
+    throw coded("EXTERNAL_CHANGE_APPROVAL_SUBJECT_MISMATCH");
+  }
   const signature = Buffer.from(approval.protected.signature, "base64");
   if (!verify(null, Buffer.from(canonicalJson(unsigned(approval))), trust.publicKey, signature))
     throw coded("EXTERNAL_CHANGE_APPROVAL_SIGNATURE_INVALID");

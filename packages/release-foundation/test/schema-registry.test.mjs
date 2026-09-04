@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { compileAllSchemas, validateContract } from "../src/index.mjs";
@@ -83,4 +86,15 @@ test("validates the Task 0 PostgreSQL image contract", () => {
       serverVersionMajor: 17
     })
   );
+});
+
+test("rejects a schema whose filename and id differ", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "schema-parity-"));
+  const schemas = path.join(root, "release", "contracts", "schemas");
+  await mkdir(schemas, { recursive: true });
+  await writeFile(
+    path.join(schemas, "wrong.v1.schema.json"),
+    JSON.stringify({ $id: "right.v1", type: "object" })
+  );
+  assert.throws(() => compileAllSchemas(root), { code: "CONTRACT_SCHEMA_FILENAME_ID_MISMATCH" });
 });

@@ -63,3 +63,61 @@ test("admission cannot reference a future observation", () => {
     environmentPolicyObservationDigest: DIGEST
   });
 });
+
+test("producer completion rejects self-reported future workflow terminal state", () => {
+  const completion = {
+    schemaVersion: "snapshot-producer-completion.v1",
+    snapshotAdmissionVerificationDigest: DIGEST,
+    producerRun: {
+      repository: "keqi119/subscription-Saas",
+      runId: "123",
+      runAttempt: 1,
+      workflowPath: ".github/workflows/sanitized-snapshot.yml",
+      sourceSha: "b".repeat(40)
+    },
+    dataJob: { id: "4", name: "snapshot-data" },
+    dataExportDigest: DIGEST,
+    scanReportDigest: DIGEST,
+    encryptedObject: {
+      objectDigest: DIGEST,
+      objectVersion: "v1",
+      custodyReference: "custody://object"
+    },
+    cryptoUseProofDigest: DIGEST,
+    publisherUseProofDigest: DIGEST,
+    destructionReceiptDigest: DIGEST,
+    dataCustodyReceiptDigest: DIGEST,
+    runTerminalState: "success"
+  };
+  assertSchemaInvalidAdditionalProperties("snapshot-producer-completion.v1", completion);
+});
+
+test("terminal observation rejects non-success runs and required job conclusions", () => {
+  const observation = {
+    schemaVersion: "producer-terminal-observation.v1",
+    snapshotProducerCompletionDigest: DIGEST,
+    producerRun: {
+      repository: "keqi119/subscription-Saas",
+      runId: "123",
+      runAttempt: 1,
+      workflowPath: ".github/workflows/sanitized-snapshot.yml",
+      sourceSha: "b".repeat(40),
+      status: "completed",
+      conclusion: "cancelled"
+    },
+    requiredJobs: [
+      { id: "1", name: "snapshot-admission", status: "completed", conclusion: "success" },
+      { id: "2", name: "snapshot-data", status: "completed", conclusion: "success" },
+      { id: "3", name: "snapshot-custody", status: "completed", conclusion: "success" }
+    ],
+    githubApiReadback: { responseDigest: DIGEST, observedAt: NOW },
+    externalCustodyReadback: {
+      reference: "custody://object",
+      contentDigest: DIGEST,
+      observedAt: NOW
+    }
+  };
+  assert.throws(() => validateContract("producer-terminal-observation.v1", observation), {
+    code: "CONTRACT_SCHEMA_INVALID"
+  });
+});

@@ -37,14 +37,17 @@ test("fails closed before custody when the approval signature is invalid", async
           operationId: "op-1",
           target: approval.target,
           planDigest: digest,
-          expectedPreStateDigest: digest
+          expectedPreStateDigest: digest,
+          subject: approval.subject,
+          subjectDigest: sha256Canonical(approval.subject)
         },
         trust: {
           issuer: "independent-root",
           keyId: "root-1",
           publicKey: keys.publicKey,
           revocationPublicKey: keys.publicKey,
-          revocationPolicyDigest: digest
+          revocationPolicyDigest: digest,
+          approverImmutableId: "reviewer"
         },
         revocationClient: {
           async readCurrent() {
@@ -100,14 +103,17 @@ test("verifies pinned signatures, current revocation and immutable custody", asy
       operationId: "op-1",
       target: approval.target,
       planDigest: digest,
-      expectedPreStateDigest: digest
+      expectedPreStateDigest: digest,
+      subject: approval.subject,
+      subjectDigest: sha256Canonical(approval.subject)
     },
     trust: {
       issuer: "independent-root",
       keyId: "root-1",
       publicKey: keys.publicKey,
       revocationPublicKey: keys.publicKey,
-      revocationPolicyDigest: digest
+      revocationPolicyDigest: digest,
+      approverImmutableId: "reviewer"
     },
     revocationClient: {
       async readCurrent() {

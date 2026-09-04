@@ -14,14 +14,14 @@
 
 **Upstream Plan:** `docs/superpowers/plans/2026-09-02-stage1-s1-trusted-release-foundation-implementation-plan.md`；本轮批准内容 `f50676c6`/元数据 `30a90fae`；旧内容 `24799d0c`/元数据 `c3afabcc` 保留为历史基线。执行时它是只读依赖，Task29R-D 零文件/零提交；本计划为唯一施工所有者，不恢复或实施 Task30。
 
-**Revision Scope:** 用户于 2026-09-04 批准本计划内容基线 `31cc3e8c`，确认 Producer crypto/publisher、source/final proof DAG、构建前 sanitized 输入、私有证据保管与 bootstrap 时序的跨文档收敛通过。本状态记录同步 Task 1 的已批准内容/元数据引用，不改变任务、权限或证明契约；文内批准记录不替代 Task 0 的独立签名批准链。Canary `155acf6a` 交接设计的独立窄授权已确认，按附录同步到 Task 13/I7/I8；其代码和真实云验证仍未实施。本计划仍是唯一施工所有者，上游 Task 29R-D 仅验收。
+**Revision Scope:** 用户于 2026-09-04 批准本计划内容基线 `31cc3e8c`，确认 Producer crypto/publisher、source/final proof DAG、构建前 sanitized 输入、私有证据保管与 bootstrap 时序的跨文档收敛通过。本状态记录同步 Task 1 的已批准内容/元数据引用。用户另已确认仅限 Task 0 的 GitHub 本人评论准入方式；本次对齐不增加任务、运行权限或证明契约，文内记录不替代该评论及最终 blob 在线核验，不生成批准材料或恢复施工。Canary `155acf6a` 交接设计的独立窄授权已确认，按附录同步到 Task 13/I7/I8；其代码和真实云验证仍未实施。本计划仍是唯一施工所有者，上游 Task 29R-D 仅验收。
 
-**Remaining admission gates:** 三份内容已分别批准，但 Task 0 的最新 main/签名批准链/受控数据库、I0 独立签发及私有保管实际 readback、canary 无云交接与真实探测、I15B 合法构建前 sanitized 输入及独立使用授权仍须实际验证，不能由文档或 mock 代替。缺失构建前输入时为 `PREBUILD_SANITIZED_INPUT_UNAVAILABLE`；另行输入补给方案/批准不由本计划自动施工。Qualification 通过后 Task 30 再单独授权，S2/S3 不在本次范围。
+**Remaining admission gates:** 三份历史内容已分别批准，但本次最终文档的复核/必需 CI/合并、Task 0 的最新 main/GitHub 本人评论读回及最终 blob/独立开工指令/受控数据库、I0 独立签发及私有保管实际 readback、canary 无云交接与真实探测、I15B 合法构建前 sanitized 输入及独立使用授权仍须实际验证，不能由文档或 mock 代替。缺失构建前输入时为 `PREBUILD_SANITIZED_INPUT_UNAVAILABLE`；另行输入补给方案/批准不由本计划自动施工。Qualification 通过后 Task 30 再单独授权，S2/S3 不在本次范围。
 
 ## Global Constraints
 
 - 本计划获批前不得执行任何安装或外部状态变更。获批后，每项外部变更仍必须经过本计划列出的独立 human approval checkpoint；不得把“计划批准”当作某次具体 apply 的批准记录。
-- 从包含本轮三文档最终批准内容及批准记录的最新 main 创建新的隔离 worktree；旧附录/上游 commits 仅用于追溯，不能代替本轮批准。不得在当前文档 worktree 或保存 Task30 stash 的工作树施工。
+- 从包含本轮三文档最终内容的最新 main 创建新的隔离 worktree，逐一核对仓库外的 GitHub 本人批准评论与实际 main/blob；不把评论回写文档来改变被批准 blob。旧附录/上游 commits 仅用于追溯，不能代替本轮批准。不得在当前文档 worktree 或保存 Task30 stash 的工作树施工。
 - Task 30 stash `paused-task30-before-task29r-20260903` 在整个计划期间保持冻结。禁止 apply/pop/drop、修改 stash 内容或把其中文件加入任何提交。
 - S2、S3、产品代码、业务迁移、Prisma 模型/枚举、应用 RBAC、业务权限、业务开关、客户可见行为和业务 API 均不在范围内。
 - 所有仓库任务开始前运行 `git status --short`；只允许本任务列出的文件变更。每个任务独立提交，禁止把相邻安全边界合并为一个大提交。
@@ -150,28 +150,63 @@ role, keys and proofs bind that ID. The canonical workflow job ID must still mat
 
 **Interfaces:**
 
-- Consumes: clean latest main with all three revised documents matching independently signed actual approval content/blob records; old commits are history only.
+- Consumes: clean latest main with all three final documents matching the addendum's GitHub-authenticated human comment and actual blob records. No pre-existing digital signature chain is required for this Task 0-only document admission; old commits and local indexes are not approval authority.
 - Produces: `.release-local/controlled-target.v1.json` and successful controlled PostgreSQL 17 migration-status evidence.
 - Stop rule: no later task starts if the target cannot be created, existing migrations cannot be deployed, final migration status is not current, or Task 30 stash is missing.
 
 - [ ] **Step 1: Create the isolated implementation worktree**
 
-Run from the primary checkout after protecting local Dockerfile changes. Under the existing independent human trust anchor, verify actual review decisions/signatures/revocation for all three revised documents; preserve original records in protected encrypted provisional escrow and the verified non-secret index in `.release-local/input/s1-infrastructure-plan-approval.v1.json` as exactly three `documents` entries `{path,decision,approvedSourceCommit,blobOid,reviewRecordDigest}`. I0 custody does not exist yet and is not a Task0 prerequisite: escrow is not an authoritative 180-day receipt. I0 must import these exact original approval chains and complete independent private readback before I1. These records refer to existing reviewed content, never this plan's future commit or a fabricated approval SHA. Old ancestor presence alone does not approve the new crypto/custody design.
+This documentation update does not start Task 0. After an explicit user start instruction, run from the primary checkout after protecting local Dockerfile changes. First require the revised three documents to pass review/required CI and merge. Read their actual main SHA and blob OIDs; the user personally posts the addendum's complete JSON approval in PR #316 and supplies its comment reference. The only body fields are `scope=TASK0_DOCUMENT_ADMISSION_ONLY`, `approvedMainSha` and exactly three `documents[{path,decision=APPROVED,blobOid}]`. No future SHA, blanket decision, bot/Agent posting, signature service or new runtime contract is permitted.
+
+Read that exact comment via the fixed GitHub API, verify repository `1253231368`, PR #316 association/merge, user `275060624` of type `User`, unedited creation/update times, complete body and actual main/documents. Only after this readback may the Agent derive `.release-local/input/s1-infrastructure-plan-approval.v1.json`: root fields `commentId`, `commentCreatedAt`, `commentUpdatedAt`, `approvedMainSha`, plus the existing three `documents[{path,decision,approvedSourceCommit,blobOid,reviewRecordDigest}]`. Each `approvedSourceCommit` is the actual approved main SHA; each `reviewRecordDigest` is `sha256:` plus lowercase SHA-256 of the original comment body string encoded as UTF-8. The index is neither a signature nor an approval. Preserve the raw API/body and git observations in protected encrypted provisional escrow, without claiming I0/180-day custody.
+
+Before each admission, independently GET the specified original comment again; edited/deleted/unavailable or mismatched identity/body/times/content stops. Editing/deleting the original comment withdraws this approval; a new approval requires a new personal comment and explicitly supplied reference, not Agent selection of another record. I0 later archives the originals with their real GitHub human provenance and never backdates a signature. This record cannot authorize I0 or any external/runtime operation. The following block rechecks the index against live facts after the initial readback/index derivation and prior required-CI/explicit-start checks; only then does it create the worktree. Do not run it during this documentation change.
 
 ```powershell
+$ErrorActionPreference = 'Stop'
 git fetch origin main
+if ($LASTEXITCODE -ne 0) { throw 'MAIN_FETCH_FAILED' }
 $approvalPath = '.release-local/input/s1-infrastructure-plan-approval.v1.json'
-$approval = Get-Content -LiteralPath $approvalPath -Raw | ConvertFrom-Json
+$approval = Get-Content -LiteralPath $approvalPath -Raw -Encoding utf8 | ConvertFrom-Json
+if ([string]$approval.commentId -notmatch '^[1-9][0-9]*$') { throw 'APPROVAL_COMMENT_REFERENCE_REQUIRED' }
+$repoRaw = gh api --hostname github.com repos/keqi119/subscription-Saas
+if ($LASTEXITCODE -ne 0) { throw 'APPROVAL_REPOSITORY_READ_FAILED' }
+$repository = ($repoRaw -join "`n") | ConvertFrom-Json
+if ($repository.id -ne 1253231368) { throw 'APPROVAL_REPOSITORY_MISMATCH' }
+$prRaw = gh api --hostname github.com repos/keqi119/subscription-Saas/pulls/316
+if ($LASTEXITCODE -ne 0) { throw 'APPROVAL_PR_READ_FAILED' }
+$pullRequest = ($prRaw -join "`n") | ConvertFrom-Json
+if ($pullRequest.number -ne 316 -or $pullRequest.merged -ne $true) { throw 'APPROVAL_DOCUMENTS_NOT_MERGED' }
+$commentRaw = gh api --hostname github.com "repos/keqi119/subscription-Saas/issues/comments/$($approval.commentId)"
+if ($LASTEXITCODE -ne 0) { throw 'APPROVAL_COMMENT_READ_FAILED' }
+$comment = ($commentRaw -join "`n") | ConvertFrom-Json
+if ([string]$comment.id -cne [string]$approval.commentId -or $comment.user.id -ne 275060624 -or $comment.user.type -cne 'User' -or $comment.issue_url -cne 'https://api.github.com/repos/keqi119/subscription-Saas/issues/316') { throw 'APPROVAL_COMMENT_IDENTITY_MISMATCH' }
+if ($comment.created_at -cne $comment.updated_at -or $comment.created_at -cne $approval.commentCreatedAt -or $comment.updated_at -cne $approval.commentUpdatedAt) { throw 'APPROVAL_COMMENT_CHANGED' }
+if ([DateTimeOffset]::Parse($comment.created_at) -lt [DateTimeOffset]::Parse($pullRequest.merged_at)) { throw 'APPROVAL_COMMENT_PRECEDES_MERGE' }
+$bodyApproval = $comment.body | ConvertFrom-Json
+if ((@($bodyApproval.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'approvedMainSha,documents,scope' -or $bodyApproval.scope -cne 'TASK0_DOCUMENT_ADMISSION_ONLY') { throw 'APPROVAL_COMMENT_SCOPE_INVALID' }
+$mainSha = git rev-parse origin/main
+if ($LASTEXITCODE -ne 0 -or $bodyApproval.approvedMainSha -cne $mainSha -or $approval.approvedMainSha -cne $mainSha) { throw 'APPROVAL_MAIN_MISMATCH' }
+$hasher = [Security.Cryptography.SHA256]::Create()
+try {
+  $bodyHash = $hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$comment.body))
+  $reviewRecordDigest = 'sha256:' + ([BitConverter]::ToString($bodyHash).Replace('-', '').ToLowerInvariant())
+} finally {
+  $hasher.Dispose()
+}
 $requiredPaths = @(
   'docs/superpowers/specs/2026-09-03-stage1-s1-execution-infrastructure-security-addendum.zh-CN.md',
   'docs/superpowers/plans/2026-09-03-stage1-s1-execution-infrastructure-implementation-plan.md',
   'docs/superpowers/plans/2026-09-02-stage1-s1-trusted-release-foundation-implementation-plan.md'
 )
-if (@($approval.documents).Count -ne 3) { throw 'THREE_DOCUMENT_APPROVALS_REQUIRED' }
+if (@($approval.documents).Count -ne 3 -or @($bodyApproval.documents).Count -ne 3) { throw 'THREE_DOCUMENT_APPROVALS_REQUIRED' }
 foreach ($documentPath in $requiredPaths) {
+  $decisions = @($bodyApproval.documents | Where-Object { $_.path -ceq $documentPath })
+  if ($decisions.Count -ne 1 -or $decisions[0].decision -cne 'APPROVED' -or (@($decisions[0].PSObject.Properties.Name | Sort-Object) -join ',') -cne 'blobOid,decision,path') { throw 'DOCUMENT_COMMENT_DECISION_INVALID' }
   $records = @($approval.documents | Where-Object { $_.path -eq $documentPath })
   if ($records.Count -ne 1 -or $records[0].decision -ne 'APPROVED') { throw 'DOCUMENT_NOT_INDEPENDENTLY_APPROVED' }
   $documentApproval = $records[0]
+  if ($documentApproval.approvedSourceCommit -cne $mainSha -or $documentApproval.blobOid -cne $decisions[0].blobOid -or $documentApproval.reviewRecordDigest -cne $reviewRecordDigest) { throw 'DOCUMENT_INDEX_COMMENT_MISMATCH' }
   if ($documentApproval.approvedSourceCommit -notmatch '^[0-9a-f]{40,64}$' -or $documentApproval.blobOid -notmatch '^[0-9a-f]{40,64}$') { throw 'APPROVED_DOCUMENT_IDENTITY_INVALID' }
   git merge-base --is-ancestor $documentApproval.approvedSourceCommit origin/main
   if ($LASTEXITCODE -ne 0) { throw 'APPROVED_DOCUMENT_COMMIT_MISSING' }
@@ -184,6 +219,8 @@ git worktree add D:\Projects\auto-subscription-platform\.worktrees\stage1-s1-exe
 ```
 
 Expected: `origin/main` already contains the exact approved plan and addendum; the new worktree is created directly from that `main`. No documentation branch is merged into the implementation branch, and no existing checkout or Task 30 stash is modified.
+
+Document-admission checks must reject: absent index/comment, wrong repository/PR/author or bot, approval before merge, edited/deleted/unavailable comment, broad/wrong scope, missing/duplicate document decision, stale main/blob/body digest and an index without matching live approval. These are Task 0 inline checks, not a new helper/task or a digital-signature bypass for later execution. No approved comment/index is supplied by this plan itself.
 
 - [ ] **Step 2: Verify repository and stash boundaries**
 
@@ -2134,7 +2171,7 @@ For each bootstrap mutation, create `.release-local/evidence/$stage1Infrastructu
 
 - [ ] Verify the existing human trust anchor and independently approve signer/public-key/revocation policy/executor source-runtime plan; establish protected Ed25519 signing with public-key challenge/readback. Initial approval/apply bytes are preserved in encrypted provisional escrow, not yet authoritative custody and not dependent on a future bucket receipt.
 - [ ] Separately plan/approve actual private OSS bucket/ACL/logging/management and archive identity policies, apply/read back. Separately approve the irreversible bucket-wide 210-day WORM lock and read back GetBucketWorm Locked/ID/days. Management credentials never enter archive writer/reader processes. Existing matching infrastructure is verified and adopted by explicit approval, not silently replaced.
-- [ ] Freeze the original three-document approval/signature/revocation chains from Task0 plus bootstrap plan/approval/apply/readback bytes and exact archive keys. Import originals unchanged from provisional escrow; no retroactive approval or replacement signatures. Independently authorize an exact conditional-create writer, terminate its session, then independently authorize reader Head/Get and verify bytes/digests/Last-Modified/actual WORM retention. Archive roles have no KMS/database/JIT/OIDC/management/lineage permissions.
+- [ ] Freeze the original Task0 GitHub human comment/API/body/index/git observations plus independently approved bootstrap plan/approval/apply/readback bytes and exact archive keys. Preserve Task0's actual online-human provenance: it is not a historical digital signature and does not authorize I0. Import originals unchanged from provisional escrow; no retroactive approval, backdated signature or replacement record. Independently authorize an exact conditional-create writer, terminate its session, then independently authorize reader Head/Get and verify bytes/digests/Last-Modified/actual WORM retention. Archive roles have no KMS/database/JIT/OIDC/management/lineage permissions.
 - [ ] Close I0 only after original evidence and terminal/access receipts have authoritative private custody and the bootstrap readback is complete. Escrow alone, missing signer, future Adapter/I13/OIDC dependency, UNKNOWN mutation or deficient retention blocks I1 and canary. No mutation is retried under ambiguity; no bucket recreation or blind relock.
 
 ### Infrastructure Task I1: Plan, approve, publish and custody the trusted Adapter

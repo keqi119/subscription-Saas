@@ -33,7 +33,7 @@
       }
     },
     "canAdminsBypass": { "const": false },
-    "preventSelfReview": { "const": true },
+    "preventSelfReview": { "const": false },
     "allowedActorId": { "$ref": "#/$defs/id" },
     "waitTimerSeconds": { "type": "integer", "minimum": 0 },
     "workflowPath": { "type": "string", "pattern": "^\\.github/workflows/[a-z0-9._-]+\\.ya?ml$" },

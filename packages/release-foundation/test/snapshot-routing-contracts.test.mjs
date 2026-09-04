@@ -13,7 +13,7 @@ const validIdentity = {
   requiredReviewerId: "3",
   branchPolicy: { protectedBranches: ["main"], tagRules: [] },
   canAdminsBypass: false,
-  preventSelfReview: true,
+  preventSelfReview: false,
   allowedActorId: "4",
   waitTimerSeconds: 0,
   workflowPath: ".github/workflows/sanitized-snapshot.yml",
@@ -77,11 +77,40 @@ function assertSchemaInvalidAdditionalProperties(schemaId, value) {
 }
 
 test("environment identity cannot contain observation time", () => {
-  validateContract("environment-policy-identity.v1", validIdentity);
   assertSchemaInvalidAdditionalProperties("environment-policy-identity.v1", {
     ...validIdentity,
     observedAt: NOW
   });
+});
+
+test("environment identity permits the approved self-review exception", () => {
+  assert.doesNotThrow(() => validateContract("environment-policy-identity.v1", validIdentity));
+});
+
+test("environment identity rejects the unapproved true self-review value", () => {
+  assert.throws(
+    () =>
+      validateContract("environment-policy-identity.v1", {
+        ...validIdentity,
+        preventSelfReview: true
+      }),
+    { code: "CONTRACT_SCHEMA_INVALID" }
+  );
+});
+
+test("environment identity rejects missing and non-boolean self-review values", () => {
+  const { preventSelfReview: _removed, ...identityWithoutPreventSelfReview } = validIdentity;
+  for (const candidate of [
+    identityWithoutPreventSelfReview,
+    ...[null, 0, "false", [], {}].map((preventSelfReview) => ({
+      ...validIdentity,
+      preventSelfReview
+    }))
+  ]) {
+    assert.throws(() => validateContract("environment-policy-identity.v1", candidate), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
+  }
 });
 
 test("admission cannot reference a future observation", () => {

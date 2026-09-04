@@ -4,7 +4,11 @@ import { canonicalJson } from "../canonical-json.mjs";
 import { sha256Bytes, sha256Canonical } from "../digest.mjs";
 import { verifyDispatchAuthorization } from "../dispatch-authorization.mjs";
 import { validateContract } from "../schema-registry.mjs";
-import { buildEnvironmentPolicyIdentity } from "./environment-policy.mjs";
+import {
+  buildEnvironmentPolicyIdentity,
+  assertKernelFrame,
+  snapshotKernelData
+} from "./environment-policy.mjs";
 import { buildSnapshotAdmission } from "./snapshot-admission.mjs";
 
 const coded = (code) => Object.assign(new Error(code), { code });
@@ -14,8 +18,11 @@ const fail = (code) => {
 const same = (a, b) => canonicalJson(a) === canonicalJson(b);
 
 function root(rootPolicy) {
-  if (!rootPolicy || typeof rootPolicy !== "object" || Array.isArray(rootPolicy))
-    fail("SNAPSHOT_ADMISSION_POLICY_INVALID");
+  assertKernelFrame(
+    rootPolicy,
+    ["repository", "actorId", "environment", "workflow", "environmentPolicyIdentity", "rootSigner"],
+    "SNAPSHOT_ADMISSION_POLICY_INVALID"
+  );
   const signer = rootPolicy.rootSigner;
   if (
     !signer ||
@@ -23,7 +30,11 @@ function root(rootPolicy) {
     Array.isArray(signer) ||
     Object.keys(signer).length !== 3 ||
     typeof signer.issuer !== "string" ||
+    !signer.issuer.length ||
+    signer.issuer.length > 2048 ||
     typeof signer.keyId !== "string" ||
+    !signer.keyId.length ||
+    signer.keyId.length > 2048 ||
     typeof signer.publicKey !== "string"
   )
     fail("SNAPSHOT_ADMISSION_POLICY_INVALID");
@@ -43,71 +54,210 @@ function root(rootPolicy) {
 }
 
 function observations(githubObservations) {
+  const code = "SNAPSHOT_ADMISSION_OBSERVATION_INVALID";
+  assertKernelFrame(githubObservations, ["selection", "readExact"], code);
+  if (typeof githubObservations.readExact !== "function") fail(code);
+  const { selection } = githubObservations;
+  assertKernelFrame(
+    selection,
+    [
+      "repository",
+      "runId",
+      "runAttempt",
+      "sourceSha",
+      "admissionJobId",
+      "jobId",
+      "artifactId",
+      "artifactName"
+    ],
+    code
+  );
+  assertKernelFrame(selection.repository, ["id", "name"], code);
   if (
-    !githubObservations ||
-    typeof githubObservations !== "object" ||
-    Array.isArray(githubObservations) ||
-    Object.keys(githubObservations).length !== 1 ||
-    typeof githubObservations.readExact !== "function"
+    selection.repository.id !== "1253231368" ||
+    selection.repository.name !== "keqi119/subscription-Saas" ||
+    selection.runAttempt !== 1 ||
+    selection.artifactName !== "snapshot-admission" ||
+    !/^[0-9a-f]{40}$/.test(selection.sourceSha) ||
+    selection.admissionJobId === selection.jobId ||
+    [selection.runId, selection.admissionJobId, selection.jobId, selection.artifactId].some(
+      (id) => typeof id !== "string" || !/^[1-9][0-9]*$/.test(id)
+    )
   )
-    fail("SNAPSHOT_ADMISSION_OBSERVATION_INVALID");
-  return githubObservations.readExact;
+    fail(code);
+  return githubObservations;
 }
 
-function exact(value) {
+function exact(raw, selection) {
+  const code = "SNAPSHOT_ADMISSION_OBSERVATION_INVALID";
+  const value = snapshotKernelData(raw, code);
+  assertKernelFrame(
+    value,
+    [
+      "repository",
+      "producerRun",
+      "admissionJob",
+      "workflow",
+      "environmentPolicy",
+      "artifact",
+      "queuedJobs",
+      "usedRouteNonces"
+    ],
+    code
+  );
+  assertKernelFrame(value.repository, ["id", "name"], code);
+  assertKernelFrame(
+    value.producerRun,
+    [
+      "repository",
+      "runId",
+      "runAttempt",
+      "workflowPath",
+      "workflowRef",
+      "workflowBlobDigest",
+      "sourceSha",
+      "event",
+      "actorId"
+    ],
+    code
+  );
+  assertKernelFrame(value.workflow, ["repositoryId", "path", "sourceSha", "bytes"], code);
+  assertKernelFrame(
+    value.admissionJob,
+    ["repository", "runId", "runAttempt", "id", "name", "status", "conclusion", "sourceSha"],
+    code
+  );
+  assertKernelFrame(
+    value.artifact,
+    ["id", "name", "repositoryId", "runId", "runAttempt", "jobId", "sourceSha", "bytes"],
+    code
+  );
+  const { producerRun: run, workflow, artifact } = value;
   if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).length !== 6
+    !same(value.repository, selection.repository) ||
+    run.repository !== selection.repository.name ||
+    run.runId !== selection.runId ||
+    run.runAttempt !== selection.runAttempt ||
+    run.sourceSha !== selection.sourceSha ||
+    run.actorId !== "275060624" ||
+    value.admissionJob.repository !== selection.repository.name ||
+    value.admissionJob.id !== selection.admissionJobId ||
+    value.admissionJob.runId !== selection.runId ||
+    value.admissionJob.runAttempt !== 1 ||
+    value.admissionJob.sourceSha !== selection.sourceSha ||
+    value.admissionJob.name !== "admission" ||
+    value.admissionJob.status !== "completed" ||
+    value.admissionJob.conclusion !== "success" ||
+    workflow.repositoryId !== selection.repository.id ||
+    workflow.path !== ".github/workflows/sanitized-snapshot.yml" ||
+    workflow.path !== run.workflowPath ||
+    workflow.sourceSha !== selection.sourceSha ||
+    !Buffer.isBuffer(workflow.bytes) ||
+    workflow.bytes.length > 1048576 ||
+    artifact.id !== selection.artifactId ||
+    artifact.name !== selection.artifactName ||
+    artifact.repositoryId !== selection.repository.id ||
+    artifact.runId !== selection.runId ||
+    artifact.runAttempt !== 1 ||
+    artifact.jobId !== selection.admissionJobId ||
+    artifact.sourceSha !== selection.sourceSha ||
+    !Buffer.isBuffer(artifact.bytes) ||
+    artifact.bytes.length > 1048576 ||
+    !Array.isArray(value.queuedJobs) ||
+    !Array.isArray(value.usedRouteNonces)
   )
-    fail("SNAPSHOT_ADMISSION_OBSERVATION_INVALID");
-  const {
-    repository,
-    producerRun,
-    workflowBytes,
-    environmentPolicy,
-    queuedLabels,
-    admissionBytes
-  } = value;
-  if (
-    !repository ||
-    repository.id !== "1253231368" ||
-    repository.name !== "keqi119/subscription-Saas" ||
-    !Array.isArray(queuedLabels) ||
-    !Buffer.isBuffer(admissionBytes) ||
-    !Buffer.isBuffer(workflowBytes)
-  )
-    fail("SNAPSHOT_ADMISSION_OBSERVATION_INVALID");
-  return {
-    repository,
-    producerRun: { ...producerRun, queuedLabels },
-    workflowBytes: Buffer.from(workflowBytes),
-    environmentPolicy,
-    queuedLabels,
-    admissionBytes
-  };
+    fail(code);
+  return value;
 }
 
-// The approved workflow subset permits only a complete, literal `uses:` value on one
-// line. This is intentionally not a YAML parser: quoting, flow values, aliases, multiline
-// values, local/reusable/dynamic references, and any non-40-hex ref fail closed.
+// Closed YAML subset: two-space block mappings and mapping-item sequences, plain keys,
+// and single-line plain scalar values. Every non-comment line is consumed. Quoting,
+// flow forms, aliases, document directives and block scalars are unsupported. A whole
+// single-line ${{ ... }} scalar with the restricted character set below is opaque text;
+// it is never evaluated and cannot supply an action reference or a mapping key.
+// Action keys are permitted only in jobs.<job>.steps[n], never inferred from script text.
 function pinnedActions(workflowBytes) {
+  const code = "SNAPSHOT_ADMISSION_WORKFLOW_INVALID";
   const source = workflowBytes.toString("utf8");
-  if (!Buffer.from(source, "utf8").equals(workflowBytes))
-    fail("SNAPSHOT_ADMISSION_WORKFLOW_INVALID");
-  const actions = [];
-  for (const line of source.split("\n")) {
-    if (!line.includes("uses:")) continue;
-    const match = line.match(
-      /^\s*(?:-\s*)?uses:\s*([a-z0-9_.-]+\/[a-z0-9_.-]+)@([0-9a-f]{40})\s*(?:#.*)?$/
-    );
-    if (!match) fail("SNAPSHOT_ADMISSION_WORKFLOW_INVALID");
-    actions.push({ action: match[1], commit: match[2] });
+  if (!Buffer.from(source, "utf8").equals(workflowBytes)) fail(code);
+  const tokens = [];
+  for (const line of source.split(/\r?\n/)) {
+    if (/^ *(?:#.*)?$/.test(line)) continue;
+    const match = line.trimEnd().match(/^((?:  )*)(- )?([A-Za-z_][A-Za-z0-9_-]*):(?: (.*))?$/);
+    if (!match) fail(code);
+    const scalar = match[4] === undefined ? "" : match[4];
+    if (
+      scalar !== "" &&
+      !/^[A-Za-z0-9_./@][A-Za-z0-9_./@ -]*$/.test(scalar) &&
+      !/^\$\{\{ [A-Za-z0-9_.()'" !=&|,+*/-]+ \}\}$/.test(scalar)
+    )
+      fail(code);
+    tokens.push({ indent: match[1].length, sequence: !!match[2], key: match[3], scalar });
   }
-  if (actions.length === 0 || new Set(actions.map(canonicalJson)).size !== actions.length)
-    fail("SNAPSHOT_ADMISSION_WORKFLOW_INVALID");
-  return actions.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
+  let cursor = 0;
+  function entry(target, token, logicalIndent) {
+    if (Object.hasOwn(target, token.key)) fail(code);
+    let value = token.scalar || null;
+    if (tokens[cursor]?.indent > logicalIndent) {
+      if (token.scalar || tokens[cursor].indent !== logicalIndent + 2) fail(code);
+      value = block(logicalIndent + 2);
+    }
+    target[token.key] = value;
+  }
+  function block(indent) {
+    if (tokens[cursor]?.indent !== indent) fail(code);
+    const sequence = tokens[cursor].sequence;
+    const result = sequence ? [] : Object.create(null);
+    while (cursor < tokens.length && tokens[cursor].indent === indent) {
+      const token = tokens[cursor++];
+      if (token.sequence !== sequence) fail(code);
+      if (!sequence) entry(result, token, indent);
+      else {
+        const item = Object.create(null);
+        entry(item, token, indent + 2);
+        while (tokens[cursor]?.indent === indent + 2 && !tokens[cursor].sequence)
+          entry(item, tokens[cursor++], indent + 2);
+        result.push(item);
+      }
+      if (tokens[cursor]?.indent > indent) fail(code);
+    }
+    return result;
+  }
+  if (!tokens.length) fail(code);
+  const document = block(0);
+  if (
+    cursor !== tokens.length ||
+    Array.isArray(document) ||
+    !document.jobs ||
+    Array.isArray(document.jobs)
+  )
+    fail(code);
+  const actions = [];
+  function visit(node, path = []) {
+    if (!node || typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "uses") {
+        if (
+          path.length !== 4 ||
+          path[0] !== "jobs" ||
+          path[2] !== "steps" ||
+          !/^[0-9]+$/.test(path[3]) ||
+          typeof value !== "string"
+        )
+          fail(code);
+        const match = value.match(/^([a-z0-9_.-]+\/[a-z0-9_.-]+)@([0-9a-f]{40})$/);
+        if (!match) fail(code);
+        actions.push({ action: match[1], commit: match[2] });
+      }
+      visit(value, [...path, key]);
+    }
+  }
+  visit(document);
+  if (actions.length === 0) fail("SNAPSHOT_ADMISSION_WORKFLOW_INVALID");
+  const uniqueActions = [
+    ...new Map(actions.map((action) => [canonicalJson(action), action])).values()
+  ];
+  return uniqueActions.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
 }
 
 function keyDescriptor(privateKeyFd, expectedPublicKey) {
@@ -152,31 +302,51 @@ function keyDescriptor(privateKeyFd, expectedPublicKey) {
   return privateKey;
 }
 
-export async function verifyAndSignSnapshotAdmission({
-  admission,
-  dispatchVerification,
-  githubObservations,
-  rootPolicy,
-  privateKeyFd
-} = {}) {
+export async function verifyAndSignSnapshotAdmission(input = {}) {
+  assertKernelFrame(
+    input,
+    ["admission", "dispatchVerification", "githubObservations", "rootPolicy", "privateKeyFd"],
+    "SNAPSHOT_ADMISSION_INVALID"
+  );
+  const admission = snapshotKernelData(input.admission, "SNAPSHOT_ADMISSION_INVALID");
+  const rootPolicy = snapshotKernelData(input.rootPolicy, "SNAPSHOT_ADMISSION_POLICY_INVALID");
+  const dispatchVerification = snapshotKernelData(
+    input.dispatchVerification,
+    "SNAPSHOT_ADMISSION_DISPATCH_INVALID",
+    true
+  );
+  const githubObservations = snapshotKernelData(
+    input.githubObservations,
+    "SNAPSHOT_ADMISSION_OBSERVATION_INVALID",
+    true
+  );
+  const privateKeyFd = snapshotKernelData(
+    input.privateKeyFd,
+    "SNAPSHOT_ADMISSION_KEY_DESCRIPTOR_INVALID",
+    true
+  );
+  const trustedRoot = root(rootPolicy);
   // Every GitHub fact is read before the fresh Task 2V verifier and before the descriptor.
-  const readExact = observations(githubObservations);
+  const { readExact, selection } = observations(githubObservations);
   let received;
   try {
-    received = exact(await readExact());
+    received = exact(await readExact(selection), selection);
   } catch (error) {
     if (error?.code?.startsWith("SNAPSHOT_ADMISSION_")) throw error;
     fail("SNAPSHOT_ADMISSION_OBSERVATION_UNAVAILABLE");
   }
-  const trustedRoot = root(rootPolicy);
   const identity = buildEnvironmentPolicyIdentity({
     rootPolicy,
     apiPolicy: received.environmentPolicy
   });
-  const actions = pinnedActions(received.workflowBytes);
+  const actions = pinnedActions(received.workflow.bytes);
   if (
     !same(identity, rootPolicy.environmentPolicyIdentity) ||
-    sha256Bytes(received.workflowBytes) !== rootPolicy.workflow.blobDigest ||
+    sha256Bytes(received.workflow.bytes) !== rootPolicy.workflow.blobDigest ||
+    received.producerRun.workflowBlobDigest !== rootPolicy.workflow.blobDigest
+  )
+    fail("SNAPSHOT_ADMISSION_OBSERVATION_INVALID");
+  if (
     !same(
       actions,
       [...rootPolicy.workflow.actionCommits].sort((a, b) =>
@@ -184,7 +354,7 @@ export async function verifyAndSignSnapshotAdmission({
       )
     )
   )
-    fail("SNAPSHOT_ADMISSION_OBSERVATION_INVALID");
+    fail("SNAPSHOT_ADMISSION_WORKFLOW_INVALID");
   let verifiedDispatch;
   try {
     verifiedDispatch = await verifyDispatchAuthorization(dispatchVerification);
@@ -194,8 +364,13 @@ export async function verifyAndSignSnapshotAdmission({
   }
   const routeNonce = (() => {
     try {
-      const artifact = JSON.parse(received.admissionBytes.toString("utf8"));
-      if (!artifact?.route?.nonce || !same(artifact, admission))
+      const copied = received.artifact.bytes;
+      const artifact = JSON.parse(copied.toString("utf8"));
+      if (
+        !artifact?.route?.nonce ||
+        !copied.equals(Buffer.from(canonicalJson(artifact))) ||
+        !same(artifact, admission)
+      )
         fail("SNAPSHOT_ADMISSION_ARTIFACT_MISMATCH");
       return artifact.route.nonce;
     } catch (error) {
@@ -205,12 +380,18 @@ export async function verifyAndSignSnapshotAdmission({
   })();
   const rebuilt = buildSnapshotAdmission({
     verifiedDispatch,
-    producerRunObservation: { ...received.producerRun, queuedLabels: received.queuedLabels },
+    producerRunObservation: {
+      ...received.producerRun,
+      jobId: selection.jobId,
+      queuedJobs: received.queuedJobs,
+      usedRouteNonces: received.usedRouteNonces
+    },
     routeNonce,
     rootPolicy,
-    now: dispatchVerification?.clock?.now?.()
+    now: dispatchVerification.clock.now()
   });
-  if (!same(rebuilt, admission)) fail("SNAPSHOT_ADMISSION_ARTIFACT_MISMATCH");
+  if (!received.artifact.bytes.equals(Buffer.from(canonicalJson(rebuilt))))
+    fail("SNAPSHOT_ADMISSION_ARTIFACT_MISMATCH");
   const unsigned = {
     schemaVersion: "snapshot-admission-verification.v1",
     snapshotAdmissionDigest: sha256Canonical(rebuilt),
@@ -218,11 +399,29 @@ export async function verifyAndSignSnapshotAdmission({
     githubApiResponseDigest: sha256Canonical({
       repository: received.repository,
       producerRun: received.producerRun,
-      workflowBlobDigest: sha256Bytes(received.workflowBytes),
+      admissionJob: received.admissionJob,
+      workflow: {
+        repositoryId: received.workflow.repositoryId,
+        path: received.workflow.path,
+        sourceSha: received.workflow.sourceSha,
+        blobDigest: sha256Bytes(received.workflow.bytes)
+      },
       environmentPolicy: received.environmentPolicy,
-      queuedLabels: received.queuedLabels
+      artifact: {
+        id: received.artifact.id,
+        name: received.artifact.name,
+        repositoryId: received.artifact.repositoryId,
+        runId: received.artifact.runId,
+        runAttempt: received.artifact.runAttempt,
+        jobId: received.artifact.jobId,
+        sourceSha: received.artifact.sourceSha,
+        digest: sha256Bytes(received.artifact.bytes)
+      },
+      queuedJobs: received.queuedJobs,
+      usedRouteNonces: received.usedRouteNonces,
+      selection
     }),
-    workflowBlobDigest: sha256Bytes(received.workflowBytes),
+    workflowBlobDigest: sha256Bytes(received.workflow.bytes),
     rootSigner: {
       issuer: trustedRoot.signer.issuer,
       keyId: trustedRoot.signer.keyId,
@@ -243,5 +442,5 @@ export async function verifyAndSignSnapshotAdmission({
   } catch {
     fail("SNAPSHOT_ADMISSION_SIGNING_INVALID");
   }
-  return Object.freeze(result);
+  return snapshotKernelData(result, "SNAPSHOT_ADMISSION_SIGNING_INVALID");
 }

@@ -2,7 +2,7 @@ import { canonicalJson } from "../canonical-json.mjs";
 import { sha256Canonical } from "../digest.mjs";
 import { validateContract } from "../schema-registry.mjs";
 
-const REPOSITORY = { id: "1253231368", name: "keqi119/subscription-Saas" };
+const REPOSITORY = Object.freeze({ id: "1253231368", name: "keqi119/subscription-Saas" });
 const ACTOR_ID = "275060624";
 const ENVIRONMENT_NAME = "stage1-snapshot-export";
 const WORKFLOW_PATH = ".github/workflows/sanitized-snapshot.yml";
@@ -14,6 +14,63 @@ const fail = (code) => {
   throw coded(code);
 };
 const same = (left, right) => canonicalJson(left) === canonicalJson(right);
+
+// Internal kernel boundary helper. Never evaluate accessors, preserve no caller-owned data,
+// and capture function slots only in explicitly function-bearing runtime frames.
+export function snapshotKernelData(value, code, capabilities = false, seen = new Set()) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (capabilities && typeof value === "function") return value;
+  if (!value || typeof value !== "object" || seen.has(value)) fail(code);
+  if (Buffer.isBuffer(value)) {
+    if (
+      Object.getPrototypeOf(value) !== Buffer.prototype ||
+      Reflect.ownKeys(value).some((key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return (
+          typeof key !== "string" ||
+          !/^(0|[1-9][0-9]*)$/.test(key) ||
+          !descriptor.enumerable ||
+          !("value" in descriptor)
+        );
+      })
+    )
+      fail(code);
+    return Buffer.from(value);
+  }
+  const array = Array.isArray(value);
+  if (!array && ![Object.prototype, null].includes(Object.getPrototypeOf(value))) fail(code);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (
+    array &&
+    (Object.getPrototypeOf(value) !== Array.prototype || keys.length !== value.length + 1)
+  )
+    fail(code);
+  seen.add(value);
+  const result = array ? [] : {};
+  for (const key of keys) {
+    if (array && key === "length") continue;
+    const descriptor = descriptors[key];
+    if (
+      typeof key !== "string" ||
+      !descriptor.enumerable ||
+      !("value" in descriptor) ||
+      (array && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length))
+    )
+      fail(code);
+    Object.defineProperty(result, key, {
+      value: snapshotKernelData(descriptor.value, code, capabilities, seen),
+      enumerable: true
+    });
+  }
+  seen.delete(value);
+  return Object.freeze(result);
+}
+
+export function assertKernelFrame(value, keys, code) {
+  closed(value, keys, code);
+}
 
 function plain(value, code) {
   if (
@@ -29,7 +86,10 @@ function closed(value, keys, code) {
   plain(value, code);
   if (
     Reflect.ownKeys(value).length !== keys.length ||
-    keys.some((key) => !Object.prototype.hasOwnProperty.call(value, key))
+    keys.some((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return !descriptor || !descriptor.enumerable || !("value" in descriptor);
+    })
   )
     fail(code);
 }
@@ -167,11 +227,12 @@ function admission(value) {
   }
 }
 
-export function buildEnvironmentPolicyIdentity({ rootPolicy, apiPolicy } = {}) {
+export function buildEnvironmentPolicyIdentity(input = {}) {
+  const { rootPolicy, apiPolicy } = snapshotKernelData(input, "ENVIRONMENT_POLICY_INVALID");
   const policy = policyFacts(rootPolicy, apiPolicy);
   const result = {
     schemaVersion: "environment-policy-identity.v1",
-    repository: policy.repository,
+    repository: { ...policy.repository },
     environment: policy.environment,
     requiredReviewerId: ACTOR_ID,
     branchPolicy: { protectedBranches: ["main"], tagRules: [] },
@@ -185,19 +246,20 @@ export function buildEnvironmentPolicyIdentity({ rootPolicy, apiPolicy } = {}) {
     canonicalizationVersion: "RFC8785"
   };
   identity(result);
-  return Object.freeze(result);
+  return snapshotKernelData(result, "ENVIRONMENT_POLICY_INVALID");
 }
 
-export function buildEnvironmentPolicyObservation({
-  identity: policyIdentity,
-  apiPolicy,
-  observedAt,
-  phase,
-  deployment,
-  run,
-  job,
-  review
-} = {}) {
+export function buildEnvironmentPolicyObservation(input = {}) {
+  const {
+    identity: policyIdentity,
+    apiPolicy,
+    observedAt,
+    phase,
+    deployment,
+    run,
+    job,
+    review
+  } = snapshotKernelData(input, "ENVIRONMENT_OBSERVATION_INVALID");
   identity(policyIdentity);
   instant(observedAt, "ENVIRONMENT_OBSERVATION_INVALID");
   const value = {
@@ -216,18 +278,20 @@ export function buildEnvironmentPolicyObservation({
   } catch {
     fail("ENVIRONMENT_OBSERVATION_INVALID");
   }
-  return Object.freeze(value);
+  return snapshotKernelData(value, "ENVIRONMENT_OBSERVATION_INVALID");
 }
 
-export function verifyPostApprovalObservation({
-  rootPolicy,
-  apiPolicy,
-  identity: policyIdentity,
-  observation,
-  admission: snapshotAdmission,
-  now,
-  maxAgeMs
-} = {}) {
+export function verifyPostApprovalObservation(input = {}) {
+  const {
+    rootPolicy,
+    apiPolicy,
+    identity: policyIdentity,
+    observation,
+    admission: snapshotAdmission,
+    now,
+    maxAgeMs,
+    approvalSelection
+  } = snapshotKernelData(input, "ENVIRONMENT_OBSERVATION_INVALID");
   const latestIdentity = buildEnvironmentPolicyIdentity({ rootPolicy, apiPolicy });
   identity(policyIdentity);
   admission(snapshotAdmission);
@@ -267,4 +331,60 @@ export function verifyPostApprovalObservation({
     )
   )
     fail("ENVIRONMENT_OBSERVATION_INVALID");
+  const code = "ENVIRONMENT_OBSERVATION_INVALID";
+  closed(approvalSelection, ["runId", "runAttempt", "jobId", "deploymentId"], code);
+  const facts = apiPolicy.approval;
+  closed(
+    facts,
+    [
+      "repositoryId",
+      "environmentId",
+      "bypassed",
+      "observedAt",
+      "run",
+      "deployment",
+      "job",
+      "review"
+    ],
+    code
+  );
+  closed(facts.deployment, ["id", "state", "runId", "runAttempt", "approvedAt"], code);
+  closed(
+    facts.job,
+    ["id", "name", "status", "labels", "runId", "runAttempt", "deploymentId"],
+    code
+  );
+  closed(facts.review, ["reviewerId", "state", "deploymentId", "approvedAt"], code);
+  const approvedAt = instant(facts.deployment.approvedAt, code);
+  if (
+    facts.repositoryId !== REPOSITORY.id ||
+    facts.environmentId !== latestIdentity.environment.id ||
+    facts.bypassed !== false ||
+    approvalSelection.runId !== snapshotAdmission.producerRun.runId ||
+    approvalSelection.runAttempt !== 1 ||
+    !ID.test(approvalSelection.jobId) ||
+    !ID.test(approvalSelection.deploymentId) ||
+    !same(facts.run, observation.run) ||
+    facts.deployment.id !== approvalSelection.deploymentId ||
+    facts.deployment.runId !== approvalSelection.runId ||
+    facts.deployment.runAttempt !== 1 ||
+    !same(observation.deployment, { id: facts.deployment.id, state: facts.deployment.state }) ||
+    facts.job.id !== approvalSelection.jobId ||
+    facts.job.runId !== approvalSelection.runId ||
+    facts.job.runAttempt !== 1 ||
+    facts.job.deploymentId !== approvalSelection.deploymentId ||
+    facts.job.name !== "snapshot-data" ||
+    !same(observation.job, {
+      id: facts.job.id,
+      name: facts.job.name,
+      status: facts.job.status,
+      labels: facts.job.labels
+    }) ||
+    facts.review.deploymentId !== approvalSelection.deploymentId ||
+    !same(observation.review, { reviewerId: facts.review.reviewerId, state: facts.review.state }) ||
+    instant(facts.review.approvedAt, code) !== approvedAt ||
+    approvedAt > observedAt ||
+    instant(facts.observedAt, code) !== observedAt
+  )
+    fail(code);
 }

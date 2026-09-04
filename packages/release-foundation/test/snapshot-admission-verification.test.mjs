@@ -5,6 +5,11 @@ import test from "node:test";
 import { canonicalJson } from "../src/canonical-json.mjs";
 import { sha256Bytes, sha256Canonical } from "../src/digest.mjs";
 import { verifyAndSignSnapshotAdmission } from "../src/snapshot/snapshot-admission-verification.mjs";
+import { verifyDispatchAuthorization } from "../src/dispatch-authorization.mjs";
+import {
+  buildSnapshotAdmission,
+  createUntrustedSnapshotAdmissionInput
+} from "../src/snapshot/snapshot-admission.mjs";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
 const SHA = "b".repeat(40);
@@ -35,7 +40,7 @@ function signer(issuer) {
 
 // Minimal real Task2V frame: signatures, online revocation read and immutable custody are all
 // verified by the production verifier; no test-only decision or verifier substitute exists.
-function validDispatch(workflowDigest, calls) {
+function validDispatch(workflowDigest, calls, authorizationPatch = {}) {
   const dispatch = signer("dispatch");
   const observer = signer("observer");
   const revoker = signer("revoker");
@@ -62,7 +67,8 @@ function validDispatch(workflowDigest, calls) {
     issuer: "dispatch",
     issuedAt: "2026-09-03T00:00:00.000Z",
     notAfter: "2026-09-03T00:10:00.000Z",
-    revocationPolicyDigest: DIGEST
+    revocationPolicyDigest: DIGEST,
+    ...authorizationPatch
   };
   const archive = {
     reference: "authorization/test",
@@ -234,10 +240,11 @@ function validDispatch(workflowDigest, calls) {
   };
 }
 
-function fixture() {
+function fixture(workflowSource, authorizationPatch) {
   const pair = generateKeyPairSync("ed25519");
   const workflowBytes = Buffer.from(
-    `jobs:\n  test:\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n`
+    workflowSource ??
+      `jobs:\n  admission:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n  snapshot-data:\n    needs: admission\n    runs-on: \u0024{{ needs.admission.outputs.labels }}\n    steps:\n      - run: /usr/local/bin/stage1-snapshot-export\n  snapshot-custody:\n    needs: snapshot-data\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n`
   );
   const workflowDigest = sha256Bytes(workflowBytes);
   const rootPolicy = {
@@ -272,7 +279,7 @@ function fixture() {
     }
   };
   const calls = { github: 0, dispatch: 0, key: 0, jit: 0 };
-  const valid = validDispatch(workflowDigest, calls);
+  const valid = validDispatch(workflowDigest, calls, authorizationPatch);
   const authorization = valid.authorization;
   const admission = {
     schemaVersion: "snapshot-admission.v1",
@@ -302,31 +309,79 @@ function fixture() {
     workflowBlobDigest: workflowDigest,
     sourceSha: SHA,
     event: "workflow_dispatch",
-    queuedLabels: ["self-hosted", "linux", "x64", "stage1-snapshot-export"]
+    actorId: "275060624"
+  };
+  const selection = {
+    repository: { id: "1253231368", name: "keqi119/subscription-Saas" },
+    runId: "123",
+    runAttempt: 1,
+    sourceSha: SHA,
+    admissionJobId: "98",
+    jobId: "99",
+    artifactId: "77",
+    artifactName: "snapshot-admission"
+  };
+  const facts = {
+    repository: structuredClone(rootPolicy.repository),
+    producerRun,
+    admissionJob: {
+      repository: "keqi119/subscription-Saas",
+      runId: "123",
+      runAttempt: 1,
+      id: "98",
+      name: "admission",
+      status: "completed",
+      conclusion: "success",
+      sourceSha: SHA
+    },
+    workflow: {
+      repositoryId: "1253231368",
+      path: ".github/workflows/sanitized-snapshot.yml",
+      sourceSha: SHA,
+      bytes: workflowBytes
+    },
+    environmentPolicy: {
+      environment: {
+        id: "44",
+        name: "stage1-snapshot-export",
+        canAdminsBypass: false,
+        preventSelfReview: false,
+        waitTimerSeconds: 0,
+        requiredReviewerIds: ["275060624"],
+        branchRules: ["main"],
+        tagRules: []
+      },
+      workflow: structuredClone(rootPolicy.workflow)
+    },
+    artifact: {
+      id: "77",
+      name: "snapshot-admission",
+      repositoryId: "1253231368",
+      runId: "123",
+      runAttempt: 1,
+      jobId: "98",
+      sourceSha: SHA,
+      bytes: Buffer.from(canonicalJson(admission))
+    },
+    queuedJobs: [
+      {
+        repository: "keqi119/subscription-Saas",
+        runId: "123",
+        runAttempt: 1,
+        id: "99",
+        name: "snapshot-data",
+        status: "waiting",
+        labels: ["self-hosted", "linux", "x64", "stage1-snapshot-export", admission.route.label]
+      }
+    ],
+    usedRouteNonces: []
   };
   const githubObservations = {
-    async readExact() {
+    selection,
+    async readExact(request) {
       calls.github += 1;
-      return {
-        repository: rootPolicy.repository,
-        producerRun,
-        workflowBytes,
-        environmentPolicy: {
-          environment: {
-            id: "44",
-            name: "stage1-snapshot-export",
-            canAdminsBypass: false,
-            preventSelfReview: false,
-            waitTimerSeconds: 0,
-            requiredReviewerIds: ["275060624"],
-            branchRules: ["main"],
-            tagRules: []
-          },
-          workflow: rootPolicy.workflow
-        },
-        queuedLabels: producerRun.queuedLabels,
-        admissionBytes: Buffer.from(canonicalJson(admission))
-      };
+      assert.deepEqual(request, selection);
+      return facts;
     }
   };
   const privateKeyFd = {
@@ -344,7 +399,9 @@ function fixture() {
     dispatchVerification,
     githubObservations,
     privateKeyFd,
-    revoke: valid.revoke
+    revoke: valid.revoke,
+    facts,
+    selection
   };
 }
 
@@ -372,44 +429,299 @@ test("root re-fetches, freshly verifies and signs the reconstructed canonical ve
   );
 });
 
-test("forged input, changed artifact route and wrong root signer never read a signing key", async () => {
+const signFixture = (f) =>
+  verifyAndSignSnapshotAdmission({
+    admission: f.admission,
+    dispatchVerification: f.dispatchVerification,
+    githubObservations: f.githubObservations,
+    rootPolicy: f.rootPolicy,
+    privateKeyFd: f.privateKeyFd
+  });
+const noPrivilege = (f) => {
+  assert.equal(f.calls.key, 0);
+  assert.equal(f.calls.jit, 0);
+};
+
+test("independent selection denies wrong actor, job, artifact and workflow provenance", async () => {
   for (const mutate of [
     (f) => {
-      f.admission.executionPurpose = "release-candidate";
+      f.facts.producerRun.actorId = "1";
     },
     (f) => {
-      f.githubObservations.readExact = async () => ({
-        repository: f.rootPolicy.repository,
-        producerRun: { ...f.admission.producerRun, event: "workflow_dispatch", queuedLabels: [] },
-        workflow: f.rootPolicy.workflow,
-        environmentPolicy: { environment: {}, workflow: f.rootPolicy.workflow },
-        queuedLabels: [],
-        admissionBytes: Buffer.from(
-          canonicalJson({ ...f.admission, route: { ...f.admission.route, nonce: "d".repeat(32) } })
-        )
-      });
+      f.facts.artifact.runId = "124";
     },
     (f) => {
-      f.rootPolicy.rootSigner.publicKey = generateKeyPairSync("ed25519").publicKey.export({
-        type: "spki",
-        format: "pem"
-      });
+      f.facts.artifact.runAttempt = 2;
+    },
+    (f) => {
+      f.facts.artifact.id = "78";
+    },
+    (f) => {
+      f.facts.artifact.jobId = "100";
+    },
+    (f) => {
+      f.facts.artifact.jobId = "99";
+    },
+    (f) => {
+      f.facts.admissionJob.status = "in_progress";
+    },
+    (f) => {
+      f.facts.admissionJob.conclusion = "failure";
+    },
+    (f) => {
+      f.facts.admissionJob.sourceSha = "e".repeat(40);
+    },
+    (f) => {
+      f.facts.artifact.sourceSha = "e".repeat(40);
+    },
+    (f) => {
+      f.facts.workflow.sourceSha = "e".repeat(40);
+    },
+    (f) => {
+      f.facts.workflow.repositoryId = "2";
+    },
+    (f) => {
+      f.selection.runId = "124";
     }
   ]) {
     const f = fixture();
     mutate(f);
-    await assert.rejects(
-      verifyAndSignSnapshotAdmission({
-        admission: f.admission,
-        dispatchVerification: f.dispatchVerification,
-        githubObservations: f.githubObservations,
-        rootPolicy: f.rootPolicy,
-        privateKeyFd: f.privateKeyFd
-      }),
-      /(?:SNAPSHOT_ADMISSION_|DISPATCH_)/
-    );
-    assert.equal(f.calls.key, 0);
+    await assert.rejects(signFixture(f), { code: "SNAPSHOT_ADMISSION_OBSERVATION_INVALID" });
+    noPrivilege(f);
   }
+});
+
+test("queued selection requires the exact five labels and a single unused run-bound nonce", async () => {
+  for (const mutate of [
+    (f) => {
+      f.facts.queuedJobs[0].labels.pop();
+    },
+    (f) => {
+      f.facts.queuedJobs[0].labels.push(f.admission.route.label);
+    },
+    (f) => {
+      f.facts.queuedJobs.push({ ...structuredClone(f.facts.queuedJobs[0]), id: "100" });
+    },
+    (f) => {
+      f.facts.queuedJobs[0].runId = "124";
+    },
+    (f) => {
+      f.facts.queuedJobs[0].status = "in_progress";
+    },
+    (f) => {
+      f.facts.usedRouteNonces.push(nonce);
+    },
+    (f) => {
+      f.admission.route.nonce = "d".repeat(32);
+      f.admission.route.label = `stage1-snapshot-export-123-${"d".repeat(32)}`;
+      f.facts.artifact.bytes = Buffer.from(canonicalJson(f.admission));
+    }
+  ]) {
+    const f = fixture();
+    mutate(f);
+    await assert.rejects(signFixture(f), { code: "SNAPSHOT_ROUTE_IDENTITY_INVALID" });
+    noPrivilege(f);
+  }
+});
+
+test("trusted reconstruction succeeds with a real branded decision and denies actual mutated run facts", async () => {
+  const f = fixture();
+  const decision = await verifyDispatchAuthorization(f.dispatchVerification);
+  const input = {
+    verifiedDispatch: decision,
+    rootPolicy: f.rootPolicy,
+    routeNonce: nonce,
+    now: "2026-09-03T00:01:00Z",
+    producerRunObservation: {
+      ...f.facts.producerRun,
+      jobId: "99",
+      queuedJobs: f.facts.queuedJobs,
+      usedRouteNonces: []
+    }
+  };
+  assert.equal(canonicalJson(buildSnapshotAdmission(input)), canonicalJson(f.admission));
+  for (const [field, value] of [
+    ["runAttempt", 2],
+    ["workflowRef", "tag"],
+    ["event", "push"],
+    ["actorId", "2"]
+  ]) {
+    assert.throws(
+      () =>
+        buildSnapshotAdmission({
+          ...input,
+          producerRunObservation: { ...input.producerRunObservation, [field]: value }
+        }),
+      { code: "SNAPSHOT_ADMISSION_INVALID" }
+    );
+  }
+  assert.throws(() => buildSnapshotAdmission({ ...input, now: "2026-09-03T00:11:00Z" }), {
+    code: "DISPATCH_EVIDENCE_EXPIRED"
+  });
+  noPrivilege(f);
+});
+
+test("changed admission bindings, self-signature and observation provenance fail before key", async () => {
+  for (const mutate of [
+    (a) => {
+      a.dispatchAuthorizationDigest = `sha256:${"f".repeat(64)}`;
+    },
+    (a) => {
+      a.releaseAttemptId = "other";
+    },
+    (a) => {
+      a.executionPurpose = "release-candidate";
+    },
+    (a) => {
+      a.signature = "forged";
+    },
+    (a) => {
+      a.observation = {};
+    },
+    (a) => {
+      a.producerRun.workflowBlobDigest = DIGEST;
+    }
+  ]) {
+    const f = fixture();
+    mutate(f.admission);
+    f.facts.artifact.bytes = Buffer.from(canonicalJson(f.admission));
+    await assert.rejects(signFixture(f), { code: "SNAPSHOT_ADMISSION_ARTIFACT_MISMATCH" });
+    noPrivilege(f);
+  }
+});
+
+test("revocation after untrusted preparation and expired authorization fail before key", async () => {
+  const f = fixture();
+  const prepared = createUntrustedSnapshotAdmissionInput({
+    authorization: f.dispatchVerification.authorization,
+    producerRunObservation: {
+      ...f.admission.producerRun,
+      event: "workflow_dispatch",
+      queuedLabels: ["self-hosted", "linux", "x64", "stage1-snapshot-export"]
+    },
+    route: { nonce, environmentPolicyIdentityDigest: f.admission.environmentPolicyIdentityDigest }
+  });
+  assert.equal(canonicalJson(prepared), canonicalJson(f.admission));
+  f.revoke();
+  await assert.rejects(signFixture(f), { code: "DISPATCH_REVOKED" });
+  noPrivilege(f);
+  const expired = fixture();
+  expired.dispatchVerification.clock.now = () => "2026-09-03T00:11:00Z";
+  await assert.rejects(signFixture(expired), { code: "DISPATCH_EVIDENCE_EXPIRED" });
+  noPrivilege(expired);
+});
+
+test("validly signed wrong purpose and legacy purpose never reach signing", async () => {
+  const wrong = fixture(undefined, { executionPurpose: "release-candidate" });
+  await assert.rejects(signFixture(wrong), { code: "DISPATCH_BINDING_MISMATCH" });
+  noPrivilege(wrong);
+  const legacy = fixture(undefined, { executionPurpose: "snapshot" });
+  await assert.rejects(signFixture(legacy), { code: "DISPATCH_SIGNATURE_INVALID" });
+  noPrivilege(legacy);
+});
+
+test("artifact byte accessors are rejected without evaluation", async () => {
+  const f = fixture();
+  let getters = 0;
+  Object.defineProperty(f.facts.artifact.bytes, "length", {
+    get() {
+      getters++;
+      return 0;
+    }
+  });
+  await assert.rejects(signFixture(f), { code: "SNAPSHOT_ADMISSION_OBSERVATION_INVALID" });
+  assert.equal(getters, 0);
+  noPrivilege(f);
+});
+
+test("unsupported YAML structures cannot hide actions even with matching protected byte digest", async () => {
+  const action = `actions/checkout@${"d".repeat(40)}`;
+  for (const source of [
+    `jobs:\n  test:\n    steps:\n      - uses: ${action}\n      - "uses": other/action@main\n`,
+    `jobs:\n  test:\n    steps:\n      - {uses: ${action}}\n`,
+    `jobs:\n  test:\n    steps: &steps\n      - uses: ${action}\n`,
+    `jobs:\n  test:\n    steps:\n      - run: |\n          uses: ${action}\n`,
+    `jobs:\n  test:\n    steps:\n      - uses: \u0024{{ inputs.action }}\n`,
+    `jobs:\n  test:\n    runs-on: \u0024{{ inputs.labels }} uses: other/action@main\n    steps:\n      - uses: ${action}\n`,
+    `jobs:\n  test:\n    steps:\n      - uses: other/action@${"e".repeat(40)}\n`
+  ]) {
+    const f = fixture(source);
+    await assert.rejects(signFixture(f), { code: "SNAPSHOT_ADMISSION_WORKFLOW_INVALID" });
+    noPrivilege(f);
+  }
+});
+
+test("closed workflow grammar accepts ordinary route expressions without treating script text as actions", async () => {
+  const f = fixture(
+    `name: Snapshot\non:\n  workflow_dispatch:\npermissions:\n  contents: read\njobs:\n  admission:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n        with:\n          ref: \u0024{{ github.sha }}\n      - run: node scripts/uses-helper.mjs\n  snapshot-data:\n    needs: admission\n    runs-on: \u0024{{ needs.admission.outputs.labels }}\n    steps:\n      - run: /usr/local/bin/stage1-snapshot-export\n  snapshot-custody:\n    needs: snapshot-data\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n`
+  );
+  const result = await signFixture(f);
+  assert.equal(result.workflowBlobDigest, f.rootPolicy.workflow.blobDigest);
+  assert.equal(f.calls.key, 1);
+});
+
+test("workflow jobs may reuse an approved action but never introduce a different commit", async () => {
+  const f = fixture();
+  const result = await signFixture(f);
+  assert.equal(result.snapshotAdmissionDigest, sha256Canonical(f.admission));
+  const source = f.facts.workflow.bytes.toString().replace(/d{40}(?![\s\S]*d{40})/, "e".repeat(40));
+  const drift = fixture(source);
+  await assert.rejects(signFixture(drift), { code: "SNAPSHOT_ADMISSION_WORKFLOW_INVALID" });
+  noPrivilege(drift);
+  const duplicatePolicy = fixture();
+  duplicatePolicy.rootPolicy.workflow.actionCommits.push({
+    ...duplicatePolicy.rootPolicy.workflow.actionCommits[0]
+  });
+  await assert.rejects(signFixture(duplicatePolicy), { code: "ENVIRONMENT_POLICY_INVALID" });
+  noPrivilege(duplicatePolicy);
+});
+
+test("input snapshots isolate async mutation and captured capabilities", async () => {
+  const f = fixture();
+  const originalDigest = sha256Canonical(f.admission);
+  const read = f.dispatchVerification.evidenceSource.readRevocationHead;
+  f.dispatchVerification.evidenceSource.readRevocationHead = async (request) => {
+    f.rootPolicy.rootSigner.issuer = "changed";
+    f.admission.route.nonce = "f".repeat(32);
+    f.facts.artifact.bytes.fill(0);
+    f.facts.queuedJobs[0].labels.length = 0;
+    f.privateKeyFd.readPrivateKey = () => {
+      throw new Error("late replacement");
+    };
+    return read(request);
+  };
+  const result = await signFixture(f);
+  assert.equal(result.snapshotAdmissionDigest, originalDigest);
+  assert.equal(result.rootSigner.issuer, "root-test");
+  assert.throws(() => {
+    result.rootSigner.issuer = "changed";
+  }, TypeError);
+});
+
+test("accessors and invalid signer identity are rejected without key or getter effects", async () => {
+  const f = fixture();
+  let getters = 0;
+  Object.defineProperty(f.admission.route, "nonce", {
+    enumerable: true,
+    get() {
+      getters++;
+      return nonce;
+    }
+  });
+  await assert.rejects(signFixture(f), { code: "SNAPSHOT_ADMISSION_INVALID" });
+  assert.equal(getters, 0);
+  noPrivilege(f);
+  const invalid = fixture();
+  invalid.rootPolicy.rootSigner.issuer = "";
+  await assert.rejects(signFixture(invalid), { code: "SNAPSHOT_ADMISSION_POLICY_INVALID" });
+  noPrivilege(invalid);
+  const wrong = fixture();
+  wrong.rootPolicy.rootSigner.publicKey = generateKeyPairSync("ed25519").publicKey.export({
+    type: "spki",
+    format: "pem"
+  });
+  await assert.rejects(signFixture(wrong), { code: "SNAPSHOT_ADMISSION_KEY_DESCRIPTOR_INVALID" });
+  noPrivilege(wrong);
 });
 
 test("independent re-fetch happens before dispatch verification and unavailable read has zero privileged calls", async () => {
@@ -429,4 +741,16 @@ test("independent re-fetch happens before dispatch verification and unavailable 
     { code: "SNAPSHOT_ADMISSION_OBSERVATION_UNAVAILABLE" }
   );
   assert.deepEqual(f.calls, { github: 1, dispatch: 0, key: 0, jit: 0 });
+});
+
+test("noncanonical and duplicate-key original admission bytes fail before key", async () => {
+  for (const change of [
+    (bytes) => Buffer.concat([bytes, Buffer.from(" ")]),
+    (bytes) => Buffer.from(bytes.toString().replace("{", '{"executionPurpose":"evil",'))
+  ]) {
+    const f = fixture();
+    f.facts.artifact.bytes = change(f.facts.artifact.bytes);
+    await assert.rejects(signFixture(f), { code: "SNAPSHOT_ADMISSION_ARTIFACT_MISMATCH" });
+    noPrivilege(f);
+  }
 });

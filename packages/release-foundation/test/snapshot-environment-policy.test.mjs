@@ -110,7 +110,26 @@ function approvedFixture() {
     },
     review: { reviewerId: "275060624", state: "approved" }
   });
-  return { root, api, identity, snapshotAdmission, observation };
+  const approvalSelection = { runId: "123", runAttempt: 1, jobId: "99", deploymentId: "88" };
+  api.approval = {
+    repositoryId: "1253231368",
+    environmentId: "44",
+    bypassed: false,
+    observedAt: NOW,
+    run: structuredClone(observation.run),
+    deployment: { ...observation.deployment, runId: "123", runAttempt: 1, approvedAt: NOW },
+    job: { ...structuredClone(observation.job), runId: "123", runAttempt: 1, deploymentId: "88" },
+    review: { ...observation.review, deploymentId: "88", approvedAt: NOW }
+  };
+  const boundObservation = { ...observation, apiResponseDigest: sha256Canonical(api) };
+  return {
+    root,
+    api,
+    identity,
+    snapshotAdmission,
+    observation: boundObservation,
+    approvalSelection
+  };
 }
 
 test("reading the same policy later does not drift identity", () => {
@@ -176,6 +195,7 @@ test("a five-minute-old post-approval observation is rejected", () => {
     () =>
       verifyPostApprovalObservation({
         rootPolicy: fixture.root,
+        approvalSelection: fixture.approvalSelection,
         apiPolicy: fixture.api,
         identity: fixture.identity,
         observation: fixture.observation,
@@ -217,13 +237,15 @@ test("post-approval verification binds latest environment facts, reviewer and ex
       api: structuredClone(original.api),
       identity: structuredClone(original.identity),
       snapshotAdmission: structuredClone(original.snapshotAdmission),
-      observation: structuredClone(original.observation)
+      observation: structuredClone(original.observation),
+      approvalSelection: original.approvalSelection
     };
     mutate(fixture);
     assert.throws(
       () =>
         verifyPostApprovalObservation({
           rootPolicy: fixture.root,
+          approvalSelection: fixture.approvalSelection,
           apiPolicy: fixture.api,
           identity: fixture.identity,
           observation: fixture.observation,
@@ -234,4 +256,88 @@ test("post-approval verification binds latest environment facts, reviewer and ex
       /ENVIRONMENT_(?:POLICY|OBSERVATION)_/
     );
   }
+});
+
+test("postapproval accepts independently bound approval and rejects forged provenance and time", () => {
+  const check = (f) =>
+    verifyPostApprovalObservation({
+      rootPolicy: f.root,
+      apiPolicy: f.api,
+      identity: f.identity,
+      observation: f.observation,
+      admission: f.snapshotAdmission,
+      approvalSelection: f.approvalSelection,
+      now: "2026-09-03T00:01:00.000Z",
+      maxAgeMs: 300000
+    });
+  assert.doesNotThrow(() => check(approvedFixture()));
+  for (const mutate of [
+    (f) => {
+      f.observation.job.id = "100";
+    },
+    (f) => {
+      f.observation.deployment.id = "89";
+    },
+    (f) => {
+      f.api.approval.job.runId = "124";
+    },
+    (f) => {
+      f.api.approval.review.deploymentId = "89";
+    },
+    (f) => {
+      f.api.approval.bypassed = true;
+    },
+    (f) => {
+      f.api.approval.deployment.approvedAt = "2026-09-03T00:00:01Z";
+    },
+    (f) => {
+      f.api.approval.review.state = "pending";
+    },
+    (f) => {
+      f.api.approval.observedAt = "2026-09-02T00:00:00Z";
+    },
+    (f) => {
+      f.approvalSelection.jobId = "100";
+    }
+  ]) {
+    const f = structuredClone(approvedFixture());
+    mutate(f);
+    f.observation.apiResponseDigest = sha256Canonical(f.api);
+    assert.throws(() => check(f), { code: "ENVIRONMENT_OBSERVATION_INVALID" });
+  }
+});
+
+test("identity is deeply immutable and never exposes shared policy constants", () => {
+  const identity = buildEnvironmentPolicyIdentity({
+    rootPolicy: rootPolicy(),
+    apiPolicy: apiPolicyAt()
+  });
+  assert.throws(() => {
+    identity.repository.id = "2";
+  }, TypeError);
+  assert.throws(() => {
+    identity.actionCommitAllowlist[0].commit = "f".repeat(40);
+  }, TypeError);
+  assert.equal(
+    buildEnvironmentPolicyIdentity({ rootPolicy: rootPolicy(), apiPolicy: apiPolicyAt() })
+      .repository.id,
+    "1253231368"
+  );
+});
+
+test("policy rejects accessors without invoking them", () => {
+  let reads = 0;
+  const api = apiPolicyAt();
+  Object.defineProperty(api.environment, "id", {
+    enumerable: true,
+    get() {
+      reads++;
+      return "44";
+    }
+  });
+  assert.throws(
+    () => buildEnvironmentPolicyIdentity({ rootPolicy: rootPolicy(), apiPolicy: api }),
+    { code: "ENVIRONMENT_POLICY_INVALID" }
+  );
+  assert.equal(reads, 0);
 });

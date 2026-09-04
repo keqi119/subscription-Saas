@@ -4,6 +4,11 @@ import { canonicalJson } from "../canonical-json.mjs";
 import { sha256Canonical } from "../digest.mjs";
 import { assertVerifiedDispatchAuthorization } from "../dispatch-authorization.mjs";
 import { validateContract } from "../schema-registry.mjs";
+import {
+  assertKernelFrame,
+  snapshotKernelData,
+  buildEnvironmentPolicyIdentity
+} from "./environment-policy.mjs";
 
 const REPOSITORY = "keqi119/subscription-Saas";
 const ENVIRONMENT = "stage1-snapshot-export";
@@ -18,15 +23,7 @@ const fail = (code) => {
 const same = (a, b) => canonicalJson(a) === canonicalJson(b);
 
 function frame(value, keys, code = "SNAPSHOT_ADMISSION_INVALID") {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    ![Object.prototype, null].includes(Object.getPrototypeOf(value)) ||
-    Reflect.ownKeys(value).length !== keys.length ||
-    keys.some((key) => !Object.prototype.hasOwnProperty.call(value, key))
-  )
-    fail(code);
+  assertKernelFrame(value, keys, code);
 }
 
 function policy(rootPolicy) {
@@ -55,15 +52,26 @@ function policy(rootPolicy) {
   } catch {
     fail("SNAPSHOT_ADMISSION_POLICY_INVALID");
   }
-  if (
-    environmentPolicyIdentity.workflowBlobDigest !== workflow.blobDigest ||
-    environmentPolicyIdentity.environment.id !== environment.id
-  )
-    fail("SNAPSHOT_ADMISSION_POLICY_INVALID");
+  const expectedIdentity = buildEnvironmentPolicyIdentity({
+    rootPolicy,
+    apiPolicy: {
+      environment: {
+        ...environment,
+        canAdminsBypass: false,
+        preventSelfReview: false,
+        waitTimerSeconds: 0,
+        requiredReviewerIds: ["275060624"],
+        branchRules: ["main"],
+        tagRules: []
+      },
+      workflow
+    }
+  });
+  if (!same(environmentPolicyIdentity, expectedIdentity)) fail("SNAPSHOT_ADMISSION_POLICY_INVALID");
   return { repository, workflow, environmentPolicyIdentity };
 }
 
-function producer(value) {
+function producer(value, trusted = false) {
   frame(value, [
     "repository",
     "runId",
@@ -73,7 +81,7 @@ function producer(value) {
     "workflowBlobDigest",
     "sourceSha",
     "event",
-    "queuedLabels"
+    ...(trusted ? ["actorId", "jobId", "queuedJobs", "usedRouteNonces"] : ["queuedLabels"])
   ]);
   if (
     value.repository !== REPOSITORY ||
@@ -84,9 +92,10 @@ function producer(value) {
     !DIGEST.test(value.workflowBlobDigest) ||
     !SHA.test(value.sourceSha) ||
     value.event !== "workflow_dispatch" ||
-    !Array.isArray(value.queuedLabels) ||
-    new Set(value.queuedLabels).size !== value.queuedLabels.length ||
-    !same([...value.queuedLabels].sort(), ["self-hosted", "linux", "x64", ENVIRONMENT].sort())
+    (trusted
+      ? value.actorId !== "275060624"
+      : !Array.isArray(value.queuedLabels) ||
+        !same([...value.queuedLabels].sort(), ["self-hosted", "linux", "x64", ENVIRONMENT].sort()))
   )
     fail("SNAPSHOT_ADMISSION_INVALID");
   return {
@@ -114,11 +123,13 @@ export function uniqueRouteLabel(runId, nonce) {
   return `stage1-snapshot-export-${runId}-${nonce}`;
 }
 
-export function createUntrustedSnapshotAdmissionInput({
-  authorization: rawAuthorization,
-  producerRunObservation,
-  route
-} = {}) {
+export function createUntrustedSnapshotAdmissionInput(input = {}) {
+  frame(input, ["authorization", "producerRunObservation", "route"]);
+  const {
+    authorization: rawAuthorization,
+    producerRunObservation,
+    route
+  } = snapshotKernelData(input, "SNAPSHOT_ADMISSION_INVALID");
   const auth = authorization(rawAuthorization);
   const run = producer(producerRunObservation);
   if (
@@ -147,16 +158,21 @@ export function createUntrustedSnapshotAdmissionInput({
   // This is an untrusted copied digest, not an approval or a decision. The root recomputes it
   // from protected policy plus the fresh environment readback before byte-for-byte comparison.
   validateContract("snapshot-admission.v1", value);
-  return Object.freeze(value);
+  return snapshotKernelData(value, "SNAPSHOT_ADMISSION_INVALID");
 }
 
-export function buildSnapshotAdmission({
-  verifiedDispatch,
-  producerRunObservation,
-  routeNonce,
-  rootPolicy,
-  now
-} = {}) {
+export function buildSnapshotAdmission(input = {}) {
+  frame(input, ["verifiedDispatch", "producerRunObservation", "routeNonce", "rootPolicy", "now"]);
+  const { verifiedDispatch } = input;
+  const { producerRunObservation, routeNonce, rootPolicy, now } = snapshotKernelData(
+    {
+      producerRunObservation: input.producerRunObservation,
+      routeNonce: input.routeNonce,
+      rootPolicy: input.rootPolicy,
+      now: input.now
+    },
+    "SNAPSHOT_ADMISSION_INVALID"
+  );
   const trustedPolicy = policy(rootPolicy);
   try {
     assertVerifiedDispatchAuthorization(verifiedDispatch, {
@@ -168,7 +184,7 @@ export function buildSnapshotAdmission({
     fail("DISPATCH_DECISION_UNVERIFIED");
   }
   const auth = verifiedDispatch.authorization;
-  const run = producer(producerRunObservation);
+  const run = producer(producerRunObservation, true);
   if (
     !same(verifiedDispatch.expected, {
       ...verifiedDispatch.expected,
@@ -185,7 +201,50 @@ export function buildSnapshotAdmission({
   )
     fail("SNAPSHOT_ADMISSION_BINDING_MISMATCH");
   const label = uniqueRouteLabel(run.runId, routeNonce);
-  if (producerRunObservation.queuedLabels.includes(label)) fail("SNAPSHOT_ROUTE_ALREADY_QUEUED");
+  const routeCode = "SNAPSHOT_ROUTE_IDENTITY_INVALID";
+  const { jobId, queuedJobs, usedRouteNonces } = producerRunObservation;
+  if (
+    typeof jobId !== "string" ||
+    !ID.test(jobId) ||
+    !Array.isArray(queuedJobs) ||
+    !Array.isArray(usedRouteNonces) ||
+    usedRouteNonces.some((nonce) => typeof nonce !== "string" || !NONCE.test(nonce)) ||
+    new Set(usedRouteNonces).size !== usedRouteNonces.length ||
+    usedRouteNonces.includes(routeNonce)
+  )
+    fail(routeCode);
+  const jobs = new Set();
+  for (const job of queuedJobs) {
+    frame(job, ["repository", "runId", "runAttempt", "id", "name", "status", "labels"], routeCode);
+    if (
+      job.repository !== REPOSITORY ||
+      typeof job.runId !== "string" ||
+      !ID.test(job.runId) ||
+      typeof job.id !== "string" ||
+      !ID.test(job.id) ||
+      jobs.has(job.id) ||
+      !Number.isSafeInteger(job.runAttempt) ||
+      job.runAttempt < 1 ||
+      typeof job.name !== "string" ||
+      !Array.isArray(job.labels) ||
+      job.labels.some((label) => typeof label !== "string") ||
+      !["waiting", "queued"].includes(job.status)
+    )
+      fail(routeCode);
+    jobs.add(job.id);
+  }
+  const selected = queuedJobs.find((job) => job.id === jobId);
+  const matches = queuedJobs.filter((job) => job.labels.includes(label));
+  if (
+    !selected ||
+    selected.name !== "snapshot-data" ||
+    selected.runId !== run.runId ||
+    selected.runAttempt !== 1 ||
+    matches.length !== 1 ||
+    matches[0] !== selected ||
+    !same([...selected.labels].sort(), ["self-hosted", "linux", "x64", ENVIRONMENT, label].sort())
+  )
+    fail(routeCode);
   const value = {
     schemaVersion: "snapshot-admission.v1",
     dispatchAuthorizationDigest: verifiedDispatch.authorizationDigest,
@@ -201,5 +260,5 @@ export function buildSnapshotAdmission({
   } catch {
     fail("SNAPSHOT_ADMISSION_INVALID");
   }
-  return Object.freeze(value);
+  return snapshotKernelData(value, "SNAPSHOT_ADMISSION_INVALID");
 }

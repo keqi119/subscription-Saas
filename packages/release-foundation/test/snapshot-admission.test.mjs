@@ -108,7 +108,7 @@ test("unique route labels are exactly run-bound 128-bit identities", () => {
     });
 });
 
-test("untrusted preparation generates a nonce without claiming a decision", () => {
+test("untrusted preparation preserves its original nonce without claiming a decision", () => {
   const prepared = createUntrustedSnapshotAdmissionInput({
     authorization: verifiedDispatch().authorization,
     producerRunObservation: producerRun(),
@@ -139,40 +139,27 @@ test("trusted reconstruction never treats a plain dispatch-shaped object as a de
   );
 });
 
-test("trusted reconstruction rejects unverified decisions and inconsistent route or producer facts", () => {
+test("raw authorization and an untrusted admission are never verified decisions", () => {
   const policyIdentity = buildEnvironmentPolicyIdentity({ rootPolicy, apiPolicy });
   const policy = { ...rootPolicy, environmentPolicyIdentity: policyIdentity };
-  for (const mutate of [
-    (v) => {
-      v.verifiedDispatch = { ...v.verifiedDispatch };
-    },
-    (v) => {
-      v.producerRunObservation.runAttempt = 2;
-    },
-    (v) => {
-      v.producerRunObservation.workflowRef = "tag";
-    },
-    (v) => {
-      v.producerRunObservation.event = "push";
-    },
-    (v) => {
-      v.producerRunObservation.workflowBlobDigest = `sha256:${"f".repeat(64)}`;
-    },
-    (v) => {
-      v.producerRunObservation.queuedLabels.push(uniqueRouteLabel("123", "c".repeat(32)));
-    },
-    (v) => {
-      v.routeNonce = "d".repeat(32);
-    }
+  const untrusted = createUntrustedSnapshotAdmissionInput({
+    authorization: verifiedDispatch().authorization,
+    producerRunObservation: producerRun(),
+    route: { environmentPolicyIdentityDigest: `sha256:${"0".repeat(64)}` }
+  });
+  assert.match(untrusted.route.nonce, /^[0-9a-f]{32}$/);
+  for (const candidate of [
+    verifiedDispatch().authorization,
+    JSON.parse(JSON.stringify(verifiedDispatch())),
+    untrusted
   ]) {
     const input = {
-      verifiedDispatch: verifiedDispatch(),
+      verifiedDispatch: candidate,
       producerRunObservation: producerRun(),
       routeNonce: "c".repeat(32),
       rootPolicy: policy,
       now: "2026-09-03T00:00:00.000Z"
     };
-    mutate(input);
-    assert.throws(() => buildSnapshotAdmission(input), /(?:SNAPSHOT_|DISPATCH_)/);
+    assert.throws(() => buildSnapshotAdmission(input), { code: "DISPATCH_DECISION_UNVERIFIED" });
   }
 });

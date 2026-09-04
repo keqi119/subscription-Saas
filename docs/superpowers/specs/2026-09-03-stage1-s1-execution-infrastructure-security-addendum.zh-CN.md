@@ -2,9 +2,11 @@
 
 日期：2026-09-03
 
-状态：待复审（lineage capability 前向版本修订）
+状态：已批准（lineage capability 前向修订；仅设计，不授权实施）
 
-方案方向：A 基础设施拓扑与 `execution-purpose-envelope` 证明模型的既有批准保持有效；新增 `exact-capability-approval.v2` lineage 私有存储能力尚待复审，仍未批准实施
+方案方向：A 基础设施拓扑、`execution-purpose-envelope` 证明模型及前向 `exact-capability-approval.v2` lineage 私有存储能力已获设计批准；仍未批准实施
+
+本次批准内容基线：`380c0edb`（包含 claim/envelope 两个 job 存储协议；本次状态提交不替代内容基线）
 
 既有批准内容基线：`8366d87d`（状态提交 `e8a322f2`）
 
@@ -22,7 +24,7 @@
 
 ## 批准边界
 
-既有批准与本次待复审的前向修订都只允许编写、评审和提交本设计附录，不授权：
+本次仅批准设计，允许记录批准元数据及随后修订、分别复审两份既有实施计划；Task 29R、Task 30及外部施工继续阻断，不授权：
 
 - 注册或启动 GitHub self-hosted Runner；
 - 安装 `/opt/subscription-saas/snapshot-adapter/v1/`；

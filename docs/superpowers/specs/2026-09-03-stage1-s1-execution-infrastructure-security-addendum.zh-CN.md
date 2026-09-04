@@ -12,6 +12,8 @@
 
 本次修订边界：仅补充 RC dispatch 之前的 bootstrap canary 独立运行授权；不改变既有 v1/v2 批准、purpose-envelope、custody/aggregate/exit 契约或权限矩阵，不修订两份实施计划。
 
+本轮局部复审修订：针对 `acf2008b` 的批准后证据交接 P1，保持预批准 capsule 不可变，补充独立运行 checkpoint 的来源、只读传输、撤销读取语义及无云凭证验证。该补充仍待批准，不代表任何通道已部署。
+
 设计基线：`9b8a0c282f85f1794066ea23550af1d81e105ddf`
 
 上位规格与计划：
@@ -188,8 +190,10 @@ Canary 只验证 GitHub subject 切换后能否取得预期 Aliyun 临时身份�
   → 确认既有消费者的兼容条件就绪
   → repository subject 独立变更批准 → apply/readback
   → 独立签发 canary 精确运行授权并完成保管/readback
-  → 单独批准 canary Environment deployment → post-approval observation
-  → 固定入口核对全部授权/策略/观察 → 单次 OIDC → AssumeRoleWithOIDC → GetCallerIdentity
+  → 单独批准 canary Environment deployment → 独立控制面读取批准记录及实际 job
+  → 单独发布签名运行 checkpoint（批准后 observation + 已提交撤销状态），不更新 capsule
+  → job 只读取得并复核 checkpoint / GitHub 批准记录 / 当前 authority head
+  → 固定入口完成 OIDC 前准入 → 单次 OIDC → AssumeRoleWithOIDC → GetCallerIdentity
   → 禁止继续签发 / 凭证失效 / 进程处置 → 独立证据保管/readback
 ```
 
@@ -213,13 +217,47 @@ Provider/Environment 等共享 prerequisite 可更早就绪，但必须在该运
 
 授权的 canonical bytes 不引用尚未产生的自身 signature/custody digest；先计算 SHA-256，再以独立签名信封绑定该 digest，最后生成独立 readback receipt。Run 前 intent、变更批准、运行授权和 Environment observation 各自有不同类型及生成时点，验证器不允许互换，也不能用 `approvalMode=ci-policy` 跳过本次人工运行批准。
 
-签发时和取 OIDC 前都验证可信撤销来源：受同一独立 root policy 约束的签名撤销快照须绑定 issuer、policy digest、单调 sequence、issuedAt/notAfter 和撤销 ID/digest；在受保护控制面 journal 中记录已观察最高序号。取用前观察不超过 60 秒；缺失、不可访问、过期、错误签名/subject/policy 或回放旧空集合一律 `PREFLIGHT_REJECTED`。取用端核对独立签发端最新签名观察及 sequence，不接受调用者选择历史快照。授权最多有效 15 分钟；超时、撤销或策略漂移需取消旧 run，不能延长旧授权继续执行。
+签发时验证可信撤销来源：受同一独立 root policy 约束的签名撤销记录须绑定 issuer、policy digest、单调 sequence、issuedAt/notAfter 和撤销 ID/digest；在受保护控制面 journal 中记录已观察最高序号。Capsule 中的序号只是签发基线，不是运行时撤销结论。取 OIDC 前必须按下节在线读取独立运行 checkpoint 及 authority head；60 秒只是拒绝陈旧观察的上限，不证明快照是最新状态。缺失、不可访问、过期、错误签名/subject/policy 或回放旧空集合一律 `PREFLIGHT_REJECTED`。授权最多有效 15 分钟；超时、撤销或策略漂移需取消旧 run，不能延长旧授权继续执行。
 
 签发端以 `infrastructureChangeId/canaryRunId/attempt/job-key` 条件创建唯一授权 journal 项；Environment 放行前记录本次许可已分配，其他 run/attempt 不得消费，失败不退回可用。固定 job 无循环、matrix 或重试入口；保管网络重试只允许相同字节的只读核对，不能再次运行探测。签名和撤销检查不能只由 CLI 自报通过。
 
-签发端与 GitHub-hosted job 的交接固定为该 Environment 的非秘密变量 `BOOTSTRAP_CANARY_AUTHORIZATION_CAPSULE`：仅携带 canonical 授权、独立签名、授权保管/readback receipt 和最新签名撤销/策略观察，不携带私钥、JWT/STS 或任何控制面凭证。其字段须全部通过非敏感白名单检查；使用现有 GitHub 控制面变量接口，不安装回调服务或新增云端 writer。每次写入须有独立、精确 run/digest 的变更计划/批准，读取 API 核对完整值的 digest 后才能批准 deployment；同一 Environment 同时最多有一个未结束的 canary，禁止覆盖在用 capsule。该传输 readback 后置于运行授权，不反向写进授权 bytes。固定 job 在运行时把变量值作为数据读取，不插值为 Shell，依据预先固定的公钥验证，变量本身不是信任根；大小超限、缺失、签名错误、运行身份不匹配或 60 秒观察时限已过均停止，不改用公开完整 artifact 或长效授权兜底。有效授权被复制也不能在其他 run 消费；撤销观察在排队中变旧则取消并使用新 run，而非延长旧许可。
+批准前交接固定为该 Environment 的非秘密变量 `BOOTSTRAP_CANARY_AUTHORIZATION_CAPSULE`：仅携带 canonical 授权、独立签名、授权保管/readback receipt、签发基线撤销序号，以及预先批准的运行证据读取契约 identity；不含批准后 observation、未来 checkpoint digest、私钥、JWT/STS 或控制面凭证。其字段须全部通过非敏感白名单检查；每次写入须有独立、精确 run/digest 的变更计划/批准，读取 API 核对完整值的 digest 后才能批准 deployment；同一 Environment 同时最多有一个未结束的 canary，禁止覆盖在用 capsule。该传输 readback 后置于运行授权，不反向写进授权 bytes。固定 job 在运行时把变量值作为数据读取，不插值为 Shell，依据预先固定的公钥验证；变量不是信任根，job 已启动也不是 Environment 批准证据。大小超限、缺失、签名错误或运行身份不匹配均停止，不改用公开完整 artifact 或长效授权兜底。排队不会更新 capsule；后续观察通过独立通道取得，授权过期则取消并使用新 run。
 
 交接值不得超过单变量 48 KB；禁止 repository/organization/workflow 的同名变量遮蔽，也不能在 job 启动前用变量值计算授权事实。Environment 变量的可用时点及容量按 [GitHub 配置变量规则](https://docs.github.com/en/actions/reference/workflows-and-actions/variables) 验证，后续须做真实无云凭证交接测试；不能把静态 YAML 测试当成交接已可执行的证据。
+
+### 批准后证据的独立只读交接
+
+固定采用既有 GitHub API 的数据发布/读取能力，不覆盖 capsule、不向 job 注入控制面 token，也不新建回调服务。独立控制面把 canary 专用的签名 checkpoint 发布到同一 repository 的精确数据 ref `refs/heads/infra-bootstrap-canary-state`，tree 只允许 `canary-state.json`，不得包含 workflow、脚本或可执行文件。它不是 main/source SHA，不得 checkout、执行、合并到 main 或作为 RC 制品；仅为 canary 的非敏感运行状态通道。创建/保护该 ref、限定 publisher 身份及发布策略须先经独立外部变更批准/readback，纳入 capsule 的读取契约；本轮不创建它。完整授权、原始响应及最终证明仍只在既定本地私密保管区保存。
+
+读取契约必须固定 repository immutable ID、API host、精确 ref/path、实际 genesis commit/checkpoint digest、publisher/key identity、保护规则 readback 和 Schema digest；这些均在 capsule 冻结前就绪，不引用未来 `READY` commit。动态 checkpoint、发布/读取回执及其 hash 链同步进入原有私密保管/备份与 180 日保留规则，数据 ref 不是最终证据保管的替代品。
+
+| 参与方                        | 身份、来源与允许动作                                                                                                                                                                                                                                                                                                                     |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 独立控制面 observer/publisher | 使用既有非 OIDC 控制面身份读取 GitHub Environment 配置、精确 run 的 review history、deployment/status 和实际 job；读取独立撤销 journal，以原 Ed25519 root 签名。发布身份与探测身份分离，固定入口只允许该数据 ref 的单父提交和非 force fast-forward；规则禁止其他写入者、删除、回退、merge commit 和 workflow 内容，不能向 job 交付写凭证 |
+| job 内的证据读取入口          | 仅使用本 job 的 `GITHUB_TOKEN`，仓库权限显式为 `contents: read`、`actions: read`、`deployments: read`；未列权限关闭。固定 HTTPS `api.github.com` 的 GET allowlist 读取精确 ref/commit/blob、当前 run/attempt/job、review history 及目标 deployment/status；不使用 OIDC、PAT、root key、GitHub App 管理凭证或云端凭证                     |
+
+`id-token: write` 仍只声明在这个受保护 job；证据读取阶段不得调用 OIDC token endpoint。读取身份的范围由 workflow 固定，不允许遇到 403 时注入管理员 token 或放宽权限。API 端点和所需只读权限依 [GitHub Git references](https://docs.github.com/en/rest/git/refs#get-a-reference) 与 [workflow review history](https://docs.github.com/en/rest/actions/workflow-runs#get-the-review-history-for-a-workflow-run) 做实际无云凭证验证；不能只依据 job 环境变量推断已经获批。
+
+**来源与绑定。** Environment 获批且实际 job ID 可读取后，observer 重新取得 GitHub 返回的 review record、reviewer immutable ID、审批状态、deployment 与 run/job 关联，并重读 Environment stable identity。签名的 post-approval observation 必须绑定 repository ID、`infrastructureChangeId`、`canaryRunId`/attempt、source SHA、workflow/job key、实际 job ID、原 pending deployment identity、实际 deployment ID、authorization/capsule digest、Environment identity digest，以及规范化 API response digest、读取时间和审核记录。批准记录不能证明其属于该 deployment、存在 bypass、身份漂移或 API 尚未提供记录时，不发布允许准入的状态；只能等待或拒绝。Job 用自己的只读 GET 复核 GitHub 的审核/部署/run/job 事实，与签名 observation 比对，不信任 caller-provided JSON。
+
+**状态不是第二份授权。** `canary-state.json` 是独立的封闭签名运行 checkpoint，绑定上述 observation、撤销 authority/policy、当前已提交 sequence、该授权是否撤销、累计撤销 ID/digest、前序 checkpoint digest、签发/失效时间及 `BLOCKED|READY|REVOKED|CLOSED`。它只能收紧已签发的授权，不改变 scope、有效期或 run；同一授权初始状态为 `BLOCKED`，`READY` 必须有真实批准后 observation，`REVOKED/CLOSED` 不可返回 `READY`。后续新 run 必须有新授权并从 `BLOCKED` 开始，仍保留旧授权的累计撤销/关闭记录。Payload 不引用自己的 commit/receipt；先 canonical digest/签名、再提交、更新 ref、独立 readback，后置 receipt 引用 commit 与 payload digest。完整原始证据先入本地保管，公开数据仅含经过字段审查的身份、digest、状态和时间；不发布完整授权、策略或任何秘密。
+
+**撤销的权威读取及发布。** 对 canary 取用者，固定受保护 ref 中通过 root 签名校验的单调提交序列是撤销的在线已提交视图；本地 journal 保留意图/批准、已提交序号和发布回执，不能把尚未提交的本地快照冒充远端已生效状态。发布 `READY` 与撤销使用同一串行控制面队列：在锁内重读 journal、取得实际 GitHub 观察并检查所有待办撤销；有待办撤销不得生成 `READY`，先发布 `REVOKED`。每次提交仅以刚读取的 head 为唯一 parent，`force=false` 更新并 readback；冲突时重读事实、重新计算，不能把旧 `READY` 覆盖到撤销之后。撤销只有在否决状态发布/readback 后才记为已提交；发布失败或结果不明须取消/阻断 run、关闭新 assume 并保留 UNKNOWN，不得报告撤销完成或继续许可。不得批量恢复旧 head。
+
+**job 取用算法。** 在尚未请求 OIDC 的有界等待阶段（最多 300 秒），入口从固定 API 精确读取当前 ref `H1`，按该 commit 读取固定 blob，验证 canonical digest、root 签名、parent/sequence、capsule 基线及本 job 已观察最高序号；检查授权有效、状态为 `READY`、未撤销以及全部 run/deployment/job/observation 绑定。只接受 API 的新 200 响应，不使用本地 cache、artifact、调用者传入的旧 commit、304 响应或 `raw.githubusercontent.com` CDN 内容代替 authority 读取。随后复核实际 GitHub 审核/部署状态，再直接重读同一 authority ref 为 `H2`；仅 `H1=H2` 且所有核对通过时才能做 OIDC 前准入决定。Head 改变就重新读取并校验，不是继续使用旧内容；观察超过 60 秒、缺失、不可访问、签名/sequence 不符、撤销或超时都在取 OIDC 前失败。
+
+此算法只证明本次两次在线读取所见的已提交状态和签名观察，不把 HTTP 时间、两次相同 head 或 60 秒 TTL 声称为全局线性一致/未来持续未撤销。准入记录必须保留 `H1/H2`、sequence、response/request 时间与 digest，并在紧邻 OIDC 请求处再检查本地超时/取消状态；不能把许可缓存给后续步骤或别的 run。发布/readback 与取用的竞态、GitHub API 一致性必须通过下列真实交接测试；若无法满足已提交撤销的可见性门槛，则停止，不改成快照准入。准入读之后发生的撤销按取消 job、停止新 assume 和既定 expiry/UNKNOWN 处理；不宣称能追溯阻止已经获准或已发出的请求。
+
+**无云凭证交接验收（后续计划门槛，本轮不执行）。** 使用同一固定只读入口和实际 GitHub Environment/API 通道，`id-token: none`，不配置云凭证，探测器以 fail-on-call hook 记录 OIDC/STS 调用次数。必须验证：
+
+- capsule 在批准前冻结，批准后不变；job 通过独立通道拿到真实 review/deployment/job observation，成功路径只输出 `HANDOFF_VERIFIED_NO_OIDC`，不报告 canary 成功；
+- capsule 写入后、运行读取前提交撤销，即使旧 capsule/checkpoint 尚未超过 60 秒，也必须因当前 head 的撤销记录拒绝；在 `H1` 与 `H2` 之间提交撤销也必须重读并拒绝；
+- 批准后 observation 缺失、wrong run/job/deployment/reviewer、bypass、读取身份 403、签名错误、旧 sequence/commit 回放、首次 checkpoint 发布部分失败/UNKNOWN 而未取得可验证 `READY`、60 秒陈旧及 300 秒等待超时均拒绝；
+- 所有拒绝场景都断言 OIDC endpoint 请求数、AssumeRoleWithOIDC/GetCallerIdentity 调用数、云凭证读取数为 0。使用确定性 barrier 安排撤销/读取顺序；不能用 sleep 或模拟“job 已启动”替代事实验证。
+
+该补充只增加 canary checkpoint 的封闭数据契约及只读交接检查，复用已有 Git API、签名、journal 和 digest 组件，不新建通用 bootstrap 服务。所有通道创建、publisher 配置与真实交接测试须先进入获批后的计划修订；Task 29R/Task 30不因此解除阻断。
+
+### 验证组件复用边界
 
 实现复用现有 canonical JSON、SHA-256、binding/time 检查、只增 journal、撤销防回退和 custody readback 组件。现有 `approval.mjs`/`approval-revocations.mjs` 的正式入口固定为数据库批准及 GitHub artifact attestation，不能原地放宽或假装独立签名也是该 attestation。未来只增加这个封闭 canary 类型的薄验证适配，复用可独立提取的纯检查；不新增通用 bootstrap command registry、服务、任意 Shell/SQL 或应用 RBAC。本轮只规定设计，以上新契约与验证适配均未实施。
 
@@ -251,7 +289,7 @@ Canary 证据固定走独立控制面签名及本地私密保管，不使用被�
 
 每个对象使用 canonical digest 命名及 exclusive-create，受限写身份只能新增；读取身份从保管区重新读取字节核对 digest/签名并签发独立 receipt。离线受控备份同样需 readback；普通目录权限不被描述为能抵御宿主管理员的 WORM，签名、hash 链与独立备份负责篡改检出。保管/签发密钥不交给探测 job；可经 GitHub 传输的中间观察仅含字段白名单化非敏感 request ID、digest、时间和错误分类，仍是不可信输入，不能上传完整授权、策略、原始 JWT/STS 响应或秘密。
 
-单向证明顺序为 `intent/dispatch receipt → prerequisite approval/apply/readback → 独立签名运行授权 → authorization custody/readback → Environment observation → probe observation → expiry/处置记录 → bootstrap-canary-execution-proof.v1 → 独立签名/最终 custody receipt`。最终 proof 绑定全部前序 digest、实际 run/job、策略 readback、两个调用的请求/身份核对、撤销观察及终态；不引用自身最终 receipt，也不引用未来 RC。签发端独立验证来源观察后签名，未观察到的结果不得补造；UNKNOWN 的诊断以追加记录引用旧 proof，不覆盖旧终态。
+单向证明顺序为 `intent/dispatch receipt → prerequisite approval/apply/readback → 独立签名运行授权 → authorization custody/readback → Environment observation → 独立运行 checkpoint/发布回执 → job 在线读取/准入记录 → probe observation → expiry/处置记录 → bootstrap-canary-execution-proof.v1 → 独立签名/最终 custody receipt`。最终 proof 绑定全部前序 digest、实际 run/job、策略 readback、两个调用的请求/身份核对、撤销观察及终态；不引用自身最终 receipt，也不引用未来 RC。签发端独立验证来源观察后签名，未观察到的结果不得补造；UNKNOWN 的诊断以追加记录引用旧 proof，不覆盖旧终态。Checkpoint 和 job 准入记录后置引用 capsule/authorization digest，不回写批准对象。
 
 失败 proof 按已到达阶段使用封闭判别分支：未执行的动作必须是 `NOT_EXECUTED`，结果不明的动作为 `UNKNOWN`；仅已完成阶段要求对应实际 digest/ID。不得为了满足成功 proof 字段而伪造 Environment observation、job ID、STS expiry 或第二次调用结果。Capsule 的独立变更/readback 由 use proof 后置引用；其撤除亦按独立控制面变更留痕，不能被解释为 STS 已撤销。
 
@@ -261,7 +299,7 @@ Canary 证据固定走独立控制面签名及本地私密保管，不使用被�
 
 后续计划必须为本节增加封闭负向验证：假 run/未来事实、错误 workflow/ref/actor/attempt、提前 Environment 放行、签名依赖被测 OIDC、缺少实际 prerequisite readback、旧撤销集合回放、过期授权/observation、旧消费者未保护、role 业务权限/组合凭证、第三项 API、自动刷新/重试、保管覆盖及 UNKNOWN 重跑，均 fail closed。允许路径必须证明零 Release Attempt 字段、零数据库连接、零数据权限、两 API 各最多一次以及完整独立 custody。
 
-本节授权/proof Schema、固定 job/API 矩阵、独立签名/撤销/时效策略和负向检查纳入后续 repository contract digest，但既有 v1/v2 Schema/验证语义不变。设计仅增加一个窄范围探测授权及其结果类型；不能推广为其他 bootstrap 命令、日常运维身份或通用特权入口。不能满足独立签发、消费者保护、精确 subject 或凭证失效/保管时，停止 canary 和后续施工，回到设计评审。
+本节授权/proof Schema、封闭 canary checkpoint/读取契约、固定 job/API 矩阵、独立签名/撤销/时效策略和负向检查纳入后续 repository contract digest，但既有 v1/v2 Schema/验证语义不变。设计只服务这个窄范围探测的授权、运行交接和结果；不能推广为其他 bootstrap 命令、日常运维身份或通用特权入口。不能满足独立签发、消费者保护、精确 subject 或凭证失效/保管时，停止 canary 和后续施工，回到设计评审。
 
 ## Public Repository 排他路由协议
 
@@ -789,6 +827,7 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 
 - 本次 canary 是否使用 `infrastructureChangeId` 与真实 `canaryRunId`，且 dispatch、资源变更、精确运行授权和 Environment 批准互不替代、不引用未来事实；
 - canary 的签发/撤销/保管是否在被测 OIDC 之外先就绪；是否避免修改 v1/v2 或依赖较晚的 WSL/I13、Adapter、Release Attempt；
+- 预批准 capsule 是否保持不变，批准后 observation 和撤销 checkpoint 是否通过独立只读通道按精确 run/job 取得；是否明确在线读取的时间边界，且无云凭证测试覆盖 capsule 写入后撤销、缺失及超时并证明 OIDC 请求数为 0；
 - cloud 条件先行、既有 consumer 保护、固定两 API、短期凭证失效、UNKNOWN 不重跑及独立只读 readback/180 日保管是否闭环；
 - public repository 下的 JIT 排他路由是否足以实施；
 - environment 当前缺失状态、目标 ID 冻结流程、策略字段和单操作员风险是否被明确接受；

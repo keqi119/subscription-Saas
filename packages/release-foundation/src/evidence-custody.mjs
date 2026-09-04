@@ -1,5 +1,8 @@
+import { createPublicKey, verify } from "node:crypto";
+
 import { canonicalJson } from "./canonical-json.mjs";
 import { sha256Bytes } from "./digest.mjs";
+import { validateContract } from "./schema-registry.mjs";
 
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -285,4 +288,212 @@ export function assertCustodyDeletionAllowed(receipt, at = new Date()) {
     throw custodyError("EVIDENCE_DELETION_APPROVAL_REQUIRED");
   }
   return receipt;
+}
+
+// This read-only verifier deliberately does not use the legacy uploadedAt+180 receipt
+// assertion. Only authenticated independent Head/Get/ACL/GetBucketWorm facts decide
+// actual retention. Existing receipt producers and their raw v1 format are unchanged.
+export function verifyAuthoritativeCustodyObservation(input) {
+  try {
+    const closed = (value, keys) => {
+      if (
+        !value ||
+        typeof value !== "object" ||
+        Array.isArray(value) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(value)) ||
+        Reflect.ownKeys(value).length !== keys.length ||
+        keys.some(
+          (key) =>
+            !Object.getOwnPropertyDescriptor(value, key)?.enumerable ||
+            !("value" in Object.getOwnPropertyDescriptor(value, key))
+        )
+      )
+        throw new Error();
+    };
+    const copy = (value, seen = new WeakSet()) => {
+      if (value === null || ["string", "boolean"].includes(typeof value)) return value;
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (!value || typeof value !== "object" || seen.has(value)) throw new Error();
+      seen.add(value);
+      try {
+        if (Array.isArray(value)) {
+          if (Reflect.ownKeys(value).length !== value.length + 1) throw new Error();
+          return Array.from({ length: value.length }, (_, index) => {
+            const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+            if (!descriptor?.enumerable || !("value" in descriptor)) throw new Error();
+            return copy(descriptor.value, seen);
+          });
+        }
+        if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new Error();
+        const result = {};
+        for (const key of Reflect.ownKeys(value)) {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          if (typeof key !== "string" || !descriptor.enumerable || !("value" in descriptor))
+            throw new Error();
+          Object.defineProperty(result, key, {
+            value: copy(descriptor.value, seen),
+            enumerable: true
+          });
+        }
+        return result;
+      } finally {
+        seen.delete(value);
+      }
+    };
+    closed(input, [
+      "originalBytes",
+      "receipt",
+      "observation",
+      "signature",
+      "expected",
+      "trustPolicy",
+      "now"
+    ]);
+    if (!(input.originalBytes instanceof Uint8Array) || input.originalBytes.byteLength > 1048576)
+      throw new Error();
+    const originalBytes = Buffer.from(input.originalBytes);
+    const { receipt, observation, signature, expected, trustPolicy, now } = copy({
+      receipt: input.receipt,
+      observation: input.observation,
+      signature: input.signature,
+      expected: input.expected,
+      trustPolicy: input.trustPolicy,
+      now: input.now
+    });
+    const instant = (value) => {
+      if (typeof value !== "string") throw new Error();
+      const ms = Date.parse(value);
+      if (
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value) ||
+        !Number.isFinite(ms) ||
+        new Date(ms).toISOString().slice(0, 19) !== value.slice(0, 19)
+      )
+        throw new Error();
+      return ms;
+    };
+    const text = (value) => typeof value === "string" && value.length > 0 && value.length <= 2048;
+    closed(trustPolicy, [
+      "signer",
+      "writerIdentity",
+      "readerIdentity",
+      "storeRef",
+      "owner",
+      "readers"
+    ]);
+    closed(trustPolicy.signer, ["issuer", "keyId", "publicKey"]);
+    closed(expected, [
+      "contentDigest",
+      "storeRef",
+      "objectKey",
+      "objectVersion",
+      "terminalAt",
+      "snapshotExpiresAt",
+      "downstreamRetainUntil",
+      "legalHoldUntil"
+    ]);
+    closed(signature, ["algorithm", "issuer", "keyId", "subjectDigest", "signature"]);
+    closed(receipt, receiptKeys);
+    if (
+      ![
+        trustPolicy.writerIdentity,
+        trustPolicy.readerIdentity,
+        trustPolicy.storeRef,
+        trustPolicy.owner,
+        ...Object.values(trustPolicy.signer)
+      ].every(text) ||
+      trustPolicy.writerIdentity === trustPolicy.readerIdentity ||
+      !Array.isArray(trustPolicy.readers) ||
+      !trustPolicy.readers.length ||
+      !trustPolicy.readers.every(text) ||
+      new Set(trustPolicy.readers).size !== trustPolicy.readers.length ||
+      ![expected.storeRef, expected.objectKey, expected.objectVersion].every(text) ||
+      !digestPattern.test(expected.contentDigest) ||
+      !(originalBytes instanceof Uint8Array) ||
+      originalBytes.byteLength > 1048576
+    )
+      throw new Error();
+    validateContract("authoritative-custody-observation.v1", observation);
+    validateContract("custody-receipt.v1", receipt);
+    const digest = sha256Bytes(originalBytes);
+    const observationBytes = Buffer.from(canonicalJson(observation));
+    const key = createPublicKey(trustPolicy.signer.publicKey);
+    if (
+      key.asymmetricKeyType !== "ed25519" ||
+      signature.algorithm !== "Ed25519" ||
+      signature.issuer !== trustPolicy.signer.issuer ||
+      signature.keyId !== trustPolicy.signer.keyId ||
+      observation.issuer !== signature.issuer ||
+      observation.keyId !== signature.keyId ||
+      signature.subjectDigest !== sha256Bytes(observationBytes) ||
+      typeof signature.signature !== "string" ||
+      !/^[A-Za-z0-9+/]{86}==$/.test(signature.signature) ||
+      Buffer.from(signature.signature, "base64").toString("base64") !== signature.signature ||
+      !verify(
+        null,
+        Buffer.from(canonicalJson({ domain: "authoritative-custody-observation.v1", observation })),
+        key,
+        Buffer.from(signature.signature, "base64")
+      )
+    )
+      throw new Error();
+    for (const [field, value] of Object.entries(expected)) {
+      if (observation[field] !== value) throw new Error();
+    }
+    if (
+      digest !== expected.contentDigest ||
+      receipt.contentDigest !== digest ||
+      receipt.readbackDigest !== digest ||
+      observation.headDigest !== digest ||
+      observation.getDigest !== digest ||
+      observation.receiptDigest !== sha256Bytes(Buffer.from(canonicalJson(receipt))) ||
+      observation.contentSizeBytes !== originalBytes.byteLength ||
+      receipt.contentSizeBytes !== originalBytes.byteLength ||
+      observation.storeRef !== trustPolicy.storeRef ||
+      receipt.storeRef !== trustPolicy.storeRef ||
+      observation.writerIdentity !== trustPolicy.writerIdentity ||
+      observation.readerIdentity !== trustPolicy.readerIdentity ||
+      receipt.owner !== trustPolicy.owner ||
+      canonicalJson(receipt.readers) !== canonicalJson(trustPolicy.readers)
+    )
+      throw new Error();
+    const at = instant(now);
+    const terminal = instant(observation.terminalAt);
+    const modified = instant(observation.lastModified);
+    const readback = instant(observation.readbackAt);
+    const uploaded = instant(receipt.uploadedAt);
+    const receiptReadback = instant(receipt.readbackAt);
+    const required = Math.max(
+      terminal + 180 * 86400000,
+      observation.snapshotExpiresAt === null
+        ? 0
+        : instant(observation.snapshotExpiresAt) + 180 * 86400000,
+      instant(observation.downstreamRetainUntil),
+      observation.legalHoldUntil === null ? 0 : instant(observation.legalHoldUntil)
+    );
+    const retain = instant(observation.worm.retainUntil);
+    if (
+      terminal > at ||
+      modified > readback ||
+      terminal > readback ||
+      readback > at ||
+      uploaded !== modified ||
+      receiptReadback < modified ||
+      receiptReadback > readback ||
+      retain < required ||
+      modified + observation.worm.retentionDays * 86400000 < required ||
+      instant(receipt.retainUntil) < required
+    )
+      throw new Error();
+    return Object.freeze({
+      contentDigest: digest,
+      objectVersion: observation.objectVersion,
+      observationDigest: signature.subjectDigest,
+      requiredRetainUntil: new Date(required).toISOString(),
+      retainUntil: new Date(
+        Math.min(retain, modified + observation.worm.retentionDays * 86400000)
+      ).toISOString()
+    });
+  } catch {
+    throw custodyError("AUTHORITATIVE_CUSTODY_INVALID");
+  }
 }

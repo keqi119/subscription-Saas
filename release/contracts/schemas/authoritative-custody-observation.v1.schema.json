@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "authoritative-custody-observation.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "issuer",
+    "keyId",
+    "storeRef",
+    "objectKey",
+    "objectVersion",
+    "writerIdentity",
+    "readerIdentity",
+    "contentDigest",
+    "receiptDigest",
+    "headDigest",
+    "getDigest",
+    "contentSizeBytes",
+    "conditionalCreate",
+    "acl",
+    "lastModified",
+    "readbackAt",
+    "terminalAt",
+    "downstreamRetainUntil",
+    "snapshotExpiresAt",
+    "legalHoldUntil",
+    "worm"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "authoritative-custody-observation.v1"
+    },
+    "issuer": {
+      "$ref": "#/$defs/id"
+    },
+    "keyId": {
+      "$ref": "#/$defs/id"
+    },
+    "storeRef": {
+      "$ref": "#/$defs/id"
+    },
+    "objectKey": {
+      "$ref": "#/$defs/id"
+    },
+    "objectVersion": {
+      "$ref": "#/$defs/id"
+    },
+    "writerIdentity": {
+      "$ref": "#/$defs/id"
+    },
+    "readerIdentity": {
+      "$ref": "#/$defs/id"
+    },
+    "contentDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "receiptDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "headDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "getDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "contentSizeBytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1048576
+    },
+    "conditionalCreate": {
+      "const": "created"
+    },
+    "acl": {
+      "const": "private"
+    },
+    "lastModified": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "readbackAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "terminalAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "downstreamRetainUntil": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "snapshotExpiresAt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "legalHoldUntil": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "worm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "retentionDays", "retainUntil"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "state": {
+          "const": "Locked"
+        },
+        "retentionDays": {
+          "type": "integer",
+          "minimum": 180,
+          "maximum": 36500
+        },
+        "retainUntil": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "rfc3339Finite": true
+    }
+  }
+}

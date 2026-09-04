@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -10,6 +11,7 @@ import {
   sha256Bytes,
   validateContract
 } from "../src/index.mjs";
+import { verifyAuthoritativeCustodyObservation } from "../src/evidence-custody.mjs";
 
 const fixedNow = new Date("2026-09-02T08:00:00.000Z");
 const policy = {
@@ -197,4 +199,285 @@ test("expiry still requires the registered disposition", async () => {
   assert.doesNotThrow(() =>
     assertCustodyDeletionAllowed(deleteReceipt, new Date("2027-03-02T08:00:00.000Z"))
   );
+});
+
+function authoritativeFixture() {
+  const keys = generateKeyPairSync("ed25519");
+  const originalBytes = Buffer.from('{"proof":"terminal"}');
+  const contentDigest = sha256Bytes(originalBytes);
+  const receipt = {
+    schemaVersion: "custody-receipt.v1",
+    receiptId: "90d96a42-b007-4050-9c86-7d98a926a1d0",
+    contentDigest,
+    contentSizeBytes: originalBytes.length,
+    storeRef: "private-store",
+    uploadedAt: "2026-09-02T07:00:00.000Z",
+    readbackAt: "2026-09-02T08:00:00.000Z",
+    readbackDigest: contentDigest,
+    owner: "release-engineering",
+    readers: ["audit"],
+    retainUntil: "2027-03-02T07:00:00.000Z",
+    expiryDisposition: "review",
+    attestationRef: "test-attestation"
+  };
+  const expected = {
+    contentDigest,
+    storeRef: "private-store",
+    objectKey: "proof/test",
+    objectVersion: "version-1",
+    terminalAt: "2026-09-02T07:30:00.000Z",
+    snapshotExpiresAt: null,
+    downstreamRetainUntil: "2027-03-01T07:30:00.000Z",
+    legalHoldUntil: null
+  };
+  const observation = {
+    schemaVersion: "authoritative-custody-observation.v1",
+    issuer: "test-observer",
+    keyId: "test-observer-key",
+    ...expected,
+    contentSizeBytes: originalBytes.length,
+    receiptDigest: sha256Bytes(Buffer.from(canonicalJson(receipt))),
+    writerIdentity: "archive-writer",
+    readerIdentity: "independent-audit-reader",
+    conditionalCreate: "created",
+    headDigest: contentDigest,
+    getDigest: contentDigest,
+    acl: "private",
+    lastModified: receipt.uploadedAt,
+    readbackAt: receipt.readbackAt,
+    worm: { id: "worm-1", state: "Locked", retentionDays: 181, retainUntil: receipt.retainUntil }
+  };
+  const input = {
+    originalBytes,
+    receipt,
+    observation,
+    expected,
+    trustPolicy: {
+      signer: {
+        issuer: "test-observer",
+        keyId: "test-observer-key",
+        publicKey: keys.publicKey.export({ type: "spki", format: "pem" })
+      },
+      writerIdentity: "archive-writer",
+      readerIdentity: "independent-audit-reader",
+      storeRef: "private-store",
+      owner: "release-engineering",
+      readers: ["audit"]
+    },
+    now: fixedNow.toISOString()
+  };
+  const resign = () => {
+    input.signature = {
+      algorithm: "Ed25519",
+      issuer: observation.issuer,
+      keyId: observation.keyId,
+      subjectDigest: sha256Bytes(Buffer.from(canonicalJson(observation))),
+      signature: sign(
+        null,
+        Buffer.from(
+          canonicalJson({
+            domain: "authoritative-custody-observation.v1",
+            observation
+          })
+        ),
+        keys.privateKey
+      ).toString("base64")
+    };
+  };
+  resign();
+  return { input, resign };
+}
+
+test("authoritative custody verifies independently signed original bytes and actual WORM", () => {
+  const { input } = authoritativeFixture();
+  const verified = verifyAuthoritativeCustodyObservation(input);
+  assert.equal(verified.contentDigest, input.expected.contentDigest);
+  assert.equal(verified.requiredRetainUntil, "2027-03-01T07:30:00.000Z");
+  assert.ok(Object.isFrozen(verified));
+  validateContract("authoritative-custody-observation.v1", input.observation);
+});
+
+test("authoritative custody rejects missing authenticity and tampered original bytes", () => {
+  for (const mutate of [
+    (v) => {
+      v.signature = undefined;
+    },
+    (v) => {
+      v.signature.issuer = "writer";
+    },
+    (v) => {
+      v.signature.keyId = "wrong";
+    },
+    (v) => {
+      v.signature.signature = "A".repeat(88);
+    },
+    (v) => {
+      v.originalBytes = Buffer.from("tampered");
+    },
+    (v) => {
+      v.receipt.immutable = true;
+    },
+    (v) => {
+      v.observation.objectVersion = "substituted";
+    },
+    (v) => {
+      v.trustPolicy.signer.publicKey = generateKeyPairSync("ed25519").publicKey.export({
+        type: "spki",
+        format: "pem"
+      });
+    }
+  ]) {
+    const { input } = authoritativeFixture();
+    mutate(input);
+    assert.throws(() => verifyAuthoritativeCustodyObservation(input), {
+      code: "AUTHORITATIVE_CUSTODY_INVALID"
+    });
+  }
+});
+
+test("even signed custody rejects public, writer-read, preterminal and fabricated retention facts", () => {
+  for (const mutate of [
+    (v) => {
+      v.acl = "public";
+    },
+    (v) => {
+      v.storeRef = "actions-artifact";
+    },
+    (v) => {
+      v.readerIdentity = "archive-writer";
+    },
+    (v) => {
+      v.conditionalCreate = "overwritten";
+    },
+    (v) => {
+      v.worm.state = "Unlocked";
+    },
+    (v) => {
+      v.worm.id = "";
+    },
+    (v) => {
+      v.worm.retentionDays = 180;
+    },
+    (v) => {
+      v.worm.retainUntil = "2027-03-01T07:00:00.000Z";
+    },
+    (v) => {
+      v.terminalAt = null;
+    },
+    (v) => {
+      v.terminalAt = "2026-09-02T09:00:00.000Z";
+    },
+    (v) => {
+      v.lastModified = "2026-02-30T00:00:00.000Z";
+    },
+    (v) => {
+      v.readbackAt = "Infinity";
+    },
+    (v) => {
+      v.headDigest = `sha256:${"b".repeat(64)}`;
+    },
+    (v) => {
+      v.objectKey = "wrong-object";
+    },
+    (v) => {
+      v.futureRunId = "not-allowed";
+    }
+  ]) {
+    const { input, resign } = authoritativeFixture();
+    mutate(input.observation);
+    resign();
+    assert.throws(() => verifyAuthoritativeCustodyObservation(input), {
+      code: "AUTHORITATIVE_CUSTODY_INVALID"
+    });
+  }
+});
+
+test("custody retention includes snapshot expiry, downstream use and legal hold", () => {
+  for (const field of ["snapshotExpiresAt", "downstreamRetainUntil", "legalHoldUntil"]) {
+    const { input, resign } = authoritativeFixture();
+    input.expected[field] = input.observation[field] = "2027-09-01T00:00:00.000Z";
+    resign();
+    assert.throws(() => verifyAuthoritativeCustodyObservation(input), {
+      code: "AUTHORITATIVE_CUSTODY_INVALID"
+    });
+  }
+});
+
+test("custody schema closes every frame and enforces finite calendar timestamps", () => {
+  const { input } = authoritativeFixture();
+  for (const mutate of [
+    (v) => {
+      v.unknown = true;
+    },
+    (v) => {
+      v.worm.unknown = true;
+    },
+    ...[
+      "lastModified",
+      "readbackAt",
+      "terminalAt",
+      "snapshotExpiresAt",
+      "downstreamRetainUntil",
+      "legalHoldUntil"
+    ].flatMap((field) =>
+      ["Infinity", "2026-02-30T00:00:00.000Z", "2026-09-02T24:00:00.000Z"].map((value) => (v) => {
+        v[field] = value;
+      })
+    )
+  ]) {
+    const observation = structuredClone(input.observation);
+    mutate(observation);
+    assert.throws(() => validateContract("authoritative-custody-observation.v1", observation), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
+  }
+});
+
+test("custody rejects accessor metadata and extra input fields without executing getters", () => {
+  for (const target of ["observation", "expected", "trustPolicy"]) {
+    const { input } = authoritativeFixture();
+    let reads = 0;
+    const key = target === "trustPolicy" ? "owner" : "terminalAt";
+    const value = input[target][key];
+    Object.defineProperty(input[target], key, {
+      enumerable: true,
+      get() {
+        reads++;
+        return value;
+      }
+    });
+    assert.throws(() => verifyAuthoritativeCustodyObservation(input), {
+      code: "AUTHORITATIVE_CUSTODY_INVALID"
+    });
+    assert.equal(reads, 0);
+  }
+  const { input } = authoritativeFixture();
+  assert.throws(() => verifyAuthoritativeCustodyObservation({ ...input, verified: true }), {
+    code: "AUTHORITATIVE_CUSTODY_INVALID"
+  });
+});
+
+test("reported effective custody retention cannot exceed authenticated bucket WORM duration", () => {
+  const { input, resign } = authoritativeFixture();
+  input.observation.worm.retainUntil = "2028-01-01T00:00:00.000Z";
+  resign();
+  assert.equal(
+    verifyAuthoritativeCustodyObservation(input).retainUntil,
+    "2027-03-02T07:00:00.000Z"
+  );
+});
+
+test("custody accepts schema-valid UTC timestamps without rewriting signed observations", () => {
+  for (const now of ["2026-09-02T08:00:00Z", "2026-09-02T08:00:00.123456Z"]) {
+    const { input, resign } = authoritativeFixture();
+    input.now = now;
+    input.expected.terminalAt = input.observation.terminalAt = "2026-09-02T07:30:00Z";
+    input.observation.lastModified = "2026-09-02T07:00:00Z";
+    resign();
+    assert.equal(
+      verifyAuthoritativeCustodyObservation(input).requiredRetainUntil,
+      "2027-03-01T07:30:00.000Z"
+    );
+    assert.equal(input.observation.terminalAt, "2026-09-02T07:30:00Z");
+  }
 });

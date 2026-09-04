@@ -9,6 +9,11 @@ export {
 export { compileAllSchemas, validateContract } from "./schema-registry.mjs";
 export { verifyExternalChangeApproval } from "./external-change-approval.mjs";
 export {
+  assertVerifiedDispatchAuthorization,
+  dispatchAuthorizationSigningBytes,
+  verifyDispatchAuthorization
+} from "./dispatch-authorization.mjs";
+export {
   candidateReasons,
   classifyDatabaseTests,
   discoverDatabaseTestCandidates,
@@ -35,7 +40,8 @@ export {
   assertCustodyComplete,
   assertCustodyDeletionAllowed,
   custodyEvidence,
-  redactEvidence
+  redactEvidence,
+  verifyAuthoritativeCustodyObservation
 } from "./evidence-custody.mjs";
 export { assertApprovalDecision, verifyApproval } from "./approval.mjs";
 export {

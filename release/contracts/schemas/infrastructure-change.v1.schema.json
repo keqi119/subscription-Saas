@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "infrastructure-change.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "infrastructureChangeId",
+    "mainSha",
+    "repositoryContractDigest",
+    "changeScope",
+    "createdAt",
+    "ownerId"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "infrastructure-change.v1" },
+    "infrastructureChangeId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "mainSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "repositoryContractDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "changeScope": { "const": "execution-infrastructure-bootstrap" },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$"
+    },
+    "ownerId": { "type": "string", "minLength": 1 }
+  }
+}

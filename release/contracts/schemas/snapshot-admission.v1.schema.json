@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "snapshot-admission.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "dispatchAuthorizationDigest",
+    "releaseAttemptId",
+    "executionPurpose",
+    "producerRun",
+    "route",
+    "adapterDigest",
+    "environmentPolicyIdentityDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "snapshot-admission.v1" },
+    "dispatchAuthorizationDigest": { "$ref": "#/$defs/digest" },
+    "releaseAttemptId": { "type": "string", "minLength": 1 },
+    "executionPurpose": { "const": "stage1-qualification" },
+    "producerRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "runId",
+        "runAttempt",
+        "workflowPath",
+        "workflowRef",
+        "workflowBlobDigest",
+        "sourceSha"
+      ],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "runAttempt": { "const": 1 },
+        "workflowPath": {
+          "type": "string",
+          "pattern": "^\\.github/workflows/[a-z0-9._-]+\\.ya?ml$"
+        },
+        "workflowRef": { "const": "main" },
+        "workflowBlobDigest": { "$ref": "#/$defs/digest" },
+        "sourceSha": { "$ref": "#/$defs/sha" }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nonce", "label"],
+      "properties": {
+        "nonce": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "label": {
+          "type": "string",
+          "pattern": "^stage1-snapshot-export-[1-9][0-9]*-[0-9a-f]{32}$"
+        }
+      }
+    },
+    "adapterDigest": { "$ref": "#/$defs/digest" },
+    "environmentPolicyIdentityDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+  }
+}

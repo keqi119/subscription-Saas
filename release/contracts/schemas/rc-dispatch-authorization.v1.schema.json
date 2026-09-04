@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rc-dispatch-authorization.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "authorizationId",
+    "executionPurpose",
+    "releaseAttemptId",
+    "sourceSha",
+    "producerWorkflow",
+    "rcWorkflow",
+    "buildProofDigest",
+    "buildBundleDigest",
+    "repositoryContractDigest",
+    "adapterDigest",
+    "issuer",
+    "issuedAt",
+    "notAfter",
+    "revocationPolicyDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "rc-dispatch-authorization.v1" },
+    "authorizationId": { "$ref": "#/$defs/id" },
+    "executionPurpose": { "const": "stage1-qualification" },
+    "releaseAttemptId": { "$ref": "#/$defs/id" },
+    "sourceSha": { "$ref": "#/$defs/sha" },
+    "producerWorkflow": { "$ref": "#/$defs/workflow" },
+    "rcWorkflow": { "$ref": "#/$defs/workflow" },
+    "buildProofDigest": { "$ref": "#/$defs/digest" },
+    "buildBundleDigest": { "$ref": "#/$defs/digest" },
+    "repositoryContractDigest": { "$ref": "#/$defs/digest" },
+    "adapterDigest": { "$ref": "#/$defs/digest" },
+    "issuer": { "$ref": "#/$defs/id" },
+    "issuedAt": { "$ref": "#/$defs/timestamp" },
+    "notAfter": { "$ref": "#/$defs/timestamp" },
+    "revocationPolicyDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1 },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$"
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "ref", "blobDigest"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^\\.github/workflows/[a-z0-9._-]+\\.ya?ml$" },
+        "ref": { "const": "main" },
+        "blobDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

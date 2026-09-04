@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "snapshot-admission-verification.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "snapshotAdmissionDigest",
+    "environmentPolicyIdentityDigest",
+    "githubApiResponseDigest",
+    "workflowBlobDigest",
+    "rootSigner",
+    "signature"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "snapshot-admission-verification.v1" },
+    "snapshotAdmissionDigest": { "$ref": "#/$defs/digest" },
+    "environmentPolicyIdentityDigest": { "$ref": "#/$defs/digest" },
+    "githubApiResponseDigest": { "$ref": "#/$defs/digest" },
+    "workflowBlobDigest": { "$ref": "#/$defs/digest" },
+    "rootSigner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "keyId", "algorithm"],
+      "properties": {
+        "issuer": { "type": "string", "minLength": 1 },
+        "keyId": { "type": "string", "minLength": 1 },
+        "algorithm": { "const": "Ed25519" }
+      }
+    },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$" }
+  },
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

@@ -7,6 +7,7 @@ export {
   verifyMigrationCatalog
 } from "./catalogs.mjs";
 export { compileAllSchemas, validateContract } from "./schema-registry.mjs";
+export { verifyExternalChangeApproval } from "./external-change-approval.mjs";
 export {
   candidateReasons,
   classifyDatabaseTests,

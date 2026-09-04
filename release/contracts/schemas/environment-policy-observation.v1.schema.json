@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "environment-policy-observation.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "environmentPolicyIdentityDigest",
+    "phase",
+    "observedAt",
+    "apiResponseDigest",
+    "deployment",
+    "run",
+    "job",
+    "review"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "environment-policy-observation.v1" },
+    "environmentPolicyIdentityDigest": { "$ref": "#/$defs/digest" },
+    "phase": { "enum": ["pending", "approved-queued"] },
+    "observedAt": { "$ref": "#/$defs/timestamp" },
+    "apiResponseDigest": { "$ref": "#/$defs/digest" },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state"],
+      "properties": { "id": { "$ref": "#/$defs/id" }, "state": { "enum": ["pending", "approved"] } }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "runId", "runAttempt", "workflowPath", "workflowRef", "sourceSha"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "runId": { "$ref": "#/$defs/id" },
+        "runAttempt": { "const": 1 },
+        "workflowPath": {
+          "type": "string",
+          "pattern": "^\\.github/workflows/[a-z0-9._-]+\\.ya?ml$"
+        },
+        "workflowRef": { "const": "main" },
+        "sourceSha": { "$ref": "#/$defs/sha" }
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "status", "labels"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["queued", "in_progress"] },
+        "labels": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewerId", "state"],
+      "properties": {
+        "reviewerId": { "$ref": "#/$defs/id" },
+        "state": { "enum": ["pending", "approved"] }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$"
+    }
+  }
+}

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "producer-terminal-observation.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "snapshotProducerCompletionDigest",
+    "producerRun",
+    "requiredJobs",
+    "githubApiReadback",
+    "externalCustodyReadback"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "producer-terminal-observation.v1" },
+    "snapshotProducerCompletionDigest": { "$ref": "#/$defs/digest" },
+    "producerRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "runId",
+        "runAttempt",
+        "workflowPath",
+        "sourceSha",
+        "status",
+        "conclusion"
+      ],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "runId": { "$ref": "#/$defs/id" },
+        "runAttempt": { "const": 1 },
+        "workflowPath": {
+          "type": "string",
+          "pattern": "^\\.github/workflows/[a-z0-9._-]+\\.ya?ml$"
+        },
+        "sourceSha": { "$ref": "#/$defs/sha" },
+        "status": { "const": "completed" },
+        "conclusion": { "const": "success" }
+      }
+    },
+    "requiredJobs": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        { "$ref": "#/$defs/admissionJob" },
+        { "$ref": "#/$defs/dataJob" },
+        { "$ref": "#/$defs/custodyJob" }
+      ],
+      "items": false
+    },
+    "githubApiReadback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["responseDigest", "observedAt"],
+      "properties": {
+        "responseDigest": { "$ref": "#/$defs/digest" },
+        "observedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "externalCustodyReadback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "contentDigest", "observedAt"],
+      "properties": {
+        "reference": { "type": "string", "minLength": 1 },
+        "contentDigest": { "$ref": "#/$defs/digest" },
+        "observedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$"
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "status", "conclusion"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string" },
+        "status": { "const": "completed" },
+        "conclusion": { "const": "success" }
+      }
+    },
+    "admissionJob": {
+      "allOf": [
+        { "$ref": "#/$defs/job" },
+        { "type": "object", "properties": { "name": { "const": "snapshot-admission" } } }
+      ]
+    },
+    "dataJob": {
+      "allOf": [
+        { "$ref": "#/$defs/job" },
+        { "type": "object", "properties": { "name": { "const": "snapshot-data" } } }
+      ]
+    },
+    "custodyJob": {
+      "allOf": [
+        { "$ref": "#/$defs/job" },
+        { "type": "object", "properties": { "name": { "const": "snapshot-custody" } } }
+      ]
+    }
+  }
+}

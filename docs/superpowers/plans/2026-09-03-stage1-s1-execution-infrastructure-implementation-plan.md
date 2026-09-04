@@ -125,7 +125,7 @@ role, keys and proofs bind that ID. The canonical workflow job ID must still mat
 
 | Area               | Files and responsibility                                                                                                                                                                                          |
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Plan dependency    | Approved upstream content `f50676c6`, metadata `30a90fae`: verify Task 29R-D zero-file ownership and Task 30 consumer-only block; never edit it                                                                   |
+| Plan dependency    | Task 0 verified final upstream main/blob; `f50676c6`/`30a90fae` remain history only: verify Task 29R-D zero-file ownership and Task 30 consumer-only block; never edit it                                         |
 | Routing contracts  | `release/contracts/schemas/environment-policy-*.json`, `snapshot-admission.v1`, `snapshot-admission-verification.v1`, `snapshot-jit-launch-proof.v1`, `snapshot-producer-completion.v1`                           |
 | Custody contracts  | Snapshot encryption/private/destruction/retention Schemas plus `evidence-lineage-storage-policy.v1`, lineage access/readback/retention and v2 custody contracts                                                   |
 | Shared logic       | `packages/release-foundation/src/snapshot/**`: policy/digest checks, envelope crypto, capacity calculation and proof builders                                                                                     |
@@ -280,24 +280,33 @@ Expected: both local paths are ignored; tracked worktree remains clean. This che
 
 **Interfaces:**
 
-- Consumes: approved addendum content `75aaa956`/approval record and erratum `86663d98`, and upstream content `f50676c6`/metadata `30a90fae`.
+- Consumes: Task 0's online-verified final addendum/upstream document decisions and main/blob identities; `75aaa956`/`86663d98` and `f50676c6`/`30a90fae` remain historical provenance, not final-file equality targets.
 - Produces: a read-only dependency-verification record proving that this plan is the sole Task 29R-D施工 owner and that the upstream plan remains unchanged.
 
 - [ ] **Step 1: Verify the approved commits and exact upstream file identity**
 
+Repeat only Task 0 Step 1's online comment/index/git readback, using the original controlled index from the primary checkout; stop before its `git worktree add` and do not repeat database provisioning. Carry the verified `$approval` into this block in the implementation worktree. A cached or merely parsed index cannot supply this variable. Compare the complete final file, including metadata, against the actual approved main/blob; never substitute a historical or future hardcoded SHA.
+
 ```powershell
 $upstreamPlan = 'docs/superpowers/plans/2026-09-02-stage1-s1-trusted-release-foundation-implementation-plan.md'
+if ($null -eq $approval) { throw 'TASK0_ONLINE_APPROVAL_REQUIRED' }
 git merge-base --is-ancestor f50676c6 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'UPSTREAM_APPROVAL_BASELINE_MISSING' }
-git diff --exit-code 30a90fae -- $upstreamPlan
+$upstreamApprovals = @($approval.documents | Where-Object { $_.path -ceq $upstreamPlan })
+if ($upstreamApprovals.Count -ne 1 -or $upstreamApprovals[0].decision -cne 'APPROVED') { throw 'UPSTREAM_FINAL_APPROVAL_MISSING' }
+$approvedMain = [string]$approval.approvedMainSha
+if ($approvedMain -notmatch '^[0-9a-f]{40,64}$' -or $upstreamApprovals[0].approvedSourceCommit -cne $approvedMain) { throw 'UPSTREAM_FINAL_IDENTITY_INVALID' }
+git merge-base --is-ancestor $approvedMain HEAD
+if ($LASTEXITCODE -ne 0) { throw 'UPSTREAM_FINAL_APPROVED_MAIN_MISSING' }
+$approvedBlob = git rev-parse "${approvedMain}:$upstreamPlan"
+if ($LASTEXITCODE -ne 0 -or $approvedBlob -cne $upstreamApprovals[0].blobOid) { throw 'UPSTREAM_FINAL_BLOB_MISMATCH' }
+$headBlob = git rev-parse "HEAD:$upstreamPlan"
+if ($LASTEXITCODE -ne 0 -or $headBlob -cne $approvedBlob) { throw 'UPSTREAM_APPROVED_HEAD_CHANGED' }
+git diff --exit-code $approvedMain -- $upstreamPlan
 if ($LASTEXITCODE -ne 0) { throw 'UPSTREAM_APPROVED_FILE_CHANGED' }
-$approvedBody = ((git show "f50676c6:$upstreamPlan") -join "`n") -split '## Global Constraints', 2
-$currentBody = (Get-Content -LiteralPath $upstreamPlan -Raw -Encoding utf8) -replace "`r`n", "`n"
-$currentBody = $currentBody -split '## Global Constraints', 2
-if ($approvedBody[1].TrimEnd() -cne $currentBody[1].TrimEnd()) { throw 'UPSTREAM_APPROVED_BODY_CHANGED' }
 ```
 
-Expected: PASS; only the separately recorded `30a90fae` approval metadata differs from content baseline `f50676c6`; the approved body and current file identity are unchanged.
+Expected: PASS; the upstream HEAD and working file exactly match the final blob/main approved by the live Task 0 human record, including metadata. Historical commits remain ancestors for traceability but are not byte-equality gates for the revised file.
 
 - [ ] **Step 2: Verify fixed topology, ownership handoff and Task 30 block**
 

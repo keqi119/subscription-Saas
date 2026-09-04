@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-状态：局部计划修订待复审（Task 2R/2V 前置关卡及消费归属）；原内容基线 `31cc3e8c` 的条件批准保留，不代表本次修订已批准或允许进入 Task 3
+状态：Task 2E 局部修订待复审（Environment Schema/fixture 的 Task 3 前置窄修复）；Task 2R/2V 局部计划批准 `040d059a` 已批准，Task 2R `6ea32510` 与 Task 2V `759435ef` 已实施且各自本地独立审查通过；这些历史记录不代表本次 Task 2E 修订已批准或允许进入 Task 3
 
 **Goal:** 实现已批准的方案 A 执行基础设施，使独立 sanitized snapshot producer 能在 public repository 条件下安全运行，并让唯一 RC workflow 在 GitHub-hosted 临时机上完成 source、final、aggregate 与 exit 证明链，从而解除 Task 29R 的基础设施阻断。
 
@@ -14,9 +14,9 @@
 
 **Upstream Plan:** `docs/superpowers/plans/2026-09-02-stage1-s1-trusted-release-foundation-implementation-plan.md`；本轮批准内容 `f50676c6`/元数据 `30a90fae`；旧内容 `24799d0c`/元数据 `c3afabcc` 保留为历史基线。执行时它是只读依赖，Task29R-D 零文件/零提交；本计划为唯一施工所有者，不恢复或实施 Task30。
 
-**Approved historical scope:** 用户于 2026-09-04 批准本计划内容基线 `31cc3e8c`，确认 Producer crypto/publisher、source/final proof DAG、构建前 sanitized 输入、私有证据保管与 bootstrap 时序的跨文档收敛通过。该状态记录同步 Task 1 的已批准内容/元数据引用。用户另已确认仅限 Task 0 的 GitHub 本人评论准入方式；该次对齐不增加任务、运行权限或证明契约，文内记录不替代该评论及最终 blob 在线核验。Canary `155acf6a` 交接设计的独立窄授权已确认，按附录同步到 Task 13/I7/I8；其代码和真实云验证仍未实施。本计划仍是唯一施工所有者，上游 Task 29R-D 仅验收。
+**Approved historical scope:** 用户于 2026-09-04 批准本计划内容基线 `31cc3e8c`，确认 Producer crypto/publisher、source/final proof DAG、构建前 sanitized 输入、私有证据保管与 bootstrap 时序的跨文档收敛通过。该状态记录同步 Task 1 的已批准内容/元数据引用。其后 `040d059a` 仅为 Task 2R/2V 局部计划批准，不构成对全基础设施范围的再次批准。用户另已确认仅限 Task 0 的 GitHub 本人评论准入方式；该次对齐不增加任务、运行权限或证明契约，文内记录不替代该评论及最终 blob 在线核验。Canary `155acf6a` 交接设计的独立窄授权已确认，按附录同步到 Task 13/I7/I8；其代码和真实云验证仍未实施。本计划仍是唯一施工所有者，上游 Task 29R-D 仅验收。
 
-**Local revision for review:** 以工作树 `56206c38` 的现状核对两项 P1：Task 3 所需的 dispatch 验证器原由 Task 16A 首次创建；Task 2 的 dispatch/admission Schema 及夹具使用了附录不允许的 `stage1-qualification`。本次只提交计划文档，新增 Task 2R 返修门槛及 Task 2V 唯一只读验证器任务，保留其余任务编号。Task 16A 仍负责签发；同步必要只读依赖、导出、digest 与下游测试归属。不修改安全附录、上游计划、代码、Schema 或夹具，不把历史 Task 2 绿色测试解释为上述偏差已修复。本稿独立复审前不得执行 2R/2V 或进入 Task 3；Task 30 stash、真实签发、数据库身份及全部外部操作仍保持原有阻断和逐项批准边界。
+**Local revision for review:** 以干净 HEAD `759435ef` 核对一项 Task 3 前 P1：现有 `environment-policy-identity.v1` Schema 将 `preventSelfReview` 固定为附录不允许的 `true`，而 `snapshot-routing-contracts.test.mjs` 的正向 identity fixture 也错误使用 `true`；安全附录第 344–367 行已批准固定值 `false`，不得反向修改附录迁就代码。本次只提交计划文档，在保留全部既有任务编号后新增 Task 2E。Task 2R `6ea32510` 和 Task 2V `759435ef` 已实施且各自本地独立审查通过，本稿不重写其完成记录、不重新验收或重做两道历史关卡。Task 2E 只修复该 Schema 与 routing fixture，并以真实 validator 覆盖值；Schema ID、contract manifest、现有 exports、其他 fixture 的 ID/name 均不变。Task 3 仍是唯一负责实际 Environment、actor、reviewer 与 root policy 核验的任务；本 Environment 的单操作员例外不得推广到任何其他 Environment。本稿独立复审、Task 2E 实施和独立审查均完成前不得进入 Task 3；Task 30 stash、真实签发、数据库身份及全部外部操作仍保持原有阻断和逐项批准边界。
 
 **Remaining admission gates:** 三份历史内容已分别批准，但本次最终文档的复核/必需 CI/合并、Task 0 的最新 main/GitHub 本人评论读回及最终 blob/独立开工指令/受控数据库、I0 独立签发及私有保管实际 readback、canary 无云交接与真实探测、I15B 合法构建前 sanitized 输入及独立使用授权仍须实际验证，不能由文档或 mock 代替。缺失构建前输入时为 `PREBUILD_SANITIZED_INPUT_UNAVAILABLE`；另行输入补给方案/批准不由本计划自动施工。Qualification 通过后 Task 30 再单独授权，S2/S3 不在本次范围。
 
@@ -27,7 +27,7 @@
 - Task 30 stash `paused-task30-before-task29r-20260903` 在整个计划期间保持冻结。禁止 apply/pop/drop、修改 stash 内容或把其中文件加入任何提交。
 - S2、S3、产品代码、业务迁移、Prisma 模型/枚举、应用 RBAC、业务权限、业务开关、客户可见行为和业务 API 均不在范围内。
 - 所有仓库任务开始前运行 `git status --short`；只允许本任务列出的文件变更。每个任务独立提交，禁止把相邻安全边界合并为一个大提交。
-- 本地续接顺序固定为 `本修订获批 → Task 2R 修复/审查 → Task 2V 只读验证器/审查 → Task 3`。Task 2 的历史测试证据不代替这两个关卡；任一未通过均停止 Task 3。2R/2V 仅实现仓库验证能力，不建立签发身份、生成真实授权、dispatch workflow 或执行 I0。
+- 本地续接顺序固定为 `本 Task 2E 局部修订获批 → Task 2E 修复/独立审查 → Task 3`。Task 2R `6ea32510` 与 Task 2V `759435ef` 的历史实施/本地独立审查记录保留，但不代替 Task 2E 的实现和独立审查；Task 2E 未通过即停止 Task 3。Task 2E 仅实现仓库 Schema/fixture 验证能力，不建立签发身份、生成真实授权、dispatch workflow 或执行 I0。
 - Task 0 之前不得读取 ambient `DATABASE_URL`、仓库 `.env` 或任何 Staging 凭证。Task 0 建立受控 PostgreSQL 17 目标后，所有 Prisma/database 检查只通过 `scripts/release/with-controlled-target.mjs` 执行。
 - 当前 `prisma migrate status` 因缺少 datasource URL 未验证。Task 0 必须在代码写入前用受控目标取得 `migrate deploy → migrate status` 成功证据；失败立即停止，不能把 `prisma validate` 替代为迁移状态。
 - Snapshot custody 固定采用 Alibaba Cloud China (Shanghai) 区域的独立私有 OSS bucket、KMS key 和 RAM/STS 身份；不得复用业务上传 bucket、API 的 OSS 身份或生产服务 KMS key。
@@ -131,6 +131,7 @@ role, keys and proofs bind that ID. The canonical workflow job ID must still mat
 | Plan dependency    | Task 0 verified final upstream main/blob; `f50676c6`/`30a90fae` remain history only: verify Task 29R-D zero-file ownership and Task 30 consumer-only block; never edit it                                         |
 | Routing contracts  | `release/contracts/schemas/environment-policy-*.json`, `snapshot-admission.v1`, `snapshot-admission-verification.v1`, `snapshot-jit-launch-proof.v1`, `snapshot-producer-completion.v1`                           |
 | Dispatch preflight | Task 2R repairs purpose; Task 2V owns `dispatch-authorization.mjs`, its tests, common read-only custody validation and observation Schema; Task 16A owns issuance only                                            |
+| Environment gate   | Task 2E owns only the self-review Schema/fixture repair before Task 3; Task 3 retains actual Environment/actor/reviewer/root-policy verification                                                                  |
 | Custody contracts  | Snapshot encryption/private/destruction/retention Schemas plus `evidence-lineage-storage-policy.v1`, lineage access/readback/retention and v2 custody contracts                                                   |
 | Shared logic       | `packages/release-foundation/src/snapshot/**`: policy/digest checks, envelope crypto, capacity calculation and proof builders                                                                                     |
 | Root-owned adapter | `apps/snapshot-adapter/**`: fixed CLI, GitHub API verifier, JIT lifecycle, SSH/PostgreSQL snapshot pipeline, crypto subprocess, OSS/KMS adapters                                                                  |
@@ -714,6 +715,135 @@ Task 3 cannot proceed on Schema validation alone; Task 16A will consume, not rec
 
 ---
 
+### Task 2E: Align the approved Environment self-review constant before Task 3
+
+**Files:**
+
+- Modify: `release/contracts/schemas/environment-policy-identity.v1.schema.json`
+- Modify: `packages/release-foundation/test/snapshot-routing-contracts.test.mjs`
+
+**Consumes:** 附录第 344–367 行已经批准的 `prevent_self_review=false`；Task 2 已有的
+`environment-policy-identity.v1` catalog entry、Schema registry、contract manifest 与
+`validateContract`。Task 2R `6ea32510`、Task 2V `759435ef` 是已实施、各自本地独立审查通过的
+历史前置，不在本任务重新验收或重做。
+
+**Produces:** 一个保持既有 Schema ID 的 identity contract：仅 boolean `false` 合法；routing
+fixture 与真实 validator 的正/负覆盖。Task 3 消费该已审查 contract，仍独自核验实际
+Environment、actor、reviewer 和 root policy；本任务不把 `stage1-snapshot-export` 的已批准
+单操作员例外推广至其他 Environment。
+
+**Boundary:** 只可改这两个文件。不得修改安全附录、Schema ID、catalog/contract manifest、exports
+或其他 fixture 的 repository/environment ID/name。不得把字段放宽为任意 boolean；不得建立 root
+policy、签发身份、真实 Environment/审批、I0、数据库或外部状态。manifest 已含该 Schema，必须用
+digest gate 验证覆盖而非新增条目。
+
+- [ ] **Step 1: Write the final validator-backed expectations before changing the Schema**
+
+Change only `validIdentity.preventSelfReview` in the existing routing test fixture from `true` to
+`false`; retain every other fixture field byte-for-byte. Add these final expectations now and leave
+them unchanged after the Schema edit; every assertion calls the real `validateContract`.
+
+```js
+test("environment identity permits the approved self-review exception", () => {
+  assert.doesNotThrow(() => validateContract("environment-policy-identity.v1", validIdentity));
+});
+
+test("environment identity rejects the unapproved true self-review value", () => {
+  assert.throws(
+    () =>
+      validateContract("environment-policy-identity.v1", {
+        ...validIdentity,
+        preventSelfReview: true
+      }),
+    { code: "CONTRACT_SCHEMA_INVALID" }
+  );
+});
+
+test("environment identity rejects missing and non-boolean self-review values", () => {
+  const { preventSelfReview: _removed, ...identityWithoutPreventSelfReview } = validIdentity;
+  for (const candidate of [
+    identityWithoutPreventSelfReview,
+    ...[null, 0, "false", [], {}].map((preventSelfReview) => ({
+      ...validIdentity,
+      preventSelfReview
+    }))
+  ]) {
+    assert.throws(() => validateContract("environment-policy-identity.v1", candidate), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
+  }
+});
+```
+
+- [ ] **Step 2: Run and record the failing final expectations (RED)**
+
+Run:
+
+```powershell
+node --test packages/release-foundation/test/snapshot-routing-contracts.test.mjs
+```
+
+Expected: exit `1`; the `false` expectation reports `CONTRACT_SCHEMA_INVALID`, and the `true`
+rejection expectation reports `Missing expected exception` because current `const: true` accepts it.
+The missing/non-boolean rejection test may pass under the defective Schema. This is not a
+product/database test and is not approval to alter an Environment.
+
+- [ ] **Step 3: Make the minimal Schema correction without rewriting the tests**
+
+In `environment-policy-identity.v1.schema.json`, replace only:
+
+```json
+"preventSelfReview": { "const": true }
+```
+
+with:
+
+```json
+"preventSelfReview": { "const": false }
+```
+
+Do not rewrite, weaken or add a Schema-specific mock to the Step 1 tests; this single constant change
+must make those same final expectations green.
+
+- [ ] **Step 4: Run focused GREEN, format, catalog/digest, discovery and diff gates**
+
+```powershell
+node --test packages/release-foundation/test/snapshot-routing-contracts.test.mjs packages/release-foundation/test/schema-registry.test.mjs packages/release-foundation/test/catalogs.test.mjs
+pnpm exec prettier --check release/contracts/schemas/environment-policy-identity.v1.schema.json packages/release-foundation/test/snapshot-routing-contracts.test.mjs
+$task2eSchema = Get-Content -Raw release/contracts/schemas/environment-policy-identity.v1.schema.json | ConvertFrom-Json
+$task2eSelfReviewProperties = @($task2eSchema.properties.PSObject.Properties | Where-Object { $_.Name -eq "preventSelfReview" })
+if ($task2eSelfReviewProperties.Count -ne 1 -or $task2eSelfReviewProperties[0].Value.const -isnot [bool] -or $task2eSelfReviewProperties[0].Value.const -ne $false) { throw "Expected exactly one preventSelfReview boolean const false" }
+$task2eCatalog = Get-Content -Raw release/contracts/repository-contract-files.v1.json | ConvertFrom-Json
+$task2eSchemaPath = "release/contracts/schemas/environment-policy-identity.v1.schema.json"
+if (@($task2eCatalog.files | Where-Object { $_ -eq $task2eSchemaPath }).Count -ne 1) { throw "Expected exactly one catalog entry for $task2eSchemaPath" }
+pnpm release:contracts:verify
+node scripts/release/discover-database-tests.mjs --mode verify
+git diff --check
+```
+
+Expected: tests accept only `false` and reject `true`, missing, `null`, `0`, `"false"`, `[]` and `{}`;
+Prettier is clean; JSON parsing proves the Schema constant is false and the catalog contains exactly
+one existing entry; the contract digest is recomputed by the gate; discovery is unchanged; and the
+diff is whitespace-clean.
+
+- [ ] **Step 5: Commit only the narrow correction after GREEN verification**
+
+```powershell
+git add -- release/contracts/schemas/environment-policy-identity.v1.schema.json packages/release-foundation/test/snapshot-routing-contracts.test.mjs
+git commit -m "fix: align environment self-review policy contract"
+```
+
+- [ ] **Step 6: Obtain an independent review of that exact commit before unblocking Task 3**
+
+The reviewer must confirm all of the following: the diff names exactly the two Files above; the Schema
+ID and manifest are untouched; the sole constant is `false`, not a boolean type; unchanged fixture
+IDs/names prevent a disguised identity change; tests call `validateContract` and cover every listed
+negative value; and Task 3's actual Environment/actor/reviewer/root-policy checks remain unimplemented.
+Only a passing independent review of the Step 5 commit removes this Task 3 precondition; it neither reopens
+Task 2R/2V nor authorizes Task 30, real signing, I0, database, cloud or other external work.
+
+---
+
 ### Task 3: Implement environment identity, observation and admission verification
 
 **Files:**
@@ -729,8 +859,9 @@ Task 3 cannot proceed on Schema validation alone; Task 16A will consume, not rec
 
 **Interfaces:**
 
-- Consumes: Task 2R vocabulary and Task 2V `verifyDispatchAuthorization` /
-  `assertVerifiedDispatchAuthorization`; both scoped reviews must pass before any Task 3 code.
+- Consumes: Task 2R vocabulary, Task 2V `verifyDispatchAuthorization` /
+  `assertVerifiedDispatchAuthorization`, and Task 2E's reviewed `preventSelfReview=false` identity
+  contract/fixture coverage; Task 2E independent review must pass before any Task 3 code.
 - Produces: `buildEnvironmentPolicyIdentity(input): EnvironmentPolicyIdentityV1`.
 - Produces: `buildEnvironmentPolicyObservation(input): EnvironmentPolicyObservationV1`.
 - Produces: `verifyPostApprovalObservation({ identity, observation, admission, now, maxAgeMs }): void`.
@@ -2779,6 +2910,7 @@ Coverage below is routing for this cross-document revision, not approval/complet
 | Build/bundle before attempt and dispatch authorization        | 2, 2R, 2V, 16A, 17B; I15B, I16           | Approved build plan, three registry digests, custody, new attempt and authorization                                  |
 | Independent Producer, then one same-run RC chain              | 2, 3, 9, 14-16C; I17-I23                 | Admission/JIT/Producer proofs plus same-run DAG checkpoint                                                           |
 | Public-repository exclusive JIT routing                       | 2, 3, 8, 9, 13-14; I3-I4, I7-I8, I12-I19 | Environment identity, route observation, exact labels, terminal cleanup                                              |
+| Approved Environment self-review contract                     | 2E, 3                                    | Reviewed const=false and value regressions before actual fixed identity/root-policy verification                     |
 | No arbitrary repository code on data host                     | 7-9, 14, 17A; I1, I12-I15                | Adapter allowlist/SBOM, workflow structural audit, negative launch tests                                             |
 | Trusted Adapter main artifact chain                           | 7, 17A; I1, I14                          | Approved build plan, OCI digest, attestation, custody and installed-file readback                                    |
 | Dedicated WSL, LUKS and truthful destruction                  | 8; I12-I19                               | Host policy, LUKS lifecycle proof, destruction receipt                                                               |
@@ -2833,7 +2965,7 @@ Before execution this cross-document revision requires approval; I0, real canary
 
 | Condition                                                                        | Required response                                                                                                                                                         | Prohibited shortcut                                                                                       |
 | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Task 2R purpose repair or Task 2V verification gate not reviewed/passing         | Stop before Task 3; preserve scoped findings and seek review                                                                                                              | Historical Task 2 green tests, legacy purpose alias, Schema-only approval or early Task 16A/I0 issuance   |
+| Task 2E Environment repair or its independent review not passing                 | Stop before Task 3; preserve scoped findings and seek review                                                                                                              | Old green tests, const=true/any boolean, Schema-only approval or early Task 16A/I0 issuance               |
 | I0 signer/archive or actual retention unavailable                                | Stop I1; preserve provisional escrow; reconcile separately approved exact bootstrap operation                                                                             | Future Adapter/OIDC/I13 root, escrow as final custody, fake now+180                                       |
 | Prebuild sanitized input/use authority absent or expired                         | `PREBUILD_SANITIZED_INPUT_UNAVAILABLE`; stop I15B, request separate input design/approval                                                                                 | Future Producer, qualification reuse, fabricated artifact or expanded v1 consumer                         |
 | Publisher KMS permission, future digest slot/context or crypto/publisher overlap | Reject before credentials; preserve denial                                                                                                                                | Expand v1/v2, grant prefix, preissue STS, retry GenerateDataKey                                           |
@@ -2866,7 +2998,7 @@ This plan is complete only when:
 
 This cross-document revision must be approved before construction. Confirmed canary design is not a cloud-success claim; I0 actual private archive/signing and legal prebuild input must be proven, not inferred.
 
-1. Tasks 0-15 including the separately reviewed 2R/2V gates, 16A-16C, 17A-17B and 18 have merged with required CI green; I0 is closed, real canary passed, I1 produced trusted Adapter, and I15B proved legal prebuild input/independent authority and both source chains before the complete bundle. All original referenced evidence has actual private retention readback.
+1. Tasks 0-15 including historical Task 2R/2V reviews and the separately reviewed Task 2E gate, 16A-16C, 17A-17B and 18 have merged with required CI green; I0 is closed, real canary passed, I1 produced trusted Adapter, and I15B proved legal prebuild input/independent authority and both source chains before the complete bundle. All original referenced evidence has actual private retention readback.
 2. Each external operation has its applicable independent approval/readback/custody; lineage uses the closed v2 matrix, separate terminated writer/reader credentials and complete use/access receipts. No unresolved prerequisite UNKNOWN or failed/partial/conflicting/UNKNOWN pair is admitted, including after diagnosis.
 3. One real Producer succeeds, followed by one immutable RC run with source/final raw v1 proofs, two-job one-to-one claim/envelope and privately read-back v2 custody/aggregate/exit. Every node has a later external access receipt, with exit access bound into the qualification stop proof. Purpose remains `qualification` and machine-non-promotable; private bytes never use public artifacts.
 4. The environment is idle: no JIT Runner, unlocked LUKS volume, plaintext snapshot or active per-run credential remains.

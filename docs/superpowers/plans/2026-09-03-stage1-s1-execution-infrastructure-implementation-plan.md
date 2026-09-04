@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-状态：待跨文档复审；本次仅设计/计划收敛，不授权施工或外部操作
+状态：已批准为条件可执行实施计划（内容基线 `31cc3e8c`）；先完成 Task 0 仓库准入，外部操作逐项批准
 
 **Goal:** 实现已批准的方案 A 执行基础设施，使独立 sanitized snapshot producer 能在 public repository 条件下安全运行，并让唯一 RC workflow 在 GitHub-hosted 临时机上完成 source、final、aggregate 与 exit 证明链，从而解除 Task 29R 的基础设施阻断。
 
@@ -10,13 +10,13 @@
 
 **Tech Stack:** Node.js 22.23.2、pnpm 11.4.0、Node ESM/`node:test`、PostgreSQL 17、GitHub Actions/JIT ephemeral Runner、WSL2 Ubuntu 24.04、LUKS2、OpenSSH、Docker Buildx/Compose、Aliyun OSS、Alibaba Cloud KMS/RAM/STS、AES-256-GCM、Playwright 1.62.1。
 
-**Spec:** `docs/superpowers/specs/2026-09-03-stage1-s1-execution-infrastructure-security-addendum.zh-CN.md`；旧批准内容基线 `380c0edb`/状态 `4f037a5c` 仅作历史记录。本计划必须与该附录本轮新增内容一起复审/批准，不能只满足旧 commit；状态提交不替代内容基线。
+**Spec:** `docs/superpowers/specs/2026-09-03-stage1-s1-execution-infrastructure-security-addendum.zh-CN.md`；本轮批准内容基线 `75aaa956`，批准记录及 admission 勘误提交 `86663d98` 不替代内容基线；旧批准内容 `380c0edb`/状态 `4f037a5c` 仅作历史记录。
 
-**Upstream Plan:** `docs/superpowers/plans/2026-09-02-stage1-s1-trusted-release-foundation-implementation-plan.md`；旧批准内容 `24799d0c`/元数据 `c3afabcc` 是历史基线，本轮同步验收文本仍待批准。执行时它是只读依赖，Task29R-D 零文件/零提交；本计划为唯一施工所有者，不恢复或实施 Task30。
+**Upstream Plan:** `docs/superpowers/plans/2026-09-02-stage1-s1-trusted-release-foundation-implementation-plan.md`；本轮批准内容 `f50676c6`/元数据 `30a90fae`；旧内容 `24799d0c`/元数据 `c3afabcc` 保留为历史基线。执行时它是只读依赖，Task29R-D 零文件/零提交；本计划为唯一施工所有者，不恢复或实施 Task30。
 
-**Revision Scope:** 本轮与安全附录及上游计划同步收敛 Producer crypto/publisher、source/final proof DAG、构建前 sanitized 输入、私有证据保管与 bootstrap 时序。上列旧批准内容/状态基线仅作历史记录，不代表本轮新增设计已获批准。Canary `155acf6a` 交接设计的独立窄授权已确认，按附录同步到 Task 13/I7/I8；其代码和真实云验证仍未实施。本计划仍是唯一施工所有者，上游 Task 29R-D 仅验收。
+**Revision Scope:** 用户于 2026-09-04 批准本计划内容基线 `31cc3e8c`，确认 Producer crypto/publisher、source/final proof DAG、构建前 sanitized 输入、私有证据保管与 bootstrap 时序的跨文档收敛通过。本状态记录同步 Task 1 的已批准内容/元数据引用，不改变任务、权限或证明契约；文内批准记录不替代 Task 0 的独立签名批准链。Canary `155acf6a` 交接设计的独立窄授权已确认，按附录同步到 Task 13/I7/I8；其代码和真实云验证仍未实施。本计划仍是唯一施工所有者，上游 Task 29R-D 仅验收。
 
-**Remaining admission gates:** 本轮跨文档批准、I0 独立签发/私有保管控制面实际 readback、canary 真实云验证及 I15B 合法构建前 sanitized 输入均不能由文档或 mock 代替。缺失构建前输入时为 `PREBUILD_SANITIZED_INPUT_UNAVAILABLE`；另行输入补给方案/批准不由本计划自动施工。
+**Remaining admission gates:** 三份内容已分别批准，但 Task 0 的最新 main/签名批准链/受控数据库、I0 独立签发及私有保管实际 readback、canary 无云交接与真实探测、I15B 合法构建前 sanitized 输入及独立使用授权仍须实际验证，不能由文档或 mock 代替。缺失构建前输入时为 `PREBUILD_SANITIZED_INPUT_UNAVAILABLE`；另行输入补给方案/批准不由本计划自动施工。Qualification 通过后 Task 30 再单独授权，S2/S3 不在本次范围。
 
 ## Global Constraints
 
@@ -125,7 +125,7 @@ role, keys and proofs bind that ID. The canonical workflow job ID must still mat
 
 | Area               | Files and responsibility                                                                                                                                                                                          |
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Plan dependency    | Approved upstream content `24799d0c`, metadata `c3afabcc`: verify Task 29R-D zero-file ownership and Task 30 consumer-only block; never edit it                                                                   |
+| Plan dependency    | Approved upstream content `f50676c6`, metadata `30a90fae`: verify Task 29R-D zero-file ownership and Task 30 consumer-only block; never edit it                                                                   |
 | Routing contracts  | `release/contracts/schemas/environment-policy-*.json`, `snapshot-admission.v1`, `snapshot-admission-verification.v1`, `snapshot-jit-launch-proof.v1`, `snapshot-producer-completion.v1`                           |
 | Custody contracts  | Snapshot encryption/private/destruction/retention Schemas plus `evidence-lineage-storage-policy.v1`, lineage access/readback/retention and v2 custody contracts                                                   |
 | Shared logic       | `packages/release-foundation/src/snapshot/**`: policy/digest checks, envelope crypto, capacity calculation and proof builders                                                                                     |
@@ -243,24 +243,24 @@ Expected: both local paths are ignored; tracked worktree remains clean. This che
 
 **Interfaces:**
 
-- Consumes: approved addendum content `380c0edb`/metadata `4f037a5c` and upstream content `24799d0c`/metadata `c3afabcc`.
+- Consumes: approved addendum content `75aaa956`/approval record and erratum `86663d98`, and upstream content `f50676c6`/metadata `30a90fae`.
 - Produces: a read-only dependency-verification record proving that this plan is the sole Task 29R-D施工 owner and that the upstream plan remains unchanged.
 
 - [ ] **Step 1: Verify the approved commits and exact upstream file identity**
 
 ```powershell
 $upstreamPlan = 'docs/superpowers/plans/2026-09-02-stage1-s1-trusted-release-foundation-implementation-plan.md'
-git merge-base --is-ancestor 24799d0c HEAD
+git merge-base --is-ancestor f50676c6 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'UPSTREAM_APPROVAL_BASELINE_MISSING' }
-git diff --exit-code c3afabcc -- $upstreamPlan
+git diff --exit-code 30a90fae -- $upstreamPlan
 if ($LASTEXITCODE -ne 0) { throw 'UPSTREAM_APPROVED_FILE_CHANGED' }
-$approvedBody = ((git show "24799d0c:$upstreamPlan") -join "`n") -split '## Global Constraints', 2
+$approvedBody = ((git show "f50676c6:$upstreamPlan") -join "`n") -split '## Global Constraints', 2
 $currentBody = (Get-Content -LiteralPath $upstreamPlan -Raw -Encoding utf8) -replace "`r`n", "`n"
 $currentBody = $currentBody -split '## Global Constraints', 2
 if ($approvedBody[1].TrimEnd() -cne $currentBody[1].TrimEnd()) { throw 'UPSTREAM_APPROVED_BODY_CHANGED' }
 ```
 
-Expected: PASS; only the separately recorded `c3afabcc` approval metadata differs from content baseline `24799d0c`; the approved body and current file identity are unchanged.
+Expected: PASS; only the separately recorded `30a90fae` approval metadata differs from content baseline `f50676c6`; the approved body and current file identity are unchanged.
 
 - [ ] **Step 2: Verify fixed topology, ownership handoff and Task 30 block**
 

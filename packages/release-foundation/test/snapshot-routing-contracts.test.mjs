@@ -77,6 +77,7 @@ function assertSchemaInvalidAdditionalProperties(schemaId, value) {
 }
 
 test("environment identity cannot contain observation time", () => {
+  validateContract("environment-policy-identity.v1", validIdentity);
   assertSchemaInvalidAdditionalProperties("environment-policy-identity.v1", {
     ...validIdentity,
     observedAt: NOW

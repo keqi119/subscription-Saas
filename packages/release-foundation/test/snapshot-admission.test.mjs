@@ -139,6 +139,35 @@ test("trusted reconstruction never treats a plain dispatch-shaped object as a de
   );
 });
 
+test("unverified decision accessors are rejected without reading expected or authorization", () => {
+  const policyIdentity = buildEnvironmentPolicyIdentity({ rootPolicy, apiPolicy });
+  let expectedReads = 0;
+  let authorizationReads = 0;
+  const candidate = {
+    get expected() {
+      expectedReads += 1;
+      return verifiedDispatch().expected;
+    },
+    get authorization() {
+      authorizationReads += 1;
+      return verifiedDispatch().authorization;
+    }
+  };
+  assert.throws(
+    () =>
+      buildSnapshotAdmission({
+        verifiedDispatch: candidate,
+        producerRunObservation: producerRun(),
+        routeNonce: "c".repeat(32),
+        rootPolicy: { ...rootPolicy, environmentPolicyIdentity: policyIdentity },
+        now: "2026-09-03T00:00:00.000Z"
+      }),
+    { code: "DISPATCH_DECISION_UNVERIFIED" }
+  );
+  assert.equal(expectedReads, 0);
+  assert.equal(authorizationReads, 0);
+});
+
 test("raw authorization and an untrusted admission are never verified decisions", () => {
   const policyIdentity = buildEnvironmentPolicyIdentity({ rootPolicy, apiPolicy });
   const policy = { ...rootPolicy, environmentPolicyIdentity: policyIdentity };

@@ -175,8 +175,13 @@ export function buildSnapshotAdmission(input = {}) {
   );
   const trustedPolicy = policy(rootPolicy);
   try {
+    // Do not evaluate fields on an unbranded candidate while assembling the assertion.
+    // A descriptor read rejects accessors; Task2V alone still establishes the brand.
+    const expectedDescriptor = Object.getOwnPropertyDescriptor(verifiedDispatch, "expected");
+    if (!expectedDescriptor || !Object.hasOwn(expectedDescriptor, "value"))
+      fail("DISPATCH_DECISION_UNVERIFIED");
     assertVerifiedDispatchAuthorization(verifiedDispatch, {
-      expected: verifiedDispatch.expected,
+      expected: expectedDescriptor.value,
       now
     });
   } catch (error) {

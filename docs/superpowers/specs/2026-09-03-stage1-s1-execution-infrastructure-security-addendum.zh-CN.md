@@ -4,6 +4,8 @@
 
 状态：已批准设计（内容基线 `75aaa956`；批准记录及 admission 措辞勘误不替代内容基线）
 
+本轮局部对齐：用户已确认仅限 Task 0 的 GitHub 人工批准方式；以下文字供核对，不表示最终文档评论已经发布、批准索引已经生成或施工已经恢复。
+
 方案方向：A 基础设施拓扑、`execution-purpose-envelope` 证明模型及前向 `exact-capability-approval.v2` lineage 私有存储能力已获设计批准；仓库施工遵循独立获批的基础设施计划，外部操作仍逐项批准
 
 最近已批准内容基线：`75aaa956`。用户于 2026-09-04 确认本轮 5 项 P1、1 项 P2 已在设计与计划层面闭环；批准不代表端到端已就绪。既有 `380c0edb`/状态提交 `4f037a5c` 保留为历史记录。用户已确认 `155acf6a` 的 canary 交接设计修复；无云凭证交接实测仍是未来实施门槛，不再登记为新增设计缺陷。
@@ -38,6 +40,19 @@
 - 修改业务代码、业务迁移、模型、枚举、应用 RBAC、S2 或 S3。
 
 三份文档分别保留内容批准基线；状态提交不替代内容批准。I0 私有保管、canary 无云交接及真实探测仍须实际验证；I15B 缺少合法构建前快照或独立使用授权时必须停止，不自动补建供应机制。Task 29R 仅按获批计划完成仓库修复与后续独立批准的 qualification；qualification 通过后 Task 30 仍须单独授权，stash 保持冻结，S2/S3 不在本次范围。不新增总实施计划或通用运维框架。
+
+### 仅限 Task 0 的首次人工信任锚
+
+首次文档准入不再假定已存在独立数字签名批准链。固定采用 GitHub 受认证人工评论：repository 为 `keqi119/subscription-Saas`、immutable ID `1253231368`，批准人为 `keqi119`、immutable user ID `275060624`，记录位置仅为 PR #316。依赖 GitHub 身份及在线 API 读回，不宣称 Ed25519 签名、离线不可抵赖或独立第二位审批人；不新建签发端、Schema、服务或权限。
+
+1. 先完成本次三文档局部修订、文档复核、必需 CI 和合并；随后读取实际 `main` SHA 及三份最终文档的路径/blob OID，不能预填未来 SHA，也不把批准内容再次写回被批准文档。历史内容基线和状态提交继续保留，但不能代替最终 blob 核验。
+2. Agent 仅可准备标明“待本人发布”的草稿；用户本人核对后在 PR #316 发布一条完整 JSON 评论，字段为 `scope=TASK0_DOCUMENT_ADMISSION_ONLY`、实际 `approvedMainSha` 和恰好三项 `documents[{path,decision=APPROVED,blobOid}]`。一条评论可以承载三个独立文档决定，不能用一个笼统批准替代。用户提供该评论引用；Agent 不得通过用户 token、bot、自动化或自己的账号代发/自批，也不得自行选择另一条评论作为替代。
+3. 只读核验固定 GitHub API 的 repository ID、PR 关联/合并事实、评论 ID、作者 ID/type、完整正文、`created_at`/`updated_at` 和实际 git 内容。批准评论必须未编辑；编辑或删除原评论即撤回本条批准，重新批准只能由本人发布新评论并明确提供新引用。首次读取及每次 Task 0 准入都重新 GET；缺失、不可访问、已编辑、作者/正文/时间/文档绑定变化即停止，不用缓存、截图、AI 回复或本地 JSON 放行。[GitHub 评论读取接口](https://docs.github.com/en/rest/issues/comments#get-an-issue-comment)
+4. 通过核验后，才生成既有本地索引 `.release-local/input/s1-infrastructure-plan-approval.v1.json`。它保存评论 ID/创建更新时间、实际批准 main SHA 和三个既有文档条目；`reviewRecordDigest` 明确定义为评论原始 body 字符串 UTF-8 字节的 SHA-256，API 身份/关联另行核验并保全。它只是定位和完整性索引，不是授权、数字签名或权威 custody。索引与原始 API 读回/git 记录保存在受控 provisional escrow，不要求尚未建立的 I0 receipt。
+5. 本例外只满足 Task 0 的文档批准材料要求，不替代用户另行发出的开工指令，不授权 I0、云资源、Staging、canary、qualification、Task 30 或 S2/S3。Task 0 获准执行时仍须通过原有干净 main、隔离 worktree、受控数据库和 stash 门槛。
+6. I0 获得其自身独立外部操作批准并建立签发/保管后，原样归档 Task 0 评论、API 观察、索引及 git 核验记录，保留其真实 GitHub 人工来源；后置归档不得回填历史签名或把 Task 0 评论当作 I0 的批准。其他运行批准、签名、撤销和权威保管规则全部不变。
+
+本次文档对齐不发布评论、不生成草稿批准材料或索引、不修改 GitHub 状态，也不执行 Task 0。
 
 ## 背景与已核实现状
 
@@ -495,7 +510,7 @@ S1 唯一权威保管后端固定为专用私有 OSS bucket 的真实对象与 L
 
 `authoritative-custody-observation.v1` 是前向的窄 readback 契约，进入 repository contract digest，不改写已发布 raw proof/custody v1。它绑定对象 key/实际 ETag或存储版本/完整字节 digest、主体及不同 reader、私有 ACL/policy、实际 `Last-Modified`、`GetBucketWorm` 的 ID/Locked/days、读取时间、证据用途/owner/requiredUntil、前序批准和 operation/run。有效保留到期由服务端对象 Last-Modified 与实际锁定天数计算，不是本机 now、调用方要求或 upload 回显；缺值、非法日期/NaN、未 Locked 或不足期限即失败。BucketWorm 对整个 bucket 生效，延长须评估全 bucket 影响并单独批准。[OSS 保留策略](https://www.alibabacloud.com/help/en/oss/user-guide/oss-retention-policies)
 
-三份文档的实际批准/签名/撤销及精确 blob 核验属于实施 Task0 的既有人类信任锚准入，I0 建立前仅保全于加密 provisional escrow，不要求未来 OSS receipt；I0 必须将这三份原始批准链与 bootstrap 原件一并导入/readback 才能关闭。此例外不允许把 escrow 作为 Release/运行证明的权威保管，也不追认任何未批准的代码或外部变更。
+三份文档的首次批准按“仅限 Task 0 的首次人工信任锚”核验 GitHub 本人评论、当前未编辑/未删除状态及精确 blob，不要求预存数字签名链。I0 建立前只保全原始 API/git 观察与索引于加密 provisional escrow，不要求未来 OSS receipt；I0 必须将这些真实来源的原件与另行批准的 bootstrap 原件一并导入/readback 才能关闭。不能回填历史签名，不能把 escrow 作为 Release/运行证明的权威保管，也不能追认未批准的代码或外部变更。
 
 普通证据至少保留终态后 180 日；snapshot 及所需 wrapped key/proof 至失效后 180 日；批准/撤销及所有验证用传递引用不得早于任一仍引用它的下游证据/适用 legal hold。210 日只是基础下界，不自动证明未来闭包足够。父级准入前逐对象验证 `effectiveRetainUntil >= requiredUntil`；不足时停止，独立批准延长全 bucket 或合规转存并 readback，追加 observation 而不重写旧 proof。到期处置需独立批准/receipt；账户持续性、保留费用与欠费风险由 retention owner 负责，不宣称绝对永久保存。
 

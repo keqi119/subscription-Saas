@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -53,6 +53,12 @@ test("accepts a strict build proof", () => {
   assert.doesNotThrow(() => validateContract("build-proof.v1", validBuildProof()));
 });
 
+test("published build-proof v1 retains its existing date-format behavior", () => {
+  const proof = validBuildProof();
+  proof.provenance.generatedAt = "2026-99-99TgarbageZ";
+  assert.doesNotThrow(() => validateContract("build-proof.v1", proof));
+});
+
 test("rejects an unregistered Schema version", () => {
   assert.throws(() => validateContract("build-proof.v2", validBuildProof()), {
     code: "CONTRACT_SCHEMA_UNREGISTERED"
@@ -97,4 +103,22 @@ test("rejects a schema whose filename and id differ", async () => {
     JSON.stringify({ $id: "right.v1", type: "object" })
   );
   assert.throws(() => compileAllSchemas(root), { code: "CONTRACT_SCHEMA_FILENAME_ID_MISMATCH" });
+  await rm(root, { recursive: true, force: true });
+});
+
+test("filename parity retains the existing duplicate-ID error", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "schema-duplicate-"));
+  try {
+    const schemas = path.join(root, "release/contracts/schemas");
+    await mkdir(schemas, { recursive: true });
+    for (const filename of ["a.v1", "b.v1"]) {
+      await writeFile(
+        path.join(schemas, `${filename}.schema.json`),
+        JSON.stringify({ $id: "a.v1", type: "object" })
+      );
+    }
+    assert.throws(() => compileAllSchemas(root), { code: "CONTRACT_SCHEMA_ID_DUPLICATE" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

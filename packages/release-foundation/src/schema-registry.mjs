@@ -29,11 +29,18 @@ function schemaFiles(directory) {
 function createRegistry(repoRoot) {
   const schemaDirectory = path.join(repoRoot, "release", "contracts", "schemas");
   const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: false });
-  ajv.addFormat("rfc3339-finite", {
+  // Opt-in keyword: legacy published schemas retain validateFormats:false.
+  ajv.addKeyword({
+    keyword: "rfc3339Finite",
     type: "string",
-    validate(value) {
+    schemaType: "boolean",
+    validate(enabled, value) {
+      if (!enabled) return true;
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)) return false;
       const epoch = Date.parse(value);
-      return Number.isFinite(epoch) && new Date(epoch).toISOString() === value;
+      return (
+        Number.isFinite(epoch) && new Date(epoch).toISOString().slice(0, 19) === value.slice(0, 19)
+      );
     }
   });
   ajv.addFormat(
@@ -46,12 +53,12 @@ function createRegistry(repoRoot) {
     if (typeof schema.$id !== "string" || schema.$id.length === 0) {
       throw codeError("CONTRACT_SCHEMA_ID_MISSING", { file });
     }
+    if (validators.has(schema.$id))
+      throw codeError("CONTRACT_SCHEMA_ID_DUPLICATE", { id: schema.$id });
     const filenameId = path.basename(file).slice(0, -".schema.json".length);
     if ((legacySchemaIdAliases[filenameId] ?? filenameId) !== schema.$id) {
       throw codeError("CONTRACT_SCHEMA_FILENAME_ID_MISMATCH", { file, id: schema.$id });
     }
-    if (validators.has(schema.$id))
-      throw codeError("CONTRACT_SCHEMA_ID_DUPLICATE", { id: schema.$id });
     validators.set(schema.$id, ajv.compile(schema));
   }
   return validators;

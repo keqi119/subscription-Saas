@@ -40,6 +40,7 @@
     "timestamp": {
       "type": "string",
       "format": "date-time",
+      "rfc3339Finite": true,
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$"
     }
   }

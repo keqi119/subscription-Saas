@@ -37,9 +37,7 @@ export async function verifyExternalChangeApproval({
     !trust ||
     approval.protected.issuer !== trust.issuer ||
     approval.protected.keyId !== trust.keyId ||
-    approval.revocationPolicyDigest !== trust.revocationPolicyDigest ||
-    approval.approver.immutableId === expected?.planAuthorId ||
-    approval.approver.immutableId === expected?.workflowActorId
+    approval.revocationPolicyDigest !== trust.revocationPolicyDigest
   )
     throw coded("EXTERNAL_CHANGE_APPROVAL_UNTRUSTED");
   if (
@@ -52,6 +50,8 @@ export async function verifyExternalChangeApproval({
   if (
     !expected?.subject ||
     expected.subjectDigest !== sha256Canonical(expected.subject) ||
+    approval.subjectDigest !== sha256Canonical(approval.subject) ||
+    approval.subjectDigest !== expected.subjectDigest ||
     canonicalJson(approval.subject) !== canonicalJson(expected.subject)
   ) {
     throw coded("EXTERNAL_CHANGE_APPROVAL_SUBJECT_MISMATCH");

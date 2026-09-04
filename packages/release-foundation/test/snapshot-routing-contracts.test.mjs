@@ -51,6 +51,7 @@ function assertSchemaInvalidAdditionalProperties(schemaId, value) {
 }
 
 test("environment identity cannot contain observation time", () => {
+  validateContract("environment-policy-identity.v1", validIdentity);
   assertSchemaInvalidAdditionalProperties("environment-policy-identity.v1", {
     ...validIdentity,
     observedAt: NOW
@@ -58,6 +59,7 @@ test("environment identity cannot contain observation time", () => {
 });
 
 test("admission cannot reference a future observation", () => {
+  validateContract("snapshot-admission.v1", validAdmission);
   assertSchemaInvalidAdditionalProperties("snapshot-admission.v1", {
     ...validAdmission,
     environmentPolicyObservationDigest: DIGEST
@@ -86,10 +88,19 @@ test("producer completion rejects self-reported future workflow terminal state",
     cryptoUseProofDigest: DIGEST,
     publisherUseProofDigest: DIGEST,
     destructionReceiptDigest: DIGEST,
-    dataCustodyReceiptDigest: DIGEST,
-    runTerminalState: "success"
+    dataCustodyReceiptDigest: DIGEST
   };
-  assertSchemaInvalidAdditionalProperties("snapshot-producer-completion.v1", completion);
+  validateContract("snapshot-producer-completion.v1", completion);
+  for (const field of [
+    "runTerminalState",
+    "custodyJobTerminalState",
+    "producerTerminalObservationDigest"
+  ]) {
+    assertSchemaInvalidAdditionalProperties("snapshot-producer-completion.v1", {
+      ...completion,
+      [field]: DIGEST
+    });
+  }
 });
 
 test("terminal observation rejects non-success runs and required job conclusions", () => {
@@ -103,7 +114,7 @@ test("terminal observation rejects non-success runs and required job conclusions
       workflowPath: ".github/workflows/sanitized-snapshot.yml",
       sourceSha: "b".repeat(40),
       status: "completed",
-      conclusion: "cancelled"
+      conclusion: "success"
     },
     requiredJobs: [
       { id: "1", name: "snapshot-admission", status: "completed", conclusion: "success" },
@@ -117,7 +128,197 @@ test("terminal observation rejects non-success runs and required job conclusions
       observedAt: NOW
     }
   };
-  assert.throws(() => validateContract("producer-terminal-observation.v1", observation), {
-    code: "CONTRACT_SCHEMA_INVALID"
-  });
+  validateContract("producer-terminal-observation.v1", observation);
+  for (const [name, mutate] of [
+    [
+      "PRODUCER_RUN_NOT_TERMINAL_SUCCESS",
+      (v) => {
+        v.producerRun.status = "in_progress";
+      }
+    ],
+    [
+      "cancelled run",
+      (v) => {
+        v.producerRun.conclusion = "cancelled";
+      }
+    ],
+    [
+      "rerun attempt",
+      (v) => {
+        v.producerRun.runAttempt = 2;
+      }
+    ],
+    [
+      "missing required job",
+      (v) => {
+        v.requiredJobs.pop();
+      }
+    ],
+    [
+      "extra required job",
+      (v) => {
+        v.requiredJobs.push(v.requiredJobs[0]);
+      }
+    ],
+    [
+      "wrong required job set",
+      (v) => {
+        v.requiredJobs[2].name = "unrelated-job";
+      }
+    ],
+    [
+      "caller success without independent API metadata",
+      (v) => {
+        delete v.githubApiReadback;
+      }
+    ],
+    [
+      "missing API digest",
+      (v) => {
+        delete v.githubApiReadback.responseDigest;
+      }
+    ],
+    [
+      "missing API time",
+      (v) => {
+        delete v.githubApiReadback.observedAt;
+      }
+    ],
+    [
+      "missing external custody",
+      (v) => {
+        delete v.externalCustodyReadback;
+      }
+    ],
+    ...[1, 2].flatMap((job) =>
+      ["skipped", "cancelled", "UNKNOWN"].map((conclusion) => [
+        `job ${job} ${conclusion}`,
+        (v) => {
+          v.requiredJobs[job].conclusion = conclusion;
+        }
+      ])
+    )
+  ]) {
+    const invalid = structuredClone(observation);
+    mutate(invalid);
+    assert.throws(
+      () => validateContract("producer-terminal-observation.v1", invalid),
+      { code: "CONTRACT_SCHEMA_INVALID" },
+      name
+    );
+  }
+});
+
+const validObservation = {
+  schemaVersion: "environment-policy-observation.v1",
+  environmentPolicyIdentityDigest: DIGEST,
+  phase: "approved-queued",
+  observedAt: NOW,
+  apiResponseDigest: DIGEST,
+  deployment: { id: "1", state: "approved" },
+  run: {
+    repository: "keqi119/subscription-Saas",
+    runId: "123",
+    runAttempt: 1,
+    workflowPath: ".github/workflows/sanitized-snapshot.yml",
+    workflowRef: "main",
+    sourceSha: "b".repeat(40)
+  },
+  job: { id: "2", name: "snapshot-data", status: "queued", labels: [validAdmission.route.label] },
+  review: { reviewerId: "3", state: "approved" }
+};
+
+test("observation phases reject inconsistent deployment, review, job and missing labels", () => {
+  for (const phase of ["pending", "approved-queued"]) {
+    const valid = structuredClone(validObservation);
+    valid.phase = phase;
+    valid.deployment.state = valid.review.state = phase === "pending" ? "pending" : "approved";
+    validateContract(valid.schemaVersion, valid);
+    for (const mutate of [
+      (v) => {
+        v.deployment.state = phase === "pending" ? "approved" : "pending";
+      },
+      (v) => {
+        v.review.state = phase === "pending" ? "approved" : "pending";
+      },
+      (v) => {
+        v.job.status = "in_progress";
+      },
+      (v) => {
+        v.job.labels = [];
+      },
+      (v) => {
+        v.run.runAttempt = 2;
+      }
+    ]) {
+      const invalid = structuredClone(valid);
+      mutate(invalid);
+      assert.throws(() => validateContract(valid.schemaVersion, invalid), {
+        code: "CONTRACT_SCHEMA_INVALID"
+      });
+    }
+  }
+});
+
+test("new observation timestamps reject nonfinite and impossible calendar values", () => {
+  validateContract(validObservation.schemaVersion, validObservation);
+  for (const observedAt of [
+    "2026-99-99TgarbageZ",
+    "2026-02-30T00:00:00.000Z",
+    "2026-09-04T24:00:00.000Z",
+    "2026-09-04T00:00:60.000Z",
+    "Infinity"
+  ]) {
+    assert.throws(
+      () => validateContract(validObservation.schemaVersion, { ...validObservation, observedAt }),
+      { code: "CONTRACT_SCHEMA_INVALID" },
+      observedAt
+    );
+  }
+});
+
+test("all newly introduced timestamp fields enforce finite RFC3339 without tightening published v1", async () => {
+  const { mkdtemp, mkdir, readFile, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  // Exercise the exact production timestamp definitions in small valid schemas.
+  for (const id of [
+    "environment-policy-observation.v1",
+    "producer-terminal-observation.v1",
+    "snapshot-jit-launch-proof.v1",
+    "rc-dispatch-authorization.v1",
+    "infrastructure-change.v1",
+    "external-change-approval.v1"
+  ]) {
+    const schema = JSON.parse(
+      await readFile(
+        new URL(`../../../release/contracts/schemas/${id}.schema.json`, import.meta.url),
+        "utf8"
+      )
+    );
+    const timestamp = schema.$defs?.timestamp ?? schema.properties.createdAt;
+    const root = await mkdtemp(path.join(tmpdir(), "routing-time-"));
+    try {
+      const directory = path.join(root, "release/contracts/schemas");
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        path.join(directory, "timestamp-test.v1.schema.json"),
+        JSON.stringify({ $id: "timestamp-test.v1", ...timestamp })
+      );
+      validateContract("timestamp-test.v1", NOW, { repoRoot: root });
+      for (const invalid of [
+        "2026-99-99TgarbageZ",
+        "2026-02-30T00:00:00.000Z",
+        "2026-09-04T24:00:00.000Z"
+      ]) {
+        assert.throws(
+          () => validateContract("timestamp-test.v1", invalid, { repoRoot: root }),
+          { code: "CONTRACT_SCHEMA_INVALID" },
+          id
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 });

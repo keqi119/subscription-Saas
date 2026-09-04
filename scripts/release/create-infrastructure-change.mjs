@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import {
   canonicalJson,
   computeRepositoryContract,
+  sha256Bytes,
   validateContract
 } from "../../packages/release-foundation/src/index.mjs";
 
@@ -19,11 +20,18 @@ const execFile = promisify(execFileCallback);
 async function assertExactMergedMain(repoRoot, mainSha) {
   let main;
   try {
-    ({ stdout: main } = await execFile("git", ["rev-parse", "refs/heads/main"], { cwd: repoRoot }));
+    // Task0's read-back source; never substitute the user's unrelated local main.
+    ({ stdout: main } = await execFile(
+      "git",
+      ["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
+      { cwd: repoRoot }
+    ));
   } catch {
     fail("INFRASTRUCTURE_CHANGE_MAIN_UNAVAILABLE");
   }
   if (main.trim() !== mainSha) fail("INFRASTRUCTURE_CHANGE_MAIN_SHA_INVALID");
+  const { stdout: head } = await execFile("git", ["rev-parse", "HEAD"], { cwd: repoRoot });
+  if (head.trim() !== mainSha) fail("INFRASTRUCTURE_CHANGE_REVISION_DIRTY");
   try {
     await execFile("git", ["diff", "--quiet", mainSha, "--"], { cwd: repoRoot });
   } catch (error) {
@@ -48,6 +56,22 @@ export async function createInfrastructureChange({
     fail("INFRASTRUCTURE_CHANGE_ARGUMENT_INVALID");
   await assertExactMergedMain(repoRoot, mainSha);
   const contract = await computeRepositoryContract(repoRoot);
+  // Git diff can hide assume-unchanged files or normalize checkout filters.
+  // Bind the actual hashed bytes, including the manifest, to immutable Git blobs.
+  for (const entry of contract.entries) {
+    let blob;
+    try {
+      ({ stdout: blob } = await execFile("git", ["show", `${mainSha}:${entry.path}`], {
+        cwd: repoRoot,
+        encoding: "buffer",
+        maxBuffer: 32 * 1024 * 1024
+      }));
+    } catch {
+      fail("INFRASTRUCTURE_CHANGE_REVISION_DIRTY");
+    }
+    if (sha256Bytes(blob) !== entry.sha256) fail("INFRASTRUCTURE_CHANGE_REVISION_DIRTY");
+  }
+  await assertExactMergedMain(repoRoot, mainSha);
   const record = {
     schemaVersion: "infrastructure-change.v1",
     infrastructureChangeId: randomBytes(16).toString("hex"),
@@ -71,7 +95,7 @@ async function main() {
   const names = new Set(["--main-sha", "--owner-id", "--output"]);
   if (
     args.length !== 6 ||
-    args.some((value, index) => (index % 2 === 0 ? !names.has(value) : names.has(value)))
+    args.some((value, index) => (index % 2 === 0 ? !names.has(value) : value.startsWith("--")))
   )
     fail("INFRASTRUCTURE_CHANGE_ARGUMENT_INVALID");
   const read = (name) => {

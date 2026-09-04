@@ -7,6 +7,7 @@
     "schemaVersion",
     "operationId",
     "subject",
+    "subjectDigest",
     "target",
     "planDigest",
     "expectedPreStateDigest",
@@ -20,6 +21,7 @@
   "properties": {
     "schemaVersion": { "const": "external-change-approval.v1" },
     "operationId": { "type": "string", "minLength": 1 },
+    "subjectDigest": { "$ref": "#/$defs/digest" },
     "subject": {
       "oneOf": [
         {
@@ -84,6 +86,7 @@
     "timestamp": {
       "type": "string",
       "format": "date-time",
+      "rfc3339Finite": true,
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$"
     }
   }

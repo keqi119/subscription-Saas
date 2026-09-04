@@ -2,15 +2,15 @@
 
 日期：2026-09-03
 
-状态：待跨文档复审（Producer、保管与 source/final 证明分层收敛；仅文档设计，不授权实施）
+状态：已批准设计（内容基线 `75aaa956`；批准记录及 admission 措辞勘误不替代内容基线）
 
-方案方向：A 基础设施拓扑、`execution-purpose-envelope` 证明模型及前向 `exact-capability-approval.v2` lineage 私有存储能力已获设计批准；仍未批准实施
+方案方向：A 基础设施拓扑、`execution-purpose-envelope` 证明模型及前向 `exact-capability-approval.v2` lineage 私有存储能力已获设计批准；仓库施工遵循独立获批的基础设施计划，外部操作仍逐项批准
 
-最近已批准内容基线：`380c0edb`（包含 claim/envelope 两个 job 存储协议；状态提交 `4f037a5c` 不替代内容基线）。用户已确认 `155acf6a` 的 canary 交接设计修复；无云凭证交接实测仍是未来实施门槛，不再登记为新增设计缺陷。
+最近已批准内容基线：`75aaa956`。用户于 2026-09-04 确认本轮 5 项 P1、1 项 P2 已在设计与计划层面闭环；批准不代表端到端已就绪。既有 `380c0edb`/状态提交 `4f037a5c` 保留为历史记录。用户已确认 `155acf6a` 的 canary 交接设计修复；无云凭证交接实测仍是未来实施门槛，不再登记为新增设计缺陷。
 
 既有批准内容基线：`8366d87d`（状态提交 `e8a322f2`）
 
-本次修订边界：同时收敛全局复审的 5 项 P1、1 项 P2，三份文档独立提交、统一复审。原始 v1 proof 和既有 exact-capability v1/v2 保持冻结；新增独立 Producer 加密授权、snapshot 精确 slot 定位、私有权威保管协议及 source/final 类型校正均是本次待批准设计，不是既有能力已经实现。
+本次批准边界：全局复审的 5 项 P1、1 项 P2 已闭环，三份文档独立提交、统一复审通过。原始 v1 proof 和既有 exact-capability v1/v2 保持冻结；独立 Producer 加密授权、snapshot 精确 slot 定位、私有权威保管协议及 source/final 类型校正已获设计批准，不是既有能力已经实现。另按同次复审处理 admission 的非阻断措辞勘误：发布未受信输入，由 root launcher 独立核验并签名，不授予 admission job OIDC/attestation 权限，不新增契约。
 
 保留 `155acf6a` 的不可变预批准 capsule、批准后独立 checkpoint、在线撤销读取语义及凭证请求数为零的负向门槛。本轮不重建 canary 机制，也不声明其通道已部署。
 
@@ -26,18 +26,18 @@
 
 ## 批准边界
 
-本轮只获准修订并独立提交安全附录、上游计划和基础设施计划，最后统一复审，不表示新增内容已获批准。基础设施计划 `4786e21e` 的整份复审尚未完成；上游计划已批准内容基线 `24799d0c`（状态提交 `c3afabcc`）不因此扩大授权。Task 29R、Task 30及外部施工继续阻断，不授权：
+本轮分别批准安全附录 `75aaa956`、上游计划 `f50676c6` 的依赖与验收边界，以及基础设施计划 `31cc3e8c` 的条件可执行实施安排。可记录批准、完成上述勘误并进入仓库任务及 CI 审查；旧基线 `4786e21e`、`24799d0c`/状态 `c3afabcc` 仅用于追溯。附录批准本身不替代以下具体操作的独立批准或准入门槛：
 
 - 注册或启动 GitHub self-hosted Runner；
 - 安装 `/opt/subscription-saas/snapshot-adapter/v1/`；
 - 创建或修改 Staging 数据库身份、权限、网络或 SSH 配置；
-- 修改实际 GitHub Actions 门禁工作流；
+- 激活或 dispatch 实际 GitHub Actions 门禁；仓库内工作流代码修改仅按获批基础设施计划逐任务施工并经 CI 审查；
 - 创建 Environment、签发 canary 实际运行授权、dispatch canary、修改 OIDC Provider/subject/role 或取得探测凭证；
 - 运行 sanitized snapshot、source gate 或 final Compose；
 - 恢复 Task 30、应用其 stash 或聚合 S1 退出证据；
 - 修改业务代码、业务迁移、模型、枚举、应用 RBAC、S2 或 S3。
 
-本轮允许同步修订两份既有实施计划，但三份文档分别保留批准记录，不能以其中一份通过代替其余批准。全部批准前不允许安装或执行；不新增总实施计划或通用运维框架。
+三份文档分别保留内容批准基线；状态提交不替代内容批准。I0 私有保管、canary 无云交接及真实探测仍须实际验证；I15B 缺少合法构建前快照或独立使用授权时必须停止，不自动补建供应机制。Task 29R 仅按获批计划完成仓库修复与后续独立批准的 qualification；qualification 通过后 Task 30 仍须单独授权，stash 保持冻结，S2/S3 不在本次范围。不新增总实施计划或通用运维框架。
 
 ## 背景与已核实现状
 
@@ -402,7 +402,7 @@ workflow job 的 `runs-on` 必须精确要求五个标签：GitHub 默认标签 
 
 后续获批实施时，现有 snapshot workflow 必须拆为下列三个 job，并作为独立 `workflow_dispatch` producer run 完整结束。它不作为 RC run 内的 reusable workflow，RC run 也不得在启动后临时选择内联或外部 snapshot 模式：
 
-1. **GitHub-hosted admission job**：checkout 固定 SHA，计算并记录 workflow digest 和允许 action 清单、验证 repository contracts、生成 route nonce 并 attest `snapshot-admission.v1`；实际 workflow blob 与本地 root policy 的独立一致性判断仍由可信启动器完成；
+1. **GitHub-hosted admission job**：checkout 固定 SHA，计算并记录 workflow digest 和允许 action 清单、验证 repository contracts、生成 route nonce 并发布未受信的 `snapshot-admission.v1` 输入；该 job 不获得 OIDC/attestation 权限。Root launcher 独立重新读取并核验 GitHub run/job/workflow/artifact 事实及本地 root policy 一致性，再签名 `snapshot-admission-verification.v1`；
 2. **self-hosted data job**：不 checkout repository、不运行任何 `uses` action、不运行 `pnpm install`、不加载仓库 Node 模块、不执行仓库 package scripts，只调用固定 root-owned adapter；
 3. **GitHub-hosted producer custody continuation**：从受控交接位置只接收加密对象引用、已完成脱敏/扫描的非敏感 proof、publisher receipt 和销毁证明，复核密文 digest/object version、attestation 与处置终态后形成 producer completion proof。该 job 不下载明文 dump、不取得 KMS Decrypt、不解包 DEK，也不解密 snapshot。
 

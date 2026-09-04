@@ -18,12 +18,13 @@
 
 **Dependent Plan:** `docs/superpowers/plans/2026-09-03-stage1-s1-execution-infrastructure-implementation-plan.md`; content baseline `31cc3e8c` is independently approved as conditionally executable. It alone owns infrastructure contracts, tooling, workflows and operational acceptance, including I0 authoritative-custody bootstrap before I1.
 
-**Approval Record:** 用户于 2026-09-04 批准本计划内容基线 `f50676c6` 的依赖与验收边界，并分别批准安全附录 `75aaa956` 及基础设施计划 `31cc3e8c`。本记录不替代 Task 0 要求的独立签名批准链，也不表示 S1 已完成。
+**Approval Record:** 用户于 2026-09-04 批准本计划内容基线 `f50676c6` 的依赖与验收边界，并分别批准安全附录 `75aaa956` 及基础设施计划 `31cc3e8c`。本记录不替代基础设施 Task 0 要求的 GitHub 本人评论及最终文档 blob 在线核验，也不表示 S1 已完成。用户已确认首次文档准入不要求预存数字签名链；本次仅对齐文字，不生成批准材料或恢复施工。
 
 **Plan Status:** 本次修订已批准；可按基础设施计划先完成仓库任务准入及 CI 审查，Task 29R-D 仍为零文件、零提交的依赖验收门禁。I0 私有保管及 canary 实测未完成；I15B 缺少合法构建前快照或独立使用授权时必须停止。外部操作逐项批准；qualification 通过后 Task 30 再单独授权，stash 冻结，S2/S3 不在范围内。
 
 ## Global Constraints
 
+- Infrastructure Task 0 alone uses the addendum's initial human trust anchor: after the revised documents pass review/required CI and merge, user ID `275060624` personally posts the exact three-document decisions/main SHA/blob OIDs in PR #316 of repository ID `1253231368`. Scope is `TASK0_DOCUMENT_ADMISSION_ONLY`. Read the specified unedited comment through GitHub API before generating the local index and again at admission; mismatch, edit, deletion or unavailable readback stops. Agent-authored approval, cached/local-only evidence or fabricated signatures cannot pass. This does not authorize starting work or substitute for any I0/external/runtime approval; no new signing system or parallel implementation belongs to this plan.
 - Start implementation in a new isolated worktree from a `main` commit that already contains the approved ADR, S0 specification, S1 specification, and this plan. Do not implement on the documentation worktree.
 - Before every implementation task run `git status --short` and stop on unrelated overlapping changes. Database preflight is phase-specific: Task 0 creates the controlled target; Tasks 1-2 are offline and must not read `DATABASE_URL`, repository `.env`, or connect to PostgreSQL; Task 3 and every later database-aware task run Prisma status/validation only through `scripts/release/with-controlled-target.mjs` and the Task 0 target record. Never run Prisma against an ambient connection.
 - S1 adds no business model, business enum, application RBAC permission, business migration, or feature flag. It must not change customer-visible behavior, application API contracts, domain semantics, audit semantics, lock order, or business transaction boundaries.
@@ -3215,7 +3216,7 @@ deletion or transfer must produce a lineage-wide disposition receipt.
 
 - [ ] **Step 1: Verify the dependency is eligible for acceptance**
 
-Require separate approval of all three revised documents, reviewed implementation commits
+Require separate approval of all three revised documents (the infrastructure Task 0 GitHub human record and final-blob readback, not a pre-existing digital signature chain), reviewed implementation commits
 for the infrastructure plan's complete repository and infrastructure scope, the newly approved exact
 content identities (preserving historical `24799d0c` and `380c0edb`, not treating them as approval of this revision), and a clean source SHA. I0 independent signing/archive readback must precede I1. Canary `155acf6a` confirms a design repair only; separately authorized real acceptance follows infrastructure I7/I8 and must precede later data execution and Task 29R acceptance. Verify the delivered contract-file
 manifest covers the new approval/use/access Schemas, closed matrix, canonicalization and negative
@@ -3333,6 +3334,7 @@ RC retention role/session was created.
 Include prebuild input authorization/custody and build provenance, same-RC source-only replay,
 Producer crypto authorization/slot/use/termination and later GitHub terminal admission observation,
 I0 independent signing/archive readbacks and actual private retention for all ordinary evidence.
+I0 must retain the initial Task 0 comment/API/git/index originals with their real GitHub human provenance; later custody must not backdate a signature or reinterpret that comment as I0/external-operation approval.
 This evidence package closes Task 29R-D only; it does not modify the repository or authorize Task 30.
 
 ---

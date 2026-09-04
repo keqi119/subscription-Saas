@@ -17,7 +17,7 @@
     "schemaVersion": { "const": "snapshot-admission.v1" },
     "dispatchAuthorizationDigest": { "$ref": "#/$defs/digest" },
     "releaseAttemptId": { "type": "string", "minLength": 1 },
-    "executionPurpose": { "const": "stage1-qualification" },
+    "executionPurpose": { "enum": ["qualification", "release-candidate"] },
     "producerRun": {
       "type": "object",
       "additionalProperties": false,

@@ -26,7 +26,7 @@ const validAdmission = {
   schemaVersion: "snapshot-admission.v1",
   dispatchAuthorizationDigest: DIGEST,
   releaseAttemptId: "attempt-1",
-  executionPurpose: "stage1-qualification",
+  executionPurpose: "qualification",
   producerRun: {
     repository: "keqi119/subscription-Saas",
     runId: "123",
@@ -39,6 +39,32 @@ const validAdmission = {
   route: { nonce: "c".repeat(32), label: `stage1-snapshot-export-123-${"c".repeat(32)}` },
   adapterDigest: DIGEST,
   environmentPolicyIdentityDigest: DIGEST
+};
+
+const purposeDispatch = {
+  schemaVersion: "rc-dispatch-authorization.v1",
+  authorizationId: "authorization-purpose-test",
+  executionPurpose: "qualification",
+  releaseAttemptId: validAdmission.releaseAttemptId,
+  sourceSha: validAdmission.producerRun.sourceSha,
+  producerWorkflow: {
+    path: ".github/workflows/sanitized-snapshot.yml",
+    ref: "main",
+    blobDigest: DIGEST
+  },
+  rcWorkflow: {
+    path: ".github/workflows/release-candidate-gate.yml",
+    ref: "main",
+    blobDigest: DIGEST
+  },
+  buildProofDigest: DIGEST,
+  buildBundleDigest: DIGEST,
+  repositoryContractDigest: DIGEST,
+  adapterDigest: DIGEST,
+  issuer: "unit-test-only",
+  issuedAt: NOW,
+  notAfter: "2026-09-04T01:00:00.000Z",
+  revocationPolicyDigest: DIGEST
 };
 
 function assertSchemaInvalidAdditionalProperties(schemaId, value) {
@@ -64,6 +90,19 @@ test("admission cannot reference a future observation", () => {
     ...validAdmission,
     environmentPolicyObservationDigest: DIGEST
   });
+});
+
+test("dispatch and admission share the approved closed purpose vocabulary", () => {
+  for (const value of [purposeDispatch, validAdmission]) {
+    for (const executionPurpose of ["qualification", "release-candidate"]) {
+      validateContract(value.schemaVersion, { ...value, executionPurpose });
+    }
+    for (const executionPurpose of ["stage1-qualification", "", "production"]) {
+      assert.throws(() => validateContract(value.schemaVersion, { ...value, executionPurpose }), {
+        code: "CONTRACT_SCHEMA_INVALID"
+      });
+    }
+  }
 });
 
 test("producer completion rejects self-reported future workflow terminal state", () => {

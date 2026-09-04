@@ -23,7 +23,7 @@
   "properties": {
     "schemaVersion": { "const": "rc-dispatch-authorization.v1" },
     "authorizationId": { "$ref": "#/$defs/id" },
-    "executionPurpose": { "const": "stage1-qualification" },
+    "executionPurpose": { "enum": ["qualification", "release-candidate"] },
     "releaseAttemptId": { "$ref": "#/$defs/id" },
     "sourceSha": { "$ref": "#/$defs/sha" },
     "producerWorkflow": { "$ref": "#/$defs/workflow" },

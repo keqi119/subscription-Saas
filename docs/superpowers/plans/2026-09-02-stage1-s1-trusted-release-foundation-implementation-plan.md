@@ -12,13 +12,15 @@
 
 **Security Addendum:** `docs/superpowers/specs/2026-09-03-stage1-s1-execution-infrastructure-security-addendum.zh-CN.md` at approved forward-revision content baseline `380c0edb`; `4f037a5c` records approval status only.
 
-**Previous Plan Baseline:** `a63a39c8` is the approved upstream revision; `1fe77ea2` is the original S1 implementation-plan baseline. This pending revision updates only the forward-lineage dependency and audit requirements described below.
+**Previous Plan Baseline:** `a63a39c8` is the previous approved upstream revision; `1fe77ea2` is the original S1 implementation-plan baseline. The current revision updates only the forward-lineage dependency and audit requirements described below.
 
 **Review History:** `a63a39c8` closed the Producer/RC approval separation, attempt-allocation order, and Task 29R-D ownership findings. Preserve those decisions. This revision aligns with `380c0edb`: frozen v1/forward v2 capability boundaries, prerequisite readback before capability approval, private lineage custody, the two-job claim/envelope protocol, and downstream access receipts. It does not revise the independent infrastructure plan.
 
 **Dependent Plan:** `docs/superpowers/plans/2026-09-03-stage1-s1-execution-infrastructure-implementation-plan.md`; it remains unapproved and must be revised independently after this plan is approved.
 
-**Plan Status:** 待独立复审。本次仅修订上游计划的依赖验收和 Task 30 消费约束，不授权代码、工作流或基础设施施工。独立基础设施实施计划仍须另行修订、提交和批准；两份计划全部批准前，Task 29R、Task 30 及外部施工继续阻断。
+**Approval Record:** 用户于 2026-09-04 批准内容基线 `24799d0c`；本次状态提交仅记录批准元数据，不改变该内容基线，也不表示 S1 已完成。
+
+**Plan Status:** 已批准（内容基线 `24799d0c`）。批准仅覆盖本次上游计划的依赖验收和 Task 30 消费约束，不授权代码、工作流或基础设施施工。独立基础设施实施计划仍须另行修订、提交和批准；Task 29R、Task 30 及外部操作继续阻断。
 
 ## Global Constraints
 

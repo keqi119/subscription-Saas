@@ -422,8 +422,11 @@ public repository 的标准 Linux Runner 当前提供 4 CPU、16 GiB 内存和 1
 ```text
 验证并保管 raw v1 proof
   → 从固定 workflow 与已批准 dispatch 授权继承 executionPurpose
-  → 计算一对一 execution-purpose-envelope.v1
-  → 条件创建 purpose-claim.v1 并 readback
+  → 冻结一对一 execution-purpose-envelope.v1 与 purpose-claim.v1
+  → lineage-purpose-store：claim 条件创建确认成功后，再条件创建 envelope
+  → writer session 撤销或确定失效
+  → lineage-purpose-readback：独立读回并验证 claim 与 envelope
+  → 成功 lineage-storage-access-receipt.v1
   → v2 custody 同时绑定 envelope 与 claim
   → v2 aggregate
   → v2 exit
@@ -455,7 +458,11 @@ Typed binding 必须使用封闭的 `oneOf`/判别联合，而不是一组大量
 
 某一 variant 缺少其必填身份、携带另一 variant 字段、使用 `null` 占位，或 envelope 与原始 proof 内已有身份不一致时，必须 fail closed。Schema、规范化规则和所有 variant 都进入 repository contract digest；任何语义变更只能前向发布新 envelope 版本。
 
-一对一关系由可信、create-only 的 `purpose-claim.v1` 强制执行。claim 的存储 key 由原始 proof digest 按版本化派生规则唯一确定，内容绑定原始 proof type/digest、purpose、envelope digest、`releaseAttemptId` 和 run/attempt。生成器先确定 envelope 的规范化内容和 digest，再以条件创建写入 claim 并完成 digest/object version readback，之后才允许保管 envelope。已存在的完全相同 claim 只能做只读 reconcile；任何字段不同均以 `RAW_PROOF_PURPOSE_ALREADY_CLAIMED` 拒绝。同一原始 proof digest 不得产生第二个 envelope，不得被重新包装为另一 purpose，也不得通过删除索引、改变对象路径或换聚合器绕过 claim。
+一对一关系由可信、create-only 的 `purpose-claim.v1` 强制执行。claim 的存储 key 由原始 proof digest 按版本化派生规则唯一确定，内容绑定原始 proof type/digest、purpose、envelope digest、`releaseAttemptId` 和 run/attempt。生成器先确定 envelope 的规范化内容和 digest，再生成并冻结指向该 envelope 的 claim；两者的 canonical bytes、digest 与 exact-key set 必须在 store approval 前固定。同一原始 proof digest 不得产生第二个 envelope，不得被重新包装为另一 purpose，也不得通过删除索引、改变对象路径或换聚合器绕过 claim。
+
+Claim/envelope 存储固定采用两个 job，不拆分为四阶段，也不允许运行时另选协议：`lineage-purpose-store` 只持有 writer profile，先条件创建 claim，且只有获得该次创建成功的明确响应后才条件创建 envelope；禁止并发写入两者、提前写 envelope，或在 writer 中执行 Head/Get/readback。两个创建都明确成功后，先完成 writer session 撤销或确定失效，再由独立批准的 `lineage-purpose-readback` 持 reader profile，按冻结的 exact-key set 与预期 digest 读回两者，核对 canonical bytes、对象版本和 claim→envelope/purpose/attempt/run 全部绑定。强制 readback 门槛位于成功 `lineage-storage-access-receipt.v1` 与 `custody-receipt.v2` 生成之前，不位于两次写入之间；写入响应本身不得替代 readback 证明。
+
+两次写入不是跨对象原子事务。Claim 写入失败、已存在冲突或结果 UNKNOWN 时，writer 必须停止，不能继续写 envelope；claim 已创建但 envelope 失败或冲突属于部分成功，两个对象写入/读回任一结果不明则按 `INTERRUPTED_UNKNOWN` 处理。上述状态及任一读回缺失、不匹配都不得生成成功 access receipt、custody 或进入 aggregate/exit；保留已写对象、原始 proof、批准链与失败记录，禁止补写、覆盖、删除 claim 或重新包装。冲突和 UNKNOWN 只允许 reader 在独立只读身份下按冻结目标诊断/reconcile：已存在的完全相同 claim 也只作只读记录，任何字段不同均以 `RAW_PROOF_PURPOSE_ALREADY_CLAIMED` 拒绝；reconcile 不得恢复本次失败尝试的写入或下游准入。后续执行按“失败、取消与 UNKNOWN”中的新 operation/run 与完整 proof lineage 规则处理。
 
 为保持无环，envelope 不反向引用尚未创建的 claim；claim 单向引用 envelope，随后 `custody-receipt.v2` 把两者纳入同一个可审计 subject。每份 v2 custody 必须同时绑定 envelope digest、`purposeClaimDigest`、按原始 proof digest 派生的 claim/envelope storage key/object version、条件创建证明 digest、claim/envelope readback digest 及其 `lineage-storage-access-receipt.v1` digest，并重新验证 claim 中的 envelope/purpose/run 身份与被保管 envelope 完全一致。缺少任一字段、派生 key 不一致、object version 被覆盖、v2 writer/reader capability lineage 不完整或 readback 不匹配时，aggregate 不得选择该证据。
 
@@ -509,8 +516,8 @@ Purpose claim、条件创建/readback 证明和 storage version 的保留期不�
 
    | `permissionProfile`          | 允许的精确 RC job ID                                   | 固定 Environment            | 允许动作                                                                                                                                        | 明确禁止                                                                                         |
    | ---------------------------- | ------------------------------------------------------ | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-   | `lineage-create-only-writer` | `lineage-purpose-store`、`lineage-custody-store`       | `trusted-release-execution` | 仅对本 job 的 exact-key set 执行带 `x-oss-forbid-overwrite=true` 的条件创建；purpose store 只写一对 claim/envelope，custody store 只写对应 node | Head/Get/List、覆盖、Delete、KMS、snapshot namespace、其他 node/job、跨 attempt/run、通配 prefix |
-   | `lineage-readback-reader`    | `lineage-purpose-readback`、`lineage-custody-readback` | `trusted-release-execution` | 仅对前序固定 store job 的 exact key/version/digest 执行 Head/Get 和字节/digest readback；不得接受目录、prefix 或调用方追加 key                  | Put/覆盖/List/Delete、KMS、snapshot namespace、其他 node/job、跨 attempt/run、通配 prefix        |
+   | `lineage-create-only-writer` | `lineage-purpose-store`、`lineage-custody-store`       | `trusted-release-execution` | 仅对 exact-key set 条件创建（`x-oss-forbid-overwrite=true`）；purpose store 先 claim 确认成功再写 envelope，不读回；custody store 只写对应 node | Head/Get/List、覆盖、Delete、KMS、snapshot namespace、其他 node/job、跨 attempt/run、通配 prefix |
+   | `lineage-readback-reader`    | `lineage-purpose-readback`、`lineage-custody-readback` | `trusted-release-execution` | 仅对前序固定 store job 的 exact-key set 执行 Head/Get 并核对版本/digest；purpose readback 独立验证两者后才准入 custody；禁止追加 key            | Put/覆盖/List/Delete、KMS、snapshot namespace、其他 node/job、跨 attempt/run、通配 prefix        |
    | `lineage-create-only-writer` | `lineage-aggregate-store`、`lineage-exit-store`        | `trusted-release-candidate` | 仅对本 job 的单一 aggregate 或 exit exact key 执行带 `x-oss-forbid-overwrite=true` 的条件创建                                                   | Head/Get/List、覆盖、Delete、KMS、snapshot namespace、其他 node/job、跨 attempt/run、通配 prefix |
    | `lineage-readback-reader`    | `lineage-aggregate-readback`、`lineage-exit-readback`  | `trusted-release-candidate` | 仅对前序固定 store job 的单一 exact key/version/digest 执行 Head/Get 和字节/digest readback                                                     | Put/覆盖/List/Delete、KMS、snapshot namespace、其他 node/job、跨 attempt/run、通配 prefix        |
 
@@ -576,9 +583,10 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 - runner job 与 GitHub API 终态不一致：以 `UNKNOWN` 处理；
 - 销毁证明、日志保管或 runner 注销任一缺失：即使加密 sanitized snapshot 已生成，也不得进入 source snapshot/final chain；
 - GitHub-hosted 容量、镜像、数据库、API/Web 或 Playwright 失败：保留本次失败证明，不得转为外部 JSON 或人工“通过”。
-- 原始 v1 proof 已完成但 envelope 生成或 purpose claim 条件创建结果不明：记录 `INTERRUPTED_UNKNOWN`，保留原始 proof、批准链和失败记录；只能以相同 operation 做只读 reconcile，禁止再次创建、覆盖或改 purpose；
+- Claim/envelope 成对写入部分成功或发生已存在冲突：记录 `FAILED`，保留已写对象且禁止补写、回滚删除或下游准入；reader 只读诊断/reconcile 不得把该失败尝试改作成功；
+- 原始 v1 proof 已完成但 envelope 生成、claim/envelope 任一次条件创建或成对 readback 结果不明：记录 `INTERRUPTED_UNKNOWN`，保留原始 proof、批准链和失败记录；只能以相同 operation 做只读 reconcile，禁止再次创建、覆盖、改 purpose 或下游准入；
 - envelope 已生成但 v2 custody 写入/readback 结果不明：同样记录 `INTERRUPTED_UNKNOWN`，禁止重新包装原始 proof 或覆盖 custody。若只读 reconcile 仍不能确定终态，本 attempt 永久不可提升；
-- 上述 UNKNOWN 不能通过同一 run 的新 operation“补成功”。合法恢复必须使用新的 operation/run，重新生成对应原始 proof 和完整 purpose lineage；旧对象继续按失败/UNKNOWN 保留策略保存，不得删除或覆盖。
+- 上述成对写入失败、冲突和 UNKNOWN 不能通过同一 run 的新 operation“补成功”。合法恢复必须使用新的 operation/run，重新生成对应原始 proof 和完整 purpose lineage；旧对象继续按失败/UNKNOWN 保留策略保存，不得删除或覆盖。
 
 ## 当前实现到目标的偏差
 
@@ -630,6 +638,7 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 - 同一 purpose attempt 内的 snapshot、source、build、final 或 Task 30 证据不能绑定同一 `releaseAttemptId` 和固定 source SHA；
 - 原始 v1 proof 未先验证/保管就生成 envelope，envelope 允许 CLI 传入 purpose，或 typed variant 缺少该 proof 类型必需的 Manifest、数据库、命令/能力身份；
 - 同一原始 proof digest 能生成多个 envelope、改变 purpose，或 purpose claim/custody 不具备 create-only、派生 key/version、条件创建/readback 证明与不短于 lineage 的保留期；
+- claim/envelope 未按两个 job 的固定协议依次条件创建并独立读回，writer 为完成顺序而取得读取权限，或部分成功、冲突、UNKNOWN、读回不匹配仍能生成成功 custody/下游证明；
 - dispatch、exact capability 和命令执行批准使用同一个含糊对象，或批准生成时点早于其必须绑定的身份；
 - exact capability 缺少唯一 `capabilityKind`、接受跨 variant 字段/组合凭证，或把 Publisher/JIT 强制包装成 OIDC cloud role；
 - v1 `oidc-cloud-role` 被用于 lineage Put/readback、增加 lineage permission profile 或允许新的 RC lineage job；v2 `lineage-oss-role` 缺少封闭 job/profile/node 矩阵，writer/reader 凭证共存，或 storage access receipt 与其所证明的 node 形成循环；
@@ -682,6 +691,7 @@ RC workflow 不得声明或接受 `finalExecutionRunId`、`finalExecutionArtifac
 - lineage node 是否先冻结再写入，`lineage-storage-access-receipt.v1` 是否由下一层单向引用且不递归写入自身；
 - 原始 v1 → 一对一 purpose envelope → v2 custody/aggregate/exit 是否无环、内容寻址且可机器验证；
 - v2 custody 是否同时绑定 envelope、purpose claim、派生 key/version、条件创建/readback 证明，且 claim 保留期覆盖完整 lineage；
+- 两个 purpose job 是否严格实现“claim 创建确认 → envelope 创建确认 → writer session 退出 → 独立读回两者 → 成功 access receipt/custody”，并拒绝部分成功、冲突、UNKNOWN 或读回失败进入下游；
 - typed envelope 是否按原始 proof 类型强制绑定 Manifest、数据库、命令/能力身份，而非依赖可选字段；
 - 外部 capability 与 Runner 数据库角色是否采用封闭分支，禁止 fresh 数据库命令伪造云端批准；
 - purpose 是否只能由固定 workflow 和 dispatch 授权继承，同一原始 digest 是否被永久限制为单一 envelope/purpose；

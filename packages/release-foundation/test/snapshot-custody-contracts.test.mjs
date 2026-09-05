@@ -249,6 +249,36 @@ function validLineageRetentionReceipt() {
         rawProofType: "source-gate-evidence.v1",
         rawProofDigest: digest("f"),
         custodyObservationDigest: digest("d")
+      },
+      {
+        addressingKind: "lineage",
+        objectType: "execution-purpose-envelope.v1",
+        key: `evidence/v1/${releaseAttemptId}/701/execution-purpose-envelope.v1/${"1".repeat(64)}`,
+        version: "purpose-envelope-version-001",
+        digest: digest("1"),
+        rawProofType: null,
+        rawProofDigest: null,
+        custodyObservationDigest: digest("4")
+      },
+      {
+        addressingKind: "lineage",
+        objectType: "custody-receipt.v2",
+        key: `evidence/v1/${releaseAttemptId}/701/custody-receipt.v2/${"2".repeat(64)}`,
+        version: "custody-version-001",
+        digest: digest("2"),
+        rawProofType: null,
+        rawProofDigest: null,
+        custodyObservationDigest: digest("5")
+      },
+      {
+        addressingKind: "lineage",
+        objectType: "s1-exit-evidence.v2",
+        key: `evidence/v1/${releaseAttemptId}/701/s1-exit-evidence.v2/${"3".repeat(64)}`,
+        version: "exit-version-001",
+        digest: digest("3"),
+        rawProofType: null,
+        rawProofDigest: null,
+        custodyObservationDigest: digest("6")
       }
     ],
     latestWholeLineageRetainUntil: "2027-04-01T00:00:00.000Z",
@@ -513,6 +543,19 @@ test("lineage retention receipt derives every exact key and rejects duplicate ad
       code: "LINEAGE_RETENTION_DISPOSITION_INVALID"
     });
   }
+});
+
+test("lineage retention receipt cannot relabel a purpose claim as ordinary lineage", () => {
+  const candidate = validLineageRetentionReceipt();
+  const claim = candidate.objects[1];
+  claim.addressingKind = "lineage";
+  claim.rawProofType = null;
+  claim.rawProofDigest = null;
+  claim.key = `evidence/v1/${releaseAttemptId}/701/purpose-claim.v1/${claim.digest.slice(7)}`;
+
+  assert.throws(() => validateLineageRetentionReceipt(candidate), {
+    code: "CONTRACT_SCHEMA_INVALID"
+  });
 });
 
 test("every Task 4 custody and lineage schema compiles and accepts its positive fixture", () => {

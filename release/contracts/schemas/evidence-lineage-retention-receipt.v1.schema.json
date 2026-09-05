@@ -86,6 +86,14 @@
             "type": "object",
             "properties": {
               "addressingKind": { "const": "lineage" },
+              "objectType": {
+                "enum": [
+                  "execution-purpose-envelope.v1",
+                  "custody-receipt.v2",
+                  "release-aggregate-proof.v2",
+                  "s1-exit-evidence.v2"
+                ]
+              },
               "rawProofType": { "type": "null" },
               "rawProofDigest": { "type": "null" }
             }

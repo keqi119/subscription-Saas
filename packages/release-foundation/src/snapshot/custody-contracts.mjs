@@ -6,6 +6,12 @@ import { validateContract } from "../schema-registry.mjs";
 
 const DAY_MS = 86_400_000;
 const contractRoot = new URL("../../../../release/contracts/", import.meta.url);
+const lineageRetentionObjectTypes = new Set([
+  "execution-purpose-envelope.v1",
+  "custody-receipt.v2",
+  "release-aggregate-proof.v2",
+  "s1-exit-evidence.v2"
+]);
 
 function loadPolicy(relativePath) {
   return JSON.parse(readFileSync(new URL(relativePath, contractRoot), "utf8"));
@@ -216,6 +222,7 @@ export function validateLineageRetentionReceipt(receipt) {
       );
     }
     return (
+      !lineageRetentionObjectTypes.has(object.objectType) ||
       object.rawProofType !== null ||
       object.rawProofDigest !== null ||
       object.key !==

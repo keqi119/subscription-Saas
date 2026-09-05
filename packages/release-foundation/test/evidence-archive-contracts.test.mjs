@@ -464,6 +464,47 @@ test("prebuild sanitized input rejects expiry, unavailable custody, missing auth
   }
 });
 
+test("prebuild byte upper bounds cover the known ciphertext and plaintext length", () => {
+  for (const field of ["ciphertextBytes", "plaintextBytes"]) {
+    const below = validPrebuildBinding();
+    below.capacityUpperBounds[field] = 8191;
+    assert.throws(
+      () =>
+        validatePrebuildSanitizedInputBinding(below, {
+          now: "2026-09-04T00:00:00.000Z"
+        }),
+      { code: "PREBUILD_SANITIZED_INPUT_INVALID" }
+    );
+
+    for (const validBound of [8192, 8193]) {
+      const candidate = validPrebuildBinding();
+      candidate.capacityUpperBounds[field] = validBound;
+      assert.doesNotThrow(() =>
+        validatePrebuildSanitizedInputBinding(candidate, {
+          now: "2026-09-04T00:00:00.000Z"
+        })
+      );
+    }
+  }
+
+  for (const [field, invalidBound] of [
+    ["ciphertextBytes", 1073741825],
+    ["plaintextBytes", 1099511627777],
+    ["plaintextBytes", 8192.5],
+    ["plaintextBytes", "8192"]
+  ]) {
+    const candidate = validPrebuildBinding();
+    candidate.capacityUpperBounds[field] = invalidBound;
+    assert.throws(
+      () =>
+        validatePrebuildSanitizedInputBinding(candidate, {
+          now: "2026-09-04T00:00:00.000Z"
+        }),
+      { code: "CONTRACT_SCHEMA_INVALID" }
+    );
+  }
+});
+
 test("prebuild input rejects current attempt, Producer, and build-proof claims", () => {
   for (const field of ["currentReleaseAttemptId", "producerCompletionDigest", "buildProofDigest"]) {
     const candidate = validPrebuildBinding();

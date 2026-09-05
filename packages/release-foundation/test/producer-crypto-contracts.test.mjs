@@ -142,8 +142,8 @@ function validEnvelope(authorization = validAuthorization()) {
     kmsContext,
     kmsContextDigest,
     gcmAad: { ...aad, digest: sha256Canonical(aad) },
-    snapshotAllocatedAt: allocatedAt,
-    expiresAt
+    snapshotAllocatedAt: authorization.snapshotAllocatedAt,
+    expiresAt: authorization.kms.context.expiresAt
   };
 }
 
@@ -224,6 +224,37 @@ test("producer crypto authorization accepts only the pre-existing generate-only 
     mutate(candidate);
     assert.throws(() => validateProducerCryptoAuthorization(candidate));
   }
+});
+
+test("producer run allocation cannot postdate authorization issuance", () => {
+  const late = validAuthorization();
+  late.snapshotAllocatedAt = "2026-09-04T00:00:00.000Z";
+  late.kms.context.expiresAt = "2026-10-04T00:00:00.000Z";
+  late.kms.contextDigest = sha256Canonical(late.kms.context);
+  const lateEnvelope = validEnvelope(late);
+  const lateProof = validUseProof(late);
+  assert.throws(() => validateProducerCryptoAuthorization(late), {
+    code: "PRODUCER_CRYPTO_AUTHORIZATION_INVALID"
+  });
+  assert.throws(
+    () =>
+      validateProducerCryptoUseProof(lateProof, { authorization: late, envelope: lateEnvelope }),
+    { code: "PRODUCER_CRYPTO_AUTHORIZATION_INVALID" }
+  );
+
+  const boundary = validAuthorization();
+  boundary.snapshotAllocatedAt = boundary.issuedAt;
+  boundary.kms.context.expiresAt = "2026-10-03T00:05:00.000Z";
+  boundary.kms.contextDigest = sha256Canonical(boundary.kms.context);
+  const boundaryEnvelope = validEnvelope(boundary);
+  const boundaryProof = validUseProof(boundary);
+  assert.doesNotThrow(() => validateProducerCryptoAuthorization(boundary));
+  assert.doesNotThrow(() =>
+    validateProducerCryptoUseProof(boundaryProof, {
+      authorization: boundary,
+      envelope: boundaryEnvelope
+    })
+  );
 });
 
 test("producer crypto authorization rejects future proof and v1/v2 authority fields", () => {

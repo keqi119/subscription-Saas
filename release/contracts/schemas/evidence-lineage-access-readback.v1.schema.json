@@ -155,7 +155,15 @@
       ],
       "properties": {
         "addressingKind": { "enum": ["claim", "lineage"] },
-        "objectType": { "type": "string", "pattern": "^[a-z0-9.-]+$", "maxLength": 128 },
+        "objectType": {
+          "enum": [
+            "execution-purpose-envelope.v1",
+            "purpose-claim.v1",
+            "custody-receipt.v2",
+            "release-aggregate-proof.v2",
+            "s1-exit-evidence.v2"
+          ]
+        },
         "digest": { "$ref": "#/$defs/digest" },
         "expectedDigest": { "$ref": "#/$defs/digest" },
         "rawProofType": {
@@ -168,7 +176,34 @@
         },
         "rawProofDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
         "key": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^*?]+$" }
-      }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "addressingKind": { "const": "claim" },
+            "objectType": { "const": "purpose-claim.v1" },
+            "rawProofType": { "type": "string" },
+            "rawProofDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "addressingKind": { "const": "lineage" },
+            "objectType": {
+              "enum": [
+                "execution-purpose-envelope.v1",
+                "custody-receipt.v2",
+                "release-aggregate-proof.v2",
+                "s1-exit-evidence.v2"
+              ]
+            },
+            "rawProofType": { "type": "null" },
+            "rawProofDigest": { "type": "null" }
+          }
+        }
+      ]
     }
   }
 }

@@ -509,6 +509,45 @@ test("lineage prerequisite readback accepts the exact purpose writer binding onl
   }
 });
 
+test("both purpose jobs reject a purpose claim relabeled as ordinary lineage", () => {
+  for (const job of [
+    {
+      id: "lineage-purpose-store",
+      permissionProfile: "lineage-create-only-writer",
+      deniedActions: ["Head", "Get", "List", "Delete", "KMS", "Database", "Snapshot", "JIT"]
+    },
+    {
+      id: "lineage-purpose-readback",
+      permissionProfile: "lineage-readback-reader",
+      deniedActions: ["Put", "List", "Delete", "KMS", "Database", "Snapshot", "JIT"]
+    }
+  ]) {
+    const candidate = validLineageReadback();
+    candidate.job.id = job.id;
+    candidate.job.instanceId = `${job.id}-001`;
+    candidate.job.permissionProfile = job.permissionProfile;
+    candidate.deniedActions = job.deniedActions;
+    const claim = candidate.exactObjects[0];
+    claim.addressingKind = "lineage";
+    claim.rawProofType = null;
+    claim.rawProofDigest = null;
+    claim.key = `evidence/v1/${releaseAttemptId}/701/purpose-claim.v1/${claim.digest.slice(7)}`;
+
+    assert.throws(() => validateLineageAccessReadback(candidate), undefined, job.id);
+  }
+});
+
+test("claim addressing remains bound to raw proof identity across attempt and run changes", () => {
+  const candidate = validLineageReadback();
+  const claim = structuredClone(candidate.exactObjects[0]);
+  candidate.releaseAttemptId = "attempt-20260903-002";
+  candidate.rcWorkflowRunId = "702";
+  candidate.exactObjects[1].key = `evidence/v1/attempt-20260903-002/702/execution-purpose-envelope.v1/${candidate.exactObjects[1].digest.slice(7)}`;
+
+  assert.deepEqual(candidate.exactObjects[0], claim);
+  assert.doesNotThrow(() => validateLineageAccessReadback(candidate));
+});
+
 test("lineage retention receipt requires whole-lineage and legal-hold boundaries", () => {
   assert.doesNotThrow(() => validateLineageRetentionReceipt(validLineageRetentionReceipt()));
   for (const mutate of [

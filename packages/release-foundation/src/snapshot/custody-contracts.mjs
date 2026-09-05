@@ -6,7 +6,7 @@ import { validateContract } from "../schema-registry.mjs";
 
 const DAY_MS = 86_400_000;
 const contractRoot = new URL("../../../../release/contracts/", import.meta.url);
-const lineageRetentionObjectTypes = new Set([
+const lineageObjectTypes = new Set([
   "execution-purpose-envelope.v1",
   "custody-receipt.v2",
   "release-aggregate-proof.v2",
@@ -35,6 +35,24 @@ function exactSet(left, right) {
   return (
     left.length === right.length &&
     [...left].sort().every((value, index) => value === [...right].sort()[index])
+  );
+}
+
+function validLineageObjectAddressing(object, releaseAttemptId, rcWorkflowRunId) {
+  if (object.addressingKind === "claim") {
+    return (
+      object.objectType === "purpose-claim.v1" &&
+      object.rawProofType !== null &&
+      object.rawProofDigest !== null &&
+      object.key === `evidence/claims/v1/${object.rawProofType}/${object.rawProofDigest.slice(7)}`
+    );
+  }
+  return (
+    lineageObjectTypes.has(object.objectType) &&
+    object.rawProofType === null &&
+    object.rawProofDigest === null &&
+    object.key ===
+      `evidence/v1/${releaseAttemptId}/${rcWorkflowRunId}/${object.objectType}/${object.digest.slice(7)}`
   );
 }
 
@@ -167,22 +185,14 @@ export function validateLineageAccessReadback(readback) {
     if (object.digest !== object.expectedDigest || /[*?]/.test(object.key)) {
       throw contractError("LINEAGE_ACCESS_OBJECT_INVALID");
     }
-    if (object.addressingKind === "claim") {
-      if (
-        object.rawProofType === null ||
-        object.rawProofDigest === null ||
-        object.objectType !== "purpose-claim.v1" ||
-        object.key !== `evidence/claims/v1/${object.rawProofType}/${object.rawProofDigest.slice(7)}`
-      ) {
-        throw contractError("LINEAGE_CLAIM_KEY_INVALID");
-      }
-    } else if (
-      object.rawProofType !== null ||
-      object.rawProofDigest !== null ||
-      object.key !==
-        `evidence/v1/${readback.releaseAttemptId}/${readback.rcWorkflowRunId}/${object.objectType}/${object.digest.slice(7)}`
+    if (
+      !validLineageObjectAddressing(object, readback.releaseAttemptId, readback.rcWorkflowRunId)
     ) {
-      throw contractError("LINEAGE_OBJECT_KEY_INVALID");
+      throw contractError(
+        object.addressingKind === "claim"
+          ? "LINEAGE_CLAIM_KEY_INVALID"
+          : "LINEAGE_OBJECT_KEY_INVALID"
+      );
     }
   }
   const expectedTypes = {
@@ -213,21 +223,7 @@ export function validateLineageRetentionReceipt(receipt) {
   const invalidObject = receipt.objects.some((object) => {
     if (objectKeys.has(object.key)) return true;
     objectKeys.add(object.key);
-    if (object.addressingKind === "claim") {
-      return (
-        object.objectType !== "purpose-claim.v1" ||
-        object.rawProofType === null ||
-        object.rawProofDigest === null ||
-        object.key !== `evidence/claims/v1/${object.rawProofType}/${object.rawProofDigest.slice(7)}`
-      );
-    }
-    return (
-      !lineageRetentionObjectTypes.has(object.objectType) ||
-      object.rawProofType !== null ||
-      object.rawProofDigest !== null ||
-      object.key !==
-        `evidence/v1/${receipt.releaseAttemptId}/${receipt.rcWorkflowRunId}/${object.objectType}/${object.digest.slice(7)}`
-    );
+    return !validLineageObjectAddressing(object, receipt.releaseAttemptId, receipt.rcWorkflowRunId);
   });
   if (
     instant(receipt.appliedAt) < required ||
@@ -385,7 +381,8 @@ export function validatePrebuildSanitizedInputBinding(binding, { now } = {}) {
     instant(authority.validUntil) <= at ||
     instant(authority.validFrom) >= instant(authority.validUntil) ||
     instant(authority.validUntil) > instant(binding.snapshotExpiresAt) ||
-    binding.capacityUpperBounds.ciphertextBytes < binding.ciphertext.sizeBytes
+    binding.capacityUpperBounds.ciphertextBytes < binding.ciphertext.sizeBytes ||
+    binding.capacityUpperBounds.plaintextBytes < binding.ciphertext.sizeBytes
   ) {
     throw contractError("PREBUILD_SANITIZED_INPUT_INVALID");
   }

@@ -65,7 +65,8 @@ export function validateProducerCryptoAuthorization(authorization) {
     issuedAt > notBefore ||
     notBefore > notAfter ||
     notAfter - notBefore > 900_000 ||
-    authorization.session.requestedDurationSeconds * 1000 > notAfter - notBefore
+    authorization.session.requestedDurationSeconds * 1000 > notAfter - notBefore ||
+    allocatedAt > issuedAt
   ) {
     throw contractError("PRODUCER_CRYPTO_AUTHORIZATION_INVALID");
   }

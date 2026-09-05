@@ -10,9 +10,9 @@
 
 **Spec:** [最小受控发布决策](../specs/2026-09-06-stage1-minimal-controlled-release-decision.zh-CN.md) §1/2/4.1/5/6；[覆盖路线图](./2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)。
 
-**Status:** 待独立批准，未执行。P0 与 P1 可分别批准；本文不批准 R1–R4 的实现，不以这些包细化完成为前置。
+**Status:** P0 已按用户对 `5b4cd68d` 的本轮评审独立批准，尚未执行；P1 待局部终审，禁止执行。本文不批准 R1–R4 的实现，不以这些包细化完成为前置。
 
-本次复审仅闭环三个执行问题：Runbook 第 10 节 ManualTask 遗漏、现存 Task 0 目标的精确退役、operation-scoped 原始结果保管。路线/信任原则不重开设计。P0/P1 仍未获批；P1.0 的实际退役另需明确批准。
+本次仅修订两项剩余 P1：删除前可审计的串行门禁，以及新目标的完整精确回收。P0 内容与已批准边界不变；不重开路线/安全架构，不启动 P0/P1。P1.0 的实际旧目标退役仍须单独批准。
 
 ## Global Constraints
 
@@ -257,6 +257,8 @@ if ($LASTEXITCODE -ne 0) { throw 'P0_COMMIT_FAILED' }
 
 **Interfaces：** bootstrap 生成 `.release-local/controlled-target.v1.json`；wrapper 仅接受现有 migrate/verify/runtime-test。独立 suite launcher 自行 provision/迁移/角色注入/Schema diff/计数/保管/回收，不从 wrapper 借 URL。
 
+本机新增资产仅为 `.release-local/p1-lifecycle.lock`、`p1-operations/<UUID>` 的会话/门禁/checkpoint/回读文件，以及 `p1-retirements/<UUID>` 的登记与五文件归档；全部只在获批执行时生成、保持 Git ignored，不增加产品/Runner/Schema/工作流文件。
+
 ### P1 本地记录约定（只用于本次开发会话）
 
 P1 获批后，在 worktree 根的同一个 PowerShell 7 会话定义以下 helper；**不写入仓库脚本，不成为 Runner/Schema/发布入口**。每次命令独立 UUID 目录，固定根 `.release-local/p1-operations`，只保存受控本地输出。原始输出可能包含调试信息，必须 owner-only，不上传、不贴聊天；Git 索引只收脱敏摘要。
@@ -287,7 +289,11 @@ function Get-P1LocalPath {
 }
 
 function Invoke-P1Recorded {
-  param([string]$Step, [string]$Program, [string[]]$Argv)
+  [CmdletBinding(DefaultParameterSetName='Native',PositionalBinding=$false)]
+  param([Parameter(Position=0)][string]$Step,
+    [Parameter(Mandatory,Position=1,ParameterSetName='Native')][string]$Program,
+    [Parameter(Position=2,ParameterSetName='Native')][string[]]$Argv,
+    [Parameter(Mandatory,ParameterSetName='LocalAction')][scriptblock]$Action)
   $operationId = [guid]::NewGuid().ToString()
   $dir = Get-P1LocalPath (Join-Path $stage1P1Root $operationId)
   New-Item -ItemType Directory -Path $dir -ErrorAction Stop | Out-Null
@@ -300,6 +306,7 @@ function Invoke-P1Recorded {
   if (Test-Path -LiteralPath '.release-local/runs') {
     $beforeRuns = @(Get-ChildItem -LiteralPath '.release-local/runs' -Directory | Select-Object -ExpandProperty Name)
   }
+  if ($PSCmdlet.ParameterSetName -eq 'LocalAction') { $Program='PowerShell-local-plan'; $Argv=@($Action.ToString()) }
   $command = [ordered]@{operationId=$operationId;step=$Step;sourceSha=$sourceSha;program=$Program;argv=$Argv;startedAt=$startedAt;beforeRunIds=$beforeRuns}
   $utf8 = [Text.UTF8Encoding]::new($false)
   [IO.File]::WriteAllText((Join-Path $dir 'command.json'), ($command | ConvertTo-Json -Depth 8), $utf8)
@@ -309,10 +316,16 @@ function Invoke-P1Recorded {
   Start-Transcript -Path (Join-Path $dir 'session.log') -NoClobber | Out-Null
   try {
     Write-Host "operation=$operationId step=$Step source=$sourceSha start=$startedAt"
-    & $Program @Argv 1> (Join-Path $dir 'stdout.log') 2> (Join-Path $dir 'stderr.log')
-    $nativeExit = $LASTEXITCODE
+    if ($PSCmdlet.ParameterSetName -eq 'LocalAction') {
+      & $Action $dir $operationId 1> (Join-Path $dir 'stdout.log') 2> (Join-Path $dir 'stderr.log')
+      $nativeExit = 0 # 仅整个同步 block 正常返回；每个 native exit 由 block 当场检查。
+    } else {
+      & $Program @Argv 1> (Join-Path $dir 'stdout.log') 2> (Join-Path $dir 'stderr.log')
+      $nativeExit = $LASTEXITCODE
+    }
     Write-Host "nativeExit=$nativeExit"
   } catch {
+    if ($PSCmdlet.ParameterSetName -eq 'LocalAction') { $nativeExit=1 }
     Write-Host 'P1_COMMAND_ABORTED'
   } finally {
     $finishedAt = [DateTime]::UtcNow.ToString('o')
@@ -339,6 +352,8 @@ function Invoke-P1Recorded {
 ```
 
 `command.json/result.json` 是普通会话元数据，不带新 Schema、不称 execution proof。本地 operationId 与已有 launcher 报告的 operationId/runId 分开记录。重开终端先根据原目录核对原件；缺 result、exitCode 为 null、硬中断或 transcript 未关闭均记 INTERRUPTED_UNKNOWN，不覆盖/盲重试。
+
+`LocalAction` 只供下文两处共享退役 block 使用，不是仓库 CLI 或任意脚本入口。它与 native 分支共用独立 operation/transcript/退出码记录；部分删除后 block 抛错即使记录 exit1，也仍按处置阶段记 UNKNOWN，不当成“零副作用失败”。
 
 ### P1 suite 的只读回读函数
 
@@ -430,6 +445,223 @@ try {
 
 成功日志的 sanitizedLogDigest 原件当前不保证落盘；stderr 如有 sanitized diagnostic，保存在本次 stderr.log，但不虚构成功日志原件。正常 PASSED/FAILED 在返回前都可删除 runs/<runId>，因此成功回读不要求目录差集仍有 runId；绑定本次 stdout 原件 hash、report UUID、receipt 的内容/attestation/时间窗。只有缺 report 的异常分支才用目录差集定位 incident。启动早期失败、硬中断也可能无 incident：保留 transcript/result/差集并记 UNKNOWN/原件不足，不假设目标已删或必然保留，不盲目重试/cleanup。
 
+### P1 共享资源登记与 pre-retirement 门禁
+
+以下是本计划的本地同步操作块，不创建仓库模块/Schema。P1.0 与 P1.6 必须调用同一块，不得拆出删除命令手工续跑。`Invoke-P1Recorded -Action` 生成一次全新的 pre-retirement operation；其 `pre-retirement.json`、digest、删除/移动进度、终态和 transcript 共同证明删除前的实际观察。
+
+固定 `.release-local/p1-lifecycle.lock` 使用 `FileShare.None`，从最后复核持续持有到完整回收读回；P1.2 创建/登记也使用同一锁。它只串行化遵守本计划的本地执行，**不是 Docker/数据库跨资源原子事务**。owner 必须先暂停全部潜在消费者和 record 写入者，确认停用窗口覆盖完整操作；无法保证窗口即 BLOCKED。操作中不等待人工批准、不交给后台、不跨会话消费旧 PASS。删除期间另以 `FileShare.Read` 固定 record，允许现有 cleanup 重读，拒绝写入/替换；释放后只做精确归档。
+
+- [ ] 定义以下只读登记 helper。所有新文件用 CreateNew、flush 和读回，禁止覆盖。仅 `database.migrationHead` 可在 P1.3 的批准迁移步骤变化，其余字段必须与初始副本一致；初始 hash 和最终 hash 分开保管。
+
+```powershell
+function Write-P1NewJson {
+  param([string]$Path, $Value)
+  $Path=Get-P1LocalPath $Path
+  $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value | ConvertTo-Json -Depth 30))
+  $stream=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+  try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+function Open-P1LifecycleGuard {
+  $file=Get-P1LocalPath '.release-local/p1-lifecycle.lock'
+  $guard=[IO.File]::Open($file,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+  try {
+    icacls $file /inheritance:r /grant:r ($stage1Owner + ':F') | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'P1_GUARD_ACL_FAILED' }
+    return $guard
+  } catch { $guard.Dispose(); throw }
+}
+function Get-P1StableRecord {
+  param([string]$Path)
+  $record=Get-Content -LiteralPath (Get-P1LocalPath $Path) -Raw | ConvertFrom-Json -AsHashtable
+  $record.database.Remove('migrationHead') | Out-Null
+  return ($record | ConvertTo-Json -Depth 20 -Compress)
+}
+function Get-P1TargetMount {
+  param($Record)
+  if (Test-Path Env:DOCKER_HOST) { throw 'P1_DOCKER_HOST_OVERRIDE_PRESENT' }
+  if ($Record.container.id -notmatch '^[0-9a-f]{64}$') { throw 'P1_CONTAINER_ID_INVALID' }
+  $identity=docker inspect --format '{{.Id}}|{{.Config.Image}}|{{index .Config.Labels "subscription-s1-controlled"}}|{{index .Config.Labels "subscription-s1-controlled.run-id"}}' $Record.container.id
+  if ($LASTEXITCODE -ne 0) { throw 'P1_CONTAINER_INSPECT_FAILED' }
+  if ($identity -ne ($Record.container.id+'|'+$Record.image.repository+'@'+$Record.image.resolvedDigest+'|v1|'+$Record.container.runId)) { throw 'P1_CONTAINER_IDENTITY_CHANGED' }
+  $mountJson=docker inspect --format '{{json .Mounts}}' $Record.container.id
+  if ($LASTEXITCODE -ne 0) { throw 'P1_MOUNTS_FAILED' }
+  $mount=@(($mountJson | ConvertFrom-Json) | Where-Object Destination -eq '/var/lib/postgresql/data')
+  if ($mount.Count -ne 1 -or $mount[0].Type -ne 'volume' -or $mount[0].Name -notmatch '^[0-9a-f]{64}$' -or $mount[0].RW -ne $true) { throw 'P1_VOLUME_SCOPE_INVALID' }
+  $owners=@(docker ps -aq --no-trunc --filter ("volume="+$mount[0].Name))
+  if ($LASTEXITCODE -ne 0) { throw 'P1_VOLUME_OWNERS_UNKNOWN' }
+  if ($owners.Count -ne 1 -or $owners[0] -ne $Record.container.id) { throw 'P1_VOLUME_NOT_EXCLUSIVE' }
+  $context=docker context show
+  if ($LASTEXITCODE -ne 0) { throw 'P1_CONTEXT_UNKNOWN' }
+  $endpoint=docker context inspect --format '{{(index .Endpoints "docker").Host}}'
+  if ($LASTEXITCODE -ne 0 -or $endpoint -notmatch '^(npipe|unix)://') { throw 'P1_LOCAL_ENDPOINT_REQUIRED' }
+  return [ordered]@{identity=$identity;volume=$mount[0].Name;mount=$mount[0];owners=$owners;context=$context;endpoint=$endpoint}
+}
+function Save-P1TargetRegistration {
+  param([string]$OriginRef)
+  if ([string]::IsNullOrWhiteSpace($OriginRef)) { throw 'P1_TARGET_ORIGIN_REQUIRED' }
+  $dir=Get-P1LocalPath (Join-Path '.release-local/p1-retirements' ([guid]::NewGuid().ToString()))
+  New-Item -ItemType Directory -Path $dir -ErrorAction Stop | Out-Null
+  icacls $dir /inheritance:r /grant:r ($stage1Owner + ':(OI)(CI)F') | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'P1_RETIREMENT_ACL_FAILED' }
+  $source=Get-P1LocalPath '.release-local/controlled-target.v1.json'
+  $hash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+  Copy-Item -LiteralPath $source -Destination (Join-Path $dir 'record-initial.json') -ErrorAction Stop
+  if ((Get-FileHash -LiteralPath (Join-Path $dir 'record-initial.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash) { throw 'P1_INITIAL_RECORD_CHANGED' }
+  $record=Get-Content -LiteralPath $source -Raw | ConvertFrom-Json
+  $mount=Get-P1TargetMount $record
+  $digest=Write-P1NewJson (Join-Path $dir 'target-registration.json') ([ordered]@{originRef=$OriginRef;initialRecordHash=$hash;target=$record;docker=$mount})
+  Write-Host "P1_TARGET_REGISTRATION=$dir digest=$digest"
+  return [pscustomobject]@{Directory=$dir;Digest=$digest}
+}
+```
+
+- [ ] 定义唯一退役 block。调用前的四个绑定值是本次保管的 registration、最终 record hash、真实批准引用和 owner 停用窗口引用；赋值不构成授权。登记目录只保管本目标。先检查五文件归档条件，门禁通过后连续删除精确容器、精确卷并归档五文件，不能只调用旧 cleanup 就宣布成功。
+
+```powershell
+$stage1RetirementAction = {
+  param($operationDir,$operationId)
+  $guard=$null; $recordGuard=$null; $phase='PREFLIGHT'; $gateHash=$null; $failure=$null
+  $moved=[Collections.Generic.List[string]]::new()
+  try {
+    $guard=Open-P1LifecycleGuard
+    if ([string]::IsNullOrWhiteSpace($stage1RetirementApprovalRef) -or [string]::IsNullOrWhiteSpace($stage1OwnerWindowRef)) { throw 'P1_RETIREMENT_APPROVAL_REQUIRED' }
+    $archive=Get-P1LocalPath $stage1TargetRegistration.Directory
+    if ((Split-Path $archive -Parent) -ne (Get-P1LocalPath '.release-local/p1-retirements') -or (Split-Path $archive -Leaf) -notmatch '^[0-9a-f-]{36}$') { throw 'P1_ARCHIVE_SCOPE_INVALID' }
+    $registrationFile=Join-Path $archive 'target-registration.json'
+    if ((Get-FileHash -LiteralPath $registrationFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stage1TargetRegistration.Digest) { throw 'P1_REGISTRATION_CHANGED' }
+    $registration=Get-Content -LiteralPath $registrationFile -Raw | ConvertFrom-Json
+    $recordPath=Get-P1LocalPath '.release-local/controlled-target.v1.json'
+    $recordGuard=[IO.File]::Open($recordPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    $initial=Get-P1LocalPath (Join-Path $archive 'record-initial.json')
+    if ((Get-FileHash -LiteralPath $initial -Algorithm SHA256).Hash.ToLowerInvariant() -ne $registration.initialRecordHash) { throw 'P1_INITIAL_ARCHIVE_CHANGED' }
+    if ((Get-P1StableRecord $initial) -ne (Get-P1StableRecord $recordPath)) { throw 'P1_RESOURCE_IDENTITY_CHANGED' }
+    if ((Get-FileHash -LiteralPath $recordPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stage1FinalRecordHash) { throw 'P1_FINAL_RECORD_CHANGED' }
+    $record=Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
+    $names=@('bootstrap.json','migrate.json','verify.json','runtime-test.json')
+    $secretRoot=Get-P1LocalPath '.release-local/secrets'
+    $entries=@(Get-ChildItem -LiteralPath $secretRoot -Force)
+    if ($entries.Count -ne 4 -or @($entries | Where-Object { $_.PSIsContainer -or $_.Name -notin $names }).Count -ne 0) { throw 'P1_SECRET_SCOPE_MISMATCH' }
+    $pairs=@([pscustomobject]@{Source=$recordPath;Target=(Get-P1LocalPath (Join-Path $archive 'controlled-target.v1.json'))})
+    foreach ($name in $names) {
+      $source=Get-P1LocalPath (Join-Path $secretRoot $name)
+      if ((Get-P1LocalPath $record.secretFiles.($name.Replace('.json',''))) -ne $source) { throw 'P1_SECRET_REFERENCE_MISMATCH' }
+      $pairs += [pscustomobject]@{Source=$source;Target=(Get-P1LocalPath (Join-Path $archive $name))}
+    }
+    foreach ($pair in $pairs) {
+      if (-not (Test-Path -LiteralPath $pair.Source -PathType Leaf) -or (Test-Path -LiteralPath $pair.Target)) { throw 'P1_ARCHIVE_PRESTATE_INVALID' }
+    }
+    # 重新连接真实目标，不复用批准前的 observation。verify 不改写 record。
+    $observerOutput=@(& node scripts/release/with-controlled-target.mjs --profile verify -- pnpm --filter @subscription-saas/api exec node --input-type=module -e $stage1Observer)
+    if ($LASTEXITCODE -ne 0) { throw 'P1_CONSUMER_OR_DATABASE_IDENTITY_CHANGED' }
+    $observation=($observerOutput -join "`n") | ConvertFrom-Json -NoEnumerate
+    if ($observation -isnot [pscustomobject] -or @($observation.PSObject.Properties).Count -ne 1 -or ($observation.other_sessions -isnot [int] -and $observation.other_sessions -isnot [long]) -or $observation.other_sessions -ne 0) { throw 'P1_CONSUMERS_PRESENT_OR_OBSERVATION_INVALID' }
+    $actual=Get-P1TargetMount $record
+    if (($actual | ConvertTo-Json -Depth 20 -Compress) -ne ($registration.docker | ConvertTo-Json -Depth 20 -Compress)) { throw 'P1_DOCKER_OR_VOLUME_CHANGED' }
+    $gate=[ordered]@{operationId=$operationId;status='PASS';checkedAt=[DateTime]::UtcNow.ToString('o');approvalRef=$stage1RetirementApprovalRef;ownerWindowRef=$stage1OwnerWindowRef;registrationDigest=$stage1TargetRegistration.Digest;finalRecordHash=$stage1FinalRecordHash;observation=$observation;docker=$actual}
+    $gateFile=Join-Path $operationDir 'pre-retirement.json'
+    $gateHash=Write-P1NewJson $gateFile $gate
+    if ((Get-FileHash -LiteralPath $gateFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $gateHash) { throw 'P1_GATE_READBACK_FAILED' }
+    Write-Host "pre-retirement operation=$operationId digest=$gateHash PASS"
+    # 同一前台操作/锁内立即消费门禁，以下之前没有删除；此后不等待人工输入。
+    $phase='CONTAINER_DELETE_REQUESTED'
+    & node scripts/release/bootstrap-controlled-postgres.mjs --cleanup $recordPath
+    if ($LASTEXITCODE -ne 0) { throw 'P1_CONTAINER_RETIREMENT_UNKNOWN' }
+    $containers=@(docker ps -aq --no-trunc)
+    if ($LASTEXITCODE -ne 0 -or $record.container.id -in $containers) { throw 'P1_CONTAINER_READBACK_UNKNOWN' }
+    $phase='CONTAINER_REMOVED'
+    $owners=@(docker ps -aq --no-trunc --filter ("volume="+$actual.volume))
+    if ($LASTEXITCODE -ne 0 -or $owners.Count -ne 0) { throw 'P1_VOLUME_STILL_REFERENCED_OR_UNKNOWN' }
+    $phase='VOLUME_DELETE_REQUESTED'
+    & docker volume rm $actual.volume
+    if ($LASTEXITCODE -ne 0) { throw 'P1_VOLUME_RETIREMENT_UNKNOWN' }
+    $volumes=@(docker volume ls -q)
+    if ($LASTEXITCODE -ne 0 -or $actual.volume -in $volumes) { throw 'P1_VOLUME_READBACK_UNKNOWN' }
+    $phase='VOLUME_REMOVED'
+    $recordGuard.Dispose(); $recordGuard=$null
+    foreach ($pair in $pairs) {
+      $source=Get-P1LocalPath $pair.Source; $destination=Get-P1LocalPath $pair.Target
+      if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Test-Path -LiteralPath $destination)) { throw 'P1_MOVE_PRESTATE_CHANGED' }
+      Move-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
+      $moved.Add((Split-Path $destination -Leaf)); Write-Host ('moved='+$moved[-1])
+    }
+    if (@(Get-ChildItem -LiteralPath $secretRoot -Force).Count -ne 0) { throw 'P1_SECRET_DIRECTORY_NOT_EMPTY' }
+    Remove-Item -LiteralPath $secretRoot -ErrorAction Stop # 非递归，只删已空目录。
+    foreach ($pair in $pairs) {
+      if ((Test-Path -LiteralPath $pair.Source) -or -not (Test-Path -LiteralPath $pair.Target -PathType Leaf)) { throw 'P1_ARCHIVE_READBACK_FAILED' }
+      icacls $pair.Target /inheritance:r /grant:r ($stage1Owner + ':F') | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw 'P1_ARCHIVE_ACL_FAILED' }
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $archive 'controlled-target.v1.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stage1FinalRecordHash) { throw 'P1_ARCHIVED_RECORD_CHANGED' }
+    $phase='COMPLETE'
+  } catch {
+    $failure=if ($_.Exception.Message -match '^P1_[A-Z_]+$') { $_.Exception.Message } else { 'P1_RETIREMENT_OPERATION_FAILED' }
+    throw
+  } finally {
+    try {
+      $status=if ($phase -eq 'COMPLETE') { 'COMPLETE' } elseif ($phase -eq 'PREFLIGHT') { 'BLOCKED' } else { 'UNKNOWN' }
+      $digest=Write-P1NewJson (Join-Path $operationDir 'retirement-result.json') ([ordered]@{operationId=$operationId;status=$status;phase=$phase;errorCode=$failure;deletionAttempted=($phase -ne 'PREFLIGHT');preRetirementDigest=$gateHash;moved=$moved.ToArray();finishedAt=[DateTime]::UtcNow.ToString('o')})
+      Write-Host "retirement-result digest=$digest status=$status phase=$phase"
+    } finally {
+      if ($null -ne $recordGuard) { $recordGuard.Dispose() }
+      if ($null -ne $guard) { $guard.Dispose() }
+    }
+  }
+}
+```
+
+门禁不通过须 `BLOCKED/deletionAttempted=false`；发出第一个删除请求后失败、硬中断或终态文件缺失一律 UNKNOWN，不自动补删、从头重跑或 bootstrap。成功后独立读回本 operation 的 gate/result/transcript/hash、五文件存在性和 owner-only ACL、源 record/secrets 消失、精确容器/卷不存在。归档仅是本地凭证隔离保管，不是删除字节或密码学销毁；按 GUID 保留，CreateNew 和目标不存在断言禁止覆盖，当前入口不再引用归档路径。
+
+- [ ] 定义可重复用于新旧目标的只读核验方法；每个 operation 的回读文件只能首次创建。下面不读取 secret 内容，ACL 验证有其他主体的 Allow 项即失败；归档文件不合格时不能假报 COMPLETE。
+
+```powershell
+function Test-P1RetirementReadback {
+  param($Operation,$Registration)
+  $dir=Get-P1LocalPath $Operation.Directory
+  if ((Split-Path $dir -Parent) -ne $stage1P1Root -or (Split-Path $dir -Leaf) -ne $Operation.OperationId) { throw 'P1_RETIREMENT_OPERATION_PATH' }
+  $command=Get-Content -LiteralPath (Join-Path $dir 'command.json') -Raw | ConvertFrom-Json
+  $result=Get-Content -LiteralPath (Join-Path $dir 'result.json') -Raw | ConvertFrom-Json
+  $retired=Get-Content -LiteralPath (Join-Path $dir 'retirement-result.json') -Raw | ConvertFrom-Json
+  $gate=Get-Content -LiteralPath (Join-Path $dir 'pre-retirement.json') -Raw | ConvertFrom-Json
+  foreach ($value in @($command,$result,$retired,$gate)) {
+    if ($value.operationId -ne $Operation.OperationId) { throw 'P1_RETIREMENT_OPERATION_MISMATCH' }
+  }
+  if ($result.exitCode -ne 0 -or $null -eq $result.exitCode -or $retired.status -ne 'COMPLETE' -or $retired.phase -ne 'COMPLETE' -or $gate.status -ne 'PASS') { throw 'P1_RETIREMENT_NOT_COMPLETE' }
+  foreach ($name in @('command.json','stdout.log','stderr.log','session.log')) {
+    if ((Get-FileHash -LiteralPath (Join-Path $dir $name) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $result.fileHashes.$name) { throw 'P1_RETIREMENT_LOG_CHANGED' }
+  }
+  $gateHash=(Get-FileHash -LiteralPath (Join-Path $dir 'pre-retirement.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($gateHash -ne $retired.preRetirementDigest -or $gate.registrationDigest -ne $Registration.Digest) { throw 'P1_RETIREMENT_DIGEST_MISMATCH' }
+  $archive=Get-P1LocalPath $Registration.Directory
+  if ((Get-FileHash -LiteralPath (Join-Path $archive 'target-registration.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Registration.Digest) { throw 'P1_REGISTRATION_READBACK_CHANGED' }
+  $target=Get-Content -LiteralPath (Join-Path $archive 'target-registration.json') -Raw | ConvertFrom-Json
+  if (Test-Path Env:DOCKER_HOST) { throw 'P1_DOCKER_HOST_OVERRIDE_PRESENT' }
+  $context=docker context show
+  if ($LASTEXITCODE -ne 0 -or $context -ne $target.docker.context) { throw 'P1_READBACK_CONTEXT_CHANGED' }
+  $endpoint=docker context inspect --format '{{(index .Endpoints "docker").Host}}'
+  if ($LASTEXITCODE -ne 0 -or $endpoint -ne $target.docker.endpoint) { throw 'P1_READBACK_ENDPOINT_CHANGED' }
+  $containers=@(docker ps -aq --no-trunc)
+  if ($LASTEXITCODE -ne 0 -or $target.target.container.id -in $containers) { throw 'P1_RETIRED_CONTAINER_PRESENT_OR_UNKNOWN' }
+  $volumes=@(docker volume ls -q)
+  if ($LASTEXITCODE -ne 0 -or $target.docker.volume -in $volumes) { throw 'P1_RETIRED_VOLUME_PRESENT_OR_UNKNOWN' }
+  if ((Test-Path -LiteralPath '.release-local/controlled-target.v1.json') -or (Test-Path -LiteralPath '.release-local/secrets')) { throw 'P1_RETIRED_SOURCE_PATH_PRESENT' }
+  $names=@('bootstrap.json','migrate.json','verify.json','runtime-test.json','controlled-target.v1.json')
+  if ($retired.moved.Count -ne 5 -or @($names | Where-Object { $_ -notin $retired.moved }).Count -ne 0) { throw 'P1_ARCHIVE_FILE_SET_INCOMPLETE' }
+  $ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  foreach ($name in $names) {
+    $file=Get-P1LocalPath (Join-Path $archive $name)
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw 'P1_ARCHIVE_FILE_MISSING' }
+    $acl=Get-Acl -LiteralPath $file
+    $allows=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object AccessControlType -eq 'Allow')
+    if (-not $acl.AreAccessRulesProtected -or $allows.Count -eq 0 -or @($allows | Where-Object { $_.IdentityReference.Value -ne $ownerSid }).Count -ne 0) { throw 'P1_ARCHIVE_NOT_OWNER_ONLY' }
+  }
+  $recordHash=(Get-FileHash -LiteralPath (Join-Path $archive 'controlled-target.v1.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($recordHash -ne $gate.finalRecordHash) { throw 'P1_RETIRED_RECORD_DIGEST_MISMATCH' }
+  $readbackDigest=Write-P1NewJson (Join-Path $dir 'retirement-readback.json') ([ordered]@{operationId=$Operation.OperationId;status='VERIFIED';registrationDigest=$Registration.Digest;preRetirementDigest=$gateHash;retirementResultDigest=(Get-FileHash -LiteralPath (Join-Path $dir 'retirement-result.json') -Algorithm SHA256).Hash.ToLowerInvariant();finalRecordHash=$recordHash;containerAbsent=$true;volumeAbsent=$true;sourcePathsAbsent=$true;archiveFiles=$names;ownerOnly=$true})
+  Write-Host "P1_RETIREMENT_READBACK=$dir digest=$readbackDigest"
+}
+```
+
 ### P1.0 原 Task 0 目标的核查、独立批准与精确退役
 
 本次只读核查确认 record 和容器仍在。下列是**退役提案基线，不是已批准删除**：
@@ -456,95 +688,27 @@ if ($null -eq $stage1OldObservation.ExitCode -or $stage1OldObservation.ExitCode 
 ```
 
 - [ ] **停止并单独申请退役批准**。批准绑定 container/run/DB/record digest、实际 PGDATA volume、owner 无保留/无消费者记录，并明确包含“删除该容器及其专属 volume，归档旧 record 与四个凭证文件”。未获批准时 P1 保持 BLOCKED；计划获批、路线原则认可或只读核查成功都不代替删除批准。
-- [ ] 获批后建立 owner-only 新目录 `.release-local/p1-retirements/<retirementOperationId>`（GUID），复制 record 为 `record-before.json` 并读回字节 hash；在 `disposition.md` 记录非秘密批准引用、目标、owner/消费者证据。该目录须无重解析点且此前不存在，不覆盖旧处置记录。设 `stage1RetirementDir` 为其已验证绝对路径，沿用上述 icacls owner-only 规则；缺真实批准引用则不创建“已批准”记录。
-
-- [ ] 目录创建与 record 复制使用以下命令。`stage1RetirementApprovalRef` 必须从**实际用户批准**填入；给变量赋值不构成批准。未有批准或身份变化时禁止执行。
+- [ ] 获批后填写真实 `stage1RetirementApprovalRef` 和 `stage1OwnerWindowRef`。后者引用 owner 已暂停所有消费者及 record 写入者、覆盖至归档读回结束的停用窗口；变量赋值不构成批准。先在固定锁内按已批准的旧 record hash 登记实际目标及专属卷，再由共享 block 在**新的 pre-retirement operation** 内重做全部实际检查；禁止沿用批准前 observation。
 
 ```powershell
-if ([string]::IsNullOrWhiteSpace($stage1RetirementApprovalRef)) { throw 'P1_RETIREMENT_APPROVAL_REQUIRED' }
-$stage1RetirementId = [guid]::NewGuid().ToString()
-$stage1RetirementDir = Get-P1LocalPath (Join-Path '.release-local/p1-retirements' $stage1RetirementId)
-if (Test-Path -LiteralPath $stage1RetirementDir) { throw 'P1_RETIREMENT_DIRECTORY_EXISTS' }
-New-Item -ItemType Directory -Path $stage1RetirementDir -ErrorAction Stop | Out-Null
-icacls $stage1RetirementDir /inheritance:r /grant:r ($stage1Owner + ':(OI)(CI)F') | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'P1_RETIREMENT_ACL_FAILED' }
-$stage1OldRecordPath = Get-P1LocalPath '.release-local/controlled-target.v1.json'
-$stage1ExpectedRecordHash = '423fd2117c2e819afd84760013617b22d793b10911eca9873fa89faeba27f380'
-if ((Get-FileHash -LiteralPath $stage1OldRecordPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stage1ExpectedRecordHash) { throw 'P1_OLD_RECORD_CHANGED' }
-Copy-Item -LiteralPath $stage1OldRecordPath -Destination (Join-Path $stage1RetirementDir 'record-before.json') -ErrorAction Stop
-if ((Get-FileHash -LiteralPath (Join-Path $stage1RetirementDir 'record-before.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stage1ExpectedRecordHash) { throw 'P1_RECORD_ARCHIVE_MISMATCH' }
-$stage1Disposition = "retirementOperationId: $stage1RetirementId`r`napprovalRef: $stage1RetirementApprovalRef`r`nrecordBytesSha256: $stage1ExpectedRecordHash`r`nstate: PREPARED; not yet retired"
-[IO.File]::WriteAllText((Join-Path $stage1RetirementDir 'disposition.md'),$stage1Disposition,[Text.UTF8Encoding]::new($false))
+if ([string]::IsNullOrWhiteSpace($stage1RetirementApprovalRef) -or [string]::IsNullOrWhiteSpace($stage1OwnerWindowRef)) { throw 'P1_RETIREMENT_APPROVAL_REQUIRED' }
+$stage1Guard=Open-P1LifecycleGuard
+try {
+  $stage1FinalRecordHash='423fd2117c2e819afd84760013617b22d793b10911eca9873fa89faeba27f380'
+  if ((Get-FileHash -LiteralPath (Get-P1LocalPath '.release-local/controlled-target.v1.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stage1FinalRecordHash) { throw 'P1_OLD_RECORD_CHANGED' }
+  $stage1TargetRegistration=Save-P1TargetRegistration $stage1RetirementApprovalRef
+  $stage1Registered=Get-Content -LiteralPath (Join-Path $stage1TargetRegistration.Directory 'target-registration.json') -Raw | ConvertFrom-Json
+  if ($stage1Registered.initialRecordHash -ne $stage1FinalRecordHash -or $stage1Registered.target.container.id -ne '8ad87116924cdf709f9c40df94a32bc4a06cd3f832e177523501a6ef724a1ea8' -or $stage1Registered.docker.volume -ne '04fe0d650f040d1d5f91d66bf1a58ab31980f6a4165d478112b5f034e356c84e') { throw 'P1_OLD_APPROVAL_TARGET_MISMATCH' }
+} finally { $stage1Guard.Dispose() }
+$stage1Retire=Invoke-P1Recorded -Step 'P1.0-pre-retirement-and-exact-cleanup' -Action $stage1RetirementAction
+if ($null -eq $stage1Retire.ExitCode -or $stage1Retire.ExitCode -ne 0) { throw 'P1_OLD_RETIREMENT_BLOCKED_OR_UNKNOWN' }
+Test-P1RetirementReadback $stage1Retire $stage1TargetRegistration
+$stage1OldRegistration=$stage1TargetRegistration
+$stage1OldOwnerWindowRef=$stage1OwnerWindowRef
+$stage1OwnerWindowRef=$null; $stage1NewOwnerWindowRef=$null # 新目标必须重新取得窗口。
 ```
 
-- [ ] 删除前的卷专属性硬断言如下，批准基线或实际对象不同即停止；同一核查也在批准前执行供 owner 审阅。这里只输出非秘密容器元数据。
-
-```powershell
-$stage1RetiredContainer = '8ad87116924cdf709f9c40df94a32bc4a06cd3f832e177523501a6ef724a1ea8'
-$stage1RetiredVolume = '04fe0d650f040d1d5f91d66bf1a58ab31980f6a4165d478112b5f034e356c84e'
-$stage1ExpectedContainerIdentity = $stage1RetiredContainer + '|docker.io/library/postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6|v1|ba53ccd1-5814-4e4a-aa47-2077ea4a9908'
-$stage1ContainerIdentity = docker inspect --format '{{.Id}}|{{.Config.Image}}|{{index .Config.Labels "subscription-s1-controlled"}}|{{index .Config.Labels "subscription-s1-controlled.run-id"}}' $stage1RetiredContainer
-if ($LASTEXITCODE -ne 0) { throw 'P1_OLD_CONTAINER_INSPECT_FAILED' }
-if ($stage1ContainerIdentity -ne $stage1ExpectedContainerIdentity) { throw 'P1_OLD_CONTAINER_IDENTITY_CHANGED' }
-$stage1MountJson = docker inspect --format '{{json .Mounts}}' $stage1RetiredContainer
-if ($LASTEXITCODE -ne 0) { throw 'P1_OLD_MOUNTS_FAILED' }
-$stage1PgMount = @(($stage1MountJson | ConvertFrom-Json) | Where-Object Destination -eq '/var/lib/postgresql/data')
-if ($stage1PgMount.Count -ne 1 -or $stage1PgMount[0].Type -ne 'volume' -or $stage1PgMount[0].Name -ne $stage1RetiredVolume) { throw 'P1_OLD_VOLUME_MISMATCH' }
-$stage1VolumeOwners = @(docker ps -aq --no-trunc --filter "volume=$stage1RetiredVolume")
-if ($LASTEXITCODE -ne 0) { throw 'P1_OLD_VOLUME_OWNERS_UNKNOWN' }
-if ($stage1VolumeOwners.Count -ne 1 -or $stage1VolumeOwners[0] -ne $stage1RetiredContainer) { throw 'P1_OLD_VOLUME_NOT_EXCLUSIVE' }
-```
-
-- [ ] 执行前再次运行 observer、重读 record hash/容器/volume 与批准值，确认 owner 停用窗口有效。然后仅用现有精确 cleanup；它只删容器，**不会删匿名 volume 或 secret**。
-
-```powershell
-$stage1Retire = Invoke-P1Recorded 'P1.0-retire-container' 'node' @('scripts/release/bootstrap-controlled-postgres.mjs','--cleanup','.release-local/controlled-target.v1.json')
-if ($null -eq $stage1Retire.ExitCode -or $stage1Retire.ExitCode -ne 0) { throw 'P1_RETIREMENT_UNKNOWN' }
-$stage1RetiredContainer = '8ad87116924cdf709f9c40df94a32bc4a06cd3f832e177523501a6ef724a1ea8'
-$stage1RetiredVolume = '04fe0d650f040d1d5f91d66bf1a58ab31980f6a4165d478112b5f034e356c84e'
-$stage1Containers = @(docker ps -aq --no-trunc)
-if ($LASTEXITCODE -ne 0) { throw 'P1_RETIREMENT_READBACK_UNKNOWN' }
-if ($stage1RetiredContainer -in $stage1Containers) { throw 'P1_CONTAINER_NOT_RETIRED' }
-$stage1VolumeConsumers = @(docker ps -aq --filter "volume=$stage1RetiredVolume")
-if ($LASTEXITCODE -ne 0) { throw 'P1_VOLUME_CONSUMERS_UNKNOWN' }
-if ($stage1VolumeConsumers.Count -ne 0) { throw 'P1_VOLUME_STILL_REFERENCED' }
-$stage1VolumeRemoval = Invoke-P1Recorded 'P1.0-retire-volume' 'docker' @('volume','rm',$stage1RetiredVolume)
-if ($null -eq $stage1VolumeRemoval.ExitCode -or $stage1VolumeRemoval.ExitCode -ne 0) { throw 'P1_VOLUME_RETIREMENT_UNKNOWN' }
-$stage1Volumes = @(docker volume ls -q)
-if ($LASTEXITCODE -ne 0) { throw 'P1_VOLUME_READBACK_UNKNOWN' }
-if ($stage1RetiredVolume -in $stage1Volumes) { throw 'P1_VOLUME_NOT_RETIRED' }
-```
-
-没有删卷批准不能执行 volume rm；不使用 prune、通配删除或 `docker rm -v` 扩大范围。只完成部分删除时记部分成功/UNKNOWN，保留原路径与证据，不自动再次删除或新建库。
-
-- [ ] 容器/volume 消失确认后，将**精确五文件**（record、四个 secret）逐个移动到该 owner-only 退役目录；不是删除 secret 字节，不声称密码学销毁。移动前逐一检查源/目标绝对路径均在本 worktree 的 `.release-local` 内、无重解析点、源存在/目标不存在；secret 目录只能有上表四文件。目录不递归移动。
-- [ ] 下列命令中的 `stage1RetirementDir` 只能来自前一步已验证的新目录。先记“准备移动”，每完成一个文件登记路径；变量未设置或部分移动则停止，不重试覆盖。
-
-```powershell
-$stage1RetirementDir = Get-P1LocalPath $stage1RetirementDir
-$stage1RetirementParent = Get-P1LocalPath '.release-local/p1-retirements'
-if ((Split-Path $stage1RetirementDir -Parent) -ne $stage1RetirementParent -or (Split-Path $stage1RetirementDir -Leaf) -ne $stage1RetirementId) { throw 'P1_RETIREMENT_PATH_MISMATCH' }
-$stage1MoveNames = @('bootstrap.json','migrate.json','verify.json','runtime-test.json')
-$stage1SecretRoot = Get-P1LocalPath '.release-local/secrets'
-$stage1Existing = @(Get-ChildItem -LiteralPath $stage1SecretRoot -Force)
-if ($stage1Existing.Count -ne 4 -or @($stage1Existing | Where-Object { $_.PSIsContainer -or $_.Name -notin $stage1MoveNames }).Count -ne 0) { throw 'P1_SECRET_SCOPE_MISMATCH' }
-$stage1MovePairs = @()
-foreach ($stage1Name in $stage1MoveNames) {
-  $stage1MovePairs += [pscustomobject]@{Source=(Get-P1LocalPath (Join-Path $stage1SecretRoot $stage1Name));Target=(Get-P1LocalPath (Join-Path $stage1RetirementDir $stage1Name))}
-}
-$stage1MovePairs += [pscustomobject]@{Source=(Get-P1LocalPath '.release-local/controlled-target.v1.json');Target=(Get-P1LocalPath (Join-Path $stage1RetirementDir 'controlled-target.v1.json'))}
-foreach ($stage1Pair in $stage1MovePairs) {
-  if (-not (Test-Path -LiteralPath $stage1Pair.Source -PathType Leaf) -or (Test-Path -LiteralPath $stage1Pair.Target)) { throw 'P1_MOVE_PRESTATE_INVALID' }
-}
-foreach ($stage1Pair in $stage1MovePairs) {
-  Move-Item -LiteralPath $stage1Pair.Source -Destination $stage1Pair.Target -ErrorAction Stop
-  Add-Content -LiteralPath (Join-Path $stage1RetirementDir 'disposition.md') -Value ("moved: " + (Split-Path $stage1Pair.Target -Leaf))
-}
-if (@(Get-ChildItem -LiteralPath $stage1SecretRoot -Force).Count -ne 0) { throw 'P1_SECRET_DIRECTORY_NOT_EMPTY' }
-Remove-Item -LiteralPath $stage1SecretRoot -ErrorAction Stop
-```
-
-- [ ] 独立读回 disposition、归档 record hash、五文件存在性/ACL、源路径消失及容器/volume 不存在结果；非秘密处置摘要绑定批准引用、operationId、真实退出码和 transcript/hash。仅标旧目标退役。四个 secret 不输出、不进 Git。部分移动/读回失败记 UNKNOWN，禁止重建覆盖；沿用同一处置操作人工核对。
+- [ ] 按共享门禁末尾的独立读回要求核验新 operation；非秘密索引登记 registration/gate/result 的精确位置和 SHA256、批准/停用窗口引用、容器/卷不存在、五文件归档及源 record/secrets 不存在。没有独立读回不能进入新建。没有删卷批准不能运行本 block；不会使用 prune、通配、递归移动或 `docker rm -v`。部分完成只沿原 operation 人工核对，不另开 operation 覆盖或补删。
 
 P1.0 成功才允许 P1.1 的“旧路径不存在”断言和 P1.2 新建空库。新容器/runId/数据库名/PGDATA volume 须区别于旧目标，禁止重挂旧 volume。OID 要重新读取并绑定新集群，跨集群数值相同不等于同一个数据库。
 
@@ -584,12 +748,29 @@ $stage1Op = Invoke-P1Recorded 'P1_LAUNCHER_UNIT' 'node' @('--test','scripts/rele
 if ($null -eq $stage1Op.ExitCode -or $stage1Op.ExitCode -ne 0) { throw 'P1_LAUNCHER_UNIT_FAILED' }
 ```
 
-- [ ] 建受控临时目标，记录实际 image digest、serverVersionNum、容器/runId/marker、数据库名/OID和角色。必须为 PG17；不要输出 `.release-local/secrets`。
+- [ ] P1 明确批准包含本步所建目标的完整生命周期：精确容器和专属卷删除、record 与四个 secret 归档，无需再借用旧目标退役批准。将实际 P1 批准引用存为 `stage1P1ApprovalRef`，后续不得用 P0 批准替代。
+- [ ] 在固定锁内新建受控临时目标，**创建成功后立即登记实际 PGDATA volume**，成功保管后才进入 P1.3。保存 bootstrap operationId、初始 record 字节/hash、全部非秘密身份、实际镜像/标签/挂载/卷专属性及 Docker context；必须为 PG17、初始 migrationHead 为 null。卷与旧目标不同，不允许挂载旧卷。登记失败保留创建 operation/资源，记 UNKNOWN，不重复 bootstrap。
 
 ```powershell
-$stage1Op = Invoke-P1Recorded 'P1_CONTROLLED_BOOTSTRAP' 'node' @('scripts/release/bootstrap-controlled-postgres.mjs','--output','.release-local/controlled-target.v1.json')
-if ($null -eq $stage1Op.ExitCode -or $stage1Op.ExitCode -ne 0) { throw 'P1_CONTROLLED_BOOTSTRAP_FAILED' }
+if ([string]::IsNullOrWhiteSpace($stage1P1ApprovalRef)) { throw 'P1_APPROVAL_REQUIRED' }
+$stage1Guard=Open-P1LifecycleGuard
+try {
+  # 与 P1.1 不能分离：锁内再次拒绝旧路径，防止 bootstrap 覆盖。
+  if ((Test-Path -LiteralPath '.release-local/controlled-target.v1.json') -or (Test-Path -LiteralPath '.release-local/secrets')) { throw 'P1_BOOTSTRAP_OVERWRITE_REFUSED' }
+  $stage1Op = Invoke-P1Recorded 'P1_CONTROLLED_BOOTSTRAP' 'node' @('scripts/release/bootstrap-controlled-postgres.mjs','--output','.release-local/controlled-target.v1.json')
+  if ($null -eq $stage1Op.ExitCode -or $stage1Op.ExitCode -ne 0) { throw 'P1_CONTROLLED_BOOTSTRAP_UNKNOWN' }
+  $stage1TargetRegistration=Save-P1TargetRegistration ('bootstrap-operation:'+ $stage1Op.OperationId)
+  $stage1NewRegistration=$stage1TargetRegistration
+  $stage1Registered=Get-Content -LiteralPath (Join-Path $stage1NewRegistration.Directory 'target-registration.json') -Raw | ConvertFrom-Json
+  $stage1Old=Get-Content -LiteralPath (Join-Path $stage1OldRegistration.Directory 'target-registration.json') -Raw | ConvertFrom-Json
+  $stage1Sha=git rev-parse HEAD
+  if ($LASTEXITCODE -ne 0) { throw 'P1_BOOTSTRAP_SOURCE_UNKNOWN' }
+  if ($stage1Registered.target.sourceSha -ne $stage1Sha -or $null -ne $stage1Registered.target.database.migrationHead -or [int]$stage1Registered.target.cluster.serverVersionNum -lt 170000 -or [int]$stage1Registered.target.cluster.serverVersionNum -ge 180000) { throw 'P1_NEW_TARGET_BASELINE_INVALID' }
+  if ($stage1Registered.target.container.id -eq $stage1Old.target.container.id -or $stage1Registered.target.container.runId -eq $stage1Old.target.container.runId -or $stage1Registered.target.database.name -eq $stage1Old.target.database.name -or $stage1Registered.docker.volume -eq $stage1Old.docker.volume) { throw 'P1_RETIRED_RESOURCE_REUSE_FORBIDDEN' }
+} finally { $stage1Guard.Dispose() }
 ```
+
+把新 registration 的精确路径/digest 和 bootstrap operationId 当场写入本地执行记录；该 GUID 目录后续只允许添加终态/归档文件，不覆盖初始记录。OID 只需绑定新集群，不要求跨集群数值不同。
 
 ### P1.3 迁移身份自检与源码 Schema 校验
 
@@ -609,6 +790,28 @@ $stage1Op = Invoke-P1Recorded 'P1_MIGRATION_STATUS' 'node' @('scripts/release/wi
 if ($null -eq $stage1Op.ExitCode -or $stage1Op.ExitCode -ne 0) { throw 'P1_MIGRATION_STATUS_FAILED' }
 $stage1Op = Invoke-P1Recorded 'P1_DATABASE_SCHEMA_DIFF' 'node' @('scripts/release/with-controlled-target.mjs','--profile','migrate','--','pnpm','--filter','@subscription-saas/api','exec','prisma','migrate','diff','--from-config-datasource','--to-schema','prisma/schema.prisma','--exit-code')
 if ($null -eq $stage1Op.ExitCode -or $stage1Op.ExitCode -ne 0) { throw 'P1_DATABASE_SCHEMA_DIFF_FAILED' }
+```
+
+- [ ] 最后一次成功 migrate profile（上面的 diff）后，立即锁内保存最终 record 副本及 checkpoint。wrapper 在 deploy/status/diff 成功后都会重写 migrationHead；初始 hash 只证明来源，不能拿来拒绝合法迁移结果。P1.4–P1.6 不再允许 migrate profile；若需要重跑迁移，停止并重新核定 checkpoint，不覆盖。
+
+```powershell
+$stage1Guard=Open-P1LifecycleGuard
+$stage1RecordGuard=$null
+try {
+  $stage1Record=Get-P1LocalPath '.release-local/controlled-target.v1.json'
+  $stage1RecordGuard=[IO.File]::Open($stage1Record,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+  if ((Get-P1StableRecord $stage1Record) -ne (Get-P1StableRecord (Join-Path $stage1NewRegistration.Directory 'record-initial.json'))) { throw 'P1_RESOURCE_IDENTITY_CHANGED' }
+  $stage1FinalRecordHash=(Get-FileHash -LiteralPath $stage1Record -Algorithm SHA256).Hash.ToLowerInvariant()
+  $stage1FinalRecordPath=Get-P1LocalPath (Join-Path $stage1Op.Directory 'record-after-migrate.json')
+  if (Test-Path -LiteralPath $stage1FinalRecordPath) { throw 'P1_RECORD_CHECKPOINT_EXISTS' }
+  Copy-Item -LiteralPath $stage1Record -Destination $stage1FinalRecordPath -ErrorAction Stop
+  if ((Get-FileHash -LiteralPath $stage1FinalRecordPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stage1FinalRecordHash) { throw 'P1_RECORD_CHECKPOINT_CHANGED' }
+  $stage1CheckpointPath=Get-P1LocalPath (Join-Path $stage1Op.Directory 'record-checkpoint.json')
+  $stage1CheckpointDigest=Write-P1NewJson $stage1CheckpointPath ([ordered]@{afterOperationId=$stage1Op.OperationId;afterResultDigest=(Get-FileHash -LiteralPath (Join-Path $stage1Op.Directory 'result.json') -Algorithm SHA256).Hash.ToLowerInvariant();registrationDigest=$stage1NewRegistration.Digest;finalRecordPath=$stage1FinalRecordPath;finalRecordHash=$stage1FinalRecordHash})
+} finally {
+  if ($null -ne $stage1RecordGuard) { $stage1RecordGuard.Dispose() }
+  $stage1Guard.Dispose()
+}
 ```
 
 - [ ] verify profile 下只运行源码 Schema validate；不把它称为对迁移表或业务事实的独立验证。
@@ -700,14 +903,32 @@ if ($null -eq $stage1Result.exitCode -or $stage1Result.exitCode -ne 0) { throw '
 stdout/stderr 原件只在受控本地读取，不在公开输出中展示。P1.5 则逐套使用 Test-P1SuiteReadback；把其 `readback.json` 字节 hash、report/receipt 路径与双方 digest 一并登记，引用实际文件，而非从报告摘要编造原始日志。独立审查者按相同只读方法复算；本机普通文件不宣称不可篡改保管。
 
 - [ ] 在索引记录每个实际命令、退出码、身份/迁移结论、计数和非秘密证据引用。原件从现有 launcher 的实际输出位置独立读回并计算 SHA256；无原件的 unit 控制台记录标为“会话日志”，不能伪造 execution proof。禁止把 secrets/raw URL/订单数据提交 Git。
-- [ ] 只在证据已读回、没有消费者、与本 P1 创建记录完全匹配时回收 P1.2 临时目标；这是本 P1 明列的本地合成目标回收，不适用于别的任务/数据。
+- [ ] 只在证据已读回、所有本 P1 消费者已退出并由 owner 确认停用窗口后回收。核对 P1.2 登记及 P1.3 checkpoint 的原件，不在清理时临时编造最终 migrationHead/hash。未完成 P1.3、会话丢失或记录不匹配时保持 BLOCKED，保留精确资源引用，不自动走成功路径。
 
 ```powershell
-$stage1Op = Invoke-P1Recorded 'P1.6-cleanup-new-target' 'node' @('scripts/release/bootstrap-controlled-postgres.mjs','--cleanup','.release-local/controlled-target.v1.json')
-if ($null -eq $stage1Op.ExitCode -or $stage1Op.ExitCode -ne 0) { throw 'P1_EXACT_CLEANUP_FAILED' }
+if ((Get-FileHash -LiteralPath (Get-P1LocalPath $stage1CheckpointPath) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stage1CheckpointDigest) { throw 'P1_CHECKPOINT_CHANGED' }
+$stage1Checkpoint=Get-Content -LiteralPath $stage1CheckpointPath -Raw | ConvertFrom-Json
+$stage1CheckpointDir=Get-P1LocalPath (Split-Path $stage1CheckpointPath -Parent)
+if ((Split-Path $stage1CheckpointDir -Parent) -ne $stage1P1Root -or (Split-Path $stage1CheckpointDir -Leaf) -notmatch '^[0-9a-f-]{36}$' -or (Split-Path $stage1CheckpointDir -Leaf) -ne $stage1Checkpoint.afterOperationId) { throw 'P1_CHECKPOINT_OPERATION_PATH' }
+$stage1CheckpointCommand=Get-Content -LiteralPath (Join-Path $stage1CheckpointDir 'command.json') -Raw | ConvertFrom-Json
+$stage1CheckpointResult=Get-Content -LiteralPath (Join-Path $stage1CheckpointDir 'result.json') -Raw | ConvertFrom-Json
+if ($stage1CheckpointCommand.operationId -ne $stage1Checkpoint.afterOperationId -or $stage1CheckpointResult.operationId -ne $stage1Checkpoint.afterOperationId -or $stage1CheckpointCommand.step -ne 'P1_DATABASE_SCHEMA_DIFF' -or $null -eq $stage1CheckpointResult.exitCode -or $stage1CheckpointResult.exitCode -ne 0) { throw 'P1_CHECKPOINT_SUCCESS_BINDING' }
+if ((Get-FileHash -LiteralPath (Join-Path $stage1CheckpointDir 'result.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stage1Checkpoint.afterResultDigest) { throw 'P1_CHECKPOINT_RESULT_CHANGED' }
+if ($stage1Checkpoint.registrationDigest -ne $stage1NewRegistration.Digest -or $stage1Checkpoint.finalRecordHash -ne $stage1FinalRecordHash) { throw 'P1_CHECKPOINT_BINDING_CHANGED' }
+if ((Get-FileHash -LiteralPath (Get-P1LocalPath $stage1Checkpoint.finalRecordPath) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stage1FinalRecordHash) { throw 'P1_FINAL_RECORD_ARCHIVE_CHANGED' }
+$stage1TargetRegistration=$stage1NewRegistration
+$stage1RetirementApprovalRef=$stage1P1ApprovalRef
+# stage1NewOwnerWindowRef 从本次实际 owner 确认填入，不复用旧引用。
+if ([string]::IsNullOrWhiteSpace($stage1NewOwnerWindowRef) -or $stage1NewOwnerWindowRef -eq $stage1OldOwnerWindowRef) { throw 'P1_NEW_OWNER_WINDOW_REQUIRED' }
+$stage1OwnerWindowRef=$stage1NewOwnerWindowRef
+$stage1Retire=Invoke-P1Recorded -Step 'P1.6-pre-retirement-and-exact-cleanup' -Action $stage1RetirementAction
+if ($null -eq $stage1Retire.ExitCode -or $stage1Retire.ExitCode -ne 0) { throw 'P1_NEW_RETIREMENT_BLOCKED_OR_UNKNOWN' }
+Test-P1RetirementReadback $stage1Retire $stage1NewRegistration
 ```
 
-cleanup 只证明本次新容器的删除，不代表其匿名 volume、record 或私密文件已删除。把这些未删资产及精确标识列为隔离保留，禁止复用；后续需要删除时按精确目标批准处置，不声称全量资源清空或敏感数据已销毁（本 P1 不含真实敏感数据）。本次 cleanup 的新 operation 原件也按上面的只读方法单独核验。任何失败回收只写 BLOCKED 和精确目标指纹，不使用通配删除。
+该调用必须完整回收**登记的容器和专属 volume**，并将 record/四个 secret 逐个移入 P1.2 已分配的 owner-only GUID 目录；固定 record 和 secrets 源路径必须消失。不再允许“只删容器、原地隔离保留”。归档不称密码学销毁；目录不可复用/覆盖，后续 bootstrap 必须在固定锁内检查源路径不存在。
+
+- [ ] 上面 `Test-P1RetirementReadback` 实际完成 command/result/log hash、gate/result 身份与 digest、五文件及 owner-only ACL、容器/卷和源路径消失的核验，CreateNew 保管 `retirement-readback.json`。独立审查者按精确文件路径复算回读 digest，并核对其中 finalRecordHash 等于 P1.3 checkpoint.finalRecordHash。缺任一原件/断言则 P1 不完成，不重建覆盖。只读回当前明确列出的路径和 ID，不递归扫描 secrets、不用 prune 或通配删除。
 
 - [ ] 独立审查索引与原件，确认无生产代码改动、无 stash 变化；区分“开发准入通过”“发布/真实双链/人工验收未运行”。只对索引格式和 diff 验证并提交。
 
@@ -736,7 +957,7 @@ if ($LASTEXITCODE -ne 0) { throw 'P1_COMMIT_FAILED' }
 ## 批准与交付判定
 
 - P0 独立通过：三文件口径一致、静态门禁通过、真实 DB/供应商/签字仍标未运行。
-- P1 独立通过：P1.0 所有权/身份/无消费者已核对且旧目标退役获批完成；无 ambient、控制脚本通过、PG17身份和迁移侧 status/diff 明确、unit 与五项 suite 的实际报告齐全、operation 原件/report/receipt 可读回、精确回收有结果；不等于业务完成或独立 DB verify。后者仍由 R2/最终候选真实证明。
+- P1 独立通过：P1.0 所有权/身份/无消费者已核对且旧目标退役获批完成；无 ambient、控制脚本通过、PG17身份和迁移侧 status/diff 明确、unit 与五项 suite 的实际报告齐全、operation 原件/report/receipt 可读回；新旧目标均有成功 pre-retirement、完整处置及独立读回，精确容器/卷和固定 record/secrets 源路径消失，五文件按目标归档且最终 record hash 匹配。仅容器删除、部分回收或 UNKNOWN 均不通过；不等于业务完成或独立 DB verify。后者仍由 R2/最终候选真实证明。
 - 任一失败：记录具体反例、缺失材料、受影响出口和下一责任包；不把本地基础设施失败误报产品回归，不暗自修复。
 - 通过后只**申请**首批 B1/B3/B5 与 R1/R2 小计划审批，不自动施工；P0 后的副本可用性盘点已并行，不再等 R2 才发现缺输入。
 - 真实副本、本机安全改动、密钥、Staging、外部服务及旧路线仍各自阻断；OSS/210 天 WORM 不动。

@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-状态：Task 6 export/catalog 局部计划修订待复审，本状态不授权实施 Task 6；Task 0–5 的既有完成/审查记录保持历史事实，Task 2E 旧段落仅保留其当时的局部修订提案语境，不是当前 pending 状态
+状态：当前 Task 6 合并计划修订以被人工复审拒绝的干净 HEAD `6e7d07cf` 为提案起点，等待新的人工内容批准；固定续接顺序为 `Task 6 修订获批 → Task 6 实施 → 独立审查`。Task 0–5 已完成至内核/本地测试基线 `1f0b0439`，不是当前施工队列；本状态不声称数据库、云环境、I0–I24 或 qualification 已就绪，也不授权 Task 6 代码或外部操作
+
+**Checkbox execution state:** Tasks 0–5 中未勾选的步骤是不可变的历史验收配方，不表示当前待执行；不得把它们当作待施工任务从头重做、补勾或重复提交。下游步骤明确要求的回归测试和受控 preflight 仍按其自身 gate 执行。当前可施工的未勾选步骤只从 Task 6 获得人工批准后开始；Tasks 7+仍是未来序列。
 
 **Goal:** 实现已批准的方案 A 执行基础设施，使独立 sanitized snapshot producer 能在 public repository 条件下安全运行，并让唯一 RC workflow 在 GitHub-hosted 临时机上完成 source、final、aggregate 与 exit 证明链，从而解除 Task 29R 的基础设施阻断。
 
@@ -16,9 +18,9 @@
 
 **Approved historical scope:** 用户于 2026-09-04 批准本计划内容基线 `31cc3e8c`，确认 Producer crypto/publisher、source/final proof DAG、构建前 sanitized 输入、私有证据保管与 bootstrap 时序的跨文档收敛通过。该状态记录同步 Task 1 的已批准内容/元数据引用。其后 `040d059a` 仅为 Task 2R/2V 局部计划批准，不构成对全基础设施范围的再次批准。用户另已确认仅限 Task 0 的 GitHub 本人评论准入方式；该次对齐不增加任务、运行权限或证明契约，文内记录不替代该评论及最终 blob 在线核验。Canary `155acf6a` 交接设计的独立窄授权已确认，按附录同步到 Task 13/I7/I8；其代码和真实云验证仍未实施。本计划仍是唯一施工所有者，上游 Task 29R-D 仅验收。
 
-**Local revision for review:** 以干净 HEAD `759435ef` 核对一项 Task 3 前 P1：现有 `environment-policy-identity.v1` Schema 将 `preventSelfReview` 固定为附录不允许的 `true`，而 `snapshot-routing-contracts.test.mjs` 的正向 identity fixture 也错误使用 `true`；安全附录第 344–367 行已批准固定值 `false`，不得反向修改附录迁就代码。本次只提交计划文档，在保留全部既有任务编号后新增 Task 2E。Task 2R `6ea32510` 和 Task 2V `759435ef` 已实施且各自本地独立审查通过，本稿不重写其完成记录、不重新验收或重做两道历史关卡。Task 2E 只修复该 Schema 与 routing fixture，并以真实 validator 覆盖值；Schema ID、contract manifest、现有 exports、其他 fixture 的 ID/name 均不变。Task 3 仍是唯一负责实际 Environment、actor、reviewer 与 root policy 核验的任务；本 Environment 的单操作员例外不得推广到任何其他 Environment。本稿独立复审、Task 2E 实施和独立审查均完成前不得进入 Task 3；Task 30 stash、真实签发、数据库身份及全部外部操作仍保持原有阻断和逐项批准边界。
+**Current Task 6 proposal for review:** 本提案从干净 HEAD `6e7d07cf47bdd798eaa8e6ec621d26bcda4dde76` 开始，只修订这一份官方计划；已完成实施基线仍为 `1f0b0439`。Task 6 保留原编号和 32 个文件事件，并为 KMS/crypto broker、OSS、lineage、publisher STS broker、RAM policy、五个 custody/lifecycle 边界和 OIDC subject 增加各自 RED → implementation → GREEN。批准范围还必须明确包含 Task 6 对 root exports/catalog/tests/manifest 的所有权、Task 7 的 public-package/deployed-bundle 消费测试，以及 catalog 对已经规划的 Task 7–18 production paths 的保留覆盖；后两项是下游接口/发现影响，不授权本任务创建或修改未来任务文件。安全附录及上游计划不变。只有本修订经人工批准后才能实施 Task 6，实施完成仍须独立审查；Task 30 stash、I0–I24、真实签发、qualification、promotion 和全部外部操作继续逐项阻断。
 
-**Remaining admission gates:** 三份历史内容已分别批准，但本次最终文档的复核/必需 CI/合并、Task 0 的最新 main/GitHub 本人评论读回及最终 blob/独立开工指令/受控数据库、I0 独立签发及私有保管实际 readback、canary 无云交接与真实探测、I15B 合法构建前 sanitized 输入及独立使用授权仍须实际验证，不能由文档或 mock 代替。缺失构建前输入时为 `PREBUILD_SANITIZED_INPUT_UNAVAILABLE`；另行输入补给方案/批准不由本计划自动施工。Qualification 通过后 Task 30 再单独授权，S2/S3 不在本次范围。
+**Remaining admission gates:** Task 0/1 的 no-change 核对停在 `f8ed9440`，Task 2/2R/2V/2E/3/4/5 的已完成提交依次为 `56206c38`、`6ea32510`、`759435ef`、`deef9b6b`、`6508c861`、`5fc6c572`、`1f0b0439`；这些仅证明仓库内核/本地测试的历史完成，不证明当前环境或 datasource 就绪。本次纯文档修订不运行数据库命令；进入任何新的代码轮次前仍须通过受控 target 重跑 PostgreSQL 17 `migrate deploy → migrate status` 和适用 preflight，禁止读取 ambient `DATABASE_URL`、仓库 `.env` 或 Staging 凭证。当前 Task 6 修订的人工批准、实施和独立审查，以及 I0 独立签发/私有保管 readback、canary 无云交接与真实探测、I15B 合法构建前 sanitized 输入和独立使用授权都仍须实际完成，不能由文档或 mock 代替。用户已确认该 prebuild input/use authority 尚未准备；缺失时固定为 `PREBUILD_SANITIZED_INPUT_UNAVAILABLE`，本计划不发明补给方案。Qualification 通过后 Task 30 仍须单独授权，S2/S3 不在本次范围。
 
 ## Global Constraints
 
@@ -27,9 +29,9 @@
 - Task 30 stash `paused-task30-before-task29r-20260903` 在整个计划期间保持冻结。禁止 apply/pop/drop、修改 stash 内容或把其中文件加入任何提交。
 - S2、S3、产品代码、业务迁移、Prisma 模型/枚举、应用 RBAC、业务权限、业务开关、客户可见行为和业务 API 均不在范围内。
 - 所有仓库任务开始前运行 `git status --short`；只允许本任务列出的文件变更。每个任务独立提交，禁止把相邻安全边界合并为一个大提交。
-- 本地续接顺序固定为 `本 Task 2E 局部修订获批 → Task 2E 修复/独立审查 → Task 3`。Task 2R `6ea32510` 与 Task 2V `759435ef` 的历史实施/本地独立审查记录保留，但不代替 Task 2E 的实现和独立审查；Task 2E 未通过即停止 Task 3。Task 2E 仅实现仓库 Schema/fixture 验证能力，不建立签发身份、生成真实授权、dispatch workflow 或执行 I0。
-- Task 0 之前不得读取 ambient `DATABASE_URL`、仓库 `.env` 或任何 Staging 凭证。Task 0 建立受控 PostgreSQL 17 目标后，所有 Prisma/database 检查只通过 `scripts/release/with-controlled-target.mjs` 执行。
-- 当前 `prisma migrate status` 因缺少 datasource URL 未验证。Task 0 必须在代码写入前用受控目标取得 `migrate deploy → migrate status` 成功证据；失败立即停止，不能把 `prisma validate` 替代为迁移状态。
+- 当前续接顺序固定为 `本 Task 6 修订获人工批准 → Task 6 的 32 文件实施 → Task 6 独立审查`；任一关未通过都不得进入 Task 7、I0 或其他外部工作。Task 0–5 的完成提交保留为历史依赖，不重开、不重做，也不能替代本次 Task 6 批准/实施/审查。
+- Task 0 的历史受控 PostgreSQL 17 preflight 已完成，但环境状态会变化；每个未来代码轮次仍须先用 `scripts/release/with-controlled-target.mjs` 重跑适用 Prisma/database 检查。禁止读取 ambient `DATABASE_URL`、仓库 `.env` 或任何 Staging 凭证。
+- 本次文档轮次没有新的 `prisma migrate status` 证据，也不需要冒充一份。Task 6 实施写入前必须在受控 target 取得新的 `migrate deploy → migrate status` 成功证据；失败立即停止，不能把 `prisma validate` 替代为迁移状态或重开 Task 0。
 - Snapshot custody 固定采用 Alibaba Cloud China (Shanghai) 区域的独立私有 OSS bucket、KMS key 和 RAM/STS 身份；不得复用业务上传 bucket、API 的 OSS 身份或生产服务 KMS key。
 - Alibaba RAM OIDC Provider 固定名称 `github-actions-subscription-saas-stage1`、issuer `https://token.actions.githubusercontent.com`、唯一 client ID/audience `sts.aliyuncs.com`、Earliest Issuance Time Allowed `1 hour`。Provider 计划固定独立验证的 HTTPS CA fingerprints，readback 必须记录 Provider ARN、实际 fingerprint 集合和 issuance limit；任何漂移均拒绝 STS。
 - Dedicated custody bucket 名称由 `subscription-saas-stage1-snapshot-${sha256(accountId).slice(0, 12)}-cn-shanghai` 派生；versioning disabled、forbid-overwrite=true、Locked BucketWorm 210 日只是配置下界。每对象仍须以实际 Last-Modified/GetBucketWorm readback 证明覆盖 ordinary terminal+180 或 snapshot expiry+180 及下游/legal hold，不能直接宣称210日已满足。
@@ -126,23 +128,23 @@ role, keys and proofs bind that ID. The canonical workflow job ID must still mat
 
 ## Planned File Map
 
-| Area               | Files and responsibility                                                                                                                                                                                          |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Plan dependency    | Task 0 verified final upstream main/blob; `f50676c6`/`30a90fae` remain history only: verify Task 29R-D zero-file ownership and Task 30 consumer-only block; never edit it                                         |
-| Routing contracts  | `release/contracts/schemas/environment-policy-*.json`, `snapshot-admission.v1`, `snapshot-admission-verification.v1`, `snapshot-jit-launch-proof.v1`, `snapshot-producer-completion.v1`                           |
-| Dispatch preflight | Task 2R repairs purpose; Task 2V owns `dispatch-authorization.mjs`, its tests, common read-only custody validation and observation Schema; Task 16A owns issuance only                                            |
-| Environment gate   | Task 2E owns only the self-review Schema/fixture repair before Task 3; Task 3 retains actual Environment/actor/reviewer/root-policy verification                                                                  |
-| Custody contracts  | Snapshot encryption/private/destruction/retention Schemas plus `evidence-lineage-storage-policy.v1`, lineage access/readback/retention and v2 custody contracts                                                   |
-| Shared logic       | `packages/release-foundation/src/snapshot/**`: policy/digest checks, envelope crypto, capacity calculation and proof builders                                                                                     |
-| Root-owned adapter | `apps/snapshot-adapter/**`: fixed CLI, GitHub API verifier, JIT lifecycle, SSH/PostgreSQL snapshot pipeline, crypto subprocess, OSS/KMS adapters                                                                  |
-| Bundle producers   | Adapter: `build/verify-snapshot-adapter-*`, `.github/workflows/snapshot-adapter-build.yml`; three-image RC bundle: `create-three-image-bundle-build-plan.mjs`, verifier and `.github/workflows/docker-images.yml` |
-| Host policy        | `infrastructure/stage1-snapshot/wsl/**`, `infrastructure/stage1-snapshot/server/**`: WSL, LUKS, egress, sshd and loopback database endpoint configuration                                                         |
-| Cloud policy       | `infrastructure/stage1-snapshot/aliyun/**`, `manage-snapshot-cloud-custody.mjs`, lineage custody adapters: OSS/KMS/RAM snapshot and evidence policies plus closed lifecycle operations                            |
-| GitHub bootstrap   | `scripts/release/bootstrap-snapshot-environment.mjs`, `bootstrap-snapshot-launcher-app.mjs`, `bootstrap-aliyun-oidc-provider.mjs`, `manage-exact-run-capability.mjs` and tests                                    |
-| Qualification      | Three distinct approvals; immutable raw v1 proof → one-to-one purpose claim/envelope → v2 custody/aggregate/exit; qualification remains permanently non-promotable                                                |
-| Workflows          | `.github/workflows/sanitized-snapshot.yml`, `release-candidate-gate.yml`, `release-final-chain.yml`                                                                                                               |
-| Capacity           | `release/contracts/schemas/capacity-plan.v1.schema.json`, `packages/release-foundation/src/capacity-plan.mjs`, `scripts/release/collect-capacity-plan.mjs`                                                        |
-| Operations         | `docs/operations/stage1-s1-execution-infrastructure-runbook.md`, bootstrap/attempt evidence templates and failure matrix                                                                                          |
+| Area               | Files and responsibility                                                                                                                                                                                                                                        |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plan dependency    | Task 0 verified final upstream main/blob; `f50676c6`/`30a90fae` remain history only: verify Task 29R-D zero-file ownership and Task 30 consumer-only block; never edit it                                                                                       |
+| Routing contracts  | `release/contracts/schemas/environment-policy-*.json`, `snapshot-admission.v1`, `snapshot-admission-verification.v1`, `snapshot-jit-launch-proof.v1`, `snapshot-producer-completion.v1`                                                                         |
+| Dispatch preflight | Task 2R repairs purpose; Task 2V owns `dispatch-authorization.mjs`, its tests, common read-only custody validation and observation Schema; Task 16A owns issuance only                                                                                          |
+| Environment gate   | Historical Task 2E `deef9b6b` repaired the self-review Schema/fixture and Task 3 `6508c861` completed the local verification kernel/tests for Environment/actor/reviewer/root-policy facts; current-environment observation still awaits its planned future run |
+| Custody contracts  | Snapshot encryption/private/destruction/retention Schemas plus `evidence-lineage-storage-policy.v1`, lineage access/readback/retention and v2 custody contracts                                                                                                 |
+| Shared logic       | `packages/release-foundation/src/snapshot/**`: policy/digest checks, envelope crypto, capacity calculation and proof builders                                                                                                                                   |
+| Root-owned adapter | `apps/snapshot-adapter/**`: fixed CLI, GitHub API verifier, JIT lifecycle, SSH/PostgreSQL snapshot pipeline, crypto subprocess, OSS/KMS adapters                                                                                                                |
+| Bundle producers   | Adapter: `build/verify-snapshot-adapter-*`, `.github/workflows/snapshot-adapter-build.yml`; three-image RC bundle: `create-three-image-bundle-build-plan.mjs`, verifier and `.github/workflows/docker-images.yml`                                               |
+| Host policy        | `infrastructure/stage1-snapshot/wsl/**`, `infrastructure/stage1-snapshot/server/**`: WSL, LUKS, egress, sshd and loopback database endpoint configuration                                                                                                       |
+| Cloud policy       | `infrastructure/stage1-snapshot/aliyun/**`, `manage-snapshot-cloud-custody.mjs`, lineage custody adapters: OSS/KMS/RAM snapshot and evidence policies plus closed lifecycle operations                                                                          |
+| GitHub bootstrap   | `scripts/release/bootstrap-snapshot-environment.mjs`, `bootstrap-snapshot-launcher-app.mjs`, `bootstrap-aliyun-oidc-provider.mjs`, `manage-exact-run-capability.mjs` and tests                                                                                  |
+| Qualification      | Three distinct approvals; immutable raw v1 proof → one-to-one purpose claim/envelope → v2 custody/aggregate/exit; qualification remains permanently non-promotable                                                                                              |
+| Workflows          | `.github/workflows/sanitized-snapshot.yml`, `release-candidate-gate.yml`, `release-final-chain.yml`                                                                                                                                                             |
+| Capacity           | `release/contracts/schemas/capacity-plan.v1.schema.json`, `packages/release-foundation/src/capacity-plan.mjs`, `scripts/release/collect-capacity-plan.mjs`                                                                                                      |
+| Operations         | `docs/operations/stage1-s1-execution-infrastructure-runbook.md`, bootstrap/attempt evidence templates and failure matrix                                                                                                                                        |
 
 ---
 
@@ -534,7 +536,7 @@ git add -- release/contracts/schemas/rc-dispatch-authorization.v1.schema.json re
 git commit -m "fix: align dispatch and admission purpose contracts"
 ```
 
-Task 2V may follow only after this repair review; Task 3 remains blocked until Task 2V also passes.
+Historical sequence at this point was Task 2R review → Task 2V → Task 3; all three gates later completed at `6ea32510`, `759435ef` and `6508c861`. This paragraph is provenance, not a current queue or blocker.
 
 ---
 
@@ -710,12 +712,15 @@ git add -- packages/release-foundation/src/dispatch-authorization.mjs packages/r
 git commit -m "build: verify dispatch authorization before admission"
 ```
 
-The reviewer must verify Task 2R's vocabulary repair and this real verification kernel together.
-Task 3 cannot proceed on Schema validation alone; Task 16A will consume, not recreate, this module.
+The historical reviewer had to verify Task 2R's vocabulary repair and this real verification kernel
+together; Task 3 could not then proceed on Schema validation alone. That sequence is complete, and
+Task 16A will consume, not recreate, this module.
 
 ---
 
-### Task 2E: Align the approved Environment self-review constant before Task 3
+### Task 2E: Align the approved Environment self-review constant before Task 3 (historical; completed at `deef9b6b`)
+
+> **Historical completion — do not reopen:** Task 2E completed at final commit `deef9b6b` and its independent review closed. The unchecked steps below preserve the accepted RED/GREEN and review recipe only; do not execute them as a new task, check them off or create another Task 2E commit. A later gate may still run an explicitly required regression test.
 
 **Files:**
 
@@ -833,18 +838,22 @@ git add -- release/contracts/schemas/environment-policy-identity.v1.schema.json 
 git commit -m "fix: align environment self-review policy contract"
 ```
 
-- [ ] **Step 6: Obtain an independent review of that exact commit before unblocking Task 3**
+- [ ] **Step 6: Obtain the historical independent review of that exact commit before unblocking Task 3**
 
 The reviewer must confirm all of the following: the diff names exactly the two Files above; the Schema
 ID and manifest are untouched; the sole constant is `false`, not a boolean type; unchanged fixture
 IDs/names prevent a disguised identity change; tests call `validateContract` and cover every listed
-negative value; and Task 3's actual Environment/actor/reviewer/root-policy checks remain unimplemented.
-Only a passing independent review of the Step 5 commit removes this Task 3 precondition; it neither reopens
-Task 2R/2V nor authorizes Task 30, real signing, I0, database, cloud or other external work.
+negative value; and, at that historical review point, Task 3's local
+Environment/actor/reviewer/root-policy verification kernel and tests were still unimplemented.
+Historically, only a passing independent review of the Step 5 commit removed this Task 3 precondition; that
+review and Task 3 later completed at `deef9b6b` and `6508c861`. This record neither reopens Task 2R/2V nor
+authorizes Task 30, real signing, I0, database, cloud or other external work.
 
 ---
 
 ### Task 3: Implement environment identity, observation and admission verification
+
+> **Historical completion — do not reopen:** Task 3 consumed Task 2E final `deef9b6b`, completed at final commit `6508c861`, and all Task 3 review findings closed. The unchecked steps below are archival acceptance recipes; do not execute them as a new task, check them off or create another Task 3 commit. A later gate may still run an explicitly required regression test. This local kernel/test completion does not prove the current external Environment observation or readiness.
 
 **Files:**
 
@@ -859,9 +868,9 @@ Task 2R/2V nor authorizes Task 30, real signing, I0, database, cloud or other ex
 
 **Interfaces:**
 
-- Consumes: Task 2R vocabulary, Task 2V `verifyDispatchAuthorization` /
+- Consumes: the historically completed Task 2R vocabulary, Task 2V `verifyDispatchAuthorization` /
   `assertVerifiedDispatchAuthorization`, and Task 2E's reviewed `preventSelfReview=false` identity
-  contract/fixture coverage; Task 2E independent review must pass before any Task 3 code.
+  contract/fixture coverage (`6ea32510`, `759435ef`, `deef9b6b`); Task 3 itself completed at `6508c861`.
 - Produces: `buildEnvironmentPolicyIdentity(input): EnvironmentPolicyIdentityV1`.
 - Produces: `buildEnvironmentPolicyObservation(input): EnvironmentPolicyObservationV1`.
 - Produces: `verifyPostApprovalObservation({ identity, observation, admission, now, maxAgeMs }): void`.
@@ -1334,39 +1343,112 @@ Run: `node --test --test-name-pattern "^repository contract discovers snapshot a
 
 Expected: each focused command executes its exact named test once and reports `pass 1`; zero-selected, all-skipped or any failure is invalid. The catalog test passes on the complete input fixture without a `.git` directory.
 
-Now run the provider-module RED separately:
+For every Steps 2–8 boundary below, tests lazy-import only that boundary's production module and use injected transports. If a new module is absent, create only its loadable exact export shell, with no SDK construction or side effect, then rerun RED; an accepted RED must execute every named test and fail on its stated semantic assertion, never `ERR_MODULE_NOT_FOUND`, zero-selected or all-skipped. Implement only after that semantic RED, rerun the identical command to GREEN, and stop at this boundary on any unexpected count/failure. Repository tests never use real credentials, call live cloud APIs or claim actual approval/readback.
 
-Run: `pnpm --filter @subscription-saas/snapshot-adapter exec node --test --test-name-pattern "^cloud clients reject ambient Alibaba credentials$" test/aliyun-policy.test.mjs`
+- [ ] **Step 2: RED → implement → GREEN KMS generate/decrypt and crypto broker**
 
-Expected: the exact `cloud clients reject ambient Alibaba credentials` test executes once and RED reports `fail 1` because the lazy-imported Task 6 cloud module is not implemented yet; zero-selected or all-skipped is invalid. This failure does not invalidate the public-export/catalog GREEN.
+Declare these exact cases in `aliyun-kms.test.mjs` and `aliyun-producer-crypto-broker.test.mjs`:
 
-- [ ] **Step 2: Implement KMS `GenerateDataKey` and `Decrypt` wrappers**
+- `test("KMS generate-only client rejects wrong key context and publisher credentials before transport", ...)` asserts zero injected KMS calls for wrong alias/key/context/profile.
+- `test("KMS generate and decrypt uncertainty is UNKNOWN without retry or raw error", ...)` injects one post-request transport failure per method and asserts one call, safe code, immutable enumerable `kmsOutcome: "UNKNOWN"`, and no raw error/secret.
+- `test("producer crypto broker terminates generate credential before publisher readiness", ...)` asserts generate-only authority, key-buffer clearing, child/session terminal evidence and no simultaneous publisher credential.
+
+RED/GREEN command: `pnpm --filter @subscription-saas/snapshot-adapter exec node --test --test-name-pattern "^(KMS generate-only client rejects wrong key context and publisher credentials before transport|KMS generate and decrypt uncertainty is UNKNOWN without retry or raw error|producer crypto broker terminates generate credential before publisher readiness)$" test/aliyun-kms.test.mjs test/aliyun-producer-crypto-broker.test.mjs`
+
+All three named cases must execute. RED requires those three to fail on their stated semantic assertions; GREEN requires those same three to pass. Tests excluded by the name pattern may appear as skipped in this focused run, but zero selected or all selected skipped is invalid.
+
+**Implementation:**
 
 Allow only actual key identity behind approved alias `alias/stage1-snapshot-custody`, `AES_256`, approved region/endpoint and pre-existing exact encryption context. Producer wrapper requires standalone crypto authorization/readback/observation and generate-only credential; no publisher credential is accepted. Disable automatic GenerateDataKey retries; uncertain response is UNKNOWN. Strip SDK secrets from errors. Plaintext is a mutable Buffer owned only by the isolated crypto child; consumer uses its distinct Decrypt identity.
 
-This wrapper must match the already completed Task 5 boundary: `source` is an immutable `{ open() }` replay source opened twice, and Task 5 rejects changed bytes between passes. Task 5 calls `generateDataKey({ keyAlias, keySpec, encryptionContext })` and requires `{ plaintext: Buffer(32), wrapped: { kind: "kms-symmetric-data-key.v1", ciphertext: Buffer, region: "cn-shanghai", keyId, keyAlias: "alias/stage1-snapshot-custody", aliasReadbackKeyId } }` with `keyId === aliasReadbackKeyId`; it calls `decryptDataKey({ wrapped, encryptionContext })` and requires `Buffer(32)`. Keep KMS region `cn-shanghai` distinct from OSS `oss-cn-shanghai`. The kernel normalizes post-request KMS uncertainty to its safe error with enumerable, immutable `kmsOutcome: "UNKNOWN"`; the provider must not forward a raw SDK error or trust/copy an arbitrary provider-supplied outcome marker, and it must not automatically retry. This is interface consumption only—Task 6 must not modify or reimplement Task 5 files.
+This wrapper must match the already completed Task 5 boundary: `source` is an immutable `{ open() }` replay source opened twice, and Task 5 rejects changed bytes between passes. Task 5 calls `generateDataKey({ keyAlias, keySpec, encryptionContext })` and requires `{ plaintext: Buffer(32), wrapped: { kind: "kms-symmetric-data-key.v1", ciphertext: Buffer, region: "cn-shanghai", keyId, keyAlias: "alias/stage1-snapshot-custody", aliasReadbackKeyId } }` with `keyId === aliasReadbackKeyId`; it calls `decryptDataKey({ wrapped, encryptionContext })` and requires `Buffer(32)`. Keep KMS region `cn-shanghai` distinct from OSS `oss-cn-shanghai`. The kernel normalizes post-request KMS uncertainty to its safe error with enumerable, immutable `kmsOutcome: "UNKNOWN"`; the provider must not forward a raw SDK error or trust/copy an arbitrary provider-supplied outcome marker, and it must not automatically retry. This is interface consumption only—Task 6 must not modify or reimplement Task 5 files. Rerun the three-test command and require GREEN before Step 3.
 
-- [ ] **Step 3: Implement conditional OSS publication**
+- [ ] **Step 3: RED → implement → GREEN conditional OSS publisher, reader and retention**
+
+Declare these exact cases in `aliyun-oss.test.mjs`:
+
+- `test("OSS publisher rejects wrong target and maps 409 or uncertain create without extra authority", ...)` verifies exact key/digest, `x-oss-forbid-overwrite=true`, 409 conflict, UNKNOWN write, and absence of Get/List/Delete.
+- `test("OSS exact reader binds every replay open to attested key version and digest", ...)` opens the injected exact reader twice and rejects changed key/version/digest or prefix listing.
+- `test("OSS retention rejects unexpired or insufficient WORM readback", ...)` rejects missing/private-ACL failure, unlocked WORM, early disposition and retain-until shorter than expiry/terminal plus 180 days.
+
+RED/GREEN command: `pnpm --filter @subscription-saas/snapshot-adapter exec node --test --test-name-pattern "^(OSS publisher rejects wrong target and maps 409 or uncertain create without extra authority|OSS exact reader binds every replay open to attested key version and digest|OSS retention rejects unexpired or insufficient WORM readback)$" test/aliyun-oss.test.mjs`
+
+All three named cases must execute. RED requires those three to fail on their stated semantic assertions; GREEN requires those same three to pass. Tests excluded by the name pattern may appear as skipped in this focused run, but zero selected or all selected skipped is invalid.
+
+**Implementation:**
 
 `AliyunOssWriteOncePublisher.putExact` uses the deterministic object key and `x-oss-forbid-overwrite=true`; HTTP 409 is `SNAPSHOT_OBJECT_ALREADY_EXISTS`, never success. After upload, use an independently injected readback adapter in tests to verify ciphertext digest, size, private ACL and WORM state. Publisher methods for Get/List/Delete are absent.
 
-- [ ] **Step 4: Implement exact-object consumer and retention adapters**
-
 Reader only accepts the object key/digest/version from an attested custody record and cannot list prefixes. Retention adapter is a separate constructor and credential profile; it rejects objects whose retain-until or snapshot-expiry-plus-180-days time has not elapsed.
+
+Rerun the three-test command and require GREEN before Step 4.
+
+- [ ] **Step 4: RED → implement → GREEN exact lineage write/read/retention**
+
+Declare these exact cases in `aliyun-lineage-custody.test.mjs`:
+
+- `test("lineage writer rejects wrong profile key digest and overwrite conflict", ...)` requires canonical bytes/digest and conditional exact-key create, rejects the reader/retention profile, and treats existing-key/UNKNOWN as terminal failure.
+- `test("lineage reader rejects cross-node key version digest and list access", ...)` permits only injected Head/Get for the frozen object and rejects another node/run/key or List/Delete/KMS.
+- `test("lineage retention requires whole-lineage expiry legal hold and separate approval", ...)` rejects RC/runtime credentials, incomplete node expiry, active legal hold or missing disposition approval.
+
+RED/GREEN command: `pnpm --filter @subscription-saas/snapshot-adapter exec node --test --test-name-pattern "^(lineage writer rejects wrong profile key digest and overwrite conflict|lineage reader rejects cross-node key version digest and list access|lineage retention requires whole-lineage expiry legal hold and separate approval)$" test/aliyun-lineage-custody.test.mjs`
+
+All three named cases must execute. RED requires those three to fail on their stated semantic assertions; GREEN requires those same three to pass. Tests excluded by the name pattern may appear as skipped in this focused run, but zero selected or all selected skipped is invalid.
+
+**Implementation:**
 
 The lineage adapters accept only the Task 4 deterministic claim/object derivations and a frozen exact-key plan. `putExact({ key, bytes, expectedDigest })` verifies canonical-byte digest before sending `x-oss-forbid-overwrite=true`; an existing key is a conflict, never idempotent success. `readExact({ key, expectedVersion, expectedDigest })` performs Head/Get only for that approved object. Neither constructor discovers credentials or exposes another action family. Forward v2 approval/use validation is wired at Task 13/16B, not by extending snapshot v1 clients. Retention requires separate whole-lineage expiry/legal-hold and disposition approval, and is unavailable to RC constructors. Test exact-key denial and separate writer/reader credentials with injected clients only.
 
-- [ ] **Step 5: Implement the root-only publisher credential broker**
+Rerun the three-test command and require GREEN before Step 5.
+
+- [ ] **Step 5: RED → implement → GREEN root-only publisher STS broker**
+
+Declare these exact cases in `aliyun-publisher-broker.test.mjs`:
+
+- `test("publisher STS broker emits one 900-second publisher-only credential through a sealed descriptor", ...)` injects STS and descriptor transports and asserts one exact AssumeRole request plus no credential in argv/env/disk/proof.
+- `test("publisher STS broker rejects wrong role wider session second request and broker data grants", ...)` rejects custody/consumer/retention/crypto roles, duration other than 900, replay, role chaining and any OSS/KMS permission before STS.
+
+RED/GREEN command: `pnpm --filter @subscription-saas/snapshot-adapter exec node --test --test-name-pattern "^(publisher STS broker emits one 900-second publisher-only credential through a sealed descriptor|publisher STS broker rejects wrong role wider session second request and broker data grants)$" test/aliyun-publisher-broker.test.mjs`
+
+Both named cases must execute. RED requires both to fail on their stated semantic assertions; GREEN requires those same two to pass. Tests excluded by the name pattern may appear as skipped in this focused run, but zero selected or all selected skipped is invalid.
+
+**Implementation:**
 
 The broker reads its assume-role-only principal from a root-opened descriptor, validates the approved exact role ARN/policy/readback/attempt binding, requests a 900-second STS session and writes the resulting publisher-only credential to a sealed child descriptor. The broker principal has no OSS/KMS permission, cannot assume custody/consumer/retention roles and never enters the Runner process, workflow environment, argv, disk or proof.
 
-- [ ] **Step 6: Generate mutually exclusive RAM policies**
+Rerun the two-test command and require GREEN before Step 6.
+
+- [ ] **Step 6: RED → implement → GREEN mutually exclusive effective RAM policies**
+
+Declare these exact cases in `aliyun-policy.test.mjs` in addition to the already named ambient-credential case:
+
+- `test("RAM policies keep snapshot crypto publisher custody consumer retention and lineage profiles disjoint", ...)` rejects a wrong profile/target, prefix resource, combined action family or future digest/context.
+- `test("RAM policy readback rejects hidden key-policy grants wider session and alias mismatch", ...)` combines key, attached, inline and session policies and rejects hidden Decrypt/Encrypt/OSS/role-chain grants.
+- Existing `test("cloud clients reject ambient Alibaba credentials", ...)` must reach its assertion with zero SDK calls.
+
+RED/GREEN command: `pnpm --filter @subscription-saas/snapshot-adapter exec node --test --test-name-pattern "^(RAM policies keep snapshot crypto publisher custody consumer retention and lineage profiles disjoint|RAM policy readback rejects hidden key-policy grants wider session and alias mismatch|cloud clients reject ambient Alibaba credentials)$" test/aliyun-policy.test.mjs`
+
+All three named cases must execute. RED requires those three to fail on their stated semantic assertions; GREEN requires those same three to pass. Tests excluded by the name pattern may appear as skipped in this focused run, but zero selected or all selected skipped is invalid.
+
+**Implementation:**
 
 `buildAttemptRamPolicies` emits policy templates, not live roles: unchanged four snapshot profiles, separate generate-only crypto, and unchanged three lineage templates. Publisher permits only conditional OSS PutObject on the pre-existing slot-v2 exact-key set and denies every KMS data action. Crypto permits only GenerateDataKey on approved actual key/context, no OSS/Decrypt/Encrypt/AsymmetricDecrypt/JIT/management/role chaining. Custody permits exact ciphertext/proof Head/Get without Decrypt; RC consumer exact Get plus Decrypt; retention is separately approved later disposition. Lineage templates retain the frozen v2 matrix. Archive writer/reader are independently generated control-plane profiles, not snapshot/v2 additions. Reject namespace grants, combined profiles, ambient identities and future content digests. Preserve frozen v1/v2 golden tests.
 
 Effective KMS readback includes actual key policy, all RAM attached/inline policies and narrowing session policy, not merely a newly generated role Allow. Explicitly deny forbidden actions across the effective authorization model; an independent key-policy grant must not restore them. Add RED hidden key-policy Decrypt/Encrypt/OSS grant, wider session and alias/key mismatch cases; no real permission probing is authorized by these contract tests.
 
-- [ ] **Step 7: Implement the closed cloud-resource lifecycle CLI**
+Implement only the RAM policy/client factory portion of `policy-generator.mjs`; leave OIDC subject generation for Step 8. Rerun the three-test command and require GREEN before Step 7.
+
+- [ ] **Step 7: RED → implement → GREEN each custody lifecycle boundary sequentially**
+
+Run each following boundary independently with injected transports. For each, write its exact named case and require that named case to execute once and fail on its semantic counterexample; implement only that named CLI/checkpoint boundary, rerun the identical command and require that same named case to execute once and pass, then advance. Tests excluded by the name pattern may appear as skipped, but a loader error, zero-selected/all-selected-skipped run or failure stops Step 7; the later commands do not run.
+
+1. `test("bootstrap lifecycle refuses escrow-only closure and requires original-byte authoritative readback", ...)` in `manage-evidence-custody-bootstrap.test.mjs`; it rejects future Adapter/OIDC dependency, combined management/writer/reader identity, missing original bytes, provisional escrow as final custody and UNKNOWN replay. Command: `node --test --test-name-pattern "^bootstrap lifecycle refuses escrow-only closure and requires original-byte authoritative readback$" scripts/release/manage-evidence-custody-bootstrap.test.mjs`.
+2. `test("archive lifecycle isolates writer reader and rejects missing retention observation", ...)` in `archive-release-evidence.test.mjs`; it rejects self-readback, changed bytes/digest/version, missing terminal/Last-Modified/Locked-WORM observation and own-future-receipt cycles. Command: `node --test --test-name-pattern "^archive lifecycle isolates writer reader and rejects missing retention observation$" scripts/release/archive-release-evidence.test.mjs`.
+3. `test("snapshot cloud lifecycle separates base custody from retention lock and reconciles UNKNOWN", ...)` in `manage-snapshot-cloud-custody.test.mjs`; it rejects I0 bucket recreation/relock, wrong resource/profile, blind retry and failed-lineage repair. Command: `node --test --test-name-pattern "^snapshot cloud lifecycle separates base custody from retention lock and reconciles UNKNOWN$" scripts/release/manage-snapshot-cloud-custody.test.mjs`.
+4. `test("workflow custody record rejects synthetic retention and missing authoritative observation", ...)` in `workflow-custody-record.test.mjs`; it rejects local uploader, Actions-only/synthetic now+180 custody, missing original bytes/terminal and mismatched Task 2V observation. Command: `node --test --test-name-pattern "^workflow custody record rejects synthetic retention and missing authoritative observation$" scripts/release/workflow-custody-record.test.mjs`.
+5. `test("custody evidence checkpoint preserves raw v1 and requires matching Task 2V observation", ...)` in `custody-evidence.test.mjs`; it proves unchanged `assertCustodyComplete(receipt, expectedDigest)` first, then rejects missing/mismatched authoritative observation, object/digest/storage mismatch and insufficient retention. Command: `node --test --test-name-pattern "^custody evidence checkpoint preserves raw v1 and requires matching Task 2V observation$" scripts/release/custody-evidence.test.mjs`.
+
+**Implementation boundaries:**
 
 `manage-evidence-custody-bootstrap.mjs plan|apply|readback|reconcile` owns I0 signer/control-plane/private-bucket setup and separately approved bucket-wide WORM lock. `archive-release-evidence.mjs freeze|authorize|write|readback|reconcile` uses fixed approved source/runtime, never future Adapter/Runner/OIDC, and separate exact-key writer/reader processes. Initial approval relies on the existing human trust anchor and encrypted provisional escrow, not future bucket custody; I0 closes only after original approval/apply bytes are archived and independently read back. `manage-snapshot-cloud-custody.mjs --resource base-custody|retention-lock` owns only I5 existing-storage verification plus separately approved KMS/crypto/broker delta, and I6 read-only retention revalidation. It may not recreate/relock I0 storage. Future bucket-wide extension requires a new independent plan/approval. UNKNOWN reconciles exact resource identity and never repeats mutation or repairs failed lineage data attempts.
 
@@ -1379,13 +1461,24 @@ the earlier validator using injected clients. Root-held read-only FD/controlled-
 the verifier's monotonic journal remain separate from writer/cloud credentials; a missing live I0
 source cannot fall back to synthetic fixtures. Task 6 creates producers, not a second input format.
 
-- [ ] Test bootstrap without future custody, rejection of escrow as final custody, management/writer/reader isolation, exact original-byte archive/readback, post-write Last-Modified/WORM calculation and crypto-terminal-before-publisher. Run the new broker/bootstrap/archive tests with injected clients only. Include these named files in this task's `git add`/commit along with existing Task 6 files; no I0 operation occurs during repository tests.
-
 Replace current `workflow-custody-record.mjs` synthetic retention and local-only custody assumptions through `custody-evidence.mjs` and shared `evidence-custody.mjs`: frozen raw v1 receipt bytes/schema remain immutable, but checkpoint acceptance requires the valid receipt together with matching `authoritative-custody-observation.v1`, actual privately read original bytes and operation terminal retention bound. Old synthetic receipt alone cannot pass. Task 6 wires the Task 2V base verifier into these consumers; Task 16B later adds its v2 lineage-specific acceptance without a competing implementation. RED injected readback cases reject local uploader, missing observation, mismatched digest/storage/object, now+180, missing/NaN terminal time and insufficient Locked-WORM bound.
 
 Keep `assertCustodyComplete(receipt, expectedDigest)` byte-for-byte behaviorally immutable as the raw v1 validator. The separate joint checkpoint, not that function, consumes Task 2V's authoritative observation; Task 6 adds no custody migration, downstream caller rewrite or second verifier.
 
-- [ ] **Step 8: Prove exact OIDC subject generation**
+Only after all five commands are GREEN may Step 8 begin. No I0 operation occurs during repository tests.
+
+- [ ] **Step 8: RED → implement → GREEN exact OIDC subject generation**
+
+Declare these exact cases in `aliyun-policy.test.mjs`:
+
+- `test("GitHub OIDC subject uses exact ordered immutable claim keys", ...)` asserts the exact string below and fixed `include_claim_keys` order.
+- `test("GitHub OIDC subject rejects missing wildcard reordered or mutable claims before policy output", ...)` asserts missing/reordered claims, wildcard values, wrong repository/workflow/ref/environment/actor/run/attempt/event/runner and caller-selected extras fail before policy output.
+
+RED/GREEN command: `pnpm --filter @subscription-saas/snapshot-adapter exec node --test --test-name-pattern "^(GitHub OIDC subject uses exact ordered immutable claim keys|GitHub OIDC subject rejects missing wildcard reordered or mutable claims before policy output)$" test/aliyun-policy.test.mjs`
+
+Both named cases must execute. RED requires both to fail on their stated semantic assertions; GREEN requires those same two to pass. Tests excluded by the name pattern may appear as skipped in this focused run, but zero selected or all selected skipped is invalid.
+
+**Implementation:**
 
 ```js
 assert.equal(
@@ -1396,23 +1489,84 @@ assert.equal(
 
 Use the exact `include_claim_keys` order above. A missing claim or wildcard subject fails before emitting policy.
 
+Rerun the two-test command and require GREEN before final manifest synchronization or staging.
+
 - [ ] **Step 9: Stage exact files, then run public-import, catalog and full Task 6 gates**
 
 After Steps 2–8 create all Task 6 production files, resynchronize `repository-contract-files.v1.json` a final time to exact sorted filesystem parity before staging. Retain every inherited entry and all four already-existing newly reserved paths—`scripts/release/custody-evidence.mjs`, `scripts/release/run-source-database-gate.mjs`, `scripts/release/create-build-proof.mjs` and `scripts/release/verify-build-proof.mjs`—then add all now-existing Task 6 adapter/package/src and reserved production paths. Omit every future absent reserved path. Do not create a synchronization script or modify a future owner's production file.
 
 ```powershell
+$ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true
+$task6Paths = @(
+  "apps/snapshot-adapter/package.json"
+  "apps/snapshot-adapter/src/cloud/aliyun-kms.mjs"
+  "apps/snapshot-adapter/src/cloud/aliyun-oss.mjs"
+  "apps/snapshot-adapter/src/cloud/aliyun-sts.mjs"
+  "apps/snapshot-adapter/src/cloud/aliyun-publisher-broker.mjs"
+  "apps/snapshot-adapter/src/cloud/aliyun-producer-crypto-broker.mjs"
+  "apps/snapshot-adapter/src/cloud/aliyun-lineage-custody.mjs"
+  "apps/snapshot-adapter/src/cloud/policy-generator.mjs"
+  "apps/snapshot-adapter/test/aliyun-kms.test.mjs"
+  "apps/snapshot-adapter/test/aliyun-oss.test.mjs"
+  "apps/snapshot-adapter/test/aliyun-policy.test.mjs"
+  "apps/snapshot-adapter/test/aliyun-publisher-broker.test.mjs"
+  "apps/snapshot-adapter/test/aliyun-producer-crypto-broker.test.mjs"
+  "apps/snapshot-adapter/test/aliyun-lineage-custody.test.mjs"
+  "infrastructure/stage1-snapshot/aliyun/snapshot-cloud-policy-input.v1.json"
+  "scripts/release/manage-snapshot-cloud-custody.mjs"
+  "scripts/release/manage-snapshot-cloud-custody.test.mjs"
+  "scripts/release/manage-evidence-custody-bootstrap.mjs"
+  "scripts/release/manage-evidence-custody-bootstrap.test.mjs"
+  "scripts/release/archive-release-evidence.mjs"
+  "scripts/release/archive-release-evidence.test.mjs"
+  "scripts/release/workflow-custody-record.mjs"
+  "scripts/release/workflow-custody-record.test.mjs"
+  "scripts/release/custody-evidence.mjs"
+  "scripts/release/custody-evidence.test.mjs"
+  "packages/release-foundation/src/evidence-custody.mjs"
+  "packages/release-foundation/test/evidence-custody.test.mjs"
+  "packages/release-foundation/src/index.mjs"
+  "packages/release-foundation/src/catalogs.mjs"
+  "packages/release-foundation/test/catalogs.test.mjs"
+  "release/contracts/repository-contract-files.v1.json"
+  "pnpm-lock.yaml"
+)
 pnpm install --frozen-lockfile
-git add apps/snapshot-adapter/package.json apps/snapshot-adapter/src/cloud/aliyun-kms.mjs apps/snapshot-adapter/src/cloud/aliyun-oss.mjs apps/snapshot-adapter/src/cloud/aliyun-sts.mjs apps/snapshot-adapter/src/cloud/aliyun-publisher-broker.mjs apps/snapshot-adapter/src/cloud/aliyun-producer-crypto-broker.mjs apps/snapshot-adapter/src/cloud/aliyun-lineage-custody.mjs apps/snapshot-adapter/src/cloud/policy-generator.mjs apps/snapshot-adapter/test/aliyun-kms.test.mjs apps/snapshot-adapter/test/aliyun-oss.test.mjs apps/snapshot-adapter/test/aliyun-policy.test.mjs apps/snapshot-adapter/test/aliyun-publisher-broker.test.mjs apps/snapshot-adapter/test/aliyun-producer-crypto-broker.test.mjs apps/snapshot-adapter/test/aliyun-lineage-custody.test.mjs infrastructure/stage1-snapshot/aliyun/snapshot-cloud-policy-input.v1.json scripts/release/manage-snapshot-cloud-custody.mjs scripts/release/manage-snapshot-cloud-custody.test.mjs scripts/release/manage-evidence-custody-bootstrap.mjs scripts/release/manage-evidence-custody-bootstrap.test.mjs scripts/release/archive-release-evidence.mjs scripts/release/archive-release-evidence.test.mjs scripts/release/workflow-custody-record.mjs scripts/release/workflow-custody-record.test.mjs scripts/release/custody-evidence.mjs scripts/release/custody-evidence.test.mjs packages/release-foundation/src/evidence-custody.mjs packages/release-foundation/test/evidence-custody.test.mjs packages/release-foundation/src/index.mjs packages/release-foundation/src/catalogs.mjs packages/release-foundation/test/catalogs.test.mjs release/contracts/repository-contract-files.v1.json pnpm-lock.yaml
+if ($LASTEXITCODE -ne 0) { throw "TASK6_INSTALL_FAILED" }
+pnpm exec prettier --write -- $task6Paths
+if ($LASTEXITCODE -ne 0) { throw "TASK6_PRETTIER_WRITE_FAILED" }
+pnpm exec prettier --check -- $task6Paths
+if ($LASTEXITCODE -ne 0) { throw "TASK6_PRETTIER_CHECK_FAILED" }
+git add -- $task6Paths
+if ($LASTEXITCODE -ne 0) { throw "TASK6_GIT_ADD_FAILED" }
+$expectedPaths = @($task6Paths | Sort-Object -Unique)
+$stagedPaths = @(git diff --cached --name-only | Sort-Object -Unique)
+if ($LASTEXITCODE -ne 0) { throw "TASK6_STAGED_PATH_READ_FAILED" }
+$stagedDelta = @(Compare-Object $expectedPaths $stagedPaths)
+if ($stagedDelta.Count -ne 0) {
+  $stagedDelta | Format-Table | Out-String | Write-Error
+  throw "TASK6_STAGED_FILE_SET_DRIFT"
+}
 pnpm release:database-tests:discover
+if ($LASTEXITCODE -ne 0) { throw "TASK6_DATABASE_DISCOVERY_FAILED" }
 node --test packages/release-foundation/test/catalogs.test.mjs packages/release-foundation/test/dispatch-authorization.test.mjs packages/release-foundation/test/evidence-custody.test.mjs packages/release-foundation/test/evidence-archive-contracts.test.mjs packages/release-foundation/test/producer-crypto-contracts.test.mjs packages/release-foundation/test/snapshot-custody-contracts.test.mjs
+if ($LASTEXITCODE -ne 0) { throw "TASK6_FOUNDATION_TESTS_FAILED" }
 pnpm --filter @subscription-saas/snapshot-adapter test
+if ($LASTEXITCODE -ne 0) { throw "TASK6_ADAPTER_TESTS_FAILED" }
 node --test scripts/release/manage-snapshot-cloud-custody.test.mjs scripts/release/manage-evidence-custody-bootstrap.test.mjs scripts/release/archive-release-evidence.test.mjs scripts/release/workflow-custody-record.test.mjs scripts/release/custody-evidence.test.mjs
+if ($LASTEXITCODE -ne 0) { throw "TASK6_LIFECYCLE_TESTS_FAILED" }
 pnpm --filter @subscription-saas/snapshot-adapter exec node -e "import('@subscription-saas/release-foundation').then((m) => { for (const name of ['validateProducerCryptoAuthorization','validateSnapshotEncryptionEnvelope','validateProducerCryptoUseProof','validateSnapshotCustody','validateSnapshotDestructionReceipt','validateSnapshotRetentionReceipt','validateLineageStoragePolicy','validateLineageAccessReadback','validateLineageRetentionReceipt','validateEvidenceArchiveAuthorization','validateEvidenceArchiveAccessReceipt','validateEvidenceCustodyBootstrapReadback','validatePrebuildSanitizedInputBinding']) if (typeof m[name] !== 'function') throw new Error('PUBLIC_EXPORT_MISSING:' + name) })"
+if ($LASTEXITCODE -ne 0) { throw "TASK6_PUBLIC_IMPORT_FAILED" }
 pnpm release:contracts:verify
+if ($LASTEXITCODE -ne 0) { throw "TASK6_CONTRACT_GATE_FAILED" }
+git diff --cached --check
+if ($LASTEXITCODE -ne 0) { throw "TASK6_CACHED_DIFF_CHECK_FAILED" }
 git diff --check
+if ($LASTEXITCODE -ne 0) { throw "TASK6_WORKTREE_DIFF_CHECK_FAILED" }
 ```
 
-Expected: PASS. Filesystem repository-contract discovery sees existing files with or without staging; the exact `git add` occurs before `release:database-tests:discover` because that separate database-test discovery uses `git ls-files`. The synchronized manifest retains inherited entries and includes every currently existing path in the expanded catalog union, while reserved absent Task 7–18 paths remain omitted.
+Expected: every native command exits zero or its immediate explicit `$LASTEXITCODE` guard stops before commit, including on PowerShell versions that do not honor `$PSNativeCommandUseErrorActionPreference`. Prettier writes/checks exactly the same 32 paths listed by Task 6; staged paths equal that array with no extra or missing file. Filesystem repository-contract discovery sees existing files with or without staging; exact staging occurs before `release:database-tests:discover` because that separate database-test discovery uses `git ls-files`. The synchronized manifest retains inherited entries and every currently existing path in the expanded catalog union, while reserved absent Task 7–18 paths remain omitted. Both cached and unstaged whitespace checks pass; the final catalog and adapter suites are unfiltered and must report zero failed, cancelled, skipped or todo tests.
 
 - [ ] **Step 10: Commit the cloud provider adapter**
 
@@ -3038,7 +3192,7 @@ promotion rejection, successful receipt custody, exact cleanup and stop proof bo
 
 ## Specification Coverage Matrix
 
-Coverage below is routing for this cross-document revision, not approval/completion. Canary uses its confirmed independent narrow contract and still requires real cloud evidence; it is not a v1/v2 runtime job.
+Coverage below is architectural routing, not approval/completion of the current Task 6 revision. Canary uses its confirmed independent narrow contract and still requires real cloud evidence; it is not a v1/v2 runtime job.
 
 | Approved addendum requirement                                 | Implementation tasks                     | Completion evidence                                                                                                  |
 | ------------------------------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -3102,11 +3256,11 @@ Coverage below is routing for this cross-document revision, not approval/complet
 
 ## Stop and Recovery Matrix
 
-Before execution this cross-document revision requires approval; I0, real canary and legal prebuild input remain evidence gates. No row permits v1/v2 widening, substitute approvals, assumed input availability or an early attempt.
+Before Task 6 implementation, this current plan revision requires human approval; I0, real canary and legal prebuild input remain later evidence gates. No row permits v1/v2 widening, substitute approvals, assumed input availability or an early attempt.
 
 | Condition                                                                        | Required response                                                                                                                                                         | Prohibited shortcut                                                                                       |
 | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Task 2E Environment repair or its independent review not passing                 | Stop before Task 3; preserve scoped findings and seek review                                                                                                              | Old green tests, const=true/any boolean, Schema-only approval or early Task 16A/I0 issuance               |
+| Task 6 revised plan, implementation or independent review not passing            | Stop before Task 7/I0; preserve the failing boundary's RED/GREEN evidence and seek review                                                                                 | Aggregate-only green, skipped focused test, future-task implementation or early external operation        |
 | I0 signer/archive or actual retention unavailable                                | Stop I1; preserve provisional escrow; reconcile separately approved exact bootstrap operation                                                                             | Future Adapter/OIDC/I13 root, escrow as final custody, fake now+180                                       |
 | Prebuild sanitized input/use authority absent or expired                         | `PREBUILD_SANITIZED_INPUT_UNAVAILABLE`; stop I15B, request separate input design/approval                                                                                 | Future Producer, qualification reuse, fabricated artifact or expanded v1 consumer                         |
 | Publisher KMS permission, future digest slot/context or crypto/publisher overlap | Reject before credentials; preserve denial                                                                                                                                | Expand v1/v2, grant prefix, preissue STS, retry GenerateDataKey                                           |
@@ -3137,7 +3291,7 @@ Before execution this cross-document revision requires approval; I0, real canary
 
 This plan is complete only when:
 
-This cross-document revision must be approved before construction. Confirmed canary design is not a cloud-success claim; I0 actual private archive/signing and legal prebuild input must be proven, not inferred.
+This current Task 6 plan revision must pass human approval, implementation and independent review before Task 7 or external construction. Confirmed canary design is not a cloud-success claim; I0 actual private archive/signing and legal prebuild input must be proven, not inferred.
 
 1. Tasks 0-15 including historical Task 2R/2V reviews and the separately reviewed Task 2E gate, 16A-16C, 17A-17B and 18 have merged with required CI green; I0 is closed, real canary passed, I1 produced trusted Adapter, and I15B proved legal prebuild input/independent authority and both source chains before the complete bundle. All original referenced evidence has actual private retention readback.
 2. Each external operation has its applicable independent approval/readback/custody; lineage uses the closed v2 matrix, separate terminated writer/reader credentials and complete use/access receipts. No unresolved prerequisite UNKNOWN or failed/partial/conflicting/UNKNOWN pair is admitted, including after diagnosis.

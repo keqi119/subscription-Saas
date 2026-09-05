@@ -2,8 +2,18 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { createReadStream } from "node:fs";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import fs, { createReadStream } from "node:fs";
+import {
+  mkdtemp,
+  open as openFile,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  unlink as unlinkFile,
+  writeFile
+} from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -102,6 +112,50 @@ async function childProcessRoundtrip(value) {
   child.disconnect();
   await once(child, "exit");
   return received;
+}
+
+async function withFileHandleFailure(directory, method, action) {
+  const probePath = join(directory, `file-handle-probe-${method}`);
+  const probe = await openFile(probePath, "wx", 0o600);
+  const prototype = Object.getPrototypeOf(probe);
+  const original = prototype[method];
+  await probe.close();
+  await unlinkFile(probePath);
+  prototype[method] = function injectedFileHandleFailure() {
+    throw Object.assign(new Error("SENTINEL_RAW_FS_SECRET"), {
+      secret: "SENTINEL_RAW_FS_SECRET"
+    });
+  };
+  try {
+    return await action();
+  } finally {
+    prototype[method] = original;
+  }
+}
+
+async function withTemporaryUnlinkFailures(destination, failureCount, action) {
+  const originalUnlink = fs.promises.unlink;
+  let injectedFailures = 0;
+  fs.promises.unlink = async function injectedUnlink(path) {
+    if (
+      String(path).includes(".snapshot-tmp-") &&
+      fs.existsSync(destination) &&
+      injectedFailures < failureCount
+    ) {
+      injectedFailures += 1;
+      throw Object.assign(new Error("SENTINEL_UNLINK_SECRET"), {
+        secret: "SENTINEL_UNLINK_SECRET"
+      });
+    }
+    return originalUnlink(path);
+  };
+  syncBuiltinESMExports();
+  try {
+    return await action(() => injectedFailures);
+  } finally {
+    fs.promises.unlink = originalUnlink;
+    syncBuiltinESMExports();
+  }
 }
 
 test("real streaming encryption roundtrips and clears both plaintext DEKs", async (t) => {
@@ -658,7 +712,11 @@ test("pre-abort and first-pass abort do not open/request beyond the abort bounda
         },
         signal: pre.signal
       }),
-    { code: "SNAPSHOT_ABORTED" }
+    (error) => {
+      assert.equal(error.code, "SNAPSHOT_ABORTED");
+      assert.equal(error.kmsOutcome, undefined);
+      return true;
+    }
   );
   assert.equal(opens, 0);
   assert.equal(kmsCalls, 0);
@@ -706,6 +764,7 @@ test("abort while GenerateDataKey settles waits to wipe returned key material", 
   let markStarted;
   const started = new Promise((resolve) => (markStarted = resolve));
   const kmsResult = new Promise((resolve) => (releaseKms = resolve));
+  let kmsCalls = 0;
   const operation = encryptSnapshotStream({
     source: replayableFile(inputPath).source,
     destination: join(directory, "snapshot.enc"),
@@ -713,16 +772,21 @@ test("abort while GenerateDataKey settles waits to wipe returned key material", 
     signal: controller.signal,
     kms: {
       async generateDataKey() {
+        kmsCalls += 1;
         markStarted();
         return kmsResult;
       }
     }
   });
   await started;
+  assert.equal(kmsCalls, 1);
   controller.abort();
   releaseKms({ plaintext: plaintextDek, wrapped: wrappedKey() });
 
-  await assert.rejects(operation, { code: "SNAPSHOT_ABORTED" });
+  await assert.rejects(operation, {
+    code: "SNAPSHOT_ABORTED",
+    kmsOutcome: "UNKNOWN"
+  });
   assert.deepEqual(plaintextDek, Buffer.alloc(32));
   assert.deepEqual(await readdir(directory), ["snapshot.sql"]);
 });
@@ -837,6 +901,7 @@ test("source, destination, and KMS failures are closed and provider errors are r
   }
   assert.equal(caught.code, "SNAPSHOT_KMS_GENERATE_FAILED");
   assert.equal(caught.message, "SNAPSHOT_KMS_GENERATE_FAILED");
+  assert.equal(caught.kmsOutcome, "UNKNOWN");
   assert.equal(caught.cause, undefined);
   assert.equal(caught.details, undefined);
   serializedSecretScan(
@@ -987,6 +1052,7 @@ test("opaque wrapped bytes are delegated once to trusted KMS and failures are re
   assert.equal(kmsCalls, 1);
   assert.equal(caught.code, "SNAPSHOT_KMS_DECRYPT_FAILED");
   assert.equal(caught.message, "SNAPSHOT_KMS_DECRYPT_FAILED");
+  assert.equal(caught.kmsOutcome, "UNKNOWN");
   assert.equal(caught.cause, undefined);
   assert.equal(JSON.stringify(caught).includes("provider-secret"), false);
   assert.equal((await readdir(directory)).includes("restored.sql"), false);
@@ -1109,6 +1175,7 @@ test("abort while Decrypt settles waits to wipe returned key material", async (t
   let markStarted;
   const started = new Promise((resolve) => (markStarted = resolve));
   const kmsResult = new Promise((resolve) => (releaseKms = resolve));
+  let kmsCalls = 0;
   const operation = decryptSnapshotStream({
     source: replayableFile(fixture.ciphertextPath).source,
     destination: join(directory, "restored.sql"),
@@ -1117,16 +1184,21 @@ test("abort while Decrypt settles waits to wipe returned key material", async (t
     signal: controller.signal,
     kms: {
       async decryptDataKey() {
+        kmsCalls += 1;
         markStarted();
         return kmsResult;
       }
     }
   });
   await started;
+  assert.equal(kmsCalls, 1);
   controller.abort();
   releaseKms(plaintextDek);
 
-  await assert.rejects(operation, { code: "SNAPSHOT_ABORTED" });
+  await assert.rejects(operation, {
+    code: "SNAPSHOT_ABORTED",
+    kmsOutcome: "UNKNOWN"
+  });
   assert.deepEqual(plaintextDek, Buffer.alloc(32));
   assert.equal((await readdir(directory)).includes("restored.sql"), false);
 });
@@ -1239,4 +1311,450 @@ test("nonce and declared-size tampering fail at the earliest safe boundary", asy
     (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
     false
   );
+});
+
+test("review fix: copied or encoded plaintext DEKs cannot enter wrapped output", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-key-copy-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const plaintext = Buffer.from("sanitized snapshot");
+  const inputPath = join(directory, "snapshot.sql");
+  await writeFile(inputPath, plaintext);
+  const cases = [
+    (key) => Buffer.from(key),
+    (key) => Buffer.from(key.toString("hex"), "utf8"),
+    (key) => Buffer.from(key.toString("base64"), "utf8"),
+    (key, wrapped) => {
+      wrapped.keyId = key.toString("hex");
+      wrapped.aliasReadbackKeyId = wrapped.keyId;
+      return wrapped.ciphertext;
+    },
+    (key, wrapped) => {
+      wrapped.keyId = key.toString("utf8");
+      wrapped.aliasReadbackKeyId = wrapped.keyId;
+      return wrapped.ciphertext;
+    }
+  ];
+
+  for (const [index, copiedCiphertext] of cases.entries()) {
+    const plaintextDek =
+      index === cases.length - 1
+        ? Buffer.from("0123456789abcdef0123456789abcdef", "utf8")
+        : Buffer.alloc(32, 0xa7);
+    const wrapped = wrappedKey();
+    wrapped.ciphertext = copiedCiphertext(plaintextDek, wrapped);
+    const destination = join(directory, `copied-${index}.enc`);
+    let caught;
+    try {
+      await encryptSnapshotStream({
+        source: replayableFile(inputPath).source,
+        destination,
+        aad: expectedAad(plaintext),
+        kms: {
+          async generateDataKey() {
+            return { plaintext: plaintextDek, wrapped };
+          }
+        }
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(caught?.code, "SNAPSHOT_KEY_MATERIAL_EXPOSED");
+    assert.equal(caught?.message, "SNAPSHOT_KEY_MATERIAL_EXPOSED");
+    assert.equal(caught?.cause, undefined);
+    assert.equal(caught?.details, undefined);
+    assert.deepEqual(plaintextDek, Buffer.alloc(32));
+    assert.equal(fs.existsSync(destination), false);
+  }
+});
+
+test("review fix: producer output-setup failure is redacted before replay acquisition", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-setup-producer-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const plaintext = Buffer.from("sanitized snapshot");
+  const inputPath = join(directory, "snapshot.sql");
+  await writeFile(inputPath, plaintext);
+  let opens = 0;
+  let secondStream;
+  const plaintextDek = Buffer.alloc(32, 7);
+  let caught;
+
+  await withFileHandleFailure(directory, "createWriteStream", async () => {
+    try {
+      await encryptSnapshotStream({
+        source: {
+          open() {
+            opens += 1;
+            const stream = createReadStream(inputPath);
+            if (opens === 2) secondStream = stream;
+            return stream;
+          }
+        },
+        destination: join(directory, "snapshot.enc"),
+        aad: expectedAad(plaintext),
+        kms: {
+          async generateDataKey() {
+            return { plaintext: plaintextDek, wrapped: wrappedKey() };
+          }
+        }
+      });
+    } catch (error) {
+      caught = error;
+    }
+  });
+
+  assert.equal(caught?.code, "SNAPSHOT_DESTINATION_SETUP_FAILED");
+  assert.equal(caught?.message, "SNAPSHOT_DESTINATION_SETUP_FAILED");
+  assert.equal(caught?.secret, undefined);
+  assert.equal(caught?.cause, undefined);
+  assert.equal(opens, 1);
+  assert.equal(secondStream, undefined);
+  assert.deepEqual(plaintextDek, Buffer.alloc(32));
+  assert.deepEqual(await readdir(directory), ["snapshot.sql"]);
+});
+
+test("review fix: consumer output-setup failure is redacted before replay acquisition", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-setup-consumer-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
+  let opens = 0;
+  let secondStream;
+  const plaintextDek = Buffer.alloc(32, 7);
+  let caught;
+
+  await withFileHandleFailure(directory, "chmod", async () => {
+    try {
+      await decryptSnapshotStream({
+        source: {
+          open() {
+            opens += 1;
+            const stream = createReadStream(fixture.ciphertextPath);
+            if (opens === 2) secondStream = stream;
+            return stream;
+          }
+        },
+        destination: join(directory, "restored.sql"),
+        envelope: fixture.envelope,
+        aad: fixture.aad,
+        kms: {
+          async decryptDataKey() {
+            return plaintextDek;
+          }
+        }
+      });
+    } catch (error) {
+      caught = error;
+    }
+  });
+
+  assert.equal(caught?.code, "SNAPSHOT_DESTINATION_SETUP_FAILED");
+  assert.equal(caught?.message, "SNAPSHOT_DESTINATION_SETUP_FAILED");
+  assert.equal(caught?.secret, undefined);
+  assert.equal(caught?.cause, undefined);
+  assert.equal(opens, 1);
+  assert.equal(secondStream, undefined);
+  assert.deepEqual(plaintextDek, Buffer.alloc(32));
+  assert.equal(fs.existsSync(join(directory, "restored.sql")), false);
+  assert.equal(
+    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
+    false
+  );
+});
+
+test("review fix: schema-invalid deterministic facts fail before source or KMS", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-preflight-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const plaintext = Buffer.from("sanitized snapshot");
+  const base = expectedAad(plaintext);
+  const fixedSlotLength =
+    "snapshot-slots/v2/".length + base.releaseAttemptId.length + 1 + "/snapshot.enc".length;
+  const boundaryRunId = `1${"0".repeat(1024 - fixedSlotLength - 1)}`;
+  const candidates = [
+    {
+      ...base,
+      snapshotAllocatedAt: "September 3, 2026 00:00:00 GMT",
+      expiresAt: "October 3, 2026 00:00:00 GMT"
+    },
+    { ...base, releaseAttemptId: "attempt/subpath" },
+    { ...base, snapshotRunId: `${boundaryRunId}0` }
+  ];
+
+  for (const [index, aad] of candidates.entries()) {
+    let opens = 0;
+    let kmsCalls = 0;
+    await assert.rejects(
+      () =>
+        encryptSnapshotStream({
+          source: {
+            open() {
+              opens += 1;
+              return Readable.from([plaintext]);
+            }
+          },
+          destination: join(directory, `invalid-${index}.enc`),
+          aad,
+          kms: {
+            generateDataKey() {
+              kmsCalls += 1;
+            }
+          }
+        }),
+      { code: "SNAPSHOT_AAD_INVALID" }
+    );
+    assert.equal(opens, 0);
+    assert.equal(kmsCalls, 0);
+  }
+
+  const boundaryPath = join(directory, "boundary.sql");
+  await writeFile(boundaryPath, plaintext);
+  const validBoundary = await encryptSnapshotStream({
+    source: replayableFile(boundaryPath).source,
+    destination: join(directory, "boundary.enc"),
+    aad: { ...base, snapshotRunId: boundaryRunId },
+    kms: {
+      async generateDataKey() {
+        return { plaintext: Buffer.alloc(32, 7), wrapped: wrappedKey() };
+      }
+    }
+  });
+  assert.equal(validBoundary.slotObjectKey.length, 1024);
+  assert.doesNotThrow(() => validateSnapshotEncryptionEnvelope(validBoundary));
+});
+
+test("review fix: producer transient and persistent cleanup keep committed status", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-commit-producer-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const plaintext = Buffer.from("sanitized snapshot");
+  const inputPath = join(directory, "snapshot.sql");
+  await writeFile(inputPath, plaintext);
+
+  for (const [kind, failureCount] of [
+    ["transient", 1],
+    ["persistent", Number.POSITIVE_INFINITY]
+  ]) {
+    const destination = join(directory, `${kind}.enc`);
+    const plaintextDek = Buffer.alloc(32, 7);
+    let caught;
+    await withTemporaryUnlinkFailures(destination, failureCount, async (attempts) => {
+      try {
+        await encryptSnapshotStream({
+          source: replayableFile(inputPath).source,
+          destination,
+          aad: expectedAad(plaintext),
+          kms: {
+            async generateDataKey() {
+              return { plaintext: plaintextDek, wrapped: wrappedKey() };
+            }
+          }
+        });
+      } catch (error) {
+        caught = error;
+      }
+      assert.equal(attempts() >= 1, true);
+    });
+    assert.equal(caught?.code, "SNAPSHOT_TEMP_CLEANUP_FAILED");
+    assert.deepEqual(caught?.details, { outputCommitted: true });
+    assert.equal(caught?.message.includes("SENTINEL_UNLINK_SECRET"), false);
+    assert.deepEqual(plaintextDek, Buffer.alloc(32));
+    assert.equal(fs.existsSync(destination), true);
+    assert.notDeepEqual(await readFile(destination), plaintext);
+  }
+});
+
+test("review fix: consumer transient and persistent cleanup keep committed status", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-commit-consumer-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const plaintext = Buffer.from("sanitized snapshot");
+  const fixture = await encryptedFixture(directory, plaintext);
+
+  for (const [kind, failureCount] of [
+    ["transient", 1],
+    ["persistent", Number.POSITIVE_INFINITY]
+  ]) {
+    const destination = join(directory, `${kind}.sql`);
+    let caught;
+    await withTemporaryUnlinkFailures(destination, failureCount, async (attempts) => {
+      try {
+        await decryptSnapshotStream({
+          source: replayableFile(fixture.ciphertextPath).source,
+          destination,
+          envelope: fixture.envelope,
+          aad: fixture.aad,
+          kms: {
+            async decryptDataKey() {
+              return Buffer.alloc(32, 7);
+            }
+          }
+        });
+      } catch (error) {
+        caught = error;
+      }
+      assert.equal(attempts() >= 1, true);
+    });
+    assert.equal(caught?.code, "SNAPSHOT_TEMP_CLEANUP_FAILED");
+    assert.deepEqual(caught?.details, { outputCommitted: true });
+    assert.equal(caught?.message.includes("SENTINEL_UNLINK_SECRET"), false);
+    assert.deepEqual(await readFile(destination), plaintext);
+  }
+});
+
+test("review fix: nested option shapes reject hidden own keys", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-own-keys-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const plaintext = Buffer.from("sanitized snapshot");
+  const inputPath = join(directory, "snapshot.sql");
+  await writeFile(inputPath, plaintext);
+
+  const nonEnumerableAad = expectedAad(plaintext);
+  Object.defineProperty(nonEnumerableAad, "snapshotDigest", { enumerable: false });
+  let nonEnumerableOpens = 0;
+  let nonEnumerableKmsCalls = 0;
+  await assert.rejects(
+    () =>
+      encryptSnapshotStream({
+        source: {
+          open() {
+            nonEnumerableOpens += 1;
+            return createReadStream(inputPath);
+          }
+        },
+        destination: join(directory, "non-enumerable-required.enc"),
+        aad: nonEnumerableAad,
+        kms: {
+          generateDataKey() {
+            nonEnumerableKmsCalls += 1;
+          }
+        }
+      }),
+    { code: "SNAPSHOT_AAD_INVALID" }
+  );
+  assert.equal(nonEnumerableOpens, 0);
+  assert.equal(nonEnumerableKmsCalls, 0);
+
+  const hiddenCases = [
+    {
+      code: "SNAPSHOT_SOURCE_REPLAY_REQUIRED",
+      make() {
+        const source = replayableFile(inputPath).source;
+        source[Symbol("hidden")] = true;
+        return { source, aad: expectedAad(plaintext) };
+      }
+    },
+    {
+      code: "SNAPSHOT_AAD_INVALID",
+      make() {
+        const aad = expectedAad(plaintext);
+        Object.defineProperty(aad, "hidden", { value: true });
+        return { source: replayableFile(inputPath).source, aad };
+      }
+    },
+    {
+      code: "SNAPSHOT_LIMITS_INVALID",
+      make() {
+        const limits = {};
+        Object.defineProperty(limits, "hidden", { value: true });
+        return { source: replayableFile(inputPath).source, aad: expectedAad(plaintext), limits };
+      }
+    }
+  ];
+
+  for (const [index, { code, make }] of hiddenCases.entries()) {
+    let kmsCalls = 0;
+    await assert.rejects(
+      () =>
+        encryptSnapshotStream({
+          ...make(),
+          destination: join(directory, `hidden-${index}.enc`),
+          kms: {
+            generateDataKey() {
+              kmsCalls += 1;
+            }
+          }
+        }),
+      { code }
+    );
+    assert.equal(kmsCalls, 0);
+  }
+
+  const plaintextDek = Buffer.alloc(32, 7);
+  const wrapped = wrappedKey();
+  wrapped[Symbol("hidden")] = true;
+  await assert.rejects(
+    () =>
+      encryptSnapshotStream({
+        source: replayableFile(inputPath).source,
+        destination: join(directory, "hidden-wrapped.enc"),
+        aad: expectedAad(plaintext),
+        kms: {
+          async generateDataKey() {
+            return { plaintext: plaintextDek, wrapped };
+          }
+        }
+      }),
+    { code: "SNAPSHOT_WRAPPED_KEY_INVALID" }
+  );
+  assert.deepEqual(plaintextDek, Buffer.alloc(32));
+  assert.equal(fs.existsSync(join(directory, "hidden-wrapped.enc")), false);
+});
+
+test("review fix: in-flight KMS failures carry only conservative UNKNOWN", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-kms-unknown-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const plaintext = Buffer.from("sanitized snapshot");
+  const inputPath = join(directory, "snapshot.sql");
+  await writeFile(inputPath, plaintext);
+  let generateCalls = 0;
+  let generateError;
+
+  try {
+    await encryptSnapshotStream({
+      source: replayableFile(inputPath).source,
+      destination: join(directory, "unknown-generate.enc"),
+      aad: expectedAad(plaintext),
+      kms: {
+        async generateDataKey() {
+          generateCalls += 1;
+          throw Object.assign(new Error("SENTINEL_KMS_SECRET"), {
+            kmsOutcome: "SUCCEEDED",
+            details: { secret: "SENTINEL_KMS_SECRET" }
+          });
+        }
+      }
+    });
+  } catch (error) {
+    generateError = error;
+  }
+  assert.equal(generateCalls, 1);
+  assert.equal(generateError?.code, "SNAPSHOT_KMS_GENERATE_FAILED");
+  assert.equal(generateError?.kmsOutcome, "UNKNOWN");
+  assert.equal(generateError?.details, undefined);
+  assert.equal(JSON.stringify(generateError).includes("SENTINEL_KMS_SECRET"), false);
+  assert.equal(fs.existsSync(join(directory, "unknown-generate.enc")), false);
+
+  const fixture = await encryptedFixture(directory, plaintext);
+  let decryptCalls = 0;
+  let decryptError;
+  try {
+    await decryptSnapshotStream({
+      source: replayableFile(fixture.ciphertextPath).source,
+      destination: join(directory, "unknown-decrypt.sql"),
+      envelope: fixture.envelope,
+      aad: fixture.aad,
+      kms: {
+        async decryptDataKey() {
+          decryptCalls += 1;
+          throw Object.assign(new Error("SENTINEL_KMS_SECRET"), {
+            kmsOutcome: "SUCCEEDED"
+          });
+        }
+      }
+    });
+  } catch (error) {
+    decryptError = error;
+  }
+  assert.equal(decryptCalls, 1);
+  assert.equal(decryptError?.code, "SNAPSHOT_KMS_DECRYPT_FAILED");
+  assert.equal(decryptError?.kmsOutcome, "UNKNOWN");
+  assert.equal(decryptError?.details, undefined);
+  assert.equal(JSON.stringify(decryptError).includes("SENTINEL_KMS_SECRET"), false);
+  assert.equal(fs.existsSync(join(directory, "unknown-decrypt.sql")), false);
 });

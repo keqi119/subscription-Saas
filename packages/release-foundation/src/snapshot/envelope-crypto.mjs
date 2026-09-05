@@ -56,13 +56,38 @@ function snapshotError(code, details) {
   return error;
 }
 
+function unknownKmsError(code) {
+  const error = snapshotError(code);
+  Object.defineProperty(error, "kmsOutcome", {
+    value: "UNKNOWN",
+    enumerable: true,
+    writable: false,
+    configurable: false
+  });
+  return error;
+}
+
+function hasEnumerableDataProperty(value, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+}
+
 function sameKeys(value, expected) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    return false;
+  }
+  const keys = Reflect.ownKeys(value);
   return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    Object.getPrototypeOf(value) === Object.prototype &&
-    canonicalJson(Object.keys(value).sort()) === canonicalJson(expected)
+    keys.length === expected.length &&
+    keys.every((key) => {
+      if (typeof key !== "string" || !expected.includes(key)) return false;
+      return hasEnumerableDataProperty(value, key);
+    })
   );
 }
 
@@ -95,6 +120,10 @@ function assertNotAborted(signal) {
   if (signal?.aborted) throw snapshotError("SNAPSHOT_ABORTED");
 }
 
+function assertKmsNotAborted(signal) {
+  if (signal?.aborted) throw unknownKmsError("SNAPSHOT_ABORTED");
+}
+
 function captureLimits(limits) {
   if (limits === undefined) {
     return Object.freeze({
@@ -107,7 +136,12 @@ function captureLimits(limits) {
     typeof limits !== "object" ||
     Array.isArray(limits) ||
     Object.getPrototypeOf(limits) !== Object.prototype ||
-    Object.keys(limits).some((key) => !["maxCiphertextBytes", "maxEnvelopeBytes"].includes(key))
+    Reflect.ownKeys(limits).some(
+      (key) =>
+        typeof key !== "string" ||
+        !["maxCiphertextBytes", "maxEnvelopeBytes"].includes(key) ||
+        !hasEnumerableDataProperty(limits, key)
+    )
   ) {
     throw snapshotError("SNAPSHOT_LIMITS_INVALID");
   }
@@ -126,6 +160,25 @@ function captureLimits(limits) {
   return Object.freeze({ maxCiphertextBytes, maxEnvelopeBytes });
 }
 
+function finiteRfc3339(value) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)) return false;
+  const epoch = Date.parse(value);
+  return (
+    Number.isFinite(epoch) && new Date(epoch).toISOString().slice(0, 19) === value.slice(0, 19)
+  );
+}
+
+function slotObjectKey(aad) {
+  const value = `snapshot-slots/v2/${aad.releaseAttemptId}/${aad.snapshotRunId}/snapshot.enc`;
+  if (
+    value.length > 1024 ||
+    !/^snapshot-slots\/v2\/[^/*?]+\/[1-9][0-9]*\/snapshot\.enc$/.test(value)
+  ) {
+    throw snapshotError("SNAPSHOT_AAD_INVALID");
+  }
+  return value;
+}
+
 function captureAad(aad, { required = false } = {}) {
   if (aad === undefined && required) throw snapshotError("SNAPSHOT_AAD_REQUIRED");
   if (!sameKeys(aad, AAD_KEYS) || Object.values(aad).some((value) => typeof value !== "string")) {
@@ -140,12 +193,15 @@ function captureAad(aad, { required = false } = {}) {
     !/^[1-9][0-9]*$/.test(aad.snapshotRunId) ||
     !/^sha256:[0-9a-f]{64}$/.test(aad.sanitizationContractDigest) ||
     !/^sha256:[0-9a-f]{64}$/.test(aad.snapshotDigest) ||
+    !finiteRfc3339(aad.snapshotAllocatedAt) ||
+    !finiteRfc3339(aad.expiresAt) ||
     !Number.isFinite(allocatedAt) ||
     !Number.isFinite(expiresAt) ||
     expiresAt - allocatedAt !== 30 * DAY_MS
   ) {
     throw snapshotError("SNAPSHOT_AAD_INVALID");
   }
+  slotObjectKey(aad);
   return immutableJson(aad);
 }
 
@@ -294,16 +350,43 @@ async function createPrivateTemp(destination) {
   }
 }
 
-async function removeOwnedTemp(temporaryPath) {
+async function closeTemporary(temporary) {
+  if (!temporary) return;
+  if (temporary.output && !temporary.output.destroyed) {
+    temporary.output.destroy();
+    await finished(temporary.output).catch(() => {});
+  }
+  if (temporary.handle) await temporary.handle.close().catch(() => {});
+}
+
+async function preparePrivateTemp(destination) {
+  const temporary = await createPrivateTemp(destination);
+  try {
+    await temporary.handle.chmod(0o600);
+    temporary.output = temporary.handle.createWriteStream({ autoClose: true, flush: true });
+    return temporary;
+  } catch {
+    await closeTemporary(temporary);
+    await removeOwnedTemp(temporary.path);
+    throw snapshotError("SNAPSHOT_DESTINATION_SETUP_FAILED");
+  }
+}
+
+async function removeOwnedTemp(temporaryPath, { outputCommitted = false } = {}) {
   if (!temporaryPath) return;
   try {
     await unlink(temporaryPath);
   } catch (error) {
-    if (error?.code !== "ENOENT") throw snapshotError("SNAPSHOT_TEMP_CLEANUP_FAILED");
+    if (error?.code !== "ENOENT") {
+      throw snapshotError(
+        "SNAPSHOT_TEMP_CLEANUP_FAILED",
+        outputCommitted ? { outputCommitted: true } : undefined
+      );
+    }
   }
 }
 
-async function publishTemp(temporaryPath, destination, signal) {
+async function publishTemp(temporaryPath, destination, signal, publication) {
   assertNotAborted(signal);
   try {
     await link(temporaryPath, destination);
@@ -311,10 +394,45 @@ async function publishTemp(temporaryPath, destination, signal) {
     if (error?.code === "EEXIST") throw snapshotError("SNAPSHOT_DESTINATION_EXISTS");
     throw snapshotError("SNAPSHOT_DESTINATION_PUBLISH_FAILED");
   }
+  publication.outputCommitted = true;
   try {
     await unlink(temporaryPath);
   } catch {
     throw snapshotError("SNAPSHOT_TEMP_CLEANUP_FAILED", { outputCommitted: true });
+  }
+}
+
+function plaintextRepresentations(plaintext) {
+  const hex = plaintext.toString("hex");
+  const base64 = plaintext.toString("base64");
+  return Object.freeze([
+    plaintext,
+    Buffer.from(hex, "utf8"),
+    Buffer.from(hex.toUpperCase(), "utf8"),
+    Buffer.from(base64, "utf8"),
+    Buffer.from(plaintext.toString("base64url"), "utf8")
+  ]);
+}
+
+function containsPlaintextRepresentation(value, plaintext) {
+  const representations = plaintextRepresentations(plaintext);
+  try {
+    return representations.some(
+      (representation) => representation.byteLength > 0 && value.indexOf(representation) !== -1
+    );
+  } finally {
+    for (const representation of representations) {
+      if (representation !== plaintext) representation.fill(0);
+    }
+  }
+}
+
+function metadataContainsPlaintextRepresentation(metadata, plaintext) {
+  const bytes = Buffer.from(metadata, "utf8");
+  try {
+    return containsPlaintextRepresentation(bytes, plaintext);
+  } finally {
+    bytes.fill(0);
   }
 }
 
@@ -338,7 +456,19 @@ function validateWrappedKey(wrapped, plaintext) {
     wrapped.ciphertext.byteOffset < plaintext.byteOffset + plaintext.byteLength &&
     plaintext.byteOffset < wrapped.ciphertext.byteOffset + wrapped.ciphertext.byteLength
   ) {
-    throw snapshotError("SNAPSHOT_WRAPPED_KEY_INVALID");
+    throw snapshotError("SNAPSHOT_KEY_MATERIAL_EXPOSED");
+  }
+  if (
+    containsPlaintextRepresentation(wrapped.ciphertext, plaintext) ||
+    [
+      wrapped.kind,
+      wrapped.region,
+      wrapped.keyId,
+      wrapped.keyAlias,
+      wrapped.aliasReadbackKeyId
+    ].some((metadata) => metadataContainsPlaintextRepresentation(metadata, plaintext))
+  ) {
+    throw snapshotError("SNAPSHOT_KEY_MATERIAL_EXPOSED");
   }
   return Object.freeze({
     kind: wrapped.kind,
@@ -394,7 +524,7 @@ function buildEnvelope({ aad, auth, nonce, tag, ciphertext, wrapped }) {
     sourceSha: aad.sourceSha,
     snapshotDigest: aad.snapshotDigest,
     sanitizationContractDigest: aad.sanitizationContractDigest,
-    slotObjectKey: `snapshot-slots/v2/${aad.releaseAttemptId}/${aad.snapshotRunId}/snapshot.enc`,
+    slotObjectKey: slotObjectKey(aad),
     nonceBase64: nonce.toString("base64"),
     authenticationTagBase64: tag.toString("base64"),
     ciphertextDigest: ciphertext.digest,
@@ -500,7 +630,7 @@ export async function encryptSnapshotStream({
   let keyMaterial;
   let temporary;
   let envelope;
-  let committed = false;
+  const publication = { outputCommitted: false };
   try {
     try {
       let generated;
@@ -511,11 +641,11 @@ export async function encryptSnapshotStream({
           encryptionContext: auth.context
         });
       } catch {
-        if (signal?.aborted) throw snapshotError("SNAPSHOT_ABORTED");
-        throw snapshotError("SNAPSHOT_KMS_GENERATE_FAILED");
+        if (signal?.aborted) throw unknownKmsError("SNAPSHOT_ABORTED");
+        throw unknownKmsError("SNAPSHOT_KMS_GENERATE_FAILED");
       }
       keyMaterial = generated?.plaintext;
-      assertNotAborted(signal);
+      assertKmsNotAborted(signal);
       const key = validateGeneratedKey(generated);
       const nonce = randomBytes(12);
       const cipher = createCipheriv("aes-256-gcm", key.plaintext, nonce, {
@@ -523,16 +653,19 @@ export async function encryptSnapshotStream({
       });
       cipher.setAAD(auth.bytes);
 
-      temporary = await createPrivateTemp(outputPath);
+      temporary = await preparePrivateTemp(outputPath);
       const replay = await openOwnedSource(openReplay, signal);
       const plaintextMonitor = byteMonitor(effectiveLimits.maxCiphertextBytes);
       const ciphertextMonitor = byteMonitor(effectiveLimits.maxCiphertextBytes);
-      await temporary.handle.chmod(0o600);
-      const output = temporary.handle.createWriteStream({ autoClose: true, flush: true });
       try {
-        await pipeline(replay, plaintextMonitor.stream, cipher, ciphertextMonitor.stream, output, {
-          signal
-        });
+        await pipeline(
+          replay,
+          plaintextMonitor.stream,
+          cipher,
+          ciphertextMonitor.stream,
+          temporary.output,
+          { signal }
+        );
       } catch (error) {
         throw safePipelineError(error, signal, "SNAPSHOT_ENCRYPTION_FAILED");
       } finally {
@@ -566,12 +699,11 @@ export async function encryptSnapshotStream({
     } finally {
       wipePossibleKey(keyMaterial);
     }
-    await publishTemp(temporary.path, outputPath, signal);
-    committed = true;
+    await publishTemp(temporary.path, outputPath, signal, publication);
     return envelope;
   } finally {
-    if (temporary?.handle) await temporary.handle.close().catch(() => {});
-    if (!committed) await removeOwnedTemp(temporary?.path);
+    await closeTemporary(temporary);
+    await removeOwnedTemp(temporary?.path, publication);
   }
 }
 
@@ -616,7 +748,7 @@ export async function decryptSnapshotStream({
   const wrapped = wrappedFromEnvelope(capturedEnvelope);
   let keyMaterial;
   let temporary;
-  let committed = false;
+  const publication = { outputCommitted: false };
   try {
     try {
       try {
@@ -625,10 +757,10 @@ export async function decryptSnapshotStream({
           encryptionContext: auth.context
         });
       } catch {
-        if (signal?.aborted) throw snapshotError("SNAPSHOT_ABORTED");
-        throw snapshotError("SNAPSHOT_KMS_DECRYPT_FAILED");
+        if (signal?.aborted) throw unknownKmsError("SNAPSHOT_ABORTED");
+        throw unknownKmsError("SNAPSHOT_KMS_DECRYPT_FAILED");
       }
-      assertNotAborted(signal);
+      assertKmsNotAborted(signal);
       const key = validateDecryptedKey(keyMaterial);
       const decipher = createDecipheriv(
         "aes-256-gcm",
@@ -639,19 +771,17 @@ export async function decryptSnapshotStream({
       decipher.setAAD(auth.bytes);
       decipher.setAuthTag(Buffer.from(capturedEnvelope.authenticationTagBase64, "base64"));
 
-      temporary = await createPrivateTemp(outputPath);
+      temporary = await preparePrivateTemp(outputPath);
       const replay = await openOwnedSource(openReplay, signal);
       const ciphertextMonitor = byteMonitor(effectiveLimits.maxCiphertextBytes);
       const plaintextMonitor = byteMonitor(effectiveLimits.maxCiphertextBytes);
-      await temporary.handle.chmod(0o600);
-      const output = temporary.handle.createWriteStream({ autoClose: true, flush: true });
       try {
         await pipeline(
           replay,
           ciphertextMonitor.stream,
           decipher,
           plaintextMonitor.stream,
-          output,
+          temporary.output,
           { signal }
         );
       } catch (error) {
@@ -676,10 +806,9 @@ export async function decryptSnapshotStream({
     } finally {
       wipePossibleKey(keyMaterial);
     }
-    await publishTemp(temporary.path, outputPath, signal);
-    committed = true;
+    await publishTemp(temporary.path, outputPath, signal, publication);
   } finally {
-    if (temporary?.handle) await temporary.handle.close().catch(() => {});
-    if (!committed) await removeOwnedTemp(temporary?.path);
+    await closeTemporary(temporary);
+    await removeOwnedTemp(temporary?.path, publication);
   }
 }

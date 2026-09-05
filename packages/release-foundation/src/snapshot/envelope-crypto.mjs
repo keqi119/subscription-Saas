@@ -372,15 +372,18 @@ async function preparePrivateTemp(destination) {
   }
 }
 
-async function removeOwnedTemp(temporaryPath, { outputCommitted = false } = {}) {
-  if (!temporaryPath) return;
+async function removeOwnedTemp(temporaryPath, publication = {}) {
+  if (!temporaryPath || publication.temporaryNameOwned === false) return;
   try {
     await unlink(temporaryPath);
+    publication.temporaryNameOwned = false;
   } catch (error) {
-    if (error?.code !== "ENOENT") {
+    if (error?.code === "ENOENT") {
+      publication.temporaryNameOwned = false;
+    } else {
       throw snapshotError(
         "SNAPSHOT_TEMP_CLEANUP_FAILED",
-        outputCommitted ? { outputCommitted: true } : undefined
+        publication.outputCommitted ? { outputCommitted: true } : undefined
       );
     }
   }
@@ -397,7 +400,12 @@ async function publishTemp(temporaryPath, destination, signal, publication) {
   publication.outputCommitted = true;
   try {
     await unlink(temporaryPath);
-  } catch {
+    publication.temporaryNameOwned = false;
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      publication.temporaryNameOwned = false;
+      return;
+    }
     throw snapshotError("SNAPSHOT_TEMP_CLEANUP_FAILED", { outputCommitted: true });
   }
 }
@@ -630,7 +638,7 @@ export async function encryptSnapshotStream({
   let keyMaterial;
   let temporary;
   let envelope;
-  const publication = { outputCommitted: false };
+  const publication = { outputCommitted: false, temporaryNameOwned: false };
   try {
     try {
       let generated;
@@ -654,6 +662,7 @@ export async function encryptSnapshotStream({
       cipher.setAAD(auth.bytes);
 
       temporary = await preparePrivateTemp(outputPath);
+      publication.temporaryNameOwned = true;
       const replay = await openOwnedSource(openReplay, signal);
       const plaintextMonitor = byteMonitor(effectiveLimits.maxCiphertextBytes);
       const ciphertextMonitor = byteMonitor(effectiveLimits.maxCiphertextBytes);
@@ -748,7 +757,7 @@ export async function decryptSnapshotStream({
   const wrapped = wrappedFromEnvelope(capturedEnvelope);
   let keyMaterial;
   let temporary;
-  const publication = { outputCommitted: false };
+  const publication = { outputCommitted: false, temporaryNameOwned: false };
   try {
     try {
       try {
@@ -772,6 +781,7 @@ export async function decryptSnapshotStream({
       decipher.setAuthTag(Buffer.from(capturedEnvelope.authenticationTagBase64, "base64"));
 
       temporary = await preparePrivateTemp(outputPath);
+      publication.temporaryNameOwned = true;
       const replay = await openOwnedSource(openReplay, signal);
       const ciphertextMonitor = byteMonitor(effectiveLimits.maxCiphertextBytes);
       const plaintextMonitor = byteMonitor(effectiveLimits.maxCiphertextBytes);

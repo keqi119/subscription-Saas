@@ -158,6 +158,31 @@ async function withTemporaryUnlinkFailures(destination, failureCount, action) {
   }
 }
 
+async function withTemporaryNameReplacement(destination, replacement, action) {
+  const originalUnlink = fs.promises.unlink;
+  let temporaryPath;
+  let temporaryUnlinkCalls = 0;
+  fs.promises.unlink = async function replaceReleasedTemporaryName(path) {
+    if (String(path).includes(".snapshot-tmp-") && fs.existsSync(destination)) {
+      temporaryUnlinkCalls += 1;
+      const result = await originalUnlink(path);
+      if (temporaryUnlinkCalls === 1) {
+        temporaryPath = String(path);
+        await writeFile(temporaryPath, replacement, { flag: "wx" });
+      }
+      return result;
+    }
+    return originalUnlink(path);
+  };
+  syncBuiltinESMExports();
+  try {
+    return await action(() => ({ temporaryPath, temporaryUnlinkCalls }));
+  } finally {
+    fs.promises.unlink = originalUnlink;
+    syncBuiltinESMExports();
+  }
+}
+
 test("real streaming encryption roundtrips and clears both plaintext DEKs", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -1595,6 +1620,53 @@ test("review fix: consumer transient and persistent cleanup keep committed statu
     assert.equal(caught?.message.includes("SENTINEL_UNLINK_SECRET"), false);
     assert.deepEqual(await readFile(destination), plaintext);
   }
+});
+
+test("review fix round 2: producer and consumer preserve a replacement at the released temp name", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-released-name-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const plaintext = Buffer.from("sanitized snapshot");
+  const inputPath = join(directory, "snapshot.sql");
+  await writeFile(inputPath, plaintext);
+  const replacement = Buffer.from("replacement owned by another actor");
+  const encryptedPath = join(directory, "snapshot.enc");
+
+  let producerEnvelope;
+  await withTemporaryNameReplacement(encryptedPath, replacement, async (state) => {
+    producerEnvelope = await encryptSnapshotStream({
+      source: replayableFile(inputPath).source,
+      destination: encryptedPath,
+      aad: expectedAad(plaintext),
+      kms: {
+        async generateDataKey() {
+          return { plaintext: Buffer.alloc(32, 7), wrapped: wrappedKey() };
+        }
+      }
+    });
+    const observed = state();
+    assert.equal(observed.temporaryUnlinkCalls, 1);
+    assert.deepEqual(await readFile(observed.temporaryPath), replacement);
+    assert.equal(fs.existsSync(encryptedPath), true);
+  });
+
+  const restoredPath = join(directory, "restored.sql");
+  await withTemporaryNameReplacement(restoredPath, replacement, async (state) => {
+    await decryptSnapshotStream({
+      source: replayableFile(encryptedPath).source,
+      destination: restoredPath,
+      envelope: producerEnvelope,
+      aad: expectedAad(plaintext),
+      kms: {
+        async decryptDataKey() {
+          return Buffer.alloc(32, 7);
+        }
+      }
+    });
+    const observed = state();
+    assert.equal(observed.temporaryUnlinkCalls, 1);
+    assert.deepEqual(await readFile(observed.temporaryPath), replacement);
+    assert.deepEqual(await readFile(restoredPath), plaintext);
+  });
 });
 
 test("review fix: nested option shapes reject hidden own keys", async (t) => {

@@ -231,10 +231,24 @@ function validLineageRetentionReceipt() {
     rcWorkflowRunId: "701",
     objects: [
       {
+        addressingKind: "lineage",
+        objectType: "release-aggregate-proof.v2",
         key: `evidence/v1/${releaseAttemptId}/701/release-aggregate-proof.v2/${"a".repeat(64)}`,
         version: "null-version-disabled",
         digest: digest("a"),
+        rawProofType: null,
+        rawProofDigest: null,
         custodyObservationDigest: digest("b")
+      },
+      {
+        addressingKind: "claim",
+        objectType: "purpose-claim.v1",
+        key: `evidence/claims/v1/source-gate-evidence.v1/${"f".repeat(64)}`,
+        version: "claim-version-001",
+        digest: digest("c"),
+        rawProofType: "source-gate-evidence.v1",
+        rawProofDigest: digest("f"),
+        custodyObservationDigest: digest("d")
       }
     ],
     latestWholeLineageRetainUntil: "2027-04-01T00:00:00.000Z",
@@ -475,6 +489,29 @@ test("lineage retention receipt requires whole-lineage and legal-hold boundaries
     const candidate = validLineageRetentionReceipt();
     mutate(candidate);
     assert.throws(() => validateLineageRetentionReceipt(candidate));
+  }
+});
+
+test("lineage retention receipt derives every exact key and rejects duplicate addresses", () => {
+  const valid = validLineageRetentionReceipt();
+  assert.doesNotThrow(() => validateLineageRetentionReceipt(valid));
+
+  for (const mutate of [
+    (value) =>
+      (value.objects[0].key = `evidence/v1/wrong-attempt/701/release-aggregate-proof.v2/${"a".repeat(64)}`),
+    (value) =>
+      (value.objects[0].key = `evidence/v1/${releaseAttemptId}/702/release-aggregate-proof.v2/${"a".repeat(64)}`),
+    (value) =>
+      (value.objects[0].key = `evidence/v1/${releaseAttemptId}/701/release-aggregate-proof.v2/${"0".repeat(64)}`),
+    (value) =>
+      (value.objects[1].key = `evidence/claims/v1/source-gate-evidence.v1/${"0".repeat(64)}`),
+    (value) => value.objects.push({ ...value.objects[0], version: "different-version" })
+  ]) {
+    const candidate = validLineageRetentionReceipt();
+    mutate(candidate);
+    assert.throws(() => validateLineageRetentionReceipt(candidate), {
+      code: "LINEAGE_RETENTION_DISPOSITION_INVALID"
+    });
   }
 });
 

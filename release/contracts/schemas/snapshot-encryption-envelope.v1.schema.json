@@ -13,7 +13,6 @@
     "sanitizationContractDigest",
     "slotObjectKey",
     "nonceBase64",
-    "nonceUniqueness",
     "authenticationTagBase64",
     "ciphertextDigest",
     "ciphertextSizeBytes",
@@ -39,15 +38,6 @@
       "maxLength": 1024
     },
     "nonceBase64": { "type": "string", "pattern": "^[A-Za-z0-9+/]{16}$" },
-    "nonceUniqueness": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["scope", "uniquenessProofDigest"],
-      "properties": {
-        "scope": { "const": "kms-key-and-snapshot-run" },
-        "uniquenessProofDigest": { "$ref": "#/$defs/digest" }
-      }
-    },
     "authenticationTagBase64": { "type": "string", "pattern": "^[A-Za-z0-9+/]{22}==$" },
     "ciphertextDigest": { "$ref": "#/$defs/digest" },
     "ciphertextSizeBytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 },

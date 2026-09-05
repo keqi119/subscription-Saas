@@ -126,10 +126,6 @@ function validEnvelope(authorization = validAuthorization()) {
     sanitizationContractDigest: kmsContext.sanitizationContractDigest,
     slotObjectKey: `snapshot-slots/v2/${authorization.releaseAttemptId}/${authorization.snapshotRunId}/snapshot.enc`,
     nonceBase64: Buffer.alloc(12, 1).toString("base64"),
-    nonceUniqueness: {
-      scope: "kms-key-and-snapshot-run",
-      uniquenessProofDigest: digest("5")
-    },
     authenticationTagBase64: Buffer.alloc(16, 2).toString("base64"),
     ciphertextDigest: digest("6"),
     ciphertextSizeBytes: 8192,
@@ -156,6 +152,7 @@ function validUseProof(authorization = validAuthorization()) {
   return {
     schemaVersion: "producer-crypto-use-proof.v1",
     publishable: true,
+    failureKind: null,
     authorizationDigest: sha256Canonical(authorization),
     prerequisiteReadbackDigest: authorization.prerequisites.readbackDigest,
     dataObservationDigest: digest("8"),
@@ -276,6 +273,22 @@ test("encryption envelope rejects plaintext key material with public schema erro
   );
 });
 
+test("encryption envelope keeps only the canonical 96-bit nonce representation", () => {
+  const authorization = validAuthorization();
+  const envelope = validEnvelope(authorization);
+  delete envelope.nonceUniqueness;
+  assert.doesNotThrow(() => validateSnapshotEncryptionEnvelope(envelope, { authorization }));
+
+  const legacy = validEnvelope(authorization);
+  legacy.nonceUniqueness = {
+    scope: "kms-key-and-snapshot-run",
+    uniquenessProofDigest: digest("5")
+  };
+  assert.throws(() => validateContract("snapshot-encryption-envelope.v1", legacy), {
+    code: "CONTRACT_SCHEMA_INVALID"
+  });
+});
+
 test("producer crypto use proof requires one successful call, cleanup, and terminal session", () => {
   const authorization = validAuthorization();
   const envelope = validEnvelope(authorization);
@@ -311,18 +324,63 @@ test("producer crypto success proof is unusable without its authorization and en
   );
 });
 
+test("producer crypto authorization bounds issuance while session duration remains separate", () => {
+  const authorization = validAuthorization();
+  const envelope = validEnvelope(authorization);
+  const delayed = validUseProof(authorization);
+  delayed.session.issuedAt = "2026-09-03T00:14:59.999Z";
+  delayed.session.expiresAt = "2026-09-03T00:24:59.999Z";
+  delayed.cleanup.processExitedAt = "2026-09-03T00:20:00.000Z";
+  delayed.session.terminalAt = "2026-09-03T00:21:00.000Z";
+  delayed.issuedAt = "2026-09-03T00:22:00.000Z";
+  assert.doesNotThrow(() => validateProducerCryptoUseProof(delayed, { authorization, envelope }));
+
+  const atExpiry = structuredClone(delayed);
+  atExpiry.session.issuedAt = authorization.notAfter;
+  assert.throws(() => validateProducerCryptoUseProof(atExpiry, { authorization, envelope }));
+
+  const overlong = structuredClone(delayed);
+  overlong.session.expiresAt = "2026-09-03T00:25:00.000Z";
+  assert.throws(() => validateProducerCryptoUseProof(overlong, { authorization, envelope }));
+});
+
 test("producer crypto use proof preserves a closed non-publishable UNKNOWN failure record", () => {
   const authorization = validAuthorization();
-  const failure = validUseProof(authorization);
-  failure.publishable = false;
-  failure.request.callCount = 2;
-  failure.request.outcome = "INTERRUPTED_UNKNOWN";
-  failure.session.terminalState = "ACTIVE";
-  failure.session.terminalAt = null;
-  failure.session.terminalReceiptDigest = null;
-  failure.cleanup.keyBufferClear = "UNKNOWN";
-  failure.cleanup.processExitedAt = null;
+  const success = validUseProof(authorization);
+  const failure = {
+    ...success,
+    publishable: false,
+    failureKind: "INTERRUPTED_UNKNOWN",
+    dataObservationDigest: null,
+    request: {
+      requestId: null,
+      action: "kms:GenerateDataKey",
+      keySpec: "AES_256",
+      keyId: null,
+      contextDigest: null,
+      callCount: 1,
+      outcome: "SUCCESS"
+    },
+    session: {
+      ...success.session,
+      terminalState: "ACTIVE",
+      terminalAt: null,
+      terminalReceiptDigest: null
+    },
+    encryption: null,
+    cleanup: {
+      coreDumpDisabled: true,
+      memoryLocked: true,
+      keyBufferClear: null,
+      processExitedAt: null
+    }
+  };
   assert.doesNotThrow(() => validateContract("producer-crypto-use-proof.v1", failure));
+
+  const duplicateCall = structuredClone(failure);
+  duplicateCall.request.callCount = 2;
+  duplicateCall.request.outcome = "INTERRUPTED_UNKNOWN";
+  assert.doesNotThrow(() => validateContract("producer-crypto-use-proof.v1", duplicateCall));
   assert.throws(
     () =>
       validateProducerCryptoUseProof(failure, {
@@ -333,6 +391,36 @@ test("producer crypto use proof preserves a closed non-publishable UNKNOWN failu
       code: "PRODUCER_CRYPTO_USE_NOT_PUBLISHABLE"
     }
   );
+});
+
+test("producer crypto failure shape permits unavailable facts without accepting success fields", () => {
+  const authorization = validAuthorization();
+  const failedBeforeRequest = {
+    ...validUseProof(authorization),
+    publishable: false,
+    failureKind: "FAILED"
+  };
+  delete failedBeforeRequest.dataObservationDigest;
+  delete failedBeforeRequest.request;
+  delete failedBeforeRequest.session;
+  delete failedBeforeRequest.encryption;
+  delete failedBeforeRequest.cleanup;
+  assert.doesNotThrow(() => validateContract("producer-crypto-use-proof.v1", failedBeforeRequest));
+  assert.throws(
+    () =>
+      validateProducerCryptoUseProof(failedBeforeRequest, {
+        authorization,
+        envelope: validEnvelope(authorization)
+      }),
+    { code: "PRODUCER_CRYPTO_USE_NOT_PUBLISHABLE" }
+  );
+
+  const mislabeledSuccess = validUseProof(authorization);
+  mislabeledSuccess.publishable = false;
+  mislabeledSuccess.failureKind = "FAILED";
+  assert.throws(() => validateContract("producer-crypto-use-proof.v1", mislabeledSuccess), {
+    code: "CONTRACT_SCHEMA_INVALID"
+  });
 });
 
 test("producer crypto use proof schema rejects secret-bearing fields", () => {

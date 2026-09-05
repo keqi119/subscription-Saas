@@ -174,7 +174,8 @@ export function validateProducerCryptoUseProof(proof, { authorization, envelope 
     proof.encryption.ciphertextDigest !== envelope.ciphertextDigest ||
     proof.encryption.wrappedDekDigest !== envelope.wrappedDek.digest ||
     sessionIssued < instant(authorization.notBefore) ||
-    sessionExpires > instant(authorization.notAfter)
+    sessionIssued >= instant(authorization.notAfter) ||
+    sessionExpires - sessionIssued > authorization.session.requestedDurationSeconds * 1000
   ) {
     throw contractError("PRODUCER_CRYPTO_USE_AUTHORIZATION_MISMATCH");
   }

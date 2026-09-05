@@ -29,8 +29,27 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["key", "version", "digest", "custodyObservationDigest"],
+        "required": [
+          "addressingKind",
+          "objectType",
+          "key",
+          "version",
+          "digest",
+          "rawProofType",
+          "rawProofDigest",
+          "custodyObservationDigest"
+        ],
         "properties": {
+          "addressingKind": { "enum": ["claim", "lineage"] },
+          "objectType": {
+            "enum": [
+              "execution-purpose-envelope.v1",
+              "purpose-claim.v1",
+              "custody-receipt.v2",
+              "release-aggregate-proof.v2",
+              "s1-exit-evidence.v2"
+            ]
+          },
           "key": {
             "type": "string",
             "pattern": "^(?:evidence/claims/v1|evidence/v1)/[^*?]+$",
@@ -38,8 +57,40 @@
           },
           "version": { "$ref": "#/$defs/id" },
           "digest": { "$ref": "#/$defs/digest" },
+          "rawProofType": {
+            "anyOf": [
+              {
+                "enum": [
+                  "source-gate-evidence.v1",
+                  "execution-proof.v1",
+                  "final-compose-evidence.v1"
+                ]
+              },
+              { "type": "null" }
+            ]
+          },
+          "rawProofDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
           "custodyObservationDigest": { "$ref": "#/$defs/digest" }
-        }
+        },
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "addressingKind": { "const": "claim" },
+              "objectType": { "const": "purpose-claim.v1" },
+              "rawProofType": { "type": "string" },
+              "rawProofDigest": { "$ref": "#/$defs/digest" }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "addressingKind": { "const": "lineage" },
+              "rawProofType": { "type": "null" },
+              "rawProofDigest": { "type": "null" }
+            }
+          }
+        ]
       }
     },
     "latestWholeLineageRetainUntil": { "$ref": "#/$defs/timestamp" },

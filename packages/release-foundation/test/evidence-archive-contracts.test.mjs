@@ -28,8 +28,10 @@ const knownArchiveProofTypes = [
   "producer-terminal-observation.v1",
   "snapshot-jit-launch-proof.v1",
   "snapshot-producer-completion.v1",
+  "snapshot-private-custody.v1",
   "snapshot-destruction-receipt.v1",
   "snapshot-retention-receipt.v1",
+  "evidence-lineage-retention-receipt.v1",
   "build-proof.v1",
   "build-material-observation.v1",
   "post-state-observation.v1",
@@ -326,6 +328,41 @@ test("archive access receipt is unusable without its exact authorization", () =>
   });
 });
 
+test("archive session stays within its bound authorization lifetime", () => {
+  const authorization = validArchiveAuthorization();
+  const before = validArchiveAccessReceipt(authorization);
+  before.session.issuedAt = "2026-09-02T23:59:00.000Z";
+  before.session.expiresAt = "2026-09-03T00:09:00.000Z";
+  assert.throws(() => validateEvidenceArchiveAccessReceipt(before, { authorization }), {
+    code: "EVIDENCE_ARCHIVE_ACCESS_INVALID"
+  });
+
+  const after = validArchiveAccessReceipt(authorization);
+  after.session.issuedAt = "2026-09-03T00:15:00.001Z";
+  after.session.expiresAt = "2026-09-03T00:25:00.001Z";
+  after.session.terminalAt = "2026-09-03T00:20:00.000Z";
+  after.issuedAt = "2026-09-03T00:21:00.000Z";
+  assert.throws(() => validateEvidenceArchiveAccessReceipt(after, { authorization }), {
+    code: "EVIDENCE_ARCHIVE_ACCESS_INVALID"
+  });
+
+  const exactExpiry = validArchiveAccessReceipt(authorization);
+  exactExpiry.session.issuedAt = authorization.notAfter;
+  exactExpiry.session.expiresAt = "2026-09-03T00:30:00.000Z";
+  exactExpiry.session.terminalAt = "2026-09-03T00:20:00.000Z";
+  exactExpiry.issuedAt = "2026-09-03T00:21:00.000Z";
+  assert.throws(() => validateEvidenceArchiveAccessReceipt(exactExpiry, { authorization }), {
+    code: "EVIDENCE_ARCHIVE_ACCESS_INVALID"
+  });
+
+  const boundary = validArchiveAccessReceipt(authorization);
+  boundary.session.issuedAt = "2026-09-03T00:14:59.999Z";
+  boundary.session.expiresAt = "2026-09-03T00:29:59.999Z";
+  boundary.session.terminalAt = "2026-09-03T00:20:00.000Z";
+  boundary.issuedAt = "2026-09-03T00:21:00.000Z";
+  assert.doesNotThrow(() => validateEvidenceArchiveAccessReceipt(boundary, { authorization }));
+});
+
 test("archive reader cannot self-read as writer or claim a successful receipt without observation", () => {
   const authorization = validArchiveAuthorization("archive-readback-reader");
   for (const mutate of [
@@ -344,6 +381,34 @@ test("archive reader receipt requires both Head and Get for every frozen object"
   const authorization = validArchiveAuthorization("archive-readback-reader");
   const candidate = validArchiveAccessReceipt(authorization);
   candidate.actions = candidate.actions.filter(({ action }) => action !== "oss:HeadObject");
+  assert.throws(() => validateEvidenceArchiveAccessReceipt(candidate, { authorization }), {
+    code: "EVIDENCE_ARCHIVE_ACCESS_INVALID"
+  });
+});
+
+test("archive receipt requires one result for every authorized exact key", () => {
+  const authorization = validArchiveAuthorization("archive-readback-reader");
+  authorization.objects.push({
+    proofType: "external-change-approval.v1",
+    canonicalDigest: digest("2"),
+    exactKey: `control-evidence/v1/external-change-approval.v1/${digest("2")}`,
+    contentDigest: digest("2"),
+    contentSizeBytes: 4096
+  });
+  const candidate = validArchiveAccessReceipt(authorization);
+  for (const action of ["oss:HeadObject", "oss:GetObject"]) {
+    candidate.actions.push({
+      objectKey: authorization.objects[1].exactKey,
+      action,
+      result: "SUCCESS",
+      conditionalCreate: false,
+      requestId: `second-${action}`
+    });
+  }
+  candidate.objectResults.push({
+    ...candidate.objectResults[0],
+    etag: "FEDCBA9876543210FEDCBA9876543210"
+  });
   assert.throws(() => validateEvidenceArchiveAccessReceipt(candidate, { authorization }), {
     code: "EVIDENCE_ARCHIVE_ACCESS_INVALID"
   });

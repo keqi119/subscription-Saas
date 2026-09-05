@@ -6,23 +6,116 @@
   "required": [
     "schemaVersion",
     "publishable",
+    "failureKind",
     "authorizationDigest",
     "prerequisiteReadbackDigest",
-    "dataObservationDigest",
-    "request",
-    "session",
-    "encryption",
-    "cleanup",
     "issuer",
     "issuedAt"
   ],
   "properties": {
     "schemaVersion": { "const": "producer-crypto-use-proof.v1" },
     "publishable": { "type": "boolean" },
+    "failureKind": {
+      "anyOf": [{ "enum": ["FAILED", "INTERRUPTED_UNKNOWN"] }, { "type": "null" }]
+    },
     "authorizationDigest": { "$ref": "#/$defs/digest" },
     "prerequisiteReadbackDigest": { "$ref": "#/$defs/digest" },
-    "dataObservationDigest": { "$ref": "#/$defs/digest" },
+    "dataObservationDigest": {
+      "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+    },
     "request": {
+      "anyOf": [
+        { "$ref": "#/$defs/successRequest" },
+        { "$ref": "#/$defs/failureRequest" },
+        { "type": "null" }
+      ]
+    },
+    "session": {
+      "anyOf": [
+        { "$ref": "#/$defs/successSession" },
+        { "$ref": "#/$defs/failureSession" },
+        { "type": "null" }
+      ]
+    },
+    "encryption": {
+      "anyOf": [{ "$ref": "#/$defs/encryption" }, { "type": "null" }]
+    },
+    "cleanup": {
+      "anyOf": [
+        { "$ref": "#/$defs/successCleanup" },
+        { "$ref": "#/$defs/failureCleanup" },
+        { "type": "null" }
+      ]
+    },
+    "issuer": { "$ref": "#/$defs/id" },
+    "issuedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["dataObservationDigest", "request", "session", "encryption", "cleanup"],
+      "properties": {
+        "publishable": { "const": true },
+        "failureKind": { "type": "null" },
+        "dataObservationDigest": { "$ref": "#/$defs/digest" },
+        "request": { "$ref": "#/$defs/successRequest" },
+        "session": { "$ref": "#/$defs/successSession" },
+        "encryption": { "$ref": "#/$defs/encryption" },
+        "cleanup": { "$ref": "#/$defs/successCleanup" }
+      }
+    },
+    {
+      "type": "object",
+      "not": { "$ref": "#/$defs/completeSuccessFacts" },
+      "properties": {
+        "publishable": { "const": false },
+        "failureKind": { "const": "FAILED" },
+        "dataObservationDigest": {
+          "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+        },
+        "request": {
+          "anyOf": [{ "$ref": "#/$defs/failureRequest" }, { "type": "null" }]
+        },
+        "session": {
+          "anyOf": [{ "$ref": "#/$defs/failureSession" }, { "type": "null" }]
+        },
+        "encryption": {
+          "anyOf": [{ "$ref": "#/$defs/encryption" }, { "type": "null" }]
+        },
+        "cleanup": {
+          "anyOf": [{ "$ref": "#/$defs/failureCleanup" }, { "type": "null" }]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "not": { "$ref": "#/$defs/completeSuccessFacts" },
+      "properties": {
+        "publishable": { "const": false },
+        "failureKind": { "const": "INTERRUPTED_UNKNOWN" },
+        "dataObservationDigest": {
+          "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+        },
+        "request": {
+          "anyOf": [{ "$ref": "#/$defs/failureRequest" }, { "type": "null" }]
+        },
+        "session": {
+          "anyOf": [{ "$ref": "#/$defs/failureSession" }, { "type": "null" }]
+        },
+        "encryption": {
+          "anyOf": [{ "$ref": "#/$defs/encryption" }, { "type": "null" }]
+        },
+        "cleanup": {
+          "anyOf": [{ "$ref": "#/$defs/failureCleanup" }, { "type": "null" }]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true },
+    "successRequest": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -40,11 +133,37 @@
         "keySpec": { "const": "AES_256" },
         "keyId": { "$ref": "#/$defs/id" },
         "contextDigest": { "$ref": "#/$defs/digest" },
-        "callCount": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "callCount": { "const": 1 },
+        "outcome": { "const": "SUCCESS" }
+      }
+    },
+    "failureRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestId",
+        "action",
+        "keySpec",
+        "keyId",
+        "contextDigest",
+        "callCount",
+        "outcome"
+      ],
+      "properties": {
+        "requestId": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "action": { "const": "kms:GenerateDataKey" },
+        "keySpec": { "const": "AES_256" },
+        "keyId": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "contextDigest": {
+          "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+        },
+        "callCount": {
+          "anyOf": [{ "type": "integer", "minimum": 1, "maximum": 100 }, { "type": "null" }]
+        },
         "outcome": { "enum": ["SUCCESS", "FAILED", "INTERRUPTED_UNKNOWN"] }
       }
     },
-    "session": {
+    "successSession": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -59,9 +178,31 @@
         "fingerprint": { "$ref": "#/$defs/digest" },
         "issuedAt": { "$ref": "#/$defs/timestamp" },
         "expiresAt": { "$ref": "#/$defs/timestamp" },
+        "terminalState": { "enum": ["REVOKED", "EXPIRED"] },
+        "terminalAt": { "$ref": "#/$defs/timestamp" },
+        "terminalReceiptDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "failureSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fingerprint",
+        "issuedAt",
+        "expiresAt",
+        "terminalState",
+        "terminalAt",
+        "terminalReceiptDigest"
+      ],
+      "properties": {
+        "fingerprint": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "issuedAt": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+        "expiresAt": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
         "terminalState": { "enum": ["REVOKED", "EXPIRED", "ACTIVE", "UNKNOWN"] },
         "terminalAt": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
-        "terminalReceiptDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }
+        "terminalReceiptDigest": {
+          "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+        }
       }
     },
     "encryption": {
@@ -74,23 +215,42 @@
         "wrappedDekDigest": { "$ref": "#/$defs/digest" }
       }
     },
-    "cleanup": {
+    "successCleanup": {
       "type": "object",
       "additionalProperties": false,
       "required": ["coreDumpDisabled", "memoryLocked", "keyBufferClear", "processExitedAt"],
       "properties": {
-        "coreDumpDisabled": { "type": "boolean" },
-        "memoryLocked": { "type": "boolean" },
-        "keyBufferClear": { "enum": ["BEST_EFFORT_COMPLETED", "FAILED", "UNKNOWN"] },
-        "processExitedAt": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] }
+        "coreDumpDisabled": { "const": true },
+        "memoryLocked": { "const": true },
+        "keyBufferClear": { "const": "BEST_EFFORT_COMPLETED" },
+        "processExitedAt": { "$ref": "#/$defs/timestamp" }
       }
     },
-    "issuer": { "$ref": "#/$defs/id" },
-    "issuedAt": { "$ref": "#/$defs/timestamp" }
-  },
-  "$defs": {
-    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
-    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-    "timestamp": { "type": "string", "rfc3339Finite": true }
+    "failureCleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coreDumpDisabled", "memoryLocked", "keyBufferClear", "processExitedAt"],
+      "properties": {
+        "coreDumpDisabled": { "anyOf": [{ "type": "boolean" }, { "type": "null" }] },
+        "memoryLocked": { "anyOf": [{ "type": "boolean" }, { "type": "null" }] },
+        "keyBufferClear": {
+          "anyOf": [{ "enum": ["BEST_EFFORT_COMPLETED", "FAILED", "UNKNOWN"] }, { "type": "null" }]
+        },
+        "processExitedAt": {
+          "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+        }
+      }
+    },
+    "completeSuccessFacts": {
+      "type": "object",
+      "required": ["dataObservationDigest", "request", "session", "encryption", "cleanup"],
+      "properties": {
+        "dataObservationDigest": { "$ref": "#/$defs/digest" },
+        "request": { "$ref": "#/$defs/successRequest" },
+        "session": { "$ref": "#/$defs/successSession" },
+        "encryption": { "$ref": "#/$defs/encryption" },
+        "cleanup": { "$ref": "#/$defs/successCleanup" }
+      }
+    }
   }
 }

@@ -203,11 +203,30 @@ export function validateLineageRetentionReceipt(receipt) {
     receipt.legalHoldUntil === null ? 0 : instant(receipt.legalHoldUntil)
   );
   const expectedDisposition = receipt.action === "DELETE" ? "DELETED" : "TRANSFERRED";
+  const objectKeys = new Set();
+  const invalidObject = receipt.objects.some((object) => {
+    if (objectKeys.has(object.key)) return true;
+    objectKeys.add(object.key);
+    if (object.addressingKind === "claim") {
+      return (
+        object.objectType !== "purpose-claim.v1" ||
+        object.rawProofType === null ||
+        object.rawProofDigest === null ||
+        object.key !== `evidence/claims/v1/${object.rawProofType}/${object.rawProofDigest.slice(7)}`
+      );
+    }
+    return (
+      object.rawProofType !== null ||
+      object.rawProofDigest !== null ||
+      object.key !==
+        `evidence/v1/${receipt.releaseAttemptId}/${receipt.rcWorkflowRunId}/${object.objectType}/${object.digest.slice(7)}`
+    );
+  });
   if (
     instant(receipt.appliedAt) < required ||
     instant(receipt.terminalReadback.verifiedAt) < instant(receipt.appliedAt) ||
     receipt.terminalReadback.disposition !== expectedDisposition ||
-    receipt.objects.some(({ key }) => /[*?]/.test(key))
+    invalidObject
   ) {
     throw contractError("LINEAGE_RETENTION_DISPOSITION_INVALID");
   }
@@ -265,6 +284,8 @@ export function validateEvidenceArchiveAccessReceipt(receipt, { authorization } 
     throw contractError("EVIDENCE_ARCHIVE_SESSION_INVALID");
   }
   validateEvidenceArchiveAuthorization(authorization);
+  const authorizationIssuedAt = instant(authorization.issuedAt);
+  const authorizationNotAfter = instant(authorization.notAfter);
   const expectedActions =
     authorization.profile === "archive-create-only-writer"
       ? ["oss:PutObject"]
@@ -274,6 +295,8 @@ export function validateEvidenceArchiveAccessReceipt(receipt, { authorization } 
   );
   if (
     receipt.authorizationDigest !== sha256Canonical(authorization) ||
+    issuedAt < authorizationIssuedAt ||
+    issuedAt >= authorizationNotAfter ||
     receipt.operationId !== authorization.operationId ||
     receipt.profile !== authorization.profile ||
     receipt.issuer !== authorization.issuer.id ||
@@ -295,6 +318,12 @@ export function validateEvidenceArchiveAccessReceipt(receipt, { authorization } 
       )
     ) ||
     receipt.objectResults.length !== authorization.objects.length ||
+    new Set(receipt.objectResults.map(({ objectKey }) => objectKey)).size !==
+      receipt.objectResults.length ||
+    !exactSet(
+      receipt.objectResults.map(({ objectKey }) => objectKey),
+      authorization.objects.map(({ exactKey }) => exactKey)
+    ) ||
     receipt.objectResults.some((result) => {
       const expected = authorizedObjects.get(result.objectKey);
       return (

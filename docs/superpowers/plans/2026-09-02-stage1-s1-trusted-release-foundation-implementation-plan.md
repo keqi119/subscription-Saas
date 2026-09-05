@@ -1,5 +1,7 @@
 # Stage 1 S1 Trusted Release Foundation Implementation Plan
 
+> **前向状态（2026-09-06）：旧路线冻结，不得自动续跑。** 阶段1关键路径由[最小受控发布决策](../specs/2026-09-06-stage1-minimal-controlled-release-decision.zh-CN.md)及[覆盖路线图](./2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)替代。基础设施 Task 6 及后续扩展、本计划 Task 29R/30 和全部 I 系列延期；恢复旧路线必须重新取得明确批准。已完成基础设施 Task 0–5（代码至 `1f0b0439`）保留，其他已完成上游成果同样不重做、不回退。下文的 Plan Status/Dependent Plan/续跑规则均为历史语境，不构成当前施工授权。第一批仅申请[独立 P0/P1 计划](./2026-09-06-stage1-p0-p1-admission-implementation-plan.md)批准；R1–R4、业务包和外部操作仍分别审批。Task 30 stash 保持冻结。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the approved S1 trusted release foundation: isolated PostgreSQL 17 database tests with zero skips, an immutable API/Web/Runner release bundle, capability-scoped Runner execution and proofs, a sanitized snapshot upgrade chain, final-artifact Compose verification, and removal of governance tooling from the API runtime.

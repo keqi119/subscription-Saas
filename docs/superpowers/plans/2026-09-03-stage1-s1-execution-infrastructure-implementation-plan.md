@@ -1,5 +1,7 @@
 # Stage 1 S1 Execution Infrastructure Implementation Plan
 
+> **前向状态（2026-09-06）：旧路线冻结，不得自动续跑。** 阶段1关键路径由[最小受控发布决策](../specs/2026-09-06-stage1-minimal-controlled-release-decision.zh-CN.md)及[覆盖路线图](./2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)替代。基础设施 Task 6 及后续扩展、上游 Task 29R/30 和全部 I 系列延期；恢复旧路线必须重新取得明确批准。已完成基础设施 Task 0–5（代码至 `1f0b0439`）保留，不重做、不回退。下文的 Task 6 续接/批准文字均为历史提案语境，不再是有效施工入口。原在途 `+207/-53` 已原样独立保管为提交 `457c0011`，该保管不代表批准。新路线也未因此获准施工：第一批仅申请[独立 P0/P1 计划](./2026-09-06-stage1-p0-p1-admission-implementation-plan.md)批准；真实签发、数据库/云/部署操作仍需各自授权。Task 30 stash 保持冻结。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 状态：当前 Task 6 合并计划修订以被人工复审拒绝的干净 HEAD `6e7d07cf` 为提案起点，等待新的人工内容批准；固定续接顺序为 `Task 6 修订获批 → Task 6 实施 → 独立审查`。Task 0–5 已完成至内核/本地测试基线 `1f0b0439`，不是当前施工队列；本状态不声称数据库、云环境、I0–I24 或 qualification 已就绪，也不授权 Task 6 代码或外部操作

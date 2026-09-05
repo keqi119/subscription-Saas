@@ -40,6 +40,7 @@
     "packages/release-foundation/src/proof-builders.mjs",
     "packages/release-foundation/src/schema-registry.mjs",
     "packages/release-foundation/src/snapshot/custody-contracts.mjs",
+    "packages/release-foundation/src/snapshot/envelope-crypto.mjs",
     "packages/release-foundation/src/snapshot/environment-policy.mjs",
     "packages/release-foundation/src/snapshot/export-sanitized.mjs",
     "packages/release-foundation/src/snapshot/normalize-ownership.mjs",

@@ -69,6 +69,11 @@ export {
 } from "./snapshot/export-sanitized.mjs";
 export { scanSanitizedArtifact } from "./snapshot/scan-artifact.mjs";
 export {
+  decryptSnapshotStream,
+  encryptSnapshotStream,
+  wipeKeyBuffer
+} from "./snapshot/envelope-crypto.mjs";
+export {
   assertReadOnlySnapshotSource,
   createReadOnlySourceExecutor,
   fingerprintSourceSnapshot

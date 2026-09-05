@@ -1,0 +1,45 @@
+{
+  "contractVersion": "snapshot-cloud-policy.v1",
+  "region": "oss-cn-shanghai",
+  "bucket": {
+    "derivationVersion": "sha256-account-id-v1",
+    "nameTemplate": "subscription-saas-stage1-snapshot-${sha256(accountId).slice(0,12)}-cn-shanghai",
+    "versioning": "Disabled",
+    "forbidOverwrite": true,
+    "worm": { "state": "Locked", "retentionDays": 210 }
+  },
+  "kms": { "alias": "alias/stage1-snapshot-custody", "kekExportable": false },
+  "profiles": {
+    "publisher": {
+      "allowedActions": ["oss:PutObject"],
+      "conditionalCreateOnly": true,
+      "kmsDecrypt": false,
+      "liveRoleProvisioned": true
+    },
+    "custody-reader": {
+      "allowedActions": [
+        "oss:HeadObject",
+        "oss:GetObject",
+        "oss:GetBucketAcl",
+        "oss:GetBucketWorm"
+      ],
+      "conditionalCreateOnly": false,
+      "kmsDecrypt": false,
+      "liveRoleProvisioned": true
+    },
+    "rc-consumer": {
+      "allowedActions": ["oss:HeadObject", "oss:GetObject", "kms:Decrypt"],
+      "conditionalCreateOnly": false,
+      "kmsDecrypt": true,
+      "liveRoleProvisioned": true
+    },
+    "retention": {
+      "allowedActions": [],
+      "conditionalCreateOnly": false,
+      "kmsDecrypt": false,
+      "liveRoleProvisioned": false,
+      "requiresSeparateApproval": true
+    }
+  },
+  "producerCryptoAuthorization": "producer-crypto-run-authorization.v1"
+}

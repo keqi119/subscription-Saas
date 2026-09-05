@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "snapshot-destruction-receipt.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseAttemptId",
+    "snapshotRunId",
+    "claim",
+    "volume",
+    "keyDisposition",
+    "residualScan",
+    "processTerminal",
+    "issuer",
+    "issuedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "snapshot-destruction-receipt.v1" },
+    "releaseAttemptId": { "$ref": "#/$defs/id" },
+    "snapshotRunId": { "$ref": "#/$defs/runId" },
+    "claim": { "const": "KEY_INVALIDATION_ONLY" },
+    "volume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backingFile",
+        "mapper",
+        "luksUuid",
+        "keySlotsBefore",
+        "keySlotsInvalidated",
+        "unlockAttemptResult"
+      ],
+      "properties": {
+        "backingFile": {
+          "type": "string",
+          "pattern": "^/var/lib/subscription-saas/snapshot-volumes/[A-Za-z0-9._-]+\\.luks$"
+        },
+        "mapper": { "type": "string", "pattern": "^subscription-s1-[A-Za-z0-9._-]+$" },
+        "luksUuid": { "type": "string", "format": "uuid" },
+        "keySlotsBefore": { "$ref": "#/$defs/slots" },
+        "keySlotsInvalidated": { "$ref": "#/$defs/slots" },
+        "unlockAttemptResult": { "const": "DENIED" }
+      }
+    },
+    "keyDisposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dekBufferClear", "tokenizationKeyDestroyed", "credentialsRemoved"],
+      "properties": {
+        "dekBufferClear": { "const": "BEST_EFFORT_COMPLETED" },
+        "tokenizationKeyDestroyed": { "const": true },
+        "credentialsRemoved": { "const": true }
+      }
+    },
+    "residualScan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performedAt", "pathsChecked", "plaintextArtifactsFound"],
+      "properties": {
+        "performedAt": { "$ref": "#/$defs/timestamp" },
+        "pathsChecked": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "plaintextArtifactsFound": { "const": 0 }
+      }
+    },
+    "processTerminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cryptoExited", "publisherIssuedAfterCryptoTerminal", "terminalAt"],
+      "properties": {
+        "cryptoExited": { "const": true },
+        "publisherIssuedAfterCryptoTerminal": { "const": true },
+        "terminalAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "issuer": { "$ref": "#/$defs/id" },
+    "issuedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "slots": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 0, "maximum": 31 }
+    },
+    "timestamp": { "type": "string", "rfc3339Finite": true }
+  }
+}

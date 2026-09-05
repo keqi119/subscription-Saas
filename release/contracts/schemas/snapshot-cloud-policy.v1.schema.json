@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "snapshot-cloud-policy.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "region",
+    "bucket",
+    "kms",
+    "profiles",
+    "producerCryptoAuthorization"
+  ],
+  "properties": {
+    "contractVersion": { "const": "snapshot-cloud-policy.v1" },
+    "region": { "const": "oss-cn-shanghai" },
+    "bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["derivationVersion", "nameTemplate", "versioning", "forbidOverwrite", "worm"],
+      "properties": {
+        "derivationVersion": { "const": "sha256-account-id-v1" },
+        "nameTemplate": {
+          "const": "subscription-saas-stage1-snapshot-${sha256(accountId).slice(0,12)}-cn-shanghai"
+        },
+        "versioning": { "const": "Disabled" },
+        "forbidOverwrite": { "const": true },
+        "worm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "retentionDays"],
+          "properties": { "state": { "const": "Locked" }, "retentionDays": { "const": 210 } }
+        }
+      }
+    },
+    "kms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alias", "kekExportable"],
+      "properties": {
+        "alias": { "const": "alias/stage1-snapshot-custody" },
+        "kekExportable": { "const": false }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publisher", "custody-reader", "rc-consumer", "retention"],
+      "properties": {
+        "publisher": { "$ref": "#/$defs/publisher" },
+        "custody-reader": { "$ref": "#/$defs/custodyReader" },
+        "rc-consumer": { "$ref": "#/$defs/rcConsumer" },
+        "retention": { "$ref": "#/$defs/retention" }
+      }
+    },
+    "producerCryptoAuthorization": { "const": "producer-crypto-run-authorization.v1" }
+  },
+  "$defs": {
+    "publisher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedActions", "conditionalCreateOnly", "kmsDecrypt", "liveRoleProvisioned"],
+      "properties": {
+        "allowedActions": { "const": ["oss:PutObject"] },
+        "conditionalCreateOnly": { "const": true },
+        "kmsDecrypt": { "const": false },
+        "liveRoleProvisioned": { "const": true }
+      }
+    },
+    "custodyReader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedActions", "conditionalCreateOnly", "kmsDecrypt", "liveRoleProvisioned"],
+      "properties": {
+        "allowedActions": {
+          "const": ["oss:HeadObject", "oss:GetObject", "oss:GetBucketAcl", "oss:GetBucketWorm"]
+        },
+        "conditionalCreateOnly": { "const": false },
+        "kmsDecrypt": { "const": false },
+        "liveRoleProvisioned": { "const": true }
+      }
+    },
+    "rcConsumer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedActions", "conditionalCreateOnly", "kmsDecrypt", "liveRoleProvisioned"],
+      "properties": {
+        "allowedActions": { "const": ["oss:HeadObject", "oss:GetObject", "kms:Decrypt"] },
+        "conditionalCreateOnly": { "const": false },
+        "kmsDecrypt": { "const": true },
+        "liveRoleProvisioned": { "const": true }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowedActions",
+        "conditionalCreateOnly",
+        "kmsDecrypt",
+        "liveRoleProvisioned",
+        "requiresSeparateApproval"
+      ],
+      "properties": {
+        "allowedActions": { "const": [] },
+        "conditionalCreateOnly": { "const": false },
+        "kmsDecrypt": { "const": false },
+        "liveRoleProvisioned": { "const": false },
+        "requiresSeparateApproval": { "const": true }
+      }
+    }
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "producer-crypto-use-proof.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "publishable",
+    "authorizationDigest",
+    "prerequisiteReadbackDigest",
+    "dataObservationDigest",
+    "request",
+    "session",
+    "encryption",
+    "cleanup",
+    "issuer",
+    "issuedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "producer-crypto-use-proof.v1" },
+    "publishable": { "type": "boolean" },
+    "authorizationDigest": { "$ref": "#/$defs/digest" },
+    "prerequisiteReadbackDigest": { "$ref": "#/$defs/digest" },
+    "dataObservationDigest": { "$ref": "#/$defs/digest" },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestId",
+        "action",
+        "keySpec",
+        "keyId",
+        "contextDigest",
+        "callCount",
+        "outcome"
+      ],
+      "properties": {
+        "requestId": { "$ref": "#/$defs/id" },
+        "action": { "const": "kms:GenerateDataKey" },
+        "keySpec": { "const": "AES_256" },
+        "keyId": { "$ref": "#/$defs/id" },
+        "contextDigest": { "$ref": "#/$defs/digest" },
+        "callCount": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "outcome": { "enum": ["SUCCESS", "FAILED", "INTERRUPTED_UNKNOWN"] }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fingerprint",
+        "issuedAt",
+        "expiresAt",
+        "terminalState",
+        "terminalAt",
+        "terminalReceiptDigest"
+      ],
+      "properties": {
+        "fingerprint": { "$ref": "#/$defs/digest" },
+        "issuedAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" },
+        "terminalState": { "enum": ["REVOKED", "EXPIRED", "ACTIVE", "UNKNOWN"] },
+        "terminalAt": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+        "terminalReceiptDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }
+      }
+    },
+    "encryption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["envelopeDigest", "ciphertextDigest", "wrappedDekDigest"],
+      "properties": {
+        "envelopeDigest": { "$ref": "#/$defs/digest" },
+        "ciphertextDigest": { "$ref": "#/$defs/digest" },
+        "wrappedDekDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coreDumpDisabled", "memoryLocked", "keyBufferClear", "processExitedAt"],
+      "properties": {
+        "coreDumpDisabled": { "type": "boolean" },
+        "memoryLocked": { "type": "boolean" },
+        "keyBufferClear": { "enum": ["BEST_EFFORT_COMPLETED", "FAILED", "UNKNOWN"] },
+        "processExitedAt": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] }
+      }
+    },
+    "issuer": { "$ref": "#/$defs/id" },
+    "issuedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true }
+  }
+}

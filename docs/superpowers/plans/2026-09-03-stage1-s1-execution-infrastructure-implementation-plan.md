@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-状态：Task 2E 局部修订待复审（Environment Schema/fixture 的 Task 3 前置窄修复）；Task 2R/2V 局部计划批准 `040d059a` 已批准，Task 2R `6ea32510` 与 Task 2V `759435ef` 已实施且各自本地独立审查通过；这些历史记录不代表本次 Task 2E 修订已批准或允许进入 Task 3
+状态：Task 6 export/catalog 局部计划修订待复审，本状态不授权实施 Task 6；Task 0–5 的既有完成/审查记录保持历史事实，Task 2E 旧段落仅保留其当时的局部修订提案语境，不是当前 pending 状态
 
 **Goal:** 实现已批准的方案 A 执行基础设施，使独立 sanitized snapshot producer 能在 public repository 条件下安全运行，并让唯一 RC workflow 在 GitHub-hosted 临时机上完成 source、final、aggregate 与 exit 证明链，从而解除 Task 29R 的基础设施阻断。
 
@@ -1181,6 +1181,10 @@ git commit -m "build: add isolated snapshot envelope crypto"
 - Modify: `scripts/release/custody-evidence.test.mjs`
 - Modify: `packages/release-foundation/src/evidence-custody.mjs`
 - Modify: `packages/release-foundation/test/evidence-custody.test.mjs`
+- Modify: `packages/release-foundation/src/index.mjs`
+- Modify: `packages/release-foundation/src/catalogs.mjs`
+- Modify: `packages/release-foundation/test/catalogs.test.mjs`
+- Modify: `release/contracts/repository-contract-files.v1.json`
 - Create: `apps/snapshot-adapter/src/cloud/aliyun-lineage-custody.mjs`
 - Create: `apps/snapshot-adapter/src/cloud/policy-generator.mjs`
 - Create: `apps/snapshot-adapter/test/aliyun-kms.test.mjs`
@@ -1196,13 +1200,73 @@ git commit -m "build: add isolated snapshot envelope crypto"
 **Interfaces:**
 
 - Dependencies pin exactly `ali-oss@6.23.0`, `@alicloud/credentials@2.4.7`, `@alicloud/kms20160120@3.3.0` and `@alicloud/sts20150401@1.2.0`.
+- `apps/snapshot-adapter/package.json` depends on `@subscription-saas/release-foundation` as exactly `workspace:*`; a real workspace install/link is required before public-package import tests. `pnpm install --lockfile-only` alone is insufficient.
 - Produces: `AliyunKmsDataKeyClient`, `AliyunOssWriteOncePublisher`, `AliyunOssExactReader`, `AliyunPublisherCredentialBroker`, `AliyunLineageCreateOnlyWriter`, `AliyunLineageExactReader`, `AliyunLineageRetentionOperator` and `buildAttemptRamPolicies(input)`.
 - The adapter accepts credentials as open file descriptors or injected SDK credential objects in tests; it never discovers credentials from environment variables or user home files.
+- The package root re-exports the existing Task 4 implementations; it must not copy or wrap their validators. From `snapshot/producer-crypto-contracts.mjs`, export exactly `validateProducerCryptoAuthorization`, `validateSnapshotEncryptionEnvelope` and `validateProducerCryptoUseProof`. From `snapshot/custody-contracts.mjs`, export exactly `validateSnapshotCustody`, `validateSnapshotDestructionReceipt`, `validateSnapshotRetentionReceipt`, `validateLineageStoragePolicy`, `validateLineageAccessReadback`, `validateLineageRetentionReceipt`, `validateEvidenceArchiveAuthorization`, `validateEvidenceArchiveAccessReceipt`, `validateEvidenceCustodyBootstrapReadback` and `validatePrebuildSanitizedInputBinding`.
+- `catalogs.mjs` remains the sole repository-contract discovery authority. Keep filesystem-based discovery and retain `RELEASE_GATE_ENTRY_POINTS`; union it with one bounded exact reserved-production set for Tasks 6–18, plus dynamic filesystem discovery of existing `apps/snapshot-adapter/package.json` and production files below `apps/snapshot-adapter/src/`. Normalize repository paths, sort them and require exact declared/discovered parity without requiring `.git`, so a complete contract input directory remains verifiable without Git metadata. Real final-image inventory and consumer proof remain with Task 15 and are not claimed by this fixture. A reserved path is discovered only while it exists; absent future paths must not enter `repository-contract-files.v1.json` early. Task 6 synchronizes the manifest by retaining every inherited entry and adding every currently existing path discovered by the union, including existing Task 15/17-owned sources; that registration does not transfer their modification ownership. Each later owner task adds its newly created production paths to that already-owned manifest and creates neither another catalog nor runtime parsing of this plan.
+- The exact additional reserved-production paths (excluding paths already in `RELEASE_GATE_ENTRY_POINTS`) are:
 
-- [ ] **Step 1: Scaffold the package and write RED credential-discovery tests**
+| Owner        | Exact paths reserved for discovery when existing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Task 6       | `infrastructure/stage1-snapshot/aliyun/snapshot-cloud-policy-input.v1.json`; `scripts/release/archive-release-evidence.mjs`; `scripts/release/custody-evidence.mjs`; `scripts/release/manage-evidence-custody-bootstrap.mjs`; `scripts/release/manage-snapshot-cloud-custody.mjs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Task 7       | `scripts/release/build-snapshot-adapter.mjs`; `scripts/release/verify-snapshot-adapter-bundle.mjs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Task 8       | `infrastructure/stage1-snapshot/wsl/audit-host.ps1`; `infrastructure/stage1-snapshot/wsl/configure-distro.sh`; `infrastructure/stage1-snapshot/wsl/create-attempt-volume.sh`; `infrastructure/stage1-snapshot/wsl/destroy-attempt-volume.sh`; `infrastructure/stage1-snapshot/wsl/install-adapter.sh`; `infrastructure/stage1-snapshot/wsl/snapshot-egress-policy.v1.json`; `infrastructure/stage1-snapshot/wsl/snapshot-launcher@.service`; `infrastructure/stage1-snapshot/wsl/wsl.conf`; `infrastructure/stage1-snapshot/wsl/wslconfig.stage1`; `scripts/release/manage-snapshot-wsl-host.mjs`                                                                                                                                                                                                                                                                                                                       |
+| Task 9       | `infrastructure/stage1-snapshot/github/snapshot-launcher-app-policy.v1.json`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Task 10      | `infrastructure/stage1-snapshot/server/sshd-stage1-snapshot.conf`; `infrastructure/stage1-snapshot/server/stage1-snapshot-reader.sql`; `infrastructure/stage1-snapshot/server/staging-loopback-endpoint.compose.yml`; `infrastructure/stage1-snapshot/server/verify-stage1-snapshot-reader.sql`; `scripts/release/manage-staging-snapshot-boundary.mjs`; `scripts/release/provision-snapshot-source-test-target.mjs`; `scripts/release/run-snapshot-reader-postgres-test.mjs`; `scripts/release/verify-snapshot-source-test-target.mjs`                                                                                                                                                                                                                                                                                                                                                                                 |
+| Task 11      | No fixed addition; its production foundation sources remain covered by existing dynamic discovery.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Task 12      | `scripts/release/collect-capacity-plan.mjs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Task 13      | `scripts/release/bootstrap-aliyun-oidc-provider.mjs`; `scripts/release/bootstrap-github-oidc-subject.mjs`; `scripts/release/bootstrap-snapshot-environment.mjs`; `scripts/release/bootstrap-snapshot-launcher-app.mjs`; `scripts/release/create-bootstrap-canary-authorization.mjs`; `scripts/release/create-exact-capability-approval.mjs`; `scripts/release/create-producer-crypto-authorization.mjs`; `scripts/release/manage-canary-handoff.mjs`; `scripts/release/manage-exact-run-capability.mjs`; `scripts/release/manage-producer-crypto-capability.mjs`; `scripts/release/prepare-rc-snapshot-consumer-role.mjs`; `scripts/release/prepare-snapshot-run.mjs`; `scripts/release/read-canary-checkpoint.mjs`; `scripts/release/run-aliyun-oidc-canary.mjs`; `scripts/release/verify-canary-no-cloud-handoff.mjs`; `scripts/release/verify-github-oidc-subject.mjs`; `.github/workflows/snapshot-oidc-canary.yml` |
+| Task 14      | `scripts/release/verify-snapshot-workflow.mjs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Task 15      | `scripts/release/download-private-snapshot.mjs`; `scripts/release/run-source-database-gate.mjs`; `scripts/release/verify-producer-terminal.mjs`; `scripts/release/verify-release-runner-hosting.mjs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Task 16A–16C | `scripts/release/create-execution-purpose-envelope.mjs`; `scripts/release/create-rc-dispatch-authorization.mjs`; `scripts/release/create-release-attempt.mjs`; `scripts/release/custody-purpose-envelope.mjs`; `scripts/release/lineage-custody-adapters.mjs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Task 17A     | `.github/workflows/snapshot-adapter-build.yml`; `scripts/release/create-snapshot-adapter-build-plan.mjs`; `scripts/release/create-snapshot-adapter-build-proof.mjs`; `scripts/release/verify-snapshot-adapter-build-workflow.mjs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Task 17B     | `scripts/release/create-build-proof.mjs`; `scripts/release/create-three-image-bundle-build-plan.mjs`; `scripts/release/verify-build-proof.mjs`; `scripts/release/verify-prebuild-sanitized-input.mjs`; `scripts/release/verify-three-image-bundle-workflow.mjs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Task 18      | `scripts/release/audit-task29r-qualification-package.mjs`; its runbook and templates are documentation/examples, not production executables, and remain outside this reserved set.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+
+- `release/contracts/**` and `packages/release-foundation/src/**` retain their existing dynamic coverage. Preserve every inherited `RELEASE_GATE_ENTRY_POINTS` exception, including `tests/release/web-public-api.spec.ts`. Only new, unreserved tests/fixtures, docs/templates, `.release-output/**`, `.release-local/**`, credentials and other private/generated outputs are excluded; adding one of those paths to the manifest is drift, not a way to promote it into a contract. Root `package.json` is classified as repository command-alias metadata rather than a production executable and remains outside this catalog; its original Task 7/12/13 ownership is unchanged. Do not add arbitrary `scripts/**` or `infrastructure/**` scans. The reservation table authorizes discovery only: it does not authorize Task 6 to create or modify any future owner task's file.
+
+- [ ] **Step 1: Scaffold and link the package, then write isolated RED tests**
+
+Create `apps/snapshot-adapter/package.json` first with test script, the four exact Alibaba dependencies and `@subscription-saas/release-foundation: workspace:*`. Update the lockfile and create the real workspace link before testing exports:
+
+Run: `pnpm install --lockfile-only`, then `pnpm install --frozen-lockfile`.
+
+In `aliyun-policy.test.mjs`, declare this exact public test. The namespace import remains resolvable when individual root exports are absent, and the loop checks each property without importing a cloud module:
 
 ```js
-test("cloud clients reject ambient Alibaba credentials", () => {
+import assert from "node:assert/strict";
+import test from "node:test";
+import * as releaseFoundation from "@subscription-saas/release-foundation";
+
+const PUBLIC_VALIDATORS = [
+  "validateProducerCryptoAuthorization",
+  "validateSnapshotEncryptionEnvelope",
+  "validateProducerCryptoUseProof",
+  "validateSnapshotCustody",
+  "validateSnapshotDestructionReceipt",
+  "validateSnapshotRetentionReceipt",
+  "validateLineageStoragePolicy",
+  "validateLineageAccessReadback",
+  "validateLineageRetentionReceipt",
+  "validateEvidenceArchiveAuthorization",
+  "validateEvidenceArchiveAccessReceipt",
+  "validateEvidenceCustodyBootstrapReadback",
+  "validatePrebuildSanitizedInputBinding"
+];
+
+test("release foundation public exports", () => {
+  for (const name of PUBLIC_VALIDATORS) {
+    assert.equal(typeof releaseFoundation[name], "function", name);
+  }
+});
+```
+
+Do not statically import absent cloud modules at file scope: provider tests lazy-import them inside their own test bodies.
+
+```js
+test("cloud clients reject ambient Alibaba credentials", async () => {
+  const { createCloudClients } = await import("../src/cloud/policy-generator.mjs");
   assert.throws(
     () => createCloudClients({ environment: { ALIBABA_CLOUD_ACCESS_KEY_ID: "ambient" } }),
     /AMBIENT_CLOUD_CREDENTIAL_FORBIDDEN/
@@ -1210,13 +1274,77 @@ test("cloud clients reject ambient Alibaba credentials", () => {
 });
 ```
 
-Run: `pnpm --filter @subscription-saas/snapshot-adapter test`
+At the relevant production consumer boundary, exercise valid and invalid samples through the real public validator: KMS/crypto tests cover producer authorization/envelope/use; OSS/custody tests cover snapshot custody/destruction/retention; lineage tests cover storage/access/retention; bootstrap/archive tests cover archive authorization/access/bootstrap observation; prebuild validation remains owned by its existing Task 4 semantic suite until its Task 17B consumer. Do not use repository-relative imports or turn `buildAttemptRamPolicies` into a catch-all validator dispatcher. Existing Task 4 suites stay as semantic regressions rather than having their fixtures rewritten here.
 
-Expected: FAIL because the package scripts or modules do not exist.
+In `catalogs.test.mjs`, preserve the existing non-Git temporary fixtures and prove filesystem discovery without `.git`: omitted existing snapshot-adapter/package/src or reserved Task 6 production paths fail; missing/stale declarations fail; manifest order is exact and sorted; changing a policy, CLI or executable byte changes the repository digest; and declaring `apps/snapshot-adapter/test/unreserved.test.mjs`, a generated output, credential or private-output path fails as set drift. Preserve the inherited `tests/release/web-public-api.spec.ts` positive coverage and include the existing `workflow-custody-record.mjs` consumer plus a Git-free complete-input-directory regression fixture. Reuse the existing `withTempRepo`, `writeRepositoryContractFixture`, `mkdir` and `writeFile` declarations for this exact discovery test:
+
+```js
+test("repository contract discovers snapshot adapter production sources", async () => {
+  await withTempRepo(async (root) => {
+    const files = [
+      "apps/snapshot-adapter/package.json",
+      "apps/snapshot-adapter/src/cloud/policy-generator.mjs",
+      "release/contracts/repository-contract-files.v1.json",
+      "release/contracts/schemas/example.json",
+      "scripts/release/manage-snapshot-cloud-custody.mjs"
+    ].sort();
+    await writeRepositoryContractFixture(root, files);
+    await mkdir(path.join(root, "apps/snapshot-adapter/src/cloud"), { recursive: true });
+    await mkdir(path.join(root, "scripts/release"), { recursive: true });
+    await writeFile(path.join(root, "apps/snapshot-adapter/package.json"), "{}\n");
+    await writeFile(
+      path.join(root, "apps/snapshot-adapter/src/cloud/policy-generator.mjs"),
+      "export {};\n"
+    );
+    await writeFile(
+      path.join(root, "scripts/release/manage-snapshot-cloud-custody.mjs"),
+      "export {};\n"
+    );
+
+    const contract = await computeRepositoryContract(root);
+    assert.deepEqual(
+      contract.entries.map(({ path: relativePath }) => relativePath),
+      files
+    );
+  });
+});
+```
+
+Run the public-export RED, with the package already resolvable but before adding root exports:
+
+Run: `pnpm --filter @subscription-saas/snapshot-adapter exec node --test --test-name-pattern "^release foundation public exports$" test/aliyun-policy.test.mjs`
+
+Expected: the exact `release foundation public exports` test executes once and RED reports `fail 1` only because package-root properties are not functions, not `ERR_MODULE_NOT_FOUND` or an absent provider module. Zero-selected or an all-skipped run is invalid.
+
+Run the catalog RED separately before expanding discovery:
+
+Run: `node --test --test-name-pattern "^repository contract discovers snapshot adapter production sources$" packages/release-foundation/test/catalogs.test.mjs`
+
+Expected: the exact `repository contract discovers snapshot adapter production sources` test executes once and RED reports `fail 1` because current discovery rejects the complete declared fixture. Zero-selected or an all-skipped run is invalid.
+
+- [ ] **Step 1A: Implement public exports and the single catalog extension**
+
+Add direct re-export statements for the 13 named Task 4 validators to `index.mjs`. In `catalogs.mjs`, preserve `listFiles` filesystem discovery, union the existing entrypoints with the exact table, filter only existing reserved paths, and dynamically include the adapter package and recursive production `src` tree. Synchronize `repository-contract-files.v1.json` to the sorted exact filesystem result available at this point, retaining inherited entries and adding all existing entries exposed by the new union; do not add absent Task 7–18 paths.
+
+Rerun the same two isolated tests immediately and require GREEN without importing an unimplemented cloud module:
+
+Run: `pnpm --filter @subscription-saas/snapshot-adapter exec node --test --test-name-pattern "^release foundation public exports$" test/aliyun-policy.test.mjs`
+
+Run: `node --test --test-name-pattern "^repository contract discovers snapshot adapter production sources$" packages/release-foundation/test/catalogs.test.mjs`
+
+Expected: each focused command executes its exact named test once and reports `pass 1`; zero-selected, all-skipped or any failure is invalid. The catalog test passes on the complete input fixture without a `.git` directory.
+
+Now run the provider-module RED separately:
+
+Run: `pnpm --filter @subscription-saas/snapshot-adapter exec node --test --test-name-pattern "^cloud clients reject ambient Alibaba credentials$" test/aliyun-policy.test.mjs`
+
+Expected: the exact `cloud clients reject ambient Alibaba credentials` test executes once and RED reports `fail 1` because the lazy-imported Task 6 cloud module is not implemented yet; zero-selected or all-skipped is invalid. This failure does not invalidate the public-export/catalog GREEN.
 
 - [ ] **Step 2: Implement KMS `GenerateDataKey` and `Decrypt` wrappers**
 
 Allow only actual key identity behind approved alias `alias/stage1-snapshot-custody`, `AES_256`, approved region/endpoint and pre-existing exact encryption context. Producer wrapper requires standalone crypto authorization/readback/observation and generate-only credential; no publisher credential is accepted. Disable automatic GenerateDataKey retries; uncertain response is UNKNOWN. Strip SDK secrets from errors. Plaintext is a mutable Buffer owned only by the isolated crypto child; consumer uses its distinct Decrypt identity.
+
+This wrapper must match the already completed Task 5 boundary: `source` is an immutable `{ open() }` replay source opened twice, and Task 5 rejects changed bytes between passes. Task 5 calls `generateDataKey({ keyAlias, keySpec, encryptionContext })` and requires `{ plaintext: Buffer(32), wrapped: { kind: "kms-symmetric-data-key.v1", ciphertext: Buffer, region: "cn-shanghai", keyId, keyAlias: "alias/stage1-snapshot-custody", aliasReadbackKeyId } }` with `keyId === aliasReadbackKeyId`; it calls `decryptDataKey({ wrapped, encryptionContext })` and requires `Buffer(32)`. Keep KMS region `cn-shanghai` distinct from OSS `oss-cn-shanghai`. The kernel normalizes post-request KMS uncertainty to its safe error with enumerable, immutable `kmsOutcome: "UNKNOWN"`; the provider must not forward a raw SDK error or trust/copy an arbitrary provider-supplied outcome marker, and it must not automatically retry. This is interface consumption only—Task 6 must not modify or reimplement Task 5 files.
 
 - [ ] **Step 3: Implement conditional OSS publication**
 
@@ -1255,6 +1383,8 @@ source cannot fall back to synthetic fixtures. Task 6 creates producers, not a s
 
 Replace current `workflow-custody-record.mjs` synthetic retention and local-only custody assumptions through `custody-evidence.mjs` and shared `evidence-custody.mjs`: frozen raw v1 receipt bytes/schema remain immutable, but checkpoint acceptance requires the valid receipt together with matching `authoritative-custody-observation.v1`, actual privately read original bytes and operation terminal retention bound. Old synthetic receipt alone cannot pass. Task 6 wires the Task 2V base verifier into these consumers; Task 16B later adds its v2 lineage-specific acceptance without a competing implementation. RED injected readback cases reject local uploader, missing observation, mismatched digest/storage/object, now+180, missing/NaN terminal time and insufficient Locked-WORM bound.
 
+Keep `assertCustodyComplete(receipt, expectedDigest)` byte-for-byte behaviorally immutable as the raw v1 validator. The separate joint checkpoint, not that function, consumes Task 2V's authoritative observation; Task 6 adds no custody migration, downstream caller rewrite or second verifier.
+
 - [ ] **Step 8: Prove exact OIDC subject generation**
 
 ```js
@@ -1266,21 +1396,28 @@ assert.equal(
 
 Use the exact `include_claim_keys` order above. A missing claim or wildcard subject fails before emitting policy.
 
-- [ ] **Step 9: Run provider tests and lockfile verification**
+- [ ] **Step 9: Stage exact files, then run public-import, catalog and full Task 6 gates**
+
+After Steps 2–8 create all Task 6 production files, resynchronize `repository-contract-files.v1.json` a final time to exact sorted filesystem parity before staging. Retain every inherited entry and all four already-existing newly reserved paths—`scripts/release/custody-evidence.mjs`, `scripts/release/run-source-database-gate.mjs`, `scripts/release/create-build-proof.mjs` and `scripts/release/verify-build-proof.mjs`—then add all now-existing Task 6 adapter/package/src and reserved production paths. Omit every future absent reserved path. Do not create a synchronization script or modify a future owner's production file.
 
 ```powershell
-pnpm install --lockfile-only
-node --test packages/release-foundation/test/dispatch-authorization.test.mjs packages/release-foundation/test/evidence-custody.test.mjs
+pnpm install --frozen-lockfile
+git add apps/snapshot-adapter/package.json apps/snapshot-adapter/src/cloud/aliyun-kms.mjs apps/snapshot-adapter/src/cloud/aliyun-oss.mjs apps/snapshot-adapter/src/cloud/aliyun-sts.mjs apps/snapshot-adapter/src/cloud/aliyun-publisher-broker.mjs apps/snapshot-adapter/src/cloud/aliyun-producer-crypto-broker.mjs apps/snapshot-adapter/src/cloud/aliyun-lineage-custody.mjs apps/snapshot-adapter/src/cloud/policy-generator.mjs apps/snapshot-adapter/test/aliyun-kms.test.mjs apps/snapshot-adapter/test/aliyun-oss.test.mjs apps/snapshot-adapter/test/aliyun-policy.test.mjs apps/snapshot-adapter/test/aliyun-publisher-broker.test.mjs apps/snapshot-adapter/test/aliyun-producer-crypto-broker.test.mjs apps/snapshot-adapter/test/aliyun-lineage-custody.test.mjs infrastructure/stage1-snapshot/aliyun/snapshot-cloud-policy-input.v1.json scripts/release/manage-snapshot-cloud-custody.mjs scripts/release/manage-snapshot-cloud-custody.test.mjs scripts/release/manage-evidence-custody-bootstrap.mjs scripts/release/manage-evidence-custody-bootstrap.test.mjs scripts/release/archive-release-evidence.mjs scripts/release/archive-release-evidence.test.mjs scripts/release/workflow-custody-record.mjs scripts/release/workflow-custody-record.test.mjs scripts/release/custody-evidence.mjs scripts/release/custody-evidence.test.mjs packages/release-foundation/src/evidence-custody.mjs packages/release-foundation/test/evidence-custody.test.mjs packages/release-foundation/src/index.mjs packages/release-foundation/src/catalogs.mjs packages/release-foundation/test/catalogs.test.mjs release/contracts/repository-contract-files.v1.json pnpm-lock.yaml
+pnpm release:database-tests:discover
+node --test packages/release-foundation/test/catalogs.test.mjs packages/release-foundation/test/dispatch-authorization.test.mjs packages/release-foundation/test/evidence-custody.test.mjs packages/release-foundation/test/evidence-archive-contracts.test.mjs packages/release-foundation/test/producer-crypto-contracts.test.mjs packages/release-foundation/test/snapshot-custody-contracts.test.mjs
 pnpm --filter @subscription-saas/snapshot-adapter test
-node --test scripts/release/manage-snapshot-cloud-custody.test.mjs
+node --test scripts/release/manage-snapshot-cloud-custody.test.mjs scripts/release/manage-evidence-custody-bootstrap.test.mjs scripts/release/archive-release-evidence.test.mjs scripts/release/workflow-custody-record.test.mjs scripts/release/custody-evidence.test.mjs
+pnpm --filter @subscription-saas/snapshot-adapter exec node -e "import('@subscription-saas/release-foundation').then((m) => { for (const name of ['validateProducerCryptoAuthorization','validateSnapshotEncryptionEnvelope','validateProducerCryptoUseProof','validateSnapshotCustody','validateSnapshotDestructionReceipt','validateSnapshotRetentionReceipt','validateLineageStoragePolicy','validateLineageAccessReadback','validateLineageRetentionReceipt','validateEvidenceArchiveAuthorization','validateEvidenceArchiveAccessReceipt','validateEvidenceCustodyBootstrapReadback','validatePrebuildSanitizedInputBinding']) if (typeof m[name] !== 'function') throw new Error('PUBLIC_EXPORT_MISSING:' + name) })"
 pnpm release:contracts:verify
 git diff --check
 ```
 
+Expected: PASS. Filesystem repository-contract discovery sees existing files with or without staging; the exact `git add` occurs before `release:database-tests:discover` because that separate database-test discovery uses `git ls-files`. The synchronized manifest retains inherited entries and includes every currently existing path in the expanded catalog union, while reserved absent Task 7–18 paths remain omitted.
+
 - [ ] **Step 10: Commit the cloud provider adapter**
 
 ```powershell
-git add apps/snapshot-adapter infrastructure/stage1-snapshot/aliyun scripts/release/manage-snapshot-cloud-custody.mjs scripts/release/manage-snapshot-cloud-custody.test.mjs scripts/release/manage-evidence-custody-bootstrap.mjs scripts/release/manage-evidence-custody-bootstrap.test.mjs scripts/release/archive-release-evidence.mjs scripts/release/archive-release-evidence.test.mjs scripts/release/workflow-custody-record.mjs scripts/release/workflow-custody-record.test.mjs scripts/release/custody-evidence.mjs scripts/release/custody-evidence.test.mjs packages/release-foundation/src/evidence-custody.mjs packages/release-foundation/test/evidence-custody.test.mjs pnpm-lock.yaml
+git diff --cached --name-only
 git commit -m "build: add private snapshot cloud custody adapter"
 ```
 
@@ -1309,6 +1446,7 @@ git commit -m "build: add private snapshot cloud custody adapter"
 - Supported Runner-facing command is represented as argv `['launch', '--admission-ref', value]`; `value` must match `^https://api\.github\.com/repos/keqi119/subscription-Saas/actions/artifacts/[1-9][0-9]*$` and is supplied by the trusted root launcher from the protected admission descriptor. No other Runner-facing subcommand exists.
 - Admin-facing installer/launcher paths are root-only and cannot be invoked by the Runner user. The only qualification form is the fixed `snapshot-job qualify --suite closed-security-rehearsal-v1 --request-fd 3`; policy rejects every other suite, path or argument and the production JIT route never invokes it.
 - Build output: `.release-output/snapshot-adapter/snapshot-adapter-v1.tar.zst` plus canonical file/digest/ownership manifest.
+- Consumes Task 6's public `@subscription-saas/release-foundation` validator exports. The deployed bundle must resolve those exports from its installed package graph; repository-relative foundation source imports are forbidden.
 
 - [ ] **Step 1: Write RED CLI grammar tests**
 
@@ -1343,6 +1481,8 @@ Use `pnpm --filter @subscription-saas/snapshot-adapter deploy --prod` into a cle
 - [ ] **Step 6: Add bundle tamper and negative-capability tests**
 
 Verify a changed byte, writable parent directory, extra executable, missing dependency, wrong Node version or unknown CLI command fails. The test also asserts the bundle contains no repository `.git`, `.env`, test data, raw snapshot or package-manager binary.
+
+After `pnpm --filter @subscription-saas/snapshot-adapter deploy --prod`, `snapshot-adapter-bundle.test.mjs` executes a smoke import from the clean deploy root using the public specifier `@subscription-saas/release-foundation` and asserts all Task 6 validator exports are functions. It must not resolve them through repository paths. This consumption test supplements Task 6's workspace public-import test; it does not transfer export or catalog ownership to Task 7.
 
 - [ ] **Step 7: Run package, bundle and contract gates**
 

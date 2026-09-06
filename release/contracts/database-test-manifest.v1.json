@@ -18,6 +18,7 @@
     {
       "batchId": "batch-b",
       "suiteIds": [
+        "api.stage1-contract-archive.postgres",
         "api.stage2-handover-pdf.postgres",
         "api.stage2-handover-provider-reconciliation.postgres",
         "api.stage2-handover-workflow.postgres",
@@ -216,6 +217,22 @@
       "suiteId": "api.subscription-vehicle-swap-failure-injection.postgres",
       "runner": "vitest",
       "files": ["apps/api/test/subscription-vehicle-swap-failure-injection.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
+      "suiteId": "api.stage1-contract-archive.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/stage1-contract-archive.integration.spec.ts"],
       "chainApplicability": {
         "fresh": { "status": "required" },
         "snapshot": { "status": "required" }

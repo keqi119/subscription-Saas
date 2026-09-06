@@ -1,12 +1,12 @@
 # Stage 1 B3 合同、电子签与 PDF 归档独立验证实施计划
 
-> **Status: APPROVED — bounded local validation only.** User-approved content baseline: `51981b32`. Approval does not establish completed validation or authorize production fixes, external services, or release.
+> **Status: BLOCKED — fixture-representativeness revision pending re-review.** The original bounded plan was approved at `51981b32`, implemented at `05f33a32`, first launched from clean source `16adab17`, and recorded at `a3709bb6`. This document-only revision does not authorize the fixture edit, another launch, production changes, external services, or release.
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Independently validate that an electronic-signature task completion is only a provider-process fact, while Stage 1 platform archive admission requires the persisted `Contract` archive tuple and its actual PDF `FileObject`; duplicate and out-of-order callbacks/signals must converge without creating B4 activation facts.
 
-**Architecture:** Preserve the existing authority split: `ESignService.handleCallback` owns signer/task completion and the `SIGNED` transition; `FadadaSignedArtifactService.archiveSignedContract` validates, stores, hashes, and atomically admits the archived PDF; `SubscriptionJourneyService.dispatchSignalOutbox` advances the signing step only from `FADADA_ARTIFACT_ARCHIVED`. Add one B3-owned PostgreSQL characterization suite that uses the real Prisma-backed services and repository with deterministic in-process provider/storage boundaries. The first pass changes tests, manifest registration, and evidence only; any runtime counterexample stops execution and requires a separately reviewed production amendment.
+**Architecture:** Preserve the existing authority split: `ESignService.handleCallback` owns signer/task completion and the `SIGNED` transition; `FadadaSignedArtifactService.archiveSignedContract` validates, stores, hashes, and atomically admits the archived PDF; `SubscriptionJourneyService.dispatchSignalOutbox` advances the signing step only from `FADADA_ARTIFACT_ARCHIVED`. The historical first pass added one B3-owned PostgreSQL characterization suite over the real Prisma-backed services and stopped on a counterexample. The proposed continuation changes only the B3-local fixture so Journey identity follows the production default, then requires a new clean-source run and independent evidence after separate approval.
 
 **Tech Stack:** TypeScript 6, NestJS 11, Prisma 7/PostgreSQL 17, Vitest 4, pnpm 11, the existing release database-suite launcher.
 
@@ -14,14 +14,14 @@
 
 ## 审批摘要
 
-- 本计划只申请一个 B3 专属 PostgreSQL 测试、数据库测试清单的增量纳管，以及一份本轮新鲜证据；不预授权生产代码修改。
+- 首轮 B3 专属 PostgreSQL 测试和数据库清单纳管已在 `05f33a32` 完成。当前修订只申请修改既有 B3 本地夹具，并在一次新的完整 fresh 运行后创建独立证据 note；不再申请新 suite 或 manifest 修改。
 - 电子签任务完成只证明供应商流程事实；平台归档准入需要完整 Contract 归档元组和可解析的 PDF FileObject，且 `ARCHIVED` 不被解释为法律生效时间。
 - 不调用真实 Fadada/OSS，不写 Lease/VehicleSubscriptionPeriod，不运行 B4 激活；snapshot 链和真实供应商验证继续留给 R3/A2/A3。
-- 用户已单独批准 `51981b32` 的限定本地验证范围。任何生产反例都在精确失败摘要处停止，不在本计划内顺手修复。
+- 用户已批准 `51981b32` 的首轮限定本地验证；首轮结果现为 `BLOCKED_COUNTEREXAMPLE`。本修订必须复审后才可实施，不预授权夹具修改、重跑或生产修复。
 
 ## Global Constraints
 
-- Only B3 among these five plans has user implementation approval at `51981b32`; the other four remain subject to their separate revisions/reviews. This status entry is metadata, not a change to B3's scope or proof requirements.
+- B3's original bounded scope was approved at `51981b32`; this fixture amendment is independently pending re-review. B3 neither depends on nor gates the approval state of other work lines.
 - The planning baseline is `4b93f8abf4697d3970205d3d37e78e8a55b4ebd6`. At implementation time, use the approved descendant and classify every pre-existing change before touching B3-owned files.
 - P0/P1 are closed and their controlled targets were retired. The fixed target record and four fixed secret files are absent. Historical P1 run IDs, database identities, digests, and counts are context only and must not be reused as B3 evidence.
 - The only B3 database entry is the existing self-provisioning `scripts/release/run-database-suite.mjs --chain fresh`. Do not create a bootstrap, cleanup, credential, target-record, evidence-schema, test context, or suite launcher. Do not use an ambient `DATABASE_URL` or directly invoke the database Vitest project.
@@ -29,9 +29,17 @@
 - `ContractVersion` remains the immutable text/template authority. `ContractESignTask` and `ContractESignSigner` remain provider-process facts. Platform archive admission is the `Contract` tuple `status=ARCHIVED`, non-null `archivedAt`, non-null `fileId`, and a matching, valid PDF `FileObject`; `ARCHIVED` must not be described as legal-effective time.
 - The archive path may preserve `signedAt` and order payment state, but B3 must not create/update `Lease`, `VehicleSubscriptionPeriod`, delivery/handover activation, billing schedules, or any B4 fact. `apps/api/src/lease/lease-activation.engine.ts` is read/test-only and B4-owned.
 - Do not add schema/models/enums, migrations, RBAC permissions, feature flags, package scripts, shared fixture frameworks, or generic production fixes. Reuse `requiredReleaseDatabaseTestContext`, `insertRuntimeOrderGraph`, and `insertRuntimeContract`; all new B3-specific fixture builders and doubles stay inside the new B3 spec.
-- Existing conforming behavior gets characterization evidence, not a fabricated behavioral RED. The only expected RED below is discovery proving that the new database file is unclassified before its exact manifest entry is added.
+- Historical Tasks 1–2 used discovery of the then-new unclassified database file as their only governance RED. Task 3R does not recreate that RED, add a suite, or modify the manifest.
 - If a new assertion exposes a runtime contradiction, stop. Preserve the exact failing test, persisted before/after facts, and source method; propose the smallest exact production edit in a plan amendment, but do not make it under this plan.
 - Snapshot-chain execution remains required by manifest policy but belongs to the later R3/A2 controlled snapshot input. B3 runs only the fresh chain and does not claim snapshot or real-provider evidence.
+
+## Current Blocked State and Immutable First-Run Evidence
+
+- Tasks 1–2 were implemented at `05f33a32`; the first Task 3 launch used clean source `16adab17`. The result was committed as evidence at `a3709bb6`. The original Tasks 1–3 below are a read-only historical plan record: do not rerun them, recreate their files, change their checkboxes, or edit the manifest under this revision.
+- The sole launch had `runId=3597a875-3e3f-4a0a-b25c-55a271060835`, `operationId=5de6db6b-e0de-4e3f-a92e-3db830c7d519`, `passed=2`, `failed=1`, and `terminalStatus=FAILED`. No retry occurred.
+- Its canonical 963-byte report remains `.release-local/evidence/evidence/623c488b4c59990aa5e283de2318203009694612bcc7e7281d7c7a0f136342e9.json`, digest `sha256:623c488b4c59990aa5e283de2318203009694612bcc7e7281d7c7a0f136342e9`. Its receipt remains `.release-local/evidence/receipts/ed43e6ed-e06b-458e-b9ba-2eafbea8e1b5.json`, whose file digest is `sha256:200f9d312b26d5076070d8719b43af263bdc6853642dcb40085b006f69744110`.
+- The historical acceptance note `docs/acceptance/2026-09-06-stage1-b3-contract-archive-validation.md` remains byte-for-byte unchanged with digest `sha256:bbcad66c3eb5c0918285123c8c69bab74ae8ffaac171b7a5e778a7fb7d9008a4`. A continuation must not overwrite, amend, or retroactively reclassify the report, receipt, or note.
+- The failed report retained neither the exact Prisma error code nor its message/constraint. Static correlation shows that the fixture's explicit 36-character Journey UUID makes the completion event/outbox keys 131/138 characters, while a normal approximately 25-character Prisma `cuid()` makes them approximately 120/127 against `@db.VarChar(128)`. This supports a fixture-representativeness amendment, but does not prove the root cause completely or establish that the default production Journey path fails.
 
 ---
 
@@ -50,18 +58,19 @@
 
 ## File Ownership and Cross-Package Coordination
 
-| Path                                                                                                                                                                                  | Planned ownership                          | Consumers / coordination                                                                                                                                                                                                                |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/api/test/stage1-contract-archive.integration.spec.ts`                                                                                                                           | **Create — B3 sole owner.**                | A B3-local fixture and deterministic adapters only. Uses existing release test context/runtime-domain helpers; exports nothing and creates no B1/B5 shared helper.                                                                      |
-| `release/contracts/database-test-manifest.v1.json`                                                                                                                                    | **Modify — one minimal serialized merge.** | Add `api.stage1-contract-archive.postgres` to `batch-b` and one suite record. Before applying, reread the latest file and preserve every already-integrated B1/B5/R entry; never replace/reformat the whole manifest from a stale copy. |
-| `docs/acceptance/2026-09-06-stage1-b3-contract-archive-validation.md`                                                                                                                 | **Create — B3 evidence owner.**            | Records only fresh observed results and limitations. It does not edit the shared mainline execution index or claim candidate promotion.                                                                                                 |
-| `apps/api/test/esign.spec.ts`; `fadada-archive.spec.ts`; `subscription-journey-esign.spec.ts`; `lease-activation.spec.ts`                                                             | **Read/Test only.**                        | Existing in-memory callback/archive/journey/activation characterization; no duplicated fixtures or edits.                                                                                                                               |
-| `apps/api/test/helpers/release-database-test-context.ts`; `runtime-domain-fixture.ts`                                                                                                 | **Read/Import only.**                      | Existing runtime-equivalent identity and minimal database graph. No new shared fixture API is authorized.                                                                                                                               |
-| `apps/api/src/esign/esign.service.ts`; `esign.provider.ts`; `esign.controller.ts`; `fadada/fadada-signed-artifact.service.ts`; `apps/api/src/storage/storage.service.ts`              | **Read only.**                             | Real admin/public callback and archive services/callers. A failing counterexample must name one exact method before seeking separate modification approval.                                                                             |
-| `apps/api/src/subscription-journey/subscription-journey.service.ts`; `subscription-journey-signal.service.ts`; `subscription-journey.repository.ts`; `subscription-journey.config.ts` | **Read only.**                             | Shared B1–B6 signal/outbox logic; the test composes the real classes but B3 changes no orchestration source.                                                                                                                            |
-| `apps/api/src/order/order.service.ts`                                                                                                                                                 | **Read only.**                             | `ensureJourneyContractPdfArtifact(...)` is the real generated-source-PDF caller before provider signing; signed-PDF archive remains the Fadada service's separate authority.                                                            |
-| `apps/api/src/lease/lease-activation.engine.ts`; `lease-activation.persistence.ts`                                                                                                    | **Read only / B4 owner.**                  | No B3 import, construction, spy patch, or activation invocation. B3 only observes absence of Lease/period writes.                                                                                                                       |
-| `apps/api/prisma/schema.prisma`; `apps/api/prisma/migrations/**`; `release/contracts/external-validation-applicability.v1.json`; package manifests                                    | **Read only.**                             | Authority/schema/external-applicability/script evidence; no schema, migration, external status, or script change.                                                                                                                       |
+| Path                                                                                                                                                                                  | Historical / current ownership                      | Consumers / coordination                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/api/test/stage1-contract-archive.integration.spec.ts`                                                                                                                           | **Historical create; Task 3R current modify.**      | Current permission is limited to the Journey identity edit in the B3-local fixture. Existing deterministic adapters, imports, test bodies, and assertions remain unchanged.  |
+| `release/contracts/database-test-manifest.v1.json`                                                                                                                                    | **Historical modify; current read only.**           | The suite is already manifested. Task 3R must not replay discovery RED, add another suite entry, replace the file, or reformat it.                                           |
+| `docs/acceptance/2026-09-06-stage1-b3-contract-archive-validation.md`                                                                                                                 | **Historical create; current immutable/read only.** | First-run `FAILED` evidence at `a3709bb6`; never overwrite, amend, or reclassify it.                                                                                         |
+| `docs/acceptance/2026-09-07-stage1-b3-contract-archive-validation-rerun.md`                                                                                                           | **Task 3R current create.**                         | New independent note records only actual rerun observations and retains all unresolved external/snapshot/B4 limits.                                                          |
+| `apps/api/test/esign.spec.ts`; `fadada-archive.spec.ts`; `subscription-journey-esign.spec.ts`; `lease-activation.spec.ts`                                                             | **Read/Test only.**                                 | Existing in-memory callback/archive/journey/activation characterization; no duplicated fixtures or edits.                                                                    |
+| `apps/api/test/helpers/release-database-test-context.ts`; `runtime-domain-fixture.ts`                                                                                                 | **Read/Import only.**                               | Existing runtime-equivalent identity and minimal database graph. No new shared fixture API is authorized.                                                                    |
+| `apps/api/src/esign/esign.service.ts`; `esign.provider.ts`; `esign.controller.ts`; `fadada/fadada-signed-artifact.service.ts`; `apps/api/src/storage/storage.service.ts`              | **Read only.**                                      | Real admin/public callback and archive services/callers. A failing counterexample must name one exact method before seeking separate modification approval.                  |
+| `apps/api/src/subscription-journey/subscription-journey.service.ts`; `subscription-journey-signal.service.ts`; `subscription-journey.repository.ts`; `subscription-journey.config.ts` | **Read only.**                                      | Shared B1–B6 signal/outbox logic; the test composes the real classes but B3 changes no orchestration source.                                                                 |
+| `apps/api/src/order/order.service.ts`                                                                                                                                                 | **Read only.**                                      | `ensureJourneyContractPdfArtifact(...)` is the real generated-source-PDF caller before provider signing; signed-PDF archive remains the Fadada service's separate authority. |
+| `apps/api/src/lease/lease-activation.engine.ts`; `lease-activation.persistence.ts`                                                                                                    | **Read only / B4 owner.**                           | No B3 import, construction, spy patch, or activation invocation. B3 only observes absence of Lease/period writes.                                                            |
+| `apps/api/prisma/schema.prisma`; `apps/api/prisma/migrations/**`; `release/contracts/external-validation-applicability.v1.json`; package manifests                                    | **Read only.**                                      | Authority/schema/external-applicability/script evidence; no schema, migration, external status, or script change.                                                            |
 
 ## Exact Test Harness Contract
 
@@ -167,6 +176,8 @@ Fixture setup may use Prisma writes; assertions must exercise the real service m
 
 ---
 
+> **Historical execution record:** The original preflight and Tasks 1–3 are preserved below as the instructions that produced `05f33a32` and the failed first run. They are not a live checklist and must not be replayed by the continuation. Their statement that the fixture “uses UUIDs” describes the old Journey UUID too; Task 3R supersedes only that Journey identity while retaining every other UUID.
+
 ## Fresh Execution Preflight
 
 - [ ] **Step 1: Confirm approved source and classify local changes**
@@ -206,8 +217,6 @@ pnpm prisma:generate
 ```
 
 Expected: both exit `0`. These commands establish no database or release-candidate identity.
-
----
 
 ### Task 1: Add the Real-Service PostgreSQL Counterexample Gate
 
@@ -524,12 +533,149 @@ git commit -m "docs: record Stage 1 B3 archive validation"
 
 Expected before commit: all gates exit `0`, discovery remains fully classified, and `git diff --cached --name-only` contains only the B3 evidence note.
 
-## Completion Criteria
+---
 
-B3 is locally complete only when all of the following are true:
+### Task 3R: Correct the B3-Local Journey Fixture and Produce Independent Rerun Evidence
+
+> **Approval gate:** This continuation is a proposal pending review. Execute none of it until the user explicitly approves the revised plan.
+>
+> **Current write boundary:** Task 3R is the only live task. Its only writable paths are the existing B3 spec and the new rerun note below. For the Step 3 and Step 6 command sequences, run commands one at a time in order: any non-zero exit or unexpected path stops the sequence before later commands, including `git add`/`git commit`; do not continue to database execution. Such a stop applies only to this B3 continuation and does not freeze independently approved work lines.
+
+**Files:**
+
+- Modify: `apps/api/test/stage1-contract-archive.integration.spec.ts`
+- Create: `docs/acceptance/2026-09-07-stage1-b3-contract-archive-validation-rerun.md`
+- Read only: `docs/acceptance/2026-09-06-stage1-b3-contract-archive-validation.md`
+- Read/Execute unchanged: `scripts/release/run-database-suite.mjs`
+
+**Interfaces:**
+
+- Preserve the existing fixture transaction and all three test bodies. `prisma.$transaction(...)` returns the actual `SubscriptionJourney.id` created by Prisma, and the fixture returns that value as `journeyId`.
+- Preserve UUID identities for Application, Contract, ContractVersion, Customer, Order, task, and provider facts. Do not truncate, hash, handcraft, or otherwise substitute the Journey ID or any event key.
+- Do not change product code, Prisma schema/migrations, shared helpers, manifest, launcher, package scripts, or historical evidence.
+
+- [ ] **Step 1: Reconfirm the narrow static boundary**
+
+Before touching the fixture, require the approved version of this revised plan to exist in its own commit and run:
+
+```powershell
+git status --short
+git rev-parse HEAD
+```
+
+Expected: checkout and index are empty at the approved-plan starting SHA. A dirty plan document or any unrelated staged/unstaged path stops Task 3R for classification; do not stage, commit, clean, or discard those changes on the user's behalf, and never fold this pending-review document into the fixture commit.
+
+Then read the fixture at source commit `05f33a32` and the production create branch at `apps/api/src/subscription-journey/subscription-journey.repository.ts:119-131`. Confirm production omits `SubscriptionJourney.id` and relies on `@default(cuid())`; treat the 131/138 versus approximately 120/127 length calculation only as static fixture-correlation evidence. Do not claim an exact database error absent the retained Prisma code/message.
+
+- [ ] **Step 2: Make only this fixture edit**
+
+Apply the following local shape without moving other setup out of the existing callback transaction:
+
+```diff
+-  const journeyId = randomUUID();
+   const orderId = randomUUID();
+
+-  await prisma.$transaction(async (tx) => {
++  const journeyId = await prisma.$transaction(async (tx) => {
+-    await tx.subscriptionJourney.create({
++    const createdJourney = await tx.subscriptionJourney.create({
+       data: {
+         applicationId,
+         currentStepCode: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+         currentStepStatus: SubscriptionJourneyStepStatus.RUNNING,
+-        id: journeyId,
+         orderId,
+         status: SubscriptionJourneyStatus.RUNNING,
+         steps: {
+           create: {
+             code: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+             status: SubscriptionJourneyStepStatus.RUNNING
+           }
+         }
+       }
+     });
++    return createdJourney.id;
+   });
+```
+
+Do not call `createOrGetForApplication`, because this B3 fixture must retain its existing signing-step state and surrounding writes. Do not add a helper or modify the three assertions/event-key rules.
+
+- [ ] **Step 3: Review and commit one clean runnable fixture source after approval**
+
+Run only static checks before the commit:
+
+```powershell
+pnpm exec prettier --check apps/api/test/stage1-contract-archive.integration.spec.ts
+git diff --check
+git diff HEAD --name-only
+git diff -- apps/api/test/stage1-contract-archive.integration.spec.ts
+git add -- apps/api/test/stage1-contract-archive.integration.spec.ts
+git diff --cached --check
+git diff --cached --name-only
+git diff HEAD --name-only
+git diff HEAD -- apps/api/test/stage1-contract-archive.integration.spec.ts
+git commit -m "test: align B3 journey fixture identity"
+git status --short
+git rev-parse HEAD
+```
+
+Expected: both `git diff HEAD` inspections and the staged-path check show only the Task 3R fixture edit above; there is no manifest or product/schema/shared-helper change. The commit succeeds, status is empty, and its full SHA becomes the new launch source. No database or unit test runs occur before this clean source boundary.
+
+- [ ] **Step 4: Prepare generated code and rerun the four unchanged unit characterizations**
+
+From that new clean source SHA, run these necessary local prerequisites and the original fixed unit selection:
+
+```powershell
+pnpm --filter @subscription-saas/shared build
+pnpm prisma:generate
+pnpm --filter @subscription-saas/api exec vitest run --project unit test/esign.spec.ts test/fadada-archive.spec.ts test/subscription-journey-esign.spec.ts test/lease-activation.spec.ts
+```
+
+Expected: each command exits `0`; all four selected files pass with `failed=0`, `skipped=0`, and `todo=0`. Record the actual test count. Any non-zero exit stops this B3 continuation before the database launcher; do not claim these commands were run during the document-revision round.
+
+- [ ] **Step 5: Run and classify the complete three-case suite once**
+
+Confirm `git status --short` is empty and `git rev-parse HEAD` is the newly reviewed fixture commit, then run the existing launcher interface exactly once:
+
+```powershell
+node scripts/release/run-database-suite.mjs --suite-id api.stage1-contract-archive.postgres --chain fresh
+```
+
+This is a full three-test fresh run, not a failed-test-only invocation. Do not add automatic retry, a cleanup/clean framework, a new launcher, a new interface, or an external JSON input.
+
+For a complete `PASSED` result require exit `0`, `schemaVersion=database-suite-report.v1`, the existing suite/`fresh` identities, `terminalStatus=PASSED`, `collected=selected=executed=passed=3`, and `failed=skipped=todo=filtered=cancelled=0`. Also require `target.targetFingerprint` and the manifest/discovery/sanitized-log digests to have `sha256:` syntax; require `target.roleAttributes` to report `superuser=false`, `createdb=false`, `createrole=false`, and `bypassrls=false`; and require `target.canCreateSchema=false`, `target.schemaOwner=false`, and `target.objectOwner=false`.
+
+For either a complete `PASSED` or complete `FAILED` report, independently read back the current launch's content-addressed report and matching custody receipt after the launcher returns. Compute the actual SHA-256 of both files; require the report-file digest to equal the receipt's `contentDigest` and `readbackDigest`, and require its `attestationRef` to bind the current `runId` and suite. Record the receipt ID/path and its actual file digest. Use only the launcher's existing local evidence/receipt files and fields.
+
+A complete `FAILED` report with exit `1` is a governed test result, not automatically a launcher incident: verify that current report and custody binding first, then proceed only to Step 6 to record the actual counts and outcomes. A missing/incomplete report, `INTERRUPTED_UNKNOWN`, or custody/cleanup uncertainty is recorded from the actual run/incident information available; do not invent target fields, claim that all three cases executed, or manually delete retained resources. After any non-passing branch, stop all remaining B3 testing, fixes, and reruns, but still perform Step 6 evidence preservation. This B3 stop does not block other independently approved lines.
+
+- [ ] **Step 6: Write a new evidence note without altering the first-run record**
+
+Create `docs/acceptance/2026-09-07-stage1-b3-contract-archive-validation-rerun.md`. Record the fixture commit, clean launch source SHA, exact commands, unit result, terminal status, and only the run/operation/target/count/digest/custody identities actually observed. Every new value must come from this launch; do not reuse or overwrite first-run values. Mark any assertion not reached as `NOT_REACHED`; without a complete report, do not state that all three cases executed.
+
+The note must reference the first run as immutable failed history, keep the same external/snapshot/B4 limitations, and avoid promotion language. Whether the new run passes or fails, preserve the first report, receipt, and acceptance note byte-for-byte. Then run:
+
+```powershell
+pnpm exec prettier --check docs/acceptance/2026-09-07-stage1-b3-contract-archive-validation-rerun.md
+git diff --check
+git diff HEAD --name-only
+git diff HEAD -- docs/acceptance/2026-09-07-stage1-b3-contract-archive-validation-rerun.md
+git add -- docs/acceptance/2026-09-07-stage1-b3-contract-archive-validation-rerun.md
+git diff --cached --check
+git diff --cached --name-only
+git diff HEAD --name-only
+git diff HEAD -- docs/acceptance/2026-09-07-stage1-b3-contract-archive-validation-rerun.md
+git commit -m "docs: record Stage 1 B3 archive validation rerun"
+```
+
+Expected: the only evidence diff and staged path is the new rerun note. The historical note, canonical report, receipt, launcher, and manifest remain unchanged.
+
+## Completion Criteria After an Approved Task 3R Execution
+
+B3 is currently blocked. It becomes locally complete only after Task 3R is approved and all of the following are newly evidenced from one clean-source full run:
 
 - the new PG file is manifested exactly once and discovery has no unclassified candidate;
-- existing mock characterizations remain green without edits;
+- the shared build and Prisma generation prerequisites exit `0`, and the fixed four-file mock characterization command is newly green without edits;
 - the fresh governed suite calls real ESign/archive/journey services and passes all three persistent tests;
 - callback completion alone leaves Contract `SIGNED` with no archive admission facts;
 - archive admission has a resolvable valid PDF FileObject and preserves ContractVersion and `signedAt`;

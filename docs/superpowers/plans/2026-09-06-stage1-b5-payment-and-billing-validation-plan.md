@@ -15,7 +15,7 @@
 ## 审批摘要
 
 - 本计划只申请主动支付 authority、回调异常/部分金额/重复回放，以及账单维护正向幂等的聚焦测试和本轮新鲜证据；不预授权产品代码、Schema 或发布运行器修改。
-- 所有真实 PostgreSQL 验证只调用现有自包含 `run-database-suite.mjs --chain fresh` 生命周期；不建立固定 target、凭证、bootstrap、cleanup 或新证据对象，异常资源原样保留并交精确处置摘要。
+- 所有真实 PostgreSQL 验证只调用现有自包含 `run-database-suite.mjs --chain fresh` 生命周期；不建立固定 target、凭证、bootstrap、cleanup 或新证据对象。完整 `PASSED`/`FAILED` 报告都先 custody/readback 再清理，只有无法产出完整报告的 launcher incident 才保留资源并交精确处置摘要。
 - Mock/合成验证不等于真实微信支付、Staging 或两个自然月运行；B6 法务/关账、自动扣款和生产修复均不在范围，任何真实反例都先停止并另行报审。
 
 ## Global Constraints
@@ -30,8 +30,8 @@
 - Existing conforming behavior is captured as characterization evidence; do not manufacture a RED phase. A newly added invariant probe may report PASS or expose a real counterexample.
 - If a unit or PostgreSQL probe exposes a production defect, preserve the failing test and exact observed rows/output, mark the validation record `BLOCKED_COUNTEREXAMPLE`, and stop. Production files may be changed only under a separate approved plan naming the exact method and counterexample.
 - Current P1 results are historical only. Do not copy their counts or receipts as B5 success, and do not read, reuse, or reconstruct a retired P1 controlled-target record, archive, or credential.
-- Every `run-database-suite.mjs --chain fresh` invocation owns a separate run-scoped PostgreSQL 17 cluster, suite database, migration verification, custody/readback, and success cleanup lifecycle. B5 never bootstraps a fixed target, creates a second target record, or invokes cleanup independently.
-- Before any fresh-suite invocation, reject a dirty checkout and the mere presence of ambient database environment names or retired fixed-target paths without reading their values/content. If the launcher retains a failed run for bounded reconciliation, stop: do not retry, mutate, or clean it; hand off the exact current-run incident path and non-secret identifiers for explicit disposition.
+- Every `run-database-suite.mjs --chain fresh` invocation owns a separate run-scoped PostgreSQL 17 cluster, suite database, migration verification, custody/readback, and normal complete-report cleanup lifecycle. A counted test failure returns a custodized `terminalStatus=FAILED` report, removes the current run, and exits `1`; only a failure without a complete report becomes a retained incident. B5 never bootstraps a fixed target, creates a second target record, or invokes cleanup independently.
+- Before any fresh-suite invocation, reject a dirty checkout and the mere presence of ambient database environment names or retired fixed-target paths without reading their values/content. If the launcher cannot produce a complete `PASSED` or `FAILED` report and retains an incident for bounded reconciliation, stop: do not retry, mutate, or clean it; hand off the exact current-run incident path and non-secret identifiers for explicit disposition.
 - This planning turn runs no product tests, database commands, migrations, external provider calls, deployment, GitHub/cloud API, signing, or operational commands. It reads source and writes this plan only.
 - Each future commit is restricted to the files listed by its task. Main or the explicitly approved executor owns commits; this draft author does not commit.
 
@@ -78,16 +78,28 @@ The only produced runtime interface is test coverage registered under the existi
 
   Read `handleCallback()` and `completePaymentOrder()` in `payment-order.service.ts`, `settlePaymentOrder()` in `finance.service.ts`, and the named tests. Record the exact existing cases for route/provider mismatch, Mock-disabled rejection, verified non-paid event, provider-scoped lookup, duplicate callback, allocation cap, Journey wait, and settlement signal. This is evidence discovery, not a request to rewrite passing tests.
 
-- [ ] **Step 2: Run the current focused unit baseline before editing**
+- [ ] **Step 2: Generate prerequisites in an independent clean checkout, then run the current focused unit baseline before editing**
 
   Run:
 
   ```powershell
+  $prerequisiteStatus = @(git status --porcelain=v1 --untracked-files=all)
+  if ($LASTEXITCODE -ne 0 -or $prerequisiteStatus.Count -gt 0) {
+    throw "B5_PREREQUISITE_CHECKOUT_NOT_CLEAN"
+  }
+  pnpm --filter @subscription-saas/shared build
+  if ($LASTEXITCODE -ne 0) { throw "B5_SHARED_BUILD_FAILED" }
+  pnpm prisma:generate
+  if ($LASTEXITCODE -ne 0) { throw "B5_PRISMA_GENERATE_FAILED" }
+  $generatedStatus = @(git status --porcelain=v1 --untracked-files=all)
+  if ($LASTEXITCODE -ne 0 -or $generatedStatus.Count -gt 0) {
+    throw "B5_PREREQUISITE_GENERATION_DIRTIED_CHECKOUT"
+  }
   pnpm --filter @subscription-saas/api exec vitest run test/portal-payment.spec.ts test/payment-settlement.spec.ts test/subscription-journey-payment.spec.ts
   if ($LASTEXITCODE -ne 0) { throw "B5_UNIT_BASELINE_FAILED" }
   ```
 
-  Expected: record the actual file/test/pass/fail counts. Do not cite P1's historical `303/4074` result. If an existing test fails, preserve its output in the Task 4 record and stop before changing assertions or production code.
+  Expected: the shared build, Prisma generation, and focused unit command each exit `0`, generation leaves the independent checkout clean, and the actual file/test/pass/fail counts are recorded. Do not cite P1's historical `303/4074` result. If an existing test fails, preserve its output in the Task 4 record and stop before changing assertions or production code.
 
 - [ ] **Step 3: Strengthen the existing unverified-callback characterization**
 
@@ -598,14 +610,17 @@ The only produced runtime interface is test coverage registered under the existi
 
   Discovery must report no unclassified database tests and must map `apps/api/test/payment-authority.integration.spec.ts` to `api.billing-automation.postgres`. The staged-name output must contain exactly the test and manifest paths above. The final porcelain status must then be empty. If another plan has uncommitted work in this checkout, serialize or use an already-approved isolated checkout; never stash user content or bypass `DATABASE_LAUNCHER_SOURCE_CHECKOUT_DIRTY`.
 
-  Only from that clean checkpoint SHA, invoke the reusable source/ambient preflight defined in Task 4 Step 1. That preflight applies to the current reviewed checkpoint and does not require any later Task checkpoint. Load the in-session `Invoke-B5FreshSuite` wrapper exactly as defined in Task 4 Step 2, then run:
+  Only from that clean checkpoint SHA, invoke the reusable source/ambient preflight defined in Task 4 Step 1. That preflight applies to the current reviewed checkpoint and does not require any later Task checkpoint. Then execute **only** the exact `Reusable in-session function definitions` fence in Task 4 Step 2 to load `Get-B5CanonicalDigest`, `Read-B5FreshResult`, and `Invoke-B5FreshSuite`; do not execute Task 4's unit/static or pair-reuse fences. Run:
 
   ```powershell
   $paymentResult = Invoke-B5FreshSuite 'api.billing-automation.postgres'
   $paymentResult | ConvertTo-Json -Depth 20
+  if ($paymentResult.classification -ne 'PASS') {
+    throw "B5_BLOCKED_COUNTEREXAMPLE: api.billing-automation.postgres"
+  }
   ```
 
-  Expected: the canonical current-run report has `collected = selected = executed = passed > 0` and `failed = skipped = todo = filtered = cancelled = 0`; its custody receipt proves `contentDigest === readbackDigest`, after which the existing runner removes the suite database, cluster, and run directory. Record the actual report/receipt paths, digests, and lifecycle result; do not paste a historical count. If either new probe fails, preserve the test-source checkpoint as the counterexample commit, capture the precise rows/error and retained current-run incident summary, and stop without production edits or independent cleanup.
+  Expected: the canonical current-run report has `collected = selected = executed = passed > 0` and `failed = skipped = todo = filtered = cancelled = 0`; its current receipt proves `contentDigest === readbackDigest === independentDigest`, after which the existing runner removes the suite database, cluster, and run directory. Record the actual report/receipt paths, digests, and lifecycle result; do not paste a historical count. If a probe produces a complete counted `FAILED` report, classify it `BLOCKED_COUNTEREXAMPLE`, preserve the test-source checkpoint and exact rows/error, verify its current receipt and normal cleanup, and stop without product edits. Only a failure with no complete report is `BLOCKED_INFRASTRUCTURE` with a retained current-run incident; do not retry or independently clean it.
 
 - [ ] **Step 7: Independently review the PostgreSQL result without rewriting the checkpoint**
 
@@ -735,24 +750,30 @@ The only produced runtime interface is test coverage registered under the existi
 
 - [ ] **Step 3: Run the two existing fresh suites as separate lifecycles**
 
-  Invoke the reusable Task 4 Step 1 source/ambient preflight for this current reviewed checkpoint; it does not require later Task work. Load the in-session `Invoke-B5FreshSuite` wrapper exactly as defined in Task 4 Step 2, then run these sequentially from the same clean checkpoint SHA:
+  Invoke the reusable Task 4 Step 1 source/ambient preflight for this current reviewed checkpoint; it does not require later Task work. Then execute **only** the exact `Reusable in-session function definitions` fence in Task 4 Step 2 to load `Get-B5CanonicalDigest`, `Read-B5FreshResult`, and `Invoke-B5FreshSuite`; do not execute Task 4's unit/static or pair-reuse fences. Run these sequentially from the same clean checkpoint SHA:
 
   ```powershell
   $billingResult = Invoke-B5FreshSuite 'api.billing-automation.postgres'
   $billingResult | ConvertTo-Json -Depth 20
+  if ($billingResult.classification -ne 'PASS') {
+    throw "B5_BLOCKED_COUNTEREXAMPLE: api.billing-automation.postgres"
+  }
   $maintenanceFactResult = Invoke-B5FreshSuite 'api.database.release'
   $maintenanceFactResult | ConvertTo-Json -Depth 20
+  if ($maintenanceFactResult.classification -ne 'PASS') {
+    throw "B5_BLOCKED_COUNTEREXAMPLE: api.database.release"
+  }
   ```
 
   The invocations create two different `runId`/cluster/database lifecycles; never merge their target identity or imply they ran on one database. In `api.billing-automation.postgres`, the new test must see at least its controlled due schedule on both scans and exactly one row for the stable source key. `enqueuedCount` is attempted/eligible dispatch count; job-table uniqueness is the idempotency authority. In `api.database.release`, existing tests remain the authority for facts allocated only as sequence `1` then `2`, run-lock serialization, no third fact, source-drift rejection, and append-only behavior. Record actual reports/readback receipts and do not call this two elapsed real billing months or actual Staging maintenance.
 
-- [ ] **Step 4: Independently review both current-run results**
+- [ ] **Step 4: Preserve and independently review the Task 3 current-run pair**
 
-  For each separate invocation, tie the observed `runId`, `operationId`, target identity, counts, terminal status, report digest, custody `contentDigest`/`readbackDigest` equality, and success lifecycle result to the checkpoint SHA. If the first invocation fails, do not start the second. Any failure preserves its own current-run incident and cluster for disposition; do not retry or clean it under B5.
+  For each separate invocation, tie the observed `runId`, `operationId`, target identity, counts, terminal status, report digest, custody `contentDigest`/`readbackDigest`/independent equality, classification, and lifecycle result to the Task 3 checkpoint SHA and exact suite input (`suiteId`, `chain=fresh`, manifest/discovery digests). Preserve `$billingResult` and `$maintenanceFactResult` or their exact non-secret serialized outputs as the pair Task 4 must consume when SHA and inputs remain unchanged. If the first complete report is `FAILED`, stop before the second. A complete counted `FAILED` report is custodized and cleaned and becomes `BLOCKED_COUNTEREXAMPLE`; only absence of a complete report yields a retained current-run incident and `BLOCKED_INFRASTRUCTURE`. Do not retry or clean an incident under B5.
 
 ---
 
-### Task 4: Reject Ambient Inputs, Run Existing Fresh Lifecycles, And Publish A Truthful B5 Record
+### Task 4: Reject Ambient Inputs, Consume Current Fresh Lifecycles, And Publish A Truthful B5 Record
 
 **Files:**
 
@@ -822,21 +843,73 @@ The only produced runtime interface is test coverage registered under the existi
   $sourceSha = ($sourceShaRaw -join '').Trim()
   pnpm release:contracts:verify
   if ($LASTEXITCODE -ne 0) { throw "B5_CONTRACT_VERIFY_FAILED" }
-  pnpm release:database-tests:discover
+  $discoveryStdout = @(
+    & node scripts/release/discover-database-tests.mjs --mode verify
+  )
   if ($LASTEXITCODE -ne 0) { throw "B5_DATABASE_DISCOVERY_FAILED" }
+  $discoveryVerification = ($discoveryStdout -join '') | ConvertFrom-Json
+  if ($discoveryVerification.unclassifiedCount -ne 0) {
+    throw "B5_DATABASE_DISCOVERY_INCOMPLETE"
+  }
+  $inputDigestScript = @'
+  import { readFile } from "node:fs/promises";
+  import { sha256Canonical } from "./packages/release-foundation/src/index.mjs";
+  const manifest = JSON.parse(await readFile("release/contracts/database-test-manifest.v1.json", "utf8"));
+  const discovery = JSON.parse(await readFile("release/contracts/database-test-discovery.v1.json", "utf8"));
+  process.stdout.write(JSON.stringify({
+  schemaVersion: "b5-current-database-inputs.v1",
+  manifestDigest: sha256Canonical(manifest),
+  discoveryDigest: sha256Canonical(discovery),
+  discovery
+  }));
+  '@
+  $currentInputRaw = @(& node --input-type=module -e $inputDigestScript)
+  if ($LASTEXITCODE -ne 0 -or $currentInputRaw.Count -ne 1) {
+    throw "B5_CURRENT_INPUT_DIGEST_FAILED"
+  }
+  $currentInputIdentity = ($currentInputRaw -join '') | ConvertFrom-Json
+  $currentManifestDigest = $currentInputIdentity.manifestDigest
+  $currentDiscoveryDigest = $currentInputIdentity.discoveryDigest
+  if (
+    $currentManifestDigest -notmatch '^sha256:[0-9a-f]{64}$' -or
+    $currentDiscoveryDigest -notmatch '^sha256:[0-9a-f]{64}$' -or
+    $currentInputIdentity.discovery.contractVersion -ne 'database-test-discovery.v1'
+  ) {
+    throw "B5_CURRENT_INPUT_IDENTITY_INVALID"
+  }
   ```
 
-  `$currentStatus` must be empty; do not stash, discard, or hide another plan's/user's changes. Contract verification must pass, and discovery must report zero unclassified database tests with the new payment file mapped to `api.billing-automation.postgres`. A missing/ambient/fixed-path/pre-existing-run result is `BLOCKED_INFRASTRUCTURE`: stop before invoking a suite and report names/paths only. Do not inspect or delete the refused path/resource.
+  `$currentStatus` must be empty; do not stash, discard, or hide another plan's/user's changes. Contract verification must pass, and the captured discovery verification JSON must report zero unclassified database tests with the new payment file mapped to `api.billing-automation.postgres`. Preserve `$currentInputIdentity` as the actual current discovery contract plus independently canonicalized manifest/discovery digests used by both suite invocation and Task 4 reuse checks. A missing/ambient/fixed-path/pre-existing-run result is `BLOCKED_INFRASTRUCTURE`: stop before invoking a suite and report names/paths only. Do not inspect or delete the refused path/resource.
 
-- [ ] **Step 2: Run only the bounded B5 validation commands**
+- [ ] **Step 2: Run bounded checks and consume the Task 3 current-run pair when inputs are unchanged**
 
-  Run the unit/static commands first. Then define an in-session wrapper which inventories names only, invokes the existing runner unchanged, reads only the receipt created by that invocation, independently hashes its content-addressed report, and verifies the runner removed the successful current-run directory:
+  Use the following three fences separately. Task 2/3 load only the explicitly labelled function-definition fence; they do not execute the surrounding Task 4 commands.
+
+  First run the bounded unit/static commands:
 
   ```powershell
   pnpm --filter @subscription-saas/api exec vitest run test/portal-payment.spec.ts test/payment-settlement.spec.ts test/subscription-journey-payment.spec.ts test/billing-maintenance-evidence.service.spec.ts
   if ($LASTEXITCODE -ne 0) { throw "B5_FOCUSED_UNIT_SUITE_FAILED" }
   pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json
   if ($LASTEXITCODE -ne 0) { throw "B5_API_TSC_FAILED" }
+  ```
+
+  **Reusable in-session function definitions — load this fence only before Task 2/3 suite calls:**
+
+  ```powershell
+  $canonicalDigestScript = @'
+  import { sha256Canonical } from "./packages/release-foundation/src/index.mjs";
+  let input = "";
+  for await (const chunk of process.stdin) input += chunk;
+  process.stdout.write(sha256Canonical(JSON.parse(input)));
+  '@
+  function Get-B5CanonicalDigest([string]$json) {
+    $digest = @($json | & node --input-type=module -e $canonicalDigestScript)
+    if ($LASTEXITCODE -ne 0 -or $digest.Count -ne 1) {
+      throw "B5_CANONICAL_DIGEST_FAILED"
+    }
+    return ($digest -join '').Trim()
+  }
 
   function Invoke-B5FreshSuite([string]$suiteId) {
     $dirty = @(git status --porcelain=v1 --untracked-files=all)
@@ -859,14 +932,72 @@ The only produced runtime interface is test coverage registered under the existi
       }
     }
 
-    $rawReport = & node scripts/release/run-database-suite.mjs --suite-id $suiteId --chain fresh
+    $invocationSha = ((git rev-parse HEAD) -join '').Trim()
+    if ($LASTEXITCODE -ne 0) { throw "B5_FRESH_SOURCE_SHA_FAILED" }
+    $rawReport = @(
+      & node scripts/release/run-database-suite.mjs --suite-id $suiteId --chain fresh
+    )
     $suiteExit = $LASTEXITCODE
-    if ($suiteExit -ne 0) {
-      $newRuns = @(
-        Get-ChildItem -LiteralPath $runRoot -Directory | Where-Object {
-          -not $beforeRuns.ContainsKey($_.FullName)
+    $rawReportJson = $rawReport -join ''
+    $report = $null
+    if ($rawReport.Count -gt 0) {
+      try {
+        $report = $rawReportJson | ConvertFrom-Json
+      } catch {
+        $report = $null
+      }
+    }
+    $newReceipts = @()
+    if (Test-Path -LiteralPath $receiptRoot) {
+      $newReceipts = @(
+        Get-ChildItem -LiteralPath $receiptRoot -File | Where-Object {
+          -not $beforeReceipts.ContainsKey($_.FullName)
         }
       )
+    }
+    $countKeys = @(
+      'collected', 'selected', 'executed', 'passed', 'failed',
+      'skipped', 'todo', 'filtered', 'cancelled'
+    )
+    $countsComplete = $null -ne $report -and $null -ne $report.counts -and @(
+      $countKeys | Where-Object {
+        $null -eq $report.counts.$_ -or
+        (
+          $report.counts.$_ -isnot [long] -and
+          $report.counts.$_ -isnot [int]
+        ) -or
+        $report.counts.$_ -lt 0
+      }
+    ).Count -eq 0
+    $completeReport =
+      $null -ne $report -and
+      $report.schemaVersion -eq 'database-suite-report.v1' -and
+      $report.runId -match '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -and
+      $report.suiteId -eq $suiteId -and
+      $report.chain -eq 'fresh' -and
+      $report.manifestDigest -eq $currentManifestDigest -and
+      $report.discoveryDigest -eq $currentDiscoveryDigest -and
+      $report.terminalStatus -in @('PASSED', 'FAILED') -and
+      $countsComplete -and
+      $report.counts.collected -eq ($report.counts.selected + $report.counts.filtered) -and
+      $report.counts.selected -eq (
+        $report.counts.executed + $report.counts.skipped + $report.counts.todo +
+        $report.counts.cancelled
+      ) -and
+      $report.counts.executed -eq ($report.counts.passed + $report.counts.failed)
+
+    if (-not $completeReport) {
+      if ($suiteExit -eq 0) {
+        throw "B5_SUCCEEDED_WITHOUT_COMPLETE_REPORT"
+      }
+      $newRuns = @()
+      if (Test-Path -LiteralPath $runRoot) {
+        $newRuns = @(
+          Get-ChildItem -LiteralPath $runRoot -Directory | Where-Object {
+            -not $beforeRuns.ContainsKey($_.FullName)
+          }
+        )
+      }
       if ($newRuns.Count -ne 1) {
         throw "B5_CURRENT_RUN_IDENTITY_AMBIGUOUS"
       }
@@ -875,56 +1006,240 @@ The only produced runtime interface is test coverage registered under the existi
         throw "B5_CURRENT_RUN_INCIDENT_MISSING: $incidentPath"
       }
       $incident = Get-Content -LiteralPath $incidentPath -Raw | ConvertFrom-Json
-      throw "B5_FRESH_SUITE_FAILED: $($incident | ConvertTo-Json -Compress); incidentPath=$incidentPath"
+      throw "B5_BLOCKED_INFRASTRUCTURE: $($incident | ConvertTo-Json -Compress); incidentPath=$incidentPath"
     }
 
-    $report = ($rawReport -join '') | ConvertFrom-Json
-    $newReceipts = @(
-      Get-ChildItem -LiteralPath $receiptRoot -File | Where-Object {
-        -not $beforeReceipts.ContainsKey($_.FullName)
-      }
-    )
     if ($newReceipts.Count -ne 1) {
       throw "B5_CURRENT_RECEIPT_IDENTITY_AMBIGUOUS"
     }
-    $receipt = Get-Content -LiteralPath $newReceipts[0].FullName -Raw | ConvertFrom-Json
+    $currentRunPath = Join-Path $runRoot $report.runId
+    if (Test-Path -LiteralPath $currentRunPath) {
+      throw "B5_COMPLETE_REPORT_LIFECYCLE_NOT_RETIRED: $currentRunPath"
+    }
+    if (
+      (
+        $report.terminalStatus -eq 'PASSED' -and
+        (
+          $suiteExit -ne 0 -or
+          $report.counts.executed -le 0 -or
+          $report.counts.passed -ne $report.counts.executed -or
+          $report.counts.failed -ne 0 -or
+          $report.counts.skipped -ne 0 -or
+          $report.counts.todo -ne 0 -or
+          $report.counts.filtered -ne 0 -or
+          $report.counts.cancelled -ne 0
+        )
+      ) -or
+      ($report.terminalStatus -eq 'FAILED' -and ($suiteExit -ne 1 -or $report.counts.failed -le 0))
+    ) {
+      throw "B5_REPORT_EXIT_STATUS_MISMATCH"
+    }
+    $candidate = [pscustomobject]@{
+      sourceSha = $invocationSha
+      report = $report
+      rawReportJson = $rawReportJson
+      receiptPath = $newReceipts[0].FullName
+      suiteExit = $suiteExit
+      classification = if ($report.terminalStatus -eq 'PASSED') {
+        'PASS'
+      } else {
+        'BLOCKED_COUNTEREXAMPLE'
+      }
+      lifecycle = 'COMPLETE_REPORT_RUN_DIRECTORY_REMOVED'
+    }
+    return Read-B5FreshResult $candidate $suiteId $false
+  }
+
+  function Read-B5FreshResult(
+    [object]$candidate,
+    [string]$suiteId,
+    [bool]$stopOnFailed = $true
+  ) {
+    if (
+      $null -eq $candidate -or
+      $candidate.sourceSha -notmatch '^[0-9a-f]{40}$' -or
+      -not (Test-Path -LiteralPath $candidate.receiptPath)
+    ) {
+      throw "B5_PRESENT_PAIR_CORRUPT: $suiteId"
+    }
+    $receipt = Get-Content -LiteralPath $candidate.receiptPath -Raw | ConvertFrom-Json
+    if (
+      $receipt.contentDigest -notmatch '^sha256:[0-9a-f]{64}$' -or
+      $receipt.readbackDigest -notmatch '^sha256:[0-9a-f]{64}$'
+    ) {
+      throw "B5_PRESENT_PAIR_DIGEST_FORMAT_INVALID: $suiteId"
+    }
+    $evidenceRoot = Join-Path (Get-Location) '.release-local/evidence'
+    $receiptRoot = Join-Path $evidenceRoot 'receipts'
+    $expectedReceiptPath = Join-Path $receiptRoot "$($receipt.receiptId).json"
     $contentPath = Join-Path $evidenceRoot (
       'evidence/' + $receipt.contentDigest.Substring('sha256:'.Length) + '.json'
     )
+    if (
+      [IO.Path]::GetFullPath($candidate.receiptPath) -ne [IO.Path]::GetFullPath($expectedReceiptPath) -or
+      ($candidate.reportPath -and [IO.Path]::GetFullPath($candidate.reportPath) -ne [IO.Path]::GetFullPath($contentPath)) -or
+      -not (Test-Path -LiteralPath $contentPath)
+    ) {
+      throw "B5_PRESENT_PAIR_PATH_INVALID: $suiteId"
+    }
+    $storedRaw = Get-Content -LiteralPath $contentPath -Raw
+    $storedReport = $storedRaw | ConvertFrom-Json
+    $rawReportJson = [string]$candidate.rawReportJson
+    if ([string]::IsNullOrWhiteSpace($rawReportJson)) {
+      throw "B5_PRESENT_PAIR_RAW_REPORT_MISSING: $suiteId"
+    }
+    $stdoutReport = $rawReportJson | ConvertFrom-Json
     $independentDigest = 'sha256:' + (
       Get-FileHash -LiteralPath $contentPath -Algorithm SHA256
     ).Hash.ToLowerInvariant()
+    $stdoutCanonicalDigest = Get-B5CanonicalDigest $rawReportJson
+    $storedCanonicalDigest = Get-B5CanonicalDigest $storedRaw
+    $countKeys = @(
+      'collected', 'selected', 'executed', 'passed', 'failed',
+      'skipped', 'todo', 'filtered', 'cancelled'
+    )
+    $storedCountMismatch = @(
+      $countKeys | Where-Object { $storedReport.counts.$_ -ne $stdoutReport.counts.$_ }
+    ).Count -gt 0
     if (
+      $stdoutReport.schemaVersion -ne 'database-suite-report.v1' -or
+      $stdoutReport.runId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+      $stdoutReport.suiteId -ne $suiteId -or
+      $stdoutReport.chain -ne 'fresh' -or
+      $stdoutReport.manifestDigest -notmatch '^sha256:[0-9a-f]{64}$' -or
+      $stdoutReport.discoveryDigest -notmatch '^sha256:[0-9a-f]{64}$' -or
+      $stdoutReport.counts.collected -ne ($stdoutReport.counts.selected + $stdoutReport.counts.filtered) -or
+      $stdoutReport.counts.selected -ne (
+        $stdoutReport.counts.executed + $stdoutReport.counts.skipped +
+        $stdoutReport.counts.todo + $stdoutReport.counts.cancelled
+      ) -or
+      $stdoutReport.counts.executed -ne (
+        $stdoutReport.counts.passed + $stdoutReport.counts.failed
+      ) -or
+      $receipt.attestationRef -ne "local-controlled-nonpromotable://$($stdoutReport.runId)/$suiteId" -or
       $receipt.contentDigest -ne $receipt.readbackDigest -or
-      $receipt.contentDigest -ne $independentDigest
+      $receipt.contentDigest -ne $independentDigest -or
+      $receipt.contentDigest -ne $stdoutCanonicalDigest -or
+      $receipt.contentDigest -ne $storedCanonicalDigest -or
+      $storedReport.runId -ne $stdoutReport.runId -or
+      $storedReport.suiteId -ne $stdoutReport.suiteId -or
+      $storedReport.terminalStatus -ne $stdoutReport.terminalStatus -or
+      $storedCountMismatch -or
+      ($candidate.independentDigest -and $candidate.independentDigest -ne $independentDigest) -or
+      ($candidate.stdoutCanonicalDigest -and $candidate.stdoutCanonicalDigest -ne $stdoutCanonicalDigest) -or
+      ($candidate.storedCanonicalDigest -and $candidate.storedCanonicalDigest -ne $storedCanonicalDigest)
     ) {
-      throw "B5_CURRENT_RUN_READBACK_MISMATCH"
+      throw "B5_PRESENT_PAIR_CORRUPT: $suiteId"
     }
-    $expectedAttestation = "local-controlled-nonpromotable://$($report.runId)/$suiteId"
-    if ($receipt.attestationRef -ne $expectedAttestation) {
-      throw "B5_CURRENT_RUN_RECEIPT_BINDING_MISMATCH"
+    if ($stopOnFailed -and (
+      $stdoutReport.terminalStatus -eq 'FAILED' -and
+      $candidate.suiteExit -eq 1 -and
+      $stdoutReport.counts.failed -gt 0 -and
+      $candidate.classification -eq 'BLOCKED_COUNTEREXAMPLE'
+    )) {
+      throw "B5_BLOCKED_COUNTEREXAMPLE_PRESENT_PAIR: $suiteId"
     }
-    $currentRunPath = Join-Path $runRoot $report.runId
-    if (Test-Path -LiteralPath $currentRunPath) {
-      throw "B5_SUCCESS_LIFECYCLE_NOT_RETIRED: $currentRunPath"
+    if (
+      (
+        $stdoutReport.terminalStatus -eq 'PASSED' -and
+        (
+          $candidate.suiteExit -ne 0 -or
+          $stdoutReport.counts.executed -le 0 -or
+          $stdoutReport.counts.passed -ne $stdoutReport.counts.executed -or
+          $stdoutReport.counts.failed -ne 0 -or
+          $stdoutReport.counts.skipped -ne 0 -or
+          $stdoutReport.counts.todo -ne 0 -or
+          $stdoutReport.counts.filtered -ne 0 -or
+          $stdoutReport.counts.cancelled -ne 0 -or
+          $candidate.classification -ne 'PASS'
+        )
+      ) -or
+      (
+        $stdoutReport.terminalStatus -eq 'FAILED' -and
+        (
+          $candidate.suiteExit -ne 1 -or
+          $stdoutReport.counts.failed -le 0 -or
+          $candidate.classification -ne 'BLOCKED_COUNTEREXAMPLE'
+        )
+      ) -or
+      $stdoutReport.terminalStatus -notin @('PASSED', 'FAILED') -or
+      (Test-Path -LiteralPath (Join-Path '.release-local/runs' $stdoutReport.runId))
+    ) {
+      throw "B5_PRESENT_PAIR_CORRUPT: $suiteId"
     }
-    [pscustomobject]@{
-      report = $report
+    return [pscustomobject]@{
+      sourceSha = $candidate.sourceSha
+      report = $storedReport
+      rawReportJson = $rawReportJson
       reportPath = $contentPath
       receipt = $receipt
-      receiptPath = $newReceipts[0].FullName
+      receiptPath = $expectedReceiptPath
       independentDigest = $independentDigest
-      lifecycle = 'SUCCESS_RUN_DIRECTORY_REMOVED'
+      stdoutCanonicalDigest = $stdoutCanonicalDigest
+      storedCanonicalDigest = $storedCanonicalDigest
+      suiteExit = $candidate.suiteExit
+      classification = $candidate.classification
+      lifecycle = 'COMPLETE_REPORT_RUN_DIRECTORY_REMOVED'
     }
   }
-
-  $billingResult = Invoke-B5FreshSuite 'api.billing-automation.postgres'
-  $billingResult | ConvertTo-Json -Depth 20
-  $maintenanceFactResult = Invoke-B5FreshSuite 'api.database.release'
-  $maintenanceFactResult | ConvertTo-Json -Depth 20
   ```
 
-  Each suite command independently provisions, migrates, verifies, tests, custodizes/readbacks, and—only after custody equality—removes its own suite database, cluster, secrets, and run directory. The before/after sets identify only artifacts created by the current invocation; do not open pre-existing receipts, runs, incidents, or retired archives. Do not manually run Prisma migrate/generate/validate commands around the launcher. If any command fails, PowerShell stops before the next invocation; do not retry with a new `runId`. Do not mutate or clean the retained resource. Hand main/R2 the exact emitted current-run `incidentPath`, `runId`, `containerId`, and `errorCode` for disposition. Do not run full product/DB matrices, snapshot, provider, browser, Staging, signing, or deployment commands under B5.
+  Task 4 now revalidates or replaces the pair using this separate fence:
+
+  ```powershell
+  $billingCandidate = Get-Variable billingResult -ValueOnly -ErrorAction SilentlyContinue
+  $maintenanceCandidate = Get-Variable maintenanceFactResult -ValueOnly -ErrorAction SilentlyContinue
+  $hasBillingCandidate = $null -ne $billingCandidate
+  $hasMaintenanceCandidate = $null -ne $maintenanceCandidate
+  if ($hasBillingCandidate -xor $hasMaintenanceCandidate) {
+    throw "B5_PRESENT_PAIR_INCOMPLETE"
+  }
+
+  $replacementReason = $null
+  if ($hasBillingCandidate -and $hasMaintenanceCandidate) {
+    $billingResult = Read-B5FreshResult $billingCandidate 'api.billing-automation.postgres'
+    $maintenanceFactResult = Read-B5FreshResult $maintenanceCandidate 'api.database.release'
+    $inputChanges = @()
+    if ($billingResult.sourceSha -ne $sourceSha -or $maintenanceFactResult.sourceSha -ne $sourceSha) {
+      $inputChanges += 'sourceSha'
+    }
+    if (
+      $billingResult.report.manifestDigest -ne $currentManifestDigest -or
+      $maintenanceFactResult.report.manifestDigest -ne $currentManifestDigest
+    ) {
+      $inputChanges += 'manifestDigest'
+    }
+    if (
+      $billingResult.report.discoveryDigest -ne $currentDiscoveryDigest -or
+      $maintenanceFactResult.report.discoveryDigest -ne $currentDiscoveryDigest
+    ) {
+      $inputChanges += 'discoveryDigest'
+    }
+    if ($inputChanges.Count -gt 0) {
+      $replacementReason = "CURRENT_INPUT_CHANGED: $($inputChanges -join ',')"
+    }
+  } else {
+    $replacementReason = 'TASK3_CURRENT_PAIR_ABSENT'
+  }
+
+  if ($null -ne $replacementReason) {
+    Write-Output "B5_TASK4_REPLACEMENT_REASON=$replacementReason"
+    $billingResult = Invoke-B5FreshSuite 'api.billing-automation.postgres'
+    $billingResult | ConvertTo-Json -Depth 20
+    if ($billingResult.classification -ne 'PASS') {
+      throw "B5_BLOCKED_COUNTEREXAMPLE: api.billing-automation.postgres"
+    }
+    $maintenanceFactResult = Invoke-B5FreshSuite 'api.database.release'
+    $maintenanceFactResult | ConvertTo-Json -Depth 20
+    if ($maintenanceFactResult.classification -ne 'PASS') {
+      throw "B5_BLOCKED_COUNTEREXAMPLE: api.database.release"
+    }
+  }
+  ```
+
+  Task 4 must first re-read both Task 3 receipt files and content-addressed report bytes, revalidate raw-file and canonical digests from the preserved original JSON text, and compare each report's manifest/discovery digests to the independently recomputed current values—not merely to each other. Never canonicalize a PowerShell-reserialized report object. It consumes the pair when those checks and the current SHA/suite/chain inputs match; do not launch two replacement suites merely to publish the record. A present `FAILED`, incomplete, or corrupt pair stops immediately and can never fall through to replacement. Run a replacement pair only when the pair is wholly absent or a fully revalidated PASS pair has an explicitly named current source/manifest/discovery input change, and record `$replacementReason`. This is reuse of the just-observed Task 3 pair, not reuse of historical P1 evidence.
+
+  Each invoked suite independently provisions, migrates, verifies, tests, custodizes/readbacks, and—after either complete `PASSED` or counted `FAILED` report—removes its own suite database, cluster, secrets, and run directory. A complete `FAILED` report must have exit `1`, a verified current receipt, and classification `BLOCKED_COUNTEREXAMPLE`; stop before the next invocation. Only when no complete report exists may the wrapper consult the single new current-run incident and classify `BLOCKED_INFRASTRUCTURE`; do not retry, mutate, or clean that retained resource. The before/after sets identify only artifacts created by the current invocation; do not open pre-existing receipts, runs, incidents, or retired archives. Do not manually run Prisma migrate/generate/validate commands around the launcher. Hand main/R2 the exact emitted current-run `incidentPath`, `runId`, `containerId`, and `errorCode` for incident disposition. Do not run full product/DB matrices, snapshot, provider, browser, Staging, signing, or deployment commands under B5.
 
 - [ ] **Step 3: Write the validation record from observed outputs**
 
@@ -939,9 +1254,9 @@ The only produced runtime interface is test coverage registered under the existi
   ## Execution identity
 
   - Source SHA: the exact 40-lowercase-hex SHA tested
-  - Source-only prerequisites: actual contract/discovery results and zero ambient/fixed-path names
-  - Fresh suite invocation 1: actual suiteId/runId/operationId/chain and checkpoint SHA
-  - Fresh suite invocation 2: its distinct suiteId/runId/operationId/chain and same checkpoint SHA
+  - Source-only prerequisites: actual discovery verification JSON, captured current discovery contract, independently canonicalized current manifest/discovery digests, and zero ambient/fixed-path names
+  - Task 3 current-run pair (or documented input-change replacement pair): actual suiteId/runId/operationId/chain and exact shared checkpoint SHA
+  - Reuse decision: receipt/report-byte re-read result plus exact current SHA, independently recomputed manifest/discovery digests, suite IDs, and chain comparison proving whether Task 4 consumed the Task 3 pair without rerun; otherwise record the exact allowed replacement reason
 
   ## Command results
 
@@ -953,10 +1268,13 @@ The only produced runtime interface is test coverage registered under the existi
 
   ## Fresh lifecycle disposition
 
-  - Success: custody content/readback digests match, suite database cleanup completed, cluster and
-    current run directory were removed by the launcher; cite the actual current-run output.
-  - Failure: DISPOSITION_PENDING; list only current-run incident path, runId, containerId, errorCode,
-    failed phase, and next owner. State that B5 performed no retry, mutation, or cleanup.
+  - Complete PASSED report: exit 0, current receipt content/readback/independent digests match, and
+    suite database, cluster, secrets, and current run directory were removed by the launcher.
+  - Complete counted FAILED report: exit 1, current receipt content/readback/independent digests
+    match, normal cleanup removed the current run, and status is BLOCKED_COUNTEREXAMPLE.
+  - No complete report: DISPOSITION_PENDING; list only current-run incident path, runId,
+    containerId, errorCode, failed phase, and next owner; status is BLOCKED_INFRASTRUCTURE. State
+    that B5 performed no retry, mutation, or cleanup of the retained incident resource.
 
   ## Authority observations
 
@@ -985,7 +1303,7 @@ The only produced runtime interface is test coverage registered under the existi
   production entry that needs a separate plan.
   ```
 
-  Choose `PASS` only when every bounded command passes, both independent suite receipts prove readback equality, both lifecycle successes are observed, and every authority observation is supported by current-run output. Use `BLOCKED_COUNTEREXAMPLE` for a product-invariant failure and `BLOCKED_INFRASTRUCTURE` for source/ambient/launcher infrastructure failure; do not soften or omit either.
+  Choose `PASS` only when every bounded command passes, the exact Task 3 current-run pair (or a justified input-change replacement pair) has two verified current receipts and complete cleanup, and every authority observation is supported by those outputs. Use `BLOCKED_COUNTEREXAMPLE` for a complete counted `FAILED` report or other product-invariant failure, and `BLOCKED_INFRASTRUCTURE` only for source/ambient failure or a launcher failure with no complete report; do not soften or omit either.
 
 - [ ] **Step 4: Prove the validation stayed test-and-evidence only**
 

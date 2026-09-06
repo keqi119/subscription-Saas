@@ -145,17 +145,36 @@ expect(harness.journeySignal.record).not.toHaveBeenCalled();
 expect(harness.tx.customerIdentity.upsert).not.toHaveBeenCalled();
 ```
 
-This test deliberately verifies that runtime code relies on the declared schema default instead of duplicating the source value in service code.
+In the same test file, add `import { readFileSync } from "node:fs";`, then add this independent public-schema assertion beside the B-line draft case:
+
+```ts
+it("declares SALES_ASSISTED as the Prisma Application source default", () => {
+  const schemaSource = readFileSync(new URL("../prisma/schema.prisma", import.meta.url), "utf8");
+  const application = schemaSource.match(/^model\s+Application\s*\{([\s\S]*?)^\}/m);
+  expect(application, "Prisma model Application is missing").toBeDefined();
+  const declarations = (application?.[1] ?? "")
+    .split("\n")
+    .map((line) => line.replace(/\/\/.*$/, "").trim())
+    .filter((line) => /^applicationSource\s/.test(line));
+
+  expect(declarations).toHaveLength(1);
+  expect(declarations[0]).toMatch(
+    /^applicationSource\s+ApplicationSource\s+@default\(SALES_ASSISTED\)\s+@map\("application_source"\)$/
+  );
+});
+```
+
+This narrowly isolates the `Application` model, strips line comments, requires exactly one `applicationSource` declaration, and asserts its public schema type/default/map. Prisma 7 runtime DMMF exposes the field kind/type but not `default`/`hasDefaultValue`, so it is not used as default authority. The draft case separately proves that service input omits `applicationSource`, while the existing real PostgreSQL golden-path fixture remains the persistence proof. Do not add another database suite, helper, dependency, `getDMMF` call, or private API.
 
 - [ ] **Step 2: Run the focused test once and confirm the only failure is the unit harness's missing Prisma default**
 
 Run:
 
 ```powershell
-pnpm --filter @subscription-saas/api exec vitest run --project unit test/application-review-api.spec.ts -t "allows an incomplete customer to have a sales-assisted draft"
+pnpm --filter @subscription-saas/api exec vitest run --project unit test/application-review-api.spec.ts -t "allows an incomplete customer to have a sales-assisted draft|declares SALES_ASSISTED as the Prisma Application source default"
 ```
 
-Expected: FAIL because the current in-memory `tx.application.create` retains the harness's prior `SELF_SERVICE` value instead of applying Prisma's `SALES_ASSISTED` default. The production method and schema are not changed.
+Expected: the public-schema assertion passes, while the focused draft case fails because the current in-memory `tx.application.create` retains the harness's prior `SELF_SERVICE` value instead of applying the independently verified `SALES_ASSISTED` default. The production method and schema are not changed.
 
 - [ ] **Step 3: Make the unit harness emulate the existing Prisma default**
 
@@ -548,15 +567,128 @@ git diff --check
 
 Expected: all commands exit `0`; `git diff --check` has no output.
 
-- [ ] **Step 3: Run the existing self-contained fresh PostgreSQL A/B convergence suite**
+- [ ] **Step 3: Run the existing self-contained fresh PostgreSQL A/B convergence suite and bind its receipt**
 
-Run exactly once:
+Run exactly once. Inventory receipt **filenames only** before and after the invocation, parse only the launcher's stdout as the report, then bind the single new receipt to that report and independently hash its content-addressed report:
 
 ```powershell
-node scripts/release/run-database-suite.mjs --suite-id api.subscription-journey-golden-path.postgres --chain fresh
+$suiteId = 'api.subscription-journey-golden-path.postgres'
+$evidenceRoot = Join-Path (Get-Location) '.release-local/evidence'
+$receiptRoot = Join-Path $evidenceRoot 'receipts'
+$beforeReceiptNames = @()
+if (Test-Path -LiteralPath $receiptRoot) {
+  $beforeReceiptNames = @(
+    Get-ChildItem -LiteralPath $receiptRoot -File | Select-Object -ExpandProperty Name
+  )
+}
+$stdout = @(
+  & node scripts/release/run-database-suite.mjs --suite-id $suiteId --chain fresh
+)
+$suiteExit = $LASTEXITCODE
+$afterReceiptNames = @()
+if (Test-Path -LiteralPath $receiptRoot) {
+  $afterReceiptNames = @(
+    Get-ChildItem -LiteralPath $receiptRoot -File | Select-Object -ExpandProperty Name
+  )
+}
+if ($suiteExit -ne 0) { throw "B1_FRESH_SUITE_FAILED" }
+$stdoutJson = $stdout -join ''
+$report = $stdoutJson | ConvertFrom-Json
+$newReceiptNames = @($afterReceiptNames | Where-Object { $_ -notin $beforeReceiptNames })
+if ($newReceiptNames.Count -ne 1) {
+  throw "B1_CURRENT_RECEIPT_IDENTITY_AMBIGUOUS: $($newReceiptNames -join ',')"
+}
+$receiptPath = Join-Path $receiptRoot $newReceiptNames[0]
+$receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+$canonicalDigestScript = @'
+import { sha256Canonical } from "./packages/release-foundation/src/index.mjs";
+let input = "";
+for await (const chunk of process.stdin) input += chunk;
+process.stdout.write(sha256Canonical(JSON.parse(input)));
+'@
+function Get-B1CanonicalDigest([string]$json) {
+  $digest = @($json | & node --input-type=module -e $canonicalDigestScript)
+  if ($LASTEXITCODE -ne 0 -or $digest.Count -ne 1) {
+    throw "B1_CANONICAL_DIGEST_FAILED"
+  }
+  return ($digest -join '').Trim()
+}
+if (
+  $report.runId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
+  $report.suiteId -ne $suiteId -or
+  $report.terminalStatus -ne 'PASSED' -or
+  $report.counts.collected -ne 1 -or
+  $report.counts.selected -ne 1 -or
+  $report.counts.executed -ne 1 -or
+  $report.counts.passed -ne 1 -or
+  $report.counts.failed -ne 0 -or
+  $report.counts.skipped -ne 0 -or
+  $report.counts.todo -ne 0 -or
+  $report.counts.filtered -ne 0 -or
+  $report.counts.cancelled -ne 0
+) {
+  throw "B1_STDOUT_REPORT_IDENTITY_INVALID"
+}
+$expectedAttestation = "local-controlled-nonpromotable://$($report.runId)/$($report.suiteId)"
+if (
+  $receipt.attestationRef -ne $expectedAttestation -or
+  $newReceiptNames[0] -ne "$($receipt.receiptId).json"
+) {
+  throw "B1_CURRENT_RECEIPT_BINDING_MISMATCH"
+}
+if (
+  $receipt.contentDigest -notmatch '^sha256:[0-9a-f]{64}$' -or
+  $receipt.readbackDigest -notmatch '^sha256:[0-9a-f]{64}$'
+) {
+  throw "B1_CURRENT_RECEIPT_DIGEST_FORMAT_INVALID"
+}
+$contentPath = Join-Path $evidenceRoot (
+  'evidence/' + $receipt.contentDigest.Substring('sha256:'.Length) + '.json'
+)
+$independentDigest = 'sha256:' + (
+  Get-FileHash -LiteralPath $contentPath -Algorithm SHA256
+).Hash.ToLowerInvariant()
+$storedRaw = Get-Content -LiteralPath $contentPath -Raw
+$storedReport = $storedRaw | ConvertFrom-Json
+$stdoutCanonicalDigest = Get-B1CanonicalDigest $stdoutJson
+$storedCanonicalDigest = Get-B1CanonicalDigest $storedRaw
+$countKeys = @(
+  'collected', 'selected', 'executed', 'passed', 'failed',
+  'skipped', 'todo', 'filtered', 'cancelled'
+)
+$storedCountMismatch = @(
+  $countKeys | Where-Object { $storedReport.counts.$_ -ne $report.counts.$_ }
+).Count -gt 0
+if (
+  $receipt.contentDigest -ne $receipt.readbackDigest -or
+  $receipt.contentDigest -ne $independentDigest -or
+  $receipt.contentDigest -ne $stdoutCanonicalDigest -or
+  $receipt.contentDigest -ne $storedCanonicalDigest -or
+  $storedReport.runId -ne $report.runId -or
+  $storedReport.suiteId -ne $report.suiteId -or
+  $storedReport.terminalStatus -ne $report.terminalStatus -or
+  $storedCountMismatch
+) {
+  throw "B1_CURRENT_RECEIPT_REPORT_MISMATCH"
+}
+$currentRunPath = Join-Path (Get-Location) ".release-local/runs/$($report.runId)"
+if (Test-Path -LiteralPath $currentRunPath) {
+  throw "B1_SUCCESS_LIFECYCLE_NOT_RETIRED: $currentRunPath"
+}
+[pscustomobject]@{
+  beforeReceiptNames = $beforeReceiptNames
+  afterReceiptNames = $afterReceiptNames
+  runId = $report.runId
+  suiteId = $report.suiteId
+  independentDigest = $independentDigest
+  stdoutCanonicalDigest = $stdoutCanonicalDigest
+  storedCanonicalDigest = $storedCanonicalDigest
+  terminalStatus = $report.terminalStatus
+  counts = $report.counts
+} | ConvertTo-Json -Depth 5
 ```
 
-Expected: exit `0`; the unchanged suite reports `collected=selected=executed=passed=1` and `failed=skipped=todo=filtered=cancelled=0`. The launcher creates a new run ID and per-suite database, generates its existing local custody report/receipt/readback, then cleans up through its existing lifecycle. Do not manually create a target, inspect credentials, retry a failed/unknown cleanup under a different ID, or copy P1 evidence.
+Expected: exit `0`; the parsed stdout report has exact `runId`/`suiteId`, `terminalStatus=PASSED`, `collected=selected=executed=passed=1`, and `failed=skipped=todo=filtered=cancelled=0`. Exactly one receipt filename appears in the after-minus-before set. Before constructing the content path, both receipt digests match the strict `sha256:<64 lowercase hex>` form. The receipt attestation and filename bind the exact stdout identity, the stored report repeats the stdout identity/status/counts, and the receipt content/readback digest equals both the independent raw-file SHA-256 and the existing canonical helper's digest of the original stdout/stored JSON text. Never feed a `ConvertFrom-Json` object back through `ConvertTo-Json` for this digest. The launcher then cleans up through its existing lifecycle. Do not manually create a target, inspect credentials, retry a failed/unknown cleanup under a different ID, or copy P1 evidence.
 
 - [ ] **Step 4: Read back only the non-secret result references emitted by this fresh run**
 
@@ -566,9 +698,10 @@ Record in the implementation handoff:
 source SHA
 exact command and exit code
 actual unit selected/passed/failed/skipped/todo counts
-fresh suite runId and suiteId
-canonical report digest
-custody receipt id and content/readback digest equality
+before/after receipt filename inventories and the single new receipt filename
+exact stdout report runId and suiteId
+independent raw-file hash plus stdout/stored canonical report hashes
+custody receipt id and content/readback/raw/canonical digest equality
 cleanup terminal status
 ```
 

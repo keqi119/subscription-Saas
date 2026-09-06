@@ -1,6 +1,6 @@
 # Stage 1 主线执行索引
 
-状态：P0 已完成；P1.0 旧目标已获明确授权、完成退役并通过独立审查。P1.1–P1.5 已有本轮实际通过证据：控制脚本单测 41/41、API 单测 4074/4074、五项主线 fresh suite 104/104；126 条迁移、status、diff、validate 均通过。P1.6 新目标回收尚未执行，等待新的 owner 停用窗口；完整 P1 仍未关闭。真实副本、候选全量/双链、固定 Node22 最终制品、供应商、浏览器及 Stage 1 人工验收均未执行。
+状态：**P0/P1 本地开发准入已完成并通过独立审查。** P1.0 旧目标及 P1.6 新目标均完成精确退役、五文件归档及独立读回，本次新目标停用窗口已结束。P1.1–P1.5 实际证据保持：控制脚本单测 41/41、API 单测 4074/4074、五项主线 fresh suite 104/104；126 条迁移、status、diff、validate 均通过。真实副本、候选全量/双链、固定 Node22 最终制品、供应商、浏览器及 Stage 1 人工验收均未执行。
 
 范围：A/B进件—审核—方案/预约—单次确认—签约归档—主动支付/核销—交付激活—账单/催收—无争议正常结束。
 
@@ -139,22 +139,41 @@ API 单测实际输出 303/303 文件、4074/4074 passed；该 reporter 没有�
 
 限制：suite 内迁移/Schema/PG版本观察未单独持久化原始日志，成功测试日志原件也不由 suite CLI 保证；不从摘要补造这些证明。上述本机普通文件及 local-controlled-nonpromotable custody 不宣称不可篡改权威存储。测试用确定性 provider 不是供应商联通证明；本轮只有五项 fresh 开发基线，不是全量 fresh/snapshot 最终 Runner 验收。
 
-### P1.6 新目标停用窗口与精确回收停止点
+### P1.6 新目标清单与原停用窗口停止点（历史）
 
-| 新目标/证据          | 当前保留身份                                                                                                                                                                                                            |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| container            | `797a4d2e27f756cb863b37480ac2c610cc8412be70355642e240cba0a1ad7aec`                                                                                                                                                      |
-| 专属 volume          | `c444341da882fd083e9f9cd179081a837c04f97b9ace4f4005cef285ce2a596a`                                                                                                                                                      |
-| run / database / OID | `261aeedf-70df-42e4-9ec4-f6dbd4152934` / `s1dev_2039832846a3d34ff332c081` / `16387`                                                                                                                                     |
-| 实际 PG / image      | `170011` / `docker.io/library/postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6`                                                                                                         |
-| registration         | `.release-local/p1-retirements/71bd3bf5-144f-4b06-b36b-835390d1376f/target-registration.json`；SHA256 `7760e2f104bb2df5e9b6edc64719b75054a2c728748c7e6e2c5ecad93eca38ac`                                                |
-| 初始 record          | 同 registration 目录 `record-initial.json`；SHA256 `a31d3ef677cdbe9373e0506f24e3c3e5db179f4910556f046342813a02996274`；初始 migrationHead 为 null                                                                       |
-| 最终 checkpoint      | `.release-local/p1-operations/cc2c8102-a6d2-46e1-b4fc-e4267a17a719/record-checkpoint.json`；SHA256 `c2e078c73f4cc838b192239fc974753ef23f52ea82bc5351ee2c792603e19fc8`                                                   |
-| 最终 record          | checkpoint 同目录 `record-after-migrate.json`；SHA256 `abc658ff01e89eefb4337b3fe155c2373dd83b9fe86eb757e42e8dc9f72b35c9`，与当前 controlled record 一致；migrationHead `20260901010000_stage1_schema_drift_convergence` |
-| 后续五文件归档       | 当前 `.release-local/controlled-target.v1.json` 及 `.release-local/secrets/{bootstrap,migrate,verify,runtime-test}.json` 保留；P1.6 获得新窗口后按批准计划移至上述新 registration UUID 根部，不覆盖原件                 |
+| 新目标/证据          | 退役前登记身份                                                                                                                                                                                                                      |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| container            | `797a4d2e27f756cb863b37480ac2c610cc8412be70355642e240cba0a1ad7aec`                                                                                                                                                                  |
+| 专属 volume          | `c444341da882fd083e9f9cd179081a837c04f97b9ace4f4005cef285ce2a596a`                                                                                                                                                                  |
+| run / database / OID | `261aeedf-70df-42e4-9ec4-f6dbd4152934` / `s1dev_2039832846a3d34ff332c081` / `16387`                                                                                                                                                 |
+| 实际 PG / image      | `170011` / `docker.io/library/postgres@sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6`                                                                                                                     |
+| registration         | `.release-local/p1-retirements/71bd3bf5-144f-4b06-b36b-835390d1376f/target-registration.json`；SHA256 `7760e2f104bb2df5e9b6edc64719b75054a2c728748c7e6e2c5ecad93eca38ac`                                                            |
+| 初始 record          | 同 registration 目录 `record-initial.json`；SHA256 `a31d3ef677cdbe9373e0506f24e3c3e5db179f4910556f046342813a02996274`；初始 migrationHead 为 null                                                                                   |
+| 最终 checkpoint      | `.release-local/p1-operations/cc2c8102-a6d2-46e1-b4fc-e4267a17a719/record-checkpoint.json`；SHA256 `c2e078c73f4cc838b192239fc974753ef23f52ea82bc5351ee2c792603e19fc8`                                                               |
+| 最终 record          | checkpoint 同目录 `record-after-migrate.json`；SHA256 `abc658ff01e89eefb4337b3fe155c2373dd83b9fe86eb757e42e8dc9f72b35c9`，与退役前及归档后的 controlled record 一致；migrationHead `20260901010000_stage1_schema_drift_convergence` |
+| 五文件归档           | 原 `.release-local/controlled-target.v1.json` 及 `.release-local/secrets/{bootstrap,migrate,verify,runtime-test}.json` 已在 P1.6 移至上述新 registration UUID 根部；固定源路径已消失，未覆盖原件                                    |
 
 新 target 的 container/run/database/volume 全部与旧 target 不同；迁移后稳定身份不变，仅允许 migrationHead 演进。diff 后立即在锁内保存最终 checkpoint，后续无 migrate profile；本轮 deploy/status/diff 使用迁移角色自检，validate 仅校验源码，均不冒充独立只读 verify。
 
-**当前停止：** 用户对 `645c8927` 的批准已覆盖新合成目标技术生命周期，但尚未提供该新目标的 owner 停用窗口。执行 agent 的前景会话已正常退出，未执行 P1.6，也未删除新容器/卷或归档新凭证。请 owner 确认新目标所有消费者及 record 写入者暂停，窗口持续至 P1.6 归档独立读回结束。收到后仍须新 operation 原样执行 checkpoint、精确身份、卷专属性、fresh 无消费者、删除/逐文件归档/独立读回，不能复用旧窗口或本次观察。
+**原停止点已解除：** 用户对 `645c8927` 的批准覆盖新合成目标完整技术生命周期；本次又明确确认本清单所有消费者及 record 写入者已暂停，窗口覆盖至归档独立读回结束。使用的是本次新目标确认，不是旧 P1.0 窗口。此前保留新目标等待授权的记录不改判为提前执行。
 
-SDD 完整执行报告 `task-P1-baseline-report.md` SHA256 `d2f63749c7553190a96f6db6c1eb5f2825b4968a816f1c155b8150aefc317ade`；独立审查见同目录 `task-P1-baseline-review.md`。P1 仅在新目标完整回收读回后才可关闭；现阶段不能进入 Stage 1 人工验收。没有修改产品代码、迁移文件、Runner、工作流、RBAC 或 stash，也没有 push/PR/部署。Task 6、29R/30、真实副本、Staging、外部施工继续冻结。
+SDD 完整执行报告 `task-P1-baseline-report.md` SHA256 `d2f63749c7553190a96f6db6c1eb5f2825b4968a816f1c155b8150aefc317ade`；独立审查 `task-P1-baseline-review.md` SHA256 `88ab39f349dddc6ec3ffa3eb49e1319b0b9ae1767c5e70ede41ec957143b5b95`。P1.1–P1.5 测试未重跑：其执行 SHA 仍为 `debd50d6904b58169cf83b1da27d6e738651024d`，不因后续文档提交改写原件。
+
+### P1.6 实际退役与最终读回
+
+执行 SHA：`17a12b07bd848b5bd0a6d9e775d55c8f89371562`。2026-09-06 19:09:22–19:09:28 +08:00，唯一新 operation `0894d206-604b-4307-9fd4-4f71b8f3a953` 执行批准计划原样 `P1.6-pre-retirement-and-exact-cleanup`。checkpoint/registration/final record 绑定通过，固定锁及 record guard 内重新观察 `other_sessions=0`；gate PASS，retirement COMPLETE/COMPLETE，exit0，readback VERIFIED。没有再次创建 registration、bootstrap、迁移或重跑测试。
+
+上述精确新容器和专属卷已删除。五文件直接移至 `.release-local/p1-retirements/71bd3bf5-144f-4b06-b36b-835390d1376f/`，加上原有 `record-initial.json`、`target-registration.json` 共七文件；五份归档均 owner-only ACL，固定 record 和 secrets 源路径不存在。主控独立复算四个日志 hash、gate/result/readback 链、最终 record/checkpoint 绑定，并核对本机 Docker 实际缺失及归档 ACL，全部通过。未读取四份 secret 内容。归档不是密码学销毁或数据库备份；已删除卷中的开发数据不能靠这五个文件恢复。
+
+| 本次 operation 原件        | SHA256                                                             |
+| -------------------------- | ------------------------------------------------------------------ |
+| `result.json`              | `60ae63f2301e220e8406276d18147817bcb2e460a2f74eb838c7e3518495d7d1` |
+| `pre-retirement.json`      | `c5eb89f50b5e4a0f6de806cd109c1e5064dc6cc0c511810294d9ca25213f7ed9` |
+| `retirement-result.json`   | `14d28a21d1ba663ac7f4e0a1e8815e1c63b9ce180ec70876ea075a0bd27965c6` |
+| `retirement-readback.json` | `01e45b83fa529a1200d288fe373e6c1b51247b50aaa67c1a6bc75c82444f6b7b` |
+
+准备期另有静态检查失败：主控过宽的 Markdown block 前缀匹配失败，主控/执行者各一次 PowerShell 展示命令解析失败，均发生在任何 helper、数据库连接和实际退役 operation 之前；原记录保留在 SDD ledger/report。修正只读检查后，原样操作块和单次调用经双方静态解析/摘要核对才执行。没有实际退役失败、UNKNOWN 或删除重试。
+
+本次 SDD 执行报告 `task-P1-6-report.md` SHA256 `cb904513677d5921f92001912347c7c21abeae20dae021e176dfb8e250af96ff`；独立终审 `task-P1-6-review.md` SHA256 `6406d41c9496b984013a7dc9a9d023afef4ba6de795e34b2f75bd49fe2c11d1c`。独立审查者实际读回上述原件、ACL、精确 Docker 目标缺失及索引，结论 **APPROVED：P1.6 与完整 P0/P1 本地开发准入关闭**，无新增阻断项。主控亦独立通过，并再次核对此前 15 个 operation/60 个日志摘要不变。停用窗口至该独立读回完成后结束。
+
+本次仅修改执行索引；无产品代码、迁移文件、Runner、工作流、RBAC、stash 变化，未 push/PR/部署。下一步只申请 B1/B3/B5 与 R1/R2 小计划审批，不自动施工。Task 6、29R/30、真实副本、Staging、外部施工继续冻结，当前不能进入 Stage 1 人工验收。

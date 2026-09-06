@@ -1,6 +1,6 @@
 # Stage 1 B3 合同、电子签与 PDF 归档独立验证实施计划
 
-> **Status: DRAFT / PENDING_REVIEW.** This plan is not implementation approval.
+> **Status: APPROVED — bounded local validation only.** User-approved content baseline: `51981b32`. Approval does not establish completed validation or authorize production fixes, external services, or release.
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -17,11 +17,11 @@
 - 本计划只申请一个 B3 专属 PostgreSQL 测试、数据库测试清单的增量纳管，以及一份本轮新鲜证据；不预授权生产代码修改。
 - 电子签任务完成只证明供应商流程事实；平台归档准入需要完整 Contract 归档元组和可解析的 PDF FileObject，且 `ARCHIVED` 不被解释为法律生效时间。
 - 不调用真实 Fadada/OSS，不写 Lease/VehicleSubscriptionPeriod，不运行 B4 激活；snapshot 链和真实供应商验证继续留给 R3/A2/A3。
-- 执行仍需单独批准。任何生产反例都在精确失败摘要处停止，不在本计划内顺手修复。
+- 用户已单独批准 `51981b32` 的限定本地验证范围。任何生产反例都在精确失败摘要处停止，不在本计划内顺手修复。
 
 ## Global Constraints
 
-- This is one of the five authorized planning documents. It remains `DRAFT / PENDING_REVIEW`; implementation needs separate approval.
+- Only B3 among these five plans has user implementation approval at `51981b32`; the other four remain subject to their separate revisions/reviews. This status entry is metadata, not a change to B3's scope or proof requirements.
 - The planning baseline is `4b93f8abf4697d3970205d3d37e78e8a55b4ebd6`. At implementation time, use the approved descendant and classify every pre-existing change before touching B3-owned files.
 - P0/P1 are closed and their controlled targets were retired. The fixed target record and four fixed secret files are absent. Historical P1 run IDs, database identities, digests, and counts are context only and must not be reused as B3 evidence.
 - The only B3 database entry is the existing self-provisioning `scripts/release/run-database-suite.mjs --chain fresh`. Do not create a bootstrap, cleanup, credential, target-record, evidence-schema, test context, or suite launcher. Do not use an ambient `DATABASE_URL` or directly invoke the database Vitest project.

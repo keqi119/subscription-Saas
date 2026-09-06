@@ -1,16 +1,20 @@
-# Stage 1 Golden Path 生产验收手册
+# Stage 1 Golden Path Staging RC × 生产通道验收手册
 
-日期：2026-08-06
+日期：2026-09-07
 
-执行入口转至 [Stage 1 P0/P1 准入实施计划](../superpowers/plans/2026-09-06-stage1-p0-p1-admission-implementation-plan.md)；本 Runbook 是后续验收清单，不授权 production 或 Staging 操作。
+[Stage 1 P0/P1 准入实施计划](../superpowers/plans/2026-09-06-stage1-p0-p1-admission-implementation-plan.md)仅为历史准入记录；当前依赖按[现有 Stage 1 主线与最小受控发布覆盖路线图](../superpowers/plans/2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)及分别批准的 B/R/A 小计划执行，本文不提供重跑 P0/P1 的权限。本 Runbook 是冻结待复审的后续验收清单。批准本路线或本文修订，不等于批准 Staging 配置/部署、真实实名/签署、合同上传/链接生成、模板 smoke/通知开启、支付或退款；每个实际操作仍须逐项批准。
 
 适用范围：第 1 阶段新订阅 A/B Golden Path。A 线为客户 Portal 自助进件，B 线为 Admin 代客进件。两条线必须使用不同的 Application，但执行完全相同的下游步骤。
 
-本手册不授权接入或开启微信委托代扣。整个验收期间必须保持 `AUTO_DEBIT_ENABLED=false`、`PAYMENT_MANDATE_PROVIDER=disabled`、`PAYMENT_MANDATE_MOCK_ENABLED=false`，支付仅使用客户 Portal 的微信 JSAPI 主动支付。
+固定拓扑是：**指定 Staging RC 的 Web/API、Staging 专用数据库、队列和对象存储**，本次法大大/支付/退款路线仅外连**生产法大大与生产微信支付/退款通道**，并且只使用逐项批准的专用生产测试资产；该拓扑描述不包含或授权通知路线。生产业务数据库、普通客户、运营车辆及非测试 payer 均不在范围内；生产应用也不得同时消费本次专用交易的 callback/notify。
+
+本手册不授权接入或开启微信委托代扣。整个验收期间必须保持 `AUTO_DEBIT_ENABLED=false`、`PAYMENT_MANDATE_PROVIDER=disabled`、`PAYMENT_MANDATE_MOCK_ENABLED=false`，支付仅使用客户 Portal 的微信 JSAPI 主动支付。A/B 流程与状态机不变：合同归档后进入 `INITIAL_BILLING`，账单生成后才进入客户支付；本手册不修改运行时代码或状态语义。
 
 ## 1. 安全边界与通过条件
 
-验收只允许使用事先批准的专用生产测试资产：已授权测试客户与签署人、授权 payer OpenID、非运营车辆、生产合同模板、受控付款额度和退款额度。不得使用真实运营车辆、普通客户或未授权微信用户。
+验收只允许使用事先批准的专用生产测试资产：已授权测试客户与签署人、授权测试 payer OpenID、非运营车辆、生产合同模板、受控付款额度和退款额度。不得使用生产业务数据库、运营车辆、普通客户或未授权/非测试微信用户；不得填写猜测值、通配列表、真实 PII 或秘密。
+
+候选相关的每个操作级批准只绑定一个已验真的 `buildProofDigest`，并绑定操作时间窗、精确资产、执行人、独立复核人及批准引用。候选完整 source SHA、API/Web/Runner 镜像 digest、migration catalog 与 repository contract identity 只能从该已验证 `build-proof.v1` 派生展示并逐项比对，不能复制成第二套身份权威。支付/退款批准另绑定以整数分为单位的单次上限及变更单单列的累计上限；非资金操作不填金额门槛。缺少适用字段或身份不一致即 `STOP`。退款还须另绑原支付交易、精确退款金额、财务复核人与独立批准引用，并要求日终对账；签署/支付批准不能继承为退款批准。
 
 通过条件：
 
@@ -24,19 +28,24 @@
 - 客户和 Admin 均无代扣 mutation 路由或 UI 动作控件；历史 Mandate/Attempt 数量只记录、不影响验收；
 - 导出的证据已脱敏，PII 与供应商原始 payload 只保留在受控服务端审计系统中。
 
+当前 B3 Task 3S 的方案在 source `2886d911223c741b000d00c0701676e1b391593f` 上已获批准，但实际执行属于另一任务；本 Runbook 未新跑任何验证，也不得据此写成 B3 已通过。Task 30、旧 Task 6/29R、全部 I 系列及其 stash/证据边界继续冻结，不能由本路线自动恢复。
+
 ## 2. 变更窗口前检查
 
 执行人、复核人和回滚负责人必须是不同的已授权角色。开始前逐项记录到变更单，不在本手册副本中填写秘密或 PII。
 
 - [ ] 数据库备份已完成，恢复演练时间和备份引用已登记。
-- [ ] Prisma migration 状态为 clean，目标部署版本和镜像不可变 tag 已登记。
-- [ ] API、Web 和 Journey worker 的部署版本一致。
+- [ ] Staging 专用数据库的 Prisma migration 状态为 clean；操作批准已绑定唯一、验真的 `buildProofDigest`。
+- [ ] 从该 build proof 派生并逐项读回候选完整 source SHA、API/Web/Runner 镜像 digest、migration catalog 与 repository contract identity；API、Web 和 Journey worker 均匹配该身份，且时间窗、操作人、复核人和批准引用一致。
 - [ ] `/api/health` 正常；worker heartbeat、待处理 job/outbox 和最老异常时间已建立基线。
+- [ ] 从部署配置和资源控制面独立读回数据库、队列、对象存储的精确资源身份，并从路由/代理实际配置独立读回 callback/return/notify 的精确目标；均只指向本次指定 Staging RC。仅有域名、页面或 `/api/health` 正常不是隔离证明。
+- [ ] 已证明只对本次专用交易安全分流，生产应用不会消费同一组 callback/notify；不得为测试全局改写生产商户 callback、停止普通客户消费，或提供未单独批准的租户级配置步骤。无法证明安全分流和唯一消费者时 `STOP`。
+- [ ] 已在窗口前逐项核验并记录紧急停止边界：本次 Staging 的精确 enrollment、worker 与 consumer 暂停目标、执行身份、有效窗口、停止/事故操作批准引用，以及现有权限/config 的只读 readback。任一项缺失时不得开启窗口；该批准不得包含生产应用、普通客户或通配控制目标。
 - [ ] 回滚负责人、应用回滚步骤和数据库处置边界已确认。
 - [ ] 初始配置为 `SUBSCRIPTION_JOURNEY_ENABLED=false`、`SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false`、两类 allowlist 为空。
 - [ ] `AUTO_DEBIT_ENABLED=false`、`PAYMENT_MANDATE_PROVIDER=disabled`、`PAYMENT_MANDATE_MOCK_ENABLED=false`，且变更窗口内禁止修改。
 
-先完成 migration 和应用部署，再确认健康状态；不得在 migration 或部署未确认时开启 Journey 或 worker。
+先在各自操作批准下完成 migration 和应用部署，再确认资源隔离与健康状态；不得在 migration、候选身份或隔离未确认时开启 Journey 或 worker。生产法大大/微信租户与凭据保持生产属性；任何 callback、notify、开关、allowlist 或其他设置变化均须单独批准，不从本 Runbook 推定权限。
 
 ## 3. 专用验收资产与配置
 
@@ -45,15 +54,15 @@
 | 变量                                     | 用途                     | 验收要求                                     |
 | ---------------------------------------- | ------------------------ | -------------------------------------------- |
 | `FADADA_TEST_CUSTOMER_ID`                | 已实名的法大大测试签署人 | 专用、已授权                                 |
-| `FADADA_TEST_LOCAL_CUSTOMER_ID`          | 本地测试客户             | 与签署人绑定且不用于日常运营                 |
+| `FADADA_TEST_LOCAL_CUSTOMER_ID`          | Staging 专用测试客户     | 与签署人绑定且不用于日常运营                 |
 | `STAGE1_ACCEPTANCE_CONTRACT_TEMPLATE_ID` | 生产订阅合同模板         | 已激活、版本已冻结                           |
 | `STAGE1_ACCEPTANCE_PAYER_OPENID`         | JSAPI 付款人             | 已书面授权                                   |
-| `STAGE1_ACCEPTANCE_TEST_VEHICLE_ID`      | 生产测试车辆             | 明确标记为非运营                             |
-| `STAGE1_ACCEPTANCE_TEST_APPLICATION_ID`  | 首条验收申请             | 仅作预检锚点；A/B 运行时仍各建新 Application |
+| `STAGE1_ACCEPTANCE_TEST_VEHICLE_ID`      | 专用验收测试车辆         | Staging 精确记录，实物明确为非运营           |
+| `STAGE1_ACCEPTANCE_TEST_APPLICATION_ID`  | Staging 首条验收申请     | 仅作预检锚点；A/B 运行时仍各建新 Application |
 | `STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN`      | 单次付款上限             | 正整数，取批准的最小金额                     |
 | `STAGE1_ACCEPTANCE_MAX_REFUND_FEN`       | 单次退款上限             | 正整数且不高于付款上限                       |
 
-五个微信公众号模板必须分别配置，禁止跨场景复用：
+五个微信公众号模板的候选映射必须分别记录，禁止跨场景复用：
 
 | 变量                                   | 场景           | 核验字段                                                                                            |
 | -------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------- |
@@ -66,16 +75,18 @@
 同时确认：
 
 - `ESIGN_PROVIDER=fadada`、`FADADA_ENV=production`，基础地址为已确认的法大大生产地址；
-- 法大大签署 callback/return URL 均为生产 HTTPS 地址；
+- 法大大实名 callback/return 与签署 callback/return 均须逐项记录为**指定 Staging RC 的精确已批准 HTTPS 地址**，不是生产应用地址；未知实际值时保持未配置/未通过，不猜测 URL 或新增变量名；
 - `PAYMENT_PROVIDER=wechat_pay`、`PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`、`WECHAT_PAY_ENABLED=true`；
-- 微信支付 notify URL 为生产 HTTPS 地址；
-- `NOTIFICATION_PROVIDER=wechat_official_account`，验收窗口内 `NOTIFICATION_WECHAT_ENABLED=true`；
-- 五个模板均通过官方列表接口只读核对，并对单一批准 OpenID 完成精确字段 smoke；
+- 微信支付 notify 与退款 notify 均须逐项记录为**指定 Staging RC 的精确已批准 HTTPS 地址**，不是生产应用地址；未知实际值时保持未配置/未通过，不猜测 URL 或新增变量名；
+- `NOTIFICATION_PROVIDER=wechat_official_account` 的五模板 smoke 与 `NOTIFICATION_WECHAT_ENABLED=true` 均是独立真实外部动作，只能在 `stage1.notification = must-external-verify` 的单独门槛和批准下执行；法大大/支付/退款路线批准不自动涵盖它们；
+- 五个模板映射可基于既有受控证据核对；如需调用官方列表接口，亦须取得只读外部操作批准。对批准 OpenID 的精确字段 smoke 必须另获操作批准，不得使用通配或普通客户 OpenID；
 - A/B 两个新 Application 或对应专用客户被精确加入 allowlist，禁止使用通配或扩大到普通客户群。
 
-## 4. 只读预检
+callback/return/notify 的验收只限本次专用交易。若现有生产商户或法大大租户只支持全局 callback，且无法在不影响生产应用和普通客户的前提下证明精确安全分流，则保持现状并 `STOP`；不得擅自改租户全局配置。
 
-以下命令不会创建客户、申请、订单、合同、支付或退款：
+## 4. 预检与逐操作启动门槛
+
+只有以下精确 alias 属于本节预检；本次文档修订未执行它们：
 
 ```powershell
 pnpm stage1:golden-path:preflight
@@ -83,9 +94,13 @@ pnpm fadada:test-signer:preflight
 pnpm fadada:upload-signurl:preflight
 ```
 
-第一条命令只检查 fail-closed 配置并以 GET 请求读取 API health；后两条使用既有法大大生产预检能力。任何 blocker 都必须先修复，禁止通过改脚本、切换 mock/sandbox 或扩大 allowlist 绕过。
+`pnpm stage1:golden-path:preflight` 只检查 HTTPS/fail-closed 配置并以 GET 读取 API health，不能证明 Staging 数据库、队列、对象存储或 callback 唯一消费者隔离；这些事实仍须按第 2 节由独立配置/资源/路由读回证明。
 
-完成 migration、部署、五模板 smoke 和配置复核后，按以下顺序进入验收窗口：
+两个法大大 `preflight` alias 均在 provider transport 前返回，不创建客户、合同、文件或链接。它们的 CLI 输出是文本：只有看到 `preflight=passed` 且没有 `blockers=` 才可认为内部 `preflight.ok` 通过；preflight 模式的顶层 `ok=true` 或进程退出码 `0` 单独都不代表通过。任何 blocker 都必须先处理并重新审批受影响操作，禁止通过改脚本、切换 mock/sandbox 或扩大 allowlist 绕过。
+
+不得把 `run`、`prepare` 或 `signurl-only` 当作预检：它们会调用生产供应商并创建/复用客户、上传文件或生成链接；人再以 GET 打开所生成 URL 仍是实际外部动作。每次调用均须独立操作批准。本 Runbook 不新增这些模式的命令。
+
+完成候选身份、migration、部署、资源隔离、配置复核，以及对应外部动作各自批准后，才可按以下顺序进入验收窗口；每一步设置变化也须单独批准并记录 readback：
 
 1. 设置精确 allowlist；
 2. 设置 `SUBSCRIPTION_JOURNEY_ENABLED=true`；
@@ -93,9 +108,13 @@ pnpm fadada:upload-signurl:preflight
 4. 重启 API/worker 并确认 heartbeat；
 5. 再运行一次 `pnpm stage1:golden-path:preflight`。
 
+五模板 smoke/通知开启仅在独立 `stage1.notification` 门槛通过后加入窗口；未批准时不得执行，也不得因为它缺席而把其他路线的批准扩大为通知批准。
+
 ## 5. A/B 两线执行步骤
 
 先完整执行 A 线，再使用新的 Application 完整执行 B 线。不得把 A 线的 Application、Journey、Order 或法大大任务复用于 B 线。
+
+以下是未来逐操作获批后的业务顺序，不是本次路线批准附带的执行授权。每次真实供应商调用、签署、支付、退款、配置写入或 worker/Journey 开关变化前，都须重新核对第 1 节批准绑定和第 2 节隔离 readback；任何 `UNKNOWN` 立即 `STOP`。
 
 ### 5.1 A 线：Portal 自助进件
 
@@ -104,9 +123,9 @@ pnpm fadada:upload-signurl:preflight
 3. 运营批准 `FINAL_PLAN_DECISION`；客户在 Portal 核对并确认页面展示的精确 `finalPlanRevision`。
 4. 系统基于已确认方案及预约事实完成车辆分配；使用专用非运营车辆，不新增 `FINAL_VEHICLE_ALLOCATION` 内部批准。
 5. 系统自动创建唯一 Order、Contract 和初始权益，不手工调用旧建单/建合同入口。
-6. 客户完成法大大实名与签署，平台完成盖章；等待 callback/主动对账使合同归档。
-7. 系统自动生成押金和首期租金应收。
-8. 客户在 Portal 使用授权 OpenID 完成不超过批准上限的最小真实 JSAPI 支付。
+6. 在该次法大大操作批准下，客户完成实名与签署，平台完成盖章；等待本次专用 callback/主动查询和归档事实一致。
+7. 只有合同归档事实完成后，Journey 才进入 `INITIAL_BILLING` 并自动生成押金和首期租金应收；归档 callback 不得跳过该步直接进入支付。
+8. 在独立支付操作批准下，客户在 Portal 使用授权测试 OpenID 完成不超过批准上限的最小真实 JSAPI 支付。
 9. 核对 PaymentRecord、allocation/write-off 与账单余额全部一致。
 10. 系统自动创建 Stage 2 handover；现场人员完成预约、里程和全部必需证据。
 11. 运营对精确 evidence manifest 批准 `DELIVERY_EVIDENCE_DECISION`。
@@ -132,21 +151,25 @@ DELIVERY_EVIDENCE_DECISION  = 1
 
 ## 7. 法大大归档与 PDF 证据
 
-- 确认供应商环境、任务号和合同号均属于生产验收资产；证据导出时只保留掩码引用。
+- 确认生产供应商环境、任务号和合同号均属于本次专用测试资产，callback 只由指定 Staging RC 消费；证据导出时只保留掩码引用。
 - 确认客户签署、平台盖章和 archive 状态全部完成。
-- 从受控存储读取最终 signed PDF，重新计算 SHA-256，与服务端归档 metadata 的 checksum 比对。
+- 从 Staging 专用受控对象存储读取最终 signed PDF，重新计算 SHA-256，与服务端归档 metadata 的 checksum 比对。
 - 确认 PDF 绑定本次 Order/Contract 和正确模板版本，不包含另一条验收线的标识。
 - 不把 sign URL、证件号、手机号、原始供应商响应或 PDF 本体复制到验收文档。
 
 ## 8. JSAPI 支付、退款与对账
 
-1. 付款前确认应付金额不超过 `STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN`。
-2. 仅由 `STAGE1_ACCEPTANCE_PAYER_OPENID` 对应的授权用户在 Portal 发起 JSAPI 支付。
+1. 付款前确认支付操作批准绑定原始应付对象、整数分金额和精确测试 payer；`STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN` 只表示单次上限，累计上限须在变更单另列，且本次应付金额同时不超过两者。
+2. 仅由 `STAGE1_ACCEPTANCE_PAYER_OPENID` 对应的授权测试用户在 Portal 发起 JSAPI 支付。
 3. 以服务端支付回调和主动查询结果为准，核对 PaymentRecord、PaymentOrder、Bill allocation/write-off 和 remaining amount。
-4. 激活与证据采集完成后，按财务已批准的生产退款流程发起不超过 `STAGE1_ACCEPTANCE_MAX_REFUND_FEN` 的退款。
-5. 由第二人复核微信商户侧退款引用、平台退款记录、账务冲销和日终对账结果。
+4. 激活与证据采集完成后，重新申请独立退款操作批准；批准必须绑定原支付交易、精确整数分退款金额、财务复核人和批准引用。`STAGE1_ACCEPTANCE_MAX_REFUND_FEN` 只表示单次上限，累计上限须在变更单另列；未同时满足或未获批准不得退款。
+5. 退款只针对该原支付交易，不得新建替代交易或扩大资产集合；由第二人复核微信商户侧退款引用、平台退款记录、账务冲销和日终对账结果。
 
-预检脚本不会发起支付或退款。不得用 mock-pay 页面、手工改账单状态或人工“已收款”字段替代真实闭环。
+申请真实退款前，必须只读核实现有的实际退款入口、退款 notify（如现有通道适用）、主动查询和对账能力，并在变更单记录该次只读核验的批准与结果。缺少任一必需入口或能力即 `STOP` 并另行处理；不得自行补产品代码、脚本或 SQL，也不得声称本文已实现退款能力。
+
+`stage1.refund` 必须在 `release/contracts/external-validation-applicability.v1.json` 中保持独立 `must-external-verify`。其 `relatedSuiteId=api.billing-automation.postgres` 仅是现有计费 suite 锚点，不证明真实退款渠道、财务复核或日终对账；支付成功和该 suite 的证据均不能替代退款证据。
+
+预检脚本不会发起支付或退款。不得用 mock-pay 页面、手工改账单状态、人工“已收款”字段或数据库编辑替代真实闭环。
 
 ## 9. Stage 2 证据与权威激活
 
@@ -160,29 +183,25 @@ DELIVERY_EVIDENCE_DECISION  = 1
 
 每条 Journey 导出一个独立证据包，至少包含：
 
+- 唯一已验证 `buildProofDigest`，以及仅从该 proof 派生展示的候选完整 source SHA、API/Web/Runner 镜像 digest、migration catalog、repository contract identity；另含操作时间窗、执行人/复核人的掩码主体 ID 与角色、逐操作批准引用和受控审计引用；
+- Staging 数据库/队列/对象存储的精确身份 readback，以及 callback/return/notify 路由和本次专用交易唯一消费者的独立 readback；
 - 掩码后的 Journey/Application/Order/Contract/Lease/Vehicle/WorkOrder 引用；
 - 每个步骤的开始、等待、完成时间和最终状态；
 - 两个 ManualTask 的类型、决定结果和审计事件引用；
 - 掩码后的法大大任务/交易引用、归档 PDF SHA-256；
-- 掩码后的微信支付/退款交易引用、Bill/Payment/write-off 引用；
+- 掩码后的微信原支付/退款交易引用、批准的整数分金额、单次上限及变更单单列的累计上限、财务复核和日终对账引用、Bill/Payment/write-off 引用；
 - evidence manifest hash、Stage 2 审批和权威激活审计引用；
 - 执行前后 Journey 指标快照：pending job/outbox、open exception、最老异常、worker heartbeat；
 - `ACTIVE_PAYMENT_ONLY` 收款模式、退役任务 `PENDING/PROCESSING=0`、客户/Admin 无 mutation 入口的核验结果；
 - 历史 mandate/attempt 数量快照（允许非零，不作为失败条件），以及至少一笔客户发起的 JSAPI 支付达到 PaymentRecord `CONFIRMED` 并生成 WriteOff 的证据。
 
-姓名、手机号、证件号、OpenID、密钥、证书、签署 URL、支付凭据和 provider raw payload 不得进入证据包。完整审计留在服务端受控系统，并按现有保留策略管理。
+姓名、手机号、证件号、OpenID、密钥、证书、签署 URL、支付凭据和 provider raw payload 不得进入证据包。执行人/复核人的完整身份只保留在受控变更单和审计系统中；导出包仅保留掩码主体 ID、角色与受控引用。完整审计按现有保留策略管理。
 
-### 10.1 自动化验收证据（生产执行前必过）
+### 10.1 受控自动化证据（外部执行前必过）
 
-生产变更单必须附上以下自动化证据；测试仅连接回环地址上的专用 PostgreSQL，外部法大大、对象存储和微信支付均使用确定性测试适配器，测试事务结束后回滚：
+旧版 Runbook 列出的直接 API/Web Vitest 命令从本次前向路线退出执行入口，仅保留为历史引用，也不得带入 ambient `DATABASE_URL` 执行。本次文档修订不运行本节产品、数据库或浏览器验收。PostgreSQL 证据必须引用已批准 B/R 小计划中的 governed launcher、精确 suite/chain、受控目标身份和完成报告；Web/unit 证据与真实浏览器证据分别按已批准的 B/A 线计划入口取得，不能假装由数据库 launcher 覆盖。不得从本文拼装新命令或把旧结果改写成当前通过。
 
-```powershell
-pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-golden-path.e2e-spec.ts test/subscription-journey-failure-recovery.e2e-spec.ts
-pnpm --filter @subscription-saas/web exec vitest run test/subscription-journey-golden-path.spec.tsx
-pnpm release:check
-```
-
-自动化证据必须证明：
+受控自动化证据必须证明：
 
 - Portal `SELF_SERVICE` A 线与 Admin `SALES_ASSISTED` B 线执行相同的 11 个有序步骤，且各自只有两个内部人工决定；
 - 每条线只有一个 Order、Contract、Lease 和 BillingSchedule，合同含法大大签署/盖章/归档元数据，初始账单由 PaymentRecord 与 write-off 权威结清；
@@ -191,27 +210,38 @@ pnpm release:check
 - 死信原子投影为 Journey/Step `EXCEPTION`，后台 retry/pause/resume/cancel 受版本和权限约束，Portal/Admin 均不显示 provider/payment 原始错误；
 - Journey 订单不显示旧手工收款、直接合同归档或直接交付激活入口。
 
-该自动化结果不等同于生产验收，也不授权部署、迁移、启用 Journey/worker、写入 allowlist、真实签署、真实支付或退款。生产步骤仍须满足第 2～4 节前置条件并取得显式生产放量批准。
+其中 B3 Task 3S 只批准了方案；本任务没有新鲜执行证据，不能标记 B3 通过。其正确归档后继是 `INITIAL_BILLING`，且 Task 3S 不执行 worker、账单、支付或激活路径。
+
+最终验收仍须完成既有最小发布路线的全部门槛：真实最终镜像的 fresh 证据、合法 snapshot 升级、Schema/runtime identity 与 readiness、A 线真实浏览器结果，以及 B4–B6 的权威激活、账单维护和正常完结证据。B3 fresh、路线批准或本文修订均不能替代这些门槛；也不得为此恢复旧 Task 6、Task 29R/30 或 I 系列云关键路径。
+
+`release/contracts/external-validation-applicability.v1.json` 或其他 repository-contract JSON 的内容/digest 一旦变化，必须从包含新字节的新候选生成与之匹配的 repository contract/build proof；旧证明不得复用或重新解释。
+
+自动化结果不等同于本次 Staging RC × 生产通道验收，也不授权部署、迁移、开关/allowlist/租户配置变化、真实实名/签署、模板 smoke/通知开启、支付或退款。外部步骤仍须满足第 1～4 节前置条件并取得逐操作批准。
 
 ## 11. 阻断、恢复与回滚
 
 出现任一 blocker 时立即：
 
-1. 设置 `SUBSCRIPTION_JOURNEY_ENABLED=false`，阻止新 Journey enrollment；
-2. 保持 `SUBSCRIPTION_JOURNEY_WORKER_ENABLED=true`，仅让已入组 Journey 完成安全的幂等恢复；
-3. 不扩大 allowlist，不删除事件、job、exception 或供应商回调记录；
-4. 对 retryable 异常使用 Admin 的 Retry；需要暂停调查时使用 Pause；合同尚未签署/归档且业务确认取消时才使用 Cancel；
-5. 对法大大、支付或通知故障只重试对应异步步骤，不回滚已经提交的领域事实；
-6. 若存在重复收费、错误车辆占用、证据错绑或权威状态不一致，停止 worker，通知回滚负责人并按事故流程处置。
+1. 立即使用第 2 节已核验的预批准停止/事故操作，停止本次 Staging 精确范围内的新验收动作和 Journey enrollment，无需等待新授权；不得扩大到生产应用、普通客户或通配控制目标；
+2. 按同一预批准边界暂停对应 worker/consumer。停止后立即只读 readback，确认没有新增供应商调用或交易；worker 自动恢复不得越过人工 `STOP`、继续供应商调用或产生新交易；
+3. 保留并掩码记录全部 Journey、合同、provider task、支付/退款、callback、job、exception 与批准引用，包括所有在途 `UNKNOWN` 和原交易引用；不扩大 allowlist，不删除或覆盖失败记录；
+4. 先用相同幂等身份在已批准范围内查询供应商与平台权威事实并 reconcile；只有事实已知且原操作批准仍有效时，才可 replay 对应幂等步骤；
+5. 状态为 `UNKNOWN`、回调归属不明或响应丢失时，禁止以新 transaction/contract/payment/refund ID 盲目重试；保留现场并升级人工复核；
+6. 数据库恢复、数据库编辑、应用回滚或重新部署都不能撤销已经发生的实名、签署、归档、通知、支付或退款外部事实；不得靠恢复/改库伪造回退，再以新交易重做；
+7. 若存在重复收费、错误车辆占用、证据错绑、唯一消费者不成立或权威状态不一致，维持 `STOP`，通知回滚负责人并按事故流程处置。
 
-恢复后先确认幂等对象数量和权威事实，再 Resume/Retry。不得直接改 Journey 状态“跳步”。
+紧急停止只消费窗口前的精确停止批准；任何恢复或新写操作仍须另行批准。恢复前先确认幂等对象数量、原外部引用、账务与归档权威事实，再取得精确 Resume/Retry/replay 批准。不得直接改 Journey 状态“跳步”，也不得让 worker 的自动恢复代替该批准。
 
 ## 12. 收尾
 
 - [ ] A/B 两条通过条件全部满足，证据包已由第二人复核。
 - [ ] 退款与日终对账已完成。
-- [ ] `SUBSCRIPTION_JOURNEY_ENABLED` 恢复为发布决策指定状态；未批准正式放量时设回 `false`。
-- [ ] allowlist 清空；注意只有同时关闭 `SUBSCRIPTION_JOURNEY_ENABLED` 才能阻止新 enrollment。
-- [ ] worker 对已入组 Journey 的处置策略已记录；无遗留时可按发布决策关闭。
+- [ ] 在各自收尾操作批准下，`SUBSCRIPTION_JOURNEY_ENABLED` 恢复为发布决策指定状态；未批准放量时设回 `false`。
+- [ ] 在单独配置操作批准下清空本次精确 allowlist；注意只有同时关闭 `SUBSCRIPTION_JOURNEY_ENABLED` 才能阻止新 enrollment。
+- [ ] worker 对已入组 Journey 的处置策略已记录；无遗留时可按发布决策和独立配置批准关闭。
+- [ ] 本次专用 callback/return/notify 路由已按批准处置，未改变生产商户全局 callback，也未中断普通客户消费；Staging 专用 DB/队列/对象存储没有越界写入生产业务资源。
+- [ ] `stage1.notification` 的五模板 smoke/通知开启和 `stage1.refund` 的真实退款分别具有自己的外部证据、批准与复核；任何未执行项均如实保留为未通过，不借用其他路线结果。
 - [ ] `AUTO_DEBIT_ENABLED=false`、`PAYMENT_MANDATE_PROVIDER=disabled`、`PAYMENT_MANDATE_MOCK_ENABLED=false` 保持不变。
 - [ ] 变更单已附脱敏证据引用、异常说明和最终签字。
+
+本 Runbook 不执行广泛退役、不建立新发布框架/契约/命令，也不解冻 Task 30 或任何旧路线。完成本文评审仅冻结 Runbook 内容供后续逐操作审批，不构成 Staging 或生产通道执行许可。

@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- 状态：**待复审，未授权施工**。核查代码基线 `4b93f8abf4697d3970205d3d37e78e8a55b4ebd6`。用户本轮仅授权编写五份独立小计划。
+- 状态：**局部修订待复审，未授权代码施工**。原计划 `11ef95e6`；本轮按用户评审补齐共享 verifier 纳管，不改变 H1/H2 独立批准。当前修订核查 HEAD `dce7ba1a4d3f5848dd5225e535dd43146a095974`；历史代码基线 `4b93f8abf4697d3970205d3d37e78e8a55b4ebd6`。
 - P0/P1 本地准入已结束，两个测试目标均退役。不能读取归档凭证、重建旧 record，或访问 ambient `DATABASE_URL`；R1 所有代码测试均不连接数据库。
 - Task 6、29R/30、I 系列和冻结 stash `b299ceeed80374d181998f8ef485629beba56b5f` 不动。API/Web、业务模型、迁移、应用 RBAC、工作流、OSS/WORM 均不在文件修改范围内。
 - 单 JSON 输入/输出实际 UTF-8 字节数最多 `1048576`，读取、规范化前后均计数；不能只在 Schema 写上限。私钥不得进入 Git、镜像、环境变量、argv、日志、聊天或测试报告。
@@ -151,11 +151,13 @@ const valid = verify(null, bytes, publicKey, signature);
 - Consumes: R1.1–2；现有 `verifyBuildProof()` 的身份绑定逻辑。
 - Produces: `loadFixedManualProfile({repoRoot}):profile`（固定相对位置，未建立时报 `MANUAL_PROFILE_NOT_PROVISIONED`）；`verifyManualBuild({proofBytes,materialBytes,repoRoot}):trustedBuildDecision`；`openTrustedManualSession({repoRoot,proofBytes,materialBytes}):session`。最后一个函数先真实验真，再使用本文件非导出的 `loadFixedSigningKey(profile)` 和真实 owner/文件 IO 构造 R1.2 session；生产请求不能传 signingKey/IO/ownerObservation。
 - 从旧 verifier 提取 `assertBuildIdentity({proof,buildMaterialObservation}):void`，只包含原 Schema/三镜像/source/catalog/material 绑定。旧 `verifyBuildProof()` 继续调用它及原 attestation/custody 校验，旧 fixture 路径仍不可提升；新接口名明确不含 trusted/verified，不返回通行证。
+- 同一任务把新入口 `scripts/release/manual-stage1-trust.mjs` **及其实际共享依赖 `scripts/release/verify-build-proof.mjs`** 同时纳入 `RELEASE_GATE_ENTRY_POINTS` 与 `repository-contract-files.v1.json`。旧 verifier 当前未纳管；不能只登记新入口，不能用 dependency 的自报摘要代替实际源码重算。此变化会改变 repository contract digest，必须进入 H2 新可信构建。
 
 - [ ] **1. 写固定输入/CLI 边界 RED。** 实际子进程执行 trust 文件；不存在 profile、argv `--trust-root/--profile-file/--archive-root`、环境 override、额外 JSON 属性均拒绝。合法测试用隔离 Git 工作区和临时 fixture profile，不向真实仓库固定路径写测试 key。
 - [ ] **2. 实现 loader 与纯身份提取，GREEN。** 生产只接受固定入口当前代码根；从 proof 指定且 attested 的 source tree 读 profile blob、catalog/contract 并与当前执行入口逐项对照。入口自身尚未可信前仅允许读取/验签，不能读私钥、DB credential 或执行写入。不是仅比较 profile 自报的 digest。
 - [ ] **2a. 固定私钥读取 RED → GREEN。** 错 key 类型/指纹、替换文件、链接/重解析点、越界 keyRef、非 owner-only、未通过 build 验真即调用均拒绝，断言签名次数为 0。`loadFixedSigningKey` 仅解析 profile 固定 keyRef；逐级 realpath/ACL → 打开只读文件句柄 → 对句柄/路径身份复核 → 内存 `createPrivateKey` → Ed25519 类型/导出公钥指纹匹配。不得从 argv/env/stdin 收取替代 key，不在错误中输出字节；会话关闭后释放 KeyObject/清零原始 Buffer，说明托管内存清除为 best effort，不伪称物理擦除。
 - [ ] **3. 写实际 verifier argv/结果反例 RED。** `gh` exit 非零、证书 issuer/workflow/source ref/source digest 不符、self-hosted、材料/subject 字节 hash 不符、public artifact 无 custody、进程超时/输出超限、仅返回 `{verified:true}` 全部拒绝。测试使用固定进程 adapter 检查 argv 和解析器，明确这部分是适配器单测而非真实 attestation 验证成功。
+- [ ] **3a. 共享依赖摘要 RED → GREEN。** 在 `manual-stage1-trust.test.mjs` 的隔离真实 Git/contract fixture 中，先冻结 proof/material/profile，随后**只修改 `scripts/release/verify-build-proof.mjs` 字节**，保持新入口、profile 和请求不变。重新执行真实 `computeRepositoryContract`/加载绑定分支，断言摘要变化且 `BUILD_PROOF_REGISTRY_SUBJECT_MISMATCH`，private-key-read、sign、credential-read 均为 0。不要 mock 一个“dependency changed”布尔值。新旧两个入口同一 manifest 纳管后，恢复原件的正向例和既有 `build-proof.test.mjs` 必须仍通过。
 - [ ] **4. 实现固定进程调用，GREEN。** 使用 `spawn` 参数数组，无 Shell；对准确 build proof 原始字节执行下列固定验证，SHA 从 proof 解析后还必须与验证结果及材料相等：
 
 ```text
@@ -171,7 +173,7 @@ gh attestation verify <受限非秘密 proof 文件>
 上面是参数映射说明，不是允许用户传入尖括号参数或任意文件路径的命令行。正式函数由固定受控输入索引解析只读文件，实际计数 1 MiB。校验 `verificationResult` 的已验证证书/subject，不能把可由 workflow 填写的 predicate 当成证书身份；固定 repo/workflow 的 run 终态还须真实 GitHub 只读核验。具体 CLI 选项见 [官方 gh verifier](https://cli.github.com/manual/gh_attestation_verify)。真实版本/输出格式必须在 H2 留证；不兼容直接停止，不采用宽松字段猜测。
 
 - [ ] **5. 证明旧边界未放宽。** `node --test scripts/release/build-proof.test.mjs scripts/release/manual-stage1-trust.test.mjs`；旧 issuer/custody/full-RC 负向测试仍拒绝。人工路径使用本地 manual record，不能为了复用旧 verifier 伪造 `custody-receipt.v1`。成功结果通过内部品牌返回，仍固定不可直接提升。
-- [ ] **6. 纳管并提交。** 新 trust 入口进入 `RELEASE_GATE_ENTRY_POINTS`、contract manifest；`pnpm release:contracts:verify`；精确六文件 Prettier、unstaged/staged 检查、独立审查后提交 `feat(release): verify attested build for fixed manual profile`。
+- [ ] **6. 纳管并提交。** 新 trust 入口和共享 `verify-build-proof.mjs` 两者均进入 `RELEASE_GATE_ENTRY_POINTS`、contract manifest；`pnpm release:contracts:verify`；精确六文件 Prettier、unstaged/staged 检查、独立审查后提交 `feat(release): verify attested build for fixed manual profile`。保留旧 verifier 回归；本任务没有扩大文件数量或建立第二个 build verifier。
 
 ## H1：首次实际身份、路径与备份——人工停止点
 

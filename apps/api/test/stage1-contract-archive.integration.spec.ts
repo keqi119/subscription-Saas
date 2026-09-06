@@ -89,7 +89,6 @@ const createStage1ArchiveFixture: Stage1ArchiveFixtureBuilder = async (prisma, l
   const contractId = randomUUID();
   const contractVersionId = randomUUID();
   const customerId = randomUUID();
-  const journeyId = randomUUID();
   const orderId = randomUUID();
   const providerContractId = `B3-CONTRACT-${randomUUID()}`;
   const taskId = randomUUID();
@@ -97,7 +96,7 @@ const createStage1ArchiveFixture: Stage1ArchiveFixtureBuilder = async (prisma, l
   const transactionId = `B3TX${randomUUID().replaceAll("-", "").slice(0, 20)}`;
   const alreadySignedAt = new Date("2026-09-06T00:00:00.000Z");
 
-  await prisma.$transaction(async (tx) => {
+  const journeyId = await prisma.$transaction(async (tx) => {
     await insertRuntimeOrderGraph(tx, {
       applicationId,
       customerId,
@@ -213,12 +212,11 @@ const createStage1ArchiveFixture: Stage1ArchiveFixtureBuilder = async (prisma, l
         }
       ]
     });
-    await tx.subscriptionJourney.create({
+    const createdJourney = await tx.subscriptionJourney.create({
       data: {
         applicationId,
         currentStepCode: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
         currentStepStatus: SubscriptionJourneyStepStatus.RUNNING,
-        id: journeyId,
         orderId,
         status: SubscriptionJourneyStatus.RUNNING,
         steps: {
@@ -229,6 +227,7 @@ const createStage1ArchiveFixture: Stage1ArchiveFixtureBuilder = async (prisma, l
         }
       }
     });
+    return createdJourney.id;
   });
 
   return {

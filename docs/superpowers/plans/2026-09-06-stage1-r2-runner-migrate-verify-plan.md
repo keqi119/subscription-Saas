@@ -12,12 +12,13 @@
 
 ## Global Constraints
 
-- 状态：**待复审，未授权施工**；基线 `4b93f8abf4697d3970205d3d37e78e8a55b4ebd6`。R1 和 R2 必须分别批准；本稿只约定依赖，不把 R1 标记为已完成。
+- 状态：**局部修订待复审，未授权施工**；原计划 `dce7ba1a`，本轮修订基于同一完整 HEAD `dce7ba1a4d3f5848dd5225e535dd43146a095974`。补齐既有 Prisma runtime 参数缺陷、fresh 权限安装时序和真实门禁选择隔离；R1/R2 仍分别审批，不把 R1 标记为已完成。
 - P1 两个合成目标已经退役。没有可复用的 active record 或 credentials；不读取归档秘密，不访问 ambient DB URL，不以旧删除批准覆盖新目标创建/退役。
-- R2.1–R2.3 是无外部副作用的代码/适配器测试；R2.4 的真实运行必须先完成 R1 H1/H2 和 H3 精确新目标操作批准。缺任何输入只停止真实门禁，不让 mock 报告转为实际证据。
+- R2.0–R2.3 是无外部副作用的代码/适配器测试；R2.0 可独立修正旧 runtime，R2.1–3 消费已审查 R1 代码。R2.4 的真实运行必须先完成 R1 H1/H2 和 H3 精确新目标操作批准。缺任何输入只停止真实门禁，不让 mock 报告转为实际证据。
 - Task 6/29R/30/I、业务代码、API/Web、历史迁移、Schema 模型、RBAC、工作流、旧 final Compose DAG、OSS/WORM 和冻结 stash 均不动。
 - 仅允许 `db.migrate.deploy@1`、`db.schema.verify@1`；只有 `migrate`、`verify` 两种既有 capability，一调用一凭证。没有新的 `database-test` capability，没有任意 Shell/SQL/模块路径或容器 entrypoint override。
 - 所有 manual JSON 实际字节上限 1 MiB；日志不泄漏凭证。真实 source/snapshot、API/Web 联测、供应商、浏览器、双链全量及 Stage 1 签字均非本计划完成条件。
+- 本轮权限修订采用 **两个固定真实测试阶段 + 中间 H3-B 人工精确授权**，取代原 R2.4 单命令；不增加 permission worker、签名协议、Runner capability 或通用 SQL 入口。H3-A 仅准备目标，H3-B 必须等迁移表实际产生后另行批准；两阶段都完成才可能形成完整 R2 结论。
 
 ## 1. 基线事实与不能省略的门槛
 
@@ -33,6 +34,8 @@
 
 当前可信 CI build proof 及真实 profile 尚未落实，R1 H2 还明确了 public Actions 180 日保管的现存阻断。本计划不修改工作流解决它；真实候选不可用时 `TRUSTED_BUILD_UNAVAILABLE`，不能偷偷改成本地 build 或绕过 attestation。
 
+**本轮实际工具偏差：** `Dockerfile.runner` 以 `/app` 为工作目录，config 在 `/app/apps/api/prisma.config.ts`；runtime 三次迁移/比较调用未明确 `--config`，其中 datasource-to-script 调用还传入 Prisma 7.8 `migrate diff` 不支持的 `--schema`。已有 runtime 测试用注入子进程返回值，不证明 CLI 兼容。这是原有工具缺陷，R2.0 精确修复并保留旧路径回归；不是本计划此前引入的产品回归。另 `apps/release-runner/package.json` 默认 `node --test test/*.test.mjs` 不得选入人工真实门禁，专用子目录与 discovery 例外各司其职。
+
 ## 2. 固定交接与证据顺序
 
 `R1 build/profile 验真 → 父会话锁 → target-observe 批准 → 只读真实目标 observation → 冻结 manual baseline → 启动零凭证 Runner → 实际进程 challenge → 签发/消费精确命令批准 → 单 capability 凭证交接 → 命令 → post-state → manual execution record → 私密独立读回`
@@ -43,6 +46,47 @@
 - 管道关闭/父会话死亡：未交凭证时拒绝；已执行时停止进一步动作并记 UNKNOWN，父进程能存活时仅可停止记录中的精确子容器。数据库写入是否已提交以原幂等键 reconcile 判定，不能靠断开管道宣称已回滚。
 - 人工 baseline 只引用唯一 `buildProofDigest`，保存真实 pre-state、目标、角色观察及批准引用，不复制 source/三镜像/catalog 的第二份权威。新型记录不进入旧 full-RC 聚合，不伪造旧 `approval-record.v1` 或 `launch-attestation.v1`。
 - apply 不重新生成审批身份：锁内重算 plan，并对照冻结 baseline/批准 digest；post-state 是新观察。verify/replay/reconcile 引用前序结果，不因合法迁移头变化拒绝，也不覆盖旧 baseline。
+
+## Task R2.0：修正既有 Prisma 7.8 固定配置和参数
+
+**Files:**
+
+- Modify: `apps/release-runner/src/database-runtime-adapter.mjs`
+- Modify/Test: `apps/release-runner/test/database-runtime-adapter.integration.test.mjs`
+- Read/Test: `apps/release-runner/test/db-migrate-schema.integration.test.mjs`
+- Read: `Dockerfile.runner`
+- Read: `apps/api/prisma.config.ts`
+- Read: `apps/api/prisma-env-policy.ts`
+- Read: `packages/release-foundation/src/catalogs.mjs`
+- Read: `release/contracts/repository-contract-files.v1.json`
+
+**Interfaces:** 保持 `prismaMigrateDeployArgs({schema,repoRoot})`、`prismaSchemaDiffArgs({schema,repoRoot})` 和 `createDatabaseRuntimeAdapter(...)` 签名不变；script argv 私有函数仍不导出。只修三个参数数组，config 从固定 `repoRoot/apps/api/prisma.config.ts` 解析，不接收 caller config/工作目录覆盖，不改变锁/事务、凭证、错误分类或旧 handler 语义。runtime 已纳入 repository contract；修改将改变摘要，H2 必须基于新代码构建。
+
+- [ ] **1. 写参数 RED。** 原测试的 deploy/diff 两数组增加固定 `--config`；经 `adapter.observeSchema()` 捕获 `--script` 调用，新增完整 script argv 断言，确保没有 `--schema`。使用跨平台 `path.resolve(repoRoot, ...)`；错误 schema 仍拒绝，凭证仍只在既有受控子进程环境中、不进入 argv。执行 `node --test apps/release-runner/test/database-runtime-adapter.integration.test.mjs`，记录实际缺 config/多 schema 的断言失败，不把 mock 子进程通过视为真实 Prisma 验证。
+- [ ] **2. 最小 GREEN。** 保留 `assertSchemaPath`，由同一固定 repoRoot 生成 config；目标参数为：
+
+```js
+const config = path.resolve(repoRoot, "apps/api/prisma.config.ts");
+// deploy: --schema 在此子命令合法；同时固定 datasource/migration config。
+["migrate", "deploy", "--schema", schema, "--config", config];
+// diff-to-schema: 不得增加独立 --schema。
+[
+  "migrate",
+  "diff",
+  "--from-config-datasource",
+  "--to-schema",
+  schema,
+  "--exit-code",
+  "--config",
+  config
+];
+// 当前数据库的 script/digest：仍读取真实 datasource，不改成从 schema 生成。
+["migrate", "diff", "--from-empty", "--to-config-datasource", "--script", "--config", config];
+```
+
+第三数组仍先执行现有固定 schema 路径校验，只是不再将该路径当非法 flag 传入。三处均无需依赖 shell cwd；保留 `STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV=1`。不更新 Prisma 版本、不改 config 文件或 Dockerfile。参数依据：[Prisma 7 migrate/diff](https://docs.prisma.io/docs/cli/v7/migrate/diff)。
+
+- [ ] **3. 旧路径回归与精确提交。** 运行 `node --test apps/release-runner/test/database-runtime-adapter.integration.test.mjs apps/release-runner/test/db-migrate-schema.integration.test.mjs`，再运行默认 `pnpm --filter @subscription-saas/release-runner test`；`pnpm release:contracts:verify`。只有两文件可暂存；Prettier、unstaged/staged diff、独立审查后提交 `fix(runner): bind Prisma commands to fixed v7 config`。记录此时仍只是参数/适配器证据，真实 Linux `/app`、Prisma 7.8 和 datasource 连接留给 R2.4 最终镜像，不能提前声明工具实测完成。
 
 ## Task R2.1：人工请求、baseline 与 handler 映射
 
@@ -135,7 +179,8 @@ test("rejects fabricated approval before database access", async () => {
 
 - Create: `scripts/release/verify-manual-runner-result.mjs`
 - Create/Test: `scripts/release/verify-manual-runner-result.test.mjs`
-- Create: `apps/release-runner/test/manual-runner-postgres.integration.test.mjs`
+- Create: `apps/release-runner/test/manual/manual-runner-migration-postgres.integration.test.mjs`
+- Create: `apps/release-runner/test/manual/manual-runner-verification-postgres.integration.test.mjs`
 - Modify: `release/contracts/database-test-exceptions.v1.json`
 - Modify: `packages/release-foundation/src/catalogs.mjs`
 - Modify: `release/contracts/repository-contract-files.v1.json`
@@ -143,23 +188,28 @@ test("rejects fabricated approval before database access", async () => {
 **Interfaces:**
 
 - Consumes: R2.2 `launchManualStage1({operationRef})` 以及其档案原件；不接受 `--evidence-input-file` 或 injected successful adapters。
-- Produces: `verifyManualRunnerResult({operationRef}):{status,counts,recordDigest,promotionEligible:false}`。此只读函数从固定 R1 索引独立读回实际工具/DB/容器记录，验证下面固定用例清单；不能仅验 JSON Schema 即通过。
+- 同一对真实测试文件覆盖两个分别批准的场景链：正向与真实 apply 中断。每条链内部保持同一 allocation/build/baseline/原始 apply；不同场景不得混用目标或原件。最终 verifier 要求同一可信 build 下两条链均完整，UNKNOWN 原件本身不是成功迁移记录；第二场景未获独立 H3 批准时显式 NOT_RUN，不自动运行。
+- Produces: `verifyManualRunnerResult({operationRef}):{status,counts,recordDigest,promotionEligible:false}`。此只读函数从固定 R1 索引独立读回实际工具/DB/容器记录，验证下面固定用例清单；不能仅验 JSON Schema 即通过。第一阶段仅形成 migration 阶段记录，verification 未运行显式为 `NOT_RUN`，不能生成整体 PASS。最终汇总必须关联同一 allocation/build/原始 baseline/迁移 operation 和 H3-B 人工操作原件、独立权限读回；不得接收 caller 提供的权限通过布尔值。
 
 - [ ] **1. 先写 result verifier RED。** 构造受控测试档案：缺 child PID/实际镜像 digest/版本、少一项命令、统计 dropped/skipped、改写结果字节、工具 stdout 为预制但没有对应进程记录、只给 liveness 均拒绝。`node --test scripts/release/verify-manual-runner-result.test.mjs` 首次缺模块；断言 `MANUAL_RESULT_INCOMPLETE`/`MANUAL_RESULT_IDENTITY_MISMATCH`。
-- [ ] **2. 最小校验实现并 GREEN。** 固定运行清单：target-observe、migration dry-run/apply、readonly verify、migration readonly replay、失败/UNKNOWN 的只读 reconcile。核对每个 operation/前序关系和实际 readback；fresh 正向迁移必须确有 pending 条目，不以空库“零变化”冒充迁移执行。
-- [ ] **3. 写实际 PG 测试。** `manual-runner-postgres.integration.test.mjs` 使用 Node test，入口从固定 R1 索引取得已批准的 H3 目标及实际 H2 bundle；缺失即 throw `MANUAL_REAL_GATE_INPUT_REQUIRED`，无条件 `.skip`/`.only`/Boolean 外部开关。测试真实调用 launcher，不能提供 `createClient/runProcess/handler` mock。测试进程本身不持有 migration credential；能力凭证只由 R1 父会话交给单次 Runner。
-- [ ] **4. 独立登记适用性。** 该文件属于真实最终镜像门禁，不混入 source CI DB 清单。将其按精确路径登记为有 owner、原因、复核日期和唯一执行命令的例外；manifest 不伪造 source/fresh 执行条目。`release:database-tests:discover` 必须发现并分类它，不能靠目录漏选。例外理由只覆盖 source 测试集合，不豁免 R2.4 实际执行。
-- [ ] **5. 无数据库提交门禁。** 仅运行 result verifier 单测、契约与测试发现；不在这里执行真实 PG 文件。精确六文件 Prettier、unstaged/staged diff、独立审查后提交 `test(runner): define real manual migration verification gate`。报告明确真实数据库计数为 NOT_RUN。
+- [ ] **2. 最小校验实现并 GREEN。** 固定运行清单：target-observe、migration dry-run/apply、H3-B 精确权限安装及独立读回、readonly verify、migration readonly replay、失败/UNKNOWN 的只读 reconcile。核对每个 operation/前序关系和实际 readback；fresh 正向迁移必须确有 pending 条目，不以空库“零变化”冒充迁移执行。增加缺 H3-B、表 OID/owner/受让角色不符、provision 未退出或第二阶段重新 apply/生成 baseline 的反例；拒绝整体 PASS，不要求尚未生成的 H3-B 记录作为第一阶段前置。
+- [ ] **3. 写两个实际 PG 测试文件。** 精确位置为 Files 列出的 `test/manual/` 两文件，该子目录不被默认 `test/*.test.mjs` 覆盖；相对导入按新增层级修正。migration 文件仅执行 target-observe、原始 baseline、dry-run/apply、保管读回并结束；verification 文件从固定索引消费同一 allocation/build/原始 baseline/迁移前序记录和完成后的 H3-B 原件，再实际核对目标与权限，执行 verify/replay/reconcile。后者禁止 apply、重新分配目标或重建 baseline。使用 Node test；缺本阶段实际 H1/H2/H3 输入即 throw `MANUAL_REAL_GATE_INPUT_REQUIRED`，没有 `.skip`/`.only`/test-name filter 或 Boolean 外部开关。测试真实调用 launcher，不能提供 `createClient/runProcess/handler` mock。测试进程不持有 migration/provision credential；Runner 能力凭证只由 R1 父会话交给对应单次 Runner。H3-B 是测试之间单独批准的人工操作，不伪装为 R1 `target-observe`/`runner-command` 批准。
+- [ ] **4. 独立登记适用性。** 两文件属于真实最终镜像门禁，不混入 source CI DB 清单。分别按精确路径登记为有 owner、原因、复核日期和各自唯一执行命令的例外；manifest 不伪造 source/fresh 执行条目。`release:database-tests:discover` 必须发现并分类两文件，不能靠目录漏选。例外理由只覆盖 source 测试集合，不豁免 R2.4 两阶段实际执行。
+- [ ] **5. 无数据库提交门禁。** 运行 result verifier 单测、契约与测试发现，并在没有 H1/H2/H3 的开发环境执行默认 `pnpm --filter @subscription-saas/release-runner test`；默认运行必须不包含 `test/manual/` 两个真实门禁且不得出现 `MANUAL_REAL_GATE_INPUT_REQUIRED`。不能改 package glob、加 skip 或靠 discovery 例外控制 Node 选择。精确七文件 Prettier、unstaged/staged diff、独立审查后提交 `test(runner): define real manual migration verification gate`。报告明确两阶段真实数据库计数均为 NOT_RUN；真实文件仅由 R2.4 的两个精确命令执行。
 
-例外及 contract manifest 修改与 B3/B5 串行集成，保留先前已合入条目；不重写整张清单。现有 `database-test-exceptions.v1.json` 的条目固定为 `path/owner/reason/scope/reviewDate`：新增精确测试路径，owner 为 `stage1-r2-owner`，scope 为 `manual-final-image-gate`，reviewDate 为 `2026-12-06`；reason 写明 source 集合不适用、由本计划 R2.4 的唯一 Node 命令实际执行。R2 不修改 source suite manifest，也不让例外成为最终门禁的 skip。
+例外及 contract manifest 修改与 B3/B5 串行集成，保留先前已合入条目；不重写整张清单。现有 `database-test-exceptions.v1.json` 的条目固定为 `path/owner/reason/scope/reviewDate`：新增两个精确测试路径，owner 为 `stage1-r2-owner`，scope 为 `manual-final-image-gate`，reviewDate 为 `2026-12-06`；各 reason 写明 source 集合不适用、由 R2.4 对应的唯一 Node 命令实际执行。R2 不修改 source suite manifest，也不让例外成为最终门禁的 skip。
 
 ## H3：精确合成目标准备与回收批准
 
 在 R2.4 前停下提交本次精确摘要。R1 H1/H2 任一未完成，不能进入 H3 实际目标创建。H3 不是把 P1 已删除的目标恢复，也不是 Stage1 实际副本。
 
 - [ ] 列明单次批准的新临时 cluster/container/专属 volume 或创建参数、PostgreSQL 17 digest、loopback/内部网络、TLS、精确 marker/run、database 名、provision/migrate/verify/observer 四个不同角色及四个独立凭证位置（仅位于 R1 固定 credential root 内）和回收计划。observer 仅供父方预观察，verify 仅供 Runner schema 命令；不组合凭证，不复用 migration 身份。名称必须由本次分配记录产生，不从旧 record 复制；用户批准后才执行该次一次性操作单。
-- [ ] provision 身份仅建本次角色/database、extension 和权限；退出并撤去该凭证后才启动 observer/migration/verify。migration 拥有目标 Schema；verify 为只读 catalog + 必需 `_prisma_migrations` SELECT，observer 仅具备固定身份/前置 catalog 查询所需只读权限；两者均非 owner、无 DDL/DML/SUPERUSER/CREATEDB/BYPASSRLS/额外 role membership。migration fixture 不承担业务 seed，R2 不写业务数据。
+- [ ] **H3-A 初始权限。** migration 拥有目标 Schema；verify/observer 为固定身份/catalog 只读角色，均非 owner、无 DDL/DML/SUPERUSER/CREATEDB/BYPASSRLS/额外 role membership。fresh 库确认 `_prisma_migrations` 不存在，将该表 SELECT 明确记为 `PENDING_TABLE_CREATION`，不能提前记已授权；observer 此时可以通过 `to_regclass` 记录真实空前缀。provision 初始进程退出并清除内存凭证，其 credential 在固定 root 中密封保留，仅可在另行批准的 H3-B 人工进程重新开启；不得交给测试或 Runner。迁移不承担业务 seed，R2 不写业务数据。
+- [ ] **H3-B 的权限发行者前置披露。** migrate 将成为迁移表 owner，普通建库 provision 身份并不自动拥有授权资格。本方案在 H3-A 精确审批中声明该单次隔离合成集群的临时 provision 管理身份及实际 PostgreSQL `SUPERUSER` 属性，仅用于已批准建库/权限安装/撤权操作；不声称数据库把它限制成单表 grant-only。该管理凭证不得跨集群，不得成为 migration/test/verify/observer 身份。若用户不接受此临时管理身份保留到 H3-B，停止真实运行，不借用 migrate 凭证或 `SET ROLE` 绕过，也不另建权限框架。
 - [ ] 独立读回 cluster system identifier、精确 Docker/container/volume/image/marker/endpoint、DB OID、role、TLS、PG17 实际版本、owner/扩展/权限。migration/verify 各角色必须能执行 observer 固定只读函数；若需精确 `GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system()`，列入本次 H3 权限批准、独立读回 `has_function_privilege`，不能运行时提权。角色权限以 `pg_roles`、`pg_auth_members`、owner、`has_schema_privilege/has_table_privilege` 固定查询核验；错误 TLS/owner/角色必须阻断。旧 suite launcher 的 `tlsMode:disable` 或 P1 migrate 自检不是替代。
+- [ ] **H3-B 表创建后的独立批准。** migration 阶段实际 apply/内部自检完成并保管、其 Runner 与连接退出后，停止提交新操作单：本次 allocation/build/原始 migration 记录、真实 cluster/DB/table OID、migrate owner、verify/observer 精确受让角色、权限发行者、固定 `GRANT SELECT ON TABLE public._prisma_migrations`、读回及撤权顺序。用户另行批准后，独立人工操作进程才使用密封 provision credential；不新增自动 worker、R1 签名 kind 或 Runner 命令。禁止 `GRANT ... ON ALL TABLES`、默认全表 SELECT、grant option、业务 DML/DDL。实际授权前再核对目标/表 owner/OID；只能针对上述一表和两个角色。
+- [ ] **H3-B 完成与退出。** verify/observer 各自连接实际读迁移表，核对成功 SELECT、无表 owner/额外成员关系、无业务表 SELECT，并保存本次人工批准来源、真实命令/退出码、前后权限及独立读回。原件归档到已批准固定档案并绑定 allocation/迁移记录，不接受 caller JSON 代替实时权限事实。provision 在独立操作进程中撤销自身登录/管理权限、关闭最后连接；凭证按本次精确清单处置，随后由只读身份读回 `pg_roles`/活动会话和宿主精确文件状态。只有撤权/退出/独立读回全部完成，才允许第二个 verification 测试。GRANT、提交、撤权或读回不确定均记 UNKNOWN，阻断后续；另获精确恢复批准，不自动重跑 migration apply。
+- [ ] **apply UNKNOWN 独立恢复分支。** 正向 allocation 与受控中断 allocation 分别申请 H3，不在已完成正向迁移的库中伪造 pending 条目。中断场景在第一阶段真实 Prisma 提交后、父方完成记录前中断，保存该 apply 的 operation/idempotency/批准 plan/实际进程和 UNKNOWN 原件，立即停止。此时不得使用正常 H3-B 成功前置；另行向用户申请本次 UNKNOWN 的精确只读调查及必要单表授权/撤权操作单，绑定未知 apply 和其实际目标，由独立 provision 操作进程核对迁移表存在、owner/OID、实际 catalog/head/checksum，再完成获准的 H3-B 恢复步骤。第二阶段只读 reconcile 判定的是原 apply，不是 replay 的 UNKNOWN；不能根据管理方读回自动抹除旧 UNKNOWN 或重新 apply。目标/表状态不足以授权时保持阻断。
 - [ ] 执行前批准消费者暂停范围；成功保管后按精确清单另行确认退役窗口。失败/UNKNOWN 保留原件并停止；禁止 `docker compose down --remove-orphans`、prune、通配删除或“自动清干净”。回收后独立确认容器/专属卷/凭证与 record 状态，不能只信删除命令退出码。
 
 H3 精确对象在本稿编写时不存在，因此这里不提供可直接误执行的 Docker 删除命令。所有实际创建、权限写入及销毁仍需用户另行批准；不足以制定精确操作单时停止，不扩建新的 provision/cleanup 平台。
@@ -168,15 +218,16 @@ H3 精确对象在本稿编写时不存在，因此这里不提供可直接误�
 
 **Files:** 无产品或工具代码修改；只新增执行后报告 `docs/acceptance/2026-09-06-stage1-r2-manual-runner-verification.md`。保密原件进入 R1 固定档案，不提交凭证或原始 DB 连接串。
 
-**Interfaces:** Consumes R1 H1/H2、H3 真实读回及 R2.3 的固定入口；Produces 指定 bundle/本次目标的本地 manual 竖切报告，不是 full-RC/Stage1 完成证明。
+**Interfaces:** 第一阶段 Consumes R1 H1/H2、H3-A 真实读回；第二阶段还必须消费之后产生的 H3-B 读回及原始 migration 记录。Produces 指定 bundle/同一目标的两个阶段统计及完整本地 manual 竖切报告，不是 full-RC/Stage1 完成证明。
 
-- [ ] **1. 核验准入后运行唯一实际测试。** `node --test apps/release-runner/test/manual-runner-postgres.integration.test.mjs`；由固定索引读取批准而非临时参数拼接。没有 H1/H2/H3 时不要运行以制造一次可预知失败，也不得记通过。
+- [ ] **1. 核验准入后运行 migration 阶段。** `node --test apps/release-runner/test/manual/manual-runner-migration-postgres.integration.test.mjs`；固定索引读取 H1/H2/H3-A 批准而非临时参数拼接。缺失时不运行以制造可预知失败，也不得记通过。此阶段只到真实 apply/内部 migrate 自检、原件保管读回并退出，不提前运行 readonly verify。任何失败/UNKNOWN 停止正常序列，只能另获精确只读调查/恢复批准。
+- [ ] **1a. 人工权限停止点。** 按 H3-B 提交精确操作单并等待用户批准；不得把 H3-A 或本计划批准当作该 DCL 操作批准。完成实际授权、两个角色独立读取、provision 撤权/退出和档案读回后，才执行 `node --test apps/release-runner/test/manual/manual-runner-verification-postgres.integration.test.mjs`。两次精确命令不得替换为 glob/filter/skip；第二阶段只能消费同一目标、build、原始 baseline 和迁移结果，不再次 apply。H3-B 未完成时第二阶段为 NOT_RUN，R2 未通过。
 - [ ] **2. 检查真实正向结果。** 实际最终 Runner Node22、Prisma7.8.0、psql17、PG17 版本，三镜像同一 build proof/实际 Runner digest，真实 pending migrations 应用与 checksum/head、Schema diff=0、迁移 owner 完整、verify 只读。API/Web 本轮不启动；完整 bundle 匹配不意味着完整 RC 通过。
 - [ ] **3. 独立核验反例。** 通过 H3 权限只读 readback 与实际 verify 查询证明角色边界；固定 verify handler 不接受任意 DDL/DML，不能为了负向测试新增 SQL 入口。若还需实际写拒绝探测，应先提交 H3 独立精确探测批准，不将其伪装成 Runner 命令；当前两命令测试不自动执行。错误 cluster/DB/OID/TLS/镜像/批准/组合凭证在指定边界失败；不符合权限 readback 时停止保留现场。测试进程不持有 migration credential。
-- [ ] **4. 检查 plan 与 UNKNOWN。** 同一批准 plan 在锁内实际重算；readonly replay 无重复迁移。仅对已批准合成子进程做提交后/记录前中断注入，UNKNOWN 禁止再次 apply，只读 reconcile 对 `_prisma_migrations`/schema 实际状态确认原操作；无法判定保持 UNKNOWN。
-- [ ] **5. 先保管、读回再回收。** 实际执行等式 `collected=selected=executed=passed+failed`，failed/skipped/todo/filtered/cancelled 全为 0 才可能通过；第一次失败原件仍保留。R1 私密档案/加密备份/owner 签收、H3 精确退役及独立读回分别有事实，不能用一条“成功”代替。
+- [ ] **4. 检查 plan 与真实 apply UNKNOWN。** 正向目标证明锁内实际重算及 readonly replay 无重复迁移。另对 H3 独立精确批准的合成中断目标，以相同两个固定测试命令执行实际 pending migration 的提交后/父记录前中断；测试文件从本次已批准操作索引识别固定场景，不接受 CLI 故障代码或任意 hook。第一阶段仅证明观察到原 apply 的 UNKNOWN，立即进入 H3 的独立恢复停止点；不能把预期测试断言通过写成 migration 成功。恢复批准、真实表/权限读回和 provision 退出后，第二阶段只读 reconcile 按同一 apply 幂等键、真实 `_prisma_migrations`/schema 判定已提交/未提交/仍未知。replay 中断的状态必须属于 replay 自己，不能替代此提交不确定性用例。未获该场景批准或未完成真实 reconcile 时标记该项 NOT_RUN/BLOCKED，整体 R2 不得 PASS；不自动创建第二目标或重跑 apply。
+- [ ] **5. 先保管、读回再回收。** 两个测试阶段分别报告完整计数再汇总；各自满足 `collected=selected=executed=passed+failed`，failed/skipped/todo/filtered/cancelled 全为 0，且 H3-B 完成才可能通过；未运行阶段明确 NOT_RUN，第一次失败原件仍保留。R1 私密档案/加密备份/owner 签收、H3 精确退役及独立读回分别有事实，不能用一条“成功”代替。
 - [ ] **6. 独立 reviewer 签报告后结束。** 报告列实际运行 source/build/工具版本、每次命令/phase/op/目标、统计、失败历史、保管/退出状态。仅报告文件格式与 staged diff 检查后提交 `docs(acceptance): record manual runner vertical slice evidence`。若任一门槛失败，不提交“通过”结论，停止并请求精确修复或重跑批准。
 
 ## 交接与停止点
 
-R2.1–3 的单元/适配器通过只说明代码可进入真实门禁，不解除 H1/H2/H3。R2.4 成功后也只交付 fresh migrate/verify；真实 snapshot、独立数据授权/隔离、API/Web 公共路径、全量双链归 R3/A2，Staging 部署/签字归 R4/A3。旧 Task 29R/30、KMS、自动化工作流及外部施工继续冻结。
+R2.0–3 的单元/适配器通过只说明代码可进入真实门禁，不解除 H1/H2/H3。R2.4 成功后也只交付 fresh migrate/verify；真实 snapshot、独立数据授权/隔离、API/Web 公共路径、全量双链归 R3/A2，Staging 部署/签字归 R4/A3。旧 Task 29R/30、KMS、自动化工作流及外部施工继续冻结。

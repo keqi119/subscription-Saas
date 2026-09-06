@@ -1,4 +1,53 @@
 {
   "schemaVersion": "external-validation-applicability.v1",
-  "records": []
+  "records": [
+    {
+      "applicabilityId": "stage1.esign",
+      "relatedSuiteId": "api.subscription-journey-golden-path.postgres",
+      "status": "must-external-verify",
+      "owner": "keqi119",
+      "reason": "真实电子签与归档文件联通不能由模拟 provider 证明",
+      "reviewDate": "2026-09-06"
+    },
+    {
+      "applicabilityId": "stage1.active-payment",
+      "relatedSuiteId": "api.billing-automation.postgres",
+      "status": "must-external-verify",
+      "owner": "keqi119",
+      "reason": "真实主动支付、回调与核销需独立许可和到账证据",
+      "reviewDate": "2026-09-06"
+    },
+    {
+      "applicabilityId": "stage1.notification",
+      "relatedSuiteId": "api.billing-automation.postgres",
+      "status": "must-external-verify",
+      "owner": "keqi119",
+      "reason": "主线通知及催收投递需实际供应商或渠道结果",
+      "reviewDate": "2026-09-06"
+    },
+    {
+      "applicabilityId": "stage1.admin",
+      "relatedSuiteId": "api.subscription-journey-golden-path.postgres",
+      "status": "must-human-verify",
+      "owner": "keqi119",
+      "reason": "Admin 权限、等待和交付页面需浏览器及人工验收",
+      "reviewDate": "2026-09-06"
+    },
+    {
+      "applicabilityId": "stage1.portal",
+      "relatedSuiteId": "api.subscription-journey-golden-path.postgres",
+      "status": "must-human-verify",
+      "owner": "keqi119",
+      "reason": "Portal A 线及单次客户确认需真实界面验收",
+      "reviewDate": "2026-09-06"
+    },
+    {
+      "applicabilityId": "stage1.normal-expiry",
+      "relatedSuiteId": "api.subscription-expiry-return.postgres",
+      "status": "must-human-verify",
+      "owner": "keqi119",
+      "reason": "完整来源成熟样本的无争议正常结束与两次有效维护需签字",
+      "reviewDate": "2026-09-06"
+    }
+  ]
 }

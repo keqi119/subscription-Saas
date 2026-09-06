@@ -2,6 +2,8 @@
 
 日期：2026-08-06
 
+执行入口转至 [Stage 1 P0/P1 准入实施计划](../superpowers/plans/2026-09-06-stage1-p0-p1-admission-implementation-plan.md)；本 Runbook 是后续验收清单，不授权 production 或 Staging 操作。
+
 适用范围：第 1 阶段新订阅 A/B Golden Path。A 线为客户 Portal 自助进件，B 线为 Admin 代客进件。两条线必须使用不同的 Application，但执行完全相同的下游步骤。
 
 本手册不授权接入或开启微信委托代扣。整个验收期间必须保持 `AUTO_DEBIT_ENABLED=false`、`PAYMENT_MANDATE_PROVIDER=disabled`、`PAYMENT_MANDATE_MOCK_ENABLED=false`，支付仅使用客户 Portal 的微信 JSAPI 主动支付。
@@ -14,7 +16,7 @@
 
 - A/B 两个 Journey 均到达 `COMPLETED`，且 Application 不复用；
 - 两个 Journey 的步骤顺序一致；
-- 每个 Journey 恰好出现三类且各一次的内部人工决定：`FINAL_PLAN_DECISION`、`FINAL_VEHICLE_ALLOCATION`、`DELIVERY_EVIDENCE_DECISION`；
+- 每个 Journey 恰好出现两类且各一次的内部人工决定：`FINAL_PLAN_DECISION`、`DELIVERY_EVIDENCE_DECISION`；
 - 法大大完成客户签署、平台盖章和归档，最终 PDF 的服务端校验和可复核；
 - 最小金额真实 JSAPI 支付已登记、分摊并核销，随后按批准流程完成退款和对账；
 - Stage 2 的精确 evidence manifest 已通过审核，订单、车辆、Lease 与 BillingSchedule 由权威事实激活；
@@ -40,26 +42,26 @@
 
 在部署秘密存储中配置下列变量。这里只记录“已配置/未配置”，不得抄录真实值。
 
-| 变量 | 用途 | 验收要求 |
-|---|---|---|
-| `FADADA_TEST_CUSTOMER_ID` | 已实名的法大大测试签署人 | 专用、已授权 |
-| `FADADA_TEST_LOCAL_CUSTOMER_ID` | 本地测试客户 | 与签署人绑定且不用于日常运营 |
-| `STAGE1_ACCEPTANCE_CONTRACT_TEMPLATE_ID` | 生产订阅合同模板 | 已激活、版本已冻结 |
-| `STAGE1_ACCEPTANCE_PAYER_OPENID` | JSAPI 付款人 | 已书面授权 |
-| `STAGE1_ACCEPTANCE_TEST_VEHICLE_ID` | 生产测试车辆 | 明确标记为非运营 |
-| `STAGE1_ACCEPTANCE_TEST_APPLICATION_ID` | 首条验收申请 | 仅作预检锚点；A/B 运行时仍各建新 Application |
-| `STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN` | 单次付款上限 | 正整数，取批准的最小金额 |
-| `STAGE1_ACCEPTANCE_MAX_REFUND_FEN` | 单次退款上限 | 正整数且不高于付款上限 |
+| 变量                                     | 用途                     | 验收要求                                     |
+| ---------------------------------------- | ------------------------ | -------------------------------------------- |
+| `FADADA_TEST_CUSTOMER_ID`                | 已实名的法大大测试签署人 | 专用、已授权                                 |
+| `FADADA_TEST_LOCAL_CUSTOMER_ID`          | 本地测试客户             | 与签署人绑定且不用于日常运营                 |
+| `STAGE1_ACCEPTANCE_CONTRACT_TEMPLATE_ID` | 生产订阅合同模板         | 已激活、版本已冻结                           |
+| `STAGE1_ACCEPTANCE_PAYER_OPENID`         | JSAPI 付款人             | 已书面授权                                   |
+| `STAGE1_ACCEPTANCE_TEST_VEHICLE_ID`      | 生产测试车辆             | 明确标记为非运营                             |
+| `STAGE1_ACCEPTANCE_TEST_APPLICATION_ID`  | 首条验收申请             | 仅作预检锚点；A/B 运行时仍各建新 Application |
+| `STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN`      | 单次付款上限             | 正整数，取批准的最小金额                     |
+| `STAGE1_ACCEPTANCE_MAX_REFUND_FEN`       | 单次退款上限             | 正整数且不高于付款上限                       |
 
 五个微信公众号模板必须分别配置，禁止跨场景复用：
 
-| 变量 | 场景 | 核验字段 |
-|---|---|---|
-| `WECHAT_TEMPLATE_APPLICATION_PROGRESS` | 申请已受理 | `character_string3`、`const4`、`const5`、`time6`；枚举固定为 `const4=审核中`、`const5=车辆订阅申请` |
-| `WECHAT_TEMPLATE_FINAL_PLAN_PENDING` | 最终方案待确认 | `character_string2`、`phrase5`、`car_number8`、`thing13`、`time9` |
-| `WECHAT_TEMPLATE_CONTRACT_PENDING` | 合同待签署 | `character_string2`、`thing3`、`thing6`、`thing1` |
-| `WECHAT_TEMPLATE_PAYMENT_PENDING` | 首期账单待支付 | `car_number1`、`thing2`、`amount4`、`amount7`、`time5` |
-| `WECHAT_TEMPLATE_HANDOVER_PENDING` | 车辆待取车 | `character_string1`、`thing9`、`car_number5`、`thing11` |
+| 变量                                   | 场景           | 核验字段                                                                                            |
+| -------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------- |
+| `WECHAT_TEMPLATE_APPLICATION_PROGRESS` | 申请已受理     | `character_string3`、`const4`、`const5`、`time6`；枚举固定为 `const4=审核中`、`const5=车辆订阅申请` |
+| `WECHAT_TEMPLATE_FINAL_PLAN_PENDING`   | 最终方案待确认 | `character_string2`、`phrase5`、`car_number8`、`thing13`、`time9`                                   |
+| `WECHAT_TEMPLATE_CONTRACT_PENDING`     | 合同待签署     | `character_string2`、`thing3`、`thing6`、`thing1`                                                   |
+| `WECHAT_TEMPLATE_PAYMENT_PENDING`      | 首期账单待支付 | `car_number1`、`thing2`、`amount4`、`amount7`、`time5`                                              |
+| `WECHAT_TEMPLATE_HANDOVER_PENDING`     | 车辆待取车     | `character_string1`、`thing9`、`car_number5`、`thing11`                                             |
 
 同时确认：
 
@@ -100,7 +102,7 @@ pnpm fadada:upload-signurl:preflight
 1. 授权客户在 Portal 创建并提交 `SELF_SERVICE` Application。
 2. 确认 Journey 进入 `APPLICATION_VALIDATION`，随后只生成一个 `FINAL_PLAN_DECISION` 任务。
 3. 运营批准 `FINAL_PLAN_DECISION`；客户在 Portal 核对并确认页面展示的精确 `finalPlanRevision`。
-4. 运营批准 `FINAL_VEHICLE_ALLOCATION`，使用专用非运营车辆。
+4. 系统基于已确认方案及预约事实完成车辆分配；使用专用非运营车辆，不新增 `FINAL_VEHICLE_ALLOCATION` 内部批准。
 5. 系统自动创建唯一 Order、Contract 和初始权益，不手工调用旧建单/建合同入口。
 6. 客户完成法大大实名与签署，平台完成盖章；等待 callback/主动对账使合同归档。
 7. 系统自动生成押金和首期租金应收。
@@ -114,16 +116,16 @@ pnpm fadada:upload-signurl:preflight
 
 使用新的 `SALES_ASSISTED` Application 重复 5.1 的第 2—12 步。输入规则、最终方案快照、客户确认、电子签、主动支付、交付证据和激活门禁必须与 A 线相同；只允许入口来源不同。
 
-## 6. 三个人工决定核验
+## 6. 两个人工决定核验
 
 每条 Journey 完成后，按 Journey 时间线和 ManualTask 记录同时核对：
 
 ```text
-FINAL_PLAN_DECISION          = 1
-FINAL_VEHICLE_ALLOCATION     = 1
-DELIVERY_EVIDENCE_DECISION   = 1
-其他内部人工决定             = 0
-总计                         = 3
+FINAL_PLAN_DECISION         = 1
+FINAL_VEHICLE_ALLOCATION    = 0
+DELIVERY_EVIDENCE_DECISION  = 1
+其他内部人工决定            = 0
+总计                        = 2
 ```
 
 客户确认方案、法大大签署、JSAPI 支付和现场人员提交证据均是客户/履约动作，不计入内部人工决定。若因驳回产生同类任务的新版本，当前验收运行判为不通过，应保留证据后使用新的 Application 重跑，不得篡改历史。
@@ -160,7 +162,7 @@ DELIVERY_EVIDENCE_DECISION   = 1
 
 - 掩码后的 Journey/Application/Order/Contract/Lease/Vehicle/WorkOrder 引用；
 - 每个步骤的开始、等待、完成时间和最终状态；
-- 三个 ManualTask 的类型、决定结果和审计事件引用；
+- 两个 ManualTask 的类型、决定结果和审计事件引用；
 - 掩码后的法大大任务/交易引用、归档 PDF SHA-256；
 - 掩码后的微信支付/退款交易引用、Bill/Payment/write-off 引用；
 - evidence manifest hash、Stage 2 审批和权威激活审计引用；
@@ -182,7 +184,7 @@ pnpm release:check
 
 自动化证据必须证明：
 
-- Portal `SELF_SERVICE` A 线与 Admin `SALES_ASSISTED` B 线执行相同的 11 个有序步骤，且各自只有三个内部人工决定；
+- Portal `SELF_SERVICE` A 线与 Admin `SALES_ASSISTED` B 线执行相同的 11 个有序步骤，且各自只有两个内部人工决定；
 - 每条线只有一个 Order、Contract、Lease 和 BillingSchedule，合同含法大大签署/盖章/归档元数据，初始账单由 PaymentRecord 与 write-off 权威结清；
 - 本次 A/B Journey 未新建 PaymentMandate、DebitAttempt，系统无可执行退役代扣任务，且未使用委托代扣或人工“已收款”捷径；已有历史 Mandate/Attempt 可非零但必须只读；
 - 法大大启动/归档存储、账单、交接、激活前置条件的重试可恢复，重复支付回调不重复生成业务事实，过期 worker lease 可回收；

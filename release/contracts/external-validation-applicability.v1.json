@@ -22,7 +22,7 @@
       "relatedSuiteId": "api.billing-automation.postgres",
       "status": "must-external-verify",
       "owner": "keqi119",
-      "reason": "Staging 应用/数据库与生产微信退款渠道联通须独立验证；api.billing-automation.postgres 仅作现有计费关联，不证明真实退款；真实退款必须使用专用生产测试资产，取得逐操作批准，并完成独立财务复核与日终对账",
+      "reason": "本轮专用测试支付优先采用经批准的微信商户后台单次全额原路退款；须核验通知适用性、平台原付款事实、渠道最终结果、既有财务凭证及日终对账。api.billing-automation.postgres 仅为关联，不证明真实退款或平台自动退款能力；路线不适用时付款前停止。",
       "reviewDate": "2026-09-07"
     },
     {

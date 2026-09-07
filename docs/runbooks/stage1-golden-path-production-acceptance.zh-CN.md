@@ -16,6 +16,8 @@
 
 候选相关的每个操作级批准只绑定一个已验真的 `buildProofDigest`，并绑定操作时间窗、精确资产、执行人、独立复核人及批准引用。候选完整 source SHA、API/Web/Runner 镜像 digest、migration catalog 与 repository contract identity 只能从该已验证 `build-proof.v1` 派生展示并逐项比对，不能复制成第二套身份权威。支付/退款批准另绑定以整数分为单位的单次上限及变更单单列的累计上限；非资金操作不填金额门槛。缺少适用字段或身份不一致即 `STOP`。退款还须另绑原支付交易、精确退款金额、财务复核人与独立批准引用，并要求日终对账；签署/支付批准不能继承为退款批准。
 
+本轮专用测试支付仅可有条件采用[受控测试退款方案](../superpowers/specs/2026-09-07-stage1-controlled-test-refund-design.zh-CN.md)定义的 A 路线：经批准后在同一微信商户后台对一笔无优惠、无分账、无多付款人、无历史或未决退款的 CNY 原支付执行一次全额原路退款，平台业务数据全程只读。真实付款前必须完成该方案 §3 的退款路线可行性门槛；“路线可用”“允许付款”“允许退款”是依次取得的三阶段批准，任何前一阶段都不自动授予后一阶段。商户申请已受理、渠道最终成功、平台与财务核对完成也是三个不同事实，不得相互替代或推导平台自动退款能力。
+
 通过条件：
 
 - A/B 两个 Journey 均到达 `COMPLETED`，且 Application 不复用；
@@ -44,6 +46,8 @@
 - [ ] 回滚负责人、应用回滚步骤和数据库处置边界已确认。
 - [ ] 初始配置为 `SUBSCRIPTION_JOURNEY_ENABLED=false`、`SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false`、两类 allowlist 为空。
 - [ ] `AUTO_DEBIT_ENABLED=false`、`PAYMENT_MANDATE_PROVIDER=disabled`、`PAYMENT_MANDATE_MOCK_ENABLED=false`，且变更窗口内禁止修改。
+- [ ] 已按退款方案 §3 完成窗口前无资金桌面演练和只读核验：同一商户的精确单笔退款权限及独立查询权限、退款 notify 行为、一次执行人及无并发控制、单次与累计付款/退款额度、可退款期限与资金可用性、已有财务记账方法/责任人/复核人/档案位置及保留读回均已明确；同时确认只接受已有正常审批免押、应付账单构成仅为专用测试租金的样本。此处只证明既有权限、方法和取得后续事实的能力，不填写或借用尚未生成的付款、核销或微信交易 ID。
+- [ ] 已按退款方案 §4.1 核实现有只读入口的权限、实际字段、读取范围及后续逐笔关联方法可用，能够在真实付款后取得并关联平台原付款/核销事实与商户原单；入口、字段、范围或关联方法任一缺失即 `STOP`，不得临时开放 SQL、API 或 RBAC，也不得以未来 `PaymentRecord`、`PaymentWriteOff` 或微信交易值冒充窗口前证据。
 
 先在各自操作批准下完成 migration 和应用部署，再确认资源隔离与健康状态；不得在 migration、候选身份或隔离未确认时开启 Journey 或 worker。生产法大大/微信租户与凭据保持生产属性；任何 callback、notify、开关、allowlist 或其他设置变化均须单独批准，不从本 Runbook 推定权限。
 
@@ -77,7 +81,8 @@
 - `ESIGN_PROVIDER=fadada`、`FADADA_ENV=production`，基础地址为已确认的法大大生产地址；
 - 法大大实名 callback/return 与签署 callback/return 均须逐项记录为**指定 Staging RC 的精确已批准 HTTPS 地址**，不是生产应用地址；未知实际值时保持未配置/未通过，不猜测 URL 或新增变量名；
 - `PAYMENT_PROVIDER=wechat_pay`、`PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`、`WECHAT_PAY_ENABLED=true`；
-- 微信支付 notify 与退款 notify 均须逐项记录为**指定 Staging RC 的精确已批准 HTTPS 地址**，不是生产应用地址；未知实际值时保持未配置/未通过，不猜测 URL 或新增变量名；
+- 微信支付 notify 仍须逐项记录为**指定 Staging RC 的精确已批准 HTTPS 地址**，不是生产应用地址；未知实际值时保持未配置/未通过，不猜测 URL 或新增变量名；签署 callback/return 与支付 callback/notify 的既有路由规则不变；
+- 退款 notify 必须先只读核实实际行为。仅当本次退款实际不向应用推送通知，且已独立批准采用商户后台查询作为结果来源时，方可将退款 notify 记为窄范围 N/A；如存在全局通知、目标未知或生产应用可能收到本次通知，保持原配置并 `STOP`，不得新增接收器、修改全局 callback，或把退款 XML 发送到支付 JSON callback；
 - `NOTIFICATION_PROVIDER=wechat_official_account` 的五模板 smoke 与 `NOTIFICATION_WECHAT_ENABLED=true` 均是独立真实外部动作，只能在 `stage1.notification = must-external-verify` 的单独门槛和批准下执行；法大大/支付/退款路线批准不自动涵盖它们；
 - 五个模板映射可基于既有受控证据核对；如需调用官方列表接口，亦须取得只读外部操作批准。对批准 OpenID 的精确字段 smoke 必须另获操作批准，不得使用通配或普通客户 OpenID；
 - A/B 两个新 Application 或对应专用客户被精确加入 allowlist，禁止使用通配或扩大到普通客户群。
@@ -101,6 +106,8 @@ pnpm fadada:upload-signurl:preflight
 不得把 `run`、`prepare` 或 `signurl-only` 当作预检：它们会调用生产供应商并创建/复用客户、上传文件或生成链接；人再以 GET 打开所生成 URL 仍是实际外部动作。每次调用均须独立操作批准。本 Runbook 不新增这些模式的命令。
 
 完成候选身份、migration、部署、资源隔离、配置复核，以及对应外部动作各自批准后，才可按以下顺序进入验收窗口；每一步设置变化也须单独批准并记录 readback：
+
+真实付款还要求退款路线可行性批准先通过；付款子步骤开始前再核实该样本已有正常审批免押事实、本笔应付账单仅含专用测试租金，并取得绑定精确应付对象、测试 payer、整数分金额和窗口的付款批准。实际原交易生成后，退款必须重新查询同单事实并另获独立退款批准。总预检的 `NOTIFICATION_WECHAT_ENABLED=true` 仍是硬门禁；退款 notify 的窄范围 N/A、退款路线批准或其他外部路线批准均不能豁免，通知未独立批准时仍 `STOP`。
 
 1. 设置精确 allowlist；
 2. 设置 `SUBSCRIPTION_JOURNEY_ENABLED=true`；
@@ -161,11 +168,15 @@ DELIVERY_EVIDENCE_DECISION  = 1
 
 1. 付款前确认支付操作批准绑定原始应付对象、整数分金额和精确测试 payer；`STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN` 只表示单次上限，累计上限须在变更单另列，且本次应付金额同时不超过两者。
 2. 仅由 `STAGE1_ACCEPTANCE_PAYER_OPENID` 对应的授权测试用户在 Portal 发起 JSAPI 支付。
-3. 以服务端支付回调和主动查询结果为准，核对 PaymentRecord、PaymentOrder、Bill allocation/write-off 和 remaining amount。
-4. 激活与证据采集完成后，重新申请独立退款操作批准；批准必须绑定原支付交易、精确整数分退款金额、财务复核人和批准引用。`STAGE1_ACCEPTANCE_MAX_REFUND_FEN` 只表示单次上限，累计上限须在变更单另列；未同时满足或未获批准不得退款。
-5. 退款只针对该原支付交易，不得新建替代交易或扩大资产集合；由第二人复核微信商户侧退款引用、平台退款记录、账务冲销和日终对账结果。
+3. 服务端支付回调仍是平台入账触发来源；平台原付款事实只从已落库的 `PaymentOrder`、`PaymentRecord`、`PaymentWriteOff` 及账单观察读取。微信原支付单终态须由获准人员在商户后台独立查询，并将实际 `out_trade_no` 与平台 `paymentOrderNo` 精确关联。当前平台没有主动向微信查询支付终态的接口，不得保留或出具“平台已主动向微信查询”的证明。
+4. 实际付款完成后、申请退款批准前，将真实生成的 `PaymentOrder`、`PaymentRecord`、`PaymentWriteOff`、账单分摊及微信 `transaction_id`/`out_trade_no` 关联追加到受控记录，并重新核实实际付款分摊仅含专用测试租金、逐笔来源及关联完整；缺少任何实际记录或关联即 `STOP`，不得以窗口前的方法核验替代。
+5. 激活与证据采集完成后，重新申请独立退款操作批准；批准必须绑定上述实际原支付交易、精确整数分退款金额、财务复核人和批准引用。`STAGE1_ACCEPTANCE_MAX_REFUND_FEN` 只表示单次上限，累计上限须在变更单另列；未同时满足或未获批准不得退款。
+6. 提交前在同一商户后台查询该原支付单及全部退款记录；确认无历史/未决退款且批准仍有效后，才可对该原交易单次提交全额退款，不得新建替代交易或扩大资产集合。申请已受理后只按同一退款单查询，受理、商户资金扣出或页面提示均不等于渠道成功。
+7. 渠道最终成功后，由第二人分别复核同一商户原单/退款单及金额、平台原付款与核销的只读历史、实际财务记账凭证和日终资金对账；平台历史不得被抹除，也不得声称账单已自动冲销、业务净额已同步或平台已具备退款接口。
 
-申请真实退款前，必须只读核实现有的实际退款入口、退款 notify（如现有通道适用）、主动查询和对账能力，并在变更单记录该次只读核验的批准与结果。缺少任一必需入口或能力即 `STOP` 并另行处理；不得自行补产品代码、脚本或 SQL，也不得声称本文已实现退款能力。
+字段来源和访问边界以退款方案 §4.1 的现有只读入口矩阵为准：平台业务入口不返回微信原单终态，且现有业务读取入口不能单独证明逐笔核销明细全量可取。缺少合格逐笔来源、商户同单查询、实际财务凭证或日终账单时即 `STOP` 并登记差距；不得自行补产品代码、脚本、SQL、权限或以汇总数/时间金额猜配冒充明细。
+
+退款 notify 仅可在第 3 节的窄范围条件全部满足时记为 N/A；否则它仍是阻断项。任何退款状态为 `PROCESSING` 或 `UNKNOWN` 时只允许在另获批准的只读范围内查询同一原交易及其退款列表，不得刷新重提、生成新退款 ID 或改用其他交易。
 
 `stage1.refund` 必须在 `release/contracts/external-validation-applicability.v1.json` 中保持独立 `must-external-verify`。其 `relatedSuiteId=api.billing-automation.postgres` 仅是现有计费 suite 锚点，不证明真实退款渠道、财务复核或日终对账；支付成功和该 suite 的证据均不能替代退款证据。
 
@@ -189,7 +200,7 @@ DELIVERY_EVIDENCE_DECISION  = 1
 - 每个步骤的开始、等待、完成时间和最终状态；
 - 两个 ManualTask 的类型、决定结果和审计事件引用；
 - 掩码后的法大大任务/交易引用、归档 PDF SHA-256；
-- 掩码后的微信原支付/退款交易引用、批准的整数分金额、单次上限及变更单单列的累计上限、财务复核和日终对账引用、Bill/Payment/write-off 引用；
+- 掩码后的微信原支付/退款交易引用、批准的整数分金额、单次上限及变更单单列的累计上限；分别列示商户受理、渠道最终结果、平台原付款/核销只读事实、实际财务凭证与日终对账引用，不把任一组事实合并或相互推导；
 - evidence manifest hash、Stage 2 审批和权威激活审计引用；
 - 执行前后 Journey 指标快照：pending job/outbox、open exception、最老异常、worker heartbeat；
 - `ACTIVE_PAYMENT_ONLY` 收款模式、退役任务 `PENDING/PROCESSING=0`、客户/Admin 无 mutation 入口的核验结果；
@@ -225,17 +236,17 @@ DELIVERY_EVIDENCE_DECISION  = 1
 1. 立即使用第 2 节已核验的预批准停止/事故操作，停止本次 Staging 精确范围内的新验收动作和 Journey enrollment，无需等待新授权；不得扩大到生产应用、普通客户或通配控制目标；
 2. 按同一预批准边界暂停对应 worker/consumer。停止后立即只读 readback，确认没有新增供应商调用或交易；worker 自动恢复不得越过人工 `STOP`、继续供应商调用或产生新交易；
 3. 保留并掩码记录全部 Journey、合同、provider task、支付/退款、callback、job、exception 与批准引用，包括所有在途 `UNKNOWN` 和原交易引用；不扩大 allowlist，不删除或覆盖失败记录；
-4. 先用相同幂等身份在已批准范围内查询供应商与平台权威事实并 reconcile；只有事实已知且原操作批准仍有效时，才可 replay 对应幂等步骤；
-5. 状态为 `UNKNOWN`、回调归属不明或响应丢失时，禁止以新 transaction/contract/payment/refund ID 盲目重试；保留现场并升级人工复核；
+4. 先用相同幂等身份在已批准范围内查询供应商与平台权威事实并 reconcile；只有事实已知且原操作批准仍有效时，才可 replay 已证明幂等的非退款步骤。A 路线商户后台人工退款提交不属于可 replay 步骤；首次提交后只能在另获批准的只读范围内查询同一原支付交易及其退款记录；
+5. 状态为 `UNKNOWN`、回调归属不明或响应丢失时，禁止以新 transaction/contract/payment/refund ID 盲目重试；A 路线人工退款即使取得新批准、沿用同一原支付单或同一退款 ID，也不得第二次提交，只能另获批准后只读查询同一原交易/退款并保留现场、升级人工复核；
 6. 数据库恢复、数据库编辑、应用回滚或重新部署都不能撤销已经发生的实名、签署、归档、通知、支付或退款外部事实；不得靠恢复/改库伪造回退，再以新交易重做；
 7. 若存在重复收费、错误车辆占用、证据错绑、唯一消费者不成立或权威状态不一致，维持 `STOP`，通知回滚负责人并按事故流程处置。
 
-紧急停止只消费窗口前的精确停止批准；任何恢复或新写操作仍须另行批准。恢复前先确认幂等对象数量、原外部引用、账务与归档权威事实，再取得精确 Resume/Retry/replay 批准。不得直接改 Journey 状态“跳步”，也不得让 worker 的自动恢复代替该批准。
+紧急停止只消费窗口前的精确停止批准；任何恢复或新写操作仍须另行批准。恢复前先确认幂等对象数量、原外部引用、账务与归档权威事实，再取得精确 Resume/Retry/replay 批准；该类批准不适用于 A 路线商户后台人工退款再次提交，首次提交或进入 `UNKNOWN` 后始终只能另获批准后只读查询同一原支付交易/退款。不得直接改 Journey 状态“跳步”，也不得让 worker 的自动恢复代替该批准。
 
 ## 12. 收尾
 
 - [ ] A/B 两条通过条件全部满足，证据包已由第二人复核。
-- [ ] 退款与日终对账已完成。
+- [ ] 同一原支付交易的商户退款申请受理、渠道最终成功、平台原付款/核销只读事实、实际财务凭证与日终对账已分别完成并由第二人复核；任何 `PROCESSING`、`UNKNOWN`、账单未生成、凭证未生效或差异未解决均不通过，不能因验收窗口或当日结束而关闭。
 - [ ] 在各自收尾操作批准下，`SUBSCRIPTION_JOURNEY_ENABLED` 恢复为发布决策指定状态；未批准放量时设回 `false`。
 - [ ] 在单独配置操作批准下清空本次精确 allowlist；注意只有同时关闭 `SUBSCRIPTION_JOURNEY_ENABLED` 才能阻止新 enrollment。
 - [ ] worker 对已入组 Journey 的处置策略已记录；无遗留时可按发布决策和独立配置批准关闭。

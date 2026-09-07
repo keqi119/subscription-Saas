@@ -7,6 +7,14 @@ export {
   verifyMigrationCatalog
 } from "./catalogs.mjs";
 export { compileAllSchemas, validateContract } from "./schema-registry.mjs";
+export {
+  encodeManualJson,
+  signManualAuthorization,
+  verifyManualAuthorization,
+  assertManualDecision,
+  verifyManualHandoff,
+  assertManualHandoffDecision
+} from "./manual-stage1-contracts.mjs";
 export { verifyExternalChangeApproval } from "./external-change-approval.mjs";
 export {
   assertVerifiedDispatchAuthorization,

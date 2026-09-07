@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manual-stage1-profile.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profileId",
+    "ownerId",
+    "publicKeyPem",
+    "keyFingerprint",
+    "validFrom",
+    "expiresAt",
+    "buildTrust",
+    "allowedCommands",
+    "allowedTargets",
+    "storage"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "manual-stage1-profile.v1"
+    },
+    "profileId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "ownerId": {
+      "$ref": "#/$defs/label"
+    },
+    "publicKeyPem": {
+      "type": "string"
+    },
+    "keyFingerprint": {
+      "$ref": "#/$defs/digest"
+    },
+    "validFrom": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "expiresAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "buildTrust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "workflow", "sourceRef", "oidcIssuer", "runnerClass"],
+      "properties": {
+        "repository": {
+          "const": "keqi119/subscription-Saas"
+        },
+        "workflow": {
+          "const": "keqi119/subscription-Saas/.github/workflows/docker-images.yml"
+        },
+        "sourceRef": {
+          "const": "refs/heads/main"
+        },
+        "oidcIssuer": {
+          "const": "https://token.actions.githubusercontent.com"
+        },
+        "runnerClass": {
+          "const": "github-hosted"
+        }
+      }
+    },
+    "allowedCommands": {
+      "const": [
+        {
+          "commandId": "db.migrate.deploy",
+          "commandVersion": "1",
+          "capability": "migrate"
+        },
+        {
+          "commandId": "db.schema.verify",
+          "commandVersion": "1",
+          "capability": "verify"
+        }
+      ]
+    },
+    "allowedTargets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["endpointPolicyId", "endpoint", "databaseName", "purposes", "roles", "tls"],
+        "properties": {
+          "endpointPolicyId": {
+            "$ref": "#/$defs/label"
+          },
+          "endpoint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^@/?#\\s]+(?:://[^@/?#\\s]+)?$"
+          },
+          "databaseName": {
+            "$ref": "#/$defs/label"
+          },
+          "purposes": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": ["synthetic-fresh", "staging-mainline"]
+            }
+          },
+          "roles": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["observer", "migrate", "verify"],
+            "properties": {
+              "observer": {
+                "$ref": "#/$defs/label"
+              },
+              "migrate": {
+                "$ref": "#/$defs/label"
+              },
+              "verify": {
+                "$ref": "#/$defs/label"
+              }
+            }
+          },
+          "tls": {
+            "const": "required"
+          }
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keyRoot",
+        "keyRef",
+        "journalRoot",
+        "archiveRoot",
+        "backupRoot",
+        "credentialRoot",
+        "retentionDays"
+      ],
+      "properties": {
+        "keyRoot": {
+          "type": "string",
+          "pattern": "^(?:/[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:/[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*|[A-Za-z]:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*)$",
+          "not": {
+            "pattern": "(?:^|[\\\\/])\\.{1,2}(?:[\\\\/]|$)"
+          }
+        },
+        "keyRef": {
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*$",
+          "not": {
+            "pattern": "(?:^|[\\\\/])\\.{1,2}(?:[\\\\/]|$)"
+          }
+        },
+        "journalRoot": {
+          "type": "string",
+          "pattern": "^(?:/[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:/[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*|[A-Za-z]:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*)$",
+          "not": {
+            "pattern": "(?:^|[\\\\/])\\.{1,2}(?:[\\\\/]|$)"
+          }
+        },
+        "archiveRoot": {
+          "type": "string",
+          "pattern": "^(?:/[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:/[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*|[A-Za-z]:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*)$",
+          "not": {
+            "pattern": "(?:^|[\\\\/])\\.{1,2}(?:[\\\\/]|$)"
+          }
+        },
+        "backupRoot": {
+          "type": "string",
+          "pattern": "^(?:/[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:/[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*|[A-Za-z]:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*)$",
+          "not": {
+            "pattern": "(?:^|[\\\\/])\\.{1,2}(?:[\\\\/]|$)"
+          }
+        },
+        "credentialRoot": {
+          "type": "string",
+          "pattern": "^(?:/[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:/[^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*|[A-Za-z]:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+(?:[\\\\/][^\\u0000-\\u001f\\\\/:?*\"<>|#@%]+)*)$",
+          "not": {
+            "pattern": "(?:^|[\\\\/])\\.{1,2}(?:[\\\\/]|$)"
+          }
+        },
+        "retentionDays": {
+          "const": 180
+        }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}

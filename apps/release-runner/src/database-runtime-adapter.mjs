@@ -6,6 +6,7 @@ import { computeMigrationCatalog, sha256Bytes } from "@subscription-saas/release
 import { runnerError } from "./error-codes.mjs";
 
 const schemaRelativePath = "apps/api/prisma/schema.prisma";
+const configRelativePath = "apps/api/prisma.config.ts";
 
 function assertSchemaPath(schema, repoRoot) {
   const expected = path.resolve(repoRoot, schemaRelativePath);
@@ -13,8 +14,19 @@ function assertSchemaPath(schema, repoRoot) {
   return expected;
 }
 
+function prismaConfigPath(repoRoot) {
+  return path.resolve(repoRoot, configRelativePath);
+}
+
 export function prismaMigrateDeployArgs({ schema, repoRoot = "/app" }) {
-  return ["migrate", "deploy", "--schema", assertSchemaPath(schema, repoRoot)];
+  return [
+    "migrate",
+    "deploy",
+    "--schema",
+    assertSchemaPath(schema, repoRoot),
+    "--config",
+    prismaConfigPath(repoRoot)
+  ];
 }
 
 export function prismaSchemaDiffArgs({ schema, repoRoot = "/app" }) {
@@ -24,19 +36,22 @@ export function prismaSchemaDiffArgs({ schema, repoRoot = "/app" }) {
     "--from-config-datasource",
     "--to-schema",
     assertSchemaPath(schema, repoRoot),
-    "--exit-code"
+    "--exit-code",
+    "--config",
+    prismaConfigPath(repoRoot)
   ];
 }
 
 function prismaSchemaScriptArgs({ schema, repoRoot = "/app" }) {
+  assertSchemaPath(schema, repoRoot);
   return [
     "migrate",
     "diff",
     "--from-empty",
     "--to-config-datasource",
     "--script",
-    "--schema",
-    assertSchemaPath(schema, repoRoot)
+    "--config",
+    prismaConfigPath(repoRoot)
   ];
 }
 

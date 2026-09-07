@@ -22,7 +22,7 @@
       "relatedSuiteId": "api.billing-automation.postgres",
       "status": "must-external-verify",
       "owner": "keqi119",
-      "reason": "本轮专用测试支付优先采用经批准的微信商户后台单次全额原路退款；须核验通知适用性、平台原付款事实、渠道最终结果、既有财务凭证及日终对账。api.billing-automation.postgres 仅为关联，不证明真实退款或平台自动退款能力；路线不适用时付款前停止。",
+      "reason": "退款为独立人工资金收尾：经独立批准在微信商户平台退款管理按商户订单号或微信支付订单号关联原交易，单次全额原路退款并核验渠道终态、平台原付款只读事实、财务凭证及日终对账；不作为 Stage 1 实施、候选提升或主线验收签字前置。未执行或缺证据仍未通过，不改为 N/A；api.billing-automation.postgres 仅为关联，不证明真实退款或平台自动退款/余额冲回，不开发退款 API、不配置退款 notify URL、不修改支付 callback。",
       "reviewDate": "2026-09-07"
     },
     {

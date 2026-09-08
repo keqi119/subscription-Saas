@@ -983,6 +983,11 @@ function authorizeMatches(frame, request, authorization, challenge) {
   same(p.allocation, request, A);
   requireThat(sha256Canonical(p.allocation) === request.attemptAllocationDigest, MISMATCH);
   same(p.process, request, A);
+  const launches = p.process.events.filter(
+    (event) => event.source === "parent" && event.tool === "runner" && event.event === "SPAWNED"
+  );
+  requireThat(launches.length === 1 && launches[0].processSequence === 0, MISMATCH);
+  same(launches[0], request, ["containerId"]);
   requireThat(
     p.process.requestDigest === sha256Canonical(request) &&
       p.process.attemptAllocationDigest === request.attemptAllocationDigest &&
@@ -2400,6 +2405,15 @@ function classifyRunner(request, graph, base, result, observed, consumption, pos
       requireThat(
         plan !== null && originalRequest.approvedPlanDigest === deterministicPlanDigest(plan)
       );
+      // Recovery reads the original approved plan; only the capability-derived
+      // connection fingerprint is independently checked against the current role.
+      same(request.domainInput, plan.identity, [
+        "baselineManifestIdentityDigest",
+        "baselineManifestDigest",
+        "expectedSchemaDigest",
+        "expectedOwner",
+        "allowedExtensions"
+      ]);
       if (request.phase === "replay") {
         originalAssessment = classify(originalRequest, graph);
         requireThat(

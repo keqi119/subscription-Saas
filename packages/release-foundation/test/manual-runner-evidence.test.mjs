@@ -450,6 +450,9 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   const root = previous?.root ?? observeFixture();
   const shared = previous?.shared ?? buildFixture(root, options.report);
   const { archive } = root;
+  const expectation = options.expectationScript
+    ? { ...shared.expectation, script: archive.raw(Buffer.from(options.expectationScript)) }
+    : shared.expectation;
   const step = { "dry-run": 1, apply: 2, verify: 3, replay: 4, reconcile: 5 }[phase];
   const n = 20 + step * 100;
   const request = requestFixture(phase);
@@ -464,7 +467,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
       tls: true,
       schemaObservationDigest: sha256Canonical(root.catalog)
     },
-    expectedSchemaEvidenceDigest: archive.add(shared.expectation),
+    expectedSchemaEvidenceDigest: archive.add(expectation),
     containerId: String(step).repeat(64),
     childChallenge: String(step + 1).repeat(64)
   });
@@ -472,7 +475,8 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     ...request.domainInput,
     baselineManifestIdentityDigest: sha256Canonical(shared.baseline.identity),
     baselineManifestDigest: request.baselineManifestDigest,
-    expectedSchemaDigest: shared.expectation.script.digest
+    expectedSchemaDigest: expectation.script.digest,
+    ...options.domainDrift
   };
   if (phase === "apply") {
     request.dryRunRecordDigest = archive.add(previous.execution);
@@ -565,7 +569,10 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   }
   event("runner", "PREPARED", n + 1, 0, runnerArgv);
   const nullRoot = snapshot(n + 1, null);
-  event("runner", "SPAWNED", n + 2, 0, runnerArgv, { pid: 1000 + step });
+  event("runner", "SPAWNED", n + 2, 0, runnerArgv, {
+    pid: 1000 + step,
+    containerId: options.initialContainerId ?? request.containerId
+  });
   frame("CHALLENGE", { childChallenge: request.childChallenge });
   snapshot(n + 2, null);
   const bound = snapshot(n + 3);
@@ -769,7 +776,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
           "--config",
           config
         ],
-        archive.raws.get(shared.expectation.script.digest)
+        archive.raws.get(expectation.script.digest)
       ],
       [
         "prisma-diff",
@@ -810,6 +817,9 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   const process = last;
   const entries = shared.migrationCatalog.entries;
   const catalog = structuredClone(root.catalog);
+  if (options.domainDrift?.expectedOwner) catalog.schemaOwner = options.domainDrift.expectedOwner;
+  if (options.domainDrift?.allowedExtensions)
+    catalog.extensions = [...options.domainDrift.allowedExtensions];
   if (phase !== "dry-run" && !options.emptyRows) {
     catalog.migrationTableOid = "456";
     catalog.migrationRows = entries.slice(0, options.partial ? 1 : 2).map((entry, i) => ({
@@ -839,10 +849,10 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
           catalogDigest: shared.migrationCatalog.digest,
           migrationHead: entries.at(-1).path.split("/").at(-2),
           migrationChecksums: entries,
-          schemaDigest: shared.expectation.script.digest,
-          schemaOwner: "test-owner",
+          schemaDigest: expectation.script.digest,
+          schemaOwner: catalog.schemaOwner,
           ownerInventory: [],
-          extensions: ["plpgsql"],
+          extensions: catalog.extensions,
           schemaDiff: { exitCode: 0, stdout: "" },
           toolVersions: versions,
           statementLogDigest: sha256Canonical(statements),
@@ -2242,4 +2252,91 @@ test("review3 unique arrays preserve different items and an unfinished matching 
     head = text.slice(0, text.indexOf(marker) + marker.length);
   for (const suffix of ['"hstore","plpgsql",', '"plpgsql","plpgsql', '"plpgsql","plpgsql_extra",'])
     assert.equal(f.parse(Buffer.from(head + suffix), 8000).frames.length, 4);
+});
+
+for (const phase of ["reconcile", "replay"]) {
+  for (const [field, options] of [
+    ["expectedOwner", { domainDrift: { expectedOwner: "changed-owner" } }],
+    ["allowedExtensions", { domainDrift: { allowedExtensions: ["hstore", "plpgsql"] } }],
+    ["expectedSchemaDigest", { expectationScript: "CREATE TABLE changed_target(id int);\n" }]
+  ]) {
+    test(`user-review ${phase} rejects current ${field} drift from the original approved plan`, () => {
+      const dry = runnerFixture(),
+        original = runnerFixture(
+          "apply",
+          dry,
+          phase === "reconcile" ? { unknown: true, missingResult: true, deployExit: 1 } : {}
+        );
+      const originals = [...original.archive.artifacts].map(([digest, value]) => [
+        digest,
+        encodeManualJson(value)
+      ]);
+      const current = runnerFixture(phase, original, options);
+      for (const [digest, bytes] of originals)
+        assert.deepEqual(encodeManualJson(current.archive.artifacts.get(digest)), bytes);
+      assert.notDeepEqual(current.request.domainInput[field], dry.result.plan.identity[field]);
+      assert.equal(current.request.buildProofDigest, original.request.buildProofDigest);
+      assert.equal(current.request.baselineManifestDigest, original.request.baselineManifestDigest);
+      assert.throws(() => assessManualRunnerEvidence(current.archive.input(current.request)), {
+        code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+      });
+    });
+  }
+
+  test(`user-review unchanged ${phase} preserves the original approved plan`, () => {
+    const dry = runnerFixture(),
+      original = runnerFixture(
+        "apply",
+        dry,
+        phase === "reconcile" ? { unknown: true, missingResult: true, deployExit: 1 } : {}
+      );
+    const current = runnerFixture(phase, original);
+    const actual = assessManualRunnerEvidence(current.archive.input(current.request));
+    assert.equal(actual.executionStatus, "SUCCEEDED");
+    assert.equal(actual.originalDatabaseOutcome, "committed");
+    assert.equal(actual.planDigest, deterministicPlanDigest(dry.result.plan));
+  });
+}
+
+test("user-review live ACK refuses a different initial container after coherent digest repairs", () => {
+  const genuine = runnerFixture(),
+    altered = runnerFixture("dry-run", null, { initialContainerId: "f".repeat(64) });
+  const live = altered.liveInputs[0],
+    authorize = fixtureDecode(live.parentFrameBytes[0]);
+  assert.deepEqual(live.requestBytes, genuine.liveInputs[0].requestBytes);
+  assert.deepEqual(live.authorizationBytes, genuine.liveInputs[0].authorizationBytes);
+  assert.equal(authorize.payload.launchContext.containerId, altered.request.containerId);
+  assert.equal(authorize.payload.process.events[1].containerId, "f".repeat(64));
+  assert.equal(
+    authorize.payload.processReadback.subjectDigest,
+    sha256Canonical(authorize.payload.process)
+  );
+  assert.equal(
+    authorize.payload.processReadback.observedDigest,
+    sha256Canonical(authorize.payload.process)
+  );
+  assert.throws(() => validateManualRunnerProtocol(live), {
+    code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+  });
+});
+
+test("user-review live ACK preserves the valid initial launch binding", () => {
+  assert.equal(validateManualRunnerProtocol(runnerFixture().liveInputs[0]), undefined);
+});
+
+test("user-review verify preserves the approved capability role fingerprint difference", () => {
+  const original = runnerFixture("apply", runnerFixture());
+  const current = runnerFixture("verify", original, {
+    freshVerifyOperation: true,
+    changedSession: true
+  });
+  assert.equal(original.request.roleObservation.role, "test-migrate");
+  assert.equal(current.request.roleObservation.role, "test-verify");
+  assert.notEqual(
+    current.request.domainInput.databaseIdentityFingerprint,
+    original.request.domainInput.databaseIdentityFingerprint
+  );
+  const actual = assessManualRunnerEvidence(current.archive.input(current.request));
+  assert.equal(actual.executionStatus, "SUCCEEDED");
+  assert.equal(actual.originalDatabaseOutcome, "not-applicable");
 });

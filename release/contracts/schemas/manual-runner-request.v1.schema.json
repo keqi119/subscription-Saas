@@ -1,0 +1,605 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manual-runner-request.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profileDigest",
+    "ownerId",
+    "sessionId",
+    "sessionNonce",
+    "operationId",
+    "idempotencyKey",
+    "purpose",
+    "targetIntent",
+    "stage",
+    "capability",
+    "attemptId",
+    "runId",
+    "attemptAllocationDigest"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "manual-runner-request.v1"
+    },
+    "profileDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "ownerId": {
+      "$ref": "#/$defs/label"
+    },
+    "sessionId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "sessionNonce": {
+      "$ref": "#/$defs/nonce"
+    },
+    "operationId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "idempotencyKey": {
+      "$ref": "#/$defs/label"
+    },
+    "purpose": {
+      "enum": ["synthetic-fresh", "staging-mainline"]
+    },
+    "targetIntent": {
+      "$ref": "#/$defs/targetIntent"
+    },
+    "stage": {
+      "enum": ["target-observe", "runner-command"]
+    },
+    "capability": {
+      "enum": ["verify", "migrate"]
+    },
+    "commandVersion": {
+      "const": "1"
+    },
+    "buildProofDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "baselineManifestDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "targetObservationDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "physicalIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpointPolicyId", "databaseName", "databaseOid", "clusterFingerprint"],
+      "properties": {
+        "endpointPolicyId": {
+          "$ref": "#/$defs/label"
+        },
+        "databaseName": {
+          "$ref": "#/$defs/label"
+        },
+        "databaseOid": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "clusterFingerprint": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "roleObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "tls", "schemaObservationDigest"],
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/label"
+        },
+        "tls": {
+          "const": true
+        },
+        "schemaObservationDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "containerId": {
+      "$ref": "#/$defs/nonce"
+    },
+    "runnerImageDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "childChallenge": {
+      "$ref": "#/$defs/nonce"
+    },
+    "phase": {
+      "enum": ["dry-run", "apply", "replay", "reconcile", "verify"]
+    },
+    "commandId": {
+      "enum": ["db.migrate.deploy", "db.schema.verify"]
+    },
+    "dryRunRecordDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "approvedPlanDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "predecessorExecutionRecordDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "originalIdempotencyKey": {
+      "$ref": "#/$defs/label"
+    },
+    "attemptId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "runId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "attemptAllocationDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "domainInput": {
+      "$ref": "#/$defs/domainInput"
+    },
+    "expectedSchemaEvidenceDigest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "stage": {
+          "const": "target-observe"
+        },
+        "capability": {
+          "const": "verify"
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": ["commandId"],
+            "properties": {
+              "commandId": true
+            }
+          },
+          {
+            "required": ["commandVersion"],
+            "properties": {
+              "commandVersion": true
+            }
+          },
+          {
+            "required": ["phase"],
+            "properties": {
+              "phase": true
+            }
+          },
+          {
+            "required": ["buildProofDigest"],
+            "properties": {
+              "buildProofDigest": true
+            }
+          },
+          {
+            "required": ["baselineManifestDigest"],
+            "properties": {
+              "baselineManifestDigest": true
+            }
+          },
+          {
+            "required": ["targetObservationDigest"],
+            "properties": {
+              "targetObservationDigest": true
+            }
+          },
+          {
+            "required": ["physicalIdentity"],
+            "properties": {
+              "physicalIdentity": true
+            }
+          },
+          {
+            "required": ["roleObservation"],
+            "properties": {
+              "roleObservation": true
+            }
+          },
+          {
+            "required": ["containerId"],
+            "properties": {
+              "containerId": true
+            }
+          },
+          {
+            "required": ["runnerImageDigest"],
+            "properties": {
+              "runnerImageDigest": true
+            }
+          },
+          {
+            "required": ["childChallenge"],
+            "properties": {
+              "childChallenge": true
+            }
+          },
+          {
+            "required": ["dryRunRecordDigest"],
+            "properties": {
+              "dryRunRecordDigest": true
+            }
+          },
+          {
+            "required": ["approvedPlanDigest"],
+            "properties": {
+              "approvedPlanDigest": true
+            }
+          },
+          {
+            "required": ["predecessorExecutionRecordDigest"],
+            "properties": {
+              "predecessorExecutionRecordDigest": true
+            }
+          },
+          {
+            "required": ["originalIdempotencyKey"],
+            "properties": {
+              "originalIdempotencyKey": true
+            }
+          },
+          {
+            "required": ["domainInput"],
+            "properties": {
+              "domainInput": true
+            }
+          },
+          {
+            "required": ["expectedSchemaEvidenceDigest"],
+            "properties": {
+              "expectedSchemaEvidenceDigest": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "stage": {
+          "const": "runner-command"
+        },
+        "commandId": true,
+        "commandVersion": true,
+        "phase": true,
+        "buildProofDigest": true,
+        "baselineManifestDigest": true,
+        "targetObservationDigest": true,
+        "physicalIdentity": true,
+        "roleObservation": true,
+        "containerId": true,
+        "runnerImageDigest": true,
+        "childChallenge": true,
+        "domainInput": true,
+        "expectedSchemaEvidenceDigest": true
+      },
+      "required": [
+        "commandId",
+        "commandVersion",
+        "phase",
+        "buildProofDigest",
+        "baselineManifestDigest",
+        "targetObservationDigest",
+        "physicalIdentity",
+        "roleObservation",
+        "containerId",
+        "runnerImageDigest",
+        "childChallenge",
+        "domainInput",
+        "expectedSchemaEvidenceDigest"
+      ],
+      "oneOf": [
+        {
+          "properties": {
+            "phase": {
+              "const": "dry-run"
+            },
+            "commandId": {
+              "const": "db.migrate.deploy"
+            },
+            "capability": {
+              "const": "migrate"
+            }
+          },
+          "not": {
+            "anyOf": [
+              {
+                "required": ["dryRunRecordDigest"],
+                "properties": {
+                  "dryRunRecordDigest": true
+                }
+              },
+              {
+                "required": ["approvedPlanDigest"],
+                "properties": {
+                  "approvedPlanDigest": true
+                }
+              },
+              {
+                "required": ["predecessorExecutionRecordDigest"],
+                "properties": {
+                  "predecessorExecutionRecordDigest": true
+                }
+              },
+              {
+                "required": ["originalIdempotencyKey"],
+                "properties": {
+                  "originalIdempotencyKey": true
+                }
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "phase": {
+              "const": "apply"
+            },
+            "commandId": {
+              "const": "db.migrate.deploy"
+            },
+            "capability": {
+              "const": "migrate"
+            },
+            "dryRunRecordDigest": true,
+            "approvedPlanDigest": true
+          },
+          "required": ["dryRunRecordDigest", "approvedPlanDigest"],
+          "not": {
+            "anyOf": [
+              {
+                "required": ["predecessorExecutionRecordDigest"],
+                "properties": {
+                  "predecessorExecutionRecordDigest": true
+                }
+              },
+              {
+                "required": ["originalIdempotencyKey"],
+                "properties": {
+                  "originalIdempotencyKey": true
+                }
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "phase": {
+              "const": "replay"
+            },
+            "commandId": {
+              "const": "db.migrate.deploy"
+            },
+            "capability": {
+              "const": "migrate"
+            },
+            "predecessorExecutionRecordDigest": true,
+            "originalIdempotencyKey": true
+          },
+          "required": ["predecessorExecutionRecordDigest", "originalIdempotencyKey"],
+          "not": {
+            "anyOf": [
+              {
+                "required": ["dryRunRecordDigest"],
+                "properties": {
+                  "dryRunRecordDigest": true
+                }
+              },
+              {
+                "required": ["approvedPlanDigest"],
+                "properties": {
+                  "approvedPlanDigest": true
+                }
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "phase": {
+              "const": "reconcile"
+            },
+            "commandId": {
+              "const": "db.migrate.deploy"
+            },
+            "capability": {
+              "const": "migrate"
+            },
+            "predecessorExecutionRecordDigest": true,
+            "originalIdempotencyKey": true
+          },
+          "required": ["predecessorExecutionRecordDigest", "originalIdempotencyKey"],
+          "not": {
+            "anyOf": [
+              {
+                "required": ["dryRunRecordDigest"],
+                "properties": {
+                  "dryRunRecordDigest": true
+                }
+              },
+              {
+                "required": ["approvedPlanDigest"],
+                "properties": {
+                  "approvedPlanDigest": true
+                }
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "phase": {
+              "const": "verify"
+            },
+            "commandId": {
+              "const": "db.schema.verify"
+            },
+            "capability": {
+              "const": "verify"
+            }
+          },
+          "not": {
+            "anyOf": [
+              {
+                "required": ["dryRunRecordDigest"],
+                "properties": {
+                  "dryRunRecordDigest": true
+                }
+              },
+              {
+                "required": ["approvedPlanDigest"],
+                "properties": {
+                  "approvedPlanDigest": true
+                }
+              },
+              {
+                "required": ["originalIdempotencyKey"],
+                "properties": {
+                  "originalIdempotencyKey": true
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "targetIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpointPolicyId", "databaseName"],
+      "properties": {
+        "endpointPolicyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "databaseName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "physicalIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpointPolicyId", "databaseName", "databaseOid", "clusterFingerprint"],
+      "properties": {
+        "endpointPolicyId": {
+          "$ref": "#/$defs/label"
+        },
+        "databaseName": {
+          "$ref": "#/$defs/label"
+        },
+        "databaseOid": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "clusterFingerprint": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "roleObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "tls", "schemaObservationDigest"],
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/label"
+        },
+        "tls": {
+          "const": true
+        },
+        "schemaObservationDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "integer": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "error": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+    },
+    "report": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1048576
+    },
+    "domainInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "databaseIdentityFingerprint",
+        "baselineManifestIdentityDigest",
+        "baselineManifestDigest",
+        "expectedSchemaDigest",
+        "expectedOwner",
+        "allowedExtensions"
+      ],
+      "properties": {
+        "databaseIdentityFingerprint": {
+          "$ref": "#/$defs/digest"
+        },
+        "baselineManifestIdentityDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "baselineManifestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "expectedSchemaDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "expectedOwner": {
+          "$ref": "#/$defs/label"
+        },
+        "allowedExtensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/label"
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

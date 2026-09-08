@@ -102,3 +102,10 @@ export {
   assertSnapshotSchemaDiffResult,
   restoreSanitizedSnapshot
 } from "./snapshot/restore-sanitized.mjs";
+export {
+  validateManualRunnerRequest,
+  assessManualRunnerEvidence,
+  encodeManualRunnerFrame,
+  parseManualRunnerFrames,
+  validateManualRunnerProtocol
+} from "./manual-runner-evidence.mjs";

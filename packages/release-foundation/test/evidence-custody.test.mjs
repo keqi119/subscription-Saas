@@ -409,6 +409,28 @@ test("new custody rejects 89-day facts, invalid dates, and delayed content or re
   );
 });
 
+test("new custody rejects receipt retention whose 90-day minimum overflows", async () => {
+  const storage = memoryStore({
+    createMetadata: ({ key }) =>
+      key.startsWith("receipts/")
+        ? {
+            storedAt: "+275760-09-13T00:00:00.000Z",
+            retainUntil: "2026-12-01T08:00:00.000Z"
+          }
+        : {}
+  });
+  await assert.rejects(
+    custodyEvidence(
+      fixture({
+        policy: { ...policy, retentionDays: 90 },
+        receiptContract: receipt90Contract,
+        storage
+      })
+    ),
+    { code: "EVIDENCE_STORAGE_RECEIPT_INVALID" }
+  );
+});
+
 test("new custody independently rejects content and receipt byte readback failures", async () => {
   for (const missingRead of [1, 2]) {
     const storage = memoryStore();

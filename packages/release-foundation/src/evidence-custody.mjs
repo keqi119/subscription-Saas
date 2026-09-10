@@ -152,6 +152,7 @@ function assertStoredFacts(
       ? result.retainUntil !== expectedRetainUntil
       : !isCanonicalTimestamp(result.storedAt) ||
         !isCanonicalTimestamp(result.retainUntil) ||
+        !Number.isFinite(retentionMinimum) ||
         retainUntil < retentionMinimum ||
         retainUntil < (minimumRetainUntil ?? 0))
   ) {

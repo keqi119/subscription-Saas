@@ -1,0 +1,1221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manual-operation-record.v2",
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "targetIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpointPolicyId", "databaseName"],
+      "properties": {
+        "endpointPolicyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "databaseName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "errorCode": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "sessionId",
+        "sessionNonce",
+        "ownerId",
+        "targetIntent",
+        "status",
+        "openedAt",
+        "previousSessionRecordDigest",
+        "reasonCode"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v2"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "session"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "ownerId": {
+          "$ref": "#/$defs/label"
+        },
+        "targetIntent": {
+          "$ref": "#/$defs/targetIntent"
+        },
+        "status": {
+          "enum": ["OPEN", "CLOSED", "INTERRUPTED_UNKNOWN"]
+        },
+        "openedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "previousSessionRecordDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/errorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "OPEN"
+            },
+            "previousSessionRecordDigest": {
+              "type": "null"
+            },
+            "reasonCode": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "CLOSED"
+            },
+            "previousSessionRecordDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "reasonCode": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "INTERRUPTED_UNKNOWN"
+            },
+            "previousSessionRecordDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "reasonCode": {
+              "$ref": "#/$defs/errorCode"
+            }
+          }
+        }
+      ]
+    },
+    "revocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "ownerId",
+        "sequence",
+        "previousRevocationDigest",
+        "action",
+        "authorizationId",
+        "reasonCode"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v2"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "revocation"
+        },
+        "ownerId": {
+          "$ref": "#/$defs/label"
+        },
+        "sequence": {
+          "$ref": "#/$defs/sequence"
+        },
+        "previousRevocationDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "action": {
+          "enum": ["GENESIS", "REVOKE_AUTHORIZATION", "REVOKE_PROFILE"]
+        },
+        "authorizationId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/errorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "action": {
+              "const": "GENESIS"
+            },
+            "sequence": {
+              "const": 0
+            },
+            "previousRevocationDigest": {
+              "type": "null"
+            },
+            "authorizationId": {
+              "type": "null"
+            },
+            "reasonCode": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "REVOKE_AUTHORIZATION"
+            },
+            "sequence": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "previousRevocationDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "authorizationId": {
+              "$ref": "#/$defs/uuid"
+            },
+            "reasonCode": {
+              "$ref": "#/$defs/errorCode"
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "REVOKE_PROFILE"
+            },
+            "sequence": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "previousRevocationDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "authorizationId": {
+              "type": "null"
+            },
+            "reasonCode": {
+              "$ref": "#/$defs/errorCode"
+            }
+          }
+        }
+      ]
+    },
+    "consumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "ownerId",
+        "authorizationDigest",
+        "requestDigest",
+        "stage",
+        "sessionRecordDigest",
+        "revocationRecordDigest",
+        "revocationSequence",
+        "status"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v2"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "consumption"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/label"
+        },
+        "ownerId": {
+          "$ref": "#/$defs/label"
+        },
+        "authorizationDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "stage": {
+          "enum": ["target-observe", "runner-command"]
+        },
+        "sessionRecordDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "revocationRecordDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "revocationSequence": {
+          "$ref": "#/$defs/sequence"
+        },
+        "status": {
+          "const": "CONSUMED"
+        }
+      }
+    },
+    "consumption-handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "authorizationDigest",
+        "requestDigest",
+        "containerId",
+        "runnerImageDigest",
+        "childChallenge",
+        "consumptionRecordDigest",
+        "consumptionReadbackDigest",
+        "revocationSequence",
+        "issuedAt",
+        "expiresAt",
+        "signature"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v2"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "consumption-handoff"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/label"
+        },
+        "authorizationDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "containerId": {
+          "$ref": "#/$defs/nonce"
+        },
+        "runnerImageDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "childChallenge": {
+          "$ref": "#/$defs/nonce"
+        },
+        "consumptionRecordDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "consumptionReadbackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "revocationSequence": {
+          "$ref": "#/$defs/sequence"
+        },
+        "issuedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "signature": {
+          "type": "string"
+        }
+      }
+    },
+    "post-state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "requestDigest",
+        "consumptionRecordDigest",
+        "outcome",
+        "observationDigest",
+        "observedAt",
+        "reasonCode"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v2"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "post-state"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/label"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "consumptionRecordDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "outcome": {
+          "enum": ["OBSERVED", "UNAVAILABLE"]
+        },
+        "observationDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/errorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "outcome": {
+              "const": "OBSERVED"
+            },
+            "observationDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "observedAt": {
+              "$ref": "#/$defs/timestamp"
+            },
+            "reasonCode": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "outcome": {
+              "const": "UNAVAILABLE"
+            },
+            "observationDigest": {
+              "type": "null"
+            },
+            "observedAt": {
+              "type": "null"
+            },
+            "reasonCode": {
+              "$ref": "#/$defs/errorCode"
+            }
+          }
+        }
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "attemptId",
+        "requestDigest",
+        "authorizationDigest",
+        "consumptionRecordDigest",
+        "handoffRecordDigest",
+        "handoffReadbackDigest",
+        "postStateRecordDigest",
+        "predecessorExecutionRecordDigest",
+        "startedAt",
+        "finishedAt",
+        "status",
+        "reasonCode",
+        "resultDigest",
+        "processEvidenceDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v2"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "execution"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/label"
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "authorizationDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "consumptionRecordDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "handoffRecordDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "handoffReadbackDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "postStateRecordDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "predecessorExecutionRecordDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": ["PREFLIGHT_REJECTED", "FAILED", "SUCCEEDED", "INTERRUPTED_UNKNOWN"]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/errorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resultDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "processEvidenceDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "PREFLIGHT_REJECTED"
+            },
+            "reasonCode": {
+              "$ref": "#/$defs/errorCode"
+            },
+            "startedAt": {
+              "type": "null"
+            },
+            "finishedAt": {
+              "type": "null"
+            },
+            "resultDigest": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "FAILED"
+            },
+            "reasonCode": {
+              "$ref": "#/$defs/errorCode"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "SUCCEEDED"
+            },
+            "reasonCode": {
+              "type": "null"
+            },
+            "startedAt": {
+              "$ref": "#/$defs/timestamp"
+            },
+            "finishedAt": {
+              "$ref": "#/$defs/timestamp"
+            },
+            "authorizationDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "consumptionRecordDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "postStateRecordDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "resultDigest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "INTERRUPTED_UNKNOWN"
+            },
+            "reasonCode": {
+              "$ref": "#/$defs/errorCode"
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "FAILED"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "properties": {
+                  "resultDigest": {
+                    "$ref": "#/$defs/digest"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "processEvidenceDigest": {
+                    "$ref": "#/$defs/digest"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "SUCCEEDED"
+              }
+            }
+          },
+          "then": {
+            "oneOf": [
+              {
+                "properties": {
+                  "handoffRecordDigest": {
+                    "type": "null"
+                  },
+                  "handoffReadbackDigest": {
+                    "type": "null"
+                  },
+                  "processEvidenceDigest": {
+                    "type": "null"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "handoffRecordDigest": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "handoffReadbackDigest": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "processEvidenceDigest": {
+                    "$ref": "#/$defs/digest"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "custody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "ownerId",
+        "subjectDigest",
+        "subjectType",
+        "purpose",
+        "outcome",
+        "observedDigest",
+        "observedAt",
+        "storageRole",
+        "retentionDays",
+        "reasonCode"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v2"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "custody"
+        },
+        "ownerId": {
+          "$ref": "#/$defs/label"
+        },
+        "subjectDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "subjectType": {
+          "enum": ["profile", "authorization", "record", "r2-artifact"]
+        },
+        "purpose": {
+          "enum": [
+            "consumption-readback",
+            "handoff-readback",
+            "archive-readback",
+            "backup-readback",
+            "owner-acknowledgement"
+          ]
+        },
+        "outcome": {
+          "enum": ["MATCH", "FAILED", "UNKNOWN"]
+        },
+        "observedDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "storageRole": {
+          "enum": ["journal", "archive", "backup"]
+        },
+        "retentionDays": {
+          "const": 90
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/errorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "outcome": {
+              "const": "MATCH"
+            },
+            "observedDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "observedAt": {
+              "$ref": "#/$defs/timestamp"
+            },
+            "reasonCode": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "outcome": {
+              "enum": ["FAILED", "UNKNOWN"]
+            },
+            "reasonCode": {
+              "$ref": "#/$defs/errorCode"
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "consumption-readback"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "storageRole": {
+                "const": "journal"
+              },
+              "subjectType": {
+                "const": "record"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "handoff-readback"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "storageRole": {
+                "const": "archive"
+              },
+              "subjectType": {
+                "const": "record"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "archive-readback"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "storageRole": {
+                "const": "archive"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "backup-readback"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "storageRole": {
+                "const": "backup"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "signoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "ownerId",
+        "executionRecordDigest",
+        "executionReadbackDigest",
+        "backupReadbackDigest",
+        "decision",
+        "reasonCode"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v2"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "signoff"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/label"
+        },
+        "ownerId": {
+          "$ref": "#/$defs/label"
+        },
+        "executionRecordDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "executionReadbackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "backupReadbackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "decision": {
+          "enum": ["ACCEPTED", "REJECTED"]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/errorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "decision": {
+              "const": "ACCEPTED"
+            },
+            "reasonCode": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "decision": {
+              "const": "REJECTED"
+            },
+            "reasonCode": {
+              "$ref": "#/$defs/errorCode"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/session"
+    },
+    {
+      "$ref": "#/$defs/revocation"
+    },
+    {
+      "$ref": "#/$defs/consumption"
+    },
+    {
+      "$ref": "#/$defs/consumption-handoff"
+    },
+    {
+      "$ref": "#/$defs/post-state"
+    },
+    {
+      "$ref": "#/$defs/execution"
+    },
+    {
+      "$ref": "#/$defs/custody"
+    },
+    {
+      "$ref": "#/$defs/signoff"
+    }
+  ]
+}

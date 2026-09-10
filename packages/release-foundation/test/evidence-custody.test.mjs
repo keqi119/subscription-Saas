@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   assertCustodyComplete,
   assertCustodyDeletionAllowed,
   canonicalJson,
+  compileAllSchemas,
   custodyEvidence,
   redactEvidence,
   sha256Bytes,
@@ -20,16 +22,23 @@ const policy = {
   retentionDays: 180,
   expiryDisposition: "review"
 };
+const receipt90Contract = "custody-receipt.retention90.v1";
 
-function memoryStore(overrides = {}) {
+function memoryStore({ createMetadata, ...overrides } = {}) {
   const objects = new Map();
+  const metadata = new Map();
   const reads = [];
+  const metadataReads = [];
+  const createResponses = new Map();
   return {
     trustPolicy: "immutable-content-addressed/v1",
     writerIdentity: "protected-ci-writer",
     auditReaderIdentity: "audit-reader",
     objects,
+    metadata,
     reads,
+    metadataReads,
+    createResponses,
     async createOnly({ key, bytes, requestedAt, retainUntil }) {
       if (objects.has(key)) {
         throw Object.assign(new Error("EVIDENCE_OVERWRITE_REFUSED"), {
@@ -37,20 +46,62 @@ function memoryStore(overrides = {}) {
         });
       }
       objects.set(key, Buffer.from(bytes));
-      return {
+      const response = {
         storeRef: `memory://${key}`,
         created: true,
         contentSizeBytes: Buffer.byteLength(bytes),
         storedAt: requestedAt,
-        retainUntil
+        retainUntil,
+        ...(createMetadata?.({ key, bytes, requestedAt, retainUntil }) ?? {})
       };
+      createResponses.set(key, response);
+      metadata.set(key, {
+        storeRef: response.storeRef,
+        contentSizeBytes: response.contentSizeBytes,
+        storedAt: response.storedAt,
+        retainUntil: response.retainUntil
+      });
+      return response;
     },
     async read({ key, identity }) {
       reads.push({ key, identity });
       return objects.get(key);
     },
+    async readMetadata({ key, identity }) {
+      metadataReads.push({ key, identity });
+      return metadata.get(key);
+    },
     ...overrides
   };
+}
+
+function readSchema(schemaId) {
+  return JSON.parse(
+    readFileSync(
+      new URL(`../../../release/contracts/schemas/${schemaId}.schema.json`, import.meta.url)
+    )
+  );
+}
+
+function normalizeForwardSchema(schema) {
+  const normalized = structuredClone(schema);
+  delete normalized.$id;
+  const visit = (value) => {
+    if (value === null || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value.properties?.schemaVersion?.const === "string") {
+      value.properties.schemaVersion.const = "<schema-version>";
+    }
+    if (value.properties?.retentionDays?.const === 90) {
+      value.properties.retentionDays.const = 180;
+    }
+    Object.values(value).forEach(visit);
+  };
+  visit(normalized);
+  return normalized;
 }
 
 function fixture(overrides = {}) {
@@ -109,8 +160,388 @@ test("uploads content by digest and verifies content and receipt through audit r
     input.storage.reads.map(({ identity }) => identity),
     ["audit-reader", "audit-reader"]
   );
+  assert.deepEqual(input.storage.metadataReads, []);
   assert.doesNotThrow(() => validateContract("custody-receipt.v1", receipt));
   assert.doesNotThrow(() => assertCustodyComplete(receipt, receipt.contentDigest));
+});
+
+test("forward schemas preserve every legacy constraint except version and fixed retention", () => {
+  for (const [legacyId, forwardId] of [
+    ["manual-stage1-profile.v1", "manual-stage1-profile.v2"],
+    ["manual-operation-record.v1", "manual-operation-record.v2"],
+    ["custody-receipt.v1", receipt90Contract]
+  ]) {
+    assert.deepEqual(
+      normalizeForwardSchema(readSchema(forwardId)),
+      normalizeForwardSchema(readSchema(legacyId))
+    );
+  }
+  assert.equal(
+    readSchema("manual-stage1-profile.v2").properties.storage.properties.retentionDays.const,
+    90
+  );
+  assert.equal(
+    readSchema("manual-operation-record.v2").$defs.custody.properties.retentionDays.const,
+    90
+  );
+  const { schemaIds } = compileAllSchemas();
+  for (const schemaId of [
+    "manual-stage1-profile.v2",
+    "manual-operation-record.v2",
+    receipt90Contract
+  ]) {
+    assert.ok(schemaIds.includes(schemaId));
+  }
+});
+
+test("new custody requires explicit 90-day contract and never upgrades legacy input", async () => {
+  const options = { receiptContract: receipt90Contract };
+  const receipt = await custodyEvidence(
+    fixture({
+      policy: { ...policy, retentionDays: 90 },
+      ...options
+    })
+  );
+  validateContract(options.receiptContract, receipt);
+  assertCustodyComplete(receipt, receipt.contentDigest, options);
+  assert.throws(() => assertCustodyComplete(receipt, receipt.contentDigest), {
+    code: "CUSTODY_RECEIPT_INCOMPLETE"
+  });
+  const old = await custodyEvidence(fixture());
+  assert.throws(() => assertCustodyComplete(old, old.contentDigest, options), {
+    code: "CUSTODY_RECEIPT_INCOMPLETE"
+  });
+});
+
+test("custody selectors and option objects are closed and policy types cannot be crossed", async () => {
+  const old = await custodyEvidence(fixture());
+  assert.throws(
+    () =>
+      redactEvidence({ result: "safe" }, policy, {
+        receiptContract: "custody-receipt.v1",
+        retentionDays: 90
+      }),
+    { code: "EVIDENCE_CUSTODY_INPUT_INVALID" }
+  );
+  assert.throws(
+    () =>
+      assertCustodyComplete(old, old.contentDigest, {
+        receiptContract: "custody-receipt.v1",
+        unknown: true
+      }),
+    { code: "EVIDENCE_CUSTODY_INPUT_INVALID" }
+  );
+  await assert.rejects(custodyEvidence(fixture({ receiptContract: "custody-receipt.v2" })), {
+    code: "EVIDENCE_CUSTODY_INPUT_INVALID"
+  });
+  await assert.rejects(custodyEvidence(fixture({ receiptContract: receipt90Contract })), {
+    code: "EVIDENCE_CUSTODY_POLICY_INVALID"
+  });
+  await assert.rejects(
+    custodyEvidence(
+      fixture({
+        policy: { ...policy, retentionDays: 90 },
+        receiptContract: "custody-receipt.v1"
+      })
+    ),
+    { code: "EVIDENCE_CUSTODY_POLICY_INVALID" }
+  );
+});
+
+test("all custody selectors reject inherited names and non-string property coercion", async () => {
+  const old = await custodyEvidence(fixture());
+  for (const [receiptContract, selectedPolicy] of [
+    ["constructor", { ...policy, retentionDays: undefined }],
+    [{ toString: () => "custody-receipt.v1" }, policy]
+  ]) {
+    const options = { receiptContract };
+    assert.throws(() => redactEvidence({ result: "safe" }, selectedPolicy, options), {
+      code: "EVIDENCE_CUSTODY_INPUT_INVALID"
+    });
+    assert.throws(() => assertCustodyComplete(old, old.contentDigest, options), {
+      code: "EVIDENCE_CUSTODY_INPUT_INVALID"
+    });
+    await assert.rejects(custodyEvidence(fixture({ policy: selectedPolicy, receiptContract })), {
+      code: "EVIDENCE_CUSTODY_INPUT_INVALID"
+    });
+  }
+});
+
+test("new custody reads closed metadata independently and preserves longer actual retention", async () => {
+  for (const [actualRetainUntil, receiptId] of [
+    ["2027-03-01T08:00:00.000Z", "90d96a42-b007-4050-9c86-7d98a926a1d0"],
+    ["2027-03-31T08:00:00.000Z", "68be0142-ee64-45ee-9ed6-03fd038107bf"]
+  ]) {
+    const storage = memoryStore({
+      createMetadata: () => ({ retainUntil: actualRetainUntil })
+    });
+    const receipt = await custodyEvidence(
+      fixture({
+        policy: { ...policy, retentionDays: 90 },
+        receiptContract: receipt90Contract,
+        createReceiptId: () => receiptId,
+        storage
+      })
+    );
+    assert.equal(receipt.retainUntil, actualRetainUntil);
+    assert.deepEqual(
+      storage.metadataReads.map(({ identity }) => identity),
+      ["audit-reader", "audit-reader"]
+    );
+    assertCustodyComplete(receipt, receipt.contentDigest, { receiptContract: receipt90Contract });
+    assert.throws(
+      () => assertCustodyDeletionAllowed(receipt, new Date("2028-01-01T00:00:00.000Z")),
+      { code: "CUSTODY_RECEIPT_INCOMPLETE" }
+    );
+  }
+});
+
+test("new custody rejects missing, malformed, drifting, and mutually borrowed metadata", async () => {
+  const noMetadata = memoryStore();
+  delete noMetadata.readMetadata;
+  await assert.rejects(
+    custodyEvidence(
+      fixture({
+        policy: { ...policy, retentionDays: 90 },
+        receiptContract: receipt90Contract,
+        storage: noMetadata
+      })
+    ),
+    { code: "EVIDENCE_CUSTODY_INPUT_INVALID" }
+  );
+
+  for (const scenario of ["missing", "extra", "field-missing"]) {
+    const invalidMetadata = memoryStore();
+    invalidMetadata.readMetadata = async ({ key }) => {
+      if (scenario === "missing") return undefined;
+      const observed = { ...invalidMetadata.metadata.get(key) };
+      if (scenario === "extra") observed.unexpected = true;
+      else delete observed.storedAt;
+      return observed;
+    };
+    await assert.rejects(
+      custodyEvidence(
+        fixture({
+          policy: { ...policy, retentionDays: 90 },
+          receiptContract: receipt90Contract,
+          storage: invalidMetadata
+        })
+      ),
+      { code: "EVIDENCE_STORAGE_RECEIPT_INVALID" }
+    );
+  }
+
+  const mutableResponse = memoryStore();
+  mutableResponse.readMetadata = async ({ key }) => {
+    const response = mutableResponse.createResponses.get(key);
+    response.storeRef = `memory://substituted/${key}`;
+    return {
+      storeRef: response.storeRef,
+      contentSizeBytes: response.contentSizeBytes,
+      storedAt: response.storedAt,
+      retainUntil: response.retainUntil
+    };
+  };
+  await assert.rejects(
+    custodyEvidence(
+      fixture({
+        policy: { ...policy, retentionDays: 90 },
+        receiptContract: receipt90Contract,
+        storage: mutableResponse
+      })
+    ),
+    { code: "EVIDENCE_STORAGE_RECEIPT_INVALID" }
+  );
+
+  const borrowedMetadata = memoryStore();
+  let firstMetadata;
+  borrowedMetadata.readMetadata = async ({ key }) => {
+    firstMetadata ??= { ...borrowedMetadata.metadata.get(key) };
+    return firstMetadata;
+  };
+  await assert.rejects(
+    custodyEvidence(
+      fixture({
+        policy: { ...policy, retentionDays: 90 },
+        receiptContract: receipt90Contract,
+        storage: borrowedMetadata
+      })
+    ),
+    { code: "EVIDENCE_STORAGE_RECEIPT_INVALID" }
+  );
+});
+
+test("new custody rejects 89-day facts, invalid dates, and delayed content or receipt creation", async () => {
+  for (const createMetadata of [
+    () => ({ retainUntil: "2026-11-30T08:00:00.000Z" }),
+    () => ({ storedAt: "Infinity" }),
+    () => ({ retainUntil: "2026-02-30T08:00:00.000Z" }),
+    () => ({ storedAt: "2026-09-03T08:00:00.000Z" }),
+    ({ key }) => (key.startsWith("receipts/") ? { storedAt: "2026-09-03T08:00:00.000Z" } : {})
+  ]) {
+    await assert.rejects(
+      custodyEvidence(
+        fixture({
+          policy: { ...policy, retentionDays: 90 },
+          receiptContract: receipt90Contract,
+          storage: memoryStore({ createMetadata })
+        })
+      ),
+      { code: "EVIDENCE_STORAGE_RECEIPT_INVALID" }
+    );
+  }
+
+  const receiptShorterThanContent = memoryStore({
+    createMetadata: ({ key }) =>
+      key.startsWith("evidence/")
+        ? { retainUntil: "2027-03-31T08:00:00.000Z" }
+        : { retainUntil: "2026-12-01T08:00:00.000Z" }
+  });
+  await assert.rejects(
+    custodyEvidence(
+      fixture({
+        policy: { ...policy, retentionDays: 90 },
+        receiptContract: receipt90Contract,
+        storage: receiptShorterThanContent
+      })
+    ),
+    { code: "EVIDENCE_STORAGE_RECEIPT_INVALID" }
+  );
+});
+
+test("new custody independently rejects content and receipt byte readback failures", async () => {
+  for (const missingRead of [1, 2]) {
+    const storage = memoryStore();
+    let reads = 0;
+    storage.read = async ({ key }) => {
+      reads += 1;
+      return reads === missingRead ? undefined : storage.objects.get(key);
+    };
+    await assert.rejects(
+      custodyEvidence(
+        fixture({
+          policy: { ...policy, retentionDays: 90 },
+          receiptContract: receipt90Contract,
+          storage
+        })
+      ),
+      { code: missingRead === 1 ? "EVIDENCE_READBACK_MISSING" : "CUSTODY_RECEIPT_MISSING" }
+    );
+  }
+
+  for (const driftRead of [1, 2]) {
+    const storage = memoryStore();
+    let reads = 0;
+    storage.read = async ({ key }) => {
+      reads += 1;
+      return reads === driftRead ? Buffer.from("drifted", "utf8") : storage.objects.get(key);
+    };
+    await assert.rejects(
+      custodyEvidence(
+        fixture({
+          policy: { ...policy, retentionDays: 90 },
+          receiptContract: receipt90Contract,
+          storage
+        })
+      ),
+      {
+        code:
+          driftRead === 1
+            ? "EVIDENCE_READBACK_DIGEST_MISMATCH"
+            : "CUSTODY_RECEIPT_READBACK_DIGEST_MISMATCH"
+      }
+    );
+  }
+});
+
+test("new custody assertions reject direct short or non-finite facts and an invalid clock", async () => {
+  const receipt = await custodyEvidence(
+    fixture({
+      policy: { ...policy, retentionDays: 90 },
+      receiptContract: receipt90Contract
+    })
+  );
+  for (const [field, value] of [
+    ["retainUntil", "2026-11-30T08:00:00.000Z"],
+    ["uploadedAt", "Infinity"],
+    ["readbackAt", "2026-02-30T08:00:00.000Z"],
+    ["retainUntil", "Infinity"]
+  ]) {
+    const invalid = { ...receipt, [field]: value };
+    assert.throws(
+      () =>
+        assertCustodyComplete(invalid, invalid.contentDigest, {
+          receiptContract: receipt90Contract
+        }),
+      { code: "CUSTODY_RECEIPT_INCOMPLETE" }
+    );
+  }
+
+  const lexicalYearBypass = {
+    ...receipt,
+    uploadedAt: "+010000-09-02T08:00:00.000Z",
+    readbackAt: "+010000-09-02T08:00:00.000Z",
+    retainUntil: "2026-12-01T08:00:00.000Z"
+  };
+  assert.throws(
+    () =>
+      assertCustodyComplete(lexicalYearBypass, lexicalYearBypass.contentDigest, {
+        receiptContract: receipt90Contract
+      }),
+    { code: "CUSTODY_RECEIPT_INCOMPLETE" }
+  );
+
+  await assert.rejects(
+    custodyEvidence(
+      fixture({
+        policy: { ...policy, retentionDays: 90 },
+        receiptContract: receipt90Contract,
+        now: () => new Date(Number.NaN)
+      })
+    ),
+    { code: "EVIDENCE_CUSTODY_CLOCK_INVALID" }
+  );
+});
+
+test("new custody snapshots accepted policy and applies the same guard to all terminal evidence", async () => {
+  for (const [terminalState, receiptId] of [
+    ["SUCCEEDED", "6094e005-6a37-48c4-8ad9-99149fc75205"],
+    ["FAILED", "6a46924c-611b-4712-8714-c6039c6bd58b"],
+    ["INTERRUPTED_UNKNOWN", "52146491-47ab-4f3f-b36c-e33e5769600f"]
+  ]) {
+    const newPolicy = { ...policy, readers: [...policy.readers], retentionDays: 90 };
+    const storage = memoryStore();
+    const createOnly = storage.createOnly;
+    storage.createOnly = async (input) => {
+      const response = await createOnly(input);
+      newPolicy.owner = "mutated-after-upload";
+      newPolicy.readers.push("mutated-reader");
+      return response;
+    };
+    const receipt = await custodyEvidence(
+      fixture({
+        value: { schemaVersion: "execution-proof.v1", operationId: terminalState, terminalState },
+        policy: newPolicy,
+        receiptContract: receipt90Contract,
+        storage,
+        createReceiptId: () => receiptId
+      })
+    );
+    assert.equal(receipt.schemaVersion, receipt90Contract);
+    assert.equal(receipt.owner, policy.owner);
+    assert.deepEqual(receipt.readers, policy.readers);
+  }
+
+  await assert.rejects(
+    custodyEvidence(
+      fixture({
+        value: { accessToken: "top-secret-token" },
+        policy: { ...policy, retentionDays: 90 },
+        receiptContract: receipt90Contract
+      })
+    ),
+    { code: "EVIDENCE_SECRET_DETECTED" }
+  );
 });
 
 test("rejects storage overwrite and content readback drift", async () => {

@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- 状态：**2026-09-08 DOC-ONLY framing 局部修订待用户复审（停止基线 `411d76531ec393fa9f161e85fdc7b242681bfdc9`）；R1.1 在 `a7dae4910f42bc5cb598ea4242257176951ef2f9` 的批准与交付有效，R1.1E 未完成、未提交、未验收，R1.2 尚未 RED、尚无代码修改**。本次只修改现有 R1/R2 两份计划，内部审查后由主控分别本地提交供用户复审，不因此批准修订或恢复代码施工。停止报告所列五个未追踪 R1.1E WIP 原样保留；不修改 Schema/代码/测试/index/manifest/stash，不跑测试，不接触 DB、Docker、网络、真实 key/profile、H1/H2 或 Task 30。R1.1E 仍是 R1.2 的独立前置，不追改 R1.1 的七文件、六函数或既有验签语义。
+- 状态：**2026-09-10 fixed-input DOC-ONLY 补全待复审（起始基线 `a42c2041`）**。R1.1 已在 `a7dae491` 完成，R1.1E 已在 `f618b2d2` 完成，R1.2 已在 `a42c2041` 完成；R1.2 的已接受证据为 Node 22 下 150+44，不在本轮重跑。本轮只更新 R1/R2 两份计划并由主控分别提交、复审，不因此批准 R1.3、H1/H2/H3 或任何外部操作；不修改 Schema/代码/测试/index/manifest，不跑测试，不接触 DB、Docker、网络、真实 key/profile 或 Task 30。既有 session 档案的 `objects/raw` 机制不改，冻结 stash `b299ceeed80374d181998f8ef485629beba56b5f` 与未追踪 scheduler 原样保留。
 - P0/P1 本地准入已结束，两个测试目标均退役。不能读取归档凭证、重建旧 record，或访问 ambient `DATABASE_URL`；R1 所有代码测试均不连接数据库。
 - Task 6、29R/30、I 系列和冻结 stash `b299ceeed80374d181998f8ef485629beba56b5f` 不动。API/Web、业务模型、迁移、应用 RBAC、工作流、OSS/WORM 均不在文件修改范围内。
 - 单 JSON 输入/输出实际 UTF-8 字节数最多 `1048576`，读取、规范化前后均计数；不能只在 Schema 写上限。新人工管道另按 §2.5.4 对每帧及 stdin/stdout 各自完整流（含全部 header/payload）执行同一 1 MiB 上限；旧单 JSON 路径及其限额不变。私钥不得进入 Git、镜像、环境变量、argv、日志、聊天或测试报告。
@@ -31,7 +31,7 @@
 
 Public Actions 的 artifact/log 保留期不能提供 180 日权威保管。现有工作流该问题必须在实际 H2 前通过**另行批准的窄范围构建保管修正**或已存在、符合要求的真实产物证明解决；本计划不提前宣称 CI 可用，也不让 R2 自行绕过。见 [GitHub 保留规则](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#configuring-the-retention-period-for-github-actions-artifacts-and-logs-in-your-repository)。本地人工档案与旧 CI custody 是不同事实，不能把本地文件签收伪装为旧不可变存储 receipt。
 
-R1 交付顺序：`R1.1（已批准）→ R1.1E 共享请求/证据纯契约 → R1.2 会话/签发/消费 → R1.3 固定入口及真实验签适配 → H1 精确身份批准/读回 → H2 新 main 可信构建及独立验证`。R2.0 的既有修正已在 `5a16ca8a`；R2.1–3 消费上述已审查代码，不能让 R1.2 反向等待/导入 R2 runtime。R2 真实最终镜像执行仍须通过 H1/H2/H3 与 R2.1 的预期 Schema 原件门槛。
+R1 交付顺序：`R1.1（a7dae491）→ R1.1E（f618b2d2）→ R1.2（a42c2041）→ R1.3 固定入口/读取器/真实验签适配 → H1 profile 与真实 owner/host 绑定 → H2 新 main 可信构建原件导入及独立验证 → R2.2 prepareManualOperation → H3-A`。R2.0 的既有修正已在 `5a16ca8a`；R2.1–3 消费上述已审查代码，不能让 R1.2 反向等待/导入 R2 runtime。R2 真实最终镜像执行仍须通过 H1/H2/H3 与 R2.1 的预期 Schema 原件门槛。
 
 ## 2. 唯一字段契约
 
@@ -308,6 +308,54 @@ previousAck 的 null 只表示当前 child 尚未收到任何 ACK，且没有待
 
 错误分层固定为：grammar/非法 UTF-8/非 canonical/错 version/type/direction/边界/尾垃圾 `MANUAL_FRAME_INVALID`；重复一次性交接或 RESULT `MANUAL_HANDOFF_REUSED`；序号/阶段/ACK 目标或绑定不等 `MANUAL_FRAME_ORDER_INVALID`（跨请求身份仍适用既有 `MANUAL_EVIDENCE_BINDING_MISMATCH`）；帧/完整管道/工具输出超限 `MANUAL_OUTPUT_LIMIT`，既有独立 JSON 入口仍 `MANUAL_JSON_LIMIT`；EOF 半帧/缺 RESULT/缺 ACK 后继 `MANUAL_FRAME_INCOMPLETE`。这些错误不是“未提交”结论：已确认 attempt 身份且凭证可能已交付、PREPARED 已存在或执行可能发生时，assessor 将运行证据不足保留为 INTERRUPTED_UNKNOWN，既有 originalDatabaseOutcome 谓词不放宽；无完整身份继续 INPUT_REQUIRED/STOP，不能造失败成功原件。
 
+### 2.6 固定 H1/build/operation 输入权威（R1.3 与 R2.2 的唯一边界）
+
+本节只闭合原计划尚未存在的生产输入，不改变 §2.1–2.5、R1.1E 的五个导出、R1.2 状态机或 session `objects/raw` 档案。新增 `inputs` 子目录只供 R1.3/H2 和 R2.2 metadata 固定 IO 使用，不加入现有 session 原件 union。
+
+**H1 owner/host 绑定。** 固定仓库文件 `release/contracts/manual-stage1-owner-binding.v1.json` 由与 profile 相同的 attested source/repository contract 锚定；不新增 profile 字段、Schema 或 foundation 权限模型。R1.3 私有 closed validator 只接受：
+
+```text
+{schemaVersion:"manual-stage1-owner-binding.v1",profileDigest:D,ownerId:S,
+ principal:{platform:"win32",sid:S}|{platform:"posix",uid:integer>=0},
+ hostFingerprint:D,approvedAt:T,approvalReference:Ref,approvalDigest:D,
+ promotionEligible:false}
+```
+
+`approvalDigest=sha256Bytes(approvalBytes)`；`approvalReference` 必须恰为 `inputs/h1/{approvalDigest 去掉 sha256:}.approval.json`。该原件是在 sidecar 发布前由用户批准的 canonical closed JSON，顶层恰为：
+
+```text
+{schemaVersion:"manual-stage1-owner-approval.v1",profileDigest:D,ownerId:S,
+ principal:{platform:"win32",sid:S}|{platform:"posix",uid:integer>=0},
+ hostFingerprint:D,approvedAt:T,promotionEligible:false}
+```
+
+不得含 future build/session/operation/成功字段，也不由尚不存在的 runtime session 签名。H1 将其以 CreateNew 存入 `profile.storage.archiveRoot/{approvalReference}` 并从新只读句柄独立读回；sidecar 的 `profileDigest/ownerId/principal/hostFingerprint/approvedAt/promotionEligible` 六项必须与原件逐项相等。运行时同时验证 sidecar/profile/approval 原件、实际 host/principal 及 profile 五个 storage root 的 ACL owner；当前进程“等于自己”、operation index 的 owner 字段或调用方布尔值都不能建立 owner 信任。
+
+上述非秘密 H1 全链唯一归现有导出 `loadFixedManualProfile({repoRoot})`：它每次固定读取 profile/sidecar/approval，实际探测 host/principal，核对五个 storage root ACL owner 后才返回深冻结 Profile；全程不读 private key、不打开 session、不写 operation index。该预先 readonly loader 只证明当前本机 H1 输入一致，不能代替之后 `verifyManualBuild` 对 attested source/repository contract 的独立绑定。
+
+`hostFingerprint` 的唯一编码为：Windows 只用固定绝对程序 `C:\Windows\System32\reg.exe ["QUERY","HKLM\\SOFTWARE\\Microsoft\\Cryptography","/v","MachineGuid","/reg:64"]` 读 `MachineGuid`，去首尾空白/花括号后要求小写 RFC UUID，再计算 `sha256Bytes(UTF8("subscription-saas/win32-machine-guid/v1\n"+guid))`；SID 只用 `C:\Windows\System32\whoami.exe ["/user","/fo","csv","/nh"]` 并严格解析唯一行。执行前后对两个 exe 的固定绝对路径做 realpath/file identity/owner ACL 读回，系统目录不是该精确位置或无法证明即 STOP，不使用 PATH/PATHEXT/SystemRoot env 选程序。Linux 从固定 `/etc/machine-id` 读 bytes，严格 trim 后要求 32 位小写 hex，以 `sha256Bytes(UTF8("subscription-saas/linux-machine-id/v1\n"+machineId))` 计算，principal 取 `process.getuid()`。两个 Windows probe 均复用现有 fixed `execFile`/ACL adapter 语义、参数数组、`shell:false`，单次 timeout `5000 ms`，stdout 与 stderr 各最多 `8192 bytes`；Linux 固定文件也按 `8192 bytes` 上限读取。不新增通用 host-probe framework；失败、歧义或不支持的平台拒绝，不 fallback 到 hostname/env。
+
+**H2 原始构建输入。** `verifyManualBuild({proofBytes,materialBytes,repoRoot})` 每次先调用上述 `loadFixedManualProfile` 完成非秘密 H1 门禁，随后分别计算 `proofRawDigest=sha256Bytes(proofBytes)` 与 `materialRawDigest=sha256Bytes(materialBytes)`，再只从 `archiveRoot/inputs/build/{proofRawHex}.proof.json` 和 `{materialRawHex}.material.json` 打开已由 H2 独立批准 import 以 CreateNew 发布并读回的原始 bytes。每个调用 Buffer、实际文件 pre/post stat bytes 和解析后的 canonical JSON bytes 均各自不超过 1 MiB；fatal UTF-8、JSON/Schema/identity 不符拒绝。proof 原始 bytes 无须等于 canonical bytes：`buildProofDigest=sha256Canonical(parsedProof)` 与 `proofRawDigest` 明确不同；`gh` 验证 subject digest 必须等于后者，同时保留旧 verifier 的 source/main/workflow/issuer/runner class、三镜像、material、catalog、contract 与 custody 等式。loader 通过后仍须完成 attested source/contract 验证；两者不是可互换的通行证。
+
+固定 IO 逐级拒绝 link/reparse/escape，核对 owner ACL/realpath，持有只读句柄并在 `gh` 前后复核句柄和路径 identity/size/mtime/realpath；从句柄读到的 bytes、调用 Buffer、路径 pre/post bytes 与 `gh` 已验证 subject hash 必须相同。任何 altered/missing/oversize/readback/timeout 或路径 ABA 无法由 subject hash 加 pre/post 检查闭合时，在 private-key/sign/credential read 前拒绝。不为 `gh` 假设未经证明的 stdin 模式，也不让 verifier 创建 temp 文件；H2 import 与其外部批准是另一个人工动作，不是 verifier 导出或隐含副作用。
+
+**非授权 operation index。** 唯一 producer 是既有 R2.2 launcher 内新接口 `prepareManualOperation({proofBytes,materialBytes,targetIntent,scenario})`；无新 CLI/path/env authority。它必须先调用 `verifyManualBuild`，从而先完成其内部 readonly H1 loader 与 H2 attested build/custody 门禁；prepare 前禁止读取 key、打开 session 或写任何 index。全部核验成功后且仍在 H3-A 操作单批准前，才固定生成 lowercase UUID `operationRef/runId` 及 observe/migrate/verify 三个随机 `operationId`；三项幂等键分别且恰为 `manual-stage1:${operationRef}:observe`、`manual-stage1:${operationRef}:migrate`、`manual-stage1:${operationRef}:verify`，并以 CreateNew 写入 `archiveRoot/inputs/operations/{operationRef}/index.json`：
+
+```text
+{schemaVersion:"manual-operation-input.v1",operationRef:UUID,runId:UUID,createdAt:T,
+ profileDigest:D,buildProofDigest:D,proofRawDigest:D,materialRawDigest:D,
+ targetIntent:TargetIntent,purpose:"synthetic-fresh",scenario:"normal"|"apply-interrupted",
+ operations:{observe:{operationId:UUID,idempotencyKey:S},
+             migrate:{operationId:UUID,idempotencyKey:S},
+             verify:{operationId:UUID,idempotencyKey:S}},promotionEligible:false}
+```
+
+index 必须是 fatal UTF-8、canonical JSON、完整对象不超过 1 MiB、递归 closed；`indexDigest=sha256Canonical(index)` 外部引用而不自存。禁止 owner/approved/success、session/attempt/allocation/DB OID、H3/baseline/result 字段。H3-A 后不得重新 prepare；H3-A 的 `h3-a-approval.json` 与实际后置 `h3-a-readback.json`、H3-B 的 `h3-b-approval.json` 与后置 `h3-b-readback.json` 均在同一 operation 目录 CreateNew，分别绑定既有 indexDigest、精确目标和当时已存在事实，绝不覆盖 index 或写入未来字段。launcher 必须独立读回相应真实 approval/readback 才可连接；index 不是批准，也不能绕过 R1.2 的单目标锁和 UNKNOWN 全历史。
+
+producer 的 CreateNew collision、已存在 operationRef、H1 loader 或 H2 未通过仍试图写 index、H3-A 后再次 prepare 反例归 R2.2 既有 `scripts/release/launch-manual-stage1.test.mjs`；H1 任一失败必须同时断言 index-write/session-open/private-key-read 均为 0。这是明确新增的 R2.2 prepare 接口，不是给 R1.1E 增加 factory。R1.3 测试只覆盖固定 reader/source gate，不写 index。
+
+R1.3 是唯一 reader/parser：`readFixedManualOperation({repoRoot,operationRef})` 返回 `{operation,indexDigest,proofBytes,materialBytes}`，其中 `operation` 是上述完整深冻结对象，两个 Buffer 是按 raw digest 固定路径从只读句柄独立读回的副本；这些值只证明冻结描述与来源 bytes，不授予 session/credential/DB 权限，不返回 `verified/approved/trusted` wrapper。R2.2/R2.3 不复制 parser；R2.4 migration/verification 始终消费同一 operationRef/runId/原 observe-migrate-verify identities，attempt allocation 仍只在已开的 session 内按 §2.5 创建，replay/reconcile 继续绑定原 migrate operation/key，不另添 index 身份。
+
 ## Task R1.1：封闭契约和无副作用签名 kernel
 
 **历史交付状态：** 本任务原有七文件/六函数已在 `a7dae491` 批准；以下原始步骤保留作为交付范围，不重新执行、不把 R1.1E 纳入原验收。
@@ -368,7 +416,7 @@ const valid = verify(null, bytes, publicKey, signature);
 
 ## Task R1.1E：先交付唯一共享请求/证据 Schema 与纯判定器
 
-**范围披露：** 这是新增前置审批/提交单元，不重编号、不重开已批准 R1.1。下列前两个 Schema 原计划由 R2.1 新建，现只移交所有权，不重复创建；新增 evidence union/module/test 是三个净新增计划文件。本 DOC-ONLY 回合不创建/修改这些文件，停止基线五个未追踪 WIP 原样保留。此次仅为后续复审精确新增 process.protocol 封闭字段与 MS1 三个纯导出、对应 local frame 定义/typed edges/测试，均仍在下列原七文件内。七文件之外不改 approved kernel/三旧 manual Schema/状态机/Runner/DB；不用第三份规范文档。
+**历史交付状态：** 本任务七文件和五个导出已在 `f618b2d2` 完成；以下原始范围与步骤保留作为审计记录，不重新执行、不因本次 fixed-input 补全增加 Schema、导出或 factory。下列前两个 Schema 原计划由 R2.1 新建，已移交给本任务且不重复创建；evidence union/module/test 为三个净新增文件。七文件之外不追改 R1.1 kernel/三旧 manual Schema/状态机/Runner/DB。
 
 **Files:**
 
@@ -453,6 +501,8 @@ R1.1E 本任务既有 `manual-runner-evidence.test.mjs` 同时负责这三组契
 
 ## Task R1.2：单父会话、撤销消费与私密记录
 
+**历史交付状态：** 本任务四文件已在 `a42c2041` 完成，接受证据为 Node 22 下 150+44；以下正文保留为已交付接口和审计约束，本轮不重跑、不追改。R1.3 只能以固定输入构造该现有 session，不能把 H1 sidecar/index 变成新的 session 权限层。
+
 **Files:**
 
 - Create: `packages/release-foundation/src/manual-stage1-session.mjs`
@@ -516,18 +566,16 @@ R1.2 `manual-stage1-session.test.mjs` 和 R2.3 `scripts/release/verify-manual-ru
 
 **Interfaces:**
 
-- Consumes: R1.1–2；现有 `verifyBuildProof()` 的身份绑定逻辑。
-- Produces: `loadFixedManualProfile({repoRoot}):Promise<Profile>`（固定相对位置，未建立时报 `MANUAL_PROFILE_NOT_PROVISIONED`）；`verifyManualBuild({proofBytes,materialBytes,repoRoot}):Promise<trustedBuildDecision>`；`openTrustedManualSession({repoRoot,proofBytes,materialBytes,operationRef}):Promise<Session>`。operationRef 仅为 R2 已有的固定根内非秘密 UUID/digest 索引 ID：这是多目标 profile 下唯一选定已批准目标所需的 typed-input completion，不增加 CLI 参数或任意目标覆盖。最后一个函数先真实 build/profile 验真，再从固定索引独立读回 targetIntent、核对 profile，使用固定本地主体/H1 映射观察、非导出 `loadFixedSigningKey(profile)` 和真实文件 IO 构造 R1.2 session；生产请求不能传 signingKey/IO/ownerObservation/targetIntent。R2.2 调用方只传它已有的 operationRef；索引本身不能建立 owner 信任。
-- 从旧 verifier 提取 `assertBuildIdentity({proof,buildMaterialObservation}):void`，只包含原 Schema/三镜像/source/catalog/material 绑定。旧 `verifyBuildProof()` 继续调用它及原 attestation/custody 校验，旧 fixture 路径仍不可提升；新接口名明确不含 trusted/verified，不返回通行证。
-- 同一任务把新入口 `scripts/release/manual-stage1-trust.mjs` **及其实际共享依赖 `scripts/release/verify-build-proof.mjs`** 同时纳入 `RELEASE_GATE_ENTRY_POINTS` 与 `repository-contract-files.v1.json`。旧 verifier 当前未纳管；不能只登记新入口，不能用 dependency 的自报摘要代替实际源码重算。此变化会改变 repository contract digest，必须进入 H2 新可信构建。
+- Consumes: 已完成 R1.1/R1.1E/R1.2、§2.6 fixed-input 契约及现有 `verifyBuildProof()` 身份/保管逻辑；不修改前述 Schema、五个 evidence 导出或 R1.2 接口。
+- Produces 恰四个显式接口：`loadFixedManualProfile({repoRoot}):Promise<Profile>`；`readFixedManualOperation({repoRoot,operationRef}):Promise<{operation,indexDigest,proofBytes,materialBytes}>`；`verifyManualBuild({proofBytes,materialBytes,repoRoot}):Promise<{buildProofDigest,proofRawDigest,materialRawDigest,promotionEligible:false}>`；`openTrustedManualSession({repoRoot,proofBytes,materialBytes,operationRef}):Promise<Session>`。loader 自行完成 profile/sidecar/approval/actual host-principal/五 roots ACL 的非秘密校验且不读 key；build verifier 每次先调用 loader，再完成 raw/gh/build/custody 与 attested source/contract 验证。最后一个函数重新调用 loader、reader 和 build verifier，将 caller 两个 Buffer 与 fixed-path readback 逐字节比较并核对 index 三个 build digest，所有步骤通过后才加载固定 key、构造既有 R1.2 session。生产调用方不能传文件路径、targetIntent、ownerObservation、signingKey、IO、decision 或任意 `verified/approved` 值；`verifyManualBuild` 返回只供报告的冻结事实，没有 public consumer 接受它作为通行证，`openTrustedManualSession` 不接受 caller result。不增加第五个导出。
+- `readFixedManualOperation` 只接受 lowercase UUID；digest alias、绝对/相对路径、大小写变体、额外键均拒绝。返回 Buffer 为独立副本且不进入 JSON/log/error；函数只证明 fixed-path source/bytes，不能读私钥、签名、开 session 或检查 H3。R2.2/3 调用本 reader，禁止复制 index parser；H3-A/B approval/readback 的 closed validator 和实际门禁仍由对应 R2 固定 IO 在 launch/result reader 中拥有。
+- 从旧 verifier 提取 `assertBuildIdentity({proof,buildMaterialObservation}):void`，只包含原 Schema/三镜像/source/catalog/material 绑定。旧 `verifyBuildProof()` 继续调用它及原 attestation/custody 校验，旧 fixture 路径仍不可提升；新 manual 函数不修改旧 execution scope 或伪造旧 custody。
+- 六个生产任务文件保持上列不变；H1 sidecar 不在 R1.3 代码提交中生成。同一任务仅把 `scripts/release/manual-stage1-trust.mjs` 与实际共享依赖 `scripts/release/verify-build-proof.mjs` 加入 `RELEASE_GATE_ENTRY_POINTS`/manifest，使 H2 repository contract 覆盖两者。
 
-- [ ] **1. 写固定输入/CLI 边界 RED。** 实际子进程执行 trust 文件；不存在 profile、argv `--trust-root/--profile-file/--archive-root`、环境 override、额外 JSON 属性均拒绝。合法测试用隔离 Git 工作区和临时 fixture profile，不向真实仓库固定路径写测试 key。
-- [ ] **1a. 补既有入口的 typed-input RED → GREEN。** R1.3 仅在本任务已有 `manual-stage1-trust.test.mjs` 覆盖 operationRef 缺失/越界/错目标、多目标 profile 不猜选、索引伪造 owner、实际 SID/uid 不符均拒绝；build/profile 未通过时 private-key-read=0。R1.2 既有 session 测试覆盖每次重读时钟、5分钟/到期较早界、禁止 caller 替换 nonce/授权 ID，以及真实 childObservation 的仅 runner 分支；R2.2 在其消费阶段单独于 `launch-manual-stage1.test.mjs` 复验 operationRef 传递；R1.3 不创建或修改 R2 文件，不新增测试文件或生产构造器。
-- [ ] **2. 实现 loader 与纯身份提取，GREEN。** 生产只接受固定入口当前代码根；从 proof 指定且 attested 的 source tree 读 profile blob、catalog/contract 并与当前执行入口逐项对照。入口自身尚未可信前仅允许读取/验签，不能读私钥、DB credential 或执行写入。不是仅比较 profile 自报的 digest。
-- [ ] **2a. 固定私钥读取 RED → GREEN。** 错 key 类型/指纹、替换文件、链接/重解析点、越界 keyRef、非 owner-only、未通过 build 验真即调用均拒绝，断言签名次数为 0。`loadFixedSigningKey` 仅解析 profile 固定 keyRef；逐级 realpath/ACL → 打开只读文件句柄 → 对句柄/路径身份复核 → 内存 `createPrivateKey` → Ed25519 类型/导出公钥指纹匹配。不得从 argv/env/stdin 收取替代 key，不在错误中输出字节；会话关闭后释放 KeyObject/清零原始 Buffer，说明托管内存清除为 best effort，不伪称物理擦除。
-- [ ] **3. 写实际 verifier argv/结果反例 RED。** `gh` exit 非零、证书 issuer/workflow/source ref/source digest 不符、self-hosted、材料/subject 字节 hash 不符、public artifact 无 custody、进程超时/输出超限、仅返回 `{verified:true}` 全部拒绝。测试使用固定进程 adapter 检查 argv 和解析器，明确这部分是适配器单测而非真实 attestation 验证成功。
-- [ ] **3a. 共享依赖摘要 RED → GREEN。** 在 `manual-stage1-trust.test.mjs` 的隔离真实 Git/contract fixture 中，先冻结 proof/material/profile，随后**只修改 `scripts/release/verify-build-proof.mjs` 字节**，保持新入口、profile 和请求不变。重新执行真实 `computeRepositoryContract`/加载绑定分支，断言摘要变化且 `BUILD_PROOF_REGISTRY_SUBJECT_MISMATCH`，private-key-read、sign、credential-read 均为 0。不要 mock 一个“dependency changed”布尔值。新旧两个入口同一 manifest 纳管后，恢复原件的正向例和既有 `build-proof.test.mjs` 必须仍通过。
-- [ ] **4. 实现固定进程调用，GREEN。** 使用 `spawn` 参数数组，无 Shell；对准确 build proof 原始字节执行下列固定验证，SHA 从 proof 解析后还必须与验证结果及材料相等：
+- [ ] **1. 固定 profile/sidecar/operation reader RED。** 在既有 `manual-stage1-trust.test.mjs` 用隔离 Git/临时 storage roots 预置原件，先分别破坏 profile/sidecar/approval、actual host/principal 与五 roots ACL，断言 `loadFixedManualProfile` 拒绝且 private-key-read/session-open 为 0；R2.2 对应测试另断言 index-write=0。再测 index 缺失、非 canonical/非法 UTF-8/1 MiB+1/额外或未来字段，operationRef 为 digest/path/大写 UUID，raw digest 与 fixed build 文件不符、link/reparse/escape；argv `--trust-root/--profile-file/--archive-root` 与环境 override 均不能选择来源。合法 index 返回完整 deep-frozen operation、外部 indexDigest 和两个 Buffer 副本，调用前后源文件一字节改变拒绝；不得新增 fixture、Schema、R1.3 production factory 或 R2 文件。
+- [ ] **2. 实现 fixed loaders 与 checkout 绑定，GREEN。** 固定读 `release/contracts/manual-stage1-profile.v1.json`、`manual-stage1-owner-binding.v1.json`、manifest、index 和两个 raw build 文件；全部要求 fatal UTF-8/JSON/closed/bytes 上限，只有新生成的 approval/sidecar/index 要求原 bytes canonical，既有 proof/material 允许合法 pretty JSON并另算 canonical 对象摘要。逐级 realpath/reparse/ACL、只读句柄与 pre/post path identity 按 §2.6 拒绝失败。实际 checkout HEAD/source 与 proof/attestation source 相同，重算 repository contract 单独等于 `proof.identity.repositoryContractDigest`；重算 profile canonical digest分别等于 sidecar/index 的 `profileDigest`。不同摘要域不得互等，也不能仅信任任一文件自报摘要。
+- [ ] **3. 原始 proof/material/gh 反例 RED。** 覆盖 Buffer 与独立读回不等、proofRawDigest 与 canonical buildProofDigest 混用、gh subject 只等 canonical digest、path 在 gh 前后替换/identity 漂移、exit 非零、issuer/workflow/source-ref/source SHA/runner class 不符、self-hosted、material/三镜像/catalog/contract/custody 不符、public artifact 无权威 custody、超时/stdout/stderr 超限；全部在 private-key/sign/credential read 前拒绝。另保留 pretty/non-canonical raw proof 的正例：只要 fatal parse/Schema 合法且 attested subject 等于 raw digest，不得偷偷要求 raw bytes 已 canonical。
+- [ ] **4. 实现固定进程调用，GREEN。** 使用 `spawn`/`execFile` 参数数组、`shell:false`；`gh` 单次 timeout 固定 `120000 ms`，stdout/stderr 各自最多 `1048576 bytes`。`gh` 只接 R1.3 已验证的 fixed proof path，对原始 proof bytes 执行：
 
 ```text
 gh attestation verify <受限非秘密 proof 文件>
@@ -539,27 +587,52 @@ gh attestation verify <受限非秘密 proof 文件>
   --deny-self-hosted-runners --format json
 ```
 
-上面是参数映射说明，不是允许用户传入尖括号参数或任意文件路径的命令行。正式函数由固定受控输入索引解析只读文件，实际计数 1 MiB。校验 `verificationResult` 的已验证证书/subject，不能把可由 workflow 填写的 predicate 当成证书身份；固定 repo/workflow 的 run 终态还须真实 GitHub 只读核验。具体 CLI 选项见 [官方 gh verifier](https://cli.github.com/manual/gh_attestation_verify)。真实版本/输出格式必须在 H2 留证；不兼容直接停止，不采用宽松字段猜测。
+上面是参数映射，不是 CLI 文件参数。必须从 gh 已验证证书/subject 取得 raw subject hash；workflow predicate 或 `{verified:true}` 不能代替。固定 repo/workflow run 终态仍须真实 GitHub 只读核验；具体选项见 [官方 gh verifier](https://cli.github.com/manual/gh_attestation_verify)。真实版本/输出格式到 H2 才留证，不兼容即停止。
 
-- [ ] **5. 证明旧边界未放宽。** `node --test scripts/release/build-proof.test.mjs scripts/release/manual-stage1-trust.test.mjs`；旧 issuer/custody/full-RC 负向测试仍拒绝。人工路径使用本地 manual record，不能为了复用旧 verifier 伪造 `custody-receipt.v1`。成功结果通过内部品牌返回，仍固定不可直接提升。
-- [ ] **6. 纳管并提交。** 新 trust 入口和共享 `verify-build-proof.mjs` 两者均进入 `RELEASE_GATE_ENTRY_POINTS`、contract manifest；`pnpm release:contracts:verify`；精确六文件 Prettier、unstaged/staged 检查、独立审查后提交 `feat(release): verify attested build for fixed manual profile`。保留旧 verifier 回归；本任务没有扩大文件数量或建立第二个 build verifier。
+- [ ] **5. actual host/principal/approval/key RED → GREEN。** Windows MachineGuid/SID、Linux machine-id/uid 按 §2.6 精确编码；wrong host/SID/uid、sidecar 或 approval 一字节变化、approval 未先存在/未独立读回、任一 storage root ACL owner 不等 anchored principal、当前进程只自报相同、index 伪造 owner均使 loader/build/open 拒绝。R1.3 test 断言 session-open/private-key-read=0，R2.2 对应 prepare test 断言 index-write/session-open/private-key-read=0。通过非秘密 loader 与完整 build verifier 后，只有 `openTrustedManualSession` 才调用 `loadFixedSigningKey`：逐级核对固定 keyRef/ACL/句柄/path identity、解析 Ed25519、导出公钥指纹匹配；错 key/替换/链接/越界拒绝。会话关闭后清零原始 Buffer/释放 KeyObject仅属 best effort，不声明物理擦除。
+- [ ] **6. 回归、纳管、独立审查后提交。** 运行 `node --test scripts/release/build-proof.test.mjs scripts/release/manual-stage1-trust.test.mjs` 与 `pnpm release:contracts:verify`；旧 issuer/custody/full-RC/fixture 负例保持。隔离 contract fixture 仅改 `verify-build-proof.mjs` 一字节，真实重算必须使 proof contract identity 失败且 key/sign/credential read=0。精确六文件 Prettier、diff/staged 清单复核后提交 `feat(release): verify fixed manual operation inputs`；不建立第二 verifier、importer、CLI/path authority 或新 shared trust wrapper。
+
+```powershell
+$r13Files = @(
+  'scripts/release/manual-stage1-trust.mjs', 'scripts/release/manual-stage1-trust.test.mjs',
+  'scripts/release/verify-build-proof.mjs', 'scripts/release/build-proof.test.mjs',
+  'packages/release-foundation/src/catalogs.mjs',
+  'release/contracts/repository-contract-files.v1.json'
+)
+pnpm exec prettier --write -- $r13Files
+if ($LASTEXITCODE -ne 0) { throw 'R13_FORMAT_FAILED' }
+git add -- $r13Files
+if ($LASTEXITCODE -ne 0) { throw 'R13_STAGE_FAILED' }
+git diff --cached --check
+if ($LASTEXITCODE -ne 0) { throw 'R13_STAGED_DIFF_INVALID' }
+$r13Staged = @(git diff --cached --name-only)
+if ($LASTEXITCODE -ne 0) { throw 'R13_STAGED_LIST_UNAVAILABLE' }
+if (@(Compare-Object ($r13Files | Sort-Object) ($r13Staged | Sort-Object)).Count -ne 0) {
+  throw 'R13_STAGED_SCOPE_MISMATCH'
+}
+git commit -m "feat(release): verify fixed manual operation inputs"
+if ($LASTEXITCODE -ne 0) { throw 'R13_COMMIT_FAILED' }
+```
+
+只在全部命令成功且 staged 清单恰为上述六文件时提交；保留任何无关修改。
 
 ## H1：首次实际身份、路径与备份——人工停止点
 
-这不是自动执行任务。R1.1–3 通过后只提交一份**非秘密精确摘要**请求用户批准：owner ID、加密主存储/私钥引用/固定 journal 与 archive/独立加密 backup/credential root 的绝对目标、权限观察、生成与恢复校验步骤、凭证丢失/撤销处置。credential root 此时不包含数据库凭证；R2 H3 单独批准四种精确身份和其内部引用，不改变 profile 根。当前这些输入尚未提供，不猜目录、owner key 或公钥指纹。
+这不是自动执行任务。R1.3 代码审查通过后才提交**非秘密精确摘要**：owner ID、actual principal、按 §2.6 算出的 hostFingerprint、加密 key/journal/archive/backup/credential roots、权限/恢复步骤及撤销处置。当前真实值尚未提供；不猜目录、SID/uid、MachineGuid/machine-id、公钥或批准时间。credential root 此时无 DB 凭证；H3 后续批准精确身份/内部引用，不改 profile/owner binding。
 
-- [ ] 用户分别批准真实 key 创建和精确私密保管位置后，才可形成该次一次性操作单；本计划不自动生成 key、执行 `icacls` 写权限、安装磁盘加密或上传。
-- [ ] 真实 owner 环境生成 Ed25519、非秘密指纹、初始台账，恢复到独立加密位置后验证同一公钥及测试签名；只输出非秘密 readback。任何失败保留停止状态，不伪造 profile。
-- [ ] H1 仅允许届时新建 `release/contracts/manual-stage1-profile.v1.json`、更新 `repository-contract-files.v1.json`，独立提交审查；代码测试 fixture 绝不复制成生产 profile。
+- [ ] **顺序固定为 profile 草案 → digest → H1 真实批准原件 → sidecar → manifest。** 用户先分别批准真实 key 创建、精确 storage roots 和实际 host/principal；owner 环境才生成 Ed25519/指纹/GENESIS，验证独立加密 backup 可恢复同一公钥及测试签名。形成 profile bytes 并算 profileDigest 后，再由用户批准包含精确 profileDigest/ownerId/principal/hostFingerprint/approvedAt 的 closed approval 原件；该原件在 sidecar 之前 CreateNew 保存并独立读回，不能由 runtime session 或未来 build 签名。
+- [ ] H1 仓库提交从原计划两文件明确增为三文件：Create `release/contracts/manual-stage1-profile.v1.json`；Create `release/contracts/manual-stage1-owner-binding.v1.json`；Modify `release/contracts/repository-contract-files.v1.json`。三者同一独立审查提交；sidecar/approval 必须逐项相等且 profile/sidecar 均进入 contract。此授权增量不属于 R1.3 六个生产任务文件，不新增/修改 profile Schema 或 foundation 模块。
+- [ ] R1.3 固定 loader 在候选提交上只读演练 profile/sidecar/approval/ACL/backup readback；任何来源、权限、恢复或逐项等式失败保持 `H1_INPUT_UNAVAILABLE`。测试 fixture 绝不复制成真实值；本计划不自动执行 key 创建、ACL 写入、磁盘配置、上传或 Git 操作。
 
 ## H2：可信构建与消费验真——真实执行前的停止点
 
-- [ ] H1 非秘密 profile 经审查合并后冻结准确 main SHA，由既有可信 CI 生成三镜像和证明。CI Actions 保管问题未闭环、构建失败、真实 attestation/材料/受保护来源不足时标记 `TRUSTED_BUILD_UNAVAILABLE`；不得运行本地替代候选或修改旧工作流来“临时放行”。
-- [ ] 实际运行 R1.3 验证器，保管实际 gh 版本、可信证书/subject/材料、准确输出计数/退出状态和私密独立读回。只读验证失败不得进入凭证读取。
-- [ ] 独立 reviewer 同时确认 H1 owner/ACL/恢复读回、H2 CI 原件和固定代码/profile。R1 内核测试通过不代表 H1/H2 通过；只有这两项也通过，R2 才可申请真实最终镜像竖切操作。
+- [ ] H1 三文件经审查合并后冻结准确 main SHA，由既有可信 CI 生成三镜像、proof 和 material。CI Actions 保管未闭环、构建失败、真实 attestation/材料/受保护来源不足即 `TRUSTED_BUILD_UNAVAILABLE`；不使用本地候选，不修改旧 workflow 临时放行。
+- [ ] 用户另行批准精确 proof/material 原件 import；importer 不是 R1.3 导出。外部操作按各自 raw digest 在 `archiveRoot/inputs/build/` 用 CreateNew 发布原 bytes，从新只读句柄独立读回并记录 owner ACL/realpath/identity/bytes。冲突、失败或读回不等停止，不覆盖、不用 verifier temp write 修补。本地 raw import 仅证明私密 fixed-input bytes，不替代旧 verifier 的权威 custody/180 日门槛；public artifact 无 custody 仍拒绝，不能为兼容人工路径伪造 `custody-receipt.v1`。
+- [ ] 对上述 readonly H2 bytes 调 `verifyManualBuild({proofBytes,materialBytes,repoRoot})`，在任何 H3 index/session/attempt 之前保管实际 Node/gh 版本、证书/subject raw hash、repo/workflow/main/source、材料、准确输出计数/exit 和 pre/post file identity。该只读验证可独立完成，不需要 operationRef；任一失败不得读 private key、签名或凭证。
+- [ ] 独立 reviewer 同时确认 H1 owner/host/ACL/approval/恢复读回与 H2 source/contract/profile/sidecar/proof/material。只有 H1/H2 都有事实，R2.2 才可调用一次 `prepareManualOperation` 产生非授权 metadata 供 H3-A 审批；H3-A 批准后外部操作不得重新 prepare。R1 内核测试或 index 存在均不表示 H1/H2/H3 已批准。
 
 ## 完成与交接
 
-代码审查报告分别列：R1.1/2/3 测试计数、实际 Node 版本、contract digest 变更、旧路径回归、H1/H2 状态；没有真实验证的项目保持 `NOT_RUN/INPUT_UNAVAILABLE`。不引用 P1 的历史 4074/104 测试数作为本任务通过数。
+代码审查报告分别列：R1.1/R1.1E/R1.2 历史提交与已接受计数、R1.3 新测试计数、实际 Node 版本、contract digest 变更、旧路径回归、H1/H2 状态；没有真实验证的项目保持 `NOT_RUN/INPUT_UNAVAILABLE`。本 fixed-input 文档仍为**待复审**，不作批准或施工完成声明。
 
-R2 只由 `openTrustedManualSession` 建立父方，保留 parentDecision 作为交凭证条件；子方消费已签 handoff 并生成不同的 childDecision。子方不加载 host key/journal/backup，不把 Windows 路径当镜像内文件。B1/B3/B5 不依赖真实 key/CI 完成，可独立进行批准后的业务测试。R3 的数据 stage、隔离副本、主机安全及 R4/A3 外部批准没有在 R1 暗中实现。
+R2 只由 `openTrustedManualSession({repoRoot,proofBytes,materialBytes,operationRef})` 建立父方，caller bytes 必须与 `readFixedManualOperation` 独立读回的同一原件逐字节一致；R2.2/R2.3 只用该 reader 取得同一冻结描述/bytes，不复制 parser、不接收 caller trust decision。parentDecision 仍是交凭证条件；子方消费 handoff 并生成不同 childDecision，不加载 host key/journal/backup。新增 `inputs` 不改变 session `objectPath/archiveRoot/raw` union。B1/B3/B5 可在各自批准后独立测试；产品/DB/RBAC/workflow/Task 30、R3 数据 stage/隔离副本/主机安全及 R4/A3 外部批准均未在本计划扩入。

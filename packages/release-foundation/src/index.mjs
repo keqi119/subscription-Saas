@@ -15,6 +15,7 @@ export {
   verifyManualHandoff,
   assertManualHandoffDecision
 } from "./manual-stage1-contracts.mjs";
+export { openManualSession } from "./manual-stage1-session.mjs";
 export { verifyExternalChangeApproval } from "./external-change-approval.mjs";
 export {
   assertVerifiedDispatchAuthorization,

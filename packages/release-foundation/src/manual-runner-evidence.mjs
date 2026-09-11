@@ -1625,6 +1625,13 @@ function validateArtifacts(artifacts, raws, profileDigest, policy) {
           ["expectedSchemaEvidenceDigest", "schema-expectation"]
         ])
           edge(value, value[key], [target]);
+        const baseline = get(value.baselineManifestDigest, ["baseline"]).identity;
+        // Bind actual predecessors to this request, not to the archive's current policy.
+        for (const digest of [value.targetObservationDigest, baseline.targetObservationDigest])
+          same(value, get(digest, ["observation"]), ["profileDigest"]);
+        same(value, get(baseline.authorizationDigest, ["authorization"]).payload, [
+          "profileDigest"
+        ]);
         for (const key of ["dryRunRecordDigest", "predecessorExecutionRecordDigest"])
           if (value[key]) edge(value, value[key], ["execution"]);
       }

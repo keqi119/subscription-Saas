@@ -536,7 +536,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     : shared.expectation;
   const step = { "dry-run": 1, apply: 2, verify: 3, replay: 4, reconcile: 5 }[phase];
   const n = 20 + step * 100;
-  const request = requestFixture(phase, policyFor(root.request));
+  const request = requestFixture(phase, options.runnerPolicy ?? policyFor(root.request));
   Object.assign(request, {
     attemptId: uuid(100 + step),
     physicalIdentity: root.observation.physicalIdentity,
@@ -657,12 +657,15 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   frame("CHALLENGE", { childChallenge: request.childChallenge });
   snapshot(n + 2, null);
   const bound = snapshot(n + 3);
+  const sharesProfile = request.profileDigest === root.request.profileDigest;
   const prior = consumeFixture(
     archive,
     request,
     n,
-    ["replay", "reconcile"].includes(phase) || options.changedSession ? null : root.session,
-    root.revocation
+    ["replay", "reconcile"].includes(phase) || options.changedSession || !sharesProfile
+      ? null
+      : root.session,
+    sharesProfile ? root.revocation : null
   );
   if (options.beforeCredential) {
     custodyFixture(archive, request, prior.consumption, "consumption-readback", n + 6);
@@ -1155,6 +1158,88 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
 function fixture90(phase = "dry-run", previous = null, options = {}) {
   return runnerFixture(phase, previous, { ...options, policy: current90Policy() });
 }
+
+for (const [direction, currentIsV2] of [
+  ["v1 runner with v2 baseline", false],
+  ["v2 runner with v1 baseline", true]
+])
+  for (const [entry, run] of [
+    ["assessor", assessManualRunnerEvidence],
+    ["archive", validateManualRunnerProtocol]
+  ])
+    test(`referenced baseline predecessor profile rejects ${direction} in ${entry}`, () => {
+      const policy90 = current90Policy();
+      const current = runnerFixture("dry-run", null, {
+        policy: currentIsV2 ? legacyPolicy : policy90,
+        runnerPolicy: currentIsV2 ? policy90 : legacyPolicy
+      });
+      const input = current.archive.input(current.request);
+      assert.equal(Object.hasOwn(input, "profileBytes"), currentIsV2);
+      assert.notEqual(current.request.profileDigest, current.root.request.profileDigest);
+      assert.equal(
+        current.request.baselineManifestDigest,
+        sha256Canonical(current.shared.baseline)
+      );
+      assert.equal(
+        current.request.targetObservationDigest,
+        sha256Canonical(current.root.observation)
+      );
+      assert.equal(
+        current.shared.baseline.identity.authorizationDigest,
+        sha256Canonical(current.root.authorization)
+      );
+      for (const branch of [current, current.root]) {
+        assert.equal(branch.session.profileDigest, branch.request.profileDigest);
+        assert.equal(branch.revocation.profileDigest, branch.request.profileDigest);
+        assert.equal(branch.consumption.sessionRecordDigest, sha256Canonical(branch.session));
+        assert.equal(branch.consumption.revocationRecordDigest, sha256Canonical(branch.revocation));
+        for (const artifact of [branch.session, branch.revocation, branch.consumption])
+          assert.equal(current.archive.artifacts.get(sha256Canonical(artifact)), artifact);
+      }
+      assert.throws(() => run(input), { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" });
+    });
+
+for (const [direction, currentIsV2] of [
+  ["v1 runner with v2 baseline", false],
+  ["v2 runner with v1 baseline", true]
+])
+  test(`isolated baseline predecessor profile rejects ${direction} in archive`, () => {
+    const policy90 = current90Policy();
+    const root = observeFixture({ policy: currentIsV2 ? policy90 : legacyPolicy });
+    const predecessor = observeFixture({ policy: currentIsV2 ? legacyPolicy : policy90 });
+    const shared = buildFixture(predecessor);
+    for (const [digest, artifact] of predecessor.archive.artifacts)
+      root.archive.artifacts.set(digest, artifact);
+    for (const [digest, bytes] of predecessor.archive.raws) root.archive.raws.set(digest, bytes);
+    const current = runnerFixture("dry-run", { root, shared });
+    const input = current.archive.input(current.request);
+    assert.equal(Object.hasOwn(input, "profileBytes"), currentIsV2);
+    assert.equal(current.request.profileDigest, root.observation.profileDigest);
+    assert.equal(current.request.targetObservationDigest, sha256Canonical(root.observation));
+    assert.equal(current.request.baselineManifestDigest, sha256Canonical(shared.baseline));
+    assert.equal(
+      shared.baseline.identity.targetObservationDigest,
+      sha256Canonical(predecessor.observation)
+    );
+    assert.equal(
+      shared.baseline.identity.authorizationDigest,
+      sha256Canonical(predecessor.authorization)
+    );
+    assert.notEqual(current.request.profileDigest, predecessor.observation.profileDigest);
+    assert.notEqual(current.request.profileDigest, predecessor.authorization.payload.profileDigest);
+    for (const artifact of [
+      root.observation,
+      predecessor.observation,
+      predecessor.authorization,
+      predecessor.consumption,
+      predecessor.session,
+      predecessor.revocation
+    ])
+      assert.equal(current.archive.artifacts.get(sha256Canonical(artifact)), artifact);
+    assert.throws(() => validateManualRunnerProtocol(input), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+  });
 
 test("object-valued profile version stays a structural error in archive assessor and live ACK", () => {
   const current = fixture90();

@@ -68,6 +68,12 @@ function profile() {
     }
   };
 }
+function profile90() {
+  const value = profile();
+  value.schemaVersion = "manual-stage1-profile.v2";
+  value.storage.retentionDays = 90;
+  return value;
+}
 function fixture(phase = "observe") {
   const p = profile();
   const binding = {
@@ -138,6 +144,28 @@ function fixture(phase = "observe") {
         originalIdempotencyKey: binding.idempotencyKey
       });
   }
+  rebind(f);
+  return f;
+}
+function fixture90(phase = "observe") {
+  const f = fixture(phase);
+  f.profile = profile90();
+  f.request.binding.profileDigest = sha256Canonical(f.profile);
+  for (const value of [f.session.record, f.session.predecessor, ...f.revocation.records].filter(
+    Boolean
+  )) {
+    value.schemaVersion = "manual-operation-record.v2";
+    value.profileDigest = f.request.binding.profileDigest;
+  }
+  if (f.session.predecessor) {
+    const key = phase === "apply" ? "dryRunRecordDigest" : "predecessorExecutionRecordDigest";
+    f.request.binding[key] = sha256Canonical(f.session.predecessor);
+  }
+  f.session.recordDigest = sha256Canonical(f.session.record);
+  f.revocation.headDigest = sha256Canonical(f.revocation.records.at(-1));
+  f.revocation.checkpoint.digest = sha256Canonical(
+    f.revocation.records[f.revocation.checkpoint.sequence]
+  );
   rebind(f);
   return f;
 }
@@ -278,6 +306,10 @@ function handoff(f) {
     issuedAt: NOW,
     expiresAt: "2026-09-07T12:00:30.000Z"
   };
+  receipt.schemaVersion =
+    f.profile.schemaVersion === "manual-stage1-profile.v2"
+      ? "manual-operation-record.v2"
+      : "manual-operation-record.v1";
   resignReceipt(receipt);
   return {
     authorization: f.authorization,
@@ -708,6 +740,43 @@ test("handoff is a separate frozen brand and repeated pure verification is permi
   rejects(() => manual.assertManualHandoffDecision({ ...child }), "MANUAL_HANDOFF_UNTRUSTED");
 });
 
+test("object-valued profile version stays a structural error in authorization and handoff", () => {
+  const parent = fixture90("verify");
+  const child = handoff(parent);
+  parent.profile.schemaVersion = { toString: null };
+  child.profile.schemaVersion = { toString: null };
+  rejects(() => manual.verifyManualAuthorization(parent), "CONTRACT_SCHEMA_INVALID");
+  rejects(() => manual.verifyManualHandoff(child), "CONTRACT_SCHEMA_INVALID");
+});
+
+test("90-day profile selects only the complete v2 authorization and handoff record chain", () => {
+  const current = fixture90("verify");
+  manual.assertManualDecision(manual.verifyManualAuthorization(current));
+  manual.assertManualHandoffDecision(manual.verifyManualHandoff(handoff(current)));
+
+  const v1InV2 = fixture90();
+  v1InV2.session.record.schemaVersion = "manual-operation-record.v1";
+  v1InV2.session.recordDigest = sha256Canonical(v1InV2.session.record);
+  rejects(() => manual.verifyManualAuthorization(v1InV2), "CONTRACT_SCHEMA_INVALID");
+
+  const v2InV1 = fixture();
+  v2InV1.session.record.schemaVersion = "manual-operation-record.v2";
+  v2InV1.session.recordDigest = sha256Canonical(v2InV1.session.record);
+  rejects(() => manual.verifyManualAuthorization(v2InV1), "CONTRACT_SCHEMA_INVALID");
+
+  const signedWrongDigest = fixture90();
+  signedWrongDigest.request.binding.profileDigest = OTHER;
+  signedWrongDigest.session.record.profileDigest = OTHER;
+  signedWrongDigest.revocation.records[0].profileDigest = OTHER;
+  signedWrongDigest.session.recordDigest = sha256Canonical(signedWrongDigest.session.record);
+  signedWrongDigest.revocation.headDigest = sha256Canonical(
+    signedWrongDigest.revocation.records[0]
+  );
+  signedWrongDigest.revocation.checkpoint.digest = signedWrongDigest.revocation.headDigest;
+  rebind(signedWrongDigest);
+  rejects(() => manual.verifyManualAuthorization(signedWrongDigest), "MANUAL_BINDING_MISMATCH");
+});
+
 for (const [label, change, code] of [
   [
     "unsigned receipt",
@@ -807,6 +876,36 @@ for (const kind of [
     invalid("manual-operation-record.v1", negative);
   });
 
+for (const kind of [
+  "session",
+  "revocation",
+  "consumption",
+  "consumption-handoff",
+  "post-state",
+  "execution",
+  "custody",
+  "signoff"
+])
+  test(`closed v2 ${kind} record required fields and branches`, () => {
+    const r = record(kind);
+    r.schemaVersion = "manual-operation-record.v2";
+    if (kind === "custody") r.retentionDays = 90;
+    validateContract("manual-operation-record.v2", r);
+    for (const key of Object.keys(r)) {
+      const missing = clone(r);
+      delete missing[key];
+      invalid("manual-operation-record.v2", missing, "required");
+    }
+    invalid("manual-operation-record.v2", { ...r, extra: true }, "additionalProperties");
+    invalid("manual-operation-record.v2", { ...r, kind: "other" });
+    invalid("manual-operation-record.v2", { ...r, promotionEligible: true }, "const");
+    const negative = clone(r);
+    if ("reasonCode" in negative) negative.reasonCode = "UNEXPECTED_REASON";
+    else if (kind === "consumption") negative.status = "AVAILABLE";
+    else negative.consumptionReadbackDigest = null;
+    invalid("manual-operation-record.v2", negative);
+  });
+
 test("profile recursively closes roots targets and trust with explicit UUID patterns", () => {
   const p = profile();
   validateContract("manual-stage1-profile.v1", p);
@@ -833,6 +932,38 @@ test("profile recursively closes roots targets and trust with explicit UUID patt
     const bad = clone(p);
     mutate(bad);
     invalid("manual-stage1-profile.v1", bad);
+  }
+});
+
+test("v2 profile recursively closes roots targets and fixes retention at 90 days", () => {
+  const p = profile90();
+  validateContract("manual-stage1-profile.v2", p);
+  for (const mutate of [
+    (v) => {
+      v.buildTrust.extra = true;
+    },
+    (v) => {
+      v.allowedTargets[0].roles.extra = "x";
+    },
+    (v) => {
+      v.allowedCommands.push(v.allowedCommands[0]);
+    },
+    (v) => {
+      v.storage.keyRef = "../key";
+    },
+    (v) => {
+      v.profileId = UUID.toUpperCase();
+    },
+    (v) => {
+      v.storage.archiveRoot = "relative/path";
+    },
+    (v) => {
+      v.storage.retentionDays = 180;
+    }
+  ]) {
+    const bad = clone(p);
+    mutate(bad);
+    invalid("manual-stage1-profile.v2", bad);
   }
 });
 

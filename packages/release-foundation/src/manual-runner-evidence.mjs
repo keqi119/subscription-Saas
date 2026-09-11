@@ -9,6 +9,11 @@ import evidenceSchema from "../../../release/contracts/schemas/manual-runner-evi
 const LIMIT = 1048576;
 const MISMATCH = "MANUAL_EVIDENCE_BINDING_MISMATCH";
 const REQUIRED = "MANUAL_EVIDENCE_INPUT_REQUIRED";
+const manualVersions = Object.freeze({
+  "manual-stage1-profile.v1": Object.freeze({ record: "manual-operation-record.v1", days: 180 }),
+  "manual-stage1-profile.v2": Object.freeze({ record: "manual-operation-record.v2", days: 90 })
+});
+const recordVersions = Object.freeze(Object.values(manualVersions).map((p) => p.record));
 const A = [
   "profileDigest",
   "sessionId",
@@ -97,6 +102,30 @@ function exact(value, keys, code = FRAME) {
       }),
     code
   );
+}
+function profileKeys(input, keys) {
+  return Object.hasOwn(input ?? {}, "profileBytes") ? [...keys, "profileBytes"] : keys;
+}
+function resolveProfile(input, request) {
+  if (!Object.hasOwn(input, "profileBytes")) return manualVersions["manual-stage1-profile.v1"];
+  const profile = parse(input.profileBytes);
+  validateContract(
+    typeof profile?.schemaVersion === "string" &&
+      Object.hasOwn(manualVersions, profile.schemaVersion)
+      ? profile.schemaVersion
+      : "manual-stage1-profile.v1",
+    profile
+  );
+  requireThat(sha256Bytes(input.profileBytes) === request.profileDigest);
+  return manualVersions[profile.schemaVersion];
+}
+function recordPolicy(record, policy) {
+  requireThat(record.schemaVersion === policy.record);
+  if (record.kind === "custody") requireThat(record.retentionDays === policy.days);
+}
+function frameRecord(record) {
+  requireThat(recordVersions.includes(record?.schemaVersion), FRAME);
+  validateContract(record.schemaVersion, record);
 }
 function matches(pattern, value) {
   return typeof value === "string" && pattern.test(value);
@@ -239,7 +268,7 @@ function validateFramePayload(type, payload) {
       ["processReadback", "custody"]
     ]) {
       requireThat(payload[k]?.kind === kind, FRAME);
-      validateContract("manual-operation-record.v1", payload[k]);
+      frameRecord(payload[k]);
     }
     return;
   }
@@ -297,7 +326,7 @@ function validateFramePayload(type, payload) {
     requireThat(subject?.kind === payload.subject.kind, FRAME);
     validateContract("manual-runner-evidence.v1", subject);
     requireThat(payload.readback?.kind === "custody", FRAME);
-    validateContract("manual-operation-record.v1", payload.readback);
+    frameRecord(payload.readback);
   }
 }
 
@@ -874,22 +903,27 @@ export function parseManualRunnerFrames(input) {
 
 export function validateManualRunnerProtocol(input) {
   if (Object.getOwnPropertyDescriptor(input ?? {}, "mode")?.value === "live-ack") {
-    exact(input, [
-      "mode",
-      "requestBytes",
-      "authorizationBytes",
-      "previousProcessBytes",
-      "childFrameBytes",
-      "ackFrameBytes",
-      "stdoutPrefixBytes",
-      "parentFrameBytes"
-    ]);
+    exact(
+      input,
+      profileKeys(input, [
+        "mode",
+        "requestBytes",
+        "authorizationBytes",
+        "previousProcessBytes",
+        "childFrameBytes",
+        "ackFrameBytes",
+        "stdoutPrefixBytes",
+        "parentFrameBytes"
+      ]),
+      Object.hasOwn(input, "profileBytes") ? MISMATCH : FRAME
+    );
     const request = parse(input.requestBytes),
       authorization = parse(input.authorizationBytes),
       previous = parse(input.previousProcessBytes);
     validateManualRunnerRequest(request);
     validateContract("manual-launch-authorization.v1", authorization);
     validateContract("manual-runner-evidence.v1", previous);
+    const policy = resolveProfile(input, request);
     const parsed = parseManualRunnerFrames({
       direction: "child-to-parent",
       bytes: input.stdoutPrefixBytes,
@@ -904,13 +938,18 @@ export function validateManualRunnerProtocol(input) {
     requireThat(candidate.type === "ACK" && candidate.sequence === parents.length + 1, ORDER);
     protocolTrace(request, authorization, parsed.frames, [...parents, candidate], {
       live: true,
+      policy,
       previous,
       current: input.childFrameBytes,
       stdout: input.stdoutPrefixBytes
     });
     return;
   }
-  exact(input, ["requestBytes", "artifactBytes", "rawBlobs"]);
+  exact(
+    input,
+    profileKeys(input, ["requestBytes", "artifactBytes", "rawBlobs"]),
+    Object.hasOwn(input ?? {}, "profileBytes") ? MISMATCH : FRAME
+  );
   const graph = inputGraph(input);
   protocolArchive(graph.request, graph);
 }
@@ -947,7 +986,8 @@ function expectedWire(request, authorization) {
     ])
   );
 }
-function readbackMatches(subject, readback, request) {
+function readbackMatches(subject, readback, request, policy) {
+  recordPolicy(readback, policy);
   requireThat(
     readback.kind === "custody" &&
       readback.subjectType === "r2-artifact" &&
@@ -960,7 +1000,7 @@ function readbackMatches(subject, readback, request) {
     readback.subjectDigest === sha256Canonical(subject) &&
       readback.observedDigest === readback.subjectDigest &&
       readback.reasonCode === null &&
-      readback.retentionDays === 180 &&
+      readback.retentionDays === policy.days &&
       readback.promotionEligible === false,
     ORDER
   );
@@ -974,9 +1014,10 @@ function readbackMatches(subject, readback, request) {
     "MANUAL_TIME_INVALID"
   );
 }
-function authorizeMatches(frame, request, authorization, challenge) {
+function authorizeMatches(frame, request, authorization, challenge, policy) {
   requireThat(frame?.type === "AUTHORIZE", INCOMPLETE);
   const p = frame.payload;
+  recordPolicy(p.receipt, policy);
   requireThat(equal(p.request, request) && equal(p.authorization, authorization), MISMATCH);
   requireThat(challenge === request.childChallenge, MISMATCH);
   same(p.launchContext, request, ["containerId", "runnerImageDigest"]);
@@ -1021,7 +1062,7 @@ function authorizeMatches(frame, request, authorization, challenge) {
   );
   requireThat(payload.requestDigest === sha256Canonical(request), MISMATCH);
   requireThat(sha256Canonical(p.baseline) === request.baselineManifestDigest, MISMATCH);
-  readbackMatches(p.process, p.processReadback, request);
+  readbackMatches(p.process, p.processReadback, request, policy);
 }
 function protocolEvent(previous, event, request) {
   requireThat(event.sequence === previous.events.length, ORDER);
@@ -1113,7 +1154,7 @@ function protocolEvent(previous, event, request) {
       );
   }
 }
-function ackMatches(ack, child, previous, parents, stdout, request, wire) {
+function ackMatches(ack, child, previous, parents, stdout, request, wire, policy) {
   requireThat(equal(ack.payload.binding, wire), MISMATCH);
   requireThat(equal(ack.payload.acknowledgedFrame, frameRef(child.frameBytes)), ORDER);
   const p = ack.payload;
@@ -1152,13 +1193,19 @@ function ackMatches(ack, child, previous, parents, stdout, request, wire) {
   }
   same(subject, request, A);
   requireThat(subject.requestDigest === sha256Canonical(request), MISMATCH);
-  readbackMatches(subject, p.readback, request);
+  readbackMatches(subject, p.readback, request, policy);
   return p.subject.kind === "process" ? subject : previous;
 }
 function protocolTrace(request, authorization, children, parents, options) {
   requireThat(children[0]?.type === "CHALLENGE", INCOMPLETE);
   const wire = expectedWire(request, authorization);
-  authorizeMatches(parents[0], request, authorization, children[0].payload.childChallenge);
+  authorizeMatches(
+    parents[0],
+    request,
+    authorization,
+    children[0].payload.childChallenge,
+    options.policy
+  );
   let process = parents[0].payload.process,
     lastAck = null,
     parentIndex = 1,
@@ -1225,7 +1272,8 @@ function protocolTrace(request, authorization, children, parents, options) {
         parents.slice(0, parentIndex),
         options.stdout.subarray(0, offset),
         request,
-        wire
+        wire,
+        options.policy
       );
       lastAck = ack;
       parentIndex++;
@@ -1288,11 +1336,12 @@ export function validateManualRunnerRequest(request) {
 }
 
 function inputGraph(input) {
-  exact(input, ["artifactBytes", "rawBlobs", "requestBytes"], MISMATCH);
+  exact(input, profileKeys(input, ["artifactBytes", "rawBlobs", "requestBytes"]), MISMATCH);
   const artifactBytes = bufferCollection(input.artifactBytes),
     rawBlobs = bufferCollection(input.rawBlobs);
   const request = parse(input.requestBytes);
   validateManualRunnerRequest(request);
+  const policy = resolveProfile(input, request);
   const artifacts = new Map(),
     raws = new Map();
   for (const bytes of rawBlobs) {
@@ -1311,7 +1360,7 @@ function inputGraph(input) {
   const requestDigest = sha256Bytes(input.requestBytes);
   if (artifacts.has(requestDigest)) requireThat(equal(artifacts.get(requestDigest), request));
   else artifacts.set(requestDigest, request);
-  const graph = validateArtifacts(artifacts, raws);
+  const graph = validateArtifacts(artifacts, raws, request.profileDigest, policy);
   const protocolPrefixes = new Set(
     graph.list("process").map((p) => p.protocol.stdoutPrefix.digest)
   );
@@ -1322,7 +1371,15 @@ function inputGraph(input) {
   requireThat(A.every((k) => allocation[k] === request[k]));
   requireThat(allocation.allocatedAt === allocation.recordedAt);
   instant(allocation.recordedAt);
-  return { ...graph, request };
+  return {
+    ...graph,
+    request,
+    policyFor(evaluatedRequest) {
+      // Recursive recovery evaluates this bound profile, never unrelated history.
+      requireThat(evaluatedRequest.profileDigest === request.profileDigest);
+      return policy;
+    }
+  };
 }
 
 function bufferCollection(value, code = MISMATCH) {
@@ -1365,6 +1422,7 @@ function closedProtocolStdout(final, graph) {
 }
 
 function protocolArchive(request, graph, { allowMissingResult = false } = {}) {
+  const policy = graph.policyFor(request);
   if (request.stage === "target-observe") {
     requireThat(
       !graph
@@ -1422,6 +1480,7 @@ function protocolArchive(request, graph, { allowMissingResult = false } = {}) {
   for (const f of frames) if (f.type === "OBSERVATION") archived(f.payload.observation);
   const lastAcknowledgedProcess = protocolTrace(request, authorization, frames, parents, {
     live: false,
+    policy,
     stdout: raw,
     allowMissingResult
   });
@@ -1445,7 +1504,7 @@ function protocolArchive(request, graph, { allowMissingResult = false } = {}) {
 function type(value) {
   if (value?.payload?.schemaVersion === "manual-launch-authorization.v1") return "authorization";
   if (value?.catalogVersion === "migration-catalog.v1") return "migration-catalog";
-  if (["manual-runner-evidence.v1", "manual-operation-record.v1"].includes(value?.schemaVersion))
+  if (["manual-runner-evidence.v1", ...recordVersions].includes(value?.schemaVersion))
     return value.kind;
   return {
     "manual-runner-request.v1": "request",
@@ -1464,7 +1523,7 @@ function timeFields(value) {
 function same(left, right, keys) {
   requireThat(keys.every((k) => equal(left[k], right[k])));
 }
-function validateArtifacts(artifacts, raws) {
+function validateArtifacts(artifacts, raws, profileDigest, policy) {
   const get = (digest, kinds) => {
     const value = artifacts.get(digest);
     requireThat(value, REQUIRED);
@@ -1490,6 +1549,11 @@ function validateArtifacts(artifacts, raws) {
   const edge = (from, digest, kinds) => {
     const target = get(digest, kinds),
       key = sha256Canonical(from);
+    if (
+      (from.profileDigest ?? from.payload?.profileDigest) === profileDigest &&
+      recordVersions.includes(target.schemaVersion)
+    )
+      recordPolicy(target, policy);
     const links = edges.get(key) ?? [];
     links.push(digest);
     edges.set(key, links);
@@ -1521,6 +1585,8 @@ function validateArtifacts(artifacts, raws) {
       }
       requireThat(sortedUnique(paths));
     } else validateContract(value.schemaVersion, value);
+    if (value.profileDigest === profileDigest && recordVersions.includes(value.schemaVersion))
+      recordPolicy(value, policy);
     timeFields(value);
     if (value.recordedAt) {
       for (const field of [
@@ -1673,7 +1739,7 @@ function validateArtifacts(artifacts, raws) {
           );
         }
       }
-    } else if (value.schemaVersion === "manual-operation-record.v1") {
+    } else if (recordVersions.includes(value.schemaVersion)) {
       validateRecord(value, edge, get);
     }
   }

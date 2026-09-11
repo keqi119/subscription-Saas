@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import test from "node:test";
+import { canonicalJson } from "../src/canonical-json.mjs";
 import { sha256Bytes, sha256Canonical } from "../src/digest.mjs";
 import { encodeManualJson } from "../src/manual-stage1-contracts.mjs";
 import { deterministicPlanDigest } from "../src/proof-builders.mjs";
@@ -12,13 +14,84 @@ import { createRequire } from "node:module";
 
 const D = "sha256:" + "a".repeat(64);
 const uuid = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-function requestFixture(phase = "target-observe") {
+const currentKeys = generateKeyPairSync("ed25519");
+const signDomain = (body, domain) =>
+  sign(
+    null,
+    Buffer.from(`subscription-saas/${domain}/v1\n${canonicalJson(body)}`),
+    currentKeys.privateKey
+  ).toString("base64");
+const legacyPolicy = Object.freeze({
+  profileBytes: null,
+  recordSchema: "manual-operation-record.v1",
+  retentionDays: 180
+});
+const requestPolicies = new WeakMap();
+function profile90() {
+  return {
+    schemaVersion: "manual-stage1-profile.v2",
+    profileId: uuid(90),
+    ownerId: "test-owner",
+    publicKeyPem: currentKeys.publicKey.export({ type: "spki", format: "pem" }),
+    keyFingerprint: `sha256:${createHash("sha256")
+      .update(currentKeys.publicKey.export({ type: "spki", format: "der" }))
+      .digest("hex")}`,
+    validFrom: time(-1000),
+    expiresAt: time(10000),
+    buildTrust: {
+      repository: "keqi119/subscription-Saas",
+      workflow: "keqi119/subscription-Saas/.github/workflows/docker-images.yml",
+      sourceRef: "refs/heads/main",
+      oidcIssuer: "https://token.actions.githubusercontent.com",
+      runnerClass: "github-hosted"
+    },
+    allowedCommands: [
+      { commandId: "db.migrate.deploy", commandVersion: "1", capability: "migrate" },
+      { commandId: "db.schema.verify", commandVersion: "1", capability: "verify" }
+    ],
+    allowedTargets: [
+      {
+        endpointPolicyId: "test-endpoint",
+        endpoint: "db.invalid:5432",
+        databaseName: "test-db",
+        purposes: ["synthetic-fresh", "staging-mainline"],
+        roles: { observer: "test-observer", migrate: "test-migrate", verify: "test-verify" },
+        tls: "required"
+      }
+    ],
+    storage: {
+      keyRoot: "/manual/keys",
+      keyRef: "owner.key",
+      journalRoot: "/manual/journal",
+      archiveRoot: "/manual/archive",
+      backupRoot: "/independent/backup",
+      credentialRoot: "/manual/credentials",
+      retentionDays: 90
+    }
+  };
+}
+function current90Policy() {
+  const profileBytes = encodeManualJson(profile90());
+  return Object.freeze({
+    profileBytes,
+    recordSchema: "manual-operation-record.v2",
+    retentionDays: 90
+  });
+}
+function policyFor(request) {
+  return requestPolicies.get(request) ?? legacyPolicy;
+}
+function profileInput(request) {
+  const profileBytes = policyFor(request).profileBytes;
+  return profileBytes ? { profileBytes } : {};
+}
+function requestFixture(phase = "target-observe", policy = legacyPolicy) {
   const request = {
     schemaVersion: "manual-runner-request.v1",
     attemptId: uuid(1),
     runId: uuid(2),
     attemptAllocationDigest: D,
-    profileDigest: D,
+    profileDigest: policy.profileBytes ? sha256Bytes(policy.profileBytes) : D,
     ownerId: "test-owner",
     sessionId: uuid(3),
     sessionNonce: "b".repeat(64),
@@ -29,6 +102,7 @@ function requestFixture(phase = "target-observe") {
     stage: "target-observe",
     capability: "verify"
   };
+  requestPolicies.set(request, policy);
   if (phase === "target-observe") return request;
   const physicalIdentity = { ...request.targetIntent, databaseOid: "123", clusterFingerprint: D };
   const role = phase === "verify" ? "test-verify" : "test-migrate";
@@ -152,7 +226,7 @@ function fixtureFrame({ type, sequence, payload }) {
   const bytes = encodeManualJson(payload);
   return Buffer.concat([Buffer.from(`MS1 ${type} ${sequence} ${bytes.length}\n`), bytes]);
 }
-function archiveFixture() {
+function archiveFixture(policy = legacyPolicy) {
   const artifacts = new Map(),
     raws = new Map();
   return {
@@ -170,6 +244,7 @@ function archiveFixture() {
     },
     input(request) {
       return {
+        ...profileInput(request),
         requestBytes: encodeManualJson(request),
         artifactBytes: [...artifacts.values()].map(encodeManualJson),
         rawBlobs: [...raws.values()]
@@ -179,7 +254,7 @@ function archiveFixture() {
 }
 function record(request, kind, n, fields) {
   return {
-    schemaVersion: "manual-operation-record.v1",
+    schemaVersion: policyFor(request).recordSchema,
     kind,
     profileDigest: request.profileDigest,
     recordedAt: time(n),
@@ -241,7 +316,12 @@ function consumeFixture(
     expiresAt: time(n + 120),
     requestDigest: archive.add(request)
   });
-  const authorization = { payload, signature: Buffer.alloc(64, 7).toString("base64") };
+  const authorization = {
+    payload,
+    signature: policyFor(request).profileBytes
+      ? signDomain(payload, "manual-launch")
+      : Buffer.alloc(64, 7).toString("base64")
+  };
   const consumption = record(request, "consumption", n + 6, {
     ...pick(request, [...sessionKeys, ...operationKeys]),
     ownerId: request.ownerId,
@@ -257,8 +337,9 @@ function consumeFixture(
   return { session, revocation, authorization, consumption };
 }
 function observeFixture(options = {}) {
-  const archive = archiveFixture(),
-    request = requestFixture();
+  const policy = options.policy ?? legacyPolicy,
+    archive = archiveFixture(policy),
+    request = requestFixture("target-observe", policy);
   const allocation = evidence(request, "attempt-allocation", 1, {
     stage: "target-observe",
     phaseKey: "target-observe",
@@ -361,7 +442,7 @@ function custodyFixture(archive, request, subject, purpose, n) {
         : purpose === "backup-readback"
           ? "backup"
           : "archive",
-    retentionDays: 180,
+    retentionDays: policyFor(request).retentionDays,
     reasonCode: null
   });
   archive.add(custody);
@@ -447,7 +528,7 @@ function buildFixture(f, prismaReport = null) {
   return { build, migrationCatalog: catalog, report, expectation, baseline };
 }
 function runnerFixture(phase = "dry-run", previous = null, options = {}) {
-  const root = previous?.root ?? observeFixture();
+  const root = previous?.root ?? observeFixture({ policy: options.policy });
   const shared = previous?.shared ?? buildFixture(root, options.report);
   const { archive } = root;
   const expectation = options.expectationScript
@@ -455,7 +536,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     : shared.expectation;
   const step = { "dry-run": 1, apply: 2, verify: 3, replay: 4, reconcile: 5 }[phase];
   const n = 20 + step * 100;
-  const request = requestFixture(phase);
+  const request = requestFixture(phase, policyFor(root.request));
   Object.assign(request, {
     attemptId: uuid(100 + step),
     physicalIdentity: root.observation.physicalIdentity,
@@ -648,6 +729,11 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     expiresAt: time(n + 38),
     signature: Buffer.alloc(64, 8).toString("base64")
   });
+  if (policyFor(request).profileBytes) {
+    const body = { ...handoff };
+    delete body.signature;
+    handoff.signature = signDomain(body, "manual-consumption");
+  }
   archive.add(handoff);
   const handoffReadback = custodyFixture(archive, request, handoff, "handoff-readback", n + 9);
   const processReadback = custodyFixture(archive, request, bound, "archive-readback", n + 4);
@@ -706,6 +792,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     });
     liveInputs.push({
       mode: "live-ack",
+      ...profileInput(request),
       requestBytes: encodeManualJson(request),
       authorizationBytes: encodeManualJson(prior.authorization),
       previousProcessBytes: encodeManualJson(previous),
@@ -895,6 +982,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   });
   liveInputs.push({
     mode: "live-ack",
+    ...profileInput(request),
     requestBytes: encodeManualJson(request),
     authorizationBytes: encodeManualJson(prior.authorization),
     previousProcessBytes: encodeManualJson(process),
@@ -1063,6 +1151,253 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     liveInputs
   };
 }
+
+function fixture90(phase = "dry-run", previous = null, options = {}) {
+  return runnerFixture(phase, previous, { ...options, policy: current90Policy() });
+}
+
+test("object-valued profile version stays a structural error in archive assessor and live ACK", () => {
+  const current = fixture90();
+  const profile = profile90();
+  profile.schemaVersion = { toString: null };
+  const profileBytes = encodeManualJson(profile);
+  const archiveInput = { ...current.archive.input(current.request), profileBytes };
+  for (const run of [assessManualRunnerEvidence, validateManualRunnerProtocol])
+    assert.throws(() => run(archiveInput), { code: "CONTRACT_SCHEMA_INVALID" });
+  assert.throws(
+    () => validateManualRunnerProtocol({ ...current.liveInputs.at(-1), profileBytes }),
+    { code: "CONTRACT_SCHEMA_INVALID" }
+  );
+});
+
+test("bound 90-day profile accepts the complete v2 archive and every live ACK", () => {
+  const current = fixture90();
+  const newInput = current.archive.input(current.request);
+  assert.equal(
+    verify(
+      null,
+      Buffer.from(
+        `subscription-saas/manual-launch/v1\n${canonicalJson(current.authorization.payload)}`
+      ),
+      currentKeys.publicKey,
+      Buffer.from(current.authorization.signature, "base64")
+    ),
+    true
+  );
+  const receiptBody = { ...current.handoff };
+  delete receiptBody.signature;
+  assert.equal(
+    verify(
+      null,
+      Buffer.from(`subscription-saas/manual-consumption/v1\n${canonicalJson(receiptBody)}`),
+      currentKeys.publicKey,
+      Buffer.from(current.handoff.signature, "base64")
+    ),
+    true
+  );
+  assert.equal(assessManualRunnerEvidence(newInput).executionStatus, "SUCCEEDED");
+  assert.equal(validateManualRunnerProtocol(newInput), undefined);
+  for (const live of current.liveInputs)
+    assert.equal(validateManualRunnerProtocol(live), undefined);
+});
+
+test("bound v2 policy survives observe dry-run apply verify replay and reconcile routing", () => {
+  const dry = fixture90();
+  const apply = fixture90("apply", dry);
+  const verifyCurrent = fixture90("verify", apply);
+  const replay = fixture90("replay", apply);
+  const recoveryDry = fixture90();
+  const uncertainApply = fixture90("apply", recoveryDry, {
+    unknown: true,
+    missingResult: true,
+    deployExit: 1
+  });
+  const reconcile = fixture90("reconcile", uncertainApply);
+  for (const current of [dry.root, dry, apply, verifyCurrent, replay, reconcile]) {
+    const input = current.archive.input(current.request);
+    assert.equal(assessManualRunnerEvidence(input).executionStatus, "SUCCEEDED");
+    assert.equal(validateManualRunnerProtocol(input), undefined);
+  }
+});
+
+test("an unlinked opposite-version historical session does not select current policy", () => {
+  for (const [current, historicalSchema] of [
+    [runnerFixture(), "manual-operation-record.v2"],
+    [fixture90(), "manual-operation-record.v1"]
+  ]) {
+    current.archive.add({
+      schemaVersion: historicalSchema,
+      kind: "session",
+      profileDigest: `sha256:${"f".repeat(64)}`,
+      recordedAt: time(-50),
+      promotionEligible: false,
+      sessionId: uuid(700),
+      sessionNonce: "e".repeat(64),
+      ownerId: "independent-history-owner",
+      targetIntent: { endpointPolicyId: "history-endpoint", databaseName: "history-db" },
+      status: "OPEN",
+      openedAt: time(-50),
+      previousSessionRecordDigest: null,
+      reasonCode: null
+    });
+    assert.equal(
+      assessManualRunnerEvidence(current.archive.input(current.request)).executionStatus,
+      "SUCCEEDED"
+    );
+  }
+});
+
+test("v2 archive requires present canonical profile bytes bound to the request", () => {
+  const current = fixture90();
+  const newInput = current.archive.input(current.request);
+  const absent = { ...newInput };
+  delete absent.profileBytes;
+  for (const input of [absent, { ...newInput, profileBytes: undefined }]) {
+    assert.throws(() => validateManualRunnerProtocol(input), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+    assert.throws(() => assessManualRunnerEvidence(input), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+  }
+  for (const profileBytes of [
+    Buffer.from([0xff]),
+    Buffer.from(JSON.stringify(profile90(), null, 2), "utf8")
+  ])
+    for (const run of [validateManualRunnerProtocol, assessManualRunnerEvidence])
+      assert.throws(() => run({ ...newInput, profileBytes }), {
+        code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+      });
+  const wrongProfile = profile90();
+  wrongProfile.profileId = uuid(91);
+  for (const run of [validateManualRunnerProtocol, assessManualRunnerEvidence])
+    assert.throws(() => run({ ...newInput, profileBytes: encodeManualJson(wrongProfile) }), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+  const malformedProfile = profile90();
+  malformedProfile.storage.retentionDays = 180;
+  assert.throws(
+    () =>
+      validateManualRunnerProtocol({
+        ...newInput,
+        profileBytes: encodeManualJson(malformedProfile)
+      }),
+    { code: "CONTRACT_SCHEMA_INVALID" }
+  );
+  assert.throws(
+    () => validateManualRunnerProtocol({ ...newInput, profileBytes: Buffer.alloc(1048577) }),
+    { code: "MANUAL_JSON_LIMIT" }
+  );
+});
+
+test("profile input remains inert closed own data", () => {
+  const current = fixture90();
+  const newInput = current.archive.input(current.request);
+  let getterCalled = false;
+  const accessorInput = { ...newInput };
+  Object.defineProperty(accessorInput, "profileBytes", {
+    enumerable: true,
+    get() {
+      getterCalled = true;
+      return newInput.profileBytes;
+    }
+  });
+  for (const run of [validateManualRunnerProtocol, assessManualRunnerEvidence])
+    assert.throws(() => run(accessorInput), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+  assert.equal(getterCalled, false);
+  for (const run of [validateManualRunnerProtocol, assessManualRunnerEvidence])
+    assert.throws(() => run({ ...newInput, [Symbol("extra")]: true }), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+});
+
+test("v2 archive and live ACK both reject a linked v1 record", () => {
+  const mixedArchive = fixture90();
+  const backup = [...mixedArchive.archive.artifacts.values()].find(
+    (value) =>
+      value.kind === "custody" &&
+      value.purpose === "backup-readback" &&
+      value.subjectDigest === sha256Canonical(mixedArchive.execution)
+  );
+  backup.schemaVersion = "manual-operation-record.v1";
+  backup.retentionDays = 180;
+  assert.throws(
+    () => validateManualRunnerProtocol(mixedArchive.archive.input(mixedArchive.request)),
+    { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" }
+  );
+
+  const current = fixture90();
+  const live = current.liveInputs.at(-1);
+  const headerEnd = live.ackFrameBytes.indexOf(10);
+  const [type, sequence] = live.ackFrameBytes
+    .subarray(0, headerEnd)
+    .toString("ascii")
+    .split(" ")
+    .slice(1, 3);
+  const payload = JSON.parse(live.ackFrameBytes.subarray(headerEnd + 1).toString("utf8"));
+  payload.readback.schemaVersion = "manual-operation-record.v1";
+  payload.readback.retentionDays = 180;
+  assert.throws(
+    () =>
+      validateManualRunnerProtocol({
+        ...live,
+        ackFrameBytes: fixtureFrame({ type, sequence: Number(sequence), payload })
+      }),
+    { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" }
+  );
+});
+
+test("v2 live ACK requires the same bound profile bytes as archive assessment", () => {
+  const current = fixture90();
+  const live = current.liveInputs.at(-1);
+  const absent = { ...live };
+  delete absent.profileBytes;
+  assert.throws(() => validateManualRunnerProtocol(absent), {
+    code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+  });
+  assert.throws(() => validateManualRunnerProtocol({ ...live, profileBytes: undefined }), {
+    code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+  });
+  const wrongProfile = profile90();
+  wrongProfile.profileId = uuid(92);
+  assert.throws(
+    () => validateManualRunnerProtocol({ ...live, profileBytes: encodeManualJson(wrongProfile) }),
+    { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" }
+  );
+  for (const profileBytes of [
+    Buffer.from([0xff]),
+    Buffer.from(JSON.stringify(profile90(), null, 2), "utf8")
+  ])
+    assert.throws(() => validateManualRunnerProtocol({ ...live, profileBytes }), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+});
+
+test("legacy policy rejects v2 custody and cannot let a receipt choose its own version", () => {
+  const custody90 = runnerFixture();
+  const backup = [...custody90.archive.artifacts.values()].find(
+    (value) =>
+      value.kind === "custody" &&
+      value.purpose === "backup-readback" &&
+      value.subjectDigest === sha256Canonical(custody90.execution)
+  );
+  backup.schemaVersion = "manual-operation-record.v2";
+  backup.retentionDays = 90;
+  assert.throws(() => assessManualRunnerEvidence(custody90.archive.input(custody90.request)), {
+    code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+  });
+
+  const receiptVersion = runnerFixture();
+  const unauthorized = structuredClone(receiptVersion.handoff);
+  unauthorized.schemaVersion = "manual-operation-record.v2";
+  receiptVersion.archive.add(unauthorized);
+  assert.throws(
+    () => assessManualRunnerEvidence(receiptVersion.archive.input(receiptVersion.request)),
+    { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" }
+  );
+});
 
 test("complete dry-run and apply use stable domain input and fresh attempts", () => {
   const dry = runnerFixture();

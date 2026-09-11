@@ -6,6 +6,10 @@ import { sha256Bytes, sha256Canonical } from "./digest.mjs";
 import { validateContract } from "./schema-registry.mjs";
 
 const LIMIT = 1048576;
+const manualVersions = Object.freeze({
+  "manual-stage1-profile.v1": "manual-operation-record.v1",
+  "manual-stage1-profile.v2": "manual-operation-record.v2"
+});
 const parentDecisions = new WeakSet();
 const childDecisions = new WeakSet();
 const commonKeys = [
@@ -259,7 +263,13 @@ function bindingKeys(payload) {
 }
 
 function verifyBase(authorization, profile, request, now) {
-  validateContract("manual-stage1-profile.v1", profile);
+  validateContract(
+    typeof profile?.schemaVersion === "string" &&
+      Object.hasOwn(manualVersions, profile.schemaVersion)
+      ? profile.schemaVersion
+      : "manual-stage1-profile.v1",
+    profile
+  );
   validateContract("manual-launch-authorization.v1", authorization);
   const epoch = instant(now),
     key = profileKey(profile, epoch),
@@ -319,7 +329,7 @@ function verifyBase(authorization, profile, request, now) {
     if (["replay", "reconcile"].includes(payload.phase))
       requireThat(payload.originalIdempotencyKey === payload.idempotencyKey);
   }
-  return { payload, key, epoch };
+  return { payload, key, epoch, recordSchema: manualVersions[profile.schemaVersion] };
 }
 
 function predecessorValid(predecessor, payload) {
@@ -442,12 +452,11 @@ export function verifyManualAuthorization(input) {
     ["records", "headDigest", "checkpoint", "readAt"],
     "MANUAL_REVOCATION_UNVERIFIED"
   );
-  validateContract("manual-operation-record.v1", session.record);
-  if (session.predecessor !== null)
-    validateContract("manual-operation-record.v1", session.predecessor);
+  const { payload, epoch, recordSchema } = verifyBase(authorization, profile, request, now);
+  validateContract(recordSchema, session.record);
+  if (session.predecessor !== null) validateContract(recordSchema, session.predecessor);
   requireThat(Array.isArray(revocation.records), "MANUAL_REVOCATION_UNVERIFIED");
-  for (const record of revocation.records) validateContract("manual-operation-record.v1", record);
-  const { payload, epoch } = verifyBase(authorization, profile, request, now);
+  for (const record of revocation.records) validateContract(recordSchema, record);
   recordTimes(session.record);
   if (session.predecessor !== null) recordTimes(session.predecessor);
   sessionValid(session, payload, epoch);
@@ -480,9 +489,9 @@ export function verifyManualHandoff(input) {
     request = requestInput(input.request),
     observation = jsonInput(input.childObservation),
     now = input.now;
-  validateContract("manual-operation-record.v1", receipt);
   closed(observation, childKeys);
-  const { payload, key, epoch } = verifyBase(authorization, profile, request, now);
+  const { payload, key, epoch, recordSchema } = verifyBase(authorization, profile, request, now);
+  validateContract(recordSchema, receipt);
   requireThat(payload.stage === "runner-command" && receipt.kind === "consumption-handoff");
   const { signature, ...body } = receipt;
   verifySignature(body, signature, key, "manual-consumption");

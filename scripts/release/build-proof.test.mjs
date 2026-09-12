@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { sha256Canonical } from "../../packages/release-foundation/src/index.mjs";
+import {
+  canonicalJson,
+  computeRepositoryContract,
+  sha256Canonical
+} from "../../packages/release-foundation/src/index.mjs";
 import { createBuildProof } from "./create-build-proof.mjs";
-import { verifyBuildProof } from "./verify-build-proof.mjs";
+import * as buildProofVerifier from "./verify-build-proof.mjs";
+
+const { assertBuildIdentity, assertProofCustody, verifyBuildProof } = buildProofVerifier;
 
 const sourceSha = "1".repeat(40);
 const digest = (character) => `sha256:${character.repeat(64)}`;
@@ -127,6 +136,33 @@ function trustFixture(proof, buildObservation = observation(), executionScope = 
   };
 }
 
+function trustFixture90(proof, buildObservation = observation(), executionScope = "full-rc") {
+  const input = trustFixture(proof, buildObservation, executionScope);
+  input.trustRoot.custody = {
+    owner: "release-engineering",
+    readers: ["release", "qa", "security", "audit"],
+    retentionDays: 90,
+    expiryDisposition: "review",
+    receiptContract: "custody-receipt.retention90.v1"
+  };
+  input.custodyReceipt = {
+    ...input.custodyReceipt,
+    schemaVersion: "custody-receipt.retention90.v1",
+    contentSizeBytes: Buffer.byteLength(canonicalJson(proof), "utf8"),
+    retainUntil: "2026-12-01T16:00:00.000Z"
+  };
+  return input;
+}
+
+function custodyAssertionInput(input) {
+  return {
+    proofDigest: sha256Canonical(input.proof),
+    custodyReceipt: input.custodyReceipt,
+    trustRoot: input.trustRoot,
+    verifiedAttestation: input.verifiedAttestation
+  };
+}
+
 test("creates and verifies one immutable three-image build proof", () => {
   const buildObservation = observation();
   const proof = createValidProof(buildObservation);
@@ -191,6 +227,252 @@ test("rejects a custody receipt that does not bind the proof digest", () => {
   const input = trustFixture(proof, buildObservation);
   input.custodyReceipt.contentDigest = digest("0");
   assert.throws(() => verifyBuildProof(input), { code: "BUILD_PROOF_CUSTODY_INVALID" });
+});
+
+test("exports the bounded build custody assertion for fixed-policy consumers", () => {
+  assert.equal(typeof assertProofCustody, "function");
+});
+
+test("exports the shared build identity assertion", () => {
+  assert.equal(typeof assertBuildIdentity, "function");
+});
+
+test("accepts complete 90-day custody only through the direct custody assertion", () => {
+  const buildObservation = observation();
+  const proof = createValidProof(buildObservation);
+  const input = trustFixture90(proof, buildObservation);
+  assert.equal(
+    input.custodyReceipt.contentSizeBytes,
+    Buffer.byteLength(canonicalJson(proof), "utf8")
+  );
+  assert.equal(assertProofCustody(custodyAssertionInput(input)), undefined);
+});
+
+test("rejects a legacy receipt under the explicit 90-day custody policy", () => {
+  const buildObservation = observation();
+  const proof = createValidProof(buildObservation);
+  const input = trustFixture90(proof, buildObservation);
+  input.custodyReceipt = trustFixture(proof, buildObservation).custodyReceipt;
+  assert.throws(() => assertProofCustody(custodyAssertionInput(input)), {
+    code: "BUILD_PROOF_CUSTODY_INVALID"
+  });
+});
+
+test("rejects a 90-day receipt under the legacy 180-day custody policy", () => {
+  const buildObservation = observation();
+  const proof = createValidProof(buildObservation);
+  const input = trustFixture90(proof, buildObservation);
+  input.trustRoot.custody = trustFixture(proof, buildObservation).trustRoot.custody;
+  assert.throws(() => assertProofCustody(custodyAssertionInput(input)), {
+    code: "BUILD_PROOF_CUSTODY_INVALID"
+  });
+});
+
+test("rejects an unknown custody policy selector even with a complete legacy receipt", () => {
+  const buildObservation = observation();
+  const proof = createValidProof(buildObservation);
+  const input = trustFixture(proof, buildObservation);
+  input.trustRoot.custody.receiptContract = "custody-receipt.unknown.v1";
+  assert.throws(() => assertProofCustody(custodyAssertionInput(input)), {
+    code: "BUILD_PROOF_CUSTODY_INVALID"
+  });
+});
+
+test("rejects the exact 90-day selector when its policy claims 180 days", () => {
+  const buildObservation = observation();
+  const proof = createValidProof(buildObservation);
+  const input = trustFixture90(proof, buildObservation);
+  input.trustRoot.custody.retentionDays = 180;
+  assert.throws(() => assertProofCustody(custodyAssertionInput(input)), {
+    code: "BUILD_PROOF_CUSTODY_INVALID"
+  });
+});
+
+for (const fixture of [
+  {
+    name: "legacy",
+    create: (proof, buildObservation) => trustFixture(proof, buildObservation)
+  },
+  {
+    name: "90-day",
+    create: (proof, buildObservation) => trustFixture90(proof, buildObservation)
+  }
+]) {
+  test(`rejects additional fields in the closed ${fixture.name} custody policy`, () => {
+    const buildObservation = observation();
+    const proof = createValidProof(buildObservation);
+    const input = fixture.create(proof, buildObservation);
+    input.trustRoot.custody.unexpectedPolicy = true;
+    assert.throws(() => assertProofCustody(custodyAssertionInput(input)), {
+      code: "BUILD_PROOF_CUSTODY_INVALID"
+    });
+  });
+}
+
+for (const mutation of [
+  {
+    name: "owner",
+    apply: (input) => {
+      input.custodyReceipt.owner = "other-owner";
+    }
+  },
+  {
+    name: "readers",
+    apply: (input) => {
+      input.custodyReceipt.readers = ["release", "qa", "security"];
+    }
+  },
+  {
+    name: "proof subject",
+    apply: (input) => {
+      input.custodyReceipt.contentDigest = digest("0");
+      input.custodyReceipt.readbackDigest = digest("0");
+    }
+  },
+  {
+    name: "attestation reference",
+    apply: (input) => {
+      input.custodyReceipt.attestationRef = "https://github.com/other/attestations/2801";
+    }
+  },
+  {
+    name: "minimum retention",
+    apply: (input) => {
+      input.custodyReceipt.retainUntil = "2026-12-01T15:59:59.999Z";
+    }
+  }
+]) {
+  test(`rejects 90-day custody with the wrong ${mutation.name}`, () => {
+    const buildObservation = observation();
+    const proof = createValidProof(buildObservation);
+    const input = trustFixture90(proof, buildObservation);
+    mutation.apply(input);
+    assert.throws(() => assertProofCustody(custodyAssertionInput(input)), {
+      code: "BUILD_PROOF_CUSTODY_INVALID"
+    });
+  });
+}
+
+for (const executionScope of ["full-rc", "migration-schema"]) {
+  test(`legacy ${executionScope} verifier rejects the 90-day selector and receipt type`, () => {
+    const buildObservation = observation();
+    const proof = createValidProof(buildObservation);
+    const input = trustFixture90(proof, buildObservation, executionScope);
+    assert.throws(() => verifyBuildProof(input), { code: "BUILD_PROOF_CUSTODY_INVALID" });
+  });
+}
+
+test("shared build identity assertion accepts the complete proof and observation", () => {
+  const buildMaterialObservation = observation();
+  const proof = createValidProof(buildMaterialObservation);
+  assert.equal(assertBuildIdentity({ proof, buildMaterialObservation }), undefined);
+});
+
+for (const name of ["api", "web", "runner"]) {
+  test(`shared build identity assertion rejects schema-valid ${name} mirror drift`, () => {
+    const buildMaterialObservation = observation();
+    const proof = structuredClone(createValidProof(buildMaterialObservation));
+    proof.identity.images[name].imageDigest = digest("9");
+    assert.throws(() => assertBuildIdentity({ proof, buildMaterialObservation }), {
+      code: "BUILD_PROOF_REGISTRY_SUBJECT_MISMATCH"
+    });
+  });
+}
+
+test("shared build identity assertion rejects schema-valid material drift", () => {
+  const buildMaterialObservation = observation();
+  const proof = structuredClone(createValidProof(buildMaterialObservation));
+  proof.provenance.materials.find(({ name }) => name === "builder").reference =
+    "oci://other/builder-attestation";
+  assert.throws(() => assertBuildIdentity({ proof, buildMaterialObservation }), {
+    code: "BUILD_PROOF_PROVENANCE_MISMATCH"
+  });
+});
+
+for (const field of ["migrationCatalogDigest", "repositoryContractDigest"]) {
+  test(`shared build identity assertion rejects schema-valid ${field} drift`, () => {
+    const buildMaterialObservation = observation();
+    const proof = structuredClone(createValidProof(buildMaterialObservation));
+    proof.identity[field] = digest("8");
+    assert.throws(() => assertBuildIdentity({ proof, buildMaterialObservation }), {
+      code: "BUILD_PROOF_REGISTRY_SUBJECT_MISMATCH"
+    });
+  });
+}
+
+test("shared build identity assertion rejects schema-valid source drift", () => {
+  const buildMaterialObservation = observation();
+  const proof = structuredClone(createValidProof(buildMaterialObservation));
+  const otherSourceSha = "8".repeat(40);
+  proof.identity.sourceSha = otherSourceSha;
+  proof.provenance.checkoutRef = otherSourceSha;
+  for (const image of Object.values(proof.identity.images)) {
+    image.sourceRevision = otherSourceSha;
+  }
+  assert.throws(() => assertBuildIdentity({ proof, buildMaterialObservation }), {
+    code: "BUILD_PROOF_REGISTRY_SUBJECT_MISMATCH"
+  });
+});
+
+test("repository contract discovers and content-addresses the shared build proof verifier", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "build-proof-catalog-"));
+  const manifestPath = "release/contracts/repository-contract-files.v1.json";
+  const verifierPath = "scripts/release/verify-build-proof.mjs";
+  try {
+    await mkdir(path.join(root, "release", "contracts"), { recursive: true });
+    await mkdir(path.join(root, "scripts", "release"), { recursive: true });
+    await writeFile(path.join(root, ...verifierPath.split("/")), "export const version = 1;\n");
+    await writeFile(
+      path.join(root, ...manifestPath.split("/")),
+      `${JSON.stringify(
+        { contractVersion: "repository-contract-files.v1", files: [manifestPath] },
+        null,
+        2
+      )}\n`
+    );
+
+    await assert.rejects(computeRepositoryContract(root), {
+      code: "CONTRACT_FILE_SET_DRIFT"
+    });
+
+    await writeFile(
+      path.join(root, ...manifestPath.split("/")),
+      `${JSON.stringify(
+        {
+          contractVersion: "repository-contract-files.v1",
+          files: [manifestPath, verifierPath]
+        },
+        null,
+        2
+      )}\n`
+    );
+    const before = await computeRepositoryContract(root);
+    const beforeVerifier = before.entries.find(
+      ({ path: relativePath }) => relativePath === verifierPath
+    );
+
+    await writeFile(path.join(root, ...verifierPath.split("/")), "export const version = 2;\n");
+    const after = await computeRepositoryContract(root);
+    const afterVerifier = after.entries.find(
+      ({ path: relativePath }) => relativePath === verifierPath
+    );
+
+    assert.ok(beforeVerifier);
+    assert.ok(afterVerifier);
+    assert.notEqual(afterVerifier.sha256, beforeVerifier.sha256);
+    assert.notEqual(after.digest, before.digest);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("repository contract discovery binds the shared build proof verifier", async () => {
+  const contract = await computeRepositoryContract(process.cwd());
+  assert.ok(
+    contract.entries.some(
+      ({ path: relativePath }) => relativePath === "scripts/release/verify-build-proof.mjs"
+    )
+  );
 });
 
 test("protected aggregation is the only proof issuer and uses immutable custody", () => {

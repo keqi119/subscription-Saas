@@ -169,6 +169,7 @@
     "scripts/release/run-final-compose-gate.mjs",
     "scripts/release/trusted-launch-production-adapters.mjs",
     "scripts/release/trusted-launch-runner.mjs",
+    "scripts/release/verify-build-proof.mjs",
     "scripts/release/verify-compose-policy.mjs",
     "scripts/release/workflow-custody-record.mjs",
     "tests/release/web-public-api.spec.ts"

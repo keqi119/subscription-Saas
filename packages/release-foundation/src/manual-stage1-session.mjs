@@ -36,6 +36,19 @@ const EVIDENCE = "MANUAL_EVIDENCE_BINDING_MISMATCH";
 const REQUIRED = "MANUAL_EVIDENCE_INPUT_REQUIRED";
 const LIMIT = 1048576;
 const nativeIO = Object.freeze({ fs: nativeFs, execFile: promisify(execFile) });
+const manualPolicies = Object.freeze({
+  "manual-stage1-profile.v1": Object.freeze({
+    recordSchema: "manual-operation-record.v1",
+    retentionDays: 180
+  }),
+  "manual-stage1-profile.v2": Object.freeze({
+    recordSchema: "manual-operation-record.v2",
+    retentionDays: 90
+  })
+});
+const manualRecordSchemas = new Set(
+  Object.values(manualPolicies).map((policy) => policy.recordSchema)
+);
 const fail = (code) => {
   throw Object.assign(new Error(code), { code });
 };
@@ -257,8 +270,15 @@ export async function openManualSession({
   signingKey
 }) {
   const profile = snapshot(inputProfile),
-    owner = snapshot(inputOwner);
-  validateContract("manual-stage1-profile.v1", profile);
+    owner = snapshot(inputOwner),
+    profileSchema =
+      typeof profile?.schemaVersion === "string" &&
+      Object.hasOwn(manualPolicies, profile.schemaVersion)
+        ? profile.schemaVersion
+        : "manual-stage1-profile.v1";
+  validateContract(profileSchema, profile);
+  const { recordSchema, retentionDays } = manualPolicies[profileSchema],
+    profileBytes = encodeManualJson(profile);
   exact(owner, ["ownerId", "principal", "targetIntent", "observedAt"], SESSION);
   exact(
     owner.principal,
@@ -339,7 +359,7 @@ export async function openManualSession({
     return result;
   };
   const sessionRecord = (status, previous, reasonCode, recordedAt) => ({
-    schemaVersion: "manual-operation-record.v1",
+    schemaVersion: recordSchema,
     kind: "session",
     profileDigest,
     recordedAt,
@@ -385,7 +405,7 @@ export async function openManualSession({
         const name = `${profileDigest.slice(7)}-${sequence}.json`;
         requireThat(names.includes(name), REVOCATION);
         const record = JSON.parse(await store.read(path.join(dir, name)));
-        validateContract("manual-operation-record.v1", record);
+        validateContract(recordSchema, record);
         requireThat(
           record.kind === "revocation" &&
             record.sequence === sequence &&
@@ -623,7 +643,7 @@ export async function openManualSession({
     const get = (digest, schema, kind = null) => {
       const value = graph.get(digest)?.value;
       requireThat(value, REQUIRED);
-      validateContract(schema, value);
+      if (schema) validateContract(schema, value);
       requireThat(!kind || value.kind === kind, EVIDENCE);
       return value;
     };
@@ -671,7 +691,7 @@ export async function openManualSession({
     const predecessorDigest =
       request.dryRunRecordDigest ?? request.predecessorExecutionRecordDigest;
     if (!predecessorDigest) return;
-    const predecessor = get(predecessorDigest, "manual-operation-record.v1", "execution");
+    const predecessor = get(predecessorDigest, null, "execution");
     const priorRequest = graph.get(predecessor.requestDigest)?.value;
     requireThat(priorRequest, REQUIRED);
     requireThat(priorRequest.attemptId !== request.attemptId, EVIDENCE);
@@ -683,6 +703,7 @@ export async function openManualSession({
       "physicalIdentity"
     ])
       requireThat(equal(request[field], priorRequest[field]), EVIDENCE);
+    validateContract(recordSchema, predecessor);
     if (request.phase !== "verify")
       for (const field of ["operationId", "idempotencyKey"])
         requireThat(request[field] === priorRequest[field], EVIDENCE);
@@ -737,7 +758,7 @@ export async function openManualSession({
         EVIDENCE
       );
   }
-  async function archiveInput(request, graph = null) {
+  async function archiveInput(request, graph = null, historicalConsumption = null) {
     graph ??= await store.objects();
     const rawDir = path.join(profile.storage.archiveRoot, "raw"),
       raws = new Map();
@@ -751,11 +772,21 @@ export async function openManualSession({
     }
     const requestBytes = graph.get(sha256Canonical(request))?.bytes;
     requireThat(requestBytes, REQUIRED);
-    return {
+    const input = {
       requestBytes,
       artifactBytes: [...graph.values()].map((item) => item.bytes),
       rawBlobs: [...raws.values()]
     };
+    if (request.profileDigest === profileDigest)
+      return { ...input, profileBytes: Buffer.from(profileBytes) };
+    requireThat(
+      historicalConsumption?.kind === "consumption" &&
+        historicalConsumption.schemaVersion === "manual-operation-record.v1" &&
+        historicalConsumption.profileDigest === request.profileDigest &&
+        historicalConsumption.requestDigest === sha256Canonical(request),
+      SESSION
+    );
+    return input;
   }
   async function history(request, ignoreRequest = null) {
     const graph = await store.objects(),
@@ -777,7 +808,15 @@ export async function openManualSession({
       let consumed;
       try {
         consumed = JSON.parse(await store.read(path.join(dir, name)));
-        validateContract("manual-operation-record.v1", consumed);
+        requireThat(
+          typeof consumed?.schemaVersion === "string" &&
+            manualRecordSchemas.has(consumed.schemaVersion),
+          SESSION
+        );
+        validateContract(
+          consumed.profileDigest === profileDigest ? recordSchema : consumed.schemaVersion,
+          consumed
+        );
       } catch {
         fail(SESSION);
       }
@@ -796,6 +835,11 @@ export async function openManualSession({
     for (const consumed of consumptions.values()) {
       const original = graph.get(consumed.requestDigest)?.value;
       requireThat(original?.schemaVersion === "manual-runner-request.v1", SESSION);
+      requireThat(
+        consumed.requestDigest === sha256Canonical(original) &&
+          consumed.profileDigest === original.profileDigest,
+        SESSION
+      );
       if (original.targetIntent.databaseName !== target.databaseName) continue;
       const historicalTarget = profile.allowedTargets.find(
         (item) =>
@@ -814,7 +858,7 @@ export async function openManualSession({
       if (!executions.length || executions[0].status === "INTERRUPTED_UNKNOWN")
         unresolved.push({ consumed, original, execution: executions[0] });
       else if (original.phase === "apply" && original.operationId === request.operationId)
-        completedApplies.push({ original, execution: executions[0] });
+        completedApplies.push({ consumed, original, execution: executions[0] });
     }
     // This gate precedes assessing any old successful subset. In particular a
     // replay UNKNOWN never turns the original apply success into permission.
@@ -834,7 +878,17 @@ export async function openManualSession({
       for (const candidate of candidates) {
         const recoveryRequest = graph.get(candidate.requestDigest)?.value;
         if (recoveryRequest?.phase !== "reconcile") continue;
-        const assessment = assessManualRunnerEvidence(await archiveInput(recoveryRequest, graph));
+        const recoveryConsumption = consumptions.get(candidate.consumptionRecordDigest);
+        requireThat(
+          recoveryConsumption &&
+            slotDigests.has(candidate.consumptionRecordDigest) &&
+            recoveryConsumption.requestDigest === candidate.requestDigest &&
+            recoveryConsumption.profileDigest === recoveryRequest.profileDigest,
+          SESSION
+        );
+        const assessment = assessManualRunnerEvidence(
+          await archiveInput(recoveryRequest, graph, recoveryConsumption)
+        );
         if (
           assessment.executionStatus === "SUCCEEDED" &&
           ["committed", "not-committed"].includes(assessment.originalDatabaseOutcome) &&
@@ -874,7 +928,9 @@ export async function openManualSession({
     // sign, consume and successful record/signoff all pass this shared gate.
     if (["dry-run", "apply"].includes(request.phase)) {
       for (const prior of completedApplies) {
-        const assessment = assessManualRunnerEvidence(await archiveInput(prior.original, graph));
+        const assessment = assessManualRunnerEvidence(
+          await archiveInput(prior.original, graph, prior.consumed)
+        );
         const state = reducedExecution(prior.execution, graph, assessment);
         requireThat(state?.status === "DRY_RUN_SUCCEEDED", SESSION);
       }
@@ -885,7 +941,7 @@ export async function openManualSession({
     await active();
     const readAt = stamp(),
       value = snapshot(input);
-    validateContract("manual-operation-record.v1", value);
+    validateContract(recordSchema, value);
     requireThat(value.kind === kind && value.profileDigest === profileDigest, EVIDENCE);
     requireThat(instant(value.recordedAt) <= instant(readAt), "MANUAL_TIME_INVALID");
     for (const name of ["openedAt", "observedAt", "startedAt", "finishedAt", "issuedAt"])
@@ -983,14 +1039,11 @@ export async function openManualSession({
       if (value.subjectType === "profile")
         requireThat(value.subjectDigest === profileDigest, EVIDENCE);
       else if (value.subjectType === "record")
-        requireThat(subject.schemaVersion === "manual-operation-record.v1", EVIDENCE);
+        requireThat(subject.schemaVersion === recordSchema, EVIDENCE);
       else if (value.subjectType === "authorization")
         requireThat(subject.payload?.schemaVersion === "manual-launch-authorization.v1", EVIDENCE);
       else
-        requireThat(
-          subject.schemaVersion !== "manual-operation-record.v1" && !subject.payload,
-          EVIDENCE
-        );
+        requireThat(!manualRecordSchemas.has(subject.schemaVersion) && !subject.payload, EVIDENCE);
       if (value.purpose === "consumption-readback")
         requireThat(subject.kind === "consumption" && value.storageRole === "journal", EVIDENCE);
       if (value.purpose === "handoff-readback")
@@ -1263,7 +1316,7 @@ export async function openManualSession({
   }
   function common(kind, recordedAt) {
     return {
-      schemaVersion: "manual-operation-record.v1",
+      schemaVersion: recordSchema,
       kind,
       profileDigest,
       recordedAt,
@@ -1289,7 +1342,7 @@ export async function openManualSession({
       observedDigest: digest,
       observedAt: recordedAt,
       storageRole: "journal",
-      retentionDays: 180,
+      retentionDays,
       reasonCode: null
     };
     return store.put(custody);
@@ -1394,7 +1447,7 @@ export async function openManualSession({
           revocationSequence: ctx.revocation.records.at(-1).sequence,
           status: "CONSUMED"
         };
-        validateContract("manual-operation-record.v1", consumption);
+        validateContract(recordSchema, consumption);
         try {
           await store.create(
             consumptionSlot(authorization.payload.authorizationId),
@@ -1466,7 +1519,7 @@ export async function openManualSession({
               observedDigest: ref.recordDigest,
               observedAt: readAt,
               storageRole: "archive",
-              retentionDays: 180,
+              retentionDays,
               reasonCode: null
             });
           }

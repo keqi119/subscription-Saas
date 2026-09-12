@@ -78,12 +78,25 @@ function fixtureFrame({ type, sequence, payload }) {
   const bytes = encodeManualJson(payload);
   return Buffer.concat([Buffer.from(`MS1 ${type} ${sequence} ${bytes.length}\n`), bytes]);
 }
-function archiveFixture() {
+function manualPolicy(profile = null) {
+  const current = profile?.schemaVersion === "manual-stage1-profile.v2";
+  return {
+    recordSchema: current ? "manual-operation-record.v2" : "manual-operation-record.v1",
+    retentionDays: current ? 90 : 180,
+    profileBytes: current ? encodeManualJson(profile) : null
+  };
+}
+function archiveFixture(profile = null) {
   const artifacts = new Map(),
-    raws = new Map();
+    raws = new Map(),
+    policy = manualPolicy(profile);
   return {
     artifacts,
     raws,
+    ...policy,
+    profileInput() {
+      return policy.profileBytes ? { profileBytes: Buffer.from(policy.profileBytes) } : {};
+    },
     add(value) {
       const digest = sha256Canonical(value);
       artifacts.set(digest, value);
@@ -98,14 +111,15 @@ function archiveFixture() {
       return {
         requestBytes: encodeManualJson(request),
         artifactBytes: [...artifacts.values()].map(encodeManualJson),
-        rawBlobs: [...raws.values()]
+        rawBlobs: [...raws.values()],
+        ...this.profileInput()
       };
     }
   };
 }
-function record(request, kind, n, fields) {
+function record(archive, request, kind, n, fields) {
   return {
-    schemaVersion: "manual-operation-record.v1",
+    schemaVersion: archive.recordSchema,
     kind,
     profileDigest: request.profileDigest,
     recordedAt: time(n),
@@ -125,7 +139,7 @@ function evidence(request, kind, n, fields) {
 }
 
 function custodyFixture(archive, request, subject, purpose, n) {
-  const custody = record(request, "custody", n, {
+  const custody = record(archive, request, "custody", n, {
     ownerId: request.ownerId,
     subjectDigest: archive.add(subject),
     subjectType: subject.schemaVersion === "manual-runner-evidence.v1" ? "r2-artifact" : "record",
@@ -139,7 +153,7 @@ function custodyFixture(archive, request, subject, purpose, n) {
         : purpose === "backup-readback"
           ? "backup"
           : "archive",
-    retentionDays: 180,
+    retentionDays: archive.retentionDays,
     reasonCode: null
   });
   archive.add(custody);
@@ -377,7 +391,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
       stderr: archive.raw(Buffer.alloc(0))
     });
     const finalProcess = snapshot(n + 8, archive.add(request), time(n + 8));
-    const execution = record(request, "execution", n + 9, {
+    const execution = record(archive, request, "execution", n + 9, {
       ...pick(request, [...sessionKeys, ...operationKeys]),
       attemptId: request.attemptId,
       requestDigest: archive.add(request),
@@ -475,7 +489,8 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
       childFrameBytes: childFrame,
       ackFrameBytes: ack,
       stdoutPrefixBytes: stdoutBytes(),
-      parentFrameBytes: [...parentFrames]
+      parentFrameBytes: [...parentFrames],
+      ...archive.profileInput()
     });
     parentFrames.push(ack);
     lastAck = ack;
@@ -664,7 +679,8 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     childFrameBytes: observationFrame,
     ackFrameBytes: observationAck,
     stdoutPrefixBytes: stdoutBytes(),
-    parentFrameBytes: [...parentFrames]
+    parentFrameBytes: [...parentFrames],
+    ...archive.profileInput()
   });
   parentFrames.push(observationAck);
   lastAck = observationAck;
@@ -773,7 +789,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   const finalProcess = options.missingClose
     ? last
     : snapshot(n + 43, archive.add(request), time(n + 43));
-  const post = record(request, "post-state", n + 44, {
+  const post = record(archive, request, "post-state", n + 44, {
     ...pick(request, [...sessionKeys, ...operationKeys]),
     requestDigest: archive.add(request),
     consumptionRecordDigest: archive.add(prior.consumption),
@@ -783,7 +799,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     reasonCode: null
   });
   if (!options.missingPost) archive.add(post);
-  const execution = record(request, "execution", n + 45, {
+  const execution = record(archive, request, "execution", n + 45, {
     ...pick(request, [...sessionKeys, ...operationKeys]),
     attemptId: request.attemptId,
     requestDigest: archive.add(request),
@@ -837,10 +853,15 @@ const pick = (value, keys) => Object.fromEntries(keys.map((key) => [key, value[k
 const sessionKeys = ["sessionId", "sessionNonce"];
 const operationKeys = [...sessionKeys, "operationId", "idempotencyKey"];
 const aKeys = ["profileDigest", ...operationKeys, "attemptId", "runId"];
+const sessionPolicies = new WeakMap();
 
 // Only the expensive OS ACL observer is doubled; all paths, locks, handles,
 // create-only writes, readback, enumeration and cryptography are real.
-async function fixture(t, { native = false, genesis = true } = {}) {
+async function fixture(
+  t,
+  { native = false, genesis = true, profileVersion = "v1", recordedAt = NOW } = {}
+) {
+  assert.match(profileVersion, /^v[12]$/);
   const root = await fs.mkdtemp(path.join(tmpdir(), "manual-session-test-"));
   t.after(async () => {
     assert.equal(
@@ -864,7 +885,10 @@ async function fixture(t, { native = false, genesis = true } = {}) {
       path.join(root, name)
     ])
   );
-  Object.assign(storage, { keyRef: "owner.key", retentionDays: 180 });
+  Object.assign(storage, {
+    keyRef: "owner.key",
+    retentionDays: profileVersion === "v2" ? 90 : 180
+  });
   for (const [key, dir] of Object.entries(storage).filter(([key]) => key.endsWith("Root"))) {
     await fs.mkdir(dir, { mode: 0o700 });
     if (native && process.platform === "win32")
@@ -880,7 +904,7 @@ async function fixture(t, { native = false, genesis = true } = {}) {
   if (native && process.platform === "win32")
     await run("icacls.exe", [root, "/setowner", `*${actualSid}`, "/T"], { windowsHide: true });
   const profile = {
-    schemaVersion: "manual-stage1-profile.v1",
+    schemaVersion: `manual-stage1-profile.${profileVersion}`,
     profileId: randomUUID(),
     ownerId: "test-owner",
     publicKeyPem: keys.publicKey.export({ type: "spki", format: "pem" }),
@@ -918,7 +942,7 @@ async function fixture(t, { native = false, genesis = true } = {}) {
     targetIntent,
     observedAt: NOW
   };
-  let clock = NOW;
+  let clock = recordedAt;
   const f = {
     root,
     profile,
@@ -947,6 +971,7 @@ async function fixture(t, { native = false, genesis = true } = {}) {
       now: () => (typeof clock === "function" ? clock() : clock),
       signingKey: keys.privateKey
     });
+    sessionPolicies.set(session, manualPolicy(f.profile));
     t.after(() => session.close().catch(() => {}));
     return session;
   };
@@ -974,11 +999,12 @@ async function fixture(t, { native = false, genesis = true } = {}) {
     return [...values.values()];
   };
   if (genesis) {
+    const policy = manualPolicy(profile);
     const value = {
-      schemaVersion: "manual-operation-record.v1",
+      schemaVersion: policy.recordSchema,
       kind: "revocation",
       profileDigest: sha256Canonical(profile),
-      recordedAt: NOW,
+      recordedAt,
       promotionEligible: false,
       ownerId: profile.ownerId,
       sequence: 0,
@@ -1003,7 +1029,44 @@ async function fixture(t, { native = false, genesis = true } = {}) {
   return f;
 }
 
-async function requestFixture(f, session, phase = "target-observe", fields = {}) {
+async function selectProfileVersion(f, profileVersion, recordedAt = NOW) {
+  assert.match(profileVersion, /^v[12]$/);
+  f.profile = {
+    ...clone(f.profile),
+    schemaVersion: `manual-stage1-profile.${profileVersion}`,
+    profileId: randomUUID(),
+    storage: {
+      ...clone(f.profile.storage),
+      retentionDays: profileVersion === "v2" ? 90 : 180
+    }
+  };
+  const policy = manualPolicy(f.profile);
+  const genesis = {
+    schemaVersion: policy.recordSchema,
+    kind: "revocation",
+    profileDigest: sha256Canonical(f.profile),
+    recordedAt,
+    promotionEligible: false,
+    ownerId: f.profile.ownerId,
+    sequence: 0,
+    previousRevocationDigest: null,
+    action: "GENESIS",
+    authorizationId: null,
+    reasonCode: null
+  };
+  await f.put(genesis, "journal");
+  await fs.writeFile(
+    path.join(
+      f.profile.storage.journalRoot,
+      "revocations",
+      `${sha256Canonical(f.profile).slice(7)}-0.json`
+    ),
+    encodeManualJson(genesis),
+    { flag: "wx", mode: 0o600 }
+  );
+}
+
+async function requestFixture(f, session, phase = "target-observe", fields = {}, recordedAt = NOW) {
   const binding = {
     profileDigest: session.profileDigest,
     ownerId: f.profile.ownerId,
@@ -1025,12 +1088,12 @@ async function requestFixture(f, session, phase = "target-observe", fields = {})
   const allocation = {
     schemaVersion: "manual-runner-evidence.v1",
     kind: "attempt-allocation",
-    recordedAt: NOW,
+    recordedAt,
     promotionEligible: false,
     ...pick(request, aKeys),
     stage: binding.stage,
     phaseKey: phase,
-    allocatedAt: NOW,
+    allocatedAt: recordedAt,
     targetIntent: request.targetIntent,
     predecessorExecutionRecordDigest: null
   };
@@ -1111,8 +1174,9 @@ test("request cannot select archiveRoot and closed session cannot sign", async (
 });
 
 function manualRecord(session, kind, fields = {}) {
+  const policy = sessionPolicies.get(session) ?? manualPolicy();
   return {
-    schemaVersion: "manual-operation-record.v1",
+    schemaVersion: policy.recordSchema,
     kind,
     profileDigest: session.profileDigest,
     recordedAt: NOW,
@@ -1279,7 +1343,8 @@ test("target-observe rejects child context before consuming", async (t) => {
 
 async function observeResult(f, session, input, options = {}) {
   const request = JSON.parse(input.canonicalBytes),
-    requestDigest = sha256Bytes(input.canonicalBytes);
+    requestDigest = sha256Bytes(input.canonicalBytes),
+    recordedAt = options.recordedAt ?? NOW;
   const consumption = (await f.records("consumption")).find(
     (r) => r.requestDigest === requestDigest
   );
@@ -1294,11 +1359,11 @@ async function observeResult(f, session, input, options = {}) {
   const observation = {
     schemaVersion: "manual-runner-evidence.v1",
     kind: "observation",
-    recordedAt: NOW,
+    recordedAt,
     promotionEligible: false,
     ...pick(request, aKeys),
     requestDigest,
-    observedAt: NOW,
+    observedAt: recordedAt,
     physicalIdentity: { ...targetIntent, databaseOid: "123", clusterFingerprint: D },
     roleObservation: {
       role: "test-observer",
@@ -1313,14 +1378,14 @@ async function observeResult(f, session, input, options = {}) {
   const result = {
     schemaVersion: "manual-runner-evidence.v1",
     kind: "manual-command-result",
-    recordedAt: NOW,
+    recordedAt,
     promotionEligible: false,
     ...pick(request, aKeys),
     requestDigest,
     phaseKey: options.phase ?? "target-observe",
     attemptAllocationDigest: request.attemptAllocationDigest,
-    startedAt: NOW,
-    finishedAt: NOW,
+    startedAt: recordedAt,
+    finishedAt: recordedAt,
     outcome: options.failed ? "THREW" : "RETURNED",
     reasonCode: options.failed ? "OBSERVER_FAILED" : null,
     plan: null,
@@ -1332,16 +1397,18 @@ async function observeResult(f, session, input, options = {}) {
   };
   const resultDigest = await f.put(result);
   const post = manualRecord(session, "post-state", {
+    recordedAt,
     ...pick(request, operationKeys),
     requestDigest,
     consumptionRecordDigest: sha256Canonical(consumption),
     outcome: options.unavailable ? "UNAVAILABLE" : "OBSERVED",
     observationDigest: options.unavailable ? null : observationDigest,
-    observedAt: options.unavailable ? null : NOW,
+    observedAt: options.unavailable ? null : recordedAt,
     reasonCode: options.unavailable ? "OBSERVATION_UNAVAILABLE" : null
   });
   const postRef = await session.record("post-state", post);
   const execution = manualRecord(session, "execution", {
+    recordedAt,
     ...pick(request, operationKeys),
     attemptId: request.attemptId,
     requestDigest,
@@ -1351,8 +1418,8 @@ async function observeResult(f, session, input, options = {}) {
     handoffReadbackDigest: null,
     postStateRecordDigest: postRef.recordDigest,
     predecessorExecutionRecordDigest: null,
-    startedAt: NOW,
-    finishedAt: NOW,
+    startedAt: recordedAt,
+    finishedAt: recordedAt,
     status: "SUCCEEDED",
     reasonCode: null,
     resultDigest,
@@ -1361,6 +1428,7 @@ async function observeResult(f, session, input, options = {}) {
   return { request, observation, result, post, execution };
 }
 function custody(session, subject, role = "archive") {
+  const policy = sessionPolicies.get(session) ?? manualPolicy();
   return manualRecord(session, "custody", {
     ownerId: "test-owner",
     subjectDigest: sha256Canonical(subject),
@@ -1370,7 +1438,7 @@ function custody(session, subject, role = "archive") {
     observedDigest: sha256Canonical(subject),
     observedAt: NOW,
     storageRole: role,
-    retentionDays: 180,
+    retentionDays: policy.retentionDays,
     reasonCode: null
   });
 }
@@ -1551,15 +1619,16 @@ async function persistArchive(f, archive) {
     }
   }
 }
-async function liveRoot(t) {
-  const f = await fixture(t),
+async function liveRoot(t, fixtureOptions = {}) {
+  const recordedAt = fixtureOptions.recordedAt ?? NOW;
+  const f = await fixture(t, fixtureOptions),
     session = await f.open(),
-    input = await requestFixture(f, session);
+    input = await requestFixture(f, session, "target-observe", {}, recordedAt);
   const authorization = await session.sign(input);
   await session.consume({ authorization, request: input });
-  const result = await observeResult(f, session, input);
+  const result = await observeResult(f, session, input, { recordedAt });
   await session.record("execution", result.execution);
-  const archive = archiveFixture();
+  const archive = archiveFixture(f.profile);
   for (const value of await f.records()) archive.add(value);
   const root = {
     ...result,
@@ -1715,6 +1784,87 @@ async function sealExecution(context, attempt) {
     await session.record("custody", value);
   }
 }
+
+async function acceptanceRecord(context, attempt, { alreadyRecorded = false } = {}) {
+  const { f, session } = context;
+  const executionRef = alreadyRecorded
+    ? { recordDigest: sha256Canonical(attempt.execution) }
+    : await session.record("execution", attempt.execution);
+  await f.put(attempt.execution, "backup");
+  const readbacks = {};
+  for (const role of ["archive", "backup"]) {
+    const value = custody(session, attempt.execution, role);
+    value.recordedAt = value.observedAt = attempt.execution.recordedAt;
+    readbacks[role] = await session.record("custody", value);
+  }
+  const signoff = manualRecord(session, "signoff", {
+    ...pick(attempt.execution, operationKeys),
+    ownerId: f.profile.ownerId,
+    executionRecordDigest: executionRef.recordDigest,
+    executionReadbackDigest: readbacks.archive.recordDigest,
+    backupReadbackDigest: readbacks.backup.recordDigest,
+    decision: "ACCEPTED",
+    reasonCode: null
+  });
+  signoff.recordedAt = attempt.execution.recordedAt;
+  return signoff;
+}
+
+async function acceptExecution(context, attempt, options = {}) {
+  const signoff = await acceptanceRecord(context, attempt, options);
+  await context.session.record("signoff", signoff);
+  return signoff;
+}
+
+test("v2 profile completes handoff, archive readback, and signoff with all eight 90-day record kinds", async (t) => {
+  const context = await liveRoot(t, { profileVersion: "v2" });
+  const revocable = await requestFixture(context.f, context.session);
+  const revokedAuthorization = await context.session.sign(revocable);
+  await revoke(context.f, context.session, revokedAuthorization);
+  const dry = await liveRunner(context);
+  await acceptExecution(context, dry);
+  await context.session.close();
+  const expectedKinds = [
+    "consumption",
+    "consumption-handoff",
+    "custody",
+    "execution",
+    "post-state",
+    "revocation",
+    "session",
+    "signoff"
+  ];
+  const expectedKindSet = new Set(expectedKinds);
+  const records = (await context.f.records()).filter(
+    (value) =>
+      value.profileDigest === context.session.profileDigest &&
+      (expectedKindSet.has(value.kind) ||
+        (typeof value.schemaVersion === "string" &&
+          value.schemaVersion.startsWith("manual-operation-record.")))
+  );
+  assert.deepEqual([...new Set(records.map((value) => value.kind))].sort(), expectedKinds);
+  assert.ok(records.every((value) => value.schemaVersion === "manual-operation-record.v2"));
+  assert.ok(
+    records.filter((value) => value.kind === "custody").every((value) => value.retentionDays === 90)
+  );
+  assert.equal(
+    assessManualRunnerEvidence(dry.archive.input(dry.request)).executionStatus,
+    "SUCCEEDED"
+  );
+  assert.equal(
+    records.filter(
+      (value) =>
+        value.kind === "revocation" &&
+        value.action === "REVOKE_AUTHORIZATION" &&
+        value.authorizationId === revokedAuthorization.payload.authorizationId
+    ).length,
+    1
+  );
+  assert.equal(
+    records.filter((value) => value.kind === "session" && value.status === "CLOSED").length,
+    1
+  );
+});
 
 test("dry-run to apply and full replay use the existing state machine with fresh attempts", async (t) => {
   const context = await liveRoot(t),
@@ -2160,6 +2310,283 @@ test("new-session reconcile can prove not-committed without erasing original UNK
     );
   }
   await context.session.close();
+});
+
+async function unknownHistory(t, phase, fixtureOptions = {}) {
+  const context = await liveRoot(t, fixtureOptions);
+  const dry = await liveRunner(context);
+  await sealExecution(context, dry);
+  let predecessor = dry;
+  if (phase === "replay") {
+    predecessor = await liveRunner(context, "apply", dry);
+    await sealExecution(context, predecessor);
+  }
+  const original = await liveRunner(context, phase, predecessor, {
+    ...(phase === "apply"
+      ? { beforeCredential: true }
+      : { missingResult: true, missingClose: true, unknown: true })
+  });
+  await context.session.record("execution", original.execution);
+  await context.session.close();
+  return { context, dry, predecessor, original };
+}
+
+const retainedHistoryDirectories = [
+  ["archiveRoot", ["objects", "raw"]],
+  ["journalRoot", ["objects", "consumptions", "revocations", "checkpoints"]],
+  ["backupRoot", ["objects"]]
+];
+
+async function storedHistorySnapshot(f) {
+  const stored = [];
+  for (const [rootKey, directories] of retainedHistoryDirectories)
+    for (const directory of directories) {
+      const dir = path.join(f.profile.storage[rootKey], directory);
+      for (const name of await fs.readdir(dir)) {
+        const file = path.join(dir, name);
+        stored.push({ file, bytes: await fs.readFile(file) });
+      }
+    }
+  return stored.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+async function copyStoredHistory(source, target) {
+  const copied = [];
+  for (const [rootKey, directories] of retainedHistoryDirectories) {
+    for (const directory of directories) {
+      const sourceDir = path.join(source.profile.storage[rootKey], directory);
+      const targetDir = path.join(target.profile.storage[rootKey], directory);
+      for (const name of await fs.readdir(sourceDir)) {
+        const bytes = await fs.readFile(path.join(sourceDir, name));
+        const file = path.join(targetDir, name);
+        try {
+          await fs.writeFile(file, bytes, { flag: "wx", mode: 0o600 });
+        } catch (error) {
+          if (error.code !== "EEXIST") throw error;
+          assert.deepEqual(await fs.readFile(file), bytes);
+        }
+        copied.push({ file, bytes });
+      }
+    }
+  }
+  return copied;
+}
+
+async function assertStoredHistory(copied) {
+  for (const item of copied) assert.deepEqual(await fs.readFile(item.file), item.bytes);
+}
+
+function requestInput(request) {
+  const binding = { ...request };
+  for (const key of [
+    "schemaVersion",
+    "attemptId",
+    "runId",
+    "attemptAllocationDigest",
+    "domainInput",
+    "expectedSchemaEvidenceDigest"
+  ])
+    delete binding[key];
+  return { binding, canonicalBytes: encodeManualJson(request) };
+}
+
+async function crossProfileReconcile(f, session, context, original) {
+  const archive = archiveFixture(f.profile);
+  for (const value of original.archive.artifacts.values()) archive.add(value);
+  for (const bytes of original.archive.raws.values()) archive.raw(bytes);
+  const root = {
+    ...context.root,
+    archive,
+    request: { ...context.root.request, profileDigest: session.profileDigest },
+    session
+  };
+  const previous = { ...original, root, archive };
+  const recovery = runnerFixture("reconcile", previous, {
+    root,
+    session,
+    shared: original.shared,
+    beforeConsume: true,
+    n: 720
+  });
+  await persistArchive(f, recovery.archive);
+  f.setTime(time(725));
+  return { recovery, input: requestInput(recovery.request) };
+}
+
+for (const phase of ["apply", "replay"])
+  test(`unresolved legacy v1 ${phase} blocks valid v2 sign, consume, and ACCEPTED`, async (t) => {
+    const legacy = await unknownHistory(t, phase);
+    const currentAt = time(600);
+    const current = await liveRoot(t, { profileVersion: "v2", recordedAt: currentAt });
+    const signoff = await acceptanceRecord(current, current.root, { alreadyRecorded: true });
+    const blockedSign = await requestFixture(
+      current.f,
+      current.session,
+      "target-observe",
+      {},
+      currentAt
+    );
+    const pending = await requestFixture(
+      current.f,
+      current.session,
+      "target-observe",
+      {},
+      currentAt
+    );
+    const authorization = await current.session.sign(pending);
+    const copied = await copyStoredHistory(legacy.context.f, current.f);
+    const beforeBlockedOutputs = await storedHistorySnapshot(current.f);
+    const beforeConsumptions = await current.f.records("consumption");
+    const beforeSignoffs = await current.f.records("signoff");
+
+    await assert.rejects(current.session.sign(blockedSign), {
+      code: "MANUAL_SESSION_UNVERIFIED"
+    });
+    assert.deepEqual(await storedHistorySnapshot(current.f), beforeBlockedOutputs);
+    await assert.rejects(current.session.record("signoff", signoff), {
+      code: "MANUAL_SESSION_UNVERIFIED"
+    });
+    assert.deepEqual(await storedHistorySnapshot(current.f), beforeBlockedOutputs);
+    assert.deepEqual(await current.f.records("signoff"), beforeSignoffs);
+
+    await assert.rejects(
+      current.session
+        .consume({ authorization, request: pending })
+        .then(() => assert.fail("unresolved legacy history released a v2 capability")),
+      { code: "MANUAL_SESSION_UNVERIFIED" }
+    );
+    assert.equal(
+      (await current.f.records("consumption")).filter(
+        (value) => value.requestDigest === sha256Bytes(pending.canonicalBytes)
+      ).length,
+      0
+    );
+    assert.deepEqual(await current.f.records("consumption"), beforeConsumptions);
+    assert.deepEqual(await storedHistorySnapshot(current.f), beforeBlockedOutputs);
+    if (phase === "apply") {
+      const recovery = await crossProfileReconcile(
+        current.f,
+        current.session,
+        legacy.context,
+        legacy.original
+      );
+      await assert.rejects(current.session.sign(recovery.input), {
+        code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+      });
+    }
+    await assertStoredHistory(copied);
+    assert.ok(
+      (await current.f.records("execution")).some(
+        (value) =>
+          sha256Canonical(value) === sha256Canonical(legacy.original.execution) &&
+          value.status === "INTERRUPTED_UNKNOWN"
+      )
+    );
+    await current.session.close();
+    await assertStoredHistory(copied);
+  });
+
+test("a consumed legacy v1 authorization stays one-time while completed history permits v2", async (t) => {
+  const context = await liveRoot(t);
+  const { f, root } = context;
+  await acceptExecution(context, root, { alreadyRecorded: true });
+  const oldInput = requestInput(root.request);
+  const slotDir = path.join(f.profile.storage.journalRoot, "consumptions");
+  const oldSlotName = (await fs.readdir(slotDir))[0];
+  const oldSlotBytes = await fs.readFile(path.join(slotDir, oldSlotName));
+  await context.session.close();
+
+  await selectProfileVersion(f, "v2");
+  const session = await f.open();
+  await assert.rejects(session.consume({ authorization: root.authorization, request: oldInput }), {
+    code: "MANUAL_BINDING_MISMATCH"
+  });
+  assert.deepEqual(await fs.readFile(path.join(slotDir, oldSlotName)), oldSlotBytes);
+  assert.equal((await fs.readdir(slotDir)).length, 1);
+
+  const input = await requestFixture(f, session);
+  const authorization = await session.sign(input);
+  await session.consume({ authorization, request: input });
+  const execution = await observeResult(f, session, input);
+  await acceptExecution({ f, session }, execution);
+  assert.deepEqual(await fs.readFile(path.join(slotDir, oldSlotName)), oldSlotBytes);
+  assert.equal((await fs.readdir(slotDir)).length, 2);
+  await session.close();
+});
+
+test("resolved legacy v1 UNKNOWN permits an independent v2 operation without deleting history", async (t) => {
+  const { context, original } = await unknownHistory(t, "apply");
+  const { f } = context;
+  context.session = await f.open();
+  const recovered = await liveRunner(context, "reconcile", original, { emptyRows: true });
+  await context.session.record("execution", recovered.execution);
+  await context.session.close();
+  const historicalBytes = await storedHistorySnapshot(f);
+  const historicalDigests = new Set((await f.records()).map(sha256Canonical));
+
+  const continuedAt = time(600);
+  f.setTime(continuedAt);
+  await selectProfileVersion(f, "v2", continuedAt);
+  const session = await f.open();
+  const input = await requestFixture(f, session, "target-observe", {}, continuedAt);
+  const authorization = await session.sign(input);
+  await session.consume({ authorization, request: input });
+  const execution = await observeResult(f, session, input, { recordedAt: continuedAt });
+  await acceptExecution({ f, session }, execution);
+
+  const records = await f.records();
+  const currentDigests = new Set(records.map(sha256Canonical));
+  assert.ok([...historicalDigests].every((digest) => currentDigests.has(digest)));
+  assert.ok(
+    records.some(
+      (value) =>
+        sha256Canonical(value) === sha256Canonical(original.execution) &&
+        value.status === "INTERRUPTED_UNKNOWN"
+    )
+  );
+  assert.ok(
+    records.some(
+      (value) =>
+        value.kind === "execution" &&
+        value.schemaVersion === "manual-operation-record.v2" &&
+        value.status === "SUCCEEDED"
+    )
+  );
+  await session.close();
+  await assertStoredHistory(historicalBytes);
+});
+
+test("resolved foreign v2 UNKNOWN without canonical profile bytes blocks an independent v2 sign", async (t) => {
+  const { context, original } = await unknownHistory(t, "apply", {
+    profileVersion: "v2"
+  });
+  const { f } = context;
+  const profileABytes = encodeManualJson(f.profile);
+  const profileADigest = sha256Bytes(profileABytes);
+  context.session = await f.open();
+  const recovered = await liveRunner(context, "reconcile", original, { emptyRows: true });
+  await context.session.record("execution", recovered.execution);
+  await context.session.close();
+  const historicalBytes = await storedHistorySnapshot(f);
+  assert.equal(
+    historicalBytes.some(({ bytes }) => bytes.equals(profileABytes)),
+    false
+  );
+
+  const currentAt = time(600);
+  f.setTime(currentAt);
+  await selectProfileVersion(f, "v2", currentAt);
+  const session = await f.open();
+  assert.notEqual(session.profileDigest, profileADigest);
+  const input = await requestFixture(f, session, "target-observe", {}, currentAt);
+  const beforeSign = await storedHistorySnapshot(f);
+  await assert.rejects(session.sign(input), {
+    code: "MANUAL_SESSION_UNVERIFIED"
+  });
+  assert.deepEqual(await storedHistorySnapshot(f), beforeSign);
+  await assertStoredHistory(historicalBytes);
+  await session.close();
+  await assertStoredHistory(historicalBytes);
 });
 
 test("a partially persisted revocation cannot be silently treated as not revoked", async (t) => {

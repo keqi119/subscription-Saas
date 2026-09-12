@@ -12,12 +12,14 @@
 
 ## Global Constraints
 
+- 当前状态（本轮文档修订）：R1.3 已在 `aebbb6b0` 本地通过并获用户接受；不返工其代码或历史证据。本稿与 R2 的 H3 原件传输局部草案待本轮复审；新增 Task R1.3H 是唯一未来纯协议施工单元，位于 R1.3 之后、R2.1 之前，尚未获施工批准。本轮只修订两份计划并分别本地提交复审，不启动 R1.3H/R2 代码、GitHub/DB/Docker/网络/密钥或 H1/H2/H3/Task 30。
+- 以下 RP6 状态、§1.1 的 RP 收口段及末尾原交接状态均为当时历史记录，不覆盖上一条当前状态。
 - 状态：**RP1–RP5 已按获批的 90 日同步计划交付代码；RP6 初次 frozen compatibility 183/185、exit 1 的 STOP 原件保留为历史，随后获批的同字节 scratch-only 完整重验 185/185、exit 0，后置核验 exit 0，独立 evidence review 为 `PASS/LEGACY_SCRATCH_RETRY_CONFIRMED`。RP6 获批的本地执行/审查范围 `LOCAL_COMPLETE`，仅待本地文档提交与 metadata final check；R1.3 的“90 天代码同步”前置已解除，但 R1.3 尚未实施且未因本结论获得施工批准**。R1.1 `a7dae491`、R1.1E `f618b2d2`、R1.2 `a42c2041` 及其历史 150+44 证据不改写；RP1–RP5 实现提交为 `0ce02461`/`fb5c3d36`、`41dfaf37`/`8f5402c0`、`b9aaa55e`、`a7377cc1`、`6f834aaa`。H1/H2/H3、真实 profile/key/credential、DB/Docker/网络操作或 Task 30 仍未批准。既有 session `objects/raw`、冻结 stash `b299ceeed80374d181998f8ef485629beba56b5f` 与未追踪 scheduler 原样保留。
 - P0/P1 本地准入已结束，两个测试目标均退役。不能读取归档凭证、重建旧 record，或访问 ambient `DATABASE_URL`；R1 所有代码测试均不连接数据库。
 - Task 6、29R/30、I 系列和冻结 stash `b299ceeed80374d181998f8ef485629beba56b5f` 不动。API/Web、业务模型、迁移、应用 RBAC、工作流、OSS/WORM 均不在文件修改范围内。
 - 单 JSON 输入/输出实际 UTF-8 字节数最多 `1048576`，读取、规范化前后均计数；不能只在 Schema 写上限。新人工管道另按 §2.5.4 对每帧及 stdin/stdout 各自完整流（含全部 header/payload）执行同一 1 MiB 上限；旧单 JSON 路径及其限额不变。私钥不得进入 Git、镜像、环境变量、argv、日志、聊天或测试报告。
 - 只交付人工路径；decision、operation record 和人工业务结果固定 `promotionEligible:false`（不向 Buffer/KeyObject/void 附加字段）。R4/A3 才可能对指定 Staging 签字，不将本路径结果包装为旧 full-RC 或 Task 30 证明。
-- 本稿内 Task R1.1–R1.3 是代码实施审批单元；H1/H2 是尚未具备输入的人工停止点。计划批准不等于真实 key、目录、签发、上传或构建操作批准。
+- 本稿内 Task R1.1–R1.3 是既有代码实施审批单元；Task R1.3H 是本轮新增、待复审且未启动的局部补充单元。H1/H2 是尚未具备输入的人工停止点。计划批准不等于真实 key、目录、签发、上传或构建操作批准。
 
 ## 1. 当前事实与交付界面
 
@@ -256,6 +258,8 @@ R1.2 仅按已有 `execution-state-machine.mjs` 归约历史：DRY_RUN_SUCCEEDED
 
 #### 2.5.4 人工管道 MS1：唯一 framing、持久化 ACK 与结果提取契约
 
+**历史语义保留：** 本节记录已交付 MS1 的三键 encoder、八键 AUTHORIZE 与两键 launchContext，不全局替换或追改 R1.1E/R1.2/RP 已接受证据。新 R2 必须显式使用 §2.5.5 的 MS2；MS1 只用于历史兼容回归，不是新执行 fallback。本节与 RP3 已交付 `profileBytes` 前向输入约束同时阅读；本轮不撤销其 v2/90 绑定。
+
 本局部协议只实现前述单次人工交接/证据传输，不新增授权、恢复状态机、签名域、服务或通用 transport。旧 `cli.mjs` 单 JSON+LF 输出及旧完整 stdout JSON reader 原样保留；它们不解析 MS1，人工分支也不以旧 reader 猜测多帧。以下规范唯一 owner 为 R1.1E；R2.2 的现有 launcher/entrypoint 文件负责真实 IO，R2.1 只映射领域返回/抛错与观察。
 
 **局部 shape/导出增量披露。** 不改 A、ProcessEvent、R1 已批准八 kind 或六函数。只在尚未发布的 `manual-runner-evidence.v1` 的 `process` 分支新增必填 `protocol:{stdoutPrefix:RawRef,parentFrames:RawRef[]}`；同一个 process 可混合 parent/runner/tool events，该属性始终描述这一 attempt 的 Runner 管道，而非某个 event 的流。只有 allocation.stage=`runner-command` 可以有 process 原件，target-observe 仍无 process。无新 Schema 文件或 artifact kind，以下 frame 的封闭 local 定义/验证只在 `manual-runner-evidence.mjs`，不把任意 frame JSON 加入 artifactBytes。
@@ -327,9 +331,55 @@ previousAck 的 null 只表示当前 child 尚未收到任何 ACK，且没有待
 
 错误分层固定为：grammar/非法 UTF-8/非 canonical/错 version/type/direction/边界/尾垃圾 `MANUAL_FRAME_INVALID`；重复一次性交接或 RESULT `MANUAL_HANDOFF_REUSED`；序号/阶段/ACK 目标或绑定不等 `MANUAL_FRAME_ORDER_INVALID`（跨请求身份仍适用既有 `MANUAL_EVIDENCE_BINDING_MISMATCH`）；帧/完整管道/工具输出超限 `MANUAL_OUTPUT_LIMIT`，既有独立 JSON 入口仍 `MANUAL_JSON_LIMIT`；EOF 半帧/缺 RESULT/缺 ACK 后继 `MANUAL_FRAME_INCOMPLETE`。这些错误不是“未提交”结论：已确认 attempt 身份且凭证可能已交付、PREPARED 已存在或执行可能发生时，assessor 将运行证据不足保留为 INTERRUPTED_UNKNOWN，既有 originalDatabaseOutcome 谓词不放宽；无完整身份继续 INPUT_REQUIRED/STOP，不能造失败成功原件。
 
+#### 2.5.5 MS2 前向 H3 目标原件投影（Task R1.3H；本轮待复审）
+
+**缺口与最小边界。** Runner 的实际 DB 核对需要 H3 post-create 的 systemIdentifier、数据库容器/专属卷/PostgreSQL 镜像/marker/服务器端点原件；request 的 clusterFingerprint 不是这些原件，原八键 AUTHORIZE 和两键 launchContext 不能暗增字段。本节只给既有管道增加显式 MS2 格式和一个非秘密 `targetContext`，复用同一 encoder/parser/protocol validator/assessor。无新授权、签名域、profile 字段、Schema/artifact kind、process 字段、通用 metadata/IO factory 或第二信任内核；launchContext 仍只描述 Runner，不塞 DB 身份。
+
+**版本选择和封闭接口。** 既有 `encodeManualRunnerFrame({type,sequence,payload}):Buffer` 原样只编码 MS1；新增同一函数的封闭四键输入 `encodeManualRunnerFrame({protocol:"MS2",type,sequence,payload}):Buffer` 只编码 MS2。四键的 `protocol:"MS1"`、未知版本、缺键、额外键均拒绝，不能由 payload 猜版本或失败后降级。MS2 header 恰为 `ASCII("MS2 " + type + " " + sequence + " " + payloadByteLength + "\n") || payloadBytes`，其余 §2.5.4 数字、UTF-8/canonical、逐 frame/完整方向流 1048576 bytes、顺序、nonce、ACK、EOF 与秘密禁入档规则不变；除 AUTHORIZE 必填新增一键 targetContext 外，所有 payload 原样保留。
+
+`parseManualRunnerFrames({direction,bytes,ended})` 的三键输入和 `{frames,consumedBytes,pendingBytes}` 返回完全不改，frame 返回键也不加 protocol。它从本方向首个 header 选择一次 MS1/MS2，再以私有 decoder 将这一版本绑定整条流；空流/合法半 header 按原 prefix 规则处理，已可证明非法的版本立即拒绝。双向及全部公开单帧、候选 ACK 必须同版本；live/archive 由首个实际 CHALLENGE header 与 AUTHORIZE/ACK 原 header 比对，而不是把公开 parentFrames 拼成完整 stdin。任何混版在未完前缀中也不得被等待吞掉。新 R2 固定编码 MS2，并在收取首 header/调用共享 validator 之前拒绝 MS1；共享模块仍能按原规则复评历史 MS1，不能以“共享 decoder 支持旧版”为新入口降级授权。
+
+保留 RP3 当前实际接口：v2/90 的 `assessManualRunnerEvidence`/archive validator 接收封闭 `{requestBytes,artifactBytes,rawBlobs,profileBytes}`，live-ack 接收原八键加 `profileBytes` 的封闭九键；旧 v1 历史分支仍按其已交付规则。MS2 不改变这些输入/返回，不新增 expectedProtocol/targetContext 参数；context 只沿真实 AUTHORIZE bytes 到达，current profileBytes 仍 canonical 且绑定 request。只新增一个纯导出 `computeManualClusterFingerprint(cluster:ClusterOrigin):D`，在本模块与 package index 导出；它只验证封闭数据与重算摘要，不生成品牌或宣称来源可信。
+
+**唯一封闭形状。** `TargetIntent`、`UUID`、`D`、`S`、`RawRef` 沿既有定义。下列每个键必填、递归 closed；`databaseContainerId` 为完整 64 位小写 hex 实际 Docker ID（形状沿 N，不声称它是随机 nonce）。正十进制文本仅 `[1-9][0-9]*`，systemIdentifier 另以 BigInt 检查 `<=18446744073709551615`，禁止 Number 精度丢失。
+
+```text
+TargetContext={contextVersion:"manual-h3-target-context.v1",operationRef:UUID,
+ indexDigest:D,runId:UUID,profileDigest:D,targetIntent:TargetIntent,
+ databaseOid:positive-decimal-string,h3Approval:RawRef,h3Readback:RawRef,
+ cluster:ClusterOrigin}
+ClusterOrigin={systemIdentifier:positive-decimal-uint64-string,
+ databaseContainerId:N,dataVolumeName:S,postgresImageDigest:D,marker:S,
+ serverAddress:S,serverPort:integer1..65535}
+```
+
+serverAddress 只取 `host(inet_server_addr())` 实际原文本，须为合法 IPv4/IPv6 地址文本；无 DNS、URL、zone、调用方选址或格式替换。serverPort 只取实际 `inet_server_port()`，是 PostgreSQL 内部端口，不等同 host published port；固定 profile endpoint 与精确 Docker published 映射在父方另验。NULL/Unix socket、含 subnet 的 inet 输出、未知地址或端口均 STOP，不能填 profile endpoint 冒充 SQL 原件。H3 readback 固定保存这组实际值，后续读回逐项相等。
+
+```js
+// 唯一纯算法；先完成上面的 closed/值域校验，再调用现有 canonical digest。
+const clusterFingerprint = sha256Canonical({
+  domain: "manual-postgres-cluster.v1",
+  ...cluster
+});
+```
+
+该 fingerprint 只含上述固定物理 tuple；不含 databaseOid、run/profile/operation/attempt/session、审批/读回引用、时间、role/TLS/catalog/head/权限。数据库名/OID 和端点 policy 仍在原 PhysicalIdentity 单独绑定；观察、migrate、verify、replay/reconcile 对同 cluster 计算相同值，不因跨角色或恢复更换包装上下文漂移。更换数据库容器、专属卷、系统标识、镜像、marker 或实际 serverAddress/port 是不同物理目标，不以新 run/摘要绕过原审批。
+
+**来源与时序。** H3-A approval 先于 create，仅批准 R2 H3-A 固定 creationSpec（容器名、专属卷、PG digest、marker、精确 published endpoint、内部 port）及当时已有 operation/index/目标；不能预填未来 systemIdentifier、实际 containerId、serverAddress 或 databaseOid。create 后的 `h3-a-readback.json` 才保存实际 create/inspect/SQL 事实，并逐项对应该 creationSpec。parent 经 `readFixedManualOperation` 取得实际 operation/indexDigest，再只从同一 `archiveRoot/inputs/operations/{operationRef}/h3-a-approval.json` 与 `h3-a-readback.json` 按既有固定 IO/ACL/句柄/pre-post identity/完整 raw byte 限额独立读回。R2 按其 §2.1 的两固定原件形状校验 index/operation/profile/run/target/审批与 post-create 对应关系，并即时重读 Docker/卷/镜像/marker/端点映射，仅把核对后的非秘密字段投影为 targetContext。systemIdentifier、DB OID、serverAddress/port 此时来自先前获准的 H3-A 实际 SQL readback；本次 SQL 实测必须等对应 target-observe 或 child 授权消费后，不为生成 context 提前连接，不从 request/授权/旧摘要还原“原件”。
+
+父方每次即时资源检查只要求已批准的稳定物理身份、creationSpec 与精确 endpoint 映射未变；不重新要求原 H3-A 的 catalog/head/权限仍未变化，否则合法 migration 与 H3-B 撤写无法继续。当前角色/TLS/权限和 schema 状态仍由各 phase 的既有实际门禁单独核验，不能把“不冻结旧 catalog”解释为跳过它们。H3-A/H3-B 外部批准、create 或读取真实数据库均不由本任务执行。
+
+以下 request.physicalIdentity/baseline 等式仅适用于 runner-command。parent 将 targetContext.runId/profileDigest/targetIntent 与 request 同名字段逐项对应；`databaseOid` 同时等于 request.physicalIdentity.databaseOid 与 baseline.identity.physicalIdentity.databaseOid，`computeManualClusterFingerprint(cluster)` 同时等于这两处 physicalIdentity.clusterFingerprint。baseline 本身不新增 run/profile/target 字段。targetContext.operationRef/indexDigest 必须等于 reader 对当前 operation 的实际读回。后两项不是 request 字段，不给 request 或签名加字段，child 无法凭这两个 digest 自证固定路径或人审来源。首次 target-observe 仍在 parent、无 Runner/process/MS2 帧：只核已有 ref/index/run/profile/target 与 H3 来源，不读取该请求禁止的 physicalIdentity/domainInput 或不存在的 baseline；消费其原授权后，父方从相同 H3 原件与实际 DB 只读查询形成 observation，再由既有流程生成 baseline。之后 child 在 READY 前核 MS2/context closed、run/profile/target 及 baseline/request 的上述物理等式；只信已有固定父管道传来的 H3 非秘密来源。credential/handoff 门槛过后，再以本能力只读 SQL 实测 databaseName/OID、systemIdentifier、serverAddress/port、role/TLS；实际值对 context/request 不符时在 handler/deploy 前拒绝。marker 是父方实际 Docker/卷标签读回事实，不新增数据库字段或 child marker 查询。child 不独立验证 GitHub/H3 人工批准，不 inspect Docker，不接收宿主 key、H3 路径、凭证引用或 caller 选择的 context。
+
+**原 bytes 与归档核对。** h3Approval/h3Readback 分别是固定两份完整原件 raw bytes 的 `RawRef`，不是 creationSpec/context 投影摘要。两原件按现有 90 日 inputs/档案/备份边界保管；R2.2 在 AUTHORIZE 前将这两份完整 bytes 通过既有 raw 写入/独立重开存入 archiveRoot/raw/{rawDigestHex}.bin，与固定 inputs 原件逐字节一致，才供现有 session.archiveInput 枚举为 rawBlobs。已存在同 digest 路径只能独立核同字节，缺失/冲突/不确定停止，不能覆盖。不是新 H3 source 子文件或新存储体系；MS2 AUTHORIZE 完整 frame（含 context）归既有 `process.protocol.parentFrames` 的 raw custody，context 不另建 artifact/record，秘密仍不入 rawBlobs。archive validator/assessor 只沿 MS2 AUTHORIZE.targetContext 的这两个明确 RawRef 在 rawBlobs 找到完整 bytes、重算 bytes/hash；不把原件 JSON 放入 artifactBytes、不递归扫描其 digest，不新增 H3 Schema 或把 hash 宣称为来源证明。R2 独立 reader 还须从同 operation 的固定原件重开核相等，并重做完整 closed/审批/投影等式；pure live-ack 只有 frame 原件，不接收 H3 文件 Buffer，也不声称完成此 IO 门禁。
+
+MS2 live/archive 共用相同 context→request/baseline 的 closed/物理绑定谓词。单改 context 的 cluster/databaseOid/run/profile/target，即便同步重算 frame RawRef、READY/ACK 及 raw 引用，仍因签名请求/既存 baseline 不匹配拒绝；改 h3Approval/h3Readback bytes 而只保留旧 RawRef 拒绝。把伪造 H3 原件和它的 RawRef 一起更换且内部字节自洽，纯模块不能证明人审或来源真假，必须由 R2 的实际 fixed-source/完整原件比较反例拒绝，不能在 R1.3H 测试中冒称已证明 Docker/存储事实。错误沿既有 FRAME/ORDER/OUTPUT、`MANUAL_EVIDENCE_BINDING_MISMATCH`/`MANUAL_EVIDENCE_INPUT_REQUIRED` 分层；不新造状态或错误协议。
+
 ### 2.6 固定 H1/build/operation 输入权威（R1.3 与 R2.2 的唯一边界）
 
 本节只闭合原计划尚未存在的生产输入，不改变 §2.1–2.5、R1.1E 的五个导出、R1.2 状态机或 session `objects/raw` 档案。新执行的唯一固定 profile 为 `release/contracts/manual-stage1-profile.v2.json`，其 Schema 固定 v2/90；历史 v1 只在 RP3 已存记录路由中读取，不是 loader fallback。新增 `inputs` 子目录只供 R1.3/H2 和 R2.2 metadata 固定 IO 使用，不加入现有 session 原件 union。
+
+上段是 R1.3 原审批范围；本轮 §2.5.5 的单一纯导出/MS2 由独立 Task R1.3H 拥有，不返工 R1.3。H3 两份固定原件的完整读取/验证和 targetContext 投影由 R2 固定 IO 拥有；R1.3 reader 四接口、index 形状以及本节 H1/H2 规则不扩展，不能让 readFixedManualOperation 额外返回 H3 或可信 wrapper。
 
 **H1 owner/host 绑定。** 固定仓库文件 `release/contracts/manual-stage1-owner-binding.v1.json` 由与 profile 相同的 attested source/repository contract 锚定；不新增 profile 字段、Schema 或 foundation 权限模型。R1.3 私有 closed validator 只接受：
 
@@ -578,6 +628,8 @@ R1.2 `manual-stage1-session.test.mjs` 和 R2.3 `scripts/release/verify-manual-ru
 
 ## Task R1.3：固定 profile loader 与真实构建验签适配
 
+**已接受状态：** 本任务已在 `aebbb6b0` 本地通过并获用户接受；下列四文件、四接口与原步骤保留为历史范围，不因本轮 H3 传输补充返工。新增工作只归 Task R1.3H，后者仍待复审与施工批准。
+
 **Files:**
 
 - Create: `scripts/release/manual-stage1-trust.mjs`
@@ -637,6 +689,113 @@ if ($LASTEXITCODE -ne 0) { throw 'R13_COMMIT_FAILED' }
 
 只在全部命令成功且 staged 清单恰为上述四个可写文件时提交；保留任何无关修改。
 
+## Task R1.3H：MS2 的 H3 目标原件投影纯闭环（待本轮复审；未启动）
+
+**前置与范围：** R1.3 `aebbb6b0` 已接受；本任务位于其后、R2.1 前。本轮只批准文档局部修订和分别本地提交复审，不执行下列代码、测试或提交步骤。后续只有两计划复审通过且用户单独批准施工后才按此任务进行；不重新开 R1.1/E/2/RP/R1.3，不提前执行 H1/H2/H3 或 R2。
+
+**Files（恰四个，均 Modify）：**
+
+- `packages/release-foundation/src/manual-runner-evidence.mjs`：同一个私有 framing/payload/绑定实现支持 MS1 历史与 MS2 前向，新增唯一纯 cluster fingerprint 导出。
+- `packages/release-foundation/test/manual-runner-evidence.test.mjs`：扩展现有私有 fixture 与纯正反例，不新增 fixture 文件/生产 factory。
+- `packages/release-foundation/src/index.mjs`：只重导出 `computeManualClusterFingerprint`。
+- `packages/release-foundation/test/manual-stage1-session.test.mjs`：真实临时根读回调用既有 session，验证 MS2 与旧历史/UNKNOWN 不回归；不修改 session 生产模块。
+
+两个生产文件（evidence/index）已在 repository contract manifest 纳管，两个测试继续由既有 Foundation 测试发现入口选中；本任务不重新登记、不改 catalog/manifest、Schema、profile、kernel、session 生产文件或 R2 文件。旧 pure parser/validator/assessor 五导出签名按 §2.5.5 保留，encoder 仅增加显式四键 MS2 分支；总计新增一个纯导出，无 IO/身份品牌。
+
+**Interfaces：** Consumes §2.5.5 的 TargetContext/ClusterOrigin、现有 `sha256Canonical`/`encodeManualJson`、现有 MS1 codec、RP3 v2/90 `profileBytes` 和真实 `openManualSession`。Produces `computeManualClusterFingerprint(cluster):D`；同 `encodeManualRunnerFrame` 新 closed MS2 输入；parser 原返回与 validator/assessor 原当前输入/结果。R2.1/R2.2/R2.3 只有本任务获接受后才消费这些接口，并由自己的固定 IO 保证 H3 来源和拒绝 MS1 新入口。
+
+- [ ] **1. 写纯 RED，并记录真实失败。** 在 evidence 测试内通过模块 namespace 断言新增导出，不把旧 fixture 全局改成 MS2；以下测试向量不来自真实 DB/密钥，UInt64 不经 Number 转换。
+
+```js
+test("MS2 cluster fingerprint is the closed physical tuple", async () => {
+  const module = await import("../src/manual-runner-evidence.mjs");
+  assert.equal(typeof module.computeManualClusterFingerprint, "function");
+  const cluster = {
+    systemIdentifier: "18446744073709551615",
+    databaseContainerId: "1".repeat(64),
+    dataVolumeName: "test-h3-volume",
+    postgresImageDigest: "sha256:" + "2".repeat(64),
+    marker: "test-h3-marker",
+    serverAddress: "192.0.2.10",
+    serverPort: 5432
+  };
+  assert.equal(
+    module.computeManualClusterFingerprint(cluster),
+    sha256Canonical({ domain: "manual-postgres-cluster.v1", ...cluster })
+  );
+  for (const bad of [
+    { ...cluster, systemIdentifier: "18446744073709551616" },
+    { ...cluster, systemIdentifier: "01" },
+    { ...cluster, systemIdentifier: 1 },
+    { ...cluster, serverAddress: "db.invalid" },
+    { ...cluster, serverAddress: "fe80::1%eth0" },
+    { ...cluster, serverPort: 0 },
+    { ...cluster, role: "test-migrate" },
+    { ...cluster, runId: uuid(90) }
+  ])
+    assert.throws(() => module.computeManualClusterFingerprint(bad));
+});
+```
+
+Run `node --test --test-name-pattern="MS2" packages/release-foundation/test/manual-runner-evidence.test.mjs`；预期缺导出/四键被旧 encoder 拒绝，记录 RED 原件。随后新增完整 cluster 的缺键/额外 symbol/accessor（不执行 getter）、非法 IPv4/IPv6、空/零/负值/指数和 upper uint64 边界反例，所有有效字段逐一改动须改变 hash；合法 IPv4 与无 zone IPv6 均覆盖。
+
+- [ ] **2. 为 MS2 正常链和 live/archive 写 RED。** 仅给测试内既有 `fixtureFrame`/`runnerFixture` 新增显式 `options.protocol:"MS2"` 分支，旧默认始终 MS1；MS2 分支在 build/baseline/request 冻结和测试签名前用同一 ClusterOrigin 重算 physicalIdentity，并将同 run/profile/target、两个测试完整 H3 raw bytes 的 RawRef 放入 AUTHORIZE.targetContext。由原有按事件顺序的 fixture 建图/重算，不对最终档案逐字符串替换 MS1。私有 fixture 参数不是生产接口；H3 synthetic bytes 只测试 raw 关系，不称人审或 Docker 证据。扩展 existing fixture90 所依赖的 options 透传，增加以下测试：
+
+```js
+test("MS2 bound 90-day archive and every live ACK use the same target context", () => {
+  const dry = fixture90("dry-run", null, { protocol: "MS2" });
+  const apply = fixture90("apply", dry, { protocol: "MS2" });
+  const replay = fixture90("replay", apply, { protocol: "MS2" });
+  for (const current of [dry, apply, replay]) {
+    const input = current.archive.input(current.request);
+    assert.equal(assessManualRunnerEvidence(input).executionStatus, "SUCCEEDED");
+    assert.equal(validateManualRunnerProtocol(input), undefined);
+    for (const live of current.liveInputs)
+      assert.equal(validateManualRunnerProtocol(live), undefined);
+  }
+});
+```
+
+同一组增加 verify、apply UNKNOWN→reconcile、合法跨角色/新 attempt 与新恢复 session；相同 cluster 的 hash 不随包装 run/profile/审批引用改变，但 context outer 必须始终绑定其当前 request。target-observe 保留 parent-only/no-process 分支，以父方 synthetic H3 readback 与实际观察形状构建初始 baseline，不造 MS2 observe 帧。
+
+- [ ] **3. 写拒绝矩阵并逐项运行 RED。** MS2 AUTHORIZE 缺 targetContext、context/cluster/RawRef 缺键/多键；旧八键 payload；databaseOid、run/profile/target 或 cluster 身份不符；旧 context 跨 run 重用；MS1 payload 偷带 context；四键 protocol 为 MS1/未知；方向内或跨方向/公开 parentFrames/候选 ACK 混版。live 与 archive 对身份错同时拒绝；archive 缺 H3 raw bytes 或 bytes/hash 不匹配分别断言 INPUT_REQUIRED/绑定失败。另重建内部一致 frame/READY/ACK/raw 引用但只改 context（不改已签 request/既存 baseline），仍必须拒绝 `MANUAL_EVIDENCE_BINDING_MISMATCH`。完全换原件+RawRef 的自洽伪造仅能由 R2 固定 source reader 拒绝，归 R2.2/R2.3 测试，不将该能力计入本任务。
+
+- [ ] **4. 最小实现后 GREEN。** 在同 evidence 模块新增私有 closed ClusterOrigin/TargetContext 检查，纯导出只做该检查与 §2.5.5 唯一 hash；encoder 用互斥三/四键分支，私有 header/prefix decoder 识别首版并向后绑定，同一 authorizeMatches/protocolTrace 谓词接入 context→request/baseline 等式，archive 只新增两个显式 RawRef raw edges。live 使用已有 frame 中 context，不加 Buffer 参数；未知版本、混版、缺 context 不 fallback。index 只加一个重导出；所有 request/authorization/receipt/profile/process Schema 和 session 生产代码保持字节不动。再次运行 Step 1 命令须 PASS，再运行 evidence 整文件；失败时不能扩为第二 codec、Schema 或 H3 生产 IO。
+
+- [ ] **5. 边界与实际 session 回归 RED → GREEN。** evidence 同一完整合法 MS2 archive/live 流逐 byte split、逐多字节 UTF-8 split、所有帧 coalesce 后重解析必须相同，ParsedFrames/frame 返回 own keys 与旧版完全一致；覆盖 1 MiB header+payload 与整 stdin/stdout（含 CREDENTIAL 但绝不归档秘密）的上限/加一、有限 header、RESULT prefix、EOF 半帧、重复/缺 RESULT、尾日志、wrong ACK/自引用/future 引用和秘密混入公开数组。沿旧 error/UNKNOWN 分层，不删弱化 MS1 原测试。session 测试仅扩展现有私有 fixture 的显式 MS2 分支，并用 `liveRoot(t,{profileVersion:"v2"})`、`liveRunner`、`acceptExecution`/`sealExecution` 与临时文件真实重开证明 MS2 handoff→archive→90 日 signoff；再覆盖 apply/replay 丢 result/close 的 UNKNOWN、旧 v1/MS1 未决历史仍阻断 v2 签发/消费/ACCEPTED、一次性消费/撤销/排他锁不回归。session 只按既有 assessor 读取 raw；不加生产 factory/参数，不调用 DB/Docker/网络、生产 secret 或真实 profile。
+
+- [ ] **6. 完整离线验证、精确范围审查，另行获批后提交。** 运行以下完整测试，不以仅 MS2 pattern 的通过计整体完成；记录实际 Node、各命令完整计数/exit，核旧 MS1/RP/UNKNOWN 断言未改弱、只有一个新导出/四个文件。按 requesting-code-review/verification-before-completion 做独立审查和证据核对；这是未来施工收口，不是本轮文档任务允许的执行。
+
+```powershell
+node --test packages/release-foundation/test/manual-runner-evidence.test.mjs packages/release-foundation/test/manual-stage1-session.test.mjs packages/release-foundation/test/manual-stage1-contracts.test.mjs packages/release-foundation/test/execution-state-machine.test.mjs
+if ($LASTEXITCODE -ne 0) { throw 'R13H_OFFLINE_FAILED' }
+pnpm release:contracts:verify
+if ($LASTEXITCODE -ne 0) { throw 'R13H_CONTRACT_FAILED' }
+$r13hFiles = @(
+  'packages/release-foundation/src/manual-runner-evidence.mjs',
+  'packages/release-foundation/test/manual-runner-evidence.test.mjs',
+  'packages/release-foundation/src/index.mjs',
+  'packages/release-foundation/test/manual-stage1-session.test.mjs'
+)
+pnpm exec prettier --write -- $r13hFiles
+if ($LASTEXITCODE -ne 0) { throw 'R13H_FORMAT_FAILED' }
+git diff --check
+if ($LASTEXITCODE -ne 0) { throw 'R13H_DIFF_INVALID' }
+git add -- $r13hFiles
+if ($LASTEXITCODE -ne 0) { throw 'R13H_STAGE_FAILED' }
+git diff --cached --check
+if ($LASTEXITCODE -ne 0) { throw 'R13H_STAGED_DIFF_INVALID' }
+$r13hStaged = @(git diff --cached --name-only)
+if ($LASTEXITCODE -ne 0) { throw 'R13H_STAGED_LIST_UNAVAILABLE' }
+if (@(Compare-Object ($r13hFiles | Sort-Object) ($r13hStaged | Sort-Object)).Count -ne 0) {
+  throw 'R13H_STAGED_SCOPE_MISMATCH'
+}
+git commit -m "feat(release): bind MS2 manual target context"
+if ($LASTEXITCODE -ne 0) { throw 'R13H_COMMIT_FAILED' }
+```
+
+验收只说明同一纯协议内的结构/绑定与真实临时档案回归；新 R2 拒绝旧 MS1 的生产入口、H3 fixed-source/完整原件投影、即时 Docker/SQL 身份及 archive 实际源错反例，仍由 R2.1/R2.2/R2.3 在各自批准范围实现。本任务接受后停在 R2.1 施工批准门前，不自动执行下一任务。
+
 ## H1：首次实际身份、路径与备份——人工停止点
 
 这不是自动执行任务。R1.3 代码审查通过后才提交**非秘密精确摘要**：owner ID、actual principal、按 §2.6 算出的 hostFingerprint、加密 key/journal/archive/backup/credential roots、权限/恢复步骤及撤销处置。当前真实值尚未提供；不猜目录、SID/uid、MachineGuid/machine-id、公钥或批准时间。credential root 此时无 DB 凭证；H3 后续批准精确身份/内部引用，不改 profile/owner binding。
@@ -653,6 +812,8 @@ if ($LASTEXITCODE -ne 0) { throw 'R13_COMMIT_FAILED' }
 - [ ] 独立 reviewer 同时确认 H1 owner/host/ACL/approval/恢复读回与 H2 source/contract/profile/sidecar/proof/material/custody receipt、receipt attestation及权威 storage readback。只有 H1/H2 都有事实，R2.2 才可调用一次 `prepareManualOperation`，把 verifier 返回的 `custodyReceiptRawDigest` 连同其余 fixed-build digest 写入非授权 index 供 H3-A 审批；H3-A 批准后外部操作不得重新 prepare。R1 内核测试或 index 存在均不表示 H1/H2/H3 已批准。
 
 ## 完成与交接
+
+当前交接优先级：R1.3 `aebbb6b0` 已本地通过并获接受；本轮仅交付 R1/R2 两份局部计划修订，等待复审。Task R1.3H 与 R2 代码均未启动，H1/H2/H3/Task 30 保持冻结。下面 RP6 的收口描述是历史状态，不再表示 R1.3 尚未实施，也不构成 R1.3H 施工批准。
 
 代码审查报告分别列：R1.1/R1.1E/R1.2 历史提交与已接受计数、R1.3 新测试计数、实际 Node 版本、contract digest 变更、旧路径回归、H1/H2 状态；没有真实验证的项目保持 `NOT_RUN/INPUT_UNAVAILABLE`。RP6 本地执行/审查范围现为 `LOCAL_COMPLETE`，仅待本地文档提交与 metadata final check；该状态只解除 R1.3 的代码同步前置，不作 R1.3/H1/H2 批准或真实施工完成声明。
 

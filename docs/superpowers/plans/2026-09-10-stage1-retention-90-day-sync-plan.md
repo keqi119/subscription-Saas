@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- 状态：**待复审，尚不授权实施**。编写基线 `a721ae07fa9b6fd56bc460849df9e958871c4b99`；本次只新增本文件并独立本地提交，不推送。
+- 状态：**RP1–RP5 实现已经用户接受；RP6 文档消费同步已获授权。联合 Node 22 当前路径 374/374 与两项 offline gate 通过；初次 frozen compatibility 183/185、exit 1 的 `STOP/LEGACY_COMPATIBILITY_FAILED` 原件保留为历史。用户另行批准的同字节 scratch-only 完整重验 185/185、exit 0，后置核验 exit 0，独立 evidence review 为 `PASS/LEGACY_SCRATCH_RETRY_CONFIRMED`；RP6 获批的本地执行/审查范围 `LOCAL_COMPLETE`，仅待本地文档提交与 metadata final check，R1.3 的“90 天代码同步”前置已解除**。计划基线 `6d1b1947`，RP6 施工基线 `6f834aaa18a6a2d2fa679777a9cd069feb1ef69e`。R1.3 尚未实施且未因本结论获得施工批准；不推送、合并或执行 H1/H2/H3/Task 30。
 - 获批后的执行顺序为 RP1 → RP2 → RP3 → RP4 → RP5 → RP6；各任务独立提交、主控核验及独立审查，全部通过后才解除 R1.3 的“90 天代码同步”前置阻断。H1/H2/H3、真实密钥、数据库、外部操作及 Task 30 不因该解除而获得批准。
 - 新政策仅适用新的 profile/执行/证明链。历史 180 天原件、摘要、签名、起算事件、实际到期时间不改写、不缩短、不重签；既有 210 天 WORM 不改配置、不缩短。新政策不构成删除授权。
 - R1.2 `a42c2041` 历史验收保持有效。下列未来修改是有明确差异的新版本兼容工作，不能把历史通过计数登记为本次通过；Windows 既有失败与 Ubuntu 成功记录均保留。
@@ -319,7 +319,54 @@ if (!Number.isFinite(created) || !Number.isFinite(expires) || expires < created 
 
 R2.2实际实时收发、R2.3当前请求归档校验均向RP2接口传同一固定loader取得的canonical profileBytes；每次与当前request/auth摘要匹配。历史重评估遵守RP3的被评估request路由，不能用当前profile替换原profile；未知历史版本继续STOP。R1.2实际session由RP3同步，不归R2重复施工。R2.4仍显式汇总两个独立operationRef且同build，不增加聚合平台。
 
-- [ ] **1. 联合当前路径完整测试。** 在既有Ubuntu/Node22隔离环境记录准确版本，然后串行执行，保留每条命令完整计数和退出码：
+### RP6 执行记录（UTC 2026-09-12 / 北京时间跨至 2026-09-13，`LOCAL_COMPLETE`，待本地文档提交）
+
+RP6 文档草稿已按实际导出与固定文件名对齐，不改已批准架构：`assertBuildIdentity(input)`、`assertProofCustody({proofDigest,custodyReceipt,trustRoot,verifiedAttestation})`由 RP4 `a7377cc1` 拥有；R1.3 只消费它们。`validateManualRunnerProtocol(input)` 和 `assessManualRunnerEvidence(input)` 的新当前链均必须显式带 canonical `profileBytes`；`openManualSession({profile,ownerObservation,io,now,signingKey})` 在 v2 下生产 v2/90，历史请求按被评估链的原 profile 路由。RP5 `6f834aaa` 的 workflow 仅上传两份 90 天交付 artifact，本地代码结果固定 `authorityCustody:"INPUT_REQUIRED"`/`promotionEligible:false`；这不是实际 workflow 执行或 H2 证明。
+
+| 交付 | 实现/审查引用                                                                                                                                                                                                                                                                                                                                                                                                                                                  | RP6 记录                                                                                                                         |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| RP1  | `0ce02461`；overflow 修正 `fb5c3d36`；`.superpowers/sdd/2026-09-10-stage1-retention-90-day-sync-plan/task-RP1-independent-review.md`                                                                                                                                                                                                                                                                                                                           | 前向 v2 profile/record 与 retention90 receipt Schema，旧 v1/180 不变                                                             |
+| RP2  | `41dfaf37`；baseline 修正 `8f5402c0`；`task-RP2-independent-review.md` 及 `task-RP2-baseline-fix-independent-review.md`                                                                                                                                                                                                                                                                                                                                        | 当前 live/archive 消费 canonical `profileBytes`                                                                                  |
+| RP3  | `b9aaa55e`；`task-RP3-independent-review.md`                                                                                                                                                                                                                                                                                                                                                                                                                   | v2/90 session 与跨政策历史 UNKNOWN 阻断                                                                                          |
+| RP4  | `a7377cc1`；`task-RP4-independent-review.md`                                                                                                                                                                                                                                                                                                                                                                                                                   | 两个共享 build 断言及 verifier/catalog 登记唯一 owner                                                                            |
+| RP5  | `6f834aaa`；`task-RP5-independent-review.md`                                                                                                                                                                                                                                                                                                                                                                                                                   | 90 天 delivery-only，不生成权威 receipt                                                                                          |
+| RP6  | 初次原始记录目录 `C:/Users/keqi_119/AppData/Local/Temp/rp6-native-validation-20260912-0e10e3bb60dc4038b6d0da3430f7ab47`；历史 `task-RP6-stop-review.md`（SHA-256 `17e94b145e1ae7766e620946b3336308c83059f314455a49fd1fb808b89b657a`）；scratch 重验目录 `C:/Users/keqi_119/AppData/Local/Temp/rp6-scratch-retry-20260912-dd4f0e03d9174b0f84a98b9210e86ecb`；`evidence-review.md`（SHA-256 `af5433a4b38394178409105190507c86a88d68aada79e96b0a7e364e2e2cff67`） | 初次 183/185 STOP 原件保留；scratch-only 重验 185/185，独立复核 `PASS/LEGACY_SCRATCH_RETRY_CONFIRMED`；本地范围 `LOCAL_COMPLETE` |
+
+本次新契约 SHA-256 按仓库原字节记录为：
+
+- `manual-stage1-profile.v2.schema.json`: `d8e19380b81f86625226e2171975b7c6af4d2d11ffb29246e20e643c21a080dc`
+- `manual-operation-record.v2.schema.json`: `6ee01d7aecc7008121cf4f07c3027a85769bc9184c843a30fe2888eb132ad6f6`
+- `custody-receipt.retention90.v1.schema.json`: `5204927209fb2ee83107b3b25e6e5a1428cf73e46f28b510d705f07c07aca388`
+
+RP6 当前状态：
+
+| 项目                                                             | 状态                                                                                                                                                                                                | 不得推断                                                             |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| 七个 current-path 完整测试                                       | `PASS`；374/374，0 failed/cancelled/skipped/todo，exit 0；Node 22.22.2；`11:48:30.147Z`–`14:49:06.947Z`                                                                                             | 只证明当前七文件命令在该原始输入上通过，不覆盖 legacy 失败           |
+| 十六个 frozen compatibility 文件（初次，历史原件）               | `FAIL / STOP`；185 total/183 passed/2 failed，0 cancelled/skipped/todo，exit 1；Node 22.22.2；`14:51:03.015Z`–`14:56:41.362Z`                                                                       | 原失败不覆盖、不追认、不筛掉                                         |
+| 十六个 frozen compatibility 文件（获批 scratch-only 完整重验）   | `PASS`；185/185，0 failed/cancelled/skipped/todo，exit 0；Node 22.22.2；UTC `15:55:41.590Z`–`16:00:46.128Z`；actualclose SHA-256 `b89dab982989f16c3892d473c7df61320ebf382566b3e01bee87a1acc869b21b` | 北京时间结束于 2026-09-13；只证明获批 scratch 布局下的同字节完整命令 |
+| `release:contracts:verify`                                       | `PASS`；exit 0；68 schemas/173 files/13 commands/126 migration files；`repoDigest=sha256:e4387a1cd5791d9e64e46765e8898dc41120acc5154db042ae291154045fb85f`                                          | 不代替失败的 legacy 联合回归                                         |
+| `release:database-tests:discover`                                | `PASS`；exit 0；93 candidates/37 manifested/56 exceptions/0 unclassified                                                                                                                            | 不授予 exception 任何最终门禁 skip                                   |
+| scratch 重验后置核验 / 独立 evidence review                      | 后置核验 `PASS/LEGACY_SCRATCH_RETRY`，exit 0，verification SHA-256 `3de56fd8556d57f177f8a4228a49a4f1c36a8e34bb65083a92fa32d7708ed39b`；独立复核 `PASS/LEGACY_SCRATCH_RETRY_CONFIRMED`               | 不把测试 double 称为真实 Docker/数据库验证                           |
+| RP6 本地范围 / R1.3 代码同步前置                                 | `LOCAL_COMPLETE` / `CLEARED`                                                                                                                                                                        | 只解除前置；R1.3 未实施、未获本轮施工批准                            |
+| RP6 文档最终提交                                                 | `PENDING_LOCAL_COMMIT`                                                                                                                                                                              | 尚未生成未来提交事实                                                 |
+| 实际 workflow/Actions readback、H1/H2/H3、R1.3 真实执行、Task 30 | `NOT_RUN / INPUT_UNAVAILABLE`                                                                                                                                                                       | 即使 RP6 后续通过也不自动获批                                        |
+
+#### 历史初次 STOP 记录（原件保留）
+
+legacy 初次失败恰为原样保留的 `scripts/release/database-test-launcher-cli.test.mjs` 中 test 152/153。test 152 定义于 `:225`，期望 `TEST_STOP_AFTER_RUN`、实际 `ENOENT`；其原始堆栈记录 `scripts/release/database-test-launcher-runtime.mjs:211` 尝试在只读 native repo 下创建不存在的 `.release-local`。test 153 定义于 `:267`，期望 `DATABASE_LAUNCHER_CONTAINER_IMAGE_NOT_LOCAL`、实际 `ENOENT`；其原件只展开 `:292` 的错误码断言，没有展开同一 mkdir 底层堆栈。源码调用链显示两例均进入同一 `startCluster()`，且该函数在调用注入的 Docker double 前先准备本地目录；把第二例也定位为该准备阶段属于调用链推断，不冒充第二份原始底层堆栈。native repo 为只读且 `.release-local` 不存在；未发生真实数据库、Docker 或云端调用。因此这只是当时观察到的首个失败条件，**不分类为产品回归，也不声称已唯一证明根因**。初次四条命令均使用 Node 22.22.2 与原始未改输入。
+
+初次失败后只读保全再次核对 source/native 各 9,642 files/136 links、28 项冻结资产及 stash 均未改变，native `.release-local` 仍不存在。独立停止复核确认当时原件一致及 `STOP_CONFIRMED`；这不是 compatibility PASS，也不证明产品 90 日回归。初次命令错误 `RETENTION_LEGACY_COMPATIBILITY_FAILED` 及保存状态 `STOP/LEGACY_COMPATIBILITY_FAILED` 均作为历史保留，不被后续成功覆盖。
+
+#### 获批 scratch-only 完整重验及当前结论
+
+用户随后单独批准在同字节 Linux 原生隔离副本 `/var/tmp/rp6-scratch-retry-PZQR8C/repo` 中仅为 `.release-local` 提供私有可写临时空间，并完整执行一次相同十六文件命令；源码与新副本各 9,642 files/136 links，28 项冻结资产与 stash 不变。该唯一重验于 UTC `2026-09-12T15:55:41.590Z`–`2026-09-12T16:00:46.128Z` 实际关闭（北京时间结束于 2026-09-13），185/185、0 failed/cancelled/skipped/todo、exit 0；原 test 152/153 均包含且通过。`legacy.actualclose.json` SHA-256 为 `b89dab982989f16c3892d473c7df61320ebf382566b3e01bee87a1acc869b21b`。
+
+后置只读核验于 UTC `2026-09-12T16:01:02.430Z` 返回 `PASS/LEGACY_SCRATCH_RETRY`、exit 0，`verification.json` SHA-256 为 `3de56fd8556d57f177f8a4228a49a4f1c36a8e34bb65083a92fa32d7708ed39b`。独立 `evidence-review.md`（SHA-256 `af5433a4b38394178409105190507c86a88d68aada79e96b0a7e364e2e2cff67`）确认 `PASS/LEGACY_SCRATCH_RETRY_CONFIRMED`，无阻止三文档收口的问题。该对照只支持“提供 repo-local 私有可写 scratch 后，相同完整兼容命令通过”，不唯一解释初次 ENOENT，不证明产品 90 日回归，也不代表真实 Docker、数据库或云端执行。
+
+据此，RP6 获批的本地执行/审查范围记为 `LOCAL_COMPLETE`，R1.3 的“90 天代码同步”前置已解除；R1.3 本身尚未实施且未获得本轮施工批准。RP6 文档最终提交仍为 `PENDING_LOCAL_COMMIT`，不得虚构未来提交。真实 90 天私密权威 storage readiness 与代码可用性继续分开报告，H1/H2/H3、实际 workflow/Actions readback、Task 30 及其他外部操作仍为 `NOT_RUN / INPUT_UNAVAILABLE`。
+
+- [x] **1. 联合当前路径完整测试。** 在既有Ubuntu/Node22隔离环境记录准确版本，然后串行执行，保留每条命令完整计数和退出码：
 
 ```powershell
 node --test packages/release-foundation/test/evidence-custody.test.mjs packages/release-foundation/test/manual-stage1-contracts.test.mjs packages/release-foundation/test/manual-runner-evidence.test.mjs packages/release-foundation/test/manual-stage1-session.test.mjs scripts/release/build-proof.test.mjs scripts/release/build-materials.test.mjs scripts/release/verify-build-delivery.test.mjs
@@ -332,7 +379,7 @@ if ($LASTEXITCODE -ne 0) { throw 'RETENTION_DISCOVERY_FAILED' }
 
 无效环境先停，不安装/下载；不把Node24辅助通过当Node22发布通过。实际进程版本检查、secret隔离及超时沿原门槛，任何此前未通过用例都包含在完整文件内。
 
-- [ ] **2. 冻结路径只做无外部副作用兼容回归。** 完整运行下列已存在的纯测试文件；任何文件实际试图连接DB/网络/调用云端则停止报告，不提供凭证、不开资源、不skip：
+- [x] **2. 冻结路径只做无外部副作用兼容回归。** 完整运行下列已存在的纯测试文件；任何文件实际试图连接DB/网络/调用云端则停止报告，不提供凭证、不开资源、不skip：
 
 ```powershell
 node --test scripts/release/custody-evidence.test.mjs scripts/release/workflow-custody-record.test.mjs packages/release-foundation/test/approval.test.mjs packages/release-foundation/test/approval-revocations.test.mjs scripts/release/approval-workflows.test.mjs packages/release-foundation/test/database-test-launcher.test.mjs scripts/release/database-test-launcher-cli.test.mjs packages/release-foundation/test/dispatch-authorization.test.mjs packages/release-foundation/test/snapshot-custody-contracts.test.mjs packages/release-foundation/test/evidence-archive-contracts.test.mjs packages/release-foundation/test/snapshot-export.test.mjs packages/release-foundation/test/snapshot-chain.integration.test.mjs scripts/release/final-compose-custody-adapters.test.mjs scripts/release/aggregate-release-proof.test.mjs scripts/release/release-dag-assemblers.test.mjs scripts/release/generate-s1-exit-evidence.test.mjs
@@ -341,8 +388,8 @@ if ($LASTEXITCODE -ne 0) { throw 'RETENTION_LEGACY_COMPATIBILITY_FAILED' }
 
 兼容回归不生成新运行证明、不执行旧workflow，也不授予旧180路径新执行权。Schema原文件及210 policy摘要须与施工前完全一致。
 
-- [ ] **3. 跨文档检查并记录精确完成状态。** R1/R2同步本步骤的类型、固定文件、profileBytes参数、共享export所有者及CI交付事实。R1.3代码前置可在本次实现审查通过后解除，H2私有权威receipt与单独attestation、整链实际保留及授权import仍STOP；Actions不再伪造这些材料。历史批准提交及测试记录不改写，新的 contract digest 明确列出，不复用旧候选build。
-- [ ] **4. 主控联合审查。** 对照 §1三张表逐项查生产、实时、archive、history、旧消费者、CI；特别验证“新profile配旧receipt”“旧UNKNOWN换profile”“public交付伪装custody”“NaN expires”“210被截断”均被拒绝或保留原事实。新90的可用代码与真实90存储就绪分别报告，不合并一个PASS。
+- [x] **3. 跨文档检查并记录精确完成状态。** R1/R2同步本步骤的类型、固定文件、profileBytes参数、共享export所有者及CI交付事实。R1.3代码前置可在本次实现审查通过后解除，H2私有权威receipt与单独attestation、整链实际保留及授权import仍STOP；Actions不再伪造这些材料。历史批准提交及测试记录不改写，新的 contract digest 明确列出，不复用旧候选build。
+- [x] **4. 主控联合审查。** 对照 §1三张表逐项查生产、实时、archive、history、旧消费者、CI；特别验证“新profile配旧receipt”“旧UNKNOWN换profile”“public交付伪装custody”“NaN expires”“210被截断”均被拒绝或保留原事实。新90的可用代码与真实90存储就绪分别报告，不合并一个PASS。
 - [ ] **5. 文档独立提交。** 精确三文件提交 `docs: record retention sync and unblock only R1.3 code dependency`；若任一实现或兼容审查不通过，不使用该标题宣称解除，保留STOP。不推送、不合并、不创建H1/H2原件。
 
 ## 3. 退出、失败与后续人工事项

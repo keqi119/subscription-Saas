@@ -36,6 +36,7 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/final-compose-custody-adapters.mjs",
   "scripts/release/final-compose-production-adapters.mjs",
   "scripts/release/generate-s1-exit-evidence.mjs",
+  "scripts/release/manual-stage1-trust.mjs",
   "scripts/release/prepare-final-compose-launch.mjs",
   "scripts/release/run-final-compose-gate.mjs",
   "scripts/release/trusted-launch-production-adapters.mjs",

@@ -475,7 +475,7 @@ test("repository contract discovery binds the shared build proof verifier", asyn
   );
 });
 
-test("protected aggregation is the only proof issuer and uses immutable custody", () => {
+test("protected aggregation is the only proof issuer and exposes non-promotable delivery", () => {
   const workflow = readFileSync(".github/workflows/docker-images.yml", "utf8");
   const registry = JSON.parse(readFileSync("release/contracts/command-registry.v1.json", "utf8"));
   assert.equal(workflow.match(/create-build-proof\.mjs/gu)?.length, 1);
@@ -486,8 +486,34 @@ test("protected aggregation is the only proof issuer and uses immutable custody"
   assert.match(workflow, /gh attestation verify/u);
   assert.match(workflow, /--signer-workflow/u);
   assert.match(workflow, /--source-digest/u);
-  assert.equal(workflow.match(/retention-days: 180/gu)?.length, 3);
-  assert.equal(workflow.match(/overwrite: false/gu)?.length, 3);
+  assert.equal(workflow.match(/retention-days: 90/gu)?.length, 2);
+  assert.equal(workflow.match(/retention-days: 180/gu)?.length ?? 0, 0);
+  assert.equal(workflow.match(/overwrite: false/gu)?.length, 2);
+  assert.match(
+    workflow,
+    /name: build-proof-\$\{\{ steps\.proof-identity\.outputs\.digest-hex \}\}/u
+  );
+  assert.match(
+    workflow,
+    /name: build-proof-evidence-\$\{\{ steps\.proof-identity\.outputs\.digest-hex \}\}/u
+  );
+  assert.match(workflow, /node scripts\/release\/verify-build-delivery\.mjs/u);
+  assert.match(workflow, /delivery-verified/u);
+  assert.match(workflow, /authorityCustody=INPUT_REQUIRED/u);
+  assert.match(workflow, /promotionEligible=false/u);
+  assert.match(
+    workflow,
+    /build-proof-artifact-id:\s*\$\{\{ steps\.proof-upload\.outputs\.artifact-id \}\}/u
+  );
+  assert.match(
+    workflow,
+    /build-proof-evidence-artifact-id:\s*\$\{\{ steps\.evidence-upload\.outputs\.artifact-id \}\}/u
+  );
+  assert.doesNotMatch(workflow, /build-proof-receipt-/u);
+  assert.doesNotMatch(workflow, /receipt-upload/u);
+  assert.doesNotMatch(workflow, /build-proof-receipt-artifact-id/u);
+  assert.doesNotMatch(workflow, /custody-receipt\.v1/u);
+  assert.doesNotMatch(workflow, /promotionEligible\s*!==\s*true/u);
   assert.equal(
     registry.commands.some(({ commandId }) => /build[.-]proof/iu.test(commandId)),
     false

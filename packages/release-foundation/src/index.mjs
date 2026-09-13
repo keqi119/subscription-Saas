@@ -104,6 +104,7 @@ export {
   restoreSanitizedSnapshot
 } from "./snapshot/restore-sanitized.mjs";
 export {
+  computeManualClusterFingerprint,
   validateManualRunnerRequest,
   assessManualRunnerEvidence,
   encodeManualRunnerFrame,

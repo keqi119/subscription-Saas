@@ -74,9 +74,21 @@ function runnerRequest(phase = "target-observe") {
   return request;
 }
 
-function fixtureFrame({ type, sequence, payload }) {
+function clusterFixture() {
+  return {
+    systemIdentifier: "18446744073709551615",
+    databaseContainerId: "1".repeat(64),
+    dataVolumeName: "test-h3-volume",
+    postgresImageDigest: "sha256:" + "2".repeat(64),
+    marker: "test-h3-marker",
+    serverAddress: "192.0.2.10",
+    serverPort: 5432
+  };
+}
+
+function fixtureFrame({ protocol = "MS1", type, sequence, payload }) {
   const bytes = encodeManualJson(payload);
-  return Buffer.concat([Buffer.from(`MS1 ${type} ${sequence} ${bytes.length}\n`), bytes]);
+  return Buffer.concat([Buffer.from(`${protocol} ${type} ${sequence} ${bytes.length}\n`), bytes]);
 }
 function manualPolicy(profile = null) {
   const current = profile?.schemaVersion === "manual-stage1-profile.v2";
@@ -240,6 +252,8 @@ function buildFixture(f, prismaReport = null) {
 }
 function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   const root = previous?.root ?? options.root;
+  const protocol = options.protocol ?? previous?.protocol ?? root.protocol ?? "MS1";
+  const cluster = previous?.cluster ?? root.cluster ?? clusterFixture();
   const shared = previous?.shared ?? options.shared ?? buildFixture(root, options.report);
   const { archive } = root;
   const expectation = options.expectationScript
@@ -308,8 +322,9 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     liveInputs = [];
   let binding = null,
     lastAck = null;
+  const wireFrame = (input) => fixtureFrame({ protocol, ...input });
   const frame = (type, payload) => {
-    const bytes = fixtureFrame({ type, sequence: stdoutFrames.length, payload });
+    const bytes = wireFrame({ type, sequence: stdoutFrames.length, payload });
     stdoutFrames.push(bytes);
     return bytes;
   };
@@ -428,19 +443,42 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   const handoffReadback = prior.handoffReadback;
   archive.add(handoffReadback);
   const processReadback = custodyFixture(archive, request, bound, "archive-readback", n + 4);
-  const authorizeBytes = fixtureFrame({
+  const h3ApprovalBytes =
+    previous?.h3ApprovalBytes ??
+    encodeManualJson({ kind: "synthetic-h3-a-approval", operationRef: uuid(700) });
+  const h3ReadbackBytes =
+    previous?.h3ReadbackBytes ??
+    encodeManualJson({ kind: "synthetic-h3-a-readback", operationRef: uuid(700) });
+  const targetContext =
+    protocol === "MS2"
+      ? {
+          contextVersion: "manual-h3-target-context.v1",
+          operationRef: uuid(700),
+          indexDigest: "sha256:" + "7".repeat(64),
+          runId: request.runId,
+          profileDigest: request.profileDigest,
+          targetIntent: structuredClone(request.targetIntent),
+          databaseOid: request.physicalIdentity.databaseOid,
+          h3Approval: archive.raw(h3ApprovalBytes),
+          h3Readback: archive.raw(h3ReadbackBytes),
+          cluster: structuredClone(cluster)
+        }
+      : null;
+  const authorizePayload = {
+    launchContext: pick(request, ["containerId", "runnerImageDigest"]),
+    allocation,
+    request,
+    authorization: prior.authorization,
+    receipt: handoff,
+    baseline: shared.baseline,
+    process: bound,
+    processReadback
+  };
+  if (targetContext) authorizePayload.targetContext = targetContext;
+  const authorizeBytes = wireFrame({
     type: "AUTHORIZE",
     sequence: 0,
-    payload: {
-      launchContext: pick(request, ["containerId", "runnerImageDigest"]),
-      allocation,
-      request,
-      authorization: prior.authorization,
-      receipt: handoff,
-      baseline: shared.baseline,
-      process: bound,
-      processReadback
-    }
+    payload: authorizePayload
   });
   parentFrames.push(authorizeBytes);
   binding = {
@@ -468,7 +506,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     const childFrame = frame(e.event === "PREPARED" ? "PREPARED" : "EVENT", payload);
     const subject = snapshot(t),
       readback = custodyFixture(archive, request, subject, "archive-readback", t);
-    const ack = fixtureFrame({
+    const ack = wireFrame({
       type: "ACK",
       sequence: parentFrames.length + 1,
       payload: {
@@ -661,7 +699,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     "archive-readback",
     n + 40
   );
-  const observationAck = fixtureFrame({
+  const observationAck = wireFrame({
     type: "ACK",
     sequence: parentFrames.length + 1,
     payload: {
@@ -768,7 +806,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   frame("ACK_RECEIVED", { binding, previousAck: ref(lastAck) });
   if (!options.missingResult) frame("RESULT", result);
   if (options.partialResultUtf8) {
-    const resultFrame = fixtureFrame({
+    const resultFrame = wireFrame({
       type: "RESULT",
       sequence: stdoutFrames.length,
       payload: result
@@ -776,7 +814,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     stdoutFrames.push(resultFrame.subarray(0, resultFrame.indexOf(Buffer.from("测试")) + 2));
   }
   if (options.malformedPartialResult)
-    stdoutFrames.push(Buffer.from(`MS1 RESULT ${stdoutFrames.length} 100\n!]`));
+    stdoutFrames.push(Buffer.from(`${protocol} RESULT ${stdoutFrames.length} 100\n!]`));
   if (!options.missingClose)
     event("runner", "CLOSED", n + 43, 0, runnerArgv, {
       pid: 1000 + step,
@@ -838,7 +876,12 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     execution,
     stdoutFrames,
     parentFrames,
-    liveInputs
+    liveInputs,
+    protocol,
+    cluster,
+    targetContext,
+    h3ApprovalBytes,
+    h3ReadbackBytes
   };
 }
 
@@ -1364,7 +1407,11 @@ async function observeResult(f, session, input, options = {}) {
     ...pick(request, aKeys),
     requestDigest,
     observedAt: recordedAt,
-    physicalIdentity: { ...targetIntent, databaseOid: "123", clusterFingerprint: D },
+    physicalIdentity: {
+      ...targetIntent,
+      databaseOid: "123",
+      clusterFingerprint: options.clusterFingerprint ?? D
+    },
     roleObservation: {
       role: "test-observer",
       tls: true,
@@ -1621,12 +1668,21 @@ async function persistArchive(f, archive) {
 }
 async function liveRoot(t, fixtureOptions = {}) {
   const recordedAt = fixtureOptions.recordedAt ?? NOW;
+  const protocol = fixtureOptions.protocol ?? "MS1";
+  const cluster = clusterFixture();
+  const clusterFingerprint = sha256Canonical({
+    domain: "manual-postgres-cluster.v1",
+    ...cluster
+  });
   const f = await fixture(t, fixtureOptions),
     session = await f.open(),
     input = await requestFixture(f, session, "target-observe", {}, recordedAt);
   const authorization = await session.sign(input);
   await session.consume({ authorization, request: input });
-  const result = await observeResult(f, session, input, { recordedAt });
+  const result = await observeResult(f, session, input, {
+    recordedAt,
+    clusterFingerprint: protocol === "MS2" ? clusterFingerprint : D
+  });
   await session.record("execution", result.execution);
   const archive = archiveFixture(f.profile);
   for (const value of await f.records()) archive.add(value);
@@ -1636,7 +1692,9 @@ async function liveRoot(t, fixtureOptions = {}) {
     archive,
     authorization,
     session: (await f.records("session")).find((r) => r.status === "OPEN"),
-    revocation: (await f.records("revocation"))[0]
+    revocation: (await f.records("revocation"))[0],
+    protocol,
+    cluster
   };
   return { f, session, root };
 }
@@ -1864,6 +1922,112 @@ test("v2 profile completes handoff, archive readback, and signoff with all eight
     records.filter((value) => value.kind === "session" && value.status === "CLOSED").length,
     1
   );
+});
+
+test("MS2 v2 profile persists H3 originals through handoff, archive, signoff, and reopen", async (t) => {
+  const context = await liveRoot(t, { profileVersion: "v2", protocol: "MS2" });
+  const dry = await liveRunner(context);
+  assert.equal(
+    assessManualRunnerEvidence(dry.archive.input(dry.request)).executionStatus,
+    "SUCCEEDED"
+  );
+  assert.equal(dry.targetContext.runId, dry.request.runId);
+  assert.equal(dry.targetContext.profileDigest, context.session.profileDigest);
+  await acceptExecution(context, dry);
+  await context.session.close();
+  context.session = await context.f.open();
+  for (const [refKey, bytes] of [
+    ["h3Approval", dry.h3ApprovalBytes],
+    ["h3Readback", dry.h3ReadbackBytes]
+  ]) {
+    const ref = dry.targetContext[refKey];
+    assert.deepEqual(
+      await fs.readFile(
+        path.join(context.f.profile.storage.archiveRoot, "raw", `${ref.digest.slice(7)}.bin`)
+      ),
+      bytes
+    );
+  }
+  const records = await context.f.records();
+  assert.equal(
+    records.filter(
+      (value) =>
+        value.kind === "signoff" &&
+        value.executionRecordDigest === sha256Canonical(dry.execution) &&
+        value.decision === "ACCEPTED"
+    ).length,
+    1
+  );
+  const custodyRecords = records.filter(
+    (value) => value.kind === "custody" && value.profileDigest === dry.request.profileDigest
+  );
+  assert.ok(custodyRecords.length > 0);
+  assert.ok(custodyRecords.every((value) => value.retentionDays === 90));
+  await context.session.close();
+});
+
+test("MS2 missing RESULT and close remain UNKNOWN after reopen and cannot be accepted", async (t) => {
+  for (const phase of ["apply", "replay"])
+    await t.test(phase, async () => {
+      const context = await liveRoot(t, { profileVersion: "v2", protocol: "MS2" });
+      const dry = await liveRunner(context);
+      await sealExecution(context, dry);
+      let predecessor = dry;
+      if (phase === "replay") {
+        predecessor = await liveRunner(context, "apply", dry);
+        await sealExecution(context, predecessor);
+      }
+      const predecessorDigest = sha256Canonical(predecessor.execution);
+      const predecessorBytes = encodeManualJson(predecessor.execution);
+      const pending = await requestFixture(context.f, context.session);
+      const pendingAuthorization = await context.session.sign(pending);
+      const lost = await liveRunner(context, phase, predecessor, {
+        missingResult: true,
+        missingClose: true,
+        unknown: true
+      });
+      const assessment = assessManualRunnerEvidence(lost.archive.input(lost.request));
+      assert.equal(assessment.executionStatus, "INTERRUPTED_UNKNOWN");
+      assert.equal(assessment.originalDatabaseOutcome, phase === "apply" ? "unknown" : "committed");
+      await context.session.record("execution", lost.execution);
+      const beforeBlockedHistory = await storedHistorySnapshot(context.f);
+      const beforeConsumptions = await context.f.records("consumption");
+      await assert.rejects(
+        context.session.consume({ authorization: pendingAuthorization, request: pending }),
+        { code: "MANUAL_SESSION_UNVERIFIED" }
+      );
+      assert.deepEqual(await storedHistorySnapshot(context.f), beforeBlockedHistory);
+      assert.deepEqual(await context.f.records("consumption"), beforeConsumptions);
+      const signoff = await acceptanceRecord(context, lost, { alreadyRecorded: true });
+      const beforeSignoffs = await context.f.records("signoff");
+      await assert.rejects(context.session.record("signoff", signoff), {
+        code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+      });
+      assert.deepEqual(await context.f.records("signoff"), beforeSignoffs);
+      await context.session.close();
+      context.session = await context.f.open();
+      assert.ok(
+        (await context.f.records("execution")).some(
+          (value) =>
+            value.status === "INTERRUPTED_UNKNOWN" &&
+            value.attemptId === lost.request.attemptId &&
+            value.resultDigest === null &&
+            value.finishedAt === null
+        )
+      );
+      if (phase === "replay") {
+        const originalApply = (await context.f.records("execution")).find(
+          (value) => sha256Canonical(value) === predecessorDigest
+        );
+        assert.equal(originalApply.status, "SUCCEEDED");
+        assert.deepEqual(encodeManualJson(originalApply), predecessorBytes);
+      }
+      const request = await requestFixture(context.f, context.session);
+      const beforeBlockedSign = await storedHistorySnapshot(context.f);
+      await assert.rejects(context.session.sign(request), { code: "MANUAL_SESSION_UNVERIFIED" });
+      assert.deepEqual(await storedHistorySnapshot(context.f), beforeBlockedSign);
+      await context.session.close();
+    });
 });
 
 test("dry-run to apply and full replay use the existing state machine with fresh attempts", async (t) => {

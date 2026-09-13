@@ -3,6 +3,7 @@ import { sha256Bytes, sha256Canonical } from "./digest.mjs";
 import { encodeManualJson } from "./manual-stage1-contracts.mjs";
 import { validateContract } from "./schema-registry.mjs";
 import { deterministicPlanDigest } from "./proof-builders.mjs";
+import { isIP } from "node:net";
 import Ajv2020 from "ajv/dist/2020.js";
 import evidenceSchema from "../../../release/contracts/schemas/manual-runner-evidence.v1.schema.json" with { type: "json" };
 
@@ -51,6 +52,16 @@ const WIRE_KEYS = [
 const DIGEST = /^sha256:[0-9a-f]{64}$/,
   NONCE = /^[0-9a-f]{64}$/,
   UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MANUAL_PROTOCOLS = ["MS1", "MS2"];
+const CLUSTER_KEYS = [
+  "systemIdentifier",
+  "databaseContainerId",
+  "dataVolumeName",
+  "postgresImageDigest",
+  "marker",
+  "serverAddress",
+  "serverPort"
+];
 function requireThat(condition, code = MISMATCH) {
   if (!condition) throw Object.assign(new Error(code), { code });
 }
@@ -103,6 +114,30 @@ function exact(value, keys, code = FRAME) {
     code
   );
 }
+function clusterOrigin(cluster) {
+  exact(cluster, CLUSTER_KEYS);
+  requireThat(
+    matches(/^[1-9][0-9]*$/, cluster.systemIdentifier) &&
+      BigInt(cluster.systemIdentifier) <= 18446744073709551615n &&
+      matches(/^[0-9a-f]{64}$/, cluster.databaseContainerId) &&
+      matches(DIGEST, cluster.postgresImageDigest) &&
+      [cluster.dataVolumeName, cluster.marker].every(
+        (value) => typeof value === "string" && value.length > 0 && value.length <= 256
+      ) &&
+      typeof cluster.serverAddress === "string" &&
+      !cluster.serverAddress.includes("%") &&
+      isIP(cluster.serverAddress) !== 0 &&
+      Number.isInteger(cluster.serverPort) &&
+      cluster.serverPort >= 1 &&
+      cluster.serverPort <= 65535,
+    FRAME
+  );
+}
+
+export function computeManualClusterFingerprint(cluster) {
+  clusterOrigin(cluster);
+  return sha256Canonical({ domain: "manual-postgres-cluster.v1", ...cluster });
+}
 function profileKeys(input, keys) {
   return Object.hasOwn(input ?? {}, "profileBytes") ? [...keys, "profileBytes"] : keys;
 }
@@ -139,6 +174,42 @@ function checkRef(ref) {
     matches(DIGEST, ref.digest) && Number.isSafeInteger(ref.bytes) && ref.bytes >= 0,
     FRAME
   );
+}
+function checkTargetIntent(targetIntent) {
+  exact(targetIntent, ["endpointPolicyId", "databaseName"]);
+  requireThat(
+    [targetIntent.endpointPolicyId, targetIntent.databaseName].every(
+      (value) => typeof value === "string" && value.length > 0 && value.length <= 256
+    ),
+    FRAME
+  );
+}
+function checkTargetContext(context) {
+  exact(context, [
+    "contextVersion",
+    "operationRef",
+    "indexDigest",
+    "runId",
+    "profileDigest",
+    "targetIntent",
+    "databaseOid",
+    "h3Approval",
+    "h3Readback",
+    "cluster"
+  ]);
+  requireThat(
+    context.contextVersion === "manual-h3-target-context.v1" &&
+      matches(UUID, context.operationRef) &&
+      matches(DIGEST, context.indexDigest) &&
+      matches(UUID, context.runId) &&
+      matches(DIGEST, context.profileDigest) &&
+      matches(/^[1-9][0-9]*$/, context.databaseOid),
+    FRAME
+  );
+  checkTargetIntent(context.targetIntent);
+  checkRef(context.h3Approval);
+  checkRef(context.h3Readback);
+  clusterOrigin(context.cluster);
 }
 function checkWire(binding) {
   exact(binding, WIRE_KEYS);
@@ -204,9 +275,9 @@ function checkEvent(e) {
   requireThat(e.reasonCode === null || matches(/^[A-Z][A-Z0-9_]{0,127}$/, e.reasonCode), FRAME);
   for (const k of ["stdout", "stderr"]) if (e[k] !== null) checkRef(e[k]);
 }
-function framePayload(type, payload) {
+function framePayload(type, payload, protocol) {
   try {
-    validateFramePayload(type, payload);
+    validateFramePayload(type, payload, protocol);
   } catch (error) {
     if (
       ["CONTRACT_SCHEMA_INVALID", "CANONICAL_JSON_REFUSED"].includes(error.code) ||
@@ -216,19 +287,32 @@ function framePayload(type, payload) {
     throw error;
   }
 }
-function validateFramePayload(type, payload) {
+function validateFramePayload(type, payload, protocol) {
   const shapes = {
     CHALLENGE: ["childChallenge"],
-    AUTHORIZE: [
-      "launchContext",
-      "allocation",
-      "request",
-      "authorization",
-      "receipt",
-      "baseline",
-      "process",
-      "processReadback"
-    ],
+    AUTHORIZE:
+      protocol === "MS2"
+        ? [
+            "launchContext",
+            "allocation",
+            "request",
+            "authorization",
+            "receipt",
+            "baseline",
+            "process",
+            "processReadback",
+            "targetContext"
+          ]
+        : [
+            "launchContext",
+            "allocation",
+            "request",
+            "authorization",
+            "receipt",
+            "baseline",
+            "process",
+            "processReadback"
+          ],
     READY: ["binding", "authorizeFrame"],
     CREDENTIAL: ["binding", "credential"],
     CREDENTIAL_RECEIVED: ["binding", "authorizeFrame"],
@@ -270,6 +354,7 @@ function validateFramePayload(type, payload) {
       requireThat(payload[k]?.kind === kind, FRAME);
       frameRecord(payload[k]);
     }
+    if (protocol === "MS2") checkTargetContext(payload.targetContext);
     return;
   }
   checkWire(payload.binding);
@@ -331,7 +416,15 @@ function validateFramePayload(type, payload) {
 }
 
 export function encodeManualRunnerFrame(input) {
-  exact(input, ["type", "sequence", "payload"]);
+  const keyCount = input !== null && typeof input === "object" ? Reflect.ownKeys(input).length : 0;
+  const protocol = keyCount === 3 ? "MS1" : "MS2";
+  exact(
+    input,
+    protocol === "MS1"
+      ? ["type", "sequence", "payload"]
+      : ["protocol", "type", "sequence", "payload"]
+  );
+  if (protocol === "MS2") requireThat(input.protocol === "MS2", FRAME);
   requireThat(
     [...CHILD_TYPES, ...PARENT_TYPES].includes(input.type) &&
       Number.isSafeInteger(input.sequence) &&
@@ -345,9 +438,9 @@ export function encodeManualRunnerFrame(input) {
     requireThat(false, error.code === "MANUAL_JSON_LIMIT" ? OUTPUT : FRAME);
   }
   const payload = JSON.parse(payloadBytes.toString("utf8"));
-  framePayload(input.type, payload);
+  framePayload(input.type, payload, protocol);
   const bytes = Buffer.concat([
-    Buffer.from(`MS1 ${input.type} ${input.sequence} ${payloadBytes.length}\n`, "ascii"),
+    Buffer.from(`${protocol} ${input.type} ${input.sequence} ${payloadBytes.length}\n`, "ascii"),
     payloadBytes
   ]);
   requireThat(bytes.length <= LIMIT, OUTPUT);
@@ -728,7 +821,8 @@ function decodeFrame(
   ended,
   expectedSequence = null,
   seen = [],
-  binding = {}
+  binding = {},
+  protocolState = { value: null }
 ) {
   const allowed = direction === "parent-to-child" ? PARENT_TYPES : CHILD_TYPES;
   const headerEnd = bytes.indexOf(10, offset);
@@ -737,11 +831,20 @@ function decodeFrame(
   requireThat(header.length <= 64 && header.every((b) => b >= 32 && b <= 126), FRAME);
   const text = header.toString("ascii");
   if (text.length < 4) {
-    requireThat("MS1 ".startsWith(text), FRAME);
+    const prefixes = protocolState.value
+      ? [`${protocolState.value} `]
+      : MANUAL_PROTOCOLS.map((protocol) => `${protocol} `);
+    requireThat(
+      prefixes.some((prefix) => prefix.startsWith(text)),
+      FRAME
+    );
     if (ended) requireThat(false, INCOMPLETE);
     return null;
   }
-  requireThat(text.startsWith("MS1 "), FRAME);
+  const protocol =
+    protocolState.value ?? MANUAL_PROTOCOLS.find((value) => text.startsWith(`${value} `));
+  requireThat(protocol && text.startsWith(`${protocol} `), FRAME);
+  protocolState.value = protocol;
   const pieces = text.slice(4).split(" ");
   requireThat(pieces.length <= 3, FRAME);
   requireThat(
@@ -822,7 +925,7 @@ function decodeFrame(
   } catch {
     requireThat(false, FRAME);
   }
-  framePayload(type, payload);
+  framePayload(type, payload, protocol);
   return {
     type,
     sequence: Number(sequenceText),
@@ -845,11 +948,15 @@ export function parseManualRunnerFrames(input) {
   let consumedBytes = 0,
     result = false,
     acknowledged = false;
+  const protocolState = { value: null };
   while (consumedBytes < input.bytes.length) {
     if (result)
       requireThat(
         false,
-        input.bytes.subarray(consumedBytes).toString("ascii").startsWith("MS1 RESULT ")
+        input.bytes
+          .subarray(consumedBytes)
+          .toString("ascii")
+          .startsWith(`${protocolState.value} RESULT `)
           ? REUSED
           : FRAME
       );
@@ -860,7 +967,8 @@ export function parseManualRunnerFrames(input) {
       input.ended,
       frames.length,
       frames.map((f) => f.type),
-      frames.find((f) => f.type === "READY")?.payload.binding
+      frames.find((f) => f.type === "READY")?.payload.binding,
+      protocolState
     );
     if (!frame) break;
     const once = [
@@ -933,9 +1041,16 @@ export function validateManualRunnerProtocol(input) {
       parsed.frames.length > 0 && parsed.frames.at(-1).frameBytes.equals(input.childFrameBytes),
       ORDER
     );
+    requireThat(parsed.frames[0]?.type === "CHALLENGE", INCOMPLETE);
     const parents = publicParents(input.parentFrameBytes);
     const candidate = singleFrame(input.ackFrameBytes, "parent-to-child");
     requireThat(candidate.type === "ACK" && candidate.sequence === parents.length + 1, ORDER);
+    requireThat(
+      parents.length > 0 &&
+        frameProtocol(parsed.frames[0]) === frameProtocol(parents[0]) &&
+        frameProtocol(candidate) === frameProtocol(parents[0]),
+      FRAME
+    );
     protocolTrace(request, authorization, parsed.frames, [...parents, candidate], {
       live: true,
       policy,
@@ -961,14 +1076,22 @@ function singleFrame(bytes, direction) {
   requireThat(frame && frame.frameBytes.length === bytes.length, FRAME);
   return frame;
 }
+function frameProtocol(frame) {
+  const protocol = frame.frameBytes.subarray(0, 3).toString("ascii");
+  requireThat(MANUAL_PROTOCOLS.includes(protocol), FRAME);
+  return protocol;
+}
 function publicParents(bytes) {
   bytes = bufferCollection(bytes, FRAME);
   requireThat(
     bytes.reduce((n, b) => n + (Buffer.isBuffer(b) ? b.length : LIMIT + 1), 0) <= LIMIT,
     OUTPUT
   );
+  let protocol = null;
   return bytes.map((b, i) => {
     const frame = singleFrame(b, "parent-to-child");
+    protocol ??= frameProtocol(frame);
+    requireThat(frameProtocol(frame) === protocol, FRAME);
     requireThat(frame.type === (i === 0 ? "AUTHORIZE" : "ACK"), FRAME);
     requireThat(frame.sequence === (i === 0 ? 0 : i + 1), ORDER);
     return frame;
@@ -1062,6 +1185,23 @@ function authorizeMatches(frame, request, authorization, challenge, policy) {
   );
   requireThat(payload.requestDigest === sha256Canonical(request), MISMATCH);
   requireThat(sha256Canonical(p.baseline) === request.baselineManifestDigest, MISMATCH);
+  if (frameProtocol(frame) === "MS2") {
+    const context = p.targetContext;
+    requireThat(
+      context.runId === request.runId &&
+        context.profileDigest === request.profileDigest &&
+        equal(context.targetIntent, request.targetIntent) &&
+        context.databaseOid === request.physicalIdentity.databaseOid &&
+        context.databaseOid === p.baseline.identity.physicalIdentity.databaseOid,
+      MISMATCH
+    );
+    const clusterFingerprint = computeManualClusterFingerprint(context.cluster);
+    requireThat(
+      clusterFingerprint === request.physicalIdentity.clusterFingerprint &&
+        clusterFingerprint === p.baseline.identity.physicalIdentity.clusterFingerprint,
+      MISMATCH
+    );
+  }
   readbackMatches(p.process, p.processReadback, request, policy);
 }
 function protocolEvent(previous, event, request) {
@@ -1445,9 +1585,11 @@ function protocolArchive(request, graph, { allowMissingResult = false } = {}) {
   const { frames, pendingBytes } = parsed;
   if (pendingBytes.length) {
     const headerEnd = pendingBytes.indexOf(10);
+    const protocol = frames.length > 0 ? frameProtocol(frames[0]) : null;
     if (
       headerEnd >= 0 &&
-      pendingBytes.subarray(0, headerEnd).toString("ascii").startsWith("MS1 RESULT ")
+      protocol !== null &&
+      pendingBytes.subarray(0, headerEnd).toString("ascii").startsWith(`${protocol} RESULT `)
     )
       pendingResultBody(
         pendingBytes.subarray(headerEnd + 1),
@@ -1457,11 +1599,13 @@ function protocolArchive(request, graph, { allowMissingResult = false } = {}) {
       );
   }
   requireThat(parents.length > 0, INCOMPLETE);
+  requireThat(frames[0]?.type === "CHALLENGE", INCOMPLETE);
+  requireThat(frameProtocol(frames[0]) === frameProtocol(parents[0]), FRAME);
   const authorization = parents[0].payload.authorization;
   const archived = (value) =>
     requireThat(equal(graph.artifacts.get(sha256Canonical(value)) ?? null, value), REQUIRED);
   for (const p of parents) {
-    if (p.type === "AUTHORIZE")
+    if (p.type === "AUTHORIZE") {
       for (const key of [
         "allocation",
         "request",
@@ -1472,7 +1616,11 @@ function protocolArchive(request, graph, { allowMissingResult = false } = {}) {
         "processReadback"
       ])
         archived(p.payload[key]);
-    else {
+      if (frameProtocol(p) === "MS2") {
+        graph.raw(p.payload.targetContext.h3Approval);
+        graph.raw(p.payload.targetContext.h3Readback);
+      }
+    } else {
       archived(p.payload.subject[p.payload.subject.kind]);
       archived(p.payload.readback);
     }

@@ -222,9 +222,9 @@ const operationKeys = ["operationId", "idempotencyKey"];
 const aKeys = ["profileDigest", ...sessionKeys, ...operationKeys, "attemptId", "runId"];
 const pick = (value, keys) => Object.fromEntries(keys.map((k) => [k, value[k]]));
 // Independent wire fixture encoder: expected framing is not computed by the codec under test.
-function fixtureFrame({ type, sequence, payload }) {
+function fixtureFrame({ protocol = "MS1", type, sequence, payload }) {
   const bytes = encodeManualJson(payload);
-  return Buffer.concat([Buffer.from(`MS1 ${type} ${sequence} ${bytes.length}\n`), bytes]);
+  return Buffer.concat([Buffer.from(`${protocol} ${type} ${sequence} ${bytes.length}\n`), bytes]);
 }
 function archiveFixture(policy = legacyPolicy) {
   const artifacts = new Map(),
@@ -340,6 +340,7 @@ function observeFixture(options = {}) {
   const policy = options.policy ?? legacyPolicy,
     archive = archiveFixture(policy),
     request = requestFixture("target-observe", policy);
+  if (options.runId) request.runId = options.runId;
   const allocation = evidence(request, "attempt-allocation", 1, {
     stage: "target-observe",
     phaseKey: "target-observe",
@@ -360,7 +361,11 @@ function observeFixture(options = {}) {
   const observation = evidence(request, "observation", 10, {
     requestDigest: archive.add(request),
     observedAt: time(10),
-    physicalIdentity: { ...request.targetIntent, databaseOid: "123", clusterFingerprint: D },
+    physicalIdentity: {
+      ...request.targetIntent,
+      databaseOid: "123",
+      clusterFingerprint: options.clusterFingerprint ?? D
+    },
     roleObservation: {
       role: "test-observer",
       tls: true,
@@ -528,7 +533,19 @@ function buildFixture(f, prismaReport = null) {
   return { build, migrationCatalog: catalog, report, expectation, baseline };
 }
 function runnerFixture(phase = "dry-run", previous = null, options = {}) {
-  const root = previous?.root ?? observeFixture({ policy: options.policy });
+  const protocol = options.protocol ?? previous?.protocol ?? "MS1";
+  const cluster = previous?.cluster ?? options.cluster ?? clusterFixture();
+  const clusterFingerprint = sha256Canonical({
+    domain: "manual-postgres-cluster.v1",
+    ...cluster
+  });
+  const root =
+    previous?.root ??
+    observeFixture({
+      policy: options.policy,
+      runId: options.runId,
+      clusterFingerprint: protocol === "MS2" ? clusterFingerprint : D
+    });
   const shared = previous?.shared ?? buildFixture(root, options.report);
   const { archive } = root;
   const expectation = options.expectationScript
@@ -552,6 +569,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     containerId: String(step).repeat(64),
     childChallenge: String(step + 1).repeat(64)
   });
+  if (options.runId) request.runId = options.runId;
   request.domainInput = {
     ...request.domainInput,
     baselineManifestIdentityDigest: sha256Canonical(shared.baseline.identity),
@@ -590,8 +608,9 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     liveInputs = [];
   let binding = null,
     lastAck = null;
+  const wireFrame = (input) => fixtureFrame({ protocol, ...input });
   const frame = (type, payload) => {
-    const bytes = fixtureFrame({ type, sequence: stdoutFrames.length, payload });
+    const bytes = wireFrame({ type, sequence: stdoutFrames.length, payload });
     stdoutFrames.push(bytes);
     return bytes;
   };
@@ -740,19 +759,43 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   archive.add(handoff);
   const handoffReadback = custodyFixture(archive, request, handoff, "handoff-readback", n + 9);
   const processReadback = custodyFixture(archive, request, bound, "archive-readback", n + 4);
-  const authorizeBytes = fixtureFrame({
+  const h3ApprovalBytes =
+    previous?.h3ApprovalBytes ??
+    encodeManualJson({ kind: "synthetic-h3-a-approval", operationRef: uuid(700) });
+  const h3ReadbackBytes =
+    previous?.h3ReadbackBytes ??
+    encodeManualJson({ kind: "synthetic-h3-a-readback", operationRef: uuid(700) });
+  const targetContext =
+    protocol === "MS2"
+      ? {
+          contextVersion: "manual-h3-target-context.v1",
+          operationRef: uuid(700),
+          indexDigest: "sha256:" + "7".repeat(64),
+          runId: request.runId,
+          profileDigest: request.profileDigest,
+          targetIntent: structuredClone(request.targetIntent),
+          databaseOid: request.physicalIdentity.databaseOid,
+          h3Approval: archive.raw(h3ApprovalBytes),
+          h3Readback: archive.raw(h3ReadbackBytes),
+          cluster: structuredClone(cluster)
+        }
+      : null;
+  if (targetContext) options.mutateTargetContext?.(targetContext);
+  const authorizePayload = {
+    launchContext: pick(request, ["containerId", "runnerImageDigest"]),
+    allocation,
+    request,
+    authorization: prior.authorization,
+    receipt: handoff,
+    baseline: shared.baseline,
+    process: bound,
+    processReadback
+  };
+  if (targetContext) authorizePayload.targetContext = targetContext;
+  const authorizeBytes = wireFrame({
     type: "AUTHORIZE",
     sequence: 0,
-    payload: {
-      launchContext: pick(request, ["containerId", "runnerImageDigest"]),
-      allocation,
-      request,
-      authorization: prior.authorization,
-      receipt: handoff,
-      baseline: shared.baseline,
-      process: bound,
-      processReadback
-    }
+    payload: authorizePayload
   });
   parentFrames.push(authorizeBytes);
   binding = {
@@ -780,7 +823,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     const childFrame = frame(e.event === "PREPARED" ? "PREPARED" : "EVENT", payload);
     const subject = snapshot(t),
       readback = custodyFixture(archive, request, subject, "archive-readback", t);
-    const ack = fixtureFrame({
+    const ack = wireFrame({
       type: "ACK",
       sequence: parentFrames.length + 1,
       payload: {
@@ -973,7 +1016,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     "archive-readback",
     n + 40
   );
-  const observationAck = fixtureFrame({
+  const observationAck = wireFrame({
     type: "ACK",
     sequence: parentFrames.length + 1,
     payload: {
@@ -1080,7 +1123,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   frame("ACK_RECEIVED", { binding, previousAck: ref(lastAck) });
   if (!options.missingResult) frame("RESULT", result);
   if (options.partialResultUtf8) {
-    const resultFrame = fixtureFrame({
+    const resultFrame = wireFrame({
       type: "RESULT",
       sequence: stdoutFrames.length,
       payload: result
@@ -1088,7 +1131,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     stdoutFrames.push(resultFrame.subarray(0, resultFrame.indexOf(Buffer.from("测试")) + 2));
   }
   if (options.malformedPartialResult)
-    stdoutFrames.push(Buffer.from(`MS1 RESULT ${stdoutFrames.length} 100\n!]`));
+    stdoutFrames.push(Buffer.from(`${protocol} RESULT ${stdoutFrames.length} 100\n!]`));
   if (!options.missingClose)
     event("runner", "CLOSED", n + 43, 0, runnerArgv, {
       pid: 1000 + step,
@@ -1151,7 +1194,12 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     execution,
     stdoutFrames,
     parentFrames,
-    liveInputs
+    liveInputs,
+    protocol,
+    cluster,
+    targetContext,
+    h3ApprovalBytes,
+    h3ReadbackBytes
   };
 }
 
@@ -1284,6 +1332,220 @@ test("bound 90-day profile accepts the complete v2 archive and every live ACK", 
   assert.equal(validateManualRunnerProtocol(newInput), undefined);
   for (const live of current.liveInputs)
     assert.equal(validateManualRunnerProtocol(live), undefined);
+});
+
+test("MS2 bound 90-day archives and every live ACK share the target context", () => {
+  const dry = fixture90("dry-run", null, { protocol: "MS2" });
+  const apply = fixture90("apply", dry, { protocol: "MS2" });
+  const verifyCurrent = fixture90("verify", apply, { protocol: "MS2" });
+  const replay = fixture90("replay", apply, { protocol: "MS2" });
+  const recoveryDry = fixture90("dry-run", null, { protocol: "MS2" });
+  const uncertainApply = fixture90("apply", recoveryDry, {
+    protocol: "MS2",
+    unknown: true,
+    missingResult: true,
+    deployExit: 1
+  });
+  const reconcile = fixture90("reconcile", uncertainApply, { protocol: "MS2" });
+  const expectedFingerprint = dry.request.physicalIdentity.clusterFingerprint;
+  assert.notEqual(verifyCurrent.request.roleObservation.role, apply.request.roleObservation.role);
+  assert.equal(
+    new Set([dry, apply, verifyCurrent, replay, reconcile].map((f) => f.request.attemptId)).size,
+    5
+  );
+  assert.notEqual(replay.request.sessionId, apply.request.sessionId);
+  assert.notEqual(reconcile.request.sessionId, uncertainApply.request.sessionId);
+  for (const current of [dry, apply, verifyCurrent, replay, reconcile]) {
+    const input = current.archive.input(current.request);
+    assert.equal(assessManualRunnerEvidence(input).executionStatus, "SUCCEEDED");
+    assert.equal(validateManualRunnerProtocol(input), undefined);
+    for (const live of current.liveInputs)
+      assert.equal(validateManualRunnerProtocol(live), undefined);
+    assert.equal(current.targetContext.runId, current.request.runId);
+    assert.equal(current.targetContext.profileDigest, current.request.profileDigest);
+    assert.deepEqual(current.targetContext.targetIntent, current.request.targetIntent);
+    assert.equal(current.targetContext.databaseOid, current.request.physicalIdentity.databaseOid);
+    assert.equal(
+      sha256Canonical({ domain: "manual-postgres-cluster.v1", ...current.targetContext.cluster }),
+      expectedFingerprint
+    );
+    assert.equal(current.request.physicalIdentity.clusterFingerprint, expectedFingerprint);
+    assert.equal(
+      current.shared.baseline.identity.physicalIdentity.clusterFingerprint,
+      expectedFingerprint
+    );
+  }
+});
+
+test("MS2 AUTHORIZE requires the closed target context while MS1 keeps eight payload keys", () => {
+  const ms1 = fixture90();
+  const ms2 = fixture90("dry-run", null, { protocol: "MS2" });
+  const ms1Authorize = fixtureDecode(ms1.parentFrames[0]);
+  const ms2Authorize = fixtureDecode(ms2.parentFrames[0]);
+  assert.equal(Reflect.ownKeys(ms1Authorize.payload).length, 8);
+  assert.equal(Reflect.ownKeys(ms2Authorize.payload).length, 9);
+  assert.throws(() => encodeManualRunnerFrame({ protocol: "MS2", ...ms1Authorize }), {
+    code: "MANUAL_FRAME_INVALID"
+  });
+  assert.throws(() => encodeManualRunnerFrame(ms2Authorize), { code: "MANUAL_FRAME_INVALID" });
+
+  const mutations = [
+    (context) => delete context.targetIntent,
+    (context) => {
+      context.extra = true;
+    },
+    (context) => delete context.cluster.serverPort,
+    (context) => {
+      context.cluster.extra = true;
+    },
+    (context) => delete context.h3Approval.bytes,
+    (context) => {
+      context.h3Readback.extra = true;
+    }
+  ];
+  for (const [index, mutateTargetContext] of mutations.entries()) {
+    const current = fixture90("dry-run", null, { protocol: "MS2", mutateTargetContext });
+    for (const input of [current.archive.input(current.request), current.liveInputs.at(-1)])
+      assert.throws(
+        () => validateManualRunnerProtocol(input),
+        { code: "MANUAL_FRAME_INVALID" },
+        `closed target context mutation ${index}`
+      );
+  }
+});
+
+test("MS2 live and archive reject target context identity changes after request signing", () => {
+  const genuine = fixture90("dry-run", null, { protocol: "MS2" });
+  const mutations = [
+    (context) => {
+      context.runId = uuid(999);
+    },
+    (context) => {
+      context.profileDigest = "sha256:" + "f".repeat(64);
+    },
+    (context) => {
+      context.targetIntent.databaseName = "other-db";
+    },
+    (context) => {
+      context.databaseOid = "124";
+    },
+    (context) => {
+      context.cluster.serverPort = 5433;
+    }
+  ];
+  for (const [index, mutateTargetContext] of mutations.entries()) {
+    const current = fixture90("dry-run", null, { protocol: "MS2", mutateTargetContext });
+    assert.deepEqual(encodeManualJson(current.request), encodeManualJson(genuine.request));
+    assert.deepEqual(
+      encodeManualJson(current.authorization),
+      encodeManualJson(genuine.authorization)
+    );
+    assert.deepEqual(
+      encodeManualJson(current.shared.baseline),
+      encodeManualJson(genuine.shared.baseline)
+    );
+    for (const run of [assessManualRunnerEvidence, validateManualRunnerProtocol])
+      assert.throws(
+        () => run(current.archive.input(current.request)),
+        { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" },
+        `archive identity mutation ${index}`
+      );
+    assert.throws(
+      () => validateManualRunnerProtocol(current.liveInputs.at(-1)),
+      { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" },
+      `live identity mutation ${index}`
+    );
+  }
+});
+
+test("MS2 refuses a complete old target context reused under a new signed run", () => {
+  const old = fixture90("dry-run", null, { protocol: "MS2" });
+  const current = fixture90("dry-run", null, {
+    protocol: "MS2",
+    runId: uuid(998),
+    mutateTargetContext(context) {
+      Object.assign(context, structuredClone(old.targetContext));
+    }
+  });
+  assert.notEqual(current.request.runId, old.request.runId);
+  assert.deepEqual(current.targetContext, old.targetContext);
+  for (const run of [assessManualRunnerEvidence, validateManualRunnerProtocol])
+    assert.throws(() => run(current.archive.input(current.request)), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+  assert.throws(() => validateManualRunnerProtocol(current.liveInputs.at(-1)), {
+    code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+  });
+});
+
+test("MS2 archive requires both complete H3 raw originals and their exact RawRef length", () => {
+  for (const refKey of ["h3Approval", "h3Readback"]) {
+    const current = fixture90("dry-run", null, { protocol: "MS2" });
+    const digest = current.targetContext[refKey].digest;
+    const input = current.archive.input(current.request);
+    const missing = {
+      ...input,
+      rawBlobs: input.rawBlobs.filter((bytes) => sha256Bytes(bytes) !== digest)
+    };
+    const changed = {
+      ...input,
+      rawBlobs: input.rawBlobs.map((bytes) =>
+        sha256Bytes(bytes) === digest ? Buffer.from(`changed synthetic ${refKey} original`) : bytes
+      )
+    };
+    for (const bad of [missing, changed])
+      for (const run of [assessManualRunnerEvidence, validateManualRunnerProtocol])
+        assert.throws(() => run(bad), { code: "MANUAL_EVIDENCE_INPUT_REQUIRED" });
+
+    const wrongLength = fixture90("dry-run", null, {
+      protocol: "MS2",
+      mutateTargetContext(context) {
+        context[refKey].bytes++;
+      }
+    });
+    for (const run of [assessManualRunnerEvidence, validateManualRunnerProtocol])
+      assert.throws(() => run(wrongLength.archive.input(wrongLength.request)), {
+        code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+      });
+  }
+});
+
+test("MS2 rejects mixed legal AUTHORIZE, public ACK, candidate ACK, and child versions", () => {
+  const ms2 = fixture90("dry-run", null, { protocol: "MS2" });
+  const live = ms2.liveInputs[2];
+  const authorize = fixtureDecode(live.parentFrameBytes[0]);
+  delete authorize.payload.targetContext;
+  const ms1Authorize = fixtureFrame(authorize);
+  assert.throws(
+    () =>
+      validateManualRunnerProtocol({
+        ...live,
+        parentFrameBytes: [ms1Authorize, ...live.parentFrameBytes.slice(1)]
+      }),
+    { code: "MANUAL_FRAME_INVALID" }
+  );
+
+  const mixedPublic = [...live.parentFrameBytes];
+  mixedPublic[1] = reframeProtocol(mixedPublic[1], "MS1");
+  assert.throws(() => validateManualRunnerProtocol({ ...live, parentFrameBytes: mixedPublic }), {
+    code: "MANUAL_FRAME_INVALID"
+  });
+  assert.throws(
+    () =>
+      validateManualRunnerProtocol({
+        ...live,
+        ackFrameBytes: reframeProtocol(live.ackFrameBytes, "MS1")
+      }),
+    { code: "MANUAL_FRAME_INVALID" }
+  );
+
+  const stdoutPrefixBytes = Buffer.concat([
+    reframeProtocol(ms2.stdoutFrames[0], "MS1"),
+    live.stdoutPrefixBytes.subarray(ms2.stdoutFrames[0].length)
+  ]);
+  assert.throws(() => validateManualRunnerProtocol({ ...live, stdoutPrefixBytes }), {
+    code: "MANUAL_FRAME_INVALID"
+  });
 });
 
 test("bound v2 policy survives observe dry-run apply verify replay and reconcile routing", () => {
@@ -1511,6 +1773,199 @@ test("wrong raw diff output cannot satisfy a reported PASSED schema", () => {
   });
 });
 
+function clusterFixture(overrides = {}) {
+  return {
+    systemIdentifier: "18446744073709551615",
+    databaseContainerId: "1".repeat(64),
+    dataVolumeName: "test-h3-volume",
+    postgresImageDigest: "sha256:" + "2".repeat(64),
+    marker: "test-h3-marker",
+    serverAddress: "192.0.2.10",
+    serverPort: 5432,
+    ...overrides
+  };
+}
+
+test("MS2 cluster fingerprint validates and hashes only the closed physical tuple", async () => {
+  const module = await import("../src/manual-runner-evidence.mjs");
+  assert.equal(typeof module.computeManualClusterFingerprint, "function");
+  const cluster = clusterFixture();
+  const fingerprint = module.computeManualClusterFingerprint(cluster);
+  assert.equal(
+    fingerprint,
+    "sha256:02d94ff157089a79d2c9a4e69f0008fc8a9025b3870b23dfdbfd0bf55e3749a4"
+  );
+  assert.equal(fingerprint, sha256Canonical({ domain: "manual-postgres-cluster.v1", ...cluster }));
+
+  for (const changed of [
+    { systemIdentifier: "1" },
+    { databaseContainerId: "3".repeat(64) },
+    { dataVolumeName: "test-h3-volume-2" },
+    { postgresImageDigest: "sha256:" + "4".repeat(64) },
+    { marker: "test-h3-marker-2" },
+    { serverAddress: "2001:db8::10" },
+    { serverPort: 5433 }
+  ])
+    assert.notEqual(module.computeManualClusterFingerprint(clusterFixture(changed)), fingerprint);
+
+  for (const bad of [
+    { systemIdentifier: "18446744073709551616" },
+    { systemIdentifier: "01" },
+    { systemIdentifier: "0" },
+    { systemIdentifier: "-1" },
+    { systemIdentifier: "1e2" },
+    { systemIdentifier: 1 },
+    { databaseContainerId: "A".repeat(64) },
+    { databaseContainerId: "1".repeat(63) },
+    { dataVolumeName: "" },
+    { postgresImageDigest: "2".repeat(64) },
+    { marker: "" },
+    { serverAddress: "db.invalid" },
+    { serverAddress: "fe80::1%eth0" },
+    { serverAddress: "2001:::1" },
+    { serverAddress: "192.0.2.10/24" },
+    { serverAddress: "999.0.2.10" },
+    { serverPort: 0 },
+    { serverPort: 65536 },
+    { serverPort: "5432" },
+    { role: "test-migrate" },
+    { runId: uuid(90) }
+  ])
+    assert.throws(
+      () => module.computeManualClusterFingerprint(clusterFixture(bad)),
+      undefined,
+      `bad cluster override ${JSON.stringify(bad)}`
+    );
+
+  for (const key of Object.keys(cluster)) {
+    const missing = clusterFixture();
+    delete missing[key];
+    assert.throws(
+      () => module.computeManualClusterFingerprint(missing),
+      undefined,
+      `missing ${key}`
+    );
+  }
+
+  assert.doesNotThrow(() =>
+    module.computeManualClusterFingerprint(
+      clusterFixture({ systemIdentifier: "1", serverAddress: "2001:db8::1", serverPort: 65535 })
+    )
+  );
+  assert.throws(() =>
+    module.computeManualClusterFingerprint({ ...cluster, [Symbol("extra")]: true })
+  );
+  let getterCalls = 0;
+  const accessor = clusterFixture();
+  Object.defineProperty(accessor, "serverAddress", {
+    enumerable: true,
+    get() {
+      getterCalls++;
+      return "192.0.2.10";
+    }
+  });
+  assert.throws(() => module.computeManualClusterFingerprint(accessor));
+  assert.equal(getterCalls, 0);
+});
+
+test("MS2 codec preserves exact bytes, closed inputs, and incomplete header prefixes", () => {
+  const payload = { childChallenge: "b".repeat(64) };
+  const payloadBytes = Buffer.from('{"childChallenge":"' + "b".repeat(64) + '"}');
+  const expected = Buffer.concat([
+    Buffer.from(`MS2 CHALLENGE 0 ${payloadBytes.length}\n`),
+    payloadBytes
+  ]);
+  const encoded = encodeManualRunnerFrame({
+    protocol: "MS2",
+    type: "CHALLENGE",
+    sequence: 0,
+    payload
+  });
+  assert.deepEqual(encoded, expected);
+  for (let i = 0; i < encoded.length; i++) {
+    const parsed = parseManualRunnerFrames({
+      direction: "child-to-parent",
+      bytes: encoded.subarray(0, i),
+      ended: false
+    });
+    assert.equal(parsed.frames.length, 0, `split ${i}`);
+    assert.deepEqual(parsed.pendingBytes, encoded.subarray(0, i), `split ${i}`);
+  }
+  const parsed = parseManualRunnerFrames({
+    direction: "child-to-parent",
+    bytes: encoded,
+    ended: true
+  });
+  assert.equal(parsed.frames.length, 1);
+  assert.deepEqual(parsed.frames[0].payloadBytes, payloadBytes);
+  assert.deepEqual(parsed.frames[0].frameBytes, encoded);
+  assert.deepEqual(Reflect.ownKeys(parsed.frames[0]).map(String).sort(), [
+    "frameBytes",
+    "payload",
+    "payloadBytes",
+    "sequence",
+    "type"
+  ]);
+
+  for (const bytes of [
+    Buffer.from("M"),
+    Buffer.from("MS"),
+    Buffer.from("MS2"),
+    Buffer.from("MS2 ")
+  ]) {
+    const prefix = parseManualRunnerFrames({
+      direction: "child-to-parent",
+      bytes,
+      ended: false
+    });
+    assert.equal(prefix.frames.length, 0);
+    assert.deepEqual(prefix.pendingBytes, bytes);
+  }
+  assert.throws(
+    () =>
+      parseManualRunnerFrames({
+        direction: "child-to-parent",
+        bytes: Buffer.from("MS3"),
+        ended: false
+      }),
+    { code: "MANUAL_FRAME_INVALID" }
+  );
+  for (const protocol of ["MS1", "MS3"])
+    assert.throws(
+      () => encodeManualRunnerFrame({ protocol, type: "CHALLENGE", sequence: 0, payload }),
+      { code: "MANUAL_FRAME_INVALID" }
+    );
+  assert.throws(
+    () =>
+      encodeManualRunnerFrame({
+        protocol: "MS2",
+        type: "CHALLENGE",
+        sequence: 0,
+        payload,
+        extra: true
+      }),
+    { code: "MANUAL_FRAME_INVALID" }
+  );
+});
+
+test("MS2 encoder preserves MANUAL_FRAME_INVALID for primitive inputs", () => {
+  for (const input of [1, true, "x", null, undefined])
+    assert.throws(() => encodeManualRunnerFrame(input), { code: "MANUAL_FRAME_INVALID" });
+});
+
+test("MS2 mixed versions fail as soon as a partial stream proves the other version", () => {
+  const prefix = grammarPrefix();
+  const challenge = fixtureDecode(prefix.frames[0]);
+  for (const bytes of [
+    Buffer.concat([fixtureFrame({ protocol: "MS2", ...challenge }), Buffer.from("MS1")]),
+    Buffer.concat([prefix.frames[0], Buffer.from("MS2")])
+  ])
+    assert.throws(
+      () => parseManualRunnerFrames({ direction: "child-to-parent", bytes, ended: false }),
+      { code: "MANUAL_FRAME_INVALID" }
+    );
+});
+
 test("MS1 preserves exact bytes and permits every incomplete challenge split", () => {
   const payload = { childChallenge: "b".repeat(64) };
   const expectedPayload = Buffer.from('{"childChallenge":"' + "b".repeat(64) + '"}');
@@ -1546,7 +2001,7 @@ test("MS1 rejects malformed headers, closed payloads, direction and half-frame E
     payload: { childChallenge: "b".repeat(64) }
   });
   for (const prefix of [
-    "MS2 ",
+    "MS3 ",
     "MS1  ",
     "MS1 UNKNOWN ",
     "MS1 CHALLENGE 00 ",
@@ -1799,6 +2254,9 @@ function fixtureDecode(bytes) {
     payload: JSON.parse(bytes.subarray(end + 1).toString("utf8"))
   };
 }
+function reframeProtocol(bytes, protocol) {
+  return fixtureFrame({ protocol, ...fixtureDecode(bytes) });
+}
 const refBytes = (bytes) => ({ digest: sha256Bytes(bytes), bytes: bytes.length });
 function changedLiveEvent(input, mutate) {
   const child = fixtureDecode(input.childFrameBytes),
@@ -1974,7 +2432,7 @@ test("public parent single-frame sequence excludes secrets and rejects a skipped
   );
 });
 
-function grammarPrefix() {
+function grammarPrefix(protocol = "MS1") {
   const request = requestFixture("dry-run");
   const binding = {
     ...pick(request, [
@@ -1994,12 +2452,19 @@ function grammarPrefix() {
     ref,
     frames: [
       fixtureFrame({
+        protocol,
         type: "CHALLENGE",
         sequence: 0,
         payload: { childChallenge: request.childChallenge }
       }),
-      fixtureFrame({ type: "READY", sequence: 1, payload: { binding, authorizeFrame: ref } }),
       fixtureFrame({
+        protocol,
+        type: "READY",
+        sequence: 1,
+        payload: { binding, authorizeFrame: ref }
+      }),
+      fixtureFrame({
+        protocol,
         type: "CREDENTIAL_RECEIVED",
         sequence: 2,
         payload: { binding, authorizeFrame: ref }
@@ -2029,6 +2494,392 @@ test("MS1 all UTF-8 split positions and coalesced frames preserve exact boundari
     parsed.frames.map((f) => f.frameBytes),
     frames
   );
+});
+
+test("MS2 all byte and UTF-8 splits coalesce with the unchanged three-key parser result", () => {
+  const current = fixture90("dry-run", null, { protocol: "MS2" }),
+    live = current.liveInputs[0],
+    liveBytes = live.stdoutPrefixBytes;
+  assert.equal(validateManualRunnerProtocol(live), undefined);
+  for (let n = 0; n <= liveBytes.length; n++) {
+    const parsed = parseManualRunnerFrames({
+      direction: "child-to-parent",
+      bytes: liveBytes.subarray(0, n),
+      ended: false
+    });
+    assert.equal(parsed.consumedBytes + parsed.pendingBytes.length, n);
+    assert.deepEqual(
+      Buffer.concat(parsed.frames.map((frame) => frame.frameBytes)),
+      liveBytes.subarray(0, parsed.consumedBytes)
+    );
+  }
+  const archiveBytes = Buffer.concat(current.stdoutFrames),
+    parsed = parseManualRunnerFrames({
+      direction: "child-to-parent",
+      bytes: archiveBytes,
+      ended: true
+    });
+  assert.deepEqual(Reflect.ownKeys(parsed).map(String).sort(), [
+    "consumedBytes",
+    "frames",
+    "pendingBytes"
+  ]);
+  assert.deepEqual(
+    parsed.frames.map((frame) => frame.frameBytes),
+    current.stdoutFrames
+  );
+  const utf8 = grammarPrefix("MS2"),
+    utf8Bytes = Buffer.concat(utf8.frames);
+  for (let n = 0; n <= utf8Bytes.length; n++) {
+    const split = parseManualRunnerFrames({
+      direction: "child-to-parent",
+      bytes: utf8Bytes.subarray(0, n),
+      ended: false
+    });
+    assert.equal(split.consumedBytes + split.pendingBytes.length, n);
+  }
+  assert.equal(
+    parseManualRunnerFrames({ direction: "child-to-parent", bytes: utf8Bytes, ended: true })
+      .frames[1].payload.binding.idempotencyKey,
+    "离线多字节测试"
+  );
+  assert.throws(
+    () =>
+      parseManualRunnerFrames({
+        direction: "child-to-parent",
+        bytes: archiveBytes,
+        ended: true,
+        protocol: "MS2"
+      }),
+    { code: "MANUAL_FRAME_INVALID" }
+  );
+  assert.throws(
+    () => parseManualRunnerFrames({ direction: "child-to-parent", bytes: archiveBytes }),
+    { code: "MANUAL_FRAME_INVALID" }
+  );
+  const wrongReady = fixtureFrame({
+    protocol: "MS2",
+    type: "READY",
+    sequence: 2,
+    payload: { binding: utf8.binding, authorizeFrame: utf8.ref }
+  });
+  assert.throws(
+    () =>
+      parseManualRunnerFrames({
+        direction: "child-to-parent",
+        bytes: Buffer.concat([utf8.frames[0], wrongReady.subarray(0, wrongReady.indexOf(10) + 2)]),
+        ended: false
+      }),
+    { code: "MANUAL_FRAME_ORDER_INVALID" }
+  );
+});
+
+test("MS2 RESULT prefixes, EOF, duplicates, and trailing logs stay terminal", () => {
+  const prefix = grammarPrefix("MS2"),
+    result = {
+      ...observeFixture().result,
+      // A partial RESULT must remain coherent with the READY binding before it can be pending.
+      ...pick(prefix.binding, [...aKeys, "attemptAllocationDigest", "requestDigest"])
+    },
+    ack = fixtureFrame({
+      protocol: "MS2",
+      type: "ACK_RECEIVED",
+      sequence: 3,
+      payload: { binding: prefix.binding, previousAck: prefix.ref }
+    }),
+    resultFrame = fixtureFrame({ protocol: "MS2", type: "RESULT", sequence: 4, payload: result }),
+    complete = Buffer.concat([...prefix.frames, ack, resultFrame]),
+    partial = Buffer.concat([...prefix.frames, ack, resultFrame.subarray(0, -1)]);
+  assert.equal(
+    parseManualRunnerFrames({ direction: "child-to-parent", bytes: complete, ended: true }).frames
+      .length,
+    5
+  );
+  assert.ok(
+    parseManualRunnerFrames({ direction: "child-to-parent", bytes: partial, ended: false })
+      .pendingBytes.length > 0
+  );
+  assert.throws(
+    () => parseManualRunnerFrames({ direction: "child-to-parent", bytes: partial, ended: true }),
+    { code: "MANUAL_FRAME_INCOMPLETE" }
+  );
+  assert.throws(
+    () =>
+      parseManualRunnerFrames({
+        direction: "child-to-parent",
+        bytes: Buffer.concat([complete, resultFrame]),
+        ended: true
+      }),
+    { code: "MANUAL_HANDOFF_REUSED" }
+  );
+  for (const trailing of [Buffer.from("log"), Buffer.from("\n")])
+    assert.throws(
+      () =>
+        parseManualRunnerFrames({
+          direction: "child-to-parent",
+          bytes: Buffer.concat([complete, trailing]),
+          ended: false
+        }),
+      { code: "MANUAL_FRAME_INVALID" }
+    );
+  assert.throws(
+    () =>
+      parseManualRunnerFrames({
+        direction: "child-to-parent",
+        bytes: Buffer.from(`MS2 ${"A".repeat(61)}`),
+        ended: false
+      }),
+    { code: "MANUAL_FRAME_INVALID" }
+  );
+
+  const archivedPrefix = fixture90("verify", null, {
+    protocol: "MS2",
+    unknown: true,
+    missingResult: true,
+    partialResultUtf8: true
+  });
+  const actual = assessManualRunnerEvidence(archivedPrefix.archive.input(archivedPrefix.request));
+  assert.equal(actual.executionStatus, "INTERRUPTED_UNKNOWN");
+  assert.equal(actual.reasonCode, "MANUAL_FRAME_INCOMPLETE");
+});
+
+function credentialFrameWithLength(protocol, binding, frameLength) {
+  const base = { binding, credential: "" };
+  const baseLength = encodeManualJson(base).length;
+  let credentialLength = frameLength - baseLength - 32;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const payloadLength = baseLength + credentialLength;
+    const actualLength =
+      Buffer.byteLength(`${protocol} CREDENTIAL 1 ${payloadLength}\n`) + payloadLength;
+    if (actualLength === frameLength) {
+      const payload = { binding, credential: "x".repeat(credentialLength) };
+      const frame = fixtureFrame({ protocol, type: "CREDENTIAL", sequence: 1, payload });
+      assert.equal(frame.length, frameLength);
+      return { frame, payload };
+    }
+    credentialLength += frameLength - actualLength;
+  }
+  assert.fail(`unable to construct ${frameLength}-byte credential frame`);
+}
+
+function eventFrameCompletingStream(protocol, binding, prefixLength, streamLength) {
+  for (let idLength = 1; idLength <= 8; idLength++) {
+    const currentBinding = { ...binding, idempotencyKey: "x".repeat(idLength) };
+    let rawLength = 780000;
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const event = {
+        sequence: 0,
+        processSequence: 1,
+        source: "runner",
+        tool: "prisma-script",
+        event: "CLOSED",
+        at: time(1),
+        containerId: currentBinding.containerId,
+        pid: 1,
+        argvDigest: D,
+        exitCode: 0,
+        signal: null,
+        reasonCode: null,
+        stdout: { digest: D, bytes: rawLength },
+        stderr: refBytes(Buffer.alloc(0))
+      };
+      const emptyPayload = {
+        binding: currentBinding,
+        previousAck: null,
+        event,
+        stdoutBase64: "",
+        stderrBase64: ""
+      };
+      const payloadLength = encodeManualJson(emptyPayload).length + 4 * Math.ceil(rawLength / 3);
+      const frameLength =
+        Buffer.byteLength(`${protocol} EVENT 3 ${payloadLength}\n`) + payloadLength;
+      const total = prefixLength + frameLength;
+      if (total === streamLength) {
+        const raw = Buffer.alloc(rawLength, 120);
+        event.stdout = refBytes(raw);
+        const frame = fixtureFrame({
+          protocol,
+          type: "EVENT",
+          sequence: 3,
+          payload: { ...emptyPayload, event, stdoutBase64: raw.toString("base64") }
+        });
+        assert.equal(prefixLength + frame.length, streamLength);
+        return frame;
+      }
+      rawLength += Math.trunc(((streamLength - total) * 3) / 4);
+      if (rawLength <= 0 || rawLength > 786432) break;
+    }
+  }
+  assert.fail(`unable to construct ${streamLength}-byte child stream`);
+}
+
+test("MS2 exact 1 MiB frames and complete stdin/stdout streams reject one byte more", () => {
+  const limit = 1048576;
+  const current = fixture90("dry-run", null, { protocol: "MS2" });
+  const binding = fixtureDecode(current.parentFrames[1]).payload.binding;
+  const exactFrame = credentialFrameWithLength("MS2", binding, limit);
+  assert.equal(
+    encodeManualRunnerFrame({
+      protocol: "MS2",
+      type: "CREDENTIAL",
+      sequence: 1,
+      payload: exactFrame.payload
+    }).length,
+    limit
+  );
+  assert.throws(
+    () =>
+      encodeManualRunnerFrame({
+        protocol: "MS2",
+        type: "CREDENTIAL",
+        sequence: 1,
+        payload: { ...exactFrame.payload, credential: exactFrame.payload.credential + "x" }
+      }),
+    { code: "MANUAL_OUTPUT_LIMIT" }
+  );
+
+  const authorize = current.parentFrames[0],
+    ack = current.parentFrames[1],
+    credential = credentialFrameWithLength(
+      "MS2",
+      binding,
+      limit - authorize.length - ack.length
+    ).frame,
+    stdin = Buffer.concat([authorize, credential, ack]);
+  assert.equal(stdin.length, limit);
+  assert.equal(
+    parseManualRunnerFrames({ direction: "parent-to-child", bytes: stdin, ended: true }).frames
+      .length,
+    3
+  );
+  assert.throws(
+    () =>
+      parseManualRunnerFrames({
+        direction: "parent-to-child",
+        bytes: Buffer.concat([stdin, Buffer.from("x")]),
+        ended: false
+      }),
+    { code: "MANUAL_OUTPUT_LIMIT" }
+  );
+  const credentialRef = refBytes(credential);
+  assert.equal(
+    current.finalProcess.protocol.parentFrames.some(
+      (ref) => ref.digest === credentialRef.digest && ref.bytes === credentialRef.bytes
+    ),
+    false
+  );
+  assert.equal(
+    [...current.archive.raws.values()].some((bytes) => bytes.equals(credential)),
+    false
+  );
+
+  const prefix = grammarPrefix("MS2"),
+    prefixBytes = Buffer.concat(prefix.frames),
+    event = eventFrameCompletingStream("MS2", prefix.binding, prefixBytes.length, limit),
+    stdout = Buffer.concat([prefixBytes, event]);
+  assert.equal(stdout.length, limit);
+  assert.equal(
+    parseManualRunnerFrames({ direction: "child-to-parent", bytes: stdout, ended: true }).frames
+      .length,
+    4
+  );
+  assert.throws(
+    () =>
+      parseManualRunnerFrames({
+        direction: "child-to-parent",
+        bytes: Buffer.concat([stdout, Buffer.from("x")]),
+        ended: false
+      }),
+    { code: "MANUAL_OUTPUT_LIMIT" }
+  );
+});
+
+test("MS2 live ACK rejects wrong, self, and future references and keeps credentials private", () => {
+  const current = fixture90("dry-run", null, { protocol: "MS2" });
+  assert.throws(
+    () =>
+      validateManualRunnerProtocol({
+        ...current.liveInputs[0],
+        ackFrameBytes: current.liveInputs[1].ackFrameBytes
+      }),
+    { code: "MANUAL_FRAME_ORDER_INVALID" }
+  );
+
+  const live = current.liveInputs[1];
+  const self = fixtureDecode(live.ackFrameBytes);
+  self.payload.subject.process.protocol.parentFrames.push(refBytes(live.ackFrameBytes));
+  self.payload.readback.subjectDigest = sha256Canonical(self.payload.subject.process);
+  self.payload.readback.observedDigest = self.payload.readback.subjectDigest;
+  assert.throws(
+    () =>
+      validateManualRunnerProtocol({
+        ...live,
+        ackFrameBytes: fixtureFrame({ protocol: "MS2", ...self })
+      }),
+    { code: "MANUAL_FRAME_ORDER_INVALID" }
+  );
+
+  const futureChild = fixtureDecode(live.childFrameBytes);
+  const futureAck = fixtureDecode(live.ackFrameBytes);
+  futureChild.payload.previousAck = refBytes(live.ackFrameBytes);
+  const childFrameBytes = fixtureFrame({ protocol: "MS2", ...futureChild });
+  const stdoutPrefixBytes = Buffer.concat([
+    live.stdoutPrefixBytes.subarray(0, -live.childFrameBytes.length),
+    childFrameBytes
+  ]);
+  futureAck.payload.acknowledgedFrame = refBytes(childFrameBytes);
+  futureAck.payload.subject.process.protocol.stdoutPrefix = refBytes(stdoutPrefixBytes);
+  futureAck.payload.readback.subjectDigest = sha256Canonical(futureAck.payload.subject.process);
+  futureAck.payload.readback.observedDigest = futureAck.payload.readback.subjectDigest;
+  assert.throws(
+    () =>
+      validateManualRunnerProtocol({
+        ...live,
+        childFrameBytes,
+        stdoutPrefixBytes,
+        ackFrameBytes: fixtureFrame({ protocol: "MS2", ...futureAck })
+      }),
+    { code: "MANUAL_FRAME_ORDER_INVALID" }
+  );
+
+  const publicLive = current.liveInputs[2];
+  const credential = fixtureFrame({
+    protocol: "MS2",
+    type: "CREDENTIAL",
+    sequence: 1,
+    payload: {
+      binding: fixtureDecode(publicLive.ackFrameBytes).payload.binding,
+      credential: "synthetic-secret-never-archive"
+    }
+  });
+  assert.throws(
+    () =>
+      validateManualRunnerProtocol({
+        ...publicLive,
+        parentFrameBytes: [publicLive.parentFrameBytes[0], credential]
+      }),
+    { code: "MANUAL_FRAME_INVALID" }
+  );
+  assert.equal(
+    [...current.archive.raws.values()].some((bytes) => bytes.equals(credential)),
+    false
+  );
+});
+
+test("MS1 and MS2 live empty child streams preserve MANUAL_FRAME_ORDER_INVALID", () => {
+  for (const protocol of ["MS1", "MS2"]) {
+    const live = fixture90("dry-run", null, { protocol }).liveInputs[0];
+    assert.throws(
+      () =>
+        validateManualRunnerProtocol({
+          ...live,
+          childFrameBytes: Buffer.alloc(0),
+          stdoutPrefixBytes: Buffer.alloc(0)
+        }),
+      { code: "MANUAL_FRAME_ORDER_INVALID" },
+      protocol
+    );
+  }
 });
 
 test("MS1 rejects known wrong sequence without waiting for its payload", () => {
@@ -2275,9 +3126,11 @@ test("invalid finite artifact timestamp is rejected before any success assertion
   assert.throws(() => assessManualRunnerEvidence(input), { code: "MANUAL_TIME_INVALID" });
 });
 
-test("foundation public surface exposes the five shared pure functions", async () => {
+test("foundation public surface exposes the six shared pure functions", async () => {
   const publicApi = await import("../src/index.mjs");
+  const evidenceApi = await import("../src/manual-runner-evidence.mjs");
   for (const [name, expected] of Object.entries({
+    computeManualClusterFingerprint: evidenceApi.computeManualClusterFingerprint,
     validateManualRunnerRequest,
     assessManualRunnerEvidence,
     encodeManualRunnerFrame,

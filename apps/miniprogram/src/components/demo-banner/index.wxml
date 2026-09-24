@@ -1,0 +1,11 @@
+<view
+  wx:if="{{demo}}"
+  class="demo"
+  bindtap="openSettings"
+  role="button"
+  aria-label="本地体验，使用示例数据，打开体验设置"
+>
+  <view class="dot"></view>
+  <text>本地体验 · 使用示例数据</text>
+  <text class="arrow">↗</text>
+</view>

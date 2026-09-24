@@ -1,0 +1,97 @@
+.application-header {
+  padding: 34rpx 0;
+}
+.application-header .title {
+  margin: 18rpx 0;
+  line-height: 1.4;
+}
+.intent-card {
+  border: 1rpx solid #d0d4c6;
+  padding: 30rpx;
+  background: #fbfaf7;
+  margin-bottom: 32rpx;
+}
+.intent-card .section-title {
+  margin: 20rpx 0 8rpx;
+}
+.intent-detail {
+  gap: 24rpx;
+  margin-top: 24rpx;
+  font-size: 27rpx;
+  align-items: baseline;
+}
+.intent-detail > text:last-child {
+  text-align: right;
+}
+.intent-card .text-button {
+  margin-top: 24rpx;
+  padding-left: 0;
+  text-align: left;
+}
+.contact-section {
+  padding: 20rpx 0;
+}
+.contact-section .section-title {
+  margin: 18rpx 0 24rpx;
+}
+.contact-section .notice {
+  margin-bottom: 28rpx;
+}
+.review-section {
+  margin: 28rpx 0;
+}
+.review-line {
+  display: flex;
+  gap: 24rpx;
+  padding: 24rpx 0;
+  border-bottom: 1rpx solid #d9dccf;
+  font-size: 26rpx;
+  line-height: 1.7;
+}
+.review-line > text {
+  color: #b44919;
+  font-size: 23rpx;
+}
+.acceptance {
+  display: flex;
+  gap: 12rpx;
+  align-items: flex-start;
+  font-size: 25rpx;
+  line-height: 1.8;
+  padding-top: 14rpx;
+}
+.acceptance checkbox {
+  flex-shrink: 0;
+  transform: scale(0.85);
+  transform-origin: top left;
+}
+.terms-link {
+  padding-left: 0;
+  text-align: left;
+}
+.form-error {
+  padding: 24rpx;
+  background: #f4e6dd;
+  color: #9b3717;
+  font-size: 25rpx;
+  line-height: 1.7;
+  margin-top: 20rpx;
+}
+.submit-caption {
+  text-align: center;
+  font-size: 21rpx;
+  color: #737a6a;
+  padding-top: 14rpx;
+  line-height: 1.6;
+}
+.submitted-card {
+  border-left: 4rpx solid #b44919;
+  padding: 24rpx;
+  background: #e9ecdf;
+}
+.submitted-card .muted {
+  margin: 18rpx 0 24rpx;
+}
+.application-page {
+  padding-bottom: 260rpx;
+}

@@ -1,0 +1,57 @@
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+  margin-top: 36rpx;
+}
+.profile-mark {
+  width: 80rpx;
+  height: 80rpx;
+  background: #e4e3dc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34rpx;
+  border-radius: 4rpx;
+}
+.identity-text {
+  flex: 1;
+  min-width: 0;
+}
+.identity-text .section-title {
+  margin: 0 0 8rpx;
+}
+.menu-row {
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+  padding: 28rpx 0;
+  border-bottom: 1rpx solid #e1e0d9;
+  font-size: 30rpx;
+  line-height: 1.5;
+}
+.menu-row:last-child {
+  border: 0;
+}
+.small {
+  font-size: 24rpx;
+  margin-top: 8rpx;
+}
+
+.page {
+  padding-bottom: calc(64rpx + env(safe-area-inset-bottom));
+}
+.card {
+  margin-top: 24rpx;
+  margin-bottom: 24rpx;
+}
+.notice {
+  margin-top: 24rpx;
+  margin-bottom: 24rpx;
+}
+.row .section-title {
+  margin-top: 0;
+  margin-bottom: 0;
+}

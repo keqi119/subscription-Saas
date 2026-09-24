@@ -755,7 +755,7 @@ describe("Stage 1 contract archive admission", () => {
         }
       }
     });
-    expect(journeyAfter.currentStepCode).toBe(SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT);
+    expect(journeyAfter.currentStepCode).toBe(SubscriptionJourneyStepCode.INITIAL_BILLING);
     expect(signingStepAfter.status).toBe(SubscriptionJourneyStepStatus.COMPLETED);
     expect(
       await prisma.subscriptionJourneyEvent.count({

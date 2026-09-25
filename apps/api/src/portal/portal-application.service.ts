@@ -290,6 +290,12 @@ export class PortalApplicationService {
     );
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      // Confirmation records a Journey signal after updating the Application.
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "subscription_journey"
+        WHERE "application_id" = ${id}::uuid
+        FOR UPDATE
+      `);
       const updateResult = await tx.application.updateMany({
         data: {
           customerConfirmedPlanRevision: application.subscriptionJourney
@@ -310,7 +316,10 @@ export class PortalApplicationService {
             ? dto.revision
             : undefined,
           id,
-          planConfirmStatus: PlanConfirmStatus.PENDING
+          planConfirmStatus: PlanConfirmStatus.PENDING,
+          status: ApplicationStatus.APPROVED,
+          depositStatus: DepositStatus.CONFIRMED,
+          orders: { none: { deletedAt: null } }
         }
       });
 

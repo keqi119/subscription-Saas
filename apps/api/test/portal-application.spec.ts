@@ -1093,6 +1093,7 @@ function createPortalTransaction(application: ReturnType<typeof createApplicatio
   };
 
   return {
+    $queryRaw: vi.fn(async () => []),
     application: {
       findFirstOrThrow: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         if (where.id !== application.id || where.customerId !== application.customerId) {

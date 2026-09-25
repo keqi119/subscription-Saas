@@ -437,6 +437,137 @@ describe("Stage 1 subscription Journey failure recovery", () => {
       expect(audit.write).toHaveBeenCalledOnce();
     });
   });
+  it.each([
+    "paused journey",
+    "cancelled journey",
+    "different job type",
+    "different step",
+    "incomplete step",
+    "step completion clock missing",
+    "different current step",
+    "incomplete current step",
+    "journey completion clock missing",
+    "different order",
+    "stale revision",
+    "missing revision",
+    "null revision",
+    "string revision",
+    "future availability",
+    "unexpired processing lease",
+    "completed job",
+    "cancelled job",
+    "dead-letter job"
+  ])("B4 terminal ACK recovery refuses %s without claim mutations", async (reason) => {
+    // These are eligibility-only fixtures inside a rollback transaction. The
+    // following worker cases separately prove real activation and ACK recovery.
+    await rolledBack(prisma, async (tx) => {
+      const fixture = await createFixture(tx, "AUTHORITATIVE_ACTIVATION", "COMPLETED", "COMPLETED");
+      const orderId = await createRawOrder(tx, fixture);
+      const completedAt = new Date("2026-09-01T00:00:00.000Z");
+      await tx.application.update({
+        data: { finalPlanRevision: 1 },
+        where: { id: fixture.applicationId }
+      });
+      await tx.subscriptionJourney.update({
+        data: { orderId, completedAt },
+        where: { id: fixture.journeyId }
+      });
+      await tx.subscriptionJourneyStep.update({
+        data: { completedAt },
+        where: { id: fixture.stepId }
+      });
+      const payload: Prisma.InputJsonObject = { orderId, finalPlanRevision: 1 };
+      const job = await repository.enqueueJob(tx, {
+        availableAt: new Date("2000-01-01T00:00:00.000Z"),
+        jobType: "ACTIVATE_SUBSCRIPTION",
+        journeyId: fixture.journeyId,
+        payload,
+        sourceKey: `${fixture.prefix}:terminal-guard`,
+        stepId: fixture.stepId
+      });
+      const journeyPatch: Prisma.SubscriptionJourneyUpdateInput = {};
+      const stepPatch: Prisma.SubscriptionJourneyStepUpdateInput = {};
+      const jobPatch: Prisma.SubscriptionJourneyJobUpdateInput = {};
+      switch (reason) {
+        case "paused journey":
+          journeyPatch.status = "PAUSED";
+          break;
+        case "cancelled journey":
+          journeyPatch.status = "CANCELLED";
+          break;
+        case "different job type":
+          jobPatch.jobType = "CREATE_HANDOVER";
+          break;
+        case "different step":
+          stepPatch.code = "APPLICATION_VALIDATION";
+          break;
+        case "incomplete step":
+          stepPatch.status = "PENDING";
+          break;
+        case "step completion clock missing":
+          stepPatch.completedAt = null;
+          break;
+        case "different current step":
+          journeyPatch.currentStepCode = "APPLICATION_VALIDATION";
+          break;
+        case "incomplete current step":
+          journeyPatch.currentStepStatus = "PENDING";
+          break;
+        case "journey completion clock missing":
+          journeyPatch.completedAt = null;
+          break;
+        case "different order":
+          jobPatch.payload = { ...payload, orderId: randomUUID() };
+          break;
+        case "stale revision":
+          jobPatch.payload = { ...payload, finalPlanRevision: 0 };
+          break;
+        case "missing revision":
+          jobPatch.payload = { orderId };
+          break;
+        case "null revision":
+          jobPatch.payload = { ...payload, finalPlanRevision: null };
+          break;
+        case "string revision":
+          jobPatch.payload = { ...payload, finalPlanRevision: "1" };
+          break;
+        case "future availability":
+          jobPatch.availableAt = new Date("2999-01-01T00:00:00.000Z");
+          break;
+        case "unexpired processing lease":
+          Object.assign(jobPatch, {
+            status: "PROCESSING",
+            leaseToken: "active-lease",
+            leaseExpiresAt: new Date("2999-01-01T00:00:00.000Z")
+          });
+          break;
+        case "completed job":
+          Object.assign(jobPatch, { status: "COMPLETED", completedAt });
+          break;
+        case "cancelled job":
+          jobPatch.status = "CANCELLED";
+          break;
+        case "dead-letter job":
+          jobPatch.status = "DEAD_LETTER";
+          break;
+        default:
+          throw new Error(`Unknown claim guard: ${reason}`);
+      }
+      await tx.subscriptionJourney.update({ data: journeyPatch, where: { id: fixture.journeyId } });
+      await tx.subscriptionJourneyStep.update({ data: stepPatch, where: { id: fixture.stepId } });
+      await tx.subscriptionJourneyJob.update({ data: jobPatch, where: { id: job.id } });
+      const snapshot = () =>
+        Promise.all([
+          tx.subscriptionJourneyJob.findUniqueOrThrow({ where: { id: job.id } }),
+          tx.subscriptionJourney.findUniqueOrThrow({ where: { id: fixture.journeyId } }),
+          tx.subscriptionJourneyStep.findUniqueOrThrow({ where: { id: fixture.stepId } })
+        ]);
+      const before = await snapshot();
+      expect(await repository.claimJobs(tx, 100, 120_000)).toEqual([]);
+      expect(await snapshot()).toEqual(before);
+    });
+  });
+
   it("B4 refuses missing inspection facts without activation residue and permits recovery", async () => {
     const h = await prepareActivation(prisma);
     await prisma.vehicleInspection.update({

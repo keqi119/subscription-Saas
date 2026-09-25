@@ -720,7 +720,10 @@ describe("Stage 1 application and order authority", () => {
     const sharedVehicleId = randomUUID();
     await prisma.$transaction(async (tx) => {
       const { modelDefinitionId } = await insertRuntimeVehicle(tx, sharedVehicleId, "authority-shared");
-      await tx.vehicle.update({ where: { id: sharedVehicleId }, data: { currentSalePriceAmount: 1000000n } });
+      await tx.vehicle.update({
+        where: { id: sharedVehicleId },
+        data: { status: "AVAILABLE", currentSalePriceAmount: 1000000n }
+      });
       for (const fixture of [firstFixture, secondFixture]) {
         const plan = await tx.subscriptionPlan.findUniqueOrThrow({ where: { id: fixture.planId } });
         await tx.vehiclePackage.update({
@@ -729,6 +732,8 @@ describe("Stage 1 application and order authority", () => {
         });
       }
     });
+    expect(await prisma.vehicle.findUniqueOrThrow({ where: { id: sharedVehicleId } }))
+      .toMatchObject({ status: "AVAILABLE", currentSalePriceAmount: 1000000n });
     // Reach the existing manual decision through real commercial-drift recovery.
     for (const fixture of [firstFixture, secondFixture]) {
       await changeCommercialFact(fixture, "mileage price");

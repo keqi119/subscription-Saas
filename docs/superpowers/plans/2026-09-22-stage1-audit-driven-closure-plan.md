@@ -281,6 +281,13 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 **出口：** B4/B6 有当前界面实际入口证据，F6 关闭，样本准备可以绑定完整事实。
 
+#### F6 关单审计限域实施（2026-09-25）
+
+- `SubscriptionReturnGovernanceService.completeOperations` 当前对 Closure、Order、Contract 的终态更新处于同一事务，却没有成功审计。仅在该方法已有锁与所有准入校验之后读取 Order/Contract 当前状态，保留 Closure 的事务内原状态，在三项更新成功后用 `tx.auditLog.create` 写一次 UPDATE；记录 operatorId、Closure/Order/Contract 的 id/前后状态、财务状态及本次 idempotencyKey。沿用 module `subscription_closure`、entityType `subscription_closure_case`，不引入新模型/权限/事件。
+- 已完成/已终止的早返回保持，不为重放补写或重复写审计；任一状态更新或审计失败必须让原事务失败。不改客户响应、争议、实物接收、库存释放、合法催收/法催归口或金额规则，也不补造历史审计。
+- 新增 unit 文件 `apps/api/test/subscription-return-completion.spec.ts`，先取得“真实方法成功返回但无审计”的确定 RED，覆盖完成及现有终止分支的准确旧状态、单次审计/重放、业务写入失败和审计失败传播。unit transaction double 只证明调用顺序/事务归属；数据库回滚由任务 8 原 expiry-return suite 中的真实 `completeOperations` 切片独立验证。
+- 生成输入/数据库接口不变。准备期复核 Prisma validate；migrate status/deploy/diff 继续仅在每次新受控 fresh 内执行，不连接 ambient 或退役目标。记录独立生产提交，聚焦 unit、相关 closure 单测、owned ESLint、API tsc；最终按任务 8 原三套完整 fresh 与 custody/readback 顺序验收。
+
 ## 5. 发布与真实验收路径
 
 ### 任务 9：按 R2.1 → R2.2 → R2.3 实施离线接入

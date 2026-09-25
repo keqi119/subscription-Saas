@@ -106,15 +106,13 @@ function harness(mode: "CUSTOMER_SIGNED" | "CUSTOMER_REFUSED" | "CUSTOMER_ABSENT
     contractESignTask: { findFirst: vi.fn().mockResolvedValue(null) },
     subscriptionAutomationJob: { updateMany: jobUpdate, upsert: jobUpsert },
     subscriptionClosureCase: {
-      findUnique: vi
-        .fn()
-        .mockResolvedValue({
-          id: "case-1",
-          orderId: "order-1",
-          status: "PREPARING_RETURN",
-          vehicleReturnId: "return-1",
-          returnAssetWorkOrderId: "work-1"
-        }),
+      findUnique: vi.fn().mockResolvedValue({
+        id: "case-1",
+        orderId: "order-1",
+        status: "PREPARING_RETURN",
+        vehicleReturnId: "return-1",
+        returnAssetWorkOrderId: "work-1"
+      }),
       update: caseUpdate
     },
     subscriptionClosureDocumentRevision: {

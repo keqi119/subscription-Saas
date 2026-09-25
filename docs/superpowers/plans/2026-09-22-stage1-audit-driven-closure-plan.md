@@ -193,7 +193,7 @@ node --test packages/release-foundation/test/manual-runner-evidence.test.mjs pac
 
 ### 任务 4：两文件预检对齐
 
-- [ ] 在现有 preflight test 中增加以下用例，并移除/替换旧退款 blocker 断言；先记录当前 RED。
+- [x] 在现有 preflight test 中增加以下用例，并移除/替换旧退款 blocker 断言；先记录当前 RED。
 
 ```javascript
 test("mainline preflight does not require independent refund funding", () => {
@@ -205,8 +205,8 @@ test("mainline preflight does not require independent refund funding", () => {
 });
 ```
 
-- [ ] 从主线 validator 移除 refundLimit 必填/与 paymentLimit 比较。保留付款额度、专用资产、payer、真实渠道/通知和禁止代扣全部断言；退款值缺失或高于付款值均不能单独阻断主线。
-- [ ] 只运行离线 test，独立审查/提交这两个文件；原索引和 Runbook 的“未实施差异”仅在代码通过后前向更新。不要运行真实 preflight CLI。
+- [x] 从主线 validator 移除 refundLimit 必填/与 paymentLimit 比较。保留付款额度、专用资产、payer、真实渠道/通知和禁止代扣全部断言；退款值缺失或高于付款值均不能单独阻断主线。
+- [x] 只运行离线 test，独立审查/提交这两个文件；原索引和 Runbook 的“未实施差异”仅在代码通过后前向更新。不要运行真实 preflight CLI。
 
 ```powershell
 node --test scripts/stage1-golden-path-production-preflight.test.mjs
@@ -214,9 +214,9 @@ node --test scripts/stage1-golden-path-production-preflight.test.mjs
 
 ### 任务 5：续接 B3 Task 3S
 
-- [ ] 向原 B3 执行 owner 核对是否已有未整合的唯一 Task3S 原件/提交；已有则接收并核对，不重复运行。
-- [ ] 若仍是本轮基线，只将 `stage1-contract-archive.integration.spec.ts:758` 的 CUSTOMER_JSAPI_PAYMENT 期待改为 INITIAL_BILLING；保留后续事件唯一性和无 B4 写入断言。
-- [ ] 完整执行 [B3 计划 Task3S](./2026-09-06-stage1-b3-contract-archive-validation-plan.md) 的六文件 unit、干净 SHA、唯一 fresh、custody/readback 和独立审查；不缩减原步骤。
+- [x] 向原 B3 执行 owner 核对是否已有未整合的唯一 Task3S 原件/提交；已有则接收并核对，不重复运行。
+- [x] 若仍是本轮基线，只将 `stage1-contract-archive.integration.spec.ts:758` 的 CUSTOMER_JSAPI_PAYMENT 期待改为 INITIAL_BILLING；保留后续事件唯一性和无 B4 写入断言。
+- [x] 完整执行 [B3 计划 Task3S](./2026-09-06-stage1-b3-contract-archive-validation-plan.md) 的六文件 unit、干净 SHA、唯一 fresh、custody/readback 和独立审查；不缩减原步骤。
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run --project unit test/esign.spec.ts test/fadada-archive.spec.ts test/subscription-journey-esign.spec.ts test/lease-activation.spec.ts test/subscription-journey-state-machine.spec.ts test/subscription-journey-payment.spec.ts
@@ -224,6 +224,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.stage1-contract-archi
 ```
 
 **出口：** 当前三个 PG case 全部达到后续断言并通过，其余失败/跳过/过滤/取消为 0；两份旧 2/3 失败永久保留。
+
+2026-09-25：任务 4/F5 的离线 16/16 与独立代码审查已完成（`c99a2ce9`），本 Runbook 与索引已前向对齐，未运行真实预检。任务 5/B3 的原 Task3S 已完整执行，六文件 171/171、唯一 fresh 3/3、custody/readback/退役及独立审查通过，见[实际记录](../../acceptance/2026-09-07-stage1-b3-contract-archive-transition-validation.md)。历史失败与真实渠道边界不变。
 
 ## 4. 第二批：补齐业务事实证据
 

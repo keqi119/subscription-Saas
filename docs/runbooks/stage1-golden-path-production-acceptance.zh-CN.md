@@ -107,7 +107,7 @@ pnpm fadada:upload-signurl:preflight
 
 `pnpm stage1:golden-path:preflight` 只检查 HTTPS/fail-closed 配置并以 GET 读取 API health，不能证明 Staging 数据库、队列、对象存储或 callback 唯一消费者隔离；这些事实仍须按第 2 节由独立配置/资源/路由读回证明。
 
-**现有实现差异，尚未实施对齐：** `scripts/stage1-golden-path-production-preflight.mjs:155-164` 仍无条件要求正整数退款额度，并拒绝退款上限高于付款上限。这与“退款独立、非主线前置”的当前文档口径不一致；本次没有修改脚本/测试，也没有运行总预检。按新范围使用该总预检之前，必须单独批准并完成这处限域实现对齐；不得伪填退款额度、忽略实际 blocker 或把本文当作脚本门禁已改。此项是既有实现待对齐，不是退款验证/财务收尾阻断主线。通知与其他安全检查保持原门禁。
+**2026-09-25 实现前向对齐：** 已按获批审计计划任务 4 修复 `scripts/stage1-golden-path-production-preflight.mjs`（`c99a2ce9`），移除主线退款额度必填及退款上限不得超过付款上限的限制。离线矩阵 16/16 通过并经独立审查，详见[实际修复记录](../acceptance/2026-09-25-stage1-offline-fixes.md)。付款额度、专用资产、payer、真实渠道、通知和禁止代扣门禁保持。未运行真实总预检；候选环境仍须执行并保存自己的实际结果，不得伪填配置或忽略 blocker。
 
 两个法大大 `preflight` alias 均在 provider transport 前返回，不创建客户、合同、文件或链接。它们的 CLI 输出是文本：只有看到 `preflight=passed` 且没有 `blockers=` 才可认为内部 `preflight.ok` 通过；preflight 模式的顶层 `ok=true` 或进程退出码 `0` 单独都不代表通过。任何 blocker 都必须先处理并重新审批受影响操作，禁止通过改脚本、切换 mock/sandbox 或扩大 allowlist 绕过。
 
@@ -115,7 +115,7 @@ pnpm fadada:upload-signurl:preflight
 
 完成候选身份、migration、部署、资源隔离、配置复核，以及对应外部动作各自批准后，才可按以下顺序进入验收窗口；每一步设置变化也须单独批准并记录 readback：
 
-真实付款按既有正常风控、押金及账单事实，并取得绑定精确应付对象、测试 payer、整数分金额和窗口的独立付款批准；不以前述退款路线可行性、免押或仅租金限制作为主线付款前提。将来启动退款时，再按该路线核实实际原单、样本资格并独立批准。总预检的 `NOTIFICATION_WECHAT_ENABLED=true` 仍是硬门禁；退款独立或退款 notify 的窄范围 N/A 均不能豁免，通知未独立批准时仍 `STOP`。总预检退款额度依赖的未实施差异按本节单独处理，不绕过实际结果。
+真实付款按既有正常风控、押金及账单事实，并取得绑定精确应付对象、测试 payer、整数分金额和窗口的独立付款批准；不以前述退款路线可行性、免押或仅租金限制作为主线付款前提。将来启动退款时，再按该路线核实实际原单、样本资格并独立批准。总预检的 `NOTIFICATION_WECHAT_ENABLED=true` 仍是硬门禁；退款独立或退款 notify 的窄范围 N/A 均不能豁免，通知未独立批准时仍 `STOP`。退款额度依赖已按本节记录移除，其他实际预检结果仍须逐项满足。
 
 1. 设置精确 allowlist；
 2. 设置 `SUBSCRIPTION_JOURNEY_ENABLED=true`；

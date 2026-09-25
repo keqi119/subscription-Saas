@@ -327,7 +327,7 @@ export class SubscriptionReturnGovernanceService {
           attestationMode: input.attestationMode,
           attestationSnapshot: attestationSnapshot
             ? (attestationSnapshot as Prisma.InputJsonValue)
-            : Prisma.JsonNull,
+            : Prisma.DbNull,
           capturedAt: input.capturedAt,
           capturedBy: actorId,
           closureCaseId: closureCase.id,

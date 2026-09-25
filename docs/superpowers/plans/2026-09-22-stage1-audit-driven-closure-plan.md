@@ -142,6 +142,14 @@ pnpm --filter @subscription-saas/api exec vitest run --project unit test/portal-
 
 **出口：** 合法到账只有一笔，错误通知不造成终态回退或账单/支付单矛盾。
 
+#### F3 限域实施说明（2026-09-25）
+
+- 已读现有回调与 Finance 权威事务。错误金额分支无条件写 FAILED；若错误先提交，现有 Payment/Finance 对 FAILED 的拒绝也会阻挡后来的正确付款。单纯增加 PAID CAS 不能满足两种到达顺序。
+- 生产范围仍仅 `payment-order.service.ts`：金额校验移到已付款幂等短路之前；金额错误总是记录 callback 错误并拒绝，不把错误 callback 标为 handled。PaymentOrder 仅对本次读取的非 PAID 状态条件写错误诊断，不由不匹配的金额决定支付单失败；保留原状态使后续合法回调仍可进入真实 Finance 事务。已 PAID 时只保留错误 callback 记录，不覆盖付款事实或错误快照。
+- 这是当前已批准任务 2 的生产修复，覆盖原 B5 仅测试计划中“金额错误应为 FAILED”的旧预期；保留原 B5 文档作历史，不改写它来伪称原 tests-only 批准允许生产修改。退款、代扣、Finance 账务规则、合法 CLOSED 补回调和供应商协议均不改。
+- 测试：沿原 B5 fixture/受控 billing suite 增加 `payment-authority.integration.spec.ts`，只有 manifest 对应 files 变动。真实 PaymentOrderService → FinanceService → 审计/账单/核销，provider 使用合成边界。旧 PENDING 读取暂停后让合法付款先提交再放行错误回调；反向顺序、已 PAID 后错误金额、正常并发重复、非法验证、非成功事件、CLOSED 合法到账一并覆盖。
+- unit 先记录 RED，真实 fresh 先保存反例与 migrate/status/diff 后才写生产修复。B5 当前准备基线已在干净 checkout 执行 shared build、Prisma generate、三文件 unit 36/36。后续沿原 B5 精确 preflight/函数生命周期保管结果，最终 Task7 仍需正向账单维护及两套同 source 门禁。
+
 ### 任务 3：修复非法短帧头，完成 R2 之前的纯契约回归
 
 - [ ] 在现有 evidence test 写入下列回归；当前 LF 输入应出现 RED，真正未完成 prefix 仍应合法。

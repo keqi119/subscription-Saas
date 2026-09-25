@@ -580,6 +580,43 @@ describe("Stage 1 subscription Journey failure recovery", () => {
       ack.mockRestore();
     }
   });
+
+  it("B4 reclaims an actually expired activation lease after business commit without an ACK", async () => {
+    const h = await prepareActivation(prisma);
+    const [claimed] = await prisma.$transaction((tx) => h.repository.claimJobs(tx, 1, 1_000));
+    expect(claimed?.id).toBe(h.jobId);
+    await h.service.activateSubscriptionJob(claimed!);
+    const activated = await activationTruth(prisma, h);
+    expectActivated(activated);
+    // Model a process loss after the committed business call: deliberately no
+    // ACK/reschedule. Observe real lease expiry without rewriting job clocks.
+    let expired = false;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const rows = await prisma.$queryRaw<Array<{ expired: boolean }>>(Prisma.sql`
+        SELECT "status" = 'PROCESSING' AND "lease_expires_at" <= clock_timestamp() AS "expired"
+        FROM "subscription_journey_job" WHERE "id" = ${h.jobId}
+      `);
+      if (rows[0]?.expired) {
+        expired = true;
+        break;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(expired).toBe(true);
+    await h.worker.runOnce();
+    expect(
+      await prisma.subscriptionJourneyJob.findMany({ where: { journeyId: h.journeyId } })
+    ).toEqual([
+      expect.objectContaining({
+        id: h.jobId,
+        status: "COMPLETED",
+        completedAt: expect.any(Date),
+        leaseToken: null
+      })
+    ]);
+    expect(await activationTruth(prisma, h)).toEqual(activated);
+  });
 });
 
 async function createFixture(

@@ -1260,6 +1260,35 @@ describe("application self-service review APIs", () => {
     expect(harness.state.application.vehicleReviewStatus).toBe(OrderReviewStatus.PENDING);
   });
 
+  it.each([ApplicationStatus.CANCELLED, ApplicationStatus.REJECTED])(
+    "direct order creation rechecks %s application state inside the transaction",
+    async (status) => {
+      const harness = createApplicationReviewHarness({
+        application: {
+          ...readyToCreateOrderApplication(),
+          applicationSource: ApplicationSource.SALES_ASSISTED
+        },
+        vehicle: { status: VehicleStatus.AVAILABLE }
+      });
+      const transaction = harness.prisma.$transaction.getMockImplementation()!;
+      harness.prisma.$transaction.mockImplementationOnce(async (callback) => {
+        harness.state.application = { ...harness.state.application, status };
+        return transaction(callback);
+      });
+
+      await expect(
+        harness.service.createOrderFromApplication(
+          harness.application.id,
+          harness.user,
+          harness.context
+        )
+      ).rejects.toThrow("当前进件状态不允许生成订单。");
+      expect(harness.tx.subscriptionOrder.create).not.toHaveBeenCalled();
+      expect(harness.tx.subscriptionQuote.create).not.toHaveBeenCalled();
+      expect(harness.state.vehicleStatus).toBe(VehicleStatus.AVAILABLE);
+    }
+  );
+
   it("creates an official quote and order, then locks the vehicle as reserved", async () => {
     const harness = createApplicationReviewHarness({
       application: readyToCreateOrderApplication(),

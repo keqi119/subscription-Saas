@@ -994,6 +994,14 @@ export class CustomerService {
     }
 
     const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+      await lockJourneyApplication(tx, id);
+      const before = await this.findApplicationOrThrow(id, tx);
+      ensureCanAccessApplication(before, user);
+      assertApplicationCanCreateOrder(before);
+      const finalDepositAmount = before.finalDepositAmount;
+      if (finalDepositAmount === null) {
+        throw new BadRequestException("押金确认后才可以生成订单。");
+      }
       const details = await loadApplicationFinalPlanDetails(tx, before);
       await lockVehicleAvailabilityAuthorities(tx, [details.vehicle.id]);
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: details.vehicle.id } });
@@ -2874,6 +2882,13 @@ export class CustomerService {
     const comment = normalizeRequiredText(dto.comment ?? dto.reason, "comment");
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockJourneyApplication(tx, id);
+      const before = await this.findApplicationOrThrow(id, tx);
+      ensureCanAccessApplication(before, user);
+      assertApplicationHasNoOrder(before);
+      if (before.status === ApplicationStatus.CANCELLED || before.status === ApplicationStatus.REJECTED) {
+        throw new BadRequestException("当前进件状态不允许取消。");
+      }
       const vehicleRelease = await releaseApplicationSoftReservedVehicle(
         tx,
         before,
@@ -2910,10 +2925,10 @@ export class CustomerService {
         reason: comment
       });
 
-      return { application, vehicleRelease };
+      return { application, before, vehicleRelease };
     });
 
-    await this.auditApplicationChange(AuditAction.UPDATE, before, result.application, user, context);
+    await this.auditApplicationChange(AuditAction.UPDATE, result.before, result.application, user, context);
     if (result.vehicleRelease) {
       await this.auditService.write({
         action: AuditAction.UPDATE,
@@ -2945,6 +2960,11 @@ export class CustomerService {
     const comment = normalizeRequiredText(dto.comment ?? dto.reason ?? dto.remark, "comment");
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockJourneyApplication(tx, id);
+      const before = await this.findApplicationOrThrow(id, tx);
+      ensureCanAccessApplication(before, user);
+      ensureApplicationReviewWorkflowAllowed(before);
+      assertApplicationHasNoOrder(before);
       const vehicleRelease = await releaseApplicationSoftReservedVehicle(
         tx,
         before,
@@ -2991,10 +3011,10 @@ export class CustomerService {
         reason: comment
       });
 
-      return { application, vehicleRelease };
+      return { application, before, vehicleRelease };
     });
 
-    await this.auditApplicationChange(AuditAction.REJECT, before, result.application, user, context);
+    await this.auditApplicationChange(AuditAction.REJECT, result.before, result.application, user, context);
     if (result.vehicleRelease) {
       await this.auditService.write({
         action: AuditAction.UPDATE,
@@ -3038,8 +3058,8 @@ export class CustomerService {
     return customer;
   }
 
-  private async findApplicationOrThrow(id: string) {
-    const application = await this.prisma.application.findUnique({
+  private async findApplicationOrThrow(id: string, client: Tx = this.prisma) {
+    const application = await client.application.findUnique({
       include: applicationInclude,
       where: { id }
     });
@@ -3194,6 +3214,13 @@ async function lockVehicleAvailabilityAuthorities(
 }
 
 async function lockJourneyApplication(tx: Tx, applicationId: string) {
+  // Match bootstrap's Journey -> Application -> Vehicle authority lock order.
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id"
+    FROM "subscription_journey"
+    WHERE "application_id" = ${applicationId}::uuid
+    FOR UPDATE
+  `);
   const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT "id"
     FROM "application"

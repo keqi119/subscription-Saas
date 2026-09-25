@@ -3205,7 +3205,7 @@ export class SubscriptionReturnGovernanceService {
   ) {
     await this.assertThreeStageWriteAllowed(closureCaseId);
     return this.prisma.$transaction(async (tx) => {
-      requiredText(input.idempotencyKey, "idempotencyKey", 180);
+      const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey", 180);
       await tx.$queryRaw(
         Prisma.sql`SELECT "id" FROM "subscription_closure_case" WHERE "id" = ${closureCaseId}::uuid FOR UPDATE`
       );
@@ -3326,7 +3326,26 @@ export class SubscriptionReturnGovernanceService {
         closureCase.finalDisposition === "TERMINATE"
           ? ContractStatus.TERMINATED
           : ContractStatus.COMPLETED;
-      await Promise.all([
+      const [previousOrder, previousContract] = await Promise.all([
+        tx.subscriptionOrder.findUniqueOrThrow({
+          select: { id: true, orderStatus: true },
+          where: { id: closureCase.orderId }
+        }),
+        tx.contract.findUniqueOrThrow({
+          select: { id: true, status: true },
+          where: { id: closureCase.contractId }
+        })
+      ]);
+      const beforeSnapshot = {
+        closureCaseId: closureCase.id,
+        closureStatus: closureCase.status,
+        contractId: previousContract.id,
+        contractStatus: previousContract.status,
+        financialStatus: closureCase.financialStatus,
+        orderId: previousOrder.id,
+        orderStatus: previousOrder.orderStatus
+      };
+      const [updatedOrder, updatedContract, updatedClosure] = await Promise.all([
         tx.subscriptionOrder.update({
           data: { orderStatus, updatedBy: actorId },
           where: { id: closureCase.orderId }
@@ -3347,6 +3366,27 @@ export class SubscriptionReturnGovernanceService {
           where: { id: closureCase.id }
         })
       ]);
+      await tx.auditLog.create({
+        data: {
+          action: AuditAction.UPDATE,
+          afterSnapshot: {
+            closureCaseId: updatedClosure.id,
+            closureStatus: updatedClosure.status,
+            contractId: updatedContract.id,
+            contractStatus: updatedContract.status,
+            financialStatus: updatedClosure.financialStatus,
+            idempotencyKey,
+            orderId: updatedOrder.id,
+            orderStatus: updatedOrder.orderStatus
+          },
+          beforeSnapshot,
+          createdAt: input.occurredAt,
+          entityId: closureCase.id,
+          entityType: "subscription_closure_case",
+          module: "subscription_closure",
+          operatorId: actorId
+        }
+      });
       return { closureCaseId, financialStatus: financial.financialStatus, replayed: false, status: targetStatus };
     });
   }

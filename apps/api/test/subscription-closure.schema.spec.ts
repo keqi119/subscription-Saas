@@ -1046,6 +1046,24 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
         "subscription_closure_settlement_current_deferred_chk"
       );
 
+      // Operational completion cannot bypass the requirement for a FINALIZED
+      // (or SETTLED) current FINAL plan: the current revision is still PROPOSED.
+      await expectDeferredPgError(
+        client,
+        async () => {
+          await client.query(
+            `UPDATE "subscription_closure_case"
+             SET "status" = 'TERMINATED', "physical_controlled_at" = clock_timestamp(),
+                 "operational_completed_at" = clock_timestamp(), "closed_at" = clock_timestamp(),
+                 "version" = "version" + 1, "updated_by" = $1::uuid,
+                 "updated_at" = clock_timestamp()
+             WHERE "id" = $2::uuid`,
+            [fixture.actorId, fixture.caseId]
+          );
+        },
+        "subscription_closure_terminal_settlement_deferred_chk"
+      );
+
       const finalizedSettlementId = randomUUID();
       await insertSettlementRevision(client, {
         actorId: fixture.actorId,
@@ -1066,6 +1084,47 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
         [finalizedSettlementId, fixture.actorId, fixture.caseId]
       );
       await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+      await client.query("SET CONSTRAINTS ALL DEFERRED");
+
+      // A legacy settlement clock alone must not admit an unsettled plan.
+      await expectDeferredPgError(
+        client,
+        async () => {
+          await client.query(
+            `UPDATE "subscription_closure_case"
+             SET "status" = 'TERMINATED', "physical_controlled_at" = clock_timestamp(),
+                 "settled_at" = clock_timestamp(), "closed_at" = clock_timestamp(),
+                 "version" = "version" + 1, "updated_by" = $1::uuid,
+                 "updated_at" = clock_timestamp()
+             WHERE "id" = $2::uuid`,
+            [fixture.actorId, fixture.caseId]
+          );
+        },
+        "subscription_closure_terminal_settlement_deferred_chk"
+      );
+
+      await client.query("SAVEPOINT operational_terminal");
+      await client.query(
+        `UPDATE "subscription_closure_case"
+         SET "status" = 'TERMINATED', "physical_controlled_at" = clock_timestamp(),
+             "operational_completed_at" = clock_timestamp(), "closed_at" = clock_timestamp(),
+             "version" = "version" + 1, "updated_by" = $1::uuid,
+             "updated_at" = clock_timestamp()
+         WHERE "id" = $2::uuid`,
+        [fixture.actorId, fixture.caseId]
+      );
+      await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+      expect(
+        (
+          await client.query(
+            `SELECT "status", "settled_at", "operational_completed_at" IS NOT NULL AS "operational"
+         FROM "subscription_closure_case" WHERE "id" = $1::uuid`,
+            [fixture.caseId]
+          )
+        ).rows
+      ).toEqual([{ status: "TERMINATED", settled_at: null, operational: true }]);
+      await client.query("ROLLBACK TO SAVEPOINT operational_terminal");
+      await client.query("RELEASE SAVEPOINT operational_terminal");
       await client.query("SET CONSTRAINTS ALL DEFERRED");
 
       const settledSettlementId = randomUUID();

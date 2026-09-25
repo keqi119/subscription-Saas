@@ -282,6 +282,7 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 **出口：** B4/B6 有当前界面实际入口证据，F6 关闭，样本准备可以绑定完整事实。
 
 #### F6 关单审计限域实施（2026-09-25）
+- 第六轮 source `c5b8ef21` 全量 88 执行、82 通过：原 80 项全过，新增两项业务拒绝通过；正常完成与回滚后重试明确触发 `terminal closure requires the case current FINAL settlement revision at SETTLED stage`，即旧延迟提交约束尚未兼容运营完成。另以独立前向迁移修正该函数：仍要求本案、最新指针、FINAL 类型，仅增加“FINALIZED 且本案 operational_completed_at 已记录”的替代；旧未记录运营完成的路径仍强制 SETTLED。补 schema 级 PROPOSED 即使有运营时间仍拒绝、FINALIZED 只有结清时间仍拒绝、FINALIZED 加运营时间可行及原 SETTLED 兼容断言；不回写结清、余额或历史迁移。缺两类时间的负例须先满足 version 递增规则，避免被其他约束提前截住。上一轮旧 Task9 异常未复现，原因仍未知，不抹去历史失败。
 
 - B6 完成入口的数据库衔接修正另立单元：第五轮 source `c976d863` 已通过两项业务拒绝断言，正常完成、清单重放后完成及审计回滚切片进入真实状态写入后出现数据库 DriverAdapterError（原件摘要截断，未直接确认具体约束）；静态定位旧 `subscription_closure_case_terminal_shape_chk` 强制 settled_at 非空，而现行入口只写 operational_completed_at。按已批准的 2026-08-26 三阶段规格，运营完成必须可保留真实未结债权。新增一个前向迁移，只将该终态 CHECK 的“结清时间存在”改为“结清或运营完成时间存在”，保留终态与 final_disposition、closed_at 及物理控制全部旧约束；不改旧迁移、不补 settled_at、不改结算修订/应收余额。新 PG 覆盖未归口拒绝、实际 COLLECTION_PENDING 归口后运营完成且余额保持、没有两类完成时间的终态仍被拒绝，并验证旧结清路径兼容。迁移只在 Launcher 新建本地目标验证；最终除原三套外追加现有 closure repository/schema 门禁，线上应用仍属于后续发布环节。
 

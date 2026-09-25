@@ -7719,7 +7719,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     expect(before.closure).toMatchObject({ operationalCompletedAt: null, settledAt: null });
     await expect(
       prisma.subscriptionClosureCase.update({
-        data: { closedAt: h.occurredAt, status: "COMPLETED" },
+        data: { closedAt: h.occurredAt, status: "COMPLETED", version: { increment: 1 } },
         where: { id: h.scenario.closureCase.id }
       })
     ).rejects.toThrow("subscription_closure_case_terminal_shape_chk");

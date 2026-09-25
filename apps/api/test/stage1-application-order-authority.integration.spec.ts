@@ -308,6 +308,10 @@ describe("Stage 1 application and order authority", () => {
 
   async function bootstrap(fixture: Awaited<ReturnType<typeof confirmedApplication>>) {
     await expect(journey.createOrderAndContractJob(fixture.job)).resolves.toMatchObject({ action: "ORDER_AND_CONTRACT_CREATED" });
+    await dispatchBootstrapCompletion(fixture);
+  }
+
+  async function dispatchBootstrapCompletion(fixture: Awaited<ReturnType<typeof confirmedApplication>>) {
     // Materialize the successor step through the real signal consumer, without calling the provider.
     await waitUntilQueueRecordDue("outbox", `${fixture.job.sourceKey}:completed:outbox`);
     await prisma.$transaction(async (tx) => {
@@ -550,6 +554,268 @@ describe("Stage 1 application and order authority", () => {
     await expect(journey.createOrderAndContractJob(fixture.job)).resolves.toMatchObject({
       action: "ORDER_AND_CONTRACT_ALREADY_COMPLETED"
     });
+    await expectOrdered(fixture);
+  });
+
+  async function workflowFacts(fixture: Awaited<ReturnType<typeof confirmedApplication>>) {
+    const where = { journeyId: fixture.journeyId };
+    const [jobs, events, outbox, steps, tasks, actions] = await Promise.all([
+      prisma.subscriptionJourneyJob.findMany({ where, orderBy: { id: "asc" } }),
+      prisma.subscriptionJourneyEvent.findMany({ where, orderBy: { sequence: "asc" } }),
+      prisma.subscriptionJourneyOutbox.findMany({ where, orderBy: { id: "asc" } }),
+      prisma.subscriptionJourneyStep.findMany({ where, orderBy: { id: "asc" } }),
+      prisma.subscriptionJourneyManualTask.findMany({ where, orderBy: { id: "asc" } }),
+      prisma.applicationActionLog.findMany({ where: { applicationId: fixture.applicationId }, orderBy: { id: "asc" } })
+    ]);
+    return { jobs, events, outbox, steps, tasks, actions };
+  }
+
+  function journeyService(client: PrismaService, orderService = new OrderService(audit, prisma)) {
+    return new SubscriptionJourneyService(
+      repository, client, customerService(client), orderService,
+      new OrderEntitlementService(), undefined, undefined, undefined, undefined, undefined, audit
+    );
+  }
+
+  function transactionProbe(pausedWrite?: { model: string; operation: string }) {
+    const entered = deferred();
+    const written = deferred();
+    const release = deferred();
+    let pid = 0;
+    const client = instrumentTransactions(async (tx) => {
+      const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      pid = backend!.pid;
+      entered.resolve();
+      if (!pausedWrite) return tx;
+      return new Proxy(tx, {
+        get(target, model) {
+          const delegate = Reflect.get(target, model, target);
+          if (model !== pausedWrite.model) return delegate;
+          return new Proxy(delegate, {
+            get(record, operation) {
+              const method = Reflect.get(record, operation, record);
+              if (operation !== pausedWrite.operation) return method;
+              return async (...args: unknown[]) => {
+                const result = await Reflect.apply(method, record, args);
+                written.resolve();
+                await release.promise;
+                return result;
+              };
+            }
+          });
+        }
+      });
+    });
+    return { client, entered, written, release, pid: () => pid };
+  }
+
+  async function expectDatabaseBlocking(blocker: number, waiter: number) {
+    const deadline = performance.now() + 5000;
+    while (performance.now() < deadline) {
+      const [row] = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
+        SELECT ${blocker}::integer = ANY(pg_blocking_pids(${waiter}::integer)) AS blocked
+      `;
+      if (row?.blocked) return;
+    }
+    throw new Error("The expected real PostgreSQL lock wait was not observed");
+  }
+
+  async function reachBarrier(signal: Promise<void>, operation: Promise<unknown>) {
+    await Promise.race([
+      signal,
+      operation.then(() => { throw new Error("Operation ended before its expected barrier"); })
+    ]);
+  }
+
+  it.each(["old revision", "wrong hash"])("rejects %s without changing published confirmation facts", async (mismatch) => {
+    const fixture = await confirmedApplication();
+    await changeCommercialFact(fixture, "mileage price");
+    await expect(journey.createOrderAndContractJob(fixture.job))
+      .resolves.toMatchObject({ action: "ORDER_AND_CONTRACT_WAITING_REQUOTE" });
+    const waiting = await facts(fixture);
+    await journey.decideFinalPlan(fixture.journeyId, {
+      version: waiting.current.version,
+      finalPeriodMonths: 6,
+      finalSubscriptionPlanId: fixture.planId,
+      finalVehicleId: fixture.vehicleId
+    }, fixture.actor, context);
+    await dispatchPendingSignals(fixture.journeyId);
+    const published = await facts(fixture);
+    const workflow = await workflowFacts(fixture);
+    expect(published.application.finalPlanRevision).toBe(2);
+    await expect(fixture.confirm(
+      prisma,
+      mismatch === "old revision" ? 1 : 2,
+      mismatch === "old revision" ? published.application.finalPlanCommercialHash! : `sha256:${"0".repeat(64)}`
+    )).rejects.toMatchObject({ code: "FINAL_PLAN_REVISION_STALE" });
+    expect(await facts(fixture)).toEqual(published);
+    expect(await workflowFacts(fixture)).toEqual(workflow);
+    await fixture.confirm(prisma, 2, published.application.finalPlanCommercialHash!);
+    expect((await facts(fixture)).application.customerConfirmedPlanRevision).toBe(2);
+  });
+
+  it("commits only one of two concurrent confirmations of the same Application", async () => {
+    const fixture = await confirmedApplication(false);
+    const firstProbe = transactionProbe({ model: "application", operation: "updateMany" });
+    const secondProbe = transactionProbe();
+    const first = fixture.confirm(firstProbe.client);
+    let second: Promise<unknown> | undefined;
+    try {
+      await reachBarrier(firstProbe.written.promise, first);
+      second = fixture.confirm(secondProbe.client).catch((error: Error) => error);
+      await reachBarrier(secondProbe.entered.promise, second);
+      await expectDatabaseBlocking(firstProbe.pid(), secondProbe.pid());
+    } finally {
+      firstProbe.release.resolve();
+      await Promise.allSettled(second ? [first, second] : [first]);
+    }
+    await first;
+    expect(await second).toMatchObject({ message: "最终方案状态已变化，请刷新后重试。" });
+    const confirmed = await facts(fixture);
+    expect(confirmed.application).toMatchObject({ planConfirmStatus: "CONFIRMED", customerConfirmedPlanRevision: 1 });
+    expect(confirmed.vehicle.status).toBe("REVIEW_RESERVED");
+    expect(confirmed.orders).toHaveLength(0);
+    expect(confirmed.contracts).toHaveLength(0);
+    expect(confirmed.quotes).toHaveLength(0);
+    const workflow = await workflowFacts(fixture);
+    expect(workflow.actions.filter(({ comment }) => comment === "客户确认最终方案")).toHaveLength(1);
+    expect(workflow.outbox.filter(({ eventKey }) => eventKey.startsWith(`application:${fixture.applicationId}:plan-confirmed:1:`))).toHaveLength(1);
+    await bootstrap(fixture);
+    await expectOrdered(fixture);
+  });
+
+  it("serializes duplicate CREATE_ORDER_AND_CONTRACT deliveries without duplicate facts", async () => {
+    const fixture = await confirmedApplication();
+    const firstProbe = transactionProbe({ model: "contract", operation: "create" });
+    const secondProbe = transactionProbe();
+    const first = journeyService(firstProbe.client).createOrderAndContractJob(fixture.job);
+    let second: Promise<unknown> | undefined;
+    try {
+      await reachBarrier(firstProbe.written.promise, first);
+      second = journeyService(secondProbe.client).createOrderAndContractJob(fixture.job);
+      await reachBarrier(secondProbe.entered.promise, second);
+      await expectDatabaseBlocking(firstProbe.pid(), secondProbe.pid());
+    } finally {
+      firstProbe.release.resolve();
+      await Promise.allSettled(second ? [first, second] : [first]);
+    }
+    const result = await first;
+    expect(await second).toMatchObject({
+      applicationId: fixture.applicationId,
+      orderId: (result as { orderId: string }).orderId
+    });
+    await prisma.$transaction((tx) => repository.completeJob(tx, fixture.job.id, fixture.job.leaseToken, result));
+    const workflow = await workflowFacts(fixture);
+    expect(workflow.events.filter(({ eventKey }) => eventKey === `${fixture.job.sourceKey}:completed`)).toHaveLength(1);
+    expect(workflow.outbox.filter(({ eventKey }) => eventKey === `${fixture.job.sourceKey}:completed:outbox`)).toHaveLength(1);
+    expect(workflow.jobs.filter(({ jobType }) => jobType === "CREATE_ORDER_AND_CONTRACT")).toHaveLength(1);
+    expect(workflow.jobs.find(({ id }) => id === fixture.job.id)).toMatchObject({ status: "COMPLETED", attemptCount: 0 });
+    await dispatchBootstrapCompletion(fixture);
+    await expectOrdered(fixture);
+  });
+
+  it("reserves a shared vehicle for only one of two real final-plan publications", async () => {
+    const firstFixture = await confirmedApplication(true, ApplicationSource.SALES_ASSISTED);
+    const secondFixture = await confirmedApplication(true, ApplicationSource.SALES_ASSISTED);
+    const sharedVehicleId = randomUUID();
+    await prisma.$transaction(async (tx) => {
+      const { modelDefinitionId } = await insertRuntimeVehicle(tx, sharedVehicleId, "authority-shared");
+      await tx.vehicle.update({ where: { id: sharedVehicleId }, data: { currentSalePriceAmount: 1000000n } });
+      for (const fixture of [firstFixture, secondFixture]) {
+        const plan = await tx.subscriptionPlan.findUniqueOrThrow({ where: { id: fixture.planId } });
+        await tx.vehiclePackage.update({
+          where: { id: plan.vehiclePackageId },
+          data: { modelMembers: { create: { modelDefinitionId } } }
+        });
+      }
+    });
+    // Reach the existing manual decision through real commercial-drift recovery.
+    for (const fixture of [firstFixture, secondFixture]) {
+      await changeCommercialFact(fixture, "mileage price");
+      const result = await journey.createOrderAndContractJob(fixture.job);
+      expect(result).toMatchObject({ action: "ORDER_AND_CONTRACT_WAITING_REQUOTE" });
+      await prisma.$transaction((tx) => repository.completeJob(tx, fixture.job.id, fixture.job.leaseToken, result));
+    }
+    const firstBefore = await facts(firstFixture);
+    const secondBefore = await facts(secondFixture);
+    const secondWorkflow = await workflowFacts(secondFixture);
+    const firstProbe = transactionProbe({ model: "vehicle", operation: "updateMany" });
+    const secondProbe = transactionProbe();
+    const decision = (fixture: typeof firstFixture, version: number) => ({
+      version, finalPeriodMonths: 6,
+      finalSubscriptionPlanId: fixture.planId, finalVehicleId: sharedVehicleId
+    });
+    const first = journeyService(firstProbe.client).decideFinalPlan(
+      firstFixture.journeyId, decision(firstFixture, firstBefore.current.version), firstFixture.actor, context
+    );
+    let second: Promise<unknown> | undefined;
+    try {
+      await reachBarrier(firstProbe.written.promise, first);
+      second = journeyService(secondProbe.client).decideFinalPlan(
+        secondFixture.journeyId, decision(secondFixture, secondBefore.current.version), secondFixture.actor, context
+      ).catch((error: Error) => error);
+      await reachBarrier(secondProbe.entered.promise, second);
+      await expectDatabaseBlocking(firstProbe.pid(), secondProbe.pid());
+    } finally {
+      firstProbe.release.resolve();
+      await Promise.allSettled(second ? [first, second] : [first]);
+    }
+    await first;
+    expect(await second).toMatchObject({ code: "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE" });
+    const winner = await facts(firstFixture);
+    expect(winner.application).toMatchObject({
+      finalVehicleId: sharedVehicleId, softReservedVehicleId: sharedVehicleId,
+      finalPlanRevision: 2, customerConfirmedPlanRevision: null, planConfirmStatus: "PENDING"
+    });
+    expect(winner.application.finalPlanCommercialHash).toBe(commercialPlanHash(winner.application.finalPlanSnapshot));
+    expect(winner.vehicle.status).toBe("AVAILABLE");
+    expect(winner.orders).toHaveLength(0);
+    expect(winner.quotes).toHaveLength(0);
+    expect(winner.contracts).toHaveLength(0);
+    expect(winner.accounts).toHaveLength(0);
+    expect(winner.grants).toHaveLength(0);
+    expect(await facts(secondFixture)).toEqual(secondBefore);
+    expect(await workflowFacts(secondFixture)).toEqual(secondWorkflow);
+    expect((await prisma.vehicle.findUniqueOrThrow({ where: { id: sharedVehicleId } })).status).toBe("REVIEW_RESERVED");
+    expect(await prisma.application.count({ where: { softReservedVehicleId: sharedVehicleId, deletedAt: null } })).toBe(1);
+    const winnerWorkflow = await workflowFacts(firstFixture);
+    expect(winnerWorkflow.tasks.filter(({ status }) => status === "OPEN")).toHaveLength(0);
+    expect(secondWorkflow.tasks.filter(({ status }) => status === "OPEN")).toHaveLength(1);
+    expect(winnerWorkflow.events.filter(({ eventKey }) => eventKey.includes("FINAL_PLAN_DECISION:revision:2:"))).toHaveLength(1);
+    expect(winnerWorkflow.jobs.filter(({ jobType }) => jobType === "CREATE_ORDER_AND_CONTRACT")).toHaveLength(1);
+    // The old revision's completed job must not use the winner's new, unconfirmed reservation.
+    await expect(journey.createOrderAndContractJob(firstFixture.job))
+      .resolves.toMatchObject({ action: "ORDER_AND_CONTRACT_WAITING_REQUOTE", finalPlanRevision: 1 });
+    expect(await facts(firstFixture)).toEqual(winner);
+  });
+
+  it("rolls back real contract writes and all earlier bootstrap facts on a later failure, then retries", async () => {
+    const fixture = await confirmedApplication();
+    const before = await facts(fixture);
+    const workflow = await workflowFacts(fixture);
+    const failure = new Error("Synthetic failure after real contract persistence");
+    const realOrderService = new OrderService(audit, prisma);
+    let reachedPersistedContract = false;
+    const failingOrderService = new Proxy(realOrderService, {
+      get(target, property) {
+        if (property !== "createJourneyContractInTransaction") return Reflect.get(target, property, target);
+        return async (...args: Parameters<typeof target.createJourneyContractInTransaction>) => {
+          const contract = await target.createJourneyContractInTransaction(...args);
+          const tx = args[0];
+          expect(await tx.contract.count({ where: { id: contract.id } })).toBe(1);
+          expect(await tx.subscriptionOrder.count({ where: { applicationId: fixture.applicationId } })).toBe(1);
+          expect(await tx.subscriptionQuote.count({ where: { applicationId: fixture.applicationId } })).toBe(1);
+          expect((await tx.vehicle.findUniqueOrThrow({ where: { id: fixture.vehicleId } })).status).toBe("RESERVED");
+          reachedPersistedContract = true;
+          throw failure;
+        };
+      }
+    });
+    await expect(journeyService(prisma, failingOrderService).createOrderAndContractJob(fixture.job)).rejects.toBe(failure);
+    expect(reachedPersistedContract).toBe(true);
+    expect(await facts(fixture)).toEqual(before);
+    expect(await workflowFacts(fixture)).toEqual(workflow);
+    await bootstrap(fixture);
     await expectOrdered(fixture);
   });
 

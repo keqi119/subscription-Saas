@@ -52,6 +52,7 @@ import { SubscriptionClosureRepository } from "../src/subscription-closure/subsc
 import { SubscriptionClosureProjectionService } from "../src/subscription-closure/subscription-closure.projection";
 import { SubscriptionClosureSettlementResolver } from "../src/subscription-closure/subscription-closure.settlement-resolver";
 import { SubscriptionClosureService } from "../src/subscription-closure/subscription-closure.service";
+import { SubscriptionReturnGovernanceService } from "../src/subscription-closure/subscription-return-governance.service";
 import { canonicalSubscriptionClosureJson } from "../src/subscription-closure/subscription-closure.domain";
 import { VehicleMileageRepository } from "../src/vehicle-mileage/vehicle-mileage.repository";
 import { VehicleMileageService } from "../src/vehicle-mileage/vehicle-mileage.service";
@@ -92,6 +93,179 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
   afterAll(async () => {
     await prisma.onModuleDestroy();
   });
+
+  it("B6 completes a paid normal expiry through the current operational entry and replays without writes", async () => {
+    const h = await prepareGovernedCompletion(prisma);
+    const before = await completionTruth(prisma, h.scenario.fixture);
+    await expect(h.complete()).resolves.toMatchObject({
+      financialStatus: "SETTLED",
+      replayed: false,
+      status: "COMPLETED"
+    });
+    const after = await completionTruth(prisma, h.scenario.fixture);
+    expect(after.closure).toMatchObject({
+      closureType: "NORMAL_EXPIRY",
+      financialStatus: "SETTLED",
+      operationalCompletedAt: h.occurredAt,
+      status: "COMPLETED"
+    });
+    expect(after.order.orderStatus).toBe("COMPLETED");
+    expect(after.contract.status).toBe("COMPLETED");
+    expect(after.vehicle.status).toBe("AVAILABLE");
+    expect(after.lease?.status).toBe("TERMINATED");
+    expect(after.periods).toHaveLength(1);
+    expect(after.periods[0]?.endedAt).toBeInstanceOf(Date);
+    expect(after.bills).toEqual([
+      expect.objectContaining({
+        amount: 100n,
+        billStatus: "PAID",
+        paidAmount: 100n,
+        remainingAmount: 0n
+      })
+    ]);
+    expect(after.payments).toEqual([expect.objectContaining({ paymentAmount: 100n })]);
+    expect(after.writeOffs).toEqual([expect.objectContaining({ writeOffAmount: 100n })]);
+    expect({
+      lease: after.lease,
+      periods: after.periods,
+      bills: after.bills,
+      payments: after.payments,
+      writeOffs: after.writeOffs,
+      vehicle: after.vehicle
+    }).toEqual({
+      lease: before.lease,
+      periods: before.periods,
+      bills: before.bills,
+      payments: before.payments,
+      writeOffs: before.writeOffs,
+      vehicle: before.vehicle
+    });
+    const completionAudits = after.audits.filter(
+      ({ entityType }) => entityType === "subscription_closure_case"
+    );
+    expect(completionAudits).toEqual([
+      expect.objectContaining({
+        action: "UPDATE",
+        beforeSnapshot: {
+          closureCaseId: h.scenario.closureCase.id,
+          closureStatus: before.closure.status,
+          contractId: before.contract.id,
+          contractStatus: before.contract.status,
+          financialStatus: before.closure.financialStatus,
+          orderId: before.order.id,
+          orderStatus: before.order.orderStatus
+        },
+        afterSnapshot: {
+          closureCaseId: h.scenario.closureCase.id,
+          closureStatus: "COMPLETED",
+          contractId: before.contract.id,
+          contractStatus: "COMPLETED",
+          financialStatus: "SETTLED",
+          idempotencyKey: h.input.idempotencyKey,
+          orderId: before.order.id,
+          orderStatus: "COMPLETED"
+        },
+        createdAt: h.occurredAt,
+        entityId: h.scenario.closureCase.id,
+        operatorId: h.scenario.fixture.actorId
+      })
+    ]);
+    await expect(h.complete()).resolves.toMatchObject({ replayed: true, status: "COMPLETED" });
+    await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(after);
+  });
+
+  it.each([
+    [
+      "missing customer acceptance",
+      { accept: false },
+      "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED"
+    ],
+    [
+      "unassigned unpaid receivable",
+      { paid: false },
+      "CLOSURE_OPERATIONAL_FINANCIAL_OWNER_REQUIRED"
+    ]
+  ] as const)("B6 refuses %s without changing any joint facts", async (_name, options, code) => {
+    const h = await prepareGovernedCompletion(prisma, options);
+    const before = await completionTruth(prisma, h.scenario.fixture);
+    await expect(h.complete()).rejects.toMatchObject({ response: { code } });
+    await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(before);
+  });
+
+  it.each(["contract", "auditLog"] as const)(
+    "F6 rolls back real completion after the %s write and permits an exact retry",
+    async (model) => {
+      const h = await prepareGovernedCompletion(prisma);
+      const before = await completionTruth(prisma, h.scenario.fixture);
+      const failure = new Error(`F6_AFTER_${model}_WRITE`);
+      let reached = false;
+      const hooked = new Proxy(prisma, {
+        get(target, property) {
+          if (property !== "$transaction") return Reflect.get(target, property);
+          return (work: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+            target.$transaction(async (tx) => {
+              const hookedTx = new Proxy(tx, {
+                get(transaction, delegate) {
+                  const value = Reflect.get(transaction, delegate);
+                  if (delegate !== model) return value;
+                  return new Proxy(value, {
+                    get(actualDelegate, method) {
+                      const original = Reflect.get(actualDelegate, method);
+                      if (method !== (model === "contract" ? "update" : "create")) return original;
+                      return async (...args: unknown[]) => {
+                        await Reflect.apply(original, actualDelegate, args);
+                        if (model === "auditLog") {
+                          expect(
+                            await tx.auditLog.count({
+                              where: {
+                                entityId: h.scenario.closureCase.id,
+                                entityType: "subscription_closure_case"
+                              }
+                            })
+                          ).toBe(1);
+                          expect(
+                            await tx.subscriptionClosureCase.findUniqueOrThrow({
+                              where: { id: h.scenario.closureCase.id }
+                            })
+                          ).toMatchObject({ status: "COMPLETED" });
+                        } else {
+                          expect(
+                            await tx.contract.findUniqueOrThrow({
+                              where: { id: h.scenario.fixture.contractId }
+                            })
+                          ).toMatchObject({ status: "COMPLETED" });
+                        }
+                        reached = true;
+                        throw failure;
+                      };
+                    }
+                  });
+                }
+              });
+              return work(hookedTx);
+            });
+        }
+      });
+      await expect(
+        completionGovernance(hooked).completeOperations(
+          h.scenario.closureCase.id,
+          h.input,
+          h.scenario.fixture.actorId
+        )
+      ).rejects.toBe(failure);
+      expect(reached).toBe(true);
+      await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(before);
+      await expect(h.complete()).resolves.toMatchObject({ replayed: false, status: "COMPLETED" });
+      await expect(
+        prisma.auditLog.count({
+          where: {
+            entityId: h.scenario.closureCase.id,
+            entityType: "subscription_closure_case"
+          }
+        })
+      ).resolves.toBe(1);
+    }
+  );
 
   it("keeps AuditService persistence timestamps implicit unless an internal caller supplies one", async () => {
     const create = vi.fn(async (input: { data: Record<string, unknown> }) => {
@@ -8365,14 +8539,14 @@ async function createManagedExpiryFixture(prisma: PrismaService) {
 
 async function setupFocusedPhysicalReceipt(
   prisma: PrismaService,
-  options: Readonly<{ early?: boolean; skipManifestSuccessors?: boolean }> = {}
+  options: Readonly<{ early?: boolean; skipManifestSuccessors?: boolean; undamaged?: boolean }> = {}
 ) {
   const fixture = await createManagedExpiryFixture(prisma);
   const checklist = {
     batteryCheckedConfirmed: true,
     chargingEquipmentReturnedConfirmed: true,
     customerItemsClearedConfirmed: true,
-    damageFound: !options.early,
+    damageFound: !options.early && !options.undamaged,
     exteriorCheckedConfirmed: true,
     interiorCheckedConfirmed: true,
     keysReturnedConfirmed: true,
@@ -8512,7 +8686,7 @@ async function setupFocusedPhysicalReceipt(
   const receipt = {
     actorId: fixture.actorId,
     checklist,
-    damages: options.early
+    damages: options.early || options.undamaged
       ? []
       : [
           {
@@ -8544,6 +8718,260 @@ async function setupFocusedPhysicalReceipt(
     signedFileHash,
     signedFileId
   };
+}
+
+function completionGovernance(prisma: PrismaService) {
+  return new SubscriptionReturnGovernanceService(
+    prisma,
+    {} as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    new ConfigService({ SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "true" })
+  );
+}
+
+async function prepareGovernedCompletion(
+  prisma: PrismaService,
+  options: Readonly<{ accept?: boolean; paid?: boolean }> = {}
+) {
+  const base = await setupFocusedPhysicalReceipt(prisma, {
+    skipManifestSuccessors: true,
+    undamaged: true
+  });
+  const { fixture, closureCase } = base;
+  const governance = completionGovernance(prisma);
+  // The mature lease/BASE/open period and signed delivery baseline are fixture
+  // inputs; receipt, delta, inspection, settlement, payment and completion below
+  // use current services. The signing provider/storage remain deterministic.
+  const delivery = await prisma.vehicleDeliveryHandover.create({
+    data: {
+      archiveStatus: "ARCHIVED",
+      archivedAt: new Date("2026-03-03T02:00:00.000Z"),
+      completedAt: new Date("2026-03-03T02:00:00.000Z"),
+      manifestHash: "d".repeat(64),
+      orderId: fixture.orderId,
+      signedDocumentFileId: randomUUID(),
+      signedObjectKey: `b6/${fixture.orderId}/delivery.pdf`,
+      signedPdfHash: "e".repeat(64),
+      stage1ContractId: fixture.contractId,
+      status: "ARCHIVED"
+    }
+  });
+  await prisma.vehicleHandoverWorkOrder.create({
+    data: {
+      accessoryItems: [{ code: "CHARGER", name: "Charger", quantity: 1, state: "NORMAL" }],
+      assignedInternalUserId: fixture.actorId,
+      fieldCompletedAt: new Date("2026-03-03T02:00:00.000Z"),
+      handoverId: delivery.id,
+      handoverMileageKm: 1200,
+      handoverType: "DELIVERY_OUTBOUND",
+      keyState: "NORMAL",
+      orderId: fixture.orderId,
+      primaryKeyCount: 1,
+      registrationDocumentState: "HANDED_OVER",
+      spareKeyCount: 1,
+      status: "OPS_REVIEWED",
+      vehicleConditionConfirmed: true
+    }
+  });
+  const quantities = {
+    ACCESSORIES: 1,
+    BATTERY: 1,
+    CHARGING_EQUIPMENT: 1,
+    CUSTOMER_ITEMS: 0,
+    KEY: 2,
+    MILEAGE: 1200,
+    REGISTRATION_CERTIFICATE: 1,
+    VEHICLE_EXTERIOR: 1,
+    VEHICLE_INTERIOR: 1
+  };
+  await governance.captureChecklist(
+    closureCase.id,
+    {
+      attestationEvidenceIds: [],
+      attestationMode: "CUSTOMER_SIGNED",
+      attestationReason: null,
+      capturedAt: await readTestDatabaseClock(prisma),
+      customerComments: null,
+      idempotencyKey: "b6-checklist",
+      items: Object.entries(quantities).map(([itemCode, quantity]) => ({
+        expectedQuantity: quantity,
+        itemCode,
+        returnedQuantity: quantity,
+        state: "NORMAL" as const
+      })),
+      witnesses: []
+    },
+    fixture.actorId
+  );
+  const signed = await produceReturnManifestSuccessors(prisma, {
+    actorId: fixture.actorId,
+    closureCaseId: closureCase.id,
+    idempotencyKey: "b6-return-manifest"
+  });
+  const receiptAt = await readTestDatabaseClock(prisma);
+  const scenario = {
+    ...base,
+    occurredAt: receiptAt,
+    receipt: { ...base.receipt, returnedAt: receiptAt },
+    signedFileHash: signed.finalized.signedFileHash,
+    signedFileId: signed.finalized.signedFileId
+  };
+  expect(
+    await prisma.lease.findUniqueOrThrow({ where: { orderId: fixture.orderId } })
+  ).toMatchObject({ status: "ACTIVE" });
+  expect(
+    await prisma.vehicleSubscriptionPeriod.findMany({ where: { orderId: fixture.orderId } })
+  ).toEqual([expect.objectContaining({ endedAt: null })]);
+  await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
+  expect(
+    await prisma.lease.findUniqueOrThrow({ where: { orderId: fixture.orderId } })
+  ).toMatchObject({ status: "TERMINATED" });
+  expect(
+    await prisma.vehicleSubscriptionPeriod.findMany({ where: { orderId: fixture.orderId } })
+  ).toEqual([expect.objectContaining({ endedAt: receiptAt })]);
+  expect(
+    await prisma.vehicleOperationalRestriction.count({
+      where: {
+        vehicleId: fixture.vehicleId,
+        status: "ACTIVE"
+      }
+    })
+  ).toBeGreaterThan(0);
+  const delta = await governance.generateDelta(
+    closureCase.id,
+    { idempotencyKey: "b6-delta" },
+    fixture.actorId
+  );
+  expect(delta.items.every(({ responsibility }) => responsibility === "NORMAL_WEAR")).toBe(true);
+  await closeFocusedInspectionWorkOrder(scenario);
+  await scenario.closure.recordManagedReturnInspection(
+    {
+      accepted: true,
+      actorId: fixture.actorId,
+      closureCaseId: closureCase.id,
+      costs: [],
+      evidence: [],
+      occurredAt: await readTestDatabaseClock(prisma),
+      reconditioningRequired: false
+    },
+    {}
+  );
+  await prisma.vehicle.update({
+    data: { currentSalePriceAmount: 10000000n, salePriceStatus: "EFFECTIVE" },
+    where: { id: fixture.vehicleId }
+  });
+  await scenario.closure.releaseManagedReturnInventory(
+    {
+      actorId: fixture.actorId,
+      closureCaseId: closureCase.id,
+      occurredAt: await readTestDatabaseClock(prisma),
+      releaseReason: "B6 governed inspection complete"
+    },
+    {}
+  );
+  expect(
+    await prisma.vehicleOperationalRestriction.count({
+      where: {
+        vehicleId: fixture.vehicleId,
+        status: "ACTIVE"
+      }
+    })
+  ).toBe(0);
+  expect(
+    await prisma.vehicle.findUniqueOrThrow({ where: { id: fixture.vehicleId } })
+  ).toMatchObject({ status: "AVAILABLE" });
+  const bill = await prisma.receivableBill.create({
+    data: {
+      amount: 100n,
+      billNo: `B6-${randomUUID()}`,
+      billType: "MONTHLY_RENT",
+      customerId: fixture.customerId,
+      dueDate: new Date("2026-08-20T00:00:00.000Z"),
+      orderId: fixture.orderId,
+      remainingAmount: 100n
+    }
+  });
+  if (options.paid !== false) {
+    await settleTask6Bill(
+      prisma,
+      new FinanceService(new AuditService(prisma), prisma),
+      fixture,
+      bill.id,
+      100n,
+      0
+    );
+  }
+  const settlementInput = async (suffix: string) => ({
+    actorId: fixture.actorId,
+    closureCaseId: closureCase.id,
+    idempotencyKey: `b6-${suffix}`,
+    occurredAt: await readTestDatabaseClock(prisma),
+    waiverApprovalId: null,
+    writeOffApprovalId: null
+  });
+  await scenario.closure.proposeManagedSettlement(await settlementInput("propose"));
+  const finalized = await scenario.closure.finalizeManagedSettlement(
+    await settlementInput("finalize")
+  );
+  const settlement = await prisma.subscriptionClosureSettlementRevision.findUniqueOrThrow({
+    where: { id: finalized.id }
+  });
+  if (options.accept !== false) {
+    await governance.recordCustomerResponse(fixture.orderId, fixture.customerId, {
+      disputes: [],
+      idempotencyKey: "b6-accept",
+      settlementHash: settlement.resultHash,
+      settlementRevisionId: settlement.id,
+      status: "ACCEPTED"
+    });
+  }
+  const occurredAt = await readTestDatabaseClock(prisma);
+  const input = { idempotencyKey: "b6-complete", occurredAt };
+  return {
+    complete: () => governance.completeOperations(closureCase.id, input, fixture.actorId),
+    governance,
+    input,
+    occurredAt,
+    scenario,
+    settlement
+  };
+}
+
+async function completionTruth(
+  prisma: PrismaService,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>
+) {
+  const [closure, order, contract, vehicle, lease, periods, bills, payments, writeOffs, audits] =
+    await Promise.all([
+      prisma.subscriptionClosureCase.findFirstOrThrow({
+        where: { orderId: fixture.orderId, retiredAt: null }
+      }),
+      prisma.subscriptionOrder.findUniqueOrThrow({ where: { id: fixture.orderId } }),
+      prisma.contract.findUniqueOrThrow({ where: { id: fixture.contractId } }),
+      prisma.vehicle.findUniqueOrThrow({ where: { id: fixture.vehicleId } }),
+      prisma.lease.findUnique({ where: { orderId: fixture.orderId } }),
+      prisma.vehicleSubscriptionPeriod.findMany({
+        orderBy: { id: "asc" },
+        where: { orderId: fixture.orderId }
+      }),
+      prisma.receivableBill.findMany({
+        orderBy: { id: "asc" },
+        where: { orderId: fixture.orderId }
+      }),
+      prisma.paymentRecord.findMany({
+        orderBy: { id: "asc" },
+        where: { orderId: fixture.orderId }
+      }),
+      prisma.paymentWriteOff.findMany({
+        orderBy: { id: "asc" },
+        where: { orderId: fixture.orderId }
+      }),
+      prisma.auditLog.findMany({ orderBy: { id: "asc" }, where: { operatorId: fixture.actorId } })
+    ]);
+  return { closure, order, contract, vehicle, lease, periods, bills, payments, writeOffs, audits };
 }
 
 function createReturnManifestESignHarness(prisma: PrismaService) {

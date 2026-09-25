@@ -13,6 +13,7 @@
 - F4 协议修复聚焦 4/4 通过；完整四文件 248/249，唯一 Prisma 版本探测超时；串行复核中断且没有 close。任务 3 尚未收口。[离线修复记录](2026-09-25-stage1-offline-fixes.md)包含失败、中断和局限。
 - F2 取消/拒绝、审核、门户确认与建单权威锁修复已接回本分支，最终代码提交 `9ee850b1`、证据 `b671ba8d`。独立干净 source `23f575edb53d7faa27cbcec1c4807f3ed6da6e48` 上 integrity fresh 19/19、七文件 unit 161/161、tsc/lint 通过；独立评审 ACCEPT，custody 完整回读、运行目录已退役。[F2 实际证据](2026-09-25-stage1-application-authority-validation.md)保留全部 RED、误判与修复历史。
 - F1 商业漂移检查与人工重新报价恢复已接回，最终代码 `05c8d99b`、证据 `be2e9d28`。独立干净 source `35353517d3499c5fde22a5525bd8e1ab04133c31` 完整 fresh 31/31、20 文件 unit 324/324，tsc/lint/契约/发现检查通过，custody 读回及最终独立评审 ACCEPT。[F1 证据](2026-09-25-stage1-commercial-plan-validation.md)保留反例、队列时序诊断、两轮重新报价/确认及旧请求重放验证。任务 1 限定 F1/F2 修复闭环；任务 6 的 B1/B2 剩余矩阵及阶段 1 仍未关闭。
+- F3 错误金额不写支付单的修复已接回 `0b32fd17`，B5 正向重复派发用例 `a3c1e657`，证据 `3819088c`。独立干净 source `46e8f95aa7ffbc045f7c6a672956f242325ff004` 顺序完成 billing fresh 17/17、maintenance fact fresh 15/15，四文件 unit 64/64、tsc/lint/契约/发现检查通过；两套 custody/readback、退役与独立终审 ACCEPT，Task4 复用当前 pair，没有重复运行。[F3/B5 记录](2026-09-06-stage1-b5-payment-and-billing-validation-record.md)保留真实 RED 与中间实现失败，并明确维护事实业务响应/镜像来源仍为合成边界。任务 2、7 限定收口，不代表真实付款、维护运行或 Stage 1 签字。
 - 用户说明服务器端本系统 Docker 当前全部停止。需要线上联调前先核对并恢复本系统容器、验证健康；当前本地测试不依赖线上。
 - 阶段 1 签字、最终 Node22 三镜像、真实渠道/浏览器、snapshot 双链及外部操作仍未完成。
 

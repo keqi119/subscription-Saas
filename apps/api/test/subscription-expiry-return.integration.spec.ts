@@ -8751,6 +8751,17 @@ async function prepareGovernedCompletion(
   // The mature lease/BASE/open period and signed delivery baseline are fixture
   // inputs; receipt, delta, inspection, settlement, payment and completion below
   // use current services. The signing provider/storage remain deterministic.
+  const deliveryFile = await prisma.fileObject.create({
+    data: {
+      bucket: "synthetic-b6",
+      contentSha256: "e".repeat(64),
+      mimeType: "application/pdf",
+      objectKey: `b6/${fixture.orderId}/delivery.pdf`,
+      originalName: "delivery.pdf",
+      sizeBytes: 100n,
+      uploadedBy: fixture.actorId
+    }
+  });
   const delivery = await prisma.vehicleDeliveryHandover.create({
     data: {
       archiveStatus: "ARCHIVED",
@@ -8758,8 +8769,8 @@ async function prepareGovernedCompletion(
       completedAt: new Date("2026-03-03T02:00:00.000Z"),
       manifestHash: "d".repeat(64),
       orderId: fixture.orderId,
-      signedDocumentFileId: randomUUID(),
-      signedObjectKey: `b6/${fixture.orderId}/delivery.pdf`,
+      signedDocumentFileId: deliveryFile.id,
+      signedObjectKey: deliveryFile.objectKey,
       signedPdfHash: "e".repeat(64),
       stage1ContractId: fixture.contractId,
       status: "ARCHIVED"

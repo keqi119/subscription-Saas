@@ -283,6 +283,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 #### F6 关单审计限域实施（2026-09-25）
 
+- B6 第二轮真实 PG 在 source `613d3350` 执行 85/85（80 通过、5 失败），新增正常签署场景均被 `vehicle_return_checklist_revision_attestation_check` 拒绝。`captureChecklist` 对 CUSTOMER_SIGNED 写 Prisma.JsonNull，而既有 SQL 约束要求 SQL NULL；这是真实生产入口反例，不是首轮的夹具状态错误。新增限域只将该空分支改为 Prisma.DbNull，并在原 PG 切片独立查询 `attestation_snapshot IS NULL`；拒签/缺席的证据对象、校验及数据库约束保持。该前置修正单独提交，继续原套件，不绕过真实清单入口。
+
 - `SubscriptionReturnGovernanceService.completeOperations` 当前对 Closure、Order、Contract 的终态更新处于同一事务，却没有成功审计。仅在该方法已有锁与所有准入校验之后读取 Order/Contract 当前状态，保留 Closure 的事务内原状态，在三项更新成功后用 `tx.auditLog.create` 写一次 UPDATE；记录 operatorId、Closure/Order/Contract 的 id/前后状态、财务状态及本次 idempotencyKey。沿用 module `subscription_closure`、entityType `subscription_closure_case`，不引入新模型/权限/事件。
 - 已完成/已终止的早返回保持，不为重放补写或重复写审计；任一状态更新或审计失败必须让原事务失败。不改客户响应、争议、实物接收、库存释放、合法催收/法催归口或金额规则，也不补造历史审计。
 - 新增 unit 文件 `apps/api/test/subscription-return-completion.spec.ts`，先取得“真实方法成功返回但无审计”的确定 RED，覆盖完成及现有终止分支的准确旧状态、单次审计/重放、业务写入失败和审计失败传播。unit transaction double 只证明调用顺序/事务归属；数据库回滚由任务 8 原 expiry-return suite 中的真实 `completeOperations` 切片独立验证。

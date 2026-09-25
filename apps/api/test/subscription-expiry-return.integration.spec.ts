@@ -8807,6 +8807,11 @@ async function prepareGovernedCompletion(
     },
     fixture.actorId
   );
+  const attestations = await prisma.$queryRaw<Array<{ mode: string; sqlNull: boolean }>>(
+    Prisma.sql`SELECT "attestation_mode" AS "mode", "attestation_snapshot" IS NULL AS "sqlNull"
+      FROM "vehicle_return_checklist_revision" WHERE "closure_case_id" = ${closureCase.id}::uuid`
+  );
+  expect(attestations).toEqual([{ mode: "CUSTOMER_SIGNED", sqlNull: true }]);
   const signed = await produceReturnManifestSuccessors(prisma, {
     actorId: fixture.actorId,
     closureCaseId: closureCase.id,

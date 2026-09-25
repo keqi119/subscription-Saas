@@ -1086,19 +1086,19 @@ export class SubscriptionJourneyService {
         journey.currentStepCode !== SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION ||
         requestedRevision !== journey.application.finalPlanRevision
       ) {
+        const recovery = await tx.subscriptionJourneyEvent.findUnique({
+          where: { eventKey: `${job.sourceKey}:requote` }
+        });
+        if (
+          recovery?.journeyId === journey.id &&
+          isRecord(recovery.payload) &&
+          recovery.payload.operation === "REQUIRE_FINAL_PLAN_REQUOTE" &&
+          recovery.payload.finalPlanRevision === requestedRevision &&
+          recovery.payload.stepId === job.stepId
+        ) {
+          return requoteResult;
+        }
         if (!journey.orderId) {
-          const recovery = await tx.subscriptionJourneyEvent.findUnique({
-            where: { eventKey: `${job.sourceKey}:requote` }
-          });
-          if (
-            recovery?.journeyId === journey.id &&
-            isRecord(recovery.payload) &&
-            recovery.payload.operation === "REQUIRE_FINAL_PLAN_REQUOTE" &&
-            recovery.payload.finalPlanRevision === requestedRevision &&
-            recovery.payload.stepId === job.stepId
-          ) {
-            return requoteResult;
-          }
           throw journeyError(
             requestedRevision !== journey.application.finalPlanRevision
               ? "FINAL_PLAN_REVISION_STALE" : "JOURNEY_IDEMPOTENCY_CONFLICT",

@@ -241,6 +241,15 @@ node scripts/release/run-database-suite.mjs --suite-id api.stage1-contract-archi
 
 2026-09-25：限定 B1 已完成，Task2 `5c9223ca`、Task3/最终 source `7ad53559`，四文件 unit 112/112、ESLint/API tsc 通过，原 golden-path fresh 1/1、custody/readback/退役及独立终审 ACCEPT。[本轮 B1 记录](../../acceptance/2026-09-25-stage1-intake-business-wait-validation.md)说明两文件既有 Prettier 基线例外；原 fixture 收敛不替代真实服务矩阵，B2 及任务 6 其余步骤继续开放。
 
+#### B2 真实服务矩阵与门户确认回读限域（2026-09-25）
+
+- 在现有 `stage1-application-order-authority.integration.spec.ts` 扩展已审核边界 fixture，SELF_SERVICE 和 SALES_ASSISTED 均从对应 Application 来源开始，消费真实快照生成、门户确认和建单/合同/权益服务。B 线方案发布使用已有 Journey FINAL_PLAN_DECISION 入口，不把 A 线成功结果重标成 B 线证据。
+- 已发现 `PortalApplicationService.confirmFinalPlan` 的 owned read 和 updateMany 使用统一 portalApplicationSourceScope，而事务最后的 findFirstOrThrow 硬编码 SELF_SERVICE；有 Journey 的 B 线可能在确认及信号写入后被回读排除、整笔回滚。现有 unit 的 findFirstOrThrow fixture 未检查来源，无法暴露此差异。先记录真实 PG 反例，再将最终回读对齐既有 scope，保留 customerId、deletedAt、id、锁序、revision/hash、状态/无订单条件。仅此生产入口修正，不扩展无 Journey 的销售进件访问权限。
+- 门户 unit 增强已有 B 线确认测试的查询契约，并验证无 Journey 的非自助进件及其他客户仍拒绝；不修改其他门户动作的来源策略。
+- 继续补两 Application 争同车、同进件重复确认、旧 revision/hash、重复 CREATE_ORDER_AND_CONTRACT、真实合同写入后受控异常的整笔回滚与重试。所有断言联合读取 Application、Vehicle、Quote、Order、Contract、Journey、job/event；现有 F1/F2 漂移/取消/拒绝用例保持。
+- 合同失败仅在测试侧调用真实合同服务完成事务内写入后抛确定异常；竞争通过真实事务与 barrier/数据库阻塞观测，不依赖随机 sleep、不替换 Prisma 写入或伪造终态。
+- 本轮继续使用原 integrity fresh suite 和 suite context，不添加 manifest 文件或数据库接口。准备期已完成 B1 的 Prisma validate 及唯一 fresh 内 migrate/status/diff；数据库输入/生成准备未变，不访问退役目标。每次后续 fresh 均独立干净 SHA、完整报告/custody/readback 与受控退役，失败记录保留；只复用已审核的非秘密捕获/回读函数，不复用任何数据库身份。
+
 ### 任务 7：B5 完整付款/账单验证
 
 - [x] 接任务 2，按 [B5 原计划](./2026-09-06-stage1-b5-payment-and-billing-validation-plan.md) Task1/2 补验证失败/非成功/部分金额/并发重复回调，真实 FinanceService 联合断言 PaymentOrder → Callback → PaymentRecord → WriteOff → Bill。

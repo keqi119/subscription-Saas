@@ -567,9 +567,15 @@ describe("Stage 1 subscription Journey failure recovery", () => {
         leaseToken: null
       });
       expect(ack).toHaveBeenLastCalledWith(expect.anything(), h.jobId, expect.any(String), {
-        action: "SUBSCRIPTION_ALREADY_ACTIVATED", orderId: h.orderId
+        action: "SUBSCRIPTION_ALREADY_ACTIVATED",
+        orderId: h.orderId
       });
       expect(await activationTruth(prisma, h)).toEqual(activated);
+      expect(
+        await prisma.subscriptionJourneyJob.findMany({
+          where: { journeyId: h.journeyId, jobType: "ACTIVATE_SUBSCRIPTION" }
+        })
+      ).toEqual([expect.objectContaining({ id: h.jobId, status: "COMPLETED" })]);
     } finally {
       ack.mockRestore();
     }

@@ -3,6 +3,8 @@ import { ApplicationSource, Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
 
+import { AssetAccountingRepository } from "../../src/asset-accounting/asset-accounting.repository";
+import { AssetAccountingService } from "../../src/asset-accounting/asset-accounting.service";
 import { AssetFactsRepository } from "../../src/asset-facts/asset-facts.repository";
 import { AssetFactsService } from "../../src/asset-facts/asset-facts.service";
 import { AssetOperationsRepository } from "../../src/asset-operations/asset-operations.repository";
@@ -16,7 +18,9 @@ import {
   DeliveryEvidenceService
 } from "../../src/delivery-evidence/delivery-evidence.service";
 import { FinanceService } from "../../src/finance/finance.service";
+import { DeliveryHandoverService } from "../../src/delivery-handover/delivery-handover.service";
 import { HandoverWorkOrderService } from "../../src/handover-work-order/handover-work-order.service";
+import { Stage2HandoverRegistrationExceptionService } from "../../src/handover-work-order/stage2-handover-registration-exception.service";
 import { LeaseActivationEngine } from "../../src/lease/lease-activation.engine";
 import { MileageReviewRepository } from "../../src/mileage-review/mileage-review.repository";
 import { MileageReviewService } from "../../src/mileage-review/mileage-review.service";
@@ -40,7 +44,22 @@ export function activationServices(
 ) {
   const audit = new AuditService(prisma);
   const evidence = new DeliveryEvidenceService(prisma);
-  const handover = new HandoverWorkOrderService(prisma, evidence);
+  const accounting = new AssetAccountingService(prisma, new AssetAccountingRepository(), audit);
+  const registration = new Stage2HandoverRegistrationExceptionService(prisma, accounting);
+  const handover = new HandoverWorkOrderService(
+    prisma,
+    evidence,
+    new DeliveryHandoverService(prisma, evidence),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    registration
+  );
   const finance = new FinanceService(audit, prisma);
   const segments = new ContractSegmentService(prisma);
   const assets = new AssetOperationsService(prisma, new AssetOperationsRepository(), audit);
@@ -115,6 +134,16 @@ export async function prepareActivation(
         where: { id: ids.applicationId }
       });
       await tx.vehicle.update({ data: { status: "RESERVED" }, where: { id: ids.vehicleId } });
+      await tx.vehicleDocument.create({
+        data: {
+          documentType: "VEHICLE_LICENSE",
+          fileName: "synthetic-license.pdf",
+          fileSize: 100,
+          mimeType: "application/pdf",
+          objectKey: `b4/${ids.vehicleId}/license.pdf`,
+          vehicleId: ids.vehicleId
+        }
+      });
       // Create stage 2 first because the reusable contract fixture links its
       // contract to the order; stage 1 must remain the formal order contract.
       for (const contractId of [ids.handoverContractId, ids.contractId]) {
@@ -159,6 +188,8 @@ export async function prepareActivation(
     }
   });
   const stage2 = await prisma.contract.findUniqueOrThrow({ where: { id: ids.handoverContractId } });
+  const signedFile = await prisma.fileObject.findUniqueOrThrow({ where: { id: stage2.fileId! } });
+  const sourceFile = await syntheticFile(prisma, ids.actorId, "application/pdf");
   const handover = await prisma.vehicleDeliveryHandover.create({
     data: {
       archiveStatus: "ARCHIVED",
@@ -169,8 +200,11 @@ export async function prepareActivation(
       orderId: ids.orderId,
       platformSignedAt: activatedAt,
       signedDocumentFileId: stage2.fileId,
-      signedObjectKey: `b4/${ids.orderId}/signed.pdf`,
+      signedObjectKey: signedFile.objectKey,
       signedPdfHash: "b".repeat(64),
+      sourceDocumentFileId: sourceFile.id,
+      sourceObjectKey: sourceFile.objectKey,
+      sourcePdfHash: sourceFile.contentSha256,
       stage1ContractId: ids.contractId,
       status: "ARCHIVED",
       vehicleDeliveryId: delivery.id
@@ -236,6 +270,55 @@ export async function prepareActivation(
     }
   }
   const evidencePackage = await services.handover.getCurrentEvidencePackage(workOrder.id);
+  const manifestHash = evidencePackage.manifestHash.replace(/^sha256:/, "");
+  const taskNo = `B4${randomUUID().replaceAll("-", "")}`;
+  const task = await prisma.contractESignTask.create({
+    data: {
+      completedAt: activatedAt,
+      contractId: ids.handoverContractId,
+      customerId: ids.customerId,
+      documentType: "DELIVERY_HANDOVER",
+      orderId: ids.orderId,
+      provider: "MOCK",
+      signedDocumentObjectKey: signedFile.objectKey,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskNo,
+      taskStatus: "COMPLETED",
+      requestSnapshot: {
+        artifactVersion: 1,
+        contractId: ids.handoverContractId,
+        handoverId: handover.id,
+        manifestHash,
+        sourceDocumentFileId: sourceFile.id,
+        sourcePdfHash: sourceFile.contentSha256
+      },
+      signers: {
+        create: [
+          {
+            customerId: ids.customerId,
+            documentType: "DELIVERY_HANDOVER",
+            providerActionType: "CUSTOMER_MANUAL_SIGN",
+            providerTransactionId: `${taskNo.slice(0, 30)}H1`,
+            required: true,
+            signedAt: activatedAt,
+            signerStatus: "SIGNED",
+            signerType: "CUSTOMER",
+            slotId: "STAGE2_HANDOVER_CUSTOMER"
+          },
+          {
+            documentType: "DELIVERY_HANDOVER",
+            providerActionType: "PLATFORM_AUTO_SEAL",
+            providerTransactionId: `${taskNo.slice(0, 30)}H2`,
+            required: true,
+            signedAt: activatedAt,
+            signerStatus: "SIGNED",
+            signerType: "PLATFORM",
+            slotId: "STAGE2_HANDOVER_PLATFORM"
+          }
+        ]
+      }
+    }
+  });
   await prisma.vehicleHandoverReviewAttempt.create({
     data: {
       attemptNo: 1,
@@ -248,7 +331,7 @@ export async function prepareActivation(
     }
   });
   await prisma.vehicleDeliveryHandover.update({
-    data: { manifestHash: evidencePackage.manifestHash.replace(/^sha256:/, "") },
+    data: { handoverESignTaskId: task.id, manifestHash },
     where: { id: handover.id }
   });
   await prisma.vehicleHandoverWorkOrder.update({
@@ -304,8 +387,13 @@ export async function prepareActivation(
       availableAt: new Date("2000-01-01T00:00:00.000Z"),
       jobType: "ACTIVATE_SUBSCRIPTION",
       journeyId: journey.id,
-      payload: { finalPlanRevision: 1, orderId: ids.orderId },
-      sourceKey: `b4:${journey.id}:activation`,
+      payload: {
+        applicationId: ids.applicationId,
+        finalPlanRevision: 1,
+        orderId: ids.orderId,
+        stepCode: "AUTHORITATIVE_ACTIVATION"
+      },
+      sourceKey: `journey:${journey.id}:step:AUTHORITATIVE_ACTIVATION:revision:1`,
       stepId: journey.steps[0]!.id
     })
   );
@@ -435,10 +523,27 @@ export function expectActivated(facts: Awaited<ReturnType<typeof activationTruth
   ]);
   expect(facts.schedules).toHaveLength(1);
   expect(facts.accounts).toEqual([expect.objectContaining({ accountStatus: "ACTIVE" })]);
-  expect(facts.grants.length).toBeGreaterThan(0);
+  expect(facts.grants).toEqual([
+    expect.objectContaining({
+      accountId: facts.accounts[0]!.id,
+      entitlementType: "MILEAGE",
+      grantPeriodStart: facts.accounts[0]!.periodStart,
+      grantPeriodEnd: facts.accounts[0]!.periodEnd,
+      orderId: facts.order.id,
+      remainingAmount: new Prisma.Decimal(1500),
+      totalAmount: new Prisma.Decimal(1500),
+      unit: "KM",
+      usedAmount: new Prisma.Decimal(0)
+    })
+  ]);
   expect(facts.readings).toHaveLength(1);
   expect(facts.reviews).toHaveLength(1);
   expect(facts.audits).toHaveLength(1);
+  expect(facts.events).toHaveLength(2);
+  expect(facts.events.map(({ eventType }) => eventType).sort()).toEqual([
+    "JOURNEY_COMPLETED",
+    "STEP_COMPLETED"
+  ]);
   expect(facts.audits[0]?.afterSnapshot).toMatchObject({
     baseSegmentId: facts.segments[0]!.id,
     leaseId: facts.leases[0]!.id,

@@ -11,7 +11,8 @@
 - F5 预检修复已提交 `c99a2ce9`，离线 16/16 通过；退款额度独立，不再阻断主线。
 - B3 Task3S 单行 oracle 已整合为 `338bad80`，独立干净源码 `05af3223f79b3f166c4271de1fb2400d2b83429c` 上六文件 171/171、唯一 fresh 3/3 通过，custody 独立读回通过、运行目录已回收。[实际证据](2026-09-07-stage1-b3-contract-archive-transition-validation.md)保留两次旧失败和 Node24/真实供应商等限制。
 - F4 协议修复聚焦 4/4 通过；完整四文件 248/249，唯一 Prisma 版本探测超时；串行复核中断且没有 close。任务 3 尚未收口。[离线修复记录](2026-09-25-stage1-offline-fixes.md)包含失败、中断和局限。
-- F1/F2 两个 P1 仍未关闭；当前在独立干净 checkout 编写并运行真实服务 PG 反例，不能移用 B3 通过数。
+- F2 取消/拒绝、审核、门户确认与建单权威锁修复已接回本分支，最终代码提交 `9ee850b1`、证据 `b671ba8d`。独立干净 source `23f575edb53d7faa27cbcec1c4807f3ed6da6e48` 上 integrity fresh 19/19、七文件 unit 161/161、tsc/lint 通过；独立评审 ACCEPT，custody 完整回读、运行目录已退役。[F2 实际证据](2026-09-25-stage1-application-authority-validation.md)保留全部 RED、误判与修复历史。
+- F1 商业漂移检查与人工重新报价恢复正在推进；任务 1、B2 整体及阶段 1 仍未关闭。
 - 用户说明服务器端本系统 Docker 当前全部停止。需要线上联调前先核对并恢复本系统容器、验证健康；当前本地测试不依赖线上。
 - 阶段 1 签字、最终 Node22 三镜像、真实渠道/浏览器、snapshot 双链及外部操作仍未完成。
 

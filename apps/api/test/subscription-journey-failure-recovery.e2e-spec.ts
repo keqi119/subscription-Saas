@@ -17,8 +17,15 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
 import { SubscriptionJourneyService } from "../src/subscription-journey/subscription-journey.service";
+import { SubscriptionJourneyError } from "../src/subscription-journey/subscription-journey.errors";
 import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
 import { insertRuntimeOrderGraph } from "./helpers/runtime-domain-fixture";
+import {
+  activationServices,
+  activationTruth,
+  expectActivated,
+  prepareActivation
+} from "./helpers/stage1-activation-fixture";
 
 const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
   "apps/api/test/subscription-journey-failure-recovery.e2e-spec.ts"
@@ -429,6 +436,143 @@ describe("Stage 1 subscription Journey failure recovery", () => {
       ).resolves.toMatchObject({ status: SubscriptionJourneyJobStatus.CANCELLED });
       expect(audit.write).toHaveBeenCalledOnce();
     });
+  });
+  it("B4 refuses missing inspection facts without activation residue and permits recovery", async () => {
+    const h = await prepareActivation(prisma);
+    await prisma.vehicleInspection.update({
+      data: { status: "PENDING" },
+      where: { orderId: h.orderId }
+    });
+    const [claimed] = await prisma.$transaction((tx) => h.repository.claimJobs(tx, 1, 120_000));
+    expect(claimed?.id).toBe(h.jobId);
+    const before = await activationTruth(prisma, h);
+    await expect(h.service.activateSubscriptionJob(claimed!)).rejects.toMatchObject({
+      response: { canActivate: false, missingConditions: ["INSPECTION_PASSED"] }
+    });
+    expect(await activationTruth(prisma, h)).toEqual(before);
+    await prisma.vehicleInspection.update({
+      data: { status: "PASSED" },
+      where: { orderId: h.orderId }
+    });
+    const result = await h.service.activateSubscriptionJob(claimed!);
+    expectActivated(await activationTruth(prisma, h));
+    await prisma.$transaction((tx) =>
+      h.repository.completeJob(tx, h.jobId, claimed!.leaseToken, result)
+    );
+  });
+
+  it.each(["subscriptionContractSegment", "vehicleSubscriptionPeriod"] as const)(
+    "B4 rolls back every real activation fact after the %s write and retries once",
+    async (model) => {
+      const h = await prepareActivation(prisma);
+      const [claimed] = await prisma.$transaction((tx) => h.repository.claimJobs(tx, 1, 120_000));
+      expect(claimed?.id).toBe(h.jobId);
+      const before = await activationTruth(prisma, h);
+      const failure = new Error(`B4_AFTER_${model}_WRITE`);
+      let reached = false;
+      const failingPrisma = new Proxy(prisma, {
+        get(target, property, receiver) {
+          if (property === "$transaction") {
+            return (work: (tx: Tx) => Promise<unknown>, options?: { timeout?: number }) =>
+              prisma.$transaction(
+                (tx) =>
+                  work(
+                    new Proxy(tx, {
+                      get(transaction, delegateName) {
+                        const delegate = Reflect.get(transaction, delegateName);
+                        if (delegateName !== model) return delegate;
+                        return new Proxy(delegate, {
+                          get(realDelegate, method) {
+                            const value = Reflect.get(realDelegate, method);
+                            if (method !== "create")
+                              return typeof value === "function" ? value.bind(realDelegate) : value;
+                            return async (args: unknown) => {
+                              const row = await value.call(realDelegate, args);
+                              expect(
+                                await realDelegate.findUnique({ where: { id: row.id } })
+                              ).not.toBeNull();
+                              reached = true;
+                              throw failure;
+                            };
+                          }
+                        });
+                      }
+                    })
+                  ),
+                options
+              );
+          }
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+      }) as PrismaService;
+      await expect(
+        activationServices(failingPrisma).service.activateSubscriptionJob(claimed!)
+      ).rejects.toBe(failure);
+      expect(reached).toBe(true);
+      expect(await activationTruth(prisma, h)).toEqual(before);
+      const result = await h.service.activateSubscriptionJob(claimed!);
+      expectActivated(await activationTruth(prisma, h));
+      await prisma.$transaction((tx) =>
+        h.repository.completeJob(tx, h.jobId, claimed!.leaseToken, result)
+      );
+    }
+  );
+
+  it("B4 recovers an ACK transaction failure after real activation has committed without repeating business writes", async () => {
+    const h = await prepareActivation(prisma);
+    const complete = h.repository.completeJob.bind(h.repository);
+    let reached = false;
+    const ack = vi
+      .spyOn(h.repository, "completeJob")
+      .mockImplementationOnce(async (tx, id, token, result) => {
+        expect(id).toBe(h.jobId);
+        await complete(tx, id, token, result);
+        expect(await tx.subscriptionJourneyJob.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: "COMPLETED"
+        });
+        reached = true;
+        throw new SubscriptionJourneyError({
+          code: "JOURNEY_EXECUTION_ERROR",
+          message: "B4 controlled ACK rollback",
+          retryable: true,
+          retryAfterMs: 0
+        });
+      });
+    try {
+      await h.worker.runOnce();
+      expect(reached).toBe(true);
+      const activated = await activationTruth(prisma, h);
+      expectActivated(activated);
+      expect(
+        await prisma.subscriptionJourneyJob.findUniqueOrThrow({ where: { id: h.jobId } })
+      ).toMatchObject({
+        attemptCount: 1,
+        completedAt: null,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: "RETRY_SCHEDULED"
+      });
+      const due = await prisma.$queryRaw<Array<{ due: boolean }>>(Prisma.sql`
+        SELECT "available_at" <= clock_timestamp() AS "due" FROM "subscription_journey_job" WHERE "id" = ${h.jobId}
+      `);
+      expect(due).toEqual([{ due: true }]);
+      await h.worker.runOnce();
+      expect(
+        await prisma.subscriptionJourneyJob.findUniqueOrThrow({ where: { id: h.jobId } })
+      ).toMatchObject({
+        attemptCount: 1,
+        status: "COMPLETED",
+        completedAt: expect.any(Date),
+        leaseToken: null
+      });
+      expect(ack).toHaveBeenLastCalledWith(expect.anything(), h.jobId, expect.any(String), {
+        action: "SUBSCRIPTION_ALREADY_ACTIVATED", orderId: h.orderId
+      });
+      expect(await activationTruth(prisma, h)).toEqual(activated);
+    } finally {
+      ack.mockRestore();
+    }
   });
 });
 

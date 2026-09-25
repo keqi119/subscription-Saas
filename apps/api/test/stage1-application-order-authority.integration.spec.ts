@@ -74,7 +74,7 @@ describe("Stage 1 application and order authority", () => {
     return new CustomerService(audit, client, {} as never, {} as never, undefined, signals);
   }
 
-  async function confirmedApplication() {
+  async function confirmedApplication(confirmNow = true) {
     const userId = randomUUID();
     const customerId = randomUUID();
     const vehicleId = randomUUID();
@@ -174,24 +174,25 @@ describe("Stage 1 application and order authority", () => {
       },
       include: { steps: true }
     });
-    const portal = new PortalApplicationService(
-      audit,
-      new ConfigService({}),
-      customer,
-      prisma,
-      {} as never
-    );
-    await portal.confirmFinalPlan(
-      applicationId,
-      { revision: 1, commercialHash: hash },
-      {
-        accountStatus: "ACTIVE",
-        customerAccountId: randomUUID(),
-        customerId,
-        phone: "13000000000"
-      },
-      context
-    );
+    const confirm = (client = prisma) =>
+      new PortalApplicationService(
+        audit,
+        new ConfigService({}),
+        customer,
+        client,
+        {} as never
+      ).confirmFinalPlan(
+        applicationId,
+        { revision: 1, commercialHash: hash },
+        {
+          accountStatus: "ACTIVE",
+          customerAccountId: randomUUID(),
+          customerId,
+          phone: "13000000000"
+        },
+        context
+      );
+    if (confirmNow) await confirm();
     const job = await prisma.subscriptionJourneyJob.create({
       data: {
         journeyId: current.id,
@@ -207,6 +208,7 @@ describe("Stage 1 application and order authority", () => {
     return {
       actor,
       applicationId,
+      confirm,
       vehicleId,
       journeyId: current.id,
       job: job as ClaimedJourneyJob
@@ -259,7 +261,100 @@ describe("Stage 1 application and order authority", () => {
     const fixture = await confirmedApplication();
     await bootstrap(fixture);
     await expectOrdered(fixture);
+    await expect(journey.createOrderAndContractJob(fixture.job)).resolves.toMatchObject({
+      action: "ORDER_AND_CONTRACT_ALREADY_COMPLETED"
+    });
+    await expectOrdered(fixture);
   });
+
+  it("serializes portal confirmation before cancellation without a database deadlock", async () => {
+    const fixture = await confirmedApplication(false);
+    const updatedApplication = deferred();
+    const releaseConfirmation = deferred();
+    const cancellationEntered = deferred();
+    let confirmingPid = 0;
+    let cancellingPid = 0;
+    const confirmingClient = instrumentTransactions(async (tx) => {
+      const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      confirmingPid = backend!.pid;
+      return new Proxy(tx, {
+        get(target, key) {
+          if (key === "application")
+            return new Proxy(target.application, {
+              get(delegate, operation) {
+                if (operation === "updateMany")
+                  return async (...args: Parameters<typeof delegate.updateMany>) => {
+                    const result = await delegate.updateMany(...args);
+                    updatedApplication.resolve();
+                    await releaseConfirmation.promise;
+                    return result;
+                  };
+                return Reflect.get(delegate, operation, delegate);
+              }
+            });
+          return Reflect.get(target, key, target);
+        }
+      });
+    });
+    const cancellingClient = instrumentTransactions(async (tx) => {
+      const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      cancellingPid = backend!.pid;
+      cancellationEntered.resolve();
+      return tx;
+    });
+    const confirmation = fixture.confirm(confirmingClient).then(
+      () => "confirmed",
+      (error: Error) => error.message
+    );
+    let cancellation: Promise<unknown> | undefined;
+    try {
+      await updatedApplication.promise;
+      cancellation = customerService(cancellingClient)
+        .cancelApplication(
+          fixture.applicationId,
+          { reason: "Synthetic test" },
+          fixture.actor,
+          context
+        )
+        .then(
+          () => "cancelled",
+          (error: Error) => error.message
+        );
+      await cancellationEntered.promise;
+      // Observe an actual lock wait, then release the first transaction. No timing-dependent sleep.
+      const deadline = Date.now() + 5000;
+      let blocked = false;
+      while (!blocked && Date.now() < deadline) {
+        const [row] = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
+          SELECT ${confirmingPid}::integer = ANY(pg_blocking_pids(${cancellingPid}::integer)) AS blocked
+        `;
+        blocked = row!.blocked;
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      releaseConfirmation.resolve();
+    }
+    expect(await confirmation).toBe("confirmed");
+    expect(await cancellation).toBe("cancelled");
+    const state = await facts(fixture);
+    expect(state.application.status).toBe("CANCELLED");
+    expect(state.current.status).toBe("CANCELLED");
+    expect(state.vehicle.status).toBe("AVAILABLE");
+    expect(state.orders).toHaveLength(0);
+  });
+
+  function instrumentTransactions(
+    inspect: (tx: Prisma.TransactionClient) => Promise<Prisma.TransactionClient>
+  ) {
+    return new Proxy(prisma, {
+      get(target, key) {
+        if (key === "$transaction")
+          return (run: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+            target.$transaction(async (tx) => run(await inspect(tx)), { timeout: 15000 });
+        return Reflect.get(target, key, target);
+      }
+    });
+  }
 
   for (const action of ["cancelApplication", "rejectApplication"] as const) {
     it(`${action} cannot use a pre-bootstrap read after the real bootstrap commits`, async () => {

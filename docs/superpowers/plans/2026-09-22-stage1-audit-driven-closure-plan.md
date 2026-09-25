@@ -109,6 +109,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-journey-
 
 2026-09-25 用户说明：服务器端本系统 Docker 当前全部停止。上述本地验证不依赖线上。后续需要线上连接调试时，先核对本系统 Compose 项目、已部署版本和配置，恢复对应容器并完成健康检查后再调试；具体供应商、付款、数据及发布边界仍按原操作单执行。
 
+2026-09-25 F2 独立审查补充：门户 `confirmFinalPlan` 先更新 Application，再通过 `recordSignal` 更新 Journey，和取消的新锁序构成死锁。为完成同一并发修复，生产范围增加 `apps/api/src/portal/portal-application.service.ts` 的确认事务：更新 Application 之前先锁对应 Journey。新增真实 PG 确认/取消交错，以事务 barrier 和 PostgreSQL 的实际阻塞关系同步；不靠 sleep 或替换业务写入。确认先提交、随后取消应能按顺序完成。既有 `application-review-api.spec.ts` 的 CommonJS/import.meta 编译冲突单独改用 __dirname 路径，保持原 schema 断言，独立提交。
+
 ### 任务 2：保护 PAID 资金事实免于错误金额回调倒退
 
 **接口：** 保持 `PaymentOrderService.handleCallback` 到 `FinanceService.settlePaymentOrder` 的公共路径；错误渠道/验签失败仍不能结算。

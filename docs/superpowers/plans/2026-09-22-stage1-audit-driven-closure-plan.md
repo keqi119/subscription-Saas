@@ -235,7 +235,7 @@ node scripts/release/run-database-suite.mjs --suite-id api.stage1-contract-archi
 - [x] 扩展任务 1 的真实 PG 文件：两 Application 争同一车；同 Application 重复确认；旧 revision/hash；重复 CREATE_ORDER_AND_CONTRACT；合同后段失败回滚；确认后商业漂移；取消/拒绝竞争。结果必须联合查 Application、Vehicle、Quote、Order、Contract、Journey、job/event。
 - [x] 不替换原 golden-path 全部 fixture；在新增切片调用真实服务成功路径，原覆盖继续保留。测试 identity 从 suite context 取得，不从 retired P1 record 取连接。
 - [x] 按 B1 Task4 运行本轮 golden-path fresh，并运行包含新文件的 integrity fresh。分别报告 suite 自己的覆盖，不将 fixture 成功夸大为生产入口并发验证。
-- [ ] 在原执行索引追加本轮 B1/B2 状态、source、计数、原件引用和未覆盖外部事项。
+- [x] 在原执行索引追加本轮 B1/B2 状态、source、计数、原件引用和未覆盖外部事项。
 
 **出口：** B1/B2 当前生产路径与反例闭环；F1/F2 关闭。
 

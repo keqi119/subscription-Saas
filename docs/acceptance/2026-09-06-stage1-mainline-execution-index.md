@@ -17,6 +17,7 @@
 - F4 后续完整门禁已关闭：精确字节判定的 Schema 编译复用已整合 `2cd87533`，证据 `98565931`。干净 source `fc1b1806` 原四文件 249/249、exit 0，Schema 回归 17/17，独立代码及原件审查 ACCEPT；旧失败和中断分类不变。[完整门禁记录](2026-09-25-stage1-parser-full-gate-validation.md)绑定实际 source、140 项输入及日志摘要。任务 3 限定收口；R2 实现、最终 Node22 和阶段 1 继续开放。
 - B1 续接验证已整合 `2eb520fb`、`40b07747`，证据 `ff64a11e`。独立干净 source `7ad53559` 四文件 unit 112/112、ESLint/API tsc 通过，原 golden-path fresh 1/1，唯一新 receipt 与原始/canonical 摘要读回一致、目标退役、独立终审 ACCEPT。[B1 记录](2026-09-25-stage1-intake-business-wait-validation.md)保留既有 Prettier 基线例外和 fixture 证据边界。限定 B1 关闭；任务 6 的 B2 真实服务矩阵仍开放。
 - B2 销售协助进件的门户确认回读缺陷已整合 `f3630d52`，证据 `e6f85b36`：真实 PG 先 31/32 RED，限定一行修复后干净 source `62a7567a` 完整 32/32、exit 0；三文件 unit 84/84、API tsc/ESLint 通过，custody/readback/退役及独立终审 ACCEPT。[限定修复记录](2026-09-25-stage1-sales-assisted-confirmation-validation.md)保留无 Journey 销售进件/其他客户拒绝边界、真实 A/B 路径与 fixture 限制。完整 B2 的竞争和回滚矩阵继续开放。
+- B2 完整本地矩阵已整合 `cbbfc58b`、`84abe0aa`，记录 `e24cd92f`。最终干净 source `a92b2f66` 的 integrity fresh 38/38、API tsc/owned ESLint 均通过，custody/readback、退役及独立终审 ACCEPT。[B2 矩阵记录](2026-09-25-stage1-application-order-matrix-validation.md)保留首轮 37/38 夹具前置失败，限定真实预留竞争、独立 revision/hash、并发幂等、合同写后回滚和既有 F1/F2 回归。结合 B1 原 source 的 112/112 unit 和 golden-path 1/1，审计收口计划任务 6 的本地证据范围关闭；不影响旧冻结 Task6，也不替代 B4/B6 或最终候选证据。
 - 用户说明服务器端本系统 Docker 当前全部停止。需要线上联调前先核对并恢复本系统容器、验证健康；当前本地测试不依赖线上。
 - 阶段 1 签字、最终 Node22 三镜像、真实渠道/浏览器、snapshot 双链及外部操作仍未完成。
 

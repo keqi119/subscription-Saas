@@ -216,15 +216,25 @@ describe("Stage 1 application and order authority", () => {
   }
 
   async function facts(fixture: Awaited<ReturnType<typeof confirmedApplication>>) {
-    const [application, vehicle, current, orders, contracts, quotes] = await Promise.all([
-      prisma.application.findUniqueOrThrow({ where: { id: fixture.applicationId } }),
-      prisma.vehicle.findUniqueOrThrow({ where: { id: fixture.vehicleId } }),
-      prisma.subscriptionJourney.findUniqueOrThrow({ where: { id: fixture.journeyId } }),
-      prisma.subscriptionOrder.findMany({ where: { applicationId: fixture.applicationId } }),
-      prisma.contract.findMany({ where: { order: { applicationId: fixture.applicationId } } }),
-      prisma.subscriptionQuote.findMany({ where: { applicationId: fixture.applicationId } })
-    ]);
-    return { application, vehicle, current, orders, contracts, quotes };
+    const [application, vehicle, current, orders, contracts, quotes, accounts, grants, audits] =
+      await Promise.all([
+        prisma.application.findUniqueOrThrow({ where: { id: fixture.applicationId } }),
+        prisma.vehicle.findUniqueOrThrow({ where: { id: fixture.vehicleId } }),
+        prisma.subscriptionJourney.findUniqueOrThrow({ where: { id: fixture.journeyId } }),
+        prisma.subscriptionOrder.findMany({ where: { applicationId: fixture.applicationId } }),
+        prisma.contract.findMany({ where: { order: { applicationId: fixture.applicationId } } }),
+        prisma.subscriptionQuote.findMany({ where: { applicationId: fixture.applicationId } }),
+        prisma.orderEntitlementAccount.findMany({
+          where: { order: { applicationId: fixture.applicationId } }
+        }),
+        prisma.orderEntitlementGrant.findMany({
+          where: { order: { applicationId: fixture.applicationId } }
+        }),
+        prisma.auditLog.findMany({
+          where: { entityId: fixture.applicationId, entityType: "application" }
+        })
+      ]);
+    return { application, vehicle, current, orders, contracts, quotes, accounts, grants, audits };
   }
 
   async function expectOrdered(fixture: Awaited<ReturnType<typeof confirmedApplication>>) {
@@ -240,6 +250,21 @@ describe("Stage 1 application and order authority", () => {
     expect(state.orders[0]!.mileageLimitKm).toBe(1500);
     expect(state.orders[0]!.periodMonths).toBe(6);
     expect(state.orders[0]!.quoteSnapshot).toEqual(state.application.finalQuoteSnapshot);
+    expect(state.accounts).toHaveLength(1);
+    expect(state.accounts[0]!.accountStatus).toBe("SUSPENDED");
+    expect(
+      state.grants.map(({ entitlementType, totalAmount, remainingAmount }) => ({
+        entitlementType,
+        total: totalAmount?.toString(),
+        remaining: remainingAmount?.toString()
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        { entitlementType: "MILEAGE", total: "1500", remaining: "1500" },
+        { entitlementType: "ENERGY", total: "100", remaining: "100" }
+      ])
+    );
+    expect(state.grants).toHaveLength(2);
     return state;
   }
 
@@ -302,10 +327,9 @@ describe("Stage 1 application and order authority", () => {
       cancellationEntered.resolve();
       return tx;
     });
-    const confirmation = fixture.confirm(confirmingClient).then(
-      () => "confirmed",
-      (error: Error) => error.message
-    );
+    const confirmation = fixture
+      .confirm(confirmingClient)
+      .then(() => "confirmed", databaseFailureLabel);
     let cancellation: Promise<unknown> | undefined;
     try {
       await updatedApplication.promise;
@@ -316,10 +340,7 @@ describe("Stage 1 application and order authority", () => {
           fixture.actor,
           context
         )
-        .then(
-          () => "cancelled",
-          (error: Error) => error.message
-        );
+        .then(() => "cancelled", databaseFailureLabel);
       await cancellationEntered.promise;
       // Observe an actual lock wait, then release the first transaction. No timing-dependent sleep.
       const deadline = Date.now() + 5000;
@@ -341,6 +362,17 @@ describe("Stage 1 application and order authority", () => {
     expect(state.current.status).toBe("CANCELLED");
     expect(state.vehicle.status).toBe("AVAILABLE");
     expect(state.orders).toHaveLength(0);
+    expect(state.audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          beforeSnapshot: expect.objectContaining({
+            planConfirmStatus: "CONFIRMED",
+            status: "APPROVED"
+          }),
+          afterSnapshot: expect.objectContaining({ status: "CANCELLED" })
+        })
+      ])
+    );
   });
 
   function instrumentTransactions(
@@ -411,6 +443,16 @@ describe("Stage 1 application and order authority", () => {
       expect(state.orders).toHaveLength(0);
       expect(state.contracts).toHaveLength(0);
       expect(state.quotes).toHaveLength(0);
+      expect(state.accounts).toHaveLength(0);
+      expect(state.grants).toHaveLength(0);
+      expect(state.audits).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            beforeSnapshot: expect.objectContaining({ status: "APPROVED" }),
+            afterSnapshot: expect.objectContaining({ status: state.application.status })
+          })
+        ])
+      );
     });
   }
 });
@@ -421,4 +463,8 @@ function deferred() {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+function databaseFailureLabel(error: Error) {
+  return /deadlock detected/i.test(error.message) ? "PostgreSQL deadlock detected" : error.message;
 }

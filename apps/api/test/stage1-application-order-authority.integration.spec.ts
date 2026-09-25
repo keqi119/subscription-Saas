@@ -267,7 +267,7 @@ describe("Stage 1 application and order authority", () => {
         [action](fixture.applicationId, { reason: "Synthetic test" }, fixture.actor, context)
         .then(
           () => ({ rejected: false }),
-          () => ({ rejected: true })
+          (error: Error) => ({ rejected: true, message: error.message })
         );
       try {
         await entered.promise;
@@ -275,7 +275,10 @@ describe("Stage 1 application and order authority", () => {
       } finally {
         release.resolve();
       }
-      expect(await cancellation).toEqual({ rejected: true });
+      expect(await cancellation).toEqual({
+        rejected: true,
+        message: "该进件已生成订单，请勿重复处理。"
+      });
       await expectOrdered(fixture);
     });
 

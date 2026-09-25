@@ -794,6 +794,25 @@ describe("PortalApplicationService", () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
+  it("blocks final plan confirmation for a sales-assisted application without a Journey", async () => {
+    const harness = createPortalApplicationFixture({
+      application: readyFinalPlanApplication({
+        applicationSource: ApplicationSource.SALES_ASSISTED,
+        subscriptionJourney: null
+      })
+    });
+
+    await expect(harness.service.confirmFinalPlan(
+      "application-1",
+      { revision: 1, commercialHash: FINAL_PLAN_COMMERCIAL_HASH },
+      currentCustomer("customer-1"),
+      requestContext()
+    )).rejects.toBeInstanceOf(NotFoundException);
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+    expect(harness.tx.application.updateMany).not.toHaveBeenCalled();
+    expect(harness.customerService.recordJourneyCustomerPlanConfirmation).not.toHaveBeenCalled();
+  });
+
   it("requires and records the exact Journey final-plan revision", async () => {
     const harness = createPortalApplicationFixture({
       application: readyFinalPlanApplication({
@@ -915,7 +934,7 @@ function createPortalApplicationFixture(
     $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
     application: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-        if (where.id !== application.id || where.customerId !== application.customerId) {
+        if (!matchesPortalApplicationWhere(application, where)) {
           return null;
         }
         return application;
@@ -1108,7 +1127,7 @@ function createPortalTransaction(application: ReturnType<typeof createApplicatio
     $queryRaw: vi.fn(async () => []),
     application: {
       findFirstOrThrow: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-        if (where.id !== application.id || where.customerId !== application.customerId) {
+        if (!matchesPortalApplicationWhere(application, where)) {
           throw new Error("Application not found");
         }
         return application;
@@ -1147,6 +1166,20 @@ function createPortalTransaction(application: ReturnType<typeof createApplicatio
       }))
     }
   };
+}
+
+function matchesPortalApplicationWhere(
+  application: Record<string, unknown>,
+  where: Record<string, unknown>
+): boolean {
+  for (const field of ["id", "customerId", "applicationSource", "deletedAt"]) {
+    if (field in where && (application[field] ?? null) !== where[field]) return false;
+  }
+  const relation = where.subscriptionJourney as { isNot?: unknown } | undefined;
+  if (relation?.isNot === null && !application.subscriptionJourney) return false;
+  return !Array.isArray(where.OR) || where.OR.some(
+    (condition: Record<string, unknown>) => matchesPortalApplicationWhere(application, condition)
+  );
 }
 
 function readyFinalPlanApplication(overrides: Record<string, unknown> = {}) {

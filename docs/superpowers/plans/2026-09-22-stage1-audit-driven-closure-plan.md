@@ -281,6 +281,13 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 **出口：** B4/B6 有当前界面实际入口证据，F6 关闭，样本准备可以绑定完整事实。
 
+#### B4 激活与 ACK 恢复验证限域（2026-09-25）
+
+- 新增仅供两份既有 PG 文件复用的 `apps/api/test/helpers/stage1-activation-fixture.ts`。该 helper 接收 suite 已创建的 PrismaService，不读取环境/连接、不创建目标/launcher；准备已归档合同、实际到账核销、完整 Stage2 文件元数据/客户确认/人工审核及待激活 Journey，所有激活写入调用真实 LeaseActivationEngine 和既有依赖。文件字节/供应商及激活前的人工事实是明确 fixture 边界。
+- golden-path 新增 A/B 真实激活成功和完整重放切片，不替换原收敛 fixture。failure-recovery 新增缺前置事实拒绝、真实 BASE 与 Period 写后失败回滚，以及真实 worker 在业务提交后 ACK 事务失败、调度重放与最终 ACK 的恢复；联合读取权威事实与 job/event/audit。
+- 静态发现 `claimJobs` 排除所有 COMPLETED Journey，可能使激活事务已提交但 ACK 失败的任务无法再领取。先用完整真实激活和 ACK 后写入异常验证，不把手工终态构造当成唯一证明。若确定 RED，生产范围仅扩至 `subscription-journey.repository.ts` 的领取准入与其精确回归：只允许与已完成权威激活 step、该 Journey/order 对齐的 ACTIVATE_SUBSCRIPTION 重放；其他终态/暂停/取消/过期计划不放开，不改通用重试策略、不重激活业务事实。实现前独立审查精确条件，保留旧 handler 与锁/lease 语义。
+- B6 诊断运行时保持其 source 不变，本单元在独立 `stage1-b4-activation-20260925` worktree 准备测试；集成后串行受控 PG，不并发数据库重负载。最终仍按任务 8 原三套顺序同 source 完整验证。
+
 #### F6 关单审计限域实施（2026-09-25）
 - 2026-09-25 争议场景衔接限域：真实定价新增应收后必须再次 propose 捕获新账单，再以真实 createPricing 复用旧 bill、追加后继 chargeLine，才能 finalize，禁止回填 proposal 摘要。该合法路径及同版本重放静态发现两处 evidenceIds 数组误传对象根 canonical 函数；聚焦真实 createPricing 单测已得到 8/12、四项 TypeError 反例。独立修正仅把两处比较双方包为 `{ evidenceIds }` 对象，排序、全部字段对比及同键改证据/活跃账单禁止直接改价条件保持，不改通用序列化函数。新增 B6 样本同时走真实四项证据上传、清单版本/hash 绑定的受管实物接收，外观责任未定在 inspection 前拒绝；真实责任确认/定价/最终发布/客户争议与平台接受后分别验证当前完成入口拒绝。未定责任与合法 FINALIZED 不能沿当前链同时存在，PG 证明其前置守卫，complete 内该分支由独立 unit 隔离。
 - 第六轮 source `c5b8ef21` 全量 88 执行、82 通过：原 80 项全过，新增两项业务拒绝通过；正常完成与回滚后重试明确触发 `terminal closure requires the case current FINAL settlement revision at SETTLED stage`，即旧延迟提交约束尚未兼容运营完成。另以独立前向迁移修正该函数：仍要求本案、最新指针、FINAL 类型，仅增加“FINALIZED 且本案 operational_completed_at 已记录”的替代；旧未记录运营完成的路径仍强制 SETTLED。补 schema 级 PROPOSED 即使有运营时间仍拒绝、FINALIZED 只有结清时间仍拒绝、FINALIZED 加运营时间可行及原 SETTLED 兼容断言；不回写结清、余额或历史迁移。缺两类时间的负例须先满足 version 递增规则，避免被其他约束提前截住。上一轮旧 Task9 异常未复现，原因仍未知，不抹去历史失败。

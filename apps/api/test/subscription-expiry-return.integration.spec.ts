@@ -94,179 +94,6 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
     await prisma.onModuleDestroy();
   });
 
-  it("B6 completes a paid normal expiry through the current operational entry and replays without writes", async () => {
-    const h = await prepareGovernedCompletion(prisma);
-    const before = await completionTruth(prisma, h.scenario.fixture);
-    await expect(h.complete()).resolves.toMatchObject({
-      financialStatus: "SETTLED",
-      replayed: false,
-      status: "COMPLETED"
-    });
-    const after = await completionTruth(prisma, h.scenario.fixture);
-    expect(after.closure).toMatchObject({
-      closureType: "NORMAL_EXPIRY",
-      financialStatus: "SETTLED",
-      operationalCompletedAt: h.occurredAt,
-      status: "COMPLETED"
-    });
-    expect(after.order.orderStatus).toBe("COMPLETED");
-    expect(after.contract.status).toBe("COMPLETED");
-    expect(after.vehicle.status).toBe("AVAILABLE");
-    expect(after.lease?.status).toBe("TERMINATED");
-    expect(after.periods).toHaveLength(1);
-    expect(after.periods[0]?.endedAt).toBeInstanceOf(Date);
-    expect(after.bills).toEqual([
-      expect.objectContaining({
-        amount: 100n,
-        billStatus: "PAID",
-        paidAmount: 100n,
-        remainingAmount: 0n
-      })
-    ]);
-    expect(after.payments).toEqual([expect.objectContaining({ paymentAmount: 100n })]);
-    expect(after.writeOffs).toEqual([expect.objectContaining({ writeOffAmount: 100n })]);
-    expect({
-      lease: after.lease,
-      periods: after.periods,
-      bills: after.bills,
-      payments: after.payments,
-      writeOffs: after.writeOffs,
-      vehicle: after.vehicle
-    }).toEqual({
-      lease: before.lease,
-      periods: before.periods,
-      bills: before.bills,
-      payments: before.payments,
-      writeOffs: before.writeOffs,
-      vehicle: before.vehicle
-    });
-    const completionAudits = after.audits.filter(
-      ({ entityType }) => entityType === "subscription_closure_case"
-    );
-    expect(completionAudits).toEqual([
-      expect.objectContaining({
-        action: "UPDATE",
-        beforeSnapshot: {
-          closureCaseId: h.scenario.closureCase.id,
-          closureStatus: before.closure.status,
-          contractId: before.contract.id,
-          contractStatus: before.contract.status,
-          financialStatus: before.closure.financialStatus,
-          orderId: before.order.id,
-          orderStatus: before.order.orderStatus
-        },
-        afterSnapshot: {
-          closureCaseId: h.scenario.closureCase.id,
-          closureStatus: "COMPLETED",
-          contractId: before.contract.id,
-          contractStatus: "COMPLETED",
-          financialStatus: "SETTLED",
-          idempotencyKey: h.input.idempotencyKey,
-          orderId: before.order.id,
-          orderStatus: "COMPLETED"
-        },
-        createdAt: h.occurredAt,
-        entityId: h.scenario.closureCase.id,
-        operatorId: h.scenario.fixture.actorId
-      })
-    ]);
-    await expect(h.complete()).resolves.toMatchObject({ replayed: true, status: "COMPLETED" });
-    await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(after);
-  });
-
-  it.each([
-    [
-      "missing customer acceptance",
-      { accept: false },
-      "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED"
-    ],
-    [
-      "unassigned unpaid receivable",
-      { paid: false },
-      "CLOSURE_OPERATIONAL_FINANCIAL_OWNER_REQUIRED"
-    ]
-  ] as const)("B6 refuses %s without changing any joint facts", async (_name, options, code) => {
-    const h = await prepareGovernedCompletion(prisma, options);
-    const before = await completionTruth(prisma, h.scenario.fixture);
-    await expect(h.complete()).rejects.toMatchObject({ response: { code } });
-    await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(before);
-  });
-
-  it.each(["contract", "auditLog"] as const)(
-    "F6 rolls back real completion after the %s write and permits an exact retry",
-    async (model) => {
-      const h = await prepareGovernedCompletion(prisma);
-      const before = await completionTruth(prisma, h.scenario.fixture);
-      const failure = new Error(`F6_AFTER_${model}_WRITE`);
-      let reached = false;
-      const hooked = new Proxy(prisma, {
-        get(target, property) {
-          if (property !== "$transaction") return Reflect.get(target, property);
-          return (work: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
-            target.$transaction(async (tx) => {
-              const hookedTx = new Proxy(tx, {
-                get(transaction, delegate) {
-                  const value = Reflect.get(transaction, delegate);
-                  if (delegate !== model) return value;
-                  return new Proxy(value, {
-                    get(actualDelegate, method) {
-                      const original = Reflect.get(actualDelegate, method);
-                      if (method !== (model === "contract" ? "update" : "create")) return original;
-                      return async (...args: unknown[]) => {
-                        await Reflect.apply(original, actualDelegate, args);
-                        if (model === "auditLog") {
-                          expect(
-                            await tx.auditLog.count({
-                              where: {
-                                entityId: h.scenario.closureCase.id,
-                                entityType: "subscription_closure_case"
-                              }
-                            })
-                          ).toBe(1);
-                          expect(
-                            await tx.subscriptionClosureCase.findUniqueOrThrow({
-                              where: { id: h.scenario.closureCase.id }
-                            })
-                          ).toMatchObject({ status: "COMPLETED" });
-                        } else {
-                          expect(
-                            await tx.contract.findUniqueOrThrow({
-                              where: { id: h.scenario.fixture.contractId }
-                            })
-                          ).toMatchObject({ status: "COMPLETED" });
-                        }
-                        reached = true;
-                        throw failure;
-                      };
-                    }
-                  });
-                }
-              });
-              return work(hookedTx);
-            });
-        }
-      });
-      await expect(
-        completionGovernance(hooked).completeOperations(
-          h.scenario.closureCase.id,
-          h.input,
-          h.scenario.fixture.actorId
-        )
-      ).rejects.toBe(failure);
-      expect(reached).toBe(true);
-      await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(before);
-      await expect(h.complete()).resolves.toMatchObject({ replayed: false, status: "COMPLETED" });
-      await expect(
-        prisma.auditLog.count({
-          where: {
-            entityId: h.scenario.closureCase.id,
-            entityType: "subscription_closure_case"
-          }
-        })
-      ).resolves.toBe(1);
-    }
-  );
-
   it("keeps AuditService persistence timestamps implicit unless an internal caller supplies one", async () => {
     const create = vi.fn(async (input: { data: Record<string, unknown> }) => {
       void input;
@@ -7741,6 +7568,180 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       await cleanupManagedExpiryFixture(prisma, fixture);
     }
   });
+
+  it("B6 completes a paid normal expiry through the current operational entry and replays without writes", async () => {
+    const h = await prepareGovernedCompletion(prisma);
+    const before = await completionTruth(prisma, h.scenario.fixture);
+    await expect(h.complete()).resolves.toMatchObject({
+      financialStatus: "SETTLED",
+      replayed: false,
+      status: "COMPLETED"
+    });
+    const after = await completionTruth(prisma, h.scenario.fixture);
+    expect(after.closure).toMatchObject({
+      closureType: "NORMAL_EXPIRY",
+      financialStatus: "SETTLED",
+      operationalCompletedAt: h.occurredAt,
+      status: "COMPLETED"
+    });
+    expect(after.order.orderStatus).toBe("COMPLETED");
+    expect(after.contract.status).toBe("COMPLETED");
+    expect(after.vehicle.status).toBe("AVAILABLE");
+    expect(after.lease?.status).toBe("TERMINATED");
+    expect(after.periods).toHaveLength(1);
+    expect(after.periods[0]?.endedAt).toBeInstanceOf(Date);
+    expect(after.bills).toEqual([
+      expect.objectContaining({
+        amount: 100n,
+        billStatus: "PAID",
+        paidAmount: 100n,
+        remainingAmount: 0n
+      })
+    ]);
+    expect(after.payments).toEqual([expect.objectContaining({ paymentAmount: 100n })]);
+    expect(after.writeOffs).toEqual([expect.objectContaining({ writeOffAmount: 100n })]);
+    expect({
+      lease: after.lease,
+      periods: after.periods,
+      bills: after.bills,
+      payments: after.payments,
+      writeOffs: after.writeOffs,
+      vehicle: after.vehicle
+    }).toEqual({
+      lease: before.lease,
+      periods: before.periods,
+      bills: before.bills,
+      payments: before.payments,
+      writeOffs: before.writeOffs,
+      vehicle: before.vehicle
+    });
+    const completionAudits = after.audits.filter(
+      ({ entityType }) => entityType === "subscription_closure_case"
+    );
+    expect(completionAudits).toEqual([
+      expect.objectContaining({
+        action: "UPDATE",
+        beforeSnapshot: {
+          closureCaseId: h.scenario.closureCase.id,
+          closureStatus: before.closure.status,
+          contractId: before.contract.id,
+          contractStatus: before.contract.status,
+          financialStatus: before.closure.financialStatus,
+          orderId: before.order.id,
+          orderStatus: before.order.orderStatus
+        },
+        afterSnapshot: {
+          closureCaseId: h.scenario.closureCase.id,
+          closureStatus: "COMPLETED",
+          contractId: before.contract.id,
+          contractStatus: "COMPLETED",
+          financialStatus: "SETTLED",
+          idempotencyKey: h.input.idempotencyKey,
+          orderId: before.order.id,
+          orderStatus: "COMPLETED"
+        },
+        createdAt: h.occurredAt,
+        entityId: h.scenario.closureCase.id,
+        operatorId: h.scenario.fixture.actorId
+      })
+    ]);
+    await expect(h.complete()).resolves.toMatchObject({ replayed: true, status: "COMPLETED" });
+    await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(after);
+  });
+
+  it.each([
+    [
+      "missing customer acceptance",
+      { accept: false },
+      "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED"
+    ],
+    [
+      "unassigned unpaid receivable",
+      { paid: false },
+      "CLOSURE_OPERATIONAL_FINANCIAL_OWNER_REQUIRED"
+    ]
+  ] as const)("B6 refuses %s without changing any joint facts", async (_name, options, code) => {
+    const h = await prepareGovernedCompletion(prisma, options);
+    const before = await completionTruth(prisma, h.scenario.fixture);
+    await expect(h.complete()).rejects.toMatchObject({ response: { code } });
+    await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(before);
+  });
+
+  it.each(["contract", "auditLog"] as const)(
+    "F6 rolls back real completion after the %s write and permits an exact retry",
+    async (model) => {
+      const h = await prepareGovernedCompletion(prisma);
+      const before = await completionTruth(prisma, h.scenario.fixture);
+      const failure = new Error(`F6_AFTER_${model}_WRITE`);
+      let reached = false;
+      const hooked = new Proxy(prisma, {
+        get(target, property) {
+          if (property !== "$transaction") return Reflect.get(target, property);
+          return (work: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+            target.$transaction(async (tx) => {
+              const hookedTx = new Proxy(tx, {
+                get(transaction, delegate) {
+                  const value = Reflect.get(transaction, delegate);
+                  if (delegate !== model) return value;
+                  return new Proxy(value, {
+                    get(actualDelegate, method) {
+                      const original = Reflect.get(actualDelegate, method);
+                      if (method !== (model === "contract" ? "update" : "create")) return original;
+                      return async (...args: unknown[]) => {
+                        await Reflect.apply(original, actualDelegate, args);
+                        if (model === "auditLog") {
+                          expect(
+                            await tx.auditLog.count({
+                              where: {
+                                entityId: h.scenario.closureCase.id,
+                                entityType: "subscription_closure_case"
+                              }
+                            })
+                          ).toBe(1);
+                          expect(
+                            await tx.subscriptionClosureCase.findUniqueOrThrow({
+                              where: { id: h.scenario.closureCase.id }
+                            })
+                          ).toMatchObject({ status: "COMPLETED" });
+                        } else {
+                          expect(
+                            await tx.contract.findUniqueOrThrow({
+                              where: { id: h.scenario.fixture.contractId }
+                            })
+                          ).toMatchObject({ status: "COMPLETED" });
+                        }
+                        reached = true;
+                        throw failure;
+                      };
+                    }
+                  });
+                }
+              });
+              return work(hookedTx);
+            });
+        }
+      });
+      await expect(
+        completionGovernance(hooked).completeOperations(
+          h.scenario.closureCase.id,
+          h.input,
+          h.scenario.fixture.actorId
+        )
+      ).rejects.toBe(failure);
+      expect(reached).toBe(true);
+      await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(before);
+      await expect(h.complete()).resolves.toMatchObject({ replayed: false, status: "COMPLETED" });
+      await expect(
+        prisma.auditLog.count({
+          where: {
+            entityId: h.scenario.closureCase.id,
+            entityType: "subscription_closure_case"
+          }
+        })
+      ).resolves.toBe(1);
+    }
+  );
+
 });
 
 function passthroughClosureOrchestrator() {
@@ -8761,13 +8762,13 @@ async function prepareGovernedCompletion(
   });
   await prisma.vehicleHandoverWorkOrder.create({
     data: {
-      accessoryItems: [{ code: "CHARGER", name: "Charger", quantity: 1, state: "NORMAL" }],
+      accessoryItems: [{ code: "CHARGER", name: "Charger", quantity: 1, state: "PRESENT" }],
       assignedInternalUserId: fixture.actorId,
       fieldCompletedAt: new Date("2026-03-03T02:00:00.000Z"),
       handoverId: delivery.id,
       handoverMileageKm: 1200,
       handoverType: "DELIVERY_OUTBOUND",
-      keyState: "NORMAL",
+      keyState: "COMPLETE",
       orderId: fixture.orderId,
       primaryKeyCount: 1,
       registrationDocumentState: "HANDED_OVER",
@@ -8821,7 +8822,7 @@ async function prepareGovernedCompletion(
   };
   expect(
     await prisma.lease.findUniqueOrThrow({ where: { orderId: fixture.orderId } })
-  ).toMatchObject({ status: "ACTIVE" });
+  ).toMatchObject({ status: "RETURN_DUE" });
   expect(
     await prisma.vehicleSubscriptionPeriod.findMany({ where: { orderId: fixture.orderId } })
   ).toEqual([expect.objectContaining({ endedAt: null })]);

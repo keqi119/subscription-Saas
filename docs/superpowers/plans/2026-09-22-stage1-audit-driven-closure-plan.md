@@ -115,6 +115,15 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-journey-
 
 18 项 PG 通过后的独立审查发现：资料上传先锁既存资料组，再插入带 Application 外键的文件；资料组审核先锁 Application，再等组记录。新增真实上传/审核交错后，评估把共同 Application 锁收窄到 `FOR NO KEY UPDATE`：业务不更新进件主键，仍与状态写入互斥，同时允许纯外键检查的 KEY SHARE，避免扩写附件上传/删除流程。存储边界仅使用合成 adapter，数据库读写和审核/上传服务均真实执行；本轮不宣称对象存储渠道验收。
 
+#### F1 商业漂移与恢复的精确实施范围（2026-09-25）
+
+- 在既有 CustomerService 两个建单入口比较已确认快照与本次实际写 Quote/Order 的 details 商业投影：押金/规则、周期、全部定价、套餐及额度、车型/车辆身份；只排除车辆 status、assetLocation、currentMileageKm 等运营观测字段及确认时间等顶层元数据。原 commercialPlanHash 协议不变；Journey 的 revision/hash 与快照须一致。检查发生在 Quote/Order/车辆终态写入之前。
+- 使用内部可辨识的商业漂移错误，沿用 `FINAL_PLAN_REVISION_STALE` 代码；不能将无关 stale revision、无效商品或基础设施故障全部改判为正常等待。公开直接建单返回明确的业务拒绝。
+- 生产范围增加 `subscription-journey.errors.ts`、`subscription-journey-json.ts`、`subscription-journey.repository.ts`、`subscription-journey.service.ts`。真实 bootstrap 捕获此特定漂移，在原事务/权威锁内确认没有订单后，把现有最终方案、车辆分配、客户确认及建单步骤重置为可再次执行状态，创建新的 FINAL_PLAN_DECISION 人工任务和带本次 revision 的幂等事件；旧任务/事件保留。原已确认 Application 快照/确认值不改写。正常业务等待返回可完成 job 的结果，不进入技术 retry/dead-letter。
+- 恢复只使用现有 `decideFinalPlan`、门户确认及信号消费：人工发布新 revision 清除旧确认，客户明确确认后才能重新生成 bootstrap job。再次发生漂移仍可重新进入人工任务；旧 job 响应丢失后的重放依据对应恢复事件返回原等待结果，不能扰动新 revision 或重复创建任务。保留原 job lease 供正常完成。
+- 不新增 DTO、模型、枚举、权限或 UI 动作；人工待办复用现有入口，恢复事件记录原因、旧 revision/step 和 taskId。测试扩展已有 authority PG 文件及原聚焦 unit：八类事实变更拒绝、运营元数据变化合法、直接建单拒绝、两轮重新报价/确认/最终建单、旧 job 重放及共同终态/权益/审计。
+- 先提交测试并用完整 integrity fresh 保存真实 RED/受控 migrate deploy/status/diff，再改业务；最终同套 fresh、相关 unit、tsc/lint、契约/发现检查及独立审查后单独接回实施分支。F2 原 19 项保持。此项不扩大为 B1/B2 全矩阵或阶段 1 验收。
+
 ### 任务 2：保护 PAID 资金事实免于错误金额回调倒退
 
 **接口：** 保持 `PaymentOrderService.handleCallback` 到 `FinanceService.settlePaymentOrder` 的公共路径；错误渠道/验签失败仍不能结算。

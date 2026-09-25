@@ -54,7 +54,8 @@ describe("Stage 1 application and order authority", () => {
       prisma,
       customer,
       new OrderService(audit, prisma),
-      new OrderEntitlementService()
+      new OrderEntitlementService(),
+      undefined, undefined, undefined, undefined, undefined, audit
     );
     await prisma.contractVersion.create({
       data: {
@@ -174,7 +175,7 @@ describe("Stage 1 application and order authority", () => {
       },
       include: { steps: true }
     });
-    const confirm = (client = prisma) =>
+    const confirm = (client = prisma, revision = 1, commercialHash = hash) =>
       new PortalApplicationService(
         audit,
         new ConfigService({}),
@@ -183,7 +184,7 @@ describe("Stage 1 application and order authority", () => {
         {} as never
       ).confirmFinalPlan(
         applicationId,
-        { revision: 1, commercialHash: hash },
+        { revision, commercialHash },
         {
           accountStatus: "ACTIVE",
           customerAccountId: randomUUID(),
@@ -209,6 +210,7 @@ describe("Stage 1 application and order authority", () => {
       actor,
       applicationId,
       confirm,
+      planId,
       vehicleId,
       journeyId: current.id,
       job: job as ClaimedJourneyJob
@@ -281,6 +283,173 @@ describe("Stage 1 application and order authority", () => {
       await repository.completeOutbox(tx, completed!.id, completed!.leaseToken);
     });
   }
+
+  async function changeCommercialFact(
+    fixture: Awaited<ReturnType<typeof confirmedApplication>>,
+    fact: string
+  ) {
+    const plan = await prisma.subscriptionPlan.findUniqueOrThrow({ where: { id: fixture.planId } });
+    switch (fact) {
+      case "vehicle price":
+        await prisma.vehicle.update({ where: { id: fixture.vehicleId }, data: { currentSalePriceAmount: 1200000n } });
+        break;
+      case "mileage price":
+        await prisma.mileagePackage.update({ where: { id: plan.mileagePackageId }, data: { priceAmount: { increment: 1000n } } });
+        break;
+      case "energy price":
+        await prisma.energyPackage.update({ where: { id: plan.energyPackageId }, data: { priceAmount: 3000n } });
+        break;
+      case "mileage quota":
+        await prisma.mileagePackage.update({ where: { id: plan.mileagePackageId }, data: { monthlyMileageKm: 2000 } });
+        break;
+      case "energy quota":
+        await prisma.energyPackage.update({ where: { id: plan.energyPackageId }, data: { monthlyEnergyKwh: 200 } });
+        break;
+      case "over mileage fee":
+        await prisma.mileagePackage.update({ where: { id: plan.mileagePackageId }, data: { overMileageFeeAmount: { increment: 100n } } });
+        break;
+      case "period":
+        await prisma.application.update({ where: { id: fixture.applicationId }, data: { finalPeriodMonths: 12 } });
+        break;
+      case "vehicle identity":
+        await prisma.vehicle.update({ where: { id: fixture.vehicleId }, data: { vin: `F1${randomUUID().replaceAll("-", "").slice(0, 15)}` } });
+        break;
+      default:
+        throw new Error(`Unknown commercial fact: ${fact}`);
+    }
+  }
+
+  async function expectRequote(
+    fixture: Awaited<ReturnType<typeof confirmedApplication>>,
+    before: Awaited<ReturnType<typeof facts>>
+  ) {
+    const state = await facts(fixture);
+    expect(state.application.finalPlanSnapshot).toEqual(before.application.finalPlanSnapshot);
+    expect(state.application.finalQuoteSnapshot).toEqual(before.application.finalQuoteSnapshot);
+    expect(state.application.finalPlanCommercialHash).toBe(before.application.finalPlanCommercialHash);
+    expect(state.application.customerConfirmedPlanRevision).toBe(before.application.customerConfirmedPlanRevision);
+    expect(state.application.planConfirmStatus).toBe("CONFIRMED");
+    expect(state.application.finalPlanConfirmedAt).toEqual(before.application.finalPlanConfirmedAt);
+    expect(state.vehicle.status).toBe("REVIEW_RESERVED");
+    expect(state.orders).toHaveLength(0);
+    expect(state.quotes).toHaveLength(0);
+    expect(state.contracts).toHaveLength(0);
+    expect(state.accounts).toHaveLength(0);
+    expect(state.grants).toHaveLength(0);
+    expect(state.current).toMatchObject({ currentStepCode: "FINAL_PLAN_DECISION", status: "WAITING_MANUAL", orderId: null });
+    const tasks = await prisma.subscriptionJourneyManualTask.findMany({
+      where: { journeyId: fixture.journeyId, status: "OPEN" }
+    });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ taskType: "FINAL_PLAN_DECISION", inputSnapshot: { reason: "FINAL_PLAN_REVISION_STALE", finalPlanRevision: before.application.finalPlanRevision } });
+    return state;
+  }
+
+  it.each([
+    "vehicle price", "mileage price", "energy price", "mileage quota",
+    "energy quota", "over mileage fee", "period", "vehicle identity"
+  ])("returns to manual pricing without writing an order after confirmed %s changes", async (fact) => {
+    const fixture = await confirmedApplication();
+    const before = await facts(fixture);
+    await changeCommercialFact(fixture, fact);
+    await expect(journey.createOrderAndContractJob(fixture.job)).resolves.toMatchObject({ action: "ORDER_AND_CONTRACT_WAITING_REQUOTE" });
+    await expectRequote(fixture, before);
+  });
+
+  it("allows operational vehicle observations to change without replacing confirmed commercial facts", async () => {
+    const fixture = await confirmedApplication();
+    await prisma.vehicle.update({
+      where: { id: fixture.vehicleId },
+      data: { assetLocation: "Synthetic preparation bay", currentMileageKm: { increment: 10 } }
+    });
+    await bootstrap(fixture);
+    await expectOrdered(fixture);
+  });
+
+  it("rejects commercial drift through the public direct creation entry before any writes", async () => {
+    const fixture = await confirmedApplication();
+    const before = await facts(fixture);
+    await changeCommercialFact(fixture, "mileage quota");
+    await expect(customer.createOrderFromApplication(fixture.applicationId, fixture.actor, context))
+      .rejects.toThrow("FINAL_PLAN_REVISION_STALE");
+    const after = await facts(fixture);
+    expect(after.orders).toHaveLength(0);
+    expect(after.quotes).toHaveLength(0);
+    expect(after.vehicle.status).toBe("REVIEW_RESERVED");
+    expect(after.application.finalPlanSnapshot).toEqual(before.application.finalPlanSnapshot);
+  });
+
+  async function dispatchPendingSignals(journeyId: string) {
+    for (let round = 0; round < 20; round += 1) {
+      const pending = await prisma.subscriptionJourneyOutbox.count({
+        where: { journeyId, status: "PENDING", aggregateType: { not: "JOURNEY_NOTIFICATION" } }
+      });
+      if (pending === 0) return;
+      await prisma.$transaction(async (tx) => {
+        const rows = await repository.claimSignalOutbox(tx, 1000, 120000);
+        for (const row of rows.filter((value) => value.journeyId === journeyId)) {
+          await journey.dispatchSignalOutbox(tx, row);
+          await repository.completeOutbox(tx, row.id, row.leaseToken);
+        }
+      });
+    }
+    throw new Error("Journey signal drain did not settle");
+  }
+
+  it("reopens pricing twice, requires each new customer confirmation, and safely replays an unacknowledged old job", async () => {
+    const fixture = await confirmedApplication();
+    let currentJob = fixture.job;
+    for (const revision of [2, 3]) {
+      const before = await facts(fixture);
+      await changeCommercialFact(fixture, "mileage price");
+      const result = await journey.createOrderAndContractJob(currentJob);
+      expect(result).toMatchObject({ action: "ORDER_AND_CONTRACT_WAITING_REQUOTE" });
+      const waiting = await expectRequote(fixture, before);
+      // Response loss before job acknowledgement must not create another task or technical exception.
+      await expect(journey.createOrderAndContractJob(currentJob)).resolves.toEqual(result);
+      expect((await facts(fixture)).current.version).toBe(waiting.current.version);
+      await prisma.$transaction((tx) => repository.completeJob(tx, currentJob.id, currentJob.leaseToken, result));
+      expect(await prisma.subscriptionJourneyJob.findUniqueOrThrow({ where: { id: currentJob.id } }))
+        .toMatchObject({ status: "COMPLETED", attemptCount: 0, lastErrorCode: null });
+      await journey.decideFinalPlan(fixture.journeyId, {
+        version: waiting.current.version,
+        finalPeriodMonths: 6,
+        finalSubscriptionPlanId: fixture.planId,
+        finalVehicleId: fixture.vehicleId
+      }, fixture.actor, context);
+      await dispatchPendingSignals(fixture.journeyId);
+      const published = await facts(fixture);
+      expect(published.application).toMatchObject({ finalPlanRevision: revision, customerConfirmedPlanRevision: null, planConfirmStatus: "PENDING", finalPlanConfirmedAt: null });
+      expect(published.application.finalPlanCommercialHash).not.toBe(before.application.finalPlanCommercialHash);
+      expect(published.current.currentStepCode).toBe("CUSTOMER_PLAN_CONFIRMATION");
+      expect(published.orders).toHaveLength(0);
+      await expect(journey.createOrderAndContractJob(currentJob)).resolves.toEqual(result);
+      await expect(fixture.confirm()).rejects.toThrow();
+      await fixture.confirm(prisma, revision, published.application.finalPlanCommercialHash!);
+      await dispatchPendingSignals(fixture.journeyId);
+      const job = await prisma.subscriptionJourneyJob.findUniqueOrThrow({
+        where: { sourceKey: `journey:${fixture.journeyId}:step:ORDER_AND_CONTRACT_CREATION:revision:${revision}` }
+      });
+      // Claim the actual queued revision via the production repository.
+      const claimed = await prisma.$transaction((tx) => repository.claimJobs(tx, 1000, 120000));
+      currentJob = claimed.find(({ id }) => id === job.id)!;
+      expect(currentJob).toBeDefined();
+    }
+    await bootstrap({ ...fixture, job: currentJob });
+    const final = await facts(fixture);
+    expect(final.orders).toHaveLength(1);
+    expect(final.quotes).toHaveLength(1);
+    expect(final.contracts).toHaveLength(1);
+    expect(final.orders[0]).toMatchObject({ monthlyFeeAmount: 15000n, periodMonths: 6, mileageLimitKm: 1500, energyLimitKwh: 100 });
+    expect(final.quotes[0]).toMatchObject({ monthlyFeeAmount: 15000n, mileagePackagePriceAmount: 3000n, periodMonths: 6 });
+    expect(final.orders[0]!.quoteSnapshot).toEqual(final.application.finalQuoteSnapshot);
+    expect(final.application).toMatchObject({ finalPlanRevision: 3, customerConfirmedPlanRevision: 3, planConfirmStatus: "CONFIRMED" });
+    expect(final.grants).toHaveLength(2);
+    expect(final.grants.map(({ totalAmount }) => totalAmount?.toString()).sort()).toEqual(["100", "1500"]);
+    expect(await prisma.subscriptionJourneyManualTask.count({ where: { journeyId: fixture.journeyId, status: "COMPLETED" } })).toBe(2);
+    expect(await prisma.subscriptionJourneyException.count({ where: { journeyId: fixture.journeyId } })).toBe(0);
+    expect(await prisma.auditLog.count({ where: { entityId: fixture.applicationId, entityType: "subscription_journey" } })).toBe(2);
+  });
 
   it("bootstraps a confirmed application through real order, contract and entitlement services", async () => {
     const fixture = await confirmedApplication();

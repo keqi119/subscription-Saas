@@ -292,87 +292,144 @@ describe("Stage 1 application and order authority", () => {
     await expectOrdered(fixture);
   });
 
-  it("serializes portal confirmation before cancellation without a database deadlock", async () => {
-    const fixture = await confirmedApplication(false);
-    const updatedApplication = deferred();
-    const releaseConfirmation = deferred();
-    const cancellationEntered = deferred();
-    let confirmingPid = 0;
-    let cancellingPid = 0;
-    const confirmingClient = instrumentTransactions(async (tx) => {
-      const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
-      confirmingPid = backend!.pid;
-      return new Proxy(tx, {
-        get(target, key) {
-          if (key === "application")
-            return new Proxy(target.application, {
-              get(delegate, operation) {
-                if (operation === "updateMany")
-                  return async (...args: Parameters<typeof delegate.updateMany>) => {
-                    const result = await delegate.updateMany(...args);
-                    updatedApplication.resolve();
-                    await releaseConfirmation.promise;
-                    return result;
-                  };
-                return Reflect.get(delegate, operation, delegate);
-              }
-            });
-          return Reflect.get(target, key, target);
-        }
+  it.each(["portal confirmation", "material review"])(
+    "serializes %s before cancellation without a database deadlock",
+    async (firstAction) => {
+      const fixture = await confirmedApplication(firstAction === "material review");
+      const updatedApplication = deferred();
+      const releaseConfirmation = deferred();
+      const cancellationEntered = deferred();
+      let confirmingPid = 0;
+      let cancellingPid = 0;
+      const confirmingClient = instrumentTransactions(async (tx) => {
+        const [backend] = await tx.$queryRaw<
+          Array<{ pid: number }>
+        >`SELECT pg_backend_pid() AS pid`;
+        confirmingPid = backend!.pid;
+        return new Proxy(tx, {
+          get(target, key) {
+            if (key === "application")
+              return new Proxy(target.application, {
+                get(delegate, operation) {
+                  if (operation === "update")
+                    return async (...args: Parameters<typeof delegate.update>) => {
+                      const result = await delegate.update(...args);
+                      updatedApplication.resolve();
+                      await releaseConfirmation.promise;
+                      return result;
+                    };
+                  if (operation === "updateMany")
+                    return async (...args: Parameters<typeof delegate.updateMany>) => {
+                      const result = await delegate.updateMany(...args);
+                      updatedApplication.resolve();
+                      await releaseConfirmation.promise;
+                      return result;
+                    };
+                  return Reflect.get(delegate, operation, delegate);
+                }
+              });
+            return Reflect.get(target, key, target);
+          }
+        });
       });
-    });
-    const cancellingClient = instrumentTransactions(async (tx) => {
-      const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
-      cancellingPid = backend!.pid;
-      cancellationEntered.resolve();
-      return tx;
-    });
-    const confirmation = fixture
-      .confirm(confirmingClient)
-      .then(() => "confirmed", databaseFailureLabel);
-    let cancellation: Promise<unknown> | undefined;
-    try {
-      await updatedApplication.promise;
-      cancellation = customerService(cancellingClient)
-        .cancelApplication(
-          fixture.applicationId,
-          { reason: "Synthetic test" },
-          fixture.actor,
-          context
-        )
-        .then(() => "cancelled", databaseFailureLabel);
-      await cancellationEntered.promise;
-      // Observe an actual lock wait, then release the first transaction. No timing-dependent sleep.
-      const deadline = Date.now() + 5000;
-      let blocked = false;
-      while (!blocked && Date.now() < deadline) {
-        const [row] = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
+      const cancellingClient = instrumentTransactions(async (tx) => {
+        const [backend] = await tx.$queryRaw<
+          Array<{ pid: number }>
+        >`SELECT pg_backend_pid() AS pid`;
+        cancellingPid = backend!.pid;
+        cancellationEntered.resolve();
+        return tx;
+      });
+      const first =
+        firstAction === "portal confirmation"
+          ? fixture.confirm(confirmingClient)
+          : customerService(confirmingClient).reviewApplication(
+              fixture.applicationId,
+              "material",
+              {
+                action: "APPROVED",
+                comment: "Synthetic review"
+              },
+              fixture.actor,
+              context
+            );
+      const confirmation = first.then(() => "updated", databaseFailureLabel);
+      let cancellation: Promise<unknown> | undefined;
+      try {
+        await updatedApplication.promise;
+        cancellation = customerService(cancellingClient)
+          .cancelApplication(
+            fixture.applicationId,
+            { reason: "Synthetic test" },
+            fixture.actor,
+            context
+          )
+          .then(() => "cancelled", databaseFailureLabel);
+        await cancellationEntered.promise;
+        // Observe an actual lock wait, then release the first transaction. No timing-dependent sleep.
+        const deadline = Date.now() + 5000;
+        let blocked = false;
+        while (!blocked && Date.now() < deadline) {
+          const [row] = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
           SELECT ${confirmingPid}::integer = ANY(pg_blocking_pids(${cancellingPid}::integer)) AS blocked
         `;
-        blocked = row!.blocked;
+          blocked = row!.blocked;
+        }
+        expect(blocked).toBe(true);
+      } finally {
+        releaseConfirmation.resolve();
       }
-      expect(blocked).toBe(true);
-    } finally {
-      releaseConfirmation.resolve();
+      expect(await confirmation).toBe("updated");
+      expect(await cancellation).toBe("cancelled");
+      const state = await facts(fixture);
+      expect(state.application.status).toBe("CANCELLED");
+      expect(state.current.status).toBe("CANCELLED");
+      expect(state.vehicle.status).toBe("AVAILABLE");
+      expect(state.orders).toHaveLength(0);
+      expect(state.audits).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            beforeSnapshot: expect.objectContaining({
+              planConfirmStatus: "CONFIRMED",
+              status: firstAction === "portal confirmation" ? "APPROVED" : "SUBMITTED"
+            }),
+            afterSnapshot: expect.objectContaining({ status: "CANCELLED" })
+          })
+        ])
+      );
     }
-    expect(await confirmation).toBe("confirmed");
-    expect(await cancellation).toBe("cancelled");
+  );
+
+  it("does not confirm a final plan after cancellation commits", async () => {
+    const fixture = await confirmedApplication(false);
+    const entered = deferred();
+    const release = deferred();
+    const client = instrumentTransactions(async (tx) => {
+      entered.resolve();
+      await release.promise;
+      return tx;
+    });
+    const confirmation = fixture.confirm(client).then(
+      () => "confirmed",
+      (error: Error) => error.message
+    );
+    try {
+      await entered.promise;
+      await customer.cancelApplication(
+        fixture.applicationId,
+        { reason: "Synthetic test" },
+        fixture.actor,
+        context
+      );
+    } finally {
+      release.resolve();
+    }
+    expect(await confirmation).toBe("最终方案状态已变化，请刷新后重试。");
     const state = await facts(fixture);
     expect(state.application.status).toBe("CANCELLED");
+    expect(state.application.planConfirmStatus).toBe("PENDING");
     expect(state.current.status).toBe("CANCELLED");
-    expect(state.vehicle.status).toBe("AVAILABLE");
     expect(state.orders).toHaveLength(0);
-    expect(state.audits).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          beforeSnapshot: expect.objectContaining({
-            planConfirmStatus: "CONFIRMED",
-            status: "APPROVED"
-          }),
-          afterSnapshot: expect.objectContaining({ status: "CANCELLED" })
-        })
-      ])
-    );
   });
 
   function instrumentTransactions(

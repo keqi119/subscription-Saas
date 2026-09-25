@@ -119,7 +119,7 @@ describe("Stage 1 application and order authority", () => {
         });
         await tx.vehiclePackage.update({
           where: { id: vehiclePackageId },
-          data: { status: "ACTIVE" }
+          data: { status: "ACTIVE", modelMembers: { create: { modelDefinitionId } } }
         });
         await tx.mileagePackage.update({
           where: { id: packages.mileagePackageId },

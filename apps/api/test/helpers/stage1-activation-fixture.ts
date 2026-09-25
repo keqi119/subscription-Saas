@@ -252,9 +252,34 @@ export async function prepareActivation(
         ids.actorId,
         mediaType === "VIDEO" ? "video/mp4" : "image/jpeg"
       );
-      await prisma.vehicleDeliveryEvidenceFile.create({
-        data: { evidenceItemId: item.id, fileId: file.id, mediaType, objectKey: file.objectKey }
-      });
+      const derivativeCount =
+        mediaType === "PHOTO" ? 1 : item.evidenceType === "WALKAROUND_VIDEO" ? 4 : 2;
+      const derivativeIds: string[] = [];
+      for (let index = 0; index < derivativeCount; index += 1) {
+        derivativeIds.push((await syntheticFile(prisma, ids.actorId, "image/jpeg")).id);
+      }
+      // Synthetic archived media remains a fixture boundary; the real attachment
+      // service verifies its metadata and the existence/type of every derivative.
+      await services.evidence.attachEvidenceFile(
+        item.id,
+        file.id,
+        mediaType,
+        ids.actorId,
+        prisma,
+        ids.actorId,
+        {
+          artifactVersion: 1,
+          detectedCodec: mediaType === "VIDEO" ? "h264" : null,
+          detectedMimeType: file.mimeType,
+          photoPreviewFileId: mediaType === "PHOTO" ? derivativeIds[0]! : null,
+          processedAt: activatedAt.toISOString(),
+          processingStatus: "READY",
+          sourceSha256: `sha256:${file.contentSha256}`,
+          sourceSizeBytes: Number(file.sizeBytes),
+          videoDurationMs: mediaType === "VIDEO" ? 12_000 : null,
+          videoFrameFileIds: mediaType === "VIDEO" ? derivativeIds : []
+        }
+      );
     }
     if (definition.isRequired || item.evidenceType === "NO_VISIBLE_DAMAGE_DECLARATION") {
       await prisma.vehicleDeliveryEvidenceItem.update({

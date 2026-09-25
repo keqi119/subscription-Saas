@@ -443,7 +443,10 @@
     {
       "suiteId": "api.billing-automation.postgres",
       "runner": "vitest",
-      "files": ["apps/api/test/billing-automation.integration.spec.ts"],
+      "files": [
+        "apps/api/test/billing-automation.integration.spec.ts",
+        "apps/api/test/payment-authority.integration.spec.ts"
+      ],
       "chainApplicability": {
         "fresh": { "status": "required" },
         "snapshot": { "status": "required" }

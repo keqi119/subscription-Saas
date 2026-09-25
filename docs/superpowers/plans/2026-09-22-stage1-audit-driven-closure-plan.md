@@ -113,6 +113,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-journey-
 
 同次锁序排查继续覆盖 CustomerService 的既有 Journey 信号写入方：`reviewApplication` 的补件/资料/资质/产品分支、`reviewMaterialGroup`、`submitApplication` 补件重提交、`needMoreInfo`、`approveApplication`。这些入口首次相关写入前必须取得同一锁，并重读进件后复核原权限/状态/无订单条件，防止终止后旧审核请求复活进件。车辆审核同时使用相同事务内复核。复用原有规则，不增加角色权限或新业务流；审核反例与共同锁序的真实数据库交错一起验证。
 
+18 项 PG 通过后的独立审查发现：资料上传先锁既存资料组，再插入带 Application 外键的文件；资料组审核先锁 Application，再等组记录。新增真实上传/审核交错后，评估把共同 Application 锁收窄到 `FOR NO KEY UPDATE`：业务不更新进件主键，仍与状态写入互斥，同时允许纯外键检查的 KEY SHARE，避免扩写附件上传/删除流程。存储边界仅使用合成 adapter，数据库读写和审核/上传服务均真实执行；本轮不宣称对象存储渠道验收。
+
 ### 任务 2：保护 PAID 资金事实免于错误金额回调倒退
 
 **接口：** 保持 `PaymentOrderService.handleCallback` 到 `FinanceService.settlePaymentOrder` 的公共路径；错误渠道/验签失败仍不能结算。

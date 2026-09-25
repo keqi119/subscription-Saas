@@ -432,6 +432,146 @@ describe("Stage 1 application and order authority", () => {
     expect(state.orders).toHaveLength(0);
   });
 
+  it("lets an existing-group upload finish while material review waits without an FK deadlock", async () => {
+    const fixture = await confirmedApplication();
+    const actor = {
+      ...fixture.actor,
+      permissions: ["application:review", "application:material_upload"]
+    };
+    const oldFile = await prisma.fileObject.create({
+      data: {
+        bucket: "synthetic-authority",
+        objectKey: randomUUID(),
+        originalName: "before.txt",
+        sizeBytes: 1n
+      }
+    });
+    const group = await prisma.applicationMaterialGroup.create({
+      data: {
+        applicationId: fixture.applicationId,
+        materialType: "ID_CARD",
+        required: true,
+        files: {
+          create: {
+            applicationId: fixture.applicationId,
+            fileId: oldFile.id,
+            fileName: "before.txt",
+            materialType: "ID_CARD",
+            sizeBytes: 1n,
+            uploadedBy: actor.id
+          }
+        }
+      }
+    });
+    const groupLocked = deferred();
+    const releaseUpload = deferred();
+    const reviewEntered = deferred();
+    let uploadPid = 0;
+    let reviewPid = 0;
+    const uploadClient = instrumentTransactions(async (tx) => {
+      const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      uploadPid = backend!.pid;
+      return new Proxy(tx, {
+        get(target, key) {
+          if (key === "applicationMaterialGroup")
+            return new Proxy(target.applicationMaterialGroup, {
+              get(delegate, operation) {
+                if (operation === "upsert")
+                  return async (...args: Parameters<typeof delegate.upsert>) => {
+                    const result = await delegate.upsert(...args);
+                    groupLocked.resolve();
+                    await releaseUpload.promise;
+                    return result;
+                  };
+                return Reflect.get(delegate, operation, delegate);
+              }
+            });
+          return Reflect.get(target, key, target);
+        }
+      });
+    });
+    const reviewClient = instrumentTransactions(async (tx) => {
+      const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      reviewPid = backend!.pid;
+      reviewEntered.resolve();
+      return tx;
+    });
+    // Synthetic object-store boundary; upload/review services and every database write remain real.
+    const uploadingCustomer = new CustomerService(
+      audit,
+      uploadClient,
+      {} as never,
+      {
+        putApplicationMaterial: async () => ({
+          bucket: "synthetic-authority",
+          objectKey: randomUUID()
+        })
+      } as never,
+      undefined,
+      signals
+    );
+    const upload = uploadingCustomer
+      .uploadMaterial(
+        fixture.applicationId,
+        { materialType: "ID_CARD" },
+        [
+          {
+            buffer: Buffer.from("x"),
+            originalname: "after.txt",
+            mimetype: "text/plain",
+            size: 1
+          }
+        ],
+        actor,
+        context
+      )
+      .then(() => "uploaded", databaseFailureLabel);
+    let review: Promise<unknown> | undefined;
+    try {
+      await groupLocked.promise;
+      review = customerService(reviewClient)
+        .reviewMaterialGroup(
+          fixture.applicationId,
+          group.id,
+          {
+            status: "APPROVED",
+            comment: "Synthetic review"
+          },
+          actor,
+          context
+        )
+        .then(() => "reviewed", databaseFailureLabel);
+      await reviewEntered.promise;
+      const deadline = Date.now() + 5000;
+      let blocked = false;
+      while (!blocked && Date.now() < deadline) {
+        const [row] = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
+          SELECT ${uploadPid}::integer = ANY(pg_blocking_pids(${reviewPid}::integer)) AS blocked
+        `;
+        blocked = row!.blocked;
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      releaseUpload.resolve();
+    }
+    expect(await upload).toBe("uploaded");
+    expect(await review).toBe("reviewed");
+    const persisted = await prisma.applicationMaterialGroup.findUniqueOrThrow({
+      where: { id: group.id },
+      include: { files: true }
+    });
+    expect(persisted.reviewStatus).toBe("APPROVED");
+    expect(persisted.files).toHaveLength(2);
+    expect(
+      await prisma.applicationActionLog.count({
+        where: {
+          applicationId: fixture.applicationId,
+          materialGroupId: group.id
+        }
+      })
+    ).toBe(2);
+  });
+
   function instrumentTransactions(
     inspect: (tx: Prisma.TransactionClient) => Promise<Prisma.TransactionClient>
   ) {

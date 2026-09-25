@@ -83,12 +83,12 @@ F5 预检修复 ----------------------------+
 
 **依赖/接口：** 消费真实 `CustomerService.createOrderFromApplicationInTransaction`、`cancelApplication`、`rejectApplication`、`PortalApplicationService` 确认入口和 `SubscriptionJourneyService.createOrderAndContractJob`。保持 public DTO、业务模型和原事件格式。
 
-- [ ] 读取 DEV_SPEC 及现有商业快照/确认契约；记录建单当前 Journey → Application → Vehicle 锁顺序、取消/拒绝路径和直接建单入口，形成仅此缺陷的实施说明。
-- [ ] 在新增 PG 文件编写两个确定性交错反例：取消/拒绝读取旧状态后让建单提交，再放行旧请求；反向顺序也执行。使用事务 barrier/受控暂停点，不使用随机 sleep。期望非法一方拒绝，Order/Contract/Vehicle/Journey/Application 一致；当前结果原样记录。
-- [ ] 添加确认后变更车价、里程价、能源价、权益额度再建单的反例，联合读取 Quote/Order/finalPlanSnapshot 和确认 revision/hash。必须断言金额、限额、周期及快照一致，不能只查订单数量。
-- [ ] 采用保守行为：商业投影漂移时，在写 Quote/Order/车辆终态前拒绝本次建单，保持原确认快照；重新报价只能经现有发布新 revision 和客户确认流程。不得自动替客户确认，也不得静默重写旧快照。实现前在小单元说明中固定既有业务错误/恢复入口，防止把正常待确认变成无穷技术 retry。
-- [ ] 取消/拒绝在相同权威锁下重读订单和状态；状态条件/锁覆盖真正写入。两项修复分开提交，顺序修改同一 customer 文件，完整保留既有审计与车辆释放语义。
-- [ ] 跑聚焦 unit 后，在干净批准 source 上用既有 integrity suite 执行包含新文件的全部 fresh 用例，审查回滚和重复调用。
+- [x] 读取 DEV_SPEC 及现有商业快照/确认契约；记录建单当前 Journey → Application → Vehicle 锁顺序、取消/拒绝路径和直接建单入口，形成仅此缺陷的实施说明。
+- [x] 在新增 PG 文件编写两个确定性交错反例：取消/拒绝读取旧状态后让建单提交，再放行旧请求；反向顺序也执行。使用事务 barrier/受控暂停点，不使用随机 sleep。期望非法一方拒绝，Order/Contract/Vehicle/Journey/Application 一致；当前结果原样记录。
+- [x] 添加确认后变更车价、里程价、能源价、权益额度再建单的反例，联合读取 Quote/Order/finalPlanSnapshot 和确认 revision/hash。必须断言金额、限额、周期及快照一致，不能只查订单数量。
+- [x] 采用保守行为：商业投影漂移时，在写 Quote/Order/车辆终态前拒绝本次建单，保持原确认快照；重新报价只能经现有发布新 revision 和客户确认流程。不得自动替客户确认，也不得静默重写旧快照。实现前在小单元说明中固定既有业务错误/恢复入口，防止把正常待确认变成无穷技术 retry。
+- [x] 取消/拒绝在相同权威锁下重读订单和状态；状态条件/锁覆盖真正写入。两项修复分开提交，顺序修改同一 customer 文件，完整保留既有审计与车辆释放语义。
+- [x] 跑聚焦 unit 后，在干净批准 source 上用既有 integrity suite 执行包含新文件的全部 fresh 用例，审查回滚和重复调用。
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run --project unit test/subscription-journey-order-contract.spec.ts
@@ -96,6 +96,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-journey-
 ```
 
 **出口：** 两种竞争顺序无孤立事实；商业漂移不能产生未确认金额/权益。未通过前 B2 不关闭，也不进入最终候选。
+
+2026-09-25 本地限定出口已达到：[F2 证据](../../acceptance/2026-09-25-stage1-application-authority-validation.md)、[F1 证据](../../acceptance/2026-09-25-stage1-commercial-plan-validation.md)。最终 source `35353517` 完整 integrity fresh 31/31、相关 20 文件 unit 324/324，tsc/lint/契约与发现检查通过，独立代码评审 ACCEPT。任务 6 的 B1/B2 全矩阵及最终候选/外部验收未由此关闭。
 
 #### 2026-09-25 任务 1 限域实施说明
 

@@ -1,5 +1,5 @@
 import { ConfigService } from "@nestjs/config";
-import { Prisma } from "@prisma/client";
+import { ApplicationSource, Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -75,7 +75,10 @@ describe("Stage 1 application and order authority", () => {
     return new CustomerService(audit, client, {} as never, {} as never, undefined, signals);
   }
 
-  async function confirmedApplication(confirmNow = true) {
+  async function confirmedApplication(
+    confirmNow = true,
+    applicationSource: ApplicationSource = ApplicationSource.SELF_SERVICE
+  ) {
     const userId = randomUUID();
     const customerId = randomUUID();
     const vehicleId = randomUUID();
@@ -97,7 +100,10 @@ describe("Stage 1 application and order authority", () => {
         const { modelDefinitionId } = await insertRuntimeVehicle(tx, vehicleId, "authority");
         await tx.vehicle.update({
           where: { id: vehicleId },
-          data: { status: "REVIEW_RESERVED", currentSalePriceAmount: 1000000n }
+          data: {
+            status: applicationSource === ApplicationSource.SELF_SERVICE ? "REVIEW_RESERVED" : "AVAILABLE",
+            currentSalePriceAmount: 1000000n
+          }
         });
         const product = await tx.product.create({
           data: { productNo: `authority-${randomUUID()}`, name: "Authority", status: "ACTIVE" }
@@ -139,7 +145,7 @@ describe("Stage 1 application and order authority", () => {
           data: {
             id: applicationId,
             applicationNo: `authority-${randomUUID()}`,
-            applicationSource: "SELF_SERVICE",
+            applicationSource,
             customerId,
             salesUserId: userId,
             status: "APPROVED",
@@ -150,7 +156,7 @@ describe("Stage 1 application and order authority", () => {
             depositStatus: "CONFIRMED",
             finalDepositAmount: 100000n,
             finalVehicleId: vehicleId,
-            softReservedVehicleId: vehicleId,
+            softReservedVehicleId: applicationSource === ApplicationSource.SELF_SERVICE ? vehicleId : null,
             finalSubscriptionPlanId: planId,
             finalPeriodMonths: 6
           }
@@ -159,22 +165,52 @@ describe("Stage 1 application and order authority", () => {
       { timeout: 30000 }
     );
 
+    // B-line publication uses the existing Journey decision and real vehicle reservation.
+    if (applicationSource === ApplicationSource.SALES_ASSISTED) {
+      const decisionStepId = randomUUID();
+      const decision = await prisma.subscriptionJourney.create({
+        data: {
+          applicationId,
+          currentStepCode: "FINAL_PLAN_DECISION",
+          steps: { create: { id: decisionStepId, code: "FINAL_PLAN_DECISION" } }
+        }
+      });
+      await prisma.subscriptionJourneyManualTask.create({
+        data: {
+          journeyId: decision.id,
+          stepId: decisionStepId,
+          taskType: "FINAL_PLAN_DECISION",
+          inputSnapshot: { applicationId }
+        }
+      });
+    }
     // Production snapshot generation and portal confirmation; fixture starts at the reviewed boundary.
     await customer.finalizeApplicationPlan(applicationId, actor, context);
     const published = await prisma.application.findUniqueOrThrow({ where: { id: applicationId } });
     const hash = commercialPlanHash(published.finalPlanSnapshot);
-    await prisma.application.update({
-      where: { id: applicationId },
-      data: { finalPlanRevision: 1, finalPlanCommercialHash: hash }
-    });
-    const current = await prisma.subscriptionJourney.create({
-      data: {
-        applicationId,
-        currentStepCode: "ORDER_AND_CONTRACT_CREATION",
-        steps: { create: { code: "ORDER_AND_CONTRACT_CREATION" } }
-      },
-      include: { steps: true }
-    });
+    if (applicationSource === ApplicationSource.SELF_SERVICE) {
+      await prisma.application.update({
+        where: { id: applicationId },
+        data: { finalPlanRevision: 1, finalPlanCommercialHash: hash }
+      });
+    } else {
+      expect(published.finalPlanRevision).toBe(1);
+      expect(published.finalPlanCommercialHash).toBe(hash);
+    }
+    const orderStep = {
+      currentStepCode: "ORDER_AND_CONTRACT_CREATION" as const,
+      steps: { create: { code: "ORDER_AND_CONTRACT_CREATION" as const } }
+    };
+    const current = applicationSource === ApplicationSource.SALES_ASSISTED
+      ? await prisma.subscriptionJourney.update({
+          where: { applicationId },
+          data: orderStep,
+          include: { steps: true }
+        })
+      : await prisma.subscriptionJourney.create({
+          data: { applicationId, ...orderStep },
+          include: { steps: true }
+        });
     const confirm = (client = prisma, revision = 1, commercialHash = hash) =>
       new PortalApplicationService(
         audit,
@@ -197,7 +233,7 @@ describe("Stage 1 application and order authority", () => {
     const job = await prisma.subscriptionJourneyJob.create({
       data: {
         journeyId: current.id,
-        stepId: current.steps[0]!.id,
+        stepId: current.steps.find(({ code }) => code === "ORDER_AND_CONTRACT_CREATION")!.id,
         jobType: "CREATE_ORDER_AND_CONTRACT",
         sourceKey: `journey:${current.id}:step:ORDER_AND_CONTRACT_CREATION:revision:1`,
         payload: { finalPlanRevision: 1 },
@@ -504,10 +540,13 @@ describe("Stage 1 application and order authority", () => {
     expect(await prisma.auditLog.count({ where: { entityId: fixture.applicationId, entityType: "subscription_journey" } })).toBe(2);
   });
 
-  it("bootstraps a confirmed application through real order, contract and entitlement services", async () => {
-    const fixture = await confirmedApplication();
+  it.each([ApplicationSource.SELF_SERVICE, ApplicationSource.SALES_ASSISTED])(
+    "bootstraps a confirmed %s application through real order, contract and entitlement services",
+    async (source) => {
+    const fixture = await confirmedApplication(true, source);
     await bootstrap(fixture);
-    await expectOrdered(fixture);
+    const state = await expectOrdered(fixture);
+    expect(state.application.applicationSource).toBe(source);
     await expect(journey.createOrderAndContractJob(fixture.job)).resolves.toMatchObject({
       action: "ORDER_AND_CONTRACT_ALREADY_COMPLETED"
     });

@@ -830,6 +830,18 @@ describe("PortalApplicationService", () => {
       finalPlanStatus: PlanConfirmStatus.CONFIRMED
     });
     expect(harness.application.customerConfirmedPlanRevision).toBe(2);
+    expect(harness.tx.application.findFirstOrThrow).toHaveBeenCalledWith({
+      include: expect.anything(),
+      where: {
+        OR: [
+          { applicationSource: ApplicationSource.SELF_SERVICE },
+          { subscriptionJourney: { isNot: null } }
+        ],
+        customerId: "customer-1",
+        deletedAt: null,
+        id: "application-1"
+      }
+    });
     expect(
       harness.customerService.recordJourneyCustomerPlanConfirmation
     ).toHaveBeenCalledWith(harness.tx, {

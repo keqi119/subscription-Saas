@@ -347,6 +347,39 @@ describe("portal payment foundation", () => {
     expect(harness.state.callbacks.filter((callback) => callback.handled)).toHaveLength(2);
   });
 
+  it.each([false, true])("rejects wrong amounts without changing payment authority (valid first: %s)", async (validFirst) => {
+    const harness = createPaymentHarness();
+    harness.addBill({ id: "bill_amount_authority", remainingAmount: 1000n });
+    const created = await harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_amount_authority"], paymentChannel: PaymentChannel.MOCK },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+    const payment = harness.state.paymentOrders.find((item) => item.id === created.id)!;
+    const valid = {
+      eventType: "mock.payment.success",
+      paidAmount: 1000,
+      providerTradeNo: payment.providerTradeNo,
+      providerTransactionId: "valid-amount-authority"
+    };
+    if (validFirst) await harness.service.handleCallback("mock", valid);
+    await expect(harness.service.handleCallback("mock", {
+      ...valid, paidAmount: 400, providerTransactionId: "wrong-amount-authority"
+    })).rejects.toThrow("支付金额与支付单金额不一致。");
+    expect(payment.paymentStatus).toBe(validFirst ? PaymentOrderStatus.PAID : PaymentOrderStatus.PENDING);
+    expect(harness.state.callbacks.find((row) => row.providerTransactionId === "wrong-amount-authority"))
+      .toMatchObject({ handled: false, verified: true, errorMessage: "支付金额与支付单金额不一致。" });
+    if (!validFirst) {
+      expect(harness.state.paymentRecords).toHaveLength(0);
+      expect(harness.state.bills[0]).toMatchObject({ paidAmount: 0n, remainingAmount: 1000n, billStatus: BillStatus.PENDING });
+      await harness.service.handleCallback("mock", valid);
+    }
+    expect(payment.paymentStatus).toBe(PaymentOrderStatus.PAID);
+    expect(harness.state.paymentRecords).toHaveLength(1);
+    expect(harness.financeService.settlePaymentOrder).toHaveBeenCalledOnce();
+    expect(harness.state.bills[0]).toMatchObject({ billStatus: BillStatus.PAID, paidAmount: 1000n, remainingAmount: 0n });
+  });
+
   it("does not regress a paid order when a late non-paid callback arrives", async () => {
     const harness = createPaymentHarness();
     harness.addBill({ id: "bill_monthly", remainingAmount: 29900n });
@@ -677,6 +710,9 @@ describe("portal payment foundation", () => {
 
     expect(result.verified).toBe(false);
     expect(harness.state.callbacks[0]?.errorMessage).toBe("WECHATPAY_SERIAL_NOT_CONFIGURED");
+    expect(harness.state.callbacks[0]).toMatchObject({ handled: false, paymentOrderId: null, verified: false });
+    expect(harness.state.paymentRecords).toHaveLength(0);
+    expect(harness.state.bills[0]).toMatchObject({ billStatus: BillStatus.PENDING, paidAmount: 0n, remainingAmount: 1000n });
     expect(harness.state.paymentOrders.find((item) => item.id === paymentOrder.id)?.paymentStatus)
       .toBe(PaymentOrderStatus.PENDING);
     expect(harness.financeService.settlePaymentOrder).not.toHaveBeenCalled();

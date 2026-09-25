@@ -273,6 +273,7 @@ describe("Stage 1 application and order authority", () => {
   async function bootstrap(fixture: Awaited<ReturnType<typeof confirmedApplication>>) {
     await expect(journey.createOrderAndContractJob(fixture.job)).resolves.toMatchObject({ action: "ORDER_AND_CONTRACT_CREATED" });
     // Materialize the successor step through the real signal consumer, without calling the provider.
+    await waitUntilQueueRecordDue("outbox", `${fixture.job.sourceKey}:completed:outbox`);
     await prisma.$transaction(async (tx) => {
       const claimed = await repository.claimSignalOutbox(tx, 100, 120000);
       const completed = claimed.find(
@@ -289,6 +290,18 @@ describe("Stage 1 application and order authority", () => {
       await journey.dispatchSignalOutbox(tx, completed!);
       await repository.completeOutbox(tx, completed!.id, completed!.leaseToken);
     });
+  }
+
+  async function waitUntilQueueRecordDue(kind: "job" | "outbox", key: string) {
+    const deadline = performance.now() + 5000;
+    while (performance.now() < deadline) {
+      const [row] = await prisma.$queryRaw<Array<{ due: boolean }>>(kind === "job"
+        ? Prisma.sql`SELECT available_at <= clock_timestamp() AS due FROM subscription_journey_job WHERE id = ${key}`
+        : Prisma.sql`SELECT available_at <= clock_timestamp() AS due FROM subscription_journey_outbox WHERE event_key = ${key}`);
+      if (!row) throw new Error("Expected queued record is missing");
+      if (row.due) return;
+    }
+    throw new Error("Queued record did not become due within the bounded database-clock wait");
   }
 
   async function changeCommercialFact(
@@ -400,10 +413,12 @@ describe("Stage 1 application and order authority", () => {
 
   async function dispatchPendingSignals(journeyId: string) {
     for (let round = 0; round < 20; round += 1) {
-      const pending = await prisma.subscriptionJourneyOutbox.count({
+      const pending = await prisma.subscriptionJourneyOutbox.findMany({
+        select: { eventKey: true },
         where: { journeyId, status: "PENDING", aggregateType: { not: "JOURNEY_NOTIFICATION" } }
       });
-      if (pending === 0) return;
+      if (pending.length === 0) return;
+      for (const row of pending) await waitUntilQueueRecordDue("outbox", row.eventKey);
       await prisma.$transaction(async (tx) => {
         const rows = await repository.claimSignalOutbox(tx, 1000, 120000);
         for (const row of rows.filter((value) => value.journeyId === journeyId)) {
@@ -459,6 +474,7 @@ describe("Stage 1 application and order authority", () => {
         where: { sourceKey: `journey:${fixture.journeyId}:step:ORDER_AND_CONTRACT_CREATION:revision:${revision}` }
       });
       // Claim the actual queued revision via the production repository.
+      await waitUntilQueueRecordDue("job", job.id);
       const claimed = await prisma.$transaction((tx) => repository.claimJobs(tx, 1000, 120000));
       currentJob = claimed.find(({ id }) => id === job.id)!;
       if (!currentJob) {
@@ -470,6 +486,9 @@ describe("Stage 1 application and order authority", () => {
       }
     }
     await bootstrap({ ...fixture, job: currentJob });
+    await expect(journey.createOrderAndContractJob(fixture.job)).resolves.toMatchObject({
+      action: "ORDER_AND_CONTRACT_WAITING_REQUOTE", finalPlanRevision: 1
+    });
     const final = await facts(fixture);
     expect(final.orders).toHaveLength(1);
     expect(final.quotes).toHaveLength(1);

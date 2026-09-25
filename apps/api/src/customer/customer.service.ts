@@ -636,17 +636,23 @@ export class CustomerService {
     const decision = applicationReviewDecision(dto);
     const comment = applicationReviewComment(dto);
     assertApplicationReviewDecision(decision);
-    const before = await this.findApplicationOrThrow(id);
+    let before = await this.findApplicationOrThrow(id);
     ensureCanAccessApplication(before, user);
     ensureApplicationReviewWorkflowAllowed(before);
     assertApplicationHasNoOrder(before);
+
+    const reviewTransaction = <T>(run: (tx: Tx) => Promise<T>) => this.prisma.$transaction(async (tx) => {
+      before = await this.lockApplicationForChange(tx, id, user);
+      ensureApplicationReviewWorkflowAllowed(before);
+      return run(tx);
+    });
 
     if (decision === OrderReviewStatus.REJECTED) {
       return this.rejectApplicationWithReviewType(id, dto, user, context, reviewType, before);
     }
 
     if (decision === OrderReviewStatus.NEED_MORE_INFO) {
-      const application = await this.prisma.$transaction(async (tx) => {
+      const application = await reviewTransaction(async (tx) => {
         await tx.application.update({
           data: {
             [applicationReviewStatusField(reviewType)]: OrderReviewStatus.NEED_MORE_INFO,
@@ -683,7 +689,7 @@ export class CustomerService {
     }
 
     if (reviewType === "material") {
-      const application = await this.prisma.$transaction(async (tx) => {
+      const application = await reviewTransaction(async (tx) => {
         const updated = await tx.application.update({
           data: {
             materialReviewStatus: OrderReviewStatus.APPROVED,
@@ -723,7 +729,7 @@ export class CustomerService {
         throw new BadRequestException("客户资质审核通过时必须选择客户等级。");
       }
 
-      const result = await this.prisma.$transaction(async (tx) => {
+      const result = await reviewTransaction(async (tx) => {
         const depositRule = await findActiveApplicationDepositRule(tx, customerGrade);
         if (!depositRule) {
           throw new BadRequestException(`No active deposit rule configured for grade ${customerGrade}.`);
@@ -799,7 +805,7 @@ export class CustomerService {
     }
 
     if (reviewType === "product") {
-      const application = await this.prisma.$transaction(async (tx) => {
+      const application = await reviewTransaction(async (tx) => {
         const details = await loadApplicationFinalPlanDetails(tx, before, dto);
         const updated = await tx.application.update({
           data: {
@@ -839,7 +845,7 @@ export class CustomerService {
     }
 
     if (reviewType === "vehicle") {
-      const application = await this.prisma.$transaction(async (tx) => {
+      const application = await reviewTransaction(async (tx) => {
         const journey = await tx.subscriptionJourney.findUnique({
           select: { currentStepCode: true },
           where: { applicationId: id }
@@ -2238,7 +2244,7 @@ export class CustomerService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const before = await this.findApplicationOrThrow(id);
+    let before = await this.findApplicationOrThrow(id);
     ensureCanManageApplication(before, user);
     assertApplicationHasNoOrder(before);
 
@@ -2249,6 +2255,12 @@ export class CustomerService {
     const submittedAt = new Date();
 
     const application = await this.prisma.$transaction(async (tx) => {
+      before = await this.lockApplicationForChange(tx, id, user);
+      ensureCanManageApplication(before, user);
+      if (!canEditApplication(before.status)) {
+        throw new BadRequestException("Only draft or need-more-info applications can be submitted.");
+      }
+      assertCanSubmitApplication(before);
       const currentCustomer = await tx.customer.findUniqueOrThrow({
         include: { identity: true, profile: true },
         where: { id: before.customerId }
@@ -2550,13 +2562,13 @@ export class CustomerService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const application = await this.findApplicationOrThrow(id);
+    let application = await this.findApplicationOrThrow(id);
     ensureCanAccessApplication(application, user);
     assertApplicationHasNoOrder(application);
     assertCanReviewMaterialGroup(application, user);
     assertReviewMaterialInput(dto.status, dto.comment);
 
-    const before = await this.prisma.applicationMaterialGroup.findFirst({
+    let before = await this.prisma.applicationMaterialGroup.findFirst({
       include: materialGroupInclude,
       where: { applicationId: id, deletedAt: null, id: materialGroupId }
     });
@@ -2570,6 +2582,14 @@ export class CustomerService {
     const reviewedAt = new Date();
     const comment = normalizeOptionalText(dto.comment);
     const group = await this.prisma.$transaction(async (tx) => {
+      application = await this.lockApplicationForChange(tx, id, user);
+      assertCanReviewMaterialGroup(application, user);
+      before = await tx.applicationMaterialGroup.findFirst({
+        include: materialGroupInclude,
+        where: { applicationId: id, deletedAt: null, id: materialGroupId }
+      });
+      if (!before) throw new NotFoundException("Application material group not found.");
+      assertCanReviewMaterialGroupStatus(before, dto.status);
       const updated = await tx.applicationMaterialGroup.update({
         data: {
           reviewComment: comment,
@@ -2701,12 +2721,14 @@ export class CustomerService {
   }
 
   async needMoreInfo(id: string, dto: NeedMoreInfoDto, user: RequestUser, context: RequestContext) {
-    const before = await this.findApplicationOrThrow(id);
+    let before = await this.findApplicationOrThrow(id);
     assertApplicationHasNoOrder(before);
     ensureReviewable(before);
     const comment = normalizeRequiredText(dto.comment ?? dto.reason, "comment");
 
     const application = await this.prisma.$transaction(async (tx) => {
+      before = await this.lockApplicationForChange(tx, id, user);
+      ensureReviewable(before);
       await tx.application.update({
         data: {
           ...(before.applicationSource === ApplicationSource.SELF_SERVICE
@@ -2750,7 +2772,7 @@ export class CustomerService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const before = await this.findApplicationOrThrow(id);
+    let before = await this.findApplicationOrThrow(id);
     assertApplicationHasNoOrder(before);
     ensureReviewable(before);
     assertCanApproveApplication(before);
@@ -2758,6 +2780,9 @@ export class CustomerService {
     const comment = normalizeOptionalText(dto.comment ?? dto.remark);
 
     const { application, riskResult } = await this.prisma.$transaction(async (tx) => {
+      before = await this.lockApplicationForChange(tx, id, user);
+      ensureReviewable(before);
+      assertCanApproveApplication(before);
       await tx.application.update({
         data: {
           approvedAt,
@@ -3056,6 +3081,14 @@ export class CustomerService {
     }
 
     return customer;
+  }
+
+  private async lockApplicationForChange(tx: Tx, id: string, user: RequestUser) {
+    await lockJourneyApplication(tx, id);
+    const application = await this.findApplicationOrThrow(id, tx);
+    ensureCanAccessApplication(application, user);
+    assertApplicationHasNoOrder(application);
+    return application;
   }
 
   private async findApplicationOrThrow(id: string, client: Tx = this.prisma) {

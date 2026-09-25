@@ -1261,6 +1261,26 @@ describe("application self-service review APIs", () => {
     expect(harness.state.application.vehicleReviewStatus).toBe(OrderReviewStatus.PENDING);
   });
 
+  it.each([
+    ["material", OrderReviewStatus.APPROVED],
+    ["credit", OrderReviewStatus.APPROVED],
+    ["product", OrderReviewStatus.APPROVED],
+    ["vehicle", OrderReviewStatus.APPROVED],
+    ["material", OrderReviewStatus.NEED_MORE_INFO]
+  ] as const)("%s review %s cannot revive an application cancelled after its outside read", async (type, action) => {
+    const harness = createApplicationReviewHarness({ application: readyToCreateOrderApplication() });
+    const transaction = harness.prisma.$transaction.getMockImplementation()!;
+    harness.prisma.$transaction.mockImplementationOnce(async (callback) => {
+      await harness.tx.application.update({ data: { status: ApplicationStatus.CANCELLED } });
+      return transaction(callback);
+    });
+    await expect(harness.service.reviewApplication(harness.application.id, type, {
+      action, comment: "Synthetic review", customerGrade: CustomerGrade.A
+    }, harness.user, harness.context)).rejects.toThrow("当前进件状态不允许审核。");
+    expect(harness.state.application.status).toBe(ApplicationStatus.CANCELLED);
+    expect(harness.journeySignal.record).not.toHaveBeenCalled();
+  });
+
   it.each([ApplicationStatus.CANCELLED, ApplicationStatus.REJECTED])(
     "direct order creation rechecks %s application state inside the transaction",
     async (status) => {

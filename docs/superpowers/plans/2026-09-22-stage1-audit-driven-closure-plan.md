@@ -111,6 +111,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-journey-
 
 2026-09-25 F2 独立审查补充：门户 `confirmFinalPlan` 先更新 Application，再通过 `recordSignal` 更新 Journey，和取消的新锁序构成死锁。为完成同一并发修复，生产范围增加 `apps/api/src/portal/portal-application.service.ts` 的确认事务：更新 Application 之前先锁对应 Journey。新增真实 PG 确认/取消交错，以事务 barrier 和 PostgreSQL 的实际阻塞关系同步；不靠 sleep 或替换业务写入。确认先提交、随后取消应能按顺序完成。既有 `application-review-api.spec.ts` 的 CommonJS/import.meta 编译冲突单独改用 __dirname 路径，保持原 schema 断言，独立提交。
 
+同次锁序排查继续覆盖 CustomerService 的既有 Journey 信号写入方：`reviewApplication` 的补件/资料/资质/产品分支、`reviewMaterialGroup`、`submitApplication` 补件重提交、`needMoreInfo`、`approveApplication`。这些入口首次相关写入前必须取得同一锁，并重读进件后复核原权限/状态/无订单条件，防止终止后旧审核请求复活进件。车辆审核同时使用相同事务内复核。复用原有规则，不增加角色权限或新业务流；审核反例与共同锁序的真实数据库交错一起验证。
+
 ### 任务 2：保护 PAID 资金事实免于错误金额回调倒退
 
 **接口：** 保持 `PaymentOrderService.handleCallback` 到 `FinanceService.settlePaymentOrder` 的公共路径；错误渠道/验签失败仍不能结算。

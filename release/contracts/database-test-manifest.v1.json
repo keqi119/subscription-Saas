@@ -344,7 +344,10 @@
     {
       "suiteId": "api.subscription-journey-integrity.postgres",
       "runner": "vitest",
-      "files": ["apps/api/test/subscription-journey-integrity.integration.spec.ts"],
+      "files": [
+        "apps/api/test/subscription-journey-integrity.integration.spec.ts",
+        "apps/api/test/stage1-application-order-authority.integration.spec.ts"
+      ],
       "chainApplicability": {
         "fresh": { "status": "required" },
         "snapshot": { "status": "required" }

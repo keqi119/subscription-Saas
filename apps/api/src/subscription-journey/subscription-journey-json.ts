@@ -46,6 +46,26 @@ export function commercialPlanHash(value: unknown): string {
     .digest("hex")}`;
 }
 
+// Compare the facts actually used to price/create an order, without treating
+// operational vehicle observations or customer-confirmation metadata as a reprice.
+// This is deliberately separate from the published commercial-hash protocol.
+export function orderCommercialPlanSnapshot(value: unknown): Prisma.InputJsonObject {
+  if (!isPlainRecord(value) || !isPlainRecord(value.vehicleSnapshot)) {
+    throw invalidJson("order commercial plan requires a vehicle snapshot");
+  }
+  const keys = [
+    "depositAmount", "depositRuleSnapshot", "periodMonths", "pricing",
+    "packageSnapshot", "subscriptionPlan", "subscriptionPlanId", "vehicleId"
+  ];
+  const operationalKeys = new Set(["status", "assetLocation", "currentMileageKm"]);
+  return canonicalJourneyJson({
+    ...Object.fromEntries(keys.map((key) => [key, value[key] ?? null])),
+    vehicleSnapshot: Object.fromEntries(
+      Object.entries(value.vehicleSnapshot).filter(([key]) => !operationalKeys.has(key))
+    )
+  }) as Prisma.InputJsonObject;
+}
+
 function canonicalize(value: unknown, path: string): unknown {
   if (value === null) return null;
   if (typeof value === "string" || typeof value === "boolean") return value;

@@ -1323,6 +1323,7 @@ describe("application self-service review APIs", () => {
       }
     });
 
+    await publishConfirmedSnapshot(harness);
     const result = await harness.service.createOrderFromApplication(
       harness.application.id,
       harness.user,
@@ -1384,6 +1385,8 @@ describe("application self-service review APIs", () => {
       }
     });
 
+    await publishConfirmedSnapshot(harness, 1);
+    harness.prisma.$transaction.mockClear();
     const first = await harness.service.createOrderFromApplicationInTransaction(
       harness.tx as never,
       harness.application.id,
@@ -1895,6 +1898,21 @@ function approvedRequiredMaterialGroups(now: Date) {
       updatedBy: operator.id
     };
   });
+}
+
+async function publishConfirmedSnapshot(
+  harness: ReturnType<typeof createApplicationReviewHarness>,
+  revision = 0
+) {
+  await harness.service.finalizeApplicationPlan(harness.application.id, harness.user, harness.context);
+  const { commercialPlanHash } = await import("../src/subscription-journey/subscription-journey-json");
+  await harness.tx.application.update({ data: {
+    finalPlanConfirmedAt: new Date("2026-06-05T10:40:00.000Z"),
+    planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+    finalPlanRevision: revision,
+    customerConfirmedPlanRevision: revision || null,
+    finalPlanCommercialHash: revision ? commercialPlanHash(harness.state.application.finalPlanSnapshot) : null
+  } });
 }
 
 function readyToCreateOrderApplication() {

@@ -379,6 +379,18 @@ describe("Stage 1 application and order authority", () => {
     expect(after.application.finalPlanSnapshot).toEqual(before.application.finalPlanSnapshot);
   });
 
+  it("does not bypass a pending requote when commercial values revert to the old confirmation", async () => {
+    const fixture = await confirmedApplication();
+    const before = await facts(fixture);
+    await changeCommercialFact(fixture, "mileage price");
+    await expect(journey.createOrderAndContractJob(fixture.job)).resolves.toMatchObject({ action: "ORDER_AND_CONTRACT_WAITING_REQUOTE" });
+    const plan = await prisma.subscriptionPlan.findUniqueOrThrow({ where: { id: fixture.planId } });
+    await prisma.mileagePackage.update({ where: { id: plan.mileagePackageId }, data: { priceAmount: 1000n } });
+    await expect(customer.createOrderFromApplication(fixture.applicationId, fixture.actor, context))
+      .rejects.toThrow("FINAL_PLAN_REVISION_STALE");
+    await expectRequote(fixture, before);
+  });
+
   async function dispatchPendingSignals(journeyId: string) {
     for (let round = 0; round < 20; round += 1) {
       const pending = await prisma.subscriptionJourneyOutbox.count({
@@ -399,6 +411,7 @@ describe("Stage 1 application and order authority", () => {
   it("reopens pricing twice, requires each new customer confirmation, and safely replays an unacknowledged old job", async () => {
     const fixture = await confirmedApplication();
     let currentJob = fixture.job;
+    const decisions: Array<{ version: number; finalPeriodMonths: number; finalSubscriptionPlanId: string; finalVehicleId: string }> = [];
     for (const revision of [2, 3]) {
       const before = await facts(fixture);
       await changeCommercialFact(fixture, "mileage price");
@@ -411,12 +424,20 @@ describe("Stage 1 application and order authority", () => {
       await prisma.$transaction((tx) => repository.completeJob(tx, currentJob.id, currentJob.leaseToken, result));
       expect(await prisma.subscriptionJourneyJob.findUniqueOrThrow({ where: { id: currentJob.id } }))
         .toMatchObject({ status: "COMPLETED", attemptCount: 0, lastErrorCode: null });
-      await journey.decideFinalPlan(fixture.journeyId, {
+      const decision = {
         version: waiting.current.version,
         finalPeriodMonths: 6,
         finalSubscriptionPlanId: fixture.planId,
         finalVehicleId: fixture.vehicleId
-      }, fixture.actor, context);
+      };
+      decisions.push(decision);
+      const publication = await journey.decideFinalPlan(fixture.journeyId, decision, fixture.actor, context);
+      await expect(journey.decideFinalPlan(fixture.journeyId, decision, fixture.actor, context))
+        .resolves.toMatchObject({ ...publication, replayed: true });
+      if (revision === 3) {
+        await expect(journey.decideFinalPlan(fixture.journeyId, decisions[0]!, fixture.actor, context))
+          .rejects.toMatchObject({ code: "FINAL_PLAN_REVISION_STALE" });
+      }
       await dispatchPendingSignals(fixture.journeyId);
       const published = await facts(fixture);
       expect(published.application).toMatchObject({ finalPlanRevision: revision, customerConfirmedPlanRevision: null, planConfirmStatus: "PENDING", finalPlanConfirmedAt: null });

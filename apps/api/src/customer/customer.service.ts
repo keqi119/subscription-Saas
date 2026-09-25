@@ -60,7 +60,8 @@ import {
   type ApplicationReadinessResult
 } from "../subscription-journey/application-readiness";
 import { journeyError } from "../subscription-journey/subscription-journey.errors";
-import { commercialPlanHash } from "../subscription-journey/subscription-journey-json";
+import { commercialPlanHash, orderCommercialPlanSnapshot, sameJourneyJson } from "../subscription-journey/subscription-journey-json";
+import { ConfirmedCommercialPlanChanged } from "../subscription-journey/subscription-journey.errors";
 import {
   buildApplicationCustomerProfileSnapshot,
   parseApplicationCustomerProfileSnapshot
@@ -1008,8 +1009,16 @@ export class CustomerService {
       if (finalDepositAmount === null) {
         throw new BadRequestException("押金确认后才可以生成订单。");
       }
+      await lockVehicleAvailabilityAuthorities(tx, [resolveApplicationFinalPlanInput(before).vehicleId]);
       const details = await loadApplicationFinalPlanDetails(tx, before);
-      await lockVehicleAvailabilityAuthorities(tx, [details.vehicle.id]);
+      try {
+        assertConfirmedCommercialPlanUnchanged(before, details);
+      } catch (error) {
+        if (error instanceof ConfirmedCommercialPlanChanged) {
+          throw new BadRequestException(error.message);
+        }
+        throw error;
+      }
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: details.vehicle.id } });
       assertApplicationVehicleCanEnterOrder(before, vehicleBefore);
       await this.assetOperationsService?.assertVehicleAvailable(
@@ -1298,6 +1307,7 @@ export class CustomerService {
       );
     }
 
+    assertConfirmedCommercialPlanUnchanged(application, details);
     const vehicleUpdate = await tx.vehicle.updateMany({
       data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
       where: {
@@ -4120,6 +4130,31 @@ function toSelfServicePackageSnapshot(row: SelfServicePackage) {
 
 function toJsonSnapshot(value: unknown): Prisma.InputJsonValue {
   return toAuditSnapshot(value) as Prisma.InputJsonValue;
+}
+
+function assertConfirmedCommercialPlanUnchanged(
+  application: ApplicationWithDetails,
+  details: ApplicationFinalPlanDetails
+) {
+  const snapshot = application.finalPlanSnapshot;
+  if (
+    !isPlainRecord(snapshot) ||
+    (application.finalPlanRevision > 0 && (
+      application.customerConfirmedPlanRevision !== application.finalPlanRevision ||
+      application.finalPlanCommercialHash !== commercialPlanHash(snapshot)
+    ))
+  ) {
+    throw journeyError("FINAL_PLAN_REVISION_STALE", "The confirmed commercial snapshot is not bound to its plan revision.");
+  }
+  let confirmed: Prisma.InputJsonObject;
+  try {
+    confirmed = orderCommercialPlanSnapshot(snapshot);
+  } catch {
+    throw journeyError("FINAL_PLAN_REVISION_STALE", "The confirmed commercial snapshot is incomplete.");
+  }
+  if (!sameJourneyJson(confirmed, orderCommercialPlanSnapshot(details.finalPlanSnapshot))) {
+    throw new ConfirmedCommercialPlanChanged();
+  }
 }
 
 function commercialPlanChanged(

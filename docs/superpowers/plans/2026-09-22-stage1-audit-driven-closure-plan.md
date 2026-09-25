@@ -122,6 +122,7 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-journey-
 - 生产范围增加 `subscription-journey.errors.ts`、`subscription-journey-json.ts`、`subscription-journey.repository.ts`、`subscription-journey.service.ts`。真实 bootstrap 捕获此特定漂移，在原事务/权威锁内确认没有订单后，把现有最终方案、车辆分配、客户确认及建单步骤重置为可再次执行状态，创建新的 FINAL_PLAN_DECISION 人工任务和带本次 revision 的幂等事件；旧任务/事件保留。原已确认 Application 快照/确认值不改写。正常业务等待返回可完成 job 的结果，不进入技术 retry/dead-letter。
 - 恢复只使用现有 `decideFinalPlan`、门户确认及信号消费：人工发布新 revision 清除旧确认，客户明确确认后才能重新生成 bootstrap job。再次发生漂移仍可重新进入人工任务；旧 job 响应丢失后的重放依据对应恢复事件返回原等待结果，不能扰动新 revision 或重复创建任务。保留原 job lease 供正常完成。
 - 不新增 DTO、模型、枚举、权限或 UI 动作；人工待办复用现有入口，恢复事件记录原因、旧 revision/step 和 taskId。测试扩展已有 authority PG 文件及原聚焦 unit：八类事实变更拒绝、运营元数据变化合法、直接建单拒绝、两轮重新报价/确认/最终建单、旧 job 重放及共同终态/权益/审计。
+- 独立审查补充：恢复等待时即使外部商业事实恢复成原值，存在 Journey 的公开建单入口仍须在权威锁内校验当前建单步骤，不能绕过人工待办。人工发布请求重放须绑定当次 publication 的事件 sequence 与原 dto.version；跨轮次旧请求明确拒绝为 stale，不能用当前 revision 冒充旧结果。分别补真实 PG 反例后实施。
 - 先提交测试并用完整 integrity fresh 保存真实 RED/受控 migrate deploy/status/diff，再改业务；最终同套 fresh、相关 unit、tsc/lint、契约/发现检查及独立审查后单独接回实施分支。F2 原 19 项保持。此项不扩大为 B1/B2 全矩阵或阶段 1 验收。
 
 ### 任务 2：保护 PAID 资金事实免于错误金额回调倒退

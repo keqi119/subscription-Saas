@@ -39,6 +39,18 @@ export class SubscriptionJourneyError extends Error {
   }
 }
 
+// Only this proven commercial drift is a normal request for manual repricing.
+// Other stale-revision errors retain their existing failure semantics.
+export class ConfirmedCommercialPlanChanged extends SubscriptionJourneyError {
+  constructor() {
+    super({
+      code: "FINAL_PLAN_REVISION_STALE",
+      message: "FINAL_PLAN_REVISION_STALE: 商业方案已变化，请重新发布最终方案并由客户确认。",
+      retryable: false
+    });
+  }
+}
+
 export function journeyError(
   code: SubscriptionJourneyErrorCode,
   message: string,

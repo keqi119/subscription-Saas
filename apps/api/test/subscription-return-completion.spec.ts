@@ -84,7 +84,26 @@ describe("governed return completion audit", () => {
       { pendingResponse: true },
       "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED"
     ],
-    ["unowned receivable", { openReceivable: true }, "CLOSURE_OPERATIONAL_FINANCIAL_OWNER_REQUIRED"]
+    [
+      "unowned receivable",
+      { openReceivable: true },
+      "CLOSURE_OPERATIONAL_FINANCIAL_OWNER_REQUIRED"
+    ],
+    [
+      "unresolved responsibility",
+      { unresolvedResponsibility: true },
+      "CLOSURE_OPERATIONAL_SETTLEMENT_REQUIRED"
+    ],
+    [
+      "open charge dispute",
+      { openDispute: true },
+      "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED"
+    ],
+    [
+      "accepted dispute awaiting revised settlement",
+      { acceptedDispute: true },
+      "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED"
+    ]
   ] as const)(
     "keeps the existing %s guard before writes and audit",
     async (_name, options, code) => {
@@ -106,6 +125,9 @@ function completionHarness(
     finalDisposition?: "COMPLETE" | "TERMINATE";
     openReceivable?: boolean;
     pendingResponse?: boolean;
+    unresolvedResponsibility?: boolean;
+    openDispute?: boolean;
+    acceptedDispute?: boolean;
   } = {}
 ) {
   const occurredAt = new Date("2026-09-25T01:00:00.000Z");
@@ -167,8 +189,10 @@ function completionHarness(
         return structuredClone(transactionState.closure);
       })
     },
-    subscriptionClosureChargeDispute: { count: vi.fn(async () => 0) },
-    subscriptionClosureChargeDisputeDecision: { count: vi.fn(async () => 0) },
+    subscriptionClosureChargeDispute: { count: vi.fn(async () => (options.openDispute ? 1 : 0)) },
+    subscriptionClosureChargeDisputeDecision: {
+      count: vi.fn(async () => (options.acceptedDispute ? 1 : 0))
+    },
     subscriptionClosureCustomerResponse: {
       findFirst: vi.fn(async () => ({
         settlementHash: "settlement-hash",
@@ -193,7 +217,12 @@ function completionHarness(
     },
     vehicle: { findUnique: vi.fn(async () => ({ status: "AVAILABLE" })) },
     vehicleConditionDeltaRevision: {
-      findUnique: vi.fn(async () => ({ closureCaseId: "closure-1", items: [] }))
+      findUnique: vi.fn(async () => ({
+        closureCaseId: "closure-1",
+        items: [
+          { responsibility: options.unresolvedResponsibility ? "UNDETERMINED" : "NORMAL_WEAR" }
+        ]
+      }))
     },
     vehicleOperationalRestriction: { count: vi.fn(async () => 0) }
   };

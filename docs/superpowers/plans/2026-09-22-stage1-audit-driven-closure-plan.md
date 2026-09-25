@@ -283,7 +283,7 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 #### F6 关单审计限域实施（2026-09-25）
 
-- B6 完成入口的数据库衔接修正另立单元：第五轮 source `c976d863` 已通过两项业务拒绝断言，正常完成、清单重放后完成及审计回滚切片进入真实状态写入后被 CHECK 拒绝（原件摘要对约束名有截断）；静态确认旧 `subscription_closure_case_terminal_shape_chk` 强制 settled_at 非空，而现行入口只写 operational_completed_at。按已批准的 2026-08-26 三阶段规格，运营完成必须可保留真实未结债权。新增一个前向迁移，只将该终态 CHECK 的“结清时间存在”改为“结清或运营完成时间存在”，保留终态与 final_disposition、closed_at 及物理控制全部旧约束；不改旧迁移、不补 settled_at、不改结算修订/应收余额。新 PG 覆盖未归口拒绝、实际 COLLECTION_PENDING 归口后运营完成且余额保持、没有两类完成时间的终态仍被拒绝，并验证旧结清路径兼容。迁移只在 Launcher 新建本地目标验证；最终除原三套外追加现有 closure repository/schema 门禁，线上应用仍属于后续发布环节。
+- B6 完成入口的数据库衔接修正另立单元：第五轮 source `c976d863` 已通过两项业务拒绝断言，正常完成、清单重放后完成及审计回滚切片进入真实状态写入后出现数据库 DriverAdapterError（原件摘要截断，未直接确认具体约束）；静态定位旧 `subscription_closure_case_terminal_shape_chk` 强制 settled_at 非空，而现行入口只写 operational_completed_at。按已批准的 2026-08-26 三阶段规格，运营完成必须可保留真实未结债权。新增一个前向迁移，只将该终态 CHECK 的“结清时间存在”改为“结清或运营完成时间存在”，保留终态与 final_disposition、closed_at 及物理控制全部旧约束；不改旧迁移、不补 settled_at、不改结算修订/应收余额。新 PG 覆盖未归口拒绝、实际 COLLECTION_PENDING 归口后运营完成且余额保持、没有两类完成时间的终态仍被拒绝，并验证旧结清路径兼容。迁移只在 Launcher 新建本地目标验证；最终除原三套外追加现有 closure repository/schema 门禁，线上应用仍属于后续发布环节。
 
 - B6 第二轮真实 PG 在 source `613d3350` 执行 85/85（80 通过、5 失败），新增正常签署场景均被 `vehicle_return_checklist_revision_attestation_check` 拒绝。`captureChecklist` 对 CUSTOMER_SIGNED 写 Prisma.JsonNull，而既有 SQL 约束要求 SQL NULL；这是真实生产入口反例，不是首轮的夹具状态错误。新增限域只将该空分支改为 Prisma.DbNull，并在原 PG 切片独立查询 `attestation_snapshot IS NULL`；拒签/缺席的证据对象、校验及数据库约束保持。该前置修正单独提交，继续原套件，不绕过真实清单入口。
 - 清单重放另立修正单元：当前直接以数组调用只接受对象根的 canonicalSubscriptionClosureJson；数据库 items 还带有 id、revisionId 和时间等元数据。先用真实 capture 首写→同键同内容重放取得 unit/PG 反例，再仅将已存 items 投影为规范化输入相同的五个业务字段、以 `{ items }` 对象比较。保持 manifestHash 对完整输入的绑定与同键改内容拒绝，不放宽签署锁定和证据约束，不改通用序列化函数。

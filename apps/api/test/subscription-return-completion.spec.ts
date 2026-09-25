@@ -170,7 +170,7 @@ function completionHarness(
     subscriptionClosureChargeDispute: { count: vi.fn(async () => 0) },
     subscriptionClosureChargeDisputeDecision: { count: vi.fn(async () => 0) },
     subscriptionClosureCustomerResponse: {
-      findUnique: vi.fn(async () => ({
+      findFirst: vi.fn(async () => ({
         settlementHash: "settlement-hash",
         status: options.pendingResponse ? "PENDING" : "CONFIRMED"
       }))

@@ -26,8 +26,12 @@ function schemaFiles(directory) {
     .sort((left, right) => left.localeCompare(right));
 }
 
-function createRegistry(repoRoot) {
+function readSchemaSources(repoRoot) {
   const schemaDirectory = path.join(repoRoot, "release", "contracts", "schemas");
+  return schemaFiles(schemaDirectory).map((file) => ({ file, bytes: readFileSync(file) }));
+}
+
+function createRegistry(repoRoot, sources = readSchemaSources(repoRoot)) {
   const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: false });
   // Opt-in keyword: legacy published schemas retain validateFormats:false.
   ajv.addKeyword({
@@ -48,8 +52,8 @@ function createRegistry(repoRoot) {
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
   );
   const validators = new Map();
-  for (const file of schemaFiles(schemaDirectory)) {
-    const schema = JSON.parse(readFileSync(file, "utf8"));
+  for (const { file, bytes } of sources) {
+    const schema = JSON.parse(bytes.toString("utf8"));
     if (typeof schema.$id !== "string" || schema.$id.length === 0) {
       throw codeError("CONTRACT_SCHEMA_ID_MISSING", { file });
     }
@@ -64,13 +68,34 @@ function createRegistry(repoRoot) {
   return validators;
 }
 
+let lastRegistry;
+
+function validationRegistry(repoRoot) {
+  const root = path.resolve(repoRoot);
+  const sources = readSchemaSources(repoRoot);
+  if (
+    lastRegistry?.root === root &&
+    sources.length === lastRegistry.sources.length &&
+    sources.every(
+      ({ file, bytes }, index) =>
+        file === lastRegistry.sources[index].file && bytes.equals(lastRegistry.sources[index].bytes)
+    )
+  ) {
+    return lastRegistry.validators;
+  }
+  // Compile the exact bytes just observed; failed reads/compilation never fall back to old validators.
+  const validators = createRegistry(repoRoot, sources);
+  lastRegistry = { root, sources, validators };
+  return validators;
+}
+
 export function compileAllSchemas(repoRoot = defaultRepoRoot) {
   const validators = createRegistry(repoRoot);
   return Object.freeze({ schemaIds: Object.freeze([...validators.keys()].sort()) });
 }
 
 export function validateContract(schemaId, value, { repoRoot = defaultRepoRoot } = {}) {
-  const validate = createRegistry(repoRoot).get(schemaId);
+  const validate = validationRegistry(repoRoot).get(schemaId);
   if (!validate) throw codeError("CONTRACT_SCHEMA_UNREGISTERED", { schemaId });
   if (!validate(value)) {
     throw codeError("CONTRACT_SCHEMA_INVALID", {
@@ -79,7 +104,8 @@ export function validateContract(schemaId, value, { repoRoot = defaultRepoRoot }
         instancePath,
         keyword,
         message,
-        params
+        // Ajv const/enum error parameters can reference the compiled schema.
+        params: structuredClone(params)
       }))
     });
   }

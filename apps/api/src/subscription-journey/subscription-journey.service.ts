@@ -526,7 +526,7 @@ export class SubscriptionJourneyService {
     return prisma.$transaction(async (tx) => {
       const journey = await this.lockAdminJourney(tx, journeyId);
       if (journey.version !== dto.version) {
-        const replay = this.resolveFinalPlanReplay(journey, dto);
+        const replay = await this.resolveFinalPlanReplay(tx, journey, dto);
         if (replay) return replay;
         throw new ConflictException("JOURNEY_OPTIMISTIC_LOCK_CONFLICT");
       }
@@ -1565,7 +1565,8 @@ export class SubscriptionJourneyService {
     return journey;
   }
 
-  private resolveFinalPlanReplay(
+  private async resolveFinalPlanReplay(
+    tx: Tx,
     journey: AdminJourney,
     dto: FinalPlanDecisionDto
   ) {
@@ -1578,6 +1579,16 @@ export class SubscriptionJourneyService {
           status === SubscriptionJourneyStepStatus.COMPLETED
       );
     if (!published || dto.version > journey.version) return null;
+
+    const hashKey = journey.application.finalPlanCommercialHash!.slice("sha256:".length, 23);
+    const publication = await tx.subscriptionJourneyEvent.findUnique({
+      where: {
+        eventKey: `journey:${journey.id}:step:FINAL_PLAN_DECISION:revision:${journey.application.finalPlanRevision}:hash:${hashKey}`
+      }
+    });
+    if (!publication || publication.sequence !== dto.version + 1) {
+      throw journeyError("FINAL_PLAN_REVISION_STALE", "This command version does not identify the current final-plan publication.");
+    }
 
     const exact =
       journey.application.finalPeriodMonths === dto.finalPeriodMonths &&

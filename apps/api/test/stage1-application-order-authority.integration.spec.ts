@@ -271,14 +271,21 @@ describe("Stage 1 application and order authority", () => {
   }
 
   async function bootstrap(fixture: Awaited<ReturnType<typeof confirmedApplication>>) {
-    await journey.createOrderAndContractJob(fixture.job);
+    await expect(journey.createOrderAndContractJob(fixture.job)).resolves.toMatchObject({ action: "ORDER_AND_CONTRACT_CREATED" });
     // Materialize the successor step through the real signal consumer, without calling the provider.
     await prisma.$transaction(async (tx) => {
       const claimed = await repository.claimSignalOutbox(tx, 100, 120000);
       const completed = claimed.find(
         (row) => row.eventKey === `${fixture.job.sourceKey}:completed:outbox`
       );
-      expect(completed).toBeDefined();
+      if (!completed) {
+        const [observed] = await tx.$queryRaw<Array<{ status: string; due: boolean; lease: boolean }>>(Prisma.sql`
+          SELECT status::text, available_at <= clock_timestamp() AS due,
+            lease_token IS NOT NULL AS lease FROM subscription_journey_outbox
+          WHERE event_key = ${`${fixture.job.sourceKey}:completed:outbox`}
+        `);
+        throw new Error(`Completion claim missing: ${JSON.stringify(observed)}, claimedCount=${claimed.length}`);
+      }
       await journey.dispatchSignalOutbox(tx, completed!);
       await repository.completeOutbox(tx, completed!.id, completed!.leaseToken);
     });
@@ -454,7 +461,13 @@ describe("Stage 1 application and order authority", () => {
       // Claim the actual queued revision via the production repository.
       const claimed = await prisma.$transaction((tx) => repository.claimJobs(tx, 1000, 120000));
       currentJob = claimed.find(({ id }) => id === job.id)!;
-      expect(currentJob).toBeDefined();
+      if (!currentJob) {
+        const [observed] = await prisma.$queryRaw<Array<{ status: string; due: boolean; lease: boolean }>>(Prisma.sql`
+          SELECT status::text, available_at <= clock_timestamp() AS due,
+            lease_token IS NOT NULL AS lease FROM subscription_journey_job WHERE id = ${job.id}
+        `);
+        throw new Error(`Revision job claim missing: ${JSON.stringify(observed)}, claimedCount=${claimed.length}`);
+      }
     }
     await bootstrap({ ...fixture, job: currentJob });
     const final = await facts(fixture);

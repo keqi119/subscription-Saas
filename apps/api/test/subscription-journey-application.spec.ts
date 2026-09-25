@@ -727,6 +727,16 @@ describe("subscription journey manual application decisions", () => {
 });
 
 describe("subscription journey final-plan command replay", () => {
+  it("does not report the current publication as the result of a different command version", async () => {
+    const harness = finalPlanReplayHarness();
+    await expect(harness.service.decideFinalPlan("journey-1", {
+      finalPeriodMonths: 12,
+      finalSubscriptionPlanId: "plan-1",
+      finalVehicleId: "vehicle-1",
+      version: 0
+    }, harness.user, harness.context)).rejects.toMatchObject({ code: "FINAL_PLAN_REVISION_STALE" });
+  });
+
   it("returns the committed publication for an exact stale-version replay", async () => {
     const harness = finalPlanReplayHarness();
 
@@ -856,6 +866,9 @@ function finalPlanReplayHarness() {
   };
   const tx = {
     $queryRaw: vi.fn(async () => [{ id: journey.id }]),
+    subscriptionJourneyEvent: {
+      findUnique: vi.fn(async () => ({ sequence: 3 }))
+    },
     subscriptionJourney: {
       findUnique: vi.fn(async () => journey)
     }

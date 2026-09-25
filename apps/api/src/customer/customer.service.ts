@@ -59,9 +59,8 @@ import {
   classifyApplicationReadiness,
   type ApplicationReadinessResult
 } from "../subscription-journey/application-readiness";
-import { journeyError } from "../subscription-journey/subscription-journey.errors";
+import { ConfirmedCommercialPlanChanged, journeyError, SubscriptionJourneyError } from "../subscription-journey/subscription-journey.errors";
 import { commercialPlanHash, orderCommercialPlanSnapshot, sameJourneyJson } from "../subscription-journey/subscription-journey-json";
-import { ConfirmedCommercialPlanChanged } from "../subscription-journey/subscription-journey.errors";
 import {
   buildApplicationCustomerProfileSnapshot,
   parseApplicationCustomerProfileSnapshot
@@ -1005,6 +1004,16 @@ export class CustomerService {
       const before = await this.findApplicationOrThrow(id, tx);
       ensureCanAccessApplication(before, user);
       assertApplicationCanCreateOrder(before);
+      const currentJourney = await tx.subscriptionJourney.findUnique({
+        select: { currentStepCode: true, status: true },
+        where: { applicationId: id }
+      });
+      if (currentJourney && (
+        currentJourney.currentStepCode !== "ORDER_AND_CONTRACT_CREATION" ||
+        ["PAUSED", "CANCELLED", "COMPLETED"].includes(currentJourney.status)
+      )) {
+        throw new BadRequestException("FINAL_PLAN_REVISION_STALE: 当前流程尚不允许建单，请完成最终方案发布与客户确认。");
+      }
       const finalDepositAmount = before.finalDepositAmount;
       if (finalDepositAmount === null) {
         throw new BadRequestException("押金确认后才可以生成订单。");
@@ -1014,8 +1023,8 @@ export class CustomerService {
       try {
         assertConfirmedCommercialPlanUnchanged(before, details);
       } catch (error) {
-        if (error instanceof ConfirmedCommercialPlanChanged) {
-          throw new BadRequestException(error.message);
+        if (error instanceof SubscriptionJourneyError && error.code === "FINAL_PLAN_REVISION_STALE") {
+          throw new BadRequestException(`${error.code}: ${error.message}`);
         }
         throw error;
       }

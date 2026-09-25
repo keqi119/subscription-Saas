@@ -7572,7 +7572,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
   it("B6 completes a paid normal expiry through the current operational entry and replays without writes", async () => {
     const h = await prepareGovernedCompletion(prisma);
     const before = await completionTruth(prisma, h.scenario.fixture);
-    await expect(h.complete()).resolves.toMatchObject({
+    expect(await h.complete()).toMatchObject({
       financialStatus: "SETTLED",
       replayed: false,
       status: "COMPLETED"
@@ -7582,6 +7582,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       closureType: "NORMAL_COMPLETION",
       financialStatus: "SETTLED",
       operationalCompletedAt: h.occurredAt,
+      settledAt: null,
       status: "COMPLETED"
     });
     expect(after.order.orderStatus).toBe("COMPLETED");
@@ -7651,7 +7652,79 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
 
   it("B6 replays the exact captured checklist without new facts and rejects a changed item", async () => {
     const h = await prepareGovernedCompletion(prisma, { replayChecklist: true });
-    await expect(h.complete()).resolves.toMatchObject({ status: "COMPLETED" });
+    expect(await h.complete()).toMatchObject({ status: "COMPLETED" });
+  });
+
+  it("B6 completes operations with governed collection ownership and preserves the unpaid debt", async () => {
+    const h = await prepareGovernedCompletion(prisma, { paid: false });
+    const beforeOwnership = await completionTruth(prisma, h.scenario.fixture);
+    await expect(h.complete()).rejects.toMatchObject({
+      response: { code: "CLOSURE_OPERATIONAL_FINANCIAL_OWNER_REQUIRED" }
+    });
+    expect(await completionTruth(prisma, h.scenario.fixture)).toEqual(beforeOwnership);
+    await h.governance.recordDisposition(
+      h.scenario.closureCase.id,
+      {
+        approvalId: null,
+        billId: beforeOwnership.bills[0]!.id,
+        chargeLineId: null,
+        detail: { reason: "Assigned collection after the accepted final settlement" },
+        disposition: "COLLECTION_PENDING",
+        idempotencyKey: "b6-collection-owner",
+        ownerId: h.scenario.fixture.actorId,
+        ownerType: "FINANCE",
+        proofFileId: null
+      },
+      h.scenario.fixture.actorId
+    );
+    const before = await completionTruth(prisma, h.scenario.fixture);
+    expect(
+      await h.governance.completeOperations(
+        h.scenario.closureCase.id,
+        {
+          idempotencyKey: "b6-owned-debt-complete",
+          occurredAt: await readTestDatabaseClock(prisma)
+        },
+        h.scenario.fixture.actorId
+      )
+    ).toMatchObject({ status: "COMPLETED", financialStatus: "COLLECTION_PENDING" });
+    const after = await completionTruth(prisma, h.scenario.fixture);
+    expect(after.closure).toMatchObject({
+      status: "COMPLETED",
+      financialStatus: "COLLECTION_PENDING",
+      settledAt: null
+    });
+    expect(after.closure.operationalCompletedAt).toBeInstanceOf(Date);
+    expect(after.order.orderStatus).toBe("COMPLETED");
+    expect(after.contract.status).toBe("COMPLETED");
+    expect(after.vehicle.status).toBe("AVAILABLE");
+    expect(after.lease?.status).toBe("COMPLETED");
+    expect(after.bills).toEqual(before.bills);
+    expect(after.bills).toEqual([
+      expect.objectContaining({ amount: 100n, paidAmount: 0n, remainingAmount: 100n })
+    ]);
+    expect(after.payments).toEqual([]);
+    expect(after.writeOffs).toEqual([]);
+    expect(
+      await prisma.subscriptionClosureSettlementRevision.findUniqueOrThrow({
+        where: { id: h.settlement.id }
+      })
+    ).toEqual(h.settlement);
+    expect(h.settlement.stage).toBe("FINALIZED");
+  });
+
+  it("B6 retains the terminal database guard when neither completion clock is present", async () => {
+    const h = await prepareGovernedCompletion(prisma);
+    const before = await completionTruth(prisma, h.scenario.fixture);
+    expect(before.closure).toMatchObject({ operationalCompletedAt: null, settledAt: null });
+    await expect(
+      prisma.subscriptionClosureCase.update({
+        data: { closedAt: h.occurredAt, status: "COMPLETED" },
+        where: { id: h.scenario.closureCase.id }
+      })
+    ).rejects.toThrow("subscription_closure_case_terminal_shape_chk");
+    expect(await completionTruth(prisma, h.scenario.fixture)).toEqual(before);
+    expect(await h.complete()).toMatchObject({ status: "COMPLETED" });
   });
 
   it.each([

@@ -229,13 +229,15 @@ node scripts/release/run-database-suite.mjs --suite-id api.stage1-contract-archi
 
 ### 任务 6：B1 后续与 B2 真实服务矩阵
 
-- [ ] 按 [B1 已有计划](./2026-09-06-stage1-b1-intake-and-business-wait-validation-plan.md) Task2/3 组合真实 CustomerService 与 Journey；加入 A/B、补件、人工等待、拒绝/取消和技术错误。worker 对正常等待完成 job，对真正技术错误才 retry/dead-letter。
+- [x] 按 [B1 已有计划](./2026-09-06-stage1-b1-intake-and-business-wait-validation-plan.md) Task2/3 组合真实 CustomerService 与 Journey；加入 A/B、补件、人工等待、拒绝/取消和技术错误。worker 对正常等待完成 job，对真正技术错误才 retry/dead-letter。
 - [ ] 扩展任务 1 的真实 PG 文件：两 Application 争同一车；同 Application 重复确认；旧 revision/hash；重复 CREATE_ORDER_AND_CONTRACT；合同后段失败回滚；确认后商业漂移；取消/拒绝竞争。结果必须联合查 Application、Vehicle、Quote、Order、Contract、Journey、job/event。
 - [ ] 不替换原 golden-path 全部 fixture；在新增切片调用真实服务成功路径，原覆盖继续保留。测试 identity 从 suite context 取得，不从 retired P1 record 取连接。
 - [ ] 按 B1 Task4 运行本轮 golden-path fresh，并运行包含新文件的 integrity fresh。分别报告 suite 自己的覆盖，不将 fixture 成功夸大为生产入口并发验证。
 - [ ] 在原执行索引追加本轮 B1/B2 状态、source、计数、原件引用和未覆盖外部事项。
 
 **出口：** B1/B2 当前生产路径与反例闭环；F1/F2 关闭。
+
+2026-09-25：限定 B1 已完成，Task2 `5c9223ca`、Task3/最终 source `7ad53559`，四文件 unit 112/112、ESLint/API tsc 通过，原 golden-path fresh 1/1、custody/readback/退役及独立终审 ACCEPT。[本轮 B1 记录](../../acceptance/2026-09-25-stage1-intake-business-wait-validation.md)说明两文件既有 Prettier 基线例外；原 fixture 收敛不替代真实服务矩阵，B2 及任务 6 其余步骤继续开放。
 
 ### 任务 7：B5 完整付款/账单验证
 

@@ -1066,7 +1066,30 @@ export class SubscriptionJourneyRepository {
         (job."status" IN ('PENDING', 'RETRY_SCHEDULED') AND job."available_at" <= clock_timestamp())
         OR (job."status" = 'PROCESSING' AND job."lease_expires_at" <= clock_timestamp())
       )
-        AND journey."status" NOT IN ('PAUSED', 'CANCELLED', 'COMPLETED')
+        AND (
+          journey."status" NOT IN ('PAUSED', 'CANCELLED', 'COMPLETED')
+          OR (
+            journey."status" = 'COMPLETED'
+            AND journey."current_step_code" = 'AUTHORITATIVE_ACTIVATION'
+            AND journey."current_step_status" = 'COMPLETED'
+            AND journey."completed_at" IS NOT NULL
+            AND job."job_type" = 'ACTIVATE_SUBSCRIPTION'
+            AND job."payload"->>'orderId' = journey."order_id"::text
+            AND EXISTS (
+              SELECT 1 FROM "subscription_journey_step" step
+              WHERE step."id" = job."step_id"
+                AND step."journey_id" = journey."id"
+                AND step."code" = 'AUTHORITATIVE_ACTIVATION'
+                AND step."status" = 'COMPLETED'
+                AND step."completed_at" IS NOT NULL
+            )
+            AND EXISTS (
+              SELECT 1 FROM "application" application
+              WHERE application."id" = journey."application_id"
+                AND job."payload"->'finalPlanRevision' = to_jsonb(application."final_plan_revision")
+            )
+          )
+        )
       ORDER BY job."available_at" ASC, job."created_at" ASC
       LIMIT ${limit}
       FOR UPDATE OF job SKIP LOCKED

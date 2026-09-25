@@ -15,6 +15,7 @@
 - F1 商业漂移检查与人工重新报价恢复已接回，最终代码 `05c8d99b`、证据 `be2e9d28`。独立干净 source `35353517d3499c5fde22a5525bd8e1ab04133c31` 完整 fresh 31/31、20 文件 unit 324/324，tsc/lint/契约/发现检查通过，custody 读回及最终独立评审 ACCEPT。[F1 证据](2026-09-25-stage1-commercial-plan-validation.md)保留反例、队列时序诊断、两轮重新报价/确认及旧请求重放验证。任务 1 限定 F1/F2 修复闭环；任务 6 的 B1/B2 剩余矩阵及阶段 1 仍未关闭。
 - F3 错误金额不写支付单的修复已接回 `0b32fd17`，B5 正向重复派发用例 `a3c1e657`，证据 `3819088c`。独立干净 source `46e8f95aa7ffbc045f7c6a672956f242325ff004` 顺序完成 billing fresh 17/17、maintenance fact fresh 15/15，四文件 unit 64/64、tsc/lint/契约/发现检查通过；两套 custody/readback、退役与独立终审 ACCEPT，Task4 复用当前 pair，没有重复运行。[F3/B5 记录](2026-09-06-stage1-b5-payment-and-billing-validation-record.md)保留真实 RED 与中间实现失败，并明确维护事实业务响应/镜像来源仍为合成边界。任务 2、7 限定收口，不代表真实付款、维护运行或 Stage 1 签字。
 - F4 后续完整门禁已关闭：精确字节判定的 Schema 编译复用已整合 `2cd87533`，证据 `98565931`。干净 source `fc1b1806` 原四文件 249/249、exit 0，Schema 回归 17/17，独立代码及原件审查 ACCEPT；旧失败和中断分类不变。[完整门禁记录](2026-09-25-stage1-parser-full-gate-validation.md)绑定实际 source、140 项输入及日志摘要。任务 3 限定收口；R2 实现、最终 Node22 和阶段 1 继续开放。
+- B1 续接验证已整合 `2eb520fb`、`40b07747`，证据 `ff64a11e`。独立干净 source `7ad53559` 四文件 unit 112/112、ESLint/API tsc 通过，原 golden-path fresh 1/1，唯一新 receipt 与原始/canonical 摘要读回一致、目标退役、独立终审 ACCEPT。[B1 记录](2026-09-25-stage1-intake-business-wait-validation.md)保留既有 Prettier 基线例外和 fixture 证据边界。限定 B1 关闭；任务 6 的 B2 真实服务矩阵仍开放。
 - 用户说明服务器端本系统 Docker 当前全部停止。需要线上联调前先核对并恢复本系统容器、验证健康；当前本地测试不依赖线上。
 - 阶段 1 签字、最终 Node22 三镜像、真实渠道/浏览器、snapshot 双链及外部操作仍未完成。
 

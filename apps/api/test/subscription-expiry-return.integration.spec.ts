@@ -7649,6 +7649,11 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(after);
   });
 
+  it("B6 replays the exact captured checklist without new facts and rejects a changed item", async () => {
+    const h = await prepareGovernedCompletion(prisma, { replayChecklist: true });
+    await expect(h.complete()).resolves.toMatchObject({ status: "COMPLETED" });
+  });
+
   it.each([
     [
       "missing customer acceptance",
@@ -7741,7 +7746,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       ).resolves.toBe(1);
     }
   );
-
 });
 
 function passthroughClosureOrchestrator() {
@@ -8687,18 +8691,19 @@ async function setupFocusedPhysicalReceipt(
   const receipt = {
     actorId: fixture.actorId,
     checklist,
-    damages: options.early || options.undamaged
-      ? []
-      : [
-          {
-            damageLevel: "MEDIUM",
-            damageType: "EXTERIOR",
-            description: "Focused rear door scratch",
-            estimatedRepairAmount: 3600n,
-            photoUrls: ["focused-rear-door-1.jpg", "focused-rear-door-2.jpg"],
-            responsibleParty: "CUSTOMER"
-          }
-        ],
+    damages:
+      options.early || options.undamaged
+        ? []
+        : [
+            {
+              damageLevel: "MEDIUM",
+              damageType: "EXTERIOR",
+              description: "Focused rear door scratch",
+              estimatedRepairAmount: 3600n,
+              photoUrls: ["focused-rear-door-1.jpg", "focused-rear-door-2.jpg"],
+              responsibleParty: "CUSTOMER"
+            }
+          ],
     orderId: fixture.orderId,
     physicalControlMode: "VOLUNTARY_RETURN" as const,
     remark: "focused receipt",
@@ -8735,7 +8740,7 @@ function completionGovernance(prisma: PrismaService) {
 
 async function prepareGovernedCompletion(
   prisma: PrismaService,
-  options: Readonly<{ accept?: boolean; paid?: boolean }> = {}
+  options: Readonly<{ accept?: boolean; paid?: boolean; replayChecklist?: boolean }> = {}
 ) {
   const base = await setupFocusedPhysicalReceipt(prisma, {
     skipManifestSuccessors: true,
@@ -8788,23 +8793,24 @@ async function prepareGovernedCompletion(
     VEHICLE_EXTERIOR: 1,
     VEHICLE_INTERIOR: 1
   };
-  await governance.captureChecklist(
+  const checklistInput = {
+    attestationEvidenceIds: [],
+    attestationMode: "CUSTOMER_SIGNED" as const,
+    attestationReason: null,
+    capturedAt: await readTestDatabaseClock(prisma),
+    customerComments: null,
+    idempotencyKey: "b6-checklist",
+    items: Object.entries(quantities).map(([itemCode, quantity]) => ({
+      expectedQuantity: quantity,
+      itemCode,
+      returnedQuantity: quantity,
+      state: "NORMAL" as const
+    })),
+    witnesses: []
+  };
+  const checklist = await governance.captureChecklist(
     closureCase.id,
-    {
-      attestationEvidenceIds: [],
-      attestationMode: "CUSTOMER_SIGNED",
-      attestationReason: null,
-      capturedAt: await readTestDatabaseClock(prisma),
-      customerComments: null,
-      idempotencyKey: "b6-checklist",
-      items: Object.entries(quantities).map(([itemCode, quantity]) => ({
-        expectedQuantity: quantity,
-        itemCode,
-        returnedQuantity: quantity,
-        state: "NORMAL" as const
-      })),
-      witnesses: []
-    },
+    checklistInput,
     fixture.actorId
   );
   const attestations = await prisma.$queryRaw<Array<{ mode: string; sqlNull: boolean }>>(
@@ -8812,6 +8818,47 @@ async function prepareGovernedCompletion(
       FROM "vehicle_return_checklist_revision" WHERE "closure_case_id" = ${closureCase.id}::uuid`
   );
   expect(attestations).toEqual([{ mode: "CUSTOMER_SIGNED", sqlNull: true }]);
+  if (options.replayChecklist) {
+    const readChecklistFacts = () =>
+      Promise.all([
+        prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } }),
+        prisma.vehicleReturn.findUniqueOrThrow({ where: { id: closureCase.vehicleReturnId! } }),
+        prisma.vehicleReturnChecklistRevision.findMany({
+          include: { items: { orderBy: { itemCode: "asc" } } },
+          orderBy: { id: "asc" },
+          where: { closureCaseId: closureCase.id }
+        }),
+        prisma.subscriptionAutomationJob.findMany({
+          orderBy: { id: "asc" },
+          where: { orderId: fixture.orderId }
+        })
+      ]);
+    const captured = await readChecklistFacts();
+    await expect(
+      governance.captureChecklist(
+        closureCase.id,
+        {
+          ...checklistInput,
+          items: [...checklistInput.items].reverse()
+        },
+        fixture.actorId
+      )
+    ).resolves.toEqual({ ...checklist, replayed: true });
+    expect(await readChecklistFacts()).toEqual(captured);
+    await expect(
+      governance.captureChecklist(
+        closureCase.id,
+        {
+          ...checklistInput,
+          items: checklistInput.items.map((item) =>
+            item.itemCode === "KEY" ? { ...item, returnedQuantity: 0 } : item
+          )
+        },
+        fixture.actorId
+      )
+    ).rejects.toMatchObject({ response: { code: "RETURN_CHECKLIST_IDEMPOTENCY_CONFLICT" } });
+    expect(await readChecklistFacts()).toEqual(captured);
+  }
   const signed = await produceReturnManifestSuccessors(prisma, {
     actorId: fixture.actorId,
     closureCaseId: closureCase.id,

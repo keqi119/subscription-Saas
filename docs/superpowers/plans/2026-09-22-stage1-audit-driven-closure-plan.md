@@ -153,7 +153,7 @@ pnpm --filter @subscription-saas/api exec vitest run --project unit test/portal-
 
 ### 任务 3：修复非法短帧头，完成 R2 之前的纯契约回归
 
-- [ ] 在现有 evidence test 写入下列回归；当前 LF 输入应出现 RED，真正未完成 prefix 仍应合法。
+- [x] 在现有 evidence test 写入下列回归；当前 LF 输入应出现 RED，真正未完成 prefix 仍应合法。
 
 ```javascript
 test("short protocol headers terminated by LF are invalid", () => {
@@ -168,9 +168,9 @@ test("short protocol headers terminated by LF are invalid", () => {
 });
 ```
 
-- [ ] 在 `decodeFrame` 的 `text.length < 4` 分支先要求 `headerEnd < 0`；沿用 FRAME 错误，不调整大小/版本/权限限制，不添加协议。
-- [ ] 用原 interrupted-apply fixture 分别构造 MS1/MS2：ACK_RECEIVED 后短 header 含 LF + 正确重算 RawRef/process。完整 reconcile 必须不能 SUCCEEDED/committed；合法 EOF/UTF-8 截断与真实提交归因继续按原契约通过。
-- [ ] 先执行新增名称的聚焦门禁；此两文件单元收口时执行原完整四文件 gate 一次，保存 stdout/stderr/actual close、计数、字节摘要及独立审查。不要把本轮原 245/245 移作修复后结果。
+- [x] 在 `decodeFrame` 的 `text.length < 4` 分支先要求 `headerEnd < 0`；沿用 FRAME 错误，不调整大小/版本/权限限制，不添加协议。
+- [x] 用原 interrupted-apply fixture 分别构造 MS1/MS2：ACK_RECEIVED 后短 header 含 LF + 正确重算 RawRef/process。完整 reconcile 必须不能 SUCCEEDED/committed；合法 EOF/UTF-8 截断与真实提交归因继续按原契约通过。
+- [x] 先执行新增名称的聚焦门禁；此两文件单元收口时执行原完整四文件 gate 一次，保存 stdout/stderr/actual close、计数、字节摘要及独立审查。不要把本轮原 245/245 移作修复后结果。
 
 ```powershell
 node --test --test-name-pattern="short protocol headers" packages/release-foundation/test/manual-runner-evidence.test.mjs
@@ -188,6 +188,8 @@ node --test packages/release-foundation/test/manual-runner-evidence.test.mjs pac
 - 独立审查发现 Ajv 的 error.params 内 const/enum 值会引用编译 Schema；调用方改写它可能污染下一次复用。返回错误时深拷贝 params，保持形状、值及调用方可变性；增加嵌套错误详情污染回归。缓存比较精确 Buffer bytes，编译消费同一次读取的快照，失败不得回退旧结果；仅成功完整编译才发布缓存。
 - TDD 先证明相同内容的连续验证仍重复调用真实 Ajv compile；同时增加相同 size/mtime 的内容替换、目录增删/无关坏 Schema、不同 root、输入变化和失败后恢复的回归。随后独立评审、完整 schema 回归及原四文件 gate；真实版本探测必须仍运行，任何剩余失败继续分类。
 - 本轮沿用刚完成的受控 fresh migrate/status/diff 和源码 validate 证据；上述修正不涉及业务或数据库，禁止为此访问已经退役的 target。原件与 Node24/最终 Node22 的边界继续保留。
+
+2026-09-25：限定 F4 完整关闭。最终 source `fc1b1806`，原四文件 249/249、exit 0；Schema 回归 17/17，独立代码与原件审查 ACCEPT。见[完整门禁记录](../../acceptance/2026-09-25-stage1-parser-full-gate-validation.md)。历史失败与中断原件保留；R2、最终 Node22 与阶段 1 验收继续开放。
 
 ### 任务 4：两文件预检对齐
 

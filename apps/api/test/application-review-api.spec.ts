@@ -1272,7 +1272,7 @@ describe("application self-service review APIs", () => {
       });
       const transaction = harness.prisma.$transaction.getMockImplementation()!;
       harness.prisma.$transaction.mockImplementationOnce(async (callback) => {
-        harness.state.application = { ...harness.state.application, status };
+        await harness.tx.application.update({ data: { status } });
         return transaction(callback);
       });
 

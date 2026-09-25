@@ -7727,6 +7727,90 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     expect(await h.complete()).toMatchObject({ status: "COMPLETED" });
   });
 
+  it("B6 rejects an unresolved inspection and completes only after a governed responsibility decision", async () => {
+    const h = await prepareGovernedCompletion(prisma, { damageResponsibility: "PLATFORM" });
+    // The helper proves the real inspection rejection before confirmDelta. A
+    // finalized/unresolved combination cannot be produced through this workflow.
+    expect(await h.complete()).toMatchObject({ status: "COMPLETED" });
+  });
+
+  it("B6 refuses both an open charge dispute and an accepted dispute awaiting a new settlement", async () => {
+    const h = await prepareGovernedCompletion(prisma, {
+      damageResponsibility: "CUSTOMER",
+      accept: false
+    });
+    const { fixture, closureCase } = h.scenario;
+    expect(h.chargeLineId).not.toBeNull();
+    await h.governance.recordCustomerResponse(fixture.orderId, fixture.customerId, {
+      disputes: [
+        {
+          chargeLineId: h.chargeLineId!,
+          evidenceIds: [h.evidenceIds.get("VEHICLE_EXTERIOR")!],
+          reason: "B6 disputed responsibility"
+        }
+      ],
+      idempotencyKey: "b6-dispute",
+      settlementHash: h.settlement.resultHash,
+      settlementRevisionId: h.settlement.id,
+      status: "DISPUTED"
+    });
+    const disputes = () =>
+      prisma.subscriptionClosureChargeDispute.findMany({
+        include: { decision: true },
+        where: { closureCaseId: closureCase.id },
+        orderBy: { id: "asc" }
+      });
+    const open = await disputes();
+    expect(open).toEqual([expect.objectContaining({ status: "OPEN", decision: null })]);
+    const before = await completionTruth(prisma, fixture);
+    await expect(h.complete()).rejects.toMatchObject({
+      response: { code: "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED" }
+    });
+    expect(await completionTruth(prisma, fixture)).toEqual(before);
+    expect(await disputes()).toEqual(open);
+
+    await h.governance.decideDispute(
+      closureCase.id,
+      open[0]!.id,
+      {
+        decision: "ACCEPTED_BY_PLATFORM",
+        evidenceIds: [h.evidenceIds.get("VEHICLE_EXTERIOR")!],
+        idempotencyKey: "b6-accept-dispute",
+        occurredAt: await readTestDatabaseClock(prisma),
+        rationale: "B6 independent review accepts the customer objection"
+      },
+      fixture.actorId
+    );
+    const decided = await disputes();
+    expect(decided).toEqual([
+      expect.objectContaining({
+        decision: expect.objectContaining({ decision: "ACCEPTED_BY_PLATFORM" })
+      })
+    ]);
+    expect(
+      await prisma.subscriptionClosureChargeDispute.count({
+        where: { closureCaseId: closureCase.id, status: "OPEN", decision: null }
+      })
+    ).toBe(0);
+    const accepted = await completionTruth(prisma, fixture);
+    expect(
+      accepted.bills.some(
+        (bill) =>
+          bill.billStatus === "CANCELLED" && bill.amount === 200n && bill.remainingAmount === 0n
+      )
+    ).toBe(true);
+    await expect(h.complete()).rejects.toMatchObject({
+      response: { code: "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED" }
+    });
+    expect(await completionTruth(prisma, fixture)).toEqual(accepted);
+    expect(await disputes()).toEqual(decided);
+    expect(
+      await prisma.subscriptionClosureSettlementRevision.findUniqueOrThrow({
+        where: { id: h.settlement.id }
+      })
+    ).toEqual(h.settlement);
+  });
+
   it.each([
     [
       "missing customer acceptance",
@@ -8799,10 +8883,10 @@ async function setupFocusedPhysicalReceipt(
   };
 }
 
-function completionGovernance(prisma: PrismaService) {
+function completionGovernance(prisma: PrismaService, storage: unknown = {}) {
   return new SubscriptionReturnGovernanceService(
     prisma,
-    {} as never,
+    storage as never,
     undefined,
     undefined,
     undefined,
@@ -8813,14 +8897,29 @@ function completionGovernance(prisma: PrismaService) {
 
 async function prepareGovernedCompletion(
   prisma: PrismaService,
-  options: Readonly<{ accept?: boolean; paid?: boolean; replayChecklist?: boolean }> = {}
+  options: Readonly<{
+    accept?: boolean;
+    paid?: boolean;
+    replayChecklist?: boolean;
+    damageResponsibility?: "CUSTOMER" | "PLATFORM";
+  }> = {}
 ) {
   const base = await setupFocusedPhysicalReceipt(prisma, {
     skipManifestSuccessors: true,
     undamaged: true
   });
   const { fixture, closureCase } = base;
-  const governance = completionGovernance(prisma);
+  const evidenceObjects = new Map<string, Buffer>();
+  const governance = completionGovernance(prisma, {
+    async putSubscriptionReturnEvidence(input: { buffer: Buffer; objectIdentity: string }) {
+      const objectKey = `${closureCase.id}/${input.objectIdentity}`;
+      evidenceObjects.set(objectKey, Buffer.from(input.buffer));
+      return { bucket: "synthetic-b6-evidence", objectKey };
+    },
+    async deleteObject(_bucket: string, objectKey: string) {
+      evidenceObjects.delete(objectKey);
+    }
+  });
   // The mature lease/BASE/open period and signed delivery baseline are fixture
   // inputs; receipt, delta, inspection, settlement, payment and completion below
   // use current services. The signing provider/storage remain deterministic.
@@ -8888,7 +8987,10 @@ async function prepareGovernedCompletion(
       expectedQuantity: quantity,
       itemCode,
       returnedQuantity: quantity,
-      state: "NORMAL" as const
+      state:
+        options.damageResponsibility && itemCode === "VEHICLE_EXTERIOR"
+          ? ("DAMAGED" as const)
+          : ("NORMAL" as const)
     })),
     witnesses: []
   };
@@ -8943,6 +9045,40 @@ async function prepareGovernedCompletion(
     ).rejects.toMatchObject({ response: { code: "RETURN_CHECKLIST_IDEMPOTENCY_CONFLICT" } });
     expect(await readChecklistFacts()).toEqual(captured);
   }
+  // Current receipt authority binds the captured revision/hash plus the four
+  // required item proofs. Bytes/storage are synthetic; upload and linkage are real.
+  const evidenceIds = new Map<string, string>();
+  const checklistItems = await prisma.vehicleReturnChecklistItem.findMany({
+    where: { revisionId: String(checklist.revisionId) }
+  });
+  const image = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4XsAAAAASUVORK5CYII=",
+    "base64"
+  );
+  for (const itemCode of [
+    "KEY",
+    "REGISTRATION_CERTIFICATE",
+    "VEHICLE_EXTERIOR",
+    "VEHICLE_INTERIOR"
+  ]) {
+    const item = checklistItems.find((row) => row.itemCode === itemCode)!;
+    const uploaded = await governance.uploadEvidence(
+      closureCase.id,
+      {
+        capturedAt: await readTestDatabaseClock(prisma),
+        evidenceType: "PHOTO",
+        idempotencyKey: `b6-proof-${itemCode}`,
+        supersedesEvidenceId: null,
+        targetId: item.id,
+        targetType: "CHECKLIST_ITEM",
+        visibility: "CUSTOMER_VISIBLE"
+      },
+      { buffer: image, mimetype: "image/png", originalname: `${itemCode}.png`, size: image.length },
+      fixture.actorId
+    );
+    evidenceIds.set(itemCode, String(uploaded.evidenceId));
+  }
+  expect(evidenceObjects.size).toBe(4);
   const signed = await produceReturnManifestSuccessors(prisma, {
     actorId: fixture.actorId,
     closureCaseId: closureCase.id,
@@ -8952,7 +9088,27 @@ async function prepareGovernedCompletion(
   const scenario = {
     ...base,
     occurredAt: receiptAt,
-    receipt: { ...base.receipt, returnedAt: receiptAt },
+    receipt: {
+      ...base.receipt,
+      returnedAt: receiptAt,
+      checklistRevisionId: String(checklist.revisionId),
+      checklistManifestHash: String(checklist.manifestHash),
+      damages: options.damageResponsibility
+        ? [
+            {
+              checklistItemId: checklistItems.find((row) => row.itemCode === "VEHICLE_EXTERIOR")!
+                .id,
+              evidenceIds: [evidenceIds.get("VEHICLE_EXTERIOR")!],
+              damageLevel: "MEDIUM",
+              damageType: "EXTERIOR",
+              description: "B6 synthetic exterior damage",
+              estimatedRepairAmount: 200n,
+              photoUrls: [],
+              responsibleParty: "CUSTOMER"
+            }
+          ]
+        : []
+    },
     signedFileHash: signed.finalized.signedFileHash,
     signedFileId: signed.finalized.signedFileId
   };
@@ -8977,25 +9133,53 @@ async function prepareGovernedCompletion(
       }
     })
   ).toBeGreaterThan(0);
-  const delta = await governance.generateDelta(
+  let delta = await governance.generateDelta(
     closureCase.id,
     { idempotencyKey: "b6-delta" },
     fixture.actorId
   );
-  expect(delta.items.every(({ responsibility }) => responsibility === "NORMAL_WEAR")).toBe(true);
   await closeFocusedInspectionWorkOrder(scenario);
-  await scenario.closure.recordManagedReturnInspection(
-    {
-      accepted: true,
-      actorId: fixture.actorId,
-      closureCaseId: closureCase.id,
-      costs: [],
-      evidence: [],
-      occurredAt: await readTestDatabaseClock(prisma),
-      reconditioningRequired: false
-    },
-    {}
-  );
+  const inspection = {
+    accepted: true,
+    actorId: fixture.actorId,
+    closureCaseId: closureCase.id,
+    costs: [],
+    evidence: [],
+    occurredAt: await readTestDatabaseClock(prisma),
+    reconditioningRequired: false
+  };
+  if (options.damageResponsibility) {
+    const exterior = delta.items.find(({ itemCode }) => itemCode === "VEHICLE_EXTERIOR")!;
+    expect(exterior).toMatchObject({
+      responsibility: "UNDETERMINED",
+      wearClassification: "NEW_DAMAGE"
+    });
+    const unresolved = await completionTruth(prisma, fixture);
+    await expect(
+      scenario.closure.recordManagedReturnInspection(inspection, {})
+    ).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" }
+    });
+    expect(await completionTruth(prisma, fixture)).toEqual(unresolved);
+    delta = await governance.confirmDelta(
+      closureCase.id,
+      {
+        baseRevisionId: delta.id,
+        idempotencyKey: "b6-responsibility",
+        decisions: [
+          {
+            itemId: exterior.id,
+            responsibility: options.damageResponsibility,
+            decisionReason: "B6 governed review of captured exterior evidence"
+          }
+        ]
+      },
+      fixture.actorId
+    );
+  } else {
+    expect(delta.items.every(({ responsibility }) => responsibility === "NORMAL_WEAR")).toBe(true);
+  }
+  await scenario.closure.recordManagedReturnInspection(inspection, {});
   await prisma.vehicle.update({
     data: { currentSalePriceAmount: 10000000n, salePriceStatus: "EFFECTIVE" },
     where: { id: fixture.vehicleId }
@@ -9049,7 +9233,81 @@ async function prepareGovernedCompletion(
     waiverApprovalId: null,
     writeOffApprovalId: null
   });
-  await scenario.closure.proposeManagedSettlement(await settlementInput("propose"));
+  const proposed = await scenario.closure.proposeManagedSettlement(
+    await settlementInput("propose")
+  );
+  let chargeLineId: string | null = null;
+  if (options.damageResponsibility === "CUSTOMER") {
+    // Archived contract clause is an input fixture; price/bill production is real.
+    const clause = await prisma.contractChargeClauseSnapshot.create({
+      data: {
+        contractId: fixture.contractId,
+        clauseCode: "B6_EXTERIOR",
+        clauseVersion: 1,
+        status: "EXECUTABLE",
+        chargeType: "DAMAGE_VEHICLE_EXTERIOR",
+        unit: "ITEM",
+        pricingSnapshot: { unitPriceCents: "200" },
+        evidenceRequirementSnapshot: { photo: true },
+        exemptionSnapshot: {},
+        sourceTextLocator: "synthetic-archived-contract:exterior",
+        sourceTextHash: "c".repeat(64),
+        compilationHash: "d".repeat(64),
+        createdBy: fixture.actorId
+      }
+    });
+    const pricingInput: Parameters<SubscriptionReturnGovernanceService["createPricing"]>[1] = {
+      finalize: true,
+      idempotencyKey: "b6-pricing",
+      settlementRevisionId: proposed.id,
+      lines: [
+        {
+          chargeType: "DAMAGE_VEHICLE_EXTERIOR",
+          clauseSnapshotId: clause.id,
+          deltaItemId: delta.items.find(({ itemCode }) => itemCode === "VEHICLE_EXTERIOR")!.id,
+          evidenceIds: [evidenceIds.get("VEHICLE_EXTERIOR")!],
+          exceptionApprovalId: null,
+          lineCode: "B6_EXTERIOR",
+          quantity: 1,
+          responsibility: "CUSTOMER"
+        }
+      ]
+    };
+    const lines = await governance.createPricing(closureCase.id, pricingInput, fixture.actorId);
+    expect(lines).toEqual([
+      expect.objectContaining({ status: "FINAL", amountCents: 200n, billId: expect.any(String) })
+    ]);
+    const pricedTruth = await completionTruth(prisma, fixture);
+    await expect(
+      governance.createPricing(closureCase.id, pricingInput, fixture.actorId)
+    ).resolves.toEqual(lines);
+    expect(await completionTruth(prisma, fixture)).toEqual(pricedTruth);
+    // Pricing creates the bill after proposal. Refresh the real financial facts,
+    // then carry the existing bill into the new proposal through createPricing.
+    const repricedProposal = await scenario.closure.proposeManagedSettlement(
+      await settlementInput("repropose-after-pricing")
+    );
+    expect(repricedProposal.id).not.toBe(proposed.id);
+    const successorLines = await governance.createPricing(
+      closureCase.id,
+      {
+        ...pricingInput,
+        idempotencyKey: "b6-pricing-successor",
+        settlementRevisionId: repricedProposal.id
+      },
+      fixture.actorId
+    );
+    expect(successorLines).toEqual([
+      expect.objectContaining({
+        status: "FINAL",
+        amountCents: 200n,
+        billId: lines[0]!.billId,
+        supersedesLineId: lines[0]!.id
+      })
+    ]);
+    expect(await prisma.receivableBill.count({ where: { orderId: fixture.orderId } })).toBe(2);
+    chargeLineId = successorLines[0]!.id;
+  }
   const finalized = await scenario.closure.finalizeManagedSettlement(
     await settlementInput("finalize")
   );
@@ -9068,8 +9326,10 @@ async function prepareGovernedCompletion(
   const occurredAt = await readTestDatabaseClock(prisma);
   const input = { idempotencyKey: "b6-complete", occurredAt };
   return {
+    chargeLineId,
     complete: () => governance.completeOperations(closureCase.id, input, fixture.actorId),
     governance,
+    evidenceIds,
     input,
     occurredAt,
     scenario,

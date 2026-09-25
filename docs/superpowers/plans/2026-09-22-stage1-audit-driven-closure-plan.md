@@ -266,12 +266,12 @@ node scripts/release/run-database-suite.mjs --suite-id api.stage1-contract-archi
 
 ### 任务 8：B4 真激活、B6 真正常结束及审计
 
-- [ ] 在 golden-path/failure-recovery 的既有 PG 环境加入真实 `activateSubscriptionJob`/LeaseActivationEngine 路径，保留前置合同归档、收款核销和 Stage2 事实。至少覆盖成功、完整重复、缺事实拒绝、BASE/Period 后事务失败回滚、业务提交后 job ack 失败再恢复。
-- [ ] 每例联合核 Delivery、Order、Vehicle、Lease、BASE Segment、Period、Schedule、Entitlement、Journey 和 Audit；不只看 replay helper 或手工 fixture 终态。
-- [ ] 对 F6 建立独立生产修复单元：`completeOperations` 复用既有事务审计写法，记录本次操作者、Closure/Order/Contract 前后状态和 idempotencyKey；新完成一次审计、重复不重复、事务失败没有成功审计。
-- [ ] 在 expiry-return PG 用当前 `SubscriptionReturnGovernanceService.completeOperations` 跑 NORMAL_EXPIRY、无争议、应收清偿样本。沿真实实物接收读 Lease/Period；旧 settleManagedSettlement 用例保留但不替代当前入口。
-- [ ] 补客户未确认/责任异议、尚有未归口应收、重复请求、写入中途失败；区分“正常结束必须已清偿”的验收样本与通用入口已有合法催收/法催归口，不能为正常样本删除其他既有业务规则。
-- [ ] 联合读取 Order/Contract/Closure/Lease/Period/Vehicle/Bill/PaymentRecord/WriteOff/Audit；解除占用与可上架分开断言。按当前套件完整顺序执行，不静默筛选旧复杂域测试。
+- [x] 在 golden-path/failure-recovery 的既有 PG 环境加入真实 `activateSubscriptionJob`/LeaseActivationEngine 路径，保留前置合同归档、收款核销和 Stage2 事实。至少覆盖成功、完整重复、缺事实拒绝、BASE/Period 后事务失败回滚、业务提交后 job ack 失败再恢复。
+- [x] 每例联合核 Delivery、Order、Vehicle、Lease、BASE Segment、Period、Schedule、Entitlement、Journey 和 Audit；不只看 replay helper 或手工 fixture 终态。
+- [x] 对 F6 建立独立生产修复单元：`completeOperations` 复用既有事务审计写法，记录本次操作者、Closure/Order/Contract 前后状态和 idempotencyKey；新完成一次审计、重复不重复、事务失败没有成功审计。
+- [x] 在 expiry-return PG 用当前 `SubscriptionReturnGovernanceService.completeOperations` 跑 NORMAL_EXPIRY、无争议、应收清偿样本。沿真实实物接收读 Lease/Period；旧 settleManagedSettlement 用例保留但不替代当前入口。
+- [x] 补客户未确认/责任异议、尚有未归口应收、重复请求、写入中途失败；区分“正常结束必须已清偿”的验收样本与通用入口已有合法催收/法催归口，不能为正常样本删除其他既有业务规则。
+- [x] 联合读取 Order/Contract/Closure/Lease/Period/Vehicle/Bill/PaymentRecord/WriteOff/Audit；解除占用与可上架分开断言。按当前套件完整顺序执行，不静默筛选旧复杂域测试。
 
 ```powershell
 node scripts/release/run-database-suite.mjs --suite-id api.subscription-journey-golden-path.postgres --chain fresh
@@ -280,6 +280,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 ```
 
 **出口：** B4/B6 有当前界面实际入口证据，F6 关闭，样本准备可以绑定完整事实。
+
+2026-09-25：任务8本地范围完成，独立终审ACCEPT。最终同一干净source `0e9d966d` 顺序五套fresh分别3/3、29/29、90/90、14/14、59/59，共195/195；集成unit178/178、API tsc/owned Lint/Prisma validate通过，报告/receipt独立读回和五目标退役完成。真实服务激活、ACK恢复、正常运营完成/审计、重放与争议守卫及两条前向约束兼容均有本轮证据。详见[完整验收与历史失败记录](../../acceptance/2026-09-25-stage1-activation-and-operational-closure-validation.md)。存储/签署/已归档人工输入仍有合成边界，不替代最终Node22、真实渠道、候选双链或阶段1签字。
 
 #### B4 激活与 ACK 恢复验证限域（2026-09-25）
 

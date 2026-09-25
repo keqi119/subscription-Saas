@@ -148,14 +148,31 @@ describe("SubscriptionJourneyWorker", () => {
     expect(harness.repository.deadLetterJob).not.toHaveBeenCalled();
   });
 
-  it("completes an application-review business wait without retry or dead-letter", async () => {
+  it.each([
+    {
+      action: "APPLICATION_VALIDATION_WAITING_MANUAL",
+      reasonCodes: ["MATERIAL_REVIEW_PENDING"]
+    },
+    {
+      action: "APPLICATION_VALIDATION_WAITING_CUSTOMER",
+      reasonCodes: ["MATERIAL_SUPPLEMENT_REQUIRED"]
+    },
+    {
+      action: "APPLICATION_VALIDATION_REJECTED",
+      reasonCodes: ["APPLICATION_REJECTED"]
+    },
+    {
+      action: "APPLICATION_VALIDATION_REJECTED",
+      reasonCodes: ["APPLICATION_CANCELLED"]
+    }
+  ] as const)("completes $action ($reasonCodes) without retry or dead-letter", async (result) => {
     const job = claimedJob({ jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION });
     const harness = createWorkerHarness({ jobs: [job] });
     harness.handlers.handle.mockResolvedValueOnce({
-      action: "APPLICATION_VALIDATION_WAITING_MANUAL",
+      action: result.action,
       applicationId: "application-1",
       factVersion: 3,
-      reasonCodes: ["MATERIAL_REVIEW_PENDING"]
+      reasonCodes: [...result.reasonCodes]
     } as never);
 
     await harness.worker.runOnce();
@@ -164,24 +181,31 @@ describe("SubscriptionJourneyWorker", () => {
       expect.anything(),
       job.id,
       job.leaseToken,
-      expect.objectContaining({
-        action: "APPLICATION_VALIDATION_WAITING_MANUAL"
-      })
+      {
+        action: result.action,
+        applicationId: "application-1",
+        factVersion: 3,
+        reasonCodes: [...result.reasonCodes]
+      }
     );
     expect(harness.repository.rescheduleJob).not.toHaveBeenCalled();
     expect(harness.repository.deadLetterJob).not.toHaveBeenCalled();
   });
 
-  it("applies bounded jitter when rescheduling a retryable job", async () => {
+  it("reschedules a thrown application-validation execution error", async () => {
     vi.spyOn(Math, "random").mockReturnValue(1);
-    const job = claimedJob({ attemptCount: 0 });
+    const job = claimedJob({
+      attemptCount: 0,
+      jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION
+    });
     const harness = createWorkerHarness({
-      handlerError: new Error("provider token=must-not-leak"),
+      handlerError: new Error("database unavailable"),
       jobs: [job]
     });
 
     await harness.worker.runOnce();
 
+    expect(harness.repository.completeJob).not.toHaveBeenCalled();
     expect(harness.repository.rescheduleJob).toHaveBeenCalledWith(
       expect.anything(),
       job.id,
@@ -195,6 +219,7 @@ describe("SubscriptionJourneyWorker", () => {
         }
       }
     );
+    expect(harness.repository.deadLetterJob).not.toHaveBeenCalled();
   });
 
   it("prefers a capped provider retry-after value", async () => {

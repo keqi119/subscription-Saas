@@ -7579,7 +7579,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     });
     const after = await completionTruth(prisma, h.scenario.fixture);
     expect(after.closure).toMatchObject({
-      closureType: "NORMAL_EXPIRY",
+      closureType: "NORMAL_COMPLETION",
       financialStatus: "SETTLED",
       operationalCompletedAt: h.occurredAt,
       status: "COMPLETED"

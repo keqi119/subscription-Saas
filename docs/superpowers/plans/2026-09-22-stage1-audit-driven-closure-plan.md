@@ -131,10 +131,10 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-journey-
 
 **接口：** 保持 `PaymentOrderService.handleCallback` 到 `FinanceService.settlePaymentOrder` 的公共路径；错误渠道/验签失败仍不能结算。
 
-- [ ] 与 B5 同一测试 owner 使用其 payment-authority 文件，先固定“错误金额读 PENDING → 正常结算提交 → 错误金额继续”的 barrier 反例；读取 PaymentOrder、PaymentRecord、PaymentWriteOff、ReceivableBill 和 CallbackLog。
-- [ ] 将金额不符分支的状态处理纳入共同支付权威锁或等价 CAS；已经 PAID 时不得写 FAILED。错误 callback 仍留痕并拒绝，不得因保护终态而把金额错误标为合法成功。
-- [ ] 覆盖正常/错误顺序互换、正常并发重复、非法验签、非成功事件和已关闭支付单的既有合法补回调。资金变化必须由真实 Finance 事务产生。
-- [ ] 先跑 portal/payment-settlement 聚焦，再按 B5 原批准生命周期执行 billing fresh；生产修复作为明确的独立提交，不能混作原“仅新增测试”的结果。
+- [x] 与 B5 同一测试 owner 使用其 payment-authority 文件，先固定“错误金额读 PENDING → 正常结算提交 → 错误金额继续”的 barrier 反例；读取 PaymentOrder、PaymentRecord、PaymentWriteOff、ReceivableBill 和 CallbackLog。
+- [x] 将金额不符分支的状态处理纳入共同支付权威锁或等价 CAS；已经 PAID 时不得写 FAILED。错误 callback 仍留痕并拒绝，不得因保护终态而把金额错误标为合法成功。
+- [x] 覆盖正常/错误顺序互换、正常并发重复、非法验签、非成功事件和已关闭支付单的既有合法补回调。资金变化必须由真实 Finance 事务产生。
+- [x] 先跑 portal/payment-settlement 聚焦，再按 B5 原批准生命周期执行 billing fresh；生产修复作为明确的独立提交，不能混作原“仅新增测试”的结果。
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run --project unit test/portal-payment.spec.ts test/payment-settlement.spec.ts test/subscription-journey-payment.spec.ts
@@ -227,12 +227,15 @@ node scripts/release/run-database-suite.mjs --suite-id api.stage1-contract-archi
 
 ### 任务 7：B5 完整付款/账单验证
 
-- [ ] 接任务 2，按 [B5 原计划](./2026-09-06-stage1-b5-payment-and-billing-validation-plan.md) Task1/2 补验证失败/非成功/部分金额/并发重复回调，真实 FinanceService 联合断言 PaymentOrder → Callback → PaymentRecord → WriteOff → Bill。
-- [ ] Task3 增加真实 due schedule 两次扫描：确有正向应处理对象、只入队一次、金额和应付状态正确；原暂停/唯一性测试保留。
-- [ ] Task4 同一干净 SHA 顺序调用原 `Invoke-B5FreshSuite 'api.billing-automation.postgres'` 和 `Invoke-B5FreshSuite 'api.database.release'`，使用原计划函数及 preflight，保管完整结果后再推进下一套。不因最后写报告重复运行同一输入。
-- [ ] 创建原计划指定 `docs/acceptance/2026-09-06-stage1-b5-payment-and-billing-validation-record.md`，按实际执行日期与 source 记录；任何新生产反例单列限域修复，不在报告中改判为通过。
+- [x] 接任务 2，按 [B5 原计划](./2026-09-06-stage1-b5-payment-and-billing-validation-plan.md) Task1/2 补验证失败/非成功/部分金额/并发重复回调，真实 FinanceService 联合断言 PaymentOrder → Callback → PaymentRecord → WriteOff → Bill。
+- [x] Task3 增加真实 due schedule 两次扫描：确有正向应处理对象、只入队一次、金额和应付状态正确；原暂停/唯一性测试保留。
+- [x] Task4 同一干净 SHA 顺序调用原 `Invoke-B5FreshSuite 'api.billing-automation.postgres'` 和 `Invoke-B5FreshSuite 'api.database.release'`，使用原计划函数及 preflight，保管完整结果后再推进下一套。不因最后写报告重复运行同一输入。
+- [x] 创建原计划指定 `docs/acceptance/2026-09-06-stage1-b5-payment-and-billing-validation-record.md`，按实际执行日期与 source 记录；任何新生产反例单列限域修复，不在报告中改判为通过。
 
 **出口：** 当前资金链与维护正向/重放有自己的证据；不宣称真实微信或两个自然月运营通过。
+
+2026-09-25：任务 2/F3 与任务 7/B5 限定验收完成。独立生产提交 `86b1de50`；最终测试 source `46e8f95a` 两套 fresh 17/17、15/15，unit 64/64、API tsc/Lint 与 custody/readback 均通过，独立审查 ACCEPT。详见[原计划指定的本轮记录](../../acceptance/2026-09-06-stage1-b5-payment-and-billing-validation-record.md)。维护事实套件中的业务响应和 release/image 为合成边界，不扩称真实维护、渠道、Node22 镜像或阶段 1 收口。
+
 
 ### 任务 8：B4 真激活、B6 真正常结束及审计
 

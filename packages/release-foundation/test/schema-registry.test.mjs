@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  rename,
+  rm,
+  rmdir,
+  stat,
+  unlink,
+  utimes,
+  writeFile
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import Ajv2020 from "ajv/dist/2020.js";
 
 import { compileAllSchemas, validateContract } from "../src/index.mjs";
 
@@ -120,5 +132,171 @@ test("filename parity retains the existing duplicate-ID error", async () => {
     assert.throws(() => compileAllSchemas(root), { code: "CONTRACT_SCHEMA_ID_DUPLICATE" });
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function schemaFixture(t, type = "string") {
+  const root = await mkdtemp(path.join(os.tmpdir(), "schema-cache-"));
+  t.after(async () => {
+    const absolute = path.resolve(root);
+    assert.equal(path.dirname(absolute), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(absolute).startsWith("schema-cache-"));
+    await rm(absolute, { recursive: true, force: true });
+  });
+  const directory = path.join(root, "release/contracts/schemas");
+  const file = path.join(directory, "probe.v1.schema.json");
+  await mkdir(directory, { recursive: true });
+  await writeFile(file, JSON.stringify({ $id: "probe.v1", type }));
+  return { root, repoRoot: root, directory, file };
+}
+
+test("reuses identical schema compilation while validating every new payload", async (t) => {
+  const fixture = await schemaFixture(t);
+  const compile = t.mock.method(Ajv2020.prototype, "compile");
+  validateContract("probe.v1", "first", fixture);
+  const firstCompilationCount = compile.mock.callCount();
+  assert.ok(firstCompilationCount > 0);
+  validateContract("probe.v1", "second", fixture);
+  assert.throws(() => validateContract("probe.v1", 42, fixture), {
+    code: "CONTRACT_SCHEMA_INVALID"
+  });
+  assert.throws(() => validateContract("missing.v1", "third", fixture), {
+    code: "CONTRACT_SCHEMA_UNREGISTERED"
+  });
+  assert.equal(compile.mock.callCount(), firstCompilationCount);
+  compileAllSchemas(fixture.root);
+  assert.ok(compile.mock.callCount() > firstCompilationCount);
+  const compiledAgain = compile.mock.callCount();
+  compileAllSchemas(fixture.root);
+  assert.ok(compile.mock.callCount() > compiledAgain);
+});
+
+test("observes schema replacement even when file size and mtime are unchanged", async (t) => {
+  const fixture = await schemaFixture(t);
+  validateContract("probe.v1", "before", fixture);
+  const before = await stat(fixture.file);
+  await writeFile(fixture.file, JSON.stringify({ $id: "probe.v1", type: "number" }));
+  await utimes(fixture.file, before.atime, before.mtime);
+  assert.equal((await stat(fixture.file)).size, before.size);
+  assert.throws(() => validateContract("probe.v1", "after", fixture), {
+    code: "CONTRACT_SCHEMA_INVALID"
+  });
+  validateContract("probe.v1", 42, fixture);
+});
+
+test("still rejects an unrelated invalid schema and recovers after its removal", async (t) => {
+  const fixture = await schemaFixture(t);
+  validateContract("probe.v1", "before", fixture);
+  const other = path.join(fixture.directory, "other.v1.schema.json");
+  await writeFile(other, JSON.stringify({ $id: "other.v1", type: "invalid-type" }));
+  assert.throws(() => validateContract("probe.v1", "invalid schema", fixture));
+  await writeFile(other, JSON.stringify({ type: "string" }));
+  assert.throws(() => validateContract("probe.v1", "missing id", fixture), {
+    code: "CONTRACT_SCHEMA_ID_MISSING"
+  });
+  await unlink(other);
+  validateContract("probe.v1", "recovered", fixture);
+});
+
+test("observes added, renamed and removed schema files after a successful validation", async (t) => {
+  const fixture = await schemaFixture(t);
+  validateContract("probe.v1", "before", fixture);
+  const added = path.join(fixture.directory, "added.v1.schema.json");
+  const renamed = path.join(fixture.directory, "renamed.v1.schema.json");
+  await writeFile(added, JSON.stringify({ $id: "added.v1", type: "number" }));
+  validateContract("added.v1", 42, fixture);
+  await rename(added, renamed);
+  assert.throws(() => validateContract("probe.v1", "renamed", fixture), {
+    code: "CONTRACT_SCHEMA_FILENAME_ID_MISMATCH"
+  });
+  await unlink(renamed);
+  await unlink(fixture.file);
+  assert.throws(() => validateContract("probe.v1", "removed", fixture), {
+    code: "CONTRACT_SCHEMA_UNREGISTERED"
+  });
+  await rmdir(fixture.directory);
+  assert.throws(() => validateContract("probe.v1", "unreadable", fixture), { code: "ENOENT" });
+  await mkdir(fixture.directory);
+  await writeFile(fixture.file, JSON.stringify({ $id: "probe.v1", type: "string" }));
+  validateContract("probe.v1", "restored", fixture);
+});
+
+test("still rejects duplicate schema ids introduced after a successful validation", async (t) => {
+  const fixture = await schemaFixture(t);
+  validateContract("probe.v1", "before", fixture);
+  const nested = path.join(fixture.directory, "nested");
+  await mkdir(nested);
+  await writeFile(
+    path.join(nested, "probe.v1.schema.json"),
+    JSON.stringify({ $id: "probe.v1", type: "string" })
+  );
+  assert.throws(() => validateContract("probe.v1", "duplicate", fixture), {
+    code: "CONTRACT_SCHEMA_ID_DUPLICATE"
+  });
+});
+
+test("does not share validators between roots or keep a result for changed input", async (t) => {
+  const strings = await schemaFixture(t);
+  const numbers = await schemaFixture(t, "number");
+  const compile = t.mock.method(Ajv2020.prototype, "compile");
+  validateContract("probe.v1", "first root", strings);
+  validateContract("probe.v1", 42, numbers);
+  assert.throws(() => validateContract("probe.v1", "wrong root", numbers), {
+    code: "CONTRACT_SCHEMA_INVALID"
+  });
+  const afterSecondRoot = compile.mock.callCount();
+  validateContract("probe.v1", "back to first root", strings);
+  assert.ok(compile.mock.callCount() > afterSecondRoot);
+  await writeFile(strings.file, "{");
+  assert.throws(() => validateContract("probe.v1", "bad JSON", strings), SyntaxError);
+  await writeFile(strings.file, JSON.stringify({ $id: "probe.v1", type: "number" }));
+  validateContract("probe.v1", 42, strings);
+});
+
+test("compares schema bytes even when distinct bytes decode to the same JSON string", async (t) => {
+  const fixture = await schemaFixture(t);
+  const compile = t.mock.method(Ajv2020.prototype, "compile");
+  const bytes = (byte) =>
+    Buffer.concat([
+      Buffer.from('{"$id":"probe.v1","const":"'),
+      Buffer.from([byte]),
+      Buffer.from('"}')
+    ]);
+  assert.equal(bytes(0x80).toString("utf8"), bytes(0x81).toString("utf8"));
+  await writeFile(fixture.file, bytes(0x80));
+  validateContract("probe.v1", "\ufffd", fixture);
+  const firstCompilationCount = compile.mock.callCount();
+  await writeFile(fixture.file, bytes(0x81));
+  validateContract("probe.v1", "\ufffd", fixture);
+  assert.ok(compile.mock.callCount() > firstCompilationCount);
+});
+
+test("caller mutation of error details cannot change future const or enum validation", async (t) => {
+  const fixture = await schemaFixture(t);
+  for (const keyword of ["const", "enum"]) {
+    const allowed = [{ stage: ["verify", "migrate"] }];
+    await writeFile(
+      fixture.file,
+      JSON.stringify({
+        $id: "probe.v1",
+        [keyword]: keyword === "const" ? allowed : [allowed]
+      })
+    );
+    validateContract("probe.v1", allowed, fixture);
+    let failure;
+    try {
+      validateContract("probe.v1", [{ stage: ["unsafe"] }], fixture);
+    } catch (error) {
+      failure = error;
+    }
+    assert.equal(failure?.code, "CONTRACT_SCHEMA_INVALID");
+    const params = failure.details.errors.find((error) => error.keyword === keyword).params;
+    const exposed = keyword === "const" ? params.allowedValue : params.allowedValues[0];
+    // Error details remain mutable for callers, but must not alias the compiled schema.
+    exposed[0].stage.splice(0, 2, "unsafe");
+    validateContract("probe.v1", allowed, fixture);
+    assert.throws(() => validateContract("probe.v1", [{ stage: ["unsafe"] }], fixture), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
   }
 });

@@ -704,6 +704,11 @@ export class PaymentOrderService {
     context: RequestContext = {}
   ) {
     const paymentOrder = await this.findPaymentOrderOrThrow(paymentOrderId);
+    const paidAmount = options.paidAmount === undefined ? paymentOrder.amount : BigInt(options.paidAmount);
+    if (paidAmount !== paymentOrder.amount) {
+      // A rejected callback is diagnostic evidence, not a payment-order state transition.
+      throw new BadRequestException("支付金额与支付单金额不一致。");
+    }
     if (paymentOrder.paymentStatus === PaymentOrderStatus.PAID) {
       if (options.callbackLogId) {
         await this.markCallbackHandled(options.callbackLogId, paymentOrder.id);
@@ -715,21 +720,6 @@ export class PaymentOrderService {
       !(options.callbackLogId && paymentOrder.paymentStatus === PaymentOrderStatus.CLOSED)
     ) {
       throw new BadRequestException("当前支付单状态不允许完成支付。");
-    }
-
-    const paidAmount = options.paidAmount === undefined ? paymentOrder.amount : BigInt(options.paidAmount);
-    if (paidAmount !== paymentOrder.amount) {
-      await this.prisma.paymentOrder.update({
-        data: {
-          errorSnapshot: toJsonValue({
-            expectedAmount: Number(paymentOrder.amount),
-            paidAmount: Number(paidAmount)
-          }),
-          paymentStatus: PaymentOrderStatus.FAILED
-        },
-        where: { id: paymentOrder.id }
-      });
-      throw new BadRequestException("支付金额与支付单金额不一致。");
     }
 
     const operator = await this.resolveFinanceOperator(paymentOrder.customerId);

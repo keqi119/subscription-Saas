@@ -240,8 +240,8 @@ export class SubscriptionReturnGovernanceService {
       if (replay) {
         if (
           replay.manifestHash !== manifestHash ||
-          canonicalSubscriptionClosureJson(replay.items as never) !==
-            canonicalSubscriptionClosureJson(normalizedItems as never)
+          canonicalSubscriptionClosureJson({ items: normalizeChecklistItems(replay.items) }) !==
+            canonicalSubscriptionClosureJson({ items: normalizedItems })
         ) {
           throw conflict("RETURN_CHECKLIST_IDEMPOTENCY_CONFLICT", "幂等键已用于其他退车清单。");
         }

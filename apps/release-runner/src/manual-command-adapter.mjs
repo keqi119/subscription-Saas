@@ -132,6 +132,20 @@ function failureReason(error) {
     : "MANUAL_COMMAND_FAILED";
 }
 
+function completedObservation(runtime, observation) {
+  if (observation === null) return null;
+  const completedAt = time(runtime);
+  const completed = {
+    ...observation,
+    recordedAt: completedAt,
+    observedAt: completedAt,
+    processEvidenceDigest: sha256Canonical(runtime.manualContext.processEvidence)
+  };
+  validateContract("manual-runner-evidence.v1", completed);
+  encodeManualJson(completed);
+  return Object.freeze(completed);
+}
+
 function resultFor(request, runtime, startedAt, outcome, reasonCode, plan, postState, observation) {
   const process = runtime.manualContext.processEvidence;
   const result = {
@@ -275,6 +289,7 @@ export async function executeManualCommand(input) {
       encodeManualJson(candidate);
       observation = Object.freeze(candidate);
     }
+    observation = completedObservation(runtime, observation);
     const result = resultFor(
       request,
       runtime,
@@ -287,6 +302,7 @@ export async function executeManualCommand(input) {
     );
     return { result, observation };
   } catch (error) {
+    observation = completedObservation(runtime, observation);
     const result = resultFor(
       request,
       runtime,

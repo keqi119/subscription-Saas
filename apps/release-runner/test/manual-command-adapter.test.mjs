@@ -13,6 +13,8 @@ import {
   sha256Bytes,
   sha256Canonical,
   signManualAuthorization,
+  encodeManualRunnerFrame,
+  validateManualRunnerProtocol,
   verifyManualHandoff,
   verifyManualAuthorization,
   validateContract
@@ -231,7 +233,8 @@ function manualFixture(
   {
     attemptId = targetRequest.attemptId,
     approvedPlanDigest = digest,
-    expectedSchemaDigest = digest
+    expectedSchemaDigest = digest,
+    attemptAllocationDigest = digest
   } = {}
 ) {
   const fixedProfile = profile();
@@ -269,6 +272,7 @@ function manualFixture(
   const request = {
     ...targetRequest,
     attemptId,
+    attemptAllocationDigest,
     profileDigest,
     stage: "runner-command",
     capability: phase === "verify" ? "verify" : "migrate",
@@ -697,6 +701,427 @@ test("branded dry-run maps stable domain input and returns a bound observation/r
   assert.deepEqual(result.statements, runtime.statementLog);
   validateContract("manual-runner-evidence.v1", actual);
   validateContract("manual-runner-evidence.v1", result);
+});
+
+test("final observation follows each phase's actual process ACK and completion time", async () => {
+  const planning = await connectedRuntime("migrator");
+  await planning.observeIdentity();
+  const proposed = manualFixture();
+  const approvedPlan = await planMigration(planning, proposed.request.domainInput);
+  const approvedPlanDigest = (
+    await import("@subscription-saas/release-foundation")
+  ).deterministicPlanDigest(approvedPlan);
+  for (const phase of ["dry-run", "apply", "verify", "replay", "reconcile"]) {
+    const { request, decision, baseline } = manualFixture(phase, { approvedPlanDigest });
+    const runtime = await connectedRuntime(phase === "verify" ? "verifier" : "migrator");
+    let clock = Date.parse(NOW);
+    let ackCount = 0;
+    runtime.now = () => new Date(clock);
+    const readVersions = runtime.readToolVersions;
+    runtime.readToolVersions = async () => {
+      clock += 1000;
+      runtime.manualContext.processEvidence = { kind: "process", sequence: ++ackCount };
+      return readVersions();
+    };
+    const { result, observation: current } = await executeManualCommand({
+      request,
+      decision,
+      baseline,
+      database: runtime,
+      runtime
+    });
+    assert.equal(result.outcome, "RETURNED", `${phase}: ${result.reasonCode}`);
+    assert.ok(ackCount > 0, phase);
+    assert.equal(
+      current.processEvidenceDigest,
+      sha256Canonical(runtime.manualContext.processEvidence),
+      phase
+    );
+    assert.equal(current.observedAt, new Date(clock).toISOString(), phase);
+    assert.equal(result.observationDigest, sha256Canonical(current), phase);
+    assert.equal(current.roleObservation.role, request.roleObservation.role, phase);
+    assert.equal(current.catalog.migrationTableOid, phase === "apply" ? "456" : null, phase);
+    assert.equal(current.schema === null, phase === "dry-run", phase);
+    if (phase === "apply") {
+      assert.equal(result.postState.attemptId, request.attemptId);
+      assert.equal(current.schema.statementLogDigest, sha256Canonical(result.statements));
+    }
+  }
+});
+
+test("tool failure retains catalog with final process ACK and failure time", async () => {
+  const { request, decision, baseline } = manualFixture("dry-run");
+  const runtime = await connectedRuntime("migrator");
+  let clock = Date.parse(NOW);
+  runtime.now = () => new Date(clock);
+  runtime.readToolVersions = async () => {
+    clock += 1000;
+    runtime.manualContext.processEvidence = { kind: "process", sequence: 1 };
+    throw Object.assign(new Error("tool failed"), { code: "TOOL_FAILED" });
+  };
+  const { result, observation: current } = await executeManualCommand({
+    request,
+    decision,
+    baseline,
+    database: runtime,
+    runtime
+  });
+  assert.equal(result.outcome, "THREW");
+  assert.equal(result.reasonCode, "TOOL_FAILED");
+  assert.equal(current.catalog.migrationTableOid, null);
+  assert.equal(
+    current.processEvidenceDigest,
+    sha256Canonical(runtime.manualContext.processEvidence)
+  );
+  assert.equal(current.observedAt, new Date(clock).toISOString());
+  assert.equal(result.observationDigest, sha256Canonical(current));
+});
+
+function liveProtocolHarness(provisional, options = {}) {
+  const { request } = provisional;
+  let clock = Date.parse(NOW) + 3000;
+  const now = () => new Date(clock);
+  const tick = () => {
+    clock += 1000;
+    return now().toISOString();
+  };
+  const pick = (value, keys) => Object.fromEntries(keys.map((key) => [key, value[key]]));
+  const common = pick(request, [
+    "profileDigest",
+    "sessionId",
+    "sessionNonce",
+    "operationId",
+    "idempotencyKey",
+    "attemptId",
+    "runId"
+  ]);
+  const allocation = {
+    schemaVersion: "manual-runner-evidence.v1",
+    recordedAt: NOW,
+    promotionEligible: false,
+    kind: "attempt-allocation",
+    ...common,
+    stage: request.stage,
+    phaseKey: request.phase,
+    allocatedAt: NOW,
+    targetIntent: request.targetIntent,
+    predecessorExecutionRecordDigest:
+      request.dryRunRecordDigest ?? request.predecessorExecutionRecordDigest ?? null
+  };
+  const fixture = manualFixture(request.phase, {
+    attemptId: request.attemptId,
+    approvedPlanDigest: request.approvedPlanDigest,
+    expectedSchemaDigest: request.domainInput.expectedSchemaDigest,
+    attemptAllocationDigest: sha256Canonical(allocation)
+  });
+  const actualRequest = fixture.request;
+  const ref = (bytes) => ({ digest: sha256Bytes(bytes), bytes: bytes.length });
+  const frame = (type, sequence, payload) =>
+    encodeManualRunnerFrame({ protocol: "MS2", type, sequence, payload });
+  const childFrames = [frame("CHALLENGE", 0, { childChallenge: actualRequest.childChallenge })];
+  const parentFrames = [];
+  let lastAck = null;
+  let attached = null;
+  const events = [];
+  const event = (tool, status, processSequence, fields = {}) => {
+    const value = {
+      sequence: events.length,
+      processSequence,
+      source: tool === "runner" ? "parent" : "runner",
+      tool,
+      event: status,
+      at: tick(),
+      containerId: status === "PREPARED" && tool === "runner" ? null : actualRequest.containerId,
+      pid: null,
+      argvDigest: tool === "runner" ? digest : null,
+      exitCode: null,
+      signal: null,
+      reasonCode: null,
+      stdout: null,
+      stderr: null,
+      ...fields
+    };
+    events.push(value);
+    return value;
+  };
+  event("runner", "PREPARED", 0);
+  event("runner", "SPAWNED", 0, { pid: 1000 });
+  const process = (previous) => ({
+    schemaVersion: "manual-runner-evidence.v1",
+    recordedAt: tick(),
+    promotionEligible: false,
+    kind: "process",
+    ...pick(actualRequest, [
+      "profileDigest",
+      "sessionId",
+      "sessionNonce",
+      "operationId",
+      "idempotencyKey",
+      "attemptId",
+      "runId"
+    ]),
+    attemptAllocationDigest: actualRequest.attemptAllocationDigest,
+    requestDigest: sha256Canonical(actualRequest),
+    previousProcessEvidenceDigest: previous ? sha256Canonical(previous) : null,
+    events: structuredClone(events),
+    closedAt: null,
+    protocol: {
+      stdoutPrefix: ref(Buffer.concat(childFrames)),
+      parentFrames: parentFrames.map(ref)
+    }
+  });
+  let currentProcess = process(null);
+  const custody = (subject) => ({
+    schemaVersion: "manual-operation-record.v2",
+    recordedAt: tick(),
+    promotionEligible: false,
+    kind: "custody",
+    profileDigest: actualRequest.profileDigest,
+    ownerId: actualRequest.ownerId,
+    subjectDigest: sha256Canonical(subject),
+    subjectType: "r2-artifact",
+    purpose: "archive-readback",
+    outcome: "MATCH",
+    observedDigest: sha256Canonical(subject),
+    observedAt: now().toISOString(),
+    storageRole: "archive",
+    retentionDays: 90,
+    reasonCode: null
+  });
+  const processReadback = custody(currentProcess);
+  const authorize = frame("AUTHORIZE", 0, {
+    launchContext: pick(actualRequest, ["containerId", "runnerImageDigest"]),
+    allocation,
+    request: actualRequest,
+    authorization: fixture.authorization,
+    receipt: fixture.receipt,
+    baseline: fixture.baseline,
+    process: currentProcess,
+    processReadback,
+    targetContext: {
+      ...targetContext,
+      profileDigest: actualRequest.profileDigest,
+      targetIntent: actualRequest.targetIntent,
+      runId: actualRequest.runId
+    }
+  });
+  parentFrames.push(authorize);
+  const binding = {
+    ...pick(actualRequest, [
+      "profileDigest",
+      "sessionId",
+      "sessionNonce",
+      "operationId",
+      "idempotencyKey",
+      "attemptId",
+      "runId",
+      "attemptAllocationDigest",
+      "containerId",
+      "runnerImageDigest",
+      "childChallenge"
+    ]),
+    requestDigest: sha256Canonical(actualRequest),
+    authorizationDigest: sha256Canonical(fixture.authorization)
+  };
+  childFrames.push(frame("READY", 1, { binding, authorizeFrame: ref(authorize) }));
+  childFrames.push(frame("CREDENTIAL_RECEIVED", 2, { binding, authorizeFrame: ref(authorize) }));
+  const live = (childFrame, previous, ack) =>
+    validateManualRunnerProtocol({
+      mode: "live-ack",
+      profileBytes: encodeManualJson(fixture.fixedProfile),
+      requestBytes: encodeManualJson(actualRequest),
+      authorizationBytes: encodeManualJson(fixture.authorization),
+      previousProcessBytes: encodeManualJson(previous),
+      childFrameBytes: childFrame,
+      ackFrameBytes: ack,
+      stdoutPrefixBytes: Buffer.concat(childFrames),
+      parentFrameBytes: [...parentFrames]
+    });
+  const acknowledge = (type, payload, subject) => {
+    const previous = currentProcess;
+    const childFrame = frame(type, childFrames.length, {
+      binding,
+      previousAck: lastAck ? ref(lastAck) : null,
+      ...payload
+    });
+    childFrames.push(childFrame);
+    if (type !== "OBSERVATION") currentProcess = process(previous);
+    const ack = frame("ACK", parentFrames.length + 1, {
+      binding,
+      acknowledgedFrame: ref(childFrame),
+      subject:
+        type === "OBSERVATION"
+          ? { kind: "observation", observation: subject }
+          : { kind: "process", process: currentProcess },
+      readback: custody(type === "OBSERVATION" ? subject : currentProcess)
+    });
+    live(childFrame, previous, ack);
+    parentFrames.push(ack);
+    lastAck = ack;
+    if (type !== "OBSERVATION" && attached) attached.manualContext.processEvidence = currentProcess;
+  };
+  let processSequence = 0;
+  const toolCalls = [];
+  const runProcess = async (command, args) => {
+    const tool =
+      command === "psql"
+        ? "psql-version"
+        : args.length === 1 && args[0] === "--version"
+          ? "prisma-version"
+          : args.includes("deploy")
+            ? "prisma-deploy"
+            : args.includes("--script")
+              ? "prisma-script"
+              : "prisma-diff";
+    toolCalls.push(tool);
+    const sequence = ++processSequence;
+    const argvDigest = sha256Canonical({ command, args });
+    acknowledge("PREPARED", { event: event(tool, "PREPARED", sequence, { argvDigest }) });
+    acknowledge("EVENT", {
+      event: event(tool, "SPAWNED", sequence, { argvDigest, pid: 2000 + sequence }),
+      stdoutBase64: null,
+      stderrBase64: null
+    });
+    const stdout =
+      tool === "prisma-version"
+        ? "prisma : 7.8.0\nengines : test\n"
+        : tool === "psql-version"
+          ? "psql (PostgreSQL) 17.11\n"
+          : tool === "prisma-script"
+            ? (options.schemaScript ?? "CREATE TABLE test(id INT);\n")
+            : "";
+    const failed =
+      options.failTool === tool &&
+      toolCalls.filter((call) => call === tool).length === options.failOrdinal;
+    const output = { exitCode: failed ? 1 : 0, signal: null, stdout, stderr: "" };
+    acknowledge("EVENT", {
+      event: event(tool, "CLOSED", sequence, {
+        argvDigest,
+        pid: 2000 + sequence,
+        exitCode: output.exitCode,
+        stdout: ref(Buffer.from(stdout)),
+        stderr: ref(Buffer.alloc(0))
+      }),
+      stdoutBase64: Buffer.from(stdout).toString("base64"),
+      stderrBase64: ""
+    });
+    if (tool === "prisma-deploy" && !failed) options.onDeploy?.();
+    return output;
+  };
+  return {
+    fixture,
+    allocation,
+    now,
+    attach(runtime) {
+      attached = runtime;
+      runtime.manualContext.processEvidence = currentProcess;
+    },
+    runProcess,
+    toolCalls,
+    currentProcess: () => currentProcess,
+    acknowledgeObservation: (observation) =>
+      acknowledge("OBSERVATION", { observation }, observation)
+  };
+}
+
+test("real runtime tool ACK chain accepts the adapter's unchanged final observation", async () => {
+  const schemaScript = "CREATE TABLE test(id INT);\n";
+  const expectedSchemaDigest = sha256Bytes(Buffer.from(schemaScript));
+  const planning = await connectedRuntime("migrator");
+  await planning.observeIdentity();
+  const proposed = manualFixture("dry-run", { expectedSchemaDigest });
+  const approvedPlan = await planMigration(planning, proposed.request.domainInput);
+  const approvedPlanDigest = (
+    await import("@subscription-saas/release-foundation")
+  ).deterministicPlanDigest(approvedPlan);
+  for (const phase of ["dry-run", "apply", "verify", "replay", "reconcile"]) {
+    const provisional = manualFixture(phase, { expectedSchemaDigest, approvedPlanDigest });
+    const database = await connectedRuntime(phase === "verify" ? "verifier" : "migrator");
+    if (["verify", "replay", "reconcile"].includes(phase)) database.simulateDeploy();
+    const harness = liveProtocolHarness(provisional, {
+      schemaScript,
+      onDeploy: () => database.simulateDeploy()
+    });
+    const runtime = createDatabaseRuntimeAdapter({
+      database,
+      credential: { username: "offline", password: "offline" },
+      target: { hostname: "127.0.0.1", port: 5432, databaseName: "fresh_db" },
+      repoRoot: fileURLToPath(new URL("../../..", import.meta.url)),
+      now: harness.now,
+      runProcess: harness.runProcess
+    });
+    runtime.loadMigrationCatalog = planning.loadMigrationCatalog;
+    harness.attach(runtime);
+    const { request, decision, baseline } = harness.fixture;
+    const { result, observation: current } = await executeManualCommand({
+      request,
+      decision,
+      baseline,
+      database: runtime,
+      runtime
+    });
+    assert.equal(result.outcome, "RETURNED", `${phase}: ${result.reasonCode}`);
+    assert.ok(harness.toolCalls.length > 0, phase);
+    assert.equal(current.processEvidenceDigest, sha256Canonical(harness.currentProcess()), phase);
+    assert.equal(result.observationDigest, sha256Canonical(current), phase);
+    assert.doesNotThrow(() => harness.acknowledgeObservation(current), phase);
+    assert.equal(
+      result.statements.filter((sql) => sql === "SHOW transaction_isolation").length,
+      phase === "apply" ? 2 : 1,
+      phase
+    );
+    if (phase === "apply") {
+      assert.equal(result.postState.attemptId, request.attemptId);
+      assert.equal(current.schema.statementLogDigest, sha256Canonical(result.statements));
+    }
+  }
+});
+
+test("failed final tool ACK accepts the adapter's THREW observation and preserves postState", async () => {
+  const schemaScript = "CREATE TABLE test(id INT);\n";
+  const expectedSchemaDigest = sha256Bytes(Buffer.from(schemaScript));
+  const planning = await connectedRuntime("migrator");
+  await planning.observeIdentity();
+  const proposed = manualFixture("dry-run", { expectedSchemaDigest });
+  const approvedPlan = await planMigration(planning, proposed.request.domainInput);
+  const approvedPlanDigest = (
+    await import("@subscription-saas/release-foundation")
+  ).deterministicPlanDigest(approvedPlan);
+  const provisional = manualFixture("apply", { expectedSchemaDigest, approvedPlanDigest });
+  const database = await connectedRuntime("migrator");
+  const harness = liveProtocolHarness(provisional, {
+    schemaScript,
+    failTool: "prisma-script",
+    failOrdinal: 2,
+    onDeploy: () => database.simulateDeploy()
+  });
+  const runtime = createDatabaseRuntimeAdapter({
+    database,
+    credential: { username: "offline", password: "offline" },
+    target: { hostname: "127.0.0.1", port: 5432, databaseName: "fresh_db" },
+    repoRoot: fileURLToPath(new URL("../../..", import.meta.url)),
+    now: harness.now,
+    runProcess: harness.runProcess
+  });
+  runtime.loadMigrationCatalog = planning.loadMigrationCatalog;
+  harness.attach(runtime);
+  const { request, decision, baseline } = harness.fixture;
+  const { result, observation: current } = await executeManualCommand({
+    request,
+    decision,
+    baseline,
+    database: runtime,
+    runtime
+  });
+  assert.equal(result.outcome, "THREW");
+  assert.equal(result.reasonCode, "SCHEMA_DIGEST_EXECUTION_FAILED");
+  assert.equal(result.postState.attemptId, request.attemptId);
+  assert.equal(current.catalog.migrationRows.length, 1);
+  assert.equal(current.schema, null);
+  assert.equal(current.processEvidenceDigest, sha256Canonical(harness.currentProcess()));
+  assert.equal(result.observationDigest, sha256Canonical(current));
+  assert.doesNotThrow(() => harness.acknowledgeObservation(current));
+  assert.equal(result.statements.filter((sql) => sql === "SHOW transaction_isolation").length, 2);
 });
 
 test("fresh apply identity changes without changing the approved stable plan", async () => {

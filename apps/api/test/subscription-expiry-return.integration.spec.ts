@@ -7587,7 +7587,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     expect(after.order.orderStatus).toBe("COMPLETED");
     expect(after.contract.status).toBe("COMPLETED");
     expect(after.vehicle.status).toBe("AVAILABLE");
-    expect(after.lease?.status).toBe("TERMINATED");
+    expect(after.lease?.status).toBe("COMPLETED");
     expect(after.periods).toHaveLength(1);
     expect(after.periods[0]?.endedAt).toBeInstanceOf(Date);
     expect(after.bills).toEqual([
@@ -8834,7 +8834,7 @@ async function prepareGovernedCompletion(
   await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
   expect(
     await prisma.lease.findUniqueOrThrow({ where: { orderId: fixture.orderId } })
-  ).toMatchObject({ status: "TERMINATED" });
+  ).toMatchObject({ status: "COMPLETED" });
   expect(
     await prisma.vehicleSubscriptionPeriod.findMany({ where: { orderId: fixture.orderId } })
   ).toEqual([expect.objectContaining({ endedAt: receiptAt })]);

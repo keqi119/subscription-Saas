@@ -232,9 +232,9 @@ node scripts/release/run-database-suite.mjs --suite-id api.stage1-contract-archi
 ### 任务 6：B1 后续与 B2 真实服务矩阵
 
 - [x] 按 [B1 已有计划](./2026-09-06-stage1-b1-intake-and-business-wait-validation-plan.md) Task2/3 组合真实 CustomerService 与 Journey；加入 A/B、补件、人工等待、拒绝/取消和技术错误。worker 对正常等待完成 job，对真正技术错误才 retry/dead-letter。
-- [ ] 扩展任务 1 的真实 PG 文件：两 Application 争同一车；同 Application 重复确认；旧 revision/hash；重复 CREATE_ORDER_AND_CONTRACT；合同后段失败回滚；确认后商业漂移；取消/拒绝竞争。结果必须联合查 Application、Vehicle、Quote、Order、Contract、Journey、job/event。
-- [ ] 不替换原 golden-path 全部 fixture；在新增切片调用真实服务成功路径，原覆盖继续保留。测试 identity 从 suite context 取得，不从 retired P1 record 取连接。
-- [ ] 按 B1 Task4 运行本轮 golden-path fresh，并运行包含新文件的 integrity fresh。分别报告 suite 自己的覆盖，不将 fixture 成功夸大为生产入口并发验证。
+- [x] 扩展任务 1 的真实 PG 文件：两 Application 争同一车；同 Application 重复确认；旧 revision/hash；重复 CREATE_ORDER_AND_CONTRACT；合同后段失败回滚；确认后商业漂移；取消/拒绝竞争。结果必须联合查 Application、Vehicle、Quote、Order、Contract、Journey、job/event。
+- [x] 不替换原 golden-path 全部 fixture；在新增切片调用真实服务成功路径，原覆盖继续保留。测试 identity 从 suite context 取得，不从 retired P1 record 取连接。
+- [x] 按 B1 Task4 运行本轮 golden-path fresh，并运行包含新文件的 integrity fresh。分别报告 suite 自己的覆盖，不将 fixture 成功夸大为生产入口并发验证。
 - [ ] 在原执行索引追加本轮 B1/B2 状态、source、计数、原件引用和未覆盖外部事项。
 
 **出口：** B1/B2 当前生产路径与反例闭环；F1/F2 关闭。
@@ -249,6 +249,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.stage1-contract-archi
 - 继续补两 Application 争同车、同进件重复确认、旧 revision/hash、重复 CREATE_ORDER_AND_CONTRACT、真实合同写入后受控异常的整笔回滚与重试。所有断言联合读取 Application、Vehicle、Quote、Order、Contract、Journey、job/event；现有 F1/F2 漂移/取消/拒绝用例保持。
 - 合同失败仅在测试侧调用真实合同服务完成事务内写入后抛确定异常；竞争通过真实事务与 barrier/数据库阻塞观测，不依赖随机 sleep、不替换 Prisma 写入或伪造终态。
 - 本轮继续使用原 integrity fresh suite 和 suite context，不添加 manifest 文件或数据库接口。准备期已完成 B1 的 Prisma validate 及唯一 fresh 内 migrate/status/diff；数据库输入/生成准备未变，不访问退役目标。每次后续 fresh 均独立干净 SHA、完整报告/custody/readback 与受控退役，失败记录保留；只复用已审核的非秘密捕获/回读函数，不复用任何数据库身份。
+
+2026-09-25 前向登记：上述 B2 矩阵已补齐，最终 source `a92b2f66` 的 integrity fresh 38/38、API tsc/owned ESLint 均通过，代码、原件及记录独立终审 ACCEPT。首轮 37/38 是 DRAFT 车辆夹具前置失败，原件保留且不当作业务 RED。[矩阵记录](../../acceptance/2026-09-25-stage1-application-order-matrix-validation.md)说明真实入口及 fixture 边界；B1 原 Task4 golden-path 1/1 保留其独立 source，不重标成当前 SHA。
 
 ### 任务 7：B5 完整付款/账单验证
 

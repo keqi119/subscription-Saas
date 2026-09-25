@@ -352,7 +352,7 @@ export class PortalApplicationService {
       return tx.application.findFirstOrThrow({
         include: portalApplicationInclude,
         where: {
-          applicationSource: ApplicationSource.SELF_SERVICE,
+          ...portalApplicationSourceScope,
           customerId: currentCustomer.customerId,
           deletedAt: null,
           id

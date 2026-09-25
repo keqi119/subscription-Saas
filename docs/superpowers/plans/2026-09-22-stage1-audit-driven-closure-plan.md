@@ -97,6 +97,18 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-journey-
 
 **出口：** 两种竞争顺序无孤立事实；商业漂移不能产生未确认金额/权益。未通过前 B2 不关闭，也不进入最终候选。
 
+#### 2026-09-25 任务 1 限域实施说明
+
+用户再次批准实施。先处理 F2 的已确认竞争，再处理 F1 商业投影与恢复；两者分开提交，不能因其中一项通过而关闭整个任务 1。
+
+- F2 反例在原 integrity suite 增加一个文件。使用真实 Prisma、CustomerService、PortalApplicationService、SubscriptionJourneyService、OrderService 和 OrderEntitlementService；测试从已审核事实开始，使用生产快照生成和门户确认。只在测试侧延迟取消/拒绝调用的事务入口，不替换事务内读写，不用 sleep。分别观察建单先提交和取消/拒绝先提交。
+- 统一权威锁顺序为存在的 Journey → Application → Vehicle。CustomerService 既有 `lockJourneyApplication` 同步取得 Journey 后再锁 Application；已有调用方持同一 Journey 锁时可重入。取消、拒绝及公开直接建单入口在事务内调用该锁并重读 Application，重新验证访问权、状态和已有订单；审计 before 使用事务内实际读取值。仅外部旧读取不能授权终态写入。
+- 精确生产修改仍限于 `apps/api/src/customer/customer.service.ts`。测试先保存当前真实 PG RED；没有运行/准入证据时不改业务代码。当前应用/合同/权益合法正例必须同时通过，不能用全部拒绝实现“无非法订单”。
+- F1 进一步核查：现有 `commercialPlanHash` 包含 vehicleSnapshot 等字段；快照中的车辆状态、确认元数据不能被直接当成价格漂移。实现前先固定实际金额、周期、押金、里程/能源/权益及车辆身份的商业投影，保留正常预约状态变化正例。
+- F1 恢复缺口：`finalizeApplicationPlan` 和 `decideFinalPlan` 只允许 FINAL_PLAN_DECISION，`allocateVehicle` 只允许 FINAL_VEHICLE_ALLOCATION。ORDER_AND_CONTRACT_CREATION 阶段直接抛非重试错误会进入异常，现有 retry 不会恢复报价入口。因此 F1 不能只加 hash 拒绝就宣布关闭；须单独落实受控回到方案审核/新 revision/客户再次确认的路径，并在扩大生产文件前补充该路径精确说明。
+
+2026-09-25 用户说明：服务器端本系统 Docker 当前全部停止。上述本地验证不依赖线上。后续需要线上连接调试时，先核对本系统 Compose 项目、已部署版本和配置，恢复对应容器并完成健康检查后再调试；具体供应商、付款、数据及发布边界仍按原操作单执行。
+
 ### 任务 2：保护 PAID 资金事实免于错误金额回调倒退
 
 **接口：** 保持 `PaymentOrderService.handleCallback` 到 `FinanceService.settlePaymentOrder` 的公共路径；错误渠道/验签失败仍不能结算。

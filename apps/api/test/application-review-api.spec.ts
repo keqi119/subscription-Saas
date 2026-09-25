@@ -26,6 +26,7 @@ import {
   VehicleStatus
 } from "@prisma/client";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { CustomerService } from "../src/customer/customer.service";
@@ -143,7 +144,7 @@ describe("application self-service review APIs", () => {
   });
 
   it("declares SALES_ASSISTED as the Prisma Application source default", () => {
-    const schemaSource = readFileSync(new URL("../prisma/schema.prisma", import.meta.url), "utf8");
+    const schemaSource = readFileSync(resolve(__dirname, "../prisma/schema.prisma"), "utf8");
     const application = schemaSource.match(/^model\s+Application\s*\{([\s\S]*?)^\}/m);
     expect(application, "Prisma model Application is missing").toBeDefined();
     const declarations = (application?.[1] ?? "")

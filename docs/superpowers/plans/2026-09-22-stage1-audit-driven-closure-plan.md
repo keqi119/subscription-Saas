@@ -179,6 +179,15 @@ node --test packages/release-foundation/test/manual-runner-evidence.test.mjs pac
 
 **出口：** F4 反例拒绝、兼容与恢复不退化，R2 继续消费同一共享 parser。
 
+#### F4 完整门禁恢复限域说明（2026-09-25）
+
+- 原两文件 parser 修复已独立审查、聚焦 4/4；原完整门禁 248/249 的唯一失败是 Prisma 版本探测 30 秒超时，随后串行运行中断且无 close，仍不算通过。保留所有原件，不改判历史。
+- 只读定位 `validateContract` 每次 `createRegistry` 重编全部 68 份 Schema。三个相同源码、未注册 ID 的探针分别耗时约 3919/3203/1563ms；历史 MS2 单例超过 3296 秒。先解决重复编译开销，再运行完整四文件门禁，不删慢用例、不降低断言、不盲目调大版本探测超时。
+- 追加非业务范围仅 `packages/release-foundation/src/schema-registry.mjs` 与其既有测试：缓存最近一组已成功编译的 registry；每次仍重新枚举排序文件并读取精确内容，以 root、文件路径及内容共同判定复用。任何新增、删除、改名、内容变化或 root 切换均重新编译；不依赖 mtime/size、不缓存 payload 验证结果、不导出 mutable cache，不累计多个 root 的常驻缓存。
+- `compileAllSchemas` 继续强制完整编译。复用仅省去相同 schema bytes 的重复编译，所有注册/文件名/重复 ID/无效 Schema/未知版本/输入错误检查仍生效；不改 Schema、协议、错误码、角色、凭证、状态权威或受控数据库 launcher。
+- TDD 先证明相同内容的连续验证仍重复调用真实 Ajv compile；同时增加相同 size/mtime 的内容替换、目录增删/无关坏 Schema、不同 root、输入变化和失败后恢复的回归。随后独立评审、完整 schema 回归及原四文件 gate；真实版本探测必须仍运行，任何剩余失败继续分类。
+- 本轮沿用刚完成的受控 fresh migrate/status/diff 和源码 validate 证据；上述修正不涉及业务或数据库，禁止为此访问已经退役的 target。原件与 Node24/最终 Node22 的边界继续保留。
+
 ### 任务 4：两文件预检对齐
 
 - [ ] 在现有 preflight test 中增加以下用例，并移除/替换旧退款 blocker 断言；先记录当前 RED。

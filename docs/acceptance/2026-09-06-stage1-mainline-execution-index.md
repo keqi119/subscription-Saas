@@ -4,6 +4,17 @@
 
 范围：A/B进件—审核—方案/预约—单次确认—签约归档—主动支付/核销—交付激活—账单/催收—无争议正常结束。
 
+## 2026-09-25 审计后实施前向登记
+
+用户已批准 [审计驱动收口计划](../superpowers/plans/2026-09-22-stage1-audit-driven-closure-plan.md)，以下登记不改写旧历史状态。
+
+- F5 预检修复已提交 `c99a2ce9`，离线 16/16 通过；退款额度独立，不再阻断主线。
+- B3 Task3S 单行 oracle 已整合为 `338bad80`，独立干净源码 `05af3223f79b3f166c4271de1fb2400d2b83429c` 上六文件 171/171、唯一 fresh 3/3 通过，custody 独立读回通过、运行目录已回收。[实际证据](2026-09-07-stage1-b3-contract-archive-transition-validation.md)保留两次旧失败和 Node24/真实供应商等限制。
+- F4 协议修复聚焦 4/4 通过；完整四文件 248/249，唯一 Prisma 版本探测超时；串行复核中断且没有 close。任务 3 尚未收口。[离线修复记录](2026-09-25-stage1-offline-fixes.md)包含失败、中断和局限。
+- F1/F2 两个 P1 仍未关闭；当前在独立干净 checkout 编写并运行真实服务 PG 反例，不能移用 B3 通过数。
+- 用户说明服务器端本系统 Docker 当前全部停止。需要线上联调前先核对并恢复本系统容器、验证健康；当前本地测试不依赖线上。
+- 阶段 1 签字、最终 Node22 三镜像、真实渠道/浏览器、snapshot 双链及外部操作仍未完成。
+
 历史代码基线：Task 5 `1f0b0439`。Task 6 提案保管：`457c0011`，不代表批准。
 Task 6/29R/30/I 系列冻结，Task 30 stash 不变。
 历史准入入口：[P0/P1 准入实施计划](../superpowers/plans/2026-09-06-stage1-p0-p1-admission-implementation-plan.md)，已关闭，不重跑。当前前向工作按下节及既有[主线/最小发布计划](../superpowers/plans/2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)执行。

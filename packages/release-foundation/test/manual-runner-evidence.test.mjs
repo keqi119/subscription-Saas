@@ -1132,6 +1132,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   }
   if (options.malformedPartialResult)
     stdoutFrames.push(Buffer.from(`${protocol} RESULT ${stdoutFrames.length} 100\n!]`));
+  if (options.shortHeaderTail) stdoutFrames.push(Buffer.from(options.shortHeaderTail));
   if (!options.missingClose)
     event("runner", "CLOSED", n + 43, 0, runnerArgv, {
       pid: 1000 + step,
@@ -1867,6 +1868,46 @@ test("MS2 cluster fingerprint validates and hashes only the closed physical tupl
   assert.throws(() => module.computeManualClusterFingerprint(accessor));
   assert.equal(getterCalls, 0);
 });
+
+test("short protocol headers terminated by LF are invalid", () => {
+  for (const direction of ["parent-to-child", "child-to-parent"]) {
+    for (const text of ["M\njunk", "MS1\njunk", "MS2\njunk", "\njunk"]) {
+      assert.throws(
+        () => parseManualRunnerFrames({ direction, bytes: Buffer.from(text), ended: false }),
+        { code: "MANUAL_FRAME_INVALID" },
+        `${direction}: ${JSON.stringify(text)}`
+      );
+    }
+  }
+});
+
+test("short protocol headers without LF remain pending", () => {
+  for (const direction of ["parent-to-child", "child-to-parent"]) {
+    for (const text of ["M", "MS", "MS1", "MS2"]) {
+      const bytes = Buffer.from(text);
+      const parsed = parseManualRunnerFrames({ direction, bytes, ended: false });
+      assert.equal(parsed.frames.length, 0);
+      assert.deepEqual(parsed.pendingBytes, bytes);
+    }
+  }
+});
+
+for (const protocol of ["MS1", "MS2"]) {
+  test(`${protocol} reconcile refuses short protocol headers after original ACK_RECEIVED`, () => {
+    const dry = fixture90("dry-run", null, { protocol });
+    const original = fixture90("apply", dry, {
+      unknown: true,
+      missingResult: true,
+      deployExit: 1,
+      shortHeaderTail: `${protocol}\njunk`
+    });
+    const current = fixture90("reconcile", original);
+    const actual = assessManualRunnerEvidence(current.archive.input(current.request));
+    assert.equal(actual.executionStatus, "INTERRUPTED_UNKNOWN");
+    assert.equal(actual.originalDatabaseOutcome, "unknown");
+    assert.equal(actual.reasonCode, "MANUAL_FRAME_INVALID");
+  });
+}
 
 test("MS2 codec preserves exact bytes, closed inputs, and incomplete header prefixes", () => {
   const payload = { childChallenge: "b".repeat(64) };

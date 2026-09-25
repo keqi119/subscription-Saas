@@ -835,7 +835,7 @@ function decodeFrame(
       ? [`${protocolState.value} `]
       : MANUAL_PROTOCOLS.map((protocol) => `${protocol} `);
     requireThat(
-      prefixes.some((prefix) => prefix.startsWith(text)),
+      headerEnd < 0 && prefixes.some((prefix) => prefix.startsWith(text)),
       FRAME
     );
     if (ended) requireThat(false, INCOMPLETE);

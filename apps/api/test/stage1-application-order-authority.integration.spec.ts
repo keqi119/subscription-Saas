@@ -33,6 +33,7 @@ describe("Stage 1 application and order authority", () => {
   let prisma: PrismaService;
   let audit: AuditService;
   let signals: SubscriptionJourneySignalService;
+  let repository: SubscriptionJourneyRepository;
   let customer: CustomerService;
   let journey: SubscriptionJourneyService;
 
@@ -42,7 +43,7 @@ describe("Stage 1 application and order authority", () => {
     );
     await prisma.onModuleInit();
     audit = new AuditService(prisma);
-    const repository = new SubscriptionJourneyRepository();
+    repository = new SubscriptionJourneyRepository();
     signals = new SubscriptionJourneySignalService(
       repository,
       new SubscriptionJourneyRuntimeConfig(new ConfigService({}))
@@ -240,9 +241,23 @@ describe("Stage 1 application and order authority", () => {
     return state;
   }
 
+  async function bootstrap(fixture: Awaited<ReturnType<typeof confirmedApplication>>) {
+    await journey.createOrderAndContractJob(fixture.job);
+    // Materialize the successor step through the real signal consumer, without calling the provider.
+    await prisma.$transaction(async (tx) => {
+      const claimed = await repository.claimSignalOutbox(tx, 100, 120000);
+      const completed = claimed.find(
+        (row) => row.eventKey === `${fixture.job.sourceKey}:completed:outbox`
+      );
+      expect(completed).toBeDefined();
+      await journey.dispatchSignalOutbox(tx, completed!);
+      await repository.completeOutbox(tx, completed!.id, completed!.leaseToken);
+    });
+  }
+
   it("bootstraps a confirmed application through real order, contract and entitlement services", async () => {
     const fixture = await confirmedApplication();
-    await journey.createOrderAndContractJob(fixture.job);
+    await bootstrap(fixture);
     await expectOrdered(fixture);
   });
 
@@ -271,11 +286,11 @@ describe("Stage 1 application and order authority", () => {
         );
       try {
         await entered.promise;
-        await journey.createOrderAndContractJob(fixture.job);
+        await bootstrap(fixture);
       } finally {
         release.resolve();
       }
-      expect(await cancellation).toEqual({
+      expect.soft(await cancellation).toEqual({
         rejected: true,
         message: "该进件已生成订单，请勿重复处理。"
       });

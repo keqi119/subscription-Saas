@@ -1531,10 +1531,10 @@ export class SubscriptionReturnGovernanceService {
                 (typeof calculation.manualBasis === "string"
                   ? calculation.manualBasis
                   : null) ||
-              canonicalSubscriptionClosureJson(
-                (Array.isArray(evidence) ? [...evidence].sort() : []) as never
-              ) !==
-                canonicalSubscriptionClosureJson([...requested.evidenceIds].sort() as never)
+              canonicalSubscriptionClosureJson({
+                evidenceIds: Array.isArray(evidence) ? [...evidence].sort() : []
+              }) !==
+                canonicalSubscriptionClosureJson({ evidenceIds: [...requested.evidenceIds].sort() })
             );
           })
         ) {
@@ -1669,9 +1669,9 @@ export class SubscriptionReturnGovernanceService {
             priorFinalLine.clauseSnapshotId !== line.clauseSnapshotId ||
             Number(priorFinalLine.quantity) !== line.quantity ||
             priorFinalLine.responsibility !== line.responsibility ||
-            canonicalSubscriptionClosureJson(
-              (Array.isArray(priorEvidence) ? [...priorEvidence].sort() : []) as never
-            ) !== canonicalSubscriptionClosureJson([...line.evidenceIds].sort() as never) ||
+            canonicalSubscriptionClosureJson({
+              evidenceIds: Array.isArray(priorEvidence) ? [...priorEvidence].sort() : []
+            }) !== canonicalSubscriptionClosureJson({ evidenceIds: [...line.evidenceIds].sort() }) ||
             (line.manualBasis?.trim() || null) !==
               (typeof priorCalculation.manualBasis === "string"
                 ? priorCalculation.manualBasis

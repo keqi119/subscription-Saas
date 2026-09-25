@@ -3254,11 +3254,12 @@ async function lockJourneyApplication(tx: Tx, applicationId: string) {
     WHERE "application_id" = ${applicationId}::uuid
     FOR UPDATE
   `);
+  // State writes keep the primary key; allow material-file FK checks to take KEY SHARE.
   const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT "id"
     FROM "application"
     WHERE "id" = ${applicationId}::uuid
-    FOR UPDATE
+    FOR NO KEY UPDATE
   `);
   if (rows.length !== 1) {
     throw journeyError(

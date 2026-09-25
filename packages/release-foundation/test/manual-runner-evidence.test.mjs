@@ -675,6 +675,13 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
   });
   frame("CHALLENGE", { childChallenge: request.childChallenge });
   snapshot(n + 2, null);
+  if (options.parentToolClose)
+    event("runner", "CLOSED", n + 3, 2, runnerArgv, {
+      pid: 1000 + step,
+      exitCode: 0,
+      stdout: ref(stdoutBytes()),
+      stderr: archive.raw(Buffer.alloc(0))
+    });
   const bound = snapshot(n + 3);
   const sharesProfile = request.profileDigest === root.request.profileDigest;
   const prior = consumeFixture(
@@ -815,6 +822,8 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     const e = events.at(-1),
       previous = last;
     const payload = { binding, previousAck: lastAck ? ref(lastAck) : null, event: e };
+    if (options.foreignToolAttempt && e.tool === "prisma-script")
+      payload.binding = { ...binding, attemptId: uuid(999) };
     if (e.event !== "PREPARED")
       Object.assign(payload, {
         stdoutBase64: e.stdout ? archive.raws.get(e.stdout.digest).toString("base64") : null,
@@ -926,26 +935,68 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
         Buffer.from(options.diffOutput ?? "")
       ]
     );
-  let t = n + 10;
-  for (const [index, [tool, args, stdout]] of calls.entries()) {
+  if (protocol === "MS2" && phase === "apply" && !options.legacyToolSchedule) {
+    const versions = calls.slice(0, 2),
+      schemaCalls = calls
+        .filter(([tool]) => ["prisma-diff", "prisma-script"].includes(tool))
+        .reverse();
+    calls.splice(
+      0,
+      calls.length,
+      ...versions,
+      ...calls.filter(([tool]) => tool === "prisma-deploy"),
+      ...versions,
+      ...schemaCalls,
+      ...versions,
+      ...schemaCalls
+    );
+    // A real failed deploy stops the handler; a later reconcile is a fresh run.
+    if (options.deployExit) calls.splice(3);
+  }
+  if (options.toolTrace) calls.splice(0, calls.length, ...options.toolTrace.calls);
+  options.mutateCalls?.(calls);
+  const callFacts = calls.map(([tool, args, stdout, fields = {}, command], index) => {
     const argv = archive.raw(
       encodeManualJson({
         command:
-          tool === "psql-version" ? "psql" : "/app/apps/release-runner/node_modules/.bin/prisma",
+          command ??
+          (tool === "psql-version" ? "psql" : "/app/apps/release-runner/node_modules/.bin/prisma"),
         args
       })
     ).digest;
-    event(tool, "PREPARED", t++, index + 1, argv);
-    acknowledgedEvent(t - 1);
-    event(tool, "SPAWNED", t++, index + 1, argv, { pid: 2000 + index });
-    acknowledgedEvent(t - 1);
-    event(tool, "CLOSED", t++, index + 1, argv, {
-      pid: 2000 + index,
-      exitCode: tool === "prisma-deploy" ? (options.deployExit ?? 0) : 0,
-      stdout: archive.raw(stdout),
-      stderr: archive.raw(Buffer.from(""))
-    });
-    acknowledgedEvent(t - 1);
+    return { tool, stdout, fields, argv, processSequence: index + 1 };
+  });
+  const steps =
+    options.toolTrace?.steps ??
+    callFacts.flatMap((_, index) =>
+      ["PREPARED", "SPAWNED", "CLOSED"].map((status) => [index, status])
+    );
+  options.mutateSteps?.(steps);
+  let t = n + 10;
+  for (const [stepIndex, [index, status]] of steps.entries()) {
+    const { tool, stdout, fields, argv, processSequence } = callFacts[index];
+    event(
+      tool,
+      status,
+      t,
+      processSequence,
+      argv,
+      status === "PREPARED"
+        ? {}
+        : {
+            pid: 2000 + index,
+            ...(status === "CLOSED"
+              ? {
+                  exitCode: tool === "prisma-deploy" ? (options.deployExit ?? 0) : 0,
+                  stdout: archive.raw(stdout),
+                  stderr: archive.raw(Buffer.from("")),
+                  ...fields
+                }
+              : {})
+          }
+    );
+    acknowledgedEvent(t);
+    t += protocol === "MS2" && phase === "apply" && stepIndex >= 9 ? 0.5 : 1;
   }
   const process = last;
   const entries = shared.migrationCatalog.entries;
@@ -975,7 +1026,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     psql: "psql (PostgreSQL) 17.0"
   };
   const schema =
-    phase === "dry-run" || options.emptyRows
+    phase === "dry-run" || options.emptyRows || (protocol === "MS2" && options.deployExit)
       ? null
       : {
           schemaVersion: "schema-observation.v1",
@@ -1076,7 +1127,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     actualDigest: sha256Canonical(value ?? null)
   }));
   const postState =
-    phase === "apply"
+    phase === "apply" && schema
       ? {
           schemaVersion: "post-state-observation.v1",
           ...pick(request, ["operationId", "attemptId", "runId"]),
@@ -1106,8 +1157,8 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
     attemptAllocationDigest: request.attemptAllocationDigest,
     startedAt: time(n + 10),
     finishedAt: time(n + 41),
-    outcome: "RETURNED",
-    reasonCode: null,
+    outcome: protocol === "MS2" && options.deployExit ? "THREW" : "RETURNED",
+    reasonCode: protocol === "MS2" && options.deployExit ? "PRISMA_MIGRATE_DEPLOY_FAILED" : null,
     plan,
     postState,
     observationDigest: archive.add(observation),
@@ -1207,6 +1258,382 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
 function fixture90(phase = "dry-run", previous = null, options = {}) {
   return runnerFixture(phase, previous, { ...options, policy: current90Policy() });
 }
+
+// Capture the existing real runtime/handler path at its external SQL and process
+// seams. No Prisma process, DB connection, credential read, or network is used.
+async function runtimeApplyTrace(dry) {
+  const { createDatabaseRuntimeAdapter } =
+    await import("../../../apps/release-runner/src/database-runtime-adapter.mjs");
+  const { applyMigration, planMigration } =
+    await import("../../../apps/release-runner/src/commands/db-migrate-deploy.mjs");
+  const { verifySchema } =
+    await import("../../../apps/release-runner/src/commands/db-schema-verify.mjs");
+  const calls = [],
+    steps = [];
+  let deployed = false;
+  const database = {
+    databaseIdentityFingerprint: dry.request.domainInput.databaseIdentityFingerprint,
+    statementLog: [],
+    async $transaction(callback) {
+      return callback(database);
+    },
+    async $queryRawUnsafe(sql) {
+      database.statementLog.push(sql);
+      if (sql.includes("pg_advisory_xact_lock")) return [{ locked: true }];
+      if (sql.includes("to_regclass")) return [{ name: deployed ? "_prisma_migrations" : null }];
+      if (sql.includes("migration_name::text"))
+        return dry.shared.migrationCatalog.entries.map((e) => ({
+          name: e.path.split("/").at(-2),
+          checksum: e.sha256
+        }));
+      if (sql.includes("objectClass")) return [];
+      if (sql.includes("nspowner")) return [{ owner: "test-owner" }];
+      if (sql.includes("pg_extension")) return [{ name: "plpgsql" }];
+      if (sql === "SHOW server_version") return [{ server_version: "17.0" }];
+      throw new Error(`Unexpected offline SQL: ${sql}`);
+    }
+  };
+  const runtime = createDatabaseRuntimeAdapter({
+    database,
+    credential: { username: "offline", password: "synthetic-unused" },
+    target: { hostname: "offline.invalid", databaseName: "offline" },
+    async runProcess(command, args) {
+      const tool =
+        command === "psql"
+          ? "psql-version"
+          : args[0] === "--version"
+            ? "prisma-version"
+            : args[1] === "deploy"
+              ? "prisma-deploy"
+              : args.includes("--script")
+                ? "prisma-script"
+                : "prisma-diff";
+      const stdout =
+        tool === "prisma-version"
+          ? dry.shared.report
+          : tool === "psql-version"
+            ? "psql (PostgreSQL) 17.0\n"
+            : tool === "prisma-script"
+              ? dry.archive.raws.get(dry.shared.expectation.script.digest).toString("utf8")
+              : "";
+      const index = calls.length;
+      calls.push([tool, args, Buffer.from(stdout), {}, command]);
+      steps.push([index, "PREPARED"], [index, "SPAWNED"]);
+      await Promise.resolve();
+      if (tool === "prisma-deploy") deployed = true;
+      steps.push([index, "CLOSED"]);
+      return { exitCode: 0, signal: null, stdout, stderr: "" };
+    }
+  });
+  // The catalog seam replaces repository IO, not handler/runtime behavior.
+  runtime.loadMigrationCatalog = async () => dry.shared.migrationCatalog;
+  const input = {
+    ...dry.request.domainInput,
+    operationId: uuid(801),
+    attemptId: uuid(802),
+    runId: uuid(803)
+  };
+  const plan = await planMigration(runtime, input);
+  calls.length = 0;
+  steps.length = 0;
+  await applyMigration(runtime, { input, planDigest: deterministicPlanDigest(plan) });
+  // R2.1 performs a final schema verification after its complete catalog read.
+  await verifySchema(runtime, input);
+  return { calls, steps };
+}
+
+test("MS2 schedule accepts every real runtime apply call with concurrent tool custody", async () => {
+  const dry = fixture90("dry-run", null, { protocol: "MS2" });
+  const toolTrace = await runtimeApplyTrace(dry);
+  assert.deepEqual(
+    toolTrace.calls.map(([tool]) => tool),
+    [
+      "prisma-version",
+      "psql-version",
+      "prisma-deploy",
+      "prisma-version",
+      "psql-version",
+      "prisma-diff",
+      "prisma-script",
+      "prisma-version",
+      "psql-version",
+      "prisma-diff",
+      "prisma-script"
+    ]
+  );
+  const current = fixture90("apply", dry, { toolTrace });
+  assert.equal(validateManualRunnerProtocol(current.archive.input(current.request)), undefined);
+  assert.equal(
+    assessManualRunnerEvidence(current.archive.input(current.request)).executionStatus,
+    "SUCCEEDED"
+  );
+  const spawned = current.liveInputs.find(
+    (input) => fixtureDecode(input.childFrameBytes).payload.event?.event === "SPAWNED"
+  );
+  assert.throws(
+    () =>
+      validateManualRunnerProtocol({
+        ...spawned,
+        parentFrameBytes: spawned.parentFrameBytes.slice(0, -1)
+      }),
+    { code: "MANUAL_FRAME_ORDER_INVALID" }
+  );
+});
+
+test("MS2 schedule accepts complete serialized apply custody with every runtime call", () => {
+  const dry = fixture90("dry-run", null, { protocol: "MS2" });
+  const current = fixture90("apply", dry);
+  assert.equal(
+    assessManualRunnerEvidence(current.archive.input(current.request)).executionStatus,
+    "SUCCEEDED"
+  );
+});
+
+test("MS2 schedule refuses the former single-round apply fixture while MS1 keeps it", () => {
+  for (const protocol of ["MS1", "MS2"]) {
+    const dry = fixture90("dry-run", null, { protocol });
+    const current = fixture90("apply", dry, { legacyToolSchedule: true });
+    assert.equal(
+      assessManualRunnerEvidence(current.archive.input(current.request)).executionStatus,
+      protocol === "MS1" ? "SUCCEEDED" : "INTERRUPTED_UNKNOWN"
+    );
+  }
+});
+
+for (const [label, options] of [
+  [
+    "early version nonzero",
+    {
+      mutateCalls: (c) => {
+        c[0] = [...c[0].slice(0, 3), { exitCode: 1 }];
+      }
+    }
+  ],
+  [
+    "early schema timeout",
+    {
+      mutateCalls: (c) => {
+        c[5] = [
+          ...c[5].slice(0, 3),
+          { exitCode: 1, signal: "SIGTERM", reasonCode: "MANUAL_PROCESS_TIMEOUT" }
+        ];
+      }
+    }
+  ],
+  [
+    "early schema missing close",
+    {
+      mutateSteps: (s) => {
+        s.splice(
+          s.findIndex(([i, e]) => i === 5 && e === "CLOSED"),
+          1
+        );
+      }
+    }
+  ],
+  ...[0, 1, 3, 4, 7, 8].map((index) => [
+    `complete version report changes at invocation ${index + 1}`,
+    {
+      mutateCalls: (calls) => {
+        calls[index] = [...calls[index]];
+        calls[index][2] = Buffer.from(calls[index][2].toString() + "engine build changed\n");
+      }
+    }
+  ]),
+  [
+    "first schema script differs",
+    {
+      mutateCalls: (c) => {
+        c[6] = [...c[6]];
+        c[6][2] = Buffer.from("CREATE TABLE drift(id int);\n");
+      }
+    }
+  ],
+  [
+    "first schema diff is nonzero",
+    {
+      mutateCalls: (c) => {
+        c[5] = [...c[5].slice(0, 3), { exitCode: 2 }];
+      }
+    }
+  ],
+  [
+    "first schema diff has output",
+    {
+      mutateCalls: (c) => {
+        c[5] = [...c[5]];
+        c[5][2] = Buffer.from("drift\n");
+      }
+    }
+  ],
+  [
+    "extra version call",
+    {
+      mutateCalls: (c) => {
+        c.push(c[0]);
+      }
+    }
+  ],
+  [
+    "missing first schema call",
+    {
+      mutateCalls: (c) => {
+        c.splice(5, 1);
+      }
+    }
+  ],
+  [
+    "deploy before initial versions close",
+    {
+      mutateSteps: (s) => {
+        const i = s.findIndex(([index, e]) => index === 1 && e === "CLOSED");
+        const [close] = s.splice(i, 1);
+        s.splice(i + 1, 0, close);
+      }
+    }
+  ],
+  [
+    "first schema before deploy close",
+    {
+      mutateSteps: (s) => {
+        const i = s.findIndex(([index, e]) => index === 2 && e === "CLOSED");
+        const [close] = s.splice(i, 1);
+        s.splice(i + 1, 0, close);
+      }
+    }
+  ],
+  [
+    "second schema before first round closes",
+    {
+      mutateSteps: (s) => {
+        const i = s.findIndex(([index, e]) => index === 6 && e === "CLOSED");
+        const [close] = s.splice(i, 1);
+        s.splice(i + 1, 0, close);
+      }
+    }
+  ],
+  [
+    "schema call in wrong round",
+    {
+      mutateCalls: (c) => {
+        [c[1], c[5]] = [c[5], c[1]];
+      }
+    }
+  ],
+  ["tool from another attempt", { foreignToolAttempt: true }],
+  ["no deploy", { noDeploy: true }]
+])
+  test(`MS2 schedule refuses ${label} even when the final schema succeeds`, () => {
+    const dry = fixture90("dry-run", null, { protocol: "MS2" });
+    const current = fixture90("apply", dry, options);
+    let assessment;
+    try {
+      assessment = assessManualRunnerEvidence(current.archive.input(current.request));
+    } catch (error) {
+      assert.match(
+        error.code,
+        /^MANUAL_(?:EVIDENCE_BINDING_MISMATCH|FRAME_ORDER_INVALID|FRAME_INVALID)$/
+      );
+      return;
+    }
+    assert.equal(assessment.executionStatus, "INTERRUPTED_UNKNOWN");
+  });
+
+test("MS2 schedule rejects duplicate dry-run and verify tools", () => {
+  const dry = fixture90("dry-run", null, {
+    protocol: "MS2",
+    mutateCalls: (calls) => calls.push(calls[0])
+  });
+  assert.equal(
+    assessManualRunnerEvidence(dry.archive.input(dry.request)).executionStatus,
+    "INTERRUPTED_UNKNOWN"
+  );
+  const current = fixture90("verify", null, {
+    protocol: "MS2",
+    mutateCalls: (calls) => calls.push(calls.at(-1))
+  });
+  assert.equal(
+    assessManualRunnerEvidence(current.archive.input(current.request)).executionStatus,
+    "INTERRUPTED_UNKNOWN"
+  );
+});
+
+test("MS2 schedule rejects schema calls during dry-run", () => {
+  const current = fixture90("dry-run", null, {
+    protocol: "MS2",
+    mutateCalls: (calls) =>
+      calls.push([
+        "prisma-diff",
+        [
+          "migrate",
+          "diff",
+          "--from-config-datasource",
+          "--to-schema",
+          "/app/apps/api/prisma/schema.prisma",
+          "--exit-code",
+          "--config",
+          "/app/apps/api/prisma.config.ts"
+        ],
+        Buffer.alloc(0)
+      ])
+  });
+  assert.equal(
+    assessManualRunnerEvidence(current.archive.input(current.request)).executionStatus,
+    "INTERRUPTED_UNKNOWN"
+  );
+});
+
+test("MS2 schedule live ACK refuses the next group after a failed tool closes", () => {
+  const dry = fixture90("dry-run", null, { protocol: "MS2" });
+  const current = fixture90("apply", dry, {
+    mutateCalls: (calls) => {
+      calls[0] = [...calls[0].slice(0, 3), { exitCode: 1 }];
+    }
+  });
+  const deploy = current.liveInputs.find((input) => {
+    const child = fixtureDecode(input.childFrameBytes);
+    return child.type === "PREPARED" && child.payload.event.tool === "prisma-deploy";
+  });
+  assert.throws(() => validateManualRunnerProtocol(deploy), { code: "MANUAL_FRAME_ORDER_INVALID" });
+});
+
+test("MS2 schedule live ACK cannot borrow a parent close for an unfinished tool", () => {
+  const dry = fixture90("dry-run", null, { protocol: "MS2" });
+  const current = fixture90("apply", dry, {
+    parentToolClose: true,
+    mutateSteps: (steps) => {
+      const index = steps.findIndex(([call, status]) => call === 1 && status === "CLOSED");
+      const [close] = steps.splice(index, 1);
+      steps.splice(index + 1, 0, close);
+    }
+  });
+  const deploy = current.liveInputs.find((input) => {
+    const child = fixtureDecode(input.childFrameBytes);
+    return child.type === "PREPARED" && child.payload.event.tool === "prisma-deploy";
+  });
+  assert.throws(() => validateManualRunnerProtocol(deploy), { code: "MANUAL_FRAME_ORDER_INVALID" });
+});
+
+test("MS2 schedule keeps an incomplete concurrent failure prefix and its peer close", async () => {
+  const dry = fixture90("dry-run", null, { protocol: "MS2" });
+  const trace = await runtimeApplyTrace(dry);
+  // Keep only calls that actually began before a failing first version returned.
+  trace.calls = trace.calls.slice(0, 2);
+  trace.calls[0][3] = { exitCode: 1 };
+  trace.steps = trace.steps.filter(([index]) => index < 2);
+  const current = fixture90("apply", dry, {
+    toolTrace: trace,
+    missingResult: true,
+    unknown: true,
+    emptyRows: true
+  });
+  for (const live of current.liveInputs)
+    assert.equal(validateManualRunnerProtocol(live), undefined);
+  assert.equal(
+    assessManualRunnerEvidence(current.archive.input(current.request)).executionStatus,
+    "INTERRUPTED_UNKNOWN"
+  );
+});
 
 for (const [direction, currentIsV2] of [
   ["v1 runner with v2 baseline", false],

@@ -12,6 +12,18 @@
 
 ## Global Constraints
 
+### 2026-09-25 审计收口：MS2 真实工具调用 schedule（限域补充）
+
+本补充属于用户已批准的 Stage 1 审计收口 Task 9/R2 离线实施，由独立 R1 owner 修改且仅修改 `packages/release-foundation/src/manual-runner-evidence.mjs`、既有 `packages/release-foundation/test/manual-runner-evidence.test.mjs`、`packages/release-foundation/test/manual-stage1-session.test.mjs` 与本计划。先记录本限域说明，再以 RED → GREEN 修复共享成功证据谓词；主控负责独立审查和提交。第四文件由独立审查发现必要依赖后经主控精确纳入：其独立 runnerFixture 的 MS2 单轮 apply 是既有 UNKNOWN/replay 测试 seal 成功前件，故仅升级该 MS2 fixture 工具 schedule，原断言和 MS1 默认不变。Schema、session 实现、parser、旧 MS1、R2 handler/runtime/CLI、manifest、历史运行记录与冻结摘要均不修改。所有验证离线，不执行 AGENTS 的 ambient 数据库 preflight，不连接 DB、不使用秘密、不运行 Docker/网络；真实 Prisma/DB 门禁只由主控获准 fresh launcher 执行。
+
+R2.1 的真实 adapter 在 `applyMigration` 锁内重算 plan 并验证 schema，返回后再读取完整 catalog 与 `verifySchema` 取得最终完整 SQL 日志。因此非空 apply 的真实工具调用是 Prisma/psql 版本各三次、deploy 一次、diff/script 各两次；先前 MS2 单轮成功 fixture 遗漏既有 handler 调用，不能代表真实 R2 运行证明。旧成功测试只升级进程 facts 并保留原断言，另保留 MS2 单轮 apply 必须拒绝的反例；不为 MS2 添加虚构历史回退，MS1 单轮历史判定保持原样。
+
+仅从已验证实际 MS2 frames 选择前向 schedule：dry-run 版本各一次且无 deploy/diff/script；verify/replay/reconcile 版本各一次、diff/script 各一次且无 deploy；非空 apply 版本各三次、deploy 一次、diff/script 各两次，runner 始终唯一。apply 按每工具序号及完整 PREPARED/CLOSED 证明首轮两版本全部关闭后才准备 deploy，deploy 关闭后才开始第一组四工具，该组全部关闭后才开始第二组四工具；组内允许真实 Promise.all 并发。全部调用必须完整 custody、exit 0、signal/reason null；每轮完整 Prisma/psql trim 报告逐字一致，两轮 script 均绑定 expected digest、diff 均 exit 0 且 stdout.trim 为空。只有全部验证后才绑定末组 schema 字段；postState 算法、非空 pending/deploy 成功条件和原失败/UNKNOWN 分类不变。不删除真实调用记录，不缓存 schema 事实，不只取末组掩盖失败，不把 observer 塞入锁内。
+
+真实并发 RED 另证实既有 `protocolEvent` 的 PREPARED 全前件串行守卫先于成功判定拒绝 Promise.all。主控据此将同一生产文件内 MS2 私有 validator 前向分支精确纳入本修复：协议只从实际已核 `frameProtocol(child)` 传入私有函数，复用同一固定 schedule 校验 live/archive 的合法前缀和最终完整调用。组内每工具最多一次且保留每调用 PREPARED → ACK → SPAWNED → CLOSED/失败与唯一序号；跨组须前组全部 CLOSED、exit 0、signal/reason null，且 close 必须属于同一 runner 来源、tool 与 processSequence，不能借用父进程 close。失败/未完成前缀仍可保管、同组已启动 peer 仍可关闭，不要求尚未发生的未来组齐全；完整次数仅作为成功条件。MS1 全串行守卫不改。仅既有测试为本次组合正例离线动态导入真实 Runner runtime/旧 handler，生产 foundation 无 Runner 反向依赖、IO、新依赖或新导出。该正例证明真实调用轨迹进入共享判定，不证明真实进程/PID、数据库或 R2.2 collector 原件；R2.1 完整 adapter 组合仍独立验收。
+
+验证必须覆盖早组非零/超时/缺 close 但末组成功、任一完整版本报告变化、首轮 script 漂移/diff 非零、多/少/乱序调用、跨 attempt 混入；正例对接 R2.1 真实 runtime 的离线 runProcess 轨迹。原件和精确 RED/GREEN 计数写 ignored `node_modules/.cache/sdd/r1-tool-evidence-schedule`。小范围验证先行，长共享门禁与主控 PostgreSQL 重负载串行，未执行门禁不得记作通过。
+
 - 当前状态（本轮文档修订）：R1.3 已在 `aebbb6b0` 本地通过并获用户接受；不返工其代码或历史证据。本稿与 R2 的 H3 原件传输局部草案待本轮复审；新增 Task R1.3H 是唯一未来纯协议施工单元，位于 R1.3 之后、R2.1 之前，尚未获施工批准。本轮只修订两份计划并分别本地提交复审，不启动 R1.3H/R2 代码、GitHub/DB/Docker/网络/密钥或 H1/H2/H3/Task 30。
 - 以下 RP6 状态、§1.1 的 RP 收口段及末尾原交接状态均为当时历史记录，不覆盖上一条当前状态。
 - 状态：**RP1–RP5 已按获批的 90 日同步计划交付代码；RP6 初次 frozen compatibility 183/185、exit 1 的 STOP 原件保留为历史，随后获批的同字节 scratch-only 完整重验 185/185、exit 0，后置核验 exit 0，独立 evidence review 为 `PASS/LEGACY_SCRATCH_RETRY_CONFIRMED`。RP6 获批的本地执行/审查范围 `LOCAL_COMPLETE`，仅待本地文档提交与 metadata final check；R1.3 的“90 天代码同步”前置已解除，但 R1.3 尚未实施且未因本结论获得施工批准**。R1.1 `a7dae491`、R1.1E `f618b2d2`、R1.2 `a42c2041` 及其历史 150+44 证据不改写；RP1–RP5 实现提交为 `0ce02461`/`fb5c3d36`、`41dfaf37`/`8f5402c0`、`b9aaa55e`、`a7377cc1`、`6f834aaa`。H1/H2/H3、真实 profile/key/credential、DB/Docker/网络操作或 Task 30 仍未批准。既有 session `objects/raw`、冻结 stash `b299ceeed80374d181998f8ef485629beba56b5f` 与未追踪 scheduler 原样保留。

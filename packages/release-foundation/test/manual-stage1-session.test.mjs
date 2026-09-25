@@ -609,6 +609,24 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
         Buffer.from(options.diffOutput ?? "")
       ]
     );
+  if (protocol === "MS2" && phase === "apply") {
+    const versions = calls.slice(0, 2),
+      schemaCalls = calls
+        .filter(([tool]) => ["prisma-diff", "prisma-script"].includes(tool))
+        .reverse();
+    calls.splice(
+      0,
+      calls.length,
+      ...versions,
+      ...calls.filter(([tool]) => tool === "prisma-deploy"),
+      ...versions,
+      ...schemaCalls,
+      ...versions,
+      ...schemaCalls
+    );
+    // Failed deploys end the handler; reconciliation is a separate attempt.
+    if (options.deployExit) calls.splice(3);
+  }
   let t = n + 10;
   for (const [index, [tool, args, stdout]] of calls.entries()) {
     const argv = archive.raw(
@@ -618,17 +636,21 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
         args
       })
     ).digest;
-    event(tool, "PREPARED", t++, index + 1, argv);
-    acknowledgedEvent(t - 1);
-    event(tool, "SPAWNED", t++, index + 1, argv, { pid: 2000 + index });
-    acknowledgedEvent(t - 1);
-    event(tool, "CLOSED", t++, index + 1, argv, {
+    const tick = protocol === "MS2" && phase === "apply" && index >= 3 ? 0.5 : 1;
+    event(tool, "PREPARED", t, index + 1, argv);
+    acknowledgedEvent(t);
+    t += tick;
+    event(tool, "SPAWNED", t, index + 1, argv, { pid: 2000 + index });
+    acknowledgedEvent(t);
+    t += tick;
+    event(tool, "CLOSED", t, index + 1, argv, {
       pid: 2000 + index,
       exitCode: tool === "prisma-deploy" ? (options.deployExit ?? 0) : 0,
       stdout: archive.raw(stdout),
       stderr: archive.raw(Buffer.from(""))
     });
-    acknowledgedEvent(t - 1);
+    acknowledgedEvent(t);
+    t += tick;
   }
   const process = last;
   const entries = shared.migrationCatalog.entries;

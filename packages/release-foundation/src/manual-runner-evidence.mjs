@@ -1204,7 +1204,50 @@ function authorizeMatches(frame, request, authorization, challenge, policy) {
   }
   readbackMatches(p.process, p.processReadback, request, policy);
 }
-function protocolEvent(previous, event, request) {
+function manualToolSchedule(phase) {
+  const versions = ["prisma-version", "psql-version"],
+    schema = [...versions, "prisma-diff", "prisma-script"];
+  if (phase === "dry-run") return [versions];
+  if (phase === "apply") return [versions, ["prisma-deploy"], schema, schema];
+  return [schema];
+}
+
+function successfulToolClose(event) {
+  return (
+    event?.event === "CLOSED" &&
+    event.exitCode === 0 &&
+    event.signal === null &&
+    event.reasonCode === null
+  );
+}
+
+function ms2PreparedAllowed(events, event, phase) {
+  const prepared = events.filter((e) => e.source === "runner" && e.event === "PREPARED");
+  let offset = 0;
+  for (const group of manualToolSchedule(phase)) {
+    if (prepared.length < offset + group.length) {
+      return (
+        group.includes(event.tool) &&
+        !prepared.slice(offset).some((e) => e.tool === event.tool) &&
+        prepared
+          .slice(0, offset)
+          .every((e) =>
+            events.some(
+              (end) =>
+                end.source === "runner" &&
+                end.tool === e.tool &&
+                end.processSequence === e.processSequence &&
+                successfulToolClose(end)
+            )
+          )
+      );
+    }
+    offset += group.length;
+  }
+  return false;
+}
+
+function protocolEvent(previous, event, request, protocol) {
   requireThat(event.sequence === previous.events.length, ORDER);
   requireThat(event.containerId === request.containerId && event.source === "runner", MISMATCH);
   const events = previous.events,
@@ -1241,13 +1284,15 @@ function protocolEvent(previous, event, request) {
     const prepared = events.filter((e) => e.source === "runner" && e.event === "PREPARED");
     requireThat(event.processSequence === prepared.length + 1 && toolEvents.length === 0, ORDER);
     requireThat(
-      prepared.every((e) =>
-        events.some(
-          (end) =>
-            end.processSequence === e.processSequence &&
-            ["CLOSED", "SPAWN_FAILED"].includes(end.event)
-        )
-      ),
+      protocol === "MS2"
+        ? ms2PreparedAllowed(events, event, request.phase)
+        : prepared.every((e) =>
+            events.some(
+              (end) =>
+                end.processSequence === e.processSequence &&
+                ["CLOSED", "SPAWN_FAILED"].includes(end.event)
+            )
+          ),
       ORDER
     );
     requireThat(
@@ -1324,7 +1369,7 @@ function ackMatches(ack, child, previous, parents, stdout, request, wire, policy
       }),
       ORDER
     );
-    protocolEvent(previous, child.payload.event, request);
+    protocolEvent(previous, child.payload.event, request, frameProtocol(child));
     requireThat(
       instant(child.payload.event.at) <= instant(subject.recordedAt) &&
         instant(previous.recordedAt) <= instant(subject.recordedAt),
@@ -1647,6 +1692,7 @@ function protocolArchive(request, graph, { allowMissingResult = false } = {}) {
     .filter((r) => r.requestDigest === sha256Canonical(request));
   requireThat(originals.length === 1, INCOMPLETE);
   requireThat(result.payloadBytes.equals(encodeManualJson(originals[0])), MISMATCH);
+  return frameProtocol(frames[0]);
 }
 
 function type(value) {
@@ -2425,7 +2471,56 @@ function projectedRows(catalog, observation, complete = false) {
     return null;
   return catalog.entries.slice(0, rows.length);
 }
-function toolsFor(request, graph, process, observation, result) {
+function ms2ClosedTools(request, graph, process) {
+  const prepared = process.final.events.filter(
+      (e) => e.source === "runner" && e.event === "PREPARED"
+    ),
+    schedule = manualToolSchedule(request.phase),
+    closed = new Map(process.calls.map((e) => [e.processSequence, e])),
+    rounds = new Map();
+  if (
+    prepared.length !== schedule.flat().length ||
+    process.calls.length !== prepared.length + 1 ||
+    !process.calls.every(successfulToolClose)
+  )
+    return null;
+  let offset = 0,
+    lastClosedSequence = -1;
+  for (const group of schedule) {
+    const calls = prepared.slice(offset, offset + group.length);
+    if (
+      !equal(calls.map((e) => e.tool).sort(), [...group].sort()) ||
+      calls.some((e) => e.sequence <= lastClosedSequence || !closed.has(e.processSequence))
+    )
+      return null;
+    for (const event of calls) {
+      const entries = rounds.get(event.tool) ?? [];
+      entries.push(closed.get(event.processSequence));
+      rounds.set(event.tool, entries);
+    }
+    lastClosedSequence = Math.max(...calls.map((e) => closed.get(e.processSequence).sequence));
+    offset += group.length;
+  }
+  for (const name of ["prisma-version", "psql-version"]) {
+    const reports = rounds.get(name).map((e) => decode(graph.raw(e.stdout)).trim());
+    if (!reports.every((report) => report === reports[0])) return null;
+  }
+  if (
+    (rounds.get("prisma-script") ?? []).some(
+      (e) => e.stdout.digest !== request.domainInput.expectedSchemaDigest
+    ) ||
+    (rounds.get("prisma-diff") ?? []).some((e) => decode(graph.raw(e.stdout)).trim() !== "")
+  )
+    return null;
+  // Only after every round's custody, success, ordering and bytes agree may the
+  // final schema observation bind its fields to the last invocation.
+  return (name) =>
+    name === "runner"
+      ? process.calls.find((e) => e.tool === "runner")
+      : (rounds.get(name)?.at(-1) ?? null);
+}
+
+function toolsFor(request, graph, process, observation, result, protocol) {
   if (!process || process.final.closedAt === null || !process.bound) return null;
   if (
     process.final.events.some(
@@ -2434,10 +2529,14 @@ function toolsFor(request, graph, process, observation, result) {
   )
     return null;
   const closed = process.calls;
-  const tool = (name) => {
-    const matches = closed.filter((e) => e.tool === name);
-    return matches.length === 1 ? matches[0] : null;
-  };
+  const tool =
+    protocol === "MS2"
+      ? ms2ClosedTools(request, graph, process)
+      : (name) => {
+          const matches = closed.filter((e) => e.tool === name);
+          return matches.length === 1 ? matches[0] : null;
+        };
+  if (!tool) return null;
   const prisma = tool("prisma-version"),
     psql = tool("psql-version"),
     runner = tool("runner");
@@ -2656,8 +2755,9 @@ function classifyRunner(request, graph, base, result, observed, consumption, pos
     } else requireThat(originalRequest.phase === "apply" && original.status === "SUCCEEDED");
   }
   if (plan) base.planDigest = deterministicPlanDigest(plan);
+  let protocol;
   try {
-    protocolArchive(request, graph);
+    protocol = protocolArchive(request, graph);
   } catch (error) {
     if ([FRAME, ORDER, INCOMPLETE, OUTPUT, REUSED].includes(error.code))
       return Object.freeze({ ...base, reasonCode: error.code });
@@ -2712,7 +2812,7 @@ function classifyRunner(request, graph, base, result, observed, consumption, pos
       instant(observed.observedAt) <= instant(result.finishedAt),
     "MANUAL_TIME_INVALID"
   );
-  const tools = toolsFor(request, graph, process, observed, result),
+  const tools = toolsFor(request, graph, process, observed, result, protocol),
     catalog = catalogFor(request, graph);
   const deploys = process.final.events.filter(
     (e) => e.tool === "prisma-deploy" && e.event === "PREPARED"

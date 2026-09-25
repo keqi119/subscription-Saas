@@ -51,3 +51,7 @@ node --test packages/release-foundation/test/manual-runner-evidence.test.mjs pac
 辅助原件目录：`.superpowers/sdd/2026-09-22-stage1-audit-driven-closure-plan/`，保留 `preflight-red.log`、`preflight-green.log`、`parser-red.log`、`parser-green.log`、`parser-full.launch.json`、`parser-full.stdout.log`、`parser-full.stderr.log`、`parser-full.actual-close.json`、两个 Prisma 单独复核日志和诊断日志。`serial-gate/` 保存第二轮 launch、部分 raw 和 `interruption-observation.json`，没有伪造 close。
 
 后续先推进独立的 P1 真实服务反例及限域修复。协议门禁须在说明版本探测的运行条件后再作有针对性的完整验证；历史失败和中断记录均保留。B3 的独立 3/3 fresh 结果见 [Task3S 记录](2026-09-07-stage1-b3-contract-archive-transition-validation.md)，不能替代 P1 或协议门禁。
+
+## 2026-09-25 后续完整门禁关闭
+
+以上失败与中断保持历史原分类。追加精确内容判定的 Schema 编译复用后，干净 source `fc1b1806` 原四文件完整门禁 249/249、exit 0，Schema 回归 17/17；真实 Prisma 版本探测通过且原 30 秒超时不变。独立代码及完整原件复核 ACCEPT，限定 F4 关闭。实现已接回 `2cd87533`，实际 source、140 项输入绑定、原始日志与 Node24/R2 限制见[完整门禁记录](2026-09-25-stage1-parser-full-gate-validation.md)。

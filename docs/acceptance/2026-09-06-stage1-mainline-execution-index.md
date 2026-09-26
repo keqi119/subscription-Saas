@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 Runner 启动参数对齐前向登记
+
+隔离分支提交 `0612f986`，为真实 `docker run` 限定增加 attempt CID 文件及固定数据目录 tmpfs 配对，历史单 tmpfs 证据仍兼容。[验证记录](2026-09-27-stage1-runner-argv-alignment-validation.md)保留 RED 2 项、定向 21/21、唯一完整文件 169/169/exit 0 和独立审查 Approved；默认 lint 的 3 个既有诊断未被隐去。未重复业务套件，未整合候选。下一步为父端零凭证实际进程采集与停止归档；真实云身份、可信输入和阶段 1 均继续开放。
+
 ## 2026-09-27 expected-schema 固定输入接口对齐前向登记
 
 隔离分支提交 `3feff2e7`，补齐初版生成器与既有 R2 精确 provenance 接口的差距，保留完整进程原件并实现有限逐对象取回；私有参考 Origin 修正 `f2bbbd97/9dec7a8c` 先获 DOC Approved，共享 H3 规则不变。[验证记录](2026-09-27-stage1-expected-schema-producer-validation.md)保留旧源三个真实 RED、最终冻结文件 7/7/exit 0 和独立代码审查 Approved。未整合主候选或执行真实参考库/云保管，阶段 1 继续开放。

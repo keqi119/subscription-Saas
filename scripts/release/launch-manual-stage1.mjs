@@ -9,6 +9,7 @@ import {
   computeMigrationCatalog,
   computeManualClusterFingerprint,
   assertManualDecision,
+  assessManualRunnerEvidence,
   verifyManualAuthorization,
   validateContract,
   validateManualRunnerRequest,
@@ -745,19 +746,206 @@ async function performTargetObservation(session, facts) {
     sha256Canonical(session.targetIntent) !== sha256Canonical(operation.targetIntent)
   )
     fail("MANUAL_BINDING_MISMATCH");
-  // A prior original must never be replaced by a new observation. Resolution
-  // of its complete graph is the next continuation boundary for this slice.
+  // Original identities survive session closure. Reuse reads their archived
+  // graph; it neither consumes the old authorization nor reserves another attempt.
   const graph = await archive.graph();
+  const values = [...graph.values()].map(({ value }) => value);
   if (
-    [...graph.values()].some(
-      ({ value }) =>
-        value.schemaVersion === "manual-runner-request.v1" &&
-        value.stage === "target-observe" &&
-        value.runId === operation.runId &&
-        value.operationId === operation.operations.observe.operationId
+    values.some(
+      (value) =>
+        value.operationId === operation.operations.observe.operationId ||
+        value.idempotencyKey === operation.operations.observe.idempotencyKey ||
+        (value.runId === operation.runId &&
+          (value.stage === "target-observe" || value.phaseKey === "target-observe"))
     )
-  )
-    fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+  ) {
+    try {
+      const unique = (matches) => {
+        if (matches.length !== 1) fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+        return matches[0];
+      };
+      const request = unique(
+        values.filter(
+          (value) =>
+            value.schemaVersion === "manual-runner-request.v1" &&
+            value.stage === "target-observe" &&
+            (value.operationId === operation.operations.observe.operationId ||
+              value.idempotencyKey === operation.operations.observe.idempotencyKey ||
+              value.runId === operation.runId)
+        )
+      );
+      validateManualRunnerRequest(request);
+      if (
+        request.profileDigest !== operation.profileDigest ||
+        request.runId !== operation.runId ||
+        request.operationId !== operation.operations.observe.operationId ||
+        request.idempotencyKey !== operation.operations.observe.idempotencyKey ||
+        request.ownerId !== profile.ownerId ||
+        request.purpose !== operation.purpose ||
+        sha256Canonical(request.targetIntent) !== sha256Canonical(operation.targetIntent)
+      )
+        fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+      const requestDigest = sha256Canonical(request);
+      const baseline = unique(
+        values.filter(
+          (value) =>
+            value.schemaVersion === "manual-baseline-manifest.v1" &&
+            (graph.get(value.identity?.targetObservationDigest)?.value.requestDigest ===
+              requestDigest ||
+              graph.get(value.identity?.authorizationDigest)?.value.payload?.requestDigest ===
+                requestDigest)
+        )
+      );
+      validateContract("manual-baseline-manifest.v1", baseline);
+      if (
+        baseline.identity.buildProofDigest !== facts.build.buildProofDigest ||
+        baseline.identity.purpose !== operation.purpose ||
+        baseline.identity.physicalIdentity.endpointPolicyId !==
+          operation.targetIntent.endpointPolicyId ||
+        baseline.identity.physicalIdentity.databaseName !== operation.targetIntent.databaseName ||
+        baseline.identity.physicalIdentity.databaseOid !== targetContext.databaseOid ||
+        baseline.identity.physicalIdentity.clusterFingerprint !==
+          computeManualClusterFingerprint(targetContext.cluster)
+      )
+        fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+      const consumption = unique(
+          values.filter((v) => v.kind === "consumption" && v.requestDigest === requestDigest)
+        ),
+        execution = unique(
+          values.filter((v) => v.kind === "execution" && v.requestDigest === requestDigest)
+        );
+      const original = async (digest, schema, role = "archive") => {
+        const item = await archive.get(digest, role);
+        validateContract(schema, item.value);
+        if (!item.bytes.equals(graph.get(digest)?.bytes))
+          fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+        return item;
+      };
+      const custody = async (
+        subjectDigest,
+        subjectType,
+        purpose = "archive-readback",
+        storageRole = "archive"
+      ) => {
+        const saved = unique(
+          values.filter(
+            (v) =>
+              v.kind === "custody" && v.subjectDigest === subjectDigest && v.purpose === purpose
+          )
+        );
+        const digest = sha256Canonical(saved);
+        await original(digest, "manual-operation-record.v2");
+        if (
+          saved.profileDigest !== operation.profileDigest ||
+          saved.ownerId !== profile.ownerId ||
+          saved.subjectType !== subjectType ||
+          saved.outcome !== "MATCH" ||
+          saved.observedDigest !== subjectDigest ||
+          saved.storageRole !== storageRole
+        )
+          fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+        return digest;
+      };
+      const requestItem = await original(requestDigest, "manual-runner-request.v1");
+      await original(request.attemptAllocationDigest, "manual-runner-evidence.v1");
+      await original(sha256Canonical(baseline), "manual-baseline-manifest.v1");
+      const observation = (
+          await original(baseline.identity.targetObservationDigest, "manual-runner-evidence.v1")
+        ).value,
+        authorization = (
+          await original(baseline.identity.authorizationDigest, "manual-launch-authorization.v1")
+        ).value,
+        proof = await original(facts.build.buildProofDigest, "build-proof.v1");
+      if (
+        !proof.bytes.equals(encodeManualJson(JSON.parse(fixed.proofBytes))) ||
+        observation.kind !== "observation" ||
+        observation.requestDigest !== requestDigest ||
+        consumption.authorizationDigest !== baseline.identity.authorizationDigest ||
+        execution.authorizationDigest !== baseline.identity.authorizationDigest ||
+        execution.consumptionRecordDigest !== sha256Canonical(consumption)
+      )
+        fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+      await original(sha256Canonical(consumption), "manual-operation-record.v2", "journal");
+      const slot = await archive.read(
+        path.join(
+          profile.storage.journalRoot,
+          "consumptions",
+          `${request.profileDigest.slice(7)}-${authorization.payload.authorizationId}.json`
+        ),
+        profile.storage.journalRoot
+      );
+      if (!slot.bytes.equals(encodeManualJson(consumption)))
+        fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+      await custody(sha256Canonical(consumption), "record", "consumption-readback", "journal");
+      await original(sha256Canonical(execution), "manual-operation-record.v2");
+      const result = (await original(execution.resultDigest, "manual-runner-evidence.v1")).value,
+        postState = (await original(execution.postStateRecordDigest, "manual-operation-record.v2"))
+          .value;
+      if (
+        baseline.identity.targetObservationDigest !== result.observationDigest ||
+        baseline.identity.targetObservationDigest !== postState.observationDigest
+      )
+        fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+      const readbackDigest = await custody(
+        baseline.identity.targetObservationDigest,
+        "r2-artifact"
+      );
+      await custody(sha256Canonical(execution), "record");
+      await custody(sha256Canonical(baseline), "r2-artifact");
+      // The same complete canonical archive input as R1 supplies the only
+      // success classification; raw reads retain the existing private-store protections.
+      const rawDirectory = path.join(profile.storage.archiveRoot, "raw"),
+        rawBlobs = [];
+      await checkedPrivatePath(rawDirectory, {
+        principal,
+        privateRoot: profile.storage.archiveRoot,
+        directory: true
+      });
+      for (const name of await fs.readdir(rawDirectory)) {
+        if (!/^[0-9a-f]{64}\.bin$/u.test(name)) fail("MANUAL_STORAGE_UNVERIFIED");
+        const raw = await pinPrivateInput(path.join(rawDirectory, name), {
+          principal,
+          privateRoot: profile.storage.archiveRoot
+        });
+        try {
+          if (sha256Bytes(raw.bytes) !== `sha256:${name.slice(0, -4)}`)
+            fail("MANUAL_STORAGE_UNVERIFIED");
+          await raw.recheck();
+          rawBlobs.push(Buffer.from(raw.bytes));
+        } finally {
+          await raw.close();
+        }
+      }
+      const assessment = assessManualRunnerEvidence({
+        profileBytes: encodeManualJson(profile),
+        requestBytes: requestItem.bytes,
+        artifactBytes: [...graph.values()].map((item) => item.bytes),
+        rawBlobs
+      });
+      if (
+        assessment.executionStatus !== "SUCCEEDED" ||
+        execution.status !== assessment.executionStatus
+      )
+        fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+      await recheckResources();
+      const current = await readFixedManualOperation({
+        repoRoot,
+        operationRef: operation.operationRef
+      });
+      if (
+        current.indexDigest !== fixed.indexDigest ||
+        !current.proofBytes.equals(fixed.proofBytes) ||
+        !current.materialBytes.equals(fixed.materialBytes)
+      )
+        fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+      await recheck();
+      return Object.freeze({ observation, readbackDigest });
+    } catch (cause) {
+      throw Object.assign(new Error("MANUAL_BASELINE_REUSE_INPUT_REQUIRED", { cause }), {
+        code: "MANUAL_BASELINE_REUSE_INPUT_REQUIRED"
+      });
+    }
+  }
   const binding = {
     profileDigest: session.profileDigest,
     ownerId: profile.ownerId,

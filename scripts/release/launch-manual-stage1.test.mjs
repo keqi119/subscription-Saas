@@ -1093,7 +1093,7 @@ async function targetObserveFixture(t) {
   return { ...f, pg, records, open, objectPath, genesis, credentialDirectory };
 }
 
-test("target-observe genuine session and real connector archive observation and original baseline", async (t) => {
+test("target-observe baseline reuse preserves genuine original observation without reconnecting", async (t) => {
   const f = await targetObserveFixture(t),
     session = await f.open();
   const result = await launcher.connectAndObserveManualTarget({
@@ -1144,20 +1144,40 @@ test("target-observe genuine session and real connector archive observation and 
   for (const role of ["migrate", "verify", "provision"])
     assert.ok((await fs.readFile(path.join(f.credentialDirectory, `${role}.json`))).length);
   const preserved = await fs.readFile(f.objectPath(baseline[0])),
+    observationBytes = await fs.readFile(f.objectPath(result.observation)),
+    custodyPath = path.join(
+      f.profile.storage.archiveRoot,
+      "objects",
+      `${result.readbackDigest.slice(7)}.json`
+    ),
+    custodyBytes = await fs.readFile(custodyPath),
+    credentialReads = f.counters.credentialReads,
+    statements = [...f.pg.statements],
     next = await f.open();
-  await assert.rejects(
-    launcher.connectAndObserveManualTarget({
-      session: next,
-      operationRef: f.prepared.operationRef
-    }),
-    { code: "MANUAL_BASELINE_REUSE_INPUT_REQUIRED" }
-  );
+  assert.notEqual(next.sessionId, session.sessionId);
+  const reused = await launcher.connectAndObserveManualTarget({
+    session: {
+      ...next,
+      sign() {
+        assert.fail("reuse must not sign a fresh target observation");
+      },
+      consume() {
+        assert.fail("reuse must not consume a fresh target observation");
+      }
+    },
+    operationRef: f.prepared.operationRef
+  });
+  assert.deepEqual(encodeManualJson(reused.observation), observationBytes);
+  assert.equal(reused.readbackDigest, result.readbackDigest);
+  assert.deepEqual(await fs.readFile(custodyPath), custodyBytes);
   assert.deepEqual(await fs.readFile(f.objectPath(baseline[0])), preserved);
+  assert.equal(f.counters.credentialReads, credentialReads);
+  assert.deepEqual(f.pg.statements, statements);
   assert.equal(f.pg.connects, 1);
   assert.equal((await f.records()).filter((v) => v.kind === "attempt-allocation").length, 1);
 });
 
-test("target-observe parent reaches explicit runner boundary after completed observation", async (t) => {
+test("target-observe baseline reuse parent retains explicit runner boundary", async (t) => {
   const f = await targetObserveFixture(t);
   await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
     code: "MANUAL_RUNNER_INPUT_REQUIRED"
@@ -1165,7 +1185,181 @@ test("target-observe parent reaches explicit runner boundary after completed obs
   assert.equal(f.pg.connects, 1);
   assert.equal(f.pg.closes, 1);
   assert.ok((await f.records()).some((v) => v.kind === "execution" && v.status === "SUCCEEDED"));
+  const credentialReads = f.counters.credentialReads,
+    statements = [...f.pg.statements];
+  await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+    code: "MANUAL_RUNNER_INPUT_REQUIRED"
+  });
+  assert.equal(f.pg.connects, 1);
+  assert.equal(f.counters.credentialReads, credentialReads);
+  assert.deepEqual(f.pg.statements, statements);
+  assert.equal((await f.records()).filter((v) => v.kind === "attempt-allocation").length, 1);
   assert.equal(f.counters.externalCalls, 0);
+});
+
+test("target-observe baseline reuse rejects incomplete conflicting or foreign originals without repair", async (t) => {
+  const f = await targetObserveFixture(t);
+  const result = await launcher.connectAndObserveManualTarget({
+    session: await f.open(),
+    operationRef: f.prepared.operationRef
+  });
+  const values = await f.records(),
+    baseline = values.find((v) => v.schemaVersion === "manual-baseline-manifest.v1"),
+    request = values.find((v) => v.schemaVersion === "manual-runner-request.v1"),
+    execution = values.find((v) => v.kind === "execution"),
+    consumption = values.find((v) => v.kind === "consumption");
+  const custodyFor = (subject) =>
+    values.find(
+      (v) =>
+        v.kind === "custody" &&
+        v.subjectDigest === sha256Canonical(subject) &&
+        v.purpose === "archive-readback"
+    );
+  const credentialReads = f.counters.credentialReads,
+    statements = [...f.pg.statements];
+  const competingCatalog = { ...result.observation.catalog, postgresqlVersion: "17.1" },
+    competingObservation = {
+      ...result.observation,
+      catalog: competingCatalog,
+      roleObservation: {
+        ...result.observation.roleObservation,
+        schemaObservationDigest: sha256Canonical(competingCatalog)
+      }
+    },
+    competingBaseline = {
+      ...baseline,
+      identity: {
+        ...baseline.identity,
+        targetObservationDigest: sha256Canonical(competingObservation),
+        roleObservation: competingObservation.roleObservation,
+        preStateDigest: sha256Canonical(competingCatalog)
+      }
+    };
+  const competingCustody = (subject, original) => ({
+    ...custodyFor(original),
+    subjectDigest: sha256Canonical(subject),
+    observedDigest: sha256Canonical(subject)
+  });
+  const cases = [
+    ["missing baseline", baseline],
+    ["missing observation readback", custodyFor(result.observation)],
+    ["missing execution", execution],
+    ["missing execution readback", custodyFor(execution)],
+    ["missing baseline readback", custodyFor(baseline)],
+    ["missing consumption slot", consumption, "slot"],
+    [
+      "inconsistent bound graph",
+      baseline,
+      "replace",
+      { ...baseline, identity: { ...baseline.identity, preStateDigest: digest("e") } }
+    ],
+    [
+      "foreign build",
+      baseline,
+      "replace",
+      { ...baseline, identity: { ...baseline.identity, buildProofDigest: digest("e") } }
+    ],
+    ["foreign run", request, "replace", { ...request, runId: randomUUID() }],
+    [
+      "foreign ref",
+      request,
+      "replace",
+      { ...request, idempotencyKey: `manual-stage1:${randomUUID()}:observe` }
+    ],
+    [
+      "ambiguous baseline",
+      baseline,
+      "add",
+      { ...baseline, createdAt: new Date(Date.parse(baseline.createdAt) + 1).toISOString() }
+    ],
+    [
+      "same-request competing observation",
+      baseline,
+      "competing-observation",
+      competingBaseline,
+      [
+        { remove: custodyFor(baseline), add: competingCustody(competingBaseline, baseline) },
+        { add: competingObservation },
+        { add: competingCustody(competingObservation, result.observation) }
+      ]
+    ]
+  ];
+  for (const [name, subject, mode, replacement, mutations = []] of cases) {
+    await t.test(name, async () => {
+      const file =
+          mode === "slot"
+            ? path.join(
+                f.profile.storage.journalRoot,
+                "consumptions",
+                `${request.profileDigest.slice(7)}-${values.find((v) => v.payload?.requestDigest === sha256Canonical(request)).payload.authorizationId}.json`
+              )
+            : f.objectPath(subject),
+        original = await fs.readFile(file),
+        added = replacement ? f.objectPath(replacement) : null;
+      if (mode !== "add") await fs.unlink(file);
+      if (added) await fs.writeFile(added, encodeManualJson(replacement), { mode: 0o600 });
+      const restored = new Map(),
+        injected = [];
+      for (const mutation of mutations) {
+        if (mutation.remove) {
+          const removedPath = f.objectPath(mutation.remove);
+          restored.set(removedPath, await fs.readFile(removedPath));
+          await fs.unlink(removedPath);
+        }
+        if (mutation.add) {
+          const injectedPath = f.objectPath(mutation.add);
+          await fs.writeFile(injectedPath, encodeManualJson(mutation.add), { mode: 0o600 });
+          injected.push(injectedPath);
+        }
+      }
+      const originals = new Map();
+      for (const role of ["journal", "archive"])
+        for (const name of await fs.readdir(
+          path.join(f.profile.storage[`${role}Root`], "objects")
+        )) {
+          const originalPath = path.join(f.profile.storage[`${role}Root`], "objects", name);
+          originals.set(originalPath, await fs.readFile(originalPath));
+        }
+      try {
+        if (mode === "competing-observation") {
+          assert.notEqual(
+            sha256Canonical(result.observation),
+            replacement.identity.targetObservationDigest
+          );
+          assert.equal(
+            assessManualRunnerEvidence({
+              profileBytes: encodeManualJson(f.profile),
+              requestBytes: encodeManualJson(request),
+              artifactBytes: (await f.records()).map(encodeManualJson),
+              rawBlobs: []
+            }).executionStatus,
+            "SUCCEEDED"
+          );
+        }
+        await assert.rejects(
+          launcher.connectAndObserveManualTarget({
+            session: await f.open(),
+            operationRef: f.prepared.operationRef
+          }),
+          { code: "MANUAL_BASELINE_REUSE_INPUT_REQUIRED" }
+        );
+        if (mode !== "add") await assert.rejects(fs.stat(file), { code: "ENOENT" });
+        for (const [originalPath, bytes] of originals)
+          assert.deepEqual(await fs.readFile(originalPath), bytes);
+        assert.equal(f.pg.connects, 1);
+        assert.equal(f.counters.credentialReads, credentialReads);
+        assert.deepEqual(f.pg.statements, statements);
+        assert.equal((await f.records()).filter((v) => v.kind === "attempt-allocation").length, 1);
+        assert.equal(f.counters.externalCalls, 0);
+      } finally {
+        for (const injectedPath of injected) await fs.unlink(injectedPath);
+        for (const [restoredPath, bytes] of restored)
+          await fs.writeFile(restoredPath, bytes, { mode: 0o600 });
+        if (added) await fs.unlink(added);
+        if (mode !== "add") await fs.writeFile(file, original, { mode: 0o600 });
+      }
+    });
+  }
 });
 
 for (const fault of ["forged", "expired", "revoked", "mismatched", "unconsumed"])

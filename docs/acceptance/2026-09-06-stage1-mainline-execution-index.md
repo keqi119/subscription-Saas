@@ -41,6 +41,8 @@
 
 - 2026-09-27，R2.2 H3资源观察增量 `e7a1b5e1` 已在独立实施分支提交，见[正式限定记录](2026-09-27-stage1-r22-h3-resource-observation-validation.md)。修复独立审查发现的网络/卷驱动秘密输出后，同源完整launcher/child/CLI237/237、exit0，六输入摘要不变，静态/契约/发现通过。固定只读Docker检查与两轮资源读回、原件/index重查已实现，当前仅支持明确本机回环映射；真实Docker CLI只连接合成Engine管道。合法输入仍在target-observe会话前停止，未读取私钥/凭证或连接DB，也未恢复线上环境。此处只前向登记，WIP代码不整合主候选；R2.2/3与实际H1/H2/H3/expected、最终Node22及阶段1仍开放。下一步按既有计划实施授权观察/baseline与父子MS2闭环，不重复财务已收口单元。
 
+- 2026-09-27，用户已指定签名主机 `139.196.227.195`、负责人 `keqi119` 及既有 snapshot bucket，并批准配置缺失基础设施、按发布要求对齐迁移和暂停无关容器。见[环境与可信输入准备记录](2026-09-27-stage1-environment-and-trusted-input-readiness.md)：Staging 数据库已启动且健康，实际 PG17.10；126 个已应用迁移与本地校验和一致，待应用两个 9 月 25 日迁移，无未完成迁移。无关 MVP 五容器经项目/完整 ID 核对后优雅停止，数据卷保留；旧 API/Web 仍停止。未执行 DDL、候选部署或外部渠道操作。Edge 已有人类管理登录，但浏览器工具连接失败；云身份、加密根和独立备份仍待实际配置，不能把主机/bucket 名称记成 H1/H2 通过。离线 R2 授权观察施工继续，阶段 1 未收口。
+
 历史代码基线：Task 5 `1f0b0439`。Task 6 提案保管：`457c0011`，不代表批准。
 Task 6/29R/30/I 系列冻结，Task 30 stash 不变。
 历史准入入口：[P0/P1 准入实施计划](../superpowers/plans/2026-09-06-stage1-p0-p1-admission-implementation-plan.md)，已关闭，不重跑。当前前向工作按下节及既有[主线/最小发布计划](../superpowers/plans/2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)执行。

@@ -236,8 +236,11 @@ describe("normal return inspection through the authenticated HTTP boundary", () 
         contract: before.contract
       });
     } finally {
-      await http?.close();
-      await cleanupManagedExpiryFixture(prisma, scenario.fixture);
+      try {
+        await http?.close();
+      } finally {
+        await isolateReturnInspectionHttpFixture(prisma, scenario.fixture);
+      }
     }
   });
 
@@ -272,8 +275,11 @@ describe("normal return inspection through the authenticated HTTP boundary", () 
       expect(await retry.json()).toMatchObject({ code: "ASSET_WORK_ORDER_VERSION_CONFLICT" });
       expect(await snapshotPhysicalReturnTruth(prisma, scenario.fixture)).toEqual(truth);
     } finally {
-      await http?.close();
-      await cleanupManagedExpiryFixture(prisma, scenario.fixture);
+      try {
+        await http?.close();
+      } finally {
+        await isolateReturnInspectionHttpFixture(prisma, scenario.fixture);
+      }
     }
   });
 
@@ -319,11 +325,40 @@ describe("normal return inspection through the authenticated HTTP boundary", () 
         initial.workOrder.version + 1
       );
     } finally {
-      await http?.close();
-      await cleanupManagedExpiryFixture(prisma, scenario.fixture);
+      try {
+        await http?.close();
+      } finally {
+        await isolateReturnInspectionHttpFixture(prisma, scenario.fixture);
+      }
     }
   });
 });
+
+async function isolateReturnInspectionHttpFixture(
+  prisma: PrismaService,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>
+) {
+  // Only after all HTTP/business assertions: isolate this retained test fixture
+  // from later suite-wide scheduler checks. Immutable facts stay for custody.
+  const before = await prisma.billingSchedule.findUniqueOrThrow({
+    where: { id: fixture.scheduleId }
+  });
+  const pauseReason = "R4_HTTP_FIXTURE_ASSERTIONS_FINISHED";
+  const changed = await prisma.billingSchedule.updateMany({
+    where: { id: fixture.scheduleId, orderId: fixture.orderId, status: "ACTIVE" },
+    data: { status: "PAUSED", pauseReason, version: { increment: 1 } }
+  });
+  expect(changed.count).toBe(1);
+  expect(
+    await prisma.billingSchedule.findUniqueOrThrow({ where: { id: fixture.scheduleId } })
+  ).toMatchObject({
+    id: fixture.scheduleId,
+    orderId: fixture.orderId,
+    status: "PAUSED",
+    pauseReason,
+    version: before.version + 1
+  });
+}
 
 function inspectionHttpCommand(
   scenario: Awaited<ReturnType<typeof setupFocusedPhysicalReceipt>>,
@@ -9793,6 +9828,28 @@ async function prepareGovernedCompletion(
           createdBy: fixture.actorId
         }
       });
+      // Both links are produced by real upload/receipt services, not duplicated
+      // test inserts. One proof can support the checklist and the damage record.
+      const manualEvidenceLinks = await prisma.vehicleReturnEvidenceLink.findMany({
+        where: { closureCaseId: closureCase.id, evidenceId: originalLine.evidenceIds[0] },
+        select: { checklistItemId: true, damageId: true, evidenceId: true, evidencePurpose: true }
+      });
+      expect(manualEvidenceLinks).toHaveLength(2);
+      expect(manualEvidenceLinks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            checklistItemId: expect.any(String),
+            damageId: null,
+            evidencePurpose: "CHECKLIST_PROOF"
+          }),
+          expect.objectContaining({
+            checklistItemId: null,
+            damageId: expect.any(String),
+            evidencePurpose: "DAMAGE_PROOF"
+          })
+        ])
+      );
+      expect(new Set(manualEvidenceLinks.map(({ evidenceId }) => evidenceId)).size).toBe(1);
       await expect(
         price({
           ...successorInput,

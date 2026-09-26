@@ -647,6 +647,7 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
       `test.invalid/release@${D}`
     ]
   };
+  if (options.runnerArgs) docker.args = options.runnerArgs(docker.args);
   const runnerArgv = archive.raw(encodeManualJson(docker)).digest;
   function event(tool, status, t, processSequence, argvDigest, fields = {}) {
     events.push({
@@ -1257,6 +1258,101 @@ function runnerFixture(phase = "dry-run", previous = null, options = {}) {
 
 function fixture90(phase = "dry-run", previous = null, options = {}) {
   return runnerFixture(phase, previous, { ...options, policy: current90Policy() });
+}
+
+// These archives bind the actual supplied argv bytes through the normal assessor.
+// Removing the CID/tmpfs pair admission or relaxing its bounds must fail these cases.
+const runnerCidPath = `/tmp/manual-stage1-${uuid(101)}/runner.cid`;
+const runnerDataTmpfs = "/var/lib/postgresql/data:rw,noexec,nosuid,size=1m";
+const runnerCidPair = ["--cidfile", runnerCidPath, "--tmpfs", runnerDataTmpfs];
+function runnerArgvOptions(extraArgs, transform = (args) => args) {
+  return {
+    runnerArgs(args) {
+      return transform([...args.slice(0, -1), ...extraArgs, args.at(-1)]);
+    }
+  };
+}
+
+for (const protocol of ["MS1", "MS2"]) {
+  for (const [name, extraArgs] of [
+    ["legacy single /tmp", []],
+    ["exact attempt CID and data tmpfs pair", runnerCidPair]
+  ]) {
+    test(`runner argv accepts ${name} in ${protocol}`, () => {
+      const current = fixture90("dry-run", null, { protocol, ...runnerArgvOptions(extraArgs) });
+      assert.equal(
+        assessManualRunnerEvidence(current.archive.input(current.request)).executionStatus,
+        "SUCCEEDED"
+      );
+    });
+  }
+}
+
+test("runner argv preserves legacy -i, allowed env and /tmp size variants", () => {
+  const current = fixture90(
+    "dry-run",
+    null,
+    runnerArgvOptions(["--env", "RUNNER_EXECUTION_MODE=manual-stage1"], (args) =>
+      args.map((arg) =>
+        arg === "--interactive"
+          ? "-i"
+          : arg === "/tmp:rw,noexec,nosuid,size=64m"
+            ? "/tmp:rw,noexec,nosuid,size=128k"
+            : arg
+      )
+    )
+  );
+  assert.equal(
+    assessManualRunnerEvidence(current.archive.input(current.request)).executionStatus,
+    "SUCCEEDED"
+  );
+});
+
+for (const [name, extraArgs, transform] of [
+  [
+    "CID from another attempt",
+    ["--cidfile", `/tmp/manual-stage1-${uuid(102)}/runner.cid`, "--tmpfs", runnerDataTmpfs]
+  ],
+  ["arbitrary CID path", ["--cidfile", "/tmp/runner.cid", "--tmpfs", runnerDataTmpfs]],
+  [
+    "CID traversal path",
+    ["--cidfile", `${runnerCidPath}/../runner.cid`, "--tmpfs", runnerDataTmpfs]
+  ],
+  ["CID without data tmpfs", ["--cidfile", runnerCidPath]],
+  ["data tmpfs without CID", ["--tmpfs", runnerDataTmpfs]],
+  ["CID pair without /tmp", runnerCidPair, (args) => args.filter((arg, i) => i !== 5 && i !== 6)],
+  ["arbitrary third tmpfs", [...runnerCidPair, "--tmpfs", "/other:rw,noexec,nosuid,size=1m"]],
+  ["repeated data tmpfs", [...runnerCidPair, "--tmpfs", runnerDataTmpfs]],
+  ["repeated /tmp", [...runnerCidPair, "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m"]],
+  ["repeated CID", [...runnerCidPair, "--cidfile", runnerCidPath]],
+  [
+    "altered data tmpfs",
+    ["--cidfile", runnerCidPath, "--tmpfs", "/var/lib/postgresql/data:rw,noexec,nosuid,size=2m"]
+  ],
+  ["legacy repeated /tmp", ["--tmpfs", "/tmp:rw,noexec,nosuid,size=64m"]],
+  [
+    "CID pair with host network",
+    runnerCidPair,
+    (args) => args.map((arg) => (arg === "test-internal" ? "host" : arg))
+  ],
+  [
+    "CID pair with weakened capabilities",
+    runnerCidPair,
+    (args) => args.map((arg) => (arg === "ALL" ? "NET_ADMIN" : arg))
+  ],
+  ["CID pair with arbitrary env", [...runnerCidPair, "--env", "OTHER=value"]],
+  [
+    "CID pair with another image",
+    runnerCidPair,
+    (args) => [...args.slice(0, -1), `other.invalid/release@${D}`]
+  ]
+]) {
+  test(`runner argv rejects ${name}`, () => {
+    const current = fixture90("dry-run", null, runnerArgvOptions(extraArgs, transform));
+    assert.throws(() => assessManualRunnerEvidence(current.archive.input(current.request)), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+  });
 }
 
 // Capture the existing real runtime/handler path at its external SQL and process

@@ -8256,6 +8256,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                   closure={subscriptionClosure}
                   currentUserId={me?.user.id ?? null}
                   onChanged={loadOrder}
+                  reloadClosure={returnClosureReadback.reloadClosure}
+                  onClosureReadback={returnClosureReadback.onClosureReadback}
                 /> : null}
               </Space>
             ) : null}

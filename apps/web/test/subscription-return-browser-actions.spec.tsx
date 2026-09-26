@@ -5,6 +5,7 @@ import { ApiError, apiFetch } from "../src/lib/api";
 import * as api from "../src/lib/subscription-closure-api";
 import * as inspection from "../src/components/subscription-closure/return-inspection-work-order";
 import * as pricing from "../src/components/subscription-closure/return-pricing-stage";
+import * as financial from "../src/components/subscription-closure/return-settlement-stage";
 
 vi.mock("../src/lib/api", async (original) => ({
   ...(await original<typeof import("../src/lib/api")>()),
@@ -882,5 +883,521 @@ describe("return pricing proposal refresh", () => {
         })
       )
     ).toBe("");
+  });
+});
+
+const financialBinding = {
+  closureCaseId,
+  currentUserId: "financial-operator",
+  settlementRevisionId: "final-1",
+  settlementResultHash: "final-hash",
+  canRequest: true,
+  canApprove: true,
+  canSettle: true,
+  bills: [{ id: "bill-1", remainingAmount: "100" }]
+};
+function financialAggregate(status = "PENDING", revisionId = "final-1") {
+  return {
+    ...aggregate(),
+    closureCase: { ...aggregate().closureCase, status: "PENDING_SETTLEMENT" },
+    allowedActions: ["RECORD_RECEIVABLE_DISPOSITION"],
+    settlementRevisions: [
+      {
+        id: revisionId,
+        stage: "FINALIZED",
+        resultHash: "final-hash",
+        revisionNumber: 2,
+        amountDueCents: "100",
+        amountRefundableCents: "0"
+      }
+    ],
+    receivableBills: [
+      {
+        id: "bill-1",
+        remainingAmount: "100",
+        amount: "100",
+        paidAmount: "0",
+        billNo: "B-1",
+        billType: "DAMAGE",
+        billStatus: "PENDING"
+      }
+    ],
+    approvals: [
+      {
+        id: "approval-1",
+        status,
+        version: status === "PENDING" ? 0 : 1,
+        requestedBy: "other-requester",
+        exceptionType: "SETTLEMENT_WAIVER",
+        subjectField: "settlementWaiver:bill-1",
+        subjectSnapshot: { billId: "bill-1", amountCents: "100", settlementRevisionId: "final-1" }
+      }
+    ]
+  };
+}
+const financialRequest = () => ({
+  billId: "bill-1",
+  approvalType: "WAIVER" as const,
+  reason: "核销依据",
+  proof: new File(["proof"], "proof.png", { type: "image/png" })
+});
+const financialDecision = {
+  billId: "bill-1",
+  approvalType: "WAIVER" as const,
+  approval: { id: "approval-1", version: 0, status: "PENDING", requestedBy: "other-requester" },
+  decision: "APPROVED" as const,
+  comment: "独立核验"
+};
+function setupFinancial(
+  options: { beforePublish?: () => Promise<void>; isCurrent?: () => boolean } = {}
+) {
+  expect(financial).toHaveProperty("createReturnFinancialApprovalController");
+  const published: unknown[] = [];
+  let current = true;
+  const boundary = inspection.createReturnClosureReadback({
+    orderId: "order-1",
+    closureCaseId,
+    permissions: new Set(["subscription_closure:settle"]),
+    isCurrent: () => current,
+    publish: (view) => published.push(view)
+  });
+  const controller = financial.createReturnFinancialApprovalController({
+    isCurrent: options.isCurrent,
+    reloadClosure: boundary.reloadClosure,
+    onClosureReadback: async (view) => {
+      await options.beforePublish?.();
+      boundary.onClosureReadback(view);
+    },
+    onState: () => undefined
+  });
+  controller.bind(financialBinding);
+  return {
+    controller,
+    published,
+    boundary,
+    invalidatePage: () => {
+      current = false;
+    }
+  };
+}
+const financialUploads = () =>
+  posts().filter(([path]) => path.endsWith("/financial-proofs/upload"));
+const financialCommands = () =>
+  posts().filter(([path]) => !path.endsWith("/financial-proofs/upload"));
+
+describe("financial approval retry controller", () => {
+  it.each(["PROPOSED", "no-action", "no-permission"])(
+    "keeps the actual binding closed for %s",
+    async (guard) => {
+      const { buildAdminSubscriptionClosureView } =
+        await import("../src/lib/subscription-closure-view-model");
+      const aggregate = financialAggregate();
+      if (guard === "PROPOSED") aggregate.settlementRevisions[0]!.stage = guard;
+      if (guard === "no-action") aggregate.allowedActions = [];
+      const closure = buildAdminSubscriptionClosureView(
+        aggregate,
+        new Set(guard === "no-permission" ? [] : ["subscription_closure:settle"])
+      );
+      const { controller } = setupFinancial();
+      controller.bind(
+        financial.returnFinancialApprovalBinding(
+          closure,
+          financialBinding.currentUserId,
+          true,
+          true
+        )
+      );
+      await controller.startRequest(financialRequest());
+      await controller.startDecision(financialDecision);
+      expect(apiFetch).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["FINALIZED", "request"],
+    ["FINALIZED", "decision"],
+    ["SETTLED", "request"],
+    ["SETTLED", "decision"]
+  ] as const)(
+    "retains the actual %s component binding for an outstanding bill %s",
+    async (stage, operation) => {
+      const { buildAdminSubscriptionClosureView } =
+        await import("../src/lib/subscription-closure-view-model");
+      const aggregate = financialAggregate();
+      aggregate.settlementRevisions[0]!.stage = stage;
+      const closure = buildAdminSubscriptionClosureView(
+        aggregate,
+        new Set(["subscription_closure:settle"])
+      );
+      expect(financial).toHaveProperty("returnFinancialApprovalBinding");
+      const binding = financial.returnFinancialApprovalBinding(
+        closure,
+        financialBinding.currentUserId,
+        true,
+        true
+      );
+      const { controller } = setupFinancial();
+      controller.bind(binding);
+      if (operation === "request") vi.mocked(apiFetch).mockResolvedValueOnce({ fileId: "proof-1" });
+      vi.mocked(apiFetch)
+        .mockResolvedValueOnce({ id: "approval-1" })
+        .mockResolvedValueOnce(aggregate);
+      await (operation === "request"
+        ? controller.startRequest(financialRequest())
+        : controller.startDecision(financialDecision));
+      expect(financialCommands()).toHaveLength(1);
+      expect(controller.getSnapshot()).toMatchObject({ status: "ready", pending: null });
+    }
+  );
+
+  it("does not submit an upload that resolves after render binding invalidation before effect cleanup", async () => {
+    let active = true;
+    const { controller } = setupFinancial({ isCurrent: () => active });
+    const upload = deferred<{ fileId: string }>();
+    vi.mocked(apiFetch).mockReturnValueOnce(upload.promise);
+    const starting = controller.startRequest(financialRequest());
+    active = false;
+    upload.resolve({ fileId: "old-proof" });
+    await starting;
+    expect(financialCommands()).toHaveLength(0);
+  });
+
+  it("keeps a successful malformed ACK committed and never resends while recovering", async () => {
+    const { controller } = setupFinancial();
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce(financialAggregate("APPROVED"));
+    await controller.startDecision(financialDecision);
+    expect(controller.getSnapshot()).toMatchObject({
+      status: "refresh-required",
+      pending: { committed: true }
+    });
+    vi.mocked(apiFetch).mockResolvedValueOnce(financialAggregate("APPROVED"));
+    await controller.retry();
+    expect(financialCommands()).toHaveLength(1);
+  });
+
+  it("freezes a decision version and prevents a second decision while the first response is pending", async () => {
+    const { controller } = setupFinancial();
+    const post = deferred<unknown>();
+    vi.mocked(apiFetch)
+      .mockReturnValueOnce(post.promise)
+      .mockResolvedValueOnce(financialAggregate("APPROVED"));
+    const decision = { ...financialDecision, approval: { ...financialDecision.approval } };
+    const first = controller.startDecision(decision);
+    decision.approval.version = 8;
+    decision.comment = "later edit";
+    await controller.startDecision(decision);
+    expect(financialCommands()).toHaveLength(1);
+    expect(JSON.parse(String(financialCommands()[0]![1]!.body))).toMatchObject({
+      expectedVersion: 0,
+      decisionComment: "独立核验"
+    });
+    post.resolve({ id: "approval-1" });
+    await first;
+  });
+
+  it("does not publish an old decision response after a binding switch", async () => {
+    const { controller, published } = setupFinancial();
+    const post = deferred<unknown>();
+    vi.mocked(apiFetch).mockReturnValueOnce(post.promise);
+    const first = controller.startDecision(financialDecision);
+    controller.bind({ ...financialBinding, currentUserId: "other-user" });
+    post.resolve({ id: "approval-1" });
+    await first;
+    expect(published).toHaveLength(0);
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot()).toMatchObject({ pending: null, busy: false });
+  });
+
+  it("stops retrying an unknown command when current settlement authority has changed", async () => {
+    const { controller } = setupFinancial();
+    vi.mocked(apiFetch)
+      .mockRejectedValueOnce(new ApiError("response lost", 0))
+      .mockResolvedValueOnce(financialAggregate("PENDING", "final-2"));
+    await controller.startDecision(financialDecision);
+    expect(controller.getSnapshot().status).toBe("blocked");
+    vi.mocked(apiFetch).mockResolvedValueOnce(financialAggregate("PENDING", "final-2"));
+    await controller.retry();
+    expect(financialCommands()).toHaveLength(1);
+  });
+
+  it("ignores a late older GET after the current GET already published", async () => {
+    const { controller, published } = setupFinancial();
+    const old = deferred<unknown>();
+    const next = deferred<unknown>();
+    vi.mocked(apiFetch).mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+    const first = controller.reload();
+    const second = controller.reload();
+    next.resolve(financialAggregate("APPROVED"));
+    await second;
+    old.resolve(financialAggregate("PENDING"));
+    await first;
+    expect(published).toEqual([
+      expect.objectContaining({ approvals: [expect.objectContaining({ status: "APPROVED" })] })
+    ]);
+  });
+
+  it("renders upload-unknown recovery without offering a repeat upload command", async () => {
+    const { controller } = setupFinancial();
+    vi.mocked(apiFetch).mockRejectedValueOnce(new Error("upload unknown"));
+    await controller.startRequest(financialRequest());
+    expect(financial).toHaveProperty("ReturnFinancialApprovalRecovery");
+    const html = renderToStaticMarkup(
+      createElement(financial.ReturnFinancialApprovalRecovery, {
+        snapshot: controller.getSnapshot(),
+        onRetry: () => undefined,
+        onReload: () => undefined,
+        onNewIntent: () => undefined
+      })
+    );
+    expect(html).toContain("上传结果未确定");
+    expect(html).toContain("读取后开始新操作");
+    expect(html).not.toContain("重试原审批命令");
+  });
+
+  it("freezes the upload and original command before a second click can enter", async () => {
+    const { controller } = setupFinancial();
+    const upload = deferred<{ fileId: string }>();
+    vi.mocked(apiFetch)
+      .mockReturnValueOnce(upload.promise)
+      .mockResolvedValueOnce({ id: "approval-1", status: "PENDING" })
+      .mockResolvedValueOnce(financialAggregate());
+    const original = financialRequest();
+    const first = controller.startRequest(original);
+    original.reason = "edited after starting";
+    await controller.startRequest(financialRequest());
+    expect(financialUploads()).toHaveLength(1);
+    expect(financialCommands()).toHaveLength(0);
+    upload.resolve({ fileId: "proof-1" });
+    await first;
+    const body = JSON.parse(String(financialCommands()[0]![1]!.body));
+    expect(body).toEqual({
+      approvalType: "WAIVER",
+      billId: "bill-1",
+      evidenceIds: ["proof-1"],
+      idempotencyKey: expect.any(String),
+      requestReason: "核销依据",
+      settlementRevisionId: "final-1"
+    });
+    expect(controller.getSnapshot()).toMatchObject({ pending: null, busy: false, status: "ready" });
+  });
+
+  it("keeps an unknown upload separate and never retries upload or approval implicitly", async () => {
+    const { controller } = setupFinancial();
+    vi.mocked(apiFetch).mockRejectedValueOnce(new ApiError("upload response lost", 0));
+    await controller.startRequest(financialRequest());
+    expect(controller.getSnapshot()).toMatchObject({ status: "upload-unknown", busy: false });
+    vi.mocked(apiFetch).mockResolvedValueOnce(financialAggregate());
+    await controller.retry();
+    expect(financialUploads()).toHaveLength(1);
+    expect(financialCommands()).toHaveLength(0);
+    expect(controller.getSnapshot().pending).not.toBeNull();
+    vi.mocked(apiFetch).mockResolvedValueOnce(financialAggregate());
+    await controller.beginNewIntent();
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce({ fileId: "proof-2" })
+      .mockResolvedValueOnce({ id: "approval-1" })
+      .mockResolvedValueOnce(financialAggregate());
+    await controller.startRequest(financialRequest());
+    expect(financialUploads()).toHaveLength(2);
+    expect(financialCommands()).toHaveLength(1);
+  });
+
+  it.each(["request", "decision"] as const)(
+    "retries the identical %s body after a lost response",
+    async (kind) => {
+      const { controller } = setupFinancial();
+      if (kind === "request") vi.mocked(apiFetch).mockResolvedValueOnce({ fileId: "proof-1" });
+      vi.mocked(apiFetch)
+        .mockRejectedValueOnce(new ApiError("response lost", 0))
+        .mockResolvedValueOnce(financialAggregate());
+      await (kind === "request"
+        ? controller.startRequest(financialRequest())
+        : controller.startDecision(financialDecision));
+      expect(controller.getSnapshot()).toMatchObject({ status: "unknown", busy: false });
+      const original = financialCommands()[0];
+      vi.mocked(apiFetch)
+        .mockResolvedValueOnce({ id: "approval-1", status: "PENDING" })
+        .mockResolvedValueOnce(financialAggregate("APPROVED"));
+      await controller.retry();
+      expect(financialCommands()).toEqual([original, original]);
+      expect(financialUploads()).toHaveLength(kind === "request" ? 1 : 0);
+      expect(controller.getSnapshot().pending).toBeNull();
+    }
+  );
+
+  it.each(["read", "publish"] as const)(
+    "retains a committed command after %s fails and retries only GET",
+    async (failure) => {
+      let fail = failure === "publish";
+      const { controller } = setupFinancial({
+        beforePublish: async () => {
+          if (fail) throw new Error("publish failed");
+        }
+      });
+      vi.mocked(apiFetch).mockResolvedValueOnce({ id: "approval-1" });
+      if (failure === "read") vi.mocked(apiFetch).mockRejectedValueOnce(new Error("read failed"));
+      else vi.mocked(apiFetch).mockResolvedValueOnce(financialAggregate("APPROVED"));
+      await controller.startDecision(financialDecision);
+      expect(controller.getSnapshot()).toMatchObject({
+        status: "refresh-required",
+        pending: { committed: true }
+      });
+      fail = false;
+      vi.mocked(apiFetch).mockResolvedValueOnce(financialAggregate("APPROVED"));
+      await controller.retry();
+      expect(financialCommands()).toHaveLength(1);
+      expect(controller.getSnapshot()).toMatchObject({ status: "ready", pending: null });
+    }
+  );
+
+  it("does not treat a historical PENDING ACK as current approval authority", async () => {
+    const { controller, published } = setupFinancial();
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce({ fileId: "proof-1" })
+      .mockResolvedValueOnce({ id: "approval-1", status: "PENDING" })
+      .mockResolvedValueOnce(financialAggregate("EXPIRED"));
+    await controller.startRequest(financialRequest());
+    expect(published).toEqual([
+      expect.objectContaining({ approvals: [expect.objectContaining({ status: "EXPIRED" })] })
+    ]);
+    expect(controller.getSnapshot().pending).toBeNull();
+  });
+
+  it.each([
+    { closureCaseId: "other-case" },
+    { currentUserId: "other-user" },
+    { settlementRevisionId: "final-2" },
+    { settlementResultHash: "changed-hash" },
+    { canRequest: false },
+    { canSettle: false },
+    { bills: [{ id: "bill-1", remainingAmount: "99" }] }
+  ])("discards old upload results when its binding changes: %j", async (change) => {
+    const { controller } = setupFinancial();
+    const upload = deferred<{ fileId: string }>();
+    vi.mocked(apiFetch).mockReturnValueOnce(upload.promise);
+    const first = controller.startRequest(financialRequest());
+    controller.bind({ ...financialBinding, ...change });
+    controller.bind(financialBinding);
+    upload.resolve({ fileId: "old-proof" });
+    await first;
+    expect(financialCommands()).toHaveLength(0);
+    expect(controller.getSnapshot()).toMatchObject({ pending: null, busy: false });
+  });
+
+  it("does not let an invalidated upload finally clear a new operation busy state", async () => {
+    const { controller } = setupFinancial();
+    const old = deferred<{ fileId: string }>();
+    const next = deferred<{ fileId: string }>();
+    vi.mocked(apiFetch).mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+    const first = controller.startRequest(financialRequest());
+    controller.bind({ ...financialBinding, currentUserId: "other-user" });
+    const second = controller.startRequest(financialRequest());
+    old.resolve({ fileId: "old-proof" });
+    await first;
+    expect(controller.getSnapshot().busy).toBe(true);
+    expect(financialCommands()).toHaveLength(0);
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce({ id: "approval-1" })
+      .mockResolvedValueOnce(financialAggregate());
+    next.resolve({ fileId: "new-proof" });
+    await second;
+    expect(financialCommands()).toHaveLength(1);
+  });
+
+  it("stops writes after permission loss or a definitive HTTP rejection", async () => {
+    const { controller } = setupFinancial();
+    vi.mocked(apiFetch)
+      .mockRejectedValueOnce(new ApiError("forbidden", 403))
+      .mockResolvedValueOnce(financialAggregate());
+    await controller.startDecision(financialDecision);
+    expect(controller.getSnapshot().status).toBe("blocked");
+    vi.mocked(apiFetch).mockResolvedValueOnce(financialAggregate());
+    await controller.retry();
+    expect(financialCommands()).toHaveLength(1);
+    controller.bind({ ...financialBinding, canApprove: false });
+    await controller.startDecision(financialDecision);
+    expect(financialCommands()).toHaveLength(1);
+  });
+
+  it("rejects self-approval and nonpending decisions before transport", async () => {
+    const { controller } = setupFinancial();
+    await controller.startDecision({
+      ...financialDecision,
+      approval: { ...financialDecision.approval, requestedBy: financialBinding.currentUserId }
+    });
+    await controller.startDecision({
+      ...financialDecision,
+      approval: { ...financialDecision.approval, status: "APPROVED" }
+    });
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("publishes only the latest GET and retains the busy state of that read", async () => {
+    const { controller, published } = setupFinancial();
+    const old = deferred<unknown>();
+    const next = deferred<unknown>();
+    vi.mocked(apiFetch).mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+    const first = controller.reload();
+    const second = controller.reload();
+    old.resolve(financialAggregate("PENDING"));
+    await first;
+    expect(published).toHaveLength(0);
+    expect(controller.getSnapshot().busy).toBe(true);
+    next.resolve(financialAggregate("APPROVED"));
+    await second;
+    expect(published).toEqual([
+      expect.objectContaining({ approvals: [expect.objectContaining({ status: "APPROVED" })] })
+    ]);
+  });
+
+  it("does not accept another case or publish after the real page reader is invalidated", async () => {
+    const { controller, published, invalidatePage } = setupFinancial();
+    const read = deferred<unknown>();
+    vi.mocked(apiFetch).mockReturnValueOnce(read.promise);
+    const first = controller.reload();
+    invalidatePage();
+    read.resolve(financialAggregate());
+    await first;
+    expect(published).toHaveLength(0);
+    expect(controller.getSnapshot().error).toBeTruthy();
+    const other = setupFinancial();
+    vi.mocked(apiFetch).mockResolvedValueOnce({
+      ...financialAggregate(),
+      closureCase: { ...aggregate().closureCase, id: "other-case" }
+    });
+    await other.controller.reload();
+    expect(other.published).toHaveLength(0);
+  });
+
+  it("requires a successful strict read before clearing an unresolved intent for editing", async () => {
+    const { controller } = setupFinancial();
+    vi.mocked(apiFetch).mockRejectedValueOnce(new Error("upload unknown"));
+    await controller.startRequest(financialRequest());
+    vi.mocked(apiFetch).mockRejectedValueOnce(new Error("read failed"));
+    await controller.beginNewIntent();
+    expect(controller.getSnapshot().pending).not.toBeNull();
+    await controller.startRequest(financialRequest());
+    expect(financialUploads()).toHaveLength(1);
+  });
+
+  it("keeps a new setup usable after disposing the old instance without accepting its pending work", async () => {
+    const old = setupFinancial();
+    const upload = deferred<{ fileId: string }>();
+    vi.mocked(apiFetch).mockReturnValueOnce(upload.promise);
+    const starting = old.controller.startRequest(financialRequest());
+    old.controller.dispose();
+    const next = setupFinancial();
+    upload.resolve({ fileId: "old-proof" });
+    await starting;
+    await old.controller.startDecision(financialDecision);
+    expect(financialCommands()).toHaveLength(0);
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce({ id: "approval-1" })
+      .mockResolvedValueOnce(financialAggregate("APPROVED"));
+    await next.controller.startDecision(financialDecision);
+    expect(financialCommands()).toHaveLength(1);
+    expect(next.controller.getSnapshot().status).toBe("ready");
   });
 });

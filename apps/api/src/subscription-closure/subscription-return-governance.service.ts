@@ -3661,20 +3661,22 @@ async function resolveClosureApprovalAuthority(
         "人工定价审批必须绑定当前草案、差异项、人工审查条款、价格、依据和证据。"
       );
     }
-    const [clause, deltaItem, evidenceCount] = await Promise.all([
+    const [clause, deltaItem, evidenceLinks] = await Promise.all([
       tx.contractChargeClauseSnapshot.findUnique({ where: { id: input.clauseSnapshotId } }),
       tx.vehicleConditionDeltaItem.findUnique({ where: { id: input.deltaItemId } }),
-      tx.vehicleReturnEvidenceLink.count({
-        where: { closureCaseId, evidenceId: { in: evidenceIds } }
+      tx.vehicleReturnEvidenceLink.findMany({
+        where: { closureCaseId, evidenceId: { in: evidenceIds } },
+        select: { evidenceId: true }
       })
     ]);
+    const linkedEvidenceIds = new Set(evidenceLinks.map(({ evidenceId }) => evidenceId));
     if (
       !clause ||
       clause.contractId !== closureCase.contractId ||
       clause.status !== "MANUAL_CLAUSE_REVIEW_REQUIRED" ||
       !deltaItem ||
       deltaItem.revisionId !== closureCase.currentDeltaRevisionId ||
-      evidenceCount !== evidenceIds.length
+      evidenceIds.some((id) => !linkedEvidenceIds.has(id))
     ) {
       throw conflict(
         "CLOSURE_PRICING_APPROVAL_AUTHORITY_MISMATCH",

@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 子进程采集与 ACK 前向登记
+
+R2.2 隔离分支提交 `3710f11a`，子入口接通真实工具进程采集、共享 live ACK、原始结果和有界异常清理，限定独立审查 Approved，无 Important/Critical。[验证记录](2026-09-27-stage1-r22-child-collector-validation.md)区分唯一完整文件 102/102 与最终限域小修的定向 5/5，保留日志覆盖和起始测试字节未冻结的限制；未重复完整文件或业务套件。代码未整合主候选，父端/CLI 仍 STOP，expected 来源、H1/H2 与后续真实门槛仍未完成。
+
 ## 2026-09-27 原始 baseline 复用前向登记
 
 R2.2 隔离分支提交 `fd1f8852`，从原始归档及独立读回链复用唯一 baseline；缺失/冲突拒绝且不重新观察。独立审查指出的同 request 双 observation 关联 P1 已修复并通过限定复审。[限定验证记录](2026-09-27-stage1-r22-baseline-reuse-validation.md)保留初始聚焦 15/15、修复反例 RED 与定向 4/4，未重复完整 launcher 或业务套件。代码未整合主候选；父 Runner 仍 STOP，后续 child collector、expected 来源及完整 R2 门槛继续开放。

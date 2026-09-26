@@ -99,3 +99,7 @@ Edge 已登录的控制台仍无法由浏览器工具读取，因此改用阿里
 GitHub 实际读回：`trusted-image-build` 环境要求 reviewer `keqi119`，自定义分支策略只有 `main`；OIDC 仓库设置为 `use_default=true`、`use_immutable_subject=false`、`sub_claim_prefix=repo:keqi119/subscription-Saas`。没有修改环境或仓库设置。独立 writer/audit-reader 的限域 RAM 策略及 OIDC trust 草稿已放入 Task10 scratch；只是待管理身份认证后逐项核对的草稿，没有应用。
 
 GitHub OIDC discovery 和 TLS 链也已实际读取：JWKS 主机为 `token.actions.githubusercontent.com`，服务端末张证书是 ISRG Root X1 交叉签名的 Root YR。该证书与 Let's Encrypt 官方发布 DER 精确一致；使用官方 X1 根证书校验完整链、服务端用途和实际 hostname，OpenSSL verify exit 0。按阿里云官方“取服务端输出最后一张证书”方法，当前指纹为 `ab9d0263244dd0326eb67015705a667e79cfe998`；未创建 provider。公开证书及读回原件保存在 Task10 scratch `oidc-public-chain/`，不含认证凭证。依据：[阿里云方法](https://www.alibabacloud.com/help/en/ram/user-guide/obtain-oidc-idp-fingerprints-through-openssl)、[Let's Encrypt 信任链](https://letsencrypt.org/certificates/)。
+
+进一步仅查询拟用 writer 角色和本机 metadata 所指实例：`ram:GetRole` 返回 `NoPermission`，`ecs:DescribeDisks` 返回 `Forbidden.RAM`。`ims:GetOIDCProvider` 指定 `github-actions-stage1` 返回 `EntityNotExist.OIDCProvider`，只说明这个名称的响应，不能推定账户内没有同 issuer 的其他 provider 或已有创建权限。临时 RAM 配置已删除，无云写入；云盘加密仍 UNKNOWN。
+
+私密性准备还补齐了对象 ACL 与公共访问读回：reader 草稿仅在原对象前缀添加 `oss:GetObjectAcl`，原桶添加 `oss:GetBucketPolicyStatus`/`oss:GetBucketPublicAccessBlock`，不扩写入或资源范围。当前 `GetBucketAcl=private` 不足以替代这几项实际观察；未来适配器须显式 private 上传并独立核对公共访问状态。仍是草稿，未修改桶配置。依据：[OSS 公共访问规则](https://www.alibabacloud.com/help/en/oss/user-guide/block-public-access)、[GetBucketPolicyStatus](https://www.alibabacloud.com/help/en/oss/developer-reference/getbucketpolicystatus)。

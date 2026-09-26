@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 父端零凭证启动链前向登记
+
+隔离分支提交 `2b42e5d5`，原 launcher 接通同一 session 下的 PREPARED、实际 Node 子进程 CHALLENGE/PID/raw、精确 CID 停止与归档边界。[验证记录](2026-09-27-stage1-parent-zero-credential-validation.md)区分修正前 11/11、Windows 2/2 与最终修正定向 5/5，保留行为 RED、运行准备失败、真实 exit 和默认 lint 限制。空 CID 过渡及公共目录 nlink 两项 Important 已修复并通过独立复审；未重复旧套件，未整合候选。可信 expected-schema 缺失仍在命令签发/凭证前停止，真实云配置、完整 R2、R3/R4 和阶段 1 均未关闭。
+
 ## 2026-09-27 Runner 启动参数对齐前向登记
 
 隔离分支提交 `0612f986`，为真实 `docker run` 限定增加 attempt CID 文件及固定数据目录 tmpfs 配对，历史单 tmpfs 证据仍兼容。[验证记录](2026-09-27-stage1-runner-argv-alignment-validation.md)保留 RED 2 项、定向 21/21、唯一完整文件 169/169/exit 0 和独立审查 Approved；默认 lint 的 3 个既有诊断未被隐去。未重复业务套件，未整合候选。下一步为父端零凭证实际进程采集与停止归档；真实云身份、可信输入和阶段 1 均继续开放。

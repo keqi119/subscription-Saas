@@ -1,4 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { ConfigService } from "@nestjs/config";
+import type { Prisma } from "@prisma/client";
+import { describe, expect, it, vi } from "vitest";
+
+import { hashBusinessExceptionSnapshot } from "../src/asset-accounting/asset-accounting.domain";
+import type { AssetAccountingRepository } from "../src/asset-accounting/asset-accounting.repository";
+import { AssetAccountingService } from "../src/asset-accounting/asset-accounting.service";
+import type { BusinessExceptionApprovalSnapshot } from "../src/asset-accounting/asset-accounting.types";
+import type { RequestUser } from "../src/auth/auth.types";
 
 import {
   deriveClosureFinancialState,
@@ -6,7 +14,8 @@ import {
 } from "../src/subscription-closure/subscription-closure-financial.service";
 import {
   assertLegalCollectionTransferReady,
-  hasBlockingLegalCollectionDispute
+  hasBlockingLegalCollectionDispute,
+  SubscriptionReturnGovernanceService
 } from "../src/subscription-closure/subscription-return-governance.service";
 
 describe("closure financial disposition", () => {
@@ -25,16 +34,18 @@ describe("closure financial disposition", () => {
       openAmountCents: 9000n,
       paidAmountCents: 0n
     });
-    expect(mayCompleteOperations(result, { inventoryReleased: true, physicalReceiptComplete: true }))
-      .toBe(true);
+    expect(
+      mayCompleteOperations(result, { inventoryReleased: true, physicalReceiptComplete: true })
+    ).toBe(true);
   });
 
   it("fails closed on an orphaned open receivable", () => {
     const result = deriveClosureFinancialState([
       { billId: "bill-1", disposition: "OPEN", remainingAmountCents: 500n, ownerId: null }
     ]);
-    expect(mayCompleteOperations(result, { inventoryReleased: true, physicalReceiptComplete: true }))
-      .toBe(false);
+    expect(
+      mayCompleteOperations(result, { inventoryReleased: true, physicalReceiptComplete: true })
+    ).toBe(false);
   });
 
   it.each(["PAID", "MANUAL_PAYMENT_CONFIRMED", "WAIVED", "WRITTEN_OFF"] as const)(
@@ -104,9 +115,7 @@ describe("closure financial disposition", () => {
         { decision: { decision: "REJECTED_BY_PLATFORM" }, status: "OPEN" }
       ])
     ).toBe(false);
-    expect(
-      hasBlockingLegalCollectionDispute([{ decision: null, status: "OPEN" }])
-    ).toBe(true);
+    expect(hasBlockingLegalCollectionDispute([{ decision: null, status: "OPEN" }])).toBe(true);
     expect(
       hasBlockingLegalCollectionDispute([
         { decision: { decision: "ACCEPTED_BY_PLATFORM" }, status: "OPEN" }
@@ -132,5 +141,258 @@ function legalReadyFixture() {
     settlement: { id: "settlement-1", resultHash: "hash-1", stage: "FINALIZED" },
     transferOwnerId: "legal-owner-1",
     transferOwnerType: "LEGAL_TEAM"
+  };
+}
+
+describe.each(["WAIVER", "WRITE_OFF"] as const)("%s approval accounting context", (type) => {
+  it("requests through the real Accounting service with the exact server-derived source key", async () => {
+    const h = financialApprovalHarness(type);
+    await expect(h.request()).resolves.toMatchObject({ status: "PENDING" });
+    expect(h.repository.requestExceptionApproval).toHaveBeenCalledTimes(1);
+    expect(h.repository.requestExceptionApproval.mock.calls[0]?.[1]).toMatchObject({
+      requestedBy: FINANCIAL_IDS.requester,
+      source: {
+        id: FINANCIAL_IDS.closure,
+        key: "closure-approval-request:financial-request",
+        type: "SUBSCRIPTION_CLOSURE_APPROVAL"
+      }
+    });
+    expect(h.audit.write).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        action: "CREATE",
+        operatorId: FINANCIAL_IDS.requester,
+        after: expect.objectContaining({
+          permission: "business_exception:request",
+          requestContext: expect.objectContaining({
+            idempotencyKey: "closure-approval-request:financial-request"
+          })
+        })
+      }),
+      h.tx
+    );
+  });
+
+  it("decides a controlled PENDING input through real Accounting using its distinct decision key", async () => {
+    const h = financialApprovalHarness(type);
+    await expect(h.decide()).resolves.toMatchObject({ status: "APPROVED", version: 1 });
+    expect(h.repository.decideExceptionApproval).toHaveBeenCalledTimes(1);
+    expect(h.repository.decideExceptionApproval.mock.calls[0]?.[1]).toMatchObject({
+      decidedBy: FINANCIAL_IDS.decider,
+      source: {
+        id: FINANCIAL_IDS.closure,
+        key: "closure-approval-decision:financial-decision",
+        type: "SUBSCRIPTION_CLOSURE_APPROVAL"
+      }
+    });
+    expect(h.audit.write).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        action: "APPROVE",
+        operatorId: FINANCIAL_IDS.decider,
+        after: expect.objectContaining({
+          permission: "business_exception:approve",
+          requestContext: expect.objectContaining({
+            idempotencyKey: "closure-approval-decision:financial-decision"
+          })
+        })
+      }),
+      h.tx
+    );
+  });
+
+  it.each(["request", "decide"] as const)("retains the real %s permission guard", async (entry) => {
+    const h = financialApprovalHarness(type);
+    const user = financialUser(
+      entry === "request" ? FINANCIAL_IDS.requester : FINANCIAL_IDS.decider,
+      []
+    );
+    await expect(h[entry](user)).rejects.toMatchObject({
+      response: { code: "ASSET_ACCOUNTING_PERMISSION_REQUIRED" }
+    });
+    expect(h.repository.requestExceptionApproval).not.toHaveBeenCalled();
+    expect(h.repository.decideExceptionApproval).not.toHaveBeenCalled();
+    expect(h.audit.write).not.toHaveBeenCalled();
+  });
+
+  it("retains the real independent-decider guard", async () => {
+    const h = financialApprovalHarness(type);
+    await expect(
+      h.decide(financialUser(FINANCIAL_IDS.requester, ["business_exception:approve"]))
+    ).rejects.toMatchObject({ response: { code: "ASSET_ACCOUNTING_SELF_APPROVAL_FORBIDDEN" } });
+    expect(h.repository.decideExceptionApproval).not.toHaveBeenCalled();
+    expect(h.audit.write).not.toHaveBeenCalled();
+  });
+});
+
+const FINANCIAL_IDS = {
+  closure: "00000000-0000-4000-8000-000000000101",
+  order: "00000000-0000-4000-8000-000000000102",
+  settlement: "00000000-0000-4000-8000-000000000103",
+  bill: "00000000-0000-4000-8000-000000000104",
+  proof: "00000000-0000-4000-8000-000000000105",
+  approval: "00000000-0000-4000-8000-000000000106",
+  requester: "00000000-0000-4000-8000-000000000107",
+  decider: "00000000-0000-4000-8000-000000000108"
+};
+
+function financialUser(id: string, permissions: string[]): RequestUser {
+  return { id, permissions, menus: [], name: "Financial fixture", username: id, roles: ["OP"] };
+}
+
+function financialApprovalHarness(approvalType: "WAIVER" | "WRITE_OFF") {
+  const subjectField = `${approvalType === "WAIVER" ? "settlementWaiver" : "settlementWriteOff"}:${FINANCIAL_IDS.bill}`;
+  const subjectSnapshot = {
+    approvalType,
+    amountCents: "100",
+    billId: FINANCIAL_IDS.bill,
+    clauseSnapshotId: null,
+    closureCaseId: FINANCIAL_IDS.closure,
+    deltaItemId: null,
+    evidenceIds: [FINANCIAL_IDS.proof],
+    manualBasis: null,
+    manualUnitPriceCents: null,
+    settlementResultHash: "financial-result-hash",
+    settlementRevisionId: FINANCIAL_IDS.settlement
+  };
+  // A controlled PENDING row lets the decision RED run independently of the
+  // broken request call. Only the PG test proves actual approval persistence.
+  let approval: BusinessExceptionApprovalSnapshot = {
+    approvalNo: "BEA-fixture",
+    id: FINANCIAL_IDS.approval,
+    exceptionType: approvalType === "WAIVER" ? "SETTLEMENT_WAIVER" : "SETTLEMENT_WRITE_OFF",
+    subjectType: "SETTLEMENT_CASE",
+    subjectId: FINANCIAL_IDS.closure,
+    subjectField,
+    subjectSnapshot,
+    subjectSnapshotHash: hashBusinessExceptionSnapshot(subjectSnapshot),
+    requestReason: "Financial fixture",
+    requestEvidenceSnapshot: { evidenceIds: subjectSnapshot.evidenceIds },
+    requestedBy: FINANCIAL_IDS.requester,
+    requestedAt: new Date("2026-09-26T00:00:00.000Z"),
+    requestSourceType: "SUBSCRIPTION_CLOSURE_APPROVAL",
+    requestSourceId: FINANCIAL_IDS.closure,
+    requestSourceKey: "closure-approval-request:financial-request",
+    status: "PENDING",
+    decision: null,
+    version: 0
+  };
+  const closureCase = {
+    id: FINANCIAL_IDS.closure,
+    orderId: FINANCIAL_IDS.order,
+    retiredAt: null,
+    currentSettlementRevisionId: FINANCIAL_IDS.settlement
+  };
+  const settlement = {
+    id: FINANCIAL_IDS.settlement,
+    closureCaseId: FINANCIAL_IDS.closure,
+    resultHash: "financial-result-hash",
+    stage: "FINALIZED"
+  };
+  const bill = { id: FINANCIAL_IDS.bill, orderId: FINANCIAL_IDS.order, remainingAmount: 100n };
+  const files = [
+    {
+      id: FINANCIAL_IDS.proof,
+      objectKey: `subscription-closure/${FINANCIAL_IDS.closure}/financial-proof/proof.png`
+    }
+  ];
+  const tx = {
+    $queryRaw: vi.fn(async () => []),
+    subscriptionClosureCase: { findUnique: vi.fn(async () => closureCase) },
+    subscriptionClosureSettlementRevision: { findUnique: vi.fn(async () => settlement) },
+    receivableBill: { findUnique: vi.fn(async () => bill) },
+    vehicleReturnEvidenceLink: { count: vi.fn(async () => 0) },
+    fileObject: {
+      count: vi.fn(
+        async ({ where }: { where: { id: { in: string[] }; objectKey: { startsWith: string } } }) =>
+          files.filter(
+            (row) =>
+              where.id.in.includes(row.id) && row.objectKey.startsWith(where.objectKey.startsWith)
+          ).length
+      )
+    },
+    businessExceptionApproval: { findUnique: vi.fn(async () => approval) }
+  };
+  // Only persistence and audit IO are doubled; both governance and Accounting
+  // services execute their real guards and authority callback. This does not
+  // model repository locking, snapshot/version enforcement or PG rollback.
+  const repository = {
+    lockBusinessExceptionSourceAndSubject: vi.fn(async () => undefined),
+    requestExceptionApproval: vi.fn(
+      async (
+        _tx: Prisma.TransactionClient,
+        command: Parameters<AssetAccountingRepository["requestExceptionApproval"]>[1]
+      ) => {
+        approval = {
+          ...approval,
+          subjectSnapshot: command.authoritySnapshot,
+          subjectSnapshotHash: hashBusinessExceptionSnapshot(command.authoritySnapshot),
+          requestedBy: command.requestedBy
+        };
+        return { outcome: approval, wrote: true };
+      }
+    ),
+    decideExceptionApproval: vi.fn(
+      async (
+        _tx: Prisma.TransactionClient,
+        command: Parameters<AssetAccountingRepository["decideExceptionApproval"]>[1]
+      ) => {
+        approval = {
+          ...approval,
+          status: command.decision,
+          decision: command.decision,
+          decidedBy: command.decidedBy,
+          decidedAt: command.decidedAt,
+          version: approval.version + 1
+        };
+        return { outcome: approval, wrote: true };
+      }
+    )
+  };
+  const audit = { write: vi.fn(async () => undefined) };
+  const prisma = { $transaction: async <T>(work: (client: typeof tx) => Promise<T>) => work(tx) };
+  const accounting = new AssetAccountingService(
+    prisma as never,
+    repository as never,
+    audit as never
+  );
+  const governance = new SubscriptionReturnGovernanceService(
+    prisma as never,
+    {} as never,
+    undefined,
+    undefined,
+    undefined,
+    accounting,
+    new ConfigService({ SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "true" })
+  );
+  return {
+    audit,
+    repository,
+    tx,
+    request: (user = financialUser(FINANCIAL_IDS.requester, ["business_exception:request"])) =>
+      governance.requestApproval(
+        FINANCIAL_IDS.closure,
+        {
+          approvalType,
+          billId: FINANCIAL_IDS.bill,
+          evidenceIds: [FINANCIAL_IDS.proof],
+          settlementRevisionId: FINANCIAL_IDS.settlement,
+          idempotencyKey: "financial-request",
+          requestReason: "Financial fixture"
+        },
+        user,
+        {}
+      ),
+    decide: (user = financialUser(FINANCIAL_IDS.decider, ["business_exception:approve"])) =>
+      governance.decideApproval(
+        FINANCIAL_IDS.closure,
+        FINANCIAL_IDS.approval,
+        {
+          decision: "APPROVED",
+          decisionComment: "Independent review",
+          expectedVersion: 0,
+          idempotencyKey: "financial-decision"
+        },
+        user,
+        {}
+      )
   };
 }

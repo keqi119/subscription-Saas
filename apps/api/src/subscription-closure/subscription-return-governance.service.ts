@@ -1276,6 +1276,11 @@ export class SubscriptionReturnGovernanceService {
       throw conflict("CLOSURE_APPROVAL_SERVICE_UNAVAILABLE", "例外审批服务不可用。");
     }
     const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey", 180);
+    const source = {
+      id: closureCaseId,
+      key: `closure-approval-request:${idempotencyKey}`,
+      type: "SUBSCRIPTION_CLOSURE_APPROVAL"
+    } as const;
     return this.prisma.$transaction(async (tx) => {
       const authority = await resolveClosureApprovalAuthority(tx, closureCaseId, input);
       return this.assetAccounting!.requestApprovalInTransaction(
@@ -1285,11 +1290,7 @@ export class SubscriptionReturnGovernanceService {
           requestEvidenceSnapshot: { evidenceIds: authority.snapshot.evidenceIds },
           requestReason: requiredText(input.requestReason, "requestReason", 2000),
           requestedAt: new Date(),
-          source: {
-            id: closureCaseId,
-            key: `closure-approval-request:${idempotencyKey}`,
-            type: "SUBSCRIPTION_CLOSURE_APPROVAL"
-          },
+          source,
           subject: {
             subjectField: authority.subjectField,
             subjectId: closureCaseId,
@@ -1298,6 +1299,7 @@ export class SubscriptionReturnGovernanceService {
         },
         {
           actorId: user.id,
+          idempotencyKey: source.key,
           ipAddress: context.ipAddress,
           permissions: user.permissions,
           userAgent: context.userAgent
@@ -1324,6 +1326,11 @@ export class SubscriptionReturnGovernanceService {
       throw conflict("CLOSURE_APPROVAL_SERVICE_UNAVAILABLE", "例外审批服务不可用。");
     }
     const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey", 180);
+    const source = {
+      id: closureCaseId,
+      key: `closure-approval-decision:${idempotencyKey}`,
+      type: "SUBSCRIPTION_CLOSURE_APPROVAL"
+    } as const;
     return this.prisma.$transaction(async (tx) => {
       const approval = await tx.businessExceptionApproval.findUnique({ where: { id: approvalId } });
       if (
@@ -1364,11 +1371,7 @@ export class SubscriptionReturnGovernanceService {
           decisionComment: requiredText(input.decisionComment, "decisionComment", 2000),
           exceptionType: authority.exceptionType,
           expectedVersion: input.expectedVersion,
-          source: {
-            id: closureCaseId,
-            key: `closure-approval-decision:${idempotencyKey}`,
-            type: "SUBSCRIPTION_CLOSURE_APPROVAL"
-          },
+          source,
           subject: {
             subjectField: authority.subjectField,
             subjectId: closureCaseId,
@@ -1377,6 +1380,7 @@ export class SubscriptionReturnGovernanceService {
         },
         {
           actorId: user.id,
+          idempotencyKey: source.key,
           ipAddress: context.ipAddress,
           permissions: user.permissions,
           userAgent: context.userAgent

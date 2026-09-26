@@ -39,6 +39,8 @@
 
 - 2026-09-26，财务审批未知结果重试与签署审计顺序修复已精确整合，见[正式验收](2026-09-26-stage1-financial-approval-retry-validation.md)。实际干净执行源 `f82d30e149ded76d958831dfb46f6332fad1e2dc`：API9 607/607、Web2 115/115、完整 expiry112/112 与 asset33/33 共145/145，types/lint/diff全通过。后端核原收据/事实后复用服务器首写时间，前端冻结key/body/proof并严格读回；签署task按完整snapshot唯一因果链校验，拒绝分叉/循环/重复ID。代码、最终原件及报告获独立限定ACCEPT，11文件与已审源一致、报告/receipt/七项权限和精确退役已复核，保留98/102、110/112、111/112及类型/文档格式中间失败。Registration仍低优先级防御项；下一依赖为真实H1/H2/expected-schema输入→完整R2→Node22最终三镜像每链37套→恢复服务器Docker后真实A/B及成熟样本、渠道、维护/恢复与签字。未进行线上联调或关闭整体阶段1。
 
+- 2026-09-27，R2.2 H3资源观察增量 `e7a1b5e1` 已在独立实施分支提交，见[正式限定记录](2026-09-27-stage1-r22-h3-resource-observation-validation.md)。修复独立审查发现的网络/卷驱动秘密输出后，同源完整launcher/child/CLI237/237、exit0，六输入摘要不变，静态/契约/发现通过。固定只读Docker检查与两轮资源读回、原件/index重查已实现，当前仅支持明确本机回环映射；真实Docker CLI只连接合成Engine管道。合法输入仍在target-observe会话前停止，未读取私钥/凭证或连接DB，也未恢复线上环境。此处只前向登记，WIP代码不整合主候选；R2.2/3与实际H1/H2/H3/expected、最终Node22及阶段1仍开放。下一步按既有计划实施授权观察/baseline与父子MS2闭环，不重复财务已收口单元。
+
 历史代码基线：Task 5 `1f0b0439`。Task 6 提案保管：`457c0011`，不代表批准。
 Task 6/29R/30/I 系列冻结，Task 30 stash 不变。
 历史准入入口：[P0/P1 准入实施计划](../superpowers/plans/2026-09-06-stage1-p0-p1-admission-implementation-plan.md)，已关闭，不重跑。当前前向工作按下节及既有[主线/最小发布计划](../superpowers/plans/2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)执行。

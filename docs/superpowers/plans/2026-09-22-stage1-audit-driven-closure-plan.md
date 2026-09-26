@@ -321,6 +321,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 后续固定H3-A reader切片 `d854a608` 已限定复审，最终相同两文件字节的parent+CLI完整109/109、exit0；新增37聚焦与完整109重叠，不累加。路径/ACL/heldfd/完整字节、原件闭合及绑定/时序保留；仅私密根之外祖先的内容时标不作替换判断，节点身份和私密根内全部检查保持。真实临时文件/junction与受控ACL、gh输出构成其证据边界；合法形状仍止于 `MANUAL_H3_RESOURCE_INPUT_REQUIRED`，不证明真实批准/资源/来源、环境白名单、session/expected/credential/DB。该提交与child仍在R2实施分支，完整R2.2和任务9不关闭。
 
+2026-09-27：R2.2 资源观察增量 `e7a1b5e15ce9ac5d84ee2c83f2ee7c80e81684b4` 已在独立 R22 分支提交，见[验收与接续点](../../acceptance/2026-09-27-stage1-r22-h3-resource-observation-validation.md)。实际冻结 source 的 launcher/child/CLI 完整237/237、exit0，六输入哈希一致；独立审查提出的驱动参数秘密投影问题经真实 CLI/合成 Engine 管道 RED0/3→GREEN3/3 修复，再完成该完整回归，契约/发现和限定静态检查均通过。只读核对容器/专属卷/镜像/bridge/精确本机回环发布映射，两轮资源观察及原件/index重查；合格材料推进至 MANUAL_TARGET_OBSERVE_INPUT_REQUIRED 后停止，session/attempt/key/credential/DB仍未开放。真实Engine/DB/Node22/线上NOT_RUN，WIP代码尚未整合本候选；保留旧回归主动终止及全部失败原件，不关闭R2.2或任务9。下一实现为已授权target-observe→baseline，再完成process collector/MS2/ACK与独立verifier。
+
 - [ ] R2.2：创建 launch-manual-stage1/manual-entrypoint 及测试，接 cli manual 分支；唯一 selector 为 operationRef。固定 H3 来源、prepare/index、真实 child/工具 raw、PREPARED→readback→ACK→spawn、最后关闭全部按原计划实现。
 - [ ] R2.2 出口：真实临时 Node 管道组合通过；非法 CLI/替代路径/错 nonce/H3/ACK/版本在 secret/DB 前拒绝。manual stdout 无额外 JSON 尾写；旧入口字节行为保持。
 - [ ] R2.3：创建 verify-manual-runner-result、两个 test/manual 真实阶段文件；登记精确 discovery exceptions。verifier 只读固定 index/build/H3/raw，全链证据不接受 caller success flag。

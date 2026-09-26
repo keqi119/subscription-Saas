@@ -374,6 +374,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 2026-09-26：[R4 方案](./2026-09-22-stage1-r4-staging-signoff-plan.md)已通过 DOC-only 独立审查。成熟结束动作按当前代码修正为工单 CLOSED、delta、inspection、提案/定价及必要的重新提案、finalize，最终经放行和 completeOperations 完成；证据包在完成前导出，完成后终态另行独立读回。工单关闭和定价后重新提案的实际浏览器入口，以及如需包含终态的最终包入口，仍须核实可达，缺失时停止该验收并交接实现。未恢复线上 Docker、部署或执行供应商/资金/浏览器验收，任务13整体开放。
 
+同日后续静态审查已确认：当前 Web 缺检查工单关闭入口；正额 CUSTOMER FINAL 计价新增账单后，当前 PROPOSED 缺重新提案入口。两项已形成独立审查通过的[正常退车浏览器修复计划](./2026-09-26-stage1-return-browser-gap-plan.md)，仅六个生产文件与六个测试文件，复用现有受权 HTTP、人工幂等来源和结算服务，不放宽 CLOSED/hash/权限守卫。实施前 source `5c57416e` 的受控 asset-operations fresh 33/33、独立读回/退役及 skip-dotenv Prisma validate 已通过；这是新开发轮基线，不是修复后的验收或真实浏览器证据。两个实现单元及 R4 实测仍开放。
+
 ## 6. 每个单元的统一验收与交接
 
 - [ ] 施工前记录实际 HEAD/status、任务文件范围、批准/冻结边界；业务修改遵守 DEV_SPEC 和受控数据库 preflight。存在未明确归属的改动先交接，不回滚他人内容。

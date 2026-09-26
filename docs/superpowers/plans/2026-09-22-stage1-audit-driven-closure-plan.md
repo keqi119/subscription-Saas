@@ -394,6 +394,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 后续优先单元为financial审批未知结果重试：只读核验发现跨毫秒同key请求/决定会因新时间进入完整payload而冲突，UI再次点击又生成key并重新上传proof；必须同时处理服务器首写时间与UI稳定命令，保留完整payload/当前权限/权威检查。独立设计审查进一步要求使用页面既有严格读回、上传前冻结绑定并区分upload-unknown、核receipt/outcome/实际approval的完整历史关系；方案精确化中，不把其登记为本轮已修。Registration已完成有界producer审计，未发现当前同case/item/evidence重复行生产链，且e-sign仍有Set.every后置；行数校验保留为较低优先级防御改进，不称已证实端到端漏洞。R2实际私有输入/来源、最终三镜像双链及线上三样本按任务9–13继续。
 
+重试[精确实施计划](./2026-09-26-stage1-financial-approval-retry-plan.md)已完成v2独立DOC审查并前向登记 `eef00780`。生产范围固定五文件、测试四文件，不开放客户端时间、不更改上传接口或旧registration/pricing重试语义。独立 `stage1-financial-retry-20260926` 保持原生产源、仅准备真实PG RED；`stage1-financial-retry-code-20260926` 承担API/UI实现，文件owner分离。两者基线eef的API/Web与已完整验证0ca相同，认可前一fresh迁移/权限/退役为本轮preflight，并完成新一轮skip-dotenv validate、两tree offline install/shared build/generate，均exit0。真实重试RED/GREEN、最终门禁与整合尚待，不将前一轮131项记为重试证据。
+
 ## 6. 每个单元的统一验收与交接
 
 - [ ] 施工前记录实际 HEAD/status、任务文件范围、批准/冻结边界；业务修改遵守 DEV_SPEC 和受控数据库 preflight。存在未明确归属的改动先交接，不回滚他人内容。

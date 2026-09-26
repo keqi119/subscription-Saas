@@ -1,0 +1,1142 @@
+import assert from "node:assert/strict";
+import childProcess, { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import crypto, { generateKeyPairSync, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { syncBuiltinESMExports } from "node:module";
+import {
+  encodeManualJson,
+  computeMigrationCatalog,
+  computeRepositoryContract,
+  sha256Bytes,
+  sha256Canonical
+} from "../../packages/release-foundation/src/index.mjs";
+import { createBuildProof } from "./create-build-proof.mjs";
+import {
+  loadFixedManualProfile,
+  readFixedManualOperation,
+  verifyManualBuild
+} from "./manual-stage1-trust.mjs";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+const launcherFile = fileURLToPath(new URL("./launch-manual-stage1.mjs", import.meta.url));
+const operationRef = "abcdefab-1111-4111-8111-abcdefabcdef";
+const launcher = await import("./launch-manual-stage1.mjs").catch((error) => {
+  if (error.code === "ERR_MODULE_NOT_FOUND" && error.url?.endsWith("/launch-manual-stage1.mjs"))
+    return null;
+  throw error;
+});
+
+function invoke(argv, extraEnvironment = {}, entrypoint = launcherFile) {
+  // Test-only native boundary guards run in the actual CLI child. They deny
+  // any external process/socket and count attempted credential/metadata access.
+  const preload = `
+    import fs from 'node:fs/promises'; import cp from 'node:child_process';
+    import net from 'node:net'; import tls from 'node:tls'; import {syncBuiltinESMExports} from 'node:module';
+    const effects={processSpawn:0,secretReads:0,metadataWrites:0,databaseConnections:0};
+    for(const name of ['spawn','exec','execFile','fork']) cp[name]=()=>{effects.processSpawn++;throw new Error('External child forbidden');};
+    net.Socket.prototype.connect=()=>{effects.databaseConnections++;throw new Error('Socket forbidden');};
+    tls.connect=()=>{effects.databaseConnections++;throw new Error('TLS forbidden');};
+    for(const name of ['open','readFile','writeFile','mkdir']) {const native=fs[name].bind(fs);fs[name]=(...args)=>{
+      if(/(?:^|[\\\\/])(?:key|credential)(?:[\\\\/]|$)/u.test(String(args[0]))) {effects.secretReads++;throw new Error('Secret input forbidden');}
+      if(name==='writeFile'||name==='mkdir'||(name==='open'&&args[1]!=='r')) effects.metadataWrites++;
+      return native(...args);
+    };}
+    syncBuiltinESMExports();
+    process.once('exit',()=>process.stderr.write('EFFECTS:'+JSON.stringify(effects)+'\\n'));
+  `;
+  return new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, entrypoint, ...argv],
+      {
+        shell: false,
+        windowsHide: true,
+        timeout: 10000,
+        maxBuffer: 8192,
+        env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...extraEnvironment }
+      },
+      (error, stdout, stderr) => {
+        const match = stderr.match(/EFFECTS:(\{[^\n]+\})\n$/u);
+        resolve({
+          exit: error?.code ?? 0,
+          stdout,
+          stderr: match ? stderr.slice(0, match.index) : stderr,
+          effects: match ? JSON.parse(match[1]) : null
+        });
+      }
+    );
+  });
+}
+function noCliEffects(result) {
+  assert.deepEqual(result.effects, {
+    processSpawn: 0,
+    secretReads: 0,
+    metadataWrites: 0,
+    databaseConnections: 0
+  });
+}
+
+for (const argv of [
+  [],
+  ["--command", "db.migrate.deploy@1"],
+  ["--entrypoint", "sh"],
+  ["--shell", "sh"],
+  ["--adapter", "adapter.mjs"],
+  ["--profile-file", "profile.json"],
+  ["--archive-root", "archive"],
+  ["--credentials", "secret"],
+  ["--operation-ref", "../index.json"],
+  ["--operation-ref", operationRef.toUpperCase()],
+  ["--operation-ref", operationRef, "--command", "db.schema.verify@1"],
+  ["--operation-ref", operationRef, "extra"],
+  ["--operation-ref", "sha256:" + "a".repeat(64)]
+]) {
+  test(`fixed launcher rejects argv ${JSON.stringify(argv)} before input access`, async () => {
+    const result = await invoke(argv);
+    assert.equal(result.exit, 1);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "MANUAL_LAUNCH_INVOCATION_REJECTED\n");
+    noCliEffects(result);
+  });
+}
+
+test("fixed launcher rejects mixing manual ref with the old launch-envelope mode", async () => {
+  const result = await invoke(["--operation-ref", operationRef], {
+    RUNNER_LAUNCH_ENVELOPE_FILE: "forbidden-old-envelope.json"
+  });
+  assert.equal(result.exit, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "MANUAL_LAUNCH_INVOCATION_REJECTED\n");
+  noCliEffects(result);
+});
+
+test("unknown ref with no H1 cannot open a session or fall back to a legacy launcher", async () => {
+  const result = await invoke(["--operation-ref", operationRef]);
+  assert.equal(result.exit, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "MANUAL_OPERATION_INPUT_UNAVAILABLE\n");
+  noCliEffects(result);
+});
+
+test("metadata prepare requires the formal four-key input without caller IO authority", async () => {
+  assert.equal(typeof launcher?.prepareManualOperation, "function");
+  await assert.rejects(
+    launcher.prepareManualOperation({
+      proofBytes: Buffer.from("{}"),
+      materialBytes: Buffer.from("{}"),
+      targetIntent: { endpointPolicyId: "synthetic-policy", databaseName: "synthetic-db" },
+      scenario: "normal",
+      repoRoot: "/caller-authority"
+    }),
+    { code: "MANUAL_OPERATION_INPUT_UNAVAILABLE" }
+  );
+});
+
+test("real Runner CLI manual mode alone cannot consume credentials or connect a database", async () => {
+  const result = await invoke(
+    [],
+    { RUNNER_EXECUTION_MODE: "manual-stage1" },
+    fileURLToPath(new URL("../../apps/release-runner/src/cli.mjs", import.meta.url))
+  );
+  assert.equal(result.exit, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "MANUAL_AUTHORIZATION_REQUIRED\n");
+  noCliEffects(result);
+});
+
+test("launcher API rejects non-string UUID and extra caller authority before fixed IO", async () => {
+  for (const input of [
+    { operationRef: { toString: () => operationRef } },
+    { operationRef, adapter: {} }
+  ])
+    await assert.rejects(launcher.launchManualStage1(input), {
+      code: "MANUAL_LAUNCH_INVOCATION_REJECTED"
+    });
+});
+
+const productionRoot = fileURLToPath(new URL("../../", import.meta.url)).replace(/[\\/]$/u, "");
+const profileName = "release/contracts/manual-stage1-profile.v2.json";
+const bindingName = "release/contracts/manual-stage1-owner-binding.v1.json";
+const repository = "keqi119/subscription-Saas";
+const workflowPath = ".github/workflows/docker-images.yml";
+const generatedAt = "2026-09-01T00:00:00.000Z";
+const runId = 2801;
+const digest = (character) => `sha256:${character.repeat(64)}`;
+const nativeExecFile = childProcess.execFile.bind(childProcess);
+const nativeUUID = crypto.randomUUID.bind(crypto);
+const nativeFS = Object.fromEntries(
+  ["open", "lstat", "realpath", "readFile", "readdir", "mkdir", "writeFile"].map((name) => [
+    name,
+    fs[name].bind(fs)
+  ])
+);
+const sid = "S-1-5-21-111-222-333-1001";
+const guid = "01234567-89ab-4cde-8fab-0123456789ab";
+const systemRoot = "C:\\Windows";
+const system = systemRoot + "\\System32\\";
+
+async function git(repoRoot, ...args) {
+  return new Promise((resolve, reject) =>
+    nativeExecFile(
+      "git",
+      [
+        "-c",
+        "core.hooksPath=NUL",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "user.name=Synthetic Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-C",
+        repoRoot,
+        ...args
+      ],
+      {
+        shell: false,
+        windowsHide: true,
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1048576,
+        env: {
+          PATH: process.env.PATH,
+          SystemRoot: process.env.SystemRoot,
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: "NUL"
+        }
+      },
+      (error, stdout) => (error ? reject(error) : resolve(stdout.trim()))
+    )
+  );
+}
+
+async function fixture(t) {
+  assert.equal(
+    process.platform,
+    "win32",
+    "This fixture exercises the real Windows R1 branch with synthetic OS observations"
+  );
+  const root = await fs.mkdtemp(path.join(tmpdir(), "r22-metadata-"));
+  t.after(async () => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    assert.equal(path.dirname(root), path.resolve(tmpdir()));
+    assert.ok(path.basename(root).startsWith("r22-metadata-"));
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const repoRoot = path.join(root, "repo");
+  await fs.mkdir(path.join(repoRoot, "release", "contracts"), { recursive: true });
+  const storage = { keyRef: "owner.key", retentionDays: 90 };
+  for (const name of ["key", "journal", "archive", "backup", "credential"]) {
+    storage[`${name}Root`] = path.join(root, name);
+    await fs.mkdir(storage[`${name}Root`], { mode: 0o700 });
+  }
+  const keys = generateKeyPairSync("ed25519");
+  const profile = {
+    schemaVersion: "manual-stage1-profile.v2",
+    profileId: randomUUID(),
+    ownerId: "synthetic-owner",
+    publicKeyPem: keys.publicKey.export({ type: "spki", format: "pem" }),
+    keyFingerprint: sha256Bytes(keys.publicKey.export({ type: "spki", format: "der" })),
+    validFrom: "2020-01-01T00:00:00.000Z",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    buildTrust: {
+      repository,
+      workflow: `${repository}/${workflowPath}`,
+      sourceRef: "refs/heads/main",
+      oidcIssuer: "https://token.actions.githubusercontent.com",
+      runnerClass: "github-hosted"
+    },
+    allowedCommands: [
+      { commandId: "db.migrate.deploy", commandVersion: "1", capability: "migrate" },
+      { commandId: "db.schema.verify", commandVersion: "1", capability: "verify" }
+    ],
+    allowedTargets: [
+      {
+        endpointPolicyId: "synthetic-policy",
+        endpoint: "db.invalid:5432",
+        databaseName: "synthetic-db",
+        purposes: ["synthetic-fresh"],
+        roles: { observer: "observer", migrate: "migrate", verify: "verify" },
+        tls: "required"
+      }
+    ],
+    storage
+  };
+  const approval = {
+    schemaVersion: "manual-stage1-owner-approval.v1",
+    profileDigest: sha256Canonical(profile),
+    ownerId: profile.ownerId,
+    principal: { platform: "win32", sid },
+    hostFingerprint: sha256Bytes(Buffer.from(`subscription-saas/win32-machine-guid/v1\n${guid}`)),
+    approvedAt: generatedAt,
+    promotionEligible: false
+  };
+  const approvalBytes = encodeManualJson(approval),
+    approvalDigest = sha256Bytes(approvalBytes);
+  const binding = {
+    ...approval,
+    schemaVersion: "manual-stage1-owner-binding.v1",
+    approvalDigest,
+    approvalReference: `inputs/h1/${approvalDigest.slice(7)}.approval.json`
+  };
+  const approvalPath = path.join(storage.archiveRoot, binding.approvalReference);
+  await fs.mkdir(path.dirname(approvalPath), { recursive: true, mode: 0o700 });
+  for (const [file, bytes] of [
+    [path.join(repoRoot, profileName), encodeManualJson(profile)],
+    [path.join(repoRoot, bindingName), encodeManualJson(binding)],
+    [approvalPath, approvalBytes]
+  ])
+    await fs.writeFile(file, bytes, { flag: "wx", mode: 0o600 });
+  const systemDir = path.join(root, "synthetic-system");
+  for (const relative of [
+    "System32/reg.exe",
+    "System32/whoami.exe",
+    "System32/icacls.exe",
+    "System32/WindowsPowerShell/v1.0/powershell.exe"
+  ]) {
+    const file = path.join(systemDir, relative);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, "synthetic executable");
+  }
+  return {
+    root,
+    repoRoot,
+    profile,
+    approval,
+    binding,
+    approvalPath,
+    keys,
+    systemDir,
+    counters: {
+      privateKeyReads: 0,
+      indexWrites: 0,
+      sessionWrites: 0,
+      credentialReads: 0,
+      externalCalls: 0
+    },
+    host: { guid, sid, badRoot: null }
+  };
+}
+
+function installFixedIO(t, f, gh) {
+  const sourceMapped = (file) =>
+    typeof file === "string" &&
+    (file === productionRoot || file.startsWith(productionRoot + path.sep)) &&
+    !file.includes(path.join("release", "contracts", "schemas"));
+  const mapped = (file) =>
+    typeof file !== "string"
+      ? file
+      : file.startsWith(systemRoot)
+        ? path.join(f.systemDir, file.slice(systemRoot.length))
+        : sourceMapped(file)
+          ? path.join(f.repoRoot, path.relative(productionRoot, file))
+          : file;
+  for (const name of ["lstat", "readFile", "readdir", "mkdir", "writeFile"])
+    t.mock.method(fs, name, (file, ...args) => nativeFS[name](mapped(file), ...args));
+  t.mock.method(fs, "realpath", async (file, ...args) => {
+    const real = await nativeFS.realpath(mapped(file), ...args);
+    return sourceMapped(file) || String(file).startsWith(systemRoot) ? file : real;
+  });
+  t.mock.method(fs, "open", async (file, flags, ...args) => {
+    const actual = mapped(file);
+    if (actual.startsWith(f.profile.storage.keyRoot + path.sep)) f.counters.privateKeyReads++;
+    if (actual.startsWith(f.profile.storage.credentialRoot + path.sep))
+      f.counters.credentialReads++;
+    if (String(flags) !== "r" && actual.startsWith(f.profile.storage.journalRoot + path.sep))
+      f.counters.sessionWrites++;
+    if (String(flags) !== "r" && actual.endsWith(path.sep + "index.json")) f.counters.indexWrites++;
+    return nativeFS.open(actual, flags, ...args);
+  });
+  t.mock.method(childProcess, "execFile", (file, args, options, callback) => {
+    if (f.host.before) f.host.before(file, args);
+    let value;
+    if (file === "git") {
+      const actualArgs = args.map((arg) => (arg === productionRoot ? f.repoRoot : arg));
+      return nativeExecFile(file, actualArgs, options, (error, stdout, stderr) => {
+        const output =
+          args.includes("--show-toplevel") && !error ? Buffer.from(productionRoot) : stdout;
+        callback(error, output, stderr);
+      });
+    }
+    if (file === "gh") {
+      if (gh.before) gh.before(args);
+      gh.calls.push({ file, args: [...args], options: { ...options } });
+      if (args[0] === "attestation" && args[2] === gh.paths.proof) value = gh.proof;
+      else if (args[0] === "attestation" && args[2] === gh.paths.receipt) value = gh.receipt;
+      else if (
+        args[0] === "api" &&
+        args[1] === `repos/${repository}/actions/runs/${runId}/attempts/1`
+      )
+        value = gh.run;
+      else throw new Error("Unexpected synthetic gh invocation");
+      value = Buffer.from(JSON.stringify(value));
+    } else if (file === system + "reg.exe")
+      value = Buffer.from(
+        `HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    {${f.host.guid}}\r\n`
+      );
+    else if (file === system + "whoami.exe")
+      value = Buffer.from(`"synthetic\\owner","${f.host.sid}"\r\n`);
+    else if (file === system + "icacls.exe") value = Buffer.from("synthetic ACL observation\n");
+    else if (file === system + "WindowsPowerShell\\v1.0\\powershell.exe") {
+      const script = args.at(-1),
+        isSystem = script.includes(systemRoot),
+        bad = f.host.badRoot && script.includes(f.host.badRoot.replaceAll("'", "''")),
+        wide = f.host.wideRoot && script.includes(f.host.wideRoot.replaceAll("'", "''"));
+      value = Buffer.from(
+        isSystem
+          ? "S-1-5-18\nS-1-5-18|Allow|2032127\nattributes|0\n"
+          : `${bad ? "S-1-5-21-999" : sid}\n${sid}|Allow|2032127\n${wide ? "S-1-5-32-545|Allow|1179817\n" : ""}attributes|0\n`
+      );
+    } else {
+      f.counters.externalCalls++;
+      throw new Error("Unexpected external process denied");
+    }
+    queueMicrotask(() => callback(null, value, Buffer.alloc(0)));
+    return { kill() {} };
+  });
+  syncBuiltinESMExports();
+}
+
+function verifiedItem(bytes, sourceSha, name, timestamp = generatedAt) {
+  const statement = {
+    _type: "https://in-toto.io/Statement/v1",
+    subject: [{ name, digest: { sha256: sha256Bytes(bytes).slice(7) } }],
+    predicateType: "https://slsa.dev/provenance/v1",
+    predicate: {
+      buildDefinition: {
+        buildType: "https://actions.github.io/buildtypes/workflow/v1",
+        externalParameters: {}
+      },
+      runDetails: { builder: { id: "https://github.com/actions/runner" } }
+    }
+  };
+  return {
+    attestation: {
+      bundle: {
+        mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+        verificationMaterial: {
+          certificate: { rawBytes: Buffer.from("synthetic-certificate").toString("base64") },
+          tlogEntries: []
+        },
+        dsseEnvelope: {
+          payloadType: "application/vnd.in-toto+json",
+          payload: encodeManualJson(statement).toString("base64"),
+          signatures: [{ sig: Buffer.alloc(64, 1).toString("base64") }]
+        }
+      },
+      bundle_url: "https://synthetic.invalid/short-lived-download",
+      initiator: "github"
+    },
+    verificationResult: {
+      statement,
+      signature: {
+        certificate: {
+          issuer: "https://token.actions.githubusercontent.com",
+          subjectAlternativeName: {
+            type: "URI",
+            value: `https://github.com/${repository}/${workflowPath}@refs/heads/main`
+          },
+          buildSignerURI: `https://github.com/${repository}/${workflowPath}@refs/heads/main`,
+          buildSignerDigest: sourceSha,
+          runnerEnvironment: "github-hosted",
+          sourceRepositoryURI: `https://github.com/${repository}`,
+          sourceRepositoryDigest: sourceSha,
+          sourceRepositoryRef: "refs/heads/main",
+          sourceRepositoryIdentifier: "10001",
+          sourceRepositoryOwnerURI: "https://github.com/keqi119",
+          sourceRepositoryOwnerIdentifier: "10002",
+          buildConfigURI: `https://github.com/${repository}/${workflowPath}@refs/heads/main`,
+          buildConfigDigest: sourceSha,
+          buildTrigger: "push",
+          runInvocationURI: `https://github.com/${repository}/actions/runs/${runId}/attempts/1`,
+          sourceRepositoryVisibilityAtSigning: "public"
+        }
+      },
+      verifiedTimestamps: [{ type: "Tlog", uri: "https://rekor.sigstore.dev", timestamp }]
+    }
+  };
+}
+
+async function buildFixture(t) {
+  const f = await fixture(t);
+  const manifest = "release/contracts/repository-contract-files.v1.json";
+  const entrypoints = [
+    "scripts/release/manual-stage1-trust.mjs",
+    "scripts/release/verify-build-proof.mjs"
+  ];
+  await fs.mkdir(path.join(f.repoRoot, "scripts", "release"), { recursive: true });
+  await fs.mkdir(path.join(f.repoRoot, "apps", "api", "prisma", "migrations"), { recursive: true });
+  for (const file of entrypoints)
+    await fs.copyFile(
+      new URL(`./${path.basename(file)}`, import.meta.url),
+      path.join(f.repoRoot, file)
+    );
+  await fs.writeFile(
+    path.join(f.repoRoot, manifest),
+    encodeManualJson({
+      contractVersion: "repository-contract-files.v1",
+      files: [manifest, profileName, bindingName, ...entrypoints].sort()
+    }),
+    { mode: 0o600 }
+  );
+  await git(f.repoRoot, "init", "--initial-branch=main");
+  await git(f.repoRoot, "add", "--all");
+  await git(f.repoRoot, "commit", "--no-verify", "-m", "Synthetic fixed trust inputs");
+  const sourceSha = await git(f.repoRoot, "rev-parse", "HEAD");
+  const contract = await computeRepositoryContract(f.repoRoot);
+  const catalog = await computeMigrationCatalog(f.repoRoot);
+  const ciRunRef = `https://github.com/${repository}/actions/runs/${runId}`;
+  const images = ["api", "web", "runner"].map((name, index) => {
+    const image = `ghcr.io/keqi119/subscription-${name}`,
+      imageDigest = digest(String(index + 1));
+    return {
+      name,
+      image,
+      platform: "linux/amd64",
+      digest: imageDigest,
+      sourceRevision: sourceSha,
+      baseImageDigests: [
+        { image: "node:22-bookworm-slim", declaredDigest: digest("a"), digest: digest("b") }
+      ],
+      builderName: "https://mobyproject.org/buildkit@v1",
+      buildAttestationRef: `oci://${image}@${imageDigest}#provenance=${digest("c")}`,
+      registrySubject: `${image}@${imageDigest}`,
+      buildRunRef: ciRunRef
+    };
+  });
+  const material = {
+    schemaVersion: "build-material-observation.v1",
+    sourceSha,
+    checkoutRef: sourceSha,
+    ciRunRef,
+    repositoryContractDigest: contract.digest,
+    migrationCatalogDigest: catalog.digest,
+    policyDigest: digest("f"),
+    promotionEligibility: "trusted-candidate",
+    images,
+    externalActions: [
+      { name: "actions/checkout", commitSha: "2".repeat(40) },
+      { name: "docker/build-push-action", commitSha: "3".repeat(40) }
+    ],
+    builder: {
+      name: "https://mobyproject.org/buildkit@v1",
+      provenanceRef: `build-material-attestations:${digest("4")}`
+    },
+    observedAt: generatedAt
+  };
+  const proof = structuredClone(
+    createBuildProof({
+      sourceSha,
+      images,
+      migrationCatalog: catalog,
+      repositoryContract: contract,
+      provenance: {
+        generatedAt,
+        ciRunRef,
+        attestationRef: material.builder.provenanceRef,
+        checkoutRef: sourceSha,
+        buildMaterialObservation: material
+      }
+    })
+  );
+  const proofBytes = Buffer.from(JSON.stringify(proof, null, 2) + "\n");
+  const materialBytes = Buffer.from(JSON.stringify(material, null, 2) + "\n");
+  const proofItem = verifiedItem(proofBytes, sourceSha, "build-proof.json");
+  const receipt = {
+    schemaVersion: "custody-receipt.retention90.v1",
+    receiptId: randomUUID(),
+    contentDigest: sha256Canonical(proof),
+    contentSizeBytes: encodeManualJson(proof).length,
+    storeRef: `s3://synthetic-authority/private/${sha256Canonical(proof).slice(7)}.json`,
+    uploadedAt: generatedAt,
+    readbackAt: "2026-09-01T00:00:01.000Z",
+    readbackDigest: sha256Canonical(proof),
+    owner: "release-engineering",
+    readers: ["release", "qa", "security", "audit"],
+    retainUntil: "2026-11-30T00:00:00.000Z",
+    expiryDisposition: "review",
+    attestationRef: sha256Canonical(proofItem.attestation.bundle)
+  };
+  const buildRoot = path.join(f.profile.storage.archiveRoot, "inputs", "build");
+  await fs.mkdir(buildRoot, { recursive: true, mode: 0o700 });
+  const proofPath = path.join(buildRoot, `${sha256Bytes(proofBytes).slice(7)}.proof.json`);
+  const materialPath = path.join(buildRoot, `${sha256Bytes(materialBytes).slice(7)}.material.json`);
+  const receiptPath = path.join(
+    buildRoot,
+    `${sha256Bytes(proofBytes).slice(7)}.custody-receipt.retention90.v1.json`
+  );
+  const receiptBytes = encodeManualJson(receipt);
+  for (const [file, bytes] of [
+    [proofPath, proofBytes],
+    [materialPath, materialBytes],
+    [receiptPath, receiptBytes]
+  ])
+    await fs.writeFile(file, bytes, { flag: "wx", mode: 0o600 });
+  const gh = {
+    proof: [proofItem],
+    receipt: [
+      verifiedItem(receiptBytes, sourceSha, "custody-receipt.json", "2026-09-01T00:00:02.000Z")
+    ],
+    run: {
+      id: runId,
+      run_attempt: 1,
+      head_sha: sourceSha,
+      head_branch: "main",
+      status: "completed",
+      conclusion: "success",
+      path: workflowPath,
+      html_url: ciRunRef,
+      repository: { full_name: repository },
+      head_repository: { full_name: repository },
+      event: "push",
+      workflow_id: 3001
+    },
+    calls: [],
+    before: null,
+    error: null,
+    stderr: Buffer.alloc(0),
+    raw: null
+  };
+  gh.paths = { proof: proofPath, receipt: receiptPath };
+  installFixedIO(t, f, gh);
+  return {
+    ...f,
+    sourceSha,
+    proof,
+    material,
+    proofBytes,
+    materialBytes,
+    proofPath,
+    materialPath,
+    receipt,
+    receiptBytes,
+    receiptPath,
+    gh
+  };
+}
+
+function prepareInput(f, overrides = {}) {
+  return {
+    proofBytes: f.proofBytes,
+    materialBytes: f.materialBytes,
+    targetIntent: { endpointPolicyId: "synthetic-policy", databaseName: "synthetic-db" },
+    scenario: "normal",
+    ...overrides
+  };
+}
+function noAuthority(f) {
+  assert.equal(f.counters.privateKeyReads, 0);
+  assert.equal(f.counters.sessionWrites, 0);
+  assert.equal(f.counters.credentialReads, 0);
+  assert.equal(f.counters.externalCalls, 0);
+}
+
+test("prepare freezes its four caller inputs before asynchronous build verification", async (t) => {
+  const f = await buildFixture(t),
+    input = prepareInput(f);
+  const originalProof = Buffer.from(input.proofBytes),
+    originalMaterial = Buffer.from(input.materialBytes);
+  f.gh.before = () => {
+    input.proofBytes.fill(32);
+    input.materialBytes.fill(32);
+    input.targetIntent.databaseName = "changed-caller-db";
+    input.scenario = "apply-interrupted";
+  };
+  const result = await launcher.prepareManualOperation(input);
+  const fixed = await readFixedManualOperation({
+    repoRoot: productionRoot,
+    operationRef: result.operationRef
+  });
+  assert.equal(fixed.operation.scenario, "normal");
+  assert.equal(fixed.operation.targetIntent.databaseName, "synthetic-db");
+  assert.equal(fixed.operation.proofRawDigest, sha256Bytes(originalProof));
+  assert.equal(fixed.operation.materialRawDigest, sha256Bytes(originalMaterial));
+  noAuthority(f);
+});
+
+test("synthetic lowest-layer fixture passes the unchanged R1 build verifier", async (t) => {
+  const f = await buildFixture(t);
+  const build = await verifyManualBuild({
+    repoRoot: productionRoot,
+    proofBytes: f.proofBytes,
+    materialBytes: f.materialBytes
+  });
+  assert.equal(build.custodyReceiptRawDigest, sha256Bytes(f.receiptBytes));
+  assert.equal(build.buildProofDigest, sha256Canonical(f.proof));
+  assert.equal(f.counters.indexWrites, 0);
+  noAuthority(f);
+});
+
+for (const scenario of ["normal", "apply-interrupted"]) {
+  test(`prepare ${scenario} creates a closed fixed index and returns only its independent reference`, async (t) => {
+    const f = await buildFixture(t);
+    const result = await launcher.prepareManualOperation(prepareInput(f, { scenario }));
+    assert.deepEqual(Object.keys(result).sort(), [
+      "indexDigest",
+      "operationRef",
+      "promotionEligible"
+    ]);
+    assert.equal(result.promotionEligible, false);
+    const fixed = await readFixedManualOperation({
+      repoRoot: productionRoot,
+      operationRef: result.operationRef
+    });
+    const index = fixed.operation;
+    assert.equal(fixed.indexDigest, result.indexDigest);
+    assert.deepEqual(Object.keys(index).sort(), [
+      "buildProofDigest",
+      "createdAt",
+      "custodyReceiptRawDigest",
+      "materialRawDigest",
+      "operationRef",
+      "operations",
+      "profileDigest",
+      "promotionEligible",
+      "proofRawDigest",
+      "purpose",
+      "runId",
+      "scenario",
+      "schemaVersion",
+      "targetIntent"
+    ]);
+    assert.equal(index.profileDigest, sha256Canonical(f.profile));
+    assert.equal(index.buildProofDigest, sha256Canonical(f.proof));
+    assert.equal(index.proofRawDigest, sha256Bytes(f.proofBytes));
+    assert.equal(index.materialRawDigest, sha256Bytes(f.materialBytes));
+    assert.equal(index.custodyReceiptRawDigest, sha256Bytes(f.receiptBytes));
+    assert.equal(index.purpose, "synthetic-fresh");
+    assert.equal(index.scenario, scenario);
+    assert.deepEqual(index.targetIntent, {
+      endpointPolicyId: "synthetic-policy",
+      databaseName: "synthetic-db"
+    });
+    const identities = [
+      index.operationRef,
+      index.runId,
+      ...Object.values(index.operations).map((entry) => entry.operationId)
+    ];
+    assert.equal(new Set(identities).size, 5);
+    for (const identity of identities)
+      assert.match(
+        identity,
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+      );
+    for (const phase of ["observe", "migrate", "verify"])
+      assert.equal(
+        index.operations[phase].idempotencyKey,
+        `manual-stage1:${result.operationRef}:${phase}`
+      );
+    const bytes = await fs.readFile(
+      path.join(
+        f.profile.storage.archiveRoot,
+        "inputs",
+        "operations",
+        result.operationRef,
+        "index.json"
+      )
+    );
+    assert.deepEqual(bytes, encodeManualJson(index));
+    assert.equal(f.counters.indexWrites, 1);
+    noAuthority(f);
+  });
+}
+
+for (const [name, mutate, code] of [
+  [
+    "missing sidecar",
+    (f) => fs.unlink(path.join(f.repoRoot, bindingName)),
+    "TRUSTED_BUILD_UNAVAILABLE"
+  ],
+  ["changed approval", (f) => fs.appendFile(f.approvalPath, "\n"), "TRUSTED_BUILD_UNAVAILABLE"],
+  [
+    "wrong actual host",
+    (f) => {
+      f.host.guid = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    },
+    "TRUSTED_BUILD_UNAVAILABLE"
+  ],
+  [
+    "wrong actual principal",
+    (f) => {
+      f.host.sid = "S-1-5-21-999-888-777-1002";
+    },
+    "TRUSTED_BUILD_UNAVAILABLE"
+  ],
+  ...["key", "journal", "archive", "backup", "credential"].map((name) => [
+    `wrong ${name} root ACL`,
+    (f) => {
+      f.host.badRoot = f.profile.storage[`${name}Root`];
+    },
+    "TRUSTED_BUILD_UNAVAILABLE"
+  ]),
+  ["missing proof", (f) => fs.unlink(f.proofPath), "TRUSTED_BUILD_UNAVAILABLE"],
+  ["changed material", (f) => fs.appendFile(f.materialPath, "\n"), "TRUSTED_BUILD_UNAVAILABLE"],
+  [
+    "missing custody receipt",
+    (f) => fs.unlink(f.receiptPath),
+    "MANUAL_BUILD_CUSTODY_INPUT_REQUIRED"
+  ],
+  [
+    "wrong receipt content binding",
+    (f) =>
+      fs.writeFile(f.receiptPath, encodeManualJson({ ...f.receipt, contentDigest: digest("e") })),
+    "TRUSTED_BUILD_UNAVAILABLE"
+  ],
+  [
+    "receipt from another source run",
+    (f) => {
+      f.gh.receipt[0].verificationResult.signature.certificate.runInvocationURI = `https://github.com/${repository}/actions/runs/9999/attempts/1`;
+    },
+    "TRUSTED_BUILD_UNAVAILABLE"
+  ],
+  [
+    "incomplete CI",
+    (f) => {
+      f.gh.run.status = "in_progress";
+    },
+    "TRUSTED_BUILD_UNAVAILABLE"
+  ]
+]) {
+  test(`prepare rejects ${name} before index/key/session/H3 access`, async (t) => {
+    const f = await buildFixture(t);
+    await mutate(f);
+    await assert.rejects(launcher.prepareManualOperation(prepareInput(f)), { code });
+    assert.equal(f.counters.indexWrites, 0);
+    noAuthority(f);
+  });
+}
+
+for (const [name, overrides] of [
+  ["missing target", { targetIntent: undefined }],
+  [
+    "target profile mismatch",
+    { targetIntent: { endpointPolicyId: "synthetic-policy", databaseName: "other-db" } }
+  ],
+  [
+    "target future authority field",
+    {
+      targetIntent: {
+        endpointPolicyId: "synthetic-policy",
+        databaseName: "synthetic-db",
+        approved: true
+      }
+    }
+  ],
+  ["missing scenario", { scenario: undefined }],
+  ["unsupported scenario", { scenario: "snapshot" }]
+]) {
+  test(`prepare rejects ${name} without reserving an operation`, async (t) => {
+    const f = await buildFixture(t);
+    await assert.rejects(launcher.prepareManualOperation(prepareInput(f, overrides)), {
+      code: "MANUAL_OPERATION_INPUT_UNAVAILABLE"
+    });
+    assert.equal(f.counters.indexWrites, 0);
+    noAuthority(f);
+    await assert.rejects(
+      fs.readdir(path.join(f.profile.storage.archiveRoot, "inputs", "operations")),
+      { code: "ENOENT" }
+    );
+  });
+}
+
+test("prepare rejects a wide existing operations-directory ACL before writing any index", async (t) => {
+  const f = await buildFixture(t);
+  const operationsRoot = path.join(f.profile.storage.archiveRoot, "inputs", "operations");
+  await fs.mkdir(operationsRoot, { recursive: true });
+  f.host.wideRoot = operationsRoot;
+  await assert.rejects(launcher.prepareManualOperation(prepareInput(f)));
+  assert.equal(f.counters.indexWrites, 0);
+  assert.deepEqual(await fs.readdir(operationsRoot), []);
+  noAuthority(f);
+});
+
+test("prepare refuses a changed owner binding after H1 success before index write", async (t) => {
+  const f = await buildFixture(t);
+  let changed = false;
+  t.mock.method(crypto, "randomUUID", () => {
+    if (!changed) {
+      changed = true;
+      fsSync.writeFileSync(
+        path.join(f.repoRoot, bindingName),
+        encodeManualJson({ ...f.binding, approvedAt: "2026-09-02T00:00:00.000Z" })
+      );
+    }
+    return nativeUUID();
+  });
+  syncBuiltinESMExports();
+  await assert.rejects(launcher.prepareManualOperation(prepareInput(f)));
+  assert.equal(f.counters.indexWrites, 0);
+  noAuthority(f);
+});
+
+test("prepare refuses a new checkout HEAD even when tracked contract bytes stay identical", async (t) => {
+  const f = await buildFixture(t);
+  let changed = false;
+  t.mock.method(crypto, "randomUUID", () => {
+    if (!changed) {
+      changed = true;
+      childProcess.execFileSync(
+        "git",
+        [
+          "-c",
+          "core.hooksPath=NUL",
+          "-c",
+          "commit.gpgsign=false",
+          "-c",
+          "user.name=Synthetic Test",
+          "-c",
+          "user.email=test@example.invalid",
+          "-C",
+          f.repoRoot,
+          "commit",
+          "--allow-empty",
+          "--no-verify",
+          "-m",
+          "Synthetic changed source"
+        ],
+        {
+          shell: false,
+          windowsHide: true,
+          env: {
+            PATH: process.env.PATH,
+            SystemRoot: process.env.SystemRoot,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_GLOBAL: "NUL"
+          }
+        }
+      );
+    }
+    return nativeUUID();
+  });
+  syncBuiltinESMExports();
+  await assert.rejects(launcher.prepareManualOperation(prepareInput(f)));
+  assert.equal(f.counters.indexWrites, 0);
+  noAuthority(f);
+});
+
+test("prepare detects binding rename-out-and-back during the real H1 loader window", async (t) => {
+  const f = await buildFixture(t);
+  let replaced = false;
+  f.host.before = (file) => {
+    if (!replaced && file === system + "whoami.exe") {
+      replaced = true;
+      const bindingPath = path.join(f.repoRoot, bindingName),
+        displaced = bindingPath + ".displaced";
+      fsSync.renameSync(bindingPath, displaced);
+      fsSync.renameSync(displaced, bindingPath);
+    }
+  };
+  await assert.rejects(launcher.prepareManualOperation(prepareInput(f)));
+  assert.equal(replaced, true);
+  assert.equal(f.counters.indexWrites, 0);
+  noAuthority(f);
+});
+
+test("prepare cannot replace the verified build tuple with another independently valid H1 tuple", async (t) => {
+  const f = await buildFixture(t);
+  let changed = false,
+    replacement;
+  t.mock.method(crypto, "randomUUID", () => {
+    if (!changed) {
+      changed = true;
+      replacement = { ...f.profile, profileId: nativeUUID() };
+      const approval = { ...f.approval, profileDigest: sha256Canonical(replacement) };
+      const approvalBytes = encodeManualJson(approval),
+        approvalDigest = sha256Bytes(approvalBytes);
+      const binding = {
+        ...approval,
+        schemaVersion: "manual-stage1-owner-binding.v1",
+        approvalDigest,
+        approvalReference: `inputs/h1/${approvalDigest.slice(7)}.approval.json`
+      };
+      fsSync.writeFileSync(
+        path.join(f.profile.storage.archiveRoot, binding.approvalReference),
+        approvalBytes
+      );
+      fsSync.writeFileSync(path.join(f.repoRoot, profileName), encodeManualJson(replacement));
+      fsSync.writeFileSync(path.join(f.repoRoot, bindingName), encodeManualJson(binding));
+    }
+    return nativeUUID();
+  });
+  syncBuiltinESMExports();
+  await assert.rejects(launcher.prepareManualOperation(prepareInput(f)));
+  assert.deepEqual(await loadFixedManualProfile({ repoRoot: productionRoot }), replacement);
+  assert.equal(f.counters.indexWrites, 0);
+  noAuthority(f);
+});
+
+test("prepare detects a verified source file changed after build success before index write", async (t) => {
+  const f = await buildFixture(t);
+  let changed = false;
+  t.mock.method(crypto, "randomUUID", () => {
+    if (!changed) {
+      changed = true;
+      fsSync.appendFileSync(
+        path.join(f.repoRoot, "scripts", "release", "verify-build-proof.mjs"),
+        "\n// synthetic later source\n"
+      );
+    }
+    return nativeUUID();
+  });
+  syncBuiltinESMExports();
+  await assert.rejects(launcher.prepareManualOperation(prepareInput(f)));
+  assert.equal(f.counters.indexWrites, 0);
+  noAuthority(f);
+});
+
+for (const fault of [
+  "wide-inputs",
+  "new-directory-ACL",
+  "new-directory-path",
+  "opened-index-ACL"
+]) {
+  test(`prepare ${fault} refuses bytes before the first index write`, async (t) => {
+    const f = await buildFixture(t);
+    let reservedRef, indexPath;
+    const mkdir = fs.mkdir.bind(fs),
+      open = fs.open.bind(fs),
+      realpath = fs.realpath.bind(fs);
+    if (fault === "wide-inputs")
+      f.host.wideRoot = path.join(f.profile.storage.archiveRoot, "inputs");
+    t.mock.method(fs, "mkdir", async (file, ...args) => {
+      const result = await mkdir(file, ...args);
+      if (path.basename(path.dirname(file)) === "operations") {
+        reservedRef = path.basename(file);
+        if (fault === "new-directory-ACL") f.host.wideRoot = file;
+      }
+      return result;
+    });
+    t.mock.method(fs, "realpath", (file, ...args) =>
+      fault === "new-directory-path" && path.basename(file) === reservedRef
+        ? Promise.resolve(path.join(f.root, "wrong-operation-path"))
+        : realpath(file, ...args)
+    );
+    t.mock.method(fs, "open", async (file, flags, ...args) => {
+      const handle = await open(file, flags, ...args);
+      if (flags === "wx" && String(file).endsWith(path.sep + "index.json")) {
+        indexPath = file;
+        if (fault === "opened-index-ACL") f.host.wideRoot = file;
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(launcher.prepareManualOperation(prepareInput(f)));
+    if (indexPath) assert.equal((await nativeFS.readFile(indexPath)).length, 0);
+    else assert.equal(f.counters.indexWrites, 0);
+    noAuthority(f);
+  });
+}
+
+test("prepare collision preserves the original ref and bytes without generating another identity set", async (t) => {
+  const f = await buildFixture(t),
+    reservedRef = randomUUID();
+  const directory = path.join(f.profile.storage.archiveRoot, "inputs", "operations", reservedRef);
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(path.join(directory, "index.json"), "original reserved bytes");
+  let calls = 0;
+  t.mock.method(crypto, "randomUUID", () => (++calls === 1 ? reservedRef : nativeUUID()));
+  syncBuiltinESMExports();
+  await assert.rejects(launcher.prepareManualOperation(prepareInput(f)), (error) => {
+    assert.equal(error.code, "MANUAL_OPERATION_PREPARATION_UNKNOWN");
+    assert.equal(error.operationRef, reservedRef);
+    return true;
+  });
+  assert.equal(
+    await fs.readFile(path.join(directory, "index.json"), "utf8"),
+    "original reserved bytes"
+  );
+  assert.equal(calls, 5);
+  assert.equal(f.counters.indexWrites, 0);
+  noAuthority(f);
+});
+
+for (const fault of [
+  "partial-write",
+  "independent-readback",
+  "readback-ACL",
+  "readback-path",
+  "future-index-field"
+]) {
+  test(`prepare ${fault} leaves the reserved ref and refuses success or automatic retry`, async (t) => {
+    const f = await buildFixture(t);
+    const open = fs.open.bind(fs);
+    let reservedRef,
+      wroteIndex = false,
+      injected = false;
+    t.mock.method(fs, "open", async (file, flags, ...args) => {
+      if (String(file).endsWith(path.sep + "index.json")) {
+        reservedRef = path.basename(path.dirname(file));
+        if (flags === "r" && fault === "independent-readback") {
+          injected = true;
+          throw new Error("synthetic independent reopen failure");
+        }
+        if (flags === "r" && fault === "readback-ACL") {
+          injected = true;
+          f.host.badRoot = path.dirname(file);
+        }
+      }
+      const handle = await open(file, flags, ...args);
+      if (String(file).endsWith(path.sep + "index.json") && flags === "wx") {
+        const write = handle.writeFile.bind(handle);
+        handle.writeFile = async (bytes) => {
+          if (fault === "partial-write") {
+            injected = true;
+            await write(bytes.subarray(0, 30));
+            throw new Error("synthetic partial write");
+          }
+          if (fault === "future-index-field") {
+            injected = true;
+            return write(encodeManualJson({ ...JSON.parse(bytes), approved: true }));
+          }
+          const result = await write(bytes);
+          wroteIndex = true;
+          return result;
+        };
+      }
+      return handle;
+    });
+    if (fault === "readback-path") {
+      const realpath = fs.realpath.bind(fs);
+      t.mock.method(fs, "realpath", (file, ...args) => {
+        if (wroteIndex && String(file).endsWith(path.sep + "index.json")) {
+          injected = true;
+          return Promise.resolve(path.join(f.root, "wrong-path"));
+        }
+        return realpath(file, ...args);
+      });
+    }
+    syncBuiltinESMExports();
+    await assert.rejects(launcher.prepareManualOperation(prepareInput(f)), (error) => {
+      assert.equal(error.code, "MANUAL_OPERATION_PREPARATION_UNKNOWN");
+      assert.equal(error.operationRef, reservedRef);
+      if (fault === "partial-write") assert.equal(error.cause.message, "synthetic partial write");
+      else assert.equal(error.cause.code, "MANUAL_OPERATION_INPUT_UNAVAILABLE");
+      return true;
+    });
+    assert.equal(injected, true, "the intended write/readback fault must actually occur");
+    assert.deepEqual(
+      await fs.readdir(path.join(f.profile.storage.archiveRoot, "inputs", "operations")),
+      [reservedRef]
+    );
+    assert.ok(
+      (
+        await nativeFS.readFile(
+          path.join(
+            f.profile.storage.archiveRoot,
+            "inputs",
+            "operations",
+            reservedRef,
+            "index.json"
+          )
+        )
+      ).length > 0
+    );
+    assert.equal(f.counters.indexWrites, 1);
+    noAuthority(f);
+  });
+}

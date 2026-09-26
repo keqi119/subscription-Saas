@@ -5,6 +5,35 @@ import { finalizeRunnerExecution, runCli, runProductionEntrypoint } from "../src
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 
+for (const [name, argv, envelope, code] of [
+  ["mode alone", [], undefined, "MANUAL_AUTHORIZATION_REQUIRED"],
+  ["mixed old envelope", [], "/old/envelope.json", "RUNNER_EXECUTION_MODE_REJECTED"],
+  ["extra argv", ["--adapter", "other.mjs"], undefined, "RUNNER_ENTRYPOINT_OVERRIDE_REJECTED"]
+]) {
+  test(`manual production ${name} cannot construct legacy adapters or execute trusted envelope`, async () => {
+    let effects = 0;
+    await assert.rejects(
+      runProductionEntrypoint({
+        argv,
+        environment: {
+          RUNNER_EXECUTION_MODE: "manual-stage1",
+          ...(envelope ? { RUNNER_LAUNCH_ENVELOPE_FILE: envelope } : {})
+        },
+        createAdapters() {
+          effects++;
+          throw new Error("legacy adapter touched");
+        },
+        executeTrusted() {
+          effects++;
+          throw new Error("legacy execution touched");
+        }
+      }),
+      { code }
+    );
+    assert.equal(effects, 0);
+  });
+}
+
 for (const argv of [["sh"], ["execute", "scripts/foo.mjs"], ["sql", "select 1"]]) {
   test(`rejects unsupported invocation ${argv.join(" ")}`, async () => {
     await assert.rejects(() => runCli(argv), { code: "RUNNER_COMMAND_NOT_REGISTERED" });

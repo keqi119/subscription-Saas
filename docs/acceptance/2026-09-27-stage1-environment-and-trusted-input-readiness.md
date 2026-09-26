@@ -54,3 +54,16 @@ GitHub 只读查询确认远端 main 受保护，当前 SHA 为 `f8ed944030646bb
 最近三次 docker-images workflow 记录中，2026-09-03 的 `33716557087` 失败，2026-09-01 的 `33480081279` 与 2026-08-31 的 `33450642058` 成功。均非当前阶段 1 最终候选，未触发新 workflow、push 或合并。
 
 后续先补齐现有云身份配置及加密/备份事实，形成精确可审查的 H1/H2 配置；不复制测试身份、不把 bucket 名称视为权限或保留策略已通过、不生成替代成功 receipt。离线 R2 代码实现可继续，不依赖这些尚未完成的外部门槛。
+
+## 签名主机运行工具准备（同日后续）
+
+已在 `/opt/stage1-tools/` 安装 Node `v22.23.3`、GitHub CLI `2.101.0` 和 pnpm `11.4.0`，并建立 `/usr/local/bin` 入口。安装前核对目标路径及入口不存在，没有覆盖既有程序。新 SSH 会话读回默认版本及 `gh attestation verify` 的 `--deny-self-hosted-runners` 支持；用该 Node 按既有 R1 算法重新计算 hostFingerprint，与本记录前述结果相同。
+
+Node 和 gh 的官方发布包在本地及服务器分别校验 SHA-256：
+
+- `node-v22.23.3-linux-x64.tar.xz`：`df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de`，来源为 Node 官方发布目录及其 SHASUMS。
+- `gh_2.101.0_linux_amd64.tar.gz`：`9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8`，来源为 GitHub CLI 官方 release asset/digest。
+
+服务器直接下载 gh 曾在 90 秒后超时、未成功；随后由本地下载同一官方发布包，经 SCP 上传并在服务器重新核验后安装。失败原件未改写为成功。pnpm 通过随 Node 安装的 Corepack 准备；没有配置云凭证、生成发布签名密钥或启动业务服务。
+
+安装后磁盘剩余约 **4.8 GiB**（使用率 88%）。这些工具只补齐执行环境，不证明 H1 加密保管、H2 可信构建或 R2 真实门槛已经通过。

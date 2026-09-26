@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 H2 内部 producer 前向登记
+
+隔离分支提交 `bbaf9710`，新增内部构建证据 custody producer，复用既有 proof/receipt 保管并补 material 原字节独立 Get/Head。独立限定审查 Approved；新增文件唯一测试 24/24、登记检查通过，未重复业务或全量门禁。[验证记录](2026-09-27-stage1-h2-internal-custody-validation.md)保留 RED、lint 全局配置修正和 hash 后置记录限制。未接真实 OSS/CI、未整合主候选；H2、expected-schema 和阶段 1 继续开放。
+
 ## 2026-09-27 子进程采集与 ACK 前向登记
 
 R2.2 隔离分支提交 `3710f11a`，子入口接通真实工具进程采集、共享 live ACK、原始结果和有界异常清理，限定独立审查 Approved，无 Important/Critical。[验证记录](2026-09-27-stage1-r22-child-collector-validation.md)区分唯一完整文件 102/102 与最终限域小修的定向 5/5，保留日志覆盖和起始测试字节未冻结的限制；未重复完整文件或业务套件。代码未整合主候选，父端/CLI 仍 STOP，expected 来源、H1/H2 与后续真实门槛仍未完成。

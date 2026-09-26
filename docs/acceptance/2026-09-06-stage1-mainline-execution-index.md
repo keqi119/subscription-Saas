@@ -30,9 +30,12 @@
 
 - 2026-09-26，离线实现切片状态已通过 `5e8b44d2` 前向登记。R2 metadata 两窗口修复 `83e91242` 经真实4 RED→4 GREEN、完整72/72与独立复审；归还工单入口 `4568006b` 的Web 65/65、类型/lint及独立审查通过，HTTP/服务组合测试 `acf75c4f` 经静态审查、controller 57/57和lint/格式通过。三者仍位于各自实施分支，尚未整合本候选；完整R2父子执行链、草案刷新单元、修复后同源PG和实际浏览器仍在推进。R2 READY前消费关联复用既有共享接口，不新增协议或授权入口；任何局部通过不替代完整门禁。
 
-历史代码基线：Task 5 `1f0b0439`。Task 6 提案保管：`457c0011`，不代表批准。
 - 2026-09-26，断点续接事实经 `0bf3eab1` 前向同步：R2 child 两文件 `73eeaf26` 的91/91与独立限定审查通过，证据止于受控授权/凭证拒绝边界，完整真实父子执行仍未闭合。ExpectedImport 实际私密服务 Get/Head/ACL 格式、固定消费绑定及身份未提供，保持输入未就绪。R4源 `f02af8de` 离线87/87 Web、197/197 API通过，但首轮完整expiry fresh为91/94、exit1并已保管读回/退役；新增fixture调度隔离及人工定价证据集合缺陷正在按已审窄追加修复，首轮失败原件不覆盖。上述实施提交尚未整合本候选，实际浏览器、线上恢复与阶段1签字均未完成。
 
+- 2026-09-26，本地正常退车修复已整合：检查工单入口 `225c9913`、草案刷新 `c6d313fe`、人工定价证据成员修复 `ee549f41` 及相应测试/格式后继；[正式验收](2026-09-26-stage1-return-browser-gap-validation.md)为 `dd078c48`，前向状态 `9163b00e`。实际同源 `a86ed407` 完整PG退租94/94、资产33/33共127/127，API七文件225/225、API类型及14文件lint通过；Web87/87及类型来源、最后纯格式后继准确保留。三轮report/receipt独立重开核验及退役、代码和正式报告终审限定ACCEPT，原91/94与44个bad-port失败不覆盖。整合后API/Web整树与已审提交一致，契约176文件/128迁移/68Schema/13个命令契约、发现95/39/56/0通过。实际浏览器与完整R4仍待，未恢复线上Docker、部署或运行真实渠道。
+- 同日，R2 H3-A固定reader `d854a608` 在最终冻结字节上完整parent+CLI109/109、exit0并经限定复审；新增37聚焦与完整109重叠，不累加。合法材料仍止于RESOURCE_INPUT_REQUIRED，真实来源/资源、session/expected/credential/DB与完整R2.2未关闭；该WIP与child切片保留在独立实施分支。新发现的财务审批幂等键接线及WAIVER/WRITE_OFF证据成员风险已形成[独立实施计划](../superpowers/plans/2026-09-26-stage1-financial-approval-evidence-plan.md)并开始TDD；未把该后续单元或阶段1提前记为通过。
+
+历史代码基线：Task 5 `1f0b0439`。Task 6 提案保管：`457c0011`，不代表批准。
 Task 6/29R/30/I 系列冻结，Task 30 stash 不变。
 历史准入入口：[P0/P1 准入实施计划](../superpowers/plans/2026-09-06-stage1-p0-p1-admission-implementation-plan.md)，已关闭，不重跑。当前前向工作按下节及既有[主线/最小发布计划](../superpowers/plans/2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)执行。
 

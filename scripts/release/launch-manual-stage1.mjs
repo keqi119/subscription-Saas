@@ -13,6 +13,7 @@ import {
   verifyManualAuthorization,
   validateContract,
   validateManualRunnerRequest,
+  parseManualRunnerFrames,
   encodeManualJson,
   sha256Bytes,
   sha256Canonical
@@ -170,6 +171,7 @@ export async function prepareManualOperation(input) {
       });
       // The directory reserves this exact ref. EEXIST is never an invitation to retry.
       await fs.mkdir(operationDirectory, { mode: 0o700 });
+      await fs.mkdir(path.join(operationDirectory, "runner-launch"), { mode: 0o700 });
       await checkedPrivatePath(operationDirectory, {
         principal,
         privateRoot: archiveRoot,
@@ -229,6 +231,13 @@ function sameIdentity(left, right, contents = true) {
     ...(contents ? ["size", "mtimeNs", "ctimeNs"] : [])
   ].every((key) => left[key] === right[key]);
 }
+function samePublicDirectory(left, right) {
+  return (
+    left.isDirectory() &&
+    right.isDirectory() &&
+    ["dev", "ino", "mode", "uid", "gid"].every((key) => left[key] === right[key])
+  );
+}
 async function observedPath(file) {
   const chain = [];
   let current = path.parse(file).root;
@@ -283,13 +292,11 @@ async function pinOwnerInputs() {
           !after.every(
             (entry, index) =>
               entry.path === item.chain[index].path &&
-              sameIdentity(
-                entry.stat,
-                item.chain[index].stat,
-                index === after.length - 1 ||
-                  entry.path === repoRoot ||
-                  entry.path.startsWith(repoRoot + path.sep)
-              )
+              (index === after.length - 1 ||
+              entry.path === repoRoot ||
+              entry.path.startsWith(repoRoot + path.sep)
+                ? sameIdentity(entry.stat, item.chain[index].stat)
+                : samePublicDirectory(entry.stat, item.chain[index].stat))
           )
         )
           fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
@@ -428,11 +435,9 @@ async function checkedPrivatePath(file, { principal, privateRoot, directory = fa
   if (
     after.length !== before.length ||
     !after.every((entry, index) =>
-      sameIdentity(
-        entry.stat,
-        before[index].stat,
-        entry.path === privateRoot || entry.path.startsWith(privateRoot + path.sep)
-      )
+      entry.path === privateRoot || entry.path.startsWith(privateRoot + path.sep)
+        ? sameIdentity(entry.stat, before[index].stat)
+        : samePublicDirectory(entry.stat, before[index].stat)
     ) ||
     (directory
       ? !after.at(-1).stat.isDirectory()
@@ -468,11 +473,11 @@ export async function launchManualStage1(input) {
       materialBytes: facts.fixed.materialBytes
     });
     try {
-      await performTargetObservation(session, facts);
+      const observed = await performTargetObservation(session, facts);
+      await launchZeroCredentialRunner(session, facts, observed);
     } finally {
       await session.close();
     }
-    fail("MANUAL_RUNNER_INPUT_REQUIRED");
   });
 }
 
@@ -556,7 +561,48 @@ function targetArchive({ profile, principal, recheck }) {
     if (sha256Bytes(item.bytes) !== digest) fail("MANUAL_STORAGE_UNVERIFIED");
     return item;
   };
+  const raw = async (bytes) => {
+    if (!Buffer.isBuffer(bytes) || bytes.length > 1048576) fail("MANUAL_OUTPUT_LIMIT");
+    const digest = sha256Bytes(bytes),
+      file = path.join(profile.storage.archiveRoot, "raw", `${digest.slice(7)}.bin`);
+    await recheck();
+    await checkedPrivatePath(path.dirname(file), {
+      principal,
+      privateRoot: profile.storage.archiveRoot,
+      directory: true
+    });
+    try {
+      const handle = await fs.open(file, "wx", 0o600);
+      try {
+        const chain = await checkedPrivatePath(file, {
+          principal,
+          privateRoot: profile.storage.archiveRoot
+        });
+        if (!sameIdentity(chain.at(-1).stat, await handle.stat({ bigint: true })))
+          fail("MANUAL_STORAGE_UNVERIFIED");
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    const input = await pinPrivateInput(file, {
+      principal,
+      privateRoot: profile.storage.archiveRoot
+    });
+    try {
+      if (!input.bytes.equals(bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
+      await input.recheck();
+    } finally {
+      await input.close();
+    }
+    await recheck();
+    return { digest, bytes: bytes.length };
+  };
   return {
+    raw,
     read,
     get,
     async put(value, schema) {
@@ -602,6 +648,695 @@ function targetArchive({ profile, principal, recheck }) {
       return graph;
     }
   };
+}
+
+const runnerEntrypoint = '["node","/app/apps/release-runner/src/cli.mjs"]';
+const runnerFormats = Object.freeze({
+  image:
+    '{"id":{{json .Id}},"repoDigests":{{json .RepoDigests}},"sourceRevision":{{json (index .Config.Labels "org.opencontainers.image.revision")}},"platform":{{json (printf "%s/%s" .Os .Architecture)}},"defaultEntrypoint":{{eq (json .Config.Entrypoint) "' +
+    runnerEntrypoint.replaceAll('"', '\\"') +
+    '"}},"defaultCommand":{{not .Config.Cmd}}}',
+  container:
+    '{"id":{{json .Id}},"imageId":{{json .Image}},"imageReference":{{json .Config.Image}},"running":{{json .State.Running}},"paused":{{json .State.Paused}},"restarting":{{json .State.Restarting}},"dead":{{json .State.Dead}},"readonlyRootfs":{{json .HostConfig.ReadonlyRootfs}},"privileged":{{json .HostConfig.Privileged}},"networkMode":{{json .HostConfig.NetworkMode}},"networkId":{{$sep := ""}}{{range .NetworkSettings.Networks}}{{$sep}}{{json .NetworkID}}{{$sep = ","}}{{end}},"capDrop":{{json .HostConfig.CapDrop}},"securityOpt":{{json .HostConfig.SecurityOpt}},"tmpfs":{{json .HostConfig.Tmpfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"portBindings":{{json .HostConfig.PortBindings}},"defaultEntrypoint":{{eq (json .Config.Entrypoint) "' +
+    runnerEntrypoint.replaceAll('"', '\\"') +
+    '"}},"defaultCommand":{{not .Config.Cmd}},"manualMode":[{{$sep := ""}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "RUNNER_EXECUTION_MODE"}}{{$sep}}{{eq . "RUNNER_EXECUTION_MODE=manual-stage1"}}{{$sep = ","}}{{end}}{{end}}]}'
+});
+
+// These are private source locations, never caller-selected evidence or admission.
+async function runnerSources(facts, attemptId) {
+  const { profile, principal, fixed, recheck } = facts,
+    privateRoot = profile.storage.archiveRoot,
+    base = path.join(
+      privateRoot,
+      "inputs",
+      "operations",
+      fixed.operation.operationRef,
+      "runner-launch"
+    );
+  await recheck();
+  const initial = await checkedPrivatePath(base, { principal, privateRoot, directory: true });
+  const directory = path.join(base, attemptId);
+  await fs.mkdir(directory, { mode: 0o700 });
+  const config = path.join(directory, "docker-config");
+  await fs.mkdir(config, { mode: 0o700 });
+  const pinned = await checkedPrivatePath(config, { principal, privateRoot, directory: true });
+  const immutable = [];
+  const guard = async () => {
+    await recheck();
+    const after = await checkedPrivatePath(config, { principal, privateRoot, directory: true });
+    if (
+      after.length !== pinned.length ||
+      !after.every(
+        (entry, index) =>
+          entry.path === pinned[index].path &&
+          (entry.path !== privateRoot && !entry.path.startsWith(privateRoot + path.sep)
+            ? samePublicDirectory(entry.stat, pinned[index].stat)
+            : sameIdentity(entry.stat, pinned[index].stat, entry.path !== directory))
+      )
+    )
+      fail("MANUAL_STORAGE_UNVERIFIED");
+    const baseEntry = after.find((entry) => entry.path === base);
+    if (
+      !sameIdentity(
+        baseEntry.stat,
+        { ...initial.at(-1).stat, nlink: initial.at(-1).stat.nlink + 1n },
+        false
+      )
+    )
+      fail("MANUAL_STORAGE_UNVERIFIED");
+    for (const item of immutable) {
+      const current = await checkedPrivatePath(item.file, { principal, privateRoot });
+      if (!sameIdentity(current.at(-1).stat, item.stat)) fail("MANUAL_STORAGE_UNVERIFIED");
+      const handle = await fs.open(item.file, "r");
+      try {
+        if (!(await readPinned(handle, item.stat)).bytes.equals(item.bytes))
+          fail("MANUAL_STORAGE_UNVERIFIED");
+      } finally {
+        await handle.close();
+      }
+    }
+  };
+  const put = async (name, bytes) => {
+    await guard();
+    if (!Buffer.isBuffer(bytes) || bytes.length > 1048576) fail("MANUAL_OUTPUT_LIMIT");
+    const file = path.join(directory, name),
+      handle = await fs.open(file, "wx", 0o600);
+    try {
+      const chain = await checkedPrivatePath(file, { principal, privateRoot });
+      if (!sameIdentity(chain.at(-1).stat, await handle.stat({ bigint: true })))
+        fail("MANUAL_STORAGE_UNVERIFIED");
+      await handle.writeFile(bytes);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const item = await pinPrivateInput(file, { principal, privateRoot });
+    try {
+      if (!item.bytes.equals(bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
+      await item.recheck();
+      immutable.push({
+        file,
+        bytes: Buffer.from(bytes),
+        stat: (await checkedPrivatePath(file, { principal, privateRoot })).at(-1).stat
+      });
+    } finally {
+      await item.close();
+    }
+    await guard();
+  };
+  await guard();
+  return { put, guard, config };
+}
+
+async function launchZeroCredentialRunner(session, facts, observed) {
+  const { fixed, principal } = facts,
+    operation = fixed.operation,
+    archive = targetArchive(facts);
+  // Reopen the genuine original baseline, rather than inventing one for this attempt.
+  const graph = await archive.graph();
+  const baselines = [...graph.entries()].filter(
+    ([, item]) =>
+      item.value.schemaVersion === "manual-baseline-manifest.v1" &&
+      item.value.identity.targetObservationDigest === sha256Canonical(observed.observation)
+  );
+  if (baselines.length !== 1) fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+  const baseline = await archive.get(baselines[0][0]);
+  if (!baseline.bytes.equals(baselines[0][1].bytes)) fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+  if (process.platform !== "linux") fail("MANUAL_RUNNER_INPUT_REQUIRED");
+  const resources = await facts.recheckResources();
+  if (resources.network.internal !== true) fail("MANUAL_RUNNER_RESOURCE_INPUT_REQUIRED");
+  const attemptId = randomUUID(),
+    allocatedAt = new Date().toISOString(),
+    identity = {
+      profileDigest: operation.profileDigest,
+      ...fieldsFrom(session, ["sessionId", "sessionNonce"]),
+      ...operation.operations.migrate,
+      attemptId,
+      runId: operation.runId
+    };
+  const allocation = {
+    schemaVersion: "manual-runner-evidence.v1",
+    kind: "attempt-allocation",
+    recordedAt: allocatedAt,
+    promotionEligible: false,
+    ...identity,
+    stage: "runner-command",
+    phaseKey: "dry-run",
+    allocatedAt,
+    targetIntent: operation.targetIntent,
+    predecessorExecutionRecordDigest: null
+  };
+  const attemptAllocationDigest = await archive.put(allocation, "manual-runner-evidence.v1");
+  if (!(await archive.get(attemptAllocationDigest)).bytes.equals(encodeManualJson(allocation)))
+    fail("MANUAL_STORAGE_UNVERIFIED");
+  const sources = await runnerSources(facts, attemptId),
+    cidRoot = `/tmp/manual-stage1-${attemptId}`,
+    cidFile = `${cidRoot}/runner.cid`;
+  await fs.mkdir(cidRoot, { mode: 0o700 });
+  const cleanupConfig = path.join(cidRoot, "cleanup-config");
+  await fs.mkdir(cleanupConfig, { mode: 0o700 });
+  await checkedPrivatePath(cleanupConfig, { principal, privateRoot: cidRoot, directory: true });
+  const cidDirectory = (
+    await checkedPrivatePath(cidRoot, { principal, privateRoot: cidRoot, directory: true })
+  ).at(-1).stat;
+  try {
+    await fs.lstat(cidFile);
+    fail("MANUAL_RUNNER_RESOURCE_INPUT_REQUIRED");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const proof = JSON.parse(fixed.proofBytes),
+    image = proof.identity.images.runner,
+    imageReference = `${image.registry}@${image.imageDigest}`,
+    args = [
+      "run",
+      "--interactive",
+      "--read-only",
+      "--network",
+      resources.network.id,
+      "--tmpfs",
+      "/tmp:rw,noexec,nosuid,size=64m",
+      "--tmpfs",
+      "/var/lib/postgresql/data:rw,noexec,nosuid,size=1m",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--env",
+      "RUNNER_EXECUTION_MODE=manual-stage1",
+      "--cidfile",
+      cidFile,
+      imageReference
+    ],
+    argvBytes = encodeManualJson({ command: "docker", args }),
+    argv = await archive.raw(argvBytes);
+  await sources.put("runner.argv.json", argvBytes);
+  const environment = { DOCKER_HOST: "unix:///var/run/docker.sock", DOCKER_CONFIG: sources.config };
+  if (typeof process.env.PATH === "string") environment.PATH = process.env.PATH;
+  let cleanupCause = null,
+    cleanupEnvironment;
+  const docker = async (callArgs, prefix, cleanup = false) => {
+    if (!cleanup) await sources.guard();
+    const result = await new Promise((resolve) => {
+      try {
+        childProcess.execFile(
+          "docker",
+          callArgs,
+          {
+            shell: false,
+            windowsHide: true,
+            encoding: "buffer",
+            timeout: 10000,
+            maxBuffer: 1048576,
+            env: cleanup ? cleanupEnvironment : environment
+          },
+          (error, stdout, stderr) => resolve({ error, stdout, stderr })
+        );
+      } catch (error) {
+        resolve({ error });
+      }
+    });
+    for (const stream of ["stdout", "stderr"])
+      if (Buffer.isBuffer(result[stream])) {
+        const bytes = result[stream];
+        try {
+          if (bytes.length > 1048576) fail("MANUAL_OUTPUT_LIMIT");
+          await sources.put(`${prefix}.${stream}`, bytes);
+          await archive.raw(bytes);
+        } catch (cause) {
+          if (!cleanup) throw cause;
+          cleanupCause ??= cause;
+        }
+      }
+    return result;
+  };
+  const decode = (result) => {
+    if (
+      result.error ||
+      !Buffer.isBuffer(result.stdout) ||
+      !Buffer.isBuffer(result.stderr) ||
+      result.stdout.length > 1048576 ||
+      result.stderr.length
+    )
+      fail("MANUAL_RUNNER_RESOURCE_INPUT_REQUIRED");
+    try {
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(result.stdout));
+    } catch {
+      fail("MANUAL_RUNNER_RESOURCE_INPUT_REQUIRED");
+    }
+  };
+  const imageFacts = decode(
+    await docker(
+      ["image", "inspect", "--format", runnerFormats.image, "--", imageReference],
+      "image-inspect"
+    )
+  );
+  if (
+    !exact(imageFacts, [
+      "id",
+      "repoDigests",
+      "sourceRevision",
+      "platform",
+      "defaultEntrypoint",
+      "defaultCommand"
+    ]) ||
+    !/^sha256:[0-9a-f]{64}$/u.test(imageFacts.id) ||
+    !Array.isArray(imageFacts.repoDigests) ||
+    !imageFacts.repoDigests.includes(imageReference) ||
+    imageFacts.sourceRevision !== proof.identity.sourceSha ||
+    imageFacts.platform !== image.platform ||
+    imageFacts.defaultEntrypoint !== true ||
+    imageFacts.defaultCommand !== true
+  )
+    fail("MANUAL_RUNNER_RESOURCE_MISMATCH");
+  await archive.raw(Buffer.alloc(0));
+  const events = [];
+  let previousProcessEvidenceDigest = null,
+    stdout = Buffer.alloc(0),
+    stderr = Buffer.alloc(0),
+    closedAt = null;
+  const snapshot = async () => {
+    const value = {
+      schemaVersion: "manual-runner-evidence.v1",
+      kind: "process",
+      recordedAt: new Date().toISOString(),
+      promotionEligible: false,
+      ...identity,
+      attemptAllocationDigest,
+      requestDigest: null,
+      previousProcessEvidenceDigest,
+      events: [...events],
+      closedAt,
+      protocol: { stdoutPrefix: await archive.raw(stdout), parentFrames: [] }
+    };
+    previousProcessEvidenceDigest = await archive.put(value, "manual-runner-evidence.v1");
+    if (!(await archive.get(previousProcessEvidenceDigest)).bytes.equals(encodeManualJson(value)))
+      fail("MANUAL_STORAGE_UNVERIFIED");
+  };
+  const event = (status, fields = {}) => ({
+    sequence: events.length,
+    processSequence: 0,
+    source: "parent",
+    tool: "runner",
+    event: status,
+    at: new Date().toISOString(),
+    containerId: null,
+    pid: null,
+    argvDigest: argv.digest,
+    exitCode: null,
+    signal: null,
+    reasonCode: null,
+    stdout: null,
+    stderr: null,
+    ...fields
+  });
+  events.push(event("PREPARED"));
+  await snapshot();
+  await sources.guard();
+  let child,
+    containerId = null,
+    close = null,
+    failure = null,
+    spawned = false,
+    challenge,
+    spawnedEvent = null,
+    spawnError = null,
+    refusalAt = null,
+    launchCustodyComplete = false;
+  const incompleteRaw = new Set();
+  let closedResolve, challengeResolve, challengeReject;
+  const closed = new Promise((resolve) => {
+    closedResolve = resolve;
+  });
+  const challenged = new Promise((resolve, reject) => {
+    challengeResolve = resolve;
+    challengeReject = reject;
+  });
+  challenged.catch(() => {});
+  const rejectStream = (cause) => {
+    if (!failure || failure.code === "MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED") {
+      failure = cause;
+      refusalAt = new Date().toISOString();
+    }
+    challengeReject(cause);
+  };
+  const collect = (stream) => (chunk) => {
+    if (!Buffer.isBuffer(chunk)) {
+      rejectStream(
+        Object.assign(new Error("MANUAL_FRAME_INVALID"), { code: "MANUAL_FRAME_INVALID" })
+      );
+      return;
+    }
+    const current = stream === "stdout" ? stdout : stderr;
+    const overflow = current.length + chunk.length > 1048576;
+    if (overflow) incompleteRaw.add(stream);
+    const next = Buffer.concat([current, chunk.subarray(0, 1048576 - current.length)]);
+    if (stream === "stdout") stdout = next;
+    else stderr = next;
+    try {
+      if (overflow) fail("MANUAL_OUTPUT_LIMIT");
+      if (stream === "stdout") {
+        if (
+          !stdout
+            .subarray(0, Math.min(4, stdout.length))
+            .equals(Buffer.from("MS2 ").subarray(0, Math.min(4, stdout.length)))
+        )
+          fail("MANUAL_FRAME_INVALID");
+        const parsed = parseManualRunnerFrames({
+          direction: "child-to-parent",
+          bytes: stdout,
+          ended: false
+        });
+        if (parsed.frames.length > 1 || (parsed.frames.length === 1 && parsed.pendingBytes.length))
+          fail("MANUAL_FRAME_ORDER_INVALID");
+        if (parsed.frames.length === 1) {
+          challenge = parsed.frames[0];
+          challengeResolve(challenge);
+        }
+      }
+    } catch (cause) {
+      rejectStream(cause);
+    }
+  };
+  const bounded = async (promise, milliseconds, code) => {
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Object.assign(new Error(code), { code })), milliseconds);
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const readCid = async () => {
+    const deadline = Date.now() + 5000;
+    while (true) {
+      try {
+        // Docker's one permitted CID creation changes directory times. Its
+        // stable identity stays pinned; the complete file is separately pinned.
+        const chain = await observedPath(cidRoot),
+          current = chain.at(-1).stat;
+        await ownerOnly(cidRoot, principal, current);
+        if (!sameIdentity(current, cidDirectory, false))
+          fail("MANUAL_RUNNER_RESOURCE_INPUT_REQUIRED");
+        const pending = await fs.lstat(cidFile, { bigint: true });
+        if (!pending.isFile() || pending.nlink !== 1n || (await fs.realpath(cidFile)) !== cidFile)
+          fail("MANUAL_RUNNER_RESOURCE_INPUT_REQUIRED");
+        await ownerOnly(cidFile, principal, pending);
+        // os.Create exposes a zero-byte file while the Engine call is in flight.
+        // Reopen each bounded poll; only the later complete bytes can supply ID.
+        if (pending.size === 0n) {
+          const handle = await fs.open(cidFile, "r");
+          try {
+            if (!sameIdentity(pending, await handle.stat({ bigint: true }), false))
+              fail("MANUAL_RUNNER_RESOURCE_INPUT_REQUIRED");
+          } finally {
+            await handle.close();
+          }
+          if (Date.now() >= deadline || close) fail("MANUAL_RUNNER_RESOURCE_INPUT_REQUIRED");
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          continue;
+        }
+        const input = await pinPrivateInput(cidFile, { principal, privateRoot: cidRoot });
+        try {
+          if (
+            !/^[0-9a-f]{64}\n?$/u.test(
+              new TextDecoder("utf-8", { fatal: true }).decode(input.bytes)
+            )
+          )
+            fail("MANUAL_RUNNER_RESOURCE_INPUT_REQUIRED");
+          await input.recheck();
+          containerId = input.bytes.toString("ascii").trim();
+          await sources.put("runner.cid", input.bytes);
+          await archive.raw(input.bytes);
+          return containerId;
+        } finally {
+          await input.close();
+        }
+      } catch (error) {
+        if (error.code !== "ENOENT" || Date.now() >= deadline || close) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+  };
+  const inspect = async (prefix, cleanup = false) =>
+    decode(
+      await docker(
+        ["container", "inspect", "--format", runnerFormats.container, "--", containerId],
+        prefix,
+        cleanup
+      )
+    );
+  const checkContainer = (value, running) => {
+    if (
+      !exact(value, [
+        "id",
+        "imageId",
+        "imageReference",
+        "running",
+        "paused",
+        "restarting",
+        "dead",
+        "readonlyRootfs",
+        "privileged",
+        "networkMode",
+        "networkId",
+        "capDrop",
+        "securityOpt",
+        "tmpfs",
+        "mounts",
+        "ports",
+        "portBindings",
+        "defaultEntrypoint",
+        "defaultCommand",
+        "manualMode"
+      ]) ||
+      value.id !== containerId ||
+      value.imageId !== imageFacts.id ||
+      value.imageReference !== imageReference ||
+      value.running !== running ||
+      value.paused !== false ||
+      value.restarting !== false ||
+      value.dead !== false ||
+      value.readonlyRootfs !== true ||
+      value.privileged !== false ||
+      value.networkMode !== resources.network.id ||
+      value.networkId !== resources.network.id ||
+      sha256Canonical(value.capDrop) !== sha256Canonical(["ALL"]) ||
+      sha256Canonical(value.securityOpt) !== sha256Canonical(["no-new-privileges"]) ||
+      sha256Canonical(value.tmpfs) !==
+        sha256Canonical({
+          "/tmp": "rw,noexec,nosuid,size=64m",
+          "/var/lib/postgresql/data": "rw,noexec,nosuid,size=1m"
+        }) ||
+      !Array.isArray(value.mounts) ||
+      value.mounts.some(
+        (mount) =>
+          mount.Type !== "tmpfs" ||
+          !["/tmp", "/var/lib/postgresql/data"].includes(mount.Destination)
+      ) ||
+      !(
+        value.ports === null ||
+        exact(value.ports, []) ||
+        (exact(value.ports, ["5432/tcp"]) && value.ports["5432/tcp"] === null)
+      ) ||
+      !(value.portBindings === null || exact(value.portBindings, [])) ||
+      value.defaultEntrypoint !== true ||
+      value.defaultCommand !== true ||
+      sha256Canonical(value.manualMode) !== sha256Canonical([true])
+    )
+      fail("MANUAL_RUNNER_RESOURCE_MISMATCH");
+  };
+  try {
+    const oldMask = process.umask(0o077);
+    try {
+      child = childProcess.spawn("docker", args, {
+        shell: false,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: environment
+      });
+    } finally {
+      process.umask(oldMask);
+    }
+    child.once("close", (exitCode, signal) => {
+      close = { exitCode, signal, at: new Date().toISOString() };
+      closedResolve(close);
+      if (!challenge)
+        rejectStream(
+          Object.assign(new Error("MANUAL_FRAME_INCOMPLETE"), { code: "MANUAL_FRAME_INCOMPLETE" })
+        );
+    });
+    child.once("error", () => {
+      spawnError = event("SPAWN_FAILED", { reasonCode: "MANUAL_PROCESS_SPAWN_FAILED" });
+      rejectStream(
+        Object.assign(new Error("MANUAL_PROCESS_SPAWN_FAILED"), {
+          code: "MANUAL_PROCESS_SPAWN_FAILED"
+        })
+      );
+    });
+    child.stdout.on("data", collect("stdout"));
+    child.stderr.on("data", collect("stderr"));
+    for (const stream of [child.stdin, child.stdout, child.stderr])
+      stream.on("error", () =>
+        rejectStream(
+          Object.assign(new Error("MANUAL_FRAME_INCOMPLETE"), { code: "MANUAL_FRAME_INCOMPLETE" })
+        )
+      );
+    await bounded(
+      new Promise((resolve, reject) => {
+        child.once("spawn", () => {
+          spawned = true;
+          spawnedEvent = event("SPAWNED", { pid: child.pid });
+          resolve();
+        });
+        child.once("error", reject);
+      }),
+      5000,
+      "MANUAL_PROCESS_TIMEOUT"
+    );
+    containerId = await readCid();
+    spawnedEvent.containerId = containerId;
+    events.push(spawnedEvent);
+    await snapshot();
+    checkContainer(await inspect("container-inspect"), true);
+    launchCustodyComplete = true;
+    await bounded(challenged, 5000, "MANUAL_PROCESS_TIMEOUT");
+    if (failure) throw failure;
+    // No implementation currently validates native expected Get/Head/ACL sources.
+    // Even an existing local file cannot admit a request or authorize this child.
+    refusalAt = new Date().toISOString();
+    fail("MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED");
+  } catch (cause) {
+    if (!child) spawnError = event("SPAWN_FAILED", { reasonCode: "MANUAL_PROCESS_SPAWN_FAILED" });
+    failure ??= cause;
+    refusalAt ??= new Date().toISOString();
+  } finally {
+    const retain = async (work) => {
+      try {
+        await work();
+      } catch (cause) {
+        cleanupCause ??= cause;
+      }
+    };
+    try {
+      if (spawned && !events.some((value) => value.event === "SPAWNED")) {
+        events.push({ ...spawnedEvent, sequence: events.length, containerId });
+        await retain(snapshot);
+      } else if (!spawned && spawnError) {
+        events.push({ ...spawnError, sequence: events.length });
+        await retain(snapshot);
+      }
+      let stopped = false;
+      if (containerId) {
+        try {
+          await checkedPrivatePath(cleanupConfig, {
+            principal,
+            privateRoot: cidRoot,
+            directory: true
+          });
+          cleanupEnvironment = { ...environment, DOCKER_CONFIG: cleanupConfig };
+          await docker(["stop", "--time", "2", "--", containerId], "stop", true);
+          checkContainer(await inspect("final-inspect", true), false);
+          stopped = true;
+        } catch (cause) {
+          cleanupCause ??= cause;
+        }
+      } else if (spawned) {
+        cleanupCause ??= failure;
+      }
+      child?.stdin.end();
+      if (child && !close) {
+        try {
+          await bounded(closed, 1000, "MANUAL_FRAME_INCOMPLETE");
+        } catch {
+          child.kill("SIGTERM");
+          try {
+            await bounded(closed, 1000, "MANUAL_FRAME_INCOMPLETE");
+          } catch {
+            child.kill("SIGKILL");
+            try {
+              await bounded(closed, 1000, "MANUAL_FRAME_INCOMPLETE");
+            } catch (cause) {
+              cleanupCause ??= cause;
+            }
+          }
+        }
+      }
+      await retain(async () => {
+        await archive.raw(stdout);
+        await archive.raw(stderr);
+      });
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(stdout);
+        new TextDecoder("utf-8", { fatal: true }).decode(stderr);
+        parseManualRunnerFrames({ direction: "child-to-parent", bytes: stdout, ended: true });
+      } catch (cause) {
+        const code = cause.code?.startsWith("MANUAL_") ? cause.code : "MANUAL_FRAME_INVALID";
+        rejectStream(Object.assign(new Error(code), { code }));
+      }
+      // Actual pipe closure and exact stopped inspect are independent facts.
+      // A killed Docker CLI alone never establishes container completion.
+      if (close && spawned) {
+        const complete =
+          launchCustodyComplete &&
+          stopped &&
+          !cleanupCause &&
+          incompleteRaw.size === 0 &&
+          refusalAt <= close.at;
+        if (complete) {
+          events.push(
+            event("DISPATCH_CLOSED", {
+              at: refusalAt,
+              containerId,
+              argvDigest: null,
+              reasonCode: failure?.code ?? "MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED"
+            })
+          );
+          await retain(snapshot);
+        }
+        const stdoutRef = incompleteRaw.has("stdout") ? null : await archive.raw(stdout),
+          stderrRef = incompleteRaw.has("stderr") ? null : await archive.raw(stderr);
+        events.push(
+          event("CLOSED", {
+            at: close.at,
+            containerId,
+            pid: child.pid,
+            exitCode: close.exitCode,
+            signal: close.signal,
+            reasonCode: failure?.code ?? null,
+            stdout: stdoutRef,
+            stderr: stderrRef
+          })
+        );
+        if (complete && !cleanupCause) closedAt = close.at;
+        await retain(snapshot);
+      }
+      await retain(sources.guard);
+    } catch (cause) {
+      failure = Object.assign(new Error("MANUAL_RUNNER_CLEANUP_UNKNOWN", { cause }), {
+        code: "MANUAL_RUNNER_CLEANUP_UNKNOWN"
+      });
+    } finally {
+      if (child && !close) child.kill("SIGKILL");
+      child?.stdin.destroy();
+      child?.stdout.destroy();
+      child?.stderr.destroy();
+    }
+  }
+  if (cleanupCause)
+    throw Object.assign(new Error("MANUAL_RUNNER_CLEANUP_UNKNOWN", { cause: cleanupCause }), {
+      code: "MANUAL_RUNNER_CLEANUP_UNKNOWN"
+    });
+  throw (
+    failure ??
+    Object.assign(new Error("MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED"), {
+      code: "MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED"
+    })
+  );
 }
 
 async function checkConsumedObservation(session, input, authorization, consumed, facts, archive) {
@@ -1194,12 +1929,10 @@ async function pinPrivateInput(file, options) {
       observed.every(
         (entry, index) =>
           entry.path === chain[index].path &&
-          sameIdentity(
-            entry.stat,
-            chain[index].stat,
-            entry.path === options.privateRoot ||
-              entry.path.startsWith(options.privateRoot + path.sep)
-          )
+          (entry.path !== options.privateRoot &&
+          !entry.path.startsWith(options.privateRoot + path.sep)
+            ? samePublicDirectory(entry.stat, chain[index].stat)
+            : sameIdentity(entry.stat, chain[index].stat))
       );
     const recheck = async () => {
       const after = await checkedPrivatePath(file, options);
@@ -1419,7 +2152,7 @@ const h3DockerFormats = Object.freeze({
     '")}}}',
   image: '{"id":{{json .Id}},"repoDigests":{{json .RepoDigests}}}',
   network:
-    '{"id":{{json .Id}},"name":{{json .Name}},"driver":{{json .Driver}},"scope":{{json .Scope}}}'
+    '{"id":{{json .Id}},"name":{{json .Name}},"driver":{{json .Driver}},"scope":{{json .Scope}},"internal":{{json .Internal}}}'
 });
 
 async function dockerObservation(kind, reference, recheck) {
@@ -1607,6 +2340,7 @@ async function observeH3Resources(approval, readback, recheck) {
   const first = await snapshot(),
     second = await snapshot();
   if (sha256Canonical(first) !== sha256Canonical(second)) mismatch();
+  return second;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

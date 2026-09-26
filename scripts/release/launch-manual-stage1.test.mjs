@@ -41,7 +41,8 @@ const {
   sha256Canonical,
   assessManualRunnerEvidence,
   verifyManualAuthorization,
-  signManualAuthorization
+  signManualAuthorization,
+  encodeManualRunnerFrame
 } = await import("../../packages/release-foundation/src/index.mjs");
 const { createBuildProof } = await import("./create-build-proof.mjs");
 const {
@@ -266,11 +267,7 @@ async function git(repoRoot, ...args) {
 }
 
 async function fixture(t, endpoint = "db.invalid:5432") {
-  assert.equal(
-    process.platform,
-    "win32",
-    "This fixture exercises the real Windows R1 branch with synthetic OS observations"
-  );
+  assert.ok(["win32", "linux"].includes(process.platform));
   const root = await fs.mkdtemp(path.join(tmpdir(), "r22-metadata-"));
   t.after(async () => {
     t.mock.restoreAll();
@@ -322,8 +319,17 @@ async function fixture(t, endpoint = "db.invalid:5432") {
     schemaVersion: "manual-stage1-owner-approval.v1",
     profileDigest: sha256Canonical(profile),
     ownerId: profile.ownerId,
-    principal: { platform: "win32", sid },
-    hostFingerprint: sha256Bytes(Buffer.from(`subscription-saas/win32-machine-guid/v1\n${guid}`)),
+    principal:
+      process.platform === "linux"
+        ? { platform: "posix", uid: process.getuid() }
+        : { platform: "win32", sid },
+    hostFingerprint: sha256Bytes(
+      Buffer.from(
+        process.platform === "linux"
+          ? `subscription-saas/linux-machine-id/v1\n${(await nativeFS.readFile("/etc/machine-id", "utf8")).trim()}`
+          : `subscription-saas/win32-machine-guid/v1\n${guid}`
+      )
+    ),
     approvedAt: generatedAt,
     promotionEligible: false
   };
@@ -433,7 +439,12 @@ function installFixedIO(t, f, gh) {
       f.docker.calls.push({ args: [...args], options: { ...options } });
       const kind = args[2] === "container" && args[3] === "ls" ? "users" : args[2];
       assert.equal(args[0], "--host");
-      assert.equal(args[1], "npipe:////./pipe/docker_engine");
+      assert.equal(
+        args[1],
+        process.platform === "linux"
+          ? "unix:///var/run/docker.sock"
+          : "npipe:////./pipe/docker_engine"
+      );
       assert.equal(args[3], kind === "users" ? "ls" : "inspect");
       assert.equal(options.shell, false);
       assert.equal(options.encoding, "buffer");
@@ -723,6 +734,408 @@ function noAuthority(f) {
   assert.equal(f.counters.externalCalls, 0);
 }
 
+async function zeroCredentialFixture(t, mode = "split") {
+  const f = await targetObserveFixture(t);
+  await launcher.connectAndObserveManualTarget({
+    session: await f.open(),
+    operationRef: f.prepared.operationRef
+  });
+  const originals = await f.records();
+  const baseline = originals.find((v) => v.schemaVersion === "manual-baseline-manifest.v1");
+  const indexBytes = await fs.readFile(path.join(f.operationRoot, "index.json"));
+  const baselineBytes = await fs.readFile(f.objectPath(baseline));
+  const credentialReads = f.counters.credentialReads;
+  const keyReads = f.counters.privateKeyReads;
+  const nativeSpawn = childProcess.spawn.bind(childProcess);
+  const previousExec = childProcess.execFile.bind(childProcess);
+  const id = "e".repeat(64);
+  const challenge = encodeManualRunnerFrame({
+    protocol: "MS2",
+    type: "CHALLENGE",
+    sequence: 0,
+    payload: { childChallenge: "f".repeat(64) }
+  });
+  let child;
+  const launches = [];
+  const actualCloses = [];
+  const readOpens = new Map(),
+    previousOpen = fs.open.bind(fs);
+  t.mock.method(fs, "open", (file, flags, ...args) => {
+    if (flags === "r") readOpens.set(String(file), (readOpens.get(String(file)) ?? 0) + 1);
+    return previousOpen(file, flags, ...args);
+  });
+  t.mock.method(childProcess, "spawn", (file, args, options) => {
+    assert.equal(file, "docker");
+    assert.equal(args[0], "run");
+    const cid = args[args.indexOf("--cidfile") + 1];
+    const attemptId = /^\/tmp\/manual-stage1-([0-9a-f-]+)\/runner\.cid$/u.exec(cid)?.[1];
+    assert.ok(attemptId);
+    const records = fsSync
+      .readdirSync(path.join(f.profile.storage.archiveRoot, "objects"))
+      .map((name) =>
+        JSON.parse(fsSync.readFileSync(path.join(f.profile.storage.archiveRoot, "objects", name)))
+      );
+    const prepared = records.find((v) => v.kind === "process" && v.attemptId === attemptId);
+    assert.equal(prepared?.requestDigest, null, "PREPARED must be saved before the actual spawn");
+    assert.ok(
+      readOpens.get(f.objectPath(prepared)) >= 4,
+      "PREPARED must be independently reopened before spawn"
+    );
+    assert.deepEqual(
+      prepared.events.map((e) => e.event),
+      ["PREPARED"]
+    );
+    const allocation = records.find(
+      (v) => v.kind === "attempt-allocation" && v.attemptId === attemptId
+    );
+    assert.equal(allocation?.phaseKey, "dry-run");
+    assert.ok(
+      readOpens.get(f.objectPath(allocation)) >= 4,
+      "allocation must be independently reopened before spawn"
+    );
+    assert.equal(allocation.operationId, JSON.parse(indexBytes).operations.migrate.operationId);
+    assert.equal(options.env.DOCKER_HOST, "unix:///var/run/docker.sock");
+    assert.deepEqual(fsSync.readdirSync(options.env.DOCKER_CONFIG), []);
+    assert.equal(process.umask(), 0o077);
+    const cidWrite =
+      mode === "empty-cid"
+        ? `fs.writeFileSync(${JSON.stringify(cid)}, ''); setTimeout(()=>fs.writeFileSync(${JSON.stringify(cid)},${JSON.stringify(id)}),150);`
+        : `fs.writeFileSync(${JSON.stringify(cid)},${JSON.stringify(id)});`;
+    const source = `import fs from 'node:fs'; ${cidWrite} const bytes=Buffer.from(${JSON.stringify(challenge.toString("base64"))},'base64'); ${mode === "invalid" ? "process.stdout.write(Buffer.from([255]));" : mode === "limit" ? "process.stdout.write(bytes); process.stderr.write(Buffer.alloc(1048577,65));" : mode === "early" ? "process.exit(7);" : mode === "stderr-invalid" ? "process.stdout.write(bytes);process.stderr.write(Buffer.from([255]));" : "for(let i=0;i<bytes.length;i+=7) process.stdout.write(bytes.subarray(i,i+7));"} process.stdin.resume(); process.stdin.on('end',()=>process.exit(0));`;
+    child = nativeSpawn(process.execPath, ["--input-type=module", "-e", source], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { PATH: process.env.PATH }
+    });
+    child.once("close", (exitCode, signal) =>
+      actualCloses.push({ pid: child.pid, exitCode, signal })
+    );
+    launches.push({ attemptId, args: [...args], options, pid: child.pid });
+    return child;
+  });
+  const calls = [];
+  t.mock.method(childProcess, "execFile", (file, args, options, callback) => {
+    if (file !== "docker" || args[0] === "--host")
+      return previousExec(file, args, options, callback);
+    calls.push([...args]);
+    assert.equal(options.env.DOCKER_HOST, "unix:///var/run/docker.sock");
+    const image = `${f.proof.identity.images.runner.registry}@${f.proof.identity.images.runner.imageDigest}`;
+    const value =
+      args[0] === "image"
+        ? {
+            id: digest("9"),
+            repoDigests: [image],
+            sourceRevision: f.sourceSha,
+            platform: "linux/amd64",
+            defaultEntrypoint: true,
+            defaultCommand: true
+          }
+        : {
+            id,
+            imageId: digest("9"),
+            imageReference: image,
+            running: child?.exitCode === null && child?.signalCode === null,
+            paused: false,
+            restarting: false,
+            dead: false,
+            readonlyRootfs: true,
+            privileged: false,
+            networkMode: "d".repeat(64),
+            networkId: "d".repeat(64),
+            capDrop: ["ALL"],
+            securityOpt: ["no-new-privileges"],
+            tmpfs: {
+              "/tmp": "rw,noexec,nosuid,size=64m",
+              "/var/lib/postgresql/data": "rw,noexec,nosuid,size=1m"
+            },
+            mounts: [],
+            ports:
+              mode === "exposed"
+                ? { "5432/tcp": null }
+                : mode === "published"
+                  ? { "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "25499" }] }
+                  : {},
+            portBindings:
+              mode === "published"
+                ? { "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "25499" }] }
+                : {},
+            defaultEntrypoint: true,
+            defaultCommand: true,
+            manualMode: [true]
+          };
+    if (args[0] === "stop") {
+      assert.equal(args.at(-1), id);
+      child.stdin.end();
+      if (child.exitCode !== null || child.signalCode !== null)
+        queueMicrotask(() => callback(null, Buffer.from(id + "\n"), Buffer.alloc(0)));
+      else child.once("close", () => callback(null, Buffer.from(id + "\n"), Buffer.alloc(0)));
+    } else
+      queueMicrotask(() =>
+        callback(
+          mode === "unknown-stop" && args[0] === "container" && child.exitCode !== null
+            ? new Error("inspect unavailable")
+            : null,
+          Buffer.from(JSON.stringify(value) + "\n"),
+          Buffer.alloc(0)
+        )
+      );
+    return { kill() {} };
+  });
+  t.after(() => child?.kill("SIGKILL"));
+  return {
+    ...f,
+    launches,
+    calls,
+    challenge,
+    indexBytes,
+    baselineBytes,
+    baseline,
+    credentialReads,
+    keyReads,
+    actualCloses
+  };
+}
+
+test(
+  "zero-credential parent saves real null attempt and split CHALLENGE then precisely stops before expected admission",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t);
+    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+      code: "MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED"
+    });
+    assert.equal(f.launches.length, 1);
+    const records = await f.records();
+    const snapshots = records.filter(
+      (v) => v.kind === "process" && v.attemptId === f.launches[0].attemptId
+    );
+    const final = snapshots.find((v) => v.closedAt !== null);
+    assert.ok(final);
+    assert.deepEqual(
+      final.events.map((e) => e.event),
+      ["PREPARED", "SPAWNED", "DISPATCH_CLOSED", "CLOSED"]
+    );
+    assert.equal(final.events[1].pid, f.launches[0].pid);
+    assert.equal(final.events[1].containerId, "e".repeat(64));
+    assert.equal(final.events.at(-1).exitCode, 0);
+    const raw = await fs.readFile(
+      path.join(
+        f.profile.storage.archiveRoot,
+        "raw",
+        final.protocol.stdoutPrefix.digest.slice(7) + ".bin"
+      )
+    );
+    assert.deepEqual(raw, f.challenge);
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+    assert.equal(f.pg.connects, 1);
+    assert.equal(records.filter((v) => v.schemaVersion === "manual-runner-request.v1").length, 1);
+    assert.deepEqual(await fs.readFile(path.join(f.operationRoot, "index.json")), f.indexBytes);
+    assert.deepEqual(await fs.readFile(f.objectPath(f.baseline)), f.baselineBytes);
+    assert.ok(f.calls.some((args) => args[0] === "stop"));
+    assert.ok(f.calls.some((args) => args[0] === "container" && args.at(-1) === "e".repeat(64)));
+  }
+);
+
+test(
+  "zero-credential parent refuses PREPARED write or independent reopen failure before spawn",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    for (const mode of ["write", "reopen"])
+      await t.test(mode, async (t) => {
+        const f = await zeroCredentialFixture(t),
+          open = fs.open.bind(fs);
+        let blocked;
+        t.mock.method(fs, "open", async (file, flags, ...args) => {
+          if (flags === "r" && file === blocked)
+            throw Object.assign(new Error("read unavailable"), { code: "EIO" });
+          const handle = await open(file, flags, ...args);
+          if (flags === "wx" && String(file).includes(path.sep + "objects" + path.sep)) {
+            const write = handle.writeFile.bind(handle);
+            handle.writeFile = async (bytes, ...rest) => {
+              const value = JSON.parse(bytes);
+              if (value.kind === "process" && value.requestDigest === null) {
+                if (mode === "write")
+                  throw Object.assign(new Error("write unavailable"), { code: "EIO" });
+                blocked = file;
+              }
+              return write(bytes, ...rest);
+            };
+          }
+          return handle;
+        });
+        await assert.rejects(
+          launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+          (error) => ["EIO", "MANUAL_STORAGE_UNVERIFIED"].includes(error.code)
+        );
+        assert.equal(f.launches.length, 0);
+        assert.equal(f.counters.credentialReads, f.credentialReads);
+        assert.equal(f.pg.connects, 1);
+      });
+  }
+);
+
+test(
+  "zero-credential parent retains bounded real failure bytes and close without command admission",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    for (const [mode, code] of [
+      ["invalid", "MANUAL_FRAME_INVALID"],
+      ["stderr-invalid", "MANUAL_FRAME_INVALID"],
+      ["limit", "MANUAL_OUTPUT_LIMIT"],
+      ["early", "MANUAL_FRAME_INCOMPLETE"]
+    ])
+      await t.test(mode, async (t) => {
+        const f = await zeroCredentialFixture(t, mode);
+        await assert.rejects(
+          launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+          { code }
+        );
+        assert.equal(f.launches.length, 1);
+        const records = await f.records(),
+          snapshots = records.filter(
+            (v) => v.kind === "process" && v.attemptId === f.launches[0].attemptId
+          );
+        assert.ok(
+          snapshots.some((v) => v.events.some((e) => e.event === "CLOSED")),
+          "actual process close must survive refusal"
+        );
+        assert.ok(snapshots.every((v) => v.protocol.stdoutPrefix.bytes <= 1048576));
+        if (mode === "limit") {
+          assert.ok(snapshots.every((v) => v.closedAt === null));
+          assert.equal(
+            snapshots.find((v) => v.events.at(-1)?.event === "CLOSED").events.at(-1).stderr,
+            null
+          );
+        }
+        assert.equal(f.counters.credentialReads, f.credentialReads);
+        assert.equal(f.pg.connects, 1);
+        assert.equal(
+          records.filter((v) => v.schemaVersion === "manual-runner-request.v1").length,
+          1
+        );
+      });
+  }
+);
+
+test(
+  "zero-credential parent preserves actual CLI close but unknown container cleanup",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "unknown-stop");
+    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+      code: "MANUAL_RUNNER_CLEANUP_UNKNOWN"
+    });
+    const snapshots = (await f.records()).filter(
+      (v) => v.kind === "process" && v.attemptId === f.launches[0].attemptId
+    );
+    assert.ok(snapshots.every((v) => v.closedAt === null));
+    assert.ok(snapshots.every((v) => v.events.every((e) => e.event !== "DISPATCH_CLOSED")));
+    assert.ok(snapshots.some((v) => v.events.some((e) => e.event === "CLOSED")));
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+  }
+);
+
+test(
+  "zero-credential parent keeps the validated CID for exact stop when CID custody write fails",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t),
+      open = fs.open.bind(fs);
+    t.mock.method(fs, "open", async (file, flags, ...args) => {
+      const handle = await open(file, flags, ...args);
+      if (
+        flags === "wx" &&
+        String(file).startsWith(f.operationRoot + path.sep) &&
+        path.basename(file) === "runner.cid"
+      )
+        handle.writeFile = async () => {
+          throw Object.assign(new Error("CID source write unavailable"), { code: "EIO" });
+        };
+      return handle;
+    });
+    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+      code: "EIO"
+    });
+    assert.equal(f.launches.length, 1);
+    assert.ok(f.calls.some((args) => args[0] === "stop" && args.at(-1) === "e".repeat(64)));
+    assert.deepEqual(f.actualCloses, [{ pid: f.launches[0].pid, exitCode: 0, signal: null }]);
+    const snapshots = (await f.records()).filter(
+      (v) => v.kind === "process" && v.attemptId === f.launches[0].attemptId
+    );
+    assert.ok(snapshots.every((v) => v.closedAt === null));
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+  }
+);
+
+test(
+  "zero-credential review handles native CID transition and unpublished inherited port",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    for (const mode of ["empty-cid", "exposed"])
+      await t.test(mode, async (t) => {
+        const f = await zeroCredentialFixture(t, mode);
+        await assert.rejects(
+          launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+          { code: "MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED" }
+        );
+        assert.equal(f.launches.length, 1);
+        assert.ok(f.calls.some((args) => args[0] === "stop" && args.at(-1) === "e".repeat(64)));
+        assert.equal(f.actualCloses.length, 1);
+        assert.equal(f.counters.credentialReads, f.credentialReads);
+      });
+  }
+);
+
+test(
+  "zero-credential review rejects an actual published port mapping",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "published");
+    await assert.rejects(
+      launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+      (error) =>
+        error.code === "MANUAL_RUNNER_CLEANUP_UNKNOWN" &&
+        error.cause?.code === "MANUAL_RUNNER_RESOURCE_MISMATCH"
+    );
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+    assert.equal(f.actualCloses.length, 1);
+    assert.ok(f.calls.some((args) => args[0] === "stop"));
+  }
+);
+
+test(
+  "zero-credential review ignores public sibling nlink changes within the common private path guard",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t),
+      lstat = fs.lstat.bind(fs),
+      sibling = `/tmp/r22-public-sibling-${randomUUID()}`;
+    let armed = false,
+      created = false;
+    t.mock.method(fs, "lstat", async (file, ...args) => {
+      if (
+        f.launches.length &&
+        file === path.join(f.operationRoot, "h3-a-approval.json") &&
+        !created
+      )
+        armed = true;
+      if (armed && file === "/tmp" && !created) {
+        await nativeFS.mkdir(sibling, { mode: 0o700 });
+        created = true;
+      }
+      return lstat(file, ...args);
+    });
+    t.after(async () => {
+      if (created) await fs.rmdir(sibling);
+    });
+    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+      code: "MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED"
+    });
+    assert.equal(created, true);
+    assert.equal(f.actualCloses.length, 1);
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+  }
+);
+
 function h3Rejection(causeCode) {
   return (error) => {
     assert.equal(error.code, "H3_INPUT_UNAVAILABLE");
@@ -962,7 +1375,13 @@ async function h3ResourceFixture(t) {
       marker: "synthetic-h3-marker"
     },
     image: { id: digest("c"), repoDigests: ["postgres@" + digest("a")] },
-    network: { id: "d".repeat(64), name: "synthetic-h3-network", driver: "bridge", scope: "local" },
+    network: {
+      id: "d".repeat(64),
+      name: "synthetic-h3-network",
+      driver: "bridge",
+      scope: "local",
+      internal: true
+    },
     users: Buffer.from("b".repeat(64) + "\n")
   };
   return f;

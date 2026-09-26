@@ -26,6 +26,7 @@
 - 2026-09-26，[R4 Staging 签字方案](../superpowers/plans/2026-09-22-stage1-r4-staging-signoff-plan.md)已整合 `7a1d8122`，DOC-only 独立审查 ACCEPT，文件 SHA256 `5b6fff2c244dc443790a7046ebd93325dd1c95ab4ff80f448b2abd4f09cb78d0`。方案覆盖停止的本系统 Docker 恢复/健康、A/B及成熟结束样本、五模板、两次非空维护和外部事实恢复边界；按当前服务/UI修正工单、delta、inspection、定价/重新提案、放行/运营完成及完成前导出顺序。实际工单关闭、重新提案及所需终态导出 UI 入口仍须核实，缺失则停止并交接实现。未开展线上恢复、部署、真实付款/签署/通知或浏览器验收，任务13与阶段1仍未关闭。
 - 阶段 1 签字、最终 Node22 三镜像、真实渠道/浏览器、snapshot 双链及外部操作仍未完成。
 - 2026-09-26，R2.2 三类[固定私有输入定义](../superpowers/plans/2026-09-06-stage1-r2-runner-migrate-verify-plan.md#23-r22-私有输入补充范围2026-09-26doc-only-独立审查通过)已整合 `6adae09c`，DOC-only 独立审查 ACCEPT。新增 expected 来源/两 subject 验真及同请求 expectation 闭合、H3-B 正常与 UNKNOWN 恢复读回、四角色凭证与父子网络映射；R2.3 须独立重验实际 attestation，历史 gh 输出仅作历史证据。无新共享 Schema/export 或生产文件扩围，R2.2 八文件实现继续；实际 producer、身份/凭证、人工权限及来源证明仍未提供，不登记真实准入通过。
+- 2026-09-26，后续静态审查确认 R4 两项 Web 代码缺口：[正常退车浏览器修复计划](../superpowers/plans/2026-09-26-stage1-return-browser-gap-plan.md)已整合 `bd577824` 并通过 DOC-only 独立审查。限定补检查工单的受权操作入口，以及正额正式计价新增账单后的提案刷新/原账单重绑；六生产＋六测试文件，不放宽后端 CLOSED、财务 hash 或权限校验。开发前基线 source `5c57416e` 的本地 fresh asset-operations 33/33、保管读回/退役及 skip-dotenv Prisma validate 通过，run `f933a187-a04b-4255-9039-436950c28731`、receipt `72de56cb-9140-4f7a-bb0b-64290112f85f`，报告摘要 `sha256:1ace227dc87b67e0d0de685ea9dbe156675e6c8697216543fe9ba35508eb01a1`；该基线与本分支当时 API/Web 字节一致。当前按该小单元实施，尚未取得修复后完整门禁或浏览器证据；未恢复线上或使用真实外部渠道。
 
 历史代码基线：Task 5 `1f0b0439`。Task 6 提案保管：`457c0011`，不代表批准。
 Task 6/29R/30/I 系列冻结，Task 30 stash 不变。

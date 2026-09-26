@@ -156,6 +156,7 @@ export interface AdminSubscriptionClosureView {
   }>;
   operationalCompletedAt: string | null;
   physicalControlMode: string | null;
+  returnAssetWorkOrderId: string | null;
   restrictions: Array<{ id: string; status: string; type: string }>;
   receivableBills: Array<{
     amount: string;
@@ -362,6 +363,7 @@ export function buildAdminSubscriptionClosureView(
     })),
     operationalCompletedAt: optionalString(closureCase.operationalCompletedAt),
     physicalControlMode: optionalString(closureCase.physicalControlMode),
+    returnAssetWorkOrderId: optionalString(closureCase.returnAssetWorkOrderId),
     restrictions,
     receivableBills: records(aggregate.receivableBills).map((item) => ({
       amount: integerString(item.amount),

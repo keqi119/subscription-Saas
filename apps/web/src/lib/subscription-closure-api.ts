@@ -5,6 +5,34 @@ import {
   buildCustomerSubscriptionClosureView
 } from "./subscription-closure-view-model";
 
+export type ReturnInspectionCommand = {
+  source: { type: "MANUAL_OPERATION"; id: string; key: string };
+  occurredAt: string;
+  expectedVersion: number;
+  targetStatus: "PENDING_ACCEPTANCE" | "CLOSED";
+  detailSnapshot: { closureCaseId: string };
+  closeReason: string | null;
+  solution: string | null;
+};
+
+export function loadReturnInspectionWorkOrder(workOrderId: string) {
+  return apiFetch<unknown>(`/asset-operations/work-orders/${encodeURIComponent(workOrderId)}`);
+}
+
+export function transitionReturnInspectionWorkOrder(
+  workOrderId: string,
+  command: ReturnInspectionCommand
+) {
+  return apiFetch<unknown>(
+    `/asset-operations/work-orders/${encodeURIComponent(workOrderId)}/transition`,
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": command.source.key },
+      body: JSON.stringify(command)
+    }
+  );
+}
+
 export async function loadAdminSubscriptionClosureByOrder(
   orderId: string,
   permissions: ReadonlySet<string>

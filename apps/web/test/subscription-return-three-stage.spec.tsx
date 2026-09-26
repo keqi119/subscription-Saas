@@ -56,6 +56,12 @@ describe("admin subscription return three-stage workspace", () => {
     expect(pricing).toContain("canFinalizePricing");
     expect(pricing).toContain("canGenerateConditionDelta");
     expect(pricing).toContain("canRecordReturnInspection");
+    expect(pricing).toContain("ReturnInspectionWorkOrder");
+    expect(pricing).toContain("inspectionWorkOrderClosed");
+    expect(page).toContain('permissions.has("asset_operations:view")');
+    expect(page).toContain('permissions.has("asset_work_order:manage")');
+    expect(page).toContain("onClosureReadback=");
+    expect(page).toContain("reloadClosure=");
     expect(page).toContain("GENERATE_CONDITION_DELTA");
     expect(page).toContain("RECORD_RETURN_INSPECTION");
     expect(settlement).toContain("完成订单运营闭环");

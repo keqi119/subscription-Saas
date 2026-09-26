@@ -67,6 +67,7 @@ import { SubscriptionJourneyCard } from "../../../components/order-workspace/sub
 import { ProtectedShell } from "../../../components/protected-shell";
 import { ReturnEvidenceStage } from "../../../components/subscription-closure/return-evidence-stage";
 import { ReturnPricingStage } from "../../../components/subscription-closure/return-pricing-stage";
+import { createReturnClosureReadback } from "../../../components/subscription-closure/return-inspection-work-order";
 import { ReturnSettlementStage } from "../../../components/subscription-closure/return-settlement-stage";
 import {
   BILL_STATUS_LABELS,
@@ -5295,6 +5296,27 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const writeOffEnabled = Form.useWatch("writeOffEnabled", paymentForm);
   const writeOffItems = Form.useWatch("writeOffItems", paymentForm);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
+  const returnClosurePermissionKey = [...permissions].sort().join("\n");
+  const returnClosureBinding = useMemo(() => ({
+    orderId,
+    closureCaseId: subscriptionClosure?.closureCaseId ?? null,
+    permissions: new Set(returnClosurePermissionKey.split("\n"))
+  }), [orderId, subscriptionClosure?.closureCaseId, returnClosurePermissionKey]);
+  const returnClosureBindingRef = useRef<typeof returnClosureBinding | null>(returnClosureBinding);
+  returnClosureBindingRef.current = returnClosureBinding;
+  useEffect(() => {
+    returnClosureBindingRef.current = returnClosureBinding;
+    return () => {
+      if (returnClosureBindingRef.current === returnClosureBinding) returnClosureBindingRef.current = null;
+    };
+  }, [returnClosureBinding]);
+  const returnClosureReadback = useMemo(() => createReturnClosureReadback({
+    orderId: returnClosureBinding.orderId,
+    closureCaseId: returnClosureBinding.closureCaseId ?? "",
+    permissions: returnClosureBinding.permissions,
+    isCurrent: () => returnClosureBindingRef.current === returnClosureBinding,
+    publish: setSubscriptionClosure
+  }), [returnClosureBinding]);
   const deliveryConfirmationAdjustments = getDeliveryConfirmationAdjustmentState(
     {
       deliveredAt: confirmDeliveryAtValue?.toISOString(),
@@ -8218,9 +8240,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 ) ? <ReturnPricingStage
                   canApproveApproval={permissions.has("business_exception:approve")}
                   canRequestApproval={permissions.has("business_exception:request")}
+                  canViewAssetWorkOrder={permissions.has("asset_operations:view")}
+                  canManageAssetWorkOrder={permissions.has("asset_work_order:manage")}
                   closure={subscriptionClosure}
                   currentUserId={me?.user.id ?? null}
                   onChanged={loadOrder}
+                  reloadClosure={returnClosureReadback.reloadClosure}
+                  onClosureReadback={returnClosureReadback.onClosureReadback}
                 /> : null}
                 {subscriptionClosure.settlementRevisions.some((settlement) =>
                   ["FINALIZED", "SETTLED"].includes(settlement.stage)

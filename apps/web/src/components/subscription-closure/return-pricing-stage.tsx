@@ -19,24 +19,40 @@ import {
   type SubscriptionClosureChargeLineView,
   type SubscriptionClosureDeltaItemView
 } from "../../lib/subscription-closure-view-model";
+import { ReturnInspectionWorkOrder } from "./return-inspection-work-order";
 
 type Responsibility = "CUSTOMER" | "PLATFORM" | "THIRD_PARTY" | "NORMAL_WEAR";
 
 export function ReturnPricingStage({
   canApproveApproval,
   canRequestApproval,
+  canViewAssetWorkOrder,
+  canManageAssetWorkOrder,
   closure,
   currentUserId,
-  onChanged
+  onChanged,
+  reloadClosure,
+  onClosureReadback
 }: {
   canApproveApproval: boolean;
   canRequestApproval: boolean;
+  canViewAssetWorkOrder: boolean;
+  canManageAssetWorkOrder: boolean;
   closure: AdminSubscriptionClosureView;
   currentUserId: string | null;
   onChanged: () => Promise<void> | void;
+  reloadClosure: () => Promise<AdminSubscriptionClosureView>;
+  onClosureReadback: (view: AdminSubscriptionClosureView) => Promise<void> | void;
 }) {
   const { message } = App.useApp();
   const [busy, setBusy] = useState<string | null>(null);
+  const [closedInspectionBinding, setClosedInspectionBinding] = useState<string | null>(null);
+  const inspectionBinding = `${closure.closureCaseId}:${closure.returnAssetWorkOrderId}`;
+  const normalInspection = closure.returnThreeStageEnabled && closure.closureType === "NORMAL_COMPLETION" &&
+    closure.physicalControlMode === "VOLUNTARY_RETURN" && closure.status === "RETURN_INSPECTION";
+  const inspectionWorkOrderClosed = !normalInspection || (canViewAssetWorkOrder &&
+    closedInspectionBinding === inspectionBinding && closure.workOrders.some((workOrder) =>
+      workOrder.id === closure.returnAssetWorkOrderId && workOrder.status === "CLOSED"));
   const [responsibilities, setResponsibilities] = useState<Record<string, Responsibility>>({});
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [clauseByItem, setClauseByItem] = useState<Record<string, string>>({});
@@ -282,6 +298,19 @@ export function ReturnPricingStage({
 
   return (
     <Card title="节点 2 · 交付/退回差异与合同计费">
+      {normalInspection && closure.capabilities.inspect && <ReturnInspectionWorkOrder
+        closure={closure}
+        canView={canViewAssetWorkOrder}
+        canManage={canManageAssetWorkOrder}
+        reloadClosure={reloadClosure}
+        onChanged={onClosureReadback}
+        onClosedReadback={(closed) => setClosedInspectionBinding(closed ? inspectionBinding : null)}
+      />}
+      {normalInspection && !inspectionWorkOrderClosed && <Alert
+        type="info"
+        title="先提交并验收关闭关联检查工单，再生成差异、确认责任并完成车况检查。"
+        style={{ marginTop: 12 }}
+      />}
       <Alert
         message="差异只从已归档交车文件与当前受管退车清单计算；客户收费必须同时绑定合同条款、差异项和现场证据。"
         showIcon
@@ -381,7 +410,7 @@ export function ReturnPricingStage({
 
       {closure.delta && unresolved.length === 0 && closure.status === "RETURN_INSPECTION" ? (
         <Button
-          disabled={!canRecordReturnInspection}
+          disabled={!canRecordReturnInspection || !inspectionWorkOrderClosed}
           loading={busy === "inspection"}
           onClick={() =>
             void run(

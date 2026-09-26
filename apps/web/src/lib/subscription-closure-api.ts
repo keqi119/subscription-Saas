@@ -198,12 +198,13 @@ export function decideSubscriptionClosureApproval(
 
 export function advanceSubscriptionClosureSettlement(
   closureCaseId: string,
-  action: "propose" | "finalize" | "settle"
+  action: "propose" | "finalize" | "settle",
+  command?: Readonly<{ idempotencyKey: string; occurredAt: string }>
 ) {
   return apiFetch<Record<string, unknown>>(
     `/subscription-closures/${encodeURIComponent(closureCaseId)}/settlements/${action}`,
     {
-      body: JSON.stringify({
+      body: JSON.stringify(command ?? {
         idempotencyKey: crypto.randomUUID(),
         occurredAt: new Date().toISOString()
       }),

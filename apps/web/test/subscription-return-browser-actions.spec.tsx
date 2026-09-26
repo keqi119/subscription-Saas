@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { ApiError, apiFetch } from "../src/lib/api";
 import * as api from "../src/lib/subscription-closure-api";
 import * as inspection from "../src/components/subscription-closure/return-inspection-work-order";
+import * as pricing from "../src/components/subscription-closure/return-pricing-stage";
 
 vi.mock("../src/lib/api", async (original) => ({
   ...(await original<typeof import("../src/lib/api")>()),
@@ -549,5 +550,337 @@ describe("return inspection browser transport", () => {
       })
     );
     expect(html).toContain("disabled");
+  });
+});
+function refreshAggregate(revisionId = "proposal-1", hash = `hash-${revisionId}`) {
+  const value = aggregate();
+  return {
+    ...value,
+    closureCase: { ...value.closureCase, status: "PENDING_SETTLEMENT" },
+    allowedActions: ["PROPOSE_SETTLEMENT"],
+    settlementRevisions: [
+      {
+        id: revisionId,
+        stage: "PROPOSED",
+        resultHash: hash,
+        revisionNumber: 1,
+        amountDueCents: "200",
+        amountRefundableCents: "0"
+      }
+    ]
+  };
+}
+const refreshBinding = { closureCaseId, settlementRevisionId: "proposal-1", canRefresh: true };
+function proposal(id = "proposal-2") {
+  return { id, closureCaseId, stage: "PROPOSED", resultHash: `hash-${id}` };
+}
+function setupRefresh(options: { onChanged?: () => Promise<void> } = {}) {
+  expect(pricing).toHaveProperty("createReturnSettlementRefreshController");
+  const published: unknown[] = [];
+  const boundary = inspection.createReturnClosureReadback({
+    orderId: "order-1",
+    closureCaseId,
+    permissions: new Set(["subscription_closure:settle"]),
+    isCurrent: () => true,
+    publish: (view) => {
+      published.push(view);
+    }
+  });
+  const controller = pricing.createReturnSettlementRefreshController({
+    reloadClosure: boundary.reloadClosure,
+    onChanged: async (view) => {
+      await options.onChanged?.();
+      boundary.onClosureReadback(view);
+    },
+    onState: () => undefined
+  });
+  controller.bind(refreshBinding);
+  return { controller, published };
+}
+
+describe("return pricing proposal refresh", () => {
+  it("wires the actual pricing container to the server action and blocks publication until refresh", async () => {
+    const { buildAdminSubscriptionClosureView } =
+      await import("../src/lib/subscription-closure-view-model");
+    const render = (actions: string[], canSettle = true) => {
+      const value = refreshAggregate();
+      const closure = buildAdminSubscriptionClosureView(
+        { ...value, allowedActions: actions },
+        new Set(canSettle ? ["subscription_closure:settle"] : [])
+      );
+      return renderToStaticMarkup(
+        createElement(pricing.ReturnPricingStage, {
+          canApproveApproval: false,
+          canRequestApproval: false,
+          canViewAssetWorkOrder: false,
+          canManageAssetWorkOrder: false,
+          closure,
+          currentUserId: null,
+          onChanged: () => undefined,
+          reloadClosure: async () => closure,
+          onClosureReadback: () => undefined
+        })
+      );
+    };
+    const refreshing = render(["PROPOSE_SETTLEMENT", "FINALIZE_CONTRACT_PRICING"]);
+    expect(refreshing).toContain("更新结算草案");
+    expect(refreshing).toContain("正式收费已生成账单，请更新草案后重新绑定收费清单");
+    expect(refreshing).toMatch(/<button[^>]*disabled[^>]*><span>发布最终结算方案/);
+    const captured = render(["FINALIZE_CONTRACT_PRICING"]);
+    expect(captured).not.toContain("更新结算草案");
+    expect(captured).not.toMatch(/<button[^>]*disabled[^>]*><span>发布最终结算方案/);
+    expect(render(["PROPOSE_SETTLEMENT"], false)).not.toContain("更新结算草案");
+  });
+
+  it.each([
+    {},
+    { ...proposal(), closureCaseId: "other-case" },
+    { ...proposal(), stage: "FINALIZED" }
+  ])(
+    "does not trust a malformed proposal response %j or resend the committed request",
+    async (response) => {
+      const { controller } = setupRefresh();
+      vi.mocked(apiFetch)
+        .mockResolvedValueOnce(response)
+        .mockResolvedValueOnce(refreshAggregate("proposal-2"));
+      await controller.refresh();
+      expect(controller.getSnapshot().readback).toBe("changed");
+      vi.mocked(apiFetch).mockResolvedValueOnce(refreshAggregate("proposal-2"));
+      await controller.retry();
+      expect(posts()).toHaveLength(1);
+    }
+  );
+
+  it("keeps an ordinary same-binding rerender from dropping an in-flight refresh", async () => {
+    const { controller } = setupRefresh();
+    const post = deferred<unknown>();
+    vi.mocked(apiFetch).mockReturnValueOnce(post.promise);
+    const request = controller.refresh();
+    const pending = controller.getSnapshot().pending;
+    controller.bind({ ...refreshBinding });
+    expect(controller.getSnapshot().pending).toBe(pending);
+    expect(controller.getSnapshot().busy).toBe(true);
+    vi.mocked(apiFetch).mockResolvedValueOnce(refreshAggregate("proposal-2"));
+    post.resolve(proposal());
+    await request;
+  });
+
+  it("keeps optional explicit command bytes while preserving legacy callers", async () => {
+    const command = { idempotencyKey: "operation-1", occurredAt: "2026-09-26T08:00:00.000Z" };
+    await api.advanceSubscriptionClosureSettlement(closureCaseId, "propose", command);
+    await api.advanceSubscriptionClosureSettlement(closureCaseId, "propose", command);
+    expect(posts()[0]).toEqual(posts()[1]);
+    expect(JSON.parse(posts()[0][1]!.body as string)).toEqual(command);
+    await api.advanceSubscriptionClosureSettlement(closureCaseId, "finalize");
+    expect(JSON.parse(posts()[2][1]!.body as string)).toMatchObject({
+      idempotencyKey: expect.any(String),
+      occurredAt: expect.any(String)
+    });
+  });
+
+  it("runs the actual refresh action once for double clicks and publishes the matching readback", async () => {
+    const { controller, published } = setupRefresh();
+    const post = deferred<unknown>();
+    vi.mocked(apiFetch)
+      .mockReturnValueOnce(post.promise)
+      .mockResolvedValueOnce(refreshAggregate("proposal-2"));
+    const request = controller.refresh();
+    await controller.refresh();
+    expect(posts()).toHaveLength(1);
+    expect(controller.getSnapshot().busy).toBe(true);
+    expect(Object.isFrozen(controller.getSnapshot().pending!.command)).toBe(true);
+    post.resolve(proposal());
+    await request;
+    expect(published).toHaveLength(1);
+    expect(controller.getSnapshot()).toMatchObject({
+      pending: null,
+      busy: false,
+      readback: "ready"
+    });
+  });
+
+  it("keeps unknown same-revision retries byte-identical", async () => {
+    const { controller } = setupRefresh();
+    const read = deferred<unknown>();
+    vi.mocked(apiFetch)
+      .mockRejectedValueOnce(new ApiError("timeout", 0))
+      .mockReturnValueOnce(read.promise);
+    const request = controller.refresh();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(controller.getSnapshot().busy).toBe(true);
+    await controller.refresh();
+    read.resolve(refreshAggregate());
+    await request;
+    expect(controller.getSnapshot().readback).toBe("unknown");
+    const original = posts()[0];
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce(proposal())
+      .mockResolvedValueOnce(refreshAggregate("proposal-2"));
+    await controller.retry();
+    expect(posts()).toHaveLength(2);
+    expect(posts()[1]).toEqual(original);
+  });
+
+  it("does not infer success or resend after timeout when another revision appears", async () => {
+    const { controller, published } = setupRefresh();
+    vi.mocked(apiFetch)
+      .mockRejectedValueOnce(new ApiError("timeout", 0))
+      .mockResolvedValueOnce(refreshAggregate("proposal-other"));
+    await controller.refresh();
+    expect(published).toHaveLength(1);
+    expect(controller.getSnapshot().readback).toBe("changed");
+    vi.mocked(apiFetch).mockResolvedValueOnce(refreshAggregate("proposal-other"));
+    await controller.retry();
+    expect(posts()).toHaveLength(1);
+    expect(controller.getSnapshot().readback).toBe("changed");
+  });
+
+  it.each(["closure", "publish"])(
+    "only retries reads after commit and %s failure",
+    async (failure) => {
+      let failed = failure === "publish";
+      const { controller } = setupRefresh({
+        onChanged: async () => {
+          if (failed) throw new Error("publish failed");
+        }
+      });
+      vi.mocked(apiFetch).mockResolvedValueOnce(proposal());
+      if (failure === "closure")
+        vi.mocked(apiFetch).mockRejectedValueOnce(new Error("read failed"));
+      else vi.mocked(apiFetch).mockResolvedValueOnce(refreshAggregate("proposal-2"));
+      await controller.refresh();
+      expect(controller.getSnapshot().readback).toBe("refresh-required");
+      failed = false;
+      vi.mocked(apiFetch).mockResolvedValueOnce(refreshAggregate("proposal-2"));
+      await controller.retry();
+      expect(posts()).toHaveLength(1);
+      expect(controller.getSnapshot().pending).toBeNull();
+    }
+  );
+
+  it.each(["revision", "hash"])(
+    "publishes facts but refuses a mismatched response %s",
+    async (mismatch) => {
+      const { controller, published } = setupRefresh();
+      vi.mocked(apiFetch)
+        .mockResolvedValueOnce(proposal())
+        .mockResolvedValueOnce(
+          refreshAggregate(mismatch === "revision" ? "proposal-other" : "proposal-2", "hash-other")
+        );
+      await controller.refresh();
+      expect(published).toHaveLength(1);
+      expect(controller.getSnapshot().readback).toBe("changed");
+      expect(posts()).toHaveLength(1);
+    }
+  );
+
+  it.each(["case", "revision", "permission", "dispose"])(
+    "invalidates an old propose after %s changes",
+    async (change) => {
+      const { controller, published } = setupRefresh();
+      const post = deferred<unknown>();
+      vi.mocked(apiFetch).mockReturnValueOnce(post.promise);
+      const request = controller.refresh();
+      if (change === "dispose") controller.dispose();
+      else
+        controller.bind({
+          ...refreshBinding,
+          ...(change === "case"
+            ? { closureCaseId: "case-2" }
+            : change === "revision"
+              ? { settlementRevisionId: "proposal-2" }
+              : { canRefresh: false })
+        });
+      post.resolve(proposal());
+      await request;
+      await controller.retry();
+      expect(posts()).toHaveLength(1);
+      expect(published).toHaveLength(0);
+      expect(controller.getSnapshot().pending).toBeNull();
+    }
+  );
+
+  it("never publishes a stale closure GET after a revision switch", async () => {
+    const { controller, published } = setupRefresh();
+    const read = deferred<unknown>();
+    vi.mocked(apiFetch).mockResolvedValueOnce(proposal()).mockReturnValueOnce(read.promise);
+    const request = controller.refresh();
+    await vi.waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+    controller.bind({ ...refreshBinding, settlementRevisionId: "proposal-3" });
+    read.resolve(refreshAggregate("proposal-2"));
+    await request;
+    expect(published).toHaveLength(0);
+    expect(controller.getSnapshot().readback).toBe("idle");
+  });
+
+  it("accepts only the latest GET within one binding", async () => {
+    const { controller, published } = setupRefresh();
+    const old = deferred<unknown>();
+    const current = deferred<unknown>();
+    vi.mocked(apiFetch).mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    const a = controller.reload();
+    const b = controller.reload();
+    current.resolve(refreshAggregate("proposal-3"));
+    await b;
+    old.resolve(refreshAggregate("proposal-1"));
+    await a;
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({ settlementRevisions: [{ id: "proposal-3" }] });
+  });
+
+  it("an old finally cannot unlock a new A-to-B-to-A request", async () => {
+    const { controller } = setupRefresh();
+    const old = deferred<unknown>();
+    const current = deferred<unknown>();
+    vi.mocked(apiFetch).mockReturnValueOnce(old.promise);
+    const a = controller.refresh();
+    controller.bind({ ...refreshBinding, closureCaseId: "case-2" });
+    controller.bind(refreshBinding);
+    vi.mocked(apiFetch).mockReturnValueOnce(current.promise);
+    const b = controller.refresh();
+    old.resolve(proposal());
+    await a;
+    expect(controller.getSnapshot().busy).toBe(true);
+    vi.mocked(apiFetch).mockResolvedValueOnce(refreshAggregate("proposal-2"));
+    current.resolve(proposal());
+    await b;
+    expect(controller.getSnapshot().busy).toBe(false);
+  });
+
+  it("denies refresh without the current action capability", async () => {
+    const { controller } = setupRefresh();
+    controller.bind({ ...refreshBinding, canRefresh: false });
+    await controller.refresh();
+    await controller.retry();
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("renders only the four planned proposal action modes", () => {
+    expect(pricing).toHaveProperty("ReturnSettlementProposalActions");
+    for (const [mode, label] of [
+      ["initial", "生成结算草案"],
+      ["refresh", "更新结算草案"],
+      ["dispute", "生成争议调整后继结算"]
+    ] as const) {
+      const html = renderToStaticMarkup(
+        createElement(pricing.ReturnSettlementProposalActions, {
+          mode,
+          busy: true,
+          onPropose: () => undefined
+        })
+      );
+      expect(html).toContain(label);
+      expect(html).toContain("disabled");
+    }
+    expect(
+      renderToStaticMarkup(
+        createElement(pricing.ReturnSettlementProposalActions, {
+          mode: "hidden",
+          busy: false,
+          onPropose: () => undefined
+        })
+      )
+    ).toBe("");
   });
 });

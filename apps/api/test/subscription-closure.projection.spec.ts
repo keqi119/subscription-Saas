@@ -10,6 +10,120 @@ import {
 import { vi } from "vitest";
 
 describe("subscription closure public projections", () => {
+  describe("proposal refresh after a positive customer pricing bill", () => {
+    function facts() {
+      return {
+        closureCase: {
+          status: "PENDING_SETTLEMENT",
+          currentSettlementRevision: {
+            id: "proposal-1",
+            stage: "PROPOSED",
+            billInputSnapshot: { bills: [] as Array<{ id: string }> }
+          }
+        },
+        governed: {
+          deltaRevisions: [{ id: "delta-1", items: [] }],
+          chargeLines: [
+            {
+              settlementRevisionId: "proposal-1",
+              status: "FINAL",
+              responsibility: "CUSTOMER",
+              amountCents: "200",
+              billId: "bill-1" as string | null
+            }
+          ],
+          receivableBills: [
+            { id: "bill-1", billStatus: "PENDING", amount: "200", remainingAmount: "200" }
+          ]
+        }
+      };
+    }
+
+    it("offers the existing propose action only for an uncaptured live final customer bill", () => {
+      const { closureCase, governed } = facts();
+      expect(governedAllowedActions(closureCase, governed)).toContain("PROPOSE_SETTLEMENT");
+      closureCase.currentSettlementRevision.billInputSnapshot.bills.push({ id: "bill-1" });
+      expect(governedAllowedActions(closureCase, governed)).not.toContain("PROPOSE_SETTLEMENT");
+    });
+
+    it.each([
+      ["zero", { amountCents: "0" }],
+      ["negative", { amountCents: "-1" }],
+      ["invalid amount", { amountCents: "invalid" }],
+      ["platform", { responsibility: "PLATFORM" }],
+      ["preview", { status: "PREVIEW" }],
+      ["exception", { status: "PRICING_EXCEPTION" }],
+      ["other revision", { settlementRevisionId: "proposal-old" }],
+      ["no bill", { billId: null }],
+      ["absent bill", { billId: "bill-other" }]
+    ])("does not refresh for %s", (_label, change) => {
+      const { closureCase, governed } = facts();
+      Object.assign(governed.chargeLines[0]!, change);
+      expect(governedAllowedActions(closureCase, governed)).not.toContain("PROPOSE_SETTLEMENT");
+    });
+
+    it.each(["RETURN_INSPECTION", "RECONDITIONING", "SETTLED", "COMPLETED"])(
+      "does not refresh the proposal in %s",
+      (status) => {
+        const { closureCase, governed } = facts();
+        closureCase.status = status;
+        expect(governedAllowedActions(closureCase, governed)).not.toContain("PROPOSE_SETTLEMENT");
+      }
+    );
+
+    it.each(["CANCELLED", "missing bill", "missing delta", "FINALIZED", "SETTLED"])(
+      "does not refresh when %s",
+      (condition) => {
+        const { closureCase, governed } = facts();
+        if (condition === "CANCELLED") governed.receivableBills[0]!.billStatus = "CANCELLED";
+        if (condition === "missing bill") governed.receivableBills = [];
+        if (condition === "missing delta") governed.deltaRevisions = [];
+        if (["FINALIZED", "SETTLED"].includes(condition))
+          closureCase.currentSettlementRevision.stage = condition;
+        expect(governedAllowedActions(closureCase, governed)).not.toContain("PROPOSE_SETTLEMENT");
+      }
+    );
+
+    it("preserves initial proposals and the existing accepted-dispute successor route", () => {
+      const { closureCase, governed } = facts();
+      expect(
+        governedAllowedActions({ ...closureCase, currentSettlementRevision: null }, governed)
+      ).toContain("PROPOSE_SETTLEMENT");
+      closureCase.currentSettlementRevision.stage = "FINALIZED";
+      expect(
+        governedAllowedActions(closureCase, {
+          ...governed,
+          disputes: [{ status: "ACCEPTED_BY_PLATFORM" }]
+        })
+      ).toContain("PROPOSE_SETTLEMENT");
+    });
+
+    it.each([null, {}, { bills: "malformed" }])(
+      "does not treat a malformed snapshot %j as proof the bill was captured",
+      (billInputSnapshot) => {
+        const { closureCase, governed } = facts();
+        expect(
+          governedAllowedActions(
+            {
+              ...closureCase,
+              currentSettlementRevision: {
+                ...closureCase.currentSettlementRevision,
+                billInputSnapshot
+              }
+            },
+            governed
+          )
+        ).toContain("PROPOSE_SETTLEMENT");
+      }
+    );
+
+    it("compares positive cent amounts without floating point conversion", () => {
+      const { closureCase, governed } = facts();
+      governed.chargeLines[0]!.amountCents = "900719925474099312345";
+      expect(governedAllowedActions(closureCase, governed)).toContain("PROPOSE_SETTLEMENT");
+    });
+  });
+
   it("recursively removes approval comments, command envelopes, provider payloads, and BigInt", () => {
     const source = {
       amountDueCents: 1250n,

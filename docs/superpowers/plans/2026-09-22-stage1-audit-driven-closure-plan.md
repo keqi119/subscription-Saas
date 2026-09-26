@@ -390,6 +390,10 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 新确证财务审批缺口按[审批接线与证据成员计划](./2026-09-26-stage1-financial-approval-evidence-plan.md)独立实施：先补真实Accounting所需context幂等键，再修WAIVER/WRITE_OFF两来源ID并集覆盖，最后真实双人PG请求/决定/处置。只改一个生产文件及两个既有测试；registration可达性、历史审批、跨时刻重试时间语义另列，不借Mock批准冒称真实链完成。独立financial工作区已启动，沿相同API字节的上述fresh迁移/权限/退役与skip-dotenv Prisma validate完成前置，后续实际结果另登记。
 
+财务接线与成员修复现已本地收口并整合：实际干净source `0ca44e6e` 的原expiry完整98/98、asset33/33，共131/131；五文件unit186/186、API类型/三文件lint/diff通过。真实双人Accounting请求/决定、缺项与他案拒绝、批准后的余额/结算版本变化拒绝、实际减免/核销及同处置命令重放均已执行；report/receipt独立摘要读回、七项权限及精确退役通过，代码/原件/正式报告终审限定ACCEPT。见[财务审批验收](../../acceptance/2026-09-26-stage1-financial-approval-evidence-validation.md)。新增迁移为0，现有128迁移在本地fresh应用；原服务器Docker未恢复，真实浏览器、渠道及阶段1签字仍开放。
+
+后续优先单元为financial审批未知结果重试：只读核验发现跨毫秒同key请求/决定会因新时间进入完整payload而冲突，UI再次点击又生成key并重新上传proof；必须同时处理服务器首写时间与UI稳定命令，保留完整payload/当前权限/权威检查。独立设计审查进一步要求使用页面既有严格读回、上传前冻结绑定并区分upload-unknown、核receipt/outcome/实际approval的完整历史关系；方案精确化中，不把其登记为本轮已修。Registration已完成有界producer审计，未发现当前同case/item/evidence重复行生产链，且e-sign仍有Set.every后置；行数校验保留为较低优先级防御改进，不称已证实端到端漏洞。R2实际私有输入/来源、最终三镜像双链及线上三样本按任务9–13继续。
+
 ## 6. 每个单元的统一验收与交接
 
 - [ ] 施工前记录实际 HEAD/status、任务文件范围、批准/冻结边界；业务修改遵守 DEV_SPEC 和受控数据库 preflight。存在未明确归属的改动先交接，不回滚他人内容。

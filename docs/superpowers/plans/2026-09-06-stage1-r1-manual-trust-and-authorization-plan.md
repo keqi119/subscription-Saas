@@ -10,6 +10,8 @@
 
 **Spec:** [最小受控发布决策 §3](../specs/2026-09-06-stage1-minimal-controlled-release-decision.zh-CN.md)、[覆盖路线图 R1/R2](./2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)、[P0/P1 实际执行索引](../../acceptance/2026-09-06-stage1-mainline-execution-index.md)。决策文档仍保留其自身审批状态；本稿不代替对新增人工路径的批准。
 
+2026-09-26 前向验收：本节限域修复已与R2.1同源完整验证，实际source `ba57efea` 的八文件343/343、exit0，代码与原件独立终审ACCEPT。见[本地组合记录](../../acceptance/2026-09-26-stage1-r21-offline-integration-validation.md)；保留先前RED/聚焦/339轮及默认lint、历史parser格式限制。该结论不替代R2.2实际collector、来源门槛或Node22/H3真实执行。
+
 ## Global Constraints
 
 ### 2026-09-25 审计收口：MS2 真实工具调用 schedule（限域补充）

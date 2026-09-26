@@ -310,8 +310,11 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 依赖任务 3，R1.3/RP/R1.3H 既有实现不重新开发。严格使用 [R2 原计划](./2026-09-06-stage1-r2-runner-migrate-verify-plan.md) 的三份 Files 清单和接口。
 
-- [ ] R2.1：创建 manual-command-adapter/target-observer 及测试；按原计划为 applyMigration 增加受约束 executionIdentity 接缝。observer 真实查询的字段/角色/一致性快照由受控 connector double 测试；保存完整迁移行，不用过滤后的成功行伪造前缀。
-- [ ] R2.1 出口：错 system identifier/endpoint/DB OID/role/TLS 时 handler=0，合法迁移后 catalog/权限变化不被旧 H3-A 错挡；旧 handler 兼容。
+- [x] R2.1：创建 manual-command-adapter/target-observer 及测试；按原计划为 applyMigration 增加受约束 executionIdentity 接缝。observer 真实查询的字段/角色/一致性快照由受控 connector double 测试；保存完整迁移行，不用过滤后的成功行伪造前缀。
+- [x] R2.1 出口：错 system identifier/endpoint/DB OID/role/TLS 时 handler=0，合法迁移后 catalog/权限变化不被旧 H3-A 错挡；旧 handler 兼容。
+
+2026-09-26：R2.1限定本地范围已收口，最终实际测试source `ba57efea` 八文件343/343、exit0、独立终审ACCEPT。新增适配器/observer、MS2真实工具schedule及最终观察ACK绑定修复均纳入；见[完整原件与限制](../../acceptance/2026-09-26-stage1-r21-offline-integration-validation.md)。R2.2/3仍待实施，任务9整体未关闭。
+
 - [ ] R2.2：创建 launch-manual-stage1/manual-entrypoint 及测试，接 cli manual 分支；唯一 selector 为 operationRef。固定 H3 来源、prepare/index、真实 child/工具 raw、PREPARED→readback→ACK→spawn、最后关闭全部按原计划实现。
 - [ ] R2.2 出口：真实临时 Node 管道组合通过；非法 CLI/替代路径/错 nonce/H3/ACK/版本在 secret/DB 前拒绝。manual stdout 无额外 JSON 尾写；旧入口字节行为保持。
 - [ ] R2.3：创建 verify-manual-runner-result、两个 test/manual 真实阶段文件；登记精确 discovery exceptions。verifier 只读固定 index/build/H3/raw，全链证据不接受 caller success flag。

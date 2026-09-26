@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 构建运行链接兼容修复前向登记
+
+Task10 的运行链接格式修复已接回 `ea3f6d6e`、`b7efeccc`：工作流统一生成精确 HTTPS run URL，delivery verifier 闭集兼容原 `github://` 及 HTTPS，proof/material 必须同一表示，手动准入仍严格要求 HTTPS。[限定验证记录](2026-09-27-stage1-build-run-reference-validation.md)保留一次 76/83 夹具失败、稳定版本 83/83，以及独立审查指出混合格式夹具缺口后定向修正的 1/1；最终审查批准，整合字节一致。没有触发 CI、取得 OSS custody 或部署；Task10 整体仍开放。
+
 ## 2026-09-27 授权目标观察增量前向登记
 
 R2.2 本地目标观察增量在隔离工作树提交 `900b978bc55d8a4c2e7d399d1ce47764251ad970`：接通真实 R1 session/sign/consume、固定 observer 凭证、只读 SQL 观察、归档独立读回和原始 baseline 保存。独立代码审查及两处旧测试断言的限定复审通过。[原始验证报告](2026-09-27-stage1-r22-target-observe-validation.md)保留单次全文件 **157 tests / 155 pass / 2 fail / exit 1**；21 个新增用例均通过，两个旧计数断言修正后的定向验证 **4/4、exit 0**，没有把原全文件失败改称全绿，也没有重复全文件运行。

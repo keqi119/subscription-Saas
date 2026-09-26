@@ -1,5 +1,19 @@
 # Stage 1 独立 expected-schema producer 限定验证
 
+## 2026-09-27 固定输入接口与原件取回对齐
+
+隔离分支提交 `3feff2e7e6a419583b69a1550149460f57ecba57`，父提交 `9dec7a8c`，仅修改已有 producer/test。主控在衔接检查中发现初版输出未符合 R2 §2.4 精确 ExpectedProvenance 接口，且缺失调用 PID、事件时间和完整原始输出；此前最小 brief 遗漏了该精确接口，初版限定审查不等于下游兼容通过。
+
+参考库使用无网络、只读根、tmpfs 和 Unix socket，不能如实提供 H3 的卷名或 TCP 身份。私有参考 Origin 的 DOC 修正 `f2bbbd97`（隔离树 `9dec7a8c`）已先获独立 Approved；共享 H3/Schema/授权不变。实现随后输出精确 provenance/四调用/creation-readback 图及有限去重 raw 集合，保留实际 PID、prepared/spawn/close、完整 argv/stdout/stderr。版本调用移至真实创建后，最终 SQL 读回在 script close 后，非空 zero-exit diff 拒绝；migration owner 从实际关系读取。
+
+宿主保留已核源码 bytes；inner PG 真正停止后输出小 manifest，并在容器仍运行时逐对象取回固定 tmpfs 原件、检查文件身份/大小/hash 和独立重开。取完才 release、等待真实 close/exited 0，最后分别 stop/forced rm 精确容器。每个 raw 和完整 canonical JSON 仍最多 1 MiB，未增加卷、网络、挂载或容器，也未将全部原件合并 base64。
+
+实际验证：旧冻结源取得三个真实 RED（格式缺失、非空 diff 被接受、大原件聚合超限），exit 1；修正后定向 3/3。最终 lint 后冻结，唯一完整受影响文件 **7/7、Node exit 0**，lint/语法/登记/diff 检查通过。测试复用原四例，增加三项有限反例；大原件例使用 462831-byte schema、274737-byte lock 和 400000-byte script。未重复业务或完整发布套件。
+
+独立 Sol high 代码审查 **Approved**，无 Important/Critical。主控实际核对日志、冻结摘要和单次两文件提交，提交前后摘要相同、工作树 clean。producer SHA256 `8153475a68f20c9fea1ffe58f32751d2dc3a202dcc97db767139430c38f1c265`，test `2fd6e651d18c51810efa383442901b388072f1b449dca816905c0e97e84bffcf`。01–06 日志/冻结/diff/review/commit evidence 位于隔离工作树该计划 scratch 的 `expected-schema-alignment/` 子目录。
+
+上述仍由离线底层进程 double 驱动真实实现，未运行实际 Docker/PG/CI 或取得 custody/attestation/import。下一步还须用既有私有存储绑定保留实际 Get/Head/ACL 原件、接两 subject attestation 和固定 reader；**Task3、H2、R2 和阶段 1 均未关闭**。下述初版记录保留为历史。
+
 隔离工作树 `stage1-r22-launcher-20260926` 提交 `42bb7ec48ee076505768364a7f788d809cb2b566`，父提交 `bbaf9710aa54cebb98eed51f4dba5b308b71f52e`。仅新增 producer、对应测试及现有 catalogs/manifest 登记；未整合主候选。
 
 宿主内部函数核验实际干净 checkout、proof/material、源码契约与迁移目录，然后以同 proof 的固定 Runner 镜像顺序创建两套独立参考容器。容器采用 postgres 用户、只读根、禁用网络和两个固定 tmpfs，无宿主挂载；镜像内通过私有 Unix socket 创建 PG17.11 参考库，执行迁移、身份及完整迁移/owner/extension 读回、零差异检查并保留 Prisma 原始脚本字节。两次原始输出及稳定事实一致才返回未发布的 schema/script/provenance 和既有 schema-expectation。

@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 expected-schema 固定输入接口对齐前向登记
+
+隔离分支提交 `3feff2e7`，补齐初版生成器与既有 R2 精确 provenance 接口的差距，保留完整进程原件并实现有限逐对象取回；私有参考 Origin 修正 `f2bbbd97/9dec7a8c` 先获 DOC Approved，共享 H3 规则不变。[验证记录](2026-09-27-stage1-expected-schema-producer-validation.md)保留旧源三个真实 RED、最终冻结文件 7/7/exit 0 和独立代码审查 Approved。未整合主候选或执行真实参考库/云保管，阶段 1 继续开放。
+
 ## 2026-09-27 H2 收据到固定 consumer 前向登记
 
 隔离分支 test-only 提交 `a1a968c0`，真实 producer/foundation 生成的收据通过既有固定 consumer；旧 `github://` 一致输入在存储写入前拒绝。独立限定审查 Approved，最终 Node22.22.2 新增两例 2/2、actual exit 0，108 个 Linux 执行副本摘要相符；[原始记录](2026-09-27-stage1-h2-internal-custody-validation.md)保留权限和运行准备失败。未重复全套测试，未发现新生产缺陷，真实云保管和阶段 1 仍开放。

@@ -106,6 +106,202 @@ R2.2 在 AUTHORIZE 前经既有 raw 保管路径把完整两个输入 bytes 写�
 
 小修先跑相应 RED/GREEN 和负向组合并保留记录；R1.3H、R2.1、R2.2 各自收口节点跑该任务完整门禁，后续集成再集中跑跨任务回归。不得把延后全量记作通过，也不每修一个小问题重复长时间全套。
 
+### 2.3 R2.2 私有输入补充范围（2026-09-26，DOC-ONLY 独立审查通过）
+
+本节至 §2.6 只明确现有 R2.2 launcher/entrypoint 私有 IO 的输入，不增加生产文件、公开 export、共享 Schema/artifact kind、CLI 参数、Runner capability、签名域或自动 provision/grant。R2.2 仍只有其 Files 中八文件，R2.3 在原 verifier/test 中独立重读相同来源；R1 reader/build verifier/session bootstrap 与 MS2 parser/assessor 不复制。2026-09-25 真实 schedule 与 `3b20c1f7` 的最后 observation/ACK 快照 P1 说明及其门禁保持原样。
+
+沿用 R1 的 `D/T/S/Report/RawRef/UUID/TargetIntent/ClusterOrigin`：RawRef 永远为完整实际 bytes 的 `{digest:D,bytes:I}`；T 必须是真实、可往返的 UTC 毫秒时间，I 为非负安全整数。以下另用 `OID` 表示正十进制字符串、`SHA` 表示 40 位 lowercase source SHA、`PID` 表示正安全整数；所有对象递归 closed，列出的字段全部必填，仅明确写 `null` 的位置可空。局部 `recordVersion` 只用于固定私有文件分流，不登记新通用契约。JSON fatal UTF-8 解码后须与 `encodeManualJson(value)` 逐字节相等，重复键、BOM、额外键、非法 Unicode 和完整 JSON 超 1 MiB 均拒绝；供应商/工具原始 stdout 不强制 canonical，但原 bytes 与严格解码后的 JSON 分别受既有上限约束。
+
+固定私有文件都由已核 profile 派生绝对位置，不从 caller/环境变量/record 内路径选根；拒绝目录越界、symlink/reparse、硬链接、非普通文件、宽 ACL 或前后文件身份/大小/内容变化。沿 H1 已批准 owner 受控导入：CreateNew、完整读取、独立重开、所有父目录/文件 ACL 与实际身份前后核对；格式/摘要不证明人已批准或外部操作已发生。R2 只核固定来源及下述绑定，不能声称 hash/ACL 能防御已获 owner/宿主管理权限者同时伪造全部人工源记录。读取现有非秘密 raw 仅走 `archiveRoot/raw/{digestHex}.bin` 或本节指定 input 子目录，digestHex 只能来自已验闭合 RawRef；不递归扫描、不从正文发现 URL/路径执行操作。
+
+### 2.4 独立 expected-schema 的固定私有输入
+
+**来源与先后。** 消费已审 [Task 10 预备方案 Task 3](./2026-09-25-stage1-trusted-build-input-preparation-plan.md#task-3-independent-expected-schema-production-and-fixed-input-admission) 的未来 producer/两次独立 reference DB 及私密 custody。先实际调用 R1 `verifyManualBuild({repoRoot,proofBytes,materialBytes})` 成功并锁定返回的 `proofRawDigest/buildProofDigest` 和同一 proof bytes，才解析该已核 proof 的 `identity.sourceSha` 与 `provenance.ciRunRef`。后者必须为同一成功 run 的精确 HTTPS URL；R1 已核该 run 的 attempt 1/成功结论，不从 caller 提供 run/source/verified JSON。当前 producer、CI/私密原件尚未实现或未提供时保持 `MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED`，不从 H3 target script/catalog 或 fixture 反填期望。
+
+固定目录为 `profile.storage.archiveRoot/inputs/expected-schema/{proofRawHex}/`，其中 proofRawHex 仅取 R1 返回 digest 去前缀。仅以下四个数据文件与一个导入读回文件；没有 latest/current 别名、命令行路径或另一个 expected digest 输入：
+
+| 固定相对名              | 完整 bytes 与用途                                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `provenance.json`       | 下述 ExpectedProvenance 的 canonical producer 原件；单独 raw-subject attestation                                          |
+| `expected.sql`          | reference DB 的精确 Prisma script stdout Buffer；无 trim/换行转换；单独 raw-subject attestation                           |
+| `schema.prisma`         | 同 attested checkout 的 `apps/api/prisma/schema.prisma` 原 bytes；不是另一个 schema 路径                                  |
+| `prisma-version.stdout` | 完整 `prisma --version` 原 stdout，严格解码后只在 Report 边界 trim                                                        |
+| `import-readback.json`  | 下述 ExpectedImport，批准的 Task 10 私密 Get/Head/ACL/保留期与 owner 导入/重开事实；不是替代 attestation 的 verified 标志 |
+
+其余 finite RawRef（reference 创建/迁移/读回原件、catalog、argv/stdout/stderr、配置/lock 原 bytes、私密读回原件）只读该目录下 `raw/{digestHex}.bin`；四个固定数据文件与所有 RawRef 均重算 hash/大小。配置与 lock 还须等于已核 source checkout 中固定路径的实际 bytes。允许同一 raw 被多次引用，不允许缺 ref、未受 provenance/导入表覆盖的隐式输入或凭证内容。需要的实际 raw 未提供即 INPUT_REQUIRED。
+
+```text
+ExpectedProvenance={recordVersion:"manual-expected-schema-provenance.v1",
+ buildProofDigest:D,proofRaw:RawRef,sourceSha:SHA,
+ ci:{repository:"keqi119/subscription-Saas",workflowPath:".github/workflows/docker-images.yml",
+     sourceRef:"refs/heads/main",runId:positive-decimal-string,runAttempt:1,
+     runnerClass:"github-hosted"},
+ sourceSchema:{path:"apps/api/prisma/schema.prisma",raw:RawRef},
+ config:{path:"apps/api/prisma.config.ts",raw:RawRef},
+ lockfile:{path:"pnpm-lock.yaml",raw:RawRef},migrationCatalogDigest:D,
+ toolchain:{runnerImageDigest:D,postgresImageDigest:D,nodeVersion:Report,
+            postgresqlVersion:Report,prismaVersion:Report,prismaVersionRaw:RawRef},
+ expectedScript:RawRef,references:[ExpectedReference,ExpectedReference],
+ generatedAt:T,promotionEligible:false}
+ExpectedReference={referenceRunId:UUID,identity:{cluster:ClusterOrigin,databaseName:S,databaseOid:OID},
+ createdAt:T,readbackAt:T,creationEvidence:RawRef,readbackEvidence:RawRef,
+ migrationCatalog:RawRef,migrationHead:S|null,migrationOwner:S,allowedExtensions:S[],
+ calls:[ExpectedCall,ExpectedCall,ExpectedCall,ExpectedCall]}
+ExpectedCall={tool:"prisma-version"|"prisma-deploy"|"prisma-diff"|"prisma-script",
+ argv:RawRef,stdout:RawRef,stderr:RawRef,pid:PID,preparedAt:T,spawnedAt:T,closedAt:T,
+ exitCode:0,signal:null}
+ExpectedImport={recordVersion:"manual-expected-schema-import.v1",buildProofDigest:D,
+ proofRawDigest:D,profileDigest:D,ownerId:S,importApprovalRef:S,importedAt:T,readbackAt:T,
+ objects:{subject:RawRef,storeRef:S,writerIdentity:S,auditReaderIdentity:"audit-reader",
+          storedAt:T,retainUntil:T,readbackAt:T,getEvidence:RawRef,
+          headEvidence:RawRef,aclEvidence:RawRef}[],promotionEligible:false}
+```
+
+上述是 producer 与 consumer 的精确接口约束，未来 Task 10 producer 在自身已列文件中产出；R2 不实现 producer。`references` 恰为两次独立 fresh reference DB 的实际创建/读取，referenceRunId 与 `(systemIdentifier,databaseOid)` 各自不同；与本次 H3 目标的实际物理 tuple 也不得相同。每轮 calls 恰依序为版本、deploy、零 diff、script，argv raw 为 canonical 字符串数组，与固定 `/app`、现有 Prisma 7.8 config/schema/CLI 路径和 Task 10 四命令逐项相等；不执行 provenance 内的 argv/SQL。每个实际 call 满足 `createdAt <= preparedAt <= spawnedAt <= closedAt <= readbackAt <= generatedAt`；PID/close/raw 必须齐全，diff stdout.trim 为空。两轮 script stdout 等于同一 expected.sql 原 bytes；版本 stdout 等于同一完整 version 原件，其 Report 与 toolchain.prismaVersion 完全相等。Node22、Prisma7.8.0、PG17.11 与 pinned Runner/PG 镜像来自同次 producer 实测/读回；runner digest 等于已核 proof 的 Runner platform digest。两轮 migration catalog 的稳定 path/order/checksum/head/owner/extensions 相同且 catalog identity digest 等于 proof；UUID/OID/创建时间等非确定性原件保留各自真实值，不按字节相等压成一轮。
+
+ExpectedImport.objects 精确覆盖 provenance 本身及其可达 raw 集合（重复 digest 只一项），不包含 import 文件自身；按 subject.digest 排序且无重复。其 getEvidence/headEvidence/aclEvidence 是批准 Task 10 私密服务的非秘密原始读回，不是本地文件 copy 成功、Actions metadata 或 writer 自报。独立 audit-reader Get 的实际 bytes 等于 subject，Head 大小/digest/实际保留期与 ACL 对应同对象，writer 与 audit reader 分离；有效保留期覆盖既定 90 日审查区间，不使用现在加 90 日代替原起算事件。Task 10 独立读取/批准来源不能核实就拒绝；R2 不新增私密存储 client、重签 custody receipt 或将此本地导入表当新的存储权威。所有 importedAt/readbackAt/对象时间不在未来，且 `storedAt <= readbackAt <= importedAt <= ExpectedImport.readbackAt`；owner/profile/build 必须等于 H1/R1 已核值。
+
+**两个新 subject 的唯一验真接缝。** 本次细化的 expected attestation 集合恰为 producer provenance 原 bytes 与 expected.sql 原 bytes 两项。Task 10 原概述中“record and both raw byte subjects”的宽措辞在本接口按此两项细化：schema 原 bytes 与完整 Prisma version 原 bytes 由已 attested provenance 的 RawRef 闭合，再与 R1 已核同 checkout schema/config/lock bytes逐字节比对；不无故要求第三份 schema attestation，也不把 proof attestation 当 expected attestation。
+
+R1 trust 内 `verifyAttestedInput/attestation` 当前为 private，无可调用 export。本轮允许仅在现有 R2.2 launcher 内为上述两个新 subject 实现固定 `gh` 验真 IO/局部检查，不复制 `verifyManualBuild`、proof/material/custody 验真、successfulRun、固定 operation reader 或 session bootstrap。对每一个由固定目录派生的 subjectFile，spawn `gh` 的精确 argv 为：
+
+```text
+["attestation","verify",subjectFile,"--repo","keqi119/subscription-Saas",
+ "--signer-workflow","keqi119/subscription-Saas/.github/workflows/docker-images.yml",
+ "--source-ref","refs/heads/main","--source-digest",verifiedSourceSha,
+ "--cert-oidc-issuer","https://token.actions.githubusercontent.com",
+ "--deny-self-hosted-runners","--format","json"]
+```
+
+subjectFile/verifiedSourceSha 仅来自固定 IO 与已成功 R1 的同一 proof，不是新增 CLI 参数。使用固定 github.com、禁交互且无 `GH_REPO/GH_HOST` 覆盖的受控进程环境、`shell:false`；退出非 0、signal/timeout、超限、非 UTF-8 或非 JSON 即拒绝。保存实际 gh stdout/stderr/close 的非秘密原件到现有 raw 保管路径，拒绝 caller“已验证 JSON”、fixture 文件替代真实 spawn、旧 launch-envelope verifier、bundle_url 下载地址或混用两个 result 的证书/statement。每份实际 stdout 必须为单元素结果数组，该项具有：
+
+- 精确 issuer、repository URI、workflow/main signer SAN/buildSignerURI/buildConfigURI，所有 source/build signer/config digest 等于已核 source，runnerEnvironment 为 github-hosted；
+- `runInvocationURI` 恰为已核 proof.ciRunRef 加 `/attempts/1`；两 subject 都属于该相同已成功 run/attempt，不能仅同 source 或同 workflow；
+- statement 的 `_type` 为 `https://in-toto.io/Statement/v1`，subject 恰一个且 sha256 为当前完整 subject raw digest；
+- verifiedTimestamps 非空，每个真实 timestamp 不早于 provenance.generatedAt、不晚于实际验真时间；bundle 的 dsse payloadType 为 `application/vnd.in-toto+json`，严格 base64 解码 payload 与该项 verified statement 的 canonical JSON 全等；
+- 私有 attestationRef 仅取该已验证 bundle 的 `sha256Canonical`；原 stdout 与 bundle/statement 对应关系及两个 subject 的不同 digest 均保留，不能用 provenance 的自报引用代替。
+
+两次 gh 前后都重核固定 inputs/同 proof/source bytes、路径身份与 ACL，独立重开 subject 后再比较精确 bytes；验证完成后、request freeze 前再核。成功才从实际 sourceSchema/version/script 构造既有 `schema-expectation`、调用共享 validator、将完整 JSON 与 sourceSchema/script raw 及有关非秘密 raw 按既有保管路径独立读回，使 `raws.has(sourceSchemaDigest)` 成立。任何 missing/mismatch 都在 runner request freeze/sign、命令 credential read、命令 DB connect 前拒绝，三类计数为 0；target-observe/session-open 的既定边界不改。
+
+**历史原件的确定性定位。** 两次实际 gh 调用与已保存 expectation 的非秘密读回，在同 expected 目录下固定为 `admissions/{operationRef}/{attemptId}.json`，只由已有 R1 fixed index 和该 runner-command attempt allocation 派生，不能传路径、枚举 latest 或先造 request 来定位。它不是另一个外部 input selector；R2.2 在所有原件已保管/重开后、request freeze 前 CreateNew 并独立重开，失败时只保留真实 partial raw，不补成功 sidecar。其 closed 私有形状为：
+
+```text
+ExpectedAdmission={recordVersion:"manual-expected-schema-readback.v1",
+ operationRef:UUID,indexDigest:D,runId:UUID,profileDigest:D,
+ attemptId:UUID,attemptAllocationDigest:D,buildProofDigest:D,proofRawDigest:D,
+ provenance:RawRef,sourceSchema:RawRef,prismaVersion:RawRef,script:RawRef,
+ schemaExpectation:RawRef,calls:[AttestationCall,AttestationCall],recordedAt:T,
+ promotionEligible:false}
+AttestationCall={subject:RawRef,argv:RawRef,stdout:RawRef,stderr:RawRef,pid:PID,
+ startedAt:T,closedAt:T,exitCode:0,signal:null,bundleDigest:D}
+```
+
+calls 恰按 provenance、expected.sql 顺序，subject 与固定 bytes 等式一致；argv 是上文固定数组的 canonical raw，stdout/stderr 是本次实际 process 的完整原 bytes，bundleDigest 由对应 stdout 已核 bundle 计算。两 call 的时间与实际非并行调用相符且均不晚于 recordedAt，所有 RawRef 指现有 raw 保管目录并核完整 bytes；schemaExpectation 指既有共享类型，不在 sidecar 重定义。跨 allocation/ref/run/proof、漏 call、改 raw 或 writer 未读回均拒绝。sidecar **只解决历史原件定位，不是当前密码学验真权威**，里面没有 `verified` 字段；真实 gh 原输出、self-reported exit 0、原件 digest 或一份 canonical sidecar 均不能独自放行。
+
+**R2.3 独立只读验真。** 在其原有 `scripts/release/verify-manual-runner-result.mjs` 和对应 test 内明确允许固定 gh 子进程及验 attestation 所需的 GitHub 只读网络读取；不扩文件/export/命令选择。它先实际消费 R1 `verifyManualBuild` 的当前成功结果及同 proof bytes，重开上述 fixed inputs、既有 raw 和 allocation 精确定位的 sidecar，独立核 bytes/digest/来源/历史调用闭合；随后**独立重新执行上文两个 subject 的固定 gh 验真**，使用已核 source/ciRunRef 并执行同一 issuer/repo/workflow/main/hosted/run-attempt/单 subject/bundle↔statement/时间政策，前后 ACL/bytes 再核，全部通过才调用共享 assessor。历史 gh 输出仅保留为历史证据，不据其 JSON 或 exit 字段宣称当前验真，也不以 fresh gh 成功覆盖缺失/被改的历史。
+
+**被评估请求与原件图必须是同一 expectation。** R2.3 独立重开 sidecar.schemaExpectation 的完整 canonical bytes，交共享 validator 并核 RawRef 大小/digest，要求 `sidecar.schemaExpectation.digest === request.expectedSchemaEvidenceDigest`，且 request 图中该 digest 的完整 bytes 与重开 bytes 相等。不能只证明 sidecar 与 graph 各自合法。令该同一对象为 E、当前重新 attested 的 provenance 为 P：`E.buildProofDigest === P.buildProofDigest === sidecar.buildProofDigest === request.buildProofDigest === R1 已核 buildProofDigest`；`E.sourceSchemaDigest === P.sourceSchema.raw.digest === sidecar.sourceSchema.digest`，对应 RawRef/完整 bytes 同时核等且等于 R1 已核同 checkout schema bytes；`E.prismaVersion === P.toolchain.prismaVersion === strictDecode(versionRaw).trim()`，其中 versionRaw 完整 RawRef/bytes 必须同时等于 P.toolchain.prismaVersionRaw、sidecar.prismaVersion 与固定 prisma-version.stdout；`E.script` 的完整 RawRef/bytes 等于 P.expectedScript、sidecar.script 与已单独 attested 的固定 expected.sql，且 `E.script.digest === request.domainInput.expectedSchemaDigest`；`E.sourceSchemaPath === P.sourceSchema.path === "apps/api/prisma/schema.prisma"`。这五字段逐项闭合后才交共享 assessor；不增加字段/export，也不借共享图内部相等替代固定来源与当前密码学验真。
+
+此 R2.3 接缝只验两个新 expected subjects，不复制 build/custody/session bootstrap、不调用 launcher；不创建 session、签发、读取 credential/key、连接 DB、启动 Runner 或写/覆盖 fixed inputs、admissions、journal。其当前固定 gh 网络读取也须处于对应获批只读窗口；gh 缺失、网络/认证不可用、输入变化或验真失败就拒绝，不能退回历史输出或 caller verified JSON。新鲜验证的必要 process 输出由现有执行证据保管流程保留，不另建成功记录平台。
+
+### 2.5 H3-B 固定批准与独立读回的封闭字段
+
+仍仅使用 §2.1 同一 operation 目录的 `h3-b-approval.json`、`h3-b-readback.json`；不新增 H3 文件名、输入参数或共享 TargetContext 字段。先由真实用户批准完整非秘密操作单，owner 才 CreateNew approval；人工独立操作及撤权/退出/读回完成后才 CreateNew readback。两者与 H3-A 一样以完整 RawRef 入现有 raw 目录并重开；R2.2/R2.3 既重开 fixed inputs 也核 raw bytes，不凭文件存在、签名样例或字段为 true 放行。
+
+```text
+H3BApproval={recordVersion:"manual-h3-b-approval.v1",operationRef:UUID,indexDigest:D,
+ runId:UUID,profileDigest:D,targetIntent:TargetIntent,ownerId:S,
+ h3AApproval:RawRef,h3AReadback:RawRef,approvedAt:T,expiresAt:T,
+ branch:"normal-success"|"apply-unknown-recovery",migration:MigrationBasis,
+ preApprovalEvidence:RawRef,investigationApprovalRef:S|null,
+ target:{cluster:ClusterOrigin,databaseName:S,databaseOid:OID},
+ migrationTable:{schema:"public",name:"_prisma_migrations",oid:OID,owner:RoleIdentity},
+ roles:{provision:RoleIdentity,migrate:RoleIdentity,verify:RoleIdentity,observer:RoleIdentity},
+ grant:{privileges:["SELECT"],grantees:["verify","observer"],grantOption:false},
+ operationSheet:Report,promotionEligible:false}
+MigrationBasis={operationId:UUID,idempotencyKey:S,attemptId:UUID,
+ allocationDigest:D,requestDigest:D,approvedPlanDigest:D,
+ processEvidenceDigest:D,resultDigest:D|null,executionRecordDigest:D}
+RoleIdentity={name:S,oid:OID}
+H3BReadback={recordVersion:"manual-h3-b-readback.v1",operationRef:UUID,indexDigest:D,
+ runId:UUID,profileDigest:D,targetIntent:TargetIntent,ownerId:S,approval:RawRef,
+ migration:MigrationBasis,target:{cluster:ClusterOrigin,databaseName:S,databaseOid:OID},
+ migrationTable:{schema:"public",name:"_prisma_migrations",oid:OID,owner:RoleIdentity},
+ writerQuiescence:{observedAt:T,containerId:hex64,containerState:"exited",
+                  processEvidence:RawRef,databaseSessions:0,sessionReadback:RawRef},
+ before:PermissionReadback,grantStartedAt:T,grantCompletedAt:T,grantEvidence:RawRef,
+ after:PermissionReadback,provisionExit:ProvisionExit,readbackAt:T,
+ readbackReport:Report,promotionEligible:false}
+PermissionReadback={observedAt:T,source:RawRef,roles:[ReadonlyRoleFacts,ReadonlyRoleFacts]}
+ReadonlyRoleFacts={kind:"verify"|"observer",identity:RoleIdentity,tls:true,
+ superuser:false,createdb:false,createrole:false,replication:false,bypassrls:false,
+ memberships:[],ownedSchemas:[],ownedRelations:[],
+ databasePrivileges:{connect:true,create:false,temporary:false},
+ publicSchemaPrivileges:{usage:true,create:false},
+ migrationTablePrivileges:{select:boolean,insert:false,update:false,delete:false,
+                          truncate:false,references:false,trigger:false,maintain:false,
+                          grantOptions:[],columnPrivileges:[]},
+ pgControlSystem:{functionOid:OID,signature:"pg_catalog.pg_control_system()",execute:true},
+ otherUserRelationPrivileges:[],privilegeInventory:RawRef,selectReadback:RawRef|null}
+ProvisionExit={identity:RoleIdentity,revokedAt:T,canLogin:false,superuser:false,
+ createdb:false,createrole:false,replication:false,bypassrls:false,memberships:[],
+ process:{pid:PID,startedAt:T,closedAt:T,exitCode:0,signal:null},
+ observedAt:T,activeSessions:0,credentialState:"SEALED_RETAINED"|"REMOVED",
+ roleReadback:RawRef,sessionReadback:RawRef,processReadback:RawRef,
+ credentialStateReadback:RawRef}
+```
+
+**共同绑定与实际来源。** Approval 的 operation/index/run/profile/target/owner 等于 R1 fixed index/H1；H3-A 两 RawRef 等于固定原件，target 等于 H3-A 的稳定物理身份且每次请求前仍由现有实际 inspect 核等。四 role name/OID 互异，migrate/verify/observer 的 name 等于 profile 精确 target.roles 对应值，provision 等于 H3-A 已批准操作单中的临时管理角色，不能新增 profile.provision。table OID/owner 是表实际产生后按真实 catalog 读取的值，owner 必须为该 migrate name/OID。preApprovalEvidence 包含当时真实 table/owner/角色/cluster 与原进程已退出的查询原件；它必须早于 approvedAt，不能将将来的 grant/readback 倒填进批准。
+
+MigrationBasis 的每个 digest 必须打开既有 R1/R2 原件并核全件 hash、同 operation/key/attempt/run/build/target、phase=apply 及既定前序链；不是按字符串相等接受。normal 分支只来自 frozen scenario=normal 的实际 SUCCEEDED apply，resultDigest 必填，已完成内部自检且原 Runner/连接退出；`investigationApprovalRef=null`。unknown 分支只来自 frozen scenario=apply-interrupted 的该原 apply `INTERRUPTED_UNKNOWN` 历史，允许尚未产生的 result 为 null，但已有的实际 result 不能删除；`investigationApprovalRef` 必填并对应对该 UNKNOWN 的另批只读调查，preApprovalEvidence 是该调查的实际原件。调查确认原 writer/连接已停、表真实存在且 OID/owner/cluster 可确定后，才可能批准本次精确单表 SELECT 及撤权；不能借正常 H3-B 成功前置或 normal 的结果。未知 writer、错表/owner、缺实际调查许可或 table 不存在均保持阻断；H3-B 管理调查不将原 apply 改为成功，后续只能按原身份 readonly reconcile。
+
+Readback.approval 等于完整固定 approval RawRef；其 migration/target/table 与批准逐项相同。before/after.roles 恰按 `[verify,observer]` 两项，before.select=false、before.selectReadback=null 表示 H3-A 的待表授权尚未完成，不执行预期失败 SELECT 来伪造证据；after.select=true 且 selectReadback 为各角色各自真实 TLS 连接完整读取 `_prisma_migrations` 的原件。`source/privilegeInventory` 保留 `pg_roles/pg_auth_members`、实际 owner、database/schema/table/column ACL 与 effective `has_*_privilege`、pg_control_system 函数 OID/EXECUTE、PUBLIC/继承影响及所有非系统用户关系的完整读回；“otherUserRelationPrivileges=[]” 表示此完整清单中无业务表权限，不是省略查询。table/column grant option、PUBLIC 宽授权、额外成员关系、业务表 SELECT、DDL/DML/TEMP 或所有权均拒绝。SQL/Report 只是批准人工原件，不成为 Runner 任意 SQL 执行入口；R2 不安装权限、不发 grant、不自动用 provision 探测。
+
+`writerQuiescence` 绑定原 apply 的实际 containerId/进程链，normal 要求原成功退出，unknown 允许实际终止的非零 exit/signal 但须有可核终态与数据库无原写者连接；不得把观察到 exit 的时间写回旧 UNKNOWN execution。人工 grant 的唯一范围为本表 SELECT 给两个精确角色，无全 schema/table、default privileges、grant option 或新函数授权；H3-A 所需固定函数权限必须此前已获批且读回，缺失回 H3 人工门槛。
+
+provisionExit 证明独立人工进程完成本次撤销登录/管理权限并退出：复核其真实 role OID、`pg_roles/pg_auth_members` 和该角色活动会话为 0、准确 PID/退出原件，以及 §2.6 固定 provision 文件的实际状态。`SEALED_RETAINED` 只表示按批准 ACL 密封保留至精确退役，DB 登录已禁；`REMOVED` 只在该文件删除本身已获精确批准且实际 readback 缺失时使用，R2 从不删除。owner-only 文件本身不证明 DB 撤权，退出日志也不证明没有其他会话。
+
+时间要求：`preApprovalEvidence 的实际观察/原 writer 停止 <= approvedAt < expiresAt <= profile.expiresAt`；`approvedAt <= before.observedAt <= grantStartedAt <= grantCompletedAt <= after.observedAt <= provisionExit.revokedAt <= process.closedAt <= provisionExit.observedAt <= readbackAt`，人工进程 startedAt 位于批准窗口内且不晚于 grantStartedAt；readbackAt 不晚于 expiresAt/本次读取时间。第二阶段 request 必须仍在批准窗口，过期不重写原件延长授权。after/provision 的独立读回可使用其明确批准的只读身份，不能由已退出 provision 自证；文件审批来源及原始命令/exit/权限读回还须人工独立复核。
+
+第一 migration 阶段不要求未来 H3-B；第二 verification 阶段必须在 request freeze/sign 和 verify/migrate 能力凭证读取前具备两份完整 H3-B 原件并通过上述绑定。GRANT/撤权/退出/归档任一失败或 UNKNOWN，只保管真实 partial raw、停止，不发布成功 readback或自动再 grant；固定 approval/readback 不覆盖。已有 H3-B 之后若需改变范围或恢复，先另行明确审查恢复记录方案，不靠新 operationRef 或静默重写文件绕过原历史。
+
+### 2.6 四角色私有文件、CREDENTIAL 字符串映射及测试矩阵
+
+**固定位置与唯一 closed JSON。** 四个相对名为 `operations/{operationRef}/observer.json`、`operations/{operationRef}/migrate.json`、`operations/{operationRef}/verify.json`、`operations/{operationRef}/provision.json`，共同根只能是 H1 验真的 `profile.storage.credentialRoot`，operationRef 只能由 R1 fixed reader 确定。H3-A 人工操作单必须列这四个不同位置及实际角色，但文件 JSON 仅为 `{username:S,password:Secret}`，不含 role selector、capabilityProfile、URL、host/port/database/TLS、过期布尔值或其他字段。Secret 为非空、无 NUL、可按严格 UTF-8/canonical JSON 往返的字符串，不 trim/正规化/转义改值；文件与完整 wire frame/累计流分别遵守既有 1 MiB 上限，不能因内层小于上限忽略外层 JSON 转义膨胀。
+
+| 场景                  | 谁可读哪个文件                                                                                                                         | connector 的唯一映射与限制                                                                                                                                                              |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 父方 target-observe   | 在该观察授权消费/读回及最后撤销检查后只读 observer.json                                                                                | username 必须等于 `target.roles.observer`；构造 `{username,password,capabilityProfile:"verify"}`。这只是 connector 的只读 profile，不把 observer 角色替换为 roles.verify；不发给 Runner |
+| 已授权 runner-command | READY、R1 消费/handoff 读回、最后撤销检查和所有本阶段 fixed input 门槛通过后，只读 request.capability 对应 migrate.json 或 verify.json | username 必须等于 `target.roles[request.capability]`，childDecision 后子方从本次 request 派生 capabilityProfile；dry-run/apply/replay/reconcile 的既有 command/capability 映射不改      |
+| 人工 H3-A/H3-B        | 仅其独立人工操作进程按批准读取 provision.json                                                                                          | 不是 Runner capability，不进入 connector/管道/测试；R2 永不打开、解析或尝试 provision 密码，H3-B 只读其非秘密文件状态证明                                                               |
+
+父方先完成文件/目录 ACL、单链接普通文件、前后身份检查和严格 canonical closed 解析，再把**同一 canonical 两字段 JSON 的 UTF-8 文本**作为既有 `CREDENTIAL.credential:string` 发送。没有 URL、base64、内层 frame 或多凭证列表分支。子方只在本次唯一 CREDENTIAL frame、WireBinding、childDecision 及协议时序通过后，将该字符串严格编码/解析并以 `encodeManualJson` 对比原文本 bytes；校验两字段与精确预期 username，再构造深冻结 `{username,password,capabilityProfile:request.capability}` 交既有 `createPostgresConnector()` 和 `createDatabaseRuntimeAdapter()`。target 独立来自已授权 profile/H3，不能由 credential 改写；旧 runtime 自身在内存组装工具 DATABASE_URL，不扩大为 caller URL/env 覆盖。
+
+**父/子连接地址的可达性。** 父 observer 的 connector target 为 `{hostname,port,databaseName:targetIntent.databaseName,tlsMode:"require"}`，hostname/port 只由当前已核 profile.endpoint 的明确 `host:port`（IPv6 为 `[address]:port`）解析；端口必须显式且在 1..65535，禁止 userinfo、路径、query、fragment、scheme 或环境覆盖。H1 尚无真实 profile 值，不能以测试中的 `db.invalid` 或 `127.0.0.1:5432` 填入。该 endpoint 是父机 published 连接意图，不直接带入 child。child 的 connector/runtime target 固定为 `{hostname:AUTHORIZE.targetContext.cluster.serverAddress,port:AUTHORIZE.targetContext.cluster.serverPort,databaseName:request.targetIntent.databaseName,tlsMode:"require"}`，仅在共享 MS2 绑定/profile/H3/childDecision 全通过后使用；父方必须已通过实际 Docker inspect 证明同 container/volume/image/marker 的 published endpoint 与这个内部 PG address/port 映射一致。授权后真实 SQL 再次核 system identifier、DB OID/name、内部 address/port、角色和 TLS，不能以连接建立代替身份核验。
+
+H3-A 的既有 operationSheet/readbackReport 与实际资源原件须明确本次唯一专用 Docker 内部 network 的 name/ID/归属和 DB container 的唯一 attachment；父方在 create/start/inspect Runner 时只加入这一已批准 network，并即时核它与 DB attachment/内部 IP 对应。缺固定网络事实、多个无法消歧的地址、child loopback/published-port 误用、DNS/代理无法证明唯一映射时 STOP；不启 host-network、额外网络、socket 或 caller endpoint，不把本文变成创建网络/资源的批准。这只是 §2.1 既有实际映射的技术落地，不扩 TargetContext/profile/H3 JSON shape。
+
+不调用旧 `createReadOnceCredentialReader()`：它的 finally unlink 语义既不适用于管道，也未获授权删除长期角色文件。父方一次 release 只读所需角色，子方一次 request 只交一个能力；跨阶段或合法后续只读连接可在新授权/撤销及 H3 门槛通过后重新读取同一受控角色文件，不能把“读一次”误写成整个生命周期只有一次连接。角色凭证保留至该目标精确退役或已批准撤销处置，R2 不自动 unlink/rename/归档凭证。密码不进入任何 raw/Report/错误/argv/URL日志或 credential digest；不记录 CREDENTIAL bytes/hash、完整 stdin 或双向 transcript。finally 关闭连接、移除引用、可控 Buffer 尽力清零，但 JS 字符串、第三方连接库和 OS 缓冲不能保证物理擦除，不作此声明。
+
+**既有测试文件中的补充矩阵（先聚焦 RED→GREEN，再纳入原完整门禁）。** 下面的 fixed filesystem/OS/gh/数据库/管道 double 只证明真实 IO 代码的顺序及拒绝行为，不能成为 H1/H2/H3 或供应商事实。测试不得新增 production 路径/flag；R2.3 的重读测试在其既有 verifier.test 范围内，R2.2 八文件不扩大。
+
+| 归属测试                                                           | 正例与必须拒绝的反例                                                                                                                                                                                                                                                                                          | 副作用/证据断言                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `scripts/release/launch-manual-stage1.test.mjs`：expected 来源     | 真实 R1 verifier 成功后同 proof/source/run、两独立 reference、两个实际 gh 调用输出及全部 raw/custody 读回闭合；缺任一文件/raw/第二复现、target-derived script、错源/schema/config/lock/catalog/tool版本、只有短 Prisma 报告、producer 未实现                                                                  | 缺来源时 runner request freeze/sign、命令 credential read、命令 DB connect 全 0，不要求未来 expected 阻断 target-observe                                                                                                                         |
+| 同上：expected 验真                                                | 精确命令 argv/环境与单结果/单 subject；错 issuer/repo/workflow/main/source/hosted、同 source 不同 run/attempt、混合 bundle/statement、无效 base64/时间、caller verified JSON、旧 launch envelope                                                                                                              | 实际固定 gh 路径被调用且 exit/raw 保管；任一 mismatch 三类计数全 0；不借 proof attestation 省去两次新 subject 验真                                                                                                                               |
+| 同上：私有文件来源                                                 | 固定路径 raw 重开；软/硬链接、reparse、ACL 变化、gh 期间替换、同 hash 不同固定来源、读后替换、missing custody、只用 writer Head、保留期不足、重复 JSON 键/非 canonical                                                                                                                                        | freeze/sign 前拒绝；真实原始失败保存，不能导入自报 success；无请求路径或 profile override                                                                                                                                                        |
+| 同上：H3-B                                                         | normal 完整 SUCCEEDED apply 与 unknown 原 apply 两种独立链；缺 H3-B、跨 ref/scenario/attempt、借另一目标成功、伪表 OID/owner、未来时间、无调查批准、无 writer 终态、replay UNKNOWN 冒充 apply UNKNOWN                                                                                                         | migration 第一阶段不需未来 H3-B；第二阶段 freeze/sign/能力 credential read 为 0；未知历史不被局部成功覆盖                                                                                                                                        |
+| 同上：权限/撤权                                                    | 两角色真实独立读表、无业务权限且 provision 退出；额外成员/PUBLIC/column grant、grant option、业务 SELECT/TEMP/owner、缺 function EXECUTE、grant 超时、provision 仍可登录/有会话/未退出、密码文件状态自报                                                                                                      | 不调用 grant/provision；不发第二阶段 AUTHORIZE/CREDENTIAL；不把私有 true/空数组当实时权限证明                                                                                                                                                    |
+| 同上及 `apps/release-runner/test/manual-entrypoint.test.mjs`：凭证 | 四角色独立；observer 的 verify profile 与独立 username、migrate/verify 请求单次两字段 JSON 映射；错用户名/能力、附加 URL/target/capabilityProfile、两个 credential、provision 注入、非法 UTF-8/NUL/超限/外层膨胀                                                                                              | 未到消费/READY 门槛 credential read=0；子方解析失败 connector/handler/deploy=0；provision read/unlink 恒为 0；全错误/日志/raw 不含秘密或其摘要                                                                                                   |
+| 同上：多阶段与中断                                                 | observer 关闭后迁移、另会话 verify/replay 或同原 apply reconcile 的合法重新读取；EOF/撤销/父死亡/文件变化                                                                                                                                                                                                     | 不删除长期角色文件；断管不声称事务回滚，保留原 UNKNOWN；每 request 单 credential、单 capability，不跨 attempt 复用 decision                                                                                                                      |
+| 同上：父/子网络映射                                                | 同一获准 DB 的父 published 地址与 child 内部 address/port 分别传入实际 connector；child 被传父 loopback/宿主端口、错误 network ID/attachment/IP、额外网络、caller URL/env 覆盖                                                                                                                                | actual createClient 参数与 approved H3 映射一致；错误在对应连接前拒绝，连接后物理身份错则 handler/deploy=0；无创建网络或网络策略旁路                                                                                                             |
+| `scripts/release/verify-manual-runner-result.test.mjs`：独立重读   | 重新打开同 fixed inputs 和 allocation 定位的 admission/raw/provenance/两个历史 gh 原件/H3-B 链；只替换副本、删 sourceSchema raw、缺 provision 退出、改权限/表OID/owner；同 build/同 allocation 的 sidecar 指另一合法 expectation，或 graph 引用不同 script/schema/version，五字段任一未与已 attested 来源闭合 | 不读 key/credential、不连接 DB、不打开 session、不调用 launcher；历史链不能缺件，sidecar.schemaExpectation.digest 与 request.expectedSchemaEvidenceDigest 严格相等且五字段/完整 raw 独立核等后，共享 graph/assessor 与真实固定来源同时通过才验收 |
+| 同上：当前独立 expected 验真                                       | 用真实只读 IO 路径和离线 process transport double 验两个固定 gh 调用；历史 JSON 全部貌似成功但当前 subject/签名/issuer/run/bundle 校验失败、gh 不存在、认证/网络不可用                                                                                                                                        | expected-subject gh 恰 2 次（R1 自己的 build 验真调用另计）；失败时 assessor 成功返回 0，session/sign/credential/DB/Runner/输入或 journal 写入均 0；无历史 fallback，不新增外部参数                                                              |
+
+- [ ] R2.2 owner 先在既有 launcher/entrypoint tests 为上述三类私有 IO 写聚焦 RED，记录具体缺实现断言；不手写“生产成功 JSON”让未实现来源先通过。
+- [ ] 在现有两个 production 文件内最小实现私有读取/映射，复用所有现有 R1 codec/validator/reader，聚焦 GREEN 后运行原 R2.2 全门禁；现有动态 ACK/最终 observation 与真实 runtime 组合继续必跑。
+- [ ] R2.3 owner 在原 verifier/tests 增加同源独立重开矩阵；R2.4 只有真实 H1/H2/expected/H3-A/B 全部输入和操作批准实际就绪才执行，missing 仍 INPUT_REQUIRED，不跳过或据离线 GREEN 宣称通过。
+
 ## Task R2.0：修正既有 Prisma 7.8 固定配置和参数
 
 **历史交付：** 已由 `5a16ca8a` 实施；以下保留原任务范围/参数依据，不在此次 DOC-ONLY 回合重跑或重新提交，也不宣称真实外部门禁通过。

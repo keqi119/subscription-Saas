@@ -6,30 +6,80 @@ import crypto, { generateKeyPairSync, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import http from "node:http";
-import { syncBuiltinESMExports } from "node:module";
-import {
+import { registerHooks, syncBuiltinESMExports } from "node:module";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+// R1 deliberately captures its native OS boundary at module initialization.
+// Install the same fixed Windows ACL double before loading R1, then restore the
+// builtin. All later filesystem and cryptographic behavior remains genuine.
+const initialExecFile = childProcess.execFile;
+childProcess.execFile = (file, args, options, callback) => {
+  if (file === "icacls.exe" || file === "powershell.exe") {
+    const value =
+      file === "icacls.exe"
+        ? "synthetic session ACL\n"
+        : "S-1-5-21-111-222-333-1001\nS-1-5-21-111-222-333-1001|Allow|2032127\n";
+    queueMicrotask(() => callback(null, value, ""));
+    return { kill() {} };
+  }
+  return initialExecFile(file, args, options, callback);
+};
+const sessionExecFile = childProcess.execFile;
+sessionExecFile[Symbol.for("nodejs.util.promisify.custom")] = (...args) =>
+  new Promise((resolve, reject) =>
+    sessionExecFile(...args, (error, stdout, stderr) =>
+      error ? reject(error) : resolve({ stdout, stderr })
+    )
+  );
+syncBuiltinESMExports();
+const {
   encodeManualJson,
   computeMigrationCatalog,
   computeRepositoryContract,
   sha256Bytes,
-  sha256Canonical
-} from "../../packages/release-foundation/src/index.mjs";
-import { createBuildProof } from "./create-build-proof.mjs";
-import {
+  sha256Canonical,
+  assessManualRunnerEvidence,
+  verifyManualAuthorization,
+  signManualAuthorization
+} = await import("../../packages/release-foundation/src/index.mjs");
+const { createBuildProof } = await import("./create-build-proof.mjs");
+const {
   loadFixedManualProfile,
   readFixedManualOperation,
-  verifyManualBuild
-} from "./manual-stage1-trust.mjs";
-import { fileURLToPath } from "node:url";
-import test from "node:test";
+  verifyManualBuild,
+  openTrustedManualSession
+} = await import("./manual-stage1-trust.mjs");
+childProcess.execFile = initialExecFile;
+syncBuiltinESMExports();
 
 const launcherFile = fileURLToPath(new URL("./launch-manual-stage1.mjs", import.meta.url));
 const operationRef = "abcdefab-1111-4111-8111-abcdefabcdef";
+// Only PostgreSQL's OS/network client is replaced. The production connector,
+// transaction adapter, observer, session and archive readers execute unchanged.
+const pgClientSlot = Symbol.for("r22.offline.postgres-client");
+const pgHook = registerHooks({
+  resolve(specifier, context, next) {
+    if (specifier === "postgres")
+      return {
+        url:
+          "data:text/javascript," +
+          encodeURIComponent(
+            'export default options => globalThis[Symbol.for("r22.offline.postgres-client")](options);'
+          ),
+        shortCircuit: true
+      };
+    return next(specifier, context);
+  }
+});
 const launcher = await import("./launch-manual-stage1.mjs").catch((error) => {
   if (error.code === "ERR_MODULE_NOT_FOUND" && error.url?.endsWith("/launch-manual-stage1.mjs"))
     return null;
   throw error;
 });
+// Resolve the genuine connector while the single PG-edge hook is active.
+await import("../../apps/release-runner/src/postgres-connector.mjs");
+pgHook.deregister();
 
 function invoke(argv, extraEnvironment = {}, entrypoint = launcherFile) {
   // Test-only native boundary guards run in the actual CLI child. They deny
@@ -347,8 +397,10 @@ function installFixedIO(t, f, gh) {
   t.mock.method(fs, "open", async (file, flags, ...args) => {
     const actual = mapped(file);
     if (actual.startsWith(f.profile.storage.keyRoot + path.sep)) f.counters.privateKeyReads++;
-    if (actual.startsWith(f.profile.storage.credentialRoot + path.sep))
+    if (actual.startsWith(f.profile.storage.credentialRoot + path.sep)) {
       f.counters.credentialReads++;
+      (f.counters.credentialPaths ??= []).push(actual);
+    }
     if (String(flags) !== "r" && actual.startsWith(f.profile.storage.journalRoot + path.sep))
       f.counters.sessionWrites++;
     if (String(flags) !== "r" && actual.endsWith(path.sep + "index.json")) f.counters.indexWrites++;
@@ -402,7 +454,9 @@ function installFixedIO(t, f, gh) {
         return { kill() {} };
       }
       value = Buffer.isBuffer(observed) ? observed : Buffer.from(JSON.stringify(observed) + "\n");
-    } else if (file === system + "reg.exe")
+    } else if (file === "icacls.exe") value = Buffer.from("synthetic session ACL\n");
+    else if (file === "powershell.exe") value = Buffer.from(`${sid}\n${sid}|Allow|2032127\n`);
+    else if (file === system + "reg.exe")
       value = Buffer.from(
         `HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    {${f.host.guid}}\r\n`
       );
@@ -423,7 +477,13 @@ function installFixedIO(t, f, gh) {
       f.counters.externalCalls++;
       throw new Error("Unexpected external process denied");
     }
-    queueMicrotask(() => callback(null, value, Buffer.alloc(0)));
+    queueMicrotask(() =>
+      callback(
+        null,
+        options.encoding === "buffer" ? value : value.toString("utf8"),
+        options.encoding === "buffer" ? Buffer.alloc(0) : ""
+      )
+    );
     return { kill() {} };
   });
   syncBuiltinESMExports();
@@ -908,12 +968,433 @@ async function h3ResourceFixture(t) {
   return f;
 }
 
-test("H3 Docker source observations bind resources before the target-observe boundary", async (t) => {
+async function targetObserveFixture(t) {
   const f = await h3ResourceFixture(t);
-  await assert.rejects(
-    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
-    h3Rejection("MANUAL_TARGET_OBSERVE_INPUT_REQUIRED")
+  for (const role of ["journal", "archive", "backup"])
+    await fs.mkdir(path.join(f.profile.storage[`${role}Root`], "objects"), { mode: 0o700 });
+  for (const name of ["locks", "consumptions", "revocations", "checkpoints"])
+    await fs.mkdir(path.join(f.profile.storage.journalRoot, name), { mode: 0o700 });
+  await fs.mkdir(path.join(f.profile.storage.archiveRoot, "raw"), { mode: 0o700 });
+  await fs.writeFile(
+    path.join(f.profile.storage.keyRoot, "owner.key"),
+    f.keys.privateKey.export({ type: "pkcs8", format: "pem" }),
+    { mode: 0o600 }
   );
+  const genesis = {
+    schemaVersion: "manual-operation-record.v2",
+    kind: "revocation",
+    profileDigest: sha256Canonical(f.profile),
+    recordedAt: generatedAt,
+    promotionEligible: false,
+    ownerId: f.profile.ownerId,
+    sequence: 0,
+    previousRevocationDigest: null,
+    action: "GENESIS",
+    authorizationId: null,
+    reasonCode: null
+  };
+  const objectPath = (value, role = "archive") =>
+    path.join(
+      f.profile.storage[`${role}Root`],
+      "objects",
+      `${sha256Canonical(value).slice(7)}.json`
+    );
+  await fs.writeFile(objectPath(genesis, "journal"), encodeManualJson(genesis), { mode: 0o600 });
+  await fs.writeFile(
+    path.join(
+      f.profile.storage.journalRoot,
+      "revocations",
+      `${sha256Canonical(f.profile).slice(7)}-0.json`
+    ),
+    encodeManualJson(genesis),
+    { mode: 0o600 }
+  );
+  const credentialDirectory = path.join(
+    f.profile.storage.credentialRoot,
+    "operations",
+    f.prepared.operationRef
+  );
+  await fs.mkdir(credentialDirectory, { recursive: true, mode: 0o700 });
+  for (const role of ["observer", "migrate", "verify", "provision"])
+    await fs.writeFile(
+      path.join(credentialDirectory, `${role}.json`),
+      encodeManualJson({ username: role, password: `offline-${role}-secret` }),
+      { mode: 0o600 }
+    );
+  const pg = { connects: 0, closes: 0, statements: [], options: [], fault: null, before: null };
+  globalThis[pgClientSlot] = (options) => {
+    pg.connects++;
+    pg.options.push(options);
+    const client = {
+      async begin(callback) {
+        return callback(client);
+      },
+      async unsafe(statement) {
+        pg.statements.push(statement);
+        if (pg.before) await pg.before(statement);
+        if (pg.fault === "query") throw new Error("offline SQL failure with private detail");
+        if (statement.startsWith("SET TRANSACTION")) return [];
+        if (statement === "SHOW transaction_isolation")
+          return [{ transaction_isolation: "repeatable read" }];
+        if (statement === "SHOW transaction_read_only") return [{ transaction_read_only: "on" }];
+        if (statement.includes("pg_control_system"))
+          return [
+            {
+              systemIdentifier: pg.fault === "system" ? "999" : f.readback.cluster.systemIdentifier
+            }
+          ];
+        if (statement.includes("inet_server_addr"))
+          return [
+            {
+              serverAddress:
+                pg.fault === "address" ? "172.19.0.3" : f.readback.cluster.serverAddress,
+              serverPort: pg.fault === "port" ? 5433 : 5432,
+              databaseName: pg.fault === "name" ? "other-db" : "synthetic-db",
+              databaseOid: pg.fault === "oid" ? "124" : "123",
+              role: pg.fault === "role" ? "migrate" : "observer",
+              tls: pg.fault !== "tls"
+            }
+          ];
+        if (statement.includes("to_regclass")) return [{ oid: null }];
+        if (statement.includes("AS owner FROM pg_namespace")) return [{ owner: "provision" }];
+        if (statement.includes("UNION ALL"))
+          return [{ objectClass: "schema", objectName: "public", owner: "provision" }];
+        if (statement.includes("pg_extension")) return [{ name: "plpgsql" }];
+        if (statement === "SHOW server_version") return [{ server_version: "17.0" }];
+        throw new Error("Unexpected SQL statement");
+      },
+      async end() {
+        pg.closes++;
+      }
+    };
+    return client;
+  };
+  t.after(() => {
+    delete globalThis[pgClientSlot];
+  });
+  const records = async () => {
+    const values = new Map();
+    for (const role of ["journal", "archive"])
+      for (const name of await fs.readdir(path.join(f.profile.storage[`${role}Root`], "objects"))) {
+        const bytes = await fs.readFile(
+          path.join(f.profile.storage[`${role}Root`], "objects", name)
+        );
+        values.set(sha256Bytes(bytes), JSON.parse(bytes));
+      }
+    return [...values.values()];
+  };
+  const open = () =>
+    openTrustedManualSession({
+      repoRoot: productionRoot,
+      proofBytes: f.proofBytes,
+      materialBytes: f.materialBytes,
+      operationRef: f.prepared.operationRef
+    });
+  return { ...f, pg, records, open, objectPath, genesis, credentialDirectory };
+}
+
+test("target-observe genuine session and real connector archive observation and original baseline", async (t) => {
+  const f = await targetObserveFixture(t),
+    session = await f.open();
+  const result = await launcher.connectAndObserveManualTarget({
+    session,
+    operationRef: f.prepared.operationRef
+  });
+  assert.deepEqual(Object.keys(result).sort(), ["observation", "readbackDigest"]);
+  assert.equal(f.pg.connects, 1);
+  assert.equal(f.pg.closes, 1);
+  assert.ok(f.counters.credentialReads > 0);
+  assert.deepEqual(
+    [...new Set(f.counters.credentialPaths)],
+    [path.join(f.credentialDirectory, "observer.json")]
+  );
+  assert.equal(result.observation.roleObservation.role, "observer");
+  assert.equal(result.observation.physicalIdentity.databaseOid, "123");
+  assert.equal(f.pg.statements[0], "SET TRANSACTION READ ONLY, ISOLATION LEVEL REPEATABLE READ");
+  assert.deepEqual(f.pg.statements.slice(1, 3), [
+    "SHOW transaction_isolation",
+    "SHOW transaction_read_only"
+  ]);
+  const values = await f.records(),
+    request = values.find(
+      (v) => v.stage === "target-observe" && v.schemaVersion === "manual-runner-request.v1"
+    );
+  const assessment = assessManualRunnerEvidence({
+    profileBytes: encodeManualJson(f.profile),
+    requestBytes: encodeManualJson(request),
+    artifactBytes: values.map(encodeManualJson),
+    rawBlobs: []
+  });
+  assert.equal(assessment.executionStatus, "SUCCEEDED");
+  const baseline = values.filter((v) => v.schemaVersion === "manual-baseline-manifest.v1");
+  assert.equal(baseline.length, 1);
+  assert.equal(baseline[0].identity.targetObservationDigest, sha256Canonical(result.observation));
+  assert.equal(baseline[0].identity.preStateDigest, sha256Canonical(result.observation.catalog));
+  assert.ok(
+    values.some(
+      (v) =>
+        v.kind === "custody" &&
+        sha256Canonical(v) === result.readbackDigest &&
+        v.subjectDigest === sha256Canonical(result.observation) &&
+        v.outcome === "MATCH"
+    )
+  );
+  assert.ok(values.some((v) => v.kind === "session" && v.status === "CLOSED"));
+  for (const v of values) assert.ok(!JSON.stringify(v).includes("offline-observer-secret"));
+  for (const role of ["migrate", "verify", "provision"])
+    assert.ok((await fs.readFile(path.join(f.credentialDirectory, `${role}.json`))).length);
+  const preserved = await fs.readFile(f.objectPath(baseline[0])),
+    next = await f.open();
+  await assert.rejects(
+    launcher.connectAndObserveManualTarget({
+      session: next,
+      operationRef: f.prepared.operationRef
+    }),
+    { code: "MANUAL_BASELINE_REUSE_INPUT_REQUIRED" }
+  );
+  assert.deepEqual(await fs.readFile(f.objectPath(baseline[0])), preserved);
+  assert.equal(f.pg.connects, 1);
+  assert.equal((await f.records()).filter((v) => v.kind === "attempt-allocation").length, 1);
+});
+
+test("target-observe parent reaches explicit runner boundary after completed observation", async (t) => {
+  const f = await targetObserveFixture(t);
+  await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+    code: "MANUAL_RUNNER_INPUT_REQUIRED"
+  });
+  assert.equal(f.pg.connects, 1);
+  assert.equal(f.pg.closes, 1);
+  assert.ok((await f.records()).some((v) => v.kind === "execution" && v.status === "SUCCEEDED"));
+  assert.equal(f.counters.externalCalls, 0);
+});
+
+for (const fault of ["forged", "expired", "revoked", "mismatched", "unconsumed"])
+  test(`target-observe ${fault} authorization releases no credential or connection`, async (t) => {
+    const f = await targetObserveFixture(t),
+      genuine = await f.open();
+    const session = {
+      ...genuine,
+      async sign(input) {
+        const authorization = await genuine.sign(input);
+        if (fault === "expired")
+          return signManualAuthorization({
+            privateKey: f.keys.privateKey,
+            payload: {
+              ...authorization.payload,
+              issuedAt: "2026-09-01T01:00:00.000Z",
+              expiresAt: "2026-09-01T01:01:00.000Z"
+            }
+          });
+        if (fault === "mismatched")
+          return signManualAuthorization({
+            privateKey: f.keys.privateKey,
+            payload: {
+              ...authorization.payload,
+              targetIntent: { ...authorization.payload.targetIntent, databaseName: "other-db" }
+            }
+          });
+        if (fault === "revoked")
+          await genuine.record("revocation", {
+            ...f.genesis,
+            recordedAt: new Date().toISOString(),
+            sequence: 1,
+            previousRevocationDigest: sha256Canonical(f.genesis),
+            action: "REVOKE_AUTHORIZATION",
+            authorizationId: authorization.payload.authorizationId,
+            reasonCode: "OFFLINE_REVOKED"
+          });
+        return authorization;
+      },
+      async consume(input) {
+        if (fault === "forged")
+          return {
+            stage: "target-observe",
+            parentDecision: {},
+            consumptionReadbackDigest: digest("f")
+          };
+        if (fault === "unconsumed") {
+          const opened = (await f.records()).find(
+              (v) => v.kind === "session" && v.status === "OPEN"
+            ),
+            readAt = new Date().toISOString(),
+            genesisDigest = sha256Canonical(f.genesis);
+          return {
+            stage: "target-observe",
+            consumptionReadbackDigest: digest("f"),
+            parentDecision: verifyManualAuthorization({
+              authorization: input.authorization,
+              request: input.request,
+              profile: f.profile,
+              session: {
+                record: opened,
+                recordDigest: sha256Canonical(opened),
+                readAt,
+                predecessor: null
+              },
+              revocation: {
+                records: [f.genesis],
+                headDigest: genesisDigest,
+                checkpoint: { sequence: 0, digest: genesisDigest },
+                readAt
+              },
+              now: readAt
+            })
+          };
+        }
+        return genuine.consume(input);
+      }
+    };
+    await assert.rejects(
+      launcher.connectAndObserveManualTarget({ session, operationRef: f.prepared.operationRef })
+    );
+    assert.equal(f.counters.credentialReads, 0);
+    assert.equal(f.pg.connects, 0);
+    assert.ok(!(await f.records()).some((v) => v.schemaVersion === "manual-baseline-manifest.v1"));
+  });
+
+test("target-observe changed H3 after consumption releases no credentials", async (t) => {
+  const f = await targetObserveFixture(t),
+    genuine = await f.open();
+  const session = {
+    ...genuine,
+    async consume(input) {
+      const consumed = await genuine.consume(input);
+      await fs.appendFile(path.join(f.operationRoot, "h3-a-readback.json"), "\n");
+      return consumed;
+    }
+  };
+  await assert.rejects(
+    launcher.connectAndObserveManualTarget({ session, operationRef: f.prepared.operationRef })
+  );
+  assert.equal(f.counters.credentialReads, 0);
+  assert.equal(f.pg.connects, 0);
+});
+
+test("target-observe revocation during credential read prevents DB connection", async (t) => {
+  const f = await targetObserveFixture(t),
+    session = await f.open();
+  const opening = fs.open.bind(fs);
+  let revoked = false;
+  t.mock.method(fs, "open", async (file, flags, ...args) => {
+    if (!revoked && file === path.join(f.credentialDirectory, "observer.json")) {
+      revoked = true;
+      await session.record("revocation", {
+        ...f.genesis,
+        recordedAt: new Date().toISOString(),
+        sequence: 1,
+        previousRevocationDigest: sha256Canonical(f.genesis),
+        action: "REVOKE_PROFILE",
+        reasonCode: "OFFLINE_REVOKED"
+      });
+    }
+    return opening(file, flags, ...args);
+  });
+  await assert.rejects(
+    launcher.connectAndObserveManualTarget({ session, operationRef: f.prepared.operationRef }),
+    { code: "MANUAL_AUTHORIZATION_REVOKED" }
+  );
+  assert.equal(revoked, true);
+  assert.equal(f.pg.connects, 0);
+});
+
+for (const [fault, bytes] of [
+  ["malformed", Buffer.from('{"password":"offline-private-parse-secret",broken')],
+  [
+    "role selector",
+    encodeManualJson({
+      username: "observer",
+      password: "offline-private-parse-secret",
+      capabilityProfile: "verify"
+    })
+  ]
+])
+  test(`target-observe invalid ${fault} credential rejects without private diagnostics`, async (t) => {
+    const f = await targetObserveFixture(t),
+      session = await f.open();
+    await fs.writeFile(path.join(f.credentialDirectory, "observer.json"), bytes);
+    await assert.rejects(
+      launcher.connectAndObserveManualTarget({ session, operationRef: f.prepared.operationRef }),
+      (error) => {
+        assert.equal(error.code, "MANUAL_CREDENTIAL_INVALID");
+        assert.ok(!error.message.includes("offline-private-parse-secret"));
+        return true;
+      }
+    );
+    assert.equal(f.pg.connects, 0);
+    assert.ok(!(await f.records()).some((v) => v.schemaVersion === "manual-baseline-manifest.v1"));
+  });
+
+for (const fault of ["system", "address", "port", "name", "oid", "role", "tls", "query"])
+  test(`target-observe rejects actual SQL ${fault} without baseline and retains UNKNOWN`, async (t) => {
+    const f = await targetObserveFixture(t),
+      session = await f.open();
+    f.pg.fault = fault;
+    await assert.rejects(
+      launcher.connectAndObserveManualTarget({ session, operationRef: f.prepared.operationRef })
+    );
+    assert.equal(f.pg.connects, 1);
+    assert.equal(f.pg.closes, 1);
+    const values = await f.records();
+    assert.ok(!values.some((v) => v.schemaVersion === "manual-baseline-manifest.v1"));
+    assert.ok(values.some((v) => v.kind === "execution" && v.status === "INTERRUPTED_UNKNOWN"));
+    assert.ok(values.some((v) => v.kind === "session" && v.status === "CLOSED"));
+  });
+
+for (const fault of ["partial-write", "readback"])
+  test(`target-observe ${fault} prevents baseline and keeps consumed attempt UNKNOWN`, async (t) => {
+    const f = await targetObserveFixture(t),
+      session = await f.open();
+    const opening = fs.open.bind(fs);
+    let observationFile,
+      injected = false;
+    t.mock.method(fs, "open", async (file, flags, ...args) => {
+      if (fault === "readback" && file === observationFile && flags === "r") {
+        injected = true;
+        throw new Error("offline observation independent reopen failure");
+      }
+      const handle = await opening(file, flags, ...args);
+      if (flags === "wx" && String(file).startsWith(f.profile.storage.archiveRoot + path.sep)) {
+        const write = handle.writeFile.bind(handle);
+        handle.writeFile = async (bytes) => {
+          if (JSON.parse(bytes).kind === "observation") {
+            observationFile = file;
+            if (fault === "partial-write") {
+              injected = true;
+              await write(bytes.subarray(0, 24));
+              throw new Error("offline partial observation write");
+            }
+          }
+          return write(bytes);
+        };
+      }
+      return handle;
+    });
+    await assert.rejects(
+      launcher.connectAndObserveManualTarget({ session, operationRef: f.prepared.operationRef })
+    );
+    assert.equal(injected, true);
+    assert.equal(f.pg.closes, 1);
+    // Unreadable/partial archive facts may prevent R1 from appending UNKNOWN:
+    // the durable consumption and lock must remain rather than claim success.
+    assert.equal(
+      (await fs.readdir(path.join(f.profile.storage.journalRoot, "consumptions"))).length,
+      1
+    );
+    const archived = await fs.readdir(path.join(f.profile.storage.archiveRoot, "objects"));
+    for (const name of archived) {
+      if (path.join(f.profile.storage.archiveRoot, "objects", name) === observationFile) continue;
+      const value = JSON.parse(
+        await nativeFS.readFile(path.join(f.profile.storage.archiveRoot, "objects", name))
+      );
+      assert.notEqual(value.schemaVersion, "manual-baseline-manifest.v1");
+    }
+  });
+
+test("H3 Docker source observations bind resources before trusted session bootstrap", async (t) => {
+  const f = await h3ResourceFixture(t);
+  await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+    code: "MANUAL_SESSION_UNVERIFIED"
+  });
   assert.deepEqual(
     f.docker.calls.map(({ args }) =>
       args[2] === "container" && args[3] === "ls" ? "users" : args[2]
@@ -958,7 +1439,10 @@ test("H3 Docker source observations bind resources before the target-observe bou
       ]);
     }
   }
-  noAuthority(f);
+  assert.equal(f.counters.privateKeyReads, 0);
+  assert.equal(f.counters.sessionWrites, 0);
+  assert.equal(f.counters.credentialReads, 0);
+  assert.equal(f.counters.externalCalls, 0);
 });
 
 test("H3 Docker real CLI formats nonsecret projections against an isolated synthetic Engine pipe", async (t) => {
@@ -1056,11 +1540,7 @@ test("H3 Docker real CLI formats nonsecret projections against an isolated synth
   await assert.rejects(
     launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
     (error) => {
-      assert.equal(
-        error.cause?.code,
-        "MANUAL_TARGET_OBSERVE_INPUT_REQUIRED",
-        JSON.stringify(responses)
-      );
+      assert.equal(error.code, "MANUAL_SESSION_UNVERIFIED", JSON.stringify(responses));
       return true;
     }
   );
@@ -1073,7 +1553,7 @@ test("H3 Docker real CLI formats nonsecret projections against an isolated synth
       () => {
         c.networks["synthetic-h3-network"].DriverOpts = { password: secret };
       },
-      "MANUAL_TARGET_OBSERVE_INPUT_REQUIRED"
+      "MANUAL_SESSION_UNVERIFIED"
     ],
     [
       "rejected volume options stay out of collected output",
@@ -1089,16 +1569,21 @@ test("H3 Docker real CLI formats nonsecret projections against an isolated synth
       const offset = responses.length;
       await assert.rejects(
         launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
-        h3Rejection(expected)
+        expected === "MANUAL_SESSION_UNVERIFIED" ? { code: expected } : h3Rejection(expected)
       );
       assert.ok(responses.length > offset, "the real CLI observation happened");
       assert.ok(
         !JSON.stringify(responses.slice(offset)).includes(secret),
         "driver secrets must not enter captured stdout even when the resource is refused"
       );
-      noAuthority(f);
+      assert.equal(f.counters.sessionWrites, 0);
+      assert.equal(f.counters.credentialReads, 0);
+      assert.equal(f.counters.externalCalls, 0);
     });
-  noAuthority(f);
+  assert.equal(f.counters.privateKeyReads, 0);
+  assert.equal(f.counters.sessionWrites, 0);
+  assert.equal(f.counters.credentialReads, 0);
+  assert.equal(f.counters.externalCalls, 0);
 });
 
 test("H3 Docker resource mismatches cannot become target observations", async (t) => {

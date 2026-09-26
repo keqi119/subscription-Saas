@@ -8,6 +8,10 @@ import {
   computeRepositoryContract,
   computeMigrationCatalog,
   computeManualClusterFingerprint,
+  assertManualDecision,
+  verifyManualAuthorization,
+  validateContract,
+  validateManualRunnerRequest,
   encodeManualJson,
   sha256Bytes,
   sha256Canonical
@@ -15,8 +19,12 @@ import {
 import {
   loadFixedManualProfile,
   readFixedManualOperation,
-  verifyManualBuild
+  verifyManualBuild,
+  openTrustedManualSession
 } from "./manual-stage1-trust.mjs";
+import { createPostgresConnector } from "../../apps/release-runner/src/postgres-connector.mjs";
+import { observeManualTarget } from "../../apps/release-runner/src/manual-target-observer.mjs";
+import { buildManualBaseline } from "../../apps/release-runner/src/manual-command-adapter.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -451,7 +459,42 @@ export async function launchManualStage1(input) {
     !uuid.test(input.operationRef)
   )
     fail("MANUAL_LAUNCH_INVOCATION_REJECTED");
-  const fixed = await readFixedManualOperation({ repoRoot, operationRef: input.operationRef });
+  return withManualTarget(input.operationRef, async (facts) => {
+    const session = await openTrustedManualSession({
+      repoRoot,
+      operationRef: input.operationRef,
+      proofBytes: facts.fixed.proofBytes,
+      materialBytes: facts.fixed.materialBytes
+    });
+    try {
+      await performTargetObservation(session, facts);
+    } finally {
+      await session.close();
+    }
+    fail("MANUAL_RUNNER_INPUT_REQUIRED");
+  });
+}
+
+export async function connectAndObserveManualTarget(input) {
+  if (
+    !exact(input, ["session", "operationRef"]) ||
+    typeof input.operationRef !== "string" ||
+    !uuid.test(input.operationRef) ||
+    !input.session ||
+    !["sign", "consume", "record", "close"].every((key) => typeof input.session[key] === "function")
+  )
+    fail("MANUAL_LAUNCH_INVOCATION_REJECTED");
+  try {
+    return await withManualTarget(input.operationRef, (facts) =>
+      performTargetObservation(input.session, facts)
+    );
+  } finally {
+    await input.session.close();
+  }
+}
+
+async function withManualTarget(operationRef, work) {
+  const fixed = await readFixedManualOperation({ repoRoot, operationRef });
   const ownerInputs = await pinOwnerInputs();
   try {
     const build = await verifyManualBuild({
@@ -469,9 +512,477 @@ export async function launchManualStage1(input) {
     )
       fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
     const principal = Object.freeze({ ...JSON.parse(ownerInputs.bindingBytes).principal });
-    await readH3Inputs(fixed, profile, principal, ownerInputs.recheck);
+    return await readH3Inputs(fixed, profile, principal, ownerInputs.recheck, (facts) =>
+      work({ ...facts, fixed, profile, principal, build })
+    );
   } finally {
     await ownerInputs.close();
+  }
+}
+
+const observationFields = [
+  "profileDigest",
+  "sessionId",
+  "sessionNonce",
+  "operationId",
+  "idempotencyKey",
+  "attemptId",
+  "runId"
+];
+const fieldsFrom = (value, keys) => Object.fromEntries(keys.map((key) => [key, value[key]]));
+const objectFile = (root, digest) => {
+  if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) fail("MANUAL_STORAGE_UNVERIFIED");
+  return path.join(root, "objects", `${digest.slice(7)}.json`);
+};
+
+function targetArchive({ profile, principal, recheck }) {
+  const read = async (file, root) => {
+    const item = await pinPrivateInput(file, { principal, privateRoot: root });
+    try {
+      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(item.bytes));
+      if (!encodeManualJson(value).equals(item.bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
+      await item.recheck();
+      return { value, bytes: Buffer.from(item.bytes) };
+    } finally {
+      await item.close();
+    }
+  };
+  const get = async (digest, role = "archive") => {
+    const item = await read(
+      objectFile(profile.storage[`${role}Root`], digest),
+      profile.storage[`${role}Root`]
+    );
+    if (sha256Bytes(item.bytes) !== digest) fail("MANUAL_STORAGE_UNVERIFIED");
+    return item;
+  };
+  return {
+    read,
+    get,
+    async put(value, schema) {
+      validateContract(schema, value);
+      const bytes = encodeManualJson(value),
+        digest = sha256Bytes(bytes),
+        file = objectFile(profile.storage.archiveRoot, digest);
+      await recheck();
+      await checkedPrivatePath(path.dirname(file), {
+        principal,
+        privateRoot: profile.storage.archiveRoot,
+        directory: true
+      });
+      const handle = await fs.open(file, "wx", 0o600);
+      try {
+        const chain = await checkedPrivatePath(file, {
+          principal,
+          privateRoot: profile.storage.archiveRoot
+        });
+        if (!sameIdentity(chain.at(-1).stat, await handle.stat({ bigint: true })))
+          fail("MANUAL_STORAGE_UNVERIFIED");
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      if (!(await get(digest)).bytes.equals(bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
+      await recheck();
+      return digest;
+    },
+    async graph() {
+      const graph = new Map();
+      for (const role of ["journal", "archive"]) {
+        const root = profile.storage[`${role}Root`],
+          directory = path.join(root, "objects");
+        await checkedPrivatePath(directory, { principal, privateRoot: root, directory: true });
+        for (const name of await fs.readdir(directory)) {
+          if (!/^[0-9a-f]{64}\.json$/u.test(name)) fail("MANUAL_STORAGE_UNVERIFIED");
+          const digest = `sha256:${name.slice(0, -5)}`;
+          graph.set(digest, await get(digest, role));
+        }
+      }
+      return graph;
+    }
+  };
+}
+
+async function checkConsumedObservation(session, input, authorization, consumed, facts, archive) {
+  assertManualDecision(consumed?.parentDecision);
+  const { profile, targetContext } = facts,
+    request = JSON.parse(input.canonicalBytes),
+    authorizationDigest = sha256Canonical(authorization),
+    requestDigest = sha256Bytes(input.canonicalBytes);
+  if (
+    consumed.stage !== "target-observe" ||
+    consumed.parentDecision.authorizationDigest !== authorizationDigest ||
+    consumed.parentDecision.requestDigest !== requestDigest
+  )
+    fail("MANUAL_BINDING_MISMATCH");
+  const custody = (await archive.get(consumed.consumptionReadbackDigest)).value;
+  validateContract("manual-operation-record.v2", custody);
+  const consumption = (await archive.get(custody.subjectDigest, "journal")).value;
+  validateContract("manual-operation-record.v2", consumption);
+  const slot = await archive.read(
+    path.join(
+      profile.storage.journalRoot,
+      "consumptions",
+      `${request.profileDigest.slice(7)}-${authorization.payload.authorizationId}.json`
+    ),
+    profile.storage.journalRoot
+  );
+  if (
+    custody.kind !== "custody" ||
+    custody.purpose !== "consumption-readback" ||
+    custody.outcome !== "MATCH" ||
+    custody.observedDigest !== custody.subjectDigest ||
+    custody.storageRole !== "journal" ||
+    consumption.kind !== "consumption" ||
+    consumption.status !== "CONSUMED" ||
+    consumption.authorizationDigest !== authorizationDigest ||
+    consumption.requestDigest !== requestDigest ||
+    !slot.bytes.equals(encodeManualJson(consumption))
+  )
+    fail("MANUAL_SESSION_UNVERIFIED");
+  await facts.recheck();
+  const graph = await archive.graph(),
+    opened = graph.get(consumption.sessionRecordDigest)?.value;
+  if (
+    !opened ||
+    [...graph.values()].some(
+      ({ value }) =>
+        value.kind === "session" && value.sessionId === session.sessionId && value.status !== "OPEN"
+    )
+  )
+    fail("MANUAL_SESSION_UNVERIFIED");
+  const revocationDirectory = path.join(profile.storage.journalRoot, "revocations"),
+    records = [];
+  for (const name of await fs.readdir(revocationDirectory)) {
+    if (!name.startsWith(`${sha256Canonical(profile).slice(7)}-`)) continue;
+    records.push(
+      (await archive.read(path.join(revocationDirectory, name), profile.storage.journalRoot)).value
+    );
+  }
+  records.sort((left, right) => left.sequence - right.sequence);
+  const head = records.at(-1);
+  if (!head) fail("MANUAL_REVOCATION_UNVERIFIED");
+  const checkpoints = path.join(profile.storage.journalRoot, "checkpoints");
+  for (const name of await fs.readdir(checkpoints)) {
+    if (!name.startsWith(`${sha256Canonical(profile).slice(7)}-`)) continue;
+    const saved = (await archive.read(path.join(checkpoints, name), profile.storage.journalRoot))
+      .value;
+    if (
+      !records[saved.sequence] ||
+      sha256Canonical(records[saved.sequence]) !== sha256Canonical(saved)
+    )
+      fail("MANUAL_REVOCATION_UNVERIFIED");
+  }
+  const checkpoint = (
+    await archive.read(
+      path.join(
+        profile.storage.journalRoot,
+        "checkpoints",
+        `${sha256Canonical(profile).slice(7)}-${head.sequence}.json`
+      ),
+      profile.storage.journalRoot
+    )
+  ).value;
+  const readAt = new Date().toISOString();
+  const decision = verifyManualAuthorization({
+    authorization,
+    profile,
+    request: input,
+    session: {
+      record: opened,
+      recordDigest: consumption.sessionRecordDigest,
+      readAt,
+      predecessor: null
+    },
+    revocation: {
+      records,
+      headDigest: sha256Canonical(head),
+      checkpoint: { sequence: checkpoint.sequence, digest: sha256Canonical(checkpoint) },
+      readAt
+    },
+    now: readAt
+  });
+  assertManualDecision(decision);
+  if (
+    decision.sessionId !== session.sessionId ||
+    decision.profileDigest !== targetContext.profileDigest
+  )
+    fail("MANUAL_BINDING_MISMATCH");
+  return consumption;
+}
+
+function observerCredential(bytes, expectedRole) {
+  try {
+    const supplied = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (
+      !exact(supplied, ["username", "password"]) ||
+      !encodeManualJson(supplied).equals(bytes) ||
+      supplied.username !== expectedRole ||
+      typeof supplied.password !== "string" ||
+      !supplied.password.length ||
+      supplied.password.includes("\0")
+    )
+      fail("MANUAL_CREDENTIAL_INVALID");
+    const credential = {
+      username: supplied.username,
+      password: supplied.password,
+      capabilityProfile: "verify"
+    };
+    supplied.password = "";
+    return credential;
+  } catch {
+    // Native JSON diagnostics can include secret input. Only a fixed code escapes.
+    fail("MANUAL_CREDENTIAL_INVALID");
+  }
+}
+
+async function performTargetObservation(session, facts) {
+  const { fixed, profile, principal, targetContext, recheck, recheckResources } = facts,
+    archive = targetArchive(facts),
+    operation = fixed.operation;
+  if (
+    session.profileDigest !== operation.profileDigest ||
+    sha256Canonical(session.targetIntent) !== sha256Canonical(operation.targetIntent)
+  )
+    fail("MANUAL_BINDING_MISMATCH");
+  // A prior original must never be replaced by a new observation. Resolution
+  // of its complete graph is the next continuation boundary for this slice.
+  const graph = await archive.graph();
+  if (
+    [...graph.values()].some(
+      ({ value }) =>
+        value.schemaVersion === "manual-runner-request.v1" &&
+        value.stage === "target-observe" &&
+        value.runId === operation.runId &&
+        value.operationId === operation.operations.observe.operationId
+    )
+  )
+    fail("MANUAL_BASELINE_REUSE_INPUT_REQUIRED");
+  const binding = {
+    profileDigest: session.profileDigest,
+    ownerId: profile.ownerId,
+    ...fieldsFrom(session, ["sessionId", "sessionNonce"]),
+    ...operation.operations.observe,
+    purpose: operation.purpose,
+    targetIntent: operation.targetIntent,
+    stage: "target-observe",
+    capability: "verify"
+  };
+  const request = {
+    schemaVersion: "manual-runner-request.v1",
+    ...binding,
+    attemptId: randomUUID(),
+    runId: operation.runId
+  };
+  const allocatedAt = new Date().toISOString();
+  const allocation = {
+    schemaVersion: "manual-runner-evidence.v1",
+    kind: "attempt-allocation",
+    recordedAt: allocatedAt,
+    promotionEligible: false,
+    ...fieldsFrom(request, observationFields),
+    stage: "target-observe",
+    phaseKey: "target-observe",
+    allocatedAt,
+    targetIntent: operation.targetIntent,
+    predecessorExecutionRecordDigest: null
+  };
+  request.attemptAllocationDigest = await archive.put(allocation, "manual-runner-evidence.v1");
+  validateManualRunnerRequest(request);
+  const requestDigest = await archive.put(request, "manual-runner-request.v1"),
+    input = { binding, canonicalBytes: (await archive.get(requestDigest)).bytes };
+  const authorization = await session.sign(input),
+    consumed = await session.consume({ authorization, request: input });
+  let database, credential;
+  try {
+    let consumption = await checkConsumedObservation(
+      session,
+      input,
+      authorization,
+      consumed,
+      facts,
+      archive
+    );
+    await recheckResources();
+    await checkConsumedObservation(session, input, authorization, consumed, facts, archive);
+    const secret = await pinPrivateInput(
+      path.join(
+        profile.storage.credentialRoot,
+        "operations",
+        operation.operationRef,
+        "observer.json"
+      ),
+      { principal, privateRoot: profile.storage.credentialRoot }
+    );
+    try {
+      const endpointPolicy = profile.allowedTargets.find(
+        (target) =>
+          target.endpointPolicyId === operation.targetIntent.endpointPolicyId &&
+          target.databaseName === operation.targetIntent.databaseName
+      );
+      credential = observerCredential(secret.bytes, endpointPolicy.roles.observer);
+      await secret.recheck();
+      await recheckResources();
+      consumption = await checkConsumedObservation(
+        session,
+        input,
+        authorization,
+        consumed,
+        facts,
+        archive
+      );
+      const endpoint = /^(127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})$/u.exec(endpointPolicy.endpoint);
+      if (!endpoint) fail("MANUAL_H3_RESOURCE_INPUT_REQUIRED");
+      database = await createPostgresConnector()({
+        credential,
+        target: {
+          hostname: endpoint[1] === "[::1]" ? "::1" : endpoint[1],
+          port: Number(endpoint[2]),
+          databaseName: endpointPolicy.databaseName,
+          tlsMode: "require"
+        }
+      });
+      const startedAt = new Date().toISOString();
+      const observation = await observeManualTarget({
+        request,
+        database,
+        endpointPolicy,
+        approvedClusterObservation: targetContext
+      });
+      await recheck();
+      const observationDigest = await archive.put(observation, "manual-runner-evidence.v1");
+      const record = (kind, fields) => ({
+        schemaVersion: "manual-operation-record.v2",
+        kind,
+        profileDigest: request.profileDigest,
+        recordedAt: new Date().toISOString(),
+        promotionEligible: false,
+        ...fields
+      });
+      const custody = async (subjectDigest, subjectType) => {
+        const observedAt = new Date().toISOString();
+        return session.record(
+          "custody",
+          record("custody", {
+            ownerId: profile.ownerId,
+            subjectDigest,
+            subjectType,
+            purpose: "archive-readback",
+            outcome: "MATCH",
+            observedDigest: subjectDigest,
+            observedAt,
+            storageRole: "archive",
+            retentionDays: 90,
+            reasonCode: null
+          })
+        );
+      };
+      const readback = await custody(observationDigest, "r2-artifact");
+      const reopened = (await archive.get(observationDigest)).value;
+      const finishedAt = new Date().toISOString();
+      const result = {
+        schemaVersion: "manual-runner-evidence.v1",
+        kind: "manual-command-result",
+        recordedAt: finishedAt,
+        promotionEligible: false,
+        ...fieldsFrom(request, observationFields),
+        requestDigest,
+        phaseKey: "target-observe",
+        attemptAllocationDigest: request.attemptAllocationDigest,
+        startedAt,
+        finishedAt,
+        outcome: "RETURNED",
+        reasonCode: null,
+        plan: null,
+        postState: null,
+        observationDigest,
+        processEvidenceDigest: null,
+        statements: [...database.statementLog],
+        originalExecutionRecordDigest: null
+      };
+      const resultDigest = await archive.put(result, "manual-runner-evidence.v1");
+      const scoped = fieldsFrom(request, [
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey"
+      ]);
+      const post = await session.record(
+        "post-state",
+        record("post-state", {
+          ...scoped,
+          requestDigest,
+          consumptionRecordDigest: sha256Canonical(consumption),
+          outcome: "OBSERVED",
+          observationDigest,
+          observedAt: reopened.observedAt,
+          reasonCode: null
+        })
+      );
+      const execution = await session.record(
+        "execution",
+        record("execution", {
+          ...scoped,
+          attemptId: request.attemptId,
+          requestDigest,
+          authorizationDigest: sha256Canonical(authorization),
+          consumptionRecordDigest: sha256Canonical(consumption),
+          handoffRecordDigest: null,
+          handoffReadbackDigest: null,
+          postStateRecordDigest: post.recordDigest,
+          predecessorExecutionRecordDigest: null,
+          startedAt,
+          finishedAt,
+          status: "SUCCEEDED",
+          reasonCode: null,
+          resultDigest,
+          processEvidenceDigest: null
+        })
+      );
+      await custody(execution.recordDigest, "record");
+      await recheckResources();
+      // Baseline E references the verified build's canonical archive object,
+      // not its differently formatted fixed input bytes.
+      const verifiedProof = JSON.parse(fixed.proofBytes);
+      if (sha256Canonical(verifiedProof) !== facts.build.buildProofDigest)
+        fail("MANUAL_EVIDENCE_BINDING_MISMATCH");
+      try {
+        if (
+          !(await archive.get(facts.build.buildProofDigest)).bytes.equals(
+            encodeManualJson(verifiedProof)
+          )
+        )
+          fail("MANUAL_STORAGE_UNVERIFIED");
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        await archive.put(verifiedProof, "build-proof.v1");
+      }
+      const baseline = buildManualBaseline({
+        request,
+        trustedBuildDecision: facts.build,
+        targetObservation: reopened,
+        roleObservation: reopened.roleObservation,
+        preState: reopened.catalog,
+        authorizationDigest: sha256Canonical(authorization)
+      });
+      const baselineDigest = await archive.put(baseline, "manual-baseline-manifest.v1");
+      await custody(baselineDigest, "r2-artifact");
+      await recheck();
+      return Object.freeze({ observation: reopened, readbackDigest: readback.recordDigest });
+    } finally {
+      secret.bytes.fill(0);
+      await secret.close();
+    }
+  } finally {
+    try {
+      await database?.close();
+    } finally {
+      if (credential) {
+        credential.password = "";
+        credential.username = "";
+      }
+      credential = null;
+    }
   }
 }
 
@@ -632,8 +1143,9 @@ function validateH3Inputs(approval, readback, approvalBytes, fixed, profile) {
   computeManualClusterFingerprint(readback.cluster);
 }
 
-async function readH3Inputs(fixed, profile, principal, recheckOwner) {
+async function readH3Inputs(fixed, profile, principal, recheckOwner, work) {
   const opened = [];
+  let verified = false;
   try {
     const root = path.join(
       profile.storage.archiveRoot,
@@ -651,6 +1163,13 @@ async function readH3Inputs(fixed, profile, principal, recheckOwner) {
       values.push(canonicalH3(item.bytes));
     }
     validateH3Inputs(values[0], values[1], opened[0].bytes, fixed, profile);
+    const indexInput = await pinPrivateInput(path.join(root, "index.json"), {
+      principal,
+      privateRoot: profile.storage.archiveRoot
+    });
+    opened.push(indexInput);
+    if (!indexInput.bytes.equals(encodeManualJson(fixed.operation)))
+      fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
     for (const item of opened) await item.recheck();
     await recheckOwner();
     const recheckInputs = async () => {
@@ -669,10 +1188,27 @@ async function readH3Inputs(fixed, profile, principal, recheckOwner) {
     )
       fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
     await recheckInputs();
-    // Docker readback is not SQL observation, authorization, or a baseline.
-    // Keep the next unfinished phase closed before session/attempt/credential IO.
-    fail("MANUAL_TARGET_OBSERVE_INPUT_REQUIRED");
+    const readback = values[1];
+    const targetContext = {
+      contextVersion: "manual-h3-target-context.v1",
+      operationRef: fixed.operation.operationRef,
+      indexDigest: fixed.indexDigest,
+      runId: fixed.operation.runId,
+      profileDigest: fixed.operation.profileDigest,
+      targetIntent: fixed.operation.targetIntent,
+      databaseOid: readback.databaseOid,
+      cluster: readback.cluster,
+      h3Approval: { digest: sha256Bytes(opened[0].bytes), bytes: opened[0].bytes.length },
+      h3Readback: { digest: sha256Bytes(opened[1].bytes), bytes: opened[1].bytes.length }
+    };
+    verified = true;
+    return await work({
+      targetContext,
+      recheck: recheckInputs,
+      recheckResources: () => observeH3Resources(values[0], values[1], recheckInputs)
+    });
   } catch (cause) {
+    if (verified) throw cause;
     throw Object.assign(new Error("H3_INPUT_UNAVAILABLE", { cause }), {
       code: "H3_INPUT_UNAVAILABLE"
     });

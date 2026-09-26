@@ -1,5 +1,13 @@
 # Stage 1 H2 内部 custody producer 限定验证
 
+## 2026-09-27 producer 到固定 consumer 衔接增量
+
+隔离分支提交 `a1a968c0a6731bc62755c48c14399d0620765310`，父提交 `356f0fbd`，仅修改 `manual-stage1-trust.test.mjs`。两项 characterization 使用真实 producer、foundation custody 与固定 `verifyManualBuild`：实际产出的收据通过原字节及同 run 的两 subject attestation 绑定；完整一致的历史 `github://` 输入在任何存储写入前被拒绝。原有 pretty JSON fixture 默认行为保持。
+
+最终在 owner-only Linux 临时目录、Node22.22.2 仅运行新增 **2/2，Node/WSL actual exit 0**；108 个执行副本文件逐项 SHA256 与原源码相同，限定 lint/语法/diff 检查通过。首次 WSL Windows 挂载目录 mode777 被真实 consumer 拒绝，TAP 1 pass/1 fail，但未可靠捕获 Node exit；另有 PATH 和遗漏依赖的两次 setup 失败，均保留原件，未声称是业务 RED。修正执行环境时未改变冻结源或放宽权限检查，没有重复完整 suite。
+
+独立 Sol medium 限定审查 **Approved**，主控核对日志和提交前后 hash、精确单文件暂存，提交后 clean。测试 SHA256 `ca99ecfe7f5259a5a03a35ea2f6e606c1e8aa0ab3779e442ad4359a39567a686`。证据位于隔离工作树 `.superpowers/sdd/2026-09-25-stage1-trusted-build-input-preparation-plan/h2-consumer-integration/` 的 01–20 文件。未发现新生产缺陷；GH 和分离读写存储仍为 double，不能证明真实 IAM/签名或 H2 完成。下述最初内部 producer 记录作为历史保留。
+
 隔离工作树 `stage1-r22-launcher-20260926` 提交 `bbaf9710aa54cebb98eed51f4dba5b308b71f52e`，父提交 `3710f11ab4051b87452af9fd57ea940240ea5663`。仅新增 producer、对应测试，并登记现有 catalogs/manifest；未整合主候选。
 
 内部函数复用 `assertBuildIdentity` 与 `custodyEvidence`，绑定固定 protected job 的 source、workflow、run/attempt 和同一 gh 验证结果中的 certificate/subject/DSSE bundle。proof 必须保持 canonical 原字节；material 保持原始字节，CreateNew 后由 audit-reader 独立 Get/Head，并核对实际服务元数据的至少 90 天保留和 proof 覆盖期。全部成功后只返回既有 receipt；部分失败不回滚、不改 ID 重试、不返回成功。

@@ -73,3 +73,23 @@ Node 和 gh 的官方发布包在本地及服务器分别校验 SHA-256：
 Edge 已登录的控制台仍无法由浏览器工具读取，因此改用阿里云官方 CLI 的 OAuth 浏览器授权流程。Windows CLI `3.5.1` 已从官方 CDN 下载，其发布包 SHA-256 与官方 GitHub release digest 一致：`e35c0f66727df399c996646a4c33f64cd5b69f66eee3e33e1c4f51d41c603997`。两次 GitHub 下载传输失败/停滞保持为失败事实；没有使用第三方包。
 
 已准备单独的当前用户 ACL 目录 `C:/Users/keqi_119/AppData/Local/Stage1CloudAuth`，本次 profile 为 `stage1-keqi119`，使用显式 `--config-path`。官方浏览器授权已发起并等待用户完成；截至本检查点，配置文件尚未生成，没有取得云管理身份，也没有创建 RAM role、改 OSS 策略或核实云盘加密。不会在报告、仓库或聊天中保存令牌/AccessKey。该认证步骤不改变用户此前对基础设施配置和服务器操作的授权。
+
+## 已验明现有 RAM 身份与 OSS 配置（同日后续）
+
+后续读取确认，前述 CLI 探测在本地 `profile default is not configure yet` 处失败。改用 `/dev/shm` 中 0700 临时目录及 0600 配置、仅在进程内装入既有项目凭证后，STS GetCallerIdentity 实际成功：账户 `1457643390906675`，RAM 身份 `deploy-codex-staging-user`。临时配置随后删除；没有将凭证值、凭证摘要或配置内容输出到日志/仓库。此前失败保留，不将其解释为凭证无效。
+
+该身份的 `ram:ListPoliciesForUser` 返回 `NoPermission`，`ecs:DescribeInstances` 返回 `Forbidden.RAM`。这两项不证明所有其他 RAM/ECS 动作均禁止，但不足以完成受审查的角色/云盘配置；仍等待官方 OAuth 管理授权，不能将 SSH root 或当前应用身份当成云管理员。
+
+使用已有 API 镜像中的 ali-oss SDK，对指定 bucket 的以下五项只读请求均返回 200：
+
+| 配置                    | 实际读回                                                                                              |
+| ----------------------- | ----------------------------------------------------------------------------------------------------- |
+| bucket / region / owner | `subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai` / `oss-cn-shanghai` / `1457643390906675` |
+| ACL                     | `private`                                                                                             |
+| Versioning              | SDK `versionStatus=null`，未启用版本控制                                                              |
+| WORM                    | `Locked`，保留 **210 天**；创建于 `2026-09-05T15:47:35.000Z`                                          |
+| 默认服务端加密          | `AES256`                                                                                              |
+
+这些请求在无业务启动命令的临时只读容器中执行，仅以 stdin 在内存传入现有 OSS 凭证；不传 API 数据库环境，不挂载数据卷，禁用提权并限制内存/CPU，结束后容器已删除。第一次 SDK 相对路径解析失败（exit 1）后，按镜像既有 `/app/apps/api/node_modules/ali-oss` 路径修正才成功；没有启动旧 API/Web 后台工作者。
+
+未写 OSS 对象、修改 ACL/WORM/加密、创建角色或绑定身份。当前事实仅证明已有桶配置符合这些基础条件，**不证明独立 writer/audit-reader、对象 Get/Head、实际保留或 H2 已通过**；210 天既有锁保持不变。ECS 云盘加密仍为 UNKNOWN，H1 五根/独立恢复仍未建立。

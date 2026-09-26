@@ -325,6 +325,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 **现在可交付的部分：** 非秘密材料和具体操作单/实现说明。实际身份、主机、云、构建及导入另按原边界执行。
 
+2026-09-26：[可信构建输入准备方案](./2026-09-25-stage1-trusted-build-input-preparation-plan.md)已完成 DOC-only 独立审查并整合。真实 owner/host、私密 writer/独立 reader、H1 文件、H2/expected producer 和同源 CI 原件仍未就绪；以下实际输入门槛及任务10整体保持开放。
+
 - [ ] H1：列出 owner、host/principal、五 roots、独立加密备份与恢复读回、key 遗失处置。生成 profile/批准/sidecar 的顺序保持 R1 H1；真实 `manual-stage1-profile.v2.json` 和 `manual-stage1-owner-binding.v1.json` 纳入 manifest 并经审查进入候选 source。
 - [ ] H2：先交付窄范围 producer 方案，消费当前 build-proof/material，明确现有受批私密存储、最小读取权限、真实对象 readback/期限、retention90 receipt 生产及独立 attestation。以 `.github/workflows/docker-images.yml` 和现有 custody 接口为对照，不恢复 Task6/I 系列。
 - [ ] H2 方案必须解决同 workflow/source/run/attempt 的 proof 与 receipt 绑定；当前两份 Actions delivery artifact 本身不满足。没有已批准保管能力则保持 INPUT_UNAVAILABLE，并将需要的具体选择提交用户，不自动购建平台或伪造本地 receipt。
@@ -347,7 +349,7 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 **新增计划文件：** `docs/superpowers/plans/2026-09-22-stage1-r3-final-image-dual-chain-plan.md`。先交付方案并评审，再执行真实数据阶段。
 
-- [ ] 从当前 manifest 完整列出最终 fresh/snapshot 适用集合、现有 handler/launcher 的接口、人工授权与最终 Runner 缺少的最小适配文件；禁止因为 R2 仅 migrate/verify 就假定其他命令已接好。
+- [x] 从当前 manifest 完整列出最终 fresh/snapshot 适用集合、现有 handler/launcher 的接口、人工授权与最终 Runner 缺少的最小适配文件；禁止因为 R2 仅 migrate/verify 就假定其他命令已接好。
 - [ ] 列出合法副本受控索引、来源/用途、digest、扫描、读取/解密/使用许可和有效期；没有材料仍记 INPUT_UNAVAILABLE，不搜索秘密或自行导出。
 - [ ] 先设计并执行获批的合成 LUKS 演练，再准入真实输入。专用 WSL、swap、宿主分页/转储、临时路径、备份排除及异常销毁均沿既定边界；不能拿普通 Docker volume 或 TEMP 代替。
 - [ ] 把 source-read/export、restore、sanitize、scan、candidate-use 分为独立 capability/凭证/operation；明确每步失败保管、后验/回收和最终只读验收。
@@ -355,6 +357,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 - [ ] 在业务包与 R2 完成、合法输入可用后，绑定一个可信候选 source 和 api/web/runner platform digest 执行完整适用 fresh/snapshot/readiness；`collected=selected=executed=passed` 且 fail/skip/filter/cancel/todo 均为 0。
 
 **出口：** 同候选的真实双链可独立读回；此前 P1 104/104 和 R1.3H 245/245 均不能替代。
+
+2026-09-26：[R3 方案](./2026-09-22-stage1-r3-final-image-dual-chain-plan.md)已通过 DOC-only 独立审查。确认两链各需全部37个 suite，六 batch 仅覆盖30个；最终入口覆写为同一 DB、现有普通卷/明文副本链与新版本外层 consumer 均有明确缺口。新宿主 launcher 的精确实现切片尚未定义，GitHub-hosted fresh/snapshot 的实际 owner/profile/H3 准入、加密边界及合法输入尚未提供。方案接受不等于这些接口已实现或真实双链已执行，任务12整体开放。
 
 ### 任务 13：R4/A1/A3，形成指定 Staging 的签字证据
 
@@ -367,6 +371,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 - [ ] 两次维护均有应处理对象，核 due/enqueued/结果、无重复遗漏且 blockedCount=0；两个空跑不能签字。
 - [ ] 完成恢复演练并说明外部付款/签署事实不能随 DB 回滚撤销；所有失败/UNKNOWN 有可核终态或仍是阻断。
 - [ ] 在原执行索引前向汇总 exact source/build proof/三镜像、双链、浏览器/供应商、维护、恢复和签字。独立退款另列状态；不称生产发布或完整 S1/Task30 完成。
+
+2026-09-26：[R4 方案](./2026-09-22-stage1-r4-staging-signoff-plan.md)已通过 DOC-only 独立审查。成熟结束动作按当前代码修正为工单 CLOSED、delta、inspection、提案/定价及必要的重新提案、finalize，最终经放行和 completeOperations 完成；证据包在完成前导出，完成后终态另行独立读回。工单关闭和定价后重新提案的实际浏览器入口，以及如需包含终态的最终包入口，仍须核实可达，缺失时停止该验收并交接实现。未恢复线上 Docker、部署或执行供应商/资金/浏览器验收，任务13整体开放。
 
 ## 6. 每个单元的统一验收与交接
 

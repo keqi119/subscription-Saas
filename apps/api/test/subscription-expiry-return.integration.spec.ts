@@ -8051,6 +8051,113 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
   });
 
   it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "replays the same %s request after the server clock passes its persisted requestedAt",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      try {
+        const input = Object.freeze({
+          approvalType,
+          billId: h.billId,
+          evidenceIds: Object.freeze([h.evidenceId, h.proof.fileId]),
+          settlementRevisionId: h.base.settlement.id,
+          idempotencyKey: "financial-cross-millisecond-request",
+          requestReason: "Financial proof independently reviewed"
+        });
+        const request = () => h.governance.requestApproval(h.caseId, input, h.requester, {});
+        const first = await request();
+        const before = await h.truth();
+        expect(before.approvals).toHaveLength(1);
+        expect(before.receipts).toHaveLength(1);
+        expect(before.approvalAudits).toHaveLength(1);
+        const approval = before.approvals[0]!;
+        expect(approval).toMatchObject({ id: first.id, status: "PENDING", version: 0 });
+        expect(before.receipts[0]).toMatchObject({
+          approvalId: first.id,
+          commandType: "EXCEPTION_REQUEST",
+          payloadSnapshot: { requestedAt: approval.requestedAt.toISOString() }
+        });
+        const observedBeforeRetry = await waitForFinancialRetryClock(approval.requestedAt);
+        console.info("FINANCIAL_APPROVAL_REQUEST_RETRY_BEFORE", {
+          approvalType,
+          sourceId: h.caseId,
+          sourceKey: before.receipts[0]!.sourceKey,
+          persistedAt: approval.requestedAt,
+          observedBeforeRetry
+        });
+        try {
+          await expect(financialRetryAttempt(request)).resolves.toEqual(first);
+        } finally {
+          const after = await h.truth();
+          expect(after).toEqual(before);
+        }
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+      }
+    }
+  );
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "replays the same %s decision after the server clock passes its persisted decidedAt",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      try {
+        // A separate fixture/first request keeps request-retry RED from hiding decision RED.
+        const requested = await h.request();
+        const pending = await prisma.businessExceptionApproval.findUniqueOrThrow({
+          where: { id: requested.id }
+        });
+        const input = Object.freeze({
+          decision: "APPROVED" as const,
+          decisionComment: "Independent financial approval",
+          expectedVersion: pending.version,
+          idempotencyKey: "financial-cross-millisecond-decision"
+        });
+        const decide = () =>
+          h.governance.decideApproval(h.caseId, pending.id, input, h.decider, {});
+        const first = await decide();
+        const before = await h.truth();
+        expect(before.approvals).toHaveLength(1);
+        expect(before.receipts).toHaveLength(2);
+        expect(before.approvalAudits).toHaveLength(2);
+        const approval = before.approvals[0]!;
+        expect(approval).toMatchObject({
+          id: first.id,
+          status: "APPROVED",
+          decidedBy: h.decider.id,
+          version: pending.version + 1
+        });
+        if (!approval.decidedAt) throw new Error("Expected the persisted decision time");
+        expect(before.receipts.find((row) => row.commandType === "EXCEPTION_DECIDE")).toMatchObject(
+          {
+            approvalId: first.id,
+            payloadSnapshot: {
+              decidedAt: approval.decidedAt.toISOString(),
+              expectedVersion: pending.version
+            }
+          }
+        );
+        const observedBeforeRetry = await waitForFinancialRetryClock(approval.decidedAt);
+        console.info("FINANCIAL_APPROVAL_DECISION_RETRY_BEFORE", {
+          approvalType,
+          sourceId: h.caseId,
+          sourceKey: before.receipts.find((row) => row.commandType === "EXCEPTION_DECIDE")!
+            .sourceKey,
+          persistedAt: approval.decidedAt,
+          observedBeforeRetry
+        });
+        try {
+          await expect(financialRetryAttempt(decide)).resolves.toEqual(first);
+        } finally {
+          const after = await h.truth();
+          expect(after).toEqual(before);
+        }
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+      }
+    }
+  );
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
     "requires complete evidence and an independent real approval before %s disposition",
     async (approvalType) => {
       const h = await prepareFinancialApproval(prisma, approvalType);
@@ -10304,6 +10411,29 @@ async function completionTruth(
   return { closure, order, contract, vehicle, lease, periods, bills, payments, writeOffs, audits };
 }
 
+async function waitForFinancialRetryClock(persistedAt: Date) {
+  const persistedMillis = persistedAt.getTime();
+  expect(Number.isFinite(persistedMillis)).toBe(true);
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const observed = Date.now();
+    if (observed > persistedMillis) return observed;
+    if (observed >= deadline) throw new Error("Server clock did not pass persisted approval time");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+async function financialRetryAttempt<T>(attempt: () => Promise<T>) {
+  try {
+    return await attempt();
+  } catch (error) {
+    console.info("FINANCIAL_APPROVAL_RETRY_REJECTED", {
+      code: (error as { response?: { code?: string } }).response?.code
+    });
+    throw error;
+  }
+}
+
 async function prepareFinancialApproval(
   prisma: PrismaService,
   approvalType: "WAIVER" | "WRITE_OFF"
@@ -10468,6 +10598,7 @@ async function prepareFinancialApproval(
     proof,
     requester,
     decider,
+    governance,
     uploadProof,
     truth,
     request: (

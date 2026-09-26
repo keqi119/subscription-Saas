@@ -371,6 +371,9 @@ function manifestAuditChainDamage(): [
 }
 
 type ManifestDiagnosticRow = Record<string, unknown>;
+type ManifestDiagnosticRevision = Prisma.SubscriptionClosureDocumentRevisionGetPayload<
+  Record<string, never>
+>;
 
 // Controlled IO rows follow the actual producer mappings at reserve/start/
 // completion/finalize and repository document/event/receipt writes. This does
@@ -468,7 +471,8 @@ function manifestAuditChronologyFixture(
   const files = [generatedFile, sourceFile, providerFile, signedFile];
   const generatedTaskId = id(14);
   const taskId = id(15);
-  const revisions = ["GENERATED", "SIGNED", "ARCHIVED"].map((stage, index) => {
+  const stages = ["GENERATED", "SIGNED", "ARCHIVED"] as const;
+  const revisions = stages.map((stage, index): ManifestDiagnosticRevision => {
     const source = [generatedSource, signedSource, archivedSource][index]!;
     return {
       id: id(20 + index),
@@ -479,6 +483,9 @@ function manifestAuditChronologyFixture(
       supersedesRevisionId: index === 0 ? null : id(19 + index),
       documentSnapshot,
       documentSnapshotHash: documentHash,
+      attestationMode: null,
+      attestationSnapshot: null,
+      attestationSnapshotHash: null,
       sourceFileHash: documentHash,
       sourceFileId: index === 0 ? generatedFile.id : sourceFile.id,
       contractESignTaskId: index === 0 ? generatedTaskId : taskId,
@@ -497,7 +504,7 @@ function manifestAuditChronologyFixture(
       sourceType: source.type,
       sourceKey: source.key
     };
-  }) as Prisma.SubscriptionClosureDocumentRevisionGetPayload<Record<string, never>>[];
+  });
   const generated = revisions[0]!;
   const current = {
     closureCaseId: closureCase.id,
@@ -777,11 +784,18 @@ function manifestAuditChronologyFixture(
       sourceId: _sourceId,
       sourceType: _sourceType,
       sourceKey: _sourceKey,
+      attestationMode: _attestationMode,
+      attestationSnapshot: _attestationSnapshot,
+      attestationSnapshotHash: _attestationSnapshotHash,
       ...outcomeFields
     } = revision;
     void _sourceId;
     void _sourceType;
     void _sourceKey;
+    // Nullable database columns are not in projectDocument / receipt outcome.
+    void _attestationMode;
+    void _attestationSnapshot;
+    void _attestationSnapshotHash;
     const outcome = json({ ...outcomeFields, source });
     const persistedAt = revision.createdAt;
     const eventId = id(60 + index);

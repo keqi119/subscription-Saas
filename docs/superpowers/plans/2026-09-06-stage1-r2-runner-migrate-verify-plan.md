@@ -143,10 +143,13 @@ ExpectedProvenance={recordVersion:"manual-expected-schema-provenance.v1",
             postgresqlVersion:Report,prismaVersion:Report,prismaVersionRaw:RawRef},
  expectedScript:RawRef,references:[ExpectedReference,ExpectedReference],
  generatedAt:T,promotionEligible:false}
-ExpectedReference={referenceRunId:UUID,identity:{cluster:ClusterOrigin,databaseName:S,databaseOid:OID},
+ExpectedReference={referenceRunId:UUID,identity:{cluster:ExpectedReferenceOrigin,databaseName:S,databaseOid:OID},
  createdAt:T,readbackAt:T,creationEvidence:RawRef,readbackEvidence:RawRef,
  migrationCatalog:RawRef,migrationHead:S|null,migrationOwner:S,allowedExtensions:S[],
  calls:[ExpectedCall,ExpectedCall,ExpectedCall,ExpectedCall]}
+ExpectedReferenceOrigin={systemIdentifier:positive-decimal-uint64-string,
+ databaseContainerId:N,runnerImageDigest:D,postgresImageDigest:D,
+ dataDirectory:S,socketDirectory:S,listenAddresses:"",configuredPort:5432}
 ExpectedCall={tool:"prisma-version"|"prisma-deploy"|"prisma-diff"|"prisma-script",
  argv:RawRef,stdout:RawRef,stderr:RawRef,pid:PID,preparedAt:T,spawnedAt:T,closedAt:T,
  exitCode:0,signal:null}
@@ -156,6 +159,29 @@ ExpectedImport={recordVersion:"manual-expected-schema-import.v1",buildProofDiges
           storedAt:T,retainUntil:T,readbackAt:T,getEvidence:RawRef,
           headEvidence:RawRef,aclEvidence:RawRef}[],promotionEligible:false}
 ```
+
+**2026-09-27 参考库接口实施对齐。** 上述 `ExpectedReferenceOrigin` 仅用于本节的独立参考库，替换此处原先误用的 H3 `ClusterOrigin`。已实现的参考库位于同候选 Runner 的只读、无网络容器内，使用两个固定 tmpfs 和私有 Unix socket，不能提供 H3 的专属卷或实际 TCP 地址。R1/H3 的类型、指纹、授权及所有共享 Schema 均不改；不得将该 reference origin 传给 `computeManualClusterFingerprint`，也不得填假卷名、marker、地址或 TLS 事实。
+
+该 origin 的 `databaseContainerId` 来自本次真实 create/inspect；Runner digest 等于同 proof 的 platform digest，PG digest 等于同 proof 的固定 PG17.11 基础镜像。`systemIdentifier` 为实测 uint64，`dataDirectory/socketDirectory/listenAddresses/configuredPort` 来自 SQL 对 `data_directory/unix_socket_directories/listen_addresses/port` 的实际读回。路径必须落在本次固定 `/tmp/manual-schema-reference-` 临时根下，分别为 `data` 和 `socket`；端口 5432 是配置读回，不冒充 `inet_server_port()`。初始与最终身份一致，两个 referenceRunId/containerId 不同，两个 `(systemIdentifier,databaseOid)` tuple 及其与 H3 的 tuple 不同；不同 cluster 可有相同 databaseOid。
+
+实际容器 user=postgres、network=none、只读根、无 host bind/持久卷、两个固定 tmpfs、镜像与 OCI revision 的 selective inspect 原件属于下述 creation/readback raw 图。只读取非秘密投影，不采集 Env 或凭据。四个 Prisma call 的 argv RawRef 明确是 canonical 完整字符串数组 `["/app/apps/release-runner/node_modules/.bin/prisma",...固定参数]`；version 在 CREATE DATABASE 完成后执行，最终身份/迁移读回在 script close 后执行，diff 除 exit 0 外须原 stdout 严格解码后 trim 为空。PID 与 prepared/spawn/close 时间来自真实 spawn 事件，禁止事后回填时间或重建 stdout/stderr。
+
+creationEvidence/readbackEvidence 使用两个仅本 producer/consumer 私有的闭合收集对象，不登记共享契约：
+
+```text
+ReferenceEvidence={recordVersion:"manual-expected-reference-creation.v1"|"manual-expected-reference-readback.v1",
+ referenceRunId:UUID,calls:ReferenceProcess[]}
+ReferenceProcess={tool:S,argv:RawRef,stdout:RawRef,stderr:RawRef,pid:PID,
+ preparedAt:T,spawnedAt:T,closedAt:T,exitCode:0,signal:null}
+```
+
+creation 的 tool 恰依序为 `container-create/container-inspect/image-inspect/node-version/psql-version/initdb/pg-start/database-create/identity-before`；readback 恰依序为 `identity-after/migration-readback/pg-stop/container-exit-inspect/container-stop/container-remove`。每项保留实际完整 invocation 数组和原 stdout/stderr；各 invocation 在 producer 固定，不从记录执行命令。native JSON 原文不强制 canonical，但其解析结果须符合对应固定 SQL/inspect 投影，原件不被重新序列化替换。source/config/lock/proof 使用已核宿主 checkout 的完整 bytes；两次参考调用的完整 version/script bytes 须相等。migrationCatalog raw 是从已逐条校验实际迁移名、路径、顺序和 checksum 的事实形成的 canonical catalog identity，其 digest 与 proof 一致；实际 migration SQL 原文另由 migration-readback 保留。migrationOwner 取实际 `_prisma_migrations` relation owner，不用 public schema owner 替代。
+
+raw 取回保持每个原件和每个完整 canonical JSON 至多 1 MiB。实际 schema 已达 462831 bytes、lock 为 274737 bytes，不能把全部原件塞入同一个 base64 JSON，也不提高限制。相同两容器的固定 `--reference` 模式接收一份 canonical envelope 加 LF；参考 PG 停止成功后，将有限闭合原件 CreateNew 写入固定 `/tmp/manual-expected-schema-output/{digestHex}.bin`，输出一个只有元数据/RawRefs 的 canonical manifest 加 LF。源码/配置/lock/proof 不在此重复传输。容器仅在固定期限内等待精确 `RELEASE\n`；未知输入、额外帧、提前 EOF、超时均拒绝。
+
+宿主保持这条实际管道，在 inner 仍运行时按闭合集合逐对象执行固定 Docker cp，从精确 container ID 和上述固定路径取至 owner-only 临时目录；拒绝非普通文件、软/硬链接、路径或 size/hash 不符，并独立重开原件。全部取回后才发送 release/结束 stdin，等待真实 close 及容器 exited/exit 0，随后原有 finally 对精确 ID 分别 stop 和 forced rm；任一不确定不返回成功。不能在容器停止后才取 tmpfs 原件，[Docker tmpfs 文档](https://docs.docker.com/engine/storage/tmpfs/)明确停止后不保留数据。该握手只用于固定输出生命周期，不提供存储、签名或准入权威，不增加通用协议、CLI 选择项、容器、持久卷、TCP 或 host mount。
+
+后续实现仍仅修改既有 `manual-expected-schema-producer.mjs` 及其 test：输出精确 ExpectedProvenance、完整 version 与去重 raw 集合，保留现有 expectation 和清理修复。复用既有四例，仅补真实格式/PID/raw、时序、非空 diff 和实际大小传输反例；此处不要求重复业务或完整发布套件。私有存储、import、两 subject attestation、R2 固定 reader 和真实参考运行仍分别待完成；文档对齐不等于验收通过。
 
 上述是 producer 与 consumer 的精确接口约束，未来 Task 10 producer 在自身已列文件中产出；R2 不实现 producer。`references` 恰为两次独立 fresh reference DB 的实际创建/读取，referenceRunId 与 `(systemIdentifier,databaseOid)` 各自不同；与本次 H3 目标的实际物理 tuple 也不得相同。每轮 calls 恰依序为版本、deploy、零 diff、script，argv raw 为 canonical 字符串数组，与固定 `/app`、现有 Prisma 7.8 config/schema/CLI 路径和 Task 10 四命令逐项相等；不执行 provenance 内的 argv/SQL。每个实际 call 满足 `createdAt <= preparedAt <= spawnedAt <= closedAt <= readbackAt <= generatedAt`；PID/close/raw 必须齐全，diff stdout.trim 为空。两轮 script stdout 等于同一 expected.sql 原 bytes；版本 stdout 等于同一完整 version 原件，其 Report 与 toolchain.prismaVersion 完全相等。Node22、Prisma7.8.0、PG17.11 与 pinned Runner/PG 镜像来自同次 producer 实测/读回；runner digest 等于已核 proof 的 Runner platform digest。两轮 migration catalog 的稳定 path/order/checksum/head/owner/extensions 相同且 catalog identity digest 等于 proof；UUID/OID/创建时间等非确定性原件保留各自真实值，不按字节相等压成一轮。
 

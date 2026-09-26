@@ -558,3 +558,5 @@ H3 精确对象在本稿编写时不存在，因此这里不提供可直接误�
 ## 交接与停止点
 
 R2.0–3 的单元/适配器通过只说明代码可进入真实门禁，不解除 H1/H2/H3。R2.4 成功后也只交付 fresh migrate/verify；真实 snapshot、独立数据授权/隔离、API/Web 公共路径、全量双链归 R3/A2，Staging 部署/签字归 R4/A3。旧 Task 29R/30、KMS、自动化工作流及外部施工继续冻结。
+
+2026-09-26 实施时确认的固定输入缺口：ExpectedImport 的 getEvidence/headEvidence/aclEvidence RawRef 定义已完成 DOC 审查，但实际私密服务原始响应格式、获准 namespace 与 writer/独立 reader 身份、固定来源消费绑定仍未提供。现有 evidence-custody 只定义注入式 createOnly/readMetadata/read，local file custody 不提供真实独立服务的 Get/Head/ACL 来源证明，不能替代该门槛。此项维持 `MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED`；三 RawRef 的 bytes/digest 读回或调用者自报 verified 均不证明保管服务来源。可继续固定路径/ACL/字节、已有 GitHub attestation 验证及其他离线切片，不能宣称 ExpectedImport 正例或 R2.2 完整闭合。保持原阶段顺序：H3/index/session-open/target-observe 在前，expected 准入在 runner-request freeze/sign、命令 credential 及命令 DB 动作前；不得为使测试先通过而前移 expected 或另造 storage client。

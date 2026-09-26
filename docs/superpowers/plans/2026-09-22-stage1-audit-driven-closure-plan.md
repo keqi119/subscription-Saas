@@ -317,6 +317,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 同日后续：R2.2 已在独立 `stage1-r22-launcher-20260926` 开始实施。metadata/CLI WIP `d29519e5` 的两处异步校验窗口经真实 4 RED→4 GREEN 修复，精确后继提交 `83e91242`、完整组合72/72、exit0及六输入摘要已独立复审 ACCEPT。该切片只证明固定 metadata 写入/读回和入口拒绝；child 授权、凭证、H3/expected 输入、工具 collector 与父子闭环仍在实施，尚未整合主候选，R2.2/任务9不收口。原67/68及新反例失败原件保留，不能与重叠测试累加。
 
+再后续，child 授权/credential 两文件切片 `73eeaf26` 已限定复审 ACCEPT，91/91、exit0及静态检查通过。完整合法授权使用受控 PassThrough/临时固定 profile；实际 Node 双向管道用例仅到 challenge 和截断 AUTHORIZE。合法凭证正例止于父 EOF 后拒绝，开放管道到 INPUT_REQUIRED 仅静态确认。connector/runtime/live ACK/RESULT、CLI/父子完整路径与来源输入仍未完成，不能以91项替代完整MS2验收。另已确认 ExpectedImport 私密服务原始 Get/Head/ACL 格式和固定消费绑定尚缺，local custody 不构成独立服务来源；按R2计划末尾前向说明保持输入未就绪，继续可独立离线验证的部分。
+
 - [ ] R2.2：创建 launch-manual-stage1/manual-entrypoint 及测试，接 cli manual 分支；唯一 selector 为 operationRef。固定 H3 来源、prepare/index、真实 child/工具 raw、PREPARED→readback→ACK→spawn、最后关闭全部按原计划实现。
 - [ ] R2.2 出口：真实临时 Node 管道组合通过；非法 CLI/替代路径/错 nonce/H3/ACK/版本在 secret/DB 前拒绝。manual stdout 无额外 JSON 尾写；旧入口字节行为保持。
 - [ ] R2.3：创建 verify-manual-runner-result、两个 test/manual 真实阶段文件；登记精确 discovery exceptions。verifier 只读固定 index/build/H3/raw，全链证据不接受 caller success flag。
@@ -379,6 +381,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 同日后续静态审查已确认：当前 Web 缺检查工单关闭入口；正额 CUSTOMER FINAL 计价新增账单后，当前 PROPOSED 缺重新提案入口。两项已形成独立审查通过的[正常退车浏览器修复计划](./2026-09-26-stage1-return-browser-gap-plan.md)，仅六个生产文件与六个测试文件，复用现有受权 HTTP、人工幂等来源和结算服务，不放宽 CLOSED/hash/权限守卫。实施前 source `5c57416e` 的受控 asset-operations fresh 33/33、独立读回/退役及 skip-dotenv Prisma validate 已通过；这是新开发轮基线，不是修复后的验收或真实浏览器证据。两个实现单元及 R4 实测仍开放。
 
 浏览器修复后续实施记录：独立 `stage1-return-browser-fixes-20260926` 的工单入口单元 `4568006b` 已通过限定复审，冻结八文件的 Web 聚焦65/65、最终Web类型及 owned lint exit0。HTTP/服务组合测试提交 `acf75c4f` 已静态复审，controller单测57/57、两测试文件 lint/格式通过；其中鉴权身份为测试替身，工单 HTTP guards/DTO/service/repository/audit 为真实实现，结算段直接调用真实 controller/service，不声称经过 HTTP 或浏览器。计价后草案刷新单元仍在施工，完整同源离线门禁、expiry/asset两套fresh和真实浏览器均未执行；这两个提交尚未整合主候选，不把开发前33/33记为开发后验证。
+
+再后续，草案刷新切片 `f02af8de` 已限定复审，最终离线 Web三文件87/87、API六文件197/197、两端类型与12个改动文件lint均通过。该源首轮完整 expiry fresh 为94执行、91通过、3失败；报告保管/独立读回/目标退役完成，原件保留。两个失败来自新增HTTP fixture 的全局计费计划污染；第三经源码独立核验，确认人工定价审批把合法同证据多关联行数误作证据集合数量。已审窄追加 `28a785db` 只允许隔离三个fixture、修复PRICING_OVERRIDE证据集合并补回归，尚待修复后的完整expiry/asset同源验证。相邻 registration/financial 的行数成员校验列为独立待审风险，未并入本修复；阶段1、R4和实际浏览器均未收口。
 
 ## 6. 每个单元的统一验收与交接
 

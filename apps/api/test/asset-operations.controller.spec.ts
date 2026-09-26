@@ -24,6 +24,7 @@ import {
   VehicleOperationalRestrictionType
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
+import { request as requestHttp } from "node:http";
 import { AddressInfo, createConnection } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -512,13 +513,13 @@ describe("AssetOperationsController governed boundary", () => {
   );
 
   function get(path: string, token?: string) {
-    return fetch(`${baseUrl}${path}`, {
+    return requestControllerHttp(`${baseUrl}${path}`, {
       headers: token ? { authorization: `Bearer ${token}` } : undefined
     });
   }
 
   function post(path: string, body: object, token: string, idempotencyKey?: string) {
-    return fetch(`${baseUrl}${path}`, {
+    return requestControllerHttp(`${baseUrl}${path}`, {
       body: JSON.stringify(body),
       headers: {
         authorization: `Bearer ${token}`,
@@ -586,6 +587,34 @@ describe("AssetOperationsModule registration", () => {
     );
   });
 });
+
+function requestControllerHttp(
+  url: string,
+  options: { body?: string; headers?: Record<string, string>; method?: string } = {}
+): Promise<Response> {
+  // A real loopback HTTP client: OS-assigned port 0 can select a port that the
+  // browser-compatible fetch client blocks before reaching the test server.
+  return new Promise((resolve, reject) => {
+    const request = requestHttp(
+      url,
+      { method: options.method, headers: options.headers },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.once("error", reject);
+        res.once("aborted", () => reject(new Error("Controller HTTP response aborted")));
+        res.once("end", () => {
+          resolve(new Response(Buffer.concat(chunks).toString("utf8"), { status: res.statusCode }));
+        });
+      }
+    );
+    request.once("error", reject);
+    request.setTimeout(5_000, () =>
+      request.destroy(new Error("Controller HTTP request timed out"))
+    );
+    request.end(options.body);
+  });
+}
 
 function testUser(token: string) {
   const permissionsByToken: Record<string, PermissionCode[]> = {

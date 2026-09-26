@@ -24,6 +24,7 @@ import {
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
 import { createHash, randomUUID } from "node:crypto";
+import { request as requestHttp } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -378,6 +379,34 @@ function inspectionHttpCommand(
   };
 }
 
+function requestInspectionHttp(
+  url: string,
+  options: { body?: string; headers?: Record<string, string>; method?: string } = {}
+): Promise<Response> {
+  // Exercise the actual HTTP server on its assigned loopback port without the
+  // browser fetch client's unrelated forbidden-port policy.
+  return new Promise((resolve, reject) => {
+    const request = requestHttp(
+      url,
+      { method: options.method, headers: options.headers },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.once("error", reject);
+        res.once("aborted", () => reject(new Error("Inspection HTTP response aborted")));
+        res.once("end", () => {
+          resolve(new Response(Buffer.concat(chunks).toString("utf8"), { status: res.statusCode }));
+        });
+      }
+    );
+    request.once("error", reject);
+    request.setTimeout(5_000, () =>
+      request.destroy(new Error("Inspection HTTP request timed out"))
+    );
+    request.end(options.body);
+  });
+}
+
 async function returnInspectionHttp(
   scenario: Awaited<ReturnType<typeof setupFocusedPhysicalReceipt>>
 ) {
@@ -421,7 +450,7 @@ async function returnInspectionHttp(
   await app.listen(0, "127.0.0.1");
   const baseUrl = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}/api/asset-operations/work-orders`;
   const get = (id: string, token = "all") =>
-    fetch(`${baseUrl}/${id}`, { headers: { authorization: `Bearer ${token}` } });
+    requestInspectionHttp(`${baseUrl}/${id}`, { headers: { authorization: `Bearer ${token}` } });
   return {
     close: () => app.close(),
     get,
@@ -439,7 +468,7 @@ async function returnInspectionHttp(
       };
     },
     post<Body extends { source: { key: string } }>(id: string, body: Body, token = "all") {
-      return fetch(`${baseUrl}/${id}/transition`, {
+      return requestInspectionHttp(`${baseUrl}/${id}/transition`, {
         method: "POST",
         body: JSON.stringify(body),
         headers: {

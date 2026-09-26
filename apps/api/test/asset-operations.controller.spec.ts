@@ -149,6 +149,36 @@ describe("AssetOperationsController governed boundary", () => {
     expect(response.status).toBe(403);
   });
 
+  it("keeps return-inspection read and transition permissions independent", async () => {
+    const path = `/api/asset-operations/work-orders/${WORK_ORDER_ID}`;
+    const command = {
+      ...transitionBody(),
+      detailSnapshot: { closureCaseId: SOURCE_ID },
+      targetStatus: AssetWorkOrderStatus.PENDING_ACCEPTANCE
+    };
+    expect((await get(path, "work")).status).toBe(403);
+    expect((await post(`${path}/transition`, command, "view", SOURCE_KEY)).status).toBe(403);
+    expect(service.getWorkOrderDetail).not.toHaveBeenCalled();
+    expect(service.transitionWorkOrder).not.toHaveBeenCalled();
+
+    expect((await get(path, "view")).status).toBe(200);
+    expect((await post(`${path}/transition`, command, "work", SOURCE_KEY)).status).toBe(201);
+    expect(service.getWorkOrderDetail).toHaveBeenCalledExactlyOnceWith(WORK_ORDER_ID);
+    expect(service.transitionWorkOrder).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        detailSnapshot: { closureCaseId: SOURCE_ID },
+        expectedVersion: command.expectedVersion,
+        source: { type: "MANUAL_OPERATION", id: SOURCE_ID, key: SOURCE_KEY },
+        targetStatus: AssetWorkOrderStatus.PENDING_ACCEPTANCE,
+        workOrderId: WORK_ORDER_ID
+      }),
+      expect.objectContaining({
+        actorId: ACTOR_ID,
+        permissions: [PermissionCode.ASSET_WORK_ORDER_MANAGE]
+      })
+    );
+  });
+
   it("allows either ordinary or approval release permission to reach type-specific service authorization", async () => {
     for (const token of ["release", "approve"]) {
       const response = await post(

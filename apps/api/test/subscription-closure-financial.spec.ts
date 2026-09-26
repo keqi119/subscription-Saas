@@ -145,6 +145,27 @@ function legalReadyFixture() {
 }
 
 describe.each(["WAIVER", "WRITE_OFF"] as const)("%s approval accounting context", (type) => {
+  it("consumes the financial request boundary without an external requestedAt", async () => {
+    const h = financialApprovalHarness(type);
+    await expect(h.request()).resolves.toMatchObject({ status: "PENDING" });
+    expect(h.repository.requestClosureFinancialExceptionApproval).toHaveBeenCalledTimes(1);
+    const command = h.repository.requestClosureFinancialExceptionApproval.mock.calls[0]![1];
+    expect(command).not.toHaveProperty("requestedAt");
+    expect(command).toMatchObject({
+      requestedBy: FINANCIAL_IDS.requester,
+      exceptionType: type === "WAIVER" ? "SETTLEMENT_WAIVER" : "SETTLEMENT_WRITE_OFF"
+    });
+  });
+
+  it("consumes the financial decision boundary without an external decidedAt", async () => {
+    const h = financialApprovalHarness(type);
+    await expect(h.decide()).resolves.toMatchObject({ status: "APPROVED", version: 1 });
+    expect(h.repository.decideClosureFinancialExceptionApproval).toHaveBeenCalledTimes(1);
+    const command = h.repository.decideClosureFinancialExceptionApproval.mock.calls[0]![1];
+    expect(command).not.toHaveProperty("decidedAt");
+    expect(command).toMatchObject({ decidedBy: FINANCIAL_IDS.decider, expectedVersion: 0 });
+  });
+
   it("requests through the real Accounting service with the exact server-derived source key", async () => {
     const h = financialApprovalHarness(type);
     await expect(h.request()).resolves.toMatchObject({ status: "PENDING" });
@@ -516,11 +537,43 @@ function financialApprovalHarness(
       }
     )
   };
+  // This harness proves the actual governance/service consumption boundary.
+  // Server-time admission and receipt replay are exercised with the real
+  // repository in asset-accounting.repository.spec.ts and by the parent PG owner.
+  const financialRepository = {
+    ...repository,
+    requestClosureFinancialExceptionApproval: vi.fn(
+      async (
+        tx: Prisma.TransactionClient,
+        command: Omit<
+          Parameters<AssetAccountingRepository["requestExceptionApproval"]>[1],
+          "requestedAt"
+        >
+      ) =>
+        repository.requestExceptionApproval(tx, {
+          ...command,
+          requestedAt: new Date("2026-09-26T00:00:00.000Z")
+        })
+    ),
+    decideClosureFinancialExceptionApproval: vi.fn(
+      async (
+        tx: Prisma.TransactionClient,
+        command: Omit<
+          Parameters<AssetAccountingRepository["decideExceptionApproval"]>[1],
+          "decidedAt"
+        >
+      ) =>
+        repository.decideExceptionApproval(tx, {
+          ...command,
+          decidedAt: new Date("2026-09-26T00:00:01.000Z")
+        })
+    )
+  };
   const audit = { write: vi.fn(async () => undefined) };
   const prisma = { $transaction: async <T>(work: (client: typeof tx) => Promise<T>) => work(tx) };
   const accounting = new AssetAccountingService(
     prisma as never,
-    repository as never,
+    financialRepository as never,
     audit as never
   );
   const governance = new SubscriptionReturnGovernanceService(
@@ -534,7 +587,7 @@ function financialApprovalHarness(
   );
   return {
     audit,
-    repository,
+    repository: financialRepository,
     tx,
     bill,
     closureCase,

@@ -1283,29 +1283,38 @@ export class SubscriptionReturnGovernanceService {
     } as const;
     return this.prisma.$transaction(async (tx) => {
       const authority = await resolveClosureApprovalAuthority(tx, closureCaseId, input);
-      return this.assetAccounting!.requestApprovalInTransaction(
-        tx,
-        {
-          exceptionType: authority.exceptionType,
-          requestEvidenceSnapshot: { evidenceIds: authority.snapshot.evidenceIds },
-          requestReason: requiredText(input.requestReason, "requestReason", 2000),
-          requestedAt: new Date(),
-          source,
-          subject: {
-            subjectField: authority.subjectField,
-            subjectId: closureCaseId,
-            subjectType: "SETTLEMENT_CASE"
-          }
-        },
-        {
-          actorId: user.id,
-          idempotencyKey: source.key,
-          ipAddress: context.ipAddress,
-          permissions: user.permissions,
-          userAgent: context.userAgent
-        },
-        async () => authority.snapshot
-      );
+      const command = {
+        exceptionType: authority.exceptionType,
+        requestEvidenceSnapshot: { evidenceIds: authority.snapshot.evidenceIds },
+        requestReason: requiredText(input.requestReason, "requestReason", 2000),
+        source,
+        subject: {
+          subjectField: authority.subjectField,
+          subjectId: closureCaseId,
+          subjectType: "SETTLEMENT_CASE" as const
+        }
+      };
+      const accountingContext = {
+        actorId: user.id,
+        idempotencyKey: source.key,
+        ipAddress: context.ipAddress,
+        permissions: user.permissions,
+        userAgent: context.userAgent
+      };
+      return authority.exceptionType === "SETTLEMENT_WAIVER" ||
+        authority.exceptionType === "SETTLEMENT_WRITE_OFF"
+        ? this.assetAccounting!.requestClosureFinancialApprovalInTransaction(
+            tx,
+            command,
+            accountingContext,
+            async () => authority.snapshot
+          )
+        : this.assetAccounting!.requestApprovalInTransaction(
+            tx,
+            { ...command, requestedAt: new Date() },
+            accountingContext,
+            async () => authority.snapshot
+          );
     });
   }
 
@@ -1362,31 +1371,40 @@ export class SubscriptionReturnGovernanceService {
       ) {
         throw conflict("CLOSURE_APPROVAL_STALE", "审批绑定的退车结算事实已变化，请重新发起审批。");
       }
-      const result = await this.assetAccounting!.decideApprovalInTransaction(
-        tx,
-        {
-          approvalId,
-          decidedAt: new Date(),
-          decision: input.decision,
-          decisionComment: requiredText(input.decisionComment, "decisionComment", 2000),
-          exceptionType: authority.exceptionType,
-          expectedVersion: input.expectedVersion,
-          source,
-          subject: {
-            subjectField: authority.subjectField,
-            subjectId: closureCaseId,
-            subjectType: "SETTLEMENT_CASE"
-          }
-        },
-        {
-          actorId: user.id,
-          idempotencyKey: source.key,
-          ipAddress: context.ipAddress,
-          permissions: user.permissions,
-          userAgent: context.userAgent
-        },
-        async () => authority.snapshot
-      );
+      const command = {
+        approvalId,
+        decision: input.decision,
+        decisionComment: requiredText(input.decisionComment, "decisionComment", 2000),
+        exceptionType: authority.exceptionType,
+        expectedVersion: input.expectedVersion,
+        source,
+        subject: {
+          subjectField: authority.subjectField,
+          subjectId: closureCaseId,
+          subjectType: "SETTLEMENT_CASE" as const
+        }
+      };
+      const accountingContext = {
+        actorId: user.id,
+        idempotencyKey: source.key,
+        ipAddress: context.ipAddress,
+        permissions: user.permissions,
+        userAgent: context.userAgent
+      };
+      const result = authority.exceptionType === "SETTLEMENT_WAIVER" ||
+        authority.exceptionType === "SETTLEMENT_WRITE_OFF"
+        ? await this.assetAccounting!.decideClosureFinancialApprovalInTransaction(
+            tx,
+            command,
+            accountingContext,
+            async () => authority.snapshot
+          )
+        : await this.assetAccounting!.decideApprovalInTransaction(
+            tx,
+            { ...command, decidedAt: new Date() },
+            accountingContext,
+            async () => authority.snapshot
+          );
       if (
         input.decision === "APPROVED" &&
         authority.exceptionType === "VEHICLE_REGISTRATION_DOCUMENT_MISSING"

@@ -146,6 +146,18 @@ export type DecideApprovalServiceCommand = Omit<
   DecideExceptionApprovalCommand,
   "authoritySnapshot" | "decidedBy"
 >;
+type ApprovalRequestExecution =
+  | { readonly kind: "legacy"; readonly command: RequestApprovalServiceCommand }
+  | {
+      readonly kind: "financial";
+      readonly command: Omit<RequestApprovalServiceCommand, "requestedAt">;
+    };
+type ApprovalDecisionExecution =
+  | { readonly kind: "legacy"; readonly command: DecideApprovalServiceCommand }
+  | {
+      readonly kind: "financial";
+      readonly command: Omit<DecideApprovalServiceCommand, "decidedAt">;
+    };
 export type ExpireApprovalServiceCommand = Omit<
   ExpireExceptionApprovalCommand,
   "authoritySnapshot" | "expiredBy"
@@ -1101,6 +1113,30 @@ export class AssetAccountingService {
     context: AssetAccountingCommandContext,
     resolveAuthority: BusinessExceptionAuthorityResolver
   ): Promise<PublicBusinessExceptionApproval> {
+    return this.executeApprovalRequest(tx, { kind: "legacy", command }, context, resolveAuthority);
+  }
+
+  async requestClosureFinancialApprovalInTransaction(
+    tx: Prisma.TransactionClient,
+    command: Omit<RequestApprovalServiceCommand, "requestedAt">,
+    context: AssetAccountingCommandContext,
+    resolveAuthority: BusinessExceptionAuthorityResolver
+  ): Promise<PublicBusinessExceptionApproval> {
+    return this.executeApprovalRequest(
+      tx,
+      { kind: "financial", command },
+      context,
+      resolveAuthority
+    );
+  }
+
+  private async executeApprovalRequest(
+    tx: Prisma.TransactionClient,
+    execution: ApprovalRequestExecution,
+    context: AssetAccountingCommandContext,
+    resolveAuthority: BusinessExceptionAuthorityResolver
+  ): Promise<PublicBusinessExceptionApproval> {
+    const command = execution.command;
     const { actorId, source } = assertWriteContext(
       command.source,
       context,
@@ -1112,11 +1148,20 @@ export class AssetAccountingService {
       normalizedCommand,
       resolveAuthority
     );
-    const result = await this.repository.requestExceptionApproval(tx, {
-      ...normalizedCommand,
-      authoritySnapshot,
-      requestedBy: actorId
-    });
+    const result =
+      execution.kind === "financial"
+        ? await this.repository.requestClosureFinancialExceptionApproval(tx, {
+            ...execution.command,
+            source,
+            authoritySnapshot,
+            requestedBy: actorId
+          })
+        : await this.repository.requestExceptionApproval(tx, {
+            ...execution.command,
+            source,
+            authoritySnapshot,
+            requestedBy: actorId
+          });
     const fact = projectApproval(result.outcome);
     if (result.wrote) {
       await this.writeAudit(tx, {
@@ -1140,6 +1185,30 @@ export class AssetAccountingService {
     context: AssetAccountingCommandContext,
     resolveAuthority: BusinessExceptionAuthorityResolver
   ): Promise<PublicBusinessExceptionApproval> {
+    return this.executeApprovalDecision(tx, { kind: "legacy", command }, context, resolveAuthority);
+  }
+
+  async decideClosureFinancialApprovalInTransaction(
+    tx: Prisma.TransactionClient,
+    command: Omit<DecideApprovalServiceCommand, "decidedAt">,
+    context: AssetAccountingCommandContext,
+    resolveAuthority: BusinessExceptionAuthorityResolver
+  ): Promise<PublicBusinessExceptionApproval> {
+    return this.executeApprovalDecision(
+      tx,
+      { kind: "financial", command },
+      context,
+      resolveAuthority
+    );
+  }
+
+  private async executeApprovalDecision(
+    tx: Prisma.TransactionClient,
+    execution: ApprovalDecisionExecution,
+    context: AssetAccountingCommandContext,
+    resolveAuthority: BusinessExceptionAuthorityResolver
+  ): Promise<PublicBusinessExceptionApproval> {
+    const command = execution.command;
     const { actorId, source } = assertWriteContext(
       command.source,
       context,
@@ -1158,11 +1227,20 @@ export class AssetAccountingService {
         "The requester cannot decide the same exception approval."
       );
     }
-    const result = await this.repository.decideExceptionApproval(tx, {
-      ...normalizedCommand,
-      authoritySnapshot,
-      decidedBy: actorId
-    });
+    const result =
+      execution.kind === "financial"
+        ? await this.repository.decideClosureFinancialExceptionApproval(tx, {
+            ...execution.command,
+            source,
+            authoritySnapshot,
+            decidedBy: actorId
+          })
+        : await this.repository.decideExceptionApproval(tx, {
+            ...execution.command,
+            source,
+            authoritySnapshot,
+            decidedBy: actorId
+          });
     const fact = projectApproval(result.outcome);
     if (result.wrote) {
       await this.writeAudit(tx, {

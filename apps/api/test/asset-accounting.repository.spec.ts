@@ -3,6 +3,7 @@ import { Prisma, type VehicleCostLedgerEntry } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
+import { AssetAccountingService } from "../src/asset-accounting/asset-accounting.service";
 import {
   ASSET_ACCOUNTING_ERROR_CODE,
   AssetAccountingRepository,
@@ -2053,6 +2054,596 @@ describe("AssetAccountingRepository", () => {
   });
 });
 
+describe.each(["SETTLEMENT_WAIVER", "SETTLEMENT_WRITE_OFF"] as const)(
+  "%s financial server-time receipt replay",
+  (exceptionType) => {
+    it.each([
+      "type",
+      "source-type",
+      "source-key",
+      "subject-type",
+      "subject-id",
+      "subject-field",
+      "external-time"
+    ] as const)(
+      "rejects a %s input outside the financial request boundary before any write",
+      async (scope) => {
+        const database = fakeTransaction();
+        const repository = new AssetAccountingRepository();
+        const command = omitRequestTime(financialRequest(database.ids, exceptionType));
+        if (scope === "type") command.exceptionType = "HANDOVER_EVIDENCE_EXCEPTION";
+        if (scope === "source-type")
+          command.source = { ...command.source, type: "HANDOVER_FIXTURE" };
+        if (scope === "source-key")
+          command.source = { ...command.source, key: "closure-approval-decision:wrong-kind" };
+        if (scope === "subject-type")
+          command.subject = { ...command.subject, subjectType: "VEHICLE" };
+        if (scope === "subject-id")
+          command.subject = { ...command.subject, subjectId: database.ids.vehicleId };
+        if (scope === "subject-field")
+          command.subject = { ...command.subject, subjectField: "other-field" };
+        if (scope === "external-time") Object.assign(command, { requestedAt: NOW });
+        await expectCode(
+          repository.requestClosureFinancialExceptionApproval(database.tx, command),
+          ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND
+        );
+        expect(database.approvals.size).toBe(0);
+        expect(database.receipts.size).toBe(0);
+      }
+    );
+
+    it("uses the current server time only for the first request and preserves it on replay", async () => {
+      const database = fakeTransaction();
+      const repository = new AssetAccountingRepository();
+      const input = financialRequest(database.ids, exceptionType);
+      const before = Date.now();
+      const first = await repository.requestClosureFinancialExceptionApproval(
+        database.tx,
+        omitRequestTime(input)
+      );
+      expect(first.wrote).toBe(true);
+      expect(first.outcome.requestedAt.getTime()).toBeGreaterThanOrEqual(before);
+      expect(first.outcome.requestedAt.getTime()).toBeLessThanOrEqual(Date.now());
+      const unchanged = financialTruth(database);
+      const replay = await repository.requestClosureFinancialExceptionApproval(
+        database.tx,
+        omitRequestTime(input)
+      );
+      expect(replay).toEqual({ outcome: first.outcome, wrote: false });
+      expect(financialTruth(database)).toEqual(unchanged);
+    });
+
+    it.each(["PENDING", "APPROVED", "REJECTED", "EXPIRED_PENDING", "EXPIRED_APPROVED"] as const)(
+      "returns the original PENDING request ACK after the legitimate %s successor",
+      async (state) => {
+        const h = await financialReceiptFixture(exceptionType, "request", state);
+        const unchanged = financialTruth(h.database);
+        const result = await replayFinancialReceipt(h);
+        expect(result).toEqual({ outcome: h.requested.outcome, wrote: false });
+        expect(result.outcome).toMatchObject({ status: "PENDING", version: 0, decision: null });
+        expect(financialTruth(h.database)).toEqual(unchanged);
+      }
+    );
+
+    it.each(["APPROVED", "REJECTED", "EXPIRED_APPROVED"] as const)(
+      "returns the original decision ACK after the legitimate %s successor",
+      async (state) => {
+        const h = await financialReceiptFixture(exceptionType, "decision", state);
+        const unchanged = financialTruth(h.database);
+        const result = await replayFinancialReceipt(h);
+        expect(result).toEqual({ outcome: h.decided!.outcome, wrote: false });
+        expect(result.outcome.version).toBe(1);
+        expect(financialTruth(h.database)).toEqual(unchanged);
+      }
+    );
+
+    it("rejects a fabricated REJECTED to EXPIRED successor", async () => {
+      const h = await financialReceiptFixture(exceptionType, "decision", "REJECTED");
+      Object.assign(h.approval, {
+        status: "EXPIRED",
+        version: 2,
+        expiredAt: NOW,
+        expiredBy: h.database.ids.deciderId,
+        expiryReason: "fabricated successor"
+      });
+      const unchanged = financialTruth(h.database);
+      await expectCode(replayFinancialReceipt(h), ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT);
+      expect(financialTruth(h.database)).toEqual(unchanged);
+    });
+
+    for (const kind of ["request", "decision"] as const) {
+      it.each(financialReceiptPollution(kind))(
+        `${kind} rejects %s while the complete payload and payloadHash remain correct`,
+        async (_name, target, patch) => {
+          const h = await financialReceiptFixture(
+            exceptionType,
+            kind,
+            kind === "request" ? "PENDING" : "APPROVED"
+          );
+          const payload = structuredClone(h.receipt.payloadSnapshot);
+          const payloadHash = h.receipt.payloadHash;
+          Object.assign(
+            target === "receipt"
+              ? h.receipt
+              : target === "outcome"
+                ? (h.receipt.outcomeSnapshot as Record<string, unknown>)
+                : h.approval,
+            patch
+          );
+          expect(h.receipt.payloadSnapshot).toEqual(payload);
+          expect(h.receipt.payloadHash).toBe(payloadHash);
+          const unchanged = financialTruth(h.database);
+          await expectCode(replayFinancialReceipt(h), ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT);
+          expect(financialTruth(h.database)).toEqual(unchanged);
+        }
+      );
+
+      it(`${kind} revalidates the current actor under SHARE before looking up its time candidate`, async () => {
+        const h = await financialReceiptFixture(
+          exceptionType,
+          kind,
+          kind === "request" ? "PENDING" : "APPROVED"
+        );
+        h.database.operationTimeline.length = 0;
+        h.database.rawQueries.length = 0;
+        await replayFinancialReceipt(h);
+        const actorId = kind === "request" ? h.database.ids.actorId : h.database.ids.deciderId;
+        const lock = h.database.operationTimeline.indexOf(`authority-lock:user:${actorId}`);
+        const source = h.database.operationTimeline.indexOf("source-lock");
+        const subject = h.database.operationTimeline.indexOf("subject-lock");
+        const receipt = h.database.operationTimeline.indexOf("receipt-lookup");
+        for (const index of [source, subject, lock, receipt])
+          expect(index).toBeGreaterThanOrEqual(0);
+        expect(source).toBeLessThan(subject);
+        expect(subject).toBeLessThan(lock);
+        expect(lock).toBeLessThan(receipt);
+        const query = h.database.rawQueries.find(
+          ({ text, values }) => text.includes('FROM "user"') && values[0] === actorId
+        );
+        expect(query).toBeDefined();
+        expect(query!.text).toMatch(/\bFOR SHARE(?: NOWAIT)?\b/);
+        expect(h.database.authorityLockModes).toContainEqual({
+          id: actorId,
+          mode: "SHARE",
+          table: "user"
+        });
+      });
+
+      it.each(["INACTIVE", "DELETED", "MISSING"] as const)(
+        `${kind} refuses a now %s actor even for an exact old receipt`,
+        async (state) => {
+          const h = await financialReceiptFixture(
+            exceptionType,
+            kind,
+            kind === "request" ? "PENDING" : "APPROVED"
+          );
+          const actorId = kind === "request" ? h.database.ids.actorId : h.database.ids.deciderId;
+          if (state === "MISSING") h.database.authorities.user.delete(actorId);
+          else
+            Object.assign(
+              h.database.authorities.user.get(actorId)!,
+              state === "DELETED" ? { deletedAt: NOW } : { status: state }
+            );
+          const unchanged = financialTruth(h.database);
+          await expectCode(
+            replayFinancialReceipt(h),
+            state === "MISSING"
+              ? ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND
+              : ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_LIVE
+          );
+          expect(financialTruth(h.database)).toEqual(unchanged);
+        }
+      );
+
+      it.each(["permission", "actor", "body", "authority", "source"] as const)(
+        `${kind} retains the real Accounting %s rejection before returning an old ACK`,
+        async (drift) => {
+          const h = await financialReceiptFixture(
+            exceptionType,
+            kind,
+            kind === "request" ? "PENDING" : "APPROVED"
+          );
+          const audits: unknown[] = [];
+          const service = new AssetAccountingService({} as never, h.repository, {
+            write: async (record: unknown) => {
+              audits.push(record);
+            }
+          } as never);
+          const { authoritySnapshot, requestedBy, ...requestCommand } = omitRequestTime(
+            h.requestCommand
+          );
+          const {
+            authoritySnapshot: decisionAuthority,
+            decidedBy,
+            ...decisionCommand
+          } = omitDecisionTime(h.decisionCommand);
+          const context = {
+            actorId: kind === "request" ? requestedBy : decidedBy,
+            idempotencyKey:
+              kind === "request" ? requestCommand.source.key : decisionCommand.source.key,
+            permissions: [
+              kind === "request" ? "business_exception:request" : "business_exception:approve"
+            ]
+          };
+          let currentAuthority = kind === "request" ? authoritySnapshot : decisionAuthority;
+          if (drift === "permission") context.permissions = [];
+          if (drift === "actor") {
+            context.actorId = randomUUID();
+            h.database.authorities.user.set(context.actorId, {
+              id: context.actorId,
+              status: "ACTIVE",
+              deletedAt: null
+            });
+          }
+          if (drift === "body") {
+            requestCommand.requestReason = "changed request";
+            decisionCommand.decisionComment = "changed decision";
+          }
+          if (drift === "authority") currentAuthority = { ...currentAuthority, amountCents: "99" };
+          if (drift === "source") context.idempotencyKey = "wrong-context-key";
+          const unchanged = financialTruth(h.database);
+          const work =
+            kind === "request"
+              ? service.requestClosureFinancialApprovalInTransaction(
+                  h.database.tx,
+                  requestCommand,
+                  context,
+                  async () => currentAuthority
+                )
+              : service.decideClosureFinancialApprovalInTransaction(
+                  h.database.tx,
+                  decisionCommand,
+                  context,
+                  async () => currentAuthority
+                );
+          const code =
+            drift === "permission"
+              ? "ASSET_ACCOUNTING_PERMISSION_REQUIRED"
+              : drift === "source"
+                ? "ASSET_ACCOUNTING_IDEMPOTENCY_KEY_MISMATCH"
+                : "ASSET_ACCOUNTING_SOURCE_CONFLICT";
+          await expect(work).rejects.toMatchObject({ response: { code } });
+          expect(financialTruth(h.database)).toEqual(unchanged);
+          expect(audits).toEqual([]);
+        }
+      );
+    }
+
+    it("retains self-approval refusal independently of a different ACTIVE decision actor", async () => {
+      const h = await financialReceiptFixture(exceptionType, "decision", "APPROVED");
+      const audits: unknown[] = [];
+      const service = new AssetAccountingService({} as never, h.repository, {
+        write: async (record: unknown) => {
+          audits.push(record);
+        }
+      } as never);
+      const {
+        authoritySnapshot,
+        decidedBy: _actor,
+        ...command
+      } = omitDecisionTime(h.decisionCommand);
+      void _actor;
+      const unchanged = financialTruth(h.database);
+      await expect(
+        service.decideClosureFinancialApprovalInTransaction(
+          h.database.tx,
+          command,
+          {
+            actorId: h.database.ids.actorId,
+            idempotencyKey: command.source.key,
+            permissions: ["business_exception:approve"]
+          },
+          async () => authoritySnapshot
+        )
+      ).rejects.toMatchObject({ response: { code: "ASSET_ACCOUNTING_SELF_APPROVAL_FORBIDDEN" } });
+      expect(financialTruth(h.database)).toEqual(unchanged);
+      expect(audits).toEqual([]);
+    });
+
+    it.each(financialReceiptPollution("request").filter((entry) => entry[1] !== "approval"))(
+      "decision refuses its original request receipt's %s while its own receipt and approval remain intact",
+      async (_name, target, patch) => {
+        const h = await financialReceiptFixture(exceptionType, "decision", "APPROVED");
+        const originalRequest = h.database.receipts.get(
+          receiptKey(
+            h.requestCommand.source.type,
+            h.requestCommand.source.id,
+            h.requestCommand.source.key
+          )
+        )!;
+        const decisionReceipt = structuredClone(h.receipt);
+        const currentApproval = structuredClone(h.approval);
+        const requestPayload = structuredClone(originalRequest.payloadSnapshot);
+        const requestPayloadHash = originalRequest.payloadHash;
+        Object.assign(
+          target === "receipt"
+            ? originalRequest
+            : (originalRequest.outcomeSnapshot as Record<string, unknown>),
+          patch
+        );
+        expect(originalRequest.payloadSnapshot).toEqual(requestPayload);
+        expect(originalRequest.payloadHash).toBe(requestPayloadHash);
+        expect(h.receipt).toEqual(decisionReceipt);
+        expect(h.approval).toEqual(currentApproval);
+        const unchanged = financialTruth(h.database);
+        await expectCode(replayFinancialReceipt(h), ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT);
+        expect(financialTruth(h.database)).toEqual(unchanged);
+      }
+    );
+
+    it("decision refuses a missing original request receipt without trusting its own valid payload", async () => {
+      const h = await financialReceiptFixture(exceptionType, "decision", "APPROVED");
+      h.database.receipts.delete(
+        receiptKey(
+          h.requestCommand.source.type,
+          h.requestCommand.source.id,
+          h.requestCommand.source.key
+        )
+      );
+      const unchanged = financialTruth(h.database);
+      await expectCode(replayFinancialReceipt(h), ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT);
+      expect(financialTruth(h.database)).toEqual(unchanged);
+    });
+
+    it("preserves the original expectedVersion and does not duplicate the real Accounting audit on replay", async () => {
+      const h = await financialReceiptFixture(exceptionType, "decision", "APPROVED");
+      const audits: unknown[] = [];
+      const service = new AssetAccountingService({} as never, h.repository, {
+        write: async (record: unknown) => {
+          audits.push(record);
+        }
+      } as never);
+      const { authoritySnapshot, decidedBy, ...command } = omitDecisionTime(h.decisionCommand);
+      const context = {
+        actorId: decidedBy,
+        idempotencyKey: command.source.key,
+        permissions: ["business_exception:approve"]
+      };
+      const unchanged = financialTruth(h.database);
+      await expect(
+        service.decideClosureFinancialApprovalInTransaction(
+          h.database.tx,
+          command,
+          context,
+          async () => authoritySnapshot
+        )
+      ).resolves.toMatchObject({ status: "APPROVED", version: 1 });
+      expect(financialTruth(h.database)).toEqual(unchanged);
+      expect(audits).toEqual([]);
+      await expectCode(
+        service.decideClosureFinancialApprovalInTransaction(
+          h.database.tx,
+          { ...command, expectedVersion: 1 },
+          context,
+          async () => authoritySnapshot
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+      );
+      expect(financialTruth(h.database)).toEqual(unchanged);
+    });
+  }
+);
+
+type FinancialExceptionType = "SETTLEMENT_WAIVER" | "SETTLEMENT_WRITE_OFF";
+type FinancialReplayKind = "request" | "decision";
+type FinancialSuccessor =
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "EXPIRED_PENDING"
+  | "EXPIRED_APPROVED";
+
+function financialRequest(
+  ids: FixtureIds,
+  exceptionType: FinancialExceptionType
+): RequestExceptionApprovalCommand {
+  return {
+    ...requestApprovalCommand(ids, "unused"),
+    exceptionType,
+    authoritySnapshot: {
+      approvalType: exceptionType === "SETTLEMENT_WAIVER" ? "WAIVER" : "WRITE_OFF",
+      amountCents: "100",
+      billId: ids.orderId,
+      clauseSnapshotId: null,
+      closureCaseId: ids.sourceId,
+      deltaItemId: null,
+      evidenceIds: [ids.evidenceId],
+      manualBasis: null,
+      manualUnitPriceCents: null,
+      settlementResultHash: "financial-hash",
+      settlementRevisionId: ids.contractId
+    },
+    requestEvidenceSnapshot: { evidenceIds: [ids.evidenceId] },
+    requestReason: "financial proof",
+    source: {
+      id: ids.sourceId,
+      type: "SUBSCRIPTION_CLOSURE_APPROVAL",
+      key: "closure-approval-request:financial-retry"
+    },
+    subject: {
+      subjectId: ids.sourceId,
+      subjectType: "SETTLEMENT_CASE",
+      subjectField: `${exceptionType === "SETTLEMENT_WAIVER" ? "settlementWaiver" : "settlementWriteOff"}:${ids.orderId}`
+    }
+  };
+}
+
+function omitRequestTime(input: RequestExceptionApprovalCommand) {
+  const { requestedAt: _serverTime, ...command } = input;
+  void _serverTime;
+  return command;
+}
+
+function omitDecisionTime(input: DecideExceptionApprovalCommand) {
+  const { decidedAt: _serverTime, ...command } = input;
+  void _serverTime;
+  return command;
+}
+
+async function financialReceiptFixture(
+  exceptionType: FinancialExceptionType,
+  kind: FinancialReplayKind,
+  state: FinancialSuccessor
+) {
+  const database = fakeTransaction();
+  const repository = new AssetAccountingRepository();
+  const requestCommand = financialRequest(database.ids, exceptionType);
+  const requested = await repository.requestExceptionApproval(database.tx, requestCommand);
+  const decisionCommand: DecideExceptionApprovalCommand = {
+    ...decideApprovalCommand(database.ids, requested.outcome.id, "unused"),
+    exceptionType,
+    authoritySnapshot: requestCommand.authoritySnapshot,
+    decision: state === "REJECTED" ? "REJECTED" : "APPROVED",
+    source: { ...requestCommand.source, key: "closure-approval-decision:financial-retry" },
+    subject: requestCommand.subject
+  };
+  const decided = ["APPROVED", "REJECTED", "EXPIRED_APPROVED"].includes(state)
+    ? await repository.decideExceptionApproval(database.tx, decisionCommand)
+    : null;
+  if (state.startsWith("EXPIRED"))
+    await repository.expireExceptionApproval(database.tx, {
+      ...expireApprovalCommand(
+        database.ids,
+        requested.outcome.id,
+        decided ? 1 : 0,
+        "closure-approval-expire:financial-retry"
+      ),
+      exceptionType,
+      subject: requestCommand.subject,
+      authoritySnapshot: { ...requestCommand.authoritySnapshot, amountCents: "99" },
+      source: { ...requestCommand.source, key: "closure-approval-expire:financial-retry" }
+    });
+  const source = kind === "request" ? requestCommand.source : decisionCommand.source;
+  const receipt = database.receipts.get(receiptKey(source.type, source.id, source.key))!;
+  const approval = database.approvals.get(requested.outcome.id)!;
+  return {
+    database,
+    repository,
+    requestCommand,
+    decisionCommand,
+    requested,
+    decided,
+    kind,
+    receipt,
+    approval
+  };
+}
+
+function replayFinancialReceipt(h: Awaited<ReturnType<typeof financialReceiptFixture>>) {
+  return h.kind === "request"
+    ? h.repository.requestClosureFinancialExceptionApproval(
+        h.database.tx,
+        omitRequestTime(h.requestCommand)
+      )
+    : h.repository.decideClosureFinancialExceptionApproval(
+        h.database.tx,
+        omitDecisionTime(h.decisionCommand)
+      );
+}
+
+function financialTruth(database: FakeDatabase) {
+  return structuredClone({ approvals: [...database.approvals], receipts: [...database.receipts] });
+}
+
+function financialReceiptPollution(
+  kind: FinancialReplayKind
+): Array<[string, "receipt" | "outcome" | "approval", Record<string, unknown>]> {
+  const otherId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  return [
+    ["receipt actor", "receipt", { actorId: otherId }],
+    ["numeric receipt actor", "receipt", { actorId: 123 }],
+    ["receipt approval", "receipt", { approvalId: otherId }],
+    ["cost receipt", "receipt", { costEntryId: otherId }],
+    ["receipt command type", "receipt", { commandType: "EXCEPTION_EXPIRE" }],
+    ["receipt source", "receipt", { sourceId: otherId }],
+    ["receipt source type", "receipt", { sourceType: "OTHER_SOURCE" }],
+    ["receipt source key", "receipt", { sourceKey: "other-key" }],
+    ["outcome id", "outcome", { id: otherId }],
+    ["outcome numeric id", "outcome", { id: 123 }],
+    ["outcome requester", "outcome", { requestedBy: otherId }],
+    ["outcome request source", "outcome", { requestSourceKey: "other-source" }],
+    ["outcome request source id", "outcome", { requestSourceId: otherId }],
+    ["outcome request source type", "outcome", { requestSourceType: "OTHER_SOURCE" }],
+    ["outcome exception type", "outcome", { exceptionType: "HANDOVER_EVIDENCE_EXCEPTION" }],
+    ["outcome number", "outcome", { approvalNo: "BEA-other" }],
+    ["outcome subject", "outcome", { subjectId: otherId }],
+    ["outcome subject type", "outcome", { subjectType: "VEHICLE" }],
+    ["outcome field", "outcome", { subjectField: "other-field" }],
+    ["outcome hash", "outcome", { subjectSnapshotHash: "0".repeat(64) }],
+    ["outcome snapshot", "outcome", { subjectSnapshot: { amountCents: "1" } }],
+    ["outcome request reason", "outcome", { requestReason: "changed-history" }],
+    ["outcome request evidence", "outcome", { requestEvidenceSnapshot: { evidenceIds: [] } }],
+    ["outcome request time", "outcome", { requestedAt: "2026-08-21T10:00:00.000Z" }],
+    ["outcome version", "outcome", { version: 9 }],
+    [
+      "outcome expiry",
+      "outcome",
+      { expiredAt: NOW.toISOString(), expiredBy: otherId, expiryReason: "changed-history" }
+    ],
+    ["extra outcome field", "outcome", { verified: true }],
+    [
+      "real approval request time",
+      "approval",
+      { requestedAt: new Date("2026-08-21T10:00:00.000Z") }
+    ],
+    ["real approval requester", "approval", { requestedBy: otherId }],
+    ["real approval hash", "approval", { subjectSnapshotHash: "0".repeat(64) }],
+    ["real approval source", "approval", { requestSourceId: otherId }],
+    ["real approval request reason", "approval", { requestReason: "changed-original" }],
+    [
+      "real approval request evidence",
+      "approval",
+      { requestEvidenceSnapshot: { evidenceIds: [] } }
+    ],
+    ...(kind === "request"
+      ? [
+          [
+            "request historical decision",
+            "outcome",
+            {
+              decision: "APPROVED",
+              status: "APPROVED",
+              decidedAt: NOW.toISOString(),
+              decidedBy: otherId,
+              decisionComment: "fabricated"
+            }
+          ] as [string, "outcome", Record<string, unknown>]
+        ]
+      : [
+          ["outcome decider", "outcome", { decidedBy: otherId }] as [
+            string,
+            "outcome",
+            Record<string, unknown>
+          ],
+          ["outcome decision", "outcome", { decision: "REJECTED" }] as [
+            string,
+            "outcome",
+            Record<string, unknown>
+          ],
+          ["outcome decision status", "outcome", { status: "PENDING" }] as [
+            string,
+            "outcome",
+            Record<string, unknown>
+          ],
+          ["outcome decision time", "outcome", { decidedAt: NOW.toISOString() }] as [
+            string,
+            "outcome",
+            Record<string, unknown>
+          ],
+          ["outcome decision comment", "outcome", { decisionComment: "changed-history" }] as [
+            string,
+            "outcome",
+            Record<string, unknown>
+          ],
+          ["real approval decision", "approval", { decision: "REJECTED" }] as [
+            string,
+            "approval",
+            Record<string, unknown>
+          ]
+        ])
+  ];
+}
+
 type AuthorityRecord = Record<string, unknown> & { id: string };
 type AuthorityStore = {
   assetOwner: Map<string, AuthorityRecord>;
@@ -2133,6 +2724,7 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
   const sourceLockKeys: string[] = [];
   const subjectLockKeys: string[] = [];
   const operationTimeline: string[] = [];
+  const rawQueries: Array<{ text: string; values: readonly unknown[] }> = [];
   const lockedAuthorities: Array<{ id: string; table: string }> = [];
   const authorityLockModes: Array<{
     id: string;
@@ -2156,6 +2748,7 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     lastActiveCostQueryArgs: undefined as unknown,
     nextReceiptCreateError: undefined as unknown,
     operationTimeline,
+    rawQueries,
     receipts,
     sourceLockKeys,
     subjectLockKeys,
@@ -2170,6 +2763,7 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
   const tx = {
     $queryRaw: async (query: unknown) => {
       const text = sqlText(query);
+      rawQueries.push({ text, values: sqlValues(query) });
       if (text.includes("current_setting('transaction_isolation')")) {
         probeCount += 1;
         operationTimeline.push("transaction-probe");

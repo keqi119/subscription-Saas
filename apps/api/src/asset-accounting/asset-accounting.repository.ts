@@ -1,6 +1,7 @@
 import { ConflictException, Injectable } from "@nestjs/common";
 import {
   Prisma,
+  type AssetAccountingCommandReceipt,
   type BusinessExceptionApproval,
   type BusinessExceptionApprovalStatus,
   type BusinessExceptionDecision,
@@ -414,6 +415,17 @@ export class AssetAccountingRepository {
     return this.executeRequestExceptionApproval(tx, command, false, false);
   }
 
+  async requestClosureFinancialExceptionApproval(
+    tx: Prisma.TransactionClient,
+    command: Omit<RequestExceptionApprovalCommand, "requestedAt">
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
+    assertClosureFinancialScope(command, "EXCEPTION_REQUEST");
+    await this.lockBusinessExceptionSourceAndSubject(tx, command.source, command.subject);
+    await lockAndValidateApprovalActor(tx, canonicalApprovalUuid(command.requestedBy));
+    const requestedAt = await closureFinancialTimeCandidate(tx, command, "EXCEPTION_REQUEST");
+    return this.executeRequestExceptionApproval(tx, { ...command, requestedAt }, true, false);
+  }
+
   private async executeRequestExceptionApproval(
     tx: Prisma.TransactionClient,
     command: RequestExceptionApprovalCommand,
@@ -503,6 +515,17 @@ export class AssetAccountingRepository {
     command: DecideExceptionApprovalCommand
   ): Promise<AssetAccountingApprovalCommandOutcome> {
     return this.executeDecideExceptionApproval(tx, command, false, false);
+  }
+
+  async decideClosureFinancialExceptionApproval(
+    tx: Prisma.TransactionClient,
+    command: Omit<DecideExceptionApprovalCommand, "decidedAt">
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
+    assertClosureFinancialScope(command, "EXCEPTION_DECIDE");
+    await this.lockBusinessExceptionSourceAndSubject(tx, command.source, command.subject);
+    await lockAndValidateApprovalActor(tx, canonicalApprovalUuid(command.decidedBy));
+    const decidedAt = await closureFinancialTimeCandidate(tx, command, "EXCEPTION_DECIDE");
+    return this.executeDecideExceptionApproval(tx, { ...command, decidedAt }, true, false);
   }
 
   private async executeDecideExceptionApproval(
@@ -1216,6 +1239,305 @@ function requestApprovalPayload(command: NormalizedRequestApprovalCommand) {
     requestedBy: command.requestedBy,
     subject: command.subject
   };
+}
+
+type ClosureFinancialCommand =
+  | Omit<RequestExceptionApprovalCommand, "requestedAt">
+  | Omit<DecideExceptionApprovalCommand, "decidedAt">;
+type ClosureFinancialCommandType = "EXCEPTION_REQUEST" | "EXCEPTION_DECIDE";
+
+function assertClosureFinancialScope(
+  command: ClosureFinancialCommand,
+  kind: ClosureFinancialCommandType
+) {
+  const source = normalizeApprovalSource(command.source);
+  const subject = normalizeApprovalSubject(command.subject);
+  const snapshot = normalizeApprovalSnapshot(command.authoritySnapshot);
+  const prefix =
+    kind === "EXCEPTION_REQUEST" ? "closure-approval-request:" : "closure-approval-decision:";
+  const subjectPrefix =
+    command.exceptionType === "SETTLEMENT_WAIVER" ? "settlementWaiver:" : "settlementWriteOff:";
+  if (
+    !["SETTLEMENT_WAIVER", "SETTLEMENT_WRITE_OFF"].includes(command.exceptionType) ||
+    source.type !== "SUBSCRIPTION_CLOSURE_APPROVAL" ||
+    !source.key.startsWith(prefix) ||
+    !source.key.slice(prefix.length).trim() ||
+    subject.subjectType !== "SETTLEMENT_CASE" ||
+    subject.subjectId !== source.id ||
+    canonicalApprovalUuid(snapshot.closureCaseId) !== source.id ||
+    subject.subjectField !== `${subjectPrefix}${canonicalApprovalUuid(snapshot.billId)}` ||
+    "requestedAt" in command ||
+    "decidedAt" in command
+  )
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
+}
+
+async function closureFinancialTimeCandidate(
+  tx: Prisma.TransactionClient,
+  command: ClosureFinancialCommand,
+  kind: ClosureFinancialCommandType
+): Promise<Date> {
+  const source = normalizeApprovalSource(command.source);
+  const receipt = await tx.assetAccountingCommandReceipt.findUnique({
+    where: {
+      sourceType_sourceId_sourceKey: {
+        sourceType: source.type,
+        sourceId: source.id,
+        sourceKey: source.key
+      }
+    }
+  });
+  if (!receipt) return new Date();
+  requireFinancialReceipt(
+    typeof receipt.approvalId === "string" && UUID_PATTERN.test(receipt.approvalId)
+  );
+  if (kind === "EXCEPTION_DECIDE")
+    requireFinancialReceipt(
+      "approvalId" in command && canonicalApprovalUuid(command.approvalId) === receipt.approvalId
+    );
+  // An existing malformed receipt must never fall back to a new first write.
+  const observed = await tx.businessExceptionApproval.findUnique({
+    where: { id: receipt.approvalId }
+  });
+  requireFinancialReceipt(observed !== null);
+  const approval = await lockAndLoadApproval(tx, receipt.approvalId);
+  const outcome = validateClosureFinancialReceipt(receipt, approval, source, kind);
+  if (kind === "EXCEPTION_DECIDE") {
+    const requestSource = {
+      type: approval.requestSourceType,
+      id: approval.requestSourceId,
+      key: approval.requestSourceKey
+    };
+    const requestReceipt = await tx.assetAccountingCommandReceipt.findUnique({
+      where: {
+        sourceType_sourceId_sourceKey: {
+          sourceType: requestSource.type,
+          sourceId: requestSource.id,
+          sourceKey: requestSource.key
+        }
+      }
+    });
+    requireFinancialReceipt(requestReceipt !== null);
+    validateClosureFinancialReceipt(requestReceipt, approval, requestSource, "EXCEPTION_REQUEST");
+  }
+  // This is a verified historical time, not a replay result. The current actor,
+  // body and authority still enter the original complete payload comparison.
+  return new Date(kind === "EXCEPTION_REQUEST" ? outcome.requestedAt : outcome.decidedAt!);
+}
+
+function validateClosureFinancialReceipt(
+  receipt: AssetAccountingCommandReceipt,
+  approval: BusinessExceptionApproval,
+  source: AssetAccountingSource,
+  kind: ClosureFinancialCommandType
+): BusinessExceptionApprovalSnapshot {
+  try {
+    requireFinancialReceipt(
+      receipt.sourceType === source.type &&
+        receipt.sourceId === source.id &&
+        receipt.sourceKey === source.key
+    );
+    requireFinancialReceipt(
+      receipt.commandType === kind &&
+        receipt.costEntryId === null &&
+        receipt.approvalId === approval.id
+    );
+    requireFinancialReceipt(isRecord(receipt.payloadSnapshot));
+    const payload = receipt.payloadSnapshot;
+    requireFinancialReceipt(receipt.payloadHash === hashBusinessExceptionSnapshot(payload));
+    const outcome = approvalOutcomeFromReceipt(receipt.outcomeSnapshot);
+    requireFinancialReceipt(
+      canonicalAssetAccountingJson(publicApprovalOutcomeJson(outcome)) ===
+        canonicalAssetAccountingJson(receipt.outcomeSnapshot)
+    );
+    for (const id of [
+      receipt.approvalId,
+      receipt.actorId,
+      outcome.id,
+      outcome.requestedBy,
+      outcome.subjectId,
+      outcome.requestSourceId
+    ]) {
+      requireFinancialReceipt(
+        typeof id === "string" && UUID_PATTERN.test(id) && id === canonicalApprovalUuid(id)
+      );
+    }
+    requireFinancialReceipt(outcome.id === approval.id);
+    const immutable = [
+      "approvalNo",
+      "exceptionType",
+      "subjectType",
+      "subjectId",
+      "subjectField",
+      "subjectSnapshot",
+      "subjectSnapshotHash",
+      "requestReason",
+      "requestEvidenceSnapshot",
+      "requestedBy",
+      "requestedAt",
+      "requestSourceType",
+      "requestSourceId",
+      "requestSourceKey"
+    ] as const;
+    for (const field of immutable)
+      requireFinancialReceipt(
+        canonicalAssetAccountingJson({ value: outcome[field] }) ===
+          canonicalAssetAccountingJson({ value: approval[field] })
+      );
+    requireFinancialReceipt(
+      outcome.subjectSnapshotHash === hashBusinessExceptionSnapshot(outcome.subjectSnapshot)
+    );
+    requireFinancialReceipt(
+      canonicalAssetAccountingJson(outcome.subjectSnapshot) ===
+        canonicalAssetAccountingJson(payload.authoritySnapshot)
+    );
+    const subject = {
+      subjectType: outcome.subjectType,
+      subjectId: outcome.subjectId,
+      subjectField: outcome.subjectField
+    };
+    const scope = {
+      exceptionType: outcome.exceptionType,
+      authoritySnapshot: outcome.subjectSnapshot,
+      source,
+      subject
+    };
+    assertClosureFinancialScope(
+      { ...scope, requestedBy: outcome.requestedBy, requestReason: outcome.requestReason },
+      kind
+    );
+    requireFinancialReceipt(validFinancialApprovalSuccessor(approval));
+    let expectedPayload: object;
+    if (kind === "EXCEPTION_REQUEST") {
+      requireFinancialReceipt(
+        outcome.requestSourceType === source.type &&
+          outcome.requestSourceId === source.id &&
+          outcome.requestSourceKey === source.key
+      );
+      requireFinancialReceipt(
+        receipt.actorId === outcome.requestedBy &&
+          outcome.status === "PENDING" &&
+          outcome.version === 0 &&
+          emptyDecision(outcome) &&
+          emptyExpiry(outcome)
+      );
+      expectedPayload = requestApprovalPayload(
+        normalizeRequestApprovalCommand({
+          ...scope,
+          requestedBy: outcome.requestedBy,
+          requestedAt: outcome.requestedAt,
+          requestReason: outcome.requestReason,
+          requestEvidenceSnapshot:
+            outcome.requestEvidenceSnapshot as AssetAccountingSnapshotObject | null
+        })
+      );
+    } else {
+      requireFinancialReceipt(outcome.decision === "APPROVED" || outcome.decision === "REJECTED");
+      requireFinancialReceipt(
+        outcome.status === outcome.decision &&
+          outcome.decidedAt instanceof Date &&
+          !Number.isNaN(outcome.decidedAt.getTime()) &&
+          validFinancialActorId(outcome.decidedBy) &&
+          typeof outcome.decisionComment === "string" &&
+          outcome.decisionComment.trim().length > 0 &&
+          emptyExpiry(outcome)
+      );
+      requireFinancialReceipt(
+        receipt.actorId === outcome.decidedBy &&
+          typeof payload.expectedVersion === "number" &&
+          Number.isSafeInteger(payload.expectedVersion) &&
+          payload.expectedVersion >= 0 &&
+          outcome.version === payload.expectedVersion + 1
+      );
+      for (const field of ["decision", "decidedAt", "decidedBy", "decisionComment"] as const)
+        requireFinancialReceipt(
+          canonicalAssetAccountingJson({ value: outcome[field] }) ===
+            canonicalAssetAccountingJson({ value: approval[field] })
+        );
+      requireFinancialReceipt(
+        approval.status === outcome.status
+          ? approval.version === outcome.version
+          : approval.status === "EXPIRED" &&
+              outcome.status === "APPROVED" &&
+              approval.version === outcome.version + 1
+      );
+      expectedPayload = decisionPayload(
+        normalizeDecisionCommand({
+          ...scope,
+          approvalId: outcome.id,
+          decidedAt: outcome.decidedAt,
+          decidedBy: outcome.decidedBy,
+          decision: outcome.decision,
+          decisionComment: outcome.decisionComment,
+          expectedVersion: payload.expectedVersion
+        })
+      );
+    }
+    requireFinancialReceipt(
+      canonicalAssetAccountingJson(expectedPayload) === canonicalAssetAccountingJson(payload)
+    );
+    return outcome;
+  } catch {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT);
+  }
+}
+
+function requireFinancialReceipt(condition: unknown): asserts condition {
+  if (!condition) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT);
+}
+
+function validFinancialActorId(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value) && value === value.toLowerCase();
+}
+
+function emptyDecision(
+  value: Pick<
+    BusinessExceptionApprovalSnapshot,
+    "decision" | "decidedBy" | "decidedAt" | "decisionComment"
+  >
+) {
+  return (
+    value.decision === null &&
+    value.decidedBy === null &&
+    value.decidedAt === null &&
+    value.decisionComment === null
+  );
+}
+
+function emptyExpiry(
+  value: Pick<BusinessExceptionApprovalSnapshot, "expiredAt" | "expiredBy" | "expiryReason">
+) {
+  return value.expiredAt === null && value.expiredBy === null && value.expiryReason === null;
+}
+
+function validFinancialApprovalSuccessor(approval: BusinessExceptionApproval) {
+  const decided =
+    (approval.decision === "APPROVED" || approval.decision === "REJECTED") &&
+    validFinancialActorId(approval.decidedBy) &&
+    approval.decidedBy !== approval.requestedBy &&
+    approval.decidedAt instanceof Date &&
+    !Number.isNaN(approval.decidedAt.getTime()) &&
+    typeof approval.decisionComment === "string" &&
+    !!approval.decisionComment.trim();
+  if (approval.status === "PENDING")
+    return approval.version === 0 && emptyDecision(approval) && emptyExpiry(approval);
+  if (approval.status === "APPROVED" || approval.status === "REJECTED")
+    return (
+      approval.version === 1 &&
+      approval.status === approval.decision &&
+      decided &&
+      emptyExpiry(approval)
+    );
+  return (
+    approval.status === "EXPIRED" &&
+    approval.expiredAt instanceof Date &&
+    !Number.isNaN(approval.expiredAt.getTime()) &&
+    validFinancialActorId(approval.expiredBy) &&
+    typeof approval.expiryReason === "string" &&
+    !!approval.expiryReason.trim() &&
+    ((approval.version === 1 && emptyDecision(approval)) ||
+      (approval.version === 2 && approval.decision === "APPROVED" && decided))
+  );
 }
 
 function decisionPayload(command: NormalizedDecisionCommand) {

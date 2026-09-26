@@ -28,6 +28,8 @@
 - 2026-09-26，R2.2 三类[固定私有输入定义](../superpowers/plans/2026-09-06-stage1-r2-runner-migrate-verify-plan.md#23-r22-私有输入补充范围2026-09-26doc-only-独立审查通过)已整合 `6adae09c`，DOC-only 独立审查 ACCEPT。新增 expected 来源/两 subject 验真及同请求 expectation 闭合、H3-B 正常与 UNKNOWN 恢复读回、四角色凭证与父子网络映射；R2.3 须独立重验实际 attestation，历史 gh 输出仅作历史证据。无新共享 Schema/export 或生产文件扩围，R2.2 八文件实现继续；实际 producer、身份/凭证、人工权限及来源证明仍未提供，不登记真实准入通过。
 - 2026-09-26，后续静态审查确认 R4 两项 Web 代码缺口：[正常退车浏览器修复计划](../superpowers/plans/2026-09-26-stage1-return-browser-gap-plan.md)已整合 `bd577824` 并通过 DOC-only 独立审查。限定补检查工单的受权操作入口，以及正额正式计价新增账单后的提案刷新/原账单重绑；六生产＋六测试文件，不放宽后端 CLOSED、财务 hash 或权限校验。开发前基线 source `5c57416e` 的本地 fresh asset-operations 33/33、保管读回/退役及 skip-dotenv Prisma validate 通过，run `f933a187-a04b-4255-9039-436950c28731`、receipt `72de56cb-9140-4f7a-bb0b-64290112f85f`，报告摘要 `sha256:1ace227dc87b67e0d0de685ea9dbe156675e6c8697216543fe9ba35508eb01a1`；该基线与本分支当时 API/Web 字节一致。当前按该小单元实施，尚未取得修复后完整门禁或浏览器证据；未恢复线上或使用真实外部渠道。
 
+- 2026-09-26，离线实现切片状态已通过 `5e8b44d2` 前向登记。R2 metadata 两窗口修复 `83e91242` 经真实4 RED→4 GREEN、完整72/72与独立复审；归还工单入口 `4568006b` 的Web 65/65、类型/lint及独立审查通过，HTTP/服务组合测试 `acf75c4f` 经静态审查、controller 57/57和lint/格式通过。三者仍位于各自实施分支，尚未整合本候选；完整R2父子执行链、草案刷新单元、修复后同源PG和实际浏览器仍在推进。R2 READY前消费关联复用既有共享接口，不新增协议或授权入口；任何局部通过不替代完整门禁。
+
 历史代码基线：Task 5 `1f0b0439`。Task 6 提案保管：`457c0011`，不代表批准。
 Task 6/29R/30/I 系列冻结，Task 30 stash 不变。
 历史准入入口：[P0/P1 准入实施计划](../superpowers/plans/2026-09-06-stage1-p0-p1-admission-implementation-plan.md)，已关闭，不重跑。当前前向工作按下节及既有[主线/最小发布计划](../superpowers/plans/2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)执行。

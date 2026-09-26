@@ -8438,7 +8438,38 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           });
           expect(after.receipts).toHaveLength(phase === "request" ? 1 : 2);
           expect(after.approvalAudits).toHaveLength(phase === "request" ? 1 : 2);
-          expect(after.joint).toEqual(before.joint);
+          const priorAuditIds = new Set(before.approvalAudits.map((audit) => audit.id));
+          const addedAudits = after.approvalAudits.filter((audit) => !priorAuditIds.has(audit.id));
+          expect(addedAudits).toHaveLength(1);
+          const addedAudit = addedAudits[0]!;
+          expect(addedAudit).toMatchObject({
+            module: "asset_accounting",
+            entityType: "business_exception_approval",
+            entityId: committed.id,
+            action: phase === "request" ? "CREATE" : "APPROVE",
+            operatorId: phase === "request" ? h.requester.id : h.decider.id,
+            afterSnapshot: {
+              fact: committed,
+              snapshotHash: committed.subjectSnapshotHash,
+              source: {
+                type: "SUBSCRIPTION_CLOSURE_APPROVAL",
+                id: h.caseId,
+                key:
+                  phase === "request"
+                    ? "closure-approval-request:financial-request"
+                    : "closure-approval-decision:financial-decision"
+              }
+            }
+          });
+          expect(after.approvalAudits.filter((audit) => audit.id !== addedAudit.id)).toEqual(
+            before.approvalAudits
+          );
+          const expectedJointAudits = [...before.joint.audits];
+          if (addedAudit.operatorId === h.base.scenario.fixture.actorId) {
+            expectedJointAudits.push(addedAudit);
+          }
+          expectedJointAudits.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+          expect(after.joint).toEqual({ ...before.joint, audits: expectedJointAudits });
         }
       } finally {
         await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);

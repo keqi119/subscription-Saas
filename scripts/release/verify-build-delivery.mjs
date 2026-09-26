@@ -292,10 +292,13 @@ export function verifyBuildDelivery(input) {
   if (proofDigest !== input.expected.buildProofDigest) {
     throw deliveryError("BUILD_DELIVERY_PROOF_DIGEST_MISMATCH");
   }
-  const expectedRunRef = `github://${input.expected.repository}/actions/runs/${input.expected.workflowRunId}`;
+  const expectedRunRefs = new Set([
+    `github://${input.expected.repository}/actions/runs/${input.expected.workflowRunId}`,
+    `https://github.com/${input.expected.repository}/actions/runs/${input.expected.workflowRunId}`
+  ]);
   if (
-    proof.provenance.ciRunRef !== expectedRunRef ||
-    buildMaterialObservation.ciRunRef !== expectedRunRef
+    proof.provenance.ciRunRef !== buildMaterialObservation.ciRunRef ||
+    !expectedRunRefs.has(proof.provenance.ciRunRef)
   ) {
     throw deliveryError("BUILD_DELIVERY_RUN_MISMATCH");
   }

@@ -636,6 +636,386 @@ function noAuthority(f) {
   assert.equal(f.counters.externalCalls, 0);
 }
 
+function h3Rejection(causeCode) {
+  return (error) => {
+    assert.equal(error.code, "H3_INPUT_UNAVAILABLE");
+    assert.equal(
+      error.cause?.code,
+      causeCode,
+      `${error.cause?.stack}\n${JSON.stringify({ changedPath: error.cause?.changedPath, changedFields: error.cause?.changedFields })}`
+    );
+    return true;
+  };
+}
+async function launchInputFixture(t) {
+  const f = await buildFixture(t);
+  const prepared = await launcher.prepareManualOperation(prepareInput(f));
+  const operationRoot = path.join(
+    f.profile.storage.archiveRoot,
+    "inputs",
+    "operations",
+    prepared.operationRef
+  );
+  const files = [];
+  const opening = fs.open.bind(fs);
+  t.mock.method(fs, "open", (file, ...args) => {
+    if (
+      typeof file === "string" &&
+      file.startsWith(operationRoot + path.sep) &&
+      path.basename(file).startsWith("h3-a-")
+    )
+      files.push(file);
+    return opening(file, ...args);
+  });
+  return { ...f, prepared, operationRoot, h3Opens: files };
+}
+
+test("launch missing fixed H3 input never opens a session or capability credential", async (t) => {
+  const f = await launchInputFixture(t);
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    h3Rejection("ENOENT")
+  );
+  noAuthority(f);
+});
+
+for (const [name, bytes] of [
+  ["invalid UTF-8", Buffer.from([0xff])],
+  ["BOM", Buffer.from("\ufeff{}")],
+  ["duplicate keys", Buffer.from('{"x":1,"x":1}')],
+  ["trailing newline", Buffer.from("{}\n")],
+  ["above full raw limit", Buffer.alloc(1048577, 32)]
+]) {
+  test(`launch refuses fixed H3 approval ${name} before authority`, async (t) => {
+    const f = await launchInputFixture(t);
+    await fs.mkdir(f.operationRoot, { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(f.operationRoot, "h3-a-approval.json"), bytes, { mode: 0o600 });
+    await assert.rejects(
+      launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+      h3Rejection(
+        name === "above full raw limit"
+          ? "MANUAL_OPERATION_INPUT_UNAVAILABLE"
+          : "MANUAL_H3_FORMAT_INVALID"
+      )
+    );
+    noAuthority(f);
+  });
+}
+
+for (const name of ["inputs", "operations", "h3-a-approval.json"]) {
+  test(`launch rejects wide ACL on fixed H3 ${name} before reading data`, async (t) => {
+    const f = await launchInputFixture(t);
+    await fs.mkdir(f.operationRoot, { recursive: true, mode: 0o700 });
+    const file = path.join(f.operationRoot, "h3-a-approval.json");
+    await fs.writeFile(file, encodeManualJson({}), { mode: 0o600 });
+    const checking = fs.lstat.bind(fs);
+    t.mock.method(fs, "lstat", (candidate, ...args) => {
+      if (candidate === file)
+        f.host.wideRoot =
+          name === "inputs"
+            ? path.join(f.profile.storage.archiveRoot, "inputs")
+            : name === "operations"
+              ? path.dirname(f.operationRoot)
+              : file;
+      return checking(candidate, ...args);
+    });
+    await assert.rejects(
+      launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+      h3Rejection("MANUAL_OPERATION_INPUT_UNAVAILABLE")
+    );
+    assert.equal(f.h3Opens.length, 0);
+    noAuthority(f);
+  });
+}
+
+test("launch rejects hard-linked fixed H3 approval before reading data", async (t) => {
+  const f = await launchInputFixture(t);
+  await fs.mkdir(f.operationRoot, { recursive: true, mode: 0o700 });
+  const file = path.join(f.operationRoot, "h3-a-approval.json");
+  await fs.writeFile(file, encodeManualJson({}), { mode: 0o600 });
+  await fs.link(file, path.join(f.operationRoot, "other.json"));
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    h3Rejection("MANUAL_OPERATION_INPUT_UNAVAILABLE")
+  );
+  assert.equal(f.h3Opens.length, 0);
+  noAuthority(f);
+});
+
+test("launch detects fixed H3 approval changed at independent reopen", async (t) => {
+  const f = await launchInputFixture(t);
+  await fs.mkdir(f.operationRoot, { recursive: true, mode: 0o700 });
+  const file = path.join(f.operationRoot, "h3-a-approval.json");
+  await fs.writeFile(file, encodeManualJson({}), { mode: 0o600 });
+  const opening = fs.open.bind(fs);
+  let opens = 0;
+  t.mock.method(fs, "open", async (candidate, ...args) => {
+    if (candidate === file && ++opens === 2)
+      await fs.writeFile(file, encodeManualJson({ changed: true }));
+    return opening(candidate, ...args);
+  });
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    h3Rejection("MANUAL_OPERATION_INPUT_UNAVAILABLE")
+  );
+  assert.equal(opens, 2, "the intended independent reopen fault happened");
+  noAuthority(f);
+});
+
+async function h3InputFixture(t) {
+  const f = await launchInputFixture(t);
+  const fixed = await readFixedManualOperation({
+    repoRoot: productionRoot,
+    operationRef: f.prepared.operationRef
+  });
+  const common = {
+    operationRef: f.prepared.operationRef,
+    indexDigest: f.prepared.indexDigest,
+    runId: fixed.operation.runId,
+    profileDigest: sha256Canonical(f.profile),
+    targetIntent: fixed.operation.targetIntent,
+    ownerId: f.profile.ownerId,
+    promotionEligible: false
+  };
+  const approval = {
+    recordVersion: "manual-h3-a-approval.v1",
+    ...common,
+    approvedAt: generatedAt,
+    creationSpec: {
+      databaseContainerName: "synthetic-h3-database",
+      dataVolumeName: "synthetic-h3-volume",
+      postgresImageDigest: digest("a"),
+      marker: "synthetic-h3-marker",
+      endpoint: f.profile.allowedTargets[0].endpoint,
+      serverPort: 5432
+    },
+    operationSheet: "Synthetic nonsecret approved operations; not real H3 approval."
+  };
+  const approvalBytes = encodeManualJson(approval);
+  const readback = {
+    recordVersion: "manual-h3-a-readback.v1",
+    ...common,
+    approval: { digest: sha256Bytes(approvalBytes), bytes: approvalBytes.length },
+    databaseContainerName: approval.creationSpec.databaseContainerName,
+    endpoint: approval.creationSpec.endpoint,
+    databaseOid: "123",
+    cluster: {
+      systemIdentifier: "123456789012345678",
+      databaseContainerId: "b".repeat(64),
+      dataVolumeName: approval.creationSpec.dataVolumeName,
+      postgresImageDigest: approval.creationSpec.postgresImageDigest,
+      marker: approval.creationSpec.marker,
+      serverAddress: "172.19.0.2",
+      serverPort: approval.creationSpec.serverPort
+    },
+    resourceObservedAt: "2026-09-01T00:00:01.000Z",
+    sqlObservedAt: "2026-09-01T00:00:01.000Z",
+    readbackAt: "2026-09-01T00:00:02.000Z",
+    readbackReport: "Synthetic nonsecret source readback; not real Docker or SQL evidence."
+  };
+  return { ...f, approval, readback };
+}
+
+async function writeH3(f, { bindApproval = true } = {}) {
+  if (bindApproval) {
+    const bytes = encodeManualJson(f.approval);
+    f.readback.approval = { digest: sha256Bytes(bytes), bytes: bytes.length };
+  }
+  for (const [name, value] of [
+    ["h3-a-approval.json", f.approval],
+    ["h3-a-readback.json", f.readback]
+  ])
+    await fs.writeFile(path.join(f.operationRoot, name), encodeManualJson(value), { mode: 0o600 });
+}
+
+for (const key of [
+  "operationRef",
+  "indexDigest",
+  "runId",
+  "profileDigest",
+  "targetIntent",
+  "ownerId"
+]) {
+  for (const part of ["approval", "readback"]) {
+    test(`launch binds fixed H3 ${part} ${key} to independently read index/profile`, async (t) => {
+      const f = await h3InputFixture(t);
+      f[part][key] =
+        key === "targetIntent"
+          ? { ...f[part][key], databaseName: "other-db" }
+          : key.endsWith("Digest")
+            ? digest("f")
+            : key === "ownerId"
+              ? "other-owner"
+              : randomUUID();
+      await writeH3(f);
+      await assert.rejects(
+        launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+        h3Rejection("MANUAL_H3_BINDING_INVALID")
+      );
+      noAuthority(f);
+    });
+  }
+}
+
+for (const [name, mutate] of [
+  [
+    "extra creation spec key",
+    (f) => {
+      f.approval.creationSpec.command = "forbidden";
+    }
+  ],
+  [
+    "wrong profile endpoint",
+    (f) => {
+      f.approval.creationSpec.endpoint = "other.invalid:5432";
+      f.readback.endpoint = f.approval.creationSpec.endpoint;
+    }
+  ],
+  [
+    "wrong complete approval bytes",
+    (f) => {
+      f.readback.approval.digest = digest("f");
+    }
+  ],
+  [
+    "wrong complete approval size",
+    (f) => {
+      f.readback.approval.bytes++;
+    }
+  ],
+  [
+    "changed volume",
+    (f) => {
+      f.readback.cluster.dataVolumeName = "other-volume";
+    }
+  ],
+  [
+    "changed container name",
+    (f) => {
+      f.readback.databaseContainerName = "other-container";
+    }
+  ],
+  [
+    "observations before approval",
+    (f) => {
+      f.readback.sqlObservedAt = "2026-08-01T00:00:00.000Z";
+    }
+  ],
+  [
+    "future readback",
+    (f) => {
+      f.readback.readbackAt = "2099-01-01T00:00:00.000Z";
+    }
+  ],
+  [
+    "numeric database OID",
+    (f) => {
+      f.readback.databaseOid = 123;
+    }
+  ]
+]) {
+  test(`launch refuses fixed H3 ${name} before any session or credential`, async (t) => {
+    const f = await h3InputFixture(t);
+    mutate(f);
+    await writeH3(f, { bindApproval: !name.startsWith("wrong complete approval") });
+    await assert.rejects(
+      launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+      h3Rejection(
+        name === "extra creation spec key"
+          ? "MANUAL_H3_FORMAT_INVALID"
+          : "MANUAL_H3_BINDING_INVALID"
+      )
+    );
+    noAuthority(f);
+  });
+}
+
+test("well-shaped fixed H3 does not claim actual resource source verification", async (t) => {
+  const f = await h3InputFixture(t);
+  await writeH3(f);
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    h3Rejection("MANUAL_H3_RESOURCE_INPUT_REQUIRED")
+  );
+  assert.equal(new Set(f.h3Opens).size, 2);
+  noAuthority(f);
+});
+
+test("fixed H3 retains ancestor identity without treating unrelated sibling creation as source mutation", async (t) => {
+  const f = await h3InputFixture(t);
+  await writeH3(f);
+  const file = path.join(f.operationRoot, "h3-a-approval.json");
+  const opening = fs.open.bind(fs);
+  let opens = 0;
+  t.mock.method(fs, "open", async (candidate, ...args) => {
+    if (candidate === file && ++opens === 2) await fs.mkdir(path.join(f.root, "unrelated-sibling"));
+    return opening(candidate, ...args);
+  });
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    h3Rejection("MANUAL_H3_RESOURCE_INPUT_REQUIRED")
+  );
+  assert.ok(opens >= 2, "the unrelated ancestor timestamp change actually occurred");
+  noAuthority(f);
+});
+
+test("H3 ACL inspection tolerates unrelated ancestor timestamps while preserving private path checks", async (t) => {
+  const f = await h3InputFixture(t);
+  await writeH3(f);
+  const file = path.join(f.operationRoot, "h3-a-approval.json");
+  let faultHit = false;
+  f.host.before = (command, args) => {
+    if (!faultHit && command === system + "icacls.exe" && args.includes(file)) {
+      faultHit = true;
+      fsSync.mkdirSync(path.join(f.root, "unrelated-during-acl"));
+    }
+  };
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    h3Rejection("MANUAL_H3_RESOURCE_INPUT_REQUIRED")
+  );
+  assert.equal(faultHit, true, "the existing ACL await window changed only the outside ancestor");
+  noAuthority(f);
+});
+
+for (const mode of ["junction", "new regular directory"]) {
+  test(`H3 rejects a private ancestor replaced with ${mode} despite identical file bytes`, async (t) => {
+    const f = await h3InputFixture(t);
+    await writeH3(f);
+    const file = path.join(f.operationRoot, "h3-a-approval.json");
+    const retained = path.join(f.root, "original-h3-directory");
+    let faultHit = false;
+    const replace = async () => {
+      faultHit = true;
+      await fs.rename(f.operationRoot, retained);
+      if (mode === "junction") await fs.symlink(retained, f.operationRoot, "junction");
+      else {
+        await fs.mkdir(f.operationRoot, { mode: 0o700 });
+        await writeH3(f);
+      }
+    };
+    if (mode === "junction") {
+      const checking = fs.lstat.bind(fs);
+      t.mock.method(fs, "lstat", async (candidate, ...args) => {
+        if (candidate === file && !faultHit) await replace();
+        return checking(candidate, ...args);
+      });
+    } else {
+      const opening = fs.open.bind(fs);
+      t.mock.method(fs, "open", async (candidate, ...args) => {
+        if (candidate === file && !faultHit) await replace();
+        return opening(candidate, ...args);
+      });
+    }
+    await assert.rejects(
+      launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+      h3Rejection("MANUAL_OPERATION_INPUT_UNAVAILABLE")
+    );
+    assert.equal(faultHit, true, "the actual private directory replacement happened");
+    noAuthority(f);
+  });
+}
+
 test("prepare freezes its four caller inputs before asynchronous build verification", async (t) => {
   const f = await buildFixture(t),
     input = prepareInput(f);

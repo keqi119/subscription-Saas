@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 import {
   computeRepositoryContract,
   computeMigrationCatalog,
+  computeManualClusterFingerprint,
   encodeManualJson,
+  sha256Bytes,
   sha256Canonical
 } from "../../packages/release-foundation/src/index.mjs";
 import {
@@ -416,7 +418,13 @@ async function checkedPrivatePath(file, { principal, privateRoot, directory = fa
   const after = await observedPath(file);
   if (
     after.length !== before.length ||
-    !after.every((entry, index) => sameIdentity(entry.stat, before[index].stat)) ||
+    !after.every((entry, index) =>
+      sameIdentity(
+        entry.stat,
+        before[index].stat,
+        entry.path === privateRoot || entry.path.startsWith(privateRoot + path.sep)
+      )
+    ) ||
     (directory
       ? !after.at(-1).stat.isDirectory()
       : !after.at(-1).stat.isFile() || after.at(-1).stat.nlink !== 1n)
@@ -443,9 +451,218 @@ export async function launchManualStage1(input) {
     !uuid.test(input.operationRef)
   )
     fail("MANUAL_LAUNCH_INVOCATION_REJECTED");
-  await readFixedManualOperation({ repoRoot, operationRef: input.operationRef });
-  // Until fixed H3 source admission is implemented, no session or attempt can open.
-  fail("H3_INPUT_UNAVAILABLE");
+  const fixed = await readFixedManualOperation({ repoRoot, operationRef: input.operationRef });
+  const ownerInputs = await pinOwnerInputs();
+  try {
+    const build = await verifyManualBuild({
+      repoRoot,
+      proofBytes: fixed.proofBytes,
+      materialBytes: fixed.materialBytes
+    });
+    const profile = await loadFixedManualProfile({ repoRoot });
+    await ownerInputs.recheck();
+    if (
+      !encodeManualJson(profile).equals(ownerInputs.profileBytes) ||
+      ["buildProofDigest", "proofRawDigest", "materialRawDigest", "custodyReceiptRawDigest"].some(
+        (key) => build[key] !== fixed.operation[key]
+      )
+    )
+      fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+    const principal = Object.freeze({ ...JSON.parse(ownerInputs.bindingBytes).principal });
+    await readH3Inputs(fixed, profile, principal, ownerInputs.recheck);
+  } finally {
+    await ownerInputs.close();
+  }
+}
+
+function canonicalH3(bytes) {
+  try {
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (!encodeManualJson(value).equals(bytes)) fail("MANUAL_H3_FORMAT_INVALID");
+    return value;
+  } catch {
+    fail("MANUAL_H3_FORMAT_INVALID");
+  }
+}
+
+async function pinPrivateInput(file, options) {
+  const chain = await checkedPrivatePath(file, options);
+  const handle = await fs.open(file, "r");
+  try {
+    const captured = await readPinned(handle, chain.at(-1).stat);
+    const sameChain = (observed) =>
+      observed.length === chain.length &&
+      observed.every(
+        (entry, index) =>
+          entry.path === chain[index].path &&
+          sameIdentity(
+            entry.stat,
+            chain[index].stat,
+            entry.path === options.privateRoot ||
+              entry.path.startsWith(options.privateRoot + path.sep)
+          )
+      );
+    const recheck = async () => {
+      const after = await checkedPrivatePath(file, options);
+      if (
+        !sameChain(after) ||
+        !(await readPinned(handle, captured.stat)).bytes.equals(captured.bytes)
+      )
+        fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+      const independent = await fs.open(file, "r");
+      try {
+        if (!(await readPinned(independent, captured.stat)).bytes.equals(captured.bytes))
+          fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+      } finally {
+        await independent.close();
+      }
+      const final = await checkedPrivatePath(file, options);
+      if (!sameChain(final)) fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+    };
+    await recheck();
+    return { bytes: captured.bytes, recheck, close: () => handle.close() };
+  } catch (cause) {
+    await handle.close();
+    throw cause;
+  }
+}
+
+function validateH3Inputs(approval, readback, approvalBytes, fixed, profile) {
+  const common = [
+    "operationRef",
+    "indexDigest",
+    "runId",
+    "profileDigest",
+    "targetIntent",
+    "ownerId",
+    "promotionEligible"
+  ];
+  if (
+    !exact(approval, [
+      "recordVersion",
+      ...common,
+      "approvedAt",
+      "creationSpec",
+      "operationSheet"
+    ]) ||
+    !exact(readback, [
+      "recordVersion",
+      ...common,
+      "approval",
+      "databaseContainerName",
+      "endpoint",
+      "databaseOid",
+      "cluster",
+      "resourceObservedAt",
+      "sqlObservedAt",
+      "readbackAt",
+      "readbackReport"
+    ]) ||
+    !exact(approval.creationSpec, [
+      "databaseContainerName",
+      "dataVolumeName",
+      "postgresImageDigest",
+      "marker",
+      "endpoint",
+      "serverPort"
+    ]) ||
+    !exact(readback.approval, ["digest", "bytes"])
+  )
+    fail("MANUAL_H3_FORMAT_INVALID");
+  const text = (value, limit = 256) =>
+    typeof value === "string" && value.length > 0 && value.length <= limit;
+  const instant = (value) =>
+    typeof value === "string" &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value
+      ? Date.parse(value)
+      : NaN;
+  const approvedAt = instant(approval.approvedAt),
+    resourceAt = instant(readback.resourceObservedAt),
+    sqlAt = instant(readback.sqlObservedAt),
+    readbackAt = instant(readback.readbackAt);
+  const target = profile.allowedTargets.find(
+    (entry) =>
+      entry.endpointPolicyId === fixed.operation.targetIntent.endpointPolicyId &&
+      entry.databaseName === fixed.operation.targetIntent.databaseName
+  );
+  const spec = approval.creationSpec;
+  if (
+    approval.recordVersion !== "manual-h3-a-approval.v1" ||
+    readback.recordVersion !== "manual-h3-a-readback.v1" ||
+    ![approval, readback].every(
+      (record) =>
+        record.operationRef === fixed.operation.operationRef &&
+        record.indexDigest === fixed.indexDigest &&
+        record.runId === fixed.operation.runId &&
+        record.profileDigest === fixed.operation.profileDigest &&
+        sha256Canonical(record.targetIntent) === sha256Canonical(fixed.operation.targetIntent) &&
+        record.ownerId === profile.ownerId &&
+        record.promotionEligible === false
+    ) ||
+    !target ||
+    spec.endpoint !== target.endpoint ||
+    readback.endpoint !== spec.endpoint ||
+    readback.databaseContainerName !== spec.databaseContainerName ||
+    ![spec.databaseContainerName, spec.dataVolumeName, spec.marker].every((value) => text(value)) ||
+    !/^sha256:[0-9a-f]{64}$/u.test(spec.postgresImageDigest) ||
+    !Number.isInteger(spec.serverPort) ||
+    spec.serverPort < 1 ||
+    spec.serverPort > 65535 ||
+    !text(approval.operationSheet, 1048576) ||
+    !text(readback.readbackReport, 1048576) ||
+    typeof readback.databaseOid !== "string" ||
+    !/^[1-9][0-9]*$/u.test(readback.databaseOid) ||
+    readback.approval.digest !== sha256Bytes(approvalBytes) ||
+    readback.approval.bytes !== approvalBytes.length ||
+    !(
+      approvedAt <= resourceAt &&
+      approvedAt <= sqlAt &&
+      resourceAt <= readbackAt &&
+      sqlAt <= readbackAt &&
+      readbackAt <= Date.now()
+    ) ||
+    !readback.cluster ||
+    ["dataVolumeName", "postgresImageDigest", "marker", "serverPort"].some(
+      (key) => readback.cluster[key] !== spec[key]
+    )
+  )
+    fail("MANUAL_H3_BINDING_INVALID");
+  // Reuse R1's only closed physical cluster validator/hash; H3 supplies no actual SQL facts.
+  computeManualClusterFingerprint(readback.cluster);
+}
+
+async function readH3Inputs(fixed, profile, principal, recheckOwner) {
+  const opened = [];
+  try {
+    const root = path.join(
+      profile.storage.archiveRoot,
+      "inputs",
+      "operations",
+      fixed.operation.operationRef
+    );
+    const values = [];
+    for (const name of ["h3-a-approval.json", "h3-a-readback.json"]) {
+      const item = await pinPrivateInput(path.join(root, name), {
+        principal,
+        privateRoot: profile.storage.archiveRoot
+      });
+      opened.push(item);
+      values.push(canonicalH3(item.bytes));
+    }
+    validateH3Inputs(values[0], values[1], opened[0].bytes, fixed, profile);
+    for (const item of opened) await item.recheck();
+    await recheckOwner();
+    // Shape/binding is insufficient: actual resource inspect admission remains WIP.
+    // No session/attempt or future expected-schema input is opened at this boundary.
+    fail("MANUAL_H3_RESOURCE_INPUT_REQUIRED");
+  } catch (cause) {
+    throw Object.assign(new Error("H3_INPUT_UNAVAILABLE", { cause }), {
+      code: "H3_INPUT_UNAVAILABLE"
+    });
+  } finally {
+    for (const item of opened) await item.close();
+  }
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

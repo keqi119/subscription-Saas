@@ -34,6 +34,7 @@
 
 - 2026-09-26，本地正常退车修复已整合：检查工单入口 `225c9913`、草案刷新 `c6d313fe`、人工定价证据成员修复 `ee549f41` 及相应测试/格式后继；[正式验收](2026-09-26-stage1-return-browser-gap-validation.md)为 `dd078c48`，前向状态 `9163b00e`。实际同源 `a86ed407` 完整PG退租94/94、资产33/33共127/127，API七文件225/225、API类型及14文件lint通过；Web87/87及类型来源、最后纯格式后继准确保留。三轮report/receipt独立重开核验及退役、代码和正式报告终审限定ACCEPT，原91/94与44个bad-port失败不覆盖。整合后API/Web整树与已审提交一致，契约176文件/128迁移/68Schema/13个命令契约、发现95/39/56/0通过。实际浏览器与完整R4仍待，未恢复线上Docker、部署或运行真实渠道。
 - 同日，R2 H3-A固定reader `d854a608` 在最终冻结字节上完整parent+CLI109/109、exit0并经限定复审；新增37聚焦与完整109重叠，不累加。合法材料仍止于RESOURCE_INPUT_REQUIRED，真实来源/资源、session/expected/credential/DB与完整R2.2未关闭；该WIP与child切片保留在独立实施分支。新发现的财务审批幂等键接线及WAIVER/WRITE_OFF证据成员风险已形成[独立实施计划](../superpowers/plans/2026-09-26-stage1-financial-approval-evidence-plan.md)并开始TDD；未把该后续单元或阶段1提前记为通过。
+- 2026-09-26，财务审批接线 `8c068885`、证据ID并集 `fb9a5df2`、真实PG组合 `84533176` 和[正式验收](2026-09-26-stage1-financial-approval-evidence-validation.md) `5a48c1cf` 已整合。实际干净source `0ca44e6e` 原expiry98/98、asset33/33，共131/131；五文件unit186/186、API类型/三文件lint/diff通过，报告/receipt独立重开校验、七项权限与精确退役及最终独立审查限定ACCEPT。两类型真实双人批准及减免/核销、证据缺项、余额/结算版本漂移、处置重放均验证；原API/Web字节与已审源一致，契约/发现仍176文件/128迁移/68Schema/13命令及95/39/56/0。后续优先细化财务审批未知结果重试（服务器首次时间、稳定key/body/proof、严格读回、上传未知状态），Registration仅列防御改进；R2外部输入、最终双链和真实浏览器/渠道仍开放。本轮未恢复线上Docker或扩大为阶段1完成。
 
 历史代码基线：Task 5 `1f0b0439`。Task 6 提案保管：`457c0011`，不代表批准。
 Task 6/29R/30/I 系列冻结，Task 30 stash 不变。

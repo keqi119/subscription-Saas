@@ -57,9 +57,13 @@ function image(name, character, fixtureSourceSha, ciRunRef) {
 function buildIdentity({
   fixtureRepository = repository,
   fixtureRunId = workflowRunId,
-  fixtureSourceSha = sourceSha
+  fixtureSourceSha = sourceSha,
+  fixtureRunRefFormat = "legacy"
 } = {}) {
-  const ciRunRef = `github://${fixtureRepository}/actions/runs/${fixtureRunId}`;
+  const ciRunRef =
+    fixtureRunRefFormat === "https"
+      ? `https://github.com/${fixtureRepository}/actions/runs/${fixtureRunId}`
+      : `github://${fixtureRepository}/actions/runs/${fixtureRunId}`;
   const observation = {
     schemaVersion: "build-material-observation.v1",
     sourceSha: fixtureSourceSha,
@@ -147,12 +151,14 @@ function deliveryFixture({
   fixtureExpiresAt = exact90ExpiresAt,
   fixtureRepository = repository,
   fixtureRunId = workflowRunId,
-  fixtureSourceSha = sourceSha
+  fixtureSourceSha = sourceSha,
+  fixtureRunRefFormat = "legacy"
 } = {}) {
   const { observation, proof } = buildIdentity({
     fixtureRepository,
     fixtureRunId,
-    fixtureSourceSha
+    fixtureSourceSha,
+    fixtureRunRefFormat
   });
   const buildProofDigest = sha256Canonical(proof);
   const digestHex = buildProofDigest.slice("sha256:".length);
@@ -238,6 +244,33 @@ function verify(input = deliveryFixture()) {
   return verifyBuildDelivery(input);
 }
 
+function replaceRunReferences(input, proofRunRef, materialRunRef = proofRunRef) {
+  const proof = JSON.parse(entry(input, "proof").originalFiles[0].bytes);
+  proof.provenance.ciRunRef = proofRunRef;
+  const proofBytes = Buffer.from(canonicalJson(proof));
+  entry(input, "proof").originalFiles[0].bytes = proofBytes;
+  entry(input, "proof").readbackFiles[0].bytes = Buffer.from(proofBytes);
+  input.expected.buildProofDigest = sha256Canonical(proof);
+
+  const supporting = entry(input, "supporting-evidence");
+  const observation = JSON.parse(supporting.originalFiles[0].bytes);
+  observation.ciRunRef = materialRunRef;
+  for (const builtImage of observation.images) builtImage.buildRunRef = materialRunRef;
+  const materialBytes = Buffer.from(`${canonicalJson(observation)}\n`);
+  supporting.originalFiles[0].bytes = materialBytes;
+  supporting.readbackFiles[0].bytes = Buffer.from(materialBytes);
+  const updatedProof = JSON.parse(proofBytes);
+  updatedProof.provenance.registryResolutionEvidenceDigest = sha256Canonical(observation);
+  const materialReference = updatedProof.provenance.materials.find(
+    ({ name }) => name === "build-material-observation"
+  );
+  materialReference.reference = sha256Canonical(observation);
+  const updatedProofBytes = Buffer.from(canonicalJson(updatedProof));
+  entry(input, "proof").originalFiles[0].bytes = updatedProofBytes;
+  entry(input, "proof").readbackFiles[0].bytes = Buffer.from(updatedProofBytes);
+  input.expected.buildProofDigest = sha256Canonical(updatedProof);
+}
+
 test("verifies exact producer/readback bytes at the 90-day boundary without promoting", () => {
   const input = deliveryFixture();
   const result = verify(input);
@@ -267,6 +300,42 @@ test("verifies exact producer/readback bytes at the 90-day boundary without prom
   });
   assertDeepFrozen(result);
 });
+
+test("accepts the HTTPS workflow run reference without promoting", async () => {
+  const input = deliveryFixture({ fixtureRunRefFormat: "https" });
+  const result = verify(input);
+  assert.equal(result.status, "delivery-verified");
+  assert.equal(result.authorityCustody, "INPUT_REQUIRED");
+  assert.equal(result.promotionEligible, false);
+  const workflow = await readFile(".github/workflows/docker-images.yml", "utf8");
+  const match = workflow.match(/BUILD_RUN_REF:\s*(.+)/u);
+  assert.ok(match);
+  const projected = match[1]
+    .replaceAll("${{ github.repository }}", repository)
+    .replaceAll("${{ github.run_id }}", workflowRunId);
+  assert.equal(projected, `https://github.com/${repository}/actions/runs/${workflowRunId}`);
+});
+
+test("rejects mixed proof and material run-reference representations", () => {
+  const input = deliveryFixture();
+  replaceRunReferences(input, `https://github.com/${repository}/actions/runs/${workflowRunId}`);
+  assert.throws(() => verify(input));
+});
+
+for (const runRef of [
+  `http://github.com/${repository}/actions/runs/${workflowRunId}`,
+  `https://example.com/${repository}/actions/runs/${workflowRunId}`,
+  `https://github.com/other/repository/actions/runs/${workflowRunId}`,
+  `https://github.com/${repository}/actions/runs/2802`,
+  `https://github.com/${repository}/actions/runs/${workflowRunId}/extra`,
+  `https://github.com/${repository}/actions/runs/${workflowRunId}?x=1`
+]) {
+  test(`rejects run reference ${runRef}`, () => {
+    const input = deliveryFixture();
+    replaceRunReferences(input, runRef);
+    assert.throws(() => verify(input), { code: "BUILD_DELIVERY_RUN_MISMATCH" });
+  });
+}
 
 test("accepts entry order changes but returns proof before supporting evidence", () => {
   const input = deliveryFixture();

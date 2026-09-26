@@ -321,7 +321,7 @@ jobs:
           BUILD_EVENT_NAME: ${{ github.event_name }}
           BUILD_REF: ${{ github.ref }}
           BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
-          BUILD_RUN_REF: github://${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BUILD_RUN_REF: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'

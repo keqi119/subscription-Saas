@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 H2 私有存储适配层前向登记
+
+隔离分支提交 `356f0fbd`，新增固定 bucket/run 的短期双身份存储适配层，独立读取服务实际 ACL、保留期、加密与原字节。SDK 调试凭据输出和版本 XML 根节点丢失两项 Important 经真实 RED、最小修复及限定复审 Approved。[验证记录](2026-09-27-stage1-h2-storage-binding-validation.md)保留初始 9/9 和最终冻结 11/11、原 scratch 路径修正及本地 Node24 限制。未整合主候选、未启用工作流；真实 IAM/BPA、云端 custody 和阶段 1 仍未完成。
+
 ## 2026-09-27 独立 expected-schema producer 前向登记
 
 隔离分支提交 `42bb7ec4`，实现宿主源码核验与固定 Runner 内两套独立参考库生成。唯一清理 Important 已修复并获限定复审 Approved。[验证记录](2026-09-27-stage1-expected-schema-producer-validation.md)区分初始 3/3 与最终修复定向 1/1，保留真实 RED；未重复全套。代码未整合主候选，尚未运行真实参考库或接私有保管、attestation、R2 准入，Task3 和阶段 1 继续开放。

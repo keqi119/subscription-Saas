@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   computeManualClusterFingerprint,
@@ -9,9 +11,13 @@ import {
   sha256Bytes,
   sha256Canonical,
   validateContract,
+  validateManualRunnerProtocol,
   verifyManualHandoff
 } from "@subscription-saas/release-foundation";
 import { runnerError } from "./error-codes.mjs";
+import { createPostgresConnector } from "./postgres-connector.mjs";
+import { createDatabaseRuntimeAdapter } from "./database-runtime-adapter.mjs";
+import { executeManualCommand } from "./manual-command-adapter.mjs";
 
 const limit = 1048576;
 const activePrefix = Buffer.from("MS2 ", "ascii");
@@ -277,6 +283,7 @@ function inputChannel(incoming) {
     error = null,
     wake = null;
   const queued = [];
+  const closedListeners = new Set();
   const notify = () => {
     wake?.();
     wake = null;
@@ -313,6 +320,8 @@ function inputChannel(incoming) {
       error = cause;
     } finally {
       ended = true;
+      for (const listener of closedListeners)
+        listener(error ?? runnerError("MANUAL_FRAME_INCOMPLETE"));
       notify();
     }
   })();
@@ -337,11 +346,301 @@ function inputChannel(incoming) {
     ready() {
       ready = true;
     },
+    onClose(listener) {
+      closedListeners.add(listener);
+      if (ended) listener(error ?? runnerError("MANUAL_FRAME_INCOMPLETE"));
+      return () => closedListeners.delete(listener);
+    },
     async close() {
       incoming.destroy?.();
       await pump;
       bytes.fill(0);
       queued.length = 0;
+    }
+  };
+}
+
+function freeze(value) {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function processCollector({ authorization, channel, output, stdoutFrames, manualContext }) {
+  let sequence = 3,
+    processSequence = 0,
+    previousAck = null,
+    queue = Promise.resolve(),
+    failure;
+  const parentFrames = [authorization.authorizeFrameBytes],
+    running = new Set(),
+    pending = new Set();
+  const terminations = new Map(),
+    closeRejectors = new Map();
+  const terminate = (child) => {
+    if (terminations.has(child)) return;
+    child.kill("SIGTERM");
+    const force = setTimeout(() => child.kill("SIGKILL"), 1000);
+    const incomplete = setTimeout(() => {
+      closeRejectors.get(child)?.(runnerError("MANUAL_FRAME_INCOMPLETE"));
+      closeRejectors.delete(child);
+      terminations.delete(child);
+    }, 3000);
+    terminations.set(child, { force, incomplete });
+  };
+  const stop = (error) => {
+    failure ??= error;
+    for (const child of running) terminate(child);
+  };
+  const unsubscribe = channel.onClose(stop);
+  const healthy = () => {
+    if (failure) throw failure;
+    channel.assertOpen();
+  };
+  async function emit(type, fields, acknowledge = true) {
+    const operation = queue.then(async () => {
+      healthy();
+      const payload =
+        type === "RESULT"
+          ? fields
+          : {
+              binding: authorization.binding,
+              previousAck,
+              ...fields
+            };
+      if (payload.event) {
+        payload.event.sequence = manualContext.processEvidence.events.length;
+        payload.event.at = new Date().toISOString();
+      }
+      const frameBytes = encodeManualRunnerFrame({ protocol: "MS2", type, sequence, payload });
+      const prefix = Buffer.concat([...stdoutFrames, frameBytes]);
+      if (prefix.length > limit) throw runnerError("MANUAL_OUTPUT_LIMIT");
+      await write(output, frameBytes);
+      stdoutFrames.push(frameBytes);
+      sequence++;
+      if (!acknowledge) return;
+      const ack = await channel.next();
+      healthy();
+      validateManualRunnerProtocol({
+        mode: "live-ack",
+        profileBytes: authorization.profileBytes,
+        requestBytes: authorization.requestBytes,
+        authorizationBytes: authorization.authorizationBytes,
+        previousProcessBytes: encodeManualJson(manualContext.processEvidence),
+        childFrameBytes: frameBytes,
+        ackFrameBytes: ack.frameBytes,
+        stdoutPrefixBytes: prefix,
+        parentFrameBytes: parentFrames
+      });
+      parentFrames.push(Buffer.from(ack.frameBytes));
+      previousAck = rawRef(ack.frameBytes);
+      if (ack.payload.subject.kind === "process")
+        manualContext.processEvidence = freeze(ack.payload.subject.process);
+    });
+    queue = operation.catch(stop);
+    return operation;
+  }
+  const event = (tool, index, status, argvDigest, values = {}) => ({
+    sequence: 0,
+    processSequence: index,
+    source: "runner",
+    tool,
+    event: status,
+    at: new Date().toISOString(),
+    containerId: authorization.request.containerId,
+    pid: null,
+    argvDigest,
+    exitCode: null,
+    signal: null,
+    reasonCode: null,
+    stdout: null,
+    stderr: null,
+    ...values
+  });
+  function runProcess(command, args, options) {
+    const work = (async () => {
+      healthy();
+      // Only the existing fixed runtime chooses these calls; no caller command seam.
+      const tool =
+        command === "psql" && same(args, ["--version"])
+          ? "psql-version"
+          : command === path.resolve("/app", "apps/release-runner/node_modules/.bin/prisma")
+            ? args[0] === "--version"
+              ? "prisma-version"
+              : args[1] === "deploy"
+                ? "prisma-deploy"
+                : args.includes("--script")
+                  ? "prisma-script"
+                  : "prisma-diff"
+            : null;
+      if (!tool) throw runnerError("MANUAL_FRAME_INVALID");
+      const index = ++processSequence,
+        argvDigest = sha256Bytes(encodeManualJson({ command, args }));
+      await emit("PREPARED", { event: event(tool, index, "PREPARED", argvDigest) });
+      healthy();
+      let child;
+      try {
+        child = spawn(command, args, {
+          env: options.environment,
+          shell: false,
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "pipe"]
+        });
+      } catch {
+        await emit("EVENT", {
+          event: event(tool, index, "SPAWN_FAILED", argvDigest, {
+            reasonCode: "MANUAL_PROCESS_SPAWN_FAILED"
+          }),
+          stdoutBase64: null,
+          stderrBase64: null
+        });
+        throw runnerError("MANUAL_PROCESS_SPAWN_FAILED");
+      }
+      running.add(child);
+      const stdout = [],
+        stderr = [];
+      let rawSize = 0,
+        rawFailure,
+        spawnFailure;
+      const collect = (chunks) => (chunk) => {
+        if (rawFailure || failure) return;
+        if (!Buffer.isBuffer(chunk)) {
+          rawFailure ??= runnerError("MANUAL_FRAME_INVALID");
+          terminate(child);
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+        rawSize += chunk.length;
+        if (rawSize > limit) {
+          rawFailure ??= runnerError("MANUAL_OUTPUT_LIMIT");
+          terminate(child);
+        }
+      };
+      child.stdout.on("data", collect(stdout));
+      child.stderr.on("data", collect(stderr));
+      for (const stream of [child.stdout, child.stderr])
+        stream.once("error", () => {
+          rawFailure ??= runnerError("MANUAL_FRAME_INCOMPLETE");
+          terminate(child);
+        });
+      child.once("error", () => {
+        spawnFailure = runnerError("MANUAL_PROCESS_SPAWN_FAILED");
+      });
+      const spawned = new Promise((resolve) => {
+        child.once("spawn", () => resolve(true));
+        child.once("error", () => resolve(false));
+      });
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        terminate(child);
+      }, options.timeoutMs ?? 300000);
+      const closed = new Promise((resolve, reject) => {
+        closeRejectors.set(child, (error) => {
+          // Abandon this incomplete collection; no close event or outcome is inferred.
+          clearTimeout(timer);
+          running.delete(child);
+          reject(error);
+        });
+        child.once("close", (exitCode, signal) => {
+          clearTimeout(timer);
+          const termination = terminations.get(child);
+          clearTimeout(termination?.force);
+          clearTimeout(termination?.incomplete);
+          terminations.delete(child);
+          closeRejectors.delete(child);
+          running.delete(child);
+          resolve({ exitCode, signal });
+        });
+      });
+      closed.catch(() => {});
+      try {
+        if (!(await spawned)) {
+          await closed;
+          await emit("EVENT", {
+            event: event(tool, index, "SPAWN_FAILED", argvDigest, {
+              reasonCode: spawnFailure.code
+            }),
+            stdoutBase64: null,
+            stderrBase64: null
+          });
+          throw spawnFailure;
+        }
+        await emit("EVENT", {
+          event: event(tool, index, "SPAWNED", argvDigest, { pid: child.pid }),
+          stdoutBase64: null,
+          stderrBase64: null
+        });
+        const close = await closed;
+        const stdoutBytes = Buffer.concat(stdout),
+          stderrBytes = Buffer.concat(stderr);
+        // Facts remain held as raw bytes before decoding or returning to requireSuccess.
+        if (rawFailure) throw rawFailure;
+        const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+        let stdoutText, stderrText;
+        try {
+          stdoutText = decoder.decode(stdoutBytes);
+          stderrText = decoder.decode(stderrBytes);
+        } catch {
+          throw runnerError("MANUAL_FRAME_INVALID");
+        }
+        await emit("EVENT", {
+          event: event(tool, index, "CLOSED", argvDigest, {
+            pid: child.pid,
+            exitCode: close.exitCode,
+            signal: close.signal,
+            reasonCode: timedOut ? "MANUAL_PROCESS_TIMEOUT" : null,
+            stdout: rawRef(stdoutBytes),
+            stderr: rawRef(stderrBytes)
+          }),
+          stdoutBase64: stdoutBytes.toString("base64"),
+          stderrBase64: stderrBytes.toString("base64")
+        });
+        if (timedOut) throw runnerError("MANUAL_PROCESS_TIMEOUT");
+        return { ...close, stdout: stdoutText, stderr: stderrText };
+      } catch (error) {
+        stop(error);
+        await closed;
+        throw error;
+      }
+    })();
+    pending.add(work);
+    work.then(
+      () => pending.delete(work),
+      () => pending.delete(work)
+    );
+    return work;
+  }
+  return {
+    runProcess,
+    healthy,
+    async settle() {
+      await Promise.allSettled([...pending]);
+      await queue;
+      healthy();
+    },
+    async finish({ result, observation }) {
+      const processDigest = sha256Canonical(manualContext.processEvidence);
+      requireBinding(
+        result.processEvidenceDigest === processDigest &&
+          (observation === null || observation.processEvidenceDigest === processDigest)
+      );
+      if (observation) await emit("OBSERVATION", { observation });
+      await emit("EVENT", {
+        event: event("runner", 0, "DISPATCH_CLOSED", null, { reasonCode: result.reasonCode }),
+        stdoutBase64: null,
+        stderrBase64: null
+      });
+      await emit("ACK_RECEIVED", {}, false);
+      await emit("RESULT", result, false);
+      return result;
+    },
+    async close() {
+      unsubscribe();
+      stop(runnerError("MANUAL_FRAME_INCOMPLETE"));
+      await Promise.allSettled([...pending]);
     }
   };
 }
@@ -380,38 +679,101 @@ export async function runManualEntrypoint(input) {
   await write(output, challengeBytes);
 
   const channel = inputChannel(incoming);
+  const stdoutFrames = [challengeBytes];
+  let authorization, database, collector, credentialFrame;
   try {
     const frame = await channel.next();
-    const authorization = await receiveAuthorization(frame, childChallenge, challengeBytes);
+    authorization = await receiveAuthorization(frame, childChallenge, challengeBytes);
     channel.assertHealthy();
     channel.ready();
-    await write(
-      output,
-      encodeManualRunnerFrame({
-        protocol: "MS2",
-        type: "READY",
-        sequence: 1,
-        payload: { binding: authorization.binding, authorizeFrame: rawRef(frame.frameBytes) }
-      })
-    );
-    const credentialFrame = await channel.next();
+    const readyBytes = encodeManualRunnerFrame({
+      protocol: "MS2",
+      type: "READY",
+      sequence: 1,
+      payload: { binding: authorization.binding, authorizeFrame: rawRef(frame.frameBytes) }
+    });
+    await write(output, readyBytes);
+    stdoutFrames.push(readyBytes);
+    credentialFrame = await channel.next();
     authorization.credential = receiveCredential(credentialFrame, authorization);
-    await write(
-      output,
-      encodeManualRunnerFrame({
-        protocol: "MS2",
-        type: "CREDENTIAL_RECEIVED",
-        sequence: 2,
-        payload: {
-          binding: authorization.binding,
-          authorizeFrame: rawRef(authorization.authorizeFrameBytes)
-        }
-      })
-    );
+    const credentialReceivedBytes = encodeManualRunnerFrame({
+      protocol: "MS2",
+      type: "CREDENTIAL_RECEIVED",
+      sequence: 2,
+      payload: {
+        binding: authorization.binding,
+        authorizeFrame: rawRef(authorization.authorizeFrameBytes)
+      }
+    });
+    await write(output, credentialReceivedBytes);
+    stdoutFrames.push(credentialReceivedBytes);
     channel.assertOpen();
-    // The real connector/collector with the first PREPARED/live ACK remain WIP.
-    throw runnerError("MANUAL_EVIDENCE_INPUT_REQUIRED");
+    const endpointPolicy = authorization.profile.allowedTargets.find(
+      (target) =>
+        target.endpointPolicyId === authorization.request.targetIntent.endpointPolicyId &&
+        target.databaseName === authorization.request.targetIntent.databaseName
+    );
+    const manualContext = {
+      endpointPolicy: freeze(endpointPolicy),
+      approvedClusterObservation: freeze(authorization.targetContext),
+      processEvidence: freeze(authorization.processEvidence)
+    };
+    collector = processCollector({ authorization, channel, output, stdoutFrames, manualContext });
+    const [hostname, port] = endpointPolicy.endpoint.split(":");
+    const target = {
+      hostname,
+      port: Number(port),
+      databaseName: endpointPolicy.databaseName,
+      tlsMode: "require"
+    };
+    database = await createPostgresConnector()({ credential: authorization.credential, target });
+    collector.healthy();
+    // Query effects and transaction continuations stop when the private pipe is lost.
+    const guard = (context) => {
+      for (const name of ["$queryRawUnsafe", "$executeRawUnsafe"]) {
+        const original = context[name];
+        context[name] = (...args) => {
+          collector.healthy();
+          return original(...args);
+        };
+      }
+      const transaction = context.$transaction;
+      context.$transaction = (callback) => {
+        collector.healthy();
+        return transaction((tx) => callback(guard(tx)));
+      };
+      return context;
+    };
+    guard(database);
+    const runtime = createDatabaseRuntimeAdapter({
+      database,
+      credential: authorization.credential,
+      target,
+      runProcess: collector.runProcess
+    });
+    runtime.manualContext = manualContext;
+    const outcome = await executeManualCommand({
+      request: authorization.request,
+      decision: authorization.decision,
+      baseline: authorization.baseline,
+      database,
+      runtime
+    });
+    await collector.settle();
+    const connected = database;
+    database = null;
+    await connected.close();
+    return await collector.finish(outcome);
   } finally {
-    await channel.close();
+    try {
+      await collector?.close();
+      await database?.close();
+    } finally {
+      if (authorization) authorization.credential = null;
+      credentialFrame?.frameBytes.fill(0);
+      credentialFrame?.payloadBytes.fill(0);
+      if (credentialFrame?.payload) credentialFrame.payload.credential = "";
+      await channel.close();
+    }
   }
 }

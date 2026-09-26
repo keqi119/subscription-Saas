@@ -20,6 +20,7 @@ import {
   sha256Bytes,
   sha256Canonical,
   signManualAuthorization,
+  validateManualRunnerProtocol,
   verifyManualHandoff
 } from "@subscription-saas/release-foundation";
 
@@ -45,7 +46,11 @@ const aKeys = [
   "attemptId",
   "runId"
 ];
-function signedAuthorize(challengeBytes, retainedNonce = challenge([challengeBytes])) {
+function signedAuthorize(
+  challengeBytes,
+  retainedNonce = challenge([challengeBytes]),
+  collector = false
+) {
   // These are shape/binding fixtures with a real ephemeral Ed25519 signature.
   // They do not attest parent Docker, H3, private custody, or archival success.
   const key = generateKeyPairSync("ed25519"),
@@ -112,7 +117,16 @@ function signedAuthorize(challengeBytes, retainedNonce = challenge([challengeByt
       targetObservationDigest: syntheticDigest,
       physicalIdentity,
       roleObservation: { role: "observer", tls: true, schemaObservationDigest: syntheticDigest },
-      preStateDigest: syntheticDigest,
+      preStateDigest: collector
+        ? sha256Canonical({
+            migrationTableOid: null,
+            migrationRows: [],
+            schemaOwner: "migrator",
+            ownerInventory: [{ objectClass: "schema", objectName: "public", owner: "migrator" }],
+            extensions: ["plpgsql"],
+            postgresqlVersion: "17.11"
+          })
+        : syntheticDigest,
       authorizationDigest: syntheticDigest
     },
     createdAt: stamp(-1000),
@@ -1076,4 +1090,475 @@ test("actual Node child emits its own challenge on a zero-credential pipe before
     diagnostics,
     'MANUAL_FRAME_INCOMPLETE\nEFFECTS:{"externalProcesses":0,"secretReads":0,"databaseConnections":0}\n'
   );
+});
+
+async function collectedChild(t, options = {}) {
+  const root = await fs.mkdtemp(path.join(tmpdir(), "r22-collector-"));
+  let child;
+  t.after(async () => {
+    child?.kill();
+    assert.equal(path.dirname(root), path.resolve(tmpdir()));
+    assert.ok(path.basename(root).startsWith("r22-collector-"));
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const publicFile = path.join(root, "profile.json");
+  const migrationRoot = path.join(root, "migrations");
+  await fs.mkdir(path.join(migrationRoot, "20260101000000_first"), { recursive: true });
+  await fs.writeFile(
+    path.join(migrationRoot, "20260101000000_first", "migration.sql"),
+    "CREATE TABLE synthetic_fixture (id integer);\n",
+    { flag: "wx" }
+  );
+  const moduleURL = new URL("../src/manual-entrypoint.mjs", import.meta.url).href;
+  const toolOutput = "prisma : 7.8.0\nSchema Engine : synthetic\n中文报告\n";
+  const script = `
+    import fs from 'node:fs/promises'; import cp from 'node:child_process';
+    import {registerHooks,syncBuiltinESMExports} from 'node:module';
+    const effects={connections:0,queries:0,spawns:0,closed:0,forceKills:0};
+    const options=${JSON.stringify(options)}, root=${JSON.stringify(root)};
+    const client={async unsafe(sql){effects.queries++;
+      if(sql.includes('pg_stat_ssl')) return [{databaseName:'synthetic_db',databaseOid:options.wrongIdentity?'999':'123',role:'migrator',tls:true,schemas:['public'],extensions:['plpgsql'],serverAddress:'172.19.0.2',serverPort:5432}];
+      if(sql.includes('pg_control_system'))return [{systemIdentifier:'123456789012345678'}];
+      if(sql==='SHOW transaction_isolation')return [{transaction_isolation:'repeatable read'}];
+      if(sql==='SHOW transaction_read_only')return [{transaction_read_only:'on'}];
+      if(sql.includes('to_regclass'))return [{name:null,oid:null}];
+      if(sql.includes('FROM pg_class AS c'))return [{objectClass:'schema',objectName:'public',owner:'migrator'}];
+      if(sql.includes('pg_namespace'))return [{owner:'migrator'}];
+      if(sql.includes('pg_extension'))return [{name:'plpgsql'}];
+      if(sql==='SHOW server_version')return [{server_version:'17.11'}];
+      if(sql.startsWith('SET TRANSACTION')){if(options.disconnectDuringObservation){const disconnected=new Promise(resolve=>process.stdin.once('end',()=>setTimeout(resolve,0)));process.stderr.write('OBSERVER_PAUSED\\n');await disconnected}return []};
+      process.stderr.write('UNEXPECTED_SQL:'+sql+'\\n');
+      throw Object.assign(new Error('unexpected offline SQL'),{code:'OFFLINE_SQL_UNEXPECTED'});
+    },async begin(...args){return args.at(-1)(client)},async end(){effects.closed++;if(options.failedClose)throw Object.assign(new Error('offline close failure'),{code:'OFFLINE_CLOSE_FAILED'})}};
+    globalThis.offlinePostgres=()=>{effects.connections++;return client};
+    registerHooks({resolve(specifier,context,next){if(specifier==='postgres')return {url:'data:text/javascript,export default globalThis.offlinePostgres',shortCircuit:true};return next(specifier,context)}});
+    const profileFile=${JSON.stringify(profileFile)},publicFile=${JSON.stringify(publicFile)};
+    for(const name of ['open','lstat']){const native=fs[name].bind(fs);fs[name]=(file,...args)=>native(file===profileFile?publicFile:file,...args)};
+    const realpath=fs.realpath.bind(fs);fs.realpath=async(file,...args)=>file===profileFile?(await realpath(publicFile),profileFile):realpath(file,...args);
+    const migrationRoot=${JSON.stringify(migrationRoot)}, migrationPrefix='/app/apps/api/prisma/migrations';
+    const mapped=file=>{const normalized=String(file).replaceAll('\\\\','/');const index=normalized.indexOf(migrationPrefix);return index<0?file:migrationRoot+normalized.slice(index+migrationPrefix.length)};
+    for(const name of ['readdir','readFile']){const native=fs[name].bind(fs);fs[name]=(file,...args)=>native(mapped(file),...args)};
+    const nativeSpawn=cp.spawn;
+    cp.spawn=(command,args,settings)=>{effects.spawns++;
+      let source=args[0]==='--version'&&command==='psql'?${JSON.stringify(`process.stdout.write(${JSON.stringify("psql (PostgreSQL) 17.11\n")})`)}:${JSON.stringify(`process.stdout.write(${JSON.stringify(toolOutput)})`)};
+      if(options.invalidUtf8)source="process.stdout.write(Buffer.from([255]))";
+      if(options.oversize)source="process.stdout.write(Buffer.alloc(1048577,65))";
+      if(options.frameOversize)source="process.stdout.write(Buffer.alloc(800000,65))";
+      if(options.streamOversize)source="process.stdout.write(Buffer.alloc(390000,65))";
+      if(options.nonzero)source+=";process.exitCode=7";
+      if(options.longTool)source+=options.ignoreTerm?";setTimeout(()=>{},30000)":";setTimeout(()=>{},3000)";
+      const tool=nativeSpawn(process.execPath,['--eval',source],{...settings,env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot},timeout:5000});
+      const kill=tool.kill.bind(tool);tool.kill=signal=>{if(options.ignoreTerm&&signal==='SIGTERM')return true;if(signal==='SIGKILL')effects.forceKills++;return kill(signal)};
+      if(options.missingClose){const once=tool.once.bind(tool);tool.once=(event,callback)=>event==='close'?tool:once(event,callback)};
+      return tool;
+    };
+    syncBuiltinESMExports();
+    const {runManualEntrypoint}=await import(${JSON.stringify(moduleURL)});
+    try{const result=await runManualEntrypoint({input:process.stdin,output:process.stdout,environment:{RUNNER_EXECUTION_MODE:'manual-stage1'}});process.stderr.write('RETURN:'+JSON.stringify(result)+'\\n')}
+    catch(error){process.stderr.write('ERROR:'+error.code+'\\n');process.exitCode=1}
+    process.stderr.write('EFFECTS:'+JSON.stringify(effects)+'\\n');
+  `;
+  child = spawn(process.execPath, ["--input-type=module", "--eval", script], {
+    shell: false,
+    windowsHide: true,
+    timeout: 45000,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot }
+  });
+  const stdout = [],
+    stderr = [],
+    parents = [],
+    subjects = [],
+    raws = [],
+    liveInputs = [];
+  let fixture,
+    last,
+    previousAck = null,
+    binding,
+    count = 0,
+    failure;
+  let tasks = Promise.resolve();
+  child.stdin.on("error", () => {});
+  child.stderr.on("data", (chunk) => {
+    stderr.push(Buffer.from(chunk));
+    if (
+      options.disconnectDuringObservation &&
+      Buffer.concat(stderr).includes(Buffer.from("OBSERVER_PAUSED\n"))
+    )
+      child.stdin.end();
+  });
+  async function send(bytes) {
+    // Actual split pipe writes, including UTF-8 payload boundaries.
+    child.stdin.write(bytes.subarray(0, 7));
+    child.stdin.write(bytes.subarray(7));
+  }
+  async function consume(frame) {
+    if (frame.type === "CHALLENGE") {
+      fixture = signedAuthorize(frame.frameBytes, undefined, true);
+      last = fixture.payload.process;
+      await fs.writeFile(publicFile, encodeManualJson(fixture.profile), { flag: "wx" });
+      const request = fixture.payload.request;
+      binding = {
+        ...pick(request, [
+          ...aKeys,
+          "attemptAllocationDigest",
+          "containerId",
+          "runnerImageDigest",
+          "childChallenge"
+        ]),
+        requestDigest: sha256Canonical(request),
+        authorizationDigest: sha256Canonical(fixture.payload.authorization)
+      };
+      parents.push(
+        encodeManualRunnerFrame({
+          protocol: "MS2",
+          type: "AUTHORIZE",
+          sequence: 0,
+          payload: fixture.payload
+        })
+      );
+      await send(parents[0]);
+    } else if (frame.type === "READY") {
+      await send(
+        encodeManualRunnerFrame({
+          protocol: "MS2",
+          type: "CREDENTIAL",
+          sequence: 1,
+          payload: {
+            binding,
+            credential: options.extraCredential
+              ? '{"extra":true,"password":"synthetic-never-real","username":"migrator"}'
+              : '{"password":"synthetic-never-real","username":"migrator"}'
+          }
+        })
+      );
+    } else if (["PREPARED", "EVENT", "OBSERVATION"].includes(frame.type)) {
+      if (frame.type === "OBSERVATION")
+        assert.equal(
+          sha256Canonical(frame.payload.observation.catalog),
+          fixture.payload.baseline.identity.preStateDigest
+        );
+      if (options.missingAck && frame.type === "PREPARED") {
+        child.stdin.end();
+        return;
+      }
+      const prefix = Buffer.concat(stdout).subarray(0, frame.endOffset);
+      const now = new Date().toISOString();
+      const subject =
+        frame.type === "OBSERVATION"
+          ? frame.payload.observation
+          : {
+              ...last,
+              recordedAt: now,
+              previousProcessEvidenceDigest: sha256Canonical(last),
+              events: [...last.events, frame.payload.event],
+              protocol: { stdoutPrefix: rawRef(prefix), parentFrames: parents.map(rawRef) }
+            };
+      const bytes = encodeManualJson(subject),
+        file = path.join(root, `subject-${subjects.length}.json`);
+      await fs.writeFile(file, bytes, { flag: "wx" });
+      const reopened = await fs.readFile(file);
+      assert.deepEqual(reopened, bytes);
+      const persisted = JSON.parse(reopened);
+      subjects.push(persisted);
+      if (frame.type === "EVENT" && frame.payload.event.event === "CLOSED")
+        for (const key of ["stdout", "stderr"]) {
+          const raw = Buffer.from(frame.payload[key + "Base64"], "base64");
+          const rawFile = path.join(root, `raw-${raws.length}`);
+          await fs.writeFile(rawFile, raw, { flag: "wx" });
+          assert.deepEqual(await fs.readFile(rawFile), raw);
+          raws.push(raw);
+        }
+      const readback = {
+        ...fixture.payload.processReadback,
+        subjectDigest: sha256Bytes(reopened),
+        observedDigest: sha256Bytes(reopened),
+        observedAt: new Date().toISOString(),
+        recordedAt: new Date().toISOString()
+      };
+      const ack = encodeManualRunnerFrame({
+        protocol: "MS2",
+        type: "ACK",
+        sequence: parents.length + 1,
+        payload: {
+          binding,
+          acknowledgedFrame: rawRef(frame.frameBytes),
+          subject:
+            frame.type === "OBSERVATION"
+              ? { kind: "observation", observation: persisted }
+              : { kind: "process", process: persisted },
+          readback
+        }
+      });
+      const live = {
+        mode: "live-ack",
+        profileBytes: encodeManualJson(fixture.profile),
+        requestBytes: encodeManualJson(fixture.payload.request),
+        authorizationBytes: encodeManualJson(fixture.payload.authorization),
+        previousProcessBytes: encodeManualJson(last),
+        childFrameBytes: frame.frameBytes,
+        ackFrameBytes: ack,
+        stdoutPrefixBytes: prefix,
+        parentFrameBytes: [...parents]
+      };
+      try {
+        validateManualRunnerProtocol(live);
+      } catch (error) {
+        error.message += ` current=${frame.type}/${frame.payload.event?.event} at=${frame.payload.event?.at ?? frame.payload.observation?.observedAt} previousAck=${parents.length > 1 ? new TextDecoder().decode(parents.at(-1)).match(/recordedAt[^,]+/gu) : "initial"}`;
+        throw error;
+      }
+      liveInputs.push(live);
+      let actual = ack;
+      if (options.wrongAck && frame.type === "PREPARED") {
+        const payload = JSON.parse(
+          parseManualRunnerFrames({
+            direction: "parent-to-child",
+            bytes: Buffer.concat([
+              parents[0],
+              encodeManualRunnerFrame({
+                protocol: "MS2",
+                type: "CREDENTIAL",
+                sequence: 1,
+                payload: { binding, credential: "x" }
+              }),
+              ack
+            ]),
+            ended: true
+          }).frames.at(-1).payloadBytes
+        );
+        payload.acknowledgedFrame = rawRef(parents[0]);
+        actual = encodeManualRunnerFrame({
+          protocol: "MS2",
+          type: "ACK",
+          sequence: parents.length + 1,
+          payload
+        });
+      }
+      parents.push(actual);
+      previousAck = rawRef(actual);
+      if (frame.type !== "OBSERVATION") last = persisted;
+      await send(actual);
+      if (options.disconnectAfterSpawn && frame.payload.event?.event === "SPAWNED")
+        child.stdin.end();
+    }
+  }
+  child.stdout.on("data", (chunk) => {
+    stdout.push(Buffer.from(chunk));
+    try {
+      const parsed = parseManualRunnerFrames({
+        direction: "child-to-parent",
+        bytes: Buffer.concat(stdout),
+        ended: false
+      });
+      for (const frame of parsed.frames.slice(count)) {
+        frame.endOffset = parsed.frames
+          .slice(0, frame.sequence + 1)
+          .reduce((sum, f) => sum + f.frameBytes.length, 0);
+        tasks = tasks.then(() => consume(frame));
+      }
+      count = parsed.frames.length;
+      tasks.catch((error) => {
+        failure = error;
+        child.stdin.end();
+      });
+    } catch (error) {
+      failure = error;
+      child.kill();
+    }
+  });
+  const closed = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
+  });
+  await tasks.catch((error) => {
+    failure = error;
+  });
+  if (failure)
+    throw new Error(failure.message + Buffer.concat(stderr).toString("utf8"), { cause: failure });
+  const diagnostics = Buffer.concat(stderr).toString("utf8");
+  const effects = JSON.parse(diagnostics.match(/EFFECTS:(.*)\n/u)?.[1] ?? "null");
+  const frames = parseManualRunnerFrames({
+    direction: "child-to-parent",
+    bytes: Buffer.concat(stdout),
+    ended: true
+  }).frames;
+  const archived = await Promise.all(
+    (await fs.readdir(root, { withFileTypes: true }))
+      .filter((file) => file.isFile())
+      .map((file) => fs.readFile(path.join(root, file.name)))
+  );
+  assert.equal(
+    Buffer.concat([...stdout, ...archived]).includes(Buffer.from("synthetic-never-real")),
+    false
+  );
+  return {
+    frames,
+    closed,
+    diagnostics,
+    effects,
+    subjects,
+    raws,
+    liveInputs,
+    previousAck,
+    toolOutput
+  };
+}
+
+test("authorized child collector persists actual tool PID raw close and live ACK before original result", async (t) => {
+  const actual = await collectedChild(t);
+  assert.equal(actual.closed.exitCode, 0, actual.diagnostics);
+  assert.equal(actual.effects.spawns, 2);
+  assert.equal(actual.frames.at(-1).type, "RESULT");
+  assert.equal(actual.frames.at(-1).payload.outcome, "RETURNED", actual.diagnostics);
+  assert.equal(actual.frames.at(-2).type, "ACK_RECEIVED");
+  const events = actual.frames.filter((f) => f.payload.event).map((f) => f.payload.event);
+  assert.equal(
+    events.filter((e) => e.event === "SPAWNED").every((e) => e.pid > 0),
+    true
+  );
+  assert.equal(events.filter((e) => e.event === "CLOSED").length, 2);
+  assert.ok(actual.raws.some((bytes) => bytes.equals(Buffer.from(actual.toolOutput))));
+  assert.equal(
+    actual.frames.at(-1).payload.processEvidenceDigest,
+    sha256Bytes(
+      actual.liveInputs.find(
+        (live) =>
+          parseManualRunnerFrames({
+            direction: "child-to-parent",
+            bytes: live.stdoutPrefixBytes,
+            ended: true
+          }).frames.at(-1).type === "OBSERVATION"
+      ).previousProcessBytes
+    )
+  );
+  assert.equal(
+    actual.frames.at(-1).payload.plan.provenance.toolVersions.prisma,
+    actual.toolOutput.trim()
+  );
+});
+
+for (const [name, options] of [
+  ["missing", { missingAck: true }],
+  ["incorrect", { wrongAck: true }]
+])
+  test(`child collector ${name} PREPARED ACK stops before tool spawn`, async (t) => {
+    const actual = await collectedChild(t, options);
+    assert.equal(actual.effects.spawns, 0);
+    assert.equal(
+      actual.frames.some((f) => f.type === "PREPARED"),
+      true
+    );
+    assert.equal(
+      actual.frames.some((f) => f.type === "RESULT"),
+      false
+    );
+    assert.equal(actual.closed.exitCode, 1, actual.diagnostics);
+  });
+
+test("child collector actual identity mismatch stops before domain tools", async (t) => {
+  const actual = await collectedChild(t, { wrongIdentity: true });
+  assert.equal(actual.effects.connections, 1);
+  assert.equal(actual.effects.spawns, 0);
+  assert.equal(actual.frames.at(-1).payload.outcome, "THREW");
+  assert.equal(actual.frames.at(-1).payload.reasonCode, "MANUAL_CLUSTER_IDENTITY_MISMATCH");
+  assert.equal(actual.frames.at(-1).payload.observationDigest, null);
+});
+
+for (const [name, options, code] of [
+  ["invalid raw UTF-8", { invalidUtf8: true }, "MANUAL_FRAME_INVALID"],
+  ["raw 1 MiB+1", { oversize: true }, "MANUAL_OUTPUT_LIMIT"],
+  ["base64 frame over 1 MiB", { frameOversize: true }, "MANUAL_OUTPUT_LIMIT"],
+  ["whole output stream over 1 MiB", { streamOversize: true }, "MANUAL_OUTPUT_LIMIT"]
+])
+  test(`child collector ${name} retains incomplete evidence without RESULT`, async (t) => {
+    const actual = await collectedChild(t, options);
+    assert.ok(actual.effects.spawns > 0);
+    assert.equal(
+      actual.frames.some((f) => f.payload.event?.event === "SPAWNED"),
+      true
+    );
+    assert.equal(
+      actual.frames.some((f) => ["RESULT", "ACK_RECEIVED"].includes(f.type)),
+      false
+    );
+    assert.match(actual.diagnostics, new RegExp(`ERROR:${code}\\n`, "u"));
+    assert.equal(actual.closed.exitCode, 1);
+  });
+
+test("child collector failed database close cannot emit a successful result", async (t) => {
+  const actual = await collectedChild(t, { failedClose: true });
+  assert.equal(actual.effects.closed, 1);
+  assert.equal(actual.frames.filter((f) => f.payload.event?.event === "CLOSED").length, 2);
+  assert.equal(
+    actual.frames.some((f) => f.type === "RESULT"),
+    false
+  );
+  assert.match(actual.diagnostics, /ERROR:OFFLINE_CLOSE_FAILED\n/u);
+});
+
+test("child collector input disconnect after actual spawn stops tools and keeps incomplete facts", async (t) => {
+  const actual = await collectedChild(t, { disconnectAfterSpawn: true, longTool: true });
+  assert.ok(actual.effects.spawns > 0);
+  assert.equal(actual.effects.closed, 1);
+  assert.equal(
+    actual.frames.some((f) => f.payload.event?.event === "SPAWNED"),
+    true
+  );
+  assert.equal(
+    actual.frames.some((f) => f.type === "RESULT"),
+    false
+  );
+  assert.equal(actual.closed.exitCode, 1, actual.diagnostics);
+});
+
+test("child collector observation disconnect stops after the already running SQL", async (t) => {
+  const actual = await collectedChild(t, { disconnectDuringObservation: true });
+  assert.equal(actual.effects.queries, 3);
+  assert.equal(actual.effects.spawns, 0);
+  assert.equal(actual.effects.closed, 1);
+  assert.equal(
+    actual.frames.some((f) => f.type === "RESULT"),
+    false
+  );
+});
+
+test("child collector forces actual termination when SIGTERM leaves the tool running", async (t) => {
+  const actual = await collectedChild(t, {
+    disconnectAfterSpawn: true,
+    longTool: true,
+    ignoreTerm: true
+  });
+  assert.ok(actual.effects.forceKills > 0, actual.diagnostics);
+  assert.equal(actual.effects.closed, 1);
+  assert.equal(
+    actual.frames.some((f) => f.type === "RESULT"),
+    false
+  );
+  assert.equal(actual.closed.exitCode, 1);
+});
+
+test("child collector missing actual close ends boundedly without inventing CLOSED", async (t) => {
+  const actual = await collectedChild(t, { disconnectAfterSpawn: true, missingClose: true });
+  assert.equal(actual.effects.closed, 1);
+  assert.equal(
+    actual.frames.some((f) => f.payload.event?.event === "CLOSED"),
+    false
+  );
+  assert.equal(
+    actual.frames.some((f) => f.type === "RESULT"),
+    false
+  );
+  assert.equal(actual.closed.exitCode, 1, actual.diagnostics);
+});
+
+test("child collector keeps actual nonzero close before runtime requireSuccess failure", async (t) => {
+  const actual = await collectedChild(t, { nonzero: true });
+  const closes = actual.frames.filter((f) => f.payload.event?.event === "CLOSED");
+  assert.equal(closes.length, 2);
+  assert.equal(
+    closes.every((f) => f.payload.event.exitCode === 7),
+    true
+  );
+  assert.equal(actual.frames.at(-1).payload.outcome, "THREW");
+  assert.equal(actual.frames.at(-1).payload.reasonCode, "PRISMA_VERSION_UNAVAILABLE");
 });

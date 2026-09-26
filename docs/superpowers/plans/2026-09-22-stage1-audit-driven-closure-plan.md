@@ -396,6 +396,8 @@ node scripts/release/run-database-suite.mjs --suite-id api.subscription-expiry-r
 
 重试[精确实施计划](./2026-09-26-stage1-financial-approval-retry-plan.md)已完成v2独立DOC审查并前向登记 `eef00780`。生产范围固定五文件、测试四文件，不开放客户端时间、不更改上传接口或旧registration/pricing重试语义。独立 `stage1-financial-retry-20260926` 保持原生产源、仅准备真实PG RED；`stage1-financial-retry-code-20260926` 承担API/UI实现，文件owner分离。两者基线eef的API/Web与已完整验证0ca相同，认可前一fresh迁移/权限/退役为本轮preflight，并完成新一轮skip-dotenv validate、两tree offline install/shared build/generate，均exit0。真实重试RED/GREEN、最终门禁与整合尚待，不将前一轮131项记为重试证据。
 
+财务审批重试与签署审计顺序追加单元现已本地收口并整合：见[正式验收](../../acceptance/2026-09-26-stage1-financial-approval-retry-validation.md)及[签署限域计划](./2026-09-26-stage1-return-manifest-audit-order-plan.md)。实际干净source `f82d30e149ded76d958831dfb46f6332fad1e2dc`，API9 607/607、Web2 115/115、expiry112/112和asset33/33共145/145；两类型审批跨时刻重放、并发单写/异体冲突、当前权限和权威漂移、request/decision审计写后整笔回滚均验证。签署审计改由完整snapshot恢复唯一顺序，合法同毫秒不再受随机UUID排序影响，闭环/自环/重复ID均拒绝。最终types/lint/diff、11文件摘要、report/receipt独立读回、七项权限与精确退役均通过，代码/原件/报告终审限定ACCEPT；保留各失败历史，fresh-2历史子谓词因原件不足仍不作根因断言。真实浏览器、线上和最终Node22并未执行，阶段1仍开放；按任务9–13依次等待实际owner/host、私有writer/独立reader和expected-schema来源，完成R2与最终双链，再先恢复指定服务器Docker/健康检查后做三样本、渠道、维护、恢复和签字。Registration保留低优先级防御改进，不借本轮扩改。
+
 ## 6. 每个单元的统一验收与交接
 
 - [ ] 施工前记录实际 HEAD/status、任务文件范围、批准/冻结边界；业务修改遵守 DEV_SPEC 和受控数据库 preflight。存在未明确归属的改动先交接，不回滚他人内容。

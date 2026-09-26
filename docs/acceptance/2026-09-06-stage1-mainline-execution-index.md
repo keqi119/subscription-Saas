@@ -37,6 +37,8 @@
 - 2026-09-26，财务审批接线 `8c068885`、证据ID并集 `fb9a5df2`、真实PG组合 `84533176` 和[正式验收](2026-09-26-stage1-financial-approval-evidence-validation.md) `5a48c1cf` 已整合。实际干净source `0ca44e6e` 原expiry98/98、asset33/33，共131/131；五文件unit186/186、API类型/三文件lint/diff通过，报告/receipt独立重开校验、七项权限与精确退役及最终独立审查限定ACCEPT。两类型真实双人批准及减免/核销、证据缺项、余额/结算版本漂移、处置重放均验证；原API/Web字节与已审源一致，契约/发现仍176文件/128迁移/68Schema/13命令及95/39/56/0。后续优先细化财务审批未知结果重试（服务器首次时间、稳定key/body/proof、严格读回、上传未知状态），Registration仅列防御改进；R2外部输入、最终双链和真实浏览器/渠道仍开放。本轮未恢复线上Docker或扩大为阶段1完成。
 - 同日，审批重试的[五生产/四测试实施计划](../superpowers/plans/2026-09-26-stage1-financial-approval-retry-plan.md) `8f961324` 已经v2独立DOC ACCEPT，保留服务器首次时间与完整payload、严格UI读回及upload-unknown边界，未向HTTP开放回填时间。主控已建立原生产源PG RED与API/UI代码两个独立工作区，依赖/Prisma准备通过，按现有完整expiry取真实反例后再修后端；界面另行TDD。仅启动实施，不把前轮PG131/131或设计接受改称重试实现通过。
 
+- 2026-09-26，财务审批未知结果重试与签署审计顺序修复已精确整合，见[正式验收](2026-09-26-stage1-financial-approval-retry-validation.md)。实际干净执行源 `f82d30e149ded76d958831dfb46f6332fad1e2dc`：API9 607/607、Web2 115/115、完整 expiry112/112 与 asset33/33 共145/145，types/lint/diff全通过。后端核原收据/事实后复用服务器首写时间，前端冻结key/body/proof并严格读回；签署task按完整snapshot唯一因果链校验，拒绝分叉/循环/重复ID。代码、最终原件及报告获独立限定ACCEPT，11文件与已审源一致、报告/receipt/七项权限和精确退役已复核，保留98/102、110/112、111/112及类型/文档格式中间失败。Registration仍低优先级防御项；下一依赖为真实H1/H2/expected-schema输入→完整R2→Node22最终三镜像每链37套→恢复服务器Docker后真实A/B及成熟样本、渠道、维护/恢复与签字。未进行线上联调或关闭整体阶段1。
+
 历史代码基线：Task 5 `1f0b0439`。Task 6 提案保管：`457c0011`，不代表批准。
 Task 6/29R/30/I 系列冻结，Task 30 stash 不变。
 历史准入入口：[P0/P1 准入实施计划](../superpowers/plans/2026-09-06-stage1-p0-p1-admission-implementation-plan.md)，已关闭，不重跑。当前前向工作按下节及既有[主线/最小发布计划](../superpowers/plans/2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)执行。

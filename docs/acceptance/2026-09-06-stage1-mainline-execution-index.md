@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 原始 baseline 复用前向登记
+
+R2.2 隔离分支提交 `fd1f8852`，从原始归档及独立读回链复用唯一 baseline；缺失/冲突拒绝且不重新观察。独立审查指出的同 request 双 observation 关联 P1 已修复并通过限定复审。[限定验证记录](2026-09-27-stage1-r22-baseline-reuse-validation.md)保留初始聚焦 15/15、修复反例 RED 与定向 4/4，未重复完整 launcher 或业务套件。代码未整合主候选；父 Runner 仍 STOP，后续 child collector、expected 来源及完整 R2 门槛继续开放。
+
 ## 2026-09-27 构建运行链接兼容修复前向登记
 
 Task10 的运行链接格式修复已接回 `ea3f6d6e`、`b7efeccc`：工作流统一生成精确 HTTPS run URL，delivery verifier 闭集兼容原 `github://` 及 HTTPS，proof/material 必须同一表示，手动准入仍严格要求 HTTPS。[限定验证记录](2026-09-27-stage1-build-run-reference-validation.md)保留一次 76/83 夹具失败、稳定版本 83/83，以及独立审查指出混合格式夹具缺口后定向修正的 1/1；最终审查批准，整合字节一致。没有触发 CI、取得 OSS custody 或部署；Task10 整体仍开放。

@@ -93,3 +93,9 @@ Edge 已登录的控制台仍无法由浏览器工具读取，因此改用阿里
 这些请求在无业务启动命令的临时只读容器中执行，仅以 stdin 在内存传入现有 OSS 凭证；不传 API 数据库环境，不挂载数据卷，禁用提权并限制内存/CPU，结束后容器已删除。第一次 SDK 相对路径解析失败（exit 1）后，按镜像既有 `/app/apps/api/node_modules/ali-oss` 路径修正才成功；没有启动旧 API/Web 后台工作者。
 
 未写 OSS 对象、修改 ACL/WORM/加密、创建角色或绑定身份。当前事实仅证明已有桶配置符合这些基础条件，**不证明独立 writer/audit-reader、对象 Get/Head、实际保留或 H2 已通过**；210 天既有锁保持不变。ECS 云盘加密仍为 UNKNOWN，H1 五根/独立恢复仍未建立。
+
+## 后续身份配置的只读准备
+
+GitHub 实际读回：`trusted-image-build` 环境要求 reviewer `keqi119`，自定义分支策略只有 `main`；OIDC 仓库设置为 `use_default=true`、`use_immutable_subject=false`、`sub_claim_prefix=repo:keqi119/subscription-Saas`。没有修改环境或仓库设置。独立 writer/audit-reader 的限域 RAM 策略及 OIDC trust 草稿已放入 Task10 scratch；只是待管理身份认证后逐项核对的草稿，没有应用。
+
+GitHub OIDC discovery 和 TLS 链也已实际读取：JWKS 主机为 `token.actions.githubusercontent.com`，服务端末张证书是 ISRG Root X1 交叉签名的 Root YR。该证书与 Let's Encrypt 官方发布 DER 精确一致；使用官方 X1 根证书校验完整链、服务端用途和实际 hostname，OpenSSL verify exit 0。按阿里云官方“取服务端输出最后一张证书”方法，当前指纹为 `ab9d0263244dd0326eb67015705a667e79cfe998`；未创建 provider。公开证书及读回原件保存在 Task10 scratch `oidc-public-chain/`，不含认证凭证。依据：[阿里云方法](https://www.alibabacloud.com/help/en/ram/user-guide/obtain-oidc-idp-fingerprints-through-openssl)、[Let's Encrypt 信任链](https://letsencrypt.org/certificates/)。

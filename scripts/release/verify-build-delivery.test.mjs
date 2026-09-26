@@ -318,8 +318,13 @@ test("accepts the HTTPS workflow run reference without promoting", async () => {
 
 test("rejects mixed proof and material run-reference representations", () => {
   const input = deliveryFixture();
-  replaceRunReferences(input, `https://github.com/${repository}/actions/runs/${workflowRunId}`);
-  assert.throws(() => verify(input));
+  replaceRunReferences(
+    input,
+    `https://github.com/${repository}/actions/runs/${workflowRunId}`,
+    `github://${repository}/actions/runs/${workflowRunId}`
+  );
+  // The shared identity assertion rejects unequal references before delivery-specific checks.
+  assert.throws(() => verify(input), { code: "BUILD_PROOF_REGISTRY_SUBJECT_MISMATCH" });
 });
 
 for (const runRef of [

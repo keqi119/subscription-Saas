@@ -3717,21 +3717,27 @@ async function resolveClosureApprovalAuthority(
   );
   const bill = await tx.receivableBill.findUnique({ where: { id: input.billId } });
   const [linkedEvidence, financialProofs] = await Promise.all([
-    tx.vehicleReturnEvidenceLink.count({
-      where: { closureCaseId, evidenceId: { in: evidenceIds } }
+    tx.vehicleReturnEvidenceLink.findMany({
+      where: { closureCaseId, evidenceId: { in: evidenceIds } },
+      select: { evidenceId: true }
     }),
-    tx.fileObject.count({
+    tx.fileObject.findMany({
       where: {
         id: { in: evidenceIds },
         objectKey: { startsWith: `subscription-closure/${closureCaseId}/financial-proof/` }
-      }
+      },
+      select: { id: true }
     })
+  ]);
+  const coveredEvidenceIds = new Set([
+    ...linkedEvidence.map(({ evidenceId }) => evidenceId),
+    ...financialProofs.map(({ id }) => id)
   ]);
   if (
     !bill ||
     bill.orderId !== closureCase.orderId ||
     bill.remainingAmount <= 0n ||
-    linkedEvidence + financialProofs < evidenceIds.length
+    evidenceIds.some((id) => !coveredEvidenceIds.has(id))
   ) {
     throw conflict(
       "CLOSURE_FINANCIAL_APPROVAL_AUTHORITY_MISMATCH",

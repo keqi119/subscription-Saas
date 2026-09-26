@@ -223,6 +223,114 @@ describe.each(["WAIVER", "WRITE_OFF"] as const)("%s approval accounting context"
   });
 });
 
+describe.each(["WAIVER", "WRITE_OFF"] as const)("%s financial evidence membership", (type) => {
+  describe.each(["request", "decide"] as const)("%s entry", (entry) => {
+    it.each([
+      "missing B",
+      "foreign link B",
+      "foreign proof B",
+      "missing P",
+      "wrong proof directory P",
+      "foreign proof P",
+      "unmasked missing B"
+    ] as const)(
+      "rejects %s using actual where-filtered rows without any writes",
+      async (variant) => {
+        const links = multiFinancialEvidence();
+        const files = [financialProofRow()];
+        const evidenceIds = variant.endsWith(" P")
+          ? [FINANCIAL_IDS.evidenceA, FINANCIAL_IDS.proof]
+          : [FINANCIAL_IDS.evidenceA, FINANCIAL_IDS.evidenceB, FINANCIAL_IDS.proof];
+        if (variant === "foreign link B") {
+          links.push({
+            closureCaseId: FINANCIAL_IDS.foreignClosure,
+            evidenceId: FINANCIAL_IDS.evidenceB,
+            evidencePurpose: "CHECKLIST_PROOF"
+          });
+        }
+        if (variant === "foreign proof B") {
+          files.push({
+            id: FINANCIAL_IDS.evidenceB,
+            objectKey: `subscription-closure/${FINANCIAL_IDS.foreignClosure}/financial-proof/b.png`
+          });
+        }
+        if (variant === "missing P") files.splice(0);
+        if (variant === "wrong proof directory P")
+          files[0]!.objectKey = `subscription-closure/${FINANCIAL_IDS.closure}/evidence-package/proof.png`;
+        if (variant === "foreign proof P")
+          files[0]!.objectKey = `subscription-closure/${FINANCIAL_IDS.foreignClosure}/financial-proof/proof.png`;
+        if (variant === "unmasked missing B") links.splice(1, 1);
+        const h = financialApprovalHarness(type, { links, files, evidenceIds });
+        const before = structuredClone(h.bill);
+        await expect(h[entry]()).rejects.toMatchObject({
+          response: { code: "CLOSURE_FINANCIAL_APPROVAL_AUTHORITY_MISMATCH" }
+        });
+        expect(h.repository.requestExceptionApproval).not.toHaveBeenCalled();
+        expect(h.repository.decideExceptionApproval).not.toHaveBeenCalled();
+        expect(h.audit.write).not.toHaveBeenCalled();
+        expect(h.bill).toEqual(before);
+      }
+    );
+
+    it.each(["duplicate IDs", "link only", "proof only", "complete union"] as const)(
+      "preserves %s without requiring each ID in both sources",
+      async (variant) => {
+        const links = multiFinancialEvidence();
+        const evidenceIds =
+          variant === "link only"
+            ? [FINANCIAL_IDS.evidenceA]
+            : variant === "proof only"
+              ? [FINANCIAL_IDS.proof, FINANCIAL_IDS.proof]
+              : variant === "complete union"
+                ? [FINANCIAL_IDS.evidenceA, FINANCIAL_IDS.evidenceB, FINANCIAL_IDS.proof]
+                : [FINANCIAL_IDS.proof, FINANCIAL_IDS.evidenceA, FINANCIAL_IDS.evidenceA];
+        if (variant === "complete union") {
+          links.push({
+            closureCaseId: FINANCIAL_IDS.closure,
+            evidenceId: FINANCIAL_IDS.evidenceB,
+            evidencePurpose: "CHECKLIST_PROOF"
+          });
+        }
+        const h = financialApprovalHarness(type, { links, evidenceIds });
+        expect(await h[entry]()).toMatchObject({
+          subjectSnapshot: { evidenceIds: [...new Set(evidenceIds)].sort() }
+        });
+        expect(h.audit.write).toHaveBeenCalledTimes(1);
+      }
+    );
+
+    it.each([
+      ["empty evidence", "CLOSURE_APPROVAL_EVIDENCE_REQUIRED"],
+      ["missing bill input", "CLOSURE_FINANCIAL_APPROVAL_INPUT_INVALID"],
+      ["missing bill row", "CLOSURE_FINANCIAL_APPROVAL_AUTHORITY_MISMATCH"],
+      ["unpublished settlement", "CLOSURE_FINANCIAL_APPROVAL_INPUT_INVALID"],
+      ["retired case", "CLOSURE_APPROVAL_STALE"],
+      ["old revision", "CLOSURE_APPROVAL_STALE"],
+      ["foreign settlement", "CLOSURE_APPROVAL_STALE"],
+      ["foreign bill", "CLOSURE_FINANCIAL_APPROVAL_AUTHORITY_MISMATCH"],
+      ["zero balance", "CLOSURE_FINANCIAL_APPROVAL_AUTHORITY_MISMATCH"]
+    ] as const)("retains the first guard for %s", async (variant, code) => {
+      const h = financialApprovalHarness(type, {
+        evidenceIds: variant === "empty evidence" ? [] : undefined,
+        omitBill: variant === "missing bill input"
+      });
+      if (variant === "missing bill row") h.tx.receivableBill.findUnique.mockResolvedValue(null);
+      if (variant === "unpublished settlement") h.settlement.stage = "PROPOSED";
+      if (variant === "retired case") h.closureCase.retiredAt = new Date();
+      if (variant === "old revision")
+        h.closureCase.currentSettlementRevisionId = FINANCIAL_IDS.foreignClosure;
+      if (variant === "foreign settlement")
+        h.settlement.closureCaseId = FINANCIAL_IDS.foreignClosure;
+      if (variant === "foreign bill") h.bill.orderId = FINANCIAL_IDS.foreignClosure;
+      if (variant === "zero balance") h.bill.remainingAmount = 0n;
+      await expect(h[entry]()).rejects.toMatchObject({ response: { code } });
+      expect(h.repository.requestExceptionApproval).not.toHaveBeenCalled();
+      expect(h.repository.decideExceptionApproval).not.toHaveBeenCalled();
+      expect(h.audit.write).not.toHaveBeenCalled();
+    });
+  });
+});
+
 const FINANCIAL_IDS = {
   closure: "00000000-0000-4000-8000-000000000101",
   order: "00000000-0000-4000-8000-000000000102",
@@ -231,23 +339,63 @@ const FINANCIAL_IDS = {
   proof: "00000000-0000-4000-8000-000000000105",
   approval: "00000000-0000-4000-8000-000000000106",
   requester: "00000000-0000-4000-8000-000000000107",
-  decider: "00000000-0000-4000-8000-000000000108"
+  decider: "00000000-0000-4000-8000-000000000108",
+  evidenceA: "00000000-0000-4000-8000-000000000109",
+  evidenceB: "00000000-0000-4000-8000-000000000110",
+  foreignClosure: "00000000-0000-4000-8000-000000000111"
 };
 
 function financialUser(id: string, permissions: string[]): RequestUser {
   return { id, permissions, menus: [], name: "Financial fixture", username: id, roles: ["OP"] };
 }
 
-function financialApprovalHarness(approvalType: "WAIVER" | "WRITE_OFF") {
+type FinancialEvidenceLink = {
+  closureCaseId: string;
+  evidenceId: string | null;
+  evidencePurpose: string;
+};
+
+function multiFinancialEvidence(): FinancialEvidenceLink[] {
+  return [
+    {
+      closureCaseId: FINANCIAL_IDS.closure,
+      evidenceId: FINANCIAL_IDS.evidenceA,
+      evidencePurpose: "CHECKLIST_PROOF"
+    },
+    {
+      closureCaseId: FINANCIAL_IDS.closure,
+      evidenceId: FINANCIAL_IDS.evidenceA,
+      evidencePurpose: "DAMAGE_PROOF"
+    },
+    { closureCaseId: FINANCIAL_IDS.closure, evidenceId: null, evidencePurpose: "UNRELATED" }
+  ];
+}
+
+function financialProofRow() {
+  return {
+    id: FINANCIAL_IDS.proof,
+    objectKey: `subscription-closure/${FINANCIAL_IDS.closure}/financial-proof/proof.png`
+  };
+}
+
+function financialApprovalHarness(
+  approvalType: "WAIVER" | "WRITE_OFF",
+  options: {
+    links?: FinancialEvidenceLink[];
+    files?: Array<{ id: string; objectKey: string }>;
+    evidenceIds?: string[];
+    omitBill?: boolean;
+  } = {}
+) {
   const subjectField = `${approvalType === "WAIVER" ? "settlementWaiver" : "settlementWriteOff"}:${FINANCIAL_IDS.bill}`;
   const subjectSnapshot = {
     approvalType,
     amountCents: "100",
-    billId: FINANCIAL_IDS.bill,
+    billId: options.omitBill ? null : FINANCIAL_IDS.bill,
     clauseSnapshotId: null,
     closureCaseId: FINANCIAL_IDS.closure,
     deltaItemId: null,
-    evidenceIds: [FINANCIAL_IDS.proof],
+    evidenceIds: [...new Set(options.evidenceIds ?? [FINANCIAL_IDS.proof])].sort(),
     manualBasis: null,
     manualUnitPriceCents: null,
     settlementResultHash: "financial-result-hash",
@@ -278,7 +426,7 @@ function financialApprovalHarness(approvalType: "WAIVER" | "WRITE_OFF") {
   const closureCase = {
     id: FINANCIAL_IDS.closure,
     orderId: FINANCIAL_IDS.order,
-    retiredAt: null,
+    retiredAt: null as Date | null,
     currentSettlementRevisionId: FINANCIAL_IDS.settlement
   };
   const settlement = {
@@ -288,25 +436,46 @@ function financialApprovalHarness(approvalType: "WAIVER" | "WRITE_OFF") {
     stage: "FINALIZED"
   };
   const bill = { id: FINANCIAL_IDS.bill, orderId: FINANCIAL_IDS.order, remainingAmount: 100n };
-  const files = [
-    {
-      id: FINANCIAL_IDS.proof,
-      objectKey: `subscription-closure/${FINANCIAL_IDS.closure}/financial-proof/proof.png`
-    }
-  ];
+  const files = options.files ?? [financialProofRow()];
+  const links = options.links ?? [];
+  const matchingLinks = ({
+    where
+  }: {
+    where: { closureCaseId: string; evidenceId: { in: string[] } };
+  }) =>
+    links.filter(
+      (row) =>
+        row.closureCaseId === where.closureCaseId &&
+        row.evidenceId !== null &&
+        where.evidenceId.in.includes(row.evidenceId)
+    );
+  const matchingFiles = ({
+    where
+  }: {
+    where: { id: { in: string[] }; objectKey: { startsWith: string } };
+  }) =>
+    files.filter(
+      (row) => where.id.in.includes(row.id) && row.objectKey.startsWith(where.objectKey.startsWith)
+    );
   const tx = {
     $queryRaw: vi.fn(async () => []),
     subscriptionClosureCase: { findUnique: vi.fn(async () => closureCase) },
     subscriptionClosureSettlementRevision: { findUnique: vi.fn(async () => settlement) },
-    receivableBill: { findUnique: vi.fn(async () => bill) },
-    vehicleReturnEvidenceLink: { count: vi.fn(async () => 0) },
+    receivableBill: { findUnique: vi.fn(async (): Promise<typeof bill | null> => bill) },
+    vehicleReturnEvidenceLink: {
+      count: vi.fn(
+        async (query: Parameters<typeof matchingLinks>[0]) => matchingLinks(query).length
+      ),
+      findMany: vi.fn(async (query: Parameters<typeof matchingLinks>[0]) =>
+        matchingLinks(query).map(({ evidenceId }) => ({ evidenceId }))
+      )
+    },
     fileObject: {
       count: vi.fn(
-        async ({ where }: { where: { id: { in: string[] }; objectKey: { startsWith: string } } }) =>
-          files.filter(
-            (row) =>
-              where.id.in.includes(row.id) && row.objectKey.startsWith(where.objectKey.startsWith)
-          ).length
+        async (query: Parameters<typeof matchingFiles>[0]) => matchingFiles(query).length
+      ),
+      findMany: vi.fn(async (query: Parameters<typeof matchingFiles>[0]) =>
+        matchingFiles(query).map(({ id }) => ({ id }))
       )
     },
     businessExceptionApproval: { findUnique: vi.fn(async () => approval) }
@@ -367,13 +536,16 @@ function financialApprovalHarness(approvalType: "WAIVER" | "WRITE_OFF") {
     audit,
     repository,
     tx,
+    bill,
+    closureCase,
+    settlement,
     request: (user = financialUser(FINANCIAL_IDS.requester, ["business_exception:request"])) =>
       governance.requestApproval(
         FINANCIAL_IDS.closure,
         {
           approvalType,
-          billId: FINANCIAL_IDS.bill,
-          evidenceIds: [FINANCIAL_IDS.proof],
+          billId: options.omitBill ? undefined : FINANCIAL_IDS.bill,
+          evidenceIds: options.evidenceIds ?? [FINANCIAL_IDS.proof],
           settlementRevisionId: FINANCIAL_IDS.settlement,
           idempotencyKey: "financial-request",
           requestReason: "Financial fixture"

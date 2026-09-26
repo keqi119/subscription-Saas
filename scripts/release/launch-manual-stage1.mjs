@@ -653,9 +653,25 @@ async function readH3Inputs(fixed, profile, principal, recheckOwner) {
     validateH3Inputs(values[0], values[1], opened[0].bytes, fixed, profile);
     for (const item of opened) await item.recheck();
     await recheckOwner();
-    // Shape/binding is insufficient: actual resource inspect admission remains WIP.
-    // No session/attempt or future expected-schema input is opened at this boundary.
-    fail("MANUAL_H3_RESOURCE_INPUT_REQUIRED");
+    const recheckInputs = async () => {
+      for (const item of opened) await item.recheck();
+      await recheckOwner();
+    };
+    await observeH3Resources(values[0], values[1], recheckInputs);
+    const current = await readFixedManualOperation({
+      repoRoot,
+      operationRef: fixed.operation.operationRef
+    });
+    if (
+      current.indexDigest !== fixed.indexDigest ||
+      !current.proofBytes.equals(fixed.proofBytes) ||
+      !current.materialBytes.equals(fixed.materialBytes)
+    )
+      fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+    await recheckInputs();
+    // Docker readback is not SQL observation, authorization, or a baseline.
+    // Keep the next unfinished phase closed before session/attempt/credential IO.
+    fail("MANUAL_TARGET_OBSERVE_INPUT_REQUIRED");
   } catch (cause) {
     throw Object.assign(new Error("H3_INPUT_UNAVAILABLE", { cause }), {
       code: "H3_INPUT_UNAVAILABLE"
@@ -663,6 +679,210 @@ async function readH3Inputs(fixed, profile, principal, recheckOwner) {
   } finally {
     for (const item of opened) await item.close();
   }
+}
+
+// Fixed, nonsecret projections. Never collect Docker's whole Config/Env or commands
+// (which can contain credentials), nor execute the human operation-sheet text.
+const h3MarkerLabel = "subscription-stage1-manual-marker";
+const h3DockerFormats = Object.freeze({
+  container:
+    '{"id":{{json .Id}},"name":{{json .Name}},"imageId":{{json .Image}},"imageReference":{{json .Config.Image}},"running":{{json .State.Running}},"paused":{{json .State.Paused}},"restarting":{{json .State.Restarting}},"dead":{{json .State.Dead}},"privileged":{{json .HostConfig.Privileged}},"marker":{{json (index .Config.Labels "' +
+    h3MarkerLabel +
+    '")}},"networkMode":{{json .HostConfig.NetworkMode}},"mounts":{{json .Mounts}},"networks":{ {{$sep := ""}}{{range $name, $network := .NetworkSettings.Networks}}{{$sep}}{{json $name}}:{"NetworkID":{{json $network.NetworkID}},"IPAddress":{{json $network.IPAddress}},"GlobalIPv6Address":{{json $network.GlobalIPv6Address}}}{{$sep = ","}}{{end}} },"ports":{{json .NetworkSettings.Ports}},"portBindings":{{json .HostConfig.PortBindings}},"pgdata":[{{$sep := ""}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "PGDATA"}}{{$sep}}{{eq . "PGDATA=/var/lib/postgresql/data"}}{{$sep = ","}}{{end}}{{end}}],"defaultEntrypoint":{{eq (json .Config.Entrypoint) "[\\"docker-entrypoint.sh\\"]"}},"defaultCommand":{{eq (json .Config.Cmd) "[\\"postgres\\"]"}}}',
+  volume:
+    '{"name":{{json .Name}},"driver":{{json .Driver}},"scope":{{json .Scope}},"mountpoint":{{json .Mountpoint}},"optionsEmpty":{{not .Options}},"marker":{{json (index .Labels "' +
+    h3MarkerLabel +
+    '")}}}',
+  image: '{"id":{{json .Id}},"repoDigests":{{json .RepoDigests}}}',
+  network:
+    '{"id":{{json .Id}},"name":{{json .Name}},"driver":{{json .Driver}},"scope":{{json .Scope}}}'
+});
+
+async function dockerObservation(kind, reference, recheck) {
+  const daemon =
+    process.platform === "win32"
+      ? "npipe:////./pipe/docker_engine"
+      : process.platform === "linux"
+        ? "unix:///var/run/docker.sock"
+        : null;
+  if (!daemon) fail("MANUAL_H3_RESOURCE_INPUT_REQUIRED");
+  const args =
+    kind === "users"
+      ? [
+          "container",
+          "ls",
+          "--all",
+          "--no-trunc",
+          "--filter",
+          `volume=${reference}`,
+          "--format",
+          "{{.ID}}"
+        ]
+      : [kind, "inspect", "--format", h3DockerFormats[kind], "--", reference];
+  // Ignore DOCKER_HOST/CONTEXT/TLS, HOME, PostgreSQL and arbitrary inherited env.
+  // Host/principal trust is established by H1, not selected by this invocation.
+  const env = {};
+  for (const name of ["PATH", "SystemRoot", "WINDIR"])
+    if (typeof process.env[name] === "string") env[name] = process.env[name];
+  const result = await new Promise((resolve) => {
+    try {
+      childProcess.execFile(
+        "docker",
+        ["--host", daemon, ...args],
+        {
+          shell: false,
+          windowsHide: true,
+          encoding: "buffer",
+          timeout: 10000,
+          maxBuffer: 1048576,
+          env
+        },
+        (error, stdout, stderr) => resolve({ error, stdout, stderr })
+      );
+    } catch {
+      resolve({ error: true });
+    }
+  });
+  await recheck();
+  if (
+    result.error ||
+    !Buffer.isBuffer(result.stdout) ||
+    !Buffer.isBuffer(result.stderr) ||
+    result.stdout.length > 1048576 ||
+    result.stderr.length > 1048576 ||
+    result.stderr.length
+  )
+    fail("MANUAL_H3_RESOURCE_INPUT_REQUIRED");
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);
+    return kind === "users" ? text : JSON.parse(text);
+  } catch {
+    // Do not retain raw daemon errors, which may contain private host information.
+    fail("MANUAL_H3_RESOURCE_INPUT_REQUIRED");
+  }
+}
+
+async function observeH3Resources(approval, readback, recheck) {
+  const spec = approval.creationSpec,
+    cluster = readback.cluster;
+  // DNS/proxy/wildcard paths require a separately proven mapping. This initial
+  // implementation admits only an exact loopback publication on the H1 host.
+  const endpoint = /^(127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})$/u.exec(spec.endpoint);
+  if (
+    !endpoint ||
+    Number(endpoint[2]) > 65535 ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/u.test(spec.dataVolumeName)
+  )
+    fail("MANUAL_H3_RESOURCE_INPUT_REQUIRED");
+  const host = endpoint[1] === "[::1]" ? "::1" : endpoint[1];
+  const mismatch = () => fail("MANUAL_H3_RESOURCE_MISMATCH");
+  const snapshot = async () => {
+    const container = await dockerObservation("container", cluster.databaseContainerId, recheck);
+    if (
+      !container ||
+      container.id !== cluster.databaseContainerId ||
+      container.name !== "/" + spec.databaseContainerName ||
+      container.running !== true ||
+      container.paused !== false ||
+      container.restarting !== false ||
+      container.dead !== false ||
+      container.privileged !== false ||
+      container.marker !== spec.marker ||
+      !/^sha256:[0-9a-f]{64}$/u.test(container.imageId) ||
+      typeof container.imageReference !== "string" ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9_./:-]*@sha256:[0-9a-f]{64}$/u.test(container.imageReference) ||
+      !container.imageReference.endsWith("@" + spec.postgresImageDigest) ||
+      container.defaultEntrypoint !== true ||
+      container.defaultCommand !== true ||
+      !Array.isArray(container.pgdata) ||
+      container.pgdata.length !== 1 ||
+      container.pgdata[0] !== true ||
+      !Array.isArray(container.mounts) ||
+      !container.networks ||
+      typeof container.networks !== "object" ||
+      Array.isArray(container.networks)
+    )
+      mismatch();
+    const mounts = container.mounts.filter(
+      (item) => item?.Destination === "/var/lib/postgresql/data"
+    );
+    if (
+      mounts.length !== 1 ||
+      mounts[0].Type !== "volume" ||
+      mounts[0].Name !== spec.dataVolumeName ||
+      mounts[0].RW !== true ||
+      typeof mounts[0].Source !== "string"
+    )
+      mismatch();
+    for (const mount of container.mounts) {
+      if (mount === mounts[0]) continue;
+      const dest = mount?.Destination;
+      if (
+        typeof dest !== "string" ||
+        !dest.startsWith("/") ||
+        dest === "/" ||
+        "/var/lib/postgresql/data".startsWith(dest + "/") ||
+        dest.startsWith("/var/lib/postgresql/data/") ||
+        mount.RW !== false
+      )
+        mismatch();
+    }
+    const expectedPorts = { [`${spec.serverPort}/tcp`]: [{ HostIp: host, HostPort: endpoint[2] }] };
+    if (
+      sha256Canonical(container.ports) !== sha256Canonical(expectedPorts) ||
+      sha256Canonical(container.portBindings) !== sha256Canonical(expectedPorts)
+    )
+      mismatch();
+    const networks = Object.entries(container.networks);
+    if (networks.length !== 1) mismatch();
+    const [networkName, link] = networks[0];
+    if (
+      !link ||
+      !/^[0-9a-f]{64}$/u.test(link.NetworkID) ||
+      ![networkName, link.NetworkID].includes(container.networkMode) ||
+      ["host", "none", "default", "bridge"].includes(networkName) ||
+      ![link.IPAddress, link.GlobalIPv6Address].includes(cluster.serverAddress)
+    )
+      mismatch();
+    const volume = await dockerObservation("volume", spec.dataVolumeName, recheck);
+    if (
+      !volume ||
+      volume.name !== spec.dataVolumeName ||
+      volume.driver !== "local" ||
+      volume.scope !== "local" ||
+      volume.mountpoint !== mounts[0].Source ||
+      volume.optionsEmpty !== true ||
+      volume.marker !== spec.marker
+    )
+      mismatch();
+    const image = await dockerObservation("image", container.imageId, recheck);
+    if (
+      !image ||
+      image.id !== container.imageId ||
+      !Array.isArray(image.repoDigests) ||
+      !image.repoDigests.includes(container.imageReference)
+    )
+      mismatch();
+    const network = await dockerObservation("network", link.NetworkID, recheck);
+    if (
+      !network ||
+      network.id !== link.NetworkID ||
+      network.name !== networkName ||
+      network.driver !== "bridge" ||
+      network.scope !== "local"
+    )
+      mismatch();
+    const users = await dockerObservation("users", spec.dataVolumeName, recheck);
+    if (
+      users !== cluster.databaseContainerId + "\n" &&
+      users !== cluster.databaseContainerId + "\r\n"
+    )
+      mismatch();
+    return { container, volume, image, network, users };
+  };
+  const first = await snapshot(),
+    second = await snapshot();
+  if (sha256Canonical(first) !== sha256Canonical(second)) mismatch();
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

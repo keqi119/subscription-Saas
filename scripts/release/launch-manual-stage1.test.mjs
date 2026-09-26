@@ -5,6 +5,7 @@ import fsSync from "node:fs";
 import crypto, { generateKeyPairSync, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import http from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import {
   encodeManualJson,
@@ -214,7 +215,7 @@ async function git(repoRoot, ...args) {
   );
 }
 
-async function fixture(t) {
+async function fixture(t, endpoint = "db.invalid:5432") {
   assert.equal(
     process.platform,
     "win32",
@@ -258,7 +259,7 @@ async function fixture(t) {
     allowedTargets: [
       {
         endpointPolicyId: "synthetic-policy",
-        endpoint: "db.invalid:5432",
+        endpoint,
         databaseName: "synthetic-db",
         purposes: ["synthetic-fresh"],
         roles: { observer: "observer", migrate: "migrate", verify: "verify" },
@@ -312,6 +313,7 @@ async function fixture(t) {
     approvalPath,
     keys,
     systemDir,
+    docker: { calls: [], outputs: null, before: null },
     counters: {
       privateKeyReads: 0,
       indexWrites: 0,
@@ -375,6 +377,31 @@ function installFixedIO(t, f, gh) {
         value = gh.run;
       else throw new Error("Unexpected synthetic gh invocation");
       value = Buffer.from(JSON.stringify(value));
+    } else if (file === "docker" && f.docker.outputs) {
+      f.docker.calls.push({ args: [...args], options: { ...options } });
+      const kind = args[2] === "container" && args[3] === "ls" ? "users" : args[2];
+      assert.equal(args[0], "--host");
+      assert.equal(args[1], "npipe:////./pipe/docker_engine");
+      assert.equal(args[3], kind === "users" ? "ls" : "inspect");
+      assert.equal(options.shell, false);
+      assert.equal(options.encoding, "buffer");
+      assert.equal(options.windowsHide, true);
+      assert.ok(options.timeout > 0 && options.timeout <= 10000);
+      assert.ok(options.maxBuffer <= 1048576);
+      assert.ok(
+        Object.keys(options.env).every((key) => ["PATH", "SystemRoot", "WINDIR"].includes(key))
+      );
+      if (f.docker.before) f.docker.before(kind, args);
+      if (f.docker.native) return f.docker.native(args, options, callback);
+      const observed = f.docker.outputs[kind];
+      assert.notEqual(observed, undefined, "only fixed read-only Docker observations are allowed");
+      if (observed instanceof Error) {
+        queueMicrotask(() =>
+          callback(observed, Buffer.alloc(0), Buffer.from("private daemon error"))
+        );
+        return { kill() {} };
+      }
+      value = Buffer.isBuffer(observed) ? observed : Buffer.from(JSON.stringify(observed) + "\n");
     } else if (file === system + "reg.exe")
       value = Buffer.from(
         `HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    {${f.host.guid}}\r\n`
@@ -462,8 +489,8 @@ function verifiedItem(bytes, sourceSha, name, timestamp = generatedAt) {
   };
 }
 
-async function buildFixture(t) {
-  const f = await fixture(t);
+async function buildFixture(t, endpoint) {
+  const f = await fixture(t, endpoint);
   const manifest = "release/contracts/repository-contract-files.v1.json";
   const entrypoints = [
     "scripts/release/manual-stage1-trust.mjs",
@@ -647,8 +674,8 @@ function h3Rejection(causeCode) {
     return true;
   };
 }
-async function launchInputFixture(t) {
-  const f = await buildFixture(t);
+async function launchInputFixture(t, endpoint) {
+  const f = await buildFixture(t, endpoint);
   const prepared = await launcher.prepareManualOperation(prepareInput(f));
   const operationRoot = path.join(
     f.profile.storage.archiveRoot,
@@ -762,8 +789,8 @@ test("launch detects fixed H3 approval changed at independent reopen", async (t)
   noAuthority(f);
 });
 
-async function h3InputFixture(t) {
-  const f = await launchInputFixture(t);
+async function h3InputFixture(t, endpoint) {
+  const f = await launchInputFixture(t, endpoint);
   const fixed = await readFixedManualOperation({
     repoRoot: productionRoot,
     operationRef: f.prepared.operationRef
@@ -827,6 +854,495 @@ async function writeH3(f, { bindApproval = true } = {}) {
   ])
     await fs.writeFile(path.join(f.operationRoot, name), encodeManualJson(value), { mode: 0o600 });
 }
+
+async function h3ResourceFixture(t) {
+  const f = await h3InputFixture(t, "127.0.0.1:25432");
+  await writeH3(f);
+  f.docker.outputs = {
+    container: {
+      id: "b".repeat(64),
+      name: "/synthetic-h3-database",
+      imageId: digest("c"),
+      imageReference: "postgres@" + digest("a"),
+      running: true,
+      paused: false,
+      restarting: false,
+      dead: false,
+      privileged: false,
+      marker: "synthetic-h3-marker",
+      networkMode: "synthetic-h3-network",
+      pgdata: [true],
+      defaultEntrypoint: true,
+      defaultCommand: true,
+      mounts: [
+        {
+          Type: "volume",
+          Name: "synthetic-h3-volume",
+          Source: "/var/lib/docker/volumes/synthetic-h3-volume/_data",
+          Destination: "/var/lib/postgresql/data",
+          RW: true
+        }
+      ],
+      networks: {
+        "synthetic-h3-network": {
+          NetworkID: "d".repeat(64),
+          IPAddress: "172.19.0.2",
+          GlobalIPv6Address: ""
+        }
+      },
+      ports: { "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "25432" }] },
+      portBindings: { "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "25432" }] }
+    },
+    volume: {
+      name: "synthetic-h3-volume",
+      driver: "local",
+      scope: "local",
+      mountpoint: "/var/lib/docker/volumes/synthetic-h3-volume/_data",
+      optionsEmpty: true,
+      marker: "synthetic-h3-marker"
+    },
+    image: { id: digest("c"), repoDigests: ["postgres@" + digest("a")] },
+    network: { id: "d".repeat(64), name: "synthetic-h3-network", driver: "bridge", scope: "local" },
+    users: Buffer.from("b".repeat(64) + "\n")
+  };
+  return f;
+}
+
+test("H3 Docker source observations bind resources before the target-observe boundary", async (t) => {
+  const f = await h3ResourceFixture(t);
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    h3Rejection("MANUAL_TARGET_OBSERVE_INPUT_REQUIRED")
+  );
+  assert.deepEqual(
+    f.docker.calls.map(({ args }) =>
+      args[2] === "container" && args[3] === "ls" ? "users" : args[2]
+    ),
+    [
+      "container",
+      "volume",
+      "image",
+      "network",
+      "users",
+      "container",
+      "volume",
+      "image",
+      "network",
+      "users"
+    ]
+  );
+  for (const { args } of f.docker.calls) {
+    assert.ok(!args.some((arg) => ["exec", "run", "start", "create", "pull"].includes(arg)));
+    if (args[3] === "inspect") {
+      assert.equal(args.at(-2), "--");
+      assert.ok(
+        ["b".repeat(64), "synthetic-h3-volume", digest("c"), "d".repeat(64)].includes(args.at(-1))
+      );
+      const template = args[args.indexOf("--format") + 1];
+      assert.ok(
+        !template.includes("{{json .}}") &&
+          !template.includes("{{json .Config}}") &&
+          !template.includes("{{json .Config.Env}}"),
+        "whole configuration or secret environment must never be requested"
+      );
+    } else {
+      assert.deepEqual(args.slice(2), [
+        "container",
+        "ls",
+        "--all",
+        "--no-trunc",
+        "--filter",
+        "volume=synthetic-h3-volume",
+        "--format",
+        "{{.ID}}"
+      ]);
+    }
+  }
+  noAuthority(f);
+});
+
+test("H3 Docker real CLI formats nonsecret projections against an isolated synthetic Engine pipe", async (t) => {
+  const f = await h3ResourceFixture(t);
+  const pipe = "\\\\.\\pipe\\stage1-h3-test-" + randomUUID();
+  const requests = [];
+  const c = f.docker.outputs.container,
+    v = f.docker.outputs.volume,
+    i = f.docker.outputs.image,
+    n = f.docker.outputs.network;
+  const secret = "SYNTHETIC_SECRET_MUST_NOT_BE_PROJECTED";
+  let volumeOptions = null;
+  const server = http.createServer((request, response) => {
+    requests.push(request.url);
+    response.setHeader("Api-Version", "1.47");
+    response.setHeader("Content-Type", "application/json");
+    if (request.url === "/_ping") {
+      response.end("OK");
+      return;
+    }
+    const route = request.url.replace(/^\/v[0-9.]+/u, "").split("?")[0];
+    let value;
+    if (route === "/containers/" + c.id + "/json")
+      value = {
+        Id: c.id,
+        Name: c.name,
+        Image: c.imageId,
+        Config: {
+          Image: c.imageReference,
+          Labels: { "subscription-stage1-manual-marker": c.marker },
+          Env: ["X=x", "PGDATA=/var/lib/postgresql/data", "POSTGRES_PASSWORD=" + secret],
+          Entrypoint: ["docker-entrypoint.sh"],
+          Cmd: ["postgres"]
+        },
+        State: { Running: true, Paused: false, Restarting: false, Dead: false },
+        HostConfig: { Privileged: false, NetworkMode: c.networkMode, PortBindings: c.portBindings },
+        Mounts: c.mounts,
+        NetworkSettings: { Ports: c.ports, Networks: c.networks }
+      };
+    else if (route === "/volumes/" + v.name)
+      value = {
+        Name: v.name,
+        Driver: v.driver,
+        Scope: v.scope,
+        Mountpoint: v.mountpoint,
+        Options: volumeOptions,
+        Labels: { "subscription-stage1-manual-marker": v.marker }
+      };
+    else if (decodeURIComponent(route) === "/images/" + i.id + "/json")
+      value = { Id: i.id, RepoDigests: i.repoDigests };
+    else if (route === "/networks/" + n.id)
+      value = { Id: n.id, Name: n.name, Driver: n.driver, Scope: n.scope };
+    else if (route === "/containers/json")
+      value = [
+        {
+          Id: c.id,
+          Names: [c.name],
+          Image: c.imageReference,
+          ImageID: c.imageId,
+          State: "running",
+          Status: "Up",
+          Ports: [],
+          Labels: {}
+        }
+      ];
+    else {
+      response.statusCode = 404;
+      value = { message: "unexpected synthetic route" };
+    }
+    response.end(JSON.stringify(value));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(pipe, resolve);
+  });
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const responses = [];
+  f.docker.native = (args, options, callback) =>
+    nativeExecFile(
+      "docker",
+      ["--host", "npipe:////./pipe/" + pipe.split("\\").at(-1), ...args.slice(2)],
+      options,
+      (error, stdout, stderr) => {
+        responses.push({
+          error: error?.message,
+          stdout: stdout?.toString("utf8"),
+          stderr: stderr?.toString("utf8")
+        });
+        callback(error, stdout, stderr);
+      }
+    );
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    (error) => {
+      assert.equal(
+        error.cause?.code,
+        "MANUAL_TARGET_OBSERVE_INPUT_REQUIRED",
+        JSON.stringify(responses)
+      );
+      return true;
+    }
+  );
+  assert.equal(responses.length, 10);
+  assert.ok(requests.some((url) => url.includes("/containers/json?")));
+  assert.ok(!JSON.stringify(responses).includes(secret));
+  for (const [name, mutate, expected] of [
+    [
+      "network driver options stay out of collected output",
+      () => {
+        c.networks["synthetic-h3-network"].DriverOpts = { password: secret };
+      },
+      "MANUAL_TARGET_OBSERVE_INPUT_REQUIRED"
+    ],
+    [
+      "rejected volume options stay out of collected output",
+      () => {
+        delete c.networks["synthetic-h3-network"].DriverOpts;
+        volumeOptions = { type: "cifs", o: "username=synthetic,password=" + secret };
+      },
+      "MANUAL_H3_RESOURCE_MISMATCH"
+    ]
+  ])
+    await t.test(name, async () => {
+      mutate();
+      const offset = responses.length;
+      await assert.rejects(
+        launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+        h3Rejection(expected)
+      );
+      assert.ok(responses.length > offset, "the real CLI observation happened");
+      assert.ok(
+        !JSON.stringify(responses.slice(offset)).includes(secret),
+        "driver secrets must not enter captured stdout even when the resource is refused"
+      );
+      noAuthority(f);
+    });
+  noAuthority(f);
+});
+
+test("H3 Docker resource mismatches cannot become target observations", async (t) => {
+  const f = await h3ResourceFixture(t);
+  const original = structuredClone(f.docker.outputs);
+  for (const [name, mutate] of [
+    [
+      "container ID",
+      (o) => {
+        o.container.id = "f".repeat(64);
+      }
+    ],
+    [
+      "container name",
+      (o) => {
+        o.container.name = "/other";
+      }
+    ],
+    [
+      "stopped container",
+      (o) => {
+        o.container.running = false;
+      }
+    ],
+    [
+      "container marker",
+      (o) => {
+        o.container.marker = "other";
+      }
+    ],
+    [
+      "volume marker",
+      (o) => {
+        o.volume.marker = "other";
+      }
+    ],
+    [
+      "named volume",
+      (o) => {
+        o.container.mounts[0].Name = "other";
+      }
+    ],
+    [
+      "volume mount source",
+      (o) => {
+        o.volume.mountpoint += "-other";
+      }
+    ],
+    [
+      "bind-backed local volume",
+      (o) => {
+        o.volume.optionsEmpty = false;
+      }
+    ],
+    [
+      "PGDATA bypass",
+      (o) => {
+        o.container.pgdata = [false];
+      }
+    ],
+    [
+      "entrypoint bypass",
+      (o) => {
+        o.container.defaultEntrypoint = false;
+      }
+    ],
+    [
+      "command override",
+      (o) => {
+        o.container.defaultCommand = false;
+      }
+    ],
+    [
+      "overlaid data directory",
+      (o) => {
+        o.container.mounts.push({
+          Type: "bind",
+          Source: "/other",
+          Destination: "/var/lib/postgresql/data/base",
+          RW: false
+        });
+      }
+    ],
+    [
+      "local image identity",
+      (o) => {
+        o.image.id = digest("f");
+      }
+    ],
+    [
+      "registry digest",
+      (o) => {
+        o.image.repoDigests = ["postgres@" + digest("f")];
+      }
+    ],
+    [
+      "mutable image tag",
+      (o) => {
+        o.container.imageReference = "postgres:17";
+      }
+    ],
+    [
+      "published port",
+      (o) => {
+        o.container.ports["5432/tcp"][0].HostPort = "25433";
+      }
+    ],
+    [
+      "wildcard bind",
+      (o) => {
+        o.container.ports["5432/tcp"][0].HostIp = "0.0.0.0";
+        o.container.portBindings = structuredClone(o.container.ports);
+      }
+    ],
+    [
+      "duplicate published binding",
+      (o) => {
+        o.container.ports["5432/tcp"].push({ HostIp: "::", HostPort: "25432" });
+      }
+    ],
+    [
+      "internal server address",
+      (o) => {
+        o.container.networks["synthetic-h3-network"].IPAddress = "172.19.0.3";
+      }
+    ],
+    [
+      "host networking",
+      (o) => {
+        o.container.networkMode = "host";
+      }
+    ],
+    [
+      "network ID",
+      (o) => {
+        o.network.id = "f".repeat(64);
+      }
+    ],
+    [
+      "unproven proxy network",
+      (o) => {
+        o.network.driver = "overlay";
+      }
+    ],
+    [
+      "shared volume",
+      (o) => {
+        o.users = Buffer.from("b".repeat(64) + "\n" + "e".repeat(64) + "\n");
+      }
+    ]
+  ]) {
+    await t.test(name, async () => {
+      f.docker.outputs = structuredClone(original);
+      f.docker.outputs.users = Buffer.from(f.docker.outputs.users);
+      mutate(f.docker.outputs);
+      await assert.rejects(
+        launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+        h3Rejection("MANUAL_H3_RESOURCE_MISMATCH")
+      );
+      noAuthority(f);
+    });
+  }
+});
+
+test("H3 Docker observations reject failed or unbounded raw source output", async (t) => {
+  const f = await h3ResourceFixture(t);
+  for (const [name, value] of [
+    ["daemon failure", new Error("synthetic failed inspect")],
+    ["invalid UTF-8", Buffer.from([0xff])],
+    ["oversized raw", Buffer.alloc(1048577, 32)],
+    ["two documents", Buffer.from("{}\n{}\n")],
+    ["truncated JSON", Buffer.from('{"id":')]
+  ])
+    await t.test(name, async () => {
+      f.docker.outputs.container = value;
+      const before = f.docker.calls.length;
+      await assert.rejects(
+        launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+        (error) => {
+          h3Rejection("MANUAL_H3_RESOURCE_INPUT_REQUIRED")(error);
+          assert.ok(!String(error.cause?.stack).includes("private daemon error"));
+          return true;
+        }
+      );
+      assert.equal(
+        f.docker.calls.length,
+        before + 1,
+        "the actual raw observation boundary was reached"
+      );
+      noAuthority(f);
+    });
+});
+
+test("H3 Docker observations recheck source bytes after every external await", async (t) => {
+  const f = await h3ResourceFixture(t);
+  let changed = false;
+  f.docker.before = (kind) => {
+    if (kind === "container" && !changed) {
+      changed = true;
+      fsSync.writeFileSync(
+        path.join(f.operationRoot, "h3-a-readback.json"),
+        encodeManualJson({ ...f.readback, databaseOid: "456" })
+      );
+    }
+  };
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    h3Rejection("MANUAL_OPERATION_INPUT_UNAVAILABLE")
+  );
+  assert.equal(changed, true);
+  assert.equal(f.docker.calls.length, 1, "do not continue inspection after fixed input changed");
+  noAuthority(f);
+});
+
+test("H3 Docker observations detect replacement between independent resource reads", async (t) => {
+  const f = await h3ResourceFixture(t);
+  let seen = 0;
+  f.docker.before = (kind) => {
+    if (kind === "container" && ++seen === 2) f.docker.outputs.container.id = "e".repeat(64);
+  };
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    h3Rejection("MANUAL_H3_RESOURCE_MISMATCH")
+  );
+  assert.equal(seen, 2);
+  noAuthority(f);
+});
+
+test("H3 Docker observations cannot carry an index replaced during inspection into the next phase", async (t) => {
+  const f = await h3ResourceFixture(t);
+  let changed = false;
+  f.docker.before = (kind) => {
+    if (kind === "users" && !changed) {
+      changed = true;
+      fsSync.appendFileSync(path.join(f.operationRoot, "index.json"), "\n");
+    }
+  };
+  await assert.rejects(
+    launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+    h3Rejection("MANUAL_OPERATION_INPUT_UNAVAILABLE")
+  );
+  assert.equal(changed, true);
+  noAuthority(f);
+});
 
 for (const key of [
   "operationRef",

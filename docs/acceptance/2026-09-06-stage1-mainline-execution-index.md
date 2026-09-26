@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 独立 expected-schema producer 前向登记
+
+隔离分支提交 `42bb7ec4`，实现宿主源码核验与固定 Runner 内两套独立参考库生成。唯一清理 Important 已修复并获限定复审 Approved。[验证记录](2026-09-27-stage1-expected-schema-producer-validation.md)区分初始 3/3 与最终修复定向 1/1，保留真实 RED；未重复全套。代码未整合主候选，尚未运行真实参考库或接私有保管、attestation、R2 准入，Task3 和阶段 1 继续开放。
+
 ## 2026-09-27 H2 内部 producer 前向登记
 
 隔离分支提交 `bbaf9710`，新增内部构建证据 custody producer，复用既有 proof/receipt 保管并补 material 原字节独立 Get/Head。独立限定审查 Approved；新增文件唯一测试 24/24、登记检查通过，未重复业务或全量门禁。[验证记录](2026-09-27-stage1-h2-internal-custody-validation.md)保留 RED、lint 全局配置修正和 hash 后置记录限制。未接真实 OSS/CI、未整合主候选；H2、expected-schema 和阶段 1 继续开放。

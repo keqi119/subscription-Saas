@@ -167,15 +167,15 @@ export async function prepareManualOperation(input) {
       await recheckSource();
       const handle = await fs.open(indexPath, "wx", 0o600);
       try {
-        const chain = await checkedPrivatePath(indexPath, { principal, privateRoot: archiveRoot });
-        if (!sameIdentity(chain.at(-1).stat, await handle.stat({ bigint: true })))
-          fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
         await recheckSource();
         await checkedPrivatePath(operationDirectory, {
           principal,
           privateRoot: archiveRoot,
           directory: true
         });
+        const chain = await checkedPrivatePath(indexPath, { principal, privateRoot: archiveRoot });
+        if (!sameIdentity(chain.at(-1).stat, await handle.stat({ bigint: true })))
+          fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
         await handle.writeFile(bytes);
         await handle.sync();
         const after = await checkedPrivatePath(indexPath, { principal, privateRoot: archiveRoot });
@@ -193,6 +193,7 @@ export async function prepareManualOperation(input) {
         !fixed.materialBytes.equals(materialBytes)
       )
         fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+      await recheckSource();
       return Object.freeze({ operationRef, indexDigest, promotionEligible: false });
     } catch (cause) {
       // Partial/colliding metadata stays reserved. No execution record or new identity is invented.

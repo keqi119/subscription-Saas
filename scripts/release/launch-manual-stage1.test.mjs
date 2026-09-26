@@ -989,6 +989,106 @@ test("prepare detects a verified source file changed after build success before 
   noAuthority(f);
 });
 
+for (const fault of ["source-bytes", "checkout-HEAD", "binding-ABA"]) {
+  test(`prepare final independent readback ${fault} retains UNKNOWN instead of returning success`, async (t) => {
+    const f = await buildFixture(t);
+    const open = fs.open.bind(fs);
+    let injected = false,
+      reservedRef;
+    t.mock.method(fs, "open", async (file, flags, ...args) => {
+      if (!injected && flags === "r" && String(file).endsWith(path.sep + "index.json")) {
+        injected = true;
+        reservedRef = path.basename(path.dirname(file));
+        if (fault === "source-bytes")
+          await nativeFS.writeFile(
+            path.join(f.repoRoot, "scripts", "release", "verify-build-proof.mjs"),
+            "changed during independent reader\n"
+          );
+        else if (fault === "checkout-HEAD")
+          await git(
+            f.repoRoot,
+            "commit",
+            "--allow-empty",
+            "--no-verify",
+            "-m",
+            "Synthetic readback source change"
+          );
+        else {
+          const binding = path.join(f.repoRoot, bindingName);
+          fsSync.renameSync(binding, binding + ".displaced");
+          fsSync.renameSync(binding + ".displaced", binding);
+        }
+      }
+      return open(file, flags, ...args);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(launcher.prepareManualOperation(prepareInput(f)), (error) => {
+      assert.equal(error.code, "MANUAL_OPERATION_PREPARATION_UNKNOWN");
+      assert.equal(error.operationRef, reservedRef);
+      assert.equal(error.cause.code, "MANUAL_OPERATION_INPUT_UNAVAILABLE");
+      return true;
+    });
+    assert.equal(injected, true);
+    assert.deepEqual(
+      await fs.readdir(path.join(f.profile.storage.archiveRoot, "inputs", "operations")),
+      [reservedRef]
+    );
+    assert.ok(
+      (
+        await nativeFS.readFile(
+          path.join(
+            f.profile.storage.archiveRoot,
+            "inputs",
+            "operations",
+            reservedRef,
+            "index.json"
+          )
+        )
+      ).length > 0
+    );
+    assert.equal(f.counters.indexWrites, 1);
+    noAuthority(f);
+  });
+}
+
+test("prepare rechecks opened index ACL after source awaits before writing bytes", async (t) => {
+  const f = await buildFixture(t);
+  const open = fs.open.bind(fs);
+  let indexPath,
+    injected = false,
+    dataWrites = 0;
+  t.mock.method(fs, "open", async (file, flags, ...args) => {
+    const handle = await open(file, flags, ...args);
+    if (flags === "wx" && String(file).endsWith(path.sep + "index.json")) {
+      indexPath = file;
+      const write = handle.writeFile.bind(handle);
+      handle.writeFile = (...values) => {
+        dataWrites++;
+        return write(...values);
+      };
+    }
+    return handle;
+  });
+  f.host.before = (file) => {
+    if (!injected && indexPath && file === "git") {
+      injected = true;
+      f.host.wideRoot = indexPath;
+    }
+  };
+  syncBuiltinESMExports();
+  await assert.rejects(launcher.prepareManualOperation(prepareInput(f)), (error) => {
+    assert.equal(error.code, "MANUAL_OPERATION_PREPARATION_UNKNOWN");
+    assert.equal(error.operationRef, path.basename(path.dirname(indexPath)));
+    assert.equal(error.cause.code, "MANUAL_OPERATION_INPUT_UNAVAILABLE");
+    return true;
+  });
+  assert.equal(injected, true);
+  assert.equal(dataWrites, 0);
+  assert.equal((await nativeFS.readFile(indexPath)).length, 0);
+  assert.equal(f.counters.indexWrites, 1, "CreateNew reserved the empty file without data writes");
+  noAuthority(f);
+});
+
 for (const fault of [
   "wide-inputs",
   "new-directory-ACL",

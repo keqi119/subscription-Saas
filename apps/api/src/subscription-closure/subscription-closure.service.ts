@@ -13580,9 +13580,11 @@ async function validateProducedReturnManifestSuccessorChain(
         )
       );
     });
+  const causalTaskAudits = orderReturnManifestTaskAuditChain(taskAudits);
   const auditChainValid =
-    taskAudits.length === 4 &&
-    taskAudits.every(
+    causalTaskAudits !== null &&
+    causalTaskAudits.length === 4 &&
+    causalTaskAudits.every(
       (audit) =>
         audit.entityId === task.id &&
         audit.entityType === "contract_esign_task" &&
@@ -13591,17 +13593,30 @@ async function validateProducedReturnManifestSuccessorChain(
         audit.ipAddress === null &&
         audit.userAgent === null
     ) &&
-    taskAudits[0]?.action === AuditAction.CREATE &&
-    taskAudits[0].beforeSnapshot === null &&
-    taskAudits.slice(1).every(({ action }) => action === AuditAction.UPDATE) &&
-    taskAudits[0].createdAt.getTime() === task.createdAt.getTime() &&
-    taskAudits[1]?.createdAt.getTime() === task.startedAt?.getTime() &&
-    taskAudits[2]?.createdAt.getTime() === task.completedAt?.getTime() &&
-    taskAudits[3]?.createdAt.getTime() === task.updatedAt.getTime() &&
-    sameCanonicalReceiptValue(taskAudits[0].afterSnapshot, taskAudits[1]?.beforeSnapshot) &&
-    sameCanonicalReceiptValue(taskAudits[1]?.afterSnapshot, taskAudits[2]?.beforeSnapshot) &&
-    sameCanonicalReceiptValue(taskAudits[2]?.afterSnapshot, taskAudits[3]?.beforeSnapshot) &&
-    sameCanonicalReceiptValue(taskAudits[3]?.afterSnapshot, manifestTaskAuditSnapshot(task));
+    causalTaskAudits[0]?.action === AuditAction.CREATE &&
+    causalTaskAudits[0].beforeSnapshot === null &&
+    causalTaskAudits.slice(1).every(({ action }) => action === AuditAction.UPDATE) &&
+    causalTaskAudits.every(
+      (audit, index) =>
+        index === 0 || audit.createdAt.getTime() >= causalTaskAudits[index - 1]!.createdAt.getTime()
+    ) &&
+    causalTaskAudits[0].createdAt.getTime() === task.createdAt.getTime() &&
+    causalTaskAudits[1]?.createdAt.getTime() === task.startedAt?.getTime() &&
+    causalTaskAudits[2]?.createdAt.getTime() === task.completedAt?.getTime() &&
+    causalTaskAudits[3]?.createdAt.getTime() === task.updatedAt.getTime() &&
+    sameCanonicalReceiptValue(
+      causalTaskAudits[0].afterSnapshot,
+      causalTaskAudits[1]?.beforeSnapshot
+    ) &&
+    sameCanonicalReceiptValue(
+      causalTaskAudits[1]?.afterSnapshot,
+      causalTaskAudits[2]?.beforeSnapshot
+    ) &&
+    sameCanonicalReceiptValue(
+      causalTaskAudits[2]?.afterSnapshot,
+      causalTaskAudits[3]?.beforeSnapshot
+    ) &&
+    sameCanonicalReceiptValue(causalTaskAudits[3]?.afterSnapshot, manifestTaskAuditSnapshot(task));
   const customerSigner = customerSigners[0];
   const platformSigner = platformSigners[0];
   const generatedSource = {
@@ -13872,6 +13887,37 @@ async function validateProducedReturnManifestSuccessorChain(
   return manifestValid;
 }
 
+function orderReturnManifestTaskAuditChain(
+  audits: readonly Prisma.AuditLogGetPayload<Record<string, never>>[]
+): Prisma.AuditLogGetPayload<Record<string, never>>[] | null {
+  if (audits.length !== 4 || new Set(audits.map(({ id }) => id)).size !== 4) return null;
+  const roots = audits.filter(({ action }) => action === AuditAction.CREATE);
+  const root = roots[0];
+  if (roots.length !== 1 || !root || root.beforeSnapshot !== null) return null;
+  try {
+    const ordered = [root];
+    const remaining = audits.filter((audit) => audit !== root);
+    const visitedStates = new Set([canonicalSubscriptionClosureJson(root.afterSnapshot as never)]);
+    while (remaining.length > 0) {
+      const current = ordered.at(-1)!;
+      const next = remaining.filter(
+        (audit) =>
+          audit.action === AuditAction.UPDATE &&
+          sameCanonicalReceiptValue(current.afterSnapshot, audit.beforeSnapshot)
+      );
+      if (next.length !== 1) return null;
+      const candidate = next[0]!;
+      const state = canonicalSubscriptionClosureJson(candidate.afterSnapshot as never);
+      if (visitedStates.has(state)) return null;
+      visitedStates.add(state);
+      ordered.push(candidate);
+      remaining.splice(remaining.indexOf(candidate), 1);
+    }
+    return ordered;
+  } catch {
+    return null;
+  }
+}
 function manifestFileMatches(
   file:
     | Readonly<{

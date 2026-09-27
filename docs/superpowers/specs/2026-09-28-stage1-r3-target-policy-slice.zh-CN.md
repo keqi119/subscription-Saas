@@ -73,3 +73,15 @@ R3 会话使用 `manual-operation-record.v3`，范围仅包括 session、consump
 `manual-runner-evidence.v2` 只表达尝试分配，不扩展原 MS2 子进程协议。分配绑定该 sessionRecordDigest、会话/操作/attempt/run、源码和候选、policy/spec/job、phase/chain 与分配时间。target-create 不得携带输入、目的地或前序执行；snapshot-consumer 只允许 snapshot chain，并须绑定已存在的创建执行、destination、scope authorization 和固定输入 selector/index 摘要；final 消费还需 matchingSourceEvidenceDigest。
 
 父方校验的 R3 分支复用原签名域和 parent decision 类型，严格检查新 session scope 与原撤销链。创建没有前序执行；消费必须引用同 session 的成功创建，其 resultDigest 对应请求的 destinationAdmissionDigest。完整原件图、实际目标及来源权限必须仍由 native session 校验；纯父方判定不是已消费或已获准读 payload 的证据。旧 v1/v2 记录及 R2 handoff 语义保持，native session 接线完成前不能用新记录启动执行。
+
+## 加密工作区的原始观察
+
+仓库原先没有 LUKS 的生产观察入口。`r3-encrypted-workspace-observer.mjs` 现提供 hosted 侧只读 `observeR3EncryptedWorkspace({operationRef,capacityBytes,state})`，其中 state 仅为 active 或 absent。路径均由固定策略及 UUID 派生；入口不接收路径、命令、环境或 IO adapter，也不创建、关闭或删除资源。原始观察必须随后由同 job 的签名原件、H1 固定读取器和完整目标图共同绑定，不能单独授予创建、消费或释放锁。
+
+active 读取完整内核 mount/loop/block 表、指定 mapper 元数据、LUKS2 header JSON 和独立 UUID，将 mount 的设备号、dm UUID、parent loop 与 backing file 精确对应。只接受 ext4、rw/nodev/nosuid、正常单 crypt segment、AES-XTS 的 64 字节 volume key；拒绝外部别名挂载、额外子挂载、重复或 deleted backing loop、重加密状态、启用 swap/core。key 文件的最长挂载前缀必须实际为 tmpfs；只检查其 root 所有权、私有权限和 64 字节长度，不读取内容。后续固定创建命令须使用同一算法及随机 64 字节操作 key，不能从观察器反推密钥熵已被证明。
+
+命令采用固定 executable/argv 和隔离环境；采集实际 PID、启动/close 时间、退出码/signal、完整 stdout/stderr 及其摘要。backing、key、mount 和 mapper 路径的身份在观察前后检查；backing/key 仅读取元数据。失败保留 INCOMPLETE 及已获得的原件，不补造退出或成功。`assessR3WorkspaceObservation` 是无副作用解析函数，返回冻结事实，不生成 manual decision。
+
+absent 要求完整拓扑命令成功，并且指定 mount、mapper、loop/backing 关联均不存在；指定文件/目录缺失仅接受 ENOENT，权限错误或命令失败不能视为已清理。这只证明本次指定存储名称的观察状态，不能证明原 Engine/CID、进程、数据库及完整资源集合已经停止或清理。完整 cleanup 仍须绑定创建时的实际资源身份，并经独立读回才可释放锁；当前入口不具备此能力。
+
+命令格式依据 [util-linux findmnt 文档](https://kernel.googlesource.com/pub/scm/utils/util-linux/util-linux/+/refs/heads/master/misc-utils/findmnt.8.adoc) 和 [cryptsetup luksDump 文档](https://gitlab.com/cryptsetup/cryptsetup/-/raw/main/man/cryptsetup-luksDump.8.adoc)：显式列名避免默认输出变化；findmnt 的非零退出不能证明不存在；LUKS2 JSON 不包含 UUID，因此使用独立 UUID 读回。未使用任何导出 volume key 的选项。

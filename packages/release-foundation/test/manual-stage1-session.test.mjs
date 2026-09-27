@@ -1946,6 +1946,25 @@ test("v2 profile completes handoff, archive readback, and signoff with all eight
   );
 });
 
+test("MS2 capacity reopens a large apply stdout through real session history", async (t) => {
+  const context = await liveRoot(t, { profileVersion: "v2", protocol: "MS2" });
+  const script = "-- self-contained capacity fixture\n".repeat(12000).slice(0, 402008) + "\n";
+  const dry = await liveRunner(context, "dry-run", null, { expectationScript: script });
+  await sealExecution(context, dry);
+  const apply = await liveRunner(context, "apply", dry, { expectationScript: script });
+  assert.ok(apply.finalProcess.protocol.stdoutPrefix.bytes > 1048576);
+  await sealExecution(context, apply);
+  await context.session.close();
+  context.session = await context.f.open();
+  const verify = await liveRunner(context, "verify", apply, { expectationScript: script });
+  assert.equal(
+    assessManualRunnerEvidence(verify.archive.input(verify.request)).executionStatus,
+    "SUCCEEDED"
+  );
+  await context.session.record("execution", verify.execution);
+  await context.session.close();
+});
+
 test("MS2 v2 profile persists H3 originals through handoff, archive, signoff, and reopen", async (t) => {
   const context = await liveRoot(t, { profileVersion: "v2", protocol: "MS2" });
   const dry = await liveRunner(context);

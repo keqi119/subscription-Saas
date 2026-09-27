@@ -1476,6 +1476,115 @@ test("MS2 schedule accepts every real runtime apply call with concurrent tool cu
   );
 });
 
+test("MS2 capacity transports two complete script originals with every live ACK", () => {
+  const script = "-- self-contained capacity fixture\n".repeat(12000).slice(0, 402008) + "\n";
+  assert.equal(Buffer.byteLength(script), 402009);
+  const dry = fixture90("dry-run", null, { protocol: "MS2", expectationScript: script });
+  const current = fixture90("apply", dry, { expectationScript: script });
+  const input = current.archive.input(current.request);
+  const stdout = current.archive.raws.get(current.finalProcess.protocol.stdoutPrefix.digest);
+  assert.ok(stdout.length > 1048576 && stdout.length <= 2097152);
+  for (const live of current.liveInputs) validateManualRunnerProtocol(live);
+  validateManualRunnerProtocol(input);
+  assert.equal(assessManualRunnerEvidence(input).executionStatus, "SUCCEEDED");
+  const scripts = current.finalProcess.events.filter(
+    (event) => event.tool === "prisma-script" && event.event === "CLOSED"
+  );
+  assert.equal(scripts.length, 2);
+  assert.notEqual(scripts[0].processSequence, scripts[1].processSequence);
+  for (const event of scripts)
+    assert.deepEqual(current.archive.raws.get(event.stdout.digest), Buffer.from(script));
+  for (const role of ["tool", "argv", "parent", "expected", "source", "h3"]) {
+    const process = structuredClone(current.finalProcess),
+      prefix = process.protocol.stdoutPrefix;
+    let digest;
+    if (["expected", "source"].includes(role)) {
+      const expectation = structuredClone(
+        current.archive.artifacts.get(current.request.expectedSchemaEvidenceDigest)
+      );
+      if (role === "expected") expectation.script = prefix;
+      else expectation.sourceSchemaDigest = prefix.digest;
+      digest = current.archive.add(expectation);
+    } else {
+      if (role === "tool")
+        process.events.find(
+          (event) => event.tool === "prisma-script" && event.event === "CLOSED"
+        ).stdout = prefix;
+      if (role === "argv")
+        process.events.find((event) => event.tool === "prisma-script").argvDigest = prefix.digest;
+      if (role === "parent") process.protocol.parentFrames.push(prefix);
+      if (role === "h3") {
+        const authorize = parseManualRunnerFrames({
+          direction: "parent-to-child",
+          bytes: current.archive.raws.get(process.protocol.parentFrames[0].digest),
+          ended: true
+        }).frames[0];
+        authorize.payload.targetContext.h3Approval = prefix;
+        process.protocol.parentFrames[0] = current.archive.raw(
+          fixtureFrame({
+            protocol: "MS2",
+            type: "AUTHORIZE",
+            sequence: 0,
+            payload: authorize.payload
+          })
+        );
+      }
+      digest = current.archive.add(process);
+    }
+    assert.throws(
+      () => assessManualRunnerEvidence(current.archive.input(current.request)),
+      { code: "MANUAL_OUTPUT_LIMIT" },
+      role
+    );
+    current.archive.artifacts.delete(digest);
+  }
+});
+
+test("MS2 capacity keeps other roles and the two MiB prefix boundary finite", () => {
+  const script = "-- self-contained capacity fixture\n".repeat(23000).slice(0, 780000);
+  const dry = fixture90("dry-run", null, { protocol: "MS2", expectationScript: script });
+  const current = fixture90("apply", dry, { expectationScript: script });
+  const stdout = current.archive.raws.get(current.finalProcess.protocol.stdoutPrefix.digest);
+  assert.ok(stdout.length > 2097152);
+  const prefix = stdout.subarray(0, 2097152);
+  assert.doesNotThrow(() =>
+    parseManualRunnerFrames({ direction: "child-to-parent", bytes: prefix, ended: false })
+  );
+  assert.throws(
+    () =>
+      parseManualRunnerFrames({
+        direction: "child-to-parent",
+        bytes: stdout.subarray(0, 2097153),
+        ended: false
+      }),
+    { code: "MANUAL_OUTPUT_LIMIT" }
+  );
+  for (const [direction, bytes] of [
+    ["child-to-parent", Buffer.concat([Buffer.from("MS1 "), Buffer.alloc(1048573)])],
+    ["parent-to-child", Buffer.concat([Buffer.from("MS2 "), Buffer.alloc(1048573)])]
+  ])
+    assert.throws(() => parseManualRunnerFrames({ direction, bytes, ended: false }), {
+      code: "MANUAL_OUTPUT_LIMIT"
+    });
+  assert.throws(
+    () =>
+      parseManualRunnerFrames({
+        direction: "child-to-parent",
+        bytes: Buffer.from("MS2 CHALLENGE 0 1048577\n"),
+        ended: false
+      }),
+    { code: "MANUAL_OUTPUT_LIMIT" }
+  );
+  assert.throws(() => encodeManualJson({ text: "x".repeat(1048576) }), {
+    code: "MANUAL_JSON_LIMIT"
+  });
+  const small = fixture90("apply", fixture90("dry-run", null, { protocol: "MS2" }));
+  small.archive.raw(Buffer.concat([Buffer.from("MS2 "), Buffer.alloc(1048573, 32)]));
+  assert.throws(() => assessManualRunnerEvidence(small.archive.input(small.request)), {
+    code: "MANUAL_OUTPUT_LIMIT"
+  });
+});
+
 test("MS2 schedule accepts complete serialized apply custody with every runtime call", () => {
   const dry = fixture90("dry-run", null, { protocol: "MS2" });
   const current = fixture90("apply", dry);

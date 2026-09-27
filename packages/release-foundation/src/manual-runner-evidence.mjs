@@ -8,6 +8,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 import evidenceSchema from "../../../release/contracts/schemas/manual-runner-evidence.v1.schema.json" with { type: "json" };
 
 const LIMIT = 1048576;
+const MS2_STDOUT_LIMIT = 2097152;
 const MISMATCH = "MANUAL_EVIDENCE_BINDING_MISMATCH";
 const REQUIRED = "MANUAL_EVIDENCE_INPUT_REQUIRED";
 const manualVersions = Object.freeze({
@@ -940,7 +941,11 @@ export function parseManualRunnerFrames(input) {
       typeof input.ended === "boolean",
     FRAME
   );
-  requireThat(input.bytes.length <= LIMIT, OUTPUT);
+  const streamLimit =
+    input.direction === "child-to-parent" && input.bytes.subarray(0, 4).equals(Buffer.from("MS2 "))
+      ? MS2_STDOUT_LIMIT
+      : LIMIT;
+  requireThat(input.bytes.length <= streamLimit, OUTPUT);
   const frames = [];
   let consumedBytes = 0,
     result = false,
@@ -1528,7 +1533,7 @@ function inputGraph(input) {
     raws = new Map();
   for (const bytes of rawBlobs) {
     requireThat(Buffer.isBuffer(bytes));
-    requireThat(bytes.length <= LIMIT, OUTPUT);
+    requireThat(bytes.length <= MS2_STDOUT_LIMIT, OUTPUT);
     const digest = sha256Bytes(bytes);
     requireThat(!raws.has(digest));
     raws.set(digest, bytes);
@@ -1546,7 +1551,11 @@ function inputGraph(input) {
   const protocolPrefixes = new Set(
     graph.list("process").map((p) => p.protocol.stdoutPrefix.digest)
   );
-  for (const [digest, bytes] of raws) if (!protocolPrefixes.has(digest)) decode(bytes);
+  for (const [digest, bytes] of raws)
+    if (!protocolPrefixes.has(digest)) {
+      requireThat(bytes.length <= LIMIT, OUTPUT);
+      decode(bytes);
+    }
   const allocation = artifacts.get(request.attemptAllocationDigest);
   requireThat(allocation, REQUIRED);
   requireThat(allocation.kind === "attempt-allocation");
@@ -1598,7 +1607,7 @@ function closedProtocolStdout(final, graph) {
   requireThat(closed.length === 1, INCOMPLETE);
   requireThat(
     equal(closed[0].stdout, final.protocol.stdoutPrefix) &&
-      graph.raw(closed[0].stdout).equals(graph.raw(final.protocol.stdoutPrefix)),
+      graph.raw(closed[0].stdout, graph.prefixRaw(final).length).equals(graph.prefixRaw(final)),
     ORDER
   );
 }
@@ -1616,8 +1625,8 @@ function protocolArchive(request, graph, { allowMissingResult = false } = {}) {
   const process = processChain(request, graph);
   requireThat(process, INCOMPLETE);
   const final = process.final,
-    raw = graph.raw(final.protocol.stdoutPrefix);
-  const parentBytes = final.protocol.parentFrames.map(graph.raw);
+    raw = graph.prefixRaw(final);
+  const parentBytes = final.protocol.parentFrames.map((ref) => graph.raw(ref));
   const parents = publicParents(parentBytes);
   const parsed = parseManualRunnerFrames({
     direction: "child-to-parent",
@@ -1722,12 +1731,16 @@ function validateArtifacts(artifacts, raws, profileDigest, policy) {
     return value;
   };
   const list = (kind) => [...artifacts.values()].filter((v) => type(v) === kind);
-  const raw = (ref) => {
+  const raw = (ref, limit = LIMIT) => {
     const bytes = raws.get(ref.digest);
     requireThat(bytes, REQUIRED);
     requireThat(bytes.length === ref.bytes);
+    requireThat(bytes.length <= limit, OUTPUT);
     return bytes;
   };
+  const prefixLimits = new Map();
+  const prefixRaw = (process) =>
+    raw(process.protocol.stdoutPrefix, prefixLimits.get(sha256Canonical(process)) ?? LIMIT);
   const birth = (value) =>
     value.recordedAt ??
     value.createdAt ??
@@ -1772,6 +1785,7 @@ function validateArtifacts(artifacts, raws, profileDigest, policy) {
             /^apps\/api\/prisma\/migrations\/[0-9]{14}_[a-z0-9_]+\/migration\.sql$/.test(entry.path)
         );
         requireThat(raws.has(entry.sha256), REQUIRED);
+        requireThat(raws.get(entry.sha256).length <= LIMIT, OUTPUT);
         paths.push(entry.path);
       }
       requireThat(sortedUnique(paths));
@@ -1876,6 +1890,7 @@ function validateArtifacts(artifacts, raws, profileDigest, policy) {
       edge(value, value.buildProofDigest, ["build"]);
       raw(value.script);
       requireThat(raws.has(value.sourceSchemaDigest), REQUIRED);
+      requireThat(raws.get(value.sourceSchemaDigest).length <= LIMIT, OUTPUT);
     } else if (["process", "observation", "manual-command-result"].includes(kind)) {
       let request = null;
       if (value.requestDigest !== null) {
@@ -1887,14 +1902,56 @@ function validateArtifacts(artifacts, raws, profileDigest, policy) {
         same(value, allocation, A);
       }
       if (kind === "process") {
-        raw(value.protocol.stdoutPrefix);
+        if (value.protocol.stdoutPrefix.bytes > LIMIT) {
+          requireThat(request !== null, MISMATCH);
+          const bytes = raw(value.protocol.stdoutPrefix, MS2_STDOUT_LIMIT),
+            parsed = parseManualRunnerFrames({ direction: "child-to-parent", bytes, ended: false }),
+            parents = publicParents(value.protocol.parentFrames.map((ref) => raw(ref)));
+          requireThat(parsed.frames.length > 0 && frameProtocol(parsed.frames[0]) === "MS2", FRAME);
+          requireThat(parents.length > 0 && frameProtocol(parents[0]) === "MS2", FRAME);
+          const authorization = parents[0].payload.authorization;
+          authorizeMatches(
+            parents[0],
+            request,
+            authorization,
+            parsed.frames[0].payload.childChallenge,
+            policy
+          );
+          raw(parents[0].payload.targetContext.h3Approval);
+          raw(parents[0].payload.targetContext.h3Readback);
+          const wire = expectedWire(request, authorization);
+          for (const frame of parsed.frames.slice(1)) {
+            if (frame.type === "RESULT") {
+              same(frame.payload, request, A);
+              requireThat(
+                frame.payload.requestDigest === sha256Canonical(request) &&
+                  frame.payload.attemptAllocationDigest === request.attemptAllocationDigest,
+                MISMATCH
+              );
+            } else requireThat(equal(frame.payload.binding, wire), MISMATCH);
+          }
+          prefixLimits.set(sha256Canonical(value), MS2_STDOUT_LIMIT);
+        }
+        prefixRaw(value);
         for (const ref of value.protocol.parentFrames) raw(ref);
         if (value.previousProcessEvidenceDigest)
           edge(value, value.previousProcessEvidenceDigest, ["process"]);
         for (const event of value.events) {
           requireThat(instant(event.at) <= instant(value.recordedAt), "MANUAL_TIME_INVALID");
-          if (event.argvDigest) requireThat(raws.has(event.argvDigest), REQUIRED);
-          if (event.stdout) raw(event.stdout);
+          if (event.argvDigest) {
+            requireThat(raws.has(event.argvDigest), REQUIRED);
+            requireThat(raws.get(event.argvDigest).length <= LIMIT, OUTPUT);
+          }
+          if (event.stdout)
+            raw(
+              event.stdout,
+              event.source === "parent" &&
+                event.tool === "runner" &&
+                event.event === "CLOSED" &&
+                equal(event.stdout, value.protocol.stdoutPrefix)
+                ? (prefixLimits.get(sha256Canonical(value)) ?? LIMIT)
+                : LIMIT
+            );
           if (event.stderr) raw(event.stderr);
         }
       } else {
@@ -1952,7 +2009,7 @@ function validateArtifacts(artifacts, raws, profileDigest, policy) {
     visited.add(digest);
   }
   for (const digest of artifacts.keys()) visit(digest);
-  return { artifacts, raws, get, list, raw };
+  return { artifacts, raws, get, list, raw, prefixRaw };
 }
 
 function validateCatalogObservation(catalog) {
@@ -2331,9 +2388,9 @@ function processChain(request, graph) {
         "MANUAL_TIME_INVALID"
       );
     }
-    const prefix = graph.raw(node.protocol.stdoutPrefix);
+    const prefix = graph.prefixRaw(node);
     if (previous) {
-      const old = graph.raw(previous.protocol.stdoutPrefix);
+      const old = graph.prefixRaw(previous);
       requireThat(prefix.subarray(0, old.length).equals(old));
       requireThat(
         equal(
@@ -3011,7 +3068,7 @@ function classifyRunner(request, graph, base, result, observed, consumption, pos
     }
     const originalFrames = parseManualRunnerFrames({
       direction: "child-to-parent",
-      bytes: graph.raw(originalProcesses.final.protocol.stdoutPrefix),
+      bytes: graph.prefixRaw(originalProcesses.final),
       ended: true
     }).frames;
     const refused = events.find(

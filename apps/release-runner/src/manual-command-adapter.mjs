@@ -147,10 +147,11 @@ function completedObservation(runtime, observation) {
 }
 
 function resultFor(request, runtime, startedAt, outcome, reasonCode, plan, postState, observation) {
-  const process = runtime.manualContext.processEvidence;
+  const process = runtime.manualContext.processEvidence,
+    completedAt = time(runtime);
   const result = {
     schemaVersion: "manual-runner-evidence.v1",
-    recordedAt: time(runtime),
+    recordedAt: completedAt,
     promotionEligible: false,
     kind: "manual-command-result",
     profileDigest: request.profileDigest,
@@ -164,7 +165,7 @@ function resultFor(request, runtime, startedAt, outcome, reasonCode, plan, postS
     phaseKey: request.phase,
     attemptAllocationDigest: request.attemptAllocationDigest,
     startedAt,
-    finishedAt: time(runtime),
+    finishedAt: completedAt,
     outcome,
     reasonCode,
     plan,

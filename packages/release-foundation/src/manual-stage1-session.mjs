@@ -35,6 +35,7 @@ const BINDING = "MANUAL_BINDING_MISMATCH";
 const EVIDENCE = "MANUAL_EVIDENCE_BINDING_MISMATCH";
 const REQUIRED = "MANUAL_EVIDENCE_INPUT_REQUIRED";
 const LIMIT = 1048576;
+const MS2_STDOUT_LIMIT = 2097152;
 const nativeIO = Object.freeze({ fs: nativeFs, execFile: promisify(execFile) });
 const manualPolicies = Object.freeze({
   "manual-stage1-profile.v1": Object.freeze({
@@ -153,25 +154,25 @@ function fileStore(profile, principal, io) {
       STORAGE
     );
   }
-  async function read(file, raw = false) {
+  async function read(file, raw = false, limit = LIMIT) {
     try {
       const before = await checkedPath(file);
-      requireThat(before.isFile() && before.nlink === 1 && before.size <= LIMIT, STORAGE);
+      requireThat(before.isFile() && before.nlink === 1 && before.size <= limit, STORAGE);
       const handle = await fs.open(file, "r");
       try {
         const actual = await handle.stat();
         requireThat(
-          actual.ino === before.ino && actual.dev === before.dev && actual.size <= LIMIT,
+          actual.ino === before.ino && actual.dev === before.dev && actual.size <= limit,
           STORAGE
         );
-        const bytes = Buffer.alloc(LIMIT + 1);
+        const bytes = Buffer.alloc(limit + 1);
         let offset = 0;
         while (offset < bytes.length) {
           const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
           if (!bytesRead) break;
           offset += bytesRead;
         }
-        requireThat(offset <= LIMIT, "MANUAL_JSON_LIMIT");
+        requireThat(offset <= limit, "MANUAL_JSON_LIMIT");
         const result = Buffer.from(bytes.subarray(0, offset));
         const after = await checkedPath(file, false);
         requireThat(
@@ -760,12 +761,40 @@ export async function openManualSession({
   }
   async function archiveInput(request, graph = null, historicalConsumption = null) {
     graph ??= await store.objects();
+    // Only existing process references can enter the bounded candidate read.
+    // The shared assessor subsequently validates protocol/direction/binding and
+    // every ordinary usage before this input can authorize any transition.
+    const prefixDigests = new Set();
+    for (const { value } of graph.values()) {
+      if (value.kind !== "process") continue;
+      validateContract("manual-runner-evidence.v1", value);
+      const bound = graph.get(value.requestDigest)?.value;
+      if (!bound || bound.schemaVersion !== "manual-runner-request.v1") continue;
+      validateManualRunnerRequest(bound);
+      if (
+        [
+          "profileDigest",
+          "sessionId",
+          "sessionNonce",
+          "operationId",
+          "idempotencyKey",
+          "attemptId",
+          "runId"
+        ].every((key) => value[key] === bound[key]) &&
+        value.attemptAllocationDigest === bound.attemptAllocationDigest
+      )
+        prefixDigests.add(value.protocol.stdoutPrefix.digest);
+    }
     const rawDir = path.join(profile.storage.archiveRoot, "raw"),
       raws = new Map();
     await store.checkedPath(rawDir);
     for (const name of await store.fs.readdir(rawDir)) {
       requireThat(/^[0-9a-f]{64}\.bin$/.test(name), STORAGE);
-      const bytes = await store.read(path.join(rawDir, name), true),
+      const bytes = await store.read(
+          path.join(rawDir, name),
+          true,
+          prefixDigests.has(`sha256:${name.slice(0, -4)}`) ? MS2_STDOUT_LIMIT : LIMIT
+        ),
         digest = sha256Bytes(bytes);
       requireThat(digest === `sha256:${name.slice(0, -4)}`, STORAGE);
       raws.set(digest, bytes);

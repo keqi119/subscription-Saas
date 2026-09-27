@@ -967,7 +967,7 @@ test("v2 profile recursively closes roots targets and fixes retention at 90 days
   }
 });
 
-test("barrel exposes the six usable manual functions and no additional module exports", async () => {
+test("barrel keeps six manual functions while consumer checks stay module-local exports", async () => {
   const barrel = await import("../src/index.mjs");
   assert.deepEqual(
     Object.keys(manual).sort(),
@@ -976,8 +976,10 @@ test("barrel exposes the six usable manual functions and no additional module ex
       "assertManualHandoffDecision",
       "encodeManualJson",
       "signManualAuthorization",
+      "validateManualSnapshotConsumerRequest",
       "verifyManualAuthorization",
-      "verifyManualHandoff"
+      "verifyManualHandoff",
+      "verifyManualSnapshotConsumerAuthorizationBinding"
     ].sort()
   );
   const f = fixture();
@@ -988,6 +990,211 @@ test("barrel exposes the six usable manual functions and no additional module ex
   barrel.assertManualDecision(barrel.verifyManualAuthorization({ ...f, authorization }));
   barrel.assertManualHandoffDecision(barrel.verifyManualHandoff(handoff(fixture("verify"))));
   assert.equal(barrel.encodeManualJson({ ok: true }).toString(), '{"ok":true}');
+  assert.equal(barrel.validateManualSnapshotConsumerRequest, undefined);
+  assert.equal(barrel.verifyManualSnapshotConsumerAuthorizationBinding, undefined);
+});
+
+function consumerFixture(phase = "prebuild-source") {
+  const p = profile90();
+  // Digest references below are synthetic; no scope/input/destination is admitted.
+  const request = {
+    schemaVersion: "manual-runner-request.v2",
+    profileDigest: sha256Canonical(p),
+    ownerId: p.ownerId,
+    sessionId: UUID,
+    sessionNonce: "c".repeat(64),
+    operationId: UUID2,
+    idempotencyKey: "test-consumer-only",
+    attemptId: UUID,
+    runId: UUID2,
+    attemptAllocationDigest: D,
+    stage: "snapshot-consumer",
+    capability: "read-decrypt-use",
+    purpose: "sanitized-snapshot-test-input",
+    phase,
+    sourceSha: "d".repeat(40),
+    scopeAuthorizationDigest: D,
+    destinationAdmissionDigest: D,
+    input: { prebuildBindingDigest: D }
+  };
+  if (phase !== "prebuild-source") {
+    request.input = {
+      privateCustodyDigest: D,
+      producerCompletionDigest: D,
+      producerTerminalObservationDigest: D
+    };
+    request.candidate = {
+      buildProofDigest: D,
+      buildBundleDigest: D,
+      dispatchAuthorizationDigest: D,
+      rcWorkflowRunId: "123"
+    };
+    if (phase === "final") request.matchingRcSourceEvidenceDigest = D;
+  }
+  const binding = Object.fromEntries(
+    [
+      "profileDigest",
+      "ownerId",
+      "sessionId",
+      "sessionNonce",
+      "operationId",
+      "idempotencyKey",
+      "stage",
+      "capability",
+      "purpose",
+      "phase",
+      "scopeAuthorizationDigest"
+    ].map((field) => [field, request[field]])
+  );
+  const payload = {
+    schemaVersion: "manual-launch-authorization.v2",
+    authorizationId: UUID2,
+    issuedAt: ISSUED,
+    expiresAt: EXPIRES,
+    requestDigest: sha256Canonical(request),
+    ...binding
+  };
+  return { request, payload, profile: p, now: NOW };
+}
+
+function consumerCheck(f, authorization = rawSign(f.payload)) {
+  return manual.verifyManualSnapshotConsumerAuthorizationBinding({
+    authorization,
+    profile: f.profile,
+    requestBytes: encodeManualJson(f.request),
+    now: f.now
+  });
+}
+
+test("consumer v2 has three closed phases and real pure signature round trips", async (t) => {
+  for (const phase of ["prebuild-source", "rc-source", "final"]) {
+    await t.test(phase, () => {
+      const f = consumerFixture(phase);
+      const captured = manual.validateManualSnapshotConsumerRequest(f.request);
+      assert.deepEqual(captured, f.request);
+      assert.ok(Object.isFrozen(captured) && Object.isFrozen(captured.input));
+      const authorization = manual.signManualAuthorization({
+        payload: f.payload,
+        privateKey: keys.privateKey
+      });
+      assert.equal(consumerCheck(f, authorization), undefined);
+      f.request.input[Object.keys(f.request.input)[0]] = OTHER;
+      assert.notDeepEqual(captured, f.request);
+    });
+  }
+});
+
+test("consumer v2 rejects mixed phases missing facts and executable or extra data", () => {
+  const changes = [
+    (r) => {
+      r.candidate = consumerFixture("rc-source").request.candidate;
+    },
+    (r) => {
+      r.input.prebuildBindingDigest = null;
+    },
+    (r) => {
+      r.input.extra = D;
+    },
+    (r) => {
+      r.approved = true;
+    },
+    (r) => {
+      r.schemaVersion = "manual-runner-request.v1";
+    }
+  ];
+  for (const change of changes) {
+    const f = consumerFixture();
+    change(f.request);
+    rejects(
+      () => manual.validateManualSnapshotConsumerRequest(f.request),
+      "CONTRACT_SCHEMA_INVALID"
+    );
+  }
+  const rc = consumerFixture("rc-source");
+  delete rc.request.candidate;
+  rejects(
+    () => manual.validateManualSnapshotConsumerRequest(rc.request),
+    "CONTRACT_SCHEMA_INVALID"
+  );
+  const final = consumerFixture("final");
+  delete final.request.matchingRcSourceEvidenceDigest;
+  rejects(
+    () => manual.validateManualSnapshotConsumerRequest(final.request),
+    "CONTRACT_SCHEMA_INVALID"
+  );
+  const sameId = consumerFixture();
+  sameId.request.runId = sameId.request.attemptId;
+  rejects(
+    () => manual.validateManualSnapshotConsumerRequest(sameId.request),
+    "MANUAL_BINDING_MISMATCH"
+  );
+  const getter = consumerFixture();
+  Object.defineProperty(getter.request, "sourceSha", {
+    enumerable: true,
+    get() {
+      throw new Error("must not read");
+    }
+  });
+  rejects(
+    () => manual.validateManualSnapshotConsumerRequest(getter.request),
+    "CANONICAL_JSON_REFUSED"
+  );
+});
+
+test("consumer v2 signature binds full request version canonical bytes and time", () => {
+  for (const field of ["sourceSha", "destinationAdmissionDigest", "scopeAuthorizationDigest"]) {
+    const f = consumerFixture();
+    const authorization = rawSign(f.payload);
+    f.request[field] = field === "sourceSha" ? "e".repeat(40) : OTHER;
+    rejects(() => consumerCheck(f, authorization), "MANUAL_BINDING_MISMATCH");
+  }
+  const input = consumerFixture();
+  const original = rawSign(input.payload);
+  input.request.input.prebuildBindingDigest = OTHER;
+  rejects(() => consumerCheck(input, original), "MANUAL_BINDING_MISMATCH");
+  const f = consumerFixture();
+  const wrongKey = generateKeyPairSync("ed25519");
+  rejects(
+    () => consumerCheck(f, rawSign(f.payload, wrongKey.privateKey)),
+    "MANUAL_SIGNATURE_INVALID"
+  );
+  const v1 = rawSign({ ...f.payload, schemaVersion: "manual-launch-authorization.v1" });
+  rejects(() => consumerCheck(f, v1), "CONTRACT_SCHEMA_INVALID");
+  rejects(
+    () =>
+      manual.verifyManualSnapshotConsumerAuthorizationBinding({
+        authorization: rawSign(f.payload),
+        profile: f.profile,
+        requestBytes: Buffer.from(JSON.stringify(f.request)),
+        now: NOW
+      }),
+    "MANUAL_BINDING_MISMATCH"
+  );
+  const expired = consumerFixture();
+  expired.now = EXPIRES;
+  rejects(() => consumerCheck(expired), "MANUAL_TIME_INVALID");
+  const tooLong = consumerFixture();
+  tooLong.payload.expiresAt = "2026-09-07T12:05:00.000Z";
+  rejects(() => consumerCheck(tooLong), "MANUAL_TIME_INVALID");
+});
+
+test("valid consumer v2 cannot acquire a production parent or handoff decision", async () => {
+  const f = consumerFixture();
+  const authorization = manual.signManualAuthorization({
+    payload: f.payload,
+    privateKey: keys.privateKey
+  });
+  assert.equal(consumerCheck(f, authorization), undefined);
+  rejects(() => manual.assertManualDecision(authorization), "MANUAL_DECISION_UNTRUSTED");
+  const old = fixture90();
+  rejects(
+    () => manual.verifyManualAuthorization({ ...old, authorization }),
+    "CONTRACT_SCHEMA_INVALID"
+  );
+  const { validateManualRunnerRequest } = await import("../src/manual-runner-evidence.mjs");
+  // This is the same unchanged validator called by session.checkedRequest.
+  rejects(() => validateManualRunnerRequest(f.request), "CONTRACT_SCHEMA_INVALID");
+  rejects(() => manual.assertManualHandoffDecision(authorization), "MANUAL_HANDOFF_UNTRUSTED");
 });
 
 test("SPKI input rejects concatenated keys instead of parsing only a prefix", () => {

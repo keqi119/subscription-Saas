@@ -226,7 +226,11 @@ function profileKey(profile, now) {
 export function signManualAuthorization(input) {
   closed(input, ["payload", "privateKey"]);
   const payload = jsonInput(input.payload);
-  validateContract("manual-launch-authorization.v1", { payload, signature: "" });
+  const consumer = payload.schemaVersion === "manual-launch-authorization.v2";
+  validateContract(consumer ? "manual-launch-authorization.v2" : "manual-launch-authorization.v1", {
+    payload,
+    signature: consumer ? Buffer.alloc(64).toString("base64") : ""
+  });
   instant(payload.issuedAt);
   instant(payload.expiresAt);
   const key = input.privateKey;
@@ -256,6 +260,58 @@ function requestInput(request) {
   requireThat(full && typeof full === "object" && !Array.isArray(full));
   requireThat(encodeManualJson(full).equals(bytes));
   return { full, binding };
+}
+
+// These checks only bind inert bytes and signatures. Missing scope, destination
+// and allocation originals remain IO admission stops; no decision is branded.
+export function validateManualSnapshotConsumerRequest(request) {
+  const captured = snapshot(jsonInput(request));
+  validateContract("manual-runner-request.v2", captured);
+  requireThat(captured.attemptId !== captured.runId);
+  return captured;
+}
+
+export function verifyManualSnapshotConsumerAuthorizationBinding(input) {
+  closed(input, ["authorization", "profile", "requestBytes", "now"]);
+  const authorization = jsonInput(input.authorization),
+    profile = jsonInput(input.profile),
+    parsed = requestInput({ canonicalBytes: input.requestBytes, binding: {} }),
+    request = validateManualSnapshotConsumerRequest(parsed.full),
+    epoch = instant(input.now);
+  validateContract("manual-stage1-profile.v2", profile);
+  validateContract("manual-launch-authorization.v2", authorization);
+  const payload = authorization.payload,
+    key = profileKey(profile, epoch),
+    issued = instant(payload.issuedAt),
+    expires = instant(payload.expiresAt);
+  verifySignature(payload, authorization.signature, key, "manual-launch");
+  requireThat(
+    instant(profile.validFrom) <= issued &&
+      issued <= epoch &&
+      epoch < expires &&
+      expires <= instant(profile.expiresAt) &&
+      expires <= issued + 300000,
+    "MANUAL_TIME_INVALID"
+  );
+  for (const field of [
+    "profileDigest",
+    "ownerId",
+    "sessionId",
+    "sessionNonce",
+    "operationId",
+    "idempotencyKey",
+    "stage",
+    "capability",
+    "purpose",
+    "phase",
+    "scopeAuthorizationDigest"
+  ])
+    requireThat(same(payload[field], request[field]));
+  requireThat(payload.requestDigest === sha256Canonical(request));
+  requireThat(
+    payload.profileDigest === sha256Canonical(profile) && payload.ownerId === profile.ownerId
+  );
+  // Deliberately return undefined, without issuing a parent/child decision.
 }
 
 function bindingKeys(payload) {

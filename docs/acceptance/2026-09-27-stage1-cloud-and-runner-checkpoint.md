@@ -1,0 +1,36 @@
+# Stage 1 加密存储准备与 R2 父命令断点（2026-09-27）
+
+本轮完成服务器的空加密卷及五个私密目录准备；R2 父命令链仍未通过定向正例。没有执行业务迁移、部署、真实 CI、签发发布命令或关闭阶段 1。
+
+## 云账号和实际存储
+
+第二次官方 CLI OAuth 正常完成，但 `stage1-ecs-keqi119` 的实际 STS 仍为 OSS 账号 `1457643390906675`，不等于服务器所属账号 `1335332669126231`。用户明确无法登录后者／由其他账号代管，因此停止重发登录要求，使用已获授权的 SSH 配置主机级加密。云盘底层加密仍 UNKNOWN；本次不冒称已取得 ECS 管理权限。
+
+`139.196.227.195` 已安装发行版 `cryptsetup 2.3.7`。两个新建容器各为 1,073,741,824 bytes，实际分配各 1,073,745,920 bytes；没有格式化已有磁盘、删除旧数据或改动系统分区。
+
+| 用途   | 密文文件                                   | LUKS UUID                              | 卷内私密目录                                                    |
+| ------ | ------------------------------------------ | -------------------------------------- | --------------------------------------------------------------- |
+| 主卷   | `/var/lib/stage1-ciphertext/main.luks`     | `97c61d0d-fa2c-42bb-9ba7-66f8724bc29b` | `/var/lib/stage1-volumes/main/{key,journal,archive,credential}` |
+| 备份卷 | `/var/lib/stage1-ciphertext/recovery.luks` | `867c622b-e066-4a9a-88eb-766a4f27528c` | `/var/lib/stage1-volumes/recovery/backup`                       |
+
+实际 header 为 LUKS2 / AES-XTS 512-bit / Argon2id 128 MiB、单线程。各卷使用独立随机解锁材料；Windows 当前用户 DPAPI 保护文件位于 `C:/Users/keqi_119/AppData/Local/Stage1VaultKeys`，目录及两个实际文件均核对当前 SID 所有权与唯一访问规则。秘密只经已核 SSH 主机的标准输入传入，未置于 argv、环境、脚本、仓库或日志；受保护文件不得删除或被新生成的材料覆盖。
+
+主机在秘密操作前停用实际两个 swap 文件，读回合并后的 coredump 配置 `Storage=none / ProcessSizeMax=0`，秘密 worker 使用 core limit 0；操作后 worker 退出、卷卸载、映射关闭，再恢复原 swap 和临时 core 设置。两个卷均实际重新解锁、以 `nosuid,nodev,noexec` 挂载并读回五根 uid 0 / 0700，最后关闭。独立事后读回确认：没有残留 mapper，底层 mountpoint 为空，临时 core drop-in 已移除，原 swap 已恢复，密文文件 uid 0 / 0600。最后观察根盘空闲 9,909,067,776 bytes；没有把相较前次探测的空闲变化归因于本次清理。
+
+首次操作退出 1：主卷已成功格式化，但该版本不支持 `luksDump --dump-json-metadata`。保留主卷、解锁材料及原始失败；读回精确 UUID 后使用新接续脚本，只为无文件系统的已知主卷建立 ext4，并新建备份卷，未重做主卷加密或更换密钥。接续退出 0；实际重开、挂载、关闭和事后读回均有原件。
+
+**H1 尚未完成。** 当前五根为空，尚无 Ed25519 签名密钥、GENESIS、签名密钥备份恢复、profile/批准/sidecar。此次只验证卷能重新解锁，不是同公钥恢复演练。两卷仍在同一物理盘，不能据此声称主机丢失可恢复；后续按已批准范围安排私有密文副本及恢复读回，并明确 Windows DPAPI 恢复依赖。卷默认关闭，不自动解锁；任何后续秘密操作须重新实施同一内存/转储保护。现有容量不代表 R3 数据快照容量已满足。
+
+运维原件位于发布工作树 `.superpowers/sdd/2026-09-25-stage1-trusted-build-input-preparation-plan/cloud-setup-20260927/`：`ecs-oauth-completed-account-mismatch.json`、`host-luks-prerequisite-probe.json`、`h1-empty-volumes-setup-result.json`、`h1-volume-failure-readback.json`、`h1-empty-volumes-resume-result.json`、`h1-empty-volumes-final-readback.json`。原 setup 和 resume 脚本分别保留，不再次运行初始化脚本。
+
+## R2 真实失败及下一步
+
+发布工作树基线为 `9e6829c01463384da0ca9ddc9e52a5ca1f126fcc`。三个父命令实现/测试文件为冻结未提交 WIP；独立只读审查没有发现有充分依据的新增 Critical/Important，但 verdict 为 **No / 不可视为可发布**，因为真实正例仍失败且容量合同未解决。
+
+最新唯一正例 actual Node/host exit 1，1 test / 0 pass / 1 fail，`MANUAL_TIME_INVALID`。dry-run handoff 原件从 `03:14:28.543Z` 到 `03:14:58.543Z` 有效，实际拒绝事件为 `03:15:15.679Z`：凭据前已过期，0 DB 连接、0 工具，未进入 apply。移除两次冗余全图校验后仍失败；保留 AUTHORIZE 及 CREDENTIAL 两个真实发送边界的最新 session/消费/撤销检查。停止盲目重跑完整链，先定位 guard/档案读回的耗时；不延长 30 秒或回填时钟。此前曾执行 dry 2 / apply 11 个工具但共享验收失败的原件也保留，不能拼接成一次成功。
+
+实际本地 Prisma 7.8 `from-empty → to-schema` 离线 SQL 为 402,009 bytes，SHA256 `7a066863c903c3e48d5d2d23903ba3e269db2067e79db9c671d5daa996ce01da`。两份完整 base64 为 1,072,024 bytes，仅 SQL 即比旧完整 stdout 1 MiB 上限多 23,448 bytes。此前 462,831 bytes 是 schema 源文件，不能用于该推算。离线文件不是独立 reference DB 或 admitted expected 原件；实际 datasource introspection 字节尚未取得。
+
+独立容量审查建议仅对 MS2 完整 stdout／经绑定验证的 prefix raw 明确有限 2 MiB 例外，JSON、单帧、单工具 raw、stdin、stderr、普通 raw 及 MS1 保持原限制。尚未修改规范或生产限额，须先形成精确前向变更，再用真实规模离线负载验证完整运输/独立重开；不省略第二轮工具或原件，不泛化放大所有输入。
+
+三文件语法、格式、diff 检查通过；默认 mjs lint globals 配置及已有一处无用赋值诊断保留，未冒称全仓 lint 通过。新增负向矩阵、完整 R2、H3-B、R3 双链与 R4 真实验收均未完成，未重复旧业务测试。详细日志、冻结 SHA256、审查与尺寸原件在 `.superpowers/sdd/2026-09-06-stage1-r2-runner-migrate-verify-plan/runner-command/`。

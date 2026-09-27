@@ -1,12 +1,16 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 加密卷落地与父命令真实失败断点
+
+[当前断点](2026-09-27-stage1-cloud-and-runner-checkpoint.md)：用户无法登录代管 ECS 账号后，通过已授权 SSH 完成两个各 1 GiB 的 LUKS2 空卷、五个私密根及真实重新解锁读回，最后全部关闭并恢复 swap；尚未生成签名密钥或关闭 H1。R2 最新单正例仍在凭据前因 30 秒 handoff 过期失败，0 DB 连接／0 工具；父命令实现冻结未提交，先定位耗时，不再盲跑。真实规模离线 SQL 的总流容量问题已独立核实并提出有限修正方向，尚未改限额。阶段 1 未收口。
+
 ## 2026-09-27 R3 宿主权限边界前向核验
 
 [只读复核](2026-09-27-stage1-r3-host-boundary-review.md)确认 R3 不能仅修逐套件 v2 映射：固定 H1 主机绑定与临时 hosted host、以镜像摘要代替容器 ID、lifecycle 套件自行持有 Docker/provisioner/migration 权限均有实码差距。后续先定界同 H1 父端的委托通道与 lifecycle 操作归属，再冻结 successor/宿主入口；当前仅登记设计前置，未新增协议/权限或运行测试。R2 父命令链继续实施，R3 与阶段 1 不因本核验关闭。
 
 ## 2026-09-27 云端 IAM 配置与服务器账号边界
 
-OSS 账号 `1457643390906675` 的官方 CLI OAuth 已完成，固定 GitHub OIDC provider、证据 writer 与 audit-reader 双角色及各自唯一最小策略已创建并逐项 API 读回。[配置记录](2026-09-27-stage1-cloud-iam-configuration.md)保留实际响应、准备失败及权限边界；尚未运行真实 CI/OIDC 交换或对象保管，H2 不因 IAM 配置完成而关闭。服务器 `139.196.227.195` 的实例 metadata 实际归属账号为 `1335332669126231`，与 OSS 不同，已发起独立服务器账号 OAuth 待回调；云盘加密仍 UNKNOWN。R2 父命令执行链继续离线实施，真实 H1/R2/R3/R4 与阶段 1 仍开放。
+OSS 账号 `1457643390906675` 的官方 CLI OAuth 已完成，固定 GitHub OIDC provider、证据 writer 与 audit-reader 双角色及各自唯一最小策略已创建并逐项 API 读回。[配置记录](2026-09-27-stage1-cloud-iam-configuration.md)保留实际响应、准备失败及权限边界；尚未运行真实 CI/OIDC 交换或对象保管，H2 不因 IAM 配置完成而关闭。服务器 `139.196.227.195` 的实例 metadata 实际归属账号为 `1335332669126231`，与 OSS 不同；后续独立 OAuth 实际仍为 OSS 账号，用户确认无法登录代管账号，转用上述 SSH 加密卷路线。云盘加密仍 UNKNOWN，真实 H1/R2/R3/R4 与阶段 1 仍开放。
 
 ## 2026-09-27 固定 expected-schema 准入前向登记
 

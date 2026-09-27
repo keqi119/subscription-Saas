@@ -14,6 +14,8 @@
 
 R3 的 host launch stop 仍真实存在。把 v1 改成 v2、补局部通过用例或引用 ECS 上的 R2 成功原件，均不能关闭这些差距。
 
+补充静态核对：本业务工作树与发布工作树当前均有 128 个 `migration.sql`，而 `database-lifecycle.postgres.test.mjs:372` 仍断言迁移记录数为 126；该套件实际执行当前迁移后会与硬编码数量不符。应在上述 lifecycle 适配时绑定同候选迁移清单并核对成功迁移身份，避免仅将魔数改为下一版数量。本次未执行数据库测试，也未改动迁移或测试实现。
+
 ## 后续顺序
 
 1. **先完成同一授权机制的跨主机设计。** 固定 H1 父端继续保管同 owner 私钥和消费台账。静态 hosted 委托策略可由 profile successor 锚定同候选，实际 job/host/DB 事实在运行时独立验真并由同父会话签发/消费；hosted 执行方不持新的授权私钥，不把 GitHub provenance 本身当数据库操作许可。仍须确定 transport 的身份、有限消息、撤销/时限/断线行为及原件读回。当前无正式 transport，不暗建常驻 broker，不把 Actions 日志/公开产物用作秘密通道。

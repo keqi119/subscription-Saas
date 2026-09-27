@@ -45,6 +45,8 @@ OIDC provider 为 `acs:ram::1457643390906675:oidc-provider/github-actions-stage1
 
 保留的准备失败包括：CLI 对 EntityNotExist 实际退出 2，最初检查误预期 1；服务器按公网 IP/实例 ID 在 OSS 账号内查询均为零结果；严格文本比较首次拒绝服务端把 Federated 字符串规范化为单元素数组；一次 GetPolicyVersion 缺 VersionId 的 CLI 校验失败，未请求云 API。后续按已有成功创建原件接续，没有重复创建/覆盖对象。策略版本最终采用 GetPolicy 已返回的 DefaultPolicyVersion 文档独立核验。
 
-用户已批准基础设施配置和服务器操作；当前额外缺口是另一个账号的实际登录。已为服务器账号发起独立 `stage1-ecs-keqi119` OAuth，会话待回调，配置路径为 `C:/Users/keqi_119/AppData/Local/Stage1EcsCloudAuth/config.json`。原 OSS profile 保留。只有实际 STS 确认账号 `1335332669126231` 后，才继续该实例的云盘查询/配置；不扩大现有应用 RAM 用户权限来绕过账号边界。
+用户已批准基础设施配置和服务器操作。独立 `stage1-ecs-keqi119` OAuth 已完成并正常退出，但实际 STS 仍返回 OSS 账号 `1457643390906675`，与实例所属账号不符；不能凭 profile 名称认定已取得服务器云管理身份。实际返回原件记入 `ecs-oauth-completed-account-mismatch.json`，没有随后发起 ECS 修改。配置路径为 `C:/Users/keqi_119/AppData/Local/Stage1EcsCloudAuth/config.json`，原 OSS profile 保留。
+
+用户随后确认无法登录服务器所属账号／服务器由其他账号代管。停止重发同一登录要求；后续先评估已授权 SSH 下的主机级加密能否满足既有 H1 五 roots、独立备份及恢复要求。云盘加密仍是未确定，不把操作系统未见 dm-crypt 当作云盘未加密，也不把主机级方案预先标作已配置。若仍需 ECS 控制面事实或操作，应交由代管方提供精确实例/云盘读回或执行具体动作，不扩大现有应用 RAM 用户权限绕过账号边界。
 
 R2 父命令执行链的离线实施正在原隔离工作树继续。本轮 preflight 的 migration status 因 `datasource.url` 缺失 exit 1（禁用 dotenv、未连接 DB），schema validate exit 0。未改业务代码；真实 H1、H2、完整 R2、R3 双链与 R4 验收仍未关闭。

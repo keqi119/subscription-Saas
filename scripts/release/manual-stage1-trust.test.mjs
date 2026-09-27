@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import childProcess from "node:child_process";
+import http from "node:http";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -2753,6 +2754,209 @@ async function r3SessionFixture(t) {
   });
   return { ...f, keyPath };
 }
+
+test("R3 LAUNCH API exposes only the fixed native entry", async () => {
+  const { launchR3TargetCreate } = await import("./launch-manual-stage1.mjs");
+  assert.equal(typeof launchR3TargetCreate, "function");
+  for (const input of [null, {}, { repoRoot: "/tmp", operationRef: randomUUID(), transport: {} }])
+    await assert.rejects(launchR3TargetCreate(input), { code: "R3_TARGET_CREATE_UNAVAILABLE" });
+});
+
+// The H1 key path and native commands are synthetic; all key/lock/journal IO
+// and TCP HTTP exchanges below use actual Linux files and sockets. No sshd or
+// firewall configuration, cloud resource or disk is changed by this fixture.
+async function r3ForwardFixture(t) {
+  const f = await r3SessionFixture(t);
+  assert.equal(process.getuid(), 0, "run only in isolated WSL root test process");
+  const key = "/etc/ssh/stage1-r3-forward/authorized_keys";
+  const directory = path.join(f.root, "forward");
+  await fs.mkdir(directory, { mode: 0o700 });
+  const keyPath = path.join(directory, "authorized_keys");
+  await fs.writeFile(keyPath, "", { mode: 0o644, flag: "wx" });
+  const original = {
+    lstat: fs.lstat,
+    open: fs.open,
+    realpath: fs.realpath,
+    execFile: childProcess.execFile
+  };
+  const mapped = (value) =>
+    value === key
+      ? keyPath
+      : ["/etc", "/etc/ssh", "/etc/ssh/stage1-r3-forward"].includes(value)
+        ? directory
+        : value;
+  t.mock.method(fs, "lstat", (value, ...args) => original.lstat(mapped(value), ...args));
+  t.mock.method(fs, "open", (value, ...args) => original.open(mapped(value), ...args));
+  t.mock.method(fs, "realpath", async (value, ...args) =>
+    mapped(value) !== value ? value : original.realpath(value, ...args)
+  );
+  const settings = {
+    authenticationmethods: "publickey",
+    pubkeyauthentication: "yes",
+    passwordauthentication: "no",
+    challengeresponseauthentication: "no",
+    authorizedkeysfile: key,
+    authorizedkeyscommand: "none",
+    trustedusercakeys: "none",
+    authorizedprincipalsfile: "none",
+    authorizedprincipalscommand: "none",
+    allowtcpforwarding: "remote",
+    permitlisten: "127.0.0.1:55440 127.0.0.1:55441",
+    permitopen: "none",
+    allowstreamlocalforwarding: "no",
+    allowagentforwarding: "no",
+    x11forwarding: "no",
+    permittty: "no",
+    permituserrc: "no",
+    permittunnel: "no",
+    gatewayports: "no",
+    maxsessions: "0",
+    forcecommand: "/sbin/nologin"
+  };
+  const rules = new Map();
+  t.mock.method(childProcess, "execFile", (file, args, options, callback) => {
+    let text = "",
+      error = null;
+    if (file === "/usr/sbin/sshd")
+      text =
+        Object.entries(settings)
+          .map(([k, v]) => `${k} ${v}`)
+          .join("\n") + "\n";
+    else if (file === "/usr/sbin/iptables") {
+      if (args[2] === "-C") {
+        const fields = args.slice(4);
+        const destination = fields.indexOf("-d");
+        const match = fields.splice(destination, 2);
+        rules.set(args[3], `-A ${args[3]} ${[...match, ...fields].join(" ")}`);
+      } else {
+        assert.equal(args[2], "-S");
+        text = rules.get(args[3]) + "\n";
+      }
+    } else if (file === "/usr/bin/pgrep")
+      error = Object.assign(new Error("no sessions"), { code: 1 });
+    else if (file !== "/usr/bin/ss") return original.execFile(file, args, options, callback);
+    queueMicrotask(() => callback(error, Buffer.from(text), Buffer.alloc(0)));
+  });
+  return { ...f, forwardKey: keyPath };
+}
+
+test(
+  "R3 LAUNCH lease requires owned slots, revokes only its unchanged key",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3ForwardFixture(t);
+    const { openR3H1ForwardLease } = await import("./r3-h1-forward-lease.mjs");
+    const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    await assert.rejects(openR3H1ForwardLease(input));
+    assert.equal((await fs.readFile(f.forwardKey)).length, 0);
+    const session = await production().openTrustedR3CreationSession(input);
+    t.after(() => session.close());
+    const lease = await openR3H1ForwardLease(input);
+    const line = await fs.readFile(f.forwardKey);
+    assert.match(
+      line.toString(),
+      /^restrict,port-forwarding,permitlisten="127\.0\.0\.1:55440",permitlisten="127\.0\.0\.1:55441" ssh-ed25519 /u
+    );
+    await lease.recheck();
+    await lease.close();
+    assert.equal((await fs.readFile(f.forwardKey)).length, 0);
+    const second = await openR3H1ForwardLease(input);
+    await fs.rename(f.forwardKey, f.forwardKey + ".owned");
+    await fs.writeFile(f.forwardKey, "external-key\n", { mode: 0o644 });
+    await assert.rejects(second.recheck());
+    await assert.rejects(second.close());
+    assert.equal(await fs.readFile(f.forwardKey, "utf8"), "external-key\n");
+    await session.close();
+  }
+);
+
+for (const dropped of [false, true])
+  test(
+    `R3 LAUNCH ${dropped ? "delivery loss keeps consumed UNKNOWN" : "consumes before delivery and reads the same forwarded Engine"}`,
+    { skip: process.platform !== "linux" },
+    async (t) => {
+      const f = await r3ForwardFixture(t);
+      const { launchR3TargetCreate } = await import("./launch-manual-stage1.mjs");
+      let received = 0,
+        handlerError,
+        pings = 0;
+      const server = http.createServer(async (request, response) => {
+        try {
+          if (request.method === "POST") {
+            received++;
+            assert.equal(request.url, "/stage1-r3/target-create");
+            const chunks = [];
+            for await (const chunk of request) chunks.push(chunk);
+            const body = JSON.parse(Buffer.concat(chunks));
+            assert.equal(body.request.schemaVersion, "manual-runner-request.v4");
+            const journal = path.join(f.profile.storage.journalRoot, "objects");
+            const records = await Promise.all(
+              (await fs.readdir(journal)).map(async (name) =>
+                JSON.parse(await fs.readFile(path.join(journal, name)))
+              )
+            );
+            assert.equal(records.filter((v) => v.kind === "consumption").length, 1);
+            assert.equal(records.find((v) => v.kind === "execution").status, "INTERRUPTED_UNKNOWN");
+            if (dropped) request.socket.destroy();
+            else response.writeHead(202, { "Content-Length": "0", Connection: "close" }).end();
+          } else if (request.url === "/_ping") {
+            if (pings++ === 0)
+              response.writeHead(409, { "Content-Length": "0", Connection: "close" }).end();
+            else response.end("OK");
+          } else if (request.url === "/v1.45/info")
+            response.end(
+              JSON.stringify({
+                ID: "synthetic-engine-id",
+                Driver: "overlay2",
+                DockerRootDir: path.join(f.spec.workspace.mountPath, "docker"),
+                LoggingDriver: "json-file",
+                Containers: 0,
+                Images: 0,
+                DriverStatus: []
+              })
+            );
+          else if (request.url === "/v1.45/version")
+            response.end(
+              JSON.stringify({ Version: "26.1.3", ApiVersion: "1.45", MinAPIVersion: "1.24" })
+            );
+          else throw new Error("unexpected transport request");
+        } catch (error) {
+          handlerError = error;
+          request.socket.destroy();
+        }
+      });
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(55440, "127.0.0.1", resolve);
+      });
+      t.after(
+        () =>
+          new Promise((resolve) => {
+            server.closeAllConnections();
+            server.close(resolve);
+          })
+      );
+      const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+      if (dropped)
+        await assert.rejects(launchR3TargetCreate(input), { code: "R3_TARGET_CREATE_UNAVAILABLE" });
+      else {
+        const launched = await launchR3TargetCreate(input).catch((error) => {
+          throw error.cause ?? error;
+        });
+        t.after(() => launched.close());
+        assert.equal(launched.engine.ID, "synthetic-engine-id");
+        assert.equal(launched.status, "INTERRUPTED_UNKNOWN");
+        assert.match(launched.consumption.executionRecordDigest, /^sha256:/u);
+        await launched.recheck();
+        await launched.close();
+      }
+      if (handlerError) throw handlerError;
+      assert.equal(received, 1);
+      assert.equal((await fs.readFile(f.forwardKey)).length, 0);
+      assert.equal((await fs.readdir(path.join(f.profile.storage.journalRoot, "locks"))).length, 2);
+      await assert.rejects(production().openTrustedR3CreationSession(input));
+    }
+  );
 test(
   "R3 SESSION opens target creation scope and locally closes after job termination",
   { skip: process.platform !== "linux" },

@@ -123,3 +123,13 @@ R3 复用原私有 fileStore、v2 撤销链与 checkpoint、一次消费槽；�
 副作用前要求 Linux/root、无 swap/core、三个预先安装的私有根、完整 absent 拓扑、keyRoot 为实际 tmpfs，以及容量足够。只创建本 UUID 的叶子：原生随机 64 字节 key、排他创建 backing、fallocate、LUKS2 AES-XTS-512 格式化和打开、ext4 格式化、nodev/nosuid 挂载。挂载后对实际 filesystem 根执行并核实 root:0700，再复用 active 观察器核对完整事实。它不启动 Engine、不读快照、不恢复数据库，也不记录目标成功。
 
 返回中的 `observation` 是原观察器的完整结果；`creation` 包含只读过程诊断和已创建路径，`rawInputs` 按 `absent.*`、`creation.<命令>.stdout/stderr`、`active.*` 保存副本。失败携带同类原件和已知部分状态，不自动关闭、删除或释放锁。真实 PID/退出与原件摘要可重核，诊断不含 key bytes。定向合成测试最终为 4 个顶层用例、6 个通过计数；文件系统/拓扑被模拟，子进程为真实 Node，不能作为真实 LUKS 创建证据。
+
+## 创建控制入口与受限连接
+
+H1 的 `launchR3TargetCreate({repoRoot,operationRef})` 复用既有固定 job 读取器、R3 创建 session 和私有 archive。它在 session 已持有 55440/55441 双锁后调用 `openR3H1ForwardLease`，以实际 PID、同一 scope 和原件读回核实锁，再核对 H1 有效 sshd 配置、两个链的首条完整规则、无旧监听和无既存 forward 用户进程。只向固定、原本为空的 root:0644 authorized_keys 安装该 job 的 Ed25519 公钥；不改 sshd/firewall 配置。
+
+H1 只连接固定 127.0.0.1:55440，将 allocation v2 和 request v4 归档、签名并持久消费后，才在该连接发送 canonical `{request,authorization}`。消费返回前既有台账已写入唯一 consumption、读回和 pending UNKNOWN。202 空响应仅确认送达。旧控制器交接中的空 409 和连接暂不可用可在原操作内有界等待，不能重复 POST、重新消费或换 operation。实际 Engine 的 ID、加密 data-root、classic overlay2、json-file、零容器/镜像由同一固定通道读回；这些事实尚不构成目标成功记录或快照消费权限。
+
+hosted 的 `openR3HostedCreationControl({creationSpecBytes,jobAdmissionBytes})` 在实际 tmpfs 的固定 UUID socket 上只接收一次请求。它完成 202 响应和旧连接关闭后，关闭并核实自身 socket，调用已实现的 workspace creator，再以固定配置启动独立 dockerd。daemon 的 data/exec/pid/config/log/home/tmp 均在该操作的加密挂载内；不使用系统 Engine，不接收命令或路径覆盖。返回 `created` 中的工作区原件、实际 Engine readback 和自有进程诊断。
+
+两侧 `close` 只处理自有句柄/资源：H1 仅撤回未漂移的本次 key，不能把 key 撤回当作 SSH 已断开；已消费的 session 仍保留 UNKNOWN 和双锁。hosted 只停止自己实际启动的 child 并等待退出，保留工作区和 key 供后续清理证据，不声明完成资源清理。尚未启用 CLI 或 workflow；job admission 生产、PG 目的地身份、成功/consumer/cleanup 结果图及真实 hosted 双链仍待完成。

@@ -2,6 +2,8 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import childProcess from "node:child_process";
+import http from "node:http";
+import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
@@ -26,8 +28,11 @@ import {
   loadFixedManualProfile,
   readFixedManualOperation,
   verifyManualBuild,
-  openTrustedManualSession
+  openTrustedManualSession,
+  readFixedR3JobAdmission,
+  openTrustedR3CreationSession
 } from "./manual-stage1-trust.mjs";
+import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
 import {
   sameIdentity,
   samePublicDirectory,
@@ -979,6 +984,329 @@ function targetArchive({ profile, principal, recheck }) {
       return graph;
     }
   };
+}
+
+// H1 owns the session and durable consume. The hosted control socket receives
+// only this fixed request; its 202 is delivery acknowledgement, never success.
+// No CLI/workflow calls this entry until the destination/cleanup graph is wired.
+export async function launchR3TargetCreate(input) {
+  const code = "R3_TARGET_CREATE_UNAVAILABLE";
+  let fixed,
+    session,
+    lease,
+    socket,
+    archive,
+    consumption,
+    closed = false,
+    closing;
+  const diagnostics = [];
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    socket?.destroy();
+    closing = (async () => {
+      // Revoking the key prevents new connections; it does not kill sshd or
+      // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
+      const errors = [];
+      for (const handle of [lease, session, fixed]) {
+        try {
+          await handle?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length) throw new AggregateError(errors, code);
+    })();
+    return closing;
+  };
+  const check = async () => {
+    if (closed) fail(code);
+    await fixed.recheck();
+    await lease?.recheck();
+  };
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 500));
+  const exchange = (method, pathname, body = null, connected = null) =>
+    new Promise((resolve, reject) => {
+      const agent = new http.Agent({ keepAlive: false });
+      if (connected) agent.createConnection = () => connected;
+      let settled = false;
+      const finish = (error, result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        agent.destroy();
+        if (error) reject(error);
+        else resolve(result);
+      };
+      const request = http.request(
+        {
+          hostname: "127.0.0.1",
+          port: 55440,
+          method,
+          path: pathname,
+          agent,
+          headers: {
+            Connection: "close",
+            ...(body
+              ? { "Content-Type": "application/json", "Content-Length": String(body.length) }
+              : {})
+          }
+        },
+        (response) => {
+          let bytes = 0;
+          const chunks = [];
+          response.on("data", (chunk) => {
+            bytes += chunk.length;
+            if (bytes > 1048576) request.destroy(Object.assign(new Error(code), { code }));
+            else chunks.push(chunk);
+          });
+          response.once("error", (error) => finish(error));
+          response.once("end", () => {
+            const bodyBytes = Buffer.concat(chunks);
+            if (!response.complete) return finish(Object.assign(new Error(code), { code }));
+            finish(null, {
+              status: response.statusCode,
+              headers: response.rawHeaders,
+              body: bodyBytes
+            });
+          });
+        }
+      );
+      const timer = setTimeout(
+        () => request.destroy(Object.assign(new Error(code), { code })),
+        5000
+      );
+      request.once("error", (error) => finish(error));
+      request.end(body);
+    });
+  const saveExchange = async (name, response) => {
+    diagnostics.push({
+      name,
+      response: await archive.raw(
+        encodeManualJson({ status: response.status, headers: response.headers })
+      ),
+      body: await archive.raw(response.body)
+    });
+  };
+  const engineReadback = async () => {
+    const ping = await exchange("GET", "/_ping");
+    await saveExchange("engine-ping", ping);
+    if (ping.status === 409 && ping.body.length === 0) fail("R3_HANDOFF_PENDING");
+    if (ping.status !== 200 || ping.body.toString() !== "OK") fail(code);
+    const info = await exchange("GET", "/v1.45/info"),
+      version = await exchange("GET", "/v1.45/version");
+    await saveExchange("engine-info", info);
+    await saveExchange("engine-version", version);
+    if (info.status !== 200 || version.status !== 200) fail(code);
+    const engine = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(info.body));
+    const runtime = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(version.body));
+    if (
+      typeof engine.ID !== "string" ||
+      engine.ID.length < 8 ||
+      engine.ID.length > 128 ||
+      engine.DockerRootDir !== path.posix.join(fixed.spec.workspace.mountPath, "docker") ||
+      engine.Driver !== "overlay2" ||
+      engine.LoggingDriver !== "json-file" ||
+      engine.Containers !== 0 ||
+      engine.Images !== 0 ||
+      !Array.isArray(engine.DriverStatus) ||
+      engine.DriverStatus.some(
+        (pair) =>
+          !Array.isArray(pair) ||
+          pair.length !== 2 ||
+          pair.some((v) => typeof v !== "string") ||
+          /containerd|snapshotter/iu.test(pair.join(" "))
+      ) ||
+      typeof runtime.Version !== "string" ||
+      !/^1\.\d+$/u.test(runtime.ApiVersion) ||
+      Number(runtime.ApiVersion.split(".")[1]) < 45
+    )
+      fail(code);
+    return { engine, runtime };
+  };
+  try {
+    if (
+      !exact(input, ["repoRoot", "operationRef"]) ||
+      process.platform !== "linux" ||
+      process.getuid?.() !== 0 ||
+      typeof input.repoRoot !== "string" ||
+      !path.isAbsolute(input.repoRoot) ||
+      path.normalize(input.repoRoot) !== input.repoRoot ||
+      typeof input.operationRef !== "string" ||
+      !uuid.test(input.operationRef)
+    )
+      fail(code);
+    fixed = await readFixedR3JobAdmission(input);
+    session = await openTrustedR3CreationSession(input);
+    lease = await openR3H1ForwardLease(input);
+    if (
+      sha256Canonical(lease.scope) !== sha256Canonical(session.scope) ||
+      sha256Canonical(lease.admission) !== fixed.jobAdmissionDigest
+    )
+      fail(code);
+    archive = targetArchive({
+      profile: lease.profile,
+      principal: { platform: "posix", uid: process.getuid() },
+      recheck: check
+    });
+    // Install the sole job key before waiting for its SSH reverse-forward.
+    // Connect once before consuming, then send on that very connection only.
+    const deadline = Date.now() + 60000;
+    while (!socket) {
+      await check();
+      try {
+        socket = await new Promise((resolve, reject) => {
+          const pending = net.createConnection({ host: "127.0.0.1", port: 55440 });
+          const timer = setTimeout(
+            () => pending.destroy(Object.assign(new Error(code), { code })),
+            3000
+          );
+          pending.once("error", (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+          pending.once("connect", () => {
+            clearTimeout(timer);
+            resolve(pending);
+          });
+        });
+      } catch (error) {
+        if (!["ECONNREFUSED", "ECONNRESET"].includes(error.code) || Date.now() >= deadline)
+          throw error;
+        await pause();
+      }
+    }
+    await check();
+    const current = [...(await archive.graph()).entries()].filter(
+      ([, item]) =>
+        item.value.schemaVersion === "manual-operation-record.v3" &&
+        item.value.kind === "session" &&
+        item.value.sessionId === session.sessionId &&
+        item.value.status === "OPEN"
+    );
+    if (current.length !== 1 || socket.destroyed) fail(code);
+    const now = new Date().toISOString();
+    const request = {
+      schemaVersion: "manual-runner-request.v4",
+      profileDigest: session.profileDigest,
+      ownerId: lease.profile.ownerId,
+      sessionId: session.sessionId,
+      sessionNonce: session.sessionNonce,
+      operationId: input.operationRef,
+      idempotencyKey: `r3:${input.operationRef}`,
+      attemptId: randomUUID(),
+      runId: randomUUID(),
+      stage: "target-create",
+      capability: "create-isolated-target",
+      purpose: "stage1-isolated-database-tests",
+      ...fieldsFrom(session.scope, [
+        "phase",
+        "chain",
+        "sourceSha",
+        "targetPolicyDigest",
+        "creationSpecDigest",
+        "jobAdmissionDigest"
+      ]),
+      candidate: { buildProofDigest: session.scope.buildProofDigest }
+    };
+    request.attemptAllocationDigest = await archive.put(
+      {
+        schemaVersion: "manual-runner-evidence.v2",
+        kind: "attempt-allocation",
+        recordedAt: now,
+        promotionEligible: false,
+        ...fieldsFrom(request, [
+          "profileDigest",
+          "sessionId",
+          "sessionNonce",
+          "operationId",
+          "idempotencyKey",
+          "attemptId",
+          "runId",
+          "stage",
+          "phase",
+          "chain",
+          "sourceSha",
+          "targetPolicyDigest",
+          "creationSpecDigest",
+          "jobAdmissionDigest"
+        ]),
+        sessionRecordDigest: current[0][0],
+        allocatedAt: now,
+        buildProofDigest: session.scope.buildProofDigest,
+        predecessorExecutionRecordDigest: null
+      },
+      "manual-runner-evidence.v2"
+    );
+    await archive.put(request, "manual-runner-request.v4");
+    const {
+      schemaVersion,
+      attemptId,
+      runId,
+      attemptAllocationDigest,
+      sourceSha,
+      candidate,
+      ...binding
+    } = request;
+    const requestInput = { binding, canonicalBytes: encodeManualJson(request) };
+    const authorization = await session.sign(requestInput);
+    const body = encodeManualJson({ request, authorization });
+    if (body.length > 1048576) fail(code);
+    diagnostics.push({ name: "creation-request", body: await archive.raw(body) });
+    await check();
+    if (socket.destroyed) fail(code);
+    // This call writes consumption + its readback + pending UNKNOWN before it
+    // returns. No request bytes may reach the network above this boundary.
+    consumption = await session.consume({ authorization, request: requestInput });
+    const delivered = await exchange("POST", "/stage1-r3/target-create", body, socket);
+    await saveExchange("creation-ack", delivered);
+    if (delivered.status !== 202 || delivered.body.length !== 0) fail(code);
+    const readyDeadline = Date.now() + 120000;
+    let readback;
+    while (!readback) {
+      await check();
+      try {
+        readback = await engineReadback();
+      } catch (error) {
+        if (
+          !["ECONNREFUSED", "ECONNRESET", "EPIPE", "R3_HANDOFF_PENDING"].includes(error.code) ||
+          Date.now() >= readyDeadline
+        )
+          throw error;
+        await pause();
+      }
+    }
+    await check();
+    const engine = Object.freeze(JSON.parse(JSON.stringify(readback.engine)));
+    return Object.freeze({
+      status: "INTERRUPTED_UNKNOWN",
+      session,
+      consumption,
+      engine,
+      version: Object.freeze(readback.runtime),
+      diagnostics: Object.freeze(diagnostics.slice()),
+      async recheck() {
+        await check();
+        const current = await engineReadback();
+        if (current.engine.ID !== engine.ID) fail(code);
+        await check();
+      },
+      close
+    });
+  } catch (cause) {
+    let cleanupError;
+    try {
+      await close();
+    } catch (error) {
+      cleanupError = error;
+    }
+    throw Object.assign(new Error(code, { cause }), {
+      code,
+      consumption,
+      diagnostics,
+      cleanupError
+    });
+  }
 }
 
 const runnerEntrypoint = '["node","/app/apps/release-runner/src/cli.mjs"]';

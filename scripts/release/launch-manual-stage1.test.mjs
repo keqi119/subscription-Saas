@@ -1953,6 +1953,115 @@ test(
   }
 );
 
+test(
+  "sidecar identical bytes replacement between admission holders remains UNKNOWN",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "split", true),
+      e = await expectedSourceFixture(f),
+      catalog = await computeMigrationCatalog(f.repoRoot),
+      migrationRawFile = path.join(
+        f.profile.storage.archiveRoot,
+        "raw",
+        `${catalog.entries[0].sha256.slice(7)}.bin`
+      ),
+      admissionRoot = path.join(e.root, "admissions", f.prepared.operationRef),
+      previousOpen = fs.open.bind(fs),
+      previousLstat = fs.lstat.bind(fs);
+    let sidecar,
+      saved,
+      originalBytes,
+      oldStat,
+      replacementStat,
+      fourthStat,
+      reopens = 0,
+      finalLeafReads = 0,
+      swaps = 0,
+      fallback = 0,
+      armed = false;
+    boundedExpectedMock(t, f, fs, "open", async (file, flags, ...args) => {
+      if (swaps === 1 && fourthStat && flags === "wx" && String(file) === migrationRawFile) {
+        fallback++;
+        throw Object.assign(new Error("unprotected sidecar reached command raw boundary"), {
+          code: "OFFLINE_SIDECAR_REPLACEMENT_ACCEPTED"
+        });
+      }
+      const isSidecar =
+        flags === "r" &&
+        typeof file === "string" &&
+        file.startsWith(admissionRoot + path.sep) &&
+        file.endsWith(".json");
+      const ordinal = isSidecar ? ++reopens : 0;
+      const handle = await previousOpen(file, flags, ...args);
+      if (ordinal === 1) sidecar = file;
+      if (ordinal === 4) fourthStat = await handle.stat({ bigint: true });
+      if (ordinal === 3) {
+        const close = handle.close.bind(handle);
+        handle.close = async (...closeArgs) => {
+          const result = await close(...closeArgs);
+          armed = true;
+          return result;
+        };
+      }
+      return handle;
+    });
+    boundedExpectedMock(t, f, fs, "lstat", async (file, ...args) => {
+      const stat = await previousLstat(file, ...args);
+      if (armed && file === sidecar && ++finalLeafReads === 2) {
+        armed = false;
+        originalBytes = fsSync.readFileSync(sidecar);
+        oldStat = fsSync.statSync(sidecar, { bigint: true });
+        const incoming = path.join(f.root, "incoming-sidecar.json");
+        saved = path.join(admissionRoot, "retained-" + path.basename(sidecar));
+        fsSync.writeFileSync(incoming, originalBytes, { flag: "wx", mode: 0o600 });
+        fsSync.renameSync(sidecar, saved);
+        fsSync.renameSync(incoming, sidecar);
+        replacementStat = fsSync.statSync(sidecar, { bigint: true });
+        swaps++;
+      }
+      return stat; // native pre-mutation observation; never fabricate stat fields
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(
+      launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+      (error) => {
+        const causes = [];
+        for (let cause = error; cause && causes.length < 4; cause = cause.cause)
+          causes.push({
+            code: cause.code ?? null,
+            frames: cause.stack?.split("\n").filter((line) => line.trimStart().startsWith("at "))
+          });
+        t.diagnostic(JSON.stringify({ causes, reopens, swaps, fallback }));
+        assert.equal(error.code, "MANUAL_EXPECTED_SCHEMA_ADMISSION_UNKNOWN", error.stack);
+        assert.equal(error.cause?.code, "MANUAL_OPERATION_INPUT_UNAVAILABLE");
+        assert.equal(error.cleanupCause?.code, "MANUAL_STORAGE_UNVERIFIED");
+        return true;
+      }
+    );
+    assert.equal(swaps, 1);
+    assert.equal(fallback, 0);
+    assert.equal(fourthStat.dev, replacementStat.dev);
+    assert.equal(fourthStat.ino, replacementStat.ino); // module truly saw new leaf
+    assert.notEqual(replacementStat.ino, oldStat.ino);
+    assert.deepEqual(await fs.readFile(sidecar), originalBytes);
+    assert.deepEqual(await fs.readFile(saved), originalBytes); // cleanup retains both
+    assert.equal(e.ghCalls.length, 2);
+    assert.equal(e.ghCloses.length, 2);
+    const records = await f.records();
+    assert.equal(
+      records.filter(
+        (value) =>
+          value.schemaVersion === "manual-runner-request.v1" && value.stage === "runner-command"
+      ).length,
+      0
+    );
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+    assert.equal(f.pg.connects, 1);
+    assert.deepEqual(await fs.readFile(path.join(f.operationRoot, "index.json")), f.indexBytes);
+    assert.deepEqual(await fs.readFile(f.objectPath(f.baseline)), f.baselineBytes);
+  }
+);
+
 // Every row reaches the actual launcher. Changing a native projection also
 // updates its raw binding, so these cases test service/source semantics rather
 // than merely breaking the content digest around unchanged projections.

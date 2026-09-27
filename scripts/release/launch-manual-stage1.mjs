@@ -1288,6 +1288,7 @@ async function withExpectedAdmission(
       expectation = inputs.context.expectation;
     const recheckOwnInputs = async () => {
       await inputs.recheck();
+      for (const item of opened) await item.recheck();
       expectedRequire(
         (await archive.get(attemptAllocationDigest)).bytes.equals(encodeManualJson(allocation)),
         "MANUAL_STORAGE_UNVERIFIED"

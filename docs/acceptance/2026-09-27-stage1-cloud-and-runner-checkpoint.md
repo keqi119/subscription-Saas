@@ -2,7 +2,19 @@
 
 本记录保留当天各次真实断点，以本节最新状态为准。R2 正常 dry-run → apply → verify → replay、UNKNOWN → reconcile 和三类来源读取复用已通过相应定向验证并提交；replay 中断、独立结果核验、真实数据库及最终候选验收仍未完成。没有执行业务迁移、部署、真实候选 CI 或关闭阶段 1。
 
-## 16:11 UTC 接续：续期阻塞已解除，R2.3 正例仍在验证
+## 后续实测：R2.3 在结果核验前失败，先处理局部门禁
+
+下文 16:11 UTC 的运行已自然结束。session 48597 实际 host / Node exit 1，0 pass / 1 fail / 0 skip，501,722.875813 ms。首错栈明确定位 `verifyManualHandoff → checkConsumedObservation → launcher` 的 READY 后、首次 dry-run 凭据交付前；错误为 `MANUAL_TIME_INVALID`，尚未进入新增结果核验器，apply 未执行。542 份原件经完整路径、长度、稳定身份及 SHA-256 核对保留，清单摘要 `338ec627332d18b4b0c3d2667f73ee3672f29c662922eccceb764188e1eea624`，秘密标记匹配为 0。未重跑 normal / interrupted 全链。
+
+随后只对旧 replay 原件的独立 ext4 副本做局部读取计时：205 个归档对象单次 graph 为 4,943.159 ms，完整既有 H3-A/B 原件集合重查为 998.623 ms；两者分别实际调用 readPinned 1,025 / 255 次，即每对象五次。相同数据的 bounded-mock 对照为 5,371.000 / 1,603.789 ms；107 次合同校验为 2,203.847 ms，只有一次 registry 建造、76 个 Schema 编译及 106 次缓存命中。结果摘要 `0bf488a27dc6be82cfc24d1fdf34bd935c2130a870d547967ceac5175f77fb26`。这只证明两处单件读取有重复完整检查；不重现原门禁调用频率，也不能据此把超时归因于测试替身或延长有效期。
+
+诊断首轮因缺 `postgres` 依赖在 import 阶段自然 exit 1，未计时；保留失败后补齐已有依赖链接，九个测量阶段全部返回，未调用子进程、数据库或凭据。续跑 shell 的退出码回报变量为空，host exit 1，因此不把此诊断表述为捕获到 Node exit 0。依赖链接可间接引用工作区模块，也不宣称全依赖来自不可变副本。完整结果与日志均已独立复制并核对摘要。
+
+对照来源提取前代码还确认父命令漏掉自己持有的新 admission 文件复查。共享读取器仍检查它自己的文件副本；缺口限于两次首次 pin 之间的同字节 inode 替换，不能描述为完全未验证 admission。现仅恢复原 `opened` 重查循环一行，并在既有测试文件中增加一个定向回归。有效 RED（session 45420）自然 exit 1，实际 swaps=1、fallback=1，证明替换被接受并抵达后续命令准备边界；首次测试 session 9703 因较早的 baseline 重读失败而未触达替换点，内层原因未保留，不计作缺陷复现，原失败日志仍保留。
+
+修复后的唯一 GREEN（session 51478）自然 host / Node exit 0，1 pass / 0 fail / 0 skip，220,675.591183 ms。真实同字节 inode 替换发生一次，共享读取器确实取得新 inode；父命令原 pin 将其拒绝为 `MANUAL_EXPECTED_SCHEMA_ADMISSION_UNKNOWN`，内层 `MANUAL_OPERATION_INPUT_UNAVAILABLE`、cleanupCause `MANUAL_STORAGE_UNVERIFIED`，fallback=0。测试确认两份原字节保留、无 runner-command request、无新增命令凭据读取及 DB 连接，原 index / baseline 不变。241 文件复制和源前后核对闭合；清单 SHA-256 `b5543cd91ec680089043d50a13fb5f9c1af35a059be4b1639b1d61df8aa57c5d`，生产 launcher SHA-256 `9669e276907db1c3d1ba26a507620add198e6c03cb037157acb9aa3e28f5a3d6`。有限差量审查、语法、格式及 diff 检查通过。该修复不解决 handoff 超时；重复读取的最小内部拆分仍只是方案，尚未实施。真实 PG、最终候选构建、R3 双链、两条 Staging 迁移及 R4 验收仍未完成；OSS 续期已解除，商用 KMS 排除。
+
+## 16:11 UTC 历史接续：续期阻塞已解除，R2.3 正例当时仍在验证
 
 此前用户完成的官方 CLI 续期已经用于 OSS 密文上传与完整 1 GiB 独立下载，两进程实际 exit 0 且摘要一致；没有待处理登录问题。本轮没有新云操作，商用 KMS 仍明确排除。异地密文完整回读不等于异机解密恢复，也不等于真实 CI 独立身份验收。
 

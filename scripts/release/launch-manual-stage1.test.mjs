@@ -793,8 +793,14 @@ function noAuthority(f) {
   assert.equal(f.counters.externalCalls, 0);
 }
 
-async function zeroCredentialFixture(t, mode = "split", expectedSource = false, nativeH3 = true) {
-  const f = await targetObserveFixture(t, expectedSource, nativeH3);
+async function zeroCredentialFixture(
+  t,
+  mode = "split",
+  expectedSource = false,
+  nativeH3 = true,
+  scenario = "normal"
+) {
+  const f = await targetObserveFixture(t, expectedSource, nativeH3, scenario);
   f.runner = { mode, children: [], diagnostics: [] };
   if (mode === "command") f.pg.serverVersion = "17.11";
   await launcher.connectAndObserveManualTarget({
@@ -2436,9 +2442,9 @@ function h3Rejection(causeCode) {
     return true;
   };
 }
-async function launchInputFixture(t, endpoint, expectedSource = false) {
+async function launchInputFixture(t, endpoint, expectedSource = false, scenario = "normal") {
   const f = await buildFixture(t, endpoint, expectedSource);
-  const prepared = await launcher.prepareManualOperation(prepareInput(f));
+  const prepared = await launcher.prepareManualOperation(prepareInput(f, { scenario }));
   const operationRoot = path.join(
     f.profile.storage.archiveRoot,
     "inputs",
@@ -2710,8 +2716,14 @@ async function syntheticH3Capture(f, queryId, kind, at, data, parentPid = 9900) 
   return syntheticH3Raw(f, encodeManualJson(value));
 }
 
-async function h3InputFixture(t, endpoint, expectedSource = false, nativeH3 = true) {
-  const f = await launchInputFixture(t, endpoint, expectedSource);
+async function h3InputFixture(
+  t,
+  endpoint,
+  expectedSource = false,
+  nativeH3 = true,
+  scenario = "normal"
+) {
+  const f = await launchInputFixture(t, endpoint, expectedSource, scenario);
   const fixed = await readFixedManualOperation({
     repoRoot: productionRoot,
     operationRef: f.prepared.operationRef
@@ -2804,8 +2816,8 @@ async function writeH3(f, { bindApproval = true } = {}) {
     await fs.writeFile(path.join(f.operationRoot, name), encodeManualJson(value), { mode: 0o600 });
 }
 
-async function h3ResourceFixture(t, expectedSource = false, nativeH3 = true) {
-  const f = await h3InputFixture(t, "127.0.0.1:25432", expectedSource, nativeH3);
+async function h3ResourceFixture(t, expectedSource = false, nativeH3 = true, scenario = "normal") {
+  const f = await h3InputFixture(t, "127.0.0.1:25432", expectedSource, nativeH3, scenario);
   await writeH3(f);
   f.docker.outputs = {
     container: {
@@ -2863,8 +2875,13 @@ async function h3ResourceFixture(t, expectedSource = false, nativeH3 = true) {
   return f;
 }
 
-async function targetObserveFixture(t, expectedSource = false, nativeH3 = true) {
-  const f = await h3ResourceFixture(t, expectedSource, nativeH3);
+async function targetObserveFixture(
+  t,
+  expectedSource = false,
+  nativeH3 = true,
+  scenario = "normal"
+) {
+  const f = await h3ResourceFixture(t, expectedSource, nativeH3, scenario);
   for (const role of ["journal", "archive", "backup"])
     await fs.mkdir(path.join(f.profile.storage[`${role}Root`], "objects"), { mode: 0o700 });
   for (const name of ["locks", "consumptions", "revocations", "checkpoints"])
@@ -5151,7 +5168,10 @@ async function syntheticH3B(f, first) {
     h3AReadback: await syntheticH3Raw(f, encodeManualJson(f.readback)),
     approvedAt: at,
     expiresAt: new Date(Date.parse(at) + 3600000).toISOString(),
-    branch: "normal-success",
+    branch:
+      f.fixed.operation.scenario === "apply-interrupted"
+        ? "apply-unknown-recovery"
+        : "normal-success",
     migration,
     preApprovalEvidence: await syntheticH3Raw(
       f,
@@ -5162,7 +5182,10 @@ async function syntheticH3B(f, first) {
         writerSessions: sessionsCapture
       })
     ),
-    investigationApprovalRef: null,
+    investigationApprovalRef:
+      f.fixed.operation.scenario === "apply-interrupted"
+        ? "offline separately approved read-only investigation of this original UNKNOWN"
+        : null,
     target: { cluster: f.readback.cluster, databaseName: "synthetic-db", databaseOid: "123" },
     migrationTable: f.table,
     roles,
@@ -5810,6 +5833,211 @@ test(
         .length,
       0
     );
+  }
+);
+
+test(
+  "runner frozen apply-interrupted retains original UNKNOWN and only reconciles",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "command", true, true, "apply-interrupted"),
+      e = await expectedSourceFixture(f);
+    f.runner.expectedScript = "CREATE TABLE example(id integer PRIMARY KEY);\r\n";
+    f.runner.prismaVersion = JSON.parse(e.output.schemaExpectationBytes).prismaVersion;
+    f.runner.phaseSchedule = ["dry-run", "apply", "reconcile"];
+    const opening = fs.open.bind(fs);
+    let firstFailure,
+      first,
+      second,
+      postwriteFailures = 0,
+      armed = true;
+    t.mock.method(fs, "open", async (file, flags, ...args) => {
+      const handle = await opening(file, flags, ...args);
+      if (
+        armed &&
+        flags === "wx" &&
+        typeof file === "string" &&
+        file.startsWith(path.join(f.profile.storage.archiveRoot, "objects") + path.sep)
+      ) {
+        let unknown = false;
+        const writing = handle.writeFile.bind(handle),
+          closing = handle.close.bind(handle);
+        handle.writeFile = async (bytes, ...writeArgs) => {
+          const result = await writing(bytes, ...writeArgs),
+            value = JSON.parse(Buffer.from(bytes).toString("utf8"));
+          unknown = value.kind === "execution" && value.status === "INTERRUPTED_UNKNOWN";
+          return result;
+        };
+        handle.close = async () => {
+          const result = await closing();
+          if (armed && unknown) {
+            // The fixed scenario itself must interrupt apply. This separate fault
+            // follows real write/fsync/close and must not duplicate that execution.
+            armed = false;
+            postwriteFailures++;
+            throw Object.assign(new Error("R22_UNKNOWN_POSTWRITE_FAILURE"), {
+              code: "R22_UNKNOWN_POSTWRITE_FAILURE"
+            });
+          }
+          return result;
+        };
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    try {
+      try {
+        await launcher.launchManualStage1({
+          operationRef: f.prepared.operationRef,
+          allowedStage: "migration"
+        });
+      } catch (error) {
+        firstFailure = error;
+      }
+      armed = false;
+      assert.ok(firstFailure, "the frozen interrupted scenario must not return successful apply");
+      assert.equal(postwriteFailures, 1, "the original UNKNOWN actually reached CreateNew storage");
+      const records = await f.records(),
+        apply = records.find(
+          (value) => value.schemaVersion === "manual-runner-request.v1" && value.phase === "apply"
+        ),
+        requestDigest = sha256Canonical(apply),
+        executions = records.filter(
+          (value) => value.kind === "execution" && value.requestDigest === requestDigest
+        );
+      assert.equal(executions.length, 1, "a post-write error must not create a second execution");
+      const execution = executions[0];
+      assert.equal(execution.status, "INTERRUPTED_UNKNOWN");
+      assert.ok(execution.resultDigest);
+      assert.ok(execution.processEvidenceDigest);
+      const process = records.find(
+          (value) => sha256Canonical(value) === execution.processEvidenceDigest
+        ),
+        result = records.find((value) => sha256Canonical(value) === execution.resultDigest);
+      assert.ok(process.closedAt);
+      assert.equal(execution.finishedAt, process.closedAt);
+      assert.equal(execution.startedAt, result.startedAt);
+      const parentClose = process.events.at(-1);
+      assert.equal(parentClose.source, "parent");
+      assert.equal(parentClose.event, "CLOSED");
+      assert.equal(parentClose.pid, f.actualCloses.at(-1).pid);
+      assert.equal(parentClose.exitCode, f.actualCloses.at(-1).exitCode);
+      assert.equal(parentClose.signal, f.actualCloses.at(-1).signal);
+      const terminals = new Map();
+      for (const event of process.events)
+        if (event.event !== "DISPATCH_CLOSED") terminals.set(event.processSequence, event.event);
+      assert.ok(
+        [...terminals.values()].every((event) => ["CLOSED", "SPAWN_FAILED"].includes(event))
+      );
+      assert.ok(process.events.some((event) => event.event === "DISPATCH_CLOSED"));
+      assert.equal(
+        process.events.filter((event) => event.tool === "prisma-deploy" && event.event === "CLOSED")
+          .length,
+        1
+      );
+      assert.equal(f.launches.length, 2);
+      first = {
+        operationRef: f.prepared.operationRef,
+        apply: {
+          requestDigest,
+          resultDigest: execution.resultDigest,
+          processEvidenceDigest: execution.processEvidenceDigest,
+          executionRecordDigest: sha256Canonical(execution)
+        }
+      };
+      await syntheticH3B(f, first);
+      const before = {
+        launches: f.launches.length,
+        credentialReads: f.counters.credentialReads,
+        observerConnections: f.pg.connects
+      };
+      second = await launcher.launchManualStage1({
+        operationRef: f.prepared.operationRef,
+        allowedStage: "verification"
+      });
+      assert.deepEqual(Object.keys(second).sort(), [
+        "operationRef",
+        "promotionEligible",
+        "reconcile"
+      ]);
+      assert.equal(f.launches.length, before.launches + 1);
+      assert.equal(f.pg.connects, before.observerConnections);
+      assert.equal(f.readOpens.get(path.join(f.credentialDirectory, "provision.json")) ?? 0, 0);
+      const final = await f.records(),
+        reconciled = final.find(
+          (value) => sha256Canonical(value) === second.reconcile.requestDigest
+        ),
+        reconciledExecution = final.find(
+          (value) => sha256Canonical(value) === second.reconcile.executionRecordDigest
+        );
+      assert.equal(reconciled.phase, "reconcile");
+      assert.equal(reconciled.capability, "migrate");
+      assert.equal(reconciled.roleObservation.role, "migrate");
+      assert.equal(reconciled.operationId, apply.operationId);
+      assert.equal(reconciled.idempotencyKey, apply.idempotencyKey);
+      assert.equal(reconciled.originalIdempotencyKey, apply.idempotencyKey);
+      assert.equal("approvedPlanDigest" in reconciled, false);
+      assert.equal(reconciled.predecessorExecutionRecordDigest, first.apply.executionRecordDigest);
+      const originalApplyExecution = final.find(
+          (value) => sha256Canonical(value) === reconciled.predecessorExecutionRecordDigest
+        ),
+        originalApplyRequest = final.find(
+          (value) => sha256Canonical(value) === originalApplyExecution.requestDigest
+        ),
+        approvedDryExecution = final.find(
+          (value) => sha256Canonical(value) === originalApplyRequest.dryRunRecordDigest
+        ),
+        approvedDryResult = final.find(
+          (value) => sha256Canonical(value) === approvedDryExecution.resultDigest
+        );
+      assert.deepEqual(originalApplyExecution, execution);
+      assert.equal(sha256Canonical(originalApplyRequest), requestDigest);
+      assert.equal(
+        originalApplyRequest.approvedPlanDigest,
+        deterministicPlanDigest(approvedDryResult.plan)
+      );
+      assert.equal(reconciledExecution.status, "SUCCEEDED");
+      assert.ok(
+        final.some((value) => sha256Canonical(value) === first.apply.executionRecordDigest)
+      );
+      assert.equal(
+        final.filter((value) => value.kind === "execution" && value.requestDigest === requestDigest)
+          .length,
+        1
+      );
+      assert.ok(
+        final
+          .filter(
+            (value) =>
+              value.kind === "process" && value.requestDigest === second.reconcile.requestDigest
+          )
+          .every((value) => value.events.every((event) => event.tool !== "prisma-deploy"))
+      );
+      assert.equal(
+        final.filter((value) => value.schemaVersion === "manual-baseline-manifest.v1").length,
+        1
+      );
+      assert.equal(
+        final.filter(
+          (value) =>
+            value.schemaVersion === "manual-runner-request.v1" &&
+            ["verify", "replay"].includes(value.phase)
+        ).length,
+        0
+      );
+    } finally {
+      await preserveCommandFixture(f, "stage2-frozen-unknown-reconcile", {
+        first: first ?? null,
+        second: second ?? null,
+        failureCode: firstFailure?.code ?? null,
+        postwriteFailures,
+        counts: {
+          launches: f.launches.length,
+          credentialReads: f.counters.credentialReads,
+          observerConnections: f.pg.connects
+        }
+      });
+    }
   }
 );
 

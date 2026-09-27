@@ -341,8 +341,21 @@ export async function launchManualStage1(input) {
         fail("MANUAL_LAUNCH_STAGE_MISMATCH");
       if (migration) {
         return await requireFixedH3B(facts, migration, async (secondFacts) => {
-          if (migration.branch !== "normal-success") fail("MANUAL_H3_B_INPUT_REQUIRED");
           const observed = { observation: migration.observation };
+          if (migration.branch === "apply-unknown-recovery") {
+            const reconcile = await launchZeroCredentialRunner(
+              session,
+              secondFacts,
+              observed,
+              null,
+              { phase: "reconcile", migration }
+            );
+            return Object.freeze({
+              operationRef: input.operationRef,
+              reconcile: reconcile.reference,
+              promotionEligible: false
+            });
+          }
           const verify = await launchZeroCredentialRunner(session, secondFacts, observed, null, {
             phase: "verify",
             migration
@@ -556,16 +569,18 @@ async function readConsumedMigration(facts) {
     dryAssessment.proofDigest !== dryExecution.resultDigest
   )
     fail("MANUAL_SESSION_UNVERIFIED");
-  const normal =
+  const committedAssessment =
+      assessment.executionStatus === "SUCCEEDED" &&
+      assessment.originalDatabaseOutcome === "committed",
+    normal =
       operation.scenario === "normal" &&
       execution.status === "SUCCEEDED" &&
-      assessment.executionStatus === "SUCCEEDED" &&
-      assessment.originalDatabaseOutcome === "committed" &&
+      committedAssessment &&
       execution.resultDigest === assessment.proofDigest,
     unknown =
       operation.scenario === "apply-interrupted" &&
       execution.status === "INTERRUPTED_UNKNOWN" &&
-      assessment.executionStatus === "INTERRUPTED_UNKNOWN";
+      (assessment.executionStatus === "INTERRUPTED_UNKNOWN" || committedAssessment);
   if (!normal && !unknown) fail("MANUAL_SESSION_UNVERIFIED");
   const processes = [...graph.entries()]
     .filter(([, { value }]) => value.kind === "process" && value.requestDigest === requestDigest)
@@ -573,10 +588,7 @@ async function readConsumedMigration(facts) {
   if (!processes.length) fail("MANUAL_SESSION_UNVERIFIED");
   const [processEvidenceDigest] = processes[0],
     process = original(processEvidenceDigest, "manual-runner-evidence.v1", "process");
-  if (
-    normal &&
-    (execution.processEvidenceDigest !== processEvidenceDigest || process.closedAt === null)
-  )
+  if (execution.processEvidenceDigest !== processEvidenceDigest || process.closedAt === null)
     fail("MANUAL_SESSION_UNVERIFIED");
   const actualResultDigest = assessment.proofDigest ?? execution.resultDigest;
   if (execution.resultDigest && execution.resultDigest !== actualResultDigest)
@@ -590,6 +602,24 @@ async function readConsumedMigration(facts) {
       observationFields.some((key) => result[key] !== request[key]))
   )
     fail("MANUAL_SESSION_UNVERIFIED");
+  if (unknown && committedAssessment) {
+    const post = original(
+      execution.postStateRecordDigest,
+      "manual-operation-record.v2",
+      "post-state"
+    );
+    if (
+      !result ||
+      execution.resultDigest !== assessment.proofDigest ||
+      execution.startedAt !== result.startedAt ||
+      execution.finishedAt !== process.closedAt ||
+      post.requestDigest !== requestDigest ||
+      post.consumptionRecordDigest !== execution.consumptionRecordDigest ||
+      post.outcome !== "OBSERVED" ||
+      post.observationDigest !== result.observationDigest
+    )
+      fail("MANUAL_SESSION_UNVERIFIED");
+  }
   await facts.recheck();
   return Object.freeze({
     branch: normal ? "normal-success" : "apply-unknown-recovery",
@@ -4136,6 +4166,14 @@ async function launchZeroCredentialRunner(session, facts, observed, dry = null, 
         item.value.outcome === "MATCH"
     );
     if (handoffReadback.length !== 1) fail("MANUAL_SESSION_UNVERIFIED");
+    // The frozen interrupted scenario stops after the real committed result,
+    // post-state and closed process have been independently reopened. Preserve
+    // those original facts without first writing a successful execution.
+    const interrupted =
+      facts.fixed.operation.scenario === "apply-interrupted" &&
+      request.phase === "apply" &&
+      assessment.executionStatus === "SUCCEEDED" &&
+      assessment.originalDatabaseOutcome === "committed";
     const execution = record("execution", {
       ...scoped,
       attemptId,
@@ -4149,8 +4187,8 @@ async function launchZeroCredentialRunner(session, facts, observed, dry = null, 
         request.dryRunRecordDigest ?? request.predecessorExecutionRecordDigest ?? null,
       startedAt: commandResult.startedAt,
       finishedAt: closedAt,
-      status: assessment.executionStatus,
-      reasonCode: assessment.reasonCode,
+      status: interrupted ? "INTERRUPTED_UNKNOWN" : assessment.executionStatus,
+      reasonCode: interrupted ? "MANUAL_EVIDENCE_INCOMPLETE" : assessment.reasonCode,
       resultDigest,
       processEvidenceDigest: previousProcessEvidenceDigest
     });
@@ -4175,6 +4213,7 @@ async function launchZeroCredentialRunner(session, facts, observed, dry = null, 
         })
       );
     }
+    if (interrupted) fail("MANUAL_EVIDENCE_INCOMPLETE");
     if (assessment.executionStatus !== "SUCCEEDED")
       fail(assessment.reasonCode ?? "MANUAL_EVIDENCE_INCOMPLETE");
     return {

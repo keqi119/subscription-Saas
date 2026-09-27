@@ -18,7 +18,7 @@
 
 最小验证只有直接相关的两组：一组使用本次完整 402,009-byte 离线 SQL 负载运输两轮独立 script 输出，保留实际 11 工具 MS2 时序、ACK、原始字节、独立档案重开并计量总 stdout/stdin、最大帧与 JSON；另一组覆盖 2 MiB 总 stdout 边界及普通 raw／旧 MS1／其余 1 MiB 角色不得获得例外。永久回归用例应自包含；一次实际 SQL 运输诊断必须保留文件 hash/来源，不能伪装为 reference DB 或业务验收。只跑新增或修改行为所需用例，完整 R2 组合门槛仍留到实际闭合，不重复旧业务套件。若真实完整包装仍超过 2 MiB，保留计量和失败并重新裁决，不自行继续放大。
 
-当前状态：前向规范已明确，生产四文件容量改动和上述验证尚未实施；阶段 1 与完整 R2 仍未完成。只读依据为发布工作树 `runner-command/stream-limit-review.md`，原始离线 SQL hash 为 `7a066863c903c3e48d5d2d23903ba3e269db2067e79db9c671d5daa996ce01da`。
+当前状态（2026-09-27 更新）：容量、父方原件归档及中断后停止修正已在 `c7cfed2b` 提交，并合入候选 `30aaf392`。两轮完整 SQL 输出的真实父子运输与实际中断后的安全停止已分别通过有限验证；PostgreSQL/Docker 为受控替身，不代表真实数据库发布验收。原失败保留，不重复旧矩阵。阶段 1 与完整 R2 仍未完成。只读依据为发布工作树 `runner-command/stream-limit-review.md` 和 `capacity-independent-review.md`，原始离线 SQL hash 为 `7a066863c903c3e48d5d2d23903ba3e269db2067e79db9c671d5daa996ce01da`。
 
 ## 本轮 H3 交接修订状态（2026-09-13，待复审）
 
@@ -85,19 +85,24 @@ R1.3 新 public reader `readFixedManualOperation({repoRoot,operationRef})` 是�
 **H3-A 两原件的本轮最小封闭输入。** 复用 H1 已批准 owner 受控导入模型：先向用户展示含精确非秘密操作单的 canonical approval 原件并取得真实批准，owner 才按固定路径 CreateNew/独立重开；runtime 核固定来源/ACL/绑定，不自称能证明用户点击。两对象均 fatal UTF-8、canonical、完整文件不超过 1 MiB、递归 closed；D/T/S/RawRef/Report 沿 R1，Report 保留完整非秘密文本且与完整 JSON 共同计数，不能执行其中的 Shell/SQL。以下 recordVersion 只是现有两 H3 文件的局部判别值，不新增共享 Schema、签名域或 artifact kind：
 
 ```text
-H3AApproval={recordVersion:"manual-h3-a-approval.v1",operationRef:UUID,
+H3AApproval={recordVersion:"manual-h3-a-approval.v2",operationRef:UUID,
  indexDigest:D,runId:UUID,profileDigest:D,targetIntent:TargetIntent,ownerId:S,
  approvedAt:T,creationSpec:{databaseContainerName:S,dataVolumeName:S,
- postgresImageDigest:D,marker:S,endpoint:S,serverPort:integer1..65535},
+ postgresImageDigest:D,marker:S,endpoint:S,serverPort:integer1..65535,
+ roles:{provision:S,migrate:S,verify:S,observer:S}},
  operationSheet:Report,promotionEligible:false}
-H3AReadback={recordVersion:"manual-h3-a-readback.v1",operationRef:UUID,
+H3AReadback={recordVersion:"manual-h3-a-readback.v2",operationRef:UUID,
  indexDigest:D,runId:UUID,profileDigest:D,targetIntent:TargetIntent,ownerId:S,
  approval:RawRef,databaseContainerName:S,endpoint:S,databaseOid:positive-decimal-string,
  cluster:ClusterOrigin,resourceObservedAt:T,sqlObservedAt:T,readbackAt:T,
+ roles:{provision:RoleIdentity,migrate:RoleIdentity,verify:RoleIdentity,observer:RoleIdentity},
+ roleReadback:RawRef,
  readbackReport:Report,promotionEligible:false}
 ```
 
 operationSheet 保留既有 H3-A 精确角色/凭证引用/权限/TLS/暂停与退役边界，readbackReport 保留受批操作的非秘密命令/退出/实际读回来源；不得包含密码、完整连接串、Docker Env 或原始秘密输出。这两个文本不是任意执行入口，也不能替代 H3 段已要求的实际独立确认；新身份投影通过不表示四角色、权限、TLS 或 H3 全部通过。H3-B 仍使用自己的另批原件，不能以这两个 H3-A 对象提前证明它已完成。
+
+**2026-09-27 私有 v2 角色来源。** H3-A 尚未真实创建，新执行统一要求上述 v2；v1 仅保留历史，不静默补字段或重写旧批准。creationSpec.roles 只有创建前批准的四个精确名字，三业务角色等于 H1 target.roles，provision 为本隔离集群批准的管理角色，四名互异。readback.roles 记录创建后的实际名字和 OID，四 OID 互异且名字逐项等于批准；roleReadback 指 §2.5.1 的同目标实际 roles Capture，不能从 Report 解析 JSON 或猜测身份。H3-B 四角色逐项等于该 v2 readback，不增加 profile.provision 或公共 Schema。
 
 两原件共同字段逐一等于当前 R1 index，ownerId 等于已核 H1 profile.ownerId；readback.approval 必须等于固定完整 approval bytes 的 RawRef。creationSpec.endpoint 等于固定 profile 对应目标端点，readback.endpoint 与之相同且由实际 Docker published 映射复核；readback.databaseContainerName 等于 creationSpec 同字段，cluster 的 dataVolumeName/postgresImageDigest/marker/serverPort 等于 creationSpec，同一实际 inspect 输出提供 databaseContainerId 和其容器名对应。cluster.systemIdentifier/serverAddress/serverPort 与 databaseOid 由受批 H3-A SQL 查询原件按同名列保存，不由名称、digest 或执行中 request 推断。approvedAt 不晚于 resourceObservedAt/sqlObservedAt，两个观察时间不晚于 readbackAt，全部不得晚于当次读取时间；不引入 session/attempt/未来 baseline/result 的字段或引用。
 
@@ -294,7 +299,7 @@ ProvisionExit={identity:RoleIdentity,revokedAt:T,canLogin:false,superuser:false,
  credentialStateReadback:RawRef}
 ```
 
-**共同绑定与实际来源。** Approval 的 operation/index/run/profile/target/owner 等于 R1 fixed index/H1；H3-A 两 RawRef 等于固定原件，target 等于 H3-A 的稳定物理身份且每次请求前仍由现有实际 inspect 核等。四 role name/OID 互异，migrate/verify/observer 的 name 等于 profile 精确 target.roles 对应值，provision 等于 H3-A 已批准操作单中的临时管理角色，不能新增 profile.provision。table OID/owner 是表实际产生后按真实 catalog 读取的值，owner 必须为该 migrate name/OID。preApprovalEvidence 包含当时真实 table/owner/角色/cluster 与原进程已退出的查询原件；它必须早于 approvedAt，不能将将来的 grant/readback 倒填进批准。
+**共同绑定与实际来源。** Approval 的 operation/index/run/profile/target/owner 等于 R1 fixed index/H1；H3-A 两 RawRef 等于固定原件，target 等于 H3-A 的稳定物理身份且每次请求前仍由现有实际 inspect 核等。四 role name/OID 互异且逐项等于 H3-A v2 readback.roles；migrate/verify/observer 的 name 等于 profile 精确 target.roles 对应值，provision 等于 H3-A creationSpec.roles.provision，不能新增 profile.provision。table OID/owner 是表实际产生后按真实 catalog 读取的值，owner 必须为该 migrate name/OID。preApprovalEvidence 包含当时真实 table/owner/角色/cluster 与原进程已退出的查询原件；它必须早于 approvedAt，不能将将来的 grant/readback 倒填进批准。
 
 MigrationBasis 的每个 digest 必须打开既有 R1/R2 原件并核全件 hash、同 operation/key/attempt/run/build/target、phase=apply 及既定前序链；不是按字符串相等接受。normal 分支只来自 frozen scenario=normal 的实际 SUCCEEDED apply，resultDigest 必填，已完成内部自检且原 Runner/连接退出；`investigationApprovalRef=null`。unknown 分支只来自 frozen scenario=apply-interrupted 的该原 apply `INTERRUPTED_UNKNOWN` 历史，允许尚未产生的 result 为 null，但已有的实际 result 不能删除；`investigationApprovalRef` 必填并对应对该 UNKNOWN 的另批只读调查，preApprovalEvidence 是该调查的实际原件。调查确认原 writer/连接已停、表真实存在且 OID/owner/cluster 可确定后，才可能批准本次精确单表 SELECT 及撤权；不能借正常 H3-B 成功前置或 normal 的结果。未知 writer、错表/owner、缺实际调查许可或 table 不存在均保持阻断；H3-B 管理调查不将原 apply 改为成功，后续只能按原身份 readonly reconcile。
 
@@ -307,6 +312,58 @@ provisionExit 证明独立人工进程完成本次撤销登录/管理权限并�
 时间要求：`preApprovalEvidence 的实际观察/原 writer 停止 <= approvedAt < expiresAt <= profile.expiresAt`；`approvedAt <= before.observedAt <= grantStartedAt <= grantCompletedAt <= after.observedAt <= provisionExit.revokedAt <= process.closedAt <= provisionExit.observedAt <= readbackAt`，人工进程 startedAt 位于批准窗口内且不晚于 grantStartedAt；readbackAt 不晚于 expiresAt/本次读取时间。第二阶段 request 必须仍在批准窗口，过期不重写原件延长授权。after/provision 的独立读回可使用其明确批准的只读身份，不能由已退出 provision 自证；文件审批来源及原始命令/exit/权限读回还须人工独立复核。
 
 第一 migration 阶段不要求未来 H3-B；第二 verification 阶段必须在 request freeze/sign 和 verify/migrate 能力凭证读取前具备两份完整 H3-B 原件并通过上述绑定。GRANT/撤权/退出/归档任一失败或 UNKNOWN，只保管真实 partial raw、停止，不发布成功 readback或自动再 grant；固定 approval/readback 不覆盖。已有 H3-B 之后若需改变范围或恢复，先另行明确审查恢复记录方案，不靠新 operationRef 或静默重写文件绕过原历史。
+
+### 2.5.1 H3 私有 SQL 原件与实际来源（2026-09-27）
+
+H3 现有 RawRef 只引用 archive/raw/{digest}.bin；每件仍上限 1 MiB、完整 bytes/hash/ACL/独立重开，闭包去重但不省略角色各自的实际连接。SQL capture 为私有 canonical JSON（不是公共 artifact）：
+
+```text
+Capture={recordVersion:"manual-h3-sql-capture.v1",queryId:Q,
+ operationRef:UUID,indexDigest:D,runId:UUID,profileDigest:D,
+ connection:{endpoint:S,databaseName:S,role:RoleIdentity},
+ sql:RawRef,argv:RawRef,stdout:RawRef,stderr:RawRef,
+ preparedAt:T,spawnedAt:T,closedAt:T,recordedAt:T,pid:PID,parentPid:PID,
+ exitCode:0,signal:null,stdoutEnded:true,stderrEnded:true}
+```
+
+Q 仅 roles / privileges / migrations / sessions / grant / revoke 六种。对应 SQL 是现有 launcher 内的固定私有模板；仅从已核 H1/H3/原 apply 身份代入数据库、四角色和迁移表 OID，reader 比较 sql 完整 bytes 和 argv，绝不执行档案中的 SQL/argv。不接受 caller 提供模板或 queryId 扩展。实际人工执行捕获 argv/stdout/stderr/PID/close，满足 prepared<=spawned<=closed<=recorded，stderr 为空；不凭退出码省略 stdout。所有外壳及原 stdout 保留；完整 EOF/真实 close 缺失即拒绝成功原件。
+
+固定 psql 调用禁止用户 rc 和口令提示，使用 ON_ERROR_STOP、unaligned/tuples-only/quiet。四个读 queryId 的单次输出由固定 SQL 构造一个 JSON 值和单个 LF；native JSON 保留真实原字节，仅严格 UTF-8 解码、核固定列/类型/顺序，不重新序列化替换 stdout。连接身份由输出的实际 session_user/current_user/role OID/TLS/cluster/DB 核对，不能由 argv 替代。grant/revoke 的 stdout 保留原非秘密文本，包括 quiet 模式的空输出，不要求虚构命令 tag；两份固定 DCL 模板均在执行 DCL 的同一实际连接中原生断言 session_user=current_user=已批准 provision 名、实际角色 OID、TLS 及同 cluster/DB，任一不符由 ON_ERROR_STOP 终止。成功效果只能由独立读原件证明。私密连接材料只用于独立人工操作，不进 capture/argv/Report。
+
+#### 固定 native 值和来源
+
+读查询返回同一外层 `{observedAt,identity,data}`；identity 精确为 `{systemIdentifier,serverAddress,serverPort,databaseName,databaseOid,sessionUser,currentUser,roleOid,tls}`。observedAt 为 SQL 实际时间，位于该 capture 的 spawn/close 间；四角色 OID 为十进制字符串。单次完整只读事务内取得 identity 与 data。所有行集使用固定列顺序的 tuple，按其 OID/复合键排序且无重复；不把“空数组”当作已执行查询。
+
+| queryId | data 的固定列/集合及用途 |
+| --- | --- |
+| roles | `{roles,memberships,migrationTable}`。roles 为完整 pg_roles 的 `[oid,name,canLogin,superuser,createDb,createRole,replication,bypassRls,inherit]`；memberships 为完整 pg_auth_members 的 `[roleId,member,grantor,adminOption,inheritOption,setOption]`。migrationTable 为 null 或仅从 pg_class/pg_namespace/pg_roles 读出的 `{oid,schema,name,owner:RoleIdentity}`，固定 public._prisma_migrations，不 SELECT 尚未授予权限的迁移表数据。不选择密码字段。H3-A roleReadback、H3-B preapproval 和 provision 退出角色检查复用。 |
+| privileges | `{roles,memberships,database,schemas,relations,columns,controlFunction,defaultAcls}`。roles/memberships 同上；database `[oid,name,owner,acl,privileges,grantOptions]`；schemas 全非系统 schema `[oid,name,owner,acl,privileges,grantOptions]`；relations 全非系统 pg_class 关系 `[oid,schemaOid,name,relkind,owner,acl,privileges,grantOptions]`，含无权限对象而不是仅返回有权限项；columns 全非删除用户列 `[relationOid,attnum,name,acl,privileges,grantOptions]`；controlFunction `[oid,signature,owner,acl,execute,grantOption]`，signature 固定 pg_catalog.pg_control_system()；defaultAcls 为完整非系统作用域 `[owner,schemaOid,objectType,acl]`，全局作用域 schemaOid="0"。 |
+| migrations | `{table:{oid,schema,name,owner:RoleIdentity},rows}`，table 固定 public._prisma_migrations；rows 恰为现有 observer 的七个原列 id/migrationName/checksum/startedAt/finishedAt/rolledBackAt/appliedStepsCount 的全部行，按 startedAt,migrationName,id 排序。两角色各自真实 TLS 连接成功读取，核同原 apply 后的 catalog，不读取业务行。 |
+| sessions | `{sessions}`，完整同集群 pg_stat_activity 的 `[pid,databaseOid,roleOid,roleName]`，按 pid 排序；不读 query 文本/连接秘密。writer 按原目标 databaseOid 和原 migrate roleOid 计算，provision 按 roleOid 跨所有数据库计算；不在 SQL 中先筛成目标 DB 或当前连接。后台进程的 databaseOid 可为 null，roleOid/roleName 仅可同时为 null；不能把统计可见性不足或解析失败变成空数组/0。原件至少包含实际当前 observer/目标 DB 的连接，固定查询和人工独立读回还须确认身份列的实际可见性。 |
+| grant | 固定仅两角色的本表 SELECT、无 grant option 的已批准 GRANT；保留实际输出，另靠两个角色独立 privileges/migrations 读回证明效果。授权前在该实际连接再次核同 cluster/DB/table OID/owner，不能只使用较早 preapproval 的查询。 |
+| revoke | 固定只撤销 provision LOGIN/SUPERUSER/CREATEDB/CREATEROLE/REPLICATION/BYPASSRLS 及已核 membership；保留实际输出。后续 roles/sessions 由 observer 独立新连接读取，不能由已退出 provision 自证。 |
+
+privileges/grantOptions 由固定 has_* 查询计算，适用类型分别为 database/schema/table/sequence/column/function；owner 由 native OID 关联角色表。不可对 sequence/index 误用 table 的权限函数，无适用权限函数的关系类型保留 owner/ACL 且两个有效权限数组为空。非系统 schema 精确排除名字以 pg_ 开头的 schema 和 information_schema；列只取 attnum>0 且未删除的全部列。acl 为 null 或完整 ACL 元素数组；元素固定 `[grantor,grantee,privilege,isGrantable]`，PUBLIC 的 grantee="0"。null 保留 catalog default 的事实，实际 has_* 仍包含隐式权限，不能将 null 当作“无权限”。对象集合由固定查询完整枚举，所有列都保留；不能靠 summary 声明完整。
+
+ReadonlyRoleFacts 从对应角色的 privileges 原件导出，逐字段与 H3-B 声明比较。空 ownedSchemas/ownedRelations、无 membership、无未批准业务关系/列权限、所有权、默认 relation/sequence 授权、grant option，以及数据库/schema/function 权限均根据完整对象集合判定。`columnPrivileges=[]` 指没有额外显式列 ACL，不将表级 SELECT 引起的 has_column_privilege=true 错判为额外列授权。对于非迁移业务关系，任何 effective table/sequence/column 权限均拒绝。PUBLIC/继承的影响由有效权限与 ACL 一并核对。
+
+#### 既有 RawRef 逐项连接
+
+- PermissionReadback.source 指向 canonical `{verify:RawRef,observer:RawRef}` 两个 privileges Capture；各 ReadonlyRoleFacts.privilegeInventory 必须等于该角色 Capture.stdout。before.observedAt 为两个 privileges Capture 的实际观察上界；after.observedAt 为两个 privileges 及两个 migrations Capture 共四次实际观察的上界，并满足原时间链。after.selectReadback 是该角色的 migrations Capture；before 为 null。
+- preApprovalEvidence 指向 canonical `{roles:RawRef,table:RawRef,writerProcess:RawRef,writerSessions:RawRef}`：roles/table 均为 roles Capture，可引用同一完整原件，table 只核非 null 的 catalog 元数据；writerSessions 为 sessions Capture，writerProcess 为原 apply 的现有 process 原件。正常分支由已有 observer 读取这些 catalog，不在 GRANT 前尝试迁移表 SELECT，也不提前开启 provision 密封凭证。它们全部早于批准；unknown 分支还需原定独立调查许可，不能借 normal 的原件。
+- writerQuiescence.processEvidence 是同原 apply 已归档的实际最终 process 完整 canonical bytes；并重开该 attempt 固定 final-inspect 原输出核实际 containerId/exited。正常分支完整成功；unknown 允许原真实非零/signal，不能合成缺失工具终态或将 aggregate closedAt 从 null 改写。sessionReadback 是后续 sessions Capture。
+- grantEvidence 是 grant Capture。provisionExit.roleReadback/sessionReadback 分别是 observer 在撤权、进程退出后的 roles/sessions Capture；验证同 provision OID 无登录/管理权限且同集群跨数据库会话数为 0。processReadback 是独立宿主父方实际保存的 `{process:{pid,startedAt,closedAt,exitCode,signal},grant:RawRef,revoke:RawRef}`；process 与 provisionExit.process 完全相等，两 capture.parentPid 都等于该真实 process.pid，capture 的真实生命期包含在 process 中，grant 等于 grantEvidence，revoke 同角色/目标。时间不由采集者补写。
+- credentialStateReadback 只包含固定 provision.json 的非秘密 `{observedAt,operationRef,state,stat}`；REMOVED 的 stat=null，SEALED_RETAINED 的 stat 为 `{uid,gid,mode,nlink,dev,ino}` 十进制字段，必须 owner-only 普通文件/nlink1。R2 只通过固定路径 lstat 复核状态和身份，不打开、解析、hash provision 内容。文件状态不能替代 DB 撤权。
+
+进程时间也闭合到原 §2.5 顺序：preapproval 所有 Capture.closedAt/recordedAt 不晚于 approvedAt；before 的两个 Capture.closedAt 不晚于 grant Capture.spawnedAt；grantStartedAt/grantCompletedAt 分别等于该 grant 的 spawnedAt/closedAt；after 的两个 privileges 与两个 migrations Capture 各自 spawnedAt 不早于 grantCompletedAt、closedAt 不晚于 revoke.spawnedAt；provisionExit.revokedAt 等于 revoke.closedAt；退出后的角色/会话查询在真实 provision parent.closedAt 后才 spawn，固定 credential 状态观察也在其后。每件 recordedAt 不晚于 readbackAt，任何摘要/声明时间不能覆盖相反的原进程时间。
+
+以上 JSON 是固定来源的采集/绑定格式，本身不证明批准或外部动作已经发生。H1 owner 的受控导入、原操作单批准、真实工具/SQL来源、独立人工复核和已有 archive 读回仍须成立；不声称可防御同一受信宿主管理员伪造全部原件。缺任何来源保持 INPUT_REQUIRED，不用 fixture 或已知 schema 匹配补成功。
+
+#### 依据与实现边界
+
+权限查询区分 table/column、序列、grant option，按 [PostgreSQL 17 权限函数](https://www.postgresql.org/docs/17/functions-info.html#FUNCTIONS-INFO-ACCESS-TABLE) 核对；原目录字段来自 [pg_roles](https://www.postgresql.org/docs/17/view-pg-roles.html)、[pg_auth_members](https://www.postgresql.org/docs/17/catalog-pg-auth-members.html)、[pg_class](https://www.postgresql.org/docs/17/catalog-pg-class.html)、[pg_attribute](https://www.postgresql.org/docs/17/catalog-pg-attribute.html)、[pg_default_acl](https://www.postgresql.org/docs/17/catalog-pg-default-acl.html)。只读身份可见其他连接的一般角色/数据库信息，受限列不能冒充不存在，见 [统计可见性](https://www.postgresql.org/docs/17/monitoring-stats.html#MONITORING-STATS-VIEWS)。固定输出开关见 [psql](https://www.postgresql.org/docs/17/app-psql.html)。
+
+首个实现仍仅原 launcher/test 内私有 helper：结构/绑定/原件重开与固定查询模板。R2 不执行这些管理 SQL；实际 H3 操作在原人工阶段完成。模板的具体字符串、array 空值及 canonical/native 解码必须在本增量源码审查中固定，不能让 caller 传入。standalone verifier 后续消费同一已固定格式；本节不新增测试文件或要求旧矩阵。
 
 ### 2.6 四角色私有文件、CREDENTIAL 字符串映射及测试矩阵
 

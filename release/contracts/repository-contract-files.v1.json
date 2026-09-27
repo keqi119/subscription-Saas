@@ -19,6 +19,8 @@
     "apps/release-runner/src/reference-paths.mjs",
     "apps/release-runner/src/runtime-adapters.mjs",
     "apps/release-runner/src/trusted-entrypoint.mjs",
+    "apps/release-runner/test/manual/manual-runner-migration-postgres.integration.test.mjs",
+    "apps/release-runner/test/manual/manual-runner-verification-postgres.integration.test.mjs",
     "docker-compose.release-gate.yml",
     "packages/release-foundation/package.json",
     "packages/release-foundation/src/approval-revocations.mjs",
@@ -200,6 +202,7 @@
     "scripts/release/verify-build-delivery.mjs",
     "scripts/release/verify-build-proof.mjs",
     "scripts/release/verify-compose-policy.mjs",
+    "scripts/release/verify-manual-runner-result.mjs",
     "scripts/release/workflow-custody-record.mjs",
     "tests/release/web-public-api.spec.ts"
   ]

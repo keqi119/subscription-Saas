@@ -225,6 +225,7 @@ const generatedAt = "2026-09-01T00:00:00.000Z";
 const runId = 2801;
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const nativeExecFile = childProcess.execFile.bind(childProcess);
+const nativeExpectedSpawn = childProcess.spawn.bind(childProcess);
 const nativeUUID = crypto.randomUUID.bind(crypto);
 const nativeFS = Object.fromEntries(
   ["open", "lstat", "realpath", "readFile", "readdir", "mkdir", "writeFile"].map((name) => [
@@ -442,6 +443,50 @@ function installFixedIO(t, f, gh) {
       });
     }
     if (file === "gh") {
+      if (
+        args[0] === "attestation" &&
+        ["provenance.json", "expected.sql"].includes(path.basename(args[2] ?? "")) &&
+        gh.expectedSpawn
+      ) {
+        const child = gh.expectedSpawn(file, args, options, nativeExpectedSpawn),
+          stdout = [],
+          stderr = [];
+        let outputSize = 0,
+          failure = null;
+        const timer = setTimeout(() => {
+          failure = Object.assign(new Error("synthetic gh timeout"), { code: "ETIMEDOUT" });
+          child.kill("SIGTERM");
+        }, options.timeout);
+        for (const [stream, chunks] of [
+          [child.stdout, stdout],
+          [child.stderr, stderr]
+        ])
+          stream.on("data", (chunk) => {
+            chunks.push(Buffer.from(chunk));
+            outputSize += chunk.length;
+            if (outputSize > options.maxBuffer) {
+              failure = Object.assign(new Error("synthetic gh output overflow"), {
+                code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+              });
+              child.kill("SIGTERM");
+            }
+          });
+        child.once("error", (cause) => {
+          failure = cause;
+        });
+        child.once("close", (code, signal) => {
+          clearTimeout(timer);
+          callback(
+            failure ??
+              (code === 0 && signal === null
+                ? null
+                : Object.assign(new Error("synthetic gh failed"), { code, signal })),
+            Buffer.concat(stdout),
+            Buffer.concat(stderr)
+          );
+        });
+        return child;
+      }
       if (gh.before) gh.before(args);
       gh.calls.push({ file, args: [...args], options: { ...options } });
       if (args[0] === "attestation" && args[2] === gh.paths.proof) value = gh.proof;
@@ -908,7 +953,9 @@ async function zeroCredentialFixture(
       const output = [];
       child.stdout.on("data", (chunk) => {
         output.push(Buffer.from(chunk));
-        if (f.runner.loseApplyAfterSpawn && allocation.phaseKey === "apply") {
+        const loseApply = f.runner.loseApplyAfterSpawn && allocation.phaseKey === "apply",
+          loseReplay = f.runner.loseReplayAfterSpawn && allocation.phaseKey === "replay";
+        if (loseApply || loseReplay) {
           const frames = parseManualRunnerFrames({
             direction: "child-to-parent",
             bytes: Buffer.concat(output),
@@ -918,7 +965,7 @@ async function zeroCredentialFixture(
             !f.runner.lossTriggered &&
             frames.some(
               (frame) =>
-                frame.payload.event?.tool === "prisma-deploy" &&
+                frame.payload.event?.tool === (loseApply ? "prisma-deploy" : "prisma-script") &&
                 frame.payload.event.event === "SPAWNED"
             )
           ) {
@@ -5290,6 +5337,61 @@ async function preserveCommandFixture(f, label, boundaryCounters = null) {
       recursive: true,
       errorOnExist: true
     });
+  // Keep this fixture's public checkout so later read-only verifier fixes do
+  // not require regenerating its signed parent chain. Keys/credentials live
+  // outside this exact allowlist and never enter the bundle or manifest.
+  const allowedPublicFiles = new Set([
+    "Dockerfile.runner",
+    "pnpm-lock.yaml",
+    "package.json",
+    profileName,
+    bindingName,
+    "release/contracts/repository-contract-files.v1.json",
+    "scripts/release/manual-expected-schema-producer.mjs",
+    "scripts/release/manual-stage1-trust.mjs",
+    "scripts/release/verify-build-proof.mjs",
+    "apps/api/prisma/schema.prisma",
+    "apps/api/prisma.config.ts",
+    "apps/api/prisma/migrations/20260101000000_initial/migration.sql"
+  ]);
+  const publicFiles = (await git(f.repoRoot, "ls-files", "-z")).split("\0").filter(Boolean),
+    publicManifest = [];
+  assert.ok(publicFiles.length > 0 && publicFiles.every((name) => allowedPublicFiles.has(name)));
+  for (const name of publicFiles) {
+    const source = path.join(f.repoRoot, name),
+      target = path.join(directory, "public-repo", name),
+      before = await fs.lstat(source, { bigint: true });
+    assert.ok(before.isFile() && !before.isSymbolicLink() && before.nlink === 1n);
+    const bytes = await fs.readFile(source);
+    assert.equal(
+      /-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/u.test(bytes.toString("utf8")),
+      false
+    );
+    const after = await fs.lstat(source, { bigint: true });
+    for (const key of ["dev", "ino", "size", "mtimeNs", "ctimeNs"])
+      assert.equal(after[key], before[key]);
+    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    await fs.writeFile(target, bytes, { flag: "wx", mode: 0o600 });
+    assert.ok((await fs.readFile(target)).equals(bytes));
+    publicManifest.push({ path: name, bytes: bytes.length, digest: sha256Bytes(bytes) });
+  }
+  const bundle = path.join(directory, "public-repo.bundle");
+  await assert.rejects(fs.lstat(bundle), { code: "ENOENT" });
+  assert.equal(await git(f.repoRoot, "rev-list", "--count", "HEAD"), "1");
+  assert.equal(await git(f.repoRoot, "rev-parse", "HEAD"), f.sourceSha);
+  await git(f.repoRoot, "bundle", "create", bundle, "HEAD");
+  await git(f.repoRoot, "bundle", "verify", bundle);
+  const bundleBytes = await fs.readFile(bundle);
+  await fs.writeFile(
+    path.join(directory, "public-repo-manifest.json"),
+    encodeManualJson({
+      sourceSha: await git(f.repoRoot, "rev-parse", "HEAD"),
+      files: publicManifest,
+      bundle: { bytes: bundleBytes.length, digest: sha256Bytes(bundleBytes) },
+      credentialOrKeyRootsCopied: false
+    }),
+    { flag: "wx", mode: 0o600 }
+  );
   await fs.writeFile(
     path.join(directory, "actual-child-diagnostics.json"),
     encodeManualJson({ closes: f.actualCloses, diagnostics: f.runner.diagnostics }),
@@ -5692,6 +5794,208 @@ test("fixed H3-B reader preserves native sources without live authority", async 
   assert.equal(f.pg.connects, 0);
   noAuthority(f);
 });
+
+// These two bounded compositions reuse the existing native fixture, without
+// replaying the older launcher fault matrix or copying its large constructor.
+for (const scenario of ["normal", "apply-interrupted"]) {
+  test(
+    `result verifier independently reads the ${scenario} native archive`,
+    { skip: process.platform !== "linux" },
+    async (t) => {
+      const { verifyManualRunnerResult } = await import("./verify-manual-runner-result.mjs");
+      const f = await zeroCredentialFixture(t, "command", true, true, scenario),
+        expected = await expectedSourceFixture(f);
+      f.runner.expectedScript = "CREATE TABLE example(id integer PRIMARY KEY);\r\n";
+      f.runner.prismaVersion = JSON.parse(expected.output.schemaExpectationBytes).prismaVersion;
+      f.runner.phaseSchedule =
+        scenario === "normal"
+          ? ["dry-run", "apply", "verify", "replay"]
+          : ["dry-run", "apply", "reconcile"];
+      const operationRef = f.prepared.operationRef;
+      const counts = (complete) => ({
+        expectedCommands: scenario === "normal" ? 5 : 4,
+        consumedCommands: complete ? (scenario === "normal" ? 5 : 4) : 3,
+        succeededCommands: scenario === "normal" ? (complete ? 5 : 3) : complete ? 3 : 2,
+        failedCommands: 0,
+        interruptedCommands: scenario === "normal" ? 0 : 1,
+        unresolvedCommands: scenario === "normal" || complete ? 0 : 1
+      });
+      const verifyOnly = async () => {
+        const before = { ...f.counters, launches: f.launches.length, connects: f.pg.connects },
+          guards = [],
+          records = [];
+        const opening = fs.open.bind(fs),
+          execute = childProcess.execFile.bind(childProcess),
+          logging = process.stderr.write.bind(process.stderr);
+        const denied = () => {
+          throw new Error("result verifier attempted a write or execution");
+        };
+        guards.push(
+          t.mock.method(fs, "open", (file, flags, ...args) => {
+            assert.equal(flags, "r");
+            for (const root of [f.profile.storage.keyRoot, f.profile.storage.credentialRoot])
+              assert.ok(!String(file).startsWith(root + path.sep));
+            return opening(file, flags, ...args);
+          })
+        );
+        for (const name of ["mkdir", "writeFile", "unlink", "rename", "rm"])
+          guards.push(t.mock.method(fs, name, denied));
+        guards.push(t.mock.method(childProcess, "spawn", denied));
+        guards.push(
+          t.mock.method(childProcess, "execFile", (file, ...args) => {
+            assert.notEqual(file, "docker");
+            return execute(file, ...args);
+          })
+        );
+        guards.push(
+          t.mock.method(process.stderr, "write", (bytes, ...args) => {
+            const line = String(bytes);
+            if (line.startsWith("MANUAL_RESULT_ATTESTATION "))
+              records.push(JSON.parse(line.slice("MANUAL_RESULT_ATTESTATION ".length)));
+            return logging(bytes, ...args);
+          })
+        );
+        syncBuiltinESMExports();
+        try {
+          const result = await verifyManualRunnerResult({ operationRef });
+          assert.equal(records.length, 2);
+          for (const record of records) {
+            assert.ok(record.spawned && Number.isSafeInteger(record.pid) && record.pid > 0);
+            assert.equal(record.exitCode, 0);
+            assert.equal(record.signal, null);
+            for (const field of ["argv", "stdout", "stderr"])
+              assert.deepEqual(record.capture[field], {
+                digest: sha256Bytes(Buffer.from(record[field], "base64")),
+                bytes: Buffer.from(record[field], "base64").length
+              });
+            assert.ok(
+              expected.ghCloses.some((close) => close.pid === record.pid && close.exitCode === 0)
+            );
+          }
+          return result;
+        } finally {
+          for (const guard of guards.reverse()) guard.mock.restore();
+          syncBuiltinESMExports();
+          for (const field of [
+            "privateKeyReads",
+            "credentialReads",
+            "sessionWrites",
+            "indexWrites"
+          ])
+            assert.equal(f.counters[field], before[field]);
+          assert.equal(f.launches.length, before.launches);
+          assert.equal(f.pg.connects, before.connects);
+        }
+      };
+      let first, second, migrationResult, finalResult;
+      try {
+        if (scenario === "normal")
+          first = await launcher.launchManualStage1({ operationRef, allowedStage: "migration" });
+        else {
+          await assert.rejects(
+            launcher.launchManualStage1({ operationRef, allowedStage: "migration" }),
+            { code: "MANUAL_EVIDENCE_INCOMPLETE" }
+          );
+          const records = await f.records(),
+            request = records.find(
+              (value) =>
+                value.schemaVersion === "manual-runner-request.v1" && value.phase === "apply"
+            ),
+            execution = records.find(
+              (value) =>
+                value.kind === "execution" && value.requestDigest === sha256Canonical(request)
+            );
+          assert.equal(execution.status, "INTERRUPTED_UNKNOWN");
+          first = {
+            operationRef,
+            apply: {
+              requestDigest: sha256Canonical(request),
+              resultDigest: execution.resultDigest,
+              processEvidenceDigest: execution.processEvidenceDigest,
+              executionRecordDigest: sha256Canonical(execution)
+            }
+          };
+          const backup = path.join(
+              f.profile.storage.backupRoot,
+              "objects",
+              first.apply.executionRecordDigest.slice(7) + ".json"
+            ),
+            withheld = backup + ".withheld",
+            original = await fs.readFile(backup);
+          assert.ok(execution.finishedAt, "the original UNKNOWN includes a completed process");
+          await fs.rename(backup, withheld);
+          try {
+            await assert.rejects(verifyOnly(), { code: "MANUAL_RESULT_INCOMPLETE" });
+          } finally {
+            await fs.rename(withheld, backup);
+            assert.deepEqual(await fs.readFile(backup), original);
+          }
+        }
+        migrationResult = await verifyOnly();
+        assert.equal(migrationResult.status, "NOT_RUN");
+        assert.deepEqual(migrationResult.counts, counts(false));
+        await syntheticH3B(f, first);
+        second = await launcher.launchManualStage1({ operationRef, allowedStage: "verification" });
+        finalResult = await verifyOnly();
+        assert.equal(finalResult.status, "PASS");
+        assert.deepEqual(finalResult.counts, counts(true));
+        assert.equal(finalResult.promotionEligible, false);
+        assert.match(finalResult.recordDigest, /^sha256:[0-9a-f]{64}$/u);
+        if (scenario === "normal") {
+          const genesis = (await f.records()).find(
+              (value) => value.kind === "revocation" && value.sequence === 0
+            ),
+            orphan = {
+              ...genesis,
+              sequence: 1,
+              action: "REVOKE_PROFILE",
+              reasonCode: "OWNER_REVOKED",
+              previousRevocationDigest: sha256Canonical(genesis)
+            },
+            file = path.join(
+              f.profile.storage.journalRoot,
+              "objects",
+              sha256Canonical(orphan).slice(7) + ".json"
+            );
+          await fs.writeFile(file, encodeManualJson(orphan), { flag: "wx", mode: 0o600 });
+          try {
+            await assert.rejects(verifyOnly(), { code: "MANUAL_RESULT_INCOMPLETE" });
+          } finally {
+            await fs.unlink(file);
+          }
+        }
+        t.diagnostic(
+          JSON.stringify({
+            scenario,
+            migrationResult,
+            finalResult,
+            actualCloses: f.actualCloses,
+            actualGhCloses: expected.ghCloses
+          })
+        );
+      } catch (error) {
+        t.diagnostic(
+          JSON.stringify({
+            scenario,
+            failureCode: error.code,
+            causeCode: error.cause?.code,
+            failureStack: error.stack,
+            causeStack: error.cause?.stack,
+            actualCloses: f.actualCloses
+          })
+        );
+        throw error;
+      } finally {
+        await preserveCommandFixture(f, `result-verifier-${scenario}`, {
+          first: first ?? null,
+          second: second ?? null,
+          migrationResult: migrationResult ?? null,
+          finalResult: finalResult ?? null
+        });
+      }
+    }
+  );
+}
 
 test(
   "runner second stage accepts native H3-B for readonly verify and replay",
@@ -6542,6 +6846,144 @@ test(
         failureCode: firstFailure?.code ?? null,
         postwriteFailures,
         counts: {
+          launches: f.launches.length,
+          credentialReads: f.counters.credentialReads,
+          observerConnections: f.pg.connects
+        }
+      });
+    }
+  }
+);
+
+test(
+  "runner actual replay loss preserves apply success and stops all later launches",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "command", true),
+      e = await expectedSourceFixture(f);
+    f.runner.expectedScript = "CREATE TABLE example(id integer PRIMARY KEY);\r\n";
+    f.runner.prismaVersion = JSON.parse(e.output.schemaExpectationBytes).prismaVersion;
+    f.runner.phaseSchedule = ["dry-run", "apply", "verify", "replay"];
+    let first, replayFailure, before;
+    try {
+      first = await launcher.launchManualStage1({
+        operationRef: f.prepared.operationRef,
+        allowedStage: "migration"
+      });
+      await syntheticH3B(f, first);
+      f.runner.loseReplayAfterSpawn = true;
+      try {
+        await launcher.launchManualStage1({
+          operationRef: f.prepared.operationRef,
+          allowedStage: "verification"
+        });
+      } catch (error) {
+        replayFailure = error;
+      }
+      assert.equal(f.runner.lossTriggered, 1);
+      assert.equal(replayFailure?.code, "MANUAL_FRAME_INCOMPLETE");
+      assert.equal(f.launches.length, 4);
+      const records = await f.records(),
+        requests = records.filter(
+          (value) =>
+            value.schemaVersion === "manual-runner-request.v1" && value.stage === "runner-command"
+        ),
+        replay = requests.find((value) => value.phase === "replay"),
+        replayDigest = sha256Canonical(replay),
+        executions = records.filter(
+          (value) => value.kind === "execution" && value.requestDigest === replayDigest
+        );
+      assert.equal(executions.length, 1);
+      assert.equal(executions[0].status, "INTERRUPTED_UNKNOWN");
+      assert.equal(executions[0].finishedAt, null);
+      assert.equal(executions[0].resultDigest, null);
+      assert.equal(executions[0].processEvidenceDigest, null);
+      assert.equal(
+        executions[0].predecessorExecutionRecordDigest,
+        first.apply.executionRecordDigest
+      );
+      const originalApply = records.find(
+          (value) => sha256Canonical(value) === first.apply.executionRecordDigest
+        ),
+        verify = requests.find((value) => value.phase === "verify");
+      assert.equal(originalApply.status, "SUCCEEDED");
+      assert.equal(originalApply.resultDigest, first.apply.resultDigest);
+      assert.equal(originalApply.processEvidenceDigest, first.apply.processEvidenceDigest);
+      assert.equal(
+        records.find(
+          (value) => value.kind === "execution" && value.requestDigest === sha256Canonical(verify)
+        ).status,
+        "SUCCEEDED"
+      );
+      assert.equal(requests.filter((value) => value.phase === "apply").length, 1);
+      assert.equal(requests.filter((value) => value.phase === "reconcile").length, 0);
+      const process = records
+        .filter((value) => value.kind === "process" && value.requestDigest === replayDigest)
+        .sort((left, right) => right.events.length - left.events.length)[0];
+      assert.equal(process.closedAt, null);
+      const parentClose = process.events.at(-1),
+        actualClose = f.actualCloses.at(-1);
+      assert.equal(parentClose.source, "parent");
+      assert.equal(parentClose.tool, "runner");
+      assert.equal(parentClose.event, "CLOSED");
+      assert.equal(parentClose.pid, actualClose.pid);
+      assert.equal(parentClose.exitCode, actualClose.exitCode);
+      assert.equal(parentClose.signal, actualClose.signal);
+      assert.equal(actualClose.signal, "SIGKILL");
+      const script = process.events.find(
+        (event) => event.tool === "prisma-script" && event.event === "SPAWNED"
+      );
+      assert.ok(script);
+      assert.equal(
+        process.events.some(
+          (event) =>
+            event.processSequence === script.processSequence &&
+            ["CLOSED", "SPAWN_FAILED"].includes(event.event)
+        ),
+        false,
+        "loss cannot fabricate a terminal event for the outstanding script"
+      );
+      assert.ok(process.events.every((event) => event.tool !== "prisma-deploy"));
+      before = {
+        launches: f.launches.length,
+        credentialReads: f.counters.credentialReads,
+        observerConnections: f.pg.connects,
+        requests: requests.length,
+        allocations: records.filter((value) => value.kind === "attempt-allocation").length
+      };
+      await preserveCommandFixture(f, "stage2-replay-loss", { first, before });
+      await assert.rejects(
+        launcher.launchManualStage1({
+          operationRef: f.prepared.operationRef,
+          allowedStage: "verification"
+        }),
+        { code: "MANUAL_SESSION_UNVERIFIED" }
+      );
+      const after = await f.records();
+      assert.equal(f.launches.length, before.launches);
+      assert.equal(f.counters.credentialReads, before.credentialReads);
+      assert.equal(f.pg.connects, before.observerConnections);
+      assert.equal(
+        after.filter(
+          (value) =>
+            value.schemaVersion === "manual-runner-request.v1" && value.stage === "runner-command"
+        ).length,
+        before.requests
+      );
+      assert.equal(
+        after.filter((value) => value.kind === "attempt-allocation").length,
+        before.allocations
+      );
+      assert.ok(after.some((value) => sha256Canonical(value) === sha256Canonical(executions[0])));
+      assert.ok(
+        after.some((value) => sha256Canonical(value) === first.apply.executionRecordDigest)
+      );
+    } finally {
+      await preserveCommandFixture(f, "stage2-replay-loss-reinvocation", {
+        first: first ?? null,
+        failureCode: replayFailure?.code ?? null,
+        before: before ?? null,
+        after: {
           launches: f.launches.length,
           credentialReads: f.counters.credentialReads,
           observerConnections: f.pg.connects

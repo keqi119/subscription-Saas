@@ -12,7 +12,7 @@
 - R3 创建规范固定读取器已完成：按 UUID 从既有私有 archive 读 canonical 原件，核对 H1、同一 H2/策略、派生路径、容量与时窗，保持原件句柄供重读；不读取私钥或 payload。API 用例先 RED 后 GREEN，3 个 native 定向用例自然 exit 0，3 pass / 0 fail / 0 skip，9,680.947632 ms；有限只读审查通过。实际运行 job 的准入原件、创建会话及资源执行仍未完成，不能将此结果视为目标准入。
 - R3 当前 job 固定读取入口已接入声明签名与原生 GitHub run/job API 校验，区分 final 的 reusable signer 与 caller，绑定展开 job、chain、公钥指纹和 runner；重查会拒绝已终止作业。API 用例先 RED 后 GREEN，native 4 pass / 0 fail / 0 skip，19,066.888217 ms；有限只读审查通过。此处 GH 响应为合成夹具；声明生产器、实际 hosted workflow、manual 会话及创建/消费执行仍未接线。
 - R3 会话/消费/执行/保管记录 v3 与尝试分配 v2 已补齐，父判定显式接受创建 v4 和消费 v3，并继续使用原 v2 撤销链。消费只接受同一 snapshot 会话的成功创建前序，目的地摘要必须匹配；创建不接受尚不存在的目的地或输入。父合同测试有效 RED 为 82 pass / 7 fail，完成后 89 pass / 0 fail / 0 skip；分配定向用例有效 RED 后 2/2 通过。有限独立只读审查通过，未扩展 MS2 协议。此处仍是合同层，native session、完整原件图、资源锁与实际创建/消费尚未接线。
-- R2 replay 失联定向进程 `63867` 仍在运行，最后实际轮询 `bc8a1c` 返回 live、无新增输出；尚无测试结论，未因日志安静而重启。
+- R2 replay 失联定向进程 `63867` 已自然结束，host/Node exit 0，1 pass / 0 fail / 0 skip，2,202,765.847824 ms。三个正常子进程 exit 0/null，replay 子进程 PID 29913 实际 close 为 null/SIGKILL；原 apply 保持 SUCCEEDED，replay 保留唯一 INTERRUPTED_UNKNOWN，finishedAt/resultDigest/processEvidenceDigest 均为 null。再次调用拒绝，launches 4、credentialReads 15、observerConnections 1 均未增加；分配和请求数也保持。1,132 份保全文件（含 12 公件及 Git bundle）自一致检查通过。此前失败仍保留，未重启或重复 normal/interrupted 长链。R2 结果核验器、真实 PG 入口和合成组合代码现已可提交收口；真实 PG17 与最终 CI 验收仍未完成。
 - 本轮本地 migration status 仍因缺少 `datasource.url` 自然退出 1；schema validate 自然退出 0。没有连接或更改线上数据库。
 
 ## 已取得的证据（保留各次失败与修正）
@@ -43,14 +43,13 @@ R2 normal 重验 `75700` 已自然结束，host/Node exit 0：1 pass / 0 fail / 
 
 ## 剩余收口顺序
 
-| 顺序 | 尚未完成的工作                                                           | 完成依据                                                                                   |
-| ---- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| 1    | R2 replay 失联定向回归与代码收口（normal、apply-interrupted 组合已通过） | 原始失败保留，必要定向用例自然结束；不能把局部 GREEN 汇总成完整通过                        |
-| 2    | 最终候选的受保护 CI 构建与 H2 证据读回                                   | 同一源码、API/Web/Runner 镜像及独立保管身份的真实原件                                      |
-| 3    | R2 两个独立 PG17 目标的 migration、权限读回、verification / reconcile    | normal 和 apply-interrupted 各自的真实 operationRef、目标身份与结果；原 UNKNOWN 不改写     |
-| 4    | R3 非商用快照消费接线、隔离加密目标及同候选 fresh / snapshot 双链        | 合法快照来源、消费权限、目的地与会话原件齐全；认证后恢复与两条 37-suite/API-Web 链真实执行 |
-| 5    | Staging 迁移对齐和服务恢复                                               | 发布链应用待迁移、读回实际状态；API/Web 健康及关键路径通过                                 |
-| 6    | R4 A/B 申请、签约、支付回调、激活、终态及恢复验收与签收                  | 实际业务结果和审计记录、维护/恢复证据、负责人签收                                          |
+| 顺序 | 尚未完成的工作                                                        | 完成依据                                                                                   |
+| ---- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| 1    | 最终候选的受保护 CI 构建与 H2 证据读回                                | 同一源码、API/Web/Runner 镜像及独立保管身份的真实原件                                      |
+| 2    | R2 两个独立 PG17 目标的 migration、权限读回、verification / reconcile | normal 和 apply-interrupted 各自的真实 operationRef、目标身份与结果；原 UNKNOWN 不改写     |
+| 3    | R3 非商用快照消费接线、隔离加密目标及同候选 fresh / snapshot 双链     | 合法快照来源、消费权限、目的地与会话原件齐全；认证后恢复与两条 37-suite/API-Web 链真实执行 |
+| 4    | Staging 迁移对齐和服务恢复                                            | 发布链应用待迁移、读回实际状态；API/Web 健康及关键路径通过                                 |
+| 5    | R4 A/B 申请、签约、支付回调、激活、终态及恢复验收与签收               | 实际业务结果和审计记录、维护/恢复证据、负责人签收                                          |
 
 2026-09-28 02:28（北京时间）经既有 SSH 身份只读核对：Staging PostgreSQL 正常，API/Web 及其余容器停止。数据库 `subscription_saas_staging` 的 PG 版本为 170010，迁移表共 127 行，其中 126 条完成、1 条历史 rolled-back、0 条活动失败；126 条已完成迁移的 checksum 全部与当前工作树匹配，无 remote-only 或 checksum 漂移。候选仍有 128 条，待应用的仍是 `20260925090000_stage1_operational_completion_terminal_shape` 和 `20260925091000_stage1_operational_completion_settlement_guard`。SQL 在只读事务内执行，没有应用迁移或读取业务行。
 
@@ -85,3 +84,4 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 - R3 创建规范读取器：`r3-creation-reader-red01.log` 保留缺入口的 RED；`r3-creation-native01.log` 为 3/3 GREEN，native copy `/home/keqi_119/.cache/r3-creation-6kqBQg`，249 项复制源码均经 `20260927-211012-001929813-copy.sha256` 核对。测试使用实际 Linux 文件系统和 Git、模拟 GH 响应，不是实际 hosted job 验收。当前合同校验仍为 202 文件、81 schemas、128 migrations、13 commands，repository digest `sha256:e42650d86c8fe25af14d8d15fd69ca8dc1b47677838fa0fee5a0bcd451320fc5`，包含 R2 未提交部分。
 - R3 当前 job 读取器：`r3-job-reader-red01.log`、`r3-job-native01.log`；native copy `/home/keqi_119/.cache/r3-job-fUV4eo`，249 项复制源码 manifest `20260927-212015-949658860-copy.sha256`。当前合同校验为 202 文件、81 schemas、128 migrations、13 commands，repository digest `sha256:fad2c3287a457fc1150d23ce0caf1ae3cbd7b91f3789990acddc4d597587c215`，包含 R2 未提交部分，不能充当最终候选证明。
 - R3 会话和分配：父合同 RED 原始终端 chunk `783a94`，GREEN 完整输出 `r3-parent-record-green01.log` / `r3-parent-record-green02.log`；分配输出 `r3-allocation-red01.log` / `r3-allocation-green01.log`。本片仓库合同校验 `4d1f68` 自然退出 0，204 文件、83 schemas、128 migrations、13 commands，repository digest `sha256:a7ea6820c72aeb6f5e7f97f793333efec3c9af209d7d289c5fe2ab1ea344b53e`；仍包含 R2 未提交部分，不是最终候选证明。
+- R2 replay 失联通过：`replay-loss-second.log`、`replay-loss-second-results.json`、`replay-loss-second-frozen.json`、`replay-loss-second-copy-check.json`。保全目录 `originals/stage2-replay-loss-reinvocation-0d75e978-53bb-477d-a989-a8f1035f28a4`，自一致报告 `replay-loss-second-preserved-check.json` 摘要 `sha256:e1ea1c4b3aecad3941f28c38783deac25aae949985a80508c41b939119ea9b76`。源码冻结在 `241c9951`，248 项复制文件与冻结原件一致；后续 R3 提交不追记为该次运行的源码。

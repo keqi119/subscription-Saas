@@ -1,12 +1,12 @@
 # Stage 1 加密存储准备与 R2 父命令断点（2026-09-27）
 
-本记录保留当天各次真实断点，以本节最新状态为准。R2 正常 dry-run → apply → verify → replay 执行链已通过并提交；异常恢复、真实数据库及最终候选验收仍未完成。没有执行业务迁移、部署、真实候选 CI 或关闭阶段 1。
+本记录保留当天各次真实断点，以本节最新状态为准。R2 正常 dry-run → apply → verify → replay 和 UNKNOWN → reconcile 执行链已通过并提交；replay 中断、真实数据库及最终候选验收仍未完成。没有执行业务迁移、部署、真实候选 CI 或关闭阶段 1。
 
-## 最新状态：正常链通过，真实发布仍开放
+## 最新状态：正常链与 UNKNOWN 恢复通过，真实发布仍开放
 
 提交 `aee01e39` 包含已实际验证的 R2 正常链及 H3 原件门禁。第八次正常用例自然结束，host / Node exit 0，1 pass / 0 fail / 0 skip；同一 ref 的四个阶段均完成，实际 launches=4、credentialReads=15、observerConnections=1。七个拒绝场景均保留 launches=2、credentialReads=9、observerConnections=1，没有新增启动或凭证读取。1194 份原件的完整集合、长度和 SHA-256 已由 root 独立核对，有限源码复核 ACCEPT。该测试使用真实 Node 子进程、协议帧和保管路径，但 PostgreSQL / CLI 边界为受控替身，不能计为线上迁移或真实 H3 验收。
 
-提交时逐字节核对并只入库已测的冻结源码、冻结测试；当时未运行的 UNKNOWN/reconcile 与 replay-loss 测试单独保留为工作区改动。后续 UNKNOWN/reconcile 定向 RED 自然 exit 1，实际 dry/apply 均成功、计数 2/9/1，准确暴露“固定中断场景仍返回 apply 成功”，不是前置配置失败；857 份原件保留。父端固定中断、保留 UNKNOWN 与工具 committed 两种事实、仅进入 readonly reconcile 的最小修复已完成有限源码复核，功能验收尚未闭合；replay-loss 仍未运行。不重复已通过的正常链或旧容量矩阵。R2.2 整体门禁、独立结果 verifier、严格来源读取复用和真实 PostgreSQL 两阶段入口仍开放。
+提交时逐字节核对并只入库已测的冻结源码、冻结测试；当时未运行的 UNKNOWN/reconcile 与 replay-loss 测试单独保留为工作区改动。后续 UNKNOWN/reconcile 定向 RED 自然 exit 1，实际 dry/apply 均成功、计数 2/9/1，准确暴露“固定中断场景仍返回 apply 成功”，不是前置配置失败；857 份原件保留。父端固定中断、保留 UNKNOWN 与工具 committed 两种事实、仅进入 readonly reconcile 的最小修复后续已通过，见下文提交 `c9664429`。replay-loss 尚无实际通过结果；不重复已通过的正常链或旧容量矩阵。R2.2 整体门禁、独立结果 verifier、期望结构来源读取复用和真实 PostgreSQL 两阶段入口仍开放。
 
 提交 `620857ff` 修正了 PostgreSQL 17 快照导出对 DEFERRABLE 的错误前提，保留 REPEATABLE READ、只读事务、snapshot ID 和来源指纹检查；脱敏策略仅明确支持已核实的 Staging 与候选两个迁移 head。现有 snapshot-export 测试 20/20 通过。真实 SSH 只读检查确认 Staging 已完成 126 条迁移、无活动失败项，候选有 128 条；两个待应用迁移仍为 `20260925090000_stage1_operational_completion_terminal_shape` 与 `20260925091000_stage1_operational_completion_settlement_guard`。本轮没有执行导出或 DDL/DML。本地 migrate status 仍因缺少 `datasource.url` 返回 1，不能将只读远端检查写成本地命令通过。
 
@@ -18,9 +18,13 @@
 
 13:49 UTC 接续补齐 H1 专用原生转发配置，使用两个固定回环端口、非 root 转发账号及仅 root 可连接的精确防火墙规则；一次临时维护 key 的 Docker 只读实测通过，额外端口、会话和非 root 访问被拒绝。独立 SSH 确认临时 key/连接/目录清除、授权文件为空，原 root 访问正常。首次候选配置因 OpenSSH 8.0p1 不支持一项 Match 指令失败，正式配置尚未写入；保留原件后完成有限接续。详见[通道配置与实际边界](2026-09-27-stage1-r3-remote-engine-feasibility.md#1349-utc-接续h1-原生通道配置与有限实测)。此项不等于 hosted 加密目标或真实消费完成，防火墙重启后须重新核验。
 
-本轮 R2 第一次修复验证实际 0 pass / 1 fail：原 apply 已唯一记录 UNKNOWN，两个 child 自然 exit 0；失败来自新增测试未同步 Node builtin named exports，导致落盘后的故障注入未被调用。只补一行测试同步，生产源码保持不变，唯一同组重验尚在运行；未重跑正常链或启动 replay-loss。本轮 Prisma validate exit 0，migrate status 仍因 `datasource.url` 缺失 exit 1，未连接数据库或修改业务代码。
+R2 第一次修复验证实际 0 pass / 1 fail：原 apply 已唯一记录 UNKNOWN，两个 child 自然 exit 0；失败来自新增测试未同步 Node builtin named exports，导致落盘后的故障注入未被调用。只补一行测试同步，生产源码保持不变；同组第二次重验已自然结束并通过，两个历史失败均保留。本轮 Prisma validate exit 0，migrate status 仍因 `datasource.url` 缺失 exit 1，未连接数据库或修改业务代码。
 
-提交 `72c91da1` 完成 R2.3 第一片 H3-A 来源复用：新增私有 `manual-runner-source-inputs.mjs`，21 个既有 SQL、权限、路径和原件检查函数逐字迁移，launcher 保留 owner、实时资源观察、R1 原件刷新、会话及全部执行责任。新增直接读取用例先真实失败，再与三个现有拒绝/准入用例组成有限验证；Windows 和 Linux Node 22.22.2 各 4 pass / 0 fail / 0 skip，Linux 237 个复制文件的完整摘要和前后状态闭合。输入在首个 await 前固定，返回字节副本与内部重查分离，关闭或原件被替换后拒绝继续使用，读取过程不取得执行权。有限源码复核 ACCEPT，语法/格式/diff 检查通过；最终仓库合同校验 exit 0、192 文件、76 Schema、128 迁移。仅这五个文件的 H3-A 增量入库，仍在运行的 UNKNOWN/reconcile 改动与未运行 replay-loss 保留为未提交工作；H3-B、expected-schema 只读提取和结果 verifier 仍待完成，不能把此项计为 R2.2 或真实 PostgreSQL 通过。
+提交 `72c91da1` 完成 R2.3 第一片 H3-A 来源复用：新增私有 `manual-runner-source-inputs.mjs`，21 个既有 SQL、权限、路径和原件检查函数逐字迁移，launcher 保留 owner、实时资源观察、R1 原件刷新、会话及全部执行责任。新增直接读取用例先真实失败，再与三个现有拒绝/准入用例组成有限验证；Windows 和 Linux Node 22.22.2 各 4 pass / 0 fail / 0 skip，Linux 237 个复制文件的完整摘要和前后状态闭合。输入在首个 await 前固定，返回字节副本与内部重查分离，关闭或原件被替换后拒绝继续使用，读取过程不取得执行权。有限源码复核 ACCEPT，语法/格式/diff 检查通过；最终仓库合同校验 exit 0、192 文件、76 Schema、128 迁移。仅这五个文件的 H3-A 增量入库，当时仍运行的 UNKNOWN/reconcile 改动与未运行 replay-loss 保留为未提交工作；后续进展见下文，不能把此项计为 R2.2 或真实 PostgreSQL 通过。
+
+提交 `c9664429` 完成已测 UNKNOWN/reconcile 切片。原 session 70449 自然 host / Node exit 0，1 pass / 0 fail / 0 skip，实际 launches / credentialReads / observerConnections 为 3 / 12 / 1；落盘后故障注入实际发生一次。原 apply `f83dc431…ce7bf` 保持 `INTERRUPTED_UNKNOWN`，包含完整 result 和 closed process 引用；后续仅同一身份的 readonly reconcile `59eb60c2…d8464` 成功，未升级原执行记录。1028 份原件的完整集合、长度、稳定文件身份和 SHA-256 经 root 独立核验，清单 SHA-256 为 `88cddb9b317a9853b6ac78f74d63340420038c8cd1902472940b3d1680a1f6a3`；秘密扫描为 0。实测绑定冻结源码 `47debc05…dc772` / 测试 `9a94e548…87181`；有限复核确认三处生产改动和该用例逐字保留，提交时只组合已接受的 H3-A 提取并排除未运行 replay-loss。该 GREEN 仍使用受控 PostgreSQL / CLI 边界，不代表真实 PG 或整个 R2.2 通过。
+
+提交 `ba36f738` 完成 H3-B 来源复用：同一私有模块复用固定两件 B 原件、原权限清单、grant/revoke/退出来源和已归档 final-inspect；父命令保留实际 credential 文件状态/ACL、上游重查、归档写入和执行。无参 `recheckArchived` 独立重开完整两件原件，返回副本不影响内部重查。三个权限 helper 和原 H3-A 模块正文逐字核对通过。直接用例先因入口缺失真实 RED；Windows 首次通过后，清理未用导出时误删正文校验项，Linux 首次实际 1 pass / 1 fail；保留失败日志并恢复原文后，最终 Windows 1 pass、Linux A/B 两例 2 pass，均 0 fail / 0 skip / exit 0。Linux 237 文件复制摘要及前后状态闭合，最终模块 SHA-256 为 `fa17d17d95f2a0da817b55099772576ce2283dc5cbd7a21b31b18fac83c1a760`，有限源码复核 ACCEPT；格式、diff 和仓库合同校验通过（192 文件、76 Schema、128 迁移）。仅三文件已测提取增量入库，replay-loss 仍独立保留；未重跑整条正常链，expected-schema 读取及结果 verifier 尚待实现。
 
 阶段 1 后续先完成 R2 异常恢复、结果核验入口和必要用例，并接通合法快照消费及固定远端执行；再对冻结候选执行受保护构建 / H2，完成依赖这些可信输入的 R2 真实数据库验收与 R3 fresh / snapshot 双链；按发布链对齐两条迁移并恢复 API / Web；最后执行 R4 A/B 主线、签约支付回调、激活、到期收口和维护恢复的真实验收与签收。后文较早断点中的“仍等待登录”“H3-B 未接通”等描述仅为历史事实，不能作为当前状态。
 

@@ -1664,14 +1664,94 @@ test(
 );
 
 test(
-  "fixed expected admission archives real producer closure and actual gh processes before next command input boundary",
+  "fixed expected reader holds producer sources without live authority",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const { openManualExpectedSchemaInputs } = await import("./manual-runner-source-inputs.mjs");
+    assert.equal(typeof openManualExpectedSchemaInputs, "function");
+    const f = await h3ResourceFixture(t, true),
+      e = await expectedSourceFixture(f),
+      build = await verifyManualBuild({
+        repoRoot: productionRoot,
+        proofBytes: f.proofBytes,
+        materialBytes: f.materialBytes
+      }),
+      allocation = { attemptId: randomUUID() },
+      input = {
+        fixed: {
+          operation: JSON.parse(encodeManualJson(f.fixed.operation)),
+          indexDigest: f.fixed.indexDigest,
+          proofBytes: Buffer.from(f.proofBytes),
+          materialBytes: Buffer.from(f.materialBytes)
+        },
+        build,
+        profile: f.profile,
+        principal: f.binding.principal,
+        targetContext: { cluster: f.readback.cluster, databaseOid: f.readback.databaseOid },
+        allocation,
+        attemptAllocationDigest: sha256Canonical(allocation)
+      };
+    const pending = openManualExpectedSchemaInputs(input);
+    input.fixed.proofBytes.fill(0);
+    input.fixed.operation.operationRef = randomUUID();
+    allocation.attemptId = randomUUID();
+    const held = await pending;
+    try {
+      assert.deepEqual(held.context.provenance, e.provenance);
+      assert.deepEqual(held.context.expectation, JSON.parse(e.output.schemaExpectationBytes));
+      assert.equal(Object.isFrozen(held.context.provenance.references), true);
+      assert.ok(held.bytes.files["expected.sql"].equals(e.output.scriptBytes));
+      held.bytes.files["expected.sql"].fill(0);
+      held.bytes.raws.forEach((bytes) => bytes.fill(0));
+      await held.recheck();
+      await assert.rejects(held.readRecordedAdmission(), {
+        code: "MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED"
+      });
+      await fs.appendFile(path.join(e.root, "expected.sql"), "\n");
+      await assert.rejects(held.recheck(), { code: "MANUAL_OPERATION_INPUT_UNAVAILABLE" });
+    } finally {
+      await held.close();
+    }
+    await held.close();
+    for (const recheck of [held.recheck, held.readRecordedAdmission])
+      await assert.rejects(recheck(), { code: "MANUAL_OPERATION_INPUT_UNAVAILABLE" });
+    assert.equal(e.ghCalls.length, 0);
+    assert.deepEqual(f.docker.calls, []);
+    noAuthority(f);
+  }
+);
+
+test(
+  "fixed expected admission archives real producer closure and actual gh processes before migration raw archival",
   { skip: process.platform !== "linux" },
   async (t) => {
     const f = await zeroCredentialFixture(t, "split", true),
       e = await expectedSourceFixture(f);
-    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
-      code: "MANUAL_RUNNER_REQUEST_INPUT_REQUIRED"
+    const catalog = await computeMigrationCatalog(f.repoRoot),
+      migrationRawFile = path.join(
+        f.profile.storage.archiveRoot,
+        "raw",
+        `${catalog.entries[0].sha256.slice(7)}.bin`
+      ),
+      nativeOpen = fs.open.bind(fs);
+    let boundaryReached = 0;
+    // The command path is implemented now. Stop this source-reader test at its
+    // first subsequent raw write instead of waiting for the CHALLENGE-only
+    // fixture to implement READY and the rest of the command protocol.
+    boundedExpectedMock(t, f, fs, "open", (file, flags, ...args) => {
+      if (flags === "wx" && String(file) === migrationRawFile) {
+        boundaryReached++;
+        throw Object.assign(new Error("offline migration raw boundary"), {
+          code: "OFFLINE_MIGRATION_RAW_BOUNDARY"
+        });
+      }
+      return nativeOpen(file, flags, ...args);
     });
+    syncBuiltinESMExports();
+    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+      code: "OFFLINE_MIGRATION_RAW_BOUNDARY"
+    });
+    assert.equal(boundaryReached, 1);
     assert.equal(e.ghCalls.length, 2);
     assert.equal(e.ghCloses.length, 2);
     const attemptId = f.launches[0].attemptId;
@@ -1739,6 +1819,57 @@ test(
     );
     assert.deepEqual(await fs.readFile(path.join(f.operationRoot, "index.json")), f.indexBytes);
     assert.deepEqual(await fs.readFile(f.objectPath(f.baseline)), f.baselineBytes);
+    const { openManualExpectedSchemaInputs } = await import("./manual-runner-source-inputs.mjs"),
+      fixed = await readFixedManualOperation({
+        repoRoot: productionRoot,
+        operationRef: f.prepared.operationRef
+      }),
+      build = await verifyManualBuild({
+        repoRoot: productionRoot,
+        proofBytes: f.proofBytes,
+        materialBytes: f.materialBytes
+      }),
+      allocation = records.find(
+        (item) => item.kind === "attempt-allocation" && item.attemptId === attemptId
+      ),
+      held = await openManualExpectedSchemaInputs({
+        fixed,
+        build,
+        profile: f.profile,
+        principal: f.binding.principal,
+        targetContext: { cluster: f.readback.cluster, databaseOid: f.readback.databaseOid },
+        allocation,
+        attemptAllocationDigest: sha256Canonical(allocation)
+      });
+    const added = [],
+      sourceDirectory = path.join(f.operationRoot, "runner-launch", attemptId);
+    try {
+      const recorded = await held.readRecordedAdmission();
+      assert.deepEqual(recorded.context.admission, admission);
+      assert.ok(recorded.bytes.admission.equals(admissionRaw));
+      recorded.bytes.admission.fill(0);
+      recorded.bytes.calls[0].stdout.fill(0);
+      const sibling = encodeManualJson({ fixture: "independent expected reader sibling" }),
+        digest = sha256Bytes(sibling).slice(7);
+      for (const file of [
+        path.join(f.profile.storage.archiveRoot, "raw", digest + ".bin"),
+        path.join(f.profile.storage.archiveRoot, "objects", digest + ".json"),
+        path.join(sourceDirectory, "expected-reader-sibling.json")
+      ]) {
+        await fs.writeFile(file, sibling, { flag: "wx", mode: 0o600 });
+        added.push(file);
+      }
+      await held.recheck();
+      await held.readRecordedAdmission();
+      await fs.appendFile(path.join(sourceDirectory, "expected-provenance.gh.stdout"), "\n");
+      await assert.rejects(held.recheck(), { code: "MANUAL_OPERATION_INPUT_UNAVAILABLE" });
+      assert.equal(e.ghCalls.length, 2, "recorded reads must not invoke gh");
+      assert.equal(f.counters.credentialReads, f.credentialReads);
+      assert.equal(f.pg.connects, 1);
+    } finally {
+      await held.close();
+      for (const file of added) await fs.unlink(file);
+    }
   }
 );
 

@@ -1,14 +1,22 @@
 // Private source readers shared by the manual launcher and result verifier.
 // These readers preserve original bytes and never open a session or observe a live target.
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import childProcess from "node:child_process";
 import {
   encodeManualJson,
   sha256Bytes,
   sha256Canonical,
-  computeManualClusterFingerprint
+  computeManualClusterFingerprint,
+  computeMigrationCatalog,
+  computeRepositoryContract,
+  validateContract
 } from "../../packages/release-foundation/src/index.mjs";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 function fail(code) {
   throw Object.assign(new Error(code), { code });
@@ -1630,6 +1638,1567 @@ async function openManualH3BInputs(input) {
   }
 }
 
+const expectedLimit = 1048576;
+const expectedBucket = "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai";
+const expectedAccount = "1457643390906675";
+const expectedPgDigest = "sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0";
+const expectedSchemaPath = "apps/api/prisma/schema.prisma",
+  expectedConfigPath = "apps/api/prisma.config.ts";
+const expectedPrisma = "/app/apps/release-runner/node_modules/.bin/prisma";
+const expectedRole = "expected_schema_owner",
+  expectedDatabase = "expected_schema_reference";
+const expectedProcessKeys = [
+  "tool",
+  "argv",
+  "stdout",
+  "stderr",
+  "pid",
+  "preparedAt",
+  "spawnedAt",
+  "closedAt",
+  "exitCode",
+  "signal"
+];
+const expectedCreationTools = [
+  "container-create",
+  "container-inspect",
+  "image-inspect",
+  "node-version",
+  "psql-version",
+  "initdb",
+  "pg-start",
+  "database-create",
+  "identity-before"
+];
+const expectedReadbackTools = [
+  "identity-after",
+  "migration-readback",
+  "pg-stop",
+  "container-exit-inspect",
+  "container-stop",
+  "container-remove"
+];
+const expectedPrismaTools = ["prisma-version", "prisma-deploy", "prisma-diff", "prisma-script"];
+const expectedBucketTools = [
+  "GetBucketAcl",
+  "GetBucketWorm",
+  "GetBucketVersioning",
+  "GetBucketEncryption",
+  "GetBucketPolicyStatus",
+  "GetBucketPublicAccessBlock"
+];
+const expectedHeaderKeys = [
+  "date",
+  "x-oss-request-id",
+  "content-length",
+  "last-modified",
+  "etag",
+  "x-oss-server-side-encryption",
+  "content-type"
+];
+function expectedRequire(value, code = "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID") {
+  if (!value) fail(code);
+}
+function expectedDigest(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
+}
+function expectedTime(value) {
+  return (
+    typeof value === "string" &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value
+  );
+}
+function expectedOrder(times) {
+  return times.every(expectedTime) && times.every((v, i) => i === 0 || times[i - 1] <= v);
+}
+function expectedString(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= expectedLimit;
+}
+function expectedText(bytes) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    fail("MANUAL_EXPECTED_SCHEMA_RAW_INVALID");
+  }
+}
+function expectedJson(bytes, canonical = false) {
+  expectedRequire(
+    Buffer.isBuffer(bytes) && bytes.length <= expectedLimit,
+    "MANUAL_EXPECTED_SCHEMA_RAW_INVALID"
+  );
+  let value;
+  try {
+    value = JSON.parse(expectedText(bytes));
+  } catch {
+    fail("MANUAL_EXPECTED_SCHEMA_JSON_INVALID");
+  }
+  // encodeManualJson rejects invalid Unicode, undefined values and unsafe data.
+  const encoded = encodeManualJson(value);
+  expectedRequire(
+    encoded.length <= expectedLimit && (!canonical || encoded.equals(bytes)),
+    "MANUAL_EXPECTED_SCHEMA_JSON_INVALID"
+  );
+  return value;
+}
+function expectedEqual(a, b) {
+  return encodeManualJson(a).equals(encodeManualJson(b));
+}
+function expectedRawRef(ref) {
+  expectedRequire(
+    exact(ref, ["digest", "bytes"]) &&
+      expectedDigest(ref.digest) &&
+      Number.isSafeInteger(ref.bytes) &&
+      ref.bytes >= 0 &&
+      ref.bytes <= expectedLimit,
+    "MANUAL_EXPECTED_SCHEMA_RAW_INVALID"
+  );
+  return ref;
+}
+function expectedPrismaArgv(tool) {
+  const args = {
+    "prisma-version": ["--version"],
+    "prisma-deploy": [
+      "migrate",
+      "deploy",
+      "--schema",
+      "/app/" + expectedSchemaPath,
+      "--config",
+      "/app/" + expectedConfigPath
+    ],
+    "prisma-diff": [
+      "migrate",
+      "diff",
+      "--from-config-datasource",
+      "--to-schema",
+      "/app/" + expectedSchemaPath,
+      "--exit-code",
+      "--config",
+      "/app/" + expectedConfigPath
+    ],
+    "prisma-script": [
+      "migrate",
+      "diff",
+      "--from-empty",
+      "--to-config-datasource",
+      "--script",
+      "--config",
+      "/app/" + expectedConfigPath
+    ]
+  };
+  return [expectedPrisma, ...args[tool]];
+}
+const expectedContainerFormat =
+  '{"id":{{json .Id}},"imageId":{{json .Image}},"imageRef":{{json .Config.Image}},"user":{{json .Config.User}},"network":{{json .HostConfig.NetworkMode}},"binds":{{json .HostConfig.Binds}},"mounts":[{{range $i,$m := .Mounts}}{{if $i}},{{end}}{"type":{{json $m.Type}},"source":{{json $m.Source}},"destination":{{json $m.Destination}}}{{end}}],"tmpfs":{{json .HostConfig.Tmpfs}},"readonly":{{json .HostConfig.ReadonlyRootfs}},"status":{{json .State.Status}},"running":{{json .State.Running}},"exitCode":{{json .State.ExitCode}}}';
+const expectedImageFormat =
+  '{"id":{{json .Id}},"repoDigests":{{json .RepoDigests}},"sourceRevision":{{json (index .Config.Labels "org.opencontainers.image.revision")}}}';
+const expectedIdentitySql = `SELECT json_build_object(
+ 'databaseName', current_database(),
+ 'databaseOid', (SELECT oid::text FROM pg_database WHERE datname=current_database()),
+ 'systemIdentifier', (SELECT system_identifier::text FROM pg_control_system()),
+ 'serverVersion', current_setting('server_version'),
+ 'schemaOwner', (SELECT nspowner::regrole::text FROM pg_namespace WHERE nspname='public'),
+ 'ownerInventory', (SELECT coalesce(json_agg(i ORDER BY i."objectClass",i."objectName"),'[]'::json) FROM (
+   SELECT 'schema'::text AS "objectClass", nspname::text AS "objectName", nspowner::regrole::text AS owner FROM pg_namespace WHERE nspname='public'
+   UNION ALL SELECT CASE c.relkind WHEN 'S' THEN 'sequence' ELSE 'relation' END,c.relname::text,c.relowner::regrole::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S')
+ ) i),
+ 'extensions', (SELECT coalesce(json_agg(extname ORDER BY extname),'[]'::json) FROM pg_extension),
+ 'listenAddresses', current_setting('listen_addresses'),
+ 'socketDirectory', current_setting('unix_socket_directories'),
+ 'dataDirectory', current_setting('data_directory'),
+ 'configuredPort', current_setting('port')::integer)::text`;
+const expectedMigrationsSql = `SELECT coalesce(json_agg(m ORDER BY m.name),'[]'::json)::text FROM (
+ SELECT migration_name::text AS name,checksum::text AS checksum,finished_at IS NOT NULL AS finished,
+ rolled_back_at IS NOT NULL AS "rolledBack",applied_steps_count AS "appliedSteps" FROM public._prisma_migrations
+) m`;
+
+async function expectedCheckoutPin(relative) {
+  const file = path.join(repoRoot, ...relative.split("/")),
+    chain = await observedPath(file),
+    handle = await fs.open(file, "r");
+  try {
+    const captured = await readPinned(handle, chain.at(-1).stat);
+    const recheck = async () => {
+      const current = await observedPath(file);
+      expectedRequire(
+        current.length === chain.length &&
+          current.every(
+            (v, i) =>
+              v.path === chain[i].path &&
+              (i === current.length - 1 ||
+              v.path === repoRoot ||
+              v.path.startsWith(repoRoot + path.sep)
+                ? sameIdentity(v.stat, chain[i].stat)
+                : samePublicDirectory(v.stat, chain[i].stat))
+          ),
+        "MANUAL_OPERATION_INPUT_UNAVAILABLE"
+      );
+      expectedRequire(
+        (await readPinned(handle, captured.stat)).bytes.equals(captured.bytes),
+        "MANUAL_OPERATION_INPUT_UNAVAILABLE"
+      );
+      const independent = await fs.open(file, "r");
+      try {
+        expectedRequire(
+          (await readPinned(independent, captured.stat)).bytes.equals(captured.bytes),
+          "MANUAL_OPERATION_INPUT_UNAVAILABLE"
+        );
+      } finally {
+        await independent.close();
+      }
+    };
+    await recheck();
+    return { bytes: captured.bytes, recheck, close: () => handle.close() };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+function expectedProvenanceShape(p, facts, proof) {
+  expectedRequire(
+    exact(p, [
+      "recordVersion",
+      "buildProofDigest",
+      "proofRaw",
+      "sourceSha",
+      "ci",
+      "sourceSchema",
+      "config",
+      "lockfile",
+      "migrationCatalogDigest",
+      "toolchain",
+      "expectedScript",
+      "references",
+      "generatedAt",
+      "promotionEligible"
+    ])
+  );
+  const runMatch =
+    /^https:\/\/github\.com\/keqi119\/subscription-Saas\/actions\/runs\/([1-9][0-9]*)$/u.exec(
+      proof.provenance.ciRunRef
+    );
+  expectedRequire(runMatch && Number.isSafeInteger(Number(runMatch[1])));
+  expectedRequire(
+    p.recordVersion === "manual-expected-schema-provenance.v1" &&
+      p.buildProofDigest === facts.build.buildProofDigest &&
+      expectedEqual(expectedRawRef(p.proofRaw), {
+        digest: facts.build.proofRawDigest,
+        bytes: facts.fixed.proofBytes.length
+      }) &&
+      p.sourceSha === proof.identity.sourceSha &&
+      /^[0-9a-f]{40}$/u.test(p.sourceSha) &&
+      p.migrationCatalogDigest === proof.identity.migrationCatalogDigest &&
+      expectedTime(p.generatedAt) &&
+      Date.parse(p.generatedAt) <= Date.now() &&
+      p.promotionEligible === false
+  );
+  expectedRequire(
+    exact(p.ci, [
+      "repository",
+      "workflowPath",
+      "sourceRef",
+      "runId",
+      "runAttempt",
+      "runnerClass"
+    ]) &&
+      expectedEqual(p.ci, {
+        repository: "keqi119/subscription-Saas",
+        workflowPath: ".github/workflows/docker-images.yml",
+        sourceRef: "refs/heads/main",
+        runId: runMatch[1],
+        runAttempt: 1,
+        runnerClass: "github-hosted"
+      })
+  );
+  for (const [key, location] of [
+    ["sourceSchema", expectedSchemaPath],
+    ["config", expectedConfigPath],
+    ["lockfile", "pnpm-lock.yaml"]
+  ]) {
+    expectedRequire(exact(p[key], ["path", "raw"]) && p[key].path === location);
+    expectedRawRef(p[key].raw);
+  }
+  expectedRequire(
+    exact(p.toolchain, [
+      "runnerImageDigest",
+      "postgresImageDigest",
+      "nodeVersion",
+      "postgresqlVersion",
+      "prismaVersion",
+      "prismaVersionRaw"
+    ]) &&
+      p.toolchain.runnerImageDigest === proof.identity.images.runner.imageDigest &&
+      p.toolchain.postgresImageDigest === expectedPgDigest &&
+      proof.provenance.baseImages.some(
+        (v) => v.name === "postgres:17.11-bookworm" && v.resolvedDigest === expectedPgDigest
+      ) &&
+      /^v22\.\d+\.\d+$/u.test(p.toolchain.nodeVersion) &&
+      /^17\.11(?: \([^()]+\))?$/u.test(p.toolchain.postgresqlVersion) &&
+      expectedString(p.toolchain.prismaVersion) &&
+      /^prisma\s*:\s*7\.8\.0\s*$/mu.test(p.toolchain.prismaVersion) &&
+      p.toolchain.prismaVersion.includes("\n")
+  );
+  expectedRawRef(p.toolchain.prismaVersionRaw);
+  expectedRawRef(p.expectedScript);
+  expectedRequire(
+    p.expectedScript.bytes > 0 && Array.isArray(p.references) && p.references.length === 2
+  );
+  return runMatch[1];
+}
+async function expectedReference(reference, p, raw, proof, target, catalog, extensions) {
+  expectedRequire(
+    exact(reference, [
+      "referenceRunId",
+      "identity",
+      "createdAt",
+      "readbackAt",
+      "creationEvidence",
+      "readbackEvidence",
+      "migrationCatalog",
+      "migrationHead",
+      "migrationOwner",
+      "allowedExtensions",
+      "calls"
+    ]) && uuid.test(reference.referenceRunId)
+  );
+  const r = reference,
+    c = r.identity?.cluster;
+  expectedRequire(
+    exact(r.identity, ["cluster", "databaseName", "databaseOid"]) &&
+      exact(c, [
+        "systemIdentifier",
+        "databaseContainerId",
+        "runnerImageDigest",
+        "postgresImageDigest",
+        "dataDirectory",
+        "socketDirectory",
+        "listenAddresses",
+        "configuredPort"
+      ])
+  );
+  expectedRequire(typeof c.dataDirectory === "string");
+  const root = path.posix.dirname(c.dataDirectory);
+  expectedRequire(
+    /^[1-9][0-9]*$/u.test(c.systemIdentifier) &&
+      BigInt(c.systemIdentifier) <= 18446744073709551615n &&
+      /^[0-9a-f]{64}$/u.test(c.databaseContainerId) &&
+      /^[1-9][0-9]*$/u.test(r.identity.databaseOid) &&
+      r.identity.databaseName === expectedDatabase &&
+      c.runnerImageDigest === p.toolchain.runnerImageDigest &&
+      c.postgresImageDigest === p.toolchain.postgresImageDigest &&
+      /^\/tmp\/manual-schema-reference-[a-zA-Z0-9_-]+$/u.test(root) &&
+      c.dataDirectory === root + "/data" &&
+      c.socketDirectory === root + "/socket" &&
+      c.listenAddresses === "" &&
+      c.configuredPort === 5432 &&
+      !(
+        c.systemIdentifier === target.cluster.systemIdentifier &&
+        r.identity.databaseOid === target.databaseOid
+      ) &&
+      expectedOrder([r.createdAt, r.readbackAt, p.generatedAt])
+  );
+  const creation = expectedJson(await raw(r.creationEvidence), true),
+    readback = expectedJson(await raw(r.readbackEvidence), true);
+  for (const [v, version, tools] of [
+    [creation, "manual-expected-reference-creation.v1", expectedCreationTools],
+    [readback, "manual-expected-reference-readback.v1", expectedReadbackTools]
+  ])
+    expectedRequire(
+      exact(v, ["recordVersion", "referenceRunId", "calls"]) &&
+        v.recordVersion === version &&
+        v.referenceRunId === r.referenceRunId &&
+        Array.isArray(v.calls) &&
+        v.calls.length === tools.length
+    );
+  expectedRequire(Array.isArray(r.calls) && r.calls.length === 4);
+  const captured = new Map();
+  for (const [calls, tools] of [
+    [creation.calls, expectedCreationTools],
+    [r.calls, expectedPrismaTools],
+    [readback.calls, expectedReadbackTools]
+  ]) {
+    let previous;
+    for (let i = 0; i < calls.length; i++) {
+      const call = calls[i];
+      expectedRequire(
+        exact(call, expectedProcessKeys) &&
+          call.tool === tools[i] &&
+          Number.isSafeInteger(call.pid) &&
+          call.pid > 0 &&
+          call.exitCode === 0 &&
+          call.signal === null &&
+          expectedOrder([
+            ...(previous ? [previous] : []),
+            call.preparedAt,
+            call.spawnedAt,
+            call.closedAt,
+            p.generatedAt
+          ]),
+        "MANUAL_EXPECTED_SCHEMA_PROCESS_INVALID"
+      );
+      previous = call.closedAt;
+      const argv = expectedJson(await raw(call.argv), true),
+        stdout = await raw(call.stdout),
+        stderr = await raw(call.stderr);
+      expectedRequire(
+        Array.isArray(argv) && argv.length > 0 && argv.every((v) => typeof v === "string"),
+        "MANUAL_EXPECTED_SCHEMA_PROCESS_INVALID"
+      );
+      expectedText(stdout);
+      expectedText(stderr);
+      captured.set(call.tool, { call, argv, stdout });
+      if (tools === expectedPrismaTools)
+        expectedRequire(
+          expectedEqual(argv, expectedPrismaArgv(call.tool)) &&
+            expectedOrder([
+              r.createdAt,
+              call.preparedAt,
+              call.spawnedAt,
+              call.closedAt,
+              r.readbackAt
+            ]),
+          "MANUAL_EXPECTED_SCHEMA_PROCESS_INVALID"
+        );
+    }
+  }
+  const get = (tool) => captured.get(tool),
+    dockerPrefix = get("container-create").argv.slice(0, 5),
+    dockerCommand =
+      process.platform === "win32"
+        ? "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe"
+        : "/usr/bin/docker";
+  expectedRequire(
+    dockerPrefix[0] === dockerCommand &&
+      dockerPrefix[1] === "--host" &&
+      dockerPrefix[2] ===
+        (process.platform === "win32"
+          ? "npipe:////./pipe/docker_engine"
+          : "unix:///var/run/docker.sock") &&
+      dockerPrefix[3] === "--config" &&
+      /^\/tmp\/manual-schema-handoff-[a-zA-Z0-9_-]+\/docker-config$/u.test(dockerPrefix[4]),
+    "MANUAL_EXPECTED_SCHEMA_PROCESS_INVALID"
+  );
+  const imageRef = `${proof.identity.images.runner.registry}@${c.runnerImageDigest}`,
+    id = c.databaseContainerId;
+  const checkArgv = (tool, argv) =>
+    expectedRequire(expectedEqual(get(tool).argv, argv), "MANUAL_EXPECTED_SCHEMA_PROCESS_INVALID");
+  checkArgv("container-create", [
+    ...dockerPrefix,
+    "create",
+    "--pull=never",
+    "--network=none",
+    "--user=postgres",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,size=512m,mode=1777",
+    "--tmpfs",
+    "/var/lib/postgresql/data:rw,nosuid,nodev,size=16m,mode=1777",
+    "--interactive",
+    "--entrypoint",
+    "/usr/local/bin/node",
+    imageRef,
+    "/app/scripts/release/manual-expected-schema-producer.mjs",
+    "--reference"
+  ]);
+  expectedRequire(expectedText(get("container-create").stdout).trim() === id);
+  const container = expectedJson(get("container-inspect").stdout),
+    exited = expectedJson(get("container-exit-inspect").stdout),
+    image = expectedJson(get("image-inspect").stdout);
+  const containerKeys = [
+    "id",
+    "imageId",
+    "imageRef",
+    "user",
+    "network",
+    "binds",
+    "mounts",
+    "tmpfs",
+    "readonly",
+    "status",
+    "running",
+    "exitCode"
+  ];
+  for (const [v, state] of [
+    [container, "created"],
+    [exited, "exited"]
+  ])
+    expectedRequire(
+      exact(v, containerKeys) &&
+        v.id === id &&
+        expectedDigest(v.imageId) &&
+        v.imageRef === imageRef &&
+        v.user === "postgres" &&
+        v.network === "none" &&
+        v.readonly === true &&
+        (v.binds === null || expectedEqual(v.binds, [])) &&
+        Array.isArray(v.mounts) &&
+        v.mounts.length <= 2 &&
+        v.mounts.every(
+          (m) =>
+            exact(m, ["type", "source", "destination"]) &&
+            m.type === "tmpfs" &&
+            m.source === "" &&
+            ["/tmp", "/var/lib/postgresql/data"].includes(m.destination)
+        ) &&
+        expectedEqual(v.tmpfs, {
+          "/tmp": "rw,nosuid,nodev,size=512m,mode=1777",
+          "/var/lib/postgresql/data": "rw,nosuid,nodev,size=16m,mode=1777"
+        }) &&
+        v.status === state &&
+        v.running === false &&
+        v.exitCode === 0
+    );
+  expectedRequire(
+    container.imageId === exited.imageId &&
+      exact(image, ["id", "repoDigests", "sourceRevision"]) &&
+      image.id === container.imageId &&
+      image.sourceRevision === p.sourceSha &&
+      Array.isArray(image.repoDigests) &&
+      image.repoDigests.every(expectedString) &&
+      image.repoDigests.includes(imageRef)
+  );
+  checkArgv("container-inspect", [
+    ...dockerPrefix,
+    "container",
+    "inspect",
+    "--format",
+    expectedContainerFormat,
+    id
+  ]);
+  checkArgv("container-exit-inspect", [
+    ...dockerPrefix,
+    "container",
+    "inspect",
+    "--format",
+    expectedContainerFormat,
+    id
+  ]);
+  checkArgv("image-inspect", [
+    ...dockerPrefix,
+    "image",
+    "inspect",
+    "--format",
+    expectedImageFormat,
+    image.id
+  ]);
+  checkArgv("container-stop", [...dockerPrefix, "stop", "--time", "10", id]);
+  checkArgv("container-remove", [...dockerPrefix, "rm", "--force", "--volumes", id]);
+  expectedRequire(expectedText(get("container-remove").stdout).trim() === id);
+  checkArgv("node-version", ["/usr/local/bin/node", "--version"]);
+  const pg = "/usr/lib/postgresql/17/bin/",
+    data = c.dataDirectory,
+    socket = c.socketDirectory;
+  checkArgv("psql-version", [pg + "psql", "--version"]);
+  checkArgv("initdb", [
+    pg + "initdb",
+    "--pgdata",
+    data,
+    "--username",
+    expectedRole,
+    "--encoding=UTF8",
+    "--locale=C.UTF-8",
+    "--auth-local=trust",
+    "--auth-host=reject"
+  ]);
+  checkArgv("pg-start", [
+    pg + "pg_ctl",
+    "--pgdata",
+    data,
+    "--log",
+    root + "/server.log",
+    "--wait",
+    "--timeout=30",
+    "--options",
+    `-c listen_addresses='' -c unix_socket_directories=${socket} -c unix_socket_permissions=0700 -c port=5432`,
+    "start"
+  ]);
+  checkArgv("pg-stop", [
+    pg + "pg_ctl",
+    "--pgdata",
+    data,
+    "--wait",
+    "--timeout=30",
+    "--mode=immediate",
+    "stop"
+  ]);
+  const psql = [
+    pg + "psql",
+    "--no-psqlrc",
+    "--no-password",
+    "--host",
+    socket,
+    "--port",
+    "5432",
+    "--username",
+    expectedRole,
+    "--dbname",
+    expectedDatabase,
+    "--tuples-only",
+    "--no-align",
+    "--set",
+    "ON_ERROR_STOP=1",
+    "--command"
+  ];
+  checkArgv("database-create", [
+    ...psql.map((v) => (v === expectedDatabase ? "postgres" : v)),
+    `CREATE DATABASE ${expectedDatabase} OWNER ${expectedRole}`
+  ]);
+  for (const tool of ["identity-before", "identity-after"])
+    checkArgv(tool, [...psql, expectedIdentitySql]);
+  checkArgv("migration-readback", [...psql, expectedMigrationsSql]);
+  const before = expectedJson(get("identity-before").stdout),
+    after = expectedJson(get("identity-after").stdout);
+  for (const db of [before, after])
+    expectedRequire(
+      exact(db, [
+        "databaseName",
+        "databaseOid",
+        "systemIdentifier",
+        "serverVersion",
+        "schemaOwner",
+        "ownerInventory",
+        "extensions",
+        "listenAddresses",
+        "socketDirectory",
+        "dataDirectory",
+        "configuredPort"
+      ]) &&
+        db.databaseName === r.identity.databaseName &&
+        db.databaseOid === r.identity.databaseOid &&
+        db.systemIdentifier === c.systemIdentifier &&
+        db.serverVersion === p.toolchain.postgresqlVersion &&
+        [expectedRole, "pg_database_owner"].includes(db.schemaOwner) &&
+        db.listenAddresses === "" &&
+        db.socketDirectory === socket &&
+        db.dataDirectory === data &&
+        db.configuredPort === 5432 &&
+        Array.isArray(db.ownerInventory) &&
+        db.ownerInventory.length > 0 &&
+        db.ownerInventory.every(
+          (v) =>
+            exact(v, ["objectClass", "objectName", "owner"]) &&
+            ["schema", "relation", "sequence"].includes(v.objectClass) &&
+            expectedString(v.objectName) &&
+            [expectedRole, "pg_database_owner"].includes(v.owner)
+        ) &&
+        Array.isArray(db.extensions) &&
+        db.extensions.every(expectedString)
+    );
+  expectedRequire(
+    r.migrationOwner === expectedRole &&
+      after.ownerInventory.filter(
+        (v) =>
+          v.objectClass === "relation" &&
+          v.objectName === "_prisma_migrations" &&
+          v.owner === expectedRole
+      ).length === 1 &&
+      expectedEqual(after.extensions, extensions) &&
+      expectedEqual(r.allowedExtensions, extensions)
+  );
+  const rows = expectedJson(get("migration-readback").stdout);
+  expectedRequire(
+    Array.isArray(rows) &&
+      rows.length === catalog.entries.length &&
+      rows.every(
+        (v, i) =>
+          exact(v, ["name", "checksum", "finished", "rolledBack", "appliedSteps"]) &&
+          v.name === catalog.entries[i].path.split("/").at(-2) &&
+          v.checksum === catalog.entries[i].sha256.slice(7) &&
+          v.finished === true &&
+          v.rolledBack === false &&
+          Number.isSafeInteger(v.appliedSteps) &&
+          v.appliedSteps >= 1
+      )
+  );
+  const catalogIdentity = {
+    catalogVersion: "migration-catalog.v1",
+    entries: catalog.entries.map((v) => ({ order: v.order, path: v.path, sha256: v.sha256 }))
+  };
+  expectedRequire(
+    (await raw(r.migrationCatalog)).equals(encodeManualJson(catalogIdentity)) &&
+      r.migrationCatalog.digest === p.migrationCatalogDigest &&
+      r.migrationHead === rows.at(-1)?.name
+  );
+  expectedRequire(
+    expectedText(get("node-version").stdout).trim() === p.toolchain.nodeVersion &&
+      /^psql \(PostgreSQL\) 17\.11(?: \([^()]+\))?$/u.test(
+        expectedText(get("psql-version").stdout).trim()
+      ) &&
+      expectedEqual(get("prisma-version").call.stdout, p.toolchain.prismaVersionRaw) &&
+      expectedText(get("prisma-version").stdout).trim() === p.toolchain.prismaVersion &&
+      expectedEqual(get("prisma-script").call.stdout, p.expectedScript) &&
+      expectedText(get("prisma-diff").stdout).trim() === ""
+  );
+  expectedRequire(
+    r.createdAt === get("database-create").call.closedAt &&
+      r.readbackAt === get("migration-readback").call.closedAt &&
+      expectedOrder([get("image-inspect").call.closedAt, get("node-version").call.preparedAt]) &&
+      expectedOrder([
+        get("identity-before").call.closedAt,
+        get("prisma-version").call.preparedAt
+      ]) &&
+      expectedOrder([get("prisma-script").call.closedAt, get("identity-after").call.preparedAt]) &&
+      expectedOrder([get("pg-stop").call.closedAt, get("container-exit-inspect").call.preparedAt])
+  );
+  return {
+    ownerInventory: after.ownerInventory,
+    stable: {
+      migrationCatalog: r.migrationCatalog,
+      migrationHead: r.migrationHead,
+      migrationOwner: r.migrationOwner,
+      allowedExtensions: r.allowedExtensions
+    }
+  };
+}
+
+async function expectedOssImport(imported, p, facts, subjects, raw) {
+  expectedRequire(
+    exact(imported, [
+      "recordVersion",
+      "buildProofDigest",
+      "proofRawDigest",
+      "profileDigest",
+      "ownerId",
+      "importApprovalRef",
+      "importedAt",
+      "readbackAt",
+      "objects",
+      "promotionEligible"
+    ]) &&
+      imported.recordVersion === "manual-expected-schema-import.v1" &&
+      imported.buildProofDigest === facts.build.buildProofDigest &&
+      imported.proofRawDigest === facts.build.proofRawDigest &&
+      imported.profileDigest === facts.fixed.operation.profileDigest &&
+      imported.ownerId === facts.profile.ownerId &&
+      expectedString(imported.importApprovalRef) &&
+      expectedOrder([imported.importedAt, imported.readbackAt]) &&
+      Date.parse(imported.readbackAt) <= Date.now() &&
+      imported.promotionEligible === false &&
+      Array.isArray(imported.objects) &&
+      imported.objects.length === subjects.size
+  );
+  const reader = `acs:ram::${expectedAccount}:role/subscription-saas-stage1-evidence-audit-reader/stage1-reader-${p.ci.runId}-attempt-1`,
+    writer = `acs:ram::${expectedAccount}:role/subscription-saas-stage1-evidence-writer/stage1-writer-${p.ci.runId}-attempt-1`;
+  // Resolve the installed strict XML parser only. This does not instantiate an
+  // OSS client, load credentials, or contact a storage service.
+  const apiRequire = createRequire(new URL("../../apps/api/package.json", import.meta.url)),
+    ossRequire = createRequire(apiRequire.resolve("ali-oss")),
+    xml = ossRequire("xml2js");
+  const httpTime = (v) =>
+    typeof v === "string" &&
+    Number.isFinite(Date.parse(v)) &&
+    new Date(Date.parse(v)).toUTCString() === v;
+  const xmlBody = async (body, root) => {
+    const source = expectedText(body);
+    expectedRequire(!/<!DOCTYPE|<!ENTITY/iu.test(source));
+    let parsed;
+    try {
+      parsed = await xml.parseStringPromise(source, {
+        explicitRoot: true,
+        explicitArray: false,
+        strict: true
+      });
+    } catch {
+      fail("MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID");
+    }
+    expectedRequire(exact(parsed, [root]));
+    let value = parsed[root];
+    if (value && typeof value === "object" && value.$ !== undefined) {
+      expectedRequire(
+        exact(value.$, ["xmlns"]) && value.$.xmlns === "http://doc.oss-cn-hangzhou.aliyuncs.com"
+      );
+      value = { ...value };
+      delete value.$;
+    }
+    return value;
+  };
+  const aclBody = async (body) => {
+    const v = await xmlBody(body, "AccessControlPolicy");
+    expectedRequire(
+      exact(v, ["Owner", "AccessControlList"]) &&
+        exact(v.Owner, ["ID", "DisplayName"]) &&
+        v.Owner.ID === expectedAccount &&
+        typeof v.Owner.DisplayName === "string" &&
+        exact(v.AccessControlList, ["Grant"]) &&
+        v.AccessControlList.Grant === "private"
+    );
+  };
+  let previousDigest = "";
+  for (const object of imported.objects) {
+    expectedRequire(
+      exact(object, [
+        "subject",
+        "storeRef",
+        "writerIdentity",
+        "auditReaderIdentity",
+        "storedAt",
+        "retainUntil",
+        "readbackAt",
+        "getEvidence",
+        "headEvidence",
+        "aclEvidence"
+      ])
+    );
+    const subject = expectedRawRef(object.subject),
+      bytes = subjects.get(subject.digest);
+    expectedRequire(
+      bytes &&
+        bytes.length === subject.bytes &&
+        subject.digest > previousDigest &&
+        object.writerIdentity === writer &&
+        object.auditReaderIdentity === "audit-reader" &&
+        expectedOrder([
+          object.storedAt,
+          object.readbackAt,
+          imported.importedAt,
+          imported.readbackAt
+        ]) &&
+        expectedTime(object.retainUntil)
+    );
+    previousDigest = subject.digest;
+    const key = `evidence/github-${p.ci.runId}-attempt-1/${subject.digest.slice(7)}.json`;
+    expectedRequire(object.storeRef === `oss://${expectedBucket}/${key}`);
+    const head = expectedJson(await raw(object.headEvidence), true),
+      acl = expectedJson(await raw(object.aclEvidence), true),
+      get = expectedJson(await raw(object.getEvidence), true);
+    expectedRequire(Array.isArray(head?.bucketChecks) && head.bucketChecks.length === 6);
+    const bucketRecords = [];
+    for (const ref of head.bucketChecks) bucketRecords.push(expectedJson(await raw(ref), true));
+    const records = [...bucketRecords, head, acl, get],
+      operations = [...expectedBucketTools, "HeadObject", "GetObjectAcl", "GetObject"];
+    let previousAt;
+    const bodies = new Map();
+    for (let i = 0; i < records.length; i++) {
+      const v = records[i],
+        operation = operations[i],
+        isObject = i >= 6;
+      expectedRequire(
+        exact(v, [
+          "recordVersion",
+          "operation",
+          "bucket",
+          "objectKey",
+          "readerPrincipal",
+          "observedAt",
+          "response",
+          "bucketChecks"
+        ]) &&
+          v.recordVersion === "manual-expected-oss-readback.v1" &&
+          v.operation === operation &&
+          v.bucket === expectedBucket &&
+          v.objectKey === (isObject ? key : null) &&
+          v.readerPrincipal === reader &&
+          expectedOrder([...(previousAt ? [previousAt] : []), v.observedAt, object.readbackAt]) &&
+          exact(v.response, ["status", "headers", "body"]) &&
+          v.response.status === 200 &&
+          exact(v.response.headers, expectedHeaderKeys) &&
+          Array.isArray(v.bucketChecks) &&
+          (operation === "HeadObject" || v.bucketChecks.length === 0)
+      );
+      previousAt = v.observedAt;
+      const h = v.response.headers,
+        body = await raw(v.response.body);
+      expectedRequire(
+        expectedHeaderKeys.every(
+          (name) =>
+            h[name] === null ||
+            (typeof h[name] === "string" &&
+              h[name].length <= 1024 &&
+              [...h[name]].every(
+                (character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127
+              ))
+        ) &&
+          httpTime(h.date) &&
+          typeof h["x-oss-request-id"] === "string" &&
+          /^[A-Za-z0-9-]+$/u.test(h["x-oss-request-id"]) &&
+          (h["content-length"] === null ||
+            (/^(?:0|[1-9][0-9]*)$/u.test(h["content-length"]) &&
+              Number.isSafeInteger(Number(h["content-length"])) &&
+              (operation === "HeadObject" || Number(h["content-length"]) === body.length)))
+      );
+      bodies.set(operation, body);
+      if (["GetObject", "HeadObject"].includes(operation))
+        expectedRequire(
+          h["content-length"] !== null &&
+            Number(h["content-length"]) === subject.bytes &&
+            httpTime(h["last-modified"]) &&
+            typeof h.etag === "string" &&
+            h.etag.length > 0 &&
+            h["x-oss-server-side-encryption"] === "AES256" &&
+            typeof h["content-type"] === "string" &&
+            h["content-type"].length > 0 &&
+            (operation === "HeadObject" ? body.length === 0 : body.equals(bytes))
+        );
+    }
+    await aclBody(bodies.get("GetBucketAcl"));
+    await aclBody(bodies.get("GetObjectAcl"));
+    const worm = await xmlBody(bodies.get("GetBucketWorm"), "WormConfiguration");
+    expectedRequire(
+      exact(worm, ["WormId", "State", "RetentionPeriodInDays", "CreationDate"]) &&
+        expectedString(worm.WormId) &&
+        worm.State === "Locked" &&
+        worm.RetentionPeriodInDays === "210" &&
+        typeof worm.CreationDate === "string" &&
+        Number.isFinite(Date.parse(worm.CreationDate)) &&
+        Date.parse(worm.CreationDate) <= Date.parse(object.storedAt)
+    );
+    const version = await xmlBody(bodies.get("GetBucketVersioning"), "VersioningConfiguration");
+    expectedRequire(
+      (typeof version === "string" && version.trim() === "") ||
+        ((exact(version, []) || exact(version, ["Status"])) &&
+          (version.Status === undefined || version.Status === ""))
+    );
+    const encryption = await xmlBody(bodies.get("GetBucketEncryption"), "ServerSideEncryptionRule"),
+      rule = encryption?.ApplyServerSideEncryptionByDefault;
+    expectedRequire(
+      exact(encryption, ["ApplyServerSideEncryptionByDefault"]) &&
+        rule &&
+        typeof rule === "object" &&
+        !Array.isArray(rule) &&
+        Object.keys(rule).every((k) =>
+          ["SSEAlgorithm", "KMSMasterKeyID", "KMSDataEncryption"].includes(k)
+        ) &&
+        Object.values(rule).every((v) => typeof v === "string") &&
+        rule.SSEAlgorithm === "AES256"
+    );
+    const policy = await xmlBody(bodies.get("GetBucketPolicyStatus"), "PolicyStatus"),
+      bpa = await xmlBody(
+        bodies.get("GetBucketPublicAccessBlock"),
+        "PublicAccessBlockConfiguration"
+      );
+    expectedRequire(
+      exact(policy, ["IsPublic"]) &&
+        policy.IsPublic === "false" &&
+        exact(bpa, ["BlockPublicAccess"]) &&
+        bpa.BlockPublicAccess === "true"
+    );
+    const headers = head.response.headers;
+    expectedRequire(
+      [
+        "content-length",
+        "last-modified",
+        "etag",
+        "x-oss-server-side-encryption",
+        "content-type"
+      ].every((k) => headers[k] === get.response.headers[k]) &&
+        object.storedAt === new Date(Date.parse(headers["last-modified"])).toISOString() &&
+        object.retainUntil ===
+          new Date(Date.parse(object.storedAt) + 210 * 86400000).toISOString() &&
+        Date.parse(object.retainUntil) >= Date.parse(object.storedAt) + 90 * 86400000
+    );
+  }
+}
+function expectedGhArgv(file, p) {
+  const argv = [
+    "attestation",
+    "verify",
+    file,
+    "--repo",
+    "keqi119/subscription-Saas",
+    "--signer-workflow",
+    "keqi119/subscription-Saas/.github/workflows/docker-images.yml",
+    "--source-ref",
+    "refs/heads/main",
+    "--source-digest",
+    p.sourceSha,
+    "--cert-oidc-issuer",
+    "https://token.actions.githubusercontent.com",
+    "--deny-self-hosted-runners",
+    "--format",
+    "json"
+  ];
+  return argv;
+}
+
+function expectedGhResult({ subject, p, processResult, startedAt, argvRaw, stdout, stderr }) {
+  expectedRequire(
+    !processResult.problem &&
+      processResult.spawned &&
+      Number.isSafeInteger(processResult.pid) &&
+      processResult.pid > 0 &&
+      processResult.exitCode === 0 &&
+      processResult.signal === null,
+    processResult.problem ?? "MANUAL_EXPECTED_SCHEMA_PROCESS_FAILED"
+  );
+  expectedText(processResult.stderr);
+  const output = expectedJson(processResult.stdout);
+  expectedRequire(
+    Array.isArray(output) && output.length === 1,
+    "MANUAL_EXPECTED_SCHEMA_ATTESTATION_INVALID"
+  );
+  const item = output[0],
+    result = item?.verificationResult,
+    cert = result?.signature?.certificate,
+    statement = result?.statement,
+    signer =
+      "https://github.com/keqi119/subscription-Saas/.github/workflows/docker-images.yml@refs/heads/main";
+  expectedRequire(
+    cert?.issuer === "https://token.actions.githubusercontent.com" &&
+      cert.subjectAlternativeName?.type === "URI" &&
+      cert.subjectAlternativeName.value === signer &&
+      cert.buildSignerURI === signer &&
+      cert.buildSignerDigest === p.sourceSha &&
+      cert.runnerEnvironment === "github-hosted" &&
+      cert.sourceRepositoryURI === "https://github.com/keqi119/subscription-Saas" &&
+      cert.sourceRepositoryDigest === p.sourceSha &&
+      cert.sourceRepositoryRef === "refs/heads/main" &&
+      cert.buildConfigURI === signer &&
+      cert.buildConfigDigest === p.sourceSha &&
+      cert.runInvocationURI ===
+        `https://github.com/keqi119/subscription-Saas/actions/runs/${p.ci.runId}/attempts/1` &&
+      statement?._type === "https://in-toto.io/Statement/v1" &&
+      Array.isArray(statement.subject) &&
+      statement.subject.length === 1 &&
+      exact(statement.subject[0]?.digest, ["sha256"]) &&
+      statement.subject[0].digest.sha256 === subject.digest.slice(7) &&
+      Array.isArray(result.verifiedTimestamps) &&
+      result.verifiedTimestamps.length > 0 &&
+      result.verifiedTimestamps.every(
+        (v) =>
+          typeof v?.timestamp === "string" &&
+          Number.isFinite(Date.parse(v.timestamp)) &&
+          Date.parse(p.generatedAt) <= Date.parse(v.timestamp) &&
+          Date.parse(v.timestamp) <= Date.parse(processResult.closedAt)
+      ),
+    "MANUAL_EXPECTED_SCHEMA_ATTESTATION_INVALID"
+  );
+  const bundle = item.attestation?.bundle,
+    payload = bundle?.dsseEnvelope?.payload;
+  expectedRequire(
+    bundle &&
+      typeof bundle === "object" &&
+      !Array.isArray(bundle) &&
+      bundle.dsseEnvelope?.payloadType === "application/vnd.in-toto+json" &&
+      typeof payload === "string",
+    "MANUAL_EXPECTED_SCHEMA_ATTESTATION_INVALID"
+  );
+  const payloadBytes = Buffer.from(payload, "base64");
+  expectedRequire(
+    payloadBytes.toString("base64") === payload &&
+      encodeManualJson(expectedJson(payloadBytes)).equals(encodeManualJson(statement)),
+    "MANUAL_EXPECTED_SCHEMA_ATTESTATION_INVALID"
+  );
+  return {
+    subject,
+    argv: argvRaw,
+    stdout,
+    stderr,
+    pid: processResult.pid,
+    startedAt,
+    closedAt: processResult.closedAt,
+    exitCode: 0,
+    signal: null,
+    bundleDigest: sha256Canonical(bundle)
+  };
+}
+
+async function openManualExpectedSchemaInputs(input) {
+  if (
+    !exact(input, [
+      "fixed",
+      "build",
+      "profile",
+      "principal",
+      "targetContext",
+      "allocation",
+      "attemptAllocationDigest"
+    ])
+  )
+    fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+  const descriptors = Object.getOwnPropertyDescriptors(input.fixed);
+  for (const key of ["operation", "indexDigest", "proofBytes", "materialBytes"])
+    if (!descriptors[key] || !("value" in descriptors[key]))
+      fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+  if (
+    ![descriptors.proofBytes.value, descriptors.materialBytes.value].every(
+      (bytes) => Buffer.isBuffer(bytes) && bytes.length <= expectedLimit
+    )
+  )
+    fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+  const facts = sourceValue({
+      build: input.build,
+      profile: input.profile,
+      principal: input.principal,
+      targetContext: input.targetContext
+    }),
+    fixed = {
+      ...sourceValue({
+        operation: descriptors.operation.value,
+        indexDigest: descriptors.indexDigest.value
+      }),
+      proofBytes: Buffer.from(descriptors.proofBytes.value),
+      materialBytes: Buffer.from(descriptors.materialBytes.value)
+    },
+    allocation = sourceValue(input.allocation),
+    attemptAllocationDigest = input.attemptAllocationDigest;
+  const { build, profile, principal } = facts;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+  expectedRequire(
+    uuid.test(fixed.operation.operationRef) &&
+      uuid.test(allocation.attemptId) &&
+      expectedDigest(build.proofRawDigest) &&
+      expectedDigest(build.materialRawDigest) &&
+      sha256Bytes(fixed.proofBytes) === build.proofRawDigest &&
+      sha256Bytes(fixed.materialBytes) === build.materialRawDigest &&
+      sha256Canonical(allocation) === attemptAllocationDigest &&
+      path.isAbsolute(profile.storage.archiveRoot) &&
+      path.resolve(profile.storage.archiveRoot) === profile.storage.archiveRoot
+  );
+  const bound = { ...facts, fixed },
+    opened = [],
+    sourcePins = [],
+    raws = new Map(),
+    subjects = new Map(),
+    copies = [];
+  let closed = false,
+    recorded;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    const settled = await Promise.allSettled(
+      [...opened, ...sourcePins].map((item) => item.close())
+    );
+    for (const item of [...opened, ...sourcePins]) item.bytes.fill(0);
+    for (const bytes of [...raws.values(), ...copies, fixed.proofBytes, fixed.materialBytes])
+      bytes.fill(0);
+    const failed = settled.find((result) => result.status === "rejected");
+    if (failed) throw failed.reason;
+  };
+  const copy = (bytes) => {
+    const result = Buffer.from(bytes);
+    copies.push(result);
+    return result;
+  };
+  const rawRef = (bytes) => ({ digest: sha256Bytes(bytes), bytes: bytes.length });
+  const proof = expectedJson(fixed.proofBytes),
+    root = path.join(
+      profile.storage.archiveRoot,
+      "inputs",
+      "expected-schema",
+      build.proofRawDigest.slice(7)
+    ),
+    admissionRoot = path.join(root, "admissions", fixed.operation.operationRef),
+    options = { principal, privateRoot: profile.storage.archiveRoot };
+  try {
+    const pin = async (file) => {
+      const item = await pinPrivateInput(file, options);
+      opened.push(item);
+      return item;
+    };
+    // Hold the exact already-verified originals; this is identity/byte custody,
+    // never another proof/material/receipt/CI verifier.
+    for (const [digest, suffix, bytes] of [
+      [build.proofRawDigest, "proof.json", fixed.proofBytes],
+      [build.materialRawDigest, "material.json", fixed.materialBytes]
+    ]) {
+      const original = await pin(
+        path.join(profile.storage.archiveRoot, "inputs", "build", `${digest.slice(7)}.${suffix}`)
+      );
+      expectedRequire(original.bytes.equals(bytes), "MANUAL_OPERATION_INPUT_UNAVAILABLE");
+    }
+    const files = new Map();
+    for (const name of [
+      "provenance.json",
+      "expected.sql",
+      "schema.prisma",
+      "prisma-version.stdout",
+      "import-readback.json"
+    ])
+      files.set(name, await pin(path.join(root, name)));
+    const p = expectedJson(files.get("provenance.json").bytes, true),
+      imported = expectedJson(files.get("import-readback.json").bytes, true);
+    expectedProvenanceShape(p, bound, proof);
+    const raw = async (ref) => {
+      expectedRawRef(ref);
+      if (!raws.has(ref.digest))
+        raws.set(
+          ref.digest,
+          Buffer.from((await pin(path.join(root, "raw", `${ref.digest.slice(7)}.bin`))).bytes)
+        );
+      const bytes = raws.get(ref.digest);
+      expectedRequire(
+        bytes.length === ref.bytes && sha256Bytes(bytes) === ref.digest,
+        "MANUAL_EXPECTED_SCHEMA_RAW_INVALID"
+      );
+      return bytes;
+    };
+    const sourceRaw = async (ref) => {
+      const bytes = await raw(ref);
+      subjects.set(ref.digest, bytes);
+      return bytes;
+    };
+    const provenanceRaw = files.get("provenance.json").bytes;
+    subjects.set(sha256Bytes(provenanceRaw), provenanceRaw);
+    expectedRequire((await sourceRaw(p.proofRaw)).equals(fixed.proofBytes));
+    for (const [key, name] of [
+      ["sourceSchema", "schema.prisma"],
+      ["config", null],
+      ["lockfile", null]
+    ]) {
+      const item = await expectedCheckoutPin(p[key].path);
+      sourcePins.push(item);
+      const bytes = await sourceRaw(p[key].raw);
+      expectedRequire(bytes.equals(item.bytes) && (!name || bytes.equals(files.get(name).bytes)));
+      expectedText(bytes);
+    }
+    expectedRequire(
+      (await sourceRaw(p.expectedScript)).equals(files.get("expected.sql").bytes) &&
+        (await sourceRaw(p.toolchain.prismaVersionRaw)).equals(
+          files.get("prisma-version.stdout").bytes
+        ) &&
+        expectedText(files.get("prisma-version.stdout").bytes).trim() === p.toolchain.prismaVersion
+    );
+    expectedText(files.get("expected.sql").bytes);
+    const catalog = await computeMigrationCatalog(repoRoot),
+      extensionSet = new Set(["plpgsql"]);
+    expectedRequire(catalog.digest === p.migrationCatalogDigest && catalog.entries.length > 0);
+    for (const entry of catalog.entries) {
+      const item = await expectedCheckoutPin(entry.path);
+      sourcePins.push(item);
+      expectedRequire(sha256Bytes(item.bytes) === entry.sha256);
+      for (const match of expectedText(item.bytes).matchAll(
+        /CREATE\s+EXTENSION\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([a-z0-9_]+)"?/giu
+      ))
+        extensionSet.add(match[1].toLowerCase());
+    }
+    const references = [];
+    for (const r of p.references)
+      references.push(
+        await expectedReference(
+          r,
+          p,
+          sourceRaw,
+          proof,
+          facts.targetContext,
+          catalog,
+          [...extensionSet].sort()
+        )
+      );
+    const [a, b] = p.references;
+    expectedRequire(
+      a.referenceRunId !== b.referenceRunId &&
+        a.identity.cluster.databaseContainerId !== b.identity.cluster.databaseContainerId &&
+        !(
+          a.identity.cluster.systemIdentifier === b.identity.cluster.systemIdentifier &&
+          a.identity.databaseOid === b.identity.databaseOid
+        ) &&
+        expectedEqual(references[0], references[1]),
+      "MANUAL_EXPECTED_SCHEMA_REPRODUCTION_FAILED"
+    );
+    await expectedOssImport(imported, p, bound, subjects, raw);
+    const recheck = async () => {
+      if (closed) fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+      for (const items of [opened, sourcePins]) {
+        for (let offset = 0; offset < items.length; offset += 8) {
+          const settled = await Promise.allSettled(
+            items.slice(offset, offset + 8).map((item) => item.recheck())
+          );
+          const failed = settled.find((result) => result.status === "rejected");
+          if (failed) throw failed.reason;
+        }
+      }
+      const head = (
+        await nativeText("git", [
+          "--no-optional-locks",
+          "-c",
+          "core.fsmonitor=false",
+          "-C",
+          repoRoot,
+          "rev-parse",
+          "--verify",
+          "HEAD"
+        ])
+      ).trim();
+      const status = await nativeText("git", [
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-C",
+        repoRoot,
+        "status",
+        "--porcelain",
+        "--untracked-files=all"
+      ]);
+      expectedRequire(
+        head === p.sourceSha &&
+          status === "" &&
+          (await computeRepositoryContract(repoRoot)).digest ===
+            proof.identity.repositoryContractDigest &&
+          (await computeMigrationCatalog(repoRoot)).digest === p.migrationCatalogDigest
+      );
+    };
+    const expectation = {
+      schemaVersion: "manual-runner-evidence.v1",
+      recordedAt: p.generatedAt,
+      promotionEligible: false,
+      kind: "schema-expectation",
+      buildProofDigest: build.buildProofDigest,
+      sourceSchemaDigest: p.sourceSchema.raw.digest,
+      prismaVersion: p.toolchain.prismaVersion,
+      script: p.expectedScript,
+      sourceSchemaPath: expectedSchemaPath
+    };
+    validateContract("manual-runner-evidence.v1", expectation);
+    const expectationBytes = encodeManualJson(expectation),
+      expectationDigest = sha256Bytes(expectationBytes),
+      provenance = rawRef(provenanceRaw);
+    const recordedDirectory = path.join(
+        profile.storage.archiveRoot,
+        "inputs",
+        "operations",
+        fixed.operation.operationRef,
+        "runner-launch",
+        allocation.attemptId
+      ),
+      appendDirectories = new Set([
+        path.join(profile.storage.archiveRoot, "raw"),
+        path.join(profile.storage.archiveRoot, "objects"),
+        recordedDirectory
+      ]),
+      recordedFiles = new Map();
+    // These three fixed directories gain ordinary sibling files during work.
+    // Reopen every original independently; only their directory contents may
+    // change. Leaf bytes/identity, nlink, all ACLs and other ancestors stay fixed.
+    const readRecordedFile = async (file) => {
+      const item = await pinPrivateInput(file, options);
+      try {
+        await item.recheck();
+        const chain = await checkedPrivatePath(file, options),
+          previous = recordedFiles.get(file);
+        expectedRequire(
+          !previous ||
+            (item.bytes.equals(previous.bytes) &&
+              chain.length === previous.chain.length &&
+              chain.every(
+                (entry, index) =>
+                  entry.path === previous.chain[index].path &&
+                  (entry.path !== options.privateRoot &&
+                  !entry.path.startsWith(options.privateRoot + path.sep)
+                    ? samePublicDirectory(entry.stat, previous.chain[index].stat)
+                    : sameIdentity(
+                        entry.stat,
+                        previous.chain[index].stat,
+                        !appendDirectories.has(entry.path)
+                      ))
+              )),
+          "MANUAL_OPERATION_INPUT_UNAVAILABLE"
+        );
+        if (!previous) {
+          const saved = {
+            bytes: Buffer.from(item.bytes),
+            chain,
+            recheck: async () => {
+              await readRecordedFile(file);
+            },
+            close: async () => {}
+          };
+          recordedFiles.set(file, saved);
+          opened.push(saved);
+        }
+        return recordedFiles.get(file);
+      } finally {
+        await item.close();
+      }
+    };
+    const archiveRaw = async (ref) => {
+      expectedRawRef(ref);
+      const item = await readRecordedFile(
+        path.join(profile.storage.archiveRoot, "raw", ref.digest.slice(7) + ".bin")
+      );
+      expectedRequire(
+        item.bytes.length === ref.bytes && sha256Bytes(item.bytes) === ref.digest,
+        "MANUAL_STORAGE_UNVERIFIED"
+      );
+      return item.bytes;
+    };
+    const readRecordedAdmission = async () => {
+      if (closed) fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+      if (recorded) {
+        await recheck();
+        return recorded;
+      }
+      try {
+        const sidecar = await pin(path.join(admissionRoot, allocation.attemptId + ".json")),
+          admission = expectedJson(sidecar.bytes, true),
+          calls = [],
+          captured = [],
+          directory = recordedDirectory;
+        for (const [name, subject, prefix] of [
+          ["provenance.json", provenance, "expected-provenance.gh"],
+          ["expected.sql", p.expectedScript, "expected-script.gh"]
+        ]) {
+          const captureInput = await readRecordedFile(
+              path.join(directory, prefix + ".capture.json")
+            ),
+            capture = expectedJson(captureInput.bytes, true);
+          expectedRequire(
+            exact(capture, [
+              "recordVersion",
+              "subject",
+              "argv",
+              "stdout",
+              "stderr",
+              "pid",
+              "startedAt",
+              "closedAt",
+              "exitCode",
+              "signal",
+              "processProblem",
+              "recordedAt",
+              "promotionEligible"
+            ]) &&
+              capture.recordVersion === "manual-expected-gh-capture.v1" &&
+              capture.promotionEligible === false &&
+              expectedEqual(capture.subject, subject) &&
+              exact(capture.stdout, ["raw", "complete"]) &&
+              exact(capture.stderr, ["raw", "complete"]) &&
+              capture.stdout.complete === true &&
+              capture.stderr.complete === true &&
+              capture.processProblem === null &&
+              expectedOrder([
+                p.generatedAt,
+                capture.startedAt,
+                capture.closedAt,
+                capture.recordedAt,
+                admission.recordedAt
+              ]) &&
+              Date.parse(admission.recordedAt) <= Date.now(),
+            "MANUAL_EXPECTED_SCHEMA_PROCESS_FAILED"
+          );
+          const argvBytes = await archiveRaw(capture.argv),
+            stdout = await readRecordedFile(path.join(directory, prefix + ".stdout")),
+            stderr = await readRecordedFile(path.join(directory, prefix + ".stderr"));
+          expectedRequire(
+            argvBytes.equals(encodeManualJson(expectedGhArgv(path.join(root, name), p))),
+            "MANUAL_EXPECTED_SCHEMA_PROCESS_FAILED"
+          );
+          for (const [stream, item] of [
+            ["stdout", stdout],
+            ["stderr", stderr]
+          ])
+            expectedRequire(
+              (await archiveRaw(capture[stream].raw)).equals(item.bytes),
+              "MANUAL_STORAGE_UNVERIFIED"
+            );
+          calls.push(
+            expectedGhResult({
+              subject,
+              p,
+              argvRaw: capture.argv,
+              stdout: capture.stdout.raw,
+              stderr: capture.stderr.raw,
+              startedAt: capture.startedAt,
+              processResult: {
+                stdout: stdout.bytes,
+                stderr: stderr.bytes,
+                pid: capture.pid,
+                spawned: true,
+                problem: capture.processProblem,
+                exitCode: capture.exitCode,
+                signal: capture.signal,
+                closedAt: capture.closedAt
+              }
+            })
+          );
+          captured.push({
+            capture: captureInput.bytes,
+            argv: argvBytes,
+            stdout: stdout.bytes,
+            stderr: stderr.bytes
+          });
+        }
+        const object = await readRecordedFile(
+          path.join(profile.storage.archiveRoot, "objects", expectationDigest.slice(7) + ".json")
+        );
+        expectedRequire(
+          object.bytes.equals(expectationBytes) &&
+            (await archiveRaw(rawRef(expectationBytes))).equals(expectationBytes),
+          "MANUAL_STORAGE_UNVERIFIED"
+        );
+        const recordedAt = admission.recordedAt,
+          expectedAdmission = {
+            recordVersion: "manual-expected-schema-readback.v1",
+            operationRef: fixed.operation.operationRef,
+            indexDigest: fixed.indexDigest,
+            runId: fixed.operation.runId,
+            profileDigest: fixed.operation.profileDigest,
+            attemptId: allocation.attemptId,
+            attemptAllocationDigest,
+            buildProofDigest: build.buildProofDigest,
+            proofRawDigest: build.proofRawDigest,
+            provenance,
+            sourceSchema: p.sourceSchema.raw,
+            prismaVersion: p.toolchain.prismaVersionRaw,
+            script: p.expectedScript,
+            schemaExpectation: { digest: expectationDigest, bytes: expectationBytes.length },
+            calls,
+            recordedAt,
+            promotionEligible: false
+          };
+        expectedRequire(
+          expectedEqual(admission, expectedAdmission) &&
+            expectedOrder([
+              calls[0].startedAt,
+              calls[0].closedAt,
+              calls[1].startedAt,
+              calls[1].closedAt,
+              recordedAt
+            ])
+        );
+        await recheck();
+        recorded = Object.freeze({
+          bytes: Object.freeze({
+            admission: copy(sidecar.bytes),
+            expectation: copy(expectationBytes),
+            calls: Object.freeze(
+              captured.map((item) =>
+                Object.freeze(
+                  Object.fromEntries(Object.entries(item).map(([key, bytes]) => [key, copy(bytes)]))
+                )
+              )
+            )
+          }),
+          refs: sourceValue({
+            admission: rawRef(sidecar.bytes),
+            expectation: rawRef(expectationBytes),
+            calls: captured.map((item) =>
+              Object.fromEntries(Object.entries(item).map(([key, bytes]) => [key, rawRef(bytes)]))
+            )
+          }),
+          context: sourceValue({ admission })
+        });
+        return recorded;
+      } catch (cause) {
+        if (cause.code === "ENOENT" || cause.code === "ENOTDIR")
+          fail("MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED");
+        throw cause;
+      }
+    };
+    return Object.freeze({
+      bytes: Object.freeze({
+        files: Object.freeze(
+          Object.fromEntries([...files].map(([name, item]) => [name, copy(item.bytes)]))
+        ),
+        raws: Object.freeze([...raws.values()].map(copy))
+      }),
+      refs: sourceValue({
+        files: Object.fromEntries([...files].map(([name, item]) => [name, rawRef(item.bytes)])),
+        raws: [...raws.values()].map(rawRef),
+        expectation: rawRef(expectationBytes)
+      }),
+      context: sourceValue({ provenance: p, imported, expectation }),
+      recheck,
+      readRecordedAdmission,
+      close
+    });
+  } catch (cause) {
+    await close();
+    if (cause.code === "ENOENT" || cause.code === "ENOTDIR")
+      fail("MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED");
+    throw cause;
+  }
+}
+
 export {
   sameIdentity,
   samePublicDirectory,
@@ -1643,5 +3212,14 @@ export {
   canonicalH3,
   pinPrivateInput,
   openManualH3AInputs,
-  openManualH3BInputs
+  openManualH3BInputs,
+  expectedLimit,
+  expectedRequire,
+  expectedText,
+  expectedJson,
+  expectedEqual,
+  expectedOrder,
+  expectedGhArgv,
+  expectedGhResult,
+  openManualExpectedSchemaInputs
 };

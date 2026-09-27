@@ -15,7 +15,7 @@ const pgBase = "postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6
 let fakePid = 1000;
 const result = (stdout = "", exitCode = 0) => { const time = new Date().toISOString(); return { stdout: Buffer.from(stdout), stderr: Buffer.alloc(0), exitCode, signal: null, pid: ++fakePid, preparedAt: time, spawnedAt: time, closedAt: time }; };
 
-async function fixture(t, fault) {
+export async function fixture(t, fault) {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "expected-schema-test-"));
   t.after(() => fs.rm(repoRoot, { recursive: true, force: true }));
   async function put(file, bytes) { await fs.mkdir(path.dirname(path.join(repoRoot, file)), { recursive: true }); await fs.writeFile(path.join(repoRoot, file), bytes); }

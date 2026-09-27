@@ -1,10 +1,12 @@
 import {
   canonicalJson,
   custodyEvidence,
+  encodeManualJson,
   sha256Bytes,
   sha256Canonical
 } from "../../packages/release-foundation/src/index.mjs";
 import { assertBuildIdentity } from "./verify-build-proof.mjs";
+import { produceManualExpectedSchema } from "./manual-expected-schema-producer.mjs";
 
 const REPOSITORY = "keqi119/subscription-Saas";
 const WORKFLOW = ".github/workflows/docker-images.yml";
@@ -187,4 +189,204 @@ export async function produceManualBuildCustody({
     fail("MANUAL_BUILD_CUSTODY_MATERIAL_READBACK_INVALID");
   }
   return receipt;
+}
+
+const INPUT_LIMIT = 1048576;
+const ref = (raw) => ({ digest: sha256Bytes(raw), bytes: raw.length });
+const evidenceKey = (digest) => `evidence/${digest.slice(7)}.json`;
+
+function ownedRaw(raw) {
+  if (!(raw instanceof Uint8Array) || raw.length > INPUT_LIMIT) fail("MANUAL_TRUSTED_INPUT_RAW_INVALID");
+  return Buffer.from(raw);
+}
+
+function addOwned(raws, raw) {
+  const copy = ownedRaw(raw), subject = ref(copy), existing = raws.get(subject.digest);
+  if (existing && !existing.equals(copy)) fail("MANUAL_TRUSTED_INPUT_RAW_INVALID");
+  raws.set(subject.digest, copy);
+  return subject;
+}
+
+function mergeOwned(raws, source) {
+  if (!(source instanceof Map) || source.size > 2048) fail("MANUAL_TRUSTED_INPUT_RAW_INVALID");
+  for (const [digest, raw] of source) if (addOwned(raws, raw).digest !== digest) fail("MANUAL_TRUSTED_INPUT_RAW_INVALID");
+}
+
+function atRef(raws, subject) {
+  if (!exactDataObject(subject, ["digest", "bytes"]) || !/^sha256:[0-9a-f]{64}$/u.test(subject.digest) ||
+      !Number.isSafeInteger(subject.bytes) || subject.bytes < 0 || subject.bytes > INPUT_LIMIT) fail("MANUAL_TRUSTED_INPUT_RAW_INVALID");
+  const raw = raws.get(subject.digest);
+  if (!raw || raw.length !== subject.bytes || sha256Bytes(raw) !== subject.digest) fail("MANUAL_TRUSTED_INPUT_RAW_INVALID");
+  return raw;
+}
+
+function canonicalPrivate(value) {
+  return ownedRaw(encodeManualJson(value));
+}
+
+function creationFacts(created, size, minimum) {
+  const metadata = Object.fromEntries(METADATA_KEYS.map((name) => [name, created?.[name]]));
+  try { assertMaterialMetadata(metadata, size, minimum); } catch { fail("MANUAL_TRUSTED_INPUT_METADATA_INVALID"); }
+  return metadata;
+}
+
+function compareRead(metadata, bytes, original, raw, minimum, readbackAt) {
+  try { assertMaterialMetadata(metadata, raw.length, minimum); } catch { fail("MANUAL_TRUSTED_INPUT_METADATA_INVALID"); }
+  if (METADATA_KEYS.some((name) => metadata[name] !== original[name]) ||
+      (readbackAt !== undefined && (!canonicalTimestamp(readbackAt) || Date.parse(metadata.storedAt) > Date.parse(readbackAt)))) {
+    fail("MANUAL_TRUSTED_INPUT_METADATA_INVALID");
+  }
+  if (!(bytes instanceof Uint8Array) || !Buffer.from(bytes).equals(raw) || sha256Bytes(bytes) !== sha256Bytes(raw)) {
+    fail("MANUAL_TRUSTED_INPUT_READBACK_INVALID");
+  }
+}
+
+async function createRaw(storage, raw, now, minimum) {
+  const subject = ref(raw), key = evidenceKey(subject.digest), requestedAt = clock(now);
+  const retainUntil = new Date(Math.max(requestedAt.getTime() + RETENTION_MS, minimum)).toISOString();
+  const created = await storage.createOnly({ key, bytes: Buffer.from(raw), contentDigest: subject.digest,
+    requestedAt: requestedAt.toISOString(), retainUntil });
+  if (created?.created !== true) fail("EVIDENCE_OVERWRITE_REFUSED");
+  return { key, subject, metadata: creationFacts(created, raw.length, minimum) };
+}
+
+function provenanceSubjects(provenanceRaw, raws) {
+  const { parsed } = parseBytes(provenanceRaw, "MANUAL_TRUSTED_INPUT_RAW_INVALID"), subjects = new Map();
+  function visit(value) {
+    if (!value || typeof value !== "object") return;
+    if (exactDataObject(value, ["digest", "bytes"])) {
+      const raw = atRef(raws, value);
+      if (subjects.has(value.digest)) return;
+      subjects.set(value.digest, value);
+      let parsedRaw;
+      try { parsedRaw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)); } catch { return; }
+      visit(parsedRaw); return;
+    }
+    for (const entry of Object.values(value)) visit(entry);
+  }
+  visit(parsed); subjects.set(sha256Bytes(provenanceRaw), ref(provenanceRaw));
+  return [...subjects.values()].sort((a, b) => a.digest.localeCompare(b.digest));
+}
+
+/** Same protected invocation; only successful H2 writes can be reused. No import approval. */
+export async function produceManualTrustedBuildInputs(input, { runProcess, now = input.now ?? (() => new Date()) } = {}) {
+  const storage = input.storage, created = new Map(), rawBlobs = new Map();
+  const proofVerificationRaw = ownedRaw(input.verifiedProofAttestationBytes), { parsed: proofVerification } = parseBytes(proofVerificationRaw, "MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID");
+  if (canonicalJson(proofVerification) !== canonicalJson(input.verifiedProofAttestation)) fail("MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID");
+  const capture = { ...storage, async createOnly(args) {
+    const raw = ownedRaw(args.bytes), result = await storage.createOnly({ ...args, bytes: Buffer.from(raw) });
+    if (result?.created === true) {
+      if (created.has(args.key) || args.contentDigest !== sha256Bytes(raw)) fail("MANUAL_TRUSTED_INPUT_RAW_INVALID");
+      created.set(args.key, { key: args.key, subject: ref(raw), metadata: creationFacts(result, raw.length, 0) });
+      addOwned(rawBlobs, raw);
+    }
+    return result;
+  } };
+  // Captured facts become eligible only after the complete existing H2 function returns.
+  const receipt = await produceManualBuildCustody({ ...input, storage: capture, now });
+  const expected = await produceManualExpectedSchema({ repoRoot: input.repoRoot, proofBytes: input.proofBytes,
+    materialBytes: input.materialBytes, buildIdentity: input.buildIdentity }, { runProcess, now });
+  mergeOwned(rawBlobs, expected.rawBlobs);
+  const producerRecord = addOwned(rawBlobs, expected.producerRecordBytes), subjects = provenanceSubjects(expected.producerRecordBytes, rawBlobs);
+  if (subjects.length !== expected.rawBlobs.size + (expected.rawBlobs.has(producerRecord.digest) ? 0 : 1)) fail("MANUAL_TRUSTED_INPUT_RAW_INVALID");
+  const minimum = Date.parse(receipt.retainUntil), objects = [];
+  for (const subject of subjects) {
+    const raw = atRef(rawBlobs, subject), key = evidenceKey(subject.digest);
+    let facts = created.get(key);
+    if (facts) {
+      if (facts.subject.digest !== subject.digest || facts.subject.bytes !== raw.length) fail("MANUAL_TRUSTED_INPUT_RAW_INVALID");
+    } else { facts = await createRaw(storage, raw, now, minimum); created.set(key, facts); }
+    const readback = await storage.readWithEvidence({ key, identity: "audit-reader" });
+    compareRead(readback?.metadata, readback?.bytes, facts.metadata, raw, minimum, readback?.readbackAt);
+    if (Date.parse(readback.readbackAt) > clock(now).getTime()) fail("MANUAL_TRUSTED_INPUT_METADATA_INVALID");
+    mergeOwned(rawBlobs, readback.rawBlobs);
+    const getEvidence = addOwned(rawBlobs, readback.getEvidenceBytes), headEvidence = addOwned(rawBlobs, readback.headEvidenceBytes), aclEvidence = addOwned(rawBlobs, readback.aclEvidenceBytes);
+    objects.push({ subject, storeRef: facts.metadata.storeRef, writerIdentity: storage.writerIdentity,
+      auditReaderIdentity: "audit-reader", storedAt: facts.metadata.storedAt, retainUntil: facts.metadata.retainUntil,
+      readbackAt: readback.readbackAt, getEvidence, headEvidence, aclEvidence });
+  }
+  const receiptRaw = addOwned(rawBlobs, canonicalPrivate(receipt)), materialRaw = addOwned(rawBlobs, input.materialBytes);
+  const proofVerificationRef = addOwned(rawBlobs, proofVerificationRaw);
+  const pending = { recordVersion: "manual-trusted-build-custody-pending.v1", buildIdentity: { ...input.buildIdentity },
+    receiptRaw, materialRaw, producerRecord, proofVerification: proofVerificationRef, objects, created: [...created.values()].sort((a, b) => a.key.localeCompare(b.key)),
+    raws: [...rawBlobs].map(([, raw]) => ref(raw)).sort((a, b) => a.digest.localeCompare(b.digest)) };
+  const pendingBytes = canonicalPrivate(pending);
+  return { receipt, expected, objects, rawBlobs, pendingBytes, pendingDigest: sha256Bytes(pendingBytes) };
+}
+
+/** Finite closure ends in ordinary audit-reader reads; only the last successful read publishes a locator. */
+export async function finalizeManualTrustedBuildInputs({ pendingBytes, pendingDigest, rawBlobs: suppliedRaws,
+  verifiedAttestations, buildIdentity, storage, now = () => new Date() }) {
+  const pendingRaw = ownedRaw(pendingBytes), { parsed: pending } = parseBytes(pendingRaw, "MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+  if (sha256Bytes(pendingRaw) !== pendingDigest || !canonicalPrivate(pending).equals(pendingRaw) ||
+      !exactDataObject(pending, ["recordVersion", "buildIdentity", "receiptRaw", "materialRaw", "producerRecord", "proofVerification", "objects", "created", "raws"]) ||
+      pending.recordVersion !== "manual-trusted-build-custody-pending.v1" ||
+      canonicalJson(pending.buildIdentity) !== canonicalJson(buildIdentity)) fail("MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+  const rawBlobs = new Map(); mergeOwned(rawBlobs, suppliedRaws);
+  if (!Array.isArray(pending.raws) || pending.raws.length !== rawBlobs.size) fail("MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+  for (let i = 0; i < pending.raws.length; i++) {
+    atRef(rawBlobs, pending.raws[i]);
+    if (i > 0 && pending.raws[i].digest <= pending.raws[i - 1].digest) fail("MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+  }
+  const receiptRaw = atRef(rawBlobs, pending.receiptRaw), receipt = JSON.parse(receiptRaw),
+    provenanceRaw = atRef(rawBlobs, pending.producerRecord), provenance = JSON.parse(provenanceRaw),
+    proofRaw = atRef(rawBlobs, provenance.proofRaw), proof = JSON.parse(proofRaw), material = JSON.parse(atRef(rawBlobs, pending.materialRaw));
+  assertBuildIdentity({ proof, buildMaterialObservation: material });
+  const runRef = assertJobIdentity(buildIdentity, proof, material), minimum = Date.parse(receipt.retainUntil), subjects = provenanceSubjects(provenanceRaw, rawBlobs);
+  if (!canonicalPrivate(receipt).equals(receiptRaw) || receipt.contentDigest !== sha256Bytes(proofRaw) ||
+      !canonicalTimestamp(receipt.retainUntil) || provenance.sourceSha !== buildIdentity.sourceSha || provenance.buildProofDigest !== sha256Bytes(proofRaw) ||
+      canonicalJson(provenance.ci) !== canonicalJson({ repository: buildIdentity.repository, workflowPath: buildIdentity.workflowPath,
+        sourceRef: buildIdentity.sourceRef, runId: buildIdentity.runId, runAttempt: 1, runnerClass: "github-hosted" })) fail("MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+  const proofVerification = JSON.parse(atRef(rawBlobs, pending.proofVerification));
+  if (proofAttestationRef(proofVerification, { proofDigest: sha256Bytes(proofRaw), sourceSha: buildIdentity.sourceSha, runRef,
+    earliest: Date.parse(proof.provenance.generatedAt), latest: clock(now).getTime() }) !== receipt.attestationRef) fail("MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID");
+  if (!Array.isArray(pending.objects) || !Array.isArray(pending.created) ||
+      canonicalJson(pending.objects.map((o) => o.subject)) !== canonicalJson(subjects)) fail("MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+  const created = new Map(), expectedKeys = new Set([...subjects.map((s) => evidenceKey(s.digest)), evidenceKey(pending.materialRaw.digest), `receipts/${receipt.receiptId}.json`]);
+  for (const facts of pending.created) {
+    if (!exactDataObject(facts, ["key", "subject", "metadata"]) || !exactDataObject(facts.metadata, METADATA_KEYS) || created.has(facts.key) || !expectedKeys.has(facts.key) ||
+        (facts.key !== evidenceKey(facts.subject.digest) && (facts.key !== `receipts/${receipt.receiptId}.json` || facts.subject.digest !== pending.receiptRaw.digest))) fail("MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+    creationFacts(facts.metadata, atRef(rawBlobs, facts.subject).length, minimum);
+    if (Date.parse(facts.metadata.storedAt) > clock(now).getTime()) fail("MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+    created.set(facts.key, facts);
+  }
+  if (created.size !== expectedKeys.size) fail("MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+  for (const object of pending.objects) {
+    if (!exactDataObject(object, ["subject", "storeRef", "writerIdentity", "auditReaderIdentity", "storedAt", "retainUntil", "readbackAt", "getEvidence", "headEvidence", "aclEvidence"])) fail("MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+    const facts = created.get(evidenceKey(object.subject.digest));
+    if (object.writerIdentity !== storage.writerIdentity || object.auditReaderIdentity !== "audit-reader" ||
+        ["storeRef", "storedAt", "retainUntil"].some((k) => object[k] !== facts.metadata[k]) || !canonicalTimestamp(object.readbackAt) ||
+        Date.parse(object.storedAt) > Date.parse(object.readbackAt) || Date.parse(object.readbackAt) > clock(now).getTime()) fail("MANUAL_TRUSTED_INPUT_PENDING_INVALID");
+    for (const field of ["getEvidence", "headEvidence", "aclEvidence"]) atRef(rawBlobs, object[field]);
+  }
+  if (!exactDataObject(verifiedAttestations, ["receipt", "producer", "script"])) fail("MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID");
+  const attestations = [];
+  for (const [name, subject, earliest] of [["receipt", pending.receiptRaw, receipt.uploadedAt], ["producer", pending.producerRecord, provenance.generatedAt], ["script", provenance.expectedScript, provenance.generatedAt]]) {
+    const raw = ownedRaw(verifiedAttestations[name]), { parsed } = parseBytes(raw, "MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID"),
+      bundleDigest = proofAttestationRef(parsed, { proofDigest: subject.digest, sourceSha: buildIdentity.sourceSha, runRef, earliest: Date.parse(earliest), latest: clock(now).getTime() }),
+      bundle = addOwned(rawBlobs, canonicalPrivate(parsed[0].attestation.bundle));
+    if (bundle.digest !== bundleDigest) fail("MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID");
+    attestations.push({ subject, verification: addOwned(rawBlobs, raw), bundle });
+  }
+  async function reopen(facts, raw) {
+    const metadata = await storage.readMetadata({ key: facts.key, identity: "audit-reader" }), bytes = await storage.read({ key: facts.key, identity: "audit-reader" });
+    compareRead(metadata, bytes, facts.metadata, raw, minimum);
+  }
+  // Every reused creation fact is independently re-read. Existence cannot populate this map.
+  const retained = new Map();
+  for (const facts of created.values()) { await reopen(facts, atRef(rawBlobs, facts.subject)); retained.set(facts.subject.digest, facts); }
+  for (const [digest, raw] of [...rawBlobs].sort(([a], [b]) => a.localeCompare(b))) {
+    if (retained.has(digest)) continue;
+    const facts = await createRaw(storage, raw, now, minimum); await reopen(facts, raw); retained.set(digest, facts);
+  }
+  const subjectDigests = new Set(subjects.map((s) => s.digest)), root = {
+    recordVersion: "manual-trusted-build-custody-root.v1", buildIdentity: { ...buildIdentity }, pendingDigest,
+    receiptRaw: pending.receiptRaw, materialRaw: pending.materialRaw, producerRecord: pending.producerRecord, proofVerification: pending.proofVerification,
+    objects: pending.objects, created: pending.created, attestations,
+    support: [...retained.values()].filter((f) => !subjectDigests.has(f.subject.digest)).sort((a, b) => a.subject.digest.localeCompare(b.subject.digest)),
+    recordedAt: clock(now).toISOString(), promotionEligible: false
+  };
+  const rootBytes = canonicalPrivate(root), facts = await createRaw(storage, rootBytes, now, minimum);
+  await reopen(facts, rootBytes);
+  return { rootBytes, rootDigest: facts.subject.digest, rootKey: facts.key };
 }

@@ -16,6 +16,10 @@
 
 官方 CLI 续期已成功用于新 RSA 恢复卷密文的 OSS 上传和完整 1 GiB 回读，当前没有等待续期的阻塞，详见[非商用密钥保管实测](2026-09-27-stage1-noncommercial-snapshot-key-custody.md)。仅证明同主机独立加密卷恢复及异地密文完整回读；异机解密恢复、真实 CI 独立 writer / audit-reader 身份验证仍未完成。商用 KMS 不在实施范围内。
 
+13:49 UTC 接续补齐 H1 专用原生转发配置，使用两个固定回环端口、非 root 转发账号及仅 root 可连接的精确防火墙规则；一次临时维护 key 的 Docker 只读实测通过，额外端口、会话和非 root 访问被拒绝。独立 SSH 确认临时 key/连接/目录清除、授权文件为空，原 root 访问正常。首次候选配置因 OpenSSH 8.0p1 不支持一项 Match 指令失败，正式配置尚未写入；保留原件后完成有限接续。详见[通道配置与实际边界](2026-09-27-stage1-r3-remote-engine-feasibility.md#1349-utc-接续h1-原生通道配置与有限实测)。此项不等于 hosted 加密目标或真实消费完成，防火墙重启后须重新核验。
+
+本轮 R2 第一次修复验证实际 0 pass / 1 fail：原 apply 已唯一记录 UNKNOWN，两个 child 自然 exit 0；失败来自新增测试未同步 Node builtin named exports，导致落盘后的故障注入未被调用。只补一行测试同步，生产源码保持不变，唯一同组重验尚在运行；未重跑正常链或启动 replay-loss。本轮 Prisma validate exit 0，migrate status 仍因 `datasource.url` 缺失 exit 1，未连接数据库或修改业务代码。
+
 阶段 1 后续先完成 R2 异常恢复、结果核验入口和必要用例，并接通合法快照消费及固定远端执行；再对冻结候选执行受保护构建 / H2，完成依赖这些可信输入的 R2 真实数据库验收与 R3 fresh / snapshot 双链；按发布链对齐两条迁移并恢复 API / Web；最后执行 R4 A/B 主线、签约支付回调、激活、到期收口和维护恢复的真实验收与签收。后文较早断点中的“仍等待登录”“H3-B 未接通”等描述仅为历史事实，不能作为当前状态。
 
 ## 07:00 UTC 后续：同 ref 历史交接与 H3 原件合同

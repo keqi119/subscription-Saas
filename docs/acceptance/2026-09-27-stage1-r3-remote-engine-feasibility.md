@@ -2,6 +2,22 @@
 
 日期：2026-09-27。性质：只读源码与上游文档核查；未建立隧道、修改主机配置、运行远端容器或采纳新的授权契约。
 
+## 13:49 UTC 接续：H1 原生通道配置与有限实测
+
+下文保留早期只读核查。后续实际核实 H1 为 OpenSSH 8.0p1、Docker CLI/Engine 26.1.3，选择固定 **remote TCP → hosted Docker Unix socket**。原 reverse Unix listener 方案不采纳：8.0p1 的 streamlocal listener 没有路径 ACL，单独设置目标目录权限不能约束 `/tmp` 等可写路径；session chroot 也不能替代该限制。原生 `-R 127.0.0.1:55440:/var/run/docker.sock` 已由维护实测验证，无新增 relay、密钥服务或 diagnostic workflow。[OpenSSH 8.0p1 channels.c](https://raw.githubusercontent.com/openssh/openssh-portable/V_8_0_P1/channels.c)、[ssh.1](https://raw.githubusercontent.com/openssh/openssh-portable/V_8_0_P1/ssh.1)。
+
+指定主机新增专用 `stage1-r3-forward`，实际 UID 994 / GID 990，只有其自身组。有效 SSH 配置逐项核对为 publickey-only、仅 remote TCP、只允许 `127.0.0.1:55440` 和 `127.0.0.1:55441`，禁用 streamlocal、local forward、shell/subsystem、agent/X11/TTY/tunnel/user rc；root-owned `/etc/ssh/stage1-r3-forward/authorized_keys` 当前为空。OUTPUT 首条精确拒绝非 UID 0 连接两个端口，INPUT 首条拒绝非回环接口向这两个回环端口送入流量。此边界信任 H1 root，不宣称只允许一个 root 进程；`PermitListen` 也不证明客户端 backend 正确，实际 hosted 来源及 Engine 身份仍须核验。
+
+配置接续实际 exit 0，`13:48:32.408772Z` 完成 reload，没有 restart；修改前后 root 与无关账号的完整有效 SSH 配置相同。原 `/etc/ssh/sshd_config` SHA256 为 `2bdfeeeb3975231e03a8d146690899ccb90efb95ade5cdee333a5c12dec2be9d`，修改后为 `01b68980e6a0d04caeac6bec361b172e5f195beb087edc3bf4b3fb8078d12730`。首次候选语法检查真实 exit 1：该版本不允许在 Match 内设置 `ChallengeResponseAuthentication`；当时尚未创建账号、安装规则或修改正式配置。失败源/候选/备份保留，接续只删除该不支持的 Match 行，继续核验既有全局值为 no 及本账号 publickey-only。
+
+一次维护实测于 `13:48:54.833397Z` 实际 exit 0：只在 `/run` tmpfs 生成临时 SSH 维护密钥，经同机反向转发读取现有 Docker Engine ID，与直接读取一致；非 root 连接被拒绝，额外端口和会话请求均被拒绝。未启动/停止容器、访问业务数据库、读取发布/RSA 私钥或进行快照恢复。临时 key、授权与连接已移除；另一条独立 SSH 于 `13:49:41.877985Z` 确认 keys 为空、维护目录和监听不存在、转发 UID 无进程、两条精确防火墙规则仍居首位，root 重连成功。
+
+原件位于本候选 R3 hidden workspace：`h1-r3-forward-configure-result-20260927-{01,02}.json`、`h1-r3-forward-smoke-result-20260927-01.json`、`h1-r3-forward-independent-readback-20260927-01.json`；接续配置脚本 SHA256 `d80cc0189e19020618ae34ecd9ef1086af49d4fcab2434f60cad8bf8f2903df7`，smoke 脚本 `c0210a839776f7335cec988ef12611ce3487ad84757247c7f61ecfdb6b2d4a59`。这些 create-only 运维脚本已经执行，不能重新运行初始化。
+
+**本次只关闭 H1 原生转发可用性。** 防火墙规则尚不跨重启持久化，每次真实消费前仍须独立验证其存在和顺序。真实 hosted job、加密 Engine、双端 PG、同 job attestation、scope/session/RSA 释放及 R3 双链仍未完成，当前没有长期转发连接或已获准的 hosted key。后续仅复用现有 source/final job；hosted 加密方向固定 classic overlay2，拒绝 containerd image store 或任何落在加密边界外的持久载荷。Docker `data-root` 本身不能证明 containerd 存储也已迁移，须实际读回 driver、RootDir 和 backing mount。[Docker daemon 存储配置](https://docs.docker.com/engine/daemon/)。
+
+## 原始只读核查
+
 结论：可以优先细化“原 H1 父进程控制远端 Engine”的较小方案，避免仅因容器位于 hosted VM 就新增 manual delegation 签名与另一套帧协议。现代码尚不支持该方案；R3 的主机执行停止点仍未闭合。
 
 ## 可以保留的边界

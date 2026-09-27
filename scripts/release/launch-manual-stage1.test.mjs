@@ -793,8 +793,8 @@ function noAuthority(f) {
   assert.equal(f.counters.externalCalls, 0);
 }
 
-async function zeroCredentialFixture(t, mode = "split", expectedSource = false) {
-  const f = await targetObserveFixture(t, expectedSource);
+async function zeroCredentialFixture(t, mode = "split", expectedSource = false, nativeH3 = true) {
+  const f = await targetObserveFixture(t, expectedSource, nativeH3);
   f.runner = { mode, children: [], diagnostics: [] };
   if (mode === "command") f.pg.serverVersion = "17.11";
   await launcher.connectAndObserveManualTarget({
@@ -854,13 +854,18 @@ async function zeroCredentialFixture(t, mode = "split", expectedSource = false) 
     );
     assert.equal(
       allocation?.phaseKey,
-      launches.length === 1 && mode === "command" ? "apply" : "dry-run"
+      f.runner.phaseSchedule?.[launches.length] ??
+        (launches.length === 1 && mode === "command" ? "apply" : "dry-run")
     );
     assert.ok(
       readOpens.get(f.objectPath(allocation)) >= 4,
       "allocation must be independently reopened before spawn"
     );
-    assert.equal(allocation.operationId, JSON.parse(indexBytes).operations.migrate.operationId);
+    assert.equal(
+      allocation.operationId,
+      JSON.parse(indexBytes).operations[allocation.phaseKey === "verify" ? "verify" : "migrate"]
+        .operationId
+    );
     assert.equal(options.env.DOCKER_HOST, "unix:///var/run/docker.sock");
     assert.deepEqual(fsSync.readdirSync(options.env.DOCKER_CONFIG), []);
     assert.equal(process.umask(), 0o077);
@@ -2546,7 +2551,166 @@ test("launch detects fixed H3 approval changed at independent reopen", async (t)
   noAuthority(f);
 });
 
-async function h3InputFixture(t, endpoint, expectedSource = false) {
+// This is an offline operator fixture, not evidence of PostgreSQL execution.
+// Its source SQL is intentionally separate from the launcher's private reader.
+function syntheticH3Sql(queryId, context) {
+  const quote = (value) => "'" + value.replaceAll("'", "''") + "'";
+  const acl = (column) =>
+    `CASE WHEN ${column} IS NULL THEN NULL ELSE (SELECT coalesce(jsonb_agg(jsonb_build_array(a.grantor::text,a.grantee::text,a.privilege_type,a.is_grantable) ORDER BY a.grantor,a.grantee,a.privilege_type), '[]'::jsonb) FROM aclexplode(${column}) a) END`;
+  const roles =
+    "(SELECT coalesce(jsonb_agg(jsonb_build_array(oid::text,rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls,rolinherit) ORDER BY oid),'[]'::jsonb) FROM pg_roles)";
+  const memberships =
+    "(SELECT coalesce(jsonb_agg(jsonb_build_array(roleid::text,member::text,grantor::text,admin_option,inherit_option,set_option) ORDER BY roleid,member,grantor),'[]'::jsonb) FROM pg_auth_members)";
+  const table =
+    "(SELECT jsonb_build_object('oid',c.oid::text,'schema',n.nspname,'name',c.relname,'owner',jsonb_build_object('name',r.rolname,'oid',r.oid::text)) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='public' AND c.relname='_prisma_migrations' AND c.relkind='r')";
+  const userSchemas = "n.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' AND n.nspname<>'information_schema'";
+  const privileges = (values, call, option = false) =>
+    `(SELECT coalesce(jsonb_agg(p ORDER BY ord),'[]'::jsonb) FROM unnest(ARRAY[${values.map(quote).join(",")}]) WITH ORDINALITY AS p(p,ord) WHERE ${call.replaceAll("$P", option ? "p || ' WITH GRANT OPTION'" : "p")})`;
+  const effective = (values, call) =>
+    privileges(values, call) + "," + privileges(values, call, true);
+  const tablePrivileges = [
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+    "MAINTAIN"
+  ];
+  const sequencePrivileges = ["USAGE", "SELECT", "UPDATE"];
+  const data = {
+    roles: `jsonb_build_object('roles',${roles},'memberships',${memberships},'migrationTable',${table})`,
+    sessions:
+      "jsonb_build_object('sessions',(SELECT coalesce(jsonb_agg(jsonb_build_array(pid,datid::text,usesysid::text,usename) ORDER BY pid),'[]'::jsonb) FROM pg_stat_activity))",
+    migrations: `jsonb_build_object('table',${table},'rows',(SELECT coalesce(jsonb_agg(jsonb_build_array(id,migration_name,checksum,to_char(started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),CASE WHEN finished_at IS NULL THEN NULL ELSE to_char(finished_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') END,CASE WHEN rolled_back_at IS NULL THEN NULL ELSE to_char(rolled_back_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') END,applied_steps_count) ORDER BY started_at,migration_name,id),'[]'::jsonb) FROM public._prisma_migrations))`,
+    privileges: `jsonb_build_object('roles',${roles},'memberships',${memberships},'database',(SELECT jsonb_build_array(d.oid::text,d.datname,d.datdba::text,${acl("d.datacl")},${effective(["CONNECT", "CREATE", "TEMPORARY"], "has_database_privilege(current_user,d.oid,$P)")}) FROM pg_database d WHERE d.datname=current_database()),'schemas',(SELECT coalesce(jsonb_agg(jsonb_build_array(n.oid::text,n.nspname,n.nspowner::text,${acl("n.nspacl")},${effective(["USAGE", "CREATE"], "has_schema_privilege(current_user,n.oid,$P)")}) ORDER BY n.oid),'[]'::jsonb) FROM pg_namespace n WHERE ${userSchemas}),'relations',(SELECT coalesce(jsonb_agg(jsonb_build_array(c.oid::text,c.relnamespace::text,c.relname,c.relkind,c.relowner::text,${acl("c.relacl")},CASE WHEN c.relkind='S' THEN ${privileges(sequencePrivileges, "has_sequence_privilege(current_user,c.oid,$P)")} WHEN c.relkind IN ('r','p','v','m','f') THEN ${privileges(tablePrivileges, "has_table_privilege(current_user,c.oid,$P)")} ELSE '[]'::jsonb END,CASE WHEN c.relkind='S' THEN ${privileges(sequencePrivileges, "has_sequence_privilege(current_user,c.oid,$P)", true)} WHEN c.relkind IN ('r','p','v','m','f') THEN ${privileges(tablePrivileges, "has_table_privilege(current_user,c.oid,$P)", true)} ELSE '[]'::jsonb END) ORDER BY c.oid),'[]'::jsonb) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE ${userSchemas}),'columns',(SELECT coalesce(jsonb_agg(jsonb_build_array(a.attrelid::text,a.attnum,a.attname,${acl("a.attacl")},CASE WHEN c.relkind IN ('r','p','v','m','f') THEN ${privileges(["SELECT", "INSERT", "UPDATE", "REFERENCES"], "has_column_privilege(current_user,c.oid,a.attnum,$P)")} ELSE '[]'::jsonb END,CASE WHEN c.relkind IN ('r','p','v','m','f') THEN ${privileges(["SELECT", "INSERT", "UPDATE", "REFERENCES"], "has_column_privilege(current_user,c.oid,a.attnum,$P)", true)} ELSE '[]'::jsonb END) ORDER BY a.attrelid,a.attnum),'[]'::jsonb) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE ${userSchemas} AND a.attnum>0 AND NOT a.attisdropped),'controlFunction',(SELECT jsonb_build_array(p.oid::text,'pg_catalog.pg_control_system()',p.proowner::text,${acl("p.proacl")},has_function_privilege(current_user,p.oid,'EXECUTE'),has_function_privilege(current_user,p.oid,'EXECUTE WITH GRANT OPTION')) FROM pg_proc p WHERE p.oid='pg_catalog.pg_control_system()'::regprocedure),'defaultAcls',(SELECT coalesce(jsonb_agg(jsonb_build_array(d.defaclrole::text,d.defaclnamespace::text,d.defaclobjtype,${acl("d.defaclacl")}) ORDER BY d.defaclrole,d.defaclnamespace,d.defaclobjtype),'[]'::jsonb) FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace WHERE d.defaclnamespace=0 OR ${userSchemas}))`
+  };
+  const identity =
+    "jsonb_build_object('systemIdentifier',(SELECT system_identifier::text FROM pg_control_system()),'serverAddress',inet_server_addr()::text,'serverPort',inet_server_port(),'databaseName',current_database(),'databaseOid',(SELECT oid::text FROM pg_database WHERE datname=current_database()),'sessionUser',session_user,'currentUser',current_user,'roleOid',(SELECT oid::text FROM pg_roles WHERE rolname=current_user),'tls',coalesce((SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()),false))";
+  if (data[queryId])
+    return `BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog;\nSELECT jsonb_build_object('observedAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),'identity',${identity},'data',${data[queryId]});\nCOMMIT;\n`;
+  const expected = { ...context.readback.cluster };
+  const role = context.readback.roles.provision;
+  const actualIdentity = {
+    systemIdentifier: expected.systemIdentifier,
+    serverAddress: expected.serverAddress,
+    serverPort: expected.serverPort,
+    databaseName: context.fixed.operation.targetIntent.databaseName,
+    databaseOid: context.readback.databaseOid,
+    sessionUser: role.name,
+    currentUser: role.name,
+    roleOid: role.oid,
+    tls: true
+  };
+  const roleIdentifier = (value) => '"' + value.replaceAll('"', '""') + '"';
+  const checkTable = `IF ${table} IS DISTINCT FROM ${quote(encodeManualJson(context.table).toString("utf8"))}::jsonb THEN RAISE EXCEPTION 'H3_TABLE_MISMATCH'; END IF;`;
+  const revokeMembers = context.provisionMemberships ?? [];
+  const revocations = revokeMembers
+    .map(
+      (member) =>
+        `REVOKE ${roleIdentifier(member.name)} FROM ${roleIdentifier(role.name)} RESTRICT;`
+    )
+    .join("\n");
+  const membershipCheck = `DO $h3$ BEGIN IF (SELECT coalesce(jsonb_agg(roleid::text ORDER BY roleid),'[]'::jsonb) FROM pg_auth_members WHERE member=${role.oid}::oid) IS DISTINCT FROM ${quote(JSON.stringify(revokeMembers.map((member) => member.oid)))}::jsonb THEN RAISE EXCEPTION 'H3_MEMBERSHIP_MISMATCH'; END IF; END $h3$;`;
+  const action =
+    queryId === "grant"
+      ? `GRANT SELECT ON TABLE public._prisma_migrations TO ${roleIdentifier(context.readback.roles.verify.name)}, ${roleIdentifier(context.readback.roles.observer.name)};`
+      : `${membershipCheck}\n${revocations}\nALTER ROLE ${roleIdentifier(role.name)} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;`;
+  return `BEGIN;\nSET LOCAL search_path = pg_catalog;\nDO $h3$ BEGIN IF ${identity} IS DISTINCT FROM ${quote(JSON.stringify(actualIdentity))}::jsonb THEN RAISE EXCEPTION 'H3_IDENTITY_MISMATCH'; END IF; ${checkTable} END $h3$;\n${action}\nCOMMIT;\n`;
+}
+function syntheticH3Roles(f, revoked = false) {
+  return Object.entries(f.readback.roles).map(([kind, role]) => [
+    role.oid,
+    role.name,
+    !revoked || kind !== "provision",
+    kind === "provision" && !revoked,
+    false,
+    false,
+    false,
+    false,
+    true
+  ]);
+}
+async function syntheticH3Raw(f, bytes) {
+  const root = path.join(f.profile.storage.archiveRoot, "raw");
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  const ref = { digest: sha256Bytes(bytes), bytes: bytes.length };
+  await fs.writeFile(path.join(root, ref.digest.slice(7) + ".bin"), bytes, { mode: 0o600 });
+  return ref;
+}
+async function syntheticH3Capture(f, queryId, kind, at, data, parentPid = 9900) {
+  const role = f.readback.roles[kind],
+    sqlBytes = Buffer.from(syntheticH3Sql(queryId, f));
+  const argv = {
+    command: "psql",
+    args: [
+      "-X",
+      "--no-password",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-A",
+      "-t",
+      "-q",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "25432",
+      "--dbname",
+      "synthetic-db",
+      "--username",
+      role.name,
+      "--command",
+      sqlBytes.toString("utf8")
+    ]
+  };
+  const stdout =
+    data === null
+      ? Buffer.alloc(0)
+      : Buffer.from(
+          JSON.stringify({
+            observedAt: at,
+            identity: {
+              systemIdentifier: f.readback.cluster.systemIdentifier,
+              serverAddress: f.readback.cluster.serverAddress,
+              serverPort: 5432,
+              databaseName: "synthetic-db",
+              databaseOid: "123",
+              sessionUser: role.name,
+              currentUser: role.name,
+              roleOid: role.oid,
+              tls: true
+            },
+            data
+          }) + "\n"
+        );
+  const value = {
+    recordVersion: "manual-h3-sql-capture.v1",
+    queryId,
+    operationRef: f.prepared.operationRef,
+    indexDigest: f.prepared.indexDigest,
+    runId: f.fixed.operation.runId,
+    profileDigest: sha256Canonical(f.profile),
+    connection: { endpoint: f.readback.endpoint, databaseName: "synthetic-db", role },
+    sql: await syntheticH3Raw(f, sqlBytes),
+    argv: await syntheticH3Raw(f, encodeManualJson(argv)),
+    stdout: await syntheticH3Raw(f, stdout),
+    stderr: await syntheticH3Raw(f, Buffer.alloc(0)),
+    preparedAt: at,
+    spawnedAt: at,
+    closedAt: at,
+    recordedAt: at,
+    pid: 9901,
+    parentPid,
+    exitCode: 0,
+    signal: null,
+    stdoutEnded: true,
+    stderrEnded: true
+  };
+  return syntheticH3Raw(f, encodeManualJson(value));
+}
+
+async function h3InputFixture(t, endpoint, expectedSource = false, nativeH3 = true) {
   const f = await launchInputFixture(t, endpoint, expectedSource);
   const fixed = await readFixedManualOperation({
     repoRoot: productionRoot,
@@ -2597,7 +2761,35 @@ async function h3InputFixture(t, endpoint, expectedSource = false) {
     readbackAt: "2026-09-01T00:00:02.000Z",
     readbackReport: "Synthetic nonsecret source readback; not real Docker or SQL evidence."
   };
-  return { ...f, approval, readback };
+  if (nativeH3) {
+    approval.recordVersion = "manual-h3-a-approval.v2";
+    approval.creationSpec.roles = {
+      provision: "provision",
+      migrate: "migrate",
+      verify: "verify",
+      observer: "observer"
+    };
+    readback.recordVersion = "manual-h3-a-readback.v2";
+    readback.roles = Object.fromEntries(
+      Object.entries(approval.creationSpec.roles).map(([kind, name], index) => [
+        kind,
+        { name, oid: String(1000 + index) }
+      ])
+    );
+    const context = { ...f, approval, readback, fixed };
+    readback.roleReadback = await syntheticH3Capture(
+      context,
+      "roles",
+      "observer",
+      "2026-09-01T00:00:01.000Z",
+      {
+        roles: syntheticH3Roles(context),
+        memberships: [],
+        migrationTable: null
+      }
+    );
+  }
+  return { ...f, approval, readback, fixed, nativeH3 };
 }
 
 async function writeH3(f, { bindApproval = true } = {}) {
@@ -2612,8 +2804,8 @@ async function writeH3(f, { bindApproval = true } = {}) {
     await fs.writeFile(path.join(f.operationRoot, name), encodeManualJson(value), { mode: 0o600 });
 }
 
-async function h3ResourceFixture(t, expectedSource = false) {
-  const f = await h3InputFixture(t, "127.0.0.1:25432", expectedSource);
+async function h3ResourceFixture(t, expectedSource = false, nativeH3 = true) {
+  const f = await h3InputFixture(t, "127.0.0.1:25432", expectedSource, nativeH3);
   await writeH3(f);
   f.docker.outputs = {
     container: {
@@ -2671,13 +2863,13 @@ async function h3ResourceFixture(t, expectedSource = false) {
   return f;
 }
 
-async function targetObserveFixture(t, expectedSource = false) {
-  const f = await h3ResourceFixture(t, expectedSource);
+async function targetObserveFixture(t, expectedSource = false, nativeH3 = true) {
+  const f = await h3ResourceFixture(t, expectedSource, nativeH3);
   for (const role of ["journal", "archive", "backup"])
     await fs.mkdir(path.join(f.profile.storage[`${role}Root`], "objects"), { mode: 0o700 });
   for (const name of ["locks", "consumptions", "revocations", "checkpoints"])
     await fs.mkdir(path.join(f.profile.storage.journalRoot, name), { mode: 0o700 });
-  await fs.mkdir(path.join(f.profile.storage.archiveRoot, "raw"), { mode: 0o700 });
+  await fs.mkdir(path.join(f.profile.storage.archiveRoot, "raw"), { recursive: true, mode: 0o700 });
   await fs.writeFile(
     path.join(f.profile.storage.keyRoot, "owner.key"),
     f.keys.privateKey.export({ type: "pkcs8", format: "pem" }),
@@ -2759,9 +2951,16 @@ async function targetObserveFixture(t, expectedSource = false) {
             }
           ];
         if (statement.includes("to_regclass")) return [{ oid: null }];
-        if (statement.includes("AS owner FROM pg_namespace")) return [{ owner: "provision" }];
+        if (statement.includes("AS owner FROM pg_namespace"))
+          return [{ owner: f.nativeH3 ? "migrate" : "provision" }];
         if (statement.includes("UNION ALL"))
-          return [{ objectClass: "schema", objectName: "public", owner: "provision" }];
+          return [
+            {
+              objectClass: "schema",
+              objectName: "public",
+              owner: f.nativeH3 ? "migrate" : "provision"
+            }
+          ];
         if (statement.includes("pg_extension")) return [{ name: "plpgsql" }];
         if (statement === "SHOW server_version")
           return [{ server_version: pg.serverVersion ?? "17.0" }];
@@ -4538,7 +4737,8 @@ function commandChildSource(f, cid, id) {
     stateFile: path.join(f.root, "command-pg-state.json"),
     entrypoint: new URL("../../apps/release-runner/src/manual-entrypoint.mjs", import.meta.url)
       .href,
-    checksum: sha256Bytes(Buffer.from("CREATE TABLE example(id integer PRIMARY KEY);\n")).slice(7)
+    checksum: sha256Bytes(Buffer.from("CREATE TABLE example(id integer PRIMARY KEY);\n")).slice(7),
+    owner: f.nativeH3 ? "migrate" : "provision"
   };
   return (
     "const f=" +
@@ -4548,24 +4748,24 @@ function commandChildSource(f, cid, id) {
     import fs from 'node:fs/promises'; import syncfs from 'node:fs'; import cp from 'node:child_process';
     import {registerHooks,syncBuiltinESMExports} from 'node:module';
     syncfs.writeFileSync(f.cid,f.id);
-    const effects={connections:0,spawns:0,queries:0,target:null};
+    const effects={connections:0,spawns:0,queries:0,target:null}; let actualRole;
     const deployed=()=>syncfs.existsSync(f.stateFile)?JSON.parse(syncfs.readFileSync(f.stateFile)):null;
     const client={async unsafe(sql){effects.queries++;
       if(sql.includes('pg_control_system'))return [{systemIdentifier:f.cluster.systemIdentifier}];
-      if(sql.includes('pg_stat_ssl'))return [{databaseName:'synthetic-db',databaseOid:f.runner.wrongIdentity?'999':'123',role:'migrate',tls:true,serverAddress:f.cluster.serverAddress,serverPort:f.cluster.serverPort,schemas:['public'],extensions:['plpgsql']}];
+      if(sql.includes('pg_stat_ssl'))return [{databaseName:'synthetic-db',databaseOid:f.runner.wrongIdentity?'999':'123',role:actualRole,tls:true,serverAddress:f.cluster.serverAddress,serverPort:f.cluster.serverPort,schemas:['public'],extensions:['plpgsql']}];
       if(sql.startsWith('SET TRANSACTION')||sql.includes('pg_advisory_xact_lock'))return [];
       if(sql==='SHOW transaction_isolation')return [{transaction_isolation:'repeatable read'}];
       if(sql==='SHOW transaction_read_only')return [{transaction_read_only:'on'}];
       if(sql.includes('to_regclass'))return [{name:deployed()?'public._prisma_migrations':null,oid:deployed()?'234':null}];
       if(sql.includes('SELECT migration_name'))return deployed()?[{name:'20260101000000_initial',checksum:f.checksum}]:[];
       if(sql.includes('SELECT id::text')){const at=deployed().at;return [{id:'offline-migration',migrationName:'20260101000000_initial',checksum:f.checksum,startedAt:at,finishedAt:at,rolledBackAt:null,appliedStepsCount:1}]};
-      if(sql.includes('UNION ALL'))return [...(deployed()?[{objectClass:'relation',objectName:'_prisma_migrations',owner:'provision'}]:[]),{objectClass:'schema',objectName:'public',owner:'provision'}];
-      if(sql.includes('pg_namespace'))return [{owner:'provision'}];
+      if(sql.includes('UNION ALL'))return [...(deployed()?[{objectClass:'relation',objectName:'_prisma_migrations',owner:f.owner}]:[]),{objectClass:'schema',objectName:'public',owner:f.owner}];
+      if(sql.includes('pg_namespace'))return [{owner:f.owner}];
       if(sql.includes('pg_extension'))return [{name:'plpgsql'}];
       if(sql==='SHOW server_version')return [{server_version:'17.11'}];
       throw Object.assign(new Error('unexpected offline SQL'),{code:'OFFLINE_SQL_UNEXPECTED'});
     },async begin(...args){return args.at(-1)(client)},async end(){}};
-    globalThis.offlinePostgres=options=>{effects.connections++;effects.target={host:options.host,port:options.port,database:options.database,ssl:options.ssl};return client};
+    globalThis.offlinePostgres=options=>{effects.connections++;actualRole=options.username;effects.target={host:options.host,port:options.port,database:options.database,ssl:options.ssl};return client};
     registerHooks({resolve(specifier,context,next){if(specifier==='postgres')return {url:'data:text/javascript,export default globalThis.offlinePostgres',shortCircuit:true};return next(specifier,context)}});
     const mapped=file=>file===f.profileFile?f.repoRoot+'/release/contracts/manual-stage1-profile.v2.json':String(file).startsWith('/app/apps/api/')?f.repoRoot+String(file).slice(4):file;
     for(const name of ['open','lstat','readFile','readdir']){const native=fs[name].bind(fs);fs[name]=(file,...args)=>native(mapped(file),...args)};
@@ -4743,6 +4943,489 @@ async function preserveCommandFixture(f, label, boundaryCounters = null) {
       { flag: "wx", mode: 0o600 }
     );
 }
+
+async function syntheticH3B(f, first) {
+  const records = await f.records(),
+    byDigest = new Map(records.map((value) => [sha256Canonical(value), value]));
+  const request = byDigest.get(first.apply.requestDigest),
+    execution = byDigest.get(first.apply.executionRecordDigest),
+    process = byDigest.get(first.apply.processEvidenceDigest);
+  const at = new Date().toISOString(),
+    roles = f.readback.roles;
+  f.table = { oid: "234", schema: "public", name: "_prisma_migrations", owner: roles.migrate };
+  const common = {
+    operationRef: f.prepared.operationRef,
+    indexDigest: f.prepared.indexDigest,
+    runId: f.fixed.operation.runId,
+    profileDigest: sha256Canonical(f.profile),
+    targetIntent: f.fixed.operation.targetIntent,
+    ownerId: f.profile.ownerId,
+    promotionEligible: false
+  };
+  const migration = {
+    operationId: request.operationId,
+    idempotencyKey: request.idempotencyKey,
+    attemptId: request.attemptId,
+    allocationDigest: request.attemptAllocationDigest,
+    requestDigest: first.apply.requestDigest,
+    approvedPlanDigest: request.approvedPlanDigest,
+    processEvidenceDigest: first.apply.processEvidenceDigest,
+    resultDigest: execution.resultDigest,
+    executionRecordDigest: first.apply.executionRecordDigest
+  };
+  const processRef = await syntheticH3Raw(f, encodeManualJson(process));
+  const rolesCapture = await syntheticH3Capture(f, "roles", "observer", at, {
+    roles: syntheticH3Roles(f),
+    memberships: [],
+    migrationTable: f.table
+  });
+  const sessions = { sessions: [[9901, "123", roles.observer.oid, roles.observer.name]] };
+  const sessionsCapture = await syntheticH3Capture(f, "sessions", "observer", at, sessions);
+  const beforeRoles = [],
+    afterRoles = [],
+    beforeRefs = {},
+    afterRefs = {};
+  const state = JSON.parse(await fs.readFile(path.join(f.root, "command-pg-state.json")));
+  const rows = [
+    [
+      "offline-migration",
+      "20260101000000_initial",
+      sha256Bytes(Buffer.from("CREATE TABLE example(id integer PRIMARY KEY);\n")).slice(7),
+      state.at,
+      state.at,
+      null,
+      1
+    ]
+  ];
+  for (const kind of ["verify", "observer"]) {
+    for (const after of [false, true]) {
+      const tableAcl = after
+        ? [
+            [roles.migrate.oid, roles.verify.oid, "SELECT", false],
+            [roles.migrate.oid, roles.observer.oid, "SELECT", false]
+          ]
+        : null;
+      const data = {
+        roles: syntheticH3Roles(f),
+        memberships: [],
+        database: ["123", "synthetic-db", roles.migrate.oid, null, ["CONNECT"], []],
+        schemas: [["2200", "public", roles.migrate.oid, null, ["USAGE"], []]],
+        relations: [
+          [
+            "234",
+            "2200",
+            "_prisma_migrations",
+            "r",
+            roles.migrate.oid,
+            tableAcl,
+            after ? ["SELECT"] : [],
+            []
+          ],
+          ["345", "2200", "example", "r", roles.migrate.oid, null, [], []]
+        ],
+        columns: [
+          ["234", 1, "id", null, after ? ["SELECT"] : [], []],
+          ["345", 1, "id", null, [], []]
+        ],
+        controlFunction: [
+          "100",
+          "pg_catalog.pg_control_system()",
+          roles.migrate.oid,
+          null,
+          true,
+          false
+        ],
+        defaultAcls: []
+      };
+      const ref = await syntheticH3Capture(f, "privileges", kind, at, data),
+        capture = JSON.parse(
+          await fs.readFile(
+            path.join(f.profile.storage.archiveRoot, "raw", ref.digest.slice(7) + ".bin")
+          )
+        );
+      (after ? afterRefs : beforeRefs)[kind] = ref;
+      const selectReadback = after
+        ? await syntheticH3Capture(f, "migrations", kind, at, { table: f.table, rows })
+        : null;
+      (after ? afterRoles : beforeRoles).push({
+        kind,
+        identity: roles[kind],
+        tls: true,
+        superuser: false,
+        createdb: false,
+        createrole: false,
+        replication: false,
+        bypassrls: false,
+        memberships: [],
+        ownedSchemas: [],
+        ownedRelations: [],
+        databasePrivileges: { connect: true, create: false, temporary: false },
+        publicSchemaPrivileges: { usage: true, create: false },
+        migrationTablePrivileges: {
+          select: after,
+          insert: false,
+          update: false,
+          delete: false,
+          truncate: false,
+          references: false,
+          trigger: false,
+          maintain: false,
+          grantOptions: [],
+          columnPrivileges: []
+        },
+        pgControlSystem: {
+          functionOid: "100",
+          signature: "pg_catalog.pg_control_system()",
+          execute: true
+        },
+        otherUserRelationPrivileges: [],
+        privilegeInventory: capture.stdout,
+        selectReadback
+      });
+    }
+  }
+  const grant = await syntheticH3Capture(f, "grant", "provision", at, null),
+    revoke = await syntheticH3Capture(f, "revoke", "provision", at, null);
+  const adminProcess = { pid: 9900, startedAt: at, closedAt: at, exitCode: 0, signal: null };
+  const stat = await fs.lstat(path.join(f.credentialDirectory, "provision.json"), { bigint: true });
+  const credentialStateReadback = await syntheticH3Raw(
+    f,
+    encodeManualJson({
+      observedAt: at,
+      operationRef: f.prepared.operationRef,
+      state: "SEALED_RETAINED",
+      stat: Object.fromEntries(
+        ["uid", "gid", "mode", "nlink", "dev", "ino"].map((key) => [key, String(stat[key])])
+      )
+    })
+  );
+  const approval = {
+    recordVersion: "manual-h3-b-approval.v1",
+    ...common,
+    h3AApproval: await syntheticH3Raw(f, encodeManualJson(f.approval)),
+    h3AReadback: await syntheticH3Raw(f, encodeManualJson(f.readback)),
+    approvedAt: at,
+    expiresAt: new Date(Date.parse(at) + 3600000).toISOString(),
+    branch: "normal-success",
+    migration,
+    preApprovalEvidence: await syntheticH3Raw(
+      f,
+      encodeManualJson({
+        roles: rolesCapture,
+        table: rolesCapture,
+        writerProcess: processRef,
+        writerSessions: sessionsCapture
+      })
+    ),
+    investigationApprovalRef: null,
+    target: { cluster: f.readback.cluster, databaseName: "synthetic-db", databaseOid: "123" },
+    migrationTable: f.table,
+    roles,
+    grant: { privileges: ["SELECT"], grantees: ["verify", "observer"], grantOption: false },
+    operationSheet: "Offline native capture fixture; not real approval or PostgreSQL execution."
+  };
+  const readback = {
+    recordVersion: "manual-h3-b-readback.v1",
+    ...common,
+    approval: await syntheticH3Raw(f, encodeManualJson(approval)),
+    migration,
+    target: approval.target,
+    migrationTable: f.table,
+    writerQuiescence: {
+      observedAt: at,
+      containerId: request.containerId,
+      containerState: "exited",
+      processEvidence: processRef,
+      databaseSessions: 0,
+      sessionReadback: sessionsCapture
+    },
+    before: {
+      observedAt: at,
+      source: await syntheticH3Raw(f, encodeManualJson(beforeRefs)),
+      roles: beforeRoles
+    },
+    grantStartedAt: at,
+    grantCompletedAt: at,
+    grantEvidence: grant,
+    after: {
+      observedAt: at,
+      source: await syntheticH3Raw(f, encodeManualJson(afterRefs)),
+      roles: afterRoles
+    },
+    provisionExit: {
+      identity: roles.provision,
+      revokedAt: at,
+      canLogin: false,
+      superuser: false,
+      createdb: false,
+      createrole: false,
+      replication: false,
+      bypassrls: false,
+      memberships: [],
+      process: adminProcess,
+      observedAt: at,
+      activeSessions: 0,
+      credentialState: "SEALED_RETAINED",
+      roleReadback: await syntheticH3Capture(f, "roles", "observer", at, {
+        roles: syntheticH3Roles(f, true),
+        memberships: [],
+        migrationTable: f.table
+      }),
+      sessionReadback: sessionsCapture,
+      processReadback: await syntheticH3Raw(
+        f,
+        encodeManualJson({ process: adminProcess, grant, revoke })
+      ),
+      credentialStateReadback
+    },
+    readbackAt: at,
+    readbackReport: "Offline capture closure fixture; not real H3 evidence."
+  };
+  await fs.writeFile(path.join(f.operationRoot, "h3-b-approval.json"), encodeManualJson(approval), {
+    mode: 0o600
+  });
+  await fs.writeFile(path.join(f.operationRoot, "h3-b-readback.json"), encodeManualJson(readback), {
+    mode: 0o600
+  });
+  return { approval, readback };
+}
+
+test(
+  "runner second stage accepts native H3-B for readonly verify and replay",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "command", true, true),
+      expected = await expectedSourceFixture(f);
+    f.runner.expectedScript = "CREATE TABLE example(id integer PRIMARY KEY);\r\n";
+    f.runner.prismaVersion = JSON.parse(expected.output.schemaExpectationBytes).prismaVersion;
+    f.runner.phaseSchedule = ["dry-run", "apply", "verify", "replay"];
+    let first, second;
+    try {
+      const freshCounts = {
+        launches: f.launches.length,
+        credentialReads: f.counters.credentialReads,
+        observerConnections: f.pg.connects
+      };
+      await assert.rejects(
+        launcher.launchManualStage1({
+          operationRef: f.prepared.operationRef,
+          allowedStage: "verification"
+        }),
+        { code: "MANUAL_LAUNCH_STAGE_MISMATCH" }
+      );
+      assert.deepEqual(
+        {
+          launches: f.launches.length,
+          credentialReads: f.counters.credentialReads,
+          observerConnections: f.pg.connects
+        },
+        freshCounts
+      );
+      first = await launcher.launchManualStage1({
+        operationRef: f.prepared.operationRef,
+        allowedStage: "migration"
+      });
+      const h3 = await syntheticH3B(f, first),
+        before = {
+          launches: f.launches.length,
+          credentialReads: f.counters.credentialReads,
+          observerConnections: f.pg.connects
+        };
+      const variantRoot = path.join(f.operationRoot, "offline-stop-variants");
+      await fs.mkdir(variantRoot, { mode: 0o700 });
+      const readRaw = async (ref) =>
+        fs.readFile(path.join(f.profile.storage.archiveRoot, "raw", ref.digest.slice(7) + ".bin"));
+      for (const fault of [
+        "stage",
+        "bootstrap-role",
+        "extra-consumption",
+        "native-identity",
+        "business-select",
+        "provision-session",
+        "expired"
+      ]) {
+        const original = encodeManualJson(h3.readback);
+        const originalA = encodeManualJson(f.readback),
+          added = [];
+        if (fault === "expired") h3.readback.readbackAt = "2098-01-01T00:00:00.000Z";
+        if (fault === "bootstrap-role") {
+          f.readback.roles.provision.oid = "10";
+          f.readback.roleReadback = await syntheticH3Capture(
+            f,
+            "roles",
+            "observer",
+            f.readback.sqlObservedAt,
+            { roles: syntheticH3Roles(f), memberships: [], migrationTable: null }
+          );
+          await writeH3(f);
+        }
+        if (fault === "extra-consumption") {
+          const records = await f.records(),
+            dry = records.find(
+              (value) =>
+                value.schemaVersion === "manual-runner-request.v1" && value.phase === "dry-run"
+            );
+          const request = { ...dry, attemptId: randomUUID() },
+            requestDigest = sha256Canonical(request),
+            consumed = records.find(
+              (value) =>
+                value.kind === "consumption" && value.requestDigest === sha256Canonical(dry)
+            );
+          for (const value of [
+            request,
+            { ...consumed, attemptId: request.attemptId, requestDigest }
+          ]) {
+            const file = f.objectPath(value);
+            await fs.writeFile(file, encodeManualJson(value), { flag: "wx", mode: 0o600 });
+            added.push(file);
+            await fs.writeFile(
+              path.join(variantRoot, fault + "-" + sha256Canonical(value).slice(7) + ".json"),
+              encodeManualJson(value),
+              { flag: "wx", mode: 0o600 }
+            );
+          }
+        }
+        if (["native-identity", "business-select"].includes(fault)) {
+          const after = fault === "business-select",
+            permission = after ? h3.readback.after : h3.readback.before;
+          const refs = JSON.parse(await readRaw(permission.source)),
+            capture = JSON.parse(await readRaw(refs.verify)),
+            native = JSON.parse(await readRaw(capture.stdout));
+          if (after) native.data.relations.find((row) => row[2] === "example")[6] = ["SELECT"];
+          else native.identity.databaseOid = "999";
+          capture.stdout = await syntheticH3Raw(f, Buffer.from(JSON.stringify(native) + "\n"));
+          refs.verify = await syntheticH3Raw(f, encodeManualJson(capture));
+          permission.source = await syntheticH3Raw(f, encodeManualJson(refs));
+          permission.roles[0].privilegeInventory = capture.stdout;
+        }
+        if (fault === "provision-session")
+          h3.readback.provisionExit.sessionReadback = await syntheticH3Capture(
+            f,
+            "sessions",
+            "observer",
+            h3.readback.readbackAt,
+            {
+              sessions: [
+                [9901, "123", f.readback.roles.observer.oid, "observer"],
+                [9902, "456", f.readback.roles.provision.oid, "provision"]
+              ]
+            }
+          );
+        await fs.writeFile(
+          path.join(f.operationRoot, "h3-b-readback.json"),
+          encodeManualJson(h3.readback)
+        );
+        await fs.writeFile(
+          path.join(variantRoot, fault + "-readback.json"),
+          encodeManualJson(h3.readback),
+          { flag: "wx", mode: 0o600 }
+        );
+        await assert.rejects(
+          launcher.launchManualStage1({
+            operationRef: f.prepared.operationRef,
+            allowedStage: fault === "stage" ? "migration" : "verification"
+          }),
+          fault === "stage" ? { code: "MANUAL_LAUNCH_STAGE_MISMATCH" } : undefined
+        );
+        assert.deepEqual(
+          {
+            launches: f.launches.length,
+            credentialReads: f.counters.credentialReads,
+            observerConnections: f.pg.connects
+          },
+          before
+        );
+        h3.readback = JSON.parse(original);
+        f.readback = JSON.parse(originalA);
+        await writeH3(f);
+        for (const file of added) await fs.unlink(file);
+        t.diagnostic(JSON.stringify({ stopVariant: fault, ...before }));
+      }
+      await fs.writeFile(
+        path.join(f.operationRoot, "h3-b-readback.json"),
+        encodeManualJson(h3.readback)
+      );
+      second = await launcher.launchManualStage1({
+        operationRef: f.prepared.operationRef,
+        allowedStage: "verification"
+      });
+      assert.equal(f.launches.length, 4);
+      assert.equal(f.pg.connects, before.observerConnections);
+      assert.equal(f.readOpens.get(path.join(f.credentialDirectory, "provision.json")) ?? 0, 0);
+      for (const name of ["h3-b-approval.json", "h3-b-readback.json"]) {
+        const fixedBytes = await fs.readFile(path.join(f.operationRoot, name));
+        const reopened = await fs.readFile(
+          path.join(f.profile.storage.archiveRoot, "raw", sha256Bytes(fixedBytes).slice(7) + ".bin")
+        );
+        assert.ok(reopened.equals(fixedBytes));
+        assert.equal(sha256Bytes(reopened), sha256Bytes(fixedBytes));
+        assert.ok(reopened.length <= 1048576);
+      }
+      const records = await f.records(),
+        requests = records.filter(
+          (v) => v.schemaVersion === "manual-runner-request.v1" && v.stage === "runner-command"
+        );
+      assert.deepEqual(requests.map((v) => v.phase).sort(), [
+        "apply",
+        "dry-run",
+        "replay",
+        "verify"
+      ]);
+      assert.equal(requests.find((v) => v.phase === "verify").roleObservation.role, "verify");
+      assert.equal(requests.find((v) => v.phase === "replay").roleObservation.role, "migrate");
+      assert.equal(
+        records.filter((value) => value.schemaVersion === "manual-baseline-manifest.v1").length,
+        1
+      );
+      assert.ok(
+        records.some((value) => sha256Canonical(value) === first.apply.executionRecordDigest)
+      );
+      for (const request of requests.filter((value) =>
+        ["verify", "replay"].includes(value.phase)
+      )) {
+        const processes = records.filter(
+          (value) => value.kind === "process" && value.requestDigest === sha256Canonical(request)
+        );
+        assert.ok(processes.length);
+        assert.ok(
+          processes.every((process) =>
+            process.events.every((event) => event.tool !== "prisma-deploy")
+          )
+        );
+      }
+      for (const ref of [second.verify, second.replay])
+        assert.equal(
+          records.find((v) => sha256Canonical(v) === ref.executionRecordDigest).status,
+          "SUCCEEDED"
+        );
+    } catch (error) {
+      t.diagnostic(
+        JSON.stringify({
+          failureCode: error.code,
+          causeCode: error.cause?.code,
+          closes: f.actualCloses,
+          diagnostics: f.runner.diagnostics,
+          counts: {
+            launches: f.launches.length,
+            credentialReads: f.counters.credentialReads,
+            observerConnections: f.pg.connects
+          }
+        })
+      );
+      throw error;
+    } finally {
+      await preserveCommandFixture(f, "stage2-native-h3b", {
+        first: first ?? null,
+        second: second ?? null,
+        counts: {
+          launches: f.launches.length,
+          credentialReads: f.counters.credentialReads,
+          observerConnections: f.pg.connects
+        }
+      });
+    }
+  }
+);
 
 test(
   "runner second stage requires fixed H3-B before reentering a consumed migration",

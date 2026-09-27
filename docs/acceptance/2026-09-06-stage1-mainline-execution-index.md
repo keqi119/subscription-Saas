@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 云端 IAM 配置与服务器账号边界
+
+OSS 账号 `1457643390906675` 的官方 CLI OAuth 已完成，固定 GitHub OIDC provider、证据 writer 与 audit-reader 双角色及各自唯一最小策略已创建并逐项 API 读回。[配置记录](2026-09-27-stage1-cloud-iam-configuration.md)保留实际响应、准备失败及权限边界；尚未运行真实 CI/OIDC 交换或对象保管，H2 不因 IAM 配置完成而关闭。服务器 `139.196.227.195` 的实例 metadata 实际归属账号为 `1335332669126231`，与 OSS 不同，已发起独立服务器账号 OAuth 待回调；云盘加密仍 UNKNOWN。R2 父命令执行链继续离线实施，真实 H1/R2/R3/R4 与阶段 1 仍开放。
+
 ## 2026-09-27 固定 expected-schema 准入前向登记
 
 隔离分支提交 `9e6829c0` 接通实际 R1/原 baseline/零凭证 CHALLENGE 后的固定 expected 输入、两次 gh 验真、原件保管与独立重开。真实子进程提前退出和失败二进制输出阻断后续 baseline 的两个 Important 已修复并获限定复审 Approved；[验证记录](2026-09-27-stage1-expected-admission-validation.md)保留最终定向 3/3/exit 0、全部中间失败和不同测试字节边界，不声明 28 项矩阵最终整套通过，也未重跑旧业务组。成功后仍停在下一命令请求门槛；完整 R2、真实云身份/H1/H2、R3/R4 与阶段 1 继续开放。服务器 GitHub 可使用已验证的进程内认证路径；Edge 重连仍失败、阿里云 OAuth 待回调。尚未整合或推送候选，后续保留原任务已审 API/Web 修复，仅接入发布链增量。

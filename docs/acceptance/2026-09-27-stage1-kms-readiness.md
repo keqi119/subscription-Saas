@@ -8,9 +8,10 @@
 - 07:39:46 UTC，`sts GetCallerIdentity` 返回上述账号，`IdentityType=Account`，exit 0。
 - 07:40:07 UTC，`kms ListAliases` 第 1 页、每页 100 条返回 `TotalCount=0`，所以固定 `alias/stage1-snapshot-custody` 当前不存在。
 - 07:41:56 UTC，`kms ListKmsInstances` 同样返回 `TotalCount=0`，该账号上海区域没有可直接复用的实例。此结论不外推其他地域或账号。
+- 09:00:13 UTC，续期后的同一 profile 再调用 `kms ListKeys`，第 1 页、每页 100 条返回 `TotalCount=0`、空 Key 列表及 exit 0；本次还排除了该地域可复用现存密钥的可能，不以别名或实例数量推断密钥清单。
 - 尚未创建实例、密钥或别名，未调用 GenerateDataKey/Decrypt，未改变任何 RAM 权限。
 
-非秘密 API 读回保存于候选工作区 `.superpowers/sdd/2026-09-22-stage1-r3-final-image-dual-chain-plan/cloud-kms-{alias-renewed,instances}-readback.json`；续期记录为同目录 `cloud-oauth-refresh-pending.json`。
+非秘密 API 读回保存于候选工作区 `.superpowers/sdd/2026-09-22-stage1-r3-final-image-dual-chain-plan/cloud-kms-{alias-renewed,instances,keys}-readback.json`；续期记录为同目录 `cloud-oauth-refresh-pending.json`。
 
 ## 按现有合同所需的最小配置
 

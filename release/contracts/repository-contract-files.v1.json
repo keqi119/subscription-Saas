@@ -46,6 +46,7 @@
     "packages/release-foundation/src/node-database-test-runner.mjs",
     "packages/release-foundation/src/proof-builders.mjs",
     "packages/release-foundation/src/r3-workspace-observation.mjs",
+    "packages/release-foundation/src/r3-workspace-report.mjs",
     "packages/release-foundation/src/schema-registry.mjs",
     "packages/release-foundation/src/snapshot/custody-contracts.mjs",
     "packages/release-foundation/src/snapshot/envelope-crypto.mjs",

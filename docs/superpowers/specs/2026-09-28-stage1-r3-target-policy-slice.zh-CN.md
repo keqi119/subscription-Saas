@@ -85,3 +85,11 @@ active 读取完整内核 mount/loop/block 表、指定 mapper 元数据、LUKS2
 absent 要求完整拓扑命令成功，并且指定 mount、mapper、loop/backing 关联均不存在；指定文件/目录缺失仅接受 ENOENT，权限错误或命令失败不能视为已清理。这只证明本次指定存储名称的观察状态，不能证明原 Engine/CID、进程、数据库及完整资源集合已经停止或清理。完整 cleanup 仍须绑定创建时的实际资源身份，并经独立读回才可释放锁；当前入口不具备此能力。
 
 命令格式依据 [util-linux findmnt 文档](https://kernel.googlesource.com/pub/scm/utils/util-linux/util-linux/+/refs/heads/master/misc-utils/findmnt.8.adoc) 和 [cryptsetup luksDump 文档](https://gitlab.com/cryptsetup/cryptsetup/-/raw/main/man/cryptsetup-luksDump.8.adoc)：显式列名避免默认输出变化；findmnt 的非零退出不能证明不存在；LUKS2 JSON 不包含 UUID，因此使用独立 UUID 读回。未使用任何导出 volume key 的选项。
+
+## 工作区原件的 job 绑定与固定读取
+
+`r3-workspace-report.mjs` 使用 job admission 已声明的临时 Ed25519 公钥校验观察绑定，签名域为 `subscription-saas/r3-workspace-observation/v1\n`。绑定原件只含 schemaVersion、operationRef、state、observationDigest、jobAdmissionDigest、creationSpecDigest 和 signature。它证明同一 job key 对这些原件的绑定，不替代 GitHub attestation、当前 job API 或 manual 授权。签名辅助函数只接受对应的 Node 私钥对象；H1 读取器只用已验证 admission 内的公钥。
+
+`readFixedR3WorkspaceObservation({repoRoot,operationRef,state})` 从既有私有 archive 的 `inputs/r3/{operationRef}/workspace-{state}.json` 和 `workspace-{state}.binding.json` 读取规范 JSON；全部 stdout/stderr、policy、machine-id 和适用的 proc 原件保存在同操作目录的 `raw/{sha256hex}.bin`，空 stderr 也有实际原件。入口先验证固定 job admission，然后用同一批持有字节验签、检查原件摘要与长度、固定命令/参数/成功 close、文件元数据和时间顺序，并重新解析完整拓扑，与声明事实逐项比较。返回原件均为独立副本，内部句柄持续保留；recheck 交错检查当前 job、源码/H1/H2、原件和时窗，失败关闭句柄。
+
+active 和 absent 都要求同一原 job 仍在运行且处于原有效窗内。absent 仍只表示指定工作区名的观察结果；job 已终止或原件改变时拒绝读取，不能据此释放锁。终止 job 后的清理恢复、实际 hosted producer/保管、Engine/PG 目标图、创建执行及 manual 会话接线仍待完成。本片不读取 H1 私钥、快照解密钥或 payload，不启用旧 workflow，也不新增服务。

@@ -15,6 +15,8 @@ import {
 } from "../../packages/release-foundation/src/index.mjs";
 import { createBuildProof } from "./create-build-proof.mjs";
 import { produceManualBuildCustody } from "./manual-build-custody-producer.mjs";
+import { assessR3WorkspaceObservation } from "../../packages/release-foundation/src/r3-workspace-observation.mjs";
+import { signR3WorkspaceBinding } from "../../packages/release-foundation/src/r3-workspace-report.mjs";
 
 // The first RED is an assertion, not an import crash. Subsequent assertions
 // exercise the production entrypoint; there is no trusted-result mock.
@@ -1468,7 +1470,8 @@ async function r3JobFixture(t, options = {}) {
   const f = await r3CreationFixture(t, options);
   const phase = f.spec.phase,
     chain = f.spec.chain;
-  const forwarding = generateKeyPairSync("ed25519").publicKey;
+  const forwardingKeys = generateKeyPairSync("ed25519");
+  const forwarding = forwardingKeys.publicKey;
   const generated = new Date(Date.now() - 100).toISOString();
   const ciRunId = "3801",
     jobId = "4801";
@@ -1503,7 +1506,9 @@ async function r3JobFixture(t, options = {}) {
       runnerClass: "github-hosted"
     },
     host: {
-      machineIdFingerprint: digest("d"),
+      machineIdFingerprint: sha256Bytes(
+        Buffer.from(`subscription-saas/linux-machine-id/v1\n${"b".repeat(32)}`)
+      ),
       forwardingPublicKeyPem: forwarding.export({ type: "spki", format: "pem" }),
       forwardingKeyFingerprint: sha256Bytes(forwarding.export({ type: "spki", format: "der" })),
       runnerId: 5801,
@@ -1546,7 +1551,16 @@ async function r3JobFixture(t, options = {}) {
     started_at: f.spec.createdAt
   };
   f.gh.jobAdmission = { path: admissionPath, attestation, run: apiRun, job: apiJob };
-  return { ...f, admission, admissionPath, admissionBytes, attestation, apiRun, apiJob };
+  return {
+    ...f,
+    admission,
+    admissionPath,
+    admissionBytes,
+    attestation,
+    apiRun,
+    apiJob,
+    forwardingPrivateKey: forwardingKeys.privateKey
+  };
 }
 
 test("R3 JOB API rejects overrides and accessors before native IO", async (t) => {
@@ -1676,6 +1690,400 @@ test(
         { code: "R3_JOB_ADMISSION_UNAVAILABLE" }
       );
     }
+    noAuthorityAccess(f);
+  }
+);
+
+const r3WorkspaceIdentity = (kind, size = 0) => ({
+  dev: "1",
+  ino: "42",
+  mode: String(
+    kind === "directory"
+      ? 0o40700
+      : kind === "mapper"
+        ? 0o120777
+        : kind === "executable"
+          ? 0o100755
+          : 0o100600
+  ),
+  uid: "0",
+  gid: "0",
+  nlink: "1",
+  size: String(size),
+  mtimeNs: "1",
+  ctimeNs: "1",
+  rdev: "0"
+});
+const r3WorkspaceCommands = (w, state) => [
+  [
+    "mounts",
+    "/usr/bin/findmnt",
+    ["--json", "--list", "--kernel", "--output", "TARGET,SOURCE,FSTYPE,OPTIONS,MAJ:MIN"]
+  ],
+  [
+    "loops",
+    "/usr/sbin/losetup",
+    ["--json", "--list", "--output", "NAME,BACK-FILE,OFFSET,SIZELIMIT"]
+  ],
+  [
+    "blocks",
+    "/usr/bin/lsblk",
+    ["--json", "--list", "--paths", "--output", "NAME,KNAME,TYPE,MAJ:MIN,PKNAME"]
+  ],
+  ...(state === "active"
+    ? [
+        [
+          "mapper",
+          "/usr/sbin/dmsetup",
+          [
+            "info",
+            "--columns",
+            "--noheadings",
+            "--separator",
+            "|",
+            "--options",
+            "name,uuid,major,minor",
+            w.mapperName
+          ]
+        ],
+        ["header", "/usr/sbin/cryptsetup", ["luksDump", "--dump-json-metadata", w.backingFile]],
+        ["uuid", "/usr/sbin/cryptsetup", ["luksUUID", w.backingFile]]
+      ]
+    : [])
+];
+
+async function r3WorkspaceFixture(t, state = "active") {
+  const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+  const w = f.spec.workspace;
+  const policyBytes = await fs.readFile(
+    path.join(f.repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json")
+  );
+  const json = (value) => Buffer.from(JSON.stringify(value) + "\n");
+  const raw = {
+    policy: policyBytes,
+    machineId: Buffer.from("b".repeat(32) + "\n"),
+    "mounts.stdout": json({
+      filesystems: [
+        {
+          target: "/",
+          source: "/dev/sda1",
+          fstype: "ext4",
+          options: "rw,relatime",
+          "maj:min": "8:1"
+        },
+        {
+          target: "/dev/shm",
+          source: "tmpfs",
+          fstype: "tmpfs",
+          options: "rw,nosuid,nodev",
+          "maj:min": "0:42"
+        },
+        ...(state === "active"
+          ? [
+              {
+                target: w.mountPath,
+                source: `/dev/mapper/${w.mapperName}`,
+                fstype: "ext4",
+                options: "rw,nosuid,nodev",
+                "maj:min": "253:2"
+              }
+            ]
+          : [])
+      ]
+    }),
+    "loops.stdout": json({
+      loopdevices:
+        state === "active"
+          ? [{ name: "/dev/loop4", "back-file": w.backingFile, offset: 0, sizelimit: 0 }]
+          : []
+    }),
+    "blocks.stdout": json({
+      blockdevices: [
+        {
+          name: "/dev/sda1",
+          kname: "/dev/sda1",
+          type: "part",
+          "maj:min": "8:1",
+          pkname: "/dev/sda"
+        },
+        ...(state === "active"
+          ? [
+              {
+                name: "/dev/loop4",
+                kname: "/dev/loop4",
+                type: "loop",
+                "maj:min": "7:4",
+                pkname: null
+              },
+              {
+                name: `/dev/mapper/${w.mapperName}`,
+                kname: "/dev/dm-2",
+                type: "crypt",
+                "maj:min": "253:2",
+                pkname: "/dev/loop4"
+              }
+            ]
+          : [])
+      ]
+    })
+  };
+  if (state === "active") {
+    const uuid = "2896e6bd-60c0-44f1-b3a0-14a2e1bc0d39";
+    raw["mapper.stdout"] = Buffer.from(
+      `${w.mapperName}|CRYPT-LUKS2-${uuid.replaceAll("-", "")}-${w.mapperName}|253|2\n`
+    );
+    raw["header.stdout"] = json({
+      keyslots: {
+        0: {
+          type: "luks2",
+          key_size: 64,
+          area: { type: "raw", encryption: "aes-xts-plain64", key_size: 64 }
+        }
+      },
+      tokens: {},
+      segments: {
+        0: {
+          type: "crypt",
+          offset: "16777216",
+          size: "dynamic",
+          iv_tweak: "0",
+          encryption: "aes-xts-plain64",
+          sector_size: 4096
+        }
+      },
+      digests: { 0: { type: "pbkdf2", keyslots: ["0"], segments: ["0"] } },
+      config: {}
+    });
+    raw["uuid.stdout"] = Buffer.from(uuid + "\n");
+    raw.swaps = Buffer.from("Filename\tType\tSize\tUsed\tPriority\n");
+    raw.limits = Buffer.from(
+      "Limit Soft Limit Hard Limit Units\nMax core file size        0                    0                    bytes\n"
+    );
+  }
+  const commands = r3WorkspaceCommands(w, state);
+  for (const [name] of commands) raw[`${name}.stderr`] = Buffer.alloc(0);
+  const captured = Object.fromEntries(commands.map(([name]) => [name, raw[`${name}.stdout`]]));
+  if (state === "active") Object.assign(captured, { swaps: raw.swaps, limits: raw.limits });
+  const ref = (bytes) => ({ digest: sha256Bytes(bytes), bytes: bytes.length });
+  const startMs = Date.parse(f.admission.generatedAt) + 1;
+  const startedAt = new Date(startMs).toISOString();
+  const finishedAt = new Date(startMs + 30).toISOString();
+  const processes = commands.map(([name, command, args], index) => ({
+    name,
+    command,
+    args,
+    executable: r3WorkspaceIdentity("executable", 1234),
+    startedAt: new Date(startMs + index * 3).toISOString(),
+    pid: 100 + index,
+    closedAt: new Date(startMs + index * 3 + 1).toISOString(),
+    exitCode: 0,
+    signal: null,
+    stdout: ref(raw[`${name}.stdout`]),
+    stderr: ref(raw[`${name}.stderr`])
+  }));
+  const files = [
+    {
+      name: "policy",
+      path: path.posix.join(
+        f.repoRoot.replaceAll("\\", "/"),
+        "release/contracts/manual-stage1-r3-target-policy.v1.json"
+      ),
+      observedAt: startedAt,
+      ...ref(raw.policy)
+    },
+    { name: "machineId", path: "/etc/machine-id", observedAt: startedAt, ...ref(raw.machineId) },
+    ...["backing", "key", "directory", "mapper"].map((name) => ({
+      name,
+      path:
+        name === "mapper"
+          ? `/dev/mapper/${w.mapperName}`
+          : name === "backing"
+            ? w.backingFile
+            : name === "key"
+              ? w.keyFile
+              : w.mountPath,
+      exists: state === "active",
+      observedAt: startedAt,
+      ...(state === "active"
+        ? {
+            identity: r3WorkspaceIdentity(
+              name,
+              name === "backing" ? w.capacityBytes : name === "key" ? 64 : 0
+            )
+          }
+        : {})
+    })),
+    ...(state === "active"
+      ? [
+          { name: "swaps", path: "/proc/swaps", observedAt: finishedAt, ...ref(raw.swaps) },
+          { name: "limits", path: "/proc/self/limits", observedAt: finishedAt, ...ref(raw.limits) }
+        ]
+      : [])
+  ];
+  const observation = {
+    schemaVersion: "manual-r3-workspace-observation.v1",
+    operationRef: f.operationRef,
+    policyDigest: sha256Bytes(policyBytes),
+    state,
+    startedAt,
+    finishedAt,
+    hostFingerprint: f.admission.host.machineIdFingerprint,
+    workspace: w,
+    promotionEligible: false,
+    status: "OBSERVED",
+    facts: assessR3WorkspaceObservation({ workspace: w, state, captured }),
+    processes,
+    files
+  };
+  const observationBytes = encodeManualJson(observation);
+  const binding = signR3WorkspaceBinding({
+    observationBytes,
+    jobAdmissionBytes: f.admissionBytes,
+    privateKey: f.forwardingPrivateKey
+  });
+  const bindingBytes = encodeManualJson(binding);
+  const opRoot = path.dirname(f.admissionPath);
+  const observationPath = path.join(opRoot, `workspace-${state}.json`);
+  const bindingPath = path.join(opRoot, `workspace-${state}.binding.json`);
+  await fs.writeFile(observationPath, observationBytes, { flag: "wx", mode: 0o600 });
+  await fs.writeFile(bindingPath, bindingBytes, { flag: "wx", mode: 0o600 });
+  const rawDir = path.join(opRoot, "raw");
+  await fs.mkdir(rawDir, { recursive: true, mode: 0o700 });
+  const rawPaths = {};
+  for (const [name, bytes] of Object.entries(raw)) {
+    const file = path.join(rawDir, `${sha256Bytes(bytes).slice(7)}.bin`);
+    await fs.writeFile(file, bytes, { mode: 0o600 });
+    rawPaths[name] = file;
+  }
+  return {
+    ...f,
+    observation,
+    observationBytes,
+    observationPath,
+    binding,
+    bindingBytes,
+    bindingPath,
+    raw,
+    rawPaths
+  };
+}
+
+test("R3 WORKSPACE API rejects overrides and accessors before native IO", async (t) => {
+  assert.equal(typeof trust.readFixedR3WorkspaceObservation, "function");
+  let effects = 0;
+  const denied = () => {
+    effects++;
+    throw new Error("unexpected IO or accessor");
+  };
+  for (const name of ["open", "lstat", "readFile", "writeFile"]) t.mock.method(fs, name, denied);
+  t.mock.method(childProcess, "execFile", denied);
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const input = { repoRoot: path.resolve("unused"), operationRef: randomUUID(), state: "active" };
+  for (const value of [
+    { ...input, observationFile: "/caller/report.json" },
+    { ...input, rawInputs: { policy: Buffer.from("{}") } },
+    { ...input, state: "cleanup" },
+    { ...input, operationRef: "../escape" },
+    Object.defineProperty({ ...input }, "state", { get: denied, enumerable: true })
+  ])
+    await assert.rejects(trust.readFixedR3WorkspaceObservation(value), {
+      code: "R3_WORKSPACE_INPUT_UNAVAILABLE"
+    });
+  assert.equal(effects, 0);
+});
+
+test(
+  "R3 WORKSPACE active pins signed observation and raw bytes through recheck",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3WorkspaceFixture(t);
+    const result = await trust.readFixedR3WorkspaceObservation({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef,
+      state: "active"
+    });
+    t.after(() => result.close());
+    assert.deepEqual(result.observation, f.observation);
+    assert.equal(result.observationDigest, sha256Bytes(f.observationBytes));
+    assert.equal(result.bindingDigest, sha256Bytes(f.bindingBytes));
+    assert.equal(result.jobAdmissionDigest, sha256Bytes(f.admissionBytes));
+    assert.equal(result.creationSpecDigest, sha256Bytes(f.specBytes));
+    assert.equal(result.build.promotionEligible, false);
+    assert.deepEqual(result.rawInputs["mounts.stdout"], f.raw["mounts.stdout"]);
+    assert.deepEqual(result.rawInputs["mounts.stderr"], Buffer.alloc(0));
+    result.rawInputs["mounts.stdout"].fill(0);
+    result.rawInputs.observation.fill(0);
+    assert.deepEqual((await result.recheck()).rawInputs["mounts.stdout"], f.raw["mounts.stdout"]);
+    await fs.writeFile(f.rawPaths["mounts.stdout"], Buffer.from("changed raw source"));
+    await assert.rejects(result.recheck(), { code: "R3_WORKSPACE_INPUT_UNAVAILABLE" });
+    await assert.rejects(result.recheck(), { code: "R3_WORKSPACE_INPUT_UNAVAILABLE" });
+    noAuthorityAccess(f);
+  }
+);
+
+test(
+  "R3 WORKSPACE absence remains job-bound and terminal job fails recheck",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3WorkspaceFixture(t, "absent");
+    const result = await trust.readFixedR3WorkspaceObservation({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef,
+      state: "absent"
+    });
+    t.after(() => result.close());
+    assert.equal(result.observation.facts.state, "absent");
+    assert.equal(result.observation.promotionEligible, false);
+    assert.deepEqual(result.rawInputs["mounts.stderr"], Buffer.alloc(0));
+    assert.deepEqual((await result.recheck()).rawInputs.binding, f.bindingBytes);
+    f.apiJob.status = "completed";
+    f.apiJob.conclusion = "success";
+    f.apiJob.completed_at = new Date().toISOString();
+    await assert.rejects(result.recheck(), { code: "R3_WORKSPACE_INPUT_UNAVAILABLE" });
+    noAuthorityAccess(f);
+  }
+);
+
+test(
+  "R3 WORKSPACE refuses wrong binding, report facts and missing raw source",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3WorkspaceFixture(t);
+    const input = { repoRoot: f.repoRoot, operationRef: f.operationRef, state: "active" };
+    const wrong = structuredClone(f.binding);
+    wrong.signature = Buffer.alloc(64).toString("base64");
+    await fs.writeFile(f.bindingPath, encodeManualJson(wrong));
+    await assert.rejects(trust.readFixedR3WorkspaceObservation(input), {
+      code: "R3_WORKSPACE_INPUT_UNAVAILABLE"
+    });
+    await fs.writeFile(f.bindingPath, f.bindingBytes);
+    const bad = structuredClone(f.observation);
+    bad.facts.loop.name = "/dev/loop9";
+    const badBytes = encodeManualJson(bad);
+    await fs.writeFile(f.observationPath, badBytes);
+    await fs.writeFile(
+      f.bindingPath,
+      encodeManualJson(
+        signR3WorkspaceBinding({
+          observationBytes: badBytes,
+          jobAdmissionBytes: f.admissionBytes,
+          privateKey: f.forwardingPrivateKey
+        })
+      )
+    );
+    await assert.rejects(trust.readFixedR3WorkspaceObservation(input), {
+      code: "R3_WORKSPACE_INPUT_UNAVAILABLE"
+    });
+    await fs.writeFile(f.observationPath, f.observationBytes);
+    await fs.writeFile(f.bindingPath, f.bindingBytes);
+    await fs.unlink(f.rawPaths["loops.stdout"]);
+    await assert.rejects(trust.readFixedR3WorkspaceObservation(input), {
+      code: "R3_WORKSPACE_INPUT_UNAVAILABLE"
+    });
     noAuthorityAccess(f);
   }
 );

@@ -14,6 +14,10 @@ import {
 } from "../../packages/release-foundation/src/index.mjs";
 import { assertBuildIdentity, assertProofCustody } from "./verify-build-proof.mjs";
 import { validateH1SnapshotPublicKeyReadbacks } from "../../packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs";
+import {
+  verifyR3WorkspaceBinding,
+  assessR3WorkspaceReport
+} from "../../packages/release-foundation/src/r3-workspace-report.mjs";
 
 const LIMIT = 1048576;
 const H1 = "H1_INPUT_UNAVAILABLE";
@@ -1602,6 +1606,177 @@ export async function readFixedR3JobAdmission(input) {
       build: creation.build,
       sourceSha: creation.sourceSha,
       verifiedAttestation,
+      ...readback,
+      recheck,
+      close
+    });
+  } catch {
+    await close();
+    fail(code);
+  }
+}
+
+// Job-key provenance and independently reconstructed storage facts only. Even
+// an absent observation still needs its original live job; it cannot release a
+// resource lock or stand in for the complete Engine/PG cleanup result.
+export async function readFixedR3WorkspaceObservation(input) {
+  const code = "R3_WORKSPACE_INPUT_UNAVAILABLE",
+    opened = [];
+  let job,
+    admissionBytes,
+    closed = false,
+    closing;
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    closing = (async () => {
+      const outcomes = await Promise.allSettled([
+        ...opened.map((item) => item.close()),
+        ...(job ? [job.close()] : [])
+      ]);
+      for (const item of opened) item.bytes.fill(0);
+      admissionBytes?.fill(0);
+      if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
+    })();
+    return closing;
+  };
+  try {
+    exact(input, ["repoRoot", "operationRef", "state"]);
+    requireThat(
+      typeof input.repoRoot === "string" &&
+        typeof input.operationRef === "string" &&
+        UUID.test(input.operationRef) &&
+        ["active", "absent"].includes(input.state)
+    );
+    const repoRoot = absolute(input.repoRoot),
+      { operationRef, state } = input;
+    requireThat(process.platform === "linux");
+    job = await readFixedR3JobAdmission({ repoRoot, operationRef });
+    admissionBytes = Buffer.from(job.rawInputs.admission);
+    const profile = await loadFixedManualProfile({ repoRoot }),
+      { principal } = await actualHost(),
+      archiveRoot = profile.storage.archiveRoot,
+      root = path.join(archiveRoot, "inputs", "r3", operationRef),
+      privateOptions = { principal, privateRoot: archiveRoot };
+    requireThat(
+      sha256Canonical(profile) === job.spec.profileDigest &&
+        sha256Bytes(admissionBytes) === job.jobAdmissionDigest
+    );
+    const read = async (file, options = privateOptions) => {
+      requireThat(!closed);
+      const held = await openInput(file, options);
+      opened.push(held);
+      requireThat(!closed);
+      return held.bytes;
+    };
+    const policyBytes = await read(
+        path.join(repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json"),
+        { principal, sourceRoot: repoRoot }
+      ),
+      observationBytes = await read(path.join(root, `workspace-${state}.json`)),
+      bindingBytes = await read(path.join(root, `workspace-${state}.binding.json`));
+    requireThat(sha256Bytes(policyBytes) === job.spec.targetPolicyDigest);
+    const declared = json(observationBytes, true);
+    requireThat(declared.operationRef === operationRef && declared.state === state);
+    verifyR3WorkspaceBinding({ bindingBytes, observationBytes, jobAdmissionBytes: admissionBytes });
+
+    // Read only the fixed collector names, addressed by validated digest. The
+    // report assessor then checks every field and reconstructs all facts.
+    const processNames = [
+        "mounts",
+        "loops",
+        "blocks",
+        ...(state === "active" ? ["mapper", "header", "uuid"] : [])
+      ],
+      fileNames = ["policy", "machineId", ...(state === "active" ? ["swaps", "limits"] : [])];
+    requireThat(
+      Array.isArray(declared.processes) &&
+        declared.processes.length === processNames.length &&
+        Array.isArray(declared.files) &&
+        declared.files.length === (state === "active" ? 8 : 6)
+    );
+    const blobs = new Map(),
+      raw = Object.create(null);
+    const readRaw = async (name, ref) => {
+      exact(ref, ["digest", "bytes"]);
+      requireThat(
+        typeof ref.digest === "string" &&
+          DIGEST.test(ref.digest) &&
+          Number.isSafeInteger(ref.bytes) &&
+          ref.bytes >= 0 &&
+          ref.bytes <= LIMIT
+      );
+      if (!blobs.has(ref.digest))
+        blobs.set(ref.digest, await read(path.join(root, "raw", `${ref.digest.slice(7)}.bin`)));
+      const bytes = blobs.get(ref.digest);
+      requireThat(bytes.length === ref.bytes && sha256Bytes(bytes) === ref.digest);
+      raw[name] = bytes;
+    };
+    for (let index = 0; index < processNames.length; index++) {
+      const name = processNames[index],
+        row = declared.processes[index];
+      requireThat(row?.name === name);
+      await readRaw(`${name}.stdout`, row.stdout);
+      await readRaw(`${name}.stderr`, row.stderr);
+    }
+    for (const name of fileNames) {
+      const matching = declared.files.filter((row) => row?.name === name);
+      requireThat(matching.length === 1);
+      await readRaw(name, { digest: matching[0].digest, bytes: matching[0].bytes });
+    }
+    Object.freeze(raw);
+    const assess = () => {
+      verifyR3WorkspaceBinding({
+        bindingBytes,
+        observationBytes,
+        jobAdmissionBytes: admissionBytes
+      });
+      return assessR3WorkspaceReport({
+        observationBytes,
+        rawInputs: raw,
+        jobAdmissionBytes: admissionBytes,
+        spec: job.spec,
+        policyBytes,
+        now: new Date().toISOString()
+      });
+    };
+    const observation = assess();
+    const recheck = async () => {
+      try {
+        requireThat(!closed);
+        await job.recheck();
+        for (const item of opened) await item.recheck();
+        assess();
+        const jobReadback = await job.recheck();
+        for (const item of opened) await item.recheck();
+        assess();
+        requireThat(!closed);
+        return Object.freeze({
+          jobReadback,
+          rawInputs: Object.freeze(
+            Object.fromEntries(
+              Object.entries({ observation: observationBytes, binding: bindingBytes, ...raw }).map(
+                ([name, bytes]) => [name, Buffer.from(bytes)]
+              )
+            )
+          )
+        });
+      } catch {
+        await close();
+        fail(code);
+      }
+    };
+    const readback = await recheck();
+    return Object.freeze({
+      observation,
+      observationDigest: sha256Bytes(observationBytes),
+      bindingDigest: sha256Bytes(bindingBytes),
+      jobAdmissionDigest: job.jobAdmissionDigest,
+      creationSpecDigest: job.creationSpecDigest,
+      spec: job.spec,
+      policy: job.policy,
+      build: job.build,
+      sourceSha: job.sourceSha,
       ...readback,
       recheck,
       close

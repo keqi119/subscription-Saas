@@ -154,7 +154,7 @@ test("creates once through writer and independently reads exact physical run nam
   const f = fixture(), storage = await f.open(), input = upload();
   assert.equal(f.clients.length, 2);
   assert.equal(storage.writerIdentity, `${writerRole}/stage1-writer-123456789-attempt-1`);
-  assert.deepEqual(Object.keys(storage).sort(), ["auditReaderIdentity", "createOnly", "read", "readMetadata", "trustPolicy", "writerIdentity"]);
+  assert.deepEqual(Object.keys(storage).sort(), ["auditReaderIdentity", "createOnly", "read", "readMetadata", "readWithEvidence", "trustPolicy", "writerIdentity"]);
   const pending = storage.createOnly(input); input.bytes.fill(0);
   const created = await pending;
   const physical = input.key.replace("evidence/", "evidence/github-123456789-attempt-1/");
@@ -289,4 +289,156 @@ test("versioning requires the actual XML root before accepting absent or empty S
   await rejected(storage.createOnly(upload(Buffer.from('{ "different": true }\n'))), "MANUAL_BUILD_STORAGE_BUCKET_INVALID");
   await rejected(storage.readMetadata({ key: input.key, identity: "audit-reader" }), "MANUAL_BUILD_STORAGE_BUCKET_INVALID");
   assert.equal(f.calls.filter(([op]) => op === "put").length, puts);
+});
+
+function nativeFixture() {
+  const f = fixture(), input = upload(), requests = [], responses = new Map();
+  const physical = input.key.replace("evidence/", "evidence/github-123456789-attempt-1/");
+  const aclXml = `<?xml version="1.0" encoding="UTF-8"?>\n<AccessControlPolicy>\n <Owner><ID>${owner}</ID><DisplayName>owner-name</DisplayName></Owner>\n <AccessControlList><Grant>private</Grant></AccessControlList>\n</AccessControlPolicy>\n`;
+  const bodies = {
+    GetObject: input.bytes, HeadObject: Buffer.alloc(0), GetObjectAcl: Buffer.from(aclXml),
+    GetBucketAcl: Buffer.from(aclXml),
+    GetBucketWorm: Buffer.from('<WormConfiguration>\n<WormId>locked-id</WormId><State>Locked</State><RetentionPeriodInDays>210</RetentionPeriodInDays><CreationDate>2026-09-01T00:00:00Z</CreationDate>\n</WormConfiguration>'),
+    GetBucketVersioning: Buffer.from('<VersioningConfiguration>\n  \n</VersioningConfiguration>'),
+    GetBucketEncryption: Buffer.from('<ServerSideEncryptionRule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></ServerSideEncryptionRule>'),
+    GetBucketPolicyStatus: Buffer.from('<PolicyStatus><IsPublic>false</IsPublic></PolicyStatus>'),
+    GetBucketPublicAccessBlock: Buffer.from('<PublicAccessBlockConfiguration><BlockPublicAccess>true</BlockPublicAccess></PublicAccessBlockConfiguration>')
+  };
+  for (const [operation, body] of Object.entries(bodies)) responses.set(operation, {
+    status: 200, data: Buffer.from(body), headers: {
+      date: "Sun, 27 Sep 2026 01:00:01 GMT", "x-oss-request-id": `request-${operation}`,
+      "content-length": String(operation === "HeadObject" ? input.bytes.length : body.length),
+      "content-type": operation === "GetObject" || operation === "HeadObject" ? "application/json" : "application/xml",
+      ...(["GetObject", "HeadObject"].includes(operation) ? {
+        "last-modified": "Sun, 27 Sep 2026 01:00:00 GMT", etag: '"service-etag"', "x-oss-server-side-encryption": "AES256"
+      } : {}), "x-oss-meta-secret": "not-collected", authorization: "not-collected"
+    }
+  });
+  const original = f.dependencies.createOssClient;
+  f.dependencies.createOssClient = (options) => {
+    const client = original(options);
+    if (options.accessKeyId === "STS.writer") return client;
+    // Preserve the actual SDK methods and parser, replacing only its network
+    // request boundary; no credential refresh timer or constructor is needed.
+    const reader = Object.create(OSS.prototype);
+    reader.options = options;
+    reader.request = async (params) => {
+      const subres = typeof params.subres === "object" ? Object.keys(params.subres)[0] : params.subres;
+      const operation = params.object ? (subres === "acl" ? "GetObjectAcl" : params.method === "HEAD" ? "HeadObject" : "GetObject") : {
+        acl: "GetBucketAcl", worm: "GetBucketWorm", versioning: "GetBucketVersioning", encryption: "GetBucketEncryption",
+        policyStatus: "GetBucketPolicyStatus", publicAccessBlock: "GetBucketPublicAccessBlock"
+      }[subres];
+      assert.ok(operation); assert.equal(params.bucket, bucket);
+      if (params.object) assert.equal(params.object, physical);
+      requests.push(operation);
+      const response = responses.get(operation);
+      const data = params.xmlResponse ? await reader.parseXML(response.data) : response.data;
+      f.state.afterParsed?.(operation, response);
+      return { status: response.status, headers: response.headers, res: response, data };
+    };
+    return reader;
+  };
+  return { ...f, input, physical, requests, responses, bodies };
+}
+
+test("native readback retains exact source closure through actual SDK parsing without PUT or repeated reads", async () => {
+  const f = nativeFixture(), storage = await f.open();
+  const result = await storage.readWithEvidence({ key: f.input.key, identity: "audit-reader" });
+  assert.deepEqual(Object.keys(result).sort(), ["aclEvidenceBytes", "bytes", "getEvidenceBytes", "headEvidenceBytes", "metadata", "rawBlobs", "readbackAt"]);
+  assert.deepEqual(result.metadata, { storeRef: `oss://${bucket}/${f.physical}`, contentSizeBytes: 16,
+    storedAt: "2026-09-27T01:00:00.000Z", retainUntil: "2027-04-25T01:00:00.000Z" });
+  assert.equal(result.readbackAt, now.toISOString()); assert.deepEqual(result.bytes, f.input.bytes);
+  const records = [result.getEvidenceBytes, result.headEvidenceBytes, result.aclEvidenceBytes].map((raw) => JSON.parse(raw));
+  assert.deepEqual(records.map((r) => r.operation), ["GetObject", "HeadObject", "GetObjectAcl"]);
+  const closure = new Set();
+  function visit(raw, bucketRecord = false) {
+    closure.add(sha256Bytes(raw)); const record = JSON.parse(raw);
+    assert.deepEqual(Object.keys(record).sort(), ["bucket", "bucketChecks", "objectKey", "observedAt", "operation", "readerPrincipal", "recordVersion", "response"]);
+    assert.equal(record.recordVersion, "manual-expected-oss-readback.v1"); assert.equal(record.bucket, bucket);
+    assert.equal(record.objectKey, bucketRecord ? null : f.physical);
+    assert.equal(record.readerPrincipal, `${readerRole}/stage1-reader-123456789-attempt-1`);
+    assert.equal(record.observedAt, now.toISOString()); assert.equal(record.response.status, 200);
+    assert.deepEqual(Object.keys(record.response.headers).sort(), ["content-length", "content-type", "date", "etag", "last-modified", "x-oss-request-id", "x-oss-server-side-encryption"]);
+    const body = result.rawBlobs.get(record.response.body.digest); closure.add(record.response.body.digest);
+    assert.equal(body.length, record.response.body.bytes); assert.deepEqual(body, f.bodies[record.operation]);
+    assert.equal(record.response.headers["x-oss-request-id"], `request-${record.operation}`);
+    for (const ref of record.bucketChecks) { const bytes = result.rawBlobs.get(ref.digest); assert.equal(bytes.length, ref.bytes); visit(bytes, true); }
+  }
+  for (const raw of [result.getEvidenceBytes, result.headEvidenceBytes, result.aclEvidenceBytes]) visit(raw);
+  assert.deepEqual(records[1].bucketChecks.map((ref) => JSON.parse(result.rawBlobs.get(ref.digest)).operation), ["GetBucketAcl", "GetBucketWorm", "GetBucketVersioning", "GetBucketEncryption", "GetBucketPolicyStatus", "GetBucketPublicAccessBlock"]);
+  assert.equal(records[0].bucketChecks.length, 0); assert.equal(records[2].bucketChecks.length, 0);
+  assert.deepEqual([...result.rawBlobs.keys()].sort(), [...closure].sort());
+  for (const [digest, bytes] of result.rawBlobs) { assert.equal(digest, sha256Bytes(bytes)); assert.ok(bytes.length <= 1048576); }
+  assert.equal(f.requests.length, 9); assert.equal(new Set(f.requests).size, 9); assert.equal(f.calls.length, 0);
+  assert.ok(!Buffer.concat([...result.rawBlobs.values()]).includes(Buffer.from("not-collected")));
+  for (const response of f.responses.values()) response.data.fill(0);
+  assert.deepEqual(result.bytes, f.input.bytes);
+  const getBody = result.rawBlobs.get(records[0].response.body.digest); result.bytes.fill(0);
+  assert.deepEqual(getBody, f.input.bytes); result.getEvidenceBytes.fill(0);
+  assert.equal(JSON.parse(result.rawBlobs.get([...closure][0])).operation, "GetObject");
+});
+
+test("native readback refuses missing divergent malformed encoded or inconsistent service evidence", async () => {
+  const cases = [
+    ["missing ACL native body", (f) => { f.state.afterParsed = (op, res) => { if (op === "GetObjectAcl") delete res.data; }; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["divergent ACL root after SDK parsing", (f) => { f.state.afterParsed = (op, res) => { if (op === "GetObjectAcl") { res.data = Buffer.from('<Error><Code>AccessDenied</Code></Error>'); res.headers["content-length"] = String(res.data.length); } }; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["divergent private owner projection", (f) => { f.state.afterParsed = (op, res) => { if (op === "GetObjectAcl") res.data = Buffer.from(res.data.toString().replace(owner, "0000000000000000")); }; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["divergent WORM retention projection", (f) => { f.state.afterParsed = (op, res) => { if (op === "GetBucketWorm") res.data = Buffer.from(res.data.toString().replace('210', '090')); }; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["malformed XML", (f) => { f.responses.get("GetBucketAcl").data = Buffer.from('<AccessControlPolicy>'); }, "MANUAL_BUILD_STORAGE_BUCKET_INVALID"],
+    ["encoded XML", (f) => { f.responses.get("GetBucketPolicyStatus").headers["content-encoding"] = "gzip"; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["missing actual HEAD buffer", (f) => { delete f.responses.get("HeadObject").data; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["nonempty HEAD buffer", (f) => { f.responses.get("HeadObject").data = Buffer.from('x'); }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["partial GET", (f) => { f.responses.get("GetObject").status = 206; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["versioned ACL", (f) => { f.responses.get("GetObjectAcl").headers["x-oss-version-id"] = "v1"; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["ranged WORM", (f) => { f.responses.get("GetBucketWorm").headers["content-range"] = "bytes 0-1/2"; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["over-limit native body", (f) => { f.responses.get("GetObject").data = Buffer.alloc(1048577); }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["wrong subject digest", (f) => { f.responses.get("GetObject").data = Buffer.from('{ "bad": true }\n '); }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["same length different ETag", (f) => { f.responses.get("GetObject").headers.etag = '"other-etag"'; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["missing request id", (f) => { delete f.responses.get("GetBucketPublicAccessBlock").headers["x-oss-request-id"]; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["nonstring bounded header", (f) => { f.responses.get("GetObject").headers.date = ["Sun, 27 Sep 2026 01:00:01 GMT"]; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["service storedAt after readback", (f) => { for (const op of ["GetObject", "HeadObject"]) f.responses.get(op).headers["last-modified"] = "Sun, 27 Sep 2026 01:00:02 GMT"; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
+    ["clock goes backwards", (f) => { let count = 0; f.dependencies.now = () => new Date(count++ < 3 ? now : now.getTime() - 1); }, "MANUAL_BUILD_STORAGE_CLOCK_INVALID"]
+  ];
+  for (const [name, change, code] of cases) {
+    const f = nativeFixture(); change(f); const storage = await f.open();
+    await assert.rejects(storage.readWithEvidence({ key: f.input.key, identity: "audit-reader" }), (error) => {
+      assert.equal(error.code, code, name); assert.equal(error.message, code, name); assert.equal(error.cause, undefined); return true;
+    });
+    assert.equal(f.calls.length, 0, name); assert.equal(new Set(f.requests).size, f.requests.length, name);
+  }
+});
+
+test("native readback accepts only fixed evidence subjects and the audit reader before object IO", async () => {
+  const f = nativeFixture(), storage = await f.open();
+  for (const [input, code] of [
+    [{ key: f.input.key, identity: "writer" }, "MANUAL_BUILD_STORAGE_READER_INVALID"],
+    [{ key: f.input.key, identity: "audit-reader", bytes: f.input.bytes }, "MANUAL_BUILD_STORAGE_READER_INVALID"],
+    [{ key: "receipts/550e8400-e29b-41d4-a716-446655440000.json", identity: "audit-reader" }, "MANUAL_BUILD_STORAGE_KEY_INVALID"],
+    [{ key: f.physical, identity: "audit-reader" }, "MANUAL_BUILD_STORAGE_KEY_INVALID"]
+  ]) await rejected(storage.readWithEvidence(input), code);
+  assert.deepEqual(f.requests, []); assert.deepEqual(f.calls, []);
+});
+
+test("native readback snapshots subject before caller key mutation across awaited responses", async () => {
+  const outcomes = [], fixtures = [];
+  for (const wrongBody of [true, false]) {
+    const f = nativeFixture(), input = { key: f.input.key, identity: "audit-reader" };
+    const changedBytes = Buffer.from('{ "raw": true } ');
+    if (wrongBody) f.responses.get("GetObject").data = changedBytes;
+    f.state.afterParsed = (operation) => {
+      if (operation === "GetBucketAcl") input.key = wrongBody ? `evidence/${sha256Bytes(changedBytes).slice(7)}.json` : null;
+    };
+    const storage = await f.open();
+    const [outcome] = await Promise.allSettled([storage.readWithEvidence(input)]);
+    outcomes.push(outcome); fixtures.push(f);
+  }
+  assert.equal(outcomes[0].status, "rejected", "wrong body must be refused against the original subject digest");
+  assert.equal(outcomes[0].reason.code, "MANUAL_BUILD_STORAGE_READBACK_INVALID");
+  assert.equal(outcomes[0].reason.message, "MANUAL_BUILD_STORAGE_READBACK_INVALID");
+  assert.equal(outcomes[1].status, "fulfilled", "normal subject must survive the caller replacing key with null");
+  assert.deepEqual(outcomes[1].value.bytes, fixtures[1].input.bytes);
+  assert.equal(outcomes[1].value.metadata.storeRef, `oss://${bucket}/${fixtures[1].physical}`);
+  for (const name of ["getEvidenceBytes", "headEvidenceBytes", "aclEvidenceBytes"]) {
+    assert.equal(JSON.parse(outcomes[1].value[name]).objectKey, fixtures[1].physical);
+  }
 });

@@ -601,8 +601,17 @@ test("rejects fabricated approval before database access", async () => {
 
 ## Task R2.3：真实执行测试入口与计数，尚不运行外部目标
 
+**2026-09-27 必要复用接缝。** 当前严格 H3 native 原件及 expected-schema 来源检查仍位于 R2.2 launcher 私有函数；共享 assessor 只核其上下文和引用，不能替代固定来源读回。为避免 verifier 复制第二套校验，本任务先增加一个私有模块 `scripts/release/manual-runner-source-inputs.mjs`，由 launcher 与 verifier 静态导入，不从共享 index 导出，不新增 CLI、公共 Schema、成功回调或 skip 参数。提取在当前第八次 normal 执行自然结束、原件归档后进行；不得修改其已冻结执行副本。
+
+共用范围仅为既有 owner/ACL 与文件 pin/独立重开、H3-A/B 固定文件及 native SQL/argv/process/权限原件检查、expected provenance/reference/OSS 与已归档 GitHub 调用的来源检查。固定内部 reader 使用 `openManualH3AInputs`、`openManualH3BInputs`、`openManualExpectedSchemaInputs`；返回原件字节副本、原 RawRef、绑定上下文，以及内部 pins 的完整 `recheck/close`。其输入由 R1 固定 reader 和已重开的 request/allocation 派生，不接受任意路径、raw resolver 或“已验证”布尔值。内部保留自己的原件副本，不能依赖调用者可改的返回 Buffer/Map 完成重验。缺历史 B/expected 原件时拒绝，不能现场生成。
+
+launcher 保留实时 Docker/DB 观察、credential 状态、会话/撤销/消费重查、签名和交接，以及全部创建目录、归档、admission sidecar 和清理写入。`readH3Inputs`、`requireFixedH3B`、`withExpectedAdmission` 须拆出只读主体后复用，不能把含执行动作的包装整体交给 verifier。GitHub 的实际调用仍由 launcher 采集，两方只共用其固定 argv/进程及输出的严格校验。只读模块不打开 session，不读签名密钥或数据库凭证，不连接 DB/OSS；全目标历史和计数仍由既有 reader/assessor 及下述 verifier 负责。提取与对应直接行为验证作为有界切片实施，复用现有 launcher/verifier 测试，不重跑无关矩阵；R2.2 提交门禁和后续真实 R2.4 仍须分别取得实际结果。
+
 **Files:**
 
+- Create: `scripts/release/manual-runner-source-inputs.mjs`（上述只读复用模块）
+- Modify: `scripts/release/launch-manual-stage1.mjs`（保留执行包装，静态复用只读主体）
+- Modify/Test: `scripts/release/launch-manual-stage1.test.mjs`（对应来源接缝行为）
 - Create: `scripts/release/verify-manual-runner-result.mjs`
 - Create/Test: `scripts/release/verify-manual-runner-result.test.mjs`
 - Create: `apps/release-runner/test/manual/manual-runner-migration-postgres.integration.test.mjs`
@@ -628,7 +637,7 @@ test("rejects fabricated approval before database access", async () => {
 - [ ] **2. 最小校验实现并 GREEN。** 按 frozen scenario 分支核对完整历史并调用共享 assessor：`normal` 只要求 target-observe、non-empty migration dry-run/apply、H3-B 独立权限读回、readonly verify 与 migration readonly replay，不强制 reconcile；`apply-interrupted` 要求自己的 target-observe/dry-run、一次真实 interrupted apply、获批恢复/H3-B 原件及针对该原 apply 的只读 reconcile，不要求先制造一次 successful apply，也不借 normal 链 checkpoint。分别用两个 ref 的完整单场景档案作正例；另 ref/run/目标混入、scenario 与步骤错配、删 H3-B、改表 OID/owner/角色、缺 provision 退出、第二阶段重新 apply/baseline、reconcile 本次 SUCCEEDED 但原 not-committed、未知原进程终态、仅 schema PASSED、normal replay 失联未决，均拒绝该场景 PASS。replay UNKNOWN 不能被原 SUCCEEDED checkpoint 覆盖或自动作为原 apply reconcile；第一阶段不要求未来 H3-B，本次只读调查签收不等于原迁移成功。本任务不新增双场景聚合函数/Schema或分类算法。
 - [ ] **3. 写两个实际 PG 测试文件。** 精确位置为 Files 列出的 `test/manual/` 两文件，该子目录不被默认 `test/*.test.mjs` 覆盖；相对导入按新增层级修正。仅这两份手工测试读取 `STAGE1_MANUAL_OPERATION_REF` 这个非秘密 lowercase UUID selector，默认测试、production CLI/launcher 均不读取；该变量不接受路径/digest/target/approval，值只交 R1 reader，禁止 latest discovery。migration 文件读取 frozen index/H3-A 后仅执行 target-observe、原始 baseline、dry-run/apply、保管读回并结束；verification 文件重新调用同一 reader，消费同一 ref/run/build/原始 baseline/迁移 IDs 和完成后的 H3-B 原件，再按 Step 2 的 frozen scenario 选择：`normal` 只执行 readonly verify + replay，`apply-interrupted` 只在本 ref 的独立恢复门槛完成后对其原 apply 执行 readonly reconcile，不借另一 ref。后者禁止 apply、重新分配目标或重建 baseline/index。使用 Node test；selector 或本阶段实际 H1/H2/H3 输入缺失即 throw `MANUAL_REAL_GATE_INPUT_REQUIRED`，没有 `.skip`/`.only`/test-name filter 或 Boolean 外部开关。测试真实调用 launcher，不能提供 `createClient/runProcess/handler` mock。测试进程不持有 migration/provision credential；Runner 能力凭证只由 R1 父会话交给对应单次 Runner。H3-B 是测试之间单独批准的人工操作，不伪装为 R1 `target-observe`/`runner-command` 批准，也不以 discovery 写回最新结果。
 - [ ] **4. 独立登记适用性。** 两文件属于真实最终镜像门禁，不混入 source CI DB 清单。分别按精确路径登记为有 owner、原因、复核日期和各自唯一执行命令的例外；manifest 不伪造 source/fresh 执行条目。`release:database-tests:discover` 必须发现并分类两文件，不能靠目录漏选。例外理由只覆盖 source 测试集合，不豁免 R2.4 两阶段实际执行。
-- [ ] **5. 无数据库提交门禁。** 运行 result verifier 单测、契约与测试发现，并在没有 H1/H2/H3 的开发环境执行默认 `pnpm --filter @subscription-saas/release-runner test`；默认运行必须不包含 `test/manual/` 两个真实门禁且不得出现 `MANUAL_REAL_GATE_INPUT_REQUIRED`。不能改 package glob、加 skip 或靠 discovery 例外控制 Node 选择。精确七文件 Prettier、unstaged/staged diff、独立审查后提交 `test(runner): define real manual migration verification gate`。报告明确两阶段真实数据库计数均为 NOT_RUN；真实文件仅由 R2.4 的两个精确命令执行。
+- [ ] **5. 无数据库提交门禁。** 运行 result verifier 单测、契约与测试发现，并在没有 H1/H2/H3 的开发环境执行默认 `pnpm --filter @subscription-saas/release-runner test`；默认运行必须不包含 `test/manual/` 两个真实门禁且不得出现 `MANUAL_REAL_GATE_INPUT_REQUIRED`。不能改 package glob、加 skip 或靠 discovery 例外控制 Node 选择。按上述十文件范围检查实际改动的 Prettier、unstaged/staged diff；若只读提取已独立提交，不重复将其列入本次 staged 范围。独立审查后提交 `test(runner): define real manual migration verification gate`。报告明确两阶段真实数据库计数均为 NOT_RUN；真实文件仅由 R2.4 的两个精确命令执行。
 
 例外及 contract manifest 修改与 B3/B5 串行集成，保留先前已合入条目；不重写整张清单。现有 `database-test-exceptions.v1.json` 的条目固定为 `path/owner/reason/scope/reviewDate`：新增两个精确测试路径，owner 为 `stage1-r2-owner`，scope 为 `manual-final-image-gate`，reviewDate 为 `2026-12-06`；各 reason 写明 source 集合不适用、由 R2.4 对应的唯一 Node 命令实际执行。R2 不修改 source suite manifest，也不让例外成为最终门禁的 skip。
 

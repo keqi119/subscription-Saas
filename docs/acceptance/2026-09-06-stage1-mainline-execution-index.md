@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 固定 expected-schema 准入前向登记
+
+隔离分支提交 `9e6829c0` 接通实际 R1/原 baseline/零凭证 CHALLENGE 后的固定 expected 输入、两次 gh 验真、原件保管与独立重开。真实子进程提前退出和失败二进制输出阻断后续 baseline 的两个 Important 已修复并获限定复审 Approved；[验证记录](2026-09-27-stage1-expected-admission-validation.md)保留最终定向 3/3/exit 0、全部中间失败和不同测试字节边界，不声明 28 项矩阵最终整套通过，也未重跑旧业务组。成功后仍停在下一命令请求门槛；完整 R2、真实云身份/H1/H2、R3/R4 与阶段 1 继续开放。服务器 GitHub 可使用已验证的进程内认证路径；Edge 重连仍失败、阿里云 OAuth 待回调。尚未整合或推送候选，后续保留原任务已审 API/Web 修复，仅接入发布链增量。
+
 ## 2026-09-27 同作业私有构建输入保管前向登记
 
 隔离分支提交 `d08be582` 接通原 H2、expected-schema producer 与固定 OSS binding，在同 source/run/attempt 完成去重保管、三个独立 attestation、有限支持原件与最后私有总索引。[验证记录](2026-09-27-stage1-same-job-custody-validation.md)保留新增定向 14/14/exit 0、原始失败、workflow 静态检查和独立审查 Approved。旧接口、公共产物清单保持，未重跑旧套件或整合/激活候选。真实云身份、H1、同候选 CI/保管、owner 导入和 R2/R3/R4 仍待完成；下一源码段为现有 R2 固定 expected reader，阶段 1 未关闭。

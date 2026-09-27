@@ -103,3 +103,11 @@ GitHub OIDC discovery 和 TLS 链也已实际读取：JWKS 主机为 `token.acti
 进一步仅查询拟用 writer 角色和本机 metadata 所指实例：`ram:GetRole` 返回 `NoPermission`，`ecs:DescribeDisks` 返回 `Forbidden.RAM`。`ims:GetOIDCProvider` 指定 `github-actions-stage1` 返回 `EntityNotExist.OIDCProvider`，只说明这个名称的响应，不能推定账户内没有同 issuer 的其他 provider 或已有创建权限。临时 RAM 配置已删除，无云写入；云盘加密仍 UNKNOWN。
 
 私密性准备还补齐了对象 ACL 与公共访问读回：reader 草稿仅在原对象前缀添加 `oss:GetObjectAcl`，原桶添加 `oss:GetBucketPolicyStatus`/`oss:GetBucketPublicAccessBlock`，不扩写入或资源范围。当前 `GetBucketAcl=private` 不足以替代这几项实际观察；未来适配器须显式 private 上传并独立核对公共访问状态。仍是草稿，未修改桶配置。依据：[OSS 公共访问规则](https://www.alibabacloud.com/help/en/oss/user-guide/block-public-access)、[GetBucketPolicyStatus](https://www.alibabacloud.com/help/en/oss/developer-reference/getbucketpolicystatus)。
+
+## Expected reader 实施期间的认证检查
+
+服务器现有 `gh auth status --hostname github.com` 实际 exit 1；结构化状态为 error、无已验证 login，错误分类为 HTTP 401 / invalid-token。JSON 模式自身 exit 0 不等于认证成功。检查仅保留白名单状态与错误分类，没有保存原始认证诊断或令牌值，也未改写服务器现有配置。
+
+本机官方 GitHub CLI 随后确认 `keqi119` 为 active/success。经已验证主机密钥的 SSH，将其现有认证只经 stdin 传入服务器短时进程环境，远程同一 CLI 实际读回 `github.com / keqi119 / active=true / state=success`，exit 0。没有将凭证放入命令参数、文件、仓库或工具输出；远程旧配置保持不变。后续授权执行可使用此进程内认证路径，但本次没有运行 attestation、候选 CI、迁移或部署。
+
+上述非秘密检查原件位于 R2 隔离树 scratch `expected-reader/host-gh-readiness.json` 与 `host-gh-ephemeral-readiness.json`。阿里云 OAuth 进程仍在等待回调，已确认官方 CLI 监听本机 12345 端口，指定配置文件不存在。另做一次浏览器运行时重置后重连用户指定 Edge 控制台，仍返回 `nodeRepl.fetch request failed`，未读取标签页或执行 UI 操作；该有界尝试存于同目录 `browser-reconnect-readiness.json`。管理认证、独立 RAM 身份及 H1 加密/备份仍未完成。桶 BPA=true/policyPublic=false 的后续实际 200 读回另见[私有原响应记录](2026-09-27-stage1-h2-storage-binding-validation.md)，不再将这两项列为未配置。

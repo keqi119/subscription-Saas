@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 同作业私有构建输入保管前向登记
+
+隔离分支提交 `d08be582` 接通原 H2、expected-schema producer 与固定 OSS binding，在同 source/run/attempt 完成去重保管、三个独立 attestation、有限支持原件与最后私有总索引。[验证记录](2026-09-27-stage1-same-job-custody-validation.md)保留新增定向 14/14/exit 0、原始失败、workflow 静态检查和独立审查 Approved。旧接口、公共产物清单保持，未重跑旧套件或整合/激活候选。真实云身份、H1、同候选 CI/保管、owner 导入和 R2/R3/R4 仍待完成；下一源码段为现有 R2 固定 expected reader，阶段 1 未关闭。
+
 ## 2026-09-27 私有原响应读取与本桶访问状态前向登记
 
 隔离分支 `09bacf94` 补齐既有 OSS binding 的有限 native body/响应字段采集，旧方法合同保持；跨 await key 绑定 Important 经真实 RED、最小修复和独立复审关闭。[验证记录](2026-09-27-stage1-h2-storage-binding-validation.md)区分原定向 3/3、旧受影响 1/1、最终修复 1/1、真实 exit 与既有 Prettier/本地 Node 限制。另用既有项目身份实际读回本桶 BPA=true、policyPublic=false，两项 200，无需云写入，临时 helper 已移除；独立 IAM/OIDC 角色和真实 custody 仍未完成。下一步为同作业有限对象保管/导入与 R2 expected reader；未重跑旧套件，阶段 1 未关闭。

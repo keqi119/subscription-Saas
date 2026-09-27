@@ -1,6 +1,20 @@
 # Stage 1 加密存储准备与 R2 父命令断点（2026-09-27）
 
-本记录保留当天各次真实断点。后续已完成服务器 Ed25519 密钥生成及独立加密备份卷恢复；R2 首阶段父命令链与中断后禁止重复启动的定向验证已通过。H3-B 后的第二阶段仍未接通，没有执行业务迁移、部署、真实 CI 或关闭阶段 1。
+本记录保留当天各次真实断点，以本节最新状态为准。R2 正常 dry-run → apply → verify → replay 执行链已通过并提交；异常恢复、真实数据库及最终候选验收仍未完成。没有执行业务迁移、部署、真实候选 CI 或关闭阶段 1。
+
+## 最新状态：正常链通过，真实发布仍开放
+
+提交 `aee01e39` 包含已实际验证的 R2 正常链及 H3 原件门禁。第八次正常用例自然结束，host / Node exit 0，1 pass / 0 fail / 0 skip；同一 ref 的四个阶段均完成，实际 launches=4、credentialReads=15、observerConnections=1。七个拒绝场景均保留 launches=2、credentialReads=9、observerConnections=1，没有新增启动或凭证读取。1194 份原件的完整集合、长度和 SHA-256 已由 root 独立核对，有限源码复核 ACCEPT。该测试使用真实 Node 子进程、协议帧和保管路径，但 PostgreSQL / CLI 边界为受控替身，不能计为线上迁移或真实 H3 验收。
+
+提交时逐字节核对并只入库已测的冻结源码、冻结测试；未运行的 UNKNOWN/reconcile 与 replay-loss 测试单独保留为工作区改动。下一步仅运行这两个必要场景，不重复已通过的正常链或旧容量矩阵。R2.2 整体门禁、独立结果 verifier、严格来源读取复用和真实 PostgreSQL 两阶段入口仍开放。
+
+提交 `620857ff` 修正了 PostgreSQL 17 快照导出对 DEFERRABLE 的错误前提，保留 REPEATABLE READ、只读事务、snapshot ID 和来源指纹检查；脱敏策略仅明确支持已核实的 Staging 与候选两个迁移 head。现有 snapshot-export 测试 20/20 通过。真实 SSH 只读检查确认 Staging 已完成 126 条迁移、无活动失败项，候选有 128 条；两个待应用迁移仍为 `20260925090000_stage1_operational_completion_terminal_shape` 与 `20260925091000_stage1_operational_completion_settlement_guard`。本轮没有执行导出或 DDL/DML。本地 migrate status 仍因缺少 `datasource.url` 返回 1，不能将只读远端检查写成本地命令通过。
+
+提交 `775a489b` 仅增加 R3 三阶段消费请求及签名绑定的闭合校验，原 contracts 测试 76/76 通过、有限复核 ACCEPT；仓库合同校验实际 exit 0，189 个文件、74 份 Schema。prebuild 不依赖未来构建或当前 attempt 的 producer；v1 不变，v2 纯校验不授予执行权限，现有生产 session 继续拒绝消费请求。真实 scope / destination / allocation 原件读取、session 接线、H1 密钥释放和认证后远端恢复仍未实现。
+
+官方 CLI 续期已成功用于新 RSA 恢复卷密文的 OSS 上传和完整 1 GiB 回读，当前没有等待续期的阻塞，详见[非商用密钥保管实测](2026-09-27-stage1-noncommercial-snapshot-key-custody.md)。仅证明同主机独立加密卷恢复及异地密文完整回读；异机解密恢复、真实 CI 独立 writer / audit-reader 身份验证仍未完成。商用 KMS 不在实施范围内。
+
+阶段 1 后续先完成 R2 异常恢复、结果核验入口和必要用例，并接通合法快照消费及固定远端执行；再对冻结候选执行受保护构建 / H2，完成依赖这些可信输入的 R2 真实数据库验收与 R3 fresh / snapshot 双链；按发布链对齐两条迁移并恢复 API / Web；最后执行 R4 A/B 主线、签约支付回调、激活、到期收口和维护恢复的真实验收与签收。后文较早断点中的“仍等待登录”“H3-B 未接通”等描述仅为历史事实，不能作为当前状态。
 
 ## 07:00 UTC 后续：同 ref 历史交接与 H3 原件合同
 

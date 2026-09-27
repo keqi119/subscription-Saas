@@ -2376,6 +2376,36 @@ async function expectedReference(reference, p, raw, proof, target, catalog, exte
   };
 }
 
+// Parse captured OSS XML only: no client, credentials or network. Shared with
+// the snapshot declaration reader; callers retain their own semantic checks.
+export async function readCapturedOssXml(body, root) {
+  const apiRequire = createRequire(new URL("../../apps/api/package.json", import.meta.url)),
+    ossRequire = createRequire(apiRequire.resolve("ali-oss")),
+    xml = ossRequire("xml2js");
+  const source = expectedText(body);
+  expectedRequire(!/<!DOCTYPE|<!ENTITY/iu.test(source));
+  let parsed;
+  try {
+    parsed = await xml.parseStringPromise(source, {
+      explicitRoot: true,
+      explicitArray: false,
+      strict: true
+    });
+  } catch {
+    fail("MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID");
+  }
+  expectedRequire(exact(parsed, [root]));
+  let value = parsed[root];
+  if (value && typeof value === "object" && value.$ !== undefined) {
+    expectedRequire(
+      exact(value.$, ["xmlns"]) && value.$.xmlns === "http://doc.oss-cn-hangzhou.aliyuncs.com"
+    );
+    value = { ...value };
+    delete value.$;
+  }
+  return value;
+}
+
 async function expectedOssImport(imported, p, facts, subjects, raw) {
   expectedRequire(
     exact(imported, [
@@ -2404,39 +2434,11 @@ async function expectedOssImport(imported, p, facts, subjects, raw) {
   );
   const reader = `acs:ram::${expectedAccount}:role/subscription-saas-stage1-evidence-audit-reader/stage1-reader-${p.ci.runId}-attempt-1`,
     writer = `acs:ram::${expectedAccount}:role/subscription-saas-stage1-evidence-writer/stage1-writer-${p.ci.runId}-attempt-1`;
-  // Resolve the installed strict XML parser only. This does not instantiate an
-  // OSS client, load credentials, or contact a storage service.
-  const apiRequire = createRequire(new URL("../../apps/api/package.json", import.meta.url)),
-    ossRequire = createRequire(apiRequire.resolve("ali-oss")),
-    xml = ossRequire("xml2js");
   const httpTime = (v) =>
     typeof v === "string" &&
     Number.isFinite(Date.parse(v)) &&
     new Date(Date.parse(v)).toUTCString() === v;
-  const xmlBody = async (body, root) => {
-    const source = expectedText(body);
-    expectedRequire(!/<!DOCTYPE|<!ENTITY/iu.test(source));
-    let parsed;
-    try {
-      parsed = await xml.parseStringPromise(source, {
-        explicitRoot: true,
-        explicitArray: false,
-        strict: true
-      });
-    } catch {
-      fail("MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID");
-    }
-    expectedRequire(exact(parsed, [root]));
-    let value = parsed[root];
-    if (value && typeof value === "object" && value.$ !== undefined) {
-      expectedRequire(
-        exact(value.$, ["xmlns"]) && value.$.xmlns === "http://doc.oss-cn-hangzhou.aliyuncs.com"
-      );
-      value = { ...value };
-      delete value.$;
-    }
-    return value;
-  };
+  const xmlBody = readCapturedOssXml;
   const aclBody = async (body) => {
     const v = await xmlBody(body, "AccessControlPolicy");
     expectedRequire(

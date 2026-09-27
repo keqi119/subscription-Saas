@@ -18,6 +18,12 @@
 
 本轮离线预检：Prisma schema validate 退出 0；migrate status 在子进程未设置数据库 URL 的条件下退出 1，错误为 `The datasource.url property is required in your Prisma config file when using prisma migrate status.` 此命令没有连接数据库，不能据此推断服务器当前迁移状态。修改文件语法、Prettier 和 diff 检查通过。
 
+R3 固定私有原件读取器现已实现：`readR3SnapshotInput({repoRoot,inputReference,now})` 在 Linux 固定 H1 身份下读取 UUID index 和摘要寻址的原件，复用既有路径/ACL/句柄重读、元数据、封装和 custody 校验。它核对来源/用途声明、扫描及指纹、原生 OSS 上传/Head/Get 的对象关系与时间、私有 ACL、保留期及版本；返回冻结事实与 `recheck/close`。Get 的密文正文引用只校对声明，未打开正文；原生 XML 解析从现有 expected-schema 读取器原样抽取共享，未新增云客户端或授权服务。
+
+该读取器的三个定向 Linux 用例自然退出 0：3 pass / 0 fail / 0 skip，14,334.682782 ms；245 项复制源码摘要一致。用例覆盖完整合成图、过期/错源/非零扫描/错版本/错误上传响应/非独立读者/过早读回/缺原件，以及重读过期和原件篡改。随后入口类型检查发现 selector 对象可触发隐式 `toString`；用有效绝对路径复现 RED 后，加上字符串与纯 Date 检查，该单一定向入口用例通过（1/0/0）。这不构成真实来源授权、当前 OSS 下载、认证解密、恢复或 R3 消费会话验收；生产 session 的 v3 接线仍待完成。
+
+本轮仓库合同校验通过：当前工作树 198 文件、78 schemas、128 migrations、13 commands；其中包含尚未提交的 R2 工作，不能当作最终候选证据。R2 normal 重验 `75700` 仍在运行，暂无终态；不能用此 R3 定向结果代替完整发布执行链结果。
+
 ## 剩余收口顺序
 
 | 顺序 | 尚未完成的工作                                                                                    | 完成依据                                                                                   |
@@ -54,3 +60,4 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 - H1 公共祖先误判：`consume-h1-paths01.log` 保存实际变更字段；`trust-ancestor-red01.log` / `trust-ancestor-green01.log` 和同名 JSON 保存定向结果及复制源码摘要。`consume-resource-red01` 至 `red04` 均属准备失败，尚未触达 receipt 变更边界。
 - 检查前移的有效边界回归：`consume-resource-red05.log`（0/1/0，171,240.391399 ms）与 `consume-resource-green01.log`（1/0/0）。每次都核对 243 项复制源码原始摘要；对应 manifest 分别为 `20260927-190140-561481037-copy.sha256` 和 `20260927-190549-209596540-copy.sha256`。原件保存在 `originals/consume-resource-change-*`，无真实密钥或业务凭据。
 - R3 声明校验：`r3-metadata-declarations-red01.log`、`r3-metadata-declarations-green01.log`；范围纠偏原文为 `r3-lawful-input-reader-scope-correction-20260928.md`，覆盖前 memo 的外部授权平台推导。
+- R3 固定读取器：`r3-reader-native01.log`、`20260927-194519-312525338-copy.sha256`；native copy 为 `/home/keqi_119/.cache/r3-reader-cF6Xog`。输入类型补强的 RED/GREEN 为本轮终端记录，未重复长链测试。

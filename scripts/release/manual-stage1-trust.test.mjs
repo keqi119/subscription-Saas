@@ -1273,6 +1273,178 @@ test(
     noAuthorityAccess(f);
   }
 );
+async function r3CreationFixture(t) {
+  const f = await buildFixture(t, { r3TargetPolicy: true });
+  const policyBytes = await fs.readFile(
+    path.join(f.repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json")
+  );
+  const policy = JSON.parse(policyBytes),
+    operationRef = randomUUID(),
+    id = operationRef.replaceAll("-", "");
+  const spec = {
+    schemaVersion: "manual-r3-creation-spec.v1",
+    operationRef,
+    profileDigest: sha256Canonical(f.profile),
+    ownerId: f.profile.ownerId,
+    sourceSha: f.sourceSha,
+    buildProofDigest: sha256Canonical(f.proof),
+    proofRawDigest: sha256Bytes(f.proofBytes),
+    materialRawDigest: sha256Bytes(f.materialBytes),
+    targetPolicyDigest: sha256Bytes(policyBytes),
+    phase: "source",
+    chain: "snapshot",
+    createdAt: new Date(Date.now() - 1000).toISOString(),
+    expiresAt: new Date(Date.now() + 3600000).toISOString(),
+    workspace: {
+      id,
+      capacityBytes: 64 * 1024 * 1024,
+      backingFile: path.posix.join(policy.workspace.backingRoot, id + ".luks"),
+      mountPath: path.posix.join(policy.workspace.mountRoot, id),
+      keyFile: path.posix.join(policy.workspace.keyRoot, id + ".key"),
+      mapperName: policy.workspace.mapperPrefix + id
+    },
+    cleanup: "stop-owned-engine-and-remove-workspace"
+  };
+  const specPath = path.join(
+    f.profile.storage.archiveRoot,
+    "inputs",
+    "r3",
+    operationRef,
+    "creation-spec.json"
+  );
+  await fs.mkdir(path.dirname(specPath), { recursive: true, mode: 0o700 });
+  const specBytes = encodeManualJson(spec);
+  await fs.writeFile(specPath, specBytes, { flag: "wx", mode: 0o600 });
+  return { ...f, operationRef, policy, spec, specPath, specBytes };
+}
+
+test("R3 CREATION API rejects overrides and accessors before native IO", async (t) => {
+  assert.equal(typeof trust.readFixedR3CreationSpec, "function");
+  let effects = 0;
+  const denied = () => {
+    effects++;
+    throw new Error("unexpected IO or accessor");
+  };
+  for (const name of ["open", "lstat", "readFile", "writeFile"]) t.mock.method(fs, name, denied);
+  t.mock.method(childProcess, "execFile", denied);
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const input = { repoRoot: path.resolve("unused"), operationRef: randomUUID() };
+  for (const value of [
+    { ...input, specFile: "/caller/spec.json" },
+    { ...input, proofBytes: Buffer.from("{}") },
+    { ...input, operationRef: "../escape" },
+    { ...input, repoRoot: { toString: denied } },
+    Object.defineProperty({ ...input }, "operationRef", { get: denied, enumerable: true })
+  ])
+    await assert.rejects(trust.readFixedR3CreationSpec(value), {
+      code: "R3_CREATION_INPUT_UNAVAILABLE"
+    });
+  assert.equal(effects, 0);
+});
+
+test(
+  "R3 CREATION holds the candidate-bound spec and rejects original drift",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3CreationFixture(t);
+    const result = await trust.readFixedR3CreationSpec({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef
+    });
+    t.after(() => result.close());
+    const required = [
+      "spec",
+      "creationSpecDigest",
+      "policy",
+      "databaseTargetPolicy",
+      "build",
+      "sourceSha",
+      "recheck",
+      "close"
+    ];
+    assert.ok(required.every((key) => Object.hasOwn(result, key)));
+    assert.ok(
+      Object.keys(result).every((key) =>
+        [...required, "targetPolicyDigest", "profileDigest"].includes(key)
+      )
+    );
+    assert.deepEqual(result.spec, f.spec);
+    assert.equal(result.creationSpecDigest, sha256Bytes(f.specBytes));
+    assert.equal(result.policy.profileDigest, sha256Canonical(f.profile));
+    assert.equal(result.databaseTargetPolicy.policyId, "s1-release-compose-ephemeral");
+    assert.equal(result.build.buildProofDigest, sha256Canonical(f.proof));
+    assert.equal(result.sourceSha, f.sourceSha);
+    assert.equal(result.build.promotionEligible, false);
+    assert.ok(Object.isFrozen(result.spec.workspace) && Object.isFrozen(result.policy.workspace));
+    await result.recheck();
+    await fs.appendFile(f.specPath, " ");
+    await assert.rejects(result.recheck(), { code: "R3_CREATION_INPUT_UNAVAILABLE" });
+    await result.close();
+    await result.close();
+    await assert.rejects(result.recheck(), { code: "R3_CREATION_INPUT_UNAVAILABLE" });
+    noAuthorityAccess(f);
+  }
+);
+
+test(
+  "R3 CREATION rejects future facts candidate policy path and expired scope",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3CreationFixture(t);
+    const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    for (const mutate of [
+      (s) => {
+        s.engineId = "future-engine";
+      },
+      (s) => {
+        s.destinationAdmissionDigest = digest("e");
+      },
+      (s) => {
+        s.jobAdmissionDigest = digest("e");
+      },
+      (s) => {
+        s.input = { inputReference: randomUUID() };
+      },
+      (s) => {
+        s.buildProofDigest = digest("e");
+      },
+      (s) => {
+        s.sourceSha = "e".repeat(40);
+      },
+      (s) => {
+        s.targetPolicyDigest = digest("e");
+      },
+      (s) => {
+        s.workspace.mountPath = "/tmp/escape";
+      },
+      (s) => {
+        s.workspace.id = "e".repeat(32);
+      },
+      (s) => {
+        s.workspace.capacityBytes++;
+      },
+      (s) => {
+        s.workspace.capacityBytes = 63 * 1024 * 1024;
+      },
+      (s) => {
+        s.expiresAt = new Date(Date.now() - 1).toISOString();
+      }
+    ]) {
+      const spec = structuredClone(f.spec);
+      mutate(spec);
+      await fs.writeFile(f.specPath, encodeManualJson(spec));
+      await assert.rejects(trust.readFixedR3CreationSpec(input), {
+        code: "R3_CREATION_INPUT_UNAVAILABLE"
+      });
+    }
+    noAuthorityAccess(f);
+  }
+);
+
 async function replaceReceipt(f, mutate) {
   mutate(f.receipt);
   f.receiptBytes = encodeManualJson(f.receipt);

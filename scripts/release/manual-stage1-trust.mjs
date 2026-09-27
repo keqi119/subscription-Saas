@@ -1189,6 +1189,167 @@ export async function readFixedR3TargetPolicy(input) {
   }
 }
 
+function r3CreationSpec(value, operationRef, profile) {
+  exact(value, [
+    "schemaVersion",
+    "operationRef",
+    "profileDigest",
+    "ownerId",
+    "sourceSha",
+    "buildProofDigest",
+    "proofRawDigest",
+    "materialRawDigest",
+    "targetPolicyDigest",
+    "phase",
+    "chain",
+    "createdAt",
+    "expiresAt",
+    "workspace",
+    "cleanup"
+  ]);
+  requireThat(
+    value.schemaVersion === "manual-r3-creation-spec.v1" &&
+      value.operationRef === operationRef &&
+      value.profileDigest === sha256Canonical(profile) &&
+      value.ownerId === profile.ownerId &&
+      typeof value.sourceSha === "string" &&
+      /^[0-9a-f]{40}$/u.test(value.sourceSha) &&
+      ["buildProofDigest", "proofRawDigest", "materialRawDigest", "targetPolicyDigest"].every(
+        (field) => typeof value[field] === "string" && DIGEST.test(value[field])
+      ) &&
+      ["source", "final"].includes(value.phase) &&
+      ["fresh", "snapshot"].includes(value.chain) &&
+      value.cleanup === "stop-owned-engine-and-remove-workspace"
+  );
+  const workspace = value.workspace;
+  exact(workspace, ["id", "capacityBytes", "backingFile", "mountPath", "keyFile", "mapperName"]);
+  requireThat(
+    workspace.id === operationRef.replaceAll("-", "") &&
+      Number.isSafeInteger(workspace.capacityBytes) &&
+      workspace.capacityBytes >= 64 * 1048576 &&
+      workspace.capacityBytes % 1048576 === 0
+  );
+  for (const field of ["backingFile", "mountPath", "keyFile", "mapperName"])
+    requireThat(typeof workspace[field] === "string");
+}
+
+// Fixed owner-imported plan only. Actual hosted job admission and manual
+// consumption must precede creation; no key, payload or remote target is opened.
+export async function readFixedR3CreationSpec(input) {
+  const code = "R3_CREATION_INPUT_UNAVAILABLE",
+    opened = [];
+  let policyInput,
+    closed = false,
+    closing;
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    closing = (async () => {
+      const outcomes = await Promise.allSettled([
+        ...opened.map((item) => item.close()),
+        ...(policyInput ? [policyInput.close()] : [])
+      ]);
+      for (const item of opened) item.bytes.fill(0);
+      if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
+    })();
+    return closing;
+  };
+  try {
+    exact(input, ["repoRoot", "operationRef"]);
+    requireThat(
+      typeof input.repoRoot === "string" &&
+        typeof input.operationRef === "string" &&
+        UUID.test(input.operationRef)
+    );
+    const repoRoot = absolute(input.repoRoot),
+      operationRef = input.operationRef;
+    requireThat(process.platform === "linux");
+    const profile = await loadFixedManualProfile({ repoRoot }),
+      actual = await actualHost(),
+      archiveRoot = profile.storage.archiveRoot;
+    const read = async (file) => {
+      requireThat(!closed);
+      const held = await openInput(file, { principal: actual.principal, privateRoot: archiveRoot });
+      opened.push(held);
+      requireThat(held.bytes.length > 0 && !closed);
+      return held.bytes;
+    };
+    const specBytes = await read(
+        path.join(archiveRoot, "inputs", "r3", operationRef, "creation-spec.json")
+      ),
+      spec = json(specBytes, true);
+    r3CreationSpec(spec, operationRef, profile);
+    const checkWindow = () => {
+      const now = Date.now(),
+        created = instant(spec.createdAt),
+        expires = instant(spec.expiresAt);
+      requireThat(
+        instant(profile.validFrom) <= created &&
+          created <= now &&
+          created < expires &&
+          now < expires &&
+          expires <= instant(profile.expiresAt)
+      );
+    };
+    checkWindow();
+    const buildRoot = path.join(archiveRoot, "inputs", "build"),
+      proofBytes = await read(path.join(buildRoot, `${spec.proofRawDigest.slice(7)}.proof.json`)),
+      materialBytes = await read(
+        path.join(buildRoot, `${spec.materialRawDigest.slice(7)}.material.json`)
+      );
+    requireThat(
+      sha256Bytes(proofBytes) === spec.proofRawDigest &&
+        sha256Bytes(materialBytes) === spec.materialRawDigest
+    );
+    policyInput = await readFixedR3TargetPolicy({ repoRoot, proofBytes, materialBytes });
+    requireThat(
+      spec.buildProofDigest === policyInput.build.buildProofDigest &&
+        spec.sourceSha === policyInput.sourceSha &&
+        spec.profileDigest === policyInput.profileDigest &&
+        spec.targetPolicyDigest === policyInput.policyRawDigest
+    );
+    const roots = policyInput.policy.workspace,
+      workspace = spec.workspace,
+      id = workspace.id;
+    requireThat(
+      workspace.backingFile === path.posix.join(roots.backingRoot, `${id}.luks`) &&
+        workspace.mountPath === path.posix.join(roots.mountRoot, id) &&
+        workspace.keyFile === path.posix.join(roots.keyRoot, `${id}.key`) &&
+        workspace.mapperName === `${roots.mapperPrefix}${id}`
+    );
+    const recheck = async () => {
+      try {
+        requireThat(!closed);
+        checkWindow();
+        requireThat(equal(await actualHost(), actual));
+        await policyInput.recheck();
+        for (const item of opened) await item.recheck();
+        checkWindow();
+        requireThat(!closed);
+      } catch {
+        await close();
+        fail(code);
+      }
+    };
+    await recheck();
+    return Object.freeze({
+      spec: freeze(spec),
+      creationSpecDigest: sha256Bytes(specBytes),
+      profileDigest: policyInput.profileDigest,
+      targetPolicyDigest: policyInput.policyRawDigest,
+      policy: policyInput.policy,
+      databaseTargetPolicy: policyInput.databaseTargetPolicy,
+      build: policyInput.build,
+      sourceSha: policyInput.sourceSha,
+      recheck,
+      close
+    });
+  } catch {
+    await close();
+    fail(code);
+  }
+}
+
 export async function openTrustedManualSession(input) {
   let keyInput, signingKey;
   try {

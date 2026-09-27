@@ -45,3 +45,13 @@ final 不只匹配字面 `execute`：必须核实调用方 run、展开后的实
 `manual-runner-request.v4` 和 `manual-launch-authorization.v4` 表达 `target-create / create-isolated-target`。请求绑定 profile、会话、一次尝试、唯一 build proof、source/final、fresh/snapshot、目标策略、creation spec 和实际 job admission 的摘要。创建请求不携带 snapshot 输入、消费 scope 或尚不存在的 destination admission；它们属于随后独立核验的消费阶段。
 
 `validateManualTargetCreationRequest` 与 `verifyManualTargetCreationAuthorizationBinding` 只提供闭合结构和纯签名绑定检查；签名域、profile 密钥和五分钟上限沿用现有实现。它们不出现在公共 barrel，不产生 branded decision，也没有让旧 R2 runtime 接受 v4。实际 creation spec/job 原件读取、会话台账及执行仍需后续接线。合同回归 81/81 通过，不代替这些执行证据。
+
+## 创建规范原件
+
+创建规范固定保存在既有私有 archive 下的 `inputs/r3/{operationRef}/creation-spec.json`。入口只接受 repoRoot 和规范小写 UUID selector，不接收路径、IO、已验证结果或调用方时钟。规范采用 canonical JSON，版本 `manual-r3-creation-spec.v1`；其闭合字段为 operationRef、profileDigest、ownerId、sourceSha、buildProofDigest、proofRawDigest、materialRawDigest、targetPolicyDigest、phase、chain、createdAt、expiresAt、workspace、cleanup。targetPolicyDigest 是固定策略原始字节的 SHA-256，三个构建字段分别引用同一 H2 的 canonical proof 与两份原始文件。
+
+workspace 只声明 id、capacityBytes、backingFile、mountPath、keyFile、mapperName。id 为 operationRef 去除横线后的 32 位值，四个名字由固定策略根目录和 id 唯一导出；capacityBytes 为至少 64 MiB 的安全整数且按 MiB 对齐，实际创建仍须检查主机容量和格式化结果。有效窗必须位于既有 profile 内且当前有效。cleanup 仅允许 `stop-owned-engine-and-remove-workspace`，执行时只能清理本次实际拥有的资源。
+
+读取器复用 H1 和固定策略/H2 读取器，持有规范及构建原件，在 recheck 中重新核对实际主机、原件、时窗及源码绑定。规范不含 jobAdmissionDigest、实际 Engine/PG/destination、输入或密钥；随后同 job 的已签名 descriptor 可以绑定 creationSpecDigest，不形成未来事实循环。此读取结果只是计划事实，仍须实际 job 准入及同一 manual 会话消费后才能创建；它不读取私钥或 payload，不开启目标或获得锁。
+
+该入口 `readFixedR3CreationSpec({repoRoot,operationRef})` 已实现，API 拒绝用例先 RED 后 GREEN，3 个 Linux 定向用例全部通过（0 skip）。用例只证明规范与实际固定读取边界，GH 响应仍使用合成夹具；实际当前 job 准入读取器尚未接线。现有 `successfulRun` 强制 completed/success，用于已完成构建，不能复用于创建前正在运行的 job。

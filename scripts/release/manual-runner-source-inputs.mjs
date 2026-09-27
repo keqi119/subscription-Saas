@@ -855,6 +855,781 @@ async function openManualH3AInputs(input) {
   }
 }
 
+function h3Acl(value) {
+  if (value === null) return true;
+  const oid0 = (x) => x === "0" || h3Oid(x);
+  h3Rows(value, [h3Oid, oid0, h3Text, (x) => typeof x === "boolean"], (row) => [
+    BigInt(row[0]),
+    BigInt(row[1]),
+    row[2]
+  ]);
+  return true;
+}
+function h3Privileges(value, order) {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item, index) =>
+        order.includes(item) &&
+        (index === 0 || order.indexOf(value[index - 1]) < order.indexOf(item))
+    )
+  );
+}
+function h3Permission(capture, kind, context, after, selectReadback) {
+  const data = capture.native.data,
+    identity = context.readback.roles[kind],
+    known = h3RoleRows(data, context.readback.roles),
+    role = known.get(identity.oid);
+  h3Require(
+    role[2] === true &&
+      role.slice(3, 8).every((value) => value === false) &&
+      !data.memberships.some((row) => row[1] === identity.oid)
+  );
+  const oid0 = (x) => x === "0" || h3Oid(x),
+    bool = (x) => typeof x === "boolean";
+  const perms = (order) => (value) => h3Privileges(value, order);
+  const dbPerms = ["CONNECT", "CREATE", "TEMPORARY"],
+    schemaPerms = ["USAGE", "CREATE"],
+    tablePerms = [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE",
+      "TRUNCATE",
+      "REFERENCES",
+      "TRIGGER",
+      "MAINTAIN"
+    ],
+    seqPerms = ["USAGE", "SELECT", "UPDATE"],
+    colPerms = ["SELECT", "INSERT", "UPDATE", "REFERENCES"];
+  h3Rows([data.database], [h3Oid, h3Text, h3Oid, h3Acl, perms(dbPerms), perms(dbPerms)], (row) => [
+    BigInt(row[0])
+  ]);
+  h3Require(
+    data.database[0] === context.readback.databaseOid &&
+      data.database[1] === context.fixed.operation.targetIntent.databaseName &&
+      data.database[2] !== identity.oid &&
+      h3Same(data.database[4], ["CONNECT"]) &&
+      data.database[5].length === 0
+  );
+  h3Rows(
+    data.schemas,
+    [h3Oid, h3Text, h3Oid, h3Acl, perms(schemaPerms), perms(schemaPerms)],
+    (row) => [BigInt(row[0])]
+  );
+  h3Require(
+    new Set(data.schemas.map((row) => row[1])).size === data.schemas.length &&
+      data.schemas.every(
+        (row) =>
+          !row[1].startsWith("pg_") &&
+          row[1] !== "information_schema" &&
+          row[2] !== identity.oid &&
+          row[5].length === 0 &&
+          h3Same(row[4], row[1] === "public" ? ["USAGE"] : [])
+      )
+  );
+  const publicSchema = data.schemas.find((row) => row[1] === "public");
+  h3Require(publicSchema);
+  const schemas = new Map(data.schemas.map((row) => [row[0], row]));
+  h3Rows(
+    data.relations,
+    [
+      h3Oid,
+      h3Oid,
+      h3Text,
+      (x) => ["r", "p", "v", "m", "f", "S", "i", "I", "t", "c"].includes(x),
+      h3Oid,
+      h3Acl,
+      Array.isArray,
+      Array.isArray
+    ],
+    (row) => [BigInt(row[0])]
+  );
+  const relations = new Map(data.relations.map((row) => [row[0], row]));
+  h3Require(
+    new Set(data.relations.map((row) => row[1] + "/" + row[2])).size === data.relations.length
+  );
+  for (const row of data.relations) {
+    const order =
+      row[3] === "S" ? seqPerms : ["r", "p", "v", "m", "f"].includes(row[3]) ? tablePerms : [];
+    h3Require(
+      schemas.has(row[1]) &&
+        row[4] !== identity.oid &&
+        h3Privileges(row[6], order) &&
+        h3Privileges(row[7], order) &&
+        row[7].length === 0
+    );
+    const migration = row[0] === context.table.oid;
+    if (migration) {
+      h3Require(
+        row[1] === publicSchema[0] &&
+          row[2] === "_prisma_migrations" &&
+          row[3] === "r" &&
+          row[4] === context.table.owner.oid &&
+          h3Same(row[6], after ? ["SELECT"] : [])
+      );
+      h3Require(
+        row[5] === null ||
+          row[5].every(
+            (acl) =>
+              acl[1] === context.table.owner.oid ||
+              (after &&
+                [context.readback.roles.verify.oid, context.readback.roles.observer.oid].includes(
+                  acl[1]
+                ) &&
+                acl[2] === "SELECT" &&
+                acl[3] === false)
+          )
+      );
+    } else h3Require(row[2] !== "_prisma_migrations" && row[6].length === 0);
+  }
+  h3Require(relations.has(context.table.oid));
+  h3Rows(
+    data.columns,
+    [
+      h3Oid,
+      (x) => Number.isSafeInteger(x) && x > 0,
+      h3Text,
+      h3Acl,
+      perms(colPerms),
+      perms(colPerms)
+    ],
+    (row) => [BigInt(row[0]), row[1]]
+  );
+  for (const row of data.columns) {
+    const relation = relations.get(row[0]);
+    h3Require(relation && row[5].length === 0);
+    if (row[0] === context.table.oid)
+      h3Require(
+        (row[3] === null || row[3].length === 0) && h3Same(row[4], after ? ["SELECT"] : [])
+      );
+    else h3Require(row[4].length === 0);
+  }
+  h3Require(data.columns.some((row) => row[0] === context.table.oid));
+  h3Rows(
+    [data.controlFunction],
+    [h3Oid, (x) => x === "pg_catalog.pg_control_system()", h3Oid, h3Acl, bool, bool],
+    (row) => [BigInt(row[0])]
+  );
+  h3Require(
+    data.controlFunction[2] !== identity.oid &&
+      data.controlFunction[4] === true &&
+      data.controlFunction[5] === false
+  );
+  h3Rows(
+    data.defaultAcls,
+    [h3Oid, oid0, (x) => ["r", "S", "f", "T", "n"].includes(x), h3Acl],
+    (row) => [BigInt(row[0]), BigInt(row[1]), row[2]]
+  );
+  h3Require(
+    data.defaultAcls.every(
+      (row) =>
+        row[0] !== identity.oid &&
+        (row[1] === "0" || schemas.has(row[1])) &&
+        (row[3] === null || row[3].every((acl) => !["0", identity.oid].includes(acl[1])))
+    )
+  );
+  return {
+    kind,
+    identity,
+    tls: true,
+    superuser: false,
+    createdb: false,
+    createrole: false,
+    replication: false,
+    bypassrls: false,
+    memberships: [],
+    ownedSchemas: [],
+    ownedRelations: [],
+    databasePrivileges: { connect: true, create: false, temporary: false },
+    publicSchemaPrivileges: { usage: true, create: false },
+    migrationTablePrivileges: {
+      select: after,
+      insert: false,
+      update: false,
+      delete: false,
+      truncate: false,
+      references: false,
+      trigger: false,
+      maintain: false,
+      grantOptions: [],
+      columnPrivileges: []
+    },
+    pgControlSystem: {
+      functionOid: data.controlFunction[0],
+      signature: "pg_catalog.pg_control_system()",
+      execute: true
+    },
+    otherUserRelationPrivileges: [],
+    privilegeInventory: capture.value.stdout,
+    selectReadback
+  };
+}
+
+async function openManualH3BInputs(input) {
+  if (
+    !exact(input, [
+      "fixed",
+      "profile",
+      "principal",
+      "h3InputBytes",
+      "targetContext",
+      "migration"
+    ]) ||
+    !exact(input.migration, [
+      "branch",
+      "request",
+      "execution",
+      "process",
+      "postObservation",
+      "migration"
+    ]) ||
+    !Array.isArray(input.h3InputBytes) ||
+    input.h3InputBytes.length !== 2 ||
+    !input.h3InputBytes.every((bytes) => Buffer.isBuffer(bytes) && bytes.length <= 1048576)
+  )
+    fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+  const operation = Object.getOwnPropertyDescriptor(input.fixed, "operation"),
+    indexDigest = Object.getOwnPropertyDescriptor(input.fixed, "indexDigest");
+  if (!operation || !("value" in operation) || !indexDigest || !("value" in indexDigest))
+    fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+  // Only inert, independently assessed history crosses this private boundary.
+  // Copy it before the first await; this reader never establishes that assessment.
+  const facts = {
+      ...sourceValue({
+        fixed: { operation: operation.value, indexDigest: indexDigest.value },
+        profile: input.profile,
+        principal: input.principal,
+        targetContext: input.targetContext
+      }),
+      h3InputBytes: input.h3InputBytes.map((bytes) => Buffer.from(bytes))
+    },
+    migration = sourceValue(input.migration);
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+  if (
+    !uuid.test(facts.fixed.operation.operationRef) ||
+    !uuid.test(migration.request.attemptId) ||
+    !path.isAbsolute(facts.profile.storage.archiveRoot) ||
+    path.resolve(facts.profile.storage.archiveRoot) !== facts.profile.storage.archiveRoot
+  )
+    fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+  const root = path.join(
+      facts.profile.storage.archiveRoot,
+      "inputs",
+      "operations",
+      facts.fixed.operation.operationRef
+    ),
+    opened = [],
+    values = [];
+  let sources,
+    finalSnapshot,
+    closed = false;
+  const copies = [];
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    const settled = await Promise.allSettled([
+      ...(sources ? [sources.close()] : []),
+      ...opened.map((item) => item.close())
+    ]);
+    for (const item of opened) item.bytes.fill(0);
+    for (const copy of [...copies, ...facts.h3InputBytes]) copy.fill(0);
+    finalSnapshot?.bytes.fill(0);
+    const failed = settled.find((result) => result.status === "rejected");
+    if (failed) throw failed.reason;
+  };
+  try {
+    for (const name of ["h3-b-approval.json", "h3-b-readback.json"]) {
+      let item;
+      try {
+        item = await pinPrivateInput(path.join(root, name), {
+          principal: facts.principal,
+          privateRoot: facts.profile.storage.archiveRoot
+        });
+      } catch (cause) {
+        if (cause.code === "MANUAL_OPERATION_INPUT_UNAVAILABLE" || cause.code === "ENOENT")
+          fail("MANUAL_H3_B_INPUT_REQUIRED");
+        throw cause;
+      }
+      opened.push(item);
+      const value = canonicalH3(item.bytes);
+      values.push(value);
+      if (
+        value.operationRef !== facts.fixed.operation.operationRef ||
+        value.indexDigest !== facts.fixed.indexDigest ||
+        value.runId !== facts.fixed.operation.runId ||
+        value.profileDigest !== facts.fixed.operation.profileDigest ||
+        value.ownerId !== facts.profile.ownerId ||
+        value.promotionEligible !== false ||
+        sha256Canonical(value.targetIntent) !==
+          sha256Canonical(facts.fixed.operation.targetIntent) ||
+        sha256Canonical(value.migration) !== sha256Canonical(migration.migration)
+      )
+        fail("MANUAL_H3_BINDING_INVALID");
+      await item.recheck();
+    }
+    const [approval, readback] = values,
+      [h3AApproval, h3AReadback] = facts.h3InputBytes.map(canonicalH3);
+    const common = [
+      "operationRef",
+      "indexDigest",
+      "runId",
+      "profileDigest",
+      "targetIntent",
+      "ownerId",
+      "promotionEligible"
+    ];
+    h3Require(
+      exact(approval, [
+        "recordVersion",
+        ...common,
+        "h3AApproval",
+        "h3AReadback",
+        "approvedAt",
+        "expiresAt",
+        "branch",
+        "migration",
+        "preApprovalEvidence",
+        "investigationApprovalRef",
+        "target",
+        "migrationTable",
+        "roles",
+        "grant",
+        "operationSheet"
+      ])
+    );
+    h3Require(
+      exact(readback, [
+        "recordVersion",
+        ...common,
+        "approval",
+        "migration",
+        "target",
+        "migrationTable",
+        "writerQuiescence",
+        "before",
+        "grantStartedAt",
+        "grantCompletedAt",
+        "grantEvidence",
+        "after",
+        "provisionExit",
+        "readbackAt",
+        "readbackReport"
+      ])
+    );
+    h3Require(
+      approval.recordVersion === "manual-h3-b-approval.v1" &&
+        readback.recordVersion === "manual-h3-b-readback.v1" &&
+        approval.branch === migration.branch
+    );
+    h3Require(
+      typeof approval.operationSheet === "string" &&
+        approval.operationSheet.length > 0 &&
+        typeof readback.readbackReport === "string" &&
+        readback.readbackReport.length > 0
+    );
+    h3Require(
+      h3Same(approval.h3AApproval, facts.targetContext.h3Approval) &&
+        h3Same(approval.h3AReadback, facts.targetContext.h3Readback)
+    );
+    h3Require(
+      h3Same(readback.approval, {
+        digest: sha256Bytes(opened[0].bytes),
+        bytes: opened[0].bytes.length
+      })
+    );
+    const target = {
+      cluster: facts.targetContext.cluster,
+      databaseName: facts.fixed.operation.targetIntent.databaseName,
+      databaseOid: facts.targetContext.databaseOid
+    };
+    h3Require(
+      h3Same(approval.target, target) &&
+        h3Same(readback.target, target) &&
+        h3Same(approval.roles, h3AReadback.roles)
+    );
+    h3Table(approval.migrationTable);
+    h3Require(
+      h3Same(approval.migrationTable.owner, approval.roles.migrate) &&
+        h3Same(readback.migrationTable, approval.migrationTable)
+    );
+    h3Require(
+      h3Same(approval.grant, {
+        privileges: ["SELECT"],
+        grantees: ["verify", "observer"],
+        grantOption: false
+      })
+    );
+    h3Require(
+      migration.branch === "normal-success"
+        ? approval.investigationApprovalRef === null
+        : h3Text(approval.investigationApprovalRef)
+    );
+    const time = () =>
+      h3Require(
+        h3Instant(approval.approvedAt) < h3Instant(approval.expiresAt) &&
+          h3Instant(approval.expiresAt) <= h3Instant(facts.profile.expiresAt) &&
+          h3Instant(approval.approvedAt) <= Date.now() &&
+          Date.now() <= h3Instant(approval.expiresAt) &&
+          h3Instant(readback.readbackAt) <= Date.now() &&
+          h3Instant(readback.readbackAt) <= h3Instant(approval.expiresAt)
+      );
+    time();
+    const context = {
+      approval: h3AApproval,
+      readback: h3AReadback,
+      fixed: facts.fixed,
+      table: approval.migrationTable
+    };
+    sources = await h3Sources(facts.fixed, facts.profile, facts.principal, context);
+    h3Require(
+      (await sources.raw(approval.h3AApproval)).equals(facts.h3InputBytes[0]) &&
+        (await sources.raw(approval.h3AReadback)).equals(facts.h3InputBytes[1]) &&
+        (await sources.raw(readback.approval)).equals(opened[0].bytes)
+    );
+    const pre = await sources.json(approval.preApprovalEvidence);
+    h3Require(exact(pre, ["roles", "table", "writerProcess", "writerSessions"]));
+    const preRoles = await sources.capture(pre.roles, "roles", "observer"),
+      preTable = await sources.capture(pre.table, "roles", "observer"),
+      preSessions = await sources.capture(pre.writerSessions, "sessions", "observer");
+    const knownRoles = h3RoleRows(preRoles.native.data, approval.roles);
+    context.provisionMemberships = preRoles.native.data.memberships
+      .filter((row) => row[1] === approval.roles.provision.oid)
+      .map((row) => ({ oid: row[0], name: knownRoles.get(row[0])[1] }))
+      .sort((left, right) => (BigInt(left.oid) < BigInt(right.oid) ? -1 : 1));
+    h3Table(preRoles.native.data.migrationTable, approval.migrationTable);
+    h3Table(preTable.native.data.migrationTable, approval.migrationTable);
+    const processRef = {
+      digest: migration.migration.processEvidenceDigest,
+      bytes: encodeManualJson(migration.process).length
+    };
+    h3Require(
+      h3Same(pre.writerProcess, processRef) &&
+        (await sources.raw(pre.writerProcess)).equals(encodeManualJson(migration.process)) &&
+        migration.process.closedAt !== null
+    );
+    for (const capture of [preRoles, preTable, preSessions])
+      h3Require(
+        h3Instant(migration.process.closedAt) <= h3Instant(capture.native.observedAt) &&
+          h3Instant(capture.value.recordedAt) <= h3Instant(approval.approvedAt)
+      );
+    const writerCount = (capture) =>
+      capture.native.data.sessions.filter(
+        (row) => row[1] === target.databaseOid && row[2] === approval.roles.migrate.oid
+      ).length;
+    h3Require(writerCount(preSessions) === 0);
+    const quiescence = readback.writerQuiescence;
+    h3Require(
+      exact(quiescence, [
+        "observedAt",
+        "containerId",
+        "containerState",
+        "processEvidence",
+        "databaseSessions",
+        "sessionReadback"
+      ]) &&
+        quiescence.containerId === migration.request.containerId &&
+        quiescence.containerState === "exited" &&
+        quiescence.databaseSessions === 0 &&
+        h3Same(quiescence.processEvidence, processRef)
+    );
+    h3Require(
+      (await sources.raw(quiescence.processEvidence)).equals(encodeManualJson(migration.process))
+    );
+    h3Require(
+      migration.execution.processEvidenceDigest === migration.migration.processEvidenceDigest
+    );
+    const finalFile = path.join(
+        root,
+        "runner-launch",
+        migration.request.attemptId,
+        "final-inspect.stdout"
+      ),
+      final = await pinPrivateInput(finalFile, {
+        principal: facts.principal,
+        privateRoot: facts.profile.storage.archiveRoot
+      });
+    try {
+      let inspected;
+      try {
+        inspected = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(final.bytes));
+      } catch {
+        fail("MANUAL_H3_FORMAT_INVALID");
+      }
+      h3Require(
+        inspected.id === migration.request.containerId &&
+          inspected.running === false &&
+          inspected.paused === false &&
+          inspected.restarting === false &&
+          inspected.dead === false
+      );
+      await sources.raw({ digest: sha256Bytes(final.bytes), bytes: final.bytes.length });
+      await final.recheck();
+      finalSnapshot = {
+        bytes: Buffer.from(final.bytes),
+        chain: await checkedPrivatePath(finalFile, {
+          principal: facts.principal,
+          privateRoot: facts.profile.storage.archiveRoot
+        })
+      };
+    } finally {
+      await final.close();
+    }
+    const runnerLaunchRoot = path.dirname(path.dirname(finalFile));
+    const finalRecheck = async () => {
+      const item = await pinPrivateInput(finalFile, {
+        principal: facts.principal,
+        privateRoot: facts.profile.storage.archiveRoot
+      });
+      try {
+        await item.recheck();
+        const chain = await checkedPrivatePath(finalFile, {
+          principal: facts.principal,
+          privateRoot: facts.profile.storage.archiveRoot
+        });
+        h3Require(
+          item.bytes.equals(finalSnapshot.bytes) &&
+            chain.length === finalSnapshot.chain.length &&
+            chain.every(
+              (entry, index) =>
+                entry.path === finalSnapshot.chain[index].path &&
+                (entry.path === runnerLaunchRoot
+                  ? samePublicDirectory(entry.stat, finalSnapshot.chain[index].stat)
+                  : entry.path === facts.profile.storage.archiveRoot ||
+                      entry.path.startsWith(facts.profile.storage.archiveRoot + path.sep)
+                    ? sameIdentity(
+                        entry.stat,
+                        finalSnapshot.chain[index].stat,
+                        index === chain.length - 1
+                      )
+                    : samePublicDirectory(entry.stat, finalSnapshot.chain[index].stat))
+            )
+        );
+      } finally {
+        await item.close();
+      }
+    };
+    const stoppedSessions = await sources.capture(
+      quiescence.sessionReadback,
+      "sessions",
+      "observer"
+    );
+    h3Require(
+      writerCount(stoppedSessions) === 0 &&
+        quiescence.observedAt === stoppedSessions.native.observedAt &&
+        h3Instant(migration.process.closedAt) <= h3Instant(stoppedSessions.native.observedAt)
+    );
+    const permissions = async (value, after) => {
+      h3Require(
+        exact(value, ["observedAt", "source", "roles"]) &&
+          Array.isArray(value.roles) &&
+          value.roles.length === 2
+      );
+      const refs = await sources.json(value.source);
+      h3Require(exact(refs, ["verify", "observer"]));
+      const captures = [];
+      for (const [index, kind] of ["verify", "observer"].entries()) {
+        const capture = await sources.capture(refs[kind], "privileges", kind),
+          declared = value.roles[index];
+        let selectReadback = null;
+        if (after) {
+          selectReadback = declared.selectReadback;
+          const selected = await sources.capture(selectReadback, "migrations", kind);
+          captures.push(selected);
+          if (migration.branch === "normal-success") {
+            h3Require(
+              migration.postObservation?.catalog.migrationTableOid === approval.migrationTable.oid
+            );
+            const rows = migration.postObservation.catalog.migrationRows.map((row) => {
+              h3Require(
+                typeof row.checksum === "string" && /^sha256:[0-9a-f]{64}$/u.test(row.checksum)
+              );
+              return [
+                row.id,
+                row.migrationName,
+                row.checksum.slice(7),
+                row.startedAt,
+                row.finishedAt,
+                row.rolledBackAt,
+                row.appliedStepsCount
+              ];
+            });
+            h3Require(h3Same(selected.native.data.rows, rows));
+          }
+        }
+        h3Require(h3Same(declared, h3Permission(capture, kind, context, after, selectReadback)));
+        captures.push(capture);
+      }
+      h3Require(
+        h3Instant(value.observedAt) ===
+          Math.max(...captures.map((capture) => h3Instant(capture.native.observedAt)))
+      );
+      return captures;
+    };
+    const before = await permissions(readback.before, false),
+      after = await permissions(readback.after, true),
+      grant = await sources.capture(readback.grantEvidence, "grant", "provision");
+    const exit = readback.provisionExit;
+    h3Require(
+      exact(exit, [
+        "identity",
+        "revokedAt",
+        "canLogin",
+        "superuser",
+        "createdb",
+        "createrole",
+        "replication",
+        "bypassrls",
+        "memberships",
+        "process",
+        "observedAt",
+        "activeSessions",
+        "credentialState",
+        "roleReadback",
+        "sessionReadback",
+        "processReadback",
+        "credentialStateReadback"
+      ])
+    );
+    h3Require(
+      h3Same(exit.identity, approval.roles.provision) &&
+        ["canLogin", "superuser", "createdb", "createrole", "replication", "bypassrls"].every(
+          (key) => exit[key] === false
+        ) &&
+        h3Same(exit.memberships, []) &&
+        exit.activeSessions === 0
+    );
+    const host = await sources.json(exit.processReadback);
+    h3Require(
+      exact(host, ["process", "grant", "revoke"]) &&
+        h3Same(host.process, exit.process) &&
+        h3Same(host.grant, readback.grantEvidence)
+    );
+    const parent = host.process;
+    h3Require(
+      exact(parent, ["pid", "startedAt", "closedAt", "exitCode", "signal"]) &&
+        Number.isSafeInteger(parent.pid) &&
+        parent.pid > 0 &&
+        parent.exitCode === 0 &&
+        parent.signal === null
+    );
+    const revoke = await sources.capture(host.revoke, "revoke", "provision"),
+      exitRoles = await sources.capture(exit.roleReadback, "roles", "observer"),
+      exitSessions = await sources.capture(exit.sessionReadback, "sessions", "observer");
+    const role = h3RoleRows(exitRoles.native.data, approval.roles).get(
+      approval.roles.provision.oid
+    );
+    h3Require(
+      role.slice(2, 8).every((value) => value === false) &&
+        !exitRoles.native.data.memberships.some((row) => row[1] === role[0]) &&
+        exitSessions.native.data.sessions.filter((row) => row[2] === role[0]).length === 0
+    );
+    const status = await sources.json(exit.credentialStateReadback);
+    h3Require(
+      exact(status, ["observedAt", "operationRef", "state", "stat"]) &&
+        status.operationRef === facts.fixed.operation.operationRef &&
+        status.state === exit.credentialState &&
+        ["SEALED_RETAINED", "REMOVED"].includes(status.state)
+    );
+    h3Require(
+      status.state === "REMOVED"
+        ? status.stat === null
+        : exact(status.stat, ["uid", "gid", "mode", "nlink", "dev", "ino"]) &&
+            Object.values(status.stat).every(
+              (value) => typeof value === "string" && /^[0-9]+$/u.test(value)
+            ) &&
+            status.stat.nlink === "1"
+    );
+    const chain = [
+      approval.approvedAt,
+      readback.before.observedAt,
+      readback.grantStartedAt,
+      readback.grantCompletedAt,
+      readback.after.observedAt,
+      exit.revokedAt,
+      parent.closedAt,
+      exit.observedAt,
+      readback.readbackAt
+    ].map(h3Instant);
+    h3Require(
+      chain.every((at, index) => Number.isFinite(at) && (index === 0 || chain[index - 1] <= at)) &&
+        h3Instant(approval.approvedAt) <= h3Instant(parent.startedAt) &&
+        h3Instant(parent.startedAt) <= h3Instant(readback.grantStartedAt)
+    );
+    h3Require(
+      readback.grantStartedAt === grant.value.spawnedAt &&
+        readback.grantCompletedAt === grant.value.closedAt &&
+        exit.revokedAt === revoke.value.closedAt
+    );
+    for (const capture of before)
+      h3Require(
+        h3Instant(approval.approvedAt) <= h3Instant(capture.value.preparedAt) &&
+          h3Instant(capture.value.closedAt) <= h3Instant(grant.value.spawnedAt)
+      );
+    for (const capture of after)
+      h3Require(
+        h3Instant(grant.value.closedAt) <= h3Instant(capture.value.spawnedAt) &&
+          h3Instant(capture.value.closedAt) <= h3Instant(revoke.value.spawnedAt)
+      );
+    for (const capture of [grant, revoke])
+      h3Require(
+        capture.value.parentPid === parent.pid &&
+          h3Instant(parent.startedAt) <= h3Instant(capture.value.preparedAt) &&
+          h3Instant(capture.value.closedAt) <= h3Instant(parent.closedAt)
+      );
+    for (const capture of [exitRoles, exitSessions])
+      h3Require(
+        h3Instant(parent.closedAt) <= h3Instant(capture.value.spawnedAt) &&
+          h3Instant(capture.native.observedAt) <= h3Instant(exit.observedAt)
+      );
+    h3Require(
+      h3Instant(parent.closedAt) <= h3Instant(status.observedAt) &&
+        h3Instant(status.observedAt) <= h3Instant(exit.observedAt)
+    );
+    for (const capture of [
+      preRoles,
+      preTable,
+      preSessions,
+      stoppedSessions,
+      ...before,
+      ...after,
+      grant,
+      revoke,
+      exitRoles,
+      exitSessions
+    ])
+      h3Require(h3Instant(capture.value.recordedAt) <= h3Instant(readback.readbackAt));
+    const recheck = async () => {
+      if (closed) fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+      time();
+      for (const item of opened) await item.recheck();
+      await finalRecheck();
+      await sources.recheck();
+    };
+    const refs = sourceValue({
+      approval: { digest: sha256Bytes(opened[0].bytes), bytes: opened[0].bytes.length },
+      readback: { digest: sha256Bytes(opened[1].bytes), bytes: opened[1].bytes.length }
+    });
+    const recheckArchived = async () => {
+      if (closed) fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+      for (const [index, ref] of [refs.approval, refs.readback].entries())
+        h3Require((await sources.raw(ref)).equals(opened[index].bytes));
+    };
+    copies.push(...opened.map((item) => Buffer.from(item.bytes)));
+    return Object.freeze({
+      bytes: Object.freeze(copies),
+      refs,
+      context: sourceValue({ approval, readback, credentialState: status }),
+      recheck,
+      recheckArchived,
+      close
+    });
+  } catch (cause) {
+    await close();
+    throw cause;
+  }
+}
+
 export {
   sameIdentity,
   samePublicDirectory,
@@ -863,16 +1638,10 @@ export {
   nativeText,
   ownerOnly,
   checkedPrivatePath,
-  h3Oid,
-  h3Text,
-  h3Instant,
   h3Same,
   h3Require,
-  h3Rows,
-  h3RoleRows,
-  h3Table,
-  h3Sources,
   canonicalH3,
   pinPrivateInput,
-  openManualH3AInputs
+  openManualH3AInputs,
+  openManualH3BInputs
 };

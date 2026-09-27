@@ -5258,6 +5258,144 @@ async function syntheticH3B(f, first) {
   return { approval, readback };
 }
 
+test("fixed H3-B reader preserves native sources without live authority", async (t) => {
+  const { openManualH3BInputs } = await import("./manual-runner-source-inputs.mjs");
+  assert.equal(typeof openManualH3BInputs, "function");
+  const f = await targetObserveFixture(t),
+    at = new Date().toISOString();
+  // This fixture exercises source reading only. These inert history facts confer
+  // no admission; the launcher must still reopen and assess its actual history.
+  const request = {
+      operationId: randomUUID(),
+      idempotencyKey: `manual-stage1:${f.prepared.operationRef}:apply`,
+      attemptId: randomUUID(),
+      attemptAllocationDigest: digest("1"),
+      approvedPlanDigest: digest("2"),
+      containerId: "d".repeat(64)
+    },
+    process = { closedAt: at },
+    execution = { processEvidenceDigest: sha256Canonical(process), resultDigest: digest("3") },
+    first = {
+      apply: {
+        requestDigest: sha256Canonical(request),
+        executionRecordDigest: sha256Canonical(execution),
+        processEvidenceDigest: sha256Canonical(process)
+      }
+    };
+  f.records = async () => [request, execution, process];
+  await fs.writeFile(path.join(f.root, "command-pg-state.json"), encodeManualJson({ at }));
+  const finalDirectory = path.join(f.operationRoot, "runner-launch", request.attemptId);
+  await fs.mkdir(finalDirectory, { recursive: true, mode: 0o700 });
+  const finalBytes = Buffer.from(
+    JSON.stringify({
+      id: request.containerId,
+      running: false,
+      paused: false,
+      restarting: false,
+      dead: false
+    })
+  );
+  await fs.writeFile(path.join(finalDirectory, "final-inspect.stdout"), finalBytes, {
+    mode: 0o600
+  });
+  await syntheticH3Raw(f, finalBytes);
+  const h3 = await syntheticH3B(f, first),
+    original = encodeManualJson(h3.readback),
+    bFile = path.join(f.operationRoot, "h3-b-readback.json"),
+    migration = {
+      branch: "normal-success",
+      request,
+      execution,
+      process,
+      postObservation: {
+        catalog: {
+          migrationTableOid: "234",
+          migrationRows: [
+            {
+              id: "offline-migration",
+              migrationName: "20260101000000_initial",
+              checksum: sha256Bytes(Buffer.from("CREATE TABLE example(id integer PRIMARY KEY);\n")),
+              startedAt: at,
+              finishedAt: at,
+              rolledBackAt: null,
+              appliedStepsCount: 1
+            }
+          ]
+        }
+      },
+      migration: h3.approval.migration
+    };
+  const input = () => ({
+    fixed: {
+      operation: JSON.parse(encodeManualJson(f.fixed.operation)),
+      indexDigest: f.fixed.indexDigest
+    },
+    profile: JSON.parse(encodeManualJson(f.profile)),
+    principal: { ...f.binding.principal },
+    h3InputBytes: [encodeManualJson(f.approval), encodeManualJson(f.readback)],
+    targetContext: {
+      cluster: f.readback.cluster,
+      databaseOid: f.readback.databaseOid,
+      h3Approval: h3.approval.h3AApproval,
+      h3Readback: h3.approval.h3AReadback
+    },
+    migration: JSON.parse(encodeManualJson(migration))
+  });
+  const supplied = input(),
+    pending = openManualH3BInputs(supplied);
+  supplied.fixed.operation.operationRef = randomUUID();
+  supplied.migration.request.attemptId = randomUUID();
+  supplied.h3InputBytes[0].fill(0);
+  const held = await pending;
+  try {
+    assert.deepEqual(held.context.approval, h3.approval);
+    assert.deepEqual(held.context.readback, h3.readback);
+    assert.equal(Object.isFrozen(held.context.credentialState.stat), true);
+    assert.ok(held.bytes[0].equals(encodeManualJson(h3.approval)));
+    assert.ok(held.bytes[1].equals(original));
+    assert.deepEqual(held.refs.readback, { digest: sha256Bytes(original), bytes: original.length });
+    await held.recheck();
+    await assert.rejects(held.recheckArchived(), { code: "MANUAL_H3_B_INPUT_REQUIRED" });
+    await syntheticH3Raw(f, original);
+    await held.recheckArchived();
+    held.bytes[0].fill(0);
+    held.bytes[1].fill(0);
+    await held.recheck();
+    await held.recheckArchived();
+    await fs.appendFile(bFile, "\n");
+    await assert.rejects(held.recheck(), { code: "MANUAL_OPERATION_INPUT_UNAVAILABLE" });
+  } finally {
+    await held.close();
+  }
+  await held.close();
+  for (const recheck of [held.recheck, held.recheckArchived])
+    await assert.rejects(recheck(), { code: "MANUAL_OPERATION_INPUT_UNAVAILABLE" });
+  assert.ok(held.bytes.every((bytes) => bytes.every((value) => value === 0)));
+  const readRaw = (ref) =>
+    fs.readFile(path.join(f.profile.storage.archiveRoot, "raw", ref.digest.slice(7) + ".bin"));
+  for (const fault of ["native-identity", "business-select"]) {
+    const changed = JSON.parse(original),
+      after = fault === "business-select",
+      permission = after ? changed.after : changed.before,
+      refs = JSON.parse(await readRaw(permission.source)),
+      capture = JSON.parse(await readRaw(refs.verify)),
+      native = JSON.parse(await readRaw(capture.stdout));
+    if (after) native.data.relations.find((row) => row[2] === "example")[6] = ["SELECT"];
+    else native.identity.databaseOid = "999";
+    capture.stdout = await syntheticH3Raw(f, Buffer.from(JSON.stringify(native) + "\n"));
+    refs.verify = await syntheticH3Raw(f, encodeManualJson(capture));
+    permission.source = await syntheticH3Raw(f, encodeManualJson(refs));
+    permission.roles[0].privilegeInventory = capture.stdout;
+    await fs.writeFile(bFile, encodeManualJson(changed));
+    await assert.rejects(openManualH3BInputs(input()), { code: "MANUAL_H3_BINDING_INVALID" });
+  }
+  await fs.unlink(bFile);
+  await assert.rejects(openManualH3BInputs(input()), { code: "MANUAL_H3_B_INPUT_REQUIRED" });
+  assert.deepEqual(f.docker.calls, []);
+  assert.equal(f.pg.connects, 0);
+  noAuthority(f);
+});
+
 test(
   "runner second stage accepts native H3-B for readonly verify and replay",
   { skip: process.platform !== "linux" },

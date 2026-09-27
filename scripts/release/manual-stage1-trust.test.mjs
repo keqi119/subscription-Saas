@@ -1147,6 +1147,25 @@ async function buildFixture(
           args[1] === `repos/${repository}/actions/runs/${runId}/attempts/1`
         )
           value = gh.run;
+        else if (
+          gh.jobAdmission &&
+          args[0] === "attestation" &&
+          args[1] === "verify" &&
+          args[2] === gh.jobAdmission.path
+        )
+          value = gh.jobAdmission.attestation;
+        else if (
+          gh.jobAdmission &&
+          args[0] === "api" &&
+          args[1] === `repos/${repository}/actions/runs/${gh.jobAdmission.run.id}/attempts/1`
+        )
+          value = gh.jobAdmission.run;
+        else if (
+          gh.jobAdmission &&
+          args[0] === "api" &&
+          args[1] === `repos/${repository}/actions/jobs/${gh.jobAdmission.job.id}`
+        )
+          value = gh.jobAdmission.job;
         else throw new Error("Unexpected synthetic gh invocation");
         callback(null, gh.raw ?? Buffer.from(JSON.stringify(value)), gh.stderr);
       })
@@ -1273,7 +1292,7 @@ test(
     noAuthorityAccess(f);
   }
 );
-async function r3CreationFixture(t) {
+async function r3CreationFixture(t, { phase = "source", chain = "snapshot" } = {}) {
   const f = await buildFixture(t, { r3TargetPolicy: true });
   const policyBytes = await fs.readFile(
     path.join(f.repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json")
@@ -1291,8 +1310,8 @@ async function r3CreationFixture(t) {
     proofRawDigest: sha256Bytes(f.proofBytes),
     materialRawDigest: sha256Bytes(f.materialBytes),
     targetPolicyDigest: sha256Bytes(policyBytes),
-    phase: "source",
-    chain: "snapshot",
+    phase,
+    chain,
     createdAt: new Date(Date.now() - 1000).toISOString(),
     expiresAt: new Date(Date.now() + 3600000).toISOString(),
     workspace: {
@@ -1440,6 +1459,222 @@ test(
       await assert.rejects(trust.readFixedR3CreationSpec(input), {
         code: "R3_CREATION_INPUT_UNAVAILABLE"
       });
+    }
+    noAuthorityAccess(f);
+  }
+);
+
+async function r3JobFixture(t, options = {}) {
+  const f = await r3CreationFixture(t, options);
+  const phase = f.spec.phase,
+    chain = f.spec.chain;
+  const forwarding = generateKeyPairSync("ed25519").publicKey;
+  const generated = new Date(Date.now() - 100).toISOString();
+  const ciRunId = "3801",
+    jobId = "4801";
+  const callerWorkflowPath = ".github/workflows/release-candidate-gate.yml";
+  const signerWorkflowPath =
+    phase === "source" ? callerWorkflowPath : ".github/workflows/release-final-chain.yml";
+  const jobName = phase === "source" ? `source-${chain}` : `final-${chain} / execute`;
+  const admission = {
+    schemaVersion: "manual-r3-job-admission.v1",
+    operationRef: f.operationRef,
+    profileDigest: sha256Canonical(f.profile),
+    ownerId: f.profile.ownerId,
+    creationSpecDigest: sha256Bytes(f.specBytes),
+    buildProofDigest: sha256Canonical(f.proof),
+    sourceSha: f.sourceSha,
+    phase,
+    chain,
+    generatedAt: generated,
+    expiresAt: f.spec.expiresAt,
+    ci: {
+      repository,
+      repositoryId: "1253231368",
+      runId: ciRunId,
+      runAttempt: 1,
+      workflowPath: signerWorkflowPath,
+      callerWorkflowPath,
+      jobKey: phase === "source" ? jobName : "execute",
+      jobId,
+      jobName,
+      environment:
+        phase === "source" ? "trusted-source-database-gate" : "trusted-release-execution",
+      runnerClass: "github-hosted"
+    },
+    host: {
+      machineIdFingerprint: digest("d"),
+      forwardingPublicKeyPem: forwarding.export({ type: "spki", format: "pem" }),
+      forwardingKeyFingerprint: sha256Bytes(forwarding.export({ type: "spki", format: "der" })),
+      runnerId: 5801,
+      runnerName: "GitHub Actions synthetic hosted runner"
+    }
+  };
+  const admissionPath = path.join(path.dirname(f.specPath), "job-admission.json");
+  const admissionBytes = encodeManualJson(admission);
+  await fs.writeFile(admissionPath, admissionBytes, { flag: "wx", mode: 0o600 });
+  const attestation = [verifiedItem(admissionBytes, f.sourceSha, "job-admission.json", generated)];
+  const certificate = attestation[0].verificationResult.signature.certificate;
+  certificate.subjectAlternativeName.value = `https://github.com/${repository}/${signerWorkflowPath}@refs/heads/main`;
+  certificate.buildSignerURI = certificate.subjectAlternativeName.value;
+  certificate.buildConfigURI = `https://github.com/${repository}/${callerWorkflowPath}@refs/heads/main`;
+  certificate.sourceRepositoryIdentifier = "1253231368";
+  certificate.runInvocationURI = `https://github.com/${repository}/actions/runs/${ciRunId}/attempts/1`;
+  const apiRun = {
+    id: Number(ciRunId),
+    run_attempt: 1,
+    head_sha: f.sourceSha,
+    head_branch: "main",
+    path: callerWorkflowPath,
+    status: "in_progress",
+    conclusion: null,
+    html_url: `https://github.com/${repository}/actions/runs/${ciRunId}`,
+    repository: { full_name: repository, id: 1253231368 },
+    head_repository: { full_name: repository, id: 1253231368 }
+  };
+  const apiJob = {
+    id: Number(jobId),
+    run_id: Number(ciRunId),
+    run_attempt: 1,
+    head_sha: f.sourceSha,
+    name: jobName,
+    runner_id: admission.host.runnerId,
+    runner_name: admission.host.runnerName,
+    status: "in_progress",
+    conclusion: null,
+    completed_at: null,
+    started_at: f.spec.createdAt
+  };
+  f.gh.jobAdmission = { path: admissionPath, attestation, run: apiRun, job: apiJob };
+  return { ...f, admission, admissionPath, admissionBytes, attestation, apiRun, apiJob };
+}
+
+test("R3 JOB API rejects overrides and accessors before native IO", async (t) => {
+  assert.equal(typeof trust.readFixedR3JobAdmission, "function");
+  let effects = 0;
+  const denied = () => {
+    effects++;
+    throw new Error("unexpected IO or accessor");
+  };
+  for (const name of ["open", "lstat", "readFile", "writeFile"]) t.mock.method(fs, name, denied);
+  t.mock.method(childProcess, "execFile", denied);
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const input = { repoRoot: path.resolve("unused"), operationRef: randomUUID() };
+  for (const value of [
+    { ...input, admissionFile: "/caller/job.json" },
+    { ...input, verifiedJob: { status: "in_progress" } },
+    { ...input, operationRef: "../escape" },
+    Object.defineProperty({ ...input }, "operationRef", { get: denied, enumerable: true })
+  ])
+    await assert.rejects(trust.readFixedR3JobAdmission(value), {
+      code: "R3_JOB_ADMISSION_UNAVAILABLE"
+    });
+  assert.equal(effects, 0);
+});
+
+test(
+  "R3 JOB source binds current hosted job and refuses terminal API recheck",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+    const result = await trust.readFixedR3JobAdmission({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef
+    });
+    t.after(() => result.close());
+    assert.deepEqual(result.admission, f.admission);
+    assert.equal(result.jobAdmissionDigest, sha256Bytes(f.admissionBytes));
+    assert.equal(result.creationSpecDigest, sha256Bytes(f.specBytes));
+    assert.equal(result.build.buildProofDigest, sha256Canonical(f.proof));
+    assert.equal(result.sourceSha, f.sourceSha);
+    assert.equal(result.build.promotionEligible, false);
+    assert.ok(Object.isFrozen(result.admission.host) && Object.isFrozen(result.observations));
+    assert.ok(Object.isFrozen(result.verifiedAttestation));
+    assert.deepEqual(result.rawInputs.admission, f.admissionBytes);
+    result.rawInputs.admission.fill(0);
+    const reread = await result.recheck();
+    assert.ok(Object.isFrozen(reread.observations));
+    assert.deepEqual(reread.rawInputs.admission, f.admissionBytes);
+    f.apiJob.status = "completed";
+    f.apiJob.conclusion = "success";
+    f.apiJob.completed_at = new Date().toISOString();
+    await assert.rejects(result.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+    await result.close();
+    await assert.rejects(result.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+    noAuthorityAccess(f);
+  }
+);
+
+test(
+  "R3 JOB final binds reusable signer caller and refuses original drift",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t, { phase: "final", chain: "snapshot" });
+    const result = await trust.readFixedR3JobAdmission({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef
+    });
+    t.after(() => result.close());
+    assert.equal(result.admission.ci.workflowPath, ".github/workflows/release-final-chain.yml");
+    assert.equal(
+      result.admission.ci.callerWorkflowPath,
+      ".github/workflows/release-candidate-gate.yml"
+    );
+    assert.equal(result.admission.ci.jobName, "final-snapshot / execute");
+    await result.recheck();
+    await fs.appendFile(f.admissionPath, " ");
+    await assert.rejects(result.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+    await result.close();
+    noAuthorityAccess(f);
+  }
+);
+
+test(
+  "R3 JOB rejects wrong signer source chain runner run job and expiry",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t);
+    const baseline = structuredClone({ attestation: f.attestation, run: f.apiRun, job: f.apiJob });
+    for (const mutate of [
+      (a, g) => {
+        g.attestation[0].verificationResult.signature.certificate.buildSignerURI =
+          "https://github.com/attacker/workflow";
+      },
+      (a) => {
+        a.sourceSha = "e".repeat(40);
+      },
+      (a) => {
+        a.chain = "fresh";
+      },
+      (a) => {
+        a.ci.runnerClass = "self-hosted";
+      },
+      (a, g) => {
+        g.job.runner_name = "different runner";
+      },
+      (a, g) => {
+        g.job.run_id++;
+      },
+      (a, g) => {
+        g.run.head_sha = "e".repeat(40);
+      },
+      (a) => {
+        a.expiresAt = new Date(Date.now() - 1).toISOString();
+      }
+    ]) {
+      const admission = structuredClone(f.admission),
+        api = structuredClone(baseline);
+      mutate(admission, api);
+      await fs.writeFile(f.admissionPath, encodeManualJson(admission));
+      Object.assign(f.gh.jobAdmission, api);
+      await assert.rejects(
+        trust.readFixedR3JobAdmission({ repoRoot: f.repoRoot, operationRef: f.operationRef }),
+        { code: "R3_JOB_ADMISSION_UNAVAILABLE" }
+      );
     }
     noAuthorityAccess(f);
   }

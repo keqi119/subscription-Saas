@@ -55,3 +55,13 @@ workspace 只声明 id、capacityBytes、backingFile、mountPath、keyFile、map
 读取器复用 H1 和固定策略/H2 读取器，持有规范及构建原件，在 recheck 中重新核对实际主机、原件、时窗及源码绑定。规范不含 jobAdmissionDigest、实际 Engine/PG/destination、输入或密钥；随后同 job 的已签名 descriptor 可以绑定 creationSpecDigest，不形成未来事实循环。此读取结果只是计划事实，仍须实际 job 准入及同一 manual 会话消费后才能创建；它不读取私钥或 payload，不开启目标或获得锁。
 
 该入口 `readFixedR3CreationSpec({repoRoot,operationRef})` 已实现，API 拒绝用例先 RED 后 GREEN，3 个 Linux 定向用例全部通过（0 skip）。用例只证明规范与实际固定读取边界，GH 响应仍使用合成夹具；实际当前 job 准入读取器尚未接线。现有 `successfulRun` 强制 completed/success，用于已完成构建，不能复用于创建前正在运行的 job。
+
+## 当前作业原件读取
+
+`readFixedR3JobAdmission({repoRoot,operationRef})` 现从同一私有操作目录读取 canonical `job-admission.json`，版本为 `manual-r3-job-admission.v1`。它绑定已读 creationSpecDigest、原 profile/owner、唯一 build proof/sourceSha、phase/chain 与有效窗。ci 闭合字段为 repository、repositoryId、runId、runAttempt、workflowPath、callerWorkflowPath、jobKey、jobId、jobName、environment、runnerClass；host 闭合字段为 machineIdFingerprint、forwardingPublicKeyPem、forwardingKeyFingerprint、runnerId、runnerName。只接受指纹匹配的规范 Ed25519 SPKI 公钥，不读或返回连接私钥。
+
+H1 原生 `gh attestation verify` 校验该完整文件。source 的 signer/caller 均为固定 candidate workflow；final 的 signer 为 reusable final workflow，caller 仍为 candidate workflow。保留原 Docker Images 校验默认分支，核对签名 subject、源码、仓库 ID、hosted 证书和同一 run attempt。该分工依据 [GitHub CLI attestation 说明](https://cli.github.com/manual/gh_attestation_verify)，不把 reusable signer 误认为 caller。
+
+随后独立读取固定 GitHub run-attempt 和 [job API](https://docs.github.com/en/rest/actions/workflow-jobs)，要求当前 in_progress、相同仓库/源码/run/job/runner，并核对 source 名称或 final 展开名称与 chain。签名声明承担 environment、主机指纹和临时公钥的来源绑定；API 不单独证明这些字段，也不代替后续目的地实际读回。声明生产器必须从实际 job/host 生成，不能让调用者提交任意已验证标记；生产器和 hosted workflow 目前尚未接线。
+
+`recheck` 重新核对固定原件、H1/H2/源码、时窗及当前 run/job；结束、错位或无法观察均拒绝。返回的 observations 绑定完整 admission、attestation、run、job 原始响应摘要与长度，rawInputs 为独立副本，供后续私有台账保管；副本不是授权对象，归档时仍须核对摘要。没有 manual decision、签名私钥、payload、资源创建或消费能力。4 个 Linux 定向用例全部通过（0 skip），GH 响应为合成夹具，不构成实际 CI 验收。

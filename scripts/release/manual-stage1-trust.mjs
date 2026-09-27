@@ -785,7 +785,16 @@ function fixedProcessEnvironment(kind) {
   }
   return env;
 }
-function attestation(outputBytes, expectedDigest, sourceSha, earliest) {
+function attestation(
+  outputBytes,
+  expectedDigest,
+  sourceSha,
+  earliest,
+  workflow = {
+    signer: WORKFLOW,
+    caller: WORKFLOW
+  }
+) {
   const output = json(outputBytes);
   // Refuse ambiguity rather than selecting a statement from one item and a
   // bundle/certificate from another successful verification result.
@@ -794,7 +803,8 @@ function attestation(outputBytes, expectedDigest, sourceSha, earliest) {
     result = item?.verificationResult;
   const cert = result?.signature?.certificate,
     statement = result?.statement;
-  const signer = `https://github.com/${REPOSITORY}/${WORKFLOW}@refs/heads/main`;
+  const signer = `https://github.com/${REPOSITORY}/${workflow.signer}@refs/heads/main`,
+    caller = `https://github.com/${REPOSITORY}/${workflow.caller}@refs/heads/main`;
   requireThat(
     cert?.issuer === ISSUER &&
       cert?.subjectAlternativeName?.type === "URI" &&
@@ -805,8 +815,10 @@ function attestation(outputBytes, expectedDigest, sourceSha, earliest) {
       cert.sourceRepositoryURI === `https://github.com/${REPOSITORY}` &&
       cert.sourceRepositoryDigest === sourceSha &&
       cert.sourceRepositoryRef === "refs/heads/main" &&
-      cert.buildConfigURI === signer &&
-      cert.buildConfigDigest === sourceSha
+      cert.buildConfigURI === caller &&
+      cert.buildConfigDigest === sourceSha &&
+      (workflow.repositoryId === undefined ||
+        cert.sourceRepositoryIdentifier === workflow.repositoryId)
   );
   const runPrefix = `https://github.com/${REPOSITORY}/actions/runs/`;
   requireThat(
@@ -853,7 +865,7 @@ function attestation(outputBytes, expectedDigest, sourceSha, earliest) {
     sourceSha,
     issuer: ISSUER,
     repository: REPOSITORY,
-    workflowPath: WORKFLOW,
+    workflowPath: workflow.signer,
     workflowRef: "refs/heads/main",
     workflowRunId: runMatch[1],
     runAttempt: 1,
@@ -861,29 +873,30 @@ function attestation(outputBytes, expectedDigest, sourceSha, earliest) {
     attestationRef: sha256Canonical(bundle)
   });
 }
+function attestationArgs(file, sourceSha, workflowPath = WORKFLOW) {
+  return [
+    "attestation",
+    "verify",
+    file,
+    "--repo",
+    REPOSITORY,
+    "--signer-workflow",
+    `${REPOSITORY}/${workflowPath}`,
+    "--source-ref",
+    "refs/heads/main",
+    "--source-digest",
+    sourceSha,
+    "--cert-oidc-issuer",
+    ISSUER,
+    "--deny-self-hosted-runners",
+    "--format",
+    "json"
+  ];
+}
 async function verifyAttestedInput(file, bytes, sourceSha, earliest) {
-  const output = await processOutput(
-    "gh",
-    [
-      "attestation",
-      "verify",
-      file,
-      "--repo",
-      REPOSITORY,
-      "--signer-workflow",
-      `${REPOSITORY}/${WORKFLOW}`,
-      "--source-ref",
-      "refs/heads/main",
-      "--source-digest",
-      sourceSha,
-      "--cert-oidc-issuer",
-      ISSUER,
-      "--deny-self-hosted-runners",
-      "--format",
-      "json"
-    ],
-    { env: fixedProcessEnvironment("gh") }
-  );
+  const output = await processOutput("gh", attestationArgs(file, sourceSha), {
+    env: fixedProcessEnvironment("gh")
+  });
   return attestation(output, sha256Bytes(bytes), sourceSha, earliest);
 }
 async function successfulRun(proof, verified) {
@@ -1341,6 +1354,255 @@ export async function readFixedR3CreationSpec(input) {
       databaseTargetPolicy: policyInput.databaseTargetPolicy,
       build: policyInput.build,
       sourceSha: policyInput.sourceSha,
+      recheck,
+      close
+    });
+  } catch {
+    await close();
+    fail(code);
+  }
+}
+
+function r3JobDescriptor(value, creation) {
+  exact(value, [
+    "schemaVersion",
+    "operationRef",
+    "profileDigest",
+    "ownerId",
+    "creationSpecDigest",
+    "buildProofDigest",
+    "sourceSha",
+    "phase",
+    "chain",
+    "generatedAt",
+    "expiresAt",
+    "ci",
+    "host"
+  ]);
+  requireThat(
+    value.schemaVersion === "manual-r3-job-admission.v1" &&
+      value.creationSpecDigest === creation.creationSpecDigest
+  );
+  for (const field of [
+    "operationRef",
+    "profileDigest",
+    "ownerId",
+    "buildProofDigest",
+    "sourceSha",
+    "phase",
+    "chain"
+  ])
+    requireThat(value[field] === creation.spec[field]);
+  const ci = value.ci,
+    policy = creation.policy.hosted,
+    source = value.phase === "source";
+  exact(ci, [
+    "repository",
+    "repositoryId",
+    "runId",
+    "runAttempt",
+    "workflowPath",
+    "callerWorkflowPath",
+    "jobKey",
+    "jobId",
+    "jobName",
+    "environment",
+    "runnerClass"
+  ]);
+  for (const field of ["repository", "repositoryId", "runAttempt", "runnerClass"])
+    requireThat(ci[field] === policy[field]);
+  for (const field of ["runId", "jobId"])
+    requireThat(
+      typeof ci[field] === "string" &&
+        /^[1-9][0-9]*$/u.test(ci[field]) &&
+        Number.isSafeInteger(Number(ci[field]))
+    );
+  requireThat(
+    ci.workflowPath === (source ? policy.source.workflowPath : policy.final.workflowPath) &&
+      ci.callerWorkflowPath ===
+        (source ? policy.source.workflowPath : policy.final.callerWorkflowPath) &&
+      ci.jobKey === (source ? policy.source.jobs[value.chain] : policy.final.jobId) &&
+      ci.jobName ===
+        (source
+          ? policy.source.jobs[value.chain]
+          : `${policy.final.callerJobs[value.chain]} / ${policy.final.jobId}`) &&
+      ci.environment === (source ? policy.source.environment : policy.final.environment)
+  );
+  const host = value.host;
+  exact(host, [
+    "machineIdFingerprint",
+    "forwardingPublicKeyPem",
+    "forwardingKeyFingerprint",
+    "runnerId",
+    "runnerName"
+  ]);
+  for (const field of ["machineIdFingerprint", "forwardingKeyFingerprint"])
+    requireThat(typeof host[field] === "string" && DIGEST.test(host[field]));
+  requireThat(
+    Number.isSafeInteger(host.runnerId) &&
+      host.runnerId >= 0 &&
+      typeof host.runnerName === "string" &&
+      host.runnerName.length > 0 &&
+      host.runnerName.length <= 256 &&
+      typeof host.forwardingPublicKeyPem === "string"
+  );
+  const key = createPublicKey(host.forwardingPublicKeyPem);
+  requireThat(
+    key.asymmetricKeyType === "ed25519" &&
+      key.export({ type: "spki", format: "pem" }) === host.forwardingPublicKeyPem &&
+      sha256Bytes(key.export({ type: "spki", format: "der" })) === host.forwardingKeyFingerprint
+  );
+}
+
+// A signed hosted-job declaration plus independent current API readbacks.
+// This returns evidence, not a manual consume decision or a connected target.
+export async function readFixedR3JobAdmission(input) {
+  const code = "R3_JOB_ADMISSION_UNAVAILABLE";
+  let creation,
+    held,
+    closed = false,
+    closing;
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    closing = (async () => {
+      const outcomes = await Promise.allSettled([
+        ...(creation ? [creation.close()] : []),
+        ...(held ? [held.close()] : [])
+      ]);
+      held?.bytes.fill(0);
+      if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
+    })();
+    return closing;
+  };
+  try {
+    exact(input, ["repoRoot", "operationRef"]);
+    requireThat(
+      typeof input.repoRoot === "string" &&
+        typeof input.operationRef === "string" &&
+        UUID.test(input.operationRef)
+    );
+    const repoRoot = absolute(input.repoRoot),
+      operationRef = input.operationRef;
+    requireThat(process.platform === "linux");
+    creation = await readFixedR3CreationSpec({ repoRoot, operationRef });
+    const profile = await loadFixedManualProfile({ repoRoot }),
+      { principal } = await actualHost(),
+      file = path.join(
+        profile.storage.archiveRoot,
+        "inputs",
+        "r3",
+        operationRef,
+        "job-admission.json"
+      );
+    requireThat(sha256Canonical(profile) === creation.profileDigest);
+    held = await openInput(file, { principal, privateRoot: profile.storage.archiveRoot });
+    const admission = json(held.bytes, true);
+    r3JobDescriptor(admission, creation);
+    const checkWindow = () => {
+      const now = Date.now(),
+        generated = instant(admission.generatedAt),
+        expires = instant(admission.expiresAt);
+      requireThat(
+        instant(creation.spec.createdAt) <= generated &&
+          generated <= now &&
+          generated < expires &&
+          now < expires &&
+          expires <= instant(creation.spec.expiresAt)
+      );
+    };
+    checkWindow();
+    const ci = admission.ci,
+      environment = fixedProcessEnvironment("gh"),
+      attestationBytes = await processOutput(
+        "gh",
+        attestationArgs(file, admission.sourceSha, ci.workflowPath),
+        { env: environment }
+      ),
+      verifiedAttestation = attestation(
+        attestationBytes,
+        sha256Bytes(held.bytes),
+        admission.sourceSha,
+        Math.floor(instant(admission.generatedAt) / 1000) * 1000,
+        { signer: ci.workflowPath, caller: ci.callerWorkflowPath, repositoryId: ci.repositoryId }
+      );
+    requireThat(verifiedAttestation.workflowRunId === ci.runId);
+    const api = async (endpoint) => processOutput("gh", ["api", endpoint], { env: environment });
+    const recheck = async () => {
+      try {
+        requireThat(!closed);
+        checkWindow();
+        await creation.recheck();
+        await held.recheck();
+        const runBytes = await api(`repos/${REPOSITORY}/actions/runs/${ci.runId}/attempts/1`),
+          jobBytes = await api(`repos/${REPOSITORY}/actions/jobs/${ci.jobId}`),
+          run = json(runBytes),
+          job = json(jobBytes),
+          host = admission.host;
+        requireThat(
+          run.id === Number(ci.runId) &&
+            run.run_attempt === 1 &&
+            run.head_sha === admission.sourceSha &&
+            run.head_branch === "main" &&
+            run.status === "in_progress" &&
+            run.conclusion === null &&
+            run.path === ci.callerWorkflowPath &&
+            run.html_url === `https://github.com/${REPOSITORY}/actions/runs/${ci.runId}`
+        );
+        for (const repo of [run.repository, run.head_repository])
+          requireThat(repo?.full_name === REPOSITORY && repo.id === Number(ci.repositoryId));
+        requireThat(
+          job.id === Number(ci.jobId) &&
+            job.run_id === Number(ci.runId) &&
+            job.head_sha === admission.sourceSha &&
+            job.name === ci.jobName &&
+            job.runner_id === host.runnerId &&
+            job.runner_name === host.runnerName &&
+            job.status === "in_progress" &&
+            job.conclusion === null &&
+            job.completed_at === null &&
+            (job.run_attempt === undefined || job.run_attempt === 1) &&
+            typeof job.started_at === "string" &&
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(job.started_at) &&
+            Number.isFinite(Date.parse(job.started_at)) &&
+            Date.parse(job.started_at) <= instant(admission.generatedAt)
+        );
+        await held.recheck();
+        await creation.recheck();
+        checkWindow();
+        requireThat(!closed);
+        const rawInputs = Object.freeze({
+          admission: Buffer.from(held.bytes),
+          attestation: Buffer.from(attestationBytes),
+          run: Buffer.from(runBytes),
+          job: Buffer.from(jobBytes)
+        });
+        const observations = freeze({
+          checkedAt: new Date().toISOString(),
+          ...Object.fromEntries(
+            Object.entries(rawInputs).map(([name, bytes]) => [
+              name,
+              { digest: sha256Bytes(bytes), bytes: bytes.length }
+            ])
+          )
+        });
+        return Object.freeze({ observations, rawInputs });
+      } catch {
+        await close();
+        fail(code);
+      }
+    };
+    const readback = await recheck();
+    return Object.freeze({
+      admission: freeze(admission),
+      jobAdmissionDigest: sha256Bytes(held.bytes),
+      creationSpecDigest: creation.creationSpecDigest,
+      spec: creation.spec,
+      policy: creation.policy,
+      build: creation.build,
+      sourceSha: creation.sourceSha,
+      verifiedAttestation,
+      ...readback,
       recheck,
       close
     });

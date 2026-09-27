@@ -10,6 +10,7 @@
 - R3 固定策略读取入口现已接入既有 H1/H2 校验，保留原件句柄并在重读中核对主机、profile、源码和构建绑定；没有签发能力。首次 native 测试 1 pass / 2 fail，定位到既有数据库策略 catalog 与 schema 不一致；保留 catalog 后，将 schema 修成两个互斥的现有策略分支，定向回归先 RED 后 GREEN（1/1）。读取器第二次 native 测试自然 exit 0，3 pass / 0 fail / 0 skip，5,400.665206 ms。它仍不证明实际 hosted 目标、创建/消费会话、解密或恢复通过。
 - R3 创建 request/auth v4 及纯签名绑定已补齐，沿用同一 Ed25519 签名域；绑定计划、job、候选和分支，不要求尚未生成的目的地事实，也不授予消费或生产 decision。两个新增用例先 RED 后 GREEN；整个原合同文件首次 80 pass / 1 fail（导出清单漏更新），修正后 81 pass / 0 fail / 0 skip，7,372.7318 ms；有限只读审查通过。实际 session/台账分支和创建执行仍未接线。
 - R3 创建规范固定读取器已完成：按 UUID 从既有私有 archive 读 canonical 原件，核对 H1、同一 H2/策略、派生路径、容量与时窗，保持原件句柄供重读；不读取私钥或 payload。API 用例先 RED 后 GREEN，3 个 native 定向用例自然 exit 0，3 pass / 0 fail / 0 skip，9,680.947632 ms；有限只读审查通过。实际运行 job 的准入原件、创建会话及资源执行仍未完成，不能将此结果视为目标准入。
+- R3 当前 job 固定读取入口已接入声明签名与原生 GitHub run/job API 校验，区分 final 的 reusable signer 与 caller，绑定展开 job、chain、公钥指纹和 runner；重查会拒绝已终止作业。API 用例先 RED 后 GREEN，native 4 pass / 0 fail / 0 skip，19,066.888217 ms；有限只读审查通过。此处 GH 响应为合成夹具；声明生产器、实际 hosted workflow、manual 会话及创建/消费执行仍未接线。
 - 本轮本地 migration status 仍因缺少 `datasource.url` 自然退出 1；schema validate 自然退出 0。没有连接或更改线上数据库。
 
 ## 已取得的证据（保留各次失败与修正）
@@ -80,3 +81,4 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 - R3 固定策略读取器：`r3-policy-native01.log` 保留原 schema 不一致导致的失败；`r3-policy-native02.log` 为 3/3，通过复制清单 `20260927-204205-916584168-copy.sha256` 核对 247 项源码。当前仓库合同校验为 200 文件、79 schemas、128 migrations、13 commands，包含尚未提交的 R2 工作，不是最终候选证据。
 - R3 创建合同全文件回归：`r3-creation-contracts-green02.log`，81/81；v4 登记后的仓库合同校验为 202 文件、81 schemas、128 migrations、13 commands，repository digest `sha256:421f75c4c7344f82e7953870e8f4d12b1437cf339e87e0f16c4f9f1c83e59ec3`。该工作树仍包含 R2 未提交部分，不能充当最终候选证明。
 - R3 创建规范读取器：`r3-creation-reader-red01.log` 保留缺入口的 RED；`r3-creation-native01.log` 为 3/3 GREEN，native copy `/home/keqi_119/.cache/r3-creation-6kqBQg`，249 项复制源码均经 `20260927-211012-001929813-copy.sha256` 核对。测试使用实际 Linux 文件系统和 Git、模拟 GH 响应，不是实际 hosted job 验收。当前合同校验仍为 202 文件、81 schemas、128 migrations、13 commands，repository digest `sha256:e42650d86c8fe25af14d8d15fd69ca8dc1b47677838fa0fee5a0bcd451320fc5`，包含 R2 未提交部分。
+- R3 当前 job 读取器：`r3-job-reader-red01.log`、`r3-job-native01.log`；native copy `/home/keqi_119/.cache/r3-job-fUV4eo`，249 项复制源码 manifest `20260927-212015-949658860-copy.sha256`。当前合同校验为 202 文件、81 schemas、128 migrations、13 commands，repository digest `sha256:fad2c3287a457fc1150d23ce0caf1ae3cbd7b91f3789990acddc4d597587c215`，包含 R2 未提交部分，不能充当最终候选证明。

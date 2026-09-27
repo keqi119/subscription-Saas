@@ -1,5 +1,9 @@
 # Stage 1 主线执行索引
 
+## 2026-09-27 私有原响应读取与本桶访问状态前向登记
+
+隔离分支 `09bacf94` 补齐既有 OSS binding 的有限 native body/响应字段采集，旧方法合同保持；跨 await key 绑定 Important 经真实 RED、最小修复和独立复审关闭。[验证记录](2026-09-27-stage1-h2-storage-binding-validation.md)区分原定向 3/3、旧受影响 1/1、最终修复 1/1、真实 exit 与既有 Prettier/本地 Node 限制。另用既有项目身份实际读回本桶 BPA=true、policyPublic=false，两项 200，无需云写入，临时 helper 已移除；独立 IAM/OIDC 角色和真实 custody 仍未完成。下一步为同作业有限对象保管/导入与 R2 expected reader；未重跑旧套件，阶段 1 未关闭。
+
 ## 2026-09-27 父端零凭证启动链前向登记
 
 隔离分支提交 `2b42e5d5`，原 launcher 接通同一 session 下的 PREPARED、实际 Node 子进程 CHALLENGE/PID/raw、精确 CID 停止与归档边界。[验证记录](2026-09-27-stage1-parent-zero-credential-validation.md)区分修正前 11/11、Windows 2/2 与最终修正定向 5/5，保留行为 RED、运行准备失败、真实 exit 和默认 lint 限制。空 CID 过渡及公共目录 nlink 两项 Important 已修复并通过独立复审；未重复旧套件，未整合候选。可信 expected-schema 缺失仍在命令签发/凭证前停止，真实云配置、完整 R2、R3/R4 和阶段 1 均未关闭。

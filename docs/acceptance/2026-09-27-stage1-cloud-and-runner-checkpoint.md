@@ -2,6 +2,22 @@
 
 本记录保留当天各次真实断点，以本节最新状态为准。R2 正常 dry-run → apply → verify → replay、UNKNOWN → reconcile 和三类来源读取复用已通过相应定向验证并提交；replay 中断、独立结果核验、真实数据库及最终候选验收仍未完成。没有执行业务迁移、部署、真实候选 CI 或关闭阶段 1。
 
+## 16:11 UTC 接续：续期阻塞已解除，R2.3 正例仍在验证
+
+此前用户完成的官方 CLI 续期已经用于 OSS 密文上传与完整 1 GiB 独立下载，两进程实际 exit 0 且摘要一致；没有待处理登录问题。本轮没有新云操作，商用 KMS 仍明确排除。异地密文完整回读不等于异机解密恢复，也不等于真实 CI 独立身份验收。
+
+提交 `0225e629` 完成第二处旧 expected-admission 测试修正。native session 69765 自然 host / Node exit 0，1 pass / 0 fail / 0 skip，总计 467,974.306503 ms；保留原二进制失败输出及同一 baseline，后续调用在来源准入完成后的精确 raw 写入边界停止。生产源码没有为此改变，未重跑之前已通过的正例组。
+
+replay-loss session 90628 则自然 exit 1，0 pass / 1 fail / 0 skip；实际父错误 `MANUAL_TIME_INVALID`。原 AUTHORIZE 和 READY 均存在，但没有 CREDENTIAL_RECEIVED 或 replay 工具事件，预定 SIGKILL 未触发，后续再调用断言也未运行。handoff 在 15:40:28.123Z 到期，父 DISPATCH_CLOSED 为 15:40:50.874Z；未保留确切首错 stack / gate readAt，不能把含清理的时间差当作门禁耗时。1072 份原件已保全，root 独立核对完整路径集合、长度、稳定文件身份及 SHA-256 全部一致，清单摘要 `59672ddc1b83361469f934b631e7b576e39a329e4aeab715cd7ce72abd84cab2`。只读调查定位两处重复单件复核，但没有计时依据，未删检查、延长期限或盲目重跑此用例。
+
+R2.3 工作区已新增固定 selector 的只读结果核验器、两个真实 PostgreSQL 测试入口及其既有合同登记，尚未提交或验收。有限源码审查发现并修复正常 execution checkpoint 名误拒、消费前孤立撤销对象漏查，以及当前 gh 原输出未保管三项；当前验真输出写入完整执行日志并等待写入完成，报告摘要绑定原字节与 capture，Node 错误码与真实进程退出码分开。仅两项 selector / H1 无副作用边界通过，不能据此认定完整核验器正确。
+
+唯一新增 normal 组合正在不可变 Linux 副本 `/home/keqi_119/.cache/r23-result-WYUBu0` 运行，root session 48597；241 路径完整复制摘要和源前后状态闭合，Node 22.22.2，绑定 `result-verifier-frozen02.json`。它复用既有 fixture，只验证 migration NOT_RUN、最终 normal PASS、当前 gh 与只读边界及孤立撤销拒绝，不重跑旧 launcher 故障矩阵；当前尚无终态。apply-interrupted 新组合尚未运行，两真实 PG 入口也未运行。
+
+本轮合同校验实际 exit 0（195 文件、76 Schema、128 迁移、13 命令）。测试发现检查使用独立临时 Git index 纳入新文件，实际 index 保持不变；结果 98 candidates / 39 manifested / 59 excepted / 0 unclassified。两个真实入口的例外明确限定为独立人工最终门禁，不豁免 R2.4；默认 Runner 单测的 `test/*.test.mjs` 不选择 `test/manual/`。本轮开发预检仍是 migrate status 因缺 `datasource.url` exit 1、Prisma validate exit 0，未连接数据库或变更业务逻辑。
+
+当前顺序保持：完成 R2 结果核验及必要异常验证 → 受保护最终候选构建 / H2 → R2 真实 PG 两场景与 R3 合法快照消费、fresh / snapshot 双链 → 发布链对齐 Staging 两条待迁移并恢复服务 → R4 业务实测和签收。阶段 1 未收口。
+
 ## 15:28 UTC 接续：期望结构来源读取复用已提交
 
 提交 `49356e8e` 完成第三片私有来源读取复用。既有 expected-schema provenance、reference、OSS 原件及 GitHub 输出检查迁入 `manual-runner-source-inputs.mjs`；launcher 保留实际 GitHub 调用、会话检查、归档和 sidecar 写入。新读取器独立重开固定 admission、实际调用捕获及原始输出，保留自己的字节副本，关闭时清除副本；没有新增公开 CLI、Schema、数据库动作或业务功能。原 H3 主体、expected 来源检查和 GitHub argv / 结果谓词经逐字比对保留。

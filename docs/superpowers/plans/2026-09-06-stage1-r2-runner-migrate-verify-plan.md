@@ -601,6 +601,10 @@ test("rejects fabricated approval before database access", async () => {
 
 ## Task R2.3：真实执行测试入口与计数，尚不运行外部目标
 
+**2026-09-28 测试位置与当前验真日志对齐。** 独立 verifier 测试文件只负责 selector / 固定 H1 无副作用边界；完整 normal 和 apply-interrupted 组合复用已列入本任务的 `launch-manual-stage1.test.mjs` 内既有 native fixture，分别以 `result verifier independently reads the normal native archive` / `result verifier independently reads the apply-interrupted native archive` 选择。它们独立核 migration 的 NOT_RUN 和最终单场景 PASS、原 UNKNOWN 计数、当前真实子进程 gh 捕获及只读边界，并覆盖正常 execution checkpoint 与孤立撤销对象；不复制大型 fixture，也不重跑旧 launcher 故障矩阵。后文“同一 verifier test”的完整档案组合按这两个用例执行，已有共享 parser/assessor 的算法反例继续由其原测试覆盖，不能用两项 selector 测试代替完整组合通过。只在 Linux 原生目录运行组合，Windows skip 不算通过。
+
+§2.4 要求保管的本次 gh 原输出采用现有完整执行日志：verifier 向 stderr 写固定 `MANUAL_RESULT_ATTESTATION` 诊断，包含本次完整 argv/stdout/stderr 的 base64、实际 spawn/PID/start/close/exit/signal 及校验 capture；不含环境变量或 token。必须等待日志写入回调成功，否则拒绝。返回仍为原四键，内部 report digest 绑定两条诊断原字节摘要和 capture；外层验收保管完整日志并核无截断及关联。Node 错误码另存，不伪作进程退出码。不得写回固定 inputs、历史 admission 或 journal，不新增 Schema、公开参数、成功适配器或保管服务。
+
 **2026-09-27 必要复用接缝。** 当前严格 H3 native 原件及 expected-schema 来源检查仍位于 R2.2 launcher 私有函数；共享 assessor 只核其上下文和引用，不能替代固定来源读回。为避免 verifier 复制第二套校验，本任务先增加一个私有模块 `scripts/release/manual-runner-source-inputs.mjs`，由 launcher 与 verifier 静态导入，不从共享 index 导出，不新增 CLI、公共 Schema、成功回调或 skip 参数。提取在当前第八次 normal 执行自然结束、原件归档后进行；不得修改其已冻结执行副本。
 
 共用范围仅为既有 owner/ACL 与文件 pin/独立重开、H3-A/B 固定文件及 native SQL/argv/process/权限原件检查、expected provenance/reference/OSS 与已归档 GitHub 调用的来源检查。固定内部 reader 使用 `openManualH3AInputs`、`openManualH3BInputs`、`openManualExpectedSchemaInputs`；返回原件字节副本、原 RawRef、绑定上下文，以及内部 pins 的完整 `recheck/close`。其输入由 R1 固定 reader 和已重开的 request/allocation 派生，不接受任意路径、raw resolver 或“已验证”布尔值。内部保留自己的原件副本，不能依赖调用者可改的返回 Buffer/Map 完成重验。缺历史 B/expected 原件时拒绝，不能现场生成。

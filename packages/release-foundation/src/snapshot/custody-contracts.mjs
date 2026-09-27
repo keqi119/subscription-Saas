@@ -58,8 +58,8 @@ function validLineageObjectAddressing(object, releaseAttemptId, rcWorkflowRunId)
 
 export function validateSnapshotCustody(custody, { allowProvisional = false } = {}) {
   validateContract("snapshot-private-custody.v1", custody);
-  const cloudPolicy = loadPolicy("snapshot-cloud-policy.v1.json");
-  validateContract("snapshot-cloud-policy.v1", cloudPolicy);
+  const cloudPolicy = loadPolicy("snapshot-cloud-policy.v2.json");
+  validateContract("snapshot-cloud-policy.v2", cloudPolicy);
   const expectedKey = `snapshot-slots/v2/${custody.releaseAttemptId}/${custody.snapshotRunId}/snapshot.enc`;
   const expectedReadback = {
     key: custody.object.key,
@@ -345,8 +345,8 @@ export function validateEvidenceArchiveAccessReceipt(receipt, { authorization } 
 
 export function validateEvidenceCustodyBootstrapReadback(readback) {
   validateContract("evidence-custody-bootstrap-readback.v1", readback);
-  const cloudPolicy = loadPolicy("snapshot-cloud-policy.v1.json");
-  validateContract("snapshot-cloud-policy.v1", cloudPolicy);
+  const cloudPolicy = loadPolicy("snapshot-cloud-policy.v2.json");
+  validateContract("snapshot-cloud-policy.v2", cloudPolicy);
   if (
     new Set(Object.values(readback.identities)).size !== 3 ||
     readback.bucket.worm.retentionDays < cloudPolicy.bucket.worm.retentionDays ||

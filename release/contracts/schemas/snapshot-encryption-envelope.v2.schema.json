@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "snapshot-encryption-envelope.v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "algorithm",
+    "releaseAttemptId",
+    "snapshotRunId",
+    "sourceSha",
+    "snapshotDigest",
+    "sanitizationContractDigest",
+    "slotObjectKey",
+    "nonceBase64",
+    "authenticationTagBase64",
+    "ciphertextDigest",
+    "ciphertextSizeBytes",
+    "wrappedDek",
+    "localKeyReadback",
+    "context",
+    "contextDigest",
+    "gcmAad",
+    "snapshotAllocatedAt",
+    "expiresAt",
+    "authorizationDigest"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "snapshot-encryption-envelope.v2"
+    },
+    "algorithm": {
+      "const": "AES-256-GCM"
+    },
+    "releaseAttemptId": {
+      "$ref": "#/$defs/id"
+    },
+    "snapshotRunId": {
+      "$ref": "#/$defs/runId"
+    },
+    "sourceSha": {
+      "$ref": "#/$defs/sha"
+    },
+    "snapshotDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "sanitizationContractDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "slotObjectKey": {
+      "type": "string",
+      "pattern": "^snapshot-slots/v2/[^/*?]+/[1-9][0-9]*/snapshot\\.enc$",
+      "maxLength": 1024
+    },
+    "nonceBase64": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]{16}$"
+    },
+    "authenticationTagBase64": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]{22}==$"
+    },
+    "ciphertextDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "ciphertextSizeBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1073741824
+    },
+    "wrappedDek": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ciphertextBase64", "digest"],
+      "properties": {
+        "ciphertextBase64": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{512}$",
+          "minLength": 512,
+          "maxLength": 512
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "gcmAad": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositoryId",
+        "sourceSha",
+        "releaseAttemptId",
+        "snapshotRunId",
+        "sanitizationContractDigest",
+        "expiresAt",
+        "snapshotDigest",
+        "contextDigest",
+        "digest",
+        "keyFingerprint"
+      ],
+      "properties": {
+        "repositoryId": {
+          "const": "1253231368"
+        },
+        "sourceSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "releaseAttemptId": {
+          "$ref": "#/$defs/id"
+        },
+        "snapshotRunId": {
+          "$ref": "#/$defs/runId"
+        },
+        "sanitizationContractDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "snapshotDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "contextDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "keyFingerprint": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "snapshotAllocatedAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "expiresAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "localKeyReadback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "keyFingerprint", "keyReadbackDigest", "recoveryReadbackDigest"],
+      "properties": {
+        "kind": {
+          "const": "local-rsa-oaep-sha256.v1"
+        },
+        "keyFingerprint": {
+          "$ref": "#/$defs/digest"
+        },
+        "keyReadbackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recoveryReadbackDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "context": {
+      "$ref": "#/$defs/context"
+    },
+    "contextDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "authorizationDigest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:@/-]+$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "rfc3339Finite": true
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositoryId",
+        "sourceSha",
+        "releaseAttemptId",
+        "snapshotRunId",
+        "sanitizationContractDigest",
+        "expiresAt"
+      ],
+      "properties": {
+        "repositoryId": {
+          "const": "1253231368"
+        },
+        "sourceSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "releaseAttemptId": {
+          "$ref": "#/$defs/id"
+        },
+        "snapshotRunId": {
+          "$ref": "#/$defs/runId"
+        },
+        "sanitizationContractDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    }
+  }
+}

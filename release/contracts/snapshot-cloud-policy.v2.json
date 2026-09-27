@@ -1,0 +1,53 @@
+{
+  "contractVersion": "snapshot-cloud-policy.v2",
+  "region": "oss-cn-shanghai",
+  "bucket": {
+    "derivationVersion": "sha256-account-id-v1",
+    "nameTemplate": "subscription-saas-stage1-snapshot-${sha256(accountId).slice(0,12)}-cn-shanghai",
+    "versioning": "Disabled",
+    "forbidOverwrite": true,
+    "worm": {
+      "state": "Locked",
+      "retentionDays": 210
+    }
+  },
+  "profiles": {
+    "publisher": {
+      "allowedActions": ["oss:PutObject"],
+      "conditionalCreateOnly": true,
+      "liveRoleProvisioned": true,
+      "localDecrypt": false
+    },
+    "custody-reader": {
+      "allowedActions": [
+        "oss:HeadObject",
+        "oss:GetObject",
+        "oss:GetBucketAcl",
+        "oss:GetBucketWorm"
+      ],
+      "conditionalCreateOnly": false,
+      "liveRoleProvisioned": true,
+      "localDecrypt": false
+    },
+    "rc-consumer": {
+      "allowedActions": ["oss:HeadObject", "oss:GetObject"],
+      "conditionalCreateOnly": false,
+      "liveRoleProvisioned": true,
+      "localDecrypt": false
+    },
+    "retention": {
+      "allowedActions": [],
+      "conditionalCreateOnly": false,
+      "liveRoleProvisioned": false,
+      "requiresSeparateApproval": true,
+      "localDecrypt": false
+    }
+  },
+  "producerCryptoAuthorization": "producer-crypto-run-authorization.v2",
+  "localKey": {
+    "kind": "local-rsa-oaep-sha256.v1",
+    "privateKeyCustody": "h1-luks-main-and-recovery",
+    "hardwareNonExportable": false,
+    "consumerAdmission": "separate-h1-read-decrypt-use"
+  }
+}

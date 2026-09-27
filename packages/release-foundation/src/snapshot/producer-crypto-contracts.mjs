@@ -37,7 +37,7 @@ function same(left, right) {
   return canonicalJson(left) === canonicalJson(right);
 }
 
-export function validateProducerCryptoAuthorization(authorization) {
+function validateProducerCryptoAuthorizationV1(authorization) {
   validateContract("producer-crypto-run-authorization.v1", authorization);
   const issuedAt = instant(authorization.issuedAt);
   const notBefore = instant(authorization.notBefore);
@@ -73,7 +73,7 @@ export function validateProducerCryptoAuthorization(authorization) {
   return authorization;
 }
 
-export function validateSnapshotEncryptionEnvelope(envelope, { authorization } = {}) {
+function validateSnapshotEncryptionEnvelopeV1(envelope, { authorization } = {}) {
   validateContract("snapshot-encryption-envelope.v1", envelope);
   const payloadPolicy = addressingPolicy.outputs.find(
     ({ filename }) => filename === "snapshot.enc"
@@ -114,7 +114,7 @@ export function validateSnapshotEncryptionEnvelope(envelope, { authorization } =
     throw contractError("SNAPSHOT_ENCRYPTION_ENVELOPE_INVALID");
   }
   if (authorization) {
-    validateProducerCryptoAuthorization(authorization);
+    validateProducerCryptoAuthorizationV1(authorization);
     if (
       authorization.releaseAttemptId !== envelope.releaseAttemptId ||
       authorization.snapshotRunId !== envelope.snapshotRunId ||
@@ -129,7 +129,7 @@ export function validateSnapshotEncryptionEnvelope(envelope, { authorization } =
   return envelope;
 }
 
-export function validateProducerCryptoUseProof(proof, { authorization, envelope } = {}) {
+function validateProducerCryptoUseProofV1(proof, { authorization, envelope } = {}) {
   validateContract("producer-crypto-use-proof.v1", proof);
   if (!authorization || !envelope) {
     throw contractError("PRODUCER_CRYPTO_USE_CONTEXT_REQUIRED");
@@ -164,8 +164,8 @@ export function validateProducerCryptoUseProof(proof, { authorization, envelope 
   ) {
     throw contractError("PRODUCER_CRYPTO_USE_SEQUENCE_INVALID");
   }
-  validateProducerCryptoAuthorization(authorization);
-  validateSnapshotEncryptionEnvelope(envelope, { authorization });
+  validateProducerCryptoAuthorizationV1(authorization);
+  validateSnapshotEncryptionEnvelopeV1(envelope, { authorization });
   if (
     proof.authorizationDigest !== sha256Canonical(authorization) ||
     proof.prerequisiteReadbackDigest !== authorization.prerequisites.readbackDigest ||
@@ -180,5 +180,155 @@ export function validateProducerCryptoUseProof(proof, { authorization, envelope 
   ) {
     throw contractError("PRODUCER_CRYPTO_USE_AUTHORIZATION_MISMATCH");
   }
+  return proof;
+}
+
+// v1 is retained solely for validating historical originals; new execution is v2/local.
+export function validateProducerCryptoAuthorization(authorization) {
+  if (authorization?.schemaVersion === "producer-crypto-run-authorization.v1")
+    return validateProducerCryptoAuthorizationV1(authorization);
+  validateContract("producer-crypto-run-authorization.v2", authorization);
+  const allocatedAt = instant(authorization.snapshotAllocatedAt);
+  const key = authorization.localKey;
+  const expectedContext = {
+    repositoryId: authorization.repository.id,
+    sourceSha: authorization.sourceSha,
+    releaseAttemptId: authorization.releaseAttemptId,
+    snapshotRunId: authorization.snapshotRunId,
+    sanitizationContractDigest: key.context.sanitizationContractDigest,
+    expiresAt: new Date(allocatedAt + 30 * DAY_MS).toISOString()
+  };
+  const issued = instant(authorization.issuedAt),
+    before = instant(authorization.notBefore),
+    after = instant(authorization.notAfter);
+  if (
+    authorization.producer.runId !== authorization.snapshotRunId ||
+    !same(key.context, expectedContext) ||
+    key.contextDigest !== sha256Canonical(expectedContext) ||
+    key.keyReadbackDigest !== authorization.prerequisites.keyReadbackDigest ||
+    key.recoveryReadbackDigest !== authorization.prerequisites.recoveryReadbackDigest ||
+    new Set([
+      authorization.issuer.principal,
+      authorization.issuer.cryptoPrincipal,
+      authorization.issuer.publisherBrokerPrincipal
+    ]).size !== 3 ||
+    instant(authorization.prerequisites.completedAt) > issued ||
+    allocatedAt > issued ||
+    issued > before ||
+    before >= after ||
+    after - before > 900_000 ||
+    authorization.execution.requestedDurationSeconds * 1000 > after - before
+  ) {
+    throw contractError("PRODUCER_CRYPTO_AUTHORIZATION_INVALID");
+  }
+  return authorization;
+}
+
+export function validateSnapshotEncryptionEnvelope(envelope, { authorization } = {}) {
+  if (envelope?.schemaVersion === "snapshot-encryption-envelope.v1")
+    return validateSnapshotEncryptionEnvelopeV1(envelope, { authorization });
+  validateContract("snapshot-encryption-envelope.v2", envelope);
+  const payloadPolicy = addressingPolicy.outputs.find(
+    ({ filename }) => filename === "snapshot.enc"
+  );
+  const context = {
+    repositoryId: "1253231368",
+    sourceSha: envelope.sourceSha,
+    releaseAttemptId: envelope.releaseAttemptId,
+    snapshotRunId: envelope.snapshotRunId,
+    sanitizationContractDigest: envelope.sanitizationContractDigest,
+    expiresAt: envelope.expiresAt
+  };
+  const contextDigest = sha256Canonical(context);
+  const aad = {
+    ...context,
+    snapshotDigest: envelope.snapshotDigest,
+    contextDigest,
+    keyFingerprint: envelope.localKeyReadback.keyFingerprint
+  };
+  const { digest, ...actualAad } = envelope.gcmAad;
+  const wrapped = canonicalBase64(envelope.wrappedDek.ciphertextBase64);
+  if (
+    envelope.slotObjectKey !==
+      `snapshot-slots/v2/${envelope.releaseAttemptId}/${envelope.snapshotRunId}/snapshot.enc` ||
+    envelope.ciphertextSizeBytes > payloadPolicy.maxSizeBytes ||
+    canonicalBase64(envelope.nonceBase64).length !== 12 ||
+    canonicalBase64(envelope.authenticationTagBase64).length !== 16 ||
+    wrapped.length !== 384 ||
+    envelope.wrappedDek.digest !== sha256Bytes(wrapped) ||
+    !same(envelope.context, context) ||
+    envelope.contextDigest !== contextDigest ||
+    !same(actualAad, aad) ||
+    digest !== sha256Canonical(aad) ||
+    instant(envelope.expiresAt) - instant(envelope.snapshotAllocatedAt) !== 30 * DAY_MS
+  ) {
+    throw contractError("SNAPSHOT_ENCRYPTION_ENVELOPE_INVALID");
+  }
+  if (authorization) {
+    validateProducerCryptoAuthorization(authorization);
+    if (
+      authorization.schemaVersion !== "producer-crypto-run-authorization.v2" ||
+      envelope.authorizationDigest !== sha256Canonical(authorization) ||
+      authorization.releaseAttemptId !== envelope.releaseAttemptId ||
+      authorization.snapshotRunId !== envelope.snapshotRunId ||
+      authorization.sourceSha !== envelope.sourceSha ||
+      authorization.snapshotAllocatedAt !== envelope.snapshotAllocatedAt ||
+      !same(authorization.localKey.context, context) ||
+      authorization.localKey.contextDigest !== contextDigest ||
+      !same(envelope.localKeyReadback, {
+        kind: authorization.localKey.kind,
+        keyFingerprint: authorization.localKey.keyFingerprint,
+        keyReadbackDigest: authorization.localKey.keyReadbackDigest,
+        recoveryReadbackDigest: authorization.localKey.recoveryReadbackDigest
+      })
+    ) {
+      throw contractError("SNAPSHOT_ENCRYPTION_AUTHORIZATION_MISMATCH");
+    }
+  }
+  return envelope;
+}
+
+export function validateProducerCryptoUseProof(proof, { authorization, envelope } = {}) {
+  if (proof?.schemaVersion === "producer-crypto-use-proof.v1")
+    return validateProducerCryptoUseProofV1(proof, { authorization, envelope });
+  validateContract("producer-crypto-use-proof.v2", proof);
+  if (!authorization || !envelope) throw contractError("PRODUCER_CRYPTO_USE_CONTEXT_REQUIRED");
+  if (!proof.publishable) throw contractError("PRODUCER_CRYPTO_USE_NOT_PUBLISHABLE");
+  validateProducerCryptoAuthorization(authorization);
+  validateSnapshotEncryptionEnvelope(envelope, { authorization });
+  const execution = proof.execution;
+  const started = instant(execution.issuedAt),
+    expires = instant(execution.expiresAt);
+  const exited = instant(proof.cleanup.processExitedAt),
+    terminal = instant(execution.terminalAt);
+  if (
+    expires <= started ||
+    expires - started > 900_000 ||
+    exited < started ||
+    terminal < exited ||
+    instant(proof.issuedAt) < terminal ||
+    (execution.terminalState === "ADMISSION_EXPIRED" && terminal < expires) ||
+    (execution.terminalState === "ADMISSION_CLOSED" && terminal > expires)
+  ) {
+    throw contractError("PRODUCER_CRYPTO_USE_SEQUENCE_INVALID");
+  }
+  if (
+    authorization.schemaVersion !== "producer-crypto-run-authorization.v2" ||
+    envelope.schemaVersion !== "snapshot-encryption-envelope.v2" ||
+    proof.authorizationDigest !== sha256Canonical(authorization) ||
+    proof.prerequisiteReadbackDigest !== authorization.prerequisites.readbackDigest ||
+    proof.request.keyFingerprint !== authorization.localKey.keyFingerprint ||
+    proof.request.contextDigest !== authorization.localKey.contextDigest ||
+    proof.encryption.envelopeDigest !== sha256Canonical(envelope) ||
+    proof.encryption.ciphertextDigest !== envelope.ciphertextDigest ||
+    proof.encryption.wrappedDekDigest !== envelope.wrappedDek.digest ||
+    started < instant(authorization.notBefore) ||
+    started >= instant(authorization.notAfter) ||
+    expires > instant(authorization.notAfter) ||
+    expires - started > authorization.execution.requestedDurationSeconds * 1000
+  ) {
+    throw contractError("PRODUCER_CRYPTO_USE_AUTHORIZATION_MISMATCH");
+  }
+  // Admission closure and process exit are observations, not cloud revocation or physical key erasure.
   return proof;
 }

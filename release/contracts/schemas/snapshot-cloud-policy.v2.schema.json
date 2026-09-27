@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "snapshot-cloud-policy.v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "region",
+    "bucket",
+    "localKey",
+    "profiles",
+    "producerCryptoAuthorization"
+  ],
+  "properties": {
+    "contractVersion": {
+      "const": "snapshot-cloud-policy.v2"
+    },
+    "region": {
+      "const": "oss-cn-shanghai"
+    },
+    "bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["derivationVersion", "nameTemplate", "versioning", "forbidOverwrite", "worm"],
+      "properties": {
+        "derivationVersion": {
+          "const": "sha256-account-id-v1"
+        },
+        "nameTemplate": {
+          "const": "subscription-saas-stage1-snapshot-${sha256(accountId).slice(0,12)}-cn-shanghai"
+        },
+        "versioning": {
+          "const": "Disabled"
+        },
+        "forbidOverwrite": {
+          "const": true
+        },
+        "worm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "retentionDays"],
+          "properties": {
+            "state": {
+              "const": "Locked"
+            },
+            "retentionDays": {
+              "const": 210
+            }
+          }
+        }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publisher", "custody-reader", "rc-consumer", "retention"],
+      "properties": {
+        "publisher": {
+          "$ref": "#/$defs/publisher"
+        },
+        "custody-reader": {
+          "$ref": "#/$defs/custodyReader"
+        },
+        "rc-consumer": {
+          "$ref": "#/$defs/rcConsumer"
+        },
+        "retention": {
+          "$ref": "#/$defs/retention"
+        }
+      }
+    },
+    "producerCryptoAuthorization": {
+      "const": "producer-crypto-run-authorization.v2"
+    },
+    "localKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "privateKeyCustody", "hardwareNonExportable", "consumerAdmission"],
+      "properties": {
+        "kind": {
+          "const": "local-rsa-oaep-sha256.v1"
+        },
+        "privateKeyCustody": {
+          "const": "h1-luks-main-and-recovery"
+        },
+        "hardwareNonExportable": {
+          "const": false
+        },
+        "consumerAdmission": {
+          "const": "separate-h1-read-decrypt-use"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "publisher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowedActions",
+        "conditionalCreateOnly",
+        "localDecrypt",
+        "liveRoleProvisioned"
+      ],
+      "properties": {
+        "allowedActions": {
+          "const": ["oss:PutObject"]
+        },
+        "conditionalCreateOnly": {
+          "const": true
+        },
+        "liveRoleProvisioned": {
+          "const": true
+        },
+        "localDecrypt": {
+          "const": false
+        }
+      }
+    },
+    "custodyReader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowedActions",
+        "conditionalCreateOnly",
+        "localDecrypt",
+        "liveRoleProvisioned"
+      ],
+      "properties": {
+        "allowedActions": {
+          "const": ["oss:HeadObject", "oss:GetObject", "oss:GetBucketAcl", "oss:GetBucketWorm"]
+        },
+        "conditionalCreateOnly": {
+          "const": false
+        },
+        "liveRoleProvisioned": {
+          "const": true
+        },
+        "localDecrypt": {
+          "const": false
+        }
+      }
+    },
+    "rcConsumer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowedActions",
+        "conditionalCreateOnly",
+        "localDecrypt",
+        "liveRoleProvisioned"
+      ],
+      "properties": {
+        "allowedActions": {
+          "const": ["oss:HeadObject", "oss:GetObject"]
+        },
+        "conditionalCreateOnly": {
+          "const": false
+        },
+        "liveRoleProvisioned": {
+          "const": true
+        },
+        "localDecrypt": {
+          "const": false
+        }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowedActions",
+        "conditionalCreateOnly",
+        "localDecrypt",
+        "liveRoleProvisioned",
+        "requiresSeparateApproval"
+      ],
+      "properties": {
+        "allowedActions": {
+          "const": []
+        },
+        "conditionalCreateOnly": {
+          "const": false
+        },
+        "liveRoleProvisioned": {
+          "const": false
+        },
+        "requiresSeparateApproval": {
+          "const": true
+        },
+        "localDecrypt": {
+          "const": false
+        }
+      }
+    }
+  }
+}

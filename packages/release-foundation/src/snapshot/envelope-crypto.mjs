@@ -7,12 +7,15 @@ import { finished, pipeline } from "node:stream/promises";
 
 import { canonicalJson } from "../canonical-json.mjs";
 import { sha256Bytes, sha256Canonical } from "../digest.mjs";
-import { validateSnapshotEncryptionEnvelope } from "./producer-crypto-contracts.mjs";
+import {
+  validateProducerCryptoAuthorization,
+  validateSnapshotEncryptionEnvelope
+} from "./producer-crypto-contracts.mjs";
+import {
+  generateLocalSnapshotDataKey,
+  decryptLocalSnapshotDataKey
+} from "./local-envelope-key.mjs";
 
-const KEY_ALIAS = "alias/stage1-snapshot-custody";
-const KEY_SPEC = "AES_256";
-const KMS_REGION = "cn-shanghai";
-const WRAPPED_KEY_KIND = "kms-symmetric-data-key.v1";
 const DAY_MS = 86_400_000;
 const policy = JSON.parse(
   readFileSync(
@@ -39,31 +42,12 @@ const AAD_KEYS = Object.freeze([
   "snapshotRunId",
   "sourceSha"
 ]);
-const WRAPPED_KEYS = Object.freeze([
-  "aliasReadbackKeyId",
-  "ciphertext",
-  "keyAlias",
-  "keyId",
-  "kind",
-  "region"
-]);
 const safeErrors = new WeakSet();
 
 function snapshotError(code, details) {
   const error = Object.assign(new Error(code), { code });
   if (details !== undefined) error.details = Object.freeze({ ...details });
   safeErrors.add(error);
-  return error;
-}
-
-function unknownKmsError(code) {
-  const error = snapshotError(code);
-  Object.defineProperty(error, "kmsOutcome", {
-    value: "UNKNOWN",
-    enumerable: true,
-    writable: false,
-    configurable: false
-  });
   return error;
 }
 
@@ -92,6 +76,23 @@ function sameKeys(value, expected) {
 }
 
 function immutableJson(value) {
+  const visit = (entry, seen = new Set()) => {
+    if (entry === null || typeof entry !== "object") return;
+    if (
+      seen.has(entry) ||
+      (Object.getPrototypeOf(entry) !== Object.prototype && !Array.isArray(entry))
+    )
+      throw snapshotError("SNAPSHOT_METADATA_INVALID");
+    seen.add(entry);
+    for (const key of Reflect.ownKeys(entry)) {
+      if (Array.isArray(entry) && key === "length") continue;
+      if (typeof key !== "string" || !hasEnumerableDataProperty(entry, key))
+        throw snapshotError("SNAPSHOT_METADATA_INVALID");
+      visit(entry[key], seen);
+    }
+    seen.delete(entry);
+  };
+  visit(value);
   const clone = JSON.parse(canonicalJson(value));
   const freeze = (entry) => {
     if (entry && typeof entry === "object" && !Object.isFrozen(entry)) {
@@ -118,10 +119,6 @@ function assertSignal(signal) {
 
 function assertNotAborted(signal) {
   if (signal?.aborted) throw snapshotError("SNAPSHOT_ABORTED");
-}
-
-function assertKmsNotAborted(signal) {
-  if (signal?.aborted) throw unknownKmsError("SNAPSHOT_ABORTED");
 }
 
 function captureLimits(limits) {
@@ -205,7 +202,7 @@ function captureAad(aad, { required = false } = {}) {
   return immutableJson(aad);
 }
 
-function kmsContext(aad) {
+function snapshotContext(aad) {
   return Object.freeze({
     repositoryId: aad.repositoryId,
     sourceSha: aad.sourceSha,
@@ -216,17 +213,18 @@ function kmsContext(aad) {
   });
 }
 
-function authenticatedData(aad) {
-  const context = kmsContext(aad);
-  const kmsContextDigest = sha256Canonical(context);
+function authenticatedData(aad, keyFingerprint) {
+  const context = snapshotContext(aad);
+  const contextDigest = sha256Canonical(context);
   const value = Object.freeze({
     ...context,
     snapshotDigest: aad.snapshotDigest,
-    kmsContextDigest
+    keyFingerprint,
+    contextDigest
   });
   return Object.freeze({
     context,
-    kmsContextDigest,
+    contextDigest,
     value,
     bytes: Buffer.from(canonicalJson(value), "utf8"),
     digest: sha256Canonical(value)
@@ -247,11 +245,62 @@ function captureDestination(destination) {
   return resolve(destination);
 }
 
-function captureKms(kms, method) {
-  if (kms === null || typeof kms !== "object" || typeof kms[method] !== "function") {
-    throw snapshotError("SNAPSHOT_KMS_INTERFACE_INVALID");
+function captureAuthorization(authorization) {
+  try {
+    const captured = immutableJson(authorization);
+    if (captured.schemaVersion !== "producer-crypto-run-authorization.v2") throw new Error();
+    validateProducerCryptoAuthorization(captured);
+    return captured;
+  } catch {
+    throw snapshotError("SNAPSHOT_AUTHORIZATION_INVALID");
   }
-  return kms[method].bind(kms);
+}
+
+function assertAuthorizationAad(authorization, aad, auth) {
+  if (
+    authorization.snapshotAllocatedAt !== aad.snapshotAllocatedAt ||
+    canonicalJson(authorization.localKey.context) !== canonicalJson(auth.context) ||
+    authorization.localKey.contextDigest !== auth.contextDigest
+  )
+    throw snapshotError("SNAPSHOT_AUTHORIZATION_MISMATCH");
+}
+
+function assertExecutionTime(authorization, aad, producer) {
+  const now = Date.now();
+  if (now < Date.parse(aad.snapshotAllocatedAt) || now >= Date.parse(aad.expiresAt))
+    throw snapshotError("SNAPSHOT_EXPIRED");
+  if (
+    producer &&
+    (now < Date.parse(authorization.notBefore) || now >= Date.parse(authorization.notAfter))
+  ) {
+    throw snapshotError("SNAPSHOT_AUTHORIZATION_WINDOW_CLOSED");
+  }
+}
+
+function captureOptions(options, keyName, decrypt = false) {
+  const allowed = [
+    "source",
+    "destination",
+    "aad",
+    "authorization",
+    keyName,
+    "signal",
+    "limits",
+    ...(decrypt ? ["envelope"] : [])
+  ];
+  if (
+    !options ||
+    Object.getPrototypeOf(options) !== Object.prototype ||
+    Reflect.ownKeys(options).some(
+      (key) =>
+        typeof key !== "string" ||
+        !allowed.includes(key) ||
+        !hasEnumerableDataProperty(options, key)
+    )
+  ) {
+    throw snapshotError("SNAPSHOT_CRYPTO_OPTIONS_INVALID");
+  }
+  return options;
 }
 
 async function ensureDestinationAbsent(destination) {
@@ -410,103 +459,6 @@ async function publishTemp(temporaryPath, destination, signal, publication) {
   }
 }
 
-function plaintextRepresentations(plaintext) {
-  const hex = plaintext.toString("hex");
-  const base64 = plaintext.toString("base64");
-  return Object.freeze([
-    plaintext,
-    Buffer.from(hex, "utf8"),
-    Buffer.from(hex.toUpperCase(), "utf8"),
-    Buffer.from(base64, "utf8"),
-    Buffer.from(plaintext.toString("base64url"), "utf8")
-  ]);
-}
-
-function containsPlaintextRepresentation(value, plaintext) {
-  const representations = plaintextRepresentations(plaintext);
-  try {
-    return representations.some(
-      (representation) => representation.byteLength > 0 && value.indexOf(representation) !== -1
-    );
-  } finally {
-    for (const representation of representations) {
-      if (representation !== plaintext) representation.fill(0);
-    }
-  }
-}
-
-function metadataContainsPlaintextRepresentation(metadata, plaintext) {
-  const bytes = Buffer.from(metadata, "utf8");
-  try {
-    return containsPlaintextRepresentation(bytes, plaintext);
-  } finally {
-    bytes.fill(0);
-  }
-}
-
-function validateWrappedKey(wrapped, plaintext) {
-  if (
-    !sameKeys(wrapped, WRAPPED_KEYS) ||
-    wrapped.kind !== WRAPPED_KEY_KIND ||
-    !Buffer.isBuffer(wrapped.ciphertext) ||
-    wrapped.ciphertext.byteLength === 0 ||
-    wrapped.region !== KMS_REGION ||
-    wrapped.keyAlias !== KEY_ALIAS ||
-    typeof wrapped.keyId !== "string" ||
-    wrapped.keyId.length === 0 ||
-    wrapped.keyId !== wrapped.aliasReadbackKeyId
-  ) {
-    throw snapshotError("SNAPSHOT_WRAPPED_KEY_INVALID");
-  }
-  if (
-    Buffer.isBuffer(plaintext) &&
-    wrapped.ciphertext.buffer === plaintext.buffer &&
-    wrapped.ciphertext.byteOffset < plaintext.byteOffset + plaintext.byteLength &&
-    plaintext.byteOffset < wrapped.ciphertext.byteOffset + wrapped.ciphertext.byteLength
-  ) {
-    throw snapshotError("SNAPSHOT_KEY_MATERIAL_EXPOSED");
-  }
-  if (
-    containsPlaintextRepresentation(wrapped.ciphertext, plaintext) ||
-    [
-      wrapped.kind,
-      wrapped.region,
-      wrapped.keyId,
-      wrapped.keyAlias,
-      wrapped.aliasReadbackKeyId
-    ].some((metadata) => metadataContainsPlaintextRepresentation(metadata, plaintext))
-  ) {
-    throw snapshotError("SNAPSHOT_KEY_MATERIAL_EXPOSED");
-  }
-  return Object.freeze({
-    kind: wrapped.kind,
-    ciphertext: Buffer.from(wrapped.ciphertext),
-    region: wrapped.region,
-    keyId: wrapped.keyId,
-    keyAlias: wrapped.keyAlias,
-    aliasReadbackKeyId: wrapped.aliasReadbackKeyId
-  });
-}
-
-function validateGeneratedKey(result) {
-  const plaintext = result?.plaintext;
-  if (
-    !sameKeys(result, ["plaintext", "wrapped"]) ||
-    !Buffer.isBuffer(plaintext) ||
-    plaintext.byteLength !== 32
-  ) {
-    throw snapshotError("SNAPSHOT_KMS_RESULT_INVALID");
-  }
-  return Object.freeze({ plaintext, wrapped: validateWrappedKey(result.wrapped, plaintext) });
-}
-
-function validateDecryptedKey(value) {
-  if (!Buffer.isBuffer(value) || value.byteLength !== 32) {
-    throw snapshotError("SNAPSHOT_KMS_RESULT_INVALID");
-  }
-  return value;
-}
-
 function wipePossibleKey(value) {
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) value.fill(0);
 }
@@ -523,9 +475,10 @@ function assertEnvelopeSize(envelope, maxEnvelopeBytes) {
   }
 }
 
-function buildEnvelope({ aad, auth, nonce, tag, ciphertext, wrapped }) {
+function buildEnvelope({ aad, auth, authorization, nonce, tag, ciphertext, wrapped }) {
   return immutableJson({
-    schemaVersion: "snapshot-encryption-envelope.v1",
+    schemaVersion: "snapshot-encryption-envelope.v2",
+    authorizationDigest: sha256Canonical(authorization),
     algorithm: "AES-256-GCM",
     releaseAttemptId: aad.releaseAttemptId,
     snapshotRunId: aad.snapshotRunId,
@@ -541,26 +494,27 @@ function buildEnvelope({ aad, auth, nonce, tag, ciphertext, wrapped }) {
       ciphertextBase64: wrapped.ciphertext.toString("base64"),
       digest: sha256Bytes(wrapped.ciphertext)
     },
-    kmsKeyReadback: {
-      region: wrapped.region,
-      keyId: wrapped.keyId,
-      alias: wrapped.keyAlias,
-      aliasReadbackKeyId: wrapped.aliasReadbackKeyId
+    localKeyReadback: {
+      kind: wrapped.kind,
+      keyFingerprint: wrapped.keyFingerprint,
+      keyReadbackDigest: authorization.localKey.keyReadbackDigest,
+      recoveryReadbackDigest: authorization.localKey.recoveryReadbackDigest
     },
-    kmsContext: auth.context,
-    kmsContextDigest: auth.kmsContextDigest,
+    context: auth.context,
+    contextDigest: auth.contextDigest,
     gcmAad: { ...auth.value, digest: auth.digest },
     snapshotAllocatedAt: aad.snapshotAllocatedAt,
     expiresAt: aad.expiresAt
   });
 }
 
-function captureEnvelope(envelope, maxEnvelopeBytes) {
+function captureEnvelope(envelope, maxEnvelopeBytes, authorization) {
   let captured;
   try {
     captured = immutableJson(envelope);
     assertEnvelopeSize(captured, maxEnvelopeBytes);
-    validateSnapshotEncryptionEnvelope(captured);
+    if (captured.schemaVersion !== "snapshot-encryption-envelope.v2") throw new Error();
+    validateSnapshotEncryptionEnvelope(captured, { authorization });
   } catch (error) {
     if (safeErrors.has(error)) throw error;
     throw snapshotError("SNAPSHOT_ENVELOPE_INVALID");
@@ -571,8 +525,8 @@ function captureEnvelope(envelope, maxEnvelopeBytes) {
 function assertExpectedAad(envelope, aad, auth) {
   const expectedGcmAad = { ...auth.value, digest: auth.digest };
   if (
-    canonicalJson(envelope.kmsContext) !== canonicalJson(auth.context) ||
-    envelope.kmsContextDigest !== auth.kmsContextDigest ||
+    canonicalJson(envelope.context) !== canonicalJson(auth.context) ||
+    envelope.contextDigest !== auth.contextDigest ||
     canonicalJson(envelope.gcmAad) !== canonicalJson(expectedGcmAad) ||
     envelope.snapshotAllocatedAt !== aad.snapshotAllocatedAt ||
     envelope.snapshotDigest !== aad.snapshotDigest ||
@@ -588,12 +542,10 @@ function assertExpectedAad(envelope, aad, auth) {
 
 function wrappedFromEnvelope(envelope) {
   return Object.freeze({
-    kind: WRAPPED_KEY_KIND,
-    ciphertext: Buffer.from(envelope.wrappedDek.ciphertextBase64, "base64"),
-    region: envelope.kmsKeyReadback.region,
-    keyId: envelope.kmsKeyReadback.keyId,
-    keyAlias: envelope.kmsKeyReadback.alias,
-    aliasReadbackKeyId: envelope.kmsKeyReadback.aliasReadbackKeyId
+    kind: envelope.localKeyReadback.kind,
+    keyFingerprint: envelope.localKeyReadback.keyFingerprint,
+    contextDigest: envelope.contextDigest,
+    ciphertext: Buffer.from(envelope.wrappedDek.ciphertextBase64, "base64")
   });
 }
 
@@ -603,26 +555,21 @@ export function wipeKeyBuffer(buffer) {
   buffer.fill(0);
 }
 
-export async function encryptSnapshotStream({
-  source,
-  destination,
-  aad,
-  kms,
-  signal,
-  limits,
-  ...forbidden
-} = {}) {
-  if (Reflect.ownKeys(forbidden).length > 0) {
-    throw snapshotError("SNAPSHOT_CRYPTO_OPTIONS_INVALID");
-  }
+export async function encryptSnapshotStream(options = {}) {
+  const { source, destination, aad, authorization, publicKey, signal, limits } = captureOptions(
+    options,
+    "publicKey"
+  );
   assertSignal(signal);
   assertNotAborted(signal);
   const openReplay = captureSource(source);
   const outputPath = captureDestination(destination);
   const expected = captureAad(aad);
   const effectiveLimits = captureLimits(limits);
-  const generateDataKey = captureKms(kms, "generateDataKey");
-  const auth = authenticatedData(expected);
+  const capturedAuthorization = captureAuthorization(authorization);
+  const auth = authenticatedData(expected, capturedAuthorization.localKey.keyFingerprint);
+  assertAuthorizationAad(capturedAuthorization, expected, auth);
+  assertExecutionTime(capturedAuthorization, expected, true);
   await ensureDestinationAbsent(outputPath);
   assertNotAborted(signal);
 
@@ -641,20 +588,19 @@ export async function encryptSnapshotStream({
   const publication = { outputCommitted: false, temporaryNameOwned: false };
   try {
     try {
-      let generated;
+      assertExecutionTime(capturedAuthorization, expected, true);
+      let key;
       try {
-        generated = await generateDataKey({
-          keyAlias: KEY_ALIAS,
-          keySpec: KEY_SPEC,
-          encryptionContext: auth.context
+        key = generateLocalSnapshotDataKey({
+          publicKey,
+          keyFingerprint: capturedAuthorization.localKey.keyFingerprint,
+          contextDigest: auth.contextDigest
         });
       } catch {
-        if (signal?.aborted) throw unknownKmsError("SNAPSHOT_ABORTED");
-        throw unknownKmsError("SNAPSHOT_KMS_GENERATE_FAILED");
+        throw snapshotError("SNAPSHOT_LOCAL_KEY_GENERATE_FAILED");
       }
-      keyMaterial = generated?.plaintext;
-      assertKmsNotAborted(signal);
-      const key = validateGeneratedKey(generated);
+      keyMaterial = key.plaintext;
+      assertNotAborted(signal);
       const nonce = randomBytes(12);
       const cipher = createCipheriv("aes-256-gcm", key.plaintext, nonce, {
         authTagLength: 16
@@ -694,13 +640,14 @@ export async function encryptSnapshotStream({
       envelope = buildEnvelope({
         aad: expected,
         auth,
+        authorization: capturedAuthorization,
         nonce,
         tag,
         ciphertext,
         wrapped: key.wrapped
       });
       try {
-        validateSnapshotEncryptionEnvelope(envelope);
+        validateSnapshotEncryptionEnvelope(envelope, { authorization: capturedAuthorization });
       } catch {
         throw snapshotError("SNAPSHOT_ENVELOPE_INVALID");
       }
@@ -708,6 +655,7 @@ export async function encryptSnapshotStream({
     } finally {
       wipePossibleKey(keyMaterial);
     }
+    assertExecutionTime(capturedAuthorization, expected, true);
     await publishTemp(temporary.path, outputPath, signal, publication);
     return envelope;
   } finally {
@@ -716,28 +664,25 @@ export async function encryptSnapshotStream({
   }
 }
 
-export async function decryptSnapshotStream({
-  source,
-  destination,
-  envelope,
-  aad,
-  kms,
-  signal,
-  limits,
-  ...forbidden
-} = {}) {
-  if (Reflect.ownKeys(forbidden).length > 0) {
-    throw snapshotError("SNAPSHOT_CRYPTO_OPTIONS_INVALID");
-  }
+export async function decryptSnapshotStream(options = {}) {
+  const { source, destination, envelope, aad, authorization, privateKey, signal, limits } =
+    captureOptions(options, "privateKey", true);
   assertSignal(signal);
   assertNotAborted(signal);
   const openReplay = captureSource(source);
   const outputPath = captureDestination(destination);
   const expected = captureAad(aad, { required: true });
   const effectiveLimits = captureLimits(limits);
-  const decryptDataKey = captureKms(kms, "decryptDataKey");
-  const capturedEnvelope = captureEnvelope(envelope, effectiveLimits.maxEnvelopeBytes);
-  const auth = authenticatedData(expected);
+  const capturedAuthorization = captureAuthorization(authorization);
+  const capturedEnvelope = captureEnvelope(
+    envelope,
+    effectiveLimits.maxEnvelopeBytes,
+    capturedAuthorization
+  );
+  const auth = authenticatedData(expected, capturedAuthorization.localKey.keyFingerprint);
+  assertAuthorizationAad(capturedAuthorization, expected, auth);
+  // This validates the original producer artifact, not current H1 consumer admission.
+  assertExecutionTime(capturedAuthorization, expected, false);
   assertExpectedAad(capturedEnvelope, expected, auth);
   await ensureDestinationAbsent(outputPath);
   assertNotAborted(signal);
@@ -760,17 +705,19 @@ export async function decryptSnapshotStream({
   const publication = { outputCommitted: false, temporaryNameOwned: false };
   try {
     try {
+      assertExecutionTime(capturedAuthorization, expected, false);
       try {
-        keyMaterial = await decryptDataKey({
-          wrapped,
-          encryptionContext: auth.context
+        keyMaterial = decryptLocalSnapshotDataKey({
+          privateKey,
+          keyFingerprint: capturedAuthorization.localKey.keyFingerprint,
+          contextDigest: auth.contextDigest,
+          wrapped
         });
       } catch {
-        if (signal?.aborted) throw unknownKmsError("SNAPSHOT_ABORTED");
-        throw unknownKmsError("SNAPSHOT_KMS_DECRYPT_FAILED");
+        throw snapshotError("SNAPSHOT_LOCAL_KEY_DECRYPT_FAILED");
       }
-      assertKmsNotAborted(signal);
-      const key = validateDecryptedKey(keyMaterial);
+      assertNotAborted(signal);
+      const key = keyMaterial;
       const decipher = createDecipheriv(
         "aes-256-gcm",
         key,
@@ -816,6 +763,7 @@ export async function decryptSnapshotStream({
     } finally {
       wipePossibleKey(keyMaterial);
     }
+    assertExecutionTime(capturedAuthorization, expected, false);
     await publishTemp(temporary.path, outputPath, signal, publication);
   } finally {
     await closeTemporary(temporary);

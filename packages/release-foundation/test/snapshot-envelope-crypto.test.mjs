@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import crypto, { createHash, generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
 import fs, { createReadStream } from "node:fs";
 import {
@@ -9,7 +9,6 @@ import {
   readFile,
   readdir,
   rm,
-  stat,
   unlink as unlinkFile,
   writeFile
 } from "node:fs/promises";
@@ -25,18 +24,131 @@ import {
   wipeKeyBuffer
 } from "../src/snapshot/envelope-crypto.mjs";
 import { validateSnapshotEncryptionEnvelope } from "../src/snapshot/producer-crypto-contracts.mjs";
+import { sha256Canonical } from "../src/digest.mjs";
+
+const keys = generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 });
+const keyFingerprint = `sha256:${createHash("sha256")
+  .update(keys.publicKey.export({ type: "spki", format: "der" }))
+  .digest("hex")}`;
+function producerAuthorization(aad) {
+  const now = Date.now();
+  const context = Object.fromEntries(
+    Object.entries(aad).filter(([key]) => !["snapshotAllocatedAt", "snapshotDigest"].includes(key))
+  );
+  const d = `sha256:${"a".repeat(64)}`;
+  return {
+    schemaVersion: "producer-crypto-run-authorization.v2",
+    authorizationId: "fixture-local-authorization",
+    executionPurpose: "qualification",
+    repository: { name: "keqi119/subscription-Saas", id: aad.repositoryId },
+    sourceSha: aad.sourceSha,
+    releaseAttemptId: aad.releaseAttemptId,
+    snapshotRunId: aad.snapshotRunId,
+    snapshotAllocatedAt: aad.snapshotAllocatedAt,
+    producer: {
+      workflowPath: ".github/workflows/sanitized-snapshot.yml",
+      runId: aad.snapshotRunId,
+      runAttempt: 1,
+      jobId: "snapshot-data",
+      phase: "encryption",
+      pendingDeploymentId: "fixture-deployment",
+      environment: {
+        name: "stage1-snapshot-export",
+        id: "fixture-environment",
+        policyIdentityDigest: d
+      }
+    },
+    bindings: Object.fromEntries(
+      [
+        "dispatchAuthorizationDigest",
+        "sourceGateEvidenceDigest",
+        "buildProofDigest",
+        "buildBundleDigest",
+        "repositoryContractDigest",
+        "adapterExecutableDigest",
+        "cryptoExecutableDigest"
+      ].map((key) => [key, d])
+    ),
+    issuer: {
+      issuerId: "fixture-issuer",
+      principal: "fixture-approver",
+      cryptoPrincipal: "fixture-producer",
+      publisherBrokerPrincipal: "fixture-publisher"
+    },
+    localKey: {
+      kind: "local-rsa-oaep-sha256.v1",
+      keyFingerprint,
+      keyReadbackDigest: d,
+      recoveryReadbackDigest: d,
+      action: "local:GenerateAndWrapDataKey",
+      keySpec: "AES_256",
+      maxCalls: 1,
+      context,
+      contextDigest: sha256Canonical(context)
+    },
+    execution: { requestedDurationSeconds: 600, maxDurationSeconds: 900 },
+    handoff: { protocol: "public-key-object-v1", publicKeyOnly: true, privateKey: false },
+    prerequisites: Object.fromEntries(
+      [
+        "changePlanDigest",
+        "externalChangeApprovalDigest",
+        "applyProofDigest",
+        "keyReadbackDigest",
+        "recoveryReadbackDigest",
+        "admissionPolicyReadbackDigest",
+        "readbackDigest"
+      ]
+        .map((key) => [key, d])
+        .concat([["completedAt", new Date(now - 2000).toISOString()]])
+    ),
+    issuedAt: new Date(now - 1000).toISOString(),
+    notBefore: new Date(now - 1000).toISOString(),
+    notAfter: new Date(now + 899000).toISOString(),
+    revocationPolicyDigest: d,
+    custodyAuthorizationDigest: d
+  };
+}
+
+test("v2 executes real local RSA envelope encryption and decrypts with the original producer authorization", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-local-v2-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bytes = Buffer.from("sanitized snapshot fixture");
+  const aad = expectedAad(bytes);
+  const authorization = producerAuthorization(aad);
+  const encrypted = join(directory, "snapshot.enc");
+  const envelope = await encryptSnapshotStream({
+    source: { open: () => Readable.from([bytes]) },
+    destination: encrypted,
+    aad,
+    authorization,
+    publicKey: keys.publicKey
+  });
+  assert.equal(envelope.schemaVersion, "snapshot-encryption-envelope.v2");
+  assert.equal(envelope.authorizationDigest, sha256Canonical(authorization));
+  const restored = join(directory, "restored.sql");
+  await decryptSnapshotStream({
+    source: replayableFile(encrypted).source,
+    destination: restored,
+    aad,
+    authorization,
+    envelope,
+    privateKey: keys.privateKey
+  });
+  assert.deepEqual(await readFile(restored), bytes);
+});
 
 const digest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 function expectedAad(bytes) {
+  const allocated = Date.now() - 86_400_000;
   return {
     repositoryId: "1253231368",
     sourceSha: "b".repeat(40),
     releaseAttemptId: "attempt-20260903-001",
     snapshotRunId: "9001",
     sanitizationContractDigest: `sha256:${"1".repeat(64)}`,
-    expiresAt: "2026-10-03T00:00:00.000Z",
-    snapshotAllocatedAt: "2026-09-03T00:00:00.000Z",
+    expiresAt: new Date(allocated + 30 * 86_400_000).toISOString(),
+    snapshotAllocatedAt: new Date(allocated).toISOString(),
     snapshotDigest: digest(bytes)
   };
 }
@@ -54,33 +166,26 @@ function replayableFile(path, { highWaterMark = 7 } = {}) {
   };
 }
 
-function wrappedKey() {
-  return {
-    kind: "kms-symmetric-data-key.v1",
-    ciphertext: Buffer.alloc(64, 3),
-    region: "cn-shanghai",
-    keyId: "key-actual-001",
-    keyAlias: "alias/stage1-snapshot-custody",
-    aliasReadbackKeyId: "key-actual-001"
-  };
-}
-
-async function encryptedFixture(directory, plaintext, { stem = "fixture" } = {}) {
-  const inputPath = join(directory, `${stem}.sql`);
-  const ciphertextPath = join(directory, `${stem}.enc`);
+async function encryptedFixture(
+  directory,
+  plaintext,
+  {
+    stem = "fixture",
+    aad = expectedAad(plaintext),
+    authorization = producerAuthorization(aad)
+  } = {}
+) {
+  const inputPath = join(directory, stem + ".sql"),
+    ciphertextPath = join(directory, stem + ".enc");
   await writeFile(inputPath, plaintext);
-  const source = replayableFile(inputPath);
   const envelope = await encryptSnapshotStream({
-    source: source.source,
+    source: replayableFile(inputPath).source,
     destination: ciphertextPath,
-    aad: expectedAad(plaintext),
-    kms: {
-      async generateDataKey() {
-        return { plaintext: Buffer.alloc(32, 7), wrapped: wrappedKey() };
-      }
-    }
+    aad,
+    authorization,
+    publicKey: keys.publicKey
   });
-  return { aad: expectedAad(plaintext), ciphertextPath, envelope, inputPath };
+  return { aad, authorization, ciphertextPath, envelope, inputPath };
 }
 
 function serializedSecretScan(value, forbidden) {
@@ -183,1650 +288,573 @@ async function withTemporaryNameReplacement(destination, replacement, action) {
   }
 }
 
-test("real streaming encryption roundtrips and clears both plaintext DEKs", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-"));
+async function directoryFor(t) {
+  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-local-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.concat([
-    Buffer.from("sanitized-snapshot\n"),
-    Buffer.alloc(97, 0x5a),
-    Buffer.from("\nend\n")
-  ]);
-  const inputPath = join(directory, "snapshot.sql");
-  const ciphertextPath = join(directory, "snapshot.enc");
-  const outputPath = join(directory, "restored.sql");
-  await writeFile(inputPath, plaintext);
-
-  const producerSource = replayableFile(inputPath, { highWaterMark: 5 });
-  const producerDek = Buffer.alloc(32, 7);
-  const generateRequests = [];
-  const producerKms = {
-    async generateDataKey(request) {
-      generateRequests.push(structuredClone(request));
-      return { plaintext: producerDek, wrapped: wrappedKey() };
-    }
-  };
-  const aad = expectedAad(plaintext);
-
-  const envelope = await encryptSnapshotStream({
-    source: producerSource.source,
-    destination: ciphertextPath,
+  return directory;
+}
+function producerOptions(directory, bytes, extra = {}) {
+  const aad = expectedAad(bytes);
+  return {
+    source: { open: () => Readable.from([bytes]) },
+    destination: join(directory, "output.enc"),
     aad,
-    kms: producerKms
-  });
-
-  assert.equal(producerSource.openCount(), 2);
-  assert.deepEqual(producerDek, Buffer.alloc(32));
-  assert.doesNotThrow(() => validateSnapshotEncryptionEnvelope(envelope));
-  const ciphertext = await readFile(ciphertextPath);
-  assert.notDeepEqual(ciphertext, plaintext);
-  assert.equal(envelope.ciphertextSizeBytes, plaintext.byteLength);
-  assert.equal(envelope.ciphertextDigest, digest(ciphertext));
-  assert.equal((await stat(ciphertextPath)).mode & 0o777, 0o600);
-  assert.deepEqual(generateRequests, [
-    {
-      keyAlias: "alias/stage1-snapshot-custody",
-      keySpec: "AES_256",
-      encryptionContext: {
-        repositoryId: aad.repositoryId,
-        sourceSha: aad.sourceSha,
-        releaseAttemptId: aad.releaseAttemptId,
-        snapshotRunId: aad.snapshotRunId,
-        sanitizationContractDigest: aad.sanitizationContractDigest,
-        expiresAt: aad.expiresAt
-      }
-    }
-  ]);
-
-  const consumerSource = replayableFile(ciphertextPath, { highWaterMark: 3 });
-  const consumerDek = Buffer.alloc(32, 7);
-  const decryptRequests = [];
-  const consumerKms = {
-    async decryptDataKey(request) {
-      decryptRequests.push({
-        wrapped: { ...request.wrapped, ciphertext: Buffer.from(request.wrapped.ciphertext) },
-        encryptionContext: structuredClone(request.encryptionContext)
-      });
-      return consumerDek;
-    }
+    authorization: producerAuthorization(aad),
+    publicKey: keys.publicKey,
+    ...extra
   };
-  await decryptSnapshotStream({
-    source: consumerSource.source,
-    destination: outputPath,
-    envelope,
-    aad,
-    kms: consumerKms
-  });
-
-  assert.equal(consumerSource.openCount(), 2);
-  assert.deepEqual(consumerDek, Buffer.alloc(32));
-  assert.deepEqual(await readFile(outputPath), plaintext);
-  assert.equal((await stat(outputPath)).mode & 0o777, 0o600);
-  assert.deepEqual(decryptRequests, [
-    {
-      wrapped: wrappedKey(),
-      encryptionContext: {
-        repositoryId: aad.repositoryId,
-        sourceSha: aad.sourceSha,
-        releaseAttemptId: aad.releaseAttemptId,
-        snapshotRunId: aad.snapshotRunId,
-        sanitizationContractDigest: aad.sanitizationContractDigest,
-        expiresAt: aad.expiresAt
-      }
-    }
-  ]);
-});
-
-test("consumer refuses changed authenticated data before KMS", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-aad-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  const ciphertextPath = join(directory, "snapshot.enc");
-  await writeFile(inputPath, plaintext);
-  const producerSource = replayableFile(inputPath);
-  const envelope = await encryptSnapshotStream({
-    source: producerSource.source,
-    destination: ciphertextPath,
-    aad: expectedAad(plaintext),
-    kms: {
-      async generateDataKey() {
-        return { plaintext: Buffer.alloc(32, 7), wrapped: wrappedKey() };
-      }
-    }
-  });
-  let decryptCalls = 0;
-
-  await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source: replayableFile(ciphertextPath).source,
-        destination: join(directory, "restored.sql"),
-        envelope,
-        aad: { ...expectedAad(plaintext), releaseAttemptId: "changed" },
-        kms: {
-          async decryptDataKey() {
-            decryptCalls += 1;
-            return Buffer.alloc(32, 7);
-          }
-        }
-      }),
-    { code: "SNAPSHOT_AAD_MISMATCH" }
-  );
-  assert.equal(decryptCalls, 0);
-});
-
-test("wipeKeyBuffer overwrites only mutable Buffer key material", () => {
-  const key = Buffer.alloc(32, 9);
-  assert.equal(wipeKeyBuffer(key), undefined);
-  assert.deepEqual(key, Buffer.alloc(32));
-  assert.throws(() => wipeKeyBuffer(new Uint8Array(32)), {
-    code: "SNAPSHOT_KEY_BUFFER_INVALID"
-  });
-});
-
-test("producer removes its private temp and wipes the DEK when replay fails", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-failure-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("already scanned sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  const destination = join(directory, "snapshot.enc");
-  await writeFile(inputPath, plaintext);
-  let opens = 0;
-  const producerDek = Buffer.alloc(32, 7);
-  const source = {
-    open() {
-      opens += 1;
-      if (opens === 1) return createReadStream(inputPath);
-      return createReadStream(join(directory, "missing-second-pass.sql"));
-    }
-  };
-
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source,
-        destination,
-        aad: expectedAad(plaintext),
-        kms: {
-          async generateDataKey() {
-            return { plaintext: producerDek, wrapped: wrappedKey() };
-          }
-        }
-      }),
-    { code: "SNAPSHOT_ENCRYPTION_FAILED" }
-  );
-
-  assert.deepEqual(producerDek, Buffer.alloc(32));
-  assert.deepEqual(await readdir(directory), ["snapshot.sql"]);
-});
-
-test("producer requires the already-scanned digest before requesting a key", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-digest-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  const replay = replayableFile(inputPath);
-  let kmsCalls = 0;
-  const aad = { ...expectedAad(plaintext), snapshotDigest: `sha256:${"f".repeat(64)}` };
-
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: replay.source,
-        destination: join(directory, "snapshot.enc"),
-        aad,
-        kms: {
-          async generateDataKey() {
-            kmsCalls += 1;
-            return { plaintext: Buffer.alloc(32, 7), wrapped: wrappedKey() };
-          }
-        }
-      }),
-    { code: "SNAPSHOT_DIGEST_MISMATCH" }
-  );
-  assert.equal(replay.openCount(), 1);
-  assert.equal(kmsCalls, 0);
-  assert.deepEqual(await readdir(directory), ["snapshot.sql"]);
-});
-
-test("decrypt requires caller expected AAD before opening ciphertext or KMS", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-required-aad-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
-  const replay = replayableFile(fixture.ciphertextPath);
-  let kmsCalls = 0;
-
-  await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source: replay.source,
-        destination: join(directory, "restored.sql"),
-        envelope: fixture.envelope,
-        kms: {
-          async decryptDataKey() {
-            kmsCalls += 1;
-            return Buffer.alloc(32, 7);
-          }
-        }
-      }),
-    { code: "SNAPSHOT_AAD_REQUIRED" }
-  );
-  assert.equal(replay.openCount(), 0);
-  assert.equal(kmsCalls, 0);
-});
-
-test("producer rejects asymmetric, extra, and drifting wrapped-key metadata", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-wrapped-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  const mutations = [
-    (value) => (value.kind = "local-public-key.v1"),
-    (value) => (value.publicKeyAlgorithm = "RSA-OAEP"),
-    (value) => (value.keyAlias = "alias/drifted"),
-    (value) => (value.aliasReadbackKeyId = "key-drifted"),
-    (value) => (value.region = "cn-beijing")
-  ];
-
-  for (const [index, mutate] of mutations.entries()) {
-    const plaintextDek = Buffer.alloc(32, 7);
-    const wrapped = wrappedKey();
-    mutate(wrapped);
-    await assert.rejects(
-      () =>
-        encryptSnapshotStream({
-          source: replayableFile(inputPath).source,
-          destination: join(directory, `snapshot-${index}.enc`),
-          aad: expectedAad(plaintext),
-          kms: {
-            async generateDataKey() {
-              return { plaintext: plaintextDek, wrapped };
-            }
-          }
-        }),
-      { code: "SNAPSHOT_WRAPPED_KEY_INVALID" }
-    );
-    assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  }
-  assert.deepEqual(await readdir(directory), ["snapshot.sql"]);
-});
-
-test("malformed generated key bytes are wiped and never published", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-malformed-key-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  const malformedDek = new Uint8Array(31).fill(9);
-
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: replayableFile(inputPath).source,
-        destination: join(directory, "snapshot.enc"),
-        aad: expectedAad(plaintext),
-        kms: {
-          async generateDataKey() {
-            return { plaintext: malformedDek, wrapped: wrappedKey() };
-          }
-        }
-      }),
-    { code: "SNAPSHOT_KMS_RESULT_INVALID" }
-  );
-  assert.deepEqual(malformedDek, new Uint8Array(31));
-  assert.deepEqual(await readdir(directory), ["snapshot.sql"]);
-});
-
-test("ciphertext prevalidation rejects tampering before KMS", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-ciphertext-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
-  const ciphertext = await readFile(fixture.ciphertextPath);
-  ciphertext[0] ^= 0xff;
-  await writeFile(fixture.ciphertextPath, ciphertext);
-  let kmsCalls = 0;
-
-  await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source: replayableFile(fixture.ciphertextPath).source,
-        destination: join(directory, "restored.sql"),
-        envelope: fixture.envelope,
-        aad: fixture.aad,
-        kms: {
-          async decryptDataKey() {
-            kmsCalls += 1;
-            return Buffer.alloc(32, 7);
-          }
-        }
-      }),
-    { code: "SNAPSHOT_CIPHERTEXT_MISMATCH" }
-  );
-  assert.equal(kmsCalls, 0);
-  assert.equal(
-    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
-    false
-  );
-});
-
-test("authentication-tag tampering never publishes partial plaintext", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-tag-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
-  const envelope = structuredClone(fixture.envelope);
-  const tag = Buffer.from(envelope.authenticationTagBase64, "base64");
-  tag[0] ^= 0xff;
-  envelope.authenticationTagBase64 = tag.toString("base64");
-  const consumerDek = Buffer.alloc(32, 7);
-  const outputPath = join(directory, "restored.sql");
-
-  await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source: replayableFile(fixture.ciphertextPath).source,
-        destination: outputPath,
-        envelope,
-        aad: fixture.aad,
-        kms: {
-          async decryptDataKey() {
-            return consumerDek;
-          }
-        }
-      }),
-    { code: "SNAPSHOT_AUTHENTICATION_FAILED" }
-  );
-  assert.deepEqual(consumerDek, Buffer.alloc(32));
-  assert.equal((await readdir(directory)).includes("restored.sql"), false);
-  assert.equal(
-    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
-    false
-  );
-});
-
-test("producer detects source mutation between digest verification and encryption", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-mutation-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const first = Buffer.from("sanitized snapshot A");
-  const second = Buffer.from("sanitized snapshot B");
-  const firstPath = join(directory, "first.sql");
-  const secondPath = join(directory, "second.sql");
-  await writeFile(firstPath, first);
-  await writeFile(secondPath, second);
-  let opens = 0;
-  const plaintextDek = Buffer.alloc(32, 7);
-
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: {
-          open() {
-            opens += 1;
-            return createReadStream(opens === 1 ? firstPath : secondPath);
-          }
-        },
-        destination: join(directory, "snapshot.enc"),
-        aad: expectedAad(first),
-        kms: {
-          async generateDataKey() {
-            return { plaintext: plaintextDek, wrapped: wrappedKey() };
-          }
-        }
-      }),
-    { code: "SNAPSHOT_SOURCE_CHANGED" }
-  );
-  assert.equal(opens, 2);
-  assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  assert.deepEqual((await readdir(directory)).sort(), ["first.sql", "second.sql"]);
-});
-
-test("existing and racing destinations are preserved byte-for-byte", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-destination-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  const existingPath = join(directory, "existing.enc");
-  const racePath = join(directory, "race.enc");
-  const sentinel = Buffer.from("do not overwrite");
-  await writeFile(inputPath, plaintext);
-  await writeFile(existingPath, sentinel);
-  let opens = 0;
-  let kmsCalls = 0;
-
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: {
-          open() {
-            opens += 1;
-            return createReadStream(inputPath);
-          }
-        },
-        destination: existingPath,
-        aad: expectedAad(plaintext),
-        kms: {
-          async generateDataKey() {
-            kmsCalls += 1;
-            return { plaintext: Buffer.alloc(32, 7), wrapped: wrappedKey() };
-          }
-        }
-      }),
-    { code: "SNAPSHOT_DESTINATION_EXISTS" }
-  );
-  assert.equal(opens, 0);
-  assert.equal(kmsCalls, 0);
-  assert.deepEqual(await readFile(existingPath), sentinel);
-
-  const racingDek = Buffer.alloc(32, 7);
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: {
-          async open() {
-            opens += 1;
-            if (opens === 2) await writeFile(racePath, sentinel);
-            return createReadStream(inputPath);
-          }
-        },
-        destination: racePath,
-        aad: expectedAad(plaintext),
-        kms: {
-          async generateDataKey() {
-            kmsCalls += 1;
-            return { plaintext: racingDek, wrapped: wrappedKey() };
-          }
-        }
-      }),
-    { code: "SNAPSHOT_DESTINATION_EXISTS" }
-  );
-  assert.deepEqual(racingDek, Buffer.alloc(32));
-  assert.deepEqual(await readFile(racePath), sentinel);
-  assert.equal(
-    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
-    false
-  );
-});
-
-test("downward byte caps enforce actual streamed bytes and reject upward overrides", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-limits-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("123456789");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  let kmsCalls = 0;
-
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: replayableFile(inputPath).source,
-        destination: join(directory, "too-large.enc"),
-        aad: expectedAad(plaintext),
-        limits: { maxCiphertextBytes: 8 },
-        kms: {
-          async generateDataKey() {
-            kmsCalls += 1;
-            return { plaintext: Buffer.alloc(32, 7), wrapped: wrappedKey() };
-          }
-        }
-      }),
-    { code: "SNAPSHOT_CIPHERTEXT_SIZE_LIMIT_EXCEEDED" }
-  );
-  assert.equal(kmsCalls, 0);
-
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: replayableFile(inputPath).source,
-        destination: join(directory, "invalid-limit.enc"),
-        aad: expectedAad(plaintext),
-        limits: { maxCiphertextBytes: 1_073_741_825 },
-        kms: { generateDataKey() {} }
-      }),
-    { code: "SNAPSHOT_LIMITS_INVALID" }
-  );
-
-  const envelopeLimitDek = Buffer.alloc(32, 7);
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: replayableFile(inputPath).source,
-        destination: join(directory, "envelope-too-large.enc"),
-        aad: expectedAad(plaintext),
-        limits: { maxCiphertextBytes: plaintext.byteLength, maxEnvelopeBytes: 1 },
-        kms: {
-          async generateDataKey() {
-            return { plaintext: envelopeLimitDek, wrapped: wrappedKey() };
-          }
-        }
-      }),
-    { code: "SNAPSHOT_ENVELOPE_SIZE_LIMIT_EXCEEDED" }
-  );
-  assert.deepEqual(envelopeLimitDek, Buffer.alloc(32));
-  assert.equal(
-    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
-    false
-  );
-});
-
-test("pre-abort and first-pass abort do not open/request beyond the abort boundary", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-abort-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const pre = new AbortController();
-  pre.abort();
-  let opens = 0;
-  let kmsCalls = 0;
-  const source = {
-    open() {
-      opens += 1;
-      return Readable.from([plaintext]);
-    }
-  };
-
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source,
-        destination: join(directory, "pre-abort.enc"),
-        aad: expectedAad(plaintext),
-        kms: {
-          generateDataKey() {
-            kmsCalls += 1;
-          }
-        },
-        signal: pre.signal
-      }),
-    (error) => {
-      assert.equal(error.code, "SNAPSHOT_ABORTED");
-      assert.equal(error.kmsOutcome, undefined);
-      return true;
-    }
-  );
-  assert.equal(opens, 0);
-  assert.equal(kmsCalls, 0);
-
-  const during = new AbortController();
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: {
-          open() {
-            opens += 1;
-            return Readable.from(
-              (async function* () {
-                yield plaintext.subarray(0, 3);
-                during.abort();
-                yield plaintext.subarray(3);
-              })()
-            );
-          }
-        },
-        destination: join(directory, "during-scan.enc"),
-        aad: expectedAad(plaintext),
-        kms: {
-          generateDataKey() {
-            kmsCalls += 1;
-          }
-        },
-        signal: during.signal
-      }),
-    { code: "SNAPSHOT_ABORTED" }
-  );
-  assert.equal(opens, 1);
-  assert.equal(kmsCalls, 0);
-});
-
-test("abort while GenerateDataKey settles waits to wipe returned key material", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-kms-abort-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  const controller = new AbortController();
-  const plaintextDek = Buffer.alloc(32, 7);
-  let releaseKms;
-  let markStarted;
-  const started = new Promise((resolve) => (markStarted = resolve));
-  const kmsResult = new Promise((resolve) => (releaseKms = resolve));
-  let kmsCalls = 0;
-  const operation = encryptSnapshotStream({
-    source: replayableFile(inputPath).source,
-    destination: join(directory, "snapshot.enc"),
-    aad: expectedAad(plaintext),
-    signal: controller.signal,
-    kms: {
-      async generateDataKey() {
-        kmsCalls += 1;
-        markStarted();
-        return kmsResult;
-      }
-    }
-  });
-  await started;
-  assert.equal(kmsCalls, 1);
-  controller.abort();
-  releaseKms({ plaintext: plaintextDek, wrapped: wrappedKey() });
-
-  await assert.rejects(operation, {
-    code: "SNAPSHOT_ABORTED",
-    kmsOutcome: "UNKNOWN"
-  });
-  assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  assert.deepEqual(await readdir(directory), ["snapshot.sql"]);
-});
-
-test("abort during decryption removes unauthenticated plaintext and wipes the DEK", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-decrypt-abort-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.alloc(64, 0x5a));
-  const ciphertext = await readFile(fixture.ciphertextPath);
-  const controller = new AbortController();
-  let opens = 0;
-  const plaintextDek = Buffer.alloc(32, 7);
-
-  await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source: {
-          open() {
-            opens += 1;
-            if (opens === 1) return createReadStream(fixture.ciphertextPath);
-            return Readable.from(
-              (async function* () {
-                yield ciphertext.subarray(0, 8);
-                controller.abort();
-                yield ciphertext.subarray(8);
-              })()
-            );
-          }
-        },
-        destination: join(directory, "restored.sql"),
-        envelope: fixture.envelope,
-        aad: fixture.aad,
-        signal: controller.signal,
-        kms: {
-          async decryptDataKey() {
-            return plaintextDek;
-          }
-        }
-      }),
-    { code: "SNAPSHOT_ABORTED" }
-  );
-  assert.equal(opens, 2);
-  assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  assert.equal((await readdir(directory)).includes("restored.sql"), false);
-  assert.equal(
-    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
-    false
-  );
-});
-
-test("source, destination, and KMS failures are closed and provider errors are redacted", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-failures-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  let kmsCalls = 0;
-
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: {
-          open() {
-            throw new Error("source path secret");
-          }
-        },
-        destination: join(directory, "source-failure.enc"),
-        aad: expectedAad(plaintext),
-        kms: {
-          generateDataKey() {
-            kmsCalls += 1;
-          }
-        }
-      }),
-    { code: "SNAPSHOT_SOURCE_OPEN_FAILED" }
-  );
-  assert.equal(kmsCalls, 0);
-
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: replayableFile(inputPath).source,
-        destination: join(directory, "missing-parent", "snapshot.enc"),
-        aad: expectedAad(plaintext),
-        kms: {
-          async generateDataKey() {
-            return { plaintext: Buffer.alloc(32, 7), wrapped: wrappedKey() };
-          }
-        }
-      }),
-    { code: "SNAPSHOT_DESTINATION_CREATE_FAILED" }
-  );
-
-  const rawProviderError = Object.assign(new Error("access-key-secret-value"), {
-    accessKeyId: "provider-access-key",
-    response: { plaintextDek: Buffer.alloc(32, 7) }
-  });
-  let caught;
-  try {
-    await encryptSnapshotStream({
-      source: replayableFile(inputPath).source,
-      destination: join(directory, "kms-failure.enc"),
-      aad: expectedAad(plaintext),
-      kms: {
-        async generateDataKey() {
-          throw rawProviderError;
-        }
-      }
-    });
-  } catch (error) {
-    caught = error;
-  }
-  assert.equal(caught.code, "SNAPSHOT_KMS_GENERATE_FAILED");
-  assert.equal(caught.message, "SNAPSHOT_KMS_GENERATE_FAILED");
-  assert.equal(caught.kmsOutcome, "UNKNOWN");
-  assert.equal(caught.cause, undefined);
-  assert.equal(caught.details, undefined);
-  serializedSecretScan(
-    { name: caught.name, message: caught.message, code: caught.code, details: caught.details },
-    ["access-key-secret-value", "provider-access-key"]
-  );
-});
-
-test("a forged safe-error marker cannot leak source secrets", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-forged-error-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const secret = "source-private-value";
-  const forged = Object.assign(new Error(secret), {
-    code: "FORGED_PROVIDER_ERROR",
-    details: { accessKeySecret: secret },
-    snapshotCryptoSafe: true
-  });
-  let caught;
-
-  try {
-    await encryptSnapshotStream({
-      source: {
-        open() {
-          return Readable.from(
-            (async function* () {
-              yield plaintext.subarray(0, 2);
-              throw forged;
-            })()
-          );
-        }
-      },
-      destination: join(directory, "snapshot.enc"),
-      aad: expectedAad(plaintext),
-      kms: {
-        generateDataKey() {
-          throw new Error("must not be called");
-        }
-      }
-    });
-  } catch (error) {
-    caught = error;
-  }
-
-  assert.equal(caught.code, "SNAPSHOT_SOURCE_READ_FAILED");
-  assert.equal(caught.message, "SNAPSHOT_SOURCE_READ_FAILED");
-  assert.equal(caught.details, undefined);
-  assert.equal(JSON.stringify(caught).includes(secret), false);
-});
-
-test("returned and IPC-serialized envelope data contains no plaintext key material", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-serialization-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  const plaintextDek = Buffer.alloc(32, 0xa7);
-  const rawBase64 = plaintextDek.toString("base64");
-  const rawHex = plaintextDek.toString("hex");
-  const envelope = await encryptSnapshotStream({
-    source: replayableFile(inputPath).source,
-    destination: join(directory, "snapshot.enc"),
-    aad: expectedAad(plaintext),
-    kms: {
-      async generateDataKey() {
-        return { plaintext: plaintextDek, wrapped: wrappedKey() };
-      }
-    }
-  });
-
-  assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  const ipcEnvelope = await childProcessRoundtrip(envelope);
-  for (const candidate of [envelope, structuredClone(envelope), ipcEnvelope]) {
-    serializedSecretScan(candidate, [rawBase64, rawHex]);
-    const serialized = JSON.stringify(candidate);
-    assert.equal(serialized.includes(rawBase64), false);
-    assert.equal(serialized.includes(rawHex), false);
-  }
-});
-
-test("consumer rejects envelope context and alias drift before source or KMS", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-envelope-drift-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
-  const mutations = [
-    (value) => (value.gcmAad.sourceSha = "c".repeat(40)),
-    (value) => (value.kmsKeyReadback.alias = "alias/drifted"),
-    (value) => (value.kmsKeyReadback.aliasReadbackKeyId = "key-drifted")
-  ];
-
-  for (const [index, mutate] of mutations.entries()) {
-    const envelope = structuredClone(fixture.envelope);
-    mutate(envelope);
-    const replay = replayableFile(fixture.ciphertextPath);
-    let kmsCalls = 0;
-    await assert.rejects(
-      () =>
-        decryptSnapshotStream({
-          source: replay.source,
-          destination: join(directory, `restored-${index}.sql`),
-          envelope,
-          aad: fixture.aad,
-          kms: {
-            decryptDataKey() {
-              kmsCalls += 1;
-            }
-          }
-        }),
-      { code: "SNAPSHOT_ENVELOPE_INVALID" }
-    );
-    assert.equal(replay.openCount(), 0);
-    assert.equal(kmsCalls, 0);
-  }
-});
-
-test("opaque wrapped bytes are delegated once to trusted KMS and failures are redacted", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-opaque-wrap-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
-  const envelope = structuredClone(fixture.envelope);
-  const opaqueInvalid = Buffer.alloc(64, 0xcc);
-  envelope.wrappedDek.ciphertextBase64 = opaqueInvalid.toString("base64");
-  envelope.wrappedDek.digest = digest(opaqueInvalid);
-  let kmsCalls = 0;
-  let caught;
-
-  try {
-    await decryptSnapshotStream({
-      source: replayableFile(fixture.ciphertextPath).source,
-      destination: join(directory, "restored.sql"),
-      envelope,
-      aad: fixture.aad,
-      kms: {
-        async decryptDataKey({ wrapped }) {
-          kmsCalls += 1;
-          assert.equal(wrapped.kind, "kms-symmetric-data-key.v1");
-          assert.deepEqual(wrapped.ciphertext, opaqueInvalid);
-          throw Object.assign(new Error("provider raw response secret"), {
-            response: { accessKeySecret: "provider-secret" }
-          });
-        }
-      }
-    });
-  } catch (error) {
-    caught = error;
-  }
-
-  assert.equal(kmsCalls, 1);
-  assert.equal(caught.code, "SNAPSHOT_KMS_DECRYPT_FAILED");
-  assert.equal(caught.message, "SNAPSHOT_KMS_DECRYPT_FAILED");
-  assert.equal(caught.kmsOutcome, "UNKNOWN");
-  assert.equal(caught.cause, undefined);
-  assert.equal(JSON.stringify(caught).includes("provider-secret"), false);
-  assert.equal((await readdir(directory)).includes("restored.sql"), false);
-});
-
-test("consumer detects ciphertext mutation after prevalidation and publishes no plaintext", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-consumer-mutation-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
-  const changedPath = join(directory, "changed.enc");
-  const changed = await readFile(fixture.ciphertextPath);
-  changed[changed.byteLength - 1] ^= 0xff;
-  await writeFile(changedPath, changed);
-  let opens = 0;
-  const plaintextDek = Buffer.alloc(32, 7);
-
-  await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source: {
-          open() {
-            opens += 1;
-            return createReadStream(opens === 1 ? fixture.ciphertextPath : changedPath);
-          }
-        },
-        destination: join(directory, "restored.sql"),
-        envelope: fixture.envelope,
-        aad: fixture.aad,
-        kms: {
-          async decryptDataKey() {
-            return plaintextDek;
-          }
-        }
-      }),
-    { code: "SNAPSHOT_AUTHENTICATION_FAILED" }
-  );
-  assert.equal(opens, 2);
-  assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  assert.equal((await readdir(directory)).includes("restored.sql"), false);
-  assert.equal(
-    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
-    false
-  );
-});
-
-test("consumer preserves a destination created during the decrypt race", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-consumer-race-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
-  const destination = join(directory, "restored.sql");
-  const sentinel = Buffer.from("existing race winner");
-  let opens = 0;
-  const plaintextDek = Buffer.alloc(32, 7);
-
-  await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source: {
-          async open() {
-            opens += 1;
-            if (opens === 2) await writeFile(destination, sentinel);
-            return createReadStream(fixture.ciphertextPath);
-          }
-        },
-        destination,
-        envelope: fixture.envelope,
-        aad: fixture.aad,
-        kms: {
-          async decryptDataKey() {
-            return plaintextDek;
-          }
-        }
-      }),
-    { code: "SNAPSHOT_DESTINATION_EXISTS" }
-  );
-  assert.deepEqual(await readFile(destination), sentinel);
-  assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  assert.equal(
-    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
-    false
-  );
-});
-
-test("malformed decrypted key bytes are wiped before any plaintext temp is created", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-malformed-decrypt-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
-  const malformedDek = new Uint8Array(31).fill(9);
-
-  await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source: replayableFile(fixture.ciphertextPath).source,
-        destination: join(directory, "restored.sql"),
-        envelope: fixture.envelope,
-        aad: fixture.aad,
-        kms: {
-          async decryptDataKey() {
-            return malformedDek;
-          }
-        }
-      }),
-    { code: "SNAPSHOT_KMS_RESULT_INVALID" }
-  );
-  assert.deepEqual(malformedDek, new Uint8Array(31));
-  assert.equal((await readdir(directory)).includes("restored.sql"), false);
-  assert.equal(
-    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
-    false
-  );
-});
-
-test("abort while Decrypt settles waits to wipe returned key material", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-decrypt-kms-abort-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
-  const controller = new AbortController();
-  const plaintextDek = Buffer.alloc(32, 7);
-  let releaseKms;
-  let markStarted;
-  const started = new Promise((resolve) => (markStarted = resolve));
-  const kmsResult = new Promise((resolve) => (releaseKms = resolve));
-  let kmsCalls = 0;
-  const operation = decryptSnapshotStream({
+}
+function consumerOptions(directory, fixture, extra = {}) {
+  return {
     source: replayableFile(fixture.ciphertextPath).source,
     destination: join(directory, "restored.sql"),
-    envelope: fixture.envelope,
     aad: fixture.aad,
-    signal: controller.signal,
-    kms: {
-      async decryptDataKey() {
-        kmsCalls += 1;
-        markStarted();
-        return kmsResult;
-      }
-    }
-  });
-  await started;
-  assert.equal(kmsCalls, 1);
-  controller.abort();
-  releaseKms(plaintextDek);
-
-  await assert.rejects(operation, {
-    code: "SNAPSHOT_ABORTED",
-    kmsOutcome: "UNKNOWN"
-  });
-  assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  assert.equal((await readdir(directory)).includes("restored.sql"), false);
-});
-
-test("public package index exposes only the three Task5 crypto functions", async () => {
-  const packageExports = await import("../src/index.mjs");
-  assert.equal(packageExports.encryptSnapshotStream, encryptSnapshotStream);
-  assert.equal(packageExports.decryptSnapshotStream, decryptSnapshotStream);
-  assert.equal(packageExports.wipeKeyBuffer, wipeKeyBuffer);
-});
-
-test("unknown options cannot inject a nonce or public-key recovery path", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-options-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  let opens = 0;
-  let kmsCalls = 0;
-  const source = {
-    open() {
-      opens += 1;
-      return Readable.from([plaintext]);
-    }
+    authorization: fixture.authorization,
+    envelope: fixture.envelope,
+    privateKey: keys.privateKey,
+    ...extra
   };
-
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source,
-        destination: join(directory, "snapshot.enc"),
-        aad: expectedAad(plaintext),
-        kms: {
-          generateDataKey() {
-            kmsCalls += 1;
-          }
-        },
-        nonce: Buffer.alloc(12)
-      }),
-    { code: "SNAPSHOT_CRYPTO_OPTIONS_INVALID" }
+}
+async function observeKeys(action) {
+  const held = [],
+    originals = [crypto.createCipheriv, crypto.createDecipheriv];
+  for (const [index, name] of ["createCipheriv", "createDecipheriv"].entries()) {
+    crypto[name] = function (...args) {
+      held.push(args[1]);
+      return originals[index](...args);
+    };
+  }
+  syncBuiltinESMExports();
+  try {
+    await action(held);
+  } finally {
+    crypto.createCipheriv = originals[0];
+    crypto.createDecipheriv = originals[1];
+    syncBuiltinESMExports();
+  }
+}
+async function noTemps(directory) {
+  assert.equal(
+    (await readdir(directory)).some((name) => name.includes(".snapshot-tmp-")),
+    false
   );
-  assert.equal(opens, 0);
-  assert.equal(kmsCalls, 0);
+}
+const fixtureDigest = "sha256:" + "f".repeat(64);
 
-  await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source,
-        destination: join(directory, "restored.sql"),
-        envelope: {},
-        aad: expectedAad(plaintext),
-        kms: {
-          decryptDataKey() {
-            kmsCalls += 1;
-          }
-        },
-        privateKey: Buffer.alloc(32)
-      }),
-    { code: "SNAPSHOT_CRYPTO_OPTIONS_INVALID" }
-  );
-  assert.equal(opens, 0);
-  assert.equal(kmsCalls, 0);
+test("real random envelopes differ, roundtrip and clear actual producer and consumer DEKs", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("sanitized snapshot bytes".repeat(1000));
+  await observeKeys(async (held) => {
+    const a = await encryptedFixture(directory, bytes, { stem: "a" });
+    const b = await encryptedFixture(directory, bytes, {
+      stem: "b",
+      aad: a.aad,
+      authorization: a.authorization
+    });
+    assert.notEqual(a.envelope.wrappedDek.ciphertextBase64, b.envelope.wrappedDek.ciphertextBase64);
+    assert.notEqual(a.envelope.nonceBase64, b.envelope.nonceBase64);
+    assert.equal(Buffer.from(a.envelope.wrappedDek.ciphertextBase64, "base64").length, 384);
+    assert.deepEqual(held[0], Buffer.alloc(32));
+    assert.deepEqual(held[1], Buffer.alloc(32));
+    await decryptSnapshotStream(consumerOptions(directory, a));
+    assert.deepEqual(held[2], Buffer.alloc(32));
+    assert.deepEqual(await readFile(join(directory, "restored.sql")), bytes);
+    assert.equal(Object.isFrozen(a.envelope.gcmAad), true);
+    const transferred = await childProcessRoundtrip(a.envelope);
+    assert.deepEqual(transferred, a.envelope);
+    serializedSecretScan(transferred, ["PRIVATE KEY", "SENTINEL_RAW_FS_SECRET"]);
+    await noTemps(directory);
+  });
 });
 
-test("nonce and declared-size tampering fail at the earliest safe boundary", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-envelope-tamper-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
+test("producer freezes authorization and AAD before caller mutation during awaits", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture");
+  const options = producerOptions(directory, bytes),
+    original = structuredClone(options.authorization);
+  options.source.open = () => {
+    options.authorization.localKey.context.sourceSha = "c".repeat(40);
+    options.authorization.prerequisites.keyReadbackDigest = fixtureDigest;
+    options.aad.snapshotDigest = fixtureDigest;
+    return Readable.from([bytes]);
+  };
+  const envelope = await encryptSnapshotStream(options);
+  assert.equal(envelope.authorizationDigest, sha256Canonical(original));
+  validateSnapshotEncryptionEnvelope(envelope, { authorization: original });
+});
 
-  const wrongSize = structuredClone(fixture.envelope);
-  wrongSize.ciphertextSizeBytes -= 1;
-  let sizeKmsCalls = 0;
+test("consumer freezes original authorization, envelope and AAD before caller mutation", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture"),
+    f = await encryptedFixture(directory, bytes);
+  const options = consumerOptions(directory, f);
+  options.envelope = structuredClone(options.envelope);
+  options.source.open = () => {
+    options.authorization.localKey.keyFingerprint = fixtureDigest;
+    options.aad.snapshotDigest = fixtureDigest;
+    options.envelope.authenticationTagBase64 = Buffer.alloc(16).toString("base64");
+    return createReadStream(f.ciphertextPath);
+  };
+  await decryptSnapshotStream(options);
+  assert.deepEqual(await readFile(options.destination), bytes);
+});
+
+test("producer checks actual approval time; consumer accepts an expired original producer window only while object remains valid", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture");
+  const aad = expectedAad(bytes),
+    authorization = producerAuthorization(aad),
+    base = Date.now() - 3_600_000;
+  authorization.prerequisites.completedAt = new Date(base - 2000).toISOString();
+  authorization.issuedAt = authorization.notBefore = new Date(base - 1000).toISOString();
+  authorization.notAfter = new Date(base + 899000).toISOString();
+  let opens = 0;
   await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source: replayableFile(fixture.ciphertextPath).source,
-        destination: join(directory, "wrong-size.sql"),
-        envelope: wrongSize,
-        aad: fixture.aad,
-        kms: {
-          decryptDataKey() {
-            sizeKmsCalls += 1;
-          }
+    encryptSnapshotStream({
+      ...producerOptions(directory, bytes),
+      aad,
+      authorization,
+      source: {
+        open() {
+          opens++;
+          return Readable.from([bytes]);
         }
-      }),
-    { code: "SNAPSHOT_CIPHERTEXT_MISMATCH" }
+      }
+    }),
+    { code: "SNAPSHOT_AUTHORIZATION_WINDOW_CLOSED" }
   );
-  assert.equal(sizeKmsCalls, 0);
+  assert.equal(opens, 0);
+  const realNow = Date.now;
+  let f;
+  try {
+    Date.now = () => base;
+    f = await encryptedFixture(directory, bytes, { aad, authorization });
+  } finally {
+    Date.now = realNow;
+  }
+  await decryptSnapshotStream(consumerOptions(directory, f));
+  assert.deepEqual(await readFile(join(directory, "restored.sql")), bytes);
+  try {
+    Date.now = () => Date.parse(aad.expiresAt);
+    await assert.rejects(
+      decryptSnapshotStream(
+        consumerOptions(directory, f, { destination: join(directory, "expired.sql") })
+      ),
+      { code: "SNAPSHOT_EXPIRED" }
+    );
+  } finally {
+    Date.now = realNow;
+  }
+});
 
-  const wrongNonce = structuredClone(fixture.envelope);
-  const nonce = Buffer.from(wrongNonce.nonceBase64, "base64");
-  nonce[0] ^= 0xff;
-  wrongNonce.nonceBase64 = nonce.toString("base64");
-  const nonceDek = Buffer.alloc(32, 7);
+test("v1 and provider execution options, hidden properties, getters and missing expected AAD fail closed", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture");
+  for (const name of ["kms", "provider", "nonce", "privateKey"]) {
+    await assert.rejects(
+      encryptSnapshotStream(producerOptions(directory, bytes, { [name]: undefined })),
+      { code: "SNAPSHOT_CRYPTO_OPTIONS_INVALID" }
+    );
+  }
+  const options = producerOptions(directory, bytes);
+  options.authorization.schemaVersion = "producer-crypto-run-authorization.v1";
+  await assert.rejects(encryptSnapshotStream(options), { code: "SNAPSHOT_AUTHORIZATION_INVALID" });
+  let getterCalls = 0;
+  for (const target of ["aad", "authorization"]) {
+    const option = producerOptions(directory, bytes);
+    Object.defineProperty(option[target], "hidden", {
+      get() {
+        getterCalls++;
+        return "secret";
+      },
+      enumerable: false
+    });
+    await assert.rejects(encryptSnapshotStream(option));
+  }
+  assert.equal(getterCalls, 0);
+  for (const target of ["source", "limits"]) {
+    const option = producerOptions(directory, bytes, { limits: {} });
+    Object.defineProperty(option[target], "hidden", { value: "secret", enumerable: false });
+    await assert.rejects(encryptSnapshotStream(option), {
+      code: target === "source" ? "SNAPSHOT_SOURCE_REPLAY_REQUIRED" : "SNAPSHOT_LIMITS_INVALID"
+    });
+  }
+  const f = await encryptedFixture(directory, bytes);
+  await assert.rejects(decryptSnapshotStream(consumerOptions(directory, f, { aad: undefined })), {
+    code: "SNAPSHOT_AAD_REQUIRED"
+  });
   await assert.rejects(
-    () =>
-      decryptSnapshotStream({
-        source: replayableFile(fixture.ciphertextPath).source,
-        destination: join(directory, "wrong-nonce.sql"),
-        envelope: wrongNonce,
-        aad: fixture.aad,
-        kms: {
-          async decryptDataKey() {
-            return nonceDek;
+    decryptSnapshotStream(
+      consumerOptions(directory, f, {
+        envelope: { ...f.envelope, schemaVersion: "snapshot-encryption-envelope.v1" }
+      })
+    ),
+    { code: "SNAPSHOT_ENVELOPE_INVALID" }
+  );
+});
+
+test("scanned digest and deterministic readback metadata fail before replay", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture"),
+    options = producerOptions(directory, bytes);
+  let opens = 0;
+  options.source.open = () => {
+    opens++;
+    return Readable.from([Buffer.from("different")]);
+  };
+  await assert.rejects(encryptSnapshotStream(options), { code: "SNAPSHOT_DIGEST_MISMATCH" });
+  assert.equal(opens, 1);
+  for (const change of [
+    (auth) => (auth.localKey.contextDigest = fixtureDigest),
+    (auth) => (auth.localKey.recoveryReadbackDigest = fixtureDigest)
+  ]) {
+    const option = producerOptions(directory, bytes);
+    change(option.authorization);
+    await assert.rejects(encryptSnapshotStream(option), { code: "SNAPSHOT_AUTHORIZATION_INVALID" });
+  }
+  await noTemps(directory);
+});
+
+test("wrong public or private KeyObjects cannot execute and native errors are redacted", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture");
+  await assert.rejects(
+    encryptSnapshotStream(producerOptions(directory, bytes, { publicKey: keys.privateKey })),
+    { code: "SNAPSHOT_LOCAL_KEY_GENERATE_FAILED" }
+  );
+  const f = await encryptedFixture(directory, bytes),
+    wrong = generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 });
+  await assert.rejects(
+    decryptSnapshotStream(consumerOptions(directory, f, { privateKey: wrong.privateKey })),
+    { code: "SNAPSHOT_LOCAL_KEY_DECRYPT_FAILED" }
+  );
+  await noTemps(directory);
+  assert.equal(fs.existsSync(join(directory, "restored.sql")), false);
+});
+
+test("ciphertext, truncation, tag, nonce, wrapped key, AAD and authorization tampering never publish plaintext", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture".repeat(100)),
+    f = await encryptedFixture(directory, bytes);
+  const original = await readFile(f.ciphertextPath);
+  for (const altered of [
+    original.subarray(0, original.length - 1),
+    Buffer.from(original).fill(1, 0, 1)
+  ]) {
+    await writeFile(f.ciphertextPath, altered);
+    await assert.rejects(decryptSnapshotStream(consumerOptions(directory, f)), {
+      code: "SNAPSHOT_CIPHERTEXT_MISMATCH"
+    });
+  }
+  await writeFile(f.ciphertextPath, original);
+  await observeKeys(async (held) => {
+    for (const [field, size] of [
+      ["authenticationTagBase64", 16],
+      ["nonceBase64", 12]
+    ]) {
+      const envelope = structuredClone(f.envelope);
+      envelope[field] = Buffer.alloc(size).toString("base64");
+      await assert.rejects(decryptSnapshotStream(consumerOptions(directory, f, { envelope })), {
+        code: "SNAPSHOT_AUTHENTICATION_FAILED"
+      });
+      assert.deepEqual(held.at(-1), Buffer.alloc(32));
+    }
+  });
+  const envelope = structuredClone(f.envelope),
+    wrapped = Buffer.from(envelope.wrappedDek.ciphertextBase64, "base64");
+  wrapped[0] ^= 1;
+  envelope.wrappedDek = { ciphertextBase64: wrapped.toString("base64"), digest: digest(wrapped) };
+  await assert.rejects(decryptSnapshotStream(consumerOptions(directory, f, { envelope })), {
+    code: "SNAPSHOT_LOCAL_KEY_DECRYPT_FAILED"
+  });
+  for (const altered of [
+    { aad: { ...f.aad, snapshotDigest: fixtureDigest } },
+    { envelope: { ...f.envelope, authorizationDigest: fixtureDigest } },
+    { envelope: { ...f.envelope, ciphertextSizeBytes: original.length + 1 } }
+  ])
+    await assert.rejects(decryptSnapshotStream(consumerOptions(directory, f, altered)));
+  await noTemps(directory);
+  assert.equal(fs.existsSync(join(directory, "restored.sql")), false);
+});
+
+test("producer replay mutation and replay acquisition failure wipe DEKs and remove private temps", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture");
+  await observeKeys(async (held) => {
+    for (const mutation of [true, false]) {
+      let opens = 0;
+      const options = producerOptions(directory, bytes, {
+        source: {
+          open() {
+            if (++opens === 1) return Readable.from([bytes]);
+            if (mutation) return Readable.from([Buffer.from("changed")]);
+            throw new Error("SENTINEL_SOURCE_SECRET");
           }
         }
-      }),
+      });
+      await assert.rejects(encryptSnapshotStream(options), {
+        code: mutation ? "SNAPSHOT_SOURCE_CHANGED" : "SNAPSHOT_SOURCE_OPEN_FAILED"
+      });
+      assert.deepEqual(held.at(-1), Buffer.alloc(32));
+      await noTemps(directory);
+    }
+  });
+});
+
+test("consumer detects ciphertext mutation after prevalidation", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture"),
+    f = await encryptedFixture(directory, bytes);
+  let opens = 0;
+  await assert.rejects(
+    decryptSnapshotStream(
+      consumerOptions(directory, f, {
+        source: {
+          open() {
+            if (++opens === 1) return createReadStream(f.ciphertextPath);
+            return Readable.from([Buffer.from("changed")]);
+          }
+        }
+      })
+    ),
     { code: "SNAPSHOT_AUTHENTICATION_FAILED" }
   );
-  assert.deepEqual(nonceDek, Buffer.alloc(32));
-  assert.equal(
-    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
-    false
-  );
+  await noTemps(directory);
+  assert.equal(fs.existsSync(join(directory, "restored.sql")), false);
 });
 
-test("review fix: copied or encoded plaintext DEKs cannot enter wrapped output", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-key-copy-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  const cases = [
-    (key) => Buffer.from(key),
-    (key) => Buffer.from(key.toString("hex"), "utf8"),
-    (key) => Buffer.from(key.toString("base64"), "utf8"),
-    (key, wrapped) => {
-      wrapped.keyId = key.toString("hex");
-      wrapped.aliasReadbackKeyId = wrapped.keyId;
-      return wrapped.ciphertext;
-    },
-    (key, wrapped) => {
-      wrapped.keyId = key.toString("utf8");
-      wrapped.aliasReadbackKeyId = wrapped.keyId;
-      return wrapped.ciphertext;
-    }
-  ];
-
-  for (const [index, copiedCiphertext] of cases.entries()) {
-    const plaintextDek =
-      index === cases.length - 1
-        ? Buffer.from("0123456789abcdef0123456789abcdef", "utf8")
-        : Buffer.alloc(32, 0xa7);
-    const wrapped = wrappedKey();
-    wrapped.ciphertext = copiedCiphertext(plaintextDek, wrapped);
-    const destination = join(directory, `copied-${index}.enc`);
-    let caught;
-    try {
-      await encryptSnapshotStream({
-        source: replayableFile(inputPath).source,
-        destination,
-        aad: expectedAad(plaintext),
-        kms: {
-          async generateDataKey() {
-            return { plaintext: plaintextDek, wrapped };
-          }
-        }
-      });
-    } catch (error) {
-      caught = error;
-    }
-    assert.equal(caught?.code, "SNAPSHOT_KEY_MATERIAL_EXPOSED");
-    assert.equal(caught?.message, "SNAPSHOT_KEY_MATERIAL_EXPOSED");
-    assert.equal(caught?.cause, undefined);
-    assert.equal(caught?.details, undefined);
-    assert.deepEqual(plaintextDek, Buffer.alloc(32));
-    assert.equal(fs.existsSync(destination), false);
+test("existing and racing producer and consumer destinations are preserved", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture"),
+    sentinel = Buffer.from("other actor"),
+    f = await encryptedFixture(directory, bytes);
+  for (const decrypt of [false, true]) {
+    const options = decrypt ? consumerOptions(directory, f) : producerOptions(directory, bytes),
+      action = decrypt ? decryptSnapshotStream : encryptSnapshotStream;
+    await writeFile(options.destination, sentinel);
+    await assert.rejects(action(options), { code: "SNAPSHOT_DESTINATION_EXISTS" });
+    assert.deepEqual(await readFile(options.destination), sentinel);
+    await unlinkFile(options.destination);
+    let opens = 0;
+    options.source = {
+      async open() {
+        if (++opens === 2) await writeFile(options.destination, sentinel, { flag: "wx" });
+        return decrypt ? createReadStream(f.ciphertextPath) : Readable.from([bytes]);
+      }
+    };
+    await assert.rejects(action(options), { code: "SNAPSHOT_DESTINATION_EXISTS" });
+    assert.deepEqual(await readFile(options.destination), sentinel);
+    await unlinkFile(options.destination);
+    await noTemps(directory);
   }
 });
 
-test("review fix: producer output-setup failure is redacted before replay acquisition", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-setup-producer-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  let opens = 0;
-  let secondStream;
-  const plaintextDek = Buffer.alloc(32, 7);
-  let caught;
-
-  await withFileHandleFailure(directory, "createWriteStream", async () => {
-    try {
-      await encryptSnapshotStream({
-        source: {
-          open() {
-            opens += 1;
-            const stream = createReadStream(inputPath);
-            if (opens === 2) secondStream = stream;
-            return stream;
-          }
-        },
-        destination: join(directory, "snapshot.enc"),
-        aad: expectedAad(plaintext),
-        kms: {
-          async generateDataKey() {
-            return { plaintext: plaintextDek, wrapped: wrappedKey() };
-          }
-        }
-      });
-    } catch (error) {
-      caught = error;
-    }
-  });
-
-  assert.equal(caught?.code, "SNAPSHOT_DESTINATION_SETUP_FAILED");
-  assert.equal(caught?.message, "SNAPSHOT_DESTINATION_SETUP_FAILED");
-  assert.equal(caught?.secret, undefined);
-  assert.equal(caught?.cause, undefined);
-  assert.equal(opens, 1);
-  assert.equal(secondStream, undefined);
-  assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  assert.deepEqual(await readdir(directory), ["snapshot.sql"]);
-});
-
-test("review fix: consumer output-setup failure is redacted before replay acquisition", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-setup-consumer-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fixture = await encryptedFixture(directory, Buffer.from("sanitized snapshot"));
-  let opens = 0;
-  let secondStream;
-  const plaintextDek = Buffer.alloc(32, 7);
-  let caught;
-
-  await withFileHandleFailure(directory, "chmod", async () => {
-    try {
-      await decryptSnapshotStream({
-        source: {
-          open() {
-            opens += 1;
-            const stream = createReadStream(fixture.ciphertextPath);
-            if (opens === 2) secondStream = stream;
-            return stream;
-          }
-        },
-        destination: join(directory, "restored.sql"),
-        envelope: fixture.envelope,
-        aad: fixture.aad,
-        kms: {
-          async decryptDataKey() {
-            return plaintextDek;
-          }
-        }
-      });
-    } catch (error) {
-      caught = error;
-    }
-  });
-
-  assert.equal(caught?.code, "SNAPSHOT_DESTINATION_SETUP_FAILED");
-  assert.equal(caught?.message, "SNAPSHOT_DESTINATION_SETUP_FAILED");
-  assert.equal(caught?.secret, undefined);
-  assert.equal(caught?.cause, undefined);
-  assert.equal(opens, 1);
-  assert.equal(secondStream, undefined);
-  assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  assert.equal(fs.existsSync(join(directory, "restored.sql")), false);
-  assert.equal(
-    (await readdir(directory)).some((name) => name.includes("snapshot-tmp")),
-    false
+test("stream and envelope byte caps allow only downward overrides", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture".repeat(100));
+  for (const limits of [{ maxCiphertextBytes: bytes.length - 1 }, { maxEnvelopeBytes: 1 }]) {
+    await assert.rejects(encryptSnapshotStream(producerOptions(directory, bytes, { limits })));
+    await noTemps(directory);
+    assert.equal(fs.existsSync(join(directory, "output.enc")), false);
+  }
+  for (const limits of [
+    { maxCiphertextBytes: 1073741825 },
+    { maxEnvelopeBytes: 1048577 },
+    { maxCiphertextBytes: 0 },
+    { extra: true }
+  ])
+    await assert.rejects(encryptSnapshotStream(producerOptions(directory, bytes, { limits })), {
+      code: "SNAPSHOT_LIMITS_INVALID"
+    });
+  const f = await encryptedFixture(directory, bytes);
+  await assert.rejects(
+    decryptSnapshotStream(
+      consumerOptions(directory, f, { limits: { maxCiphertextBytes: bytes.length - 1 } })
+    )
   );
 });
 
-test("review fix: schema-invalid deterministic facts fail before source or KMS", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-preflight-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const base = expectedAad(plaintext);
-  const fixedSlotLength =
-    "snapshot-slots/v2/".length + base.releaseAttemptId.length + 1 + "/snapshot.enc".length;
-  const boundaryRunId = `1${"0".repeat(1024 - fixedSlotLength - 1)}`;
-  const candidates = [
-    {
-      ...base,
-      snapshotAllocatedAt: "September 3, 2026 00:00:00 GMT",
-      expiresAt: "October 3, 2026 00:00:00 GMT"
-    },
-    { ...base, releaseAttemptId: "attempt/subpath" },
-    { ...base, snapshotRunId: `${boundaryRunId}0` }
-  ];
-
-  for (const [index, aad] of candidates.entries()) {
+test("pre-abort, first-pass and second-pass abort stop IO and wipe actual DEKs", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture".repeat(100));
+  for (const boundary of [0, 1, 2]) {
+    const controller = new AbortController();
     let opens = 0;
-    let kmsCalls = 0;
+    if (boundary === 0) controller.abort();
+    await observeKeys(async (held) => {
+      const options = producerOptions(directory, bytes, {
+        signal: controller.signal,
+        source: {
+          open() {
+            if (++opens === boundary) controller.abort();
+            return Readable.from([bytes]);
+          }
+        }
+      });
+      await assert.rejects(encryptSnapshotStream(options), { code: "SNAPSHOT_ABORTED" });
+      assert.equal(opens, boundary);
+      for (const key of held) assert.deepEqual(key, Buffer.alloc(32));
+    });
+    await noTemps(directory);
+  }
+  const f = await encryptedFixture(directory, bytes),
+    controller = new AbortController();
+  let opens = 0;
+  await observeKeys(async (held) => {
     await assert.rejects(
-      () =>
-        encryptSnapshotStream({
+      decryptSnapshotStream(
+        consumerOptions(directory, f, {
+          signal: controller.signal,
           source: {
             open() {
-              opens += 1;
-              return Readable.from([plaintext]);
-            }
-          },
-          destination: join(directory, `invalid-${index}.enc`),
-          aad,
-          kms: {
-            generateDataKey() {
-              kmsCalls += 1;
+              if (++opens === 2) controller.abort();
+              return createReadStream(f.ciphertextPath);
             }
           }
-        }),
-      { code: "SNAPSHOT_AAD_INVALID" }
+        })
+      ),
+      { code: "SNAPSHOT_ABORTED" }
     );
-    assert.equal(opens, 0);
-    assert.equal(kmsCalls, 0);
-  }
-
-  const boundaryPath = join(directory, "boundary.sql");
-  await writeFile(boundaryPath, plaintext);
-  const validBoundary = await encryptSnapshotStream({
-    source: replayableFile(boundaryPath).source,
-    destination: join(directory, "boundary.enc"),
-    aad: { ...base, snapshotRunId: boundaryRunId },
-    kms: {
-      async generateDataKey() {
-        return { plaintext: Buffer.alloc(32, 7), wrapped: wrappedKey() };
-      }
-    }
+    assert.deepEqual(held[0], Buffer.alloc(32));
   });
-  assert.equal(validBoundary.slotObjectKey.length, 1024);
-  assert.doesNotThrow(() => validateSnapshotEncryptionEnvelope(validBoundary));
+  await noTemps(directory);
 });
 
-test("review fix: producer transient and persistent cleanup keep committed status", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-commit-producer-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-
-  for (const [kind, failureCount] of [
-    ["transient", 1],
-    ["persistent", Number.POSITIVE_INFINITY]
-  ]) {
-    const destination = join(directory, `${kind}.enc`);
-    const plaintextDek = Buffer.alloc(32, 7);
-    let caught;
-    await withTemporaryUnlinkFailures(destination, failureCount, async (attempts) => {
-      try {
-        await encryptSnapshotStream({
-          source: replayableFile(inputPath).source,
-          destination,
-          aad: expectedAad(plaintext),
-          kms: {
-            async generateDataKey() {
-              return { plaintext: plaintextDek, wrapped: wrappedKey() };
-            }
-          }
-        });
-      } catch (error) {
-        caught = error;
+test("mid-stream producer and consumer abort removes private partial output and wipes DEKs", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture".repeat(100));
+  const f = await encryptedFixture(directory, bytes);
+  for (const decrypt of [false, true]) {
+    const options = decrypt ? consumerOptions(directory, f) : producerOptions(directory, bytes);
+    const controller = new AbortController();
+    options.signal = controller.signal;
+    const input = decrypt ? await readFile(f.ciphertextPath) : bytes;
+    let opens = 0;
+    options.source = {
+      open() {
+        if (++opens === 1) return Readable.from([input]);
+        return Readable.from(
+          (async function* () {
+            yield input.subarray(0, 10);
+            controller.abort();
+            yield input.subarray(10);
+          })()
+        );
       }
-      assert.equal(attempts() >= 1, true);
+    };
+    await observeKeys(async (held) => {
+      await assert.rejects((decrypt ? decryptSnapshotStream : encryptSnapshotStream)(options), {
+        code: "SNAPSHOT_ABORTED"
+      });
+      assert.deepEqual(held[0], Buffer.alloc(32));
     });
-    assert.equal(caught?.code, "SNAPSHOT_TEMP_CLEANUP_FAILED");
-    assert.deepEqual(caught?.details, { outputCommitted: true });
-    assert.equal(caught?.message.includes("SENTINEL_UNLINK_SECRET"), false);
-    assert.deepEqual(plaintextDek, Buffer.alloc(32));
-    assert.equal(fs.existsSync(destination), true);
-    assert.notDeepEqual(await readFile(destination), plaintext);
+    assert.equal(fs.existsSync(options.destination), false);
+    await noTemps(directory);
   }
 });
 
-test("review fix: consumer transient and persistent cleanup keep committed status", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-commit-consumer-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const fixture = await encryptedFixture(directory, plaintext);
-
-  for (const [kind, failureCount] of [
-    ["transient", 1],
-    ["persistent", Number.POSITIVE_INFINITY]
-  ]) {
-    const destination = join(directory, `${kind}.sql`);
-    let caught;
-    await withTemporaryUnlinkFailures(destination, failureCount, async (attempts) => {
-      try {
-        await decryptSnapshotStream({
-          source: replayableFile(fixture.ciphertextPath).source,
-          destination,
-          envelope: fixture.envelope,
-          aad: fixture.aad,
-          kms: {
-            async decryptDataKey() {
-              return Buffer.alloc(32, 7);
-            }
-          }
-        });
-      } catch (error) {
-        caught = error;
-      }
-      assert.equal(attempts() >= 1, true);
-    });
-    assert.equal(caught?.code, "SNAPSHOT_TEMP_CLEANUP_FAILED");
-    assert.deepEqual(caught?.details, { outputCommitted: true });
-    assert.equal(caught?.message.includes("SENTINEL_UNLINK_SECRET"), false);
-    assert.deepEqual(await readFile(destination), plaintext);
-  }
-});
-
-test("review fix round 2: producer and consumer preserve a replacement at the released temp name", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-released-name-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  const replacement = Buffer.from("replacement owned by another actor");
-  const encryptedPath = join(directory, "snapshot.enc");
-
-  let producerEnvelope;
-  await withTemporaryNameReplacement(encryptedPath, replacement, async (state) => {
-    producerEnvelope = await encryptSnapshotStream({
-      source: replayableFile(inputPath).source,
-      destination: encryptedPath,
-      aad: expectedAad(plaintext),
-      kms: {
-        async generateDataKey() {
-          return { plaintext: Buffer.alloc(32, 7), wrapped: wrappedKey() };
-        }
-      }
-    });
-    const observed = state();
-    assert.equal(observed.temporaryUnlinkCalls, 1);
-    assert.deepEqual(await readFile(observed.temporaryPath), replacement);
-    assert.equal(fs.existsSync(encryptedPath), true);
-  });
-
-  const restoredPath = join(directory, "restored.sql");
-  await withTemporaryNameReplacement(restoredPath, replacement, async (state) => {
-    await decryptSnapshotStream({
-      source: replayableFile(encryptedPath).source,
-      destination: restoredPath,
-      envelope: producerEnvelope,
-      aad: expectedAad(plaintext),
-      kms: {
-        async decryptDataKey() {
-          return Buffer.alloc(32, 7);
-        }
-      }
-    });
-    const observed = state();
-    assert.equal(observed.temporaryUnlinkCalls, 1);
-    assert.deepEqual(await readFile(observed.temporaryPath), replacement);
-    assert.deepEqual(await readFile(restoredPath), plaintext);
-  });
-});
-
-test("review fix: nested option shapes reject hidden own keys", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-own-keys-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-
-  const nonEnumerableAad = expectedAad(plaintext);
-  Object.defineProperty(nonEnumerableAad, "snapshotDigest", { enumerable: false });
-  let nonEnumerableOpens = 0;
-  let nonEnumerableKmsCalls = 0;
+test("source and output setup failures redact raw secrets and preserve cleanup", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture"),
+    f = await encryptedFixture(directory, bytes);
   await assert.rejects(
-    () =>
-      encryptSnapshotStream({
+    encryptSnapshotStream(
+      producerOptions(directory, bytes, {
         source: {
           open() {
-            nonEnumerableOpens += 1;
-            return createReadStream(inputPath);
-          }
-        },
-        destination: join(directory, "non-enumerable-required.enc"),
-        aad: nonEnumerableAad,
-        kms: {
-          generateDataKey() {
-            nonEnumerableKmsCalls += 1;
+            throw Object.assign(new Error("SENTINEL_SOURCE_SECRET"), {
+              code: "SENTINEL_SOURCE_SECRET",
+              safe: true
+            });
           }
         }
-      }),
-    { code: "SNAPSHOT_AAD_INVALID" }
+      })
+    ),
+    { code: "SNAPSHOT_SOURCE_OPEN_FAILED" }
   );
-  assert.equal(nonEnumerableOpens, 0);
-  assert.equal(nonEnumerableKmsCalls, 0);
-
-  const hiddenCases = [
-    {
-      code: "SNAPSHOT_SOURCE_REPLAY_REQUIRED",
-      make() {
-        const source = replayableFile(inputPath).source;
-        source[Symbol("hidden")] = true;
-        return { source, aad: expectedAad(plaintext) };
-      }
-    },
-    {
-      code: "SNAPSHOT_AAD_INVALID",
-      make() {
-        const aad = expectedAad(plaintext);
-        Object.defineProperty(aad, "hidden", { value: true });
-        return { source: replayableFile(inputPath).source, aad };
-      }
-    },
-    {
-      code: "SNAPSHOT_LIMITS_INVALID",
-      make() {
-        const limits = {};
-        Object.defineProperty(limits, "hidden", { value: true });
-        return { source: replayableFile(inputPath).source, aad: expectedAad(plaintext), limits };
-      }
-    }
-  ];
-
-  for (const [index, { code, make }] of hiddenCases.entries()) {
-    let kmsCalls = 0;
-    await assert.rejects(
-      () =>
-        encryptSnapshotStream({
-          ...make(),
-          destination: join(directory, `hidden-${index}.enc`),
-          kms: {
-            generateDataKey() {
-              kmsCalls += 1;
+  for (const decrypt of [false, true])
+    for (const method of ["chmod", "createWriteStream"]) {
+      const options = decrypt ? consumerOptions(directory, f) : producerOptions(directory, bytes);
+      await observeKeys(async (held) => {
+        await withFileHandleFailure(directory, method, async () => {
+          await assert.rejects(
+            (decrypt ? decryptSnapshotStream : encryptSnapshotStream)(options),
+            (error) => {
+              assert.equal(error.message.includes("SENTINEL"), false);
+              assert.equal(error.code, "SNAPSHOT_DESTINATION_SETUP_FAILED");
+              return true;
             }
-          }
-        }),
-      { code }
-    );
-    assert.equal(kmsCalls, 0);
-  }
-
-  const plaintextDek = Buffer.alloc(32, 7);
-  const wrapped = wrappedKey();
-  wrapped[Symbol("hidden")] = true;
-  await assert.rejects(
-    () =>
-      encryptSnapshotStream({
-        source: replayableFile(inputPath).source,
-        destination: join(directory, "hidden-wrapped.enc"),
-        aad: expectedAad(plaintext),
-        kms: {
-          async generateDataKey() {
-            return { plaintext: plaintextDek, wrapped };
-          }
-        }
-      }),
-    { code: "SNAPSHOT_WRAPPED_KEY_INVALID" }
-  );
-  assert.deepEqual(plaintextDek, Buffer.alloc(32));
-  assert.equal(fs.existsSync(join(directory, "hidden-wrapped.enc")), false);
+          );
+        });
+        assert.deepEqual(held[0], Buffer.alloc(32));
+      });
+      await noTemps(directory);
+    }
 });
 
-test("review fix: in-flight KMS failures carry only conservative UNKNOWN", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "snapshot-envelope-crypto-kms-unknown-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const plaintext = Buffer.from("sanitized snapshot");
-  const inputPath = join(directory, "snapshot.sql");
-  await writeFile(inputPath, plaintext);
-  let generateCalls = 0;
-  let generateError;
+test("producer and consumer committed status survives transient and persistent cleanup errors", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture"),
+    f = await encryptedFixture(directory, bytes);
+  for (const decrypt of [false, true])
+    for (const failureCount of [1, Infinity]) {
+      const options = decrypt ? consumerOptions(directory, f) : producerOptions(directory, bytes);
+      options.destination = join(directory, (decrypt ? "consumer" : "producer") + failureCount);
+      await withTemporaryUnlinkFailures(options.destination, failureCount, async (attempts) => {
+        await assert.rejects(
+          (decrypt ? decryptSnapshotStream : encryptSnapshotStream)(options),
+          (error) => {
+            assert.equal(error.code, "SNAPSHOT_TEMP_CLEANUP_FAILED");
+            assert.deepEqual(error.details, { outputCommitted: true });
+            assert.equal(error.message.includes("SENTINEL"), false);
+            return true;
+          }
+        );
+        assert.equal(attempts() >= 1, true);
+      });
+      assert.equal(fs.existsSync(options.destination), true);
+      if (decrypt) assert.deepEqual(await readFile(options.destination), bytes);
+    }
+});
 
-  try {
-    await encryptSnapshotStream({
-      source: replayableFile(inputPath).source,
-      destination: join(directory, "unknown-generate.enc"),
-      aad: expectedAad(plaintext),
-      kms: {
-        async generateDataKey() {
-          generateCalls += 1;
-          throw Object.assign(new Error("SENTINEL_KMS_SECRET"), {
-            kmsOutcome: "SUCCEEDED",
-            details: { secret: "SENTINEL_KMS_SECRET" }
-          });
-        }
-      }
-    });
-  } catch (error) {
-    generateError = error;
-  }
-  assert.equal(generateCalls, 1);
-  assert.equal(generateError?.code, "SNAPSHOT_KMS_GENERATE_FAILED");
-  assert.equal(generateError?.kmsOutcome, "UNKNOWN");
-  assert.equal(generateError?.details, undefined);
-  assert.equal(JSON.stringify(generateError).includes("SENTINEL_KMS_SECRET"), false);
-  assert.equal(fs.existsSync(join(directory, "unknown-generate.enc")), false);
+test("producer and consumer preserve replacement at released temporary name", async (t) => {
+  const directory = await directoryFor(t),
+    bytes = Buffer.from("fixture"),
+    replacement = Buffer.from("replacement actor"),
+    options = producerOptions(directory, bytes);
+  let envelope;
+  await withTemporaryNameReplacement(options.destination, replacement, async (state) => {
+    envelope = await encryptSnapshotStream(options);
+    assert.equal(state().temporaryUnlinkCalls, 1);
+    assert.deepEqual(await readFile(state().temporaryPath), replacement);
+  });
+  const consumer = {
+    source: replayableFile(options.destination).source,
+    destination: join(directory, "restored.sql"),
+    envelope,
+    aad: options.aad,
+    authorization: options.authorization,
+    privateKey: keys.privateKey
+  };
+  await withTemporaryNameReplacement(consumer.destination, replacement, async (state) => {
+    await decryptSnapshotStream(consumer);
+    assert.equal(state().temporaryUnlinkCalls, 1);
+    assert.deepEqual(await readFile(state().temporaryPath), replacement);
+  });
+  assert.deepEqual(await readFile(consumer.destination), bytes);
+});
 
-  const fixture = await encryptedFixture(directory, plaintext);
-  let decryptCalls = 0;
-  let decryptError;
-  try {
-    await decryptSnapshotStream({
-      source: replayableFile(fixture.ciphertextPath).source,
-      destination: join(directory, "unknown-decrypt.sql"),
-      envelope: fixture.envelope,
-      aad: fixture.aad,
-      kms: {
-        async decryptDataKey() {
-          decryptCalls += 1;
-          throw Object.assign(new Error("SENTINEL_KMS_SECRET"), {
-            kmsOutcome: "SUCCEEDED"
-          });
-        }
-      }
-    });
-  } catch (error) {
-    decryptError = error;
-  }
-  assert.equal(decryptCalls, 1);
-  assert.equal(decryptError?.code, "SNAPSHOT_KMS_DECRYPT_FAILED");
-  assert.equal(decryptError?.kmsOutcome, "UNKNOWN");
-  assert.equal(decryptError?.details, undefined);
-  assert.equal(JSON.stringify(decryptError).includes("SENTINEL_KMS_SECRET"), false);
-  assert.equal(fs.existsSync(join(directory, "unknown-decrypt.sql")), false);
+test("wipeKeyBuffer performs explicitly best-effort mutable Buffer clearing", () => {
+  const key = Buffer.alloc(32, 7);
+  wipeKeyBuffer(key);
+  assert.deepEqual(key, Buffer.alloc(32));
+  assert.throws(() => wipeKeyBuffer(new Uint8Array(32)), { code: "SNAPSHOT_KEY_BUFFER_INVALID" });
+});
+
+test("public package index preserves the existing three stream functions", async () => {
+  const index = await import("../src/index.mjs");
+  assert.equal(index.encryptSnapshotStream, encryptSnapshotStream);
+  assert.equal(index.decryptSnapshotStream, decryptSnapshotStream);
+  assert.equal(index.wipeKeyBuffer, wipeKeyBuffer);
+  assert.equal(index.generateLocalSnapshotDataKey, undefined);
 });

@@ -14,6 +14,202 @@ const sourceSha = "b".repeat(40);
 const allocatedAt = "2026-09-03T00:00:00.000Z";
 const expiresAt = "2026-10-03T00:00:00.000Z";
 
+function localAuthorization() {
+  const original = validAuthorization();
+  const { kms, session, ...authorization } = original;
+  authorization.schemaVersion = "producer-crypto-run-authorization.v2";
+  authorization.issuer.cryptoPrincipal = authorization.issuer.roleArn;
+  delete authorization.issuer.roleArn;
+  authorization.localKey = {
+    kind: "local-rsa-oaep-sha256.v1",
+    keyFingerprint: digest("a"),
+    keyReadbackDigest: digest("b"),
+    recoveryReadbackDigest: digest("c"),
+    action: "local:GenerateAndWrapDataKey",
+    keySpec: "AES_256",
+    maxCalls: 1,
+    context: kms.context,
+    contextDigest: kms.contextDigest
+  };
+  authorization.execution = session;
+  authorization.handoff = {
+    protocol: "public-key-object-v1",
+    publicKeyOnly: true,
+    privateKey: false
+  };
+  authorization.prerequisites = {
+    changePlanDigest: digest("9"),
+    externalChangeApprovalDigest: digest("a"),
+    applyProofDigest: digest("b"),
+    keyReadbackDigest: digest("b"),
+    recoveryReadbackDigest: digest("c"),
+    admissionPolicyReadbackDigest: digest("d"),
+    readbackDigest: digest("e"),
+    completedAt: original.prerequisites.completedAt
+  };
+  return authorization;
+}
+
+function localEnvelope(authorization = localAuthorization()) {
+  const old = validEnvelope();
+  const { kmsKeyReadback, kmsContext, kmsContextDigest, ...envelope } = old;
+  envelope.schemaVersion = "snapshot-encryption-envelope.v2";
+  envelope.authorizationDigest = sha256Canonical(authorization);
+  envelope.context = authorization.localKey.context;
+  envelope.contextDigest = authorization.localKey.contextDigest;
+  envelope.localKeyReadback = {
+    kind: authorization.localKey.kind,
+    keyFingerprint: authorization.localKey.keyFingerprint,
+    keyReadbackDigest: authorization.localKey.keyReadbackDigest,
+    recoveryReadbackDigest: authorization.localKey.recoveryReadbackDigest
+  };
+  const bytes = Buffer.alloc(384, 3);
+  envelope.wrappedDek = { ciphertextBase64: bytes.toString("base64"), digest: sha256Bytes(bytes) };
+  const aad = {
+    ...envelope.context,
+    snapshotDigest: envelope.snapshotDigest,
+    contextDigest: envelope.contextDigest,
+    keyFingerprint: authorization.localKey.keyFingerprint
+  };
+  envelope.gcmAad = { ...aad, digest: sha256Canonical(aad) };
+  return envelope;
+}
+
+test("v2 local contracts bind authorization, independent key readback and recovery", () => {
+  const authorization = localAuthorization();
+  const envelope = localEnvelope(authorization);
+  assert.equal(validateProducerCryptoAuthorization(authorization), authorization);
+  assert.equal(validateSnapshotEncryptionEnvelope(envelope, { authorization }), envelope);
+  const changed = structuredClone(envelope);
+  changed.authorizationDigest = digest("f");
+  assert.throws(() => validateSnapshotEncryptionEnvelope(changed, { authorization }), {
+    code: "SNAPSHOT_ENCRYPTION_AUTHORIZATION_MISMATCH"
+  });
+  const mismatched = structuredClone(authorization);
+  mismatched.prerequisites.recoveryReadbackDigest = digest("f");
+  assert.throws(() => validateProducerCryptoAuthorization(mismatched), {
+    code: "PRODUCER_CRYPTO_AUTHORIZATION_INVALID"
+  });
+});
+
+function localUseProof(
+  authorization = localAuthorization(),
+  envelope = localEnvelope(authorization)
+) {
+  const original = validUseProof();
+  const { session, ...proof } = original;
+  proof.schemaVersion = "producer-crypto-use-proof.v2";
+  proof.authorizationDigest = sha256Canonical(authorization);
+  proof.prerequisiteReadbackDigest = authorization.prerequisites.readbackDigest;
+  proof.request = {
+    requestId: "fixture-local-generation",
+    action: "local:GenerateAndWrapDataKey",
+    keySpec: "AES_256",
+    keyFingerprint: authorization.localKey.keyFingerprint,
+    contextDigest: authorization.localKey.contextDigest,
+    callCount: 1,
+    outcome: "SUCCESS"
+  };
+  proof.execution = {
+    ...session,
+    terminalState: "ADMISSION_CLOSED",
+    processExitCode: 0,
+    processSignal: null,
+    processExitRecordDigest: digest("b")
+  };
+  proof.encryption = {
+    envelopeDigest: sha256Canonical(envelope),
+    ciphertextDigest: envelope.ciphertextDigest,
+    wrappedDekDigest: envelope.wrappedDek.digest
+  };
+  return proof;
+}
+
+test("v2 local proof observes process exit and admission closure without cloud revocation", () => {
+  const authorization = localAuthorization(),
+    envelope = localEnvelope(authorization),
+    proof = localUseProof(authorization, envelope);
+  assert.equal(validateProducerCryptoUseProof(proof, { authorization, envelope }), proof);
+  for (const state of ["REVOKED", "EXPIRED", "UNKNOWN", "ACTIVE"]) {
+    const changed = structuredClone(proof);
+    changed.execution.terminalState = state;
+    assert.throws(() => validateProducerCryptoUseProof(changed, { authorization, envelope }));
+  }
+  const failed = {
+    schemaVersion: proof.schemaVersion,
+    publishable: false,
+    failureKind: "INTERRUPTED_UNKNOWN",
+    authorizationDigest: proof.authorizationDigest,
+    prerequisiteReadbackDigest: proof.prerequisiteReadbackDigest,
+    issuer: proof.issuer,
+    issuedAt: proof.issuedAt
+  };
+  assert.doesNotThrow(() => validateContract("producer-crypto-use-proof.v2", failed));
+  assert.throws(() => validateProducerCryptoUseProof(failed, { authorization, envelope }), {
+    code: "PRODUCER_CRYPTO_USE_NOT_PUBLISHABLE"
+  });
+  const uncleared = structuredClone(proof);
+  uncleared.cleanup.memoryLocked = false;
+  assert.throws(() => validateProducerCryptoUseProof(uncleared, { authorization, envelope }));
+});
+
+test("v2 publishability requires independent successful process terminal facts", () => {
+  const authorization = localAuthorization(),
+    envelope = localEnvelope(authorization),
+    proof = localUseProof(authorization, envelope);
+  for (const field of ["processExitCode", "processSignal", "processExitRecordDigest"]) {
+    const missing = structuredClone(proof);
+    delete missing.execution[field];
+    assert.throws(() => validateProducerCryptoUseProof(missing, { authorization, envelope }), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
+  }
+  for (const terminal of [
+    { processExitCode: 1, processSignal: null },
+    { processExitCode: null, processSignal: "SIGTERM" }
+  ]) {
+    const rejected = structuredClone(proof);
+    Object.assign(rejected.execution, terminal, { processExitRecordDigest: digest("b") });
+    assert.throws(() => validateProducerCryptoUseProof(rejected, { authorization, envelope }), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
+  }
+});
+
+test("v2 non-publishable failure and UNKNOWN preserve observed process exit records", () => {
+  const authorization = localAuthorization(),
+    envelope = localEnvelope(authorization);
+  for (const [failureKind, code, signal, record] of [
+    ["FAILED", 1, null, digest("b")],
+    ["FAILED", null, "SIGTERM", digest("c")],
+    ["INTERRUPTED_UNKNOWN", null, null, null]
+  ]) {
+    const proof = localUseProof(authorization, envelope);
+    proof.publishable = false;
+    proof.failureKind = failureKind;
+    Object.assign(proof.execution, {
+      processExitCode: code,
+      processSignal: signal,
+      processExitRecordDigest: record
+    });
+    assert.doesNotThrow(() => validateContract("producer-crypto-use-proof.v2", proof));
+    assert.throws(() => validateProducerCryptoUseProof(proof, { authorization, envelope }), {
+      code: "PRODUCER_CRYPTO_USE_NOT_PUBLISHABLE"
+    });
+  }
+});
+
+test("historical v1 originals remain read-only verifiable without rewriting their digests", () => {
+  const authorization = validAuthorization(),
+    envelope = validEnvelope(authorization),
+    proof = validUseProof(authorization);
+  const before = sha256Canonical({ authorization, envelope, proof });
+  validateProducerCryptoAuthorization(authorization);
+  validateSnapshotEncryptionEnvelope(envelope, { authorization });
+  validateProducerCryptoUseProof(proof, { authorization, envelope });
+  assert.equal(sha256Canonical({ authorization, envelope, proof }), before);
+});
+
 function validAuthorization() {
   const context = {
     repositoryId: "1253231368",

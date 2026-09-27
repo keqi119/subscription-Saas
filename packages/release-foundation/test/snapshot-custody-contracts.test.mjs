@@ -318,6 +318,31 @@ test("private snapshot custody accepts independent exact-object readback", () =>
   assert.doesNotThrow(() => validateSnapshotCustody(validCustody()));
 });
 
+test("v2 fixed cloud policy keeps OSS identities separate from H1 software decryption", () => {
+  const policy = JSON.parse(
+    readFileSync(
+      new URL("../../../release/contracts/snapshot-cloud-policy.v2.json", import.meta.url)
+    )
+  );
+  validateContract("snapshot-cloud-policy.v2", policy);
+  assert.equal(Object.hasOwn(policy, "kms"), false);
+  assert.equal(policy.localKey.hardwareNonExportable, false);
+  assert.equal(policy.localKey.consumerAdmission, "separate-h1-read-decrypt-use");
+  assert.equal(policy.bucket.worm.retentionDays, 210);
+  assert.equal(policy.bucket.forbidOverwrite, true);
+  assert.equal(policy.bucket.versioning, "Disabled");
+  for (const profile of Object.values(policy.profiles)) {
+    assert.equal(profile.localDecrypt, false);
+    assert.equal(
+      profile.allowedActions.some((action) => action.startsWith("kms:")),
+      false
+    );
+  }
+  const overstated = structuredClone(policy);
+  overstated.localKey.hardwareNonExportable = true;
+  assert.throws(() => validateContract("snapshot-cloud-policy.v2", overstated));
+});
+
 test("private custody expires no earlier than snapshot expiry plus 180 days", () => {
   const candidate = validCustody();
   candidate.worm.retentionDays = 209;

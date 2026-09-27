@@ -392,6 +392,13 @@
       "reason": "Uses injected process and filesystem doubles; it does not connect to PostgreSQL.",
       "scope": "mock-process-boundary",
       "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "scripts/release/manual-expected-schema-producer.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises expected-schema production with injected host and reference process doubles; it never starts Docker or connects to PostgreSQL.",
+      "scope": "mock-process-boundary",
+      "reviewDate": "2026-12-01"
     }
   ]
 }

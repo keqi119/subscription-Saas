@@ -478,7 +478,8 @@ export async function launchManualStage1(input) {
       materialBytes: facts.fixed.materialBytes
     });
     try {
-      await rejectConsumedMigrationStage1(facts);
+      const migration = await readConsumedMigration(facts);
+      if (migration) await requireFixedH3B(facts, migration);
       const observed = await performTargetObservation(session, facts);
       const dry = await launchZeroCredentialRunner(session, facts, observed);
       const apply = await launchZeroCredentialRunner(session, facts, observed, dry);
@@ -494,11 +495,12 @@ export async function launchManualStage1(input) {
   });
 }
 
-async function rejectConsumedMigrationStage1(facts) {
+async function readConsumedMigration(facts) {
   const operation = facts.fixed.operation,
     migrate = operation.operations.migrate,
     graph = await targetArchive(facts).graph(),
-    requests = new Set();
+    requests = new Map(),
+    consumptions = new Map();
   for (const [digest, { value }] of graph) {
     if (
       value.stage !== "runner-command" ||
@@ -519,7 +521,7 @@ async function rejectConsumedMigrationStage1(facts) {
       sha256Canonical(value.targetIntent) !== sha256Canonical(operation.targetIntent)
     )
       fail("MANUAL_SESSION_UNVERIFIED");
-    requests.add(digest);
+    requests.set(digest, value);
   }
   for (const { value } of graph.values()) {
     if (
@@ -546,9 +548,221 @@ async function rejectConsumedMigrationStage1(facts) {
       ].every((key) => value[key] === request[key])
     )
       fail("MANUAL_SESSION_UNVERIFIED");
-    // This first-stage entry only stops. Recovery and later-stage dispatch are
-    // not authorized here; shared sign/consume history checks remain unchanged.
+    if (consumptions.has(value.requestDigest)) fail("MANUAL_SESSION_UNVERIFIED");
+    consumptions.set(value.requestDigest, value);
+  }
+  if (!consumptions.size) return null;
+  const applied = [...requests.entries()].filter(
+    ([digest, value]) => consumptions.has(digest) && value.phase === "apply"
+  );
+  if (
+    applied.length !== 1 ||
+    [...consumptions.keys()].some(
+      (digest) => !["dry-run", "apply"].includes(requests.get(digest).phase)
+    )
+  )
     fail("MANUAL_SESSION_UNVERIFIED");
+  const [requestDigest, request] = applied[0],
+    original = (digest, schema, kind = null) => {
+      const item = graph.get(digest);
+      if (!item || sha256Bytes(item.bytes) !== digest) fail("MANUAL_SESSION_UNVERIFIED");
+      validateContract(schema, item.value);
+      if (kind && item.value.kind !== kind) fail("MANUAL_SESSION_UNVERIFIED");
+      return item.value;
+    },
+    executions = [...graph.entries()].filter(
+      ([, { value }]) => value.kind === "execution" && value.requestDigest === requestDigest
+    );
+  if (executions.length !== 1) fail("MANUAL_SESSION_UNVERIFIED");
+  const [executionRecordDigest] = executions[0],
+    execution = original(executionRecordDigest, "manual-operation-record.v2", "execution"),
+    consumption = consumptions.get(requestDigest),
+    allocation = original(
+      request.attemptAllocationDigest,
+      "manual-runner-evidence.v1",
+      "attempt-allocation"
+    ),
+    dryExecution = original(request.dryRunRecordDigest, "manual-operation-record.v2", "execution"),
+    dryRequest = original(dryExecution.requestDigest, "manual-runner-request.v1"),
+    dryResult = original(
+      dryExecution.resultDigest,
+      "manual-runner-evidence.v1",
+      "manual-command-result"
+    ),
+    baseline = original(request.baselineManifestDigest, "manual-baseline-manifest.v1"),
+    observation = original(
+      request.targetObservationDigest,
+      "manual-runner-evidence.v1",
+      "observation"
+    );
+  if (
+    observationFields.some((key) => allocation[key] !== request[key]) ||
+    observationFields
+      .filter((key) => key !== "runId")
+      .some((key) => execution[key] !== request[key]) ||
+    allocation.phaseKey !== "apply" ||
+    execution.consumptionRecordDigest !== sha256Canonical(consumption) ||
+    execution.authorizationDigest !== consumption.authorizationDigest ||
+    execution.predecessorExecutionRecordDigest !== request.dryRunRecordDigest ||
+    dryRequest.phase !== "dry-run" ||
+    !consumptions.has(dryExecution.requestDigest) ||
+    dryExecution.status !== "SUCCEEDED" ||
+    [
+      "profileDigest",
+      "operationId",
+      "idempotencyKey",
+      "runId",
+      "buildProofDigest",
+      "baselineManifestDigest",
+      "targetObservationDigest"
+    ].some((key) => dryRequest[key] !== request[key]) ||
+    request.buildProofDigest !== facts.build.buildProofDigest ||
+    request.approvedPlanDigest !== deterministicPlanDigest(dryResult.plan) ||
+    request.physicalIdentity.clusterFingerprint !==
+      computeManualClusterFingerprint(facts.targetContext.cluster) ||
+    request.physicalIdentity.databaseOid !== facts.targetContext.databaseOid ||
+    sha256Canonical(request.physicalIdentity) !==
+      sha256Canonical(baseline.identity.physicalIdentity) ||
+    baseline.identity.targetObservationDigest !== request.targetObservationDigest ||
+    sha256Canonical(observation.physicalIdentity) !== sha256Canonical(request.physicalIdentity)
+  )
+    fail("MANUAL_SESSION_UNVERIFIED");
+  const authorization = original(consumption.authorizationDigest, "manual-launch-authorization.v1"),
+    slot = await targetArchive(facts).read(
+      path.join(
+        facts.profile.storage.journalRoot,
+        "consumptions",
+        `${request.profileDigest.slice(7)}-${authorization.payload.authorizationId}.json`
+      ),
+      facts.profile.storage.journalRoot
+    );
+  if (!slot.bytes.equals(encodeManualJson(consumption))) fail("MANUAL_SESSION_UNVERIFIED");
+  const rawBlobs = [],
+    candidates = stdoutPrefixCandidates(graph),
+    rawDirectory = path.join(facts.profile.storage.archiveRoot, "raw");
+  await checkedPrivatePath(rawDirectory, {
+    principal: facts.principal,
+    privateRoot: facts.profile.storage.archiveRoot,
+    directory: true
+  });
+  for (const name of await fs.readdir(rawDirectory)) {
+    if (!/^[0-9a-f]{64}\.bin$/u.test(name)) fail("MANUAL_STORAGE_UNVERIFIED");
+    const raw = await pinPrivateInput(
+      path.join(rawDirectory, name),
+      { principal: facts.principal, privateRoot: facts.profile.storage.archiveRoot },
+      candidates.has(`sha256:${name.slice(0, -4)}`) ? 2097152 : 1048576
+    );
+    try {
+      if (sha256Bytes(raw.bytes) !== `sha256:${name.slice(0, -4)}`)
+        fail("MANUAL_STORAGE_UNVERIFIED");
+      await raw.recheck();
+      rawBlobs.push(Buffer.from(raw.bytes));
+    } finally {
+      await raw.close();
+    }
+  }
+  const assess = (value) =>
+      assessManualRunnerEvidence({
+        profileBytes: encodeManualJson(facts.profile),
+        requestBytes: graph.get(sha256Canonical(value)).bytes,
+        artifactBytes: [...graph.values()].map((item) => item.bytes),
+        rawBlobs
+      }),
+    dryAssessment = assess(dryRequest),
+    assessment = assess(request);
+  if (
+    dryAssessment.executionStatus !== "SUCCEEDED" ||
+    dryAssessment.proofDigest !== dryExecution.resultDigest
+  )
+    fail("MANUAL_SESSION_UNVERIFIED");
+  const normal =
+      operation.scenario === "normal" &&
+      execution.status === "SUCCEEDED" &&
+      assessment.executionStatus === "SUCCEEDED" &&
+      assessment.originalDatabaseOutcome === "committed" &&
+      execution.resultDigest === assessment.proofDigest,
+    unknown =
+      operation.scenario === "apply-interrupted" &&
+      execution.status === "INTERRUPTED_UNKNOWN" &&
+      assessment.executionStatus === "INTERRUPTED_UNKNOWN";
+  if (!normal && !unknown) fail("MANUAL_SESSION_UNVERIFIED");
+  const processes = [...graph.entries()]
+    .filter(([, { value }]) => value.kind === "process" && value.requestDigest === requestDigest)
+    .sort((a, b) => b[1].value.events.length - a[1].value.events.length);
+  if (!processes.length) fail("MANUAL_SESSION_UNVERIFIED");
+  const [processEvidenceDigest] = processes[0],
+    process = original(processEvidenceDigest, "manual-runner-evidence.v1", "process");
+  if (
+    normal &&
+    (execution.processEvidenceDigest !== processEvidenceDigest || process.closedAt === null)
+  )
+    fail("MANUAL_SESSION_UNVERIFIED");
+  if (execution.resultDigest)
+    original(execution.resultDigest, "manual-runner-evidence.v1", "manual-command-result");
+  await facts.recheck();
+  return Object.freeze({
+    branch: normal ? "normal-success" : "apply-unknown-recovery",
+    request,
+    execution,
+    process,
+    baseline,
+    observation,
+    migration: {
+      operationId: request.operationId,
+      idempotencyKey: request.idempotencyKey,
+      attemptId: request.attemptId,
+      allocationDigest: request.attemptAllocationDigest,
+      requestDigest,
+      approvedPlanDigest: request.approvedPlanDigest,
+      processEvidenceDigest,
+      resultDigest: assessment.proofDigest,
+      executionRecordDigest
+    }
+  });
+}
+
+async function requireFixedH3B(facts, migration) {
+  const root = path.join(
+      facts.profile.storage.archiveRoot,
+      "inputs",
+      "operations",
+      facts.fixed.operation.operationRef
+    ),
+    opened = [];
+  try {
+    for (const name of ["h3-b-approval.json", "h3-b-readback.json"]) {
+      let item;
+      try {
+        item = await pinPrivateInput(path.join(root, name), {
+          principal: facts.principal,
+          privateRoot: facts.profile.storage.archiveRoot
+        });
+      } catch (cause) {
+        if (cause.code === "MANUAL_OPERATION_INPUT_UNAVAILABLE" || cause.code === "ENOENT")
+          fail("MANUAL_H3_B_INPUT_REQUIRED");
+        throw cause;
+      }
+      opened.push(item);
+      const value = canonicalH3(item.bytes);
+      if (
+        value.operationRef !== facts.fixed.operation.operationRef ||
+        value.indexDigest !== facts.fixed.indexDigest ||
+        value.runId !== facts.fixed.operation.runId ||
+        value.profileDigest !== facts.fixed.operation.profileDigest ||
+        value.ownerId !== facts.profile.ownerId ||
+        value.promotionEligible !== false ||
+        sha256Canonical(value.targetIntent) !==
+          sha256Canonical(facts.fixed.operation.targetIntent) ||
+        sha256Canonical(value.migration) !== sha256Canonical(migration.migration)
+      )
+        fail("MANUAL_H3_BINDING_INVALID");
+      await item.recheck();
+    }
+    // Exact H3-B raw source projections are not yet specified. Presence and
+    // digest-valid files do not authorize a second-stage credential release.
+    fail("MANUAL_H3_B_INPUT_REQUIRED");
+  } finally {
+    for (const item of opened) await item.close();
   }
 }
 

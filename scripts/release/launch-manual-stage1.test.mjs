@@ -4744,6 +4744,73 @@ async function preserveCommandFixture(f, label, boundaryCounters = null) {
     );
 }
 
+test(
+  "runner second stage requires fixed H3-B before reentering a consumed migration",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "command", true),
+      expected = await expectedSourceFixture(f);
+    f.runner.expectedScript = "CREATE TABLE example(id integer PRIMARY KEY);\r\n";
+    f.runner.prismaVersion = JSON.parse(expected.output.schemaExpectationBytes).prismaVersion;
+    let before;
+    try {
+      const first = await launcher.launchManualStage1({ operationRef: f.prepared.operationRef });
+      const records = await f.records();
+      const baseline = records.find(
+        (record) => record.schemaVersion === "manual-baseline-manifest.v1"
+      );
+      assert.ok(baseline);
+      const apply = records.find(
+        (record) => sha256Canonical(record) === first.apply.executionRecordDigest
+      );
+      assert.equal(apply.status, "SUCCEEDED");
+      before = {
+        launches: f.launches.length,
+        credentialReads: f.counters.credentialReads,
+        databaseConnections: f.pg.connects
+      };
+      await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+        code: "MANUAL_H3_B_INPUT_REQUIRED"
+      });
+      assert.equal(f.launches.length, before.launches);
+      assert.equal(f.counters.credentialReads, before.credentialReads);
+      assert.equal(f.pg.connects, before.databaseConnections);
+      const after = await f.records();
+      assert.deepEqual(
+        after
+          .filter((record) => record.schemaVersion === "manual-baseline-manifest.v1")
+          .map(sha256Canonical),
+        [sha256Canonical(baseline)]
+      );
+      assert.equal(
+        after.filter(
+          (record) =>
+            record.schemaVersion === "manual-runner-request.v1" && record.stage === "runner-command"
+        ).length,
+        2
+      );
+      assert.ok(
+        after.some((record) => sha256Canonical(record) === first.apply.executionRecordDigest)
+      );
+    } finally {
+      await preserveCommandFixture(
+        f,
+        "stage2-missing-h3b",
+        before
+          ? {
+              before,
+              after: {
+                launches: f.launches.length,
+                credentialReads: f.counters.credentialReads,
+                databaseConnections: f.pg.connects
+              }
+            }
+          : null
+      );
+    }
+  }
+);
+
 for (const fault of ["invalid-ready", "sql-identity", "prepared-write", "ack-write"]) {
   test(
     "runner command parent rejects " + fault + " at the reached boundary",

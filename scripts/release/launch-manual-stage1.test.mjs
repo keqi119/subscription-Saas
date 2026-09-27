@@ -3763,6 +3763,44 @@ for (const fault of ["partial-write", "readback"])
     }
   });
 
+test(
+  "private canonical reader rejects identity replacement at independent reopen",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const { readCanonicalPrivateInput } = await import("./manual-runner-source-inputs.mjs"),
+      root = await fs.mkdtemp(path.join(tmpdir(), "r22-private-canonical-")),
+      file = path.join(root, "record.json"),
+      bytes = encodeManualJson({ value: "original" });
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    await fs.chmod(root, 0o700);
+    await fs.writeFile(file, bytes, { flag: "wx", mode: 0o600 });
+    const original = await fs.stat(file, { bigint: true }),
+      nativeOpen = fs.open.bind(fs);
+    let reads = 0,
+      replacements = 0;
+    t.mock.method(fs, "open", async (candidate, flags, ...args) => {
+      if (candidate === file && flags === "r" && ++reads === 2) {
+        const incoming = path.join(root, "incoming.json");
+        await fs.writeFile(incoming, bytes, { flag: "wx", mode: 0o600 });
+        await fs.rename(incoming, file);
+        replacements++;
+      }
+      return nativeOpen(candidate, flags, ...args);
+    });
+    await assert.rejects(
+      async () =>
+        readCanonicalPrivateInput(file, {
+          principal: { platform: "posix", uid: process.getuid() },
+          privateRoot: root
+        }),
+      { code: "MANUAL_OPERATION_INPUT_UNAVAILABLE" }
+    );
+    assert.equal(replacements, 1);
+    assert.notEqual((await fs.stat(file, { bigint: true })).ino, original.ino);
+    assert.deepEqual(await fs.readFile(file), bytes);
+  }
+);
+
 test("fixed H3-A reader holds original inputs without live authority", async (t) => {
   const sourceInputs = await import("./manual-runner-source-inputs.mjs").catch((error) => {
     if (

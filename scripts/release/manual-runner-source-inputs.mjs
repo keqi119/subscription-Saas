@@ -341,7 +341,10 @@ async function h3Sources(fixed, profile, principal, context) {
     const file = path.join(rawRoot, ref.digest.slice(7) + ".bin");
     let item;
     try {
-      item = await pinPrivateInput(file, { principal, privateRoot: profile.storage.archiveRoot });
+      item = await capturePrivateInput(file, {
+        principal,
+        privateRoot: profile.storage.archiveRoot
+      });
     } catch (cause) {
       if (cause.code === "ENOENT") fail("MANUAL_H3_B_INPUT_REQUIRED");
       throw cause;
@@ -580,7 +583,7 @@ function canonicalH3(bytes) {
   }
 }
 
-async function pinPrivateInput(file, options, limit = 1048576) {
+async function capturePrivateInput(file, options, limit = 1048576) {
   const chain = await checkedPrivatePath(file, options);
   const handle = await fs.open(file, "r");
   try {
@@ -612,11 +615,33 @@ async function pinPrivateInput(file, options, limit = 1048576) {
       const final = await checkedPrivatePath(file, options);
       if (!sameChain(final)) fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
     };
-    await recheck();
     return { bytes: captured.bytes, recheck, close: () => handle.close() };
   } catch (cause) {
     await handle.close();
     throw cause;
+  }
+}
+
+async function pinPrivateInput(file, options, limit = 1048576) {
+  const item = await capturePrivateInput(file, options, limit);
+  try {
+    await item.recheck();
+    return item;
+  } catch (cause) {
+    await item.close();
+    throw cause;
+  }
+}
+
+async function readCanonicalPrivateInput(file, options) {
+  const item = await capturePrivateInput(file, options);
+  try {
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(item.bytes));
+    if (!encodeManualJson(value).equals(item.bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
+    await item.recheck();
+    return { value, bytes: Buffer.from(item.bytes) };
+  } finally {
+    await item.close();
   }
 }
 
@@ -3211,6 +3236,7 @@ export {
   h3Require,
   canonicalH3,
   pinPrivateInput,
+  readCanonicalPrivateInput,
   openManualH3AInputs,
   openManualH3BInputs,
   expectedLimit,

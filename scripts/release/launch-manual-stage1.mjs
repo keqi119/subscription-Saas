@@ -40,6 +40,7 @@ import {
   h3Require,
   canonicalH3,
   pinPrivateInput,
+  readCanonicalPrivateInput,
   openManualH3AInputs,
   openManualH3BInputs,
   expectedLimit,
@@ -806,17 +807,7 @@ function stdoutPrefixCandidates(graph) {
 }
 
 function targetArchive({ profile, principal, recheck }) {
-  const read = async (file, root) => {
-    const item = await pinPrivateInput(file, { principal, privateRoot: root });
-    try {
-      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(item.bytes));
-      if (!encodeManualJson(value).equals(item.bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
-      await item.recheck();
-      return { value, bytes: Buffer.from(item.bytes) };
-    } finally {
-      await item.close();
-    }
-  };
+  const read = (file, root) => readCanonicalPrivateInput(file, { principal, privateRoot: root });
   const get = async (digest, role = "archive") => {
     const item = await read(
       objectFile(profile.storage[`${role}Root`], digest),

@@ -16,6 +16,16 @@
 
 **本次只关闭 H1 原生转发可用性。** 防火墙规则尚不跨重启持久化，每次真实消费前仍须独立验证其存在和顺序。真实 hosted job、加密 Engine、双端 PG、同 job attestation、scope/session/RSA 释放及 R3 双链仍未完成，当前没有长期转发连接或已获准的 hosted key。后续仅复用现有 source/final job；hosted 加密方向固定 classic overlay2，拒绝 containerd image store 或任何落在加密边界外的持久载荷。Docker `data-root` 本身不能证明 containerd 存储也已迁移，须实际读回 driver、RootDir 和 backing mount。[Docker daemon 存储配置](https://docs.docker.com/engine/daemon/)。
 
+## 2026-09-27 23:00 UTC：同 socket 路径交接实测
+
+维护验证自然退出 0（tool `9c65a7`），同一 SSH PID 2303107 和 H1 55440 监听，先连接 `/run/s1r3-handoff-b2or_du5/engine.sock` 的临时 HTTP listener，收到 204 后关闭并按 inode 核对移除 socket；独立空 dockerd PID 2303127 使用同一路径建立新 listener。直接 Unix 与 H1 TCP 的 Engine ID 均为 `69a59aea-54ef-4181-808e-cf8d6cdb05e6`，与原 Engine `93a80aa5-983c-4272-b315-c4b99bb3e696` 不同。临时 daemon 使用私有 `/run` tmpfs、vfs、独立 data-root/exec-root/pidfile/config，禁用 bridge/iptables/IP forwarding；没有拉镜像或创建容器，实际 Images=0、Containers=0。
+
+daemon 和 SSH 均正常退出 0。随后独立 SSH 读回（tool `2aaca5`，23:01:18 UTC）确认临时进程、forward UID 进程、两个固定端口监听、临时 key 文件和 socket 均不存在，authorized_keys 为空；原 Engine 的 ID、17 个容器及 19 个镜像计数在维护前后相同。空 daemon 诊断保留在上述私有临时目录，没有递归删除或触碰原 Docker 数据目录。
+
+这证明该版本 OpenSSH 可在同一反向连接下将新通道连接到同路径的新 Unix listener，不证明真实 hosted provenance、加密创建、PG 映射或候选验收。没有新增第三端口、常驻服务或业务载荷。只读预检首次因服务器 Python 3.6 不支持 `subprocess.run(text=...)` 失败（tool `71b473`）；修正调用参数后预检退出 0（tool `c45ff0`），未修改主机配置。
+
+原件位于既有 hidden workspace：`r3-native-handoff-probe01.log`、`r3-native-handoff-independent-readback01.json`；维护脚本 `r3-native-handoff-probe-20260928.py` 的 SHA-256 为 `599e9bdf035b17b9c8da8bcc7f704959a4966417ca20b38884e5f666b7555321`。该脚本是一次维护实测，不能作为创建/消费入口重复执行。
+
 ## 原始只读核查
 
 结论：可以优先细化“原 H1 父进程控制远端 Engine”的较小方案，避免仅因容器位于 hosted VM 就新增 manual delegation 签名与另一套帧协议。现代码尚不支持该方案；R3 的主机执行停止点仍未闭合。

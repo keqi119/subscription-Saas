@@ -105,3 +105,21 @@ R3 复用原私有 fileStore、v2 撤销链与 checkpoint、一次消费槽；�
 固定入口在每次 sign/consume/record 前后重查当前 job 及持有原件；不通过调用方布尔值代替。close 不要求 job 继续运行，始终能尝试本地收尾：未消费会话可关闭并释放自己的通道槽，已消费但实际结果未知的会话保留 UNKNOWN 和通道槽，不能用新操作绕过。实际 hosted 创建、同 Engine/CID 读回、两端 PG 身份/TLS、完整目标集合锁以及真实清理结果仍是后续必要工作；本会话入口本身不能证明这些操作完成。
 
 本切片核心定向 4/4、唯一 Linux 整合 7/7 通过，覆盖未解历史拒绝、旧 R2 reconcile 兼容、一次消费持久化和 job 结束后的本地关闭；独立只读审查通过。Linux 使用真实文件系统/Git 及合成 job/资源原件，不是实际 hosted 创建验收。未新增 schema、数据库 suite 或例外，未重跑已有 R2 长链。
+
+## 创建前的原生通道交接
+
+实际创建不能依赖尚不存在的 Engine。实施顺序固定为：hosted job 发布既有 admission；H1 核实后仅安装该 job 的受限 SSH 公钥并持有双槽；同一 `-R 127.0.0.1:55440:<每操作固定 Unix socket>` 先连接短生命周期控制入口，H1 完成原 session 的 sign/consume 后才交付固定创建请求。控制入口仅接受该 job/spec/profile 的创建请求，不提供 shell、命令参数、第二签名机制或其他端口。连接身份由已经核实的 job 公钥和现有 H1 root-only 端口边界绑定，不能仅凭签名 v4 推断消费已经完成。
+
+控制入口结束后安全关闭并移除自己的 Unix socket，由本次加密工作区中的独立 Engine 绑定同一路径。SSH 连接和 H1 55440 监听保持，后续新连接由 OpenSSH 连接新的 Unix listener。此处选择一次固定 HTTP 请求/响应，不扩展 MS2 数据库子进程帧，也不建立常驻控制服务。生产接线仍需完成受限公钥的逐操作安装/撤销、控制入口和 Engine 启动、实际目标独立读回；本段设计不直接启用旧 workflow。
+
+控制响应只确认指令已接收，不代表资源创建成功。实现须先完成该响应并关闭已有控制连接，再等待 HTTP server 完全关闭、核对并移除自己的 socket 后启动 Engine，避免一边等待 server.close 一边等待当前响应形成死锁。H1 保持原消费 UNKNOWN 和锁，独立读取实际 Engine、工作区、PG 及完整结果图后才能升级状态；断线或交接失败不触发新操作重试。
+
+2026-09-27 23:00 UTC 已在指定 H1 做一次同主机原生交接维护验证：同一 SSH PID 2303107 先收到 HTTP 204，控制 socket inode 5315196 关闭并移除；独立空 dockerd PID 2303127 随后绑定同一路径的新 inode 5315219。H1 转发与直接 Unix 读取的 Engine ID 相同，且与系统原 Engine 不同。临时 Engine 为 vfs、0 容器/0 镜像，只验证交接机制，不证明 hosted、LUKS 或 overlay2 准入。临时 daemon/SSH 正常退出 0；独立 SSH 读回确认进程、临时 key、socket 和两端口监听均不存在，授权文件恢复为空，原 Engine 的 ID、容器数与镜像数不变。原件和脚本摘要见 [通路核查](../../acceptance/2026-09-27-stage1-r3-remote-engine-feasibility.md)。
+
+## Hosted 工作区创建原语
+
+`r3-hosted-workspace-create.mjs` 提供内部 `createR3HostedWorkspace({requestBytes,authorizationBytes,creationSpecBytes,jobAdmissionBytes})`。四份 canonical 原件均限 1 MiB，复用既有 v4 签名绑定、固定 profile/policy、当前机器指纹和 job 环境核对；不接受路径、命令、IO 或时钟覆盖。final 的 `GITHUB_WORKFLOW_REF` 核对 caller，admission 的 signer 仍核对固定 final workflow，符合 [GitHub reusable workflow 的 caller context 语义](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations)。上层只能在已验证 root-only 控制连接且 H1 持久消费之后调用；本函数的签名核对不能单独证明消费，尚未作为 workflow 或 CLI 启用。
+
+副作用前要求 Linux/root、无 swap/core、三个预先安装的私有根、完整 absent 拓扑、keyRoot 为实际 tmpfs，以及容量足够。只创建本 UUID 的叶子：原生随机 64 字节 key、排他创建 backing、fallocate、LUKS2 AES-XTS-512 格式化和打开、ext4 格式化、nodev/nosuid 挂载。挂载后对实际 filesystem 根执行并核实 root:0700，再复用 active 观察器核对完整事实。它不启动 Engine、不读快照、不恢复数据库，也不记录目标成功。
+
+返回中的 `observation` 是原观察器的完整结果；`creation` 包含只读过程诊断和已创建路径，`rawInputs` 按 `absent.*`、`creation.<命令>.stdout/stderr`、`active.*` 保存副本。失败携带同类原件和已知部分状态，不自动关闭、删除或释放锁。真实 PID/退出与原件摘要可重核，诊断不含 key bytes。定向合成测试最终为 4 个顶层用例、6 个通过计数；文件系统/拓扑被模拟，子进程为真实 Node，不能作为真实 LUKS 创建证据。

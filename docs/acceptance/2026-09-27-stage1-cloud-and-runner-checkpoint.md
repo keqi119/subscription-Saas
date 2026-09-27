@@ -1,6 +1,20 @@
 # Stage 1 加密存储准备与 R2 父命令断点（2026-09-27）
 
-本轮完成服务器的空加密卷及五个私密目录准备；R2 父命令链仍未通过定向正例。没有执行业务迁移、部署、真实 CI、签发发布命令或关闭阶段 1。
+本记录保留当天各次真实断点。后续已完成服务器 Ed25519 密钥生成及独立加密备份卷恢复；R2 父命令链仍未通过定向正例。没有执行业务迁移、部署、真实 CI、签发发布命令或关闭阶段 1。
+
+## 03:40 UTC 后续：真实密钥与有限耗时修复
+
+实际密钥操作 exit 0：`03:39:03.374Z` 在主卷生成 Ed25519，主文件为 `/var/lib/stage1-volumes/main/key/signing-ed25519.pk8.pem`，备份为独立 recovery 卷的 `backup/bootstrap/signing-ed25519.pk8.pem`。两份均 CreateNew、uid 0 / 0600、fsync 并独立重开验证；私钥未离开服务器或输出到日志。负责人为 `keqi119`，执行 principal 为 POSIX uid 0。
+
+公钥 SPKI DER 指纹为 `sha256:7146f2e00f4a8e70183a64f3e8c7ebfa8e66926f60d18442e3d5ac4a09e408ef`。主卷关闭后，仅重开独立备份卷，在另一个 Node 进程读取备份，验证原挑战签名并签署不同的恢复挑战，`03:39:04.902Z` 完成。主控随后仅用公钥独立验证两份签名、同一指纹及不同挑战，exit 0。原件为 `h1-key-recovery-result.json` 和 `h1-key-public-signature-verification.json`；原初始化/密钥生成脚本不得重跑。
+
+操作后两个卷均卸载、映射关闭、底层目录为空，swap 恢复，临时 coredump 设置移除。此为**同主机独立加密卷恢复**；两卷仍共享物理盘，尚未验证异机恢复，Windows DPAPI 当前用户依赖仍在。GENESIS、具体 profile/批准/owner binding/sidecar 和真实 loader 尚未完成，H1 继续开放。下文“空卷、尚无签名密钥”是此前断点，已由本节推进，不作为当前状态。
+
+R2 只做了一次停止在首个真实 dry credential 发送边界前的计时诊断：实际 exit 1 / `MANUAL_DIAGNOSTIC_BOUNDARY`，0 credential 写入、0 DB 连接、0 工具，未进入 apply；不是成功正例。本次 receipt 签发至边界 15.727 秒，三次 admitted recheck 中 232 个 held inputs 和 4 个 checkout pins 的循环累计 9.695 秒，约占窗口六成。git、catalog 和 custody 实测均非主项；此前 47.136 秒超时原件仍保留，不能被这次未过期诊断抹去。
+
+当前最小修复仅针对这些彼此独立 item recheck 的固定最多 8 项批次：每项内部检查顺序不变，所有已启动项 settled 后才能返回或拒绝；仍保留最新撤销/session/receipt 检查及 30 秒期限。实现和定向验证由唯一代码写入者进行，尚未声明通过。此次开发预检中 schema validate exit 0，migration status 因未提供 `datasource.url` exit 1，未连接数据库、未改业务逻辑。
+
+容量前向裁决现已明确写入 [R1](../superpowers/plans/2026-09-06-stage1-r1-manual-trust-and-authorization-plan.md#2026-09-27-ms2-原始总输出的有限前向修正) 和 [R2](../superpowers/plans/2026-09-06-stage1-r2-runner-migrate-verify-plan.md#2026-09-27-ms2-真实规模运输修正)：只允许 MS2 完整 stdout／经绑定验证的 stdout-prefix raw 为 2 MiB，其余角色及 MS1 保持原 1 MiB。该生产容量改动与实际完整运输验证尚未开始。
 
 ## 云账号和实际存储
 

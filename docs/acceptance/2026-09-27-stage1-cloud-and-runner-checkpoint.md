@@ -18,6 +18,18 @@ R2 只做了一次停止在首个真实 dry credential 发送边界前的计时�
 
 ## 云账号和实际存储
 
+### 04:05 UTC 后续：OSS 独立密文副本已回读
+
+在 recovery 卷关闭、mountpoint 为空的状态下，按已知 LUKS2 UUID `867c622b-e066-4a9a-88eb-766a4f27528c` 校验源身份，经 SSH 二进制流导出 1,073,741,824 bytes 到 Windows 当前用户私密目录。源文件前后身份/尺寸/时间戳不变，完整 SHA256 为 `f3e9d46ff6a761362aba65f0ef3d1f174e676de428182bdea5d85ee158007ea1`；本机独立读回相同。导出未解锁卷、读取私钥或搬运解锁材料。
+
+复用既有 `stage1-keqi119` 官方 OAuth，以 `forbid-overwrite=true`、private、AES256 上传至指定桶 `subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai` 的新对象 `h1-recovery/v1/20260927-4a424369-01d6-4ba5-825a-d86fb30140ad/recovery.luks`，实际 exit 0。首次本地进程启动因未规范化的可执行文件路径失败，未发出 OSS 请求；该失败原件保留，随后以已解析绝对路径接续，没有覆盖或重试已有对象。
+
+六项独立云端读回均 exit 0：对象长度准确、SSE AES256；对象和桶 ACL 均 private、owner `1457643390906675`；WORM 状态 Locked、210 日，桶默认 AES256，versioning 响应无 Status 元素。随后从 OSS 另行下载到新的私密文件，实际 exit 0，完整长度与 SHA256 均与服务器导出一致。没有修改桶策略、锁、H2 角色或现有对象。
+
+这证明异地密文对象已保管且可完整取回，**尚不是异机解密/签名恢复**。已完成的密钥恢复仍是上述同主机独立加密卷验证，Windows DPAPI 当前用户恢复依赖仍在。两份本机密文副本保留在 `C:/Users/keqi_119/AppData/Local/Stage1CiphertextBackups/20260927-4a424369-01d6-4ba5-825a-d86fb30140ad`；不把该副本当已批准 profile/发布凭据。
+
+上述运维原件在同一 cloud scratch 的 `h1-ciphertext-export-result.json`、`h1-ciphertext-upload-result.json`（首次启动失败）、`h1-ciphertext-upload-resume-result.json`、六个 `h1-ciphertext-{api}.json`、`h1-ciphertext-download-result.json`。本次 [H1 profile 具体草案](./2026-09-27-stage1-h1-profile-approval-proposal.md)已通过 Schema 和 canonical digest 校验；仍待精确 owner 确认，未生成批准原件/sidecar/GENESIS。
+
 第二次官方 CLI OAuth 正常完成，但 `stage1-ecs-keqi119` 的实际 STS 仍为 OSS 账号 `1457643390906675`，不等于服务器所属账号 `1335332669126231`。用户明确无法登录后者／由其他账号代管，因此停止重发登录要求，使用已获授权的 SSH 配置主机级加密。云盘底层加密仍 UNKNOWN；本次不冒称已取得 ECS 管理权限。
 
 `139.196.227.195` 已安装发行版 `cryptsetup 2.3.7`。两个新建容器各为 1,073,741,824 bytes，实际分配各 1,073,745,920 bytes；没有格式化已有磁盘、删除旧数据或改动系统分区。

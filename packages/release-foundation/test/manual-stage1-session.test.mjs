@@ -3105,3 +3105,258 @@ for (const mode of ["expired-receipt", "receipt-storage-failure"]) {
     await session.close();
   });
 }
+
+function r3CreationFixture(f) {
+  const operationRef = uuid(701);
+  const id = operationRef.replaceAll("-", "");
+  const workspace = {
+    id,
+    capacityBytes: 128 * 1048576,
+    backingFile: `/var/lib/stage1-snapshots/${id}.luks`,
+    mountPath: `/srv/stage1-snapshot/${id}`,
+    keyFile: `/dev/shm/stage1-keys/${id}.key`,
+    mapperName: `s1snap_${id}`
+  };
+  const creationSpec = {
+    schemaVersion: "manual-r3-creation-spec.v1",
+    operationRef,
+    profileDigest: sha256Canonical(f.profile),
+    ownerId: f.profile.ownerId,
+    sourceSha: "a".repeat(40),
+    buildProofDigest: D,
+    proofRawDigest: "sha256:" + "1".repeat(64),
+    materialRawDigest: "sha256:" + "2".repeat(64),
+    targetPolicyDigest: "sha256:" + "3".repeat(64),
+    phase: "source",
+    chain: "fresh",
+    createdAt: time(-1),
+    expiresAt: time(600),
+    workspace,
+    cleanup: "stop-owned-engine-and-remove-workspace"
+  };
+  const jobAdmission = {
+    schemaVersion: "manual-r3-job-admission.v1",
+    operationRef,
+    profileDigest: creationSpec.profileDigest,
+    ownerId: creationSpec.ownerId,
+    creationSpecDigest: sha256Canonical(creationSpec),
+    buildProofDigest: creationSpec.buildProofDigest,
+    sourceSha: creationSpec.sourceSha,
+    phase: creationSpec.phase,
+    chain: creationSpec.chain,
+    generatedAt: NOW,
+    expiresAt: time(300),
+    ci: {
+      repository: "keqi119/subscription-Saas",
+      repositoryId: "1253231368",
+      runId: "123",
+      runAttempt: 1,
+      workflowPath: ".github/workflows/release-candidate-gate.yml",
+      callerWorkflowPath: ".github/workflows/release-candidate-gate.yml",
+      jobKey: "source-fresh",
+      jobId: "456",
+      jobName: "source-fresh",
+      environment: "trusted-source-database-gate",
+      runnerClass: "github-hosted"
+    },
+    host: {
+      machineIdFingerprint: D,
+      forwardingPublicKeyPem: f.profile.publicKeyPem,
+      forwardingKeyFingerprint: f.profile.keyFingerprint,
+      runnerId: 1,
+      runnerName: "runner"
+    }
+  };
+  const scope = {
+    targetPolicyDigest: creationSpec.targetPolicyDigest,
+    creationSpecDigest: sha256Canonical(creationSpec),
+    jobAdmissionDigest: sha256Canonical(jobAdmission),
+    buildProofDigest: creationSpec.buildProofDigest,
+    sourceSha: creationSpec.sourceSha,
+    phase: creationSpec.phase,
+    chain: creationSpec.chain
+  };
+  return { scope, creationSpec, jobAdmission };
+}
+
+async function r3CreationSession(t, f, context = r3CreationFixture(f), clock = { value: NOW }) {
+  const session = await openManualSession({
+    profile: f.profile,
+    ownerObservation: {
+      ownerId: f.profile.ownerId,
+      principal: f.ownerObservation.principal,
+      scope: context.scope,
+      observedAt: NOW
+    },
+    r3CreationContext: context,
+    io: f.io,
+    now: () => clock.value,
+    signingKey: f.keys.privateKey
+  });
+  t.after(() => session.close().catch(() => {}));
+  return session;
+}
+
+async function r3CreationRequest(f, session, fields = {}) {
+  const operationId = f.r3OperationId ?? uuid(701);
+  const request = {
+    schemaVersion: "manual-runner-request.v4",
+    profileDigest: session.profileDigest,
+    ownerId: f.profile.ownerId,
+    sessionId: session.sessionId,
+    sessionNonce: session.sessionNonce,
+    operationId,
+    idempotencyKey: `r3:${operationId}`,
+    attemptId: randomUUID(),
+    runId: randomUUID(),
+    stage: "target-create",
+    capability: "create-isolated-target",
+    purpose: "stage1-isolated-database-tests",
+    phase: session.scope.phase,
+    chain: session.scope.chain,
+    sourceSha: session.scope.sourceSha,
+    targetPolicyDigest: session.scope.targetPolicyDigest,
+    creationSpecDigest: session.scope.creationSpecDigest,
+    jobAdmissionDigest: session.scope.jobAdmissionDigest,
+    candidate: { buildProofDigest: session.scope.buildProofDigest },
+    ...fields
+  };
+  const allocation = {
+    schemaVersion: "manual-runner-evidence.v2",
+    kind: "attempt-allocation",
+    profileDigest: request.profileDigest,
+    recordedAt: NOW,
+    promotionEligible: false,
+    sessionId: request.sessionId,
+    sessionNonce: request.sessionNonce,
+    sessionRecordDigest: sha256Canonical(
+      (await f.records("session")).find((v) => v.sessionId === session.sessionId)
+    ),
+    operationId: request.operationId,
+    idempotencyKey: request.idempotencyKey,
+    attemptId: request.attemptId,
+    runId: request.runId,
+    stage: request.stage,
+    phase: request.phase,
+    chain: request.chain,
+    allocatedAt: NOW,
+    sourceSha: request.sourceSha,
+    buildProofDigest: request.candidate.buildProofDigest,
+    targetPolicyDigest: request.targetPolicyDigest,
+    creationSpecDigest: request.creationSpecDigest,
+    jobAdmissionDigest: request.jobAdmissionDigest,
+    predecessorExecutionRecordDigest: null
+  };
+  request.attemptAllocationDigest = await f.put(allocation);
+  await f.put(request);
+  const {
+    schemaVersion,
+    attemptId,
+    runId,
+    attemptAllocationDigest,
+    sourceSha,
+    candidate,
+    ...binding
+  } = request;
+  return { binding, canonicalBytes: encodeManualJson(request) };
+}
+
+test("R3 creation consumes once and persists UNKNOWN before returning", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const clock = { value: NOW };
+  const session = await r3CreationSession(t, f, r3CreationFixture(f), clock);
+  assert.deepEqual(
+    Object.keys(session).sort(),
+    [
+      "profileDigest",
+      "sessionId",
+      "sessionNonce",
+      "scope",
+      "sign",
+      "consume",
+      "record",
+      "close"
+    ].sort()
+  );
+  const request = await r3CreationRequest(f, session);
+  const authorization = await session.sign(request);
+  assert.equal(authorization.payload.schemaVersion, "manual-launch-authorization.v4");
+  const result = await session.consume({ authorization, request });
+  assert.equal(result.stage, "target-create");
+  const execution = (await f.records("execution"))[0];
+  assert.equal(execution.status, "INTERRUPTED_UNKNOWN");
+  assert.equal(execution.resultDigest, null);
+  assert.equal(execution.finishedAt, null);
+  assert.equal(result.executionRecordDigest, sha256Canonical(execution));
+  assert.equal((await f.records("consumption")).length, 1);
+  await assert.rejects(session.consume({ authorization, request }), {
+    code: "MANUAL_AUTHORIZATION_CONSUMED"
+  });
+  clock.value = time(301);
+  await session.close();
+  assert.equal((await fs.readdir(path.join(f.profile.storage.journalRoot, "locks"))).length, 2);
+});
+
+test("R3 creation rejects mismatched fixed scope before writing OPEN", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const context = r3CreationFixture(f);
+  context.scope.creationSpecDigest = D;
+  await assert.rejects(r3CreationSession(t, f, context), { code: "MANUAL_SESSION_UNVERIFIED" });
+  assert.equal((await f.records("session")).length, 0);
+  const unused = await r3CreationSession(t, f);
+  await unused.close();
+  const legacy = await f.open();
+  const legacyRequest = await requestFixture(f, legacy);
+  const legacyAuthorization = await legacy.sign(legacyRequest);
+  await legacy.consume({ authorization: legacyAuthorization, request: legacyRequest });
+  await legacy.close();
+});
+
+test("R3 creation UNKNOWN blocks a new operation and slot reacquisition", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const session = await r3CreationSession(t, f);
+  const request = await r3CreationRequest(f, session);
+  const authorization = await session.sign(request);
+  await session.consume({ authorization, request });
+  await assert.rejects(
+    session.sign(await r3CreationRequest(f, session, { operationId: uuid(702) })),
+    { code: "MANUAL_BINDING_MISMATCH" }
+  );
+  await session.close();
+  await assert.rejects(r3CreationSession(t, f), { code: "MANUAL_SESSION_UNVERIFIED" });
+});
+
+test("R3 creation does not skip unresolved legacy consumption history", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const old = await f.open();
+  const request = await requestFixture(f, old);
+  const authorization = await old.sign(request);
+  await old.consume({ authorization, request });
+  await old.close();
+  const session = await r3CreationSession(t, f);
+  await assert.rejects(session.sign(await r3CreationRequest(f, session)), {
+    code: "MANUAL_SESSION_UNVERIFIED"
+  });
+  await session.close();
+
+  const completed = await liveRoot(t, { profileVersion: "v2" });
+  const dry = await liveRunner(completed);
+  await sealExecution(completed, dry);
+  const interrupted = await liveRunner(completed, "apply", dry, { beforeCredential: true });
+  await completed.session.record("execution", interrupted.execution);
+  await completed.session.close();
+  completed.session = await completed.f.open();
+  const reconciled = await liveRunner(completed, "reconcile", interrupted, { emptyRows: true });
+  await completed.session.record("execution", reconciled.execution);
+  await completed.session.close();
+  assert.equal(
+    (await completed.f.records("execution")).find(
+      (value) => sha256Canonical(value) === sha256Canonical(interrupted.execution)
+    ).status,
+    "INTERRUPTED_UNKNOWN"
+  );
+  const creation = await r3CreationSession(t, completed.f);
+  const next = await r3CreationRequest(completed.f, creation);
+  assert.equal((await creation.sign(next)).payload.schemaVersion, "manual-launch-authorization.v4");
+  await creation.close();
+});

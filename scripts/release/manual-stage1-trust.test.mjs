@@ -2666,6 +2666,125 @@ function bootstrap() {
   );
   return production().openTrustedManualSession;
 }
+test("R3 SESSION API rejects overrides and accessors before native IO", async (t) => {
+  assert.equal(typeof production().openTrustedR3CreationSession, "function");
+  let effects = 0;
+  const denied = () => {
+    effects++;
+    throw new Error("unexpected IO or accessor");
+  };
+  for (const name of ["open", "lstat", "readFile", "writeFile"]) t.mock.method(fs, name, denied);
+  t.mock.method(childProcess, "execFile", denied);
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const input = { repoRoot: path.resolve("unused"), operationRef: randomUUID() };
+  for (const value of [
+    { ...input, privateKey: "caller-key" },
+    { ...input, targetIntent: { endpointPolicyId: "caller" } },
+    { ...input, jobAdmissionBytes: Buffer.from("{}") },
+    { ...input, operationRef: "../escape" },
+    Object.defineProperty({ ...input }, "operationRef", { get: denied, enumerable: true })
+  ])
+    await assert.rejects(production().openTrustedR3CreationSession(value), {
+      code: "R3_CREATION_SESSION_UNAVAILABLE"
+    });
+  assert.equal(effects, 0);
+});
+test(
+  "R3 SESSION refuses terminal job and changed H2 before H1 key access",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t);
+    const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    f.apiJob.status = "completed";
+    f.apiJob.conclusion = "success";
+    f.apiJob.completed_at = new Date().toISOString();
+    await assert.rejects(production().openTrustedR3CreationSession(input), {
+      code: "R3_CREATION_SESSION_UNAVAILABLE"
+    });
+    noAuthorityAccess(f);
+    f.apiJob.status = "in_progress";
+    f.apiJob.conclusion = null;
+    f.apiJob.completed_at = null;
+    await fs.appendFile(f.specPath, " ");
+    await assert.rejects(production().openTrustedR3CreationSession(input), {
+      code: "R3_CREATION_SESSION_UNAVAILABLE"
+    });
+    noAuthorityAccess(f);
+  }
+);
+async function r3SessionFixture(t) {
+  const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+  for (const role of ["journal", "archive", "backup"])
+    await fs.mkdir(path.join(f.profile.storage[`${role}Root`], "objects"), { mode: 0o700 });
+  for (const directory of ["locks", "consumptions", "revocations", "checkpoints"])
+    await fs.mkdir(path.join(f.profile.storage.journalRoot, directory), { mode: 0o700 });
+  await fs.mkdir(path.join(f.profile.storage.archiveRoot, "raw"), { mode: 0o700 });
+  const profileDigest = sha256Canonical(f.profile);
+  const genesis = {
+    schemaVersion: "manual-operation-record.v2",
+    kind: "revocation",
+    profileDigest,
+    recordedAt: generatedAt,
+    promotionEligible: false,
+    ownerId: f.profile.ownerId,
+    sequence: 0,
+    previousRevocationDigest: null,
+    action: "GENESIS",
+    authorizationId: null,
+    reasonCode: null
+  };
+  for (const file of [
+    path.join(
+      f.profile.storage.journalRoot,
+      "objects",
+      `${sha256Canonical(genesis).slice(7)}.json`
+    ),
+    path.join(f.profile.storage.journalRoot, "revocations", `${profileDigest.slice(7)}-0.json`)
+  ])
+    await fs.writeFile(file, encodeManualJson(genesis), { mode: 0o600, flag: "wx" });
+  const keyPath = path.join(f.profile.storage.keyRoot, f.profile.storage.keyRef);
+  await fs.writeFile(keyPath, f.keys.privateKey.export({ type: "pkcs8", format: "pem" }), {
+    mode: 0o600,
+    flag: "wx"
+  });
+  return { ...f, keyPath };
+}
+test(
+  "R3 SESSION opens target creation scope and locally closes after job termination",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3SessionFixture(t);
+    const session = await production().openTrustedR3CreationSession({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef
+    });
+    t.after(() => session.close());
+    assert.match(session.sessionId, /^[0-9a-f-]{36}$/u);
+    assert.match(session.sessionNonce, /^[0-9a-f]{64}$/u);
+    assert.equal(session.profileDigest, sha256Canonical(f.profile));
+    assert.equal(session.scope.targetPolicyDigest, f.spec.targetPolicyDigest);
+    assert.equal(session.scope.creationSpecDigest, sha256Bytes(f.specBytes));
+    assert.equal(session.scope.jobAdmissionDigest, sha256Bytes(f.admissionBytes));
+    assert.equal(session.scope.buildProofDigest, sha256Canonical(f.proof));
+    assert.equal(session.scope.sourceSha, f.sourceSha);
+    assert.equal(session.scope.phase, "source");
+    assert.equal(session.scope.chain, "fresh");
+    for (const name of ["sign", "consume", "record", "close"])
+      assert.equal(typeof session[name], "function");
+    assert.ok(f.counters.privateKeyReads > 0);
+    f.apiJob.status = "completed";
+    f.apiJob.conclusion = "success";
+    f.apiJob.completed_at = new Date().toISOString();
+    await assert.rejects(session.sign({}), { code: "R3_CREATION_SESSION_UNAVAILABLE" });
+    await session.close();
+    await session.close();
+    assert.deepEqual(await fs.readdir(path.join(f.profile.storage.journalRoot, "locks")), []);
+  }
+);
 async function sessionFixture(t) {
   const f = await buildFixture(t);
   const operationRef = randomUUID();

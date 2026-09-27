@@ -13,7 +13,8 @@ import {
   encodeManualJson,
   signManualAuthorization,
   verifyManualAuthorization,
-  verifyManualHandoff
+  verifyManualHandoff,
+  validateManualTargetCreationRequest
 } from "./manual-stage1-contracts.mjs";
 import { sha256Bytes, sha256Canonical } from "./digest.mjs";
 import { validateContract } from "./schema-registry.mjs";
@@ -268,8 +269,10 @@ export async function openManualSession({
   ownerObservation: inputOwner,
   io = nativeIO,
   now,
-  signingKey
+  signingKey,
+  r3CreationContext
 }) {
+  const r3 = r3CreationContext !== undefined;
   const profile = snapshot(inputProfile),
     owner = snapshot(inputOwner),
     profileSchema =
@@ -278,15 +281,133 @@ export async function openManualSession({
         ? profile.schemaVersion
         : "manual-stage1-profile.v1";
   validateContract(profileSchema, profile);
-  const { recordSchema, retentionDays } = manualPolicies[profileSchema],
+  const { retentionDays } = manualPolicies[profileSchema],
+    recordSchema = r3 ? "manual-operation-record.v3" : manualPolicies[profileSchema].recordSchema,
+    revocationSchema = r3 ? "manual-operation-record.v2" : recordSchema,
     profileBytes = encodeManualJson(profile);
-  exact(owner, ["ownerId", "principal", "targetIntent", "observedAt"], SESSION);
+  exact(owner, ["ownerId", "principal", r3 ? "scope" : "targetIntent", "observedAt"], SESSION);
   exact(
     owner.principal,
     owner.principal.platform === "win32" ? ["platform", "sid"] : ["platform", "uid"],
     SESSION
   );
   requireThat(owner.ownerId === profile.ownerId, SESSION);
+  let r3Context = null;
+  if (r3) {
+    requireThat(profileSchema === "manual-stage1-profile.v2", SESSION);
+    r3Context = snapshot(r3CreationContext);
+    exact(r3Context, ["scope", "creationSpec", "jobAdmission"], SESSION);
+    exact(
+      r3Context.scope,
+      [
+        "targetPolicyDigest",
+        "creationSpecDigest",
+        "jobAdmissionDigest",
+        "buildProofDigest",
+        "sourceSha",
+        "phase",
+        "chain"
+      ],
+      SESSION
+    );
+    validateContract("manual-operation-record.v3", {
+      schemaVersion: "manual-operation-record.v3",
+      kind: "session",
+      profileDigest: sha256Canonical(profile),
+      recordedAt: owner.observedAt,
+      promotionEligible: false,
+      sessionId: randomUUID(),
+      sessionNonce: randomBytes(32).toString("hex"),
+      ownerId: profile.ownerId,
+      scope: r3Context.scope,
+      status: "OPEN",
+      openedAt: owner.observedAt,
+      previousSessionRecordDigest: null,
+      reasonCode: null
+    });
+    requireThat(equal(owner.scope, r3Context.scope), SESSION);
+    const spec = r3Context.creationSpec,
+      job = r3Context.jobAdmission,
+      scope = r3Context.scope;
+    exact(
+      spec,
+      [
+        "schemaVersion",
+        "operationRef",
+        "profileDigest",
+        "ownerId",
+        "sourceSha",
+        "buildProofDigest",
+        "proofRawDigest",
+        "materialRawDigest",
+        "targetPolicyDigest",
+        "phase",
+        "chain",
+        "createdAt",
+        "expiresAt",
+        "workspace",
+        "cleanup"
+      ],
+      SESSION
+    );
+    exact(
+      job,
+      [
+        "schemaVersion",
+        "operationRef",
+        "profileDigest",
+        "ownerId",
+        "creationSpecDigest",
+        "buildProofDigest",
+        "sourceSha",
+        "phase",
+        "chain",
+        "generatedAt",
+        "expiresAt",
+        "ci",
+        "host"
+      ],
+      SESSION
+    );
+    requireThat(
+      spec.schemaVersion === "manual-r3-creation-spec.v1" &&
+        job.schemaVersion === "manual-r3-job-admission.v1" &&
+        sha256Canonical(spec) === scope.creationSpecDigest &&
+        sha256Canonical(job) === scope.jobAdmissionDigest &&
+        spec.targetPolicyDigest === scope.targetPolicyDigest &&
+        job.creationSpecDigest === scope.creationSpecDigest &&
+        spec.profileDigest === sha256Canonical(profile) &&
+        job.profileDigest === spec.profileDigest &&
+        spec.ownerId === profile.ownerId &&
+        job.ownerId === spec.ownerId &&
+        spec.operationRef === job.operationRef &&
+        ["sourceSha", "buildProofDigest", "phase", "chain"].every(
+          (field) => scope[field] === spec[field] && scope[field] === job[field]
+        ) &&
+        spec.cleanup === "stop-owned-engine-and-remove-workspace",
+      SESSION
+    );
+    exact(
+      spec.workspace,
+      ["id", "capacityBytes", "backingFile", "mountPath", "keyFile", "mapperName"],
+      SESSION
+    );
+    const id = spec.operationRef.replaceAll("-", "");
+    requireThat(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+        spec.operationRef
+      ) &&
+        spec.workspace.id === id &&
+        Number.isSafeInteger(spec.workspace.capacityBytes) &&
+        spec.workspace.capacityBytes >= 64 * 1048576 &&
+        spec.workspace.capacityBytes % 1048576 === 0 &&
+        spec.workspace.backingFile === `/var/lib/stage1-snapshots/${id}.luks` &&
+        spec.workspace.mountPath === `/srv/stage1-snapshot/${id}` &&
+        spec.workspace.keyFile === `/dev/shm/stage1-keys/${id}.key` &&
+        spec.workspace.mapperName === `s1snap_${id}`,
+      SESSION
+    );
+  }
   requireThat(typeof now === "function", "MANUAL_TIME_INVALID");
   const openedAt = now();
   requireThat(
@@ -295,6 +416,19 @@ export async function openManualSession({
       instant(openedAt) < instant(profile.expiresAt),
     "MANUAL_TIME_INVALID"
   );
+  if (r3) {
+    const spec = r3Context.creationSpec,
+      job = r3Context.jobAdmission;
+    requireThat(
+      instant(profile.validFrom) <= instant(spec.createdAt) &&
+        instant(spec.createdAt) <= instant(job.generatedAt) &&
+        instant(job.generatedAt) <= instant(openedAt) &&
+        instant(openedAt) < instant(job.expiresAt) &&
+        instant(job.expiresAt) <= instant(spec.expiresAt) &&
+        instant(spec.expiresAt) <= instant(profile.expiresAt),
+      "MANUAL_TIME_INVALID"
+    );
+  }
   requireThat(
     signingKey instanceof KeyObject &&
       signingKey.type === "private" &&
@@ -308,17 +442,21 @@ export async function openManualSession({
         profile.keyFingerprint,
     "MANUAL_SIGNATURE_INVALID"
   );
-  const target = profile.allowedTargets.find((item) =>
-    equal(
-      { endpointPolicyId: item.endpointPolicyId, databaseName: item.databaseName },
-      owner.targetIntent
-    )
-  );
-  requireThat(target, BINDING);
+  const target = r3
+    ? null
+    : profile.allowedTargets.find((item) =>
+        equal(
+          { endpointPolicyId: item.endpointPolicyId, databaseName: item.databaseName },
+          owner.targetIntent
+        )
+      );
+  if (!r3) requireThat(target, BINDING);
   // Exact normalized endpoint strings are the approved alias map. We never do
   // DNS resolution or invent equivalence between differently spelled hosts.
   requireThat(
-    target.endpoint === target.endpoint.trim() && target.endpoint === target.endpoint.toLowerCase(),
+    r3 ||
+      (target.endpoint === target.endpoint.trim() &&
+        target.endpoint === target.endpoint.toLowerCase()),
     STORAGE
   );
   const store = fileStore(profile, owner.principal, io);
@@ -334,15 +472,22 @@ export async function openManualSession({
     sessionId,
     sessionNonce,
     profileDigest,
-    targetIntent: snapshot(owner.targetIntent)
+    ...(r3 ? { scope: snapshot(owner.scope) } : { targetIntent: snapshot(owner.targetIntent) })
   };
-  const lockDigest = sha256Canonical({
-    endpoint: target.endpoint,
-    databaseName: target.databaseName
-  });
+  const lockDigest = r3
+    ? sha256Canonical({ slot: "tcp://127.0.0.1:55440", kind: "r3-forward-slot" })
+    : sha256Canonical({ endpoint: target.endpoint, databaseName: target.databaseName });
   const lockPath = path.join(profile.storage.journalRoot, "locks", `${lockDigest.slice(7)}.json`);
   const lockBytes = encodeManualJson({ ...identity, pid: process.pid });
+  const observerLockPath = r3
+    ? path.join(
+        profile.storage.journalRoot,
+        "locks",
+        `${sha256Canonical({ slot: "127.0.0.1:55441", kind: "r3-forward-slot" }).slice(7)}.json`
+      )
+    : null;
   let lockHandle,
+    observerLockHandle,
     current,
     closed = false,
     queue = Promise.resolve(),
@@ -354,6 +499,11 @@ export async function openManualSession({
     requireThat(instant(value) >= instant(openedAt), "MANUAL_TIME_INVALID");
     return value;
   };
+  const r3Live = () =>
+    requireThat(
+      instant(stamp()) < instant(r3Context.jobAdmission.expiresAt),
+      "MANUAL_TIME_INVALID"
+    );
   const serial = (work) => {
     const result = queue.then(work);
     queue = result.catch(() => {});
@@ -368,7 +518,7 @@ export async function openManualSession({
     sessionId,
     sessionNonce,
     ownerId: profile.ownerId,
-    targetIntent: identity.targetIntent,
+    ...(r3 ? { scope: identity.scope } : { targetIntent: identity.targetIntent }),
     status,
     openedAt,
     previousSessionRecordDigest: previous,
@@ -388,6 +538,17 @@ export async function openManualSession({
       held.ino === visible.ino && held.dev === visible.dev && bytes.equals(lockBytes),
       SESSION
     );
+    if (r3) {
+      const observerBytes = await store.read(observerLockPath);
+      const observedHeld = await observerLockHandle.stat(),
+        observedVisible = await store.fs.lstat(observerLockPath);
+      requireThat(
+        observedHeld.ino === observedVisible.ino &&
+          observedHeld.dev === observedVisible.dev &&
+          observerBytes.equals(lockBytes),
+        SESSION
+      );
+    }
     const actual = JSON.parse(
       await store.read(objectPath(profile.storage.journalRoot, sha256Canonical(current)))
     );
@@ -406,7 +567,7 @@ export async function openManualSession({
         const name = `${profileDigest.slice(7)}-${sequence}.json`;
         requireThat(names.includes(name), REVOCATION);
         const record = JSON.parse(await store.read(path.join(dir, name)));
-        validateContract(recordSchema, record);
+        validateContract(revocationSchema, record);
         requireThat(
           record.kind === "revocation" &&
             record.sequence === sequence &&
@@ -761,6 +922,27 @@ export async function openManualSession({
   }
   async function archiveInput(request, graph = null, historicalConsumption = null) {
     graph ??= await store.objects();
+    // R2's evidence assessor predates the disjoint R3 record/request schema.
+    // Validate those originals before projecting the R2 graph; a consumed R3
+    // operation is never interpreted as a local target authorization.
+    const r2Artifacts = [];
+    for (const entry of graph.values()) {
+      const value = entry.value;
+      if (value.schemaVersion === "manual-operation-record.v3") {
+        validateContract("manual-operation-record.v3", value);
+        requireThat(["session", "custody"].includes(value.kind), SESSION);
+        r2Artifacts.push(null);
+      } else if (value.schemaVersion === "manual-runner-request.v4") {
+        validateManualTargetCreationRequest(value);
+        r2Artifacts.push(null);
+      } else if (value.schemaVersion === "manual-runner-evidence.v2") {
+        validateContract("manual-runner-evidence.v2", value);
+        r2Artifacts.push(null);
+      } else if (value.payload?.schemaVersion === "manual-launch-authorization.v4") {
+        validateContract("manual-launch-authorization.v4", value);
+        r2Artifacts.push(null);
+      } else r2Artifacts.push(entry.bytes);
+    }
     // Only existing process references can enter the bounded candidate read.
     // The shared assessor subsequently validates protocol/direction/binding and
     // every ordinary usage before this input can authorize any transition.
@@ -803,7 +985,7 @@ export async function openManualSession({
     requireThat(requestBytes, REQUIRED);
     const input = {
       requestBytes,
-      artifactBytes: [...graph.values()].map((item) => item.bytes),
+      artifactBytes: r2Artifacts.filter(Boolean),
       rawBlobs: [...raws.values()]
     };
     if (request.profileDigest === profileDigest)
@@ -817,7 +999,7 @@ export async function openManualSession({
     );
     return input;
   }
-  async function history(request, ignoreRequest = null) {
+  async function history(request, ignoreRequest = null, targetFilter = target) {
     const graph = await store.objects(),
       values = [...graph.values()].map((item) => item.value);
     const sessions = values.filter(
@@ -843,7 +1025,11 @@ export async function openManualSession({
           SESSION
         );
         validateContract(
-          consumed.profileDigest === profileDigest ? recordSchema : consumed.schemaVersion,
+          r3
+            ? consumed.schemaVersion
+            : consumed.profileDigest === profileDigest
+              ? recordSchema
+              : consumed.schemaVersion,
           consumed
         );
       } catch {
@@ -869,14 +1055,14 @@ export async function openManualSession({
           consumed.profileDigest === original.profileDigest,
         SESSION
       );
-      if (original.targetIntent.databaseName !== target.databaseName) continue;
+      if (original.targetIntent.databaseName !== targetFilter.databaseName) continue;
       const historicalTarget = profile.allowedTargets.find(
         (item) =>
           item.endpointPolicyId === original.targetIntent.endpointPolicyId &&
           item.databaseName === original.targetIntent.databaseName
       );
       requireThat(historicalTarget, SESSION);
-      if (historicalTarget.endpoint !== target.endpoint) continue;
+      if (historicalTarget.endpoint !== targetFilter.endpoint) continue;
       requireThat(slotDigests.has(sha256Canonical(consumed)), SESSION);
       if (consumed.requestDigest === ignoreRequest) continue;
       requireThat(request.attemptId !== original.attemptId, SESSION);
@@ -1376,6 +1562,212 @@ export async function openManualSession({
     };
     return store.put(custody);
   }
+  async function r3CheckedRequest(input) {
+    exact(input, ["binding", "canonicalBytes"]);
+    requireThat(Buffer.isBuffer(input.canonicalBytes), BINDING);
+    const canonicalBytes = Buffer.from(input.canonicalBytes);
+    const request = validateManualTargetCreationRequest(
+      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(canonicalBytes))
+    );
+    requireThat(encodeManualJson(request).equals(canonicalBytes), BINDING);
+    const fields = [
+      "profileDigest",
+      "ownerId",
+      "sessionId",
+      "sessionNonce",
+      "operationId",
+      "idempotencyKey",
+      "stage",
+      "capability",
+      "purpose",
+      "phase",
+      "chain",
+      "targetPolicyDigest",
+      "creationSpecDigest",
+      "jobAdmissionDigest"
+    ];
+    const binding = Object.fromEntries(fields.map((field) => [field, request[field]]));
+    requireThat(equal(binding, input.binding), BINDING);
+    for (const field of ["profileDigest", "sessionId", "sessionNonce"])
+      requireThat(request[field] === identity[field], BINDING);
+    requireThat(
+      request.ownerId === profile.ownerId &&
+        request.operationId === r3Context.creationSpec.operationRef &&
+        request.stage === "target-create" &&
+        request.sourceSha === identity.scope.sourceSha &&
+        request.candidate.buildProofDigest === identity.scope.buildProofDigest,
+      BINDING
+    );
+    for (const field of [
+      "phase",
+      "chain",
+      "targetPolicyDigest",
+      "creationSpecDigest",
+      "jobAdmissionDigest"
+    ])
+      requireThat(request[field] === identity.scope[field], BINDING);
+    requireThat(
+      (
+        await store.read(objectPath(profile.storage.archiveRoot, sha256Bytes(canonicalBytes)))
+      ).equals(canonicalBytes),
+      STORAGE
+    );
+    const allocation = JSON.parse(
+      await store.read(objectPath(profile.storage.archiveRoot, request.attemptAllocationDigest))
+    );
+    validateContract("manual-runner-evidence.v2", allocation);
+    requireThat(
+      allocation.kind === "attempt-allocation" &&
+        allocation.sessionRecordDigest === sha256Canonical(current) &&
+        allocation.predecessorExecutionRecordDigest === null &&
+        instant(current.openedAt) <= instant(allocation.recordedAt) &&
+        instant(allocation.recordedAt) <= instant(allocation.allocatedAt) &&
+        instant(allocation.allocatedAt) <= instant(stamp()),
+      BINDING
+    );
+    for (const field of [
+      "profileDigest",
+      "sessionId",
+      "sessionNonce",
+      "operationId",
+      "idempotencyKey",
+      "attemptId",
+      "runId",
+      "stage",
+      "phase",
+      "chain",
+      "sourceSha",
+      "targetPolicyDigest",
+      "creationSpecDigest",
+      "jobAdmissionDigest"
+    ])
+      requireThat(allocation[field] === request[field], BINDING);
+    requireThat(allocation.buildProofDigest === request.candidate.buildProofDigest, BINDING);
+    return { request, binding, canonicalBytes };
+  }
+  async function r3History(request) {
+    const graph = await store.objects();
+    const values = [...graph.values()].map((entry) => entry.value);
+    for (const value of values.filter(
+      (entry) => entry.schemaVersion === "manual-operation-record.v3"
+    ))
+      validateContract("manual-operation-record.v3", value);
+    const dir = path.join(profile.storage.journalRoot, "consumptions");
+    await store.checkedPath(dir);
+    const slots = new Map();
+    for (const name of await store.fs.readdir(dir)) {
+      requireThat(/^[0-9a-f]{64}-[0-9a-f-]{36}\.json$/u.test(name), SESSION);
+      const consumed = JSON.parse(await store.read(path.join(dir, name)));
+      requireThat(
+        [
+          "manual-operation-record.v1",
+          "manual-operation-record.v2",
+          "manual-operation-record.v3"
+        ].includes(consumed.schemaVersion),
+        SESSION
+      );
+      validateContract(consumed.schemaVersion, consumed);
+      requireThat(consumed.kind === "consumption", SESSION);
+      const digest = sha256Canonical(consumed);
+      requireThat(graph.has(digest) && equal(graph.get(digest).value, consumed), SESSION);
+      const authorization = graph.get(consumed.authorizationDigest)?.value;
+      requireThat(
+        authorization?.payload &&
+          name ===
+            `${consumed.profileDigest.slice(7)}-${authorization.payload.authorizationId}.json` &&
+          authorization.payload.requestDigest === consumed.requestDigest,
+        SESSION
+      );
+      validateContract(authorization.payload.schemaVersion, authorization);
+      slots.set(digest, consumed);
+    }
+    for (const consumed of values.filter((value) => value.kind === "consumption")) {
+      const digest = sha256Canonical(consumed),
+        request = graph.get(consumed.requestDigest)?.value;
+      requireThat(
+        slots.has(digest) &&
+          request &&
+          consumed.requestDigest === sha256Canonical(request) &&
+          consumed.profileDigest === request.profileDigest,
+        SESSION
+      );
+      for (const field of ["sessionId", "sessionNonce", "operationId", "idempotencyKey", "stage"])
+        requireThat(consumed[field] === request[field], SESSION);
+      const r3Request = request.schemaVersion === "manual-runner-request.v4";
+      if (r3Request) validateManualTargetCreationRequest(request);
+      else {
+        requireThat(request.schemaVersion === "manual-runner-request.v1", SESSION);
+        validateManualRunnerRequest(request);
+      }
+      const allocation = graph.get(request.attemptAllocationDigest)?.value;
+      requireThat(allocation, REQUIRED);
+      validateContract(
+        r3Request ? "manual-runner-evidence.v2" : "manual-runner-evidence.v1",
+        allocation
+      );
+      requireThat(
+        allocation.kind === "attempt-allocation" &&
+          allocation.profileDigest === consumed.profileDigest &&
+          allocation.sessionId === consumed.sessionId &&
+          allocation.sessionNonce === consumed.sessionNonce &&
+          (!r3Request || allocation.sessionRecordDigest === consumed.sessionRecordDigest) &&
+          allocation.operationId === request.operationId &&
+          allocation.attemptId === request.attemptId &&
+          allocation.runId === request.runId,
+        SESSION
+      );
+      const session = graph.get(consumed.sessionRecordDigest)?.value;
+      requireThat(session, REQUIRED);
+      validateContract(consumed.schemaVersion, session);
+      requireThat(
+        session.kind === "session" &&
+          session.status === "OPEN" &&
+          session.profileDigest === consumed.profileDigest &&
+          session.sessionId === consumed.sessionId &&
+          session.sessionNonce === consumed.sessionNonce,
+        SESSION
+      );
+      const linked = values.filter(
+        (value) => value.kind === "execution" && value.requestDigest === consumed.requestDigest
+      );
+      requireThat(linked.length === 1, SESSION);
+      const execution = linked[0];
+      validateContract(consumed.schemaVersion, execution);
+      requireThat(
+        execution.consumptionRecordDigest === digest &&
+          execution.authorizationDigest === consumed.authorizationDigest &&
+          execution.profileDigest === consumed.profileDigest &&
+          execution.sessionId === consumed.sessionId &&
+          execution.sessionNonce === consumed.sessionNonce &&
+          execution.operationId === request.operationId &&
+          execution.attemptId === request.attemptId,
+        SESSION
+      );
+      if (r3Request) fail(SESSION); // No R3 creation can yet claim a completed result.
+      requireThat(
+        profile.allowedTargets.some(
+          (target) =>
+            target.endpointPolicyId === request.targetIntent.endpointPolicyId &&
+            target.databaseName === request.targetIntent.databaseName
+        ),
+        SESSION
+      );
+      if (execution.status === "INTERRUPTED_UNKNOWN") continue;
+      const assessment = assessManualRunnerEvidence(await archiveInput(request, graph, consumed));
+      requireThat(assessment.executionStatus === execution.status, SESSION);
+      if (execution.status === "SUCCEEDED")
+        requireThat(assessment.proofDigest === execution.resultDigest, SESSION);
+    }
+    for (const execution of values.filter(
+      (value) => value.kind === "execution" && value.profileDigest === profileDigest
+    ))
+      requireThat(slots.has(execution.consumptionRecordDigest), SESSION);
+    // Reuse the existing R2 reducer, including its independent reconcile
+    // readback. An original apply UNKNOWN stays in the graph after resolution.
+    for (const historicalTarget of profile.allowedTargets)
+      await history(request, null, historicalTarget);
+    return graph;
+  }
   try {
     try {
       lockHandle = await store.fs.open(lockPath, "wx", 0o600);
@@ -1386,15 +1778,232 @@ export async function openManualSession({
     await lockHandle.writeFile(lockBytes);
     await lockHandle.sync();
     requireThat((await store.read(lockPath)).equals(lockBytes), STORAGE);
+    if (r3) {
+      try {
+        observerLockHandle = await store.fs.open(observerLockPath, "wx", 0o600);
+      } catch {
+        fail(SESSION);
+      }
+      await store.setNewOwner(observerLockPath);
+      await observerLockHandle.writeFile(lockBytes);
+      await observerLockHandle.sync();
+      requireThat((await store.read(observerLockPath)).equals(lockBytes), STORAGE);
+    }
     await revocations();
     current = sessionRecord("OPEN", null, null, openedAt);
     await store.put(current, "journal");
   } catch (error) {
+    if (observerLockHandle) {
+      await observerLockHandle.close().catch(() => {});
+      await store.fs.unlink(observerLockPath).catch(() => {});
+    }
     if (lockHandle) {
       await lockHandle.close().catch(() => {});
       await store.fs.unlink(lockPath).catch(() => {});
     }
     throw error;
+  }
+  if (r3) {
+    let consumedOrUncertain = false,
+      closeRef = null;
+    return freeze({
+      ...identity,
+      sign(input) {
+        return serial(async () => {
+          await active();
+          r3Live();
+          const request = await r3CheckedRequest(input);
+          await r3History(request.request);
+          const issuedAt = stamp(),
+            ctx = await context(request.request),
+            expiresAt = new Date(
+              Math.min(
+                instant(profile.expiresAt),
+                instant(r3Context.jobAdmission.expiresAt),
+                instant(issuedAt) + 300000
+              )
+            ).toISOString();
+          requireThat(instant(issuedAt) < instant(expiresAt), "MANUAL_TIME_INVALID");
+          const authorization = signManualAuthorization({
+            payload: {
+              schemaVersion: "manual-launch-authorization.v4",
+              authorizationId: randomUUID(),
+              issuedAt,
+              expiresAt,
+              requestDigest: sha256Bytes(request.canonicalBytes),
+              ...request.binding
+            },
+            privateKey: key
+          });
+          verify(authorization, request, ctx);
+          await store.put(authorization);
+          issued.set(authorization.payload.authorizationId, sha256Canonical(authorization));
+          return freeze(authorization);
+        });
+      },
+      consume(input) {
+        return serial(async () => {
+          await active();
+          r3Live();
+          exact(input, ["authorization", "request"]);
+          const authorization = snapshot(input.authorization),
+            request = await r3CheckedRequest(input.request);
+          await unused(authorization.payload.authorizationId);
+          await r3History(request.request);
+          const ctx = await context(request.request),
+            parentDecision = verify(authorization, request, ctx);
+          requireThat(
+            issued.get(authorization.payload.authorizationId) === sha256Canonical(authorization),
+            SESSION
+          );
+          requireThat(
+            (
+              await store.read(
+                objectPath(profile.storage.archiveRoot, sha256Canonical(authorization))
+              )
+            ).equals(encodeManualJson(authorization)),
+            STORAGE
+          );
+          const consumption = {
+            ...common("consumption", stamp()),
+            sessionId,
+            sessionNonce,
+            operationId: request.binding.operationId,
+            idempotencyKey: request.binding.idempotencyKey,
+            ownerId: profile.ownerId,
+            authorizationDigest: sha256Canonical(authorization),
+            requestDigest: sha256Bytes(request.canonicalBytes),
+            stage: "target-create",
+            sessionRecordDigest: sha256Canonical(current),
+            revocationRecordDigest: ctx.revocation.headDigest,
+            revocationSequence: ctx.revocation.records.at(-1).sequence,
+            status: "CONSUMED"
+          };
+          validateContract(recordSchema, consumption);
+          // Once create-only slot insertion begins, every failure retains both
+          // forward slots. A missing execution is reconstructed as uncertainty.
+          consumedOrUncertain = true;
+          await store.create(
+            consumptionSlot(authorization.payload.authorizationId),
+            encodeManualJson(consumption),
+            "MANUAL_AUTHORIZATION_CONSUMED"
+          );
+          await store.put(consumption, "journal");
+          const readback = await consumptionReadback(consumption);
+          const execution = {
+            ...common("execution", stamp()),
+            stage: "target-create",
+            sessionId,
+            sessionNonce,
+            operationId: request.request.operationId,
+            idempotencyKey: request.request.idempotencyKey,
+            attemptId: request.request.attemptId,
+            requestDigest: consumption.requestDigest,
+            authorizationDigest: consumption.authorizationDigest,
+            consumptionRecordDigest: sha256Canonical(consumption),
+            predecessorExecutionRecordDigest: null,
+            startedAt: null,
+            finishedAt: null,
+            status: "INTERRUPTED_UNKNOWN",
+            reasonCode: "MANUAL_EVIDENCE_INCOMPLETE",
+            resultDigest: null,
+            processEvidenceDigest: null
+          };
+          validateContract(recordSchema, execution);
+          const executionRef = await store.put(execution, "journal");
+          requireThat(
+            (
+              await store.read(objectPath(profile.storage.journalRoot, executionRef.recordDigest))
+            ).equals(encodeManualJson(execution)),
+            STORAGE
+          );
+          requireThat(
+            (await store.read(consumptionSlot(authorization.payload.authorizationId))).equals(
+              encodeManualJson(consumption)
+            ),
+            STORAGE
+          );
+          const final = await context(request.request);
+          verify(authorization, request, final);
+          return freeze({
+            stage: "target-create",
+            parentDecision,
+            consumptionReadbackDigest: readback.recordDigest,
+            executionRecordDigest: executionRef.recordDigest
+          });
+        });
+      },
+      record(kind, input) {
+        return serial(async () => {
+          await active();
+          r3Live();
+          requireThat(kind === "revocation", EVIDENCE);
+          const value = snapshot(input),
+            records = await revocations(),
+            head = records.at(-1);
+          validateContract("manual-operation-record.v2", value);
+          requireThat(
+            value.kind === kind &&
+              value.profileDigest === profileDigest &&
+              value.ownerId === profile.ownerId &&
+              value.action !== "GENESIS" &&
+              value.sequence === head.sequence + 1 &&
+              value.previousRevocationDigest === sha256Canonical(head) &&
+              instant(head.recordedAt) <= instant(value.recordedAt) &&
+              instant(value.recordedAt) <= instant(stamp()),
+            REVOCATION
+          );
+          const ref = await store.put(value, "journal");
+          await store.create(
+            path.join(
+              profile.storage.journalRoot,
+              "revocations",
+              `${profileDigest.slice(7)}-${value.sequence}.json`
+            ),
+            encodeManualJson(value)
+          );
+          await revocations();
+          return ref;
+        });
+      },
+      close() {
+        return serial(async () => {
+          if (closed) return closeRef;
+          try {
+            await active();
+            const uncertain = consumedOrUncertain;
+            const value = sessionRecord(
+              uncertain ? "INTERRUPTED_UNKNOWN" : "CLOSED",
+              sha256Canonical(current),
+              uncertain ? "MANUAL_EVIDENCE_INCOMPLETE" : null,
+              stamp()
+            );
+            closeRef = await store.put(value, "journal");
+            current = value;
+            closed = true;
+            key = null;
+            await observerLockHandle.close();
+            await lockHandle.close();
+            observerLockHandle = null;
+            lockHandle = null;
+            if (!uncertain) {
+              await store.fs.unlink(observerLockPath);
+              await store.fs.unlink(lockPath);
+            }
+            return closeRef;
+          } catch (error) {
+            consumedOrUncertain = true;
+            closed = true;
+            key = null;
+            await observerLockHandle?.close().catch(() => {});
+            await lockHandle?.close().catch(() => {});
+            observerLockHandle = null;
+            lockHandle = null;
+            throw error;
+          }
+        });
+      }
+    });
   }
   return freeze({
     ...identity,

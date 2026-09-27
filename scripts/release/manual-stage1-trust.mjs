@@ -1787,6 +1787,146 @@ export async function readFixedR3WorkspaceObservation(input) {
   }
 }
 
+// Creation has no future destination facts. Its fixed live job and creation
+// plan establish the scope before the existing H1 signing key is opened. The
+// session itself owns the original revocation/consumption journal and locks.
+export async function openTrustedR3CreationSession(input) {
+  const code = "R3_CREATION_SESSION_UNAVAILABLE";
+  let fixed,
+    session,
+    closed = false,
+    closing,
+    queue = Promise.resolve();
+  const finish = () => {
+    if (closing) return closing;
+    closed = true;
+    closing = (async () => {
+      const outcomes = await Promise.allSettled([
+        ...(session ? [session.close()] : []),
+        ...(fixed ? [fixed.close()] : [])
+      ]);
+      if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
+      return outcomes[0]?.value;
+    })();
+    return closing;
+  };
+  const serial = (work) => {
+    const result = queue.then(work);
+    queue = result.catch(() => {});
+    return result;
+  };
+  const recheck = async () => {
+    try {
+      requireThat(!closed);
+      await fixed.recheck();
+    } catch {
+      fail(code);
+    }
+  };
+  try {
+    exact(input, ["repoRoot", "operationRef"]);
+    requireThat(
+      typeof input.repoRoot === "string" &&
+        typeof input.operationRef === "string" &&
+        UUID.test(input.operationRef) &&
+        process.platform === "linux"
+    );
+    const repoRoot = absolute(input.repoRoot),
+      operationRef = input.operationRef;
+    fixed = await readFixedR3JobAdmission({ repoRoot, operationRef });
+    const profile = await loadFixedManualProfile({ repoRoot }),
+      { principal } = await actualHost(),
+      spec = fixed.spec,
+      scope = freeze({
+        targetPolicyDigest: spec.targetPolicyDigest,
+        creationSpecDigest: fixed.creationSpecDigest,
+        jobAdmissionDigest: fixed.jobAdmissionDigest,
+        buildProofDigest: fixed.build.buildProofDigest,
+        sourceSha: fixed.sourceSha,
+        phase: spec.phase,
+        chain: spec.chain
+      });
+    requireThat(sha256Canonical(profile) === spec.profileDigest);
+    await recheck();
+    const keyRef = profile.storage.keyRef;
+    requireThat(
+      !path.isAbsolute(keyRef) &&
+        path.normalize(keyRef) === keyRef &&
+        keyRef.split(path.sep).every((part) => part !== "" && part !== "." && part !== "..")
+    );
+    const keyPath = path.join(profile.storage.keyRoot, keyRef);
+    requireThat(within(profile.storage.keyRoot, keyPath) && keyPath !== profile.storage.keyRoot);
+    let keyInput, signingKey;
+    try {
+      keyInput = await openInput(keyPath, { principal, privateRoot: profile.storage.keyRoot });
+      signingKey = createPrivateKey(keyInput.bytes);
+      requireThat(
+        signingKey.asymmetricKeyType === "ed25519" &&
+          sha256Bytes(createPublicKey(signingKey).export({ type: "spki", format: "der" })) ===
+            profile.keyFingerprint
+      );
+      await keyInput.recheck();
+      await recheck();
+      session = await openManualSession({
+        profile,
+        ownerObservation: {
+          ownerId: profile.ownerId,
+          principal,
+          scope,
+          observedAt: new Date().toISOString()
+        },
+        r3CreationContext: { scope, creationSpec: spec, jobAdmission: fixed.admission },
+        now: () => new Date().toISOString(),
+        signingKey
+      });
+      await recheck();
+    } finally {
+      keyInput?.bytes.fill(0);
+      await keyInput?.close();
+      signingKey = null;
+    }
+    exact(session, [
+      "profileDigest",
+      "sessionId",
+      "sessionNonce",
+      "scope",
+      "sign",
+      "consume",
+      "record",
+      "close"
+    ]);
+    requireThat(equal(session.scope, scope) && session.profileDigest === spec.profileDigest);
+    const action = (method, args) =>
+      serial(async () => {
+        requireThat(!closed, code);
+        try {
+          await recheck();
+          const result = await session[method](...args);
+          await recheck();
+          return result;
+        } catch (error) {
+          // The local session must retain consumed UNKNOWN locks even when the
+          // hosted job has ended. Cleanup never depends on a live-job recheck.
+          await finish().catch(() => {});
+          throw error;
+        }
+      });
+    return Object.freeze({
+      profileDigest: session.profileDigest,
+      sessionId: session.sessionId,
+      sessionNonce: session.sessionNonce,
+      scope,
+      sign: (value) => action("sign", [value]),
+      consume: (value) => action("consume", [value]),
+      record: (kind, value) => action("record", [kind, value]),
+      close: () => serial(finish)
+    });
+  } catch {
+    await finish().catch(() => {});
+    fail(code);
+  }
+}
+
 export async function openTrustedManualSession(input) {
   let keyInput, signingKey;
   try {

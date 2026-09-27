@@ -93,3 +93,15 @@ absent 要求完整拓扑命令成功，并且指定 mount、mapper、loop/backi
 `readFixedR3WorkspaceObservation({repoRoot,operationRef,state})` 从既有私有 archive 的 `inputs/r3/{operationRef}/workspace-{state}.json` 和 `workspace-{state}.binding.json` 读取规范 JSON；全部 stdout/stderr、policy、machine-id 和适用的 proc 原件保存在同操作目录的 `raw/{sha256hex}.bin`，空 stderr 也有实际原件。入口先验证固定 job admission，然后用同一批持有字节验签、检查原件摘要与长度、固定命令/参数/成功 close、文件元数据和时间顺序，并重新解析完整拓扑，与声明事实逐项比较。返回原件均为独立副本，内部句柄持续保留；recheck 交错检查当前 job、源码/H1/H2、原件和时窗，失败关闭句柄。
 
 active 和 absent 都要求同一原 job 仍在运行且处于原有效窗内。absent 仍只表示指定工作区名的观察结果；job 已终止或原件改变时拒绝读取，不能据此释放锁。终止 job 后的清理恢复、实际 hosted producer/保管、Engine/PG 目标图、创建执行及 manual 会话接线仍待完成。本片不读取 H1 私钥、快照解密钥或 payload，不启用旧 workflow，也不新增服务。
+
+## 创建会话接线顺序
+
+上述规范和 job 读取器已接入同一个创建会话；下一步在创建执行路径采集 Engine/PG 原件。既有 `observeH3Resources` 只承认 H1 本机 Docker 端口发布和 R2 命名卷，不能通过替换环境变量将它当成 R3 两端映射，也不把未来 destination 事实放入创建前的请求。
+
+固定入口为 `openTrustedR3CreationSession({repoRoot,operationRef})`：先读规范、当前 job、H1/H2 和源码，再打开原 profile 指定的 H1 Ed25519 私钥。七项 scope 由已验证规范/job/构建派生，不接受调用方 scope、路径、时钟、密钥或 IO 覆盖。`openManualSession` 增加显式 `r3CreationContext:{scope,creationSpec,jobAdmission}` 分支；owner observation 绑定同一 scope，旧 R2 targetIntent 路径保持独立。公开结果只含 profileDigest、sessionId、sessionNonce、scope 及 sign/consume/record/close。
+
+R3 复用原私有 fileStore、v2 撤销链与 checkpoint、一次消费槽；会话记录采用已有 v3，创建请求采用 v4，尝试分配采用已有 evidence v2。先独占固定 55440/55441 通道槽，再签发和消费；消费读回必须已有唯一永久消费槽和 UNKNOWN execution 原件。混合历史须保留原请求、分配、签名、撤销及消费关系；错误或缺图不得忽略。当前分支只准 target-create，snapshot-consumer 和成功创建 execution 等待后续完整原件图接线。
+
+固定入口在每次 sign/consume/record 前后重查当前 job 及持有原件；不通过调用方布尔值代替。close 不要求 job 继续运行，始终能尝试本地收尾：未消费会话可关闭并释放自己的通道槽，已消费但实际结果未知的会话保留 UNKNOWN 和通道槽，不能用新操作绕过。实际 hosted 创建、同 Engine/CID 读回、两端 PG 身份/TLS、完整目标集合锁以及真实清理结果仍是后续必要工作；本会话入口本身不能证明这些操作完成。
+
+本切片核心定向 4/4、唯一 Linux 整合 7/7 通过，覆盖未解历史拒绝、旧 R2 reconcile 兼容、一次消费持久化和 job 结束后的本地关闭；独立只读审查通过。Linux 使用真实文件系统/Git 及合成 job/资源原件，不是实际 hosted 创建验收。未新增 schema、数据库 suite 或例外，未重跑已有 R2 长链。

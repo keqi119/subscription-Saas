@@ -4,6 +4,7 @@
 
 ## 当前接续状态
 
+- 最新切片已接通 R3 创建会话固定入口：由已验证规范/job/H1/H2 派生 scope，再使用原 H1 签名钥、v2 撤销链和一次消费台账。独占 55440/55441 双槽；返回消费判定前落盘唯一消费记录、读回及 UNKNOWN execution。已消费或关闭出错时保留锁，job 结束后仍可关闭本地句柄。旧 R2 未解历史继续阻断，原 apply UNKNOWN 经 reconcile 核实后保留原件并允许继续。核心 4/4、Linux 整合 7/7（0 skip，28,435.500243 ms）通过，有限独立审查通过。当前只接通 target-create 授权边界，不能记录成功创建或授予 snapshot-consumer；尚未执行真实资源创建、恢复或清理。
 - R2 apply-interrupted `68888` 已自然结束，host/Node exit 1，0 pass / 1 fail / 0 skip，644,033.312586 ms。失败准确落在已结束 UNKNOWN 的备份被移走后仍未拒绝（`Missing expected rejection`）；871 份保全文件自一致检查通过，原失败未覆盖。
 - 已将结果核验器的 Runner 备份条件从仅 `SUCCEEDED` 改为 `SUCCEEDED` 或 `finishedAt !== null`；pending UNKNOWN 仍不要求不存在的备份。唯一重验 `43338` 已自然结束，host/Node exit 0，1 pass / 0 fail / 0 skip，1,685,953.300037 ms；原 apply UNKNOWN 保留，reconcile 成功后最终核验为 `PASS`，计数 4/4/3/0/1/0，report digest `sha256:d8733a89675b1bbf9519ceb75d8392e4bf0d2b2a72d04a0e28d5d8d414b4f124`。1,046 份保全文件自一致检查通过。这是合成 native 组合，不是实际 PG/CI 成绩；没有再跑 normal 或旧故障矩阵。
 - R3 固定目标策略、schema 与 manifest 登记已补齐，并经一次有限独立审查。它引用已批准 H1 profile，限定既有 source/final workflow、hosted 身份、固定两条通道与加密 Engine 目录。定向契约用例 1/1 通过，全部 schema 编译用例 1/1 通过；未接线 runtime、签发创建/消费能力或建立远端目标。具体顺序见 [R3 目标策略切片](../superpowers/specs/2026-09-28-stage1-r3-target-policy-slice.zh-CN.md)。
@@ -57,7 +58,7 @@ R2 normal 重验 `75700` 已自然结束，host/Node exit 0：1 pass / 0 fail / 
 
 R3 路线已按当前收口决策纠正：此前拟做的 prebuild 读取器不属于本期必要路径，草稿已停止，尚未写入生产代码或执行测试。[最小发布决策](../superpowers/specs/2026-09-06-stage1-minimal-controlled-release-decision.zh-CN.md)明确延期构建前私有快照依赖；本期构建沿用唯一 `build-proof.v1`，提升前完成合法 snapshot 链。
 
-当前未接线的 `manual-runner-request.v2` 强制要求旧 bundle/dispatch/RC workflow，非商用 producer 授权 v2 也带有同类依赖。不能为适配这些字段恢复已延期平台或填写替代值。本轮 consumer v3 已完成纯合同层面的纠正，保留 v2 历史解释；下一片回到 R3 Task1 的合法快照原件读取。实际权限来源、对象版本、独立保管读回、目的地和消费会话仍须闭合，不能用测试原件替代。只有确需新 producer 时才对齐它的前向授权；已有合法密文不因消费合同更新被强制重生产。
+当前未接线的 `manual-runner-request.v2` 强制要求旧 bundle/dispatch/RC workflow，非商用 producer 授权 v2 也带有同类依赖。不能为适配这些字段恢复已延期平台或填写替代值。consumer v3 已完成纯合同层面的纠正，保留 v2 历史解释；固定合法快照原件读取器和创建会话入口已实现。下一段沿该会话接通 hosted 创建执行及 Engine/PG 实际身份读回，再闭合成功创建、消费和清理结果。实际权限来源、对象版本、独立保管读回、目的地和消费会话仍须闭合，不能用测试原件替代。只有确需新 producer 时才对齐它的前向授权；已有合法密文不因消费合同更新被强制重生产。
 
 R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此前 memo 将外部 controller/current-status 服务、第二 checkpoint 和独立 grant 体系推导为统一前置条件，现已撤回；来源确有第三方许可限制时才按其真实原件处理。具体来源、用途、对象版本和存储读回是仍需核对的事实，不以此重复申请用户已授权的实施操作。
 
@@ -65,7 +66,8 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 
 ## 证据定位
 
-隐藏工作目录为 `.superpowers/sdd/2026-09-06-stage1-r2-runner-migrate-verify-plan/runner-second-stage/`：
+- R3 创建会话：核心原始输出 `r3-creation-session-core-green01.log` 保留旧 allocation v1 无 sessionRecordDigest 的兼容失败，修正后的 `r3-creation-session-core-green02.log` 为 4/4。入口 RED 位于工作树 `scratch/r3-creation-session-entry-red01.log`。唯一 Linux 整合 `r3-creation-session-native01.log`（进程 2871，终端 chunk `b7ea3d`）host/Node 自然退出 0，7/7；copy `/home/keqi_119/.cache/r3-creation-session-l3M29F`，255 项源码按 `20260927-224636-101696654-copy.sha256` 核对。实际 Linux 文件系统/Git 配合合成 GitHub 与资源报告，不是真实 hosted 创建。合同检查 `eff4bd` 退出 0：207 文件、83 schemas、128 migrations、13 commands，repository digest `sha256:f1b7cf6bdc2b8a937865030d7bd9094fd141d3490c1faf74833e9e5132fd99e5`；数据库测试登记检查 `62ba6e` 为 98 candidates / 39 manifested / 59 excepted / 0 unclassified。当前预检 `f04fc9` 因缺 datasource.url 退出 1，`9ddcf0` Prisma validate 退出 0；未连接线上数据库，未重复 R2 长链。
+  隐藏工作目录为 `.superpowers/sdd/2026-09-06-stage1-r2-runner-migrate-verify-plan/runner-second-stage/`：
 
 - 原失败与保全：`result-verifier-native02.log`、`result-verifier-native02-preserved-check.json`。
 - 最小夹具复现：`native-gh-closure-red.log`、`native-gh-closure-green.log`。

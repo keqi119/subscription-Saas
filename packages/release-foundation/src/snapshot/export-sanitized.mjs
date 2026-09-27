@@ -91,15 +91,15 @@ export function transformRecord(record, { table, contract, tokenizationKey }) {
   return immutable(output);
 }
 
-export function verifySnapshotMetadata({
-  metadata,
-  contract,
-  ownershipMap,
-  dump,
-  scan,
-  knownMigrationHeads = contract?.source?.knownMigrationHeads,
-  now = new Date()
-}) {
+function verifySnapshotMetadataFields(input, verifyDump) {
+  const {
+    metadata,
+    contract,
+    ownershipMap,
+    scan,
+    knownMigrationHeads = contract?.source?.knownMigrationHeads,
+    now = new Date()
+  } = input;
   assertContractSemantics(contract);
   try {
     validateContract("snapshot-metadata.v1", metadata);
@@ -129,7 +129,7 @@ export function verifySnapshotMetadata({
   if (!knownMigrationHeads.includes(metadata.sourceMigrationHead)) {
     throw snapshotError("SNAPSHOT_MIGRATION_HEAD_UNKNOWN");
   }
-  if (metadata.dumpDigest !== sha256Bytes(Buffer.from(dump))) {
+  if (verifyDump && metadata.dumpDigest !== sha256Bytes(Buffer.from(input.dump))) {
     throw snapshotError("SNAPSHOT_DUMP_DIGEST_MISMATCH");
   }
   if (
@@ -151,6 +151,15 @@ export function verifySnapshotMetadata({
     throw snapshotError("SNAPSHOT_METADATA_SOURCE_MISMATCH");
   }
   return metadata;
+}
+
+// Declaration consistency is not evidence of plaintext contents or permission to consume them.
+export function verifySnapshotMetadataDeclarations(input) {
+  return verifySnapshotMetadataFields(input, false);
+}
+
+export function verifySnapshotMetadata(input) {
+  return verifySnapshotMetadataFields(input, true);
 }
 
 export function snapshotBundleDigest(bundle) {

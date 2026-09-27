@@ -353,6 +353,62 @@ test("metadata verification rejects expiry, contract drift, unknown head, and du
   }
 });
 
+test("metadata declarations validate without opening dump bytes", async () => {
+  const { verifySnapshotMetadataDeclarations } =
+    await import("../src/snapshot/export-sanitized.mjs");
+  assert.equal(typeof verifySnapshotMetadataDeclarations, "function");
+  const input = exportFixture(),
+    metadata = await runExport(input),
+    bundle = input.uploads[0],
+    events = [...input.events];
+  assert.equal(
+    verifySnapshotMetadataDeclarations({
+      metadata,
+      contract: input.contract,
+      ownershipMap: input.ownershipMap,
+      scan: bundle.scan,
+      now: fixedNow,
+      get dump() {
+        assert.fail("declaration validation must not request plaintext dump bytes");
+      }
+    }),
+    metadata
+  );
+  assert.deepEqual(input.events, events);
+});
+
+test("metadata declarations preserve scan and source binding refusals", async () => {
+  const { verifySnapshotMetadataDeclarations } =
+    await import("../src/snapshot/export-sanitized.mjs");
+  assert.equal(typeof verifySnapshotMetadataDeclarations, "function");
+  const input = exportFixture(),
+    metadata = await runExport(input),
+    bundle = input.uploads[0],
+    original = {
+      metadata,
+      contract: input.contract,
+      ownershipMap: input.ownershipMap,
+      scan: bundle.scan,
+      now: fixedNow
+    };
+  for (const [overrides, code] of [
+    [{ scan: { ...bundle.scan, findingsCount: 1 } }, "SNAPSHOT_SCAN_INVALID"],
+    [{ scan: { ...bundle.scan, subjectDigest: digest("f") } }, "SNAPSHOT_SCAN_INVALID"],
+    [
+      { metadata: { ...metadata, sourceFingerprintAfterDigest: digest("f") } },
+      "SNAPSHOT_METADATA_SOURCE_MISMATCH"
+    ],
+    [{ now: new Date("2026-10-03T08:00:00.000Z") }, "SNAPSHOT_EXPIRED"]
+  ]) {
+    assert.throws(() => verifySnapshotMetadataDeclarations({ ...original, ...overrides }), {
+      code
+    });
+  }
+  assert.throws(() => verifySnapshotMetadata({ ...original, dump: Buffer.from("changed") }), {
+    code: "SNAPSHOT_DUMP_DIGEST_MISMATCH"
+  });
+});
+
 test("protected entrypoint accepts only secret references and a complete publication", async () => {
   const input = exportFixture();
   const request = {

@@ -14,6 +14,7 @@
 - R3 最小 consumer 合同已补齐前向 request/auth v3：只有 source/final，候选只引用一个 `buildProofDigest`，输入绑定固定 selector 和 index 原始字节摘要；final 另绑定既存 source 证据。定向 RED 后，原合同测试文件 79/79 通过（0 fail/skip），仓库合同校验通过（197 文件、78 schemas、128 migrations）。旧 v2 schema 字节不变；生产 session 仍拒绝 v3，此结果不授予读取、解密或恢复权限。
 - 新定向 receipt 用例在准备阶段暴露 H1 路径误判：真实 `/tmp` 公共祖先目录的 nlink 从 59 变成 60，使未变化的私有原件被拒绝。只对既有 `contents=false` 且两侧均为目录的祖先比较允许 nlink 波动；dev/ino/mode/uid/gid、私有目录完整比较、叶文件 nlink=1 和独立重读均保留。直接 H1 回归先出现 1 pass/1 fail，修复后与既有私有根目录替换拒绝用例一起 2/2 通过（0 skip，3,276.926508 ms）。未通过改变生产器临时目录规避该问题；receipt 用例的早期准备失败不算有效边界验证。
 - 已将三项与 receipt 无关的交付准备检查原样移到 sign/consume 前，保留原 30 秒期限、首次新鲜消费检查、READY 后资源与输入检查，以及 secret pin 后最终检查。定向篡改在实际 receipt 写入时改变 Docker 目标身份：旧顺序的有效 RED 未到 READY；新顺序实际收到 1 个 READY 后拒绝 `MANUAL_H3_RESOURCE_MISMATCH`，凭据交付/连接/工具/query 均为 0，原消费 receipt 与唯一 UNKNOWN 执行件保留。新用例自然 exit 0，1 pass/0 fail/0 skip，163,115.184884 ms；实际子进程 PID 96622 exit 1/null 是预期拒绝。此结果只证明该边界仍有效，不证明完整 normal 已通过或原 replay 超时已消除。
+- R3 已从现有元数据校验中抽取共享 `verifySnapshotMetadataDeclarations`，可核对声明关系而不读取 dump；原 `verifySnapshotMetadata` 仍在原校验顺序中强制核对 dump 摘要。新增用例先因缺少函数得到有效 RED；随后新声明检查与既有过期/合同漂移/迁移头/dump 漂移用例合计 3/3 通过（0 skip，3,183.8588 ms）。只读声明入口不代表密文字节已读回、来源权限已核实或消费已获准；固定私有 index/raw 读取器及实际消费接线仍未完成。
 
 本轮离线预检：Prisma schema validate 退出 0；migrate status 在子进程未设置数据库 URL 的条件下退出 1，错误为 `The datasource.url property is required in your Prisma config file when using prisma migrate status.` 此命令没有连接数据库，不能据此推断服务器当前迁移状态。修改文件语法、Prettier 和 diff 检查通过。
 
@@ -34,6 +35,8 @@ R3 路线已按当前收口决策纠正：此前拟做的 prebuild 读取器不�
 
 当前未接线的 `manual-runner-request.v2` 强制要求旧 bundle/dispatch/RC workflow，非商用 producer 授权 v2 也带有同类依赖。不能为适配这些字段恢复已延期平台或填写替代值。本轮 consumer v3 已完成纯合同层面的纠正，保留 v2 历史解释；下一片回到 R3 Task1 的合法快照原件读取。实际权限来源、对象版本、独立保管读回、目的地和消费会话仍须闭合，不能用测试原件替代。只有确需新 producer 时才对齐它的前向授权；已有合法密文不因消费合同更新被强制重生产。
 
+R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此前 memo 将外部 controller/current-status 服务、第二 checkpoint 和独立 grant 体系推导为统一前置条件，现已撤回；来源确有第三方许可限制时才按其真实原件处理。具体来源、用途、对象版本和存储读回是仍需核对的事实，不以此重复申请用户已授权的实施操作。
+
 负责人、主机、Docker 恢复和无关容器暂停、迁移对齐及非商用方案的既有授权继续有效。当前无需用户重新登录或重复批准这些事项。
 
 ## 证据定位
@@ -50,3 +53,4 @@ R3 路线已按当前收口决策纠正：此前拟做的 prebuild 读取器不�
 - R3 最小合同切片：`r3-minimal-consumer-forward-contract-proposal-20260928.md`、`r3-consumer-v3-red01.log`、`r3-consumer-v3-green01.log`、`r3-consumer-v3-contracts01.log`。这是固定签名/结构校验；其实际输入、消费会话和远端目标接线未完成。
 - H1 公共祖先误判：`consume-h1-paths01.log` 保存实际变更字段；`trust-ancestor-red01.log` / `trust-ancestor-green01.log` 和同名 JSON 保存定向结果及复制源码摘要。`consume-resource-red01` 至 `red04` 均属准备失败，尚未触达 receipt 变更边界。
 - 检查前移的有效边界回归：`consume-resource-red05.log`（0/1/0，171,240.391399 ms）与 `consume-resource-green01.log`（1/0/0）。每次都核对 243 项复制源码原始摘要；对应 manifest 分别为 `20260927-190140-561481037-copy.sha256` 和 `20260927-190549-209596540-copy.sha256`。原件保存在 `originals/consume-resource-change-*`，无真实密钥或业务凭据。
+- R3 声明校验：`r3-metadata-declarations-red01.log`、`r3-metadata-declarations-green01.log`；范围纠偏原文为 `r3-lawful-input-reader-scope-correction-20260928.md`，覆盖前 memo 的外部授权平台推导。

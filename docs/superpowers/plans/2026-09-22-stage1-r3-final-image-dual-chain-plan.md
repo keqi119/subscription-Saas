@@ -2,6 +2,8 @@
 
 > **2026-09-27 用户约束：不采用商用 KMS。** 此前“等待 KMS 预算”的记录已撤销。实施须优先复用现有加密保管设施，以最小接缝满足既有数据保护和身份分离要求；不新建密钥服务平台，不把软件保管冒称硬件不可导出。源码中的 KMS 耦合须明确对齐并验证，不能仅以文档修正代替实际加解密与恢复证据。
 
+> **非商用实现方向已前向对齐：** [2026-09-27 快照修订](../specs/2026-09-27-stage1-noncommercial-snapshot-amendment.zh-CN.md) 固定独立 H1 RSA-OAEP 公钥包装、H1 完整认证后交付 hosted 加密目标，替代本文引用旧附录中的商用 KMS 与 hosted 解封位置要求。本文任务 1–5 的实际输入、接线、双链及保管完成条件仍须逐项实现；修订本身不代表通过。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Each checkbox requires its own reviewed authorization and evidence; this document authorizes no real data, host, Docker, CI, database, key, or deployment operation.
 
 **Goal:** Admit one lawful, independently verified sanitized snapshot and run the complete fresh/snapshot database and API/Web readiness set against the same trusted source and api/web/runner platform digests, with distinct targets, operations, records, and readbacks.

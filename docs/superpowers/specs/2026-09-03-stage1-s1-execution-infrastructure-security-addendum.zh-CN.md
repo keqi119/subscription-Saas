@@ -1,5 +1,7 @@
 # Stage 1 S1 执行基础设施与 Public Repository 安全附录
 
+> **2026-09-27 阶段 1 前向优先规则：** 本文各节涉及 snapshot producer/consumer 的商用 KMS 前置、数据动作、KEK 不可导出及 hosted 解封位置，统一由[非商用快照修订](2026-09-27-stage1-noncommercial-snapshot-amendment.zh-CN.md)替代。此规则覆盖下文较早出现的 KMS prerequisite/producer 授权措辞；旧批准和原件不改写，其余保护与实际证据要求保留。
+
 日期：2026-09-03
 
 状态：已批准设计（内容基线 `75aaa956`；批准记录及 admission 措辞勘误不替代内容基线）
@@ -476,6 +478,8 @@ Snapshot payload 定位前向改为 `snapshot-slots/v2/${releaseAttemptId}/${sna
 这是对旧“snapshot 密文 digest 寻址 key”的显式替代，不是保留两种运行选项。密文 digest/size、wrapped-key envelope digest、实际 object identity/ETag 与完整字节 readback 在加密/发布后绑定于证明；key 只是位置，不是内容权威。409/部分成功/UNKNOWN 不得覆盖、换 key 或同 attempt 补写。Lineage 内容寻址规则不变。规范化、静态动作/字段拒绝及 crypto→publisher 凭证隔离故障测试由基础设施 Tasks 4–7、13–14/I17–I19负责。
 
 ### Sanitized Snapshot 私密保管
+
+> **2026-09-27 前向修订：** 用户拒绝商用 KMS 后，阶段 1 新执行采用[非商用快照修订](2026-09-27-stage1-noncommercial-snapshot-amendment.zh-CN.md)。下列 KMS / KEK 不可导出 / hosted consumer 解封位置的历史措辞由该修订替代；逐对象完整认证、合法输入、私密保管及独立身份要求保留。旧原件不改形。
 
 Sanitized 不等于公开。GitHub artifact attestation 只提供来源和完整性证明，不提供内容保密性；明文 sanitized dump 不得进入 public repository 的 Actions artifact、cache、log、release asset 或任何继承 repository read 权限的存储。
 

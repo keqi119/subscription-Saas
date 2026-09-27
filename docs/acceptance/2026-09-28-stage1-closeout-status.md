@@ -2,7 +2,14 @@
 
 阶段 1 尚未完成。当前主要差距集中在发布执行与真实验收；本轮没有增加业务功能，没有引入商用 KMS，也没有改动线上数据库。
 
-## 本轮取得的证据
+## 当前接续状态
+
+- R2 apply-interrupted `68888` 已自然结束，host/Node exit 1，0 pass / 1 fail / 0 skip，644,033.312586 ms。失败准确落在已结束 UNKNOWN 的备份被移走后仍未拒绝（`Missing expected rejection`）；871 份保全文件自一致检查通过，原失败未覆盖。
+- 已将结果核验器的 Runner 备份条件从仅 `SUCCEEDED` 改为 `SUCCEEDED` 或 `finishedAt !== null`；pending UNKNOWN 仍不要求不存在的备份。唯一重验 `43338` 正在运行，冻结 244 项源码，尚无 GREEN 或完整 reconcile 结论；没有再跑 normal 或旧故障矩阵。
+- R3 固定目标策略、schema 与 manifest 登记已补齐，并经一次有限独立审查。它引用已批准 H1 profile，限定既有 source/final workflow、hosted 身份、固定两条通道与加密 Engine 目录。定向契约用例 1/1 通过，全部 schema 编译用例 1/1 通过；未接线 runtime、签发创建/消费能力或建立远端目标。具体顺序见 [R3 目标策略切片](../superpowers/specs/2026-09-28-stage1-r3-target-policy-slice.zh-CN.md)。
+- 本轮本地 migration status 仍因缺少 `datasource.url` 自然退出 1；schema validate 自然退出 0。没有连接或更改线上数据库。
+
+## 已取得的证据（保留各次失败与修正）
 
 - 官方 CLI 续期已在此前用于 OSS 密文上传和完整 1 GiB 回读，两个进程退出码均为 0，摘要一致；当前没有待处理的续期请求。该事实不等于异机解密恢复完成。
 - normal 组合测试 `51368` 自然退出 1。保存原件确认 observe、dry-run、apply 均为 `SUCCEEDED`，两个 Runner 子进程退出 0；首次独立结果核验失败，后续 verify/replay 尚未运行。
@@ -30,14 +37,14 @@ R2 normal 重验 `75700` 已自然结束，host/Node exit 0：1 pass / 0 fail / 
 
 ## 剩余收口顺序
 
-| 顺序 | 尚未完成的工作                                                                                    | 完成依据                                                                                   |
-| ---- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| 1    | R2 apply-interrupted 组合；已完成 UNKNOWN 的备份要求；replay 失联回归（normal 组合已通过） | 原始失败保留，必要定向用例自然结束；不能把局部 GREEN 汇总成完整通过                        |
-| 2    | 最终候选的受保护 CI 构建与 H2 证据读回                                                            | 同一源码、API/Web/Runner 镜像及独立保管身份的真实原件                                      |
-| 3    | R2 两个独立 PG17 目标的 migration、权限读回、verification / reconcile                             | normal 和 apply-interrupted 各自的真实 operationRef、目标身份与结果；原 UNKNOWN 不改写     |
-| 4    | R3 非商用快照消费接线、隔离加密目标及同候选 fresh / snapshot 双链                                 | 合法快照来源、消费权限、目的地与会话原件齐全；认证后恢复与两条 37-suite/API-Web 链真实执行 |
-| 5    | Staging 迁移对齐和服务恢复                                                                        | 发布链应用待迁移、读回实际状态；API/Web 健康及关键路径通过                                 |
-| 6    | R4 A/B 申请、签约、支付回调、激活、终态及恢复验收与签收                                           | 实际业务结果和审计记录、维护/恢复证据、负责人签收                                          |
+| 顺序 | 尚未完成的工作                                                        | 完成依据                                                                                   |
+| ---- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| 1    | R2 apply-interrupted 修正重验与 replay 失联回归（normal 组合已通过）  | 原始失败保留，必要定向用例自然结束；不能把局部 GREEN 汇总成完整通过                        |
+| 2    | 最终候选的受保护 CI 构建与 H2 证据读回                                | 同一源码、API/Web/Runner 镜像及独立保管身份的真实原件                                      |
+| 3    | R2 两个独立 PG17 目标的 migration、权限读回、verification / reconcile | normal 和 apply-interrupted 各自的真实 operationRef、目标身份与结果；原 UNKNOWN 不改写     |
+| 4    | R3 非商用快照消费接线、隔离加密目标及同候选 fresh / snapshot 双链     | 合法快照来源、消费权限、目的地与会话原件齐全；认证后恢复与两条 37-suite/API-Web 链真实执行 |
+| 5    | Staging 迁移对齐和服务恢复                                            | 发布链应用待迁移、读回实际状态；API/Web 健康及关键路径通过                                 |
+| 6    | R4 A/B 申请、签约、支付回调、激活、终态及恢复验收与签收               | 实际业务结果和审计记录、维护/恢复证据、负责人签收                                          |
 
 2026-09-28 02:28（北京时间）经既有 SSH 身份只读核对：Staging PostgreSQL 正常，API/Web 及其余容器停止。数据库 `subscription_saas_staging` 的 PG 版本为 170010，迁移表共 127 行，其中 126 条完成、1 条历史 rolled-back、0 条活动失败；126 条已完成迁移的 checksum 全部与当前工作树匹配，无 remote-only 或 checksum 漂移。候选仍有 128 条，待应用的仍是 `20260925090000_stage1_operational_completion_terminal_shape` 和 `20260925091000_stage1_operational_completion_settlement_guard`。SQL 在只读事务内执行，没有应用迁移或读取业务行。
 
@@ -65,4 +72,5 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 - 检查前移的有效边界回归：`consume-resource-red05.log`（0/1/0，171,240.391399 ms）与 `consume-resource-green01.log`（1/0/0）。每次都核对 243 项复制源码原始摘要；对应 manifest 分别为 `20260927-190140-561481037-copy.sha256` 和 `20260927-190549-209596540-copy.sha256`。原件保存在 `originals/consume-resource-change-*`，无真实密钥或业务凭据。
 - R3 声明校验：`r3-metadata-declarations-red01.log`、`r3-metadata-declarations-green01.log`；范围纠偏原文为 `r3-lawful-input-reader-scope-correction-20260928.md`，覆盖前 memo 的外部授权平台推导。
 - R3 固定读取器：`r3-reader-native01.log`、`20260927-194519-312525338-copy.sha256`；native copy 为 `/home/keqi_119/.cache/r3-reader-cF6Xog`。输入类型补强的 RED/GREEN 为本轮终端记录，未重复长链测试。
-- R2 normal 通过：`result-verifier-native04.log`、`result-verifier-frozen05.json`、`result-verifier-native04-preserved-check.json`；保全目录 `originals/result-verifier-normal-bbdb4c44-be4b-439b-a8e5-7e23a1d2164d`。后续中断组合为 `result-verifier-interrupted01.log`、`result-verifier-frozen06.json`，当前尚无完成结论。
+- R2 normal 通过：`result-verifier-native04.log`、`result-verifier-frozen05.json`、`result-verifier-native04-preserved-check.json`；保全目录 `originals/result-verifier-normal-bbdb4c44-be4b-439b-a8e5-7e23a1d2164d`。
+- 中断组合有效 RED：`result-verifier-interrupted01.log`、`result-verifier-frozen06.json`、`result-verifier-interrupted01-preserved-check.json`；保全目录 `originals/result-verifier-apply-interrupted-73a9c6c4-4a81-4dd1-a4be-61ca492fd7ba`。修正重验为 `result-verifier-interrupted02.log` / `result-verifier-frozen07.json`，当前尚无完成结论。

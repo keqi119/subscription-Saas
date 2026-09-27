@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "manual-stage1-r3-target-policy.v1",
+  "profileDigest": "sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541",
+  "databaseTargetPolicyId": "s1-release-compose-ephemeral",
+  "databaseTestManifest": "database-test-manifest.v1",
+  "candidateIdentity": "build-proof.v1",
+  "tls": "required",
+  "hosted": {
+    "repository": "keqi119/subscription-Saas",
+    "repositoryId": "1253231368",
+    "workflowRef": "refs/heads/main",
+    "runAttempt": 1,
+    "runnerClass": "github-hosted",
+    "source": {
+      "workflowPath": ".github/workflows/release-candidate-gate.yml",
+      "environment": "trusted-source-database-gate",
+      "jobs": { "fresh": "source-fresh", "snapshot": "source-snapshot" }
+    },
+    "final": {
+      "callerWorkflowPath": ".github/workflows/release-candidate-gate.yml",
+      "callerJobs": { "fresh": "final-fresh", "snapshot": "final-snapshot" },
+      "workflowPath": ".github/workflows/release-final-chain.yml",
+      "jobId": "execute",
+      "environment": "trusted-release-execution"
+    }
+  },
+  "transport": {
+    "engineEndpoint": "tcp://127.0.0.1:55440",
+    "observerEndpoint": "127.0.0.1:55441",
+    "forwardingPrincipal": "stage1-r3-forward",
+    "slotLock": "exclusive-fixed-forward-slots",
+    "targetLock": "engine-system-identifier-database-oid-marker"
+  },
+  "workspace": {
+    "encryption": "LUKS2",
+    "storageDriver": "overlay2",
+    "containerdSnapshotter": false,
+    "logDriver": "json-file",
+    "dockerDataRootRelative": "docker",
+    "persistentPaths": "within-operation-mount",
+    "backingRoot": "/var/lib/stage1-snapshots",
+    "mountRoot": "/srv/stage1-snapshot",
+    "keyRoot": "/dev/shm/stage1-keys",
+    "mapperPrefix": "s1snap_",
+    "swap": "disabled",
+    "coreDump": "disabled"
+  }
+}

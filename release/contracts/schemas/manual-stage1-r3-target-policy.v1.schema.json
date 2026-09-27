@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manual-stage1-r3-target-policy.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profileDigest",
+    "databaseTargetPolicyId",
+    "databaseTestManifest",
+    "candidateIdentity",
+    "tls",
+    "hosted",
+    "transport",
+    "workspace"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "manual-stage1-r3-target-policy.v1" },
+    "profileDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "databaseTargetPolicyId": { "const": "s1-release-compose-ephemeral" },
+    "databaseTestManifest": { "const": "database-test-manifest.v1" },
+    "candidateIdentity": { "const": "build-proof.v1" },
+    "tls": { "const": "required" },
+    "hosted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "repositoryId",
+        "workflowRef",
+        "runAttempt",
+        "runnerClass",
+        "source",
+        "final"
+      ],
+      "properties": {
+        "repository": { "const": "keqi119/subscription-Saas" },
+        "repositoryId": { "const": "1253231368" },
+        "workflowRef": { "const": "refs/heads/main" },
+        "runAttempt": { "const": 1 },
+        "runnerClass": { "const": "github-hosted" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["workflowPath", "environment", "jobs"],
+          "properties": {
+            "workflowPath": { "const": ".github/workflows/release-candidate-gate.yml" },
+            "environment": { "const": "trusted-source-database-gate" },
+            "jobs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["fresh", "snapshot"],
+              "properties": {
+                "fresh": { "const": "source-fresh" },
+                "snapshot": { "const": "source-snapshot" }
+              }
+            }
+          }
+        },
+        "final": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["callerWorkflowPath", "callerJobs", "workflowPath", "jobId", "environment"],
+          "properties": {
+            "callerWorkflowPath": { "const": ".github/workflows/release-candidate-gate.yml" },
+            "callerJobs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["fresh", "snapshot"],
+              "properties": {
+                "fresh": { "const": "final-fresh" },
+                "snapshot": { "const": "final-snapshot" }
+              }
+            },
+            "workflowPath": { "const": ".github/workflows/release-final-chain.yml" },
+            "jobId": { "const": "execute" },
+            "environment": { "const": "trusted-release-execution" }
+          }
+        }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engineEndpoint",
+        "observerEndpoint",
+        "forwardingPrincipal",
+        "slotLock",
+        "targetLock"
+      ],
+      "properties": {
+        "engineEndpoint": { "const": "tcp://127.0.0.1:55440" },
+        "observerEndpoint": { "const": "127.0.0.1:55441" },
+        "forwardingPrincipal": { "const": "stage1-r3-forward" },
+        "slotLock": { "const": "exclusive-fixed-forward-slots" },
+        "targetLock": { "const": "engine-system-identifier-database-oid-marker" }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "encryption",
+        "storageDriver",
+        "containerdSnapshotter",
+        "logDriver",
+        "dockerDataRootRelative",
+        "persistentPaths",
+        "backingRoot",
+        "mountRoot",
+        "keyRoot",
+        "mapperPrefix",
+        "swap",
+        "coreDump"
+      ],
+      "properties": {
+        "encryption": { "const": "LUKS2" },
+        "storageDriver": { "const": "overlay2" },
+        "containerdSnapshotter": { "const": false },
+        "logDriver": { "const": "json-file" },
+        "dockerDataRootRelative": { "const": "docker" },
+        "persistentPaths": { "const": "within-operation-mount" },
+        "backingRoot": { "const": "/var/lib/stage1-snapshots" },
+        "mountRoot": { "const": "/srv/stage1-snapshot" },
+        "keyRoot": { "const": "/dev/shm/stage1-keys" },
+        "mapperPrefix": { "const": "s1snap_" },
+        "swap": { "const": "disabled" },
+        "coreDump": { "const": "disabled" }
+      }
+    }
+  }
+}

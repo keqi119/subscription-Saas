@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   mkdtemp,
   mkdir,
+  readFile,
   rename,
   rm,
   rmdir,
@@ -16,7 +17,79 @@ import test from "node:test";
 
 import Ajv2020 from "ajv/dist/2020.js";
 
-import { compileAllSchemas, validateContract } from "../src/index.mjs";
+import { compileAllSchemas, sha256Canonical, validateContract } from "../src/index.mjs";
+
+test("R3 fixed target policy preserves H1 and restricts hosted destination topology", async () => {
+  const read = async (name) =>
+    JSON.parse(await readFile(new URL(`../../../release/contracts/${name}`, import.meta.url)));
+  const policy = await read("manual-stage1-r3-target-policy.v1.json"),
+    profile = await read("manual-stage1-profile.v2.json"),
+    databasePolicies = await read("database-target-policies.v1.json");
+  validateContract("manual-stage1-r3-target-policy.v1", policy);
+  assert.equal(policy.profileDigest, sha256Canonical(profile));
+  assert.ok(databasePolicies.policies.some((p) => p.policyId === policy.databaseTargetPolicyId));
+  assert.equal(profile.allowedTargets.length, 1);
+  assert.equal(profile.allowedTargets[0].endpointPolicyId, "stage1-r2-synthetic-20260927");
+  for (const change of [
+    (p) => {
+      p.hosted.runnerClass = "self-hosted";
+    },
+    (p) => {
+      p.hosted.workflowRef = "refs/heads/feature";
+    },
+    (p) => {
+      p.hosted.runAttempt = 2;
+    },
+    (p) => {
+      p.hosted.source.jobs.snapshot = "source-fresh";
+    },
+    (p) => {
+      p.hosted.final.callerJobs.snapshot = "final-fresh";
+    },
+    (p) => {
+      p.hosted.final.workflowPath = p.hosted.source.workflowPath;
+    },
+    (p) => {
+      p.transport.engineEndpoint = "tcp://127.0.0.1:2375";
+    },
+    (p) => {
+      p.transport.observerEndpoint = "127.0.0.1:55439";
+    },
+    (p) => {
+      p.workspace.storageDriver = "containerd";
+    },
+    (p) => {
+      p.workspace.containerdSnapshotter = true;
+    },
+    (p) => {
+      p.workspace.dockerDataRootRelative = "../docker";
+    },
+    (p) => {
+      p.workspace.persistentPaths = "host-default";
+    },
+    (p) => {
+      p.workspace.logDriver = "journald";
+    },
+    (p) => {
+      p.workspace.mountRoot = "/tmp";
+    },
+    (p) => {
+      p.workspace.swap = "enabled";
+    },
+    (p) => {
+      p.tls = "disabled";
+    },
+    (p) => {
+      p.approved = true;
+    }
+  ]) {
+    const changed = structuredClone(policy);
+    change(changed);
+    assert.throws(() => validateContract("manual-stage1-r3-target-policy.v1", changed), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
+  }
+});
 
 const digest = `sha256:${"a".repeat(64)}`;
 const sourceSha = "b".repeat(40);

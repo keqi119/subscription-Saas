@@ -1,5 +1,7 @@
 # Stage 1 R3 Final-Image Fresh/Snapshot Dual-Chain Implementation Plan
 
+> **2026-09-27 用户约束：不采用商用 KMS。** 此前“等待 KMS 预算”的记录已撤销。实施须优先复用现有加密保管设施，以最小接缝满足既有数据保护和身份分离要求；不新建密钥服务平台，不把软件保管冒称硬件不可导出。源码中的 KMS 耦合须明确对齐并验证，不能仅以文档修正代替实际加解密与恢复证据。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Each checkbox requires its own reviewed authorization and evidence; this document authorizes no real data, host, Docker, CI, database, key, or deployment operation.
 
 **Goal:** Admit one lawful, independently verified sanitized snapshot and run the complete fresh/snapshot database and API/Web readiness set against the same trusted source and api/web/runner platform digests, with distinct targets, operations, records, and readbacks.

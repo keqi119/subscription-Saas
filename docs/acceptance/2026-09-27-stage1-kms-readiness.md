@@ -1,6 +1,8 @@
-# 阶段 1 KMS 配置核查与费用边界
+# 阶段 1 KMS 历史核查与方案否决记录
 
 2026-09-27，账号 `1457643390906675`，地域 `cn-shanghai`。本记录只涵盖已有快照加密要求，不新增业务功能或验收门槛。
+
+**当前决定：不采用商用 KMS。** 用户已明确拒绝该方案，并于本日再次纠正。此前将此事列为“等待 KMS 预算”不符合用户指令，现予撤销；不得继续询价、申请预算或采购。下列 KMS 资料仅保留为历史核查，不是待执行配置方案。此前操作均为只读查询，没有创建或购买 KMS 资源。
 
 ## 已核实状态
 
@@ -13,7 +15,7 @@
 
 非秘密 API 读回保存于候选工作区 `.superpowers/sdd/2026-09-22-stage1-r3-final-image-dual-chain-plan/cloud-kms-{alias-renewed,instances,keys}-readback.json`；续期记录为同目录 `cloud-oauth-refresh-pending.json`。
 
-## 按现有合同所需的最小配置
+## 已否决路线对应的历史配置
 
 现有 `release/contracts/snapshot-cloud-policy.v1.json` 和 producer crypto 合同要求不可导出的对称 KEK、固定别名、GenerateDataKey-only producer 与独立获准 Decrypt consumer。现有 H2 证据 writer/audit-reader 不能直接扩权代替这两个身份。
 
@@ -23,12 +25,12 @@
 
 来源：[密钥类型](https://help.aliyun.com/zh/kms/key-management-service/user-guide/overview-of-key-management)、[共享网关集成](https://help.aliyun.com/zh/kms/key-management-service/user-guide/application-access)、[公网开关](https://help.aliyun.com/zh/kms/key-management-service/user-guide/access-keys-of-a-kms-instance-over-the-internet)。CreateKey 参数另已通过本地阿里云 CLI 3.5.1 的 API 帮助核对。
 
-## 费用与执行边界
+## 历史费用资料与当前执行边界
 
-官方专门的按量计费页标示软件实例 30 元/天、一个密钥版本 0.3 元/天，另加 QPS 等用量项；最低基数为 30.3 元/天，按 30 天计算 909 元，尚未计调用费用。按量页说明创建后即开始收费。包月页标示中国内地软件实例 2,499 元/月；通用 FAQ 与按量页面的支持描述不一致，因此账号实际可购模式、报价及预算仍须在下单前核实，不能把较低公开标价当成已取得报价。
+当时查询到的官方按量计费页标示软件实例 30 元/天、一个密钥版本 0.3 元/天，另加 QPS 等用量项；最低基数为 30.3 元/天，按 30 天计算 909 元，尚未计调用费用。按量页说明创建后即开始收费。包月页标示中国内地软件实例 2,499 元/月，通用 FAQ 与按量页面的支持描述不一致。这些历史公开价格不构成采购决定，也不再产生预算或下单待办。
 
 来源：[按量计费](https://help.aliyun.com/zh/kms/key-management-service/pay-as-you-go)、[包月计费](https://help.aliyun.com/zh/kms/key-management-service/product-overview/kms-billing)、[计费 FAQ](https://help.aliyun.com/zh/kms/key-management-service/product-overview/faq-2)。
 
-用户已授权云配置，但此前没有确定该持续付费服务的预算；先取得预算边界，再核实可购规格与实际报价。不会开通会自动转付费的试用来绕过预算选择。采购问题不阻止当前 R2 实现继续。
+KMS 采购已从收口待办移除，不再等待预算答复。后续须按“不采用商用 KMS”的约束，核对如何复用现有 H1 加密目录、独立恢复副本和 OSS 保管设施，最小调整快照加解密接缝及其现有合同。现有源码中的 KMS 耦合尚未解除，不能将软件文件密钥宣称为硬件不可导出，也不能只改文档就宣布加密链通过。
 
-即使实例、密钥和权限完成配置，仍须等待实际 lawful snapshot 与候选才能冻结 exact key/context、run、source/build、输入使用授权与原件加密读回。这里的配置核查不代表 R3 或阶段 1 收口完成。
+非商用接缝仍须以实际 lawful snapshot 与候选冻结密钥绑定、run、source/build、输入使用授权及原件加密读回。这里的历史配置核查不代表 R3 或阶段 1 收口完成。

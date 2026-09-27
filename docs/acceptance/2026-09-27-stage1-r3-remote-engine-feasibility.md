@@ -23,6 +23,6 @@ OpenSSH 支持 Unix socket 的远端转发，但这本身不构成项目授权�
 
 ## 不被这一方案解决的事项
 
-lifecycle suite 的 Docker/provisioner/migration 权限及其两个内部目标、database-test successor 的 per-suite map/runtime role/真实 CID、host launcher 与 R3 bridge 接线，仍是现 Task 4 的工作。合法副本、KMS 费用边界、实际 hosted 来源和数据保护也仍独立待办。
+lifecycle suite 的 Docker/provisioner/migration 权限及其两个内部目标、database-test successor 的 per-suite map/runtime role/真实 CID、host launcher 与 R3 bridge 接线，仍是现 Task 4 的工作。合法副本、非商用加密接缝、实际 hosted 来源和数据保护也仍独立待办。用户已明确拒绝商用 KMS，不再保留 KMS 采购或预算等待项。
 
 本次裁决仅是缩小后续设计搜索范围：先验证原生通道是否足够，再决定确有必要的契约增量。旧 delegation/relay 草案保持未采纳；本页不宣称零 Schema 改动、不提供可直接执行的 SSH 配置，也不解除真实发布门槛。

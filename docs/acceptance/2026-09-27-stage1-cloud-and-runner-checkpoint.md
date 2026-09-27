@@ -2,6 +2,16 @@
 
 本记录保留当天各次真实断点。后续已完成服务器 Ed25519 密钥生成及独立加密备份卷恢复；R2 首阶段父命令链与中断后禁止重复启动的定向验证已通过。H3-B 后的第二阶段仍未接通，没有执行业务迁移、部署、真实 CI 或关闭阶段 1。
 
+## 07:00 UTC 后续：同 ref 历史交接与 H3 原件合同
+
+候选 `99ff3c0d` 已提交同 ref 原迁移历史重开和 H3-B 缺件停止增量。实际 RED 为 Node/host 1、0 pass / 1 fail；修正后唯一对应 GREEN 为 Node/host 0、1 pass / 0 fail、537,301.359 ms。用例先完成真实 Node 子进程的 dry/apply，再调用同一 ref；第二次调用前后 launches=2、credentialReads=9、父 observer DB 连接=1，原 baseline 和两个原请求均保留。PostgreSQL/Docker 仍为受控替身，不是实际数据库验收。独立复核两源码及复制清单一致，并逐件核对 1,710 份保留原件长度/hash 无差异，有限 ACCEPT；未重复旧容量或中断矩阵。
+
+当前 H3-B 即使存在仍安全拒绝，尚未实现正向放行。下一片必须在任何新命令前拒绝额外已消费迁移历史，保留并重开 UNKNOWN 已有 result，再完成 H3-B 原生权限、原 writer 退出及 provision 撤权/退出来源核对。verify/replay/reconcile、独立结果 verifier 和真实 PG 两阶段仍开放，不能将上述单例计为完整 R2.2 通过。
+
+合同补充已在 `cc098de3` 经有限复核后并入既有 R2 plan §2.1/§2.5.1：H3-A 私有 v2 显式记录批准角色名与创建后 OID；六种固定 SQL 原件与既有 RawRef 闭合，包含实际连接身份、完整权限清单、跨库 provision 会话及真实 grant/revoke 前后顺序。H1 获批 profile 不变，不新增公共接口、自动权限服务或测试文件。下一片只在既有 launcher/test 内实施。
+
+保留原件位于当前候选 `runner-second-stage/` scratch 的 `history-missing-h3b-{red,green}.log`、`first-gate-{frozen,results,originals-hashes}.json` 和 `first-gate-review.md`。GitHub 只读复核确认远端 main 仍为 `f8ed9440`，受保护环境仅允许 main，审查人为 keqi119；没有 push、合并、触发 CI 或修改环境。当前不需要用户补充操作。
+
 ## 06:19 UTC 后续：首阶段父流程与中断保管
 
 本轮 10 文件修正提交为 `c7cfed2b05c4c86b19f19357ca4733ce7ba54b66`，独立有限审查 ACCEPT。隔离整合候选从业务/H1 分支 `c2cd59d6` 建立，先以 `9521f6d3` 合入已提交发布基线，再整合此修正；逐文件核对 10 个冻结摘要相同。API/Web 与 H1 两份获批公件相对原分支无差异，repository contract 的 181 项恰为两分支并集。R2 plan 保留两侧新增约束及 READY 澄清，旧输入缺口明确标为历史。新目录通过离线 frozen-lockfile 安装（忽略安装脚本）；Prisma validate exit 0，migration status exit 1，具体为未提供 datasource.url。预检禁用 dotenv 且清空该子进程 DATABASE_URL，没有连接数据库，也未把此失败报作迁移通过。

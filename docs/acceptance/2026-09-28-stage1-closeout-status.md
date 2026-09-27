@@ -12,6 +12,7 @@
 - replay 的原 receipt 为 `18:26:49.654Z` 签发、`18:27:19.654Z` 到期，DISPATCH_CLOSED 为 `18:27:24.165Z`（清理端点，不等于精确失败时刻）。实际子进程 PID 86172 exit 1，记录的连接/工具/query 均为 0；replay 保留 `INTERRUPTED_UNKNOWN`，原 apply 成功记录未改写。1,086 个保留文件（含 12 项公件和原 Git bundle）自一致检查通过；原临时 fixture 已清理，此检查不宣称源目录仍可逐项比较。
 - 对同批原件的只读组件测量：session 整图读取约 1,691.808 ms、launcher 整图读取约 2,012.996 ms，两者读取相同 205 对象/660,697 bytes。205 份副本前后摘要不变、外部 effect 为 0。这不是原完整窗口计时，不能据此归因、延长有效期或删除最终检查。首轮在 import 阶段因缺已有 `postgres` 依赖 exit 1，未测量；保留失败后补入已锁定依赖的精确副本，测量自然 exit 0。尚未再跑 normal、apply-interrupted 或旧故障矩阵。
 - R3 最小 consumer 合同已补齐前向 request/auth v3：只有 source/final，候选只引用一个 `buildProofDigest`，输入绑定固定 selector 和 index 原始字节摘要；final 另绑定既存 source 证据。定向 RED 后，原合同测试文件 79/79 通过（0 fail/skip），仓库合同校验通过（197 文件、78 schemas、128 migrations）。旧 v2 schema 字节不变；生产 session 仍拒绝 v3，此结果不授予读取、解密或恢复权限。
+- 新定向 receipt 用例在准备阶段暴露 H1 路径误判：真实 `/tmp` 公共祖先目录的 nlink 从 59 变成 60，使未变化的私有原件被拒绝。只对既有 `contents=false` 且两侧均为目录的祖先比较允许 nlink 波动；dev/ino/mode/uid/gid、私有目录完整比较、叶文件 nlink=1 和独立重读均保留。直接 H1 回归先出现 1 pass/1 fail，修复后与既有私有根目录替换拒绝用例一起 2/2 通过（0 skip，3,276.926508 ms）。未通过改变生产器临时目录规避该问题；receipt 用例的早期准备失败不算有效边界验证。
 
 本轮离线预检：Prisma schema validate 退出 0；migrate status 在子进程未设置数据库 URL 的条件下退出 1，错误为 `The datasource.url property is required in your Prisma config file when using prisma migrate status.` 此命令没有连接数据库，不能据此推断服务器当前迁移状态。修改文件语法、Prettier 和 diff 检查通过。
 
@@ -46,3 +47,4 @@ R3 路线已按当前收口决策纠正：此前拟做的 prebuild 读取器不�
 - 服务器迁移只读原件与比较：`staging-migrations-readonly-20260928.json`、`staging-migrations-comparison-20260928.json`；后者绑定原读回 SHA-256 `aa7bdda6d60dd0247c677a3a62f7bbdc6f4464a603e033e27d685ccc5f4537f8`。
 - R3 范围纠正：`r3-prebuild-scope-correction-20260928.md`；此前 `r3-prebuild-input-reader-contract-20260928.md` 的“下一实施切片”建议已撤回，不再按它实施。
 - R3 最小合同切片：`r3-minimal-consumer-forward-contract-proposal-20260928.md`、`r3-consumer-v3-red01.log`、`r3-consumer-v3-green01.log`、`r3-consumer-v3-contracts01.log`。这是固定签名/结构校验；其实际输入、消费会话和远端目标接线未完成。
+- H1 公共祖先误判：`consume-h1-paths01.log` 保存实际变更字段；`trust-ancestor-red01.log` / `trust-ancestor-green01.log` 和同名 JSON 保存定向结果及复制源码摘要。`consume-resource-red01` 至 `red04` 均属准备失败，尚未触达 receipt 变更边界。

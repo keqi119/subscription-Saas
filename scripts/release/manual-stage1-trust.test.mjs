@@ -2113,6 +2113,26 @@ for (const [name, mutate] of [
   });
 }
 
+test("H1 tolerates an unrelated public sibling created while fixed inputs are held", async (t) => {
+  const f = await fixture(t),
+    sibling = path.join(tmpdir(), "r13-public-sibling-" + randomUUID()),
+    open = fs.open.bind(fs);
+  let created = false;
+  t.after(async () => {
+    if (created) await fs.rmdir(sibling);
+  });
+  t.mock.method(fs, "open", async (file, ...args) => {
+    if (file === f.approvalPath && !created) {
+      await fs.mkdir(sibling, { mode: 0o700 });
+      created = true;
+    }
+    return open(file, ...args);
+  });
+  assert.deepEqual(await production().loadFixedManualProfile({ repoRoot: f.repoRoot }), f.profile);
+  assert.equal(created, true);
+  noAuthorityAccess(f);
+});
+
 test("H1 accepts independently published approval and returns a deep-frozen profile without authority access", async (t) => {
   const f = await fixture(t);
   const loaded = await production().loadFixedManualProfile({ repoRoot: f.repoRoot });

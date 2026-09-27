@@ -105,7 +105,7 @@ function sameIdentity(left, right, contents = true) {
     left.mode === right.mode &&
     left.uid === right.uid &&
     left.gid === right.gid &&
-    left.nlink === right.nlink &&
+    (left.nlink === right.nlink || (!contents && left.isDirectory() && right.isDirectory())) &&
     (!contents ||
       (left.size === right.size &&
         left.mtimeNs === right.mtimeNs &&

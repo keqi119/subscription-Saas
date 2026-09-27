@@ -81,6 +81,8 @@
     "release/contracts/database-test-manifest.v1.json",
     "release/contracts/evidence-lineage-storage-policy.v1.json",
     "release/contracts/external-validation-applicability.v1.json",
+    "release/contracts/manual-stage1-owner-binding.v1.json",
+    "release/contracts/manual-stage1-profile.v2.json",
     "release/contracts/migration-global-object-policy.v1.json",
     "release/contracts/policies/snapshot-object-addressing.v2.json",
     "release/contracts/postgres-image.v1.json",

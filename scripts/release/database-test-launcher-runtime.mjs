@@ -433,6 +433,241 @@ async function readSnapshotOwnershipInventory({ cluster, resource, migrationSecr
   });
 }
 
+function hasRestoreFields(value, fields) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    Reflect.ownKeys(value).length === fields.length &&
+    fields.every((field) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+    })
+  );
+}
+
+const restoredTargetIdentitySql = [
+  "SELECT current_database(), current_user, d.oid::text,",
+  "       COALESCE(shobj_description(d.oid, 'pg_database'), ''),",
+  "       pg_get_userbyid(d.datdba), current_setting('server_version_num')",
+  "FROM pg_database d WHERE d.datname = current_database();"
+].join("\n");
+
+async function readRestoreFileNode(containerId, filePath) {
+  const output = await executeDockerCommand({
+    args: ["exec", "--user", "0", containerId, "stat", "--format=%f:%u:%a:%s:%d:%i", "--", filePath]
+  });
+  const match = /^([0-9a-f]{4,8}):([0-9]+):([0-7]{3,4}):([0-9]+):([0-9]+):([1-9][0-9]*)$/.exec(
+    output.trim()
+  );
+  if (!match) throw runtimeError("SNAPSHOT_RESTORE_FILE_IDENTITY_INVALID");
+  return Object.freeze({
+    type: Number.parseInt(match[1], 16) & 0o170000,
+    owner: match[2],
+    mode: match[3],
+    size: match[4],
+    device: match[5],
+    inode: match[6]
+  });
+}
+
+function sameRestoreFileNode(left, right) {
+  return (
+    left.type === right.type &&
+    left.owner === right.owner &&
+    left.device === right.device &&
+    left.inode === right.inode
+  );
+}
+
+async function restoreBoundSnapshotDump({
+  request,
+  cluster,
+  resource,
+  snapshotInput,
+  target,
+  restoreSecret,
+  restoreReference,
+  runId
+}) {
+  const record = resource.record;
+  if (
+    !hasRestoreFields(request, [
+      "dump",
+      "dumpDigest",
+      "target",
+      "restoreSecretReference",
+      "options"
+    ]) ||
+    !hasRestoreFields(request.target, ["databaseName", "databaseOid", "databaseIdentityDigest"]) ||
+    !hasRestoreFields(request.options, ["noOwner", "noAcl", "role"]) ||
+    !Buffer.isBuffer(request.dump) ||
+    !Buffer.isBuffer(snapshotInput.artifact.dump) ||
+    request.dump.length < 1 ||
+    request.dump.length > 1_073_741_824 ||
+    !request.dump.equals(snapshotInput.artifact.dump) ||
+    request.dumpDigest !== snapshotInput.artifact.metadata.dumpDigest ||
+    request.dumpDigest !== sha256Bytes(request.dump) ||
+    request.target.databaseName !== target.databaseName ||
+    request.target.databaseOid !== target.databaseOid ||
+    request.target.databaseIdentityDigest !== target.databaseIdentityDigest ||
+    request.restoreSecretReference !== restoreReference.replaceAll("\\", "/") ||
+    request.options.noOwner !== true ||
+    request.options.noAcl !== true ||
+    request.options.role !== record.roles.migrate ||
+    typeof snapshotInput.dumpPath !== "string" ||
+    path.resolve(snapshotInput.dumpPath) !==
+      path.join(repoRoot, ".release-inputs", "sanitized-snapshot.dump") ||
+    !/^[0-9a-f]{64}$/.test(cluster.containerId) ||
+    !/^s1ci_[0-9a-f]{24}$/.test(record.databaseName) ||
+    !/^[1-9][0-9]*$/.test(record.databaseOid) ||
+    record.runId !== runId ||
+    record.targetFingerprint !== cluster.target.clusterFingerprint ||
+    cluster.target.clusterFingerprint !==
+      sha256Canonical({ containerId: cluster.containerId, image: cluster.image, runId }) ||
+    restoreSecret.username !== record.roles.restore ||
+    restoreSecret.database !== record.databaseName ||
+    restoreSecret.host !== "127.0.0.1" ||
+    restoreSecret.port !== cluster.hostPort ||
+    restoreSecret.tlsMode !== "disable"
+  ) {
+    throw runtimeError("SNAPSHOT_RESTORE_INPUT_MISMATCH");
+  }
+  // Capture the shared subject before any asynchronous copy/readback. This remains a
+  // local fixture channel; private staging is not encrypted-target or H1 admission.
+  const dumpDigest = request.dumpDigest,
+    dumpSize = String(request.dump.length);
+  const containerId = cluster.containerId;
+  const directory = `/tmp/${record.databaseName}.snapshot-${randomUUID()}`;
+  const containerDumpPath = `${directory}/snapshot.dump`;
+  let directoryCreated = false,
+    directoryNode,
+    failure;
+  try {
+    await assertExactContainer(cluster, runId);
+    try {
+      await executeDockerCommand({
+        args: ["exec", "--user", "0", containerId, "mkdir", "--mode=0700", "--", directory]
+      });
+    } catch {
+      // No -p, no overwrite, and no cleanup ownership inferred from a failed mkdir.
+      throw runtimeError("SNAPSHOT_RESTORE_STAGING_FAILED");
+    }
+    directoryCreated = true;
+    const createdNode = await readRestoreFileNode(containerId, directory);
+    if (createdNode.type !== 0o040000 || createdNode.owner !== "0" || createdNode.mode !== "700") {
+      throw runtimeError("SNAPSHOT_RESTORE_FILE_IDENTITY_INVALID");
+    }
+    directoryNode = createdNode;
+    // The new root-owned 0700 directory is empty and inaccessible to PG roles.
+    await executeDockerCommand({
+      args: ["cp", snapshotInput.dumpPath, `${containerId}:${containerDumpPath}`]
+    });
+    const copiedNode = await readRestoreFileNode(containerId, containerDumpPath);
+    if (copiedNode.type !== 0o100000 || copiedNode.owner !== "0" || copiedNode.size !== dumpSize) {
+      throw runtimeError("SNAPSHOT_RESTORE_COPY_MISMATCH");
+    }
+    await executeDockerCommand({
+      args: ["exec", "--user", "0", containerId, "chmod", "0600", "--", containerDumpPath]
+    });
+    const privateNode = await readRestoreFileNode(containerId, containerDumpPath);
+    if (
+      !sameRestoreFileNode(copiedNode, privateNode) ||
+      privateNode.mode !== "600" ||
+      privateNode.size !== dumpSize
+    ) {
+      throw runtimeError("SNAPSHOT_RESTORE_COPY_MISMATCH");
+    }
+    const checksum = await executeDockerCommand({
+      args: ["exec", "--user", "0", containerId, "sha256sum", "--", containerDumpPath]
+    });
+    if (checksum.trimEnd() !== `${dumpDigest.slice(7)}  ${containerDumpPath}`) {
+      throw runtimeError("SNAPSHOT_RESTORE_COPY_MISMATCH");
+    }
+    const identity = await executePsql({
+      containerId,
+      credential: restoreSecret,
+      databaseName: record.databaseName,
+      sql: restoredTargetIdentitySql,
+      columns: ["databaseName", "role", "databaseOid", "marker", "owner", "serverVersionNum"]
+    });
+    const observed = identity.rows[0];
+    if (
+      identity.rows.length !== 1 ||
+      observed.databaseName !== target.databaseName ||
+      observed.role !== record.roles.restore ||
+      observed.databaseOid !== target.databaseOid ||
+      observed.marker !== record.marker ||
+      observed.owner !== record.roles.migrate ||
+      observed.serverVersionNum !== cluster.target.serverVersionNum ||
+      sha256Canonical({
+        targetFingerprint: record.targetFingerprint,
+        databaseName: observed.databaseName,
+        databaseOid: observed.databaseOid,
+        marker: observed.marker
+      }) !== target.databaseIdentityDigest
+    ) {
+      throw runtimeError("SNAPSHOT_RESTORE_TARGET_MISMATCH");
+    }
+    await executeDockerCommand({
+      args: [
+        "exec",
+        "--user",
+        "0",
+        "--env",
+        "PGPASSWORD",
+        containerId,
+        "pg_restore",
+        "--host",
+        "127.0.0.1",
+        "--username",
+        restoreSecret.username,
+        "--dbname",
+        record.databaseName,
+        "--exit-on-error",
+        "--no-owner",
+        "--no-acl",
+        `--role=${record.roles.migrate}`,
+        containerDumpPath
+      ],
+      environment: { PGPASSWORD: restoreSecret.password }
+    });
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    if (directoryCreated) {
+      try {
+        if (!directoryNode) throw runtimeError("SNAPSHOT_RESTORE_STAGING_IDENTITY_UNAVAILABLE");
+        const current = await readRestoreFileNode(containerId, directory);
+        if (!sameRestoreFileNode(directoryNode, current) || current.mode !== "700") {
+          throw runtimeError("SNAPSHOT_RESTORE_STAGING_IDENTITY_MISMATCH");
+        }
+        await executeDockerCommand({
+          args: [
+            "exec",
+            "--user",
+            "0",
+            containerId,
+            "rm",
+            "--recursive",
+            "--force",
+            "--",
+            directory
+          ]
+        });
+      } catch (cleanupError) {
+        const details = {
+          cleanupFailed: true,
+          cleanupErrorCode: cleanupError?.code ?? "UNAVAILABLE"
+        };
+        if (failure) failure.details = Object.freeze({ ...failure.details, ...details });
+        else throw runtimeError("SNAPSHOT_RESTORE_CLEANUP_FAILED", details);
+      }
+    }
+  }
+}
+
 async function restoreResourceSnapshot({
   cluster,
   resource,
@@ -462,7 +697,6 @@ async function restoreResourceSnapshot({
     migrationRole: resource.record.roles.migrate,
     runtimeRole: resource.record.roles["runtime-test"]
   });
-  const containerDumpPath = `/tmp/${resource.record.databaseName}.sanitized-snapshot.dump`;
   const adapters = {
     trustPolicy: "snapshot-restore-adapters/v1",
     async grantTemporaryMembership({ restoreRole, migrationRole }) {
@@ -488,45 +722,17 @@ async function restoreResourceSnapshot({
         sql: `GRANT ${sqlIdentifier(migrationRole)} TO ${sqlIdentifier(restoreRole)};`
       });
     },
-    async restoreDump({ options }) {
-      if (
-        options.noOwner !== true ||
-        options.noAcl !== true ||
-        options.role !== resource.record.roles.migrate
-      ) {
-        throw runtimeError("SNAPSHOT_RESTORE_OPTIONS_INVALID");
-      }
-      await executeDockerCommand({
-        args: ["cp", snapshotInput.dumpPath, `${cluster.containerId}:${containerDumpPath}`]
-      });
-      try {
-        await executeDockerCommand({
-          args: [
-            "exec",
-            "--env",
-            "PGPASSWORD",
-            cluster.containerId,
-            "pg_restore",
-            "--host",
-            "127.0.0.1",
-            "--username",
-            restoreSecret.username,
-            "--dbname",
-            resource.record.databaseName,
-            "--exit-on-error",
-            "--no-owner",
-            "--no-acl",
-            `--role=${resource.record.roles.migrate}`,
-            containerDumpPath
-          ],
-          environment: { PGPASSWORD: restoreSecret.password }
-        });
-      } finally {
-        await executeDockerCommand({
-          args: ["exec", cluster.containerId, "rm", "--force", "--", containerDumpPath]
-        }).catch(() => {});
-      }
-    },
+    restoreDump: (request) =>
+      restoreBoundSnapshotDump({
+        request,
+        cluster,
+        resource,
+        snapshotInput,
+        target,
+        restoreSecret,
+        restoreReference,
+        runId
+      }),
     readOwnershipInventory: ({ phase }) => {
       if (!["before", "after"].includes(phase)) {
         throw runtimeError("SNAPSHOT_OWNERSHIP_PHASE_INVALID");

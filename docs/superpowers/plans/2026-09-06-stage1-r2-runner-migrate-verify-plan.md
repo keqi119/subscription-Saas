@@ -10,6 +10,16 @@
 
 **Spec:** [最小受控发布决策 §3、§5](../specs/2026-09-06-stage1-minimal-controlled-release-decision.zh-CN.md)、[R1 计划](./2026-09-06-stage1-r1-manual-trust-and-authorization-plan.md)、[覆盖路线图](./2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)、[P0/P1 实际索引](../../acceptance/2026-09-06-stage1-mainline-execution-index.md)。
 
+## 2026-09-27 MS2 真实规模运输修正
+
+在既有收口实施授权下，主控依据真实规模离线 SQL 及独立只读审查，采纳 [R1 的有限前向例外](./2026-09-06-stage1-r1-manual-trust-and-authorization-plan.md#2026-09-27-ms2-原始总输出的有限前向修正)：仅新 MS2 的完整 child stdout 与已验证绑定的 stdout-prefix raw 允许至 2 MiB，其余 1 MiB 和 MS1 旧合同不变。此节优先于本计划下文对这两类原件的旧总量措辞，不改写旧失败历史，不省略 apply 的两轮独立 schema 工具／完整原件，也不增加压缩、分块、旁路、可配置限额或第二套解析器。
+
+该增量明确允许同步修改 `manual-runner-evidence.mjs`、`manual-stage1-session.mjs`、`manual-entrypoint.mjs` 和 `launch-manual-stage1.mjs` 的相关总输出收集、协议前缀保存、history/raw 重开及共享验证路径。使用现有 Schema/RawRef；未验证引用或普通工具 raw 不得借此越过自己的上限。保持秘密帧不归档、既有真实签名/消费/ACK/撤销/关闭和失败 UNKNOWN 行为。父命令交接耗时另按实际计时修复；容量调整不解除 30 秒 handoff。
+
+最小验证只有直接相关的两组：一组使用本次完整 402,009-byte 离线 SQL 负载运输两轮独立 script 输出，保留实际 11 工具 MS2 时序、ACK、原始字节、独立档案重开并计量总 stdout/stdin、最大帧与 JSON；另一组覆盖 2 MiB 总 stdout 边界及普通 raw／旧 MS1／其余 1 MiB 角色不得获得例外。永久回归用例应自包含；一次实际 SQL 运输诊断必须保留文件 hash/来源，不能伪装为 reference DB 或业务验收。只跑新增或修改行为所需用例，完整 R2 组合门槛仍留到实际闭合，不重复旧业务套件。若真实完整包装仍超过 2 MiB，保留计量和失败并重新裁决，不自行继续放大。
+
+当前状态：前向规范已明确，生产四文件容量改动和上述验证尚未实施；阶段 1 与完整 R2 仍未完成。只读依据为发布工作树 `runner-command/stream-limit-review.md`，原始离线 SQL hash 为 `7a066863c903c3e48d5d2d23903ba3e269db2067e79db9c671d5daa996ce01da`。
+
 ## 本轮 H3 交接修订状态（2026-09-13，待复审）
 
 用户已批准 R1.3 `aebbb6b0` 的本地实现；R2.0 `5a16ca8a` 不重复施工。本轮只修订 R1/R2 两份计划，分别提交复审，不写代码。当前接续为：**两份 H3 交接修订复审 → R1.3H 共享纯契约实施及独立审查 → R2.1 → R2.2 → R2.3**。R1.3H 未通过前不得以测试夹具补通道并启动 R2.1；真实 H1/H2/H3、R2.4、外部操作和 Task 30 不随文档批准放行。

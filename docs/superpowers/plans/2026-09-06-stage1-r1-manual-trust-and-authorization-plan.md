@@ -10,6 +10,16 @@
 
 **Spec:** [最小受控发布决策 §3](../specs/2026-09-06-stage1-minimal-controlled-release-decision.zh-CN.md)、[覆盖路线图 R1/R2](./2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)、[P0/P1 实际执行索引](../../acceptance/2026-09-06-stage1-mainline-execution-index.md)。决策文档仍保留其自身审批状态；本稿不代替对新增人工路径的批准。
 
+## 2026-09-27 MS2 原始总输出的有限前向修正
+
+主控依据实际 402,009-byte 离线 SQL 和独立容量审查，在既有收口实施范围内裁决：**仅 MS2 的完整 child stdout 与经协议、方向、请求／进程绑定核验的 stdout-prefix raw，上限前向改为 2,097,152 bytes。** 两次完整 SQL base64 自身已为 1,072,024 bytes，旧完整流 1 MiB 无法运输此真实规模负载。它是本地 schema 投影，不是实际 datasource/reference 原件；本修正不宣称数据库已执行通过。
+
+本节仅覆盖下文对上述新 MS2 两类总流原件的泛化 1 MiB 限制。MS1 全部旧限制以及 MS2 每件 JSON/canonical、完整单帧、单工具 stdout+stderr 合计、stdin、公开 parentFrames 合计、Runner stderr、普通 raw、expected/reference/H1/H2/H3 输入均保持原 1 MiB。不得整体扩大 JSON encoder 或所有 raw reader；普通工具原件不能凭 `MS2 ` 前缀或未验证的过程引用获取例外。同一原件在每个角色的使用处仍须满足该角色限额。
+
+共享 session 的 history/raw 读回必须与既有 MS2 过程引用和共享协议解析器一致，保留 CreateNew、路径/ACL/stat、完整摘要和独立重开；不能只扩大 collector 而留下保管链拒绝，也不能放松签名、消费、撤销、30 秒 handoff 或 UNKNOWN 语义。此改动不增加 Schema 字段、授权机制、CLI/环境可调上限或依赖。2 MiB 仍为硬上限；溢出保持真实失败及有限原件。
+
+施工及最小验证按 [R2 同日修正](./2026-09-06-stage1-r2-runner-migrate-verify-plan.md#2026-09-27-ms2-真实规模运输修正)执行。规范裁决不是生产实现或验收通过；实际大负载完整运输、独立档案重开和边界拒绝未验证前，容量缺口仍开放。
+
 2026-09-26 前向验收：本节限域修复已与R2.1同源完整验证，实际source `ba57efea` 的八文件343/343、exit0，代码与原件独立终审ACCEPT。见[本地组合记录](../../acceptance/2026-09-26-stage1-r21-offline-integration-validation.md)；保留先前RED/聚焦/339轮及默认lint、历史parser格式限制。该结论不替代R2.2实际collector、来源门槛或Node22/H3真实执行。
 
 ## Global Constraints

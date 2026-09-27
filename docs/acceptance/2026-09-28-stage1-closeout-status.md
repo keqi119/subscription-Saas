@@ -22,13 +22,17 @@ R3 固定私有原件读取器现已实现：`readR3SnapshotInput({repoRoot,inpu
 
 该读取器的三个定向 Linux 用例自然退出 0：3 pass / 0 fail / 0 skip，14,334.682782 ms；245 项复制源码摘要一致。用例覆盖完整合成图、过期/错源/非零扫描/错版本/错误上传响应/非独立读者/过早读回/缺原件，以及重读过期和原件篡改。随后入口类型检查发现 selector 对象可触发隐式 `toString`；用有效绝对路径复现 RED 后，加上字符串与纯 Date 检查，该单一定向入口用例通过（1/0/0）。这不构成真实来源授权、当前 OSS 下载、认证解密、恢复或 R3 消费会话验收；生产 session 的 v3 接线仍待完成。
 
-本轮仓库合同校验通过：当前工作树 198 文件、78 schemas、128 migrations、13 commands；其中包含尚未提交的 R2 工作，不能当作最终候选证据。R2 normal 重验 `75700` 仍在运行，暂无终态；不能用此 R3 定向结果代替完整发布执行链结果。
+本轮仓库合同校验通过：当前工作树 198 文件、78 schemas、128 migrations、13 commands；其中包含尚未提交的 R2 工作，不能当作最终候选证据。
+
+R2 normal 重验 `75700` 已自然结束，host/Node exit 0：1 pass / 0 fail / 0 skip，测试体 2,867,459.915912 ms。最终独立核验返回 `PASS`、计数 `expected=5 / consumed=5 / succeeded=5 / failed=0 / interrupted=0 / unresolved=0`，report digest 为 `sha256:a4f6c1ac4fcff9ad1e744eb710ea474e33a993c11daae99ba255d613be214717`；四个 Runner 子进程（563/630/1887/2155）均 exit 0/null。replay 原执行件为 `SUCCEEDED`，本次没有重现先前交付超时。原 `7809` 失败仍保留；不从本次合成结果推断真实 PG17、CI 或线上验收通过。
+
+本次 normal 保全的 1,175 文件（含 12 公件及 Git bundle）自一致校验通过；原临时 fixture 已清理，未声称仍可与临时源目录比较。随后只启动 apply-interrupted 的单一组合 `68888`，冻结 244 项源码（包含新登记的 R3 读取器）；生产核验器仍只检查成功 Runner 的备份，待定向 RED 后再修正已结束 UNKNOWN/FAILED 的备份要求。没有并行重跑另一条长链。
 
 ## 剩余收口顺序
 
 | 顺序 | 尚未完成的工作                                                                                    | 完成依据                                                                                   |
 | ---- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| 1    | R2 独立结果核验器完整 normal / apply-interrupted 组合；已完成 UNKNOWN 的备份要求；replay 失联回归 | 原始失败保留，必要定向用例自然结束；不能把局部 GREEN 汇总成完整通过                        |
+| 1    | R2 apply-interrupted 组合；已完成 UNKNOWN 的备份要求；replay 失联回归（normal 组合已通过） | 原始失败保留，必要定向用例自然结束；不能把局部 GREEN 汇总成完整通过                        |
 | 2    | 最终候选的受保护 CI 构建与 H2 证据读回                                                            | 同一源码、API/Web/Runner 镜像及独立保管身份的真实原件                                      |
 | 3    | R2 两个独立 PG17 目标的 migration、权限读回、verification / reconcile                             | normal 和 apply-interrupted 各自的真实 operationRef、目标身份与结果；原 UNKNOWN 不改写     |
 | 4    | R3 非商用快照消费接线、隔离加密目标及同候选 fresh / snapshot 双链                                 | 合法快照来源、消费权限、目的地与会话原件齐全；认证后恢复与两条 37-suite/API-Web 链真实执行 |
@@ -61,3 +65,4 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 - 检查前移的有效边界回归：`consume-resource-red05.log`（0/1/0，171,240.391399 ms）与 `consume-resource-green01.log`（1/0/0）。每次都核对 243 项复制源码原始摘要；对应 manifest 分别为 `20260927-190140-561481037-copy.sha256` 和 `20260927-190549-209596540-copy.sha256`。原件保存在 `originals/consume-resource-change-*`，无真实密钥或业务凭据。
 - R3 声明校验：`r3-metadata-declarations-red01.log`、`r3-metadata-declarations-green01.log`；范围纠偏原文为 `r3-lawful-input-reader-scope-correction-20260928.md`，覆盖前 memo 的外部授权平台推导。
 - R3 固定读取器：`r3-reader-native01.log`、`20260927-194519-312525338-copy.sha256`；native copy 为 `/home/keqi_119/.cache/r3-reader-cF6Xog`。输入类型补强的 RED/GREEN 为本轮终端记录，未重复长链测试。
+- R2 normal 通过：`result-verifier-native04.log`、`result-verifier-frozen05.json`、`result-verifier-native04-preserved-check.json`；保全目录 `originals/result-verifier-normal-bbdb4c44-be4b-439b-a8e5-7e23a1d2164d`。后续中断组合为 `result-verifier-interrupted01.log`、`result-verifier-frozen06.json`，当前尚无完成结论。

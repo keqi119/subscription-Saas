@@ -1,6 +1,18 @@
 # Stage 1 加密存储准备与 R2 父命令断点（2026-09-27）
 
-本记录保留当天各次真实断点，以本节最新状态为准。R2 正常 dry-run → apply → verify → replay 和 UNKNOWN → reconcile 执行链已通过并提交；replay 中断、真实数据库及最终候选验收仍未完成。没有执行业务迁移、部署、真实候选 CI 或关闭阶段 1。
+本记录保留当天各次真实断点，以本节最新状态为准。R2 正常 dry-run → apply → verify → replay、UNKNOWN → reconcile 和三类来源读取复用已通过相应定向验证并提交；replay 中断、独立结果核验、真实数据库及最终候选验收仍未完成。没有执行业务迁移、部署、真实候选 CI 或关闭阶段 1。
+
+## 15:28 UTC 接续：期望结构来源读取复用已提交
+
+提交 `49356e8e` 完成第三片私有来源读取复用。既有 expected-schema provenance、reference、OSS 原件及 GitHub 输出检查迁入 `manual-runner-source-inputs.mjs`；launcher 保留实际 GitHub 调用、会话检查、归档和 sidecar 写入。新读取器独立重开固定 admission、实际调用捕获及原始输出，保留自己的字节副本，关闭时清除副本；没有新增公开 CLI、Schema、数据库动作或业务功能。原 H3 主体、expected 来源检查和 GitHub argv / 结果谓词经逐字比对保留。
+
+首个 Linux 定向组实际 7 pass / 1 fail / 0 skip；失败暴露正常归档追加被目录内容 pin 误判。修正仅允许三个固定追加目录的内容属性变化，仍核身份、nlink、完整叶子字节、ACL 和独立重开；admission sidecar 的强 pin 保留。源码及该修正经有限复核 ACCEPT。
+
+必要正例重验另发现旧测试预期已移除的 `MANUAL_RUNNER_REQUEST_INPUT_REQUIRED`，CHALLENGE-only 替身无法回应 READY。保全 527 份非秘密原件后，root 精确停止该替身 child；实际 exit 1 / `MANUAL_FRAME_INCOMPLETE`，明确保留为人为结束的失败，不算自然通过。测试随后在来源验收完成后的第一项 migration raw 写入处设置精确失败切点，保持无新增命令凭证 / DB 连接和无 runner request 的断言，生产源码不变。
+
+修正后的唯一正向用例自然结束：host / Node exit 0，1 pass / 0 fail / 0 skip，总计 501,758.035576 ms。除实际 producer / GitHub 捕获闭合外，还核验返回副本污染、三个固定目录各追加 sibling 后重验通过、原 GitHub stdout 改写后拒绝。冻结副本 237 路径完整哈希闭合；不把前组 7 项通过与本次结果拼成同一冻结版本的 8/8。契约校验 exit 0（192 文件、76 Schema、128 迁移、13 命令），三文件格式和 staged diff 检查通过。
+
+另一处 binary-GitHub 用例存在相同旧断言，修正仅留工作区并单独验证；replay-loss 也仍为独立工作区增量，未混入本提交。原正常链和 UNKNOWN 恢复链未重复运行。定向日志、冻结哈希、原始失败和源码保持比对位于 `runner-second-stage/expected-reader-*`；本轮仍没有真实 PostgreSQL、云操作或发布通过结论。
 
 ## 最新状态：正常链与 UNKNOWN 恢复通过，真实发布仍开放
 

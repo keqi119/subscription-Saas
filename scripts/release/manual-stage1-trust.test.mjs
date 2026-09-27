@@ -14,6 +14,7 @@ import {
   sha256Canonical
 } from "../../packages/release-foundation/src/index.mjs";
 import { createBuildProof } from "./create-build-proof.mjs";
+import { produceManualBuildCustody } from "./manual-build-custody-producer.mjs";
 
 // The first RED is an assertion, not an import crash. Subsequent assertions
 // exercise the production entrypoint; there is no trusted-result mock.
@@ -742,12 +743,13 @@ function verifiedItem(bytes, sourceSha, name, timestamp = generatedAt) {
   };
 }
 
-async function buildFixture(t) {
+async function buildFixture(t, { canonicalProof = false, extraEntrypoints = [] } = {}) {
   const f = await fixture(t);
   const manifest = "release/contracts/repository-contract-files.v1.json";
   const entrypoints = [
     "scripts/release/manual-stage1-trust.mjs",
-    "scripts/release/verify-build-proof.mjs"
+    "scripts/release/verify-build-proof.mjs",
+    ...extraEntrypoints
   ];
   await fs.mkdir(path.join(f.repoRoot, "scripts", "release"), { recursive: true });
   await fs.mkdir(path.join(f.repoRoot, "apps", "api", "prisma", "migrations"), { recursive: true });
@@ -824,7 +826,9 @@ async function buildFixture(t) {
       }
     })
   );
-  const proofBytes = Buffer.from(JSON.stringify(proof, null, 2) + "\n");
+  const proofBytes = canonicalProof
+    ? encodeManualJson(proof)
+    : Buffer.from(JSON.stringify(proof, null, 2) + "\n");
   const materialBytes = Buffer.from(JSON.stringify(material, null, 2) + "\n");
   const proofItem = verifiedItem(proofBytes, sourceSha, "build-proof.json");
   const receipt = {
@@ -951,6 +955,148 @@ async function verifyFixture(f) {
     materialBytes: f.materialBytes
   });
 }
+
+function producerInput(f) {
+  const objects = new Map();
+  const calls = [];
+  const receiptId = randomUUID();
+  const storedAt = "2026-09-01T00:00:01.000Z";
+  const retainUntil = new Date(Date.parse(storedAt) + 210 * 86400000).toISOString();
+  // Separate closures are offline writer/reader doubles, not evidence of IAM.
+  const writer = {
+    createOnly({ key, bytes, contentDigest }) {
+      calls.push({ role: "writer", operation: "createOnly", key });
+      assert.equal(contentDigest, sha256Bytes(bytes));
+      if (objects.has(key)) return { created: false };
+      const metadata = {
+        storeRef: `memory://private/${key}`,
+        contentSizeBytes: bytes.length,
+        storedAt,
+        retainUntil
+      };
+      objects.set(key, { bytes: Buffer.from(bytes), metadata });
+      return { created: true, ...metadata };
+    }
+  };
+  const auditReader = {
+    readMetadata({ key, identity }) {
+      assert.equal(identity, "audit-reader");
+      calls.push({ role: identity, operation: "Head", key });
+      return { ...objects.get(key).metadata };
+    },
+    read({ key, identity }) {
+      assert.equal(identity, "audit-reader");
+      calls.push({ role: identity, operation: "Get", key });
+      return Buffer.from(objects.get(key).bytes);
+    }
+  };
+  return {
+    objects,
+    calls,
+    receiptId,
+    input: {
+      proofBytes: f.proofBytes,
+      materialBytes: f.materialBytes,
+      verifiedProofAttestation: f.gh.proof,
+      buildIdentity: {
+        sourceSha: f.sourceSha,
+        repository,
+        workflowPath,
+        sourceRef: "refs/heads/main",
+        runId: String(runId),
+        runAttempt: 1,
+        protectedEnvironment: "trusted-image-build"
+      },
+      storage: {
+        trustPolicy: "immutable-content-addressed/v1",
+        writerIdentity: "evidence-writer",
+        auditReaderIdentity: "audit-reader",
+        ...writer,
+        ...auditReader
+      },
+      now: () => new Date(storedAt),
+      createReceiptId: () => receiptId
+    }
+  };
+}
+
+const producerFixtureOptions = {
+  canonicalProof: true,
+  extraEntrypoints: ["scripts/release/manual-build-custody-producer.mjs"]
+};
+
+test("H2 PRODUCED accepts real producer custody through the fixed consumer with distinct raw subjects", async (t) => {
+  const f = await buildFixture(t, producerFixtureOptions);
+  const custody = producerInput(f);
+  f.receipt = await produceManualBuildCustody(custody.input);
+  f.receiptBytes = encodeManualJson(f.receipt);
+  assert.ok(Object.isFrozen(f.receipt));
+  assert.equal(f.receipt.receiptId, custody.receiptId);
+  assert.equal(f.receipt.contentDigest, sha256Bytes(f.proofBytes));
+  assert.equal(f.receipt.readbackDigest, sha256Bytes(f.proofBytes));
+  assert.equal(f.receipt.contentSizeBytes, f.proofBytes.length);
+  assert.equal(f.receipt.attestationRef, sha256Canonical(f.gh.proof[0].attestation.bundle));
+  assert.notEqual(f.receipt.attestationRef, f.proof.provenance.attestationRef);
+  const expectedObjects = [
+    [`evidence/${sha256Bytes(f.proofBytes).slice(7)}.json`, f.proofBytes],
+    [`receipts/${custody.receiptId}.json`, f.receiptBytes],
+    [`evidence/${sha256Bytes(f.materialBytes).slice(7)}.json`, f.materialBytes]
+  ];
+  assert.equal(custody.objects.size, expectedObjects.length);
+  for (const [key, bytes] of expectedObjects) {
+    assert.deepEqual(custody.objects.get(key).bytes, bytes);
+    assert.deepEqual(
+      custody.calls.filter((call) => call.key === key),
+      [
+        { role: "writer", operation: "createOnly", key },
+        { role: "audit-reader", operation: "Head", key },
+        { role: "audit-reader", operation: "Get", key }
+      ]
+    );
+  }
+  // Import the receipt bytes produced and read back by real custodyEvidence.
+  await fs.writeFile(f.receiptPath, f.receiptBytes, { mode: 0o600 });
+  f.gh.receipt = [
+    verifiedItem(f.receiptBytes, f.sourceSha, "custody-receipt.json", "2026-09-01T00:00:02.000Z")
+  ];
+  const result = await verifyFixture(f);
+  assert.deepEqual(result, {
+    buildProofDigest: sha256Canonical(f.proof),
+    proofRawDigest: sha256Bytes(f.proofBytes),
+    materialRawDigest: sha256Bytes(f.materialBytes),
+    custodyReceiptRawDigest: sha256Bytes(f.receiptBytes),
+    promotionEligible: false
+  });
+  assert.ok(Object.isFrozen(result));
+  assert.deepEqual(
+    f.gh.calls.filter(({ args }) => args[0] === "attestation").map(({ args }) => args[2]),
+    [f.proofPath, f.receiptPath]
+  );
+  assert.notEqual(sha256Bytes(f.proofBytes), sha256Bytes(f.receiptBytes));
+  noAuthorityAccess(f);
+});
+
+test("H2 PRODUCED rejects internally bound legacy github run reference before custody creation", async (t) => {
+  const f = await buildFixture(t, producerFixtureOptions);
+  const legacyRef = `github://${repository}/actions/runs/${runId}`;
+  f.material.ciRunRef = legacyRef;
+  for (const image of f.material.images) image.buildRunRef = legacyRef;
+  f.proof.provenance.ciRunRef = legacyRef;
+  f.proof.provenance.registryResolutionEvidenceDigest = sha256Canonical(f.material);
+  f.proof.provenance.materials.find(({ name }) => name === "build-material-observation").reference =
+    sha256Canonical(f.material);
+  f.proofBytes = encodeManualJson(f.proof);
+  f.materialBytes = Buffer.from(JSON.stringify(f.material, null, 2) + "\n");
+  f.gh.proof = [verifiedItem(f.proofBytes, f.sourceSha, "build-proof.json")];
+  const custody = producerInput(f);
+  await assert.rejects(produceManualBuildCustody(custody.input), {
+    code: "MANUAL_BUILD_CUSTODY_IDENTITY_INVALID"
+  });
+  assert.deepEqual(custody.calls, []);
+  assert.equal(custody.objects.size, 0);
+  assert.deepEqual(f.gh.calls, []);
+  noAuthorityAccess(f);
+});
 
 test("H2 accepts two independently verified same-run subjects while separating raw and canonical proof digests", async (t) => {
   verifier();

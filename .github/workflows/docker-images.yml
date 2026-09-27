@@ -272,6 +272,8 @@ jobs:
       build-proof-digest: ${{ steps.proof-identity.outputs.digest }}
       build-proof-artifact-id: ${{ steps.proof-upload.outputs.artifact-id }}
       build-proof-evidence-artifact-id: ${{ steps.evidence-upload.outputs.artifact-id }}
+      private-custody-root-digest: ${{ steps.private-custody-root.outputs.digest }}
+      private-custody-root-key: ${{ steps.private-custody-root.outputs.key }}
     steps:
       - name: Checkout the frozen source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -459,6 +461,126 @@ jobs:
             --format json \
             > .release-output/build-proof-attestation-verification.json
           node -e 'const r=require("./.release-output/build-proof-attestation-verification.json"); if(!Array.isArray(r)||r.length===0) process.exit(1)'
+
+      - name: Produce and privately custody the same protected build inputs
+        id: private-custody-inputs
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node --input-type=module <<'NODE'
+          import { mkdir, chmod, readFile, writeFile, appendFile } from "node:fs/promises";
+          import { canonicalJson } from "./packages/release-foundation/src/index.mjs";
+          import { createManualBuildCustodyStorage } from "./scripts/release/manual-build-custody-storage.mjs";
+          import { produceManualTrustedBuildInputs } from "./scripts/release/manual-build-custody-producer.mjs";
+          try {
+            if (process.env.SOURCE_SHA !== process.env.GITHUB_SHA) throw new Error("source");
+            const buildIdentity = { sourceSha: process.env.GITHUB_SHA, repository: process.env.GITHUB_REPOSITORY,
+              workflowPath: ".github/workflows/docker-images.yml", sourceRef: process.env.GITHUB_REF,
+              runId: process.env.GITHUB_RUN_ID, runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              protectedEnvironment: "trusted-image-build" };
+            const verifiedProofAttestationBytes = await readFile(".release-output/build-proof-attestation-verification.json");
+            const storage = await createManualBuildCustodyStorage({ buildIdentity });
+            const output = await produceManualTrustedBuildInputs({ repoRoot: process.cwd(),
+              proofBytes: await readFile(".release-output/build-proof.v1.json"),
+              materialBytes: await readFile(".release-output/build-material-observation.v1.json"),
+              verifiedProofAttestationBytes, verifiedProofAttestation: JSON.parse(verifiedProofAttestationBytes), buildIdentity, storage });
+            const directory = ".release-local/same-job-custody";
+            await mkdir(`${directory}/raw`, { recursive: true, mode: 0o700 });
+            for (const folder of [".release-local", directory, `${directory}/raw`]) await chmod(folder, 0o700);
+            const put = (name, bytes) => writeFile(`${directory}/${name}`, bytes, { flag: "wx", mode: 0o600 });
+            await put("receipt.json", Buffer.from(canonicalJson(output.receipt)));
+            await put("producer-provenance.json", output.expected.producerRecordBytes);
+            await put("expected.sql", output.expected.scriptBytes);
+            for (const [digest, bytes] of output.rawBlobs) await put(`raw/${digest.slice(7)}.bin`, bytes);
+            await put("inventory.pending.json", output.pendingBytes);
+            await appendFile(process.env.GITHUB_OUTPUT, `pending-digest=${output.pendingDigest}\n`);
+          } catch {
+            console.error("MANUAL_TRUSTED_BUILD_INPUTS_FAILED"); process.exitCode = 1;
+          }
+          NODE
+
+      - name: Attest the exact private custody receipt bytes
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-local/same-job-custody/receipt.json
+
+      - name: Attest the exact expected producer provenance bytes
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-local/same-job-custody/producer-provenance.json
+
+      - name: Attest the exact expected SQL bytes
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-local/same-job-custody/expected.sql
+
+      - name: Verify each distinct private subject against the protected signer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for subject in receipt.json producer-provenance.json expected.sql; do
+            gh attestation verify ".release-local/same-job-custody/$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/docker-images.yml" \
+              --source-ref refs/heads/main \
+              --source-digest "$SOURCE_SHA" \
+              --cert-oidc-issuer https://token.actions.githubusercontent.com \
+              --deny-self-hosted-runners \
+              --format json \
+              > ".release-local/same-job-custody/$subject.verification.json"
+          done
+
+      - name: Retain the finite private custody inventory and verification originals
+        id: private-custody-root
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+          PENDING_DIGEST: ${{ steps.private-custody-inputs.outputs.pending-digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node --input-type=module <<'NODE'
+          import { readFile, lstat, appendFile } from "node:fs/promises";
+          import { sha256Bytes } from "./packages/release-foundation/src/index.mjs";
+          import { createManualBuildCustodyStorage } from "./scripts/release/manual-build-custody-storage.mjs";
+          import { finalizeManualTrustedBuildInputs } from "./scripts/release/manual-build-custody-producer.mjs";
+          try {
+            const directory = ".release-local/same-job-custody";
+            const reopen = async (name) => {
+              const pathname = `${directory}/${name}`, stat = await lstat(pathname);
+              if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || stat.size > 1048576) throw new Error("private");
+              return readFile(pathname);
+            };
+            const pendingBytes = await reopen("inventory.pending.json");
+            if (sha256Bytes(pendingBytes) !== process.env.PENDING_DIGEST || process.env.SOURCE_SHA !== process.env.GITHUB_SHA) throw new Error("source");
+            const pending = JSON.parse(pendingBytes), rawBlobs = new Map();
+            if (!Array.isArray(pending.raws) || pending.raws.length > 2048) throw new Error("raws");
+            for (const ref of pending.raws) {
+              if (!/^sha256:[0-9a-f]{64}$/.test(ref.digest)) throw new Error("raws");
+              rawBlobs.set(ref.digest, await reopen(`raw/${ref.digest.slice(7)}.bin`));
+            }
+            const buildIdentity = { sourceSha: process.env.GITHUB_SHA, repository: process.env.GITHUB_REPOSITORY,
+              workflowPath: ".github/workflows/docker-images.yml", sourceRef: process.env.GITHUB_REF,
+              runId: process.env.GITHUB_RUN_ID, runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              protectedEnvironment: "trusted-image-build" };
+            const verifiedAttestations = { receipt: await reopen("receipt.json.verification.json"),
+              producer: await reopen("producer-provenance.json.verification.json"), script: await reopen("expected.sql.verification.json") };
+            const storage = await createManualBuildCustodyStorage({ buildIdentity });
+            const result = await finalizeManualTrustedBuildInputs({ pendingBytes, pendingDigest: process.env.PENDING_DIGEST,
+              rawBlobs, verifiedAttestations, buildIdentity, storage });
+            await appendFile(process.env.GITHUB_OUTPUT, `digest=${result.rootDigest}\nkey=${result.rootKey}\n`);
+            await appendFile(process.env.GITHUB_STEP_SUMMARY, `Private custody inventory: ${result.rootDigest} / ${result.rootKey}\n`);
+          } catch {
+            console.error("MANUAL_TRUSTED_BUILD_CUSTODY_FINALIZE_FAILED"); process.exitCode = 1;
+          }
+          NODE
 
       - name: Store the proof under its content digest
         id: proof-upload

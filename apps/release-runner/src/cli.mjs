@@ -65,6 +65,13 @@ export async function runProductionEntrypoint({
   executeTrusted = runTrustedEntrypoint
 } = {}) {
   const envelopeFile = environment.RUNNER_LAUNCH_ENVELOPE_FILE;
+  if (environment.RUNNER_EXECUTION_MODE !== undefined) {
+    if (environment.RUNNER_EXECUTION_MODE !== "manual-stage1" || envelopeFile !== undefined)
+      throw runnerError("RUNNER_EXECUTION_MODE_REJECTED");
+    if (argv.length !== 0) throw runnerError("RUNNER_ENTRYPOINT_OVERRIDE_REJECTED");
+    // Mode selection grants no authority. The fixed MS2 input boundary is required.
+    throw runnerError("MANUAL_AUTHORIZATION_REQUIRED");
+  }
   const runtimeAdapters =
     adapters ?? (argv.length === 0 && envelopeFile ? createAdapters() : undefined);
   const result = await executeTrusted({

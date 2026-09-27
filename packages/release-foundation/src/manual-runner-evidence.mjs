@@ -834,10 +834,7 @@ function decodeFrame(
     const prefixes = protocolState.value
       ? [`${protocolState.value} `]
       : MANUAL_PROTOCOLS.map((protocol) => `${protocol} `);
-    requireThat(
-      headerEnd < 0 && prefixes.some((prefix) => prefix.startsWith(text)),
-      FRAME
-    );
+    requireThat(headerEnd < 0 && prefixes.some((prefix) => prefix.startsWith(text)), FRAME);
     if (ended) requireThat(false, INCOMPLETE);
     return null;
   }
@@ -2378,17 +2375,22 @@ function validateArgv(event, request, graph) {
     const args = argv.args.slice(1),
       image = graph.get(request.buildProofDigest, ["build"]).identity.images.runner;
     requireThat(args.at(-1) === `${image.registry}@${request.runnerImageDigest}`);
-    const values = new Map();
+    const values = new Map(),
+      tmpfs = [];
     for (let i = 0; i < args.length - 1; i++) {
       const name = args[i];
-      requireThat(!values.has(name));
+      requireThat(name === "--tmpfs" || !values.has(name));
       if (["--interactive", "-i", "--read-only"].includes(name)) values.set(name, true);
       else {
         requireThat(
-          ["--network", "--tmpfs", "--cap-drop", "--security-opt", "--env"].includes(name)
+          ["--network", "--tmpfs", "--cidfile", "--cap-drop", "--security-opt", "--env"].includes(
+            name
+          )
         );
         requireThat(i + 1 < args.length - 1);
-        values.set(name, args[++i]);
+        const value = args[++i];
+        if (name === "--tmpfs") tmpfs.push(value);
+        else values.set(name, value);
       }
     }
     requireThat((values.has("--interactive") || values.has("-i")) && values.has("--read-only"));
@@ -2396,7 +2398,16 @@ function validateArgv(event, request, graph) {
       typeof values.get("--network") === "string" &&
         !["host", "bridge", "none", "default"].includes(values.get("--network"))
     );
-    requireThat(/^\/tmp:rw,noexec,nosuid,size=[1-9][0-9]*[km]$/.test(values.get("--tmpfs") ?? ""));
+    requireThat(
+      tmpfs.filter((value) => /^\/tmp:rw,noexec,nosuid,size=[1-9][0-9]*[km]$/.test(value))
+        .length === 1
+    );
+    if (values.has("--cidfile")) {
+      requireThat(values.get("--cidfile") === `/tmp/manual-stage1-${request.attemptId}/runner.cid`);
+      requireThat(
+        tmpfs.length === 2 && tmpfs.includes("/var/lib/postgresql/data:rw,noexec,nosuid,size=1m")
+      );
+    } else requireThat(tmpfs.length === 1);
     requireThat(
       values.get("--cap-drop") === "ALL" && values.get("--security-opt") === "no-new-privileges"
     );

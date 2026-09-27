@@ -20,6 +20,8 @@
 
 本轮 R2 第一次修复验证实际 0 pass / 1 fail：原 apply 已唯一记录 UNKNOWN，两个 child 自然 exit 0；失败来自新增测试未同步 Node builtin named exports，导致落盘后的故障注入未被调用。只补一行测试同步，生产源码保持不变，唯一同组重验尚在运行；未重跑正常链或启动 replay-loss。本轮 Prisma validate exit 0，migrate status 仍因 `datasource.url` 缺失 exit 1，未连接数据库或修改业务代码。
 
+提交 `72c91da1` 完成 R2.3 第一片 H3-A 来源复用：新增私有 `manual-runner-source-inputs.mjs`，21 个既有 SQL、权限、路径和原件检查函数逐字迁移，launcher 保留 owner、实时资源观察、R1 原件刷新、会话及全部执行责任。新增直接读取用例先真实失败，再与三个现有拒绝/准入用例组成有限验证；Windows 和 Linux Node 22.22.2 各 4 pass / 0 fail / 0 skip，Linux 237 个复制文件的完整摘要和前后状态闭合。输入在首个 await 前固定，返回字节副本与内部重查分离，关闭或原件被替换后拒绝继续使用，读取过程不取得执行权。有限源码复核 ACCEPT，语法/格式/diff 检查通过；最终仓库合同校验 exit 0、192 文件、76 Schema、128 迁移。仅这五个文件的 H3-A 增量入库，仍在运行的 UNKNOWN/reconcile 改动与未运行 replay-loss 保留为未提交工作；H3-B、expected-schema 只读提取和结果 verifier 仍待完成，不能把此项计为 R2.2 或真实 PostgreSQL 通过。
+
 阶段 1 后续先完成 R2 异常恢复、结果核验入口和必要用例，并接通合法快照消费及固定远端执行；再对冻结候选执行受保护构建 / H2，完成依赖这些可信输入的 R2 真实数据库验收与 R3 fresh / snapshot 双链；按发布链对齐两条迁移并恢复 API / Web；最后执行 R4 A/B 主线、签约支付回调、激活、到期收口和维护恢复的真实验收与签收。后文较早断点中的“仍等待登录”“H3-B 未接通”等描述仅为历史事实，不能作为当前状态。
 
 ## 07:00 UTC 后续：同 ref 历史交接与 H3 原件合同

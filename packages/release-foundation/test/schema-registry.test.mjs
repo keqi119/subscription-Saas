@@ -94,6 +94,26 @@ test("R3 fixed target policy preserves H1 and restricts hosted destination topol
 const digest = `sha256:${"a".repeat(64)}`;
 const sourceSha = "b".repeat(40);
 
+test("database target catalog accepts its existing policies and rejects mixed environments", async () => {
+  const catalog = JSON.parse(
+    await readFile(
+      new URL("../../../release/contracts/database-target-policies.v1.json", import.meta.url)
+    )
+  );
+  validateContract("database-target-policies.v1", catalog);
+  for (const [policyId, field, value] of [
+    ["s1-release-compose-ephemeral", "allowedEnvironments", ["ci", "local-controlled"]],
+    ["s1-release-ephemeral", "allowedEnvironments", ["ci-fresh", "ci-snapshot"]],
+    ["s1-release-compose-ephemeral", "allowedHosts", ["127.0.0.1", "localhost"]]
+  ]) {
+    const changed = structuredClone(catalog);
+    changed.policies.find((p) => p.policyId === policyId)[field] = value;
+    assert.throws(() => validateContract("database-target-policies.v1", changed), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
+  }
+});
+
 function validBuildProof() {
   const image = (name) => ({
     name,

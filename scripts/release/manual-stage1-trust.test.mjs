@@ -960,7 +960,10 @@ function verifiedItem(bytes, sourceSha, name, timestamp = generatedAt) {
   };
 }
 
-async function buildFixture(t, { canonicalProof = false, extraEntrypoints = [] } = {}) {
+async function buildFixture(
+  t,
+  { canonicalProof = false, extraEntrypoints = [], r3TargetPolicy = false } = {}
+) {
   const f = await fixture(t);
   const manifest = "release/contracts/repository-contract-files.v1.json";
   const entrypoints = [
@@ -975,11 +978,28 @@ async function buildFixture(t, { canonicalProof = false, extraEntrypoints = [] }
       new URL(`./${path.basename(file)}`, import.meta.url),
       path.join(f.repoRoot, file)
     );
+  const extraContracts = [];
+  if (r3TargetPolicy) {
+    for (const name of [
+      "manual-stage1-r3-target-policy.v1.json",
+      "database-target-policies.v1.json",
+      "database-test-manifest.v1.json"
+    ]) {
+      const value = JSON.parse(
+        await fs.readFile(new URL(`../../release/contracts/${name}`, import.meta.url))
+      );
+      if (name === "manual-stage1-r3-target-policy.v1.json")
+        value.profileDigest = sha256Canonical(f.profile);
+      const file = `release/contracts/${name}`;
+      await fs.writeFile(path.join(f.repoRoot, file), encodeManualJson(value), { mode: 0o600 });
+      extraContracts.push(file);
+    }
+  }
   await fs.writeFile(
     path.join(f.repoRoot, manifest),
     encodeManualJson({
       contractVersion: "repository-contract-files.v1",
-      files: [manifest, profileName, bindingName, ...entrypoints].sort()
+      files: [manifest, profileName, bindingName, ...entrypoints, ...extraContracts].sort()
     }),
     { mode: 0o600 }
   );
@@ -1157,6 +1177,102 @@ function verifier() {
   );
   return production().verifyManualBuild;
 }
+
+test("R3 POLICY API rejects trust overrides and accessors before native IO", async (t) => {
+  assert.equal(typeof trust.readFixedR3TargetPolicy, "function");
+  let effects = 0;
+  const denied = () => {
+    effects++;
+    throw new Error("unexpected IO or accessor");
+  };
+  for (const name of ["open", "lstat", "readFile", "writeFile"]) t.mock.method(fs, name, denied);
+  t.mock.method(childProcess, "execFile", denied);
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const input = {
+    repoRoot: path.resolve("unused"),
+    proofBytes: Buffer.from("{}"),
+    materialBytes: Buffer.from("{}")
+  };
+  for (const value of [
+    { ...input, policyFile: "/caller/policy.json" },
+    { ...input, verifiedBuild: { trusted: true } },
+    { ...input, repoRoot: { toString: denied } },
+    Object.defineProperty({ ...input }, "proofBytes", { get: denied, enumerable: true })
+  ])
+    await assert.rejects(trust.readFixedR3TargetPolicy(value), {
+      code: "R3_TARGET_POLICY_INPUT_UNAVAILABLE"
+    });
+  assert.equal(effects, 0);
+});
+
+test(
+  "R3 POLICY holds the build-bound fixed policy and refuses later source drift",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await buildFixture(t, { r3TargetPolicy: true });
+    const result = await trust.readFixedR3TargetPolicy({
+      repoRoot: f.repoRoot,
+      proofBytes: f.proofBytes,
+      materialBytes: f.materialBytes
+    });
+    t.after(() => result.close());
+    assert.equal(result.profileDigest, sha256Canonical(f.profile));
+    assert.equal(result.build.buildProofDigest, sha256Canonical(f.proof));
+    assert.equal(result.sourceSha, f.sourceSha);
+    assert.equal(result.databaseTargetPolicy.policyId, "s1-release-compose-ephemeral");
+    assert.equal(result.policy.transport.engineEndpoint, "tcp://127.0.0.1:55440");
+    assert.ok(Object.isFrozen(result.policy.workspace));
+    assert.ok(Object.isFrozen(result.databaseTargetPolicy.allowedEnvironments));
+    assert.equal(result.build.promotionEligible, false);
+    assert.equal(f.gh.calls.length, 3, "both raw subjects and actual build run are verified");
+    await result.recheck();
+    const policyPath = path.join(
+      f.repoRoot,
+      "release/contracts/manual-stage1-r3-target-policy.v1.json"
+    );
+    await fs.appendFile(policyPath, " ");
+    await assert.rejects(result.recheck(), { code: "R3_TARGET_POLICY_INPUT_UNAVAILABLE" });
+    await result.close();
+    await assert.rejects(result.recheck(), { code: "R3_TARGET_POLICY_INPUT_UNAVAILABLE" });
+    noAuthorityAccess(f);
+  }
+);
+
+test(
+  "R3 POLICY rejects a different H1 binding and missing trusted build",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await buildFixture(t, { r3TargetPolicy: true });
+    const input = {
+      repoRoot: f.repoRoot,
+      proofBytes: f.proofBytes,
+      materialBytes: f.materialBytes
+    };
+    const policyPath = path.join(
+      f.repoRoot,
+      "release/contracts/manual-stage1-r3-target-policy.v1.json"
+    );
+    const bytes = await fs.readFile(policyPath),
+      policy = JSON.parse(bytes);
+    policy.profileDigest = `sha256:${"f".repeat(64)}`;
+    await fs.writeFile(policyPath, encodeManualJson(policy));
+    await assert.rejects(trust.readFixedR3TargetPolicy(input), {
+      code: "R3_TARGET_POLICY_INPUT_UNAVAILABLE"
+    });
+    assert.equal(f.gh.calls.length, 0);
+    await fs.writeFile(policyPath, bytes);
+    f.gh.error = new Error("synthetic attestation verification failed");
+    await assert.rejects(trust.readFixedR3TargetPolicy(input), {
+      code: "R3_TARGET_POLICY_INPUT_UNAVAILABLE"
+    });
+    assert.equal(f.gh.calls.length, 1);
+    noAuthorityAccess(f);
+  }
+);
 async function replaceReceipt(f, mutate) {
   mutate(f.receipt);
   f.receiptBytes = encodeManualJson(f.receipt);

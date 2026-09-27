@@ -7,6 +7,7 @@
 - R2 apply-interrupted `68888` 已自然结束，host/Node exit 1，0 pass / 1 fail / 0 skip，644,033.312586 ms。失败准确落在已结束 UNKNOWN 的备份被移走后仍未拒绝（`Missing expected rejection`）；871 份保全文件自一致检查通过，原失败未覆盖。
 - 已将结果核验器的 Runner 备份条件从仅 `SUCCEEDED` 改为 `SUCCEEDED` 或 `finishedAt !== null`；pending UNKNOWN 仍不要求不存在的备份。唯一重验 `43338` 正在运行，冻结 244 项源码，尚无 GREEN 或完整 reconcile 结论；没有再跑 normal 或旧故障矩阵。
 - R3 固定目标策略、schema 与 manifest 登记已补齐，并经一次有限独立审查。它引用已批准 H1 profile，限定既有 source/final workflow、hosted 身份、固定两条通道与加密 Engine 目录。定向契约用例 1/1 通过，全部 schema 编译用例 1/1 通过；未接线 runtime、签发创建/消费能力或建立远端目标。具体顺序见 [R3 目标策略切片](../superpowers/specs/2026-09-28-stage1-r3-target-policy-slice.zh-CN.md)。
+- R3 固定策略读取入口现已接入既有 H1/H2 校验，保留原件句柄并在重读中核对主机、profile、源码和构建绑定；没有签发能力。首次 native 测试 1 pass / 2 fail，定位到既有数据库策略 catalog 与 schema 不一致；保留 catalog 后，将 schema 修成两个互斥的现有策略分支，定向回归先 RED 后 GREEN（1/1）。读取器第二次 native 测试自然 exit 0，3 pass / 0 fail / 0 skip，5,400.665206 ms。它仍不证明实际 hosted 目标、创建/消费会话、解密或恢复通过。
 - 本轮本地 migration status 仍因缺少 `datasource.url` 自然退出 1；schema validate 自然退出 0。没有连接或更改线上数据库。
 
 ## 已取得的证据（保留各次失败与修正）
@@ -74,3 +75,4 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 - R3 固定读取器：`r3-reader-native01.log`、`20260927-194519-312525338-copy.sha256`；native copy 为 `/home/keqi_119/.cache/r3-reader-cF6Xog`。输入类型补强的 RED/GREEN 为本轮终端记录，未重复长链测试。
 - R2 normal 通过：`result-verifier-native04.log`、`result-verifier-frozen05.json`、`result-verifier-native04-preserved-check.json`；保全目录 `originals/result-verifier-normal-bbdb4c44-be4b-439b-a8e5-7e23a1d2164d`。
 - 中断组合有效 RED：`result-verifier-interrupted01.log`、`result-verifier-frozen06.json`、`result-verifier-interrupted01-preserved-check.json`；保全目录 `originals/result-verifier-apply-interrupted-73a9c6c4-4a81-4dd1-a4be-61ca492fd7ba`。修正重验为 `result-verifier-interrupted02.log` / `result-verifier-frozen07.json`，当前尚无完成结论。
+- R3 固定策略读取器：`r3-policy-native01.log` 保留原 schema 不一致导致的失败；`r3-policy-native02.log` 为 3/3，通过复制清单 `20260927-204205-916584168-copy.sha256` 核对 247 项源码。当前仓库合同校验为 200 文件、79 schemas、128 migrations、13 commands，包含尚未提交的 R2 工作，不是最终候选证据。

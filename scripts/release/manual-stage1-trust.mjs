@@ -1059,6 +1059,136 @@ export async function verifyManualBuild(input) {
   }
 }
 
+// Fixed R3 policy plus the existing H2 verification. This holds trusted inputs;
+// it does not create a session, grant a capability or admit a hosted destination.
+export async function readFixedR3TargetPolicy(input) {
+  const code = "R3_TARGET_POLICY_INPUT_UNAVAILABLE";
+  const opened = [];
+  let closed = false,
+    closing;
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    closing = (async () => {
+      const results = await Promise.allSettled(opened.map((item) => item.close()));
+      for (const item of opened) item.bytes.fill(0);
+      if (results.some((result) => result.status === "rejected")) fail(code);
+    })();
+    return closing;
+  };
+  try {
+    exact(input, ["repoRoot", "proofBytes", "materialBytes"]);
+    requireThat(typeof input.repoRoot === "string");
+    const repoRoot = absolute(input.repoRoot),
+      proofBytes = inputBytes(input.proofBytes),
+      materialBytes = inputBytes(input.materialBytes);
+    requireThat(process.platform === "linux");
+    const profile = await loadFixedManualProfile({ repoRoot }),
+      profileDigest = sha256Canonical(profile),
+      actual = await actualHost(),
+      archiveRoot = profile.storage.archiveRoot;
+    const sourceOptions = { principal: actual.principal, sourceRoot: repoRoot },
+      privateOptions = { principal: actual.principal, privateRoot: archiveRoot };
+    const read = async (file, options = sourceOptions) => {
+      requireThat(!closed);
+      const item = await openInput(file, options);
+      opened.push(item);
+      requireThat(item.bytes.length > 0 && !closed);
+      return item.bytes;
+    };
+    requireThat(equal(json(await read(path.join(repoRoot, PROFILE))), profile));
+    await read(path.join(repoRoot, OWNER));
+    const policyName = "release/contracts/manual-stage1-r3-target-policy.v1.json",
+      targetsName = "release/contracts/database-target-policies.v1.json",
+      suitesName = "release/contracts/database-test-manifest.v1.json",
+      manifestName = "release/contracts/repository-contract-files.v1.json";
+    const policyBytes = await read(path.join(repoRoot, policyName)),
+      targetsBytes = await read(path.join(repoRoot, targetsName)),
+      suitesBytes = await read(path.join(repoRoot, suitesName)),
+      manifest = json(await read(path.join(repoRoot, manifestName))),
+      policy = json(policyBytes),
+      targets = json(targetsBytes),
+      suites = json(suitesBytes);
+    validateContract("manual-stage1-r3-target-policy.v1", policy);
+    validateContract("database-target-policies.v1", targets);
+    validateContract("database-test-manifest.v1", suites);
+    requireThat(policy.profileDigest === profileDigest);
+    requireThat(
+      Array.isArray(manifest.files) &&
+        [policyName, targetsName, suitesName].every((file) => manifest.files.includes(file))
+    );
+    const matchingTargets = targets.policies.filter(
+      (p) => p.policyId === policy.databaseTargetPolicyId
+    );
+    requireThat(matchingTargets.length === 1);
+    const buildRoot = path.join(archiveRoot, "inputs", "build"),
+      proofRawDigest = sha256Bytes(proofBytes),
+      materialRawDigest = sha256Bytes(materialBytes);
+    requireThat(
+      (
+        await read(path.join(buildRoot, `${proofRawDigest.slice(7)}.proof.json`), privateOptions)
+      ).equals(proofBytes)
+    );
+    requireThat(
+      (
+        await read(
+          path.join(buildRoot, `${materialRawDigest.slice(7)}.material.json`),
+          privateOptions
+        )
+      ).equals(materialBytes)
+    );
+    const receiptBytes = await read(
+      path.join(buildRoot, `${proofRawDigest.slice(7)}.custody-receipt.retention90.v1.json`),
+      privateOptions
+    );
+    const build = await verifyManualBuild({ repoRoot, proofBytes, materialBytes }),
+      proof = json(proofBytes);
+    requireThat(build.custodyReceiptRawDigest === sha256Bytes(receiptBytes));
+    const checkWindow = () => {
+      const now = Date.now();
+      requireThat(instant(profile.validFrom) <= now && now < instant(profile.expiresAt));
+    };
+    const recheck = async () => {
+      try {
+        requireThat(!closed);
+        checkWindow();
+        requireThat(equal(await actualHost(), actual));
+        requireThat(sha256Canonical(await loadFixedManualProfile({ repoRoot })) === profileDigest);
+        requireThat(
+          (await computeRepositoryContract(repoRoot)).digest ===
+            proof.identity.repositoryContractDigest
+        );
+        requireThat(
+          (await computeMigrationCatalog(repoRoot)).digest === proof.identity.migrationCatalogDigest
+        );
+        await checkoutSource(repoRoot, proof.identity.sourceSha);
+        for (const item of opened) await item.recheck();
+        checkWindow();
+        requireThat(!closed);
+      } catch {
+        await close();
+        fail(code);
+      }
+    };
+    await recheck();
+    return Object.freeze({
+      profileDigest,
+      policy: freeze(policy),
+      policyRawDigest: sha256Bytes(policyBytes),
+      databaseTargetPolicy: freeze(matchingTargets[0]),
+      databaseTargetPolicyRawDigest: sha256Bytes(targetsBytes),
+      databaseTestManifestRawDigest: sha256Bytes(suitesBytes),
+      build,
+      sourceSha: proof.identity.sourceSha,
+      recheck,
+      close
+    });
+  } catch {
+    await close();
+    fail(code);
+  }
+}
+
 export async function openTrustedManualSession(input) {
   let keyInput, signingKey;
   try {

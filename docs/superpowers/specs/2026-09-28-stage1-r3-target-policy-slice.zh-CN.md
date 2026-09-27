@@ -30,4 +30,12 @@ final 不只匹配字面 `execute`：必须核实调用方 run、展开后的实
 
 ## 本切片不能证明的事项
 
-这里不实现 creation/request/session 的前向记录、真实 CI attestation 读取、destination reader、RSA 私钥释放、远端 restore 或最终 suite 执行。后续接线须复用现有 H1/H2 和 manual 会话，明确版本分支；不能把此 JSON 或调用方传来的摘要作为已验证能力。实际 hosted job、加密工作区和目标原件仍未取得，阶段 1 未因此完成。
+这里不实现 creation/request/session 的前向记录、实际 hosted job attestation 读取、destination reader、RSA 私钥释放、远端 restore 或最终 suite 执行。后续接线须复用现有 H1/H2 和 manual 会话，明确版本分支；不能把此 JSON 或调用方传来的摘要作为已验证能力。实际 hosted job、加密工作区和目标原件仍未取得，阶段 1 未因此完成。
+
+## 固定读取入口接续
+
+`manual-stage1-trust.mjs` 已新增 `readFixedR3TargetPolicy({repoRoot,proofBytes,materialBytes})`。它保持 Linux H1 原身份校验，从固定源码位置读取策略、数据库策略和 suite manifest，核对 profile 摘要与 repository-contract 登记，再复用 `verifyManualBuild` 对私有档案中的实际 proof/material/receipt 和 H2 attestation/run 做验证。没有新增信任路径、候选身份或外部授权服务。
+
+返回的是冻结事实及 `recheck/close`，不是创建或消费能力。持有原件在每次重查中独立读回，同时核对实际主机、profile 有效期、仓库/迁移摘要和 Git checkout；失败关闭自有句柄。新接口不读取签名私钥、RSA 私钥、数据库凭据或 payload，不创建会话，也不把当前 self-hosted workflow 当作已满足 hosted 条件。
+
+首次定向 native 测试发现，现有数据库策略文件含 Compose 分支，但其 schema 仅接受旧分支。现以两个互斥分支分别绑定既有 policyId、环境集合和主机范围；原 catalog 字节、旧分支约束及 H1 原件不变，不跳过校验。该 schema 回归先 RED 后 GREEN（1/1）；随后读取器三个 Linux 用例全部通过（0 skip）。测试中的 H1/H2 原件为合成夹具，不能充当真实 CI 或目标准入证据。

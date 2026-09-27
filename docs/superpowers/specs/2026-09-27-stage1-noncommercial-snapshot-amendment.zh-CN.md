@@ -33,7 +33,7 @@ Node 22 原生 API 提供上述 OAEP 参数及随机源，后续实现不增加�
 
 host consumer、源导出、producer、固定 remote Engine 和认证文件交付仍按 R3 现有任务实现。它们尚未接线；本修订不把离线 envelope 测试算作合法真实快照、host 准入或最终双链通过。
 
-文件消费接缝固定在 R3 已列的 `scripts/release/database-test-launcher-runtime.mjs`：`loadSnapshotArtifact` 当前读取 repo 明文 Buffer，`restoreDump` 另按路径复制至容器 `/tmp` 后恢复。必须对齐 H1 已认证文件、hosted 加密暂存路径、同一 executor 和复制后实际摘要核验，再消费 shared 传入的 `dump/dumpDigest/target`，不能保留路径替换的间隙。
+文件消费接缝固定在 R3 已列的 `scripts/release/database-test-launcher-runtime.mjs`。本地适配器切片 `9417b5b3` 已绑定 shared 传入的 `dump/dumpDigest/target`，并在自建私有目录中核验复制后的实际文件摘要、权限及实际 PG 身份，失败时不调用恢复。`loadSnapshotArtifact` 仍读取 repo 明文 Buffer；H1 已认证文件、hosted 加密暂存路径和所有 Docker 动作使用同一获准 executor 的接线仍未完成。该切片没有授予真实快照消费权限。
 
 ## 有限验证与完成条件
 

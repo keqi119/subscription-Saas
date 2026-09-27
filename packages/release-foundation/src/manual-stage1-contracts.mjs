@@ -226,8 +226,10 @@ function profileKey(profile, now) {
 export function signManualAuthorization(input) {
   closed(input, ["payload", "privateKey"]);
   const payload = jsonInput(input.payload);
-  const consumer = payload.schemaVersion === "manual-launch-authorization.v2";
-  validateContract(consumer ? "manual-launch-authorization.v2" : "manual-launch-authorization.v1", {
+  const consumer = ["manual-launch-authorization.v2", "manual-launch-authorization.v3"].includes(
+    payload.schemaVersion
+  );
+  validateContract(consumer ? payload.schemaVersion : "manual-launch-authorization.v1", {
     payload,
     signature: consumer ? Buffer.alloc(64).toString("base64") : ""
   });
@@ -266,7 +268,12 @@ function requestInput(request) {
 // and allocation originals remain IO admission stops; no decision is branded.
 export function validateManualSnapshotConsumerRequest(request) {
   const captured = snapshot(jsonInput(request));
-  validateContract("manual-runner-request.v2", captured);
+  validateContract(
+    captured.schemaVersion === "manual-runner-request.v3"
+      ? "manual-runner-request.v3"
+      : "manual-runner-request.v2",
+    captured
+  );
   requireThat(captured.attemptId !== captured.runId);
   return captured;
 }
@@ -279,7 +286,12 @@ export function verifyManualSnapshotConsumerAuthorizationBinding(input) {
     request = validateManualSnapshotConsumerRequest(parsed.full),
     epoch = instant(input.now);
   validateContract("manual-stage1-profile.v2", profile);
-  validateContract("manual-launch-authorization.v2", authorization);
+  validateContract(
+    request.schemaVersion === "manual-runner-request.v3"
+      ? "manual-launch-authorization.v3"
+      : "manual-launch-authorization.v2",
+    authorization
+  );
   const payload = authorization.payload,
     key = profileKey(profile, epoch),
     issued = instant(payload.issuedAt),

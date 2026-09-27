@@ -1197,6 +1197,130 @@ test("valid consumer v2 cannot acquire a production parent or handoff decision",
   rejects(() => manual.assertManualHandoffDecision(authorization), "MANUAL_HANDOFF_UNTRUSTED");
 });
 
+function minimalConsumerFixture(phase = "source") {
+  const f = consumerFixture("rc-source");
+  f.request.schemaVersion = "manual-runner-request.v3";
+  f.request.phase = phase;
+  f.request.candidate = { buildProofDigest: D };
+  f.request.input = { inputReference: UUID2, inputIndexDigest: D };
+  if (phase === "final") f.request.matchingSourceEvidenceDigest = D;
+  f.payload.schemaVersion = "manual-launch-authorization.v3";
+  f.payload.phase = phase;
+  f.payload.requestDigest = sha256Canonical(f.request);
+  return f;
+}
+
+test("consumer v3 binds the minimal candidate source/final chain without live authority", async () => {
+  const { validateManualRunnerRequest } = await import("../src/manual-runner-evidence.mjs");
+  for (const phase of ["source", "final"]) {
+    const f = minimalConsumerFixture(phase);
+    const captured = manual.validateManualSnapshotConsumerRequest(f.request);
+    assert.deepEqual(captured, f.request);
+    assert.ok(Object.isFrozen(captured.input) && Object.isFrozen(captured.candidate));
+    const authorization = manual.signManualAuthorization({
+      payload: f.payload,
+      privateKey: keys.privateKey
+    });
+    assert.equal(consumerCheck(f, authorization), undefined);
+    rejects(() => validateManualRunnerRequest(f.request), "CONTRACT_SCHEMA_INVALID");
+    rejects(
+      () => manual.verifyManualAuthorization({ ...fixture90(), authorization }),
+      "CONTRACT_SCHEMA_INVALID"
+    );
+    rejects(() => manual.assertManualDecision(authorization), "MANUAL_DECISION_UNTRUSTED");
+    rejects(() => manual.assertManualHandoffDecision(authorization), "MANUAL_HANDOFF_UNTRUSTED");
+  }
+});
+
+test("consumer v3 rejects deferred phases and old full-RC or unbound inputs", () => {
+  for (const mutate of [
+    (r) => {
+      r.phase = "prebuild-source";
+    },
+    (r) => {
+      r.phase = "rc-source";
+    },
+    (r) => {
+      r.input = { prebuildBindingDigest: D };
+    },
+    (r) => {
+      r.input.inputReference = "latest";
+    },
+    (r) => {
+      delete r.input.inputIndexDigest;
+    },
+    (r) => {
+      r.input.producerCompletionDigest = D;
+    },
+    (r) => {
+      r.candidate.buildBundleDigest = D;
+    },
+    (r) => {
+      r.candidate.dispatchAuthorizationDigest = D;
+    },
+    (r) => {
+      r.candidate.rcWorkflowRunId = "123";
+    },
+    (r) => {
+      delete r.candidate;
+    },
+    (r) => {
+      r.matchingSourceEvidenceDigest = D;
+    },
+    (r) => {
+      r.matchingRcSourceEvidenceDigest = D;
+    }
+  ]) {
+    const f = minimalConsumerFixture();
+    mutate(f.request);
+    rejects(
+      () => manual.validateManualSnapshotConsumerRequest(f.request),
+      "CONTRACT_SCHEMA_INVALID"
+    );
+  }
+  const final = minimalConsumerFixture("final");
+  delete final.request.matchingSourceEvidenceDigest;
+  rejects(
+    () => manual.validateManualSnapshotConsumerRequest(final.request),
+    "CONTRACT_SCHEMA_INVALID"
+  );
+});
+
+test("consumer v3 signatures cover input candidate destination allocation and source evidence", () => {
+  for (const mutate of [
+    (r) => {
+      r.input.inputReference = UUID;
+    },
+    (r) => {
+      r.input.inputIndexDigest = OTHER;
+    },
+    (r) => {
+      r.candidate.buildProofDigest = OTHER;
+    },
+    (r) => {
+      r.destinationAdmissionDigest = OTHER;
+    },
+    (r) => {
+      r.attemptAllocationDigest = OTHER;
+    },
+    (r) => {
+      r.matchingSourceEvidenceDigest = OTHER;
+    }
+  ]) {
+    const f = minimalConsumerFixture("final");
+    const authorization = rawSign(f.payload);
+    mutate(f.request);
+    rejects(() => consumerCheck(f, authorization), "MANUAL_BINDING_MISMATCH");
+  }
+  // Both versions have a final phase, so this exercises version pairing rather
+  // than relying on their different source phase enums to refuse the request.
+  for (const f of [consumerFixture("final"), minimalConsumerFixture("final")]) {
+    const opposite = f.payload.schemaVersion.endsWith(".v2") ? "v3" : "v2";
+    f.payload.schemaVersion = `manual-launch-authorization.${opposite}`;
+    rejects(() => consumerCheck(f), "CONTRACT_SCHEMA_INVALID");
+  }
+});
+
 test("SPKI input rejects concatenated keys instead of parsing only a prefix", () => {
   const f = fixture();
   f.profile.publicKeyPem += f.profile.publicKeyPem;

@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manual-runner-request.v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profileDigest",
+    "ownerId",
+    "sessionId",
+    "sessionNonce",
+    "operationId",
+    "idempotencyKey",
+    "attemptId",
+    "runId",
+    "attemptAllocationDigest",
+    "stage",
+    "capability",
+    "purpose",
+    "phase",
+    "sourceSha",
+    "scopeAuthorizationDigest",
+    "destinationAdmissionDigest",
+    "input",
+    "candidate"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "manual-runner-request.v3"
+    },
+    "profileDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "ownerId": {
+      "$ref": "#/$defs/label"
+    },
+    "sessionId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "sessionNonce": {
+      "$ref": "#/$defs/nonce"
+    },
+    "operationId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "idempotencyKey": {
+      "$ref": "#/$defs/label"
+    },
+    "attemptId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "runId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "attemptAllocationDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "stage": {
+      "const": "snapshot-consumer"
+    },
+    "capability": {
+      "const": "read-decrypt-use"
+    },
+    "purpose": {
+      "const": "sanitized-snapshot-test-input"
+    },
+    "phase": {
+      "enum": ["source", "final"]
+    },
+    "sourceSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "scopeAuthorizationDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "destinationAdmissionDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "input": {
+      "$ref": "#/$defs/input"
+    },
+    "candidate": {
+      "$ref": "#/$defs/candidate"
+    },
+    "matchingSourceEvidenceDigest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "phase": {
+          "const": "source"
+        },
+        "matchingSourceEvidenceDigest": false
+      }
+    },
+    {
+      "required": ["matchingSourceEvidenceDigest"],
+      "properties": {
+        "phase": {
+          "const": "final"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["buildProofDigest"],
+      "properties": {
+        "buildProofDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputReference", "inputIndexDigest"],
+      "properties": {
+        "inputReference": {
+          "$ref": "#/$defs/uuid"
+        },
+        "inputIndexDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  }
+}

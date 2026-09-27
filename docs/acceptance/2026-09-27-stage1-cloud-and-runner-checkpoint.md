@@ -6,11 +6,13 @@
 
 提交 `aee01e39` 包含已实际验证的 R2 正常链及 H3 原件门禁。第八次正常用例自然结束，host / Node exit 0，1 pass / 0 fail / 0 skip；同一 ref 的四个阶段均完成，实际 launches=4、credentialReads=15、observerConnections=1。七个拒绝场景均保留 launches=2、credentialReads=9、observerConnections=1，没有新增启动或凭证读取。1194 份原件的完整集合、长度和 SHA-256 已由 root 独立核对，有限源码复核 ACCEPT。该测试使用真实 Node 子进程、协议帧和保管路径，但 PostgreSQL / CLI 边界为受控替身，不能计为线上迁移或真实 H3 验收。
 
-提交时逐字节核对并只入库已测的冻结源码、冻结测试；未运行的 UNKNOWN/reconcile 与 replay-loss 测试单独保留为工作区改动。下一步仅运行这两个必要场景，不重复已通过的正常链或旧容量矩阵。R2.2 整体门禁、独立结果 verifier、严格来源读取复用和真实 PostgreSQL 两阶段入口仍开放。
+提交时逐字节核对并只入库已测的冻结源码、冻结测试；当时未运行的 UNKNOWN/reconcile 与 replay-loss 测试单独保留为工作区改动。后续 UNKNOWN/reconcile 定向 RED 自然 exit 1，实际 dry/apply 均成功、计数 2/9/1，准确暴露“固定中断场景仍返回 apply 成功”，不是前置配置失败；857 份原件保留。父端固定中断、保留 UNKNOWN 与工具 committed 两种事实、仅进入 readonly reconcile 的最小修复已完成有限源码复核，功能验收尚未闭合；replay-loss 仍未运行。不重复已通过的正常链或旧容量矩阵。R2.2 整体门禁、独立结果 verifier、严格来源读取复用和真实 PostgreSQL 两阶段入口仍开放。
 
 提交 `620857ff` 修正了 PostgreSQL 17 快照导出对 DEFERRABLE 的错误前提，保留 REPEATABLE READ、只读事务、snapshot ID 和来源指纹检查；脱敏策略仅明确支持已核实的 Staging 与候选两个迁移 head。现有 snapshot-export 测试 20/20 通过。真实 SSH 只读检查确认 Staging 已完成 126 条迁移、无活动失败项，候选有 128 条；两个待应用迁移仍为 `20260925090000_stage1_operational_completion_terminal_shape` 与 `20260925091000_stage1_operational_completion_settlement_guard`。本轮没有执行导出或 DDL/DML。本地 migrate status 仍因缺少 `datasource.url` 返回 1，不能将只读远端检查写成本地命令通过。
 
 提交 `775a489b` 仅增加 R3 三阶段消费请求及签名绑定的闭合校验，原 contracts 测试 76/76 通过、有限复核 ACCEPT；仓库合同校验实际 exit 0，189 个文件、74 份 Schema。prebuild 不依赖未来构建或当前 attempt 的 producer；v1 不变，v2 纯校验不授予执行权限，现有生产 session 继续拒绝消费请求。真实 scope / destination / allocation 原件读取、session 接线、H1 密钥释放和认证后远端恢复仍未实现。
+
+提交 `48ac0b8e` 后续补齐 H1 既有密钥创建/恢复公件的固定读取：shared 22/22、Linux native 10/10 通过，有限复核 ACCEPT。源码子集在指定主机部署后，682 文件经另一次独立 SSH 全量读回匹配；生产读取器实际核验原公件成功，未读私钥或放行消费，事后独立确认卷关闭及 swap 恢复。最新仓库合同校验为 191 文件、76 份 Schema，exit 0。详情见[非商用公件读取实测](2026-09-27-stage1-noncommercial-snapshot-key-custody.md#1317-utc-后续生产公件读取器实际读回)；该进展不关闭 scope、目的地或 R3 双链门禁。
 
 官方 CLI 续期已成功用于新 RSA 恢复卷密文的 OSS 上传和完整 1 GiB 回读，当前没有等待续期的阻塞，详见[非商用密钥保管实测](2026-09-27-stage1-noncommercial-snapshot-key-custody.md)。仅证明同主机独立加密卷恢复及异地密文完整回读；异机解密恢复、真实 CI 独立 writer / audit-reader 身份验证仍未完成。商用 KMS 不在实施范围内。
 

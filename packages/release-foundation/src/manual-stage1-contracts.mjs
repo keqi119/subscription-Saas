@@ -226,12 +226,14 @@ function profileKey(profile, now) {
 export function signManualAuthorization(input) {
   closed(input, ["payload", "privateKey"]);
   const payload = jsonInput(input.payload);
-  const consumer = ["manual-launch-authorization.v2", "manual-launch-authorization.v3"].includes(
-    payload.schemaVersion
-  );
-  validateContract(consumer ? payload.schemaVersion : "manual-launch-authorization.v1", {
+  const forward = [
+    "manual-launch-authorization.v2",
+    "manual-launch-authorization.v3",
+    "manual-launch-authorization.v4"
+  ].includes(payload.schemaVersion);
+  validateContract(forward ? payload.schemaVersion : "manual-launch-authorization.v1", {
     payload,
-    signature: consumer ? Buffer.alloc(64).toString("base64") : ""
+    signature: forward ? Buffer.alloc(64).toString("base64") : ""
   });
   instant(payload.issuedAt);
   instant(payload.expiresAt);
@@ -278,18 +280,37 @@ export function validateManualSnapshotConsumerRequest(request) {
   return captured;
 }
 
+export function validateManualTargetCreationRequest(request) {
+  const captured = snapshot(jsonInput(request));
+  validateContract("manual-runner-request.v4", captured);
+  requireThat(captured.attemptId !== captured.runId);
+  return captured;
+}
+
 export function verifyManualSnapshotConsumerAuthorizationBinding(input) {
+  return verifyManualScopedAuthorizationBinding(input, false);
+}
+
+export function verifyManualTargetCreationAuthorizationBinding(input) {
+  return verifyManualScopedAuthorizationBinding(input, true);
+}
+
+function verifyManualScopedAuthorizationBinding(input, creation) {
   closed(input, ["authorization", "profile", "requestBytes", "now"]);
   const authorization = jsonInput(input.authorization),
     profile = jsonInput(input.profile),
     parsed = requestInput({ canonicalBytes: input.requestBytes, binding: {} }),
-    request = validateManualSnapshotConsumerRequest(parsed.full),
+    request = creation
+      ? validateManualTargetCreationRequest(parsed.full)
+      : validateManualSnapshotConsumerRequest(parsed.full),
     epoch = instant(input.now);
   validateContract("manual-stage1-profile.v2", profile);
   validateContract(
-    request.schemaVersion === "manual-runner-request.v3"
-      ? "manual-launch-authorization.v3"
-      : "manual-launch-authorization.v2",
+    creation
+      ? "manual-launch-authorization.v4"
+      : request.schemaVersion === "manual-runner-request.v3"
+        ? "manual-launch-authorization.v3"
+        : "manual-launch-authorization.v2",
     authorization
   );
   const payload = authorization.payload,
@@ -316,7 +337,9 @@ export function verifyManualSnapshotConsumerAuthorizationBinding(input) {
     "capability",
     "purpose",
     "phase",
-    "scopeAuthorizationDigest"
+    ...(creation
+      ? ["chain", "targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest"]
+      : ["scopeAuthorizationDigest"])
   ])
     requireThat(same(payload[field], request[field]));
   requireThat(payload.requestDigest === sha256Canonical(request));

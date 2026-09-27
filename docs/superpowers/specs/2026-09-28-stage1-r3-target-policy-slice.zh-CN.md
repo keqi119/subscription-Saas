@@ -39,3 +39,9 @@ final 不只匹配字面 `execute`：必须核实调用方 run、展开后的实
 返回的是冻结事实及 `recheck/close`，不是创建或消费能力。持有原件在每次重查中独立读回，同时核对实际主机、profile 有效期、仓库/迁移摘要和 Git checkout；失败关闭自有句柄。新接口不读取签名私钥、RSA 私钥、数据库凭据或 payload，不创建会话，也不把当前 self-hosted workflow 当作已满足 hosted 条件。
 
 首次定向 native 测试发现，现有数据库策略文件含 Compose 分支，但其 schema 仅接受旧分支。现以两个互斥分支分别绑定既有 policyId、环境集合和主机范围；原 catalog 字节、旧分支约束及 H1 原件不变，不跳过校验。该 schema 回归先 RED 后 GREEN（1/1）；随后读取器三个 Linux 用例全部通过（0 skip）。测试中的 H1/H2 原件为合成夹具，不能充当真实 CI 或目标准入证据。
+
+## 创建合同接续
+
+`manual-runner-request.v4` 和 `manual-launch-authorization.v4` 表达 `target-create / create-isolated-target`。请求绑定 profile、会话、一次尝试、唯一 build proof、source/final、fresh/snapshot、目标策略、creation spec 和实际 job admission 的摘要。创建请求不携带 snapshot 输入、消费 scope 或尚不存在的 destination admission；它们属于随后独立核验的消费阶段。
+
+`validateManualTargetCreationRequest` 与 `verifyManualTargetCreationAuthorizationBinding` 只提供闭合结构和纯签名绑定检查；签名域、profile 密钥和五分钟上限沿用现有实现。它们不出现在公共 barrel，不产生 branded decision，也没有让旧 R2 runtime 接受 v4。实际 creation spec/job 原件读取、会话台账及执行仍需后续接线。合同回归 81/81 通过，不代替这些执行证据。

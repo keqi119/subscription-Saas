@@ -967,7 +967,7 @@ test("v2 profile recursively closes roots targets and fixes retention at 90 days
   }
 });
 
-test("barrel keeps six manual functions while consumer checks stay module-local exports", async () => {
+test("barrel keeps six manual functions while scoped checks stay module-local exports", async () => {
   const barrel = await import("../src/index.mjs");
   assert.deepEqual(
     Object.keys(manual).sort(),
@@ -977,9 +977,11 @@ test("barrel keeps six manual functions while consumer checks stay module-local 
       "encodeManualJson",
       "signManualAuthorization",
       "validateManualSnapshotConsumerRequest",
+      "validateManualTargetCreationRequest",
       "verifyManualAuthorization",
       "verifyManualHandoff",
-      "verifyManualSnapshotConsumerAuthorizationBinding"
+      "verifyManualSnapshotConsumerAuthorizationBinding",
+      "verifyManualTargetCreationAuthorizationBinding"
     ].sort()
   );
   const f = fixture();
@@ -992,6 +994,8 @@ test("barrel keeps six manual functions while consumer checks stay module-local 
   assert.equal(barrel.encodeManualJson({ ok: true }).toString(), '{"ok":true}');
   assert.equal(barrel.validateManualSnapshotConsumerRequest, undefined);
   assert.equal(barrel.verifyManualSnapshotConsumerAuthorizationBinding, undefined);
+  assert.equal(barrel.validateManualTargetCreationRequest, undefined);
+  assert.equal(barrel.verifyManualTargetCreationAuthorizationBinding, undefined);
 });
 
 function consumerFixture(phase = "prebuild-source") {
@@ -1325,6 +1329,115 @@ test("SPKI input rejects concatenated keys instead of parsing only a prefix", ()
   const f = fixture();
   f.profile.publicKeyPem += f.profile.publicKeyPem;
   rejects(() => manual.verifyManualAuthorization(f), "MANUAL_SIGNATURE_INVALID");
+});
+
+function targetCreationFixture(phase = "source", chain = "fresh") {
+  const f = minimalConsumerFixture();
+  for (const field of ["input", "destinationAdmissionDigest", "scopeAuthorizationDigest"])
+    delete f.request[field];
+  delete f.payload.scopeAuthorizationDigest;
+  const binding = {
+    stage: "target-create",
+    capability: "create-isolated-target",
+    purpose: "stage1-isolated-database-tests",
+    phase,
+    chain,
+    targetPolicyDigest: D,
+    creationSpecDigest: D,
+    jobAdmissionDigest: D
+  };
+  Object.assign(f.request, binding, { schemaVersion: "manual-runner-request.v4" });
+  Object.assign(f.payload, binding, {
+    schemaVersion: "manual-launch-authorization.v4",
+    requestDigest: sha256Canonical(f.request)
+  });
+  return f;
+}
+function creationCheck(f, authorization) {
+  return manual.verifyManualTargetCreationAuthorizationBinding({
+    authorization,
+    profile: f.profile,
+    requestBytes: encodeManualJson(f.request),
+    now: NOW
+  });
+}
+
+test("creation v4 binds the planned target without future destination or consumer authority", async () => {
+  assert.equal(typeof manual.validateManualTargetCreationRequest, "function");
+  assert.equal(typeof manual.verifyManualTargetCreationAuthorizationBinding, "function");
+  const { validateManualRunnerRequest } = await import("../src/manual-runner-evidence.mjs");
+  for (const phase of ["source", "final"]) {
+    for (const chain of ["fresh", "snapshot"]) {
+      const f = targetCreationFixture(phase, chain);
+      const captured = manual.validateManualTargetCreationRequest(f.request);
+      assert.deepEqual(captured, f.request);
+      assert.ok(Object.isFrozen(captured.candidate));
+      const authorization = manual.signManualAuthorization({
+        payload: f.payload,
+        privateKey: keys.privateKey
+      });
+      assert.equal(creationCheck(f, authorization), undefined);
+      rejects(() => consumerCheck(f, authorization), "CONTRACT_SCHEMA_INVALID");
+      rejects(() => validateManualRunnerRequest(f.request), "CONTRACT_SCHEMA_INVALID");
+      rejects(() => manual.assertManualDecision(authorization), "MANUAL_DECISION_UNTRUSTED");
+      rejects(
+        () => manual.verifyManualAuthorization({ ...fixture90(), authorization }),
+        "CONTRACT_SCHEMA_INVALID"
+      );
+    }
+  }
+});
+
+test("creation v4 refuses consumer and future facts and binds the whole request", () => {
+  assert.equal(typeof manual.validateManualTargetCreationRequest, "function");
+  for (const mutate of [
+    (r) => {
+      r.input = { inputReference: UUID, inputIndexDigest: D };
+    },
+    (r) => {
+      r.destinationAdmissionDigest = D;
+    },
+    (r) => {
+      r.scopeAuthorizationDigest = D;
+    },
+    (r) => {
+      r.engineId = "future";
+    },
+    (r) => {
+      r.phase = "prebuild-source";
+    },
+    (r) => {
+      r.candidate.buildBundleDigest = D;
+    },
+    (r) => {
+      delete r.creationSpecDigest;
+    }
+  ]) {
+    const f = targetCreationFixture();
+    mutate(f.request);
+    rejects(() => manual.validateManualTargetCreationRequest(f.request), "CONTRACT_SCHEMA_INVALID");
+  }
+  for (const field of [
+    "targetPolicyDigest",
+    "creationSpecDigest",
+    "jobAdmissionDigest",
+    "attemptAllocationDigest"
+  ]) {
+    const f = targetCreationFixture(),
+      authorization = rawSign(f.payload);
+    f.request[field] = OTHER;
+    rejects(() => creationCheck(f, authorization), "MANUAL_BINDING_MISMATCH");
+  }
+  const f = targetCreationFixture(),
+    authorization = rawSign(f.payload);
+  f.request.candidate.buildProofDigest = OTHER;
+  rejects(() => creationCheck(f, authorization), "MANUAL_BINDING_MISMATCH");
+  const duplicate = targetCreationFixture();
+  duplicate.request.runId = duplicate.request.attemptId;
+  rejects(
+    () => manual.validateManualTargetCreationRequest(duplicate.request),
+    "MANUAL_BINDING_MISMATCH"
+  );
 });
 
 test("profile paths accept canonical Unicode locations and reject overlapping backup", () => {

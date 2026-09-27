@@ -46,7 +46,9 @@ const {
   assessManualRunnerEvidence,
   verifyManualAuthorization,
   signManualAuthorization,
-  encodeManualRunnerFrame
+  encodeManualRunnerFrame,
+  parseManualRunnerFrames,
+  deterministicPlanDigest
 } = await import("../../packages/release-foundation/src/index.mjs");
 const { createBuildProof } = await import("./create-build-proof.mjs");
 const {
@@ -793,6 +795,8 @@ function noAuthority(f) {
 
 async function zeroCredentialFixture(t, mode = "split", expectedSource = false) {
   const f = await targetObserveFixture(t, expectedSource);
+  f.runner = { mode, children: [], diagnostics: [] };
+  if (mode === "command") f.pg.serverVersion = "17.11";
   await launcher.connectAndObserveManualTarget({
     session: await f.open(),
     operationRef: f.prepared.operationRef
@@ -805,7 +809,7 @@ async function zeroCredentialFixture(t, mode = "split", expectedSource = false) 
   const keyReads = f.counters.privateKeyReads;
   const nativeSpawn = childProcess.spawn.bind(childProcess);
   const previousExec = childProcess.execFile.bind(childProcess);
-  const id = "e".repeat(64);
+  let id = "e".repeat(64);
   const challenge = encodeManualRunnerFrame({
     protocol: "MS2",
     type: "CHALLENGE",
@@ -829,6 +833,7 @@ async function zeroCredentialFixture(t, mode = "split", expectedSource = false) 
     const cid = args[args.indexOf("--cidfile") + 1];
     const attemptId = /^\/tmp\/manual-stage1-([0-9a-f-]+)\/runner\.cid$/u.exec(cid)?.[1];
     assert.ok(attemptId);
+    if (mode === "command") id = crypto.randomBytes(32).toString("hex");
     const records = fsSync
       .readdirSync(path.join(f.profile.storage.archiveRoot, "objects"))
       .map((name) =>
@@ -847,7 +852,10 @@ async function zeroCredentialFixture(t, mode = "split", expectedSource = false) 
     const allocation = records.find(
       (v) => v.kind === "attempt-allocation" && v.attemptId === attemptId
     );
-    assert.equal(allocation?.phaseKey, "dry-run");
+    assert.equal(
+      allocation?.phaseKey,
+      launches.length === 1 && mode === "command" ? "apply" : "dry-run"
+    );
     assert.ok(
       readOpens.get(f.objectPath(allocation)) >= 4,
       "allocation must be independently reopened before spawn"
@@ -860,7 +868,10 @@ async function zeroCredentialFixture(t, mode = "split", expectedSource = false) 
       mode === "empty-cid"
         ? `fs.writeFileSync(${JSON.stringify(cid)}, ''); setTimeout(()=>fs.writeFileSync(${JSON.stringify(cid)},${JSON.stringify(id)}),150);`
         : `fs.writeFileSync(${JSON.stringify(cid)},${JSON.stringify(id)});`;
-    const source = `import fs from 'node:fs'; ${cidWrite} const bytes=Buffer.from(${JSON.stringify(challenge.toString("base64"))},'base64'); ${expectedSource ? "process.on('SIGUSR1',()=>process.stdout.write(Buffer.from([255])));" : ""} ${mode === "invalid" ? "process.stdout.write(Buffer.from([255]));" : mode === "limit" ? "process.stdout.write(bytes); process.stderr.write(Buffer.alloc(1048577,65));" : mode === "early" ? "process.exit(7);" : mode === "stderr-invalid" ? "process.stdout.write(bytes);process.stderr.write(Buffer.from([255]));" : "for(let i=0;i<bytes.length;i+=7) process.stdout.write(bytes.subarray(i,i+7));"} process.stdin.resume(); process.stdin.on('end',()=>process.exit(0));`;
+    const source =
+      mode === "command"
+        ? commandChildSource(f, cid, id)
+        : `import fs from 'node:fs'; ${cidWrite} const bytes=Buffer.from(${JSON.stringify(challenge.toString("base64"))},'base64'); ${expectedSource ? "process.on('SIGUSR1',()=>process.stdout.write(Buffer.from([255])));" : ""} ${mode === "invalid" ? "process.stdout.write(Buffer.from([255]));" : mode === "limit" ? "process.stdout.write(bytes); process.stderr.write(Buffer.alloc(1048577,65));" : mode === "early" ? "process.exit(7);" : mode === "stderr-invalid" ? "process.stdout.write(bytes);process.stderr.write(Buffer.from([255]));" : "for(let i=0;i<bytes.length;i+=7) process.stdout.write(bytes.subarray(i,i+7));"} process.stdin.resume(); process.stdin.on('end',()=>process.exit(0));`;
     child = nativeSpawn(process.execPath, ["--input-type=module", "-e", source], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { PATH: process.env.PATH }
@@ -868,6 +879,47 @@ async function zeroCredentialFixture(t, mode = "split", expectedSource = false) 
     child.once("close", (exitCode, signal) =>
       actualCloses.push({ pid: child.pid, exitCode, signal })
     );
+    if (mode === "command") {
+      f.runner.children.push(child);
+      if (f.runner.ackWriteFailure) {
+        const write = child.stdin.write.bind(child.stdin);
+        child.stdin.write = (bytes, callback) => {
+          if (bytes.subarray(0, 8).toString("ascii") === "MS2 ACK ") {
+            f.runner.ackFailureReached = (f.runner.ackFailureReached ?? 0) + 1;
+            queueMicrotask(() => callback(new Error("offline-migrate-secret")));
+            return false;
+          }
+          return write(bytes, callback);
+        };
+      }
+      const messages = [];
+      child.stderr.on("data", (chunk) => messages.push(Buffer.from(chunk)));
+      const output = [];
+      child.stdout.on("data", (chunk) => {
+        output.push(Buffer.from(chunk));
+        if (f.runner.loseApplyAfterSpawn && allocation.phaseKey === "apply") {
+          const frames = parseManualRunnerFrames({
+            direction: "child-to-parent",
+            bytes: Buffer.concat(output),
+            ended: false
+          }).frames;
+          if (
+            !f.runner.lossTriggered &&
+            frames.some(
+              (frame) =>
+                frame.payload.event?.tool === "prisma-deploy" &&
+                frame.payload.event.event === "SPAWNED"
+            )
+          ) {
+            f.runner.lossTriggered = 1;
+            child.kill("SIGKILL");
+          }
+        }
+      });
+      child.once("close", () =>
+        f.runner.diagnostics.push(Buffer.concat(messages).toString("utf8"))
+      );
+    }
     launches.push({ attemptId, args: [...args], options, pid: child.pid });
     return child;
   });
@@ -959,7 +1011,10 @@ async function zeroCredentialFixture(t, mode = "split", expectedSource = false) 
 
 // The actual producer consumes the genuine committed R1 fixture. Only external
 // reference process responses use the existing producer test's finite synthesis.
-async function expectedSourceFixture(f) {
+async function expectedSourceFixture(
+  f,
+  script = "CREATE TABLE example(id integer PRIMARY KEY);\r\n"
+) {
   const { repoRoot, sourceSha, proof } = f,
     catalog = await computeMigrationCatalog(repoRoot),
     fault = undefined;
@@ -1113,7 +1168,7 @@ async function expectedSourceFixture(f) {
                   ? Buffer.alloc(400000, "x")
                   : container.ordinal === 2 && fault === "reproduction"
                     ? "changed\n"
-                    : "CREATE TABLE example(id integer PRIMARY KEY);\r\n"
+                    : script
               );
         if (args.includes("deploy")) container.deployed = true;
         return result();
@@ -2708,7 +2763,8 @@ async function targetObserveFixture(t, expectedSource = false) {
         if (statement.includes("UNION ALL"))
           return [{ objectClass: "schema", objectName: "public", owner: "provision" }];
         if (statement.includes("pg_extension")) return [{ name: "plpgsql" }];
-        if (statement === "SHOW server_version") return [{ server_version: "17.0" }];
+        if (statement === "SHOW server_version")
+          return [{ server_version: pg.serverVersion ?? "17.0" }];
         throw new Error("Unexpected SQL statement");
       },
       async end() {
@@ -4463,3 +4519,578 @@ for (const fault of [
     noAuthority(f);
   });
 }
+
+// Real entrypoint and real tool subprocesses; only external IO is doubled.
+function commandChildSource(f, cid, id) {
+  const configuration = {
+    repoRoot: f.repoRoot,
+    profileFile: path.join(productionRoot, profileName),
+    cluster: f.readback.cluster,
+    runner: {
+      expectedScript: f.runner.expectedScriptFile ? undefined : f.runner.expectedScript,
+      expectedScriptFile: f.runner.expectedScriptFile,
+      prismaVersion: f.runner.prismaVersion,
+      wrongIdentity: f.runner.wrongIdentity,
+      invalidReady: f.runner.invalidReady
+    },
+    cid,
+    id,
+    stateFile: path.join(f.root, "command-pg-state.json"),
+    entrypoint: new URL("../../apps/release-runner/src/manual-entrypoint.mjs", import.meta.url)
+      .href,
+    checksum: sha256Bytes(Buffer.from("CREATE TABLE example(id integer PRIMARY KEY);\n")).slice(7)
+  };
+  return (
+    "const f=" +
+    JSON.stringify(configuration) +
+    ";\n" +
+    `
+    import fs from 'node:fs/promises'; import syncfs from 'node:fs'; import cp from 'node:child_process';
+    import {registerHooks,syncBuiltinESMExports} from 'node:module';
+    syncfs.writeFileSync(f.cid,f.id);
+    const effects={connections:0,spawns:0,queries:0,target:null};
+    const deployed=()=>syncfs.existsSync(f.stateFile)?JSON.parse(syncfs.readFileSync(f.stateFile)):null;
+    const client={async unsafe(sql){effects.queries++;
+      if(sql.includes('pg_control_system'))return [{systemIdentifier:f.cluster.systemIdentifier}];
+      if(sql.includes('pg_stat_ssl'))return [{databaseName:'synthetic-db',databaseOid:f.runner.wrongIdentity?'999':'123',role:'migrate',tls:true,serverAddress:f.cluster.serverAddress,serverPort:f.cluster.serverPort,schemas:['public'],extensions:['plpgsql']}];
+      if(sql.startsWith('SET TRANSACTION')||sql.includes('pg_advisory_xact_lock'))return [];
+      if(sql==='SHOW transaction_isolation')return [{transaction_isolation:'repeatable read'}];
+      if(sql==='SHOW transaction_read_only')return [{transaction_read_only:'on'}];
+      if(sql.includes('to_regclass'))return [{name:deployed()?'public._prisma_migrations':null,oid:deployed()?'234':null}];
+      if(sql.includes('SELECT migration_name'))return deployed()?[{name:'20260101000000_initial',checksum:f.checksum}]:[];
+      if(sql.includes('SELECT id::text')){const at=deployed().at;return [{id:'offline-migration',migrationName:'20260101000000_initial',checksum:f.checksum,startedAt:at,finishedAt:at,rolledBackAt:null,appliedStepsCount:1}]};
+      if(sql.includes('UNION ALL'))return [...(deployed()?[{objectClass:'relation',objectName:'_prisma_migrations',owner:'provision'}]:[]),{objectClass:'schema',objectName:'public',owner:'provision'}];
+      if(sql.includes('pg_namespace'))return [{owner:'provision'}];
+      if(sql.includes('pg_extension'))return [{name:'plpgsql'}];
+      if(sql==='SHOW server_version')return [{server_version:'17.11'}];
+      throw Object.assign(new Error('unexpected offline SQL'),{code:'OFFLINE_SQL_UNEXPECTED'});
+    },async begin(...args){return args.at(-1)(client)},async end(){}};
+    globalThis.offlinePostgres=options=>{effects.connections++;effects.target={host:options.host,port:options.port,database:options.database,ssl:options.ssl};return client};
+    registerHooks({resolve(specifier,context,next){if(specifier==='postgres')return {url:'data:text/javascript,export default globalThis.offlinePostgres',shortCircuit:true};return next(specifier,context)}});
+    const mapped=file=>file===f.profileFile?f.repoRoot+'/release/contracts/manual-stage1-profile.v2.json':String(file).startsWith('/app/apps/api/')?f.repoRoot+String(file).slice(4):file;
+    for(const name of ['open','lstat','readFile','readdir']){const native=fs[name].bind(fs);fs[name]=(file,...args)=>native(mapped(file),...args)};
+    const realpath=fs.realpath.bind(fs);fs.realpath=async(file,...args)=>file===f.profileFile?(await realpath(mapped(file)),file):realpath(mapped(file),...args);
+    const nativeSpawn=cp.spawn;cp.spawn=(command,args,options)=>{effects.spawns++;
+      const scriptOutput=args.includes('--script')&&f.runner.expectedScriptFile;
+      const bytes=command==='psql'?'psql (PostgreSQL) 17.11\\n':args[0]==='--version'?f.runner.prismaVersion+'\\n':args.includes('--script')?f.runner.expectedScript:'';
+      let source=scriptOutput?'process.stdout.write(require("node:fs").readFileSync('+JSON.stringify(f.runner.expectedScriptFile)+'))':'process.stdout.write('+JSON.stringify(bytes)+')';
+      if(args[1]==='deploy')source+=';require("node:fs").writeFileSync('+JSON.stringify(f.stateFile)+',JSON.stringify({at:new Date().toISOString()}))';
+      return nativeSpawn(process.execPath,['--eval',source],{...options,env:{PATH:process.env.PATH}});
+    };
+    syncBuiltinESMExports();
+    const {runManualEntrypoint}=await import(f.entrypoint);
+    const {parseManualRunnerFrames,encodeManualRunnerFrame}=await import(new URL('../../../packages/release-foundation/src/index.mjs',f.entrypoint));
+    const outputFrames=[];
+    const output=f.runner.invalidReady?{once:(...args)=>process.stdout.once(...args),removeListener:(...args)=>process.stdout.removeListener(...args),
+      write(bytes,callback){outputFrames.push(bytes);const frames=parseManualRunnerFrames({direction:'child-to-parent',bytes:Buffer.concat(outputFrames),ended:true}).frames;
+        if(frames.at(-1)?.type==='READY'){const frame=frames.at(-1);frame.payload.authorizeFrame.digest='sha256:'+'0'.repeat(64);
+          bytes=encodeManualRunnerFrame({protocol:'MS2',type:frame.type,sequence:frame.sequence,payload:frame.payload});effects.invalidReady=1}
+        return process.stdout.write(bytes,callback)}}:process.stdout;
+    try{await runManualEntrypoint({input:process.stdin,output,environment:{RUNNER_EXECUTION_MODE:'manual-stage1'}})}catch(error){process.stderr.write('ERROR:'+error.code+'\\n');process.exitCode=1}
+    process.stderr.write('EFFECTS:'+JSON.stringify(effects)+'\\n');
+  `
+  );
+}
+
+test(
+  "runner command parent executes original dry-run then fresh approved apply",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "command", true),
+      script =
+        "-- self-contained parent capacity fixture\n".repeat(11000).slice(0, 401961) +
+        "\nCREATE TABLE example(id integer PRIMARY KEY);\r\n",
+      e = await expectedSourceFixture(f, script);
+    assert.equal(Buffer.byteLength(script), 402009);
+    f.runner.expectedScriptFile = path.join(f.root, "parent-capacity-script.sql");
+    await fs.writeFile(f.runner.expectedScriptFile, script, { flag: "wx", mode: 0o600 });
+    f.runner.prismaVersion = JSON.parse(e.output.schemaExpectationBytes).prismaVersion;
+    let result;
+    try {
+      result = await launcher.launchManualStage1({ operationRef: f.prepared.operationRef });
+    } catch (error) {
+      t.diagnostic(
+        JSON.stringify({
+          code: error.code,
+          cause: error.cause?.code,
+          diagnostics: f.runner.diagnostics
+        })
+      );
+      throw error;
+    } finally {
+      await preserveCommandFixture(f, "positive");
+    }
+    const records = await f.records();
+    const requests = records.filter(
+      (r) => r.schemaVersion === "manual-runner-request.v1" && r.stage === "runner-command"
+    );
+    assert.deepEqual(requests.map((r) => r.phase).sort(), ["apply", "dry-run"]);
+    const dry = requests.find((r) => r.phase === "dry-run"),
+      apply = requests.find((r) => r.phase === "apply");
+    const executions = records.filter(
+      (r) => r.kind === "execution" && requests.some((q) => sha256Canonical(q) === r.requestDigest)
+    );
+    assert.equal(executions.length, 2);
+    assert.ok(executions.every((r) => r.status === "SUCCEEDED"));
+    const dryExecution = executions.find((r) => r.requestDigest === sha256Canonical(dry));
+    const dryResult = records.find((r) => sha256Canonical(r) === dryExecution.resultDigest);
+    assert.equal(apply.dryRunRecordDigest, sha256Canonical(dryExecution));
+    assert.equal(apply.approvedPlanDigest, deterministicPlanDigest(dryResult.plan));
+    assert.deepEqual(apply.domainInput, dry.domainInput);
+    assert.equal(apply.operationId, dry.operationId);
+    assert.equal(apply.idempotencyKey, dry.idempotencyKey);
+    assert.equal(apply.sessionId, dry.sessionId);
+    assert.notEqual(apply.attemptId, dry.attemptId);
+    assert.notEqual(apply.childChallenge, dry.childChallenge);
+    assert.notEqual(apply.containerId, dry.containerId);
+    assert.deepEqual(await fs.readFile(path.join(f.operationRoot, "index.json")), f.indexBytes);
+    assert.deepEqual(await fs.readFile(f.objectPath(f.baseline)), f.baselineBytes);
+    assert.equal(f.actualCloses.length, 2);
+    assert.ok(f.actualCloses.every((c) => c.exitCode === 0 && c.signal === null));
+    for (const request of requests) {
+      const prefixes = records.filter(
+        (record) => record.kind === "process" && record.requestDigest === sha256Canonical(request)
+      );
+      const prefix = prefixes.sort(
+        (left, right) => right.protocol.stdoutPrefix.bytes - left.protocol.stdoutPrefix.bytes
+      )[0].protocol.stdoutPrefix;
+      assert.ok(
+        request.phase === "apply"
+          ? prefix.bytes > 1048576 && prefix.bytes <= 2097152
+          : prefix.bytes <= 1048576
+      );
+      const bytes = await fs.readFile(
+        path.join(f.profile.storage.archiveRoot, "raw", `${prefix.digest.slice(7)}.bin`)
+      );
+      const frames = parseManualRunnerFrames({
+        direction: "child-to-parent",
+        bytes,
+        ended: true
+      }).frames;
+      const scripts = frames.filter(
+        (frame) =>
+          frame.payload.stdoutBase64 &&
+          Buffer.from(frame.payload.stdoutBase64, "base64").equals(Buffer.from(script))
+      );
+      assert.equal(scripts.length, request.phase === "apply" ? 2 : 0);
+      assert.ok(
+        frames.every(
+          (frame) => frame.frameBytes.length <= 1048576 && frame.payloadBytes.length <= 1048576
+        )
+      );
+      const tools = prefixes
+        .flatMap((record) => record.events)
+        .filter((event) => event.source === "runner" && event.event === "CLOSED");
+      assert.ok(
+        tools.every((event) => (event.stdout?.bytes ?? 0) + (event.stderr?.bytes ?? 0) <= 1048576)
+      );
+      t.diagnostic(
+        JSON.stringify({
+          phase: request.phase,
+          stdoutBytes: prefix.bytes,
+          scriptBytes: Buffer.byteLength(script),
+          scriptOutputs: scripts.length,
+          maxFrameBytes: Math.max(...frames.map((frame) => frame.frameBytes.length))
+        })
+      );
+    }
+    for (const message of f.runner.diagnostics) {
+      const effects = JSON.parse(message.match(/EFFECTS:(.*)\n/u)?.[1]);
+      assert.equal(effects.connections, 1);
+      assert.ok(effects.spawns >= 2);
+      assert.deepEqual(effects.target, {
+        host: f.readback.cluster.serverAddress,
+        port: f.readback.cluster.serverPort,
+        database: "synthetic-db",
+        ssl: "require"
+      });
+    }
+    const all = [];
+    for (const role of ["archive", "journal", "backup"])
+      for (const name of await fs.readdir(path.join(f.profile.storage[role + "Root"], "objects")))
+        all.push(await fs.readFile(path.join(f.profile.storage[role + "Root"], "objects", name)));
+    for (const name of await fs.readdir(path.join(f.profile.storage.archiveRoot, "raw")))
+      all.push(await fs.readFile(path.join(f.profile.storage.archiveRoot, "raw", name)));
+    assert.equal(Buffer.concat(all).includes(Buffer.from("offline-migrate-secret")), false);
+    assert.ok(result);
+    t.diagnostic(
+      JSON.stringify({ result, actualCloses: f.actualCloses, diagnostics: f.runner.diagnostics })
+    );
+  }
+);
+
+async function preserveCommandFixture(f, label, boundaryCounters = null) {
+  if (!process.env.R22_COMMAND_EVIDENCE_ROOT) return;
+  const directory = path.join(
+    process.env.R22_COMMAND_EVIDENCE_ROOT,
+    label + "-" + f.prepared.operationRef
+  );
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  for (const role of ["archive", "journal", "backup"])
+    await fs.cp(f.profile.storage[role + "Root"], path.join(directory, role), {
+      recursive: true,
+      errorOnExist: true
+    });
+  await fs.writeFile(
+    path.join(directory, "actual-child-diagnostics.json"),
+    encodeManualJson({ closes: f.actualCloses, diagnostics: f.runner.diagnostics }),
+    { flag: "wx", mode: 0o600 }
+  );
+  if (boundaryCounters)
+    await fs.writeFile(
+      path.join(directory, "actual-boundary-counters.json"),
+      encodeManualJson(boundaryCounters),
+      { flag: "wx", mode: 0o600 }
+    );
+}
+
+for (const fault of ["invalid-ready", "sql-identity", "prepared-write", "ack-write"]) {
+  test(
+    "runner command parent rejects " + fault + " at the reached boundary",
+    { skip: process.platform !== "linux" },
+    async (t) => {
+      const f = await zeroCredentialFixture(t, "command", true),
+        e = await expectedSourceFixture(f);
+      f.runner.expectedScript = "CREATE TABLE example(id integer PRIMARY KEY);\r\n";
+      f.runner.prismaVersion = JSON.parse(e.output.schemaExpectationBytes).prismaVersion;
+      f.runner.invalidReady = fault === "invalid-ready";
+      f.runner.wrongIdentity = fault === "sql-identity";
+      f.runner.ackWriteFailure = fault === "ack-write";
+      let triggered = 0;
+      if (fault === "prepared-write") {
+        const open = fs.open.bind(fs);
+        boundedExpectedMock(t, f, fs, "open", async (file, flags, ...args) => {
+          const handle = await open(file, flags, ...args);
+          if (
+            flags !== "wx" ||
+            !String(file).startsWith(path.join(f.profile.storage.archiveRoot, "objects"))
+          )
+            return handle;
+          const writeFile = handle.writeFile.bind(handle);
+          handle.writeFile = async (bytes, ...rest) => {
+            const value = JSON.parse(bytes);
+            if (
+              value.kind === "process" &&
+              value.events.at(-1)?.source === "runner" &&
+              value.events.at(-1)?.event === "PREPARED"
+            ) {
+              await writeFile(bytes, ...rest);
+              triggered++;
+              throw Object.assign(new Error("offline prepared write failure"), {
+                code: "OFFLINE_PREPARED_WRITE_FAILED"
+              });
+            }
+            return writeFile(bytes, ...rest);
+          };
+          return handle;
+        });
+      }
+      let failure;
+      try {
+        await launcher.launchManualStage1({ operationRef: f.prepared.operationRef });
+      } catch (error) {
+        failure = error;
+      } finally {
+        await preserveCommandFixture(f, fault);
+      }
+      assert.ok(failure);
+      const diagnostics = f.runner.diagnostics.join("");
+      const effects = JSON.parse(diagnostics.match(/EFFECTS:(.*)\n/u)?.[1] ?? "null");
+      assert.ok(effects, diagnostics);
+      assert.equal(effects.spawns, 0, diagnostics);
+      if (fault === "invalid-ready") {
+        assert.equal(failure.code, "MANUAL_EVIDENCE_BINDING_MISMATCH");
+        assert.equal(effects.invalidReady, 1);
+        assert.equal(effects.connections, 0);
+        assert.equal(f.counters.credentialReads, f.credentialReads);
+      } else if (fault === "sql-identity") {
+        assert.equal(failure.code, "MANUAL_CLUSTER_IDENTITY_MISMATCH");
+        assert.equal(effects.connections, 1);
+        assert.ok(effects.queries > 0);
+      } else if (fault === "ack-write") {
+        assert.equal(f.runner.ackFailureReached, 1);
+        assert.equal(failure.code, "MANUAL_FRAME_INCOMPLETE");
+        assert.equal(effects.connections, 1);
+        assert.equal(JSON.stringify(failure).includes("offline-migrate-secret"), false);
+      } else {
+        assert.equal(triggered, 1);
+        assert.equal(effects.connections, 1);
+        assert.equal(failure.code, "OFFLINE_PREPARED_WRITE_FAILED");
+      }
+      t.diagnostic(
+        JSON.stringify({ fault, error: failure.code, effects, actualCloses: f.actualCloses })
+      );
+    }
+  );
+}
+
+test(
+  "runner command parent changed admission before sign releases no new authority",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "command", true),
+      e = await expectedSourceFixture(f);
+    f.runner.expectedScript = "CREATE TABLE example(id integer PRIMARY KEY);\r\n";
+    f.runner.prismaVersion = JSON.parse(e.output.schemaExpectationBytes).prismaVersion;
+    let triggered = 0;
+    const open = fs.open.bind(fs);
+    boundedExpectedMock(t, f, fs, "open", async (file, flags, ...args) => {
+      const handle = await open(file, flags, ...args);
+      if (
+        flags !== "wx" ||
+        !String(file).startsWith(path.join(f.profile.storage.archiveRoot, "objects"))
+      )
+        return handle;
+      const writeFile = handle.writeFile.bind(handle);
+      handle.writeFile = async (bytes, ...rest) => {
+        const value = JSON.parse(bytes);
+        const result = await writeFile(bytes, ...rest);
+        if (
+          value.schemaVersion === "manual-runner-request.v1" &&
+          value.stage === "runner-command"
+        ) {
+          triggered++;
+          await fs.writeFile(path.join(e.root, "expected.sql"), "changed admitted bytes\n");
+        }
+        return result;
+      };
+      return handle;
+    });
+    let failure;
+    try {
+      await launcher.launchManualStage1({ operationRef: f.prepared.operationRef });
+    } catch (error) {
+      failure = error;
+    } finally {
+      await preserveCommandFixture(f, "changed-admission");
+    }
+    assert.equal(triggered, 1);
+    assert.equal(failure?.code, "MANUAL_OPERATION_INPUT_UNAVAILABLE");
+    const records = await f.records();
+    assert.equal(records.filter((value) => value.payload?.stage === "runner-command").length, 0);
+    assert.equal(
+      records.filter((value) => value.kind === "consumption" && value.stage === "runner-command")
+        .length,
+      0
+    );
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+    const effects = JSON.parse(f.runner.diagnostics.join("").match(/EFFECTS:(.*)\n/u)?.[1]);
+    assert.equal(effects.connections, 0);
+    assert.equal(effects.spawns, 0);
+    t.diagnostic(JSON.stringify({ error: failure.code, triggered, effects }));
+  }
+);
+
+test(
+  "runner command admission batch waits for pending reads before rejecting changed input",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "command", true),
+      e = await expectedSourceFixture(f);
+    f.runner.expectedScript = "CREATE TABLE example(id integer PRIMARY KEY);\r\n";
+    f.runner.prismaVersion = JSON.parse(e.output.schemaExpectationBytes).prismaVersion;
+    const buildRoot = path.join(f.profile.storage.archiveRoot, "inputs", "build"),
+      proofFile = path.join(buildRoot, `${sha256Bytes(f.proofBytes).slice(7)}.proof.json`),
+      materialFile = path.join(buildRoot, `${sha256Bytes(f.materialBytes).slice(7)}.material.json`),
+      admissions = path.join(e.root, "admissions", f.prepared.operationRef),
+      open = fs.open.bind(fs);
+    let admissionCreated = false,
+      blocked = false,
+      mutated = false,
+      pending = 0,
+      maxPending = 0,
+      releaseFirst,
+      firstReleased = false,
+      mutationBeforeRelease = false,
+      observedChangedStat = false,
+      fallback;
+    const inputStarts = new Set();
+    boundedExpectedMock(t, f, fs, "open", async (file, flags, ...args) => {
+      const actual = String(file),
+        handle = await open(file, flags, ...args);
+      if (flags === "wx" && actual.startsWith(admissions + path.sep)) admissionCreated = true;
+      if (!admissionCreated || flags !== "r") return handle;
+      const input =
+        actual === proofFile ||
+        actual === materialFile ||
+        (actual.startsWith(e.root + path.sep) && !actual.startsWith(admissions + path.sep));
+      if (!input) return handle;
+      if (!blocked && actual === proofFile) {
+        blocked = true;
+        pending++;
+        maxPending = Math.max(maxPending, pending);
+        inputStarts.add(actual);
+        const close = handle.close.bind(handle);
+        handle.close = async (...rest) => {
+          try {
+            return await close(...rest);
+          } finally {
+            pending--;
+          }
+        };
+        await new Promise((resolve) => {
+          releaseFirst = () => {
+            if (firstReleased) return;
+            firstReleased = true;
+            clearTimeout(fallback);
+            resolve();
+          };
+          // A finite fallback lets the old sequential implementation reach its
+          // real input rejection, instead of hanging the RED test indefinitely.
+          fallback = setTimeout(releaseFirst, 2500);
+        });
+      } else if (blocked && !firstReleased) {
+        inputStarts.add(actual);
+        pending++;
+        maxPending = Math.max(maxPending, pending);
+        const close = handle.close.bind(handle);
+        handle.close = async (...rest) => {
+          try {
+            return await close(...rest);
+          } finally {
+            pending--;
+          }
+        };
+      }
+      if (blocked && actual === materialFile && !mutated) {
+        mutated = true;
+        mutationBeforeRelease = !firstReleased;
+        await nativeFS.writeFile(
+          materialFile,
+          Buffer.concat([f.materialBytes, Buffer.from("\nchanged during held-input recheck\n")])
+        );
+        const stat = handle.stat.bind(handle);
+        handle.stat = async (...rest) => {
+          const actualStat = await stat(...rest);
+          observedChangedStat ||= actualStat.size !== BigInt(f.materialBytes.length);
+          return actualStat;
+        };
+        setTimeout(releaseFirst, 100);
+      }
+      return handle;
+    });
+    let failure, pendingAtReject;
+    try {
+      await launcher.launchManualStage1({ operationRef: f.prepared.operationRef });
+    } catch (error) {
+      failure = error;
+      pendingAtReject = pending;
+    } finally {
+      clearTimeout(fallback);
+      releaseFirst?.();
+      await preserveCommandFixture(f, "batch-wait");
+    }
+    const effects = JSON.parse(f.runner.diagnostics.join("").match(/EFFECTS:(.*)\n/u)?.[1]);
+    t.diagnostic(
+      JSON.stringify({
+        error: failure?.code,
+        blocked,
+        mutated,
+        mutationBeforeRelease,
+        observedChangedStat,
+        inputStarts: inputStarts.size,
+        maxPending,
+        pendingAtReject,
+        pending,
+        effects,
+        actualCloses: f.actualCloses
+      })
+    );
+    assert.equal(failure?.code, "MANUAL_OPERATION_INPUT_UNAVAILABLE");
+    assert.equal(blocked, true);
+    assert.equal(mutated, true);
+    assert.equal(observedChangedStat, true);
+    assert.equal(mutationBeforeRelease, true);
+    assert.equal(inputStarts.size, 8);
+    assert.ok(maxPending > 1 && maxPending <= 8);
+    assert.equal(pendingAtReject, 0);
+    assert.equal(pending, 0);
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+    assert.equal(effects.connections, 0);
+    assert.equal(effects.spawns, 0);
+    const records = await f.records();
+    assert.equal(records.filter((value) => value.payload?.stage === "runner-command").length, 0);
+    assert.equal(
+      records.filter((value) => value.kind === "consumption" && value.stage === "runner-command")
+        .length,
+      0
+    );
+  }
+);
+
+test(
+  "runner command parent actual apply loss preserves UNKNOWN and blocks a new invocation",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "command", true),
+      e = await expectedSourceFixture(f);
+    f.runner.expectedScript = "CREATE TABLE example(id integer PRIMARY KEY);\r\n";
+    f.runner.prismaVersion = JSON.parse(e.output.schemaExpectationBytes).prismaVersion;
+    f.runner.loseApplyAfterSpawn = true;
+    let failure;
+    try {
+      await launcher.launchManualStage1({ operationRef: f.prepared.operationRef });
+    } catch (error) {
+      failure = error;
+    } finally {
+      await preserveCommandFixture(f, "apply-loss");
+    }
+    assert.equal(f.runner.lossTriggered, 1);
+    assert.equal(failure?.code, "MANUAL_FRAME_INCOMPLETE");
+    const records = await f.records();
+    const apply = records.find(
+      (value) => value.schemaVersion === "manual-runner-request.v1" && value.phase === "apply"
+    );
+    const execution = records.find(
+      (value) => value.kind === "execution" && value.requestDigest === sha256Canonical(apply)
+    );
+    assert.equal(execution.status, "INTERRUPTED_UNKNOWN");
+    assert.equal(execution.resultDigest, null);
+    assert.equal(execution.finishedAt, null);
+    assert.ok(
+      records.some(
+        (value) =>
+          value.kind === "process" &&
+          value.attemptId === apply.attemptId &&
+          value.events.some((event) => event.tool === "prisma-deploy" && event.event === "SPAWNED")
+      )
+    );
+    const finalProcess = records
+      .filter((value) => value.kind === "process" && value.attemptId === apply.attemptId)
+      .sort((left, right) => right.events.length - left.events.length)[0];
+    assert.equal(finalProcess.closedAt, null);
+    const parentClose = finalProcess.events.at(-1);
+    assert.equal(parentClose.source, "parent");
+    assert.equal(parentClose.tool, "runner");
+    assert.equal(parentClose.event, "CLOSED");
+    assert.equal(parentClose.pid, f.actualCloses.at(-1).pid);
+    assert.equal(parentClose.exitCode, f.actualCloses.at(-1).exitCode);
+    assert.equal(parentClose.signal, f.actualCloses.at(-1).signal);
+    const deployment = finalProcess.events.find(
+      (event) => event.tool === "prisma-deploy" && event.event === "SPAWNED"
+    );
+    assert.ok(deployment);
+    assert.equal(
+      finalProcess.events.some(
+        (event) =>
+          event.processSequence === deployment.processSequence &&
+          ["CLOSED", "SPAWN_FAILED"].includes(event.event)
+      ),
+      false
+    );
+    const before = { launches: f.launches.length, credentialReads: f.counters.credentialReads };
+    try {
+      await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+        code: "MANUAL_SESSION_UNVERIFIED"
+      });
+      assert.equal(f.launches.length, before.launches);
+      assert.equal(f.counters.credentialReads, before.credentialReads);
+    } finally {
+      await preserveCommandFixture(f, "apply-loss-reinvocation", {
+        before,
+        after: { launches: f.launches.length, credentialReads: f.counters.credentialReads }
+      });
+    }
+    t.diagnostic(JSON.stringify({ error: failure.code, execution, actualCloses: f.actualCloses }));
+  }
+);

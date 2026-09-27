@@ -12,6 +12,10 @@ import {
   assertManualDecision,
   assessManualRunnerEvidence,
   verifyManualAuthorization,
+  verifyManualHandoff,
+  encodeManualRunnerFrame,
+  validateManualRunnerProtocol,
+  deterministicPlanDigest,
   validateContract,
   validateManualRunnerRequest,
   parseManualRunnerFrames,
@@ -251,12 +255,12 @@ async function observedPath(file) {
   }
   return chain;
 }
-async function readPinned(handle, expected) {
+async function readPinned(handle, expected, limit = 1048576) {
   const before = await handle.stat({ bigint: true });
   if (
     !before.isFile() ||
     before.nlink !== 1n ||
-    before.size > 1048576n ||
+    before.size > BigInt(limit) ||
     (expected && !sameIdentity(before, expected))
   )
     fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
@@ -474,12 +478,78 @@ export async function launchManualStage1(input) {
       materialBytes: facts.fixed.materialBytes
     });
     try {
+      await rejectConsumedMigrationStage1(facts);
       const observed = await performTargetObservation(session, facts);
-      await launchZeroCredentialRunner(session, facts, observed);
+      const dry = await launchZeroCredentialRunner(session, facts, observed);
+      const apply = await launchZeroCredentialRunner(session, facts, observed, dry);
+      return Object.freeze({
+        operationRef: input.operationRef,
+        dryRun: dry.reference,
+        apply: apply.reference,
+        promotionEligible: false
+      });
     } finally {
       await session.close();
     }
   });
+}
+
+async function rejectConsumedMigrationStage1(facts) {
+  const operation = facts.fixed.operation,
+    migrate = operation.operations.migrate,
+    graph = await targetArchive(facts).graph(),
+    requests = new Set();
+  for (const [digest, { value }] of graph) {
+    if (
+      value.stage !== "runner-command" ||
+      !(
+        value.operationId === migrate.operationId ||
+        value.idempotencyKey === migrate.idempotencyKey ||
+        value.runId === operation.runId
+      )
+    )
+      continue;
+    if (value.schemaVersion !== "manual-runner-request.v1") continue;
+    validateManualRunnerRequest(value);
+    if (
+      value.profileDigest !== operation.profileDigest ||
+      value.operationId !== migrate.operationId ||
+      value.idempotencyKey !== migrate.idempotencyKey ||
+      value.runId !== operation.runId ||
+      sha256Canonical(value.targetIntent) !== sha256Canonical(operation.targetIntent)
+    )
+      fail("MANUAL_SESSION_UNVERIFIED");
+    requests.add(digest);
+  }
+  for (const { value } of graph.values()) {
+    if (
+      value.kind !== "consumption" ||
+      !(
+        value.operationId === migrate.operationId ||
+        value.idempotencyKey === migrate.idempotencyKey ||
+        requests.has(value.requestDigest)
+      )
+    )
+      continue;
+    validateContract("manual-operation-record.v2", value);
+    const request = graph.get(value.requestDigest)?.value;
+    if (
+      !requests.has(value.requestDigest) ||
+      value.status !== "CONSUMED" ||
+      ![
+        "profileDigest",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "stage"
+      ].every((key) => value[key] === request[key])
+    )
+      fail("MANUAL_SESSION_UNVERIFIED");
+    // This first-stage entry only stops. Recovery and later-stage dispatch are
+    // not authorized here; shared sign/consume history checks remain unchanged.
+    fail("MANUAL_SESSION_UNVERIFIED");
+  }
 }
 
 export async function connectAndObserveManualTarget(input) {
@@ -542,6 +612,33 @@ const objectFile = (root, digest) => {
   return path.join(root, "objects", `${digest.slice(7)}.json`);
 };
 
+// These graph references only select a bounded candidate read. The shared
+// assessor still validates MS2 protocol, binding and every individual raw usage.
+function stdoutPrefixCandidates(graph) {
+  const digests = new Set();
+  for (const { value } of graph.values()) {
+    if (value.kind !== "process") continue;
+    validateContract("manual-runner-evidence.v1", value);
+    const request = graph.get(value.requestDigest)?.value;
+    if (!request || request.schemaVersion !== "manual-runner-request.v1") continue;
+    validateManualRunnerRequest(request);
+    if (
+      [
+        "profileDigest",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "attemptId",
+        "runId"
+      ].every((key) => value[key] === request[key]) &&
+      value.attemptAllocationDigest === request.attemptAllocationDigest
+    )
+      digests.add(value.protocol.stdoutPrefix.digest);
+  }
+  return digests;
+}
+
 function targetArchive({ profile, principal, recheck }) {
   const read = async (file, root) => {
     const item = await pinPrivateInput(file, { principal, privateRoot: root });
@@ -562,8 +659,68 @@ function targetArchive({ profile, principal, recheck }) {
     if (sha256Bytes(item.bytes) !== digest) fail("MANUAL_STORAGE_UNVERIFIED");
     return item;
   };
-  const raw = async (bytes) => {
-    if (!Buffer.isBuffer(bytes) || bytes.length > 1048576) fail("MANUAL_OUTPUT_LIMIT");
+  const raw = async (bytes, stdoutContext = null) => {
+    let limit = 1048576;
+    if (!Buffer.isBuffer(bytes)) fail("MANUAL_OUTPUT_LIMIT");
+    if (bytes.length > limit) {
+      if (!stdoutContext || bytes.length > 2097152) fail("MANUAL_OUTPUT_LIMIT");
+      const { requestBytes, authorization, authorizeBytes } = stdoutContext;
+      if (!Buffer.isBuffer(requestBytes) || !Buffer.isBuffer(authorizeBytes) || !authorization)
+        fail("MANUAL_EVIDENCE_BINDING_MISMATCH");
+      const request = JSON.parse(requestBytes),
+        authorize = parseManualRunnerFrames({
+          direction: "parent-to-child",
+          bytes: authorizeBytes,
+          ended: true
+        }).frames[0],
+        parsed = parseManualRunnerFrames({ direction: "child-to-parent", bytes, ended: false });
+      if (
+        authorize?.type !== "AUTHORIZE" ||
+        !authorizeBytes.subarray(0, 4).equals(Buffer.from("MS2 ")) ||
+        !bytes.subarray(0, 4).equals(Buffer.from("MS2 ")) ||
+        !encodeManualJson(authorize.payload.request).equals(requestBytes) ||
+        sha256Canonical(authorize.payload.authorization) !== sha256Canonical(authorization) ||
+        parsed.frames[0]?.payload.childChallenge !== request.childChallenge
+      )
+        fail("MANUAL_EVIDENCE_BINDING_MISMATCH");
+      const binding = {
+        ...fieldsFrom(request, [
+          "profileDigest",
+          "sessionId",
+          "sessionNonce",
+          "operationId",
+          "idempotencyKey",
+          "attemptId",
+          "runId",
+          "attemptAllocationDigest",
+          "containerId",
+          "runnerImageDigest",
+          "childChallenge"
+        ]),
+        requestDigest: sha256Bytes(requestBytes),
+        authorizationDigest: sha256Canonical(authorization)
+      };
+      for (const frame of parsed.frames.slice(1)) {
+        if (frame.type === "RESULT") {
+          if (
+            !Object.keys(binding)
+              .filter(
+                (key) =>
+                  ![
+                    "containerId",
+                    "runnerImageDigest",
+                    "childChallenge",
+                    "authorizationDigest"
+                  ].includes(key)
+              )
+              .every((key) => frame.payload[key] === binding[key])
+          )
+            fail("MANUAL_EVIDENCE_BINDING_MISMATCH");
+        } else if (sha256Canonical(frame.payload.binding) !== sha256Canonical(binding))
+          fail("MANUAL_EVIDENCE_BINDING_MISMATCH");
+      }
+      limit = 2097152;
+    }
     const digest = sha256Bytes(bytes),
       file = path.join(profile.storage.archiveRoot, "raw", `${digest.slice(7)}.bin`);
     await recheck();
@@ -589,10 +746,14 @@ function targetArchive({ profile, principal, recheck }) {
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
     }
-    const input = await pinPrivateInput(file, {
-      principal,
-      privateRoot: profile.storage.archiveRoot
-    });
+    const input = await pinPrivateInput(
+      file,
+      {
+        principal,
+        privateRoot: profile.storage.archiveRoot
+      },
+      limit
+    );
     try {
       if (!input.bytes.equals(bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
       await input.recheck();
@@ -606,31 +767,35 @@ function targetArchive({ profile, principal, recheck }) {
     raw,
     read,
     get,
-    async put(value, schema) {
-      validateContract(schema, value);
+    async put(value, schema, role = "archive") {
+      if (schema) validateContract(schema, value);
       const bytes = encodeManualJson(value),
         digest = sha256Bytes(bytes),
-        file = objectFile(profile.storage.archiveRoot, digest);
+        file = objectFile(profile.storage[role + "Root"], digest);
       await recheck();
       await checkedPrivatePath(path.dirname(file), {
         principal,
-        privateRoot: profile.storage.archiveRoot,
+        privateRoot: profile.storage[role + "Root"],
         directory: true
       });
-      const handle = await fs.open(file, "wx", 0o600);
       try {
-        const chain = await checkedPrivatePath(file, {
-          principal,
-          privateRoot: profile.storage.archiveRoot
-        });
-        if (!sameIdentity(chain.at(-1).stat, await handle.stat({ bigint: true })))
-          fail("MANUAL_STORAGE_UNVERIFIED");
-        await handle.writeFile(bytes);
-        await handle.sync();
-      } finally {
-        await handle.close();
+        const handle = await fs.open(file, "wx", 0o600);
+        try {
+          const chain = await checkedPrivatePath(file, {
+            principal,
+            privateRoot: profile.storage[role + "Root"]
+          });
+          if (!sameIdentity(chain.at(-1).stat, await handle.stat({ bigint: true })))
+            fail("MANUAL_STORAGE_UNVERIFIED");
+          await handle.writeFile(bytes);
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
       }
-      if (!(await get(digest)).bytes.equals(bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
+      if (!(await get(digest, role)).bytes.equals(bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
       await recheck();
       return digest;
     },
@@ -2086,7 +2251,15 @@ async function withExpectedAdmission(
       assertLive();
       await facts.recheck();
       await sources.guard();
-      for (const item of [...opened, ...sourcePins]) await item.recheck();
+      for (const items of [opened, sourcePins]) {
+        for (let offset = 0; offset < items.length; offset += 8) {
+          const settled = await Promise.allSettled(
+            items.slice(offset, offset + 8).map((item) => item.recheck())
+          );
+          const failed = settled.find((result) => result.status === "rejected");
+          if (failed) throw failed.reason;
+        }
+      }
       expectedRequire(
         (await archive.get(attemptAllocationDigest)).bytes.equals(encodeManualJson(allocation)),
         "MANUAL_STORAGE_UNVERIFIED"
@@ -2274,7 +2447,7 @@ async function withExpectedAdmission(
   }
 }
 
-async function launchZeroCredentialRunner(session, facts, observed) {
+async function launchZeroCredentialRunner(session, facts, observed, dry = null) {
   const { fixed, principal } = facts,
     operation = fixed.operation,
     archive = targetArchive(facts);
@@ -2307,10 +2480,10 @@ async function launchZeroCredentialRunner(session, facts, observed) {
     promotionEligible: false,
     ...identity,
     stage: "runner-command",
-    phaseKey: "dry-run",
+    phaseKey: dry ? "apply" : "dry-run",
     allocatedAt,
     targetIntent: operation.targetIntent,
-    predecessorExecutionRecordDigest: null
+    predecessorExecutionRecordDigest: dry?.reference.executionRecordDigest ?? null
   };
   const attemptAllocationDigest = await archive.put(allocation, "manual-runner-evidence.v1");
   if (!(await archive.get(attemptAllocationDigest)).bytes.equals(encodeManualJson(allocation)))
@@ -2440,8 +2613,23 @@ async function launchZeroCredentialRunner(session, facts, observed) {
   let previousProcessEvidenceDigest = null,
     stdout = Buffer.alloc(0),
     stderr = Buffer.alloc(0),
-    closedAt = null;
-  const snapshot = async () => {
+    closedAt = null,
+    requestDigest = null,
+    input = null,
+    authorization = null,
+    consumed = null,
+    commandResult = null,
+    resultDigest = null,
+    observationDigest = null;
+  const parentFrames = [];
+  const stdoutRaw = (bytes) =>
+    archive.raw(bytes, {
+      requestBytes: input?.canonicalBytes,
+      authorization,
+      authorizeBytes: parentFrames[0]
+    });
+  const profileBytes = encodeManualJson(facts.profile);
+  const snapshot = async (prefix = stdout) => {
     const value = {
       schemaVersion: "manual-runner-evidence.v1",
       kind: "process",
@@ -2449,11 +2637,20 @@ async function launchZeroCredentialRunner(session, facts, observed) {
       promotionEligible: false,
       ...identity,
       attemptAllocationDigest,
-      requestDigest: null,
+      requestDigest,
       previousProcessEvidenceDigest,
       events: [...events],
       closedAt,
-      protocol: { stdoutPrefix: await archive.raw(stdout), parentFrames: [] }
+      protocol: {
+        stdoutPrefix: await stdoutRaw(prefix),
+        parentFrames: await (async () => {
+          const refs = [];
+          // Each new ACK can create a raw-directory entry. Keep these writes
+          // separate from the other frames' private-directory readbacks.
+          for (const bytes of parentFrames) refs.push(await archive.raw(bytes));
+          return refs;
+        })()
+      }
     };
     previousProcessEvidenceDigest = await archive.put(value, "manual-runner-evidence.v1");
     if (!(await archive.get(previousProcessEvidenceDigest)).bytes.equals(encodeManualJson(value)))
@@ -2505,7 +2702,13 @@ async function launchZeroCredentialRunner(session, facts, observed) {
       refusalAt = new Date().toISOString();
     }
     challengeReject(cause);
+    wake?.();
+    wake = null;
   };
+  let activeFrames = false,
+    parsedCount = 0,
+    wake = null;
+  const frames = [];
   const collect = (stream) => (chunk) => {
     if (!Buffer.isBuffer(chunk)) {
       rejectStream(
@@ -2514,9 +2717,10 @@ async function launchZeroCredentialRunner(session, facts, observed) {
       return;
     }
     const current = stream === "stdout" ? stdout : stderr;
-    const overflow = current.length + chunk.length > 1048576;
+    const limit = stream === "stdout" ? 2097152 : 1048576;
+    const overflow = current.length + chunk.length > limit;
     if (overflow) incompleteRaw.add(stream);
-    const next = Buffer.concat([current, chunk.subarray(0, 1048576 - current.length)]);
+    const next = Buffer.concat([current, chunk.subarray(0, limit - current.length)]);
     if (stream === "stdout") stdout = next;
     else stderr = next;
     try {
@@ -2533,12 +2737,21 @@ async function launchZeroCredentialRunner(session, facts, observed) {
           bytes: stdout,
           ended: false
         });
-        if (parsed.frames.length > 1 || (parsed.frames.length === 1 && parsed.pendingBytes.length))
+        if (
+          !activeFrames &&
+          (parsed.frames.length > 1 || (parsed.frames.length === 1 && parsed.pendingBytes.length))
+        )
           fail("MANUAL_FRAME_ORDER_INVALID");
-        if (parsed.frames.length === 1) {
+        if (!challenge && parsed.frames.length) {
           challenge = parsed.frames[0];
           challengeResolve(challenge);
         }
+        for (const frame of parsed.frames.slice(parsedCount)) {
+          if (frame.type !== "CHALLENGE") frames.push(frame);
+        }
+        parsedCount = parsed.frames.length;
+        wake?.();
+        wake = null;
       }
     } catch (cause) {
       rejectStream(cause);
@@ -2691,6 +2904,8 @@ async function launchZeroCredentialRunner(session, facts, observed) {
     child.once("close", (exitCode, signal) => {
       close = { exitCode, signal, at: new Date().toISOString() };
       closedResolve(close);
+      wake?.();
+      wake = null;
       if (!challenge)
         rejectStream(
           Object.assign(new Error("MANUAL_FRAME_INCOMPLETE"), { code: "MANUAL_FRAME_INCOMPLETE" })
@@ -2746,9 +2961,357 @@ async function launchZeroCredentialRunner(session, facts, observed) {
       },
       sources,
       async (admitted) => {
+        const { profile, targetContext } = facts;
+        const target = profile.allowedTargets.find(
+          (value) =>
+            value.endpointPolicyId === operation.targetIntent.endpointPolicyId &&
+            value.databaseName === operation.targetIntent.databaseName
+        );
+        const physicalIdentity = observed.observation.physicalIdentity;
+        const roleObservation = {
+          role: target.roles.migrate,
+          tls: true,
+          schemaObservationDigest: sha256Canonical(observed.observation.catalog)
+        };
+        const domainInput = {
+          databaseIdentityFingerprint: sha256Canonical({
+            databaseName: physicalIdentity.databaseName,
+            databaseOid: physicalIdentity.databaseOid,
+            role: roleObservation.role,
+            tls: true
+          }),
+          baselineManifestIdentityDigest: sha256Canonical(baseline.value.identity),
+          baselineManifestDigest: baselines[0][0],
+          expectedSchemaDigest: admitted.expectation.script.digest,
+          expectedOwner: observed.observation.catalog.schemaOwner,
+          allowedExtensions: [...observed.observation.catalog.extensions]
+        };
+        if (dry && !encodeManualJson(domainInput).equals(encodeManualJson(dry.domainInput)))
+          fail("MANUAL_EVIDENCE_BINDING_MISMATCH");
+        const request = {
+          schemaVersion: "manual-runner-request.v1",
+          ...identity,
+          ownerId: profile.ownerId,
+          purpose: operation.purpose,
+          targetIntent: operation.targetIntent,
+          stage: "runner-command",
+          capability: "migrate",
+          phase: allocation.phaseKey,
+          commandId: "db.migrate.deploy",
+          commandVersion: "1",
+          buildProofDigest: facts.build.buildProofDigest,
+          baselineManifestDigest: baselines[0][0],
+          targetObservationDigest: sha256Canonical(observed.observation),
+          physicalIdentity,
+          roleObservation,
+          containerId,
+          runnerImageDigest: image.imageDigest,
+          childChallenge: challenge.payload.childChallenge,
+          attemptAllocationDigest,
+          domainInput,
+          expectedSchemaEvidenceDigest: admitted.admission.schemaExpectation.digest,
+          ...(dry
+            ? {
+                dryRunRecordDigest: dry.reference.executionRecordDigest,
+                approvedPlanDigest: deterministicPlanDigest(dry.result.plan)
+              }
+            : {})
+        };
+        validateManualRunnerRequest(request);
+        const catalog = await computeMigrationCatalog(repoRoot);
+        if (catalog.digest !== proof.identity.migrationCatalogDigest)
+          fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+        for (const entry of catalog.entries) {
+          const bytes = await fs.readFile(path.join(repoRoot, ...entry.path.split("/")));
+          if (sha256Bytes(bytes) !== entry.sha256) fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
+          await archive.raw(bytes);
+        }
+        await archive.put(catalog, null);
+        for (const [index, bytes] of facts.h3InputBytes.entries()) {
+          const ref = await archive.raw(bytes);
+          const expected = index === 0 ? targetContext.h3Approval : targetContext.h3Readback;
+          if (sha256Canonical(ref) !== sha256Canonical(expected)) fail("MANUAL_STORAGE_UNVERIFIED");
+        }
         await admitted.recheck();
-        refusalAt = new Date().toISOString();
-        fail("MANUAL_RUNNER_REQUEST_INPUT_REQUIRED");
+        requestDigest = await archive.put(request, "manual-runner-request.v1");
+        input = {
+          binding: Object.fromEntries(
+            Object.entries(request).filter(
+              ([key]) =>
+                ![
+                  "schemaVersion",
+                  "attemptId",
+                  "runId",
+                  "attemptAllocationDigest",
+                  "domainInput",
+                  "expectedSchemaEvidenceDigest"
+                ].includes(key)
+            )
+          ),
+          canonicalBytes: (await archive.get(requestDigest)).bytes
+        };
+        // Append a bound successor; the original null-request bytes stay intact.
+        await snapshot();
+        await admitted.recheck();
+        authorization = await session.sign(input);
+        consumed = await session.consume({
+          authorization,
+          request: input,
+          childObservation: fieldsFrom(request, [
+            "containerId",
+            "runnerImageDigest",
+            "childChallenge"
+          ])
+        });
+        const custody = async (digest, subjectType = "r2-artifact", role = "archive") => {
+          await archive.get(digest, role);
+          const observedAt = new Date().toISOString();
+          return session.record("custody", {
+            schemaVersion: "manual-operation-record.v2",
+            kind: "custody",
+            profileDigest: request.profileDigest,
+            recordedAt: new Date().toISOString(),
+            promotionEligible: false,
+            ownerId: profile.ownerId,
+            subjectDigest: digest,
+            subjectType,
+            purpose: role === "backup" ? "backup-readback" : "archive-readback",
+            outcome: "MATCH",
+            observedDigest: digest,
+            observedAt,
+            storageRole: role,
+            retentionDays: profile.storage.retentionDays,
+            reasonCode: null
+          });
+        };
+        const processReadbackRef = await custody(previousProcessEvidenceDigest);
+        const processReadback = (await archive.get(processReadbackRef.recordDigest)).value;
+        const bound = (await archive.get(previousProcessEvidenceDigest)).value;
+        const authorize = encodeManualRunnerFrame({
+          protocol: "MS2",
+          type: "AUTHORIZE",
+          sequence: 0,
+          payload: {
+            launchContext: { containerId, runnerImageDigest: image.imageDigest },
+            allocation,
+            request,
+            authorization,
+            receipt: consumed.handoffReceipt,
+            baseline: baseline.value,
+            process: bound,
+            processReadback,
+            targetContext
+          }
+        });
+        const binding = {
+          ...fieldsFrom(request, [
+            ...observationFields,
+            "attemptAllocationDigest",
+            "containerId",
+            "runnerImageDigest",
+            "childChallenge"
+          ]),
+          requestDigest,
+          authorizationDigest: sha256Canonical(authorization)
+        };
+        let stdinBytes = 0;
+        const send = async (bytes) => {
+          if (stdinBytes + bytes.length > 1048576) fail("MANUAL_OUTPUT_LIMIT");
+          stdinBytes += bytes.length;
+          try {
+            await new Promise((resolve, reject) =>
+              child.stdin.write(bytes, (error) => (error ? reject(error) : resolve()))
+            );
+          } catch {
+            fail("MANUAL_FRAME_INCOMPLETE");
+          }
+        };
+        const next = () =>
+          bounded(
+            (async () => {
+              while (true) {
+                if (failure) throw failure;
+                if (frames.length) return frames.shift();
+                if (close) fail("MANUAL_FRAME_INCOMPLETE");
+                await new Promise((resolve) => {
+                  wake = resolve;
+                });
+              }
+            })(),
+            1810000,
+            "MANUAL_PROCESS_TIMEOUT"
+          );
+        const control = (frame, type) => {
+          if (
+            frame.type !== type ||
+            sha256Canonical(frame.payload.binding) !== sha256Canonical(binding) ||
+            sha256Canonical(frame.payload.authorizeFrame) !==
+              sha256Canonical({ digest: sha256Bytes(authorize), bytes: authorize.length })
+          )
+            fail("MANUAL_EVIDENCE_BINDING_MISMATCH");
+        };
+        await admitted.recheck();
+        await facts.recheckResources();
+        await sources.guard();
+        if (close || child.exitCode !== null || child.signalCode !== null)
+          fail("MANUAL_FRAME_INCOMPLETE");
+        await checkConsumedObservation(session, input, authorization, consumed, facts, archive);
+        activeFrames = true;
+        await send(authorize);
+        parentFrames.push(authorize);
+        control(await next(), "READY");
+        await admitted.recheck();
+        await facts.recheckResources();
+        await sources.guard();
+        if (close || child.exitCode !== null || child.signalCode !== null)
+          fail("MANUAL_FRAME_INCOMPLETE");
+        const secret = await pinPrivateInput(
+          path.join(
+            profile.storage.credentialRoot,
+            "operations",
+            operation.operationRef,
+            "migrate.json"
+          ),
+          { principal, privateRoot: profile.storage.credentialRoot }
+        );
+        let credentialBytes;
+        try {
+          const credential = observerCredential(secret.bytes, target.roles.migrate);
+          credential.password = "";
+          credential.username = "";
+          await secret.recheck();
+          await admitted.recheck();
+          await checkConsumedObservation(session, input, authorization, consumed, facts, archive);
+          credentialBytes = encodeManualRunnerFrame({
+            protocol: "MS2",
+            type: "CREDENTIAL",
+            sequence: 1,
+            payload: { binding, credential: secret.bytes.toString("utf8") }
+          });
+          await send(credentialBytes);
+        } finally {
+          credentialBytes?.fill(0);
+          secret.bytes.fill(0);
+          await secret.close();
+        }
+        control(await next(), "CREDENTIAL_RECEIVED");
+        while (true) {
+          const frame = await next();
+          await archive.raw(frame.frameBytes);
+          await archive.raw(frame.payloadBytes);
+          if (frame.type === "RESULT") {
+            commandResult = frame.payload;
+            resultDigest = await archive.put(commandResult, "manual-runner-evidence.v1");
+            if (!(await archive.get(resultDigest)).bytes.equals(frame.payloadBytes))
+              fail("MANUAL_STORAGE_UNVERIFIED");
+            await custody(resultDigest);
+            break;
+          }
+          if (frame.type === "ACK_RECEIVED") continue;
+          if (!["PREPARED", "EVENT", "OBSERVATION"].includes(frame.type))
+            fail("MANUAL_FRAME_ORDER_INVALID");
+          const prior = await archive.get(previousProcessEvidenceDigest);
+          const prefixLength = parseManualRunnerFrames({
+            direction: "child-to-parent",
+            bytes: stdout,
+            ended: false
+          })
+            .frames.slice(0, frame.sequence + 1)
+            .reduce((total, value) => total + value.frameBytes.length, 0);
+          const prefix = Buffer.from(stdout.subarray(0, prefixLength));
+          let subject, subjectDigest;
+          if (frame.type === "OBSERVATION") {
+            subjectDigest = await archive.put(
+              frame.payload.observation,
+              "manual-runner-evidence.v1"
+            );
+            observationDigest = subjectDigest;
+            subject = {
+              kind: "observation",
+              observation: (await archive.get(subjectDigest)).value
+            };
+          } else {
+            const value = frame.payload.event;
+            if (value.event === "PREPARED") {
+              const prisma = "/app/apps/release-runner/node_modules/.bin/prisma";
+              const schema = "/app/apps/api/prisma/schema.prisma",
+                config = "/app/apps/api/prisma.config.ts";
+              const argsByTool = {
+                "prisma-version": ["--version"],
+                "psql-version": ["--version"],
+                "prisma-deploy": ["migrate", "deploy", "--schema", schema, "--config", config],
+                "prisma-diff": [
+                  "migrate",
+                  "diff",
+                  "--from-config-datasource",
+                  "--to-schema",
+                  schema,
+                  "--exit-code",
+                  "--config",
+                  config
+                ],
+                "prisma-script": [
+                  "migrate",
+                  "diff",
+                  "--from-empty",
+                  "--to-config-datasource",
+                  "--script",
+                  "--config",
+                  config
+                ]
+              };
+              const args = argsByTool[value.tool];
+              if (!args) fail("MANUAL_FRAME_INVALID");
+              const argv = await archive.raw(
+                encodeManualJson({ command: value.tool === "psql-version" ? "psql" : prisma, args })
+              );
+              if (argv.digest !== value.argvDigest) fail("MANUAL_EVIDENCE_BINDING_MISMATCH");
+            }
+            if (value.event === "CLOSED") {
+              for (const key of ["stdout", "stderr"]) {
+                const bytes = Buffer.from(frame.payload[key + "Base64"], "base64");
+                new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+                const raw = await archive.raw(bytes);
+                if (sha256Canonical(raw) !== sha256Canonical(value[key]))
+                  fail("MANUAL_EVIDENCE_BINDING_MISMATCH");
+              }
+            }
+            events.push(value);
+            await snapshot(prefix);
+            subjectDigest = previousProcessEvidenceDigest;
+            subject = { kind: "process", process: (await archive.get(subjectDigest)).value };
+          }
+          const readbackRef = await custody(subjectDigest);
+          const ack = encodeManualRunnerFrame({
+            protocol: "MS2",
+            type: "ACK",
+            sequence: parentFrames.length + 1,
+            payload: {
+              binding,
+              acknowledgedFrame: {
+                digest: sha256Bytes(frame.frameBytes),
+                bytes: frame.frameBytes.length
+              },
+              subject,
+              readback: (await archive.get(readbackRef.recordDigest)).value
+            }
+          });
+          validateManualRunnerProtocol({
+            mode: "live-ack",
+            profileBytes,
+            requestBytes: input.canonicalBytes,
+            authorizationBytes: encodeManualJson(authorization),
+            previousProcessBytes: prior.bytes,
+            childFrameBytes: frame.frameBytes,
+            ackFrameBytes: ack,
+            stdoutPrefixBytes: prefix,
+            parentFrameBytes: [...parentFrames]
+          });
+          await send(ack);
+          parentFrames.push(ack);
+        }
+        await bounded(closed, 5000, "MANUAL_FRAME_INCOMPLETE");
+        if (failure) throw failure;
       }
     );
   } catch (cause) {
@@ -2780,7 +3343,8 @@ async function launchZeroCredentialRunner(session, facts, observed) {
             directory: true
           });
           cleanupEnvironment = { ...environment, DOCKER_CONFIG: cleanupConfig };
-          await docker(["stop", "--time", "2", "--", containerId], "stop", true);
+          if (!commandResult || failure || !close)
+            await docker(["stop", "--time", "2", "--", containerId], "stop", true);
           checkContainer(await inspect("final-inspect", true), false);
           stopped = true;
         } catch (cause) {
@@ -2808,7 +3372,7 @@ async function launchZeroCredentialRunner(session, facts, observed) {
         }
       }
       await retain(async () => {
-        await archive.raw(stdout);
+        await stdoutRaw(stdout);
         await archive.raw(stderr);
       });
       try {
@@ -2827,8 +3391,8 @@ async function launchZeroCredentialRunner(session, facts, observed) {
           stopped &&
           !cleanupCause &&
           incompleteRaw.size === 0 &&
-          refusalAt <= close.at;
-        if (complete) {
+          (commandResult && !failure ? true : refusalAt <= close.at);
+        if (complete && !commandResult) {
           events.push(
             event("DISPATCH_CLOSED", {
               at: refusalAt,
@@ -2839,7 +3403,7 @@ async function launchZeroCredentialRunner(session, facts, observed) {
           );
           await retain(snapshot);
         }
-        const stdoutRef = incompleteRaw.has("stdout") ? null : await archive.raw(stdout),
+        const stdoutRef = incompleteRaw.has("stdout") ? null : await stdoutRaw(stdout),
           stderrRef = incompleteRaw.has("stderr") ? null : await archive.raw(stderr);
         events.push(
           event("CLOSED", {
@@ -2853,7 +3417,19 @@ async function launchZeroCredentialRunner(session, facts, observed) {
             stderr: stderrRef
           })
         );
-        if (complete && !cleanupCause) closedAt = close.at;
+        const calls = new Map();
+        for (const value of events)
+          if (value.event !== "DISPATCH_CLOSED") calls.set(value.processSequence, value.event);
+        const dispatchClosed = events.some(
+          (value) => value.tool === "runner" && value.event === "DISPATCH_CLOSED"
+        );
+        if (
+          complete &&
+          !cleanupCause &&
+          dispatchClosed &&
+          [...calls.values()].every((value) => ["CLOSED", "SPAWN_FAILED"].includes(value))
+        )
+          closedAt = close.at;
         await retain(snapshot);
       }
       await retain(sources.guard);
@@ -2872,6 +3448,123 @@ async function launchZeroCredentialRunner(session, facts, observed) {
     throw Object.assign(new Error("MANUAL_RUNNER_CLEANUP_UNKNOWN", { cause: cleanupCause }), {
       code: "MANUAL_RUNNER_CLEANUP_UNKNOWN"
     });
+  if (!failure && commandResult && closedAt && !cleanupCause) {
+    const request = JSON.parse(input.canonicalBytes);
+    const checked = (await archive.get(consumed.handoffReceipt.consumptionRecordDigest, "journal"))
+      .value;
+    const scoped = fieldsFrom(request, [
+      "sessionId",
+      "sessionNonce",
+      "operationId",
+      "idempotencyKey"
+    ]);
+    const record = (kind, fields) => ({
+      schemaVersion: "manual-operation-record.v2",
+      kind,
+      profileDigest: request.profileDigest,
+      recordedAt: new Date().toISOString(),
+      promotionEligible: false,
+      ...fields
+    });
+    const post = await session.record(
+      "post-state",
+      record("post-state", {
+        ...scoped,
+        requestDigest,
+        consumptionRecordDigest: sha256Canonical(checked),
+        outcome: observationDigest ? "OBSERVED" : "UNAVAILABLE",
+        observationDigest,
+        observedAt: observationDigest
+          ? (await archive.get(observationDigest)).value.observedAt
+          : null,
+        reasonCode: observationDigest ? null : "MANUAL_EVIDENCE_INCOMPLETE"
+      })
+    );
+    const artifactGraph = await archive.graph(),
+      prefixCandidates = stdoutPrefixCandidates(artifactGraph),
+      rawBlobs = [];
+    for (const name of await fs.readdir(path.join(facts.profile.storage.archiveRoot, "raw"))) {
+      if (!/^[0-9a-f]{64}\.bin$/u.test(name)) fail("MANUAL_STORAGE_UNVERIFIED");
+      const raw = await pinPrivateInput(
+        path.join(facts.profile.storage.archiveRoot, "raw", name),
+        { principal, privateRoot: facts.profile.storage.archiveRoot },
+        prefixCandidates.has(`sha256:${name.slice(0, -4)}`) ? 2097152 : 1048576
+      );
+      try {
+        if (sha256Bytes(raw.bytes) !== "sha256:" + name.slice(0, -4))
+          fail("MANUAL_STORAGE_UNVERIFIED");
+        await raw.recheck();
+        rawBlobs.push(Buffer.from(raw.bytes));
+      } finally {
+        await raw.close();
+      }
+    }
+    const assessment = assessManualRunnerEvidence({
+      profileBytes,
+      requestBytes: input.canonicalBytes,
+      artifactBytes: [...artifactGraph.values()].map((item) => item.bytes),
+      rawBlobs
+    });
+    const handoffDigest = sha256Canonical(consumed.handoffReceipt);
+    const handoffReadback = [...artifactGraph.entries()].filter(
+      ([, item]) =>
+        item.value.kind === "custody" &&
+        item.value.subjectDigest === handoffDigest &&
+        item.value.purpose === "handoff-readback" &&
+        item.value.outcome === "MATCH"
+    );
+    if (handoffReadback.length !== 1) fail("MANUAL_SESSION_UNVERIFIED");
+    const execution = record("execution", {
+      ...scoped,
+      attemptId,
+      requestDigest,
+      authorizationDigest: sha256Canonical(authorization),
+      consumptionRecordDigest: sha256Canonical(checked),
+      handoffRecordDigest: handoffDigest,
+      handoffReadbackDigest: handoffReadback[0][0],
+      postStateRecordDigest: post.recordDigest,
+      predecessorExecutionRecordDigest: request.dryRunRecordDigest ?? null,
+      startedAt: commandResult.startedAt,
+      finishedAt: closedAt,
+      status: assessment.executionStatus,
+      reasonCode: assessment.reasonCode,
+      resultDigest,
+      processEvidenceDigest: previousProcessEvidenceDigest
+    });
+    const executionRef = await session.record("execution", execution);
+    await archive.put(execution, "manual-operation-record.v2", "backup");
+    for (const role of ["archive", "backup"]) {
+      await archive.get(executionRef.recordDigest, role);
+      const observedAt = new Date().toISOString();
+      await session.record(
+        "custody",
+        record("custody", {
+          ownerId: facts.profile.ownerId,
+          subjectDigest: executionRef.recordDigest,
+          subjectType: "record",
+          purpose: role === "backup" ? "backup-readback" : "archive-readback",
+          outcome: "MATCH",
+          observedDigest: executionRef.recordDigest,
+          observedAt,
+          storageRole: role,
+          retentionDays: facts.profile.storage.retentionDays,
+          reasonCode: null
+        })
+      );
+    }
+    if (assessment.executionStatus !== "SUCCEEDED")
+      fail(assessment.reasonCode ?? "MANUAL_EVIDENCE_INCOMPLETE");
+    return {
+      reference: Object.freeze({
+        requestDigest,
+        resultDigest,
+        processEvidenceDigest: previousProcessEvidenceDigest,
+        executionRecordDigest: executionRef.recordDigest
+      }),
+      result: commandResult,
+      domainInput: request.domainInput
+    };
+  }
   throw (
     failure ??
     Object.assign(new Error("MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED"), {
@@ -2887,12 +3580,20 @@ async function checkConsumedObservation(session, input, authorization, consumed,
     authorizationDigest = sha256Canonical(authorization),
     requestDigest = sha256Bytes(input.canonicalBytes);
   if (
-    consumed.stage !== "target-observe" ||
+    consumed.stage !== request.stage ||
     consumed.parentDecision.authorizationDigest !== authorizationDigest ||
     consumed.parentDecision.requestDigest !== requestDigest
   )
     fail("MANUAL_BINDING_MISMATCH");
-  const custody = (await archive.get(consumed.consumptionReadbackDigest)).value;
+  const receipt = request.stage === "runner-command" ? consumed.handoffReceipt : null;
+  if (
+    receipt &&
+    !(await archive.get(sha256Canonical(receipt))).bytes.equals(encodeManualJson(receipt))
+  )
+    fail("MANUAL_SESSION_UNVERIFIED");
+  const custody = (
+    await archive.get(receipt?.consumptionReadbackDigest ?? consumed.consumptionReadbackDigest)
+  ).value;
   validateContract("manual-operation-record.v2", custody);
   const consumption = (await archive.get(custody.subjectDigest, "journal")).value;
   validateContract("manual-operation-record.v2", consumption);
@@ -2969,7 +3670,14 @@ async function checkConsumedObservation(session, input, authorization, consumed,
       record: opened,
       recordDigest: consumption.sessionRecordDigest,
       readAt,
-      predecessor: null
+      predecessor:
+        request.dryRunRecordDigest || request.predecessorExecutionRecordDigest
+          ? (
+              await archive.get(
+                request.dryRunRecordDigest ?? request.predecessorExecutionRecordDigest
+              )
+            ).value
+          : null
     },
     revocation: {
       records,
@@ -2985,6 +3693,30 @@ async function checkConsumedObservation(session, input, authorization, consumed,
     decision.profileDigest !== targetContext.profileDigest
   )
     fail("MANUAL_BINDING_MISMATCH");
+  if (receipt) {
+    const handoffReadbacks = [...graph.values()].filter(
+      ({ value }) =>
+        value.kind === "custody" &&
+        value.subjectDigest === sha256Canonical(receipt) &&
+        value.purpose === "handoff-readback"
+    );
+    if (
+      handoffReadbacks.length !== 1 ||
+      handoffReadbacks[0].value.outcome !== "MATCH" ||
+      handoffReadbacks[0].value.observedDigest !== sha256Canonical(receipt) ||
+      handoffReadbacks[0].value.storageRole !== "archive" ||
+      receipt.consumptionRecordDigest !== sha256Canonical(consumption)
+    )
+      fail("MANUAL_SESSION_UNVERIFIED");
+    verifyManualHandoff({
+      authorization,
+      receipt,
+      profile,
+      request: input,
+      childObservation: fieldsFrom(request, ["containerId", "runnerImageDigest", "childChallenge"]),
+      now: readAt
+    });
+  }
   return consumption;
 }
 
@@ -3171,6 +3903,7 @@ async function performTargetObservation(session, facts) {
       // The same complete canonical archive input as R1 supplies the only
       // success classification; raw reads retain the existing private-store protections.
       const rawDirectory = path.join(profile.storage.archiveRoot, "raw"),
+        prefixCandidates = stdoutPrefixCandidates(graph),
         rawBlobs = [];
       await checkedPrivatePath(rawDirectory, {
         principal,
@@ -3179,10 +3912,11 @@ async function performTargetObservation(session, facts) {
       });
       for (const name of await fs.readdir(rawDirectory)) {
         if (!/^[0-9a-f]{64}\.bin$/u.test(name)) fail("MANUAL_STORAGE_UNVERIFIED");
-        const raw = await pinPrivateInput(path.join(rawDirectory, name), {
-          principal,
-          privateRoot: profile.storage.archiveRoot
-        });
+        const raw = await pinPrivateInput(
+          path.join(rawDirectory, name),
+          { principal, privateRoot: profile.storage.archiveRoot },
+          prefixCandidates.has(`sha256:${name.slice(0, -4)}`) ? 2097152 : 1048576
+        );
         try {
           if (sha256Bytes(raw.bytes) !== `sha256:${name.slice(0, -4)}`)
             fail("MANUAL_STORAGE_UNVERIFIED");
@@ -3460,11 +4194,11 @@ function canonicalH3(bytes) {
   }
 }
 
-async function pinPrivateInput(file, options) {
+async function pinPrivateInput(file, options, limit = 1048576) {
   const chain = await checkedPrivatePath(file, options);
   const handle = await fs.open(file, "r");
   try {
-    const captured = await readPinned(handle, chain.at(-1).stat);
+    const captured = await readPinned(handle, chain.at(-1).stat, limit);
     const sameChain = (observed) =>
       observed.length === chain.length &&
       observed.every(
@@ -3479,12 +4213,12 @@ async function pinPrivateInput(file, options) {
       const after = await checkedPrivatePath(file, options);
       if (
         !sameChain(after) ||
-        !(await readPinned(handle, captured.stat)).bytes.equals(captured.bytes)
+        !(await readPinned(handle, captured.stat, limit)).bytes.equals(captured.bytes)
       )
         fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
       const independent = await fs.open(file, "r");
       try {
-        if (!(await readPinned(independent, captured.stat)).bytes.equals(captured.bytes))
+        if (!(await readPinned(independent, captured.stat, limit)).bytes.equals(captured.bytes))
           fail("MANUAL_OPERATION_INPUT_UNAVAILABLE");
       } finally {
         await independent.close();
@@ -3666,6 +4400,7 @@ async function readH3Inputs(fixed, profile, principal, recheckOwner, work) {
     verified = true;
     return await work({
       targetContext,
+      h3InputBytes: opened.slice(0, 2).map((item) => Buffer.from(item.bytes)),
       recheck: recheckInputs,
       recheckResources: () => observeH3Resources(values[0], values[1], recheckInputs)
     });

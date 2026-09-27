@@ -703,6 +703,48 @@ test("branded dry-run maps stable domain input and returns a bound observation/r
   validateContract("manual-runner-evidence.v1", result);
 });
 
+for (const outcome of ["RETURNED", "THREW"])
+  test(`result completion keeps ${outcome} time fields valid across advancing milliseconds`, async (t) => {
+    const { request, decision, baseline } = manualFixture();
+    const runtime = await connectedRuntime("migrator");
+    let tick = Date.parse(NOW);
+    runtime.now = () => new Date(tick++);
+    if (outcome === "THREW")
+      runtime.loadMigrationCatalog = async () => {
+        throw Object.assign(new Error("finite handler failure"), {
+          code: "MANUAL_TEST_HANDLER_FAILED"
+        });
+      };
+    const { result, observation: current } = await executeManualCommand({
+      request,
+      decision,
+      baseline,
+      database: runtime,
+      runtime
+    });
+    t.diagnostic(
+      JSON.stringify({
+        outcome: result.outcome,
+        startedAt: result.startedAt,
+        observedAt: current?.observedAt,
+        finishedAt: result.finishedAt,
+        recordedAt: result.recordedAt
+      })
+    );
+    assert.equal(result.outcome, outcome);
+    assert.equal(result.reasonCode, outcome === "THREW" ? "MANUAL_TEST_HANDLER_FAILED" : null);
+    assert.ok(current);
+    assert.equal(result.observationDigest, sha256Canonical(current));
+    assert.ok(Date.parse(result.startedAt) <= Date.parse(current.observedAt));
+    assert.ok(Date.parse(current.observedAt) <= Date.parse(result.finishedAt));
+    assert.ok(
+      Date.parse(result.finishedAt) <= Date.parse(result.recordedAt),
+      "a completed result cannot be recorded before it finishes"
+    );
+    validateContract("manual-runner-evidence.v1", current);
+    validateContract("manual-runner-evidence.v1", result);
+  });
+
 test("final observation follows each phase's actual process ACK and completion time", async () => {
   const planning = await connectedRuntime("migrator");
   await planning.observeIdentity();

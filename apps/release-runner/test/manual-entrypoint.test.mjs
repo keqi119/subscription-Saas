@@ -13,6 +13,7 @@ import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import {
   canonicalJson,
+  deterministicPlanDigest,
   computeManualClusterFingerprint,
   encodeManualJson,
   encodeManualRunnerFrame,
@@ -49,7 +50,8 @@ const aKeys = [
 function signedAuthorize(
   challengeBytes,
   retainedNonce = challenge([challengeBytes]),
-  collector = false
+  collector = false,
+  amendRequest = () => {}
 ) {
   // These are shape/binding fixtures with a real ephemeral Ed25519 signature.
   // They do not attest parent Docker, H3, private custody, or archival success.
@@ -173,6 +175,7 @@ function signedAuthorize(
     },
     expectedSchemaEvidenceDigest: syntheticDigest
   };
+  amendRequest(request);
   const artifact = (kind, offset, fields) => ({
     schemaVersion: "manual-runner-evidence.v1",
     kind,
@@ -186,7 +189,7 @@ function signedAuthorize(
     phaseKey: request.phase,
     allocatedAt: stamp(-800),
     targetIntent,
-    predecessorExecutionRecordDigest: null
+    predecessorExecutionRecordDigest: request.dryRunRecordDigest ?? null
   });
   request.attemptAllocationDigest = sha256Canonical(allocation);
   const bindingKeys = [
@@ -212,7 +215,10 @@ function signedAuthorize(
     "runnerImageDigest",
     "childChallenge"
   ];
-  const binding = pick(request, bindingKeys);
+  const binding = pick(request, [
+    ...bindingKeys,
+    ...(request.phase === "apply" ? ["dryRunRecordDigest", "approvedPlanDigest"] : [])
+  ]);
   const authorization = signManualAuthorization({
     payload: {
       schemaVersion: "manual-launch-authorization.v1",
@@ -1094,15 +1100,41 @@ test("actual Node child emits its own challenge on a zero-credential pipe before
 
 async function collectedChild(t, options = {}) {
   const root = await fs.mkdtemp(path.join(tmpdir(), "r22-collector-"));
+  const captured = { stdout: [], stderr: [], parents: [] };
   let child;
   t.after(async () => {
     child?.kill();
+    if (
+      (options.capacityApply || options.streamOversize || options.oversize) &&
+      process.env.R22_CAPACITY_EVIDENCE_ROOT
+    ) {
+      await fs.writeFile(path.join(root, "complete-stdout.bin"), Buffer.concat(captured.stdout), {
+        flag: "wx",
+        mode: 0o600
+      });
+      await fs.writeFile(
+        path.join(root, "public-parent-frames.bin"),
+        Buffer.concat(captured.parents),
+        { flag: "wx", mode: 0o600 }
+      );
+      await fs.writeFile(path.join(root, "child-diagnostics.txt"), Buffer.concat(captured.stderr), {
+        flag: "wx",
+        mode: 0o600
+      });
+      await fs.cp(root, path.join(process.env.R22_CAPACITY_EVIDENCE_ROOT, path.basename(root)), {
+        recursive: true,
+        errorOnExist: true
+      });
+    }
     assert.equal(path.dirname(root), path.resolve(tmpdir()));
     assert.ok(path.basename(root).startsWith("r22-collector-"));
     await fs.rm(root, { recursive: true, force: true });
   });
   const publicFile = path.join(root, "profile.json");
   const migrationRoot = path.join(root, "migrations");
+  const scriptFile = path.join(root, "script-output.sql");
+  if (options.fullScript)
+    await fs.writeFile(scriptFile, options.fullScript, { flag: "wx", mode: 0o600 });
   await fs.mkdir(path.join(migrationRoot, "20260101000000_first"), { recursive: true });
   await fs.writeFile(
     path.join(migrationRoot, "20260101000000_first", "migration.sql"),
@@ -1115,18 +1147,22 @@ async function collectedChild(t, options = {}) {
     import fs from 'node:fs/promises'; import cp from 'node:child_process';
     import {registerHooks,syncBuiltinESMExports} from 'node:module';
     const effects={connections:0,queries:0,spawns:0,closed:0,forceKills:0};
-    const options=${JSON.stringify(options)}, root=${JSON.stringify(root)};
+    const options=${JSON.stringify({ ...options, fullScript: undefined })}, root=${JSON.stringify(root)};
+    let deployed = null;
     const client={async unsafe(sql){effects.queries++;
       if(sql.includes('pg_stat_ssl')) return [{databaseName:'synthetic_db',databaseOid:options.wrongIdentity?'999':'123',role:'migrator',tls:true,schemas:['public'],extensions:['plpgsql'],serverAddress:'172.19.0.2',serverPort:5432}];
       if(sql.includes('pg_control_system'))return [{systemIdentifier:'123456789012345678'}];
       if(sql==='SHOW transaction_isolation')return [{transaction_isolation:'repeatable read'}];
       if(sql==='SHOW transaction_read_only')return [{transaction_read_only:'on'}];
-      if(sql.includes('to_regclass'))return [{name:null,oid:null}];
+      if(sql.includes('to_regclass'))return [{name:deployed?'public._prisma_migrations':null,oid:deployed?'234':null}];
+      if(sql.includes('SELECT migration_name'))return deployed?[{name:'20260101000000_first',checksum:${JSON.stringify(sha256Bytes(Buffer.from("CREATE TABLE synthetic_fixture (id integer);\n")).slice(7))}}]:[];
+      if(sql.includes('SELECT id::text'))return deployed?[{id:'synthetic-migration',migrationName:'20260101000000_first',checksum:${JSON.stringify(sha256Bytes(Buffer.from("CREATE TABLE synthetic_fixture (id integer);\n")).slice(7))},startedAt:deployed,finishedAt:deployed,rolledBackAt:null,appliedStepsCount:1}]:[];
+      if(sql.includes('UNION ALL'))return [...(deployed?[{objectClass:'relation',objectName:'_prisma_migrations',owner:'migrator'}]:[]),{objectClass:'schema',objectName:'public',owner:'migrator'}];
       if(sql.includes('FROM pg_class AS c'))return [{objectClass:'schema',objectName:'public',owner:'migrator'}];
       if(sql.includes('pg_namespace'))return [{owner:'migrator'}];
       if(sql.includes('pg_extension'))return [{name:'plpgsql'}];
       if(sql==='SHOW server_version')return [{server_version:'17.11'}];
-      if(sql.startsWith('SET TRANSACTION')){if(options.disconnectDuringObservation){const disconnected=new Promise(resolve=>process.stdin.once('end',()=>setTimeout(resolve,0)));process.stderr.write('OBSERVER_PAUSED\\n');await disconnected}return []};
+      if(sql.startsWith('SET TRANSACTION')||sql.includes('pg_advisory')){if(options.disconnectDuringObservation){const disconnected=new Promise(resolve=>process.stdin.once('end',()=>setTimeout(resolve,0)));process.stderr.write('OBSERVER_PAUSED\\n');await disconnected}return []};
       process.stderr.write('UNEXPECTED_SQL:'+sql+'\\n');
       throw Object.assign(new Error('unexpected offline SQL'),{code:'OFFLINE_SQL_UNEXPECTED'});
     },async begin(...args){return args.at(-1)(client)},async end(){effects.closed++;if(options.failedClose)throw Object.assign(new Error('offline close failure'),{code:'OFFLINE_CLOSE_FAILED'})}};
@@ -1141,13 +1177,17 @@ async function collectedChild(t, options = {}) {
     const nativeSpawn=cp.spawn;
     cp.spawn=(command,args,settings)=>{effects.spawns++;
       let source=args[0]==='--version'&&command==='psql'?${JSON.stringify(`process.stdout.write(${JSON.stringify("psql (PostgreSQL) 17.11\n")})`)}:${JSON.stringify(`process.stdout.write(${JSON.stringify(toolOutput)})`)};
+      if(options.capacityApply&&args.includes('--script'))source=${JSON.stringify(`process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(scriptFile)}))`)};
+      if(options.capacityApply&&args.includes('--exit-code'))source='';
+      if(options.capacityApply&&args[1]==='deploy')source="process.stdout.write('applied')";
       if(options.invalidUtf8)source="process.stdout.write(Buffer.from([255]))";
       if(options.oversize)source="process.stdout.write(Buffer.alloc(1048577,65))";
       if(options.frameOversize)source="process.stdout.write(Buffer.alloc(800000,65))";
-      if(options.streamOversize)source="process.stdout.write(Buffer.alloc(390000,65))";
+      if(options.streamOversize)source="process.stdout.write(Buffer.alloc(780000,65))";
       if(options.nonzero)source+=";process.exitCode=7";
       if(options.longTool)source+=options.ignoreTerm?";setTimeout(()=>{},30000)":";setTimeout(()=>{},3000)";
       const tool=nativeSpawn(process.execPath,['--eval',source],{...settings,env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot},timeout:5000});
+      if(options.capacityApply&&args[1]==='deploy')tool.once('close',(code)=>{if(code===0)deployed=new Date().toISOString()});
       const kill=tool.kill.bind(tool);tool.kill=signal=>{if(options.ignoreTerm&&signal==='SIGTERM')return true;if(signal==='SIGKILL')effects.forceKills++;return kill(signal)};
       if(options.missingClose){const once=tool.once.bind(tool);tool.once=(event,callback)=>event==='close'?tool:once(event,callback)};
       return tool;
@@ -1165,9 +1205,9 @@ async function collectedChild(t, options = {}) {
     stdio: ["pipe", "pipe", "pipe"],
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot }
   });
-  const stdout = [],
-    stderr = [],
-    parents = [],
+  const stdout = captured.stdout,
+    stderr = captured.stderr,
+    parents = captured.parents,
     subjects = [],
     raws = [],
     liveInputs = [];
@@ -1176,6 +1216,7 @@ async function collectedChild(t, options = {}) {
     previousAck = null,
     binding,
     count = 0,
+    stdinBytes = 0,
     failure;
   let tasks = Promise.resolve();
   child.stdin.on("error", () => {});
@@ -1188,13 +1229,53 @@ async function collectedChild(t, options = {}) {
       child.stdin.end();
   });
   async function send(bytes) {
+    stdinBytes += bytes.length;
     // Actual split pipe writes, including UTF-8 payload boundaries.
     child.stdin.write(bytes.subarray(0, 7));
     child.stdin.write(bytes.subarray(7));
   }
   async function consume(frame) {
     if (frame.type === "CHALLENGE") {
-      fixture = signedAuthorize(frame.frameBytes, undefined, true);
+      fixture = signedAuthorize(frame.frameBytes, undefined, true, (request) => {
+        if (!options.capacityApply) return;
+        request.phase = "apply";
+        request.domainInput.expectedSchemaDigest = sha256Bytes(options.fullScript);
+        request.dryRunRecordDigest = syntheticDigest;
+        const entries = [
+          {
+            order: 1,
+            path: "apps/api/prisma/migrations/20260101000000_first/migration.sql",
+            sha256: sha256Bytes(Buffer.from("CREATE TABLE synthetic_fixture (id integer);\n"))
+          }
+        ];
+        const plan = {
+          schemaVersion: "deterministic-plan.v1",
+          identity: {
+            planType: "migration-plan.v1",
+            commandKey: "db.migrate.deploy@1",
+            inputDigest: sha256Canonical(request.domainInput),
+            databaseIdentityFingerprint: request.domainInput.databaseIdentityFingerprint,
+            baselineManifestIdentityDigest: request.domainInput.baselineManifestIdentityDigest,
+            baselineManifestDigest: request.domainInput.baselineManifestDigest,
+            migrationCatalogDigest: sha256Canonical({
+              catalogVersion: "migration-catalog.v1",
+              entries
+            }),
+            currentMigrationHead: null,
+            pendingMigrations: entries,
+            expectedPostMigrationHead: "20260101000000_first",
+            expectedSchemaDigest: request.domainInput.expectedSchemaDigest,
+            expectedOwner: "migrator",
+            allowedExtensions: ["plpgsql"],
+            expectedWriteScope: ["_prisma_migrations", "schema-ddl"]
+          },
+          provenance: {
+            planner: "db.migrate.deploy@1",
+            toolVersions: { prisma: toolOutput.trim(), psql: "psql (PostgreSQL) 17.11" }
+          }
+        };
+        request.approvedPlanDigest = deterministicPlanDigest(plan);
+      });
       last = fixture.payload.process;
       await fs.writeFile(publicFile, encodeManualJson(fixture.profile), { flag: "wx" });
       const request = fixture.payload.request;
@@ -1233,7 +1314,7 @@ async function collectedChild(t, options = {}) {
         })
       );
     } else if (["PREPARED", "EVENT", "OBSERVATION"].includes(frame.type)) {
-      if (frame.type === "OBSERVATION")
+      if (frame.type === "OBSERVATION" && !options.capacityApply)
         assert.equal(
           sha256Canonical(frame.payload.observation.catalog),
           fixture.payload.baseline.identity.preStateDigest
@@ -1243,6 +1324,13 @@ async function collectedChild(t, options = {}) {
         return;
       }
       const prefix = Buffer.concat(stdout).subarray(0, frame.endOffset);
+      if (options.capacityApply) {
+        const prefixFile = path.join(root, `stdout-prefix-${subjects.length}.bin`);
+        await fs.writeFile(prefixFile, prefix, { flag: "wx", mode: 0o600 });
+        const reopenedPrefix = await fs.readFile(prefixFile);
+        assert.deepEqual(reopenedPrefix, prefix);
+        assert.deepEqual(rawRef(reopenedPrefix), rawRef(prefix));
+      }
       const now = new Date().toISOString();
       const subject =
         frame.type === "OBSERVATION"
@@ -1391,6 +1479,7 @@ async function collectedChild(t, options = {}) {
     Buffer.concat([...stdout, ...archived]).includes(Buffer.from("synthetic-never-real")),
     false
   );
+  const stdoutBytes = Buffer.concat(stdout);
   return {
     frames,
     closed,
@@ -1400,9 +1489,68 @@ async function collectedChild(t, options = {}) {
     raws,
     liveInputs,
     previousAck,
-    toolOutput
+    toolOutput,
+    metrics: {
+      stdoutBytes: stdoutBytes.length,
+      stdinBytes,
+      publicParentBytes: Buffer.concat(parents).length,
+      maxFrameBytes: Math.max(...frames.map((frame) => frame.frameBytes.length)),
+      maxJsonBytes: Math.max(
+        ...frames.map((frame) => encodeManualJson(frame.payload).length),
+        ...subjects.map((subject) => encodeManualJson(subject).length)
+      )
+    }
   };
 }
+
+test("MS2 capacity actual child preserves two full script outputs across eleven tools", async (t) => {
+  let fullScript = Buffer.from(
+    "-- self-contained capacity fixture\n".repeat(12000).slice(0, 402008) + "\n"
+  );
+  let source = "self-contained transport fixture";
+  if (process.env.R22_CAPACITY_SQL_SOURCE) {
+    fullScript = await fs.readFile(process.env.R22_CAPACITY_SQL_SOURCE);
+    assert.equal(fullScript.length, 402009);
+    assert.equal(
+      sha256Bytes(fullScript),
+      "sha256:7a066863c903c3e48d5d2d23903ba3e269db2067e79db9c671d5daa996ce01da"
+    );
+    source = "diagnostic offline from-empty/to-schema SQL; not reference DB authority";
+  }
+  const actual = await collectedChild(t, { capacityApply: true, fullScript });
+  t.diagnostic(
+    JSON.stringify({
+      source,
+      scriptBytes: fullScript.length,
+      scriptDigest: sha256Bytes(fullScript),
+      ...actual.metrics,
+      closed: actual.closed,
+      effects: actual.effects
+    })
+  );
+  assert.equal(actual.closed.exitCode, 0, actual.diagnostics);
+  assert.equal(actual.effects.spawns, 11);
+  assert.ok(actual.metrics.stdoutBytes > 1048576 && actual.metrics.stdoutBytes <= 2097152);
+  assert.ok(
+    actual.metrics.stdinBytes <= 1048576 &&
+      actual.metrics.publicParentBytes <= 1048576 &&
+      actual.metrics.maxFrameBytes <= 1048576 &&
+      actual.metrics.maxJsonBytes <= 1048576
+  );
+  const scripts = actual.frames.filter(
+    (frame) =>
+      frame.payload.event?.tool === "prisma-script" && frame.payload.event.event === "CLOSED"
+  );
+  assert.equal(scripts.length, 2);
+  assert.notEqual(
+    scripts[0].payload.event.processSequence,
+    scripts[1].payload.event.processSequence
+  );
+  for (const frame of scripts)
+    assert.deepEqual(Buffer.from(frame.payload.stdoutBase64, "base64"), fullScript);
+  assert.equal(actual.frames.at(-1).type, "RESULT");
+  assert.equal(actual.frames.at(-1).payload.outcome, "RETURNED");
+});
 
 test("authorized child collector persists actual tool PID raw close and live ACK before original result", async (t) => {
   const actual = await collectedChild(t);
@@ -1468,17 +1616,27 @@ for (const [name, options, code] of [
   ["invalid raw UTF-8", { invalidUtf8: true }, "MANUAL_FRAME_INVALID"],
   ["raw 1 MiB+1", { oversize: true }, "MANUAL_OUTPUT_LIMIT"],
   ["base64 frame over 1 MiB", { frameOversize: true }, "MANUAL_OUTPUT_LIMIT"],
-  ["whole output stream over 1 MiB", { streamOversize: true }, "MANUAL_OUTPUT_LIMIT"]
+  ["whole MS2 output stream over 2 MiB", { streamOversize: true }, "MANUAL_OUTPUT_LIMIT"]
 ])
   test(`child collector ${name} retains incomplete evidence without RESULT`, async (t) => {
     const actual = await collectedChild(t, options);
+    t.diagnostic(
+      JSON.stringify({
+        boundary: name,
+        ...actual.metrics,
+        closed: actual.closed,
+        effects: actual.effects
+      })
+    );
     assert.ok(actual.effects.spawns > 0);
     assert.equal(
       actual.frames.some((f) => f.payload.event?.event === "SPAWNED"),
       true
     );
     assert.equal(
-      actual.frames.some((f) => ["RESULT", "ACK_RECEIVED"].includes(f.type)),
+      actual.frames.some((f) =>
+        (options.streamOversize ? ["RESULT"] : ["RESULT", "ACK_RECEIVED"]).includes(f.type)
+      ),
       false
     );
     assert.match(actual.diagnostics, new RegExp(`ERROR:${code}\\n`, "u"));

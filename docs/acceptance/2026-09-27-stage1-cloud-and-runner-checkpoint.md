@@ -1,6 +1,20 @@
 # Stage 1 加密存储准备与 R2 父命令断点（2026-09-27）
 
-本记录保留当天各次真实断点。后续已完成服务器 Ed25519 密钥生成及独立加密备份卷恢复；R2 父命令链仍未通过定向正例。没有执行业务迁移、部署、真实 CI、签发发布命令或关闭阶段 1。
+本记录保留当天各次真实断点。后续已完成服务器 Ed25519 密钥生成及独立加密备份卷恢复；R2 首阶段父命令链与中断后禁止重复启动的定向验证已通过。H3-B 后的第二阶段仍未接通，没有执行业务迁移、部署、真实 CI 或关闭阶段 1。
+
+## 06:19 UTC 后续：首阶段父流程与中断保管
+
+本轮 10 文件修正提交为 `c7cfed2b05c4c86b19f19357ca4733ce7ba54b66`，独立有限审查 ACCEPT。隔离整合候选从业务/H1 分支 `c2cd59d6` 建立，先以 `9521f6d3` 合入已提交发布基线，再整合此修正；逐文件核对 10 个冻结摘要相同。API/Web 与 H1 两份获批公件相对原分支无差异，repository contract 的 181 项恰为两分支并集。R2 plan 保留两侧新增约束及 READY 澄清，旧输入缺口明确标为历史。新目录通过离线 frozen-lockfile 安装（忽略安装脚本）；Prisma validate exit 0，migration status exit 1，具体为未提供 datasource.url。预检禁用 dotenv 且清空该子进程 DATABASE_URL，没有连接数据库，也未把此失败报作迁移通过。
+
+受控真实 Node 管道的完整 dry-run → apply 用例实际 Node/host exit 0，1 pass / 0 fail。两个 child 均自然 exit 0；dry-run 执行 2 个工具，apply 执行 11 个工具。apply 完整 stdout 为 1,143,875 bytes，两次独立工具输出各 402,009 bytes，最大帧 537,765 bytes；归档、独立重开、共享 assessor 和 session 收尾通过。此处使用 PostgreSQL double 和受控工具输出，不是线上迁移、真实 reference DB 或最终镜像验收。
+
+本增量限定 MS2 完整 stdout 及经协议/身份绑定的 prefix raw 为 2 MiB；单帧、单工具、普通 raw、stdin、stderr 和 MS1 的原限额保留。另修复实际结果时间采样倒序、多个归档写入与目录一致性检查互相干扰，以及工具终态缺失时错误声明整体关闭的问题。时间缺陷的 RETURNED/THREW 两个直接用例均有真实 RED → GREEN。
+
+首个中断用例实际 exit 1：UNKNOWN 和真实进程退出已保存，但第二次调用新增一个零凭证 child，启动数 3 不等于预期 2。该失败和原件保留；当时第二次调用的完整计量未保管，不倒推其实际工具/凭证计数。随后在可信 session 打开后、原观察/attempt/child 启动前补仅用于拒绝的已消费迁移历史检查；共享 sign/consume 最终历史裁决保持。只重跑原中断用例，实际 Node/host exit 0、1 pass / 0 fail、274,178.663 ms：原 apply 被 SIGKILL 后保持 INTERRUPTED_UNKNOWN，result/finishedAt 为 null，真实 parent CLOSED 保留，缺失的工具终态未伪造；第二次调用前后 launches 均为 2、credentialReads 均为 9。
+
+相关真实日志为发布工作树 runner-command scratch 中的 `capacity-parent-full-after-archive-fix.log`、`capacity-parent-apply-loss.log`、`capacity-parent-apply-loss-after-stop.log`。最新中断运行源冻结于 `stage1-stop-frozen-source-hashes.json`；正例在其后的 STOP-only 修正之前运行，没有为了该拒绝门重复正例。第二次调用的原件和实际前后计数另存 `apply-loss-reinvocation-*`，没有覆盖失败目录。
+
+剩余工作为同 ref 的 H3-B 原件门禁和 verify/replay/reconcile 父端分发、独立结果 verifier 与真实 PG 两阶段入口、最终候选受保护 CI/H2、真实迁移对齐、R3 同候选双链及 R4 真实验收。当前入口仍拒绝已有已消费迁移历史再次进入首阶段，不能据此声称恢复或第二阶段已实现；本轮没有重跑旧业务测试。
 
 ## 04:26 UTC 后续：精确批准与实际主机 loader
 

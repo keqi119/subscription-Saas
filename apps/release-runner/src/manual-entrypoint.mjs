@@ -20,6 +20,7 @@ import { createDatabaseRuntimeAdapter } from "./database-runtime-adapter.mjs";
 import { executeManualCommand } from "./manual-command-adapter.mjs";
 
 const limit = 1048576;
+const stdoutLimit = 2097152;
 const activePrefix = Buffer.from("MS2 ", "ascii");
 const profileFile = fileURLToPath(
   new URL("../../../release/contracts/manual-stage1-profile.v2.json", import.meta.url)
@@ -416,7 +417,7 @@ function processCollector({ authorization, channel, output, stdoutFrames, manual
       }
       const frameBytes = encodeManualRunnerFrame({ protocol: "MS2", type, sequence, payload });
       const prefix = Buffer.concat([...stdoutFrames, frameBytes]);
-      if (prefix.length > limit) throw runnerError("MANUAL_OUTPUT_LIMIT");
+      if (prefix.length > stdoutLimit) throw runnerError("MANUAL_OUTPUT_LIMIT");
       await write(output, frameBytes);
       stdoutFrames.push(frameBytes);
       sequence++;
@@ -719,11 +720,10 @@ export async function runManualEntrypoint(input) {
       processEvidence: freeze(authorization.processEvidence)
     };
     collector = processCollector({ authorization, channel, output, stdoutFrames, manualContext });
-    const [hostname, port] = endpointPolicy.endpoint.split(":");
     const target = {
-      hostname,
-      port: Number(port),
-      databaseName: endpointPolicy.databaseName,
+      hostname: authorization.targetContext.cluster.serverAddress,
+      port: authorization.targetContext.cluster.serverPort,
+      databaseName: authorization.request.targetIntent.databaseName,
       tlsMode: "require"
     };
     database = await createPostgresConnector()({ credential: authorization.credential, target });

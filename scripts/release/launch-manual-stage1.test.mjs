@@ -1593,9 +1593,28 @@ test(
       { code: "ENOENT" }
     );
     delete e.control.mode;
-    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
-      code: "MANUAL_RUNNER_REQUEST_INPUT_REQUIRED"
+    const catalog = await computeMigrationCatalog(f.repoRoot),
+      migrationRawFile = path.join(
+        f.profile.storage.archiveRoot,
+        "raw",
+        `${catalog.entries[0].sha256.slice(7)}.bin`
+      ),
+      nativeOpen = fs.open.bind(fs);
+    let boundaryReached = 0;
+    boundedExpectedMock(t, f, fs, "open", (file, flags, ...args) => {
+      if (flags === "wx" && String(file) === migrationRawFile) {
+        boundaryReached++;
+        throw Object.assign(new Error("offline migration raw boundary"), {
+          code: "OFFLINE_MIGRATION_RAW_BOUNDARY"
+        });
+      }
+      return nativeOpen(file, flags, ...args);
     });
+    syncBuiltinESMExports();
+    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+      code: "OFFLINE_MIGRATION_RAW_BOUNDARY"
+    });
+    assert.equal(boundaryReached, 1);
     assert.equal(f.launches.length, 2);
     assert.equal(e.ghCalls.length, 3);
     assert.equal(e.ghCloses.length, 3);

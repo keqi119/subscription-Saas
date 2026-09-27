@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manual-runner-evidence.v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "profileDigest",
+    "recordedAt",
+    "promotionEligible",
+    "sessionId",
+    "sessionNonce",
+    "sessionRecordDigest",
+    "operationId",
+    "idempotencyKey",
+    "attemptId",
+    "runId",
+    "stage",
+    "phase",
+    "chain",
+    "allocatedAt",
+    "sourceSha",
+    "buildProofDigest",
+    "targetPolicyDigest",
+    "creationSpecDigest",
+    "jobAdmissionDigest",
+    "predecessorExecutionRecordDigest"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "manual-runner-evidence.v2"
+    },
+    "kind": {
+      "const": "attempt-allocation"
+    },
+    "profileDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
+    "recordedAt": {
+      "$ref": "manual-operation-record.v2#/$defs/timestamp"
+    },
+    "promotionEligible": {
+      "const": false
+    },
+    "sessionId": {
+      "$ref": "manual-operation-record.v2#/$defs/uuid"
+    },
+    "sessionNonce": {
+      "$ref": "manual-operation-record.v2#/$defs/nonce"
+    },
+    "sessionRecordDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
+    "operationId": {
+      "$ref": "manual-operation-record.v2#/$defs/uuid"
+    },
+    "idempotencyKey": {
+      "$ref": "manual-operation-record.v2#/$defs/label"
+    },
+    "attemptId": {
+      "$ref": "manual-operation-record.v2#/$defs/uuid"
+    },
+    "runId": {
+      "$ref": "manual-operation-record.v2#/$defs/uuid"
+    },
+    "stage": {
+      "enum": ["target-create", "snapshot-consumer"]
+    },
+    "phase": {
+      "enum": ["source", "final"]
+    },
+    "chain": {
+      "enum": ["fresh", "snapshot"]
+    },
+    "allocatedAt": {
+      "$ref": "manual-operation-record.v2#/$defs/timestamp"
+    },
+    "sourceSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "buildProofDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
+    "targetPolicyDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
+    "creationSpecDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
+    "jobAdmissionDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
+    "predecessorExecutionRecordDigest": {
+      "anyOf": [
+        {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "destinationAdmissionDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
+    "scopeAuthorizationDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
+    "matchingSourceEvidenceDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputReference", "inputIndexDigest"],
+      "properties": {
+        "inputReference": {
+          "$ref": "manual-operation-record.v2#/$defs/uuid"
+        },
+        "inputIndexDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "stage": {
+          "const": "target-create"
+        },
+        "predecessorExecutionRecordDigest": {
+          "type": "null"
+        },
+        "destinationAdmissionDigest": false,
+        "scopeAuthorizationDigest": false,
+        "matchingSourceEvidenceDigest": false,
+        "input": false
+      }
+    },
+    {
+      "required": ["destinationAdmissionDigest", "scopeAuthorizationDigest", "input"],
+      "properties": {
+        "stage": {
+          "const": "snapshot-consumer"
+        },
+        "chain": {
+          "const": "snapshot"
+        },
+        "predecessorExecutionRecordDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "phase": {
+              "const": "source"
+            },
+            "matchingSourceEvidenceDigest": false
+          }
+        },
+        {
+          "required": ["matchingSourceEvidenceDigest"],
+          "properties": {
+            "phase": {
+              "const": "final"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

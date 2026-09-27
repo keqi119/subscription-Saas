@@ -364,6 +364,137 @@ test("compares schema bytes even when distinct bytes decode to the same JSON str
   assert.ok(compile.mock.callCount() > firstCompilationCount);
 });
 
+function r3Allocation(stage = "target-create", phase = "source", chain = "fresh") {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const value = {
+    schemaVersion: "manual-runner-evidence.v2",
+    kind: "attempt-allocation",
+    profileDigest: digest,
+    recordedAt: "2026-09-28T00:00:00.000Z",
+    promotionEligible: false,
+    sessionId: "00000000-0000-4000-8000-000000000001",
+    sessionNonce: "a".repeat(64),
+    sessionRecordDigest: digest,
+    operationId: "00000000-0000-4000-8000-000000000002",
+    idempotencyKey: "r3-creation",
+    attemptId: "00000000-0000-4000-8000-000000000003",
+    runId: "00000000-0000-4000-8000-000000000004",
+    stage,
+    phase,
+    chain,
+    allocatedAt: "2026-09-28T00:00:00.000Z",
+    sourceSha: "a".repeat(40),
+    buildProofDigest: digest,
+    targetPolicyDigest: digest,
+    creationSpecDigest: digest,
+    jobAdmissionDigest: digest,
+    predecessorExecutionRecordDigest: null
+  };
+  if (stage === "snapshot-consumer") {
+    Object.assign(value, {
+      chain: "snapshot",
+      predecessorExecutionRecordDigest: digest,
+      destinationAdmissionDigest: digest,
+      scopeAuthorizationDigest: digest,
+      input: { inputReference: "00000000-0000-4000-8000-000000000005", inputIndexDigest: digest }
+    });
+    if (phase === "final") value.matchingSourceEvidenceDigest = digest;
+  }
+  return value;
+}
+
+test("R3 ALLOCATION closes creation and snapshot-consumer branches without future facts", () => {
+  for (const phase of ["source", "final"]) {
+    for (const chain of ["fresh", "snapshot"])
+      validateContract("manual-runner-evidence.v2", r3Allocation("target-create", phase, chain));
+    validateContract("manual-runner-evidence.v2", r3Allocation("snapshot-consumer", phase));
+  }
+});
+
+test("R3 ALLOCATION rejects mixed legacy creation and consumer evidence", () => {
+  const digest = `sha256:${"b".repeat(64)}`;
+  for (const [stage, mutate] of [
+    [
+      "target-create",
+      (v) => {
+        v.destinationAdmissionDigest = digest;
+      }
+    ],
+    [
+      "target-create",
+      (v) => {
+        v.predecessorExecutionRecordDigest = digest;
+      }
+    ],
+    [
+      "target-create",
+      (v) => {
+        v.matchingSourceEvidenceDigest = digest;
+      }
+    ],
+    [
+      "target-create",
+      (v) => {
+        v.targetIntent = { databaseName: "legacy" };
+      }
+    ],
+    [
+      "target-create",
+      (v) => {
+        v.phase = "apply";
+      }
+    ],
+    [
+      "target-create",
+      (v) => {
+        delete v.sessionRecordDigest;
+      }
+    ],
+    [
+      "snapshot-consumer",
+      (v) => {
+        v.chain = "fresh";
+      }
+    ],
+    [
+      "snapshot-consumer",
+      (v) => {
+        v.predecessorExecutionRecordDigest = null;
+      }
+    ],
+    [
+      "snapshot-consumer",
+      (v) => {
+        delete v.destinationAdmissionDigest;
+      }
+    ],
+    [
+      "snapshot-consumer",
+      (v) => {
+        v.input.path = "/caller/payload";
+      }
+    ],
+    [
+      "snapshot-consumer",
+      (v) => {
+        v.matchingSourceEvidenceDigest = digest;
+      }
+    ],
+    [
+      "snapshot-consumer",
+      (v) => {
+        v.phase = "final";
+      }
+    ]
+  ]) {
+    const value = r3Allocation(stage);
+    mutate(value);
+    assert.throws(() => validateContract("manual-runner-evidence.v2", value), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
+  }
+});
+
 test("caller mutation of error details cannot change future const or enum validation", async (t) => {
   const fixture = await schemaFixture(t);
   for (const keyword of ["const", "enum"]) {

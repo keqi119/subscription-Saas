@@ -11,6 +11,8 @@
 - R3 创建 request/auth v4 及纯签名绑定已补齐，沿用同一 Ed25519 签名域；绑定计划、job、候选和分支，不要求尚未生成的目的地事实，也不授予消费或生产 decision。两个新增用例先 RED 后 GREEN；整个原合同文件首次 80 pass / 1 fail（导出清单漏更新），修正后 81 pass / 0 fail / 0 skip，7,372.7318 ms；有限只读审查通过。实际 session/台账分支和创建执行仍未接线。
 - R3 创建规范固定读取器已完成：按 UUID 从既有私有 archive 读 canonical 原件，核对 H1、同一 H2/策略、派生路径、容量与时窗，保持原件句柄供重读；不读取私钥或 payload。API 用例先 RED 后 GREEN，3 个 native 定向用例自然 exit 0，3 pass / 0 fail / 0 skip，9,680.947632 ms；有限只读审查通过。实际运行 job 的准入原件、创建会话及资源执行仍未完成，不能将此结果视为目标准入。
 - R3 当前 job 固定读取入口已接入声明签名与原生 GitHub run/job API 校验，区分 final 的 reusable signer 与 caller，绑定展开 job、chain、公钥指纹和 runner；重查会拒绝已终止作业。API 用例先 RED 后 GREEN，native 4 pass / 0 fail / 0 skip，19,066.888217 ms；有限只读审查通过。此处 GH 响应为合成夹具；声明生产器、实际 hosted workflow、manual 会话及创建/消费执行仍未接线。
+- R3 会话/消费/执行/保管记录 v3 与尝试分配 v2 已补齐，父判定显式接受创建 v4 和消费 v3，并继续使用原 v2 撤销链。消费只接受同一 snapshot 会话的成功创建前序，目的地摘要必须匹配；创建不接受尚不存在的目的地或输入。父合同测试有效 RED 为 82 pass / 7 fail，完成后 89 pass / 0 fail / 0 skip；分配定向用例有效 RED 后 2/2 通过。有限独立只读审查通过，未扩展 MS2 协议。此处仍是合同层，native session、完整原件图、资源锁与实际创建/消费尚未接线。
+- R2 replay 失联定向进程 `63867` 仍在运行，最后实际轮询 `bc8a1c` 返回 live、无新增输出；尚无测试结论，未因日志安静而重启。
 - 本轮本地 migration status 仍因缺少 `datasource.url` 自然退出 1；schema validate 自然退出 0。没有连接或更改线上数据库。
 
 ## 已取得的证据（保留各次失败与修正）
@@ -82,3 +84,4 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 - R3 创建合同全文件回归：`r3-creation-contracts-green02.log`，81/81；v4 登记后的仓库合同校验为 202 文件、81 schemas、128 migrations、13 commands，repository digest `sha256:421f75c4c7344f82e7953870e8f4d12b1437cf339e87e0f16c4f9f1c83e59ec3`。该工作树仍包含 R2 未提交部分，不能充当最终候选证明。
 - R3 创建规范读取器：`r3-creation-reader-red01.log` 保留缺入口的 RED；`r3-creation-native01.log` 为 3/3 GREEN，native copy `/home/keqi_119/.cache/r3-creation-6kqBQg`，249 项复制源码均经 `20260927-211012-001929813-copy.sha256` 核对。测试使用实际 Linux 文件系统和 Git、模拟 GH 响应，不是实际 hosted job 验收。当前合同校验仍为 202 文件、81 schemas、128 migrations、13 commands，repository digest `sha256:e42650d86c8fe25af14d8d15fd69ca8dc1b47677838fa0fee5a0bcd451320fc5`，包含 R2 未提交部分。
 - R3 当前 job 读取器：`r3-job-reader-red01.log`、`r3-job-native01.log`；native copy `/home/keqi_119/.cache/r3-job-fUV4eo`，249 项复制源码 manifest `20260927-212015-949658860-copy.sha256`。当前合同校验为 202 文件、81 schemas、128 migrations、13 commands，repository digest `sha256:fad2c3287a457fc1150d23ce0caf1ae3cbd7b91f3789990acddc4d597587c215`，包含 R2 未提交部分，不能充当最终候选证明。
+- R3 会话和分配：父合同 RED 原始终端 chunk `783a94`，GREEN 完整输出 `r3-parent-record-green01.log` / `r3-parent-record-green02.log`；分配输出 `r3-allocation-red01.log` / `r3-allocation-green01.log`。本片仓库合同校验 `4d1f68` 自然退出 0，204 文件、83 schemas、128 migrations、13 commands，repository digest `sha256:a7ea6820c72aeb6f5e7f97f793333efec3c9af209d7d289c5fe2ab1ea344b53e`；仍包含 R2 未提交部分，不是最终候选证明。

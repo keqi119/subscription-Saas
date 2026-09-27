@@ -423,6 +423,79 @@ function verifyBase(authorization, profile, request, now) {
   return { payload, key, epoch, recordSchema: manualVersions[profile.schemaVersion] };
 }
 
+function verifyR3Base(authorization, profile, request, now) {
+  const creation = authorization.payload.schemaVersion === "manual-launch-authorization.v4";
+  verifyManualScopedAuthorizationBinding(
+    {
+      authorization,
+      profile,
+      requestBytes: encodeManualJson(request.full),
+      now
+    },
+    creation
+  );
+  const payload = authorization.payload,
+    excluded = new Set([
+      "schemaVersion",
+      "authorizationId",
+      "issuedAt",
+      "expiresAt",
+      "requestDigest"
+    ]),
+    keys = Object.keys(payload).filter((field) => !excluded.has(field));
+  closed(request.binding, keys);
+  for (const field of keys) requireThat(same(request.binding[field], payload[field]));
+  // Scoped signature checks bind the full request. The native session still
+  // owns original-graph, target-fact and one-shot consumption admission.
+  return { payload, epoch: instant(now), recordSchema: "manual-operation-record.v3" };
+}
+
+function r3SessionValid(session, payload, request, now) {
+  const record = session.record,
+    readAt = instant(session.readAt),
+    scope = record.scope;
+  requireThat(
+    record.kind === "session" &&
+      record.status === "OPEN" &&
+      isDigest(session.recordDigest) &&
+      sha256Canonical(record) === session.recordDigest,
+    "MANUAL_SESSION_UNVERIFIED"
+  );
+  for (const field of ["profileDigest", "ownerId", "sessionId", "sessionNonce"])
+    requireThat(same(record[field], payload[field]));
+  requireThat(
+    instant(record.openedAt) <= instant(payload.issuedAt) &&
+      instant(payload.issuedAt) <= readAt &&
+      instant(record.recordedAt) <= readAt &&
+      readAt <= now,
+    "MANUAL_SESSION_UNVERIFIED"
+  );
+  requireThat(
+    request.sourceSha === scope.sourceSha &&
+      request.candidate.buildProofDigest === scope.buildProofDigest &&
+      request.phase === scope.phase
+  );
+  if (payload.stage === "target-create") {
+    for (const field of ["chain", "targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest"])
+      requireThat(request[field] === scope[field]);
+    requireThat(session.predecessor === null);
+  } else {
+    const predecessor = session.predecessor;
+    requireThat(scope.chain === "snapshot");
+    requireThat(
+      predecessor !== null &&
+        predecessor.kind === "execution" &&
+        predecessor.stage === "target-create" &&
+        predecessor.status === "SUCCEEDED" &&
+        predecessor.profileDigest === payload.profileDigest &&
+        predecessor.sessionId === payload.sessionId &&
+        predecessor.sessionNonce === payload.sessionNonce &&
+        instant(predecessor.recordedAt) <= instant(payload.issuedAt) &&
+        predecessor.resultDigest === request.destinationAdmissionDigest
+    );
+  }
+}
+
 function predecessorValid(predecessor, payload) {
   const expectedDigest =
     payload.phase === "apply"
@@ -543,14 +616,21 @@ export function verifyManualAuthorization(input) {
     ["records", "headDigest", "checkpoint", "readAt"],
     "MANUAL_REVOCATION_UNVERIFIED"
   );
-  const { payload, epoch, recordSchema } = verifyBase(authorization, profile, request, now);
+  const r3 = ["manual-launch-authorization.v3", "manual-launch-authorization.v4"].includes(
+    authorization.payload?.schemaVersion
+  );
+  const { payload, epoch, recordSchema } = r3
+    ? verifyR3Base(authorization, profile, request, now)
+    : verifyBase(authorization, profile, request, now);
   validateContract(recordSchema, session.record);
   if (session.predecessor !== null) validateContract(recordSchema, session.predecessor);
   requireThat(Array.isArray(revocation.records), "MANUAL_REVOCATION_UNVERIFIED");
-  for (const record of revocation.records) validateContract(recordSchema, record);
+  for (const record of revocation.records)
+    validateContract(r3 ? "manual-operation-record.v2" : recordSchema, record);
   recordTimes(session.record);
   if (session.predecessor !== null) recordTimes(session.predecessor);
-  sessionValid(session, payload, epoch);
+  if (r3) r3SessionValid(session, payload, request.full, epoch);
+  else sessionValid(session, payload, epoch);
   revocationValid(revocation, payload, epoch);
   const decision = Object.freeze({
     kind: "manual-parent-decision",

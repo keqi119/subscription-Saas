@@ -1362,6 +1362,336 @@ function creationCheck(f, authorization) {
   });
 }
 
+function r3Record(kind, request = targetCreationFixture().request) {
+  const value = record(kind, request);
+  value.schemaVersion = "manual-operation-record.v3";
+  if (kind === "session") {
+    delete value.targetIntent;
+    value.scope = {
+      targetPolicyDigest: D,
+      creationSpecDigest: D,
+      jobAdmissionDigest: D,
+      buildProofDigest: request.candidate.buildProofDigest,
+      sourceSha: request.sourceSha,
+      phase: request.phase,
+      chain: request.chain ?? "snapshot"
+    };
+  } else if (kind === "execution") {
+    for (const field of ["handoffRecordDigest", "handoffReadbackDigest", "postStateRecordDigest"])
+      delete value[field];
+    value.stage = "target-create";
+  } else if (kind === "consumption") value.stage = request.stage;
+  else if (kind === "custody") value.retentionDays = 90;
+  return value;
+}
+
+function r3ParentFixture(creation = true, phase = "source", chain = "snapshot") {
+  const f = creation ? targetCreationFixture(phase, chain) : minimalConsumerFixture(phase);
+  const authorization = rawSign(f.payload);
+  const excluded = new Set([
+    "schemaVersion",
+    "authorizationId",
+    "issuedAt",
+    "expiresAt",
+    "requestDigest"
+  ]);
+  const binding = Object.fromEntries(
+    Object.entries(f.payload).filter(([field]) => !excluded.has(field))
+  );
+  const sessionRecord = r3Record("session", f.request);
+  const genesis = record("revocation", f.request);
+  genesis.schemaVersion = "manual-operation-record.v2";
+  return {
+    authorization,
+    profile: f.profile,
+    request: { canonicalBytes: encodeManualJson(f.request), binding },
+    session: {
+      record: sessionRecord,
+      recordDigest: sha256Canonical(sessionRecord),
+      readAt: NOW,
+      predecessor: creation ? null : r3Record("execution", f.request)
+    },
+    revocation: {
+      records: [genesis],
+      headDigest: sha256Canonical(genesis),
+      checkpoint: { sequence: 0, digest: sha256Canonical(genesis) },
+      readAt: NOW
+    },
+    now: NOW
+  };
+}
+
+test("R3 v3 records close session scope and the two stages without future target or handoff facts", () => {
+  for (const kind of ["session", "consumption", "execution", "custody"]) {
+    const value = r3Record(kind);
+    validateContract("manual-operation-record.v3", value);
+    invalid("manual-operation-record.v3", { ...value, engineId: "future-engine" });
+    invalid("manual-operation-record.v3", {
+      ...value,
+      targetIntent: fixtureBinding().targetIntent
+    });
+    for (const field of Object.keys(value)) {
+      const missing = clone(value);
+      delete missing[field];
+      invalid("manual-operation-record.v3", missing);
+    }
+  }
+  const session = r3Record("session");
+  invalid("manual-operation-record.v3", {
+    ...session,
+    scope: { ...session.scope, engineId: "future-engine" }
+  });
+  for (const kind of ["revocation", "consumption-handoff", "post-state", "signoff"])
+    invalid("manual-operation-record.v3", {
+      ...record(kind),
+      schemaVersion: "manual-operation-record.v3"
+    });
+  for (const kind of ["consumption", "execution"])
+    invalid("manual-operation-record.v3", { ...r3Record(kind), stage: "runner-command" });
+  invalid("manual-operation-record.v3", { ...r3Record("custody"), purpose: "handoff-readback" });
+  invalid("manual-operation-record.v3", { ...r3Record("custody"), retentionDays: 180 });
+});
+
+test("R3 v3 execution preserves nullable unknown and failed evidence while success needs result and process", () => {
+  const execution = r3Record("execution");
+  validateContract("manual-operation-record.v3", {
+    ...execution,
+    status: "INTERRUPTED_UNKNOWN",
+    reasonCode: "PROCESS_LOST",
+    startedAt: null,
+    finishedAt: null,
+    authorizationDigest: null,
+    consumptionRecordDigest: null,
+    resultDigest: null,
+    processEvidenceDigest: null
+  });
+  validateContract("manual-operation-record.v3", {
+    ...execution,
+    status: "FAILED",
+    reasonCode: "PROCESS_FAILED",
+    finishedAt: null,
+    resultDigest: null
+  });
+  validateContract("manual-operation-record.v3", {
+    ...execution,
+    status: "FAILED",
+    reasonCode: "PROCESS_FAILED",
+    processEvidenceDigest: null
+  });
+  for (const field of ["resultDigest", "processEvidenceDigest"])
+    invalid("manual-operation-record.v3", { ...execution, [field]: null });
+  invalid("manual-operation-record.v3", {
+    ...execution,
+    status: "FAILED",
+    reasonCode: "PROCESS_FAILED",
+    resultDigest: null,
+    processEvidenceDigest: null
+  });
+});
+
+test("R3 creation and consumer enter the existing parent decision set only with their v3 session", () => {
+  for (const phase of ["source", "final"]) {
+    for (const creation of [true, false]) {
+      const f = r3ParentFixture(creation, phase);
+      const decision = manual.verifyManualAuthorization(f);
+      manual.assertManualDecision(decision);
+      assert.equal(decision.stage, creation ? "target-create" : "snapshot-consumer");
+      assert.equal(decision.promotionEligible, false);
+      rejects(() => manual.assertManualHandoffDecision(decision), "MANUAL_HANDOFF_UNTRUSTED");
+    }
+  }
+  manual.assertManualDecision(
+    manual.verifyManualAuthorization(r3ParentFixture(true, "source", "fresh"))
+  );
+});
+
+test("R3 parent rejects mismatched scope identity phase and fresh consumer chain", () => {
+  for (const creation of [true, false]) {
+    const fields = creation
+      ? [
+          "targetPolicyDigest",
+          "creationSpecDigest",
+          "jobAdmissionDigest",
+          "buildProofDigest",
+          "sourceSha",
+          "phase",
+          "chain"
+        ]
+      : ["buildProofDigest", "sourceSha", "phase", "chain"];
+    for (const field of fields) {
+      const f = r3ParentFixture(creation);
+      f.session.record.scope[field] =
+        field === "sourceSha"
+          ? "e".repeat(40)
+          : field === "phase"
+            ? "final"
+            : field === "chain"
+              ? "fresh"
+              : OTHER;
+      f.session.recordDigest = sha256Canonical(f.session.record);
+      rejects(() => manual.verifyManualAuthorization(f), "MANUAL_BINDING_MISMATCH");
+    }
+    for (const field of ["profileDigest", "ownerId", "sessionId", "sessionNonce"]) {
+      const f = r3ParentFixture(creation);
+      f.session.record[field] =
+        field === "ownerId"
+          ? "different-owner"
+          : field === "sessionId"
+            ? UUID2
+            : field === "sessionNonce"
+              ? "e".repeat(64)
+              : OTHER;
+      f.session.recordDigest = sha256Canonical(f.session.record);
+      rejects(() => manual.verifyManualAuthorization(f), "MANUAL_BINDING_MISMATCH");
+    }
+    const oldSession = r3ParentFixture(creation);
+    oldSession.session.record = record("session", {
+      ...oldSession.request.binding,
+      targetIntent: fixtureBinding().targetIntent
+    });
+    oldSession.session.record.schemaVersion = "manual-operation-record.v2";
+    oldSession.session.recordDigest = sha256Canonical(oldSession.session.record);
+    rejects(() => manual.verifyManualAuthorization(oldSession), "CONTRACT_SCHEMA_INVALID");
+  }
+});
+
+test("R3 parent requires current open session readback and exact authorization payload projection", () => {
+  for (const mutate of [
+    (f) => {
+      f.session.recordDigest = OTHER;
+    },
+    (f) => {
+      f.session.readAt = OPENED;
+    },
+    (f) => {
+      f.session.readAt = EXPIRES;
+    },
+    (f) => {
+      Object.assign(f.session.record, { status: "CLOSED", previousSessionRecordDigest: D });
+      f.session.recordDigest = sha256Canonical(f.session.record);
+    }
+  ]) {
+    const f = r3ParentFixture();
+    mutate(f);
+    rejects(() => manual.verifyManualAuthorization(f), "MANUAL_SESSION_UNVERIFIED");
+  }
+  for (const mutate of [
+    (b) => {
+      delete b.jobAdmissionDigest;
+    },
+    (b) => {
+      b.requestDigest = D;
+    },
+    (b) => {
+      b.jobAdmissionDigest = OTHER;
+    }
+  ]) {
+    const f = r3ParentFixture();
+    mutate(f.request.binding);
+    rejects(() => manual.verifyManualAuthorization(f), "MANUAL_BINDING_MISMATCH");
+  }
+});
+
+test("R3 consumer requires the same-session successful creation result as destination", () => {
+  for (const mutate of [
+    (f) => {
+      f.session.predecessor = null;
+    },
+    (f) => {
+      f.session.predecessor.stage = "snapshot-consumer";
+    },
+    (f) => {
+      f.session.predecessor.profileDigest = OTHER;
+    },
+    (f) => {
+      f.session.predecessor.sessionId = UUID2;
+    },
+    (f) => {
+      f.session.predecessor.sessionNonce = "e".repeat(64);
+    },
+    (f) => {
+      f.session.predecessor.resultDigest = OTHER;
+    },
+    (f) => {
+      f.session.predecessor.recordedAt = NOW;
+    },
+    (f) => {
+      Object.assign(f.session.predecessor, {
+        status: "INTERRUPTED_UNKNOWN",
+        reasonCode: "PROCESS_LOST"
+      });
+    }
+  ]) {
+    const f = r3ParentFixture(false);
+    mutate(f);
+    rejects(() => manual.verifyManualAuthorization(f), "MANUAL_BINDING_MISMATCH");
+  }
+  const old = r3ParentFixture(false);
+  old.session.predecessor = {
+    ...record("execution", old.request.binding),
+    schemaVersion: "manual-operation-record.v2"
+  };
+  rejects(() => manual.verifyManualAuthorization(old), "CONTRACT_SCHEMA_INVALID");
+  const creation = r3ParentFixture();
+  creation.session.predecessor = r3Record("execution", JSON.parse(creation.request.canonicalBytes));
+  rejects(() => manual.verifyManualAuthorization(creation), "MANUAL_BINDING_MISMATCH");
+});
+
+test("R3 parent uses the existing strict v2 revocation chain and rejects revoked authorization", () => {
+  for (const action of ["REVOKE_PROFILE", "REVOKE_AUTHORIZATION"]) {
+    const f = r3ParentFixture();
+    const revoked = {
+      ...f.revocation.records[0],
+      sequence: 1,
+      previousRevocationDigest: f.revocation.headDigest,
+      action,
+      authorizationId:
+        action === "REVOKE_AUTHORIZATION" ? f.authorization.payload.authorizationId : null,
+      reasonCode: "OWNER_REVOKED",
+      recordedAt: NOW
+    };
+    f.revocation.records.push(revoked);
+    f.revocation.headDigest = sha256Canonical(revoked);
+    rejects(() => manual.verifyManualAuthorization(f), "MANUAL_AUTHORIZATION_REVOKED");
+  }
+  const old = r3ParentFixture();
+  old.revocation.records[0].schemaVersion = "manual-operation-record.v1";
+  rejects(() => manual.verifyManualAuthorization(old), "CONTRACT_SCHEMA_INVALID");
+  const wrongHead = r3ParentFixture();
+  wrongHead.revocation.headDigest = OTHER;
+  rejects(() => manual.verifyManualAuthorization(wrongHead), "MANUAL_REVOCATION_UNVERIFIED");
+  const wrongCheckpoint = r3ParentFixture();
+  wrongCheckpoint.revocation.checkpoint.digest = OTHER;
+  rejects(() => manual.verifyManualAuthorization(wrongCheckpoint), "MANUAL_REVOCATION_UNVERIFIED");
+});
+
+test("R3 pure helpers and legacy handoff never grant R3 parent or child decisions", () => {
+  for (const creation of [true, false]) {
+    const f = r3ParentFixture(creation);
+    const helper = creation
+      ? manual.verifyManualTargetCreationAuthorizationBinding
+      : manual.verifyManualSnapshotConsumerAuthorizationBinding;
+    const pure = helper({
+      authorization: f.authorization,
+      profile: f.profile,
+      requestBytes: f.request.canonicalBytes,
+      now: f.now
+    });
+    assert.equal(pure, undefined);
+    rejects(() => manual.assertManualDecision(pure), "MANUAL_DECISION_UNTRUSTED");
+    rejects(() => manual.assertManualHandoffDecision(pure), "MANUAL_HANDOFF_UNTRUSTED");
+    const h = handoff(fixture90("verify"));
+    h.authorization = f.authorization;
+    h.request = f.request;
+    rejects(() => manual.verifyManualHandoff(h), "CONTRACT_SCHEMA_INVALID");
+  }
+  const old = consumerFixture("rc-source");
+  const f = r3ParentFixture(false);
+  f.authorization = rawSign(old.payload);
+  f.request.canonicalBytes = encodeManualJson(old.request);
+  rejects(() => manual.verifyManualAuthorization(f), "CONTRACT_SCHEMA_INVALID");
+});
+
 test("creation v4 binds the planned target without future destination or consumer authority", async () => {
   assert.equal(typeof manual.validateManualTargetCreationRequest, "function");
   assert.equal(typeof manual.verifyManualTargetCreationAuthorizationBinding, "function");

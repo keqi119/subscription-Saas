@@ -65,3 +65,11 @@ H1 原生 `gh attestation verify` 校验该完整文件。source 的 signer/call
 随后独立读取固定 GitHub run-attempt 和 [job API](https://docs.github.com/en/rest/actions/workflow-jobs)，要求当前 in_progress、相同仓库/源码/run/job/runner，并核对 source 名称或 final 展开名称与 chain。签名声明承担 environment、主机指纹和临时公钥的来源绑定；API 不单独证明这些字段，也不代替后续目的地实际读回。声明生产器必须从实际 job/host 生成，不能让调用者提交任意已验证标记；生产器和 hosted workflow 目前尚未接线。
 
 `recheck` 重新核对固定原件、H1/H2/源码、时窗及当前 run/job；结束、错位或无法观察均拒绝。返回的 observations 绑定完整 admission、attestation、run、job 原始响应摘要与长度，rawInputs 为独立副本，供后续私有台账保管；副本不是授权对象，归档时仍须核对摘要。没有 manual decision、签名私钥、payload、资源创建或消费能力。4 个 Linux 定向用例全部通过（0 skip），GH 响应为合成夹具，不构成实际 CI 验收。
+
+## 会话记录与尝试分配
+
+R3 会话使用 `manual-operation-record.v3`，范围仅包括 session、consumption、execution、custody。session 的 scope 固定 policy/spec/job/build 四个摘要、sourceSha、phase 和 chain；不沿用 R2 的 targetIntent。撤销仍读取原 `manual-operation-record.v2`、原 GENESIS 和 checkpoint，不另起撤销链。创建和消费使用同一 session，其一次消费槽继续按 profile 与 authorizationId 去重。
+
+`manual-runner-evidence.v2` 只表达尝试分配，不扩展原 MS2 子进程协议。分配绑定该 sessionRecordDigest、会话/操作/attempt/run、源码和候选、policy/spec/job、phase/chain 与分配时间。target-create 不得携带输入、目的地或前序执行；snapshot-consumer 只允许 snapshot chain，并须绑定已存在的创建执行、destination、scope authorization 和固定输入 selector/index 摘要；final 消费还需 matchingSourceEvidenceDigest。
+
+父方校验的 R3 分支复用原签名域和 parent decision 类型，严格检查新 session scope 与原撤销链。创建没有前序执行；消费必须引用同 session 的成功创建，其 resultDigest 对应请求的 destinationAdmissionDigest。完整原件图、实际目标及来源权限必须仍由 native session 校验；纯父方判定不是已消费或已获准读 payload 的证据。旧 v1/v2 记录及 R2 handoff 语义保持，native session 接线完成前不能用新记录启动执行。

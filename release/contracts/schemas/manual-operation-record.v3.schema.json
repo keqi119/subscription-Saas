@@ -1,0 +1,669 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manual-operation-record.v3",
+  "$defs": {
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "sessionId",
+        "sessionNonce",
+        "ownerId",
+        "scope",
+        "status",
+        "openedAt",
+        "previousSessionRecordDigest",
+        "reasonCode"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v3"
+        },
+        "profileDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "manual-operation-record.v2#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "session"
+        },
+        "sessionId": {
+          "$ref": "manual-operation-record.v2#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "manual-operation-record.v2#/$defs/nonce"
+        },
+        "ownerId": {
+          "$ref": "manual-operation-record.v2#/$defs/label"
+        },
+        "status": {
+          "enum": ["OPEN", "CLOSED", "INTERRUPTED_UNKNOWN"]
+        },
+        "openedAt": {
+          "$ref": "manual-operation-record.v2#/$defs/timestamp"
+        },
+        "previousSessionRecordDigest": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/errorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "OPEN"
+            },
+            "previousSessionRecordDigest": {
+              "type": "null"
+            },
+            "reasonCode": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "CLOSED"
+            },
+            "previousSessionRecordDigest": {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            "reasonCode": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "INTERRUPTED_UNKNOWN"
+            },
+            "previousSessionRecordDigest": {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            "reasonCode": {
+              "$ref": "manual-operation-record.v2#/$defs/errorCode"
+            }
+          }
+        }
+      ]
+    },
+    "consumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "ownerId",
+        "authorizationDigest",
+        "requestDigest",
+        "stage",
+        "sessionRecordDigest",
+        "revocationRecordDigest",
+        "revocationSequence",
+        "status"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v3"
+        },
+        "profileDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "manual-operation-record.v2#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "consumption"
+        },
+        "sessionId": {
+          "$ref": "manual-operation-record.v2#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "manual-operation-record.v2#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "manual-operation-record.v2#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "manual-operation-record.v2#/$defs/label"
+        },
+        "ownerId": {
+          "$ref": "manual-operation-record.v2#/$defs/label"
+        },
+        "authorizationDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "requestDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "stage": {
+          "enum": ["target-create", "snapshot-consumer"]
+        },
+        "sessionRecordDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "revocationRecordDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "revocationSequence": {
+          "$ref": "manual-operation-record.v2#/$defs/sequence"
+        },
+        "status": {
+          "const": "CONSUMED"
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "stage",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "attemptId",
+        "requestDigest",
+        "authorizationDigest",
+        "consumptionRecordDigest",
+        "predecessorExecutionRecordDigest",
+        "startedAt",
+        "finishedAt",
+        "status",
+        "reasonCode",
+        "resultDigest",
+        "processEvidenceDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v3"
+        },
+        "profileDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "manual-operation-record.v2#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "execution"
+        },
+        "sessionId": {
+          "$ref": "manual-operation-record.v2#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "manual-operation-record.v2#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "manual-operation-record.v2#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "manual-operation-record.v2#/$defs/label"
+        },
+        "attemptId": {
+          "$ref": "manual-operation-record.v2#/$defs/uuid"
+        },
+        "requestDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "authorizationDigest": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "consumptionRecordDigest": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "predecessorExecutionRecordDigest": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": ["PREFLIGHT_REJECTED", "FAILED", "SUCCEEDED", "INTERRUPTED_UNKNOWN"]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/errorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resultDigest": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "processEvidenceDigest": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stage": {
+          "enum": ["target-create", "snapshot-consumer"]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "PREFLIGHT_REJECTED"
+            },
+            "reasonCode": {
+              "$ref": "manual-operation-record.v2#/$defs/errorCode"
+            },
+            "startedAt": {
+              "type": "null"
+            },
+            "finishedAt": {
+              "type": "null"
+            },
+            "resultDigest": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "FAILED"
+            },
+            "reasonCode": {
+              "$ref": "manual-operation-record.v2#/$defs/errorCode"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "SUCCEEDED"
+            },
+            "reasonCode": {
+              "type": "null"
+            },
+            "startedAt": {
+              "$ref": "manual-operation-record.v2#/$defs/timestamp"
+            },
+            "finishedAt": {
+              "$ref": "manual-operation-record.v2#/$defs/timestamp"
+            },
+            "authorizationDigest": {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            "consumptionRecordDigest": {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            "resultDigest": {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            "processEvidenceDigest": {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "INTERRUPTED_UNKNOWN"
+            },
+            "reasonCode": {
+              "$ref": "manual-operation-record.v2#/$defs/errorCode"
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "FAILED"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "properties": {
+                  "resultDigest": {
+                    "$ref": "manual-operation-record.v2#/$defs/digest"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "processEvidenceDigest": {
+                    "$ref": "manual-operation-record.v2#/$defs/digest"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "custody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "ownerId",
+        "subjectDigest",
+        "subjectType",
+        "purpose",
+        "outcome",
+        "observedDigest",
+        "observedAt",
+        "storageRole",
+        "retentionDays",
+        "reasonCode"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-operation-record.v3"
+        },
+        "profileDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "recordedAt": {
+          "$ref": "manual-operation-record.v2#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "custody"
+        },
+        "ownerId": {
+          "$ref": "manual-operation-record.v2#/$defs/label"
+        },
+        "subjectDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "subjectType": {
+          "enum": ["profile", "authorization", "record", "r2-artifact"]
+        },
+        "purpose": {
+          "enum": [
+            "consumption-readback",
+            "archive-readback",
+            "backup-readback",
+            "owner-acknowledgement"
+          ]
+        },
+        "outcome": {
+          "enum": ["MATCH", "FAILED", "UNKNOWN"]
+        },
+        "observedDigest": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAt": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "storageRole": {
+          "enum": ["journal", "archive", "backup"]
+        },
+        "retentionDays": {
+          "const": 90
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "manual-operation-record.v2#/$defs/errorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "outcome": {
+              "const": "MATCH"
+            },
+            "observedDigest": {
+              "$ref": "manual-operation-record.v2#/$defs/digest"
+            },
+            "observedAt": {
+              "$ref": "manual-operation-record.v2#/$defs/timestamp"
+            },
+            "reasonCode": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "outcome": {
+              "enum": ["FAILED", "UNKNOWN"]
+            },
+            "reasonCode": {
+              "$ref": "manual-operation-record.v2#/$defs/errorCode"
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "consumption-readback"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "storageRole": {
+                "const": "journal"
+              },
+              "subjectType": {
+                "const": "record"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "archive-readback"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "storageRole": {
+                "const": "archive"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "backup-readback"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "storageRole": {
+                "const": "backup"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "targetPolicyDigest",
+        "creationSpecDigest",
+        "jobAdmissionDigest",
+        "buildProofDigest",
+        "sourceSha",
+        "phase",
+        "chain"
+      ],
+      "properties": {
+        "targetPolicyDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "creationSpecDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "jobAdmissionDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "buildProofDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "sourceSha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "phase": {
+          "enum": ["source", "final"]
+        },
+        "chain": {
+          "enum": ["fresh", "snapshot"]
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/session"
+    },
+    {
+      "$ref": "#/$defs/consumption"
+    },
+    {
+      "$ref": "#/$defs/execution"
+    },
+    {
+      "$ref": "#/$defs/custody"
+    }
+  ]
+}

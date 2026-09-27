@@ -2091,6 +2091,10 @@ async function launchZeroCredentialRunner(session, facts, observed, dry = null, 
         const processReadbackRef = await custody(previousProcessEvidenceDigest);
         const processReadback = (await archive.get(processReadbackRef.recordDigest)).value;
         const bound = (await archive.get(previousProcessEvidenceDigest)).value;
+        // Finish receipt-independent delivery preparation before starting its short window.
+        await admitted.recheckForDelivery();
+        await facts.recheckResources();
+        await sources.checkSourceBytes();
         authorization = await session.sign(input);
         consumed = await session.consume({
           authorization,
@@ -2164,10 +2168,6 @@ async function launchZeroCredentialRunner(session, facts, observed, dry = null, 
           )
             fail("MANUAL_EVIDENCE_BINDING_MISMATCH");
         };
-        // Complete source/admission reads before the fresh capability-release check below.
-        await admitted.recheckForDelivery();
-        await facts.recheckResources();
-        await sources.checkSourceBytes();
         if (close || child.exitCode !== null || child.signalCode !== null)
           fail("MANUAL_FRAME_INCOMPLETE");
         await checkConsumedObservation(session, input, authorization, consumed, facts, archive);

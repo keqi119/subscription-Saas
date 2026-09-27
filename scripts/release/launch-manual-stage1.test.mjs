@@ -5997,7 +5997,13 @@ test(
   }
 );
 
-for (const fault of ["invalid-ready", "sql-identity", "prepared-write", "ack-write"]) {
+for (const fault of [
+  "invalid-ready",
+  "sql-identity",
+  "prepared-write",
+  "ack-write",
+  "consume-resource-change"
+]) {
   test(
     "runner command parent rejects " + fault + " at the reached boundary",
     { skip: process.platform !== "linux" },
@@ -6009,8 +6015,33 @@ for (const fault of ["invalid-ready", "sql-identity", "prepared-write", "ack-wri
       f.runner.invalidReady = fault === "invalid-ready";
       f.runner.wrongIdentity = fault === "sql-identity";
       f.runner.ackWriteFailure = fault === "ack-write";
-      let triggered = 0;
-      if (fault === "prepared-write") {
+      let triggered = 0,
+        receiptDigest,
+        readyFrames = 0,
+        credentialsSent = 0;
+      if (fault === "consume-resource-change") {
+        const spawn = childProcess.spawn.bind(childProcess);
+        boundedExpectedMock(t, f, childProcess, "spawn", (...args) => {
+          const child = spawn(...args);
+          if (args[0] !== "docker") return child;
+          const output = [],
+            write = child.stdin.write.bind(child.stdin);
+          child.stdout.on("data", (bytes) => {
+            output.push(Buffer.from(bytes));
+            readyFrames = parseManualRunnerFrames({
+              direction: "child-to-parent",
+              bytes: Buffer.concat(output),
+              ended: false
+            }).frames.filter((frame) => frame.type === "READY").length;
+          });
+          child.stdin.write = (bytes, ...rest) => {
+            if (bytes.subarray(0, 15).toString("ascii") === "MS2 CREDENTIAL ") credentialsSent++;
+            return write(bytes, ...rest);
+          };
+          return child;
+        });
+      }
+      if (["prepared-write", "consume-resource-change"].includes(fault)) {
         const open = fs.open.bind(fs);
         boundedExpectedMock(t, f, fs, "open", async (file, flags, ...args) => {
           const handle = await open(file, flags, ...args);
@@ -6023,6 +6054,18 @@ for (const fault of ["invalid-ready", "sql-identity", "prepared-write", "ack-wri
           handle.writeFile = async (bytes, ...rest) => {
             const value = JSON.parse(bytes);
             if (
+              fault === "consume-resource-change" &&
+              value.kind === "consumption-handoff" &&
+              triggered === 0
+            ) {
+              const result = await writeFile(bytes, ...rest);
+              triggered++;
+              receiptDigest = sha256Bytes(bytes);
+              f.docker.outputs.container.id = "f".repeat(64);
+              return result;
+            }
+            if (
+              fault === "prepared-write" &&
               value.kind === "process" &&
               value.events.at(-1)?.source === "runner" &&
               value.events.at(-1)?.event === "PREPARED"
@@ -6038,6 +6081,7 @@ for (const fault of ["invalid-ready", "sql-identity", "prepared-write", "ack-wri
           return handle;
         });
       }
+      if (fault === "consume-resource-change") syncBuiltinESMExports();
       let failure;
       try {
         await launcher.launchManualStage1({ operationRef: f.prepared.operationRef });
@@ -6056,6 +6100,29 @@ for (const fault of ["invalid-ready", "sql-identity", "prepared-write", "ack-wri
         assert.equal(effects.invalidReady, 1);
         assert.equal(effects.connections, 0);
         assert.equal(f.counters.credentialReads, f.credentialReads);
+      } else if (fault === "consume-resource-change") {
+        assert.equal(triggered, 1, `receipt write not reached: ${failure.code}`);
+        assert.equal(failure.code, "MANUAL_H3_RESOURCE_MISMATCH");
+        assert.equal(readyFrames, 1, "exercise the retained resource guard after native READY");
+        assert.equal(credentialsSent, 0);
+        assert.equal(effects.connections, 0);
+        assert.equal(effects.queries, 0);
+        assert.equal(f.counters.credentialReads, f.credentialReads);
+        const records = await f.records(),
+          receipt = records.find((value) => sha256Canonical(value) === receiptDigest),
+          executions = records.filter(
+            (value) => value.kind === "execution" && value.requestDigest === receipt?.requestDigest
+          );
+        assert.ok(receipt, "retain the original consumed receipt");
+        assert.ok(
+          records.some(
+            (value) => value.kind === "consumption" && value.requestDigest === receipt.requestDigest
+          )
+        );
+        assert.equal(executions.length, 1);
+        assert.equal(executions[0].status, "INTERRUPTED_UNKNOWN");
+        assert.equal(executions[0].resultDigest, null);
+        assert.equal(executions[0].finishedAt, null);
       } else if (fault === "sql-identity") {
         assert.equal(failure.code, "MANUAL_CLUSTER_IDENTITY_MISMATCH");
         assert.equal(effects.connections, 1);
@@ -6071,7 +6138,15 @@ for (const fault of ["invalid-ready", "sql-identity", "prepared-write", "ack-wri
         assert.equal(failure.code, "OFFLINE_PREPARED_WRITE_FAILED");
       }
       t.diagnostic(
-        JSON.stringify({ fault, error: failure.code, effects, actualCloses: f.actualCloses })
+        JSON.stringify({
+          fault,
+          error: failure.code,
+          triggered,
+          readyFrames,
+          credentialsSent,
+          effects,
+          actualCloses: f.actualCloses
+        })
       );
     }
   );

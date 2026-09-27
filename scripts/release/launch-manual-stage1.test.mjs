@@ -9,6 +9,10 @@ import http from "node:http";
 import { registerHooks, syncBuiltinESMExports } from "node:module";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import {
+  produceManualExpectedSchema,
+  runReferenceExpectedSchema
+} from "./manual-expected-schema-producer.mjs";
 
 // R1 deliberately captures its native OS boundary at module initialization.
 // Install the same fixed Windows ACL double before loading R1, then restore the
@@ -381,6 +385,18 @@ async function fixture(t, endpoint = "db.invalid:5432") {
   };
 }
 
+// The expected closure performs many real filesystem probes. node:test retains
+// every mock call/result/stack; these fixtures assert their own explicit counters
+// and captured bytes, so keep the mock history bounded without changing the IO.
+function boundedExpectedMock(t, f, target, name, callback) {
+  let installed;
+  installed = t.mock.method(target, name, function (...args) {
+    if (f.boundedExpectedMocks) installed.mock.resetCalls();
+    return Reflect.apply(callback, this, args);
+  });
+  return installed;
+}
+
 function installFixedIO(t, f, gh) {
   const sourceMapped = (file) =>
     typeof file === "string" &&
@@ -395,12 +411,12 @@ function installFixedIO(t, f, gh) {
           ? path.join(f.repoRoot, path.relative(productionRoot, file))
           : file;
   for (const name of ["lstat", "readFile", "readdir", "mkdir", "writeFile"])
-    t.mock.method(fs, name, (file, ...args) => nativeFS[name](mapped(file), ...args));
-  t.mock.method(fs, "realpath", async (file, ...args) => {
+    boundedExpectedMock(t, f, fs, name, (file, ...args) => nativeFS[name](mapped(file), ...args));
+  boundedExpectedMock(t, f, fs, "realpath", async (file, ...args) => {
     const real = await nativeFS.realpath(mapped(file), ...args);
     return sourceMapped(file) || String(file).startsWith(systemRoot) ? file : real;
   });
-  t.mock.method(fs, "open", async (file, flags, ...args) => {
+  boundedExpectedMock(t, f, fs, "open", async (file, flags, ...args) => {
     const actual = mapped(file);
     if (actual.startsWith(f.profile.storage.keyRoot + path.sep)) f.counters.privateKeyReads++;
     if (actual.startsWith(f.profile.storage.credentialRoot + path.sep)) {
@@ -412,7 +428,7 @@ function installFixedIO(t, f, gh) {
     if (String(flags) !== "r" && actual.endsWith(path.sep + "index.json")) f.counters.indexWrites++;
     return nativeFS.open(actual, flags, ...args);
   });
-  t.mock.method(childProcess, "execFile", (file, args, options, callback) => {
+  boundedExpectedMock(t, f, childProcess, "execFile", (file, args, options, callback) => {
     if (f.host.before) f.host.before(file, args);
     let value;
     if (file === "git") {
@@ -560,8 +576,13 @@ function verifiedItem(bytes, sourceSha, name, timestamp = generatedAt) {
   };
 }
 
-async function buildFixture(t, endpoint) {
+const expectedNodeBase =
+  "node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3";
+const expectedPgBase =
+  "postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0";
+async function buildFixture(t, endpoint, expectedSource = false) {
   const f = await fixture(t, endpoint);
+  f.boundedExpectedMocks = expectedSource;
   const manifest = "release/contracts/repository-contract-files.v1.json";
   const entrypoints = [
     "scripts/release/manual-stage1-trust.mjs",
@@ -574,11 +595,42 @@ async function buildFixture(t, endpoint) {
       new URL(`./${path.basename(file)}`, import.meta.url),
       path.join(f.repoRoot, file)
     );
+  if (expectedSource) {
+    const sources = {
+      "apps/api/prisma/schema.prisma": "// exact attested checkout schema\r\n",
+      "apps/api/prisma.config.ts": "// fixed config\n",
+      "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+      "package.json": JSON.stringify({ packageManager: "pnpm@11.4.0" }),
+      "Dockerfile.runner": `FROM ${expectedNodeBase} AS deps\nFROM ${expectedPgBase} AS runtime\n`,
+      "apps/api/prisma/migrations/20260101000000_initial/migration.sql":
+        "CREATE TABLE example(id integer PRIMARY KEY);\n"
+    };
+    for (const [file, bytes] of Object.entries(sources)) {
+      await fs.mkdir(path.dirname(path.join(f.repoRoot, file)), { recursive: true });
+      await fs.writeFile(path.join(f.repoRoot, file), bytes, { mode: 0o600 });
+    }
+    await fs.copyFile(
+      new URL("./manual-expected-schema-producer.mjs", import.meta.url),
+      path.join(f.repoRoot, "scripts/release/manual-expected-schema-producer.mjs")
+    );
+  }
   await fs.writeFile(
     path.join(f.repoRoot, manifest),
     encodeManualJson({
       contractVersion: "repository-contract-files.v1",
-      files: [manifest, profileName, bindingName, ...entrypoints].sort()
+      files: [
+        manifest,
+        profileName,
+        bindingName,
+        ...entrypoints,
+        ...(expectedSource
+          ? [
+              "Dockerfile.runner",
+              "pnpm-lock.yaml",
+              "scripts/release/manual-expected-schema-producer.mjs"
+            ]
+          : [])
+      ].sort()
     }),
     { mode: 0o600 }
   );
@@ -598,9 +650,12 @@ async function buildFixture(t, endpoint) {
       platform: "linux/amd64",
       digest: imageDigest,
       sourceRevision: sourceSha,
-      baseImageDigests: [
-        { image: "node:22-bookworm-slim", declaredDigest: digest("a"), digest: digest("b") }
-      ],
+      baseImageDigests: expectedSource
+        ? [expectedNodeBase, expectedPgBase].map((base) => {
+            const [image, hash] = base.split("@");
+            return { image, declaredDigest: hash, digest: hash };
+          })
+        : [{ image: "node:22-bookworm-slim", declaredDigest: digest("a"), digest: digest("b") }],
       builderName: "https://mobyproject.org/buildkit@v1",
       buildAttestationRef: `oci://${image}@${imageDigest}#provenance=${digest("c")}`,
       registrySubject: `${image}@${imageDigest}`,
@@ -642,7 +697,9 @@ async function buildFixture(t, endpoint) {
       }
     })
   );
-  const proofBytes = Buffer.from(JSON.stringify(proof, null, 2) + "\n");
+  const proofBytes = expectedSource
+    ? encodeManualJson(proof)
+    : Buffer.from(JSON.stringify(proof, null, 2) + "\n");
   const materialBytes = Buffer.from(JSON.stringify(material, null, 2) + "\n");
   const proofItem = verifiedItem(proofBytes, sourceSha, "build-proof.json");
   const receipt = {
@@ -734,8 +791,8 @@ function noAuthority(f) {
   assert.equal(f.counters.externalCalls, 0);
 }
 
-async function zeroCredentialFixture(t, mode = "split") {
-  const f = await targetObserveFixture(t);
+async function zeroCredentialFixture(t, mode = "split", expectedSource = false) {
+  const f = await targetObserveFixture(t, expectedSource);
   await launcher.connectAndObserveManualTarget({
     session: await f.open(),
     operationRef: f.prepared.operationRef
@@ -760,11 +817,13 @@ async function zeroCredentialFixture(t, mode = "split") {
   const actualCloses = [];
   const readOpens = new Map(),
     previousOpen = fs.open.bind(fs);
-  t.mock.method(fs, "open", (file, flags, ...args) => {
+  boundedExpectedMock(t, f, fs, "open", (file, flags, ...args) => {
     if (flags === "r") readOpens.set(String(file), (readOpens.get(String(file)) ?? 0) + 1);
     return previousOpen(file, flags, ...args);
   });
-  t.mock.method(childProcess, "spawn", (file, args, options) => {
+  boundedExpectedMock(t, f, childProcess, "spawn", (file, args, options) => {
+    if (file === "gh" && f.gh.expectedSpawn)
+      return f.gh.expectedSpawn(file, args, options, nativeSpawn);
     assert.equal(file, "docker");
     assert.equal(args[0], "run");
     const cid = args[args.indexOf("--cidfile") + 1];
@@ -801,7 +860,7 @@ async function zeroCredentialFixture(t, mode = "split") {
       mode === "empty-cid"
         ? `fs.writeFileSync(${JSON.stringify(cid)}, ''); setTimeout(()=>fs.writeFileSync(${JSON.stringify(cid)},${JSON.stringify(id)}),150);`
         : `fs.writeFileSync(${JSON.stringify(cid)},${JSON.stringify(id)});`;
-    const source = `import fs from 'node:fs'; ${cidWrite} const bytes=Buffer.from(${JSON.stringify(challenge.toString("base64"))},'base64'); ${mode === "invalid" ? "process.stdout.write(Buffer.from([255]));" : mode === "limit" ? "process.stdout.write(bytes); process.stderr.write(Buffer.alloc(1048577,65));" : mode === "early" ? "process.exit(7);" : mode === "stderr-invalid" ? "process.stdout.write(bytes);process.stderr.write(Buffer.from([255]));" : "for(let i=0;i<bytes.length;i+=7) process.stdout.write(bytes.subarray(i,i+7));"} process.stdin.resume(); process.stdin.on('end',()=>process.exit(0));`;
+    const source = `import fs from 'node:fs'; ${cidWrite} const bytes=Buffer.from(${JSON.stringify(challenge.toString("base64"))},'base64'); ${expectedSource ? "process.on('SIGUSR1',()=>process.stdout.write(Buffer.from([255])));" : ""} ${mode === "invalid" ? "process.stdout.write(Buffer.from([255]));" : mode === "limit" ? "process.stdout.write(bytes); process.stderr.write(Buffer.alloc(1048577,65));" : mode === "early" ? "process.exit(7);" : mode === "stderr-invalid" ? "process.stdout.write(bytes);process.stderr.write(Buffer.from([255]));" : "for(let i=0;i<bytes.length;i+=7) process.stdout.write(bytes.subarray(i,i+7));"} process.stdin.resume(); process.stdin.on('end',()=>process.exit(0));`;
     child = nativeSpawn(process.execPath, ["--input-type=module", "-e", source], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { PATH: process.env.PATH }
@@ -813,7 +872,7 @@ async function zeroCredentialFixture(t, mode = "split") {
     return child;
   });
   const calls = [];
-  t.mock.method(childProcess, "execFile", (file, args, options, callback) => {
+  boundedExpectedMock(t, f, childProcess, "execFile", (file, args, options, callback) => {
     if (file !== "docker" || args[0] === "--host")
       return previousExec(file, args, options, callback);
     calls.push([...args]);
@@ -891,9 +950,1179 @@ async function zeroCredentialFixture(t, mode = "split") {
     baseline,
     credentialReads,
     keyReads,
-    actualCloses
+    actualCloses,
+    readOpens,
+    breakRunnerStream: () => child.kill("SIGUSR1"),
+    closeRunner: () => child.stdin.end()
   };
 }
+
+// The actual producer consumes the genuine committed R1 fixture. Only external
+// reference process responses use the existing producer test's finite synthesis.
+async function expectedSourceFixture(f) {
+  const { repoRoot, sourceSha, proof } = f,
+    catalog = await computeMigrationCatalog(repoRoot),
+    fault = undefined;
+  let syntheticPid = 1000;
+  const result = (stdout = "", exitCode = 0) => {
+    const time = new Date().toISOString();
+    return {
+      stdout: Buffer.from(stdout),
+      stderr: Buffer.alloc(0),
+      exitCode,
+      signal: null,
+      pid: ++syntheticPid,
+      preparedAt: time,
+      spawnedAt: time,
+      closedAt: time
+    };
+  };
+  const calls = [],
+    containers = new Map();
+  let ordinal = 0;
+  async function runProcess(command, argv, options) {
+    calls.push({ command, argv, environment: options.environment });
+    assert.equal(options.environment.DOCKER_HOST, undefined);
+    assert.equal(options.environment.DATABASE_URL, undefined);
+    if (command === "git")
+      return result(
+        argv.includes("status") ? "" : `${fault === "source" ? "9".repeat(40) : sourceSha}\n`
+      );
+    if (command === "pnpm") return result("11.4.0\n");
+    const operation = argv.find((v) =>
+      ["create", "inspect", "start", "stop", "rm", "cp"].includes(v)
+    );
+    if (operation === "create") {
+      assert.ok(argv.includes("--network=none"));
+      assert.ok(argv.includes("--user=postgres"));
+      assert.ok(argv.includes("--pull=never"));
+      const id = String(++ordinal).repeat(64);
+      containers.set(id, { ordinal });
+      return result(`${id}\n`);
+    }
+    const id = argv.at(-1),
+      container = containers.get(id);
+    if (operation === "inspect") {
+      if (argv.includes("image"))
+        return result(
+          JSON.stringify({
+            id: digest("a"),
+            repoDigests: [
+              `${proof.identity.images.runner.registry}@${proof.identity.images.runner.imageDigest}`
+            ],
+            sourceRevision: sourceSha
+          })
+        );
+      return result(
+        JSON.stringify({
+          id,
+          imageId: digest("a"),
+          imageRef: `${proof.identity.images.runner.registry}@${proof.identity.images.runner.imageDigest}`,
+          user: "postgres",
+          network: fault === "network" ? "host" : "none",
+          binds: null,
+          mounts: [],
+          tmpfs: {
+            "/tmp": "rw,nosuid,nodev,size=512m,mode=1777",
+            "/var/lib/postgresql/data": "rw,nosuid,nodev,size=16m,mode=1777"
+          },
+          readonly: true,
+          status: container.done ? "exited" : "created",
+          running: false,
+          exitCode: 0
+        })
+      );
+    }
+    if (operation === "start") {
+      assert.equal(options.stdin.at(-1), 10);
+      const envelope = JSON.parse(options.stdin.subarray(0, options.stdin.length - 1));
+      const innerCalls = [];
+      const innerProcess = async (cmd, args, opts) => {
+        innerCalls.push({ cmd, args });
+        assert.equal(opts.environment.STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV, "1");
+        assert.ok(!("DOCKER_HOST" in opts.environment));
+        if (args.includes("--version")) {
+          const raw = result(
+            cmd.endsWith("node")
+              ? "v22.18.0\n"
+              : cmd.endsWith("prisma")
+                ? "prisma                  : 7.8.0\n@prisma/client          : 7.8.0\nQuery Engine           : pinned\n"
+                : "psql (PostgreSQL) 17.11\n"
+          );
+          if (cmd.endsWith("prisma") && fault === "missing-pid") delete raw.pid;
+          if (cmd.endsWith("prisma") && fault === "time")
+            raw.preparedAt =
+              raw.spawnedAt =
+              raw.closedAt =
+                new Date(Date.now() - 60000).toISOString();
+          return raw;
+        }
+        if (cmd.endsWith("psql")) {
+          const sql = args.at(-1);
+          if (sql.includes("pg_control_system"))
+            return result(
+              JSON.stringify({
+                databaseName: "expected_schema_reference",
+                databaseOid: "16384",
+                systemIdentifier: String(container.ordinal),
+                serverVersion: "17.11",
+                schemaOwner: "pg_database_owner",
+                ownerInventory: [
+                  { objectClass: "schema", objectName: "public", owner: "pg_database_owner" },
+                  ...(container.deployed
+                    ? [
+                        {
+                          objectClass: "relation",
+                          objectName: "_prisma_migrations",
+                          owner: "expected_schema_owner"
+                        }
+                      ]
+                    : [])
+                ],
+                extensions: ["plpgsql"],
+                listenAddresses: "",
+                socketDirectory: opts.environment.REFERENCE_SOCKET_DIRECTORY,
+                dataDirectory: opts.environment.REFERENCE_DATA_DIRECTORY,
+                configuredPort: 5432
+              })
+            );
+          if (sql.includes("_prisma_migrations"))
+            return result(
+              JSON.stringify(
+                catalog.entries.map((e) => ({
+                  name: e.path.split("/").at(-2),
+                  checksum: e.sha256.slice(7),
+                  finished: true,
+                  rolledBack: false,
+                  appliedSteps: 1
+                }))
+              )
+            );
+          return result();
+        }
+        if (args.includes("--exit-code"))
+          return result(
+            fault === "diff-output" ? "unexpected difference\n" : "",
+            fault === "diff" ? 2 : 0
+          );
+        if (args.includes("--script"))
+          return fault === "utf8"
+            ? { ...result(), stdout: Buffer.from([255]) }
+            : result(
+                fault === "large"
+                  ? Buffer.alloc(400000, "x")
+                  : container.ordinal === 2 && fault === "reproduction"
+                    ? "changed\n"
+                    : "CREATE TABLE example(id integer PRIMARY KEY);\r\n"
+              );
+        if (args.includes("deploy")) container.deployed = true;
+        return result();
+      };
+      const output = await runReferenceExpectedSchema(envelope, {
+        repoRoot,
+        runProcess: innerProcess
+      });
+      assert.ok(innerCalls.some((c) => c.cmd.endsWith("pg_ctl") && c.args.includes("stop")));
+      container.rawBlobs = output.rawBlobs;
+      if (fault === "inner-source") output.manifest.sourceDigests.sourceSchemaDigest = digest("9");
+      const manifest = Buffer.from(encodeManualJson(output.manifest));
+      assert.ok(manifest.length < 1048576);
+      assert.equal("sourceSchemaBase64" in output.manifest, false);
+      assert.equal("scriptBase64" in output.manifest, false);
+      await options.onManifest(manifest);
+      container.released = true;
+      container.done = true;
+      return result(Buffer.concat([manifest, Buffer.from("\n")]));
+    }
+    if (operation === "cp") {
+      const source = argv.at(-2),
+        destination = argv.at(-1);
+      const match =
+        /^([0-9a-f]{64}):\/tmp\/manual-expected-schema-output\/([0-9a-f]{64})\.bin$/u.exec(source);
+      assert.ok(match);
+      const owner = containers.get(match[1]);
+      assert.equal(owner.done, undefined);
+      assert.equal(owner.released, undefined);
+      let raw = owner.rawBlobs.get(`sha256:${match[2]}`);
+      assert.ok(raw);
+      if (fault === "raw-copy") raw = Buffer.from("changed");
+      await fs.writeFile(destination, raw, { flag: "wx", mode: 0o600 });
+      return result();
+    }
+    if (operation === "stop") return result("", fault === "stop" ? 1 : 0);
+    if (operation === "rm") {
+      containers.delete(id);
+      return result(`${id}\n`);
+    }
+    throw new Error(`unexpected offline process ${command} ${argv.join(" ")}`);
+  }
+
+  const output = await produceManualExpectedSchema(
+    {
+      repoRoot,
+      proofBytes: f.proofBytes,
+      materialBytes: f.materialBytes,
+      buildIdentity: {
+        sourceSha,
+        repository,
+        workflowPath,
+        sourceRef: "refs/heads/main",
+        runId: String(runId),
+        runAttempt: 1,
+        protectedEnvironment: "trusted-image-build"
+      }
+    },
+    { runProcess }
+  );
+  assert.equal(containers.size, 0);
+  const root = path.join(
+    f.profile.storage.archiveRoot,
+    "inputs",
+    "expected-schema",
+    sha256Bytes(f.proofBytes).slice(7)
+  );
+  await fs.mkdir(path.join(root, "raw"), { recursive: true, mode: 0o700 });
+  const raws = new Map(output.rawBlobs),
+    add = (bytes) => {
+      bytes = Buffer.from(bytes);
+      const ref = { digest: sha256Bytes(bytes), bytes: bytes.length };
+      raws.set(ref.digest, bytes);
+      return ref;
+    };
+  const provenance = JSON.parse(output.producerRecordBytes);
+  add(output.producerRecordBytes);
+  const subjectRaws = new Map(raws);
+  const bucket = "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai",
+    owner = "1457643390906675";
+  const principal = `acs:ram::${owner}:role/subscription-saas-stage1-evidence-audit-reader/stage1-reader-${runId}-attempt-1`;
+  const writer = `acs:ram::${owner}:role/subscription-saas-stage1-evidence-writer/stage1-writer-${runId}-attempt-1`;
+  const storedAt = new Date(
+    Math.floor(Date.parse(provenance.generatedAt) / 1000) * 1000
+  ).toISOString();
+  const objects = [],
+    custodyObservedAt = new Date().toISOString();
+  // Explicitly synthesized external OSS responses match the native collector's
+  // nine operations, selected headers, canonical records and original XML bodies.
+  for (const [digest, bytes] of [...subjectRaws].sort(([a], [b]) => a.localeCompare(b))) {
+    const key = `evidence/github-${runId}-attempt-1/${digest.slice(7)}.json`,
+      checks = [];
+    const record = (operation, body) => {
+      body = Buffer.from(body);
+      const object = ["GetObject", "HeadObject", "GetObjectAcl"].includes(operation);
+      const at = custodyObservedAt;
+      const headers = {
+        date: new Date(at).toUTCString(),
+        "x-oss-request-id": "synthetic-request",
+        "content-length": String(operation === "HeadObject" ? bytes.length : body.length),
+        "last-modified": ["GetObject", "HeadObject"].includes(operation)
+          ? new Date(storedAt).toUTCString()
+          : null,
+        etag: ["GetObject", "HeadObject"].includes(operation) ? '"synthetic-etag"' : null,
+        "x-oss-server-side-encryption": ["GetObject", "HeadObject"].includes(operation)
+          ? "AES256"
+          : null,
+        "content-type": "application/json"
+      };
+      const ref = add(
+        encodeManualJson({
+          recordVersion: "manual-expected-oss-readback.v1",
+          operation,
+          bucket,
+          objectKey: object ? key : null,
+          readerPrincipal: principal,
+          observedAt: at,
+          response: { status: 200, headers, body: add(body) },
+          bucketChecks: operation === "HeadObject" ? [...checks] : []
+        })
+      );
+      if (!object) checks.push(ref);
+      return ref;
+    };
+    const acl = `<AccessControlPolicy><Owner><ID>${owner}</ID><DisplayName>synthetic-owner</DisplayName></Owner><AccessControlList><Grant>private</Grant></AccessControlList></AccessControlPolicy>`;
+    record("GetBucketAcl", acl);
+    record(
+      "GetBucketWorm",
+      `<WormConfiguration><WormId>locked-id</WormId><State>Locked</State><RetentionPeriodInDays>210</RetentionPeriodInDays><CreationDate>2026-09-01T00:00:00Z</CreationDate></WormConfiguration>`
+    );
+    record(
+      "GetBucketVersioning",
+      '<VersioningConfiguration xmlns="http://doc.oss-cn-hangzhou.aliyuncs.com"/>'
+    );
+    record(
+      "GetBucketEncryption",
+      "<ServerSideEncryptionRule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></ServerSideEncryptionRule>"
+    );
+    record("GetBucketPolicyStatus", "<PolicyStatus><IsPublic>false</IsPublic></PolicyStatus>");
+    record(
+      "GetBucketPublicAccessBlock",
+      "<PublicAccessBlockConfiguration><BlockPublicAccess>true</BlockPublicAccess></PublicAccessBlockConfiguration>"
+    );
+    const headEvidence = record("HeadObject", ""),
+      aclEvidence = record("GetObjectAcl", acl),
+      getEvidence = record("GetObject", bytes);
+    objects.push({
+      subject: { digest, bytes: bytes.length },
+      storeRef: `oss://${bucket}/${key}`,
+      writerIdentity: writer,
+      auditReaderIdentity: "audit-reader",
+      storedAt,
+      retainUntil: new Date(Date.parse(storedAt) + 210 * 86400000).toISOString(),
+      readbackAt: new Date().toISOString(),
+      getEvidence,
+      headEvidence,
+      aclEvidence
+    });
+  }
+  const importedAt = new Date().toISOString();
+  const imported = {
+    recordVersion: "manual-expected-schema-import.v1",
+    buildProofDigest: sha256Canonical(proof),
+    proofRawDigest: sha256Bytes(f.proofBytes),
+    profileDigest: sha256Canonical(f.profile),
+    ownerId: f.profile.ownerId,
+    importApprovalRef: "synthetic-owner-original-import",
+    importedAt,
+    readbackAt: importedAt,
+    objects,
+    promotionEligible: false
+  };
+  for (const [name, bytes] of [
+    ["provenance.json", output.producerRecordBytes],
+    ["expected.sql", output.scriptBytes],
+    ["schema.prisma", output.sourceSchemaBytes],
+    ["prisma-version.stdout", output.prismaVersionBytes],
+    ["import-readback.json", encodeManualJson(imported)]
+  ])
+    await fs.writeFile(path.join(root, name), bytes, { flag: "wx", mode: 0o600 });
+  for (const [digest, bytes] of raws)
+    await fs.writeFile(path.join(root, "raw", `${digest.slice(7)}.bin`), bytes, {
+      flag: "wx",
+      mode: 0o600
+    });
+  const ghCalls = [],
+    ghCloses = [],
+    control = {};
+  f.gh.expectedSpawn = (file, args, options, nativeSpawn) => {
+    assert.equal(file, "gh");
+    assert.equal(options.shell, false);
+    assert.equal(options.env.GH_HOST, "github.com");
+    assert.equal(options.env.GH_REPO, undefined);
+    assert.equal(options.env.GH_PROMPT_DISABLED, "1");
+    assert.equal(options.env.HOME, process.env.HOME);
+    assert.equal(options.env.GH_TOKEN, process.env.GH_TOKEN);
+    const name = path.basename(args[2]),
+      bytes = fsSync.readFileSync(args[2]);
+    assert.deepEqual(args, [
+      "attestation",
+      "verify",
+      path.join(root, name),
+      "--repo",
+      repository,
+      "--signer-workflow",
+      `${repository}/${workflowPath}`,
+      "--source-ref",
+      "refs/heads/main",
+      "--source-digest",
+      sourceSha,
+      "--cert-oidc-issuer",
+      "https://token.actions.githubusercontent.com",
+      "--deny-self-hosted-runners",
+      "--format",
+      "json"
+    ]);
+    // Native gh timestamps need not use the private records' UTCms spelling.
+    const vendorTimestamp = new Date(Date.parse(provenance.generatedAt) + 8 * 3600000)
+      .toISOString()
+      .replace("Z", "+08:00");
+    const item = verifiedItem(bytes, sourceSha, name, vendorTimestamp);
+    control.item?.(item, name);
+    const raw = encodeManualJson([item]);
+    if (control.before) {
+      control.beforeCalls = (control.beforeCalls ?? 0) + 1;
+      control.before(name);
+    }
+    const script =
+      control.mode === "overflow"
+        ? "process.stdout.write(Buffer.alloc(1048577,65));"
+        : control.mode === "invalid-utf8"
+          ? "process.stdout.write(Buffer.from([255]));"
+          : `process.stdout.write(Buffer.from('${raw.toString("base64")}','base64'));${control.mode === "nonzero" ? "process.exitCode=7;" : ""}`;
+    const child = nativeSpawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        control.delay ? `setTimeout(()=>{${script}},${control.delay});` : script
+      ],
+      {
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    );
+    ghCalls.push({ args, pid: child.pid, raw, item });
+    child.once("close", (exitCode, signal) => ghCloses.push({ pid: child.pid, exitCode, signal }));
+    return child;
+  };
+  return { root, raws, subjectRaws, provenance, imported, output, ghCalls, ghCloses, control };
+}
+
+test(
+  "fixed expected admission refuses actual Runner close after CHALLENGE during gh",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "split", true),
+      e = await expectedSourceFixture(f);
+    // Confirm the preexisting whole-archive UTF8 boundary without changing,
+    // deleting, or sanitizing any archived evidence or baseline bytes.
+    const values = await f.records(),
+      request = values.find(
+        (v) => v.stage === "target-observe" && v.schemaVersion === "manual-runner-request.v1"
+      ),
+      input = {
+        profileBytes: encodeManualJson(f.profile),
+        requestBytes: encodeManualJson(request),
+        artifactBytes: values.map(encodeManualJson),
+        rawBlobs: []
+      };
+    assert.equal(assessManualRunnerEvidence(input).executionStatus, "SUCCEEDED");
+    assert.throws(() => assessManualRunnerEvidence({ ...input, rawBlobs: [Buffer.from([255])] }), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+    t.diagnostic(
+      "Existing assessor: valid baseline SUCCEEDED; additional exact 0xff raw fails MANUAL_EVIDENCE_BINDING_MISMATCH before classification"
+    );
+    e.control.delay = 200;
+    e.control.before = () => f.closeRunner();
+    let caught;
+    try {
+      await launcher.launchManualStage1({ operationRef: f.prepared.operationRef });
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(e.ghCalls.length > 0, "actual gh must have launched before Runner close refusal");
+    assert.equal(e.ghCloses.length, e.ghCalls.length);
+    assert.equal(f.actualCloses.length, 1);
+    assert.deepEqual(f.actualCloses[0], { pid: f.launches[0].pid, exitCode: 0, signal: null });
+    t.diagnostic(
+      JSON.stringify({
+        runnerClose: f.actualCloses[0],
+        actualGhPids: e.ghCalls.map((c) => c.pid),
+        refusal: caught?.code
+      })
+    );
+    assert.equal(caught?.code, "MANUAL_FRAME_INCOMPLETE");
+    const attemptId = f.launches[0].attemptId;
+    await assert.rejects(
+      fs.stat(path.join(e.root, "admissions", f.prepared.operationRef, `${attemptId}.json`)),
+      { code: "ENOENT" }
+    );
+    const records = await f.records(),
+      processes = records.filter((r) => r.kind === "process" && r.attemptId === attemptId);
+    assert.ok(
+      processes.some((r) => r.events.some((v) => v.event === "CLOSED" && v.exitCode === 0))
+    );
+    assert.ok(
+      processes.every((r) => r.closedAt === null),
+      "early child close must retain UNKNOWN closure status"
+    );
+    assert.equal(
+      records.filter(
+        (r) => r.schemaVersion === "manual-runner-request.v1" && r.stage === "runner-command"
+      ).length,
+      0
+    );
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+    assert.equal(f.pg.connects, 1);
+    assert.deepEqual(await fs.readFile(path.join(f.operationRoot, "index.json")), f.indexBytes);
+    assert.deepEqual(await fs.readFile(f.objectPath(f.baseline)), f.baselineBytes);
+  }
+);
+
+test(
+  "fixed expected admission retains actual binary gh capture and admits same original baseline afterward",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "split", true),
+      e = await expectedSourceFixture(f),
+      sourceDirectory = (attemptId) =>
+        path.join(
+          f.profile.storage.archiveRoot,
+          "inputs",
+          "operations",
+          f.prepared.operationRef,
+          "runner-launch",
+          attemptId
+        ),
+      rawRef = (bytes) => ({ digest: sha256Bytes(bytes), bytes: bytes.length });
+    const readCapture = async (attemptId, prefix, gh) => {
+      const directory = sourceDirectory(attemptId),
+        stdoutFile = path.join(directory, `${prefix}.stdout`),
+        stderrFile = path.join(directory, `${prefix}.stderr`),
+        captureFile = path.join(directory, `${prefix}.capture.json`),
+        stdout = await fs.readFile(stdoutFile),
+        stderr = await fs.readFile(stderrFile),
+        captureRaw = await fs.readFile(captureFile),
+        capture = JSON.parse(captureRaw);
+      assert.deepEqual(captureRaw, encodeManualJson(capture));
+      assert.deepEqual(
+        Object.keys(capture).sort(),
+        [
+          "recordVersion",
+          "subject",
+          "argv",
+          "stdout",
+          "stderr",
+          "pid",
+          "startedAt",
+          "closedAt",
+          "exitCode",
+          "signal",
+          "processProblem",
+          "recordedAt",
+          "promotionEligible"
+        ].sort()
+      );
+      assert.equal(capture.recordVersion, "manual-expected-gh-capture.v1");
+      assert.deepEqual(capture.subject, rawRef(await fs.readFile(gh.args[2])));
+      assert.deepEqual(capture.argv, rawRef(encodeManualJson(gh.args)));
+      assert.deepEqual(capture.stdout, { raw: rawRef(stdout), complete: true });
+      assert.deepEqual(capture.stderr, { raw: rawRef(stderr), complete: true });
+      assert.deepEqual(Object.keys(capture.stdout).sort(), ["complete", "raw"]);
+      assert.deepEqual(Object.keys(capture.stderr).sort(), ["complete", "raw"]);
+      assert.equal(capture.pid, gh.pid);
+      const close = e.ghCloses.find((c) => c.pid === gh.pid);
+      assert.ok(close);
+      assert.equal(capture.exitCode, close.exitCode);
+      assert.equal(capture.signal, close.signal);
+      assert.equal(capture.processProblem, null);
+      assert.equal(capture.promotionEligible, false);
+      assert.ok(capture.startedAt <= capture.closedAt && capture.closedAt <= capture.recordedAt);
+      for (const file of [stdoutFile, stderrFile, captureFile])
+        assert.ok(
+          f.readOpens.get(file) >= 3,
+          "actual captured originals must independently reopen"
+        );
+      return { stdout, stderr, captureRaw, capture };
+    };
+    e.control.mode = "invalid-utf8";
+    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+      code: "MANUAL_EXPECTED_SCHEMA_JSON_INVALID"
+    });
+    assert.equal(e.ghCalls.length, 1);
+    const rejectedId = f.launches[0].attemptId,
+      binary = await readCapture(rejectedId, "expected-provenance.gh", e.ghCalls[0]);
+    assert.deepEqual(binary.stdout, Buffer.from([255]));
+    assert.deepEqual(binary.stderr, Buffer.alloc(0));
+    await assert.rejects(
+      fs.stat(path.join(e.root, "admissions", f.prepared.operationRef, `${rejectedId}.json`)),
+      { code: "ENOENT" }
+    );
+    await assert.rejects(
+      fs.stat(
+        path.join(
+          f.profile.storage.archiveRoot,
+          "raw",
+          `${sha256Bytes(binary.stdout).slice(7)}.bin`
+        )
+      ),
+      { code: "ENOENT" }
+    );
+    delete e.control.mode;
+    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+      code: "MANUAL_RUNNER_REQUEST_INPUT_REQUIRED"
+    });
+    assert.equal(f.launches.length, 2);
+    assert.equal(e.ghCalls.length, 3);
+    assert.equal(e.ghCloses.length, 3);
+    const admittedId = f.launches[1].attemptId;
+    assert.notEqual(admittedId, rejectedId);
+    const admission = JSON.parse(
+      await fs.readFile(
+        path.join(e.root, "admissions", f.prepared.operationRef, `${admittedId}.json`)
+      )
+    );
+    for (const [i, prefix] of ["expected-provenance.gh", "expected-script.gh"].entries()) {
+      const captured = await readCapture(admittedId, prefix, e.ghCalls[i + 1]);
+      assert.deepEqual(captured.stdout, e.ghCalls[i + 1].raw);
+      assert.deepEqual(admission.calls[i].stdout, captured.capture.stdout.raw);
+      assert.deepEqual(admission.calls[i].stderr, captured.capture.stderr.raw);
+      assert.equal(admission.calls[i].pid, captured.capture.pid);
+    }
+    assert.deepEqual(
+      (await fs.readdir(sourceDirectory(admittedId)))
+        .filter((n) => n.startsWith("expected-"))
+        .sort(),
+      [
+        "expected-provenance.gh.stdout",
+        "expected-provenance.gh.stderr",
+        "expected-provenance.gh.capture.json",
+        "expected-script.gh.stdout",
+        "expected-script.gh.stderr",
+        "expected-script.gh.capture.json"
+      ].sort()
+    );
+    assert.deepEqual(
+      await fs.readFile(path.join(sourceDirectory(rejectedId), "expected-provenance.gh.stdout")),
+      binary.stdout
+    );
+    assert.deepEqual(
+      await fs.readFile(
+        path.join(sourceDirectory(rejectedId), "expected-provenance.gh.capture.json")
+      ),
+      binary.captureRaw
+    );
+    assert.deepEqual(await fs.readFile(path.join(f.operationRoot, "index.json")), f.indexBytes);
+    assert.deepEqual(await fs.readFile(f.objectPath(f.baseline)), f.baselineBytes);
+    const records = await f.records();
+    assert.deepEqual(
+      records.find((r) => r.kind === "schema-expectation"),
+      JSON.parse(e.output.schemaExpectationBytes)
+    );
+    assert.equal(
+      records.filter(
+        (r) => r.schemaVersion === "manual-runner-request.v1" && r.stage === "runner-command"
+      ).length,
+      0
+    );
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+    assert.equal(f.pg.connects, 1);
+    t.diagnostic(
+      JSON.stringify({
+        rejectedId,
+        admittedId,
+        actualGhCloses: e.ghCloses,
+        binaryRetained: true,
+        originalBaselineUnchanged: true
+      })
+    );
+  }
+);
+
+test(
+  "fixed expected admission archives real producer closure and actual gh processes before next command input boundary",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "split", true),
+      e = await expectedSourceFixture(f);
+    await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {
+      code: "MANUAL_RUNNER_REQUEST_INPUT_REQUIRED"
+    });
+    assert.equal(e.ghCalls.length, 2);
+    assert.equal(e.ghCloses.length, 2);
+    const attemptId = f.launches[0].attemptId;
+    const admissionFile = path.join(
+      e.root,
+      "admissions",
+      f.prepared.operationRef,
+      `${attemptId}.json`
+    );
+    const admissionRaw = await fs.readFile(admissionFile),
+      admission = JSON.parse(admissionRaw);
+    assert.deepEqual(admissionRaw, encodeManualJson(admission));
+    assert.equal(admission.recordVersion, "manual-expected-schema-readback.v1");
+    assert.equal(admission.operationRef, f.prepared.operationRef);
+    assert.equal(admission.attemptId, attemptId);
+    assert.equal(admission.proofRawDigest, sha256Bytes(f.proofBytes));
+    assert.deepEqual(
+      admission.calls.map((c) => c.pid),
+      e.ghCalls.map((c) => c.pid)
+    );
+    const records = await f.records(),
+      expectation = records.find((r) => r.kind === "schema-expectation");
+    assert.ok(expectation);
+    assert.deepEqual(expectation, JSON.parse(e.output.schemaExpectationBytes));
+    assert.equal(admission.schemaExpectation.digest, sha256Bytes(encodeManualJson(expectation)));
+    assert.ok(
+      f.readOpens.get(admissionFile) >= 4,
+      "admission must be independently reopened by the parent"
+    );
+    assert.deepEqual(
+      await fs.readFile(
+        path.join(
+          f.profile.storage.archiveRoot,
+          "raw",
+          `${admission.schemaExpectation.digest.slice(7)}.bin`
+        )
+      ),
+      encodeManualJson(expectation)
+    );
+    for (const [digest, raw] of e.raws)
+      assert.deepEqual(
+        await fs.readFile(
+          path.join(f.profile.storage.archiveRoot, "raw", `${digest.slice(7)}.bin`)
+        ),
+        raw
+      );
+    for (let i = 0; i < 2; i++)
+      assert.deepEqual(
+        await fs.readFile(
+          path.join(
+            f.profile.storage.archiveRoot,
+            "raw",
+            `${admission.calls[i].stdout.digest.slice(7)}.bin`
+          )
+        ),
+        e.ghCalls[i].raw
+      );
+    assert.equal(f.counters.credentialReads, f.credentialReads);
+    assert.equal(f.pg.connects, 1);
+    assert.equal(
+      records.filter(
+        (r) => r.schemaVersion === "manual-runner-request.v1" && r.stage === "runner-command"
+      ).length,
+      0
+    );
+    assert.deepEqual(await fs.readFile(path.join(f.operationRoot, "index.json")), f.indexBytes);
+    assert.deepEqual(await fs.readFile(f.objectPath(f.baseline)), f.baselineBytes);
+  }
+);
+
+test(
+  "fixed expected admission rechecks R1 originals and actual allocation during gh",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "split", true),
+      e = await expectedSourceFixture(f);
+    for (const [name, code] of [
+      ["proof original", "MANUAL_OPERATION_INPUT_UNAVAILABLE"],
+      ["allocation original", "MANUAL_STORAGE_UNVERIFIED"]
+    ])
+      await t.test(name, async () => {
+        let changedFile, original;
+        e.control.before = () => {
+          if (changedFile) return;
+          if (name === "proof original") changedFile = f.proofPath;
+          else {
+            const attemptId = f.launches.at(-1).attemptId,
+              directory = path.join(f.profile.storage.archiveRoot, "objects");
+            const allocation = fsSync
+              .readdirSync(directory)
+              .map((file) => JSON.parse(fsSync.readFileSync(path.join(directory, file))))
+              .find((v) => v.kind === "attempt-allocation" && v.attemptId === attemptId);
+            assert.ok(allocation);
+            changedFile = f.objectPath(allocation);
+          }
+          original = fsSync.readFileSync(changedFile);
+          fsSync.writeFileSync(changedFile, Buffer.concat([original, Buffer.from(" ")]));
+        };
+        await assert.rejects(
+          launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+          { code }
+        );
+        assert.ok(changedFile);
+        await fs.writeFile(changedFile, original);
+        delete e.control.before;
+        await assert.rejects(
+          fs.stat(
+            path.join(
+              e.root,
+              "admissions",
+              f.prepared.operationRef,
+              `${f.launches.at(-1).attemptId}.json`
+            )
+          ),
+          { code: "ENOENT" }
+        );
+        assert.equal(f.counters.credentialReads, f.credentialReads);
+        assert.equal(f.pg.connects, 1);
+        const records = await f.records();
+        assert.equal(
+          records.filter(
+            (r) => r.schemaVersion === "manual-runner-request.v1" && r.stage === "runner-command"
+          ).length,
+          0
+        );
+        assert.deepEqual(await fs.readFile(path.join(f.operationRoot, "index.json")), f.indexBytes);
+        assert.deepEqual(await fs.readFile(f.objectPath(f.baseline)), f.baselineBytes);
+      });
+  }
+);
+
+// Every row reaches the actual launcher. Changing a native projection also
+// updates its raw binding, so these cases test service/source semantics rather
+// than merely breaking the content digest around unchanged projections.
+test(
+  "fixed expected admission rejects closed-source native attestation process and reopen failures",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await zeroCredentialFixture(t, "split", true),
+      e = await expectedSourceFixture(f);
+    const originals = new Map();
+    for (const name of [
+      "provenance.json",
+      "schema.prisma",
+      "import-readback.json",
+      "expected.sql",
+      "prisma-version.stdout"
+    ])
+      originals.set(path.join(e.root, name), await fs.readFile(path.join(e.root, name)));
+    const rawPath = (ref) => path.join(e.root, "raw", `${ref.digest.slice(7)}.bin`);
+    const writeRaw = async (value) => {
+      const bytes = Buffer.isBuffer(value) ? value : encodeManualJson(value),
+        ref = { digest: sha256Bytes(bytes), bytes: bytes.length };
+      try {
+        await fs.writeFile(rawPath(ref), bytes, { flag: "wx", mode: 0o600 });
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+      return ref;
+    };
+    const saveImport = (v) =>
+      fs.writeFile(path.join(e.root, "import-readback.json"), encodeManualJson(v));
+    const nativeMutation = async (operation, change) => {
+      const imported = structuredClone(e.imported),
+        object = imported.objects[0];
+      if (operation === "GetObject" || operation === "GetObjectAcl" || operation === "HeadObject") {
+        const field = {
+            GetObject: "getEvidence",
+            GetObjectAcl: "aclEvidence",
+            HeadObject: "headEvidence"
+          }[operation],
+          record = JSON.parse(await fs.readFile(rawPath(object[field])));
+        await change(record, object);
+        object[field] = await writeRaw(record);
+      } else {
+        const head = JSON.parse(await fs.readFile(rawPath(object.headEvidence))),
+          i = [
+            "GetBucketAcl",
+            "GetBucketWorm",
+            "GetBucketVersioning",
+            "GetBucketEncryption",
+            "GetBucketPolicyStatus",
+            "GetBucketPublicAccessBlock"
+          ].indexOf(operation);
+        const record = JSON.parse(await fs.readFile(rawPath(head.bucketChecks[i])));
+        await change(record, object);
+        head.bucketChecks[i] = await writeRaw(record);
+        object.headEvidence = await writeRaw(head);
+      }
+      await saveImport(imported);
+    };
+    const xmlChange = (from, to) => async (record) => {
+      record.response.body = await writeRaw(
+        Buffer.from((await fs.readFile(rawPath(record.response.body))).toString().replace(from, to))
+      );
+      record.response.headers["content-length"] = String(record.response.body.bytes);
+    };
+    const provenanceMutation = async (change) => {
+      const p = structuredClone(e.provenance);
+      change(p);
+      await fs.writeFile(path.join(e.root, "provenance.json"), encodeManualJson(p));
+    };
+    const cases = [
+      [
+        "missing fixed source",
+        async () =>
+          fs.rename(path.join(e.root, "expected.sql"), path.join(e.root, "expected.sql.saved")),
+        "MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED"
+      ],
+      [
+        "noncanonical producer JSON",
+        async () =>
+          fs.writeFile(
+            path.join(e.root, "provenance.json"),
+            Buffer.concat([originals.get(path.join(e.root, "provenance.json")), Buffer.from("\n")])
+          ),
+        "MANUAL_EXPECTED_SCHEMA_JSON_INVALID"
+      ],
+      [
+        "wrong source",
+        () =>
+          provenanceMutation((p) => {
+            p.sourceSha = "9".repeat(40);
+          }),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "wrong same successful run",
+        () =>
+          provenanceMutation((p) => {
+            p.ci.runId = "2802";
+          }),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "canonical proof digest used for raw",
+        () =>
+          provenanceMutation((p) => {
+            p.proofRaw.digest = p.buildProofDigest;
+            p.proofRaw.bytes++;
+          }),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "wrong PG base",
+        () =>
+          provenanceMutation((p) => {
+            p.toolchain.postgresImageDigest = digest("b");
+          }),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "H3 physical tuple reused",
+        () =>
+          provenanceMutation((p) => {
+            p.references[0].identity.cluster.systemIdentifier = f.readback.cluster.systemIdentifier;
+            p.references[0].identity.databaseOid = f.readback.databaseOid;
+          }),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "nested raw missing",
+        async () => {
+          const ref = JSON.parse(
+            await fs.readFile(rawPath(e.provenance.references[0].creationEvidence))
+          ).calls[0].argv;
+          const file = rawPath(ref);
+          originals.set(file, await fs.readFile(file));
+          await fs.unlink(file);
+        },
+        "MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED"
+      ],
+      [
+        "source schema differs from verified checkout",
+        () => fs.writeFile(path.join(e.root, "schema.prisma"), "changed"),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "native get body differs from subject",
+        () =>
+          nativeMutation("GetObject", async (r) => {
+            r.response.body = await writeRaw(Buffer.from("changed"));
+            r.response.headers["content-length"] = "7";
+          }),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "native head metadata differs from get",
+        () =>
+          nativeMutation("HeadObject", (r) => {
+            r.response.headers.etag = '"different"';
+          }),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "actual object ACL public",
+        () =>
+          nativeMutation(
+            "GetObjectAcl",
+            xmlChange("<Grant>private</Grant>", "<Grant>public-read</Grant>")
+          ),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "WORM unlocked",
+        () =>
+          nativeMutation(
+            "GetBucketWorm",
+            xmlChange("<State>Locked</State>", "<State>InProgress</State>")
+          ),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "versioning enabled",
+        () =>
+          nativeMutation("GetBucketVersioning", async (r) => {
+            r.response.body = await writeRaw(
+              Buffer.from(
+                "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"
+              )
+            );
+            r.response.headers["content-length"] = String(r.response.body.bytes);
+          }),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "AES256 absent",
+        () => nativeMutation("GetBucketEncryption", xmlChange("AES256", "KMS")),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "BPA disabled",
+        () => nativeMutation("GetBucketPublicAccessBlock", xmlChange("true", "false")),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "retention not actual storedAt plus WORM",
+        async () => {
+          const v = structuredClone(e.imported);
+          v.objects[0].retainUntil = "2026-10-01T00:00:00.000Z";
+          await saveImport(v);
+        },
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "reader principal not fixed independent role",
+        () =>
+          nativeMutation("GetObject", (r) => {
+            r.readerPrincipal = e.imported.objects[0].writerIdentity;
+          }),
+        "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID"
+      ],
+      [
+        "gh certificate wrong same run",
+        async () => {
+          e.control.item = (item) => {
+            item.verificationResult.signature.certificate.runInvocationURI = `https://github.com/${repository}/actions/runs/2802/attempts/1`;
+          };
+        },
+        "MANUAL_EXPECTED_SCHEMA_ATTESTATION_INVALID"
+      ],
+      [
+        "gh statement has two subjects",
+        async () => {
+          e.control.item = (item) => {
+            item.verificationResult.statement.subject.push(
+              item.verificationResult.statement.subject[0]
+            );
+          };
+        },
+        "MANUAL_EXPECTED_SCHEMA_ATTESTATION_INVALID"
+      ],
+      [
+        "gh bundle is another statement",
+        async () => {
+          e.control.item = (item) => {
+            item.attestation.bundle.dsseEnvelope.payload = encodeManualJson({
+              unrelated: true
+            }).toString("base64");
+          };
+        },
+        "MANUAL_EXPECTED_SCHEMA_ATTESTATION_INVALID"
+      ],
+      [
+        "actual gh nonzero close",
+        async () => {
+          e.control.mode = "nonzero";
+        },
+        "MANUAL_EXPECTED_SCHEMA_PROCESS_FAILED"
+      ],
+      [
+        "actual gh invalid UTF8",
+        async () => {
+          e.control.mode = "invalid-utf8";
+        },
+        "MANUAL_EXPECTED_SCHEMA_JSON_INVALID"
+      ],
+      [
+        "actual gh overflow",
+        async () => {
+          e.control.mode = "overflow";
+        },
+        "MANUAL_OUTPUT_LIMIT"
+      ],
+      [
+        "pinned source changes during gh",
+        async () => {
+          e.control.before = () =>
+            fsSync.writeFileSync(path.join(e.root, "expected.sql"), "changed");
+        },
+        "MANUAL_OPERATION_INPUT_UNAVAILABLE"
+      ],
+      [
+        "pinned ACL changes during gh",
+        async () => {
+          e.control.before = () => fsSync.chmodSync(path.join(e.root, "schema.prisma"), 0o644);
+        },
+        "MANUAL_OPERATION_INPUT_UNAVAILABLE"
+      ],
+      [
+        "parent stream fails during gh",
+        async () => {
+          e.control.before = () => f.breakRunnerStream();
+        },
+        "MANUAL_FRAME_INVALID"
+      ],
+      [
+        "sidecar independent reopen fails",
+        async (row) => {
+          const previousOpen = fs.open.bind(fs);
+          let opens = 0;
+          row.mock.method(fs, "open", (file, flags, ...args) => {
+            if (
+              String(file).includes(path.sep + "admissions" + path.sep) &&
+              String(file).endsWith(".json") &&
+              flags === "r" &&
+              (e.control.sidecarReopens = ++opens) === 2
+            )
+              throw Object.assign(new Error("Synthetic independent admission reopen failure"), {
+                code: "SYNTHETIC_EXPECTED_REOPEN_FAILURE"
+              });
+            return previousOpen(file, flags, ...args);
+          });
+        },
+        "SYNTHETIC_EXPECTED_REOPEN_FAILURE"
+      ]
+    ];
+    // Exercise sidecar/source guards before intentional stream/encoding
+    // failures. Their original bytes remain private; never delete evidence
+    // or weaken the existing whole-archive UTF8 contract for fixture reuse.
+    cases.push(
+      cases.splice(
+        cases.findIndex(([name]) => name === "parent stream fails during gh"),
+        1
+      )[0]
+    );
+    cases.push(
+      cases.splice(
+        cases.findIndex(([name]) => name === "actual gh invalid UTF8"),
+        1
+      )[0]
+    );
+    for (const [name, mutate, code] of cases)
+      await t.test(name, async (row) => {
+        await mutate(row);
+        const beforeCalls = e.ghCalls.length;
+        await assert.rejects(
+          launcher.launchManualStage1({ operationRef: f.prepared.operationRef }),
+          (error) => {
+            assert.equal(error.code, code, error.stack);
+            return true;
+          }
+        );
+        const reachedGh =
+          name.startsWith("actual gh") ||
+          name.includes("during gh") ||
+          name === "sidecar independent reopen fails";
+        if (reachedGh)
+          assert.ok(e.ghCalls.length > beforeCalls, "case must reach an actual gh process");
+        if (name.includes("during gh"))
+          assert.ok(e.control.beforeCalls > 0, "actual mutation/stream injection must run");
+        if (name === "sidecar independent reopen fails") assert.equal(e.control.sidecarReopens, 2);
+        const attemptId = f.launches.at(-1).attemptId;
+        await assert.rejects(
+          fs.stat(path.join(e.root, "admissions", f.prepared.operationRef, `${attemptId}.json`)),
+          { code: "ENOENT" }
+        );
+        const records = await f.records();
+        assert.equal(
+          records.filter(
+            (r) => r.schemaVersion === "manual-runner-request.v1" && r.stage === "runner-command"
+          ).length,
+          0
+        );
+        assert.equal(f.counters.credentialReads, f.credentialReads);
+        assert.equal(f.pg.connects, 1);
+        assert.deepEqual(await fs.readFile(path.join(f.operationRoot, "index.json")), f.indexBytes);
+        assert.deepEqual(await fs.readFile(f.objectPath(f.baseline)), f.baselineBytes);
+        for (const [file, bytes] of originals) await fs.writeFile(file, bytes, { mode: 0o600 });
+        await fs.chmod(path.join(e.root, "schema.prisma"), 0o600);
+        assert.equal(e.ghCloses.length, e.ghCalls.length, "every launched gh must actually close");
+        if (name.startsWith("actual gh")) assert.ok(e.ghCalls.length > beforeCalls);
+        row.diagnostic(
+          JSON.stringify({
+            actualGhPids: e.ghCalls.slice(beforeCalls).map((c) => c.pid),
+            actualGhCloses: e.ghCloses.slice(beforeCalls),
+            injectionCalls: e.control.beforeCalls ?? 0,
+            sidecarReopens: e.control.sidecarReopens ?? 0,
+            heapUsed: process.memoryUsage().heapUsed,
+            retainedLstatMockCalls: fs.lstat.mock.callCount(),
+            retainedRealpathMockCalls: fs.realpath.mock.callCount()
+          })
+        );
+        Object.keys(e.control).forEach((key) => delete e.control[key]);
+      });
+  }
+);
 
 test(
   "zero-credential parent saves real null attempt and split CHALLENGE then precisely stops before expected admission",
@@ -1147,8 +2376,8 @@ function h3Rejection(causeCode) {
     return true;
   };
 }
-async function launchInputFixture(t, endpoint) {
-  const f = await buildFixture(t, endpoint);
+async function launchInputFixture(t, endpoint, expectedSource = false) {
+  const f = await buildFixture(t, endpoint, expectedSource);
   const prepared = await launcher.prepareManualOperation(prepareInput(f));
   const operationRoot = path.join(
     f.profile.storage.archiveRoot,
@@ -1262,8 +2491,8 @@ test("launch detects fixed H3 approval changed at independent reopen", async (t)
   noAuthority(f);
 });
 
-async function h3InputFixture(t, endpoint) {
-  const f = await launchInputFixture(t, endpoint);
+async function h3InputFixture(t, endpoint, expectedSource = false) {
+  const f = await launchInputFixture(t, endpoint, expectedSource);
   const fixed = await readFixedManualOperation({
     repoRoot: productionRoot,
     operationRef: f.prepared.operationRef
@@ -1328,8 +2557,8 @@ async function writeH3(f, { bindApproval = true } = {}) {
     await fs.writeFile(path.join(f.operationRoot, name), encodeManualJson(value), { mode: 0o600 });
 }
 
-async function h3ResourceFixture(t) {
-  const f = await h3InputFixture(t, "127.0.0.1:25432");
+async function h3ResourceFixture(t, expectedSource = false) {
+  const f = await h3InputFixture(t, "127.0.0.1:25432", expectedSource);
   await writeH3(f);
   f.docker.outputs = {
     container: {
@@ -1387,8 +2616,8 @@ async function h3ResourceFixture(t) {
   return f;
 }
 
-async function targetObserveFixture(t) {
-  const f = await h3ResourceFixture(t);
+async function targetObserveFixture(t, expectedSource = false) {
+  const f = await h3ResourceFixture(t, expectedSource);
   for (const role of ["journal", "archive", "backup"])
     await fs.mkdir(path.join(f.profile.storage[`${role}Root`], "objects"), { mode: 0o700 });
   for (const name of ["locks", "consumptions", "revocations", "checkpoints"])

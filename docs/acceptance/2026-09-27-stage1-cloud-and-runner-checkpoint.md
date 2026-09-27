@@ -2,6 +2,20 @@
 
 本记录保留当天各次真实断点。后续已完成服务器 Ed25519 密钥生成及独立加密备份卷恢复；R2 父命令链仍未通过定向正例。没有执行业务迁移、部署、真实 CI、签发发布命令或关闭阶段 1。
 
+## 04:26 UTC 后续：精确批准与实际主机 loader
+
+用户明确批准 profile digest `sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541`；收到确认后记录时间为 `04:08:59.000Z`。批准原件摘要为 `sha256:2558d9ba079dd5456780a45e2b94ddac501419d9fbfa325d7f7db4f3169bece1`。服务器 CreateNew 写入加密 archive 并独立重开，然后生成 binding、保存 profile 副本，再写实时 `04:14:07.359Z` 的 GENESIS 至 journal/archive/backup 及固定 sequence 0 槽。GENESIS 摘要 `sha256:d822434b9c8696b68bb653418a513f43f0bbeb0f2a6ad6c1b22e8f07d65bbbcd`；没有使用先前本地 payload 中未落地的草拟 GENESIS。
+
+实际初始化 exit 0；本机随后使用生产 encoder/Schema 验证返回 canonical 字节、digest 和批准/binding 逐项等式，exit 0。公开 profile、binding 与两项 manifest 引用已提交到原工作树 `d198b813a27a0d21c711ed841ed0c9e2adcafebc`，完整 repository contract 178 项读回一致，digest `sha256:c10ff7672bdbfa7d587e5063843365766c9a530fd7601bca35e32c5681f68391`。这次配置预检仍为 schema validate 0 / migration status 1（dotenv 禁用、无 datasource.url、未连接 DB）。
+
+为运行真实 H1 loader，仅转移该提交的 H1 源码、所需 contracts 及现有六个纯 JS 依赖，672 个文件全部逐字节读回匹配；包 438,604 bytes，SHA256 `2a80da06f9fbaf43110826d1fcfbce1a00797182aecfb0735034b0babdfa2375`。不是完整发布 checkout、镜像构建或 CI。服务器 `/opt/stage1-h1-loader-d198b813` 中的原始 `loadFixedManualProfile` 于 `04:22:56.075Z` 实际 exit 0：批准、真实主机/principal、五根权限以及 profile/binding/GENESIS 的 10 项独立读回匹配；无私钥读取、无 DB 连接，会话凭据根为空。事后独立 SSH 确认两映射/挂载关闭、underlay 空、临时 core 设置已移除，两个原 swap 已恢复。
+
+初始 1 GiB OSS 密文仍完整保留。另将本次新增公开状态及实际校验证据作为 `approved-public-state.tar.gz` 存到同一 `h1-recovery/v1/20260927-4a424369-01d6-4ba5-825a-d86fb30140ad/` 前缀的新对象，未覆盖密文。该补充包 4,750 bytes，SHA256 `77a44e6f98c64b629ca368d6d028fd9437cfafc0e888627f0f5d431fdde2ae5c`；上传及独立 Head/ACL/Get 均 exit 0，private/AES256，完整下载摘要一致。它不包含私钥、解锁材料或凭据；仍未验证异机解密恢复。
+
+独立只读审查确认本轮 H1 身份/批准、加密五根、GENESIS、同主机独立卷恢复及生产 loader 均有实际依据，无新增阻断 Important。最终候选同源重验、异机恢复及整体 H1/H2/H3 发布验收仍开放，不将源码子集检查或 OSS 可下载等同于完整发布通过。原件为 cloud scratch 的 `h1-explicit-owner-approval-receipt.json`、`h1-initialize-state-result.json`、`h1-initialization-independent-validation.json`、`h1-public-configuration-validation.json`、`h1-loader-source-readback.json`、`h1-verify-loader-result.json`、`h1-public-state-backup-{manifest,upload,readback}.json` 与 `h1-actual-configuration-review.md`。
+
+R2 上一个小批的固定最多 8 项 `allSettled` 复核已独立接受，无新增 Critical/Important；有效 RED 1、同一用例 GREEN 0。新单次计时保持全部检查计数，输入循环 9.695 → 8.653 秒，但总窗口 15.727 → 15.678 秒，未证明整体过期问题已解决。诊断仍为编码凭据前固定停止 exit 1，0 凭据/DB/工具，不是全链正例。当前唯一代码写入者进入已明确的 MS2 总流 2 MiB 四路径修正，仅做相关容量/边界验证；该改动尚未验收，未重跑旧业务套件。
+
 ## 03:40 UTC 后续：真实密钥与有限耗时修复
 
 实际密钥操作 exit 0：`03:39:03.374Z` 在主卷生成 Ed25519，主文件为 `/var/lib/stage1-volumes/main/key/signing-ed25519.pk8.pem`，备份为独立 recovery 卷的 `backup/bootstrap/signing-ed25519.pk8.pem`。两份均 CreateNew、uid 0 / 0600、fsync 并独立重开验证；私钥未离开服务器或输出到日志。负责人为 `keqi119`，执行 principal 为 POSIX uid 0。

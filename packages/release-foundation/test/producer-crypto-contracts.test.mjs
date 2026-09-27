@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -8,11 +9,180 @@ import {
   validateProducerCryptoUseProof,
   validateSnapshotEncryptionEnvelope
 } from "../src/snapshot/producer-crypto-contracts.mjs";
+import * as cryptoContracts from "../src/snapshot/producer-crypto-contracts.mjs";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const sourceSha = "b".repeat(40);
 const allocatedAt = "2026-09-03T00:00:00.000Z";
 const expiresAt = "2026-10-03T00:00:00.000Z";
+
+let publicReadbackKeys;
+function publicReadbacks() {
+  publicReadbackKeys ??= generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 });
+  const profile = JSON.parse(
+    readFileSync(
+      new URL("../../../release/contracts/manual-stage1-profile.v2.json", import.meta.url)
+    )
+  );
+  profile.ownerId = "fixture-public-key-reader";
+  const principal = { platform: "posix", uid: 1001 };
+  const hostFingerprint = digest("d");
+  const keyFingerprint = sha256Bytes(
+    publicReadbackKeys.publicKey.export({ type: "spki", format: "der" })
+  );
+  const publicKeyPem = publicReadbackKeys.publicKey.export({ type: "spki", format: "pem" });
+  const creation = {
+    kind: "h1-snapshot-key-creation-readback",
+    ownerId: profile.ownerId,
+    principal: { ...principal },
+    hostFingerprint,
+    profileDigest: sha256Canonical(profile),
+    createdAt: "2026-09-01T10:50:23.296Z",
+    algorithm: "RSA-OAEP-SHA256",
+    modulusLength: 3072,
+    publicExponent: 65537,
+    keyRef: "snapshot-rsa3072.pk8.der",
+    keyFingerprint,
+    publicKeyPem,
+    softwareKeyExportable: true,
+    challengeDomain: "subscription-saas/H1-snapshot-key-creation/v1",
+    challengeDigest: digest("a"),
+    wrappedChallengeDigest: digest("b"),
+    roundtripVerified: true,
+    promotionEligible: false
+  };
+  // Host records use insertion-order JSON.stringify, not canonical ordering.
+  const creationRawDigest = sha256Bytes(Buffer.from(JSON.stringify(creation)));
+  const recovery = {
+    kind: "h1-snapshot-key-recovery-readback",
+    verifiedAt: "2026-09-01T10:50:24.762Z",
+    ownerId: profile.ownerId,
+    hostFingerprint,
+    profileDigest: creation.profileDigest,
+    keyFingerprint,
+    creationReadbackRawDigest: creationRawDigest,
+    publicKeyPem,
+    primaryVolumeClosed: true,
+    sameHostIndependentEncryptedVolumeRestore: true,
+    offHostRecoveryVerified: false,
+    challengeDomain: "subscription-saas/H1-snapshot-independent-recovery/v1",
+    challengeDigest: digest("c"),
+    wrappedChallengeDigest: digest("e"),
+    roundtripVerified: true,
+    promotionEligible: false
+  };
+  return { creation, recovery, creationRawDigest, profile, hostFingerprint, principal };
+}
+function checkPublicReadbacks(value) {
+  assert.equal(
+    typeof cryptoContracts.validateH1SnapshotPublicKeyReadbacks,
+    "function",
+    "shared public-key original verifier must exist"
+  );
+  return cryptoContracts.validateH1SnapshotPublicKeyReadbacks(value);
+}
+
+test("H1 PUBLIC binds real SPKI key and original insertion-order raw digest without granting authority", () => {
+  const value = publicReadbacks();
+  assert.notEqual(value.creationRawDigest, sha256Canonical(value.creation));
+  assert.equal(checkPublicReadbacks(value), undefined);
+  assert.equal(value.creation.softwareKeyExportable, true);
+  assert.equal(value.recovery.offHostRecoveryVerified, false);
+});
+
+test("H1 PUBLIC rejects mismatched identity, raw digest, historical order and extra data", () => {
+  for (const mutate of [
+    (v) => {
+      v.creation.ownerId = "different-owner";
+    },
+    (v) => {
+      v.creation.principal.uid++;
+    },
+    (v) => {
+      v.hostFingerprint = digest("f");
+    },
+    (v) => {
+      v.profile.ownerId += "-changed";
+    },
+    (v) => {
+      v.recovery.profileDigest = digest("f");
+    },
+    (v) => {
+      v.recovery.keyFingerprint = digest("f");
+    },
+    (v) => {
+      v.creationRawDigest = sha256Canonical(v.creation);
+    },
+    (v) => {
+      v.recovery.verifiedAt = v.creation.createdAt;
+    },
+    (v) => {
+      v.recovery.challengeDigest = v.creation.challengeDigest;
+    },
+    (v) => {
+      v.recovery.wrappedChallengeDigest = v.creation.wrappedChallengeDigest;
+    },
+    (v) => {
+      v.recovery.offHostRecoveryVerified = true;
+    },
+    (v) => {
+      v.creation.approved = true;
+    },
+    (v) => {
+      v.now = "2026-09-01T10:50:25.000Z";
+    }
+  ]) {
+    const value = publicReadbacks();
+    mutate(value);
+    assert.throws(() => checkPublicReadbacks(value), { code: "H1_SNAPSHOT_PUBLIC_KEY_INVALID" });
+  }
+  const value = publicReadbacks();
+  let reads = 0;
+  Object.defineProperty(value.creation, "publicKeyPem", {
+    enumerable: true,
+    get() {
+      reads++;
+      return "secret";
+    }
+  });
+  assert.throws(() => checkPublicReadbacks(value), { code: "H1_SNAPSHOT_PUBLIC_KEY_INVALID" });
+  assert.equal(reads, 0);
+});
+
+test("H1 PUBLIC rejects private keys, PKCS1 public keys and additional PEM material", () => {
+  publicReadbacks();
+  for (const pem of [
+    publicReadbackKeys.privateKey.export({ type: "pkcs8", format: "pem" }),
+    publicReadbackKeys.privateKey.export({ type: "pkcs1", format: "pem" }),
+    publicReadbackKeys.publicKey.export({ type: "pkcs1", format: "pem" }),
+    publicReadbackKeys.publicKey.export({ type: "spki", format: "pem" }) + "unexpected",
+    publicReadbackKeys.publicKey.export({ type: "spki", format: "pem" }).repeat(2)
+  ]) {
+    const value = publicReadbacks();
+    value.creation.publicKeyPem = value.recovery.publicKeyPem = pem;
+    assert.throws(() => checkPublicReadbacks(value), { code: "H1_SNAPSHOT_PUBLIC_KEY_INVALID" });
+  }
+});
+
+test("H1 PUBLIC checks actual SPKI algorithm, RSA size and fingerprint rather than metadata claims", () => {
+  const value = publicReadbacks();
+  value.creation.keyFingerprint = value.recovery.keyFingerprint = digest("f");
+  assert.throws(() => checkPublicReadbacks(value), { code: "H1_SNAPSHOT_PUBLIC_KEY_INVALID" });
+  for (const keys of [
+    generateKeyPairSync("rsa", { modulusLength: 2048, publicExponent: 65537 }),
+    generateKeyPairSync("ed25519")
+  ]) {
+    const changed = publicReadbacks();
+    changed.creation.publicKeyPem = changed.recovery.publicKeyPem = keys.publicKey.export({
+      type: "spki",
+      format: "pem"
+    });
+    changed.creation.keyFingerprint = changed.recovery.keyFingerprint = sha256Bytes(
+      keys.publicKey.export({ type: "spki", format: "der" })
+    );
+    assert.throws(() => checkPublicReadbacks(changed), { code: "H1_SNAPSHOT_PUBLIC_KEY_INVALID" });
+  }
+});
 
 function localAuthorization() {
   const original = validAuthorization();

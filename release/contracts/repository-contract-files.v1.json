@@ -120,6 +120,8 @@
     "release/contracts/schemas/final-compose-evidence.v1.schema.json",
     "release/contracts/schemas/final-compose-runtime.v1.schema.json",
     "release/contracts/schemas/final-compose-target.v1.schema.json",
+    "release/contracts/schemas/h1-snapshot-key-creation-readback.v1.schema.json",
+    "release/contracts/schemas/h1-snapshot-key-recovery-readback.v1.schema.json",
     "release/contracts/schemas/infrastructure-change.v1.schema.json",
     "release/contracts/schemas/launch-attestation.v1.schema.json",
     "release/contracts/schemas/manual-baseline-manifest.v1.schema.json",

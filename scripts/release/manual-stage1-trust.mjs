@@ -13,10 +13,12 @@ import {
   openManualSession
 } from "../../packages/release-foundation/src/index.mjs";
 import { assertBuildIdentity, assertProofCustody } from "./verify-build-proof.mjs";
+import { validateH1SnapshotPublicKeyReadbacks } from "../../packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs";
 
 const LIMIT = 1048576;
 const H1 = "H1_INPUT_UNAVAILABLE";
 const OPERATION = "MANUAL_OPERATION_INPUT_UNAVAILABLE";
+const PUBLIC_INPUT = "H1_SNAPSHOT_PUBLIC_INPUT_UNAVAILABLE";
 const BUILD = "TRUSTED_BUILD_UNAVAILABLE";
 const CUSTODY_REQUIRED = "MANUAL_BUILD_CUSTODY_INPUT_REQUIRED";
 const PROFILE = "release/contracts/manual-stage1-profile.v2.json";
@@ -594,6 +596,155 @@ export async function readFixedManualOperation(input) {
     fail(OPERATION);
   } finally {
     await Promise.all(opened.map((item) => item.close()));
+  }
+}
+
+// Public historical records only. Holding these inputs grants no consumer authority.
+export async function readFixedH1SnapshotPublicKeyInputs(input) {
+  const opened = [];
+  const copies = [];
+  let closed = false;
+  let closing;
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    closing = (async () => {
+      const outcomes = await Promise.allSettled(opened.map((item) => item.close()));
+      for (const item of opened) item.bytes.fill(0);
+      for (const copy of copies) copy.fill(0);
+      if (outcomes.some((outcome) => outcome.status === "rejected")) fail(PUBLIC_INPUT);
+    })();
+    return closing;
+  };
+  try {
+    exact(input, ["repoRoot", "operationRef"]);
+    requireThat(typeof input.operationRef === "string" && UUID.test(input.operationRef));
+    const repoRoot = absolute(input.repoRoot);
+    const operationRef = input.operationRef;
+    const profile = await loadFixedManualProfile({ repoRoot });
+    const actual = await actualHost();
+    requireThat(actual.principal.platform === "posix");
+    const profileDigest = sha256Canonical(profile);
+    const archiveRoot = profile.storage.archiveRoot;
+    const privateOptions = { principal: actual.principal, privateRoot: archiveRoot };
+    const sourceOptions = { principal: actual.principal, sourceRoot: repoRoot };
+    const read = async (file, options = privateOptions) => {
+      requireThat(!closed);
+      const item = await openInput(file, options);
+      opened.push(item);
+      requireThat(item.bytes.length > 0 && !closed);
+      return item.bytes;
+    };
+    // Retain original owner/profile inputs, not just the loader's projected profile.
+    const profileBytes = await read(path.join(repoRoot, PROFILE), sourceOptions);
+    requireThat(equal(json(profileBytes), profile));
+    const binding = json(await read(path.join(repoRoot, OWNER), sourceOptions), true);
+    validateOwner(binding, true);
+    requireThat(
+      binding.profileDigest === profileDigest &&
+        binding.ownerId === profile.ownerId &&
+        equal(binding.principal, actual.principal) &&
+        binding.hostFingerprint === actual.hostFingerprint
+    );
+    const approvalBytes = await read(path.join(archiveRoot, binding.approvalReference));
+    const approval = json(approvalBytes, true);
+    validateOwner(approval);
+    requireThat(sha256Bytes(approvalBytes) === binding.approvalDigest);
+    for (const key of [
+      "profileDigest",
+      "ownerId",
+      "principal",
+      "hostFingerprint",
+      "approvedAt",
+      "promotionEligible"
+    ])
+      requireThat(equal(binding[key], approval[key]));
+    const root = path.join(archiveRoot, "inputs", "h1-snapshot-key");
+    const indexBytes = await read(path.join(root, operationRef, "index.json"));
+    const index = json(indexBytes, true);
+    exact(index, [
+      "schemaVersion",
+      "operationRef",
+      "profileDigest",
+      "creationRawDigest",
+      "recoveryRawDigest"
+    ]);
+    requireThat(
+      index.schemaVersion === "h1-snapshot-key-input-index.v1" &&
+        index.operationRef === operationRef &&
+        index.profileDigest === profileDigest &&
+        DIGEST.test(index.creationRawDigest) &&
+        DIGEST.test(index.recoveryRawDigest)
+    );
+    const creationBytes = await read(
+      path.join(root, "raw", `${index.creationRawDigest.slice(7)}.creation.json`)
+    );
+    const recoveryBytes = await read(
+      path.join(root, "raw", `${index.recoveryRawDigest.slice(7)}.recovery.json`)
+    );
+    requireThat(
+      sha256Bytes(creationBytes) === index.creationRawDigest &&
+        sha256Bytes(recoveryBytes) === index.recoveryRawDigest
+    );
+    // Native originals use JSON.stringify insertion order, not canonical ordering.
+    const creation = json(creationBytes),
+      recovery = json(recoveryBytes);
+    validateH1SnapshotPublicKeyReadbacks({
+      creation,
+      recovery,
+      creationRawDigest: index.creationRawDigest,
+      profile,
+      hostFingerprint: actual.hostFingerprint,
+      principal: actual.principal
+    });
+    const checkWindow = () => {
+      const now = Date.now();
+      requireThat(
+        instant(profile.validFrom) <= now &&
+          now < instant(profile.expiresAt) &&
+          instant(creation.createdAt) < instant(recovery.verifiedAt) &&
+          instant(recovery.verifiedAt) <= now
+      );
+    };
+    const check = async () => {
+      requireThat(!closed);
+      const currentHost = await actualHost();
+      requireThat(equal(currentHost, actual));
+      const currentProfile = await loadFixedManualProfile({ repoRoot });
+      requireThat(sha256Canonical(currentProfile) === profileDigest);
+      checkWindow();
+      for (const item of opened) await item.recheck();
+      checkWindow();
+      requireThat(!closed);
+    };
+    const recheck = async () => {
+      try {
+        await check();
+      } catch {
+        await close();
+        fail(PUBLIC_INPUT);
+      }
+    };
+    await recheck();
+    const creationRawBytes = Buffer.from(creationBytes),
+      recoveryRawBytes = Buffer.from(recoveryBytes);
+    copies.push(creationRawBytes, recoveryRawBytes);
+    return Object.freeze({
+      creation: freeze(creation),
+      recovery: freeze(recovery),
+      creationRawBytes,
+      recoveryRawBytes,
+      refs: freeze({
+        indexRawDigest: sha256Bytes(indexBytes),
+        creationRawDigest: index.creationRawDigest,
+        recoveryRawDigest: index.recoveryRawDigest
+      }),
+      recheck,
+      close
+    });
+  } catch {
+    await close();
+    fail(PUBLIC_INPUT);
   }
 }
 

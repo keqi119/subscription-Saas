@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
+import { createPublicKey } from "node:crypto";
 
 import { canonicalJson } from "../canonical-json.mjs";
 import { sha256Bytes, sha256Canonical } from "../digest.mjs";
 import { validateContract } from "../schema-registry.mjs";
+import { encodeManualJson } from "../manual-stage1-contracts.mjs";
 
 const DAY_MS = 86_400_000;
 const addressingPolicy = JSON.parse(
@@ -23,6 +25,71 @@ function instant(value) {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) throw contractError("CONTRACT_TIME_INVALID", { value });
   return timestamp;
+}
+
+// Historical public records only: a successful binding check grants no use authority.
+export function validateH1SnapshotPublicKeyReadbacks(input) {
+  try {
+    const value = JSON.parse(encodeManualJson(input));
+    const keys = [
+      "creation",
+      "recovery",
+      "creationRawDigest",
+      "profile",
+      "hostFingerprint",
+      "principal"
+    ];
+    if (Object.keys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key)))
+      throw new Error();
+    const { creation, recovery, creationRawDigest, profile, hostFingerprint, principal } = value;
+    validateContract("h1-snapshot-key-creation-readback.v1", creation);
+    validateContract("h1-snapshot-key-recovery-readback.v1", recovery);
+    validateContract("manual-stage1-profile.v2", profile);
+    if (
+      creation.ownerId !== profile.ownerId ||
+      creation.profileDigest !== sha256Canonical(profile) ||
+      creation.hostFingerprint !== hostFingerprint ||
+      canonicalJson(creation.principal) !== canonicalJson(principal) ||
+      recovery.ownerId !== creation.ownerId ||
+      recovery.profileDigest !== creation.profileDigest ||
+      recovery.hostFingerprint !== creation.hostFingerprint ||
+      recovery.keyFingerprint !== creation.keyFingerprint ||
+      recovery.creationReadbackRawDigest !== creationRawDigest ||
+      new Date(instant(creation.createdAt)).toISOString() !== creation.createdAt ||
+      new Date(instant(recovery.verifiedAt)).toISOString() !== recovery.verifiedAt ||
+      instant(creation.createdAt) >= instant(recovery.verifiedAt) ||
+      creation.challengeDigest === recovery.challengeDigest ||
+      creation.wrappedChallengeDigest === recovery.wrappedChallengeDigest
+    )
+      throw new Error();
+    for (const record of [creation, recovery]) {
+      const pem = record.publicKeyPem;
+      // createPublicKey accepts private PEM too; reject it before native parsing.
+      if (
+        !/^-----BEGIN PUBLIC KEY-----\r?\n(?:[A-Za-z0-9+/=]{1,64}\r?\n)+-----END PUBLIC KEY-----(?:\r?\n)?$/u.test(
+          pem
+        )
+      )
+        throw new Error();
+      const encoded = pem
+        .replace(/^-----BEGIN PUBLIC KEY-----\r?\n|-----END PUBLIC KEY-----(?:\r?\n)?$/gu, "")
+        .replace(/\r?\n/gu, "");
+      const der = Buffer.from(encoded, "base64");
+      const key = createPublicKey(pem);
+      if (
+        der.toString("base64") !== encoded ||
+        key.type !== "public" ||
+        key.asymmetricKeyType !== "rsa" ||
+        key.asymmetricKeyDetails?.modulusLength !== 3072 ||
+        key.asymmetricKeyDetails?.publicExponent !== 65537n ||
+        !key.export({ type: "spki", format: "der" }).equals(der) ||
+        sha256Bytes(der) !== record.keyFingerprint
+      )
+        throw new Error();
+    }
+  } catch {
+    throw contractError("H1_SNAPSHOT_PUBLIC_KEY_INVALID");
+  }
 }
 
 function canonicalBase64(value) {

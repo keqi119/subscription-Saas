@@ -194,6 +194,223 @@ function reader() {
   return api.readFixedManualOperation;
 }
 
+let publicKeyInputKeys;
+async function publicKeyInputFixture(t, mutate = () => {}) {
+  const f = await fixture(t);
+  publicKeyInputKeys ??= generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 });
+  const publicKeyPem = publicKeyInputKeys.publicKey.export({ type: "spki", format: "pem" });
+  const keyFingerprint = sha256Bytes(
+    publicKeyInputKeys.publicKey.export({ type: "spki", format: "der" })
+  );
+  const creation = {
+    kind: "h1-snapshot-key-creation-readback",
+    ownerId: f.profile.ownerId,
+    principal: { ...f.approval.principal },
+    hostFingerprint: f.approval.hostFingerprint,
+    profileDigest: sha256Canonical(f.profile),
+    createdAt: "2026-09-01T10:50:23.296Z",
+    algorithm: "RSA-OAEP-SHA256",
+    modulusLength: 3072,
+    publicExponent: 65537,
+    keyRef: "snapshot-rsa3072.pk8.der",
+    keyFingerprint,
+    publicKeyPem,
+    softwareKeyExportable: true,
+    challengeDomain: "subscription-saas/H1-snapshot-key-creation/v1",
+    challengeDigest: `sha256:${"a".repeat(64)}`,
+    wrappedChallengeDigest: `sha256:${"b".repeat(64)}`,
+    roundtripVerified: true,
+    promotionEligible: false
+  };
+  const recovery = {
+    kind: "h1-snapshot-key-recovery-readback",
+    verifiedAt: "2026-09-01T10:50:24.762Z",
+    ownerId: creation.ownerId,
+    hostFingerprint: creation.hostFingerprint,
+    profileDigest: creation.profileDigest,
+    keyFingerprint,
+    creationReadbackRawDigest: "",
+    publicKeyPem,
+    primaryVolumeClosed: true,
+    sameHostIndependentEncryptedVolumeRestore: true,
+    offHostRecoveryVerified: false,
+    challengeDomain: "subscription-saas/H1-snapshot-independent-recovery/v1",
+    challengeDigest: `sha256:${"c".repeat(64)}`,
+    wrappedChallengeDigest: `sha256:${"d".repeat(64)}`,
+    roundtripVerified: true,
+    promotionEligible: false
+  };
+  mutate({ creation, recovery });
+  const creationRawBytes = Buffer.from(JSON.stringify(creation));
+  recovery.creationReadbackRawDigest = sha256Bytes(creationRawBytes);
+  const recoveryRawBytes = Buffer.from(JSON.stringify(recovery));
+  const operationRef = randomUUID();
+  const index = {
+    schemaVersion: "h1-snapshot-key-input-index.v1",
+    operationRef,
+    profileDigest: sha256Canonical(f.profile),
+    creationRawDigest: sha256Bytes(creationRawBytes),
+    recoveryRawDigest: sha256Bytes(recoveryRawBytes)
+  };
+  const inputsRoot = path.join(f.profile.storage.archiveRoot, "inputs", "h1-snapshot-key");
+  const indexPath = path.join(inputsRoot, operationRef, "index.json");
+  const creationPath = path.join(
+    inputsRoot,
+    "raw",
+    `${index.creationRawDigest.slice(7)}.creation.json`
+  );
+  const recoveryPath = path.join(
+    inputsRoot,
+    "raw",
+    `${index.recoveryRawDigest.slice(7)}.recovery.json`
+  );
+  await fs.mkdir(path.dirname(indexPath), { recursive: true, mode: 0o700 });
+  await fs.mkdir(path.dirname(creationPath), { recursive: true, mode: 0o700 });
+  for (const [file, bytes] of [
+    [indexPath, encodeManualJson(index)],
+    [creationPath, creationRawBytes],
+    [recoveryPath, recoveryRawBytes]
+  ])
+    await fs.writeFile(file, bytes, { flag: "wx", mode: 0o600 });
+  const held = [];
+  const fixtureOpen = fs.open.bind(fs);
+  t.mock.method(fs, "open", async (...args) => {
+    const handle = await fixtureOpen(...args);
+    if (String(args[0]).startsWith(inputsRoot + path.sep)) {
+      const item = { file: String(args[0]), closed: false };
+      held.push(item);
+      const close = handle.close.bind(handle);
+      t.mock.method(handle, "close", async () => {
+        try {
+          return await close();
+        } finally {
+          item.closed = true;
+        }
+      });
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  return {
+    ...f,
+    operationRef,
+    index,
+    indexPath,
+    creationPath,
+    recoveryPath,
+    creationRawBytes,
+    recoveryRawBytes,
+    held
+  };
+}
+function publicKeyInputReader() {
+  const api = production();
+  assert.equal(
+    typeof api.readFixedH1SnapshotPublicKeyInputs,
+    "function",
+    "fixed public-key original reader must exist"
+  );
+  return api.readFixedH1SnapshotPublicKeyInputs;
+}
+
+test("H1 KEY INPUT preserves noncanonical originals, isolates raw copies and closes only its own handles", async (t) => {
+  const f = await publicKeyInputFixture(t);
+  const result = await publicKeyInputReader()({
+    repoRoot: f.repoRoot,
+    operationRef: f.operationRef
+  });
+  t.after(() => result.close());
+  assert.deepEqual(Object.keys(result).sort(), [
+    "close",
+    "creation",
+    "creationRawBytes",
+    "recheck",
+    "recovery",
+    "recoveryRawBytes",
+    "refs"
+  ]);
+  assert.deepEqual(result.creationRawBytes, f.creationRawBytes);
+  assert.notEqual(sha256Bytes(result.creationRawBytes), sha256Canonical(result.creation));
+  assert.ok(Object.isFrozen(result.creation.principal) && Object.isFrozen(result.refs));
+  assert.equal(result.refs.creationRawDigest, f.index.creationRawDigest);
+  assert.equal(result.refs.recoveryRawDigest, f.index.recoveryRawDigest);
+  result.creationRawBytes.fill(0);
+  await result.recheck();
+  const other = await publicKeyInputReader()({
+    repoRoot: f.repoRoot,
+    operationRef: f.operationRef
+  });
+  t.after(() => other.close());
+  assert.equal(f.held.filter((item) => !item.closed).length, 6);
+  await result.close();
+  await result.close();
+  assert.equal(f.held.filter((item) => !item.closed).length, 3);
+  assert.ok(result.recoveryRawBytes.every((byte) => byte === 0));
+  await assert.rejects(result.recheck(), { code: "H1_SNAPSHOT_PUBLIC_INPUT_UNAVAILABLE" });
+  await other.recheck();
+  await other.close();
+  assert.ok(f.held.every((item) => item.closed));
+  noAuthorityAccess(f);
+});
+
+test("H1 KEY INPUT refuses noncanonical index, changed raw bytes and future readbacks without leaks", async (t) => {
+  for (const mode of ["index", "raw", "future"]) {
+    await t.test(mode, async (st) => {
+      const f = await publicKeyInputFixture(st, ({ creation, recovery }) => {
+        if (mode === "future") {
+          creation.createdAt = new Date(Date.now() + 60000).toISOString();
+          recovery.verifiedAt = new Date(Date.now() + 61000).toISOString();
+        }
+      });
+      if (mode === "index") await fs.appendFile(f.indexPath, "\n");
+      if (mode === "raw") await fs.appendFile(f.creationPath, " ");
+      await assert.rejects(
+        publicKeyInputReader()({ repoRoot: f.repoRoot, operationRef: f.operationRef }),
+        { code: "H1_SNAPSHOT_PUBLIC_INPUT_UNAVAILABLE" }
+      );
+      assert.ok(f.held.every((item) => item.closed));
+      noAuthorityAccess(f);
+    });
+  }
+});
+
+test("H1 KEY INPUT lifetime rechecks original bytes, host, owner binding and actual profile expiry", async (t) => {
+  for (const mode of ["raw", "host", "owner-binding", "expiry"]) {
+    await t.test(mode, async (st) => {
+      const f = await publicKeyInputFixture(st);
+      const result = await publicKeyInputReader()({
+        repoRoot: f.repoRoot,
+        operationRef: f.operationRef
+      });
+      st.after(() => result.close());
+      if (mode === "raw") await fs.appendFile(f.recoveryPath, " ");
+      if (mode === "host") await fs.writeFile(f.machineFile, `${"f".repeat(32)}\n`);
+      if (mode === "owner-binding") {
+        const approvedAt = "2026-09-02T00:00:00.000Z";
+        const approvalBytes = encodeManualJson({ ...f.approval, approvedAt });
+        const approvalDigest = sha256Bytes(approvalBytes);
+        const changed = {
+          ...f.binding,
+          approvedAt,
+          approvalDigest,
+          approvalReference: `inputs/h1/${approvalDigest.slice(7)}.approval.json`
+        };
+        await fs.writeFile(
+          path.join(f.profile.storage.archiveRoot, changed.approvalReference),
+          approvalBytes,
+          { flag: "wx", mode: 0o600 }
+        );
+        await fs.writeFile(path.join(f.repoRoot, bindingName), encodeManualJson(changed));
+      }
+      if (mode === "expiry") st.mock.method(Date, "now", () => Date.parse(f.profile.expiresAt));
+      await assert.rejects(result.recheck(), { code: "H1_SNAPSHOT_PUBLIC_INPUT_UNAVAILABLE" });
+      await result.close();
+      assert.ok(f.held.every((item) => item.closed));
+      noAuthorityAccess(f);
+    });
+  }
+});
+
 test("OP accepts the complete fixed index as nonauthorizing data and returns independent raw buffers", async (t) => {
   const f = await operationFixture(t);
   const result = await reader()({ repoRoot: f.repoRoot, operationRef: f.operationRef });

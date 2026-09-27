@@ -209,10 +209,11 @@ export async function exportSanitizedSnapshot({
     });
     const snapshot = await source.openReadOnlySnapshot({ secretReference });
     opened = true;
+    // PostgreSQL's DEFERRABLE flag has no effect at REPEATABLE READ. Safety here
+    // requires the read-only transaction and the same exported MVCC snapshot.
     if (
       snapshot?.isolationLevel !== "REPEATABLE READ" ||
       snapshot.readOnly !== true ||
-      snapshot.deferrable !== true ||
       typeof snapshot.snapshotId !== "string" ||
       !snapshot.snapshotId
     ) {

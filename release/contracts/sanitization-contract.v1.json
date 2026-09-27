@@ -1,7 +1,7 @@
 {
   "schemaVersion": "sanitization-contract.v1",
   "contractId": "stage1-staging-snapshot",
-  "contractVersion": "1",
+  "contractVersion": "2",
   "source": {
     "allowedEnvironment": "staging",
     "keyTables": [
@@ -10,7 +10,10 @@
       "public.customer_identity",
       "public.subscription_order"
     ],
-    "knownMigrationHeads": ["20260901010000_stage1_schema_drift_convergence"]
+    "knownMigrationHeads": [
+      "20260901010000_stage1_schema_drift_convergence",
+      "20260925091000_stage1_operational_completion_settlement_guard"
+    ]
   },
   "transformations": [
     {

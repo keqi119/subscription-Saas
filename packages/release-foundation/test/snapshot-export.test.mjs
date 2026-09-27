@@ -155,7 +155,7 @@ function exportFixture(overrides = {}) {
         snapshotId: "00000003-0000001A-1",
         isolationLevel: "REPEATABLE READ",
         readOnly: true,
-        deferrable: true
+        deferrable: false
       };
     },
     async readFingerprint() {
@@ -254,6 +254,27 @@ test("exports only a scanned final bundle after matching source fingerprints", a
   assert.equal(metadata.dumpDigest, sha256Bytes(input.uploads[0].dump));
   assert.deepEqual(input.events.slice(-2), ["snapshot-closed", "workspace-destroyed"]);
 });
+
+for (const [name, transaction] of [
+  ["READ COMMITTED", { isolationLevel: "READ COMMITTED" }],
+  ["READ WRITE", { readOnly: false }]
+]) {
+  test(`DEFERRABLE does not admit a ${name} source transaction`, async () => {
+    const input = exportFixture();
+    const openSnapshot = input.source.openReadOnlySnapshot;
+    input.source.openReadOnlySnapshot = async (...args) => ({
+      ...(await openSnapshot(...args)),
+      deferrable: true,
+      ...transaction
+    });
+    await assert.rejects(() => runExport(input), { code: "SNAPSHOT_SOURCE_TRANSACTION_INVALID" });
+    assert.equal(input.fingerprintCalls(), 0);
+    assert.equal(input.events.includes("raw-exported"), false);
+    assert.equal(input.events.includes("raw-restored"), false);
+    assert.equal(input.uploads.length, 0);
+    assert.deepEqual(input.events, ["snapshot-opened", "snapshot-closed", "workspace-destroyed"]);
+  });
+}
 
 test("source fingerprint drift prevents all publication", async () => {
   const input = exportFixture();
@@ -391,7 +412,7 @@ test("protected workflow exposes no PR trigger or raw artifact upload", async ()
   assert.equal(/raw|partial/i.test(uploadBlock), false);
 });
 
-test("repository sanitization contract targets current tables and migration head", async () => {
+test("repository sanitization contract supports reviewed Staging and current migration heads", async () => {
   const [policy, prismaSchema, migrationEntries] = await Promise.all([
     readFile(
       new URL("../../../release/contracts/sanitization-contract.v1.json", import.meta.url),
@@ -407,7 +428,11 @@ test("repository sanitization contract targets current tables and migration head
     .map(({ name }) => name)
     .sort()
     .at(-1);
-  assert.deepEqual(policy.source.knownMigrationHeads, [migrationHead]);
+  assert.equal(policy.contractVersion, "2");
+  assert.deepEqual(policy.source.knownMigrationHeads, [
+    "20260901010000_stage1_schema_drift_convergence",
+    migrationHead
+  ]);
   const mappedTables = new Set(
     [...prismaSchema.matchAll(/@@map\("([a-z][a-z0-9_]*)"\)/g)].map((match) => `public.${match[1]}`)
   );

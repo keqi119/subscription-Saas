@@ -3487,6 +3487,51 @@ for (const fault of ["partial-write", "readback"])
     }
   });
 
+test("fixed H3-A reader holds original inputs without live authority", async (t) => {
+  const sourceInputs = await import("./manual-runner-source-inputs.mjs").catch((error) => {
+    if (
+      error.code === "ERR_MODULE_NOT_FOUND" &&
+      error.url?.endsWith("/manual-runner-source-inputs.mjs")
+    )
+      return {};
+    throw error;
+  });
+  assert.equal(typeof sourceInputs.openManualH3AInputs, "function");
+  const f = await h3ResourceFixture(t);
+  const input = {
+    fixed: {
+      operation: JSON.parse(encodeManualJson(f.fixed.operation)),
+      indexDigest: f.fixed.indexDigest
+    },
+    profile: JSON.parse(encodeManualJson(f.profile)),
+    principal: { ...f.binding.principal }
+  };
+  const pending = sourceInputs.openManualH3AInputs(input);
+  input.fixed.operation.operationRef = randomUUID();
+  input.profile.storage.archiveRoot = path.join(f.root, "wrong-input-root");
+  const held = await pending;
+  try {
+    assert.equal(held.context.targetContext.operationRef, f.prepared.operationRef);
+    assert.deepEqual(held.context.approval, f.approval);
+    assert.deepEqual(held.context.readback, f.readback);
+    assert.deepEqual(held.refs.roleReadback, f.readback.roleReadback);
+    assert.ok(held.bytes[0].equals(encodeManualJson(f.approval)));
+    assert.ok(held.bytes[1].equals(encodeManualJson(f.readback)));
+    assert.equal(Object.isFrozen(held.context.readback.cluster), true);
+    held.bytes[0].fill(0);
+    held.bytes[1].fill(0);
+    await held.recheck();
+    await fs.appendFile(path.join(f.operationRoot, "h3-a-approval.json"), "\n");
+    await assert.rejects(held.recheck(), { code: "MANUAL_OPERATION_INPUT_UNAVAILABLE" });
+  } finally {
+    await held.close();
+  }
+  await held.close();
+  await assert.rejects(held.recheck(), { code: "MANUAL_OPERATION_INPUT_UNAVAILABLE" });
+  assert.deepEqual(f.docker.calls, []);
+  noAuthority(f);
+});
+
 test("H3 Docker source observations bind resources before trusted session bootstrap", async (t) => {
   const f = await h3ResourceFixture(t);
   await assert.rejects(launcher.launchManualStage1({ operationRef: f.prepared.operationRef }), {

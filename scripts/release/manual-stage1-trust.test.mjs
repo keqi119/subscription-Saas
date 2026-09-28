@@ -3009,7 +3009,7 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
   const dropped = mode === "dropped",
     evidenceOnly = mode === "evidence";
   test(
-    `R3 LAUNCH ${evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination originals from the same created Engine and database locks"}`,
+    `R3 LAUNCH ${evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
     { skip: process.platform !== "linux" },
     async (t) => {
       const f = await r3ForwardFixture(t);
@@ -3528,6 +3528,8 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         assert.equal(typeof launched.provisionPostgres, "function");
         assert.equal(typeof launched.provisionDatabases, "function");
         assert.equal(typeof launched.recordDestination, "function");
+        assert.equal(typeof launched.completeCreation, "function");
+        await assert.rejects(launched.completeCreation());
         await assert.rejects(launched.recordDestination());
         await assert.rejects(launched.provisionDatabases());
         await assert.rejects(launched.provisionPostgres({ endpoint: "elsewhere" }));
@@ -3634,6 +3636,82 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         assert.deepEqual(destination.databaseTargetSet.targetLocks, databases.targetLocks);
         await assert.rejects(launched.recordDestination());
         assert.equal(launched.status, "INTERRUPTED_UNKNOWN");
+        await assert.rejects(launched.completeCreation({ status: "SUCCEEDED" }));
+        releaseMockHistory();
+        const completed = await launched.completeCreation();
+        assert.equal(completed.status, "TARGET_CREATED");
+        assert.equal(completed.promotionEligible, false);
+        assert.equal(launched.status, "TARGET_CREATED");
+        assert.equal(completed.destinationDigest, recorded.destinationDigest);
+        const initialPath = path.join(
+          f.profile.storage.journalRoot,
+          "objects",
+          `${launched.consumption.executionRecordDigest.slice(7)}.json`
+        );
+        const initialExecution = JSON.parse(await fs.readFile(initialPath));
+        assert.equal(initialExecution.status, "INTERRUPTED_UNKNOWN");
+        assert.equal(initialExecution.resultDigest, null);
+        const completionName = `${completed.executionRecordDigest.slice(7)}.json`;
+        const completionBytes = await fs.readFile(
+          path.join(f.profile.storage.journalRoot, "objects", completionName)
+        );
+        const execution = JSON.parse(completionBytes);
+        assert.equal(sha256Bytes(completionBytes), completed.executionRecordDigest);
+        assert.equal(execution.status, "SUCCEEDED");
+        assert.equal(
+          execution.predecessorExecutionRecordDigest,
+          launched.consumption.executionRecordDigest
+        );
+        assert.equal(execution.consumptionRecordDigest, initialExecution.consumptionRecordDigest);
+        assert.equal(execution.sessionId, initialExecution.sessionId);
+        assert.equal(execution.sessionNonce, initialExecution.sessionNonce);
+        assert.equal(execution.resultDigest, recorded.destinationDigest);
+        assert.equal(execution.processEvidenceDigest, recorded.observationEvidenceDigest);
+        assert.equal(execution.startedAt, initialExecution.recordedAt);
+        assert.ok(Date.parse(execution.finishedAt) >= Date.parse(destination.observedAt));
+        for (const role of ["archive", "backup"])
+          assert.deepEqual(
+            await fs.readFile(
+              path.join(f.profile.storage[`${role}Root`], "objects", completionName)
+            ),
+            completionBytes
+          );
+        assert.equal(completed.custodyRecordDigests.length, 4);
+        const custodyPairs = [];
+        for (const digest of completed.custodyRecordDigests) {
+          const bytes = await fs.readFile(
+            path.join(f.profile.storage.archiveRoot, "objects", `${digest.slice(7)}.json`)
+          );
+          assert.equal(sha256Bytes(bytes), digest);
+          const custody = JSON.parse(bytes);
+          assert.equal(custody.kind, "custody");
+          assert.equal(custody.subjectType, "record");
+          assert.equal(custody.outcome, "MATCH");
+          assert.equal(custody.observedDigest, custody.subjectDigest);
+          assert.equal(custody.retentionDays, 90);
+          custodyPairs.push(`${custody.subjectDigest}:${custody.storageRole}`);
+        }
+        assert.deepEqual(
+          custodyPairs.sort(),
+          [
+            `${recorded.destinationDigest}:archive`,
+            `${recorded.destinationDigest}:backup`,
+            `${recorded.observationEvidenceDigest}:archive`,
+            `${recorded.observationEvidenceDigest}:backup`
+          ].sort()
+        );
+        await assert.rejects(launched.completeCreation());
+        releaseMockHistory();
+        await launched.recheck();
+        releaseMockHistory();
+        const completionBackupPath = path.join(
+          f.profile.storage.backupRoot,
+          "objects",
+          completionName
+        );
+        await fs.writeFile(completionBackupPath, encodeManualJson({ fabricated: true }));
+        await assert.rejects(launched.recheck());
+        await fs.writeFile(completionBackupPath, completionBytes);
         releaseMockHistory();
         innerIdentity = { ...pgIdentity, systemIdentifier: "7340000000000000002" };
         await assert.rejects(launched.recheck(), { code: "R3_TARGET_CREATE_UNAVAILABLE" });
@@ -3650,7 +3728,7 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         await fs.writeFile(backupName, backupBytes);
         await fs.appendFile(databaseSecretPath, "\n");
         await assert.rejects(launched.recheck());
-        assert.equal(launched.status, "INTERRUPTED_UNKNOWN");
+        assert.equal(launched.status, "TARGET_CREATED");
         await launched.close();
       }
       if (handlerError) throw handlerError;

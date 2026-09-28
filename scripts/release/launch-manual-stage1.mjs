@@ -1023,6 +1023,10 @@ export async function launchR3TargetCreate(input) {
     destinationStage = "NOT_STARTED",
     destinationPending,
     destinationRecord,
+    completionAttempted = false,
+    completionReady = false,
+    completionPending,
+    completionRecord,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1039,6 +1043,7 @@ export async function launchR3TargetCreate(input) {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
       const errors = [];
+      await completionPending?.catch(() => {});
       await destinationPending?.catch(() => {});
       await databasesPending?.catch(() => {});
       await postgresPending?.catch(() => {});
@@ -1077,6 +1082,7 @@ export async function launchR3TargetCreate(input) {
     await targetLockLease?.recheck();
     await hostedEvidence?.recheck();
     if (destinationRecord) await recheckDestination();
+    if (completionRecord) await recheckCompletion();
   };
   const recheckDestination = async () => {
     for (const [digest, bytes] of destinationRecord.originals) {
@@ -1085,6 +1091,11 @@ export async function launchR3TargetCreate(input) {
         if (!original.bytes.equals(bytes)) fail(code);
       }
     }
+  };
+  const recheckCompletion = async () => {
+    for (const { digest, bytes, roles } of completionRecord.originals)
+      for (const role of roles)
+        if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
   };
   const pause = () => new Promise((resolve) => setTimeout(resolve, 500));
   const exchange = (method, pathname, body = null, connected = null, options = {}) =>
@@ -1827,6 +1838,81 @@ export async function launchR3TargetCreate(input) {
       promotionEligible: false
     });
   };
+  const recheckResources = async () => {
+    await check();
+    if (destinationAttempted && !destinationReady) fail(code);
+    if (postgresAttempted && !postgresTarget) fail(code);
+    if (databasesAttempted && !databaseTargetSet) fail(code);
+    for (const held of databaseSecrets) await held.recheck();
+    const current = await engineReadback(
+      !postgresAttempted,
+      postgresAttempted ? savePgExchange : saveExchange
+    );
+    if (current.engine.ID !== boundEngineId) fail(code);
+    if (postgresAttempted) {
+      const observed = await inspectPg(boundEngineId);
+      if (
+        Object.keys(observed).some(
+          (key) => sha256Canonical(observed[key]) !== sha256Canonical(postgresTarget[key])
+        )
+      )
+        fail(code);
+    }
+    if (databaseTargetSet)
+      await databaseAdmin(databaseTargetSet.plan, (executeAdmin) =>
+        recheckR3DatabaseTargets({
+          plan: databaseTargetSet.plan,
+          records: databaseTargetSet.records,
+          executeAdmin
+        })
+      );
+    await check();
+  };
+  const completeCreation = async () => {
+    await recheckResources();
+    const result = await session.completeCreation({
+      destinationDigest: destinationRecord.destinationDigest
+    });
+    const execution = await archive.get(result.executionRecordDigest, "journal");
+    validateContract("manual-operation-record.v3", execution.value);
+    if (
+      execution.value.status !== "SUCCEEDED" ||
+      execution.value.stage !== "target-create" ||
+      execution.value.sessionId !== session.sessionId ||
+      execution.value.sessionNonce !== session.sessionNonce ||
+      execution.value.predecessorExecutionRecordDigest !== consumption.executionRecordDigest ||
+      execution.value.resultDigest !== destinationRecord.destinationDigest ||
+      execution.value.processEvidenceDigest !==
+        destinationRecord.destination.observationEvidenceDigest ||
+      !Array.isArray(result.custodyRecordDigests) ||
+      result.custodyRecordDigests.length !== 4 ||
+      new Set(result.custodyRecordDigests).size !== 4
+    )
+      fail(code);
+    const originals = [
+      {
+        digest: result.executionRecordDigest,
+        bytes: execution.bytes,
+        roles: ["journal", "archive", "backup"]
+      }
+    ];
+    for (const digest of result.custodyRecordDigests) {
+      const custody = await archive.get(digest);
+      validateContract("manual-operation-record.v3", custody.value);
+      if (custody.value.kind !== "custody" || custody.value.outcome !== "MATCH") fail(code);
+      originals.push({ digest, bytes: custody.bytes, roles: ["archive"] });
+    }
+    completionRecord = { originals };
+    await recheckResources();
+    completionReady = true;
+    return Object.freeze({
+      status: "TARGET_CREATED",
+      executionRecordDigest: result.executionRecordDigest,
+      custodyRecordDigests: Object.freeze([...result.custodyRecordDigests]),
+      destinationDigest: destinationRecord.destinationDigest,
+      promotionEligible: false
+    });
+  };
   try {
     if (
       !exact(input, ["repoRoot", "operationRef"]) ||
@@ -1984,7 +2070,9 @@ export async function launchR3TargetCreate(input) {
     const engine = Object.freeze(JSON.parse(JSON.stringify(readback.engine)));
     boundEngineId = engine.ID;
     return Object.freeze({
-      status: "INTERRUPTED_UNKNOWN",
+      get status() {
+        return completionReady ? "TARGET_CREATED" : "INTERRUPTED_UNKNOWN";
+      },
       session,
       consumption,
       engine,
@@ -2094,36 +2182,23 @@ export async function launchR3TargetCreate(input) {
           });
         }
       },
+      async completeCreation(...args) {
+        if (args.length !== 0 || closed || completionAttempted || !destinationReady) fail(code);
+        completionAttempted = true;
+        completionPending = completeCreation();
+        try {
+          return await completionPending;
+        } catch (cause) {
+          throw Object.assign(new Error(code), {
+            code,
+            consumption,
+            failureCode: /^[A-Z0-9_]{1,64}$/u.test(cause?.code ?? "") ? cause.code : code
+          });
+        }
+      },
       async recheck() {
-        await check();
-        if (destinationAttempted && !destinationReady) fail(code);
-        if (postgresAttempted && !postgresTarget) fail(code);
-        if (databasesAttempted && !databaseTargetSet) fail(code);
-        for (const held of databaseSecrets) await held.recheck();
-        const current = await engineReadback(
-          !postgresAttempted,
-          postgresAttempted ? savePgExchange : saveExchange
-        );
-        if (current.engine.ID !== engine.ID) fail(code);
-        if (postgresAttempted) {
-          const observed = await inspectPg(engine.ID);
-          if (
-            Object.keys(observed).some(
-              (key) => sha256Canonical(observed[key]) !== sha256Canonical(postgresTarget[key])
-            )
-          )
-            fail(code);
-        }
-        if (databaseTargetSet) {
-          await databaseAdmin(databaseTargetSet.plan, (executeAdmin) =>
-            recheckR3DatabaseTargets({
-              plan: databaseTargetSet.plan,
-              records: databaseTargetSet.records,
-              executeAdmin
-            })
-          );
-        }
-        await check();
+        if (completionAttempted && !completionReady) fail(code);
+        await recheckResources();
       },
       close
     });

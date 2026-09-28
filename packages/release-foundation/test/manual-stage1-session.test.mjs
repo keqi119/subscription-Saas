@@ -3275,6 +3275,7 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
       "sign",
       "consume",
       "holdTargets",
+      "completeCreation",
       "record",
       "close"
     ].sort()
@@ -3290,6 +3291,10 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
   assert.equal(execution.finishedAt, null);
   assert.equal(result.executionRecordDigest, sha256Canonical(execution));
   assert.equal((await f.records("consumption")).length, 1);
+  await assert.rejects(
+    session.completeCreation({ destinationDigest: sha256Canonical({ destination: "untrusted" }) }),
+    { code: "MANUAL_SESSION_UNVERIFIED" }
+  );
   await assert.rejects(session.consume({ authorization, request }), {
     code: "MANUAL_AUTHORIZATION_CONSUMED"
   });

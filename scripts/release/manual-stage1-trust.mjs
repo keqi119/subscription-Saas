@@ -2088,6 +2088,7 @@ export async function openTrustedR3CreationSession(input) {
   const code = "R3_CREATION_SESSION_UNAVAILABLE";
   let fixed,
     session,
+    policyInput,
     closed = false,
     closing,
     queue = Promise.resolve();
@@ -2097,6 +2098,7 @@ export async function openTrustedR3CreationSession(input) {
     closing = (async () => {
       const outcomes = await Promise.allSettled([
         ...(session ? [session.close()] : []),
+        ...(policyInput ? [policyInput.close()] : []),
         ...(fixed ? [fixed.close()] : [])
       ]);
       if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
@@ -2113,6 +2115,7 @@ export async function openTrustedR3CreationSession(input) {
     try {
       requireThat(!closed);
       await fixed.recheck();
+      await policyInput?.recheck();
     } catch {
       fail(code);
     }
@@ -2141,6 +2144,11 @@ export async function openTrustedR3CreationSession(input) {
         chain: spec.chain
       });
     requireThat(sha256Canonical(profile) === spec.profileDigest);
+    policyInput = await openInput(
+      path.join(repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json"),
+      { principal, sourceRoot: repoRoot }
+    );
+    requireThat(sha256Bytes(policyInput.bytes) === scope.targetPolicyDigest);
     await recheck();
     const keyRef = profile.storage.keyRef;
     requireThat(
@@ -2169,7 +2177,17 @@ export async function openTrustedR3CreationSession(input) {
           scope,
           observedAt: new Date().toISOString()
         },
-        r3CreationContext: { scope, creationSpec: spec, jobAdmission: fixed.admission },
+        r3CreationContext: {
+          scope,
+          creationSpec: spec,
+          jobAdmission: fixed.admission,
+          destinationInputs: {
+            manifest: fixed.databaseTestManifest,
+            manifestRawDigest: fixed.databaseTestManifestRawDigest,
+            policy: fixed.databaseTargetPolicy,
+            policyBytesBase64: policyInput.bytes.toString("base64")
+          }
+        },
         now: () => new Date().toISOString(),
         signingKey
       });
@@ -2187,6 +2205,7 @@ export async function openTrustedR3CreationSession(input) {
       "sign",
       "consume",
       "holdTargets",
+      "completeCreation",
       "record",
       "close"
     ]);
@@ -2214,6 +2233,7 @@ export async function openTrustedR3CreationSession(input) {
       sign: (value) => action("sign", [value]),
       consume: (value) => action("consume", [value]),
       holdTargets: (value) => action("holdTargets", [value]),
+      completeCreation: (value) => action("completeCreation", [value]),
       record: (kind, value) => action("record", [kind, value]),
       close: () => serial(finish)
     });

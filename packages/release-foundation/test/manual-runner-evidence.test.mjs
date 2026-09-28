@@ -432,6 +432,42 @@ test("observe result phase mismatch is rejected and missing post-state is unknow
   );
 });
 
+test("R3 history projection preserves R2 verification and rejects unrelated originals", async () => {
+  const { projectManualR2Archive } = await import("../src/manual-stage1-session.mjs");
+  assert.equal(typeof projectManualR2Archive, "function");
+  const f = observeFixture();
+  const input = f.archive.input(f.request);
+  // Digest selection is tested here; the native session must first replay
+  // these R3 originals before supplying this internal projection's sets.
+  const destination = encodeManualJson({ schemaVersion: "manual-r3-destination.v1" });
+  const observations = encodeManualJson({ schemaVersion: "manual-r3-destination-observations.v1" });
+  const stream = Buffer.concat([Buffer.from([1, 0, 0, 0, 0, 0, 0, 128]), Buffer.alloc(128, 32)]);
+  const mixed = {
+    artifactBytes: [...input.artifactBytes, destination, observations],
+    rawBlobs: [...input.rawBlobs, stream]
+  };
+  const checkedArtifacts = new Set([sha256Bytes(destination), sha256Bytes(observations)]);
+  const checkedRaw = new Set([sha256Bytes(stream)]);
+  const assess = (values, artifacts = checkedArtifacts, raws = checkedRaw) =>
+    assessManualRunnerEvidence({
+      ...input,
+      ...projectManualR2Archive(values, artifacts, raws)
+    });
+  assert.equal(assess(mixed).executionStatus, "SUCCEEDED");
+  assert.throws(() => assess(mixed, new Set(), checkedRaw));
+  assert.throws(() => assess(mixed, checkedArtifacts, new Set()));
+  assert.throws(() =>
+    assess({
+      ...mixed,
+      artifactBytes: [
+        ...mixed.artifactBytes,
+        encodeManualJson({ schemaVersion: "manual-r3-destination.v1", unrelated: true })
+      ]
+    })
+  );
+  assert.throws(() => assess({ ...mixed, rawBlobs: [...mixed.rawBlobs, Buffer.from([255])] }));
+});
+
 function custodyFixture(archive, request, subject, purpose, n) {
   const custody = record(request, "custody", n, {
     ownerId: request.ownerId,

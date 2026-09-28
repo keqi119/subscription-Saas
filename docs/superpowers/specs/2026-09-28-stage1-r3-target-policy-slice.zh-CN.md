@@ -191,3 +191,13 @@ H1 的 `prepareR3HostedEvidenceImport` 在打开 job/session 句柄前保留 arc
 `manual-r3-destination.v1` 绑定 spec/profile/owner、job、唯一候选、source/final、fresh/snapshot、同 session/nonce、原始 UNKNOWN execution、消费记录、hosted bundle、manifest 和观察原件摘要，包含核实的 PG 事实及初始数据库集合。`manual-r3-destination-observations.v1` 保存对应的非秘密 PG 读回与 SELECT transcript。两份 canonical 对象各不超过 1 MiB，使用既有摘要对象路径排他写入 archive 和 profile 指定的加密 backup，再独立读回相同字节；不新增信任根、签名机制或存储服务。
 
 记录失败保留已经写入的对象和一次尝试状态，普通关闭等待正在执行的记录工作，保留原 UNKNOWN 与已消费锁。成功只返回 `DESTINATION_OBSERVED` 和摘要，之后的 recheck 同时读回 archive/backup 原件及当前资源身份。后续同会话 SUCCEEDED/custody/consumer 图必须验证这组真实原件；不能仅凭目的地对象的字段或此返回值授予快照访问。
+
+## 同会话创建完成记录（2026-09-28 接续）
+
+原生句柄增加无参数、仅一次的 `completeCreation()`，在已有目的地原件的前提下，完成前后重新检查当前 job、通道、凭据、PG/数据库身份及持有的锁。会话只接收该目的地摘要，独立读取 archive/backup 原件、验证 hosted 签名、重放 PG 和数据库观察，并重建同一 manifest 的目的地；调用方不能提交成功状态或替换观察。
+
+原最初 UNKNOWN 保持不变。会话追加 v3 `SUCCEEDED` execution，前序指向原 UNKNOWN，结果和过程证据分别指向 destination 与 observations。两份证据分别生成 archive/backup 的四条实际 MATCH custody，保留期为 90 天，不冒充负责人确认。完成记录在 journal、archive 和 backup 分别落盘、读回；历史校验要求原消费槽、分配、授权、同 session/nonce、精确前序及保管关系全部存在，部分写入不能授予后续权限。
+
+R2 历史继续使用原校验器。仅在独立重放 R3 目的地之后，才从 R2 输入中排除这两份 R3 对象及已经核实的 Docker exec 流摘要；未知或无关原件仍被拒绝。该选择函数本身不核准证据，也不授予能力。
+
+原生入口成功返回 `TARGET_CREATED` 和 `promotionEligible:false`；后续重查继续读回完成原件。普通关闭仍保留已消费会话、UNKNOWN 和所有锁，等待实际清理结果。此实现不接通 snapshot-consumer、lifecycle 动态执行或实际 hosted workflow，不能作为真实 CI/数据库验收成绩。

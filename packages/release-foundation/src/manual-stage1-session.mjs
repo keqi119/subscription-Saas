@@ -5,7 +5,8 @@ import {
   KeyObject,
   randomBytes,
   randomUUID,
-  sign as cryptoSign
+  sign as cryptoSign,
+  verify as cryptoVerify
 } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -29,6 +30,7 @@ import {
 } from "./execution-state-machine.mjs";
 import { deterministicPlanDigest } from "./proof-builders.mjs";
 import { planManualR3TargetLocks } from "./manual-r3-target-locks.mjs";
+import { verifyR3HostedEvidence } from "./r3-hosted-evidence.mjs";
 
 const STORAGE = "MANUAL_STORAGE_UNVERIFIED";
 const SESSION = "MANUAL_SESSION_UNVERIFIED";
@@ -88,6 +90,21 @@ const objectPath = (root, digest) => {
   requireThat(/^sha256:[0-9a-f]{64}$/.test(digest), STORAGE);
   return path.join(root, "objects", `${digest.slice(7)}.json`);
 };
+
+// Byte selection only, not evidence admission. The session supplies these
+// digest sets only after independently replaying its R3 destination originals.
+export function projectManualR2Archive(
+  { artifactBytes, rawBlobs },
+  verifiedArtifactDigests = new Set(),
+  verifiedRawDigests = new Set()
+) {
+  return {
+    artifactBytes: artifactBytes.filter(
+      (bytes) => !verifiedArtifactDigests.has(sha256Bytes(bytes))
+    ),
+    rawBlobs: rawBlobs.filter((bytes) => !verifiedRawDigests.has(sha256Bytes(bytes)))
+  };
+}
 
 // These are low-level filesystem/process operations, not a public evidence or
 // success adapter. R1.3 uses the defaults; controlled tests inject the same
@@ -297,7 +314,32 @@ export async function openManualSession({
   if (r3) {
     requireThat(profileSchema === "manual-stage1-profile.v2", SESSION);
     r3Context = snapshot(r3CreationContext);
-    exact(r3Context, ["scope", "creationSpec", "jobAdmission"], SESSION);
+    exact(
+      r3Context,
+      r3Context.destinationInputs
+        ? ["scope", "creationSpec", "jobAdmission", "destinationInputs"]
+        : ["scope", "creationSpec", "jobAdmission"],
+      SESSION
+    );
+    if (r3Context.destinationInputs) {
+      exact(
+        r3Context.destinationInputs,
+        ["manifest", "manifestRawDigest", "policy", "policyBytesBase64"],
+        SESSION
+      );
+      const raw = r3Context.destinationInputs.policyBytesBase64;
+      requireThat(
+        typeof raw === "string" &&
+          /^[A-Za-z0-9+/]*={0,2}$/u.test(raw) &&
+          Buffer.from(raw, "base64").toString("base64") === raw &&
+          sha256Bytes(Buffer.from(raw, "base64")) === r3Context.scope.targetPolicyDigest,
+        SESSION
+      );
+      requireThat(
+        /^sha256:[0-9a-f]{64}$/u.test(r3Context.destinationInputs.manifestRawDigest),
+        SESSION
+      );
+    }
     exact(
       r3Context.scope,
       [
@@ -937,7 +979,13 @@ export async function openManualSession({
         EVIDENCE
       );
   }
-  async function archiveInput(request, graph = null, historicalConsumption = null) {
+  async function archiveInput(
+    request,
+    graph = null,
+    historicalConsumption = null,
+    r3Validated = null,
+    r3Originals = null
+  ) {
     graph ??= await store.objects();
     // R2's evidence assessor predates the disjoint R3 record/request schema.
     // Validate those originals before projecting the R2 graph; a consumed R3
@@ -947,7 +995,12 @@ export async function openManualSession({
       const value = entry.value;
       if (value.schemaVersion === "manual-operation-record.v3") {
         validateContract("manual-operation-record.v3", value);
-        requireThat(["session", "custody"].includes(value.kind), SESSION);
+        requireThat(
+          ["session", "custody"].includes(value.kind) ||
+            (value.kind === "consumption" && r3Validated?.has(sha256Canonical(value))) ||
+            (value.kind === "execution" && r3Validated?.has(value.consumptionRecordDigest)),
+          SESSION
+        );
         r2Artifacts.push(null);
       } else if (value.schemaVersion === "manual-runner-request.v4") {
         validateManualTargetCreationRequest(value);
@@ -1002,8 +1055,11 @@ export async function openManualSession({
     requireThat(requestBytes, REQUIRED);
     const input = {
       requestBytes,
-      artifactBytes: r2Artifacts.filter(Boolean),
-      rawBlobs: [...raws.values()]
+      ...projectManualR2Archive(
+        { artifactBytes: r2Artifacts.filter(Boolean), rawBlobs: [...raws.values()] },
+        r3Originals?.artifacts,
+        r3Originals?.raws
+      )
     };
     if (request.profileDigest === profileDigest)
       return { ...input, profileBytes: Buffer.from(profileBytes) };
@@ -1016,7 +1072,13 @@ export async function openManualSession({
     );
     return input;
   }
-  async function history(request, ignoreRequest = null, targetFilter = target) {
+  async function history(
+    request,
+    ignoreRequest = null,
+    targetFilter = target,
+    r3Validated = null,
+    r3Originals = null
+  ) {
     const graph = await store.objects(),
       values = [...graph.values()].map((item) => item.value);
     const sessions = values.filter(
@@ -1027,7 +1089,9 @@ export async function openManualSession({
     await store.checkedPath(dir);
     const consumptions = new Map(
       values
-        .filter((value) => value.kind === "consumption")
+        .filter(
+          (value) => value.kind === "consumption" && !r3Validated?.has(sha256Canonical(value))
+        )
         .map((value) => [sha256Canonical(value), value])
     );
     const slotDigests = new Set();
@@ -1038,7 +1102,10 @@ export async function openManualSession({
         consumed = JSON.parse(await store.read(path.join(dir, name)));
         requireThat(
           typeof consumed?.schemaVersion === "string" &&
-            manualRecordSchemas.has(consumed.schemaVersion),
+            (manualRecordSchemas.has(consumed.schemaVersion) ||
+              (r3 &&
+                consumed.schemaVersion === "manual-operation-record.v3" &&
+                r3Validated?.has(sha256Canonical(consumed)))),
           SESSION
         );
         validateContract(
@@ -1053,6 +1120,7 @@ export async function openManualSession({
         fail(SESSION);
       }
       requireThat(consumed.kind === "consumption", SESSION);
+      if (r3Validated?.has(sha256Canonical(consumed))) continue;
       const auth = graph.get(consumed.authorizationDigest)?.value;
       requireThat(
         auth?.payload &&
@@ -1119,7 +1187,7 @@ export async function openManualSession({
           SESSION
         );
         const assessment = assessManualRunnerEvidence(
-          await archiveInput(recoveryRequest, graph, recoveryConsumption)
+          await archiveInput(recoveryRequest, graph, recoveryConsumption, r3Validated, r3Originals)
         );
         if (
           assessment.executionStatus === "SUCCEEDED" &&
@@ -1161,7 +1229,7 @@ export async function openManualSession({
     if (["dry-run", "apply"].includes(request.phase)) {
       for (const prior of completedApplies) {
         const assessment = assessManualRunnerEvidence(
-          await archiveInput(prior.original, graph, prior.consumed)
+          await archiveInput(prior.original, graph, prior.consumed, r3Validated, r3Originals)
         );
         const state = reducedExecution(prior.execution, graph, assessment);
         requireThat(state?.status === "DRY_RUN_SUCCEEDED", SESSION);
@@ -1662,9 +1730,100 @@ export async function openManualSession({
     requireThat(allocation.buildProofDigest === request.candidate.buildProofDigest, BINDING);
     return { request, binding, canonicalBytes };
   }
-  async function r3History(request) {
+  async function r3StoredDestination(graph, destinationDigest, initialExecution) {
+    requireThat(r3Context.destinationInputs, SESSION);
+    const destinationBytes = await store.read(
+      objectPath(profile.storage.archiveRoot, destinationDigest)
+    );
+    const destination = JSON.parse(destinationBytes);
+    requireThat(sha256Bytes(destinationBytes) === destinationDigest, EVIDENCE);
+    const observationDigest = destination.observationEvidenceDigest;
+    requireThat(/^sha256:[0-9a-f]{64}$/u.test(observationDigest), EVIDENCE);
+    const observationBytes = await store.read(
+      objectPath(profile.storage.archiveRoot, observationDigest)
+    );
+    const observations = JSON.parse(observationBytes);
+    requireThat(sha256Bytes(observationBytes) === observationDigest, EVIDENCE);
+    for (const [digest, bytes] of [
+      [destinationDigest, destinationBytes],
+      [observationDigest, observationBytes]
+    ]) {
+      requireThat(graph.get(digest)?.bytes.equals(bytes), EVIDENCE);
+      requireThat(
+        (await store.read(objectPath(profile.storage.backupRoot, digest))).equals(bytes),
+        STORAGE
+      );
+    }
+    const operationRef = r3Context.creationSpec.operationRef;
+    const bundlePath = (role) =>
+      path.join(
+        profile.storage[`${role}Root`],
+        "inputs",
+        "r3",
+        operationRef,
+        "observations",
+        "active",
+        "hosted-evidence.json"
+      );
+    const bundleBytes = await store.read(bundlePath("archive"));
+    requireThat((await store.read(bundlePath("backup"))).equals(bundleBytes), STORAGE);
+    const policyBytes = Buffer.from(r3Context.destinationInputs.policyBytesBase64, "base64");
+    requireThat(sha256Bytes(policyBytes) === identity.scope.targetPolicyDigest, EVIDENCE);
+    const verified = verifyR3HostedEvidence({
+      bundleBytes,
+      jobAdmissionBytes: encodeManualJson(r3Context.jobAdmission),
+      spec: r3Context.creationSpec,
+      policyBytes,
+      now: stamp()
+    });
+    const { buildR3Destination } = await import("../../../scripts/release/r3-destination.mjs");
+    const rebuilt = await buildR3Destination({
+      spec: r3Context.creationSpec,
+      jobAdmissionDigest: identity.scope.jobAdmissionDigest,
+      hostedEvidence: {
+        bundleDigest: verified.bundleDigest,
+        engine: verified.engine,
+        workspaceObservation: JSON.parse(verified.workspace.observationBytes),
+        jobAdmissionDigest: identity.scope.jobAdmissionDigest,
+        spec: r3Context.creationSpec
+      },
+      session: { profileDigest, sessionId, sessionNonce, scope: identity.scope },
+      initialExecution,
+      manifest: r3Context.destinationInputs.manifest,
+      manifestRawDigest: r3Context.destinationInputs.manifestRawDigest,
+      policy: r3Context.destinationInputs.policy,
+      postgresReadback: observations.postgres,
+      databaseTargetSet: destination.databaseTargetSet,
+      databaseReadback: observations.databases,
+      observedAt: destination.observedAt
+    });
+    requireThat(
+      encodeManualJson(rebuilt.destination).equals(destinationBytes) &&
+        encodeManualJson(rebuilt.observations).equals(observationBytes) &&
+        destination.initialExecutionRecordDigest === sha256Canonical(initialExecution),
+      EVIDENCE
+    );
+    const expectedLocks = rebuilt.destination.databaseTargetSet.targetLocks;
+    requireThat(
+      expectedLocks.length === targetLocks.size &&
+        expectedLocks.every((entry) => targetLocks.has(entry.lockDigest)),
+      SESSION
+    );
+    await active();
+    return {
+      destination,
+      destinationDigest,
+      observationDigest,
+      streamDigest: sha256Bytes(Buffer.from(observations.postgres.streamBase64, "base64"))
+    };
+  }
+  async function r3History(request, pendingDigest = null, pendingDestination = null) {
+    const r3Originals = { artifacts: new Set(), raws: new Set() };
     const graph = await store.objects();
     const values = [...graph.values()].map((entry) => entry.value);
+    const r3Validated = new Set();
+    const legacy = [];
+    let r3Count = 0;
     for (const value of values.filter(
       (entry) => entry.schemaVersion === "manual-operation-record.v3"
     ))
@@ -1747,8 +1906,11 @@ export async function openManualSession({
       const linked = values.filter(
         (value) => value.kind === "execution" && value.requestDigest === consumed.requestDigest
       );
-      requireThat(linked.length === 1, SESSION);
-      const execution = linked[0];
+      requireThat(linked.length >= 1 && linked.length <= (r3Request ? 2 : 1), SESSION);
+      const execution = r3Request
+        ? linked.find((value) => value.status === "INTERRUPTED_UNKNOWN")
+        : linked[0];
+      requireThat(execution, SESSION);
       validateContract(consumed.schemaVersion, execution);
       requireThat(
         execution.consumptionRecordDigest === digest &&
@@ -1760,7 +1922,150 @@ export async function openManualSession({
           execution.attemptId === request.attemptId,
         SESSION
       );
-      if (r3Request) fail(SESSION); // No R3 creation can yet claim a completed result.
+      if (r3Request) {
+        r3Count++;
+        const authorization = graph.get(consumed.authorizationDigest)?.value;
+        const liveRevocations = await revocations();
+        requireThat(
+          liveRevocations[consumed.revocationSequence] &&
+            sha256Canonical(liveRevocations[consumed.revocationSequence]) ===
+              consumed.revocationRecordDigest &&
+            !liveRevocations.some(
+              (record) =>
+                record.action === "REVOKE_PROFILE" ||
+                (record.action === "REVOKE_AUTHORIZATION" &&
+                  record.authorizationId === authorization.payload.authorizationId)
+            ),
+          REVOCATION
+        );
+        requireThat(
+          consumed.schemaVersion === "manual-operation-record.v3" &&
+            consumed.sessionId === sessionId &&
+            consumed.sessionNonce === sessionNonce &&
+            consumed.profileDigest === profileDigest &&
+            consumed.stage === "target-create" &&
+            consumed.operationId === r3Context.creationSpec.operationRef &&
+            consumed.sessionRecordDigest === sha256Canonical(current) &&
+            equal(session.scope, identity.scope) &&
+            request.sessionId === sessionId &&
+            request.sessionNonce === sessionNonce &&
+            request.operationId === consumed.operationId &&
+            request.stage === "target-create" &&
+            request.attemptAllocationDigest === sha256Canonical(allocation) &&
+            allocation.sessionRecordDigest === consumed.sessionRecordDigest &&
+            execution.status === "INTERRUPTED_UNKNOWN" &&
+            execution.predecessorExecutionRecordDigest === null &&
+            execution.startedAt === null &&
+            execution.finishedAt === null &&
+            execution.resultDigest === null &&
+            execution.processEvidenceDigest === null,
+          SESSION
+        );
+        requireThat(
+          authorization?.payload?.schemaVersion === "manual-launch-authorization.v4" &&
+            authorization.payload.authorizationId &&
+            authorization.payload.requestDigest === consumed.requestDigest &&
+            authorization.payload.sessionId === sessionId &&
+            authorization.payload.sessionNonce === sessionNonce &&
+            authorization.payload.operationId === request.operationId &&
+            authorization.payload.idempotencyKey === request.idempotencyKey &&
+            authorization.payload.profileDigest === profileDigest &&
+            authorization.payload.ownerId === profile.ownerId &&
+            authorization.payload.stage === "target-create" &&
+            authorization.payload.creationSpecDigest === identity.scope.creationSpecDigest &&
+            authorization.payload.jobAdmissionDigest === identity.scope.jobAdmissionDigest &&
+            authorization.payload.targetPolicyDigest === identity.scope.targetPolicyDigest &&
+            cryptoVerify(
+              null,
+              Buffer.concat([
+                Buffer.from("subscription-saas/manual-launch/v1\n"),
+                encodeManualJson(authorization.payload)
+              ]),
+              createPublicKey(profile.publicKeyPem),
+              Buffer.from(authorization.signature, "base64")
+            ),
+          SESSION
+        );
+        const linkedDigest = sha256Canonical(execution);
+        let original;
+        if (linked.length === 2) {
+          const completed = linked.find((value) => value !== execution);
+          requireThat(
+            completed?.status === "SUCCEEDED" &&
+              completed.stage === "target-create" &&
+              completed.predecessorExecutionRecordDigest === linkedDigest &&
+              completed.consumptionRecordDigest === digest &&
+              completed.authorizationDigest === consumed.authorizationDigest &&
+              completed.profileDigest === profileDigest &&
+              completed.sessionId === sessionId &&
+              completed.sessionNonce === sessionNonce &&
+              completed.operationId === request.operationId &&
+              completed.idempotencyKey === request.idempotencyKey &&
+              completed.attemptId === request.attemptId &&
+              completed.startedAt === execution.recordedAt,
+            SESSION
+          );
+          original = await r3StoredDestination(graph, completed.resultDigest, execution);
+          requireThat(
+            completed.processEvidenceDigest === original.observationDigest &&
+              instant(completed.finishedAt) >= instant(original.destination.observedAt) &&
+              instant(completed.recordedAt) >= instant(completed.finishedAt),
+            SESSION
+          );
+          const completedBytes = encodeManualJson(completed);
+          for (const role of ["journal", "archive", "backup"])
+            requireThat(
+              (
+                await store.read(
+                  objectPath(profile.storage[`${role}Root`], sha256Canonical(completed))
+                )
+              ).equals(completedBytes),
+              STORAGE
+            );
+          const expected = new Set(
+            [completed.resultDigest, completed.processEvidenceDigest].flatMap((subject) =>
+              ["archive", "backup"].map((role) => `${subject}:${role}`)
+            )
+          );
+          const custody = values.filter(
+            (value) =>
+              value.kind === "custody" &&
+              value.schemaVersion === "manual-operation-record.v3" &&
+              [completed.resultDigest, completed.processEvidenceDigest].includes(
+                value.subjectDigest
+              )
+          );
+          requireThat(custody.length === 4, SESSION);
+          for (const value of custody) {
+            const pair = `${value.subjectDigest}:${value.storageRole}`;
+            requireThat(
+              expected.delete(pair) &&
+                value.profileDigest === profileDigest &&
+                value.ownerId === profile.ownerId &&
+                value.subjectType === "record" &&
+                value.purpose === `${value.storageRole}-readback` &&
+                value.outcome === "MATCH" &&
+                value.observedDigest === value.subjectDigest &&
+                value.retentionDays === 90 &&
+                instant(value.observedAt) <= instant(completed.recordedAt),
+              SESSION
+            );
+          }
+          requireThat(expected.size === 0, SESSION);
+        } else {
+          requireThat(
+            pendingDigest === linkedDigest &&
+              pendingDestination?.destination.initialExecutionRecordDigest === linkedDigest,
+            SESSION
+          );
+          original = pendingDestination;
+        }
+        r3Originals.artifacts.add(original.destinationDigest);
+        r3Originals.artifacts.add(original.observationDigest);
+        r3Originals.raws.add(original.streamDigest);
+        r3Validated.add(digest);
+        continue;
+      }
       requireThat(
         profile.allowedTargets.some(
           (target) =>
@@ -1769,8 +2074,13 @@ export async function openManualSession({
         ),
         SESSION
       );
+      legacy.push({ request, consumed, execution });
+    }
+    for (const { request: oldRequest, consumed, execution } of legacy) {
       if (execution.status === "INTERRUPTED_UNKNOWN") continue;
-      const assessment = assessManualRunnerEvidence(await archiveInput(request, graph, consumed));
+      const assessment = assessManualRunnerEvidence(
+        await archiveInput(oldRequest, graph, consumed, r3Validated, r3Originals)
+      );
       requireThat(assessment.executionStatus === execution.status, SESSION);
       if (execution.status === "SUCCEEDED")
         requireThat(assessment.proofDigest === execution.resultDigest, SESSION);
@@ -1779,10 +2089,21 @@ export async function openManualSession({
       (value) => value.kind === "execution" && value.profileDigest === profileDigest
     ))
       requireThat(slots.has(execution.consumptionRecordDigest), SESSION);
+    for (const execution of values.filter(
+      (value) => value.kind === "execution" && value.schemaVersion === "manual-operation-record.v3"
+    ))
+      requireThat(
+        r3Validated.has(execution.consumptionRecordDigest) &&
+          execution.requestDigest === slots.get(execution.consumptionRecordDigest)?.requestDigest,
+        SESSION
+      );
+    requireThat(r3Count <= 1, SESSION);
     // Reuse the existing R2 reducer, including its independent reconcile
     // readback. An original apply UNKNOWN stays in the graph after resolution.
     for (const historicalTarget of profile.allowedTargets)
-      await history(request, null, historicalTarget);
+      await history(request, null, historicalTarget, r3Validated, r3Originals);
+    // A consumed target-create slot is never authorization to sign another one.
+    requireThat(r3Count === 0 || pendingDigest !== null, SESSION);
     return graph;
   }
   try {
@@ -1824,6 +2145,7 @@ export async function openManualSession({
     let consumedOrUncertain = false,
       creationReceipt = null,
       targetLocksAttempted = false,
+      completionAttempted = false,
       closeRef = null;
     return freeze({
       ...identity,
@@ -2004,6 +2326,138 @@ export async function openManualSession({
                 r3Live();
               })
           });
+        });
+      },
+      completeCreation(input) {
+        return serial(async () => {
+          await active();
+          r3Live();
+          exact(input, ["destinationDigest"], SESSION);
+          requireThat(
+            /^sha256:[0-9a-f]{64}$/u.test(input.destinationDigest) &&
+              r3Context.destinationInputs &&
+              creationReceipt &&
+              targetLocksAttempted &&
+              !completionAttempted,
+            SESSION
+          );
+          completionAttempted = true;
+          const graph = await store.objects();
+          const initial = graph.get(creationReceipt.executionRecordDigest)?.value;
+          requireThat(initial?.kind === "execution", SESSION);
+          const request = graph.get(initial.requestDigest)?.value;
+          requireThat(request?.schemaVersion === "manual-runner-request.v4", SESSION);
+          const original = await r3StoredDestination(graph, input.destinationDigest, initial);
+          await r3History(request, creationReceipt.executionRecordDigest, original);
+          const consumed = graph.get(initial.consumptionRecordDigest)?.value;
+          requireThat(
+            consumed?.kind === "consumption" &&
+              consumed.requestDigest === sha256Canonical(request) &&
+              consumed.authorizationDigest === initial.authorizationDigest &&
+              consumed.sessionId === sessionId &&
+              consumed.sessionNonce === sessionNonce,
+            SESSION
+          );
+          const authorization = graph.get(consumed.authorizationDigest)?.value;
+          requireThat(
+            (await store.read(consumptionSlot(authorization.payload.authorizationId))).equals(
+              encodeManualJson(consumed)
+            ),
+            STORAGE
+          );
+          const records = await revocations();
+          requireThat(
+            records[consumed.revocationSequence] &&
+              sha256Canonical(records[consumed.revocationSequence]) ===
+                consumed.revocationRecordDigest &&
+              !records.some(
+                (record) =>
+                  record.action === "REVOKE_PROFILE" ||
+                  (record.action === "REVOKE_AUTHORIZATION" &&
+                    record.authorizationId === authorization.payload.authorizationId)
+              ),
+            REVOCATION
+          );
+          const custodyRecordDigests = [];
+          for (const subjectDigest of [original.observationDigest, original.destinationDigest]) {
+            const subject = graph.get(subjectDigest)?.value;
+            requireThat(subject && !subject.kind && !subject.payload, EVIDENCE);
+            for (const role of ["archive", "backup"]) {
+              const bytes = await store.read(
+                objectPath(profile.storage[`${role}Root`], subjectDigest)
+              );
+              requireThat(
+                sha256Bytes(bytes) === subjectDigest && bytes.equals(encodeManualJson(subject)),
+                STORAGE
+              );
+              const readAt = stamp();
+              const custody = {
+                ...common("custody", readAt),
+                ownerId: profile.ownerId,
+                subjectDigest,
+                subjectType: "record",
+                purpose: `${role}-readback`,
+                outcome: "MATCH",
+                observedDigest: subjectDigest,
+                observedAt: readAt,
+                storageRole: role,
+                retentionDays,
+                reasonCode: null
+              };
+              validateContract(recordSchema, custody);
+              custodyRecordDigests.push((await store.put(custody)).recordDigest);
+            }
+          }
+          await active();
+          r3Live();
+          const finalRevocations = await revocations();
+          requireThat(
+            !finalRevocations.some(
+              (record) =>
+                record.action === "REVOKE_PROFILE" ||
+                (record.action === "REVOKE_AUTHORIZATION" &&
+                  record.authorizationId === authorization.payload.authorizationId)
+            ),
+            REVOCATION
+          );
+          const finishedAt = stamp();
+          requireThat(instant(finishedAt) >= instant(original.destination.observedAt), SESSION);
+          const execution = {
+            ...common("execution", finishedAt),
+            stage: "target-create",
+            sessionId,
+            sessionNonce,
+            operationId: initial.operationId,
+            idempotencyKey: initial.idempotencyKey,
+            attemptId: initial.attemptId,
+            requestDigest: initial.requestDigest,
+            authorizationDigest: initial.authorizationDigest,
+            consumptionRecordDigest: initial.consumptionRecordDigest,
+            predecessorExecutionRecordDigest: creationReceipt.executionRecordDigest,
+            startedAt: initial.recordedAt,
+            finishedAt,
+            status: "SUCCEEDED",
+            reasonCode: null,
+            resultDigest: original.destinationDigest,
+            processEvidenceDigest: original.observationDigest
+          };
+          validateContract(recordSchema, execution);
+          const executionDigest = sha256Canonical(execution);
+          await store.put(execution, "journal");
+          await store.put(execution);
+          await store.create(
+            objectPath(profile.storage.backupRoot, executionDigest),
+            encodeManualJson(execution)
+          );
+          for (const role of ["journal", "archive", "backup"])
+            requireThat(
+              (
+                await store.read(objectPath(profile.storage[`${role}Root`], executionDigest))
+              ).equals(encodeManualJson(execution)),
+              STORAGE
+            );
+          await r3History(request, creationReceipt.executionRecordDigest);
+          return freeze({ executionRecordDigest: executionDigest, custodyRecordDigests });
         });
       },
       record(kind, input) {

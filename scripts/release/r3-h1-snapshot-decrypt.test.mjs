@@ -372,6 +372,53 @@ test("unsafe live swap refuses before opening the RSA key", async (t) => {
   assert.deepEqual(await fs.readdir(f.plaintext), []);
 });
 
+test("plaintext replay uses verified bytes and closes every owned reader", async (t) => {
+  const f = await fixture(t);
+  await installLiveGuard(t, f);
+  const held = await decryptR3SnapshotCiphertext(input(f));
+  t.after(() => held.close());
+  const chunks = [];
+  for await (const chunk of await held.source.open()) chunks.push(chunk);
+  assert.deepEqual(Buffer.concat(chunks), f.bytes);
+  await held.recheck();
+  const outstanding = await held.source.open();
+  await held.close();
+  assert.equal(outstanding.closed, true);
+  assert.equal(outstanding.destroyed, true);
+  await assert.rejects(held.source.open(), { code: "R3_H1_SNAPSHOT_DECRYPT_UNAVAILABLE" });
+});
+
+test("plaintext close waits for a pending file open and closes its descriptor", async (t) => {
+  const f = await fixture(t);
+  await installLiveGuard(t, f);
+  const held = await decryptR3SnapshotCiphertext(input(f));
+  t.after(() => held.close());
+  const originalOpen = fs.open.bind(fs);
+  let release, entered, opened;
+  const blocked = new Promise((resolve) => {
+    release = resolve;
+  });
+  const openingFile = new Promise((resolve) => {
+    entered = resolve;
+  });
+  t.mock.method(fs, "open", async (file, ...args) => {
+    const handle = await originalOpen(file, ...args);
+    if (file === held.facts.path) {
+      opened = handle;
+      entered();
+      await blocked;
+    }
+    return handle;
+  });
+  const pending = held.source.open();
+  const refused = assert.rejects(pending, { code: "R3_H1_SNAPSHOT_DECRYPT_UNAVAILABLE" });
+  await openingFile;
+  const closing = held.close();
+  release();
+  await Promise.all([refused, closing]);
+  assert.equal(opened.fd, -1);
+});
+
 test("a later spaced coredump size overrides an earlier zero before key open", async (t) => {
   const f = await fixture(t);
   const guard = await installLiveGuard(t, f, {

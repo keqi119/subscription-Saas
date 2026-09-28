@@ -237,3 +237,11 @@ R2 历史继续使用原校验器。仅在独立重放 R3 目的地之后，才�
 既有两遍摘要/GCM 解密器在 `consumer/plaintext/snapshot.dump` 排他发布完成认证的文件。随后从实际保留的 descriptor 重新计算明文长度和摘要，并核对前后文件及父目录身份，防止在异步检查间替换输出。原生入口将读回写入预先创建的 `consumer/observations/decryption/readback.json`，保留文件和原件句柄；关闭会中止并等待解密，再关闭自有资源，不删除证据或释放已消费锁。
 
 返回 `PLAINTEXT_AUTHENTICATED`、`executionStatus:INTERRUPTED_UNKNOWN` 和 `promotionEligible:false`。这一结果不等于实际远端复制、`pg_restore`、所有权归一、凭据撤销或成功 consumer 执行；这些接线和真实验收仍未完成。
+
+## 认证明文的远端复制
+
+`copySnapshot()` 无参数、仅一次，要求同 source/snapshot 会话已完成消费、下载和认证解密。明文提供受持有句柄约束的读取流，关闭会等待正在打开的文件并关闭所有流。原生固定 55440 Engine 通道新增有确切长度上限的流式请求，保留响应上限、当前身份检查和无重试；响应与上传均完整结束才允许返回，提前响应、截断或超长均拒绝。
+
+复制器在已核实容器的加密 overlay2 内排他创建 `/tmp/stage1-r3-<operationRef去横线>`，通过同一 Engine executor 发送唯一的 root/0600 ustar 成员 `snapshot.dump`。随后以同一 executor 执行固定 `stat`/`sha256sum`，核对 root/0700 父目录及文件类型、权限、长度、硬链接数、设备/inode/时间和实际摘要；所有 exec 均核对实际 container ID、Running=false、ExitCode=0 及无 stderr。调用方不能传目标或源路径。
+
+读回绑定 Engine、CID、operation、session、input、既有消费和解密读回摘要，写入预先保留的 `consumer/observations/copy/readback.json`。`recheckResources` 持续核对远端副本，`check` 持有本地读回，避免回调递归。返回 `PLAINTEXT_COPIED` 与原 UNKNOWN/nonpromotable 状态，不声明数据库恢复成功。普通关闭中止并等待复制，保留远端暂存和原锁；明确的恢复、角色撤销、所有权和清理证明仍待接通。

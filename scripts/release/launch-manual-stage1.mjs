@@ -40,6 +40,8 @@ import { assessR3PostgresReadback, buildR3Destination } from "./r3-destination.m
 import { readR3SnapshotInput } from "./r3-snapshot-input-admission.mjs";
 import { fetchR3SnapshotCiphertext } from "./r3-snapshot-payload.mjs";
 import { decryptR3SnapshotCiphertext } from "./r3-h1-snapshot-decrypt.mjs";
+import { exchangeR3Engine } from "./r3-engine-exchange.mjs";
+import { copyR3SnapshotToPostgres } from "./r3-remote-snapshot-copy.mjs";
 import {
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
@@ -1047,6 +1049,11 @@ export async function launchR3TargetCreate(input) {
     decryptPending,
     snapshotPlaintext,
     decryptionReadback,
+    copyAttempted = false,
+    copyReady = false,
+    copyPending,
+    snapshotCopy,
+    copyReadback,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1065,6 +1072,7 @@ export async function launchR3TargetCreate(input) {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
       const errors = [];
+      await copyPending?.catch(() => {});
       await decryptPending?.catch(() => {});
       await fetchPending?.catch(() => {});
       await consumerPending?.catch(() => {});
@@ -1090,6 +1098,8 @@ export async function launchR3TargetCreate(input) {
         }
       }
       for (const handle of [
+        copyReadback,
+        snapshotCopy,
         decryptionReadback,
         snapshotPlaintext,
         snapshotReadback,
@@ -1125,6 +1135,7 @@ export async function launchR3TargetCreate(input) {
     await snapshotReadback?.recheck();
     await snapshotPlaintext?.recheck();
     await decryptionReadback?.recheck();
+    await copyReadback?.recheck();
     if (consumerRecord)
       for (const { digest, bytes, role } of consumerRecord)
         if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
@@ -1144,61 +1155,9 @@ export async function launchR3TargetCreate(input) {
   };
   const pause = () => new Promise((resolve) => setTimeout(resolve, 500));
   const exchange = (method, pathname, body = null, connected = null, options = {}) =>
-    new Promise((resolve, reject) => {
-      const agent = new http.Agent({ keepAlive: false });
-      if (connected) agent.createConnection = () => connected;
-      let settled = false;
-      const finish = (error, result) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        agent.destroy();
-        if (error) reject(error);
-        else resolve(result);
-      };
-      const request = http.request(
-        {
-          hostname: "127.0.0.1",
-          port: 55440,
-          method,
-          path: pathname,
-          agent,
-          headers: {
-            Connection: "close",
-            ...(body
-              ? {
-                  "Content-Type": options.contentType ?? "application/json",
-                  "Content-Length": String(body.length)
-                }
-              : {})
-          }
-        },
-        (response) => {
-          let bytes = 0;
-          const chunks = [];
-          response.on("data", (chunk) => {
-            bytes += chunk.length;
-            if (bytes > 1048576) request.destroy(Object.assign(new Error(code), { code }));
-            else chunks.push(chunk);
-          });
-          response.once("error", (error) => finish(error));
-          response.once("end", () => {
-            const bodyBytes = Buffer.concat(chunks);
-            if (!response.complete) return finish(Object.assign(new Error(code), { code }));
-            finish(null, {
-              status: response.statusCode,
-              headers: response.rawHeaders,
-              body: bodyBytes
-            });
-          });
-        }
-      );
-      const timer = setTimeout(
-        () => request.destroy(Object.assign(new Error(code), { code })),
-        options.timeout ?? 5000
-      );
-      request.once("error", (error) => finish(error));
-      request.end(body);
+    exchangeR3Engine(method, pathname, body, connected, {
+      ...options,
+      signal: fetchAbort.signal
     });
   const saveExchange = async (name, response) => {
     diagnostics.push({
@@ -1442,6 +1401,7 @@ export async function launchR3TargetCreate(input) {
     for (const name of ["ciphertext", "plaintext", "observations"])
       await fs.mkdir(path.join(consumerDirectory, name), { mode: 0o700 });
     await fs.mkdir(path.join(consumerDirectory, "observations", "decryption"), { mode: 0o700 });
+    await fs.mkdir(path.join(consumerDirectory, "observations", "copy"), { mode: 0o700 });
     const secretPath = path.join(directory, "postgres-password");
     const secretBytes = Buffer.from(randomBytes(32).toString("hex"));
     const secretFile = await fs.open(secretPath, "wx", 0o600);
@@ -1921,6 +1881,7 @@ export async function launchR3TargetCreate(input) {
           executeAdmin
         })
       );
+    await snapshotCopy?.recheck();
     await check();
   };
   const completeCreation = async () => {
@@ -2251,6 +2212,77 @@ export async function launchR3TargetCreate(input) {
       promotionEligible: false
     });
   };
+  const copySnapshot = async () => {
+    snapshotCopy = await copyR3SnapshotToPostgres({
+      operationRef: fixed.spec.operationRef,
+      containerId: postgresTarget.containerId,
+      plaintext: snapshotPlaintext,
+      engineCall,
+      recheck: recheckResources,
+      signal: fetchAbort.signal
+    });
+    const facts = snapshotCopy.facts;
+    const targetDirectory = `/tmp/stage1-r3-${fixed.spec.operationRef.replaceAll("-", "")}`;
+    if (
+      facts.containerId !== postgresTarget.containerId ||
+      facts.directory !== targetDirectory ||
+      facts.path !== `${targetDirectory}/snapshot.dump` ||
+      facts.snapshotDigest !== snapshotPlaintext.facts.snapshotDigest ||
+      facts.plaintextSizeBytes !== snapshotPlaintext.facts.plaintextSizeBytes
+    )
+      fail(code);
+    const privateRoot = lease.profile.storage.credentialRoot;
+    const principal = { platform: "posix", uid: process.getuid() };
+    const directory = path.join(
+      privateRoot,
+      "r3",
+      fixed.spec.operationRef,
+      "consumer",
+      "observations",
+      "copy"
+    );
+    await checkedPrivatePath(directory, { principal, privateRoot, directory: true });
+    const bytes = encodeManualJson({
+      status: "PLAINTEXT_COPIED",
+      operationRef: fixed.spec.operationRef,
+      sessionId: session.sessionId,
+      inputIndexDigest: consumerInput.inputIndexDigest,
+      consumerExecutionRecordDigest: consumerExecutionDigest,
+      decryptionReadbackDigest: sha256Bytes(decryptionReadback.bytes),
+      engineId: boundEngineId,
+      facts,
+      observations: snapshotCopy.observations
+    });
+    if (bytes.length > 1048576) fail(code);
+    const filename = path.join(directory, "readback.json");
+    const file = await fs.open(filename, "wx", 0o600);
+    try {
+      await file.writeFile(bytes);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    const parent = await fs.open(directory, "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+    copyReadback = await pinPrivateInput(filename, { principal, privateRoot });
+    if (!copyReadback.bytes.equals(bytes)) fail(code);
+    await recheckResources();
+    copyReady = true;
+    return Object.freeze({
+      status: "PLAINTEXT_COPIED",
+      executionStatus: "INTERRUPTED_UNKNOWN",
+      executionRecordDigest: consumerExecutionDigest,
+      inputIndexDigest: consumerInput.inputIndexDigest,
+      snapshotDigest: facts.snapshotDigest,
+      plaintextSizeBytes: facts.plaintextSizeBytes,
+      readbackDigest: sha256Bytes(bytes),
+      promotionEligible: false
+    });
+  };
   try {
     if (
       !exact(input, ["repoRoot", "operationRef"]) ||
@@ -2540,7 +2572,32 @@ export async function launchR3TargetCreate(input) {
         if (consumerAttempted && !consumerReady) fail(code);
         if (fetchAttempted && !fetchReady) fail(code);
         if (decryptAttempted && !decryptReady) fail(code);
+        if (copyAttempted && !copyReady) fail(code);
         await recheckResources();
+      },
+      async copySnapshot(...args) {
+        if (
+          args.length !== 0 ||
+          closed ||
+          copyAttempted ||
+          !decryptReady ||
+          !fetchReady ||
+          !consumerReady ||
+          session.scope.phase !== "source" ||
+          session.scope.chain !== "snapshot"
+        )
+          fail(code);
+        copyAttempted = true;
+        copyPending = copySnapshot();
+        try {
+          return await copyPending;
+        } catch (cause) {
+          throw Object.assign(new Error(code), {
+            code,
+            consumption,
+            failureCode: /^[A-Z0-9_]{1,64}$/u.test(cause?.code ?? "") ? cause.code : code
+          });
+        }
       },
       async decryptSnapshot(...args) {
         if (

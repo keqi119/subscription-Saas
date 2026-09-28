@@ -527,6 +527,8 @@ export async function decryptR3SnapshotCiphertext(input) {
     });
     let closed = false,
       closing;
+    const openingReplays = new Set();
+    const replayStreams = new Set();
     const ownRecheck = async () => {
       try {
         requireThat(!closed && !signal.aborted);
@@ -546,14 +548,57 @@ export async function decryptR3SnapshotCiphertext(input) {
         fail();
       }
     };
+    const openReplay = () => {
+      const opening = (async () => {
+        try {
+          await ownRecheck();
+          const handle = await fs.open(
+            output,
+            fsNative.constants.O_RDONLY | fsNative.constants.O_NOFOLLOW
+          );
+          try {
+            requireThat(sameIdentity(await handle.stat({ bigint: true }), outputStat));
+            await ownRecheck();
+            requireThat(!closed && !signal.aborted);
+            const replay = handle.createReadStream({ autoClose: true });
+            replayStreams.add(replay);
+            replay.once("close", () => replayStreams.delete(replay));
+            return replay;
+          } catch {
+            await handle.close();
+            fail();
+          }
+        } catch {
+          fail();
+        }
+      })();
+      openingReplays.add(opening);
+      opening.then(
+        () => openingReplays.delete(opening),
+        () => openingReplays.delete(opening)
+      );
+      return opening;
+    };
     return Object.freeze({
       facts,
       observations,
+      source: Object.freeze({ open: openReplay }),
       recheck: ownRecheck,
       close() {
         if (closing) return closing;
         closed = true;
-        closing = closeOwned();
+        closing = (async () => {
+          await Promise.allSettled([...openingReplays]);
+          await Promise.allSettled(
+            [...replayStreams].map(async (stream) => {
+              if (stream.closed) return;
+              const done = new Promise((resolve) => stream.once("close", resolve));
+              stream.destroy();
+              await done;
+            })
+          );
+          await closeOwned();
+        })();
         return closing;
       }
     });

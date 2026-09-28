@@ -211,3 +211,9 @@ R2 历史继续使用原校验器。仅在独立重放 R3 目的地之后，才�
 准备阶段先保留 `inputs/snapshots` 父目录，允许目的地生成后再导入准确 permission。输入 pin 建立后，目标重查继续执行固定 Engine/PG/数据库查询，但不再向其共享 raw 目录追加重复诊断；既有创建观察原件保留。目录身份与文件字节检查没有放宽。
 
 本切片限定 source。final 必须先接入同候选、同输入且实际通过的 source 执行证明读取器；当前入口继续拒绝 final，不能用 schema 有效的摘要或调用方成功声明替代。认证解密恢复、生命周期实际执行与清理、真实 hosted workflow 和 Stage 1 验收仍未完成。
+
+## 生产者加密原件读取
+
+固定输入读取器现在按 envelope v2 的 `authorizationDigest`，从既有 `archiveRoot/raw/<digest>.bin` 读取 canonical 生产者授权原件，继续使用 1 MiB、128 引用上限和严格私有文件 pin。只接受本地 RSA 方案的 v2 授权/envelope，并验证摘要、snapshot/source/context、密钥指纹和两份 key readback 引用的一致性；缺失、超限或错配拒绝。
+
+返回新增冻结的 `cryptoInputs: {authorization,envelope,aad}`，AAD 由已校验的原件派生，供既有解密器消费。短期生产者执行窗允许作为历史原件存在，不扩大当前 input/permission/profile 的有效窗。这些参数不代表当前消费许可、实际 OSS 身份或私钥持有，也没有新增私钥释放入口。真实 RSA/AES-GCM 合成字节回归通过；线上合法快照、独立读取身份、同会话下载/解密/数据库 restore 仍待接通。

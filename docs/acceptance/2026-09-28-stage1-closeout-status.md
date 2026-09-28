@@ -4,6 +4,10 @@
 
 ## 当前接续状态
 
+R3 输入读取器已补齐历史生产者加密原件的固定读取：envelope 引用的授权文件必须存在、符合本地密钥 v2 合同，并与 envelope/context/key fingerprint 对应；持有期间继续核对文件身份和字节。返回冻结的解密参数，沿用既有 RSA/AES-GCM 实现，不增加授权服务或 schema。6/6 定向用例通过，包含真实加密/认证解密合成字节；合同与登记校验通过。当前尚无同会话私钥释放、实际 OSS 下载或数据库恢复成绩。详细失败与最终验证见 [本轮计划](../superpowers/plans/2026-09-28-stage1-r3-payload-originals.md)。
+
+本轮盘点也确认，此前 1 GiB OSS 下载校验对象为 RSA 密钥恢复 LUKS 卷，不是合法数据库快照；独立 snapshot reader 身份及实际合法输入仍未建立。既有来源性质问题继续待答，不重复申请已批准的 Docker、迁移或非商用方案。接下来补实际读取身份和同会话认证恢复，最终仍需同候选双链与 R4 真实验收。
+
 R3 source 快照消费接线已实现，最终定向整合复验通过。`consumeSnapshot({inputReference})` 从同一创建会话派生精确目的地、候选和前序，通过固定输入读取器核对 permission 原件及主体，再沿用永久一次性槽、读回和 UNKNOWN 执行记录。创建最初 UNKNOWN、SUCCEEDED、保管原件和全部锁均保留。
 
 本步没有读取密文、释放解密私钥或执行 restore；final 消费在匹配 source 执行证明读取器补齐前继续拒绝。后续是实际认证恢复、lifecycle 执行和清理、hosted 接线及真实验收。当前无需再次批准 Docker、迁移或非商用方案。

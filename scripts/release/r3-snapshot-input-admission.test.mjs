@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs/promises";
-import { readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createReadStream, readFileSync } from "node:fs";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import {
   sha256Canonical
 } from "../../packages/release-foundation/src/index.mjs";
 import { publishR3SnapshotFixture } from "../../packages/release-foundation/test/r3-snapshot-input-fixture.mjs";
+import { decryptSnapshotStream } from "../../packages/release-foundation/src/snapshot/envelope-crypto.mjs";
 import { readCapturedOssXml } from "./manual-runner-source-inputs.mjs";
 
 const production = await import("./r3-snapshot-input-admission.mjs").catch((error) => {
@@ -125,6 +126,102 @@ async function inputFixture(t) {
   t.mock.method(Date, "now", () => Date.parse("2026-09-28T00:00:00.000Z"));
   return publishR3SnapshotFixture(await h1Fixture(t));
 }
+
+// Without dereferencing the historical producer, an envelope's digest alone
+// previously passed admission. All other declarations remain valid here.
+test("R3 refuses missing, oversized and mismatched producer originals", async (t) => {
+  const f = await inputFixture(t);
+  const originalPath = f.rawPath({ digest: f.s.envelope.authorizationDigest });
+  const originalBytes = await fs.readFile(originalPath);
+  const readAndClose = async () => {
+    const result = await production.readR3SnapshotInput(f.input);
+    await result.close();
+    return result;
+  };
+  await fs.unlink(originalPath);
+  await assert.rejects(readAndClose(), {
+    code: "R3_SNAPSHOT_INPUT_UNAVAILABLE"
+  });
+  await fs.writeFile(originalPath, Buffer.alloc(1048577, 32), { flag: "wx", mode: 0o600 });
+  await assert.rejects(readAndClose(), {
+    code: "R3_SNAPSHOT_INPUT_UNAVAILABLE"
+  });
+  await fs.writeFile(originalPath, originalBytes);
+  const authorization = structuredClone(f.s.producerAuthorization);
+  authorization.localKey.keyFingerprint = d("f");
+  const authorizationRef = await f.publish(authorization);
+  const envelope = { ...f.s.envelope, authorizationDigest: authorizationRef.digest };
+  const custody = structuredClone(f.s.custody);
+  custody.object.envelopeDigest = sha256Canonical(envelope);
+  const index = {
+    ...f.index,
+    envelope: await f.publish(envelope),
+    custody: await f.publish(custody)
+  };
+  await fs.writeFile(f.indexPath, encodeManualJson(index));
+  await assert.rejects(readAndClose(), {
+    code: "R3_SNAPSHOT_INPUT_UNAVAILABLE"
+  });
+});
+
+// The reader must derive usable parameters from pinned originals, without
+// granting current consumption or opening any private key/payload itself.
+test("R3 pinned crypto inputs recover synthetic bytes with the historical local-key authorization", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-09-03T00:00:01.000Z"));
+  const keys = generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 });
+  const bytes = Buffer.from("R3 synthetic sanitized dump\n");
+  const f = await publishR3SnapshotFixture(await h1Fixture(t), {
+    payload: { bytes, publicKey: keys.publicKey }
+  });
+  t.mock.method(Date, "now", () => Date.parse("2026-09-28T00:00:00.000Z"));
+  const held = await production.readR3SnapshotInput(f.input);
+  t.after(() => held.close());
+  assert.ok(held.cryptoInputs, "missing parameters derived from original authorization");
+  const { authorization, envelope, aad } = held.cryptoInputs;
+  assert.deepEqual(authorization, f.s.producerAuthorization);
+  assert.ok(Date.parse(authorization.notAfter) < Date.now(), "producer window is historical");
+  assert.deepEqual(aad, {
+    repositoryId: "1253231368",
+    sourceSha: "b".repeat(40),
+    releaseAttemptId: "attempt-20260903-001",
+    snapshotRunId: "9001",
+    sanitizationContractDigest: f.s.metadata.sanitizationContractDigest,
+    snapshotDigest: sha256Bytes(bytes),
+    snapshotAllocatedAt: "2026-09-03T00:00:00.000Z",
+    expiresAt: "2026-10-03T00:00:00.000Z"
+  });
+  assert.ok(Object.isFrozen(held.cryptoInputs));
+  assert.throws(() => {
+    authorization.localKey.keyFingerprint = d("1");
+  }, TypeError);
+  assert.throws(() => {
+    envelope.context.sourceSha = "f".repeat(40);
+  }, TypeError);
+  assert.throws(() => {
+    aad.snapshotDigest = d("1");
+  }, TypeError);
+  const originalPath = f.rawPath({ digest: envelope.authorizationDigest });
+  const originalBytes = await fs.readFile(originalPath);
+  assert.ok(
+    held.rawReferences.some(
+      (ref) => ref.digest === envelope.authorizationDigest && ref.bytes === originalBytes.length
+    )
+  );
+  assert.ok(!held.rawReferences.some((ref) => ref.digest === envelope.ciphertextDigest));
+  assert.deepEqual(await fs.readdir(f.profile.storage.keyRoot), []);
+  const destination = path.join(path.dirname(f.ciphertextPath), "authenticated.dump");
+  await decryptSnapshotStream({
+    ...held.cryptoInputs,
+    source: { open: () => createReadStream(f.ciphertextPath) },
+    destination,
+    privateKey: keys.privateKey
+  });
+  assert.deepEqual(await fs.readFile(destination), bytes);
+  await held.recheck();
+  // A held original's replacement is a failure even if the JSON still parses.
+  await fs.writeFile(originalPath, Buffer.concat([originalBytes, Buffer.from(" ")]));
+  await assert.rejects(held.recheck(), { code: "R3_SNAPSHOT_INPUT_UNAVAILABLE" });
+});
 
 test("R3 consumer binds the fixed permission to exact input, destination and existing principals", async (t) => {
   const f = await inputFixture(t),

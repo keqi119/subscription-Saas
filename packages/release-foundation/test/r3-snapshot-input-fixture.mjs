@@ -1,22 +1,23 @@
-// Synthetic declarations only; no payload, private decrypt key, cloud call or legal authority.
+// Synthetic declarations; optional test bytes use real crypto, never a cloud call or legal authority.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Readable } from "node:stream";
 import { encodeManualJson, sha256Bytes, sha256Canonical } from "../src/index.mjs";
+import { encryptSnapshotStream } from "../src/snapshot/envelope-crypto.mjs";
 import { readCapturedOssXml } from "../../../scripts/release/manual-runner-source-inputs.mjs";
 const repo = fileURLToPath(new URL("../../../", import.meta.url));
 const load = (name) => JSON.parse(readFileSync(path.join(repo, "release/contracts", name), "utf8"));
 const d = (c) => "sha256:" + c.repeat(64);
-function snapshotDeclarations() {
+function snapshotDeclarations({ dumpDigest = d("4"), keyFingerprint = d("a") } = {}) {
   const contract = load("sanitization-contract.v1.json"),
     ownershipMap = load("snapshot-ownership-map.v1.json");
   const createdAt = "2026-09-03T00:00:00.000Z",
     expiresAt = "2026-10-03T00:00:00.000Z";
-  const dumpDigest = d("4"),
-    contractDigest = sha256Canonical(contract),
+  const contractDigest = sha256Canonical(contract),
     sourceSha = "b".repeat(40),
     releaseAttemptId = "attempt-20260903-001",
     snapshotRunId = "9001";
@@ -95,7 +96,7 @@ function snapshotDeclarations() {
     contextDigest = sha256Canonical(context);
   const localKeyReadback = {
     kind: "local-rsa-oaep-sha256.v1",
-    keyFingerprint: d("a"),
+    keyFingerprint,
     keyReadbackDigest: d("b"),
     recoveryReadbackDigest: d("c")
   };
@@ -104,6 +105,71 @@ function snapshotDeclarations() {
     snapshotDigest: dumpDigest,
     contextDigest,
     keyFingerprint: localKeyReadback.keyFingerprint
+  };
+  const producerAuthorization = {
+    schemaVersion: "producer-crypto-run-authorization.v2",
+    authorizationId: "fixture-historical-producer",
+    executionPurpose: "qualification",
+    repository: { name: "keqi119/subscription-Saas", id: context.repositoryId },
+    sourceSha,
+    releaseAttemptId,
+    snapshotRunId,
+    snapshotAllocatedAt: createdAt,
+    producer: {
+      workflowPath: ".github/workflows/sanitized-snapshot.yml",
+      runId: snapshotRunId,
+      runAttempt: 1,
+      jobId: "snapshot-data",
+      phase: "encryption",
+      pendingDeploymentId: "fixture-deployment",
+      environment: {
+        name: "stage1-snapshot-export",
+        id: "fixture-environment",
+        policyIdentityDigest: d("e")
+      }
+    },
+    bindings: Object.fromEntries(
+      [
+        "dispatchAuthorizationDigest",
+        "sourceGateEvidenceDigest",
+        "buildProofDigest",
+        "buildBundleDigest",
+        "repositoryContractDigest",
+        "adapterExecutableDigest",
+        "cryptoExecutableDigest"
+      ].map((key) => [key, d("e")])
+    ),
+    issuer: {
+      issuerId: "fixture-issuer",
+      principal: "fixture-approver",
+      cryptoPrincipal: "fixture-producer",
+      publisherBrokerPrincipal: "fixture-publisher"
+    },
+    localKey: {
+      ...localKeyReadback,
+      action: "local:GenerateAndWrapDataKey",
+      keySpec: "AES_256",
+      maxCalls: 1,
+      context,
+      contextDigest
+    },
+    execution: { requestedDurationSeconds: 600, maxDurationSeconds: 900 },
+    handoff: { protocol: "public-key-object-v1", publicKeyOnly: true, privateKey: false },
+    prerequisites: {
+      changePlanDigest: d("e"),
+      externalChangeApprovalDigest: d("e"),
+      applyProofDigest: d("e"),
+      keyReadbackDigest: localKeyReadback.keyReadbackDigest,
+      recoveryReadbackDigest: localKeyReadback.recoveryReadbackDigest,
+      admissionPolicyReadbackDigest: d("e"),
+      readbackDigest: d("e"),
+      completedAt: createdAt
+    },
+    issuedAt: createdAt,
+    notBefore: createdAt,
+    notAfter: "2026-09-03T00:15:00.000Z",
+    revocationPolicyDigest: d("e"),
+    custodyAuthorizationDigest: d("e")
   };
   const envelope = {
     schemaVersion: "snapshot-encryption-envelope.v2",
@@ -128,7 +194,7 @@ function snapshotDeclarations() {
     gcmAad: { ...aad, digest: sha256Canonical(aad) },
     snapshotAllocatedAt: createdAt,
     expiresAt,
-    authorizationDigest: d("e")
+    authorizationDigest: sha256Canonical(producerAuthorization)
   };
   const object = {
     key: envelope.slotObjectKey,
@@ -185,6 +251,7 @@ function snapshotDeclarations() {
     sourcePrivilege,
     beforeFingerprint,
     afterFingerprint,
+    producerAuthorization,
     envelope,
     custody
   };
@@ -195,10 +262,43 @@ export async function publishR3SnapshotFixture(
   {
     destinationAdmissionDigest = d("9"),
     jobAdmissionDigest = d("8"),
-    inputReference = randomUUID()
+    inputReference = randomUUID(),
+    payload
   } = {}
 ) {
-  const s = snapshotDeclarations();
+  const s = snapshotDeclarations(
+    payload && {
+      dumpDigest: sha256Bytes(payload.bytes),
+      keyFingerprint: sha256Bytes(payload.publicKey.export({ type: "spki", format: "der" }))
+    }
+  );
+  let ciphertextPath;
+  if (payload) {
+    const directory = path.join(f.root, "payload");
+    await fs.mkdir(directory, { mode: 0o700 });
+    ciphertextPath = path.join(directory, "snapshot.enc");
+    s.envelope = await encryptSnapshotStream({
+      source: { open: () => Readable.from([payload.bytes]) },
+      destination: ciphertextPath,
+      aad: {
+        ...s.producerAuthorization.localKey.context,
+        snapshotDigest: s.metadata.dumpDigest,
+        snapshotAllocatedAt: s.producerAuthorization.snapshotAllocatedAt
+      },
+      authorization: s.producerAuthorization,
+      publicKey: payload.publicKey
+    });
+    Object.assign(s.custody.object, {
+      envelopeDigest: sha256Canonical(s.envelope),
+      ciphertextDigest: s.envelope.ciphertextDigest,
+      ciphertextSizeBytes: s.envelope.ciphertextSizeBytes
+    });
+    for (const value of [s.custody.headReadback, s.custody.getReadback])
+      Object.assign(value, {
+        digest: s.envelope.ciphertextDigest,
+        sizeBytes: s.envelope.ciphertextSizeBytes
+      });
+  }
   const archive = f.profile.storage.archiveRoot;
   const rawPath = (ref) => path.join(archive, "raw", `${ref.digest.slice(7)}.bin`);
   await fs.mkdir(path.join(archive, "raw"), { recursive: true, mode: 0o700 });
@@ -214,6 +314,7 @@ export async function publishR3SnapshotFixture(
     return ref;
   };
   const profileDigest = sha256Canonical(f.profile);
+  await publish(s.producerAuthorization);
   const authority = {
     recordVersion: "r3-snapshot-source-authority.v1",
     ownerId: f.profile.ownerId,
@@ -354,6 +455,7 @@ export async function publishR3SnapshotFixture(
     indexPath,
     identity,
     responses,
+    ciphertextPath,
     declarations,
     rawPath,
     publish,

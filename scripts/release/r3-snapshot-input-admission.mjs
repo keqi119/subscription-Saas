@@ -506,25 +506,32 @@ export async function readR3SnapshotInput(input) {
         index.profileDigest === profileDigest &&
         index.ownerId === profile.ownerId
     );
-    const raw = async (ref) => {
-      rawRef(ref);
-      if (refs.has(ref.digest)) {
-        const bytes = refs.get(ref.digest);
-        requireThat(bytes.length === ref.bytes);
-        return bytes;
-      }
+    const rawDigest = async (digest) => {
+      requireThat(typeof digest === "string" && DIGEST.test(digest));
+      if (refs.has(digest)) return refs.get(digest);
       requireThat(refs.size < 128);
       const bytes = await pin(
-        path.join(profile.storage.archiveRoot, "raw", `${ref.digest.slice(7)}.bin`)
+        path.join(profile.storage.archiveRoot, "raw", `${digest.slice(7)}.bin`)
       );
-      requireThat(bytes.length === ref.bytes && sha256Bytes(bytes) === ref.digest);
-      refs.set(ref.digest, bytes);
+      requireThat(sha256Bytes(bytes) === digest);
+      refs.set(digest, bytes);
+      return bytes;
+    };
+    const raw = async (ref) => {
+      rawRef(ref);
+      const bytes = await rawDigest(ref.digest);
+      requireThat(bytes.length === ref.bytes);
       return bytes;
     };
     const s = {};
     for (const name of subjects) s[name] = json(await raw(index[name]));
     checkSources(s, now);
-    validateSnapshotEncryptionEnvelope(s.envelope);
+    // The digest in an envelope is a reference, not the producer original.
+    // Reuse the fixed bounded raw store; never resolve a caller-provided path.
+    requireThat(s.envelope.schemaVersion === "snapshot-encryption-envelope.v2");
+    const authorization = json(await rawDigest(s.envelope.authorizationDigest));
+    requireThat(authorization.schemaVersion === "producer-crypto-run-authorization.v2");
+    validateSnapshotEncryptionEnvelope(s.envelope, { authorization });
     validateSnapshotCustody(s.custody);
     const e = s.envelope,
       c = s.custody,
@@ -606,6 +613,17 @@ export async function readR3SnapshotInput(input) {
       metadataDigest: index.metadata.digest,
       ciphertextDigest: e.ciphertextDigest,
       objectVersion: c.object.version,
+      // Historical crypto parameters only. These do not grant consumption,
+      // attest live storage/key possession or extend the current input deadline.
+      cryptoInputs: {
+        authorization,
+        envelope: e,
+        aad: {
+          ...e.context,
+          snapshotAllocatedAt: e.snapshotAllocatedAt,
+          snapshotDigest: e.snapshotDigest
+        }
+      },
       expiresAt: new Date(deadline).toISOString(),
       allowedUses: s.permission.allowedUses,
       rawReferences: [...refs]

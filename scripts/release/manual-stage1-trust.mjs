@@ -1828,6 +1828,24 @@ export async function prepareR3HostedEvidenceImport(input) {
         .at(-1)
         .stat.isDirectory()
     );
+    // The snapshot input UUID is owner-imported after target creation. Reserve
+    // its parent before fixed job handles pin their private ancestors.
+    const snapshots = path.join(profile.storage.archiveRoot, "inputs", "snapshots");
+    try {
+      await fs.mkdir(snapshots, { mode: 0o700 });
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    requireThat(
+      (
+        await checkedPath(snapshots, {
+          principal,
+          privateRoot: profile.storage.archiveRoot
+        })
+      )
+        .at(-1)
+        .stat.isDirectory()
+    );
     for (const storageRoot of [profile.storage.archiveRoot, profile.storage.backupRoot]) {
       let directory = storageRoot;
       const segments = ["inputs", "r3", operationRef, "observations"];
@@ -2181,6 +2199,7 @@ export async function openTrustedR3CreationSession(input) {
           scope,
           creationSpec: spec,
           jobAdmission: fixed.admission,
+          snapshotInputs: { repoRoot },
           destinationInputs: {
             manifest: fixed.databaseTestManifest,
             manifestRawDigest: fixed.databaseTestManifestRawDigest,

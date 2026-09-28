@@ -15,7 +15,10 @@ import {
   signManualAuthorization,
   verifyManualAuthorization,
   verifyManualHandoff,
-  validateManualTargetCreationRequest
+  validateManualTargetCreationRequest,
+  validateManualSnapshotConsumerRequest,
+  verifyManualSnapshotConsumerAuthorizationBinding,
+  verifyManualTargetCreationAuthorizationBinding
 } from "./manual-stage1-contracts.mjs";
 import { sha256Bytes, sha256Canonical } from "./digest.mjs";
 import { validateContract } from "./schema-registry.mjs";
@@ -316,11 +319,24 @@ export async function openManualSession({
     r3Context = snapshot(r3CreationContext);
     exact(
       r3Context,
-      r3Context.destinationInputs
-        ? ["scope", "creationSpec", "jobAdmission", "destinationInputs"]
-        : ["scope", "creationSpec", "jobAdmission"],
+      [
+        "scope",
+        "creationSpec",
+        "jobAdmission",
+        ...(r3Context.destinationInputs === undefined ? [] : ["destinationInputs"]),
+        ...(r3Context.snapshotInputs === undefined ? [] : ["snapshotInputs"])
+      ],
       SESSION
     );
+    if (r3Context.snapshotInputs !== undefined) {
+      exact(r3Context.snapshotInputs, ["repoRoot"], SESSION);
+      requireThat(
+        typeof r3Context.snapshotInputs.repoRoot === "string" &&
+          path.isAbsolute(r3Context.snapshotInputs.repoRoot) &&
+          path.resolve(r3Context.snapshotInputs.repoRoot) === r3Context.snapshotInputs.repoRoot,
+        SESSION
+      );
+    }
     if (r3Context.destinationInputs) {
       exact(
         r3Context.destinationInputs,
@@ -538,6 +554,8 @@ export async function openManualSession({
   let checkpoint = null;
   const issued = new Map();
   const targetLocks = new Map();
+  let snapshotReader = null,
+    creationCompletionDigest = null;
   const closeTargetHandles = async () => {
     const outcomes = await Promise.allSettled(
       [...targetLocks.values()].map((entry) => entry.handle.close())
@@ -607,6 +625,7 @@ export async function openManualSession({
           SESSION
         );
       }
+      await snapshotReader?.recheck();
     }
     const actual = JSON.parse(
       await store.read(objectPath(profile.storage.journalRoot, sha256Canonical(current)))
@@ -752,12 +771,15 @@ export async function openManualSession({
     );
     return { request, binding, canonicalBytes: Buffer.from(input.canonicalBytes) };
   }
-  async function context(request) {
+  async function context(request, allocatedPredecessor = null) {
     await active();
     const records = await revocations(),
       readAt = stamp();
     let predecessor = null;
-    const digest = request.dryRunRecordDigest ?? request.predecessorExecutionRecordDigest;
+    const digest =
+      allocatedPredecessor ??
+      request.dryRunRecordDigest ??
+      request.predecessorExecutionRecordDigest;
     if (digest) {
       const graph = await store.objects();
       predecessor = graph.get(digest)?.value;
@@ -1005,11 +1027,17 @@ export async function openManualSession({
       } else if (value.schemaVersion === "manual-runner-request.v4") {
         validateManualTargetCreationRequest(value);
         r2Artifacts.push(null);
+      } else if (value.schemaVersion === "manual-runner-request.v3") {
+        validateManualSnapshotConsumerRequest(value);
+        r2Artifacts.push(null);
       } else if (value.schemaVersion === "manual-runner-evidence.v2") {
         validateContract("manual-runner-evidence.v2", value);
         r2Artifacts.push(null);
       } else if (value.payload?.schemaVersion === "manual-launch-authorization.v4") {
         validateContract("manual-launch-authorization.v4", value);
+        r2Artifacts.push(null);
+      } else if (value.payload?.schemaVersion === "manual-launch-authorization.v3") {
+        validateContract("manual-launch-authorization.v3", value);
         r2Artifacts.push(null);
       } else r2Artifacts.push(entry.bytes);
     }
@@ -1651,9 +1679,12 @@ export async function openManualSession({
     exact(input, ["binding", "canonicalBytes"]);
     requireThat(Buffer.isBuffer(input.canonicalBytes), BINDING);
     const canonicalBytes = Buffer.from(input.canonicalBytes);
-    const request = validateManualTargetCreationRequest(
-      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(canonicalBytes))
-    );
+    const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(canonicalBytes));
+    const consumer = parsed.schemaVersion === "manual-runner-request.v3";
+    const request = consumer
+      ? validateManualSnapshotConsumerRequest(parsed)
+      : validateManualTargetCreationRequest(parsed);
+    if (consumer) requireThat(creationCompletionDigest, SESSION);
     requireThat(encodeManualJson(request).equals(canonicalBytes), BINDING);
     const fields = [
       "profileDigest",
@@ -1666,10 +1697,9 @@ export async function openManualSession({
       "capability",
       "purpose",
       "phase",
-      "chain",
-      "targetPolicyDigest",
-      "creationSpecDigest",
-      "jobAdmissionDigest"
+      ...(consumer
+        ? ["scopeAuthorizationDigest"]
+        : ["chain", "targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest"])
     ];
     const binding = Object.fromEntries(fields.map((field) => [field, request[field]]));
     requireThat(equal(binding, input.binding), BINDING);
@@ -1678,17 +1708,17 @@ export async function openManualSession({
     requireThat(
       request.ownerId === profile.ownerId &&
         request.operationId === r3Context.creationSpec.operationRef &&
-        request.stage === "target-create" &&
+        request.stage === (consumer ? "snapshot-consumer" : "target-create") &&
         request.sourceSha === identity.scope.sourceSha &&
-        request.candidate.buildProofDigest === identity.scope.buildProofDigest,
+        request.candidate.buildProofDigest === identity.scope.buildProofDigest &&
+        (!consumer || (identity.scope.phase === "source" && identity.scope.chain === "snapshot")),
       BINDING
     );
     for (const field of [
       "phase",
-      "chain",
-      "targetPolicyDigest",
-      "creationSpecDigest",
-      "jobAdmissionDigest"
+      ...(consumer
+        ? []
+        : ["chain", "targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest"])
     ])
       requireThat(request[field] === identity.scope[field], BINDING);
     requireThat(
@@ -1704,7 +1734,9 @@ export async function openManualSession({
     requireThat(
       allocation.kind === "attempt-allocation" &&
         allocation.sessionRecordDigest === sha256Canonical(current) &&
-        allocation.predecessorExecutionRecordDigest === null &&
+        (consumer
+          ? allocation.predecessorExecutionRecordDigest === creationCompletionDigest
+          : allocation.predecessorExecutionRecordDigest === null) &&
         instant(current.openedAt) <= instant(allocation.recordedAt) &&
         instant(allocation.recordedAt) <= instant(allocation.allocatedAt) &&
         instant(allocation.allocatedAt) <= instant(stamp()),
@@ -1720,15 +1752,34 @@ export async function openManualSession({
       "runId",
       "stage",
       "phase",
-      "chain",
+      ...(consumer ? [] : ["chain"]),
       "sourceSha",
-      "targetPolicyDigest",
-      "creationSpecDigest",
-      "jobAdmissionDigest"
+      ...(consumer ? [] : ["targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest"])
     ])
       requireThat(allocation[field] === request[field], BINDING);
     requireThat(allocation.buildProofDigest === request.candidate.buildProofDigest, BINDING);
-    return { request, binding, canonicalBytes };
+    if (consumer) {
+      const predecessor = JSON.parse(
+        await store.read(objectPath(profile.storage.archiveRoot, creationCompletionDigest))
+      );
+      requireThat(
+        creationCompletionDigest &&
+          predecessor.kind === "execution" &&
+          predecessor.status === "SUCCEEDED" &&
+          predecessor.stage === "target-create" &&
+          predecessor.resultDigest === request.destinationAdmissionDigest &&
+          sha256Canonical(predecessor) === creationCompletionDigest &&
+          request.scopeAuthorizationDigest === allocation.scopeAuthorizationDigest &&
+          request.destinationAdmissionDigest === allocation.destinationAdmissionDigest &&
+          equal(request.input, allocation.input) &&
+          allocation.chain === identity.scope.chain &&
+          allocation.creationSpecDigest === identity.scope.creationSpecDigest &&
+          allocation.jobAdmissionDigest === identity.scope.jobAdmissionDigest &&
+          allocation.targetPolicyDigest === identity.scope.targetPolicyDigest,
+        BINDING
+      );
+    }
+    return { request, binding, canonicalBytes, allocation };
   }
   async function r3StoredDestination(graph, destinationDigest, initialExecution) {
     requireThat(r3Context.destinationInputs, SESSION);
@@ -1817,13 +1868,22 @@ export async function openManualSession({
       streamDigest: sha256Bytes(Buffer.from(observations.postgres.streamBase64, "base64"))
     };
   }
-  async function r3History(request, pendingDigest = null, pendingDestination = null) {
+  async function r3History(
+    request,
+    pendingDigest = null,
+    pendingDestination = null,
+    pendingConsumer = null
+  ) {
     const r3Originals = { artifacts: new Set(), raws: new Set() };
     const graph = await store.objects();
     const values = [...graph.values()].map((entry) => entry.value);
     const r3Validated = new Set();
     const legacy = [];
-    let r3Count = 0;
+    let creationCount = 0,
+      consumerCount = 0,
+      historicalCompletion = null,
+      historicalConsumerPredecessor = null,
+      historicalConsumerDestination = null;
     for (const value of values.filter(
       (entry) => entry.schemaVersion === "manual-operation-record.v3"
     ))
@@ -1869,8 +1929,11 @@ export async function openManualSession({
       );
       for (const field of ["sessionId", "sessionNonce", "operationId", "idempotencyKey", "stage"])
         requireThat(consumed[field] === request[field], SESSION);
-      const r3Request = request.schemaVersion === "manual-runner-request.v4";
-      if (r3Request) validateManualTargetCreationRequest(request);
+      const creation = request.schemaVersion === "manual-runner-request.v4";
+      const consumer = request.schemaVersion === "manual-runner-request.v3";
+      const r3Request = creation || consumer;
+      if (creation) validateManualTargetCreationRequest(request);
+      else if (consumer) validateManualSnapshotConsumerRequest(request);
       else {
         requireThat(request.schemaVersion === "manual-runner-request.v1", SESSION);
         validateManualRunnerRequest(request);
@@ -1923,7 +1986,8 @@ export async function openManualSession({
         SESSION
       );
       if (r3Request) {
-        r3Count++;
+        if (creation) creationCount++;
+        else consumerCount++;
         const authorization = graph.get(consumed.authorizationDigest)?.value;
         const liveRevocations = await revocations();
         requireThat(
@@ -1943,26 +2007,81 @@ export async function openManualSession({
             consumed.sessionId === sessionId &&
             consumed.sessionNonce === sessionNonce &&
             consumed.profileDigest === profileDigest &&
-            consumed.stage === "target-create" &&
+            consumed.stage === (creation ? "target-create" : "snapshot-consumer") &&
             consumed.operationId === r3Context.creationSpec.operationRef &&
             consumed.sessionRecordDigest === sha256Canonical(current) &&
             equal(session.scope, identity.scope) &&
             request.sessionId === sessionId &&
             request.sessionNonce === sessionNonce &&
             request.operationId === consumed.operationId &&
-            request.stage === "target-create" &&
+            request.stage === consumed.stage &&
+            request.ownerId === profile.ownerId &&
+            request.profileDigest === profileDigest &&
+            request.sourceSha === identity.scope.sourceSha &&
+            request.candidate.buildProofDigest === identity.scope.buildProofDigest &&
+            request.phase === identity.scope.phase &&
             request.attemptAllocationDigest === sha256Canonical(allocation) &&
             allocation.sessionRecordDigest === consumed.sessionRecordDigest &&
+            allocation.idempotencyKey === request.idempotencyKey &&
+            allocation.stage === request.stage &&
+            allocation.phase === request.phase &&
+            allocation.sourceSha === request.sourceSha &&
+            allocation.buildProofDigest === request.candidate.buildProofDigest &&
             execution.status === "INTERRUPTED_UNKNOWN" &&
-            execution.predecessorExecutionRecordDigest === null &&
+            execution.predecessorExecutionRecordDigest ===
+              (creation ? null : allocation.predecessorExecutionRecordDigest) &&
             execution.startedAt === null &&
             execution.finishedAt === null &&
             execution.resultDigest === null &&
-            execution.processEvidenceDigest === null,
+            execution.processEvidenceDigest === null &&
+            execution.requestDigest === consumed.requestDigest &&
+            execution.idempotencyKey === request.idempotencyKey &&
+            execution.stage === consumed.stage &&
+            consumed.ownerId === profile.ownerId &&
+            consumed.status === "CONSUMED" &&
+            instant(session.openedAt) <= instant(allocation.recordedAt) &&
+            instant(allocation.recordedAt) <= instant(allocation.allocatedAt) &&
+            instant(allocation.allocatedAt) <= instant(authorization.payload.issuedAt) &&
+            instant(authorization.payload.issuedAt) <= instant(consumed.recordedAt) &&
+            instant(consumed.recordedAt) <= instant(execution.recordedAt),
           SESSION
         );
+        const consumptionCustody = values.filter(
+          (value) =>
+            value.kind === "custody" &&
+            value.subjectDigest === digest &&
+            value.purpose === "consumption-readback"
+        );
         requireThat(
-          authorization?.payload?.schemaVersion === "manual-launch-authorization.v4" &&
+          consumptionCustody.length === 1 &&
+            consumptionCustody[0].schemaVersion === "manual-operation-record.v3" &&
+            consumptionCustody[0].ownerId === profile.ownerId &&
+            consumptionCustody[0].profileDigest === profileDigest &&
+            consumptionCustody[0].subjectType === "record" &&
+            consumptionCustody[0].outcome === "MATCH" &&
+            consumptionCustody[0].observedDigest === digest &&
+            consumptionCustody[0].storageRole === "journal" &&
+            consumptionCustody[0].retentionDays === retentionDays &&
+            instant(consumed.recordedAt) <= instant(consumptionCustody[0].observedAt) &&
+            instant(consumptionCustody[0].observedAt) <= instant(execution.recordedAt),
+          SESSION
+        );
+        if (creation)
+          requireThat(
+            allocation.predecessorExecutionRecordDigest === null &&
+              allocation.chain === identity.scope.chain &&
+              allocation.targetPolicyDigest === identity.scope.targetPolicyDigest &&
+              allocation.creationSpecDigest === identity.scope.creationSpecDigest &&
+              allocation.jobAdmissionDigest === identity.scope.jobAdmissionDigest &&
+              request.chain === identity.scope.chain &&
+              request.targetPolicyDigest === identity.scope.targetPolicyDigest &&
+              request.creationSpecDigest === identity.scope.creationSpecDigest &&
+              request.jobAdmissionDigest === identity.scope.jobAdmissionDigest,
+            SESSION
+          );
+        requireThat(
+          authorization?.payload?.schemaVersion ===
+            (creation ? "manual-launch-authorization.v4" : "manual-launch-authorization.v3") &&
             authorization.payload.authorizationId &&
             authorization.payload.requestDigest === consumed.requestDigest &&
             authorization.payload.sessionId === sessionId &&
@@ -1971,10 +2090,13 @@ export async function openManualSession({
             authorization.payload.idempotencyKey === request.idempotencyKey &&
             authorization.payload.profileDigest === profileDigest &&
             authorization.payload.ownerId === profile.ownerId &&
-            authorization.payload.stage === "target-create" &&
-            authorization.payload.creationSpecDigest === identity.scope.creationSpecDigest &&
-            authorization.payload.jobAdmissionDigest === identity.scope.jobAdmissionDigest &&
-            authorization.payload.targetPolicyDigest === identity.scope.targetPolicyDigest &&
+            authorization.payload.stage === consumed.stage &&
+            (creation
+              ? authorization.payload.creationSpecDigest === identity.scope.creationSpecDigest &&
+                authorization.payload.jobAdmissionDigest === identity.scope.jobAdmissionDigest &&
+                authorization.payload.targetPolicyDigest === identity.scope.targetPolicyDigest
+              : authorization.payload.scopeAuthorizationDigest ===
+                request.scopeAuthorizationDigest) &&
             cryptoVerify(
               null,
               Buffer.concat([
@@ -1986,7 +2108,70 @@ export async function openManualSession({
             ),
           SESSION
         );
+        (creation
+          ? verifyManualTargetCreationAuthorizationBinding
+          : verifyManualSnapshotConsumerAuthorizationBinding)({
+          authorization,
+          profile,
+          requestBytes: encodeManualJson(request),
+          now: consumed.recordedAt
+        });
         const linkedDigest = sha256Canonical(execution);
+        if (consumer) {
+          requireThat(
+            identity.scope.phase === "source" &&
+              identity.scope.chain === "snapshot" &&
+              request.phase === identity.scope.phase &&
+              request.sourceSha === identity.scope.sourceSha &&
+              request.candidate.buildProofDigest === identity.scope.buildProofDigest &&
+              allocation.predecessorExecutionRecordDigest !== null &&
+              allocation.destinationAdmissionDigest === request.destinationAdmissionDigest &&
+              allocation.scopeAuthorizationDigest === request.scopeAuthorizationDigest &&
+              equal(allocation.input, request.input) &&
+              allocation.chain === identity.scope.chain &&
+              allocation.phase === identity.scope.phase &&
+              allocation.sourceSha === identity.scope.sourceSha &&
+              allocation.buildProofDigest === identity.scope.buildProofDigest &&
+              allocation.creationSpecDigest === identity.scope.creationSpecDigest &&
+              allocation.jobAdmissionDigest === identity.scope.jobAdmissionDigest &&
+              allocation.targetPolicyDigest === identity.scope.targetPolicyDigest &&
+              [
+                "profileDigest",
+                "sessionId",
+                "sessionNonce",
+                "operationId",
+                "idempotencyKey",
+                "attemptId",
+                "runId",
+                "stage"
+              ].every((field) => allocation[field] === request[field]) &&
+              linked.length === 1 &&
+              execution.stage === "snapshot-consumer" &&
+              execution.operationId === request.operationId &&
+              execution.idempotencyKey === request.idempotencyKey &&
+              execution.requestDigest === consumed.requestDigest &&
+              execution.reasonCode === "MANUAL_EVIDENCE_INCOMPLETE" &&
+              consumed.ownerId === profile.ownerId &&
+              consumed.status === "CONSUMED" &&
+              authorization.payload.phase === identity.scope.phase &&
+              authorization.payload.capability === "read-decrypt-use" &&
+              authorization.payload.purpose === "sanitized-snapshot-test-input",
+            SESSION
+          );
+          requireThat(
+            (await store.read(consumptionSlot(authorization.payload.authorizationId))).equals(
+              encodeManualJson(consumed)
+            ),
+            STORAGE
+          );
+          requireThat(snapshotReader, SESSION);
+          await snapshotReader.assertConsumerBinding({ request, scope: identity.scope });
+          historicalConsumerPredecessor = allocation.predecessorExecutionRecordDigest;
+          historicalConsumerDestination = request.destinationAdmissionDigest;
+          for (const ref of snapshotReader.rawReferences) r3Originals.raws.add(ref.digest);
+          r3Validated.add(digest);
+          continue;
+        }
         let original;
         if (linked.length === 2) {
           const completed = linked.find((value) => value !== execution);
@@ -2052,6 +2237,7 @@ export async function openManualSession({
             );
           }
           requireThat(expected.size === 0, SESSION);
+          historicalCompletion = sha256Canonical(completed);
         } else {
           requireThat(
             pendingDigest === linkedDigest &&
@@ -2097,13 +2283,30 @@ export async function openManualSession({
           execution.requestDigest === slots.get(execution.consumptionRecordDigest)?.requestDigest,
         SESSION
       );
-    requireThat(r3Count <= 1, SESSION);
+    requireThat(
+      creationCount <= 1 &&
+        consumerCount <= 1 &&
+        (consumerCount === 0 ||
+          (creationCount === 1 &&
+            historicalCompletion === historicalConsumerPredecessor &&
+            graph.get(historicalCompletion)?.value?.resultDigest ===
+              historicalConsumerDestination)) &&
+        (pendingConsumer === null ||
+          (consumerCount === 1 && pendingConsumer === historicalConsumerPredecessor)),
+      SESSION
+    );
     // Reuse the existing R2 reducer, including its independent reconcile
     // readback. An original apply UNKNOWN stays in the graph after resolution.
     for (const historicalTarget of profile.allowedTargets)
       await history(request, null, historicalTarget, r3Validated, r3Originals);
     // A consumed target-create slot is never authorization to sign another one.
-    requireThat(r3Count === 0 || pendingDigest !== null, SESSION);
+    requireThat(
+      creationCount === 0 ||
+        pendingDigest !== null ||
+        (request.stage === "snapshot-consumer" && historicalCompletion !== null),
+      SESSION
+    );
+    requireThat(consumerCount === 0 || pendingConsumer !== null, SESSION);
     return graph;
   }
   try {
@@ -2146,7 +2349,24 @@ export async function openManualSession({
       creationReceipt = null,
       targetLocksAttempted = false,
       completionAttempted = false,
+      consumerAuthorizationIssued = false,
+      consumerAttempted = false,
       closeRef = null;
+    const boundSnapshot = async (request) => {
+      requireThat(r3Context.snapshotInputs && creationCompletionDigest, SESSION);
+      if (!snapshotReader) {
+        const { readR3SnapshotInput } =
+          await import("../../../scripts/release/r3-snapshot-input-admission.mjs");
+        snapshotReader = await readR3SnapshotInput({
+          repoRoot: r3Context.snapshotInputs.repoRoot,
+          inputReference: request.input.inputReference,
+          now: new Date(stamp())
+        });
+      }
+      requireThat(snapshotReader.inputId === request.input.inputReference, BINDING);
+      await snapshotReader.assertConsumerBinding({ request, scope: identity.scope });
+      await snapshotReader.recheck();
+    };
     return freeze({
       ...identity,
       sign(input) {
@@ -2154,20 +2374,33 @@ export async function openManualSession({
           await active();
           r3Live();
           const request = await r3CheckedRequest(input);
+          if (request.request.stage === "snapshot-consumer") {
+            requireThat(!consumerAuthorizationIssued && !consumerAttempted, SESSION);
+            await boundSnapshot(request.request);
+          }
           await r3History(request.request);
           const issuedAt = stamp(),
-            ctx = await context(request.request),
+            ctx = await context(
+              request.request,
+              request.allocation.predecessorExecutionRecordDigest
+            ),
             expiresAt = new Date(
               Math.min(
                 instant(profile.expiresAt),
                 instant(r3Context.jobAdmission.expiresAt),
+                ...(request.request.stage === "snapshot-consumer"
+                  ? [instant(snapshotReader.expiresAt)]
+                  : []),
                 instant(issuedAt) + 300000
               )
             ).toISOString();
           requireThat(instant(issuedAt) < instant(expiresAt), "MANUAL_TIME_INVALID");
           const authorization = signManualAuthorization({
             payload: {
-              schemaVersion: "manual-launch-authorization.v4",
+              schemaVersion:
+                request.request.stage === "snapshot-consumer"
+                  ? "manual-launch-authorization.v3"
+                  : "manual-launch-authorization.v4",
               authorizationId: randomUUID(),
               issuedAt,
               expiresAt,
@@ -2179,6 +2412,7 @@ export async function openManualSession({
           verify(authorization, request, ctx);
           await store.put(authorization);
           issued.set(authorization.payload.authorizationId, sha256Canonical(authorization));
+          if (request.request.stage === "snapshot-consumer") consumerAuthorizationIssued = true;
           return freeze(authorization);
         });
       },
@@ -2190,8 +2424,15 @@ export async function openManualSession({
           const authorization = snapshot(input.authorization),
             request = await r3CheckedRequest(input.request);
           await unused(authorization.payload.authorizationId);
+          if (request.request.stage === "snapshot-consumer") {
+            requireThat(consumerAuthorizationIssued && !consumerAttempted, SESSION);
+            await boundSnapshot(request.request);
+          }
           await r3History(request.request);
-          const ctx = await context(request.request),
+          const ctx = await context(
+              request.request,
+              request.allocation.predecessorExecutionRecordDigest
+            ),
             parentDecision = verify(authorization, request, ctx);
           requireThat(
             issued.get(authorization.payload.authorizationId) === sha256Canonical(authorization),
@@ -2214,7 +2455,7 @@ export async function openManualSession({
             ownerId: profile.ownerId,
             authorizationDigest: sha256Canonical(authorization),
             requestDigest: sha256Bytes(request.canonicalBytes),
-            stage: "target-create",
+            stage: request.request.stage,
             sessionRecordDigest: sha256Canonical(current),
             revocationRecordDigest: ctx.revocation.headDigest,
             revocationSequence: ctx.revocation.records.at(-1).sequence,
@@ -2224,6 +2465,7 @@ export async function openManualSession({
           // Once create-only slot insertion begins, every failure retains both
           // forward slots. A missing execution is reconstructed as uncertainty.
           consumedOrUncertain = true;
+          if (request.request.stage === "snapshot-consumer") consumerAttempted = true;
           await store.create(
             consumptionSlot(authorization.payload.authorizationId),
             encodeManualJson(consumption),
@@ -2233,7 +2475,7 @@ export async function openManualSession({
           const readback = await consumptionReadback(consumption);
           const execution = {
             ...common("execution", stamp()),
-            stage: "target-create",
+            stage: request.request.stage,
             sessionId,
             sessionNonce,
             operationId: request.request.operationId,
@@ -2242,7 +2484,7 @@ export async function openManualSession({
             requestDigest: consumption.requestDigest,
             authorizationDigest: consumption.authorizationDigest,
             consumptionRecordDigest: sha256Canonical(consumption),
-            predecessorExecutionRecordDigest: null,
+            predecessorExecutionRecordDigest: request.allocation.predecessorExecutionRecordDigest,
             startedAt: null,
             finishedAt: null,
             status: "INTERRUPTED_UNKNOWN",
@@ -2264,15 +2506,24 @@ export async function openManualSession({
             ),
             STORAGE
           );
-          const final = await context(request.request);
+          const final = await context(
+            request.request,
+            request.allocation.predecessorExecutionRecordDigest
+          );
           verify(authorization, request, final);
-          creationReceipt = freeze({
-            stage: "target-create",
+          const receipt = freeze({
+            stage: request.request.stage,
             parentDecision,
             consumptionReadbackDigest: readback.recordDigest,
             executionRecordDigest: executionRef.recordDigest
           });
-          return creationReceipt;
+          if (request.request.stage === "target-create") creationReceipt = receipt;
+          else {
+            await active();
+            r3Live();
+            await r3History(request.request, null, null, creationCompletionDigest);
+          }
+          return receipt;
         });
       },
       holdTargets(input) {
@@ -2457,6 +2708,7 @@ export async function openManualSession({
               STORAGE
             );
           await r3History(request, creationReceipt.executionRecordDigest);
+          creationCompletionDigest = executionDigest;
           return freeze({ executionRecordDigest: executionDigest, custodyRecordDigests });
         });
       },
@@ -2509,6 +2761,8 @@ export async function openManualSession({
             current = value;
             closed = true;
             key = null;
+            await snapshotReader?.close();
+            snapshotReader = null;
             await closeTargetHandles();
             await observerLockHandle.close();
             await lockHandle.close();
@@ -2523,6 +2777,8 @@ export async function openManualSession({
             consumedOrUncertain = true;
             closed = true;
             key = null;
+            await snapshotReader?.close().catch(() => {});
+            snapshotReader = null;
             await closeTargetHandles().catch(() => {});
             await observerLockHandle?.close().catch(() => {});
             await lockHandle?.close().catch(() => {});

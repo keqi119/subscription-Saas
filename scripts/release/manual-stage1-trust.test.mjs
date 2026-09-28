@@ -19,6 +19,7 @@ import { produceManualBuildCustody } from "./manual-build-custody-producer.mjs";
 import { assessR3WorkspaceObservation } from "../../packages/release-foundation/src/r3-workspace-observation.mjs";
 import { signR3WorkspaceBinding } from "../../packages/release-foundation/src/r3-workspace-report.mjs";
 import { buildR3HostedEvidence } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
+import { publishR3SnapshotFixture } from "../../packages/release-foundation/test/r3-snapshot-input-fixture.mjs";
 
 // The first RED is an assertion, not an import crash. Subsequent assertions
 // exercise the production entrypoint; there is no trusted-result mock.
@@ -2852,8 +2853,8 @@ test(
     noAuthorityAccess(f);
   }
 );
-async function r3SessionFixture(t) {
-  const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+async function r3SessionFixture(t, options = { phase: "source", chain: "fresh" }) {
+  const f = await r3JobFixture(t, options);
   for (const role of ["journal", "archive", "backup"])
     await fs.mkdir(path.join(f.profile.storage[`${role}Root`], "objects"), { mode: 0o700 });
   for (const directory of ["locks", "consumptions", "revocations", "checkpoints"])
@@ -2900,8 +2901,8 @@ test("R3 LAUNCH API exposes only the fixed native entry", async () => {
 // The H1 key path and native commands are synthetic; all key/lock/journal IO
 // and TCP HTTP exchanges below use actual Linux files and sockets. No sshd or
 // firewall configuration, cloud resource or disk is changed by this fixture.
-async function r3ForwardFixture(t) {
-  const f = await r3SessionFixture(t);
+async function r3ForwardFixture(t, options) {
+  const f = await r3SessionFixture(t, options);
   assert.equal(process.getuid(), 0, "run only in isolated WSL root test process");
   const key = "/etc/ssh/stage1-r3-forward/authorized_keys";
   const directory = path.join(f.root, "forward");
@@ -3012,7 +3013,10 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
     `R3 LAUNCH ${evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
     { skip: process.platform !== "linux" },
     async (t) => {
-      const f = await r3ForwardFixture(t);
+      const f = await r3ForwardFixture(t, {
+        phase: "source",
+        chain: mode === "accepted" ? "snapshot" : "fresh"
+      });
       const imageDigest = JSON.parse(
         await fs.readFile(
           path.join(f.repoRoot, "release/contracts/database-target-policies.v1.json")
@@ -3529,6 +3533,8 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         assert.equal(typeof launched.provisionDatabases, "function");
         assert.equal(typeof launched.recordDestination, "function");
         assert.equal(typeof launched.completeCreation, "function");
+        assert.equal(typeof launched.consumeSnapshot, "function");
+        await assert.rejects(launched.consumeSnapshot({ inputReference: randomUUID() }));
         await assert.rejects(launched.completeCreation());
         await assert.rejects(launched.recordDestination());
         await assert.rejects(launched.provisionDatabases());
@@ -3701,6 +3707,70 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
           ].sort()
         );
         await assert.rejects(launched.completeCreation());
+        releaseMockHistory();
+        const snapshot = await publishR3SnapshotFixture(f, {
+          destinationAdmissionDigest: recorded.destinationDigest,
+          jobAdmissionDigest: sha256Canonical(f.admission)
+        });
+        const selector = { inputReference: snapshot.input.inputReference };
+        await assert.rejects(launched.consumeSnapshot({ ...selector, destination: "override" }));
+        await assert.rejects(launched.consumeSnapshot(selector, { approved: true }));
+        const rawBeforeConsumer = await fs.readdir(path.join(f.profile.storage.archiveRoot, "raw"));
+        const consumedSnapshot = await launched.consumeSnapshot(selector).catch((error) => {
+          t.diagnostic(JSON.stringify({ consumerFailure: error.failureCode }));
+          throw error;
+        });
+        assert.equal(consumedSnapshot.status, "SNAPSHOT_INPUT_CONSUMED");
+        assert.equal(consumedSnapshot.executionStatus, "INTERRUPTED_UNKNOWN");
+        assert.equal(consumedSnapshot.promotionEligible, false);
+        const consumerExecution = JSON.parse(
+          await fs.readFile(
+            path.join(
+              f.profile.storage.journalRoot,
+              "objects",
+              `${consumedSnapshot.executionRecordDigest.slice(7)}.json`
+            )
+          )
+        );
+        assert.equal(consumerExecution.stage, "snapshot-consumer");
+        assert.equal(
+          consumerExecution.predecessorExecutionRecordDigest,
+          completed.executionRecordDigest
+        );
+        assert.equal(consumerExecution.status, "INTERRUPTED_UNKNOWN");
+        assert.equal(consumerExecution.resultDigest, null);
+        assert.equal(consumerExecution.sessionId, execution.sessionId);
+        const consumerRequest = JSON.parse(
+          await fs.readFile(
+            path.join(
+              f.profile.storage.archiveRoot,
+              "objects",
+              `${consumedSnapshot.requestDigest.slice(7)}.json`
+            )
+          )
+        );
+        assert.equal(consumerRequest.scopeAuthorizationDigest, snapshot.index.permission.digest);
+        assert.equal(consumerRequest.destinationAdmissionDigest, recorded.destinationDigest);
+        assert.equal(consumerRequest.candidate.buildProofDigest, f.spec.buildProofDigest);
+        assert.equal(
+          consumerRequest.input.inputIndexDigest,
+          sha256Bytes(await fs.readFile(snapshot.indexPath))
+        );
+        assert.equal(
+          (await fs.readdir(path.join(f.profile.storage.journalRoot, "consumptions"))).length,
+          2
+        );
+        assert.deepEqual(await fs.readFile(initialPath), encodeManualJson(initialExecution));
+        assert.deepEqual(
+          await fs.readdir(path.join(f.profile.storage.archiveRoot, "raw")),
+          rawBeforeConsumer
+        );
+        await assert.rejects(launched.consumeSnapshot(selector));
+        // No ciphertext or decryption key exists; successful admission cannot have read either.
+        await assert.rejects(
+          fs.stat(snapshot.rawPath({ digest: snapshot.s.envelope.ciphertextDigest })),
+          { code: "ENOENT" }
+        );
         releaseMockHistory();
         await launched.recheck();
         releaseMockHistory();

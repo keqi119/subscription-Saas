@@ -37,6 +37,7 @@ import {
 import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
 import { assessR3PostgresObservation } from "./r3-postgres-observation.mjs";
 import { assessR3PostgresReadback, buildR3Destination } from "./r3-destination.mjs";
+import { readR3SnapshotInput } from "./r3-snapshot-input-admission.mjs";
 import {
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
@@ -1027,6 +1028,12 @@ export async function launchR3TargetCreate(input) {
     completionReady = false,
     completionPending,
     completionRecord,
+    consumerAttempted = false,
+    consumerReady = false,
+    consumerPending,
+    consumerInput,
+    consumerSlot,
+    consumerRecord,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1043,6 +1050,7 @@ export async function launchR3TargetCreate(input) {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
       const errors = [];
+      await consumerPending?.catch(() => {});
       await completionPending?.catch(() => {});
       await destinationPending?.catch(() => {});
       await databasesPending?.catch(() => {});
@@ -1064,7 +1072,7 @@ export async function launchR3TargetCreate(input) {
           errors.push(error);
         }
       }
-      for (const handle of [hostedEvidence, lease, session, fixed]) {
+      for (const handle of [consumerInput, consumerSlot, hostedEvidence, lease, session, fixed]) {
         try {
           await handle?.close();
         } catch (error) {
@@ -1083,6 +1091,11 @@ export async function launchR3TargetCreate(input) {
     await hostedEvidence?.recheck();
     if (destinationRecord) await recheckDestination();
     if (completionRecord) await recheckCompletion();
+    await consumerInput?.recheck();
+    await consumerSlot?.recheck();
+    if (consumerRecord)
+      for (const { digest, bytes, role } of consumerRecord)
+        if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
   };
   const recheckDestination = async () => {
     for (const [digest, bytes] of destinationRecord.originals) {
@@ -1208,6 +1221,9 @@ export async function launchR3TargetCreate(input) {
     'role',current_user,'tls',(SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()),
     'clusterMarker',current_setting('cluster_name')) AS identity`;
   const savePgExchange = async (name, response) => {
+    // Once input originals are pinned, keep their shared raw directory fixed.
+    // Live resource checks still execute; creation evidence is already retained.
+    if (consumerAttempted) return;
     diagnostics.push({
       name,
       response: await postgresArchive.raw(
@@ -1344,10 +1360,11 @@ export async function launchR3TargetCreate(input) {
       fail(code);
     }
     if (sha256Canonical(checked) !== sha256Canonical(facts)) fail(code);
-    diagnostics.push({
-      name: "postgres-two-end-identity",
-      body: await postgresArchive.raw(encodeManualJson(readback))
-    });
+    if (!consumerAttempted)
+      diagnostics.push({
+        name: "postgres-two-end-identity",
+        body: await postgresArchive.raw(encodeManualJson(readback))
+      });
     await check();
     postgresReadback = JSON.parse(JSON.stringify(readback));
     return facts;
@@ -1608,10 +1625,11 @@ export async function launchR3TargetCreate(input) {
       // retain role-password SQL, driver errors or a connector statement log.
       if (/^SELECT\b/u.test(sql.trimStart())) {
         observations?.push({ databaseName, sql, rows: JSON.parse(JSON.stringify(rows)) });
-        diagnostics.push({
-          name: `database:${databaseName}:observation`,
-          body: await postgresArchive.raw(encodeManualJson(rows))
-        });
+        if (!consumerAttempted)
+          diagnostics.push({
+            name: `database:${databaseName}:observation`,
+            body: await postgresArchive.raw(encodeManualJson(rows))
+          });
       }
       return { rows };
     };
@@ -1902,7 +1920,7 @@ export async function launchR3TargetCreate(input) {
       if (custody.value.kind !== "custody" || custody.value.outcome !== "MATCH") fail(code);
       originals.push({ digest, bytes: custody.bytes, roles: ["archive"] });
     }
-    completionRecord = { originals };
+    completionRecord = { originals, executionRecordDigest: result.executionRecordDigest };
     await recheckResources();
     completionReady = true;
     return Object.freeze({
@@ -1910,6 +1928,159 @@ export async function launchR3TargetCreate(input) {
       executionRecordDigest: result.executionRecordDigest,
       custodyRecordDigests: Object.freeze([...result.custodyRecordDigests]),
       destinationDigest: destinationRecord.destinationDigest,
+      promotionEligible: false
+    });
+  };
+  const consumeSnapshot = async (inputReference) => {
+    await recheckResources();
+    consumerInput = await readR3SnapshotInput({
+      repoRoot: input.repoRoot,
+      inputReference,
+      now: new Date()
+    });
+    const opened = [...(await archive.graph()).entries()].filter(
+      ([, item]) =>
+        item.value.schemaVersion === "manual-operation-record.v3" &&
+        item.value.kind === "session" &&
+        item.value.sessionId === session.sessionId &&
+        item.value.status === "OPEN"
+    );
+    if (opened.length !== 1) fail(code);
+    const now = new Date().toISOString();
+    const request = {
+      schemaVersion: "manual-runner-request.v3",
+      profileDigest: session.profileDigest,
+      ownerId: lease.profile.ownerId,
+      sessionId: session.sessionId,
+      sessionNonce: session.sessionNonce,
+      operationId: input.operationRef,
+      idempotencyKey: `r3-snapshot:${input.operationRef}`,
+      attemptId: randomUUID(),
+      runId: randomUUID(),
+      stage: "snapshot-consumer",
+      capability: "read-decrypt-use",
+      purpose: "sanitized-snapshot-test-input",
+      phase: session.scope.phase,
+      sourceSha: session.scope.sourceSha,
+      scopeAuthorizationDigest: consumerInput.permissionDigest,
+      destinationAdmissionDigest: destinationRecord.destinationDigest,
+      input: { inputReference, inputIndexDigest: consumerInput.inputIndexDigest },
+      candidate: { buildProofDigest: session.scope.buildProofDigest }
+    };
+    request.attemptAllocationDigest = await archive.put(
+      {
+        schemaVersion: "manual-runner-evidence.v2",
+        kind: "attempt-allocation",
+        recordedAt: now,
+        promotionEligible: false,
+        ...fieldsFrom(request, [
+          "profileDigest",
+          "sessionId",
+          "sessionNonce",
+          "operationId",
+          "idempotencyKey",
+          "attemptId",
+          "runId",
+          "stage",
+          "phase",
+          "sourceSha",
+          "destinationAdmissionDigest",
+          "scopeAuthorizationDigest",
+          "input"
+        ]),
+        ...fieldsFrom(session.scope, [
+          "chain",
+          "targetPolicyDigest",
+          "creationSpecDigest",
+          "jobAdmissionDigest"
+        ]),
+        sessionRecordDigest: opened[0][0],
+        allocatedAt: now,
+        buildProofDigest: session.scope.buildProofDigest,
+        predecessorExecutionRecordDigest: completionRecord.executionRecordDigest
+      },
+      "manual-runner-evidence.v2"
+    );
+    await consumerInput.assertConsumerBinding({ request, scope: session.scope });
+    const requestDigest = await archive.put(request, "manual-runner-request.v3");
+    const binding = fieldsFrom(request, [
+      "profileDigest",
+      "ownerId",
+      "sessionId",
+      "sessionNonce",
+      "operationId",
+      "idempotencyKey",
+      "stage",
+      "capability",
+      "purpose",
+      "phase",
+      "scopeAuthorizationDigest"
+    ]);
+    const requestInput = { binding, canonicalBytes: encodeManualJson(request) };
+    const authorization = await session.sign(requestInput);
+    await recheckResources();
+    const receipt = await session.consume({ authorization, request: requestInput });
+    const execution = await archive.get(receipt.executionRecordDigest, "journal");
+    validateContract("manual-operation-record.v3", execution.value);
+    if (
+      receipt.stage !== "snapshot-consumer" ||
+      execution.value.stage !== "snapshot-consumer" ||
+      execution.value.status !== "INTERRUPTED_UNKNOWN" ||
+      execution.value.predecessorExecutionRecordDigest !== completionRecord.executionRecordDigest ||
+      execution.value.requestDigest !== requestDigest ||
+      execution.value.authorizationDigest !== sha256Canonical(authorization) ||
+      execution.value.sessionId !== session.sessionId ||
+      execution.value.sessionNonce !== session.sessionNonce
+    )
+      fail(code);
+    const consumed = await archive.get(execution.value.consumptionRecordDigest, "journal");
+    const readback = await archive.get(receipt.consumptionReadbackDigest);
+    for (const value of [consumed.value, readback.value])
+      validateContract("manual-operation-record.v3", value);
+    if (
+      consumed.value.kind !== "consumption" ||
+      consumed.value.status !== "CONSUMED" ||
+      consumed.value.stage !== "snapshot-consumer" ||
+      consumed.value.requestDigest !== requestDigest ||
+      readback.value.purpose !== "consumption-readback" ||
+      readback.value.outcome !== "MATCH" ||
+      readback.value.subjectDigest !== execution.value.consumptionRecordDigest ||
+      readback.value.observedDigest !== execution.value.consumptionRecordDigest
+    )
+      fail(code);
+    consumerSlot = await pinPrivateInput(
+      path.join(
+        lease.profile.storage.journalRoot,
+        "consumptions",
+        `${session.profileDigest.slice(7)}-${authorization.payload.authorizationId}.json`
+      ),
+      {
+        principal: { platform: "posix", uid: process.getuid() },
+        privateRoot: lease.profile.storage.journalRoot
+      }
+    );
+    if (!consumerSlot.bytes.equals(consumed.bytes)) fail(code);
+    consumerRecord = [];
+    for (const [digest, role] of [
+      [request.attemptAllocationDigest, "archive"],
+      [requestDigest, "archive"],
+      [sha256Canonical(authorization), "archive"],
+      [receipt.executionRecordDigest, "journal"],
+      [execution.value.consumptionRecordDigest, "journal"],
+      [receipt.consumptionReadbackDigest, "archive"]
+    ])
+      consumerRecord.push({ digest, role, bytes: (await archive.get(digest, role)).bytes });
+    await recheckResources();
+    consumerReady = true;
+    return Object.freeze({
+      status: "SNAPSHOT_INPUT_CONSUMED",
+      executionStatus: "INTERRUPTED_UNKNOWN",
+      executionRecordDigest: receipt.executionRecordDigest,
+      consumptionRecordDigest: execution.value.consumptionRecordDigest,
+      consumptionReadbackDigest: receipt.consumptionReadbackDigest,
+      requestDigest,
+      destinationDigest: destinationRecord.destinationDigest,
+      inputIndexDigest: consumerInput.inputIndexDigest,
       promotionEligible: false
     });
   };
@@ -2198,7 +2369,34 @@ export async function launchR3TargetCreate(input) {
       },
       async recheck() {
         if (completionAttempted && !completionReady) fail(code);
+        if (consumerAttempted && !consumerReady) fail(code);
         await recheckResources();
+      },
+      async consumeSnapshot(...args) {
+        const [selector] = args;
+        if (
+          args.length !== 1 ||
+          !exact(selector, ["inputReference"]) ||
+          typeof selector.inputReference !== "string" ||
+          !uuid.test(selector.inputReference) ||
+          closed ||
+          consumerAttempted ||
+          !completionReady ||
+          session.scope.phase !== "source" ||
+          session.scope.chain !== "snapshot"
+        )
+          fail(code);
+        consumerAttempted = true;
+        consumerPending = consumeSnapshot(selector.inputReference);
+        try {
+          return await consumerPending;
+        } catch (cause) {
+          throw Object.assign(new Error(code), {
+            code,
+            consumption,
+            failureCode: /^[A-Z0-9_]{1,64}$/u.test(cause?.code ?? "") ? cause.code : code
+          });
+        }
       },
       close
     });

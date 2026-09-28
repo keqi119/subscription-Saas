@@ -201,3 +201,13 @@ H1 的 `prepareR3HostedEvidenceImport` 在打开 job/session 句柄前保留 arc
 R2 历史继续使用原校验器。仅在独立重放 R3 目的地之后，才从 R2 输入中排除这两份 R3 对象及已经核实的 Docker exec 流摘要；未知或无关原件仍被拒绝。该选择函数本身不核准证据，也不授予能力。
 
 原生入口成功返回 `TARGET_CREATED` 和 `promotionEligible:false`；后续重查继续读回完成原件。普通关闭仍保留已消费会话、UNKNOWN 和所有锁，等待实际清理结果。此实现不接通 snapshot-consumer、lifecycle 动态执行或实际 hosted workflow，不能作为真实 CI/数据库验收成绩。
+
+## Source 快照消费记录接续
+
+创建完成后，同一句柄的 `consumeSnapshot({inputReference})` 只接受固定输入 UUID；source/snapshot、目的地、候选及创建完成前序均由当前会话取得。复用 request/auth v3、allocation v2 和 record v3，`scopeAuthorizationDigest` 指向既有 permission 原件，不新增授权体系。输入读取器核对完整原件图，再要求 permission 中本 phase 的精确目的地和主体：H1 读取、解密为 `manual-h1:<profileDigest>`，使用方为 `manual-r3-job:<jobAdmissionDigest>`。这些标识不替代后续实际 OSS 读取身份校验。
+
+会话独立从可信 wrapper 捕获的仓库根打开固定读取器；调用方不能提供 reader、批准布尔或回调。签发和消费均重放已完成的创建、保管及锁，校验分配、签名、时间、撤销、输入和同 session/nonce。消费沿用永久一次性槽及实际读回，追加前序为创建 SUCCEEDED 的消费 UNKNOWN，保留创建最初 UNKNOWN 和完成原件。返回 `SNAPSHOT_INPUT_CONSUMED`、`executionStatus:INTERRUPTED_UNKNOWN` 与 `promotionEligible:false`，尚无密文读取、私钥释放或 restore API。任何部分写入或再次尝试都不能重试消费或释放锁。
+
+准备阶段先保留 `inputs/snapshots` 父目录，允许目的地生成后再导入准确 permission。输入 pin 建立后，目标重查继续执行固定 Engine/PG/数据库查询，但不再向其共享 raw 目录追加重复诊断；既有创建观察原件保留。目录身份与文件字节检查没有放宽。
+
+本切片限定 source。final 必须先接入同候选、同输入且实际通过的 source 执行证明读取器；当前入口继续拒绝 final，不能用 schema 有效的摘要或调用方成功声明替代。认证解密恢复、生命周期实际执行与清理、真实 hosted workflow 和 Stage 1 验收仍未完成。

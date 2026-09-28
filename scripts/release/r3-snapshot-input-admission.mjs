@@ -7,6 +7,7 @@ import {
   sha256Canonical,
   validateContract
 } from "../../packages/release-foundation/src/index.mjs";
+import { validateManualSnapshotConsumerRequest } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { verifySnapshotMetadataDeclarations } from "../../packages/release-foundation/src/snapshot/export-sanitized.mjs";
 import { validateSnapshotEncryptionEnvelope } from "../../packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs";
 import { validateSnapshotCustody } from "../../packages/release-foundation/src/snapshot/custody-contracts.mjs";
@@ -557,6 +558,47 @@ export async function readR3SnapshotInput(input) {
       }
     };
     await recheck();
+    // This checks a declaration's resource boundary, not a consume decision.
+    // The session separately verifies allocation, creation, revocation and slot.
+    const assertConsumerBinding = async (input) => {
+      requireThat(exact(input, ["request", "scope"]));
+      const request = validateManualSnapshotConsumerRequest(input.request),
+        scope = input.scope;
+      requireThat(
+        exact(scope, [
+          "targetPolicyDigest",
+          "creationSpecDigest",
+          "jobAdmissionDigest",
+          "buildProofDigest",
+          "sourceSha",
+          "phase",
+          "chain"
+        ])
+      );
+      requireThat(
+        request.schemaVersion === "manual-runner-request.v3" &&
+          request.profileDigest === profileDigest &&
+          request.ownerId === profile.ownerId &&
+          request.input.inputReference === inputReference &&
+          request.input.inputIndexDigest === sha256Bytes(indexBytes) &&
+          request.scopeAuthorizationDigest === index.permission.digest &&
+          scope.chain === "snapshot" &&
+          request.phase === scope.phase &&
+          request.sourceSha === scope.sourceSha &&
+          request.candidate.buildProofDigest === scope.buildProofDigest &&
+          typeof scope.jobAdmissionDigest === "string" &&
+          DIGEST.test(scope.jobAdmissionDigest)
+      );
+      const use = s.permission.allowedUses.find((value) => value.phase === request.phase);
+      requireThat(
+        use &&
+          use.destinationAdmissionDigest === request.destinationAdmissionDigest &&
+          use.readerPrincipal === `manual-h1:${profileDigest}` &&
+          use.decryptorPrincipal === `manual-h1:${profileDigest}` &&
+          use.userPrincipal === `manual-r3-job:${scope.jobAdmissionDigest}`
+      );
+      await recheck();
+    };
     return freeze({
       inputId: inputReference,
       inputIndexDigest: sha256Bytes(indexBytes),
@@ -569,6 +611,7 @@ export async function readR3SnapshotInput(input) {
       rawReferences: [...refs]
         .map(([digest, bytes]) => ({ digest, bytes: bytes.length }))
         .sort((a, b) => a.digest.localeCompare(b.digest)),
+      assertConsumerBinding,
       recheck,
       close
     });

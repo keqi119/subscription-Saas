@@ -4,6 +4,14 @@
 
 ## 当前接续状态
 
+R3 source 快照消费接线已实现，最终定向整合复验通过。`consumeSnapshot({inputReference})` 从同一创建会话派生精确目的地、候选和前序，通过固定输入读取器核对 permission 原件及主体，再沿用永久一次性槽、读回和 UNKNOWN 执行记录。创建最初 UNKNOWN、SUCCEEDED、保管原件和全部锁均保留。
+
+本步没有读取密文、释放解密私钥或执行 restore；final 消费在匹配 source 执行证明读取器补齐前继续拒绝。后续是实际认证恢复、lifecycle 执行和清理、hosted 接线及真实验收。当前无需再次批准 Docker、迁移或非商用方案。
+
+输入读取器 4/4、既有 R3 会话 7/7、API 输入检查 1/1 通过；小型参数边界修正后的针对性回归也通过。有限独立审查无阻断项。第一次整合因复用的 fresh 夹具被消费入口正确拒绝，改为 snapshot 夹具后，最终 Linux 整合自然退出 0、1/1、0 skip、844,187.787811 ms；271 项源码与运行副本一致。该结果使用真实私有 Linux 文件、会话与 TCP，GitHub/Engine/PG 和 SQL helper 为合成载体，不是真实 hosted/数据库验收。完整证据记录见 [本轮计划](../superpowers/plans/2026-09-28-stage1-r3-source-consumer.md)。
+
+## 已完成增量记录（各项保留当时边界）
+
 - R3 同会话创建完成记录已接通：原生 `completeCreation()` 无参数且仅一次，前后核对当前资源；会话独立重放已归档的 hosted/PG/数据库原件，核对消费、撤销和精确锁集合，追加指向原 UNKNOWN 的 SUCCEEDED execution 及四条实际 archive/backup custody。完成记录保存 journal/archive/backup，并在后续重查中读回。原 UNKNOWN 和已消费锁仍保留，未授予 snapshot-consumer 或清理权限。最终代码的单个 Linux 定向复验自然退出 0，1/1、0 skip、527,434.613643 ms；269 项源码与冻结副本一致。该结果为合成整合，非真实 hosted/PG/CI 验收。
 - 有限审查确认并修正 R2/R3 共用归档的两处兼容问题：旧 R2 校验器不认识 R3 destination/observations，且不接受二进制 Docker 流作为 UTF-8 原件。现在仅排除独立重放确认的 R3 对象与执行流摘要，无关原件继续拒绝。短回归先 RED 后 GREEN；既有未决/已 reconcile 的 R2 历史用例通过。没有新业务功能、数据库 suite、例外、云端写入或商用 KMS。
 - R3 目的地原件已接入同一创建句柄：无参、仅一次的 `recordDestination()` 重新读取实际 PG 两端身份和数据库事实，绑定原 UNKNOWN/session、job/workspace、完整 manifest 初始目标及物理/namespace 锁。PG resource/exec 与 SELECT 原件可重解析，目的地及观察对象分别保存 archive/加密 backup 并持续比对；普通关闭保留 UNKNOWN 与锁。返回仍为 `DESTINATION_OBSERVED`，创建成功、custody/consumer/cleanup 及实际 workflow 尚未接通。
@@ -72,7 +80,7 @@ R2 normal 重验 `75700` 已自然结束，host/Node exit 0：1 pass / 0 fail / 
 
 | 顺序 | 尚未完成的工作                                                        | 完成依据                                                                               |
 | ---- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| 1    | R3 剩余生产接线：消费/清理、lifecycle 执行及 hosted job               | 复用已接通的目的地和创建完成图；37 suites 实际目标齐全；按实际 job 核验存储及通道      |
+| 1    | R3 剩余生产接线：认证恢复/final 消费/清理、lifecycle 及 hosted job    | 复用已接通的目的地和创建完成图；37 suites 实际目标齐全；按实际 job 核验存储及通道      |
 | 2    | 最终候选的受保护 CI 构建与 H2 证据读回                                | 同一源码、API/Web/Runner 镜像及独立保管身份的真实原件                                  |
 | 3    | R2 两个独立 PG17 目标的 migration、权限读回、verification / reconcile | normal 和 apply-interrupted 各自的真实 operationRef、目标身份与结果；原 UNKNOWN 不改写 |
 | 4    | R3 合法快照认证恢复及同候选 fresh / snapshot 双链                     | 合法来源、消费权限、独立保管读回齐全；两条 37-suite/API-Web 链真实执行                 |
@@ -85,7 +93,7 @@ R2 normal 重验 `75700` 已自然结束，host/Node exit 0：1 pass / 0 fail / 
 
 R3 路线已按当前收口决策纠正：此前拟做的 prebuild 读取器不属于本期必要路径，草稿已停止，尚未写入生产代码或执行测试。[最小发布决策](../superpowers/specs/2026-09-06-stage1-minimal-controlled-release-decision.zh-CN.md)明确延期构建前私有快照依赖；本期构建沿用唯一 `build-proof.v1`，提升前完成合法 snapshot 链。
 
-当前未接线的 `manual-runner-request.v2` 强制要求旧 bundle/dispatch/RC workflow，非商用 producer 授权 v2 也带有同类依赖。不能为适配这些字段恢复已延期平台或填写替代值。consumer v3 已完成纯合同层面的纠正，保留 v2 历史解释；固定合法快照原件读取器、创建会话、初始 Engine/PG/数据库集合和创建完成记录已实现。下一段补全同会话消费、lifecycle 动态执行、清理结果及实际 hosted 入口。实际权限来源、对象版本、独立保管读回、目的地和消费会话仍须闭合，不能用测试原件替代。只有确需新 producer 时才对齐它的前向授权；已有合法密文不因消费合同更新被强制重生产。
+当前未接线的 `manual-runner-request.v2` 强制要求旧 bundle/dispatch/RC workflow，非商用 producer 授权 v2 也带有同类依赖。不能为适配这些字段恢复已延期平台或填写替代值。consumer v3 已完成纯合同层面的纠正，保留 v2 历史解释；固定合法快照原件读取器、创建会话、初始 Engine/PG/数据库集合和创建完成记录已实现。source 同会话持久消费已实现但尚未认证恢复；下一段补全恢复、匹配 source 证明的 final 消费、lifecycle 动态执行、清理结果及实际 hosted 入口。实际权限来源、对象版本、独立保管读回、目的地和消费会话仍须闭合，不能用测试原件替代。只有确需新 producer 时才对齐它的前向授权；已有合法密文不因消费合同更新被强制重生产。
 
 R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此前 memo 将外部 controller/current-status 服务、第二 checkpoint 和独立 grant 体系推导为统一前置条件，现已撤回；来源确有第三方许可限制时才按其真实原件处理。具体来源、用途、对象版本和存储读回是仍需核对的事实，不以此重复申请用户已授权的实施操作。
 
@@ -93,6 +101,7 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 
 ## 证据定位
 
+- Source 消费接续：缺 API RED `4a7e7d`/`7da4f7`，错误 fresh 夹具的 native01 `e26f4b`/`8ba781` 均保留。最终 `r3-consumer-native02.log`（`2d6810`/`a6cf06`）自然 exit 0、1/1、0 skip、844,187.787811 ms；副本 `/root/.cache/r3-consumer-yfNknX` 对应 `20260928-065812-165061035-copy.sha256`，271 文件与源码一致（`a06d77`）。读取器 4/4（`5cd140`），参数边界修正后定向 1/1（`ab5a67`），原生 API 1/1（`c40d0b`），helper 报告现有会话 7/7；只读审查无阻断。最终合同 `0ee066` 为 218/83/128/13，digest `sha256:3fee60f8de55859e8f94a90e7ebbbcc7585911b2806ba6d38c97917aecda1065`；登记 `68dd1b` 为 99/39/60/0。本轮预检 `9fca32` migrate status 因空连接 URL 退出 1，Prisma validation `3b5a86` 退出 0；未连接业务库。
 - 创建完成：缺入口 RED `8594ec`（`r3-completion-red01.log`）；准备轮 native01 因并行编辑在源码复制哈希比较处拒绝，未运行测试；native02 为修正审查前的 1/1 通过。两处混合历史兼容修正后，最终 `r3-completion-native03.log`（`2a0db8`）自然 exit 0、1/1、0 skip、527,434.613643 ms；269 项副本 `/root/.cache/r3-completion-5SxkBf` 对应 `20260928-052043-764618553-copy.sha256`，与最终源码一致（`d95beb`）。核心 7/7（`c50ed3`）；原件筛选短回归 `0ecfc8` RED → `5976d4` GREEN；旧 R2 历史定向 `070b36` 为 1/1。合同 `504b47` 为 218/83/128/13，digest `sha256:42b604da6f9a2a80064eeb3a4a85eb9e753b605ea3b1b82bc9f858f28118a289`；登记 `2d527f` 为 99/39/60/0。预检 `aba01b` migrate status 缺 datasource.url、exit 1；`362903` Prisma validate exit 0，无数据库连接。限制与有限审查修正见 [本轮计划](../superpowers/plans/2026-09-28-stage1-r3-creation-completion.md)。
 - 目的地记录：`r3-destination-native01.log`（`d68683`）为唯一受影响 Linux 整合，host/Node exit 0、1/1、0 skip；269 项源码副本 `/root/.cache/r3-destination-1WH00J` 绑定 `20260928-043938-474339759-copy.sha256`。纯 helper 缺入口 RED `869b54`，GREEN `352b01` 为 5/5、1,367.7161 ms。合同首次 `dda5eb` 为登记漏项 `CONTRACT_FILE_SET_DRIFT`，修正既有 catalog 后 `f6a559` 为 218/83/128/13，repository digest `sha256:cd45f29ba45e4130a384a03806880b2d12b1204c1ad81b2fae61116b44c5cef9`；该登记修正晚于 native 冻结，目的地实现字节未变。登记 `861441` 为 99/39/60/0，格式/语法/diff `2c2a7d` 通过。预检 `b005fa` 缺 datasource.url、exit 1；`c9b98c` Prisma validate exit 0，无数据库连接。
 - hosted 原件交接：Linux `r3-evidence-native02.log`（终端 `ebcfeb`）自然 exit 0，16/16、0 skip；私有副本 `/root/.cache/r3-evidence-T2k2Aq` 的 268 项源码对应 `20260928-042033-526981653-copy.sha256`。首次 `r3-evidence-native01.log`（`493855`）为副本缺依赖，7 pass / 1 fail，H1 文件未进入测试；保留该失败。修复原件一致性的 package RED `b90a45` 为 7/8，GREEN `bcca5e` 为 8/8；此后相关代码仅格式化。最终合同 `3209a5`：217 文件、83 schemas、128 migrations、13 commands，digest `sha256:abe771e857b90823df9d32f9484d09de1b3e3c6fa1caa0c05143adab59751bf5`；登记 `9d8c8e` 为 99/39/60/0。语法、格式及 diff 检查通过；本轮预检为 migration status 缺 datasource.url（`a5de54`，exit 1）、Prisma validate 通过（`e75cf6`），无业务库连接。

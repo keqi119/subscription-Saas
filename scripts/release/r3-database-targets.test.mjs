@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { sha256Canonical, sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { suiteDatabaseName } from "../../packages/release-foundation/src/database-target.mjs";
+import { selectManifestSuites } from "../../packages/release-foundation/src/database-test-launcher.mjs";
 import { planManualR3TargetLocks } from "../../packages/release-foundation/src/manual-r3-target-locks.mjs";
 import { assessR3PostgresReadback, buildR3Destination } from "./r3-destination.mjs";
 import {
+  bindR3SourceManifest,
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
   recheckR3DatabaseTargets
@@ -130,6 +132,125 @@ test("R3 database plan covers every manifest suite with only lifecycle reserved"
   const extraTopology = structuredClone(manifest);
   extraTopology.suites[0].databaseTopology = "source-target";
   assert.throws(() => planR3DatabaseTargets({ ...input(), manifest: extraTopology }), invalid);
+});
+
+test("R3 source manifest binds every original command to exact held databases in both chains", () => {
+  assert.equal(typeof bindR3SourceManifest, "function");
+  const discoveryDigest = `sha256:${"d".repeat(64)}`;
+  for (const chain of ["fresh", "snapshot"]) {
+    const plan = planR3DatabaseTargets(input("source", chain));
+    const selections = bindR3SourceManifest({
+      operationRef,
+      chain,
+      manifest,
+      plan,
+      discoveryDigest,
+      discoveryUnclassifiedCount: 0
+    });
+    const original = selectManifestSuites({
+      manifest,
+      discoveryDigest,
+      discoveryUnclassifiedCount: 0,
+      chain,
+      runId: operationRef,
+      secretRootRef: `.release-local/runs/${operationRef}`
+    });
+    assert.equal(selections.length, manifest.suites.length);
+    assert.deepEqual(
+      selections.map(({ suiteId }) => suiteId),
+      manifest.suites.map(({ suiteId }) => suiteId)
+    );
+    const used = new Set();
+    for (const [index, selection] of selections.entries()) {
+      assert.deepEqual(selection.command, original[index].command);
+      assert.deepEqual(selection.files, original[index].files);
+      assert.equal(selection.runId, operationRef);
+      assert.equal(selection.manifestDigest, plan.manifestDigest);
+      assert.equal(selection.discoveryDigest, discoveryDigest);
+      const expected =
+        selection.suiteId === "node.release-database-lifecycle.postgres"
+          ? plan.reservations
+          : plan.targets.filter(({ suiteId }) => suiteId === selection.suiteId);
+      assert.equal(
+        expected.length,
+        selection.suiteId === "script.stage1-clean-acceptance.postgres" ||
+          selection.suiteId === "node.release-database-lifecycle.postgres"
+          ? 2
+          : 1
+      );
+      assert.equal(selection.assignment.databaseName, expected[0].databaseName);
+      assert.equal(selection.assignment.shard, expected[0].shard);
+      assert.equal(selection.additionalAssignments.length, expected.length - 1);
+      assert.equal(
+        selection.r3ExecutionMode,
+        selection.suiteId === "node.release-database-lifecycle.postgres"
+          ? "lifecycle-owned"
+          : "suite"
+      );
+      for (const [resourceIndex, item] of expected.entries()) {
+        const assignment =
+          resourceIndex === 0 ? selection.assignment : selection.additionalAssignments[0];
+        assert.equal(assignment.databaseName, item.databaseName);
+        assert.equal(assignment.shard, item.shard);
+        assert.deepEqual(
+          assignment.secretReferences,
+          Object.fromEntries(
+            Object.keys(item.roles).map((profile) => [
+              profile,
+              `r3/${operationRef}/database-credentials/${item.databaseName}-${profile}.json`
+            ])
+          )
+        );
+        assert.equal(used.has(item.databaseName), false);
+        used.add(item.databaseName);
+      }
+    }
+    assert.equal(used.size, plan.targets.length + plan.reservations.length);
+    const clean = selections.find(
+      ({ suiteId }) => suiteId === "script.stage1-clean-acceptance.postgres"
+    );
+    assert.equal(clean.additionalAssignments[0].name, "source");
+    const lifecycle = selections.find(
+      ({ r3ExecutionMode }) => r3ExecutionMode === "lifecycle-owned"
+    );
+    assert.equal(lifecycle.assignment.name, "primary");
+    assert.equal(lifecycle.additionalAssignments[0].name, "sibling");
+    assert.equal(Object.isFrozen(selections) && Object.isFrozen(lifecycle.assignment), true);
+  }
+});
+
+test("R3 source manifest refuses a partial or changed plan and caller selections", () => {
+  const plan = planR3DatabaseTargets(input());
+  const request = {
+    operationRef,
+    chain: "fresh",
+    manifest,
+    plan,
+    discoveryDigest: `sha256:${"d".repeat(64)}`,
+    discoveryUnclassifiedCount: 0
+  };
+  for (const override of [
+    { suiteIds: [manifest.suites[0].suiteId] },
+    { files: [manifest.suites[0].files[0]] },
+    { command: { executable: "node", arguments: [] } },
+    { batchId: "batch-a" },
+    { operationRef: "20000000-0000-4000-8000-000000000001" },
+    { chain: "snapshot" },
+    { plan: planR3DatabaseTargets(input("final")) },
+    { plan: Object.freeze({ ...plan, targets: plan.targets.slice(1) }) },
+    {
+      plan: Object.freeze({
+        ...plan,
+        targets: [
+          Object.freeze({ ...plan.targets[0], databaseName: "s1ci_000000000000000000000000" }),
+          ...plan.targets.slice(1)
+        ]
+      })
+    },
+    { manifest: { ...manifest, suites: manifest.suites.slice(1) } },
+    { discoveryUnclassifiedCount: 1 }
+  ])
+    assert.throws(() => bindR3SourceManifest({ ...request, ...override }), invalid);
 });
 
 test("R3 database provision executes single statements, bounds roles and rechecks actual identities", async () => {

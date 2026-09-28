@@ -3,6 +3,7 @@
 import { canonicalJson } from "../../packages/release-foundation/src/canonical-json.mjs";
 import { sha256Canonical, sha256Text } from "../../packages/release-foundation/src/digest.mjs";
 import { suiteDatabaseName } from "../../packages/release-foundation/src/database-target.mjs";
+import { selectManifestSuites } from "../../packages/release-foundation/src/database-test-launcher.mjs";
 import {
   sqlIdentifier,
   sqlLiteral
@@ -131,6 +132,87 @@ export function planR3DatabaseTargets({ operationRef, phase, chain, manifest }) 
       targets,
       reservations
     });
+  } catch {
+    fail();
+  }
+}
+// Bind the entire declared source manifest to the already planned held target.
+// The lifecycle test owns both reserved databases and its cleanup; its mode is
+// explicit so a caller cannot route it through generic post-custody cleanup.
+export function bindR3SourceManifest(input) {
+  try {
+    need(
+      input &&
+        typeof input === "object" &&
+        !Array.isArray(input) &&
+        JSON.stringify(Object.keys(input).sort()) ===
+          JSON.stringify(
+            [
+              "operationRef",
+              "chain",
+              "manifest",
+              "plan",
+              "discoveryDigest",
+              "discoveryUnclassifiedCount"
+            ].sort()
+          )
+    );
+    const { operationRef, chain, manifest, plan, discoveryDigest, discoveryUnclassifiedCount } =
+      input;
+    need(plan?.phase === "source" && plan.operationRef === operationRef && plan.chain === chain);
+    const expectedPlan = planR3DatabaseTargets({ operationRef, phase: "source", chain, manifest });
+    need(Object.isFrozen(plan) && sha256Canonical(plan) === sha256Canonical(expectedPlan));
+    const selections = selectManifestSuites({
+      manifest,
+      discoveryDigest,
+      discoveryUnclassifiedCount,
+      chain,
+      runId: operationRef,
+      secretRootRef: `.release-local/runs/${operationRef}`
+    });
+    need(selections.length === manifest.suites.length);
+    const used = new Set();
+    const bound = selections.map((selection) => {
+      const lifecycle = selection.suiteId === LIFECYCLE;
+      const items = lifecycle
+        ? plan.reservations
+        : plan.targets.filter((item) => item.suiteId === selection.suiteId);
+      need(items.length === (lifecycle || selection.suiteId === CLEAN ? 2 : 1));
+      const assign = (item, original, name) => {
+        need(!used.has(item.databaseName));
+        used.add(item.databaseName);
+        return {
+          ...original,
+          ...(name ? { name } : {}),
+          databaseName: item.databaseName,
+          shard: item.shard,
+          secretReferences: Object.fromEntries(
+            Object.keys(item.roles).map((profile) => [
+              profile,
+              `r3/${operationRef}/database-credentials/${item.databaseName}-${profile}.json`
+            ])
+          )
+        };
+      };
+      return {
+        ...selection,
+        r3ExecutionMode: lifecycle ? "lifecycle-owned" : "suite",
+        assignment: assign(items[0], selection.assignment, lifecycle ? "primary" : null),
+        additionalAssignments: items
+          .slice(1)
+          .map((item, index) =>
+            assign(
+              item,
+              lifecycle
+                ? { name: "sibling", suiteIdentity: "database-lifecycle" }
+                : selection.additionalAssignments[index],
+              lifecycle ? "sibling" : "source"
+            )
+          )
+      };
+    });
+    need(used.size === plan.targets.length + plan.reservations.length);
+    return frozen(bound);
   } catch {
     fail();
   }

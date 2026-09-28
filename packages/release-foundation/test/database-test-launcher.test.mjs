@@ -1,5 +1,19 @@
 import assert from "node:assert/strict";
+import {
+  chmodSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { sha256Text } from "../src/digest.mjs";
 
 import {
   runDatabaseManifest,
@@ -353,6 +367,26 @@ test("manifest refuses a suite report from another assignment", async () => {
   );
 });
 
+test("generic suite execution refuses lifecycle-owned targets before provisioning", async () => {
+  let provisionCalled = false;
+  await assert.rejects(
+    runDatabaseSuite({
+      execution: { r3ExecutionMode: "lifecycle-owned" },
+      operationId: "lifecycle-must-use-its-runner",
+      provision: async () => {
+        provisionCalled = true;
+      },
+      deployMigrations: async () => {},
+      grantRuntimeAccess: async () => {},
+      executeTest: async () => {},
+      custody: async () => {},
+      cleanup: async () => {}
+    }),
+    { code: "DATABASE_TEST_LIFECYCLE_RUNNER_REQUIRED" }
+  );
+  assert.equal(provisionCalled, false);
+});
+
 test("database test context resolves only the assigned runtime secret reference", () => {
   const password = "runtime-private-password";
   const context = {
@@ -480,3 +514,243 @@ test("database test context fails closed without launcher or with path traversal
     { code: "RELEASE_DATABASE_TEST_CONTEXT_REFERENCE_INVALID" }
   );
 });
+
+function h1ContextFixture() {
+  const profile = JSON.parse(
+    readFileSync(
+      new URL("../../../release/contracts/manual-stage1-profile.v2.json", import.meta.url)
+    )
+  );
+  const operationRef = "10000000-0000-4000-8000-000000000001";
+  const suiteId = "script.stage1-clean-acceptance.postgres";
+  const allowedFile = "scripts/stage1-clean-acceptance.postgres.test.mjs";
+  const secrets = new Map();
+  const database = (letter) => {
+    const databaseName = `s1ci_${letter.repeat(24)}`;
+    const password = `private-runtime-password-${letter}`;
+    const runtimeSecretReference = `r3/${operationRef}/database-credentials/${databaseName}-runtime-test.json`;
+    secrets.set(runtimeSecretReference, {
+      username: `s1r_${sha256Text(databaseName).slice(0, 24)}`,
+      password,
+      database: databaseName,
+      host: "127.0.0.1",
+      port: 55441,
+      tlsMode: "require"
+    });
+    return {
+      databaseName,
+      databaseOid: letter === "a" ? "19001" : "19002",
+      targetFingerprint: digest,
+      runtimeSecretReference,
+      runtimeCredentialFingerprint: sha256Bytes(Buffer.from(password)),
+      migrationCredentialFingerprint: `sha256:${"c".repeat(64)}`
+    };
+  };
+  const target = database("a"),
+    source = database("b");
+  const context = {
+    schemaVersion: "release-database-test-context.v1",
+    operationRef,
+    suiteId,
+    profileDigest: sha256Canonical(profile),
+    containerId: "a".repeat(64),
+    allowedFiles: [allowedFile],
+    ...target,
+    namedDatabases: { source, target }
+  };
+  const environment = {
+    S1_RELEASE_DATABASE_TEST: "1",
+    S1_RELEASE_DATABASE_CONTEXT: `r3/${operationRef}/database-test-contexts/${suiteId}/context.json`
+  };
+  const reads = [];
+  const options = {
+    environment,
+    repoRoot: process.cwd(),
+    loadJson(filePath, settings) {
+      reads.push({ filePath, settings });
+      if (
+        filePath === path.resolve(process.cwd(), "release/contracts/manual-stage1-profile.v2.json")
+      )
+        return profile;
+      if (
+        filePath === `${profile.storage.credentialRoot}/${environment.S1_RELEASE_DATABASE_CONTEXT}`
+      )
+        return context;
+      const reference = filePath.slice(profile.storage.credentialRoot.length + 1);
+      assert.ok(secrets.has(reference), "reader must use a known credential path");
+      return secrets.get(reference);
+    }
+  };
+  return { profile, context, options, secrets, reads, allowedFile };
+}
+
+test("H1 database test context reads single and paired runtime credentials from the fixed profile", () => {
+  const f = h1ContextFixture();
+  const paired = requiredReleaseDatabaseTestContext(f.allowedFile, f.options);
+  assert.equal(
+    paired.namedDatabases.source.databaseName,
+    f.context.namedDatabases.source.databaseName
+  );
+  assert.match(paired.databaseUrl, /@127\.0\.0\.1:55441\/s1ci_[a-f0-9]{24}\?sslmode=require$/u);
+  assert.equal(paired.namedDatabases.target.databaseUrl, paired.databaseUrl);
+  assert.ok(
+    f.reads
+      .slice(1)
+      .every(
+        ({ filePath, settings }) =>
+          filePath.startsWith(`${f.profile.storage.credentialRoot}/r3/`) &&
+          settings.privateRoot === f.profile.storage.credentialRoot
+      )
+  );
+  delete f.context.namedDatabases;
+  assert.equal(
+    requiredReleaseDatabaseTestContext(f.allowedFile, f.options).databaseUrl,
+    paired.databaseUrl
+  );
+});
+
+test("H1 database test context refuses operation, profile, caller and credential substitutions", () => {
+  const cases = [
+    [
+      "operation",
+      (f) => {
+        f.context.operationRef = "20000000-0000-4000-8000-000000000002";
+      }
+    ],
+    [
+      "suite",
+      (f) => {
+        f.context.suiteId = "another.suite";
+      }
+    ],
+    [
+      "profile",
+      (f) => {
+        f.context.profileDigest = digest;
+      }
+    ],
+    [
+      "root override",
+      (f) => {
+        f.options.environment.S1_RELEASE_DATABASE_CONTEXT = "/tmp/context.json";
+      }
+    ],
+    [
+      "credential traversal",
+      (f) => {
+        f.context.runtimeSecretReference = "../runtime-test.json";
+      }
+    ],
+    [
+      "cross operation",
+      (f) => {
+        f.context.runtimeSecretReference = f.context.runtimeSecretReference.replace(
+          "10000000",
+          "20000000"
+        );
+      }
+    ],
+    [
+      "migration credential",
+      (f) => {
+        f.context.runtimeSecretReference = f.context.runtimeSecretReference.replace(
+          "-runtime-test.json",
+          "-migrate.json"
+        );
+      }
+    ],
+    [
+      "port",
+      (f) => {
+        f.secrets.get(f.context.runtimeSecretReference).port = 5432;
+      }
+    ],
+    [
+      "TLS",
+      (f) => {
+        f.secrets.get(f.context.runtimeSecretReference).tlsMode = "disable";
+      }
+    ],
+    [
+      "role",
+      (f) => {
+        f.secrets.get(f.context.runtimeSecretReference).username = `s1r_${"f".repeat(24)}`;
+      }
+    ],
+    [
+      "password",
+      (f) => {
+        f.secrets.get(f.context.runtimeSecretReference).password = "different-runtime-password";
+      }
+    ],
+    [
+      "same database",
+      (f) => {
+        f.context.namedDatabases.source = f.context.namedDatabases.target;
+      }
+    ],
+    [
+      "caller suffix",
+      (f) => {
+        f.allowedFile = `other-checkout/${f.allowedFile}`;
+      }
+    ]
+  ];
+  for (const [name, mutate] of cases) {
+    const f = h1ContextFixture();
+    mutate(f);
+    assert.throws(
+      () => requiredReleaseDatabaseTestContext(f.allowedFile, f.options),
+      (error) => /^RELEASE_DATABASE_TEST_/u.test(error.code ?? ""),
+      name
+    );
+  }
+});
+
+test(
+  "H1 database test context checks real private files and rejects links and broad modes",
+  { skip: process.platform !== "linux" || process.getuid?.() !== 0 },
+  () => {
+    const scratchRoot = path.join(os.homedir(), ".cache/stage1-r3-tests");
+    mkdirSync(scratchRoot, { recursive: true, mode: 0o700 });
+    const directory = mkdtempSync(path.join(scratchRoot, "test-context-"));
+    try {
+      const f = h1ContextFixture();
+      const repoRoot = path.join(directory, "checkout");
+      f.profile.storage.credentialRoot = path.join(directory, "credential");
+      f.context.profileDigest = sha256Canonical(f.profile);
+      const write = (filename, value) => {
+        mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
+        writeFileSync(filename, JSON.stringify(value), { mode: 0o600 });
+      };
+      write(path.join(repoRoot, "release/contracts/manual-stage1-profile.v2.json"), f.profile);
+      write(
+        path.join(
+          f.profile.storage.credentialRoot,
+          f.options.environment.S1_RELEASE_DATABASE_CONTEXT
+        ),
+        f.context
+      );
+      for (const [reference, secret] of f.secrets)
+        write(path.join(f.profile.storage.credentialRoot, reference), secret);
+      const options = { environment: f.options.environment, repoRoot };
+      const read = () => requiredReleaseDatabaseTestContext(f.allowedFile, options);
+      assert.equal(read().databaseName, f.context.databaseName);
+      const filename = path.join(
+        f.profile.storage.credentialRoot,
+        f.context.runtimeSecretReference
+      );
+      chmodSync(filename, 0o644);
+      assert.throws(read, { code: "RELEASE_DATABASE_TEST_CONTEXT_INVALID" });
+      chmodSync(filename, 0o600);
+      const linked = path.join(directory, "linked.json");
+      linkSync(filename, linked);
+      assert.throws(read, { code: "RELEASE_DATABASE_TEST_CONTEXT_INVALID" });
+      unlinkSync(filename);
+      symlinkSync(linked, filename);
+      assert.throws(read, { code: "RELEASE_DATABASE_TEST_CONTEXT_INVALID" });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+);

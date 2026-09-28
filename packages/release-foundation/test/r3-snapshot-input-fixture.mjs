@@ -263,7 +263,9 @@ export async function publishR3SnapshotFixture(
     destinationAdmissionDigest = d("9"),
     jobAdmissionDigest = d("8"),
     inputReference = randomUUID(),
-    payload
+    payload,
+    storageAccount = "1234567890123456",
+    bucketName
   } = {}
 ) {
   const s = snapshotDeclarations(
@@ -274,6 +276,12 @@ export async function publishR3SnapshotFixture(
   );
   let ciphertextPath;
   if (payload) {
+    // Allocation describes the historical snapshot; producer execution may be
+    // later. Keep the real encryptor's short execution window current in tests.
+    const issuedAt = Date.now();
+    s.producerAuthorization.issuedAt = new Date(issuedAt).toISOString();
+    s.producerAuthorization.notBefore = new Date(issuedAt).toISOString();
+    s.producerAuthorization.notAfter = new Date(issuedAt + 900000).toISOString();
     const directory = path.join(f.root, "payload");
     await fs.mkdir(directory, { mode: 0o700 });
     ciphertextPath = path.join(directory, "snapshot.enc");
@@ -299,6 +307,7 @@ export async function publishR3SnapshotFixture(
         sizeBytes: s.envelope.ciphertextSizeBytes
       });
   }
+  if (bucketName) s.custody.bucket.name = bucketName;
   const archive = f.profile.storage.archiveRoot;
   const rawPath = (ref) => path.join(archive, "raw", `${ref.digest.slice(7)}.bin`);
   await fs.mkdir(path.join(archive, "raw"), { recursive: true, mode: 0o700 });
@@ -352,7 +361,7 @@ export async function publishR3SnapshotFixture(
     restrictionOriginals: []
   };
   const c = s.custody,
-    account = "1234567890123456";
+    account = storageAccount;
   c.identities = {
     writer: `acs:ram::${account}:role/fixture-writer/session`,
     reader: `acs:ram::${account}:role/fixture-reader/session`

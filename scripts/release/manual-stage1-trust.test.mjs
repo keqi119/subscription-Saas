@@ -20,6 +20,10 @@ import { assessR3WorkspaceObservation } from "../../packages/release-foundation/
 import { signR3WorkspaceBinding } from "../../packages/release-foundation/src/r3-workspace-report.mjs";
 import { buildR3HostedEvidence } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
 import { publishR3SnapshotFixture } from "../../packages/release-foundation/test/r3-snapshot-input-fixture.mjs";
+import {
+  installR3SnapshotSdkFixture,
+  r3SnapshotBootstrapFixture
+} from "./r3-snapshot-payload-fixture.mjs";
 
 // The first RED is an assertion, not an import crash. Subsequent assertions
 // exercise the production entrypoint; there is no trusted-result mock.
@@ -3112,6 +3116,13 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         databaseSecretReference,
         databaseObservation;
       if (!dropped) {
+        const readerDirectory = path.join(f.profile.storage.credentialRoot, "snapshot-reader");
+        await fs.mkdir(readerDirectory, { mode: 0o700 });
+        await fs.writeFile(
+          path.join(readerDirectory, "bootstrap.json"),
+          encodeManualJson(r3SnapshotBootstrapFixture),
+          { flag: "wx", mode: 0o600 }
+        );
         // The helper's complete SQL/role matrix has its own focused tests. Here
         // exercise the native fixed connector, credential custody and once-only
         // wiring without repeating that matrix through every H1/H2 recheck.
@@ -3534,6 +3545,8 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         assert.equal(typeof launched.recordDestination, "function");
         assert.equal(typeof launched.completeCreation, "function");
         assert.equal(typeof launched.consumeSnapshot, "function");
+        assert.equal(typeof launched.fetchSnapshot, "function");
+        await assert.rejects(launched.fetchSnapshot());
         await assert.rejects(launched.consumeSnapshot({ inputReference: randomUUID() }));
         await assert.rejects(launched.completeCreation());
         await assert.rejects(launched.recordDestination());
@@ -3710,7 +3723,14 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         releaseMockHistory();
         const snapshot = await publishR3SnapshotFixture(f, {
           destinationAdmissionDigest: recorded.destinationDigest,
-          jobAdmissionDigest: sha256Canonical(f.admission)
+          jobAdmissionDigest: sha256Canonical(f.admission),
+          payload: {
+            bytes: Buffer.from("R3 native fetch synthetic sanitized dump\n"),
+            publicKey: generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 })
+              .publicKey
+          },
+          storageAccount: "1457643390906675",
+          bucketName: "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai"
         });
         const selector = { inputReference: snapshot.input.inputReference };
         await assert.rejects(launched.consumeSnapshot({ ...selector, destination: "override" }));
@@ -3771,6 +3791,61 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
           fs.stat(snapshot.rawPath({ digest: snapshot.s.envelope.ciphertextDigest })),
           { code: "ENOENT" }
         );
+        releaseMockHistory();
+        installR3SnapshotSdkFixture(t, {
+          operationRef: f.operationRef,
+          subject: {
+            bucket: snapshot.s.custody.bucket.name,
+            region: "oss-cn-shanghai",
+            key: snapshot.s.envelope.slotObjectKey,
+            version: "null-version-disabled",
+            etag: snapshot.s.custody.object.etag,
+            ciphertextDigest: snapshot.s.envelope.ciphertextDigest,
+            ciphertextSizeBytes: snapshot.s.envelope.ciphertextSizeBytes,
+            lastModified: snapshot.s.custody.worm.lastModified,
+            writerPrincipal: snapshot.s.custody.identities.writer
+          },
+          bytes: await fs.readFile(snapshot.ciphertextPath)
+        });
+        await assert.rejects(launched.fetchSnapshot({ approved: true }));
+        const fetched = await launched.fetchSnapshot().catch((error) => {
+          t.diagnostic(JSON.stringify({ fetchFailure: error.failureCode }));
+          throw error;
+        });
+        assert.equal(fetched.status, "CIPHERTEXT_OBSERVED");
+        assert.equal(fetched.executionStatus, "INTERRUPTED_UNKNOWN");
+        assert.equal(fetched.executionRecordDigest, consumedSnapshot.executionRecordDigest);
+        assert.equal(fetched.promotionEligible, false);
+        const consumerDirectory = path.join(
+          f.profile.storage.credentialRoot,
+          "r3",
+          f.operationRef,
+          "consumer"
+        );
+        assert.deepEqual(
+          await fs.readFile(path.join(consumerDirectory, "ciphertext", "snapshot.enc")),
+          await fs.readFile(snapshot.ciphertextPath)
+        );
+        assert.deepEqual(await fs.readdir(path.join(consumerDirectory, "plaintext")), []);
+        const readbackBytes = await fs.readFile(
+          path.join(consumerDirectory, "observations", "readback.json")
+        );
+        const readback = JSON.parse(readbackBytes);
+        assert.equal(sha256Bytes(readbackBytes), fetched.readbackDigest);
+        assert.equal(
+          readback.consumerExecutionRecordDigest,
+          consumedSnapshot.executionRecordDigest
+        );
+        assert.equal(readback.inputIndexDigest, consumedSnapshot.inputIndexDigest);
+        assert.equal(
+          fetched.ciphertextDigest,
+          sha256Bytes(await fs.readFile(snapshot.ciphertextPath))
+        );
+        assert.deepEqual(
+          await fs.readdir(path.join(f.profile.storage.archiveRoot, "raw")),
+          rawBeforeConsumer
+        );
+        await assert.rejects(launched.fetchSnapshot());
         releaseMockHistory();
         await launched.recheck();
         releaseMockHistory();

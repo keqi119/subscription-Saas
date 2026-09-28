@@ -328,6 +328,18 @@ test("R3 pins a complete declaration graph without opening ciphertext and detect
   assert.equal(result.metadataDigest, f.index.metadata.digest);
   assert.equal(result.permissionDigest, f.index.permission.digest);
   assert.equal(result.objectVersion, "null-version-disabled");
+  assert.deepEqual(result.storageSubject, {
+    bucket: f.s.custody.bucket.name,
+    region: "oss-cn-shanghai",
+    key: f.s.envelope.slotObjectKey,
+    version: "null-version-disabled",
+    etag: f.s.custody.object.etag,
+    ciphertextDigest: f.s.envelope.ciphertextDigest,
+    ciphertextSizeBytes: f.s.envelope.ciphertextSizeBytes,
+    lastModified: f.s.custody.worm.lastModified,
+    writerPrincipal: f.s.custody.identities.writer
+  });
+  assert.ok(Object.isFrozen(result.storageSubject));
   assert.ok(
     Object.isFrozen(result) &&
       Object.isFrozen(result.allowedUses[0]) &&

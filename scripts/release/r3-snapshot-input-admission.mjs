@@ -613,6 +613,17 @@ export async function readR3SnapshotInput(input) {
       metadataDigest: index.metadata.digest,
       ciphertextDigest: e.ciphertextDigest,
       objectVersion: c.object.version,
+      storageSubject: {
+        bucket: c.bucket.name,
+        region: c.bucket.region,
+        key: c.object.key,
+        version: c.object.version,
+        etag: c.object.etag,
+        ciphertextDigest: e.ciphertextDigest,
+        ciphertextSizeBytes: e.ciphertextSizeBytes,
+        lastModified: c.worm.lastModified,
+        writerPrincipal: c.identities.writer
+      },
       // Historical crypto parameters only. These do not grant consumption,
       // attest live storage/key possession or extend the current input deadline.
       cryptoInputs: {

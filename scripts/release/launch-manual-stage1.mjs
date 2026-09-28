@@ -38,6 +38,7 @@ import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
 import { assessR3PostgresObservation } from "./r3-postgres-observation.mjs";
 import { assessR3PostgresReadback, buildR3Destination } from "./r3-destination.mjs";
 import { readR3SnapshotInput } from "./r3-snapshot-input-admission.mjs";
+import { fetchR3SnapshotCiphertext } from "./r3-snapshot-payload.mjs";
 import {
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
@@ -1034,6 +1035,12 @@ export async function launchR3TargetCreate(input) {
     consumerInput,
     consumerSlot,
     consumerRecord,
+    consumerExecutionDigest,
+    fetchAttempted = false,
+    fetchReady = false,
+    fetchPending,
+    snapshotPayload,
+    snapshotReadback,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1042,14 +1049,17 @@ export async function launchR3TargetCreate(input) {
     closing;
   const diagnostics = [];
   const databaseSecrets = [];
+  const fetchAbort = new AbortController();
   const close = () => {
     if (closing) return closing;
     closed = true;
+    fetchAbort.abort();
     socket?.destroy();
     closing = (async () => {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
       const errors = [];
+      await fetchPending?.catch(() => {});
       await consumerPending?.catch(() => {});
       await completionPending?.catch(() => {});
       await destinationPending?.catch(() => {});
@@ -1072,7 +1082,16 @@ export async function launchR3TargetCreate(input) {
           errors.push(error);
         }
       }
-      for (const handle of [consumerInput, consumerSlot, hostedEvidence, lease, session, fixed]) {
+      for (const handle of [
+        snapshotReadback,
+        snapshotPayload,
+        consumerInput,
+        consumerSlot,
+        hostedEvidence,
+        lease,
+        session,
+        fixed
+      ]) {
         try {
           await handle?.close();
         } catch (error) {
@@ -1093,6 +1112,8 @@ export async function launchR3TargetCreate(input) {
     if (completionRecord) await recheckCompletion();
     await consumerInput?.recheck();
     await consumerSlot?.recheck();
+    await snapshotPayload?.recheck();
+    await snapshotReadback?.recheck();
     if (consumerRecord)
       for (const { digest, bytes, role } of consumerRecord)
         if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
@@ -1405,6 +1426,10 @@ export async function launchR3TargetCreate(input) {
     // Reserve the sibling directory before pinning the provisioner password:
     // private pins also bind directory metadata, which must remain unchanged.
     await fs.mkdir(path.join(directory, "database-credentials"), { mode: 0o700 });
+    const consumerDirectory = path.join(directory, "consumer");
+    await fs.mkdir(consumerDirectory, { mode: 0o700 });
+    for (const name of ["ciphertext", "plaintext", "observations"])
+      await fs.mkdir(path.join(consumerDirectory, name), { mode: 0o700 });
     const secretPath = path.join(directory, "postgres-password");
     const secretBytes = Buffer.from(randomBytes(32).toString("hex"));
     const secretFile = await fs.open(secretPath, "wx", 0o600);
@@ -2071,6 +2096,7 @@ export async function launchR3TargetCreate(input) {
     ])
       consumerRecord.push({ digest, role, bytes: (await archive.get(digest, role)).bytes });
     await recheckResources();
+    consumerExecutionDigest = receipt.executionRecordDigest;
     consumerReady = true;
     return Object.freeze({
       status: "SNAPSHOT_INPUT_CONSUMED",
@@ -2081,6 +2107,69 @@ export async function launchR3TargetCreate(input) {
       requestDigest,
       destinationDigest: destinationRecord.destinationDigest,
       inputIndexDigest: consumerInput.inputIndexDigest,
+      promotionEligible: false
+    });
+  };
+  const fetchSnapshot = async () => {
+    snapshotPayload = await fetchR3SnapshotCiphertext({
+      profile: lease.profile,
+      operationRef: fixed.spec.operationRef,
+      subject: consumerInput.storageSubject,
+      signal: fetchAbort.signal,
+      recheck: recheckResources
+    });
+    const privateRoot = lease.profile.storage.credentialRoot;
+    const principal = { platform: "posix", uid: process.getuid() };
+    const directory = path.join(privateRoot, "r3", fixed.spec.operationRef, "consumer");
+    const facts = snapshotPayload.facts;
+    if (
+      facts.path !== path.join(directory, "ciphertext", "snapshot.enc") ||
+      facts.ciphertextDigest !== consumerInput.storageSubject.ciphertextDigest ||
+      facts.ciphertextSizeBytes !== consumerInput.storageSubject.ciphertextSizeBytes ||
+      typeof facts.readerPrincipal !== "string" ||
+      facts.readerPrincipal === consumerInput.storageSubject.writerPrincipal
+    )
+      fail(code);
+    // This separate precreated directory does not change the ciphertext's
+    // pinned parents. The original consumer UNKNOWN and global raw store remain.
+    const observedDirectory = path.join(directory, "observations");
+    await checkedPrivatePath(observedDirectory, { principal, privateRoot, directory: true });
+    const bytes = encodeManualJson({
+      status: "CIPHERTEXT_OBSERVED",
+      operationRef: fixed.spec.operationRef,
+      sessionId: session.sessionId,
+      inputIndexDigest: consumerInput.inputIndexDigest,
+      consumerExecutionRecordDigest: consumerExecutionDigest,
+      storageSubject: consumerInput.storageSubject,
+      observations: snapshotPayload.observations
+    });
+    if (bytes.length > 1048576) fail(code);
+    const filename = path.join(observedDirectory, "readback.json");
+    const file = await fs.open(filename, "wx", 0o600);
+    try {
+      await file.writeFile(bytes);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    const parent = await fs.open(observedDirectory, "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+    snapshotReadback = await pinPrivateInput(filename, { principal, privateRoot });
+    if (!snapshotReadback.bytes.equals(bytes)) fail(code);
+    await check();
+    fetchReady = true;
+    return Object.freeze({
+      status: "CIPHERTEXT_OBSERVED",
+      executionStatus: "INTERRUPTED_UNKNOWN",
+      executionRecordDigest: consumerExecutionDigest,
+      inputIndexDigest: consumerInput.inputIndexDigest,
+      ciphertextDigest: facts.ciphertextDigest,
+      ciphertextSizeBytes: facts.ciphertextSizeBytes,
+      readbackDigest: sha256Bytes(bytes),
       promotionEligible: false
     });
   };
@@ -2370,7 +2459,30 @@ export async function launchR3TargetCreate(input) {
       async recheck() {
         if (completionAttempted && !completionReady) fail(code);
         if (consumerAttempted && !consumerReady) fail(code);
+        if (fetchAttempted && !fetchReady) fail(code);
         await recheckResources();
+      },
+      async fetchSnapshot(...args) {
+        if (
+          args.length !== 0 ||
+          closed ||
+          fetchAttempted ||
+          !consumerReady ||
+          session.scope.phase !== "source" ||
+          session.scope.chain !== "snapshot"
+        )
+          fail(code);
+        fetchAttempted = true;
+        fetchPending = fetchSnapshot();
+        try {
+          return await fetchPending;
+        } catch (cause) {
+          throw Object.assign(new Error(code), {
+            code,
+            consumption,
+            failureCode: /^[A-Z0-9_]{1,64}$/u.test(cause?.code ?? "") ? cause.code : code
+          });
+        }
       },
       async consumeSnapshot(...args) {
         const [selector] = args;

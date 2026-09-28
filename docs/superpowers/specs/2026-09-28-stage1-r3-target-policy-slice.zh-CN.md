@@ -217,3 +217,13 @@ R2 历史继续使用原校验器。仅在独立重放 R3 目的地之后，才�
 固定输入读取器现在按 envelope v2 的 `authorizationDigest`，从既有 `archiveRoot/raw/<digest>.bin` 读取 canonical 生产者授权原件，继续使用 1 MiB、128 引用上限和严格私有文件 pin。只接受本地 RSA 方案的 v2 授权/envelope，并验证摘要、snapshot/source/context、密钥指纹和两份 key readback 引用的一致性；缺失、超限或错配拒绝。
 
 返回新增冻结的 `cryptoInputs: {authorization,envelope,aad}`，AAD 由已校验的原件派生，供既有解密器消费。短期生产者执行窗允许作为历史原件存在，不扩大当前 input/permission/profile 的有效窗。这些参数不代表当前消费许可、实际 OSS 身份或私钥持有，也没有新增私钥释放入口。真实 RSA/AES-GCM 合成字节回归通过；线上合法快照、独立读取身份、同会话下载/解密/数据库 restore 仍待接通。
+
+## 同会话密文下载
+
+`fetchSnapshot()` 无参数、仅一次，要求当前 source/snapshot 会话已完成创建与输入消费。bucket、region、对象键、版本、ETag、长度、摘要、修改时间和 writer 主体均来自已核验且持续持有的原件，调用者不能覆盖路径、端点、身份或观察结果。创建阶段提前保留 `consumer/ciphertext`、`consumer/plaintext` 和 `consumer/observations`，不放宽已持有目录身份检查。
+
+内部下载器从固定私有 `credentialRoot/snapshot-reader/bootstrap.json` 读取已配置凭据，只能请求既定账号中 `subscription-saas-stage1-snapshot-consumer` 的 900 秒会话，并在下载前后调用 STS 核对精确 ARN/账号。reader 不能与 writer 使用同一 RAM 角色，即使 session 名不同。bootstrap 缺失、过期、目录或文件发生变化均拒绝；实际云端角色与最小权限仍须另行配置并读回，代码常量不构成云端存在证明。
+
+下载使用固定 HTTPS SDK 请求，关闭重试并限制完整密文为 1 GiB。原始 ACL/WORM/versioning XML 经独立解析；bucket/object 必须私有、owner 对应既定账号、WORM Locked/210 天、版本未启用，HEAD/GET 的长度、ETag、修改时间、AES256 加密标记必须对应输入。临时文件排他创建、0600，流式检查完整长度和 SHA-256 后发布到固定 `snapshot.enc` 并 fsync 文件及目录；原件和文件身份继续持有。所有回读流由下载器管理，关闭等待正在打开的流并关闭其 descriptor，发布后的密文保留。
+
+原生句柄在独立 observations 目录写入 canonical 非秘密读回，绑定 session/input 和既有 consumer execution 摘要，随后再次核对当前资源。返回 `CIPHERTEXT_OBSERVED`、`executionStatus:INTERRUPTED_UNKNOWN`、`promotionEligible:false`；不追加成功 execution，不更改全局 raw 原件，不释放锁。后续私钥释放、认证解密、数据库恢复与真实验收仍须完成。

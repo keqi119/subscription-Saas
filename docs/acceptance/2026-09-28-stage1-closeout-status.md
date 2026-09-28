@@ -4,6 +4,7 @@
 
 ## 当前接续状态
 
+- R3 hosted 控制端已补入运行中 managed containerd 的只读观察：父 PID/starttime、实际配置、数据/状态路径、Unix listener 与 PID 持有的 socket 对照，并把实际 mount 的 dev/ino 绑定到 creator 的 active 原件。每次 PG 转发前重新核实；漂移关闭转发，失败保留 UNKNOWN 和工作区。定向 Linux 10/10、0 skip 通过（`r3-containerd-control-green02.log`，3,328.36227 ms）；进程/socket 为真实测试载体，containerd/PG/文件拓扑为夹具，不是实际 hosted 成绩。目的地原件、同会话成功/消费/清理和 workflow 仍待接通。
 - 初始 R3 目标锁已接入原 H1 会话：先持有两个固定通道槽，再按实际 Engine/system identifier/OID/marker 排序获取库锁，并保留 lifecycle 两个固定库名的 namespace 锁。原生入口使用自身观察，锁后再次读回数据库；碰撞、替换和部分失败均拒绝，普通关闭保留 UNKNOWN 与锁文件。该实现不授予快照消费权限，生命周期动态锁和实际清理仍待完成。
 - 本轮继续接通 R3 数据库集合创建：H1 固定读取链传递已验证 manifest；`provisionDatabases()` 使用已观察的同一 PG，仅允许一次、无调用方覆盖。覆盖 35 个普通库和 clean-acceptance 双库（37 库），final 再加独立应用库；逐句创建与权限/OID/marker 读回已实现。密码在原 H1 私有目录保管，不进入诊断；失败保留部分资源与 UNKNOWN。当前为代码接线，尚未真实创建这组目标。
 - lifecycle 两库仅列为无 OID 的 reservation，必须由该 suite 在受控执行期完成真实创建、回收和 sibling 隔离断言。生命周期实际身份扩展、创建成功/消费/清理原件图、实际 hosted/runtime 接线仍待补齐，不能把本次 `DATABASES_OBSERVED` 当作发布准入。

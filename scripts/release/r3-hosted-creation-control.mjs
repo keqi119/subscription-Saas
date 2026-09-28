@@ -14,6 +14,7 @@ import {
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
 import { createR3HostedWorkspace } from "./r3-hosted-workspace-create.mjs";
 import { assessR3PostgresResources } from "./r3-postgres-observation.mjs";
+import { observeR3ManagedContainerd } from "./r3-containerd-observation.mjs";
 
 const CODE = "R3_HOSTED_CREATION_CONTROL_INVALID";
 const LIMIT = 1048576;
@@ -283,6 +284,10 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
   );
   const mount = observation.workspace.mountPath;
   requireThat(typeof mount === "string" && /^\/srv\/stage1-snapshot\/[0-9a-f]{32}$/u.test(mount));
+  const mountEvidence = observation.files?.filter(
+    (file) => file.path === mount && file.name === "directory" && file.exists === true
+  );
+  requireThat(mountEvidence?.length === 1 && mountEvidence[0].identity);
   const dataRoot = `${mount}/docker`,
     execRoot = `${mount}/exec`,
     tmpRoot = `${mount}/tmp`,
@@ -409,6 +414,29 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
     requireThat(await absent("/run/containerd/containerd.sock"));
     const socket = await fs.lstat(socketPath, { bigint: true });
     requireThat(socket.isSocket() && socket.uid === 0n);
+    const containerd = await observeR3ManagedContainerd({
+      mountPath: mount,
+      dockerdPid: child.pid
+    });
+    requireThat(!shouldClose() && exitState.value === null);
+    requireThat(
+      containerd.facts.mount.path === mount &&
+        containerd.facts.mount.dev === mountEvidence[0].identity.dev &&
+        containerd.facts.mount.ino === mountEvidence[0].identity.ino
+    );
+    const containerdDigest = sha256Canonical(containerd.facts);
+    const rawInputs = { ping, info: infoBytes, version: versionBytes };
+    for (const [name, bytes] of Object.entries(containerd.rawInputs)) {
+      rawInputs[`containerd.${name}`] = Buffer.from(bytes);
+      attempt.rawRefs[`containerd.${name}`] = ref(bytes);
+    }
+    const recheck = async () => {
+      requireThat(!shouldClose() && exitState.value === null);
+      requireThat(await absent("/run/containerd/containerd.sock"));
+      const current = await observeR3ManagedContainerd({ mountPath: mount, dockerdPid: child.pid });
+      requireThat(sha256Canonical(current.facts) === containerdDigest);
+      requireThat(!shouldClose() && exitState.value === null);
+    };
     const result = freeze({
       id: info.ID,
       info,
@@ -421,12 +449,16 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
         startedAt: attempt.startedAt,
         logPath
       },
-      rawRefs: { ping: ref(ping), info: ref(infoBytes), version: ref(versionBytes) },
+      containerd: containerd.facts,
+      rawRefs: Object.fromEntries(
+        Object.entries(rawInputs).map(([name, bytes]) => [name, ref(bytes)])
+      ),
       promotionEligible: false
     });
     return {
       result,
-      rawInputs: { ping, info: infoBytes, version: versionBytes },
+      rawInputs,
+      recheck,
       child,
       exited,
       exitState,
@@ -450,7 +482,14 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
     attempt.exit = exitState?.value ?? null;
     throw Object.assign(new Error(CODE), {
       code: CODE,
-      engineAttempt: freeze({ ...attempt, rawRefs: { ...attempt.rawRefs } })
+      engineAttempt: freeze({
+        ...attempt,
+        rawRefs: { ...attempt.rawRefs },
+        containerdFailure:
+          cause?.code === "R3_CONTAINERD_OBSERVATION_INVALID"
+            ? { code: cause.code, rawInputs: cause.rawInputs ?? {} }
+            : null
+      })
     });
   } finally {
     await logFile.close();
@@ -491,6 +530,7 @@ async function startPostgresRelay({ spec, job, engine, socketPath, shouldClose }
   const alive = async () => {
     requireThat(!closed && !shouldClose() && engine.exitState.value === null);
     await currentJob(spec, job);
+    await engine.recheck();
   };
   const read = async (url) => {
     const bytes = await getEngine(socketPath, `/v1.45${url}`);
@@ -566,7 +606,9 @@ async function startPostgresRelay({ spec, job, engine, socketPath, shouldClose }
           incoming.pipe(upstream).pipe(incoming);
           incoming.resume();
         });
-      })().catch(() => incoming.destroy());
+      })().catch(() => {
+        void close().catch(() => {});
+      });
     });
     await new Promise((resolve, reject) => {
       relay.once("error", reject);

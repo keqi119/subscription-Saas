@@ -24,6 +24,31 @@ let creatorFailure = false;
 let engineFailure = false;
 let systemContainerd = false;
 let postgresResources = null;
+let containerdFailure = false;
+let containerdGeneration = 1;
+const containerdCalls = [];
+
+mock.module("./r3-containerd-observation.mjs", {
+  namedExports: {
+    observeR3ManagedContainerd: async (input) => {
+      containerdCalls.push(input);
+      if (containerdFailure)
+        throw Object.assign(new Error("synthetic containerd failure"), {
+          code: "R3_CONTAINERD_OBSERVATION_INVALID"
+        });
+      return {
+        facts: {
+          pid: 123,
+          starttime: String(containerdGeneration),
+          parentPid: input.dockerdPid,
+          mount: { path: input.mountPath, dev: "8", ino: "1" },
+          root: { path: `${input.mountPath}/docker/containerd/daemon` }
+        },
+        rawInputs: { config: Buffer.from("synthetic managed configuration") }
+      };
+    }
+  }
+});
 
 mock.module("./r3-hosted-workspace-create.mjs", {
   namedExports: {
@@ -45,7 +70,15 @@ mock.module("./r3-hosted-workspace-create.mjs", {
               keyFile: `${root}/${id}.key`,
               mapperName: `s1snap_${id}`
             },
-            facts: { state: "active" }
+            facts: { state: "active" },
+            files: [
+              {
+                name: "directory",
+                path: mountPath,
+                exists: true,
+                identity: { dev: "8", ino: "1" }
+              }
+            ]
           }
         },
         creation: { status: "WORKSPACE_OBSERVED", promotionEligible: false },
@@ -249,6 +282,9 @@ async function setup(t) {
   engineFailure = false;
   systemContainerd = false;
   postgresResources = null;
+  containerdFailure = false;
+  containerdGeneration = 1;
+  containerdCalls.length = 0;
   creationCalls.length = 0;
   t.after(() => {
     creatorFailure = oldCreatorFailure;
@@ -365,7 +401,15 @@ test("R3 control accepts one native HTTP request then hands same socket to obser
   assert.equal(result.engine.info.Driver, "overlay2");
   assert.equal(result.engine.info.Containers, 0);
   assert.equal(result.engine.info.Images, 0);
+  assert.equal(result.engine.containerd.root.path, `${mountPath}/docker/containerd/daemon`);
+  assert.equal(result.engine.containerd.parentPid, result.engine.process.pid);
+  assert.ok(result.engine.rawRefs["containerd.config"].digest.startsWith("sha256:"));
+  assert.ok(Buffer.isBuffer(result.rawInputs["containerd.config"]));
   assert.equal(f.commands.length, 1);
+  assert.deepEqual(containerdCalls[0], {
+    mountPath,
+    dockerdPid: result.engine.process.pid
+  });
   assert.ok(f.directories.every((item) => item.file.startsWith(mountPath + "/")));
   assert.equal(f.configurations.length, 1);
   const config = JSON.parse(f.configurations[0]);
@@ -390,6 +434,24 @@ test("R3 control refuses implicit reuse of the system containerd", async (t) => 
   await assert.rejects(control.created, { code: "R3_HOSTED_CREATION_CONTROL_INVALID" });
   assert.equal(f.commands.length, 0);
   await assert.rejects(control.postgresForward);
+});
+
+test("R3 control rejects unobserved containerd and retains the workspace", async (t) => {
+  const f = await setup(t);
+  if (!f) return;
+  containerdFailure = true;
+  const inputs = admission();
+  const control = await openR3HostedCreationControl(inputs);
+  t.after(() => control.close());
+  assert.equal((await post(socketPath, body(inputs))).status, 202);
+  await assert.rejects(control.created, (error) => {
+    assert.equal(error.code, "R3_HOSTED_CREATION_CONTROL_INVALID");
+    assert.equal(error.evidence.workspaceRemoved, false);
+    assert.equal(error.evidence.engineAttempt.exit.exitCode, 0);
+    return true;
+  });
+  await assert.rejects(control.postgresForward);
+  assert.equal(containerdCalls.length, 1);
 });
 
 test("R3 control relays only opaque bytes to its observed PG and closes the loopback listener", async (t) => {
@@ -470,7 +532,9 @@ test("R3 control relays only opaque bytes to its observed PG and closes the loop
   // A synthetic TCP peer stands in for PG; this tests opaque relay lifecycle,
   // not the database, TLS implementation or hosted job provenance.
   const peerSockets = new Set();
+  let upstreamConnections = 0;
   const peer = net.createServer((socket) => {
+    upstreamConnections += 1;
     peerSockets.add(socket);
     socket.once("close", () => peerSockets.delete(socket));
     socket.pipe(socket);
@@ -513,6 +577,23 @@ test("R3 control relays only opaque bytes to its observed PG and closes the loop
     client.setTimeout(5000, () => reject(new Error("relay timeout")));
   });
   assert.deepEqual(echoed, payload);
+  assert.ok(containerdCalls.length >= 4);
+  assert.equal(upstreamConnections, 1);
+  containerdGeneration += 1;
+  // A restarted managed child must invalidate admission, even if its paths
+  // and Engine/PG replies still match. No bytes may reach a second upstream.
+  await new Promise((resolve, reject) => {
+    const rejected = net.createConnection({ host: "127.0.0.1", port: 55441 });
+    rejected.once("connect", () => rejected.write(payload));
+    rejected.once("data", () => reject(new Error("forwarded after containerd drift")));
+    rejected.once("error", () => {});
+    rejected.once("close", resolve);
+    rejected.setTimeout(5000, () => {
+      rejected.destroy();
+      reject(new Error("drift connection did not close"));
+    });
+  });
+  assert.equal(upstreamConnections, 1);
   await control.close();
   await assert.rejects(
     new Promise((resolve, reject) => {

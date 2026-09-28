@@ -227,3 +227,13 @@ R2 历史继续使用原校验器。仅在独立重放 R3 目的地之后，才�
 下载使用固定 HTTPS SDK 请求，关闭重试并限制完整密文为 1 GiB。原始 ACL/WORM/versioning XML 经独立解析；bucket/object 必须私有、owner 对应既定账号、WORM Locked/210 天、版本未启用，HEAD/GET 的长度、ETag、修改时间、AES256 加密标记必须对应输入。临时文件排他创建、0600，流式检查完整长度和 SHA-256 后发布到固定 `snapshot.enc` 并 fsync 文件及目录；原件和文件身份继续持有。所有回读流由下载器管理，关闭等待正在打开的流并关闭其 descriptor，发布后的密文保留。
 
 原生句柄在独立 observations 目录写入 canonical 非秘密读回，绑定 session/input 和既有 consumer execution 摘要，随后再次核对当前资源。返回 `CIPHERTEXT_OBSERVED`、`executionStatus:INTERRUPTED_UNKNOWN`、`promotionEligible:false`；不追加成功 execution，不更改全局 raw 原件，不释放锁。后续私钥释放、认证解密、数据库恢复与真实验收仍须完成。
+
+## 同会话认证解密
+
+无参数 `decryptSnapshot()` 只在同一 source/snapshot 会话已消费且已完成下载后允许一次。固定仓库/操作 selector 在首次异步操作前捕获，调用者不能覆盖 key、路径、适配器或观察结果。现有公钥读取器增加闭合的 creation/recovery 原始摘要 selector，复用 profile、owner、host 和持有原件检查；公钥记录本身不授予私钥访问能力。
+
+内部 H1 helper 在固定 RSA 文件打开前检查当前主 LUKS UUID、mapper/loop/backing/mount 关系、固定路径和权限、swap 为空、进程 core 软硬限制为零以及最终 coredump 配置禁用存储和处理。原始非秘密 proc/命令输出受大小限制并写入读回。只读取既有 RSA-3072/65537 PKCS8 basename，核对派生 SPKI 指纹、profile 和 envelope 的两份公钥原件摘要；不使用商用 KMS，不声明软件内存已物理清除或硬件不可导出。
+
+既有两遍摘要/GCM 解密器在 `consumer/plaintext/snapshot.dump` 排他发布完成认证的文件。随后从实际保留的 descriptor 重新计算明文长度和摘要，并核对前后文件及父目录身份，防止在异步检查间替换输出。原生入口将读回写入预先创建的 `consumer/observations/decryption/readback.json`，保留文件和原件句柄；关闭会中止并等待解密，再关闭自有资源，不删除证据或释放已消费锁。
+
+返回 `PLAINTEXT_AUTHENTICATED`、`executionStatus:INTERRUPTED_UNKNOWN` 和 `promotionEligible:false`。这一结果不等于实际远端复制、`pg_restore`、所有权归一、凭据撤销或成功 consumer 执行；这些接线和真实验收仍未完成。

@@ -420,6 +420,54 @@ test("H1 KEY INPUT lifetime rechecks original bytes, host, owner binding and act
   }
 });
 
+test("H1 KEY DIGEST reads the exact public originals without an operation index", async (t) => {
+  const f = await publicKeyInputFixture(t);
+  await fs.unlink(f.indexPath);
+  const selector = {
+    repoRoot: f.repoRoot,
+    creationRawDigest: f.index.creationRawDigest,
+    recoveryRawDigest: f.index.recoveryRawDigest
+  };
+  const pending = publicKeyInputReader()(selector);
+  selector.recoveryRawDigest = `sha256:${"f".repeat(64)}`;
+  const result = await pending;
+  t.after(() => result.close());
+  assert.equal(result.refs.indexRawDigest, null);
+  assert.equal(result.refs.creationRawDigest, f.index.creationRawDigest);
+  assert.equal(result.refs.recoveryRawDigest, f.index.recoveryRawDigest);
+  assert.deepEqual(result.creationRawBytes, f.creationRawBytes);
+  assert.deepEqual(result.recoveryRawBytes, f.recoveryRawBytes);
+  assert.equal(f.held.filter((item) => !item.closed).length, 2);
+  await result.recheck();
+  await fs.appendFile(f.recoveryPath, " ");
+  await assert.rejects(result.recheck(), { code: "H1_SNAPSHOT_PUBLIC_INPUT_UNAVAILABLE" });
+  assert.ok(f.held.every((item) => item.closed));
+  noAuthorityAccess(f);
+});
+
+test("H1 KEY DIGEST refuses mixed selectors and unavailable or changed originals", async (t) => {
+  const f = await publicKeyInputFixture(t);
+  const selector = {
+    repoRoot: f.repoRoot,
+    creationRawDigest: f.index.creationRawDigest,
+    recoveryRawDigest: f.index.recoveryRawDigest
+  };
+  for (const invalid of [
+    { ...selector, operationRef: f.operationRef },
+    { ...selector, creationRawDigest: "../key" },
+    { ...selector, recoveryRawDigest: `sha256:${"f".repeat(64)}` }
+  ])
+    await assert.rejects(publicKeyInputReader()(invalid), {
+      code: "H1_SNAPSHOT_PUBLIC_INPUT_UNAVAILABLE"
+    });
+  await fs.appendFile(f.creationPath, " ");
+  await assert.rejects(publicKeyInputReader()(selector), {
+    code: "H1_SNAPSHOT_PUBLIC_INPUT_UNAVAILABLE"
+  });
+  assert.ok(f.held.every((item) => item.closed));
+  noAuthorityAccess(f);
+});
+
 test("OP accepts the complete fixed index as nonauthorizing data and returns independent raw buffers", async (t) => {
   const f = await operationFixture(t);
   const result = await reader()({ repoRoot: f.repoRoot, operationRef: f.operationRef });
@@ -2902,6 +2950,40 @@ test("R3 LAUNCH API exposes only the fixed native entry", async () => {
     await assert.rejects(launchR3TargetCreate(input), { code: "R3_TARGET_CREATE_UNAVAILABLE" });
 });
 
+test("R3 LAUNCH CAPTURE retains the initial selector across asynchronous preparation", async (t) => {
+  let entered, resume;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    resume = resolve;
+  });
+  let observed;
+  const mocked = t.mock.module("./manual-stage1-trust.mjs", {
+    namedExports: {
+      ...trust,
+      async prepareR3HostedEvidenceImport(selector) {
+        entered();
+        await gate;
+        observed = { ...selector };
+        throw new Error("PREPARATION_STOP");
+      }
+    }
+  });
+  t.after(() => mocked.restore());
+  const { launchR3TargetCreate } =
+    await import("./launch-manual-stage1.mjs?capture-fixed-selector");
+  const input = { repoRoot: "/tmp/initial-repository", operationRef: randomUUID() };
+  const initial = { ...input };
+  const pending = launchR3TargetCreate(input);
+  await started;
+  input.repoRoot = "/tmp/replaced-repository";
+  input.operationRef = randomUUID();
+  resume();
+  await assert.rejects(pending, { code: "R3_TARGET_CREATE_UNAVAILABLE" });
+  assert.deepEqual(observed, initial);
+});
+
 // The H1 key path and native commands are synthetic; all key/lock/journal IO
 // and TCP HTTP exchanges below use actual Linux files and sockets. No sshd or
 // firewall configuration, cloud resource or disk is changed by this fixture.
@@ -3323,8 +3405,18 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
           }
         });
       }
+      let decryptCalls = 0;
+      if (evidenceOnly)
+        t.mock.module("./r3-h1-snapshot-decrypt.mjs", {
+          namedExports: {
+            async decryptR3SnapshotCiphertext() {
+              decryptCalls++;
+              throw new Error("DECRYPT_MUST_NOT_START");
+            }
+          }
+        });
       const { launchR3TargetCreate } = await import(
-        dropped ? "./launch-manual-stage1.mjs" : "./launch-manual-stage1.mjs?r3-pg-test"
+        dropped ? "./launch-manual-stage1.mjs" : `./launch-manual-stage1.mjs?r3-pg-test=${mode}`
       );
       let received = 0,
         handlerError,
@@ -3511,6 +3603,10 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         const bundle = r3HostedBundle(source);
         const launched = await launchR3TargetCreate(input);
         t.after(() => launched.close());
+        assert.equal(typeof launched.decryptSnapshot, "function");
+        await assert.rejects(launched.decryptSnapshot());
+        await assert.rejects(launched.decryptSnapshot({ approved: true }));
+        assert.equal(decryptCalls, 0);
         const result = await launched.importHostedEvidence(bundle);
         assert.equal(result.status, "HOSTED_EVIDENCE_OBSERVED");
         assert.equal(result.bundleDigest, sha256Bytes(bundle));
@@ -3520,8 +3616,12 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         assert.equal(provisionPosts, 0);
         assert.equal(pgConnections, 0);
         await assert.rejects(launched.importHostedEvidence(bundle));
+        await assert.rejects(launched.decryptSnapshot());
+        assert.equal(decryptCalls, 0);
         await launched.recheck();
         await launched.close();
+        await assert.rejects(launched.decryptSnapshot());
+        assert.equal(decryptCalls, 0);
       } else {
         const source = await r3WorkspaceFixture(t, "active", false, f);
         const hostedBundle = r3HostedBundle(source);

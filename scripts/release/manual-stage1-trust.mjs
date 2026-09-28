@@ -623,10 +623,25 @@ export async function readFixedH1SnapshotPublicKeyInputs(input) {
     return closing;
   };
   try {
-    exact(input, ["repoRoot", "operationRef"]);
-    requireThat(typeof input.operationRef === "string" && UUID.test(input.operationRef));
+    const byDigest =
+      input && typeof input === "object" && Object.hasOwn(input, "creationRawDigest");
+    exact(
+      input,
+      byDigest
+        ? ["repoRoot", "creationRawDigest", "recoveryRawDigest"]
+        : ["repoRoot", "operationRef"]
+    );
     const repoRoot = absolute(input.repoRoot);
-    const operationRef = input.operationRef;
+    // Capture closed primitive selectors before the first asynchronous read.
+    const operationRef = byDigest ? null : input.operationRef;
+    const selected = byDigest
+      ? { creationRawDigest: input.creationRawDigest, recoveryRawDigest: input.recoveryRawDigest }
+      : null;
+    requireThat(
+      byDigest
+        ? Object.values(selected).every((value) => typeof value === "string" && DIGEST.test(value))
+        : typeof operationRef === "string" && UUID.test(operationRef)
+    );
     const profile = await loadFixedManualProfile({ repoRoot });
     const actual = await actualHost();
     requireThat(actual.principal.platform === "posix");
@@ -666,22 +681,26 @@ export async function readFixedH1SnapshotPublicKeyInputs(input) {
     ])
       requireThat(equal(binding[key], approval[key]));
     const root = path.join(archiveRoot, "inputs", "h1-snapshot-key");
-    const indexBytes = await read(path.join(root, operationRef, "index.json"));
-    const index = json(indexBytes, true);
-    exact(index, [
-      "schemaVersion",
-      "operationRef",
-      "profileDigest",
-      "creationRawDigest",
-      "recoveryRawDigest"
-    ]);
-    requireThat(
-      index.schemaVersion === "h1-snapshot-key-input-index.v1" &&
-        index.operationRef === operationRef &&
-        index.profileDigest === profileDigest &&
-        DIGEST.test(index.creationRawDigest) &&
-        DIGEST.test(index.recoveryRawDigest)
-    );
+    let indexBytes = null;
+    let index = selected;
+    if (!byDigest) {
+      indexBytes = await read(path.join(root, operationRef, "index.json"));
+      index = json(indexBytes, true);
+      exact(index, [
+        "schemaVersion",
+        "operationRef",
+        "profileDigest",
+        "creationRawDigest",
+        "recoveryRawDigest"
+      ]);
+      requireThat(
+        index.schemaVersion === "h1-snapshot-key-input-index.v1" &&
+          index.operationRef === operationRef &&
+          index.profileDigest === profileDigest &&
+          DIGEST.test(index.creationRawDigest) &&
+          DIGEST.test(index.recoveryRawDigest)
+      );
+    }
     const creationBytes = await read(
       path.join(root, "raw", `${index.creationRawDigest.slice(7)}.creation.json`)
     );
@@ -741,7 +760,7 @@ export async function readFixedH1SnapshotPublicKeyInputs(input) {
       creationRawBytes,
       recoveryRawBytes,
       refs: freeze({
-        indexRawDigest: sha256Bytes(indexBytes),
+        indexRawDigest: indexBytes === null ? null : sha256Bytes(indexBytes),
         creationRawDigest: index.creationRawDigest,
         recoveryRawDigest: index.recoveryRawDigest
       }),

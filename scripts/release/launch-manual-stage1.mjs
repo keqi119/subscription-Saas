@@ -39,6 +39,7 @@ import { assessR3PostgresObservation } from "./r3-postgres-observation.mjs";
 import { assessR3PostgresReadback, buildR3Destination } from "./r3-destination.mjs";
 import { readR3SnapshotInput } from "./r3-snapshot-input-admission.mjs";
 import { fetchR3SnapshotCiphertext } from "./r3-snapshot-payload.mjs";
+import { decryptR3SnapshotCiphertext } from "./r3-h1-snapshot-decrypt.mjs";
 import {
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
@@ -1041,6 +1042,11 @@ export async function launchR3TargetCreate(input) {
     fetchPending,
     snapshotPayload,
     snapshotReadback,
+    decryptAttempted = false,
+    decryptReady = false,
+    decryptPending,
+    snapshotPlaintext,
+    decryptionReadback,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1059,6 +1065,7 @@ export async function launchR3TargetCreate(input) {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
       const errors = [];
+      await decryptPending?.catch(() => {});
       await fetchPending?.catch(() => {});
       await consumerPending?.catch(() => {});
       await completionPending?.catch(() => {});
@@ -1083,6 +1090,8 @@ export async function launchR3TargetCreate(input) {
         }
       }
       for (const handle of [
+        decryptionReadback,
+        snapshotPlaintext,
         snapshotReadback,
         snapshotPayload,
         consumerInput,
@@ -1114,6 +1123,8 @@ export async function launchR3TargetCreate(input) {
     await consumerSlot?.recheck();
     await snapshotPayload?.recheck();
     await snapshotReadback?.recheck();
+    await snapshotPlaintext?.recheck();
+    await decryptionReadback?.recheck();
     if (consumerRecord)
       for (const { digest, bytes, role } of consumerRecord)
         if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
@@ -1430,6 +1441,7 @@ export async function launchR3TargetCreate(input) {
     await fs.mkdir(consumerDirectory, { mode: 0o700 });
     for (const name of ["ciphertext", "plaintext", "observations"])
       await fs.mkdir(path.join(consumerDirectory, name), { mode: 0o700 });
+    await fs.mkdir(path.join(consumerDirectory, "observations", "decryption"), { mode: 0o700 });
     const secretPath = path.join(directory, "postgres-password");
     const secretBytes = Buffer.from(randomBytes(32).toString("hex"));
     const secretFile = await fs.open(secretPath, "wx", 0o600);
@@ -2173,6 +2185,72 @@ export async function launchR3TargetCreate(input) {
       promotionEligible: false
     });
   };
+  const decryptSnapshot = async () => {
+    snapshotPlaintext = await decryptR3SnapshotCiphertext({
+      repoRoot: input.repoRoot,
+      profile: lease.profile,
+      operationRef: fixed.spec.operationRef,
+      cryptoInputs: consumerInput.cryptoInputs,
+      source: snapshotPayload.source,
+      signal: fetchAbort.signal,
+      recheck: recheckResources
+    });
+    const privateRoot = lease.profile.storage.credentialRoot;
+    const principal = { platform: "posix", uid: process.getuid() };
+    const directory = path.join(privateRoot, "r3", fixed.spec.operationRef, "consumer");
+    const facts = snapshotPlaintext.facts;
+    const envelope = consumerInput.cryptoInputs.envelope;
+    if (
+      facts.path !== path.join(directory, "plaintext", "snapshot.dump") ||
+      facts.snapshotDigest !== envelope.snapshotDigest ||
+      facts.keyFingerprint !== envelope.localKeyReadback.keyFingerprint ||
+      facts.plaintextSizeBytes !== envelope.ciphertextSizeBytes
+    )
+      fail(code);
+    const observedDirectory = path.join(directory, "observations", "decryption");
+    await checkedPrivatePath(observedDirectory, { principal, privateRoot, directory: true });
+    const bytes = encodeManualJson({
+      status: "PLAINTEXT_AUTHENTICATED",
+      operationRef: fixed.spec.operationRef,
+      sessionId: session.sessionId,
+      inputIndexDigest: consumerInput.inputIndexDigest,
+      consumerExecutionRecordDigest: consumerExecutionDigest,
+      ciphertextReadbackDigest: sha256Bytes(snapshotReadback.bytes),
+      snapshotDigest: facts.snapshotDigest,
+      plaintextSizeBytes: facts.plaintextSizeBytes,
+      keyFingerprint: facts.keyFingerprint,
+      observations: snapshotPlaintext.observations
+    });
+    if (bytes.length > 1048576) fail(code);
+    const filename = path.join(observedDirectory, "readback.json");
+    const file = await fs.open(filename, "wx", 0o600);
+    try {
+      await file.writeFile(bytes);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    const parent = await fs.open(observedDirectory, "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+    decryptionReadback = await pinPrivateInput(filename, { principal, privateRoot });
+    if (!decryptionReadback.bytes.equals(bytes)) fail(code);
+    await check();
+    decryptReady = true;
+    return Object.freeze({
+      status: "PLAINTEXT_AUTHENTICATED",
+      executionStatus: "INTERRUPTED_UNKNOWN",
+      executionRecordDigest: consumerExecutionDigest,
+      inputIndexDigest: consumerInput.inputIndexDigest,
+      snapshotDigest: facts.snapshotDigest,
+      plaintextSizeBytes: facts.plaintextSizeBytes,
+      readbackDigest: sha256Bytes(bytes),
+      promotionEligible: false
+    });
+  };
   try {
     if (
       !exact(input, ["repoRoot", "operationRef"]) ||
@@ -2185,6 +2263,7 @@ export async function launchR3TargetCreate(input) {
       !uuid.test(input.operationRef)
     )
       fail(code);
+    input = Object.freeze({ repoRoot: input.repoRoot, operationRef: input.operationRef });
     await prepareR3HostedEvidenceImport(input);
     fixed = await readFixedR3JobAdmission(input);
     session = await openTrustedR3CreationSession(input);
@@ -2460,7 +2539,31 @@ export async function launchR3TargetCreate(input) {
         if (completionAttempted && !completionReady) fail(code);
         if (consumerAttempted && !consumerReady) fail(code);
         if (fetchAttempted && !fetchReady) fail(code);
+        if (decryptAttempted && !decryptReady) fail(code);
         await recheckResources();
+      },
+      async decryptSnapshot(...args) {
+        if (
+          args.length !== 0 ||
+          closed ||
+          decryptAttempted ||
+          !fetchReady ||
+          !consumerReady ||
+          session.scope.phase !== "source" ||
+          session.scope.chain !== "snapshot"
+        )
+          fail(code);
+        decryptAttempted = true;
+        decryptPending = decryptSnapshot();
+        try {
+          return await decryptPending;
+        } catch (cause) {
+          throw Object.assign(new Error(code), {
+            code,
+            consumption,
+            failureCode: /^[A-Z0-9_]{1,64}$/u.test(cause?.code ?? "") ? cause.code : code
+          });
+        }
       },
       async fetchSnapshot(...args) {
         if (

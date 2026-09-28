@@ -12,7 +12,8 @@ import {
   grantRuntimeEquivalentAccess,
   provisionSuiteDatabase,
   scanMigrationGlobalObjects,
-  sha256Canonical
+  sha256Canonical,
+  sqlLiteral
 } from "../src/index.mjs";
 import {
   executeDockerCommand,
@@ -313,6 +314,7 @@ export async function runDatabaseLifecyclePostgresContract() {
       ))
     );
     assert.equal(new Set(provisioned.map((record) => record.databaseName)).size, 2);
+    const ownedDatabaseNames = provisioned.map((record) => record.databaseName);
 
     await Promise.all(
       provisioned.map((record) => runMigration(credentials.get(`${record.databaseName}:migrate`)))
@@ -427,7 +429,7 @@ export async function runDatabaseLifecyclePostgresContract() {
       containerId,
       credential: provisioner,
       databaseName: "postgres",
-      sql: "SELECT COUNT(*)::text FROM pg_database WHERE datname LIKE 's1ci\\_%' ESCAPE '\\';",
+      sql: `SELECT COUNT(*)::text FROM pg_database WHERE datname IN (${ownedDatabaseNames.map(sqlLiteral).join(", ")});`,
       columns: ["count"]
     });
     assert.equal(residue.rows[0]?.count, "0");

@@ -40,18 +40,21 @@ function markerFor({ policy, runId, suiteId, shard, createdAt }) {
 }
 
 async function rollbackPartial({ executeAdmin, databaseName, roles, databaseCreated }) {
-  const statements = [];
   if (databaseCreated) {
-    statements.push(
-      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${sqlLiteral(databaseName)} AND pid <> pg_backend_pid();`,
-      `DROP DATABASE IF EXISTS ${sqlIdentifier(databaseName)};`
-    );
+    await executeAdmin({
+      databaseName: "postgres",
+      sql: `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${sqlLiteral(databaseName)} AND pid <> pg_backend_pid();`
+    });
+    await executeAdmin({
+      databaseName: "postgres",
+      sql: `DROP DATABASE IF EXISTS ${sqlIdentifier(databaseName)};`
+    });
   }
-  statements.push(
+  const statements = [
     ...(roles.restore ? [`DROP ROLE IF EXISTS ${sqlIdentifier(roles.restore)};`] : []),
     `DROP ROLE IF EXISTS ${sqlIdentifier(roles["runtime-test"])};`,
     `DROP ROLE IF EXISTS ${sqlIdentifier(roles.migrate)};`
-  );
+  ];
   await executeAdmin({ databaseName: "postgres", sql: statements.join("\n") });
 }
 
@@ -107,9 +110,14 @@ export async function provisionSuiteDatabase({
           ? [
               `CREATE ROLE ${sqlIdentifier(roles.restore)} LOGIN PASSWORD ${sqlLiteral(restoreSecret.password)} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;`
             ]
-          : []),
-        `CREATE DATABASE ${sqlIdentifier(databaseName)} OWNER ${sqlIdentifier(roles.migrate)};`
+          : [])
       ].join("\n")
+    });
+    // Database creation cannot be part of a multi-statement query: PostgreSQL
+    // executes such queries in an implicit transaction block.
+    await executeAdmin({
+      databaseName: "postgres",
+      sql: `CREATE DATABASE ${sqlIdentifier(databaseName)} OWNER ${sqlIdentifier(roles.migrate)};`
     });
     databaseCreated = true;
     await executeAdmin({
@@ -212,9 +220,15 @@ export async function cleanupSuiteDatabase(record, { target, policy, executeAdmi
   }
   await executeAdmin({
     databaseName: "postgres",
+    sql: `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${sqlLiteral(record.databaseName)} AND pid <> pg_backend_pid();`
+  });
+  await executeAdmin({
+    databaseName: "postgres",
+    sql: `DROP DATABASE ${sqlIdentifier(record.databaseName)};`
+  });
+  await executeAdmin({
+    databaseName: "postgres",
     sql: [
-      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${sqlLiteral(record.databaseName)} AND pid <> pg_backend_pid();`,
-      `DROP DATABASE ${sqlIdentifier(record.databaseName)};`,
       ...(record.roles.restore ? [`DROP ROLE ${sqlIdentifier(record.roles.restore)};`] : []),
       `DROP ROLE ${sqlIdentifier(record.roles["runtime-test"])};`,
       `DROP ROLE ${sqlIdentifier(record.roles.migrate)};`

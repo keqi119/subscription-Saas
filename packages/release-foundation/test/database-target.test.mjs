@@ -127,6 +127,13 @@ test("migration scan rejects unregistered or non-idempotent extension creation",
 test("provisioning returns references and fingerprints but no credential or URL", async () => {
   const state = { marker: null, calls: [] };
   const executeAdmin = async ({ sql }) => {
+    // PostgreSQL treats a multi-statement query as one implicit transaction;
+    // CREATE/DROP DATABASE must be sent separately by connector callers.
+    if (
+      /\b(?:CREATE|DROP) DATABASE\b/u.test(sql) &&
+      sql.trim().split(";").filter(Boolean).length > 1
+    )
+      throw Object.assign(new Error("DATABASE_COMMAND_IN_TRANSACTION"), { code: "25001" });
     state.calls.push(sql);
     const markerMatch = sql.match(/COMMENT ON DATABASE "[^"]+" IS '([^']+)'/);
     if (markerMatch) state.marker = markerMatch[1].replaceAll("''", "'");
@@ -161,6 +168,41 @@ test("provisioning returns references and fingerprints but no credential or URL"
   assert.doesNotMatch(serialized, /password|postgres(?:ql)?:\/\//i);
   assert.match(serialized, /secret:\/\/task3\/migrate/);
   assert.ok(state.calls.some((sql) => sql.includes("CREATE DATABASE")));
+  await cleanupSuiteDatabase(record, { target: validTarget, policy: targetPolicy, executeAdmin });
+  assert.ok(state.calls.some((sql) => sql.startsWith("DROP DATABASE ")));
+});
+
+test("partial provisioning rollback sends DROP DATABASE outside a statement batch", async () => {
+  const calls = [];
+  await assert.rejects(
+    provisionSuiteDatabase({
+      target: validTarget,
+      policy: targetPolicy,
+      runId: "rollback-run",
+      suiteId: "database-lifecycle",
+      shard: 0,
+      secretStore: {
+        async create({ profile, username }) {
+          return {
+            username,
+            password: "fixture-private-password",
+            reference: `secret://${profile}`
+          };
+        }
+      },
+      executeAdmin: async ({ sql }) => {
+        if (
+          /\b(?:CREATE|DROP) DATABASE\b/u.test(sql) &&
+          sql.trim().split(";").filter(Boolean).length > 1
+        )
+          throw Object.assign(new Error("DATABASE_COMMAND_IN_TRANSACTION"), { code: "25001" });
+        calls.push(sql);
+        return { rows: [] }; // The failed identity readback must trigger real rollback SQL.
+      }
+    }),
+    { code: "DATABASE_PROVISION_IDENTITY_MISMATCH" }
+  );
+  assert.ok(calls.some((sql) => sql.startsWith("DROP DATABASE IF EXISTS ")));
 });
 
 test("runtime access is limited to DML, sequences, and migration-owner defaults", async () => {

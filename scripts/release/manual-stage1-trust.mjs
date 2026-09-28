@@ -1603,6 +1603,7 @@ export async function readFixedR3JobAdmission(input) {
       creationSpecDigest: creation.creationSpecDigest,
       spec: creation.spec,
       policy: creation.policy,
+      databaseTargetPolicy: creation.databaseTargetPolicy,
       build: creation.build,
       sourceSha: creation.sourceSha,
       verifiedAttestation,

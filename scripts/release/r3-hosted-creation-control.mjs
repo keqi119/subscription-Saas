@@ -4,14 +4,16 @@
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import childProcess from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   encodeManualJson,
   validateManualTargetCreationRequest
 } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
-import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
+import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
 import { createR3HostedWorkspace } from "./r3-hosted-workspace-create.mjs";
+import { assessR3PostgresResources } from "./r3-postgres-observation.mjs";
 
 const CODE = "R3_HOSTED_CREATION_CONTROL_INVALID";
 const LIMIT = 1048576;
@@ -240,7 +242,7 @@ async function getEngine(socketPath, url) {
         });
         response.once("end", () => {
           if (size > LIMIT || response.statusCode !== 200) {
-            reject(closedError());
+            reject(Object.assign(closedError(), { status: response.statusCode }));
             return;
           }
           resolve(Buffer.concat(chunks));
@@ -268,6 +270,10 @@ async function waitReady(socketPath, child, exitState, shouldClose) {
   fail();
 }
 async function startEngine(workspaceResult, expectedWorkspace, socketPath, shouldClose) {
+  // Otherwise dockerd silently adopts the system containerd, whose persistent
+  // metadata would escape the operation's encrypted data/exec roots. Hosted
+  // job preparation must stop its default Docker/containerd services first.
+  requireThat(await absent("/run/containerd/containerd.sock"));
   const observation = workspaceResult?.observation?.observation;
   requireThat(
     observation?.status === "OBSERVED" &&
@@ -296,6 +302,7 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
     features: { "containerd-snapshotter": false },
     bridge: "none",
     iptables: false,
+    ip6tables: false,
     "ip-forward": false,
     "ip-masq": false,
     "userland-proxy": false,
@@ -399,6 +406,7 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
         !shouldClose() &&
         exitState.value === null
     );
+    requireThat(await absent("/run/containerd/containerd.sock"));
     const socket = await fs.lstat(socketPath, { bigint: true });
     requireThat(socket.isSocket() && socket.uid === 0n);
     const result = freeze({
@@ -449,6 +457,149 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
   }
 }
 
+// Docker's internal bridge does not program published ports. Keep that network
+// private and forward opaque TLS bytes in this already-owned control process.
+// No caller can choose a target, port or command; every connection reobserves
+// the same Engine/CID/network/volume before any client bytes are forwarded.
+async function startPostgresRelay({ spec, job, engine, socketPath, shouldClose }) {
+  const catalog = JSON.parse(
+    await fs.readFile(
+      new URL("../../release/contracts/database-target-policies.v1.json", import.meta.url),
+      "utf8"
+    )
+  );
+  const policy = catalog.policies.filter(
+    (item) => item.policyId === "s1-release-compose-ephemeral"
+  );
+  requireThat(policy.length === 1 && /^sha256:[0-9a-f]{64}$/u.test(policy[0].requiredImageDigest));
+  const imageDigest = policy[0].requiredImageDigest;
+  const id = spec.operationRef.replaceAll("-", "");
+  const names = { container: `s1r3pg_${id}`, network: `s1r3net_${id}`, volume: `s1r3data_${id}` };
+  const sockets = new Set();
+  let relay,
+    timer,
+    closed = false;
+  const close = async () => {
+    closed = true;
+    clearTimeout(timer);
+    for (const socket of sockets) socket.destroy();
+    if (relay?.listening)
+      await new Promise((resolve, reject) =>
+        relay.close((error) => (error ? reject(error) : resolve()))
+      );
+  };
+  const alive = async () => {
+    requireThat(!closed && !shouldClose() && engine.exitState.value === null);
+    await currentJob(spec, job);
+  };
+  const read = async (url) => {
+    const bytes = await getEngine(socketPath, `/v1.45${url}`);
+    return { bytes, value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) };
+  };
+  const observe = async (waitForContainer = false) => {
+    await alive();
+    let container;
+    try {
+      container = await read(`/containers/${names.container}/json`);
+    } catch (error) {
+      if (waitForContainer && error.status === 404) return null;
+      throw error;
+    }
+    if (waitForContainer && container.value.State?.Status === "created") return null;
+    const info = await read("/info");
+    const image = await read(
+      `/images/${encodeURIComponent(`postgres:17-bookworm@${imageDigest}`)}/json`
+    );
+    const network = await read(`/networks/${names.network}`);
+    const volume = await read(`/volumes/${names.volume}`);
+    const facts = assessR3PostgresResources({
+      operationRef: spec.operationRef,
+      workspaceMountPath: spec.workspace.mountPath,
+      engineId: engine.result.id,
+      imageDigest,
+      engine: info.value,
+      image: image.value,
+      container: container.value,
+      network: network.value,
+      volume: volume.value
+    });
+    await alive();
+    return {
+      facts,
+      rawInputs: {
+        info: info.bytes,
+        image: image.bytes,
+        container: container.bytes,
+        network: network.bytes,
+        volume: volume.bytes
+      }
+    };
+  };
+  try {
+    const deadline = Math.min(Date.now() + 600000, epoch(job.expiresAt), epoch(spec.expiresAt));
+    let observed;
+    while (!observed) {
+      observed = await observe(true);
+      if (!observed) {
+        requireThat(Date.now() < deadline);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    const track = (socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      socket.on("error", () => socket.destroy());
+      return socket;
+    };
+    relay = net.createServer({ pauseOnConnect: true }, (incoming) => {
+      track(incoming);
+      void (async () => {
+        const current = await observe();
+        requireThat(sha256Canonical(current.facts) === sha256Canonical(observed.facts));
+        if (incoming.destroyed) return;
+        const upstream = track(
+          net.createConnection({ host: observed.facts.containerAddress, port: 5432 })
+        );
+        incoming.once("close", () => upstream.destroy());
+        upstream.once("close", () => incoming.destroy());
+        upstream.once("connect", () => {
+          incoming.pipe(upstream).pipe(incoming);
+          incoming.resume();
+        });
+      })().catch(() => incoming.destroy());
+    });
+    await new Promise((resolve, reject) => {
+      relay.once("error", reject);
+      relay.listen(55441, "127.0.0.1", () => {
+        relay.off("error", reject);
+        resolve();
+      });
+    });
+    relay.on("error", () => {
+      void close().catch(() => {});
+    });
+    await alive();
+    timer = setTimeout(
+      () => {
+        void close().catch(() => {});
+      },
+      Math.min(epoch(job.expiresAt), epoch(spec.expiresAt)) - Date.now()
+    );
+    return {
+      result: freeze({
+        ...observed.facts,
+        listener: { address: "127.0.0.1", port: 55441, pid: process.pid },
+        promotionEligible: false
+      }),
+      rawInputs: observed.rawInputs,
+      close
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
 export async function openR3HostedCreationControl(input) {
   let server,
     ownSocket,
@@ -459,6 +610,13 @@ export async function openR3HostedCreationControl(input) {
     handler = null,
     listenerClosing,
     expiryTimer;
+  let postgresRelay, relayWork;
+  let resolveForward, rejectForward;
+  const postgresForward = new Promise((resolve, reject) => {
+    resolveForward = resolve;
+    rejectForward = reject;
+  });
+  postgresForward.catch(() => {});
   const sockets = new Set();
   let resolveCreated, rejectCreated;
   const created = new Promise((resolve, reject) => {
@@ -502,6 +660,9 @@ export async function openR3HostedCreationControl(input) {
     if (!accepted) settle(closedError(), null);
     for (const socket of sockets) socket.destroy();
     if (handler) await handler.catch(() => {});
+    if (relayWork) await relayWork.catch(() => {});
+    else rejectForward(closedError());
+    await postgresRelay?.close();
     await closeListener();
     let exit = null;
     if (engine) {
@@ -588,6 +749,21 @@ export async function openR3HostedCreationControl(input) {
           requireThat(!closing);
           await currentJob(spec, job);
           engine = await startEngine(workspaceResult, spec.workspace, socketPath, () => closing);
+          relayWork = startPostgresRelay({
+            spec,
+            job,
+            engine,
+            socketPath,
+            shouldClose: () => closing
+          }).then(
+            (value) => {
+              postgresRelay = value;
+              resolveForward(freeze({ observation: value.result, rawInputs: value.rawInputs }));
+            },
+            (error) => {
+              rejectForward(closedError(error));
+            }
+          );
           settle(
             null,
             freeze({
@@ -628,6 +804,7 @@ export async function openR3HostedCreationControl(input) {
             }),
             null
           );
+          rejectForward(closedError(cause));
         }
       })();
     });
@@ -657,12 +834,13 @@ export async function openR3HostedCreationControl(input) {
       },
       Math.max(0, Math.min(epoch(spec.expiresAt), epoch(job.expiresAt)) - Date.now())
     );
-    return Object.freeze({ socketPath, created, close });
+    return Object.freeze({ socketPath, created, postgresForward, close });
   } catch (cause) {
     closing = true;
     clearTimeout(expiryTimer);
     await closeListener().catch(() => {});
     settle(closedError(cause, { accepted, workspaceRemoved: false, keyRemoved: false }), null);
+    rejectForward(closedError(cause));
     throw closedError(cause);
   }
 }

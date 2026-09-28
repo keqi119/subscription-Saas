@@ -2876,15 +2876,155 @@ for (const dropped of [false, true])
     { skip: process.platform !== "linux" },
     async (t) => {
       const f = await r3ForwardFixture(t);
-      const { launchR3TargetCreate } = await import("./launch-manual-stage1.mjs");
+      const imageDigest = JSON.parse(
+        await fs.readFile(
+          path.join(f.repoRoot, "release/contracts/database-target-policies.v1.json")
+        )
+      ).policies.find((p) => p.policyId === "s1-release-compose-ephemeral").requiredImageDigest;
+      const id = f.operationRef.replaceAll("-", "");
+      const names = {
+        container: `s1r3pg_${id}`,
+        network: `s1r3net_${id}`,
+        volume: `s1r3data_${id}`
+      };
+      const imageName = `postgres:17-bookworm@${imageDigest}`;
+      const imageId = `sha256:${"e".repeat(64)}`,
+        containerId = "b".repeat(64),
+        networkId = "c".repeat(64),
+        execId = "d".repeat(64);
+      const label = { "com.subscription.release.operation-ref": f.operationRef };
+      const volumePath = path.posix.join(
+        f.spec.workspace.mountPath,
+        "docker/volumes",
+        names.volume,
+        "_data"
+      );
+      const pgIdentity = {
+        systemIdentifier: "7340000000000000001",
+        serverVersionNum: 170011,
+        serverAddress: "172.28.0.2",
+        serverPort: 5432,
+        databaseName: "postgres",
+        databaseOid: "5",
+        role: "release_provisioner",
+        tls: true,
+        clusterMarker: "subscription-s1-controlled/v1"
+      };
+      const image = {
+        Id: imageId,
+        RepoDigests: [`postgres@${imageDigest}`],
+        Os: "linux",
+        Architecture: "amd64"
+      };
+      const container = {
+        Id: containerId,
+        Name: `/${names.container}`,
+        Image: imageId,
+        Config: { Image: imageName, Labels: label },
+        State: { Running: true, Paused: false, Restarting: false, Dead: false, Pid: 321 },
+        HostConfig: {
+          NetworkMode: names.network,
+          Privileged: false,
+          PidMode: "",
+          PortBindings: {},
+          Binds: null
+        },
+        NetworkSettings: {
+          Networks: { [names.network]: { NetworkID: networkId, IPAddress: "172.28.0.2" } },
+          Ports: { "5432/tcp": null }
+        },
+        Mounts: [
+          {
+            Type: "volume",
+            Name: names.volume,
+            Source: volumePath,
+            Destination: "/var/lib/postgresql/data",
+            Driver: "local",
+            RW: true
+          }
+        ]
+      };
+      const network = {
+        Id: networkId,
+        Name: names.network,
+        Driver: "bridge",
+        Internal: true,
+        Ingress: false,
+        EnableIPv6: false,
+        Labels: label,
+        Containers: { [containerId]: { Name: names.container, IPv4Address: "172.28.0.2/16" } }
+      };
+      const volume = {
+        Name: names.volume,
+        Driver: "local",
+        Mountpoint: volumePath,
+        Options: null,
+        Labels: label
+      };
+      let forwardedIdentity = structuredClone(pgIdentity),
+        innerIdentity = structuredClone(pgIdentity);
+      let provisionPosts = 0,
+        pgConnections = 0,
+        secret;
+      if (!dropped) {
+        t.mock.module("../../apps/release-runner/src/postgres-connector.mjs", {
+          namedExports: {
+            createPostgresConnector:
+              () =>
+              async ({ credential, target, custody }) => {
+                pgConnections++;
+                assert.deepEqual(target, {
+                  hostname: "127.0.0.1",
+                  port: 55441,
+                  databaseName: "postgres",
+                  tlsMode: "require"
+                });
+                assert.equal(credential.username, "release_provisioner");
+                assert.equal(credential.capabilityProfile, "provision");
+                assert.match(credential.password, /^[0-9a-f]{64}$/u);
+                assert.equal(credential.password, secret);
+                assert.equal(custody.operationRef, f.operationRef);
+                assert.match(custody.executionRecordDigest, /^sha256:/u);
+                return {
+                  withReadOnlyTransaction: async (callback) =>
+                    callback({
+                      execute: async (sql) => {
+                        assert.match(sql, /^SET LOCAL statement_timeout/u);
+                      },
+                      query: async (sql) => {
+                        assert.match(sql, /pg_control_system/u);
+                        // PostgreSQL inet::text includes /32; both observations need a host IP.
+                        assert.match(sql, /'serverAddress',host\(inet_server_addr\(\)\)/u);
+                        return [{ identity: forwardedIdentity }];
+                      }
+                    }),
+                  close: async () => {}
+                };
+              }
+          }
+        });
+      }
+      const { launchR3TargetCreate } = await import(
+        dropped ? "./launch-manual-stage1.mjs" : "./launch-manual-stage1.mjs?r3-pg-test"
+      );
       let received = 0,
         handlerError,
-        pings = 0;
+        pings = 0,
+        pgCreated = false;
       const server = http.createServer(async (request, response) => {
         try {
-          if (request.method === "POST") {
+          const url = request.url;
+          const reply = (status, value = "") => {
+            const bytes = typeof value === "string" ? value : JSON.stringify(value);
+            response
+              .writeHead(status, {
+                "Content-Length": Buffer.byteLength(bytes),
+                Connection: "close"
+              })
+              .end(bytes);
+          };
+          if (request.method === "POST" && url === "/stage1-r3/target-create") {
             received++;
-            assert.equal(request.url, "/stage1-r3/target-create");
             const chunks = [];
             for await (const chunk of request) chunks.push(chunk);
             const body = JSON.parse(Buffer.concat(chunks));
@@ -2898,27 +3038,135 @@ for (const dropped of [false, true])
             assert.equal(records.filter((v) => v.kind === "consumption").length, 1);
             assert.equal(records.find((v) => v.kind === "execution").status, "INTERRUPTED_UNKNOWN");
             if (dropped) request.socket.destroy();
-            else response.writeHead(202, { "Content-Length": "0", Connection: "close" }).end();
-          } else if (request.url === "/_ping") {
+            else reply(202);
+          } else if (url === "/_ping") {
             if (pings++ === 0)
               response.writeHead(409, { "Content-Length": "0", Connection: "close" }).end();
             else response.end("OK");
-          } else if (request.url === "/v1.45/info")
+          } else if (url === "/v1.45/info")
             response.end(
               JSON.stringify({
                 ID: "synthetic-engine-id",
                 Driver: "overlay2",
                 DockerRootDir: path.join(f.spec.workspace.mountPath, "docker"),
                 LoggingDriver: "json-file",
-                Containers: 0,
-                Images: 0,
+                Containers: pgCreated ? 1 : 0,
+                Images: pgCreated ? 1 : 0,
                 DriverStatus: []
               })
             );
-          else if (request.url === "/v1.45/version")
+          else if (url === "/v1.45/version")
             response.end(
               JSON.stringify({ Version: "26.1.3", ApiVersion: "1.45", MinAPIVersion: "1.24" })
             );
+          else if (
+            !dropped &&
+            request.method === "POST" &&
+            url ===
+              `/v1.45/images/create?fromImage=${encodeURIComponent(imageName)}&platform=linux%2Famd64`
+          ) {
+            provisionPosts++;
+            assert.equal(received, 1, "consume and target-create precede Engine mutation");
+            assert.match(imageDigest, /^sha256:[0-9a-f]{64}$/u);
+            reply(200, '{"status":"pulled"}\n');
+          } else if (!dropped && request.method === "POST" && url === "/v1.45/networks/create") {
+            const body = JSON.parse(Buffer.concat(await Array.fromAsync(request)).toString());
+            assert.equal(body.Name, names.network);
+            assert.equal(body.Internal, true);
+            assert.deepEqual(body.Labels, label);
+            reply(201, { Id: networkId });
+          } else if (!dropped && request.method === "POST" && url === "/v1.45/volumes/create") {
+            const body = JSON.parse(Buffer.concat(await Array.fromAsync(request)).toString());
+            assert.deepEqual(body, { Name: names.volume, Driver: "local", Labels: label });
+            reply(201, volume);
+          } else if (
+            !dropped &&
+            request.method === "POST" &&
+            url === `/v1.45/containers/create?name=${names.container}`
+          ) {
+            const body = JSON.parse(Buffer.concat(await Array.fromAsync(request)).toString());
+            assert.equal(body.Image, imageName);
+            assert.deepEqual(body.HostConfig.Mounts, [
+              { Type: "volume", Source: names.volume, Target: "/var/lib/postgresql/data" }
+            ]);
+            assert.equal(Object.hasOwn(body.HostConfig, "PortBindings"), false);
+            assert.deepEqual(body.Labels, label);
+            reply(201, { Id: containerId });
+          } else if (
+            !dropped &&
+            request.method === "PUT" &&
+            url === `/v1.45/containers/${containerId}/archive?path=%2Frun`
+          ) {
+            const tar = Buffer.concat(await Array.fromAsync(request));
+            assert.equal(request.headers["content-type"], "application/x-tar");
+            assert.equal(tar.length, 2048);
+            assert.equal(
+              tar.subarray(0, 100).toString().replace(/\0.*$/su, ""),
+              "stage1-postgres-password"
+            );
+            assert.equal(tar.subarray(100, 108).toString().replace(/\0.*$/su, ""), "0000600");
+            assert.equal(tar.subarray(124, 136).toString().replace(/\0.*$/su, ""), "00000000100");
+            assert.ok(
+              tar.subarray(576).every((byte) => byte === 0),
+              "one tar member only"
+            );
+            secret = tar.subarray(512, 576).toString();
+            assert.match(secret, /^[0-9a-f]{64}$/u);
+            reply(200);
+          } else if (
+            !dropped &&
+            request.method === "POST" &&
+            url === `/v1.45/containers/${containerId}/start`
+          ) {
+            pgCreated = true;
+            reply(204);
+          } else if (
+            !dropped &&
+            request.method === "GET" &&
+            url === `/v1.45/images/${encodeURIComponent(imageName)}/json`
+          )
+            reply(200, image);
+          else if (
+            !dropped &&
+            request.method === "GET" &&
+            url === `/v1.45/containers/${names.container}/json`
+          )
+            reply(200, container);
+          else if (
+            !dropped &&
+            request.method === "GET" &&
+            url === `/v1.45/networks/${names.network}`
+          )
+            reply(200, network);
+          else if (!dropped && request.method === "GET" && url === `/v1.45/volumes/${names.volume}`)
+            reply(200, volume);
+          else if (
+            !dropped &&
+            request.method === "POST" &&
+            url === `/v1.45/containers/${containerId}/exec`
+          ) {
+            const body = JSON.parse(Buffer.concat(await Array.fromAsync(request)).toString());
+            assert.equal(body.User, "postgres");
+            assert.equal(body.Cmd.at(-2), "172.28.0.2");
+            assert.match(body.Cmd.at(-1), /'serverAddress',host\(inet_server_addr\(\)\)/u);
+            reply(201, { Id: execId });
+          } else if (
+            !dropped &&
+            request.method === "POST" &&
+            url === `/v1.45/exec/${execId}/start`
+          ) {
+            const payload = Buffer.from(JSON.stringify(innerIdentity) + "\n");
+            const frame = Buffer.alloc(8);
+            frame[0] = 1;
+            frame.writeUInt32BE(payload.length, 4);
+            response
+              .writeHead(200, {
+                "Content-Length": frame.length + payload.length,
+                Connection: "close"
+              })
+              .end(Buffer.concat([frame, payload]));
+          } else if (!dropped && request.method === "GET" && url === `/v1.45/exec/${execId}/json`)
+            reply(200, { ContainerID: containerId, Running: false, ExitCode: 0 });
           else throw new Error("unexpected transport request");
         } catch (error) {
           handlerError = error;
@@ -2947,7 +3195,35 @@ for (const dropped of [false, true])
         assert.equal(launched.engine.ID, "synthetic-engine-id");
         assert.equal(launched.status, "INTERRUPTED_UNKNOWN");
         assert.match(launched.consumption.executionRecordDigest, /^sha256:/u);
+        // Native private-path checks produce many stat calls. The fixture's
+        // explicit counters/assertions are the evidence; retaining the mock
+        // framework's duplicate argument/return history is unnecessary.
+        const releaseMockHistory = () => {
+          for (const method of [fs.open, fs.lstat, fs.realpath, fs.readFile, childProcess.execFile])
+            method.mock?.resetCalls();
+        };
+        releaseMockHistory();
+        assert.equal(typeof launched.provisionPostgres, "function");
+        await assert.rejects(launched.provisionPostgres({ endpoint: "elsewhere" }));
+        const observed = await launched.provisionPostgres();
+        assert.equal(observed.engineId, launched.engine.ID);
+        assert.equal(observed.imageDigest, imageDigest);
+        assert.equal(observed.volumeMountpoint, volumePath);
+        assert.equal(observed.transport, "hosted-loopback-relay");
+        assert.equal(observed.status, "POSTGRES_OBSERVED");
+        assert.equal(observed.promotionEligible, false);
+        assert.equal(provisionPosts, 1);
+        assert.ok(pgConnections >= 1);
+        releaseMockHistory();
+        await assert.rejects(launched.provisionPostgres(), {
+          code: "R3_TARGET_CREATE_UNAVAILABLE"
+        });
+        assert.equal(provisionPosts, 1);
         await launched.recheck();
+        releaseMockHistory();
+        innerIdentity = { ...pgIdentity, systemIdentifier: "7340000000000000002" };
+        await assert.rejects(launched.recheck(), { code: "R3_TARGET_CREATE_UNAVAILABLE" });
+        assert.equal(launched.status, "INTERRUPTED_UNKNOWN");
         await launched.close();
       }
       if (handlerError) throw handlerError;

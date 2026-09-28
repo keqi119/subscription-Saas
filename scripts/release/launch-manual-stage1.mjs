@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import childProcess from "node:child_process";
 import http from "node:http";
 import net from "node:net";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   computeRepositoryContract,
@@ -33,6 +33,7 @@ import {
   openTrustedR3CreationSession
 } from "./manual-stage1-trust.mjs";
 import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
+import { assessR3PostgresObservation } from "./r3-postgres-observation.mjs";
 import {
   sameIdentity,
   samePublicDirectory,
@@ -997,6 +998,12 @@ export async function launchR3TargetCreate(input) {
     socket,
     archive,
     consumption,
+    postgresTarget,
+    postgresAttempted = false,
+    postgresPending,
+    postgresSecret,
+    postgresArchive,
+    boundEngineId,
     closed = false,
     closing;
   const diagnostics = [];
@@ -1008,6 +1015,15 @@ export async function launchR3TargetCreate(input) {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
       const errors = [];
+      await postgresPending?.catch(() => {});
+      if (postgresSecret) {
+        postgresSecret.bytes.fill(0);
+        try {
+          await postgresSecret.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
       for (const handle of [lease, session, fixed]) {
         try {
           await handle?.close();
@@ -1025,7 +1041,7 @@ export async function launchR3TargetCreate(input) {
     await lease?.recheck();
   };
   const pause = () => new Promise((resolve) => setTimeout(resolve, 500));
-  const exchange = (method, pathname, body = null, connected = null) =>
+  const exchange = (method, pathname, body = null, connected = null, options = {}) =>
     new Promise((resolve, reject) => {
       const agent = new http.Agent({ keepAlive: false });
       if (connected) agent.createConnection = () => connected;
@@ -1048,7 +1064,10 @@ export async function launchR3TargetCreate(input) {
           headers: {
             Connection: "close",
             ...(body
-              ? { "Content-Type": "application/json", "Content-Length": String(body.length) }
+              ? {
+                  "Content-Type": options.contentType ?? "application/json",
+                  "Content-Length": String(body.length)
+                }
               : {})
           }
         },
@@ -1074,7 +1093,7 @@ export async function launchR3TargetCreate(input) {
       );
       const timer = setTimeout(
         () => request.destroy(Object.assign(new Error(code), { code })),
-        5000
+        options.timeout ?? 5000
       );
       request.once("error", (error) => finish(error));
       request.end(body);
@@ -1088,15 +1107,15 @@ export async function launchR3TargetCreate(input) {
       body: await archive.raw(response.body)
     });
   };
-  const engineReadback = async () => {
+  const engineReadback = async (empty = !postgresAttempted, save = saveExchange) => {
     const ping = await exchange("GET", "/_ping");
-    await saveExchange("engine-ping", ping);
+    await save("engine-ping", ping);
     if (ping.status === 409 && ping.body.length === 0) fail("R3_HANDOFF_PENDING");
     if (ping.status !== 200 || ping.body.toString() !== "OK") fail(code);
     const info = await exchange("GET", "/v1.45/info"),
       version = await exchange("GET", "/v1.45/version");
-    await saveExchange("engine-info", info);
-    await saveExchange("engine-version", version);
+    await save("engine-info", info);
+    await save("engine-version", version);
     if (info.status !== 200 || version.status !== 200) fail(code);
     const engine = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(info.body));
     const runtime = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(version.body));
@@ -1107,8 +1126,7 @@ export async function launchR3TargetCreate(input) {
       engine.DockerRootDir !== path.posix.join(fixed.spec.workspace.mountPath, "docker") ||
       engine.Driver !== "overlay2" ||
       engine.LoggingDriver !== "json-file" ||
-      engine.Containers !== 0 ||
-      engine.Images !== 0 ||
+      (empty && (engine.Containers !== 0 || engine.Images !== 0)) ||
       !Array.isArray(engine.DriverStatus) ||
       engine.DriverStatus.some(
         (pair) =>
@@ -1123,6 +1141,368 @@ export async function launchR3TargetCreate(input) {
     )
       fail(code);
     return { engine, runtime };
+  };
+  const pgIdentitySql = `SELECT json_build_object(
+    'systemIdentifier',(pg_control_system()).system_identifier::text,
+    'serverVersionNum',current_setting('server_version_num')::int,
+    'serverAddress',host(inet_server_addr()),'serverPort',inet_server_port(),
+    'databaseName',current_database(),
+    'databaseOid',(SELECT oid::text FROM pg_database WHERE datname=current_database()),
+    'role',current_user,'tls',(SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()),
+    'clusterMarker',current_setting('cluster_name')) AS identity`;
+  const savePgExchange = async (name, response) => {
+    diagnostics.push({
+      name,
+      response: await postgresArchive.raw(
+        encodeManualJson({ status: response.status, headers: response.headers })
+      ),
+      body: await postgresArchive.raw(response.body)
+    });
+  };
+  const engineCall = async (method, url, value, status, options = {}) => {
+    await check();
+    if (
+      method !== "GET" &&
+      (await engineReadback(false, savePgExchange)).engine.ID !== boundEngineId
+    )
+      fail(code);
+    const body =
+      value === undefined ? null : Buffer.isBuffer(value) ? value : encodeManualJson(value);
+    const response = await exchange(method, `/v1.45${url}`, body, null, options);
+    // Never archive a credential-bearing request, including the password tar.
+    await savePgExchange(`postgres:${method}:${url}`, response);
+    await check();
+    if (response.status !== status) fail(code);
+    return response.body;
+  };
+  const engineJson = async (...args) =>
+    JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await engineCall(...args)));
+  const pgNames = () => {
+    const id = fixed.spec.operationRef.replaceAll("-", "");
+    return { container: `s1r3pg_${id}`, network: `s1r3net_${id}`, volume: `s1r3data_${id}` };
+  };
+  const readPgIdentity = async () => {
+    await check();
+    await postgresSecret.recheck();
+    const connection = await createPostgresConnector()({
+      credential: {
+        username: "release_provisioner",
+        password: postgresSecret.bytes.toString("ascii"),
+        capabilityProfile: "provision"
+      },
+      target: { hostname: "127.0.0.1", port: 55441, databaseName: "postgres", tlsMode: "require" },
+      custody: {
+        operationRef: fixed.spec.operationRef,
+        executionRecordDigest: consumption.executionRecordDigest
+      }
+    });
+    let timer;
+    try {
+      const rows = await Promise.race([
+        connection.withReadOnlyTransaction(async (transaction) => {
+          await transaction.execute("SET LOCAL statement_timeout = '5s'");
+          return transaction.query(pgIdentitySql);
+        }),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Object.assign(new Error(code), { code })), 15000);
+        })
+      ]);
+      if (!Array.isArray(rows) || rows.length !== 1 || !rows[0]?.identity) fail(code);
+      await check();
+      return rows[0].identity;
+    } finally {
+      clearTimeout(timer);
+      await connection.close();
+    }
+  };
+  const inspectPg = async (expectedEngineId, suppliedIdentity) => {
+    const names = pgNames(),
+      imageDigest = fixed.databaseTargetPolicy.requiredImageDigest;
+    const { engine } = await engineReadback(false, savePgExchange);
+    if (engine.ID !== expectedEngineId || engine.Containers !== 1 || engine.Images !== 1)
+      fail(code);
+    const container = await engineJson(
+      "GET",
+      `/containers/${names.container}/json`,
+      undefined,
+      200
+    );
+    const image = await engineJson(
+      "GET",
+      `/images/${encodeURIComponent(`postgres:17-bookworm@${imageDigest}`)}/json`,
+      undefined,
+      200
+    );
+    const network = await engineJson("GET", `/networks/${names.network}`, undefined, 200);
+    const volume = await engineJson("GET", `/volumes/${names.volume}`, undefined, 200);
+    const postgres = suppliedIdentity ?? (await readPgIdentity());
+    const facts = assessR3PostgresObservation({
+      operationRef: fixed.spec.operationRef,
+      workspaceMountPath: fixed.spec.workspace.mountPath,
+      engineId: expectedEngineId,
+      imageDigest,
+      engine,
+      image,
+      container,
+      network,
+      volume,
+      postgres
+    });
+    // Independent read through the owned CID must identify the very same PG
+    // reached over the other SSH forward. A published-port claim alone is insufficient.
+    const execution = await engineJson(
+      "POST",
+      `/containers/${facts.containerId}/exec`,
+      {
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: false,
+        User: "postgres",
+        Cmd: [
+          "/bin/bash",
+          "-ec",
+          'export PGPASSWORD="$(cat /run/stage1-postgres-password)" PGSSLMODE=require PGCONNECT_TIMEOUT=5; exec psql -X -A -t -v ON_ERROR_STOP=1 -U release_provisioner -d postgres -h "$1" -c "$2"',
+          "--",
+          facts.containerAddress,
+          pgIdentitySql
+        ]
+      },
+      201
+    );
+    if (!/^[0-9a-f]{64}$/u.test(execution.Id)) fail(code);
+    const stream = await engineCall(
+      "POST",
+      `/exec/${execution.Id}/start`,
+      { Detach: false, Tty: false },
+      200,
+      { timeout: 15000 }
+    );
+    const output = [],
+      errors = [];
+    for (let offset = 0; offset < stream.length; ) {
+      if (
+        stream.length - offset < 8 ||
+        ![1, 2].includes(stream[offset]) ||
+        stream.subarray(offset + 1, offset + 4).some((byte) => byte !== 0)
+      )
+        fail(code);
+      const length = stream.readUInt32BE(offset + 4),
+        end = offset + 8 + length;
+      if (end > stream.length) fail(code);
+      (stream[offset] === 1 ? output : errors).push(stream.subarray(offset + 8, end));
+      offset = end;
+    }
+    const completed = await engineJson("GET", `/exec/${execution.Id}/json`, undefined, 200);
+    if (
+      completed.Running !== false ||
+      completed.ExitCode !== 0 ||
+      completed.ContainerID !== facts.containerId ||
+      Buffer.concat(errors).length !== 0
+    )
+      fail(code);
+    const inner = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(output)).trim()
+    );
+    if (sha256Canonical(inner) !== sha256Canonical(postgres)) fail(code);
+    diagnostics.push({
+      name: "postgres-two-end-identity",
+      body: await postgresArchive.raw(encodeManualJson({ forwarded: postgres, container: inner }))
+    });
+    await check();
+    return facts;
+  };
+  const provisionPg = async (expectedEngineId) => {
+    await check();
+    // Raw diagnostic writes preserve the same private-file checks, but do not
+    // repeat remote job/H2 verification for every response fragment. Native
+    // operations check current trust before and after each complete exchange.
+    postgresArchive = targetArchive({
+      profile: lease.profile,
+      principal: { platform: "posix", uid: process.getuid() },
+      recheck: async () => {
+        if (closed || !consumption) fail(code);
+      }
+    });
+    const before = await engineReadback(true, savePgExchange);
+    if (before.engine.ID !== expectedEngineId) fail(code);
+    const policy = fixed.databaseTargetPolicy;
+    if (
+      policy?.policyId !== "s1-release-compose-ephemeral" ||
+      policy.requiredServerVersionMajor !== 17 ||
+      policy.requiredClusterMarker !== "subscription-s1-controlled/v1" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(policy.requiredImageDigest)
+    )
+      fail(code);
+    const privateRoot = lease.profile.storage.credentialRoot;
+    const principal = { platform: "posix", uid: process.getuid() };
+    const directory = path.join(privateRoot, "r3", fixed.spec.operationRef);
+    await ensureDirectory(path.dirname(directory), {
+      principal,
+      privateRoot,
+      recheckSource: check
+    });
+    await check();
+    await fs.mkdir(directory, { mode: 0o700 });
+    await checkedPrivatePath(directory, { principal, privateRoot, directory: true });
+    const secretPath = path.join(directory, "postgres-password");
+    const secretBytes = Buffer.from(randomBytes(32).toString("hex"));
+    const secretFile = await fs.open(secretPath, "wx", 0o600);
+    try {
+      await secretFile.writeFile(secretBytes);
+      await secretFile.sync();
+    } finally {
+      await secretFile.close();
+      secretBytes.fill(0);
+    }
+    postgresSecret = await pinPrivateInput(secretPath, { principal, privateRoot }, 64);
+    if (!/^[0-9a-f]{64}$/u.test(postgresSecret.bytes.toString("ascii"))) fail(code);
+    const names = pgNames(),
+      image = `postgres:17-bookworm@${policy.requiredImageDigest}`;
+    const labels = { "com.subscription.release.operation-ref": fixed.spec.operationRef };
+    const pull = await engineCall(
+      "POST",
+      `/images/create?fromImage=${encodeURIComponent(image)}&platform=linux%2Famd64`,
+      undefined,
+      200,
+      { timeout: 300000 }
+    );
+    const progress = new TextDecoder("utf-8", { fatal: true })
+      .decode(pull)
+      .trim()
+      .split(/\r?\n/u)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    if (!progress.length || progress.some((entry) => entry.error || entry.errorDetail)) fail(code);
+    const imageReadback = await engineJson(
+      "GET",
+      `/images/${encodeURIComponent(image)}/json`,
+      undefined,
+      200
+    );
+    if (
+      !/^sha256:[0-9a-f]{64}$/u.test(imageReadback.Id) ||
+      imageReadback.Os !== "linux" ||
+      imageReadback.Architecture !== "amd64" ||
+      !imageReadback.RepoDigests?.some((digest) =>
+        [
+          `postgres@${policy.requiredImageDigest}`,
+          `docker.io/library/postgres@${policy.requiredImageDigest}`
+        ].includes(digest)
+      )
+    )
+      fail(code);
+    const network = await engineJson(
+      "POST",
+      "/networks/create",
+      {
+        Name: names.network,
+        Driver: "bridge",
+        Internal: true,
+        EnableIPv6: false,
+        CheckDuplicate: true,
+        Labels: labels,
+        Options: { "com.docker.network.bridge.enable_ip_masquerade": "false" }
+      },
+      201
+    );
+    if (!/^[0-9a-f]{64}$/u.test(network.Id)) fail(code);
+    const volume = await engineJson(
+      "POST",
+      "/volumes/create",
+      { Name: names.volume, Driver: "local", Labels: labels },
+      201
+    );
+    if (
+      volume.Name !== names.volume ||
+      volume.Driver !== "local" ||
+      volume.Mountpoint !==
+        `${fixed.spec.workspace.mountPath}/docker/volumes/${names.volume}/_data` ||
+      (volume.Options != null && Object.keys(volume.Options).length !== 0) ||
+      volume.Labels?.["com.subscription.release.operation-ref"] !== fixed.spec.operationRef
+    )
+      fail(code);
+    const entry =
+      "set -e; chown postgres:postgres /run/stage1-postgres-password; chmod 0600 /run/stage1-postgres-password; mkdir -m 0700 /run/stage1-tls; openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 -subj /CN=localhost -keyout /run/stage1-tls/server.key -out /run/stage1-tls/server.crt; chown -R postgres:postgres /run/stage1-tls; chmod 0600 /run/stage1-tls/server.key; exec /usr/local/bin/docker-entrypoint.sh postgres -c ssl=on -c ssl_min_protocol_version=TLSv1.2 -c ssl_cert_file=/run/stage1-tls/server.crt -c ssl_key_file=/run/stage1-tls/server.key -c cluster_name=subscription-s1-controlled/v1";
+    const container = await engineJson(
+      "POST",
+      `/containers/create?name=${names.container}`,
+      {
+        Image: image,
+        Labels: labels,
+        Entrypoint: ["/bin/bash", "-ec"],
+        Cmd: [entry],
+        Env: [
+          "POSTGRES_DB=postgres",
+          "POSTGRES_USER=release_provisioner",
+          "POSTGRES_PASSWORD_FILE=/run/stage1-postgres-password",
+          "POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256"
+        ],
+        ExposedPorts: { "5432/tcp": {} },
+        HostConfig: {
+          NetworkMode: names.network,
+          Privileged: false,
+          RestartPolicy: { Name: "no" },
+          Memory: 1073741824,
+          MemorySwap: 1073741824,
+          PidsLimit: 256,
+          SecurityOpt: ["no-new-privileges:true"],
+          LogConfig: { Type: "json-file", Config: {} },
+          Mounts: [{ Type: "volume", Source: names.volume, Target: "/var/lib/postgresql/data" }]
+        }
+      },
+      201
+    );
+    if (!/^[0-9a-f]{64}$/u.test(container.Id)) fail(code);
+    // One fixed ustar member, mode 0600, root owner; bytes never enter argv,
+    // environment, inspect metadata or the public evidence archive.
+    const tar = Buffer.alloc(2048),
+      header = tar.subarray(0, 512);
+    header.write("stage1-postgres-password");
+    header.write("0000600\0", 100);
+    header.write("0000000\0", 108);
+    header.write("0000000\0", 116);
+    header.write(`${postgresSecret.bytes.length.toString(8).padStart(11, "0")}\0`, 124);
+    header.write("00000000000\0", 136);
+    header.fill(32, 148, 156);
+    header.write("0", 156);
+    header.write("ustar\0", 257);
+    header.write("00", 263);
+    header.write(
+      `${header
+        .reduce((sum, byte) => sum + byte, 0)
+        .toString(8)
+        .padStart(6, "0")}\0 `,
+      148
+    );
+    postgresSecret.bytes.copy(tar, 512);
+    try {
+      await engineCall("PUT", `/containers/${container.Id}/archive?path=%2Frun`, tar, 200, {
+        contentType: "application/x-tar"
+      });
+    } finally {
+      tar.fill(0);
+    }
+    await engineCall("POST", `/containers/${container.Id}/start`, undefined, 204);
+    const deadline = Date.now() + 120000;
+    let identity;
+    while (!identity) {
+      try {
+        identity = await readPgIdentity();
+      } catch (error) {
+        // Only connection/startup failures are retryable; trust or identity
+        // failures retain UNKNOWN and never trigger a second create.
+        if (!["ECONNREFUSED", "ECONNRESET", "57P03"].includes(error.code) || Date.now() >= deadline)
+          throw error;
+        await pause();
+      }
+    }
+    const facts = await inspectPg(expectedEngineId, identity);
+    postgresTarget = Object.freeze({
+      ...facts,
+      credentialRef: `r3/${fixed.spec.operationRef}/postgres-password`,
+      status: "POSTGRES_OBSERVED"
+    });
+    return postgresTarget;
   };
   try {
     if (
@@ -1278,17 +1658,47 @@ export async function launchR3TargetCreate(input) {
     }
     await check();
     const engine = Object.freeze(JSON.parse(JSON.stringify(readback.engine)));
+    boundEngineId = engine.ID;
     return Object.freeze({
       status: "INTERRUPTED_UNKNOWN",
       session,
       consumption,
       engine,
       version: Object.freeze(readback.runtime),
-      diagnostics: Object.freeze(diagnostics.slice()),
+      get diagnostics() {
+        return Object.freeze(diagnostics.slice());
+      },
+      async provisionPostgres(...args) {
+        if (args.length !== 0 || closed || postgresAttempted) fail(code);
+        postgresAttempted = true;
+        postgresPending = provisionPg(engine.ID);
+        try {
+          return await postgresPending;
+        } catch (cause) {
+          throw Object.assign(new Error(code, { cause }), {
+            code,
+            consumption,
+            diagnostics: Object.freeze(diagnostics.slice())
+          });
+        }
+      },
       async recheck() {
         await check();
-        const current = await engineReadback();
+        if (postgresAttempted && !postgresTarget) fail(code);
+        const current = await engineReadback(
+          !postgresAttempted,
+          postgresAttempted ? savePgExchange : saveExchange
+        );
         if (current.engine.ID !== engine.ID) fail(code);
+        if (postgresAttempted) {
+          const observed = await inspectPg(engine.ID);
+          if (
+            Object.keys(observed).some(
+              (key) => sha256Canonical(observed[key]) !== sha256Canonical(postgresTarget[key])
+            )
+          )
+            fail(code);
+        }
         await check();
       },
       close

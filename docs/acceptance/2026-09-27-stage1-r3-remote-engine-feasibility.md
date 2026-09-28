@@ -26,6 +26,18 @@ daemon 和 SSH 均正常退出 0。随后独立 SSH 读回（tool `2aaca5`，23:
 
 原件位于既有 hidden workspace：`r3-native-handoff-probe01.log`、`r3-native-handoff-independent-readback01.json`；维护脚本 `r3-native-handoff-probe-20260928.py` 的 SHA-256 为 `599e9bdf035b17b9c8da8bcc7f704959a4966417ca20b38884e5f666b7555321`。该脚本是一次维护实测，不能作为创建/消费入口重复执行。
 
+## 2026-09-28：内部网络与 PG TLS 维护实测
+
+后续无业务载荷维护尝试保留全部失败：probe01 因 H1 没有 psql 在创建前失败；probe02 因将 iptables-save 的符号链接目标作为调用名执行而在 daemon 前失败；probe03 在实际 Docker 26.1.3 内部 bridge 上无法取得所需 published-port 映射。Docker [endpoint.go](https://github.com/moby/moby/blob/v26.1.3/libnetwork/endpoint.go#L573) 明确对 Internal 网络跳过 ProgramExternalConnectivity，因此生产路径保留内部网络，取消端口发布，改由既有 hosted 控制进程做固定回环 TCP 转发。probe03 未保存具体 PG inspect JSON，不能从其失败信息追溯断言是哪一个映射字段不符。
+
+probe04 的临时 relay 已监听，但维护夹具把 PGDATA 设为绑定根下的子目录，PG 因父目录权限退出 1，未取得 TLS 身份。probe05 仅把 PGDATA 改回挂载根：内部 bridge 的 PG 没有 PortBindings，relay 从 `127.0.0.1:55441` 到实际 `172.17.0.2:5432`，客户端 exit 0，原始查询为 `true|TLSv1.3|TLS_AES_256_GCM_SHA384|7690378609107939373|172.17.0.2/32|5432|170011`，双向 2,717/2,578 字节。
+
+**probe05 总状态仍为 INCOMPLETE、exit 1。** 严格比较器要求裸 IP，但查询使用 `inet_server_addr()::text`，结果带 `/32`。根审查确认生产查询同样存在此问题，改为两端统一 `host(inet_server_addr())`；不修改或追记原探针结果，不重跑整套维护。[PostgreSQL 17 地址函数文档](https://www.postgresql.org/docs/17/functions-net.html)明确区分这两种文本表示。
+
+独立只读终验（`93eb1f` / `3ddbe7`）确认 relay/daemon/PG/client/proxy 进程、自有 socket/55441 监听和秘密文件均无残留；自有 client、PG、network、image 清理命令均 exit 0，daemon exit 0。系统原 Engine 仍为 `93a80aa5-983c-4272-b315-c4b99bb3e696`、17 容器、19 镜像，IPv4/IPv6 规则摘要不变。原件保存在 hidden workspace 的 `r3-internal-bridge-relay-probe05-diagnostics` 及同名前缀结果；v5 脚本 SHA-256 为 `6ed6232bcc7f33fa38cb02691fe24a6643fa84655f6274ca3c154ba8151bb54d`。probe03/04 及其诊断亦保留。
+
+这些原件仅证明 H1 本机内部网络、临时 relay 和真实 PG TLS 通信，不证明实际 hosted/LUKS/SSH 双端或候选验收。维护 Engine 使用独立 containerd namespace，仍连接系统 containerd，不是加密 containerd 证据。生产入口已拒绝系统 containerd socket；因为 [dockerd 26.1.3](https://github.com/moby/moby/blob/v26.1.3/cmd/dockerd/daemon_unix.go#L111) 会自动采用已有系统 socket，实际 hosted 准备与 managed containerd 加密路径读回仍必须完成。
+
 ## 原始只读核查
 
 结论：可以优先细化“原 H1 父进程控制远端 Engine”的较小方案，避免仅因容器位于 hosted VM 就新增 manual delegation 签名与另一套帧协议。现代码尚不支持该方案；R3 的主机执行停止点仍未闭合。

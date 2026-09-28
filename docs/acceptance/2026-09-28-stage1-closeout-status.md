@@ -4,6 +4,14 @@
 
 ## 当前接续状态
 
+- R3 创建入口已增加一次性的 `provisionPostgres()`：在原创建消费之后，以固定 PG17 镜像、内部网络和加密目录内的命名卷创建目标，经固定 H1 通道与同 CID 内部 TLS 查询交叉核对集群身份。密码通过单成员私有 tar 交付，不归档请求内容。当前只返回观察事实；成功创建、完整目标集合、消费和清理结果尚未接通，UNKNOWN 与已消费锁仍保留。
+- hosted 原控制进程现提供固定 `127.0.0.1:55441` TCP 转发，每次连接前重新核对本操作 Engine/CID/网络/卷，仅连接实际 PG 地址的 5432 端口。内部网络不使用 Docker 端口发布。启动前后拒绝系统 containerd socket，实际 hosted job 的默认服务停用和加密 containerd 路径读回仍待接线；没有改变 H1 系统服务。
+- 本轮服务器维护实测已取得 PG17.11 的 TLSv1.3 查询原件及集群标识，但探针总状态仍为 INCOMPLETE/exit 1：`inet_server_addr()::text` 带 `/32`，比较器要求裸 IP。根审查发现生产查询同样受影响，已改成 `host(inet_server_addr())`，两端共同使用该查询。维护原件不追记为 PASS，不再重复整套维护；具体失败、清理读回和定向回归见下文。
+- 尚未执行真实 hosted/LUKS/同候选数据库链，没有恢复 API/Web 或应用待迁移；阶段 1 仍未收口。接下来优先闭合 R3 目标集合、结果图与消费/清理，再生成最终候选及真实验收，避免源码继续变化时重复构建。
+- 同一地址格式缺陷也存在于 R2 H3 原件 SQL：它与目标裸 IP 严格比较，已同步改成 `host(inet_server_addr())` 并对齐既有合成 SQL。未更改身份比较条件，没有重跑 normal/interrupted/replay 长链。
+
+## 此前接续记录
+
 - 本轮已接通创建启动路径的生产入口：H1 复用固定 job/session，取得双锁后安装该 job 的受限 SSH 公钥；分配/签名/持久消费后才发送唯一创建 POST。hosted 单次控制入口完成 202 和旧连接关闭后，调用加密工作区 creator 并启动加密目录内的独立 classic overlay2 Engine。H1 通过固定通道读取实际 Engine 事实；202 不是创建成功，UNKNOWN 与已消费双锁仍保留。CLI/workflow 尚未启用，PG 目的地、成功/consumer/cleanup 结果图仍未闭合，不能据此声明真实 hosted 双链通过。
 - H1 受限公钥仅在两个当前 PID/scope 原件锁、实际 sshd 和完整首条防火墙规则均匹配时安装，关闭只撤回未漂移的自有 key，不声称已有 SSH 连接终止。一次真实 H1 只读检查确认有效 SSH 配置和两条首位规则，未改服务器配置。启动测试已复现并修正 202 到 Engine 交接期间的空 409；最终定向结果见本页证据定位。
 - 本轮定向验证：H1 原生合成整合 4/4（104,549.831935 ms），hosted 控制端 4/4（8,913.616205 ms），均自然退出 0、0 skip。前者复用原 H1/H2 夹具及真实 Linux 文件/TCP HTTP，后者使用真实 Unix HTTP/Node 子进程；GitHub、SSH 配置和危险创建/daemon 行为按用例替身，不能合并称为真实 CI/LUKS/PG 成绩。合同检查为 210 文件、83 schemas、128 migrations、13 commands；登记检查为 98 candidates / 39 manifested / 59 excepted / 0 unclassified，未增数据库 suite 或例外。
@@ -51,19 +59,22 @@ R2 normal 重验 `75700` 已自然结束，host/Node exit 0：1 pass / 0 fail / 
 
 ## 剩余收口顺序
 
-| 顺序 | 尚未完成的工作                                                        | 完成依据                                                                                   |
-| ---- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| 1    | 最终候选的受保护 CI 构建与 H2 证据读回                                | 同一源码、API/Web/Runner 镜像及独立保管身份的真实原件                                      |
-| 2    | R2 两个独立 PG17 目标的 migration、权限读回、verification / reconcile | normal 和 apply-interrupted 各自的真实 operationRef、目标身份与结果；原 UNKNOWN 不改写     |
-| 3    | R3 非商用快照消费接线、隔离加密目标及同候选 fresh / snapshot 双链     | 合法快照来源、消费权限、目的地与会话原件齐全；认证后恢复与两条 37-suite/API-Web 链真实执行 |
-| 4    | Staging 迁移对齐和服务恢复                                            | 发布链应用待迁移、读回实际状态；API/Web 健康及关键路径通过                                 |
-| 5    | R4 A/B 申请、签约、支付回调、激活、终态及恢复验收与签收               | 实际业务结果和审计记录、维护/恢复证据、负责人签收                                          |
+| 顺序 | 尚未完成的工作                                                        | 完成依据                                                                               |
+| ---- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| 1    | R3 剩余生产接线：目标集合、创建成功/消费/清理结果、hosted job         | 同会话原件图闭合；37 suites 的目标分配完整；默认服务、加密存储及通道按实际 job 核验    |
+| 2    | 最终候选的受保护 CI 构建与 H2 证据读回                                | 同一源码、API/Web/Runner 镜像及独立保管身份的真实原件                                  |
+| 3    | R2 两个独立 PG17 目标的 migration、权限读回、verification / reconcile | normal 和 apply-interrupted 各自的真实 operationRef、目标身份与结果；原 UNKNOWN 不改写 |
+| 4    | R3 合法快照认证恢复及同候选 fresh / snapshot 双链                     | 合法来源、消费权限、独立保管读回齐全；两条 37-suite/API-Web 链真实执行                 |
+| 5    | Staging 迁移对齐和服务恢复                                            | 发布链应用待迁移、读回实际状态；API/Web 健康及关键路径通过                             |
+| 6    | R4 A/B 申请、签约、支付回调、激活、终态及恢复验收与签收               | 实际业务结果和审计记录、维护/恢复证据、负责人签收                                      |
 
 2026-09-28 02:28（北京时间）经既有 SSH 身份只读核对：Staging PostgreSQL 正常，API/Web 及其余容器停止。数据库 `subscription_saas_staging` 的 PG 版本为 170010，迁移表共 127 行，其中 126 条完成、1 条历史 rolled-back、0 条活动失败；126 条已完成迁移的 checksum 全部与当前工作树匹配，无 remote-only 或 checksum 漂移。候选仍有 128 条，待应用的仍是 `20260925090000_stage1_operational_completion_terminal_shape` 和 `20260925091000_stage1_operational_completion_settlement_guard`。SQL 在只读事务内执行，没有应用迁移或读取业务行。
 
+当前 manifest 有 37 suites，既有 batches 仅分配 30 个不同 suiteId；补齐 R3 目标映射时须覆盖剩余 7 个及 lifecycle 内部目标，不能以现有 batch 列表当作完整验收集合。无需新增业务 suite 或另起授权平台。
+
 R3 路线已按当前收口决策纠正：此前拟做的 prebuild 读取器不属于本期必要路径，草稿已停止，尚未写入生产代码或执行测试。[最小发布决策](../superpowers/specs/2026-09-06-stage1-minimal-controlled-release-decision.zh-CN.md)明确延期构建前私有快照依赖；本期构建沿用唯一 `build-proof.v1`，提升前完成合法 snapshot 链。
 
-当前未接线的 `manual-runner-request.v2` 强制要求旧 bundle/dispatch/RC workflow，非商用 producer 授权 v2 也带有同类依赖。不能为适配这些字段恢复已延期平台或填写替代值。consumer v3 已完成纯合同层面的纠正，保留 v2 历史解释；固定合法快照原件读取器和创建会话入口已实现。下一段沿该会话接通 hosted 创建执行及 Engine/PG 实际身份读回，再闭合成功创建、消费和清理结果。实际权限来源、对象版本、独立保管读回、目的地和消费会话仍须闭合，不能用测试原件替代。只有确需新 producer 时才对齐它的前向授权；已有合法密文不因消费合同更新被强制重生产。
+当前未接线的 `manual-runner-request.v2` 强制要求旧 bundle/dispatch/RC workflow，非商用 producer 授权 v2 也带有同类依赖。不能为适配这些字段恢复已延期平台或填写替代值。consumer v3 已完成纯合同层面的纠正，保留 v2 历史解释；固定合法快照原件读取器、创建会话和 Engine/PG 创建观察入口已实现。下一段补全 target set 与成功创建、消费、清理结果及实际 hosted 入口。实际权限来源、对象版本、独立保管读回、目的地和消费会话仍须闭合，不能用测试原件替代。只有确需新 producer 时才对齐它的前向授权；已有合法密文不因消费合同更新被强制重生产。
 
 R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此前 memo 将外部 controller/current-status 服务、第二 checkpoint 和独立 grant 体系推导为统一前置条件，现已撤回；来源确有第三方许可限制时才按其真实原件处理。具体来源、用途、对象版本和存储读回是仍需核对的事实，不以此重复申请用户已授权的实施操作。
 
@@ -71,6 +82,12 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 
 ## 证据定位
 
+- PG 创建定向验证：初始 `r3-postgres-launch-red01.log` 为 3 pass / 1 fail（缺少创建方法）；`green01` 为真实 OOM/SIGABRT、exit 1，494,306.442212 ms，保留私有副本和已取得的两端身份原件，不记为通过。精简重复远端重查但保留完整 Engine 交互前后检查，并清理测试重复 mock 调用历史后，`green02` 自然 exit 0，1/1、139,570.032649 ms。随后真实维护暴露地址格式问题，修正 SQL 与两端断言后的唯一 `r3-postgres-launch-green03.log` 自然 exit 0（终端 `652cfa`），1/1、0 skip、138,365.856627 ms；259 项源码副本 `/root/.cache/r3-postgres-launch-fuxKvN` 对应 `20260928-004044-680720111-copy.sha256`。后续仅格式化纯观察模块/测试，不更改语义。Engine、PG、GitHub 身份使用合成夹具，Linux 文件/TCP 为原生，不能登记为真实 PG/CI 成绩。
+- hosted relay 与纯观察用例：`r3-hosted-relay-green01.log` 为 9 pass / 1 fail，固定测试 peer 5432 冲突；只将测试 peer 改为临时端口并保留生产 5432 约束后，`r3-hosted-relay-green02.log` 自然 exit 0（`1a5d36`），10/10、0 skip、2,855.528472 ms，261 项源码对应 `20260928-003114-220515847-copy.sha256`。实际 Node/Unix/TCP 配合合成资源，未重复旧 R2 长链。有限独立代码审查未发现可证实阻断；随后 root 根据真实 PG 输出另外修正地址 SQL。
+- 维护 probe05 与失败前序详见 [通路实测](2026-09-27-stage1-r3-remote-engine-feasibility.md)。补充现有 PG17.10 的只读格式查询 `r3-pg17-inet-format-readonly02.stdout.log` 自然 exit 0，输出 `170010|172.17.0.2/32|172.17.0.2|t`，stderr 为空；末列证明采用本地 socket，因此比较的是显式 inet 值，不伪称实际 TCP server_addr。首试因未指定现有自定义角色而连接失败（exit 2），原件保留。
+- 本轮发现登记初检 `f7ed9c` 报 1 项未分类；`r3-postgres-discovery-before.json` 确认是新纯观察测试的文件名触发 postgres 规则。明确登记其无 I/O 的 source-contract 例外后，`9ea6da` 自然 exit 0：99 candidates / 39 manifested / 60 excepted / 0 unclassified。未增减任何业务数据库 suite，不豁免真实 R3 门槛。本轮预检 `3f28f8` 的 migrate status 因缺 datasource.url 退出 1，`38ad6a` Prisma validate 退出 0；本地预检没有连接数据库。
+- R2 同类 SQL 修正：首次定向 H3-A/B 直接在 `/mnt/d` 运行，在 build fixture 阶段报 `TRUSTED_BUILD_UNAVAILABLE`（原工具 `02625c` / `1599e0`，未保存独立 stdout），未到 SQL。复用现成 Linux 私有复制流程后，`r2-h3-address-native01.log` 自然 exit 0（`26d88d`），2/2、0 skip、12,319.040385 ms；259 项源码副本 `/root/.cache/r2-h3-address-bRo07l` 对应 `20260928-022922-821501795-copy.sha256`。这里只证明固定读取器及合成原件一致，实际 R2 两个 PG17 目标验收仍待完成。
+- 最终代码合同检查 `244fce` 自然 exit 0：212 文件、83 schemas、128 migrations、13 commands，repository digest `sha256:c6cdc83d024030349ad06e0104f50ff4268583a5b9ce89c932963deccbca87ee`。代码语法/diff 检查 `eb132b` 通过，R2 两处补丁格式/语法检查 `6210f1` 通过；没有 push、merge 或 CI dispatch。
 - 创建控制与 H1 接线：`r3-target-create-native05.log`（终端 chunk `902f56`）4/4，copy `/root/.cache/r3-target-create-Ua0Um3` 的 258 项源文件按 `20260927-233858-312816521-copy.sha256` 核对；`r3-hosted-creation-control-green02.log`（`39faa6`）4/4，原始 stdout 均直接捕获。此前 `r3-target-create-native01.log` 为 wrapper 换行准备失败，`native02` 为复制依赖/测试钩子失败，`native03` 为防火墙规范化 mock 未对齐；`native04`（`6d537a`）3 pass / 1 fail 是实际 409 交接 RED，修复后完成唯一最终轮。hosted 初始缺模块 RED 位于 `r3-hosted-creation-control-red01.log`；到期 RED `r3-hosted-creation-control-expiry-red02.log` 是旧实现 12 秒 timeout，不能记作断言失败。H1 实际只读原件为 `r3-h1-forward-transport-readonly01.log`。仓库合同 `59ac87` 和登记 `7609f5` 自然退出 0，repository digest `sha256:7372180ee648d3728a152365b8ee89acffa98ffa7a6ff3f0fe8dab48c4729379`；格式/语法/staged diff 检查 `176e72` 退出 0。本轮预检 `a7b069` 的 migrate status 因缺 datasource.url 退出 1，`3b6c2d` Prisma validate 退出 0；未连接线上数据库、未重复 R2 长链、未 push/merge/dispatch。
 - Hosted 创建原语：最终工具原始输出 chunk `abf6ad` 自然退出 0（6/6），final caller/signer 有效 RED `b7769c`、定向 GREEN `67a9e9`，初始缺模块 RED 为 `2ffc19`。对应 `r3-hosted-workspace-create-{green01,final-red-b7769c,module-red-2ffc19}.log` 是可见工具输出转存，未直接捕获原 stdout 字节，仅作 partial 归档；原 chunk 保留，没有为归档重复测试。仓库合同检查 `4cc2f5` 自然退出 0：208 文件、83 schemas、128 migrations、13 commands，repository digest `sha256:e76b1659099f71c61ad17547cc565513b01d940e0f02a611b5aeec53d3a07c55`；包含新测试的 staged-index 登记检查 `eecd71` 为 98 candidates / 39 manifested / 59 excepted / 0 unclassified，没有新增数据库 suite 或例外。预检 `570d1d` 因缺 datasource.url 退出 1，`bbdd9a` Prisma validate 退出 0；未连接线上数据库。通道真实维护原件另见上面的通路核查，不能与合成创建测试合并宣称 hosted 验收通过。
 - R3 创建会话：核心原始输出 `r3-creation-session-core-green01.log` 保留旧 allocation v1 无 sessionRecordDigest 的兼容失败，修正后的 `r3-creation-session-core-green02.log` 为 4/4。入口 RED 位于工作树 `scratch/r3-creation-session-entry-red01.log`。唯一 Linux 整合 `r3-creation-session-native01.log`（进程 2871，终端 chunk `b7ea3d`）host/Node 自然退出 0，7/7；copy `/home/keqi_119/.cache/r3-creation-session-l3M29F`，255 项源码按 `20260927-224636-101696654-copy.sha256` 核对。实际 Linux 文件系统/Git 配合合成 GitHub 与资源报告，不是真实 hosted 创建。合同检查 `eff4bd` 退出 0：207 文件、83 schemas、128 migrations、13 commands，repository digest `sha256:f1b7cf6bdc2b8a937865030d7bd9094fd141d3490c1faf74833e9e5132fd99e5`；数据库测试登记检查 `62ba6e` 为 98 candidates / 39 manifested / 59 excepted / 0 unclassified。当前预检 `f04fc9` 因缺 datasource.url 退出 1，`9ddcf0` Prisma validate 退出 0；未连接线上数据库，未重复 R2 长链。

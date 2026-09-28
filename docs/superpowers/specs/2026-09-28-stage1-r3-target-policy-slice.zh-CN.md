@@ -133,3 +133,15 @@ H1 只连接固定 127.0.0.1:55440，将 allocation v2 和 request v4 归档、�
 hosted 的 `openR3HostedCreationControl({creationSpecBytes,jobAdmissionBytes})` 在实际 tmpfs 的固定 UUID socket 上只接收一次请求。它完成 202 响应和旧连接关闭后，关闭并核实自身 socket，调用已实现的 workspace creator，再以固定配置启动独立 dockerd。daemon 的 data/exec/pid/config/log/home/tmp 均在该操作的加密挂载内；不使用系统 Engine，不接收命令或路径覆盖。返回 `created` 中的工作区原件、实际 Engine readback 和自有进程诊断。
 
 两侧 `close` 只处理自有句柄/资源：H1 仅撤回未漂移的本次 key，不能把 key 撤回当作 SSH 已断开；已消费的 session 仍保留 UNKNOWN 和双锁。hosted 只停止自己实际启动的 child 并等待退出，保留工作区和 key 供后续清理证据，不声明完成资源清理。尚未启用 CLI 或 workflow；job admission 生产、PG 目的地身份、成功/consumer/cleanup 结果图及真实 hosted 双链仍待完成。
+
+## PG 创建、固定转发与两端观察接续
+
+H1 创建句柄增加无参数、每句柄仅一次的 `provisionPostgres()`。使用已验证数据库策略中的 PG17 镜像摘要，创建本 UUID 的内部 bridge、local 命名卷和 PG 容器；卷实际 Mountpoint 必须在该工作区的 `docker/volumes/<name>/_data`，不接受调用方路径。密码在原 H1 credentialRoot 的本操作目录排他落盘并持有读回，使用一个 0600 tar 成员写入新容器；请求/tar 不进入诊断档案，内存 tar 使用后清零。TLS 私钥与证书由容器生成在加密 writable layer，数据目录使用命名卷挂载根。
+
+Docker 26 的内部网络跳过外部端口编程，因此容器不设置 PortBindings。hosted 的既有控制进程启动临时透明 TCP 转发，只监听 `127.0.0.1:55441`，目标固定为当前操作实际观察到的 PG IPv4:5432；每次接受连接重新核对 Engine、镜像、CID、内部网络唯一成员和卷。没有第三端口、独立进程或常驻服务。到期或控制器关闭时停止监听和自有连接；不能据此声称远端数据库或工作区已清理。
+
+两端分别是 H1 固定通道的原 PostgreSQL connector，以及通过同 Engine 对同 CID 的固定只读 TLS psql 查询。共同查询 system identifier、PG17 版本、真实服务端地址/端口、数据库/OID、角色、TLS 与 cluster marker；结果必须完全相同。地址用 `host(inet_server_addr())` 输出裸 IP；显式 `inet::text` 会带掩码，不能与 Docker IP 字段直接比较（[PostgreSQL 17 官方说明](https://www.postgresql.org/docs/17/functions-net.html)）。只归档实际响应及两端身份，单独查询失败或重查漂移均拒绝。
+
+hosted 启动 Engine 前后还要求 `/run/containerd/containerd.sock` 不存在，避免 dockerd 自动采用系统 containerd，使持久元数据离开加密目录。实际 job 准备须关闭其默认 Docker/socket/containerd 服务，并读回本操作 managed containerd 的实际目录；当前未接线 workflow，不改变 H1 系统服务。保持 classic overlay2、iptables/ip6tables/IP forwarding/userland proxy 禁用。
+
+返回 `POSTGRES_OBSERVED` 与 `promotionEligible:false`，不写 SUCCEEDED、不授予 consumer。当前资源观察限定创建阶段的一容器/一镜像；后续 suite/API/Web 的完整目标集合必须显式入图，不能全局放松该检查。`close` 等待本句柄正在执行的 PG 操作、清零并关闭密码句柄，再关闭原 lease/session；不自动删数据库、释放已消费锁或改写 UNKNOWN。完整目标集合锁、结果与保管原件、实际 hosted producer、恢复和清理仍待实现。

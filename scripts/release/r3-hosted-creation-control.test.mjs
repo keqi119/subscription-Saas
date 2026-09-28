@@ -12,6 +12,7 @@ const originalMkdir = fs.mkdir.bind(fs);
 const originalStat = fs.stat.bind(fs);
 const originalSpawn = childProcess.spawn.bind(childProcess);
 const originalRead = fs.readFile.bind(fs);
+const originalLstat = fs.lstat.bind(fs);
 const root = "/dev/shm/stage1-keys";
 const operationRef = "70000000-0000-4000-8000-000000000001";
 const id = operationRef.replaceAll("-", "");
@@ -21,6 +22,8 @@ const machine = (await originalRead("/etc/machine-id", "utf8")).trim();
 const creationCalls = [];
 let creatorFailure = false;
 let engineFailure = false;
+let systemContainerd = false;
+let postgresResources = null;
 
 mock.module("./r3-hosted-workspace-create.mjs", {
   namedExports: {
@@ -240,13 +243,24 @@ async function setup(t) {
       else process.env[name] = previous[name];
   });
   const oldCreatorFailure = creatorFailure,
-    oldEngineFailure = engineFailure;
+    oldEngineFailure = engineFailure,
+    oldSystemContainerd = systemContainerd;
   creatorFailure = false;
   engineFailure = false;
+  systemContainerd = false;
+  postgresResources = null;
   creationCalls.length = 0;
   t.after(() => {
     creatorFailure = oldCreatorFailure;
     engineFailure = oldEngineFailure;
+    systemContainerd = oldSystemContainerd;
+  });
+  t.mock.method(fs, "lstat", async (file, ...args) => {
+    if (file === "/run/containerd/containerd.sock") {
+      if (systemContainerd) return { isSocket: () => true };
+      throw Object.assign(new Error("synthetic absent system containerd"), { code: "ENOENT" });
+    }
+    return originalLstat(file, ...args);
   });
   const opens = [],
     commands = [],
@@ -294,6 +308,8 @@ async function setup(t) {
       const http = require('node:http');
       const socket = process.argv[1], root = process.argv[2];
       const server = http.createServer((req, res) => {
+        const resources = ${JSON.stringify(postgresResources)};
+        if (resources && req.url in resources) return res.writeHead(200).end(JSON.stringify(resources[req.url]));
         if (req.url === '/_ping') return res.writeHead(200).end('OK');
         if (req.url === '/v1.45/info') return res.writeHead(200, {'content-type':'application/json'}).end(JSON.stringify({
           ID:'69a59aea-54ef-4181-808e-cf8d6cdb05e6', DockerRootDir:root,
@@ -352,11 +368,163 @@ test("R3 control accepts one native HTTP request then hands same socket to obser
   assert.equal(f.commands.length, 1);
   assert.ok(f.directories.every((item) => item.file.startsWith(mountPath + "/")));
   assert.equal(f.configurations.length, 1);
+  const config = JSON.parse(f.configurations[0]);
+  assert.equal(config.iptables, false);
+  assert.equal(config.ip6tables, false);
+  assert.equal(config["userland-proxy"], false);
   assert.notEqual((await post(socketPath, body(inputs)).catch((error) => error)).status, 202);
   assert.equal(creationCalls.length, 1);
   const closed = await control.close();
   assert.equal(closed.engine.exitCode, 0);
   assert.equal(closed.workspaceRemoved, false);
+});
+
+test("R3 control refuses implicit reuse of the system containerd", async (t) => {
+  const f = await setup(t);
+  if (!f) return;
+  systemContainerd = true;
+  const inputs = admission();
+  const control = await openR3HostedCreationControl(inputs);
+  t.after(() => control.close());
+  assert.equal((await post(socketPath, body(inputs))).status, 202);
+  await assert.rejects(control.created, { code: "R3_HOSTED_CREATION_CONTROL_INVALID" });
+  assert.equal(f.commands.length, 0);
+  await assert.rejects(control.postgresForward);
+});
+
+test("R3 control relays only opaque bytes to its observed PG and closes the loopback listener", async (t) => {
+  const f = await setup(t);
+  if (!f) return;
+  const imageDigest = JSON.parse(
+    await originalRead(
+      new URL("../../release/contracts/database-target-policies.v1.json", import.meta.url),
+      "utf8"
+    )
+  ).policies.find((value) => value.policyId === "s1-release-compose-ephemeral").requiredImageDigest;
+  const names = { container: `s1r3pg_${id}`, network: `s1r3net_${id}`, volume: `s1r3data_${id}` };
+  const imageId = `sha256:${"e".repeat(64)}`,
+    cid = "b".repeat(64),
+    nid = "c".repeat(64);
+  const labels = { "com.subscription.release.operation-ref": operationRef };
+  const volumePath = `${mountPath}/docker/volumes/${names.volume}/_data`;
+  postgresResources = {
+    [`/v1.45/containers/${names.container}/json`]: {
+      Id: cid,
+      Name: `/${names.container}`,
+      Image: imageId,
+      Config: { Image: `postgres:17-bookworm@${imageDigest}`, Labels: labels },
+      State: {
+        Status: "running",
+        Running: true,
+        Paused: false,
+        Restarting: false,
+        Dead: false,
+        Pid: 321
+      },
+      HostConfig: {
+        Privileged: false,
+        PidMode: "",
+        NetworkMode: names.network,
+        Binds: null,
+        PortBindings: {}
+      },
+      NetworkSettings: {
+        Ports: { "5432/tcp": null },
+        Networks: { [names.network]: { NetworkID: nid, IPAddress: "127.0.0.2" } }
+      },
+      Mounts: [
+        {
+          Type: "volume",
+          Name: names.volume,
+          Source: volumePath,
+          Destination: "/var/lib/postgresql/data",
+          Driver: "local",
+          RW: true
+        }
+      ]
+    },
+    [`/v1.45/images/${encodeURIComponent(`postgres:17-bookworm@${imageDigest}`)}/json`]: {
+      Id: imageId,
+      RepoDigests: [`postgres@${imageDigest}`],
+      Os: "linux",
+      Architecture: "amd64"
+    },
+    [`/v1.45/networks/${names.network}`]: {
+      Id: nid,
+      Name: names.network,
+      Driver: "bridge",
+      Internal: true,
+      Ingress: false,
+      EnableIPv6: false,
+      Labels: labels,
+      Containers: { [cid]: { Name: names.container, IPv4Address: "127.0.0.2/8" } }
+    },
+    [`/v1.45/volumes/${names.volume}`]: {
+      Name: names.volume,
+      Driver: "local",
+      Mountpoint: volumePath,
+      Options: null,
+      Labels: labels
+    }
+  };
+  // A synthetic TCP peer stands in for PG; this tests opaque relay lifecycle,
+  // not the database, TLS implementation or hosted job provenance.
+  const peerSockets = new Set();
+  const peer = net.createServer((socket) => {
+    peerSockets.add(socket);
+    socket.once("close", () => peerSockets.delete(socket));
+    socket.pipe(socket);
+  });
+  await new Promise((resolve, reject) => {
+    peer.once("error", reject);
+    peer.listen(0, "127.0.0.1", resolve);
+  });
+  const originalConnect = net.createConnection;
+  t.mock.method(net, "createConnection", (options, ...args) => {
+    if (options?.host === "127.0.0.2") {
+      assert.equal(options.port, 5432);
+      return originalConnect({ ...options, host: "127.0.0.1", port: peer.address().port }, ...args);
+    }
+    return originalConnect(options, ...args);
+  });
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        for (const socket of peerSockets) socket.destroy();
+        peer.close(resolve);
+      })
+  );
+  const inputs = admission();
+  const control = await openR3HostedCreationControl(inputs);
+  t.after(() => control.close());
+  assert.equal((await post(socketPath, body(inputs))).status, 202);
+  await control.created;
+  const forward = await control.postgresForward;
+  assert.equal(forward.observation.containerId, cid);
+  assert.equal(forward.observation.listener.address, "127.0.0.1");
+  assert.equal(forward.observation.listener.port, 55441);
+  const payload = Buffer.from([0, 0, 0, 8, 4, 210, 22, 47]);
+  const client = net.createConnection({ host: "127.0.0.1", port: 55441 });
+  t.after(() => client.destroy());
+  const echoed = await new Promise((resolve, reject) => {
+    client.once("error", reject);
+    client.once("connect", () => client.write(payload));
+    client.once("data", resolve);
+    client.setTimeout(5000, () => reject(new Error("relay timeout")));
+  });
+  assert.deepEqual(echoed, payload);
+  await control.close();
+  await assert.rejects(
+    new Promise((resolve, reject) => {
+      const socket = net.createConnection({ host: "127.0.0.1", port: 55441 });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve();
+      });
+      socket.once("error", reject);
+    }),
+    { code: "ECONNREFUSED" }
+  );
 });
 
 test("R3 control keeps UNKNOWN on accepted creator failure and close only removes own socket", async (t) => {

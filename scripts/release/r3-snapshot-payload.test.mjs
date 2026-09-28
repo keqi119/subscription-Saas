@@ -108,6 +108,12 @@ test("fetches verified ciphertext into a private replayable file with safe froze
   assert.equal(JSON.stringify(held.observations).includes("bootstrap-secret"), false);
   await held.recheck();
   assert.equal(checks, 2);
+  // The download credential can expire during the later 37-database restore.
+  // Replaying the already authenticated local file performs no cloud request.
+  t.mock.method(Date, "now", () => Date.parse(held.facts.identityExpiresAt) + 1);
+  await held.recheck();
+  assert.deepEqual(await replay(), payload);
+  assert.equal(network.calls, 2);
 });
 
 test("close destroys an owned replay and refuses future opens", async (t) => {

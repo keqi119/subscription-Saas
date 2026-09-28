@@ -530,6 +530,7 @@ export async function fetchR3SnapshotCiphertext(input) {
     requireThat(sameIdentity(pinned, await fileHandle.stat({ bigint: true })));
     await recheck();
     checkSignal(signal);
+    requireThat(Date.now() < expires);
     const facts = freeze({
       path: target,
       ciphertextDigest: subject.ciphertextDigest,
@@ -551,7 +552,10 @@ export async function fetchR3SnapshotCiphertext(input) {
     const replayStreams = new Set();
     const recheckHeld = async () => {
       try {
-        requireThat(!closed && Date.now() < expires && !signal.aborted);
+        // STS bounds the authenticated download, not the lifetime of its pinned
+        // local artifact. Later replays make no cloud call; the native holder
+        // separately rechecks its session, revocations and destination authority.
+        requireThat(!closed && !signal.aborted);
         await bootstrap.recheck();
         const currentDir = await checkedPrivatePath(directory, { ...options, directory: true });
         requireThat(sameChain(currentDir, publishedChain, privateRoot));

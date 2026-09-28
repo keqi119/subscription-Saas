@@ -61,7 +61,8 @@ test("existing buffer requests still work and oversized responses are refused", 
     response.writeHead(201);
     response.end("created");
   });
-  const result = await exchangeR3Engine("POST", "/exec", expected);
+  // Image provisioning already uses a five-minute response window.
+  const result = await exchangeR3Engine("POST", "/exec", expected, null, { timeout: 300000 });
   assert.equal(result.status, 201);
   assert.equal(result.body.toString(), "created");
   await assert.rejects(exchangeR3Engine("GET", "/large"), {

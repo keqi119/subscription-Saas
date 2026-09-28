@@ -3092,16 +3092,17 @@ test(
   }
 );
 
-for (const mode of ["accepted", "dropped", "evidence"]) {
+for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
   const dropped = mode === "dropped",
-    evidenceOnly = mode === "evidence";
+    evidenceOnly = mode === "evidence",
+    closingRestore = mode === "closing";
   test(
-    `R3 LAUNCH ${evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
+    `R3 LAUNCH ${closingRestore ? "drains current restore cleanup before closing its transport" : evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
     { skip: process.platform !== "linux" },
     async (t) => {
       const f = await r3ForwardFixture(t, {
         phase: "source",
-        chain: mode === "accepted" ? "snapshot" : "fresh"
+        chain: mode === "accepted" || closingRestore ? "snapshot" : "fresh"
       });
       const imageDigest = JSON.parse(
         await fs.readFile(
@@ -3197,6 +3198,18 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         databaseRechecks = 0,
         databaseSecretReference,
         databaseObservation;
+      const restoredDatabases = [];
+      let latestRestoreStates = [];
+      let restoreSignal,
+        grantObserved,
+        finishRestore,
+        cleanupObserved = false;
+      const grantedRestore = new Promise((resolve) => {
+        grantObserved = resolve;
+      });
+      const finishCurrentRestore = new Promise((resolve) => {
+        finishRestore = resolve;
+      });
       if (!dropped) {
         const readerDirectory = path.join(f.profile.storage.credentialRoot, "snapshot-reader");
         await fs.mkdir(readerDirectory, { mode: 0o700 });
@@ -3329,8 +3342,15 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
                 }))
               };
             },
-            recheckR3DatabaseTargets: async ({ plan, records, executeAdmin }) => {
+            recheckR3DatabaseTargets: async ({
+              plan,
+              records,
+              executeAdmin,
+              restoreStates = []
+            }) => {
               databaseRechecks++;
+              latestRestoreStates = restoreStates;
+              assert.ok(restoreStates.every((state) => state.phase === "REVOKED"));
               assert.equal(records.length, plan.targets.length);
               const item = records[0];
               databaseObservation = {
@@ -3406,15 +3426,111 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         });
       }
       let decryptCalls = 0;
-      if (evidenceOnly)
+      if (!dropped)
         t.mock.module("./r3-h1-snapshot-decrypt.mjs", {
           namedExports: {
-            async decryptR3SnapshotCiphertext() {
+            async decryptR3SnapshotCiphertext(input) {
               decryptCalls++;
-              throw new Error("DECRYPT_MUST_NOT_START");
+              if (evidenceOnly) throw new Error("DECRYPT_MUST_NOT_START");
+              assert.equal(input.operationRef, f.operationRef);
+              assert.equal(typeof input.source.open, "function");
+              assert.equal(typeof input.recheck, "function");
+              const envelope = input.cryptoInputs.envelope;
+              return {
+                facts: {
+                  path: path.join(
+                    f.profile.storage.credentialRoot,
+                    "r3",
+                    f.operationRef,
+                    "consumer",
+                    "plaintext",
+                    "snapshot.dump"
+                  ),
+                  snapshotDigest: envelope.snapshotDigest,
+                  keyFingerprint: envelope.localKeyReadback.keyFingerprint,
+                  plaintextSizeBytes: envelope.ciphertextSizeBytes
+                },
+                observations: { fixtureBoundary: "decrypt" },
+                recheck: async () => {},
+                close: async () => {}
+              };
             }
           }
         });
+      if (!dropped && !evidenceOnly) {
+        // Crypto, transfer and per-target SQL semantics have focused tests.
+        // This existing positive native chain verifies the captured inputs,
+        // complete target iteration, once-only gates and private readbacks.
+        t.mock.module("./r3-remote-snapshot-copy.mjs", {
+          namedExports: {
+            async copyR3SnapshotToPostgres(input) {
+              assert.equal(input.operationRef, f.operationRef);
+              assert.equal(input.containerId, containerId);
+              assert.equal(typeof input.engineCall, "function");
+              const directory = `/tmp/stage1-r3-${id}`;
+              return {
+                facts: {
+                  containerId,
+                  directory,
+                  path: `${directory}/snapshot.dump`,
+                  snapshotDigest: input.plaintext.facts.snapshotDigest,
+                  plaintextSizeBytes: input.plaintext.facts.plaintextSizeBytes
+                },
+                observations: { fixtureBoundary: "copy" },
+                recheck: async () => {},
+                close: async () => {}
+              };
+            }
+          }
+        });
+        t.mock.module("./r3-remote-snapshot-restore.mjs", {
+          namedExports: {
+            async restoreR3SnapshotDatabase(input) {
+              assert.equal(input.operationRef, f.operationRef);
+              assert.equal(input.postgres.containerId, containerId);
+              assert.equal(typeof input.engineCall, "function");
+              assert.equal(typeof input.recheck, "function");
+              assert.equal(input.signal.aborted, false);
+              const target = input.target;
+              assert.ok(!restoredDatabases.includes(target.databaseName));
+              restoredDatabases.push(target.databaseName);
+              assert.equal(input.restoreCredential.username, target.roles.restore);
+              assert.equal(input.migrationCredential.username, target.roles.migrate);
+              assert.equal(input.restoreCredential.database, target.databaseName);
+              assert.equal(input.migrationCredential.database, target.databaseName);
+              assert.match(input.restoreCredential.password, /^[0-9a-f]{64}$/u);
+              assert.match(input.migrationCredential.password, /^[0-9a-f]{64}$/u);
+              assert.ok(Object.isFrozen(input.ownershipMap));
+              for (const phase of ["GRANTING", "GRANTED"]) input.transition(phase);
+              if (closingRestore) {
+                restoreSignal = input.signal;
+                grantObserved();
+                await finishCurrentRestore;
+                assert.equal(input.signal.aborted, false);
+                await input.recheck();
+              }
+              for (const phase of ["REVOKING", "REVOKED"]) input.transition(phase);
+              cleanupObserved = true;
+              const ownershipObservation = {
+                fixtureBoundary: "restore",
+                databaseIdentityDigest: target.databaseIdentityDigest
+              };
+              return {
+                facts: {
+                  containerId,
+                  databaseName: target.databaseName,
+                  databaseOid: target.databaseOid,
+                  snapshotDigest: input.copied.facts.snapshotDigest,
+                  ownershipObservationDigest: sha256Canonical(ownershipObservation),
+                  restoreRoleDisabled: true,
+                  credentialFilesRemoved: true
+                },
+                observations: { ownershipObservation }
+              };
+            }
+          }
+        });
+      }
       const { launchR3TargetCreate } = await import(
         dropped ? "./launch-manual-stage1.mjs" : `./launch-manual-stage1.mjs?r3-pg-test=${mode}`
       );
@@ -3646,6 +3762,9 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         assert.equal(typeof launched.completeCreation, "function");
         assert.equal(typeof launched.consumeSnapshot, "function");
         assert.equal(typeof launched.fetchSnapshot, "function");
+        assert.equal(typeof launched.restoreSnapshot, "function");
+        await assert.rejects(launched.restoreSnapshot());
+        await assert.rejects(launched.copySnapshot());
         await assert.rejects(launched.fetchSnapshot());
         await assert.rejects(launched.consumeSnapshot({ inputReference: randomUUID() }));
         await assert.rejects(launched.completeCreation());
@@ -3946,6 +4065,83 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
           rawBeforeConsumer
         );
         await assert.rejects(launched.fetchSnapshot());
+        releaseMockHistory();
+        await assert.rejects(launched.restoreSnapshot());
+        const decrypted = await launched.decryptSnapshot();
+        assert.equal(decrypted.status, "PLAINTEXT_AUTHENTICATED");
+        assert.equal(decryptCalls, 1);
+        await assert.rejects(launched.decryptSnapshot());
+        releaseMockHistory();
+        await assert.rejects(launched.copySnapshot({ path: "override" }));
+        const copied = await launched.copySnapshot();
+        assert.equal(copied.status, "PLAINTEXT_COPIED");
+        await assert.rejects(launched.copySnapshot());
+        releaseMockHistory();
+        await assert.rejects(launched.restoreSnapshot({ target: "override" }));
+        if (closingRestore) {
+          const rejected = assert.rejects(launched.restoreSnapshot(), {
+            code: "R3_TARGET_CREATE_UNAVAILABLE"
+          });
+          await grantedRestore;
+          const closing = launched.close();
+          assert.equal(
+            restoreSignal.aborted,
+            false,
+            "current target retains transport for compensation"
+          );
+          await assert.rejects(launched.recheck());
+          await assert.rejects(launched.restoreSnapshot());
+          finishRestore();
+          await rejected;
+          await closing;
+          assert.equal(cleanupObserved, true);
+          assert.equal(restoreSignal.aborted, true);
+          assert.equal(restoredDatabases.length, 1, "close cannot start the next target");
+          assert.equal((await fs.readFile(f.forwardKey)).length, 0);
+          assert.equal(
+            (await fs.readdir(path.join(f.profile.storage.journalRoot, "locks"))).length,
+            41
+          );
+          const original = JSON.parse(
+            await fs.readFile(
+              path.join(
+                f.profile.storage.journalRoot,
+                "objects",
+                `${consumedSnapshot.executionRecordDigest.slice(7)}.json`
+              )
+            )
+          );
+          assert.equal(original.status, "INTERRUPTED_UNKNOWN");
+          if (handlerError) throw handlerError;
+          return;
+        }
+        const restored = await launched.restoreSnapshot();
+        assert.equal(restored.status, "SNAPSHOT_DATABASES_RESTORED");
+        assert.equal(restored.executionStatus, "INTERRUPTED_UNKNOWN");
+        assert.equal(restored.promotionEligible, false);
+        assert.equal(restored.executionRecordDigest, consumedSnapshot.executionRecordDigest);
+        assert.equal(restored.readbacks.length, 37);
+        assert.equal(new Set(restoredDatabases).size, 37);
+        assert.equal(latestRestoreStates.length, 37);
+        for (const readback of restored.readbacks) {
+          const bytes = await fs.readFile(
+            path.join(
+              consumerDirectory,
+              "observations",
+              "restore",
+              readback.databaseName,
+              "readback.json"
+            )
+          );
+          assert.equal(sha256Bytes(bytes), readback.digest);
+          const record = JSON.parse(bytes);
+          assert.equal(
+            record.consumerExecutionRecordDigest,
+            consumedSnapshot.executionRecordDigest
+          );
+          assert.equal(record.copyReadbackDigest, copied.readbackDigest);
+        }
+        await assert.rejects(launched.restoreSnapshot());
         releaseMockHistory();
         await launched.recheck();
         releaseMockHistory();

@@ -24,7 +24,9 @@ const invalid = { code: "R3_DATABASE_TARGETS_UNAVAILABLE" };
 function fakeAdmin({ failAfterCreate = Infinity, grantedTo = 0 } = {}) {
   const databases = new Map(),
     roles = new Map(),
-    calls = [];
+    calls = [],
+    restoreGrants = [],
+    absentPasswords = new Set();
   let creates = 0;
   const executeAdmin = async ({ databaseName, sql }) => {
     calls.push({ databaseName, sql });
@@ -76,10 +78,15 @@ function fakeAdmin({ failAfterCreate = Infinity, grantedTo = 0 } = {}) {
     } else if (/^SELECT pg_get_userbyid\(n\.nspowner\)/u.test(sql)) {
       const db = databases.get(databaseName);
       return { rows: db ? [{ schemaOwner: db.schemaOwner, canCreate: false, canUse: true }] : [] };
+    } else if (sql.startsWith('SELECT pg_get_userbyid(m.roleid) AS "roleName"')) {
+      return { rows: restoreGrants.map((row) => ({ ...row })) };
+    } else if (sql.startsWith('SELECT (r.rolpassword IS NULL) AS "passwordAbsent"')) {
+      const name = sql.match(/WHERE r\.rolname='([^']+)'$/u)?.[1];
+      return { rows: [{ passwordAbsent: absentPasswords.has(name) }] };
     }
     return { rows: [] };
   };
-  return { executeAdmin, databases, roles, calls };
+  return { executeAdmin, databases, roles, calls, restoreGrants, absentPasswords };
 }
 const createSecret = async ({ databaseName, profile, username }) => ({
   username,
@@ -234,6 +241,90 @@ test("R3 database provision preserves completed facts and partial resources on f
     "the partially created second target remains visible for UNKNOWN"
   );
   assert.ok(admin.calls.every((call) => !/^DROP |^ROLLBACK/u.test(call.sql)));
+});
+
+test("R3 restore recheck binds exact temporary membership and proven credential revocation", async () => {
+  const plan = planR3DatabaseTargets(input("source", "snapshot"));
+  const admin = fakeAdmin();
+  const { records } = await provisionR3DatabaseTargets({
+    plan,
+    policy,
+    executeAdmin: admin.executeAdmin,
+    createSecret,
+    recheck: async () => {},
+    createdAt
+  });
+  const originalDigest = sha256Canonical(records);
+  const record = records[0];
+  admin.roles.get(record.roles.restore).memberships = 1;
+  admin.roles.get(record.roles.migrate).grantedTo = 1;
+  admin.restoreGrants.push({
+    roleName: record.roles.migrate,
+    memberName: record.roles.restore,
+    adminOption: false,
+    inheritOption: false,
+    setOption: true
+  });
+  const request = { plan, records, executeAdmin: admin.executeAdmin };
+  await assert.rejects(recheckR3DatabaseTargets(request), invalid);
+  assert.equal(
+    await recheckR3DatabaseTargets({
+      ...request,
+      restoreStates: [{ databaseName: record.databaseName, phase: "GRANTED" }]
+    }),
+    true
+  );
+  admin.restoreGrants[0].memberName = records[1].roles.restore;
+  await assert.rejects(
+    recheckR3DatabaseTargets({
+      ...request,
+      restoreStates: [{ databaseName: record.databaseName, phase: "GRANTED" }]
+    }),
+    invalid
+  );
+  admin.restoreGrants.length = 0;
+  admin.roles.get(record.roles.restore).memberships = 0;
+  admin.roles.get(record.roles.restore).canLogin = false;
+  admin.roles.get(record.roles.restore).canConnect = false;
+  admin.roles.get(record.roles.migrate).grantedTo = 0;
+  const revoked = {
+    ...request,
+    restoreStates: [{ databaseName: record.databaseName, phase: "REVOKED" }]
+  };
+  await assert.rejects(recheckR3DatabaseTargets(revoked), invalid);
+  admin.absentPasswords.add(record.roles.restore);
+  assert.equal(await recheckR3DatabaseTargets(revoked), true);
+  assert.equal(sha256Canonical(records), originalDigest);
+});
+
+test("R3 restore recheck refuses an unobserved or duplicate transition", async () => {
+  const plan = planR3DatabaseTargets(input("source", "snapshot"));
+  const admin = fakeAdmin();
+  const { records } = await provisionR3DatabaseTargets({
+    plan,
+    policy,
+    executeAdmin: admin.executeAdmin,
+    createSecret,
+    recheck: async () => {},
+    createdAt
+  });
+  for (const restoreStates of [
+    [{ databaseName: records[0].databaseName, phase: "GRANTING" }],
+    [{ databaseName: records[0].databaseName, phase: "REVOKING" }],
+    [
+      { databaseName: records[0].databaseName, phase: "REVOKED" },
+      { databaseName: records[0].databaseName, phase: "REVOKED" }
+    ]
+  ])
+    await assert.rejects(
+      recheckR3DatabaseTargets({
+        plan,
+        records,
+        executeAdmin: admin.executeAdmin,
+        restoreStates
+      }),
+      invalid
+    );
 });
 
 function postgresReadback(engineId) {

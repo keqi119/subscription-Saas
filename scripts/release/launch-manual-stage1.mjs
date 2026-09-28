@@ -42,6 +42,7 @@ import { fetchR3SnapshotCiphertext } from "./r3-snapshot-payload.mjs";
 import { decryptR3SnapshotCiphertext } from "./r3-h1-snapshot-decrypt.mjs";
 import { exchangeR3Engine } from "./r3-engine-exchange.mjs";
 import { copyR3SnapshotToPostgres } from "./r3-remote-snapshot-copy.mjs";
+import { restoreR3SnapshotDatabase } from "./r3-remote-snapshot-restore.mjs";
 import {
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
@@ -1054,24 +1055,40 @@ export async function launchR3TargetCreate(input) {
     copyPending,
     snapshotCopy,
     copyReadback,
+    restoreAttempted = false,
+    restoreReady = false,
+    restorePending,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
     boundEngineId,
+    stopping = false,
     closed = false,
     closing;
   const diagnostics = [];
   const databaseSecrets = [];
+  const databaseSecretByName = new Map();
+  const restoreStates = new Map();
+  const restoreReadbacks = [];
   const fetchAbort = new AbortController();
   const close = () => {
     if (closing) return closing;
-    closed = true;
-    fetchAbort.abort();
-    socket?.destroy();
+    stopping = true;
+    const abort = () => {
+      closed = true;
+      fetchAbort.abort();
+      socket?.destroy();
+    };
+    if (!restorePending) abort();
     closing = (async () => {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
       const errors = [];
+      // Keep the existing, still-checked lease and transport available for the
+      // current target's bounded restore/revoke/credential cleanup. A stop
+      // cannot start another target or publish a completed restore set.
+      await restorePending?.catch(() => {});
+      abort();
       await copyPending?.catch(() => {});
       await decryptPending?.catch(() => {});
       await fetchPending?.catch(() => {});
@@ -1098,6 +1115,7 @@ export async function launchR3TargetCreate(input) {
         }
       }
       for (const handle of [
+        ...restoreReadbacks,
         copyReadback,
         snapshotCopy,
         decryptionReadback,
@@ -1136,6 +1154,7 @@ export async function launchR3TargetCreate(input) {
     await snapshotPlaintext?.recheck();
     await decryptionReadback?.recheck();
     await copyReadback?.recheck();
+    for (const held of restoreReadbacks) await held.recheck();
     if (consumerRecord)
       for (const { digest, bytes, role } of consumerRecord)
         if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
@@ -1402,6 +1421,15 @@ export async function launchR3TargetCreate(input) {
       await fs.mkdir(path.join(consumerDirectory, name), { mode: 0o700 });
     await fs.mkdir(path.join(consumerDirectory, "observations", "decryption"), { mode: 0o700 });
     await fs.mkdir(path.join(consumerDirectory, "observations", "copy"), { mode: 0o700 });
+    const restoreDirectory = path.join(consumerDirectory, "observations", "restore");
+    await fs.mkdir(restoreDirectory, { mode: 0o700 });
+    for (const target of planR3DatabaseTargets({
+      operationRef: fixed.spec.operationRef,
+      phase: fixed.spec.phase,
+      chain: fixed.spec.chain,
+      manifest: fixed.databaseTestManifest
+    }).targets)
+      await fs.mkdir(path.join(restoreDirectory, target.databaseName), { mode: 0o700 });
     const secretPath = path.join(directory, "postgres-password");
     const secretBytes = Buffer.from(randomBytes(32).toString("hex"));
     const secretFile = await fs.open(secretPath, "wx", 0o600);
@@ -1693,9 +1721,10 @@ export async function launchR3TargetCreate(input) {
         preparedSecrets.set(filename, { filepath });
       }
     }
-    for (const prepared of preparedSecrets.values()) {
+    for (const [filename, prepared] of preparedSecrets) {
       prepared.held = await pinPrivateInput(prepared.filepath, { principal, privateRoot }, 4096);
       databaseSecrets.push(prepared.held);
+      databaseSecretByName.set(filename, prepared.held);
     }
     await check();
     databaseStage = "PROVISION";
@@ -1878,6 +1907,10 @@ export async function launchR3TargetCreate(input) {
         recheckR3DatabaseTargets({
           plan: databaseTargetSet.plan,
           records: databaseTargetSet.records,
+          restoreStates: [...restoreStates].map(([databaseName, phase]) => ({
+            databaseName,
+            phase
+          })),
           executeAdmin
         })
       );
@@ -2283,6 +2316,147 @@ export async function launchR3TargetCreate(input) {
       promotionEligible: false
     });
   };
+  const restoreSnapshot = async () => {
+    await recheckResources();
+    const { metadata, ownershipMap } = consumerInput.restoreInputs;
+    if (
+      metadata.dumpDigest !== snapshotCopy.facts.snapshotDigest ||
+      metadata.ownershipMapDigest !== sha256Canonical(ownershipMap) ||
+      databaseTargetSet.plan.chain !== "snapshot" ||
+      databaseTargetSet.plan.phase !== "source"
+    )
+      fail(code);
+    const privateRoot = lease.profile.storage.credentialRoot;
+    const principal = { platform: "posix", uid: process.getuid() };
+    const readbacks = [];
+    for (const target of databaseTargetSet.records) {
+      if (stopping) fail(code);
+      const identity = {
+        kind: "r3-database-target",
+        engineId: boundEngineId,
+        systemIdentifier: postgresTarget.postgres.systemIdentifier,
+        databaseOid: target.databaseOid,
+        marker: target.marker
+      };
+      const databaseIdentityDigest = sha256Canonical(identity);
+      const locks = targetLockLease.locks.filter(
+        (lock) =>
+          lock.databaseName === target.databaseName && lock.lockDigest === databaseIdentityDigest
+      );
+      if (locks.length !== 1 || sha256Canonical(locks[0].identity) !== databaseIdentityDigest)
+        fail(code);
+      const credentials = {};
+      const heldCredentials = [];
+      for (const profile of ["restore", "migrate"]) {
+        const filename = `${target.databaseName}-${profile}.json`;
+        if (
+          target.secretReferences[profile] !==
+          `r3/${fixed.spec.operationRef}/database-credentials/${filename}`
+        )
+          fail(code);
+        const held = databaseSecretByName.get(filename);
+        if (!held) fail(code);
+        await held.recheck();
+        heldCredentials.push(held);
+        credentials[profile] = JSON.parse(held.bytes);
+      }
+      const result = await restoreR3SnapshotDatabase({
+        operationRef: fixed.spec.operationRef,
+        postgres: postgresTarget,
+        target: { ...target, databaseIdentityDigest },
+        copied: snapshotCopy,
+        ownershipMap,
+        restoreCredential: credentials.restore,
+        migrationCredential: credentials.migrate,
+        engineCall,
+        // The helper observes this exact PG target, role transition and copied
+        // file. Recheck the complete set before/after the loop, and keep current
+        // trust plus the held credential originals checked within each target.
+        recheck: async () => {
+          await check();
+          for (const held of heldCredentials) await held.recheck();
+        },
+        transition: (phase) => {
+          const previous = restoreStates.get(target.databaseName);
+          const allowed = {
+            GRANTING: [undefined],
+            GRANTED: ["GRANTING"],
+            REVOKING: ["GRANTING", "GRANTED"],
+            REVOKED: ["REVOKING"]
+          };
+          if (!allowed[phase]?.includes(previous)) fail(code);
+          restoreStates.set(target.databaseName, phase);
+        },
+        signal: fetchAbort.signal
+      });
+      if (
+        restoreStates.get(target.databaseName) !== "REVOKED" ||
+        result.facts.containerId !== postgresTarget.containerId ||
+        result.facts.databaseName !== target.databaseName ||
+        result.facts.databaseOid !== target.databaseOid ||
+        result.facts.snapshotDigest !== metadata.dumpDigest ||
+        result.facts.ownershipObservationDigest !==
+          sha256Canonical(result.observations.ownershipObservation) ||
+        result.facts.restoreRoleDisabled !== true ||
+        result.facts.credentialFilesRemoved !== true
+      )
+        fail(code);
+      const directory = path.join(
+        privateRoot,
+        "r3",
+        fixed.spec.operationRef,
+        "consumer",
+        "observations",
+        "restore",
+        target.databaseName
+      );
+      await checkedPrivatePath(directory, { principal, privateRoot, directory: true });
+      const bytes = encodeManualJson({
+        status: "SNAPSHOT_DATABASE_RESTORED",
+        operationRef: fixed.spec.operationRef,
+        sessionId: session.sessionId,
+        inputIndexDigest: consumerInput.inputIndexDigest,
+        consumerExecutionRecordDigest: consumerExecutionDigest,
+        copyReadbackDigest: sha256Bytes(copyReadback.bytes),
+        databaseIdentityDigest,
+        facts: result.facts,
+        observations: result.observations
+      });
+      if (bytes.length > 1048576) fail(code);
+      const filename = path.join(directory, "readback.json");
+      const file = await fs.open(filename, "wx", 0o600);
+      try {
+        await file.writeFile(bytes);
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      const parent = await fs.open(directory, "r");
+      try {
+        await parent.sync();
+      } finally {
+        await parent.close();
+      }
+      const held = await pinPrivateInput(filename, { principal, privateRoot });
+      restoreReadbacks.push(held);
+      if (!held.bytes.equals(bytes)) fail(code);
+      readbacks.push(
+        Object.freeze({ databaseName: target.databaseName, digest: sha256Bytes(bytes) })
+      );
+    }
+    await recheckResources();
+    if (stopping) fail(code);
+    restoreReady = true;
+    return Object.freeze({
+      status: "SNAPSHOT_DATABASES_RESTORED",
+      executionStatus: "INTERRUPTED_UNKNOWN",
+      executionRecordDigest: consumerExecutionDigest,
+      inputIndexDigest: consumerInput.inputIndexDigest,
+      snapshotDigest: metadata.dumpDigest,
+      readbacks: Object.freeze(readbacks),
+      promotionEligible: false
+    });
+  };
   try {
     if (
       !exact(input, ["repoRoot", "operationRef"]) ||
@@ -2453,6 +2627,7 @@ export async function launchR3TargetCreate(input) {
       },
       async importHostedEvidence(bundleBytes) {
         if (
+          stopping ||
           closed ||
           hostedImportAttempted ||
           !Buffer.isBuffer(bundleBytes) ||
@@ -2489,7 +2664,7 @@ export async function launchR3TargetCreate(input) {
         }
       },
       async provisionPostgres(...args) {
-        if (args.length !== 0 || closed || postgresAttempted) fail(code);
+        if (args.length !== 0 || stopping || closed || postgresAttempted) fail(code);
         postgresAttempted = true;
         postgresPending = provisionPg(engine.ID);
         try {
@@ -2503,7 +2678,8 @@ export async function launchR3TargetCreate(input) {
         }
       },
       async provisionDatabases(...args) {
-        if (args.length !== 0 || closed || !postgresTarget || databasesAttempted) fail(code);
+        if (args.length !== 0 || stopping || closed || !postgresTarget || databasesAttempted)
+          fail(code);
         databasesAttempted = true;
         databasesPending = provisionDatabases();
         try {
@@ -2532,6 +2708,7 @@ export async function launchR3TargetCreate(input) {
       async recordDestination(...args) {
         if (
           args.length !== 0 ||
+          stopping ||
           closed ||
           destinationAttempted ||
           !hostedEvidenceReady ||
@@ -2554,7 +2731,8 @@ export async function launchR3TargetCreate(input) {
         }
       },
       async completeCreation(...args) {
-        if (args.length !== 0 || closed || completionAttempted || !destinationReady) fail(code);
+        if (args.length !== 0 || stopping || closed || completionAttempted || !destinationReady)
+          fail(code);
         completionAttempted = true;
         completionPending = completeCreation();
         try {
@@ -2568,16 +2746,45 @@ export async function launchR3TargetCreate(input) {
         }
       },
       async recheck() {
+        if (stopping) fail(code);
         if (completionAttempted && !completionReady) fail(code);
         if (consumerAttempted && !consumerReady) fail(code);
         if (fetchAttempted && !fetchReady) fail(code);
         if (decryptAttempted && !decryptReady) fail(code);
         if (copyAttempted && !copyReady) fail(code);
+        if (restoreAttempted && !restoreReady) fail(code);
         await recheckResources();
+      },
+      async restoreSnapshot(...args) {
+        if (
+          args.length !== 0 ||
+          stopping ||
+          closed ||
+          restoreAttempted ||
+          !copyReady ||
+          !decryptReady ||
+          !fetchReady ||
+          !consumerReady ||
+          session.scope.phase !== "source" ||
+          session.scope.chain !== "snapshot"
+        )
+          fail(code);
+        restoreAttempted = true;
+        restorePending = restoreSnapshot();
+        try {
+          return await restorePending;
+        } catch (cause) {
+          throw Object.assign(new Error(code), {
+            code,
+            consumption,
+            failureCode: /^[A-Z0-9_]{1,64}$/u.test(cause?.code ?? "") ? cause.code : code
+          });
+        }
       },
       async copySnapshot(...args) {
         if (
           args.length !== 0 ||
+          stopping ||
           closed ||
           copyAttempted ||
           !decryptReady ||
@@ -2602,6 +2809,7 @@ export async function launchR3TargetCreate(input) {
       async decryptSnapshot(...args) {
         if (
           args.length !== 0 ||
+          stopping ||
           closed ||
           decryptAttempted ||
           !fetchReady ||
@@ -2625,6 +2833,7 @@ export async function launchR3TargetCreate(input) {
       async fetchSnapshot(...args) {
         if (
           args.length !== 0 ||
+          stopping ||
           closed ||
           fetchAttempted ||
           !consumerReady ||
@@ -2651,6 +2860,7 @@ export async function launchR3TargetCreate(input) {
           !exact(selector, ["inputReference"]) ||
           typeof selector.inputReference !== "string" ||
           !uuid.test(selector.inputReference) ||
+          stopping ||
           closed ||
           consumerAttempted ||
           !completionReady ||

@@ -18,7 +18,7 @@ function frame(output, channel = 1) {
   return Buffer.concat([header, bytes]);
 }
 
-function fixture({ corrupt = false, brokenSource = false } = {}) {
+function fixture({ corrupt = false, brokenSource = false, failRmdir = false } = {}) {
   const bytes = Buffer.from("authenticated snapshot dump\n".repeat(17));
   const events = [];
   let directoryExists = false,
@@ -73,9 +73,19 @@ function fixture({ corrupt = false, brokenSource = false } = {}) {
         if (directoryExists) execution.exit = 1;
         else directoryExists = true;
       } else if (program === "/usr/bin/stat") {
+        if (args[0] === "--") {
+          assert.ok([FILE, DIRECTORY].includes(args[1]));
+          if ((args[1] === FILE && remoteBytes) || (args[1] === DIRECTORY && directoryExists))
+            execution.exit = 0;
+          else {
+            execution.exit = 1;
+            return frame(`stat: cannot statx '${args[1]}': No such file or directory\n`, 2);
+          }
+          return frame("");
+        }
         assert.deepEqual(args.slice(0, 3), ["-c", "%F|%a|%u|%g|%s|%d|%i|%h|%y|%z", "--"]);
         const target = args[3];
-        if (target === DIRECTORY)
+        if (target === DIRECTORY && directoryExists)
           execution.output =
             "directory|700|0|0|4096|42|99|2|2026-09-29 00:00:00.000000000 +0000|2026-09-29 00:00:00.000000000 +0000\n";
         else if (target === FILE && remoteBytes)
@@ -84,6 +94,14 @@ function fixture({ corrupt = false, brokenSource = false } = {}) {
       } else if (program === "/usr/bin/sha256sum") {
         assert.deepEqual(args, ["--", FILE]);
         execution.output = `${digest(remoteBytes).slice(7)}  ${FILE}\n`;
+      } else if (program === "/usr/bin/unlink") {
+        assert.deepEqual(args, ["--", FILE]);
+        if (!remoteBytes) execution.exit = 1;
+        else remoteBytes = undefined;
+      } else if (program === "/usr/bin/rmdir") {
+        assert.deepEqual(args, ["--", DIRECTORY]);
+        if (!directoryExists || remoteBytes || failRmdir) execution.exit = 1;
+        else directoryExists = false;
       } else throw new Error(`unexpected command ${program}`);
       return frame(execution.output);
     }
@@ -142,6 +160,13 @@ function fixture({ corrupt = false, brokenSource = false } = {}) {
     },
     get remoteBytes() {
       return remoteBytes;
+    },
+    changeRemote() {
+      remoteBytes = Buffer.from(remoteBytes);
+      remoteBytes[0] ^= 1;
+    },
+    get directoryExists() {
+      return directoryExists;
     }
   };
 }
@@ -195,4 +220,81 @@ test("a failed source stream cannot produce a copied-file observation", async ()
     0
   );
   assert.equal(f.remoteBytes, undefined);
+});
+
+test("cleanup removes only the pinned dump and directory and proves both absent", async () => {
+  const f = fixture();
+  const held = await copyR3SnapshotToPostgres(request(f));
+  const proof = await held.cleanup();
+  assert.equal(Object.isFrozen(proof), true);
+  assert.equal(Object.isFrozen(proof.observations), true);
+  assert.equal(proof.facts.path, FILE);
+  assert.equal(f.remoteBytes, undefined);
+  assert.equal(f.directoryExists, false);
+  assert.deepEqual(
+    f.events
+      .filter((event) => ["/usr/bin/unlink", "/usr/bin/rmdir"].includes(event.value?.Cmd?.[0]))
+      .map((event) => event.value.Cmd),
+    [
+      ["/usr/bin/unlink", "--", FILE],
+      ["/usr/bin/rmdir", "--", DIRECTORY]
+    ]
+  );
+  await held.recheck();
+  await assert.rejects(held.cleanup(), { code: "R3_REMOTE_SNAPSHOT_COPY_UNAVAILABLE" });
+  await held.close();
+});
+
+test("cleanup rejects changed remote bytes before unlink", async () => {
+  const f = fixture();
+  const held = await copyR3SnapshotToPostgres(request(f));
+  f.changeRemote();
+  await assert.rejects(held.cleanup(), { code: "R3_REMOTE_SNAPSHOT_COPY_UNAVAILABLE" });
+  assert.ok(f.remoteBytes);
+  assert.equal(f.directoryExists, true);
+  assert.equal(f.events.filter((event) => event.value?.Cmd?.[0] === "/usr/bin/unlink").length, 0);
+  await assert.rejects(held.cleanup(), { code: "R3_REMOTE_SNAPSHOT_COPY_UNAVAILABLE" });
+  await assert.rejects(held.recheck(), { code: "R3_REMOTE_SNAPSHOT_COPY_UNAVAILABLE" });
+  await held.close();
+});
+
+test("partial remote cleanup remains unknown and cannot be retried", async () => {
+  const f = fixture({ failRmdir: true });
+  const held = await copyR3SnapshotToPostgres(request(f));
+  await assert.rejects(held.cleanup(), { code: "R3_REMOTE_SNAPSHOT_COPY_UNAVAILABLE" });
+  assert.equal(f.remoteBytes, undefined);
+  assert.equal(f.directoryExists, true);
+  assert.equal(f.events.filter((event) => event.value?.Cmd?.[0] === "/usr/bin/unlink").length, 1);
+  await assert.rejects(held.cleanup(), { code: "R3_REMOTE_SNAPSHOT_COPY_UNAVAILABLE" });
+  await assert.rejects(held.recheck(), { code: "R3_REMOTE_SNAPSHOT_COPY_UNAVAILABLE" });
+  await held.close();
+});
+
+test("close during cleanup leaves no clean proof", async () => {
+  const f = fixture();
+  const input = request(f);
+  let releaseRecheck, enteredRecheck;
+  const blocked = new Promise((resolve) => {
+    releaseRecheck = resolve;
+  });
+  const entered = new Promise((resolve) => {
+    enteredRecheck = resolve;
+  });
+  let pause = false;
+  input.recheck = async () => {
+    if (pause) {
+      enteredRecheck();
+      await blocked;
+    }
+  };
+  const held = await copyR3SnapshotToPostgres(input);
+  pause = true;
+  const cleanup = held.cleanup();
+  await entered;
+  const closing = held.close();
+  releaseRecheck();
+  await assert.rejects(cleanup, { code: "R3_REMOTE_SNAPSHOT_COPY_UNAVAILABLE" });
+  await closing;
+  assert.ok(f.remoteBytes);
+  assert.equal(f.directoryExists, true);
 });

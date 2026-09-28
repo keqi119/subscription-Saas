@@ -23,7 +23,7 @@ export async function exchangeR3Engine(
     (body !== null && !Buffer.isBuffer(body)) ||
     !Number.isSafeInteger(timeout) ||
     timeout < 1 ||
-    timeout > 120000 ||
+    timeout > (streamed ? 120000 : 300000) ||
     signal?.aborted ||
     (streamed &&
       (body !== null ||

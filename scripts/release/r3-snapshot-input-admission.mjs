@@ -635,6 +635,7 @@ export async function readR3SnapshotInput(input) {
           snapshotDigest: e.snapshotDigest
         }
       },
+      restoreInputs: { metadata: m, ownershipMap: s.ownershipMap },
       expiresAt: new Date(deadline).toISOString(),
       allowedUses: s.permission.allowedUses,
       rawReferences: [...refs]

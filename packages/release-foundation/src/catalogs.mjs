@@ -58,6 +58,7 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/r3-h1-snapshot-decrypt.mjs",
   "scripts/release/r3-engine-exchange.mjs",
   "scripts/release/r3-remote-snapshot-copy.mjs",
+  "scripts/release/r3-remote-snapshot-restore.mjs",
   "scripts/release/r3-hosted-creation-control.mjs",
   "scripts/release/r3-hosted-workspace-create.mjs",
   "scripts/release/r3-postgres-observation.mjs",

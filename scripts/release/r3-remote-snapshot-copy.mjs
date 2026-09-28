@@ -59,27 +59,32 @@ function jsonResponse(bytes) {
     fail();
   }
 }
-function stdoutResponse(bytes) {
+function multiplexResponse(bytes) {
   requireThat(Buffer.isBuffer(bytes) && bytes.length <= RESPONSE_LIMIT);
   let offset = 0,
     size = 0;
-  const chunks = [];
+  const stdout = [],
+    stderr = [];
   while (offset < bytes.length) {
     requireThat(
       bytes.length - offset >= 8 &&
-        bytes[offset] === 1 &&
+        (bytes[offset] === 1 || bytes[offset] === 2) &&
         bytes[offset + 1] === 0 &&
         bytes[offset + 2] === 0 &&
         bytes[offset + 3] === 0
     );
+    const channel = bytes[offset];
     const length = bytes.readUInt32BE(offset + 4);
     offset += 8;
     requireThat(length <= RESPONSE_LIMIT - size && length <= bytes.length - offset);
-    chunks.push(bytes.subarray(offset, offset + length));
+    (channel === 1 ? stdout : stderr).push(bytes.subarray(offset, offset + length));
     size += length;
     offset += length;
   }
-  return textResponse(Buffer.concat(chunks, size));
+  return {
+    stdout: textResponse(Buffer.concat(stdout)),
+    stderr: textResponse(Buffer.concat(stderr))
+  };
 }
 function tarHeader(size) {
   const header = Buffer.alloc(512);
@@ -178,18 +183,27 @@ export async function copyR3SnapshotToPostgres(input) {
     const file = `${directory}/snapshot.dump`;
     const transcript = [];
     let recording = true;
-    const run = async (command) => {
+    let closed = false;
+    const execute = async (command, { allowFailure = false, env, capture } = {}) => {
+      requireThat(!closed);
       checkSignal(signal);
       const creation = jsonResponse(
         await engineCall(
           "POST",
           `/containers/${containerId}/exec`,
-          { AttachStdout: true, AttachStderr: true, Tty: false, User: "0", Cmd: command },
+          {
+            AttachStdout: true,
+            AttachStderr: true,
+            Tty: false,
+            User: "0",
+            Cmd: command,
+            ...(env ? { Env: env } : {})
+          },
           201
         )
       );
       requireThat(CONTAINER.test(creation?.Id));
-      const output = stdoutResponse(
+      const output = multiplexResponse(
         await engineCall("POST", `/exec/${creation.Id}/start`, { Detach: false, Tty: false }, 200)
       );
       const completed = jsonResponse(
@@ -199,25 +213,28 @@ export async function copyR3SnapshotToPostgres(input) {
         completed?.ID === creation.Id &&
           completed.ContainerID === containerId &&
           completed.Running === false &&
-          completed.ExitCode === 0
+          Number.isInteger(completed.ExitCode)
       );
+      if (!allowFailure) requireThat(completed.ExitCode === 0 && output.stderr === "");
+      requireThat(!closed);
       checkSignal(signal);
-      if (recording)
-        transcript.push(
-          freeze({
-            command,
-            executionId: creation.Id,
-            output,
-            containerId: completed.ContainerID,
-            running: completed.Running,
-            exitCode: completed.ExitCode
-          })
-        );
-      return output;
+      const observation = freeze({
+        command,
+        executionId: creation.Id,
+        stdout: output.stdout,
+        stderr: output.stderr,
+        containerId: completed.ContainerID,
+        running: completed.Running,
+        exitCode: completed.ExitCode
+      });
+      if (recording) transcript.push(observation);
+      if (capture) capture.push(observation);
+      return observation;
     };
-    const stat = async (target, type) => {
+    const run = async (command, capture) => (await execute(command, { capture })).stdout;
+    const stat = async (target, type, capture) => {
       const row = statRow(
-        await run(["/usr/bin/stat", "-c", "%F|%a|%u|%g|%s|%d|%i|%h|%y|%z", "--", target]),
+        await run(["/usr/bin/stat", "-c", "%F|%a|%u|%g|%s|%d|%i|%h|%y|%z", "--", target], capture),
         type
       );
       requireThat(
@@ -226,8 +243,8 @@ export async function copyR3SnapshotToPostgres(input) {
       );
       return row;
     };
-    const hash = async () => {
-      const output = await run(["/usr/bin/sha256sum", "--", file]);
+    const hash = async (capture) => {
+      const output = await run(["/usr/bin/sha256sum", "--", file], capture);
       requireThat(output === `${expectedDigest.slice(7)}  ${file}\n`);
       return expectedDigest;
     };
@@ -323,32 +340,117 @@ export async function copyR3SnapshotToPostgres(input) {
       copiedDigest: expectedDigest,
       transcript
     });
-    let closed = false,
-      closing;
+    let closing,
+      cleanupPending,
+      cleanupState = "ready";
+    const absent = async (target, capture) => {
+      const result = await execute(["/usr/bin/stat", "--", target], {
+        allowFailure: true,
+        env: ["LC_ALL=C"],
+        capture
+      });
+      requireThat(
+        result.exitCode === 1 &&
+          result.stdout === "" &&
+          result.stderr === `stat: cannot statx '${target}': No such file or directory\n`
+      );
+      return result;
+    };
     const ownRecheck = async () => {
       try {
         requireThat(!closed);
         checkSignal(signal);
         await plaintext.recheck();
-        requireThat(
-          sameDirectory(firstDirectory, await stat(directory, "directory")) &&
-            sameFile(copiedFile, await stat(file, "regular file"))
-        );
-        await hash();
+        if (cleanupState === "clean") {
+          await absent(file);
+          await absent(directory);
+        } else {
+          requireThat(cleanupState === "ready" || cleanupState === "preflight");
+          requireThat(
+            sameDirectory(firstDirectory, await stat(directory, "directory")) &&
+              sameFile(copiedFile, await stat(file, "regular file"))
+          );
+          await hash();
+        }
         await plaintext.recheck();
         checkSignal(signal);
       } catch {
         fail();
       }
     };
+    const cleanup = async () => {
+      requireThat(!closed && cleanupState === "ready" && !cleanupPending);
+      cleanupState = "preflight";
+      cleanupPending = (async () => {
+        const cleanupTranscript = [];
+        try {
+          await recheck();
+          await ownRecheck();
+          requireThat(!closed);
+          checkSignal(signal);
+          const preDirectory = await stat(directory, "directory", cleanupTranscript);
+          const preFile = await stat(file, "regular file", cleanupTranscript);
+          requireThat(sameDirectory(firstDirectory, preDirectory) && sameFile(copiedFile, preFile));
+          await hash(cleanupTranscript);
+          requireThat(
+            sameDirectory(firstDirectory, await stat(directory, "directory", cleanupTranscript)) &&
+              sameFile(copiedFile, await stat(file, "regular file", cleanupTranscript))
+          );
+          await recheck();
+          requireThat(!closed);
+          checkSignal(signal);
+          cleanupState = "deleting";
+          requireThat(
+            (await execute(["/usr/bin/unlink", "--", file], { capture: cleanupTranscript }))
+              .stdout === ""
+          );
+          const fileAbsentAfterUnlink = await absent(file, cleanupTranscript);
+          const directoryBeforeRmdir = await stat(directory, "directory", cleanupTranscript);
+          requireThat(sameDirectory(firstDirectory, directoryBeforeRmdir));
+          requireThat(
+            (await execute(["/usr/bin/rmdir", "--", directory], { capture: cleanupTranscript }))
+              .stdout === ""
+          );
+          const directoryAbsent = await absent(directory, cleanupTranscript);
+          const fileAbsent = await absent(file, cleanupTranscript);
+          requireThat(!closed);
+          checkSignal(signal);
+          const proof = freeze({
+            facts,
+            observations: {
+              preDirectory,
+              preFile,
+              fileAbsentAfterUnlink,
+              directoryBeforeRmdir,
+              directoryAbsent,
+              fileAbsent,
+              transcript: cleanupTranscript
+            }
+          });
+          cleanupState = "clean";
+          return proof;
+        } catch {
+          cleanupState = "unknown";
+          fail();
+        }
+      })();
+      return cleanupPending;
+    };
     return Object.freeze({
       facts,
       observations,
       recheck: ownRecheck,
+      cleanup,
       close() {
         if (closing) return closing;
         closed = true;
-        closing = Promise.resolve();
+        closing = (async () => {
+          try {
+            await cleanupPending;
+          } catch {
+            // The one-shot cleanup remains unknown; close owns no remote deletion.
+          }
+        })();
         return closing;
       }
     });

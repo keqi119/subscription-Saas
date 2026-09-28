@@ -212,6 +212,7 @@
     "scripts/release/r3-hosted-workspace-create.mjs",
     "scripts/release/r3-postgres-observation.mjs",
     "scripts/release/r3-remote-snapshot-copy.mjs",
+    "scripts/release/r3-remote-snapshot-restore.mjs",
     "scripts/release/r3-snapshot-input-admission.mjs",
     "scripts/release/r3-snapshot-payload.mjs",
     "scripts/release/run-final-compose-gate.mjs",

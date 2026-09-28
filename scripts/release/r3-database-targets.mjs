@@ -170,7 +170,7 @@ function markerFor(plan, item, policy, createdAt) {
   const canonical = canonicalJson(facts);
   return item.kind === "application" ? `${policy.requiredEphemeralMarker}:${canonical}` : canonical;
 }
-async function observed(item, marker, executeAdmin) {
+async function observed(item, marker, executeAdmin, restorePhase) {
   const identity = await executeAdmin({
     databaseName: "postgres",
     sql: `SELECT d.oid::text AS "databaseOid", COALESCE(shobj_description(d.oid,'pg_database'),'') AS "marker", pg_get_userbyid(d.datdba) AS "owner" FROM pg_database d WHERE d.datname=${sqlLiteral(item.databaseName)}`
@@ -193,18 +193,40 @@ async function observed(item, marker, executeAdmin) {
       read.rows.length === 1 &&
         OID.test(row?.oid) &&
         row.name === username &&
-        row.canLogin === true &&
-        row.memberships === 0 &&
-        row.grantedTo === 0 &&
+        row.canLogin === !(profile === "restore" && restorePhase === "REVOKED") &&
+        row.memberships === (profile === "restore" && restorePhase === "GRANTED" ? 1 : 0) &&
+        row.grantedTo === (profile === "migrate" && restorePhase === "GRANTED" ? 1 : 0) &&
         ["superuser", "createdb", "createrole", "inherit", "replication", "bypassrls"].every(
           (key) => row[key] === false
         ) &&
         (profile === "migrate" ||
-          (row.canConnect === true &&
+          (row.canConnect === !(profile === "restore" && restorePhase === "REVOKED") &&
             row.canCreateDatabase === false &&
             row.canCreateTemporary === false))
     );
     roleReadback[profile] = { ...row };
+  }
+  if (restorePhase === "GRANTED") {
+    const grant = await executeAdmin({
+      databaseName: "postgres",
+      sql: `SELECT pg_get_userbyid(m.roleid) AS "roleName", pg_get_userbyid(m.member) AS "memberName", m.admin_option AS "adminOption", m.inherit_option AS "inheritOption", m.set_option AS "setOption" FROM pg_auth_members m WHERE m.member=(SELECT oid FROM pg_roles WHERE rolname=${sqlLiteral(item.roles.restore)}) OR m.roleid=(SELECT oid FROM pg_roles WHERE rolname=${sqlLiteral(item.roles.migrate)})`
+    });
+    const row = grant?.rows?.[0];
+    need(
+      grant?.rows?.length === 1 &&
+        row.roleName === item.roles.migrate &&
+        row.memberName === item.roles.restore &&
+        row.adminOption === false &&
+        row.inheritOption === false &&
+        row.setOption === true
+    );
+  }
+  if (restorePhase === "REVOKED") {
+    const password = await executeAdmin({
+      databaseName: "postgres",
+      sql: `SELECT (r.rolpassword IS NULL) AS "passwordAbsent" FROM pg_authid r WHERE r.rolname=${sqlLiteral(item.roles.restore)}`
+    });
+    need(password?.rows?.length === 1 && password.rows[0].passwordAbsent === true);
   }
   const schemaPrivileges = {};
   let schemaOwner;
@@ -366,14 +388,34 @@ export async function provisionR3DatabaseTargets({
     fail(records);
   }
 }
-export async function recheckR3DatabaseTargets({ plan, records, executeAdmin }) {
+export async function recheckR3DatabaseTargets({
+  plan,
+  records,
+  executeAdmin,
+  restoreStates = []
+}) {
   try {
     checkedPlan(plan);
     need(
       typeof executeAdmin === "function" &&
         Array.isArray(records) &&
-        records.length === plan.targets.length
+        records.length === plan.targets.length &&
+        Array.isArray(restoreStates) &&
+        (restoreStates.length === 0 || plan.chain === "snapshot")
     );
+    const states = new Map();
+    for (const state of restoreStates) {
+      need(
+        state &&
+          Object.keys(state).length === 2 &&
+          typeof state.databaseName === "string" &&
+          ["GRANTED", "REVOKED"].includes(state.phase) &&
+          plan.targets.some((item) => item.databaseName === state.databaseName) &&
+          !states.has(state.databaseName)
+      );
+      states.set(state.databaseName, state.phase);
+    }
+    need([...states.values()].filter((phase) => phase === "GRANTED").length <= 1);
     for (const [index, record] of records.entries()) {
       const item = plan.targets[index];
       need(
@@ -390,7 +432,16 @@ export async function recheckR3DatabaseTargets({ plan, records, executeAdmin }) 
               record.createdAt
             )
       );
-      const current = await observed(item, record.marker, executeAdmin);
+      const phase = states.get(item.databaseName);
+      const current = await observed(item, record.marker, executeAdmin, phase);
+      const expectedRoles = structuredClone(record.roleReadback);
+      if (phase === "GRANTED") {
+        expectedRoles.restore.memberships = 1;
+        expectedRoles.migrate.grantedTo = 1;
+      } else if (phase === "REVOKED") {
+        expectedRoles.restore.canLogin = false;
+        expectedRoles.restore.canConnect = false;
+      }
       need(
         sha256Canonical(current) ===
           sha256Canonical({
@@ -398,7 +449,7 @@ export async function recheckR3DatabaseTargets({ plan, records, executeAdmin }) 
             owner: record.owner,
             schemaOwner: record.schemaOwner,
             runtimeCanCreate: record.runtimeCanCreate,
-            roleReadback: record.roleReadback,
+            roleReadback: expectedRoles,
             schemaPrivileges: record.schemaPrivileges
           })
       );

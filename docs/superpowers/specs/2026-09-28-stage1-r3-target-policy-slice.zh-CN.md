@@ -245,3 +245,15 @@ R2 历史继续使用原校验器。仅在独立重放 R3 目的地之后，才�
 复制器在已核实容器的加密 overlay2 内排他创建 `/tmp/stage1-r3-<operationRef去横线>`，通过同一 Engine executor 发送唯一的 root/0600 ustar 成员 `snapshot.dump`。随后以同一 executor 执行固定 `stat`/`sha256sum`，核对 root/0700 父目录及文件类型、权限、长度、硬链接数、设备/inode/时间和实际摘要；所有 exec 均核对实际 container ID、Running=false、ExitCode=0 及无 stderr。调用方不能传目标或源路径。
 
 读回绑定 Engine、CID、operation、session、input、既有消费和解密读回摘要，写入预先保留的 `consumer/observations/copy/readback.json`。`recheckResources` 持续核对远端副本，`check` 持有本地读回，避免回调递归。返回 `PLAINTEXT_COPIED` 与原 UNKNOWN/nonpromotable 状态，不声明数据库恢复成功。普通关闭中止并等待复制，保留远端暂存和原锁；明确的恢复、角色撤销、所有权和清理证明仍待接通。
+
+## 同会话目标库恢复
+
+`restoreSnapshot()` 无参数、仅一次，要求 source/snapshot 的消费、下载、认证解密和远端复制均已完成。元数据及 ownership map 来自持续持有的输入原件。对完整目标集合逐库校验精确物理锁摘要和已持有的 migrate/restore 凭据，复用既有 Engine executor；不接受调用者传入目标、路径、凭据或结果。
+
+每库在独立 root/0700 临时目录发送两个 0600 pgpass 文件，密码不进入 exec argv、Env 或诊断。先读取 PG17 系统标识、地址、TLS、数据库 OID/标记、角色 OID/权限和 schema owner，再临时授予 restore 到 migrate 的 `INHERIT FALSE, SET TRUE` 成员资格。以 restore 登录、`--role=migrate --exit-on-error --no-owner --no-acl` 执行 `pg_restore`；已有 public schema 不做 DROP/CLEAN。所有权清单交由已有 normalizer 验证，禁止任意改写所有者。
+
+恢复后撤销成员关系和 CONNECT、设置 NOLOGIN/PASSWORD NULL，并读回实际状态。迁移身份必须重新连接成功，旧恢复凭据必须得到精确主机/用户名的认证拒绝；网络失败不算拒绝证明。清理只删除自身持有的 pgpass 文件与目录，核对文件身份和目录消失。完整结果写入预留的每库私有读回目录。目标重查仅允许已观察到的精确 GRANTED/REVOKED 变化，其余字段继续与原始创建记录比较；原记录不修改。
+
+关闭立即阻止新入口和下一个库；当前库保留原通道与持续的身份校验，以完成有界恢复和撤销/凭据清理，然后才中断通道并关闭句柄。身份失效或远端进程状态不明时继续保留 UNKNOWN 和锁。返回 `SNAPSHOT_DATABASES_RESTORED`、`executionStatus:INTERRUPTED_UNKNOWN`、`promotionEligible:false` 仅表示本目标集合读回；lifecycle 预留库执行、远端 dump 清理、最终 consumer 保管记录、匹配 source 的 final 执行和实际云端双链仍须完成。
+
+远端副本句柄另有一次性 `cleanup()`，目前尚未接入原生入口。它先重查身份、原文件/目录和摘要，再只 unlink 该文件；确认文件消失并再次核对目录身份后才 rmdir，最终读取两个路径均不存在的原件。成功后的 recheck 改为确认不存在。普通 close 不触发删除，清理失败或与 close 重叠不允许重试，也不声明成功；清理读回仍须进入后续消费保管记录。

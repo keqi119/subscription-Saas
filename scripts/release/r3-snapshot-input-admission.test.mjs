@@ -326,6 +326,12 @@ test("R3 pins a complete declaration graph without opening ciphertext and detect
   t.after(() => result.close());
   assert.equal(result.inputIndexDigest, sha256Bytes(await fs.readFile(f.indexPath)));
   assert.equal(result.metadataDigest, f.index.metadata.digest);
+  assert.deepEqual(result.restoreInputs, {
+    metadata: f.declarations.metadata,
+    ownershipMap: f.declarations.ownershipMap
+  });
+  assert.ok(Object.isFrozen(result.restoreInputs));
+  assert.ok(Object.isFrozen(result.restoreInputs.ownershipMap.sourceOwners));
   assert.equal(result.permissionDigest, f.index.permission.digest);
   assert.equal(result.objectVersion, "null-version-disabled");
   assert.deepEqual(result.storageSubject, {

@@ -36,6 +36,7 @@ import {
 } from "./manual-stage1-trust.mjs";
 import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
 import { assessR3PostgresObservation } from "./r3-postgres-observation.mjs";
+import { assessR3PostgresReadback, buildR3Destination } from "./r3-destination.mjs";
 import {
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
@@ -1006,6 +1007,7 @@ export async function launchR3TargetCreate(input) {
     archive,
     consumption,
     postgresTarget,
+    postgresReadback,
     postgresAttempted = false,
     postgresPending,
     postgresSecret,
@@ -1013,8 +1015,14 @@ export async function launchR3TargetCreate(input) {
     databaseTargetSet,
     targetLockLease,
     hostedEvidence,
+    hostedEvidenceReady = false,
     hostedImportAttempted = false,
     hostedImportPending,
+    destinationAttempted = false,
+    destinationReady = false,
+    destinationStage = "NOT_STARTED",
+    destinationPending,
+    destinationRecord,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1031,6 +1039,7 @@ export async function launchR3TargetCreate(input) {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
       const errors = [];
+      await destinationPending?.catch(() => {});
       await databasesPending?.catch(() => {});
       await postgresPending?.catch(() => {});
       await hostedImportPending?.catch(() => {});
@@ -1067,6 +1076,15 @@ export async function launchR3TargetCreate(input) {
     await lease?.recheck();
     await targetLockLease?.recheck();
     await hostedEvidence?.recheck();
+    if (destinationRecord) await recheckDestination();
+  };
+  const recheckDestination = async () => {
+    for (const [digest, bytes] of destinationRecord.originals) {
+      for (const role of ["archive", "backup"]) {
+        const original = await archive.get(digest, role);
+        if (!original.bytes.equals(bytes)) fail(code);
+      }
+    }
   };
   const pause = () => new Promise((resolve) => setTimeout(resolve, 500));
   const exchange = (method, pathname, body = null, connected = null, options = {}) =>
@@ -1264,7 +1282,7 @@ export async function launchR3TargetCreate(input) {
     const network = await engineJson("GET", `/networks/${names.network}`, undefined, 200);
     const volume = await engineJson("GET", `/volumes/${names.volume}`, undefined, 200);
     const postgres = suppliedIdentity ?? (await readPgIdentity());
-    const facts = assessR3PostgresObservation({
+    const resources = {
       operationRef: fixed.spec.operationRef,
       workspaceMountPath: fixed.spec.workspace.mountPath,
       engineId: expectedEngineId,
@@ -1275,7 +1293,8 @@ export async function launchR3TargetCreate(input) {
       network,
       volume,
       postgres
-    });
+    };
+    const facts = assessR3PostgresObservation(resources);
     // Independent read through the owned CID must identify the very same PG
     // reached over the other SSH forward. A published-port claim alone is insufficient.
     const execution = await engineJson(
@@ -1305,38 +1324,21 @@ export async function launchR3TargetCreate(input) {
       200,
       { timeout: 15000 }
     );
-    const output = [],
-      errors = [];
-    for (let offset = 0; offset < stream.length; ) {
-      if (
-        stream.length - offset < 8 ||
-        ![1, 2].includes(stream[offset]) ||
-        stream.subarray(offset + 1, offset + 4).some((byte) => byte !== 0)
-      )
-        fail(code);
-      const length = stream.readUInt32BE(offset + 4),
-        end = offset + 8 + length;
-      if (end > stream.length) fail(code);
-      (stream[offset] === 1 ? output : errors).push(stream.subarray(offset + 8, end));
-      offset = end;
-    }
     const completed = await engineJson("GET", `/exec/${execution.Id}/json`, undefined, 200);
-    if (
-      completed.Running !== false ||
-      completed.ExitCode !== 0 ||
-      completed.ContainerID !== facts.containerId ||
-      Buffer.concat(errors).length !== 0
-    )
+    const readback = { resources, execution, streamBase64: stream.toString("base64"), completed };
+    let checked;
+    try {
+      checked = assessR3PostgresReadback(readback);
+    } catch {
       fail(code);
-    const inner = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(output)).trim()
-    );
-    if (sha256Canonical(inner) !== sha256Canonical(postgres)) fail(code);
+    }
+    if (sha256Canonical(checked) !== sha256Canonical(facts)) fail(code);
     diagnostics.push({
       name: "postgres-two-end-identity",
-      body: await postgresArchive.raw(encodeManualJson({ forwarded: postgres, container: inner }))
+      body: await postgresArchive.raw(encodeManualJson(readback))
     });
     await check();
+    postgresReadback = JSON.parse(JSON.stringify(readback));
     return facts;
   };
   const provisionPg = async (expectedEngineId) => {
@@ -1535,7 +1537,7 @@ export async function launchR3TargetCreate(input) {
     });
     return postgresTarget;
   };
-  const databaseAdmin = async (plan, work) => {
+  const databaseAdmin = async (plan, work, observations = null) => {
     const allowed = new Set(["postgres", ...plan.targets.map((target) => target.databaseName)]);
     let connection, connectedDatabase;
     const closeConnection = async () => {
@@ -1594,6 +1596,7 @@ export async function launchR3TargetCreate(input) {
       // Only the fixed helper's nonsecret SELECT responses are archived. Never
       // retain role-password SQL, driver errors or a connector statement log.
       if (/^SELECT\b/u.test(sql.trimStart())) {
+        observations?.push({ databaseName, sql, rows: JSON.parse(JSON.stringify(rows)) });
         diagnostics.push({
           name: `database:${databaseName}:observation`,
           body: await postgresArchive.raw(encodeManualJson(rows))
@@ -1738,6 +1741,91 @@ export async function launchR3TargetCreate(input) {
     databaseTargetSet = result;
     databaseStage = "OBSERVED";
     return databaseTargetSet;
+  };
+  const recordDestination = async () => {
+    destinationStage = "LIVE_READBACK";
+    await check();
+    for (const held of databaseSecrets) await held.recheck();
+    const observed = await inspectPg(boundEngineId);
+    if (
+      Object.keys(observed).some(
+        (key) => sha256Canonical(observed[key]) !== sha256Canonical(postgresTarget[key])
+      )
+    )
+      fail(code);
+    const databaseReadback = [];
+    await databaseAdmin(
+      databaseTargetSet.plan,
+      (executeAdmin) =>
+        recheckR3DatabaseTargets({
+          plan: databaseTargetSet.plan,
+          records: databaseTargetSet.records,
+          executeAdmin
+        }),
+      databaseReadback
+    );
+    await check();
+    const initialExecution = (await archive.get(consumption.executionRecordDigest, "journal"))
+      .value;
+    destinationStage = "BUILD";
+    const result = await buildR3Destination({
+      spec: fixed.spec,
+      jobAdmissionDigest: fixed.jobAdmissionDigest,
+      hostedEvidence: fieldsFrom(hostedEvidence, [
+        "bundleDigest",
+        "engine",
+        "workspaceObservation",
+        "jobAdmissionDigest",
+        "spec"
+      ]),
+      session: fieldsFrom(session, ["profileDigest", "sessionId", "sessionNonce", "scope"]),
+      initialExecution,
+      manifest: fixed.databaseTestManifest,
+      manifestRawDigest: fixed.databaseTestManifestRawDigest,
+      policy: fixed.databaseTargetPolicy,
+      postgresReadback,
+      databaseTargetSet,
+      databaseReadback,
+      observedAt: new Date().toISOString()
+    });
+    const destinationBytes = encodeManualJson(result.destination),
+      observationBytes = encodeManualJson(result.observations),
+      destinationDigest = sha256Bytes(destinationBytes),
+      observationsDigest = sha256Bytes(observationBytes);
+    if (
+      result.destination.observationEvidenceDigest !== observationsDigest ||
+      result.destination.initialExecutionRecordDigest !== consumption.executionRecordDigest ||
+      destinationBytes.length > 1048576 ||
+      observationBytes.length > 1048576
+    )
+      fail(code);
+    // Reuse the profile's independent encrypted backup and immutable object
+    // names. A partially saved destination does not resolve the original UNKNOWN.
+    destinationStage = "CUSTODY";
+    for (const value of [result.observations, result.destination]) {
+      const expected = sha256Canonical(value);
+      for (const role of ["backup", "archive"])
+        if ((await archive.put(value, null, role)) !== expected) fail(code);
+    }
+    await check();
+    destinationRecord = {
+      originals: [
+        [observationsDigest, observationBytes],
+        [destinationDigest, destinationBytes]
+      ],
+      destination: JSON.parse(destinationBytes),
+      destinationDigest
+    };
+    await recheckDestination();
+    destinationReady = true;
+    destinationStage = "OBSERVED";
+    return Object.freeze({
+      status: "DESTINATION_OBSERVED",
+      destinationDigest,
+      observationEvidenceDigest: observationsDigest,
+      initialExecutionRecordDigest: consumption.executionRecordDigest,
+      promotionEligible: false
+    });
   };
   try {
     if (
@@ -1927,6 +2015,7 @@ export async function launchR3TargetCreate(input) {
             fail(code);
           await check();
           diagnostics.push({ name: "hosted-evidence", body: await archive.raw(bytes) });
+          hostedEvidenceReady = true;
           return Object.freeze({
             status: "HOSTED_EVIDENCE_OBSERVED",
             bundleDigest: hostedEvidence.bundleDigest,
@@ -1981,8 +2070,33 @@ export async function launchR3TargetCreate(input) {
           });
         }
       },
+      async recordDestination(...args) {
+        if (
+          args.length !== 0 ||
+          closed ||
+          destinationAttempted ||
+          !hostedEvidenceReady ||
+          !postgresTarget ||
+          !databaseTargetSet ||
+          !targetLockLease
+        )
+          fail(code);
+        destinationAttempted = true;
+        destinationPending = recordDestination();
+        try {
+          return await destinationPending;
+        } catch (cause) {
+          throw Object.assign(new Error(code), {
+            code,
+            consumption,
+            failedAt: destinationStage,
+            failureCode: /^[A-Z0-9_]{1,64}$/u.test(cause?.code ?? "") ? cause.code : code
+          });
+        }
+      },
       async recheck() {
         await check();
+        if (destinationAttempted && !destinationReady) fail(code);
         if (postgresAttempted && !postgresTarget) fail(code);
         if (databasesAttempted && !databaseTargetSet) fail(code);
         for (const held of databaseSecrets) await held.recheck();

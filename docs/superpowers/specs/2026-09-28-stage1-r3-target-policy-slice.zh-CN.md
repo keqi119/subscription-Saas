@@ -181,3 +181,13 @@ H1 的 `prepareR3HostedEvidenceImport` 在打开 job/session 句柄前保留 arc
 `readFixedR3HostedEvidence` 同时持有工作区、archive bundle 与 backup bundle，要求备份与原件字节相同，重查签名和完整原件关系。containerd 的 PID、父进程、starttime、命令行、配置路径及监听归属从已有 raw 重新解析；原生采集器复用同一解析。文件与 executable 元数据仍是该 job 采集并签名的事实，H1 不声称能够直接访问 hosted 的内核。
 
 原生 launch 句柄的 `importHostedEvidence(bytes)` 仅允许一次导入，并与同一固定转发读取的 Engine ID/version 对照；之后持续保留读取句柄用于 recheck。返回 `HOSTED_EVIDENCE_OBSERVED` 和 `promotionEligible:false`，原 session、消费记录和 UNKNOWN 保持。实际 artifact 交付、destination admission、SUCCEEDED/consumer/cleanup 和 hosted workflow 尚未完成；不得把导入成功当作这些执行通过。
+
+## 目的地原件记录
+
+创建句柄的 `recordDestination()` 不接受参数，仅在同句柄 hosted 导入成功、PG/数据库创建读回完成并持有初始目标锁后允许一次。它再次检查当前 H1/job、凭据和锁，通过实际 Engine/CID 与固定 PG 通道核对身份，并读取数据库 OID/marker、角色及权限。目的地原件仍不代表创建成功、consumer 准入或 lifecycle 执行完成。
+
+`r3-destination.mjs` 的纯构建器把本次原始 PG resource/exec 响应和只读 SELECT transcript 重新解析：复用现有 PG assessor 比对 Docker multiplex stdout 中的身份与转发身份；按真实 helper 请求的库名、SQL 和顺序重放 SELECT，拒绝缺项、多项、目标混用和权限不符。完整计划重新由固定 manifest 派生，库凭据仅保留固定私有引用；物理锁及两个 lifecycle namespace reservation 必须与现有锁规划逐项相同。
+
+`manual-r3-destination.v1` 绑定 spec/profile/owner、job、唯一候选、source/final、fresh/snapshot、同 session/nonce、原始 UNKNOWN execution、消费记录、hosted bundle、manifest 和观察原件摘要，包含核实的 PG 事实及初始数据库集合。`manual-r3-destination-observations.v1` 保存对应的非秘密 PG 读回与 SELECT transcript。两份 canonical 对象各不超过 1 MiB，使用既有摘要对象路径排他写入 archive 和 profile 指定的加密 backup，再独立读回相同字节；不新增信任根、签名机制或存储服务。
+
+记录失败保留已经写入的对象和一次尝试状态，普通关闭等待正在执行的记录工作，保留原 UNKNOWN 与已消费锁。成功只返回 `DESTINATION_OBSERVED` 和摘要，之后的 recheck 同时读回 archive/backup 原件及当前资源身份。后续同会话 SUCCEEDED/custody/consumer 图必须验证这组真实原件；不能仅凭目的地对象的字段或此返回值授予快照访问。

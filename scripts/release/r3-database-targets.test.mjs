@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
+import { sha256Canonical, sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { suiteDatabaseName } from "../../packages/release-foundation/src/database-target.mjs";
+import { planManualR3TargetLocks } from "../../packages/release-foundation/src/manual-r3-target-locks.mjs";
+import { assessR3PostgresReadback, buildR3Destination } from "./r3-destination.mjs";
 import {
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
@@ -61,7 +63,10 @@ function fakeAdmin({ failAfterCreate = Infinity, grantedTo = 0 } = {}) {
       databases.get(name).marker = marker.replaceAll("''", "'");
     } else if (/^SELECT d\.oid::text AS "databaseOid"/u.test(sql)) {
       const name = sql.match(/WHERE d\.datname='([^']+)'$/u)?.[1];
-      return { rows: databases.has(name) ? [{ ...databases.get(name) }] : [] };
+      const db = databases.get(name);
+      return {
+        rows: db ? [{ databaseOid: db.databaseOid, marker: db.marker, owner: db.owner }] : []
+      };
     } else if (/^SELECT r\.oid::text AS "oid"/u.test(sql)) {
       const name = sql.match(/WHERE r\.rolname='([^']+)'$/u)?.[1];
       if (!roles.has(name)) return { rows: [] };
@@ -229,4 +234,256 @@ test("R3 database provision preserves completed facts and partial resources on f
     "the partially created second target remains visible for UNKNOWN"
   );
   assert.ok(admin.calls.every((call) => !/^DROP |^ROLLBACK/u.test(call.sql)));
+});
+
+function postgresReadback(engineId) {
+  const id = operationRef.replaceAll("-", "");
+  const mount = `/srv/stage1-snapshot/${id}`;
+  const imageDigest = policy.requiredImageDigest;
+  const containerId = "b".repeat(64);
+  const networkId = "c".repeat(64);
+  const networkName = `s1r3net_${id}`;
+  const volumeName = `s1r3data_${id}`;
+  const containerName = `s1r3pg_${id}`;
+  const volumePath = `${mount}/docker/volumes/${volumeName}/_data`;
+  const labels = { "com.subscription.release.operation-ref": operationRef };
+  const postgres = {
+    systemIdentifier: "7340000000000000001",
+    serverVersionNum: 170011,
+    serverAddress: "172.28.0.2",
+    serverPort: 5432,
+    databaseName: "postgres",
+    databaseOid: "5",
+    role: "release_provisioner",
+    tls: true,
+    clusterMarker: policy.requiredClusterMarker
+  };
+  const resources = {
+    operationRef,
+    workspaceMountPath: mount,
+    engineId,
+    imageDigest,
+    engine: {
+      ID: engineId,
+      Driver: "overlay2",
+      LoggingDriver: "json-file",
+      DockerRootDir: `${mount}/docker`
+    },
+    image: {
+      Id: `sha256:${"e".repeat(64)}`,
+      RepoDigests: [`postgres@${imageDigest}`],
+      Os: "linux",
+      Architecture: "amd64"
+    },
+    container: {
+      Id: containerId,
+      Name: `/${containerName}`,
+      Image: `sha256:${"e".repeat(64)}`,
+      Config: { Image: `postgres:17-bookworm@${imageDigest}`, Labels: labels },
+      State: { Running: true, Paused: false, Restarting: false, Dead: false, Pid: 321 },
+      HostConfig: {
+        NetworkMode: networkName,
+        Privileged: false,
+        PidMode: "",
+        PortBindings: {},
+        Binds: null
+      },
+      NetworkSettings: {
+        Networks: { [networkName]: { NetworkID: networkId, IPAddress: "172.28.0.2" } },
+        Ports: { "5432/tcp": null }
+      },
+      Mounts: [
+        {
+          Type: "volume",
+          Name: volumeName,
+          Source: volumePath,
+          Destination: "/var/lib/postgresql/data",
+          Driver: "local",
+          RW: true
+        }
+      ]
+    },
+    network: {
+      Id: networkId,
+      Name: networkName,
+      Driver: "bridge",
+      Internal: true,
+      Ingress: false,
+      EnableIPv6: false,
+      Labels: labels,
+      Containers: { [containerId]: { Name: containerName, IPv4Address: "172.28.0.2/16" } }
+    },
+    volume: {
+      Name: volumeName,
+      Driver: "local",
+      Mountpoint: volumePath,
+      Options: null,
+      Labels: labels
+    },
+    postgres
+  };
+  const payload = Buffer.from(JSON.stringify(postgres));
+  const stream = Buffer.alloc(8 + payload.length);
+  stream[0] = 1;
+  stream.writeUInt32BE(payload.length, 4);
+  payload.copy(stream, 8);
+  return {
+    resources,
+    execution: { Id: "f".repeat(64) },
+    streamBase64: stream.toString("base64"),
+    completed: { ID: "f".repeat(64), ContainerID: containerId, Running: false, ExitCode: 0 }
+  };
+}
+
+async function destinationFixture() {
+  const engineId = operationRef;
+  const plan = planR3DatabaseTargets(input());
+  const admin = fakeAdmin();
+  const spec = {
+    schemaVersion: "manual-r3-creation-spec.v1",
+    operationRef,
+    profileDigest: `sha256:${"1".repeat(64)}`,
+    ownerId: "owner",
+    sourceSha: "a".repeat(40),
+    buildProofDigest: `sha256:${"2".repeat(64)}`,
+    targetPolicyDigest: `sha256:${"3".repeat(64)}`,
+    phase: "source",
+    chain: "fresh",
+    createdAt: "2026-09-27T23:59:59.000Z",
+    expiresAt: "2026-09-28T00:05:00.000Z",
+    workspace: {
+      id: operationRef.replaceAll("-", ""),
+      mountPath: `/srv/stage1-snapshot/${operationRef.replaceAll("-", "")}`
+    }
+  };
+  const jobAdmissionDigest = `sha256:${"4".repeat(64)}`;
+  const sessionId = "20000000-0000-4000-8000-000000000001";
+  const sessionNonce = "5".repeat(64);
+  const created = await provisionR3DatabaseTargets({
+    plan,
+    policy,
+    executeAdmin: admin.executeAdmin,
+    recheck: async () => {},
+    createdAt,
+    createSecret: async ({ databaseName, profile, username }) => ({
+      username,
+      password: "synthetic-password-do-not-log",
+      reference: `r3/${operationRef}/database-credentials/${databaseName}-${profile}.json`
+    })
+  });
+  const pg = postgresReadback(engineId);
+  const targetLocks = planManualR3TargetLocks({
+    operationRef,
+    engineId,
+    systemIdentifier: pg.resources.postgres.systemIdentifier,
+    targets: created.records.map(({ databaseName, databaseOid, marker }) => ({
+      databaseName,
+      databaseOid,
+      marker
+    }))
+  }).entries;
+  const databaseReadback = [];
+  await recheckR3DatabaseTargets({
+    plan,
+    records: created.records,
+    executeAdmin: async (query) => {
+      const result = await admin.executeAdmin(query);
+      databaseReadback.push({ ...query, rows: result.rows });
+      return result;
+    }
+  });
+  const initialExecution = {
+    schemaVersion: "manual-operation-record.v3",
+    profileDigest: spec.profileDigest,
+    recordedAt: createdAt,
+    promotionEligible: false,
+    kind: "execution",
+    stage: "target-create",
+    sessionId,
+    sessionNonce,
+    operationId: operationRef,
+    idempotencyKey: "r3-create",
+    attemptId: operationRef,
+    requestDigest: `sha256:${"6".repeat(64)}`,
+    authorizationDigest: `sha256:${"7".repeat(64)}`,
+    consumptionRecordDigest: `sha256:${"8".repeat(64)}`,
+    predecessorExecutionRecordDigest: null,
+    startedAt: null,
+    finishedAt: null,
+    status: "INTERRUPTED_UNKNOWN",
+    reasonCode: "MANUAL_EVIDENCE_INCOMPLETE",
+    resultDigest: null,
+    processEvidenceDigest: null
+  };
+  const manifestRawDigest = sha256Bytes(Buffer.from(JSON.stringify(manifest)));
+  return {
+    spec,
+    jobAdmissionDigest,
+    hostedEvidence: {
+      bundleDigest: `sha256:${"9".repeat(64)}`,
+      engine: {
+        id: engineId,
+        info: {
+          ID: engineId,
+          DockerRootDir: pg.resources.engine.DockerRootDir,
+          Driver: "overlay2",
+          LoggingDriver: "json-file"
+        }
+      },
+      workspaceObservation: { state: "active", status: "OBSERVED", workspace: spec.workspace },
+      jobAdmissionDigest,
+      spec
+    },
+    session: {
+      profileDigest: spec.profileDigest,
+      sessionId,
+      sessionNonce,
+      scope: {
+        targetPolicyDigest: spec.targetPolicyDigest,
+        creationSpecDigest: sha256Canonical(spec),
+        jobAdmissionDigest,
+        buildProofDigest: spec.buildProofDigest,
+        sourceSha: spec.sourceSha,
+        phase: spec.phase,
+        chain: spec.chain
+      }
+    },
+    initialExecution,
+    manifest,
+    manifestRawDigest,
+    policy,
+    postgresReadback: pg,
+    databaseTargetSet: {
+      ...created,
+      targetLocks,
+      status: "DATABASES_OBSERVED",
+      manifestRawDigest,
+      engineId,
+      systemIdentifier: pg.resources.postgres.systemIdentifier,
+      promotionEligible: false,
+      targetSetComplete: false
+    },
+    databaseReadback,
+    observedAt: "2026-09-28T00:00:02.000Z"
+  };
+}
+
+test("R3 destination binds PG dual readback, full manifest targets and replayed SELECT originals", async () => {
+  const input = await destinationFixture();
+  const pg = assessR3PostgresReadback(input.postgresReadback);
+  assert.equal(pg.postgres.systemIdentifier, input.databaseTargetSet.systemIdentifier);
+  const result = await buildR3Destination(input);
+  assert.equal(result.destination.observationEvidenceDigest, sha256Canonical(result.observations));
+  assert.equal(result.destination.databaseTargetSet.records.length, 37);
+  assert.equal(result.destination.databaseTargetSet.targetLocks.length, 39);
+  assert.equal(result.destination.promotionEligible, false);
+});
+
+test("R3 destination rejects a mixed target and an incomplete SELECT transcript", async () => {
+  const input = await destinationFixture();
+  const missing = { ...input, databaseReadback: input.databaseReadback.slice(0, -1) };
+  await assert.rejects(buildR3Destination(missing), { code: "R3_DESTINATION_INVALID" });
+  const mixed = structuredClone(input);
+  mixed.databaseTargetSet.records[0].databaseOid = "9999";
+  await assert.rejects(buildR3Destination(mixed), { code: "R3_DESTINATION_INVALID" });
 });

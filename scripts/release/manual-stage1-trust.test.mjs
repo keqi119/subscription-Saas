@@ -3009,7 +3009,7 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
   const dropped = mode === "dropped",
     evidenceOnly = mode === "evidence";
   test(
-    `R3 LAUNCH ${evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "consumes before delivery and reads the same forwarded Engine"}`,
+    `R3 LAUNCH ${evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination originals from the same created Engine and database locks"}`,
     { skip: process.platform !== "linux" },
     async (t) => {
       const f = await r3ForwardFixture(t);
@@ -3105,7 +3105,8 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         secret;
       let databaseProvisionCalls = 0,
         databaseRechecks = 0,
-        databaseSecretReference;
+        databaseSecretReference,
+        databaseObservation;
       if (!dropped) {
         // The helper's complete SQL/role matrix has its own focused tests. Here
         // exercise the native fixed connector, credential custody and once-only
@@ -3183,6 +3184,42 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
                 records: plan.targets.map((target, index) => ({
                   ...target,
                   databaseOid: String(index + 2000),
+                  createdAt,
+                  owner: target.roles.migrate,
+                  schemaOwner: target.roles.migrate,
+                  runtimeCanCreate: false,
+                  roleReadback: Object.fromEntries(
+                    Object.entries(target.roles).map(([profile, name], roleIndex) => [
+                      profile,
+                      {
+                        oid: String(3000 + index * 10 + roleIndex),
+                        name,
+                        canLogin: true,
+                        superuser: false,
+                        createdb: false,
+                        createrole: false,
+                        inherit: false,
+                        replication: false,
+                        bypassrls: false,
+                        memberships: 0,
+                        grantedTo: 0,
+                        canConnect: true,
+                        canCreateDatabase: profile === "migrate",
+                        canCreateTemporary: profile === "migrate"
+                      }
+                    ])
+                  ),
+                  schemaPrivileges: Object.fromEntries(
+                    Object.keys(target.roles)
+                      .filter((profile) => profile !== "migrate")
+                      .map((profile) => [profile, { canCreate: false, canUse: true }])
+                  ),
+                  secretReferences: Object.fromEntries(
+                    Object.keys(target.roles).map((profile) => [
+                      profile,
+                      `r3/${f.operationRef}/database-credentials/${target.databaseName}-${profile}.json`
+                    ])
+                  ),
                   marker: encodeManualJson({
                     markerVersion: "subscription-s1-ephemeral/v1",
                     runIdDigest: sha256Canonical(plan.operationRef),
@@ -3198,9 +3235,15 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
             recheckR3DatabaseTargets: async ({ plan, records, executeAdmin }) => {
               databaseRechecks++;
               assert.equal(records.length, plan.targets.length);
+              const item = records[0];
+              databaseObservation = {
+                databaseOid: item.databaseOid,
+                marker: item.marker,
+                owner: item.owner
+              };
               await executeAdmin({
-                databaseName: plan.targets[0].databaseName,
-                sql: "SELECT 1 AS synthetic"
+                databaseName: "postgres",
+                sql: `SELECT d.oid::text AS "databaseOid", COALESCE(shobj_description(d.oid,'pg_database'),'') AS "marker", pg_get_userbyid(d.datdba) AS "owner" FROM pg_database d WHERE d.datname='${item.databaseName}'`
               });
               return true;
             }
@@ -3234,6 +3277,8 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
                   },
                   query: async (sql) => {
                     if (sql === "SELECT 1 AS synthetic") return [{ synthetic: 1 }];
+                    if (sql.startsWith('SELECT d.oid::text AS "databaseOid"'))
+                      return [databaseObservation];
                     assert.match(sql, /'serverAddress',host\(inet_server_addr\(\)\)/u);
                     return [
                       {
@@ -3305,7 +3350,7 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
           } else if (url === "/v1.45/info")
             response.end(
               JSON.stringify({
-                ID: evidenceOnly ? "69a59aea-54ef-4181-808e-cf8d6cdb05e6" : "synthetic-engine-id",
+                ID: "69a59aea-54ef-4181-808e-cf8d6cdb05e6",
                 Driver: "overlay2",
                 DockerRootDir: path.join(f.spec.workspace.mountPath, "docker"),
                 LoggingDriver: "json-file",
@@ -3463,11 +3508,13 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         await launched.recheck();
         await launched.close();
       } else {
+        const source = await r3WorkspaceFixture(t, "active", false, f);
+        const hostedBundle = r3HostedBundle(source);
         const launched = await launchR3TargetCreate(input).catch((error) => {
           throw error.cause ?? error;
         });
         t.after(() => launched.close());
-        assert.equal(launched.engine.ID, "synthetic-engine-id");
+        assert.equal(launched.engine.ID, "69a59aea-54ef-4181-808e-cf8d6cdb05e6");
         assert.equal(launched.status, "INTERRUPTED_UNKNOWN");
         assert.match(launched.consumption.executionRecordDigest, /^sha256:/u);
         // Native private-path checks produce many stat calls. The fixture's
@@ -3480,6 +3527,8 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         releaseMockHistory();
         assert.equal(typeof launched.provisionPostgres, "function");
         assert.equal(typeof launched.provisionDatabases, "function");
+        assert.equal(typeof launched.recordDestination, "function");
+        await assert.rejects(launched.recordDestination());
         await assert.rejects(launched.provisionDatabases());
         await assert.rejects(launched.provisionPostgres({ endpoint: "elsewhere" }));
         const observed = await launched.provisionPostgres();
@@ -3547,10 +3596,58 @@ for (const mode of ["accepted", "dropped", "evidence"]) {
         await launched.recheck();
         assert.equal(databaseRechecks, 2, "readback after locks and during subsequent recheck");
         releaseMockHistory();
+        await assert.rejects(launched.recordDestination(), {
+          code: "R3_TARGET_CREATE_UNAVAILABLE"
+        });
+        await launched.importHostedEvidence(hostedBundle);
+        releaseMockHistory();
+        await assert.rejects(launched.recordDestination({ destination: "caller override" }));
+        const recorded = await launched.recordDestination();
+        assert.equal(recorded.status, "DESTINATION_OBSERVED");
+        assert.equal(recorded.promotionEligible, false);
+        assert.equal(
+          recorded.initialExecutionRecordDigest,
+          launched.consumption.executionRecordDigest
+        );
+        for (const digest of [recorded.destinationDigest, recorded.observationEvidenceDigest]) {
+          const name = `${digest.slice(7)}.json`;
+          const original = await fs.readFile(
+            path.join(f.profile.storage.archiveRoot, "objects", name)
+          );
+          assert.equal(sha256Bytes(original), digest);
+          assert.deepEqual(
+            await fs.readFile(path.join(f.profile.storage.backupRoot, "objects", name)),
+            original
+          );
+        }
+        const destination = JSON.parse(
+          await fs.readFile(
+            path.join(
+              f.profile.storage.archiveRoot,
+              "objects",
+              `${recorded.destinationDigest.slice(7)}.json`
+            )
+          )
+        );
+        assert.equal(destination.hostedEvidenceDigest, sha256Bytes(hostedBundle));
+        assert.equal(destination.postgres.engineId, launched.engine.ID);
+        assert.deepEqual(destination.databaseTargetSet.targetLocks, databases.targetLocks);
+        await assert.rejects(launched.recordDestination());
+        assert.equal(launched.status, "INTERRUPTED_UNKNOWN");
+        releaseMockHistory();
         innerIdentity = { ...pgIdentity, systemIdentifier: "7340000000000000002" };
         await assert.rejects(launched.recheck(), { code: "R3_TARGET_CREATE_UNAVAILABLE" });
         innerIdentity = { ...pgIdentity };
         releaseMockHistory();
+        const backupName = path.join(
+          f.profile.storage.backupRoot,
+          "objects",
+          `${recorded.destinationDigest.slice(7)}.json`
+        );
+        const backupBytes = await fs.readFile(backupName);
+        await fs.writeFile(backupName, encodeManualJson({ changed: true }));
+        await assert.rejects(launched.recheck());
+        await fs.writeFile(backupName, backupBytes);
         await fs.appendFile(databaseSecretPath, "\n");
         await assert.rejects(launched.recheck());
         assert.equal(launched.status, "INTERRUPTED_UNKNOWN");

@@ -51,6 +51,7 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/r3-snapshot-input-admission.mjs",
   "scripts/release/r3-containerd-observation.mjs",
   "scripts/release/r3-database-targets.mjs",
+  "scripts/release/r3-destination.mjs",
   "scripts/release/r3-encrypted-workspace-observer.mjs",
   "scripts/release/r3-h1-forward-lease.mjs",
   "scripts/release/r3-hosted-creation-control.mjs",

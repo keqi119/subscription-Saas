@@ -145,3 +145,19 @@ Docker 26 的内部网络跳过外部端口编程，因此容器不设置 PortBi
 hosted 启动 Engine 前后还要求 `/run/containerd/containerd.sock` 不存在，避免 dockerd 自动采用系统 containerd，使持久元数据离开加密目录。实际 job 准备须关闭其默认 Docker/socket/containerd 服务，并读回本操作 managed containerd 的实际目录；当前未接线 workflow，不改变 H1 系统服务。保持 classic overlay2、iptables/ip6tables/IP forwarding/userland proxy 禁用。
 
 返回 `POSTGRES_OBSERVED` 与 `promotionEligible:false`，不写 SUCCEEDED、不授予 consumer。当前资源观察限定创建阶段的一容器/一镜像；后续 suite/API/Web 的完整目标集合必须显式入图，不能全局放松该检查。`close` 等待本句柄正在执行的 PG 操作、清零并关闭密码句柄，再关闭原 lease/session；不自动删数据库、释放已消费锁或改写 UNKNOWN。完整目标集合锁、结果与保管原件、实际 hosted producer、恢复和清理仍待实现。
+
+## 数据库目标集合创建接续
+
+固定 policy/spec/job 读取链现在持有并透传已校验 manifest 及其原始摘要。H1 句柄的 `provisionDatabases()` 无参数、仅在同句柄 PG 已观察后允许一次；不接受 batch、库名、凭据、SQL 或端点覆盖。规划读取全部 manifest suites，复用 `suiteDatabaseName` 的 operation/suite/shard 命名和原角色前缀。当前 35 个普通单库，加 clean-acceptance 的 source/target，共预建 37 库；final 另外建独立 application 库，分别配置 migration、test runtime、API runtime、verify，snapshot 分支还配置 restore 角色。
+
+lifecycle suite 保留其真实运行中创建两库、拒绝伪造清理、先删一库而 sibling 仍可读、最终回收的语义。规划只登记两项确定性 reservation，不声明已有 OID/marker；后续执行必须沿同一受控 H1/session 创建、观察并加入目标及清理记录。不能把预建库或旧测试自启的未加密 cluster 替代该过程。
+
+数据库 helper 仅提供确定性计划和固定 SQL，不产生授权。H1 用已经持有的 provisioner 经 `127.0.0.1:55441` 连接；每次切换数据库连接先核对同一 system identifier、服务器地址/端口、PG17 版本、角色、TLS、cluster marker 及当前数据库。CREATE DATABASE 独立执行，不放入事务或包含其他 SQL 的调用。每库前后重查原 H1/job/源码边界，顺序执行，失败保留已创建角色/数据库和完成记录，不自动 rollback/drop。
+
+首个凭据或 SQL 变更前，先在原 archive 持久保存 UNKNOWN attempt，包含 operationRef、完整计划、manifest 原始摘要及统一 createdAt。即使首库中途失败，也能按原时间和集合重建预定 marker，不依赖已经完成的记录。各库私有凭据在 H1 原 credentialRoot 的本操作 `database-credentials` 内排他写入、持有并重读；返回引用，不返回密码。仅归档固定 SELECT 的非秘密响应，密码 SQL、驱动错误和 connector statement log 不入诊断。关闭等待正在执行的操作，清零并关闭自有凭据句柄；不宣称数据库已停止。
+
+凭据保管沿用严格父目录身份检查：PG 创建阶段先保留空 `database-credentials` 子目录，再固定 provisioner 密码句柄；数据库阶段先排他写完完整计划的凭据文件，再逐个固定句柄。后续不新增同级凭据，避免自身写入改变已经绑定的目录元数据。失败不重绑或放松检查，仍保留原 UNKNOWN 和已写凭据供后续核实。
+
+创建后读取真实数据库 OID、COMMENT、owner、schema owner，以及各角色 OID、LOGIN/特权属性、membership 和数据库/schema 权限。membership 同时检查本角色加入其他角色和其他角色获授本角色两个方向，均须为零；非迁移角色不得 CREATE 或 TEMP，runtime/API/verify 需已有 CONNECT 与 schema USAGE。重读按原始事实比较，任何身份或权限漂移拒绝。suite COMMENT 采用既有 canonical JSON marker；application 的真实 COMMENT 使用 `subscription-s1-ephemeral/v1:` 加同类 canonical 内容，直接满足现有 final target 的前缀要求，不能在出具原件时换成不同 marker。
+
+返回 `DATABASES_OBSERVED`、`promotionEligible:false`、`targetSetComplete:false`。这不表示已迁移、恢复或可消费，也不包括 lifecycle 的实际创建、目标物理锁或成功创建结果图；上述剩余事项和 actual hosted/runtime 接线仍必须完成。

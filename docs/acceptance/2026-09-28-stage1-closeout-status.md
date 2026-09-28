@@ -4,6 +4,9 @@
 
 ## 当前接续状态
 
+- 本轮继续接通 R3 数据库集合创建：H1 固定读取链传递已验证 manifest；`provisionDatabases()` 使用已观察的同一 PG，仅允许一次、无调用方覆盖。覆盖 35 个普通库和 clean-acceptance 双库（37 库），final 再加独立应用库；逐句创建与权限/OID/marker 读回已实现。密码在原 H1 私有目录保管，不进入诊断；失败保留部分资源与 UNKNOWN。当前为代码接线，尚未真实创建这组目标。
+- lifecycle 两库仅列为无 OID 的 reservation，必须由该 suite 在受控执行期完成真实创建、回收和 sibling 隔离断言。完整目标物理锁、创建成功/消费/清理原件图、实际 hosted/runtime 接线仍待补齐，不能把本次 `DATABASES_OBSERVED` 当作发布准入。
+- 有限审查补齐两处：角色 membership 的两个方向均须为零；首个数据库凭据或 SQL 变更前持久保存完整计划和原 marker 时间。定向原生测试还定位到自身创建目录使既有凭据 pin 失效，已改为先完成目录/文件准备再固定句柄，未放宽文件身份检查。测试结论与失败原件见下文。
 - R3 创建入口已增加一次性的 `provisionPostgres()`：在原创建消费之后，以固定 PG17 镜像、内部网络和加密目录内的命名卷创建目标，经固定 H1 通道与同 CID 内部 TLS 查询交叉核对集群身份。密码通过单成员私有 tar 交付，不归档请求内容。当前只返回观察事实；成功创建、完整目标集合、消费和清理结果尚未接通，UNKNOWN 与已消费锁仍保留。
 - hosted 原控制进程现提供固定 `127.0.0.1:55441` TCP 转发，每次连接前重新核对本操作 Engine/CID/网络/卷，仅连接实际 PG 地址的 5432 端口。内部网络不使用 Docker 端口发布。启动前后拒绝系统 containerd socket，实际 hosted job 的默认服务停用和加密 containerd 路径读回仍待接线；没有改变 H1 系统服务。
 - 本轮服务器维护实测已取得 PG17.11 的 TLSv1.3 查询原件及集群标识，但探针总状态仍为 INCOMPLETE/exit 1：`inet_server_addr()::text` 带 `/32`，比较器要求裸 IP。根审查发现生产查询同样受影响，已改成 `host(inet_server_addr())`，两端共同使用该查询。维护原件不追记为 PASS，不再重复整套维护；具体失败、清理读回和定向回归见下文。
@@ -82,6 +85,9 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 
 ## 证据定位
 
+- 数据库集合 helper：双向角色授权回归先 RED（2 pass / 1 fail，`03c8ea`），修复后 `r3-database-targets-membership-green.log` 为 3/3、0 skip、1,331.3963 ms（`b072bc`）。覆盖全部目标规划、逐句 SQL、角色权限、身份漂移与部分失败保留；SQL 使用模拟响应，不是真实 PG 成绩。
+- 原生接线：`r3-database-targets-native01.log` 保留 132,709.559941 ms 的失败；`native02` 为 107,858.457508 ms、0/1，安全阶段诊断定位到新增凭据目录破坏旧 pin。修正准备/固定顺序后 `native03` 正常 exit 0（`005dfa`），1/1、0 skip、182,498.126631 ms，私有副本 `/root/.cache/r3-database-targets-xoMG3k` 的 260 项源码对应 `20260928-030457-619529185-copy.sha256`。Linux 文件与 TCP 为原生，Engine/PG/GitHub 和 SQL helper 为合成夹具；不能充当真实 hosted 或同候选双链证据。
+- 本次合同校验 `a69d4b`：213 文件、83 schemas、128 migrations、13 commands，摘要 `sha256:059c40ad8be83a14fb1b8be0bfb182a592cfa98ee54f6c23a9a9a00358a6e694`。暂存区 discovery `a9b07d`：99 candidates、39 manifested、60 excepted、0 unclassified；未增加 suite 或例外。定向语法、格式与 diff 检查通过；预检仍为缺少 datasource.url（`06d6aa`）和 Prisma validate 通过（`deb27f`），本次未连接业务库。
 - PG 创建定向验证：初始 `r3-postgres-launch-red01.log` 为 3 pass / 1 fail（缺少创建方法）；`green01` 为真实 OOM/SIGABRT、exit 1，494,306.442212 ms，保留私有副本和已取得的两端身份原件，不记为通过。精简重复远端重查但保留完整 Engine 交互前后检查，并清理测试重复 mock 调用历史后，`green02` 自然 exit 0，1/1、139,570.032649 ms。随后真实维护暴露地址格式问题，修正 SQL 与两端断言后的唯一 `r3-postgres-launch-green03.log` 自然 exit 0（终端 `652cfa`），1/1、0 skip、138,365.856627 ms；259 项源码副本 `/root/.cache/r3-postgres-launch-fuxKvN` 对应 `20260928-004044-680720111-copy.sha256`。后续仅格式化纯观察模块/测试，不更改语义。Engine、PG、GitHub 身份使用合成夹具，Linux 文件/TCP 为原生，不能登记为真实 PG/CI 成绩。
 - hosted relay 与纯观察用例：`r3-hosted-relay-green01.log` 为 9 pass / 1 fail，固定测试 peer 5432 冲突；只将测试 peer 改为临时端口并保留生产 5432 约束后，`r3-hosted-relay-green02.log` 自然 exit 0（`1a5d36`），10/10、0 skip、2,855.528472 ms，261 项源码对应 `20260928-003114-220515847-copy.sha256`。实际 Node/Unix/TCP 配合合成资源，未重复旧 R2 长链。有限独立代码审查未发现可证实阻断；随后 root 根据真实 PG 输出另外修正地址 SQL。
 - 维护 probe05 与失败前序详见 [通路实测](2026-09-27-stage1-r3-remote-engine-feasibility.md)。补充现有 PG17.10 的只读格式查询 `r3-pg17-inet-format-readonly02.stdout.log` 自然 exit 0，输出 `170010|172.17.0.2/32|172.17.0.2|t`，stderr 为空；末列证明采用本地 socket，因此比较的是显式 inet 值，不伪称实际 TCP server_addr。首试因未指定现有自定义角色而连接失败（exit 2），原件保留。

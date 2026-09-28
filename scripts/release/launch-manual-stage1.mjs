@@ -35,6 +35,11 @@ import {
 import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
 import { assessR3PostgresObservation } from "./r3-postgres-observation.mjs";
 import {
+  planR3DatabaseTargets,
+  provisionR3DatabaseTargets,
+  recheckR3DatabaseTargets
+} from "./r3-database-targets.mjs";
+import {
   sameIdentity,
   samePublicDirectory,
   observedPath,
@@ -1003,10 +1008,15 @@ export async function launchR3TargetCreate(input) {
     postgresPending,
     postgresSecret,
     postgresArchive,
+    databaseTargetSet,
+    databaseStage = "NOT_STARTED",
+    databasesAttempted = false,
+    databasesPending,
     boundEngineId,
     closed = false,
     closing;
   const diagnostics = [];
+  const databaseSecrets = [];
   const close = () => {
     if (closing) return closing;
     closed = true;
@@ -1015,7 +1025,16 @@ export async function launchR3TargetCreate(input) {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
       const errors = [];
+      await databasesPending?.catch(() => {});
       await postgresPending?.catch(() => {});
+      for (const held of databaseSecrets) {
+        held.bytes.fill(0);
+        try {
+          await held.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
       if (postgresSecret) {
         postgresSecret.bytes.fill(0);
         try {
@@ -1344,6 +1363,9 @@ export async function launchR3TargetCreate(input) {
     await check();
     await fs.mkdir(directory, { mode: 0o700 });
     await checkedPrivatePath(directory, { principal, privateRoot, directory: true });
+    // Reserve the sibling directory before pinning the provisioner password:
+    // private pins also bind directory metadata, which must remain unchanged.
+    await fs.mkdir(path.join(directory, "database-credentials"), { mode: 0o700 });
     const secretPath = path.join(directory, "postgres-password");
     const secretBytes = Buffer.from(randomBytes(32).toString("hex"));
     const secretFile = await fs.open(secretPath, "wx", 0o600);
@@ -1503,6 +1525,191 @@ export async function launchR3TargetCreate(input) {
       status: "POSTGRES_OBSERVED"
     });
     return postgresTarget;
+  };
+  const databaseAdmin = async (plan, work) => {
+    const allowed = new Set(["postgres", ...plan.targets.map((target) => target.databaseName)]);
+    let connection, connectedDatabase;
+    const closeConnection = async () => {
+      const previous = connection;
+      connection = null;
+      connectedDatabase = null;
+      await previous?.close();
+    };
+    const connect = async (databaseName) => {
+      if (closed || !allowed.has(databaseName)) fail(code);
+      if (connectedDatabase !== databaseName) {
+        await closeConnection();
+        await postgresSecret.recheck();
+        connection = await createPostgresConnector()({
+          credential: {
+            username: "release_provisioner",
+            password: postgresSecret.bytes.toString("ascii"),
+            capabilityProfile: "provision"
+          },
+          target: { hostname: "127.0.0.1", port: 55441, databaseName, tlsMode: "require" },
+          custody: {
+            operationRef: fixed.spec.operationRef,
+            executionRecordDigest: consumption.executionRecordDigest
+          }
+        });
+        await connection.execute("SET statement_timeout = '30s'");
+        await connection.execute("SET lock_timeout = '5s'");
+        await connection.execute("SET search_path = pg_catalog");
+        const rows = await connection.query(pgIdentitySql);
+        const observed = rows?.[0]?.identity;
+        if (
+          !Array.isArray(rows) ||
+          rows.length !== 1 ||
+          observed?.databaseName !== databaseName ||
+          !/^[1-9][0-9]*$/u.test(observed.databaseOid ?? "") ||
+          [
+            "systemIdentifier",
+            "serverVersionNum",
+            "serverAddress",
+            "serverPort",
+            "role",
+            "tls",
+            "clusterMarker"
+          ].some((key) => observed[key] !== postgresTarget.postgres[key])
+        )
+          fail(code);
+        connectedDatabase = databaseName;
+      }
+      return connection;
+    };
+    const executeAdmin = async ({ databaseName, sql }) => {
+      if (closed || typeof sql !== "string" || sql.length > 262144) fail(code);
+      const client = await connect(databaseName);
+      const result = await client.query(sql);
+      const rows = JSON.parse(JSON.stringify([...result]));
+      // Only the fixed helper's nonsecret SELECT responses are archived. Never
+      // retain role-password SQL, driver errors or a connector statement log.
+      if (/^SELECT\b/u.test(sql.trimStart())) {
+        diagnostics.push({
+          name: `database:${databaseName}:observation`,
+          body: await postgresArchive.raw(encodeManualJson(rows))
+        });
+      }
+      return { rows };
+    };
+    try {
+      return await work(executeAdmin);
+    } finally {
+      await closeConnection();
+    }
+  };
+  const provisionDatabases = async () => {
+    databaseStage = "CLUSTER_IDENTITY";
+    await check();
+    await inspectPg(boundEngineId);
+    databaseStage = "PLAN";
+    const plan = planR3DatabaseTargets({
+      operationRef: fixed.spec.operationRef,
+      phase: fixed.spec.phase,
+      chain: fixed.spec.chain,
+      manifest: fixed.databaseTestManifest
+    });
+    const createdAt = new Date().toISOString();
+    databaseStage = "ATTEMPT_ARCHIVE";
+    diagnostics.push({
+      name: "database-target-attempt",
+      body: await postgresArchive.raw(
+        encodeManualJson({
+          status: "INTERRUPTED_UNKNOWN",
+          operationRef: fixed.spec.operationRef,
+          plan,
+          manifestRawDigest: fixed.databaseTestManifestRawDigest,
+          createdAt
+        })
+      )
+    });
+    const privateRoot = lease.profile.storage.credentialRoot;
+    const principal = { platform: "posix", uid: process.getuid() };
+    const directory = path.join(privateRoot, "r3", fixed.spec.operationRef, "database-credentials");
+    databaseStage = "CREDENTIAL_DIRECTORY";
+    await checkedPrivatePath(directory, { principal, privateRoot, directory: true });
+    if ((await fs.readdir(directory)).length !== 0) fail(code);
+    // Finish this fixed directory before pinning any of its files. Adding a
+    // sibling after a pin would correctly invalidate its held parent identity.
+    const preparedSecrets = new Map();
+    for (const target of plan.targets) {
+      for (const [profile, username] of Object.entries(target.roles)) {
+        const filename = `${target.databaseName}-${profile}.json`;
+        const filepath = path.join(directory, filename);
+        const bytes = encodeManualJson({
+          username,
+          password: randomBytes(32).toString("hex"),
+          host: "127.0.0.1",
+          port: 55441,
+          database: target.databaseName,
+          tlsMode: "require"
+        });
+        const file = await fs.open(filepath, "wx", 0o600);
+        try {
+          await file.writeFile(bytes);
+          await file.sync();
+        } finally {
+          bytes.fill(0);
+          await file.close();
+        }
+        preparedSecrets.set(filename, { filepath });
+      }
+    }
+    for (const prepared of preparedSecrets.values()) {
+      prepared.held = await pinPrivateInput(prepared.filepath, { principal, privateRoot }, 4096);
+      databaseSecrets.push(prepared.held);
+    }
+    await check();
+    databaseStage = "PROVISION";
+    const created = await databaseAdmin(plan, (executeAdmin) =>
+      provisionR3DatabaseTargets({
+        plan,
+        policy: fixed.databaseTargetPolicy,
+        createdAt,
+        executeAdmin,
+        recheck: check,
+        createSecret: async ({ databaseName, profile, username }) => {
+          const target = plan.targets.find((item) => item.databaseName === databaseName);
+          if (!target || target.roles[profile] !== username || closed) fail(code);
+          const filename = `${databaseName}-${profile}.json`;
+          const held = preparedSecrets.get(filename)?.held;
+          if (!held) fail(code);
+          await held.recheck();
+          const secret = JSON.parse(held.bytes);
+          return {
+            username,
+            password: secret.password,
+            reference: `r3/${fixed.spec.operationRef}/database-credentials/${filename}`
+          };
+        }
+      })
+    );
+    databaseStage = "FINAL_CLUSTER_IDENTITY";
+    await check();
+    await inspectPg(boundEngineId);
+    if (
+      sha256Canonical(created.plan) !== sha256Canonical(plan) ||
+      !Array.isArray(created.records) ||
+      created.records.length !== plan.targets.length
+    )
+      fail(code);
+    const result = Object.freeze({
+      ...created,
+      status: "DATABASES_OBSERVED",
+      manifestRawDigest: fixed.databaseTestManifestRawDigest,
+      engineId: postgresTarget.engineId,
+      systemIdentifier: postgresTarget.postgres.systemIdentifier,
+      promotionEligible: false,
+      targetSetComplete: false
+    });
+    databaseStage = "RESULT_ARCHIVE";
+    diagnostics.push({
+      name: "database-target-set",
+      body: await postgresArchive.raw(encodeManualJson(result))
+    });
+    databaseTargetSet = result;
+    databaseStage = "OBSERVED";
+    return databaseTargetSet;
   };
   try {
     if (
@@ -1682,9 +1889,38 @@ export async function launchR3TargetCreate(input) {
           });
         }
       },
+      async provisionDatabases(...args) {
+        if (args.length !== 0 || closed || !postgresTarget || databasesAttempted) fail(code);
+        databasesAttempted = true;
+        databasesPending = provisionDatabases();
+        try {
+          return await databasesPending;
+        } catch (cause) {
+          // SQL driver errors can contain statements with role passwords. Keep
+          // only the helper's already-sanitized partial records and a fixed code.
+          const partial = { status: "INTERRUPTED_UNKNOWN", records: cause?.records ?? [] };
+          try {
+            diagnostics.push({
+              name: "database-target-set-incomplete",
+              body: await postgresArchive.raw(encodeManualJson(partial))
+            });
+          } catch {
+            /* The operation remains UNKNOWN even if archival is unavailable. */
+          }
+          throw Object.assign(new Error(code), {
+            code,
+            failedAt: databaseStage,
+            failureCode: /^[A-Z0-9_]{1,64}$/u.test(cause?.code ?? "") ? cause.code : code,
+            consumption,
+            diagnostics: Object.freeze(diagnostics.slice())
+          });
+        }
+      },
       async recheck() {
         await check();
         if (postgresAttempted && !postgresTarget) fail(code);
+        if (databasesAttempted && !databaseTargetSet) fail(code);
+        for (const held of databaseSecrets) await held.recheck();
         const current = await engineReadback(
           !postgresAttempted,
           postgresAttempted ? savePgExchange : saveExchange
@@ -1698,6 +1934,15 @@ export async function launchR3TargetCreate(input) {
             )
           )
             fail(code);
+        }
+        if (databaseTargetSet) {
+          await databaseAdmin(databaseTargetSet.plan, (executeAdmin) =>
+            recheckR3DatabaseTargets({
+              plan: databaseTargetSet.plan,
+              records: databaseTargetSet.records,
+              executeAdmin
+            })
+          );
         }
         await check();
       },

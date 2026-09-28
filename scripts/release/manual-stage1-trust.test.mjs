@@ -2966,7 +2966,101 @@ for (const dropped of [false, true])
       let provisionPosts = 0,
         pgConnections = 0,
         secret;
+      let databaseProvisionCalls = 0,
+        databaseRechecks = 0,
+        databaseSecretReference;
       if (!dropped) {
+        // The helper's complete SQL/role matrix has its own focused tests. Here
+        // exercise the native fixed connector, credential custody and once-only
+        // wiring without repeating that matrix through every H1/H2 recheck.
+        const databaseHelpers = await import("./r3-database-targets.mjs");
+        t.mock.module("./r3-database-targets.mjs", {
+          namedExports: {
+            planR3DatabaseTargets: databaseHelpers.planR3DatabaseTargets,
+            provisionR3DatabaseTargets: async ({
+              plan,
+              policy,
+              createdAt,
+              executeAdmin,
+              createSecret,
+              recheck
+            }) => {
+              databaseProvisionCalls++;
+              assert.equal(plan.operationRef, f.operationRef);
+              assert.equal(plan.targets.length, 37);
+              assert.equal(plan.reservations.length, 2);
+              assert.equal(policy.policyId, "s1-release-compose-ephemeral");
+              const rawRoot = path.join(f.profile.storage.archiveRoot, "raw");
+              const attempt = {
+                status: "INTERRUPTED_UNKNOWN",
+                operationRef: f.operationRef,
+                plan,
+                manifestRawDigest: sha256Bytes(
+                  await fs.readFile(
+                    path.join(f.repoRoot, "release/contracts/database-test-manifest.v1.json")
+                  )
+                ),
+                createdAt
+              };
+              const attemptBytes = encodeManualJson(attempt);
+              assert.deepEqual(
+                await fs.readFile(path.join(rawRoot, `${sha256Bytes(attemptBytes).slice(7)}.bin`)),
+                attemptBytes,
+                "attempt plan and marker time are durable before credentials or SQL"
+              );
+              assert.equal(
+                (
+                  await fs.readdir(
+                    path.join(
+                      f.profile.storage.credentialRoot,
+                      "r3",
+                      f.operationRef,
+                      "database-credentials"
+                    )
+                  )
+                ).length,
+                plan.targets.reduce((count, target) => count + Object.keys(target.roles).length, 0),
+                "all sibling credentials exist before the first pinned credential is consumed"
+              );
+              await recheck();
+              const item = plan.targets[0];
+              const credential = await createSecret({
+                databaseName: item.databaseName,
+                profile: "migrate",
+                username: item.roles.migrate
+              });
+              databaseSecretReference = credential.reference;
+              assert.match(credential.password, /^[0-9a-f]{64}$/u);
+              assert.equal(
+                (
+                  await executeAdmin({
+                    databaseName: item.databaseName,
+                    sql: "SELECT 1 AS synthetic"
+                  })
+                ).rows[0].synthetic,
+                1
+              );
+              await recheck();
+              return {
+                plan,
+                records: plan.targets.map((target, index) => ({
+                  ...target,
+                  databaseOid: String(index + 2000),
+                  marker: "synthetic-only"
+                }))
+              };
+            },
+            recheckR3DatabaseTargets: async ({ plan, records, executeAdmin }) => {
+              databaseRechecks++;
+              assert.equal(records.length, plan.targets.length);
+              await executeAdmin({
+                databaseName: plan.targets[0].databaseName,
+                sql: "SELECT 1 AS synthetic"
+              });
+              return true;
+            }
+          }
+        });
         t.mock.module("../../apps/release-runner/src/postgres-connector.mjs", {
           namedExports: {
             createPostgresConnector:
@@ -2976,9 +3070,13 @@ for (const dropped of [false, true])
                 assert.deepEqual(target, {
                   hostname: "127.0.0.1",
                   port: 55441,
-                  databaseName: "postgres",
+                  databaseName: target.databaseName,
                   tlsMode: "require"
                 });
+                assert.ok(
+                  target.databaseName === "postgres" ||
+                    /^s1ci_[0-9a-f]{24}$/u.test(target.databaseName)
+                );
                 assert.equal(credential.username, "release_provisioner");
                 assert.equal(credential.capabilityProfile, "provision");
                 assert.match(credential.password, /^[0-9a-f]{64}$/u);
@@ -2986,6 +3084,22 @@ for (const dropped of [false, true])
                 assert.equal(custody.operationRef, f.operationRef);
                 assert.match(custody.executionRecordDigest, /^sha256:/u);
                 return {
+                  execute: async (sql) => {
+                    assert.match(sql, /^SET (?:statement_timeout|lock_timeout|search_path) = /u);
+                  },
+                  query: async (sql) => {
+                    if (sql === "SELECT 1 AS synthetic") return [{ synthetic: 1 }];
+                    assert.match(sql, /'serverAddress',host\(inet_server_addr\(\)\)/u);
+                    return [
+                      {
+                        identity: {
+                          ...forwardedIdentity,
+                          databaseName: target.databaseName,
+                          databaseOid: target.databaseName === "postgres" ? "5" : "2000"
+                        }
+                      }
+                    ];
+                  },
                   withReadOnlyTransaction: async (callback) =>
                     callback({
                       execute: async (sql) => {
@@ -3204,6 +3318,8 @@ for (const dropped of [false, true])
         };
         releaseMockHistory();
         assert.equal(typeof launched.provisionPostgres, "function");
+        assert.equal(typeof launched.provisionDatabases, "function");
+        await assert.rejects(launched.provisionDatabases());
         await assert.rejects(launched.provisionPostgres({ endpoint: "elsewhere" }));
         const observed = await launched.provisionPostgres();
         assert.equal(observed.engineId, launched.engine.ID);
@@ -3219,10 +3335,45 @@ for (const dropped of [false, true])
           code: "R3_TARGET_CREATE_UNAVAILABLE"
         });
         assert.equal(provisionPosts, 1);
+        await assert.rejects(launched.provisionDatabases({ endpoint: "elsewhere" }));
+        const databases = await launched.provisionDatabases().catch((error) => {
+          t.diagnostic(
+            JSON.stringify({
+              failedAt: error.failedAt,
+              failureCode: error.failureCode,
+              databaseProvisionCalls,
+              pgConnections,
+              secretCreated: Boolean(databaseSecretReference)
+            })
+          );
+          throw error;
+        });
+        assert.equal(databases.status, "DATABASES_OBSERVED");
+        assert.equal(databases.records.length, 37);
+        assert.equal(databases.targetSetComplete, false);
+        assert.equal(databases.promotionEligible, false);
+        assert.equal(databases.systemIdentifier, pgIdentity.systemIdentifier);
+        assert.match(databases.manifestRawDigest, /^sha256:/u);
+        assert.equal(databaseProvisionCalls, 1);
+        await assert.rejects(launched.provisionDatabases());
+        assert.equal(databaseProvisionCalls, 1);
+        const databaseSecretPath = path.join(
+          f.profile.storage.credentialRoot,
+          databaseSecretReference
+        );
+        const databaseSecretBytes = await fs.readFile(databaseSecretPath);
+        assert.equal((await fs.stat(databaseSecretPath)).mode & 0o777, 0o600);
+        assert.equal(JSON.parse(databaseSecretBytes).tlsMode, "require");
+        releaseMockHistory();
         await launched.recheck();
+        assert.equal(databaseRechecks, 1);
         releaseMockHistory();
         innerIdentity = { ...pgIdentity, systemIdentifier: "7340000000000000002" };
         await assert.rejects(launched.recheck(), { code: "R3_TARGET_CREATE_UNAVAILABLE" });
+        innerIdentity = { ...pgIdentity };
+        releaseMockHistory();
+        await fs.appendFile(databaseSecretPath, "\n");
+        await assert.rejects(launched.recheck());
         assert.equal(launched.status, "INTERRUPTED_UNKNOWN");
         await launched.close();
       }

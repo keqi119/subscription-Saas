@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   cleanupSuiteDatabase,
+  computeMigrationCatalog,
   grantRuntimeEquivalentAccess,
   provisionSuiteDatabase,
   scanMigrationGlobalObjects,
@@ -192,6 +193,8 @@ export async function runDatabaseLifecyclePostgresContract() {
   assert.ok(policy);
   const migrationScan = await scanMigrationGlobalObjects(repoRoot, migrationPolicy);
   assert.deepEqual(migrationScan.extensions, ["btree_gist", "pgcrypto"]);
+  const migrationCatalog = await computeMigrationCatalog(repoRoot);
+  assert.equal(migrationCatalog.digest, migrationScan.migrationCatalogDigest);
 
   const runId = randomUUID();
   const provisioner = {
@@ -369,7 +372,7 @@ export async function runDatabaseLifecyclePostgresContract() {
       assert.equal(ownership.rows[0]?.migrationOwner, record.roles.migrate);
       assert.equal(ownership.rows[0]?.canCreate, "false");
       assert.equal(ownership.rows[0]?.memberships, "0");
-      assert.equal(Number(ownership.rows[0]?.migrationCount), 126);
+      assert.equal(Number(ownership.rows[0]?.migrationCount), migrationCatalog.entries.length);
       await assert.rejects(
         executePsql({
           containerId,

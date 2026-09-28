@@ -16,6 +16,7 @@ import test from "node:test";
 import { sha256Text } from "../src/digest.mjs";
 
 import {
+  buildDatabaseSuiteReport,
   runDatabaseManifest,
   runDatabaseSuite,
   runSourceDatabaseGate,
@@ -385,6 +386,82 @@ test("generic suite execution refuses lifecycle-owned targets before provisionin
     { code: "DATABASE_TEST_LIFECYCLE_RUNNER_REQUIRED" }
   );
   assert.equal(provisionCalled, false);
+});
+
+test("lifecycle-owned report builder binds both physical assignments and rejects a missing sibling", () => {
+  const [selected] = select({ suiteIds: ["release.launcher.fixture"] });
+  const operationRef = "10000000-0000-4000-8000-000000000001";
+  const primary = {
+    name: "primary",
+    databaseName: "s1ci_aaaaaaaaaaaaaaaaaaaaaaaa",
+    shard: 0,
+    secretReferences: {
+      migrate: `r3/${operationRef}/database-credentials/s1ci_aaaaaaaaaaaaaaaaaaaaaaaa-migrate.json`,
+      "runtime-test": `r3/${operationRef}/database-credentials/s1ci_aaaaaaaaaaaaaaaaaaaaaaaa-runtime-test.json`
+    }
+  };
+  const sibling = {
+    name: "sibling",
+    suiteIdentity: "database-lifecycle",
+    databaseName: "s1ci_bbbbbbbbbbbbbbbbbbbbbbbb",
+    shard: 1,
+    secretReferences: {
+      migrate: `r3/${operationRef}/database-credentials/s1ci_bbbbbbbbbbbbbbbbbbbbbbbb-migrate.json`,
+      "runtime-test": `r3/${operationRef}/database-credentials/s1ci_bbbbbbbbbbbbbbbbbbbbbbbb-runtime-test.json`
+    }
+  };
+  const execution = {
+    ...selected,
+    suiteId: "node.release-database-lifecycle.postgres",
+    runId: operationRef,
+    assignment: primary,
+    expectedCountPolicy: { mode: "complete" },
+    r3ExecutionMode: "lifecycle-owned",
+    additionalAssignments: [sibling]
+  };
+  const provisioned = {
+    ...execution.assignment,
+    databaseOid: "19001",
+    targetFingerprint: digest,
+    additionalDatabases: [{ ...sibling, databaseOid: "19002", targetFingerprint: digest }]
+  };
+  const result = {
+    counts: completeCounts({ collected: 2, selected: 2, executed: 2, passed: 2 }),
+    sanitizedLogDigest: digest,
+    roleBoundaries: [
+      { database: "target", ...leastPrivilegeBoundary },
+      { database: "sibling", ...leastPrivilegeBoundary }
+    ]
+  };
+  const input = { execution, provisioned, result, operationId: "operation-lifecycle-1" };
+  const report = buildDatabaseSuiteReport(input);
+  assert.equal(report.operationId, input.operationId);
+  assert.equal(report.target.databaseName, execution.assignment.databaseName);
+  assert.deepEqual(report.additionalDatabases, [
+    {
+      name: "sibling",
+      databaseName: sibling.databaseName,
+      databaseOid: "19002",
+      targetFingerprint: digest,
+      ...leastPrivilegeBoundary
+    }
+  ]);
+  assert.deepEqual(
+    report.counts,
+    completeCounts({ collected: 2, selected: 2, executed: 2, passed: 2 })
+  );
+  assert.equal(report.terminalStatus, "PASSED");
+  assert.throws(
+    () =>
+      buildDatabaseSuiteReport({
+        ...input,
+        provisioned: { ...provisioned, additionalDatabases: [] }
+      }),
+    { code: "DATABASE_TEST_ADDITIONAL_ASSIGNMENT_MISMATCH" }
+  );
+  assert.throws(() => buildDatabaseSuiteReport({ ...input, operationId: "" }), {
+    code: "DATABASE_TEST_EXECUTION_INPUT_INVALID"
+  });
 });
 
 test("database test context resolves only the assigned runtime secret reference", () => {

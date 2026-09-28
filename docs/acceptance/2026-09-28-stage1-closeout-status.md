@@ -4,6 +4,14 @@
 
 ## 当前接续状态
 
+2026-09-29 已接入同一持有会话内的无参数 `runSourceManifest()`：从固定候选发现并绑定完整 37 suites，写入固定私有上下文；普通套件和 clean 双库执行迁移、状态、schema 差异、角色权限、fixture 与清单命令，lifecycle 复用实际两库创建/删除断言，保留 sibling 记录。报告复用既有构建和计数校验，没有新增 schema、套件或业务功能。
+
+执行前先把 UNKNOWN 原件写入主备，逐套件保存进程输出和读回，主备均持有且重查成功后才返回 `SOURCE_MANIFEST_OBSERVED`；该状态仍为 `promotionEligible: false`。审查发现并修正了 clean 双库原件容量不足和单边写入不能算完整结果的问题。真实 Linux 子进程检查通过正常输出、中止后自有进程组停止、超量输出明确失败；私有目录准备检查在 Linux 通过。相关目标文件 12 项通过（其 Linux 专用进程项已单独实际执行），报告构建相关文件 16 项通过。没有重复此前耗时的快照消费长链。
+
+当前实现尚未在 H1 执行完整 source 清单，也未形成可信 source gate；后续先接报告原件的既有保管合同及最终 workspace 清理，再接匹配 source 的 final/hosted。同候选 R2/R3、Staging 两项迁移与 R4 真实验收仍待完成。开发预检 `datasource.url` 仍缺失，Prisma 结构校验通过；本轮没有联系或修改业务数据库，没有云端或 H1 写入。现有 OAuth 和来源性质输入仍待处理，没有另发续期或批准请求。具体执行边界与原始检查编号记入 [lifecycle 接线计划](../superpowers/plans/2026-09-29-stage1-r3-lifecycle-execution.md)。
+
+## 前一上下文与选择绑定增量
+
 2026-09-29 本轮补齐了 source 执行前的两项接线：测试上下文可从固定发布 profile 的私有凭据目录读取 H1 的单库/双库运行时凭据，只接受同 operation、确定的运行时角色和 `127.0.0.1:55441` TLS；全清单绑定覆盖 37 suites，普通套件与 clean 双库使用既有目标，lifecycle 使用两个真实预留名，不生成第三个占位库。两项均沿用现有合同，没有新增业务功能、schema 或授权服务。
 
 上下文相关原有及新增检查在 Windows 通过 14 项，平台专用的 1 项已另在 Linux 真实私有文件系统通过；目标绑定相关文件 9 项通过。合同校验与发现登记通过（99 candidates、39 manifested、60 excepted、0 unclassified），本轮没有重跑此前通过的长链。当前开发预检仍是 `datasource.url` 缺失，Prisma 结构校验通过，未联系或修改业务数据库。

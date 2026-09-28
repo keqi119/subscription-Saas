@@ -2151,7 +2151,7 @@ function r3HostedBundle(f) {
 }
 
 test(
-  "R3 WORKSPACE prepares private lifecycle observation directories before import",
+  "R3 WORKSPACE prepares private suite observation directories before import",
   { skip: process.platform !== "linux" },
   async (t) => {
     const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
@@ -2169,6 +2169,18 @@ test(
       );
       assert.equal((await fs.stat(directory)).mode & 0o777, 0o700);
       assert.deepEqual(await fs.readdir(directory), []);
+      const manifest = JSON.parse(
+        await fs.readFile(path.join(f.repoRoot, "release/contracts/database-test-manifest.v1.json"))
+      );
+      const sourceDirectory = path.join(path.dirname(directory), "source");
+      assert.deepEqual(
+        (await fs.readdir(sourceDirectory)).sort(),
+        ["attempt", "manifest", ...manifest.suites.map(({ suiteId }) => suiteId)].sort()
+      );
+      for (const name of await fs.readdir(sourceDirectory)) {
+        assert.equal((await fs.stat(path.join(sourceDirectory, name))).mode & 0o777, 0o700);
+        assert.deepEqual(await fs.readdir(path.join(sourceDirectory, name)), []);
+      }
     }
   }
 );
@@ -3249,6 +3261,7 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
         t.mock.module("./r3-database-targets.mjs", {
           namedExports: {
             planR3DatabaseTargets: databaseHelpers.planR3DatabaseTargets,
+            bindR3SourceManifest: databaseHelpers.bindR3SourceManifest,
             provisionR3DatabaseTargets: async ({
               plan,
               policy,
@@ -4008,6 +4021,9 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
         assert.equal(typeof launched.fetchSnapshot, "function");
         assert.equal(typeof launched.restoreSnapshot, "function");
         assert.equal(typeof launched.completeSnapshot, "function");
+        assert.equal(typeof launched.runSourceManifest, "function");
+        await assert.rejects(launched.runSourceManifest());
+        await assert.rejects(launched.runSourceManifest({ approved: true }));
         await assert.rejects(launched.completeSnapshot());
         await assert.rejects(launched.restoreSnapshot());
         await assert.rejects(launched.cleanupSnapshot());

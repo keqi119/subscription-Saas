@@ -334,43 +334,18 @@ function roleBoundaryReport(entry) {
   };
 }
 
-export async function runDatabaseSuite({
-  execution,
-  provision,
-  deployMigrations,
-  grantRuntimeAccess,
-  executeTest,
-  custody,
-  cleanup,
-  operationId
-}) {
-  if (execution?.r3ExecutionMode === "lifecycle-owned") {
-    throw launcherError("DATABASE_TEST_LIFECYCLE_RUNNER_REQUIRED");
-  }
-  if (
-    typeof provision !== "function" ||
-    typeof deployMigrations !== "function" ||
-    typeof grantRuntimeAccess !== "function" ||
-    typeof executeTest !== "function" ||
-    typeof custody !== "function" ||
-    typeof cleanup !== "function" ||
-    typeof operationId !== "string" ||
-    operationId.length === 0
-  ) {
+export function buildDatabaseSuiteReport({ execution, provisioned, result, operationId }) {
+  if (typeof operationId !== "string" || operationId.length === 0) {
     throw launcherError("DATABASE_TEST_EXECUTION_INPUT_INVALID");
   }
-  const provisioned = await provision(execution);
   assertProvisioned(execution, provisioned);
-  await deployMigrations({ execution, provisioned });
-  await grantRuntimeAccess({ execution, provisioned });
-  const result = await executeTest({ execution, provisioned });
   const counts = normalizeDatabaseTestCounts(result?.counts, execution.expectedCountPolicy);
   assertFixtureObservations(execution, result?.fixtureObservations);
   const roleBoundaries = assertRoleBoundaries(execution, result?.roleBoundaries);
   if (!/^sha256:[0-9a-f]{64}$/.test(result?.sanitizedLogDigest ?? "")) {
     throw launcherError("DATABASE_TEST_LOG_DIGEST_INVALID");
   }
-  const report = Object.freeze({
+  return Object.freeze({
     schemaVersion: "database-suite-report.v1",
     operationId,
     runId: execution.runId,
@@ -406,6 +381,39 @@ export async function runDatabaseSuite({
     sanitizedLogDigest: result.sanitizedLogDigest,
     terminalStatus: counts.failed === 0 ? "PASSED" : "FAILED"
   });
+}
+
+export async function runDatabaseSuite({
+  execution,
+  provision,
+  deployMigrations,
+  grantRuntimeAccess,
+  executeTest,
+  custody,
+  cleanup,
+  operationId
+}) {
+  if (execution?.r3ExecutionMode === "lifecycle-owned") {
+    throw launcherError("DATABASE_TEST_LIFECYCLE_RUNNER_REQUIRED");
+  }
+  if (
+    typeof provision !== "function" ||
+    typeof deployMigrations !== "function" ||
+    typeof grantRuntimeAccess !== "function" ||
+    typeof executeTest !== "function" ||
+    typeof custody !== "function" ||
+    typeof cleanup !== "function" ||
+    typeof operationId !== "string" ||
+    operationId.length === 0
+  ) {
+    throw launcherError("DATABASE_TEST_EXECUTION_INPUT_INVALID");
+  }
+  const provisioned = await provision(execution);
+  assertProvisioned(execution, provisioned);
+  await deployMigrations({ execution, provisioned });
+  await grantRuntimeAccess({ execution, provisioned });
+  const result = await executeTest({ execution, provisioned });
+  const report = buildDatabaseSuiteReport({ execution, provisioned, result, operationId });
   const reportDigest = sha256Canonical(report);
   const custodyReceipt = await custody({ report, digest: reportDigest, execution, provisioned });
   assertCustodyComplete(custodyReceipt, reportDigest);

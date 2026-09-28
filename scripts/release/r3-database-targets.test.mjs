@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { sha256Canonical, sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { suiteDatabaseName } from "../../packages/release-foundation/src/database-target.mjs";
 import { selectManifestSuites } from "../../packages/release-foundation/src/database-test-launcher.mjs";
@@ -12,6 +13,7 @@ import {
   provisionR3DatabaseTargets,
   recheckR3DatabaseTargets
 } from "./r3-database-targets.mjs";
+import { executeR3SourceSuite, runR3SourceProcess } from "./r3-source-suite.mjs";
 
 const repo = new URL("../../release/contracts/", import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL("database-test-manifest.v1.json", repo)));
@@ -22,6 +24,62 @@ const operationRef = "10000000-0000-4000-8000-000000000001";
 const createdAt = "2026-09-28T00:00:00.000Z";
 const input = (phase = "source", chain = "fresh") => ({ operationRef, phase, chain, manifest });
 const invalid = { code: "R3_DATABASE_TARGETS_UNAVAILABLE" };
+
+test(
+  "R3 source process captures output and drains aborted groups",
+  { skip: process.platform !== "linux" },
+  async () => {
+    const run = (script, signal = new AbortController().signal) =>
+      runR3SourceProcess({
+        executable: "node",
+        args: ["--input-type=module", "-e", script],
+        timeoutMs: 5000,
+        repoRoot: process.cwd(),
+        environment: {},
+        signal,
+        recheck: async () => {}
+      });
+    const normal = await run(
+      'process.stdout.write("original stdout"); process.stderr.write("original stderr");'
+    );
+    assert.equal(normal.code, 0);
+    assert.equal(normal.signal, null);
+    assert.equal(normal.processError, false);
+    assert.equal(normal.stdout, "original stdout");
+    assert.equal(normal.stderr, "original stderr");
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 1000);
+    let cancelled;
+    try {
+      cancelled = await run(
+        'import { spawn } from "node:child_process"; const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {stdio:"inherit"}); console.log(JSON.stringify([process.pid, child.pid])); setInterval(()=>{},1000);',
+        abort.signal
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    assert.notEqual(cancelled.signal, null);
+    assert.equal(cancelled.processError, true);
+    const pids = JSON.parse(cancelled.stdout.trim());
+    assert.equal(pids.length, 2);
+    for (const pid of pids) {
+      assert.ok(Number.isSafeInteger(pid) && pid > 1);
+      try {
+        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+        assert.equal(
+          stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0],
+          "Z",
+          "owned process must be terminated"
+        );
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    const excessive = await run('process.stdout.write("x".repeat(700000));');
+    assert.equal(excessive.truncated, true);
+    assert.equal(Buffer.byteLength(excessive.stdout), 524288);
+  }
+);
 
 function fakeAdmin({ failAfterCreate = Infinity, grantedTo = 0 } = {}) {
   const databases = new Map(),
@@ -251,6 +309,212 @@ test("R3 source manifest refuses a partial or changed plan and caller selections
     { discoveryUnclassifiedCount: 1 }
   ])
     assert.throws(() => bindR3SourceManifest({ ...request, ...override }), invalid);
+});
+
+function sourceSuiteFixture(suiteId) {
+  const plan = planR3DatabaseTargets(input());
+  const execution = bindR3SourceManifest({
+    operationRef,
+    chain: "fresh",
+    manifest,
+    plan,
+    discoveryDigest: `sha256:${"d".repeat(64)}`,
+    discoveryUnclassifiedCount: 0
+  }).find((selection) => selection.suiteId === suiteId);
+  const assignments = [execution.assignment, ...execution.additionalAssignments];
+  const records = assignments.map((assignment, index) => ({
+    ...plan.targets.find((target) => target.databaseName === assignment.databaseName),
+    databaseOid: String(3001 + index),
+    targetFingerprint: `sha256:${"a".repeat(64)}`,
+    secretReferences: assignment.secretReferences
+  }));
+  const events = [];
+  const fixture = {
+    execution,
+    records,
+    clusterFingerprint: `sha256:${"a".repeat(64)}`,
+    containerId: "b".repeat(64),
+    profileDigest: `sha256:${"c".repeat(64)}`,
+    repoRoot: fileURLToPath(new URL("../../", import.meta.url)),
+    async readSecret(record, profile) {
+      events.push(`${record.databaseName}:secret:${profile}`);
+      return {
+        username: record.roles[profile],
+        password: `${profile}-${record.databaseName}-private-password`,
+        database: record.databaseName,
+        host: "127.0.0.1",
+        port: 55441,
+        tlsMode: "require"
+      };
+    },
+    async executeCredential(record, profile, sql) {
+      events.push(
+        `${record.databaseName}:${profile}:${sql.startsWith("SELECT r.rolsuper") ? "boundary" : sql.startsWith("ALTER SCHEMA") ? "grant" : "fixture"}`
+      );
+      if (sql.startsWith("SELECT r.rolsuper")) {
+        return {
+          rows: [
+            {
+              role: record.roles["runtime-test"],
+              superuser: false,
+              createdb: false,
+              createrole: false,
+              bypassrls: false,
+              canCreateSchema: false,
+              schemaOwner: false,
+              objectOwner: false
+            }
+          ]
+        };
+      }
+      return { rows: [] };
+    },
+    async runPrisma(record, args) {
+      events.push(`${record.databaseName}:prisma:${args.join(" ")}`);
+      return { code: 0, signal: null, truncated: false, stdout: "schema-readback", stderr: "" };
+    },
+    async writeContext(selection, context) {
+      events.push("context");
+      assert.equal(selection, execution);
+      assert.deepEqual(context.allowedFiles, execution.files);
+      assert.equal(context.databaseName, records[0].databaseName);
+      assert.equal(context.runtimeSecretReference, records[0].secretReferences["runtime-test"]);
+      if (records.length === 2) {
+        assert.equal(context.namedDatabases.target.databaseName, records[0].databaseName);
+        assert.equal(context.namedDatabases.source.databaseName, records[1].databaseName);
+        assert.equal(
+          context.namedDatabases.source.runtimeSecretReference,
+          records[1].secretReferences["runtime-test"]
+        );
+      } else {
+        assert.equal(context.namedDatabases, undefined);
+      }
+      return `r3/${operationRef}/database-test-contexts/${suiteId}/context.json`;
+    },
+    async runTest(selection, reference) {
+      events.push("test");
+      assert.equal(selection, execution);
+      assert.equal(reference, `r3/${operationRef}/database-test-contexts/${suiteId}/context.json`);
+      return {
+        code: 0,
+        signal: null,
+        truncated: false,
+        stdout:
+          "TAP version 13\n# private-stdout-marker\n# tests 1\n# pass 1\n# fail 0\n# skipped 0\n# todo 0\n# cancelled 0\n",
+        stderr: ""
+      };
+    },
+    async recheck() {
+      events.push("recheck");
+    }
+  };
+  return { fixture, events };
+}
+
+test("R3 source suite reuses ordered migration, fixture and report flow for ordinary and clean databases", async () => {
+  for (const suiteId of [manifest.suites[0].suiteId, "script.stage1-clean-acceptance.postgres"]) {
+    const { fixture, events } = sourceSuiteFixture(suiteId);
+    const { report, originals, migrationObservations, logSummary } =
+      await executeR3SourceSuite(fixture);
+    assert.equal(report.terminalStatus, "PASSED");
+    assert.equal(report.target.databaseName, fixture.records[0].databaseName);
+    assert.deepEqual(
+      report.additionalDatabases?.map(({ name, databaseName }) => ({ name, databaseName })) ?? [],
+      fixture.records
+        .slice(1)
+        .map((record) => ({ name: "source", databaseName: record.databaseName }))
+    );
+    assert.equal(originals.processes.length, fixture.records.length * 4);
+    assert.equal(
+      originals.fixtures.length,
+      fixture.execution.fixtures ? fixture.records.length : 0
+    );
+    assert.equal(migrationObservations.length, fixture.records.length);
+    assert.deepEqual(
+      events
+        .filter((event) => event.includes(":prisma:"))
+        .map((event) => event.split(":prisma:")[1].split(" ").slice(0, 2).join(" ")),
+      fixture.records.flatMap(() => [
+        "migrate deploy",
+        "migrate status",
+        "migrate diff",
+        "migrate diff"
+      ])
+    );
+    assert.ok(events.indexOf("context") < events.indexOf("test"));
+    assert.ok(events.filter((event) => event.endsWith(":grant")).length === fixture.records.length);
+    for (const record of fixture.records) {
+      const prefix = `${record.databaseName}:`;
+      const lastPrisma = events.findLastIndex((event) => event.startsWith(`${prefix}prisma:`));
+      const grant = events.indexOf(`${prefix}migrate:grant`);
+      const boundary = events.indexOf(`${prefix}runtime-test:boundary`);
+      assert.ok(lastPrisma < grant && grant < boundary && boundary < events.indexOf("context"));
+      if (fixture.execution.fixtures) {
+        const migrationFixture = events.indexOf(`${prefix}migrate:fixture`);
+        const runtimeFixture = events.indexOf(`${prefix}runtime-test:fixture`);
+        assert.ok(boundary < migrationFixture && migrationFixture < runtimeFixture);
+        assert.ok(runtimeFixture < events.indexOf("context"));
+      }
+    }
+    assert.equal(originals.test.stdout.includes("private-stdout-marker"), true);
+    assert.equal(JSON.stringify({ report, logSummary }).includes("private-stdout-marker"), false);
+  }
+});
+
+test("R3 source suite refuses crossed credentials and failed runtime role readback while retaining originals", async () => {
+  for (const defect of ["crossed-secret", "role-boundary"]) {
+    const { fixture } = sourceSuiteFixture("script.stage1-clean-acceptance.postgres");
+    if (defect === "crossed-secret") {
+      const readSecret = fixture.readSecret;
+      fixture.readSecret = async (record, profile) => ({
+        ...(await readSecret(record, profile)),
+        database: fixture.records[0].databaseName
+      });
+    } else {
+      const executeCredential = fixture.executeCredential;
+      fixture.executeCredential = async (record, profile, sql) => {
+        const readback = await executeCredential(record, profile, sql);
+        if (sql.startsWith("SELECT r.rolsuper")) readback.rows[0].superuser = true;
+        return readback;
+      };
+    }
+    await assert.rejects(executeR3SourceSuite(fixture), (error) => {
+      assert.equal(error.code, "R3_SOURCE_SUITE_UNAVAILABLE");
+      assert.ok(error.originals.databases.length > 0);
+      return true;
+    });
+  }
+});
+
+test("R3 source suite retains private outputs but refuses abnormal process exits or missing counts", async () => {
+  for (const defect of ["nonzero", "counts", "timedOut", "processError"]) {
+    const { fixture } = sourceSuiteFixture(manifest.suites[0].suiteId);
+    const runTest = fixture.runTest;
+    fixture.runTest = async (...args) => {
+      const result = await runTest(...args);
+      if (defect === "nonzero")
+        return {
+          ...result,
+          code: 1,
+          stdout: result.stdout.replace("# pass 1\n# fail 0", "# pass 0\n# fail 1")
+        };
+      if (defect === "counts") return { ...result, stdout: "private-stdout-marker without counts" };
+      return { ...result, [defect]: true };
+    };
+    await assert.rejects(executeR3SourceSuite(fixture), (error) => {
+      assert.equal(error.code, "R3_SOURCE_SUITE_UNAVAILABLE");
+      assert.ok(error.originals.test.stdout.includes("private-stdout-marker"));
+      return true;
+    });
+  }
+  const { fixture } = sourceSuiteFixture(manifest.suites[0].suiteId);
+  const runPrisma = fixture.runPrisma;
+  fixture.runPrisma = async (...args) => ({ ...(await runPrisma(...args)), timedOut: true });
+  await assert.rejects(executeR3SourceSuite(fixture), (error) => {
+    assert.equal(error.code, "R3_SOURCE_SUITE_UNAVAILABLE");
+    assert.equal(error.originals.processes.length, 1);
+    return true;
+  });
 });
 
 test("R3 database provision executes single statements, bounds roles and rechecks actual identities", async () => {

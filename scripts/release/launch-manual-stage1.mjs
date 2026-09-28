@@ -22,7 +22,11 @@ import {
   parseManualRunnerFrames,
   encodeManualJson,
   sha256Bytes,
-  sha256Canonical
+  sha256Canonical,
+  classifyDatabaseTests,
+  discoverDatabaseTestCandidates,
+  scanDatabaseFrameworkBypasses,
+  runDatabaseManifest
 } from "../../packages/release-foundation/src/index.mjs";
 import {
   loadFixedManualProfile,
@@ -46,6 +50,15 @@ import { restoreR3SnapshotDatabase } from "./r3-remote-snapshot-restore.mjs";
 import { createR3LifecycleAdapter } from "./r3-lifecycle-adapter.mjs";
 import { executeR3LifecycleSuite } from "./r3-lifecycle-test-runner.mjs";
 import {
+  executeR3SourceSuite,
+  runR3SourceProcess,
+  r3RuntimeBoundary,
+  r3RuntimeBoundarySql
+} from "./r3-source-suite.mjs";
+import { buildDatabaseSuiteReport } from "../../packages/release-foundation/src/database-test-launcher.mjs";
+import { databaseTestCounts, summarizeDatabaseTestLog } from "./database-test-launcher-runtime.mjs";
+import {
+  bindR3SourceManifest,
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
   recheckR3DatabaseTargets
@@ -1072,6 +1085,10 @@ export async function launchR3TargetCreate(input) {
     lifecycleAttempted = false,
     lifecycleReady = false,
     lifecyclePending,
+    lifecycleResult,
+    sourceAttempted = false,
+    sourceReady = false,
+    sourcePending,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1085,18 +1102,28 @@ export async function launchR3TargetCreate(input) {
   const restoreStates = new Map();
   const restoreReadbacks = [];
   const lifecycleReadbacks = [];
+  const sourceReadbacks = [];
+  const sourceContexts = [];
   const fetchAbort = new AbortController();
   const lifecycleAbort = new AbortController();
+  const sourceAbort = new AbortController();
   const close = () => {
     if (closing) return closing;
     stopping = true;
     lifecycleAbort.abort();
+    sourceAbort.abort();
     const abort = () => {
       closed = true;
       fetchAbort.abort();
       socket?.destroy();
     };
-    if (!restorePending && !cleanupPending && !snapshotCompletionPending && !lifecyclePending)
+    if (
+      !restorePending &&
+      !cleanupPending &&
+      !snapshotCompletionPending &&
+      !lifecyclePending &&
+      !sourcePending
+    )
       abort();
     closing = (async () => {
       // Revoking the key prevents new connections; it does not kill sshd or
@@ -1109,6 +1136,7 @@ export async function launchR3TargetCreate(input) {
       await cleanupPending?.catch(() => {});
       await snapshotCompletionPending?.catch(() => {});
       await lifecyclePending?.catch(() => {});
+      await sourcePending?.catch(() => {});
       abort();
       await copyPending?.catch(() => {});
       await decryptPending?.catch(() => {});
@@ -1137,6 +1165,8 @@ export async function launchR3TargetCreate(input) {
       }
       for (const handle of [
         ...lifecycleReadbacks,
+        ...sourceReadbacks,
+        ...sourceContexts,
         cleanupReadback,
         ...restoreReadbacks,
         copyReadback,
@@ -1181,6 +1211,7 @@ export async function launchR3TargetCreate(input) {
     for (const held of restoreReadbacks) await held.recheck();
     await cleanupReadback?.recheck();
     for (const held of lifecycleReadbacks) await held.recheck();
+    for (const held of [...sourceReadbacks, ...sourceContexts]) await held.recheck();
     if (consumerRecord)
       for (const { digest, bytes, role } of consumerRecord)
         if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
@@ -1446,6 +1477,12 @@ export async function launchR3TargetCreate(input) {
     // Reserve the sibling directory before pinning the provisioner password:
     // private pins also bind directory metadata, which must remain unchanged.
     await fs.mkdir(path.join(directory, "database-credentials"), { mode: 0o700 });
+    const contextRoot = path.join(directory, "database-test-contexts");
+    await fs.mkdir(contextRoot, { mode: 0o700 });
+    for (const { suiteId } of fixed.databaseTestManifest.suites) {
+      if (!/^[a-z0-9][a-z0-9.-]{0,127}$/u.test(suiteId)) fail(code);
+      await fs.mkdir(path.join(contextRoot, suiteId), { mode: 0o700 });
+    }
     const consumerDirectory = path.join(directory, "consumer");
     await fs.mkdir(consumerDirectory, { mode: 0o700 });
     for (const name of ["ciphertext", "plaintext", "observations"])
@@ -2494,7 +2531,383 @@ export async function launchR3TargetCreate(input) {
       promotionEligible: false
     });
   };
+  const sourceCheck = async () => {
+    if (stopping || closed || sourceAbort.signal.aborted) fail(code);
+    await check();
+  };
+  const sourceSecret = async (record, profile) => {
+    const planned = [
+      ...databaseTargetSet.plan.targets,
+      ...databaseTargetSet.plan.reservations
+    ].find((item) => item.databaseName === record.databaseName);
+    const filename = `${record.databaseName}-${profile}.json`;
+    const held = databaseSecretByName.get(filename);
+    if (
+      !planned ||
+      !["migrate", "runtime-test"].includes(profile) ||
+      !held ||
+      record.roles[profile] !== planned.roles[profile] ||
+      record.secretReferences[profile] !==
+        `r3/${fixed.spec.operationRef}/database-credentials/${filename}`
+    )
+      fail(code);
+    await held.recheck();
+    const secret = JSON.parse(held.bytes);
+    if (
+      secret.username !== planned.roles[profile] ||
+      secret.database !== record.databaseName ||
+      secret.host !== "127.0.0.1" ||
+      secret.port !== 55441 ||
+      secret.tlsMode !== "require"
+    )
+      fail(code);
+    return secret;
+  };
+  const sourceCredential = async (record, profile, sql) => {
+    await sourceCheck();
+    const secret = await sourceSecret(record, profile);
+    const connection = await createPostgresConnector()({
+      credential: {
+        username: secret.username,
+        password: secret.password,
+        capabilityProfile: profile
+      },
+      target: {
+        hostname: secret.host,
+        port: secret.port,
+        databaseName: secret.database,
+        tlsMode: secret.tlsMode
+      },
+      custody: {
+        operationRef: fixed.spec.operationRef,
+        executionRecordDigest: consumption.executionRecordDigest
+      }
+    });
+    try {
+      const identity = await connection.observeIdentity();
+      if (
+        identity.databaseName !== record.databaseName ||
+        identity.databaseOid !== record.databaseOid ||
+        identity.role !== secret.username ||
+        identity.tls !== true
+      )
+        fail(code);
+      await connection.execute("SET statement_timeout = '30s'");
+      await connection.execute("SET lock_timeout = '5s'");
+      const rows = JSON.parse(JSON.stringify([...(await connection.query(sql))]));
+      await sourceCheck();
+      return { rows };
+    } finally {
+      await connection.close();
+    }
+  };
+  const sourceProcess = (executable, args, timeoutMs, environment = {}) =>
+    runR3SourceProcess({
+      executable,
+      args,
+      timeoutMs,
+      environment,
+      repoRoot,
+      signal: sourceAbort.signal,
+      recheck: sourceCheck
+    });
+  const sourcePrisma = async (record, args, timeoutMs) => {
+    const secret = await sourceSecret(record, "migrate");
+    return sourceProcess(
+      "pnpm",
+      ["--filter", "@subscription-saas/api", "exec", "prisma", ...args],
+      timeoutMs,
+      {
+        DATABASE_URL: `postgresql://${encodeURIComponent(secret.username)}:${encodeURIComponent(secret.password)}@127.0.0.1:55441/${record.databaseName}?sslmode=require`,
+        STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV: "1"
+      }
+    );
+  };
+  const sourceFile = async (filename, value, privateRoot, handles) => {
+    const principal = { platform: "posix", uid: process.getuid() };
+    const bytes = encodeManualJson(value);
+    if (bytes.length > 33554432) fail(code);
+    const directory = path.dirname(filename);
+    await checkedPrivatePath(directory, { principal, privateRoot, directory: true });
+    const handle = await fs.open(filename, "wx", 0o600);
+    try {
+      await handle.writeFile(bytes);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const parent = await fs.open(directory, "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+    const held = await pinPrivateInput(filename, { principal, privateRoot }, 33554432);
+    handles.push(held);
+    if (!held.bytes.equals(bytes)) fail(code);
+    return sha256Bytes(bytes);
+  };
+  const sourceStore = async (name, value) => {
+    if (
+      !["attempt", "manifest"].includes(name) &&
+      !fixed.databaseTestManifest.suites.some(({ suiteId }) => suiteId === name)
+    )
+      fail(code);
+    let digest;
+    for (const role of ["archive", "backup"]) {
+      const privateRoot = lease.profile.storage[`${role}Root`];
+      const actual = await sourceFile(
+        path.join(
+          privateRoot,
+          "inputs",
+          "r3",
+          fixed.spec.operationRef,
+          "observations",
+          "source",
+          name,
+          "readback.json"
+        ),
+        value,
+        privateRoot,
+        sourceReadbacks
+      );
+      if (digest && actual !== digest) fail(code);
+      digest = actual;
+    }
+    return digest;
+  };
+  const runSourceManifest = async () => {
+    const observations = [];
+    let generation,
+      attemptDigest,
+      manifestWriteAttempted = false;
+    try {
+      if ((await fs.realpath(repoRoot)) !== (await fs.realpath(input.repoRoot))) fail(code);
+      await recheckResources();
+      attemptDigest = await sourceStore("attempt", {
+        status: "SOURCE_MANIFEST_INTERRUPTED_UNKNOWN",
+        operationRef: fixed.spec.operationRef,
+        sessionId: session.sessionId,
+        sessionNonce: session.sessionNonce,
+        sourceSha: fixed.spec.sourceSha,
+        destinationDigest: destinationRecord.destinationDigest,
+        manifestDigest: sha256Canonical(fixed.databaseTestManifest),
+        promotionEligible: false
+      });
+      const load = async (name) =>
+        JSON.parse(await fs.readFile(path.join(repoRoot, "release/contracts", name), "utf8"));
+      const discovery = await load("database-test-discovery.v1.json");
+      const exceptions = await load("database-test-exceptions.v1.json");
+      const external = await load("external-validation-applicability.v1.json");
+      const candidates = await discoverDatabaseTestCandidates(repoRoot, discovery);
+      const classification = classifyDatabaseTests(
+        candidates,
+        fixed.databaseTestManifest.suites,
+        exceptions.exceptions,
+        external.records
+      );
+      if ((await scanDatabaseFrameworkBypasses(repoRoot, fixed.databaseTestManifest)).length)
+        fail(code);
+      await sourceCheck();
+      const selections = bindR3SourceManifest({
+        operationRef: fixed.spec.operationRef,
+        chain: fixed.spec.chain,
+        manifest: fixed.databaseTestManifest,
+        plan: databaseTargetSet.plan,
+        discoveryDigest: sha256Canonical(discovery),
+        discoveryUnclassifiedCount: classification.unclassified.length
+      });
+      const clusterFingerprint = sha256Canonical({
+        engineId: postgresTarget.engineId,
+        systemIdentifier: postgresTarget.postgres.systemIdentifier,
+        containerId: postgresTarget.containerId,
+        imageDigest: postgresTarget.imageDigest
+      });
+      generation = await sourceProcess(
+        "pnpm",
+        [
+          "--filter",
+          "@subscription-saas/api",
+          "exec",
+          "prisma",
+          "generate",
+          "--schema",
+          "prisma/schema.prisma"
+        ],
+        300000,
+        { STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV: "1" }
+      );
+      if (
+        generation.code !== 0 ||
+        generation.signal !== null ||
+        generation.truncated ||
+        generation.processError ||
+        generation.timedOut
+      )
+        fail(code);
+      let failed = false;
+      const manifestReport = await runDatabaseManifest({
+        selections,
+        concurrency: 1,
+        executeSuite: async (execution) => {
+          if (failed) fail(code);
+          await sourceCheck();
+          let result;
+          try {
+            if (execution.r3ExecutionMode === "lifecycle-owned") {
+              lifecycleAttempted = true;
+              lifecyclePending = runLifecycle();
+              await lifecyclePending;
+              const physical = lifecycleResult.observations
+                .filter((entry) => entry.stage === "provision")
+                .map((entry) => entry.record);
+              const roles = lifecycleResult.observations.filter(
+                (entry) => entry.stage === "source-runtime-boundary"
+              );
+              const migrations = lifecycleResult.observations.filter(
+                (entry) => entry.stage === "source-migration"
+              );
+              if (physical.length !== 2 || roles.length !== 2 || migrations.length !== 2)
+                fail(code);
+              const resultLog = { stdout: lifecycleResult.originals.tap, stderr: "" };
+              const logSummary = summarizeDatabaseTestLog(resultLog);
+              result = {
+                originals: lifecycleResult,
+                migrationObservations: migrations.map((entry) => entry.value),
+                logSummary,
+                report: buildDatabaseSuiteReport({
+                  execution,
+                  operationId: fixed.spec.operationRef,
+                  provisioned: {
+                    ...physical[0],
+                    additionalDatabases: [{ ...physical[1], name: "sibling" }]
+                  },
+                  result: {
+                    counts: databaseTestCounts(resultLog.stdout),
+                    sanitizedLogDigest: sha256Canonical(logSummary),
+                    roleBoundaries: roles.map((entry, index) =>
+                      r3RuntimeBoundary(index === 0 ? "target" : "sibling", entry.value)
+                    )
+                  }
+                })
+              };
+            } else {
+              const assignments = [execution.assignment, ...execution.additionalAssignments];
+              const records = assignments.map(({ databaseName }) =>
+                databaseTargetSet.records.find((record) => record.databaseName === databaseName)
+              );
+              result = await executeR3SourceSuite({
+                execution,
+                records,
+                clusterFingerprint,
+                containerId: postgresTarget.containerId,
+                profileDigest: session.profileDigest,
+                repoRoot,
+                readSecret: sourceSecret,
+                executeCredential: sourceCredential,
+                runPrisma: sourcePrisma,
+                recheck: sourceCheck,
+                writeContext: async (selection, context) => {
+                  const reference = `r3/${fixed.spec.operationRef}/database-test-contexts/${selection.suiteId}/context.json`;
+                  const privateRoot = lease.profile.storage.credentialRoot;
+                  await sourceFile(
+                    path.join(privateRoot, reference),
+                    context,
+                    privateRoot,
+                    sourceContexts
+                  );
+                  return reference;
+                },
+                runTest: (selection, reference) =>
+                  sourceProcess(
+                    selection.command.executable,
+                    selection.command.arguments,
+                    selection.timeoutMs,
+                    { S1_RELEASE_DATABASE_TEST: "1", S1_RELEASE_DATABASE_CONTEXT: reference }
+                  )
+              });
+            }
+            const digest = await sourceStore(execution.suiteId, {
+              status: "SOURCE_SUITE_OBSERVED",
+              attemptDigest,
+              operationRef: fixed.spec.operationRef,
+              sessionId: session.sessionId,
+              destinationDigest: destinationRecord.destinationDigest,
+              ...result,
+              promotionEligible: false
+            });
+            observations.push({
+              suiteId: execution.suiteId,
+              readbackDigest: digest,
+              migrationObservations: result.migrationObservations
+            });
+            if (result.report.terminalStatus !== "PASSED") {
+              failed = true;
+              fail(code);
+            }
+            await sourceCheck();
+            return result.report;
+          } catch (cause) {
+            failed = true;
+            if (!result)
+              await sourceStore(execution.suiteId, {
+                status: "SOURCE_SUITE_INTERRUPTED_UNKNOWN",
+                attemptDigest,
+                operationRef: fixed.spec.operationRef,
+                originals: cause.originals ?? null,
+                lifecycleReadbackDigest: /^sha256:[0-9a-f]{64}$/u.test(cause.readbackDigest ?? "")
+                  ? cause.readbackDigest
+                  : null,
+                promotionEligible: false
+              });
+            throw Object.assign(new Error(code), { code });
+          }
+        }
+      });
+      await recheckResources();
+      const value = {
+        status: "SOURCE_MANIFEST_OBSERVED",
+        attemptDigest,
+        operationRef: fixed.spec.operationRef,
+        sessionId: session.sessionId,
+        sessionNonce: session.sessionNonce,
+        sourceSha: fixed.spec.sourceSha,
+        destinationDigest: destinationRecord.destinationDigest,
+        manifestReport,
+        observations,
+        generation,
+        discovery: { candidates, classification, discoveryDigest: sha256Canonical(discovery) },
+        promotionEligible: false
+      };
+      manifestWriteAttempted = true;
+      const readbackDigest = await sourceStore("manifest", value);
+      await sourceCheck();
+      sourceReady = true;
+      return Object.freeze({
+        status: value.status,
+        attemptDigest,
+        readbackDigest,
+        counts: Object.freeze({ ...manifestReport.counts }),
+        promotionEligible: false
+      });
+    } catch (cause) {
+      // The initial dual-store UNKNOWN remains authoritative on partial writes.
+      // Never overwrite an existing original or treat one OBSERVED copy as a
+      // complete result. sourceReady is set only after both copies and recheck.
+      if (attemptDigest && !manifestWriteAttempted)
+        await sourceStore("manifest", {
+          status: "SOURCE_MANIFEST_INTERRUPTED_UNKNOWN",
+          operationRef: fixed.spec.operationRef,
+          attemptDigest,
+          observations,
+          generation: generation ?? null,
+          promotionEligible: false
+        });
+      throw Object.assign(new Error(code), { code });
+    }
+  };
   const runLifecycle = async () => {
+    if ((await fs.realpath(repoRoot)) !== (await fs.realpath(input.repoRoot))) fail(code);
     await recheckResources();
     const plan = databaseTargetSet.plan;
     const target = Object.freeze({
@@ -2512,6 +2925,7 @@ export async function launchR3TargetCreate(input) {
       serverVersionNum: postgresTarget.postgres.serverVersionNum
     });
     const observations = [];
+    const sourceRuntimeChecked = new Set();
     const lifecycleCheck = async () => {
       if (stopping || lifecycleAbort.signal.aborted) fail(code);
       await check();
@@ -2568,12 +2982,76 @@ export async function launchR3TargetCreate(input) {
           fail(code);
         await connection.execute("SET statement_timeout = '30s'");
         await connection.execute("SET lock_timeout = '5s'");
+        if (
+          sourceAttempted &&
+          profile === "runtime-test" &&
+          !sourceRuntimeChecked.has(record.databaseName)
+        ) {
+          const value = {
+            rows: JSON.parse(JSON.stringify([...(await connection.query(r3RuntimeBoundarySql))]))
+          };
+          r3RuntimeBoundary("target", value);
+          observations.push({
+            stage: "source-runtime-boundary",
+            databaseName: record.databaseName,
+            value
+          });
+          sourceRuntimeChecked.add(record.databaseName);
+        }
         return { rows: JSON.parse(JSON.stringify([...(await connection.query(sql))])) };
       } finally {
         await connection.close();
       }
     };
     const migrate = async (record) => {
+      if (sourceAttempted) {
+        const results = [];
+        const commands = [
+          ["migrate", "deploy", "--schema", "prisma/schema.prisma"],
+          ["migrate", "status", "--schema", "prisma/schema.prisma"],
+          [
+            "migrate",
+            "diff",
+            "--from-config-datasource",
+            "--to-schema",
+            "prisma/schema.prisma",
+            "--exit-code"
+          ],
+          ["migrate", "diff", "--from-empty", "--to-config-datasource", "--script"]
+        ];
+        for (const args of commands) {
+          const result = await sourcePrisma(record, args, 300000);
+          observations.push({
+            stage: "source-migration-process",
+            databaseName: record.databaseName,
+            arguments: args,
+            result
+          });
+          if (
+            result.code !== 0 ||
+            result.signal !== null ||
+            result.truncated ||
+            result.processError ||
+            result.timedOut
+          )
+            fail(code);
+          results.push(result);
+        }
+        const name =
+          record.databaseName === plan.reservations[0].databaseName ? "target" : "sibling";
+        observations.push({
+          stage: "source-migration",
+          databaseName: record.databaseName,
+          value: {
+            name,
+            migrationStatusDigest: sha256Canonical(results[1]),
+            schemaDiffDigest: sha256Canonical(results[2]),
+            postSchemaDigest: sha256Bytes(Buffer.from(results[3].stdout, "utf8"))
+          }
+        });
+        await sourceCheck();
+        return { exitCode: 0, signal: null };
+      }
       const secret = await secretFor(record.databaseName, "migrate", record.roles.migrate);
       await lifecycleCheck();
       const args = [
@@ -2679,7 +3157,8 @@ export async function launchR3TargetCreate(input) {
       promotionEligible: false
     };
     const bytes = encodeManualJson(value);
-    if (bytes.length > 1048576) fail(code);
+    const readbackLimit = sourceAttempted ? 33554432 : 1048576;
+    if (bytes.length > readbackLimit) fail(code);
     const principal = { platform: "posix", uid: process.getuid() };
     for (const role of ["archive", "backup"]) {
       const privateRoot = lease.profile.storage[`${role}Root`];
@@ -2706,7 +3185,7 @@ export async function launchR3TargetCreate(input) {
       } finally {
         await parent.close();
       }
-      const held = await pinPrivateInput(filename, { principal, privateRoot });
+      const held = await pinPrivateInput(filename, { principal, privateRoot }, readbackLimit);
       lifecycleReadbacks.push(held);
       if (!held.bytes.equals(bytes)) fail(code);
     }
@@ -2714,6 +3193,7 @@ export async function launchR3TargetCreate(input) {
     // synthesized from a test event. Existing consumed locks remain retained.
     if (failure) throw Object.assign(new Error(code), { code, readbackDigest: sha256Bytes(bytes) });
     await lifecycleCheck();
+    lifecycleResult = value;
     lifecycleReady = true;
     return Object.freeze({
       status: value.status,
@@ -3197,7 +3677,24 @@ export async function launchR3TargetCreate(input) {
         if (cleanupAttempted && !cleanupReady) fail(code);
         if (snapshotCompletionAttempted && !snapshotCompletionReady) fail(code);
         if (lifecycleAttempted && !lifecycleReady) fail(code);
+        if (sourceAttempted && !sourceReady) fail(code);
         await recheckResources();
+      },
+      async runSourceManifest(...args) {
+        if (
+          args.length !== 0 ||
+          stopping ||
+          closed ||
+          sourceAttempted ||
+          lifecycleAttempted ||
+          !completionReady ||
+          session.scope.phase !== "source" ||
+          (session.scope.chain === "snapshot" ? !snapshotCompletionReady : consumerAttempted)
+        )
+          fail(code);
+        sourceAttempted = true;
+        sourcePending = runSourceManifest();
+        return sourcePending;
       },
       async runLifecycle(...args) {
         if (
@@ -3205,6 +3702,7 @@ export async function launchR3TargetCreate(input) {
           stopping ||
           closed ||
           lifecycleAttempted ||
+          sourceAttempted ||
           !completionReady ||
           session.scope.phase !== "source" ||
           (session.scope.chain === "snapshot" ? !snapshotCompletionReady : consumerAttempted)

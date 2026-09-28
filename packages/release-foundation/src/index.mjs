@@ -33,6 +33,7 @@ export { cleanupSuiteDatabase, provisionSuiteDatabase } from "./database-lifecyc
 export { grantRuntimeEquivalentAccess, sqlIdentifier, sqlLiteral } from "./database-roles.mjs";
 export { scanMigrationGlobalObjects } from "./migration-global-object-scan.mjs";
 export {
+  buildDatabaseSuiteReport,
   normalizeDatabaseTestCounts,
   requiredReleaseDatabaseTestContext,
   runDatabaseManifest,

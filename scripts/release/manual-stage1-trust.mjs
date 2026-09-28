@@ -1836,6 +1836,13 @@ export async function prepareR3HostedEvidenceImport(input) {
     const { repoRoot, operationRef } = r3EvidenceSelector(input);
     const profile = await loadFixedManualProfile({ repoRoot });
     const { principal } = await actualHost();
+    const manifest = json(
+      await fs.readFile(path.join(repoRoot, "release/contracts/database-test-manifest.v1.json"))
+    );
+    validateContract("database-test-manifest.v1", manifest);
+    requireThat(
+      manifest.suites.every(({ suiteId }) => /^[a-z0-9][a-z0-9.-]{0,127}$/u.test(suiteId))
+    );
     const archiveOperation = path.join(profile.storage.archiveRoot, "inputs", "r3", operationRef);
     requireThat(
       (
@@ -1881,7 +1888,7 @@ export async function prepareR3HostedEvidenceImport(input) {
             .stat.isDirectory()
         );
       }
-      for (const state of ["active", "absent", "lifecycle"]) {
+      for (const state of ["active", "absent", "lifecycle", "source"]) {
         const leaf = path.join(directory, state);
         try {
           await fs.mkdir(leaf, { mode: 0o700 });
@@ -1893,7 +1900,26 @@ export async function prepareR3HostedEvidenceImport(input) {
             .at(-1)
             .stat.isDirectory()
         );
-        if (storageRoot === profile.storage.archiveRoot && state !== "lifecycle") {
+        if (state === "source") {
+          for (const name of [
+            "attempt",
+            "manifest",
+            ...manifest.suites.map(({ suiteId }) => suiteId)
+          ]) {
+            const suiteDirectory = path.join(leaf, name);
+            try {
+              await fs.mkdir(suiteDirectory, { mode: 0o700 });
+            } catch (error) {
+              if (error.code !== "EEXIST") throw error;
+            }
+            requireThat(
+              (await checkedPath(suiteDirectory, { principal, privateRoot: storageRoot }))
+                .at(-1)
+                .stat.isDirectory()
+            );
+          }
+        }
+        if (storageRoot === profile.storage.archiveRoot && ["active", "absent"].includes(state)) {
           const raw = path.join(leaf, "raw");
           try {
             await fs.mkdir(raw, { mode: 0o700 });

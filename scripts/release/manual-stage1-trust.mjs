@@ -1898,6 +1898,7 @@ export async function openTrustedR3CreationSession(input) {
       "scope",
       "sign",
       "consume",
+      "holdTargets",
       "record",
       "close"
     ]);
@@ -1924,6 +1925,7 @@ export async function openTrustedR3CreationSession(input) {
       scope,
       sign: (value) => action("sign", [value]),
       consume: (value) => action("consume", [value]),
+      holdTargets: (value) => action("holdTargets", [value]),
       record: (kind, value) => action("record", [kind, value]),
       close: () => serial(finish)
     });

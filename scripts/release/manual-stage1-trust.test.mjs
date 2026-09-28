@@ -3046,7 +3046,15 @@ for (const dropped of [false, true])
                 records: plan.targets.map((target, index) => ({
                   ...target,
                   databaseOid: String(index + 2000),
-                  marker: "synthetic-only"
+                  marker: encodeManualJson({
+                    markerVersion: "subscription-s1-ephemeral/v1",
+                    runIdDigest: sha256Canonical(plan.operationRef),
+                    suiteIdDigest: sha256Canonical(
+                      target.name === "source" ? `${target.suiteId}.source` : target.suiteId
+                    ),
+                    shard: target.shard,
+                    createdAt
+                  }).toString()
                 }))
               };
             },
@@ -3350,6 +3358,24 @@ for (const dropped of [false, true])
         });
         assert.equal(databases.status, "DATABASES_OBSERVED");
         assert.equal(databases.records.length, 37);
+        assert.equal(databases.targetLocks.length, 39);
+        assert.equal(
+          databases.targetLocks.filter((lock) => lock.identity.kind === "r3-database-target")
+            .length,
+          37
+        );
+        assert.equal(
+          databases.targetLocks.filter((lock) => lock.identity.kind === "r3-database-reservation")
+            .length,
+          2
+        );
+        assert.ok(
+          databases.targetLocks.every(
+            (lock) =>
+              lock.identity.engineId === launched.engine.ID &&
+              lock.identity.systemIdentifier === pgIdentity.systemIdentifier
+          )
+        );
         assert.equal(databases.targetSetComplete, false);
         assert.equal(databases.promotionEligible, false);
         assert.equal(databases.systemIdentifier, pgIdentity.systemIdentifier);
@@ -3366,7 +3392,7 @@ for (const dropped of [false, true])
         assert.equal(JSON.parse(databaseSecretBytes).tlsMode, "require");
         releaseMockHistory();
         await launched.recheck();
-        assert.equal(databaseRechecks, 1);
+        assert.equal(databaseRechecks, 2, "readback after locks and during subsequent recheck");
         releaseMockHistory();
         innerIdentity = { ...pgIdentity, systemIdentifier: "7340000000000000002" };
         await assert.rejects(launched.recheck(), { code: "R3_TARGET_CREATE_UNAVAILABLE" });
@@ -3380,7 +3406,10 @@ for (const dropped of [false, true])
       if (handlerError) throw handlerError;
       assert.equal(received, 1);
       assert.equal((await fs.readFile(f.forwardKey)).length, 0);
-      assert.equal((await fs.readdir(path.join(f.profile.storage.journalRoot, "locks"))).length, 2);
+      assert.equal(
+        (await fs.readdir(path.join(f.profile.storage.journalRoot, "locks"))).length,
+        dropped ? 2 : 41
+      );
       await assert.rejects(production().openTrustedR3CreationSession(input));
     }
   );

@@ -3274,6 +3274,7 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
       "scope",
       "sign",
       "consume",
+      "holdTargets",
       "record",
       "close"
     ].sort()
@@ -3324,6 +3325,100 @@ test("R3 creation UNKNOWN blocks a new operation and slot reacquisition", async 
   );
   await session.close();
   await assert.rejects(r3CreationSession(t, f), { code: "MANUAL_SESSION_UNVERIFIED" });
+});
+
+function r3LockInput() {
+  return {
+    engineId: "test-r3-engine",
+    systemIdentifier: "7340000000000000001",
+    targets: [
+      {
+        databaseName: `s1ci_${"1".repeat(24)}`,
+        databaseOid: "2000",
+        marker: encodeManualJson({
+          markerVersion: "subscription-s1-ephemeral/v1",
+          runIdDigest: sha256Canonical(uuid(701)),
+          suiteIdDigest: sha256Canonical("test-suite"),
+          shard: 0,
+          createdAt: NOW
+        }).toString()
+      }
+    ]
+  };
+}
+
+async function consumedR3Session(t, f) {
+  const session = await r3CreationSession(t, f);
+  const request = await r3CreationRequest(f, session);
+  const authorization = await session.sign(request);
+  const consumption = await session.consume({ authorization, request });
+  return { session, consumption };
+}
+
+test("R3 target locks require consumption, hold physical and reserved identities, and retain UNKNOWN", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const session = await r3CreationSession(t, f);
+  assert.equal(typeof session.holdTargets, "function");
+  await assert.rejects(session.holdTargets(r3LockInput()), { code: "MANUAL_SESSION_UNVERIFIED" });
+  const request = await r3CreationRequest(f, session);
+  const authorization = await session.sign(request);
+  const consumption = await session.consume({ authorization, request });
+  const lease = await session.holdTargets(r3LockInput());
+  assert.equal(lease.locks.length, 3);
+  assert.deepEqual(
+    lease.locks.map((item) => item.lockDigest),
+    lease.locks.map((item) => item.lockDigest).sort()
+  );
+  const lockRoot = path.join(f.profile.storage.journalRoot, "locks");
+  for (const lock of lease.locks) {
+    const bytes = await fs.readFile(path.join(lockRoot, `${lock.lockDigest.slice(7)}.json`));
+    const value = JSON.parse(bytes);
+    assert.equal(value.sessionId, session.sessionId);
+    assert.equal(value.executionRecordDigest, consumption.executionRecordDigest);
+    assert.deepEqual(value.target, lock.identity);
+  }
+  await lease.recheck();
+  await assert.rejects(session.holdTargets(r3LockInput()), { code: "MANUAL_SESSION_UNVERIFIED" });
+  await session.close();
+  await assert.rejects(lease.recheck(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  assert.equal((await fs.readdir(lockRoot)).length, 5);
+  assert.equal((await f.records("execution"))[0].status, "INTERRUPTED_UNKNOWN");
+});
+
+test("R3 target lock collision retains acquired prefix and never replaces another lock", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const { session } = await consumedR3Session(t, f);
+  const input = r3LockInput();
+  const { planManualR3TargetLocks } = await import("../src/manual-r3-target-locks.mjs");
+  const { entries } = planManualR3TargetLocks({ operationRef: uuid(701), ...input });
+  const root = path.join(f.profile.storage.journalRoot, "locks");
+  const collision = path.join(root, `${entries[1].lockDigest.slice(7)}.json`);
+  const other = encodeManualJson({ owner: "other-operation" });
+  await fs.writeFile(collision, other, { flag: "wx", mode: 0o600 });
+  await assert.rejects(session.holdTargets(input), { code: "MANUAL_SESSION_UNVERIFIED" });
+  assert.deepEqual(await fs.readFile(collision), other);
+  await assert.rejects(session.holdTargets(input), { code: "MANUAL_SESSION_UNVERIFIED" });
+  await session.close();
+  assert.equal(
+    (await fs.readdir(root)).length,
+    4,
+    "two forward slots, acquired prefix and foreign collision remain"
+  );
+});
+
+test("R3 target lock replacement rejects recheck and leaves uncertainty", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const { session } = await consumedR3Session(t, f);
+  const lease = await session.holdTargets(r3LockInput());
+  const root = path.join(f.profile.storage.journalRoot, "locks");
+  const file = path.join(root, `${lease.locks[0].lockDigest.slice(7)}.json`);
+  const bytes = await fs.readFile(file);
+  await fs.rename(file, `${file}.original`);
+  await fs.writeFile(file, bytes, { flag: "wx", mode: 0o600 });
+  await assert.rejects(lease.recheck(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  await assert.rejects(session.close(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  assert.equal((await fs.readdir(root)).length, 6);
+  assert.equal((await f.records("execution"))[0].status, "INTERRUPTED_UNKNOWN");
 });
 
 test("R3 creation does not skip unresolved legacy consumption history", async (t) => {

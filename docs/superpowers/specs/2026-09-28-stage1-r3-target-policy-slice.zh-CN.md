@@ -160,4 +160,14 @@ lifecycle suite 保留其真实运行中创建两库、拒绝伪造清理、先�
 
 创建后读取真实数据库 OID、COMMENT、owner、schema owner，以及各角色 OID、LOGIN/特权属性、membership 和数据库/schema 权限。membership 同时检查本角色加入其他角色和其他角色获授本角色两个方向，均须为零；非迁移角色不得 CREATE 或 TEMP，runtime/API/verify 需已有 CONNECT 与 schema USAGE。重读按原始事实比较，任何身份或权限漂移拒绝。suite COMMENT 采用既有 canonical JSON marker；application 的真实 COMMENT 使用 `subscription-s1-ephemeral/v1:` 加同类 canonical 内容，直接满足现有 final target 的前缀要求，不能在出具原件时换成不同 marker。
 
-返回 `DATABASES_OBSERVED`、`promotionEligible:false`、`targetSetComplete:false`。这不表示已迁移、恢复或可消费，也不包括 lifecycle 的实际创建、目标物理锁或成功创建结果图；上述剩余事项和 actual hosted/runtime 接线仍必须完成。
+返回 `DATABASES_OBSERVED`、`promotionEligible:false`、`targetSetComplete:false`。这不表示已迁移、恢复或可消费，也不包括 lifecycle 的实际创建或成功创建结果图；初始目标锁现按下节接入，其余事项和 actual hosted/runtime 接线仍必须完成。
+
+## 初始目标排他锁
+
+沿用原 H1 session 的私有 journal/locks，不创建新的锁服务或授权机制。已有创建消费读回完成后，`holdTargets` 仅允许一次初始集合获取；物理锁键以 Engine ID、PG system identifier、数据库 OID 和完整 COMMENT marker 的 canonical digest 派生。规划拒绝重复库名、重复物理 OID、其他操作的 marker 以及占用 lifecycle 两个保留名的初始目标。
+
+lifecycle 的两个库名由同一 operation 的既有命名函数推导，使用独立 namespace identity，仅带 Engine/system identifier/name，不伪造 OID/marker。创建阶段不提前执行该 suite；后续受控执行必须在保留名下创建，加入实际身份锁，执行其伪造清理拒绝与 sibling 隔离断言，再记录实际回收。该动态接线仍未实现，不能将 namespace 锁视为已有数据库或测试通过。
+
+锁按 digest 固定顺序，以 `wx` 和 0600 排他创建。文件写入实际 session/nonce/scope/PID、operation、原 UNKNOWN execution 摘要及目标身份，fsync 后独立读回；持有 descriptor 并在 active/recheck 时核对同一 inode/dev 与 canonical 字节。创建文件后立即登记句柄，部分写入或碰撞保留已获取前缀，不覆盖既有文件，不重新获取另一集合。普通关闭仅关闭句柄，保留已消费会话的 UNKNOWN、两条通道槽及目标锁；释放须由后续真实清理证据支撑。
+
+H1 的 `provisionDatabases()` 自动传入本句柄观察到的 PG 和数据库事实，调用方仍没有目标或路径覆盖参数。取得锁后再次通过固定 PG 通道读取数据库身份，后续原生 recheck 同时检查本地锁、job/源码、两端 PG 和数据库事实。返回的 targetLocks 仅描述当前排他集合，不能替代 destination admission、保管读回或 snapshot 权限。创建 SUCCEEDED 与消费必须在同一会话内另行验证完整原件关系，当前实现继续保留 UNKNOWN。

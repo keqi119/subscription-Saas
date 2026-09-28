@@ -1009,6 +1009,7 @@ export async function launchR3TargetCreate(input) {
     postgresSecret,
     postgresArchive,
     databaseTargetSet,
+    targetLockLease,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1058,6 +1059,7 @@ export async function launchR3TargetCreate(input) {
     if (closed) fail(code);
     await fixed.recheck();
     await lease?.recheck();
+    await targetLockLease?.recheck();
   };
   const pause = () => new Promise((resolve) => setTimeout(resolve, 500));
   const exchange = (method, pathname, body = null, connected = null, options = {}) =>
@@ -1693,8 +1695,27 @@ export async function launchR3TargetCreate(input) {
       created.records.length !== plan.targets.length
     )
       fail(code);
+    databaseStage = "TARGET_LOCKS";
+    targetLockLease = await session.holdTargets({
+      engineId: postgresTarget.engineId,
+      systemIdentifier: postgresTarget.postgres.systemIdentifier,
+      targets: created.records.map(({ databaseName, databaseOid, marker }) => ({
+        databaseName,
+        databaseOid,
+        marker
+      }))
+    });
+    await databaseAdmin(plan, (executeAdmin) =>
+      recheckR3DatabaseTargets({
+        plan,
+        records: created.records,
+        executeAdmin
+      })
+    );
+    await check();
     const result = Object.freeze({
       ...created,
+      targetLocks: targetLockLease.locks,
       status: "DATABASES_OBSERVED",
       manifestRawDigest: fixed.databaseTestManifestRawDigest,
       engineId: postgresTarget.engineId,

@@ -28,6 +28,7 @@ import {
   assertApplyAllowed
 } from "./execution-state-machine.mjs";
 import { deterministicPlanDigest } from "./proof-builders.mjs";
+import { planManualR3TargetLocks } from "./manual-r3-target-locks.mjs";
 
 const STORAGE = "MANUAL_STORAGE_UNVERIFIED";
 const SESSION = "MANUAL_SESSION_UNVERIFIED";
@@ -494,6 +495,13 @@ export async function openManualSession({
     key = signingKey;
   let checkpoint = null;
   const issued = new Map();
+  const targetLocks = new Map();
+  const closeTargetHandles = async () => {
+    const outcomes = await Promise.allSettled(
+      [...targetLocks.values()].map((entry) => entry.handle.close())
+    );
+    if (outcomes.some((outcome) => outcome.status === "rejected")) fail(STORAGE);
+  };
   const stamp = () => {
     const value = now();
     requireThat(instant(value) >= instant(openedAt), "MANUAL_TIME_INVALID");
@@ -548,6 +556,15 @@ export async function openManualSession({
           observerBytes.equals(lockBytes),
         SESSION
       );
+      for (const entry of targetLocks.values()) {
+        const bytes = await store.read(entry.file);
+        const held = await entry.handle.stat(),
+          visible = await store.fs.lstat(entry.file);
+        requireThat(
+          held.ino === visible.ino && held.dev === visible.dev && bytes.equals(entry.bytes),
+          SESSION
+        );
+      }
     }
     const actual = JSON.parse(
       await store.read(objectPath(profile.storage.journalRoot, sha256Canonical(current)))
@@ -1805,6 +1822,8 @@ export async function openManualSession({
   }
   if (r3) {
     let consumedOrUncertain = false,
+      creationReceipt = null,
+      targetLocksAttempted = false,
       closeRef = null;
     return freeze({
       ...identity,
@@ -1925,11 +1944,65 @@ export async function openManualSession({
           );
           const final = await context(request.request);
           verify(authorization, request, final);
-          return freeze({
+          creationReceipt = freeze({
             stage: "target-create",
             parentDecision,
             consumptionReadbackDigest: readback.recordDigest,
             executionRecordDigest: executionRef.recordDigest
+          });
+          return creationReceipt;
+        });
+      },
+      holdTargets(input) {
+        return serial(async () => {
+          await active();
+          r3Live();
+          requireThat(creationReceipt && !targetLocksAttempted, SESSION);
+          exact(input, ["engineId", "systemIdentifier", "targets"]);
+          const plan = planManualR3TargetLocks({
+            operationRef: r3Context.creationSpec.operationRef,
+            ...snapshot(input)
+          });
+          targetLocksAttempted = true;
+          for (const entry of plan.entries) {
+            const file = path.join(
+              profile.storage.journalRoot,
+              "locks",
+              `${entry.lockDigest.slice(7)}.json`
+            );
+            const bytes = encodeManualJson({
+              ...identity,
+              pid: process.pid,
+              operationRef: plan.operationRef,
+              executionRecordDigest: creationReceipt.executionRecordDigest,
+              databaseName: entry.databaseName,
+              target: entry.identity
+            });
+            let handle;
+            try {
+              await store.checkedPath(path.dirname(file));
+              handle = await store.fs.open(file, "wx", 0o600);
+            } catch {
+              fail(SESSION);
+            }
+            // Retain every successfully created pathname, including a partial
+            // write, until the later verified cleanup path resolves UNKNOWN.
+            targetLocks.set(entry.lockDigest, { file, bytes, handle });
+            await store.setNewOwner(file);
+            await handle.writeFile(bytes);
+            await handle.sync();
+            requireThat((await store.read(file)).equals(bytes), STORAGE);
+          }
+          await active();
+          r3Live();
+          return Object.freeze({
+            locks: plan.entries,
+            // This checks exclusion only, not H1/job/destination authority.
+            recheck: () =>
+              serial(async () => {
+                await active();
+                r3Live();
+              })
           });
         });
       },
@@ -1982,6 +2055,7 @@ export async function openManualSession({
             current = value;
             closed = true;
             key = null;
+            await closeTargetHandles();
             await observerLockHandle.close();
             await lockHandle.close();
             observerLockHandle = null;
@@ -1995,6 +2069,7 @@ export async function openManualSession({
             consumedOrUncertain = true;
             closed = true;
             key = null;
+            await closeTargetHandles().catch(() => {});
             await observerLockHandle?.close().catch(() => {});
             await lockHandle?.close().catch(() => {});
             observerLockHandle = null;

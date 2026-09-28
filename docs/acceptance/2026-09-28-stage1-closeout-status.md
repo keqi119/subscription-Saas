@@ -4,8 +4,9 @@
 
 ## 当前接续状态
 
+- 初始 R3 目标锁已接入原 H1 会话：先持有两个固定通道槽，再按实际 Engine/system identifier/OID/marker 排序获取库锁，并保留 lifecycle 两个固定库名的 namespace 锁。原生入口使用自身观察，锁后再次读回数据库；碰撞、替换和部分失败均拒绝，普通关闭保留 UNKNOWN 与锁文件。该实现不授予快照消费权限，生命周期动态锁和实际清理仍待完成。
 - 本轮继续接通 R3 数据库集合创建：H1 固定读取链传递已验证 manifest；`provisionDatabases()` 使用已观察的同一 PG，仅允许一次、无调用方覆盖。覆盖 35 个普通库和 clean-acceptance 双库（37 库），final 再加独立应用库；逐句创建与权限/OID/marker 读回已实现。密码在原 H1 私有目录保管，不进入诊断；失败保留部分资源与 UNKNOWN。当前为代码接线，尚未真实创建这组目标。
-- lifecycle 两库仅列为无 OID 的 reservation，必须由该 suite 在受控执行期完成真实创建、回收和 sibling 隔离断言。完整目标物理锁、创建成功/消费/清理原件图、实际 hosted/runtime 接线仍待补齐，不能把本次 `DATABASES_OBSERVED` 当作发布准入。
+- lifecycle 两库仅列为无 OID 的 reservation，必须由该 suite 在受控执行期完成真实创建、回收和 sibling 隔离断言。生命周期实际身份扩展、创建成功/消费/清理原件图、实际 hosted/runtime 接线仍待补齐，不能把本次 `DATABASES_OBSERVED` 当作发布准入。
 - 有限审查补齐两处：角色 membership 的两个方向均须为零；首个数据库凭据或 SQL 变更前持久保存完整计划和原 marker 时间。定向原生测试还定位到自身创建目录使既有凭据 pin 失效，已改为先完成目录/文件准备再固定句柄，未放宽文件身份检查。测试结论与失败原件见下文。
 - R3 创建入口已增加一次性的 `provisionPostgres()`：在原创建消费之后，以固定 PG17 镜像、内部网络和加密目录内的命名卷创建目标，经固定 H1 通道与同 CID 内部 TLS 查询交叉核对集群身份。密码通过单成员私有 tar 交付，不归档请求内容。当前只返回观察事实；成功创建、完整目标集合、消费和清理结果尚未接通，UNKNOWN 与已消费锁仍保留。
 - hosted 原控制进程现提供固定 `127.0.0.1:55441` TCP 转发，每次连接前重新核对本操作 Engine/CID/网络/卷，仅连接实际 PG 地址的 5432 端口。内部网络不使用 Docker 端口发布。启动前后拒绝系统 containerd socket，实际 hosted job 的默认服务停用和加密 containerd 路径读回仍待接线；没有改变 H1 系统服务。
@@ -85,6 +86,8 @@ R3 原件读取器复用现有 owner/profile/scope 及 manual 撤销台账。此
 
 ## 证据定位
 
+- 目标锁接线：helper/session 定向 9/9、0 skip、6,992.2068 ms（`53ae97`），日志 `r3-target-lock-session-green01.log`；此前缺方法的 RED 保留在 `r3-target-lock-session-red.log`。唯一 Linux 原生用例 `r3-target-locks-native01.log` 正常 exit 0（`e01d04`），1/1、0 skip、205,229.78784 ms，验证保留 41 个锁文件。私有副本 `/root/.cache/r3-target-locks-a3B2mo` 的 261 项源码绑定 `20260928-032310-074403845-copy.sha256`；Engine/PG/GitHub 和 SQL helper 为合成响应，不是真实数据库成绩。有限只读审查未发现阻断。
+- 本轮目标锁合同校验 `ec03a7`：214 文件、83 schemas、128 migrations、13 commands，摘要 `sha256:2014b06d274c8790e1ebb3e27664c039b67a01421ac03eedfa5e1746a3df9437`。暂存区 discovery `9db43b`：99/39/60/0，未新增 schema、suite 或例外；语法与格式检查通过。本轮 migrate status 仍因未提供 datasource.url 退出 1（`179486`），Prisma validate 退出 0（`3bcd6a`），没有业务库写入。
 - 数据库集合 helper：双向角色授权回归先 RED（2 pass / 1 fail，`03c8ea`），修复后 `r3-database-targets-membership-green.log` 为 3/3、0 skip、1,331.3963 ms（`b072bc`）。覆盖全部目标规划、逐句 SQL、角色权限、身份漂移与部分失败保留；SQL 使用模拟响应，不是真实 PG 成绩。
 - 原生接线：`r3-database-targets-native01.log` 保留 132,709.559941 ms 的失败；`native02` 为 107,858.457508 ms、0/1，安全阶段诊断定位到新增凭据目录破坏旧 pin。修正准备/固定顺序后 `native03` 正常 exit 0（`005dfa`），1/1、0 skip、182,498.126631 ms，私有副本 `/root/.cache/r3-database-targets-xoMG3k` 的 260 项源码对应 `20260928-030457-619529185-copy.sha256`。Linux 文件与 TCP 为原生，Engine/PG/GitHub 和 SQL helper 为合成夹具；不能充当真实 hosted 或同候选双链证据。
 - 本次合同校验 `a69d4b`：213 文件、83 schemas、128 migrations、13 commands，摘要 `sha256:059c40ad8be83a14fb1b8be0bfb182a592cfa98ee54f6c23a9a9a00358a6e694`。暂存区 discovery `a9b07d`：99 candidates、39 manifested、60 excepted、0 unclassified；未增加 suite 或例外。定向语法、格式与 diff 检查通过；预检仍为缺少 datasource.url（`06d6aa`）和 Prisma validate 通过（`deb27f`），本次未连接业务库。

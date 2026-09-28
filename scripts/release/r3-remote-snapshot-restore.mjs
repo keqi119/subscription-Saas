@@ -278,7 +278,7 @@ export async function restoreR3SnapshotDatabase(input) {
       grantAttempted = false,
       revoked = false,
       restored = false;
-    let before, granted, revokedRole, ownershipObservation, denial;
+    let before, granted, revokedRole, ownershipObservation, ownershipInventories, denial;
     let schema, restoreExecution, migrationReconnect, cleanupObservation;
     const stage = (name) => {
       need(transition(name) === undefined);
@@ -312,7 +312,14 @@ export async function restoreR3SnapshotDatabase(input) {
       );
       signalCheck(signal);
       if (!allowFailure) need(done.ExitCode === 0 && output.stderr === "");
-      return { ...output, executionId: created.Id, exitCode: done.ExitCode };
+      return {
+        ...output,
+        executionId: created.Id,
+        command: [...command],
+        containerId: done.ContainerID,
+        running: done.Running,
+        exitCode: done.ExitCode
+      };
     };
     const admin = async (sql, database = "postgres") =>
       (await run(["/bin/bash", "-ec", ADMIN_SCRIPT, "--", addr, database, sql])).stdout;
@@ -566,12 +573,13 @@ export async function restoreR3SnapshotDatabase(input) {
         need(Array.isArray(objects) && objects.length <= 100000);
         return { databaseIdentityDigest: target.databaseIdentityDigest, objects };
       };
+      ownershipInventories = { before: await inventory() };
       ownershipObservation = await normalizeSnapshotOwnership({
         ownershipMap,
         target: ownershipTarget,
-        inventory: await inventory(),
+        inventory: ownershipInventories.before,
         transferOwnership: async () => fail(),
-        readInventory: inventory
+        readInventory: async () => (ownershipInventories.after = await inventory())
       });
       await copied.recheck();
       await checkTarget();
@@ -628,6 +636,7 @@ export async function restoreR3SnapshotDatabase(input) {
       restoreExecution,
       revokedRole,
       ownershipObservation,
+      ownershipInventories,
       restoreLoginDenial: denial,
       migrationReconnect,
       credentialCleanup: cleanupObservation

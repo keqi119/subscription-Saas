@@ -43,6 +43,8 @@ import { decryptR3SnapshotCiphertext } from "./r3-h1-snapshot-decrypt.mjs";
 import { exchangeR3Engine } from "./r3-engine-exchange.mjs";
 import { copyR3SnapshotToPostgres } from "./r3-remote-snapshot-copy.mjs";
 import { restoreR3SnapshotDatabase } from "./r3-remote-snapshot-restore.mjs";
+import { createR3LifecycleAdapter } from "./r3-lifecycle-adapter.mjs";
+import { executeR3LifecycleSuite } from "./r3-lifecycle-test-runner.mjs";
 import {
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
@@ -1058,6 +1060,18 @@ export async function launchR3TargetCreate(input) {
     restoreAttempted = false,
     restoreReady = false,
     restorePending,
+    cleanupAttempted = false,
+    cleanupReady = false,
+    cleanupPending,
+    cleanupReadback,
+    cleanupStage = "NOT_STARTED",
+    snapshotCompletionAttempted = false,
+    snapshotCompletionReady = false,
+    snapshotCompletionPending,
+    snapshotCompletionRecord,
+    lifecycleAttempted = false,
+    lifecycleReady = false,
+    lifecyclePending,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1070,16 +1084,20 @@ export async function launchR3TargetCreate(input) {
   const databaseSecretByName = new Map();
   const restoreStates = new Map();
   const restoreReadbacks = [];
+  const lifecycleReadbacks = [];
   const fetchAbort = new AbortController();
+  const lifecycleAbort = new AbortController();
   const close = () => {
     if (closing) return closing;
     stopping = true;
+    lifecycleAbort.abort();
     const abort = () => {
       closed = true;
       fetchAbort.abort();
       socket?.destroy();
     };
-    if (!restorePending) abort();
+    if (!restorePending && !cleanupPending && !snapshotCompletionPending && !lifecyclePending)
+      abort();
     closing = (async () => {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
@@ -1088,6 +1106,9 @@ export async function launchR3TargetCreate(input) {
       // current target's bounded restore/revoke/credential cleanup. A stop
       // cannot start another target or publish a completed restore set.
       await restorePending?.catch(() => {});
+      await cleanupPending?.catch(() => {});
+      await snapshotCompletionPending?.catch(() => {});
+      await lifecyclePending?.catch(() => {});
       abort();
       await copyPending?.catch(() => {});
       await decryptPending?.catch(() => {});
@@ -1115,6 +1136,8 @@ export async function launchR3TargetCreate(input) {
         }
       }
       for (const handle of [
+        ...lifecycleReadbacks,
+        cleanupReadback,
         ...restoreReadbacks,
         copyReadback,
         snapshotCopy,
@@ -1147,6 +1170,7 @@ export async function launchR3TargetCreate(input) {
     await hostedEvidence?.recheck();
     if (destinationRecord) await recheckDestination();
     if (completionRecord) await recheckCompletion();
+    if (snapshotCompletionRecord) await recheckSnapshotCompletion();
     await consumerInput?.recheck();
     await consumerSlot?.recheck();
     await snapshotPayload?.recheck();
@@ -1155,6 +1179,8 @@ export async function launchR3TargetCreate(input) {
     await decryptionReadback?.recheck();
     await copyReadback?.recheck();
     for (const held of restoreReadbacks) await held.recheck();
+    await cleanupReadback?.recheck();
+    for (const held of lifecycleReadbacks) await held.recheck();
     if (consumerRecord)
       for (const { digest, bytes, role } of consumerRecord)
         if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
@@ -1169,6 +1195,11 @@ export async function launchR3TargetCreate(input) {
   };
   const recheckCompletion = async () => {
     for (const { digest, bytes, roles } of completionRecord.originals)
+      for (const role of roles)
+        if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
+  };
+  const recheckSnapshotCompletion = async () => {
+    for (const { digest, bytes, roles } of snapshotCompletionRecord.originals)
       for (const role of roles)
         if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
   };
@@ -1421,6 +1452,7 @@ export async function launchR3TargetCreate(input) {
       await fs.mkdir(path.join(consumerDirectory, name), { mode: 0o700 });
     await fs.mkdir(path.join(consumerDirectory, "observations", "decryption"), { mode: 0o700 });
     await fs.mkdir(path.join(consumerDirectory, "observations", "copy"), { mode: 0o700 });
+    await fs.mkdir(path.join(consumerDirectory, "observations", "cleanup"), { mode: 0o700 });
     const restoreDirectory = path.join(consumerDirectory, "observations", "restore");
     await fs.mkdir(restoreDirectory, { mode: 0o700 });
     for (const target of planR3DatabaseTargets({
@@ -1590,8 +1622,13 @@ export async function launchR3TargetCreate(input) {
     });
     return postgresTarget;
   };
-  const databaseAdmin = async (plan, work, observations = null) => {
-    const allowed = new Set(["postgres", ...plan.targets.map((target) => target.databaseName)]);
+  const databaseAdmin = async (plan, work, observations = null, lifecycle = false) => {
+    if (lifecycle && (!lifecycleAttempted || lifecycleReady || !completionReady)) fail(code);
+    const allowed = new Set([
+      "postgres",
+      ...plan.targets.map((target) => target.databaseName),
+      ...(lifecycle ? plan.reservations.map((target) => target.databaseName) : [])
+    ]);
     let connection, connectedDatabase;
     const closeConnection = async () => {
       const previous = connection;
@@ -1698,7 +1735,7 @@ export async function launchR3TargetCreate(input) {
     // Finish this fixed directory before pinning any of its files. Adding a
     // sibling after a pin would correctly invalidate its held parent identity.
     const preparedSecrets = new Map();
-    for (const target of plan.targets) {
+    for (const target of [...plan.targets, ...plan.reservations]) {
       for (const [profile, username] of Object.entries(target.roles)) {
         const filename = `${target.databaseName}-${profile}.json`;
         const filepath = path.join(directory, filename);
@@ -2457,6 +2494,408 @@ export async function launchR3TargetCreate(input) {
       promotionEligible: false
     });
   };
+  const runLifecycle = async () => {
+    await recheckResources();
+    const plan = databaseTargetSet.plan;
+    const target = Object.freeze({
+      policyId: fixed.databaseTargetPolicy.policyId,
+      environment: `ci-${plan.chain}`,
+      host: "127.0.0.1",
+      clusterMarker: postgresTarget.postgres.clusterMarker,
+      clusterFingerprint: sha256Canonical({
+        engineId: postgresTarget.engineId,
+        systemIdentifier: postgresTarget.postgres.systemIdentifier,
+        containerId: postgresTarget.containerId,
+        imageDigest: postgresTarget.imageDigest
+      }),
+      imageDigest: postgresTarget.imageDigest,
+      serverVersionNum: postgresTarget.postgres.serverVersionNum
+    });
+    const observations = [];
+    const lifecycleCheck = async () => {
+      if (stopping || lifecycleAbort.signal.aborted) fail(code);
+      await check();
+    };
+    const secretFor = async (databaseName, profile, username) => {
+      const reservation = plan.reservations.find((entry) => entry.databaseName === databaseName);
+      if (!reservation || reservation.roles[profile] !== username) fail(code);
+      const filename = `${databaseName}-${profile}.json`;
+      const held = databaseSecretByName.get(filename);
+      if (!held) fail(code);
+      await held.recheck();
+      const secret = JSON.parse(held.bytes);
+      if (
+        secret.username !== username ||
+        secret.database !== databaseName ||
+        secret.host !== "127.0.0.1" ||
+        secret.port !== 55441 ||
+        secret.tlsMode !== "require"
+      )
+        fail(code);
+      return {
+        ...secret,
+        reference: `r3/${fixed.spec.operationRef}/database-credentials/${filename}`
+      };
+    };
+    const executeCredential = async ({ record, profile, sql }) => {
+      const secret = await secretFor(record.databaseName, profile, record.roles[profile]);
+      await lifecycleCheck();
+      const connection = await createPostgresConnector()({
+        credential: {
+          username: secret.username,
+          password: secret.password,
+          capabilityProfile: profile
+        },
+        target: {
+          hostname: secret.host,
+          port: secret.port,
+          databaseName: secret.database,
+          tlsMode: secret.tlsMode
+        },
+        custody: {
+          operationRef: fixed.spec.operationRef,
+          executionRecordDigest: consumption.executionRecordDigest
+        }
+      });
+      try {
+        const identity = await connection.observeIdentity();
+        if (
+          identity.databaseName !== record.databaseName ||
+          identity.databaseOid !== record.databaseOid ||
+          identity.role !== secret.username ||
+          identity.tls !== true
+        )
+          fail(code);
+        await connection.execute("SET statement_timeout = '30s'");
+        await connection.execute("SET lock_timeout = '5s'");
+        return { rows: JSON.parse(JSON.stringify([...(await connection.query(sql))])) };
+      } finally {
+        await connection.close();
+      }
+    };
+    const migrate = async (record) => {
+      const secret = await secretFor(record.databaseName, "migrate", record.roles.migrate);
+      await lifecycleCheck();
+      const args = [
+        "--filter",
+        "@subscription-saas/api",
+        "exec",
+        "prisma",
+        "migrate",
+        "deploy",
+        "--schema",
+        "prisma/schema.prisma"
+      ];
+      const exit = await new Promise((resolve, reject) => {
+        let processFailed = false;
+        const child = childProcess.spawn("pnpm", args, {
+          cwd: repoRoot,
+          env: {
+            PATH: process.env.PATH,
+            HOME: process.env.HOME,
+            DATABASE_URL: `postgresql://${encodeURIComponent(secret.username)}:${encodeURIComponent(secret.password)}@127.0.0.1:55441/${record.databaseName}?sslmode=require`,
+            STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV: "1"
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          detached: true,
+          signal: lifecycleAbort.signal,
+          timeout: 300000,
+          killSignal: "SIGKILL"
+        });
+        const stopGroup = () => {
+          if (child.pid) {
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch (error) {
+              if (error.code !== "ESRCH") processFailed = true;
+            }
+          }
+        };
+        lifecycleAbort.signal.addEventListener("abort", stopGroup, { once: true });
+        const timer = setTimeout(stopGroup, 300000);
+        child.stdout.resume();
+        child.stderr.resume();
+        child.once("error", () => {
+          processFailed = true;
+        });
+        child.once("close", (exitCode, signal) => {
+          clearTimeout(timer);
+          lifecycleAbort.signal.removeEventListener("abort", stopGroup);
+          stopGroup();
+          if (processFailed) reject(Object.assign(new Error(code), { code }));
+          else resolve({ exitCode, signal });
+        });
+      });
+      observations.push({
+        stage: "migration-process",
+        databaseName: record.databaseName,
+        command: ["pnpm", ...args],
+        ...exit
+      });
+      if (exit.exitCode !== 0 || exit.signal !== null) fail(code);
+      await lifecycleCheck();
+      return exit;
+    };
+    const adapter = createR3LifecycleAdapter({
+      plan,
+      target,
+      policy: fixed.databaseTargetPolicy,
+      executeAdmin: (command) =>
+        databaseAdmin(plan, (execute) => execute(command), observations, true),
+      executeCredential,
+      secretStore: {
+        create: ({ databaseName, profile, username }) => secretFor(databaseName, profile, username)
+      },
+      migrate,
+      registerTarget: (record) => session.registerLifecycleTarget({ record }),
+      recheck: lifecycleCheck,
+      observations
+    });
+    let originals, failure;
+    try {
+      originals = await executeR3LifecycleSuite({
+        adapter,
+        signal: lifecycleAbort.signal,
+        recheck: lifecycleCheck
+      });
+      await recheckResources();
+    } catch (error) {
+      originals = error.originals ?? null;
+      failure = error;
+    }
+    const value = {
+      status: failure ? "LIFECYCLE_INTERRUPTED_UNKNOWN" : "LIFECYCLE_OBSERVED",
+      operationRef: fixed.spec.operationRef,
+      sessionId: session.sessionId,
+      sessionNonce: session.sessionNonce,
+      destinationDigest: destinationRecord.destinationDigest,
+      creationExecutionRecordDigest: completionRecord.executionRecordDigest,
+      snapshotExecutionRecordDigest: snapshotCompletionRecord?.executionRecordDigest ?? null,
+      manifestRawDigest: fixed.databaseTestManifestRawDigest,
+      target,
+      originals,
+      observations,
+      promotionEligible: false
+    };
+    const bytes = encodeManualJson(value);
+    if (bytes.length > 1048576) fail(code);
+    const principal = { platform: "posix", uid: process.getuid() };
+    for (const role of ["archive", "backup"]) {
+      const privateRoot = lease.profile.storage[`${role}Root`];
+      const directory = path.join(
+        privateRoot,
+        "inputs",
+        "r3",
+        fixed.spec.operationRef,
+        "observations",
+        "lifecycle"
+      );
+      await checkedPrivatePath(directory, { principal, privateRoot, directory: true });
+      const filename = path.join(directory, "readback.json");
+      const handle = await fs.open(filename, "wx", 0o600);
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      const parent = await fs.open(directory, "r");
+      try {
+        await parent.sync();
+      } finally {
+        await parent.close();
+      }
+      const held = await pinPrivateInput(filename, { principal, privateRoot });
+      lifecycleReadbacks.push(held);
+      if (!held.bytes.equals(bytes)) fail(code);
+    }
+    // On authority loss the private originals remain; no success or custody is
+    // synthesized from a test event. Existing consumed locks remain retained.
+    if (failure) throw Object.assign(new Error(code), { code, readbackDigest: sha256Bytes(bytes) });
+    await lifecycleCheck();
+    lifecycleReady = true;
+    return Object.freeze({
+      status: value.status,
+      readbackDigest: sha256Bytes(bytes),
+      counts: originals.counts,
+      promotionEligible: false
+    });
+  };
+  const cleanupSnapshot = async () => {
+    cleanupStage = "INITIAL_RESOURCE_RECHECK";
+    await recheckResources();
+    if (stopping || restoreReadbacks.length !== databaseTargetSet.records.length) fail(code);
+    const readbacks = databaseTargetSet.records.map((target, index) =>
+      Object.freeze({
+        databaseName: target.databaseName,
+        digest: sha256Bytes(restoreReadbacks[index].bytes)
+      })
+    );
+    if (new Set(readbacks.map((entry) => entry.databaseName)).size !== readbacks.length) fail(code);
+    cleanupStage = "REMOTE_COPY_CLEANUP";
+    const proof = await snapshotCopy.cleanup();
+    if (
+      stopping ||
+      !proof ||
+      sha256Canonical(proof.facts) !== sha256Canonical(snapshotCopy.facts) ||
+      !proof.observations
+    )
+      fail(code);
+    cleanupStage = "CLEANED_RESOURCE_RECHECK";
+    await recheckResources();
+    if (stopping) fail(code);
+    cleanupStage = "PRIVATE_READBACK";
+    const privateRoot = lease.profile.storage.credentialRoot;
+    const principal = { platform: "posix", uid: process.getuid() };
+    const directory = path.join(
+      privateRoot,
+      "r3",
+      fixed.spec.operationRef,
+      "consumer",
+      "observations",
+      "cleanup"
+    );
+    await checkedPrivatePath(directory, { principal, privateRoot, directory: true });
+    const bytes = encodeManualJson({
+      status: "SNAPSHOT_REMOTE_DUMP_CLEANED",
+      operationRef: fixed.spec.operationRef,
+      sessionId: session.sessionId,
+      sessionNonce: session.sessionNonce,
+      inputIndexDigest: consumerInput.inputIndexDigest,
+      consumerExecutionRecordDigest: consumerExecutionDigest,
+      copyReadbackDigest: sha256Bytes(copyReadback.bytes),
+      restoreReadbacks: readbacks,
+      facts: proof.facts,
+      observations: proof.observations
+    });
+    if (bytes.length > 1048576) fail(code);
+    const filename = path.join(directory, "readback.json");
+    const file = await fs.open(filename, "wx", 0o600);
+    try {
+      await file.writeFile(bytes);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    const parent = await fs.open(directory, "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+    cleanupReadback = await pinPrivateInput(filename, { principal, privateRoot });
+    if (!cleanupReadback.bytes.equals(bytes)) fail(code);
+    cleanupStage = "FINAL_RESOURCE_RECHECK";
+    await recheckResources();
+    if (stopping) fail(code);
+    cleanupReady = true;
+    cleanupStage = "OBSERVED";
+    return Object.freeze({
+      status: "SNAPSHOT_REMOTE_DUMP_CLEANED",
+      executionStatus: "INTERRUPTED_UNKNOWN",
+      executionRecordDigest: consumerExecutionDigest,
+      inputIndexDigest: consumerInput.inputIndexDigest,
+      snapshotDigest: snapshotCopy.facts.snapshotDigest,
+      readbackDigest: sha256Bytes(bytes),
+      promotionEligible: false
+    });
+  };
+  const completeSnapshot = async () => {
+    await recheckResources();
+    if (stopping) fail(code);
+    const result = await session.completeSnapshot();
+    const digest = /^sha256:[0-9a-f]{64}$/u;
+    if (
+      !digest.test(result?.executionRecordDigest) ||
+      !digest.test(result?.resultDigest) ||
+      !digest.test(result?.processEvidenceDigest) ||
+      !Array.isArray(result?.custodyRecordDigests) ||
+      result.custodyRecordDigests.length !== 4 ||
+      new Set(result.custodyRecordDigests).size !== 4 ||
+      result.custodyRecordDigests.some((value) => !digest.test(value)) ||
+      !Array.isArray(result?.originalDigests) ||
+      result.originalDigests.length === 0 ||
+      result.originalDigests.some((value) => !digest.test(value))
+    )
+      fail(code);
+    const predecessor = await archive.get(consumerExecutionDigest, "journal");
+    const execution = await archive.get(result.executionRecordDigest, "journal");
+    validateContract("manual-operation-record.v3", predecessor.value);
+    validateContract("manual-operation-record.v3", execution.value);
+    if (
+      predecessor.value.stage !== "snapshot-consumer" ||
+      predecessor.value.status !== "INTERRUPTED_UNKNOWN" ||
+      execution.value.stage !== "snapshot-consumer" ||
+      execution.value.status !== "SUCCEEDED" ||
+      execution.value.sessionId !== session.sessionId ||
+      execution.value.sessionNonce !== session.sessionNonce ||
+      execution.value.operationId !== fixed.spec.operationRef ||
+      execution.value.predecessorExecutionRecordDigest !== consumerExecutionDigest ||
+      execution.value.resultDigest !== result.resultDigest ||
+      execution.value.processEvidenceDigest !== result.processEvidenceDigest ||
+      [
+        "requestDigest",
+        "authorizationDigest",
+        "consumptionRecordDigest",
+        "idempotencyKey",
+        "attemptId"
+      ].some((field) => execution.value[field] !== predecessor.value[field])
+    )
+      fail(code);
+    const originals = [
+      {
+        digest: result.executionRecordDigest,
+        bytes: execution.bytes,
+        roles: ["journal", "archive", "backup"]
+      }
+    ];
+    const custodyPairs = new Set();
+    for (const custodyDigest of result.custodyRecordDigests) {
+      const custody = await archive.get(custodyDigest, "archive");
+      validateContract("manual-operation-record.v3", custody.value);
+      if (
+        custody.value.kind !== "custody" ||
+        custody.value.outcome !== "MATCH" ||
+        ![result.resultDigest, result.processEvidenceDigest].includes(
+          custody.value.subjectDigest
+        ) ||
+        custody.value.observedDigest !== custody.value.subjectDigest ||
+        !["archive", "backup"].includes(custody.value.storageRole)
+      )
+        fail(code);
+      custodyPairs.add(`${custody.value.subjectDigest}:${custody.value.storageRole}`);
+      originals.push({ digest: custodyDigest, bytes: custody.bytes, roles: ["archive"] });
+    }
+    if (custodyPairs.size !== 4) fail(code);
+    for (const originalDigest of new Set([
+      ...result.originalDigests,
+      result.resultDigest,
+      result.processEvidenceDigest
+    ])) {
+      const original = await archive.get(originalDigest, "archive");
+      if (sha256Bytes(original.bytes) !== originalDigest) fail(code);
+      originals.push({
+        digest: originalDigest,
+        bytes: original.bytes,
+        roles: ["archive", "backup"]
+      });
+    }
+    snapshotCompletionRecord = { originals, executionRecordDigest: result.executionRecordDigest };
+    await recheckResources();
+    if (stopping) fail(code);
+    snapshotCompletionReady = true;
+    return Object.freeze({
+      status: "SNAPSHOT_CONSUMED",
+      executionStatus: "SUCCEEDED",
+      executionRecordDigest: result.executionRecordDigest,
+      resultDigest: result.resultDigest,
+      processEvidenceDigest: result.processEvidenceDigest,
+      custodyRecordDigests: Object.freeze([...result.custodyRecordDigests]),
+      originalDigests: Object.freeze([...result.originalDigests]),
+      promotionEligible: false
+    });
+  };
   try {
     if (
       !exact(input, ["repoRoot", "operationRef"]) ||
@@ -2618,7 +3057,9 @@ export async function launchR3TargetCreate(input) {
       get status() {
         return completionReady ? "TARGET_CREATED" : "INTERRUPTED_UNKNOWN";
       },
-      session,
+      session: Object.freeze(
+        fieldsFrom(session, ["profileDigest", "sessionId", "sessionNonce", "scope"])
+      ),
       consumption,
       engine,
       version: Object.freeze(readback.runtime),
@@ -2753,7 +3194,78 @@ export async function launchR3TargetCreate(input) {
         if (decryptAttempted && !decryptReady) fail(code);
         if (copyAttempted && !copyReady) fail(code);
         if (restoreAttempted && !restoreReady) fail(code);
+        if (cleanupAttempted && !cleanupReady) fail(code);
+        if (snapshotCompletionAttempted && !snapshotCompletionReady) fail(code);
+        if (lifecycleAttempted && !lifecycleReady) fail(code);
         await recheckResources();
+      },
+      async runLifecycle(...args) {
+        if (
+          args.length !== 0 ||
+          stopping ||
+          closed ||
+          lifecycleAttempted ||
+          !completionReady ||
+          session.scope.phase !== "source" ||
+          (session.scope.chain === "snapshot" ? !snapshotCompletionReady : consumerAttempted)
+        )
+          fail(code);
+        lifecycleAttempted = true;
+        lifecyclePending = runLifecycle();
+        return lifecyclePending;
+      },
+      async completeSnapshot(...args) {
+        if (
+          args.length !== 0 ||
+          stopping ||
+          closed ||
+          snapshotCompletionAttempted ||
+          !cleanupReady ||
+          !restoreReady ||
+          !consumerReady ||
+          session.scope.phase !== "source" ||
+          session.scope.chain !== "snapshot"
+        )
+          fail(code);
+        snapshotCompletionAttempted = true;
+        snapshotCompletionPending = completeSnapshot();
+        try {
+          return await snapshotCompletionPending;
+        } catch (cause) {
+          throw Object.assign(new Error(code), {
+            code,
+            consumption,
+            failureCode: /^[A-Z0-9_]{1,64}$/u.test(cause?.code ?? "") ? cause.code : code
+          });
+        }
+      },
+      async cleanupSnapshot(...args) {
+        if (
+          args.length !== 0 ||
+          stopping ||
+          closed ||
+          cleanupAttempted ||
+          !restoreReady ||
+          !copyReady ||
+          !decryptReady ||
+          !fetchReady ||
+          !consumerReady ||
+          session.scope.phase !== "source" ||
+          session.scope.chain !== "snapshot"
+        )
+          fail(code);
+        cleanupAttempted = true;
+        cleanupPending = cleanupSnapshot();
+        try {
+          return await cleanupPending;
+        } catch (cause) {
+          throw Object.assign(new Error(code), {
+            code,
+            consumption,
+            failureStage: cleanupStage,
+            failureCode: /^[A-Z0-9_]{1,64}$/u.test(cause?.code ?? "") ? cause.code : code
+          });
+        }
       },
       async restoreSnapshot(...args) {
         if (

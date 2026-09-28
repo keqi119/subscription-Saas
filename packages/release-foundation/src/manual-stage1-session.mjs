@@ -33,7 +33,9 @@ import {
 } from "./execution-state-machine.mjs";
 import { deterministicPlanDigest } from "./proof-builders.mjs";
 import { planManualR3TargetLocks } from "./manual-r3-target-locks.mjs";
+import { suiteDatabaseName } from "./database-target.mjs";
 import { verifyR3HostedEvidence } from "./r3-hosted-evidence.mjs";
+import { buildR3SnapshotConsumerResult } from "./r3-snapshot-consumer-result.mjs";
 
 const STORAGE = "MANUAL_STORAGE_UNVERIFIED";
 const SESSION = "MANUAL_SESSION_UNVERIFIED";
@@ -554,6 +556,7 @@ export async function openManualSession({
   let checkpoint = null;
   const issued = new Map();
   const targetLocks = new Map();
+  const lifecycleTargetLocks = new Map();
   let snapshotReader = null,
     creationCompletionDigest = null;
   const closeTargetHandles = async () => {
@@ -1781,6 +1784,115 @@ export async function openManualSession({
     }
     return { request, binding, canonicalBytes, allocation };
   }
+  function r3LifecycleLock(destination, record) {
+    const operationRef = r3Context.creationSpec.operationRef;
+    exact(
+      record,
+      [
+        "recordVersion",
+        "targetFingerprint",
+        "databaseName",
+        "databaseOid",
+        "marker",
+        "runId",
+        "suiteId",
+        "shard",
+        "roles",
+        "secretReferences",
+        "createdAt"
+      ],
+      SESSION
+    );
+    const plan = destination.databaseTargetSet.plan;
+    const shard = record.shard;
+    requireThat(
+      record.recordVersion === "provisioned-database.v1" &&
+        record.runId === operationRef &&
+        record.suiteId === "database-lifecycle" &&
+        (shard === 0 || shard === 1) &&
+        plan.operationRef === operationRef &&
+        Array.isArray(plan.reservations) &&
+        plan.reservations.length === 2,
+      SESSION
+    );
+    const reservation = plan.reservations[shard];
+    const postgres = destination.postgres;
+    const engineId = postgres.engineId;
+    const systemIdentifier = postgres.postgres.systemIdentifier;
+    const targetFingerprint = sha256Canonical({
+      engineId,
+      systemIdentifier,
+      containerId: postgres.containerId,
+      imageDigest: postgres.imageDigest
+    });
+    requireThat(
+      reservation.shard === shard &&
+        reservation.suiteIdentity === "database-lifecycle" &&
+        reservation.databaseName === suiteDatabaseName(operationRef, "database-lifecycle", shard) &&
+        record.databaseName === reservation.databaseName &&
+        equal(record.roles, reservation.roles) &&
+        record.targetFingerprint === targetFingerprint &&
+        /^[1-9][0-9]*$/u.test(record.databaseOid) &&
+        instant(record.createdAt) >= instant(destination.observedAt) &&
+        instant(record.createdAt) <= instant(stamp()),
+      SESSION
+    );
+    exact(record.secretReferences, Object.keys(reservation.roles), SESSION);
+    requireThat(
+      Object.keys(reservation.roles).every(
+        (profile) =>
+          record.secretReferences[profile] ===
+          `r3/${operationRef}/database-credentials/${record.databaseName}-${profile}.json`
+      ),
+      SESSION
+    );
+    const marker = {
+      markerVersion: "subscription-s1-ephemeral/v1",
+      runIdDigest: sha256Canonical(operationRef),
+      suiteIdDigest: sha256Canonical("database-lifecycle"),
+      shard,
+      createdAt: record.createdAt
+    };
+    requireThat(record.marker === encodeManualJson(marker).toString("utf8"), SESSION);
+    const reservedIdentity = {
+      kind: "r3-database-reservation",
+      engineId,
+      systemIdentifier,
+      databaseName: reservation.databaseName
+    };
+    const reservedLockDigest = sha256Canonical(reservedIdentity);
+    requireThat(
+      destination.databaseTargetSet.targetLocks.some(
+        (entry) =>
+          entry.lockDigest === reservedLockDigest &&
+          entry.databaseName === reservation.databaseName &&
+          equal(entry.identity, reservedIdentity)
+      ),
+      SESSION
+    );
+    const identity = {
+      kind: "r3-database-target",
+      engineId,
+      systemIdentifier,
+      databaseOid: record.databaseOid,
+      marker: record.marker
+    };
+    const entry = {
+      lockDigest: sha256Canonical(identity),
+      identity,
+      databaseName: record.databaseName
+    };
+    requireThat(
+      !destination.databaseTargetSet.targetLocks.some(
+        (held) =>
+          held.lockDigest === entry.lockDigest ||
+          (held.identity.kind === "r3-database-target" &&
+            held.identity.databaseOid === record.databaseOid)
+      ),
+      SESSION
+    );
+    return { shard, entry, reservedLockDigest, recordDigest: sha256Canonical(record) };
+  }
   async function r3StoredDestination(graph, destinationDigest, initialExecution) {
     requireThat(r3Context.destinationInputs, SESSION);
     const destinationBytes = await store.read(
@@ -1855,9 +1967,24 @@ export async function openManualSession({
       EVIDENCE
     );
     const expectedLocks = rebuilt.destination.databaseTargetSet.targetLocks;
+    const expectedDigests = new Set(expectedLocks.map((entry) => entry.lockDigest));
+    const lifecycleOids = new Set();
+    for (const held of lifecycleTargetLocks.values()) {
+      const checked = r3LifecycleLock(rebuilt.destination, held.record);
+      requireThat(
+        equal(checked.entry, held.entry) &&
+          checked.recordDigest === held.recordDigest &&
+          !expectedDigests.has(held.entry.lockDigest) &&
+          !lifecycleOids.has(held.entry.identity.databaseOid) &&
+          targetLocks.has(held.entry.lockDigest),
+        SESSION
+      );
+      expectedDigests.add(held.entry.lockDigest);
+      lifecycleOids.add(held.entry.identity.databaseOid);
+    }
     requireThat(
-      expectedLocks.length === targetLocks.size &&
-        expectedLocks.every((entry) => targetLocks.has(entry.lockDigest)),
+      expectedDigests.size === targetLocks.size &&
+        [...expectedDigests].every((digest) => targetLocks.has(digest)),
       SESSION
     );
     await active();
@@ -1867,6 +1994,97 @@ export async function openManualSession({
       observationDigest,
       streamDigest: sha256Bytes(Buffer.from(observations.postgres.streamBase64, "base64"))
     };
+  }
+  async function r3ConsumerOriginals(graph, initial, request, completed = null) {
+    requireThat(snapshotReader && creationCompletionDigest, SESSION);
+    const destination = graph.get(request.destinationAdmissionDigest)?.value;
+    requireThat(
+      destination && sha256Canonical(destination) === request.destinationAdmissionDigest,
+      EVIDENCE
+    );
+    const readArchived = async (digest) => {
+      const bytes = await store.read(objectPath(profile.storage.archiveRoot, digest));
+      requireThat(
+        sha256Bytes(bytes) === digest && graph.get(digest)?.bytes.equals(bytes),
+        EVIDENCE
+      );
+      requireThat(
+        (await store.read(objectPath(profile.storage.backupRoot, digest))).equals(bytes),
+        STORAGE
+      );
+      return JSON.parse(bytes);
+    };
+    let readbacks, completedAt;
+    if (completed) {
+      const process = await readArchived(completed.processEvidenceDigest);
+      exact(
+        process.readbacks,
+        ["fetchDigest", "decryptionDigest", "copyDigest", "restoreDigests", "cleanupDigest"],
+        EVIDENCE
+      );
+      requireThat(
+        Array.isArray(process.readbacks.restoreDigests) &&
+          process.readbacks.restoreDigests.length === destination.databaseTargetSet.records.length,
+        EVIDENCE
+      );
+      readbacks = {
+        fetch: await readArchived(process.readbacks.fetchDigest),
+        decryption: await readArchived(process.readbacks.decryptionDigest),
+        copy: await readArchived(process.readbacks.copyDigest),
+        restores: [],
+        cleanup: await readArchived(process.readbacks.cleanupDigest)
+      };
+      for (const entry of process.readbacks.restoreDigests) {
+        exact(entry, ["databaseName", "digest"], EVIDENCE);
+        readbacks.restores.push(await readArchived(entry.digest));
+      }
+      completedAt = process.completedAt;
+    } else {
+      const root = path.join(
+        profile.storage.credentialRoot,
+        "r3",
+        r3Context.creationSpec.operationRef,
+        "consumer",
+        "observations"
+      );
+      const readPrivate = async (...segments) =>
+        JSON.parse(await store.read(path.join(root, ...segments, "readback.json")));
+      readbacks = {
+        fetch: await readPrivate(),
+        decryption: await readPrivate("decryption"),
+        copy: await readPrivate("copy"),
+        restores: [],
+        cleanup: await readPrivate("cleanup")
+      };
+      for (const target of destination.databaseTargetSet.records) {
+        requireThat(/^[a-z][a-z0-9_]{0,62}$/u.test(target.databaseName), EVIDENCE);
+        readbacks.restores.push(await readPrivate("restore", target.databaseName));
+      }
+      completedAt = stamp();
+    }
+    await snapshotReader.recheck();
+    const built = buildR3SnapshotConsumerResult({
+      destination,
+      initialExecution: initial,
+      snapshotInput: {
+        inputIndexDigest: snapshotReader.inputIndexDigest,
+        ...snapshotReader.restoreInputs,
+        storageSubject: snapshotReader.storageSubject,
+        cryptoInputs: snapshotReader.cryptoInputs
+      },
+      readbacks,
+      completedAt
+    });
+    if (completed) {
+      requireThat(
+        sha256Canonical(built.result) === completed.resultDigest &&
+          sha256Canonical(built.processEvidence) === completed.processEvidenceDigest,
+        EVIDENCE
+      );
+      for (const { digest, value } of built.originals)
+        requireThat(equal(await readArchived(digest), value), EVIDENCE);
+    }
+    return built;
   }
   async function r3History(
     request,
@@ -2145,7 +2363,7 @@ export async function openManualSession({
                 "runId",
                 "stage"
               ].every((field) => allocation[field] === request[field]) &&
-              linked.length === 1 &&
+              linked.length <= 2 &&
               execution.stage === "snapshot-consumer" &&
               execution.operationId === request.operationId &&
               execution.idempotencyKey === request.idempotencyKey &&
@@ -2166,6 +2384,69 @@ export async function openManualSession({
           );
           requireThat(snapshotReader, SESSION);
           await snapshotReader.assertConsumerBinding({ request, scope: identity.scope });
+          if (linked.length === 2) {
+            const completed = linked.find((value) => value !== execution);
+            requireThat(
+              completed?.status === "SUCCEEDED" &&
+                completed.reasonCode === null &&
+                completed.stage === "snapshot-consumer" &&
+                completed.predecessorExecutionRecordDigest === linkedDigest &&
+                completed.startedAt === execution.recordedAt &&
+                [
+                  "profileDigest",
+                  "sessionId",
+                  "sessionNonce",
+                  "operationId",
+                  "idempotencyKey",
+                  "attemptId",
+                  "requestDigest",
+                  "authorizationDigest",
+                  "consumptionRecordDigest"
+                ].every((field) => completed[field] === execution[field]),
+              SESSION
+            );
+            const built = await r3ConsumerOriginals(graph, execution, request, completed);
+            requireThat(
+              instant(completed.finishedAt) >= instant(built.processEvidence.completedAt) &&
+                instant(completed.recordedAt) >= instant(completed.finishedAt),
+              SESSION
+            );
+            for (const role of ["journal", "archive", "backup"])
+              requireThat(
+                (
+                  await store.read(
+                    objectPath(profile.storage[`${role}Root`], sha256Canonical(completed))
+                  )
+                ).equals(encodeManualJson(completed)),
+                STORAGE
+              );
+            const subjects = [completed.resultDigest, completed.processEvidenceDigest];
+            const expected = new Set(
+              subjects.flatMap((subject) =>
+                ["archive", "backup"].map((role) => `${subject}:${role}`)
+              )
+            );
+            const custody = values.filter(
+              (value) => value.kind === "custody" && subjects.includes(value.subjectDigest)
+            );
+            requireThat(custody.length === 4, SESSION);
+            for (const value of custody)
+              requireThat(
+                value.schemaVersion === "manual-operation-record.v3" &&
+                  expected.delete(`${value.subjectDigest}:${value.storageRole}`) &&
+                  value.profileDigest === profileDigest &&
+                  value.ownerId === profile.ownerId &&
+                  value.subjectType === "record" &&
+                  value.purpose === `${value.storageRole}-readback` &&
+                  value.outcome === "MATCH" &&
+                  value.observedDigest === value.subjectDigest &&
+                  value.retentionDays === retentionDays &&
+                  instant(value.observedAt) <= instant(completed.recordedAt),
+                SESSION
+              );
+            requireThat(expected.size === 0, SESSION);
+            for (const { digest } of built.originals) r3Originals.artifacts.add(digest);
+          }
           historicalConsumerPredecessor = allocation.predecessorExecutionRecordDigest;
           historicalConsumerDestination = request.destinationAdmissionDigest;
           for (const ref of snapshotReader.rawReferences) r3Originals.raws.add(ref.digest);
@@ -2347,11 +2628,14 @@ export async function openManualSession({
   if (r3) {
     let consumedOrUncertain = false,
       creationReceipt = null,
+      consumerReceipt = null,
+      consumerCompletionAttempted = false,
       targetLocksAttempted = false,
       completionAttempted = false,
       consumerAuthorizationIssued = false,
       consumerAttempted = false,
       closeRef = null;
+    const lifecycleAttempts = new Set();
     const boundSnapshot = async (request) => {
       requireThat(r3Context.snapshotInputs && creationCompletionDigest, SESSION);
       if (!snapshotReader) {
@@ -2519,6 +2803,7 @@ export async function openManualSession({
           });
           if (request.request.stage === "target-create") creationReceipt = receipt;
           else {
+            consumerReceipt = receipt;
             await active();
             r3Live();
             await r3History(request.request, null, null, creationCompletionDigest);
@@ -2710,6 +2995,236 @@ export async function openManualSession({
           await r3History(request, creationReceipt.executionRecordDigest);
           creationCompletionDigest = executionDigest;
           return freeze({ executionRecordDigest: executionDigest, custodyRecordDigests });
+        });
+      },
+      registerLifecycleTarget(input) {
+        return serial(async () => {
+          await active();
+          r3Live();
+          requireThat(creationCompletionDigest && targetLocksAttempted, SESSION);
+          exact(input, ["record"], SESSION);
+          const record = snapshot(input.record);
+          const graph = await store.objects();
+          const initial = graph.get(creationReceipt.executionRecordDigest)?.value;
+          const completed = graph.get(creationCompletionDigest)?.value;
+          requireThat(
+            initial?.stage === "target-create" &&
+              initial.status === "INTERRUPTED_UNKNOWN" &&
+              completed?.stage === "target-create" &&
+              completed.status === "SUCCEEDED" &&
+              completed.predecessorExecutionRecordDigest ===
+                creationReceipt.executionRecordDigest &&
+              /^sha256:[0-9a-f]{64}$/u.test(completed.resultDigest ?? ""),
+            SESSION
+          );
+          const request = graph.get(initial.requestDigest)?.value;
+          requireThat(request?.schemaVersion === "manual-runner-request.v4", SESSION);
+          // Continue the already consumed creation; the default history path
+          // deliberately refuses a second target-create authorization.
+          await r3History(
+            request,
+            creationReceipt.executionRecordDigest,
+            null,
+            consumerReceipt ? creationCompletionDigest : null
+          );
+          const original = await r3StoredDestination(graph, completed.resultDigest, initial);
+          const checked = r3LifecycleLock(original.destination, record);
+          requireThat(
+            !lifecycleAttempts.has(checked.shard) &&
+              !targetLocks.has(checked.entry.lockDigest) &&
+              [...lifecycleTargetLocks.values()].every(
+                (held) => held.entry.identity.databaseOid !== checked.entry.identity.databaseOid
+              ),
+            SESSION
+          );
+          lifecycleAttempts.add(checked.shard);
+          const file = path.join(
+            profile.storage.journalRoot,
+            "locks",
+            `${checked.entry.lockDigest.slice(7)}.json`
+          );
+          const bytes = encodeManualJson({
+            ...identity,
+            pid: process.pid,
+            operationRef: r3Context.creationSpec.operationRef,
+            executionRecordDigest: creationReceipt.executionRecordDigest,
+            databaseName: checked.entry.databaseName,
+            target: checked.entry.identity,
+            reservationLockDigest: checked.reservedLockDigest,
+            provisionedRecordDigest: checked.recordDigest,
+            provisionedRecord: record
+          });
+          let handle;
+          try {
+            await store.checkedPath(path.dirname(file));
+            handle = await store.fs.open(file, "wx", 0o600);
+          } catch {
+            fail(SESSION);
+          }
+          // The captured descriptor and pathname remain held after any later
+          // write/readback failure; a failed attempt cannot switch identities.
+          targetLocks.set(checked.entry.lockDigest, { file, bytes, handle });
+          lifecycleTargetLocks.set(checked.shard, {
+            entry: checked.entry,
+            record,
+            recordDigest: checked.recordDigest
+          });
+          await store.setNewOwner(file);
+          await handle.writeFile(bytes);
+          await handle.sync();
+          requireThat((await store.read(file)).equals(bytes), STORAGE);
+          await r3StoredDestination(await store.objects(), completed.resultDigest, initial);
+          await active();
+          r3Live();
+          return freeze({
+            shard: checked.shard,
+            lock: checked.entry,
+            reservationLockDigest: checked.reservedLockDigest,
+            provisionedRecordDigest: checked.recordDigest
+          });
+        });
+      },
+      completeSnapshot(...args) {
+        return serial(async () => {
+          requireThat(args.length === 0, SESSION);
+          await active();
+          r3Live();
+          requireThat(
+            consumerReceipt &&
+              creationCompletionDigest &&
+              snapshotReader &&
+              !consumerCompletionAttempted,
+            SESSION
+          );
+          consumerCompletionAttempted = true;
+          const initialGraph = await store.objects();
+          const initial = initialGraph.get(consumerReceipt.executionRecordDigest)?.value;
+          requireThat(
+            initial?.kind === "execution" &&
+              initial.stage === "snapshot-consumer" &&
+              initial.status === "INTERRUPTED_UNKNOWN",
+            SESSION
+          );
+          const request = initialGraph.get(initial.requestDigest)?.value;
+          requireThat(request?.schemaVersion === "manual-runner-request.v3", SESSION);
+          await r3History(request, null, null, creationCompletionDigest);
+          const proof = await r3ConsumerOriginals(initialGraph, initial, request);
+          const resultDigest = sha256Canonical(proof.result);
+          const processEvidenceDigest = sha256Canonical(proof.processEvidence);
+          // Archive each actual original separately to keep the existing JSON
+          // bound. The two custody records per index bind this complete graph;
+          // ownership originals themselves must also have exact dual readback.
+          for (const { digest, value } of proof.originals) {
+            const bytes = encodeManualJson(value);
+            requireThat(sha256Bytes(bytes) === digest, EVIDENCE);
+            await store.put(value);
+            await store.create(objectPath(profile.storage.backupRoot, digest), bytes);
+            for (const role of ["archive", "backup"])
+              requireThat(
+                (await store.read(objectPath(profile.storage[`${role}Root`], digest))).equals(
+                  bytes
+                ),
+                STORAGE
+              );
+          }
+          const custodyRecordDigests = [];
+          for (const subjectDigest of [resultDigest, processEvidenceDigest]) {
+            for (const role of ["archive", "backup"]) {
+              const readAt = stamp();
+              const custody = {
+                ...common("custody", readAt),
+                ownerId: profile.ownerId,
+                subjectDigest,
+                subjectType: "record",
+                purpose: `${role}-readback`,
+                outcome: "MATCH",
+                observedDigest: subjectDigest,
+                observedAt: readAt,
+                storageRole: role,
+                retentionDays,
+                reasonCode: null
+              };
+              validateContract(recordSchema, custody);
+              custodyRecordDigests.push((await store.put(custody)).recordDigest);
+            }
+          }
+          await active();
+          r3Live();
+          const consumed = initialGraph.get(initial.consumptionRecordDigest)?.value;
+          const authorization = initialGraph.get(initial.authorizationDigest)?.value;
+          requireThat(
+            consumed &&
+              authorization?.payload &&
+              (await store.read(consumptionSlot(authorization.payload.authorizationId))).equals(
+                encodeManualJson(consumed)
+              ),
+            STORAGE
+          );
+          const finalRevocations = await revocations();
+          requireThat(
+            !finalRevocations.some(
+              (record) =>
+                record.action === "REVOKE_PROFILE" ||
+                (record.action === "REVOKE_AUTHORIZATION" &&
+                  record.authorizationId === authorization.payload.authorizationId)
+            ),
+            REVOCATION
+          );
+          const finishedAt = stamp();
+          const execution = {
+            ...common("execution", finishedAt),
+            stage: "snapshot-consumer",
+            sessionId,
+            sessionNonce,
+            operationId: initial.operationId,
+            idempotencyKey: initial.idempotencyKey,
+            attemptId: initial.attemptId,
+            requestDigest: initial.requestDigest,
+            authorizationDigest: initial.authorizationDigest,
+            consumptionRecordDigest: initial.consumptionRecordDigest,
+            predecessorExecutionRecordDigest: consumerReceipt.executionRecordDigest,
+            startedAt: initial.recordedAt,
+            finishedAt,
+            status: "SUCCEEDED",
+            reasonCode: null,
+            resultDigest,
+            processEvidenceDigest
+          };
+          validateContract(recordSchema, execution);
+          // Rebuild from the stored originals and independently re-read both
+          // copies before writing a terminal execution. No caller success flag.
+          await r3ConsumerOriginals(await store.objects(), initial, request, execution);
+          const current = await r3ConsumerOriginals(initialGraph, initial, request);
+          requireThat(
+            equal(current.processEvidence.readbacks, proof.processEvidence.readbacks),
+            EVIDENCE
+          );
+          await active();
+          r3Live();
+          requireThat(
+            !(await revocations()).some(
+              (record) =>
+                record.action === "REVOKE_PROFILE" ||
+                (record.action === "REVOKE_AUTHORIZATION" &&
+                  record.authorizationId === authorization.payload.authorizationId)
+            ),
+            REVOCATION
+          );
+          const executionDigest = sha256Canonical(execution);
+          await store.put(execution, "journal");
+          await store.put(execution);
+          await store.create(
+            objectPath(profile.storage.backupRoot, executionDigest),
+            encodeManualJson(execution)
+          );
+          await r3History(request, null, null, creationCompletionDigest);
+          return freeze({
+            executionRecordDigest: executionDigest,
+            resultDigest,
+            processEvidenceDigest,
+            custodyRecordDigests,
+            originalDigests: proof.originals.map(({ digest }) => digest)
+          });
         });
       },
       record(kind, input) {

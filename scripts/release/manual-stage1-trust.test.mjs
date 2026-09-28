@@ -19,6 +19,7 @@ import { produceManualBuildCustody } from "./manual-build-custody-producer.mjs";
 import { assessR3WorkspaceObservation } from "../../packages/release-foundation/src/r3-workspace-observation.mjs";
 import { signR3WorkspaceBinding } from "../../packages/release-foundation/src/r3-workspace-report.mjs";
 import { buildR3HostedEvidence } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
+import { verifyOwnershipMap } from "../../packages/release-foundation/src/snapshot/normalize-ownership.mjs";
 import { publishR3SnapshotFixture } from "../../packages/release-foundation/test/r3-snapshot-input-fixture.mjs";
 import {
   installR3SnapshotSdkFixture,
@@ -2150,6 +2151,29 @@ function r3HostedBundle(f) {
 }
 
 test(
+  "R3 WORKSPACE prepares private lifecycle observation directories before import",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+    const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    await trust.prepareR3HostedEvidenceImport(input);
+    await trust.prepareR3HostedEvidenceImport(input);
+    for (const storageRoot of [f.profile.storage.archiveRoot, f.profile.storage.backupRoot]) {
+      const directory = path.join(
+        storageRoot,
+        "inputs",
+        "r3",
+        f.operationRef,
+        "observations",
+        "lifecycle"
+      );
+      assert.equal((await fs.stat(directory)).mode & 0o777, 0o700);
+      assert.deepEqual(await fs.readdir(directory), []);
+    }
+  }
+);
+
+test(
   "R3 WORKSPACE imports job-signed hosted originals without invalidating the live job",
   { skip: process.platform !== "linux" },
   async (t) => {
@@ -3092,12 +3116,12 @@ test(
   }
 );
 
-for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
+for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-locks"]) {
   const dropped = mode === "dropped",
     evidenceOnly = mode === "evidence",
     closingRestore = mode === "closing";
   test(
-    `R3 LAUNCH ${closingRestore ? "drains current restore cleanup before closing its transport" : evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
+    `R3 LAUNCH ${mode === "lifecycle-locks" ? "registers both reserved lifecycle physical locks after completed creation" : closingRestore ? "drains current restore cleanup before closing its transport" : evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
     { skip: process.platform !== "linux" },
     async (t) => {
       const f = await r3ForwardFixture(t, {
@@ -3256,7 +3280,7 @@ for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
                 attemptBytes,
                 "attempt plan and marker time are durable before credentials or SQL"
               );
-              assert.equal(
+              assert.deepEqual(
                 (
                   await fs.readdir(
                     path.join(
@@ -3266,8 +3290,14 @@ for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
                       "database-credentials"
                     )
                   )
-                ).length,
-                plan.targets.reduce((count, target) => count + Object.keys(target.roles).length, 0),
+                ).sort(),
+                [...plan.targets, ...plan.reservations]
+                  .flatMap((target) =>
+                    Object.keys(target.roles).map(
+                      (profile) => `${target.databaseName}-${profile}.json`
+                    )
+                  )
+                  .sort(),
                 "all sibling credentials exist before the first pinned credential is consumed"
               );
               await recheck();
@@ -3426,6 +3456,29 @@ for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
         });
       }
       let decryptCalls = 0;
+      let copyCleanupCalls = 0;
+      let copyAbsenceRechecks = 0;
+      const remoteNode = (type, inode, size = type === "directory" ? 4096 : 64) => ({
+        type,
+        mode: type === "directory" ? "700" : "600",
+        uid: 0,
+        gid: 0,
+        size,
+        device: "42",
+        inode: String(inode),
+        links: type === "directory" ? 2 : 1,
+        modifiedAt: "2026-09-29 00:00:00.000000000 +0000",
+        changedAt: "2026-09-29 00:00:00.000000000 +0000"
+      });
+      const remoteAbsence = (target) => ({
+        command: ["/usr/bin/stat", "--", target],
+        executionId: "e".repeat(64),
+        stdout: "",
+        stderr: `stat: cannot statx '${target}': No such file or directory\n`,
+        containerId,
+        running: false,
+        exitCode: 1
+      });
       if (!dropped)
         t.mock.module("./r3-h1-snapshot-decrypt.mjs", {
           namedExports: {
@@ -3467,17 +3520,70 @@ for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
               assert.equal(input.operationRef, f.operationRef);
               assert.equal(input.containerId, containerId);
               assert.equal(typeof input.engineCall, "function");
+              assert.equal(typeof input.recheck, "function");
               const directory = `/tmp/stage1-r3-${id}`;
+              const facts = {
+                containerId,
+                directory,
+                path: `${directory}/snapshot.dump`,
+                snapshotDigest: input.plaintext.facts.snapshotDigest,
+                plaintextSizeBytes: input.plaintext.facts.plaintextSizeBytes
+              };
+              const finalDirectory = remoteNode("directory", 99);
+              const finalFile = remoteNode(
+                "regular file",
+                98,
+                input.plaintext.facts.plaintextSizeBytes
+              );
+              let removed = false;
               return {
-                facts: {
-                  containerId,
-                  directory,
-                  path: `${directory}/snapshot.dump`,
-                  snapshotDigest: input.plaintext.facts.snapshotDigest,
-                  plaintextSizeBytes: input.plaintext.facts.plaintextSizeBytes
+                facts,
+                observations: { finalDirectory, finalFile, copiedDigest: facts.snapshotDigest },
+                recheck: async () => {
+                  if (removed) copyAbsenceRechecks++;
                 },
-                observations: { fixtureBoundary: "copy" },
-                recheck: async () => {},
+                cleanup: async () => {
+                  copyCleanupCalls++;
+                  assert.equal(removed, false);
+                  removed = true;
+                  return Object.freeze({
+                    facts,
+                    observations: Object.freeze({
+                      preDirectory: finalDirectory,
+                      preFile: finalFile,
+                      fileAbsentAfterUnlink: remoteAbsence(facts.path),
+                      directoryBeforeRmdir: finalDirectory,
+                      directoryAbsent: remoteAbsence(facts.directory),
+                      fileAbsent: remoteAbsence(facts.path),
+                      transcript: [
+                        {
+                          command: ["/usr/bin/sha256sum", "--", facts.path],
+                          containerId,
+                          running: false,
+                          exitCode: 0,
+                          stdout: `${facts.snapshotDigest.slice(7)}  ${facts.path}\n`,
+                          stderr: ""
+                        },
+                        {
+                          command: ["/usr/bin/unlink", "--", facts.path],
+                          containerId,
+                          running: false,
+                          exitCode: 0,
+                          stdout: "",
+                          stderr: ""
+                        },
+                        {
+                          command: ["/usr/bin/rmdir", "--", facts.directory],
+                          containerId,
+                          running: false,
+                          exitCode: 0,
+                          stdout: "",
+                          stderr: ""
+                        }
+                      ]
+                    })
+                  });
+                },
                 close: async () => {}
               };
             }
@@ -3511,22 +3617,160 @@ for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
               }
               for (const phase of ["REVOKING", "REVOKED"]) input.transition(phase);
               cleanupObserved = true;
-              const ownershipObservation = {
-                fixtureBoundary: "restore",
-                databaseIdentityDigest: target.databaseIdentityDigest
+              const migrate = target.roles.migrate;
+              const restore = target.roles.restore;
+              const databaseName = target.databaseName;
+              const address = input.postgres.containerAddress;
+              const inventory = {
+                databaseIdentityDigest: target.databaseIdentityDigest,
+                objects: [
+                  {
+                    objectClass: "schema",
+                    schemaName: "public",
+                    objectName: "public",
+                    owner: migrate,
+                    extensionName: null
+                  },
+                  {
+                    objectClass: "table",
+                    schemaName: "public",
+                    objectName: "_prisma_migrations",
+                    owner: migrate,
+                    extensionName: null
+                  }
+                ]
               };
+              const ownershipObservation = verifyOwnershipMap({
+                ownershipMap: input.ownershipMap,
+                target: {
+                  databaseIdentityDigest: target.databaseIdentityDigest,
+                  migrationRole: migrate,
+                  runtimeRole: target.roles["runtime-test"]
+                },
+                inventory,
+                now: new Date()
+              });
+              const roleBase = {
+                name: restore,
+                oid: target.roleReadback.restore.oid,
+                superuser: false,
+                createdb: false,
+                createrole: false,
+                inherit: false,
+                replication: false,
+                bypassrls: false,
+                grantedTo: 0,
+                canCreateDatabase: false,
+                canCreateTemporary: false
+              };
+              const credentialDirectory = `/tmp/stage1-r3-${id}-restore-${databaseName.slice(5)}`;
               return {
                 facts: {
                   containerId,
-                  databaseName: target.databaseName,
+                  databaseName,
                   databaseOid: target.databaseOid,
+                  directory: input.copied.facts.directory,
                   snapshotDigest: input.copied.facts.snapshotDigest,
                   ownershipObservationDigest: sha256Canonical(ownershipObservation),
                   restoreRoleDisabled: true,
                   credentialFilesRemoved: true
                 },
-                observations: { ownershipObservation }
+                observations: {
+                  before: {
+                    systemIdentifier: input.postgres.postgres.systemIdentifier,
+                    serverVersionNum: input.postgres.postgres.serverVersionNum,
+                    sessionUser: "release_provisioner",
+                    currentUser: "release_provisioner",
+                    serverAddress: address,
+                    tls: true,
+                    databaseName,
+                    databaseOid: target.databaseOid,
+                    marker: target.marker,
+                    owner: migrate
+                  },
+                  schema: { schemaOwner: migrate, restoreCanCreate: false },
+                  granted: {
+                    ...roleBase,
+                    canLogin: true,
+                    canConnect: true,
+                    memberships: 1,
+                    membership: { role: migrate, inherit: false, set: true, admin: false },
+                    passwordNull: false
+                  },
+                  restoreExecution: {
+                    command: [
+                      "/usr/bin/pg_restore",
+                      "--host",
+                      address,
+                      "--port",
+                      "5432",
+                      "--username",
+                      restore,
+                      "--dbname",
+                      databaseName,
+                      "--exit-on-error",
+                      "--no-owner",
+                      "--no-acl",
+                      `--role=${migrate}`,
+                      input.copied.facts.path
+                    ],
+                    containerId,
+                    running: false,
+                    exitCode: 0,
+                    stderr: ""
+                  },
+                  revokedRole: {
+                    ...roleBase,
+                    canLogin: false,
+                    canConnect: false,
+                    memberships: 0,
+                    membership: null,
+                    passwordNull: true
+                  },
+                  ownershipObservation,
+                  ownershipInventories: { before: inventory, after: inventory },
+                  restoreLoginDenial: {
+                    exitCode: 2,
+                    stderr: `psql: error: connection to server at "${address}", port 5432 failed: FATAL:  password authentication failed for user "${restore}"\n`
+                  },
+                  migrationReconnect: {
+                    databaseName,
+                    role: migrate,
+                    databaseOid: target.databaseOid,
+                    marker: target.marker,
+                    owner: migrate,
+                    serverVersionNum: input.postgres.postgres.serverVersionNum,
+                    tls: true
+                  },
+                  credentialCleanup: {
+                    directory: remoteNode("directory", 1000 + restoredDatabases.length),
+                    files: {
+                      [`${credentialDirectory}/restore.pgpass`]: remoteNode(
+                        "regular file",
+                        2000 + restoredDatabases.length
+                      ),
+                      [`${credentialDirectory}/migration.pgpass`]: remoteNode(
+                        "regular file",
+                        3000 + restoredDatabases.length
+                      )
+                    },
+                    absentExitCode: 1,
+                    absentStderr: `stat: cannot statx '${credentialDirectory}': No such file or directory\n`
+                  }
+                }
               };
+            }
+          }
+        });
+      }
+      let capturedTrustedSession;
+      if (mode === "lifecycle-locks") {
+        t.mock.module("./manual-stage1-trust.mjs", {
+          namedExports: {
+            ...trust,
+            async openTrustedR3CreationSession(input) {
+              capturedTrustedSession = await trust.openTrustedR3CreationSession(input);
+              return capturedTrustedSession;
             }
           }
         });
@@ -3763,7 +4007,10 @@ for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
         assert.equal(typeof launched.consumeSnapshot, "function");
         assert.equal(typeof launched.fetchSnapshot, "function");
         assert.equal(typeof launched.restoreSnapshot, "function");
+        assert.equal(typeof launched.completeSnapshot, "function");
+        await assert.rejects(launched.completeSnapshot());
         await assert.rejects(launched.restoreSnapshot());
+        await assert.rejects(launched.cleanupSnapshot());
         await assert.rejects(launched.copySnapshot());
         await assert.rejects(launched.fetchSnapshot());
         await assert.rejects(launched.consumeSnapshot({ inputReference: randomUUID() }));
@@ -3939,6 +4186,84 @@ for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
           ].sort()
         );
         await assert.rejects(launched.completeCreation());
+        if (mode === "lifecycle-locks") {
+          assert.ok(capturedTrustedSession);
+          assert.deepEqual(Object.keys(launched.session).sort(), [
+            "profileDigest",
+            "scope",
+            "sessionId",
+            "sessionNonce"
+          ]);
+          assert.equal(launched.session.registerLifecycleTarget, undefined);
+          const lockRoot = path.join(f.profile.storage.journalRoot, "locks");
+          const initialLocks = await fs.readdir(lockRoot);
+          assert.equal(initialLocks.length, 41);
+          const fingerprint = sha256Canonical({
+            engineId: destination.postgres.engineId,
+            systemIdentifier: destination.postgres.postgres.systemIdentifier,
+            containerId: destination.postgres.containerId,
+            imageDigest: destination.postgres.imageDigest
+          });
+          const createdAt = new Date().toISOString();
+          const records = destination.databaseTargetSet.plan.reservations.map(
+            (reservation, shard) => ({
+              recordVersion: "provisioned-database.v1",
+              targetFingerprint: fingerprint,
+              databaseName: reservation.databaseName,
+              databaseOid: String(900000 + shard),
+              marker: encodeManualJson({
+                markerVersion: "subscription-s1-ephemeral/v1",
+                runIdDigest: sha256Canonical(f.operationRef),
+                suiteIdDigest: sha256Canonical("database-lifecycle"),
+                shard,
+                createdAt
+              }).toString("utf8"),
+              runId: f.operationRef,
+              suiteId: "database-lifecycle",
+              shard,
+              roles: reservation.roles,
+              secretReferences: Object.fromEntries(
+                Object.keys(reservation.roles).map((profile) => [
+                  profile,
+                  `r3/${f.operationRef}/database-credentials/${reservation.databaseName}-${profile}.json`
+                ])
+              ),
+              createdAt
+            })
+          );
+          for (const record of records) {
+            const held = await capturedTrustedSession.registerLifecycleTarget({ record });
+            assert.equal(held.shard, record.shard);
+            assert.equal(held.lock.databaseName, record.databaseName);
+            assert.equal(held.lock.identity.engineId, launched.engine.ID);
+            assert.equal(held.lock.identity.databaseOid, record.databaseOid);
+            assert.equal(held.lock.identity.marker, record.marker);
+            assert.equal(held.provisionedRecordDigest, sha256Canonical(record));
+            const bytes = await fs.readFile(
+              path.join(lockRoot, `${held.lock.lockDigest.slice(7)}.json`)
+            );
+            const stored = JSON.parse(bytes);
+            assert.deepEqual(stored.target, held.lock.identity);
+            assert.deepEqual(stored.provisionedRecord, record);
+            assert.equal(stored.provisionedRecordDigest, sha256Canonical(record));
+          }
+          const afterLocks = await fs.readdir(lockRoot);
+          assert.ok(initialLocks.every((name) => afterLocks.includes(name)));
+          assert.equal(afterLocks.length, 43);
+          await launched.recheck();
+          await assert.rejects(
+            capturedTrustedSession.registerLifecycleTarget({ record: records[0] }),
+            {
+              code: "MANUAL_SESSION_UNVERIFIED"
+            }
+          );
+          await launched.close();
+          assert.equal((await fs.readdir(lockRoot)).length, 43);
+          assert.equal((await fs.readFile(f.forwardKey)).length, 0);
+          if (handlerError) throw handlerError;
+          assert.equal(received, 1);
+          return;
+        }
         releaseMockHistory();
         const snapshot = await publishR3SnapshotFixture(f, {
           destinationAdmissionDigest: recorded.destinationDigest,
@@ -4067,6 +4392,8 @@ for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
         await assert.rejects(launched.fetchSnapshot());
         releaseMockHistory();
         await assert.rejects(launched.restoreSnapshot());
+        await assert.rejects(launched.cleanupSnapshot());
+        await assert.rejects(launched.completeSnapshot());
         const decrypted = await launched.decryptSnapshot();
         assert.equal(decrypted.status, "PLAINTEXT_AUTHENTICATED");
         assert.equal(decryptCalls, 1);
@@ -4142,6 +4469,92 @@ for (const mode of ["accepted", "dropped", "evidence", "closing"]) {
           assert.equal(record.copyReadbackDigest, copied.readbackDigest);
         }
         await assert.rejects(launched.restoreSnapshot());
+        releaseMockHistory();
+        const snapshotStep = async (stage, work) => {
+          try {
+            return await work();
+          } catch (error) {
+            const preserved = await fs.mkdtemp(path.join(tmpdir(), "r3-consumer-failure-"));
+            await fs.chmod(preserved, 0o700);
+            await fs.cp(f.root, path.join(preserved, "originals"), {
+              recursive: true,
+              force: false,
+              errorOnExist: true
+            });
+            t.diagnostic(
+              JSON.stringify({
+                stage,
+                failureCode: error.failureCode ?? error.code,
+                failureStage: error.failureStage ?? null,
+                copyCleanupCalls,
+                copyAbsenceRechecks,
+                preservedFixture: preserved
+              })
+            );
+            throw error;
+          }
+        };
+        await assert.rejects(launched.cleanupSnapshot({ approved: true }));
+        const cleaned = await snapshotStep("cleanup", () => launched.cleanupSnapshot());
+        assert.equal(cleaned.status, "SNAPSHOT_REMOTE_DUMP_CLEANED");
+        assert.equal(cleaned.executionStatus, "INTERRUPTED_UNKNOWN");
+        assert.equal(cleaned.executionRecordDigest, consumedSnapshot.executionRecordDigest);
+        assert.equal(cleaned.promotionEligible, false);
+        assert.equal(copyCleanupCalls, 1);
+        assert.ok(copyAbsenceRechecks >= 1);
+        const cleanupBytes = await fs.readFile(
+          path.join(consumerDirectory, "observations", "cleanup", "readback.json")
+        );
+        const cleanupReadback = JSON.parse(cleanupBytes);
+        assert.equal(sha256Bytes(cleanupBytes), cleaned.readbackDigest);
+        assert.equal(cleanupReadback.operationRef, f.operationRef);
+        assert.equal(cleanupReadback.sessionId, execution.sessionId);
+        assert.equal(cleanupReadback.sessionNonce, execution.sessionNonce);
+        assert.equal(cleanupReadback.inputIndexDigest, consumedSnapshot.inputIndexDigest);
+        assert.equal(
+          cleanupReadback.consumerExecutionRecordDigest,
+          consumedSnapshot.executionRecordDigest
+        );
+        assert.equal(cleanupReadback.copyReadbackDigest, copied.readbackDigest);
+        assert.deepEqual(cleanupReadback.restoreReadbacks, restored.readbacks);
+        assert.equal(cleanupReadback.observations.fileAbsent.exitCode, 1);
+        assert.equal(cleanupReadback.observations.directoryAbsent.exitCode, 1);
+        assert.equal(
+          (await fs.stat(path.join(consumerDirectory, "observations", "cleanup", "readback.json")))
+            .mode & 0o777,
+          0o600
+        );
+        await assert.rejects(launched.cleanupSnapshot());
+        releaseMockHistory();
+        await assert.rejects(launched.completeSnapshot({ approved: true }));
+        const consumed = await snapshotStep("completion", () => launched.completeSnapshot());
+        assert.equal(consumed.status, "SNAPSHOT_CONSUMED");
+        assert.equal(consumed.executionStatus, "SUCCEEDED");
+        assert.equal(consumed.promotionEligible, false);
+        assert.equal(consumed.custodyRecordDigests.length, 4);
+        assert.ok(consumed.originalDigests.length > 0);
+        const terminalName = `${consumed.executionRecordDigest.slice(7)}.json`;
+        const terminalBytes = await fs.readFile(
+          path.join(f.profile.storage.journalRoot, "objects", terminalName)
+        );
+        const terminal = JSON.parse(terminalBytes);
+        assert.equal(terminal.stage, "snapshot-consumer");
+        assert.equal(terminal.status, "SUCCEEDED");
+        assert.equal(terminal.sessionId, execution.sessionId);
+        assert.equal(terminal.sessionNonce, execution.sessionNonce);
+        assert.equal(
+          terminal.predecessorExecutionRecordDigest,
+          consumedSnapshot.executionRecordDigest
+        );
+        assert.equal(terminal.resultDigest, consumed.resultDigest);
+        assert.equal(terminal.processEvidenceDigest, consumed.processEvidenceDigest);
+        assert.equal(sha256Bytes(terminalBytes), consumed.executionRecordDigest);
+        for (const role of ["archive", "backup"])
+          assert.deepEqual(
+            await fs.readFile(path.join(f.profile.storage[`${role}Root`], "objects", terminalName)),
+            terminalBytes
+          );
+        await assert.rejects(launched.completeSnapshot());
         releaseMockHistory();
         await launched.recheck();
         releaseMockHistory();

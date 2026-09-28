@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
+import { verifyOwnershipMap } from "../../packages/release-foundation/src/snapshot/normalize-ownership.mjs";
 import { restoreR3SnapshotDatabase } from "./r3-remote-snapshot-restore.mjs";
 
 const operationRef = "11111111-2222-4333-8444-555555555555";
@@ -347,6 +348,28 @@ test("restores through the dedicated role, proves ownership and revocation, then
   }
   assert.equal(result.facts.databaseName, databaseName);
   assert.equal(result.facts.databaseOid, f.target.databaseOid);
+  assert.equal(result.observations.restoreExecution.containerId, containerId);
+  assert.equal(result.observations.restoreExecution.running, false);
+  assert.equal(result.observations.restoreExecution.command[0], "/usr/bin/pg_restore");
+  assert.equal(result.observations.restoreExecution.command.at(-1), f.copied.facts.path);
+  assert.deepEqual(
+    verifyOwnershipMap({
+      ownershipMap: f.ownershipMap,
+      target: {
+        databaseIdentityDigest: f.target.databaseIdentityDigest,
+        migrationRole: f.target.roles.migrate,
+        runtimeRole: f.target.roles["runtime-test"]
+      },
+      inventory: result.observations.ownershipInventories.after,
+      now: new Date(result.observations.ownershipObservation.observedAt)
+    }),
+    result.observations.ownershipObservation
+  );
+  assert.deepEqual(
+    result.observations.ownershipInventories.before,
+    result.observations.ownershipInventories.after
+  );
+  assert.ok(Object.isFrozen(result.observations.ownershipInventories.after.objects));
   assert.deepEqual(f.stages, ["GRANTING", "GRANTED", "REVOKING", "REVOKED"]);
   assert.equal(f.restoreCalls, 1);
   assert.ok(f.copiedChecks >= 2);

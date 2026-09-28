@@ -1881,7 +1881,7 @@ export async function prepareR3HostedEvidenceImport(input) {
             .stat.isDirectory()
         );
       }
-      for (const state of ["active", "absent"]) {
+      for (const state of ["active", "absent", "lifecycle"]) {
         const leaf = path.join(directory, state);
         try {
           await fs.mkdir(leaf, { mode: 0o700 });
@@ -1893,7 +1893,7 @@ export async function prepareR3HostedEvidenceImport(input) {
             .at(-1)
             .stat.isDirectory()
         );
-        if (storageRoot === profile.storage.archiveRoot) {
+        if (storageRoot === profile.storage.archiveRoot && state !== "lifecycle") {
           const raw = path.join(leaf, "raw");
           try {
             await fs.mkdir(raw, { mode: 0o700 });
@@ -2244,6 +2244,8 @@ export async function openTrustedR3CreationSession(input) {
       "consume",
       "holdTargets",
       "completeCreation",
+      "registerLifecycleTarget",
+      "completeSnapshot",
       "record",
       "close"
     ]);
@@ -2272,6 +2274,8 @@ export async function openTrustedR3CreationSession(input) {
       consume: (value) => action("consume", [value]),
       holdTargets: (value) => action("holdTargets", [value]),
       completeCreation: (value) => action("completeCreation", [value]),
+      registerLifecycleTarget: (value) => action("registerLifecycleTarget", [value]),
+      completeSnapshot: (...args) => action("completeSnapshot", args),
       record: (kind, value) => action("record", [kind, value]),
       close: () => serial(finish)
     });

@@ -257,3 +257,15 @@ R2 历史继续使用原校验器。仅在独立重放 R3 目的地之后，才�
 关闭立即阻止新入口和下一个库；当前库保留原通道与持续的身份校验，以完成有界恢复和撤销/凭据清理，然后才中断通道并关闭句柄。身份失效或远端进程状态不明时继续保留 UNKNOWN 和锁。返回 `SNAPSHOT_DATABASES_RESTORED`、`executionStatus:INTERRUPTED_UNKNOWN`、`promotionEligible:false` 仅表示本目标集合读回；lifecycle 预留库执行、远端 dump 清理、最终 consumer 保管记录、匹配 source 的 final 执行和实际云端双链仍须完成。
 
 远端副本句柄另有一次性 `cleanup()`，目前尚未接入原生入口。它先重查身份、原文件/目录和摘要，再只 unlink 该文件；确认文件消失并再次核对目录身份后才 rmdir，最终读取两个路径均不存在的原件。成功后的 recheck 改为确认不存在。普通 close 不触发删除，清理失败或与 close 重叠不允许重试，也不声明成功；清理读回仍须进入后续消费保管记录。
+
+## 原生清理与消费终结接线
+
+后续增量已接入无参数、一次性的 `cleanupSnapshot()` 和 `completeSnapshot()`，组合验证正在进行。清理入口只在完整恢复集合完成后执行，使用同一持有的副本和通道，读回绑定全部恢复摘要并保存在预留的私有目录。普通关闭不触发远端删除；关闭与显式操作重叠时等待其结束，不再发布成功回执。
+
+消费终结由既有 session 自行读取固定私有原件，调用内部纯结果构建器，重算 fetch/decryption/copy/restore/cleanup 摘要链、精确目标和物理锁、所有权清单及角色撤销/进程/清理事实。历史快照的生产源码与当前候选源码可以不同；用途继续由既有输入授权绑定当前 destination。每份原件分别写入并读回 archive 与 backup，避免将整个集合合并成超过现有 1 MiB 限制的单文件。result/process 两个摘要索引各保留两份既有 v3 custody 记录；历史核验按索引重新读取所有原件双副本并重算结果。
+
+成功时仅追加既有 v3 的 `snapshot-consumer/SUCCEEDED` execution，前驱是原 UNKNOWN，result/processEvidence 摘要均指向实际保管原件。原 UNKNOWN 和锁不删除，后续重查持续读取终结原件。`SNAPSHOT_CONSUMED` 回执仍为 `promotionEligible:false`，不能据此宣布 lifecycle、source/final 双链、hosted handoff 或阶段 1 完成。
+
+STS 下载凭据必须在密文下载及发布完成时仍有效。下载后的本地重放不再次请求云端，持续约束来自固定文件与 bootstrap 身份、会话撤销及目的地核验；不能因短期下载凭据到期而让长时间恢复在本地重查处失败。
+
+lifecycle 入口仅允许同一持有主机无参数调用，源快照链须先完成消费。实际 suite 创建两个预留库并读回身份后，既有会话才登记对应 Engine/system/OID/marker 物理锁；不修改原目的地或用库名代替物理身份。运行既有文件的两个用例，保存真实 TAP、事件、权限/清理/兄弟库读回和两份保管原件。仅收到两个实际终止事件后才结束内部 Node 测试运行信号，让 Node 生成原始汇总；持有主机会话及其撤销信号保持独立。单 suite 观察不构成 source/final 全清单通过。

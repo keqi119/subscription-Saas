@@ -15,6 +15,7 @@ import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/
 import { createR3HostedWorkspace } from "./r3-hosted-workspace-create.mjs";
 import { assessR3PostgresResources } from "./r3-postgres-observation.mjs";
 import { observeR3ManagedContainerd } from "./r3-containerd-observation.mjs";
+import { buildR3HostedEvidence } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
 
 const CODE = "R3_HOSTED_CREATION_CONTROL_INVALID";
 const LIMIT = 1048576;
@@ -67,6 +68,13 @@ function freeze(value) {
     Object.values(value).forEach(freeze);
     Object.freeze(value);
   }
+  return value;
+}
+function copyResult(value) {
+  if (Buffer.isBuffer(value)) return Buffer.from(value);
+  if (Array.isArray(value)) return value.map(copyResult);
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copyResult(item)]));
   return value;
 }
 function statIdentity(stat) {
@@ -646,6 +654,7 @@ export async function openR3HostedCreationControl(input) {
   let server,
     ownSocket,
     engine = null,
+    evidenceSeed = null,
     accepted = false,
     closing = false,
     createdSettled = false,
@@ -791,6 +800,12 @@ export async function openR3HostedCreationControl(input) {
           requireThat(!closing);
           await currentJob(spec, job);
           engine = await startEngine(workspaceResult, spec.workspace, socketPath, () => closing);
+          evidenceSeed = copyResult({
+            workspace: workspaceResult,
+            engine: engine.result,
+            rawInputs: engine.rawInputs,
+            promotionEligible: false
+          });
           relayWork = startPostgresRelay({
             spec,
             job,
@@ -876,7 +891,35 @@ export async function openR3HostedCreationControl(input) {
       },
       Math.max(0, Math.min(epoch(spec.expiresAt), epoch(job.expiresAt)) - Date.now())
     );
-    return Object.freeze({ socketPath, created, postgresForward, close });
+    return Object.freeze({
+      socketPath,
+      created,
+      postgresForward,
+      async exportEvidence(input) {
+        exact(input, ["privateKey"]);
+        requireThat(!closing);
+        await created;
+        requireThat(!closing && evidenceSeed !== null);
+        await currentJob(spec, job);
+        await engine.recheck();
+        const policyBytes = await fs.readFile(
+          new URL("../../release/contracts/manual-stage1-r3-target-policy.v1.json", import.meta.url)
+        );
+        const bytes = buildR3HostedEvidence({
+          created: copyResult(evidenceSeed),
+          jobAdmissionBytes: Buffer.from(jobInput.bytes),
+          spec,
+          policyBytes,
+          privateKey: input.privateKey,
+          now: new Date().toISOString()
+        });
+        await engine.recheck();
+        await currentJob(spec, job);
+        requireThat(!closing);
+        return bytes;
+      },
+      close
+    });
   } catch (cause) {
     closing = true;
     clearTimeout(expiryTimer);

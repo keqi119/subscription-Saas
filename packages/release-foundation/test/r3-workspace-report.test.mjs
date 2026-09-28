@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, sign } from "node:crypto";
 import fs from "node:fs/promises";
 import { encodeManualJson } from "../src/manual-stage1-contracts.mjs";
 import { sha256Bytes } from "../src/digest.mjs";
@@ -10,6 +10,7 @@ import {
   verifyR3WorkspaceBinding,
   assessR3WorkspaceReport
 } from "../src/r3-workspace-report.mjs";
+import { buildR3HostedEvidence, verifyR3HostedEvidence } from "../src/r3-hosted-evidence.mjs";
 
 const operationRef = "10000000-0000-4000-8000-000000000001";
 const id = operationRef.replaceAll("-", "");
@@ -360,6 +361,196 @@ test("valid active report and job-key binding preserve exact evidence without gr
   assert.deepEqual(result, f.observation);
   assert.ok(Object.isFrozen(result) && Object.isFrozen(result.facts));
   assert.equal(result.promotionEligible, false);
+});
+
+function hosted(f) {
+  const mount = f.observation.files.find((row) => row.name === "directory").identity;
+  const base = `${workspace.mountPath}/exec/containerd`;
+  const config = Buffer.from(
+    `version = 2\nroot = "${workspace.mountPath}/docker/containerd/daemon"\nstate = "${base}/daemon"\ndisabled_plugins = ["io.containerd.grpc.v1.cri"]\n[grpc]\naddress = "${base}/containerd.sock"\n[debug]\naddress = "${base}/containerd-debug.sock"\n`
+  );
+  const containerd = {
+    pid: 321,
+    parentPid: 320,
+    starttime: "12345",
+    mount: { path: workspace.mountPath, dev: mount.dev, ino: mount.ino },
+    executable: {
+      path: "/usr/bin/containerd",
+      dev: "1",
+      ino: "99",
+      mode: String(0o100755),
+      uid: "0",
+      gid: "0"
+    },
+    configDigest: sha256Bytes(config),
+    configIdentity: { path: `${base}/containerd.toml`, dev: mount.dev, ino: "10" },
+    pidFileIdentity: { path: `${base}/containerd.pid`, dev: mount.dev, ino: "11" },
+    root: { path: `${workspace.mountPath}/docker/containerd/daemon`, dev: mount.dev, ino: "12" },
+    state: { path: `${base}/daemon`, dev: mount.dev, ino: "13" },
+    grpc: { path: `${base}/containerd.sock`, dev: mount.dev, ino: "14", listenerInode: "100" },
+    debug: {
+      path: `${base}/containerd-debug.sock`,
+      dev: mount.dev,
+      ino: "15",
+      listenerInode: "101"
+    }
+  };
+  const info = {
+    ID: operationRef,
+    DockerRootDir: `${workspace.mountPath}/docker`,
+    Driver: "overlay2",
+    LoggingDriver: "json-file",
+    Containers: 0,
+    Images: 0,
+    DriverStatus: []
+  };
+  const version = { Version: "26.1.3", ApiVersion: "1.45" };
+  const rawInputs = {
+    ping: Buffer.from("OK"),
+    info: Buffer.from(JSON.stringify(info)),
+    version: Buffer.from(JSON.stringify(version)),
+    "containerd.pidFile": Buffer.from("321\n"),
+    "containerd.stat": Buffer.from(
+      `321 (containerd) S 320 ${Array(17).fill("0").join(" ")} 12345 0 0\n`
+    ),
+    "containerd.cmdline": Buffer.from(`containerd\0--config\0${base}/containerd.toml\0`),
+    "containerd.config": config,
+    "containerd.grpcSocketRow": Buffer.from(`000: 2 0 10000 1 01 100 ${base}/containerd.sock`),
+    "containerd.debugSocketRow": Buffer.from(
+      `001: 2 0 10000 1 01 101 ${base}/containerd-debug.sock`
+    ),
+    "containerd.socketOwners": Buffer.from(
+      JSON.stringify([
+        { path: "/proc/321/fd/3", target: "socket:[100]" },
+        { path: "/proc/321/fd/4", target: "socket:[101]" }
+      ])
+    )
+  };
+  const engine = {
+    id: operationRef,
+    info,
+    version,
+    process: {
+      pid: 320,
+      command: "/usr/bin/dockerd",
+      args: ["--config-file", `${workspace.mountPath}/daemon.json`],
+      executable: {},
+      startedAt: now,
+      logPath: `${workspace.mountPath}/daemon.log`
+    },
+    containerd,
+    rawRefs: Object.fromEntries(
+      Object.entries(rawInputs).map(([key, bytes]) => [key, digest(bytes)])
+    ),
+    promotionEligible: false
+  };
+  return {
+    workspace: {
+      observation: {
+        observation: f.observation,
+        observationDigest: sha256Bytes(canonical(f.observation)),
+        rawInputs: f.rawInputs
+      },
+      creation: { status: "WORKSPACE_OBSERVED" },
+      rawInputs: {}
+    },
+    engine,
+    rawInputs,
+    promotionEligible: false
+  };
+}
+
+test("R3 hosted evidence binds active workspace and empty encrypted Engine to the job key", async () => {
+  const f = await fixture();
+  const args = {
+    created: hosted(f),
+    jobAdmissionBytes: canonical(f.job),
+    spec: f.spec,
+    policyBytes: f.policyBytes,
+    privateKey: f.privateKey,
+    now
+  };
+  const bytes = buildR3HostedEvidence(args);
+  const result = verifyR3HostedEvidence({
+    bundleBytes: bytes,
+    jobAdmissionBytes: args.jobAdmissionBytes,
+    spec: f.spec,
+    policyBytes: f.policyBytes,
+    now
+  });
+  assert.equal(result.bundleDigest, sha256Bytes(bytes));
+  assert.equal(result.engine.containerd.parentPid, result.engine.process.pid);
+  assert.deepEqual(result.workspace.observationBytes, canonical(f.observation));
+  assert.deepEqual(result.engineRawInputs.ping, Buffer.from("OK"));
+});
+
+test("R3 hosted evidence rejects changed raw, job signature, and containerd mount", async () => {
+  const f = await fixture();
+  const args = {
+    created: hosted(f),
+    jobAdmissionBytes: canonical(f.job),
+    spec: f.spec,
+    policyBytes: f.policyBytes,
+    privateKey: f.privateKey,
+    now
+  };
+  args.created.engine.containerd.mount.ino = "other";
+  assert.throws(() => buildR3HostedEvidence(args), invalid("R3_HOSTED_EVIDENCE_INVALID"));
+  args.created = hosted(f);
+  args.created.rawInputs.info = Buffer.from("{}");
+  assert.throws(() => buildR3HostedEvidence(args), invalid("R3_HOSTED_EVIDENCE_INVALID"));
+  args.created = hosted(f);
+  const bundle = JSON.parse(buildR3HostedEvidence(args));
+  bundle.engine.info.Images = 1;
+  assert.throws(
+    () =>
+      verifyR3HostedEvidence({
+        bundleBytes: canonical(bundle),
+        jobAdmissionBytes: args.jobAdmissionBytes,
+        spec: f.spec,
+        policyBytes: f.policyBytes,
+        now
+      }),
+    invalid("R3_HOSTED_EVIDENCE_INVALID")
+  );
+});
+
+test("R3 hosted evidence rejects contradictory raw despite a valid job-key signature", async () => {
+  const f = await fixture();
+  const jobAdmissionBytes = canonical(f.job);
+  const bundle = JSON.parse(
+    buildR3HostedEvidence({
+      created: hosted(f),
+      jobAdmissionBytes,
+      spec: f.spec,
+      policyBytes: f.policyBytes,
+      privateKey: f.privateKey,
+      now
+    })
+  );
+  const changed = Buffer.from(
+    `321 (containerd) S 999 ${Array(17).fill("0").join(" ")} 12345 0 0\n`
+  );
+  bundle.engineRawInputs["containerd.stat"] = changed.toString("base64");
+  bundle.engine.rawRefs["containerd.stat"] = digest(changed);
+  const { signature, ...body } = bundle;
+  bundle.signature = sign(
+    null,
+    Buffer.concat([Buffer.from("subscription-saas/r3-hosted-evidence/v1\n"), canonical(body)]),
+    f.privateKey
+  ).toString("base64");
+  assert.notEqual(bundle.signature, signature);
+  assert.throws(
+    () =>
+      verifyR3HostedEvidence({
+        bundleBytes: canonical(bundle),
+        jobAdmissionBytes,
+        spec: f.spec,
+        policyBytes: f.policyBytes,
+        now
+      }),
+    invalid("R3_HOSTED_EVIDENCE_INVALID")
+  );
 });
 
 test("absent report needs three successful inventories and four actual ENOENT leaves", async () => {

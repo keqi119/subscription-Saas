@@ -27,6 +27,16 @@ let postgresResources = null;
 let containerdFailure = false;
 let containerdGeneration = 1;
 const containerdCalls = [];
+const evidenceCalls = [];
+
+mock.module("../../packages/release-foundation/src/r3-hosted-evidence.mjs", {
+  namedExports: {
+    buildR3HostedEvidence: (input) => {
+      evidenceCalls.push(input);
+      return Buffer.from("synthetic signed evidence");
+    }
+  }
+});
 
 mock.module("./r3-containerd-observation.mjs", {
   namedExports: {
@@ -285,6 +295,7 @@ async function setup(t) {
   containerdFailure = false;
   containerdGeneration = 1;
   containerdCalls.length = 0;
+  evidenceCalls.length = 0;
   creationCalls.length = 0;
   t.after(() => {
     creatorFailure = oldCreatorFailure;
@@ -405,6 +416,19 @@ test("R3 control accepts one native HTTP request then hands same socket to obser
   assert.equal(result.engine.containerd.parentPid, result.engine.process.pid);
   assert.ok(result.engine.rawRefs["containerd.config"].digest.startsWith("sha256:"));
   assert.ok(Buffer.isBuffer(result.rawInputs["containerd.config"]));
+  result.rawInputs.ping.fill(0);
+  const privateKey = {};
+  assert.deepEqual(
+    await control.exportEvidence({ privateKey }),
+    Buffer.from("synthetic signed evidence")
+  );
+  assert.equal(evidenceCalls.length, 1);
+  assert.equal(evidenceCalls[0].privateKey, privateKey);
+  assert.deepEqual(evidenceCalls[0].created.rawInputs.ping, Buffer.from("OK"));
+  assert.equal(evidenceCalls[0].created.engine.id, result.engine.id);
+  await assert.rejects(control.exportEvidence({ privateKey, created: result }), {
+    code: "R3_HOSTED_CREATION_CONTROL_INVALID"
+  });
   assert.equal(f.commands.length, 1);
   assert.deepEqual(containerdCalls[0], {
     mountPath,
@@ -421,6 +445,9 @@ test("R3 control accepts one native HTTP request then hands same socket to obser
   const closed = await control.close();
   assert.equal(closed.engine.exitCode, 0);
   assert.equal(closed.workspaceRemoved, false);
+  await assert.rejects(control.exportEvidence({ privateKey }), {
+    code: "R3_HOSTED_CREATION_CONTROL_INVALID"
+  });
 });
 
 test("R3 control refuses implicit reuse of the system containerd", async (t) => {

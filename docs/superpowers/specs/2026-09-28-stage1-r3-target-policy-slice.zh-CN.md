@@ -90,7 +90,7 @@ absent 要求完整拓扑命令成功，并且指定 mount、mapper、loop/backi
 
 `r3-workspace-report.mjs` 使用 job admission 已声明的临时 Ed25519 公钥校验观察绑定，签名域为 `subscription-saas/r3-workspace-observation/v1\n`。绑定原件只含 schemaVersion、operationRef、state、observationDigest、jobAdmissionDigest、creationSpecDigest 和 signature。它证明同一 job key 对这些原件的绑定，不替代 GitHub attestation、当前 job API 或 manual 授权。签名辅助函数只接受对应的 Node 私钥对象；H1 读取器只用已验证 admission 内的公钥。
 
-`readFixedR3WorkspaceObservation({repoRoot,operationRef,state})` 从既有私有 archive 的 `inputs/r3/{operationRef}/workspace-{state}.json` 和 `workspace-{state}.binding.json` 读取规范 JSON；全部 stdout/stderr、policy、machine-id 和适用的 proc 原件保存在同操作目录的 `raw/{sha256hex}.bin`，空 stderr 也有实际原件。入口先验证固定 job admission，然后用同一批持有字节验签、检查原件摘要与长度、固定命令/参数/成功 close、文件元数据和时间顺序，并重新解析完整拓扑，与声明事实逐项比较。返回原件均为独立副本，内部句柄持续保留；recheck 交错检查当前 job、源码/H1/H2、原件和时窗，失败关闭句柄。
+`readFixedR3WorkspaceObservation({repoRoot,operationRef,state})` 从既有私有 archive 的 `inputs/r3/{operationRef}/observations/{state}/workspace-{state}.json` 和同目录 `workspace-{state}.binding.json` 读取规范 JSON；全部 stdout/stderr、policy、machine-id 和适用的 proc 原件保存在该观察子目录的 `raw/{sha256hex}.bin`，空 stderr 也有实际原件。观察子目录在固定 job 句柄打开前保留，避免后续导入改变 `job-admission.json` 的父目录身份。入口先验证固定 job admission，然后用同一批持有字节验签、检查原件摘要与长度、固定命令/参数/成功 close、文件元数据和时间顺序，并重新解析完整拓扑，与声明事实逐项比较。返回原件均为独立副本，内部句柄持续保留；recheck 交错检查当前 job、源码/H1/H2、原件和时窗，失败关闭句柄。
 
 active 和 absent 都要求同一原 job 仍在运行且处于原有效窗内。absent 仍只表示指定工作区名的观察结果；job 已终止或原件改变时拒绝读取，不能据此释放锁。终止 job 后的清理恢复、实际 hosted producer/保管、Engine/PG 目标图、创建执行及 manual 会话接线仍待完成。本片不读取 H1 私钥、快照解密钥或 payload，不启用旧 workflow，也不新增服务。
 
@@ -171,3 +171,13 @@ lifecycle 的两个库名由同一 operation 的既有命名函数推导，使�
 锁按 digest 固定顺序，以 `wx` 和 0600 排他创建。文件写入实际 session/nonce/scope/PID、operation、原 UNKNOWN execution 摘要及目标身份，fsync 后独立读回；持有 descriptor 并在 active/recheck 时核对同一 inode/dev 与 canonical 字节。创建文件后立即登记句柄，部分写入或碰撞保留已获取前缀，不覆盖既有文件，不重新获取另一集合。普通关闭仅关闭句柄，保留已消费会话的 UNKNOWN、两条通道槽及目标锁；释放须由后续真实清理证据支撑。
 
 H1 的 `provisionDatabases()` 自动传入本句柄观察到的 PG 和数据库事实，调用方仍没有目标或路径覆盖参数。取得锁后再次通过固定 PG 通道读取数据库身份，后续原生 recheck 同时检查本地锁、job/源码、两端 PG 和数据库事实。返回的 targetLocks 仅描述当前排他集合，不能替代 destination admission、保管读回或 snapshot 权限。创建 SUCCEEDED 与消费必须在同一会话内另行验证完整原件关系，当前实现继续保留 UNKNOWN。
+
+## Hosted 观察原件交接
+
+现有控制句柄通过 `exportEvidence({privateKey})` 生成至多 1 MiB 的 canonical bundle，包含 active 工作区报告、原绑定、空 Engine 和 managed containerd 事实及对应非秘密原件。数据来自控制句柄自身创建结果的私有副本，导出前后重新检查当前 job 和 Engine；调用者不能替换观察结果。整体签名使用已准入 job 的同一临时 Ed25519 key 和独立证据域，不产生 manual 授权或创建成功记录。
+
+H1 的 `prepareR3HostedEvidenceImport` 在打开 job/session 句柄前保留 archive 和既有加密 backup 的观察子目录。`importR3HostedEvidence` 先核实固定 H1/job/policy 和 bundle，再以排他创建写入开始标记、完整备份、archive 原件及摘要寻址 raw。失败保留已写前缀，同一操作不得覆盖或重试；写入后独立读回，核对当前 job，才返回固定读取句柄。导入不改变 job 父目录，也不放松既有 inode、权限和目录身份检查。
+
+`readFixedR3HostedEvidence` 同时持有工作区、archive bundle 与 backup bundle，要求备份与原件字节相同，重查签名和完整原件关系。containerd 的 PID、父进程、starttime、命令行、配置路径及监听归属从已有 raw 重新解析；原生采集器复用同一解析。文件与 executable 元数据仍是该 job 采集并签名的事实，H1 不声称能够直接访问 hosted 的内核。
+
+原生 launch 句柄的 `importHostedEvidence(bytes)` 仅允许一次导入，并与同一固定转发读取的 Engine ID/version 对照；之后持续保留读取句柄用于 recheck。返回 `HOSTED_EVIDENCE_OBSERVED` 和 `promotionEligible:false`，原 session、消费记录和 UNKNOWN 保持。实际 artifact 交付、destination admission、SUCCEEDED/consumer/cleanup 和 hosted workflow 尚未完成；不得把导入成功当作这些执行通过。

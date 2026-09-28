@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import childProcess from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -18,6 +19,7 @@ import {
   verifyR3WorkspaceBinding,
   assessR3WorkspaceReport
 } from "../../packages/release-foundation/src/r3-workspace-report.mjs";
+import { verifyR3HostedEvidence } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
 
 const LIMIT = 1048576;
 const H1 = "H1_INPUT_UNAVAILABLE";
@@ -1662,7 +1664,7 @@ export async function readFixedR3WorkspaceObservation(input) {
     const profile = await loadFixedManualProfile({ repoRoot }),
       { principal } = await actualHost(),
       archiveRoot = profile.storage.archiveRoot,
-      root = path.join(archiveRoot, "inputs", "r3", operationRef),
+      root = path.join(archiveRoot, "inputs", "r3", operationRef, "observations", state),
       privateOptions = { principal, privateRoot: archiveRoot };
     requireThat(
       sha256Canonical(profile) === job.spec.profileDigest &&
@@ -1784,6 +1786,292 @@ export async function readFixedR3WorkspaceObservation(input) {
       build: job.build,
       sourceSha: job.sourceSha,
       ...readback,
+      recheck,
+      close
+    });
+  } catch {
+    await close();
+    fail(code);
+  }
+}
+
+function r3EvidenceSelector(input, additional = []) {
+  exact(input, ["repoRoot", "operationRef", ...additional]);
+  requireThat(
+    process.platform === "linux" &&
+      process.getuid?.() === 0 &&
+      typeof input.repoRoot === "string" &&
+      typeof input.operationRef === "string" &&
+      UUID.test(input.operationRef)
+  );
+  return { repoRoot: absolute(input.repoRoot), operationRef: input.operationRef };
+}
+const r3EvidenceRoot = (storageRoot, operationRef, state = "active") =>
+  path.join(storageRoot, "inputs", "r3", operationRef, "observations", state);
+
+// Reserve child directories before any job/source handles pin their parents.
+// This does not import observations, acquire a capability or consume an operation.
+export async function prepareR3HostedEvidenceImport(input) {
+  const code = "R3_HOSTED_EVIDENCE_INPUT_UNAVAILABLE";
+  try {
+    const { repoRoot, operationRef } = r3EvidenceSelector(input);
+    const profile = await loadFixedManualProfile({ repoRoot });
+    const { principal } = await actualHost();
+    const archiveOperation = path.join(profile.storage.archiveRoot, "inputs", "r3", operationRef);
+    requireThat(
+      (
+        await checkedPath(archiveOperation, {
+          principal,
+          privateRoot: profile.storage.archiveRoot
+        })
+      )
+        .at(-1)
+        .stat.isDirectory()
+    );
+    for (const storageRoot of [profile.storage.archiveRoot, profile.storage.backupRoot]) {
+      let directory = storageRoot;
+      const segments = ["inputs", "r3", operationRef, "observations"];
+      for (const segment of segments) {
+        directory = path.join(directory, segment);
+        try {
+          await fs.mkdir(directory, { mode: 0o700 });
+        } catch (error) {
+          if (error.code !== "EEXIST") throw error;
+        }
+        requireThat(
+          (await checkedPath(directory, { principal, privateRoot: storageRoot }))
+            .at(-1)
+            .stat.isDirectory()
+        );
+      }
+      for (const state of ["active", "absent"]) {
+        const leaf = path.join(directory, state);
+        try {
+          await fs.mkdir(leaf, { mode: 0o700 });
+        } catch (error) {
+          if (error.code !== "EEXIST") throw error;
+        }
+        requireThat(
+          (await checkedPath(leaf, { principal, privateRoot: storageRoot }))
+            .at(-1)
+            .stat.isDirectory()
+        );
+        if (storageRoot === profile.storage.archiveRoot) {
+          const raw = path.join(leaf, "raw");
+          try {
+            await fs.mkdir(raw, { mode: 0o700 });
+          } catch (error) {
+            if (error.code !== "EEXIST") throw error;
+          }
+          requireThat(
+            (await checkedPath(raw, { principal, privateRoot: storageRoot }))
+              .at(-1)
+              .stat.isDirectory()
+          );
+        }
+      }
+    }
+    return Object.freeze({ operationRef, promotionEligible: false });
+  } catch {
+    fail(code);
+  }
+}
+
+// The only input bytes here are untrusted evidence. A verified live job and its
+// attested code/key establish provenance; import does not make creation succeed.
+export async function importR3HostedEvidence(input) {
+  const code = "R3_HOSTED_EVIDENCE_INPUT_UNAVAILABLE";
+  let job, policy;
+  try {
+    const selector = r3EvidenceSelector(input, ["bundleBytes"]);
+    requireThat(
+      Buffer.isBuffer(input.bundleBytes) &&
+        input.bundleBytes.length > 0 &&
+        input.bundleBytes.length <= LIMIT
+    );
+    const bundleBytes = Buffer.from(input.bundleBytes);
+    job = await readFixedR3JobAdmission(selector);
+    const profile = await loadFixedManualProfile({ repoRoot: selector.repoRoot });
+    const { principal } = await actualHost();
+    policy = await openInput(
+      path.join(selector.repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json"),
+      { principal, sourceRoot: selector.repoRoot }
+    );
+    const verified = verifyR3HostedEvidence({
+      bundleBytes,
+      jobAdmissionBytes: job.rawInputs.admission,
+      spec: job.spec,
+      policyBytes: policy.bytes,
+      now: new Date().toISOString()
+    });
+    const root = r3EvidenceRoot(profile.storage.archiveRoot, selector.operationRef);
+    const backup = r3EvidenceRoot(profile.storage.backupRoot, selector.operationRef);
+    const optionsFor = (file) => ({
+      principal,
+      privateRoot: within(profile.storage.archiveRoot, file)
+        ? profile.storage.archiveRoot
+        : profile.storage.backupRoot
+    });
+    const directories = new Map();
+    for (const dir of [root, path.join(root, "raw"), backup]) {
+      const checked = await checkedPath(dir, optionsFor(dir));
+      requireThat(checked.at(-1).stat.isDirectory());
+      directories.set(dir, checked.at(-1).stat);
+    }
+    const check = async () => {
+      await policy.recheck();
+      for (const [dir, initial] of directories) {
+        const current = (await checkedPath(dir, optionsFor(dir))).at(-1).stat;
+        requireThat(current.isDirectory() && sameIdentity(initial, current, false));
+      }
+    };
+    const write = async (file, bytes) => {
+      await check();
+      requireThat(
+        Buffer.isBuffer(bytes) && bytes.length <= LIMIT && directories.has(path.dirname(file))
+      );
+      const handle = await fs.open(
+        file,
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_EXCL |
+          constants.O_NOFOLLOW |
+          constants.O_CLOEXEC,
+        0o600
+      );
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      const observed = await openInput(file, optionsFor(file));
+      try {
+        requireThat(observed.bytes.equals(bytes));
+        await observed.recheck();
+      } finally {
+        await observed.close();
+      }
+      await check();
+    };
+    await job.recheck();
+    await write(
+      path.join(root, "import-started.json"),
+      encodeManualJson({
+        operationRef: selector.operationRef,
+        bundleDigest: verified.bundleDigest,
+        jobAdmissionDigest: job.jobAdmissionDigest,
+        startedAt: new Date().toISOString(),
+        promotionEligible: false
+      })
+    );
+    await write(path.join(backup, "hosted-evidence.json"), bundleBytes);
+    await write(path.join(root, "hosted-evidence.json"), bundleBytes);
+    const raw = new Map();
+    for (const bytes of [
+      ...Object.values(verified.workspace.rawInputs),
+      ...Object.values(verified.engineRawInputs)
+    ]) {
+      const digest = sha256Bytes(bytes);
+      if (raw.has(digest)) requireThat(raw.get(digest).equals(bytes));
+      else raw.set(digest, bytes);
+    }
+    for (const [digest, bytes] of [...raw].sort(([a], [b]) => a.localeCompare(b)))
+      await write(path.join(root, "raw", `${digest.slice(7)}.bin`), bytes);
+    await write(path.join(root, "workspace-active.json"), verified.workspace.observationBytes);
+    await write(path.join(root, "workspace-active.binding.json"), verified.workspace.bindingBytes);
+    for (const dir of directories.keys()) {
+      const handle = await fs.open(dir, "r");
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    }
+    await check();
+    await job.recheck();
+    await policy.close();
+    policy = null;
+    await job.close();
+    job = null;
+    return await readFixedR3HostedEvidence(selector);
+  } catch {
+    fail(code);
+  } finally {
+    await policy?.close();
+    await job?.close();
+  }
+}
+
+export async function readFixedR3HostedEvidence(input) {
+  const code = "R3_HOSTED_EVIDENCE_INPUT_UNAVAILABLE";
+  let workspace,
+    bundle,
+    backup,
+    closed = false;
+  const close = async () => {
+    closed = true;
+    const results = await Promise.allSettled([
+      workspace?.close(),
+      bundle?.close(),
+      backup?.close()
+    ]);
+    if (results.some((result) => result.status === "rejected")) fail(code);
+  };
+  try {
+    const selector = r3EvidenceSelector(input);
+    workspace = await readFixedR3WorkspaceObservation({ ...selector, state: "active" });
+    const profile = await loadFixedManualProfile({ repoRoot: selector.repoRoot });
+    const { principal } = await actualHost();
+    bundle = await openInput(
+      path.join(
+        r3EvidenceRoot(profile.storage.archiveRoot, selector.operationRef),
+        "hosted-evidence.json"
+      ),
+      { principal, privateRoot: profile.storage.archiveRoot }
+    );
+    backup = await openInput(
+      path.join(
+        r3EvidenceRoot(profile.storage.backupRoot, selector.operationRef),
+        "hosted-evidence.json"
+      ),
+      { principal, privateRoot: profile.storage.backupRoot }
+    );
+    const assess = () => {
+      requireThat(bundle.bytes.equals(backup.bytes));
+      const value = verifyR3HostedEvidence({
+        bundleBytes: bundle.bytes,
+        jobAdmissionBytes: workspace.jobReadback.rawInputs.admission,
+        spec: workspace.spec,
+        policyBytes: workspace.rawInputs.policy,
+        now: new Date().toISOString()
+      });
+      requireThat(
+        value.workspace.observationBytes.equals(workspace.rawInputs.observation) &&
+          value.workspace.bindingBytes.equals(workspace.rawInputs.binding)
+      );
+      return value;
+    };
+    const recheck = async () => {
+      try {
+        requireThat(!closed);
+        await workspace.recheck();
+        await bundle.recheck();
+        await backup.recheck();
+        return assess();
+      } catch {
+        await close();
+        fail(code);
+      }
+    };
+    const verified = await recheck();
+    return Object.freeze({
+      ...verified,
+      workspaceObservation: workspace.observation,
+      spec: workspace.spec,
+      jobAdmissionDigest: workspace.jobAdmissionDigest,
+      rawBundle: Buffer.from(bundle.bytes),
+      promotionEligible: false,
       recheck,
       close
     });

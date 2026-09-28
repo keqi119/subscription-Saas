@@ -30,6 +30,8 @@ import {
   verifyManualBuild,
   openTrustedManualSession,
   readFixedR3JobAdmission,
+  prepareR3HostedEvidenceImport,
+  importR3HostedEvidence,
   openTrustedR3CreationSession
 } from "./manual-stage1-trust.mjs";
 import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
@@ -1010,6 +1012,9 @@ export async function launchR3TargetCreate(input) {
     postgresArchive,
     databaseTargetSet,
     targetLockLease,
+    hostedEvidence,
+    hostedImportAttempted = false,
+    hostedImportPending,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1028,6 +1033,7 @@ export async function launchR3TargetCreate(input) {
       const errors = [];
       await databasesPending?.catch(() => {});
       await postgresPending?.catch(() => {});
+      await hostedImportPending?.catch(() => {});
       for (const held of databaseSecrets) {
         held.bytes.fill(0);
         try {
@@ -1044,7 +1050,7 @@ export async function launchR3TargetCreate(input) {
           errors.push(error);
         }
       }
-      for (const handle of [lease, session, fixed]) {
+      for (const handle of [hostedEvidence, lease, session, fixed]) {
         try {
           await handle?.close();
         } catch (error) {
@@ -1060,6 +1066,7 @@ export async function launchR3TargetCreate(input) {
     await fixed.recheck();
     await lease?.recheck();
     await targetLockLease?.recheck();
+    await hostedEvidence?.recheck();
   };
   const pause = () => new Promise((resolve) => setTimeout(resolve, 500));
   const exchange = (method, pathname, body = null, connected = null, options = {}) =>
@@ -1744,6 +1751,7 @@ export async function launchR3TargetCreate(input) {
       !uuid.test(input.operationRef)
     )
       fail(code);
+    await prepareR3HostedEvidenceImport(input);
     fixed = await readFixedR3JobAdmission(input);
     session = await openTrustedR3CreationSession(input);
     lease = await openR3H1ForwardLease(input);
@@ -1895,6 +1903,42 @@ export async function launchR3TargetCreate(input) {
       version: Object.freeze(readback.runtime),
       get diagnostics() {
         return Object.freeze(diagnostics.slice());
+      },
+      async importHostedEvidence(bundleBytes) {
+        if (
+          closed ||
+          hostedImportAttempted ||
+          !Buffer.isBuffer(bundleBytes) ||
+          bundleBytes.length === 0 ||
+          bundleBytes.length > 1048576
+        )
+          fail(code);
+        hostedImportAttempted = true;
+        const bytes = Buffer.from(bundleBytes);
+        hostedImportPending = (async () => {
+          await check();
+          hostedEvidence = await importR3HostedEvidence({ ...input, bundleBytes: bytes });
+          const observed = await engineReadback(!postgresAttempted);
+          if (
+            hostedEvidence.engine.id !== boundEngineId ||
+            observed.engine.ID !== boundEngineId ||
+            sha256Canonical(hostedEvidence.engine.version) !== sha256Canonical(observed.runtime)
+          )
+            fail(code);
+          await check();
+          diagnostics.push({ name: "hosted-evidence", body: await archive.raw(bytes) });
+          return Object.freeze({
+            status: "HOSTED_EVIDENCE_OBSERVED",
+            bundleDigest: hostedEvidence.bundleDigest,
+            engineId: boundEngineId,
+            promotionEligible: false
+          });
+        })();
+        try {
+          return await hostedImportPending;
+        } catch {
+          throw Object.assign(new Error(code), { code, consumption });
+        }
       },
       async provisionPostgres(...args) {
         if (args.length !== 0 || closed || postgresAttempted) fail(code);

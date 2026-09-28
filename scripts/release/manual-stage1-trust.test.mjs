@@ -18,6 +18,7 @@ import { createBuildProof } from "./create-build-proof.mjs";
 import { produceManualBuildCustody } from "./manual-build-custody-producer.mjs";
 import { assessR3WorkspaceObservation } from "../../packages/release-foundation/src/r3-workspace-observation.mjs";
 import { signR3WorkspaceBinding } from "../../packages/release-foundation/src/r3-workspace-report.mjs";
+import { buildR3HostedEvidence } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
 
 // The first RED is an assertion, not an import crash. Subsequent assertions
 // exercise the production entrypoint; there is no trusted-result mock.
@@ -1753,8 +1754,8 @@ const r3WorkspaceCommands = (w, state) => [
     : [])
 ];
 
-async function r3WorkspaceFixture(t, state = "active") {
-  const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+async function r3WorkspaceFixture(t, state = "active", persist = true, existing = null) {
+  const f = existing ?? (await r3JobFixture(t, { phase: "source", chain: "fresh" }));
   const w = f.spec.workspace;
   const policyBytes = await fs.readFile(
     path.join(f.repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json")
@@ -1943,17 +1944,20 @@ async function r3WorkspaceFixture(t, state = "active") {
     privateKey: f.forwardingPrivateKey
   });
   const bindingBytes = encodeManualJson(binding);
-  const opRoot = path.dirname(f.admissionPath);
+  await trust.prepareR3HostedEvidenceImport({ repoRoot: f.repoRoot, operationRef: f.operationRef });
+  const opRoot = path.join(path.dirname(f.admissionPath), "observations", state);
   const observationPath = path.join(opRoot, `workspace-${state}.json`);
   const bindingPath = path.join(opRoot, `workspace-${state}.binding.json`);
-  await fs.writeFile(observationPath, observationBytes, { flag: "wx", mode: 0o600 });
-  await fs.writeFile(bindingPath, bindingBytes, { flag: "wx", mode: 0o600 });
+  if (persist) {
+    await fs.writeFile(observationPath, observationBytes, { flag: "wx", mode: 0o600 });
+    await fs.writeFile(bindingPath, bindingBytes, { flag: "wx", mode: 0o600 });
+  }
   const rawDir = path.join(opRoot, "raw");
   await fs.mkdir(rawDir, { recursive: true, mode: 0o700 });
   const rawPaths = {};
   for (const [name, bytes] of Object.entries(raw)) {
     const file = path.join(rawDir, `${sha256Bytes(bytes).slice(7)}.bin`);
-    await fs.writeFile(file, bytes, { mode: 0o600 });
+    if (persist) await fs.writeFile(file, bytes, { mode: 0o600 });
     rawPaths[name] = file;
   }
   return {
@@ -1964,6 +1968,7 @@ async function r3WorkspaceFixture(t, state = "active") {
     binding,
     bindingBytes,
     bindingPath,
+    policyBytes,
     raw,
     rawPaths
   };
@@ -1971,6 +1976,9 @@ async function r3WorkspaceFixture(t, state = "active") {
 
 test("R3 WORKSPACE API rejects overrides and accessors before native IO", async (t) => {
   assert.equal(typeof trust.readFixedR3WorkspaceObservation, "function");
+  assert.equal(typeof trust.prepareR3HostedEvidenceImport, "function");
+  assert.equal(typeof trust.importR3HostedEvidence, "function");
+  assert.equal(typeof trust.readFixedR3HostedEvidence, "function");
   let effects = 0;
   const denied = () => {
     effects++;
@@ -1996,6 +2004,133 @@ test("R3 WORKSPACE API rejects overrides and accessors before native IO", async 
     });
   assert.equal(effects, 0);
 });
+
+function r3HostedBundle(f) {
+  const mount = f.spec.workspace.mountPath;
+  const identity = f.observation.files.find((item) => item.name === "directory").identity;
+  const meta = (file) => ({ path: file, dev: identity.dev, ino: "42" });
+  const info = {
+    ID: "69a59aea-54ef-4181-808e-cf8d6cdb05e6",
+    DockerRootDir: `${mount}/docker`,
+    Driver: "overlay2",
+    LoggingDriver: "json-file",
+    Containers: 0,
+    Images: 0,
+    DriverStatus: [["Backing Filesystem", "extfs"]]
+  };
+  const version = { Version: "26.1.3", ApiVersion: "1.45", MinAPIVersion: "1.24" };
+  const rawInputs = {
+    ping: Buffer.from("OK"),
+    info: encodeManualJson(info),
+    version: encodeManualJson(version)
+  };
+  const base = `${mount}/exec/containerd`;
+  const containerdRaw = {
+    pidFile: "321\n",
+    stat: `321 (containerd) S 320 ${Array(17).fill("0").join(" ")} 9000 0 0\n`,
+    cmdline: `containerd\0--config\0${base}/containerd.toml\0`,
+    config: `version = 2\nroot = "${mount}/docker/containerd/daemon"\nstate = "${base}/daemon"\ndisabled_plugins = ["io.containerd.grpc.v1.cri"]\n[grpc]\naddress = "${base}/containerd.sock"\n[debug]\naddress = "${base}/containerd-debug.sock"\n`,
+    grpcSocketRow: `000: 2 0 10000 1 01 7001 ${base}/containerd.sock`,
+    debugSocketRow: `001: 2 0 10000 1 01 7002 ${base}/containerd-debug.sock`,
+    socketOwners: JSON.stringify([
+      { path: "/proc/321/fd/3", target: "socket:[7001]" },
+      { path: "/proc/321/fd/4", target: "socket:[7002]" }
+    ])
+  };
+  for (const [name, value] of Object.entries(containerdRaw))
+    rawInputs[`containerd.${name}`] = Buffer.from(value);
+  const engine = {
+    id: info.ID,
+    info,
+    version,
+    promotionEligible: false,
+    process: {
+      pid: 320,
+      command: "/usr/bin/dockerd",
+      args: ["--config-file", `${mount}/daemon.json`],
+      executable: {},
+      startedAt: f.observation.finishedAt,
+      logPath: `${mount}/daemon.log`
+    },
+    containerd: {
+      pid: 321,
+      parentPid: 320,
+      starttime: "9000",
+      mount: { path: mount, dev: identity.dev, ino: identity.ino },
+      executable: {},
+      configDigest: sha256Bytes(rawInputs["containerd.config"]),
+      configIdentity: meta(`${mount}/exec/containerd/containerd.toml`),
+      pidFileIdentity: meta(`${mount}/exec/containerd/containerd.pid`),
+      root: meta(`${mount}/docker/containerd/daemon`),
+      state: meta(`${mount}/exec/containerd/daemon`),
+      grpc: { ...meta(`${mount}/exec/containerd/containerd.sock`), listenerInode: "7001" },
+      debug: { ...meta(`${mount}/exec/containerd/containerd-debug.sock`), listenerInode: "7002" }
+    },
+    rawRefs: Object.fromEntries(
+      Object.entries(rawInputs).map(([name, bytes]) => [
+        name,
+        { digest: sha256Bytes(bytes), bytes: bytes.length }
+      ])
+    )
+  };
+  return buildR3HostedEvidence({
+    created: {
+      workspace: {
+        observation: {
+          observation: f.observation,
+          observationDigest: sha256Bytes(f.observationBytes),
+          rawInputs: f.raw
+        },
+        creation: { status: "WORKSPACE_OBSERVED" },
+        rawInputs: {}
+      },
+      engine,
+      rawInputs,
+      promotionEligible: false
+    },
+    jobAdmissionBytes: f.admissionBytes,
+    spec: f.spec,
+    policyBytes: f.policyBytes,
+    privateKey: f.forwardingPrivateKey,
+    now: new Date().toISOString()
+  });
+}
+
+test(
+  "R3 WORKSPACE imports job-signed hosted originals without invalidating the live job",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3WorkspaceFixture(t, "active", false);
+    const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    const live = await trust.readFixedR3JobAdmission(input);
+    t.after(() => live.close());
+    const bundleBytes = r3HostedBundle(f);
+    const imported = await trust.importR3HostedEvidence({ ...input, bundleBytes });
+    t.after(() => imported.close());
+    assert.equal(imported.bundleDigest, sha256Bytes(bundleBytes));
+    assert.deepEqual(imported.workspaceObservation, f.observation);
+    assert.deepEqual(await fs.readFile(f.observationPath), f.observationBytes);
+    await live.recheck();
+    await imported.recheck();
+    await assert.rejects(trust.importR3HostedEvidence({ ...input, bundleBytes }), {
+      code: "R3_HOSTED_EVIDENCE_INPUT_UNAVAILABLE"
+    });
+    await imported.recheck();
+    const backup = path.join(
+      f.profile.storage.backupRoot,
+      "inputs",
+      "r3",
+      f.operationRef,
+      "observations",
+      "active",
+      "hosted-evidence.json"
+    );
+    await fs.writeFile(backup, Buffer.from("changed backup"));
+    await assert.rejects(imported.recheck(), { code: "R3_HOSTED_EVIDENCE_INPUT_UNAVAILABLE" });
+    assert.equal(f.counters.privateKeyReads, 0);
+    assert.ok(f.counters.writes > 0);
+  }
+);
 
 test(
   "R3 WORKSPACE active pins signed observation and raw bytes through recheck",
@@ -2870,9 +3005,11 @@ test(
   }
 );
 
-for (const dropped of [false, true])
+for (const mode of ["accepted", "dropped", "evidence"]) {
+  const dropped = mode === "dropped",
+    evidenceOnly = mode === "evidence";
   test(
-    `R3 LAUNCH ${dropped ? "delivery loss keeps consumed UNKNOWN" : "consumes before delivery and reads the same forwarded Engine"}`,
+    `R3 LAUNCH ${evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "consumes before delivery and reads the same forwarded Engine"}`,
     { skip: process.platform !== "linux" },
     async (t) => {
       const f = await r3ForwardFixture(t);
@@ -3168,7 +3305,7 @@ for (const dropped of [false, true])
           } else if (url === "/v1.45/info")
             response.end(
               JSON.stringify({
-                ID: "synthetic-engine-id",
+                ID: evidenceOnly ? "69a59aea-54ef-4181-808e-cf8d6cdb05e6" : "synthetic-engine-id",
                 Driver: "overlay2",
                 DockerRootDir: path.join(f.spec.workspace.mountPath, "docker"),
                 LoggingDriver: "json-file",
@@ -3309,7 +3446,23 @@ for (const dropped of [false, true])
       const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
       if (dropped)
         await assert.rejects(launchR3TargetCreate(input), { code: "R3_TARGET_CREATE_UNAVAILABLE" });
-      else {
+      else if (evidenceOnly) {
+        const source = await r3WorkspaceFixture(t, "active", false, f);
+        const bundle = r3HostedBundle(source);
+        const launched = await launchR3TargetCreate(input);
+        t.after(() => launched.close());
+        const result = await launched.importHostedEvidence(bundle);
+        assert.equal(result.status, "HOSTED_EVIDENCE_OBSERVED");
+        assert.equal(result.bundleDigest, sha256Bytes(bundle));
+        assert.equal(result.engineId, launched.engine.ID);
+        assert.equal(result.promotionEligible, false);
+        assert.equal(launched.status, "INTERRUPTED_UNKNOWN");
+        assert.equal(provisionPosts, 0);
+        assert.equal(pgConnections, 0);
+        await assert.rejects(launched.importHostedEvidence(bundle));
+        await launched.recheck();
+        await launched.close();
+      } else {
         const launched = await launchR3TargetCreate(input).catch((error) => {
           throw error.cause ?? error;
         });
@@ -3408,11 +3561,12 @@ for (const dropped of [false, true])
       assert.equal((await fs.readFile(f.forwardKey)).length, 0);
       assert.equal(
         (await fs.readdir(path.join(f.profile.storage.journalRoot, "locks"))).length,
-        dropped ? 2 : 41
+        dropped || evidenceOnly ? 2 : 41
       );
       await assert.rejects(production().openTrustedR3CreationSession(input));
     }
   );
+}
 test(
   "R3 SESSION opens target creation scope and locally closes after job termination",
   { skip: process.platform !== "linux" },

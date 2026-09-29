@@ -17,7 +17,10 @@ import {
 } from "./r3-hosted-workspace-create.mjs";
 import { assessR3PostgresResources } from "./r3-postgres-observation.mjs";
 import { observeR3ManagedContainerd } from "./r3-containerd-observation.mjs";
-import { buildR3HostedEvidence } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
+import {
+  buildR3HostedEvidence,
+  buildR3HostedCleanupEvidence
+} from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
 
 const CODE = "R3_HOSTED_CREATION_CONTROL_INVALID";
 const LIMIT = 1048576;
@@ -1136,6 +1139,34 @@ export async function openR3HostedCreationControl(input) {
           }
         })();
         return cleanupWork;
+      },
+      async exportCleanupEvidence(input) {
+        exact(input, ["privateKey"]);
+        requireThat(cleanupResult !== undefined && cleanupResult !== null);
+        await currentJob(spec, job);
+        const policyBytes = await fs.readFile(
+          new URL("../../release/contracts/manual-stage1-r3-target-policy.v1.json", import.meta.url)
+        );
+        const signedAt = new Date().toISOString();
+        const creationEvidenceBytes = buildR3HostedEvidence({
+          created: copyResult(evidenceSeed),
+          jobAdmissionBytes: Buffer.from(jobInput.bytes),
+          spec,
+          policyBytes,
+          privateKey: input.privateKey,
+          now: signedAt
+        });
+        const bytes = buildR3HostedCleanupEvidence({
+          cleanup: copyResult(cleanupResult),
+          creationEvidenceBytes,
+          jobAdmissionBytes: Buffer.from(jobInput.bytes),
+          spec,
+          policyBytes,
+          privateKey: input.privateKey,
+          now: signedAt
+        });
+        await currentJob(spec, job);
+        return bytes;
       },
       async exportEvidence(input) {
         exact(input, ["privateKey"]);

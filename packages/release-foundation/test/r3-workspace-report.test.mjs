@@ -10,7 +10,13 @@ import {
   verifyR3WorkspaceBinding,
   assessR3WorkspaceReport
 } from "../src/r3-workspace-report.mjs";
-import { buildR3HostedEvidence, verifyR3HostedEvidence } from "../src/r3-hosted-evidence.mjs";
+import {
+  buildR3HostedEvidence,
+  verifyR3HostedEvidence,
+  buildR3HostedCleanupEvidence,
+  verifyR3HostedCleanupEvidence
+} from "../src/r3-hosted-evidence.mjs";
+import { assessR3PostgresResources } from "../../../scripts/release/r3-postgres-observation.mjs";
 
 const operationRef = "10000000-0000-4000-8000-000000000001";
 const id = operationRef.replaceAll("-", "");
@@ -548,6 +554,410 @@ test("R3 hosted evidence rejects contradictory raw despite a valid job-key signa
         spec: f.spec,
         policyBytes: f.policyBytes,
         now
+      }),
+    invalid("R3_HOSTED_EVIDENCE_INVALID")
+  );
+});
+
+async function cleanupFixture() {
+  const f = await fixture();
+  const created = hosted(f);
+  const jobAdmissionBytes = canonical(f.job);
+  const creationEvidenceBytes = buildR3HostedEvidence({
+    created,
+    jobAdmissionBytes,
+    spec: f.spec,
+    policyBytes: f.policyBytes,
+    privateKey: f.privateKey,
+    now
+  });
+  const imageDigest = JSON.parse(
+    await fs.readFile(
+      new URL("../../../release/contracts/database-target-policies.v1.json", import.meta.url)
+    )
+  ).policies.find((item) => item.policyId === "s1-release-compose-ephemeral").requiredImageDigest;
+  const imageId = `sha256:${"e".repeat(64)}`;
+  const cid = "b".repeat(64);
+  const nid = "c".repeat(64);
+  const containerName = `s1r3pg_${id}`;
+  const networkName = `s1r3net_${id}`;
+  const volumeName = `s1r3data_${id}`;
+  const labels = { "com.subscription.release.operation-ref": operationRef };
+  const volumePath = `${workspace.mountPath}/docker/volumes/${volumeName}/_data`;
+  const pgRaw = {
+    info: { ...created.engine.info, Containers: 1, Images: 1 },
+    image: {
+      Id: imageId,
+      RepoDigests: [`postgres@${imageDigest}`],
+      Os: "linux",
+      Architecture: "amd64"
+    },
+    container: {
+      Id: cid,
+      Name: `/${containerName}`,
+      Image: imageId,
+      Config: { Image: `postgres:17-bookworm@${imageDigest}`, Labels: labels },
+      State: {
+        Status: "running",
+        Running: true,
+        Paused: false,
+        Restarting: false,
+        Dead: false,
+        Pid: 321
+      },
+      HostConfig: {
+        Privileged: false,
+        PidMode: "",
+        NetworkMode: networkName,
+        Binds: null,
+        PortBindings: {}
+      },
+      NetworkSettings: {
+        Ports: { "5432/tcp": null },
+        Networks: { [networkName]: { NetworkID: nid, IPAddress: "127.0.0.2" } }
+      },
+      Mounts: [
+        {
+          Type: "volume",
+          Name: volumeName,
+          Source: volumePath,
+          Destination: "/var/lib/postgresql/data",
+          Driver: "local",
+          RW: true
+        }
+      ]
+    },
+    network: {
+      Id: nid,
+      Name: networkName,
+      Driver: "bridge",
+      Internal: true,
+      Ingress: false,
+      EnableIPv6: false,
+      Labels: labels,
+      Containers: { [cid]: { Name: containerName, IPv4Address: "127.0.0.2/8" } }
+    },
+    volume: {
+      Name: volumeName,
+      Driver: "local",
+      Mountpoint: volumePath,
+      Options: null,
+      Labels: labels
+    }
+  };
+  const postgres = assessR3PostgresResources({
+    operationRef,
+    workspaceMountPath: workspace.mountPath,
+    engineId: created.engine.id,
+    imageDigest,
+    engine: pgRaw.info,
+    image: pgRaw.image,
+    container: pgRaw.container,
+    network: pgRaw.network,
+    volume: pgRaw.volume
+  });
+  const rawInputs = Object.fromEntries(
+    Object.entries(pgRaw).map(([key, value]) => [`before.${key}`, json(value)])
+  );
+  const requestNames = [
+    ["stop-container", "POST", `/containers/${cid}/stop?t=10`, 204, Buffer.alloc(0)],
+    [
+      "stopped-container",
+      "GET",
+      `/containers/${cid}/json`,
+      200,
+      json({
+        ...pgRaw.container,
+        State: {
+          Status: "exited",
+          Running: false,
+          Paused: false,
+          Restarting: false,
+          Dead: false,
+          Pid: 0,
+          ExitCode: 0
+        }
+      })
+    ],
+    ["remove-container", "DELETE", `/containers/${cid}?v=false&force=false`, 204, Buffer.alloc(0)],
+    ["absent-container", "GET", `/containers/${cid}/json`, 404, Buffer.alloc(0)],
+    ["remove-network", "DELETE", `/networks/${nid}`, 204, Buffer.alloc(0)],
+    ["absent-network", "GET", `/networks/${nid}`, 404, Buffer.alloc(0)],
+    ["remove-volume", "DELETE", `/volumes/${volumeName}?force=false`, 204, Buffer.alloc(0)],
+    ["absent-volume", "GET", `/volumes/${volumeName}`, 404, Buffer.alloc(0)],
+    [
+      "remove-image",
+      "DELETE",
+      `/images/${encodeURIComponent(imageId)}?force=false&noprune=true`,
+      200,
+      json([{ Deleted: imageId }])
+    ],
+    ["absent-image", "GET", `/images/${encodeURIComponent(imageId)}/json`, 404, Buffer.alloc(0)],
+    ["empty-engine", "GET", "/info", 200, json(created.engine.info)]
+  ];
+  const requests = requestNames.map(([name, method, route, status, response], index) => {
+    rawInputs[name] = response;
+    return {
+      name,
+      method,
+      path: `/v1.45${route}`,
+      startedAt: new Date(Date.parse(start) + 4000 + index * 100).toISOString(),
+      finishedAt: new Date(Date.parse(start) + 4050 + index * 100).toISOString(),
+      status,
+      response: digest(response)
+    };
+  });
+  const absent = await fixture("absent");
+  const after = clone(absent.observation);
+  const shift = (value) => new Date(Date.parse(value) + 11000).toISOString();
+  after.startedAt = shift(after.startedAt);
+  after.finishedAt = shift(after.finishedAt);
+  for (const row of after.files) row.observedAt = shift(row.observedAt);
+  for (const row of after.processes) {
+    row.startedAt = shift(row.startedAt);
+    row.closedAt = shift(row.closedAt);
+  }
+  const workspaceRaw = {
+    ...Object.fromEntries(
+      Object.entries(f.rawInputs).map(([name, bytes]) => [`before.${name}`, Buffer.from(bytes)])
+    ),
+    "cleanup.unmount.stdout": Buffer.alloc(0),
+    "cleanup.unmount.stderr": Buffer.alloc(0),
+    "cleanup.luksClose.stdout": Buffer.alloc(0),
+    "cleanup.luksClose.stderr": Buffer.alloc(0),
+    ...Object.fromEntries(
+      Object.entries(absent.rawInputs).map(([name, bytes]) => [`after.${name}`, Buffer.from(bytes)])
+    )
+  };
+  const cleanupProcess = (name, command, args, offset) => ({
+    name,
+    command,
+    args,
+    executable: identity("executable", 1234),
+    startedAt: new Date(Date.parse(start) + offset).toISOString(),
+    pid: 500 + offset,
+    closedAt: new Date(Date.parse(start) + offset + 50).toISOString(),
+    exitCode: 0,
+    signal: null,
+    stdout: digest(workspaceRaw[`cleanup.${name}.stdout`]),
+    stderr: digest(workspaceRaw[`cleanup.${name}.stderr`])
+  });
+  const cleanup = {
+    operationRef,
+    creationSpecDigest: sha256Bytes(canonical(f.spec)),
+    jobAdmissionDigest: sha256Bytes(jobAdmissionBytes),
+    status: "TARGET_REMOVED",
+    startedAt: "2026-09-28T00:00:05.000Z",
+    finishedAt: "2026-09-28T00:00:15.000Z",
+    postgres,
+    engine: {
+      id: created.engine.id,
+      process: created.engine.process,
+      containerd: created.engine.containerd,
+      exit: {
+        pid: created.engine.process.pid,
+        exitCode: 0,
+        signal: null,
+        closedAt: "2026-09-28T00:00:08.000Z"
+      }
+    },
+    requests,
+    processAbsence: [created.engine.process.pid, created.engine.containerd.pid].map(
+      (pid, index) => ({
+        path: `/proc/${pid}`,
+        code: "ENOENT",
+        observedAt: new Date(Date.parse(start) + 8100 + index * 100).toISOString()
+      })
+    ),
+    workspace: {
+      cleanup: {
+        operationRef,
+        promotionEligible: false,
+        status: "WORKSPACE_REMOVED",
+        startedAt: "2026-09-28T00:00:11.000Z",
+        finishedAt: "2026-09-28T00:00:13.500Z",
+        ownedPaths: [
+          workspace.keyFile,
+          workspace.backingFile,
+          `/dev/mapper/${workspace.mapperName}`,
+          workspace.mountPath
+        ],
+        processes: [
+          cleanupProcess("unmount", "/usr/bin/umount", [workspace.mountPath], 10100),
+          cleanupProcess(
+            "luksClose",
+            "/usr/sbin/cryptsetup",
+            ["close", workspace.mapperName],
+            10300
+          )
+        ]
+      },
+      observation: {
+        observation: after,
+        observationDigest: sha256Bytes(canonical(after)),
+        rawInputs: absent.rawInputs
+      },
+      rawInputs: workspaceRaw
+    },
+    rawInputs,
+    promotionEligible: false
+  };
+  return {
+    f,
+    jobAdmissionBytes,
+    creationEvidenceBytes,
+    cleanup,
+    checkedAt: "2026-09-28T00:00:20.000Z"
+  };
+}
+
+test("R3 hosted cleanup evidence round trips signed raw-backed removal", async () => {
+  const x = await cleanupFixture();
+  const bundleBytes = buildR3HostedCleanupEvidence({
+    cleanup: x.cleanup,
+    creationEvidenceBytes: x.creationEvidenceBytes,
+    jobAdmissionBytes: x.jobAdmissionBytes,
+    spec: x.f.spec,
+    policyBytes: x.f.policyBytes,
+    privateKey: x.f.privateKey,
+    now: x.checkedAt
+  });
+  const result = verifyR3HostedCleanupEvidence({
+    bundleBytes,
+    creationEvidenceBytes: x.creationEvidenceBytes,
+    jobAdmissionBytes: x.jobAdmissionBytes,
+    spec: x.f.spec,
+    policyBytes: x.f.policyBytes,
+    now: x.checkedAt
+  });
+  assert.equal(result.bundleDigest, sha256Bytes(bundleBytes));
+  assert.equal(result.creationEvidenceDigest, sha256Bytes(x.creationEvidenceBytes));
+  assert.equal(result.operationRef, operationRef);
+  assert.equal(result.cleanup.status, "TARGET_REMOVED");
+});
+
+test("R3 hosted cleanup evidence rejects UNKNOWN and changed cleanup request order", async () => {
+  const x = await cleanupFixture();
+  const args = {
+    cleanup: x.cleanup,
+    creationEvidenceBytes: x.creationEvidenceBytes,
+    jobAdmissionBytes: x.jobAdmissionBytes,
+    spec: x.f.spec,
+    policyBytes: x.f.policyBytes,
+    privateKey: x.f.privateKey,
+    now: x.checkedAt
+  };
+  args.cleanup.status = "INTERRUPTED_UNKNOWN";
+  assert.throws(() => buildR3HostedCleanupEvidence(args), invalid("R3_HOSTED_EVIDENCE_INVALID"));
+  args.cleanup.status = "TARGET_REMOVED";
+  args.cleanup.requests.reverse();
+  assert.throws(() => buildR3HostedCleanupEvidence(args), invalid("R3_HOSTED_EVIDENCE_INVALID"));
+});
+
+test("R3 hosted cleanup verifier rejects changed raw, wrong job key, and expired observation", async () => {
+  const x = await cleanupFixture();
+  const args = {
+    cleanup: x.cleanup,
+    creationEvidenceBytes: x.creationEvidenceBytes,
+    jobAdmissionBytes: x.jobAdmissionBytes,
+    spec: x.f.spec,
+    policyBytes: x.f.policyBytes,
+    privateKey: x.f.privateKey,
+    now: x.checkedAt
+  };
+  const bytes = buildR3HostedCleanupEvidence(args);
+  const verifyArgs = {
+    bundleBytes: bytes,
+    creationEvidenceBytes: x.creationEvidenceBytes,
+    jobAdmissionBytes: x.jobAdmissionBytes,
+    spec: x.f.spec,
+    policyBytes: x.f.policyBytes,
+    now: x.checkedAt
+  };
+  assert.throws(
+    () => verifyR3HostedCleanupEvidence({ ...verifyArgs, now: "2026-09-28T00:00:31.000Z" }),
+    invalid("R3_HOSTED_EVIDENCE_INVALID")
+  );
+  const otherKey = generateKeyPairSync("ed25519").privateKey;
+  assert.throws(
+    () => buildR3HostedCleanupEvidence({ ...args, privateKey: otherKey }),
+    invalid("R3_HOSTED_EVIDENCE_INVALID")
+  );
+  const bundle = JSON.parse(bytes);
+  bundle.cleanup.rawInputs["before.container"] = Buffer.from("{}").toString("base64");
+  const { signature, ...body } = bundle;
+  bundle.signature = sign(
+    null,
+    Buffer.concat([Buffer.from("subscription-saas/r3-hosted-cleanup/v1\n"), canonical(body)]),
+    x.f.privateKey
+  ).toString("base64");
+  assert.notEqual(bundle.signature, signature);
+  assert.throws(
+    () => verifyR3HostedCleanupEvidence({ ...verifyArgs, bundleBytes: canonical(bundle) }),
+    invalid("R3_HOSTED_EVIDENCE_INVALID")
+  );
+});
+
+test("R3 hosted cleanup evidence accepts Docker image and layer deletions", async () => {
+  const x = await cleanupFixture();
+  const imageId = x.cleanup.postgres.imageId;
+  const response = json([
+    { Untagged: `postgres@${x.cleanup.postgres.imageDigest}` },
+    { Deleted: imageId },
+    { Deleted: `sha256:${"f".repeat(64)}` }
+  ]);
+  x.cleanup.rawInputs["remove-image"] = response;
+  x.cleanup.requests[8].response = digest(response);
+  const args = {
+    cleanup: x.cleanup,
+    creationEvidenceBytes: x.creationEvidenceBytes,
+    jobAdmissionBytes: x.jobAdmissionBytes,
+    spec: x.f.spec,
+    policyBytes: x.f.policyBytes,
+    privateKey: x.f.privateKey,
+    now: x.checkedAt
+  };
+  const bundleBytes = buildR3HostedCleanupEvidence(args);
+  assert.equal(
+    verifyR3HostedCleanupEvidence({
+      bundleBytes,
+      creationEvidenceBytes: x.creationEvidenceBytes,
+      jobAdmissionBytes: x.jobAdmissionBytes,
+      spec: x.f.spec,
+      policyBytes: x.f.policyBytes,
+      now: x.checkedAt
+    }).cleanup.status,
+    "TARGET_REMOVED"
+  );
+});
+
+test("R3 hosted cleanup evidence rejects executable mode above the kernel mode range", async () => {
+  const x = await cleanupFixture();
+  x.cleanup.workspace.cleanup.processes[0].executable.mode = String(2 ** 32 + 0o100755);
+  assert.throws(
+    () =>
+      buildR3HostedCleanupEvidence({
+        cleanup: x.cleanup,
+        creationEvidenceBytes: x.creationEvidenceBytes,
+        jobAdmissionBytes: x.jobAdmissionBytes,
+        spec: x.f.spec,
+        policyBytes: x.f.policyBytes,
+        privateKey: x.f.privateKey,
+        now: x.checkedAt
+      }),
+    invalid("R3_HOSTED_EVIDENCE_INVALID")
+  );
+  x.cleanup.workspace.cleanup.processes[0].executable.mode = 0o100755;
+  assert.throws(
+    () =>
+      buildR3HostedCleanupEvidence({
+        cleanup: x.cleanup,
+        creationEvidenceBytes: x.creationEvidenceBytes,
+        jobAdmissionBytes: x.jobAdmissionBytes,
+        spec: x.f.spec,
+        policyBytes: x.f.policyBytes,
+        privateKey: x.f.privateKey,
+        now: x.checkedAt
       }),
     invalid("R3_HOSTED_EVIDENCE_INVALID")
   );

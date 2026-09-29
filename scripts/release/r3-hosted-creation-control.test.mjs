@@ -31,6 +31,7 @@ let containerdFailure = false;
 let containerdGeneration = 1;
 const containerdCalls = [];
 const evidenceCalls = [];
+const cleanupEvidenceCalls = [];
 const workspaceCleanupCalls = [];
 const createdWorkspaces = [];
 let cleanupStopFailure = false;
@@ -40,6 +41,10 @@ mock.module("../../packages/release-foundation/src/r3-hosted-evidence.mjs", {
     buildR3HostedEvidence: (input) => {
       evidenceCalls.push(input);
       return Buffer.from("synthetic signed evidence");
+    },
+    buildR3HostedCleanupEvidence: (input) => {
+      cleanupEvidenceCalls.push(input);
+      return Buffer.from("synthetic signed cleanup evidence");
     }
   }
 });
@@ -315,6 +320,7 @@ async function setup(t) {
   containerdGeneration = 1;
   containerdCalls.length = 0;
   evidenceCalls.length = 0;
+  cleanupEvidenceCalls.length = 0;
   creationCalls.length = 0;
   createdWorkspaces.length = 0;
   workspaceCleanupCalls.length = 0;
@@ -632,6 +638,10 @@ test("R3 control cleanup drains only the owned target then removes its workspace
   const control = await openR3HostedCreationControl(inputs);
   t.after(() => control.close());
   assert.equal(typeof control.cleanupOwnedTarget, "function");
+  assert.equal(typeof control.exportCleanupEvidence, "function");
+  await assert.rejects(control.exportCleanupEvidence({ privateKey: {} }), {
+    code: "R3_HOSTED_CREATION_CONTROL_INVALID"
+  });
   await assert.rejects(control.cleanupOwnedTarget({ verified: true }), {
     code: "R3_HOSTED_CREATION_CONTROL_INVALID"
   });
@@ -668,6 +678,24 @@ test("R3 control cleanup drains only the owned target then removes its workspace
   );
   assert.ok(result.requests.every((value) => value.finishedAt && value.response?.digest));
   assert.ok(Object.values(result.rawInputs).every(Buffer.isBuffer));
+  const originalBefore = Buffer.from(result.rawInputs["before.info"]);
+  result.rawInputs["before.info"].fill(0);
+  const privateKey = {};
+  assert.deepEqual(
+    await control.exportCleanupEvidence({ privateKey }),
+    Buffer.from("synthetic signed cleanup evidence")
+  );
+  assert.equal(cleanupEvidenceCalls.length, 1);
+  assert.equal(cleanupEvidenceCalls[0].privateKey, privateKey);
+  assert.deepEqual(
+    cleanupEvidenceCalls[0].creationEvidenceBytes,
+    Buffer.from("synthetic signed evidence")
+  );
+  assert.deepEqual(cleanupEvidenceCalls[0].cleanup.rawInputs["before.info"], originalBefore);
+  assert.equal(cleanupEvidenceCalls[0].cleanup.engine.process.pid, created.engine.process.pid);
+  await assert.rejects(control.exportCleanupEvidence({ privateKey, cleanup: result }), {
+    code: "R3_HOSTED_CREATION_CONTROL_INVALID"
+  });
   await assert.rejects(control.cleanupOwnedTarget(), {
     code: "R3_HOSTED_CREATION_CONTROL_INVALID"
   });
@@ -696,6 +724,9 @@ test("R3 control cleanup preserves the failed stop prefix and never removes work
     return true;
   });
   assert.equal(workspaceCleanupCalls.length, 0);
+  await assert.rejects(control.exportCleanupEvidence({ privateKey: {} }), {
+    code: "R3_HOSTED_CREATION_CONTROL_INVALID"
+  });
   await assert.rejects(control.cleanupOwnedTarget(), {
     code: "R3_HOSTED_CREATION_CONTROL_INVALID"
   });

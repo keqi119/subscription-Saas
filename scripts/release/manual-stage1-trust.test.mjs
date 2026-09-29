@@ -4211,6 +4211,111 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
             "sessionNonce"
           ]);
           assert.equal(launched.session.registerLifecycleTarget, undefined);
+          assert.equal(launched.session.assertCandidateUse, undefined);
+          const storeCandidate = async (value) => {
+            const bytes = encodeManualJson(value),
+              digest = sha256Bytes(bytes);
+            for (const role of ["archive", "backup"])
+              await fs.writeFile(
+                path.join(f.profile.storage[`${role}Root`], "objects", `${digest.slice(7)}.json`),
+                bytes,
+                { flag: "wx", mode: 0o600 }
+              );
+            return digest;
+          };
+          const archiveObjects = path.join(f.profile.storage.archiveRoot, "objects");
+          const journalObjects = path.join(f.profile.storage.journalRoot, "objects");
+          const sessionOriginals = [];
+          for (const name of await fs.readdir(journalObjects)) {
+            const value = JSON.parse(await fs.readFile(path.join(journalObjects, name)));
+            if (
+              value.kind === "session" &&
+              value.sessionId === launched.session.sessionId &&
+              value.status === "OPEN"
+            )
+              sessionOriginals.push(value);
+          }
+          assert.equal(sessionOriginals.length, 1);
+          const now = new Date().toISOString();
+          const request = {
+            schemaVersion: "manual-runner-request.v5",
+            profileDigest: launched.session.profileDigest,
+            ownerId: f.profile.ownerId,
+            sessionId: launched.session.sessionId,
+            sessionNonce: launched.session.sessionNonce,
+            operationId: f.operationRef,
+            idempotencyKey: `r3-candidate-use:${f.operationRef}`,
+            attemptId: "50000000-0000-4000-8000-000000000001",
+            runId: "50000000-0000-4000-8000-000000000002",
+            stage: "candidate-use",
+            capability: "execute-source-database-tests",
+            purpose: "stage1-isolated-database-tests",
+            ...launched.session.scope,
+            candidate: { buildProofDigest: launched.session.scope.buildProofDigest },
+            destinationAdmissionDigest: recorded.destinationDigest,
+            preparationExecutionRecordDigest: completed.executionRecordDigest,
+            databaseTestManifestDigest: sha256Canonical(
+              JSON.parse(
+                await fs.readFile(
+                  path.join(f.repoRoot, "release/contracts/database-test-manifest.v1.json")
+                )
+              )
+            )
+          };
+          delete request.buildProofDigest;
+          const {
+            schemaVersion: requestVersion,
+            ownerId,
+            capability,
+            purpose,
+            candidate,
+            ...allocationFields
+          } = request;
+          request.attemptAllocationDigest = await storeCandidate({
+            ...allocationFields,
+            schemaVersion: "manual-runner-evidence.v2",
+            kind: "attempt-allocation",
+            recordedAt: now,
+            allocatedAt: now,
+            promotionEligible: false,
+            sessionRecordDigest: sha256Canonical(sessionOriginals[0]),
+            buildProofDigest: candidate.buildProofDigest,
+            predecessorExecutionRecordDigest: completed.executionRecordDigest
+          });
+          await storeCandidate(request);
+          const {
+            schemaVersion,
+            attemptId,
+            runId,
+            attemptAllocationDigest,
+            sourceSha,
+            candidate: candidateProof,
+            ...candidateBinding
+          } = request;
+          const requestInput = {
+            binding: candidateBinding,
+            canonicalBytes: encodeManualJson(request)
+          };
+          const authorization = await capturedTrustedSession.sign(requestInput);
+          assert.equal(authorization.payload.schemaVersion, "manual-launch-authorization.v5");
+          const candidateReceipt = await capturedTrustedSession.consume({
+            authorization,
+            request: requestInput
+          });
+          assert.equal(candidateReceipt.stage, "candidate-use");
+          assert.deepEqual(await capturedTrustedSession.assertCandidateUse(), {
+            executionRecordDigest: candidateReceipt.executionRecordDigest
+          });
+          const candidateExecution = JSON.parse(
+            await fs.readFile(
+              path.join(archiveObjects, `${candidateReceipt.executionRecordDigest.slice(7)}.json`)
+            )
+          );
+          assert.equal(candidateExecution.status, "INTERRUPTED_UNKNOWN");
+          assert.equal(
+            candidateExecution.predecessorExecutionRecordDigest,
+            completed.executionRecordDigest
+          );
           const lockRoot = path.join(f.profile.storage.journalRoot, "locks");
           const initialLocks = await fs.readdir(lockRoot);
           assert.equal(initialLocks.length, 41);

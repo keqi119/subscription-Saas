@@ -239,7 +239,8 @@ export function signManualAuthorization(input) {
   const forward = [
     "manual-launch-authorization.v2",
     "manual-launch-authorization.v3",
-    "manual-launch-authorization.v4"
+    "manual-launch-authorization.v4",
+    "manual-launch-authorization.v5"
   ].includes(payload.schemaVersion);
   validateContract(forward ? payload.schemaVersion : "manual-launch-authorization.v1", {
     payload,
@@ -297,30 +298,46 @@ export function validateManualTargetCreationRequest(request) {
   return captured;
 }
 
+export function validateManualCandidateUseRequest(request) {
+  const captured = snapshot(jsonInput(request));
+  validateContract("manual-runner-request.v5", captured);
+  requireThat(captured.attemptId !== captured.runId);
+  return captured;
+}
+
 export function verifyManualSnapshotConsumerAuthorizationBinding(input) {
-  return verifyManualScopedAuthorizationBinding(input, false);
+  return verifyManualScopedAuthorizationBinding(input, "consumer");
 }
 
 export function verifyManualTargetCreationAuthorizationBinding(input) {
-  return verifyManualScopedAuthorizationBinding(input, true);
+  return verifyManualScopedAuthorizationBinding(input, "creation");
 }
 
-function verifyManualScopedAuthorizationBinding(input, creation) {
+export function verifyManualCandidateUseAuthorizationBinding(input) {
+  return verifyManualScopedAuthorizationBinding(input, "candidate-use");
+}
+
+function verifyManualScopedAuthorizationBinding(input, kind) {
   closed(input, ["authorization", "profile", "requestBytes", "now"]);
   const authorization = jsonInput(input.authorization),
     profile = jsonInput(input.profile),
     parsed = requestInput({ canonicalBytes: input.requestBytes, binding: {} }),
-    request = creation
-      ? validateManualTargetCreationRequest(parsed.full)
-      : validateManualSnapshotConsumerRequest(parsed.full),
+    request =
+      kind === "creation"
+        ? validateManualTargetCreationRequest(parsed.full)
+        : kind === "candidate-use"
+          ? validateManualCandidateUseRequest(parsed.full)
+          : validateManualSnapshotConsumerRequest(parsed.full),
     epoch = instant(input.now);
   validateContract("manual-stage1-profile.v2", profile);
   validateContract(
-    creation
+    kind === "creation"
       ? "manual-launch-authorization.v4"
-      : request.schemaVersion === "manual-runner-request.v3"
-        ? "manual-launch-authorization.v3"
-        : "manual-launch-authorization.v2",
+      : kind === "candidate-use"
+        ? "manual-launch-authorization.v5"
+        : request.schemaVersion === "manual-runner-request.v3"
+          ? "manual-launch-authorization.v3"
+          : "manual-launch-authorization.v2",
     authorization
   );
   const payload = authorization.payload,
@@ -347,9 +364,16 @@ function verifyManualScopedAuthorizationBinding(input, creation) {
     "capability",
     "purpose",
     "phase",
-    ...(creation
-      ? ["chain", "targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest"]
-      : ["scopeAuthorizationDigest"])
+    ...(kind === "consumer"
+      ? ["scopeAuthorizationDigest"]
+      : ["chain", "targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest"]),
+    ...(kind === "candidate-use"
+      ? [
+          "destinationAdmissionDigest",
+          "preparationExecutionRecordDigest",
+          "databaseTestManifestDigest"
+        ]
+      : [])
   ])
     requireThat(same(payload[field], request[field]));
   requireThat(payload.requestDigest === sha256Canonical(request));
@@ -434,7 +458,12 @@ function verifyBase(authorization, profile, request, now) {
 }
 
 function verifyR3Base(authorization, profile, request, now) {
-  const creation = authorization.payload.schemaVersion === "manual-launch-authorization.v4";
+  const kind =
+    authorization.payload.schemaVersion === "manual-launch-authorization.v4"
+      ? "creation"
+      : authorization.payload.schemaVersion === "manual-launch-authorization.v5"
+        ? "candidate-use"
+        : "consumer";
   verifyManualScopedAuthorizationBinding(
     {
       authorization,
@@ -442,7 +471,7 @@ function verifyR3Base(authorization, profile, request, now) {
       requestBytes: encodeManualJson(request.full),
       now
     },
-    creation
+    kind
   );
   const payload = authorization.payload,
     excluded = new Set([
@@ -485,11 +514,29 @@ function r3SessionValid(session, payload, request, now) {
       request.candidate.buildProofDigest === scope.buildProofDigest &&
       request.phase === scope.phase
   );
-  if (payload.stage === "target-create") {
+  if (payload.stage === "target-create" || payload.stage === "candidate-use") {
     for (const field of ["chain", "targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest"])
       requireThat(request[field] === scope[field]);
-    requireThat(session.predecessor === null);
-  } else {
+    if (payload.stage === "target-create") requireThat(session.predecessor === null);
+  }
+  if (payload.stage === "candidate-use") {
+    const predecessor = session.predecessor;
+    requireThat(
+      scope.phase === "source" &&
+        request.chain === scope.chain &&
+        predecessor !== null &&
+        predecessor.kind === "execution" &&
+        predecessor.stage === (scope.chain === "fresh" ? "target-create" : "snapshot-consumer") &&
+        predecessor.status === "SUCCEEDED" &&
+        sha256Canonical(predecessor) === request.preparationExecutionRecordDigest &&
+        predecessor.profileDigest === payload.profileDigest &&
+        predecessor.sessionId === payload.sessionId &&
+        predecessor.sessionNonce === payload.sessionNonce &&
+        predecessor.operationId === payload.operationId &&
+        instant(predecessor.recordedAt) <= instant(payload.issuedAt) &&
+        (scope.chain !== "fresh" || predecessor.resultDigest === request.destinationAdmissionDigest)
+    );
+  } else if (payload.stage === "snapshot-consumer") {
     const predecessor = session.predecessor;
     requireThat(scope.chain === "snapshot");
     requireThat(
@@ -626,9 +673,11 @@ export function verifyManualAuthorization(input) {
     ["records", "headDigest", "checkpoint", "readAt"],
     "MANUAL_REVOCATION_UNVERIFIED"
   );
-  const r3 = ["manual-launch-authorization.v3", "manual-launch-authorization.v4"].includes(
-    authorization.payload?.schemaVersion
-  );
+  const r3 = [
+    "manual-launch-authorization.v3",
+    "manual-launch-authorization.v4",
+    "manual-launch-authorization.v5"
+  ].includes(authorization.payload?.schemaVersion);
   const { payload, epoch, recordSchema } = r3
     ? verifyR3Base(authorization, profile, request, now)
     : verifyBase(authorization, profile, request, now);

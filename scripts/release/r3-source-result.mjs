@@ -150,6 +150,7 @@ function lifecycle(execution, expected, binding, originals) {
         "sessionNonce",
         "destinationDigest",
         "creationExecutionRecordDigest",
+        "candidateUseExecutionRecordDigest",
         "snapshotExecutionRecordDigest"
       ].every((key) => originals[key] === binding[key])
   );
@@ -228,7 +229,8 @@ export async function buildR3SourceResult({
           binding.profileDigest,
           binding.destinationDigest,
           binding.clusterFingerprint,
-          binding.creationExecutionRecordDigest
+          binding.creationExecutionRecordDigest,
+          binding.candidateUseExecutionRecordDigest
         ].every((value) => DIGEST.test(value)) &&
         /^[0-9a-f]{64}$/u.test(binding.containerId) &&
         /^[0-9a-f]{64}$/u.test(binding.sessionNonce) &&
@@ -246,6 +248,7 @@ export async function buildR3SourceResult({
         sourceSha: binding.sourceSha,
         destinationDigest: binding.destinationDigest,
         manifestDigest: sha256Canonical(manifest),
+        candidateUseExecutionRecordDigest: binding.candidateUseExecutionRecordDigest,
         promotionEligible: false
       })
     );

@@ -1004,10 +1004,12 @@ test("barrel keeps six manual functions while scoped checks stay module-local ex
       "signManualAuthorization",
       "validateManualSnapshotConsumerRequest",
       "validateManualTargetCreationRequest",
+      "validateManualCandidateUseRequest",
       "verifyManualAuthorization",
       "verifyManualHandoff",
       "verifyManualSnapshotConsumerAuthorizationBinding",
-      "verifyManualTargetCreationAuthorizationBinding"
+      "verifyManualTargetCreationAuthorizationBinding",
+      "verifyManualCandidateUseAuthorizationBinding"
     ].sort()
   );
   const f = fixture();
@@ -1023,6 +1025,8 @@ test("barrel keeps six manual functions while scoped checks stay module-local ex
   assert.equal(barrel.verifyManualSnapshotConsumerAuthorizationBinding, undefined);
   assert.equal(barrel.validateManualTargetCreationRequest, undefined);
   assert.equal(barrel.verifyManualTargetCreationAuthorizationBinding, undefined);
+  assert.equal(barrel.validateManualCandidateUseRequest, undefined);
+  assert.equal(barrel.verifyManualCandidateUseAuthorizationBinding, undefined);
 });
 
 function consumerFixture(phase = "prebuild-source") {
@@ -1388,6 +1392,157 @@ function creationCheck(f, authorization) {
     now: NOW
   });
 }
+
+function candidateUseFixture(chain = "fresh") {
+  const f = targetCreationFixture("source", chain);
+  const binding = {
+    stage: "candidate-use",
+    capability: "execute-source-database-tests",
+    destinationAdmissionDigest: D,
+    preparationExecutionRecordDigest: D,
+    databaseTestManifestDigest: D
+  };
+  Object.assign(f.request, binding, { schemaVersion: "manual-runner-request.v5" });
+  Object.assign(f.payload, binding, {
+    schemaVersion: "manual-launch-authorization.v5",
+    requestDigest: sha256Canonical(f.request)
+  });
+  return f;
+}
+
+function candidateUseParentFixture(chain = "fresh") {
+  const f = r3ParentFixture(true, "source", chain);
+  const candidate = candidateUseFixture(chain);
+  const predecessor = r3Record("execution", candidate.request);
+  if (chain === "snapshot") {
+    predecessor.stage = "snapshot-consumer";
+    predecessor.resultDigest = OTHER;
+    predecessor.predecessorExecutionRecordDigest = D;
+  }
+  candidate.request.preparationExecutionRecordDigest = sha256Canonical(predecessor);
+  candidate.payload.preparationExecutionRecordDigest =
+    candidate.request.preparationExecutionRecordDigest;
+  candidate.payload.requestDigest = sha256Canonical(candidate.request);
+  const excluded = new Set([
+    "schemaVersion",
+    "authorizationId",
+    "issuedAt",
+    "expiresAt",
+    "requestDigest"
+  ]);
+  f.authorization = rawSign(candidate.payload);
+  f.request = {
+    canonicalBytes: encodeManualJson(candidate.request),
+    binding: Object.fromEntries(
+      Object.entries(candidate.payload).filter(([field]) => !excluded.has(field))
+    )
+  };
+  f.session.predecessor = predecessor;
+  return f;
+}
+
+test("candidate-use v5 binds only source destination, preparation and manifest", () => {
+  for (const chain of ["fresh", "snapshot"]) {
+    const f = candidateUseFixture(chain);
+    assert.deepEqual(manual.validateManualCandidateUseRequest(f.request), f.request);
+    assert.equal(
+      manual.verifyManualCandidateUseAuthorizationBinding({
+        authorization: manual.signManualAuthorization({
+          payload: f.payload,
+          privateKey: keys.privateKey
+        }),
+        profile: f.profile,
+        requestBytes: encodeManualJson(f.request),
+        now: NOW
+      }),
+      undefined
+    );
+    for (const field of [
+      "input",
+      "scopeAuthorizationDigest",
+      "matchingSourceEvidenceDigest",
+      "sourceCredentials"
+    ])
+      invalid("manual-runner-request.v5", { ...f.request, [field]: D });
+    invalid("manual-runner-request.v5", { ...f.request, phase: "final" });
+    invalid("manual-launch-authorization.v5", {
+      ...rawSign(f.payload),
+      payload: { ...f.payload, phase: "final" }
+    });
+  }
+});
+
+test("candidate-use parent requires a same-session successful chain preparation", () => {
+  for (const chain of ["fresh", "snapshot"]) {
+    const f = candidateUseParentFixture(chain);
+    const decision = manual.verifyManualAuthorization(f);
+    manual.assertManualDecision(decision);
+    assert.equal(decision.stage, "candidate-use");
+    for (const mutate of [
+      (v) => {
+        v.session.predecessor = null;
+      },
+      (v) => {
+        v.session.predecessor.stage = chain === "fresh" ? "snapshot-consumer" : "target-create";
+      },
+      (v) => {
+        v.session.predecessor.sessionNonce = "e".repeat(64);
+      },
+      (v) => {
+        Object.assign(v.session.predecessor, {
+          status: "FAILED",
+          reasonCode: "PROCESS_FAILED",
+          finishedAt: null,
+          resultDigest: null,
+          processEvidenceDigest: D
+        });
+      },
+      (v) => {
+        v.session.predecessor.resultDigest = chain === "fresh" ? OTHER : D;
+      }
+    ]) {
+      const bad = candidateUseParentFixture(chain);
+      mutate(bad);
+      rejects(() => manual.verifyManualAuthorization(bad), "MANUAL_BINDING_MISMATCH");
+    }
+  }
+});
+
+test("candidate-use allocation is a closed source-only branch", () => {
+  const request = candidateUseFixture("snapshot").request;
+  const allocation = {
+    schemaVersion: "manual-runner-evidence.v2",
+    kind: "attempt-allocation",
+    profileDigest: request.profileDigest,
+    recordedAt: OPENED,
+    promotionEligible: false,
+    sessionId: request.sessionId,
+    sessionNonce: request.sessionNonce,
+    sessionRecordDigest: D,
+    operationId: request.operationId,
+    idempotencyKey: request.idempotencyKey,
+    attemptId: request.attemptId,
+    runId: request.runId,
+    stage: request.stage,
+    phase: request.phase,
+    chain: request.chain,
+    allocatedAt: OPENED,
+    sourceSha: request.sourceSha,
+    buildProofDigest: request.candidate.buildProofDigest,
+    targetPolicyDigest: request.targetPolicyDigest,
+    creationSpecDigest: request.creationSpecDigest,
+    jobAdmissionDigest: request.jobAdmissionDigest,
+    predecessorExecutionRecordDigest: request.preparationExecutionRecordDigest,
+    destinationAdmissionDigest: request.destinationAdmissionDigest,
+    preparationExecutionRecordDigest: request.preparationExecutionRecordDigest,
+    databaseTestManifestDigest: request.databaseTestManifestDigest
+  };
+  validateContract("manual-runner-evidence.v2", allocation);
+  for (const field of ["input", "scopeAuthorizationDigest", "matchingSourceEvidenceDigest"])
+    invalid("manual-runner-evidence.v2", { ...allocation, [field]: D });
+  invalid("manual-runner-evidence.v2", { ...allocation, phase: "final" });
+  invalid("manual-runner-evidence.v2", { ...allocation, stage: "snapshot-consumer" });
+});
 
 function r3Record(kind, request = targetCreationFixture().request) {
   const value = record(kind, request);

@@ -177,7 +177,7 @@
           "$ref": "manual-operation-record.v2#/$defs/digest"
         },
         "stage": {
-          "enum": ["target-create", "snapshot-consumer"]
+          "enum": ["target-create", "snapshot-consumer", "candidate-use"]
         },
         "sessionRecordDigest": {
           "$ref": "manual-operation-record.v2#/$defs/digest"
@@ -337,7 +337,7 @@
           ]
         },
         "stage": {
-          "enum": ["target-create", "snapshot-consumer"]
+          "enum": ["target-create", "snapshot-consumer", "candidate-use"]
         }
       },
       "oneOf": [

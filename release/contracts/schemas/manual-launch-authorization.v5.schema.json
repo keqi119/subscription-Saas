@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "manual-launch-authorization.v5",
+  "required": ["payload", "signature"],
+  "properties": {
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "authorizationId",
+        "issuedAt",
+        "expiresAt",
+        "requestDigest",
+        "profileDigest",
+        "ownerId",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "stage",
+        "capability",
+        "purpose",
+        "phase",
+        "chain",
+        "targetPolicyDigest",
+        "creationSpecDigest",
+        "jobAdmissionDigest",
+        "destinationAdmissionDigest",
+        "preparationExecutionRecordDigest",
+        "databaseTestManifestDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-launch-authorization.v5"
+        },
+        "authorizationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "issuedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "ownerId": {
+          "$ref": "#/$defs/label"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/label"
+        },
+        "stage": {
+          "const": "candidate-use"
+        },
+        "capability": {
+          "const": "execute-source-database-tests"
+        },
+        "purpose": {
+          "const": "stage1-isolated-database-tests"
+        },
+        "phase": {
+          "const": "source"
+        },
+        "chain": {
+          "enum": ["fresh", "snapshot"]
+        },
+        "targetPolicyDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "creationSpecDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "jobAdmissionDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "destinationAdmissionDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "preparationExecutionRecordDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "databaseTestManifestDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]{86}==$"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}

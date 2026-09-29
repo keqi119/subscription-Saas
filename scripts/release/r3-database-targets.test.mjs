@@ -439,6 +439,7 @@ async function sourceResultFixture() {
     clusterFingerprint: `sha256:${"a".repeat(64)}`,
     containerId: "b".repeat(64),
     creationExecutionRecordDigest: `sha256:${"2".repeat(64)}`,
+    candidateUseExecutionRecordDigest: `sha256:${"3".repeat(64)}`,
     snapshotExecutionRecordDigest: null
   };
   const attempt = {
@@ -449,6 +450,7 @@ async function sourceResultFixture() {
     sourceSha: binding.sourceSha,
     destinationDigest: binding.destinationDigest,
     manifestDigest: sha256Canonical(manifest),
+    candidateUseExecutionRecordDigest: binding.candidateUseExecutionRecordDigest,
     promotionEligible: false
   };
   const records = [],
@@ -576,6 +578,7 @@ async function sourceResultFixture() {
         sessionNonce: binding.sessionNonce,
         destinationDigest: binding.destinationDigest,
         creationExecutionRecordDigest: binding.creationExecutionRecordDigest,
+        candidateUseExecutionRecordDigest: binding.candidateUseExecutionRecordDigest,
         snapshotExecutionRecordDigest: null,
         promotionEligible: false,
         observations,
@@ -691,6 +694,9 @@ test("R3 source result reconstructs every suite from originals and rejects omiss
     },
     (value) => {
       value.attempt.sessionNonce = "0".repeat(64);
+    },
+    (value) => {
+      value.binding.candidateUseExecutionRecordDigest = `sha256:${"9".repeat(64)}`;
     },
     (value) => {
       value.suiteReadbacks.find(

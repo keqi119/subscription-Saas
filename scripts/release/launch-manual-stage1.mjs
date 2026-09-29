@@ -1084,6 +1084,7 @@ export async function launchR3TargetCreate(input) {
     snapshotCompletionReady = false,
     snapshotCompletionPending,
     snapshotCompletionRecord,
+    candidateUseRecord,
     lifecycleAttempted = false,
     lifecycleReady = false,
     lifecyclePending,
@@ -1205,6 +1206,10 @@ export async function launchR3TargetCreate(input) {
     if (destinationRecord) await recheckDestination();
     if (completionRecord) await recheckCompletion();
     if (snapshotCompletionRecord) await recheckSnapshotCompletion();
+    if (candidateUseRecord) {
+      const admission = await session.assertCandidateUse();
+      if (admission.executionRecordDigest !== candidateUseRecord.executionRecordDigest) fail(code);
+    }
     await consumerInput?.recheck();
     await consumerSlot?.recheck();
     await snapshotPayload?.recheck();
@@ -2537,7 +2542,111 @@ export async function launchR3TargetCreate(input) {
   };
   const sourceCheck = async () => {
     if (stopping || closed || sourceAbort.signal.aborted) fail(code);
+    if (!candidateUseRecord) fail(code);
     await check();
+  };
+  const consumeCandidateUse = async () => {
+    await recheckResources();
+    const opened = [...(await archive.graph()).entries()].filter(
+      ([, item]) =>
+        item.value.schemaVersion === "manual-operation-record.v3" &&
+        item.value.kind === "session" &&
+        item.value.sessionId === session.sessionId &&
+        item.value.status === "OPEN"
+    );
+    if (opened.length !== 1 || candidateUseRecord) fail(code);
+    const preparationExecutionRecordDigest =
+      session.scope.chain === "snapshot"
+        ? snapshotCompletionRecord?.executionRecordDigest
+        : completionRecord.executionRecordDigest;
+    const now = new Date().toISOString();
+    const request = {
+      schemaVersion: "manual-runner-request.v5",
+      profileDigest: session.profileDigest,
+      ownerId: lease.profile.ownerId,
+      sessionId: session.sessionId,
+      sessionNonce: session.sessionNonce,
+      operationId: input.operationRef,
+      idempotencyKey: `r3-candidate-use:${input.operationRef}`,
+      attemptId: randomUUID(),
+      runId: randomUUID(),
+      stage: "candidate-use",
+      capability: "execute-source-database-tests",
+      purpose: "stage1-isolated-database-tests",
+      ...fieldsFrom(session.scope, [
+        "phase",
+        "chain",
+        "sourceSha",
+        "targetPolicyDigest",
+        "creationSpecDigest",
+        "jobAdmissionDigest"
+      ]),
+      candidate: { buildProofDigest: session.scope.buildProofDigest },
+      destinationAdmissionDigest: destinationRecord.destinationDigest,
+      preparationExecutionRecordDigest,
+      databaseTestManifestDigest: sha256Canonical(fixed.databaseTestManifest)
+    };
+    request.attemptAllocationDigest = await archive.put(
+      {
+        schemaVersion: "manual-runner-evidence.v2",
+        kind: "attempt-allocation",
+        recordedAt: now,
+        promotionEligible: false,
+        ...fieldsFrom(request, [
+          "profileDigest",
+          "sessionId",
+          "sessionNonce",
+          "operationId",
+          "idempotencyKey",
+          "attemptId",
+          "runId",
+          "stage",
+          "phase",
+          "chain",
+          "sourceSha",
+          "targetPolicyDigest",
+          "creationSpecDigest",
+          "jobAdmissionDigest",
+          "destinationAdmissionDigest",
+          "preparationExecutionRecordDigest",
+          "databaseTestManifestDigest"
+        ]),
+        sessionRecordDigest: opened[0][0],
+        allocatedAt: now,
+        buildProofDigest: session.scope.buildProofDigest,
+        predecessorExecutionRecordDigest: preparationExecutionRecordDigest
+      },
+      "manual-runner-evidence.v2"
+    );
+    const requestDigest = await archive.put(request, "manual-runner-request.v5");
+    const {
+      schemaVersion,
+      attemptId,
+      runId,
+      attemptAllocationDigest,
+      sourceSha,
+      candidate,
+      ...binding
+    } = request;
+    const requestInput = { binding, canonicalBytes: encodeManualJson(request) };
+    const authorization = await session.sign(requestInput);
+    await recheckResources();
+    const receipt = await session.consume({ authorization, request: requestInput });
+    const execution = await archive.get(receipt.executionRecordDigest, "journal");
+    validateContract("manual-operation-record.v3", execution.value);
+    if (
+      receipt.stage !== "candidate-use" ||
+      execution.value.stage !== "candidate-use" ||
+      execution.value.status !== "INTERRUPTED_UNKNOWN" ||
+      execution.value.predecessorExecutionRecordDigest !== preparationExecutionRecordDigest ||
+      execution.value.requestDigest !== requestDigest ||
+      execution.value.authorizationDigest !== sha256Canonical(authorization) ||
+      execution.value.sessionId !== session.sessionId ||
+      execution.value.sessionNonce !== session.sessionNonce
+    )
+      fail(code);
+    candidateUseRecord = { executionRecordDigest: receipt.executionRecordDigest };
+    await sourceCheck();
   };
   const sourceSecret = async (record, profile) => {
     const planned = [
@@ -2690,6 +2799,7 @@ export async function launchR3TargetCreate(input) {
       manifestWriteAttempted = false;
     try {
       if ((await fs.realpath(repoRoot)) !== (await fs.realpath(input.repoRoot))) fail(code);
+      await consumeCandidateUse();
       await recheckResources();
       attemptDigest = await sourceStore("attempt", {
         status: "SOURCE_MANIFEST_INTERRUPTED_UNKNOWN",
@@ -2699,6 +2809,7 @@ export async function launchR3TargetCreate(input) {
         sourceSha: fixed.spec.sourceSha,
         destinationDigest: destinationRecord.destinationDigest,
         manifestDigest: sha256Canonical(fixed.databaseTestManifest),
+        candidateUseExecutionRecordDigest: candidateUseRecord.executionRecordDigest,
         promotionEligible: false
       });
       const load = async (name) =>
@@ -2887,6 +2998,7 @@ export async function launchR3TargetCreate(input) {
           clusterFingerprint,
           containerId: postgresTarget.containerId,
           creationExecutionRecordDigest: completionRecord.executionRecordDigest,
+          candidateUseExecutionRecordDigest: candidateUseRecord.executionRecordDigest,
           snapshotExecutionRecordDigest: snapshotCompletionRecord?.executionRecordDigest ?? null
         },
         records: databaseTargetSet.records,
@@ -2968,7 +3080,7 @@ export async function launchR3TargetCreate(input) {
     const observations = [];
     const sourceRuntimeChecked = new Set();
     const lifecycleCheck = async () => {
-      if (stopping || lifecycleAbort.signal.aborted) fail(code);
+      if (stopping || lifecycleAbort.signal.aborted || !candidateUseRecord) fail(code);
       await check();
     };
     const secretFor = async (databaseName, profile, username) => {
@@ -3194,6 +3306,7 @@ export async function launchR3TargetCreate(input) {
       sessionNonce: session.sessionNonce,
       destinationDigest: destinationRecord.destinationDigest,
       creationExecutionRecordDigest: completionRecord.executionRecordDigest,
+      candidateUseExecutionRecordDigest: candidateUseRecord.executionRecordDigest,
       snapshotExecutionRecordDigest: snapshotCompletionRecord?.executionRecordDigest ?? null,
       manifestRawDigest: fixed.databaseTestManifestRawDigest,
       target,
@@ -3754,7 +3867,7 @@ export async function launchR3TargetCreate(input) {
         )
           fail(code);
         lifecycleAttempted = true;
-        lifecyclePending = runLifecycle();
+        lifecyclePending = consumeCandidateUse().then(() => runLifecycle());
         return lifecyclePending;
       },
       async completeSnapshot(...args) {

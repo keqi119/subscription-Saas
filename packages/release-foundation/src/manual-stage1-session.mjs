@@ -17,6 +17,8 @@ import {
   verifyManualHandoff,
   validateManualTargetCreationRequest,
   validateManualSnapshotConsumerRequest,
+  validateManualCandidateUseRequest,
+  verifyManualCandidateUseAuthorizationBinding,
   verifyManualSnapshotConsumerAuthorizationBinding,
   verifyManualTargetCreationAuthorizationBinding
 } from "./manual-stage1-contracts.mjs";
@@ -564,7 +566,8 @@ export async function openManualSession({
   const lifecycleTargetLocks = new Map();
   let snapshotReader = null,
     creationCompletionDigest = null,
-    consumerCompletionDigest = null;
+    consumerCompletionDigest = null,
+    candidateUseReceipt = null;
   const closeTargetHandles = async () => {
     const outcomes = await Promise.allSettled(
       [...targetLocks.values()].map((entry) => entry.handle.close())
@@ -1039,6 +1042,9 @@ export async function openManualSession({
       } else if (value.schemaVersion === "manual-runner-request.v3") {
         validateManualSnapshotConsumerRequest(value);
         r2Artifacts.push(null);
+      } else if (value.schemaVersion === "manual-runner-request.v5") {
+        validateManualCandidateUseRequest(value);
+        r2Artifacts.push(null);
       } else if (value.schemaVersion === "manual-runner-evidence.v2") {
         validateContract("manual-runner-evidence.v2", value);
         r2Artifacts.push(null);
@@ -1047,6 +1053,9 @@ export async function openManualSession({
         r2Artifacts.push(null);
       } else if (value.payload?.schemaVersion === "manual-launch-authorization.v3") {
         validateContract("manual-launch-authorization.v3", value);
+        r2Artifacts.push(null);
+      } else if (value.payload?.schemaVersion === "manual-launch-authorization.v5") {
+        validateContract("manual-launch-authorization.v5", value);
         r2Artifacts.push(null);
       } else r2Artifacts.push(entry.bytes);
     }
@@ -1690,10 +1699,14 @@ export async function openManualSession({
     const canonicalBytes = Buffer.from(input.canonicalBytes);
     const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(canonicalBytes));
     const consumer = parsed.schemaVersion === "manual-runner-request.v3";
+    const candidateUse = parsed.schemaVersion === "manual-runner-request.v5";
     const request = consumer
       ? validateManualSnapshotConsumerRequest(parsed)
-      : validateManualTargetCreationRequest(parsed);
+      : candidateUse
+        ? validateManualCandidateUseRequest(parsed)
+        : validateManualTargetCreationRequest(parsed);
     if (consumer) requireThat(creationCompletionDigest, SESSION);
+    if (candidateUse) requireThat(creationCompletionDigest && !candidateUseReceipt, SESSION);
     requireThat(encodeManualJson(request).equals(canonicalBytes), BINDING);
     const fields = [
       "profileDigest",
@@ -1708,7 +1721,14 @@ export async function openManualSession({
       "phase",
       ...(consumer
         ? ["scopeAuthorizationDigest"]
-        : ["chain", "targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest"])
+        : ["chain", "targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest"]),
+      ...(candidateUse
+        ? [
+            "destinationAdmissionDigest",
+            "preparationExecutionRecordDigest",
+            "databaseTestManifestDigest"
+          ]
+        : [])
     ];
     const binding = Object.fromEntries(fields.map((field) => [field, request[field]]));
     requireThat(equal(binding, input.binding), BINDING);
@@ -1717,7 +1737,8 @@ export async function openManualSession({
     requireThat(
       request.ownerId === profile.ownerId &&
         request.operationId === r3Context.creationSpec.operationRef &&
-        request.stage === (consumer ? "snapshot-consumer" : "target-create") &&
+        request.stage ===
+          (consumer ? "snapshot-consumer" : candidateUse ? "candidate-use" : "target-create") &&
         request.sourceSha === identity.scope.sourceSha &&
         request.candidate.buildProofDigest === identity.scope.buildProofDigest &&
         (!consumer || (identity.scope.phase === "source" && identity.scope.chain === "snapshot")),
@@ -1743,9 +1764,11 @@ export async function openManualSession({
     requireThat(
       allocation.kind === "attempt-allocation" &&
         allocation.sessionRecordDigest === sha256Canonical(current) &&
-        (consumer
-          ? allocation.predecessorExecutionRecordDigest === creationCompletionDigest
-          : allocation.predecessorExecutionRecordDigest === null) &&
+        (candidateUse
+          ? allocation.predecessorExecutionRecordDigest === request.preparationExecutionRecordDigest
+          : consumer
+            ? allocation.predecessorExecutionRecordDigest === creationCompletionDigest
+            : allocation.predecessorExecutionRecordDigest === null) &&
         instant(current.openedAt) <= instant(allocation.recordedAt) &&
         instant(allocation.recordedAt) <= instant(allocation.allocatedAt) &&
         instant(allocation.allocatedAt) <= instant(stamp()),
@@ -1767,6 +1790,15 @@ export async function openManualSession({
     ])
       requireThat(allocation[field] === request[field], BINDING);
     requireThat(allocation.buildProofDigest === request.candidate.buildProofDigest, BINDING);
+    if (candidateUse) {
+      for (const field of [
+        "destinationAdmissionDigest",
+        "preparationExecutionRecordDigest",
+        "databaseTestManifestDigest"
+      ])
+        requireThat(allocation[field] === request[field], BINDING);
+      await r3CandidatePreparation(request);
+    }
     if (consumer) {
       const predecessor = JSON.parse(
         await store.read(objectPath(profile.storage.archiveRoot, creationCompletionDigest))
@@ -1789,6 +1821,31 @@ export async function openManualSession({
       );
     }
     return { request, binding, canonicalBytes, allocation };
+  }
+  async function r3CandidatePreparation(request, graph = null) {
+    requireThat(r3Context.scope.phase === "source" && creationCompletionDigest, SESSION);
+    graph ??= await store.objects();
+    const creation = graph.get(creationCompletionDigest)?.value;
+    const predecessorDigest =
+      r3Context.scope.chain === "snapshot" ? consumerCompletionDigest : creationCompletionDigest;
+    const predecessor = graph.get(predecessorDigest)?.value;
+    requireThat(
+      creation?.stage === "target-create" &&
+        creation.status === "SUCCEEDED" &&
+        creation.resultDigest === request.destinationAdmissionDigest &&
+        request.preparationExecutionRecordDigest === predecessorDigest &&
+        predecessor?.kind === "execution" &&
+        predecessor.status === "SUCCEEDED" &&
+        predecessor.stage ===
+          (r3Context.scope.chain === "snapshot" ? "snapshot-consumer" : "target-create") &&
+        ["profileDigest", "sessionId", "sessionNonce", "operationId"].every(
+          (field) => predecessor[field] === request[field]
+        ) &&
+        request.databaseTestManifestDigest ===
+          sha256Canonical(r3Context.destinationInputs.manifest),
+      BINDING
+    );
+    return predecessor;
   }
   function r3LifecycleLock(destination, record) {
     const operationRef = r3Context.creationSpec.operationRef;
@@ -2105,6 +2162,7 @@ export async function openManualSession({
     const legacy = [];
     let creationCount = 0,
       consumerCount = 0,
+      candidateUseCount = 0,
       historicalCompletion = null,
       historicalConsumerPredecessor = null,
       historicalConsumerDestination = null;
@@ -2155,9 +2213,11 @@ export async function openManualSession({
         requireThat(consumed[field] === request[field], SESSION);
       const creation = request.schemaVersion === "manual-runner-request.v4";
       const consumer = request.schemaVersion === "manual-runner-request.v3";
-      const r3Request = creation || consumer;
+      const candidateUse = request.schemaVersion === "manual-runner-request.v5";
+      const r3Request = creation || consumer || candidateUse;
       if (creation) validateManualTargetCreationRequest(request);
       else if (consumer) validateManualSnapshotConsumerRequest(request);
+      else if (candidateUse) validateManualCandidateUseRequest(request);
       else {
         requireThat(request.schemaVersion === "manual-runner-request.v1", SESSION);
         validateManualRunnerRequest(request);
@@ -2211,7 +2271,8 @@ export async function openManualSession({
       );
       if (r3Request) {
         if (creation) creationCount++;
-        else consumerCount++;
+        else if (consumer) consumerCount++;
+        else candidateUseCount++;
         const authorization = graph.get(consumed.authorizationDigest)?.value;
         const liveRevocations = await revocations();
         requireThat(
@@ -2231,7 +2292,8 @@ export async function openManualSession({
             consumed.sessionId === sessionId &&
             consumed.sessionNonce === sessionNonce &&
             consumed.profileDigest === profileDigest &&
-            consumed.stage === (creation ? "target-create" : "snapshot-consumer") &&
+            consumed.stage ===
+              (creation ? "target-create" : candidateUse ? "candidate-use" : "snapshot-consumer") &&
             consumed.operationId === r3Context.creationSpec.operationRef &&
             consumed.sessionRecordDigest === sha256Canonical(current) &&
             equal(session.scope, identity.scope) &&
@@ -2290,9 +2352,9 @@ export async function openManualSession({
             instant(consumptionCustody[0].observedAt) <= instant(execution.recordedAt),
           SESSION
         );
-        if (creation)
+        if (creation || candidateUse)
           requireThat(
-            allocation.predecessorExecutionRecordDigest === null &&
+            (candidateUse || allocation.predecessorExecutionRecordDigest === null) &&
               allocation.chain === identity.scope.chain &&
               allocation.targetPolicyDigest === identity.scope.targetPolicyDigest &&
               allocation.creationSpecDigest === identity.scope.creationSpecDigest &&
@@ -2305,7 +2367,11 @@ export async function openManualSession({
           );
         requireThat(
           authorization?.payload?.schemaVersion ===
-            (creation ? "manual-launch-authorization.v4" : "manual-launch-authorization.v3") &&
+            (creation
+              ? "manual-launch-authorization.v4"
+              : candidateUse
+                ? "manual-launch-authorization.v5"
+                : "manual-launch-authorization.v3") &&
             authorization.payload.authorizationId &&
             authorization.payload.requestDigest === consumed.requestDigest &&
             authorization.payload.sessionId === sessionId &&
@@ -2315,7 +2381,7 @@ export async function openManualSession({
             authorization.payload.profileDigest === profileDigest &&
             authorization.payload.ownerId === profile.ownerId &&
             authorization.payload.stage === consumed.stage &&
-            (creation
+            (creation || candidateUse
               ? authorization.payload.creationSpecDigest === identity.scope.creationSpecDigest &&
                 authorization.payload.jobAdmissionDigest === identity.scope.jobAdmissionDigest &&
                 authorization.payload.targetPolicyDigest === identity.scope.targetPolicyDigest
@@ -2334,13 +2400,41 @@ export async function openManualSession({
         );
         (creation
           ? verifyManualTargetCreationAuthorizationBinding
-          : verifyManualSnapshotConsumerAuthorizationBinding)({
+          : candidateUse
+            ? verifyManualCandidateUseAuthorizationBinding
+            : verifyManualSnapshotConsumerAuthorizationBinding)({
           authorization,
           profile,
           requestBytes: encodeManualJson(request),
           now: consumed.recordedAt
         });
         const linkedDigest = sha256Canonical(execution);
+        if (candidateUse) {
+          const predecessor = await r3CandidatePreparation(request, graph);
+          requireThat(
+            candidateUseReceipt?.executionRecordDigest === linkedDigest &&
+              linked.length === 1 &&
+              execution.reasonCode === "MANUAL_EVIDENCE_INCOMPLETE" &&
+              allocation.predecessorExecutionRecordDigest ===
+                request.preparationExecutionRecordDigest &&
+              [
+                "destinationAdmissionDigest",
+                "preparationExecutionRecordDigest",
+                "databaseTestManifestDigest"
+              ].every((field) => allocation[field] === request[field]) &&
+              instant(predecessor.recordedAt) <= instant(allocation.allocatedAt),
+            SESSION
+          );
+          for (const role of ["journal", "archive", "backup"])
+            requireThat(
+              (await store.read(objectPath(profile.storage[`${role}Root`], linkedDigest))).equals(
+                encodeManualJson(execution)
+              ),
+              STORAGE
+            );
+          r3Validated.add(digest);
+          continue;
+        }
         if (consumer) {
           requireThat(
             identity.scope.phase === "source" &&
@@ -2573,6 +2667,7 @@ export async function openManualSession({
     requireThat(
       creationCount <= 1 &&
         consumerCount <= 1 &&
+        candidateUseCount <= 1 &&
         (consumerCount === 0 ||
           (creationCount === 1 &&
             historicalCompletion === historicalConsumerPredecessor &&
@@ -2590,10 +2685,16 @@ export async function openManualSession({
     requireThat(
       creationCount === 0 ||
         pendingDigest !== null ||
-        (request.stage === "snapshot-consumer" && historicalCompletion !== null),
+        (["snapshot-consumer", "candidate-use"].includes(request.stage) &&
+          historicalCompletion !== null),
       SESSION
     );
-    requireThat(consumerCount === 0 || pendingConsumer !== null, SESSION);
+    requireThat(
+      consumerCount === 0 ||
+        pendingConsumer !== null ||
+        (request.stage === "candidate-use" && consumerCompletionDigest !== null),
+      SESSION
+    );
     return graph;
   }
   try {
@@ -2640,6 +2741,8 @@ export async function openManualSession({
       completionAttempted = false,
       sourceCustodyAttempted = false,
       consumerAuthorizationIssued = false,
+      candidateUseAuthorizationIssued = false,
+      candidateUseAttempted = false,
       consumerAttempted = false,
       closeRef = null;
     const lifecycleAttempts = new Set();
@@ -2666,6 +2769,7 @@ export async function openManualSession({
           r3Context.snapshotInputs &&
           creationReceipt &&
           creationCompletionDigest &&
+          candidateUseReceipt &&
           lifecycleTargetLocks.size === 2 &&
           (r3Context.scope.chain === "snapshot" ? consumerCompletionDigest : !consumerReceipt),
         SESSION
@@ -2755,6 +2859,7 @@ export async function openManualSession({
           }),
           containerId: postgres.containerId,
           creationExecutionRecordDigest: creationCompletionDigest,
+          candidateUseExecutionRecordDigest: candidateUseReceipt.executionRecordDigest,
           snapshotExecutionRecordDigest: consumerCompletionDigest
         },
         records: destination.databaseTargetSet.records,
@@ -2798,6 +2903,8 @@ export async function openManualSession({
           await active();
           r3Live();
           const request = await r3CheckedRequest(input);
+          if (request.request.stage === "candidate-use")
+            requireThat(!candidateUseAuthorizationIssued && !candidateUseAttempted, SESSION);
           if (request.request.stage === "snapshot-consumer") {
             requireThat(!consumerAuthorizationIssued && !consumerAttempted, SESSION);
             await boundSnapshot(request.request);
@@ -2824,7 +2931,9 @@ export async function openManualSession({
               schemaVersion:
                 request.request.stage === "snapshot-consumer"
                   ? "manual-launch-authorization.v3"
-                  : "manual-launch-authorization.v4",
+                  : request.request.stage === "candidate-use"
+                    ? "manual-launch-authorization.v5"
+                    : "manual-launch-authorization.v4",
               authorizationId: randomUUID(),
               issuedAt,
               expiresAt,
@@ -2837,6 +2946,7 @@ export async function openManualSession({
           await store.put(authorization);
           issued.set(authorization.payload.authorizationId, sha256Canonical(authorization));
           if (request.request.stage === "snapshot-consumer") consumerAuthorizationIssued = true;
+          if (request.request.stage === "candidate-use") candidateUseAuthorizationIssued = true;
           return freeze(authorization);
         });
       },
@@ -2848,6 +2958,8 @@ export async function openManualSession({
           const authorization = snapshot(input.authorization),
             request = await r3CheckedRequest(input.request);
           await unused(authorization.payload.authorizationId);
+          if (request.request.stage === "candidate-use")
+            requireThat(candidateUseAuthorizationIssued && !candidateUseAttempted, SESSION);
           if (request.request.stage === "snapshot-consumer") {
             requireThat(consumerAuthorizationIssued && !consumerAttempted, SESSION);
             await boundSnapshot(request.request);
@@ -2890,6 +3002,7 @@ export async function openManualSession({
           // forward slots. A missing execution is reconstructed as uncertainty.
           consumedOrUncertain = true;
           if (request.request.stage === "snapshot-consumer") consumerAttempted = true;
+          if (request.request.stage === "candidate-use") candidateUseAttempted = true;
           await store.create(
             consumptionSlot(authorization.payload.authorizationId),
             encodeManualJson(consumption),
@@ -2942,13 +3055,37 @@ export async function openManualSession({
             executionRecordDigest: executionRef.recordDigest
           });
           if (request.request.stage === "target-create") creationReceipt = receipt;
-          else {
+          else if (request.request.stage === "candidate-use") {
+            await store.put(execution);
+            await store.put(execution, "backup");
+            candidateUseReceipt = receipt;
+            await r3History(request.request);
+          } else {
             consumerReceipt = receipt;
             await active();
             r3Live();
             await r3History(request.request, null, null, creationCompletionDigest);
           }
           return receipt;
+        });
+      },
+      assertCandidateUse(...args) {
+        return serial(async () => {
+          requireThat(args.length === 0 && candidateUseReceipt, SESSION);
+          await active();
+          r3Live();
+          const graph = await store.objects();
+          const execution = graph.get(candidateUseReceipt.executionRecordDigest)?.value;
+          requireThat(
+            execution?.stage === "candidate-use" && execution.status === "INTERRUPTED_UNKNOWN",
+            SESSION
+          );
+          const request = graph.get(execution.requestDigest)?.value;
+          requireThat(request?.schemaVersion === "manual-runner-request.v5", SESSION);
+          await r3History(request);
+          await active();
+          r3Live();
+          return freeze({ executionRecordDigest: candidateUseReceipt.executionRecordDigest });
         });
       },
       holdTargets(input) {
@@ -3141,7 +3278,10 @@ export async function openManualSession({
         return serial(async () => {
           await active();
           r3Live();
-          requireThat(creationCompletionDigest && targetLocksAttempted, SESSION);
+          requireThat(
+            creationCompletionDigest && candidateUseReceipt && targetLocksAttempted,
+            SESSION
+          );
           exact(input, ["record"], SESSION);
           const record = snapshot(input.record);
           const graph = await store.objects();

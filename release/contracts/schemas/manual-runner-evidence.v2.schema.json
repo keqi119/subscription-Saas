@@ -65,7 +65,7 @@
       "$ref": "manual-operation-record.v2#/$defs/uuid"
     },
     "stage": {
-      "enum": ["target-create", "snapshot-consumer"]
+      "enum": ["target-create", "snapshot-consumer", "candidate-use"]
     },
     "phase": {
       "enum": ["source", "final"]
@@ -105,6 +105,12 @@
     "destinationAdmissionDigest": {
       "$ref": "manual-operation-record.v2#/$defs/digest"
     },
+    "preparationExecutionRecordDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
+    "databaseTestManifestDigest": {
+      "$ref": "manual-operation-record.v2#/$defs/digest"
+    },
     "scopeAuthorizationDigest": {
       "$ref": "manual-operation-record.v2#/$defs/digest"
     },
@@ -135,6 +141,8 @@
           "type": "null"
         },
         "destinationAdmissionDigest": false,
+        "preparationExecutionRecordDigest": false,
+        "databaseTestManifestDigest": false,
         "scopeAuthorizationDigest": false,
         "matchingSourceEvidenceDigest": false,
         "input": false
@@ -151,7 +159,9 @@
         },
         "predecessorExecutionRecordDigest": {
           "$ref": "manual-operation-record.v2#/$defs/digest"
-        }
+        },
+        "preparationExecutionRecordDigest": false,
+        "databaseTestManifestDigest": false
       },
       "oneOf": [
         {
@@ -171,6 +181,23 @@
           }
         }
       ]
+    },
+    {
+      "required": [
+        "destinationAdmissionDigest",
+        "preparationExecutionRecordDigest",
+        "databaseTestManifestDigest"
+      ],
+      "properties": {
+        "stage": { "const": "candidate-use" },
+        "phase": { "const": "source" },
+        "predecessorExecutionRecordDigest": {
+          "$ref": "manual-operation-record.v2#/$defs/digest"
+        },
+        "scopeAuthorizationDigest": false,
+        "matchingSourceEvidenceDigest": false,
+        "input": false
+      }
     }
   ]
 }

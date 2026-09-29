@@ -371,7 +371,8 @@ function verifyManualScopedAuthorizationBinding(input, kind) {
       ? [
           "destinationAdmissionDigest",
           "preparationExecutionRecordDigest",
-          "databaseTestManifestDigest"
+          "databaseTestManifestDigest",
+          ...(request.phase === "final" ? ["matchingSourceEvidenceDigest"] : [])
         ]
       : [])
   ])
@@ -522,7 +523,7 @@ function r3SessionValid(session, payload, request, now) {
   if (payload.stage === "candidate-use") {
     const predecessor = session.predecessor;
     requireThat(
-      scope.phase === "source" &&
+      ["source", "final"].includes(scope.phase) &&
         request.chain === scope.chain &&
         predecessor !== null &&
         predecessor.kind === "execution" &&

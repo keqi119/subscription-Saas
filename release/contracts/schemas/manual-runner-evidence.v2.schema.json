@@ -190,14 +190,26 @@
       ],
       "properties": {
         "stage": { "const": "candidate-use" },
-        "phase": { "const": "source" },
         "predecessorExecutionRecordDigest": {
           "$ref": "manual-operation-record.v2#/$defs/digest"
         },
         "scopeAuthorizationDigest": false,
-        "matchingSourceEvidenceDigest": false,
         "input": false
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "phase": { "const": "source" },
+            "matchingSourceEvidenceDigest": false
+          }
+        },
+        {
+          "required": ["matchingSourceEvidenceDigest"],
+          "properties": {
+            "phase": { "const": "final" }
+          }
+        }
+      ]
     }
   ]
 }

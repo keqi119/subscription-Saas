@@ -1393,14 +1393,16 @@ function creationCheck(f, authorization) {
   });
 }
 
-function candidateUseFixture(chain = "fresh") {
-  const f = targetCreationFixture("source", chain);
+function candidateUseFixture(chain = "fresh", phase = "source") {
+  const f = targetCreationFixture(phase, chain);
   const binding = {
     stage: "candidate-use",
-    capability: "execute-source-database-tests",
+    capability:
+      phase === "final" ? "execute-final-database-tests" : "execute-source-database-tests",
     destinationAdmissionDigest: D,
     preparationExecutionRecordDigest: D,
-    databaseTestManifestDigest: D
+    databaseTestManifestDigest: D,
+    ...(phase === "final" ? { matchingSourceEvidenceDigest: OTHER } : {})
   };
   Object.assign(f.request, binding, { schemaVersion: "manual-runner-request.v5" });
   Object.assign(f.payload, binding, {
@@ -1410,9 +1412,9 @@ function candidateUseFixture(chain = "fresh") {
   return f;
 }
 
-function candidateUseParentFixture(chain = "fresh") {
-  const f = r3ParentFixture(true, "source", chain);
-  const candidate = candidateUseFixture(chain);
+function candidateUseParentFixture(chain = "fresh", phase = "source") {
+  const f = r3ParentFixture(true, phase, chain);
+  const candidate = candidateUseFixture(chain, phase);
   const predecessor = r3Record("execution", candidate.request);
   if (chain === "snapshot") {
     predecessor.stage = "snapshot-consumer";
@@ -1472,6 +1474,49 @@ test("candidate-use v5 binds only source destination, preparation and manifest",
   }
 });
 
+test("candidate-use v5 binds final source terminal and same-session preparation for both chains", () => {
+  for (const chain of ["fresh", "snapshot"]) {
+    const f = candidateUseFixture(chain, "final");
+    assert.deepEqual(manual.validateManualCandidateUseRequest(f.request), f.request);
+    assert.equal(
+      manual.verifyManualCandidateUseAuthorizationBinding({
+        authorization: rawSign(f.payload),
+        profile: f.profile,
+        requestBytes: encodeManualJson(f.request),
+        now: NOW
+      }),
+      undefined
+    );
+    const parent = candidateUseParentFixture(chain, "final");
+    assert.equal(manual.verifyManualAuthorization(parent).stage, "candidate-use");
+    for (const mutate of [
+      (r) => delete r.matchingSourceEvidenceDigest,
+      (r) => (r.capability = "execute-source-database-tests"),
+      (r) => (r.matchingSourceEvidenceDigest = D)
+    ]) {
+      const bad = candidateUseFixture(chain, "final");
+      mutate(bad.request);
+      if (bad.request.matchingSourceEvidenceDigest === D)
+        rejects(
+          () =>
+            manual.verifyManualCandidateUseAuthorizationBinding({
+              authorization: rawSign(bad.payload),
+              profile: bad.profile,
+              requestBytes: encodeManualJson(bad.request),
+              now: NOW
+            }),
+          "MANUAL_BINDING_MISMATCH"
+        );
+      else invalid("manual-runner-request.v5", bad.request);
+    }
+    invalid("manual-launch-authorization.v5", {
+      ...rawSign(f.payload),
+      payload: { ...f.payload, matchingSourceEvidenceDigest: undefined }
+    });
+    invalid("manual-runner-request.v5", { ...f.request, phase: "source" });
+  }
+});
+
 test("candidate-use parent requires a same-session successful chain preparation", () => {
   for (const chain of ["fresh", "snapshot"]) {
     const f = candidateUseParentFixture(chain);
@@ -1508,9 +1553,8 @@ test("candidate-use parent requires a same-session successful chain preparation"
   }
 });
 
-test("candidate-use allocation is a closed source-only branch", () => {
-  const request = candidateUseFixture("snapshot").request;
-  const allocation = {
+function candidateUseAllocation(request) {
+  return {
     schemaVersion: "manual-runner-evidence.v2",
     kind: "attempt-allocation",
     profileDigest: request.profileDigest,
@@ -1535,13 +1579,35 @@ test("candidate-use allocation is a closed source-only branch", () => {
     predecessorExecutionRecordDigest: request.preparationExecutionRecordDigest,
     destinationAdmissionDigest: request.destinationAdmissionDigest,
     preparationExecutionRecordDigest: request.preparationExecutionRecordDigest,
-    databaseTestManifestDigest: request.databaseTestManifestDigest
+    databaseTestManifestDigest: request.databaseTestManifestDigest,
+    ...(request.phase === "final"
+      ? { matchingSourceEvidenceDigest: request.matchingSourceEvidenceDigest }
+      : {})
   };
+}
+
+test("candidate-use allocation keeps the source branch closed", () => {
+  const allocation = candidateUseAllocation(candidateUseFixture("snapshot").request);
   validateContract("manual-runner-evidence.v2", allocation);
   for (const field of ["input", "scopeAuthorizationDigest", "matchingSourceEvidenceDigest"])
     invalid("manual-runner-evidence.v2", { ...allocation, [field]: D });
   invalid("manual-runner-evidence.v2", { ...allocation, phase: "final" });
   invalid("manual-runner-evidence.v2", { ...allocation, stage: "snapshot-consumer" });
+});
+
+test("candidate-use final allocation requires a matching-source digest", () => {
+  for (const chain of ["fresh", "snapshot"]) {
+    const allocation = candidateUseAllocation(candidateUseFixture(chain, "final").request);
+    validateContract("manual-runner-evidence.v2", allocation);
+    const missing = clone(allocation);
+    delete missing.matchingSourceEvidenceDigest;
+    invalid("manual-runner-evidence.v2", missing);
+    invalid("manual-runner-evidence.v2", { ...allocation, phase: "source" });
+    invalid("manual-runner-evidence.v2", {
+      ...allocation,
+      matchingSourceEvidenceDigest: "invalid"
+    });
+  }
 });
 
 function r3Record(kind, request = targetCreationFixture().request) {

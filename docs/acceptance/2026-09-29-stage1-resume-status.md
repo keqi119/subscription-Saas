@@ -122,3 +122,9 @@ hosted control 新增无参数的一次性清理入口，从自己仍持有的�
 合同检查 `0952e1` 通过，仍为 235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:c165139aa15fafc4620b3045c77555b91a4cb3055fdeed4abde896f2c9830b19`；限定源码检查 `40f2cf`、格式和差异检查 `fdc68e` 通过。后续仍需 final/fresh 匹配、最终候选执行/清理、受控工作流接线及一次实际候选完整验证，再推进 Staging 两项迁移和 R4。
 
 有限独立静态审查未发现阻断问题，核对了 selector 捕获、分阶段前后重查、失败保锁、完整历史后统一匹配和 source 历史字段兼容；该审查不补足未执行的正向链。
+
+## 最终候选执行契约（本地验证通过，尚未启用执行）
+
+预检 `b52f8c` 为干净的 `437089ec`；本地迁移查询仍因缺 datasource.url 在连接前退出，Prisma 校验 `1db929` 通过。现有 v5 请求、v5 签名授权及 v2 分配增加互斥 final 分支：必须使用 final 执行能力并绑定 matchingSourceEvidenceDigest；source 字段和签名语义不变，继续禁止该字段。final 准备前驱仍须是本会话成功创建（fresh）或消费（snapshot），不能用 source 记录替代。完整 source 原件匹配由后续 core 接线负责，本切片不启用 final 执行。
+
+短用例 RED `64b06e` → GREEN `b15589`；受影响契约测试文件 `c00780` 为 95/95，12,681.0248 ms。格式 `351885`、限定源码 lint 与差异检查 `131d4f` 通过。合同检查 `bc3b53` 通过：235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:ab92770132121db844c1cf81d2a543589254c7cc856e89c3bd95debc38715403`。未重跑长链、操作云端或变更业务代码；阶段 1 仍未完成。

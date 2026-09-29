@@ -63,13 +63,13 @@
       "const": "candidate-use"
     },
     "capability": {
-      "const": "execute-source-database-tests"
+      "enum": ["execute-source-database-tests", "execute-final-database-tests"]
     },
     "purpose": {
       "const": "stage1-isolated-database-tests"
     },
     "phase": {
-      "const": "source"
+      "enum": ["source", "final"]
     },
     "chain": {
       "enum": ["fresh", "snapshot"]
@@ -96,10 +96,29 @@
     "databaseTestManifestDigest": {
       "$ref": "#/$defs/digest"
     },
+    "matchingSourceEvidenceDigest": {
+      "$ref": "#/$defs/digest"
+    },
     "candidate": {
       "$ref": "#/$defs/candidate"
     }
   },
+  "oneOf": [
+    {
+      "properties": {
+        "phase": { "const": "source" },
+        "capability": { "const": "execute-source-database-tests" },
+        "matchingSourceEvidenceDigest": false
+      }
+    },
+    {
+      "required": ["matchingSourceEvidenceDigest"],
+      "properties": {
+        "phase": { "const": "final" },
+        "capability": { "const": "execute-final-database-tests" }
+      }
+    }
+  ],
   "$defs": {
     "digest": {
       "type": "string",

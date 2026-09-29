@@ -16,7 +16,8 @@ import {
 } from "../../packages/release-foundation/src/index.mjs";
 import {
   executeR3FinalRuntimeContainer,
-  finalRuntimeContainerSpec
+  finalRuntimeContainerSpec,
+  assessR3FinalContainerOriginals
 } from "./r3-final-migration-container.mjs";
 
 async function probe(rejectLifecycle) {
@@ -135,6 +136,21 @@ async function probe(rejectLifecycle) {
   const h2r = new PassThrough(),
     r2h = new PassThrough(),
     abort = new AbortController();
+  const transportStartedAt = new Date().toISOString();
+  let sentBytes = 0,
+    receivedBytes = 0,
+    frames = 0;
+  const inputWrite = h2r.write.bind(h2r),
+    outputWrite = r2h.write.bind(r2h);
+  h2r.write = (bytes, ...args) => {
+    sentBytes += Buffer.byteLength(bytes);
+    return inputWrite(bytes, ...args);
+  };
+  r2h.write = (bytes, ...args) => {
+    receivedBytes += Buffer.byteLength(bytes);
+    frames++;
+    return outputWrite(bytes, ...args);
+  };
   let assessed = false,
     lifecycleFailure;
   const assessLifecycle = async ({ selection: received, originals }) => {
@@ -278,7 +294,15 @@ async function probe(rejectLifecycle) {
             r2h.end();
             h2r.end();
             stderr.end();
-            return { status: "STREAM_ENDED", socketClosed: true };
+            return {
+              status: "STREAM_ENDED",
+              socketClosed: true,
+              startedAt: transportStartedAt,
+              finishedAt: new Date().toISOString(),
+              frames,
+              sentBytes,
+              receivedBytes
+            };
           });
           completed.catch(() => {});
           return {
@@ -327,6 +351,19 @@ async function probe(rejectLifecycle) {
     assert.equal(result[0].value.exit.StatusCode, 0);
     assert.equal(result[0].value.originals.trailingBytes, 0);
     assert.equal(result[0].value.originals.stderrBase64, "");
+    const verified = assessR3FinalContainerOriginals({
+      identity,
+      role: "runtime",
+      originals: result[0].value.originals
+    });
+    assert.equal(verified.containerId, cid);
+    assert.equal(verified.resultDigest, sha256Canonical(result[0].value.result));
+    const changed = structuredClone(result[0].value.originals);
+    changed.channel.result.lifecycle.report.terminalStatus = "FAILED";
+    assert.throws(
+      () => assessR3FinalContainerOriginals({ identity, role: "runtime", originals: changed }),
+      { code: "R3_FINAL_MIGRATION_CONTAINER_FAILED" }
+    );
     assert.equal(events.at(-1), "unregistered");
     assert.ok(events.indexOf("started-hook") > events.indexOf(`POST /containers/${cid}/start`));
     assert.equal(

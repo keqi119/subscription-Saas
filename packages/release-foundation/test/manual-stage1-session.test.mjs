@@ -3338,6 +3338,22 @@ test("R3 final matching returns immutable reconstructed source facts only for a 
     });
   }
 });
+test("R3 completed final claims must agree with independently reconstructed source", () => {
+  const { source, final } = r3MatchingFacts();
+  final.sourceClaims = {
+    matchingSourceEvidenceDigest: source.terminalDigest,
+    matchingSourceResultDigest: source.resultDigest,
+    expectedSchemaDigest: source.postSchemaDigest
+  };
+  assert.doesNotThrow(() => checkR3MatchingFacts(source, final));
+  for (const field of Object.keys(final.sourceClaims)) {
+    const altered = structuredClone(final);
+    altered.sourceClaims[field] = sha256Canonical(`wrong-${field}`);
+    assert.throws(() => checkR3MatchingFacts(source, altered), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+  }
+});
 test("R3 final matching admits fresh without snapshot and snapshot candidate with its own consumer", () => {
   for (const [chain, stage] of [
     ["fresh", "candidate-use"],
@@ -3437,6 +3453,10 @@ test("R3 final creation cannot complete through source methods and remains UNKNO
     "completeCleanup"
   ])
     await assert.rejects(session[method](), { code: "MANUAL_SESSION_UNVERIFIED" });
+  for (const method of ["verifyFinalOriginals", "custodyFinalOriginals", "completeFinal"]) {
+    assert.equal(typeof session[method], "function");
+    await assert.rejects(session[method](), { code: "MANUAL_SESSION_UNVERIFIED" });
+  }
   assert.equal((await f.records("consumption")).length, 1);
   assert.deepEqual(
     (await f.records("execution")).map((value) => [sha256Canonical(value), value.status]),
@@ -3483,6 +3503,35 @@ test("R3 rejects orphan cleanup originals even without legacy R2 history", async
     schemaVersion: "manual-r3-forward-shutdown-evidence.v1",
     observation: { status: "OBSERVED" },
     rawInputs: {}
+  });
+  const request = await r3CreationRequest(f, session);
+  await assert.rejects(session.sign(request), { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" });
+  assert.equal((await f.records("consumption")).length, 0);
+});
+test("R3 rejects orphan final result and its custody before any authorization", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const session = await r3CreationSession(t, f, r3CreationFixture(f, "final"));
+  const resultDigest = await f.put({
+    schemaVersion: "manual-r3-final-result.v1",
+    operationRef: uuid(701),
+    promotionEligible: false
+  });
+  await f.put({
+    schemaVersion: "manual-operation-record.v3",
+    kind: "custody",
+    profileDigest: session.profileDigest,
+    recordedAt: NOW,
+    promotionEligible: false,
+    ownerId: f.profile.ownerId,
+    subjectDigest: resultDigest,
+    subjectType: "record",
+    purpose: "archive-readback",
+    outcome: "MATCH",
+    observedDigest: resultDigest,
+    observedAt: NOW,
+    storageRole: "archive",
+    retentionDays: 90,
+    reasonCode: null
   });
   const request = await r3CreationRequest(f, session);
   await assert.rejects(session.sign(request), { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" });

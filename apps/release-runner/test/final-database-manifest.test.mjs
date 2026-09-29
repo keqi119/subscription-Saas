@@ -237,6 +237,14 @@ test("final manifest uses distinct prepared databases and source-target contexts
   const result = await executePreparedFinalManifest(f);
   assert.equal(result.manifestReport.terminalStatus, "PASSED");
   assert.equal(result.suiteReadbacks.length, f.manifest.suites.length);
+  const first = result.suiteReadbacks.find(({ originals }) => originals.invocation);
+  assert.equal(first.originals.invocation.cwd, f.repoRoot);
+  assert.equal(first.originals.invocation.executable, "node");
+  assert.equal(first.originals.invocation.environment.S1_RELEASE_DATABASE_TEST, "1");
+  assert.deepEqual(
+    Object.keys(first.originals.invocation).sort(),
+    ["executable", "arguments", "cwd", "environment"].sort()
+  );
   assert.equal(f.calls.lifecycle.length, 1);
   const clean = f.calls.contexts.find(
     ({ context }) => context.suiteId === "script.stage1-clean-acceptance.postgres"

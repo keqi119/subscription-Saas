@@ -65,6 +65,20 @@ export function assertR3MatchingSources(accumulator) {
         (key) => typeof source[key] === "string" && /^sha256:[0-9a-f]{64}$/u.test(source[key])
       )
     );
+    if (Object.hasOwn(final, "sourceClaims")) {
+      const claims = final.sourceClaims;
+      requireThat(
+        final.stage === "candidate-use" &&
+          claims &&
+          typeof claims === "object" &&
+          !Array.isArray(claims) &&
+          Object.keys(claims).sort().join(",") ===
+            "expectedSchemaDigest,matchingSourceEvidenceDigest,matchingSourceResultDigest" &&
+          claims.matchingSourceEvidenceDigest === source.terminalDigest &&
+          claims.matchingSourceResultDigest === source.resultDigest &&
+          claims.expectedSchemaDigest === source.postSchemaDigest
+      );
+    }
     matchedSources.set(
       requestDigest,
       Object.freeze(

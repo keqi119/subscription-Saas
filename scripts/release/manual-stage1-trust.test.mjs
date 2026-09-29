@@ -3312,6 +3312,9 @@ test(
                 "verifySourceOriginals",
                 "custodySourceOriginals",
                 "completeSource",
+                "verifyFinalOriginals",
+                "custodyFinalOriginals",
+                "completeFinal",
                 "acknowledgeSource",
                 "record"
               ].map((name) => [name, async () => {}])

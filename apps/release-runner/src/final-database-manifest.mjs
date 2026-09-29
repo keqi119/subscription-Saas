@@ -300,6 +300,7 @@ export async function executePreparedFinalManifest({
           context: null,
           secretReferences: [],
           process: null,
+          invocation: null,
           logSummary: null,
           lifecycle: null
         };
@@ -428,10 +429,10 @@ export async function executePreparedFinalManifest({
             );
             live(signal);
             const command = fixedCommand(selection);
-            const result = await executeProcess(command.executable, command.arguments, {
-              repoRoot,
-              signal,
-              timeoutMs: selection.timeoutMs,
+            const invocation = freeze({
+              executable: command.executable,
+              arguments: [...command.arguments],
+              cwd: repoRoot,
               environment: {
                 PATH: "/pnpm:/usr/local/bin:/usr/bin:/bin",
                 HOME: "/tmp",
@@ -439,6 +440,13 @@ export async function executePreparedFinalManifest({
                 S1_RELEASE_DATABASE_TEST: "1",
                 S1_RELEASE_DATABASE_CONTEXT: contextRelative
               }
+            });
+            originals.invocation = invocation;
+            const result = await executeProcess(invocation.executable, invocation.arguments, {
+              repoRoot,
+              signal,
+              timeoutMs: selection.timeoutMs,
+              environment: invocation.environment
             });
             originals.process = result;
             live(signal);

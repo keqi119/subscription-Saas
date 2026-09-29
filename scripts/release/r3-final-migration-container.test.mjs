@@ -78,6 +78,21 @@ async function fixture(exitCode = 0, extraStdout = false) {
     const stdin = new PassThrough(),
       stdout = new PassThrough(),
       stderr = new PassThrough();
+    const startedAt = new Date().toISOString();
+    let sentBytes = 0,
+      receivedBytes = 0,
+      frames = 0;
+    const inputWrite = stdin.write.bind(stdin),
+      outputWrite = stdout.write.bind(stdout);
+    stdin.write = (bytes, ...args) => {
+      sentBytes += Buffer.byteLength(bytes);
+      return inputWrite(bytes, ...args);
+    };
+    stdout.write = (bytes, ...args) => {
+      receivedBytes += Buffer.byteLength(bytes);
+      frames++;
+      return outputWrite(bytes, ...args);
+    };
     const childSignal = new AbortController();
     const nextResult = (stage, payload) => {
       const result = {
@@ -112,7 +127,15 @@ async function fixture(exitCode = 0, extraStdout = false) {
       if (extraStdout) stdout.write("unexpected-after-finished\n");
       stdout.end();
       stderr.end();
-      return { status: "STREAM_ENDED", socketClosed: true };
+      return {
+        status: "STREAM_ENDED",
+        socketClosed: true,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        frames,
+        sentBytes,
+        receivedBytes
+      };
     });
     completed.catch(() => {});
     return {
@@ -163,7 +186,7 @@ async function fixture(exitCode = 0, extraStdout = false) {
       assess: async () => {},
       openAttach
     });
-  return { run, events, cid, results };
+  return { run, events, cid, results, identity };
 }
 
 test("the owned migration container attaches before start and requires actual exit and deletion readback", async () => {
@@ -194,4 +217,45 @@ test("output arriving after the final protocol frame cannot be hidden by stream 
   const f = await fixture(0, true);
   await assert.rejects(f.run(), { code: "R3_FINAL_MIGRATION_CONTAINER_FAILED" });
   assert.equal(f.events.at(-1), "unregistered");
+});
+
+test("container originals independently reconstruct the owned execution and reject tampered evidence", async () => {
+  const { assessR3FinalContainerOriginals } = await import("./r3-final-migration-container.mjs");
+  const f = await fixture();
+  const completed = await f.run();
+  const assess = (originals) =>
+    assessR3FinalContainerOriginals({ identity: f.identity, role: "migration", originals });
+  const receipt = assess(completed.originals);
+  assert.equal(receipt.containerId, f.cid);
+  assert.deepEqual(receipt.resultDigests, completed.results.map(sha256Canonical));
+  for (const change of [
+    (o) => {
+      o.exchanges[1].requestBody.HostConfig.Privileged = true;
+    },
+    (o) => {
+      o.exchanges.splice(3, 1);
+    },
+    (o) => {
+      o.channelStartExchangeCount = 3;
+    },
+    (o) => {
+      o.transport.socketClosed = false;
+    },
+    (o) => {
+      o.transport.sentBytes++;
+    },
+    (o) => {
+      o.channel.results[2].bindingDigest = `sha256:${"0".repeat(64)}`;
+    },
+    (o) => {
+      o.channel.transcript[1].raw = "credential must never be retained";
+    },
+    (o) => {
+      o.inputIdentity.migrationContainerId = "f".repeat(64);
+    }
+  ]) {
+    const changed = structuredClone(completed.originals);
+    change(changed);
+    assert.throws(() => assess(changed), { code: "R3_FINAL_MIGRATION_CONTAINER_FAILED" });
+  }
 });

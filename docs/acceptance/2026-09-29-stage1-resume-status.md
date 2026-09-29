@@ -2,9 +2,23 @@
 
 阶段 1 尚未完成。保持原定范围：不增加业务功能，不采用商用 KMS，不重复已通过且未受改动影响的长测试。
 
-已接入原生 H1 final 调用和最终镜像的固定私有入口。代码现在串起已消费候选、匹配 source、分库迁移与准备、普通清单测试及生命周期测试；原生 H1 完整成功路径尚未实跑。final 原件独立重建、成功终态/保管、最终清理和 hosted 工作流仍未完成，不能据此发布或宣布阶段 1 完成。
+已接入原生 H1 final 调用、最终镜像的固定私有入口，以及 final 原件重建和核心成功终态/双份保管。原生 H1 完整成功路径、final 正向历史回放仍未实跑；final 负责人签收、最终清理和 hosted 工作流仍未完成，不能据此发布或宣布阶段 1 完成。
 
-## 当前增量：原生 H1 与最终镜像接线
+## 当前增量：final 原件重建与核心终态
+
+预检 `9e402f` 开始于干净的 `bda6867a`；本地 migrate status 仍因缺 datasource.url 在连接前失败，Prisma `fe9214` 通过。没有业务改动、云端/数据库写入、push/merge 或 workflow dispatch。
+
+独立读取器按固定顺序读取全部 79 项 final 原件的 archive/backup 两份字节，再检查重读一致。它重新检查固定镜像/容器创建与隔离、实际启动/退出/流结束/删除和独立 404、迁移四阶段及物理身份、运行权限与 fixture，再从普通套件的实际命令/上下文/输出和生命周期观测重建 37 套件报告。START 中的秘密输入只保留摘要及长度，不声称能从摘要重构密码；双份私有存储和 H1 准入仍由核心验证。
+
+核心新增零参数 `verifyFinalOriginals`、`custodyFinalOriginals`、`completeFinal`。final 引用的 source 终态、结果和结构摘要必须与完整 source 历史独立核验所得值一致；历史读取先重建各自原件，再在全部上下文收集后匹配，避免相互递归。原始 UNKNOWN 不改写；成功追加记录仍为 `promotionEligible=false`。原生 final holder 已接这三步并回读终态/结果/双份保管，后续 recheck 保持绑定。final 尚不允许 ACK/cleanup/解锁，关闭仍保留 UNKNOWN 会话和锁。审查发现的孤立 final 结果及其保管记录误放行已用短测复现并拒绝。
+
+定向验证：容器原件 4/4（`3ab0ed`），包括真实 owner 返回值到迁移读取器及 8 项篡改；现有 runtime 正常用例接入独立评估器 1/1（`99cc0d`），实际执行两个 Node 测试、19 动作和 49 帧，Engine/H1/普通汇总仍用替身。套件重建及生产原件记录 5/5（`b5fc22`）；根联合 completion/套件短测 `cb030e` 5/5，无跳过。核心 sourceClaims 匹配、方法边界和孤立结果先 RED 后 GREEN；这些不是完整 final 正向历史成功证据。原生入口边界 `38aa56` 1/1。未重跑旧 source/cleanup 长链。
+
+受限 Node 源码检查 `d85e3a` 通过，最终核心修改复查 `dafc46` 通过；明确保留既有清理/秘密清除写法的检查例外，首次套用通用 TS lint 时的 Node/旧代码诊断没有被当作通过。最终核心短测 `a9aaae` 3/3，格式/语法/差异 `33d29f` 通过。契约 `dafc46` 为 256 文件、87 schemas、128 migrations、13 commands，摘要 `sha256:3450963be9208da87d78898f1c29c22fd9452681f3ecba668a5112f657e40351`；发现清单 `50e10e` 为 99 候选 / 39 清单文件 / 60 例外 / 0 未分类。
+
+下一步接 final 负责人签收与清理/锁释放，在这条完整路径上复用既有 fixture 做一次正向核心回放，不另建大型测试框架；再连接受控工作流并执行一次同候选真实 fresh/snapshot。合法数据库快照来源仍待确认；两项 Staging 迁移和恢复 API/Web 后的 R4 仍未执行。
+
+## 前序增量：原生 H1 与最终镜像接线
 
 预检 `98eea8` 为干净的 `fd9492e5`；本地 migrate status 缺 datasource.url，在连接前退出；Prisma `f8f046` 通过。本轮没有业务改动、线上写入、push/merge 或 workflow dispatch。
 

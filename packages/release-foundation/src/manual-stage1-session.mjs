@@ -46,6 +46,7 @@ import {
   trackedTestUniverse
 } from "./database-test-discovery.mjs";
 import { scanDatabaseFrameworkBypasses } from "./node-database-test-runner.mjs";
+import { computeMigrationCatalog, computeRepositoryContract } from "./catalogs.mjs";
 
 const STORAGE = "MANUAL_STORAGE_UNVERIFIED";
 const SESSION = "MANUAL_SESSION_UNVERIFIED";
@@ -342,6 +343,7 @@ function historyAccumulator() {
     r3Acknowledgements: new Set(),
     r3Cleanups: new Set(),
     r3CleanupCustody: new Set(),
+    r3FinalResultCustody: new Set(),
     r3SourceProofs: new Map(),
     r3Sources: new Map(),
     r3FinalUses: new Map()
@@ -403,7 +405,9 @@ function createManualHistoryVerifier(runtime) {
       allocation?.matchingSourceEvidenceDigest === request.matchingSourceEvidenceDigest,
       EVIDENCE
     );
-    accumulator.r3FinalUses.set(sha256Canonical(request), {
+    const requestDigest = sha256Canonical(request);
+    const priorClaims = accumulator.r3FinalUses.get(requestDigest)?.sourceClaims;
+    accumulator.r3FinalUses.set(requestDigest, {
       ...r3CandidateContextFacts(
         profileDigest,
         identity,
@@ -419,7 +423,8 @@ function createManualHistoryVerifier(runtime) {
         request.stage === "candidate-use" && identity.scope.chain === "snapshot"
           ? graph.get(graph.get(request.preparationExecutionRecordDigest)?.value?.requestDigest)
               ?.value?.matchingSourceEvidenceDigest
-          : null
+          : null,
+      ...(priorClaims ? { sourceClaims: priorClaims } : {})
     });
   }
   function reducedExecution(value, graph, assessment = null, seen = new Set()) {
@@ -1187,6 +1192,61 @@ function createManualHistoryVerifier(runtime) {
     }
     return { request, result, verified };
   }
+  async function r3FinalProof(graph, initial, completed = null) {
+    const { profile, store, r3Context, stamp } = runtime();
+    const request = graph.get(initial.requestDigest)?.value;
+    requireThat(
+      request?.schemaVersion === "manual-runner-request.v5" && request.phase === "final",
+      SESSION
+    );
+    const verified = await r3ReadFinalOriginals();
+    const subjects = new Set(verified.originals.map(({ digest }) => digest));
+    const custodyRecords = [...graph.values()]
+      .map(({ value }) => value)
+      .filter(
+        (value) =>
+          value.kind === "custody" &&
+          subjects.has(value.subjectDigest) &&
+          ["archive-readback", "backup-readback"].includes(value.purpose)
+      );
+    for (const value of custodyRecords) {
+      const bytes = encodeManualJson(value);
+      const digest = sha256Bytes(bytes);
+      for (const role of ["archive", "backup"])
+        requireThat(
+          (await store.read(objectPath(profile.storage[`${role}Root`], digest))).equals(bytes),
+          STORAGE
+        );
+    }
+    const stored = completed ? graph.get(completed.resultDigest)?.value : null;
+    requireThat(!completed || stored?.schemaVersion === "manual-r3-final-result.v1", EVIDENCE);
+    const { buildR3FinalCompletion } = await import("../../../scripts/release/r3-final-result.mjs");
+    const result = buildR3FinalCompletion({
+      request,
+      initialExecution: initial,
+      manifest: r3Context.destinationInputs.manifest,
+      verified,
+      custodyRecords,
+      completedAt: completed ? stored.completedAt : stamp()
+    });
+    if (completed) {
+      requireThat(
+        equal(stored, result) &&
+          sha256Canonical(result) === completed.resultDigest &&
+          completed.processEvidenceDigest === verified.readbackDigest &&
+          instant(result.completedAt) <= instant(completed.finishedAt),
+        EVIDENCE
+      );
+      for (const role of ["archive", "backup"])
+        requireThat(
+          (
+            await store.read(objectPath(profile.storage[`${role}Root`], completed.resultDigest))
+          ).equals(encodeManualJson(result)),
+          STORAGE
+        );
+    }
+    return { request, result, verified };
+  }
   // A cleanup observation consumes no authorization and changes no execution.
   // Both live completion and historical replay rebuild its evidence here.
   async function r3CleanupProof(graph, record, supplied = null) {
@@ -1670,6 +1730,7 @@ function createManualHistoryVerifier(runtime) {
         });
         const linkedDigest = sha256Canonical(execution);
         if (candidateUse) {
+          let finalClaims = null;
           const predecessor = await r3CandidatePreparation(request, graph);
           requireThat(
             candidateUseReceipt?.executionRecordDigest === linkedDigest &&
@@ -1694,9 +1755,6 @@ function createManualHistoryVerifier(runtime) {
               STORAGE
             );
           if (linked.length === 2) {
-            // Final execution evidence has its own future terminal assessor.
-            // A source result can never complete a final candidate operation.
-            requireThat(identity.scope.phase === "source", SESSION);
             const completed = linked.find((value) => value !== execution);
             requireThat(
               completed?.status === "SUCCEEDED" &&
@@ -1719,7 +1777,10 @@ function createManualHistoryVerifier(runtime) {
                 ].every((field) => completed[field] === execution[field]),
               SESSION
             );
-            const proof = await r3SourceProof(graph, execution, completed);
+            const proof =
+              identity.scope.phase === "source"
+                ? await r3SourceProof(graph, execution, completed)
+                : await r3FinalProof(graph, execution, completed);
             const expected = new Set(["archive", "backup"]);
             const custody = values.filter(
               (value) =>
@@ -1754,6 +1815,8 @@ function createManualHistoryVerifier(runtime) {
                   ).equals(encodeManualJson(value)),
                   STORAGE
                 );
+              if (identity.scope.phase === "final")
+                accumulator.r3FinalResultCustody.add(sha256Canonical(value));
             }
             requireThat(expected.size === 0, EVIDENCE);
             for (const role of ["journal", "archive", "backup"])
@@ -1766,46 +1829,55 @@ function createManualHistoryVerifier(runtime) {
                 STORAGE
               );
             r3Originals.artifacts.add(completed.resultDigest);
-            const acknowledgements = values.filter(
-              (value) =>
-                value.schemaVersion === "manual-operation-record.v3" &&
-                value.kind === "custody" &&
-                value.purpose === "owner-acknowledgement" &&
-                value.subjectDigest === sha256Canonical(completed)
-            );
-            requireThat(acknowledgements.length <= 1, EVIDENCE);
-            const { assertR3SourceAcknowledgement } =
-              await import("../../../scripts/release/r3-source-result.mjs");
-            for (const acknowledgement of acknowledgements) {
-              assertR3SourceAcknowledgement({
-                acknowledgement,
-                profileDigest,
-                ownerId: profile.ownerId,
-                execution: completed,
-                result: proof.result,
-                now: stamp()
-              });
-              const bytes = encodeManualJson(acknowledgement);
-              const digest = sha256Bytes(bytes);
-              for (const role of ["archive", "backup"])
-                requireThat(
-                  (await store.read(objectPath(profile.storage[`${role}Root`], digest))).equals(
-                    bytes
-                  ),
-                  STORAGE
-                );
-              r3Acknowledgements.add(digest);
+            if (identity.scope.phase === "source") {
+              const acknowledgements = values.filter(
+                (value) =>
+                  value.schemaVersion === "manual-operation-record.v3" &&
+                  value.kind === "custody" &&
+                  value.purpose === "owner-acknowledgement" &&
+                  value.subjectDigest === sha256Canonical(completed)
+              );
+              requireThat(acknowledgements.length <= 1, EVIDENCE);
+              const { assertR3SourceAcknowledgement } =
+                await import("../../../scripts/release/r3-source-result.mjs");
+              for (const acknowledgement of acknowledgements) {
+                assertR3SourceAcknowledgement({
+                  acknowledgement,
+                  profileDigest,
+                  ownerId: profile.ownerId,
+                  execution: completed,
+                  result: proof.result,
+                  now: stamp()
+                });
+                const bytes = encodeManualJson(acknowledgement);
+                const digest = sha256Bytes(bytes);
+                for (const role of ["archive", "backup"])
+                  requireThat(
+                    (await store.read(objectPath(profile.storage[`${role}Root`], digest))).equals(
+                      bytes
+                    ),
+                    STORAGE
+                  );
+                r3Acknowledgements.add(digest);
+              }
+              accumulator.r3SourceProofs.set(
+                sha256Canonical(completed),
+                freeze({
+                  resultDigest: completed.resultDigest,
+                  reconstructedDigest: proof.result.reconstructedDigest,
+                  postSchemaDigest: proof.verified.postSchemaDigest
+                })
+              );
+            } else {
+              finalClaims = proof.verified.sourceClaims;
             }
-            accumulator.r3SourceProofs.set(
-              sha256Canonical(completed),
-              freeze({
-                resultDigest: completed.resultDigest,
-                reconstructedDigest: proof.result.reconstructedDigest,
-                postSchemaDigest: proof.verified.postSchemaDigest
-              })
-            );
           }
           collectFinalUse(graph, accumulator, request);
+          if (finalClaims)
+            accumulator.r3FinalUses.set(sha256Canonical(request), {
+              ...accumulator.r3FinalUses.get(sha256Canonical(request)),
+              sourceClaims: freeze(snapshot(finalClaims))
+            });
           r3Validated.add(digest);
           continue;
         }
@@ -2044,8 +2116,14 @@ function createManualHistoryVerifier(runtime) {
   async function finishR3History(graph, slots, accumulator, legacy, request) {
     const { profile, profileDigest } = runtime();
     const values = [...graph.values()].map((entry) => entry.value);
-    const { r3Originals, r3Validated, r3Acknowledgements, r3Cleanups, r3CleanupCustody } =
-      accumulator;
+    const {
+      r3Originals,
+      r3Validated,
+      r3Acknowledgements,
+      r3Cleanups,
+      r3CleanupCustody,
+      r3FinalResultCustody
+    } = accumulator;
     // Resolve after every context is verified, independently of directory order.
     const matchedSources = assertR3MatchingSources(accumulator);
     for (const value of values) {
@@ -2055,7 +2133,8 @@ function createManualHistoryVerifier(runtime) {
         [
           "manual-r3-hosted-cleanup.v1",
           "manual-r3-hosted-evidence.v1",
-          "manual-r3-forward-shutdown-evidence.v1"
+          "manual-r3-forward-shutdown-evidence.v1",
+          "manual-r3-final-result.v1"
         ].includes(value.schemaVersion)
       )
         requireThat(r3Originals.artifacts.has(sha256Canonical(value)), EVIDENCE);
@@ -2071,6 +2150,8 @@ function createManualHistoryVerifier(runtime) {
         ].includes(subject?.schemaVersion)
       )
         requireThat(r3CleanupCustody.has(sha256Canonical(value)), EVIDENCE);
+      if (subject?.schemaVersion === "manual-r3-final-result.v1")
+        requireThat(r3FinalResultCustody.has(sha256Canonical(value)), EVIDENCE);
     }
     for (const { request: oldRequest, consumed, execution } of legacy) {
       if (execution.status === "INTERRUPTED_UNKNOWN") continue;
@@ -2244,6 +2325,153 @@ function createManualHistoryVerifier(runtime) {
     await evidenceState();
     return freeze(result);
   }
+  async function r3ReadFinalOriginals() {
+    const {
+      profile,
+      store,
+      r3Context,
+      lifecycleTargetLocks,
+      creationCompletionDigest,
+      consumerCompletionDigest,
+      candidateUseReceipt,
+      creationReceipt,
+      consumerReceipt,
+      evidenceState
+    } = runtime();
+    await evidenceState();
+    requireThat(
+      r3Context.scope.phase === "final" &&
+        r3Context.snapshotInputs &&
+        creationReceipt &&
+        creationCompletionDigest &&
+        candidateUseReceipt &&
+        lifecycleTargetLocks.size === 2 &&
+        (r3Context.scope.chain === "snapshot" ? consumerCompletionDigest : !consumerReceipt),
+      SESSION
+    );
+    const graph = await store.objects();
+    const creationInitial = graph.get(creationReceipt.executionRecordDigest)?.value;
+    const creation = graph.get(creationCompletionDigest)?.value;
+    const candidateInitial = graph.get(candidateUseReceipt.executionRecordDigest)?.value;
+    requireThat(
+      creationInitial?.stage === "target-create" &&
+        creation?.stage === "target-create" &&
+        creation.status === "SUCCEEDED" &&
+        creation.predecessorExecutionRecordDigest === creationReceipt.executionRecordDigest &&
+        candidateInitial?.stage === "candidate-use" &&
+        candidateInitial.status === "INTERRUPTED_UNKNOWN",
+      SESSION
+    );
+    const request = graph.get(candidateInitial.requestDigest)?.value;
+    requireThat(
+      request?.schemaVersion === "manual-runner-request.v5" && request.phase === "final",
+      SESSION
+    );
+    await r3CandidatePreparation(request, graph);
+    const original = await r3StoredDestination(graph, creation.resultDigest, creationInitial);
+    const repoRoot = r3Context.snapshotInputs.repoRoot;
+    const manifest = r3Context.destinationInputs.manifest;
+    await store.captureRepository?.(repoRoot, manifest);
+    const contractBytes = new Map();
+    const load = async (name) => {
+      const file = path.join(repoRoot, "release", "contracts", name);
+      const bytes = await store.fs.readFile(file);
+      requireThat(bytes.length <= LIMIT, EVIDENCE);
+      contractBytes.set(file, bytes);
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    };
+    const discoveryDocument = await load("database-test-discovery.v1.json");
+    const exceptions = await load("database-test-exceptions.v1.json");
+    const external = await load("external-validation-applicability.v1.json");
+    const globalObjectPolicy = await load("migration-global-object-policy.v1.json");
+    const candidates = await discoverDatabaseTestCandidates(repoRoot, discoveryDocument);
+    const classification = classifyDatabaseTests(
+      candidates,
+      manifest.suites,
+      exceptions.exceptions,
+      external.records
+    );
+    requireThat(
+      classification.unclassified.length === 0 &&
+        (await scanDatabaseFrameworkBypasses(repoRoot, manifest)).length === 0,
+      EVIDENCE
+    );
+    const discovery = {
+      candidates,
+      classification,
+      discoveryDigest: sha256Canonical(discoveryDocument)
+    };
+    const buildProof = graph.get(r3Context.scope.buildProofDigest)?.value;
+    requireThat(
+      buildProof && sha256Canonical(buildProof) === r3Context.scope.buildProofDigest,
+      EVIDENCE
+    );
+    validateContract("build-proof.v1", buildProof);
+    const migrationCatalog = await computeMigrationCatalog(repoRoot);
+    requireThat(buildProof.identity.migrationCatalogDigest === migrationCatalog.digest, EVIDENCE);
+    const repositoryContract = await computeRepositoryContract(repoRoot);
+    requireThat(
+      buildProof.identity.repositoryContractDigest === repositoryContract.digest,
+      EVIDENCE
+    );
+    const plan = freeze(snapshot(original.destination.databaseTargetSet.plan));
+    const { readR3FinalOriginals, r3FinalObservationNames } =
+      await import("../../../scripts/release/r3-final-result.mjs");
+    const names = r3FinalObservationNames({ manifest, plan });
+    requireThat(
+      Array.isArray(names) &&
+        names.length > 0 &&
+        new Set(names).size === names.length &&
+        names.every((name) => /^[a-z0-9][a-z0-9_.-]{0,127}$/u.test(name)),
+      EVIDENCE
+    );
+    const allowed = new Set(names);
+    const verified = await readR3FinalOriginals({
+      manifest,
+      plan,
+      discovery,
+      request,
+      initialExecution: candidateInitial,
+      destination: original.destination,
+      buildProof,
+      migrationCatalog,
+      globalObjectPolicy,
+      lifecycleRecords: [0, 1].map((shard) => lifecycleTargetLocks.get(shard).record),
+      repoRoot,
+      readObservation: async ({ storageRole, name }) => {
+        requireThat(["archive", "backup"].includes(storageRole) && allowed.has(name), EVIDENCE);
+        return store.read(
+          path.join(
+            profile.storage[`${storageRole}Root`],
+            "inputs",
+            "r3",
+            r3Context.creationSpec.operationRef,
+            "observations",
+            "final",
+            name,
+            "readback.json"
+          ),
+          true,
+          33554432
+        );
+      },
+      recheck: async () => {
+        await evidenceState();
+        for (const [file, bytes] of contractBytes)
+          requireThat((await store.fs.readFile(file)).equals(bytes), EVIDENCE);
+        requireThat(
+          (await computeMigrationCatalog(repoRoot)).digest === migrationCatalog.digest,
+          EVIDENCE
+        );
+        requireThat(
+          (await computeRepositoryContract(repoRoot)).digest === repositoryContract.digest,
+          EVIDENCE
+        );
+      }
+    });
+    await evidenceState();
+    return freeze(verified);
+  }
   return {
     reducedExecution,
     archiveInput,
@@ -2253,11 +2481,13 @@ function createManualHistoryVerifier(runtime) {
     r3StoredDestination,
     r3ConsumerOriginals,
     r3SourceProof,
+    r3FinalProof,
     r3CleanupProof,
     collectFinalUse,
     validateR3Context,
     finishR3History,
-    readSourceOriginals: r3ReadSourceOriginals
+    readSourceOriginals: r3ReadSourceOriginals,
+    readFinalOriginals: r3ReadFinalOriginals
   };
 }
 
@@ -4106,6 +4336,7 @@ export async function openManualSession({
   const r3StoredDestination = (...args) => historyVerifier.r3StoredDestination(...args);
   const r3ConsumerOriginals = (...args) => historyVerifier.r3ConsumerOriginals(...args);
   const r3SourceProof = (...args) => historyVerifier.r3SourceProof(...args);
+  const r3FinalProof = (...args) => historyVerifier.r3FinalProof(...args);
   async function verifyR3History(
     request,
     pendingDigest = null,
@@ -4281,6 +4512,9 @@ export async function openManualSession({
       sourceCustodyResult = null,
       sourceCompletionAttempted = false,
       sourceCompletionDigest = null,
+      finalCustodyAttempted = false,
+      finalCustodyResult = null,
+      finalCompletionAttempted = false,
       sourceAcknowledgementAttempted = false,
       cleanupAttempted = false,
       cleanupReleaseCancelled = false,
@@ -4307,6 +4541,7 @@ export async function openManualSession({
       await snapshotReader.recheck();
     };
     r3ReadSourceOriginals = historyVerifier.readSourceOriginals;
+    const r3ReadFinalOriginals = historyVerifier.readFinalOriginals;
     const sourceHistory = async () => {
       requireThat(identity.scope.phase === "source" && candidateUseReceipt, SESSION);
       const graph = await store.objects();
@@ -4321,6 +4556,33 @@ export async function openManualSession({
       const result = await r3ReadSourceOriginals();
       await sourceHistory();
       return result;
+    };
+    const finalHistory = async () => {
+      requireThat(identity.scope.phase === "final" && candidateUseReceipt, SESSION);
+      const graph = await store.objects();
+      const initial = graph.get(candidateUseReceipt.executionRecordDigest)?.value;
+      requireThat(initial?.stage === "candidate-use", SESSION);
+      const request = graph.get(initial.requestDigest)?.value;
+      requireThat(
+        request?.schemaVersion === "manual-runner-request.v5" && request.phase === "final",
+        SESSION
+      );
+      return { request, ...(await verifyR3History(request)) };
+    };
+    const verifyFinalOriginalsInternal = async () => {
+      const { request, matchedSources } = await finalHistory();
+      const matched = matchedSources.get(sha256Canonical(request));
+      requireThat(matched, EVIDENCE);
+      const verified = await r3ReadFinalOriginals();
+      const claims = verified.sourceClaims;
+      requireThat(
+        claims?.matchingSourceEvidenceDigest === matched.terminalDigest &&
+          claims.matchingSourceResultDigest === matched.resultDigest &&
+          claims.expectedSchemaDigest === matched.postSchemaDigest,
+        EVIDENCE
+      );
+      await finalHistory();
+      return verified;
     };
     const closeWork = async (preserve) => {
       if (preserve) cleanupReleaseCancelled = true;
@@ -5050,6 +5312,12 @@ export async function openManualSession({
           return verifySourceOriginalsInternal();
         });
       },
+      verifyFinalOriginals(...args) {
+        return serial(async () => {
+          requireThat(args.length === 0, SESSION);
+          return verifyFinalOriginalsInternal();
+        });
+      },
       custodySourceOriginals(...args) {
         return serial(async () => {
           requireThat(args.length === 0, SESSION);
@@ -5269,6 +5537,235 @@ export async function openManualSession({
             resultDigest,
             processEvidenceDigest: execution.processEvidenceDigest,
             custodyRecordDigests
+          });
+        });
+      },
+      custodyFinalOriginals(...args) {
+        return serial(async () => {
+          requireThat(args.length === 0, SESSION);
+          await active();
+          r3Live();
+          requireThat(
+            !finalCustodyAttempted &&
+              identity.scope.phase === "final" &&
+              r3Context.snapshotInputs &&
+              creationReceipt &&
+              creationCompletionDigest &&
+              candidateUseReceipt &&
+              lifecycleTargetLocks.size === 2 &&
+              (identity.scope.chain === "snapshot" ? consumerCompletionDigest : !consumerReceipt),
+            SESSION
+          );
+          finalCustodyAttempted = true;
+          const verified = await verifyFinalOriginalsInternal();
+          const { r3FinalObservationNames } =
+            await import("../../../scripts/release/r3-final-result.mjs");
+          const graph = await store.objects();
+          const destination = graph.get(
+            graph.get(creationCompletionDigest)?.value?.resultDigest
+          )?.value;
+          requireThat(destination?.databaseTargetSet?.plan, EVIDENCE);
+          const names = r3FinalObservationNames({
+            manifest: r3Context.destinationInputs.manifest,
+            plan: destination.databaseTargetSet.plan
+          });
+          requireThat(
+            Array.isArray(verified.originals) &&
+              verified.originals.length === names.length &&
+              new Set(verified.originals.map(({ digest }) => digest)).size === names.length,
+            EVIDENCE
+          );
+          const refs = verified.originals.map((ref, index) => {
+            exact(ref, ["name", "digest", "bytes"], EVIDENCE);
+            requireThat(
+              ref.name === names[index] &&
+                /^[a-z0-9][a-z0-9_.-]{0,127}$/u.test(ref.name) &&
+                /^sha256:[0-9a-f]{64}$/u.test(ref.digest) &&
+                Number.isSafeInteger(ref.bytes) &&
+                ref.bytes > 0 &&
+                ref.bytes <= 33554432,
+              EVIDENCE
+            );
+            return ref;
+          });
+          const readFinal = async (ref, role) => {
+            const bytes = await store.read(
+              path.join(
+                profile.storage[`${role}Root`],
+                "inputs",
+                "r3",
+                r3Context.creationSpec.operationRef,
+                "observations",
+                "final",
+                ref.name,
+                "readback.json"
+              ),
+              true,
+              33554432
+            );
+            requireThat(bytes.length === ref.bytes && sha256Bytes(bytes) === ref.digest, STORAGE);
+          };
+          const custodyRecordDigests = [];
+          const custodyCopies = [];
+          for (const ref of refs) {
+            for (const role of ["archive", "backup"]) {
+              await active();
+              r3Live();
+              await readFinal(ref, role);
+              const observedAt = stamp();
+              const custody = {
+                ...common("custody", observedAt),
+                ownerId: profile.ownerId,
+                subjectDigest: ref.digest,
+                subjectType: "record",
+                purpose: `${role}-readback`,
+                outcome: "MATCH",
+                observedDigest: ref.digest,
+                observedAt,
+                storageRole: role,
+                retentionDays,
+                reasonCode: null
+              };
+              validateContract(recordSchema, custody);
+              const recordBytes = encodeManualJson(custody);
+              const recordDigest = sha256Bytes(recordBytes);
+              await active();
+              r3Live();
+              requireThat((await store.put(custody)).recordDigest === recordDigest, STORAGE);
+              await active();
+              r3Live();
+              await store.create(objectPath(profile.storage.backupRoot, recordDigest), recordBytes);
+              for (const copyRole of ["archive", "backup"])
+                requireThat(
+                  (
+                    await store.read(objectPath(profile.storage[`${copyRole}Root`], recordDigest))
+                  ).equals(recordBytes),
+                  STORAGE
+                );
+              custodyRecordDigests.push(recordDigest);
+              custodyCopies.push({ recordDigest, recordBytes });
+            }
+          }
+          for (const { recordDigest, recordBytes } of custodyCopies)
+            for (const role of ["archive", "backup"])
+              requireThat(
+                (await store.read(objectPath(profile.storage[`${role}Root`], recordDigest))).equals(
+                  recordBytes
+                ),
+                STORAGE
+              );
+          await active();
+          r3Live();
+          requireThat(
+            sha256Canonical(await verifyFinalOriginalsInternal()) === sha256Canonical(verified),
+            EVIDENCE
+          );
+          await active();
+          r3Live();
+          finalCustodyResult = freeze({ verified, custodyRecordDigests });
+          return freeze({ ...verified, custodyRecordDigests });
+        });
+      },
+      completeFinal(...args) {
+        return serial(async () => {
+          requireThat(
+            args.length === 0 &&
+              identity.scope.phase === "final" &&
+              candidateUseReceipt &&
+              finalCustodyResult &&
+              !finalCompletionAttempted,
+            SESSION
+          );
+          finalCompletionAttempted = true;
+          await active();
+          r3Live();
+          const { graph, request } = await finalHistory();
+          const initial = graph.get(candidateUseReceipt.executionRecordDigest)?.value;
+          const proof = await r3FinalProof(graph, initial);
+          requireThat(
+            equal(proof.verified, finalCustodyResult.verified) &&
+              equal(proof.result.custodyRecordDigests, finalCustodyResult.custodyRecordDigests),
+            EVIDENCE
+          );
+          const resultDigest = sha256Canonical(proof.result);
+          const resultBytes = encodeManualJson(proof.result);
+          await store.put(proof.result);
+          await store.put(proof.result, "backup");
+          const custodyRecordDigests = [];
+          for (const role of ["archive", "backup"]) {
+            await active();
+            r3Live();
+            requireThat(
+              (await store.read(objectPath(profile.storage[`${role}Root`], resultDigest))).equals(
+                resultBytes
+              ),
+              STORAGE
+            );
+            const observedAt = stamp();
+            const custody = {
+              ...common("custody", observedAt),
+              ownerId: profile.ownerId,
+              subjectDigest: resultDigest,
+              subjectType: "record",
+              purpose: `${role}-readback`,
+              outcome: "MATCH",
+              observedDigest: resultDigest,
+              observedAt,
+              storageRole: role,
+              retentionDays,
+              reasonCode: null
+            };
+            validateContract(recordSchema, custody);
+            const digest = sha256Canonical(custody);
+            await store.put(custody);
+            await store.put(custody, "backup");
+            for (const copyRole of ["archive", "backup"])
+              requireThat(
+                (await store.read(objectPath(profile.storage[`${copyRole}Root`], digest))).equals(
+                  encodeManualJson(custody)
+                ),
+                STORAGE
+              );
+            custodyRecordDigests.push(digest);
+          }
+          await active();
+          r3Live();
+          const authorization = graph.get(initial.authorizationDigest)?.value;
+          const records = await revocations();
+          requireThat(
+            authorization?.payload &&
+              !records.some(
+                (record) =>
+                  record.action === "REVOKE_PROFILE" ||
+                  (record.action === "REVOKE_AUTHORIZATION" &&
+                    record.authorizationId === authorization.payload.authorizationId)
+              ),
+            REVOCATION
+          );
+          const finishedAt = stamp();
+          const execution = {
+            ...initial,
+            ...common("execution", stamp()),
+            predecessorExecutionRecordDigest: candidateUseReceipt.executionRecordDigest,
+            startedAt: initial.recordedAt,
+            finishedAt,
+            status: "SUCCEEDED",
+            reasonCode: null,
+            resultDigest,
+            processEvidenceDigest: proof.verified.readbackDigest
+          };
+          validateContract(recordSchema, execution);
+          const executionRecordDigest = sha256Canonical(execution);
+          for (const role of ["journal", "archive", "backup"]) await store.put(execution, role);
+          await r3History(request);
+          await active();
+          r3Live();
+          return freeze({
+            executionRecordDigest,
+            resultDigest,
+            processEvidenceDigest: execution.processEvidenceDigest,
+            custodyRecordDigests,
+            promotionEligible: false
           });
         });
       },

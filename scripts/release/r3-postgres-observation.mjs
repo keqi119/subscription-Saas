@@ -220,3 +220,248 @@ export function assessR3PostgresObservation(input) {
     fail();
   }
 }
+
+// Final-only inventory check for already-running runner containers. H1 must
+// independently bind these observed IDs to its private creation registry.
+export function assessR3FinalPostgresObservation(input) {
+  try {
+    const final = input?.finalResources;
+    keys(final, [
+      "containers",
+      "image",
+      "imageDigest",
+      "imageReference",
+      "runnerContainerId",
+      "sourceSha",
+      ...(Object.hasOwn(final ?? {}, "migrationContainerId") ? ["migrationContainerId"] : [])
+    ]);
+    need(
+      CID.test(final.runnerContainerId) &&
+        (final.migrationContainerId === undefined || CID.test(final.migrationContainerId)) &&
+        final.runnerContainerId !== final.migrationContainerId &&
+        final.runnerContainerId !== input.container?.Id &&
+        final.migrationContainerId !== input.container?.Id &&
+        /^[0-9a-f]{40}$/u.test(final.sourceSha) &&
+        DIGEST.test(final.imageDigest) &&
+        typeof final.imageReference === "string" &&
+        /^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/u.test(final.imageReference) &&
+        final.imageReference.endsWith(`@${final.imageDigest}`) &&
+        Array.isArray(final.containers) &&
+        final.containers.length === (final.migrationContainerId ? 2 : 1)
+    );
+    const expectedIds = [
+      input.container.Id,
+      final.runnerContainerId,
+      ...(final.migrationContainerId ? [final.migrationContainerId] : [])
+    ];
+    need(new Set(expectedIds).size === expectedIds.length);
+    need(input.engine?.Containers === expectedIds.length && input.engine.Images === 2);
+    keys(input.network?.Containers, expectedIds);
+    // The PG-only exported assessor remains strict. Project only its own
+    // network membership here; the complete original membership is checked
+    // above and for each final container below.
+    const postgres = assessR3PostgresObservation({
+      ...input,
+      network: {
+        ...input.network,
+        Containers: { [input.container.Id]: input.network.Containers[input.container.Id] }
+      }
+    });
+    const empty = (value) =>
+      value == null ||
+      (Array.isArray(value) && value.length === 0) ||
+      (object(value) && Reflect.ownKeys(value).length === 0);
+    need(
+      DIGEST.test(final.image?.Id) &&
+        final.image.Id !== input.image.Id &&
+        final.image.Os === "linux" &&
+        final.image.Architecture === "amd64" &&
+        Array.isArray(final.image.RepoDigests) &&
+        final.image.RepoDigests.includes(final.imageReference) &&
+        final.image.Config?.Labels?.["org.opencontainers.image.revision"] === final.sourceSha &&
+        object(final.image.Config.Volumes) &&
+        Reflect.ownKeys(final.image.Config.Volumes).length === 1 &&
+        Object.hasOwn(final.image.Config.Volumes, "/var/lib/postgresql/data") &&
+        empty(final.image.Config.Volumes["/var/lib/postgresql/data"]) &&
+        object(final.image.Config.ExposedPorts) &&
+        Reflect.ownKeys(final.image.Config.ExposedPorts).length === 1 &&
+        Object.hasOwn(final.image.Config.ExposedPorts, "5432/tcp") &&
+        empty(final.image.Config.ExposedPorts["5432/tcp"])
+    );
+    const opId = input.operationRef.replaceAll("-", "");
+    const names = [
+      `s1r3runner_${opId}`,
+      ...(final.migrationContainerId ? [`s1r3migrate_${opId}`] : [])
+    ];
+    const ids = [
+      final.runnerContainerId,
+      ...(final.migrationContainerId ? [final.migrationContainerId] : [])
+    ];
+    const addresses = new Set([postgres.containerAddress]);
+    const pids = new Set([input.container.State.Pid]);
+    const labels = (role) => ({
+      ...final.image.Config.Labels,
+      [LABEL]: input.operationRef,
+      "com.subscription.release.container-role": role
+    });
+    const safeEnv = (entries, role) =>
+      Array.isArray(entries) &&
+      entries.every((item) => {
+        if (typeof item !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*=/u.test(item)) return false;
+        const name = item.slice(0, item.indexOf("="));
+        return !/(?:PASSWORD|PASSFILE|SECRET|TOKEN|DATABASE_URL|DIRECT_URL|DOCKER_HOST|NODE_OPTIONS)/iu.test(
+          name
+        );
+      }) &&
+      new Set(entries.map((item) => item.slice(0, item.indexOf("=")))).size === entries.length &&
+      (role !== "migration" || entries.includes("RUNNER_EXECUTION_MODE=r3-final-migration"));
+    for (const [index, container] of final.containers.entries()) {
+      const role = index === 0 ? "runtime" : "migration";
+      const expectedLabels = labels(role);
+      const host = container?.HostConfig;
+      const config = container?.Config;
+      const state = container?.State;
+      need(
+        container?.Id === ids[index] &&
+          container.Name === `/${names[index]}` &&
+          container.Image === final.image.Id &&
+          config?.Image === final.imageReference &&
+          object(config.Labels) &&
+          Reflect.ownKeys(config.Labels).length === Reflect.ownKeys(expectedLabels).length &&
+          Object.entries(expectedLabels).every(([key, value]) => config.Labels[key] === value) &&
+          JSON.stringify(config.Entrypoint) ===
+            JSON.stringify(["/usr/local/bin/node", "/app/apps/release-runner/src/cli.mjs"]) &&
+          (config.Cmd === null || (Array.isArray(config.Cmd) && config.Cmd.length === 0)) &&
+          config.WorkingDir === "/app" &&
+          config.User === "1000:1000" &&
+          config.Tty === false &&
+          config.OpenStdin === true &&
+          config.AttachStdin === true &&
+          config.AttachStdout === true &&
+          config.AttachStderr === true &&
+          config.StdinOnce === false &&
+          object(config.ExposedPorts) &&
+          Reflect.ownKeys(config.ExposedPorts).length === 1 &&
+          Object.hasOwn(config.ExposedPorts, "5432/tcp") &&
+          empty(config.ExposedPorts["5432/tcp"]) &&
+          object(config.Volumes) &&
+          Reflect.ownKeys(config.Volumes).length === 1 &&
+          Object.hasOwn(config.Volumes, "/var/lib/postgresql/data") &&
+          empty(config.Volumes["/var/lib/postgresql/data"]) &&
+          safeEnv(config.Env, role) &&
+          state?.Running === true &&
+          state.Paused === false &&
+          state.Restarting === false &&
+          state.Dead === false &&
+          Number.isSafeInteger(state.Pid) &&
+          state.Pid > 0 &&
+          !pids.has(state.Pid) &&
+          host?.Privileged === false &&
+          host.ReadonlyRootfs === true &&
+          host.Init === true &&
+          host.RestartPolicy?.Name === "no" &&
+          host.PublishAllPorts === false &&
+          JSON.stringify(host.CapDrop) === '["ALL"]' &&
+          empty(host.CapAdd) &&
+          JSON.stringify(host.SecurityOpt) === '["no-new-privileges:true"]' &&
+          ["", "private"].includes(host.PidMode) &&
+          host.IpcMode === "private" &&
+          host.NetworkMode === postgres.networkName &&
+          empty(host.Binds) &&
+          empty(host.Mounts) &&
+          empty(host.VolumesFrom) &&
+          empty(host.Devices) &&
+          empty(host.DeviceRequests) &&
+          empty(host.PortBindings) &&
+          Array.isArray(container.Mounts) &&
+          container.Mounts.length <= 2 &&
+          new Set(container.Mounts.map((mount) => mount.Destination)).size ===
+            container.Mounts.length &&
+          container.Mounts.every(
+            (mount) =>
+              mount.Type === "tmpfs" &&
+              mount.RW === true &&
+              ["/tmp", "/var/lib/postgresql/data"].includes(mount.Destination)
+          ) &&
+          object(container.NetworkSettings?.Ports) &&
+          Reflect.ownKeys(container.NetworkSettings.Ports).length === 1 &&
+          container.NetworkSettings.Ports["5432/tcp"] === null &&
+          JSON.stringify(host.ExtraHosts) ===
+            JSON.stringify([`postgres:${postgres.containerAddress}`]) &&
+          object(host.Tmpfs) &&
+          Reflect.ownKeys(host.Tmpfs).length === 2 &&
+          host.Tmpfs["/tmp"] === "rw,nosuid,nodev,noexec,size=268435456,mode=1777" &&
+          host.Tmpfs["/var/lib/postgresql/data"] ===
+            "rw,nosuid,nodev,noexec,size=65536,mode=0700,uid=1000,gid=1000" &&
+          host.PidsLimit === 256 &&
+          host.Memory === 1073741824 &&
+          host.MemorySwap === 1073741824
+      );
+      pids.add(state.Pid);
+      keys(container.NetworkSettings.Networks, [postgres.networkName]);
+      const attachment = container.NetworkSettings.Networks[postgres.networkName];
+      const member = input.network.Containers[container.Id];
+      need(
+        attachment?.NetworkID === postgres.networkId &&
+          ipv4(attachment.IPAddress) &&
+          !addresses.has(attachment.IPAddress) &&
+          member?.Name === names[index] &&
+          typeof member.IPv4Address === "string" &&
+          member.IPv4Address.startsWith(`${attachment.IPAddress}/`) &&
+          /^[1-9][0-9]?$/u.test(member.IPv4Address.split("/")[1] ?? "") &&
+          Number(member.IPv4Address.split("/")[1]) <= 32
+      );
+      addresses.add(attachment.IPAddress);
+    }
+    need(
+      Array.isArray(input.containerInventory) &&
+        input.containerInventory.length === expectedIds.length &&
+        new Set(input.containerInventory.map((entry) => entry?.Id)).size === expectedIds.length &&
+        expectedIds.every((id) => input.containerInventory.some((entry) => entry.Id === id))
+    );
+    for (const container of [input.container, ...final.containers]) {
+      const summary = input.containerInventory.find((entry) => entry.Id === container.Id);
+      need(
+        Array.isArray(summary.Names) &&
+          summary.Names.length === 1 &&
+          summary.Names[0] === container.Name &&
+          summary.ImageID === container.Image &&
+          summary.Image === container.Config.Image &&
+          summary.State === "running" &&
+          object(summary.Labels) &&
+          Reflect.ownKeys(summary.Labels).length ===
+            Reflect.ownKeys(container.Config.Labels).length &&
+          Object.entries(container.Config.Labels).every(
+            ([key, value]) => summary.Labels[key] === value
+          )
+      );
+    }
+    const imageIds = [input.image.Id, final.image.Id];
+    need(
+      Array.isArray(input.imageInventory) &&
+        input.imageInventory.length === 2 &&
+        new Set(input.imageInventory.map((entry) => entry?.Id)).size === 2 &&
+        imageIds.every((id) => input.imageInventory.some((entry) => entry.Id === id))
+    );
+    for (const image of [input.image, final.image]) {
+      const summary = input.imageInventory.find((entry) => entry.Id === image.Id);
+      need(
+        Array.isArray(summary.RepoDigests) &&
+          image.RepoDigests.every((digest) => summary.RepoDigests.includes(digest))
+      );
+    }
+    return freeze({
+      ...postgres,
+      runnerContainerId: final.runnerContainerId,
+      migrationContainerId: final.migrationContainerId ?? null,
+      runnerImageId: final.image.Id,
+      runnerImageDigest: final.imageDigest,
+      runnerImageReference: final.imageReference,
+      sourceSha: final.sourceSha,
+      finalContainerAddresses: [...addresses].slice(1),
+      promotionEligible: false
+    });
+  } catch {
+    fail();
+  }
+}

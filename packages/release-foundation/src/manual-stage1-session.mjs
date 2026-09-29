@@ -342,6 +342,7 @@ function historyAccumulator() {
     r3Acknowledgements: new Set(),
     r3Cleanups: new Set(),
     r3CleanupCustody: new Set(),
+    r3SourceProofs: new Map(),
     r3Sources: new Map(),
     r3FinalUses: new Map()
   };
@@ -1795,6 +1796,14 @@ function createManualHistoryVerifier(runtime) {
                 );
               r3Acknowledgements.add(digest);
             }
+            accumulator.r3SourceProofs.set(
+              sha256Canonical(completed),
+              freeze({
+                resultDigest: completed.resultDigest,
+                reconstructedDigest: proof.result.reconstructedDigest,
+                postSchemaDigest: proof.verified.postSchemaDigest
+              })
+            );
           }
           collectFinalUse(graph, accumulator, request);
           r3Validated.add(digest);
@@ -2038,7 +2047,7 @@ function createManualHistoryVerifier(runtime) {
     const { r3Originals, r3Validated, r3Acknowledgements, r3Cleanups, r3CleanupCustody } =
       accumulator;
     // Resolve after every context is verified, independently of directory order.
-    assertR3MatchingSources(accumulator);
+    const matchedSources = assertR3MatchingSources(accumulator);
     for (const value of values) {
       if (value.kind === "cleanup-observation")
         requireThat(r3Cleanups.has(sha256Canonical(value)), EVIDENCE);
@@ -2095,7 +2104,7 @@ function createManualHistoryVerifier(runtime) {
     // readback. An original apply UNKNOWN stays in the graph after resolution.
     for (const historicalTarget of profile.allowedTargets)
       await history(request, null, historicalTarget, r3Validated, r3Originals);
-    return graph;
+    return matchedSources;
   }
   async function r3ReadSourceOriginals() {
     const {
@@ -2855,10 +2864,13 @@ async function readCompletedR3Context(
       EVIDENCE
     );
     const closed = sessionRecords.find((value) => value.status === "CLOSED");
+    const sourceProof = accumulator.r3SourceProofs.get(terminalDigest);
+    requireThat(sourceProof, EVIDENCE);
     // UNKNOWN remains readable as historical source evidence. Only a verified
     // cleanup and CLOSED session make it eligible for a later final operation.
     accumulator.r3Sources.set(terminalDigest, {
       ...r3CandidateContextFacts(profileDigest, identity, r3Context, destination, snapshotReader),
+      ...sourceProof,
       terminalDigest,
       closedAt: cleanupRecord && closed ? closed.recordedAt : null,
       runIds: executions.map((value) => graph.get(value.requestDigest).value.runId)
@@ -4094,7 +4106,7 @@ export async function openManualSession({
   const r3StoredDestination = (...args) => historyVerifier.r3StoredDestination(...args);
   const r3ConsumerOriginals = (...args) => historyVerifier.r3ConsumerOriginals(...args);
   const r3SourceProof = (...args) => historyVerifier.r3SourceProof(...args);
-  async function r3History(
+  async function verifyR3History(
     request,
     pendingDigest = null,
     pendingDestination = null,
@@ -4162,7 +4174,13 @@ export async function openManualSession({
       );
       await assertOpenHistory();
       historyVerifier.collectFinalUse(graph, accumulator, request);
-      await historyVerifier.finishR3History(graph, slots, accumulator, checkedLegacy, request);
+      const matchedSources = await historyVerifier.finishR3History(
+        graph,
+        slots,
+        accumulator,
+        checkedLegacy,
+        request
+      );
       if (completedContexts.length) {
         // This is fixed H1/H2 input authentication, separate from the complete
         // execution/original proof above. No caller may supply a trusted flag.
@@ -4211,13 +4229,14 @@ export async function openManualSession({
           (request.stage === "candidate-use" && consumerCompletionDigest !== null),
         SESSION
       );
-      return graph;
+      return { graph, matchedSources };
     } finally {
       const closedInputs = await Promise.allSettled(trustInputs.map((held) => held.close()));
       capture?.close();
       if (closedInputs.some((value) => value.status === "rejected")) fail(SESSION);
     }
   }
+  const r3History = async (...args) => (await verifyR3History(...args)).graph;
   try {
     try {
       lockHandle = await store.fs.open(lockPath, "wx", 0o600);
@@ -4589,13 +4608,18 @@ export async function openManualSession({
           );
           const request = graph.get(execution.requestDigest)?.value;
           requireThat(request?.schemaVersion === "manual-runner-request.v5", SESSION);
-          await r3History(request);
+          const { matchedSources } = await verifyR3History(request);
           await active();
           r3Live();
+          const matchedSource = matchedSources.get(sha256Canonical(request));
+          requireThat(request.phase !== "final" || matchedSource, EVIDENCE);
           return freeze({
             executionRecordDigest: candidateUseReceipt.executionRecordDigest,
             ...(request.phase === "final"
-              ? { matchingSourceEvidenceDigest: request.matchingSourceEvidenceDigest }
+              ? {
+                  matchingSourceEvidenceDigest: request.matchingSourceEvidenceDigest,
+                  matchedSource
+                }
               : {})
           });
         });

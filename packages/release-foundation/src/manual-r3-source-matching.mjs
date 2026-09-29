@@ -19,7 +19,8 @@ function instant(value) {
 // In particular, matchingSourceEvidenceDigest denotes the source SUCCEEDED
 // candidate-use execution record, never its result or acknowledgement digest.
 export function assertR3MatchingSources(accumulator) {
-  for (const final of accumulator.r3FinalUses.values()) {
+  const matchedSources = new Map();
+  for (const [requestDigest, final] of accumulator.r3FinalUses) {
     requireThat(
       ["fresh", "snapshot"].includes(final.chain) &&
         ["snapshot-consumer", "candidate-use"].includes(final.stage) &&
@@ -57,5 +58,29 @@ export function assertR3MatchingSources(accumulator) {
         final.targetLocks.every((digest) => !source.targetLocks.includes(digest)),
       EVIDENCE
     );
+    // These scalars come from the complete source-original proof in the core,
+    // never from a final caller's claimed schema or an unverified result JSON.
+    requireThat(
+      ["terminalDigest", "resultDigest", "reconstructedDigest", "postSchemaDigest"].every(
+        (key) => typeof source[key] === "string" && /^sha256:[0-9a-f]{64}$/u.test(source[key])
+      )
+    );
+    matchedSources.set(
+      requestDigest,
+      Object.freeze(
+        Object.fromEntries(
+          [
+            "terminalDigest",
+            "resultDigest",
+            "reconstructedDigest",
+            "postSchemaDigest",
+            "operationRef",
+            "sessionId",
+            "sessionNonce"
+          ].map((key) => [key, source[key]])
+        )
+      )
+    );
   }
+  return matchedSources;
 }

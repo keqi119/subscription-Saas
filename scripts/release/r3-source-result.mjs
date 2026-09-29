@@ -477,6 +477,8 @@ export async function readR3SourceOriginals({
     return Object.freeze({
       readbackDigest: sha256Canonical(observed),
       reconstructedDigest: sha256Canonical(reconstructed),
+      // Internal derived fact, not a new field in the persisted source result.
+      postSchemaDigest: reconstructed.postSchemaDigest,
       suiteReadbacks: reconstructed.suiteReadbacks,
       originals: Object.freeze(originals)
     });

@@ -20,6 +20,7 @@ import {
 import { runnerError } from "./error-codes.mjs";
 import { createRuntimeAdapters } from "./runtime-adapters.mjs";
 import { runTrustedEntrypoint } from "./trusted-entrypoint.mjs";
+import { runFinalMigrationEntrypoint } from "./final-migration-entrypoint.mjs";
 
 function parseInvocation(argv) {
   if (
@@ -62,10 +63,16 @@ export async function runProductionEntrypoint({
   environment = process.env,
   adapters,
   createAdapters = createRuntimeAdapters,
+  executeFinalMigration = runFinalMigrationEntrypoint,
   executeTrusted = runTrustedEntrypoint
 } = {}) {
   const envelopeFile = environment.RUNNER_LAUNCH_ENVELOPE_FILE;
   if (environment.RUNNER_EXECUTION_MODE !== undefined) {
+    if (environment.RUNNER_EXECUTION_MODE === "r3-final-migration") {
+      if (envelopeFile !== undefined) throw runnerError("RUNNER_EXECUTION_MODE_REJECTED");
+      if (argv.length !== 0) throw runnerError("RUNNER_ENTRYPOINT_OVERRIDE_REJECTED");
+      return executeFinalMigration();
+    }
     if (environment.RUNNER_EXECUTION_MODE !== "manual-stage1" || envelopeFile !== undefined)
       throw runnerError("RUNNER_EXECUTION_MODE_REJECTED");
     if (argv.length !== 0) throw runnerError("RUNNER_ENTRYPOINT_OVERRIDE_REJECTED");
@@ -105,7 +112,9 @@ export function finalizeRunnerExecution(result) {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   runProductionEntrypoint({ argv: process.argv.slice(2) })
-    .then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))
+    .then((result) => {
+      if (result !== undefined) process.stdout.write(`${JSON.stringify(result)}\n`);
+    })
     .catch((error) => {
       process.stderr.write(`${error?.code ?? "RUNNER_FAILED"}\n`);
       process.exitCode = 1;

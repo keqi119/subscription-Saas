@@ -869,6 +869,7 @@ test("R3 source originals require matching fixed dual readbacks and reject later
   const result = await read(copies);
   assert.equal(result.readbackDigest, sha256Canonical(observed));
   assert.equal(result.reconstructedDigest, sha256Canonical(reconstructed));
+  assert.equal(result.postSchemaDigest, reconstructed.postSchemaDigest);
   assert.deepEqual(result.suiteReadbacks, reconstructed.suiteReadbacks);
   assert.ok(Object.isFrozen(result) && Object.isFrozen(result.suiteReadbacks));
   assert.deepEqual(

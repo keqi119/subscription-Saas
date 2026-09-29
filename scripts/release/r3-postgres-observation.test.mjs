@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assessR3FinalPostgresObservation,
   assessR3PostgresObservation,
   assessR3PostgresResources
 } from "./r3-postgres-observation.mjs";
@@ -90,6 +91,177 @@ function fixture() {
     }
   };
 }
+
+const runnerCid = "d".repeat(64);
+const migrationCid = "f".repeat(64);
+const runnerDigest = `sha256:${"8".repeat(64)}`;
+const runnerImageId = `sha256:${"9".repeat(64)}`;
+const runnerReference = `registry.example.test/release-runner@${runnerDigest}`;
+const sourceSha = "7".repeat(40);
+const roleLabel = "com.subscription.release.container-role";
+function finalFixture(withMigration = true) {
+  const input = fixture();
+  const makeContainer = (role, containerId, address) => {
+    const name = `s1r3${role === "runtime" ? "runner" : "migrate"}_${id}`;
+    const labels = { "org.opencontainers.image.revision": sourceSha, ...label, [roleLabel]: role };
+    const container = {
+      Id: containerId,
+      Name: `/${name}`,
+      Image: runnerImageId,
+      Config: {
+        Image: runnerReference,
+        Labels: labels,
+        Entrypoint: ["/usr/local/bin/node", "/app/apps/release-runner/src/cli.mjs"],
+        Cmd: [],
+        WorkingDir: "/app",
+        User: "1000:1000",
+        Tty: false,
+        OpenStdin: true,
+        AttachStdin: true,
+        AttachStdout: true,
+        AttachStderr: true,
+        StdinOnce: false,
+        ExposedPorts: { "5432/tcp": {} },
+        Volumes: { "/var/lib/postgresql/data": {} },
+        Env: role === "migration" ? ["RUNNER_EXECUTION_MODE=r3-final-migration"] : []
+      },
+      State: {
+        Running: true,
+        Paused: false,
+        Restarting: false,
+        Dead: false,
+        Pid: role === "runtime" ? 322 : 323
+      },
+      HostConfig: {
+        Privileged: false,
+        ReadonlyRootfs: true,
+        Init: true,
+        RestartPolicy: { Name: "no" },
+        PublishAllPorts: false,
+        CapDrop: ["ALL"],
+        CapAdd: null,
+        SecurityOpt: ["no-new-privileges:true"],
+        PidMode: "",
+        IpcMode: "private",
+        NetworkMode: networkName,
+        Binds: null,
+        Mounts: [],
+        VolumesFrom: null,
+        Devices: [],
+        DeviceRequests: null,
+        PortBindings: {},
+        ExtraHosts: [`postgres:${input.postgres.serverAddress}`],
+        Tmpfs: {
+          "/tmp": "rw,nosuid,nodev,noexec,size=268435456,mode=1777",
+          "/var/lib/postgresql/data":
+            "rw,nosuid,nodev,noexec,size=65536,mode=0700,uid=1000,gid=1000"
+        },
+        PidsLimit: 256,
+        Memory: 1073741824,
+        MemorySwap: 1073741824
+      },
+      Mounts: [],
+      NetworkSettings: {
+        Networks: { [networkName]: { NetworkID: input.network.Id, IPAddress: address } },
+        Ports: { "5432/tcp": null }
+      }
+    };
+    input.network.Containers[containerId] = { Name: name, IPv4Address: `${address}/16` };
+    return container;
+  };
+  const containers = [makeContainer("runtime", runnerCid, "172.28.0.3")];
+  if (withMigration) containers.push(makeContainer("migration", migrationCid, "172.28.0.4"));
+  input.engine.Containers = containers.length + 1;
+  input.engine.Images = 2;
+  input.finalResources = {
+    containers,
+    image: {
+      Id: runnerImageId,
+      Os: "linux",
+      Architecture: "amd64",
+      RepoDigests: [runnerReference],
+      Config: {
+        Labels: { "org.opencontainers.image.revision": sourceSha },
+        Volumes: { "/var/lib/postgresql/data": {} },
+        ExposedPorts: { "5432/tcp": {} }
+      }
+    },
+    imageDigest: runnerDigest,
+    imageReference: runnerReference,
+    runnerContainerId: runnerCid,
+    sourceSha,
+    ...(withMigration ? { migrationContainerId: migrationCid } : {})
+  };
+  input.containerInventory = [input.container, ...containers].map((entry) => ({
+    Id: entry.Id,
+    Names: [entry.Name],
+    ImageID: entry.Image,
+    Image: entry.Config.Image,
+    Labels: entry.Config.Labels,
+    State: "running"
+  }));
+  input.imageInventory = [input.image, input.finalResources.image].map((entry) => ({
+    Id: entry.Id,
+    RepoDigests: entry.RepoDigests
+  }));
+  return input;
+}
+
+test("R3 final observation binds the exact PG/runtime/migration Engine inventory", () => {
+  for (const withMigration of [false, true]) {
+    const input = finalFixture(withMigration);
+    if (withMigration) input.finalResources.containers[1].Config.Cmd = null;
+    if (withMigration)
+      input.finalResources.containers[1].Mounts = [
+        { Type: "tmpfs", Destination: "/tmp", RW: true },
+        { Type: "tmpfs", Destination: "/var/lib/postgresql/data", RW: true }
+      ];
+    const result = assessR3FinalPostgresObservation(input);
+    assert.equal(result.containerId, cid);
+    assert.equal(result.runnerContainerId, runnerCid);
+    assert.equal(result.migrationContainerId, withMigration ? migrationCid : null);
+    assert.ok(Object.isFrozen(result));
+    assert.throws(() => assessR3PostgresObservation(input), invalid);
+  }
+});
+
+test("R3 final observation rejects foreign CID or image inventory", () => {
+  for (const mutate of [
+    (f) => {
+      f.containerInventory.push({ ...f.containerInventory[1], Id: "0".repeat(64) });
+    },
+    (f) => {
+      f.network.Containers["0".repeat(64)] = { Name: "foreign", IPv4Address: "172.28.0.5/16" };
+    },
+    (f) => {
+      f.finalResources.containers[1].Id = "0".repeat(64);
+    },
+    (f) => {
+      f.imageInventory.push({ Id: `sha256:${"0".repeat(64)}`, RepoDigests: [] });
+    },
+    (f) => {
+      f.finalResources.containers[0].HostConfig.Binds = [
+        "/var/run/docker.sock:/var/run/docker.sock"
+      ];
+    },
+    (f) => {
+      f.finalResources.containers[1].Config.Env.push("POSTGRES_PASSWORD_FILE=/run/secret");
+    },
+    (f) => {
+      f.finalResources.containers[0].Config.Volumes = { "/foreign": {} };
+    },
+    (f) => {
+      f.finalResources.image.Config.ExposedPorts = { "8080/tcp": {} };
+    },
+    (f) => {
+      f.engine.Containers += 1;
+    }
+  ]) {
+    const input = finalFixture();
+    mutate(input);
+    assert.throws(() => assessR3FinalPostgresObservation(input), invalid);
+  }
+});
 
 test("R3 POSTGRES binds one encrypted Engine, private network, volume and TLS cluster", () => {
   const input = fixture();

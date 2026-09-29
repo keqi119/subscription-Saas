@@ -3259,6 +3259,9 @@ test("R3 cleanup observation is a closed schema distinct from execution and ACK"
 function r3MatchingFacts(chain = "fresh", stage = "candidate-use") {
   const source = {
     terminalDigest: D,
+    resultDigest: sha256Canonical("source-result"),
+    reconstructedDigest: sha256Canonical("source-reconstruction"),
+    postSchemaDigest: sha256Canonical("source-schema"),
     closedAt: time(-1),
     profileDigest: D,
     buildProofDigest: D,
@@ -3302,11 +3305,39 @@ function r3MatchingFacts(chain = "fresh", stage = "candidate-use") {
   return { source, final };
 }
 function checkR3MatchingFacts(source, final, extraSources = []) {
-  assertR3MatchingSources({
+  return assertR3MatchingSources({
     r3Sources: new Map([source, ...extraSources].map((value, n) => [n, value])),
     r3FinalUses: new Map([["final", final]])
   });
 }
+
+test("R3 final matching returns immutable reconstructed source facts only for a closed matching source", () => {
+  for (const chain of ["fresh", "snapshot"]) {
+    const { source, final } = r3MatchingFacts(chain);
+    const receipt = checkR3MatchingFacts(source, final).get("final");
+    assert.deepEqual(
+      receipt,
+      Object.fromEntries(
+        [
+          "terminalDigest",
+          "resultDigest",
+          "reconstructedDigest",
+          "postSchemaDigest",
+          "operationRef",
+          "sessionId",
+          "sessionNonce"
+        ].map((key) => [key, source[key]])
+      )
+    );
+    assert.ok(Object.isFrozen(receipt));
+    source.postSchemaDigest = sha256Canonical("later-change");
+    assert.notEqual(receipt.postSchemaDigest, source.postSchemaDigest);
+    source.closedAt = null;
+    assert.throws(() => checkR3MatchingFacts(source, final), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+  }
+});
 test("R3 final matching admits fresh without snapshot and snapshot candidate with its own consumer", () => {
   for (const [chain, stage] of [
     ["fresh", "candidate-use"],

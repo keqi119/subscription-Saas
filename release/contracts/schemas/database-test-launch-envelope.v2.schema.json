@@ -19,7 +19,6 @@
     "databaseTargetPlanDigest",
     "databaseTestManifestDigest",
     "databaseTestDiscoveryDigest",
-    "custodyPolicyDigest",
     "sourceSha",
     "runnerContainerId",
     "sessionId",
@@ -28,8 +27,6 @@
     "runId",
     "attemptId",
     "databaseTestManifestReference",
-    "custodyPolicyReference",
-    "journalReference",
     "postgres",
     "suiteAssignments"
   ],
@@ -49,7 +46,6 @@
     "databaseTargetPlanDigest": { "$ref": "#/$defs/digest" },
     "databaseTestManifestDigest": { "$ref": "#/$defs/digest" },
     "databaseTestDiscoveryDigest": { "$ref": "#/$defs/digest" },
-    "custodyPolicyDigest": { "$ref": "#/$defs/digest" },
     "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "runnerContainerId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "sessionId": { "$ref": "#/$defs/uuid" },
@@ -58,11 +54,6 @@
     "runId": { "$ref": "#/$defs/uuid" },
     "attemptId": { "$ref": "#/$defs/uuid" },
     "databaseTestManifestReference": { "$ref": "#/$defs/launchReference" },
-    "custodyPolicyReference": { "$ref": "#/$defs/launchReference" },
-    "journalReference": {
-      "type": "string",
-      "pattern": "^evidence-file:///evidence/[A-Za-z0-9._/-]+$"
-    },
     "postgres": { "$ref": "#/$defs/postgres" },
     "suiteAssignments": {
       "type": "object",

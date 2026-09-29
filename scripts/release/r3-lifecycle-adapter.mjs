@@ -23,6 +23,7 @@ export function createR3LifecycleAdapter({
   executeCredential,
   secretStore,
   migrate,
+  prepareRuntimeAccess,
   registerTarget,
   recheck,
   observations
@@ -35,6 +36,11 @@ export function createR3LifecycleAdapter({
     [executeAdmin, executeCredential, migrate, registerTarget, recheck].some(
       (value) => typeof value !== "function"
     )
+  )
+    fail();
+  if (
+    prepareRuntimeAccess !== undefined &&
+    (plan.phase !== "final" || typeof prepareRuntimeAccess !== "function")
   )
     fail();
   for (const [shard, reservation] of plan.reservations.entries()) {
@@ -131,16 +137,23 @@ export function createR3LifecycleAdapter({
     grantRuntimeAccess: (record) =>
       serial(async () => {
         known(record);
-        await grantRuntimeEquivalentAccess({
-          databaseName: record.databaseName,
-          migrationRole: record.roles.migrate,
-          runtimeRole: record.roles["runtime-test"],
-          executeDatabase: ({ databaseName, sql }) => {
-            if (databaseName !== record.databaseName) fail();
-            return executeCredential({ record, profile: "migrate", sql });
-          }
+        // The final image has already applied and verified these grants in its
+        // isolated migration process. Its H1 callback only reobserves them.
+        if (prepareRuntimeAccess) await prepareRuntimeAccess(record);
+        else
+          await grantRuntimeEquivalentAccess({
+            databaseName: record.databaseName,
+            migrationRole: record.roles.migrate,
+            runtimeRole: record.roles["runtime-test"],
+            executeDatabase: ({ databaseName, sql }) => {
+              if (databaseName !== record.databaseName) fail();
+              return executeCredential({ record, profile: "migrate", sql });
+            }
+          });
+        observations.push({
+          stage: prepareRuntimeAccess ? "grant-runtime-observed" : "grant-runtime",
+          databaseName: record.databaseName
         });
-        observations.push({ stage: "grant-runtime", databaseName: record.databaseName });
         await recheck();
       }),
     runtimeRole: queryRuntime(

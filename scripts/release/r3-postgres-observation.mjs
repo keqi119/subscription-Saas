@@ -321,7 +321,9 @@ export function assessR3FinalPostgresObservation(input) {
         );
       }) &&
       new Set(entries.map((item) => item.slice(0, item.indexOf("=")))).size === entries.length &&
-      (role !== "migration" || entries.includes("RUNNER_EXECUTION_MODE=r3-final-migration"));
+      entries.includes(
+        `RUNNER_EXECUTION_MODE=r3-final-${role === "runtime" ? "runtime" : "migration"}`
+      );
     for (const [index, container] of final.containers.entries()) {
       const role = index === 0 ? "runtime" : "migration";
       const expectedLabels = labels(role);
@@ -329,6 +331,18 @@ export function assessR3FinalPostgresObservation(input) {
       const config = container?.Config;
       const state = container?.State;
       const created = role === "runtime" && final.runtimeState === "created";
+      const tmpfs = {
+        "/tmp": "rw,nosuid,nodev,noexec,size=268435456,mode=1777",
+        "/var/lib/postgresql/data": "rw,nosuid,nodev,noexec,size=65536,mode=0700,uid=1000,gid=1000",
+        ...(role === "runtime"
+          ? {
+              "/app/.release-local":
+                "rw,nosuid,nodev,noexec,size=33554432,mode=0700,uid=1000,gid=1000",
+              "/run/launch": "rw,nosuid,nodev,noexec,size=1048576,mode=0700,uid=1000,gid=1000",
+              "/run/secrets": "rw,nosuid,nodev,noexec,size=1048576,mode=0700,uid=1000,gid=1000"
+            }
+          : {})
+      };
       need(
         container?.Id === ids[index] &&
           container.Name === `/${names[index]}` &&
@@ -382,14 +396,16 @@ export function assessR3FinalPostgresObservation(input) {
           empty(host.DeviceRequests) &&
           empty(host.PortBindings) &&
           Array.isArray(container.Mounts) &&
-          container.Mounts.length <= 2 &&
+          container.Mounts.length <= Object.keys(tmpfs).length &&
           new Set(container.Mounts.map((mount) => mount.Destination)).size ===
             container.Mounts.length &&
           container.Mounts.every(
             (mount) =>
               mount.Type === "tmpfs" &&
               mount.RW === true &&
-              ["/tmp", "/var/lib/postgresql/data"].includes(mount.Destination)
+              Object.hasOwn(tmpfs, mount.Destination) &&
+              !mount.Source &&
+              !mount.Name
           ) &&
           object(container.NetworkSettings?.Ports) &&
           (created
@@ -399,10 +415,8 @@ export function assessR3FinalPostgresObservation(input) {
           JSON.stringify(host.ExtraHosts) ===
             JSON.stringify([`postgres:${postgres.containerAddress}`]) &&
           object(host.Tmpfs) &&
-          Reflect.ownKeys(host.Tmpfs).length === 2 &&
-          host.Tmpfs["/tmp"] === "rw,nosuid,nodev,noexec,size=268435456,mode=1777" &&
-          host.Tmpfs["/var/lib/postgresql/data"] ===
-            "rw,nosuid,nodev,noexec,size=65536,mode=0700,uid=1000,gid=1000" &&
+          Reflect.ownKeys(host.Tmpfs).length === Object.keys(tmpfs).length &&
+          Object.entries(tmpfs).every(([key, value]) => host.Tmpfs[key] === value) &&
           host.PidsLimit === 256 &&
           host.Memory === 1073741824 &&
           host.MemorySwap === 1073741824

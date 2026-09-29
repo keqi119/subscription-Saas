@@ -137,6 +137,13 @@ async function fixture(exitCode = 0, extraStdout = false) {
         assert.equal(id, cid);
         events.push("registered");
       },
+      started: async (id) => {
+        assert.equal(id, cid);
+        assert.equal(started, true);
+        assert.equal(finished, false);
+        assert.equal(events.at(-1), `GET /containers/${cid}/json`);
+        events.push("started-hook");
+      },
       unregister: async (id) => {
         assert.equal(id, cid);
         assert.equal(deleted, true);
@@ -166,6 +173,7 @@ test("the owned migration container attaches before start and requires actual ex
   assert.equal(result.containerId, f.cid);
   assert.equal(result.exit.StatusCode, 0);
   assert.equal(result.deleted, true);
+  assert.ok(f.events.indexOf("started-hook") > f.events.indexOf(`POST /containers/${f.cid}/start`));
   assert.equal(f.events.at(-1), "unregistered");
   assert.equal(JSON.stringify(result).includes("synthetic-private-password"), false);
 });

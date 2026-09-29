@@ -128,7 +128,6 @@ export async function finalDatabaseEnvelopeFixture(chain = "fresh") {
     databaseTargetPlanDigest: sha256Canonical(plan),
     databaseTestManifestDigest: sha256Canonical(manifest),
     databaseTestDiscoveryDigest: sha256Canonical(discovery),
-    custodyPolicyDigest: `sha256:${"3".repeat(64)}`,
     sourceSha: buildProof.identity.sourceSha,
     runnerContainerId: "a".repeat(64),
     sessionId: "20000000-0000-4000-8000-000000000002",
@@ -137,8 +136,6 @@ export async function finalDatabaseEnvelopeFixture(chain = "fresh") {
     runId: "30000000-0000-4000-8000-000000000003",
     attemptId: "40000000-0000-4000-8000-000000000004",
     databaseTestManifestReference: "launch-file:///run/launch/database-test-manifest.json",
-    custodyPolicyReference: "launch-file:///run/launch/custody-policy.json",
-    journalReference: "evidence-file:///evidence/final-database-test.json",
     postgres,
     suiteAssignments
   };

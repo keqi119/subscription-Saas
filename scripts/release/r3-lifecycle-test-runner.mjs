@@ -80,7 +80,7 @@ function summaryResult(data) {
   };
 }
 
-function exactResults(originals) {
+function exactResults(originals, expectedFile = lifecycleFile) {
   const counts = originals.counts;
   const results = originals.testEvents.filter(
     (event) => event.type === "test:pass" || event.type === "test:fail"
@@ -101,7 +101,7 @@ function exactResults(originals) {
       (event, index) =>
         event.type === "test:pass" &&
         event.data.name === expectedNames[index] &&
-        event.data.file === lifecycleFile
+        event.data.file === expectedFile
     )
   );
 }
@@ -109,6 +109,23 @@ function exactResults(originals) {
 export function assertR3LifecycleOriginals(originals) {
   try {
     if (exactResults(originals)) return;
+  } catch {
+    /* A missing original is not a successful run. */
+  }
+  throw failure(originals);
+}
+
+// Final originals cross from the attested image to H1, whose checkout path is
+// different. The image path is fixed, never supplied by the runner or caller.
+export function assertR3FinalLifecycleOriginals(originals) {
+  try {
+    if (
+      exactResults(
+        originals,
+        "/app/packages/release-foundation/test/database-lifecycle.postgres.test.mjs"
+      )
+    )
+      return;
   } catch {
     /* A missing original is not a successful run. */
   }

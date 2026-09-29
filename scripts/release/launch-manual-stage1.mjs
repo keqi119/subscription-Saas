@@ -41,8 +41,23 @@ import {
   openTrustedR3CreationSession
 } from "./manual-stage1-trust.mjs";
 import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
-import { assessR3PostgresObservation } from "./r3-postgres-observation.mjs";
-import { assessR3PostgresReadback, buildR3Destination } from "./r3-destination.mjs";
+import {
+  assessR3PostgresObservation,
+  assessR3FinalPostgresObservation
+} from "./r3-postgres-observation.mjs";
+import {
+  assessR3PostgresReadback,
+  assessR3FinalPostgresReadback,
+  buildR3Destination
+} from "./r3-destination.mjs";
+import {
+  executeR3FinalMigrationContainer,
+  executeR3FinalRuntimeContainer
+} from "./r3-final-migration-container.mjs";
+import { createR3FinalMigrationAssessment } from "./r3-final-migration-result.mjs";
+import { assessFinalRuntimePreparation } from "../../apps/release-runner/src/final-runtime-preparation.mjs";
+import { observeFinalRuntimeBoundary } from "../../apps/release-runner/src/final-database-runtime.mjs";
+import { validateFinalDatabaseTestAssignments } from "../../apps/release-runner/src/database-test-envelope.mjs";
 import { readR3SnapshotInput } from "./r3-snapshot-input-admission.mjs";
 import { fetchR3SnapshotCiphertext } from "./r3-snapshot-payload.mjs";
 import { decryptR3SnapshotCiphertext } from "./r3-h1-snapshot-decrypt.mjs";
@@ -50,7 +65,10 @@ import { exchangeR3Engine } from "./r3-engine-exchange.mjs";
 import { copyR3SnapshotToPostgres } from "./r3-remote-snapshot-copy.mjs";
 import { restoreR3SnapshotDatabase } from "./r3-remote-snapshot-restore.mjs";
 import { createR3LifecycleAdapter } from "./r3-lifecycle-adapter.mjs";
-import { executeR3LifecycleSuite } from "./r3-lifecycle-test-runner.mjs";
+import {
+  executeR3LifecycleSuite,
+  assertR3FinalLifecycleOriginals
+} from "./r3-lifecycle-test-runner.mjs";
 import {
   executeR3SourceSuite,
   runR3SourceProcess,
@@ -62,6 +80,7 @@ import { buildDatabaseSuiteReport } from "../../packages/release-foundation/src/
 import { databaseTestCounts, summarizeDatabaseTestLog } from "./database-test-launcher-runtime.mjs";
 import {
   bindR3SourceManifest,
+  bindR3FinalManifest,
   planR3DatabaseTargets,
   provisionR3DatabaseTargets,
   recheckR3DatabaseTargets
@@ -1094,6 +1113,10 @@ export async function launchR3TargetCreate(input) {
     sourceAttempted = false,
     sourceReady = false,
     sourcePending,
+    finalAttempted = false,
+    finalReady = false,
+    finalPending,
+    finalResources,
     sourceCompletionRecord,
     sourceAcknowledgementAttempted = false,
     sourceAcknowledgementReady = false,
@@ -1122,6 +1145,8 @@ export async function launchR3TargetCreate(input) {
   const sourceReadbacks = [];
   const sourceContexts = [];
   const sourceValues = new Map();
+  const finalReadbacks = [];
+  const finalMigrations = new Map();
   const lifecycleRegisteredRecords = [];
   const fetchAbort = new AbortController();
   const lifecycleAbort = new AbortController();
@@ -1142,6 +1167,7 @@ export async function launchR3TargetCreate(input) {
       !snapshotCompletionPending &&
       !lifecyclePending &&
       !sourcePending &&
+      !finalPending &&
       !sourceAcknowledgementPending &&
       !targetCleanupPending
     )
@@ -1158,6 +1184,7 @@ export async function launchR3TargetCreate(input) {
       await snapshotCompletionPending?.catch(() => {});
       await lifecyclePending?.catch(() => {});
       await sourcePending?.catch(() => {});
+      await finalPending?.catch(() => {});
       await sourceAcknowledgementPending?.catch(() => {});
       await targetCleanupPending?.catch(() => {});
       abort();
@@ -1191,6 +1218,7 @@ export async function launchR3TargetCreate(input) {
         ...lifecycleReadbacks,
         ...sourceReadbacks,
         ...sourceContexts,
+        ...finalReadbacks,
         cleanupReadback,
         ...restoreReadbacks,
         copyReadback,
@@ -1238,6 +1266,11 @@ export async function launchR3TargetCreate(input) {
     } else if (candidateUseRecord) {
       const admission = await session.assertCandidateUse();
       if (admission.executionRecordDigest !== candidateUseRecord.executionRecordDigest) fail(code);
+      if (
+        candidateUseRecord.admission &&
+        sha256Canonical(admission) !== sha256Canonical(candidateUseRecord.admission)
+      )
+        fail(code);
     }
     await consumerInput?.recheck();
     await consumerSlot?.recheck();
@@ -1250,6 +1283,7 @@ export async function launchR3TargetCreate(input) {
     await cleanupReadback?.recheck();
     for (const held of lifecycleReadbacks) await held.recheck();
     for (const held of [...sourceReadbacks, ...sourceContexts]) await held.recheck();
+    for (const held of finalReadbacks) await held.recheck();
     if (consumerRecord)
       for (const { digest, bytes, role } of consumerRecord)
         if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
@@ -1402,7 +1436,10 @@ export async function launchR3TargetCreate(input) {
     const names = pgNames(),
       imageDigest = fixed.databaseTargetPolicy.requiredImageDigest;
     const { engine } = await engineReadback(false, savePgExchange);
-    if (engine.ID !== expectedEngineId || engine.Containers !== 1 || engine.Images !== 1)
+    if (
+      engine.ID !== expectedEngineId ||
+      (!finalResources && (engine.Containers !== 1 || engine.Images !== 1))
+    )
       fail(code);
     const container = await engineJson(
       "GET",
@@ -1431,7 +1468,33 @@ export async function launchR3TargetCreate(input) {
       volume,
       postgres
     };
-    const facts = assessR3PostgresObservation(resources);
+    if (finalResources) {
+      resources.finalResources = {
+        ...finalResources,
+        image: await engineJson(
+          "GET",
+          `/images/${encodeURIComponent(finalResources.imageReference)}/json`,
+          undefined,
+          200
+        ),
+        containers: await Promise.all(
+          [
+            finalResources.runnerContainerId,
+            ...(finalResources.migrationContainerId ? [finalResources.migrationContainerId] : [])
+          ].map((id) => engineJson("GET", `/containers/${id}/json`, undefined, 200))
+        )
+      };
+      resources.containerInventory = await engineJson(
+        "GET",
+        "/containers/json?all=1",
+        undefined,
+        200
+      );
+      resources.imageInventory = await engineJson("GET", "/images/json", undefined, 200);
+    }
+    const facts = finalResources
+      ? assessR3FinalPostgresObservation(resources)
+      : assessR3PostgresObservation(resources);
     // Independent read through the owned CID must identify the very same PG
     // reached over the other SSH forward. A published-port claim alone is insufficient.
     const execution = await engineJson(
@@ -1465,7 +1528,9 @@ export async function launchR3TargetCreate(input) {
     const readback = { resources, execution, streamBase64: stream.toString("base64"), completed };
     let checked;
     try {
-      checked = assessR3PostgresReadback(readback);
+      checked = finalResources
+        ? assessR3FinalPostgresReadback(readback)
+        : assessR3PostgresReadback(readback);
     } catch {
       fail(code);
     }
@@ -1476,7 +1541,7 @@ export async function launchR3TargetCreate(input) {
         body: await postgresArchive.raw(encodeManualJson(readback))
       });
     await check();
-    postgresReadback = JSON.parse(JSON.stringify(readback));
+    if (!candidateUseRecord) postgresReadback = JSON.parse(JSON.stringify(readback));
     return facts;
   };
   const provisionPg = async (expectedEngineId) => {
@@ -2009,9 +2074,9 @@ export async function launchR3TargetCreate(input) {
     if (postgresAttempted) {
       const observed = await inspectPg(boundEngineId);
       if (
-        Object.keys(observed).some(
-          (key) => sha256Canonical(observed[key]) !== sha256Canonical(postgresTarget[key])
-        )
+        Object.keys(postgresTarget)
+          .filter((key) => !["credentialRef", "status"].includes(key))
+          .some((key) => sha256Canonical(observed[key]) !== sha256Canonical(postgresTarget[key]))
       )
         fail(code);
     }
@@ -2603,8 +2668,21 @@ export async function launchR3TargetCreate(input) {
     if (!candidateUseRecord) fail(code);
     await check();
   };
-  const consumeCandidateUse = async () => {
+  const consumeCandidateUse = async (matchingSourceEvidenceDigest) => {
     await recheckResources();
+    const final = session.scope.phase === "final";
+    if (
+      final
+        ? !/^sha256:[0-9a-f]{64}$/u.test(matchingSourceEvidenceDigest ?? "")
+        : matchingSourceEvidenceDigest !== undefined
+    )
+      fail(code);
+    if (
+      final &&
+      session.scope.chain === "snapshot" &&
+      consumerMatchingSourceDigest !== matchingSourceEvidenceDigest
+    )
+      fail(code);
     const opened = [...(await archive.graph()).entries()].filter(
       ([, item]) =>
         item.value.schemaVersion === "manual-operation-record.v3" &&
@@ -2629,7 +2707,7 @@ export async function launchR3TargetCreate(input) {
       attemptId: randomUUID(),
       runId: randomUUID(),
       stage: "candidate-use",
-      capability: "execute-source-database-tests",
+      capability: final ? "execute-final-database-tests" : "execute-source-database-tests",
       purpose: "stage1-isolated-database-tests",
       ...fieldsFrom(session.scope, [
         "phase",
@@ -2642,7 +2720,8 @@ export async function launchR3TargetCreate(input) {
       candidate: { buildProofDigest: session.scope.buildProofDigest },
       destinationAdmissionDigest: destinationRecord.destinationDigest,
       preparationExecutionRecordDigest,
-      databaseTestManifestDigest: sha256Canonical(fixed.databaseTestManifest)
+      databaseTestManifestDigest: sha256Canonical(fixed.databaseTestManifest),
+      ...(final ? { matchingSourceEvidenceDigest } : {})
     };
     request.attemptAllocationDigest = await archive.put(
       {
@@ -2672,7 +2751,8 @@ export async function launchR3TargetCreate(input) {
         sessionRecordDigest: opened[0][0],
         allocatedAt: now,
         buildProofDigest: session.scope.buildProofDigest,
-        predecessorExecutionRecordDigest: preparationExecutionRecordDigest
+        predecessorExecutionRecordDigest: preparationExecutionRecordDigest,
+        ...(final ? { matchingSourceEvidenceDigest } : {})
       },
       "manual-runner-evidence.v2"
     );
@@ -2703,7 +2783,16 @@ export async function launchR3TargetCreate(input) {
       execution.value.sessionNonce !== session.sessionNonce
     )
       fail(code);
-    candidateUseRecord = { executionRecordDigest: receipt.executionRecordDigest };
+    const admission = await session.assertCandidateUse();
+    if (
+      admission.executionRecordDigest !== receipt.executionRecordDigest ||
+      (final && admission.matchingSourceEvidenceDigest !== matchingSourceEvidenceDigest)
+    )
+      fail(code);
+    candidateUseRecord = {
+      executionRecordDigest: receipt.executionRecordDigest,
+      ...(final ? { admission, request } : {})
+    };
     await sourceCheck();
   };
   const sourceSecret = async (record, profile) => {
@@ -2849,6 +2938,648 @@ export async function launchR3TargetCreate(input) {
     // stores agreed. The copies remain held and are checked by sourceCheck.
     sourceValues.set(name, JSON.parse(sourceReadbacks.at(-1).bytes));
     return digest;
+  };
+  const finalStore = async (name, value) => {
+    const allowed = [
+      "attempt",
+      "manifest",
+      "runtime",
+      ...fixed.databaseTestManifest.suites.map(({ suiteId }) => suiteId),
+      ...databaseTargetSet.plan.targets.map(({ databaseName }) => databaseName),
+      ...databaseTargetSet.plan.reservations.map(({ databaseName }) => databaseName)
+    ];
+    if (!allowed.includes(name)) fail(code);
+    let digest;
+    for (const role of ["archive", "backup"]) {
+      const privateRoot = lease.profile.storage[`${role}Root`];
+      const actual = await sourceFile(
+        path.join(
+          privateRoot,
+          "inputs",
+          "r3",
+          fixed.spec.operationRef,
+          "observations",
+          "final",
+          name,
+          "readback.json"
+        ),
+        value,
+        privateRoot,
+        finalReadbacks
+      );
+      if (digest && actual !== digest) fail(code);
+      digest = actual;
+    }
+    return digest;
+  };
+  const runFinalManifest = async (matchingSourceEvidenceDigest) => {
+    const observations = [],
+      physicalLocks = new Map(),
+      migrationAttempts = new Set();
+    let runtime,
+      runtimeWritten = false,
+      manifestWritten = false,
+      envelope,
+      lifecycleReport;
+    const plain = (value) => JSON.parse(JSON.stringify(value));
+    const equal = (a, b) => sha256Canonical(plain(a)) === sha256Canonical(plain(b));
+    try {
+      if ((await fs.realpath(repoRoot)) !== (await fs.realpath(input.repoRoot))) fail(code);
+      await consumeCandidateUse(matchingSourceEvidenceDigest);
+      const request = candidateUseRecord.request;
+      const matchedSource = candidateUseRecord.admission.matchedSource;
+      await finalStore("attempt", {
+        status: "FINAL_MANIFEST_INTERRUPTED_UNKNOWN",
+        operationRef: fixed.spec.operationRef,
+        sessionId: session.sessionId,
+        sessionNonce: session.sessionNonce,
+        candidateUseExecutionRecordDigest: candidateUseRecord.executionRecordDigest,
+        matchingSourceEvidenceDigest,
+        promotionEligible: false
+      });
+      const load = async (name) =>
+        JSON.parse(await fs.readFile(path.join(repoRoot, "release/contracts", name), "utf8"));
+      const manifest = fixed.databaseTestManifest;
+      const discovery = await load("database-test-discovery.v1.json");
+      const exceptions = await load("database-test-exceptions.v1.json");
+      const external = await load("external-validation-applicability.v1.json");
+      const globalObjectPolicy = await load("migration-global-object-policy.v1.json");
+      const migrationCatalog = await computeMigrationCatalog(repoRoot);
+      const buildProof = (await archive.get(session.scope.buildProofDigest)).value;
+      validateContract("build-proof.v1", buildProof);
+      if (
+        sha256Canonical(buildProof) !== session.scope.buildProofDigest ||
+        buildProof.identity.sourceSha !== fixed.spec.sourceSha ||
+        buildProof.identity.repositoryContractDigest !==
+          (await computeRepositoryContract(repoRoot)).digest ||
+        buildProof.identity.migrationCatalogDigest !== migrationCatalog.digest ||
+        matchedSource.terminalDigest !== matchingSourceEvidenceDigest
+      )
+        fail(code);
+      const classification = classifyDatabaseTests(
+        await discoverDatabaseTestCandidates(repoRoot, discovery),
+        manifest.suites,
+        exceptions.exceptions,
+        external.records
+      );
+      if ((await scanDatabaseFrameworkBypasses(repoRoot, manifest)).length) fail(code);
+      const plan = databaseTargetSet.plan;
+      let selections = bindR3FinalManifest({
+        operationRef: fixed.spec.operationRef,
+        chain: fixed.spec.chain,
+        manifest,
+        plan,
+        discoveryDigest: sha256Canonical(discovery),
+        discoveryUnclassifiedCount: classification.unclassified.length
+      }).map((selection) => plain({ ...selection, runId: request.runId }));
+      const postgres = {
+        engineId: postgresTarget.engineId,
+        containerId: postgresTarget.containerId,
+        systemIdentifier: postgresTarget.postgres.systemIdentifier,
+        imageDigest: postgresTarget.imageDigest,
+        hostname: "postgres",
+        port: 5432,
+        tlsMode: "require"
+      };
+      const parent = {
+        ...fieldsFrom(request, [
+          "phase",
+          "chain",
+          "profileDigest",
+          "sessionId",
+          "sessionNonce",
+          "operationId",
+          "runId",
+          "attemptId",
+          "sourceSha"
+        ]),
+        candidateUseExecutionRecordDigest: candidateUseRecord.executionRecordDigest,
+        matchingSourceEvidenceDigest,
+        destinationAdmissionDigest: destinationRecord.destinationDigest,
+        creationEvidenceDigest: hostedEvidence.bundleDigest,
+        databaseTargetPlanDigest: sha256Canonical(plan),
+        databaseTestManifestDigest: sha256Canonical(manifest),
+        databaseTestDiscoveryDigest: sha256Canonical(discovery),
+        buildProof,
+        buildProofDigest: session.scope.buildProofDigest,
+        actualRunnerDigest: buildProof.identity.images.runner.imageDigest,
+        postgres
+      };
+      const imageReference = `ghcr.io/keqi119/subscription-runner@${parent.actualRunnerDigest}`;
+      if (buildProof.identity.images.runner.registry !== "ghcr.io/keqi119/subscription-runner")
+        fail(code);
+      const identity = {
+        operationRef: fixed.spec.operationRef,
+        sourceSha: parent.sourceSha,
+        imageDigest: parent.actualRunnerDigest,
+        imageReference,
+        postgresAddress: postgresTarget.containerAddress
+      };
+      const target = Object.freeze({
+        policyId: fixed.databaseTargetPolicy.policyId,
+        environment: `ci-${plan.chain}`,
+        host: "127.0.0.1",
+        clusterMarker: postgresTarget.postgres.clusterMarker,
+        clusterFingerprint: sha256Canonical({
+          engineId: postgres.engineId,
+          systemIdentifier: postgres.systemIdentifier,
+          containerId: postgres.containerId,
+          imageDigest: postgres.imageDigest
+        }),
+        imageDigest: postgres.imageDigest,
+        serverVersionNum: postgresTarget.postgres.serverVersionNum
+      });
+      const reservations = plan.reservations.map(({ shard, databaseName, roles }) => ({
+        shard,
+        databaseName,
+        roles,
+        targetLockDigest: targetLockLease.locks.find((entry) => entry.databaseName === databaseName)
+          ?.lockDigest
+      }));
+      const runtimeBoundary = async (record, database) =>
+        observeFinalRuntimeBoundary(
+          {
+            $queryRawUnsafe: async (sql) =>
+              (await sourceCredential(record, "runtime-test", sql)).rows
+          },
+          database
+        );
+      const migrate = async (record) => {
+        if (
+          !finalResources ||
+          finalResources.migrationContainerId ||
+          migrationAttempts.has(record.databaseName)
+        )
+          fail(code);
+        migrationAttempts.add(record.databaseName);
+        const planned = [...plan.targets, ...plan.reservations].find(
+          (item) => item.databaseName === record.databaseName
+        );
+        if (!planned || planned.kind === "application" || !equal(record.roles, planned.roles))
+          fail(code);
+        const migrationSecret = await sourceSecret(record, "migrate");
+        const runtimeSecret = await sourceSecret(record, "runtime-test");
+        const lock =
+          planned.kind === "suite"
+            ? targetLockLease.locks.find((entry) => entry.databaseName === record.databaseName)
+            : physicalLocks.get(record.databaseName);
+        if (!lock) fail(code);
+        const database = {
+          databaseName: record.databaseName,
+          databaseOid: record.databaseOid,
+          marker: record.marker,
+          migrationRole: record.roles.migrate,
+          migrationCredentialFingerprint: sha256Bytes(
+            Buffer.from(migrationSecret.password, "utf8")
+          ),
+          runtimeCredentialFingerprint: sha256Bytes(Buffer.from(runtimeSecret.password, "utf8")),
+          databaseIdentityFingerprint: sha256Canonical({
+            databaseName: record.databaseName,
+            databaseOid: record.databaseOid,
+            role: record.roles.migrate,
+            tls: true
+          }),
+          targetLockDigest: lock.lockDigest
+        };
+        const assignment =
+          planned.kind === "suite"
+            ? { kind: "suite", suiteId: planned.suiteId, name: planned.name }
+            : { kind: "lifecycle-owned", suiteId: planned.suiteId, lifecycleShard: planned.shard };
+        let migrationInput, assessor, schema, preparation, boundary, owned;
+        const physical = [];
+        const observeTarget = async () => {
+          const facts = await inspectPg(boundEngineId);
+          const value = await sourceCredential(
+            record,
+            "migrate",
+            `SELECT current_database()::text AS "databaseName", d.oid::text AS "databaseOid", COALESCE(shobj_description(d.oid,'pg_database'),'') AS "marker", pg_get_userbyid(d.datdba) AS "databaseOwner", (SELECT pg_get_userbyid(n.nspowner) FROM pg_namespace n WHERE n.nspname='public') AS "schemaOwner" FROM pg_database d WHERE d.datname=current_database()`
+          );
+          if (value.rows.length !== 1) fail(code);
+          const observed = {
+            ...value.rows[0],
+            engineId: facts.engineId,
+            postgresContainerId: facts.containerId,
+            systemIdentifier: facts.postgres.systemIdentifier
+          };
+          physical.push(observed);
+          return observed;
+        };
+        try {
+          owned = await executeR3FinalMigrationContainer({
+            identity: { ...identity, runnerContainerId: finalResources.runnerContainerId },
+            signal: sourceAbort.signal,
+            engineCall,
+            recheck: () => inspectPg(boundEngineId),
+            register: async (id) => {
+              if (finalResources.migrationContainerId) fail(code);
+              finalResources.migrationContainerId = id;
+            },
+            unregister: async (id) => {
+              if (finalResources.migrationContainerId !== id) fail(code);
+              delete finalResources.migrationContainerId;
+            },
+            prepare: async (id) => {
+              migrationInput = {
+                schemaVersion: "r3-final-migration-input.v1",
+                ...parent,
+                runnerContainerId: finalResources.runnerContainerId,
+                migrationContainerId: id,
+                matchingSourceResultDigest: matchedSource.resultDigest,
+                assignment,
+                database,
+                expectedSchemaDigest: matchedSource.postSchemaDigest,
+                migrationCatalogDigest: migrationCatalog.digest
+              };
+              assessor = createR3FinalMigrationAssessment({
+                input: migrationInput,
+                manifest,
+                migrationCatalog,
+                globalObjectPolicy,
+                observeTarget
+              });
+              return {
+                input: migrationInput,
+                credential: {
+                  username: migrationSecret.username,
+                  password: migrationSecret.password,
+                  capabilityProfile: "migrate"
+                }
+              };
+            },
+            assess: async ({ stage, result }) => {
+              if (stage !== "prepare") {
+                await assessor.assess({ stage, result });
+                if (stage === "verify") schema = assessor.finish();
+              } else {
+                if (!schema) fail(code);
+                preparation = await assessFinalRuntimePreparation({
+                  input: migrationInput,
+                  manifest,
+                  migrationCatalog,
+                  globalObjectPolicy,
+                  preparation: result.preparation,
+                  repoRoot
+                });
+                await observeTarget();
+                boundary = await runtimeBoundary(record, {
+                  ...database,
+                  runtimeRole: runtimeSecret.username,
+                  databaseIdentityFingerprint: sha256Canonical({
+                    databaseName: record.databaseName,
+                    databaseOid: record.databaseOid,
+                    role: runtimeSecret.username,
+                    tls: true
+                  })
+                });
+              }
+            }
+          });
+          if (!schema || !preparation || !boundary || owned.deleted !== true) fail(code);
+        } catch (error) {
+          await finalStore(record.databaseName, {
+            status: "FINAL_MIGRATION_INTERRUPTED_UNKNOWN",
+            input: migrationInput ?? null,
+            physical,
+            originals: error.originals ?? null,
+            promotionEligible: false
+          });
+          throw error;
+        }
+        const migrationEvidenceDigest = await finalStore(record.databaseName, {
+          status: "FINAL_MIGRATION_OBSERVED",
+          input: migrationInput,
+          physical,
+          schema,
+          preparation,
+          boundary,
+          originals: owned.originals,
+          promotionEligible: false
+        });
+        const runtimeDatabase = {
+          ...database,
+          runtimeRole: runtimeSecret.username,
+          databaseIdentityFingerprint: sha256Canonical({
+            databaseName: record.databaseName,
+            databaseOid: record.databaseOid,
+            role: runtimeSecret.username,
+            tls: true
+          }),
+          migrationEvidenceDigest,
+          runtimeSecretReference: `secret-file:///run/secrets/${record.databaseName}-runtime-test.json`
+        };
+        finalMigrations.set(record.databaseName, {
+          database: runtimeDatabase,
+          preparation,
+          boundary
+        });
+        await sourceCheck();
+        return { exitCode: 0, signal: null };
+      };
+      lifecycleAttempted = true;
+      const adapter = createR3LifecycleAdapter({
+        plan,
+        target,
+        policy: fixed.databaseTargetPolicy,
+        executeAdmin: (command) =>
+          databaseAdmin(plan, (execute) => execute(command), observations, true),
+        executeCredential: ({ record, profile, sql }) => sourceCredential(record, profile, sql),
+        secretStore: {
+          create: async ({ databaseName, profile, username }) => {
+            const reservation = plan.reservations.find(
+              (item) => item.databaseName === databaseName
+            );
+            if (!reservation || reservation.roles[profile] !== username) fail(code);
+            const reference = `r3/${plan.operationRef}/database-credentials/${databaseName}-${profile}.json`;
+            const secret = await sourceSecret(
+              { ...reservation, secretReferences: { [profile]: reference } },
+              profile
+            );
+            return { username, password: secret.password, reference };
+          }
+        },
+        migrate,
+        prepareRuntimeAccess: async (record) => {
+          const prepared = finalMigrations.get(record.databaseName);
+          if (!prepared) fail(code);
+          const boundary = await runtimeBoundary(record, prepared.database);
+          observations.push({
+            stage: "final-runtime-boundary",
+            databaseName: record.databaseName,
+            value: boundary
+          });
+        },
+        registerTarget: async (record) => {
+          const registered = await session.registerLifecycleTarget({ record });
+          if (physicalLocks.has(record.databaseName)) fail(code);
+          physicalLocks.set(record.databaseName, registered.lock);
+          lifecycleRegisteredRecords.push(plain(record));
+          return registered;
+        },
+        recheck: sourceCheck,
+        observations
+      });
+      const lifecycleAdapter = { ...adapter, reservations };
+      await recheckResources();
+      const pull = await engineCall(
+        "POST",
+        `/images/create?fromImage=${encodeURIComponent(imageReference)}&platform=linux%2Famd64`,
+        undefined,
+        200,
+        { timeout: 300000 }
+      );
+      const progress = pull
+        .toString("utf8")
+        .split("\n")
+        .filter((line) => line.trim())
+        .map((line) => JSON.parse(line));
+      if (!progress.length || progress.some((item) => item.error || item.errorDetail)) fail(code);
+      observations.push({ stage: "final-image-pull", value: progress });
+      runtime = await executeR3FinalRuntimeContainer({
+        identity,
+        signal: sourceAbort.signal,
+        engineCall,
+        recheck: async () => {
+          await sourceCheck();
+          if (finalResources) await inspectPg(boundEngineId);
+        },
+        register: async (id) => {
+          if (finalResources) fail(code);
+          finalResources = {
+            runnerContainerId: id,
+            runtimeState: "created",
+            imageDigest: parent.actualRunnerDigest,
+            imageReference,
+            sourceSha: parent.sourceSha
+          };
+        },
+        started: async (id) => {
+          if (finalResources.runnerContainerId !== id || finalResources.runtimeState !== "created")
+            fail(code);
+          finalResources.runtimeState = "running";
+        },
+        unregister: async (id) => {
+          if (finalResources.runnerContainerId !== id || finalResources.migrationContainerId)
+            fail(code);
+          // Only this held candidate image is removed, after the owned CID's
+          // independent absence readback; never prune an Engine or another job.
+          const removed = await engineJson(
+            "DELETE",
+            `/images/${encodeURIComponent(imageReference)}?force=0&noprune=1`,
+            undefined,
+            200
+          );
+          await engineCall(
+            "GET",
+            `/images/${encodeURIComponent(imageReference)}/json`,
+            undefined,
+            404
+          );
+          observations.push({ stage: "final-image-removed", value: removed });
+          finalResources = undefined;
+        },
+        prepare: async (runnerContainerId) => {
+          await inspectPg(boundEngineId);
+          for (const planned of plan.targets.filter((item) => item.kind === "suite")) {
+            const record = databaseTargetSet.records.find(
+              (item) => item.databaseName === planned.databaseName
+            );
+            if (!record) fail(code);
+            await migrate(record);
+          }
+          const credentials = {},
+            runtimePreparations = {};
+          const suiteAssignments = {};
+          for (const selection of selections) {
+            if (selection.r3ExecutionMode === "lifecycle-owned") {
+              suiteAssignments[selection.suiteId] = { kind: "lifecycle-owned", reservations };
+              continue;
+            }
+            const databases = {};
+            for (const planned of plan.targets.filter(
+              (item) => item.suiteId === selection.suiteId
+            )) {
+              const prepared = finalMigrations.get(planned.databaseName);
+              if (!prepared) fail(code);
+              databases[planned.name] = prepared.database;
+              const record = databaseTargetSet.records.find(
+                (item) => item.databaseName === planned.databaseName
+              );
+              const secret = await sourceSecret(record, "runtime-test");
+              credentials[planned.databaseName] = {
+                username: secret.username,
+                password: secret.password,
+                capabilityProfile: "runtime-test"
+              };
+              runtimePreparations[planned.databaseName] = {
+                migrationEvidenceDigest: prepared.database.migrationEvidenceDigest,
+                schemaFixture: prepared.preparation.schemaFixture
+              };
+            }
+            suiteAssignments[selection.suiteId] = { kind: "suite", databases };
+          }
+          envelope = {
+            schemaVersion: "database-test-launch-envelope.v2",
+            executionMode: "database-test",
+            ...parent,
+            runnerContainerId,
+            databaseTestManifestReference: "launch-file:///run/launch/database-test-manifest.json",
+            suiteAssignments
+          };
+          const admitted = validateFinalDatabaseTestAssignments({
+            envelope,
+            manifest,
+            discoveryDigest: sha256Canonical(discovery)
+          });
+          selections = admitted.selections.map((selection) =>
+            plain({ ...selection, runId: request.runId })
+          );
+          return {
+            input: {
+              envelope,
+              credentials,
+              runtimePreparations,
+              lifecycleContext: {
+                runId: plan.operationRef,
+                target,
+                policy: fixed.databaseTargetPolicy,
+                reservations
+              }
+            }
+          };
+        },
+        lifecycleAdapter,
+        assessLifecycle: async ({ selection, originals }) => {
+          if (
+            lifecycleReady ||
+            !equal(
+              selection,
+              selections.find((item) => item.r3ExecutionMode === "lifecycle-owned")
+            )
+          )
+            fail(code);
+          assertR3FinalLifecycleOriginals(originals);
+          const physical = observations
+            .filter((entry) => entry.stage === "provision")
+            .map((entry) => entry.record);
+          const boundaries = observations.filter(
+            (entry) => entry.stage === "final-runtime-boundary"
+          );
+          if (
+            physical.length !== 2 ||
+            boundaries.length !== 2 ||
+            observations.filter((entry) => entry.stage === "cleanup").length !== 2 ||
+            observations.filter((entry) => entry.stage === "owned-absence").at(-1)?.value?.rows?.[0]
+              ?.count !== "0"
+          )
+            fail(code);
+          const logSummary = summarizeDatabaseTestLog({ stdout: originals.tap, stderr: "" });
+          lifecycleReport = buildDatabaseSuiteReport({
+            execution: selection,
+            operationId: fixed.spec.operationRef,
+            provisioned: {
+              ...physical[0],
+              additionalDatabases: [{ ...physical[1], name: "sibling" }]
+            },
+            result: {
+              counts: databaseTestCounts(originals.tap),
+              sanitizedLogDigest: sha256Canonical(logSummary),
+              roleBoundaries: boundaries.map((entry, index) => ({
+                database: index === 0 ? "target" : "sibling",
+                ...entry.value.roleBoundary
+              }))
+            }
+          });
+          if (lifecycleReport.terminalStatus !== "PASSED") fail(code);
+          lifecycleReady = true;
+          return { report: lifecycleReport, originals };
+        },
+        assess: async (result) => {
+          if (
+            !lifecycleReady ||
+            !exact(result, ["manifestReport", "suiteReadbacks"]) ||
+            !Array.isArray(result.suiteReadbacks) ||
+            result.suiteReadbacks.length !== selections.length
+          )
+            fail(code);
+          const reports = new Map();
+          for (const readback of result.suiteReadbacks) {
+            if (
+              !exact(readback, ["suiteId", "report", "originals"]) ||
+              reports.has(readback.suiteId) ||
+              !selections.some((item) => item.suiteId === readback.suiteId)
+            )
+              fail(code);
+            reports.set(readback.suiteId, readback.report);
+            if (
+              readback.suiteId === "node.release-database-lifecycle.postgres" &&
+              !equal(readback.report, lifecycleReport)
+            )
+              fail(code);
+          }
+          const reconstructed = await runDatabaseManifest({
+            selections,
+            concurrency: 1,
+            executeSuite: async (selection) => reports.get(selection.suiteId)
+          });
+          if (
+            reconstructed.terminalStatus !== "PASSED" ||
+            !equal(reconstructed, result.manifestReport)
+          )
+            fail(code);
+          // This records the observed execution only. A successful release
+          // terminal still requires independent original reconstruction/custody.
+          for (const readback of result.suiteReadbacks)
+            await finalStore(readback.suiteId, readback);
+        }
+      });
+      const { channel, ...containerOriginals } = runtime.originals;
+      runtimeWritten = true;
+      await finalStore("runtime", {
+        envelope,
+        ...containerOriginals,
+        transcript: channel.transcript,
+        resultDigest: sha256Canonical(runtime.result),
+        promotionEligible: false
+      });
+      await recheckResources();
+      manifestWritten = true;
+      const readbackDigest = await finalStore("manifest", {
+        status: "FINAL_MANIFEST_OBSERVED",
+        envelope,
+        manifestReport: runtime.result.manifestReport,
+        observations,
+        promotionEligible: false
+      });
+      finalReady = true;
+      return Object.freeze({
+        status: "FINAL_MANIFEST_OBSERVED",
+        readbackDigest,
+        candidateUseExecutionRecordDigest: candidateUseRecord.executionRecordDigest,
+        executionStatus: "INTERRUPTED_UNKNOWN",
+        promotionEligible: false
+      });
+    } catch (error) {
+      if (candidateUseRecord && !runtimeWritten && error.originals) {
+        runtimeWritten = true;
+        await finalStore("runtime", {
+          status: "FINAL_RUNTIME_INTERRUPTED_UNKNOWN",
+          originals: error.originals,
+          promotionEligible: false
+        }).catch(() => {});
+      }
+      if (candidateUseRecord && !manifestWritten) {
+        manifestWritten = true;
+        await finalStore("manifest", {
+          status: "FINAL_MANIFEST_INTERRUPTED_UNKNOWN",
+          observations,
+          promotionEligible: false
+        }).catch(() => {});
+      }
+      throw Object.assign(new Error(code), {
+        code,
+        failureCode: /^[A-Z0-9_]{1,64}$/u.test(error?.code ?? "") ? error.code : code
+      });
+    }
   };
   const runSourceManifest = async () => {
     const observations = [];
@@ -3994,6 +4725,7 @@ export async function launchR3TargetCreate(input) {
         if (snapshotCompletionAttempted && !snapshotCompletionReady) fail(code);
         if (lifecycleAttempted && !lifecycleReady) fail(code);
         if (sourceAttempted && !sourceReady) fail(code);
+        if (finalAttempted && !finalReady) fail(code);
         if (sourceAcknowledgementAttempted && !sourceAcknowledgementReady) fail(code);
         if (targetCleanupAttempted && !targetCleanupReady) fail(code);
         if (targetCleanupReady) return check();
@@ -4148,6 +4880,25 @@ export async function launchR3TargetCreate(input) {
         } catch {
           throw Object.assign(new Error(code), { code });
         }
+      },
+      async runFinalManifest(...args) {
+        if (
+          args.length !== 1 ||
+          !exact(args[0], ["matchingSourceEvidenceDigest"]) ||
+          !/^sha256:[0-9a-f]{64}$/u.test(args[0].matchingSourceEvidenceDigest ?? "") ||
+          stopping ||
+          closed ||
+          finalAttempted ||
+          sourceAttempted ||
+          lifecycleAttempted ||
+          !completionReady ||
+          session.scope.phase !== "final" ||
+          (session.scope.chain === "snapshot" ? !snapshotCompletionReady : consumerAttempted)
+        )
+          fail(code);
+        finalAttempted = true;
+        finalPending = runFinalManifest(args[0].matchingSourceEvidenceDigest);
+        return finalPending;
       },
       async runSourceManifest(...args) {
         if (

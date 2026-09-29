@@ -2,9 +2,33 @@
 
 阶段 1 尚未完成。保持原定范围：不增加业务功能，不采用商用 KMS，不重复已通过且未受改动影响的长测试。
 
-此前已提交 H1 清理链、final fresh/snapshot 历史匹配、Runner v2 输入、生命周期通道及独立迁移容器调用组件。本轮补齐迁移结果独立重建、写入前基线原件核验，以及基础结构核验后的运行角色授权和清单指定建表准备。原生 H1 调用、完整最终镜像执行、hosted 工作流和真实发布验收仍未完成，v2 执行入口继续保持阻断。
+已接入原生 H1 final 调用和最终镜像的固定私有入口。代码现在串起已消费候选、匹配 source、分库迁移与准备、普通清单测试及生命周期测试；原生 H1 完整成功路径尚未实跑。final 原件独立重建、成功终态/保管、最终清理和 hosted 工作流仍未完成，不能据此发布或宣布阶段 1 完成。
 
-## 当前增量：迁移评估和运行准备
+## 当前增量：原生 H1 与最终镜像接线
+
+预检 `98eea8` 为干净的 `fd9492e5`；本地 migrate status 缺 datasource.url，在连接前退出；Prisma `f8f046` 通过。本轮没有业务改动、线上写入、push/merge 或 workflow dispatch。
+
+原生 holder 新增一次性 `runFinalManifest({matchingSourceEvidenceDigest})`。它消费 final 候选后固定核心回放得到的 source 事实，校验仓库与候选摘要，创建尚未启动的 runtime；逐普通库从同一候选镜像创建迁移容器，执行并独立核验 plan/apply/verify/prepare 和实际 PG 物理身份，确认退出与精确删除后才生成输入。runtime 启动后的实际 CID/权限/挂载/网络复核先于私有输入交付。迁移与运行角色凭据仍隔离。
+
+固定 `r3-final-runtime` 入口不接受命令或路径参数。它只读 `/app` 中的固定清单和策略，在限额 tmpfs 中写入精确运行凭据和上下文，执行全部既有测试选择及 seed。普通 suite 的运行上下文使用实际 runId，数据库、标记和锁仍使用原 operationId 分配。生命周期通过单一外层 parser 复用原 19 个动作，H1 负责 provision、同镜像迁移、独立运行权限复核及 cleanup；最终镜像实际执行原两个 Node 测试，按完整 `/app` 文件路径检查原件。
+
+H1 保留双份私有原件、原始失败和初始 UNKNOWN。新增结果明确只是 `FINAL_MANIFEST_OBSERVED`，仍为 `promotionEligible=false`；没有使用报告汇总替代完整原件认证，没有写 final SUCCEEDED。既有通用 v1 路径的 v2 拒绝保持不变，新的能力只由固定私有入口与已消费 H1 调用连接。
+
+移除未发布 v2 输入中没有实际消费者的三个旧字段：custodyPolicyDigest、custodyPolicyReference、journalReference。H1 原有身份、保管和台账验证继续执行，镜像内不生成虚假 custody policy。v1 不变。
+
+定向验证：
+
+- 清单执行与固定入口 `b49322` 5/5；CLI 与 v2 输入 `41d74c` 17/17，包括真实 CLI 在未认证 stdin 关闭后仅输出 HELLO 并失败。
+- 外层通道正常/拒绝 `4f685f` 2/2，实际导入两个 Node 测试及 19 个固定动作。随后将正常用例接入容器 owner，`b02795` 1/1，复用同一用例验证启动回调、返回结果、退出、精确删除与独立 404。H1/Engine/PG、普通 manifest 汇总和 `/app` 路径投影仍是明确的模拟边界，不能声称真实镜像验收。
+- final PG 双端读回及权限配置 `905d76` 8/8，迁移容器时序 `1c3c5a` 3/3；原生入口拒绝替换参数 `feea20` 1/1。未重复旧长链。
+- 交叉审查修复了 selection 缺 databaseAssignment、角色边界字段、Node 计数转换及未注册单套件 schema 调用；这些静态修复不替代原生 H1 正向整合验证。
+- 限定源码检查 `7878d6` 通过，保留此前两个未使用导入和解构排除字段的例外。误选的宽范围 `release:check` 在完成 Prisma 校验/生成后主动停止，不作为发布检查通过记录。发现清单 `e4310f` 仍为 99 候选文件 / 39 清单文件 / 60 例外 / 0 未分类；实际清单为 37 套件。
+
+最终格式 `66016e`、语法与差异检查 `8e20d5` 通过。合同 `285df1` 为 254 文件、87 schemas、128 migrations、13 commands，摘要 `sha256:1f7db38b81c5429ab091e65cb9afd0d3c10d287cbf78ddc1ff8a4102e5a8b727`；首次新增路径顺序错误已修复，未隐去失败。
+
+下一步只补 final 原件独立读取/重建及核心成功终态、保管和清理接线，再连接受控工作流并做一次同候选真实 fresh/snapshot 验收。合法数据库快照来源仍待确认；两项 Staging 迁移和恢复 API/Web 后的 R4 仍未执行。
+
+## 前序增量：迁移评估和运行准备
 
 预检 `07745e` 为干净的 `14de6c5b`；本地迁移状态仍因缺 datasource.url 在连接前失败，Prisma 校验 `2f5709` 通过。本轮未更改业务、云端或数据库。
 

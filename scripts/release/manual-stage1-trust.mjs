@@ -2190,6 +2190,15 @@ export async function prepareR3HostedEvidenceImport(input) {
       await fs.readFile(path.join(repoRoot, "release/contracts/database-test-manifest.v1.json"))
     );
     validateContract("database-test-manifest.v1", manifest);
+    const { planR3DatabaseTargets } = await import("./r3-database-targets.mjs");
+    // Names do not depend on fresh/snapshot roles; reserve both execution
+    // phases before private parent directories are pinned.
+    const finalPlan = planR3DatabaseTargets({
+      operationRef,
+      phase: "final",
+      chain: "fresh",
+      manifest
+    });
     requireThat(
       manifest.suites.every(({ suiteId }) => /^[a-z0-9][a-z0-9.-]{0,127}$/u.test(suiteId))
     );
@@ -2238,7 +2247,7 @@ export async function prepareR3HostedEvidenceImport(input) {
             .stat.isDirectory()
         );
       }
-      for (const state of ["active", "absent", "lifecycle", "source", "cleanup"]) {
+      for (const state of ["active", "absent", "lifecycle", "source", "final", "cleanup"]) {
         const leaf = path.join(directory, state);
         try {
           await fs.mkdir(leaf, { mode: 0o700 });
@@ -2250,11 +2259,19 @@ export async function prepareR3HostedEvidenceImport(input) {
             .at(-1)
             .stat.isDirectory()
         );
-        if (state === "source") {
+        if (["source", "final"].includes(state)) {
           for (const name of [
             "attempt",
             "manifest",
-            ...manifest.suites.map(({ suiteId }) => suiteId)
+            ...manifest.suites.map(({ suiteId }) => suiteId),
+            ...(state === "final"
+              ? [
+                  "runtime",
+                  ...[...finalPlan.targets, ...finalPlan.reservations].map(
+                    ({ databaseName }) => databaseName
+                  )
+                ]
+              : [])
           ]) {
             const suiteDirectory = path.join(leaf, name);
             try {

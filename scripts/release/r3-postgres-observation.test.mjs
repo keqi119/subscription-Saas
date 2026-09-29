@@ -5,6 +5,7 @@ import {
   assessR3PostgresObservation,
   assessR3PostgresResources
 } from "./r3-postgres-observation.mjs";
+import { assessR3FinalPostgresReadback } from "./r3-destination.mjs";
 
 const operationRef = "10000000-0000-4000-8000-000000000001";
 const id = operationRef.replaceAll("-", "");
@@ -123,7 +124,7 @@ function finalFixture(withMigration = true, runtimeState = "running") {
         StdinOnce: false,
         ExposedPorts: { "5432/tcp": {} },
         Volumes: { "/var/lib/postgresql/data": {} },
-        Env: role === "migration" ? ["RUNNER_EXECUTION_MODE=r3-final-migration"] : []
+        Env: [`RUNNER_EXECUTION_MODE=r3-final-${role === "runtime" ? "runtime" : "migration"}`]
       },
       State: {
         Status: "running",
@@ -155,7 +156,15 @@ function finalFixture(withMigration = true, runtimeState = "running") {
         Tmpfs: {
           "/tmp": "rw,nosuid,nodev,noexec,size=268435456,mode=1777",
           "/var/lib/postgresql/data":
-            "rw,nosuid,nodev,noexec,size=65536,mode=0700,uid=1000,gid=1000"
+            "rw,nosuid,nodev,noexec,size=65536,mode=0700,uid=1000,gid=1000",
+          ...(role === "runtime"
+            ? {
+                "/app/.release-local":
+                  "rw,nosuid,nodev,noexec,size=33554432,mode=0700,uid=1000,gid=1000",
+                "/run/launch": "rw,nosuid,nodev,noexec,size=1048576,mode=0700,uid=1000,gid=1000",
+                "/run/secrets": "rw,nosuid,nodev,noexec,size=1048576,mode=0700,uid=1000,gid=1000"
+              }
+            : {})
         },
         PidsLimit: 256,
         Memory: 1073741824,
@@ -308,12 +317,58 @@ test("R3 final observation rejects foreign CID or image inventory", () => {
     },
     (f) => {
       f.engine.Containers += 1;
+    },
+    (f) => {
+      f.finalResources.containers[0].Config.Env = ["RUNNER_EXECUTION_MODE=r3-final-migration"];
+    },
+    (f) => {
+      delete f.finalResources.containers[0].HostConfig.Tmpfs["/run/secrets"];
+    },
+    (f) => {
+      f.finalResources.containers[0].Mounts.push({
+        Type: "bind",
+        Source: "/tmp/foreign",
+        Destination: "/run/secrets",
+        RW: true
+      });
     }
   ]) {
     const input = finalFixture();
     mutate(input);
     assert.throws(() => assessR3FinalPostgresObservation(input), invalid);
   }
+});
+
+test("R3 final PG readback ties the independent container stream to the held final Engine", () => {
+  const resources = finalFixture();
+  const encoded = Buffer.from(JSON.stringify(resources.postgres));
+  const header = Buffer.alloc(8);
+  header[0] = 1;
+  header.writeUInt32BE(encoded.length, 4);
+  const readback = {
+    resources,
+    execution: { Id: "1".repeat(64) },
+    streamBase64: Buffer.concat([header, encoded]).toString("base64"),
+    completed: { ContainerID: cid, Running: false, ExitCode: 0 }
+  };
+  const observed = assessR3FinalPostgresReadback(readback);
+  assert.equal(observed.runnerContainerId, runnerCid);
+  assert.equal(observed.migrationContainerId, migrationCid);
+  assert.equal(observed.postgres.systemIdentifier, resources.postgres.systemIdentifier);
+
+  const wrong = structuredClone(readback);
+  wrong.completed.ContainerID = runnerCid;
+  assert.throws(() => assessR3FinalPostgresReadback(wrong), { code: "R3_DESTINATION_INVALID" });
+  const forged = structuredClone(readback);
+  const altered = Buffer.from(
+    JSON.stringify({
+      ...resources.postgres,
+      systemIdentifier: "7340000000000000002"
+    })
+  );
+  header.writeUInt32BE(altered.length, 4);
+  forged.streamBase64 = Buffer.concat([header, altered]).toString("base64");
+  assert.throws(() => assessR3FinalPostgresReadback(forged), { code: "R3_DESTINATION_INVALID" });
 });
 
 test("R3 POSTGRES binds one encrypted Engine, private network, volume and TLS cluster", () => {

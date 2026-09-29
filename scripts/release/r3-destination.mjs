@@ -5,7 +5,10 @@ import { sha256Canonical } from "../../packages/release-foundation/src/digest.mj
 import { planManualR3TargetLocks } from "../../packages/release-foundation/src/manual-r3-target-locks.mjs";
 import { validateContract } from "../../packages/release-foundation/src/schema-registry.mjs";
 import { planR3DatabaseTargets, recheckR3DatabaseTargets } from "./r3-database-targets.mjs";
-import { assessR3PostgresObservation } from "./r3-postgres-observation.mjs";
+import {
+  assessR3PostgresObservation,
+  assessR3FinalPostgresObservation
+} from "./r3-postgres-observation.mjs";
 
 const CODE = "R3_DESTINATION_INVALID";
 const LIMIT = 1048576;
@@ -90,7 +93,7 @@ function selectRow(row) {
   if (row.rows.length) exact(row.rows[0], columns);
 }
 
-export function assessR3PostgresReadback(readback) {
+function assessPostgresReadback(readback, final) {
   try {
     exact(readback, ["resources", "execution", "streamBase64", "completed"]);
     const resources = readback.resources;
@@ -104,9 +107,12 @@ export function assessR3PostgresReadback(readback) {
       "container",
       "network",
       "volume",
-      "postgres"
+      "postgres",
+      ...(final ? ["finalResources", "containerInventory", "imageInventory"] : [])
     ]);
-    const facts = assessR3PostgresObservation(resources);
+    const facts = final
+      ? assessR3FinalPostgresObservation(resources)
+      : assessR3PostgresObservation(resources);
     need(
       readback.execution &&
         typeof readback.execution === "object" &&
@@ -152,6 +158,9 @@ export function assessR3PostgresReadback(readback) {
     fail();
   }
 }
+
+export const assessR3PostgresReadback = (readback) => assessPostgresReadback(readback, false);
+export const assessR3FinalPostgresReadback = (readback) => assessPostgresReadback(readback, true);
 
 export async function buildR3Destination(input) {
   try {

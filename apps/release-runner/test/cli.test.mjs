@@ -7,60 +7,62 @@ import { finalizeRunnerExecution, runCli, runProductionEntrypoint } from "../src
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 
-test("the real migration entrypoint emits only HELLO and fails on closed unauthenticated stdin", () => {
-  const environment = { ...process.env, RUNNER_EXECUTION_MODE: "r3-final-migration" };
-  for (const key of ["RUNNER_LAUNCH_ENVELOPE_FILE", "NODE_TEST_CONTEXT", "NODE_OPTIONS"])
-    delete environment[key];
-  const result = spawnSync(
-    process.execPath,
-    [fileURLToPath(new URL("../src/cli.mjs", import.meta.url))],
-    {
-      env: environment,
-      input: "",
-      encoding: "utf8",
-      timeout: 10000,
-      windowsHide: true
-    }
-  );
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 1);
-  assert.equal(result.signal, null);
-  const lines = result.stdout.trim().split("\n");
-  assert.equal(lines.length, 1);
-  assert.equal(JSON.parse(lines[0]).type, "HELLO");
-  assert.equal(result.stderr.trim(), "R3_FINAL_MIGRATION_CHANNEL_FAILED");
-});
+for (const mode of ["migration", "runtime"])
+  test(`the real ${mode} entrypoint emits only HELLO and fails on closed unauthenticated stdin`, () => {
+    const environment = { ...process.env, RUNNER_EXECUTION_MODE: `r3-final-${mode}` };
+    for (const key of ["RUNNER_LAUNCH_ENVELOPE_FILE", "NODE_TEST_CONTEXT", "NODE_OPTIONS"])
+      delete environment[key];
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("../src/cli.mjs", import.meta.url))],
+      {
+        env: environment,
+        input: "",
+        encoding: "utf8",
+        timeout: 10000,
+        windowsHide: true
+      }
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1);
+    assert.equal(result.signal, null);
+    const lines = result.stdout.trim().split("\n");
+    assert.equal(lines.length, 1);
+    assert.equal(JSON.parse(lines[0]).type, "HELLO");
+    assert.equal(result.stderr.trim(), `R3_FINAL_${mode.toUpperCase()}_CHANNEL_FAILED`);
+  });
 
-test("the final migration mode uses its fixed private channel without legacy adapters", async () => {
-  let calls = 0;
-  const options = {
-    environment: { RUNNER_EXECUTION_MODE: "r3-final-migration" },
-    createAdapters() {
-      assert.fail("legacy adapters are forbidden");
-    },
-    executeTrusted() {
-      assert.fail("legacy envelope execution is forbidden");
-    },
-    executeFinalMigration: async () => {
-      calls++;
-    }
-  };
-  assert.equal(await runProductionEntrypoint(options), undefined);
-  assert.equal(calls, 1);
-  await assert.rejects(
-    () => runProductionEntrypoint({ ...options, argv: ["--input", "other.json"] }),
-    { code: "RUNNER_ENTRYPOINT_OVERRIDE_REJECTED" }
-  );
-  await assert.rejects(
-    () =>
-      runProductionEntrypoint({
-        ...options,
-        environment: { ...options.environment, RUNNER_LAUNCH_ENVELOPE_FILE: "/other.json" }
-      }),
-    { code: "RUNNER_EXECUTION_MODE_REJECTED" }
-  );
-  assert.equal(calls, 1);
-});
+for (const mode of ["migration", "runtime"])
+  test(`the final ${mode} mode uses its fixed private channel without legacy adapters`, async () => {
+    let calls = 0;
+    const options = {
+      environment: { RUNNER_EXECUTION_MODE: `r3-final-${mode}` },
+      createAdapters() {
+        assert.fail("legacy adapters are forbidden");
+      },
+      executeTrusted() {
+        assert.fail("legacy envelope execution is forbidden");
+      },
+      [mode === "runtime" ? "executeFinalRuntime" : "executeFinalMigration"]: async () => {
+        calls++;
+      }
+    };
+    assert.equal(await runProductionEntrypoint(options), undefined);
+    assert.equal(calls, 1);
+    await assert.rejects(
+      () => runProductionEntrypoint({ ...options, argv: ["--input", "other.json"] }),
+      { code: "RUNNER_ENTRYPOINT_OVERRIDE_REJECTED" }
+    );
+    await assert.rejects(
+      () =>
+        runProductionEntrypoint({
+          ...options,
+          environment: { ...options.environment, RUNNER_LAUNCH_ENVELOPE_FILE: "/other.json" }
+        }),
+      { code: "RUNNER_EXECUTION_MODE_REJECTED" }
+    );
+    assert.equal(calls, 1);
+  });
 
 for (const [name, argv, envelope, code] of [
   ["mode alone", [], undefined, "MANUAL_AUTHORIZATION_REQUIRED"],

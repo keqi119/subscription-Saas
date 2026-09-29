@@ -23,7 +23,7 @@ const TMPFS = Object.freeze({
   "/var/lib/postgresql/data": "rw,nosuid,nodev,noexec,size=65536,mode=0700,uid=1000,gid=1000"
 });
 
-export function finalMigrationContainerSpec(identity) {
+function ownedRunnerContainerSpec(identity, role) {
   need(
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
       identity?.operationRef
@@ -31,7 +31,7 @@ export function finalMigrationContainerSpec(identity) {
       /^[0-9a-f]{40}$/u.test(identity.sourceSha) &&
       digest.test(identity.imageDigest) &&
       identity.imageReference === `ghcr.io/keqi119/subscription-runner@${identity.imageDigest}` &&
-      cid.test(identity.runnerContainerId) &&
+      (role === "runtime" || cid.test(identity.runnerContainerId)) &&
       /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/u.test(identity.postgresAddress) &&
       identity.postgresAddress
         .split(".")
@@ -39,7 +39,7 @@ export function finalMigrationContainerSpec(identity) {
   );
   const id = identity.operationRef.replaceAll("-", "");
   return {
-    name: `s1r3migrate_${id}`,
+    name: `s1r3${role === "runtime" ? "runner" : "migrate"}_${id}`,
     body: {
       Image: identity.imageReference,
       User: "1000:1000",
@@ -47,14 +47,14 @@ export function finalMigrationContainerSpec(identity) {
       Entrypoint: ["/usr/local/bin/node", "/app/apps/release-runner/src/cli.mjs"],
       Cmd: [],
       Env: [
-        "RUNNER_EXECUTION_MODE=r3-final-migration",
+        `RUNNER_EXECUTION_MODE=r3-final-${role === "runtime" ? "runtime" : "migration"}`,
         "NODE_ENV=production",
         "HOME=/tmp",
         `PATH=${PATH}`
       ],
       Labels: {
         "com.subscription.release.operation-ref": identity.operationRef,
-        "com.subscription.release.container-role": "migration"
+        "com.subscription.release.container-role": role
       },
       OpenStdin: true,
       StdinOnce: false,
@@ -76,7 +76,17 @@ export function finalMigrationContainerSpec(identity) {
         MemorySwap: 1073741824,
         PidsLimit: 256,
         ExtraHosts: [`postgres:${identity.postgresAddress}`],
-        Tmpfs: { ...TMPFS },
+        Tmpfs: {
+          ...TMPFS,
+          ...(role === "runtime"
+            ? {
+                "/app/.release-local":
+                  "rw,nosuid,nodev,noexec,size=33554432,mode=0700,uid=1000,gid=1000",
+                "/run/launch": "rw,nosuid,nodev,noexec,size=1048576,mode=0700,uid=1000,gid=1000",
+                "/run/secrets": "rw,nosuid,nodev,noexec,size=1048576,mode=0700,uid=1000,gid=1000"
+              }
+            : {})
+        },
         PortBindings: {},
         PublishAllPorts: false,
         LogConfig: { Type: "none", Config: {} }
@@ -84,6 +94,11 @@ export function finalMigrationContainerSpec(identity) {
     }
   };
 }
+
+export const finalMigrationContainerSpec = (identity) =>
+  ownedRunnerContainerSpec(identity, "migration");
+export const finalRuntimeContainerSpec = (identity) =>
+  ownedRunnerContainerSpec(identity, "runtime");
 
 function inspectOwned(value, spec, id, image) {
   need(value?.Id === id && value.Name === `/${spec.name}` && value.Image === image.Id);
@@ -149,12 +164,12 @@ function inspectOwned(value, spec, id, image) {
   );
   need(
     Array.isArray(value.Mounts) &&
-      value.Mounts.length <= 2 &&
+      value.Mounts.length <= Object.keys(spec.body.HostConfig.Tmpfs).length &&
       new Set(value.Mounts.map((m) => m.Destination)).size === value.Mounts.length &&
       value.Mounts.every(
         (m) =>
           m.Type === "tmpfs" &&
-          Object.hasOwn(TMPFS, m.Destination) &&
+          Object.hasOwn(spec.body.HostConfig.Tmpfs, m.Destination) &&
           !m.Source &&
           !m.Name &&
           m.RW === true
@@ -172,7 +187,7 @@ function inspectOwned(value, spec, id, image) {
 // the returned CID held even on partial failure; unregister() is reached only
 // after DELETE and a separate 404 readback. prepare() derives input/credential
 // from that same holder, and assess() must independently check each stage.
-export async function executeR3FinalMigrationContainer({
+async function executeOwnedRunnerContainer({
   identity,
   signal,
   engineCall,
@@ -181,16 +196,27 @@ export async function executeR3FinalMigrationContainer({
   unregister,
   prepare,
   assess,
+  started = async () => {},
+  role,
+  runChannel,
   openAttach = openR3EngineAttach
 }) {
   identity = structuredClone(identity);
-  const spec = finalMigrationContainerSpec(identity);
+  const spec = ownedRunnerContainerSpec(identity, role);
   need(
     signal?.addEventListener &&
       !signal.aborted &&
-      [engineCall, recheck, register, unregister, prepare, assess, openAttach].every(
-        (fn) => typeof fn === "function"
-      )
+      [
+        engineCall,
+        recheck,
+        register,
+        unregister,
+        prepare,
+        assess,
+        started,
+        openAttach,
+        runChannel
+      ].every((fn) => typeof fn === "function")
   );
   const originals = { exchanges: [], deleted: false };
   let id,
@@ -260,10 +286,12 @@ export async function executeR3FinalMigrationContainer({
     );
     prepared = await prepare(id);
     live();
-    const input = prepared?.input;
+    const input = role === "runtime" ? prepared?.input?.envelope : prepared?.input;
     need(
-      input?.migrationContainerId === id &&
-        input.runnerContainerId === identity.runnerContainerId &&
+      (role === "runtime"
+        ? input?.runnerContainerId === id
+        : input?.migrationContainerId === id &&
+          input.runnerContainerId === identity.runnerContainerId) &&
         input.operationId === identity.operationRef &&
         input.sourceSha === identity.sourceSha &&
         input.actualRunnerDigest === identity.imageDigest
@@ -278,18 +306,19 @@ export async function executeR3FinalMigrationContainer({
     await attachment.ready;
     live();
     await call("POST", `/containers/${id}/start`, undefined, 204);
-    const started = await json("GET", `/containers/${id}/json`, undefined, 200);
-    inspectOwned(started, spec, id, image);
+    const running = await json("GET", `/containers/${id}/json`, undefined, 200);
+    inspectOwned(running, spec, id, image);
     need(
-      started.State.Running === true &&
-        Number.isSafeInteger(started.State.Pid) &&
-        started.State.Pid > 0
+      running.State.Running === true &&
+        Number.isSafeInteger(running.State.Pid) &&
+        running.State.Pid > 0
     );
+    await started(id);
     await recheck();
     live();
     // HELLO remains buffered in attach.stdout until this independent running
     // inspection completes. No credential is sent before that boundary.
-    channel = runR3MigrationHostChannel({
+    channel = runChannel({
       ...prepared,
       incoming: attachment.stdout,
       outgoing: attachment.stdin,
@@ -303,7 +332,8 @@ export async function executeR3FinalMigrationContainer({
     });
     channel.catch(() => {});
     const result = await channel;
-    prepared.credential = null;
+    if (role === "migration") prepared.credential = null;
+    else prepared.input.credentials = null;
     originals.channel = result;
     let trailingBytes = 0;
     attachment.stdout.on("data", (bytes) => {
@@ -350,7 +380,10 @@ export async function executeR3FinalMigrationContainer({
     if (cause?.originals) originals.failure = cause.originals;
   } finally {
     controller.abort();
-    if (prepared) prepared.credential = null;
+    if (prepared) {
+      if (role === "migration") prepared.credential = null;
+      else if (prepared.input) prepared.input.credentials = null;
+    }
     try {
       await attachment?.close();
     } catch (cause) {
@@ -380,10 +413,37 @@ export async function executeR3FinalMigrationContainer({
   }
   return Object.freeze({
     containerId: id,
-    results: originals.channel.results,
+    ...(role === "runtime"
+      ? { result: originals.channel.result }
+      : { results: originals.channel.results }),
     transcript: originals.channel.transcript,
     exit: originals.exit,
     deleted: originals.deleted,
     originals
+  });
+}
+
+export const executeR3FinalMigrationContainer = (options) =>
+  executeOwnedRunnerContainer({
+    ...options,
+    role: "migration",
+    runChannel: runR3MigrationHostChannel
+  });
+
+// Same held-CID lifecycle, but prepare(id) finishes ordinary migrations while
+// this runtime is still stopped. Its fixed channel receives runtime credentials
+// only after attach, start and independent running inspection.
+export async function executeR3FinalRuntimeContainer(options) {
+  const { runR3FinalHostChannel } = await import("./r3-final-runtime-channel.mjs");
+  return executeOwnedRunnerContainer({
+    ...options,
+    role: "runtime",
+    runChannel: (channel) =>
+      runR3FinalHostChannel({
+        ...channel,
+        lifecycleAdapter: options.lifecycleAdapter,
+        assessLifecycle: options.assessLifecycle,
+        assessResult: channel.assess
+      })
   });
 }

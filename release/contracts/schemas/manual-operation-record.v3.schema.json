@@ -2,6 +2,50 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "manual-operation-record.v3",
   "$defs": {
+    "cleanupObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "sessionId",
+        "sessionNonce",
+        "ownerId",
+        "scope",
+        "operationRef",
+        "sessionRecordDigest",
+        "sourceExecutionRecordDigest",
+        "sourceResultDigest",
+        "sourceAcknowledgementRecordDigest",
+        "cleanupBundleDigest",
+        "creationEvidenceDigest",
+        "forwardEvidenceDigest",
+        "forwardObservationDigest"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "manual-operation-record.v3" },
+        "kind": { "const": "cleanup-observation" },
+        "profileDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "recordedAt": { "$ref": "manual-operation-record.v2#/$defs/timestamp" },
+        "promotionEligible": { "const": false },
+        "sessionId": { "$ref": "manual-operation-record.v2#/$defs/uuid" },
+        "sessionNonce": { "$ref": "manual-operation-record.v2#/$defs/nonce" },
+        "ownerId": { "$ref": "manual-operation-record.v2#/$defs/label" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "operationRef": { "$ref": "manual-operation-record.v2#/$defs/uuid" },
+        "sessionRecordDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "sourceExecutionRecordDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "sourceResultDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "sourceAcknowledgementRecordDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "cleanupBundleDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "creationEvidenceDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "forwardEvidenceDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "forwardObservationDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" }
+      }
+    },
     "session": {
       "type": "object",
       "additionalProperties": false,
@@ -653,6 +697,7 @@
     }
   },
   "oneOf": [
+    { "$ref": "#/$defs/cleanupObservation" },
     {
       "$ref": "#/$defs/session"
     },

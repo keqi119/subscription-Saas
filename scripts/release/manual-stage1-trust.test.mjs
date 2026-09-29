@@ -19,7 +19,11 @@ import { createBuildProof } from "./create-build-proof.mjs";
 import { produceManualBuildCustody } from "./manual-build-custody-producer.mjs";
 import { assessR3WorkspaceObservation } from "../../packages/release-foundation/src/r3-workspace-observation.mjs";
 import { signR3WorkspaceBinding } from "../../packages/release-foundation/src/r3-workspace-report.mjs";
-import { buildR3HostedEvidence } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
+import {
+  buildR3HostedEvidence,
+  buildR3HostedCleanupEvidence
+} from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
+import { r3CleanupFixture } from "../../packages/release-foundation/test/r3-cleanup-fixture.mjs";
 import { verifyOwnershipMap } from "../../packages/release-foundation/src/snapshot/normalize-ownership.mjs";
 import { publishR3SnapshotFixture } from "../../packages/release-foundation/test/r3-snapshot-input-fixture.mjs";
 import {
@@ -1404,7 +1408,13 @@ test(
 );
 async function r3CreationFixture(
   t,
-  { phase = "source", chain = "snapshot", sourceReadback = false, base = null } = {}
+  {
+    phase = "source",
+    chain = "snapshot",
+    sourceReadback = false,
+    base = null,
+    observedAgoMs = 0
+  } = {}
 ) {
   const f = base ?? (await buildFixture(t, { r3TargetPolicy: true, sourceReadback }));
   const policyBytes = await fs.readFile(
@@ -1425,7 +1435,7 @@ async function r3CreationFixture(
     targetPolicyDigest: sha256Bytes(policyBytes),
     phase,
     chain,
-    createdAt: new Date(Date.now() - 1000).toISOString(),
+    createdAt: new Date(Date.now() - 1000 - observedAgoMs).toISOString(),
     expiresAt: new Date(Date.now() + 3600000).toISOString(),
     workspace: {
       id,
@@ -1583,7 +1593,7 @@ async function r3JobFixture(t, options = {}) {
     chain = f.spec.chain;
   const forwardingKeys = generateKeyPairSync("ed25519");
   const forwarding = forwardingKeys.publicKey;
-  const generated = new Date(Date.now() - 100).toISOString();
+  const generated = new Date(Date.now() - 100 - (options.observedAgoMs ?? 0)).toISOString();
   const ciRunId = options.ciRunId ?? "3801",
     jobId = options.jobId ?? "4801";
   const callerWorkflowPath = ".github/workflows/release-candidate-gate.yml";
@@ -1705,6 +1715,19 @@ test(
     assert.deepEqual(retained.scope, scope);
     assert.equal(retained.sign, undefined);
     await retained.recheck();
+    const latestCleanupAt = new Date(Date.parse(latestExecutionAt) + 1000).toISOString();
+    f.apiJob.completed_at = latestCleanupAt;
+    const cleanupContext = await trust.readTrustedR3HistoricalContext({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef,
+      scope,
+      latestExecutionAt,
+      latestCleanupAt
+    });
+    t.after(() => cleanupContext.close());
+    assert.equal(cleanupContext.latestCleanupAt, latestCleanupAt);
+    f.apiJob.completed_at = latestExecutionAt;
+    await assert.rejects(cleanupContext.recheck(), { code: "R3_HISTORY_CONTEXT_UNAVAILABLE" });
     f.apiJob.completed_at = new Date(Date.parse(latestExecutionAt) - 1000).toISOString();
     await assert.rejects(retained.recheck(), { code: "R3_HISTORY_CONTEXT_UNAVAILABLE" });
     noAuthorityAccess(f);
@@ -2120,6 +2143,37 @@ async function r3WorkspaceFixture(t, state = "active", persist = true, existing 
   };
 }
 
+test("R3 CLEANUP API rejects overrides and accessors before native IO", async (t) => {
+  assert.equal(typeof trust.importR3HostedCleanupEvidence, "function");
+  assert.equal(typeof trust.readFixedR3HostedCleanupEvidence, "function");
+  let effects = 0;
+  const denied = () => {
+    effects++;
+    throw new Error("unexpected cleanup IO or accessor");
+  };
+  for (const name of ["open", "lstat", "readFile", "writeFile"]) t.mock.method(fs, name, denied);
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const selector = { repoRoot: path.resolve("unused"), operationRef: randomUUID() };
+  for (const method of ["importR3HostedCleanupEvidence", "readFixedR3HostedCleanupEvidence"]) {
+    const input = {
+      ...selector,
+      ...(method.startsWith("import") ? { bundleBytes: Buffer.from("{}") } : {})
+    };
+    for (const value of [
+      { ...input, cleanupFile: "/caller/cleanup.json" },
+      { ...input, verified: true },
+      { ...input, operationRef: "../escape" },
+      Object.defineProperty({ ...input }, "operationRef", { get: denied, enumerable: true })
+    ])
+      await assert.rejects(trust[method](value), { code: "R3_HOSTED_CLEANUP_INPUT_UNAVAILABLE" });
+  }
+  assert.equal(effects, 0);
+});
+
 test("R3 WORKSPACE API rejects overrides and accessors before native IO", async (t) => {
   assert.equal(typeof trust.readFixedR3WorkspaceObservation, "function");
   assert.equal(typeof trust.prepareR3HostedEvidenceImport, "function");
@@ -2261,6 +2315,9 @@ test(
       );
       assert.equal((await fs.stat(directory)).mode & 0o777, 0o700);
       assert.deepEqual(await fs.readdir(directory), []);
+      const cleanup = path.join(path.dirname(directory), "cleanup");
+      assert.equal((await fs.stat(cleanup)).mode & 0o777, 0o700);
+      assert.deepEqual(await fs.readdir(cleanup), []);
       const manifest = JSON.parse(
         await fs.readFile(path.join(f.repoRoot, "release/contracts/database-test-manifest.v1.json"))
       );
@@ -2274,6 +2331,82 @@ test(
         assert.deepEqual(await fs.readdir(path.join(sourceDirectory, name)), []);
       }
     }
+  }
+);
+
+test(
+  "R3 CLEANUP imports signed originals and independently rejects changed backup",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const job = await r3JobFixture(t, { phase: "source", chain: "fresh", observedAgoMs: 30000 });
+    const f = await r3WorkspaceFixture(t, "active", false, job);
+    const absent = await r3WorkspaceFixture(t, "absent", false, job);
+    const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    const creationEvidenceBytes = r3HostedBundle(f);
+    const creation = await trust.importR3HostedEvidence({
+      ...input,
+      bundleBytes: creationEvidenceBytes
+    });
+    t.after(() => creation.close());
+    const cleanup = r3CleanupFixture({
+      spec: f.spec,
+      jobAdmissionBytes: f.admissionBytes,
+      creationEvidenceBytes,
+      activeObservation: f.observation,
+      activeRawInputs: f.raw,
+      absentObservation: absent.observation,
+      absentRawInputs: absent.raw,
+      imageDigest: JSON.parse(
+        await fs.readFile(
+          path.join(f.repoRoot, "release/contracts/database-target-policies.v1.json")
+        )
+      ).policies.find((item) => item.policyId === "s1-release-compose-ephemeral")
+        .requiredImageDigest,
+      startedAt: new Date(Date.parse(f.observation.finishedAt) + 1).toISOString()
+    });
+    const bundleBytes = buildR3HostedCleanupEvidence({
+      cleanup,
+      creationEvidenceBytes,
+      jobAdmissionBytes: f.admissionBytes,
+      spec: f.spec,
+      policyBytes: f.policyBytes,
+      privateKey: f.forwardingPrivateKey,
+      now: new Date().toISOString()
+    });
+    const imported = await trust.importR3HostedCleanupEvidence({ ...input, bundleBytes });
+    t.after(() => imported.close());
+    assert.equal(imported.bundleDigest, sha256Bytes(bundleBytes));
+    assert.equal(imported.creationEvidenceDigest, sha256Bytes(creationEvidenceBytes));
+    assert.deepEqual(imported.cleanup.postgres, cleanup.postgres);
+    assert.deepEqual(imported.creationRawBundle, creationEvidenceBytes);
+    assert.deepEqual(imported.jobAdmissionBytes, f.admissionBytes);
+    imported.rawBundle.fill(0);
+    imported.creationRawBundle.fill(0);
+    imported.jobAdmissionBytes.fill(0);
+    imported.policyBytes.fill(0);
+    await creation.recheck();
+    assert.equal((await imported.recheck()).bundleDigest, sha256Bytes(bundleBytes));
+    await assert.rejects(trust.importR3HostedCleanupEvidence({ ...input, bundleBytes }), {
+      code: "R3_HOSTED_CLEANUP_INPUT_UNAVAILABLE"
+    });
+    await imported.recheck();
+    const backup = path.join(
+      f.profile.storage.backupRoot,
+      "inputs",
+      "r3",
+      f.operationRef,
+      "observations",
+      "cleanup",
+      "hosted-cleanup.json"
+    );
+    await fs.writeFile(backup, Buffer.from("changed cleanup backup"));
+    const writes = f.counters.writes;
+    await assert.rejects(imported.recheck(), { code: "R3_HOSTED_CLEANUP_INPUT_UNAVAILABLE" });
+    await assert.rejects(trust.readFixedR3HostedCleanupEvidence(input), {
+      code: "R3_HOSTED_CLEANUP_INPUT_UNAVAILABLE"
+    });
+    assert.equal(f.counters.writes, writes);
+    assert.equal(f.counters.privateKeyReads, 0);
   }
 );
 
@@ -3016,6 +3149,8 @@ test("R3 HISTORY CONTEXT API rejects authority overrides before native IO", asyn
     { ...input, verified: true },
     { ...input, io: {} },
     { ...input, scope: { ...input.scope, approved: true } },
+    { ...input, latestCleanupAt: "invalid-time" },
+    Object.defineProperty({ ...input }, "latestCleanupAt", { get: denied, enumerable: true }),
     Object.defineProperty({ ...input }, "scope", { get: denied, enumerable: true })
   ])
     await assert.rejects(production().readTrustedR3HistoricalContext(value), {
@@ -3145,6 +3280,84 @@ async function r3SessionFixture(t, options = { phase: "source", chain: "fresh" }
   });
   return { ...f, keyPath };
 }
+
+test(
+  "R3 SESSION failed post-cleanup trust recheck uses incomplete close",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3SessionFixture(t);
+    const foundation = await import("../../packages/release-foundation/src/index.mjs");
+    let normalCloses = 0,
+      incompleteCloses = 0,
+      failRecheck = true;
+    const replacement = t.mock.module("../../packages/release-foundation/src/index.mjs", {
+      namedExports: {
+        ...foundation,
+        async openManualSession({ profile, ownerObservation }) {
+          return Object.freeze({
+            profileDigest: sha256Canonical(profile),
+            sessionId: randomUUID(),
+            sessionNonce: randomUUID(),
+            scope: ownerObservation.scope,
+            ...Object.fromEntries(
+              [
+                "sign",
+                "consume",
+                "holdTargets",
+                "completeCreation",
+                "registerLifecycleTarget",
+                "completeSnapshot",
+                "assertCandidateUse",
+                "verifySourceOriginals",
+                "custodySourceOriginals",
+                "completeSource",
+                "acknowledgeSource",
+                "record"
+              ].map((name) => [name, async () => {}])
+            ),
+            async completeCleanup() {
+              if (failRecheck) {
+                f.apiJob.status = "completed";
+                f.apiJob.conclusion = "success";
+                f.apiJob.completed_at = new Date().toISOString();
+              }
+              return { cleanupObservationRecordDigest: `sha256:${"a".repeat(64)}` };
+            },
+            async close() {
+              normalCloses++;
+            },
+            async closeIncomplete() {
+              incompleteCloses++;
+            }
+          });
+        }
+      }
+    });
+    t.after(() => replacement.restore());
+    const native = await import("./manual-stage1-trust.mjs?cleanup-failed-recheck");
+    const held = await native.openTrustedR3CreationSession({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef
+    });
+    await assert.rejects(held.completeCleanup(), { code: "R3_CREATION_SESSION_UNAVAILABLE" });
+    assert.equal(incompleteCloses, 1);
+    assert.equal(normalCloses, 0);
+    await held.close();
+    assert.equal(normalCloses, 0);
+    failRecheck = false;
+    f.apiJob.status = "in_progress";
+    f.apiJob.conclusion = null;
+    f.apiJob.completed_at = null;
+    const normal = await native.openTrustedR3CreationSession({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef
+    });
+    await normal.completeCleanup();
+    await normal.close();
+    assert.equal(normalCloses, 1, "a prior action result must not become a close option");
+    assert.equal(incompleteCloses, 1);
+  }
+);
 
 test("R3 LAUNCH API exposes only the fixed native entry", async () => {
   const { launchR3TargetCreate } = await import("./launch-manual-stage1.mjs");
@@ -3295,18 +3508,27 @@ test(
   }
 );
 
-for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-locks"]) {
+for (const mode of [
+  "accepted",
+  "dropped",
+  "evidence",
+  "closing",
+  "lifecycle-locks",
+  "cleanup-locks"
+]) {
   const dropped = mode === "dropped",
     evidenceOnly = mode === "evidence",
-    closingRestore = mode === "closing";
+    closingRestore = mode === "closing",
+    cleanupMode = mode === "cleanup-locks",
+    sourceMode = mode === "lifecycle-locks" || cleanupMode;
   test(
-    `R3 LAUNCH ${mode === "lifecycle-locks" ? "retains lifecycle locks and completes the source terminal with private custody" : closingRestore ? "drains current restore cleanup before closing its transport" : evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
+    `R3 LAUNCH ${cleanupMode ? "closes verified cleanup and releases only shared slots" : mode === "lifecycle-locks" ? "retains lifecycle locks and completes the source terminal with private custody" : closingRestore ? "drains current restore cleanup before closing its transport" : evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
     { skip: process.platform !== "linux" },
     async (t) => {
       const f = await r3ForwardFixture(t, {
         phase: "source",
         chain: mode === "accepted" || closingRestore ? "snapshot" : "fresh",
-        sourceReadback: mode === "lifecycle-locks"
+        sourceReadback: sourceMode
       });
       const imageDigest = JSON.parse(
         await fs.readFile(
@@ -3944,8 +4166,20 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
           }
         });
       }
-      let capturedTrustedSession;
-      if (mode === "lifecycle-locks") {
+      let capturedTrustedSession, capturedForwardLease;
+      if (cleanupMode) {
+        const forwardModule = await import("./r3-h1-forward-lease.mjs");
+        t.mock.module("./r3-h1-forward-lease.mjs", {
+          namedExports: {
+            ...forwardModule,
+            async openR3H1ForwardLease(input) {
+              capturedForwardLease = await forwardModule.openR3H1ForwardLease(input);
+              return capturedForwardLease;
+            }
+          }
+        });
+      }
+      if (sourceMode) {
         t.mock.module("./manual-stage1-trust.mjs", {
           namedExports: {
             ...trust,
@@ -4191,6 +4425,11 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
         assert.equal(typeof launched.completeSnapshot, "function");
         assert.equal(typeof launched.runSourceManifest, "function");
         assert.equal(typeof launched.acknowledgeSource, "function");
+        assert.equal(typeof launched.completeCleanup, "function");
+        assert.equal(typeof launched.importHostedCleanupEvidence, "function");
+        await assert.rejects(launched.completeCleanup({ verified: true }));
+        await assert.rejects(launched.completeCleanup());
+        await assert.rejects(launched.importHostedCleanupEvidence(Buffer.from("{}")));
         await assert.rejects(launched.acknowledgeSource({ approved: true }));
         await assert.rejects(launched.acknowledgeSource());
         await assert.rejects(launched.runSourceManifest());
@@ -4373,7 +4612,7 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
           ].sort()
         );
         await assert.rejects(launched.completeCreation());
-        if (mode === "lifecycle-locks") {
+        if (sourceMode) {
           assert.ok(capturedTrustedSession);
           assert.deepEqual(Object.keys(launched.session).sort(), [
             "profileDigest",
@@ -4621,6 +4860,7 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
           });
           t.after(() => sourceMock.restore());
           const sourceCustody = await capturedTrustedSession.custodySourceOriginals();
+          if (cleanupMode) releaseMockHistory();
           assert.equal(sourceCustody.custodyRecordDigests.length, 78);
           assert.deepEqual(sourceCustody.originals, syntheticVerified.originals);
           for (const digest of sourceCustody.custodyRecordDigests) {
@@ -4632,6 +4872,7 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
             );
           }
           const sourceTerminal = await capturedTrustedSession.completeSource();
+          if (cleanupMode) releaseMockHistory();
           assert.equal(sourceTerminal.custodyRecordDigests.length, 2);
           assert.equal(sourceTerminal.processEvidenceDigest, syntheticVerified.readbackDigest);
           assert.match(sourceTerminal.resultDigest, /^sha256:[0-9a-f]{64}$/u);
@@ -4697,6 +4938,7 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
           const acknowledged = await capturedTrustedSession.acknowledgeSource({
             executionRecordDigest: sourceTerminal.executionRecordDigest
           });
+          if (cleanupMode) releaseMockHistory();
           assert.equal(acknowledged.executionRecordDigest, sourceTerminal.executionRecordDigest);
           assert.equal(acknowledged.resultDigest, sourceTerminal.resultDigest);
           assert.equal(acknowledged.promotionEligible, false);
@@ -4721,6 +4963,92 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
           assert.deepEqual(await fs.readFile(backupAcknowledgement), acknowledgementBytes);
           assert.deepEqual(await capturedTrustedSession.verifySourceOriginals(), syntheticVerified);
           assert.equal((await fs.readdir(lockRoot)).length, 43);
+          if (cleanupMode) {
+            const absent = await r3WorkspaceFixture(t, "absent", false, f);
+            const cleanup = r3CleanupFixture({
+              spec: f.spec,
+              jobAdmissionBytes: f.admissionBytes,
+              creationEvidenceBytes: hostedBundle,
+              activeObservation: source.observation,
+              activeRawInputs: source.raw,
+              absentObservation: absent.observation,
+              absentRawInputs: absent.raw,
+              imageDigest,
+              startedAt: acknowledgement.recordedAt
+            });
+            // The existing fixture uses a different bridge address from the
+            // codec fixture; bind the raw reports to this actual test target.
+            cleanup.rawInputs["before.container"] = Buffer.from(JSON.stringify(container) + "\n");
+            cleanup.rawInputs["before.network"] = Buffer.from(JSON.stringify(network) + "\n");
+            cleanup.postgres = Object.fromEntries(
+              Object.keys(cleanup.postgres).map((name) => [name, destination.postgres[name]])
+            );
+            t.mock.timers.enable({
+              apis: ["Date"],
+              now: Math.max(Date.now(), Date.parse(cleanup.finishedAt) + 1000)
+            });
+            t.after(() => t.mock.timers.reset());
+            const bundleBytes = buildR3HostedCleanupEvidence({
+              cleanup,
+              creationEvidenceBytes: hostedBundle,
+              jobAdmissionBytes: f.admissionBytes,
+              spec: f.spec,
+              policyBytes: source.policyBytes,
+              privateKey: f.forwardingPrivateKey,
+              now: new Date().toISOString()
+            });
+            const imported = await trust.importR3HostedCleanupEvidence({ ...input, bundleBytes });
+            await imported.close();
+            await capturedForwardLease.close();
+            await new Promise((resolve) => {
+              server.closeAllConnections();
+              server.close(resolve);
+            });
+            releaseMockHistory();
+            const cleanupReceipt = await capturedTrustedSession.completeCleanup();
+            assert.equal(cleanupReceipt.cleanupBundleDigest, sha256Bytes(bundleBytes));
+            assert.equal(cleanupReceipt.creationEvidenceDigest, sha256Bytes(hostedBundle));
+            assert.equal(
+              cleanupReceipt.sourceExecutionRecordDigest,
+              sourceTerminal.executionRecordDigest
+            );
+            assert.equal(
+              cleanupReceipt.sourceAcknowledgementRecordDigest,
+              acknowledged.acknowledgementRecordDigest
+            );
+            assert.equal(cleanupReceipt.custodyRecordDigests.length, 8);
+            const cleanupName = `${cleanupReceipt.cleanupObservationRecordDigest.slice(7)}.json`;
+            const cleanupBytes = await fs.readFile(path.join(archiveObjects, cleanupName));
+            assert.deepEqual(
+              await fs.readFile(path.join(f.profile.storage.backupRoot, "objects", cleanupName)),
+              cleanupBytes
+            );
+            assert.equal(
+              (await fs.readdir(lockRoot)).length,
+              43,
+              "completion itself never releases locks"
+            );
+            releaseMockHistory();
+            await capturedTrustedSession.close();
+            assert.equal((await fs.readdir(lockRoot)).length, 41);
+            for (const name of await fs.readdir(lockRoot))
+              assert.ok(initialLocks.includes(name) || afterLocks.includes(name));
+            const sessions = (
+              await Promise.all(
+                (await fs.readdir(journalObjects)).map(async (name) =>
+                  JSON.parse(await fs.readFile(path.join(journalObjects, name)))
+                )
+              )
+            ).filter(
+              (row) => row.kind === "session" && row.sessionId === launched.session.sessionId
+            );
+            assert.equal(sessions.filter((row) => row.status === "CLOSED").length, 1);
+            assert.equal(JSON.parse(await fs.readFile(initialPath)).status, "INTERRUPTED_UNKNOWN");
+            await assert.rejects(capturedTrustedSession.completeCleanup());
+            await launched.close();
+            assert.equal((await fs.readdir(lockRoot)).length, 41);
+            return;
+          }
           await fs.unlink(backupAcknowledgement);
           try {
             await assert.rejects(capturedTrustedSession.verifySourceOriginals(), {

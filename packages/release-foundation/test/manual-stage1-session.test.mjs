@@ -12,6 +12,7 @@ import { openManualSession } from "../src/manual-stage1-session.mjs";
 import * as manualSessions from "../src/manual-stage1-session.mjs";
 import { deterministicPlanDigest } from "../src/proof-builders.mjs";
 import { assessManualRunnerEvidence } from "../src/manual-runner-evidence.mjs";
+import { validateContract } from "../src/schema-registry.mjs";
 
 // Private offline artifact factories follow the approved E fixtures. They only
 // construct bytes; the session tests below persist and reopen every original.
@@ -3201,6 +3202,134 @@ function r3CreationFixture(f) {
   return { scope, creationSpec, jobAdmission };
 }
 
+test("R3 cleanup observation is a closed schema distinct from execution and ACK", () => {
+  const value = {
+    schemaVersion: "manual-operation-record.v3",
+    kind: "cleanup-observation",
+    profileDigest: D,
+    recordedAt: NOW,
+    promotionEligible: false,
+    sessionId: uuid(3),
+    sessionNonce: "b".repeat(64),
+    ownerId: "test-owner",
+    scope: {
+      targetPolicyDigest: D,
+      creationSpecDigest: D,
+      jobAdmissionDigest: D,
+      buildProofDigest: D,
+      sourceSha: "a".repeat(40),
+      phase: "source",
+      chain: "fresh"
+    },
+    operationRef: uuid(701),
+    sessionRecordDigest: D,
+    sourceExecutionRecordDigest: D,
+    sourceResultDigest: D,
+    sourceAcknowledgementRecordDigest: D,
+    cleanupBundleDigest: D,
+    creationEvidenceDigest: D,
+    forwardEvidenceDigest: D,
+    forwardObservationDigest: D
+  };
+  assert.doesNotThrow(() => validateContract("manual-operation-record.v3", value));
+  for (const change of [
+    { kind: "execution" },
+    { kind: "custody", purpose: "owner-acknowledgement" },
+    { verified: true },
+    { cleanupBundleDigest: null },
+    { promotionEligible: true }
+  ])
+    assert.throws(() => validateContract("manual-operation-record.v3", { ...value, ...change }));
+  for (const field of [
+    "sessionRecordDigest",
+    "sourceAcknowledgementRecordDigest",
+    "forwardEvidenceDigest"
+  ])
+    assert.throws(() =>
+      validateContract(
+        "manual-operation-record.v3",
+        Object.fromEntries(Object.entries(value).filter(([key]) => key !== field))
+      )
+    );
+});
+
+test("R3 cleanup completion rejects supplied proofs and incomplete source without writes", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const session = await r3CreationSession(t, f);
+  assert.equal(typeof session.completeCleanup, "function");
+  const before = await f.records("session");
+  await assert.rejects(session.completeCleanup({ verified: true }), {
+    code: "MANUAL_SESSION_UNVERIFIED"
+  });
+  await assert.rejects(session.completeCleanup(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  assert.deepEqual(await f.records("session"), before);
+  assert.equal((await f.records("cleanup-observation")).length, 0);
+});
+
+test("R3 rejects orphan cleanup originals even without legacy R2 history", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const session = await r3CreationSession(t, f);
+  await f.put({
+    schemaVersion: "manual-r3-forward-shutdown-evidence.v1",
+    observation: { status: "OBSERVED" },
+    rawInputs: {}
+  });
+  const request = await r3CreationRequest(f, session);
+  await assert.rejects(session.sign(request), { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" });
+  assert.equal((await f.records("consumption")).length, 0);
+});
+
+test("R3 cleanup graph leaves raw custody to source verification and still rejects orphan bundles", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const session = await r3CreationSession(t, f);
+  const bytes = Buffer.from("retained source process output\n");
+  const digest = sha256Bytes(bytes);
+  // Source custody may reference retained raw bytes instead of a JSON graph
+  // object. Its source proof owns semantic verification; cleanup adds no new
+  // admission for it and must not demand a JSON object with the same digest.
+  for (const role of ["archive", "backup"]) {
+    const rawDirectory = path.join(f.profile.storage[`${role}Root`], "raw");
+    await fs.mkdir(rawDirectory, { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(rawDirectory, `${digest.slice(7)}.bin`), bytes, { mode: 0o600 });
+    const custody = {
+      schemaVersion: "manual-operation-record.v3",
+      kind: "custody",
+      profileDigest: session.profileDigest,
+      recordedAt: NOW,
+      promotionEligible: false,
+      ownerId: f.profile.ownerId,
+      subjectDigest: digest,
+      subjectType: "record",
+      purpose: `${role}-readback`,
+      outcome: "MATCH",
+      observedDigest: digest,
+      observedAt: NOW,
+      storageRole: role,
+      retentionDays: 90,
+      reasonCode: null
+    };
+    for (const copy of ["archive", "backup"]) await f.put(custody, copy);
+  }
+  const request = await r3CreationRequest(f, session);
+  await assert.doesNotReject(session.sign(request));
+  for (const schemaVersion of [
+    "manual-r3-hosted-cleanup.v1",
+    "manual-r3-hosted-evidence.v1",
+    "manual-r3-forward-shutdown-evidence.v1"
+  ]) {
+    const orphan = { schemaVersion };
+    await f.put(orphan);
+    await assert.rejects(session.sign(request), { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" });
+    await fs.unlink(
+      path.join(
+        f.profile.storage.archiveRoot,
+        "objects",
+        `${sha256Canonical(orphan).slice(7)}.json`
+      )
+    );
+  }
+});
+
 async function r3CreationSession(t, f, context = r3CreationFixture(f), clock = { value: NOW }) {
   const session = await openManualSession({
     profile: f.profile,
@@ -3305,6 +3434,8 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
       "custodySourceOriginals",
       "completeSource",
       "acknowledgeSource",
+      "completeCleanup",
+      "closeIncomplete",
       "record",
       "close"
     ].sort()
@@ -3379,6 +3510,10 @@ test("R3 creation rejects mismatched fixed scope before writing OPEN", async (t)
 test("R3 creation UNKNOWN blocks a new operation and slot reacquisition", async (t) => {
   const f = await fixture(t, { profileVersion: "v2" });
   const session = await r3CreationSession(t, f);
+  assert.equal(typeof session.closeIncomplete, "function");
+  await assert.rejects(session.closeIncomplete({ release: true }), {
+    code: "MANUAL_SESSION_UNVERIFIED"
+  });
   const request = await r3CreationRequest(f, session);
   const authorization = await session.sign(request);
   await session.consume({ authorization, request });
@@ -3386,7 +3521,17 @@ test("R3 creation UNKNOWN blocks a new operation and slot reacquisition", async 
     session.sign(await r3CreationRequest(f, session, { operationId: uuid(702) })),
     { code: "MANUAL_BINDING_MISMATCH" }
   );
-  await session.close();
+  const lockDirectory = path.join(f.profile.storage.journalRoot, "locks");
+  const locks = await fs.readdir(lockDirectory);
+  assert.equal(locks.length, 2);
+  const closed = await session.closeIncomplete();
+  assert.deepEqual(await session.close(), closed);
+  assert.deepEqual(await fs.readdir(lockDirectory), locks);
+  assert.equal(
+    (await f.records("session")).find((value) => sha256Canonical(value) === closed.recordDigest)
+      .status,
+    "INTERRUPTED_UNKNOWN"
+  );
   await assert.rejects(r3CreationSession(t, f), { code: "MANUAL_SESSION_UNVERIFIED" });
 });
 

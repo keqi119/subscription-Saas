@@ -19,7 +19,10 @@ import {
   verifyR3WorkspaceBinding,
   assessR3WorkspaceReport
 } from "../../packages/release-foundation/src/r3-workspace-report.mjs";
-import { verifyR3HostedEvidence } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
+import {
+  verifyR3HostedEvidence,
+  verifyR3HostedCleanupEvidence
+} from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
 
 const LIMIT = 1048576;
 const H1 = "H1_INPUT_UNAVAILABLE";
@@ -1697,7 +1700,12 @@ export async function readTrustedR3HistoricalContext(input) {
     return closing;
   };
   try {
-    const { repoRoot, operationRef } = r3EvidenceSelector(input, ["scope", "latestExecutionAt"]);
+    const hasCleanup = input && Object.hasOwn(input, "latestCleanupAt");
+    const { repoRoot, operationRef } = r3EvidenceSelector(input, [
+      "scope",
+      "latestExecutionAt",
+      ...(hasCleanup ? ["latestCleanupAt"] : [])
+    ]);
     exact(input.scope, [
       "targetPolicyDigest",
       "creationSpecDigest",
@@ -1717,10 +1725,12 @@ export async function readTrustedR3HistoricalContext(input) {
         ["fresh", "snapshot"].includes(input.scope.chain)
     );
     instant(input.latestExecutionAt);
+    if (hasCleanup) instant(input.latestCleanupAt);
     const boundContext = freeze({
       operationRef,
       scope: { ...input.scope },
-      latestExecutionAt: input.latestExecutionAt
+      latestExecutionAt: input.latestExecutionAt,
+      ...(hasCleanup ? { latestCleanupAt: input.latestCleanupAt } : {})
     });
     const profile = await loadManualProfile({ repoRoot }, false),
       profileDigest = sha256Canonical(profile),
@@ -1788,6 +1798,9 @@ export async function readTrustedR3HistoricalContext(input) {
         policy: policyInput.policy
       });
       const latestExecutionAt = instant(context.latestExecutionAt);
+      const latestHostedAt = hasCleanup
+        ? Math.max(latestExecutionAt, instant(context.latestCleanupAt))
+        : latestExecutionAt;
       requireThat(
         instant(profile.validFrom) <= instant(spec.createdAt) &&
           instant(spec.createdAt) <= instant(admission.generatedAt) &&
@@ -1795,7 +1808,9 @@ export async function readTrustedR3HistoricalContext(input) {
           latestExecutionAt < instant(admission.expiresAt) &&
           instant(admission.expiresAt) <= instant(spec.expiresAt) &&
           instant(spec.expiresAt) <= instant(profile.expiresAt) &&
-          latestExecutionAt <= Date.now()
+          latestHostedAt < instant(admission.expiresAt) &&
+          (!hasCleanup || latestExecutionAt <= instant(context.latestCleanupAt)) &&
+          latestHostedAt <= Date.now()
       );
       const ci = admission.ci,
         attestationBytes = await processOutput(
@@ -1811,7 +1826,7 @@ export async function readTrustedR3HistoricalContext(input) {
           { signer: ci.workflowPath, caller: ci.callerWorkflowPath, repositoryId: ci.repositoryId }
         );
       requireThat(verified.workflowRunId === ci.runId);
-      jobs.push({ admission, latestExecutionAt });
+      jobs.push({ admission, latestHostedAt });
     }
     const api = (endpoint) => processOutput("gh", ["api", endpoint], { env: environment });
     const recheck = async () => {
@@ -1822,7 +1837,7 @@ export async function readTrustedR3HistoricalContext(input) {
           sha256Canonical(await loadManualProfile({ repoRoot }, false)) === profileDigest
         );
         for (const policy of policies.values()) await policy.recheck();
-        for (const { admission, latestExecutionAt } of jobs) {
+        for (const { admission, latestHostedAt } of jobs) {
           const ci = admission.ci,
             run = json(await api(`repos/${REPOSITORY}/actions/runs/${ci.runId}/attempts/1`)),
             job = json(await api(`repos/${REPOSITORY}/actions/jobs/${ci.jobId}`));
@@ -1846,7 +1861,7 @@ export async function readTrustedR3HistoricalContext(input) {
             const precision = job.completed_at.includes(".") ? 0 : 999;
             requireThat(
               Number.isFinite(completedAt) &&
-                latestExecutionAt <= completedAt + precision &&
+                latestHostedAt <= completedAt + precision &&
                 completedAt <= Date.now()
             );
           }
@@ -1864,6 +1879,7 @@ export async function readTrustedR3HistoricalContext(input) {
       operationRef,
       scope: boundContext.scope,
       latestExecutionAt: boundContext.latestExecutionAt,
+      ...(hasCleanup ? { latestCleanupAt: boundContext.latestCleanupAt } : {}),
       recheck,
       close
     });
@@ -1933,7 +1949,10 @@ export async function readTrustedR3SourceCompletion(input) {
         repoRoot,
         operationRef: context.operationRef,
         scope: context.scope,
-        latestExecutionAt: context.latestExecutionAt
+        latestExecutionAt: context.latestExecutionAt,
+        ...(Object.hasOwn(context, "latestCleanupAt")
+          ? { latestCleanupAt: context.latestCleanupAt }
+          : {})
       });
       contexts.push(held);
       requireThat(held.profileDigest === profileDigest && equal(held.scope, context.scope));
@@ -2219,7 +2238,7 @@ export async function prepareR3HostedEvidenceImport(input) {
             .stat.isDirectory()
         );
       }
-      for (const state of ["active", "absent", "lifecycle", "source"]) {
+      for (const state of ["active", "absent", "lifecycle", "source", "cleanup"]) {
         const leaf = path.join(directory, state);
         try {
           await fs.mkdir(leaf, { mode: 0o700 });
@@ -2465,6 +2484,8 @@ export async function readFixedR3HostedEvidence(input) {
       spec: workspace.spec,
       jobAdmissionDigest: workspace.jobAdmissionDigest,
       rawBundle: Buffer.from(bundle.bytes),
+      jobAdmissionBytes: Buffer.from(workspace.jobReadback.rawInputs.admission),
+      policyBytes: Buffer.from(workspace.rawInputs.policy),
       promotionEligible: false,
       recheck,
       close
@@ -2472,6 +2493,181 @@ export async function readFixedR3HostedEvidence(input) {
   } catch {
     await close();
     fail(code);
+  }
+}
+
+// Retained active reports identify the original owned workspace; this readback
+// does not require that the cleaned workspace or its Engine still exists.
+export async function readFixedR3HostedCleanupEvidence(input) {
+  const code = "R3_HOSTED_CLEANUP_INPUT_UNAVAILABLE";
+  let creation,
+    bundle,
+    backup,
+    closed = false,
+    closing;
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    closing = (async () => {
+      const outcomes = await Promise.allSettled([
+        creation?.close(),
+        bundle?.close(),
+        backup?.close()
+      ]);
+      if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
+    })();
+    return closing;
+  };
+  try {
+    const selector = r3EvidenceSelector(input);
+    creation = await readFixedR3HostedEvidence(selector);
+    const profile = await loadFixedManualProfile({ repoRoot: selector.repoRoot });
+    const { principal } = await actualHost();
+    const read = (storageRoot) =>
+      openInput(
+        path.join(
+          r3EvidenceRoot(storageRoot, selector.operationRef, "cleanup"),
+          "hosted-cleanup.json"
+        ),
+        { principal, privateRoot: storageRoot }
+      );
+    bundle = await read(profile.storage.archiveRoot);
+    backup = await read(profile.storage.backupRoot);
+    const assess = () => {
+      requireThat(bundle.bytes.equals(backup.bytes));
+      return verifyR3HostedCleanupEvidence({
+        bundleBytes: bundle.bytes,
+        creationEvidenceBytes: creation.rawBundle,
+        jobAdmissionBytes: creation.jobAdmissionBytes,
+        spec: creation.spec,
+        policyBytes: creation.policyBytes,
+        now: new Date().toISOString()
+      });
+    };
+    const recheck = async () => {
+      try {
+        requireThat(!closed);
+        await creation.recheck();
+        await bundle.recheck();
+        await backup.recheck();
+        return assess();
+      } catch {
+        await close();
+        fail(code);
+      }
+    };
+    const verified = await recheck();
+    return Object.freeze({
+      ...verified,
+      spec: creation.spec,
+      jobAdmissionDigest: creation.jobAdmissionDigest,
+      rawBundle: Buffer.from(bundle.bytes),
+      creationRawBundle: Buffer.from(creation.rawBundle),
+      jobAdmissionBytes: Buffer.from(creation.jobAdmissionBytes),
+      policyBytes: Buffer.from(creation.policyBytes),
+      promotionEligible: false,
+      recheck,
+      close
+    });
+  } catch {
+    await close();
+    fail(code);
+  }
+}
+
+// One import attempt, backup first, at reserved fixed paths. These untrusted
+// bytes never grant cleanup success or release a session's locks by themselves.
+export async function importR3HostedCleanupEvidence(input) {
+  const code = "R3_HOSTED_CLEANUP_INPUT_UNAVAILABLE";
+  let creation;
+  try {
+    const selector = r3EvidenceSelector(input, ["bundleBytes"]);
+    requireThat(
+      Buffer.isBuffer(input.bundleBytes) &&
+        input.bundleBytes.length > 0 &&
+        input.bundleBytes.length <= LIMIT
+    );
+    const bytes = Buffer.from(input.bundleBytes);
+    creation = await readFixedR3HostedEvidence(selector);
+    const verified = verifyR3HostedCleanupEvidence({
+      bundleBytes: bytes,
+      creationEvidenceBytes: creation.rawBundle,
+      jobAdmissionBytes: creation.jobAdmissionBytes,
+      spec: creation.spec,
+      policyBytes: creation.policyBytes,
+      now: new Date().toISOString()
+    });
+    const profile = await loadFixedManualProfile({ repoRoot: selector.repoRoot });
+    const { principal } = await actualHost();
+    const directories = [];
+    for (const storageRoot of [profile.storage.archiveRoot, profile.storage.backupRoot]) {
+      const directory = r3EvidenceRoot(storageRoot, selector.operationRef, "cleanup");
+      const options = { principal, privateRoot: storageRoot };
+      const stat = (await checkedPath(directory, options)).at(-1).stat;
+      requireThat(stat.isDirectory());
+      directories.push({ directory, options, stat });
+    }
+    const check = async () => {
+      await creation.recheck();
+      for (const item of directories) {
+        const observed = (await checkedPath(item.directory, item.options)).at(-1).stat;
+        requireThat(observed.isDirectory() && sameIdentity(item.stat, observed, false));
+      }
+    };
+    const write = async (item, name, content) => {
+      await check();
+      const file = path.join(item.directory, name);
+      const handle = await fs.open(
+        file,
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_EXCL |
+          constants.O_NOFOLLOW |
+          constants.O_CLOEXEC,
+        0o600
+      );
+      try {
+        await handle.writeFile(content);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      const readback = await openInput(file, item.options);
+      try {
+        requireThat(readback.bytes.equals(content));
+        await readback.recheck();
+      } finally {
+        await readback.close();
+      }
+      const directory = await fs.open(item.directory, "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+      await check();
+    };
+    await write(
+      directories[0],
+      "import-started.json",
+      encodeManualJson({
+        operationRef: selector.operationRef,
+        bundleDigest: verified.bundleDigest,
+        creationEvidenceDigest: verified.creationEvidenceDigest,
+        jobAdmissionDigest: creation.jobAdmissionDigest,
+        startedAt: new Date().toISOString(),
+        promotionEligible: false
+      })
+    );
+    await write(directories[1], "hosted-cleanup.json", bytes);
+    await write(directories[0], "hosted-cleanup.json", bytes);
+    await creation.close();
+    creation = null;
+    return await readFixedR3HostedCleanupEvidence(selector);
+  } catch {
+    fail(code);
+  } finally {
+    await creation?.close();
   }
 }
 
@@ -2486,15 +2682,30 @@ export async function openTrustedR3CreationSession(input) {
     closed = false,
     closing,
     queue = Promise.resolve();
-  const finish = () => {
+  const finish = (preserveLocks = false) => {
     if (closing) return closing;
     closed = true;
     closing = (async () => {
-      const outcomes = await Promise.allSettled([
-        ...(session ? [session.close()] : []),
-        ...(policyInput ? [policyInput.close()] : []),
-        ...(fixed ? [fixed.close()] : [])
-      ]);
+      const outcomes = [];
+      // Failure teardown cannot reuse a previously established cleanup receipt
+      // to release locks after the outer current-trust checks have failed.
+      if (session) {
+        if (!preserveLocks) {
+          try {
+            await fixed.recheck();
+            await policyInput?.recheck();
+          } catch (reason) {
+            preserveLocks = true;
+            outcomes.push({ status: "rejected", reason });
+          }
+        }
+        outcomes.push(
+          ...(await Promise.allSettled([
+            preserveLocks ? session.closeIncomplete() : session.close()
+          ]))
+        );
+      }
+      outcomes.push(...(await Promise.allSettled([policyInput?.close(), fixed?.close()])));
       if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
       return outcomes[0]?.value;
     })();
@@ -2608,6 +2819,8 @@ export async function openTrustedR3CreationSession(input) {
       "custodySourceOriginals",
       "completeSource",
       "acknowledgeSource",
+      "completeCleanup",
+      "closeIncomplete",
       "record",
       "close"
     ]);
@@ -2623,7 +2836,7 @@ export async function openTrustedR3CreationSession(input) {
         } catch (error) {
           // The local session must retain consumed UNKNOWN locks even when the
           // hosted job has ended. Cleanup never depends on a live-job recheck.
-          await finish().catch(() => {});
+          await finish(true).catch(() => {});
           throw error;
         }
       });
@@ -2643,11 +2856,17 @@ export async function openTrustedR3CreationSession(input) {
       custodySourceOriginals: (...args) => action("custodySourceOriginals", args),
       completeSource: (...args) => action("completeSource", args),
       acknowledgeSource: (...args) => action("acknowledgeSource", args),
+      completeCleanup: (...args) => action("completeCleanup", args),
       record: (kind, value) => action("record", [kind, value]),
-      close: () => serial(finish)
+      closeIncomplete: (...args) =>
+        serial(() => {
+          requireThat(args.length === 0, code);
+          return finish(true);
+        }),
+      close: () => serial(() => finish())
     });
   } catch {
-    await finish().catch(() => {});
+    await finish(true).catch(() => {});
     fail(code);
   }
 }

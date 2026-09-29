@@ -37,7 +37,7 @@ import { deterministicPlanDigest } from "./proof-builders.mjs";
 import { planManualR3TargetLocks } from "./manual-r3-target-locks.mjs";
 import { readManualRevocationHistory } from "./manual-revocation-history.mjs";
 import { suiteDatabaseName } from "./database-target.mjs";
-import { verifyR3HostedEvidence } from "./r3-hosted-evidence.mjs";
+import { verifyR3HostedEvidence, verifyR3HostedCleanupEvidence } from "./r3-hosted-evidence.mjs";
 import { buildR3SnapshotConsumerResult } from "./r3-snapshot-consumer-result.mjs";
 import {
   classifyDatabaseTests,
@@ -338,7 +338,9 @@ function historyAccumulator() {
   return {
     r3Originals: { artifacts: new Set(), raws: new Set() },
     r3Validated: new Set(),
-    r3Acknowledgements: new Set()
+    r3Acknowledgements: new Set(),
+    r3Cleanups: new Set(),
+    r3CleanupCustody: new Set()
   };
 }
 
@@ -450,6 +452,8 @@ function createManualHistoryVerifier(runtime) {
         validateContract("manual-operation-record.v3", value);
         requireThat(
           ["session", "custody"].includes(value.kind) ||
+            (value.kind === "cleanup-observation" &&
+              r3Originals?.artifacts.has(sha256Canonical(value))) ||
             (value.kind === "consumption" && r3Validated?.has(sha256Canonical(value))) ||
             (value.kind === "execution" && r3Validated?.has(value.consumptionRecordDigest)),
           SESSION
@@ -1096,6 +1100,245 @@ function createManualHistoryVerifier(runtime) {
     }
     return { request, result, verified };
   }
+  // A cleanup observation consumes no authorization and changes no execution.
+  // Both live completion and historical replay rebuild its evidence here.
+  async function r3CleanupProof(graph, record, supplied = null) {
+    const {
+      profile,
+      profileDigest,
+      identity,
+      sessionId,
+      sessionNonce,
+      current,
+      r3Context,
+      store,
+      stamp,
+      creationCompletionDigest,
+      candidateUseReceipt
+    } = runtime();
+    validateContract("manual-operation-record.v3", record);
+    requireThat(
+      record.kind === "cleanup-observation" &&
+        identity.scope.phase === "source" &&
+        record.profileDigest === profileDigest &&
+        record.sessionId === sessionId &&
+        record.sessionNonce === sessionNonce &&
+        record.ownerId === profile.ownerId &&
+        equal(record.scope, identity.scope) &&
+        record.operationRef === r3Context.creationSpec.operationRef &&
+        record.sessionRecordDigest === sha256Canonical(current) &&
+        current.status === "OPEN" &&
+        instant(record.recordedAt) <= instant(stamp()),
+      EVIDENCE
+    );
+    const terminal = graph.get(record.sourceExecutionRecordDigest)?.value;
+    const initial = graph.get(candidateUseReceipt?.executionRecordDigest)?.value;
+    const result = graph.get(record.sourceResultDigest)?.value;
+    const acknowledgement = graph.get(record.sourceAcknowledgementRecordDigest)?.value;
+    requireThat(
+      initial?.stage === "candidate-use" &&
+        terminal?.stage === "candidate-use" &&
+        terminal.status === "SUCCEEDED" &&
+        terminal.resultDigest === record.sourceResultDigest &&
+        terminal.predecessorExecutionRecordDigest === sha256Canonical(initial) &&
+        terminal.sessionId === sessionId &&
+        terminal.sessionNonce === sessionNonce &&
+        terminal.operationId === record.operationRef &&
+        [...graph.values()].filter(
+          ({ value }) =>
+            value.kind === "custody" &&
+            value.purpose === "owner-acknowledgement" &&
+            value.subjectDigest === record.sourceExecutionRecordDigest
+        ).length === 1,
+      EVIDENCE
+    );
+    const { assertR3SourceAcknowledgement } =
+      await import("../../../scripts/release/r3-source-result.mjs");
+    assertR3SourceAcknowledgement({
+      acknowledgement,
+      profileDigest,
+      ownerId: profile.ownerId,
+      execution: terminal,
+      result,
+      now: record.recordedAt
+    });
+    const originals = new Map();
+    const read = async (digest) => {
+      if (originals.has(digest)) return originals.get(digest);
+      const bytes = supplied ? supplied.get(digest) : graph.get(digest)?.bytes;
+      requireThat(
+        Buffer.isBuffer(bytes) &&
+          bytes.length <= LIMIT &&
+          sha256Bytes(bytes) === digest &&
+          encodeManualJson(JSON.parse(bytes)).equals(bytes),
+        EVIDENCE
+      );
+      if (!supplied)
+        for (const role of ["archive", "backup"])
+          requireThat(
+            (await store.read(objectPath(profile.storage[`${role}Root`], digest))).equals(bytes),
+            STORAGE
+          );
+      originals.set(digest, bytes);
+      return bytes;
+    };
+    const cleanupBundle = await read(record.cleanupBundleDigest);
+    const creationBundle = await read(record.creationEvidenceDigest);
+    for (const role of ["archive", "backup"])
+      for (const [state, name, bytes] of [
+        ["cleanup", "hosted-cleanup.json", cleanupBundle],
+        ["active", "hosted-evidence.json", creationBundle]
+      ])
+        requireThat(
+          (
+            await store.read(
+              path.join(
+                profile.storage[`${role}Root`],
+                "inputs",
+                "r3",
+                record.operationRef,
+                "observations",
+                state,
+                name
+              )
+            )
+          ).equals(bytes),
+          STORAGE
+        );
+    const policyBytes = Buffer.from(r3Context.destinationInputs.policyBytesBase64, "base64");
+    requireThat(sha256Bytes(policyBytes) === identity.scope.targetPolicyDigest, EVIDENCE);
+    const verified = verifyR3HostedCleanupEvidence({
+      bundleBytes: cleanupBundle,
+      creationEvidenceBytes: creationBundle,
+      jobAdmissionBytes: encodeManualJson(r3Context.jobAdmission),
+      spec: r3Context.creationSpec,
+      policyBytes,
+      now: record.recordedAt
+    });
+    const destination = graph.get(graph.get(creationCompletionDigest)?.value?.resultDigest)?.value;
+    requireThat(
+      destination?.hostedEvidenceDigest === record.creationEvidenceDigest &&
+        verified.bundleDigest === record.cleanupBundleDigest &&
+        instant(acknowledgement.recordedAt) <= instant(verified.cleanup.startedAt),
+      EVIDENCE
+    );
+    for (const [field, value] of Object.entries(verified.cleanup.postgres))
+      requireThat(equal(value, destination.postgres[field]), EVIDENCE);
+    requireThat(verified.cleanup.engine.id === destination.postgres.engineId, EVIDENCE);
+    const forward = JSON.parse(await read(record.forwardEvidenceDigest));
+    exact(forward, ["schemaVersion", "observation", "rawInputs"], EVIDENCE);
+    requireThat(
+      forward.schemaVersion === "manual-r3-forward-shutdown-evidence.v1" &&
+        forward.rawInputs &&
+        typeof forward.rawInputs === "object" &&
+        !Array.isArray(forward.rawInputs) &&
+        sha256Canonical(forward.observation) === record.forwardObservationDigest &&
+        instant(verified.cleanup.finishedAt) <= instant(forward.observation.startedAt),
+      EVIDENCE
+    );
+    const rawInputs = Object.fromEntries(
+      Object.entries(forward.rawInputs).map(([name, encoded]) => {
+        requireThat(typeof encoded === "string", EVIDENCE);
+        const bytes = Buffer.from(encoded, "base64");
+        requireThat(bytes.toString("base64") === encoded && bytes.length <= LIMIT, EVIDENCE);
+        return [name, bytes];
+      })
+    );
+    const { assessR3H1ForwardShutdown } =
+      await import("../../../scripts/release/r3-h1-forward-lease.mjs");
+    assessR3H1ForwardShutdown({
+      observationBytes: encodeManualJson(forward.observation),
+      rawInputs,
+      now: record.recordedAt
+    });
+    originals.set(sha256Canonical(record), encodeManualJson(record));
+    if (!supplied)
+      for (const role of ["archive", "backup"])
+        requireThat(
+          (
+            await store.read(objectPath(profile.storage[`${role}Root`], sha256Canonical(record)))
+          ).equals(encodeManualJson(record)),
+          STORAGE
+        );
+    return { originals, verified, forward };
+  }
+  async function validateR3CleanupContext(graph, accumulator) {
+    const { profile, profileDigest, sessionId, sessionNonce, store, stamp } = runtime();
+    const values = [...graph.values()].map(({ value }) => value);
+    const records = values.filter(
+      (value) => value.kind === "cleanup-observation" && value.sessionId === sessionId
+    );
+    requireThat(records.length <= 1, EVIDENCE);
+    for (const record of records) {
+      const proof = await r3CleanupProof(graph, record);
+      requireThat(
+        accumulator.r3Acknowledgements.has(record.sourceAcknowledgementRecordDigest),
+        EVIDENCE
+      );
+      for (const [digest] of proof.originals) {
+        const custody = values.filter(
+          (value) => value.kind === "custody" && value.subjectDigest === digest
+        );
+        const roles = new Set(["archive", "backup"]);
+        requireThat(custody.length === 2, EVIDENCE);
+        for (const value of custody) {
+          validateContract("manual-operation-record.v3", value);
+          requireThat(
+            roles.delete(value.storageRole) &&
+              value.profileDigest === profileDigest &&
+              value.ownerId === profile.ownerId &&
+              value.subjectType === "record" &&
+              value.purpose === `${value.storageRole}-readback` &&
+              value.outcome === "MATCH" &&
+              value.observedDigest === digest &&
+              value.retentionDays === 90 &&
+              value.reasonCode === null &&
+              instant(record.recordedAt) <= instant(value.observedAt) &&
+              instant(value.observedAt) <= instant(value.recordedAt) &&
+              instant(value.recordedAt) <= instant(stamp()),
+            EVIDENCE
+          );
+          const bytes = encodeManualJson(value),
+            custodyDigest = sha256Bytes(bytes);
+          for (const role of ["archive", "backup"])
+            requireThat(
+              (await store.read(objectPath(profile.storage[`${role}Root`], custodyDigest))).equals(
+                bytes
+              ),
+              STORAGE
+            );
+          accumulator.r3CleanupCustody.add(custodyDigest);
+        }
+        accumulator.r3Originals.artifacts.add(digest);
+      }
+      accumulator.r3Cleanups.add(sha256Canonical(record));
+    }
+    for (const value of values.filter(
+      (entry) =>
+        entry.kind === "session" &&
+        entry.sessionId === sessionId &&
+        entry.sessionNonce === sessionNonce &&
+        entry.status === "CLOSED"
+    )) {
+      requireThat(
+        records.length === 1 && instant(records[0].recordedAt) <= instant(value.recordedAt),
+        EVIDENCE
+      );
+      for (const custodyDigest of accumulator.r3CleanupCustody) {
+        const custody = graph.get(custodyDigest)?.value;
+        if (
+          custody &&
+          [
+            sha256Canonical(records[0]),
+            records[0].cleanupBundleDigest,
+            records[0].creationEvidenceDigest,
+            records[0].forwardEvidenceDigest
+          ].includes(custody.subjectDigest)
+        )
+          requireThat(instant(custody.recordedAt) <= instant(value.recordedAt), EVIDENCE);
+      }
+    }
+  }
   async function validateR3Context(
     graph,
     slots,
@@ -1693,12 +1936,38 @@ function createManualHistoryVerifier(runtime) {
           (consumerCount === 1 && pendingConsumer === historicalConsumerPredecessor)),
       SESSION
     );
+    await validateR3CleanupContext(graph, accumulator);
     return { legacy, creationCount, consumerCount, candidateUseCount, historicalCompletion };
   }
   async function finishR3History(graph, slots, accumulator, legacy, request) {
     const { profile, profileDigest } = runtime();
     const values = [...graph.values()].map((entry) => entry.value);
-    const { r3Originals, r3Validated, r3Acknowledgements } = accumulator;
+    const { r3Originals, r3Validated, r3Acknowledgements, r3Cleanups, r3CleanupCustody } =
+      accumulator;
+    for (const value of values) {
+      if (value.kind === "cleanup-observation")
+        requireThat(r3Cleanups.has(sha256Canonical(value)), EVIDENCE);
+      if (
+        [
+          "manual-r3-hosted-cleanup.v1",
+          "manual-r3-hosted-evidence.v1",
+          "manual-r3-forward-shutdown-evidence.v1"
+        ].includes(value.schemaVersion)
+      )
+        requireThat(r3Originals.artifacts.has(sha256Canonical(value)), EVIDENCE);
+      const subject = value.kind === "custody" ? graph.get(value.subjectDigest)?.value : null;
+      // Existing source custody also covers raw/<digest>.bin; its source proof
+      // reads those bytes. Only cleanup's new JSON subjects belong to this gate.
+      if (
+        subject?.kind === "cleanup-observation" ||
+        [
+          "manual-r3-hosted-cleanup.v1",
+          "manual-r3-hosted-evidence.v1",
+          "manual-r3-forward-shutdown-evidence.v1"
+        ].includes(subject?.schemaVersion)
+      )
+        requireThat(r3CleanupCustody.has(sha256Canonical(value)), EVIDENCE);
+    }
     for (const { request: oldRequest, consumed, execution } of legacy) {
       if (execution.status === "INTERRUPTED_UNKNOWN") continue;
       const assessment = assessManualRunnerEvidence(
@@ -1880,6 +2149,7 @@ function createManualHistoryVerifier(runtime) {
     r3StoredDestination,
     r3ConsumerOriginals,
     r3SourceProof,
+    r3CleanupProof,
     validateR3Context,
     finishR3History,
     readSourceOriginals: r3ReadSourceOriginals
@@ -2469,6 +2739,12 @@ async function readCompletedR3Context(
       );
   }
   await verifier.validateR3Context(graph, slots, consumptions, accumulator);
+  const cleanupRecord = values.find(
+    (value) =>
+      value.kind === "cleanup-observation" &&
+      value.sessionId === sessionId &&
+      accumulator.r3Cleanups.has(sha256Canonical(value))
+  );
   if (current.scope.phase === "source") {
     const terminalDigest = sha256Canonical(candidate.completed);
     const acknowledgements = values.filter(
@@ -2491,6 +2767,9 @@ async function readCompletedR3Context(
       sessionId,
       sessionNonce,
       scope: snapshot(identity.scope),
+      ...(cleanupRecord
+        ? { latestCleanupAt: graph.get(cleanupRecord.cleanupBundleDigest).value.cleanup.finishedAt }
+        : {}),
       latestExecutionAt: executions
         .map((value) => value.recordedAt)
         .sort()
@@ -3783,7 +4062,10 @@ export async function openManualSession({
             repoRoot: r3Context.snapshotInputs.repoRoot,
             operationRef: context.operationRef,
             scope: context.scope,
-            latestExecutionAt: context.latestExecutionAt
+            latestExecutionAt: context.latestExecutionAt,
+            ...(Object.hasOwn(context, "latestCleanupAt")
+              ? { latestCleanupAt: context.latestCleanupAt }
+              : {})
           });
           trustInputs.push(held);
           requireThat(
@@ -3791,6 +4073,9 @@ export async function openManualSession({
               held.operationRef === context.operationRef &&
               equal(held.scope, context.scope) &&
               held.latestExecutionAt === context.latestExecutionAt &&
+              Object.hasOwn(held, "latestCleanupAt") ===
+                Object.hasOwn(context, "latestCleanupAt") &&
+              held.latestCleanupAt === context.latestCleanupAt &&
               typeof held.recheck === "function" &&
               typeof held.close === "function",
             SESSION
@@ -3867,6 +4152,9 @@ export async function openManualSession({
       sourceCompletionAttempted = false,
       sourceCompletionDigest = null,
       sourceAcknowledgementAttempted = false,
+      cleanupAttempted = false,
+      cleanupReleaseCancelled = false,
+      cleanupObservationRecordDigest = null,
       consumerAuthorizationIssued = false,
       candidateUseAuthorizationIssued = false,
       candidateUseAttempted = false,
@@ -3903,6 +4191,76 @@ export async function openManualSession({
       const result = await r3ReadSourceOriginals();
       await sourceHistory();
       return result;
+    };
+    const closeWork = async (preserve) => {
+      if (preserve) cleanupReleaseCancelled = true;
+      if (closed) return closeRef;
+      try {
+        await active();
+        if (cleanupObservationRecordDigest && !cleanupReleaseCancelled) {
+          const graph = await sourceHistory();
+          requireThat(
+            graph.get(cleanupObservationRecordDigest)?.value?.kind === "cleanup-observation",
+            EVIDENCE
+          );
+          const { observeR3H1ForwardShutdown, assessR3H1ForwardShutdown } =
+            await import("../../../scripts/release/r3-h1-forward-lease.mjs");
+          const forward = await observeR3H1ForwardShutdown();
+          assessR3H1ForwardShutdown({
+            observationBytes: encodeManualJson(forward.observation),
+            rawInputs: forward.rawInputs,
+            now: stamp()
+          });
+          await active();
+        }
+        const uncertain =
+          consumedOrUncertain && (cleanupReleaseCancelled || !cleanupObservationRecordDigest);
+        const slotIdentities = !uncertain
+          ? [await observerLockHandle.stat(), await lockHandle.stat()]
+          : null;
+        const value = sessionRecord(
+          uncertain ? "INTERRUPTED_UNKNOWN" : "CLOSED",
+          sha256Canonical(current),
+          uncertain ? "MANUAL_EVIDENCE_INCOMPLETE" : null,
+          stamp()
+        );
+        closeRef = await store.put(value, "journal");
+        current = value;
+        closed = true;
+        key = null;
+        await snapshotReader?.close();
+        snapshotReader = null;
+        await closeTargetHandles();
+        await observerLockHandle.close();
+        await lockHandle.close();
+        observerLockHandle = null;
+        lockHandle = null;
+        if (!uncertain) {
+          for (const [index, file] of [observerLockPath, lockPath].entries()) {
+            const visible = await store.fs.lstat(file);
+            requireThat(
+              visible.ino === slotIdentities[index].ino &&
+                visible.dev === slotIdentities[index].dev &&
+                (await store.read(file)).equals(lockBytes),
+              STORAGE
+            );
+            await store.fs.unlink(file);
+          }
+        }
+        return closeRef;
+      } catch (error) {
+        consumedOrUncertain = true;
+        closed = true;
+        key = null;
+        await snapshotReader?.close().catch(() => {});
+        snapshotReader = null;
+        await closeTargetHandles().catch(() => {});
+        await observerLockHandle?.close().catch(() => {});
+        await lockHandle?.close().catch(() => {});
+        observerLockHandle = null;
+        lockHandle = null;
+        throw error;
+      }
     };
     return freeze({
       ...identity,
@@ -4809,6 +5167,160 @@ export async function openManualSession({
           });
         });
       },
+      completeCleanup(...args) {
+        return serial(async () => {
+          requireThat(
+            args.length === 0 &&
+              sourceCompletionDigest &&
+              sourceAcknowledgementAttempted &&
+              candidateUseReceipt &&
+              !cleanupAttempted &&
+              r3Context.snapshotInputs?.repoRoot,
+            SESSION
+          );
+          cleanupAttempted = true;
+          await active();
+          r3Live();
+          const graph = await sourceHistory();
+          const terminal = graph.get(sourceCompletionDigest)?.value;
+          const acknowledgements = [...graph.values()]
+            .map(({ value }) => value)
+            .filter(
+              (value) =>
+                value.kind === "custody" &&
+                value.purpose === "owner-acknowledgement" &&
+                value.subjectDigest === sourceCompletionDigest
+            );
+          requireThat(
+            acknowledgements.length === 1 &&
+              ![...graph.values()].some(
+                ({ value }) => value.kind === "cleanup-observation" && value.sessionId === sessionId
+              ),
+            EVIDENCE
+          );
+          const { readFixedR3HostedCleanupEvidence } =
+            await import("../../../scripts/release/manual-stage1-trust.mjs");
+          const { observeR3H1ForwardShutdown } =
+            await import("../../../scripts/release/r3-h1-forward-lease.mjs");
+          let held;
+          let receipt;
+          try {
+            held = await readFixedR3HostedCleanupEvidence({
+              repoRoot: r3Context.snapshotInputs.repoRoot,
+              operationRef: r3Context.creationSpec.operationRef
+            });
+            requireThat(
+              held.operationRef === r3Context.creationSpec.operationRef &&
+                equal(held.spec, r3Context.creationSpec) &&
+                held.jobAdmissionDigest === identity.scope.jobAdmissionDigest &&
+                held.jobAdmissionBytes.equals(encodeManualJson(r3Context.jobAdmission)) &&
+                sha256Bytes(held.policyBytes) === identity.scope.targetPolicyDigest &&
+                sha256Bytes(held.rawBundle) === held.bundleDigest &&
+                sha256Bytes(held.creationRawBundle) === held.creationEvidenceDigest,
+              EVIDENCE
+            );
+            const forward = await observeR3H1ForwardShutdown();
+            const forwardEvidence = {
+              schemaVersion: "manual-r3-forward-shutdown-evidence.v1",
+              observation: forward.observation,
+              rawInputs: Object.fromEntries(
+                Object.entries(forward.rawInputs).map(([name, bytes]) => {
+                  requireThat(Buffer.isBuffer(bytes), EVIDENCE);
+                  return [name, bytes.toString("base64")];
+                })
+              )
+            };
+            const forwardBytes = encodeManualJson(forwardEvidence);
+            const record = {
+              ...common("cleanup-observation", stamp()),
+              sessionId,
+              sessionNonce,
+              ownerId: profile.ownerId,
+              scope: snapshot(identity.scope),
+              operationRef: r3Context.creationSpec.operationRef,
+              sessionRecordDigest: sha256Canonical(current),
+              sourceExecutionRecordDigest: sourceCompletionDigest,
+              sourceResultDigest: terminal.resultDigest,
+              sourceAcknowledgementRecordDigest: sha256Canonical(acknowledgements[0]),
+              cleanupBundleDigest: held.bundleDigest,
+              creationEvidenceDigest: held.creationEvidenceDigest,
+              forwardEvidenceDigest: sha256Bytes(forwardBytes),
+              forwardObservationDigest: forward.observationDigest
+            };
+            const supplied = new Map([
+              [record.cleanupBundleDigest, Buffer.from(held.rawBundle)],
+              [record.creationEvidenceDigest, Buffer.from(held.creationRawBundle)],
+              [record.forwardEvidenceDigest, forwardBytes]
+            ]);
+            const proof = await historyVerifier.r3CleanupProof(graph, record, supplied);
+            await held.recheck();
+            await active();
+            r3Live();
+            // No history projection while these exact, already checked originals
+            // are being persisted. A partial write remains an orphan and blocks
+            // subsequent gates; it never becomes a broad pending exception.
+            const custodyRecordDigests = [];
+            for (const [digest, bytes] of proof.originals) {
+              for (const role of ["archive", "backup"])
+                await store.create(objectPath(profile.storage[`${role}Root`], digest), bytes);
+              for (const role of ["archive", "backup"]) {
+                requireThat(
+                  (await store.read(objectPath(profile.storage[`${role}Root`], digest))).equals(
+                    bytes
+                  ),
+                  STORAGE
+                );
+                const observedAt = stamp();
+                const custody = {
+                  ...common("custody", observedAt),
+                  ownerId: profile.ownerId,
+                  subjectDigest: digest,
+                  subjectType: "record",
+                  purpose: `${role}-readback`,
+                  outcome: "MATCH",
+                  observedDigest: digest,
+                  observedAt,
+                  storageRole: role,
+                  retentionDays,
+                  reasonCode: null
+                };
+                validateContract(recordSchema, custody);
+                const custodyDigest = sha256Canonical(custody);
+                for (const copyRole of ["archive", "backup"]) await store.put(custody, copyRole);
+                for (const copyRole of ["archive", "backup"])
+                  requireThat(
+                    (
+                      await store.read(
+                        objectPath(profile.storage[`${copyRole}Root`], custodyDigest)
+                      )
+                    ).equals(encodeManualJson(custody)),
+                    STORAGE
+                  );
+                custodyRecordDigests.push(custodyDigest);
+              }
+            }
+            await sourceHistory();
+            await held.recheck();
+            await active();
+            r3Live();
+            receipt = freeze({
+              cleanupObservationRecordDigest: sha256Canonical(record),
+              cleanupBundleDigest: record.cleanupBundleDigest,
+              creationEvidenceDigest: record.creationEvidenceDigest,
+              forwardEvidenceDigest: record.forwardEvidenceDigest,
+              forwardObservationDigest: record.forwardObservationDigest,
+              sourceExecutionRecordDigest: record.sourceExecutionRecordDigest,
+              sourceAcknowledgementRecordDigest: record.sourceAcknowledgementRecordDigest,
+              custodyRecordDigests,
+              promotionEligible: false
+            });
+          } finally {
+            await held?.close();
+          }
+          cleanupObservationRecordDigest = receipt.cleanupObservationRecordDigest;
+          return receipt;
+        });
+      },
       record(kind, input) {
         return serial(async () => {
           await active();
@@ -4842,48 +5354,14 @@ export async function openManualSession({
           return ref;
         });
       },
-      close() {
+      closeIncomplete(...args) {
         return serial(async () => {
-          if (closed) return closeRef;
-          try {
-            await active();
-            const uncertain = consumedOrUncertain;
-            const value = sessionRecord(
-              uncertain ? "INTERRUPTED_UNKNOWN" : "CLOSED",
-              sha256Canonical(current),
-              uncertain ? "MANUAL_EVIDENCE_INCOMPLETE" : null,
-              stamp()
-            );
-            closeRef = await store.put(value, "journal");
-            current = value;
-            closed = true;
-            key = null;
-            await snapshotReader?.close();
-            snapshotReader = null;
-            await closeTargetHandles();
-            await observerLockHandle.close();
-            await lockHandle.close();
-            observerLockHandle = null;
-            lockHandle = null;
-            if (!uncertain) {
-              await store.fs.unlink(observerLockPath);
-              await store.fs.unlink(lockPath);
-            }
-            return closeRef;
-          } catch (error) {
-            consumedOrUncertain = true;
-            closed = true;
-            key = null;
-            await snapshotReader?.close().catch(() => {});
-            snapshotReader = null;
-            await closeTargetHandles().catch(() => {});
-            await observerLockHandle?.close().catch(() => {});
-            await lockHandle?.close().catch(() => {});
-            observerLockHandle = null;
-            lockHandle = null;
-            throw error;
-          }
+          requireThat(args.length === 0, SESSION);
+          return closeWork(true);
         });
+      },
+      close() {
+        return serial(() => closeWork(false));
       }
     });
   }

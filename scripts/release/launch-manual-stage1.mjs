@@ -37,6 +37,7 @@ import {
   readFixedR3JobAdmission,
   prepareR3HostedEvidenceImport,
   importR3HostedEvidence,
+  importR3HostedCleanupEvidence,
   openTrustedR3CreationSession
 } from "./manual-stage1-trust.mjs";
 import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
@@ -1096,6 +1097,14 @@ export async function launchR3TargetCreate(input) {
     sourceAcknowledgementAttempted = false,
     sourceAcknowledgementReady = false,
     sourceAcknowledgementPending,
+    targetCleanupImportAttempted = false,
+    targetCleanupImportReady = false,
+    targetCleanupImportPending,
+    targetCleanupEvidence,
+    targetCleanupAttempted = false,
+    targetCleanupReady = false,
+    targetCleanupPending,
+    forwardLeaseClosed = false,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1132,7 +1141,8 @@ export async function launchR3TargetCreate(input) {
       !snapshotCompletionPending &&
       !lifecyclePending &&
       !sourcePending &&
-      !sourceAcknowledgementPending
+      !sourceAcknowledgementPending &&
+      !targetCleanupPending
     )
       abort();
     closing = (async () => {
@@ -1148,6 +1158,7 @@ export async function launchR3TargetCreate(input) {
       await lifecyclePending?.catch(() => {});
       await sourcePending?.catch(() => {});
       await sourceAcknowledgementPending?.catch(() => {});
+      await targetCleanupPending?.catch(() => {});
       abort();
       await copyPending?.catch(() => {});
       await decryptPending?.catch(() => {});
@@ -1158,6 +1169,7 @@ export async function launchR3TargetCreate(input) {
       await databasesPending?.catch(() => {});
       await postgresPending?.catch(() => {});
       await hostedImportPending?.catch(() => {});
+      await targetCleanupImportPending?.catch(() => {});
       for (const held of databaseSecrets) {
         held.bytes.fill(0);
         try {
@@ -1188,13 +1200,16 @@ export async function launchR3TargetCreate(input) {
         snapshotPayload,
         consumerInput,
         consumerSlot,
+        targetCleanupEvidence,
         hostedEvidence,
         lease,
         session,
         fixed
       ]) {
         try {
-          await handle?.close();
+          if (handle === session && session && (errors.length || !targetCleanupReady))
+            await session.closeIncomplete();
+          else await handle?.close();
         } catch (error) {
           errors.push(error);
         }
@@ -1206,7 +1221,8 @@ export async function launchR3TargetCreate(input) {
   const check = async () => {
     if (closed) fail(code);
     await fixed.recheck();
-    await lease?.recheck();
+    if (!forwardLeaseClosed) await lease?.recheck();
+    await targetCleanupEvidence?.recheck();
     await targetLockLease?.recheck();
     await hostedEvidence?.recheck();
     if (destinationRecord) await recheckDestination();
@@ -1978,6 +1994,7 @@ export async function launchR3TargetCreate(input) {
     });
   };
   const recheckResources = async () => {
+    if (targetCleanupImportAttempted) fail(code);
     await check();
     if (destinationAttempted && !destinationReady) fail(code);
     if (postgresAttempted && !postgresTarget) fail(code);
@@ -3949,7 +3966,101 @@ export async function launchR3TargetCreate(input) {
         if (lifecycleAttempted && !lifecycleReady) fail(code);
         if (sourceAttempted && !sourceReady) fail(code);
         if (sourceAcknowledgementAttempted && !sourceAcknowledgementReady) fail(code);
+        if (targetCleanupAttempted && !targetCleanupReady) fail(code);
+        if (targetCleanupReady) return check();
         await recheckResources();
+      },
+      async importHostedCleanupEvidence(...args) {
+        if (
+          args.length !== 1 ||
+          stopping ||
+          closed ||
+          targetCleanupImportAttempted ||
+          !sourceAcknowledgementReady ||
+          !Buffer.isBuffer(args[0]) ||
+          args[0].length === 0 ||
+          args[0].length > 1048576
+        )
+          fail(code);
+        targetCleanupImportAttempted = true;
+        const bundleBytes = Buffer.from(args[0]);
+        targetCleanupImportPending = (async () => {
+          // The Engine is already gone; retain trust/original checks without
+          // attempting another request against the removed target.
+          await check();
+          const held = await importR3HostedCleanupEvidence({ ...input, bundleBytes });
+          targetCleanupEvidence = held;
+          if (
+            held.creationEvidenceDigest !== hostedEvidence.bundleDigest ||
+            held.cleanup.engine.id !== boundEngineId
+          )
+            fail(code);
+          await check();
+          if (stopping || closed) fail(code);
+          targetCleanupImportReady = true;
+          return Object.freeze({
+            status: "HOSTED_CLEANUP_OBSERVED",
+            bundleDigest: held.bundleDigest,
+            promotionEligible: false
+          });
+        })();
+        try {
+          return await targetCleanupImportPending;
+        } catch {
+          throw Object.assign(new Error(code), { code });
+        }
+      },
+      async completeCleanup(...args) {
+        if (
+          args.length !== 0 ||
+          stopping ||
+          closed ||
+          targetCleanupAttempted ||
+          !sourceAcknowledgementReady ||
+          !targetCleanupImportReady
+        )
+          fail(code);
+        targetCleanupAttempted = true;
+        targetCleanupPending = (async () => {
+          await check();
+          if (stopping || closed) fail(code);
+          // The hosted owner must have closed its established forwards first.
+          // Revoking this key prevents reconnects; the core independently
+          // observes both ports and the dedicated uid before recording success.
+          await lease.close();
+          forwardLeaseClosed = true;
+          socket?.destroy();
+          const receipt = await session.completeCleanup();
+          if (
+            !exact(receipt, [
+              "cleanupObservationRecordDigest",
+              "cleanupBundleDigest",
+              "creationEvidenceDigest",
+              "forwardEvidenceDigest",
+              "forwardObservationDigest",
+              "sourceExecutionRecordDigest",
+              "sourceAcknowledgementRecordDigest",
+              "custodyRecordDigests",
+              "promotionEligible"
+            ]) ||
+            receipt.cleanupBundleDigest !== targetCleanupEvidence.bundleDigest ||
+            receipt.creationEvidenceDigest !== hostedEvidence.bundleDigest ||
+            receipt.sourceExecutionRecordDigest !==
+              sha256Canonical(sourceCompletionRecord.execution) ||
+            receipt.promotionEligible !== false
+          )
+            fail(code);
+          await check();
+          if (stopping || closed) fail(code);
+          targetCleanupReady = true;
+          return Object.freeze({ status: "CLEANUP_OBSERVED", ...receipt });
+        })();
+        try {
+          return await targetCleanupPending;
+        } catch {
+          await session.closeIncomplete().catch(() => {});
+          throw Object.assign(new Error(code), { code });
+        }
       },
       async acknowledgeSource(...args) {
         if (

@@ -11,6 +11,7 @@ import {
   encodeManualJson,
   computeMigrationCatalog,
   computeRepositoryContract,
+  openManualSession,
   sha256Bytes,
   sha256Canonical
 } from "../../packages/release-foundation/src/index.mjs";
@@ -1237,6 +1238,16 @@ async function buildFixture(
             Buffer.alloc(0)
           );
         let value;
+        const jobs = [gh.jobAdmission, ...(gh.previousJobAdmissions ?? [])].filter(Boolean);
+        const retainedJob = jobs.find(
+          (entry) =>
+            (args[0] === "attestation" && args[1] === "verify" && args[2] === entry.path) ||
+            (args[0] === "api" &&
+              [
+                `repos/${repository}/actions/runs/${entry.run.id}/attempts/1`,
+                `repos/${repository}/actions/jobs/${entry.job.id}`
+              ].includes(args[1]))
+        );
         if (args[0] === "attestation" && args[1] === "verify" && args[2] === gh.paths.proof)
           value = gh.proof;
         else if (args[0] === "attestation" && args[1] === "verify" && args[2] === gh.paths.receipt)
@@ -1247,24 +1258,24 @@ async function buildFixture(
         )
           value = gh.run;
         else if (
-          gh.jobAdmission &&
+          retainedJob &&
           args[0] === "attestation" &&
           args[1] === "verify" &&
-          args[2] === gh.jobAdmission.path
+          args[2] === retainedJob.path
         )
-          value = gh.jobAdmission.attestation;
+          value = retainedJob.attestation;
         else if (
-          gh.jobAdmission &&
+          retainedJob &&
           args[0] === "api" &&
-          args[1] === `repos/${repository}/actions/runs/${gh.jobAdmission.run.id}/attempts/1`
+          args[1] === `repos/${repository}/actions/runs/${retainedJob.run.id}/attempts/1`
         )
-          value = gh.jobAdmission.run;
+          value = retainedJob.run;
         else if (
-          gh.jobAdmission &&
+          retainedJob &&
           args[0] === "api" &&
-          args[1] === `repos/${repository}/actions/jobs/${gh.jobAdmission.job.id}`
+          args[1] === `repos/${repository}/actions/jobs/${retainedJob.job.id}`
         )
-          value = gh.jobAdmission.job;
+          value = retainedJob.job;
         else throw new Error("Unexpected synthetic gh invocation");
         callback(null, gh.raw ?? Buffer.from(JSON.stringify(value)), gh.stderr);
       })
@@ -1393,9 +1404,9 @@ test(
 );
 async function r3CreationFixture(
   t,
-  { phase = "source", chain = "snapshot", sourceReadback = false } = {}
+  { phase = "source", chain = "snapshot", sourceReadback = false, base = null } = {}
 ) {
-  const f = await buildFixture(t, { r3TargetPolicy: true, sourceReadback });
+  const f = base ?? (await buildFixture(t, { r3TargetPolicy: true, sourceReadback }));
   const policyBytes = await fs.readFile(
     path.join(f.repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json")
   );
@@ -1573,8 +1584,8 @@ async function r3JobFixture(t, options = {}) {
   const forwardingKeys = generateKeyPairSync("ed25519");
   const forwarding = forwardingKeys.publicKey;
   const generated = new Date(Date.now() - 100).toISOString();
-  const ciRunId = "3801",
-    jobId = "4801";
+  const ciRunId = options.ciRunId ?? "3801",
+    jobId = options.jobId ?? "4801";
   const callerWorkflowPath = ".github/workflows/release-candidate-gate.yml";
   const signerWorkflowPath =
     phase === "source" ? callerWorkflowPath : ".github/workflows/release-final-chain.yml";
@@ -1650,6 +1661,7 @@ async function r3JobFixture(t, options = {}) {
     completed_at: null,
     started_at: f.spec.createdAt
   };
+  if (f.gh.jobAdmission) (f.gh.previousJobAdmissions ??= []).push(f.gh.jobAdmission);
   f.gh.jobAdmission = { path: admissionPath, attestation, run: apiRun, job: apiJob };
   return {
     ...f,
@@ -1662,6 +1674,42 @@ async function r3JobFixture(t, options = {}) {
     forwardingPrivateKey: forwardingKeys.privateKey
   };
 }
+
+test(
+  "R3 HISTORY CONTEXT authenticates completed final inputs and refuses early job completion",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t, { phase: "final", chain: "snapshot" });
+    const latestExecutionAt = new Date().toISOString();
+    const scope = Object.fromEntries(
+      ["targetPolicyDigest", "buildProofDigest", "sourceSha", "phase", "chain"].map((name) => [
+        name,
+        f.spec[name]
+      ])
+    );
+    scope.creationSpecDigest = sha256Bytes(f.specBytes);
+    scope.jobAdmissionDigest = sha256Bytes(f.admissionBytes);
+    f.apiRun.status = f.apiJob.status = "completed";
+    f.apiRun.conclusion = f.apiJob.conclusion = "success";
+    f.apiJob.completed_at = latestExecutionAt;
+    t.mock.timers.enable({ apis: ["Date"], now: Date.parse(f.profile.expiresAt) + 1000 });
+    t.after(() => t.mock.timers.reset());
+    const retained = await trust.readTrustedR3HistoricalContext({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef,
+      scope,
+      latestExecutionAt
+    });
+    t.after(() => retained.close());
+    assert.equal(retained.latestExecutionAt, latestExecutionAt);
+    assert.deepEqual(retained.scope, scope);
+    assert.equal(retained.sign, undefined);
+    await retained.recheck();
+    f.apiJob.completed_at = new Date(Date.parse(latestExecutionAt) - 1000).toISOString();
+    await assert.rejects(retained.recheck(), { code: "R3_HISTORY_CONTEXT_UNAVAILABLE" });
+    noAuthorityAccess(f);
+  }
+);
 
 test("R3 JOB API rejects overrides and accessors before native IO", async (t) => {
   assert.equal(typeof trust.readFixedR3JobAdmission, "function");
@@ -2935,6 +2983,46 @@ function bootstrap() {
   );
   return production().openTrustedManualSession;
 }
+test("R3 HISTORY CONTEXT API rejects authority overrides before native IO", async (t) => {
+  assert.equal(typeof production().readTrustedR3HistoricalContext, "function");
+  let effects = 0;
+  const denied = () => {
+    effects++;
+    throw new Error("unexpected IO or accessor");
+  };
+  for (const name of ["open", "lstat", "readFile", "writeFile"]) t.mock.method(fs, name, denied);
+  t.mock.method(childProcess, "execFile", denied);
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const input = {
+    repoRoot: path.resolve("unused"),
+    operationRef: randomUUID(),
+    scope: {
+      targetPolicyDigest: `sha256:${"a".repeat(64)}`,
+      creationSpecDigest: `sha256:${"b".repeat(64)}`,
+      jobAdmissionDigest: `sha256:${"c".repeat(64)}`,
+      buildProofDigest: `sha256:${"d".repeat(64)}`,
+      sourceSha: "e".repeat(40),
+      phase: "source",
+      chain: "fresh"
+    },
+    latestExecutionAt: "2026-09-29T00:00:00.000Z"
+  };
+  for (const value of [
+    { ...input, privateKey: "caller-key" },
+    { ...input, verified: true },
+    { ...input, io: {} },
+    { ...input, scope: { ...input.scope, approved: true } },
+    Object.defineProperty({ ...input }, "scope", { get: denied, enumerable: true })
+  ])
+    await assert.rejects(production().readTrustedR3HistoricalContext(value), {
+      code: "R3_HISTORY_CONTEXT_UNAVAILABLE"
+    });
+  assert.equal(effects, 0);
+});
 test("R3 SOURCE HISTORY API rejects authority and accessor inputs before native IO", async (t) => {
   assert.equal(typeof production().readTrustedR3SourceCompletion, "function");
   let effects = 0;
@@ -4755,6 +4843,167 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
             t.mock.timers.reset();
             await fs.writeFile(backupAcknowledgement, acknowledgementBytes, { mode: 0o600 });
           }
+          // Synthetic precondition for this admission-only regression: the
+          // future verified cleanup has released the two shared forward slots.
+          // This does not implement or prove cleanup. All 41 old physical target
+          // locks and every source original remain in place.
+          for (const slot of ["tcp://127.0.0.1:55440", "127.0.0.1:55441"])
+            await fs.unlink(
+              path.join(
+                lockRoot,
+                `${sha256Canonical({ slot, kind: "r3-forward-slot" }).slice(7)}.json`
+              )
+            );
+          assert.equal((await fs.readdir(lockRoot)).length, 41);
+          const next = await r3JobFixture(t, {
+            base: f,
+            phase: "source",
+            chain: "fresh",
+            ciRunId: "3802",
+            jobId: "4802"
+          });
+          const fixed = await trust.readFixedR3JobAdmission({
+            repoRoot: next.repoRoot,
+            operationRef: next.operationRef
+          });
+          const scope = {
+            targetPolicyDigest: next.spec.targetPolicyDigest,
+            creationSpecDigest: fixed.creationSpecDigest,
+            jobAdmissionDigest: fixed.jobAdmissionDigest,
+            buildProofDigest: fixed.build.buildProofDigest,
+            sourceSha: fixed.sourceSha,
+            phase: next.spec.phase,
+            chain: next.spec.chain
+          };
+          const nextSession = await openManualSession({
+            profile: next.profile,
+            ownerObservation: {
+              ownerId: next.profile.ownerId,
+              principal: next.approval.principal,
+              scope,
+              observedAt: new Date().toISOString()
+            },
+            r3CreationContext: {
+              scope,
+              creationSpec: fixed.spec,
+              jobAdmission: fixed.admission,
+              snapshotInputs: { repoRoot: next.repoRoot },
+              destinationInputs: {
+                manifest: fixed.databaseTestManifest,
+                manifestRawDigest: fixed.databaseTestManifestRawDigest,
+                policy: fixed.databaseTargetPolicy,
+                policyBytesBase64: (
+                  await fs.readFile(
+                    path.join(
+                      next.repoRoot,
+                      "release/contracts/manual-stage1-r3-target-policy.v1.json"
+                    )
+                  )
+                ).toString("base64")
+              }
+            },
+            now: () => new Date().toISOString(),
+            signingKey: next.keys.privateKey
+          });
+          try {
+            const opening = (
+              await Promise.all(
+                (await fs.readdir(journalObjects)).map(async (name) =>
+                  JSON.parse(await fs.readFile(path.join(journalObjects, name)))
+                )
+              )
+            ).find(
+              (value) => value.kind === "session" && value.sessionId === nextSession.sessionId
+            );
+            const nextRequest = {
+              schemaVersion: "manual-runner-request.v4",
+              profileDigest: nextSession.profileDigest,
+              ownerId: next.profile.ownerId,
+              sessionId: nextSession.sessionId,
+              sessionNonce: nextSession.sessionNonce,
+              operationId: next.operationRef,
+              idempotencyKey: `r3:${next.operationRef}`,
+              attemptId: randomUUID(),
+              runId: randomUUID(),
+              stage: "target-create",
+              capability: "create-isolated-target",
+              purpose: "stage1-isolated-database-tests",
+              ...scope,
+              candidate: { buildProofDigest: scope.buildProofDigest }
+            };
+            delete nextRequest.buildProofDigest;
+            const { schemaVersion, ownerId, capability, purpose, candidate, ...allocation } =
+              nextRequest;
+            const allocatedAt = new Date().toISOString();
+            nextRequest.attemptAllocationDigest = await storeCandidate({
+              ...allocation,
+              schemaVersion: "manual-runner-evidence.v2",
+              kind: "attempt-allocation",
+              recordedAt: allocatedAt,
+              allocatedAt,
+              promotionEligible: false,
+              sessionRecordDigest: sha256Canonical(opening),
+              buildProofDigest: candidate.buildProofDigest,
+              predecessorExecutionRecordDigest: null
+            });
+            await storeCandidate(nextRequest);
+            const {
+              schemaVersion: version,
+              attemptId,
+              runId,
+              attemptAllocationDigest,
+              sourceSha,
+              candidate: proof,
+              ...binding
+            } = nextRequest;
+            const nextInput = { binding, canonicalBytes: encodeManualJson(nextRequest) };
+            const priorJobReads = f.gh.calls.filter(
+              ({ args }) => args[0] === "api" && args[1] === `repos/${repository}/actions/jobs/4801`
+            ).length;
+            await fixed.recheck();
+            const nextAuthorization = await nextSession.sign(nextInput);
+            const receipt = await nextSession.consume({
+              authorization: nextAuthorization,
+              request: nextInput
+            });
+            assert.equal(receipt.stage, "target-create");
+            const pending = JSON.parse(
+              await fs.readFile(
+                path.join(journalObjects, `${receipt.executionRecordDigest.slice(7)}.json`)
+              )
+            );
+            assert.equal(pending.status, "INTERRUPTED_UNKNOWN");
+            assert.equal(pending.operationId, next.operationRef);
+            assert.notEqual(pending.sessionId, launched.session.sessionId);
+            assert.equal(pending.resultDigest, null);
+            assert.ok(
+              f.gh.calls.filter(
+                ({ args }) =>
+                  args[0] === "api" && args[1] === `repos/${repository}/actions/jobs/4801`
+              ).length > priorJobReads,
+              "live actions independently reauthenticate the completed old job"
+            );
+            // Reenumeration after the legitimate consume must allow reading the
+            // old success and current UNKNOWN, then reject only the duplicate.
+            await assert.rejects(nextSession.sign(nextInput), {
+              code: "MANUAL_SESSION_UNVERIFIED"
+            });
+            const recordsBefore = (await fs.readdir(journalObjects)).sort();
+            await fs.appendFile(backupAcknowledgement, " ");
+            try {
+              await assert.rejects(nextSession.sign(nextInput), {
+                code: "MANUAL_STORAGE_UNVERIFIED"
+              });
+              assert.deepEqual((await fs.readdir(journalObjects)).sort(), recordsBefore);
+            } finally {
+              await fs.writeFile(backupAcknowledgement, acknowledgementBytes, { mode: 0o600 });
+            }
+            await fixed.recheck();
+          } finally {
+            await nextSession.close();
+            await fixed.close();
+          }
+          assert.equal((await fs.readdir(lockRoot)).length, 43);
           if (handlerError) throw handlerError;
           assert.equal(received, 1);
           return;

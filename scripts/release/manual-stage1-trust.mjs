@@ -1673,15 +1673,15 @@ export async function readFixedR3JobAdmission(input) {
   }
 }
 
-// Reconstruct an acknowledged source from retained originals. This never
-// opens an execution session, reads the signing key, or acquires target locks.
-export async function readTrustedR3SourceCompletion(input) {
-  const code = "R3_SOURCE_HISTORY_UNAVAILABLE",
+// Internal H1/H2 input reader shared by history replay and live admission.
+// The core supplies the binding from its verified graph. Reading these inputs
+// alone neither verifies execution history nor grants execution authority.
+export async function readTrustedR3HistoricalContext(input) {
+  const code = "R3_HISTORY_CONTEXT_UNAVAILABLE",
     opened = [],
     policies = new Map(),
     jobs = [];
-  let history,
-    closed = false,
+  let closed = false,
     closing;
   const close = () => {
     if (closing) return closing;
@@ -1689,8 +1689,7 @@ export async function readTrustedR3SourceCompletion(input) {
     closing = (async () => {
       const outcomes = await Promise.allSettled([
         ...opened.map((item) => item.close()),
-        ...[...policies.values()].map((item) => item.close()),
-        ...(history ? [history.close()] : [])
+        ...[...policies.values()].map((item) => item.close())
       ]);
       for (const item of opened) item.bytes.fill(0);
       if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
@@ -1698,39 +1697,36 @@ export async function readTrustedR3SourceCompletion(input) {
     return closing;
   };
   try {
-    const { repoRoot, operationRef } = r3EvidenceSelector(input, ["executionRecordDigest"]);
+    const { repoRoot, operationRef } = r3EvidenceSelector(input, ["scope", "latestExecutionAt"]);
+    exact(input.scope, [
+      "targetPolicyDigest",
+      "creationSpecDigest",
+      "jobAdmissionDigest",
+      "buildProofDigest",
+      "sourceSha",
+      "phase",
+      "chain"
+    ]);
     requireThat(
-      typeof input.executionRecordDigest === "string" && DIGEST.test(input.executionRecordDigest)
+      ["targetPolicyDigest", "creationSpecDigest", "jobAdmissionDigest", "buildProofDigest"].every(
+        (field) => typeof input.scope[field] === "string" && DIGEST.test(input.scope[field])
+      ) &&
+        typeof input.scope.sourceSha === "string" &&
+        /^[0-9a-f]{40}$/u.test(input.scope.sourceSha) &&
+        ["source", "final"].includes(input.scope.phase) &&
+        ["fresh", "snapshot"].includes(input.scope.chain)
     );
+    instant(input.latestExecutionAt);
+    const boundContext = freeze({
+      operationRef,
+      scope: { ...input.scope },
+      latestExecutionAt: input.latestExecutionAt
+    });
     const profile = await loadManualProfile({ repoRoot }, false),
       profileDigest = sha256Canonical(profile),
       actual = await actualHost(),
       archiveRoot = profile.storage.archiveRoot,
       environment = fixedProcessEnvironment("gh");
-    const { readManualR3SourceHistory } =
-      await import("../../packages/release-foundation/src/manual-stage1-session.mjs");
-    history = await readManualR3SourceHistory({
-      profile,
-      ownerObservation: {
-        ownerId: profile.ownerId,
-        principal: actual.principal,
-        observedAt: new Date().toISOString()
-      },
-      repoRoot,
-      terminalExecutionRecordDigest: input.executionRecordDigest,
-      now: () => new Date().toISOString()
-    });
-    requireThat(
-      history.profileDigest === profileDigest &&
-        history.operationRef === operationRef &&
-        history.executionRecordDigest === input.executionRecordDigest &&
-        history.scope.phase === "source" &&
-        history.promotionEligible === false &&
-        DIGEST.test(history.resultDigest) &&
-        DIGEST.test(history.acknowledgementRecordDigest) &&
-        Array.isArray(history.verifiedContexts) &&
-        history.verifiedContexts.length > 0
-    );
     const read = async (file) => {
       requireThat(!closed);
       const held = await openInput(file, { principal: actual.principal, privateRoot: archiveRoot });
@@ -1738,11 +1734,9 @@ export async function readTrustedR3SourceCompletion(input) {
       requireThat(held.bytes.length > 0 && !closed);
       return held.bytes;
     };
-    const contexts = new Set();
-    for (const context of history.verifiedContexts) {
+    {
+      const context = boundContext;
       const { scope } = context;
-      requireThat(UUID.test(context.operationRef) && !contexts.has(context.operationRef));
-      contexts.add(context.operationRef);
       const root = path.join(archiveRoot, "inputs", "r3", context.operationRef),
         specBytes = await read(path.join(root, "creation-spec.json")),
         spec = json(specBytes, true),
@@ -1819,7 +1813,6 @@ export async function readTrustedR3SourceCompletion(input) {
       requireThat(verified.workflowRunId === ci.runId);
       jobs.push({ admission, latestExecutionAt });
     }
-    requireThat(contexts.has(operationRef));
     const api = (endpoint) => processOutput("gh", ["api", endpoint], { env: environment });
     const recheck = async () => {
       try {
@@ -1859,6 +1852,101 @@ export async function readTrustedR3SourceCompletion(input) {
           }
         }
         for (const item of opened) await item.recheck();
+        requireThat(!closed);
+      } catch {
+        await close();
+        fail(code);
+      }
+    };
+    await recheck();
+    return Object.freeze({
+      profileDigest,
+      operationRef,
+      scope: boundContext.scope,
+      latestExecutionAt: boundContext.latestExecutionAt,
+      recheck,
+      close
+    });
+  } catch {
+    await close();
+    fail(code);
+  }
+}
+
+// Public selector-only reader: derive the contexts from the complete graph
+// before independently authenticating each context's retained H1/H2 inputs.
+export async function readTrustedR3SourceCompletion(input) {
+  const code = "R3_SOURCE_HISTORY_UNAVAILABLE",
+    contexts = [];
+  let history,
+    closed = false,
+    closing;
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    closing = (async () => {
+      const outcomes = await Promise.allSettled([
+        ...contexts.map((context) => context.close()),
+        ...(history ? [history.close()] : [])
+      ]);
+      if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
+    })();
+    return closing;
+  };
+  try {
+    const { repoRoot, operationRef } = r3EvidenceSelector(input, ["executionRecordDigest"]);
+    requireThat(
+      typeof input.executionRecordDigest === "string" && DIGEST.test(input.executionRecordDigest)
+    );
+    const profile = await loadManualProfile({ repoRoot }, false),
+      profileDigest = sha256Canonical(profile),
+      actual = await actualHost();
+    const { readManualR3SourceHistory } =
+      await import("../../packages/release-foundation/src/manual-stage1-session.mjs");
+    history = await readManualR3SourceHistory({
+      profile,
+      ownerObservation: {
+        ownerId: profile.ownerId,
+        principal: actual.principal,
+        observedAt: new Date().toISOString()
+      },
+      repoRoot,
+      terminalExecutionRecordDigest: input.executionRecordDigest,
+      now: () => new Date().toISOString()
+    });
+    requireThat(
+      history.profileDigest === profileDigest &&
+        history.operationRef === operationRef &&
+        history.executionRecordDigest === input.executionRecordDigest &&
+        history.scope.phase === "source" &&
+        history.promotionEligible === false &&
+        DIGEST.test(history.resultDigest) &&
+        DIGEST.test(history.acknowledgementRecordDigest) &&
+        Array.isArray(history.verifiedContexts) &&
+        history.verifiedContexts.length > 0
+    );
+    const operations = new Set();
+    for (const context of history.verifiedContexts) {
+      requireThat(!operations.has(context.operationRef));
+      operations.add(context.operationRef);
+      const held = await readTrustedR3HistoricalContext({
+        repoRoot,
+        operationRef: context.operationRef,
+        scope: context.scope,
+        latestExecutionAt: context.latestExecutionAt
+      });
+      contexts.push(held);
+      requireThat(held.profileDigest === profileDigest && equal(held.scope, context.scope));
+    }
+    requireThat(operations.has(operationRef));
+    const recheck = async () => {
+      try {
+        requireThat(!closed);
+        requireThat(equal(await actualHost(), actual));
+        requireThat(
+          sha256Canonical(await loadManualProfile({ repoRoot }, false)) === profileDigest
+        );
+        for (const context of contexts) await context.recheck();
         await history.recheck();
         requireThat(!closed);
       } catch {

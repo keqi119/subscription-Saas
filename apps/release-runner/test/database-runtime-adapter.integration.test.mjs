@@ -77,6 +77,7 @@ test("observes migration and schema facts and keeps the database URL out of argv
       tlsMode: "require"
     },
     repoRoot: "C:/app",
+    environment: { PATH: "fixed-image-path", NODE_ENV: "production" },
     async runProcess(command, args, options) {
       calls.push({ command, args, options });
       if (args.includes("--version")) return { exitCode: 0, signal: null, stdout: "tool 1\n" };
@@ -90,6 +91,9 @@ test("observes migration and schema facts and keeps the database URL out of argv
   const migration = await adapter.observeMigrationState();
   const schema = await adapter.observeSchema();
   const versions = await adapter.readToolVersions();
+  await adapter.withMigrationLock(async (transaction) => {
+    assert.equal(transaction, database);
+  });
 
   const schemaDiffCall = calls.find(({ args }) => args.includes("--to-schema"));
   const schemaScriptCall = calls.find(({ args }) => args.includes("--script"));
@@ -126,4 +130,10 @@ test("observes migration and schema facts and keeps the database URL out of argv
     calls.every(({ options }) => options.environment.DATABASE_URL.includes("postgresql://")),
     true
   );
+  assert.deepEqual(Object.keys(calls[0].options.environment).sort(), [
+    "DATABASE_URL",
+    "NODE_ENV",
+    "PATH",
+    "STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV"
+  ]);
 });

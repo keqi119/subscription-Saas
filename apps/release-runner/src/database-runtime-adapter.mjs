@@ -99,6 +99,7 @@ export function createDatabaseRuntimeAdapter({
   target,
   repoRoot = "/app",
   runProcess = executeProcess,
+  environment = process.env,
   now = () => new Date()
 }) {
   if (!database || typeof runProcess !== "function") {
@@ -107,7 +108,7 @@ export function createDatabaseRuntimeAdapter({
   const schema = path.resolve(repoRoot, schemaRelativePath);
   const prisma = path.resolve(repoRoot, "apps/release-runner/node_modules/.bin/prisma");
   const childEnvironment = Object.freeze({
-    ...process.env,
+    ...environment,
     DATABASE_URL: databaseUrl(credential, target),
     STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV: "1"
   });
@@ -207,7 +208,9 @@ export function createDatabaseRuntimeAdapter({
         );
         activeDatabase = transaction;
         try {
-          return await callback();
+          // Optional argument lets fixed callers reobserve target identity on
+          // the held transaction instead of deadlocking the max:1 outer pool.
+          return await callback(transaction);
         } finally {
           activeDatabase = database;
         }

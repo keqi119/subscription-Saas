@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "r3-final-migration-input.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "phase",
+    "chain",
+    "profileDigest",
+    "sessionId",
+    "sessionNonce",
+    "operationId",
+    "runId",
+    "attemptId",
+    "candidateUseExecutionRecordDigest",
+    "matchingSourceEvidenceDigest",
+    "matchingSourceResultDigest",
+    "destinationAdmissionDigest",
+    "creationEvidenceDigest",
+    "databaseTargetPlanDigest",
+    "databaseTestManifestDigest",
+    "databaseTestDiscoveryDigest",
+    "buildProof",
+    "buildProofDigest",
+    "actualRunnerDigest",
+    "sourceSha",
+    "runnerContainerId",
+    "migrationContainerId",
+    "postgres",
+    "assignment",
+    "database",
+    "expectedSchemaDigest",
+    "migrationCatalogDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "r3-final-migration-input.v1" },
+    "phase": { "const": "final" },
+    "chain": { "enum": ["fresh", "snapshot"] },
+    "profileDigest": { "$ref": "#/$defs/digest" },
+    "sessionId": { "$ref": "#/$defs/uuid" },
+    "sessionNonce": { "$ref": "#/$defs/hex64" },
+    "operationId": { "$ref": "#/$defs/uuid" },
+    "runId": { "$ref": "#/$defs/uuid" },
+    "attemptId": { "$ref": "#/$defs/uuid" },
+    "candidateUseExecutionRecordDigest": { "$ref": "#/$defs/digest" },
+    "matchingSourceEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "matchingSourceResultDigest": { "$ref": "#/$defs/digest" },
+    "destinationAdmissionDigest": { "$ref": "#/$defs/digest" },
+    "creationEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "databaseTargetPlanDigest": { "$ref": "#/$defs/digest" },
+    "databaseTestManifestDigest": { "$ref": "#/$defs/digest" },
+    "databaseTestDiscoveryDigest": { "$ref": "#/$defs/digest" },
+    "buildProof": { "$ref": "build-proof.v1" },
+    "buildProofDigest": { "$ref": "#/$defs/digest" },
+    "actualRunnerDigest": { "$ref": "#/$defs/digest" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "runnerContainerId": { "$ref": "#/$defs/hex64" },
+    "migrationContainerId": { "$ref": "#/$defs/hex64" },
+    "postgres": { "$ref": "#/$defs/postgres" },
+    "assignment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "suiteId", "name"],
+          "properties": {
+            "kind": { "const": "suite" },
+            "suiteId": { "type": "string", "minLength": 1 },
+            "name": { "enum": ["target", "source"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "suiteId", "lifecycleShard"],
+          "properties": {
+            "kind": { "const": "lifecycle-owned" },
+            "suiteId": { "const": "node.release-database-lifecycle.postgres" },
+            "lifecycleShard": { "enum": [0, 1] }
+          }
+        }
+      ]
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "databaseName",
+        "databaseOid",
+        "marker",
+        "migrationRole",
+        "migrationCredentialFingerprint",
+        "databaseIdentityFingerprint",
+        "targetLockDigest"
+      ],
+      "properties": {
+        "databaseName": { "type": "string", "pattern": "^s1ci_[0-9a-f]{24}$" },
+        "databaseOid": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "marker": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "migrationRole": { "type": "string", "pattern": "^s1m_[0-9a-f]{24}$" },
+        "migrationCredentialFingerprint": { "$ref": "#/$defs/digest" },
+        "databaseIdentityFingerprint": { "$ref": "#/$defs/digest" },
+        "targetLockDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "expectedSchemaDigest": { "$ref": "#/$defs/digest" },
+    "migrationCatalogDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "hex64": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "postgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engineId",
+        "containerId",
+        "systemIdentifier",
+        "imageDigest",
+        "hostname",
+        "port",
+        "tlsMode"
+      ],
+      "properties": {
+        "engineId": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,128}$" },
+        "containerId": { "$ref": "#/$defs/hex64" },
+        "systemIdentifier": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "imageDigest": { "$ref": "#/$defs/digest" },
+        "hostname": { "const": "postgres" },
+        "port": { "const": 5432 },
+        "tlsMode": { "const": "require" }
+      }
+    }
+  }
+}

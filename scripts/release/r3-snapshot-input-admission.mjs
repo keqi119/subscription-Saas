@@ -449,6 +449,166 @@ async function checkStorage(s, raw, now) {
   }
 }
 
+// Rebuild retained declarations at an event time. The supplied reader provides
+// bytes only; this does not observe current storage, decrypt, or grant use.
+export async function readR3SnapshotDeclarations(input) {
+  requireThat(exact(input, ["profile", "indexBytes", "inputReference", "observedAt", "readRaw"]));
+  const { profile, indexBytes, inputReference, observedAt, readRaw } = input;
+  requireThat(
+    typeof inputReference === "string" &&
+      UUID.test(inputReference) &&
+      Buffer.isBuffer(indexBytes) &&
+      indexBytes.length > 0 &&
+      indexBytes.length <= LIMIT &&
+      typeof readRaw === "function"
+  );
+  const now = instant(observedAt);
+  validateContract("manual-stage1-profile.v2", profile);
+  const capturedProfile = JSON.parse(encodeManualJson(profile).toString("utf8"));
+  const heldIndexBytes = Buffer.from(indexBytes);
+  requireThat(
+    instant(capturedProfile.validFrom) <= now && now < instant(capturedProfile.expiresAt)
+  );
+  const profileDigest = sha256Canonical(capturedProfile);
+  const index = json(heldIndexBytes);
+  requireThat(
+    exact(index, ["recordVersion", "inputReference", "profileDigest", "ownerId", ...subjects]) &&
+      index.recordVersion === "r3-snapshot-input-index.v1" &&
+      index.inputReference === inputReference &&
+      index.profileDigest === profileDigest &&
+      index.ownerId === capturedProfile.ownerId
+  );
+  const refs = new Map();
+  const rawDigest = async (digest) => {
+    requireThat(typeof digest === "string" && DIGEST.test(digest));
+    if (refs.has(digest)) return refs.get(digest);
+    requireThat(refs.size < 128);
+    const bytes = await readRaw(digest);
+    requireThat(Buffer.isBuffer(bytes) && bytes.length <= LIMIT && sha256Bytes(bytes) === digest);
+    refs.set(digest, Buffer.from(bytes));
+    return refs.get(digest);
+  };
+  const raw = async (ref) => {
+    rawRef(ref);
+    const bytes = await rawDigest(ref.digest);
+    requireThat(bytes.length === ref.bytes);
+    return bytes;
+  };
+  const s = {};
+  for (const name of subjects) s[name] = json(await raw(index[name]));
+  checkSources(s, now);
+  // The envelope's digest is a reference; open the actual producer original.
+  requireThat(s.envelope.schemaVersion === "snapshot-encryption-envelope.v2");
+  const authorization = json(await rawDigest(s.envelope.authorizationDigest));
+  requireThat(authorization.schemaVersion === "producer-crypto-run-authorization.v2");
+  validateSnapshotEncryptionEnvelope(s.envelope, { authorization });
+  validateSnapshotCustody(s.custody);
+  const e = s.envelope,
+    c = s.custody,
+    m = s.metadata;
+  requireThat(
+    e.snapshotDigest === m.dumpDigest &&
+      e.sanitizationContractDigest === m.sanitizationContractDigest &&
+      e.expiresAt === m.expiresAt &&
+      c.expiresAt === m.expiresAt &&
+      c.object.envelopeDigest === sha256Canonical(e) &&
+      c.object.ciphertextDigest === e.ciphertextDigest &&
+      c.object.ciphertextSizeBytes === e.ciphertextSizeBytes &&
+      c.object.key === e.slotObjectKey &&
+      ["sourceSha", "releaseAttemptId", "snapshotRunId"].every((key) => c[key] === e[key])
+  );
+  const bundleManifest = {
+    dumpDigest: m.dumpDigest,
+    metadataDigest: sha256Canonical(m),
+    privilegeObservationDigest: sha256Canonical(s.sourcePrivilege),
+    fingerprintObservationDigest: sha256Canonical(s.afterFingerprint),
+    scanDigest: sha256Canonical(s.scan)
+  };
+  // This reconstructs a declaration digest, not a dump custody receipt.
+  const bundleInputs = { manifest: bundleManifest, digest: sha256Canonical(bundleManifest) };
+  await checkPermission(s, index, capturedProfile, raw, now);
+  await checkStorage(s, raw, now);
+  const deadline = Math.min(
+    instant(m.expiresAt),
+    instant(s.permission.validUntil),
+    instant(capturedProfile.expiresAt)
+  );
+  const assertConsumerBinding = (input) => {
+    requireThat(exact(input, ["request", "scope"]));
+    const request = validateManualSnapshotConsumerRequest(input.request),
+      scope = input.scope;
+    requireThat(
+      exact(scope, [
+        "targetPolicyDigest",
+        "creationSpecDigest",
+        "jobAdmissionDigest",
+        "buildProofDigest",
+        "sourceSha",
+        "phase",
+        "chain"
+      ])
+    );
+    requireThat(
+      request.schemaVersion === "manual-runner-request.v3" &&
+        request.profileDigest === profileDigest &&
+        request.ownerId === capturedProfile.ownerId &&
+        request.input.inputReference === inputReference &&
+        request.input.inputIndexDigest === sha256Bytes(heldIndexBytes) &&
+        request.scopeAuthorizationDigest === index.permission.digest &&
+        scope.chain === "snapshot" &&
+        request.phase === scope.phase &&
+        request.sourceSha === scope.sourceSha &&
+        request.candidate.buildProofDigest === scope.buildProofDigest &&
+        typeof scope.jobAdmissionDigest === "string" &&
+        DIGEST.test(scope.jobAdmissionDigest)
+    );
+    const use = s.permission.allowedUses.find((value) => value.phase === request.phase);
+    requireThat(
+      use &&
+        use.destinationAdmissionDigest === request.destinationAdmissionDigest &&
+        use.readerPrincipal === `manual-h1:${profileDigest}` &&
+        use.decryptorPrincipal === `manual-h1:${profileDigest}` &&
+        use.userPrincipal === `manual-r3-job:${scope.jobAdmissionDigest}`
+    );
+  };
+  return freeze({
+    inputId: inputReference,
+    inputIndexDigest: sha256Bytes(heldIndexBytes),
+    permissionDigest: index.permission.digest,
+    metadataDigest: index.metadata.digest,
+    bundleInputs,
+    ciphertextDigest: e.ciphertextDigest,
+    objectVersion: c.object.version,
+    storageSubject: {
+      bucket: c.bucket.name,
+      region: c.bucket.region,
+      key: c.object.key,
+      version: c.object.version,
+      etag: c.object.etag,
+      ciphertextDigest: e.ciphertextDigest,
+      ciphertextSizeBytes: e.ciphertextSizeBytes,
+      lastModified: c.worm.lastModified,
+      writerPrincipal: c.identities.writer
+    },
+    cryptoInputs: {
+      authorization,
+      envelope: e,
+      aad: {
+        ...e.context,
+        snapshotAllocatedAt: e.snapshotAllocatedAt,
+        snapshotDigest: e.snapshotDigest
+      }
+    },
+    restoreInputs: { metadata: m, ownershipMap: s.ownershipMap },
+    expiresAt: new Date(deadline).toISOString(),
+    allowedUses: s.permission.allowedUses,
+    rawReferences: [...refs]
+      .map(([digest, bytes]) => ({ digest, bytes: bytes.length }))
+      .sort((a, b) => a.digest.localeCompare(b.digest)),
+    assertConsumerBinding
+  });
+}
+
 export async function readR3SnapshotInput(input) {
   if (
     !exact(input, ["repoRoot", "inputReference", "now"]) ||
@@ -473,8 +633,7 @@ export async function readR3SnapshotInput(input) {
   // H1 for this implementation is the approved Linux signing host. Never accept
   // a caller-provided uid, root, filesystem adapter or authority callback.
   if (process.platform !== "linux") fail("R3_SNAPSHOT_INPUT_UNAVAILABLE");
-  const opened = [],
-    refs = new Map();
+  const opened = [];
   let closed = false;
   const close = async () => {
     if (closed) return;
@@ -496,78 +655,17 @@ export async function readR3SnapshotInput(input) {
       return item.bytes;
     };
     const indexBytes = await pin(
-        path.join(profile.storage.archiveRoot, "inputs", "snapshots", inputReference, "index.json")
-      ),
-      index = json(indexBytes);
-    requireThat(
-      exact(index, ["recordVersion", "inputReference", "profileDigest", "ownerId", ...subjects]) &&
-        index.recordVersion === "r3-snapshot-input-index.v1" &&
-        index.inputReference === inputReference &&
-        index.profileDigest === profileDigest &&
-        index.ownerId === profile.ownerId
+      path.join(profile.storage.archiveRoot, "inputs", "snapshots", inputReference, "index.json")
     );
-    const rawDigest = async (digest) => {
-      requireThat(typeof digest === "string" && DIGEST.test(digest));
-      if (refs.has(digest)) return refs.get(digest);
-      requireThat(refs.size < 128);
-      const bytes = await pin(
-        path.join(profile.storage.archiveRoot, "raw", `${digest.slice(7)}.bin`)
-      );
-      requireThat(sha256Bytes(bytes) === digest);
-      refs.set(digest, bytes);
-      return bytes;
-    };
-    const raw = async (ref) => {
-      rawRef(ref);
-      const bytes = await rawDigest(ref.digest);
-      requireThat(bytes.length === ref.bytes);
-      return bytes;
-    };
-    const s = {};
-    for (const name of subjects) s[name] = json(await raw(index[name]));
-    checkSources(s, now);
-    // The digest in an envelope is a reference, not the producer original.
-    // Reuse the fixed bounded raw store; never resolve a caller-provided path.
-    requireThat(s.envelope.schemaVersion === "snapshot-encryption-envelope.v2");
-    const authorization = json(await rawDigest(s.envelope.authorizationDigest));
-    requireThat(authorization.schemaVersion === "producer-crypto-run-authorization.v2");
-    validateSnapshotEncryptionEnvelope(s.envelope, { authorization });
-    validateSnapshotCustody(s.custody);
-    const e = s.envelope,
-      c = s.custody,
-      m = s.metadata;
-    requireThat(
-      e.snapshotDigest === m.dumpDigest &&
-        e.sanitizationContractDigest === m.sanitizationContractDigest &&
-        e.expiresAt === m.expiresAt &&
-        c.expiresAt === m.expiresAt &&
-        c.object.envelopeDigest === sha256Canonical(e) &&
-        c.object.ciphertextDigest === e.ciphertextDigest &&
-        c.object.ciphertextSizeBytes === e.ciphertextSizeBytes &&
-        c.object.key === e.slotObjectKey &&
-        ["sourceSha", "releaseAttemptId", "snapshotRunId"].every((key) => c[key] === e[key])
-    );
-    const bundleManifest = {
-      dumpDigest: m.dumpDigest,
-      metadataDigest: sha256Canonical(m),
-      privilegeObservationDigest: sha256Canonical(s.sourcePrivilege),
-      fingerprintObservationDigest: sha256Canonical(s.afterFingerprint),
-      scanDigest: sha256Canonical(s.scan)
-    };
-    // This reconstructs the producer's bundle digest from pinned declarations.
-    // The actual dump still requires decrypt/consumer authentication; this is
-    // not the historical bundle custody receipt.
-    const bundleInputs = {
-      manifest: bundleManifest,
-      digest: sha256Canonical(bundleManifest)
-    };
-    await checkPermission(s, index, profile, raw, now);
-    await checkStorage(s, raw, now);
-    const deadline = Math.min(
-      instant(m.expiresAt),
-      instant(s.permission.validUntil),
-      instant(profile.expiresAt)
-    );
+    const declarations = await readR3SnapshotDeclarations({
+      profile,
+      indexBytes,
+      inputReference,
+      observedAt: new Date(now).toISOString(),
+      readRaw: (digest) =>
+        pin(path.join(profile.storage.archiveRoot, "raw", `${digest.slice(7)}.bin`))
+    });
+    const deadline = instant(declarations.expiresAt);
     const recheck = async () => {
       if (closed) fail("R3_SNAPSHOT_INPUT_UNAVAILABLE");
       try {
@@ -579,87 +677,12 @@ export async function readR3SnapshotInput(input) {
       }
     };
     await recheck();
-    // This checks a declaration's resource boundary, not a consume decision.
-    // The session separately verifies allocation, creation, revocation and slot.
+    // The live wrapper retains the original held-byte and deadline checks.
     const assertConsumerBinding = async (input) => {
-      requireThat(exact(input, ["request", "scope"]));
-      const request = validateManualSnapshotConsumerRequest(input.request),
-        scope = input.scope;
-      requireThat(
-        exact(scope, [
-          "targetPolicyDigest",
-          "creationSpecDigest",
-          "jobAdmissionDigest",
-          "buildProofDigest",
-          "sourceSha",
-          "phase",
-          "chain"
-        ])
-      );
-      requireThat(
-        request.schemaVersion === "manual-runner-request.v3" &&
-          request.profileDigest === profileDigest &&
-          request.ownerId === profile.ownerId &&
-          request.input.inputReference === inputReference &&
-          request.input.inputIndexDigest === sha256Bytes(indexBytes) &&
-          request.scopeAuthorizationDigest === index.permission.digest &&
-          scope.chain === "snapshot" &&
-          request.phase === scope.phase &&
-          request.sourceSha === scope.sourceSha &&
-          request.candidate.buildProofDigest === scope.buildProofDigest &&
-          typeof scope.jobAdmissionDigest === "string" &&
-          DIGEST.test(scope.jobAdmissionDigest)
-      );
-      const use = s.permission.allowedUses.find((value) => value.phase === request.phase);
-      requireThat(
-        use &&
-          use.destinationAdmissionDigest === request.destinationAdmissionDigest &&
-          use.readerPrincipal === `manual-h1:${profileDigest}` &&
-          use.decryptorPrincipal === `manual-h1:${profileDigest}` &&
-          use.userPrincipal === `manual-r3-job:${scope.jobAdmissionDigest}`
-      );
+      declarations.assertConsumerBinding(input);
       await recheck();
     };
-    return freeze({
-      inputId: inputReference,
-      inputIndexDigest: sha256Bytes(indexBytes),
-      permissionDigest: index.permission.digest,
-      metadataDigest: index.metadata.digest,
-      bundleInputs,
-      ciphertextDigest: e.ciphertextDigest,
-      objectVersion: c.object.version,
-      storageSubject: {
-        bucket: c.bucket.name,
-        region: c.bucket.region,
-        key: c.object.key,
-        version: c.object.version,
-        etag: c.object.etag,
-        ciphertextDigest: e.ciphertextDigest,
-        ciphertextSizeBytes: e.ciphertextSizeBytes,
-        lastModified: c.worm.lastModified,
-        writerPrincipal: c.identities.writer
-      },
-      // Historical crypto parameters only. These do not grant consumption,
-      // attest live storage/key possession or extend the current input deadline.
-      cryptoInputs: {
-        authorization,
-        envelope: e,
-        aad: {
-          ...e.context,
-          snapshotAllocatedAt: e.snapshotAllocatedAt,
-          snapshotDigest: e.snapshotDigest
-        }
-      },
-      restoreInputs: { metadata: m, ownershipMap: s.ownershipMap },
-      expiresAt: new Date(deadline).toISOString(),
-      allowedUses: s.permission.allowedUses,
-      rawReferences: [...refs]
-        .map(([digest, bytes]) => ({ digest, bytes: bytes.length }))
-        .sort((a, b) => a.digest.localeCompare(b.digest)),
-      assertConsumerBinding,
-      recheck,
-      close
-    });
+    return freeze({ ...declarations, assertConsumerBinding, recheck, close });
   } catch (error) {
     await close();
     if (error?.code?.startsWith("R3_SNAPSHOT_INPUT_")) throw error;

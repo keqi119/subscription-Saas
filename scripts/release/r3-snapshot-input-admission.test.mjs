@@ -282,6 +282,14 @@ test("R3 consumer binds the fixed permission to exact input, destination and exi
     input: { inputReference: f.input.inputReference, inputIndexDigest: held.inputIndexDigest },
     candidate: { buildProofDigest: scope.buildProofDigest }
   };
+  const declarations = await production.readR3SnapshotDeclarations({
+    profile: f.profile,
+    indexBytes: await fs.readFile(f.indexPath),
+    inputReference: f.input.inputReference,
+    observedAt: f.input.now.toISOString(),
+    readRaw: (digest) => fs.readFile(f.rawPath({ digest }))
+  });
+  assert.equal(declarations.assertConsumerBinding({ request, scope }), undefined);
   assert.equal(await held.assertConsumerBinding({ request, scope }), undefined);
   for (const patch of [
     { scopeAuthorizationDigest: d("0") },
@@ -389,6 +397,39 @@ test("R3 pins a complete declaration graph without opening ciphertext and detect
   await assert.rejects(result.recheck(), { code: "R3_SNAPSHOT_INPUT_UNAVAILABLE" });
   await result.close();
   await assert.rejects(result.recheck(), { code: "R3_SNAPSHOT_INPUT_UNAVAILABLE" });
+});
+
+test("R3 snapshot declarations reconstruct at their event time without reviving an expired live reader", async (t) => {
+  const f = await inputFixture(t);
+  const live = await production.readR3SnapshotInput(f.input);
+  t.after(() => live.close());
+  const indexBytes = await fs.readFile(f.indexPath);
+  const input = {
+    profile: f.profile,
+    indexBytes,
+    inputReference: f.input.inputReference,
+    observedAt: "2026-09-28T00:00:00.000Z",
+    readRaw: (digest) => fs.readFile(f.rawPath({ digest }))
+  };
+  t.mock.method(Date, "now", () => Date.parse("2026-10-04T00:00:00.000Z"));
+  const declarations = await production.readR3SnapshotDeclarations(input);
+  assert.equal(declarations.inputIndexDigest, sha256Bytes(indexBytes));
+  assert.equal(declarations.permissionDigest, f.index.permission.digest);
+  assert.equal(declarations.expiresAt, "2026-10-03T00:00:00.000Z");
+  assert.equal(typeof declarations.assertConsumerBinding, "function");
+  assert.equal(Object.hasOwn(declarations, "recheck"), false);
+  assert.equal(Object.hasOwn(declarations, "close"), false);
+  await assert.rejects(
+    production.readR3SnapshotDeclarations({
+      ...input,
+      observedAt: "2026-10-04T00:00:00.000Z"
+    }),
+    { code: "SNAPSHOT_EXPIRED" }
+  );
+  await assert.rejects(production.readR3SnapshotInput(f.input), {
+    code: "R3_SNAPSHOT_INPUT_UNAVAILABLE"
+  });
+  await assert.rejects(live.recheck(), { code: "R3_SNAPSHOT_INPUT_UNAVAILABLE" });
 });
 
 test("R3 refuses inconsistent source, scan, permission and native storage originals", async (t) => {

@@ -128,3 +128,15 @@ hosted control 新增无参数的一次性清理入口，从自己仍持有的�
 预检 `b52f8c` 为干净的 `437089ec`；本地迁移查询仍因缺 datasource.url 在连接前退出，Prisma 校验 `1db929` 通过。现有 v5 请求、v5 签名授权及 v2 分配增加互斥 final 分支：必须使用 final 执行能力并绑定 matchingSourceEvidenceDigest；source 字段和签名语义不变，继续禁止该字段。final 准备前驱仍须是本会话成功创建（fresh）或消费（snapshot），不能用 source 记录替代。完整 source 原件匹配由后续 core 接线负责，本切片不启用 final 执行。
 
 短用例 RED `64b06e` → GREEN `b15589`；受影响契约测试文件 `c00780` 为 95/95，12,681.0248 ms。格式 `351885`、限定源码 lint 与差异检查 `131d4f` 通过。合同检查 `bc3b53` 通过：235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:ab92770132121db844c1cf81d2a543589254c7cc856e89c3bd95debc38715403`。未重跑长链、操作云端或变更业务代码；阶段 1 仍未完成。
+
+## 最终候选历史匹配与测试目标分配（本地增量）
+
+契约已提交为 `4981b1e6`。预检 `9e67e0` 工作区干净，本地迁移查询仍因 datasource.url 缺失在连接前退出；Prisma `d0ca1e` 通过。完整历史校验现在为 fresh 和 snapshot 构建 source 事实，final 候选签发、消费及重查共用同候选、同链、同 CI attempt、已签收清理关闭且物理目标独立的匹配规则。snapshot 候选还须保留自身已成功 consumer 的 source 摘要。final 仍保留初始 UNKNOWN，明确拒绝使用 source 成功终态或完成方法。
+
+内部 final 清单绑定复用既有 source 逻辑，保持全部测试套件的原命令、文件、独立数据库和生命周期预留目标。额外应用数据库仍通过完整计划校验，但不作为测试套件目标。此处是分配逻辑，尚未修复旧 final Runner 入口的单库执行路径。
+
+匹配规则 RED `978fb4`（2 fail）→ GREEN `83151d`（4/4、0 skip、36.4 秒）；增强规则及真实 core 的 final 创建消费后拒绝 source 方法、保持 UNKNOWN 检查 `306816`（3/3、0 skip、20.7 秒）。纯比较用例不验证历史原件认证；真实 core 用例也没有完成 final 候选链。final 清单用例缺导出 RED 后，相关四个纯计划/绑定用例 4/4，通过格式检查；子 agent 未保存这些工具编号，未补造编号。
+
+合同检查 `99db67` 为 236 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:7d0fb18dce5808b48cb66a0365836130d7cb62eaad54f796a089b57ec3506f50`。限定 lint 初次遗漏 Node 的 structuredClone 全局声明，补齐检查配置后 `a4e1c9` 通过；格式和差异检查 `4bc37f` 通过。有限独立静态审查未发现此次绑定的阻断问题。未搭建新的大型模拟链、重跑旧长测试或操作云端。
+
+剩余重点为 final Runner 分套件入口与生命周期接线、真实 final 终态及清理、受控工作流和同候选完整 R2/R3 验证；合法快照来源仍待确认。随后才能对齐 Staging 两项迁移、恢复 API/Web 并完成 R4。以上本地增量不代表阶段 1 收口。

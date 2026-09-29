@@ -13,6 +13,7 @@ import * as manualSessions from "../src/manual-stage1-session.mjs";
 import { deterministicPlanDigest } from "../src/proof-builders.mjs";
 import { assessManualRunnerEvidence } from "../src/manual-runner-evidence.mjs";
 import { validateContract } from "../src/schema-registry.mjs";
+import { assertR3MatchingSources } from "../src/manual-r3-source-matching.mjs";
 
 // Private offline artifact factories follow the approved E fixtures. They only
 // construct bytes; the session tests below persist and reopen every original.
@@ -3129,7 +3130,7 @@ for (const mode of ["expired-receipt", "receipt-storage-failure"]) {
   });
 }
 
-function r3CreationFixture(f) {
+function r3CreationFixture(f, phase = "source") {
   const operationRef = uuid(701);
   const id = operationRef.replaceAll("-", "");
   const workspace = {
@@ -3150,7 +3151,7 @@ function r3CreationFixture(f) {
     proofRawDigest: "sha256:" + "1".repeat(64),
     materialRawDigest: "sha256:" + "2".repeat(64),
     targetPolicyDigest: "sha256:" + "3".repeat(64),
-    phase: "source",
+    phase,
     chain: "fresh",
     createdAt: time(-1),
     expiresAt: time(600),
@@ -3251,6 +3252,170 @@ test("R3 cleanup observation is a closed schema distinct from execution and ACK"
         Object.fromEntries(Object.entries(value).filter(([key]) => key !== field))
       )
     );
+});
+
+// Pure comparison fixtures exercise no historical authentication. The core must
+// still reconstruct these facts from complete originals before using the helper.
+function r3MatchingFacts(chain = "fresh", stage = "candidate-use") {
+  const source = {
+    terminalDigest: D,
+    closedAt: time(-1),
+    profileDigest: D,
+    buildProofDigest: D,
+    sourceSha: "a".repeat(40),
+    chain,
+    manifestDigest: D,
+    manifestRawDigest: D,
+    snapshot: chain === "fresh" ? null : { ciphertextDigest: D, objectVersion: "v1" },
+    ci: {
+      repository: "owner/repo",
+      repositoryId: "12",
+      runId: "34",
+      runAttempt: 1,
+      callerWorkflowPath: ".github/workflows/candidate.yml"
+    },
+    operationRef: uuid(1),
+    sessionId: uuid(2),
+    sessionNonce: "a".repeat(64),
+    runIds: [uuid(3)],
+    engineId: "source-engine",
+    containerId: "a".repeat(64),
+    systemIdentifier: "123",
+    targetLocks: [D]
+  };
+  const final = {
+    ...structuredClone(source),
+    stage,
+    matchingSourceEvidenceDigest: D,
+    allocatedAt: NOW,
+    operationRef: uuid(4),
+    sessionId: uuid(5),
+    sessionNonce: "b".repeat(64),
+    runId: uuid(6),
+    engineId: "final-engine",
+    containerId: "b".repeat(64),
+    systemIdentifier: "456",
+    targetLocks: ["sha256:" + "b".repeat(64)],
+    consumerMatchingSourceEvidenceDigest:
+      chain === "snapshot" && stage === "candidate-use" ? D : null
+  };
+  return { source, final };
+}
+function checkR3MatchingFacts(source, final, extraSources = []) {
+  assertR3MatchingSources({
+    r3Sources: new Map([source, ...extraSources].map((value, n) => [n, value])),
+    r3FinalUses: new Map([["final", final]])
+  });
+}
+test("R3 final matching admits fresh without snapshot and snapshot candidate with its own consumer", () => {
+  for (const [chain, stage] of [
+    ["fresh", "candidate-use"],
+    ["snapshot", "candidate-use"],
+    ["snapshot", "snapshot-consumer"]
+  ]) {
+    const { source, final } = r3MatchingFacts(chain, stage);
+    if (chain === "fresh") {
+      delete source.snapshot;
+      delete final.snapshot;
+    }
+    assert.doesNotThrow(() => checkR3MatchingFacts(source, final));
+  }
+});
+test("R3 final matching rejects wrong chain payload selector consumer closure or shared identity", () => {
+  assert.throws(
+    () =>
+      assertR3MatchingSources({
+        r3Sources: new Map(),
+        r3FinalUses: new Map([["final", r3MatchingFacts().final]])
+      }),
+    { code: "MANUAL_EVIDENCE_BINDING_MISMATCH" }
+  );
+  const reject = (change) => {
+    const facts = r3MatchingFacts("snapshot");
+    change(facts);
+    assert.throws(() => checkR3MatchingFacts(facts.source, facts.final, facts.extraSources), {
+      code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+    });
+  };
+  reject(({ final }) => {
+    final.chain = "fresh";
+  });
+  reject(({ final }) => {
+    final.snapshot.objectVersion = "other";
+  });
+  reject(({ final }) => {
+    final.matchingSourceEvidenceDigest = "sha256:" + "1".repeat(64);
+  });
+  reject(({ final }) => {
+    final.consumerMatchingSourceEvidenceDigest = "sha256:" + "1".repeat(64);
+  });
+  reject(({ final }) => {
+    final.consumerMatchingSourceEvidenceDigest = null;
+  });
+  reject(({ source }) => {
+    source.closedAt = null;
+  });
+  reject(({ source }) => {
+    source.closedAt = time(1);
+  });
+  reject((facts) => {
+    facts.extraSources = [{ ...facts.source, terminalDigest: "sha256:" + "1".repeat(64) }];
+  });
+  for (const field of [
+    "profileDigest",
+    "buildProofDigest",
+    "sourceSha",
+    "manifestDigest",
+    "manifestRawDigest"
+  ])
+    reject(({ final }) => {
+      final[field] = "different";
+    });
+  for (const field of ["repository", "repositoryId", "runId", "runAttempt", "callerWorkflowPath"])
+    reject(({ final }) => {
+      final.ci[field] = "different";
+    });
+  for (const field of [
+    "operationRef",
+    "sessionId",
+    "sessionNonce",
+    "engineId",
+    "containerId",
+    "systemIdentifier",
+    "targetLocks"
+  ])
+    reject(({ source, final }) => {
+      final[field] = source[field];
+    });
+  reject(({ source, final }) => {
+    final.runId = source.runIds[0];
+  });
+});
+
+test("R3 final creation cannot complete through source methods and remains UNKNOWN", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const session = await r3CreationSession(t, f, r3CreationFixture(f, "final"));
+  const request = await r3CreationRequest(f, session);
+  const authorization = await session.sign(request);
+  const receipt = await session.consume({ authorization, request });
+  for (const method of [
+    "assertCandidateUse",
+    "verifySourceOriginals",
+    "custodySourceOriginals",
+    "completeSource",
+    "completeCleanup"
+  ])
+    await assert.rejects(session[method](), { code: "MANUAL_SESSION_UNVERIFIED" });
+  assert.equal((await f.records("consumption")).length, 1);
+  assert.deepEqual(
+    (await f.records("execution")).map((value) => [sha256Canonical(value), value.status]),
+    [[receipt.executionRecordDigest, "INTERRUPTED_UNKNOWN"]]
+  );
+  await session.closeIncomplete();
+  assert.equal(
+    (await f.records("session")).filter((value) => value.status === "INTERRUPTED_UNKNOWN").length,
+    1
+  );
 });
 
 test("R3 snapshot consumption assertion rejects supplied proofs and absent consumption without writes", async (t) => {

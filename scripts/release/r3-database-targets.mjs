@@ -136,10 +136,10 @@ export function planR3DatabaseTargets({ operationRef, phase, chain, manifest }) 
     fail();
   }
 }
-// Bind the entire declared source manifest to the already planned held target.
+// Bind the entire declared manifest to the already planned held target.
 // The lifecycle test owns both reserved databases and its cleanup; its mode is
 // explicit so a caller cannot route it through generic post-custody cleanup.
-export function bindR3SourceManifest(input) {
+function bindR3Manifest(input, phase) {
   try {
     need(
       input &&
@@ -159,8 +159,8 @@ export function bindR3SourceManifest(input) {
     );
     const { operationRef, chain, manifest, plan, discoveryDigest, discoveryUnclassifiedCount } =
       input;
-    need(plan?.phase === "source" && plan.operationRef === operationRef && plan.chain === chain);
-    const expectedPlan = planR3DatabaseTargets({ operationRef, phase: "source", chain, manifest });
+    need(plan?.phase === phase && plan.operationRef === operationRef && plan.chain === chain);
+    const expectedPlan = planR3DatabaseTargets({ operationRef, phase, chain, manifest });
     need(Object.isFrozen(plan) && sha256Canonical(plan) === sha256Canonical(expectedPlan));
     const selections = selectManifestSuites({
       manifest,
@@ -211,11 +211,21 @@ export function bindR3SourceManifest(input) {
           )
       };
     });
-    need(used.size === plan.targets.length + plan.reservations.length);
+    // The final-only application database is held by the plan, but is not a
+    // database-test suite selection. The canonical plan above still checks it.
+    need(
+      used.size === plan.targets.length + plan.reservations.length - (phase === "final" ? 1 : 0)
+    );
     return frozen(bound);
   } catch {
     fail();
   }
+}
+export function bindR3SourceManifest(input) {
+  return bindR3Manifest(input, "source");
+}
+export function bindR3FinalManifest(input) {
+  return bindR3Manifest(input, "final");
 }
 function checkedPlan(plan) {
   need(

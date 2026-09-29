@@ -39,6 +39,7 @@
     "packages/release-foundation/src/external-change-approval.mjs",
     "packages/release-foundation/src/index.d.mts",
     "packages/release-foundation/src/index.mjs",
+    "packages/release-foundation/src/manual-r3-source-matching.mjs",
     "packages/release-foundation/src/manual-r3-target-locks.mjs",
     "packages/release-foundation/src/manual-revocation-history.mjs",
     "packages/release-foundation/src/manual-runner-evidence.mjs",

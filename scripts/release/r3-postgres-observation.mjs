@@ -221,8 +221,8 @@ export function assessR3PostgresObservation(input) {
   }
 }
 
-// Final-only inventory check for already-running runner containers. H1 must
-// independently bind these observed IDs to its private creation registry.
+// Final-only inventory check for held runtime and running migration containers.
+// H1 must independently bind these observed IDs to its private creation registry.
 export function assessR3FinalPostgresObservation(input) {
   try {
     const final = input?.finalResources;
@@ -232,11 +232,13 @@ export function assessR3FinalPostgresObservation(input) {
       "imageDigest",
       "imageReference",
       "runnerContainerId",
+      "runtimeState",
       "sourceSha",
       ...(Object.hasOwn(final ?? {}, "migrationContainerId") ? ["migrationContainerId"] : [])
     ]);
     need(
       CID.test(final.runnerContainerId) &&
+        ["created", "running"].includes(final.runtimeState) &&
         (final.migrationContainerId === undefined || CID.test(final.migrationContainerId)) &&
         final.runnerContainerId !== final.migrationContainerId &&
         final.runnerContainerId !== input.container?.Id &&
@@ -256,7 +258,12 @@ export function assessR3FinalPostgresObservation(input) {
     ];
     need(new Set(expectedIds).size === expectedIds.length);
     need(input.engine?.Containers === expectedIds.length && input.engine.Images === 2);
-    keys(input.network?.Containers, expectedIds);
+    const networkIds = [
+      input.container.Id,
+      ...(final.runtimeState === "running" ? [final.runnerContainerId] : []),
+      ...(final.migrationContainerId ? [final.migrationContainerId] : [])
+    ];
+    keys(input.network?.Containers, networkIds);
     // The PG-only exported assessor remains strict. Project only its own
     // network membership here; the complete original membership is checked
     // above and for each final container below.
@@ -321,6 +328,7 @@ export function assessR3FinalPostgresObservation(input) {
       const host = container?.HostConfig;
       const config = container?.Config;
       const state = container?.State;
+      const created = role === "runtime" && final.runtimeState === "created";
       need(
         container?.Id === ids[index] &&
           container.Name === `/${names[index]}` &&
@@ -349,13 +357,13 @@ export function assessR3FinalPostgresObservation(input) {
           Object.hasOwn(config.Volumes, "/var/lib/postgresql/data") &&
           empty(config.Volumes["/var/lib/postgresql/data"]) &&
           safeEnv(config.Env, role) &&
-          state?.Running === true &&
+          state?.Status === (created ? "created" : "running") &&
+          state.Running === !created &&
           state.Paused === false &&
           state.Restarting === false &&
           state.Dead === false &&
           Number.isSafeInteger(state.Pid) &&
-          state.Pid > 0 &&
-          !pids.has(state.Pid) &&
+          (created ? state.Pid === 0 : state.Pid > 0 && !pids.has(state.Pid)) &&
           host?.Privileged === false &&
           host.ReadonlyRootfs === true &&
           host.Init === true &&
@@ -384,8 +392,10 @@ export function assessR3FinalPostgresObservation(input) {
               ["/tmp", "/var/lib/postgresql/data"].includes(mount.Destination)
           ) &&
           object(container.NetworkSettings?.Ports) &&
-          Reflect.ownKeys(container.NetworkSettings.Ports).length === 1 &&
-          container.NetworkSettings.Ports["5432/tcp"] === null &&
+          (created
+            ? Reflect.ownKeys(container.NetworkSettings.Ports).length === 0
+            : Reflect.ownKeys(container.NetworkSettings.Ports).length === 1 &&
+              container.NetworkSettings.Ports["5432/tcp"] === null) &&
           JSON.stringify(host.ExtraHosts) ===
             JSON.stringify([`postgres:${postgres.containerAddress}`]) &&
           object(host.Tmpfs) &&
@@ -397,21 +407,32 @@ export function assessR3FinalPostgresObservation(input) {
           host.Memory === 1073741824 &&
           host.MemorySwap === 1073741824
       );
-      pids.add(state.Pid);
+      if (!created) pids.add(state.Pid);
       keys(container.NetworkSettings.Networks, [postgres.networkName]);
       const attachment = container.NetworkSettings.Networks[postgres.networkName];
       const member = input.network.Containers[container.Id];
-      need(
-        attachment?.NetworkID === postgres.networkId &&
-          ipv4(attachment.IPAddress) &&
-          !addresses.has(attachment.IPAddress) &&
-          member?.Name === names[index] &&
-          typeof member.IPv4Address === "string" &&
-          member.IPv4Address.startsWith(`${attachment.IPAddress}/`) &&
-          /^[1-9][0-9]?$/u.test(member.IPv4Address.split("/")[1] ?? "") &&
-          Number(member.IPv4Address.split("/")[1]) <= 32
-      );
-      addresses.add(attachment.IPAddress);
+      if (created) {
+        // Moby 26.1.3 create initializes the configured network entry with
+        // empty operational fields. Only start allocates its real endpoint.
+        need(
+          attachment?.NetworkID === "" &&
+            attachment.EndpointID === "" &&
+            attachment.IPAddress === "" &&
+            member === undefined
+        );
+      } else {
+        need(
+          attachment?.NetworkID === postgres.networkId &&
+            ipv4(attachment.IPAddress) &&
+            !addresses.has(attachment.IPAddress) &&
+            member?.Name === names[index] &&
+            typeof member.IPv4Address === "string" &&
+            member.IPv4Address.startsWith(`${attachment.IPAddress}/`) &&
+            /^[1-9][0-9]?$/u.test(member.IPv4Address.split("/")[1] ?? "") &&
+            Number(member.IPv4Address.split("/")[1]) <= 32
+        );
+        addresses.add(attachment.IPAddress);
+      }
     }
     need(
       Array.isArray(input.containerInventory) &&
@@ -427,7 +448,8 @@ export function assessR3FinalPostgresObservation(input) {
           summary.Names[0] === container.Name &&
           summary.ImageID === container.Image &&
           summary.Image === container.Config.Image &&
-          summary.State === "running" &&
+          summary.State ===
+            (container.Id === input.container.Id ? "running" : container.State.Status) &&
           object(summary.Labels) &&
           Reflect.ownKeys(summary.Labels).length ===
             Reflect.ownKeys(container.Config.Labels).length &&
@@ -453,6 +475,7 @@ export function assessR3FinalPostgresObservation(input) {
     return freeze({
       ...postgres,
       runnerContainerId: final.runnerContainerId,
+      runtimeState: final.runtimeState,
       migrationContainerId: final.migrationContainerId ?? null,
       runnerImageId: final.image.Id,
       runnerImageDigest: final.imageDigest,

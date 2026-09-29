@@ -98,10 +98,11 @@ async function fixture(exitCode = 0, extraStdout = false) {
       outgoing: stdout,
       signal: childSignal.signal,
       openRuntime: async () => ({
-        plan: async () => nextResult("plan", { baseline: {}, plan: {} }),
+        plan: async () => nextResult("plan", { baseline: {}, plan: {}, originals: [] }),
         apply: async () => nextResult("apply", { postStateObservation: {} }),
         verify: async () =>
           nextResult("verify", { observation: {}, originals: [], processOriginals: [] }),
+        prepare: async () => nextResult("prepare", { preparation: {} }),
         close: async () => {}
       })
     });

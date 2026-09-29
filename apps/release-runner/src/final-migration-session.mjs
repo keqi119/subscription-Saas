@@ -277,7 +277,7 @@ export function createFinalMigrationSession({
             )
         );
         planDigest = deterministicPlanDigest(plan);
-        return result("plan", { baseline, plan });
+        return result("plan", { baseline, plan, originals: originals.slice() });
       }),
     apply: (request) =>
       perform("planned", "applied", async () => {

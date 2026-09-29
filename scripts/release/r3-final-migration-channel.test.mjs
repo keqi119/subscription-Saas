@@ -36,7 +36,7 @@ async function fixture() {
   const runtime = {
     plan: async () => {
       calls.push("plan");
-      return result("plan", { baseline: {}, plan: {} });
+      return result("plan", { baseline: {}, plan: {}, originals: [] });
     },
     apply: async (request) => {
       calls.push("apply");
@@ -50,6 +50,11 @@ async function fixture() {
       calls.push("verify");
       assert.deepEqual(request, { predecessorDigest: digest(results.at(-1)) });
       return result("verify", { observation: {}, originals: [], processOriginals: [] });
+    },
+    prepare: async (request) => {
+      calls.push("prepare");
+      assert.deepEqual(request, { predecessorDigest: digest(results.at(-1)) });
+      return result("prepare", { preparation: {} });
     },
     close: async () => {
       calls.push("close");
@@ -94,46 +99,50 @@ test("the fixed migration conversation waits for host assessment and never retai
     }
   });
   const [hostResult, runnerResult] = await Promise.all([host, runner]);
-  assert.deepEqual(f.calls, ["plan", "apply", "verify", "close"]);
-  assert.deepEqual(f.assessments, ["plan", "apply", "verify"]);
+  assert.deepEqual(f.calls, ["plan", "apply", "verify", "prepare", "close"]);
+  assert.deepEqual(f.assessments, ["plan", "apply", "verify", "prepare"]);
   assert.deepEqual(hostResult.results, f.results);
   assert.deepEqual(hostResult.transcript, runnerResult.transcript);
-  assert.equal(hostResult.transcript.length, 9);
+  assert.equal(hostResult.transcript.length, 11);
   assert.equal(JSON.stringify(hostResult).includes(f.credential.password), false);
 });
 
-test("a rejected host plan cannot start apply and closing the pipe cancels the runtime", async () => {
-  const f = await fixture();
-  const host = f.channel.runR3MigrationHostChannel({
-    input: f.input,
-    credential: f.credential,
-    incoming: f.outgoing,
-    outgoing: f.incoming,
-    signal: f.controller.signal,
-    assess: async () => {
-      throw new Error("synthetic independent rejection");
-    }
+for (const rejectedStage of ["plan", "verify"])
+  test(`a rejected host ${rejectedStage} cannot start the next write and closing the pipe cancels the runtime`, async () => {
+    const f = await fixture();
+    const host = f.channel.runR3MigrationHostChannel({
+      input: f.input,
+      credential: f.credential,
+      incoming: f.outgoing,
+      outgoing: f.incoming,
+      signal: f.controller.signal,
+      assess: async ({ stage }) => {
+        if (stage === rejectedStage) throw new Error("synthetic independent rejection");
+      }
+    });
+    let runtimeSignal;
+    const runner = f.channel.runR3MigrationRunnerChannel({
+      incoming: f.incoming,
+      outgoing: f.outgoing,
+      signal: f.controller.signal,
+      openRuntime: async ({ signal }) => {
+        runtimeSignal = signal;
+        return f.runtime;
+      }
+    });
+    await assert.rejects(host, (error) => {
+      assert.equal(error.code, "R3_FINAL_MIGRATION_CHANNEL_FAILED");
+      assert.equal(JSON.stringify(error.originals).includes(f.credential.password), false);
+      return true;
+    });
+    f.incoming.end();
+    await assert.rejects(runner, { code: "R3_FINAL_MIGRATION_CHANNEL_FAILED" });
+    assert.equal(runtimeSignal.aborted, true);
+    assert.deepEqual(
+      f.calls,
+      rejectedStage === "plan" ? ["plan", "close"] : ["plan", "apply", "verify", "close"]
+    );
   });
-  let runtimeSignal;
-  const runner = f.channel.runR3MigrationRunnerChannel({
-    incoming: f.incoming,
-    outgoing: f.outgoing,
-    signal: f.controller.signal,
-    openRuntime: async ({ signal }) => {
-      runtimeSignal = signal;
-      return f.runtime;
-    }
-  });
-  await assert.rejects(host, (error) => {
-    assert.equal(error.code, "R3_FINAL_MIGRATION_CHANNEL_FAILED");
-    assert.equal(JSON.stringify(error.originals).includes(f.credential.password), false);
-    return true;
-  });
-  f.incoming.end();
-  await assert.rejects(runner, { code: "R3_FINAL_MIGRATION_CHANNEL_FAILED" });
-  assert.equal(runtimeSignal.aborted, true);
-  assert.deepEqual(f.calls, ["plan", "close"]);
-});
 
 for (const suffix of ["{}\n", "{"])
   test(`unsolicited bytes ${JSON.stringify(suffix)} after a valid APPLY stop the write before its callback starts`, async () => {

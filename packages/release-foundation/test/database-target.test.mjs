@@ -168,6 +168,14 @@ test("provisioning returns references and fingerprints but no credential or URL"
   assert.doesNotMatch(serialized, /password|postgres(?:ql)?:\/\//i);
   assert.match(serialized, /secret:\/\/task3\/migrate/);
   assert.ok(state.calls.some((sql) => sql.includes("CREATE DATABASE")));
+  const permissions = state.calls.find((sql) => sql.startsWith("COMMENT ON DATABASE "));
+  assert.ok(
+    permissions.includes(
+      `REVOKE ALL ON DATABASE "${record.databaseName}" FROM PUBLIC;\n` +
+        `GRANT CONNECT ON DATABASE "${record.databaseName}" TO "${record.roles.migrate}", "${record.roles["runtime-test"]}";`
+    ),
+    "PUBLIC privileges including TEMP must be revoked before explicit role CONNECT grants"
+  );
   await cleanupSuiteDatabase(record, { target: validTarget, policy: targetPolicy, executeAdmin });
   assert.ok(state.calls.some((sql) => sql.startsWith("DROP DATABASE ")));
 });

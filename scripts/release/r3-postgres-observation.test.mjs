@@ -99,7 +99,7 @@ const runnerImageId = `sha256:${"9".repeat(64)}`;
 const runnerReference = `registry.example.test/release-runner@${runnerDigest}`;
 const sourceSha = "7".repeat(40);
 const roleLabel = "com.subscription.release.container-role";
-function finalFixture(withMigration = true) {
+function finalFixture(withMigration = true, runtimeState = "running") {
   const input = fixture();
   const makeContainer = (role, containerId, address) => {
     const name = `s1r3${role === "runtime" ? "runner" : "migrate"}_${id}`;
@@ -126,6 +126,7 @@ function finalFixture(withMigration = true) {
         Env: role === "migration" ? ["RUNNER_EXECUTION_MODE=r3-final-migration"] : []
       },
       State: {
+        Status: "running",
         Running: true,
         Paused: false,
         Restarting: false,
@@ -189,6 +190,7 @@ function finalFixture(withMigration = true) {
     imageDigest: runnerDigest,
     imageReference: runnerReference,
     runnerContainerId: runnerCid,
+    runtimeState,
     sourceSha,
     ...(withMigration ? { migrationContainerId: migrationCid } : {})
   };
@@ -204,8 +206,59 @@ function finalFixture(withMigration = true) {
     Id: entry.Id,
     RepoDigests: entry.RepoDigests
   }));
+  if (runtimeState === "created") {
+    const runtime = containers[0];
+    runtime.State = {
+      Status: "created",
+      Running: false,
+      Paused: false,
+      Restarting: false,
+      Dead: false,
+      Pid: 0
+    };
+    runtime.NetworkSettings.Networks[networkName] = {
+      NetworkID: "",
+      IPAddress: "",
+      EndpointID: ""
+    };
+    runtime.NetworkSettings.Ports = {};
+    delete input.network.Containers[runnerCid];
+    input.containerInventory[1].State = "created";
+  }
   return input;
 }
+
+test("R3 final observation accepts only a held created runtime outside network membership", () => {
+  const input = finalFixture(true, "created");
+  const result = assessR3FinalPostgresObservation(input);
+  assert.equal(result.runtimeState, "created");
+  assert.deepEqual(result.finalContainerAddresses, ["172.28.0.4"]);
+  for (const mutate of [
+    (f) => {
+      f.network.Containers[runnerCid] = { Name: `s1r3runner_${id}`, IPv4Address: "172.28.0.3/16" };
+    },
+    (f) => {
+      f.finalResources.containers[0].NetworkSettings.Networks[networkName].IPAddress = "172.28.0.3";
+    },
+    (f) => {
+      f.finalResources.containers[0].NetworkSettings.Networks[networkName].NetworkID = f.network.Id;
+    },
+    (f) => {
+      f.finalResources.containers[0].NetworkSettings.Ports = { "5432/tcp": null };
+    },
+    (f) => {
+      f.finalResources.containers[1].State.Status = "created";
+      f.finalResources.containers[1].State.Running = false;
+    },
+    (f) => {
+      f.finalResources.runtimeState = "running";
+    }
+  ]) {
+    const foreign = finalFixture(true, "created");
+    mutate(foreign);
+    assert.throws(() => assessR3FinalPostgresObservation(foreign), invalid);
+  }
+});
 
 test("R3 final observation binds the exact PG/runtime/migration Engine inventory", () => {
   for (const withMigration of [false, true]) {

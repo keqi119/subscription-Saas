@@ -85,6 +85,7 @@ export function validateFinalMigrationInput({
     need(
       db.databaseName === planned.databaseName &&
         db.migrationRole === planned.roles.migrate &&
+        db.runtimeCredentialFingerprint !== db.migrationCredentialFingerprint &&
         db.databaseIdentityFingerprint ===
           sha256Canonical({
             databaseName: db.databaseName,
@@ -141,6 +142,9 @@ export function validateFinalMigrationInput({
       input: held,
       parentBindingDigest,
       assignment: structuredClone(assignment),
+      runtimeRole: planned.roles["runtime-test"],
+      migrationSecretReference: `r3/${held.operationId}/database-credentials/${db.databaseName}-migrate.json`,
+      schemaFixturePath: suite.fixtures?.schema ?? null,
       target: {
         hostname: "postgres",
         port: 5432,

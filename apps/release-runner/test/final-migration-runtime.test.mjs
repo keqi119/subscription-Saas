@@ -60,4 +60,10 @@ test("final migration runtime rejects a credential before connecting and closes 
   await runtime.close();
   assert.equal(closed, 1);
   assert.equal(JSON.stringify(runtime).includes(credential.password), false);
+  const premature = await openFinalMigrationRuntime(options);
+  await assert.rejects(
+    () => premature.prepare({ predecessorDigest: input.expectedSchemaDigest }),
+    (error) => error.cause?.code === "R3_FINAL_MIGRATION_SEQUENCE_INVALID"
+  );
+  assert.equal(closed, 2);
 });

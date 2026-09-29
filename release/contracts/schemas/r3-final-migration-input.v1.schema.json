@@ -91,6 +91,7 @@
         "marker",
         "migrationRole",
         "migrationCredentialFingerprint",
+        "runtimeCredentialFingerprint",
         "databaseIdentityFingerprint",
         "targetLockDigest"
       ],
@@ -100,6 +101,7 @@
         "marker": { "type": "string", "minLength": 1, "maxLength": 4096 },
         "migrationRole": { "type": "string", "pattern": "^s1m_[0-9a-f]{24}$" },
         "migrationCredentialFingerprint": { "$ref": "#/$defs/digest" },
+        "runtimeCredentialFingerprint": { "$ref": "#/$defs/digest" },
         "databaseIdentityFingerprint": { "$ref": "#/$defs/digest" },
         "targetLockDigest": { "$ref": "#/$defs/digest" }
       }

@@ -67,6 +67,9 @@ export async function finalMigrationInputFixture({
     migrationCredentialFingerprint:
       assigned?.migrationCredentialFingerprint ??
       sha256Bytes(Buffer.from(`${planned.databaseName}:migrate`)),
+    runtimeCredentialFingerprint:
+      assigned?.runtimeCredentialFingerprint ??
+      sha256Bytes(Buffer.from(`${planned.databaseName}:runtime-test`)),
     databaseIdentityFingerprint: sha256Canonical({
       databaseName: planned.databaseName,
       databaseOid,

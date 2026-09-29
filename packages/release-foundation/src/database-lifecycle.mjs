@@ -124,7 +124,7 @@ export async function provisionSuiteDatabase({
       databaseName: "postgres",
       sql: [
         `COMMENT ON DATABASE ${sqlIdentifier(databaseName)} IS ${sqlLiteral(marker)};`,
-        `REVOKE CONNECT ON DATABASE ${sqlIdentifier(databaseName)} FROM PUBLIC;`,
+        `REVOKE ALL ON DATABASE ${sqlIdentifier(databaseName)} FROM PUBLIC;`,
         `GRANT CONNECT ON DATABASE ${sqlIdentifier(databaseName)} TO ${[
           sqlIdentifier(roles.migrate),
           sqlIdentifier(roles["runtime-test"]),

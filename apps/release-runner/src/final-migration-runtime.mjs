@@ -14,6 +14,7 @@ import {
   validateFinalMigrationCredential
 } from "./final-migration-session.mjs";
 import { runnerError } from "./error-codes.mjs";
+import { prepareFinalRuntimeDatabase } from "./final-runtime-preparation.mjs";
 
 const connect = createPostgresConnector({
   createClient: (options) =>
@@ -59,7 +60,9 @@ export async function openFinalMigrationRuntime({
     originals: processOriginals
   });
   const database = await connectDatabase({ credential, target: held.target });
-  let closing,
+  let verified,
+    preparing = false,
+    closing,
     closed = false;
   const close = () => {
     if (!closing) {
@@ -107,14 +110,47 @@ export async function openFinalMigrationRuntime({
     const invoke = async (stage, args) => {
       try {
         if (closed || signal.aborted) throw runnerError("R3_FINAL_MIGRATION_ABORTED");
+        if (stage === "prepare") {
+          if (
+            preparing ||
+            !verified ||
+            args.length !== 1 ||
+            !args[0] ||
+            Object.keys(args[0]).join() !== "predecessorDigest" ||
+            args[0].predecessorDigest !== sha256Canonical(verified)
+          )
+            throw runnerError("R3_FINAL_MIGRATION_SEQUENCE_INVALID");
+          preparing = true;
+          const preparation = await prepareFinalRuntimeDatabase({
+            input: held.input,
+            manifest,
+            migrationCatalog,
+            globalObjectPolicy,
+            database,
+            repoRoot,
+            signal: controller.signal
+          });
+          if (closed || signal.aborted) throw runnerError("R3_FINAL_MIGRATION_ABORTED");
+          await close();
+          return Object.freeze({
+            schemaVersion: "r3-final-migration-result.v1",
+            stage: "prepare",
+            bindingDigest: verified.bindingDigest,
+            predecessorDigest: sha256Canonical(verified),
+            baselineManifestIdentityDigest: verified.baselineManifestIdentityDigest,
+            baselineManifestDigest: verified.baselineManifestDigest,
+            planDigest: verified.planDigest,
+            preparation
+          });
+        }
         const result = await session[stage](...args);
         if (closed || signal.aborted) throw runnerError("R3_FINAL_MIGRATION_ABORTED");
         if (stage !== "verify") return result;
-        await close();
-        return Object.freeze({
+        verified = Object.freeze({
           ...result,
           processOriginals: Object.freeze(processOriginals.slice())
         });
+        return verified;
       } catch (cause) {
         let closeError;
         try {
@@ -136,6 +172,7 @@ export async function openFinalMigrationRuntime({
       plan: (...args) => invoke("plan", args),
       apply: (...args) => invoke("apply", args),
       verify: (...args) => invoke("verify", args),
+      prepare: (...args) => invoke("prepare", args),
       close
     });
   } catch (cause) {

@@ -68,7 +68,7 @@ function frames({ incoming, outgoing, signal, expectedIncoming }) {
     return failure;
   };
   function retain(value, line) {
-    need(transcript.length < 9);
+    need(transcript.length < 11);
     // Never retain the credential-bearing START bytes, including on failures.
     transcript.push(
       value.type === "START"
@@ -186,7 +186,7 @@ function frames({ incoming, outgoing, signal, expectedIncoming }) {
       check();
       need(
         received === expectedIncoming &&
-          transcript.length === 9 &&
+          transcript.length === 11 &&
           !buffer.length &&
           !queued &&
           !waiting
@@ -216,10 +216,12 @@ function checkFrame(value, type, sequence, bindingDigest, fields = []) {
 function checkResult(result, stage, bindingDigest, predecessorDigest, previous) {
   const fields =
     stage === "plan"
-      ? ["baseline", "plan"]
+      ? ["baseline", "plan", "originals"]
       : stage === "apply"
         ? ["postStateObservation"]
-        : ["observation", "originals", "processOriginals"];
+        : stage === "verify"
+          ? ["observation", "originals", "processOriginals"]
+          : ["preparation"];
   need(
     exact(result, [
       "schemaVersion",
@@ -253,7 +255,7 @@ export async function runR3MigrationHostChannel({
   input = copy(input);
   credential = copy(credential);
   const bindingDigest = sha256Canonical(input),
-    io = frames({ incoming, outgoing, signal, expectedIncoming: 5 });
+    io = frames({ incoming, outgoing, signal, expectedIncoming: 6 });
   const results = [];
   try {
     const hello = await io.receive();
@@ -264,12 +266,16 @@ export async function runR3MigrationHostChannel({
       frame("START", 1, bindingDigest, { challenge: hello.challenge, input, credential })
     );
     credential = null;
-    for (const [index, stage] of ["plan", "apply", "verify"].entries()) {
+    for (const [index, stage] of ["plan", "apply", "verify", "prepare"].entries()) {
       const reply = await io.receive();
       io.check();
-      checkFrame(reply, ["PLAN", "APPLIED", "VERIFIED"][index], index * 2 + 2, bindingDigest, [
-        "result"
-      ]);
+      checkFrame(
+        reply,
+        ["PLAN", "APPLIED", "VERIFIED", "PREPARED"][index],
+        index * 2 + 2,
+        bindingDigest,
+        ["result"]
+      );
       const previous = results.at(-1);
       checkResult(
         reply.result,
@@ -282,15 +288,20 @@ export async function runR3MigrationHostChannel({
       results.push(copy(reply.result));
       const predecessorDigest = sha256Canonical(reply.result);
       await io.send(
-        frame(["APPLY", "VERIFY", "FINISH"][index], index * 2 + 3, bindingDigest, {
-          predecessorDigest,
-          ...(stage === "plan" ? { planDigest: reply.result.planDigest } : {})
-        })
+        frame(
+          ["APPLY", "VERIFY", "PREPARE_RUNTIME", "FINISH"][index],
+          index * 2 + 3,
+          bindingDigest,
+          {
+            predecessorDigest,
+            ...(stage === "plan" ? { planDigest: reply.result.planDigest } : {})
+          }
+        )
       );
     }
     const finished = await io.receive();
     io.check();
-    checkFrame(finished, "FINISHED", 8, bindingDigest, ["predecessorDigest"]);
+    checkFrame(finished, "FINISHED", 10, bindingDigest, ["predecessorDigest"]);
     need(finished.predecessorDigest === sha256Canonical(results.at(-1)));
     return Object.freeze({ results: Object.freeze(results), transcript: io.finish() });
   } catch {
@@ -300,7 +311,7 @@ export async function runR3MigrationHostChannel({
 
 export async function runR3MigrationRunnerChannel({ incoming, outgoing, signal, openRuntime }) {
   need(typeof openRuntime === "function");
-  const io = frames({ incoming, outgoing, signal, expectedIncoming: 4 });
+  const io = frames({ incoming, outgoing, signal, expectedIncoming: 5 });
   const challenge = randomBytes(32).toString("hex");
   let runtime, start, failure, outcome;
   try {
@@ -329,7 +340,7 @@ export async function runR3MigrationRunnerChannel({ incoming, outgoing, signal, 
     });
     start.credential = null;
     let previous;
-    for (const [index, stage] of ["plan", "apply", "verify"].entries()) {
+    for (const [index, stage] of ["plan", "apply", "verify", "prepare"].entries()) {
       const args =
         index === 0
           ? []
@@ -348,14 +359,19 @@ export async function runR3MigrationRunnerChannel({ incoming, outgoing, signal, 
         previous
       );
       await io.send(
-        frame(["PLAN", "APPLIED", "VERIFIED"][index], index * 2 + 2, bindingDigest, { result })
+        frame(["PLAN", "APPLIED", "VERIFIED", "PREPARED"][index], index * 2 + 2, bindingDigest, {
+          result
+        })
       );
       const request = await io.receive();
       io.check();
-      checkFrame(request, ["APPLY", "VERIFY", "FINISH"][index], index * 2 + 3, bindingDigest, [
-        "predecessorDigest",
-        ...(stage === "plan" ? ["planDigest"] : [])
-      ]);
+      checkFrame(
+        request,
+        ["APPLY", "VERIFY", "PREPARE_RUNTIME", "FINISH"][index],
+        index * 2 + 3,
+        bindingDigest,
+        ["predecessorDigest", ...(stage === "plan" ? ["planDigest"] : [])]
+      );
       need(
         request.predecessorDigest === sha256Canonical(result) &&
           (stage !== "plan" || request.planDigest === result.planDigest)
@@ -365,7 +381,7 @@ export async function runR3MigrationRunnerChannel({ incoming, outgoing, signal, 
     await runtime.close();
     runtime = null;
     await io.send(
-      frame("FINISHED", 8, bindingDigest, { predecessorDigest: sha256Canonical(previous) })
+      frame("FINISHED", 10, bindingDigest, { predecessorDigest: sha256Canonical(previous) })
     );
     outcome = Object.freeze({ transcript: io.finish() });
   } catch {

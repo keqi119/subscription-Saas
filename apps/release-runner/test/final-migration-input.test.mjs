@@ -42,6 +42,9 @@ test("rejects mismatched build, plan, role, marker, lock, policy, and extra wire
     input.database.migrationRole = `s1m_${"0".repeat(24)}`;
   });
   altered(({ input }) => {
+    input.database.runtimeCredentialFingerprint = input.database.migrationCredentialFingerprint;
+  });
+  altered(({ input }) => {
     input.database.marker = "{}";
   });
   altered(({ input }) => {

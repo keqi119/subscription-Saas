@@ -6,13 +6,15 @@ import { constants } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import childProcess from "node:child_process";
-import { fileURLToPath } from "node:url";
 import {
   encodeManualJson,
   validateManualTargetCreationRequest
 } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
-import { createR3HostedWorkspace } from "./r3-hosted-workspace-create.mjs";
+import {
+  createR3HostedWorkspace,
+  cleanupR3HostedWorkspace
+} from "./r3-hosted-workspace-create.mjs";
 import { assessR3PostgresResources } from "./r3-postgres-observation.mjs";
 import { observeR3ManagedContainerd } from "./r3-containerd-observation.mjs";
 import { buildR3HostedEvidence } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
@@ -261,6 +263,48 @@ async function getEngine(socketPath, url) {
     );
     request.setTimeout(2000, () => request.destroy());
     request.once("error", reject);
+    request.end();
+  });
+}
+// Private, fixed-use cleanup transport. Callers never supply a path or method.
+async function cleanupExchange(socketPath, method, url) {
+  return new Promise((resolve, reject) => {
+    let timer,
+      settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const request = http.request(
+      { socketPath, path: url, method, headers: { Connection: "close", "Content-Length": "0" } },
+      (response) => {
+        const chunks = [];
+        let size = 0;
+        response.on("data", (part) => {
+          size += part.length;
+          if (size > LIMIT) {
+            const error = closedError();
+            request.destroy(error);
+            finish(error);
+          } else chunks.push(Buffer.from(part));
+        });
+        response.once("end", () =>
+          finish(null, { status: response.statusCode, bytes: Buffer.concat(chunks) })
+        );
+        response.once("error", (error) => finish(error));
+        response.once("aborted", () => finish(closedError()));
+      }
+    );
+    // An idle timeout alone never ends a peer that keeps trickling bytes.
+    timer = setTimeout(() => {
+      const error = closedError();
+      request.destroy(error);
+      finish(error);
+    }, 15000);
+    request.once("error", (error) => finish(error));
     request.end();
   });
 }
@@ -642,6 +686,11 @@ async function startPostgresRelay({ spec, job, engine, socketPath, shouldClose }
         promotionEligible: false
       }),
       rawInputs: observed.rawInputs,
+      async recheck() {
+        const current = await observe();
+        requireThat(sha256Canonical(current.facts) === sha256Canonical(observed.facts));
+        return current;
+      },
       close
     };
   } catch (error) {
@@ -662,6 +711,8 @@ export async function openR3HostedCreationControl(input) {
     listenerClosing,
     expiryTimer;
   let postgresRelay, relayWork;
+  let ownedWorkspace, cleanupWork, cleanupResult;
+  let cleanupAttempted = false;
   let resolveForward, rejectForward;
   const postgresForward = new Promise((resolve, reject) => {
     resolveForward = resolve;
@@ -705,7 +756,7 @@ export async function openR3HostedCreationControl(input) {
     })();
     return listenerClosing;
   };
-  const close = async () => {
+  const stopControl = async () => {
     closing = true;
     clearTimeout(expiryTimer);
     if (!accepted) settle(closedError(), null);
@@ -718,22 +769,41 @@ export async function openR3HostedCreationControl(input) {
     let exit = null;
     if (engine) {
       if (engine.exitState.value === null) engine.child.kill("SIGTERM");
-      let timer;
-      exit = await Promise.race([
-        engine.exited,
-        new Promise((resolve) => {
-          timer = setTimeout(() => resolve(null), 10000);
-        })
-      ]);
-      clearTimeout(timer);
+      const waitForExit = async (milliseconds) => {
+        let timer;
+        try {
+          return await Promise.race([
+            engine.exited,
+            new Promise((resolve) => {
+              timer = setTimeout(() => resolve(null), milliseconds);
+            })
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+      exit = await waitForExit(10000);
       if (!exit) {
         engine.child.kill("SIGKILL");
-        exit = await engine.exited;
+        exit = await waitForExit(2000);
       }
-      if (exit.exitCode !== 0 || exit.signal !== null)
-        throw closedError(null, { engineExit: exit, workspaceRemoved: false, keyRemoved: false });
+      if (!exit || exit.exitCode !== 0 || exit.signal !== null)
+        throw closedError(null, {
+          enginePid: engine.child.pid,
+          engineExit: exit,
+          workspaceRemoved: false,
+          keyRemoved: false
+        });
     }
-    return freeze({ engine: exit, workspaceRemoved: false, keyRemoved: false });
+    return freeze({
+      engine: exit,
+      workspaceRemoved: Boolean(cleanupResult),
+      keyRemoved: Boolean(cleanupResult)
+    });
+  };
+  const close = async () => {
+    if (cleanupWork) await cleanupWork.catch(() => {});
+    return stopControl();
   };
   try {
     exact(input, ["creationSpecBytes", "jobAdmissionBytes"]);
@@ -797,6 +867,7 @@ export async function openR3HostedCreationControl(input) {
             creationSpecBytes: specInput.bytes,
             jobAdmissionBytes: jobInput.bytes
           });
+          ownedWorkspace = workspaceResult;
           requireThat(!closing);
           await currentJob(spec, job);
           engine = await startEngine(workspaceResult, spec.workspace, socketPath, () => closing);
@@ -895,9 +966,180 @@ export async function openR3HostedCreationControl(input) {
       socketPath,
       created,
       postgresForward,
+      // Normal path only: ownership comes from this still-held successful
+      // creation, never from a reconstructed or caller-supplied resource graph.
+      // H1 must separately validate source custody/ACK and signed cleanup
+      // readbacks before it can release any retained forwarding slot.
+      async cleanupOwnedTarget(...args) {
+        requireThat(
+          args.length === 0 &&
+            !closing &&
+            !cleanupAttempted &&
+            createdSettled &&
+            engine &&
+            evidenceSeed &&
+            ownedWorkspace &&
+            postgresRelay
+        );
+        cleanupAttempted = true;
+        cleanupWork = (async () => {
+          const cleanup = {
+            operationRef: spec.operationRef,
+            creationSpecDigest: sha256Bytes(specInput.bytes),
+            jobAdmissionDigest: sha256Bytes(jobInput.bytes),
+            status: "INTERRUPTED_UNKNOWN",
+            startedAt: new Date().toISOString(),
+            finishedAt: null,
+            postgres: null,
+            engine: {
+              id: engine.result.id,
+              process: engine.result.process,
+              containerd: engine.result.containerd,
+              exit: null
+            },
+            requests: [],
+            processAbsence: [],
+            workspace: null,
+            rawInputs: {},
+            promotionEligible: false
+          };
+          const ready = async () => {
+            requireThat(!closing && engine.exitState.value === null);
+            await currentJob(spec, job);
+            await engine.recheck();
+            const socket = await fs.lstat(socketPath, { bigint: true });
+            requireThat(socket.isSocket() && socket.uid === 0n && sameInode(socket, engine.socket));
+          };
+          const exchange = async (name, method, route, expectedStatus) => {
+            await ready();
+            const entry = {
+              name,
+              method,
+              path: `/v1.45${route}`,
+              startedAt: new Date().toISOString(),
+              finishedAt: null,
+              status: null,
+              response: null
+            };
+            cleanup.requests.push(entry);
+            try {
+              const result = await cleanupExchange(socketPath, method, entry.path);
+              entry.status = result.status;
+              entry.response = ref(result.bytes);
+              cleanup.rawInputs[name] = Buffer.from(result.bytes);
+              requireThat(
+                result.status === expectedStatus &&
+                  (expectedStatus !== 204 || result.bytes.length === 0)
+              );
+              await ready();
+              return result.bytes;
+            } finally {
+              entry.finishedAt = new Date().toISOString();
+            }
+          };
+          try {
+            await ready();
+            const before = await postgresRelay.recheck();
+            cleanup.postgres = before.facts;
+            for (const [name, bytes] of Object.entries(before.rawInputs))
+              cleanup.rawInputs[`before.${name}`] = Buffer.from(bytes);
+            requireThat(before.facts.engineId === engine.result.id);
+            await postgresRelay.close();
+            const target = before.facts;
+            const containerPath = `/containers/${target.containerId}`;
+            await exchange("stop-container", "POST", `${containerPath}/stop?t=10`, 204);
+            const stopped = JSON.parse(
+              await exchange("stopped-container", "GET", `${containerPath}/json`, 200)
+            );
+            requireThat(
+              stopped.Id === target.containerId &&
+                stopped.Image === target.imageId &&
+                stopped.Name === `/${target.containerName}` &&
+                stopped.Config?.Labels?.["com.subscription.release.operation-ref"] ===
+                  spec.operationRef &&
+                stopped.State?.Status === "exited" &&
+                stopped.State.Running === false &&
+                stopped.State.Paused === false &&
+                stopped.State.Restarting === false &&
+                stopped.State.Dead === false &&
+                stopped.State.Pid === 0 &&
+                stopped.State.ExitCode === 0
+            );
+            await exchange(
+              "remove-container",
+              "DELETE",
+              `${containerPath}?v=false&force=false`,
+              204
+            );
+            await exchange("absent-container", "GET", `${containerPath}/json`, 404);
+            await exchange("remove-network", "DELETE", `/networks/${target.networkId}`, 204);
+            await exchange("absent-network", "GET", `/networks/${target.networkId}`, 404);
+            await exchange(
+              "remove-volume",
+              "DELETE",
+              `/volumes/${target.volumeName}?force=false`,
+              204
+            );
+            await exchange("absent-volume", "GET", `/volumes/${target.volumeName}`, 404);
+            const imagePath = `/images/${encodeURIComponent(target.imageId)}`;
+            const removed = JSON.parse(
+              await exchange("remove-image", "DELETE", `${imagePath}?force=false&noprune=true`, 200)
+            );
+            requireThat(
+              Array.isArray(removed) && removed.some((entry) => entry.Deleted === target.imageId)
+            );
+            await exchange("absent-image", "GET", `${imagePath}/json`, 404);
+            const empty = JSON.parse(await exchange("empty-engine", "GET", "/info", 200));
+            requireThat(
+              empty.ID === target.engineId &&
+                empty.DockerRootDir === `${spec.workspace.mountPath}/docker` &&
+                empty.Driver === "overlay2" &&
+                empty.LoggingDriver === "json-file" &&
+                empty.Containers === 0 &&
+                empty.Images === 0
+            );
+            const ended = await stopControl();
+            cleanup.engine.exit = ended.engine;
+            for (const pid of [engine.result.process.pid, engine.result.containerd.pid]) {
+              const file = `/proc/${pid}`;
+              requireThat(await absent(file));
+              cleanup.processAbsence.push({
+                path: file,
+                code: "ENOENT",
+                observedAt: new Date().toISOString()
+              });
+            }
+            if (!(await absent(socketPath))) {
+              const socket = await fs.lstat(socketPath, { bigint: true });
+              requireThat(
+                socket.isSocket() && socket.uid === 0n && sameInode(socket, engine.socket)
+              );
+              await fs.unlink(socketPath);
+            }
+            requireThat(await absent(socketPath));
+            cleanup.workspace = await cleanupR3HostedWorkspace({ ownedWorkspace });
+            requireThat(cleanup.workspace.cleanup.status === "WORKSPACE_REMOVED");
+            cleanup.status = "TARGET_REMOVED";
+            cleanup.finishedAt = new Date().toISOString();
+            cleanupResult = freeze(copyResult(cleanup));
+            return freeze(copyResult(cleanupResult));
+          } catch (cause) {
+            cleanup.engine.exit = engine.exitState.value;
+            cleanup.finishedAt = new Date().toISOString();
+            if (cause?.cleanup)
+              cleanup.workspace = {
+                cleanup: cause.cleanup,
+                observation: cause.observation ?? null,
+                rawInputs: cause.rawInputs ?? {}
+              };
+            throw closedError(cause, freeze(copyResult(cleanup)));
+          }
+        })();
+        return cleanupWork;
+      },
       async exportEvidence(input) {
         exact(input, ["privateKey"]);
-        requireThat(!closing);
+        requireThat(!closing && !cleanupAttempted);
         await created;
         requireThat(!closing && evidenceSeed !== null);
         await currentJob(spec, job);

@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 
@@ -13,6 +14,8 @@ const originalStat = fs.stat.bind(fs);
 const originalSpawn = childProcess.spawn.bind(childProcess);
 const originalRead = fs.readFile.bind(fs);
 const originalLstat = fs.lstat.bind(fs);
+const originalRequest = http.request.bind(http);
+const realTimeout = globalThis.setTimeout;
 const root = "/dev/shm/stage1-keys";
 const operationRef = "70000000-0000-4000-8000-000000000001";
 const id = operationRef.replaceAll("-", "");
@@ -28,6 +31,9 @@ let containerdFailure = false;
 let containerdGeneration = 1;
 const containerdCalls = [];
 const evidenceCalls = [];
+const workspaceCleanupCalls = [];
+const createdWorkspaces = [];
+let cleanupStopFailure = false;
 
 mock.module("../../packages/release-foundation/src/r3-hosted-evidence.mjs", {
   namedExports: {
@@ -66,7 +72,7 @@ mock.module("./r3-hosted-workspace-create.mjs", {
       creationCalls.push(input);
       if (creatorFailure)
         throw Object.assign(new Error("synthetic creator failure"), { code: "SYNTHETIC" });
-      return {
+      const owned = {
         observation: {
           observation: {
             status: "OBSERVED",
@@ -92,6 +98,19 @@ mock.module("./r3-hosted-workspace-create.mjs", {
           }
         },
         creation: { status: "WORKSPACE_OBSERVED", promotionEligible: false },
+        rawInputs: {}
+      };
+      createdWorkspaces.push(owned);
+      return owned;
+    },
+    cleanupR3HostedWorkspace: async (input) => {
+      assert.deepEqual(Object.keys(input), ["ownedWorkspace"]);
+      assert.equal(input.ownedWorkspace, createdWorkspaces.at(-1));
+      await assert.rejects(originalLstat(socketPath), { code: "ENOENT" });
+      workspaceCleanupCalls.push(input);
+      return {
+        cleanup: { operationRef, status: "WORKSPACE_REMOVED", promotionEligible: false },
+        observation: { observation: { state: "absent", status: "OBSERVED" } },
         rawInputs: {}
       };
     }
@@ -297,12 +316,17 @@ async function setup(t) {
   containerdCalls.length = 0;
   evidenceCalls.length = 0;
   creationCalls.length = 0;
+  createdWorkspaces.length = 0;
+  workspaceCleanupCalls.length = 0;
+  cleanupStopFailure = false;
   t.after(() => {
     creatorFailure = oldCreatorFailure;
     engineFailure = oldEngineFailure;
     systemContainerd = oldSystemContainerd;
   });
   t.mock.method(fs, "lstat", async (file, ...args) => {
+    if (file === "/proc/123")
+      throw Object.assign(new Error("synthetic managed child absent"), { code: "ENOENT" });
     if (file === "/run/containerd/containerd.sock") {
       if (systemContainerd) return { isSocket: () => true };
       throw Object.assign(new Error("synthetic absent system containerd"), { code: "ENOENT" });
@@ -311,6 +335,7 @@ async function setup(t) {
   });
   const opens = [],
     commands = [],
+    children = [],
     directories = [],
     configurations = [];
   t.mock.method(fs, "mkdir", async (file, options) => {
@@ -354,29 +379,63 @@ async function setup(t) {
     const helper = `
       const http = require('node:http');
       const socket = process.argv[1], root = process.argv[2];
+      const resources = ${JSON.stringify(postgresResources)};
+      let removedContainer = false, removedImage = false, infoReads = 0;
+      if (resources) resources['/v1.45/containers/${"b".repeat(64)}/json'] = resources['/v1.45/containers/s1r3pg_${id}/json'];
       const server = http.createServer((req, res) => {
-        const resources = ${JSON.stringify(postgresResources)};
+        if (resources && req.url === '/v1.45/containers/${"b".repeat(64)}/stop?t=10' && req.method === 'POST') {
+          if (${JSON.stringify(cleanupStopFailure)}) return res.writeHead(500).end('synthetic stop failure');
+          const value = resources['/v1.45/containers/s1r3pg_${id}/json'];
+          value.State = {Status:'exited', Running:false, Paused:false, Restarting:false, Dead:false, Pid:0, ExitCode:0};
+          return res.writeHead(204).end();
+        }
+        if (resources && req.method === 'DELETE') {
+          const url = req.url.split('?')[0];
+          const container = '/v1.45/containers/${"b".repeat(64)}';
+          const network = '/v1.45/networks/${"c".repeat(64)}';
+          const volume = '/v1.45/volumes/s1r3data_${id}';
+          const image = '/v1.45/images/' + encodeURIComponent('sha256:${"e".repeat(64)}');
+          if (url === container) {
+            delete resources[container + '/json'];
+            delete resources['/v1.45/containers/s1r3pg_${id}/json'];
+            removedContainer = true;
+          } else if (url === network) {
+            delete resources[network];
+            delete resources['/v1.45/networks/s1r3net_${id}'];
+          } else if (url === volume) delete resources[volume];
+          else if (url === image) {
+            delete resources[image + '/json'];
+            removedImage = true;
+            return res.writeHead(200).end(JSON.stringify([{Deleted:'sha256:${"e".repeat(64)}'}]));
+          } else return res.writeHead(400).end();
+          return res.writeHead(204).end();
+        }
         if (resources && req.url in resources) return res.writeHead(200).end(JSON.stringify(resources[req.url]));
         if (req.url === '/_ping') return res.writeHead(200).end('OK');
-        if (req.url === '/v1.45/info') return res.writeHead(200, {'content-type':'application/json'}).end(JSON.stringify({
+        if (req.url === '/v1.45/info') {
+          const provisioned = ++infoReads > 1 && resources;
+          return res.writeHead(200, {'content-type':'application/json'}).end(JSON.stringify({
           ID:'69a59aea-54ef-4181-808e-cf8d6cdb05e6', DockerRootDir:root,
           Driver:${JSON.stringify(engineFailure ? "vfs" : "overlay2")},
           DriverStatus:[['Backing Filesystem','extfs']], LoggingDriver:'json-file',
-          Containers:0, Images:0
+          Containers:provisioned && !removedContainer ? 1 : 0, Images:provisioned && !removedImage ? 1 : 0
         }));
+        }
         if (req.url === '/v1.45/version') return res.writeHead(200, {'content-type':'application/json'}).end(JSON.stringify({Version:'26.1.3',ApiVersion:'1.45'}));
         res.writeHead(404).end();
       });
       server.listen(socket);
       process.on('SIGTERM', () => server.close(() => process.exit(0)));
     `;
-    return originalSpawn(
+    const child = originalSpawn(
       process.execPath,
       ["-e", helper, socketPath, `${mountPath}/docker`],
       options
     );
+    children.push(child);
+    return child;
   });
-  return { opens, commands, directories, configurations };
+  return { opens, commands, children, directories, configurations };
 }
 
 test("R3 control rejects malformed admission before native socket or creator effect", async (t) => {
@@ -481,9 +540,7 @@ test("R3 control rejects unobserved containerd and retains the workspace", async
   assert.equal(containerdCalls.length, 1);
 });
 
-test("R3 control relays only opaque bytes to its observed PG and closes the loopback listener", async (t) => {
-  const f = await setup(t);
-  if (!f) return;
+async function postgresFixture() {
   const imageDigest = JSON.parse(
     await originalRead(
       new URL("../../release/contracts/database-target-policies.v1.json", import.meta.url),
@@ -556,6 +613,200 @@ test("R3 control relays only opaque bytes to its observed PG and closes the loop
       Labels: labels
     }
   };
+  postgresResources[`/v1.45/containers/${cid}/json`] =
+    postgresResources[`/v1.45/containers/${names.container}/json`];
+  postgresResources[`/v1.45/networks/${nid}`] =
+    postgresResources[`/v1.45/networks/${names.network}`];
+  postgresResources[`/v1.45/images/${encodeURIComponent(imageId)}/json`] =
+    postgresResources[
+      `/v1.45/images/${encodeURIComponent(`postgres:17-bookworm@${imageDigest}`)}/json`
+    ];
+  return { cid, nid, imageId };
+}
+
+test("R3 control cleanup drains only the owned target then removes its workspace", async (t) => {
+  const f = await setup(t);
+  if (!f) return;
+  const { cid } = await postgresFixture();
+  const inputs = admission();
+  const control = await openR3HostedCreationControl(inputs);
+  t.after(() => control.close());
+  assert.equal(typeof control.cleanupOwnedTarget, "function");
+  await assert.rejects(control.cleanupOwnedTarget({ verified: true }), {
+    code: "R3_HOSTED_CREATION_CONTROL_INVALID"
+  });
+  assert.equal((await post(socketPath, body(inputs))).status, 202);
+  const created = await control.created;
+  await control.postgresForward;
+  const result = await control.cleanupOwnedTarget();
+  assert.equal(result.status, "TARGET_REMOVED");
+  assert.equal(result.postgres.containerId, cid);
+  assert.equal(result.engine.id, created.engine.id);
+  assert.equal(result.engine.process.pid, created.engine.process.pid);
+  assert.equal(result.engine.exit.exitCode, 0);
+  assert.equal(result.engine.exit.signal, null);
+  assert.equal(result.engine.exit.pid, created.engine.process.pid);
+  assert.ok(Date.parse(result.engine.exit.closedAt) >= Date.parse(result.startedAt));
+  assert.equal(result.workspace.cleanup.status, "WORKSPACE_REMOVED");
+  assert.equal(result.promotionEligible, false);
+  assert.equal(workspaceCleanupCalls.length, 1);
+  assert.deepEqual(
+    result.requests.map(({ name }) => name),
+    [
+      "stop-container",
+      "stopped-container",
+      "remove-container",
+      "absent-container",
+      "remove-network",
+      "absent-network",
+      "remove-volume",
+      "absent-volume",
+      "remove-image",
+      "absent-image",
+      "empty-engine"
+    ]
+  );
+  assert.ok(result.requests.every((value) => value.finishedAt && value.response?.digest));
+  assert.ok(Object.values(result.rawInputs).every(Buffer.isBuffer));
+  await assert.rejects(control.cleanupOwnedTarget(), {
+    code: "R3_HOSTED_CREATION_CONTROL_INVALID"
+  });
+  assert.equal(workspaceCleanupCalls.length, 1);
+  assert.equal((await control.close()).workspaceRemoved, true);
+});
+
+test("R3 control cleanup preserves the failed stop prefix and never removes workspace", async (t) => {
+  const f = await setup(t);
+  if (!f) return;
+  await postgresFixture();
+  cleanupStopFailure = true;
+  const inputs = admission();
+  const control = await openR3HostedCreationControl(inputs);
+  t.after(() => control.close());
+  assert.equal(typeof control.cleanupOwnedTarget, "function");
+  assert.equal((await post(socketPath, body(inputs))).status, 202);
+  await control.created;
+  await control.postgresForward;
+  await assert.rejects(control.cleanupOwnedTarget(), (error) => {
+    assert.equal(error.code, "R3_HOSTED_CREATION_CONTROL_INVALID");
+    assert.equal(error.evidence.status, "INTERRUPTED_UNKNOWN");
+    assert.equal(error.evidence.requests.length, 1);
+    assert.equal(error.evidence.requests[0].status, 500);
+    assert.equal(error.evidence.workspace, null);
+    return true;
+  });
+  assert.equal(workspaceCleanupCalls.length, 0);
+  await assert.rejects(control.cleanupOwnedTarget(), {
+    code: "R3_HOSTED_CREATION_CONTROL_INVALID"
+  });
+  assert.equal((await control.close()).workspaceRemoved, false);
+});
+
+test("R3 control cleanup bounds a response that never becomes idle or ends", async (t) => {
+  const f = await setup(t);
+  if (!f) return;
+  await postgresFixture();
+  const inputs = admission();
+  const control = await openR3HostedCreationControl(inputs);
+  assert.equal((await post(socketPath, body(inputs))).status, 202);
+  await control.created;
+  await control.postgresForward;
+  let notifyRequest;
+  const requested = new Promise((resolve) => {
+    notifyRequest = resolve;
+  });
+  const request = new EventEmitter();
+  request.setTimeout = () => request; // No idle timeout occurs on a trickling peer.
+  request.end = () => notifyRequest();
+  let destroyed = false;
+  request.destroy = (error) => {
+    destroyed = true;
+    queueMicrotask(() => request.emit("error", error ?? new Error("test teardown")));
+    return request;
+  };
+  t.mock.method(http, "request", (options, callback) => {
+    if (options.path.endsWith("/stop?t=10")) return request;
+    return originalRequest(options, callback);
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = control.cleanupOwnedTarget().catch((error) => error);
+  try {
+    await requested;
+    t.mock.timers.tick(15000);
+    const error = await Promise.race([
+      pending,
+      new Promise((resolve) => realTimeout(() => resolve(null), 100))
+    ]);
+    assert.equal(error?.code, "R3_HOSTED_CREATION_CONTROL_INVALID");
+    assert.equal(destroyed, true);
+    assert.equal(error.evidence.status, "INTERRUPTED_UNKNOWN");
+    assert.equal(error.evidence.requests.length, 1);
+    assert.equal(error.evidence.requests[0].status, null);
+    assert.equal(error.evidence.workspace, null);
+    assert.equal(workspaceCleanupCalls.length, 0);
+  } finally {
+    if (!destroyed) request.destroy();
+    t.mock.timers.reset();
+    await pending;
+    await control.close();
+  }
+});
+
+test("R3 control cleanup bounds unconfirmed Engine termination and preserves workspace", async (t) => {
+  const f = await setup(t);
+  if (!f) return;
+  await postgresFixture();
+  const inputs = admission();
+  const control = await openR3HostedCreationControl(inputs);
+  assert.equal((await post(socketPath, body(inputs))).status, 202);
+  await control.created;
+  await control.postgresForward;
+  const child = f.children[0];
+  const signals = [];
+  let notifyTerm, notifyKill;
+  const term = new Promise((resolve) => {
+    notifyTerm = resolve;
+  });
+  const kill = new Promise((resolve) => {
+    notifyKill = resolve;
+  });
+  const killMock = t.mock.method(child, "kill", (signal) => {
+    signals.push(signal);
+    if (signal === "SIGTERM") notifyTerm();
+    if (signal === "SIGKILL") notifyKill();
+    return true; // A sent signal is not evidence of process exit.
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = control.cleanupOwnedTarget().catch((error) => error);
+  try {
+    await term;
+    t.mock.timers.tick(10000);
+    await kill;
+    t.mock.timers.tick(2000);
+    const error = await Promise.race([
+      pending,
+      new Promise((resolve) => realTimeout(() => resolve(null), 100))
+    ]);
+    assert.equal(error?.code, "R3_HOSTED_CREATION_CONTROL_INVALID");
+    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(error.evidence.status, "INTERRUPTED_UNKNOWN");
+    assert.equal(error.evidence.engine.exit, null);
+    assert.equal(error.evidence.engine.process.pid, child.pid);
+    assert.equal(error.evidence.workspace, null);
+    assert.equal(workspaceCleanupCalls.length, 0);
+  } finally {
+    t.mock.timers.reset();
+    killMock.mock.restore();
+    child.kill("SIGTERM");
+    await pending;
+    await control.close();
+  }
+});
+
+test("R3 control relays only opaque bytes to its observed PG and closes the loopback listener", async (t) => {
+  const f = await setup(t);
+  if (!f) return;
+  const { cid } = await postgresFixture();
   // A synthetic TCP peer stands in for PG; this tests opaque relay lifecycle,
   // not the database, TLS implementation or hosted job provenance.
   const peerSockets = new Set();

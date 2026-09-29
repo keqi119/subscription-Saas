@@ -17,7 +17,9 @@ import { validateContract } from "../../packages/release-foundation/src/schema-r
 import { observeR3EncryptedWorkspace } from "./r3-encrypted-workspace-observer.mjs";
 
 const CODE = "R3_HOSTED_WORKSPACE_CREATE_INVALID";
+const CLEANUP_CODE = "R3_HOSTED_WORKSPACE_CLEANUP_INVALID";
 const LIMIT = 1048576;
+const ownedWorkspaces = new WeakMap();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const ENV = { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LC_ALL: "C", LANG: "C" };
@@ -88,6 +90,28 @@ function frozenCreation(creation) {
     status: creation.status,
     ownedPaths: [...creation.ownedPaths],
     processes: creation.processes.map((item) => ({
+      ...item,
+      args: [...item.args],
+      executable: { ...item.executable },
+      stdout: item.stdout && { ...item.stdout },
+      stderr: item.stderr && { ...item.stderr }
+    }))
+  });
+}
+function stableIdentity(stat) {
+  return Object.fromEntries(
+    ["dev", "ino", "mode", "uid", "gid", "rdev"].map((key) => [key, String(stat[key])])
+  );
+}
+function frozenCleanup(cleanup) {
+  return freeze({
+    operationRef: cleanup.operationRef,
+    promotionEligible: false,
+    startedAt: cleanup.startedAt,
+    finishedAt: new Date().toISOString(),
+    status: cleanup.status,
+    ownedPaths: [...cleanup.ownedPaths],
+    processes: cleanup.processes.map((item) => ({
       ...item,
       args: [...item.args],
       executable: { ...item.executable },
@@ -550,6 +574,8 @@ export async function createR3HostedWorkspace(input) {
     await run("mkfs", "/usr/sbin/mkfs.ext4", ["-F", "-q", `/dev/mapper/${workspace.mapperName}`]);
     await fs.mkdir(workspace.mountPath, { mode: 0o700 });
     creation.ownedPaths.push(workspace.mountPath);
+    const unmountedLeaf = await fs.lstat(workspace.mountPath, { bigint: true });
+    requireThat(unmountedLeaf.isDirectory() && !unmountedLeaf.isSymbolicLink());
     await run("mount", "/usr/bin/mount", [
       "-t",
       "ext4",
@@ -585,11 +611,39 @@ export async function createR3HostedWorkspace(input) {
         sha256Canonical(observation.observation.workspace) === sha256Canonical(workspace)
     );
     creation.status = "WORKSPACE_OBSERVED";
-    return Object.freeze({
+    const ownedKey = await fs.lstat(workspace.keyFile, { bigint: true });
+    const ownedBacking = await fs.lstat(workspace.backingFile, { bigint: true });
+    requireThat(
+      ownedKey.isFile() &&
+        !ownedKey.isSymbolicLink() &&
+        ownedKey.nlink === 1n &&
+        ownedKey.size === 64n &&
+        ownedBacking.isFile() &&
+        !ownedBacking.isSymbolicLink() &&
+        ownedBacking.nlink === 1n &&
+        ownedBacking.size === BigInt(workspace.capacityBytes)
+    );
+    const result = Object.freeze({
       observation,
       rawInputs: rawCopies(),
       creation: frozenCreation(creation)
     });
+    ownedWorkspaces.set(result, {
+      attempted: false,
+      spec,
+      job,
+      workspace,
+      profileDigest: spec.profileDigest,
+      policyBytes: Buffer.from(policyBytes),
+      machine,
+      factsDigest: sha256Canonical(observation.observation.facts),
+      keyIdentity: stableIdentity(ownedKey),
+      backingIdentity: stableIdentity(ownedBacking),
+      mountedIdentity: stableIdentity(mountedRoot),
+      leafIdentity: stableIdentity(unmountedLeaf),
+      ownedPaths: [...creation.ownedPaths]
+    });
+    return result;
   } catch (cause) {
     // Never undo partial resources here. The H1 UNKNOWN slot remains held and
     // a later, separately authorized cleanup must inspect the actual graph.
@@ -605,5 +659,270 @@ export async function createR3HostedWorkspace(input) {
       error.rawInputs = rawCopies();
     }
     throw error;
+  }
+}
+
+// This handle is process-local ownership of a completed create, not a grant.
+// The caller must first independently stop the owned Engine and its child.
+export async function cleanupR3HostedWorkspace(input) {
+  const invalid = () => {
+    throw Object.assign(new Error(CLEANUP_CODE), { code: CLEANUP_CODE });
+  };
+  if (
+    input === null ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+    Reflect.ownKeys(input).length !== 1 ||
+    !Object.hasOwn(input, "ownedWorkspace") ||
+    !Object.hasOwn(Object.getOwnPropertyDescriptor(input, "ownedWorkspace"), "value")
+  )
+    invalid();
+  const ownedWorkspace = Object.getOwnPropertyDescriptor(input, "ownedWorkspace").value;
+  if (ownedWorkspace === null || typeof ownedWorkspace !== "object") invalid();
+  const held = ownedWorkspaces.get(ownedWorkspace);
+  if (!held || held.attempted) invalid();
+  held.attempted = true;
+  const { spec, job, workspace } = held;
+  const cleanup = {
+    operationRef: spec.operationRef,
+    promotionEligible: false,
+    startedAt: new Date().toISOString(),
+    status: "INCOMPLETE",
+    ownedPaths: [...held.ownedPaths],
+    processes: []
+  };
+  const rawInputs = {};
+  const capture = (prefix, inputs) => {
+    for (const [name, bytes] of Object.entries(inputs)) {
+      if (!Buffer.isBuffer(bytes) || bytes.length > LIMIT) invalid();
+      rawInputs[`${prefix}.${name}`] = Buffer.from(bytes);
+    }
+  };
+  const rawCopies = () =>
+    Object.freeze(
+      Object.fromEntries(
+        Object.entries(rawInputs).map(([name, bytes]) => [name, Buffer.from(bytes)])
+      )
+    );
+  let observation;
+  try {
+    const recheck = async () => {
+      if (process.platform !== "linux" || process.getuid?.() !== 0) invalid();
+      const profile = JSON.parse(await fs.readFile(profilePath, { encoding: "utf8" }));
+      const policyBytes = await fs.readFile(policyPath);
+      const machine = new TextDecoder("utf-8", { fatal: true })
+        .decode(await fs.readFile("/etc/machine-id"))
+        .trim();
+      validateContract("manual-stage1-profile.v2", profile);
+      validateContract(
+        "manual-stage1-r3-target-policy.v1",
+        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(policyBytes))
+      );
+      if (
+        sha256Canonical(profile) !== held.profileDigest ||
+        !Buffer.isBuffer(policyBytes) ||
+        !policyBytes.equals(held.policyBytes) ||
+        machine !== held.machine ||
+        spec.cleanup !== "stop-owned-engine-and-remove-workspace" ||
+        Date.now() < instant(spec.createdAt) ||
+        Date.now() >= instant(spec.expiresAt) ||
+        Date.now() >= instant(profile.expiresAt) ||
+        process.env.GITHUB_ACTIONS !== "true" ||
+        process.env.GITHUB_REPOSITORY !== job.ci.repository ||
+        process.env.GITHUB_REPOSITORY_ID !== job.ci.repositoryId ||
+        process.env.GITHUB_SHA !== spec.sourceSha ||
+        process.env.GITHUB_REF !== JSON.parse(policyBytes).hosted.workflowRef ||
+        process.env.GITHUB_WORKFLOW_REF !==
+          `${job.ci.repository}/${job.ci.callerWorkflowPath}@${JSON.parse(policyBytes).hosted.workflowRef}` ||
+        process.env.GITHUB_RUN_ID !== job.ci.runId ||
+        process.env.GITHUB_RUN_ATTEMPT !== String(job.ci.runAttempt) ||
+        process.env.GITHUB_JOB !== job.ci.jobKey ||
+        process.env.RUNNER_NAME !== job.host.runnerName ||
+        process.env.RUNNER_OS !== "Linux"
+      )
+        invalid();
+      noSwapAndCore(await fs.readFile("/proc/swaps"), await fs.readFile("/proc/self/limits"));
+    };
+    const same = async (path, expected, kind, expectedSize) => {
+      const stat = await fs.lstat(path, { bigint: true });
+      if (
+        JSON.stringify(stableIdentity(stat)) !== JSON.stringify(expected) ||
+        !(kind === "file" ? stat.isFile() : stat.isDirectory()) ||
+        stat.isSymbolicLink() ||
+        (kind === "file" && stat.nlink !== 1n) ||
+        (expectedSize !== undefined && stat.size !== BigInt(expectedSize))
+      )
+        invalid();
+    };
+    await recheck();
+    await same(workspace.keyFile, held.keyIdentity, "file", 64);
+    await same(workspace.backingFile, held.backingIdentity, "file", workspace.capacityBytes);
+    await same(workspace.mountPath, held.mountedIdentity, "directory");
+    const before = await observeR3EncryptedWorkspace({
+      operationRef: spec.operationRef,
+      capacityBytes: workspace.capacityBytes,
+      state: "active"
+    });
+    capture("before", before.rawInputs);
+    observation = before;
+    if (
+      before.observation.status !== "OBSERVED" ||
+      before.observation.hostFingerprint !== job.host.machineIdFingerprint ||
+      before.observation.policyDigest !== spec.targetPolicyDigest ||
+      sha256Canonical(before.observation.workspace) !== sha256Canonical(workspace) ||
+      sha256Canonical(before.observation.facts) !== held.factsDigest
+    )
+      invalid();
+    await same(workspace.keyFile, held.keyIdentity, "file", 64);
+    await same(workspace.backingFile, held.backingIdentity, "file", workspace.capacityBytes);
+    await same(workspace.mountPath, held.mountedIdentity, "directory");
+    const run = async (name, command, args) => {
+      await recheck();
+      const beforeStat = await fs.stat(command, { bigint: true });
+      if (
+        !beforeStat.isFile() ||
+        beforeStat.uid !== 0n ||
+        (beforeStat.mode & 0o022n) !== 0n ||
+        (beforeStat.mode & 0o111n) === 0n
+      )
+        invalid();
+      const call = {
+        name,
+        command,
+        args: Object.freeze([...args]),
+        executable: identity(beforeStat),
+        startedAt: new Date().toISOString(),
+        pid: null,
+        closedAt: null,
+        exitCode: null,
+        signal: null,
+        stdout: null,
+        stderr: null
+      };
+      cleanup.processes.push(call);
+      const result = await new Promise((resolve) => {
+        let child,
+          timer,
+          drainTimer,
+          size = 0,
+          overflow = false,
+          spawnError = false,
+          timedOut = false,
+          settled = false;
+        const stdout = [],
+          stderr = [];
+        const settle = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          clearTimeout(drainTimer);
+          resolve({
+            stdout: Buffer.concat(stdout),
+            stderr: Buffer.concat(stderr),
+            overflow,
+            spawnError,
+            timedOut
+          });
+        };
+        const killAndDrain = () => {
+          if (timedOut || settled) return;
+          timedOut = true;
+          try {
+            child?.kill("SIGKILL");
+          } catch {
+            // The close event, rather than a kill request, proves termination.
+          }
+          if (!settled) drainTimer = setTimeout(settle, 2000);
+        };
+        try {
+          child = childProcess.spawn(command, args, {
+            shell: false,
+            windowsHide: true,
+            stdio: ["ignore", "pipe", "pipe"],
+            env: ENV
+          });
+          call.pid = Number.isSafeInteger(child.pid) && child.pid > 0 ? child.pid : null;
+          const collect = (target) => (chunk) => {
+            if (settled) return;
+            const bytes = Buffer.from(chunk);
+            size += bytes.length;
+            if (size > LIMIT) {
+              overflow = true;
+              killAndDrain();
+            } else target.push(bytes);
+          };
+          child.stdout.on("data", collect(stdout));
+          child.stderr.on("data", collect(stderr));
+          child.once("error", () => {
+            spawnError = true;
+            killAndDrain();
+          });
+          child.once("close", (exitCode, signal) => {
+            if (settled) return;
+            Object.assign(call, { closedAt: new Date().toISOString(), exitCode, signal });
+            settle();
+          });
+          timer = setTimeout(killAndDrain, 120000);
+        } catch {
+          spawnError = true;
+          if (child) killAndDrain();
+          else settle();
+        }
+      });
+      call.stdout = ref(result.stdout);
+      call.stderr = ref(result.stderr);
+      rawInputs[`cleanup.${name}.stdout`] = Buffer.from(result.stdout);
+      rawInputs[`cleanup.${name}.stderr`] = Buffer.from(result.stderr);
+      if (
+        result.overflow ||
+        result.spawnError ||
+        result.timedOut ||
+        call.pid === null ||
+        call.closedAt === null ||
+        call.exitCode !== 0 ||
+        call.signal !== null ||
+        result.stderr.length !== 0 ||
+        JSON.stringify(identity(await fs.stat(command, { bigint: true }))) !==
+          JSON.stringify(call.executable)
+      )
+        invalid();
+    };
+    await run("unmount", "/usr/bin/umount", [workspace.mountPath]);
+    await run("luksClose", "/usr/sbin/cryptsetup", ["close", workspace.mapperName]);
+    await recheck();
+    await same(workspace.keyFile, held.keyIdentity, "file", 64);
+    await fs.unlink(workspace.keyFile);
+    await same(workspace.backingFile, held.backingIdentity, "file", workspace.capacityBytes);
+    await fs.unlink(workspace.backingFile);
+    await same(workspace.mountPath, held.leafIdentity, "directory");
+    await fs.rmdir(workspace.mountPath);
+    observation = await observeR3EncryptedWorkspace({
+      operationRef: spec.operationRef,
+      capacityBytes: workspace.capacityBytes,
+      state: "absent"
+    });
+    capture("after", observation.rawInputs);
+    if (
+      observation.observation.status !== "OBSERVED" ||
+      observation.observation.facts.state !== "absent" ||
+      observation.observation.hostFingerprint !== job.host.machineIdFingerprint ||
+      observation.observation.policyDigest !== spec.targetPolicyDigest ||
+      sha256Canonical(observation.observation.workspace) !== sha256Canonical(workspace)
+    )
+      invalid();
+    cleanup.status = "WORKSPACE_REMOVED";
+    return Object.freeze({ cleanup: frozenCleanup(cleanup), observation, rawInputs: rawCopies() });
+  } catch (cause) {
+    if (cause?.evidence) {
+      observation = cause.evidence;
+      capture("failedObservation", cause.evidence.rawInputs);
+    }
+    throw Object.assign(new Error(CLEANUP_CODE), {
+      code: CLEANUP_CODE,
+      cleanup: frozenCleanup(cleanup),
+      observation,
+      rawInputs: rawCopies()
+    });
   }
 }

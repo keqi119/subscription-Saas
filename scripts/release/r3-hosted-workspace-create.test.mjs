@@ -3,6 +3,7 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import childProcess from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
 import {
   encodeManualJson,
@@ -247,8 +248,14 @@ async function fixture(t, fault = null, { phase = "source", chain = "fresh" } = 
   const created = new Set();
   const calls = [];
   const writes = [];
+  const kills = [];
+  let resolveHung;
+  const hung = new Promise((resolve) => {
+    resolveHung = resolve;
+  });
   let mounted = false,
-    securedMount = false;
+    securedMount = false,
+    keyInode = 42n;
   const privateRoots = [
     "/var/lib/stage1-snapshots",
     "/srv/stage1-snapshot",
@@ -278,7 +285,7 @@ async function fixture(t, fault = null, { phase = "source", chain = "fresh" } = 
     )
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     if (file === workspace.backingFile) return fakeStat("file", capacityBytes);
-    if (file === workspace.keyFile) return fakeStat("file", 64);
+    if (file === workspace.keyFile) return { ...fakeStat("file", 64), ino: keyInode };
     if (file === `/dev/mapper/${workspace.mapperName}`) return fakeStat("symlink");
     if (file === workspace.mountPath)
       return fakeStat("directory", 0, mounted && !securedMount ? 0o40755n : 0o40700n);
@@ -326,9 +333,22 @@ async function fixture(t, fault = null, { phase = "source", chain = "fresh" } = 
     securedMount = true;
     writes.push({ chmod: file });
   });
+  t.mock.method(fs, "unlink", async (file) => {
+    assert.ok([workspace.keyFile, workspace.backingFile].includes(file));
+    assert.ok(created.delete(file));
+    writes.push({ unlink: file });
+  });
+  t.mock.method(fs, "rmdir", async (file) => {
+    assert.equal(file, workspace.mountPath);
+    assert.equal(mounted, false);
+    assert.ok(created.delete(file));
+    writes.push({ rmdir: file });
+  });
   const outputs = (tool, args) => {
     const active =
-      created.has(`/dev/mapper/${workspace.mapperName}`) && created.has(workspace.mountPath);
+      created.has(`/dev/mapper/${workspace.mapperName}`) &&
+      created.has(workspace.mountPath) &&
+      mounted;
     if (tool === "findmnt")
       return (
         JSON.stringify({
@@ -416,7 +436,21 @@ async function fixture(t, fault = null, { phase = "source", chain = "fresh" } = 
       LC_ALL: "C",
       LANG: "C"
     });
-    const failure = fault === "crypt-open" && tool === "cryptsetup" && args[0] === "open";
+    if (fault === "hang-unmount" && tool === "umount") {
+      const child = new EventEmitter();
+      child.pid = 12345;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = (signal) => {
+        kills.push(signal);
+        return true;
+      };
+      resolveHung();
+      return child;
+    }
+    const failure =
+      (fault === "crypt-open" && tool === "cryptsetup" && args[0] === "open") ||
+      (fault === "crypt-close" && tool === "cryptsetup" && args[0] === "close");
     const output = outputs(tool, args);
     const child = originalSpawn(
       process.execPath,
@@ -426,16 +460,27 @@ async function fixture(t, fault = null, { phase = "source", chain = "fresh" } = 
     if (!failure && tool === "cryptsetup" && args[0] === "open")
       created.add(`/dev/mapper/${workspace.mapperName}`);
     if (!failure && tool === "mount") mounted = true;
+    if (!failure && tool === "umount") mounted = false;
+    if (!failure && tool === "cryptsetup" && args[0] === "close")
+      created.delete(`/dev/mapper/${workspace.mapperName}`);
     return child;
   });
-  const { createR3HostedWorkspace } = await import("./r3-hosted-workspace-create.mjs");
+  const { createR3HostedWorkspace, cleanupR3HostedWorkspace } =
+    await import("./r3-hosted-workspace-create.mjs");
   return {
     run: (override = input) => createR3HostedWorkspace(override),
+    cleanup: (ownedWorkspace) => cleanupR3HostedWorkspace({ ownedWorkspace }),
+    cleanupInput: cleanupR3HostedWorkspace,
     input,
     calls,
     writes,
+    kills,
+    hung,
     created,
-    workspace
+    workspace,
+    replaceKeyInode: () => {
+      keyInode = 43n;
+    }
   };
 }
 
@@ -541,4 +586,106 @@ test("R3 final snapshot binds caller workflow env while signer remains reusable 
   const result = await f.run();
   assert.equal(result.observation.observation.facts.state, "active");
   assert.equal(result.creation.status, "WORKSPACE_OBSERVED");
+});
+
+test("R3 cleanup removes only a held successful workspace and confirms absent", async (t) => {
+  const f = await fixture(t);
+  const owned = await f.run();
+  const before = f.calls.length;
+  await assert.rejects(f.cleanup({ ...owned }), { code: "R3_HOSTED_WORKSPACE_CLEANUP_INVALID" });
+  await assert.rejects(f.cleanupInput({ ownedWorkspace: owned, verified: true }), {
+    code: "R3_HOSTED_WORKSPACE_CLEANUP_INVALID"
+  });
+  assert.equal(f.calls.length, before);
+  const result = await f.cleanup(owned);
+  assert.equal(result.cleanup.status, "WORKSPACE_REMOVED");
+  assert.equal(result.cleanup.promotionEligible, false);
+  assert.equal(result.observation.observation.facts.state, "absent");
+  assert.deepEqual(
+    f.calls
+      .filter((call) => ["umount", "cryptsetup"].includes(call.tool))
+      .slice(-2)
+      .map((call) => [call.tool, call.args]),
+    [
+      ["umount", [f.workspace.mountPath]],
+      ["cryptsetup", ["close", f.workspace.mapperName]]
+    ]
+  );
+  assert.deepEqual(
+    f.writes.filter((write) => write.unlink || write.rmdir),
+    [
+      { unlink: f.workspace.keyFile },
+      { unlink: f.workspace.backingFile },
+      { rmdir: f.workspace.mountPath }
+    ]
+  );
+  await assert.rejects(f.cleanup(owned), { code: "R3_HOSTED_WORKSPACE_CLEANUP_INVALID" });
+});
+
+test("R3 cleanup rejects a replaced owned key before mutation", async (t) => {
+  const f = await fixture(t);
+  const owned = await f.run();
+  f.replaceKeyInode();
+  await assert.rejects(f.cleanup(owned), { code: "R3_HOSTED_WORKSPACE_CLEANUP_INVALID" });
+  assert.equal(
+    f.calls.some((call) => call.tool === "umount"),
+    false
+  );
+  assert.equal(
+    f.writes.some((write) => write.unlink || write.rmdir),
+    false
+  );
+});
+
+test("R3 cleanup retains partial process evidence and resources when close fails after unmount", async (t) => {
+  const f = await fixture(t, "crypt-close");
+  const owned = await f.run();
+  await assert.rejects(f.cleanup(owned), (error) => {
+    assert.equal(error.code, "R3_HOSTED_WORKSPACE_CLEANUP_INVALID");
+    assert.equal(error.cleanup.status, "INCOMPLETE");
+    assert.equal(error.cleanup.processes.at(-1).exitCode, 1);
+    assert.equal(error.cleanup.promotionEligible, false);
+    return true;
+  });
+  assert.equal(f.created.has(f.workspace.keyFile), true);
+  assert.equal(f.created.has(f.workspace.backingFile), true);
+  assert.equal(f.created.has(f.workspace.mountPath), true);
+  assert.equal(f.created.has(`/dev/mapper/${f.workspace.mapperName}`), true);
+  assert.equal(
+    f.calls.some((call) => call.tool === "umount"),
+    true
+  );
+  assert.equal(
+    f.writes.some((write) => write.unlink || write.rmdir),
+    false
+  );
+  await assert.rejects(f.cleanup(owned), { code: "R3_HOSTED_WORKSPACE_CLEANUP_INVALID" });
+});
+
+test("R3 cleanup bounds a child that never reports close after SIGKILL", async (t) => {
+  const f = await fixture(t, "hang-unmount");
+  const owned = await f.run();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = f.cleanup(owned);
+  await f.hung;
+  t.mock.timers.tick(120000);
+  t.mock.timers.tick(2000);
+  const error = await Promise.race([
+    pending.then(
+      () => null,
+      (failure) => failure
+    ),
+    new Promise((resolve) => setImmediate(() => resolve(null)))
+  ]);
+  assert.equal(error?.code, "R3_HOSTED_WORKSPACE_CLEANUP_INVALID");
+  assert.equal(error.cleanup.status, "INCOMPLETE");
+  assert.equal(error.cleanup.processes.at(-1).pid, 12345);
+  assert.equal(error.cleanup.processes.at(-1).closedAt, null);
+  assert.equal(error.cleanup.processes.at(-1).exitCode, null);
+  assert.deepEqual(f.kills, ["SIGKILL"]);
+  assert.equal(
+    f.writes.some((write) => write.unlink || write.rmdir),
+    false
+  );
+  assert.equal(f.created.has(f.workspace.keyFile), true);
 });

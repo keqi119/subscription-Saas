@@ -1058,6 +1058,7 @@ export async function launchR3TargetCreate(input) {
     consumerSlot,
     consumerRecord,
     consumerExecutionDigest,
+    consumerMatchingSourceDigest = null,
     fetchAttempted = false,
     fetchReady = false,
     fetchPending,
@@ -2074,7 +2075,7 @@ export async function launchR3TargetCreate(input) {
       promotionEligible: false
     });
   };
-  const consumeSnapshot = async (inputReference) => {
+  const consumeSnapshot = async (inputReference, matchingSourceEvidenceDigest) => {
     await recheckResources();
     consumerInput = await readR3SnapshotInput({
       repoRoot: input.repoRoot,
@@ -2108,6 +2109,7 @@ export async function launchR3TargetCreate(input) {
       scopeAuthorizationDigest: consumerInput.permissionDigest,
       destinationAdmissionDigest: destinationRecord.destinationDigest,
       input: { inputReference, inputIndexDigest: consumerInput.inputIndexDigest },
+      ...(session.scope.phase === "final" ? { matchingSourceEvidenceDigest } : {}),
       candidate: { buildProofDigest: session.scope.buildProofDigest }
     };
     request.attemptAllocationDigest = await archive.put(
@@ -2140,7 +2142,8 @@ export async function launchR3TargetCreate(input) {
         sessionRecordDigest: opened[0][0],
         allocatedAt: now,
         buildProofDigest: session.scope.buildProofDigest,
-        predecessorExecutionRecordDigest: completionRecord.executionRecordDigest
+        predecessorExecutionRecordDigest: completionRecord.executionRecordDigest,
+        ...(session.scope.phase === "final" ? { matchingSourceEvidenceDigest } : {})
       },
       "manual-runner-evidence.v2"
     );
@@ -2215,7 +2218,9 @@ export async function launchR3TargetCreate(input) {
       consumerRecord.push({ digest, role, bytes: (await archive.get(digest, role)).bytes });
     await recheckResources();
     consumerExecutionDigest = receipt.executionRecordDigest;
+    consumerMatchingSourceDigest = matchingSourceEvidenceDigest;
     consumerReady = true;
+    await assertSnapshotConsumption();
     return Object.freeze({
       status: "SNAPSHOT_INPUT_CONSUMED",
       executionStatus: "INTERRUPTED_UNKNOWN",
@@ -2227,6 +2232,30 @@ export async function launchR3TargetCreate(input) {
       inputIndexDigest: consumerInput.inputIndexDigest,
       promotionEligible: false
     });
+  };
+  // A source terminal digest is a selector only. The held core independently
+  // reconstructs its complete history and authenticates prior job inputs.
+  // Check explicit stages, not every low-level Engine read in a restore.
+  const assertSnapshotConsumption = async () => {
+    if (session.scope.phase !== "final" || !consumerReady) return;
+    try {
+      const receipt = await session.assertSnapshotConsumption();
+      if (
+        !exact(receipt, ["executionRecordDigest", "matchingSourceEvidenceDigest"]) ||
+        receipt.executionRecordDigest !== consumerExecutionDigest ||
+        receipt.matchingSourceEvidenceDigest !== consumerMatchingSourceDigest
+      )
+        fail(code);
+    } catch (error) {
+      await session.closeIncomplete().catch(() => {});
+      throw error;
+    }
+  };
+  const snapshotPhase = async (work) => {
+    await assertSnapshotConsumption();
+    const result = await work();
+    await assertSnapshotConsumption();
+    return result;
   };
   const fetchSnapshot = async () => {
     snapshotPayload = await fetchR3SnapshotCiphertext({
@@ -2435,7 +2464,7 @@ export async function launchR3TargetCreate(input) {
       metadata.dumpDigest !== snapshotCopy.facts.snapshotDigest ||
       metadata.ownershipMapDigest !== sha256Canonical(ownershipMap) ||
       databaseTargetSet.plan.chain !== "snapshot" ||
-      databaseTargetSet.plan.phase !== "source"
+      databaseTargetSet.plan.phase !== session.scope.phase
     )
       fail(code);
     const privateRoot = lease.profile.storage.credentialRoot;
@@ -3969,6 +3998,7 @@ export async function launchR3TargetCreate(input) {
         if (targetCleanupAttempted && !targetCleanupReady) fail(code);
         if (targetCleanupReady) return check();
         await recheckResources();
+        await assertSnapshotConsumption();
       },
       async importHostedCleanupEvidence(...args) {
         if (
@@ -4160,12 +4190,11 @@ export async function launchR3TargetCreate(input) {
           !cleanupReady ||
           !restoreReady ||
           !consumerReady ||
-          session.scope.phase !== "source" ||
           session.scope.chain !== "snapshot"
         )
           fail(code);
         snapshotCompletionAttempted = true;
-        snapshotCompletionPending = completeSnapshot();
+        snapshotCompletionPending = snapshotPhase(completeSnapshot);
         try {
           return await snapshotCompletionPending;
         } catch (cause) {
@@ -4187,12 +4216,11 @@ export async function launchR3TargetCreate(input) {
           !decryptReady ||
           !fetchReady ||
           !consumerReady ||
-          session.scope.phase !== "source" ||
           session.scope.chain !== "snapshot"
         )
           fail(code);
         cleanupAttempted = true;
-        cleanupPending = cleanupSnapshot();
+        cleanupPending = snapshotPhase(cleanupSnapshot);
         try {
           return await cleanupPending;
         } catch (cause) {
@@ -4214,12 +4242,11 @@ export async function launchR3TargetCreate(input) {
           !decryptReady ||
           !fetchReady ||
           !consumerReady ||
-          session.scope.phase !== "source" ||
           session.scope.chain !== "snapshot"
         )
           fail(code);
         restoreAttempted = true;
-        restorePending = restoreSnapshot();
+        restorePending = snapshotPhase(restoreSnapshot);
         try {
           return await restorePending;
         } catch (cause) {
@@ -4239,12 +4266,11 @@ export async function launchR3TargetCreate(input) {
           !decryptReady ||
           !fetchReady ||
           !consumerReady ||
-          session.scope.phase !== "source" ||
           session.scope.chain !== "snapshot"
         )
           fail(code);
         copyAttempted = true;
-        copyPending = copySnapshot();
+        copyPending = snapshotPhase(copySnapshot);
         try {
           return await copyPending;
         } catch (cause) {
@@ -4263,12 +4289,11 @@ export async function launchR3TargetCreate(input) {
           decryptAttempted ||
           !fetchReady ||
           !consumerReady ||
-          session.scope.phase !== "source" ||
           session.scope.chain !== "snapshot"
         )
           fail(code);
         decryptAttempted = true;
-        decryptPending = decryptSnapshot();
+        decryptPending = snapshotPhase(decryptSnapshot);
         try {
           return await decryptPending;
         } catch (cause) {
@@ -4286,12 +4311,11 @@ export async function launchR3TargetCreate(input) {
           closed ||
           fetchAttempted ||
           !consumerReady ||
-          session.scope.phase !== "source" ||
           session.scope.chain !== "snapshot"
         )
           fail(code);
         fetchAttempted = true;
-        fetchPending = fetchSnapshot();
+        fetchPending = snapshotPhase(fetchSnapshot);
         try {
           return await fetchPending;
         } catch (cause) {
@@ -4304,21 +4328,30 @@ export async function launchR3TargetCreate(input) {
       },
       async consumeSnapshot(...args) {
         const [selector] = args;
+        const final = session.scope.phase === "final";
         if (
           args.length !== 1 ||
-          !exact(selector, ["inputReference"]) ||
+          !exact(selector, [
+            "inputReference",
+            ...(final ? ["matchingSourceEvidenceDigest"] : [])
+          ]) ||
           typeof selector.inputReference !== "string" ||
           !uuid.test(selector.inputReference) ||
+          (final &&
+            (typeof selector.matchingSourceEvidenceDigest !== "string" ||
+              !/^sha256:[0-9a-f]{64}$/u.test(selector.matchingSourceEvidenceDigest))) ||
           stopping ||
           closed ||
           consumerAttempted ||
           !completionReady ||
-          session.scope.phase !== "source" ||
           session.scope.chain !== "snapshot"
         )
           fail(code);
         consumerAttempted = true;
-        consumerPending = consumeSnapshot(selector.inputReference);
+        consumerPending = consumeSnapshot(
+          selector.inputReference,
+          final ? selector.matchingSourceEvidenceDigest : null
+        );
         try {
           return await consumerPending;
         } catch (cause) {

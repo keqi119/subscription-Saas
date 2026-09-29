@@ -270,7 +270,7 @@ export function buildR3SnapshotConsumerResult(input) {
         UUID.test(destination.operationRef) &&
         UUID.test(destination.sessionId) &&
         NONCE.test(destination.sessionNonce) &&
-        destination.phase === "source" &&
+        ["source", "final"].includes(destination.phase) &&
         destination.chain === "snapshot" &&
         destination.promotionEligible === false &&
         DIGEST.test(destination.initialExecutionRecordDigest)
@@ -464,6 +464,7 @@ export function buildR3SnapshotConsumerResult(input) {
     const destinationDigest = sha256Canonical(destination);
     const processEvidence = freeze({
       recordVersion: "r3-snapshot-consumer-process.v1",
+      ...(destination.phase === "final" ? { phase: destination.phase } : {}),
       operationRef: destination.operationRef,
       sessionId: destination.sessionId,
       consumerExecutionRecordDigest: executionDigest,
@@ -474,6 +475,7 @@ export function buildR3SnapshotConsumerResult(input) {
     });
     const result = freeze({
       recordVersion: "r3-snapshot-consumer-result.v1",
+      ...(destination.phase === "final" ? { phase: destination.phase } : {}),
       operationRef: destination.operationRef,
       sessionId: destination.sessionId,
       consumerExecutionRecordDigest: executionDigest,
@@ -500,6 +502,7 @@ export function buildR3SnapshotConsumerResult(input) {
     }
     for (const value of [readbacks.cleanup, processEvidence, result]) add(value);
     return freeze({
+      phase: destination.phase,
       result,
       processEvidence,
       originals: [...originals].map(([digest, value]) => ({ digest, value })),

@@ -340,7 +340,80 @@ function historyAccumulator() {
     r3Validated: new Set(),
     r3Acknowledgements: new Set(),
     r3Cleanups: new Set(),
-    r3CleanupCustody: new Set()
+    r3CleanupCustody: new Set(),
+    r3Sources: new Map(),
+    r3FinalConsumers: new Map()
+  };
+}
+
+// Only the shared verifier constructs these facts from authenticated contexts.
+// In particular, matchingSourceEvidenceDigest denotes the source SUCCEEDED
+// candidate-use execution record, never its result or acknowledgement digest.
+function assertR3MatchingSources(accumulator) {
+  for (const final of accumulator.r3FinalConsumers.values()) {
+    const matches = [...accumulator.r3Sources.values()].filter(
+      (source) =>
+        source.closedAt !== null &&
+        source.profileDigest === final.profileDigest &&
+        source.buildProofDigest === final.buildProofDigest &&
+        source.sourceSha === final.sourceSha &&
+        source.chain === "snapshot" &&
+        source.manifestDigest === final.manifestDigest &&
+        source.manifestRawDigest === final.manifestRawDigest &&
+        equal(source.snapshot, final.snapshot) &&
+        ["repository", "repositoryId", "runId", "runAttempt", "callerWorkflowPath"].every(
+          (field) => source.ci[field] === final.ci[field]
+        )
+    );
+    requireThat(matches.length === 1, EVIDENCE);
+    const source = matches[0];
+    requireThat(
+      source.terminalDigest === final.matchingSourceEvidenceDigest &&
+        instant(source.closedAt) <= instant(final.allocatedAt) &&
+        source.operationRef !== final.operationRef &&
+        source.sessionId !== final.sessionId &&
+        source.sessionNonce !== final.sessionNonce &&
+        !source.runIds.includes(final.runId) &&
+        source.engineId !== final.engineId &&
+        source.containerId !== final.containerId &&
+        source.systemIdentifier !== final.systemIdentifier &&
+        final.targetLocks.every((digest) => !source.targetLocks.includes(digest)),
+      EVIDENCE
+    );
+  }
+}
+
+function r3SnapshotContextFacts(profileDigest, identity, r3Context, destination, snapshotReader) {
+  requireThat(
+    destination?.postgres && destination.databaseTargetSet?.targetLocks && snapshotReader,
+    EVIDENCE
+  );
+  return {
+    profileDigest,
+    buildProofDigest: identity.scope.buildProofDigest,
+    sourceSha: identity.scope.sourceSha,
+    chain: identity.scope.chain,
+    manifestDigest: sha256Canonical(r3Context.destinationInputs.manifest),
+    manifestRawDigest: destination.manifestRawDigest,
+    // Each phase authorizes its actual destination independently, so permission
+    // and index digests may differ. The admitted payload and exact stored object
+    // version must remain identical across the candidate attempt.
+    snapshot: snapshot({
+      metadataDigest: snapshotReader.metadataDigest,
+      bundleInputs: snapshotReader.bundleInputs,
+      ciphertextDigest: snapshotReader.ciphertextDigest,
+      objectVersion: snapshotReader.objectVersion,
+      storageSubject: snapshotReader.storageSubject,
+      envelopeDigest: sha256Canonical(snapshotReader.cryptoInputs.envelope)
+    }),
+    ci: snapshot(r3Context.jobAdmission.ci),
+    operationRef: r3Context.creationSpec.operationRef,
+    sessionId: identity.sessionId,
+    sessionNonce: identity.sessionNonce,
+    engineId: destination.postgres.engineId,
+    containerId: destination.postgres.containerId,
+    systemIdentifier: destination.databaseTargetSet.systemIdentifier,
+    targetLocks: destination.databaseTargetSet.targetLocks.map((entry) => entry.lockDigest)
   };
 }
 
@@ -348,6 +421,27 @@ function historyAccumulator() {
 // checkpoint-writing methods. Live-session authority remains in its caller.
 function createManualHistoryVerifier(runtime) {
   const target = runtime().target;
+  function collectFinalConsumer(graph, accumulator, request) {
+    if (request.stage !== "snapshot-consumer" || request.phase !== "final") return;
+    const { profileDigest, identity, r3Context, snapshotReader } = runtime();
+    const allocation = graph.get(request.attemptAllocationDigest)?.value;
+    requireThat(
+      allocation?.matchingSourceEvidenceDigest === request.matchingSourceEvidenceDigest,
+      EVIDENCE
+    );
+    accumulator.r3FinalConsumers.set(sha256Canonical(request), {
+      ...r3SnapshotContextFacts(
+        profileDigest,
+        identity,
+        r3Context,
+        graph.get(request.destinationAdmissionDigest)?.value,
+        snapshotReader
+      ),
+      runId: request.runId,
+      allocatedAt: allocation.allocatedAt,
+      matchingSourceEvidenceDigest: request.matchingSourceEvidenceDigest
+    });
+  }
   function reducedExecution(value, graph, assessment = null, seen = new Set()) {
     const digest = sha256Canonical(value);
     requireThat(!seen.has(digest), EVIDENCE);
@@ -1711,7 +1805,7 @@ function createManualHistoryVerifier(runtime) {
         }
         if (consumer) {
           requireThat(
-            identity.scope.phase === "source" &&
+            ["source", "final"].includes(identity.scope.phase) &&
               identity.scope.chain === "snapshot" &&
               request.phase === identity.scope.phase &&
               request.sourceSha === identity.scope.sourceSha &&
@@ -1719,6 +1813,7 @@ function createManualHistoryVerifier(runtime) {
               allocation.predecessorExecutionRecordDigest !== null &&
               allocation.destinationAdmissionDigest === request.destinationAdmissionDigest &&
               allocation.scopeAuthorizationDigest === request.scopeAuthorizationDigest &&
+              allocation.matchingSourceEvidenceDigest === request.matchingSourceEvidenceDigest &&
               equal(allocation.input, request.input) &&
               allocation.chain === identity.scope.chain &&
               allocation.phase === identity.scope.phase &&
@@ -1830,6 +1925,7 @@ function createManualHistoryVerifier(runtime) {
           historicalConsumerPredecessor = allocation.predecessorExecutionRecordDigest;
           historicalConsumerDestination = request.destinationAdmissionDigest;
           for (const ref of snapshotReader.rawReferences) r3Originals.raws.add(ref.digest);
+          collectFinalConsumer(graph, accumulator, request);
           r3Validated.add(digest);
           continue;
         }
@@ -1944,6 +2040,8 @@ function createManualHistoryVerifier(runtime) {
     const values = [...graph.values()].map((entry) => entry.value);
     const { r3Originals, r3Validated, r3Acknowledgements, r3Cleanups, r3CleanupCustody } =
       accumulator;
+    // Resolve after every context is verified, independently of directory order.
+    assertR3MatchingSources(accumulator);
     for (const value of values) {
       if (value.kind === "cleanup-observation")
         requireThat(r3Cleanups.has(sha256Canonical(value)), EVIDENCE);
@@ -2150,6 +2248,7 @@ function createManualHistoryVerifier(runtime) {
     r3ConsumerOriginals,
     r3SourceProof,
     r3CleanupProof,
+    collectFinalConsumer,
     validateR3Context,
     finishR3History,
     readSourceOriginals: r3ReadSourceOriginals
@@ -2758,6 +2857,17 @@ async function readCompletedR3Context(
         accumulator.r3Acknowledgements.has(sha256Canonical(acknowledgements[0])),
       EVIDENCE
     );
+    if (consumer && current.scope.chain === "snapshot") {
+      const closed = sessionRecords.find((value) => value.status === "CLOSED");
+      // UNKNOWN remains readable as historical source evidence. Only a verified
+      // cleanup and CLOSED session make it eligible for a later final consumer.
+      accumulator.r3Sources.set(terminalDigest, {
+        ...r3SnapshotContextFacts(profileDigest, identity, r3Context, destination, snapshotReader),
+        terminalDigest,
+        closedAt: cleanupRecord && closed ? closed.recordedAt : null,
+        runIds: executions.map((value) => graph.get(value.requestDigest).value.runId)
+      });
+    }
   }
   return {
     verifier,
@@ -3898,7 +4008,9 @@ export async function openManualSession({
           (consumer ? "snapshot-consumer" : candidateUse ? "candidate-use" : "target-create") &&
         request.sourceSha === identity.scope.sourceSha &&
         request.candidate.buildProofDigest === identity.scope.buildProofDigest &&
-        (!consumer || (identity.scope.phase === "source" && identity.scope.chain === "snapshot")),
+        (!consumer ||
+          (["source", "final"].includes(identity.scope.phase) &&
+            identity.scope.chain === "snapshot")),
       BINDING
     );
     for (const field of [
@@ -3969,6 +4081,7 @@ export async function openManualSession({
           sha256Canonical(predecessor) === creationCompletionDigest &&
           request.scopeAuthorizationDigest === allocation.scopeAuthorizationDigest &&
           request.destinationAdmissionDigest === allocation.destinationAdmissionDigest &&
+          request.matchingSourceEvidenceDigest === allocation.matchingSourceEvidenceDigest &&
           equal(request.input, allocation.input) &&
           allocation.chain === identity.scope.chain &&
           allocation.creationSpecDigest === identity.scope.creationSpecDigest &&
@@ -4051,6 +4164,7 @@ export async function openManualSession({
         pendingConsumer
       );
       await assertOpenHistory();
+      historyVerifier.collectFinalConsumer(graph, accumulator, request);
       await historyVerifier.finishR3History(graph, slots, accumulator, checkedLegacy, request);
       if (completedContexts.length) {
         // This is fixed H1/H2 input authentication, separate from the complete
@@ -4433,6 +4547,33 @@ export async function openManualSession({
             await r3History(request.request, null, null, creationCompletionDigest);
           }
           return receipt;
+        });
+      },
+      assertSnapshotConsumption(...args) {
+        return serial(async () => {
+          requireThat(
+            args.length === 0 && consumerReceipt && creationCompletionDigest && snapshotReader,
+            SESSION
+          );
+          await active();
+          r3Live();
+          const graph = await store.objects();
+          const execution = graph.get(consumerReceipt.executionRecordDigest)?.value;
+          requireThat(
+            execution?.stage === "snapshot-consumer" && execution.status === "INTERRUPTED_UNKNOWN",
+            SESSION
+          );
+          const request = graph.get(execution.requestDigest)?.value;
+          requireThat(request?.schemaVersion === "manual-runner-request.v3", SESSION);
+          // The initial consumed receipt is retained after completion. Replaying
+          // this session's known transition does not authorize another consume.
+          await r3History(request, null, null, creationCompletionDigest);
+          await active();
+          r3Live();
+          return freeze({
+            executionRecordDigest: consumerReceipt.executionRecordDigest,
+            matchingSourceEvidenceDigest: request.matchingSourceEvidenceDigest ?? null
+          });
         });
       },
       assertCandidateUse(...args) {

@@ -3253,6 +3253,20 @@ test("R3 cleanup observation is a closed schema distinct from execution and ACK"
     );
 });
 
+test("R3 snapshot consumption assertion rejects supplied proofs and absent consumption without writes", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const session = await r3CreationSession(t, f);
+  const before = await f.records("session");
+  assert.equal(typeof session.assertSnapshotConsumption, "function");
+  await assert.rejects(session.assertSnapshotConsumption({ verified: true }), {
+    code: "MANUAL_SESSION_UNVERIFIED"
+  });
+  await assert.rejects(session.assertSnapshotConsumption(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  assert.deepEqual(await f.records("session"), before);
+  assert.equal((await f.records("consumption")).length, 0);
+  assert.equal((await f.records("execution")).length, 0);
+});
+
 test("R3 cleanup completion rejects supplied proofs and incomplete source without writes", async (t) => {
   const f = await fixture(t, { profileVersion: "v2" });
   const session = await r3CreationSession(t, f);
@@ -3429,6 +3443,7 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
       "completeCreation",
       "registerLifecycleTarget",
       "completeSnapshot",
+      "assertSnapshotConsumption",
       "assertCandidateUse",
       "verifySourceOriginals",
       "custodySourceOriginals",
@@ -3452,6 +3467,11 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
   assert.equal(result.executionRecordDigest, sha256Canonical(execution));
   assert.equal((await f.records("consumption")).length, 1);
   await assert.rejects(session.completeSnapshot(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  await assert.rejects(session.assertSnapshotConsumption(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  await assert.rejects(session.assertSnapshotConsumption({ matchingSourceEvidenceDigest: D }), {
+    code: "MANUAL_SESSION_UNVERIFIED"
+  });
+  assert.equal((await f.records("consumption")).length, 1);
   await assert.rejects(session.assertCandidateUse(), { code: "MANUAL_SESSION_UNVERIFIED" });
   await assert.rejects(session.assertCandidateUse({ approved: true }), {
     code: "MANUAL_SESSION_UNVERIFIED"

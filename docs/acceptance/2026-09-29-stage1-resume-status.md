@@ -2,7 +2,7 @@
 
 阶段 1 尚未完成。保持原定范围：不增加业务功能，不采用商用 KMS，不重复已通过且未受改动影响的长测试。
 
-最新增量已接入 H1 清理证据的固定路径导入、双副本读回、独立转发关闭观测及共享端口锁释放。定向验证及唯一受影响的完整整合已通过；保留首次失败和修复记录。matching final、hosted 工作流接线和真实发布验收仍未完成。
+H1 清理证据导入、双副本读回、转发关闭观测及共享端口锁释放已本地提交为 `77364d42`，定向及完整整合通过，失败历史保留。后续 final/snapshot 的 source 匹配和消费入口已实现，短回归通过；完整正向链、final/fresh、最终镜像执行、hosted 工作流接线和真实发布验收仍未完成。
 
 ## 当前环境事实
 
@@ -108,3 +108,17 @@ hosted control 新增无参数的一次性清理入口，从自己仍持有的�
 修正后合同 `813907` 通过：235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:47cddabeda20452d17bfad751730e8975547627141cbd3a025dbab29ecc9a734`；限定源码检查 `832e31` 通过。唯一重跑为受上述失败影响的清理整合 `52645`，未重跑其他长链。
 
 清理整合最终结果 `926e0c`：自然退出 0，1 pass / 0 fail / 0 skip，测试体 948724.602681 ms、进程 972933.063548 ms。日志 SHA-256 为 `1e6ec8138341d9de2fc548933874dbee9d64f62f7e46ef55d56c38a5d909c699`；正常关闭回调回归日志为 `4cbf4511b9fcad538454b3411ad4e5ef9eacbea075f54008a2ac2ea7d87b980d`。整合使用真实私有文件、签名、核心会话和本地转发关闭观察，验证清理的八份保管记录、双副本、CLOSED 以及共享锁从 43 减为 41，原 UNKNOWN 保留。外部主机、GitHub、Engine、PG 和 source 原件生产边界为合成输入；未证明完整 native source 生产器/holder 正向完成，也不等于真实 H1 或阶段 1 验收。
+
+## 最终快照消费匹配（代码已接通，完整正向验证待完成）
+
+预检 `9b1f26` 为干净的 `77364d42`，本地 migrate status 因 datasource.url 缺失在连接前退出；`cc41aa` Prisma 校验通过。未修改业务逻辑、线上服务或数据库。
+
+复用已有 v3 request / v2 allocation 的 matchingSourceEvidenceDigest，明确指向 source 成功执行记录；创建阶段仍只负责准备资源，前序保持 null。核心完整回放所有旧上下文后，统一检查唯一 source 终态、ACK、已验证清理及 CLOSED，关闭时间须早于 final 消费分配；核对同候选、源码、清单、CI attempt 和独立实际目标。新零参数重查入口在下载、解密、复制、恢复、临时文件清理、消费完成及对外 recheck 的明确边界复核，不为每次底层 Engine 读取重复全图验证。重查失败保留已消费锁和 UNKNOWN。
+
+双方各自验证用途授权。授权索引绑定各自实际 destination/job，不能要求 source 提前知道 final 目标；因此比较同一 metadata、bundle、加密 envelope、密文以及精确 OSS 对象版本，允许两阶段使用不同权限索引。这不扩大 source 授权，也不改变既有 schema。source 持久化快照结果字段和摘要保持兼容，final 结果明确绑定 final phase。
+
+验证：core 新入口 RED `08f431` → GREEN `f92f81`（3/3、0 skip），追加消费后守卫 `daee33`（1/1、0 skip）；native 包装入口 RED `20f3e9` → GREEN `11f522`（1/1、0 skip，自然退出 0）；纯结果文件 `f92af3` 为 4/4。native 用例对 core 使用 mock，core 短用例未达到完整 source→final 匹配正向条件，不能据此宣布链路验收通过。未新增大型模拟框架或重复旧的 50 分钟恢复矩阵。
+
+合同检查 `0952e1` 通过，仍为 235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:c165139aa15fafc4620b3045c77555b91a4cb3055fdeed4abde896f2c9830b19`；限定源码检查 `40f2cf`、格式和差异检查 `fdc68e` 通过。后续仍需 final/fresh 匹配、最终候选执行/清理、受控工作流接线及一次实际候选完整验证，再推进 Staging 两项迁移和 R4。
+
+有限独立静态审查未发现阻断问题，核对了 selector 捕获、分阶段前后重查、失败保锁、完整历史后统一匹配和 source 历史字段兼容；该审查不补足未执行的正向链。

@@ -384,6 +384,9 @@ test("builds a complete frozen digest chain and preserves every original", () =>
   // revision. The current input permission binds its use to this destination.
   input.snapshotInput.cryptoInputs.envelope.sourceSha = "b".repeat(40);
   const built = buildR3SnapshotConsumerResult(input);
+  assert.equal(built.phase, "source");
+  assert.equal(Object.hasOwn(built.result, "phase"), false);
+  assert.equal(Object.hasOwn(built.processEvidence, "phase"), false);
   assert.equal(built.result.processEvidenceDigest, sha256Canonical(built.processEvidence));
   assert.equal(built.processEvidence.readbacks.restoreDigests.length, 2);
   assert.equal(built.ownershipDigests.length, 2);
@@ -399,6 +402,23 @@ test("builds a complete frozen digest chain and preserves every original", () =>
       Object.isFrozen(built.processEvidence) &&
       Object.isFrozen(built.originals)
   );
+});
+
+test("builds a final snapshot result and rejects foreign-target readbacks", () => {
+  const final = fixture();
+  final.destination.phase = "final";
+  const built = buildR3SnapshotConsumerResult(final);
+  assert.equal(built.phase, "final");
+  assert.equal(built.result.phase, "final");
+  assert.equal(built.processEvidence.phase, "final");
+  assert.equal(built.result.destinationDigest, sha256Canonical(final.destination));
+
+  const sourceReadbacks = fixture().readbacks;
+  final.destination.postgres.containerId = "d".repeat(64);
+  final.readbacks = sourceReadbacks;
+  assert.throws(() => buildR3SnapshotConsumerResult(final), {
+    code: "R3_SNAPSHOT_CONSUMER_RESULT_INVALID"
+  });
 });
 
 test("rejects incomplete, duplicated, or misbound target/readback chains", () => {

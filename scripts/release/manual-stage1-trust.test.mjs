@@ -3307,6 +3307,7 @@ test(
                 "completeCreation",
                 "registerLifecycleTarget",
                 "completeSnapshot",
+                "assertSnapshotConsumption",
                 "assertCandidateUse",
                 "verifySourceOriginals",
                 "custodySourceOriginals",
@@ -3352,6 +3353,8 @@ test(
       repoRoot: f.repoRoot,
       operationRef: f.operationRef
     });
+    assert.equal(typeof normal.assertSnapshotConsumption, "function");
+    await normal.assertSnapshotConsumption();
     await normal.completeCleanup();
     await normal.close();
     assert.equal(normalCloses, 1, "a prior action result must not become a close option");

@@ -16,7 +16,9 @@ const requireApi = createRequire(new URL("../../apps/api/package.json", import.m
 const debug = createRequire(requireApi.resolve("ali-oss"))("debug");
 const operationRef = "12345678-1234-4234-8234-123456789abc";
 const role = "acs:ram::1457643390906675:role/subscription-saas-stage1-snapshot-consumer";
-const arn = `${role}/s1r3-${operationRef}`;
+const callerRole =
+  "acs:ram::1457643390906675:assumed-role/subscription-saas-stage1-snapshot-consumer";
+const arn = `${callerRole}/s1r3-${operationRef}`;
 const bucket = "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai";
 const payload = Buffer.from("ciphertext bytes from the fixed object\n");
 const digest = `sha256:${createHash("sha256").update(payload).digest("hex")}`;
@@ -280,20 +282,26 @@ test("rejects public ACL in native XML", async (t) => {
   assert.deepEqual(await fs.readdir(f.ciphertext), []);
 });
 
-test("rejects a writer from the consumer role even with another session", async (t) => {
+test("rejects a writer from either consumer role ARN form even with another session", async (t) => {
   const f = await fixture();
   t.after(() => f.close());
   mockNetwork(t);
-  await assert.rejects(
-    fetchR3SnapshotCiphertext({
-      profile: f.profile,
-      operationRef,
-      subject: Object.freeze({ ...subject, writerPrincipal: `${role}/another-session` }),
-      recheck: async () => {},
-      signal: new AbortController().signal
-    }),
-    { code: "R3_SNAPSHOT_PAYLOAD_UNAVAILABLE" }
-  );
+  for (const writerPrincipal of [
+    role,
+    `${role}/another-session`,
+    `${callerRole}/another-session`
+  ]) {
+    await assert.rejects(
+      fetchR3SnapshotCiphertext({
+        profile: f.profile,
+        operationRef,
+        subject: Object.freeze({ ...subject, writerPrincipal }),
+        recheck: async () => {},
+        signal: new AbortController().signal
+      }),
+      { code: "R3_SNAPSHOT_PAYLOAD_UNAVAILABLE" }
+    );
+  }
   assert.deepEqual(await fs.readdir(f.ciphertext), []);
 });
 

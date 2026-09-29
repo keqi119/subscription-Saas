@@ -22,6 +22,7 @@ const requireOss = createRequire(requireApi.resolve("ali-oss"));
 const BUCKET = "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai";
 const ACCOUNT = "1457643390906675";
 const ROLE = `acs:ram::${ACCOUNT}:role/subscription-saas-stage1-snapshot-consumer`;
+const CALLER_ROLE = `acs:ram::${ACCOUNT}:assumed-role/subscription-saas-stage1-snapshot-consumer`;
 const REGION = "oss-cn-shanghai";
 const MAX_BYTES = 1073741824;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -211,7 +212,9 @@ async function currentIdentity(credentials, arn, signal) {
     })
   );
   const body = await stsCall(client, "GetCallerIdentity", {}, signal);
-  requireThat(body.AccountId === ACCOUNT && body.Arn === arn);
+  requireThat(
+    body.AccountId === ACCOUNT && body.Arn === arn && body.IdentityType === "AssumedRoleUser"
+  );
   return freeze({ AccountId: body.AccountId, Arn: body.Arn, RequestId: body.RequestId });
 }
 async function rawXml(result, root) {
@@ -392,6 +395,8 @@ export async function fetchR3SnapshotCiphertext(input) {
       })
     );
     const arn = `${ROLE}/s1r3-${operationRef}`;
+    // STS uses distinct ARN forms for AssumeRole and GetCallerIdentity.
+    const callerArn = `${CALLER_ROLE}/s1r3-${operationRef}`;
     const assumed = await stsCall(
       sts,
       "AssumeRole",
@@ -405,6 +410,8 @@ export async function fetchR3SnapshotCiphertext(input) {
         arn !== subject.writerPrincipal &&
         subject.writerPrincipal !== ROLE &&
         !subject.writerPrincipal.startsWith(`${ROLE}/`) &&
+        subject.writerPrincipal !== CALLER_ROLE &&
+        !subject.writerPrincipal.startsWith(`${CALLER_ROLE}/`) &&
         typeof credentials?.AccessKeyId === "string" &&
         /^STS\./u.test(credentials.AccessKeyId) &&
         typeof credentials?.AccessKeySecret === "string" &&
@@ -415,7 +422,7 @@ export async function fetchR3SnapshotCiphertext(input) {
         expires > Date.now() &&
         expires <= Date.now() + 960000
     );
-    const beforeIdentity = await currentIdentity(credentials, arn, signal);
+    const beforeIdentity = await currentIdentity(credentials, callerArn, signal);
     const OSS = requireApi("ali-oss");
     client = new OSS({
       bucket: BUCKET,
@@ -487,7 +494,7 @@ export async function fetchR3SnapshotCiphertext(input) {
     );
     requireThat(sameIdentity(await fileHandle.stat({ bigint: true }), tempIdentity, false));
     await fileHandle.sync();
-    const afterIdentity = await currentIdentity(credentials, arn, signal);
+    const afterIdentity = await currentIdentity(credentials, callerArn, signal);
     await bootstrap.recheck();
     const finalDir = await checkedPrivatePath(directory, { ...options, directory: true });
     requireThat(
@@ -535,7 +542,7 @@ export async function fetchR3SnapshotCiphertext(input) {
       path: target,
       ciphertextDigest: subject.ciphertextDigest,
       ciphertextSizeBytes: count,
-      readerPrincipal: arn,
+      readerPrincipal: callerArn,
       identityExpiresAt: credentials.Expiration
     });
     const observations = freeze({

@@ -22,6 +22,7 @@ export function installR3SnapshotSdkFixture(
   assert.equal(typeof subject?.key, "string");
   assert.ok(bytes instanceof Uint8Array);
   const arn = `${ROLE}/s1r3-${operationRef}`;
+  const callerArn = `acs:ram::${ACCOUNT}:assumed-role/subscription-saas-stage1-snapshot-consumer/s1r3-${operationRef}`;
   const data = Buffer.from(bytes);
   const headers = () => ({
     date: new Date().toUTCString(),
@@ -74,7 +75,12 @@ export function installR3SnapshotSdkFixture(
     identityCalls++;
     return {
       statusCode: 200,
-      body: { RequestId: `STS-IDENTITY-${identityCalls}`, AccountId: ACCOUNT, Arn: identity ?? arn }
+      body: {
+        RequestId: `STS-IDENTITY-${identityCalls}`,
+        AccountId: ACCOUNT,
+        Arn: identity ?? callerArn,
+        IdentityType: "AssumedRoleUser"
+      }
     };
   };
   OSS.prototype.request = async (params) => {

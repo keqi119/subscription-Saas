@@ -156,8 +156,16 @@ export async function executeR3LifecycleSuite({ adapter, signal, recheck } = {})
     for (const type of ["test:pass", "test:fail", "test:skip", "test:cancel"]) {
       stream.on(type, (data) => {
         originals.testEvents.push(testResult(type, data));
-        if (data?.nesting === 0 && data?.file === lifecycleFile && ++terminalTopLevel === 2)
-          runAbort.abort();
+        if (data?.nesting === 0) {
+          // Import failures are emitted as a single failed placeholder and can
+          // omit file. Do not wait for two expected tests when they cannot run:
+          // the admitted stdio/DB handles deliberately keep the process alive.
+          const expected =
+            type === "test:pass" &&
+            data.file === lifecycleFile &&
+            data.name === expectedNames[terminalTopLevel];
+          if (!expected || ++terminalTopLevel === expectedNames.length) runAbort.abort();
+        }
       });
     }
     stream.on("test:summary", (data) => {

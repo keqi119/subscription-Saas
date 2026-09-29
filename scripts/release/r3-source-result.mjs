@@ -1,7 +1,10 @@
 // Reconstruct a source result from retained originals. Callers must separately
 // establish the fixed candidate, private readbacks, live authority and custody.
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
-import { encodePrivateObservationJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
+import {
+  encodeManualJson,
+  encodePrivateObservationJson
+} from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import {
   buildDatabaseSuiteReport,
   runDatabaseManifest
@@ -475,6 +478,181 @@ export async function readR3SourceOriginals({
       reconstructedDigest: sha256Canonical(reconstructed),
       suiteReadbacks: reconstructed.suiteReadbacks,
       originals: Object.freeze(originals)
+    });
+  } catch {
+    throw Object.assign(new Error(CODE), { code: CODE });
+  }
+}
+
+// Compact private proof of the fixed source readback and its per-copy custody.
+// The holder establishes authority and reads the actual originals before calling this.
+export function buildR3SourceCompletion({
+  request,
+  initialExecution,
+  manifest,
+  verified,
+  custodyRecords,
+  completedAt
+}) {
+  try {
+    const time = (value) => {
+      need(
+        typeof value === "string" &&
+          /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(value) &&
+          Number.isFinite(Date.parse(value)) &&
+          new Date(value).toISOString() === value
+      );
+      return Date.parse(value);
+    };
+    need(
+      request?.schemaVersion === "manual-runner-request.v5" &&
+        request.stage === "candidate-use" &&
+        request.capability === "execute-source-database-tests" &&
+        request.purpose === "stage1-isolated-database-tests" &&
+        request.phase === "source" &&
+        ["fresh", "snapshot"].includes(request.chain) &&
+        typeof request.operationId === "string" &&
+        typeof request.ownerId === "string" &&
+        request.ownerId.length > 0 &&
+        typeof request.sessionId === "string" &&
+        /^[0-9a-f]{64}$/u.test(request.sessionNonce) &&
+        /^[0-9a-f]{40}$/u.test(request.sourceSha) &&
+        [
+          request.profileDigest,
+          request.candidate?.buildProofDigest,
+          request.targetPolicyDigest,
+          request.creationSpecDigest,
+          request.jobAdmissionDigest,
+          request.destinationAdmissionDigest,
+          request.preparationExecutionRecordDigest,
+          request.databaseTestManifestDigest
+        ].every((value) => DIGEST.test(value)) &&
+        sha256Canonical(manifest) === request.databaseTestManifestDigest
+    );
+    const requestDigest = sha256Canonical(request);
+    need(
+      initialExecution?.schemaVersion === "manual-operation-record.v3" &&
+        initialExecution.kind === "execution" &&
+        initialExecution.stage === "candidate-use" &&
+        initialExecution.status === "INTERRUPTED_UNKNOWN" &&
+        initialExecution.promotionEligible === false &&
+        initialExecution.reasonCode === "MANUAL_EVIDENCE_INCOMPLETE" &&
+        initialExecution.startedAt === null &&
+        initialExecution.finishedAt === null &&
+        initialExecution.resultDigest === null &&
+        initialExecution.processEvidenceDigest === null &&
+        initialExecution.requestDigest === requestDigest &&
+        initialExecution.predecessorExecutionRecordDigest ===
+          request.preparationExecutionRecordDigest &&
+        [
+          "profileDigest",
+          "sessionId",
+          "sessionNonce",
+          "operationId",
+          "idempotencyKey",
+          "attemptId"
+        ].every((key) => initialExecution[key] === request[key]) &&
+        DIGEST.test(initialExecution.authorizationDigest) &&
+        DIGEST.test(initialExecution.consumptionRecordDigest)
+    );
+    const initialAt = time(initialExecution.recordedAt);
+    const completed = time(completedAt);
+    need(initialAt <= completed);
+    const names = ["attempt", ...manifest.suites.map(({ suiteId }) => suiteId), "manifest"];
+    need(
+      names.length === 39 &&
+        new Set(names).size === names.length &&
+        DIGEST.test(verified?.readbackDigest) &&
+        DIGEST.test(verified?.reconstructedDigest) &&
+        Array.isArray(verified.originals) &&
+        verified.originals.length === names.length &&
+        Array.isArray(verified.suiteReadbacks) &&
+        verified.suiteReadbacks.length === manifest.suites.length
+    );
+    const digests = new Set();
+    const originals = verified.originals.map((original, index) => {
+      need(
+        original?.name === names[index] &&
+          DIGEST.test(original.digest) &&
+          Number.isSafeInteger(original.bytes) &&
+          original.bytes > 0 &&
+          original.bytes <= ORIGINAL_LIMIT &&
+          !digests.has(original.digest)
+      );
+      digests.add(original.digest);
+      return { name: original.name, digest: original.digest, bytes: original.bytes };
+    });
+    need(originals.at(-1).digest === verified.readbackDigest);
+    for (const [index, reference] of verified.suiteReadbacks.entries())
+      need(
+        reference?.suiteId === names[index + 1] &&
+          reference.readbackDigest === originals[index + 1].digest &&
+          DIGEST.test(reference.reportDigest)
+      );
+    need(Array.isArray(custodyRecords) && custodyRecords.length === originals.length * 2);
+    const custodyByPair = new Map();
+    for (const custody of custodyRecords) {
+      const role = custody?.storageRole;
+      const pair = `${custody?.subjectDigest}:${role}`;
+      need(
+        custody.schemaVersion === "manual-operation-record.v3" &&
+          custody.kind === "custody" &&
+          custody.promotionEligible === false &&
+          custody.profileDigest === request.profileDigest &&
+          custody.ownerId === request.ownerId &&
+          custody.subjectType === "record" &&
+          ["archive", "backup"].includes(role) &&
+          custody.purpose === `${role}-readback` &&
+          custody.outcome === "MATCH" &&
+          custody.observedDigest === custody.subjectDigest &&
+          custody.retentionDays === 90 &&
+          custody.reasonCode === null &&
+          digests.has(custody.subjectDigest) &&
+          !custodyByPair.has(pair)
+      );
+      const observedAt = time(custody.observedAt);
+      const recordedAt = time(custody.recordedAt);
+      need(initialAt <= observedAt && observedAt <= recordedAt && recordedAt <= completed);
+      custodyByPair.set(pair, sha256Canonical(custody));
+    }
+    const custodyRecordDigests = originals.flatMap(({ digest }) =>
+      ["archive", "backup"].map((role) => {
+        const value = custodyByPair.get(`${digest}:${role}`);
+        need(DIGEST.test(value));
+        return value;
+      })
+    );
+    const result = {
+      schemaVersion: "manual-r3-source-result.v1",
+      operationRef: request.operationId,
+      profileDigest: request.profileDigest,
+      ownerId: request.ownerId,
+      sessionId: request.sessionId,
+      sessionNonce: request.sessionNonce,
+      sourceSha: request.sourceSha,
+      buildProofDigest: request.candidate.buildProofDigest,
+      targetPolicyDigest: request.targetPolicyDigest,
+      creationSpecDigest: request.creationSpecDigest,
+      jobAdmissionDigest: request.jobAdmissionDigest,
+      phase: "source",
+      chain: request.chain,
+      destinationAdmissionDigest: request.destinationAdmissionDigest,
+      preparationExecutionRecordDigest: request.preparationExecutionRecordDigest,
+      databaseTestManifestDigest: request.databaseTestManifestDigest,
+      candidateUseExecutionRecordDigest: sha256Canonical(initialExecution),
+      requestDigest,
+      readbackDigest: verified.readbackDigest,
+      reconstructedDigest: verified.reconstructedDigest,
+      originals,
+      custodyRecordDigests,
+      completedAt,
+      promotionEligible: false
+    };
+    encodeManualJson(result);
+    return Object.freeze({
+      ...result,
+      originals: Object.freeze(originals.map((item) => Object.freeze(item))),
+      custodyRecordDigests: Object.freeze(custodyRecordDigests)
     });
   } catch {
     throw Object.assign(new Error(CODE), { code: CODE });

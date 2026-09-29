@@ -2275,6 +2275,7 @@ export async function openTrustedR3CreationSession(input) {
       "assertCandidateUse",
       "verifySourceOriginals",
       "custodySourceOriginals",
+      "completeSource",
       "record",
       "close"
     ]);
@@ -2308,6 +2309,7 @@ export async function openTrustedR3CreationSession(input) {
       assertCandidateUse: (...args) => action("assertCandidateUse", args),
       verifySourceOriginals: (...args) => action("verifySourceOriginals", args),
       custodySourceOriginals: (...args) => action("custodySourceOriginals", args),
+      completeSource: (...args) => action("completeSource", args),
       record: (kind, value) => action("record", [kind, value]),
       close: () => serial(finish)
     });

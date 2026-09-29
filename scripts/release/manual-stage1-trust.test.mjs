@@ -1020,7 +1020,12 @@ function verifiedItem(bytes, sourceSha, name, timestamp = generatedAt) {
 
 async function buildFixture(
   t,
-  { canonicalProof = false, extraEntrypoints = [], r3TargetPolicy = false } = {}
+  {
+    canonicalProof = false,
+    extraEntrypoints = [],
+    r3TargetPolicy = false,
+    sourceReadback = false
+  } = {}
 ) {
   const f = await fixture(t);
   const manifest = "release/contracts/repository-contract-files.v1.json";
@@ -1052,6 +1057,42 @@ async function buildFixture(
       await fs.writeFile(path.join(f.repoRoot, file), encodeManualJson(value), { mode: 0o600 });
       extraContracts.push(file);
     }
+  }
+  if (sourceReadback) {
+    assert.equal(r3TargetPolicy, true);
+    for (const name of [
+      "database-test-discovery.v1.json",
+      "database-test-exceptions.v1.json",
+      "external-validation-applicability.v1.json"
+    ]) {
+      const file = `release/contracts/${name}`;
+      await fs.copyFile(new URL(`../../${file}`, import.meta.url), path.join(f.repoRoot, file));
+      extraContracts.push(file);
+    }
+    const testManifest = JSON.parse(
+      await fs.readFile(path.join(f.repoRoot, "release/contracts/database-test-manifest.v1.json"))
+    );
+    const exceptions = JSON.parse(
+      await fs.readFile(path.join(f.repoRoot, "release/contracts/database-test-exceptions.v1.json"))
+    );
+    const testFiles = new Set([
+      ...testManifest.suites.flatMap((suite) => suite.files),
+      ...exceptions.exceptions.map(({ path: file }) => file)
+    ]);
+    for (const file of [...testFiles].sort()) {
+      const destination = path.join(f.repoRoot, ...file.split("/"));
+      await fs.mkdir(path.dirname(destination), { recursive: true });
+      await fs.copyFile(new URL(`../../${file}`, import.meta.url), destination);
+    }
+    // The repository catalog also discovers these copied release entrypoints.
+    const cataloguedTests = [
+      "apps/release-runner/test/manual/manual-runner-migration-postgres.integration.test.mjs",
+      "apps/release-runner/test/manual/manual-runner-verification-postgres.integration.test.mjs",
+      "packages/release-foundation/test/database-lifecycle.postgres.test.mjs",
+      "scripts/release/bootstrap-controlled-postgres.mjs"
+    ];
+    assert.ok(cataloguedTests.every((file) => testFiles.has(file)));
+    extraContracts.push(...cataloguedTests);
   }
   await fs.writeFile(
     path.join(f.repoRoot, manifest),
@@ -1350,8 +1391,11 @@ test(
     noAuthorityAccess(f);
   }
 );
-async function r3CreationFixture(t, { phase = "source", chain = "snapshot" } = {}) {
-  const f = await buildFixture(t, { r3TargetPolicy: true });
+async function r3CreationFixture(
+  t,
+  { phase = "source", chain = "snapshot", sourceReadback = false } = {}
+) {
+  const f = await buildFixture(t, { r3TargetPolicy: true, sourceReadback });
   const policyBytes = await fs.readFile(
     path.join(f.repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json")
   );
@@ -3133,12 +3177,13 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
     evidenceOnly = mode === "evidence",
     closingRestore = mode === "closing";
   test(
-    `R3 LAUNCH ${mode === "lifecycle-locks" ? "registers both reserved lifecycle physical locks after completed creation" : closingRestore ? "drains current restore cleanup before closing its transport" : evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
+    `R3 LAUNCH ${mode === "lifecycle-locks" ? "retains lifecycle locks and completes the source terminal with private custody" : closingRestore ? "drains current restore cleanup before closing its transport" : evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
     { skip: process.platform !== "linux" },
     async (t) => {
       const f = await r3ForwardFixture(t, {
         phase: "source",
-        chain: mode === "accepted" || closingRestore ? "snapshot" : "fresh"
+        chain: mode === "accepted" || closingRestore ? "snapshot" : "fresh",
+        sourceReadback: mode === "lifecycle-locks"
       });
       const imageDigest = JSON.parse(
         await fs.readFile(
@@ -4372,12 +4417,167 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
           assert.ok(initialLocks.every((name) => afterLocks.includes(name)));
           assert.equal(afterLocks.length, 43);
           await launched.recheck();
-          await assert.rejects(
-            capturedTrustedSession.registerLifecycleTarget({ record: records[0] }),
-            {
-              code: "MANUAL_SESSION_UNVERIFIED"
-            }
+          // Keep the real session, file store and compact result builder. The
+          // private reader's full 39-original reconstruction is covered by its
+          // own test; this fixture supplies the same ordered reference shape.
+          const sourceManifest = JSON.parse(
+            await fs.readFile(
+              path.join(f.repoRoot, "release/contracts/database-test-manifest.v1.json")
+            )
           );
+          const sourceNames = [
+            "attempt",
+            ...sourceManifest.suites.map(({ suiteId }) => suiteId),
+            "manifest"
+          ];
+          assert.equal(sourceNames.length, 39);
+          const sourceOriginals = [];
+          for (const name of sourceNames) {
+            const bytes = encodeManualJson({
+              status: "SYNTHETIC_SOURCE_ORIGINAL",
+              operationRef: f.operationRef,
+              name
+            });
+            sourceOriginals.push({ name, digest: sha256Bytes(bytes), bytes: bytes.length });
+            for (const role of ["archive", "backup"]) {
+              const directory = path.join(
+                f.profile.storage[`${role}Root`],
+                "inputs",
+                "r3",
+                f.operationRef,
+                "observations",
+                "source",
+                name
+              );
+              await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+              await fs.writeFile(path.join(directory, "readback.json"), bytes, {
+                flag: "wx",
+                mode: 0o600
+              });
+            }
+          }
+          const syntheticVerified = Object.freeze({
+            readbackDigest: sourceOriginals.at(-1).digest,
+            reconstructedDigest: sha256Canonical({
+              kind: "synthetic-source-reconstruction",
+              originals: sourceOriginals
+            }),
+            suiteReadbacks: Object.freeze(
+              sourceManifest.suites.map(({ suiteId }, index) =>
+                Object.freeze({
+                  suiteId,
+                  readbackDigest: sourceOriginals[index + 1].digest,
+                  reportDigest: sha256Canonical({ kind: "synthetic-suite-report", suiteId })
+                })
+              )
+            ),
+            originals: Object.freeze(sourceOriginals.map((entry) => Object.freeze(entry)))
+          });
+          const sourceModule = await import("./r3-source-result.mjs");
+          let mockedReaderCalls = 0;
+          const sourceMock = t.mock.module("./r3-source-result.mjs", {
+            namedExports: {
+              ...sourceModule,
+              async readR3SourceOriginals({ manifest, binding, readObservation, recheck }) {
+                mockedReaderCalls++;
+                assert.equal(sha256Canonical(manifest), request.databaseTestManifestDigest);
+                assert.equal(
+                  binding.candidateUseExecutionRecordDigest,
+                  candidateReceipt.executionRecordDigest
+                );
+                for (const { name, digest } of sourceOriginals)
+                  for (const storageRole of ["archive", "backup"])
+                    assert.equal(sha256Bytes(await readObservation({ storageRole, name })), digest);
+                await recheck();
+                return syntheticVerified;
+              }
+            }
+          });
+          t.after(() => sourceMock.restore());
+          const sourceCustody = await capturedTrustedSession.custodySourceOriginals();
+          assert.equal(sourceCustody.custodyRecordDigests.length, 78);
+          assert.deepEqual(sourceCustody.originals, syntheticVerified.originals);
+          for (const digest of sourceCustody.custodyRecordDigests) {
+            const name = `${digest.slice(7)}.json`;
+            const archive = await fs.readFile(path.join(archiveObjects, name));
+            assert.deepEqual(
+              await fs.readFile(path.join(f.profile.storage.backupRoot, "objects", name)),
+              archive
+            );
+          }
+          const sourceTerminal = await capturedTrustedSession.completeSource();
+          assert.equal(sourceTerminal.custodyRecordDigests.length, 2);
+          assert.equal(sourceTerminal.processEvidenceDigest, syntheticVerified.readbackDigest);
+          assert.match(sourceTerminal.resultDigest, /^sha256:[0-9a-f]{64}$/u);
+          assert.equal(
+            (
+              await fs.readFile(
+                path.join(archiveObjects, `${candidateReceipt.executionRecordDigest.slice(7)}.json`)
+              )
+            ).toString("utf8"),
+            encodeManualJson(candidateExecution).toString("utf8")
+          );
+          const terminalName = `${sourceTerminal.executionRecordDigest.slice(7)}.json`;
+          const terminalBytes = await fs.readFile(path.join(journalObjects, terminalName));
+          const terminalExecution = JSON.parse(terminalBytes);
+          assert.equal(terminalExecution.status, "SUCCEEDED");
+          assert.equal(
+            terminalExecution.predecessorExecutionRecordDigest,
+            candidateReceipt.executionRecordDigest
+          );
+          assert.equal(terminalExecution.resultDigest, sourceTerminal.resultDigest);
+          for (const role of ["archive", "backup"])
+            assert.deepEqual(
+              await fs.readFile(
+                path.join(f.profile.storage[`${role}Root`], "objects", terminalName)
+              ),
+              terminalBytes
+            );
+          const resultName = `${sourceTerminal.resultDigest.slice(7)}.json`;
+          const resultBytes = await fs.readFile(path.join(archiveObjects, resultName));
+          const sourceResult = JSON.parse(resultBytes);
+          assert.equal(sourceResult.schemaVersion, "manual-r3-source-result.v1");
+          assert.deepEqual(sourceResult.custodyRecordDigests, sourceCustody.custodyRecordDigests);
+          assert.deepEqual(
+            await fs.readFile(path.join(f.profile.storage.backupRoot, "objects", resultName)),
+            resultBytes
+          );
+          const resultCustodyRoles = [];
+          for (const digest of sourceTerminal.custodyRecordDigests) {
+            const name = `${digest.slice(7)}.json`;
+            const archive = await fs.readFile(path.join(archiveObjects, name));
+            const custody = JSON.parse(archive);
+            assert.equal(custody.subjectDigest, sourceTerminal.resultDigest);
+            resultCustodyRoles.push(custody.storageRole);
+            assert.deepEqual(
+              await fs.readFile(path.join(f.profile.storage.backupRoot, "objects", name)),
+              archive
+            );
+          }
+          assert.deepEqual(resultCustodyRoles, ["archive", "backup"]);
+          assert.deepEqual(await capturedTrustedSession.verifySourceOriginals(), syntheticVerified);
+          assert.ok(mockedReaderCalls >= 2);
+          const backupResult = path.join(f.profile.storage.backupRoot, "objects", resultName);
+          await fs.unlink(backupResult);
+          try {
+            await assert.rejects(capturedTrustedSession.verifySourceOriginals(), {
+              code: "MANUAL_STORAGE_UNVERIFIED"
+            });
+            assert.equal((await fs.readdir(lockRoot)).length, 43);
+            assert.equal(
+              (
+                await fs.readFile(
+                  path.join(
+                    archiveObjects,
+                    `${candidateReceipt.executionRecordDigest.slice(7)}.json`
+                  )
+                )
+              ).toString("utf8"),
+              encodeManualJson(candidateExecution).toString("utf8")
+            );
+          } finally {
+            await fs.writeFile(backupResult, resultBytes, { flag: "wx", mode: 0o600 });
+          }
           await launched.close();
           assert.equal((await fs.readdir(lockRoot)).length, 43);
           assert.equal((await fs.readFile(f.forwardKey)).length, 0);

@@ -1092,6 +1092,7 @@ export async function launchR3TargetCreate(input) {
     sourceAttempted = false,
     sourceReady = false,
     sourcePending,
+    sourceCompletionRecord,
     databaseStage = "NOT_STARTED",
     databasesAttempted = false,
     databasesPending,
@@ -1206,7 +1207,13 @@ export async function launchR3TargetCreate(input) {
     if (destinationRecord) await recheckDestination();
     if (completionRecord) await recheckCompletion();
     if (snapshotCompletionRecord) await recheckSnapshotCompletion();
-    if (candidateUseRecord) {
+    if (sourceCompletionRecord) {
+      const verified = await session.verifySourceOriginals();
+      if (sha256Canonical(verified) !== sourceCompletionRecord.verifiedDigest) fail(code);
+      for (const { digest, bytes, roles } of sourceCompletionRecord.originals)
+        for (const role of roles)
+          if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
+    } else if (candidateUseRecord) {
       const admission = await session.assertCandidateUse();
       if (admission.executionRecordDigest !== candidateUseRecord.executionRecordDigest) fail(code);
     }
@@ -3034,12 +3041,107 @@ export async function launchR3TargetCreate(input) {
       )
         fail(code);
       await sourceCheck();
+      const completed = await session.completeSource();
+      const digestPattern = /^sha256:[0-9a-f]{64}$/u;
+      if (
+        !digestPattern.test(completed?.executionRecordDigest) ||
+        !digestPattern.test(completed?.resultDigest) ||
+        completed?.processEvidenceDigest !== readbackDigest ||
+        !Array.isArray(completed?.custodyRecordDigests) ||
+        completed.custodyRecordDigests.length !== 2 ||
+        new Set(completed.custodyRecordDigests).size !== 2 ||
+        completed.custodyRecordDigests.some((digest) => !digestPattern.test(digest))
+      )
+        fail(code);
+      const initial = await archive.get(candidateUseRecord.executionRecordDigest, "journal");
+      const execution = await archive.get(completed.executionRecordDigest, "journal");
+      validateContract("manual-operation-record.v3", initial.value);
+      validateContract("manual-operation-record.v3", execution.value);
+      if (
+        initial.value.stage !== "candidate-use" ||
+        initial.value.status !== "INTERRUPTED_UNKNOWN" ||
+        execution.value.stage !== "candidate-use" ||
+        execution.value.status !== "SUCCEEDED" ||
+        execution.value.sessionId !== session.sessionId ||
+        execution.value.sessionNonce !== session.sessionNonce ||
+        execution.value.operationId !== fixed.spec.operationRef ||
+        execution.value.predecessorExecutionRecordDigest !==
+          candidateUseRecord.executionRecordDigest ||
+        execution.value.resultDigest !== completed.resultDigest ||
+        execution.value.processEvidenceDigest !== readbackDigest ||
+        [
+          "profileDigest",
+          "requestDigest",
+          "authorizationDigest",
+          "consumptionRecordDigest",
+          "idempotencyKey",
+          "attemptId"
+        ].some((field) => execution.value[field] !== initial.value[field])
+      )
+        fail(code);
+      const request = await archive.get(initial.value.requestDigest);
+      validateContract("manual-runner-request.v5", request.value);
+      const result = await archive.get(completed.resultDigest);
+      const { buildR3SourceCompletion } = await import("./r3-source-result.mjs");
+      const custodyRecords = [];
+      for (const digest of verified.custodyRecordDigests)
+        custodyRecords.push((await archive.get(digest)).value);
+      const rebuilt = buildR3SourceCompletion({
+        request: request.value,
+        initialExecution: initial.value,
+        manifest: fixed.databaseTestManifest,
+        verified,
+        custodyRecords,
+        completedAt: result.value.completedAt
+      });
+      if (
+        sha256Canonical(rebuilt) !== completed.resultDigest ||
+        !result.bytes.equals(encodeManualJson(rebuilt))
+      )
+        fail(code);
+      const originals = [
+        {
+          digest: completed.executionRecordDigest,
+          bytes: execution.bytes,
+          roles: ["journal", "archive", "backup"]
+        },
+        { digest: completed.resultDigest, bytes: result.bytes, roles: ["archive", "backup"] }
+      ];
+      const roles = new Set(["archive", "backup"]);
+      for (const digest of completed.custodyRecordDigests) {
+        const custody = await archive.get(digest);
+        validateContract("manual-operation-record.v3", custody.value);
+        const value = custody.value;
+        if (
+          value.kind !== "custody" ||
+          value.profileDigest !== session.profileDigest ||
+          value.ownerId !== lease.profile.ownerId ||
+          value.subjectType !== "record" ||
+          !roles.delete(value.storageRole) ||
+          value.purpose !== `${value.storageRole}-readback` ||
+          value.outcome !== "MATCH" ||
+          value.subjectDigest !== completed.resultDigest ||
+          value.observedDigest !== completed.resultDigest ||
+          value.retentionDays !== 90 ||
+          value.reasonCode !== null
+        )
+          fail(code);
+        originals.push({ digest, bytes: custody.bytes, roles: ["archive", "backup"] });
+      }
+      if (roles.size !== 0) fail(code);
+      const { custodyRecordDigests: originalCustody, ...sourceVerified } = verified;
+      sourceCompletionRecord = { originals, verifiedDigest: sha256Canonical(sourceVerified) };
+      await sourceCheck();
       sourceReady = true;
       return Object.freeze({
         status: value.status,
         attemptDigest,
         readbackDigest,
         custodyRecordDigests: verified.custodyRecordDigests,
+        executionStatus: "SUCCEEDED",
+        executionRecordDigest: completed.executionRecordDigest,
+        resultDigest: completed.resultDigest,
+        resultCustodyRecordDigests: completed.custodyRecordDigests,
         counts: Object.freeze({ ...manifestReport.counts }),
         promotionEligible: false
       });

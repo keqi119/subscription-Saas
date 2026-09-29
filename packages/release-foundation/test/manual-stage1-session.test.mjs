@@ -3281,6 +3281,7 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
       "assertCandidateUse",
       "verifySourceOriginals",
       "custodySourceOriginals",
+      "completeSource",
       "record",
       "close"
     ].sort()
@@ -3306,6 +3307,10 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
     code: "MANUAL_SESSION_UNVERIFIED"
   });
   await assert.rejects(session.custodySourceOriginals(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  await assert.rejects(session.completeSource(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  await assert.rejects(session.completeSource({ status: "SUCCEEDED" }), {
+    code: "MANUAL_SESSION_UNVERIFIED"
+  });
   await assert.rejects(session.custodySourceOriginals({ approved: true }), {
     code: "MANUAL_SESSION_UNVERIFIED"
   });

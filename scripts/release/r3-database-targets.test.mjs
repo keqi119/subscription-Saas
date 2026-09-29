@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { sha256Canonical, sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
-import { encodePrivateObservationJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
+import {
+  encodeManualJson,
+  encodePrivateObservationJson
+} from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { suiteDatabaseName } from "../../packages/release-foundation/src/database-target.mjs";
 import {
   buildDatabaseSuiteReport,
@@ -730,7 +733,8 @@ test("R3 source result reconstructs every suite from originals and rejects omiss
 });
 
 test("R3 source originals require matching fixed dual readbacks and reject later drift", async () => {
-  const { buildR3SourceResult, readR3SourceOriginals } = await import("./r3-source-result.mjs");
+  const { buildR3SourceResult, buildR3SourceCompletion, readR3SourceOriginals } =
+    await import("./r3-source-result.mjs");
   assert.equal(typeof readR3SourceOriginals, "function");
   const fixture = await sourceResultFixture();
   const clean = fixture.suiteReadbacks.find(
@@ -810,6 +814,106 @@ test("R3 source originals require matching fixed dual readbacks and reject later
     })
   );
   assert.ok(Object.isFrozen(result.originals) && result.originals.every(Object.isFrozen));
+  const request = {
+    schemaVersion: "manual-runner-request.v5",
+    profileDigest: fixture.binding.profileDigest,
+    ownerId: "owner",
+    sessionId: fixture.binding.sessionId,
+    sessionNonce: fixture.binding.sessionNonce,
+    operationId: operationRef,
+    idempotencyKey: `r3-candidate-use:${operationRef}`,
+    attemptId: "30000000-0000-4000-8000-000000000001",
+    runId: "40000000-0000-4000-8000-000000000001",
+    stage: "candidate-use",
+    capability: "execute-source-database-tests",
+    purpose: "stage1-isolated-database-tests",
+    phase: "source",
+    chain: "fresh",
+    sourceSha: fixture.binding.sourceSha,
+    targetPolicyDigest: `sha256:${"4".repeat(64)}`,
+    creationSpecDigest: `sha256:${"5".repeat(64)}`,
+    jobAdmissionDigest: `sha256:${"6".repeat(64)}`,
+    candidate: { buildProofDigest: `sha256:${"7".repeat(64)}` },
+    destinationAdmissionDigest: fixture.binding.destinationDigest,
+    preparationExecutionRecordDigest: `sha256:${"8".repeat(64)}`,
+    databaseTestManifestDigest: sha256Canonical(manifest),
+    attemptAllocationDigest: `sha256:${"9".repeat(64)}`
+  };
+  const initialExecution = {
+    schemaVersion: "manual-operation-record.v3",
+    kind: "execution",
+    profileDigest: request.profileDigest,
+    recordedAt: "2026-09-28T00:00:00.000Z",
+    promotionEligible: false,
+    stage: "candidate-use",
+    sessionId: request.sessionId,
+    sessionNonce: request.sessionNonce,
+    operationId: request.operationId,
+    idempotencyKey: request.idempotencyKey,
+    attemptId: request.attemptId,
+    requestDigest: sha256Canonical(request),
+    authorizationDigest: `sha256:${"a".repeat(64)}`,
+    consumptionRecordDigest: `sha256:${"b".repeat(64)}`,
+    predecessorExecutionRecordDigest: request.preparationExecutionRecordDigest,
+    startedAt: null,
+    finishedAt: null,
+    status: "INTERRUPTED_UNKNOWN",
+    reasonCode: "MANUAL_EVIDENCE_INCOMPLETE",
+    resultDigest: null,
+    processEvidenceDigest: null
+  };
+  const completedAt = "2026-09-28T00:00:02.000Z";
+  const custodyRecords = result.originals.flatMap(({ digest }) =>
+    ["archive", "backup"].map((storageRole) => ({
+      schemaVersion: "manual-operation-record.v3",
+      kind: "custody",
+      profileDigest: request.profileDigest,
+      recordedAt: "2026-09-28T00:00:01.000Z",
+      promotionEligible: false,
+      ownerId: request.ownerId,
+      subjectDigest: digest,
+      subjectType: "record",
+      purpose: `${storageRole}-readback`,
+      outcome: "MATCH",
+      observedDigest: digest,
+      observedAt: "2026-09-28T00:00:01.000Z",
+      storageRole,
+      retentionDays: 90,
+      reasonCode: null
+    }))
+  );
+  const completionInput = {
+    request,
+    initialExecution,
+    manifest,
+    verified: result,
+    custodyRecords,
+    completedAt
+  };
+  const completion = buildR3SourceCompletion(completionInput);
+  assert.equal(completion.schemaVersion, "manual-r3-source-result.v1");
+  assert.equal(completion.originals.length, 39);
+  assert.equal(completion.custodyRecordDigests.length, 78);
+  assert.equal(completion.candidateUseExecutionRecordDigest, sha256Canonical(initialExecution));
+  assert.equal(completion.promotionEligible, false);
+  assert.ok(encodeManualJson(completion).length <= 1048576);
+  for (const change of [
+    (value) => value.verified.originals.pop(),
+    (value) => {
+      value.custodyRecords[1].subjectDigest = value.custodyRecords[2].subjectDigest;
+      value.custodyRecords[1].observedDigest = value.custodyRecords[2].subjectDigest;
+    },
+    (value) => {
+      value.request.phase = "final";
+    },
+    (value) => {
+      value.completedAt = "2026-09-27T23:59:59.999Z";
+    }
+  ]) {
+    const value = structuredClone(completionInput);
+    change(value);
+    assert.throws(() => buildR3SourceCompletion(value), { code: "R3_SOURCE_RESULT_INVALID" });
+  }
   const firstSuite = fixture.suiteReadbacks[0].report.suiteId;
   for (const change of [
     (value) => value.set(`backup:${firstSuite}`, Buffer.from("{}")),

@@ -35,6 +35,7 @@ import {
 } from "./execution-state-machine.mjs";
 import { deterministicPlanDigest } from "./proof-builders.mjs";
 import { planManualR3TargetLocks } from "./manual-r3-target-locks.mjs";
+import { readManualRevocationHistory } from "./manual-revocation-history.mjs";
 import { suiteDatabaseName } from "./database-target.mjs";
 import { verifyR3HostedEvidence } from "./r3-hosted-evidence.mjs";
 import { buildR3SnapshotConsumerResult } from "./r3-snapshot-consumer-result.mjs";
@@ -646,94 +647,18 @@ export async function openManualSession({
     requireThat(equal(actual, current) && current.status === "OPEN", SESSION);
   }
   async function revocations() {
-    const dir = path.join(profile.storage.journalRoot, "revocations");
-    try {
-      await store.checkedPath(dir);
-      const names = (await store.fs.readdir(dir)).filter((name) =>
-        name.startsWith(`${profileDigest.slice(7)}-`)
-      );
-      requireThat(names.length > 0, REVOCATION);
-      const records = [];
-      for (let sequence = 0; sequence < names.length; sequence++) {
-        const name = `${profileDigest.slice(7)}-${sequence}.json`;
-        requireThat(names.includes(name), REVOCATION);
-        const record = JSON.parse(await store.read(path.join(dir, name)));
-        validateContract(revocationSchema, record);
-        requireThat(
-          record.kind === "revocation" &&
-            record.sequence === sequence &&
-            record.profileDigest === profileDigest &&
-            record.ownerId === profile.ownerId &&
-            record.previousRevocationDigest ===
-              (sequence ? sha256Canonical(records[sequence - 1]) : null) &&
-            (sequence ? record.action !== "GENESIS" : record.action === "GENESIS"),
-          REVOCATION
-        );
-        requireThat(
-          instant(record.recordedAt) <= instant(stamp()) &&
-            (!sequence || instant(record.recordedAt) >= instant(records[sequence - 1].recordedAt)),
-          REVOCATION
-        );
-        requireThat(
-          (
-            await store.read(objectPath(profile.storage.journalRoot, sha256Canonical(record)))
-          ).equals(encodeManualJson(record)),
-          REVOCATION
-        );
-        records.push(record);
-      }
-      // A failed append can leave the canonical revocation before its unique
-      // sequence slot. That is uncertainty, not permission to ignore revocation.
-      const originalDir = path.join(profile.storage.journalRoot, "objects");
-      for (const name of await store.fs.readdir(originalDir)) {
-        requireThat(/^[0-9a-f]{64}\.json$/.test(name), REVOCATION);
-        const bytes = await store.read(path.join(originalDir, name));
-        requireThat(sha256Bytes(bytes) === `sha256:${name.slice(0, -5)}`, REVOCATION);
-        const original = JSON.parse(bytes);
-        if (original.kind === "revocation" && original.profileDigest === profileDigest)
-          requireThat(
-            records[original.sequence] && equal(records[original.sequence], original),
-            REVOCATION
-          );
-      }
-      const checkpointDir = path.join(profile.storage.journalRoot, "checkpoints");
-      await store.checkedPath(checkpointDir);
-      for (const name of (await store.fs.readdir(checkpointDir)).filter((name) =>
-        name.startsWith(`${profileDigest.slice(7)}-`)
-      )) {
-        const saved = JSON.parse(await store.read(path.join(checkpointDir, name)));
-        requireThat(
-          saved.kind === "revocation" &&
-            saved.profileDigest === profileDigest &&
-            records[saved.sequence] &&
-            equal(records[saved.sequence], saved),
-          REVOCATION
-        );
-      }
-      if (checkpoint)
-        requireThat(
-          records[checkpoint.sequence] &&
-            sha256Canonical(records[checkpoint.sequence]) === checkpoint.digest,
-          REVOCATION
-        );
-      const head = records.at(-1),
-        digest = sha256Canonical(head);
-      const checkpointFile = path.join(
-        checkpointDir,
-        `${profileDigest.slice(7)}-${head.sequence}.json`
-      );
-      try {
-        await store.fs.lstat(checkpointFile);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-        await store.create(checkpointFile, encodeManualJson(head));
-      }
-      requireThat((await store.read(checkpointFile)).equals(encodeManualJson(head)), REVOCATION);
-      checkpoint = { sequence: head.sequence, digest };
-      return records;
-    } catch {
-      fail(REVOCATION);
-    }
+    const replay = await readManualRevocationHistory({
+      store,
+      journalRoot: profile.storage.journalRoot,
+      profileDigest,
+      ownerId: profile.ownerId,
+      recordSchema: revocationSchema,
+      now: stamp(),
+      checkpoint,
+      writeCheckpoint: true
+    });
+    checkpoint = replay.checkpoint;
+    return replay.records;
   }
   async function checkedRequest(input) {
     exact(input, ["binding", "canonicalBytes"]);

@@ -4067,6 +4067,9 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
         assert.equal(typeof launched.restoreSnapshot, "function");
         assert.equal(typeof launched.completeSnapshot, "function");
         assert.equal(typeof launched.runSourceManifest, "function");
+        assert.equal(typeof launched.acknowledgeSource, "function");
+        await assert.rejects(launched.acknowledgeSource({ approved: true }));
+        await assert.rejects(launched.acknowledgeSource());
         await assert.rejects(launched.runSourceManifest());
         await assert.rejects(launched.runSourceManifest({ approved: true }));
         await assert.rejects(launched.completeSnapshot());
@@ -4557,8 +4560,45 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
           assert.deepEqual(resultCustodyRoles, ["archive", "backup"]);
           assert.deepEqual(await capturedTrustedSession.verifySourceOriginals(), syntheticVerified);
           assert.ok(mockedReaderCalls >= 2);
-          const backupResult = path.join(f.profile.storage.backupRoot, "objects", resultName);
-          await fs.unlink(backupResult);
+          // Completion is not owner acknowledgement. The separate action binds
+          // exactly the completed terminal and preserves both private copies.
+          const priorRecords = await Promise.all(
+            (await fs.readdir(archiveObjects)).map(async (name) =>
+              JSON.parse(await fs.readFile(path.join(archiveObjects, name), "utf8"))
+            )
+          );
+          assert.equal(
+            priorRecords.filter((value) => value.purpose === "owner-acknowledgement").length,
+            0
+          );
+          const acknowledged = await capturedTrustedSession.acknowledgeSource({
+            executionRecordDigest: sourceTerminal.executionRecordDigest
+          });
+          assert.equal(acknowledged.executionRecordDigest, sourceTerminal.executionRecordDigest);
+          assert.equal(acknowledged.resultDigest, sourceTerminal.resultDigest);
+          assert.equal(acknowledged.promotionEligible, false);
+          const acknowledgementName = `${acknowledged.acknowledgementRecordDigest.slice(7)}.json`;
+          const acknowledgementBytes = await fs.readFile(
+            path.join(archiveObjects, acknowledgementName)
+          );
+          const acknowledgement = JSON.parse(acknowledgementBytes);
+          sourceModule.assertR3SourceAcknowledgement({
+            acknowledgement,
+            profileDigest: sha256Canonical(f.profile),
+            ownerId: f.profile.ownerId,
+            execution: terminalExecution,
+            result: sourceResult,
+            now: new Date().toISOString()
+          });
+          const backupAcknowledgement = path.join(
+            f.profile.storage.backupRoot,
+            "objects",
+            acknowledgementName
+          );
+          assert.deepEqual(await fs.readFile(backupAcknowledgement), acknowledgementBytes);
+          assert.deepEqual(await capturedTrustedSession.verifySourceOriginals(), syntheticVerified);
+          assert.equal((await fs.readdir(lockRoot)).length, 43);
+          await fs.unlink(backupAcknowledgement);
           try {
             await assert.rejects(capturedTrustedSession.verifySourceOriginals(), {
               code: "MANUAL_STORAGE_UNVERIFIED"
@@ -4576,7 +4616,10 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
               encodeManualJson(candidateExecution).toString("utf8")
             );
           } finally {
-            await fs.writeFile(backupResult, resultBytes, { flag: "wx", mode: 0o600 });
+            await fs.writeFile(backupAcknowledgement, acknowledgementBytes, {
+              flag: "wx",
+              mode: 0o600
+            });
           }
           await launched.close();
           assert.equal((await fs.readdir(lockRoot)).length, 43);

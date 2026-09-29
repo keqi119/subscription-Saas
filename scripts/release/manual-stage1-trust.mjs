@@ -2276,6 +2276,7 @@ export async function openTrustedR3CreationSession(input) {
       "verifySourceOriginals",
       "custodySourceOriginals",
       "completeSource",
+      "acknowledgeSource",
       "record",
       "close"
     ]);
@@ -2310,6 +2311,7 @@ export async function openTrustedR3CreationSession(input) {
       verifySourceOriginals: (...args) => action("verifySourceOriginals", args),
       custodySourceOriginals: (...args) => action("custodySourceOriginals", args),
       completeSource: (...args) => action("completeSource", args),
+      acknowledgeSource: (...args) => action("acknowledgeSource", args),
       record: (kind, value) => action("record", [kind, value]),
       close: () => serial(finish)
     });

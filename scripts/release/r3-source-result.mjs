@@ -1,6 +1,7 @@
 // Reconstruct a source result from retained originals. Callers must separately
 // establish the fixed candidate, private readbacks, live authority and custody.
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
+import { validateContract } from "../../packages/release-foundation/src/schema-registry.mjs";
 import {
   encodeManualJson,
   encodePrivateObservationJson
@@ -654,6 +655,113 @@ export function buildR3SourceCompletion({
       originals: Object.freeze(originals.map((item) => Object.freeze(item))),
       custodyRecordDigests: Object.freeze(custodyRecordDigests)
     });
+  } catch {
+    throw Object.assign(new Error(CODE), { code: CODE });
+  }
+}
+
+function acknowledgementTime(value) {
+  need(
+    typeof value === "string" &&
+      /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(value) &&
+      Number.isFinite(Date.parse(value)) &&
+      new Date(value).toISOString() === value
+  );
+  return Date.parse(value);
+}
+
+// A record shape only. The caller must first replay the complete source proof
+// and obtain the owner's explicit acknowledgement; this never grants authority.
+export function buildR3SourceAcknowledgement({
+  profileDigest,
+  ownerId,
+  execution,
+  result,
+  observedAt,
+  recordedAt
+}) {
+  try {
+    validateContract("manual-operation-record.v3", execution);
+    need(
+      DIGEST.test(profileDigest) &&
+        typeof ownerId === "string" &&
+        ownerId.length > 0 &&
+        execution.kind === "execution" &&
+        execution.stage === "candidate-use" &&
+        execution.status === "SUCCEEDED" &&
+        execution.promotionEligible === false &&
+        execution.reasonCode === null &&
+        execution.profileDigest === profileDigest &&
+        DIGEST.test(execution.predecessorExecutionRecordDigest) &&
+        DIGEST.test(execution.processEvidenceDigest) &&
+        result?.schemaVersion === "manual-r3-source-result.v1" &&
+        result.promotionEligible === false &&
+        result.phase === "source" &&
+        ["fresh", "snapshot"].includes(result.chain) &&
+        result.profileDigest === profileDigest &&
+        result.ownerId === ownerId &&
+        result.operationRef === execution.operationId &&
+        result.sessionId === execution.sessionId &&
+        result.sessionNonce === execution.sessionNonce &&
+        result.requestDigest === execution.requestDigest &&
+        result.candidateUseExecutionRecordDigest === execution.predecessorExecutionRecordDigest &&
+        result.readbackDigest === execution.processEvidenceDigest &&
+        sha256Canonical(result) === execution.resultDigest
+    );
+    need(
+      acknowledgementTime(result.completedAt) <= acknowledgementTime(execution.finishedAt) &&
+        acknowledgementTime(execution.finishedAt) <= acknowledgementTime(execution.recordedAt) &&
+        acknowledgementTime(execution.recordedAt) <= acknowledgementTime(observedAt) &&
+        acknowledgementTime(observedAt) <= acknowledgementTime(recordedAt)
+    );
+    const subjectDigest = sha256Canonical(execution);
+    const acknowledgement = {
+      schemaVersion: "manual-operation-record.v3",
+      profileDigest,
+      recordedAt,
+      promotionEligible: false,
+      kind: "custody",
+      ownerId,
+      subjectDigest,
+      subjectType: "record",
+      purpose: "owner-acknowledgement",
+      outcome: "MATCH",
+      observedDigest: subjectDigest,
+      observedAt,
+      storageRole: "archive",
+      retentionDays: 90,
+      reasonCode: null
+    };
+    validateContract("manual-operation-record.v3", acknowledgement);
+    encodeManualJson(acknowledgement);
+    return Object.freeze(acknowledgement);
+  } catch {
+    throw Object.assign(new Error(CODE), { code: CODE });
+  }
+}
+
+// Compare a retained acknowledgement with the one exact record this terminal
+// can authorize for an owner who has already taken the explicit action.
+export function assertR3SourceAcknowledgement({
+  acknowledgement,
+  profileDigest,
+  ownerId,
+  execution,
+  result,
+  now
+}) {
+  try {
+    need(acknowledgementTime(acknowledgement?.recordedAt) <= acknowledgementTime(now));
+    const expected = buildR3SourceAcknowledgement({
+      profileDigest,
+      ownerId,
+      execution,
+      result,
+      observedAt: acknowledgement.observedAt,
+      recordedAt: acknowledgement.recordedAt
+    });
+    need(same(acknowledgement, expected));
+    return expected;
   } catch {
     throw Object.assign(new Error(CODE), { code: CODE });
   }

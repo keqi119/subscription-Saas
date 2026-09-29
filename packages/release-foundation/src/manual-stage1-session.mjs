@@ -2213,6 +2213,7 @@ export async function openManualSession({
     const graph = await store.objects();
     const values = [...graph.values()].map((entry) => entry.value);
     const r3Validated = new Set();
+    const r3Acknowledgements = new Set();
     const legacy = [];
     let creationCount = 0,
       consumerCount = 0,
@@ -2556,6 +2557,36 @@ export async function openManualSession({
                 STORAGE
               );
             r3Originals.artifacts.add(completed.resultDigest);
+            const acknowledgements = values.filter(
+              (value) =>
+                value.schemaVersion === "manual-operation-record.v3" &&
+                value.kind === "custody" &&
+                value.purpose === "owner-acknowledgement" &&
+                value.subjectDigest === sha256Canonical(completed)
+            );
+            requireThat(acknowledgements.length <= 1, EVIDENCE);
+            const { assertR3SourceAcknowledgement } =
+              await import("../../../scripts/release/r3-source-result.mjs");
+            for (const acknowledgement of acknowledgements) {
+              assertR3SourceAcknowledgement({
+                acknowledgement,
+                profileDigest,
+                ownerId: profile.ownerId,
+                execution: completed,
+                result: proof.result,
+                now: stamp()
+              });
+              const bytes = encodeManualJson(acknowledgement);
+              const digest = sha256Bytes(bytes);
+              for (const role of ["archive", "backup"])
+                requireThat(
+                  (await store.read(objectPath(profile.storage[`${role}Root`], digest))).equals(
+                    bytes
+                  ),
+                  STORAGE
+                );
+              r3Acknowledgements.add(digest);
+            }
           }
           r3Validated.add(digest);
           continue;
@@ -2781,6 +2812,13 @@ export async function openManualSession({
       (value) => value.kind === "execution" && value.profileDigest === profileDigest
     ))
       requireThat(slots.has(execution.consumptionRecordDigest), SESSION);
+    for (const value of values.filter(
+      (entry) =>
+        entry.schemaVersion === "manual-operation-record.v3" &&
+        entry.kind === "custody" &&
+        entry.purpose === "owner-acknowledgement"
+    ))
+      requireThat(r3Acknowledgements.has(sha256Canonical(value)), EVIDENCE);
     for (const execution of values.filter(
       (value) => value.kind === "execution" && value.schemaVersion === "manual-operation-record.v3"
     ))
@@ -2867,6 +2905,8 @@ export async function openManualSession({
       sourceCustodyAttempted = false,
       sourceCustodyResult = null,
       sourceCompletionAttempted = false,
+      sourceCompletionDigest = null,
+      sourceAcknowledgementAttempted = false,
       consumerAuthorizationIssued = false,
       candidateUseAuthorizationIssued = false,
       candidateUseAttempted = false,
@@ -3862,11 +3902,75 @@ export async function openManualSession({
           await sourceHistory();
           await active();
           r3Live();
+          sourceCompletionDigest = executionRecordDigest;
           return freeze({
             executionRecordDigest,
             resultDigest,
             processEvidenceDigest: execution.processEvidenceDigest,
             custodyRecordDigests
+          });
+        });
+      },
+      acknowledgeSource(...args) {
+        return serial(async () => {
+          requireThat(
+            args.length === 1 && sourceCompletionDigest && !sourceAcknowledgementAttempted,
+            SESSION
+          );
+          const input = snapshot(args[0]);
+          exact(input, ["executionRecordDigest"], SESSION);
+          requireThat(input.executionRecordDigest === sourceCompletionDigest, SESSION);
+          // This separate owner action is never called by source completion.
+          sourceAcknowledgementAttempted = true;
+          await active();
+          r3Live();
+          const graph = await sourceHistory();
+          const execution = graph.get(sourceCompletionDigest)?.value;
+          const initial = graph.get(candidateUseReceipt.executionRecordDigest)?.value;
+          const proof = await r3SourceProof(graph, initial, execution);
+          requireThat(
+            ![...graph.values()].some(
+              ({ value }) =>
+                value.kind === "custody" &&
+                value.purpose === "owner-acknowledgement" &&
+                value.subjectDigest === sourceCompletionDigest
+            ),
+            EVIDENCE
+          );
+          const { buildR3SourceAcknowledgement } =
+            await import("../../../scripts/release/r3-source-result.mjs");
+          const acknowledgement = buildR3SourceAcknowledgement({
+            profileDigest,
+            ownerId: profile.ownerId,
+            execution,
+            result: proof.result,
+            observedAt: stamp(),
+            recordedAt: stamp()
+          });
+          const bytes = encodeManualJson(acknowledgement);
+          const acknowledgementRecordDigest = sha256Bytes(bytes);
+          for (const role of ["archive", "backup"]) {
+            await active();
+            r3Live();
+            await store.put(acknowledgement, role);
+          }
+          for (const role of ["archive", "backup"])
+            requireThat(
+              (
+                await store.read(
+                  objectPath(profile.storage[`${role}Root`], acknowledgementRecordDigest)
+                )
+              ).equals(bytes),
+              STORAGE
+            );
+          await sourceHistory();
+          await active();
+          r3Live();
+          return freeze({
+            executionRecordDigest: sourceCompletionDigest,
+            resultDigest: execution.resultDigest,
+            acknowledgementRecordDigest,
+            promotionEligible: false
           });
         });
       },

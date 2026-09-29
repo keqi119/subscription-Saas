@@ -733,8 +733,13 @@ test("R3 source result reconstructs every suite from originals and rejects omiss
 });
 
 test("R3 source originals require matching fixed dual readbacks and reject later drift", async () => {
-  const { buildR3SourceResult, buildR3SourceCompletion, readR3SourceOriginals } =
-    await import("./r3-source-result.mjs");
+  const {
+    buildR3SourceResult,
+    buildR3SourceCompletion,
+    buildR3SourceAcknowledgement,
+    assertR3SourceAcknowledgement,
+    readR3SourceOriginals
+  } = await import("./r3-source-result.mjs");
   assert.equal(typeof readR3SourceOriginals, "function");
   const fixture = await sourceResultFixture();
   const clean = fixture.suiteReadbacks.find(
@@ -897,6 +902,89 @@ test("R3 source originals require matching fixed dual readbacks and reject later
   assert.equal(completion.candidateUseExecutionRecordDigest, sha256Canonical(initialExecution));
   assert.equal(completion.promotionEligible, false);
   assert.ok(encodeManualJson(completion).length <= 1048576);
+  const terminal = {
+    ...initialExecution,
+    recordedAt: "2026-09-28T00:00:04.000Z",
+    predecessorExecutionRecordDigest: sha256Canonical(initialExecution),
+    startedAt: initialExecution.recordedAt,
+    finishedAt: "2026-09-28T00:00:03.000Z",
+    status: "SUCCEEDED",
+    reasonCode: null,
+    resultDigest: sha256Canonical(completion),
+    processEvidenceDigest: completion.readbackDigest
+  };
+  const acknowledgementInput = {
+    profileDigest: request.profileDigest,
+    ownerId: request.ownerId,
+    execution: terminal,
+    result: completion,
+    observedAt: "2026-09-28T00:00:05.000Z",
+    recordedAt: "2026-09-28T00:00:06.000Z"
+  };
+  const acknowledgement = buildR3SourceAcknowledgement(acknowledgementInput);
+  assert.deepEqual(acknowledgement, {
+    schemaVersion: "manual-operation-record.v3",
+    profileDigest: request.profileDigest,
+    recordedAt: acknowledgementInput.recordedAt,
+    promotionEligible: false,
+    kind: "custody",
+    ownerId: request.ownerId,
+    subjectDigest: sha256Canonical(terminal),
+    subjectType: "record",
+    purpose: "owner-acknowledgement",
+    outcome: "MATCH",
+    observedDigest: sha256Canonical(terminal),
+    observedAt: acknowledgementInput.observedAt,
+    storageRole: "archive",
+    retentionDays: 90,
+    reasonCode: null
+  });
+  assert.ok(Object.isFrozen(acknowledgement));
+  assert.deepEqual(
+    assertR3SourceAcknowledgement({
+      acknowledgement,
+      profileDigest: request.profileDigest,
+      ownerId: request.ownerId,
+      execution: terminal,
+      result: completion,
+      now: "2026-09-28T00:00:07.000Z"
+    }),
+    acknowledgement
+  );
+  for (const change of [
+    (value) => {
+      value.acknowledgement.subjectDigest = completion.readbackDigest;
+    },
+    (value) => {
+      value.ownerId = "other-owner";
+    },
+    (value) => {
+      value.execution.status = "INTERRUPTED_UNKNOWN";
+    },
+    (value) => {
+      value.result.sessionNonce = "0".repeat(64);
+      value.execution.resultDigest = sha256Canonical(value.result);
+    },
+    (value) => {
+      value.now = "2026-09-28T00:00:05.000Z";
+    },
+    (value) => {
+      value.acknowledgement.purpose = "archive-readback";
+    }
+  ]) {
+    const value = structuredClone({
+      acknowledgement,
+      profileDigest: request.profileDigest,
+      ownerId: request.ownerId,
+      execution: terminal,
+      result: completion,
+      now: "2026-09-28T00:00:07.000Z"
+    });
+    change(value);
+    assert.throws(() => assertR3SourceAcknowledgement(value), {
+      code: "R3_SOURCE_RESULT_INVALID"
+    });
+  }
   for (const change of [
     (value) => value.verified.originals.pop(),
     (value) => {

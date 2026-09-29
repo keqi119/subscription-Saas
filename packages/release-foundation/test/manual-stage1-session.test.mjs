@@ -3278,6 +3278,7 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
       "completeCreation",
       "registerLifecycleTarget",
       "completeSnapshot",
+      "verifySourceOriginals",
       "record",
       "close"
     ].sort()
@@ -3294,6 +3295,10 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
   assert.equal(result.executionRecordDigest, sha256Canonical(execution));
   assert.equal((await f.records("consumption")).length, 1);
   await assert.rejects(session.completeSnapshot(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  await assert.rejects(session.verifySourceOriginals(), { code: "MANUAL_SESSION_UNVERIFIED" });
+  await assert.rejects(session.verifySourceOriginals({ status: "PASSED" }), {
+    code: "MANUAL_SESSION_UNVERIFIED"
+  });
   await assert.rejects(session.registerLifecycleTarget({ record: {} }), {
     code: "MANUAL_SESSION_UNVERIFIED"
   });

@@ -1,6 +1,7 @@
 // Reconstruct a source result from retained originals. Callers must separately
 // establish the fixed candidate, private readbacks, live authority and custody.
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
+import { encodePrivateObservationJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import {
   buildDatabaseSuiteReport,
   runDatabaseManifest
@@ -16,6 +17,7 @@ import { assertR3LifecycleOriginals } from "./r3-lifecycle-test-runner.mjs";
 
 const CODE = "R3_SOURCE_RESULT_INVALID";
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
+const ORIGINAL_LIMIT = 33554432;
 const need = (value) => {
   if (!value) throw Object.assign(new Error(CODE), { code: CODE });
 };
@@ -361,6 +363,112 @@ export async function buildR3SourceResult({
         )
       ),
       postSchemaDigest: [...postSchemaDigests][0]
+    });
+  } catch {
+    throw Object.assign(new Error(CODE), { code: CODE });
+  }
+}
+
+// Read only the fixed source originals through the holder's captured reader.
+// This proves matching, stable private bytes and result consistency, not custody
+// or authority to promote the reconstructed result.
+export async function readR3SourceOriginals({
+  manifest,
+  plan,
+  binding,
+  records,
+  lifecycleRecords,
+  discovery,
+  readObservation,
+  recheck
+}) {
+  try {
+    need(
+      typeof readObservation === "function" &&
+        typeof recheck === "function" &&
+        DIGEST.test(discovery?.discoveryDigest) &&
+        Array.isArray(discovery.candidates) &&
+        Array.isArray(discovery.classification?.unclassified) &&
+        discovery.classification.unclassified.length === 0
+    );
+    const selections = bindR3SourceManifest({
+      operationRef: binding.operationRef,
+      chain: binding.chain,
+      manifest,
+      plan,
+      discoveryDigest: discovery.discoveryDigest,
+      discoveryUnclassifiedCount: discovery.classification.unclassified.length
+    });
+    const names = ["attempt", ...selections.map(({ suiteId }) => suiteId), "manifest"];
+    need(new Set(names).size === names.length);
+    const held = [];
+    const values = new Map();
+    for (const name of names) {
+      let first;
+      for (const storageRole of ["archive", "backup"]) {
+        const original = await readObservation({ storageRole, name });
+        need(original instanceof Uint8Array && original.byteLength > 0);
+        need(original.byteLength <= ORIGINAL_LIMIT);
+        const bytes = Buffer.from(original);
+        if (first) need(first.equals(bytes));
+        else first = bytes;
+        held.push({ storageRole, name, bytes });
+      }
+      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(first));
+      need(encodePrivateObservationJson(value).equals(first));
+      values.set(name, value);
+    }
+    const attempt = values.get("attempt"),
+      observed = values.get("manifest"),
+      suiteReadbacks = selections.map(({ suiteId }) => values.get(suiteId));
+    need(
+      observed?.status === "SOURCE_MANIFEST_OBSERVED" &&
+        observed.promotionEligible === false &&
+        observed.attemptDigest === sha256Canonical(attempt) &&
+        observed.operationRef === binding.operationRef &&
+        observed.sessionId === binding.sessionId &&
+        observed.sessionNonce === binding.sessionNonce &&
+        observed.sourceSha === binding.sourceSha &&
+        observed.destinationDigest === binding.destinationDigest &&
+        same(observed.discovery, discovery)
+    );
+    processResult(observed.generation);
+    const reconstructed = await buildR3SourceResult({
+      manifest,
+      plan,
+      discoveryDigest: discovery.discoveryDigest,
+      binding,
+      records,
+      lifecycleRecords,
+      attempt,
+      suiteReadbacks,
+      manifestReport: observed.manifestReport
+    });
+    need(same(observed.reconstructed, reconstructed));
+    need(
+      same(
+        observed.observations,
+        selections.map(({ suiteId }, index) => ({
+          suiteId,
+          readbackDigest: sha256Canonical(suiteReadbacks[index]),
+          migrationObservations: suiteReadbacks[index].migrationObservations
+        }))
+      )
+    );
+    await recheck();
+    for (const { storageRole, name, bytes } of held) {
+      const actual = await readObservation({ storageRole, name });
+      need(
+        actual instanceof Uint8Array &&
+          actual.byteLength > 0 &&
+          actual.byteLength <= ORIGINAL_LIMIT &&
+          Buffer.from(actual).equals(bytes)
+      );
+    }
+    return Object.freeze({
+      readbackDigest: sha256Canonical(observed),
+      reconstructedDigest: sha256Canonical(reconstructed),
+      suiteReadbacks: reconstructed.suiteReadbacks
     });
   } catch {
     throw Object.assign(new Error(CODE), { code: CODE });

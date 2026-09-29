@@ -28,6 +28,7 @@ import {
   scanDatabaseFrameworkBypasses,
   runDatabaseManifest
 } from "../../packages/release-foundation/src/index.mjs";
+import { encodePrivateObservationJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import {
   loadFixedManualProfile,
   readFixedManualOperation,
@@ -2628,7 +2629,7 @@ export async function launchR3TargetCreate(input) {
   };
   const sourceFile = async (filename, value, privateRoot, handles) => {
     const principal = { platform: "posix", uid: process.getuid() };
-    const bytes = encodeManualJson(value);
+    const bytes = encodePrivateObservationJson(value);
     if (bytes.length > 33554432) fail(code);
     const directory = path.dirname(filename);
     await checkedPrivatePath(directory, { principal, privateRoot, directory: true });
@@ -2913,6 +2914,14 @@ export async function launchR3TargetCreate(input) {
       manifestWriteAttempted = true;
       const readbackDigest = await sourceStore("manifest", value);
       await sourceCheck();
+      const verified = await session.verifySourceOriginals();
+      if (
+        verified.readbackDigest !== readbackDigest ||
+        verified.reconstructedDigest !== sha256Canonical(reconstructed) ||
+        sha256Canonical(verified.suiteReadbacks) !== sha256Canonical(reconstructed.suiteReadbacks)
+      )
+        fail(code);
+      await sourceCheck();
       sourceReady = true;
       return Object.freeze({
         status: value.status,
@@ -3191,7 +3200,7 @@ export async function launchR3TargetCreate(input) {
       observations,
       promotionEligible: false
     };
-    const bytes = encodeManualJson(value);
+    const bytes = sourceAttempted ? encodePrivateObservationJson(value) : encodeManualJson(value);
     const readbackLimit = sourceAttempted ? 33554432 : 1048576;
     if (bytes.length > readbackLimit) fail(code);
     const principal = { platform: "posix", uid: process.getuid() };

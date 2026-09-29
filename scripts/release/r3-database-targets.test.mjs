@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { sha256Canonical, sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
+import { encodePrivateObservationJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { suiteDatabaseName } from "../../packages/release-foundation/src/database-target.mjs";
 import {
   buildDatabaseSuiteReport,
@@ -720,6 +721,102 @@ test("R3 source result reconstructs every suite from originals and rejects omiss
     change(value);
     await assert.rejects(buildR3SourceResult(value), { code: "R3_SOURCE_RESULT_INVALID" });
   }
+});
+
+test("R3 source originals require matching fixed dual readbacks and reject later drift", async () => {
+  const { buildR3SourceResult, readR3SourceOriginals } = await import("./r3-source-result.mjs");
+  assert.equal(typeof readR3SourceOriginals, "function");
+  const fixture = await sourceResultFixture();
+  const clean = fixture.suiteReadbacks.find(
+    ({ report }) => report.suiteId === "script.stage1-clean-acceptance.postgres"
+  );
+  for (const index of [0, 4]) clean.originals.processes[index].result.stdout = "x".repeat(524000);
+  assert.ok(encodePrivateObservationJson(clean).length > 1048576);
+  const reconstructed = await buildR3SourceResult(fixture);
+  const discovery = {
+    candidates: [],
+    classification: { unclassified: [] },
+    discoveryDigest: fixture.discoveryDigest
+  };
+  const observed = {
+    status: "SOURCE_MANIFEST_OBSERVED",
+    attemptDigest: sha256Canonical(fixture.attempt),
+    operationRef,
+    sessionId: fixture.binding.sessionId,
+    sessionNonce: fixture.binding.sessionNonce,
+    sourceSha: fixture.binding.sourceSha,
+    destinationDigest: fixture.binding.destinationDigest,
+    manifestReport: fixture.manifestReport,
+    reconstructed,
+    observations: fixture.suiteReadbacks.map((value) => ({
+      suiteId: value.report.suiteId,
+      readbackDigest: sha256Canonical(value),
+      migrationObservations: value.migrationObservations
+    })),
+    generation: {
+      code: 0,
+      signal: null,
+      processError: false,
+      timedOut: false,
+      truncated: false,
+      stdout: "generated",
+      stderr: ""
+    },
+    discovery,
+    promotionEligible: false
+  };
+  const originals = new Map([
+    ["attempt", fixture.attempt],
+    ...fixture.suiteReadbacks.map((value) => [value.report.suiteId, value]),
+    ["manifest", observed]
+  ]);
+  const initial = () =>
+    new Map(
+      ["archive", "backup"].flatMap((storageRole) =>
+        [...originals].map(([name, value]) => [
+          `${storageRole}:${name}`,
+          encodePrivateObservationJson(value)
+        ])
+      )
+    );
+  const read = (copies, recheck = async () => {}) =>
+    readR3SourceOriginals({
+      manifest: fixture.manifest,
+      plan: fixture.plan,
+      binding: fixture.binding,
+      records: fixture.records,
+      lifecycleRecords: fixture.lifecycleRecords,
+      discovery,
+      readObservation: async ({ storageRole, name }) => copies.get(`${storageRole}:${name}`),
+      recheck
+    });
+  const copies = initial();
+  const result = await read(copies);
+  assert.equal(result.readbackDigest, sha256Canonical(observed));
+  assert.equal(result.reconstructedDigest, sha256Canonical(reconstructed));
+  assert.deepEqual(result.suiteReadbacks, reconstructed.suiteReadbacks);
+  assert.ok(Object.isFrozen(result) && Object.isFrozen(result.suiteReadbacks));
+  const firstSuite = fixture.suiteReadbacks[0].report.suiteId;
+  for (const change of [
+    (value) => value.set(`backup:${firstSuite}`, Buffer.from("{}")),
+    (value) => value.delete(`archive:${firstSuite}`),
+    (value) => {
+      const altered = structuredClone(observed);
+      altered.reconstructed.postSchemaDigest = `sha256:${"0".repeat(64)}`;
+      const bytes = encodePrivateObservationJson(altered);
+      value.set("archive:manifest", bytes);
+      value.set("backup:manifest", bytes);
+    }
+  ]) {
+    const altered = initial();
+    change(altered);
+    await assert.rejects(read(altered), { code: "R3_SOURCE_RESULT_INVALID" });
+  }
+  const drifting = initial();
+  await assert.rejects(
+    read(drifting, async () => drifting.set("backup:attempt", Buffer.from("{}"))),
+    { code: "R3_SOURCE_RESULT_INVALID" }
+  );
 });
 
 test("R3 source suite reuses ordered migration, fixture and report flow for ordinary and clean databases", async () => {

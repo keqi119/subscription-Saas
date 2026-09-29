@@ -109,15 +109,25 @@ function snapshot(value, seen = new WeakSet()) {
   }
 }
 
-function limit(bytes) {
-  requireThat(bytes.length <= LIMIT, "MANUAL_JSON_LIMIT");
+function limit(bytes, maximum = LIMIT) {
+  requireThat(bytes.length <= maximum, "MANUAL_JSON_LIMIT");
   return bytes;
 }
 
-export function encodeManualJson(value) {
+function encodeBoundedJson(value, maximum) {
   const data = snapshot(value);
-  limit(Buffer.from(JSON.stringify(data), "utf8"));
-  return limit(Buffer.from(canonicalJson(data), "utf8"));
+  limit(Buffer.from(JSON.stringify(data), "utf8"), maximum);
+  return limit(Buffer.from(canonicalJson(data), "utf8"), maximum);
+}
+
+export function encodeManualJson(value) {
+  return encodeBoundedJson(value, LIMIT);
+}
+
+// Private source process originals can aggregate multiple bounded outputs.
+// This encoder is not used for signed requests, records or protocol frames.
+export function encodePrivateObservationJson(value) {
+  return encodeBoundedJson(value, 33554432);
 }
 
 function jsonInput(value) {

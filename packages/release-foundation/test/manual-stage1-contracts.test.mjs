@@ -377,6 +377,31 @@ test("canonical encoding rejects lossy or executable input and enforces both byt
   rejects(() => encodeManualJson({ x: exact.x + "x" }), "MANUAL_JSON_LIMIT");
 });
 
+test("private observation encoding has a fixed byte cap without widening signed JSON", () => {
+  const value = { z: "汉".repeat(400000), a: 1 };
+  assert.throws(() => encodeManualJson(value), { code: "MANUAL_JSON_LIMIT" });
+  const bytes = manual.encodePrivateObservationJson(value);
+  assert.ok(bytes.length > 1048576);
+  assert.equal(bytes.toString(), canonicalJson(value));
+  const exact = { x: "x".repeat(33554432 - 8) };
+  assert.equal(manual.encodePrivateObservationJson(exact).length, 33554432);
+  assert.throws(() => manual.encodePrivateObservationJson({ x: exact.x + "x" }), {
+    code: "MANUAL_JSON_LIMIT"
+  });
+  let invoked = false;
+  assert.throws(
+    () =>
+      manual.encodePrivateObservationJson({
+        get value() {
+          invoked = true;
+          return 1;
+        }
+      }),
+    { code: "CANONICAL_JSON_REFUSED" }
+  );
+  assert.equal(invoked, false);
+});
+
 test("real Ed25519 signer covers exactly the canonical launch domain", () => {
   const f = fixture();
   const authorization = manual.signManualAuthorization({
@@ -975,6 +1000,7 @@ test("barrel keeps six manual functions while scoped checks stay module-local ex
       "assertManualDecision",
       "assertManualHandoffDecision",
       "encodeManualJson",
+      "encodePrivateObservationJson",
       "signManualAuthorization",
       "validateManualSnapshotConsumerRequest",
       "validateManualTargetCreationRequest",
@@ -992,6 +1018,7 @@ test("barrel keeps six manual functions while scoped checks stay module-local ex
   barrel.assertManualDecision(barrel.verifyManualAuthorization({ ...f, authorization }));
   barrel.assertManualHandoffDecision(barrel.verifyManualHandoff(handoff(fixture("verify"))));
   assert.equal(barrel.encodeManualJson({ ok: true }).toString(), '{"ok":true}');
+  assert.equal(barrel.encodePrivateObservationJson, undefined);
   assert.equal(barrel.validateManualSnapshotConsumerRequest, undefined);
   assert.equal(barrel.verifyManualSnapshotConsumerAuthorizationBinding, undefined);
   assert.equal(barrel.validateManualTargetCreationRequest, undefined);

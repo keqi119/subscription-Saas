@@ -55,6 +55,7 @@ import {
   r3RuntimeBoundary,
   r3RuntimeBoundarySql
 } from "./r3-source-suite.mjs";
+import { buildR3SourceResult } from "./r3-source-result.mjs";
 import { buildDatabaseSuiteReport } from "../../packages/release-foundation/src/database-test-launcher.mjs";
 import { databaseTestCounts, summarizeDatabaseTestLog } from "./database-test-launcher-runtime.mjs";
 import {
@@ -1104,6 +1105,8 @@ export async function launchR3TargetCreate(input) {
   const lifecycleReadbacks = [];
   const sourceReadbacks = [];
   const sourceContexts = [];
+  const sourceValues = new Map();
+  const lifecycleRegisteredRecords = [];
   const fetchAbort = new AbortController();
   const lifecycleAbort = new AbortController();
   const sourceAbort = new AbortController();
@@ -2674,6 +2677,9 @@ export async function launchR3TargetCreate(input) {
       if (digest && actual !== digest) fail(code);
       digest = actual;
     }
+    // Derive later results from the actual last pinned copy, only after both
+    // stores agreed. The copies remain held and are checked by sourceCheck.
+    sourceValues.set(name, JSON.parse(sourceReadbacks.at(-1).bytes));
     return digest;
   };
   const runSourceManifest = async () => {
@@ -2865,6 +2871,30 @@ export async function launchR3TargetCreate(input) {
         }
       });
       await recheckResources();
+      const reconstructed = await buildR3SourceResult({
+        manifest: fixed.databaseTestManifest,
+        plan: databaseTargetSet.plan,
+        discoveryDigest: sha256Canonical(discovery),
+        binding: {
+          operationRef: fixed.spec.operationRef,
+          chain: fixed.spec.chain,
+          profileDigest: session.profileDigest,
+          sessionId: session.sessionId,
+          sessionNonce: session.sessionNonce,
+          sourceSha: fixed.spec.sourceSha,
+          destinationDigest: destinationRecord.destinationDigest,
+          clusterFingerprint,
+          containerId: postgresTarget.containerId,
+          creationExecutionRecordDigest: completionRecord.executionRecordDigest,
+          snapshotExecutionRecordDigest: snapshotCompletionRecord?.executionRecordDigest ?? null
+        },
+        records: databaseTargetSet.records,
+        lifecycleRecords: lifecycleRegisteredRecords,
+        attempt: sourceValues.get("attempt"),
+        suiteReadbacks: selections.map(({ suiteId }) => sourceValues.get(suiteId)),
+        manifestReport
+      });
+      await sourceCheck();
       const value = {
         status: "SOURCE_MANIFEST_OBSERVED",
         attemptDigest,
@@ -2874,6 +2904,7 @@ export async function launchR3TargetCreate(input) {
         sourceSha: fixed.spec.sourceSha,
         destinationDigest: destinationRecord.destinationDigest,
         manifestReport,
+        reconstructed,
         observations,
         generation,
         discovery: { candidates, classification, discoveryDigest: sha256Canonical(discovery) },
@@ -3126,7 +3157,11 @@ export async function launchR3TargetCreate(input) {
         create: ({ databaseName, profile, username }) => secretFor(databaseName, profile, username)
       },
       migrate,
-      registerTarget: (record) => session.registerLifecycleTarget({ record }),
+      registerTarget: async (record) => {
+        const registered = await session.registerLifecycleTarget({ record });
+        lifecycleRegisteredRecords.push(JSON.parse(JSON.stringify(record)));
+        return registered;
+      },
       recheck: lifecycleCheck,
       observations
     });

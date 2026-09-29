@@ -222,6 +222,7 @@
     "scripts/release/r3-remote-snapshot-restore.mjs",
     "scripts/release/r3-snapshot-input-admission.mjs",
     "scripts/release/r3-snapshot-payload.mjs",
+    "scripts/release/r3-source-result.mjs",
     "scripts/release/r3-source-suite.mjs",
     "scripts/release/run-final-compose-gate.mjs",
     "scripts/release/trusted-launch-production-adapters.mjs",

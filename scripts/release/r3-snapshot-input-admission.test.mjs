@@ -13,6 +13,7 @@ import {
 } from "../../packages/release-foundation/src/index.mjs";
 import { publishR3SnapshotFixture } from "../../packages/release-foundation/test/r3-snapshot-input-fixture.mjs";
 import { decryptSnapshotStream } from "../../packages/release-foundation/src/snapshot/envelope-crypto.mjs";
+import { snapshotBundleDigest } from "../../packages/release-foundation/src/snapshot/export-sanitized.mjs";
 import { readCapturedOssXml } from "./manual-runner-source-inputs.mjs";
 
 const production = await import("./r3-snapshot-input-admission.mjs").catch((error) => {
@@ -176,6 +177,29 @@ test("R3 pinned crypto inputs recover synthetic bytes with the historical local-
   t.mock.method(Date, "now", () => Date.parse("2026-09-28T00:00:00.000Z"));
   const held = await production.readR3SnapshotInput(f.input);
   t.after(() => held.close());
+  const expectedManifest = {
+    dumpDigest: sha256Bytes(bytes),
+    metadataDigest: sha256Canonical(f.declarations.metadata),
+    privilegeObservationDigest: sha256Canonical(f.declarations.sourcePrivilege),
+    fingerprintObservationDigest: sha256Canonical(f.declarations.afterFingerprint),
+    scanDigest: sha256Canonical(f.declarations.scan)
+  };
+  assert.deepEqual(held.bundleInputs?.manifest, expectedManifest);
+  assert.equal(
+    held.bundleInputs?.digest,
+    snapshotBundleDigest({
+      dump: bytes,
+      metadata: f.declarations.metadata,
+      privilegeObservation: f.declarations.sourcePrivilege,
+      fingerprintObservation: f.declarations.afterFingerprint,
+      scan: f.declarations.scan
+    })
+  );
+  assert.notEqual(
+    held.bundleInputs.manifest.fingerprintObservationDigest,
+    sha256Canonical(f.declarations.afterFingerprint.identity)
+  );
+  assert.ok(Object.isFrozen(held.bundleInputs) && Object.isFrozen(held.bundleInputs.manifest));
   assert.ok(held.cryptoInputs, "missing parameters derived from original authorization");
   const { authorization, envelope, aad } = held.cryptoInputs;
   assert.deepEqual(authorization, f.s.producerAuthorization);

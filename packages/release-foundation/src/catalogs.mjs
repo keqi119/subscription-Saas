@@ -68,6 +68,7 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/r3-lifecycle-adapter.mjs",
   "scripts/release/r3-lifecycle-test-runner.mjs",
   "scripts/release/r3-source-suite.mjs",
+  "scripts/release/r3-source-result.mjs",
   "scripts/release/r3-postgres-observation.mjs",
   "scripts/release/run-final-compose-gate.mjs",
   "scripts/release/trusted-launch-production-adapters.mjs",

@@ -547,6 +547,20 @@ export async function readR3SnapshotInput(input) {
         c.object.key === e.slotObjectKey &&
         ["sourceSha", "releaseAttemptId", "snapshotRunId"].every((key) => c[key] === e[key])
     );
+    const bundleManifest = {
+      dumpDigest: m.dumpDigest,
+      metadataDigest: sha256Canonical(m),
+      privilegeObservationDigest: sha256Canonical(s.sourcePrivilege),
+      fingerprintObservationDigest: sha256Canonical(s.afterFingerprint),
+      scanDigest: sha256Canonical(s.scan)
+    };
+    // This reconstructs the producer's bundle digest from pinned declarations.
+    // The actual dump still requires decrypt/consumer authentication; this is
+    // not the historical bundle custody receipt.
+    const bundleInputs = {
+      manifest: bundleManifest,
+      digest: sha256Canonical(bundleManifest)
+    };
     await checkPermission(s, index, profile, raw, now);
     await checkStorage(s, raw, now);
     const deadline = Math.min(
@@ -611,6 +625,7 @@ export async function readR3SnapshotInput(input) {
       inputIndexDigest: sha256Bytes(indexBytes),
       permissionDigest: index.permission.digest,
       metadataDigest: index.metadata.digest,
+      bundleInputs,
       ciphertextDigest: e.ciphertextDigest,
       objectVersion: c.object.version,
       storageSubject: {

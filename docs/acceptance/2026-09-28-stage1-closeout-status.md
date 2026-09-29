@@ -4,9 +4,9 @@
 
 ## 当前接续状态
 
-2026-09-29 已接入同一持有会话内的无参数 `runSourceManifest()`：从固定候选发现并绑定完整 37 suites，写入固定私有上下文；普通套件和 clean 双库执行迁移、状态、schema 差异、角色权限、fixture 与清单命令，lifecycle 复用实际两库创建/删除断言，保留 sibling 记录。报告复用既有构建和计数校验，没有新增 schema、套件或业务功能。
+2026-09-29 已接入同一持有会话内的无参数 `runSourceManifest()`：从固定候选发现并绑定完整 37 suites，写入固定私有上下文；普通套件和 clean 双库执行迁移、状态、schema 差异、角色权限、fixture 与清单命令，lifecycle 复用实际两库创建/删除断言，保留 sibling 记录。结果现从主备一致的实际读回重建，核对完整选择、已登记数据库、上下文、进程退出/输出、角色/fixture、报告计数与 lifecycle 清理原件，并要求各库 post-schema 摘要一致。报告复用既有构建和计数校验，没有新增 schema、套件或业务功能。
 
-执行前先把 UNKNOWN 原件写入主备，逐套件保存进程输出和读回，主备均持有且重查成功后才返回 `SOURCE_MANIFEST_OBSERVED`；该状态仍为 `promotionEligible: false`。审查发现并修正了 clean 双库原件容量不足和单边写入不能算完整结果的问题。真实 Linux 子进程检查通过正常输出、中止后自有进程组停止、超量输出明确失败；私有目录准备检查在 Linux 通过。相关目标文件 12 项通过（其 Linux 专用进程项已单独实际执行），报告构建相关文件 16 项通过。没有重复此前耗时的快照消费长链。
+执行前先把 UNKNOWN 原件写入主备，逐套件保存进程输出和读回，主备均持有且重查成功后才返回 `SOURCE_MANIFEST_OBSERVED`；该状态仍为 `promotionEligible: false`。相关目标文件本轮 13 项通过（未改动的 Linux 专用进程项仍保留上一轮实际通过记录）。定向原件变异先复现了 Node 汇总与原始计数脱节，修正后一并通过。快照读取器另通过 Linux 定向检查，已从原有固定读回按既有五字段算法重建 bundle 清单及摘要；它仍须在解密/消费后绑定真实明文，不能充当旧 bundle 保管 receipt。没有重复此前耗时的快照消费长链。
 
 当前实现尚未在 H1 执行完整 source 清单，也未形成可信 source gate；后续先接报告原件的既有保管合同及最终 workspace 清理，再接匹配 source 的 final/hosted。同候选 R2/R3、Staging 两项迁移与 R4 真实验收仍待完成。开发预检 `datasource.url` 仍缺失，Prisma 结构校验通过；本轮没有联系或修改业务数据库，没有云端或 H1 写入。现有 OAuth 和来源性质输入仍待处理，没有另发续期或批准请求。具体执行边界与原始检查编号记入 [lifecycle 接线计划](../superpowers/plans/2026-09-29-stage1-r3-lifecycle-execution.md)。
 

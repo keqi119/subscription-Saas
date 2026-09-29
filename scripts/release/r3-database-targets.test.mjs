@@ -4,7 +4,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { sha256Canonical, sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { suiteDatabaseName } from "../../packages/release-foundation/src/database-target.mjs";
-import { selectManifestSuites } from "../../packages/release-foundation/src/database-test-launcher.mjs";
+import {
+  buildDatabaseSuiteReport,
+  runDatabaseManifest,
+  selectManifestSuites
+} from "../../packages/release-foundation/src/database-test-launcher.mjs";
+import { databaseTestCounts, summarizeDatabaseTestLog } from "./database-test-launcher-runtime.mjs";
 import { planManualR3TargetLocks } from "../../packages/release-foundation/src/manual-r3-target-locks.mjs";
 import { assessR3PostgresReadback, buildR3Destination } from "./r3-destination.mjs";
 import {
@@ -410,6 +415,312 @@ function sourceSuiteFixture(suiteId) {
   };
   return { fixture, events };
 }
+
+async function sourceResultFixture() {
+  const plan = planR3DatabaseTargets(input());
+  const discoveryDigest = `sha256:${"d".repeat(64)}`;
+  const selections = bindR3SourceManifest({
+    operationRef,
+    chain: "fresh",
+    manifest,
+    plan,
+    discoveryDigest,
+    discoveryUnclassifiedCount: 0
+  });
+  const binding = {
+    operationRef,
+    chain: "fresh",
+    profileDigest: `sha256:${"c".repeat(64)}`,
+    sessionId: "20000000-0000-4000-8000-000000000001",
+    sessionNonce: "e".repeat(64),
+    sourceSha: "f".repeat(40),
+    destinationDigest: `sha256:${"1".repeat(64)}`,
+    clusterFingerprint: `sha256:${"a".repeat(64)}`,
+    containerId: "b".repeat(64),
+    creationExecutionRecordDigest: `sha256:${"2".repeat(64)}`,
+    snapshotExecutionRecordDigest: null
+  };
+  const attempt = {
+    status: "SOURCE_MANIFEST_INTERRUPTED_UNKNOWN",
+    operationRef,
+    sessionId: binding.sessionId,
+    sessionNonce: binding.sessionNonce,
+    sourceSha: binding.sourceSha,
+    destinationDigest: binding.destinationDigest,
+    manifestDigest: sha256Canonical(manifest),
+    promotionEligible: false
+  };
+  const records = [],
+    suiteReadbacks = [];
+  let lifecycleRecords;
+  for (const execution of selections) {
+    let result;
+    if (execution.r3ExecutionMode === "suite") {
+      const { fixture } = sourceSuiteFixture(execution.suiteId);
+      for (const record of fixture.records)
+        record.databaseOid = String(
+          4000 + plan.targets.findIndex((item) => item.databaseName === record.databaseName)
+        );
+      const count =
+        execution.expectedCountPolicy.mode === "exact"
+          ? execution.expectedCountPolicy.collected
+          : 1;
+      fixture.runTest = async () => ({
+        code: 0,
+        signal: null,
+        truncated: false,
+        stdout: `TAP version 13\n# tests ${count}\n# pass ${count}\n# fail 0\n# skipped 0\n# todo 0\n# cancelled 0\n`,
+        stderr: ""
+      });
+      result = await executeR3SourceSuite(fixture);
+      records.push(...fixture.records);
+    } else {
+      lifecycleRecords = plan.reservations.map((item, index) => ({
+        ...item,
+        databaseOid: String(5000 + index),
+        targetFingerprint: binding.clusterFingerprint,
+        secretReferences: [execution.assignment, ...execution.additionalAssignments][index]
+          .secretReferences
+      }));
+      const normal = {
+        code: 0,
+        signal: null,
+        truncated: false,
+        stdout: "schema-readback",
+        stderr: ""
+      };
+      const commands = [
+        ["migrate", "deploy", "--schema", "prisma/schema.prisma"],
+        ["migrate", "status", "--schema", "prisma/schema.prisma"],
+        [
+          "migrate",
+          "diff",
+          "--from-config-datasource",
+          "--to-schema",
+          "prisma/schema.prisma",
+          "--exit-code"
+        ],
+        ["migrate", "diff", "--from-empty", "--to-config-datasource", "--script"]
+      ];
+      const falseRow = {
+        superuser: false,
+        createdb: false,
+        createrole: false,
+        bypassrls: false,
+        canCreateSchema: false,
+        schemaOwner: false,
+        objectOwner: false
+      };
+      const observations = lifecycleRecords.flatMap((record, index) => [
+        { stage: "provision", record },
+        ...commands.map((args) => ({
+          stage: "source-migration-process",
+          databaseName: record.databaseName,
+          arguments: args,
+          result: normal
+        })),
+        {
+          stage: "source-migration",
+          databaseName: record.databaseName,
+          value: {
+            name: index === 0 ? "target" : "sibling",
+            migrationStatusDigest: sha256Canonical(normal),
+            schemaDiffDigest: sha256Canonical(normal),
+            postSchemaDigest: sha256Bytes(Buffer.from(normal.stdout))
+          }
+        },
+        {
+          stage: "source-runtime-boundary",
+          databaseName: record.databaseName,
+          value: { rows: [falseRow] }
+        }
+      ]);
+      for (const [index, record] of lifecycleRecords.entries()) {
+        observations.push(
+          {
+            stage: "cleanup",
+            databaseName: record.databaseName,
+            recordDigest: sha256Canonical(record)
+          },
+          {
+            stage: "database-absence",
+            databaseName: record.databaseName,
+            value: { rows: [{ count: "0" }] }
+          }
+        );
+        if (index === 0)
+          observations.push({
+            stage: "sibling-connection",
+            databaseName: lifecycleRecords[1].databaseName,
+            value: { rows: [{ databaseName: lifecycleRecords[1].databaseName }] }
+          });
+      }
+      observations.push({ stage: "owned-absence", value: { rows: [{ count: "0" }] } });
+      const tap =
+        "TAP version 13\n# tests 2\n# pass 2\n# fail 0\n# skipped 0\n# todo 0\n# cancelled 0\n";
+      const counts = {
+        tests: 2,
+        passed: 2,
+        failed: 0,
+        skipped: 0,
+        cancelled: 0,
+        todo: 0,
+        topLevel: 2,
+        suites: 0
+      };
+      const lifecycle = {
+        status: "LIFECYCLE_OBSERVED",
+        operationRef,
+        sessionId: binding.sessionId,
+        sessionNonce: binding.sessionNonce,
+        destinationDigest: binding.destinationDigest,
+        creationExecutionRecordDigest: binding.creationExecutionRecordDigest,
+        snapshotExecutionRecordDigest: null,
+        promotionEligible: false,
+        observations,
+        originals: {
+          tap,
+          counts,
+          summaries: [{ success: true, counts }],
+          testEvents: [
+            "provisions, migrates, isolates, and exactly cleans concurrent PostgreSQL databases",
+            "uses the platform package-manager entrypoint for lifecycle migrations"
+          ].map((name) => ({
+            type: "test:pass",
+            data: {
+              name,
+              file: fileURLToPath(
+                new URL(
+                  "../../packages/release-foundation/test/database-lifecycle.postgres.test.mjs",
+                  import.meta.url
+                )
+              )
+            }
+          }))
+        }
+      };
+      const logSummary = summarizeDatabaseTestLog({ stdout: tap, stderr: "" });
+      const report = buildDatabaseSuiteReport({
+        execution,
+        operationId: operationRef,
+        provisioned: {
+          ...lifecycleRecords[0],
+          additionalDatabases: [{ ...lifecycleRecords[1], name: "sibling" }]
+        },
+        result: {
+          counts: databaseTestCounts(tap),
+          sanitizedLogDigest: sha256Canonical(logSummary),
+          roleBoundaries: ["target", "sibling"].map((database) => ({
+            database,
+            roleAttributes: {
+              superuser: false,
+              createdb: false,
+              createrole: false,
+              bypassrls: false
+            },
+            canCreateSchema: false,
+            schemaOwner: false,
+            objectOwner: false
+          }))
+        }
+      });
+      result = {
+        originals: lifecycle,
+        logSummary,
+        report,
+        migrationObservations: observations
+          .filter((item) => item.stage === "source-migration")
+          .map((item) => item.value)
+      };
+    }
+    suiteReadbacks.push({
+      status: "SOURCE_SUITE_OBSERVED",
+      attemptDigest: sha256Canonical(attempt),
+      operationRef,
+      sessionId: binding.sessionId,
+      destinationDigest: binding.destinationDigest,
+      ...result,
+      promotionEligible: false
+    });
+  }
+  const manifestReport = await runDatabaseManifest({
+    selections,
+    executeSuite: async (execution) =>
+      suiteReadbacks.find((item) => item.report.suiteId === execution.suiteId).report
+  });
+  return {
+    manifest,
+    plan,
+    discoveryDigest,
+    binding,
+    records,
+    lifecycleRecords,
+    attempt,
+    suiteReadbacks,
+    manifestReport
+  };
+}
+
+test("R3 source result reconstructs every suite from originals and rejects omissions or substitutions", async () => {
+  const { buildR3SourceResult } = await import("./r3-source-result.mjs");
+  const fixture = await sourceResultFixture();
+  const result = await buildR3SourceResult(fixture);
+  assert.deepEqual(result.manifestReport, fixture.manifestReport);
+  assert.equal(result.suiteReadbacks.length, manifest.suites.length);
+  assert.equal(result.postSchemaDigest, sha256Bytes(Buffer.from("schema-readback")));
+  for (const change of [
+    (value) => {
+      value.suiteReadbacks.pop();
+    },
+    (value) => {
+      value.suiteReadbacks[1] = value.suiteReadbacks[0];
+    },
+    (value) => {
+      value.suiteReadbacks[0].report.target.databaseOid = "9000";
+    },
+    (value) => {
+      value.suiteReadbacks[0].originals.processes[1].result.code = 2;
+    },
+    (value) => {
+      value.suiteReadbacks[0].originals.test.stdout =
+        "# tests 0\n# pass 0\n# fail 0\n# skipped 0\n# todo 0\n# cancelled 0\n";
+    },
+    (value) => {
+      value.suiteReadbacks[0].originals.context.profileDigest = `sha256:${"0".repeat(64)}`;
+    },
+    (value) => {
+      value.attempt.sessionNonce = "0".repeat(64);
+    },
+    (value) => {
+      value.suiteReadbacks.find(
+        (item) => item.originals.status === "LIFECYCLE_OBSERVED"
+      ).originals.observations = value.suiteReadbacks
+        .find((item) => item.originals.status === "LIFECYCLE_OBSERVED")
+        .originals.observations.filter((item) => item.stage !== "owned-absence");
+    },
+    (value) => {
+      value.manifestReport.counts.passed++;
+    },
+    (value) => {
+      const originals = value.suiteReadbacks.find(
+        (item) => item.originals.status === "LIFECYCLE_OBSERVED"
+      ).originals.originals;
+      originals.summaries[0].counts = { ...originals.counts, tests: 0 };
+    },
+    (value) => {
+      const suite = value.suiteReadbacks[0];
+      suite.originals.processes[3].result.stdout = "different schema";
+      suite.migrationObservations[0].postSchemaDigest = sha256Bytes(
+        Buffer.from("different schema")
+      );
+    }
+  ]) {
+    const value = structuredClone(fixture);
+    value.plan = fixture.plan;
+    change(value);
+    await assert.rejects(buildR3SourceResult(value), { code: "R3_SOURCE_RESULT_INVALID" });
+  }
+});
 
 test("R3 source suite reuses ordered migration, fixture and report flow for ordinary and clean databases", async () => {
   for (const suiteId of [manifest.suites[0].suiteId, "script.stage1-clean-acceptance.postgres"]) {

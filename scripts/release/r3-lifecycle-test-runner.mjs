@@ -106,6 +106,15 @@ function exactResults(originals) {
   );
 }
 
+export function assertR3LifecycleOriginals(originals) {
+  try {
+    if (exactResults(originals)) return;
+  } catch {
+    /* A missing original is not a successful run. */
+  }
+  throw failure(originals);
+}
+
 export async function executeR3LifecycleSuite({ adapter, signal, recheck } = {}) {
   if (invoked) throw failure(undefined);
   invoked = true;
@@ -159,7 +168,8 @@ export async function executeR3LifecycleSuite({ adapter, signal, recheck } = {})
     for await (const chunk of stream.compose(tap)) originals.tap += chunk;
 
     await recheck();
-    if (signal.aborted || !exactResults(originals)) throw failure(originals);
+    if (signal.aborted) throw failure(originals);
+    assertR3LifecycleOriginals(originals);
     return originals;
   } catch {
     throw failure(originals);

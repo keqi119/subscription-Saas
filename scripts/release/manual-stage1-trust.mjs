@@ -2273,6 +2273,7 @@ export async function openTrustedR3CreationSession(input) {
       "registerLifecycleTarget",
       "completeSnapshot",
       "verifySourceOriginals",
+      "custodySourceOriginals",
       "record",
       "close"
     ]);
@@ -2304,6 +2305,7 @@ export async function openTrustedR3CreationSession(input) {
       registerLifecycleTarget: (value) => action("registerLifecycleTarget", [value]),
       completeSnapshot: (...args) => action("completeSnapshot", args),
       verifySourceOriginals: (...args) => action("verifySourceOriginals", args),
+      custodySourceOriginals: (...args) => action("custodySourceOriginals", args),
       record: (kind, value) => action("record", [kind, value]),
       close: () => serial(finish)
     });

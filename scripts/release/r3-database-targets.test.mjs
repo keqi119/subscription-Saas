@@ -796,6 +796,14 @@ test("R3 source originals require matching fixed dual readbacks and reject later
   assert.equal(result.reconstructedDigest, sha256Canonical(reconstructed));
   assert.deepEqual(result.suiteReadbacks, reconstructed.suiteReadbacks);
   assert.ok(Object.isFrozen(result) && Object.isFrozen(result.suiteReadbacks));
+  assert.deepEqual(
+    result.originals,
+    [...originals].map(([name]) => {
+      const bytes = copies.get(`archive:${name}`);
+      return { name, digest: sha256Bytes(bytes), bytes: bytes.length };
+    })
+  );
+  assert.ok(Object.isFrozen(result.originals) && result.originals.every(Object.isFrozen));
   const firstSuite = fixture.suiteReadbacks[0].report.suiteId;
   for (const change of [
     (value) => value.set(`backup:${firstSuite}`, Buffer.from("{}")),

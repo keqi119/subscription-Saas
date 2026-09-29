@@ -401,7 +401,8 @@ export async function readR3SourceOriginals({
     });
     const names = ["attempt", ...selections.map(({ suiteId }) => suiteId), "manifest"];
     need(new Set(names).size === names.length);
-    const held = [];
+    const held = [],
+      originals = [];
     const values = new Map();
     for (const name of names) {
       let first;
@@ -417,6 +418,7 @@ export async function readR3SourceOriginals({
       const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(first));
       need(encodePrivateObservationJson(value).equals(first));
       values.set(name, value);
+      originals.push(Object.freeze({ name, digest: sha256Bytes(first), bytes: first.length }));
     }
     const attempt = values.get("attempt"),
       observed = values.get("manifest"),
@@ -468,7 +470,8 @@ export async function readR3SourceOriginals({
     return Object.freeze({
       readbackDigest: sha256Canonical(observed),
       reconstructedDigest: sha256Canonical(reconstructed),
-      suiteReadbacks: reconstructed.suiteReadbacks
+      suiteReadbacks: reconstructed.suiteReadbacks,
+      originals: Object.freeze(originals)
     });
   } catch {
     throw Object.assign(new Error(CODE), { code: CODE });

@@ -2914,7 +2914,7 @@ export async function launchR3TargetCreate(input) {
       manifestWriteAttempted = true;
       const readbackDigest = await sourceStore("manifest", value);
       await sourceCheck();
-      const verified = await session.verifySourceOriginals();
+      const verified = await session.custodySourceOriginals();
       if (
         verified.readbackDigest !== readbackDigest ||
         verified.reconstructedDigest !== sha256Canonical(reconstructed) ||
@@ -2927,6 +2927,7 @@ export async function launchR3TargetCreate(input) {
         status: value.status,
         attemptDigest,
         readbackDigest,
+        custodyRecordDigests: verified.custodyRecordDigests,
         counts: Object.freeze({ ...manifestReport.counts }),
         promotionEligible: false
       });

@@ -2638,6 +2638,7 @@ export async function openManualSession({
       consumerCompletionAttempted = false,
       targetLocksAttempted = false,
       completionAttempted = false,
+      sourceCustodyAttempted = false,
       consumerAuthorizationIssued = false,
       consumerAttempted = false,
       closeRef = null;
@@ -2656,6 +2657,139 @@ export async function openManualSession({
       requireThat(snapshotReader.inputId === request.input.inputReference, BINDING);
       await snapshotReader.assertConsumerBinding({ request, scope: identity.scope });
       await snapshotReader.recheck();
+    };
+    const verifySourceOriginalsInternal = async () => {
+      await active();
+      r3Live();
+      requireThat(
+        r3Context.scope.phase === "source" &&
+          r3Context.snapshotInputs &&
+          creationReceipt &&
+          creationCompletionDigest &&
+          lifecycleTargetLocks.size === 2 &&
+          (r3Context.scope.chain === "snapshot" ? consumerCompletionDigest : !consumerReceipt),
+        SESSION
+      );
+      const graph = await store.objects();
+      const initial = graph.get(creationReceipt.executionRecordDigest)?.value;
+      const completed = graph.get(creationCompletionDigest)?.value;
+      requireThat(
+        initial?.stage === "target-create" &&
+          completed?.stage === "target-create" &&
+          completed.status === "SUCCEEDED" &&
+          completed.predecessorExecutionRecordDigest === creationReceipt.executionRecordDigest,
+        SESSION
+      );
+      const request = graph.get(initial.requestDigest)?.value;
+      requireThat(request?.schemaVersion === "manual-runner-request.v4", SESSION);
+      const history = () =>
+        r3History(
+          request,
+          creationReceipt.executionRecordDigest,
+          null,
+          consumerReceipt ? creationCompletionDigest : null
+        );
+      await history();
+      const original = await r3StoredDestination(graph, completed.resultDigest, initial);
+      const destination = original.destination;
+      const repoRoot = r3Context.snapshotInputs.repoRoot;
+      const contractBytes = new Map();
+      const load = async (name) => {
+        const file = path.join(repoRoot, "release", "contracts", name);
+        const bytes = await store.fs.readFile(file);
+        requireThat(bytes.length <= LIMIT, EVIDENCE);
+        contractBytes.set(file, bytes);
+        return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      };
+      const discoveryDocument = await load("database-test-discovery.v1.json");
+      const exceptions = await load("database-test-exceptions.v1.json");
+      const external = await load("external-validation-applicability.v1.json");
+      const manifest = r3Context.destinationInputs.manifest;
+      const candidates = await discoverDatabaseTestCandidates(repoRoot, discoveryDocument);
+      const classification = classifyDatabaseTests(
+        candidates,
+        manifest.suites,
+        exceptions.exceptions,
+        external.records
+      );
+      requireThat(
+        classification.unclassified.length === 0 &&
+          (await scanDatabaseFrameworkBypasses(repoRoot, manifest)).length === 0,
+        EVIDENCE
+      );
+      const discovery = {
+        candidates,
+        classification,
+        discoveryDigest: sha256Canonical(discoveryDocument)
+      };
+      const postgres = destination.postgres;
+      const plan = freeze(snapshot(destination.databaseTargetSet.plan));
+      const names = new Set([
+        "attempt",
+        "manifest",
+        ...manifest.suites.map(({ suiteId }) => suiteId)
+      ]);
+      requireThat(
+        [...names].every((name) => /^[a-z0-9][a-z0-9.-]{0,127}$/u.test(name)),
+        EVIDENCE
+      );
+      const { readR3SourceOriginals } =
+        await import("../../../scripts/release/r3-source-result.mjs");
+      const result = await readR3SourceOriginals({
+        manifest,
+        plan,
+        discovery,
+        binding: {
+          operationRef: r3Context.creationSpec.operationRef,
+          chain: r3Context.scope.chain,
+          profileDigest,
+          sessionId,
+          sessionNonce,
+          sourceSha: r3Context.creationSpec.sourceSha,
+          destinationDigest: original.destinationDigest,
+          clusterFingerprint: sha256Canonical({
+            engineId: postgres.engineId,
+            systemIdentifier: postgres.postgres.systemIdentifier,
+            containerId: postgres.containerId,
+            imageDigest: postgres.imageDigest
+          }),
+          containerId: postgres.containerId,
+          creationExecutionRecordDigest: creationCompletionDigest,
+          snapshotExecutionRecordDigest: consumerCompletionDigest
+        },
+        records: destination.databaseTargetSet.records,
+        lifecycleRecords: [0, 1].map((shard) => lifecycleTargetLocks.get(shard).record),
+        readObservation: async ({ storageRole, name }) => {
+          requireThat(["archive", "backup"].includes(storageRole) && names.has(name), EVIDENCE);
+          return store.read(
+            path.join(
+              profile.storage[`${storageRole}Root`],
+              "inputs",
+              "r3",
+              r3Context.creationSpec.operationRef,
+              "observations",
+              "source",
+              name,
+              "readback.json"
+            ),
+            true,
+            33554432
+          );
+        },
+        recheck: async () => {
+          await active();
+          r3Live();
+          for (const [file, bytes] of contractBytes)
+            requireThat((await store.fs.readFile(file)).equals(bytes), EVIDENCE);
+        }
+      });
+      // A separate read of fixed source files is verification only: it does
+      // not write a terminal execution, sign a gate, release locks or claim
+      // that the originals have independent cloud retention/readback.
+      await history();
+      await active();
+      r3Live();
+      return freeze(result);
     };
     return freeze({
       ...identity,
@@ -3237,10 +3371,17 @@ export async function openManualSession({
       verifySourceOriginals(...args) {
         return serial(async () => {
           requireThat(args.length === 0, SESSION);
+          return verifySourceOriginalsInternal();
+        });
+      },
+      custodySourceOriginals(...args) {
+        return serial(async () => {
+          requireThat(args.length === 0, SESSION);
           await active();
           r3Live();
           requireThat(
-            r3Context.scope.phase === "source" &&
+            !sourceCustodyAttempted &&
+              r3Context.scope.phase === "source" &&
               r3Context.snapshotInputs &&
               creationReceipt &&
               creationCompletionDigest &&
@@ -3248,126 +3389,107 @@ export async function openManualSession({
               (r3Context.scope.chain === "snapshot" ? consumerCompletionDigest : !consumerReceipt),
             SESSION
           );
-          const graph = await store.objects();
-          const initial = graph.get(creationReceipt.executionRecordDigest)?.value;
-          const completed = graph.get(creationCompletionDigest)?.value;
-          requireThat(
-            initial?.stage === "target-create" &&
-              completed?.stage === "target-create" &&
-              completed.status === "SUCCEEDED" &&
-              completed.predecessorExecutionRecordDigest === creationReceipt.executionRecordDigest,
-            SESSION
-          );
-          const request = graph.get(initial.requestDigest)?.value;
-          requireThat(request?.schemaVersion === "manual-runner-request.v4", SESSION);
-          const history = () =>
-            r3History(
-              request,
-              creationReceipt.executionRecordDigest,
-              null,
-              consumerReceipt ? creationCompletionDigest : null
-            );
-          await history();
-          const original = await r3StoredDestination(graph, completed.resultDigest, initial);
-          const destination = original.destination;
-          const repoRoot = r3Context.snapshotInputs.repoRoot;
-          const contractBytes = new Map();
-          const load = async (name) => {
-            const file = path.join(repoRoot, "release", "contracts", name);
-            const bytes = await store.fs.readFile(file);
-            requireThat(bytes.length <= LIMIT, EVIDENCE);
-            contractBytes.set(file, bytes);
-            return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-          };
-          const discoveryDocument = await load("database-test-discovery.v1.json");
-          const exceptions = await load("database-test-exceptions.v1.json");
-          const external = await load("external-validation-applicability.v1.json");
-          const manifest = r3Context.destinationInputs.manifest;
-          const candidates = await discoverDatabaseTestCandidates(repoRoot, discoveryDocument);
-          const classification = classifyDatabaseTests(
-            candidates,
-            manifest.suites,
-            exceptions.exceptions,
-            external.records
-          );
-          requireThat(
-            classification.unclassified.length === 0 &&
-              (await scanDatabaseFrameworkBypasses(repoRoot, manifest)).length === 0,
-            EVIDENCE
-          );
-          const discovery = {
-            candidates,
-            classification,
-            discoveryDigest: sha256Canonical(discoveryDocument)
-          };
-          const postgres = destination.postgres;
-          const plan = freeze(snapshot(destination.databaseTargetSet.plan));
-          const names = new Set([
+          sourceCustodyAttempted = true;
+          const verified = await verifySourceOriginalsInternal();
+          const names = [
             "attempt",
-            "manifest",
-            ...manifest.suites.map(({ suiteId }) => suiteId)
-          ]);
+            ...r3Context.destinationInputs.manifest.suites.map(({ suiteId }) => suiteId),
+            "manifest"
+          ];
           requireThat(
-            [...names].every((name) => /^[a-z0-9][a-z0-9.-]{0,127}$/u.test(name)),
+            Array.isArray(verified.originals) &&
+              verified.originals.length === names.length &&
+              new Set(verified.originals.map(({ digest }) => digest)).size === names.length,
             EVIDENCE
           );
-          const { readR3SourceOriginals } =
-            await import("../../../scripts/release/r3-source-result.mjs");
-          const result = await readR3SourceOriginals({
-            manifest,
-            plan,
-            discovery,
-            binding: {
-              operationRef: r3Context.creationSpec.operationRef,
-              chain: r3Context.scope.chain,
-              profileDigest,
-              sessionId,
-              sessionNonce,
-              sourceSha: r3Context.creationSpec.sourceSha,
-              destinationDigest: original.destinationDigest,
-              clusterFingerprint: sha256Canonical({
-                engineId: postgres.engineId,
-                systemIdentifier: postgres.postgres.systemIdentifier,
-                containerId: postgres.containerId,
-                imageDigest: postgres.imageDigest
-              }),
-              containerId: postgres.containerId,
-              creationExecutionRecordDigest: creationCompletionDigest,
-              snapshotExecutionRecordDigest: consumerCompletionDigest
-            },
-            records: destination.databaseTargetSet.records,
-            lifecycleRecords: [0, 1].map((shard) => lifecycleTargetLocks.get(shard).record),
-            readObservation: async ({ storageRole, name }) => {
-              requireThat(["archive", "backup"].includes(storageRole) && names.has(name), EVIDENCE);
-              return store.read(
-                path.join(
-                  profile.storage[`${storageRole}Root`],
-                  "inputs",
-                  "r3",
-                  r3Context.creationSpec.operationRef,
-                  "observations",
-                  "source",
-                  name,
-                  "readback.json"
-                ),
-                true,
-                33554432
-              );
-            },
-            recheck: async () => {
+          const refs = verified.originals.map((ref, index) => {
+            exact(ref, ["name", "digest", "bytes"], EVIDENCE);
+            requireThat(
+              ref.name === names[index] &&
+                /^[a-z0-9][a-z0-9.-]{0,127}$/u.test(ref.name) &&
+                /^sha256:[0-9a-f]{64}$/u.test(ref.digest) &&
+                Number.isSafeInteger(ref.bytes) &&
+                ref.bytes > 0 &&
+                ref.bytes <= 33554432,
+              EVIDENCE
+            );
+            return ref;
+          });
+          const readSource = async (ref, role) => {
+            const bytes = await store.read(
+              path.join(
+                profile.storage[`${role}Root`],
+                "inputs",
+                "r3",
+                r3Context.creationSpec.operationRef,
+                "observations",
+                "source",
+                ref.name,
+                "readback.json"
+              ),
+              true,
+              33554432
+            );
+            requireThat(bytes.length === ref.bytes && sha256Bytes(bytes) === ref.digest, STORAGE);
+          };
+          const custodyRecordDigests = [];
+          const custodyCopies = [];
+          for (const ref of refs) {
+            for (const role of ["archive", "backup"]) {
               await active();
               r3Live();
-              for (const [file, bytes] of contractBytes)
-                requireThat((await store.fs.readFile(file)).equals(bytes), EVIDENCE);
+              await readSource(ref, role);
+              const observedAt = stamp();
+              const custody = {
+                ...common("custody", observedAt),
+                ownerId: profile.ownerId,
+                subjectDigest: ref.digest,
+                subjectType: "record",
+                purpose: `${role}-readback`,
+                outcome: "MATCH",
+                observedDigest: ref.digest,
+                observedAt,
+                storageRole: role,
+                retentionDays,
+                reasonCode: null
+              };
+              validateContract(recordSchema, custody);
+              const recordBytes = encodeManualJson(custody);
+              const recordDigest = sha256Bytes(recordBytes);
+              await active();
+              r3Live();
+              requireThat((await store.put(custody)).recordDigest === recordDigest, STORAGE);
+              await active();
+              r3Live();
+              await store.create(objectPath(profile.storage.backupRoot, recordDigest), recordBytes);
+              for (const copyRole of ["archive", "backup"])
+                requireThat(
+                  (
+                    await store.read(objectPath(profile.storage[`${copyRole}Root`], recordDigest))
+                  ).equals(recordBytes),
+                  STORAGE
+                );
+              custodyRecordDigests.push(recordDigest);
+              custodyCopies.push({ recordDigest, recordBytes });
             }
-          });
-          // A separate read of fixed source files is verification only: it does
-          // not write a terminal execution, sign a gate, release locks or claim
-          // that the originals have independent cloud retention/readback.
-          await history();
+          }
+          for (const { recordDigest, recordBytes } of custodyCopies)
+            for (const role of ["archive", "backup"])
+              requireThat(
+                (await store.read(objectPath(profile.storage[`${role}Root`], recordDigest))).equals(
+                  recordBytes
+                ),
+                STORAGE
+              );
           await active();
           r3Live();
-          return freeze(result);
+          requireThat(
+            sha256Canonical(await verifySourceOriginalsInternal()) === sha256Canonical(verified),
+            EVIDENCE
+          );
+          await active();
+          r3Live();
+          return freeze({ ...verified, custodyRecordDigests });
         });
       },
       record(kind, input) {

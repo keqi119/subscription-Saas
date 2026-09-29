@@ -2935,6 +2935,41 @@ function bootstrap() {
   );
   return production().openTrustedManualSession;
 }
+test("R3 SOURCE HISTORY API rejects authority and accessor inputs before native IO", async (t) => {
+  assert.equal(typeof production().readTrustedR3SourceCompletion, "function");
+  let effects = 0;
+  const denied = () => {
+    effects++;
+    throw new Error("unexpected IO or accessor");
+  };
+  for (const name of ["open", "lstat", "readFile", "writeFile"]) t.mock.method(fs, name, denied);
+  t.mock.method(childProcess, "execFile", denied);
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const input = {
+    repoRoot: path.resolve("unused"),
+    operationRef: randomUUID(),
+    executionRecordDigest: `sha256:${"a".repeat(64)}`
+  };
+  for (const value of [
+    { ...input, privateKey: "caller-key" },
+    { ...input, scope: {} },
+    { ...input, sourceCompletion: {} },
+    { ...input, verified: true },
+    { ...input, historical: true },
+    { ...input, now: "2026-01-01T00:00:00.000Z" },
+    { ...input, operationRef: "../escape" },
+    { ...input, executionRecordDigest: "../escape" },
+    Object.defineProperty({ ...input }, "executionRecordDigest", { get: denied, enumerable: true })
+  ])
+    await assert.rejects(production().readTrustedR3SourceCompletion(value), {
+      code: "R3_SOURCE_HISTORY_UNAVAILABLE"
+    });
+  assert.equal(effects, 0);
+});
 test("R3 SESSION API rejects overrides and accessors before native IO", async (t) => {
   assert.equal(typeof production().openTrustedR3CreationSession, "function");
   let effects = 0;
@@ -4624,6 +4659,102 @@ for (const mode of ["accepted", "dropped", "evidence", "closing", "lifecycle-loc
           await launched.close();
           assert.equal((await fs.readdir(lockRoot)).length, 43);
           assert.equal((await fs.readFile(f.forwardKey)).length, 0);
+          f.apiRun.status = "completed";
+          f.apiRun.conclusion = "success";
+          f.apiJob.status = "completed";
+          f.apiJob.conclusion = "success";
+          f.apiJob.completed_at = new Date().toISOString();
+          // The same archived success remains readable after its original job
+          // and session end. Current execution admission must still refuse it.
+          await assert.rejects(trust.readFixedR3JobAdmission(input), {
+            code: "R3_JOB_ADMISSION_UNAVAILABLE"
+          });
+          t.mock.timers.enable({ apis: ["Date"], now: Date.parse(f.profile.expiresAt) + 1000 });
+          await assert.rejects(trust.loadFixedManualProfile({ repoRoot: f.repoRoot }), {
+            code: "H1_INPUT_UNAVAILABLE"
+          });
+          const readTree = async (root) => {
+            const result = [];
+            const visit = async (directory) => {
+              for (const name of (await fs.readdir(directory)).sort()) {
+                const file = path.join(directory, name),
+                  stat = await fs.lstat(file);
+                if (stat.isDirectory()) await visit(file);
+                else result.push([path.relative(root, file), sha256Bytes(await fs.readFile(file))]);
+              }
+            };
+            await visit(root);
+            return result;
+          };
+          const roots = ["journal", "archive", "backup"].map(
+              (name) => f.profile.storage[`${name}Root`]
+            ),
+            before = await Promise.all(roots.map(readTree)),
+            originalOpen = fs.open,
+            originalRead = fs.readFile,
+            originalWrite = fs.writeFile;
+          let writes = 0,
+            keyReads = 0;
+          const denied = () => {
+            writes++;
+            throw new Error("historical reader attempted a write");
+          };
+          const readonlyMocks = [
+            ...["writeFile", "appendFile", "mkdir", "unlink", "rename", "copyFile", "rm"].map(
+              (name) => t.mock.method(fs, name, denied)
+            ),
+            t.mock.method(fs, "readFile", (file, ...args) => {
+              if (file === path.join(f.profile.storage.keyRoot, f.profile.storage.keyRef)) {
+                keyReads++;
+                throw new Error("historical reader attempted to read the signing key");
+              }
+              return originalRead(file, ...args);
+            }),
+            t.mock.method(fs, "open", (file, flags, ...args) => {
+              if (file === path.join(f.profile.storage.keyRoot, f.profile.storage.keyRef)) {
+                keyReads++;
+                throw new Error("historical reader attempted to open the signing key");
+              }
+              assert.ok(
+                flags === "r" ||
+                  (typeof flags === "number" && (flags & 3) === 0 && (flags & 64) === 0)
+              );
+              return originalOpen(file, flags, ...args);
+            })
+          ];
+          syncBuiltinESMExports();
+          let historical;
+          try {
+            historical = await trust.readTrustedR3SourceCompletion({
+              ...input,
+              executionRecordDigest: sourceTerminal.executionRecordDigest
+            });
+            assert.equal(historical.operationRef, f.operationRef);
+            assert.equal(historical.sessionId, launched.session.sessionId);
+            assert.equal(historical.resultDigest, sourceTerminal.resultDigest);
+            assert.equal(
+              historical.acknowledgementRecordDigest,
+              acknowledged.acknowledgementRecordDigest
+            );
+            assert.equal(historical.promotionEligible, false);
+            assert.equal(historical.sign, undefined);
+            assert.equal(historical.consume, undefined);
+            await historical.recheck();
+            assert.deepEqual(await Promise.all(roots.map(readTree)), before);
+            assert.equal(writes, 0);
+            assert.equal(keyReads, 0);
+            await originalWrite(
+              backupAcknowledgement,
+              Buffer.concat([acknowledgementBytes, Buffer.from(" ")])
+            );
+            await assert.rejects(historical.recheck(), { code: "R3_SOURCE_HISTORY_UNAVAILABLE" });
+          } finally {
+            await historical?.close();
+            for (const mock of readonlyMocks) mock.mock.restore();
+            syncBuiltinESMExports();
+            t.mock.timers.reset();
+            await fs.writeFile(backupAcknowledgement, acknowledgementBytes, { mode: 0o600 });
+          }
           if (handlerError) throw handlerError;
           assert.equal(received, 1);
           return;

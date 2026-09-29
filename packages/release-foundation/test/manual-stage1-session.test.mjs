@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { encodeManualJson } from "../src/manual-stage1-contracts.mjs";
 import { sha256Bytes, sha256Canonical } from "../src/digest.mjs";
 import { openManualSession } from "../src/manual-stage1-session.mjs";
+import * as manualSessions from "../src/manual-stage1-session.mjs";
 import { deterministicPlanDigest } from "../src/proof-builders.mjs";
 import { assessManualRunnerEvidence } from "../src/manual-runner-evidence.mjs";
 
@@ -919,6 +920,27 @@ const sessionKeys = ["sessionId", "sessionNonce"];
 const operationKeys = [...sessionKeys, "operationId", "idempotencyKey"];
 const aKeys = ["profileDigest", ...operationKeys, "attemptId", "runId"];
 const sessionPolicies = new WeakMap();
+
+test("R3 historical reader refuses an absent terminal without opening a session or writing", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const before = await storedHistorySnapshot(f);
+  const ownerObservation = pick(f.ownerObservation, ["ownerId", "principal", "observedAt"]);
+  assert.equal(typeof manualSessions.readManualR3SourceHistory, "function");
+  await assert.rejects(
+    manualSessions.readManualR3SourceHistory({
+      profile: f.profile,
+      ownerObservation,
+      repoRoot: path.resolve("."),
+      terminalExecutionRecordDigest: D,
+      now: () => NOW,
+      io: f.io
+    }),
+    { code: "MANUAL_SESSION_UNVERIFIED" }
+  );
+  assert.deepEqual(await storedHistorySnapshot(f), before);
+  assert.deepEqual(await fs.readdir(path.join(f.profile.storage.journalRoot, "locks")), []);
+  assert.deepEqual(await fs.readdir(path.join(f.profile.storage.journalRoot, "checkpoints")), []);
+});
 
 // Only the expensive OS ACL observer is doubled; all paths, locks, handles,
 // create-only writes, readback, enumeration and cryptography are real.

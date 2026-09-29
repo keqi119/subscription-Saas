@@ -412,6 +412,12 @@ function validateOwner(value, binding = false) {
 }
 
 export async function loadFixedManualProfile(input) {
+  return loadManualProfile(input, true);
+}
+
+// Only the historical reader below uses event-time profile validity. Live
+// callers cannot select this policy through their input or exported API.
+async function loadManualProfile(input, requireCurrentValidity) {
   const opened = [];
   try {
     exact(input, ["repoRoot"]);
@@ -424,9 +430,11 @@ export async function loadFixedManualProfile(input) {
     };
     const profile = json(await read(path.join(repoRoot, PROFILE), sourceOptions));
     validateContract("manual-stage1-profile.v2", profile);
-    requireThat(
-      instant(profile.validFrom) <= Date.now() && Date.now() < instant(profile.expiresAt)
-    );
+    requireThat(instant(profile.validFrom) < instant(profile.expiresAt));
+    if (requireCurrentValidity)
+      requireThat(
+        instant(profile.validFrom) <= Date.now() && Date.now() < instant(profile.expiresAt)
+      );
     requireThat(
       /^-----BEGIN PUBLIC KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-----END PUBLIC KEY-----\r?\n?$/u.test(
         profile.publicKeyPem
@@ -949,10 +957,14 @@ async function successfulRun(proof, verified) {
 }
 
 export async function verifyManualBuild(input) {
+  return verifyManualBuildInput(input, true);
+}
+
+async function verifyManualBuildInput(input, requireCurrentValidity) {
   const opened = [];
   try {
     exact(input, ["proofBytes", "materialBytes", "repoRoot"]);
-    const profile = await loadFixedManualProfile({ repoRoot: input.repoRoot });
+    const profile = await loadManualProfile({ repoRoot: input.repoRoot }, requireCurrentValidity);
     const proofBytes = inputBytes(input.proofBytes),
       materialBytes = inputBytes(input.materialBytes);
     const proofRawDigest = sha256Bytes(proofBytes),
@@ -1080,8 +1092,9 @@ export async function verifyManualBuild(input) {
     for (const item of opened) await item.recheck();
     await inspectSource();
     requireThat(
-      sha256Canonical(await loadFixedManualProfile({ repoRoot: input.repoRoot })) ===
-        sha256Canonical(profile)
+      sha256Canonical(
+        await loadManualProfile({ repoRoot: input.repoRoot }, requireCurrentValidity)
+      ) === sha256Canonical(profile)
     );
     return Object.freeze({
       buildProofDigest,
@@ -1100,6 +1113,10 @@ export async function verifyManualBuild(input) {
 // Fixed R3 policy plus the existing H2 verification. This holds trusted inputs;
 // it does not create a session, grant a capability or admit a hosted destination.
 export async function readFixedR3TargetPolicy(input) {
+  return readR3TargetPolicyInput(input, true);
+}
+
+async function readR3TargetPolicyInput(input, requireCurrentValidity) {
   const code = "R3_TARGET_POLICY_INPUT_UNAVAILABLE";
   const opened = [];
   let closed = false,
@@ -1121,7 +1138,7 @@ export async function readFixedR3TargetPolicy(input) {
       proofBytes = inputBytes(input.proofBytes),
       materialBytes = inputBytes(input.materialBytes);
     requireThat(process.platform === "linux");
-    const profile = await loadFixedManualProfile({ repoRoot }),
+    const profile = await loadManualProfile({ repoRoot }, requireCurrentValidity),
       profileDigest = sha256Canonical(profile),
       actual = await actualHost(),
       archiveRoot = profile.storage.archiveRoot;
@@ -1179,19 +1196,26 @@ export async function readFixedR3TargetPolicy(input) {
       path.join(buildRoot, `${proofRawDigest.slice(7)}.custody-receipt.retention90.v1.json`),
       privateOptions
     );
-    const build = await verifyManualBuild({ repoRoot, proofBytes, materialBytes }),
+    const build = await verifyManualBuildInput(
+        { repoRoot, proofBytes, materialBytes },
+        requireCurrentValidity
+      ),
       proof = json(proofBytes);
     requireThat(build.custodyReceiptRawDigest === sha256Bytes(receiptBytes));
     const checkWindow = () => {
       const now = Date.now();
-      requireThat(instant(profile.validFrom) <= now && now < instant(profile.expiresAt));
+      if (requireCurrentValidity)
+        requireThat(instant(profile.validFrom) <= now && now < instant(profile.expiresAt));
     };
     const recheck = async () => {
       try {
         requireThat(!closed);
         checkWindow();
         requireThat(equal(await actualHost(), actual));
-        requireThat(sha256Canonical(await loadFixedManualProfile({ repoRoot })) === profileDigest);
+        requireThat(
+          sha256Canonical(await loadManualProfile({ repoRoot }, requireCurrentValidity)) ===
+            profileDigest
+        );
         requireThat(
           (await computeRepositoryContract(repoRoot)).digest ===
             proof.identity.repositoryContractDigest
@@ -1482,6 +1506,33 @@ function r3JobDescriptor(value, creation) {
   );
 }
 
+function r3JobApiIdentity(admission, run, job) {
+  const { ci, host } = admission;
+  requireThat(
+    run.id === Number(ci.runId) &&
+      run.run_attempt === 1 &&
+      run.head_sha === admission.sourceSha &&
+      run.head_branch === "main" &&
+      run.path === ci.callerWorkflowPath &&
+      run.html_url === `https://github.com/${REPOSITORY}/actions/runs/${ci.runId}`
+  );
+  for (const repo of [run.repository, run.head_repository])
+    requireThat(repo?.full_name === REPOSITORY && repo.id === Number(ci.repositoryId));
+  requireThat(
+    job.id === Number(ci.jobId) &&
+      job.run_id === Number(ci.runId) &&
+      job.head_sha === admission.sourceSha &&
+      job.name === ci.jobName &&
+      job.runner_id === host.runnerId &&
+      job.runner_name === host.runnerName &&
+      (job.run_attempt === undefined || job.run_attempt === 1) &&
+      typeof job.started_at === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(job.started_at) &&
+      Number.isFinite(Date.parse(job.started_at)) &&
+      Date.parse(job.started_at) <= instant(admission.generatedAt)
+  );
+}
+
 // A signed hosted-job declaration plus independent current API readbacks.
 // This returns evidence, not a manual consume decision or a connected target.
 export async function readFixedR3JobAdmission(input) {
@@ -1565,35 +1616,14 @@ export async function readFixedR3JobAdmission(input) {
         const runBytes = await api(`repos/${REPOSITORY}/actions/runs/${ci.runId}/attempts/1`),
           jobBytes = await api(`repos/${REPOSITORY}/actions/jobs/${ci.jobId}`),
           run = json(runBytes),
-          job = json(jobBytes),
-          host = admission.host;
+          job = json(jobBytes);
+        r3JobApiIdentity(admission, run, job);
         requireThat(
-          run.id === Number(ci.runId) &&
-            run.run_attempt === 1 &&
-            run.head_sha === admission.sourceSha &&
-            run.head_branch === "main" &&
-            run.status === "in_progress" &&
+          run.status === "in_progress" &&
             run.conclusion === null &&
-            run.path === ci.callerWorkflowPath &&
-            run.html_url === `https://github.com/${REPOSITORY}/actions/runs/${ci.runId}`
-        );
-        for (const repo of [run.repository, run.head_repository])
-          requireThat(repo?.full_name === REPOSITORY && repo.id === Number(ci.repositoryId));
-        requireThat(
-          job.id === Number(ci.jobId) &&
-            job.run_id === Number(ci.runId) &&
-            job.head_sha === admission.sourceSha &&
-            job.name === ci.jobName &&
-            job.runner_id === host.runnerId &&
-            job.runner_name === host.runnerName &&
             job.status === "in_progress" &&
             job.conclusion === null &&
-            job.completed_at === null &&
-            (job.run_attempt === undefined || job.run_attempt === 1) &&
-            typeof job.started_at === "string" &&
-            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(job.started_at) &&
-            Number.isFinite(Date.parse(job.started_at)) &&
-            Date.parse(job.started_at) <= instant(admission.generatedAt)
+            job.completed_at === null
         );
         await held.recheck();
         await creation.recheck();
@@ -1634,6 +1664,219 @@ export async function readFixedR3JobAdmission(input) {
       sourceSha: creation.sourceSha,
       verifiedAttestation,
       ...readback,
+      recheck,
+      close
+    });
+  } catch {
+    await close();
+    fail(code);
+  }
+}
+
+// Reconstruct an acknowledged source from retained originals. This never
+// opens an execution session, reads the signing key, or acquires target locks.
+export async function readTrustedR3SourceCompletion(input) {
+  const code = "R3_SOURCE_HISTORY_UNAVAILABLE",
+    opened = [],
+    policies = new Map(),
+    jobs = [];
+  let history,
+    closed = false,
+    closing;
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    closing = (async () => {
+      const outcomes = await Promise.allSettled([
+        ...opened.map((item) => item.close()),
+        ...[...policies.values()].map((item) => item.close()),
+        ...(history ? [history.close()] : [])
+      ]);
+      for (const item of opened) item.bytes.fill(0);
+      if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
+    })();
+    return closing;
+  };
+  try {
+    const { repoRoot, operationRef } = r3EvidenceSelector(input, ["executionRecordDigest"]);
+    requireThat(
+      typeof input.executionRecordDigest === "string" && DIGEST.test(input.executionRecordDigest)
+    );
+    const profile = await loadManualProfile({ repoRoot }, false),
+      profileDigest = sha256Canonical(profile),
+      actual = await actualHost(),
+      archiveRoot = profile.storage.archiveRoot,
+      environment = fixedProcessEnvironment("gh");
+    const { readManualR3SourceHistory } =
+      await import("../../packages/release-foundation/src/manual-stage1-session.mjs");
+    history = await readManualR3SourceHistory({
+      profile,
+      ownerObservation: {
+        ownerId: profile.ownerId,
+        principal: actual.principal,
+        observedAt: new Date().toISOString()
+      },
+      repoRoot,
+      terminalExecutionRecordDigest: input.executionRecordDigest,
+      now: () => new Date().toISOString()
+    });
+    requireThat(
+      history.profileDigest === profileDigest &&
+        history.operationRef === operationRef &&
+        history.executionRecordDigest === input.executionRecordDigest &&
+        history.scope.phase === "source" &&
+        history.promotionEligible === false &&
+        DIGEST.test(history.resultDigest) &&
+        DIGEST.test(history.acknowledgementRecordDigest) &&
+        Array.isArray(history.verifiedContexts) &&
+        history.verifiedContexts.length > 0
+    );
+    const read = async (file) => {
+      requireThat(!closed);
+      const held = await openInput(file, { principal: actual.principal, privateRoot: archiveRoot });
+      opened.push(held);
+      requireThat(held.bytes.length > 0 && !closed);
+      return held.bytes;
+    };
+    const contexts = new Set();
+    for (const context of history.verifiedContexts) {
+      const { scope } = context;
+      requireThat(UUID.test(context.operationRef) && !contexts.has(context.operationRef));
+      contexts.add(context.operationRef);
+      const root = path.join(archiveRoot, "inputs", "r3", context.operationRef),
+        specBytes = await read(path.join(root, "creation-spec.json")),
+        spec = json(specBytes, true),
+        admissionPath = path.join(root, "job-admission.json"),
+        admissionBytes = await read(admissionPath),
+        admission = json(admissionBytes, true);
+      r3CreationSpec(spec, context.operationRef, profile);
+      requireThat(
+        sha256Bytes(specBytes) === scope.creationSpecDigest &&
+          sha256Bytes(admissionBytes) === scope.jobAdmissionDigest &&
+          ["sourceSha", "buildProofDigest", "targetPolicyDigest", "phase", "chain"].every(
+            (field) => spec[field] === scope[field]
+          )
+      );
+      const policyKey = `${spec.proofRawDigest}/${spec.materialRawDigest}`;
+      if (!policies.has(policyKey)) {
+        const buildRoot = path.join(archiveRoot, "inputs", "build"),
+          proofBytes = await read(
+            path.join(buildRoot, `${spec.proofRawDigest.slice(7)}.proof.json`)
+          ),
+          materialBytes = await read(
+            path.join(buildRoot, `${spec.materialRawDigest.slice(7)}.material.json`)
+          );
+        requireThat(
+          sha256Bytes(proofBytes) === spec.proofRawDigest &&
+            sha256Bytes(materialBytes) === spec.materialRawDigest
+        );
+        policies.set(
+          policyKey,
+          await readR3TargetPolicyInput({ repoRoot, proofBytes, materialBytes }, false)
+        );
+      }
+      const policyInput = policies.get(policyKey),
+        roots = policyInput.policy.workspace,
+        workspace = spec.workspace;
+      requireThat(
+        spec.buildProofDigest === policyInput.build.buildProofDigest &&
+          spec.sourceSha === policyInput.sourceSha &&
+          spec.profileDigest === policyInput.profileDigest &&
+          spec.targetPolicyDigest === policyInput.policyRawDigest &&
+          workspace.backingFile === path.posix.join(roots.backingRoot, `${workspace.id}.luks`) &&
+          workspace.mountPath === path.posix.join(roots.mountRoot, workspace.id) &&
+          workspace.keyFile === path.posix.join(roots.keyRoot, `${workspace.id}.key`) &&
+          workspace.mapperName === `${roots.mapperPrefix}${workspace.id}`
+      );
+      r3JobDescriptor(admission, {
+        spec,
+        creationSpecDigest: scope.creationSpecDigest,
+        policy: policyInput.policy
+      });
+      const latestExecutionAt = instant(context.latestExecutionAt);
+      requireThat(
+        instant(profile.validFrom) <= instant(spec.createdAt) &&
+          instant(spec.createdAt) <= instant(admission.generatedAt) &&
+          instant(admission.generatedAt) <= latestExecutionAt &&
+          latestExecutionAt < instant(admission.expiresAt) &&
+          instant(admission.expiresAt) <= instant(spec.expiresAt) &&
+          instant(spec.expiresAt) <= instant(profile.expiresAt) &&
+          latestExecutionAt <= Date.now()
+      );
+      const ci = admission.ci,
+        attestationBytes = await processOutput(
+          "gh",
+          attestationArgs(admissionPath, admission.sourceSha, ci.workflowPath),
+          { env: environment }
+        ),
+        verified = attestation(
+          attestationBytes,
+          sha256Bytes(admissionBytes),
+          admission.sourceSha,
+          Math.floor(instant(admission.generatedAt) / 1000) * 1000,
+          { signer: ci.workflowPath, caller: ci.callerWorkflowPath, repositoryId: ci.repositoryId }
+        );
+      requireThat(verified.workflowRunId === ci.runId);
+      jobs.push({ admission, latestExecutionAt });
+    }
+    requireThat(contexts.has(operationRef));
+    const api = (endpoint) => processOutput("gh", ["api", endpoint], { env: environment });
+    const recheck = async () => {
+      try {
+        requireThat(!closed);
+        requireThat(equal(await actualHost(), actual));
+        requireThat(
+          sha256Canonical(await loadManualProfile({ repoRoot }, false)) === profileDigest
+        );
+        for (const policy of policies.values()) await policy.recheck();
+        for (const { admission, latestExecutionAt } of jobs) {
+          const ci = admission.ci,
+            run = json(await api(`repos/${REPOSITORY}/actions/runs/${ci.runId}/attempts/1`)),
+            job = json(await api(`repos/${REPOSITORY}/actions/jobs/${ci.jobId}`));
+          r3JobApiIdentity(admission, run, job);
+          for (const value of [run, job])
+            requireThat(
+              (value.status === "in_progress" && value.conclusion === null) ||
+                (value.status === "completed" &&
+                  typeof value.conclusion === "string" &&
+                  value.conclusion.length > 0)
+            );
+          requireThat(run.status !== "completed" || job.status === "completed");
+          if (job.status === "in_progress") requireThat(job.completed_at === null);
+          else {
+            requireThat(
+              typeof job.completed_at === "string" &&
+                /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(job.completed_at)
+            );
+            const completedAt = Date.parse(job.completed_at);
+            // GitHub timestamps may have only second precision.
+            const precision = job.completed_at.includes(".") ? 0 : 999;
+            requireThat(
+              Number.isFinite(completedAt) &&
+                latestExecutionAt <= completedAt + precision &&
+                completedAt <= Date.now()
+            );
+          }
+        }
+        for (const item of opened) await item.recheck();
+        await history.recheck();
+        requireThat(!closed);
+      } catch {
+        await close();
+        fail(code);
+      }
+    };
+    await recheck();
+    return Object.freeze({
+      profileDigest,
+      operationRef,
+      sessionId: history.sessionId,
+      sessionNonce: history.sessionNonce,
+      scope: history.scope,
+      executionRecordDigest: history.executionRecordDigest,
+      resultDigest: history.resultDigest,
+      acknowledgementRecordDigest: history.acknowledgementRecordDigest,
+      promotionEligible: false,
       recheck,
       close
     });

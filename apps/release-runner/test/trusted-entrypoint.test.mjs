@@ -5,6 +5,31 @@ import { sha256Canonical } from "@subscription-saas/release-foundation";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 
+test("dispatches the closed final database envelope and refuses unsupported versions", async () => {
+  const { finalDatabaseEnvelopeFixture } = await import("./fixtures/final-database-envelope.mjs");
+  const { runTrustedEntrypoint } = await import("../src/trusted-entrypoint.mjs");
+  const { envelope } = await finalDatabaseEnvelopeFixture();
+  let dispatched = 0;
+  const adapters = {
+    readEnvelope: async () => envelope,
+    runDatabaseTests: async (received) => {
+      assert.equal(received.schemaVersion, "database-test-launch-envelope.v2");
+      dispatched++;
+      return { terminalStatus: "NOT_RUN" };
+    }
+  };
+  assert.deepEqual(
+    await runTrustedEntrypoint({ envelopeFile: "/run/launch/final.json", adapters }),
+    { terminalStatus: "NOT_RUN" }
+  );
+  assert.equal(dispatched, 1);
+  envelope.schemaVersion = "database-test-launch-envelope.v3";
+  await assert.rejects(runTrustedEntrypoint({ envelopeFile: "/run/launch/final.json", adapters }), {
+    code: "DATABASE_TEST_ENVELOPE_VERSION_UNSUPPORTED"
+  });
+  assert.equal(dispatched, 1);
+});
+
 function validEnvelope() {
   const request = {
     buildProofDigest: digest("a"),

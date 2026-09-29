@@ -18,6 +18,7 @@ import test from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 
 import { compileAllSchemas, sha256Canonical, validateContract } from "../src/index.mjs";
+import { finalDatabaseEnvelopeFixture } from "../../../apps/release-runner/test/fixtures/final-database-envelope.mjs";
 
 test("R3 fixed target policy preserves H1 and restricts hosted destination topology", async () => {
   const read = async (name) =>
@@ -152,6 +153,47 @@ test("compiles every registered release Schema", () => {
   assert.ok(result.schemaIds.length >= 10);
   assert.ok(result.schemaIds.includes("build-proof.v1"));
   assert.ok(result.schemaIds.includes("controlled-target-record.v1"));
+});
+
+test("registers the closed final database launch envelope v2", () => {
+  assert.ok(compileAllSchemas().schemaIds.includes("database-test-launch-envelope.v2"));
+});
+
+test("final database envelope v2 accepts both chains and closes nested launch facts", async () => {
+  for (const chain of ["fresh", "snapshot"]) {
+    const { envelope, manifest } = await finalDatabaseEnvelopeFixture(chain);
+    assert.doesNotThrow(() => validateContract("database-test-launch-envelope.v2", envelope));
+    assert.equal(Object.keys(envelope.suiteAssignments).length, manifest.suites.length);
+    const reject = (change) => {
+      const altered = structuredClone(envelope);
+      change(altered);
+      assert.throws(() => validateContract("database-test-launch-envelope.v2", altered), {
+        code: "CONTRACT_SCHEMA_INVALID"
+      });
+    };
+    const ordinary = manifest.suites.find(({ suiteId }) =>
+      Object.hasOwn(envelope.suiteAssignments[suiteId].databases ?? {}, "target")
+    ).suiteId;
+    const lifecycle = "node.release-database-lifecycle.postgres";
+    reject((value) => {
+      value.phase = "source";
+    });
+    reject((value) => {
+      value.target = value.suiteAssignments[ordinary].databases.target;
+    });
+    reject((value) => {
+      value.suiteAssignments[lifecycle].reservations[0].databaseOid = "3001";
+    });
+    reject((value) => {
+      value.suiteAssignments[ordinary].databases.target.rawPassword = "synthetic-password";
+    });
+    reject((value) => {
+      value.suiteAssignments[ordinary].databases.target.targetLockDigest = "invalid";
+    });
+    reject((value) => {
+      value.postgres.futureField = true;
+    });
+  }
 });
 
 test("accepts a strict build proof", () => {

@@ -19,6 +19,7 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "apps/release-runner/src/cli.mjs",
   "apps/release-runner/src/database-runtime-adapter.mjs",
   "apps/release-runner/src/database-test-entrypoint.mjs",
+  "apps/release-runner/src/database-test-envelope.mjs",
   "apps/release-runner/src/manual-command-adapter.mjs",
   "apps/release-runner/src/manual-target-observer.mjs",
   "apps/release-runner/src/postgres-connector.mjs",

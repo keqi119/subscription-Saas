@@ -17,6 +17,10 @@ import {
 } from "../../../scripts/release/database-test-launcher-runtime.mjs";
 import { runnerError } from "./error-codes.mjs";
 import { resolveRunnerReference } from "./reference-paths.mjs";
+import {
+  validateDatabaseTestEnvelopeVersion,
+  validateFinalDatabaseTestAssignments
+} from "./database-test-envelope.mjs";
 
 const databaseEnvironmentPattern =
   /^(?:DATABASE_URL|DIRECT_URL|POSTGRES_URL|STAGING_DATABASE_URL|PG[A-Z0-9_]*)$/iu;
@@ -180,6 +184,8 @@ export async function executeFinalDatabaseManifest({
   executeProcess = runProcess,
   environment = process.env
 }) {
+  if (envelope?.schemaVersion === "database-test-launch-envelope.v2")
+    throw runnerError("DATABASE_TEST_FINAL_EXECUTOR_UNAVAILABLE");
   if (typeof connectDatabase !== "function") {
     throw runnerError("DATABASE_TEST_EXECUTOR_UNAVAILABLE");
   }
@@ -440,7 +446,27 @@ export async function executeDatabaseTestEnvelope({
   readCredential,
   executeManifest
 }) {
-  validateContract("database-test-launch-envelope.v1", envelope);
+  const version = validateDatabaseTestEnvelopeVersion(envelope);
+  if (version === "database-test-launch-envelope.v2") {
+    const held = structuredClone(envelope);
+    const [manifest, discovery] = await Promise.all([
+      readFile(resolveRunnerReference(held.databaseTestManifestReference, roots), "utf8").then(
+        JSON.parse
+      ),
+      readFile(
+        new URL("../../../release/contracts/database-test-discovery.v1.json", import.meta.url),
+        "utf8"
+      ).then(JSON.parse)
+    ]);
+    validateFinalDatabaseTestAssignments({
+      envelope: held,
+      manifest,
+      discoveryDigest: sha256Canonical(discovery)
+    });
+    // The final-image migration/lifecycle executor must be connected before
+    // this input may release credentials or enter a test execution path.
+    throw runnerError("DATABASE_TEST_FINAL_EXECUTOR_UNAVAILABLE");
+  }
   validateContract("build-proof.v1", envelope.buildProof);
   if (
     envelope.buildProofDigest !== sha256Canonical(envelope.buildProof) ||

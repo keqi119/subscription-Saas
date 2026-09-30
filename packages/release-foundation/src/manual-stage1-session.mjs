@@ -36,6 +36,7 @@ import {
 import { deterministicPlanDigest } from "./proof-builders.mjs";
 import { planManualR3TargetLocks } from "./manual-r3-target-locks.mjs";
 import { assertR3MatchingSources } from "./manual-r3-source-matching.mjs";
+import { selectSingleR3FinalUse } from "./manual-r3-final-history.mjs";
 import { readManualRevocationHistory } from "./manual-revocation-history.mjs";
 import { suiteDatabaseName } from "./database-target.mjs";
 import { verifyR3HostedEvidence, verifyR3HostedCleanupEvidence } from "./r3-hosted-evidence.mjs";
@@ -3299,6 +3300,198 @@ export async function readManualR3SourceHistory(input) {
       resultDigest: selected.resultDigest,
       acknowledgementRecordDigest: sha256Canonical(acknowledgements[0]),
       promotionEligible: false,
+      verifiedContexts,
+      recheck: async () => {
+        stamp();
+        await capture.recheck();
+      },
+      close: async () => capture.close()
+    });
+  } catch (error) {
+    capture.close();
+    throw error;
+  }
+}
+
+// A final gate may describe one completed native attempt only after replaying
+// the entire retained graph. An unresolved historical candidate makes that
+// replay fail; a second completed candidate for the same CI/source identity
+// also fails here. Neither case is represented as an empty retry history.
+export async function readManualR3FinalHistory(input) {
+  exact(
+    input,
+    [
+      "profile",
+      "ownerObservation",
+      "repoRoot",
+      "terminalExecutionRecordDigest",
+      "now",
+      ...(input.io === undefined ? [] : ["io"])
+    ],
+    SESSION
+  );
+  const profile = snapshot(input.profile),
+    owner = snapshot(input.ownerObservation);
+  validateContract("manual-stage1-profile.v2", profile);
+  exact(owner, ["ownerId", "principal", "observedAt"], SESSION);
+  exact(
+    owner.principal,
+    owner.principal.platform === "win32" ? ["platform", "sid"] : ["platform", "uid"],
+    SESSION
+  );
+  const { repoRoot, terminalExecutionRecordDigest, now } = input;
+  requireThat(
+    owner.ownerId === profile.ownerId &&
+      typeof now === "function" &&
+      typeof repoRoot === "string" &&
+      path.isAbsolute(repoRoot) &&
+      path.resolve(repoRoot) === repoRoot &&
+      /^sha256:[0-9a-f]{64}$/u.test(terminalExecutionRecordDigest),
+    SESSION
+  );
+  requireThat(
+    sha256Bytes(createPublicKey(profile.publicKeyPem).export({ type: "spki", format: "der" })) ===
+      profile.keyFingerprint,
+    "MANUAL_SIGNATURE_INVALID"
+  );
+  const readAt = now();
+  requireThat(instant(owner.observedAt) <= instant(readAt), "MANUAL_TIME_INVALID");
+  const capture = historicalManualStore(profile, owner.principal, input.io ?? nativeIO);
+  const { store } = capture;
+  const profileDigest = sha256Canonical(profile);
+  const stamp = () => {
+    capture.available();
+    const value = now();
+    requireThat(instant(value) >= instant(readAt), "MANUAL_TIME_INVALID");
+    return value;
+  };
+  try {
+    await store.roots();
+    const { graph, slots } = await readManualHistoryGraph(store, profile);
+    const values = [...graph.values()].map(({ value }) => value);
+    const selected = graph.get(terminalExecutionRecordDigest)?.value;
+    requireThat(
+      selected?.schemaVersion === "manual-operation-record.v3" &&
+        selected.kind === "execution" &&
+        selected.stage === "candidate-use" &&
+        selected.status === "SUCCEEDED" &&
+        selected.profileDigest === profileDigest,
+      SESSION
+    );
+    const { groups, legacy } = groupManualR3History(graph, profileDigest);
+    requireThat(groups.size > 0, SESSION);
+    const environment = await readCompletedR3Environment(profile, repoRoot, capture, stamp);
+    const accumulator = historyAccumulator(),
+      verifiedContexts = [];
+    let selectedVerifier = null,
+      selectedRequest = null,
+      selectedCandidate = null;
+    for (const [sessionRecordDigest, consumptions] of groups) {
+      const completed = await readCompletedR3Context(
+        environment,
+        graph,
+        slots,
+        sessionRecordDigest,
+        consumptions,
+        accumulator
+      );
+      verifiedContexts.push(completed.summary);
+      if (
+        completed.candidate &&
+        sha256Canonical(completed.candidate.completed) === terminalExecutionRecordDigest
+      ) {
+        requireThat(completed.summary.scope.phase === "final", SESSION);
+        selectedVerifier = completed.verifier;
+        selectedCandidate = completed.candidate;
+        selectedRequest = graph.get(completed.candidate.initial.requestDigest)?.value;
+      }
+    }
+    requireThat(selectedVerifier && selectedRequest && selectedCandidate, SESSION);
+    const oldLocal = await selectedVerifier.validateR3Context(graph, slots, legacy, accumulator);
+    const matchedSources = await selectedVerifier.finishR3History(
+      graph,
+      slots,
+      accumulator,
+      oldLocal.legacy,
+      selectedRequest
+    );
+    const requestDigest = sha256Canonical(selectedRequest);
+    const matched = matchedSources.get(requestDigest);
+    requireThat(matched, EVIDENCE);
+    const { chosen, matchingRequestDigests } = selectSingleR3FinalUse(
+      accumulator.r3FinalUses,
+      requestDigest
+    );
+    const acknowledgements = values.filter(
+      (value) =>
+        value.kind === "custody" &&
+        value.purpose === "owner-acknowledgement" &&
+        value.subjectDigest === terminalExecutionRecordDigest
+    );
+    const cleanups = values.filter(
+      (value) =>
+        value.kind === "cleanup-observation" &&
+        value.sessionId === selected.sessionId &&
+        value.sessionNonce === selected.sessionNonce
+    );
+    const closed = values.filter(
+      (value) =>
+        value.kind === "session" &&
+        value.status === "CLOSED" &&
+        value.sessionId === selected.sessionId &&
+        value.sessionNonce === selected.sessionNonce
+    );
+    requireThat(
+      acknowledgements.length === 1 &&
+        accumulator.r3Acknowledgements.has(sha256Canonical(acknowledgements[0])) &&
+        cleanups.length === 1 &&
+        accumulator.r3Cleanups.has(sha256Canonical(cleanups[0])) &&
+        closed.length === 1 &&
+        cleanups[0].finalExecutionRecordDigest === terminalExecutionRecordDigest &&
+        cleanups[0].finalResultDigest === selected.resultDigest &&
+        cleanups[0].finalAcknowledgementRecordDigest === sha256Canonical(acknowledgements[0]) &&
+        instant(cleanups[0].recordedAt) <= instant(closed[0].recordedAt),
+      EVIDENCE
+    );
+    const selectedContext = verifiedContexts.find(
+      (value) =>
+        value.sessionId === selected.sessionId && value.sessionNonce === selected.sessionNonce
+    );
+    requireThat(selectedContext, SESSION);
+    await capture.recheck();
+    return freeze({
+      schemaVersion: "final-native-attempt-history.v1",
+      profileDigest,
+      ownerId: profile.ownerId,
+      chain: chosen.chain,
+      sourceSha: chosen.sourceSha,
+      buildProofDigest: chosen.buildProofDigest,
+      matchingSourceEvidenceDigest: chosen.matchingSourceEvidenceDigest,
+      sourceGateEvidenceDigest: matched.sourceGateEvidenceDigest,
+      ci: {
+        repository: chosen.ci.repository,
+        runId: chosen.ci.runId,
+        runAttempt: chosen.ci.runAttempt,
+        workflowPath: chosen.ci.workflowPath,
+        callerWorkflowPath: chosen.ci.callerWorkflowPath,
+        jobId: chosen.ci.jobId
+      },
+      matchingRequestDigests,
+      selected: {
+        operationId: selectedRequest.operationId,
+        runId: selectedRequest.runId,
+        attemptId: selectedRequest.attemptId,
+        sessionId: selectedRequest.sessionId,
+        sessionNonceDigest: sha256Bytes(Buffer.from(selectedRequest.sessionNonce, "utf8")),
+        requestDigest,
+        initialExecutionDigest: sha256Canonical(selectedCandidate.initial),
+        terminalExecutionDigest: terminalExecutionRecordDigest,
+        resultDigest: selected.resultDigest,
+        acknowledgementRecordDigest: sha256Canonical(acknowledgements[0]),
+        cleanupObservationRecordDigest: sha256Canonical(cleanups[0]),
+        closedSessionRecordDigest: sha256Canonical(closed[0])
+      },
+      verifiedAt: stamp(),
       verifiedContexts,
       recheck: async () => {
         stamp();

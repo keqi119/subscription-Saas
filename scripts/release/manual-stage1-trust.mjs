@@ -1995,6 +1995,114 @@ export async function readTrustedR3SourceCompletion(input) {
   }
 }
 
+// Select a single completed final candidate from the independently replayed
+// full manual graph, then pin every historical H1/H2 context. This reader does
+// not turn an unresolved or second candidate into an empty retry history.
+export async function readTrustedR3FinalCompletion(input) {
+  const code = "R3_FINAL_HISTORY_UNAVAILABLE",
+    contexts = [];
+  let history,
+    closed = false,
+    closing;
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    closing = (async () => {
+      const outcomes = await Promise.allSettled([
+        ...contexts.map((context) => context.close()),
+        ...(history ? [history.close()] : [])
+      ]);
+      if (outcomes.some((outcome) => outcome.status === "rejected")) fail(code);
+    })();
+    return closing;
+  };
+  try {
+    const { repoRoot, operationRef } = r3EvidenceSelector(input, ["executionRecordDigest"]);
+    requireThat(
+      typeof input.executionRecordDigest === "string" && DIGEST.test(input.executionRecordDigest)
+    );
+    const profile = await loadManualProfile({ repoRoot }, false),
+      profileDigest = sha256Canonical(profile),
+      actual = await actualHost();
+    const { readManualR3FinalHistory } =
+      await import("../../packages/release-foundation/src/manual-stage1-session.mjs");
+    history = await readManualR3FinalHistory({
+      profile,
+      ownerObservation: {
+        ownerId: profile.ownerId,
+        principal: actual.principal,
+        observedAt: new Date().toISOString()
+      },
+      repoRoot,
+      terminalExecutionRecordDigest: input.executionRecordDigest,
+      now: () => new Date().toISOString()
+    });
+    requireThat(
+      history.schemaVersion === "final-native-attempt-history.v1" &&
+        history.profileDigest === profileDigest &&
+        history.selected.operationId === operationRef &&
+        history.selected.terminalExecutionDigest === input.executionRecordDigest &&
+        history.matchingRequestDigests.length === 1 &&
+        history.matchingRequestDigests[0] === history.selected.requestDigest &&
+        Array.isArray(history.verifiedContexts) &&
+        history.verifiedContexts.length > 0
+    );
+    const operations = new Set();
+    for (const context of history.verifiedContexts) {
+      requireThat(!operations.has(context.operationRef));
+      operations.add(context.operationRef);
+      const held = await readTrustedR3HistoricalContext({
+        repoRoot,
+        operationRef: context.operationRef,
+        scope: context.scope,
+        latestExecutionAt: context.latestExecutionAt,
+        ...(Object.hasOwn(context, "latestCleanupAt")
+          ? { latestCleanupAt: context.latestCleanupAt }
+          : {})
+      });
+      contexts.push(held);
+      requireThat(held.profileDigest === profileDigest && equal(held.scope, context.scope));
+    }
+    requireThat(operations.has(operationRef));
+    const recheck = async () => {
+      try {
+        requireThat(!closed);
+        requireThat(equal(await actualHost(), actual));
+        requireThat(
+          sha256Canonical(await loadManualProfile({ repoRoot }, false)) === profileDigest
+        );
+        for (const context of contexts) await context.recheck();
+        await history.recheck();
+        requireThat(!closed);
+      } catch {
+        await close();
+        fail(code);
+      }
+    };
+    await recheck();
+    const attemptHistory = Object.fromEntries(
+      [
+        "schemaVersion",
+        "profileDigest",
+        "ownerId",
+        "chain",
+        "sourceSha",
+        "buildProofDigest",
+        "matchingSourceEvidenceDigest",
+        "sourceGateEvidenceDigest",
+        "ci",
+        "matchingRequestDigests",
+        "selected",
+        "verifiedAt"
+      ].map((key) => [key, history[key]])
+    );
+    return Object.freeze({ attemptHistory: freeze(attemptHistory), recheck, close });
+  } catch {
+    await close();
+    fail(code);
+  }
+}
+
 // Job-key provenance and independently reconstructed storage facts only. Even
 // an absent observation still needs its original live job; it cannot release a
 // resource lock or stand in for the complete Engine/PG cleanup result.

@@ -138,7 +138,9 @@ export function generateS1ExitEvidence(input) {
     throw exitError("S1_EXIT_PREBUILT_EVIDENCE_FORBIDDEN");
   }
   validateAs(
-    "release-aggregate-proof.v1",
+    input?.aggregateProof?.schemaVersion === "release-native-aggregate-proof.v1"
+      ? "release-native-aggregate-proof.v1"
+      : "release-aggregate-proof.v1",
     input?.aggregateProof,
     "S1_EXIT_AGGREGATE_PROOF_INVALID"
   );

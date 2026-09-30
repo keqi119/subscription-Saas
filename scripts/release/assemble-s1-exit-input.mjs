@@ -42,7 +42,12 @@ export async function assembleS1ExitInput({
   now = () => new Date()
 }) {
   try {
-    validateContract("release-aggregate-proof.v1", aggregateProof);
+    validateContract(
+      aggregateProof?.schemaVersion === "release-native-aggregate-proof.v1"
+        ? "release-native-aggregate-proof.v1"
+        : "release-aggregate-proof.v1",
+      aggregateProof
+    );
     validateContract("custody-receipt.v1", aggregateCustodyRecord?.receipt);
     assertCustodyComplete(aggregateCustodyRecord.receipt, sha256Canonical(aggregateProof));
   } catch (error) {

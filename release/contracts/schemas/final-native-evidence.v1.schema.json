@@ -23,6 +23,7 @@
     "apiReadiness",
     "webClient",
     "native",
+    "attemptHistory",
     "producedAt"
   ],
   "properties": {
@@ -202,6 +203,7 @@
         "previousSessionRecordDigest": { "$ref": "#/$defs/digest" }
       }
     },
+    "attemptHistory": { "$ref": "final-native-attempt-history.v1" },
     "producedAt": { "$ref": "#/$defs/timestamp" }
   },
   "$defs": {

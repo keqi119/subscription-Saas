@@ -10,6 +10,7 @@ import { aggregateReleaseProof } from "./aggregate-release-proof.mjs";
 import { assembleReleaseAggregateInput } from "./assemble-release-aggregate-input.mjs";
 import { assembleS1ExitInput } from "./assemble-s1-exit-input.mjs";
 import { createFinalAttemptHistory } from "./create-final-attempt-history.mjs";
+import { generateS1ExitEvidence } from "./generate-s1-exit-evidence.mjs";
 import { exportFinalComposeEnvironment } from "./export-final-compose-environment.mjs";
 import {
   aggregateInput,
@@ -17,9 +18,82 @@ import {
   custodyRecord,
   digest,
   finalEvidence,
+  nativeAggregateInput,
   sourceEvidence,
   uuid
 } from "./task29r-proof-fixtures.mjs";
+
+test("native artifacts assemble through the existing exit checkpoint without legacy attempt files", async () => {
+  await withTempRoot("s1-native-aggregate-", async (root) => {
+    const expected = nativeAggregateInput();
+    const files = {
+      "build-proof.v1.json": expected.buildProof,
+      "snapshot-metadata.v1.json": expected.snapshotMetadata,
+      "source-gate-fresh.v1.json": expected.sourceGateEvidence.fresh,
+      "source-gate-snapshot.v1.json": expected.sourceGateEvidence.snapshot,
+      "final-native-fresh.v1.json": expected.finalNativeEvidence.fresh,
+      "final-native-snapshot.v1.json": expected.finalNativeEvidence.snapshot,
+      "build-proof-custody-record.v1.json": expected.custodyRecords.buildProof,
+      "snapshot-metadata-custody-record.v1.json": expected.custodyRecords.snapshotMetadata,
+      "source-gate-fresh-custody-record.v1.json": expected.custodyRecords.sourceFresh,
+      "source-gate-snapshot-custody-record.v1.json": expected.custodyRecords.sourceSnapshot,
+      "final-native-fresh-custody-record.v1.json": expected.custodyRecords.finalFresh,
+      "final-native-snapshot-custody-record.v1.json": expected.custodyRecords.finalSnapshot
+    };
+    await Promise.all(
+      Object.entries(files).map(([name, value]) => writeCanonical(path.join(root, name), value))
+    );
+    const environment = {
+      GITHUB_REPOSITORY: "keqi119/subscription-Saas",
+      GITHUB_WORKFLOW_REF:
+        "keqi119/subscription-Saas/.github/workflows/release-candidate-gate.yml@refs/heads/main",
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_SHA: expected.buildProof.identity.sourceSha,
+      GITHUB_RUN_ID: "901",
+      GITHUB_RUN_ATTEMPT: "1"
+    };
+    const assembled = await assembleReleaseAggregateInput({
+      inputRoot: root,
+      environment,
+      now: () => new Date(expected.aggregatedAt)
+    });
+    const aggregateProof = aggregateReleaseProof(assembled);
+    const attestation = {
+      schemaVersion: "s1-owner-attestation.v1",
+      attestationId: uuid("7"),
+      subject: {
+        controlId: "legacy-external-owner-migration",
+        sourceSha: aggregateProof.sourceSha,
+        evidenceDigests: [aggregateProof.finalNativeEvidence.fresh]
+      },
+      owner: "release-operations",
+      facts: [{ factId: "external-entry-closed", value: true }],
+      validFrom: "2026-09-03T03:00:00.000Z",
+      notAfter: "2026-09-04T03:00:00.000Z"
+    };
+    const exitInput = await assembleS1ExitInput({
+      aggregateProof,
+      aggregateCustodyRecord: custodyRecord(aggregateProof, "8"),
+      ownerAttestations: {
+        schemaVersion: "s1-owner-attestations.v1",
+        records: [{ attestation, custodyReceipt: custodyRecord(attestation, "9").receipt }]
+      },
+      environment,
+      now: () => new Date("2026-09-03T03:20:00.000Z")
+    });
+    const exit = generateS1ExitEvidence(exitInput);
+    assert.equal(exit.aggregateProofDigest, sha256Canonical(aggregateProof));
+    assert.equal(exit.terminalStatus, "CHECKPOINT_EVIDENCED");
+    assert.equal(Object.hasOwn(assembled, "attemptHistory"), false);
+    await writeCanonical(
+      path.join(root, "final-compose-fresh.v1.json"),
+      aggregateInput().finalComposeEvidence.fresh
+    );
+    await assert.rejects(assembleReleaseAggregateInput({ inputRoot: root, environment }), {
+      code: "RELEASE_DAG_EXECUTION_MODE_MISMATCH"
+    });
+  });
+});
 
 async function withTempRoot(name, callback) {
   const root = await mkdtemp(path.join(os.tmpdir(), name));
@@ -237,7 +311,7 @@ test("aggregate assembly rejects duplicate artifact basenames", async () => {
 });
 
 test("assembles exit input only after aggregate custody and owner evidence exist", async () => {
-  await withTempRoot("s1-exit-input-", async (root) => {
+  await withTempRoot("s1-exit-input-", async () => {
     const aggregateProof = aggregateReleaseProof(aggregateInput());
     const aggregateCustody = custodyRecord(aggregateProof, "8");
     const attestation = {

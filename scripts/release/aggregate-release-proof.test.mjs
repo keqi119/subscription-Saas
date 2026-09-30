@@ -5,7 +5,53 @@ import test from "node:test";
 import { sha256Canonical } from "../../packages/release-foundation/src/index.mjs";
 
 import { aggregateReleaseProof } from "./aggregate-release-proof.mjs";
-import { aggregateInput, digest } from "./task29r-proof-fixtures.mjs";
+import { aggregateInput, digest, nativeAggregateInput } from "./task29r-proof-fixtures.mjs";
+
+test("aggregates native final records and embedded authenticated history without Compose claims", () => {
+  const input = nativeAggregateInput();
+  const result = aggregateReleaseProof(input);
+  assert.equal(result.schemaVersion, "release-native-aggregate-proof.v1");
+  assert.equal(result.finalNativeEvidence.fresh, sha256Canonical(input.finalNativeEvidence.fresh));
+  assert.equal(
+    result.nativeExecutions.snapshot.resultDigest,
+    input.finalNativeEvidence.snapshot.native.resultDigest
+  );
+  assert.equal(
+    result.attemptHistoryDigest,
+    sha256Canonical({
+      fresh: input.finalNativeEvidence.fresh.attemptHistory,
+      snapshot: input.finalNativeEvidence.snapshot.attemptHistory
+    })
+  );
+  assert.equal(Object.hasOwn(result, "composeEvidenceDigest"), false);
+});
+
+test("native aggregate rejects mixed execution modes and cross-run or unbound history", () => {
+  for (const mutate of [
+    (x) => {
+      x.finalComposeEvidence = aggregateInput().finalComposeEvidence;
+    },
+    (x) => {
+      x.finalNativeEvidence.snapshot = aggregateInput().finalComposeEvidence.snapshot;
+    },
+    (x) => {
+      x.finalNativeEvidence.fresh.attemptHistory.ci.runId = "902";
+    },
+    (x) => {
+      x.finalNativeEvidence.fresh.attemptHistory.selected.terminalExecutionDigest = digest("0");
+    },
+    (x) => {
+      x.finalNativeEvidence.fresh.attemptHistory.matchingRequestDigests.push(digest("0"));
+    },
+    (x) => {
+      x.custodyRecords.finalFresh.receipt.readbackDigest = digest("0");
+    }
+  ]) {
+    const input = nativeAggregateInput();
+    mutate(input);
+    assert.throws(() => aggregateReleaseProof(input));
+  }
+});
 
 test("selects one same-run, custodied fresh/snapshot proof set", () => {
   const input = aggregateInput();

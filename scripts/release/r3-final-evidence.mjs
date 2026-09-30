@@ -1,6 +1,7 @@
 import { URL } from "node:url";
 import {
   encodeManualJson,
+  sha256Bytes,
   sha256Canonical,
   validateContract
 } from "../../packages/release-foundation/src/index.mjs";
@@ -73,6 +74,25 @@ function assertWebClient(webClient, evidence) {
 export function validateR3FinalGateEvidence(value) {
   try {
     validateContract("final-native-evidence.v1", value);
+    validateContract("final-native-attempt-history.v1", value.attemptHistory);
+    const history = value.attemptHistory;
+    need(
+      history.chain === value.chain &&
+        history.sourceSha === value.sourceSha &&
+        history.buildProofDigest === value.buildProofDigest &&
+        history.sourceGateEvidenceDigest === value.sourceGateEvidenceDigest &&
+        same(history.matchingRequestDigests, [value.native.requestDigest]) &&
+        history.selected.operationId === value.operationId &&
+        history.selected.runId === value.runId &&
+        history.selected.attemptId === value.attemptId &&
+        history.selected.requestDigest === value.native.requestDigest &&
+        history.selected.terminalExecutionDigest === value.native.terminalExecutionDigest &&
+        history.selected.resultDigest === value.native.resultDigest &&
+        history.selected.acknowledgementRecordDigest === value.native.acknowledgementDigest &&
+        history.selected.cleanupObservationRecordDigest === value.native.cleanupObservationDigest &&
+        history.selected.closedSessionRecordDigest === value.native.closedSessionDigest &&
+        time(history.verifiedAt) >= time(value.producedAt)
+    );
     need(countsPassed(value.databaseTests.counts));
     need(
       value.chain === "fresh"
@@ -93,8 +113,7 @@ export function validateR3FinalGateEvidence(value) {
 
 // This pure projection grants no authority. Its caller must authenticate the
 // history graph, complete original readback, cleanup observation, and CLOSED
-// record before supplying these already checked values. Retry history is not
-// inferable from a successful request, so this contract makes no retry claim.
+// record and complete attempt history before supplying these checked values.
 export function buildR3FinalGateEvidence({
   request,
   execution,
@@ -102,7 +121,8 @@ export function buildR3FinalGateEvidence({
   reconstructed,
   acknowledgement,
   cleanupReceipt,
-  sessionRecord
+  sessionRecord,
+  attemptHistory
 }) {
   try {
     validateContract("manual-runner-request.v5", request);
@@ -112,9 +132,11 @@ export function buildR3FinalGateEvidence({
     const terminalExecutionDigest = sha256Canonical(execution);
     const resultDigest = sha256Canonical(result);
     const acknowledgementDigest = sha256Canonical(acknowledgement);
+    const closedSessionDigest = sha256Canonical(sessionRecord);
     const facts = reconstructed?.publicFacts;
     const gate = facts?.sourceGateEvidence;
     validateContract("source-gate-evidence.v1", gate);
+    validateContract("final-native-attempt-history.v1", attemptHistory);
     assertR3FinalAcknowledgement({
       acknowledgement,
       profileDigest: request.profileDigest,
@@ -317,6 +339,32 @@ export function buildR3FinalGateEvidence({
         time(acknowledgement.recordedAt) <= time(sessionRecord.recordedAt) &&
         time(sessionRecord.openedAt) <= time(execution.recordedAt)
     );
+    need(
+      attemptHistory.profileDigest === request.profileDigest &&
+        attemptHistory.ownerId === request.ownerId &&
+        attemptHistory.chain === request.chain &&
+        attemptHistory.sourceSha === request.sourceSha &&
+        attemptHistory.buildProofDigest === request.candidate.buildProofDigest &&
+        attemptHistory.matchingSourceEvidenceDigest === request.matchingSourceEvidenceDigest &&
+        attemptHistory.sourceGateEvidenceDigest === sha256Canonical(gate) &&
+        same(attemptHistory.matchingRequestDigests, [requestDigest]) &&
+        attemptHistory.selected.operationId === request.operationId &&
+        attemptHistory.selected.runId === request.runId &&
+        attemptHistory.selected.attemptId === request.attemptId &&
+        attemptHistory.selected.sessionId === request.sessionId &&
+        attemptHistory.selected.sessionNonceDigest ===
+          sha256Bytes(Buffer.from(request.sessionNonce, "utf8")) &&
+        attemptHistory.selected.requestDigest === requestDigest &&
+        attemptHistory.selected.initialExecutionDigest ===
+          result.candidateUseExecutionRecordDigest &&
+        attemptHistory.selected.terminalExecutionDigest === terminalExecutionDigest &&
+        attemptHistory.selected.resultDigest === resultDigest &&
+        attemptHistory.selected.acknowledgementRecordDigest === acknowledgementDigest &&
+        attemptHistory.selected.cleanupObservationRecordDigest ===
+          cleanupReceipt.cleanupObservationRecordDigest &&
+        attemptHistory.selected.closedSessionRecordDigest === closedSessionDigest &&
+        time(attemptHistory.verifiedAt) >= time(sessionRecord.recordedAt)
+    );
     const evidence = {
       schemaVersion: "final-native-evidence.v1",
       chain: request.chain,
@@ -359,9 +407,10 @@ export function buildR3FinalGateEvidence({
         cleanupObservationDigest: cleanupReceipt.cleanupObservationRecordDigest,
         cleanupBundleDigest: cleanupReceipt.cleanupBundleDigest,
         cleanupCustodyRecordDigests: cleanupReceipt.custodyRecordDigests,
-        closedSessionDigest: sha256Canonical(sessionRecord),
+        closedSessionDigest,
         previousSessionRecordDigest: sessionRecord.previousSessionRecordDigest
       },
+      attemptHistory,
       producedAt: sessionRecord.recordedAt
     };
     validateR3FinalGateEvidence(evidence);
@@ -429,7 +478,9 @@ export function assertIndependentNativeChainEvidence(fresh, snapshot) {
         fresh.databaseTests.reportDigest !== snapshot.databaseTests.reportDigest &&
         fresh.apiReadiness.applicationName !== snapshot.apiReadiness.applicationName &&
         fresh.apiReadiness.evidenceDigest !== snapshot.apiReadiness.evidenceDigest &&
-        fresh.webClient.evidenceDigest !== snapshot.webClient.evidenceDigest
+        fresh.webClient.evidenceDigest !== snapshot.webClient.evidenceDigest &&
+        fresh.attemptHistory.ci.runId === snapshot.attemptHistory.ci.runId &&
+        fresh.attemptHistory.ci.jobId !== snapshot.attemptHistory.ci.jobId
     );
     const custody = new Set([
       ...fresh.native.originalCustodyRecordDigests,

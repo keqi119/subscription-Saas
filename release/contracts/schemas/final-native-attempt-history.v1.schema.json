@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "final-native-attempt-history.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profileDigest",
+    "ownerId",
+    "chain",
+    "sourceSha",
+    "buildProofDigest",
+    "matchingSourceEvidenceDigest",
+    "sourceGateEvidenceDigest",
+    "ci",
+    "matchingRequestDigests",
+    "selected",
+    "verifiedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "final-native-attempt-history.v1" },
+    "profileDigest": { "$ref": "#/$defs/digest" },
+    "ownerId": { "type": "string", "minLength": 1 },
+    "chain": { "enum": ["fresh", "snapshot"] },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "buildProofDigest": { "$ref": "#/$defs/digest" },
+    "matchingSourceEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "sourceGateEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "runId",
+        "runAttempt",
+        "workflowPath",
+        "callerWorkflowPath",
+        "jobId"
+      ],
+      "properties": {
+        "repository": { "const": "keqi119/subscription-Saas" },
+        "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "runAttempt": { "const": 1 },
+        "workflowPath": { "const": ".github/workflows/release-final-chain.yml" },
+        "callerWorkflowPath": { "const": ".github/workflows/release-candidate-gate.yml" },
+        "jobId": { "type": "string", "pattern": "^[1-9][0-9]*$" }
+      }
+    },
+    "matchingRequestDigests": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" }
+    },
+    "selected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operationId",
+        "runId",
+        "attemptId",
+        "sessionId",
+        "sessionNonceDigest",
+        "requestDigest",
+        "initialExecutionDigest",
+        "terminalExecutionDigest",
+        "resultDigest",
+        "acknowledgementRecordDigest",
+        "cleanupObservationRecordDigest",
+        "closedSessionRecordDigest"
+      ],
+      "properties": {
+        "operationId": { "$ref": "#/$defs/uuid" },
+        "runId": { "$ref": "#/$defs/uuid" },
+        "attemptId": { "$ref": "#/$defs/uuid" },
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "sessionNonceDigest": { "$ref": "#/$defs/digest" },
+        "requestDigest": { "$ref": "#/$defs/digest" },
+        "initialExecutionDigest": { "$ref": "#/$defs/digest" },
+        "terminalExecutionDigest": { "$ref": "#/$defs/digest" },
+        "resultDigest": { "$ref": "#/$defs/digest" },
+        "acknowledgementRecordDigest": { "$ref": "#/$defs/digest" },
+        "cleanupObservationRecordDigest": { "$ref": "#/$defs/digest" },
+        "closedSessionRecordDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "verifiedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": { "type": "string", "rfc3339Finite": true }
+  }
+}

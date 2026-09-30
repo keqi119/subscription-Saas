@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
+import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
 import { buildR3FinalAcknowledgement } from "./r3-final-result.mjs";
 import {
   assertIndependentNativeChainEvidence,
@@ -285,6 +285,40 @@ function fixture(chain = "fresh", n = 1) {
     previousSessionRecordDigest: digest(`prior-session-${n}`),
     reasonCode: null
   };
+  const attemptHistory = {
+    schemaVersion: "final-native-attempt-history.v1",
+    profileDigest: request.profileDigest,
+    ownerId: request.ownerId,
+    chain,
+    sourceSha,
+    buildProofDigest,
+    matchingSourceEvidenceDigest: request.matchingSourceEvidenceDigest,
+    sourceGateEvidenceDigest: digest(sourceGateEvidence),
+    ci: {
+      repository: "keqi119/subscription-Saas",
+      runId: "123",
+      runAttempt: 1,
+      workflowPath: ".github/workflows/release-final-chain.yml",
+      callerWorkflowPath: ".github/workflows/release-candidate-gate.yml",
+      jobId: String(456 + n)
+    },
+    matchingRequestDigests: [digest(request)],
+    selected: {
+      operationId,
+      runId: request.runId,
+      attemptId: request.attemptId,
+      sessionId: request.sessionId,
+      sessionNonceDigest: sha256Bytes(Buffer.from(request.sessionNonce, "utf8")),
+      requestDigest: digest(request),
+      initialExecutionDigest: result.candidateUseExecutionRecordDigest,
+      terminalExecutionDigest: digest(execution),
+      resultDigest: digest(result),
+      acknowledgementRecordDigest: digest(acknowledgement),
+      cleanupObservationRecordDigest: cleanupReceipt.cleanupObservationRecordDigest,
+      closedSessionRecordDigest: digest(sessionRecord)
+    },
+    verifiedAt: "2026-09-29T00:00:06.000Z"
+  };
   return {
     request,
     execution,
@@ -292,7 +326,8 @@ function fixture(chain = "fresh", n = 1) {
     reconstructed,
     acknowledgement,
     cleanupReceipt,
-    sessionRecord
+    sessionRecord,
+    attemptHistory
   };
 }
 
@@ -309,6 +344,12 @@ function reseal(input) {
   });
   input.cleanupReceipt.finalExecutionRecordDigest = digest(input.execution);
   input.cleanupReceipt.finalAcknowledgementRecordDigest = digest(input.acknowledgement);
+  input.attemptHistory.sourceGateEvidenceDigest = digest(
+    input.reconstructed.publicFacts.sourceGateEvidence
+  );
+  input.attemptHistory.selected.terminalExecutionDigest = digest(input.execution);
+  input.attemptHistory.selected.resultDigest = digest(input.result);
+  input.attemptHistory.selected.acknowledgementRecordDigest = digest(input.acknowledgement);
 }
 
 test("projects a bounded native final gate from fresh and snapshot held records", () => {
@@ -322,6 +363,12 @@ test("projects a bounded native final gate from fresh and snapshot held records"
     assert.equal(evidence.native.resultDigest, digest(input.result));
     assert.equal(evidence.native.originalCustodyRecordDigests.length, 10);
     assert.equal(evidence.webClient.webOrigin, "http://web:3000");
+    assert.equal(evidence.producedAt, input.sessionRecord.recordedAt);
+    assert.deepEqual(evidence.attemptHistory.matchingRequestDigests, [digest(input.request)]);
+    assert.equal(
+      evidence.attemptHistory.selected.closedSessionRecordDigest,
+      digest(input.sessionRecord)
+    );
     assert.equal(
       evidence.contracts.snapshotMetadataDigest,
       chain === "fresh" ? null : digest("snapshot")
@@ -331,6 +378,24 @@ test("projects a bounded native final gate from fresh and snapshot held records"
     assert.ok(Object.isFrozen(evidence.native.destination));
     assert.doesNotThrow(() => validateR3FinalGateEvidence(evidence));
   }
+});
+
+test("requires authenticated attempt history before projecting a public final", () => {
+  const input = fixture();
+  delete input.attemptHistory;
+  assert.throws(() => buildR3FinalGateEvidence(input), {
+    code: "R3_FINAL_GATE_EVIDENCE_INVALID"
+  });
+  const wrong = fixture();
+  wrong.attemptHistory.selected.sessionNonceDigest = digest("another nonce");
+  assert.throws(() => buildR3FinalGateEvidence(wrong), {
+    code: "R3_FINAL_GATE_EVIDENCE_INVALID"
+  });
+  const stale = fixture();
+  stale.attemptHistory.verifiedAt = stale.sessionRecord.openedAt;
+  assert.throws(() => buildR3FinalGateEvidence(stale), {
+    code: "R3_FINAL_GATE_EVIDENCE_INVALID"
+  });
 });
 
 test("rejects altered source, reconstruction, cleanup, closed scope, and browser facts", () => {
@@ -364,6 +429,11 @@ test("rejects altered source, reconstruction, cleanup, closed scope, and browser
   assert.throws(() => validateR3FinalGateEvidence(browser), {
     code: "R3_FINAL_GATE_EVIDENCE_INVALID"
   });
+  const alteredHistory = JSON.parse(JSON.stringify(evidence));
+  alteredHistory.attemptHistory.selected.resultDigest = digest("other result");
+  assert.throws(() => validateR3FinalGateEvidence(alteredHistory), {
+    code: "R3_FINAL_GATE_EVIDENCE_INVALID"
+  });
 });
 
 test("requires independent native chain records with shared release inputs", () => {
@@ -373,6 +443,11 @@ test("requires independent native chain records with shared release inputs", () 
   const reused = JSON.parse(JSON.stringify(snapshot));
   reused.native.terminalExecutionDigest = fresh.native.terminalExecutionDigest;
   assert.throws(() => assertIndependentNativeChainEvidence(fresh, reused), {
+    code: "R3_FINAL_GATE_EVIDENCE_INVALID"
+  });
+  const repeatedJob = JSON.parse(JSON.stringify(snapshot));
+  repeatedJob.attemptHistory.ci.jobId = fresh.attemptHistory.ci.jobId;
+  assert.throws(() => assertIndependentNativeChainEvidence(fresh, repeatedJob), {
     code: "R3_FINAL_GATE_EVIDENCE_INVALID"
   });
 });

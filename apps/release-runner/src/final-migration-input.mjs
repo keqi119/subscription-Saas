@@ -70,16 +70,19 @@ export function validateFinalMigrationInput({
     });
     need(held.databaseTargetPlanDigest === sha256Canonical(plan));
     const assignment = held.assignment;
+    const application = assignment.kind === "application";
     const suite = manifest.suites.find(({ suiteId }) => suiteId === assignment.suiteId);
-    need(suite);
+    need(application || suite);
     const lifecycle = assignment.kind === "lifecycle-owned";
     need(lifecycle === (assignment.suiteId === LIFECYCLE));
-    const planned = lifecycle
-      ? plan.reservations.find(({ shard }) => shard === assignment.lifecycleShard)
-      : plan.targets.find(
-          ({ suiteId, name, kind }) =>
-            suiteId === assignment.suiteId && name === assignment.name && kind === "suite"
-        );
+    const planned = application
+      ? plan.targets.find(({ kind }) => kind === "application")
+      : lifecycle
+        ? plan.reservations.find(({ shard }) => shard === assignment.lifecycleShard)
+        : plan.targets.find(
+            ({ suiteId, name, kind }) =>
+              suiteId === assignment.suiteId && name === assignment.name && kind === "suite"
+          );
     need(planned);
     const db = held.database;
     need(
@@ -103,8 +106,10 @@ export function validateFinalMigrationInput({
           })
     );
     let marker;
+    const prefix = application ? "subscription-s1-ephemeral/v1:" : "";
     try {
-      marker = JSON.parse(db.marker);
+      need(db.marker.startsWith(prefix));
+      marker = JSON.parse(db.marker.slice(prefix.length));
     } catch {
       fail();
     }
@@ -117,19 +122,22 @@ export function validateFinalMigrationInput({
         !Number.isNaN(Date.parse(marker.createdAt)) &&
         new Date(marker.createdAt).toISOString() === marker.createdAt &&
         db.marker ===
-          canonicalJson({
-            markerVersion: "subscription-s1-ephemeral/v1",
-            runIdDigest: sha256Canonical(held.operationId),
-            suiteIdDigest: sha256Canonical(
-              lifecycle
-                ? "database-lifecycle"
-                : assignment.name === "source"
-                  ? `${assignment.suiteId}.source`
-                  : assignment.suiteId
-            ),
-            shard: planned.shard,
-            createdAt: marker.createdAt
-          })
+          prefix +
+            canonicalJson({
+              markerVersion: "subscription-s1-ephemeral/v1",
+              runIdDigest: sha256Canonical(held.operationId),
+              suiteIdDigest: sha256Canonical(
+                application
+                  ? "r3.application"
+                  : lifecycle
+                    ? "database-lifecycle"
+                    : assignment.name === "source"
+                      ? `${assignment.suiteId}.source`
+                      : assignment.suiteId
+              ),
+              shard: planned.shard,
+              createdAt: marker.createdAt
+            })
     );
     // The policy is the sole source of extension names; the wire cannot add one.
     const allowedExtensions = [
@@ -144,7 +152,7 @@ export function validateFinalMigrationInput({
       assignment: structuredClone(assignment),
       runtimeRole: planned.roles["runtime-test"],
       migrationSecretReference: `r3/${held.operationId}/database-credentials/${db.databaseName}-migrate.json`,
-      schemaFixturePath: suite.fixtures?.schema ?? null,
+      schemaFixturePath: suite?.fixtures?.schema ?? null,
       target: {
         hostname: "postgres",
         port: 5432,

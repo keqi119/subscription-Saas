@@ -63,6 +63,14 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "application" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "suiteId", "name"],
           "properties": {
             "kind": { "const": "suite" },

@@ -7,8 +7,13 @@ import { finalMigrationInputFixture } from "./fixtures/final-migration-input.mjs
 
 const code = "FINAL_MIGRATION_INPUT_INVALID";
 
-test("binds an ordinary final target and a physical lifecycle target", async () => {
-  for (const options of [{}, { lifecycleShard: 1, chain: "snapshot" }]) {
+test("binds ordinary, lifecycle and application targets without assigning application a test fixture", async () => {
+  for (const options of [
+    {},
+    { lifecycleShard: 1, chain: "snapshot" },
+    { application: true },
+    { application: true, chain: "snapshot" }
+  ]) {
     const fixture = await finalMigrationInputFixture(options);
     const result = validateFinalMigrationInput(fixture);
     assert.equal(result.input.database.databaseName, fixture.input.database.databaseName);
@@ -16,6 +21,39 @@ test("binds an ordinary final target and a physical lifecycle target", async () 
     assert.deepEqual(result.allowedExtensions, ["btree_gist", "pgcrypto", "plpgsql"]);
     assert.ok(Object.isFrozen(result) && Object.isFrozen(result.input.database));
     assert.equal(result.assignment.kind, fixture.input.assignment.kind);
+    if (options.application) {
+      assert.equal(result.schemaFixturePath, null);
+      assert.equal(result.runtimeRole.startsWith("s1r_"), true);
+      const ordinary = await finalMigrationInputFixture();
+      for (const change of [
+        (input) => {
+          input.assignment = { kind: "suite", suiteId: "r3.application", name: "target" };
+        },
+        (input) => {
+          input.assignment.suiteId = "r3.application";
+        },
+        (input) => {
+          input.database.marker = input.database.marker.slice(
+            "subscription-s1-ephemeral/v1:".length
+          );
+          input.database.targetLockDigest = sha256Canonical({
+            kind: "r3-database-target",
+            engineId: input.postgres.engineId,
+            systemIdentifier: input.postgres.systemIdentifier,
+            databaseOid: input.database.databaseOid,
+            marker: input.database.marker
+          });
+        },
+        (input) => {
+          input.database = structuredClone(ordinary.input.database);
+        }
+      ]) {
+        const other = structuredClone(fixture);
+        // The ordinary database cannot be relabelled as the dedicated application target.
+        change(other.input);
+        assert.throws(() => validateFinalMigrationInput(other), { code });
+      }
+    }
   }
 });
 

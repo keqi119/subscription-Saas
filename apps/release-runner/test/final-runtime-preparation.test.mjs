@@ -6,10 +6,12 @@ import { validateFinalMigrationInput } from "../src/final-migration-input.mjs";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
-async function fixture() {
-  const values = await finalMigrationInputFixture({
+async function fixture(
+  options = {
     suiteId: "script.stage1-clean-acceptance.postgres"
-  });
+  }
+) {
+  const values = await finalMigrationInputFixture(options);
   const held = validateFinalMigrationInput(values),
     calls = [];
   const row = {
@@ -128,4 +130,31 @@ test("preparation rejects wrong physical identity before the first statement and
       return true;
     }
   );
+});
+
+test("application preparation grants the fixed runtime role without executing a test schema or seed", async () => {
+  const api = await import("../src/final-runtime-preparation.mjs");
+  for (const chain of ["fresh", "snapshot"]) {
+    const f = await fixture({ application: true, chain });
+    const result = await api.prepareFinalRuntimeDatabase({
+      ...f.values,
+      repoRoot,
+      database: f.database,
+      signal: new AbortController().signal
+    });
+    assert.equal(result.schemaFixture, null);
+    assert.equal(result.executions.length, 1);
+    assert.ok(result.executions[0].sql.includes(`TO "${f.held.runtimeRole}"`));
+    assert.ok(!/INSERT INTO|CREATE SCHEMA/iu.test(result.executions[0].sql));
+    assert.deepEqual(
+      f.calls.map(({ kind }) => kind),
+      ["query", "execute", "query"]
+    );
+    const evidence = await api.assessFinalRuntimePreparation({
+      ...f.values,
+      repoRoot,
+      preparation: result
+    });
+    assert.equal(evidence.preparationDigest, sha256Canonical(result));
+  }
 });

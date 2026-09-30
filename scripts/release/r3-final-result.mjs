@@ -34,7 +34,6 @@ const freeze = (value) => {
   return value;
 };
 const LIFECYCLE = "node.release-database-lifecycle.postgres";
-const ordinary = (plan) => plan.targets.filter(({ kind }) => kind === "suite");
 
 export function r3FinalObservationNames({ manifest, plan }) {
   const expected = planR3DatabaseTargets({
@@ -46,7 +45,7 @@ export function r3FinalObservationNames({ manifest, plan }) {
   need(same(plan, expected));
   const names = [
     "attempt",
-    ...ordinary(plan).map(({ databaseName }) => databaseName),
+    ...plan.targets.map(({ databaseName }) => databaseName),
     ...plan.reservations.map(({ databaseName }) => databaseName),
     "runtime",
     ...manifest.suites.map(({ suiteId }) => suiteId),
@@ -219,11 +218,11 @@ export async function readR3FinalOriginals({
     need(Array.isArray(lifecycleRecords) && lifecycleRecords.length === 2);
     const records = [
       ...destination.databaseTargetSet.records.filter((record) =>
-        ordinary(plan).some((item) => item.databaseName === record.databaseName)
+        plan.targets.some((item) => item.databaseName === record.databaseName)
       ),
       ...lifecycleRecords
     ];
-    const planned = [...ordinary(plan), ...plan.reservations];
+    const planned = [...plan.targets, ...plan.reservations];
     need(
       records.length === planned.length &&
         new Set(records.map((record) => record.databaseOid)).size === records.length
@@ -240,7 +239,7 @@ export async function readR3FinalOriginals({
       migrationDigests = [],
       fingerprints = new Set();
     let sourceClaims;
-    for (const [index, target] of planned.entries()) {
+    for (const target of planned) {
       const record = records.find(({ databaseName }) => databaseName === target.databaseName);
       need(record && same(record.roles, target.roles) && record.shard === target.shard);
       const saved = values.get(target.databaseName);
@@ -268,9 +267,11 @@ export async function readR3FinalOriginals({
           input.migrationCatalogDigest === migrationCatalog.digest &&
           same(
             input.assignment,
-            index < ordinary(plan).length
-              ? { kind: "suite", suiteId: target.suiteId, name: target.name }
-              : { kind: "lifecycle-owned", suiteId: LIFECYCLE, lifecycleShard: target.shard }
+            target.kind === "application"
+              ? { kind: "application" }
+              : target.kind === "suite"
+                ? { kind: "suite", suiteId: target.suiteId, name: target.name }
+                : { kind: "lifecycle-owned", suiteId: LIFECYCLE, lifecycleShard: target.shard }
           )
       );
       const claims = {

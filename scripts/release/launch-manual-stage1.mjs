@@ -3126,12 +3126,11 @@ export async function launchR3TargetCreate(input) {
         const planned = [...plan.targets, ...plan.reservations].find(
           (item) => item.databaseName === record.databaseName
         );
-        if (!planned || planned.kind === "application" || !equal(record.roles, planned.roles))
-          fail(code);
+        if (!planned || !equal(record.roles, planned.roles)) fail(code);
         const migrationSecret = await sourceSecret(record, "migrate");
         const runtimeSecret = await sourceSecret(record, "runtime-test");
         const lock =
-          planned.kind === "suite"
+          planned.kind === "suite" || planned.kind === "application"
             ? targetLockLease.locks.find((entry) => entry.databaseName === record.databaseName)
             : physicalLocks.get(record.databaseName);
         if (!lock) fail(code);
@@ -3153,9 +3152,15 @@ export async function launchR3TargetCreate(input) {
           targetLockDigest: lock.lockDigest
         };
         const assignment =
-          planned.kind === "suite"
-            ? { kind: "suite", suiteId: planned.suiteId, name: planned.name }
-            : { kind: "lifecycle-owned", suiteId: planned.suiteId, lifecycleShard: planned.shard };
+          planned.kind === "application"
+            ? { kind: "application" }
+            : planned.kind === "suite"
+              ? { kind: "suite", suiteId: planned.suiteId, name: planned.name }
+              : {
+                  kind: "lifecycle-owned",
+                  suiteId: planned.suiteId,
+                  lifecycleShard: planned.shard
+                };
         let migrationInput, assessor, schema, preparation, boundary, owned;
         const physical = [];
         const observeTarget = async () => {
@@ -3390,7 +3395,9 @@ export async function launchR3TargetCreate(input) {
         },
         prepare: async (runnerContainerId) => {
           await inspectPg(boundEngineId);
-          for (const planned of plan.targets.filter((item) => item.kind === "suite")) {
+          // The dedicated application target needs the same candidate migrations;
+          // it remains outside the database-test selections and their counts.
+          for (const planned of plan.targets) {
             const record = databaseTargetSet.records.find(
               (item) => item.databaseName === planned.databaseName
             );

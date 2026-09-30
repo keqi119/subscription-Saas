@@ -18,6 +18,7 @@ let catalogPromise;
 
 export async function finalMigrationInputFixture({
   chain = "fresh",
+  application = false,
   lifecycleShard,
   suiteId,
   name = "target"
@@ -34,7 +35,12 @@ export async function finalMigrationInputFixture({
   catalogPromise ??= computeMigrationCatalog(repoRoot);
   const migrationCatalog = await catalogPromise;
   const chosenSuite =
-    suiteId ?? (lifecycleShard === undefined ? manifest.suites[0].suiteId : lifecycleSuite);
+    suiteId ??
+    (application
+      ? "r3.application"
+      : lifecycleShard === undefined
+        ? manifest.suites[0].suiteId
+        : lifecycleSuite);
   const plan = planR3DatabaseTargets({
     operationRef: envelope.operationId,
     phase: "final",
@@ -44,20 +50,24 @@ export async function finalMigrationInputFixture({
   const lifecycle = lifecycleShard !== undefined;
   const planned = lifecycle
     ? plan.reservations.find((item) => item.shard === lifecycleShard)
-    : plan.targets.find((item) => item.suiteId === chosenSuite && item.name === name);
+    : plan.targets.find(
+        (item) => item.suiteId === chosenSuite && item.name === (application ? "application" : name)
+      );
   if (!planned || lifecycle !== (chosenSuite === lifecycleSuite))
     throw new Error("FIXTURE_ASSIGNMENT_INVALID");
-  const assigned = lifecycle ? null : envelope.suiteAssignments[chosenSuite].databases[name];
-  const databaseOid = assigned?.databaseOid ?? String(9001 + lifecycleShard);
+  const assigned =
+    lifecycle || application ? null : envelope.suiteAssignments[chosenSuite].databases[name];
+  const databaseOid = assigned?.databaseOid ?? String(application ? 9100 : 9001 + lifecycleShard);
   const marker =
     assigned?.marker ??
-    canonicalJson({
-      markerVersion: "subscription-s1-ephemeral/v1",
-      runIdDigest: sha256Canonical(envelope.operationId),
-      suiteIdDigest: sha256Canonical("database-lifecycle"),
-      shard: lifecycleShard,
-      createdAt: "2026-09-28T00:00:00.000Z"
-    });
+    (application ? "subscription-s1-ephemeral/v1:" : "") +
+      canonicalJson({
+        markerVersion: "subscription-s1-ephemeral/v1",
+        runIdDigest: sha256Canonical(envelope.operationId),
+        suiteIdDigest: sha256Canonical(application ? "r3.application" : "database-lifecycle"),
+        shard: planned.shard,
+        createdAt: "2026-09-28T00:00:00.000Z"
+      });
   const migrationRole = planned.roles.migrate;
   const database = {
     databaseName: planned.databaseName,
@@ -111,9 +121,11 @@ export async function finalMigrationInputFixture({
     runnerContainerId: envelope.runnerContainerId,
     migrationContainerId: "9".repeat(64),
     postgres: { ...envelope.postgres, hostname: "postgres" },
-    assignment: lifecycle
-      ? { kind: "lifecycle-owned", suiteId: chosenSuite, lifecycleShard }
-      : { kind: "suite", suiteId: chosenSuite, name },
+    assignment: application
+      ? { kind: "application" }
+      : lifecycle
+        ? { kind: "lifecycle-owned", suiteId: chosenSuite, lifecycleShard }
+        : { kind: "suite", suiteId: chosenSuite, name },
     database,
     expectedSchemaDigest: `sha256:${"5".repeat(64)}`,
     migrationCatalogDigest: migrationCatalog.digest

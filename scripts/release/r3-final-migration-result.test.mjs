@@ -9,8 +9,8 @@ const digest = sha256Canonical;
 const schema = (text) => sha256Bytes(Buffer.from(text));
 const iso = "2026-09-29T01:00:00.000Z";
 
-async function fixture() {
-  const values = await finalMigrationInputFixture();
+async function fixture(options) {
+  const values = await finalMigrationInputFixture(options);
   const { input, migrationCatalog } = values;
   const password = "synthetic-migration-only-password";
   input.database.migrationCredentialFingerprint = sha256Bytes(Buffer.from(password));
@@ -160,24 +160,26 @@ async function fixture() {
 }
 
 test("assesses each migration stage before advancing and retains reconstructed migration evidence", async () => {
-  const f = await fixture();
-  let reads = 0;
-  const assessment = createR3FinalMigrationAssessment({
-    ...f,
-    observeTarget: async () => {
-      reads++;
-      return f.physical();
-    }
-  });
-  await assessment.assess({ stage: "plan", result: f.plan });
-  assert.equal(reads, 1);
-  await assessment.assess({ stage: "apply", result: f.apply });
-  await assessment.assess({ stage: "verify", result: f.verify });
-  const evidence = assessment.finish();
-  assert.equal(reads, 3);
-  assert.equal(evidence.expectedSchemaDigest, f.input.expectedSchemaDigest);
-  assert.equal(evidence.migrationEvidenceDigest, digest(evidence.migrationEvidence));
-  assert.equal(evidence.migrationEvidence.scope, "schema-migration");
+  for (const options of [{}, { application: true }, { application: true, chain: "snapshot" }]) {
+    const f = await fixture(options);
+    let reads = 0;
+    const assessment = createR3FinalMigrationAssessment({
+      ...f,
+      observeTarget: async () => {
+        reads++;
+        return f.physical();
+      }
+    });
+    await assessment.assess({ stage: "plan", result: f.plan });
+    assert.equal(reads, 1);
+    await assessment.assess({ stage: "apply", result: f.apply });
+    await assessment.assess({ stage: "verify", result: f.verify });
+    const evidence = assessment.finish();
+    assert.equal(reads, 3);
+    assert.equal(evidence.expectedSchemaDigest, f.input.expectedSchemaDigest);
+    assert.equal(evidence.migrationEvidenceDigest, digest(evidence.migrationEvidence));
+    assert.equal(evidence.migrationEvidence.scope, "schema-migration");
+  }
 });
 
 test("rejects a foreign physical target before apply and tampered terminal originals", async () => {

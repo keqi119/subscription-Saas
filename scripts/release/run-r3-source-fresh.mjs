@@ -101,11 +101,15 @@ async function original(profile, role, digest) {
   need(sha256Bytes(bytes) === digest && encodeManualJson(JSON.parse(bytes)).equals(bytes));
   return bytes;
 }
-async function persistSourceGateEvidence(repoRoot, bytes) {
+async function persistSourceEvidence(repoRoot, chain, kind, bytes) {
   need(Buffer.isBuffer(bytes) && bytes.length > 0 && bytes.length <= 1048576);
+  need(
+    ["fresh", "snapshot"].includes(chain) &&
+      (kind === "gate" || (chain === "snapshot" && kind === "metadata"))
+  );
   const directories = [
     path.join(repoRoot, ".release-output"),
-    path.join(repoRoot, ".release-output/source-fresh")
+    path.join(repoRoot, `.release-output/source-${chain}`)
   ];
   for (const directory of directories) {
     try {
@@ -123,7 +127,10 @@ async function persistSourceGateEvidence(repoRoot, bytes) {
         (stat.mode & 0o7777n) === 0o755n
     );
   }
-  const file = path.join(directories[1], "source-gate-fresh.v1.json");
+  const file = path.join(
+    directories[1],
+    kind === "gate" ? `source-gate-${chain}.v1.json` : "snapshot-metadata.v1.json"
+  );
   const handle = await fs.open(
     file,
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
@@ -172,20 +179,35 @@ async function waitForwardKey(admission, operationRef, failed) {
   }
   fail();
 }
-async function ownerAcknowledgement(executionRecordDigest, expiresAt) {
-  need(process.stdin.isTTY === true && DIGEST.test(executionRecordDigest));
+async function ownerAnswer(prompt, expiresAt) {
+  need(process.stdin.isTTY === true);
   const remaining = Date.parse(expiresAt) - Date.now();
   need(Number.isFinite(remaining) && remaining > 0);
   const terminal = readline.createInterface({ input: process.stdin, output: process.stderr });
   try {
-    const answer = await terminal.question(
-      `Source manifest completed. To acknowledge this exact terminal record, type ACK ${executionRecordDigest}\n> `,
-      { signal: AbortSignal.timeout(Math.min(remaining, 2147483647)) }
-    );
-    need(answer === `ACK ${executionRecordDigest}`);
+    return await terminal.question(prompt, {
+      signal: AbortSignal.timeout(Math.min(remaining, 2147483647))
+    });
   } finally {
     terminal.close();
   }
+}
+async function ownerAcknowledgement(executionRecordDigest, expiresAt) {
+  need(DIGEST.test(executionRecordDigest));
+  const answer = await ownerAnswer(
+    `Source manifest completed. To acknowledge this exact terminal record, type ACK ${executionRecordDigest}\n> `,
+    expiresAt
+  );
+  need(answer === `ACK ${executionRecordDigest}`);
+}
+async function ownerSnapshotInput(destinationDigest, expiresAt) {
+  need(DIGEST.test(destinationDigest));
+  const answer = await ownerAnswer(
+    `Snapshot destination: ${destinationDigest}\nPrepare the existing fixed snapshot input index and permission for this destination and current job. Select its input UUID with SNAPSHOT <uuid>; this does not grant source permission.\n> `,
+    expiresAt
+  );
+  need(typeof answer === "string" && answer.startsWith("SNAPSHOT ") && UUID.test(answer.slice(9)));
+  return answer.slice(9);
 }
 async function readProcess(binary, args) {
   return new Promise((resolve, reject) =>
@@ -224,7 +246,10 @@ async function waitForwardExit() {
   fail();
 }
 
-export async function runR3SourceFreshH1(input) {
+export const runR3SourceFreshH1 = (input) => runR3SourceH1(input, "fresh");
+export const runR3SourceSnapshotH1 = (input) => runR3SourceH1(input, "snapshot");
+
+async function runR3SourceH1(input, chain) {
   let admission,
     native,
     delivery,
@@ -236,7 +261,7 @@ export async function runR3SourceFreshH1(input) {
     inputs(input);
     input = Object.freeze({ ...input });
     admission = await readFixedR3JobAdmission(input);
-    need(admission.spec.phase === "source" && admission.spec.chain === "fresh");
+    need(admission.spec.phase === "source" && admission.spec.chain === chain);
     const profile = await loadFixedManualProfile({ repoRoot: input.repoRoot });
     launch = launchR3TargetCreate(input);
     launch.then(
@@ -256,10 +281,25 @@ export async function runR3SourceFreshH1(input) {
     await native.provisionPostgres();
     await native.provisionDatabases();
     await native.recordDestination();
-    await native.completeCreation();
+    const creation = await native.completeCreation();
+    if (chain === "snapshot") {
+      const inputReference = await ownerSnapshotInput(
+        creation.destinationDigest,
+        admission.admission.expiresAt
+      );
+      await native.consumeSnapshot({ inputReference });
+      await native.fetchSnapshot();
+      await native.decryptSnapshot();
+      await native.copySnapshot();
+      await native.restoreSnapshot();
+      await native.cleanupSnapshot();
+      await native.completeSnapshot();
+    }
     const result = await native.runSourceManifest();
     need(result.executionStatus === "SUCCEEDED" && DIGEST.test(result.executionRecordDigest));
     const sourceGateEvidenceBytes = encodeManualJson(result.sourceGateEvidence);
+    const snapshotMetadataBytes =
+      chain === "snapshot" ? encodeManualJson(result.snapshotMetadata) : undefined;
     const executionBytes = await original(profile, "journal", result.executionRecordDigest);
     await ownerAcknowledgement(result.executionRecordDigest, admission.admission.expiresAt);
     const acknowledgement = await native.acknowledgeSource({
@@ -288,7 +328,11 @@ export async function runR3SourceFreshH1(input) {
         session.sessionId === native.session.sessionId &&
         session.sessionNonce === native.session.sessionNonce
     );
-    await delivery.publishClosed({ sessionBytes, sourceGateEvidenceBytes });
+    await delivery.publishClosed({
+      sessionBytes,
+      sourceGateEvidenceBytes,
+      ...(snapshotMetadataBytes ? { snapshotMetadataBytes } : {})
+    });
     await delivery.close();
     deliveryClosed = true;
     return Object.freeze({
@@ -396,7 +440,10 @@ function forwardChild(key, socketPath) {
   };
 }
 
-export async function runR3SourceFreshHosted(input) {
+export const runR3SourceFreshHosted = (input) => runR3SourceHosted(input, "fresh");
+export const runR3SourceSnapshotHosted = (input) => runR3SourceHosted(input, "snapshot");
+
+async function runR3SourceHosted(input, chain) {
   let key,
     control,
     delivery,
@@ -411,7 +458,7 @@ export async function runR3SourceFreshHosted(input) {
     const creationSpecBytes = key.creationSpecBytes,
       jobAdmissionBytes = key.jobAdmissionBytes;
     const spec = JSON.parse(creationSpecBytes);
-    need(spec.phase === "source" && spec.chain === "fresh");
+    need(spec.phase === "source" && spec.chain === chain);
     delivery = await openR3HostedEvidenceDelivery({ creationSpecBytes, jobAdmissionBytes });
     control = await openR3HostedCreationControl({ creationSpecBytes, jobAdmissionBytes });
     await key.recheck();
@@ -434,11 +481,29 @@ export async function runR3SourceFreshHosted(input) {
     const sourceGateEvidenceBytes = Buffer.from(closed.sourceGateEvidenceBytes);
     need(sha256Bytes(sourceGateEvidenceBytes) === closed.sourceGateEvidenceDigest);
     const sourceGateEvidence = JSON.parse(sourceGateEvidenceBytes);
-    need(encodeManualJson(sourceGateEvidence).equals(sourceGateEvidenceBytes));
-    const sourceGateEvidenceFile = await persistSourceGateEvidence(
+    need(
+      sourceGateEvidence.chain === chain &&
+        encodeManualJson(sourceGateEvidence).equals(sourceGateEvidenceBytes)
+    );
+    let snapshotMetadataBytes, snapshotMetadata;
+    if (chain === "snapshot") {
+      snapshotMetadataBytes = Buffer.from(closed.snapshotMetadataBytes);
+      need(
+        sha256Bytes(snapshotMetadataBytes) === closed.snapshotMetadataDigest &&
+          sourceGateEvidence.snapshot.snapshotMetadataDigest === closed.snapshotMetadataDigest
+      );
+      snapshotMetadata = JSON.parse(snapshotMetadataBytes);
+      need(encodeManualJson(snapshotMetadata).equals(snapshotMetadataBytes));
+    }
+    const sourceGateEvidenceFile = await persistSourceEvidence(
       input.repoRoot,
+      chain,
+      "gate",
       sourceGateEvidenceBytes
     );
+    const snapshotMetadataFile = snapshotMetadataBytes
+      ? await persistSourceEvidence(input.repoRoot, chain, "metadata", snapshotMetadataBytes)
+      : undefined;
     await delivery.confirmClosedReceived();
     await delivery.close();
     deliveryClosed = true;
@@ -454,6 +519,13 @@ export async function runR3SourceFreshHosted(input) {
       sourceGateEvidence,
       sourceGateEvidenceDigest: closed.sourceGateEvidenceDigest,
       sourceGateEvidenceFile,
+      ...(snapshotMetadataBytes
+        ? {
+            snapshotMetadata,
+            snapshotMetadataDigest: closed.snapshotMetadataDigest,
+            snapshotMetadataFile
+          }
+        : {}),
       promotionEligible: false
     });
   } catch {
@@ -470,13 +542,22 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const args = process.argv.slice(2);
     need(
-      args.length === 4 &&
+      (args.length === 4 ||
+        (args.length === 6 && args[4] === "--chain" && ["fresh", "snapshot"].includes(args[5]))) &&
         args[0] === "--side" &&
         ["h1", "hosted"].includes(args[1]) &&
         args[2] === "--operation-ref" &&
         UUID.test(args[3])
     );
-    const run = args[1] === "h1" ? runR3SourceFreshH1 : runR3SourceFreshHosted;
+    const chain = args[5] ?? "fresh";
+    const run =
+      args[1] === "h1"
+        ? chain === "snapshot"
+          ? runR3SourceSnapshotH1
+          : runR3SourceFreshH1
+        : chain === "snapshot"
+          ? runR3SourceSnapshotHosted
+          : runR3SourceFreshHosted;
     const result = await run({ repoRoot: INSTALLED_ROOT, operationRef: args[3] });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch {

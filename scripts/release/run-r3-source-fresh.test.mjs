@@ -54,6 +54,48 @@ const sourceGateEvidence = {
 };
 const sourceGateEvidenceBytes = encodeManualJson(sourceGateEvidence);
 const outputFile = `${root}/output/source-fresh/source-gate-fresh.v1.json`;
+const snapshotMetadata = {
+  schemaVersion: "snapshot-metadata.v1",
+  dumpDigest: d("1"),
+  sourceMigrationHead: "20260925091000_stage1_operational_completion_settlement_guard",
+  sourcePrivilegeObservationDigest: d("2"),
+  sourceFingerprintBeforeDigest: d("3"),
+  sourceFingerprintAfterDigest: d("3"),
+  sanitizationContractDigest: d("4"),
+  ownershipMapDigest: d("5"),
+  ownershipContractVersion: "1",
+  scanDigest: d("6"),
+  scanSubjectDigest: d("1"),
+  exportToolVersion: "fixture.v1",
+  scanToolVersion: "fixture.v1",
+  createdAt: "2026-09-27T00:00:00.000Z",
+  reviewAt: "2026-09-27T00:00:00.000Z",
+  expiresAt: "2099-01-01T00:00:00.000Z",
+  owner: "owner",
+  readers: ["reader"],
+  accessPolicyRef: "fixture-policy",
+  workflowRunRef: "fixture-run"
+};
+const snapshotMetadataBytes = encodeManualJson(snapshotMetadata);
+const snapshotGate = {
+  ...sourceGateEvidence,
+  chain: "snapshot",
+  snapshot: {
+    snapshotMetadataDigest: sha256Bytes(snapshotMetadataBytes),
+    snapshotBundleDigest: d("7"),
+    sourceMigrationHead: snapshotMetadata.sourceMigrationHead,
+    ownershipMapDigest: snapshotMetadata.ownershipMapDigest,
+    ownershipObservationDigest: d("8")
+  }
+};
+const snapshotGateBytes = encodeManualJson(snapshotGate);
+const snapshotOutputFile = `${root}/output/source-snapshot/source-gate-snapshot.v1.json`;
+const snapshotMetadataFile = `${root}/output/source-snapshot/snapshot-metadata.v1.json`;
+const snapshotRef = randomUUID();
+let snapshotSelectorValid = true;
+const currentGate = () => (spec.chain === "snapshot" ? snapshotGate : sourceGateEvidence);
+const currentGateBytes = () =>
+  spec.chain === "snapshot" ? snapshotGateBytes : sourceGateEvidenceBytes;
 const job = {
   expiresAt: new Date(Date.now() + 120000).toISOString(),
   host: { forwardingPublicKeyPem: key.export({ type: "spki", format: "pem" }) }
@@ -129,11 +171,39 @@ mock.module("./launch-manual-stage1.mjs", {
         },
         async completeCreation() {
           events.push("creation-complete");
+          return { destinationDigest: d("d") };
+        },
+        async consumeSnapshot(selector) {
+          events.push("snapshot-consume");
+          assert.deepEqual(selector, { inputReference: snapshotRef });
+        },
+        async fetchSnapshot() {
+          events.push("snapshot-fetch");
+        },
+        async decryptSnapshot() {
+          events.push("snapshot-decrypt");
+        },
+        async copySnapshot() {
+          events.push("snapshot-copy");
+        },
+        async restoreSnapshot() {
+          events.push("snapshot-restore");
+        },
+        async cleanupSnapshot() {
+          events.push("snapshot-cleanup");
+        },
+        async completeSnapshot() {
+          events.push("snapshot-complete");
         },
         async runSourceManifest() {
           events.push("manifest");
           await writeObject("journal", executionRecordDigest, executionBytes);
-          return { executionStatus: "SUCCEEDED", executionRecordDigest, sourceGateEvidence };
+          return {
+            executionStatus: "SUCCEEDED",
+            executionRecordDigest,
+            sourceGateEvidence: currentGate(),
+            ...(spec.chain === "snapshot" ? { snapshotMetadata } : {})
+          };
         },
         async acknowledgeSource(input) {
           events.push("owner-ack");
@@ -180,7 +250,11 @@ mock.module("./r3-h1-evidence-delivery.mjs", {
       async publishClosed(input) {
         events.push("closed-delivery");
         assert.deepEqual(input.sessionBytes, closedBytes);
-        assert.deepEqual(input.sourceGateEvidenceBytes, sourceGateEvidenceBytes);
+        assert.deepEqual(input.sourceGateEvidenceBytes, currentGateBytes());
+        assert.deepEqual(
+          input.snapshotMetadataBytes,
+          spec.chain === "snapshot" ? snapshotMetadataBytes : undefined
+        );
       },
       async close() {
         events.push("delivery-close");
@@ -255,13 +329,24 @@ mock.module("./r3-hosted-evidence-delivery.mjs", {
           assert.ok(events.includes("forward-exit"));
           return {
             sessionDigest: closedDigest,
-            sourceGateEvidenceBytes,
-            sourceGateEvidenceDigest: sha256Bytes(sourceGateEvidenceBytes)
+            sourceGateEvidenceBytes: currentGateBytes(),
+            sourceGateEvidenceDigest: sha256Bytes(currentGateBytes()),
+            ...(spec.chain === "snapshot"
+              ? {
+                  snapshotMetadataBytes,
+                  snapshotMetadataDigest: sha256Bytes(snapshotMetadataBytes)
+                }
+              : {})
           };
         },
         async confirmClosedReceived() {
           events.push("closed-receipt");
-          assert.deepEqual(await fs.readFile(outputFile), sourceGateEvidenceBytes);
+          assert.deepEqual(
+            await fs.readFile(spec.chain === "snapshot" ? snapshotOutputFile : outputFile),
+            currentGateBytes()
+          );
+          if (spec.chain === "snapshot")
+            assert.deepEqual(await fs.readFile(snapshotMetadataFile), snapshotMetadataBytes);
         },
         async close() {
           events.push("sftp-close");
@@ -310,6 +395,11 @@ test("source fresh caller requires exact owner ACK before cleanup and publishes 
   });
   mock.method(readline, "createInterface", () => ({
     async question(prompt) {
+      if (prompt.includes("SNAPSHOT")) {
+        events.push("snapshot-selector");
+        assert.ok(prompt.includes(d("d")));
+        return snapshotSelectorValid ? `SNAPSHOT ${snapshotRef}` : "SNAPSHOT ../foreign";
+      }
       events.push("prompt");
       assert.ok(prompt.includes(executionRecordDigest));
       if (answerMode === "eof") throw new Error("EOF");
@@ -319,7 +409,7 @@ test("source fresh caller requires exact owner ACK before cleanup and publishes 
     },
     close() {}
   }));
-  const { runR3SourceFreshH1 } = await import("./run-r3-source-fresh.mjs");
+  const { runR3SourceFreshH1, runR3SourceSnapshotH1 } = await import("./run-r3-source-fresh.mjs");
   const result = await runR3SourceFreshH1({ repoRoot: "/synthetic-h1", operationRef });
   assert.equal(result.status, "CLOSED");
   assert.equal(result.sessionRecordDigest, closedDigest);
@@ -358,6 +448,38 @@ test("source fresh caller requires exact owner ACK before cleanup and publishes 
     assert.equal(events.includes("cleanup-complete"), false);
     assert.equal(events.includes("closed-delivery"), false);
   }
+  answerMode = "correct";
+  spec.chain = "snapshot";
+  t.after(() => {
+    spec.chain = "fresh";
+  });
+  events.length = 0;
+  await assert.rejects(runR3SourceFreshH1({ repoRoot: "/synthetic-h1", operationRef }));
+  assert.equal(events.includes("launch"), false);
+  assert.equal(
+    (await runR3SourceSnapshotH1({ repoRoot: "/synthetic-h1", operationRef })).status,
+    "CLOSED"
+  );
+  assert.deepEqual(
+    events.slice(events.indexOf("creation-complete"), events.indexOf("manifest") + 1),
+    [
+      "creation-complete",
+      "snapshot-selector",
+      "snapshot-consume",
+      "snapshot-fetch",
+      "snapshot-decrypt",
+      "snapshot-copy",
+      "snapshot-restore",
+      "snapshot-cleanup",
+      "snapshot-complete",
+      "manifest"
+    ]
+  );
+  snapshotSelectorValid = false;
+  events.length = 0;
+  await assert.rejects(runR3SourceSnapshotH1({ repoRoot: "/synthetic-h1", operationRef }));
+  assert.equal(events.includes("snapshot-consume"), false);
+  assert.equal(events.includes("manifest"), false);
 });
 
 test("hosted caller waits for imported cleanup and actual forward exit before CLOSED", async (t) => {
@@ -381,7 +503,8 @@ test("hosted caller waits for imported cleanup and actual forward exit before CL
     };
     return sshChild;
   });
-  const { runR3SourceFreshHosted } = await import("./run-r3-source-fresh.mjs");
+  const { runR3SourceFreshHosted, runR3SourceSnapshotHosted } =
+    await import("./run-r3-source-fresh.mjs");
   const input = { repoRoot: path.resolve(import.meta.dirname, "../.."), operationRef };
   const outputRoot = path.join(input.repoRoot, ".release-output");
   const mapped = (file) =>
@@ -445,5 +568,32 @@ test("hosted caller waits for imported cleanup and actual forward exit before CL
   await assert.rejects(runR3SourceFreshHosted(input), { code: "R3_SOURCE_FRESH_CALLER_INVALID" });
   assert.equal(events.includes("closed-receive"), false);
   assert.ok(events.includes("sftp-close"));
+  assert.ok((await fs.lstat(`${root}/forwarding.key`)).isFile());
+  earlyExit = false;
+  spec.chain = "snapshot";
+  t.after(() => {
+    spec.chain = "fresh";
+  });
+  events.length = 0;
+  await assert.rejects(runR3SourceFreshHosted(input));
+  assert.equal(events.includes("sftp-ready"), false);
+  const snapshotResult = await runR3SourceSnapshotHosted(input);
+  assert.equal(snapshotResult.status, "CLOSED");
+  assert.deepEqual(snapshotResult.sourceGateEvidence, snapshotGate);
+  assert.deepEqual(snapshotResult.snapshotMetadata, snapshotMetadata);
+  assert.equal(
+    snapshotResult.snapshotMetadataFile,
+    path.join(outputRoot, "source-snapshot/snapshot-metadata.v1.json")
+  );
+  assert.deepEqual(await fs.readFile(snapshotOutputFile), snapshotGateBytes);
+  assert.deepEqual(await fs.readFile(snapshotMetadataFile), snapshotMetadataBytes);
+  assert.equal((await fs.lstat(snapshotMetadataFile)).mode & 0o777, 0o644);
+  for (const name of ["forwarding.key", "signing-key.pem"])
+    await fs.writeFile(`${root}/${name}`, "synthetic private file", { mode: 0o600 });
+  // A blocked metadata write must not acknowledge even if the gate can be saved.
+  await fs.unlink(snapshotOutputFile);
+  events.length = 0;
+  await assert.rejects(runR3SourceSnapshotHosted(input));
+  assert.equal(events.includes("closed-receipt"), false);
   assert.ok((await fs.lstat(`${root}/forwarding.key`)).isFile());
 });

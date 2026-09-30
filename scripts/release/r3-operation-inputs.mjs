@@ -435,7 +435,10 @@ async function createInput(file, bytes) {
   }
 }
 
-export async function prepareR3SourceFreshSpec(input) {
+export const prepareR3SourceFreshSpec = (input) => prepareR3SourceSpec(input, "fresh");
+export const prepareR3SourceSnapshotSpec = (input) => prepareR3SourceSpec(input, "snapshot");
+
+async function prepareR3SourceSpec(input, chain) {
   const opened = [];
   try {
     exact(input, [
@@ -505,7 +508,7 @@ export async function prepareR3SourceFreshSpec(input) {
       materialRawDigest: input.materialRawDigest,
       targetPolicyDigest: policy.policyRawDigest,
       phase: "source",
-      chain: "fresh",
+      chain,
       createdAt: new Date().toISOString(),
       expiresAt: input.expiresAt,
       workspace: {
@@ -569,7 +572,11 @@ async function githubJson(endpoint) {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
 }
 
-export async function prepareR3SourceFreshHostedJob(input) {
+export const prepareR3SourceFreshHostedJob = (input) => prepareR3SourceHostedJob(input, "fresh");
+export const prepareR3SourceSnapshotHostedJob = (input) =>
+  prepareR3SourceHostedJob(input, "snapshot");
+
+async function prepareR3SourceHostedJob(input, chain) {
   let pem, sshBytes;
   try {
     exact(input, ["repoRoot", "creationSpecBytes"]);
@@ -585,7 +592,7 @@ export async function prepareR3SourceFreshHostedJob(input) {
     need(
       encodeManualJson(spec).equals(specBytes) &&
         spec.phase === "source" &&
-        spec.chain === "fresh" &&
+        spec.chain === chain &&
         UUID.test(spec.operationRef)
     );
     const policyBytes = await fs.readFile(
@@ -604,7 +611,7 @@ export async function prepareR3SourceFreshHostedJob(input) {
         process.env.GITHUB_REF === hosted.workflowRef &&
         process.env.GITHUB_SHA === spec.sourceSha &&
         process.env.GITHUB_RUN_ATTEMPT === "1" &&
-        process.env.GITHUB_JOB === source.jobs.fresh &&
+        process.env.GITHUB_JOB === source.jobs[chain] &&
         process.env.GITHUB_WORKFLOW_REF ===
           `${hosted.repository}/${source.workflowPath}@${hosted.workflowRef}` &&
         /^[1-9][0-9]*$/u.test(process.env.GITHUB_RUN_ID ?? "") &&
@@ -641,7 +648,7 @@ export async function prepareR3SourceFreshHostedJob(input) {
       }
       need(result.jobs.length === 100 && page < 10);
     }
-    const matches = jobs.filter((job) => job.name === source.jobs.fresh);
+    const matches = jobs.filter((job) => job.name === source.jobs[chain]);
     need(matches.length === 1);
     const observed = matches[0];
     need(
@@ -678,9 +685,9 @@ export async function prepareR3SourceFreshHostedJob(input) {
         runAttempt: 1,
         workflowPath: source.workflowPath,
         callerWorkflowPath: source.workflowPath,
-        jobKey: source.jobs.fresh,
+        jobKey: source.jobs[chain],
         jobId: String(observed.id),
-        jobName: source.jobs.fresh,
+        jobName: source.jobs[chain],
         environment: source.environment,
         runnerClass: hosted.runnerClass
       },
@@ -769,7 +776,10 @@ with zipfile.ZipFile(io.BytesIO(data)) as z:
     sys.stdout.buffer.write(value)
 `;
 
-export async function importR3SourceFreshJob(input) {
+export const importR3SourceFreshJob = (input) => importR3SourceJob(input, "fresh");
+export const importR3SourceSnapshotJob = (input) => importR3SourceJob(input, "snapshot");
+
+async function importR3SourceJob(input, chain) {
   const opened = [];
   try {
     exact(input, ["repoRoot", "operationRef", "runId"]);
@@ -789,7 +799,7 @@ export async function importR3SourceFreshJob(input) {
       operationRef: input.operationRef
     });
     opened.push(creation);
-    need(creation.spec.phase === "source" && creation.spec.chain === "fresh");
+    need(creation.spec.phase === "source" && creation.spec.chain === chain);
     const profile = await trust.loadFixedManualProfile({ repoRoot: input.repoRoot });
     const archiveRoot = profile.storage.archiveRoot,
       directory = `${archiveRoot}/inputs/r3/${input.operationRef}`;

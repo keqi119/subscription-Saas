@@ -173,7 +173,27 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
   const racing = inputs.prepareR3SourceFreshSpec(racedInput);
   racedInput.operationRef = randomUUID();
   assert.equal(JSON.parse(await racing).operationRef, originalRef);
-  const admitted = encodeManualJson({
+  const snapshotInput = { ...input, operationRef: randomUUID() };
+  const snapshotBytes = await inputs.prepareR3SourceSnapshotSpec(snapshotInput);
+  assert.equal(JSON.parse(snapshotBytes).chain, "snapshot");
+  assert.equal(JSON.parse(snapshotBytes).phase, "source");
+  await assert.rejects(
+    inputs.importR3SourceFreshJob({
+      repoRoot: input.repoRoot,
+      operationRef: snapshotInput.operationRef,
+      runId: "1234"
+    }),
+    { code: "R3_OPERATION_INPUT_INVALID" }
+  );
+  await assert.rejects(
+    inputs.importR3SourceSnapshotJob({
+      repoRoot: input.repoRoot,
+      operationRef: input.operationRef,
+      runId: "1234"
+    }),
+    { code: "R3_OPERATION_INPUT_INVALID" }
+  );
+  let admitted = encodeManualJson({
     operationRef: input.operationRef,
     sourceSha: spec.sourceSha,
     creationSpecDigest: sha256Bytes(bytes),
@@ -181,11 +201,11 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
   });
   const zipScript =
     "import io,sys,zipfile; b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('job-admission.json',sys.argv[1]); z.close(); sys.stdout.buffer.write(b.getvalue())";
-  const zip = (
-    await exec("python3", ["-c", zipScript, admitted.toString()], { encoding: "buffer" })
-  ).stdout;
+  let zip = (await exec("python3", ["-c", zipScript, admitted.toString()], { encoding: "buffer" }))
+    .stdout;
   const actualExecFile = childProcess.execFile;
   const calls = [];
+  let importedOperationRef = input.operationRef;
   const commandMock = mock.method(childProcess, "execFile", (file, args, options, callback) => {
     if (file !== "gh") return actualExecFile(file, args, options, callback);
     calls.push(args);
@@ -197,7 +217,7 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
             artifacts: [
               {
                 id: 789,
-                name: `stage1-r3-job-${input.operationRef}-1234-1`,
+                name: `stage1-r3-job-${importedOperationRef}-1234-1`,
                 expired: false,
                 size_in_bytes: zip.length,
                 workflow_run: { id: 1234, head_sha: spec.sourceSha }
@@ -223,6 +243,22 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
       runId: "1234"
     }),
     { code: "R3_OPERATION_INPUT_INVALID" }
+  );
+  importedOperationRef = snapshotInput.operationRef;
+  admitted = encodeManualJson({
+    ...JSON.parse(admitted),
+    operationRef: importedOperationRef,
+    creationSpecDigest: sha256Bytes(snapshotBytes)
+  });
+  zip = (await exec("python3", ["-c", zipScript, admitted.toString()], { encoding: "buffer" }))
+    .stdout;
+  assert.deepEqual(
+    await inputs.importR3SourceSnapshotJob({
+      repoRoot: input.repoRoot,
+      operationRef: importedOperationRef,
+      runId: "1234"
+    }),
+    admitted
   );
 });
 
@@ -459,4 +495,40 @@ test("fixed hosted key holder binds actual files, job and machine and rejects re
   await assert.rejects(inputs.prepareR3SourceFreshHostedJob(prepareInput), {
     code: "R3_OPERATION_INPUT_INVALID"
   });
+  process.env.GITHUB_REF = "refs/heads/main";
+  const snapshotRef = randomUUID(),
+    snapshotId = snapshotRef.replaceAll("-", "");
+  const snapshotDir = `/dev/shm/stage1-keys/r3-job-${snapshotId}`;
+  t.after(() => fs.rm(snapshotDir, { recursive: true, force: true }));
+  const snapshotSpec = {
+    ...preparedSpec,
+    operationRef: snapshotRef,
+    chain: "snapshot",
+    workspace: {
+      ...preparedSpec.workspace,
+      id: snapshotId,
+      backingFile: `/var/lib/stage1-snapshots/${snapshotId}.luks`,
+      mountPath: `/srv/stage1-snapshot/${snapshotId}`,
+      keyFile: `/dev/shm/stage1-keys/${snapshotId}.key`,
+      mapperName: `s1snap_${snapshotId}`
+    }
+  };
+  const snapshotInput = { ...prepareInput, creationSpecBytes: encodeManualJson(snapshotSpec) };
+  await assert.rejects(inputs.prepareR3SourceFreshHostedJob(snapshotInput), {
+    code: "R3_OPERATION_INPUT_INVALID"
+  });
+  await assert.rejects(inputs.prepareR3SourceSnapshotHostedJob(snapshotInput), {
+    code: "R3_OPERATION_INPUT_INVALID"
+  });
+  process.env.GITHUB_JOB = "source-snapshot";
+  apiJob.name = "source-snapshot";
+  const producedSnapshot = await inputs.prepareR3SourceSnapshotHostedJob(snapshotInput);
+  const snapshotJob = JSON.parse(producedSnapshot.jobAdmissionBytes);
+  assert.equal(snapshotJob.chain, "snapshot");
+  assert.equal(snapshotJob.ci.jobKey, "source-snapshot");
+  assert.equal(snapshotJob.ci.jobName, "source-snapshot");
+  const snapshotKey = await inputs.readR3HostedOperationKey({ operationRef: snapshotRef });
+  assert.deepEqual(snapshotKey.creationSpecBytes, snapshotInput.creationSpecBytes);
+  assert.deepEqual(snapshotKey.jobAdmissionBytes, producedSnapshot.jobAdmissionBytes);
+  await snapshotKey.close();
 });

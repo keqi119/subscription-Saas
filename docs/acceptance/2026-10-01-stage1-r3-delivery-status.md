@@ -55,3 +55,11 @@ source/snapshot 已沿用 fresh 的公开结果投影入口。native holder 保�
 既有 CLOSED 消息与 H1 适配器已支持共同交付 source/snapshot 的公开 gate 和精确元数据。元数据摘要、迁移头、ownership map 必须与 gate 一致；fresh/final 消息不允许混入元数据。仍使用原文件名、完整消息的精确回执和 1 MiB 限制，不增加权限。codec `d8bec6` 先失败，`1cb3ce` 为 4/4 通过；最终 Linux codec/hosted adapter/既有 fresh callers `a1f3d6` 为 8/8，无跳过，约 19.2 秒。限定独立审查与小范围补充核对均无可证实 P1/P2。`1cf632` 限定 lint、差异和合同检查通过，仓库合同摘要 `sha256:da90f03f8d10e2abab1be886173aed698de06197bfcafbd0dba0a25b6d36952a`，迁移摘要未变。
 
 final 字段追踪确认还有独立执行缺口：native `matchingSourceEvidenceDigest` 指向 source 终态 execution，aggregate 所需摘要指向公开 source-gate 原件，两者不能直接互换。native final 数据库 manifest 成功也不包含旧 final-compose 的 Compose、API 进程/会话/就绪检查、真实浏览器请求和分阶段保管证据；后续必须复用并执行这些既有检查，不能填充虚构的 `PASSED`。
+
+## Snapshot 两端调用增量
+
+后续已接通 snapshot 固定输入和两端调用。H1 使用 `prepareR3SourceSnapshotSpec` / `importR3SourceSnapshotJob`，hosted 使用 `prepareR3SourceSnapshotHostedJob`；沿用同一固定准入器、临时密钥、artifact 和摘要核验，fresh 入口保持原行为。脚本 `run-r3-source-fresh.mjs --side h1 --operation-ref <uuid> --chain snapshot` 启动 H1 snapshot 调用；hosted 同样可用 `--side hosted --chain snapshot` 的固定模式。
+
+H1 创建完成后显示实际 destination digest，在负责人终端等待 `SNAPSHOT <input UUID>`，用于选择已经按既有合同准备的固定输入索引。索引权限必须绑定刚观测的目标和当前 job；此输入不是批准合法来源，也不会自动生成权限。随后运行既有 consume/fetch/decrypt/copy/restore/cleanupSnapshot/completeSnapshot，再执行 source manifest、精确 ACK 和原有清理/CLOSED。
+
+hosted 将 source-gate 与 snapshot metadata 分别以禁止覆盖方式写入 `.release-output/source-snapshot`，两份都 fsync/读回后才发接收回执。第二份失败时，保留失败状态和私钥，不发送回执；第一份已写公开文件不代表成功。input `e98104` 3/3、caller `347e1d` 2/2 通过，无跳过；限定独立审查无可证实 P1/P2。`6a4330` 格式、限定 lint、差异和合同检查通过，仓库合同摘要为 `sha256:995b57023313b9fa34430df8151c0805b798bd91c5ca0864afa807dba60fc03b`。测试外部边界仍为替身，合法快照来源/索引与真实运行仍未完成，工作流接线是下一步。

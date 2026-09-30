@@ -63,3 +63,13 @@ final 字段追踪确认还有独立执行缺口：native `matchingSourceEvidenc
 H1 创建完成后显示实际 destination digest，在负责人终端等待 `SNAPSHOT <input UUID>`，用于选择已经按既有合同准备的固定输入索引。索引权限必须绑定刚观测的目标和当前 job；此输入不是批准合法来源，也不会自动生成权限。随后运行既有 consume/fetch/decrypt/copy/restore/cleanupSnapshot/completeSnapshot，再执行 source manifest、精确 ACK 和原有清理/CLOSED。
 
 hosted 将 source-gate 与 snapshot metadata 分别以禁止覆盖方式写入 `.release-output/source-snapshot`，两份都 fsync/读回后才发接收回执。第二份失败时，保留失败状态和私钥，不发送回执；第一份已写公开文件不代表成功。input `e98104` 3/3、caller `347e1d` 2/2 通过，无跳过；限定独立审查无可证实 P1/P2。`6a4330` 格式、限定 lint、差异和合同检查通过，仓库合同摘要为 `sha256:995b57023313b9fa34430df8151c0805b798bd91c5ca0864afa807dba60fc03b`。测试外部边界仍为替身，合法快照来源/索引与真实运行仍未完成，工作流接线是下一步。
+
+## Snapshot 工作流接线增量
+
+source-snapshot 随后已改为受保护的 Ubuntu 24.04 hosted job，使用已预留的公开 `sourceSnapshotCreationSpec`、当前 job 的 attestation/import 和 snapshot caller。它在 source-fresh 成功后运行；当前工作流的 H1 并发组也跨候选 SHA 固定，以避免竞争同一 H1 通道。final 的两个旧执行分支仍待改接，尚未据此宣称阶段 1 可发布。
+
+source 的旧明文 dump artifact 下载和旧执行器已移出该 job，由 native snapshot 准入/消费负责验证真实输入。返回 gate/metadata 的固定文件、摘要、规范编码均需一致；metadata.workflowRunRef 继续对齐所选 snapshotRunId，保留旧 final 所需的 run/artifact 输入。公开文件继续走原有 attestation、上传、下载读回和 custody；四个上传均限定具体公开文件并包含其隐藏父目录。
+
+最终 `611fae`：DAG 1/1、YAML 重复键检查、十段 shell 和四段内嵌 JS 语法、限定 lint、差异及合同检查通过。中途复制产生的自依赖被现有 DAG 检查 `d54c3d` 抓到并已修正。限定独立审查无可证实 P1/P2。当前仓库合同摘要 `sha256:adf2800f4563c6eef9c35839ab536b9a27db4f8f6cf79064d0824c7b35ad72c6`，迁移仍为 128 项、未更改。没有推送、合并、实际触发工作流或改动服务器服务。
+
+当前下一项是 final：绑定确切公开 source 原件，并接入既有真实 Compose/API/Web 检查及其证据，之后接两端 final 调用和工作流。合法源库性质、snapshot 索引、同候选真实 R2/R3、两项 Staging 迁移及 R4 验收仍未完成。

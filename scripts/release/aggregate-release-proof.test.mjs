@@ -85,7 +85,8 @@ test("release workflow contains only same-run final and generated-exit DAG input
   assert.match(workflow, /generate-exit-evidence:[\s\S]*needs:[\s\S]*aggregate-proof/u);
   assert.match(workflow, /checkpoint-custody:[\s\S]*needs:[\s\S]*generate-exit-evidence/u);
   assert.match(workflow, /release-owner-attestations\.yml[\s\S]*--source-digest "\$GITHUB_SHA"/u);
-  assert.match(workflow, /sanitized-snapshot\.yml[\s\S]*--source-ref refs\/heads\/main/u);
+  const finalWorkflow = await readFile(".github/workflows/release-final-chain.yml", "utf8");
+  assert.match(finalWorkflow, /sanitized-snapshot\.yml[\s\S]*--source-ref refs\/heads\/main/u);
   assert.doesNotMatch(workflow, /audit-s1-exit/u);
   const fresh = workflow.split("  source-fresh:\n")[1]?.split("  source-snapshot:\n")[0];
   assert.ok(fresh);
@@ -105,6 +106,39 @@ test("release workflow contains only same-run final and generated-exit DAG input
   assert.match(
     fresh,
     /id: attest\n[\s\S]*id: upload\n[\s\S]*Freeze the same-run source custody record/u
+  );
+  const snapshot = workflow.split("  source-snapshot:\n")[1]?.split("  admit-build:\n")[0];
+  assert.ok(snapshot);
+  assert.match(workflow, /group: stage1-s1-release-candidate-h1\n/u);
+  assert.match(snapshot, /needs: \[source-static, source-fresh\]/u);
+  assert.match(snapshot, /runs-on: ubuntu-24\.04/u);
+  assert.match(
+    snapshot,
+    /SOURCE_SNAPSHOT_CREATION_SPEC: \$\{\{ inputs.sourceSnapshotCreationSpec \}\}/u
+  );
+  assert.match(snapshot, /prepareR3SourceSnapshotHostedJob/u);
+  assert.match(
+    snapshot,
+    /runR3SourceSnapshotHosted[\s\S]*snapshotMetadataFile[\s\S]*snapshotMetadataDigest/u
+  );
+  assert.match(snapshot, /snapshotMetadata\.workflowRunRef !== expectedSnapshotRun/u);
+  assert.match(
+    snapshot,
+    /id: attest-job[\s\S]*id: upload-job[\s\S]*id: attest-source[\s\S]*id: attest-snapshot/u
+  );
+  assert.equal((snapshot.match(/include-hidden-files: true/gu) ?? []).length, 4);
+  assert.equal((snapshot.match(/stage1-root "\$\(command -v node\)"/gu) ?? []).length, 2);
+  assert.equal(
+    (
+      snapshot.match(
+        /sudo "\$\(command -v node\)" scripts\/release\/workflow-custody-record\.mjs/gu
+      ) ?? []
+    ).length,
+    2
+  );
+  assert.doesNotMatch(
+    snapshot,
+    /run-source-database-gate\.mjs|sanitized-snapshot\.dump|source-snapshot\.raw\.json/u
   );
 });
 

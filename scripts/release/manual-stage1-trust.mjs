@@ -2840,6 +2840,7 @@ export async function openTrustedR3CreationSession(input) {
       "custodyFinalOriginals",
       "completeFinal",
       "acknowledgeSource",
+      "acknowledgeFinal",
       "completeCleanup",
       "closeIncomplete",
       "record",
@@ -2881,6 +2882,7 @@ export async function openTrustedR3CreationSession(input) {
       custodyFinalOriginals: (...args) => action("custodyFinalOriginals", args),
       completeFinal: (...args) => action("completeFinal", args),
       acknowledgeSource: (...args) => action("acknowledgeSource", args),
+      acknowledgeFinal: (...args) => action("acknowledgeFinal", args),
       completeCleanup: (...args) => action("completeCleanup", args),
       record: (kind, value) => action("record", [kind, value]),
       closeIncomplete: (...args) =>

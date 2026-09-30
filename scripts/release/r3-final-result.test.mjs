@@ -6,6 +6,8 @@ import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { planR3DatabaseTargets } from "./r3-database-targets.mjs";
 import {
+  assertR3FinalAcknowledgement,
+  buildR3FinalAcknowledgement,
   buildR3FinalCompletion,
   r3FinalObservationNames,
   readR3FinalOriginals
@@ -161,6 +163,71 @@ test("final completion rejects missing custody, mismatched source, time and orig
     mutate(value);
     assert.throws(() => buildR3FinalCompletion(value), { code: "R3_FINAL_RESULT_INVALID" });
   }
+});
+
+test("final acknowledgement binds the successful candidate-use terminal and final result", () => {
+  const f = fixture();
+  const result = buildR3FinalCompletion(f);
+  const execution = {
+    ...f.initialExecution,
+    recordedAt: "2026-09-29T00:00:04.000Z",
+    predecessorExecutionRecordDigest: sha256Canonical(f.initialExecution),
+    startedAt: f.initialExecution.recordedAt,
+    finishedAt: "2026-09-29T00:00:03.000Z",
+    status: "SUCCEEDED",
+    reasonCode: null,
+    resultDigest: sha256Canonical(result),
+    processEvidenceDigest: result.readbackDigest
+  };
+  const input = {
+    profileDigest: f.request.profileDigest,
+    ownerId: f.request.ownerId,
+    execution,
+    result,
+    observedAt: "2026-09-29T00:00:05.000Z",
+    recordedAt: "2026-09-29T00:00:06.000Z"
+  };
+  const acknowledgement = buildR3FinalAcknowledgement(input);
+  assert.equal(acknowledgement.kind, "custody");
+  assert.equal(acknowledgement.purpose, "owner-acknowledgement");
+  assert.equal(acknowledgement.subjectDigest, sha256Canonical(execution));
+  assert.equal(acknowledgement.promotionEligible, false);
+  assert.ok(Object.isFrozen(acknowledgement));
+  assert.deepEqual(
+    assertR3FinalAcknowledgement({ ...input, acknowledgement, now: "2026-09-29T00:00:07.000Z" }),
+    acknowledgement
+  );
+  for (const mutate of [
+    (value) => {
+      value.result.phase = "source";
+    },
+    (value) => {
+      value.result.schemaVersion = "manual-r3-source-result.v1";
+    },
+    (value) => {
+      value.execution.stage = "snapshot-consumer";
+    },
+    (value) => {
+      value.execution.status = "FAILED";
+    },
+    (value) => {
+      value.result.matchingSourceEvidenceDigest = digest("different source");
+    },
+    (value) => {
+      value.result.sourceClaims.matchingSourceEvidenceDigest = digest("different source");
+    },
+    (value) => {
+      value.observedAt = "2026-09-29T00:00:03.000Z";
+    }
+  ]) {
+    const value = JSON.parse(JSON.stringify(input));
+    mutate(value);
+    assert.throws(() => buildR3FinalAcknowledgement(value), { code: "R3_FINAL_RESULT_INVALID" });
+  }
+  assert.throws(
+    () => assertR3FinalAcknowledgement({ ...input, acknowledgement, now: input.observedAt }),
+    { code: "R3_FINAL_RESULT_INVALID" }
+  );
 });
 
 test("final original reader rejects archive/backup byte disagreement before claiming any result", async () => {

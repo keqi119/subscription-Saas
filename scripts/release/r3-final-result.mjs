@@ -557,3 +557,107 @@ export function buildR3FinalCompletion({
   encodeManualJson(result);
   return freeze(result);
 }
+
+// A record shape only. The caller must authenticate the retained final and
+// source originals and obtain the owner's explicit action before calling this.
+export function buildR3FinalAcknowledgement({
+  profileDigest,
+  ownerId,
+  execution,
+  result,
+  observedAt,
+  recordedAt
+}) {
+  try {
+    validateContract("manual-operation-record.v3", execution);
+    need(
+      DIGEST.test(profileDigest) &&
+        typeof ownerId === "string" &&
+        ownerId.length > 0 &&
+        execution.kind === "execution" &&
+        execution.stage === "candidate-use" &&
+        execution.status === "SUCCEEDED" &&
+        execution.promotionEligible === false &&
+        execution.reasonCode === null &&
+        execution.profileDigest === profileDigest &&
+        DIGEST.test(execution.predecessorExecutionRecordDigest) &&
+        DIGEST.test(execution.processEvidenceDigest) &&
+        result?.schemaVersion === "manual-r3-final-result.v1" &&
+        result.promotionEligible === false &&
+        result.phase === "final" &&
+        ["fresh", "snapshot"].includes(result.chain) &&
+        result.profileDigest === profileDigest &&
+        result.ownerId === ownerId &&
+        result.operationRef === execution.operationId &&
+        result.sessionId === execution.sessionId &&
+        result.sessionNonce === execution.sessionNonce &&
+        result.requestDigest === execution.requestDigest &&
+        result.candidateUseExecutionRecordDigest === execution.predecessorExecutionRecordDigest &&
+        result.readbackDigest === execution.processEvidenceDigest &&
+        DIGEST.test(result.matchingSourceEvidenceDigest) &&
+        exact(result.sourceClaims, [
+          "matchingSourceEvidenceDigest",
+          "matchingSourceResultDigest",
+          "expectedSchemaDigest"
+        ]) &&
+        Object.values(result.sourceClaims).every((value) => DIGEST.test(value)) &&
+        result.sourceClaims.matchingSourceEvidenceDigest === result.matchingSourceEvidenceDigest &&
+        sha256Canonical(result) === execution.resultDigest
+    );
+    need(
+      time(result.completedAt) <= time(execution.finishedAt) &&
+        time(execution.finishedAt) <= time(execution.recordedAt) &&
+        time(execution.recordedAt) <= time(observedAt) &&
+        time(observedAt) <= time(recordedAt)
+    );
+    const subjectDigest = sha256Canonical(execution);
+    const acknowledgement = {
+      schemaVersion: "manual-operation-record.v3",
+      profileDigest,
+      recordedAt,
+      promotionEligible: false,
+      kind: "custody",
+      ownerId,
+      subjectDigest,
+      subjectType: "record",
+      purpose: "owner-acknowledgement",
+      outcome: "MATCH",
+      observedDigest: subjectDigest,
+      observedAt,
+      storageRole: "archive",
+      retentionDays: 90,
+      reasonCode: null
+    };
+    validateContract("manual-operation-record.v3", acknowledgement);
+    encodeManualJson(acknowledgement);
+    return Object.freeze(acknowledgement);
+  } catch {
+    throw Object.assign(new Error(CODE), { code: CODE });
+  }
+}
+
+// This comparison does not grant authority or authenticate the source claims.
+export function assertR3FinalAcknowledgement({
+  acknowledgement,
+  profileDigest,
+  ownerId,
+  execution,
+  result,
+  now
+}) {
+  try {
+    need(time(acknowledgement?.recordedAt) <= time(now));
+    const expected = buildR3FinalAcknowledgement({
+      profileDigest,
+      ownerId,
+      execution,
+      result,
+      observedAt: acknowledgement.observedAt,
+      recordedAt: acknowledgement.recordedAt
+    });
+    need(same(acknowledgement, expected));
+    return expected;
+  } catch {
+    throw Object.assign(new Error(CODE), { code: CODE });
+  }
+}

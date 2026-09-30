@@ -1119,9 +1119,9 @@ export async function launchR3TargetCreate(input) {
     finalResources,
     finalCompletionRecord,
     sourceCompletionRecord,
-    sourceAcknowledgementAttempted = false,
-    sourceAcknowledgementReady = false,
-    sourceAcknowledgementPending,
+    acknowledgementAttempted = false,
+    acknowledgementReady = false,
+    acknowledgementPending,
     targetCleanupImportAttempted = false,
     targetCleanupImportReady = false,
     targetCleanupImportPending,
@@ -1169,7 +1169,7 @@ export async function launchR3TargetCreate(input) {
       !lifecyclePending &&
       !sourcePending &&
       !finalPending &&
-      !sourceAcknowledgementPending &&
+      !acknowledgementPending &&
       !targetCleanupPending
     )
       abort();
@@ -1186,7 +1186,7 @@ export async function launchR3TargetCreate(input) {
       await lifecyclePending?.catch(() => {});
       await sourcePending?.catch(() => {});
       await finalPending?.catch(() => {});
-      await sourceAcknowledgementPending?.catch(() => {});
+      await acknowledgementPending?.catch(() => {});
       await targetCleanupPending?.catch(() => {});
       abort();
       await copyPending?.catch(() => {});
@@ -4535,6 +4535,74 @@ export async function launchR3TargetCreate(input) {
       promotionEligible: false
     });
   };
+  const acknowledgeCompletion = async (phase, args) => {
+    const completed = phase === "source" ? sourceCompletionRecord : finalCompletionRecord;
+    if (
+      args.length !== 1 ||
+      session.scope.phase !== phase ||
+      stopping ||
+      closed ||
+      acknowledgementAttempted ||
+      !(phase === "source" ? sourceReady : finalReady) ||
+      !completed ||
+      !exact(args[0], ["executionRecordDigest"]) ||
+      args[0].executionRecordDigest !== sha256Canonical(completed.execution)
+    )
+      fail(code);
+    // Only the owner's separate action reaches this entry. Running the
+    // manifest never acknowledges its result on the owner's behalf.
+    const executionRecordDigest = args[0].executionRecordDigest;
+    acknowledgementAttempted = true;
+    acknowledgementPending = (async () => {
+      await recheckResources();
+      if (stopping || closed) fail(code);
+      const receipt = await session[phase === "source" ? "acknowledgeSource" : "acknowledgeFinal"]({
+        executionRecordDigest
+      });
+      if (
+        !exact(receipt, [
+          "executionRecordDigest",
+          "resultDigest",
+          "acknowledgementRecordDigest",
+          "promotionEligible"
+        ]) ||
+        receipt.executionRecordDigest !== executionRecordDigest ||
+        receipt.resultDigest !== completed.execution.resultDigest ||
+        receipt.promotionEligible !== false
+      )
+        fail(code);
+      const retained = await archive.get(receipt.acknowledgementRecordDigest);
+      const assertAcknowledgement =
+        phase === "source"
+          ? assertR3SourceAcknowledgement
+          : (await import("./r3-final-result.mjs")).assertR3FinalAcknowledgement;
+      assertAcknowledgement({
+        acknowledgement: retained.value,
+        profileDigest: session.profileDigest,
+        ownerId: lease.profile.ownerId,
+        execution: completed.execution,
+        result: completed.result,
+        now: new Date().toISOString()
+      });
+      completed.originals.push({
+        digest: receipt.acknowledgementRecordDigest,
+        bytes: retained.bytes,
+        roles: ["archive", "backup"]
+      });
+      await check();
+      if (stopping || closed) fail(code);
+      acknowledgementReady = true;
+      return Object.freeze({
+        status: phase === "source" ? "SOURCE_ACKNOWLEDGED" : "FINAL_ACKNOWLEDGED",
+        ...receipt
+      });
+    })();
+    try {
+      return await acknowledgementPending;
+    } catch {
+      throw Object.assign(new Error(code), { code });
+    }
+  };
   try {
     if (
       !exact(input, ["repoRoot", "operationRef"]) ||
@@ -4838,7 +4906,7 @@ export async function launchR3TargetCreate(input) {
         if (lifecycleAttempted && !lifecycleReady) fail(code);
         if (sourceAttempted && !sourceReady) fail(code);
         if (finalAttempted && !finalReady) fail(code);
-        if (sourceAcknowledgementAttempted && !sourceAcknowledgementReady) fail(code);
+        if (acknowledgementAttempted && !acknowledgementReady) fail(code);
         if (targetCleanupAttempted && !targetCleanupReady) fail(code);
         if (targetCleanupReady) return check();
         await recheckResources();
@@ -4850,7 +4918,7 @@ export async function launchR3TargetCreate(input) {
           stopping ||
           closed ||
           targetCleanupImportAttempted ||
-          !sourceAcknowledgementReady ||
+          !acknowledgementReady ||
           !Buffer.isBuffer(args[0]) ||
           args[0].length === 0 ||
           args[0].length > 1048576
@@ -4890,7 +4958,7 @@ export async function launchR3TargetCreate(input) {
           stopping ||
           closed ||
           targetCleanupAttempted ||
-          !sourceAcknowledgementReady ||
+          !acknowledgementReady ||
           !targetCleanupImportReady
         )
           fail(code);
@@ -4905,6 +4973,8 @@ export async function launchR3TargetCreate(input) {
           forwardLeaseClosed = true;
           socket?.destroy();
           const receipt = await session.completeCleanup();
+          const phase = session.scope.phase;
+          const completed = phase === "source" ? sourceCompletionRecord : finalCompletionRecord;
           if (
             !exact(receipt, [
               "cleanupObservationRecordDigest",
@@ -4912,15 +4982,14 @@ export async function launchR3TargetCreate(input) {
               "creationEvidenceDigest",
               "forwardEvidenceDigest",
               "forwardObservationDigest",
-              "sourceExecutionRecordDigest",
-              "sourceAcknowledgementRecordDigest",
+              `${phase}ExecutionRecordDigest`,
+              `${phase}AcknowledgementRecordDigest`,
               "custodyRecordDigests",
               "promotionEligible"
             ]) ||
             receipt.cleanupBundleDigest !== targetCleanupEvidence.bundleDigest ||
             receipt.creationEvidenceDigest !== hostedEvidence.bundleDigest ||
-            receipt.sourceExecutionRecordDigest !==
-              sha256Canonical(sourceCompletionRecord.execution) ||
+            receipt[`${phase}ExecutionRecordDigest`] !== sha256Canonical(completed.execution) ||
             receipt.promotionEligible !== false
           )
             fail(code);
@@ -4936,63 +5005,8 @@ export async function launchR3TargetCreate(input) {
           throw Object.assign(new Error(code), { code });
         }
       },
-      async acknowledgeSource(...args) {
-        if (
-          args.length !== 1 ||
-          stopping ||
-          closed ||
-          sourceAcknowledgementAttempted ||
-          !sourceReady ||
-          !sourceCompletionRecord ||
-          !exact(args[0], ["executionRecordDigest"]) ||
-          args[0].executionRecordDigest !== sha256Canonical(sourceCompletionRecord.execution)
-        )
-          fail(code);
-        // Only the owner's separate action reaches this entry. Running the
-        // manifest never acknowledges its result on the owner's behalf.
-        const executionRecordDigest = args[0].executionRecordDigest;
-        sourceAcknowledgementAttempted = true;
-        sourceAcknowledgementPending = (async () => {
-          await recheckResources();
-          if (stopping || closed) fail(code);
-          const receipt = await session.acknowledgeSource({ executionRecordDigest });
-          if (
-            !exact(receipt, [
-              "executionRecordDigest",
-              "resultDigest",
-              "acknowledgementRecordDigest",
-              "promotionEligible"
-            ]) ||
-            receipt.executionRecordDigest !== executionRecordDigest ||
-            receipt.resultDigest !== sourceCompletionRecord.execution.resultDigest ||
-            receipt.promotionEligible !== false
-          )
-            fail(code);
-          const retained = await archive.get(receipt.acknowledgementRecordDigest);
-          assertR3SourceAcknowledgement({
-            acknowledgement: retained.value,
-            profileDigest: session.profileDigest,
-            ownerId: lease.profile.ownerId,
-            execution: sourceCompletionRecord.execution,
-            result: sourceCompletionRecord.result,
-            now: new Date().toISOString()
-          });
-          sourceCompletionRecord.originals.push({
-            digest: receipt.acknowledgementRecordDigest,
-            bytes: retained.bytes,
-            roles: ["archive", "backup"]
-          });
-          await check();
-          if (stopping || closed) fail(code);
-          sourceAcknowledgementReady = true;
-          return Object.freeze({ status: "SOURCE_ACKNOWLEDGED", ...receipt });
-        })();
-        try {
-          return await sourceAcknowledgementPending;
-        } catch {
-          throw Object.assign(new Error(code), { code });
-        }
-      },
+      acknowledgeSource: (...args) => acknowledgeCompletion("source", args),
+      acknowledgeFinal: (...args) => acknowledgeCompletion("final", args),
       async runFinalManifest(...args) {
         if (
           args.length !== 1 ||

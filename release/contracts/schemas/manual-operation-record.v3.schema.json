@@ -34,12 +34,66 @@
         "sessionId": { "$ref": "manual-operation-record.v2#/$defs/uuid" },
         "sessionNonce": { "$ref": "manual-operation-record.v2#/$defs/nonce" },
         "ownerId": { "$ref": "manual-operation-record.v2#/$defs/label" },
-        "scope": { "$ref": "#/$defs/scope" },
+        "scope": {
+          "allOf": [
+            { "$ref": "#/$defs/scope" },
+            { "type": "object", "properties": { "phase": { "const": "source" } } }
+          ]
+        },
         "operationRef": { "$ref": "manual-operation-record.v2#/$defs/uuid" },
         "sessionRecordDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
         "sourceExecutionRecordDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
         "sourceResultDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
         "sourceAcknowledgementRecordDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "cleanupBundleDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "creationEvidenceDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "forwardEvidenceDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "forwardObservationDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" }
+      }
+    },
+    "finalCleanupObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "profileDigest",
+        "recordedAt",
+        "promotionEligible",
+        "sessionId",
+        "sessionNonce",
+        "ownerId",
+        "scope",
+        "operationRef",
+        "sessionRecordDigest",
+        "finalExecutionRecordDigest",
+        "finalResultDigest",
+        "finalAcknowledgementRecordDigest",
+        "cleanupBundleDigest",
+        "creationEvidenceDigest",
+        "forwardEvidenceDigest",
+        "forwardObservationDigest"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "manual-operation-record.v3" },
+        "kind": { "const": "cleanup-observation" },
+        "profileDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "recordedAt": { "$ref": "manual-operation-record.v2#/$defs/timestamp" },
+        "promotionEligible": { "const": false },
+        "sessionId": { "$ref": "manual-operation-record.v2#/$defs/uuid" },
+        "sessionNonce": { "$ref": "manual-operation-record.v2#/$defs/nonce" },
+        "ownerId": { "$ref": "manual-operation-record.v2#/$defs/label" },
+        "scope": {
+          "allOf": [
+            { "$ref": "#/$defs/scope" },
+            { "type": "object", "properties": { "phase": { "const": "final" } } }
+          ]
+        },
+        "operationRef": { "$ref": "manual-operation-record.v2#/$defs/uuid" },
+        "sessionRecordDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "finalExecutionRecordDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "finalResultDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
+        "finalAcknowledgementRecordDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
         "cleanupBundleDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
         "creationEvidenceDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
         "forwardEvidenceDigest": { "$ref": "manual-operation-record.v2#/$defs/digest" },
@@ -698,6 +752,7 @@
   },
   "oneOf": [
     { "$ref": "#/$defs/cleanupObservation" },
+    { "$ref": "#/$defs/finalCleanupObservation" },
     {
       "$ref": "#/$defs/session"
     },

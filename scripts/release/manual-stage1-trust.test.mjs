@@ -13,7 +13,8 @@ import {
   computeRepositoryContract,
   openManualSession,
   sha256Bytes,
-  sha256Canonical
+  sha256Canonical,
+  validateContract
 } from "../../packages/release-foundation/src/index.mjs";
 import { createBuildProof } from "./create-build-proof.mjs";
 import { produceManualBuildCustody } from "./manual-build-custody-producer.mjs";
@@ -1023,6 +1024,39 @@ function verifiedItem(bytes, sourceSha, name, timestamp = generatedAt) {
   };
 }
 
+// Fail before the expensive source replay if the fixture omits inputs that
+// the actual R1/R2 producer and final core reader require.
+async function assertR3FinalFixturePrerequisites(f) {
+  for (const name of [
+    "database-test-discovery.v1",
+    "database-test-exceptions.v1",
+    "external-validation-applicability.v1",
+    "migration-global-object-policy.v1"
+  ]) {
+    const value = JSON.parse(
+      await fs.readFile(path.join(f.repoRoot, "release", "contracts", `${name}.json`))
+    );
+    assert.ok(value && typeof value === "object" && !Array.isArray(value));
+  }
+  const bytes = await fs.readFile(
+    path.join(f.profile.storage.archiveRoot, "objects", `${f.spec.buildProofDigest.slice(7)}.json`)
+  );
+  const proof = JSON.parse(bytes);
+  validateContract("build-proof.v1", proof);
+  assert.deepEqual(bytes, encodeManualJson(proof));
+  assert.equal(sha256Bytes(bytes), f.spec.buildProofDigest);
+  assert.equal(sha256Canonical(JSON.parse(f.proofBytes)), f.spec.buildProofDigest);
+  assert.equal(proof.identity.sourceSha, f.sourceSha);
+  assert.equal(
+    proof.identity.repositoryContractDigest,
+    (await computeRepositoryContract(f.repoRoot)).digest
+  );
+  assert.equal(
+    proof.identity.migrationCatalogDigest,
+    (await computeMigrationCatalog(f.repoRoot)).digest
+  );
+}
+
 async function buildFixture(
   t,
   {
@@ -1068,7 +1102,8 @@ async function buildFixture(
     for (const name of [
       "database-test-discovery.v1.json",
       "database-test-exceptions.v1.json",
-      "external-validation-applicability.v1.json"
+      "external-validation-applicability.v1.json",
+      "migration-global-object-policy.v1.json"
     ]) {
       const file = `release/contracts/${name}`;
       await fs.copyFile(new URL(`../../${file}`, import.meta.url), path.join(f.repoRoot, file));
@@ -1170,6 +1205,17 @@ async function buildFixture(
   const proofBytes = canonicalProof
     ? encodeManualJson(proof)
     : Buffer.from(JSON.stringify(proof, null, 2) + "\n");
+  if (sourceReadback) {
+    // R1 archives the verified canonical proof separately from the raw H2 input.
+    // The final native runner and core replay both require that graph object.
+    const objects = path.join(f.profile.storage.archiveRoot, "objects");
+    await fs.mkdir(objects, { recursive: true, mode: 0o700 });
+    await fs.writeFile(
+      path.join(objects, `${sha256Canonical(proof).slice(7)}.json`),
+      encodeManualJson(proof),
+      { flag: "wx", mode: 0o600 }
+    );
+  }
   const materialBytes = Buffer.from(JSON.stringify(material, null, 2) + "\n");
   const proofItem = verifiedItem(proofBytes, sourceSha, "build-proof.json");
   const receipt = {
@@ -2205,12 +2251,12 @@ test("R3 WORKSPACE API rejects overrides and accessors before native IO", async 
   assert.equal(effects, 0);
 });
 
-function r3HostedBundle(f) {
+function r3HostedBundle(f, engineId = "69a59aea-54ef-4181-808e-cf8d6cdb05e6") {
   const mount = f.spec.workspace.mountPath;
   const identity = f.observation.files.find((item) => item.name === "directory").identity;
   const meta = (file) => ({ path: file, dev: identity.dev, ino: "42" });
   const info = {
-    ID: "69a59aea-54ef-4181-808e-cf8d6cdb05e6",
+    ID: engineId,
     DockerRootDir: `${mount}/docker`,
     Driver: "overlay2",
     LoggingDriver: "json-file",
@@ -2443,6 +2489,53 @@ test(
     await assert.rejects(imported.recheck(), { code: "R3_HOSTED_EVIDENCE_INPUT_UNAVAILABLE" });
     assert.equal(f.counters.privateKeyReads, 0);
     assert.ok(f.counters.writes > 0);
+  }
+);
+
+test(
+  "R3 WORKSPACE final preparation must precede live admission pinning",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3ForwardFixture(t, { phase: "final", chain: "fresh", sourceReadback: true });
+    const globalPolicy = "release/contracts/migration-global-object-policy.v1.json";
+    assert.deepEqual(
+      await fs.readFile(path.join(f.repoRoot, globalPolicy)),
+      await fs.readFile(new URL(`../../${globalPolicy}`, import.meta.url))
+    );
+    const archivedProof = await fs.readFile(
+      path.join(
+        f.profile.storage.archiveRoot,
+        "objects",
+        `${f.spec.buildProofDigest.slice(7)}.json`
+      )
+    );
+    assert.equal(sha256Bytes(archivedProof), f.spec.buildProofDigest);
+    assert.deepEqual(archivedProof, encodeManualJson(f.proof));
+    const archivedProofPath = path.join(
+      f.profile.storage.archiveRoot,
+      "objects",
+      `${f.spec.buildProofDigest.slice(7)}.json`
+    );
+    await fs.unlink(archivedProofPath);
+    await assert.rejects(assertR3FinalFixturePrerequisites(f), { code: "ENOENT" });
+    await fs.writeFile(archivedProofPath, archivedProof, { flag: "wx", mode: 0o600 });
+    await assertR3FinalFixturePrerequisites(f);
+    const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    const premature = await trust.readFixedR3JobAdmission(input);
+    t.after(() => premature.close());
+    await premature.recheck();
+    const workspace = await r3WorkspaceFixture(t, "active", false, f);
+    await assert.rejects(premature.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+
+    const live = await trust.readFixedR3JobAdmission(input);
+    t.after(() => live.close());
+    const imported = await trust.importR3HostedEvidence({
+      ...input,
+      bundleBytes: r3HostedBundle(workspace)
+    });
+    t.after(() => imported.close());
+    await live.recheck();
+    await imported.recheck();
   }
 );
 
@@ -3246,7 +3339,10 @@ test(
 async function r3SessionFixture(t, options = { phase: "source", chain: "fresh" }) {
   const f = await r3JobFixture(t, options);
   for (const role of ["journal", "archive", "backup"])
-    await fs.mkdir(path.join(f.profile.storage[`${role}Root`], "objects"), { mode: 0o700 });
+    await fs.mkdir(path.join(f.profile.storage[`${role}Root`], "objects"), {
+      mode: 0o700,
+      recursive: true
+    });
   for (const directory of ["locks", "consumptions", "revocations", "checkpoints"])
     await fs.mkdir(path.join(f.profile.storage.journalRoot, directory), { mode: 0o700 });
   await fs.mkdir(path.join(f.profile.storage.archiveRoot, "raw"), { mode: 0o700 });
@@ -3316,6 +3412,7 @@ test(
                 "custodyFinalOriginals",
                 "completeFinal",
                 "acknowledgeSource",
+                "acknowledgeFinal",
                 "record"
               ].map((name) => [name, async () => {}])
             ),
@@ -3536,6 +3633,7 @@ for (const mode of [
         chain: mode === "accepted" || closingRestore ? "snapshot" : "fresh",
         sourceReadback: sourceMode
       });
+      if (cleanupMode) await assertR3FinalFixturePrerequisites(f);
       const imageDigest = JSON.parse(
         await fs.readFile(
           path.join(f.repoRoot, "release/contracts/database-target-policies.v1.json")
@@ -3658,6 +3756,7 @@ for (const mode of [
           namedExports: {
             planR3DatabaseTargets: databaseHelpers.planR3DatabaseTargets,
             bindR3SourceManifest: databaseHelpers.bindR3SourceManifest,
+            bindR3FinalManifest: databaseHelpers.bindR3FinalManifest,
             provisionR3DatabaseTargets: async ({
               plan,
               policy,
@@ -4431,6 +4530,7 @@ for (const mode of [
         assert.equal(typeof launched.completeSnapshot, "function");
         assert.equal(typeof launched.runSourceManifest, "function");
         assert.equal(typeof launched.acknowledgeSource, "function");
+        assert.equal(typeof launched.acknowledgeFinal, "function");
         assert.equal(typeof launched.completeCleanup, "function");
         assert.equal(typeof launched.importHostedCleanupEvidence, "function");
         await assert.rejects(launched.completeCleanup({ verified: true }));
@@ -4438,6 +4538,7 @@ for (const mode of [
         await assert.rejects(launched.importHostedCleanupEvidence(Buffer.from("{}")));
         await assert.rejects(launched.acknowledgeSource({ approved: true }));
         await assert.rejects(launched.acknowledgeSource());
+        await assert.rejects(launched.acknowledgeFinal());
         await assert.rejects(launched.runSourceManifest());
         await assert.rejects(launched.runSourceManifest({ approved: true }));
         await assert.rejects(launched.completeSnapshot());
@@ -4829,6 +4930,7 @@ for (const mode of [
           }
           const syntheticVerified = Object.freeze({
             readbackDigest: sourceOriginals.at(-1).digest,
+            postSchemaDigest: sha256Canonical({ kind: "synthetic-source-post-schema" }),
             reconstructedDigest: sha256Canonical({
               kind: "synthetic-source-reconstruction",
               originals: sourceOriginals
@@ -5053,6 +5155,606 @@ for (const mode of [
             await assert.rejects(capturedTrustedSession.completeCleanup());
             await launched.close();
             assert.equal((await fs.readdir(lockRoot)).length, 41);
+            // Continue from this actual CLOSED source. Only external observations
+            // and the pure original readers are synthetic; history, authority,
+            // both private stores, custody, ACK and cleanup remain core methods.
+            f.apiJob.status = "completed";
+            f.apiJob.conclusion = "success";
+            f.apiJob.completed_at = new Date().toISOString();
+            const next = await r3JobFixture(t, {
+              base: f,
+              phase: "final",
+              chain: "fresh",
+              ciRunId: f.admission.ci.runId,
+              jobId: "4802"
+            });
+            assert.equal(next.apiRun.status, "in_progress");
+            assert.equal(next.admission.ci.runAttempt, f.admission.ci.runAttempt);
+            assert.equal(next.sourceSha, f.sourceSha);
+            assert.equal(next.spec.buildProofDigest, f.spec.buildProofDigest);
+            // Match the native launcher: reserve evidence directories before
+            // fixed inputs pin their private parent identities.
+            const nextWorkspace = await r3WorkspaceFixture(t, "active", false, next);
+            const fixed = await trust.readFixedR3JobAdmission({
+              repoRoot: next.repoRoot,
+              operationRef: next.operationRef
+            });
+            const scope = {
+              targetPolicyDigest: next.spec.targetPolicyDigest,
+              creationSpecDigest: fixed.creationSpecDigest,
+              jobAdmissionDigest: fixed.jobAdmissionDigest,
+              buildProofDigest: fixed.build.buildProofDigest,
+              sourceSha: fixed.sourceSha,
+              phase: "final",
+              chain: "fresh"
+            };
+            const nextSession = await openManualSession({
+              profile: next.profile,
+              ownerObservation: {
+                ownerId: next.profile.ownerId,
+                principal: next.approval.principal,
+                scope,
+                observedAt: new Date().toISOString()
+              },
+              r3CreationContext: {
+                scope,
+                creationSpec: fixed.spec,
+                jobAdmission: fixed.admission,
+                snapshotInputs: { repoRoot: next.repoRoot },
+                destinationInputs: {
+                  manifest: fixed.databaseTestManifest,
+                  manifestRawDigest: fixed.databaseTestManifestRawDigest,
+                  policy: fixed.databaseTargetPolicy,
+                  policyBytesBase64: source.policyBytes.toString("base64")
+                }
+              },
+              now: () => new Date().toISOString(),
+              signingKey: next.keys.privateKey
+            });
+            t.after(() => nextSession.close());
+            t.after(() => fixed.close());
+            assert.notEqual(nextSession.sessionId, launched.session.sessionId);
+            assert.notEqual(next.operationRef, f.operationRef);
+            const readRecord = async (digest, role = "archive") =>
+              JSON.parse(
+                await fs.readFile(
+                  path.join(
+                    next.profile.storage[`${role}Root`],
+                    "objects",
+                    `${digest.slice(7)}.json`
+                  )
+                )
+              );
+            const nextOpening = (
+              await Promise.all(
+                (await fs.readdir(journalObjects)).map(async (name) =>
+                  JSON.parse(await fs.readFile(path.join(journalObjects, name)))
+                )
+              )
+            ).find((row) => row.kind === "session" && row.sessionId === nextSession.sessionId);
+            const consumeNext = async (fields, predecessorExecutionRecordDigest) => {
+              const nextRequest = {
+                schemaVersion: "manual-runner-request.v4",
+                profileDigest: nextSession.profileDigest,
+                ownerId: next.profile.ownerId,
+                sessionId: nextSession.sessionId,
+                sessionNonce: nextSession.sessionNonce,
+                operationId: next.operationRef,
+                idempotencyKey: `r3:${next.operationRef}`,
+                attemptId: randomUUID(),
+                runId: randomUUID(),
+                stage: "target-create",
+                capability: "create-isolated-target",
+                purpose: "stage1-isolated-database-tests",
+                ...scope,
+                candidate: { buildProofDigest: scope.buildProofDigest },
+                ...fields
+              };
+              delete nextRequest.buildProofDigest;
+              const allocation = Object.fromEntries(
+                Object.entries(nextRequest).filter(
+                  ([key]) =>
+                    !["schemaVersion", "ownerId", "capability", "purpose", "candidate"].includes(
+                      key
+                    )
+                )
+              );
+              const allocatedAt = new Date().toISOString();
+              nextRequest.attemptAllocationDigest = await storeCandidate({
+                ...allocation,
+                schemaVersion: "manual-runner-evidence.v2",
+                kind: "attempt-allocation",
+                recordedAt: allocatedAt,
+                allocatedAt,
+                promotionEligible: false,
+                sessionRecordDigest: sha256Canonical(nextOpening),
+                buildProofDigest: nextRequest.candidate.buildProofDigest,
+                predecessorExecutionRecordDigest
+              });
+              await storeCandidate(nextRequest);
+              const binding = Object.fromEntries(
+                Object.entries(nextRequest).filter(
+                  ([key]) =>
+                    ![
+                      "schemaVersion",
+                      "attemptId",
+                      "runId",
+                      "attemptAllocationDigest",
+                      "sourceSha",
+                      "candidate"
+                    ].includes(key)
+                )
+              );
+              const nextInput = { binding, canonicalBytes: encodeManualJson(nextRequest) };
+              await fixed.recheck();
+              const authorization = await nextSession.sign(nextInput);
+              const receipt = await nextSession.consume({ authorization, request: nextInput });
+              releaseMockHistory();
+              return { request: nextRequest, receipt };
+            };
+            const nextCreation = await consumeNext({}, null);
+            const nextEngineId = "f9c583b4-d878-4244-b185-5b5716106ff4";
+            const nextContainerId = "f".repeat(64);
+            const nextSystemIdentifier = "7340000000000000002";
+            const nextBundle = r3HostedBundle(nextWorkspace, nextEngineId);
+            const nextHosted = await trust.importR3HostedEvidence({
+              repoRoot: next.repoRoot,
+              operationRef: next.operationRef,
+              bundleBytes: nextBundle
+            });
+            await nextHosted.close();
+            const { planR3DatabaseTargets } = await import("./r3-database-targets.mjs");
+            const { buildR3Destination } = await import("./r3-destination.mjs");
+            const nextPlan = planR3DatabaseTargets({
+              operationRef: next.operationRef,
+              phase: "final",
+              chain: "fresh",
+              manifest: sourceManifest
+            });
+            const replacements = [
+              [f.operationRef, next.operationRef],
+              [id, next.operationRef.replaceAll("-", "")],
+              [launched.engine.ID, nextEngineId],
+              [containerId, nextContainerId],
+              [pgIdentity.systemIdentifier, nextSystemIdentifier]
+            ];
+            const replaceText = (text) =>
+              replacements.reduce((value, [from, to]) => value.replaceAll(from, to), text);
+            const replaceObservation = (value) => JSON.parse(replaceText(JSON.stringify(value)));
+            const nextPostgres = replaceObservation(
+              (await readRecord(recorded.observationEvidenceDigest)).postgres
+            );
+            // The Engine stream is framed binary, so regenerate its length after
+            // binding the independent final PostgreSQL identity.
+            const pgOutput = Buffer.from(JSON.stringify(nextPostgres.resources.postgres) + "\n");
+            const header = Buffer.alloc(8);
+            header[0] = 1;
+            header.writeUInt32BE(pgOutput.length, 4);
+            nextPostgres.streamBase64 = Buffer.concat([header, pgOutput]).toString("base64");
+            const nextCreatedAt = new Date().toISOString();
+            const nextRecords = nextPlan.targets.map((target, index) => {
+              const template = destination.databaseTargetSet.records[0];
+              return {
+                ...structuredClone(template),
+                ...target,
+                databaseOid: String(12000 + index),
+                createdAt: nextCreatedAt,
+                owner: target.roles.migrate,
+                schemaOwner: target.roles.migrate,
+                roleReadback: Object.fromEntries(
+                  Object.entries(target.roles).map(([profile, name], roleIndex) => [
+                    profile,
+                    {
+                      ...template.roleReadback[profile === "migrate" ? "migrate" : "runtime-test"],
+                      oid: String(13000 + index * 10 + roleIndex),
+                      name
+                    }
+                  ])
+                ),
+                schemaPrivileges: Object.fromEntries(
+                  Object.keys(target.roles)
+                    .filter((profile) => profile !== "migrate")
+                    .map((profile) => [profile, { canCreate: false, canUse: true }])
+                ),
+                secretReferences: Object.fromEntries(
+                  Object.keys(target.roles).map((profile) => [
+                    profile,
+                    `r3/${next.operationRef}/database-credentials/${target.databaseName}-${profile}.json`
+                  ])
+                ),
+                marker: encodeManualJson({
+                  markerVersion: "subscription-s1-ephemeral/v1",
+                  runIdDigest: sha256Canonical(next.operationRef),
+                  suiteIdDigest: sha256Canonical(
+                    target.name === "source" ? `${target.suiteId}.source` : target.suiteId
+                  ),
+                  shard: target.shard,
+                  createdAt: nextCreatedAt
+                }).toString("utf8")
+              };
+            });
+            const nextLocks = await nextSession.holdTargets({
+              engineId: nextEngineId,
+              systemIdentifier: nextSystemIdentifier,
+              targets: nextRecords.map(({ databaseName, databaseOid, marker }) => ({
+                databaseName,
+                databaseOid,
+                marker
+              }))
+            });
+            const nextFirst = nextRecords[0];
+            const nextDestination = await buildR3Destination({
+              spec: next.spec,
+              jobAdmissionDigest: scope.jobAdmissionDigest,
+              hostedEvidence: {
+                bundleDigest: sha256Bytes(nextBundle),
+                engine: JSON.parse(nextBundle).engine,
+                workspaceObservation: nextWorkspace.observation,
+                jobAdmissionDigest: scope.jobAdmissionDigest,
+                spec: next.spec
+              },
+              session: {
+                profileDigest: nextSession.profileDigest,
+                sessionId: nextSession.sessionId,
+                sessionNonce: nextSession.sessionNonce,
+                scope
+              },
+              initialExecution: await readRecord(
+                nextCreation.receipt.executionRecordDigest,
+                "journal"
+              ),
+              manifest: sourceManifest,
+              manifestRawDigest: fixed.databaseTestManifestRawDigest,
+              policy: fixed.databaseTargetPolicy,
+              postgresReadback: nextPostgres,
+              databaseTargetSet: {
+                ...destination.databaseTargetSet,
+                plan: nextPlan,
+                records: nextRecords,
+                targetLocks: nextLocks.locks,
+                engineId: nextEngineId,
+                systemIdentifier: nextSystemIdentifier
+              },
+              databaseReadback: [
+                {
+                  databaseName: "postgres",
+                  sql: `SELECT d.oid::text AS "databaseOid", COALESCE(shobj_description(d.oid,'pg_database'),'') AS "marker", pg_get_userbyid(d.datdba) AS "owner" FROM pg_database d WHERE d.datname='${nextFirst.databaseName}'`,
+                  rows: [
+                    {
+                      databaseOid: nextFirst.databaseOid,
+                      marker: nextFirst.marker,
+                      owner: nextFirst.owner
+                    }
+                  ]
+                }
+              ],
+              observedAt: new Date().toISOString()
+            });
+            await storeCandidate(nextDestination.observations);
+            const nextDestinationDigest = await storeCandidate(nextDestination.destination);
+            const nextPrepared = await nextSession.completeCreation({
+              destinationDigest: nextDestinationDigest
+            });
+            releaseMockHistory();
+            assert.equal(
+              nextDestination.destination.manifestRawDigest,
+              destination.manifestRawDigest
+            );
+            const finalUse = await consumeNext(
+              {
+                schemaVersion: "manual-runner-request.v5",
+                idempotencyKey: `r3-candidate-use:${next.operationRef}`,
+                stage: "candidate-use",
+                capability: "execute-final-database-tests",
+                destinationAdmissionDigest: nextDestinationDigest,
+                preparationExecutionRecordDigest: nextPrepared.executionRecordDigest,
+                databaseTestManifestDigest: request.databaseTestManifestDigest,
+                matchingSourceEvidenceDigest: sourceTerminal.executionRecordDigest
+              },
+              nextPrepared.executionRecordDigest
+            );
+            assert.deepEqual(await nextSession.assertCandidateUse(), {
+              executionRecordDigest: finalUse.receipt.executionRecordDigest,
+              matchingSourceEvidenceDigest: sourceTerminal.executionRecordDigest,
+              matchedSource: {
+                terminalDigest: sourceTerminal.executionRecordDigest,
+                resultDigest: sourceTerminal.resultDigest,
+                reconstructedDigest: syntheticVerified.reconstructedDigest,
+                postSchemaDigest: syntheticVerified.postSchemaDigest,
+                operationRef: f.operationRef,
+                sessionId: launched.session.sessionId,
+                sessionNonce: launched.session.sessionNonce
+              }
+            });
+            const finalInitial = await readRecord(finalUse.receipt.executionRecordDigest);
+            assert.equal(finalInitial.status, "INTERRUPTED_UNKNOWN");
+            for (const [shard, reservation] of nextPlan.reservations.entries())
+              await nextSession.registerLifecycleTarget({
+                record: {
+                  ...records[shard],
+                  targetFingerprint: sha256Canonical({
+                    engineId: nextEngineId,
+                    systemIdentifier: nextSystemIdentifier,
+                    containerId: nextContainerId,
+                    imageDigest
+                  }),
+                  databaseName: reservation.databaseName,
+                  databaseOid: String(910000 + shard),
+                  marker: encodeManualJson({
+                    ...JSON.parse(records[shard].marker),
+                    runIdDigest: sha256Canonical(next.operationRef),
+                    createdAt: nextCreatedAt
+                  }).toString("utf8"),
+                  runId: next.operationRef,
+                  roles: reservation.roles,
+                  secretReferences: Object.fromEntries(
+                    Object.keys(reservation.roles).map((profile) => [
+                      profile,
+                      `r3/${next.operationRef}/database-credentials/${reservation.databaseName}-${profile}.json`
+                    ])
+                  ),
+                  createdAt: nextCreatedAt
+                }
+              });
+            const finalModule = await import("./r3-final-result.mjs");
+            const finalNames = finalModule.r3FinalObservationNames({
+              manifest: sourceManifest,
+              plan: nextPlan
+            });
+            assert.equal(finalNames.length, 79);
+            const finalOriginals = [];
+            for (const name of finalNames) {
+              const bytes = encodeManualJson({
+                status: "SYNTHETIC_FINAL_ORIGINAL",
+                operationRef: next.operationRef,
+                name
+              });
+              finalOriginals.push({ name, digest: sha256Bytes(bytes), bytes: bytes.length });
+              for (const role of ["archive", "backup"]) {
+                const directory = path.join(
+                  next.profile.storage[`${role}Root`],
+                  "inputs",
+                  "r3",
+                  next.operationRef,
+                  "observations",
+                  "final",
+                  name
+                );
+                await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+                await fs.writeFile(path.join(directory, "readback.json"), bytes, {
+                  flag: "wx",
+                  mode: 0o600
+                });
+              }
+            }
+            const finalVerified = {
+              readbackDigest: finalOriginals.at(-1).digest,
+              reconstructedDigest: sha256Canonical({ kind: "synthetic-final", finalOriginals }),
+              sourceClaims: {
+                matchingSourceEvidenceDigest: sourceTerminal.executionRecordDigest,
+                matchingSourceResultDigest: sourceTerminal.resultDigest,
+                expectedSchemaDigest: syntheticVerified.postSchemaDigest
+              },
+              originals: finalOriginals,
+              suiteReadbacks: sourceManifest.suites.map(({ suiteId }) => ({
+                suiteId,
+                readbackDigest: finalOriginals.find(({ name }) => name === suiteId).digest,
+                reportDigest: sha256Canonical({ kind: "synthetic-final-report", suiteId })
+              }))
+            };
+            let wrongSourceClaims = true;
+            let finalReadCompletions = 0;
+            const finalMock = t.mock.module("./r3-final-result.mjs", {
+              namedExports: {
+                ...finalModule,
+                async readR3FinalOriginals({
+                  initialExecution,
+                  request,
+                  readObservation,
+                  recheck
+                }) {
+                  assert.equal(
+                    sha256Canonical(initialExecution),
+                    finalUse.receipt.executionRecordDigest
+                  );
+                  assert.equal(
+                    request.matchingSourceEvidenceDigest,
+                    sourceTerminal.executionRecordDigest
+                  );
+                  for (const { name, digest } of finalOriginals)
+                    for (const storageRole of ["archive", "backup"])
+                      assert.equal(
+                        sha256Bytes(await readObservation({ storageRole, name })),
+                        digest
+                      );
+                  await recheck();
+                  finalReadCompletions++;
+                  return {
+                    ...finalVerified,
+                    sourceClaims: {
+                      ...finalVerified.sourceClaims,
+                      ...(wrongSourceClaims ? { expectedSchemaDigest: digest("e") } : {})
+                    }
+                  };
+                }
+              }
+            });
+            t.after(() => finalMock.restore());
+            await assert.rejects(nextSession.verifyFinalOriginals(), {
+              code: "MANUAL_EVIDENCE_BINDING_MISMATCH"
+            });
+            assert.ok(
+              finalReadCompletions > 0,
+              "negative case must reach the final source-claim check"
+            );
+            wrongSourceClaims = false;
+            assert.deepEqual(await nextSession.verifyFinalOriginals(), finalVerified);
+            releaseMockHistory();
+            const finalCustody = await nextSession.custodyFinalOriginals();
+            assert.equal(finalCustody.custodyRecordDigests.length, 158);
+            assert.deepEqual(finalCustody.originals, finalOriginals);
+            releaseMockHistory();
+            const finalTerminal = await nextSession.completeFinal();
+            releaseMockHistory();
+            const finalExecution = await readRecord(finalTerminal.executionRecordDigest);
+            assert.equal(finalExecution.status, "SUCCEEDED");
+            assert.equal(
+              finalExecution.predecessorExecutionRecordDigest,
+              finalUse.receipt.executionRecordDigest
+            );
+            assert.deepEqual(
+              await readRecord(finalUse.receipt.executionRecordDigest),
+              finalInitial
+            );
+            assert.equal((await readRecord(finalTerminal.resultDigest)).originals.length, 79);
+            const ownerAcks = async () =>
+              (
+                await Promise.all(
+                  (await fs.readdir(archiveObjects)).map(async (name) =>
+                    JSON.parse(await fs.readFile(path.join(archiveObjects, name)))
+                  )
+                )
+              ).filter(
+                (row) =>
+                  row.kind === "custody" &&
+                  row.purpose === "owner-acknowledgement" &&
+                  row.subjectDigest === finalTerminal.executionRecordDigest
+              );
+            assert.equal((await ownerAcks()).length, 0, "completion never acknowledges itself");
+            await assert.rejects(
+              nextSession.acknowledgeSource({
+                executionRecordDigest: finalTerminal.executionRecordDigest
+              }),
+              { code: "MANUAL_SESSION_UNVERIFIED" }
+            );
+            const finalAck = await nextSession.acknowledgeFinal({
+              executionRecordDigest: finalTerminal.executionRecordDigest
+            });
+            releaseMockHistory();
+            assert.equal((await ownerAcks()).length, 1);
+            assert.notEqual(
+              finalAck.acknowledgementRecordDigest,
+              acknowledged.acknowledgementRecordDigest
+            );
+            const finalAcknowledgement = await readRecord(finalAck.acknowledgementRecordDigest);
+            const nextAbsent = await r3WorkspaceFixture(t, "absent", false, next);
+            const finalCleanup = r3CleanupFixture({
+              spec: next.spec,
+              jobAdmissionBytes: next.admissionBytes,
+              creationEvidenceBytes: nextBundle,
+              activeObservation: nextWorkspace.observation,
+              activeRawInputs: nextWorkspace.raw,
+              absentObservation: nextAbsent.observation,
+              absentRawInputs: nextAbsent.raw,
+              imageDigest,
+              startedAt: finalAcknowledgement.recordedAt
+            });
+            // Rebind the codec fixture's synthetic container to the final target;
+            // recompute response references before the real signed bundle codec.
+            for (const [name, bytes] of Object.entries(finalCleanup.rawInputs))
+              finalCleanup.rawInputs[name] = Buffer.from(
+                bytes.toString().replaceAll(containerId, nextContainerId)
+              );
+            for (const name of ["container", "network"])
+              finalCleanup.rawInputs[`before.${name}`] = Buffer.from(
+                JSON.stringify(nextPostgres.resources[name]) + "\n"
+              );
+            const stopped = JSON.parse(finalCleanup.rawInputs["stopped-container"]);
+            finalCleanup.rawInputs["stopped-container"] = Buffer.from(
+              JSON.stringify({
+                ...nextPostgres.resources.container,
+                State: stopped.State
+              }) + "\n"
+            );
+            for (const row of finalCleanup.requests) {
+              row.path = row.path.replaceAll(containerId, nextContainerId);
+              const bytes = finalCleanup.rawInputs[row.name];
+              row.response = { digest: sha256Bytes(bytes), bytes: bytes.length };
+            }
+            finalCleanup.postgres = Object.fromEntries(
+              Object.keys(finalCleanup.postgres).map((name) => [
+                name,
+                nextDestination.destination.postgres[name]
+              ])
+            );
+            t.mock.timers.setTime(Date.parse(finalCleanup.finishedAt) + 1000);
+            const finalCleanupBytes = buildR3HostedCleanupEvidence({
+              cleanup: finalCleanup,
+              creationEvidenceBytes: nextBundle,
+              jobAdmissionBytes: next.admissionBytes,
+              spec: next.spec,
+              policyBytes: nextWorkspace.policyBytes,
+              privateKey: next.forwardingPrivateKey,
+              now: new Date().toISOString()
+            });
+            const finalCleanupInput = await trust.importR3HostedCleanupEvidence({
+              repoRoot: next.repoRoot,
+              operationRef: next.operationRef,
+              bundleBytes: finalCleanupBytes
+            });
+            await finalCleanupInput.close();
+            const beforeFinalClose = (await fs.readdir(lockRoot)).sort();
+            assert.equal(beforeFinalClose.length, 85);
+            releaseMockHistory();
+            const finalCleanupReceipt = await nextSession.completeCleanup();
+            releaseMockHistory();
+            assert.equal(
+              finalCleanupReceipt.finalExecutionRecordDigest,
+              finalTerminal.executionRecordDigest
+            );
+            assert.equal(
+              finalCleanupReceipt.finalAcknowledgementRecordDigest,
+              finalAck.acknowledgementRecordDigest
+            );
+            assert.equal(finalCleanupReceipt.custodyRecordDigests.length, 8);
+            const finalCleanupRecord = await readRecord(
+              finalCleanupReceipt.cleanupObservationRecordDigest
+            );
+            assert.equal(finalCleanupRecord.scope.phase, "final");
+            assert.equal(finalCleanupRecord.finalResultDigest, finalTerminal.resultDigest);
+            assert.ok(!Object.hasOwn(finalCleanupRecord, "sourceExecutionRecordDigest"));
+            assert.ok(!Object.hasOwn(finalCleanupRecord, "sourceResultDigest"));
+            assert.ok(!Object.hasOwn(finalCleanupRecord, "sourceAcknowledgementRecordDigest"));
+            for (const digest of [
+              ...finalCustody.custodyRecordDigests,
+              ...finalTerminal.custodyRecordDigests,
+              finalTerminal.executionRecordDigest,
+              finalTerminal.resultDigest,
+              finalAck.acknowledgementRecordDigest,
+              finalCleanupReceipt.cleanupObservationRecordDigest,
+              ...finalCleanupReceipt.custodyRecordDigests
+            ]) {
+              const name = `${digest.slice(7)}.json`;
+              const bytes = await fs.readFile(path.join(archiveObjects, name));
+              assert.equal(sha256Bytes(bytes), digest);
+              assert.deepEqual(
+                await fs.readFile(path.join(f.profile.storage.backupRoot, "objects", name)),
+                bytes
+              );
+            }
+            assert.deepEqual((await fs.readdir(lockRoot)).sort(), beforeFinalClose);
+            await nextSession.close();
+            releaseMockHistory();
+            const sharedSlots = ["tcp://127.0.0.1:55440", "127.0.0.1:55441"].map(
+              (slot) => `${sha256Canonical({ slot, kind: "r3-forward-slot" }).slice(7)}.json`
+            );
+            assert.deepEqual(
+              (await fs.readdir(lockRoot)).sort(),
+              beforeFinalClose.filter((name) => !sharedSlots.includes(name))
+            );
+            const finalSessions = (
+              await Promise.all(
+                (await fs.readdir(journalObjects)).map(async (name) =>
+                  JSON.parse(await fs.readFile(path.join(journalObjects, name)))
+                )
+              )
+            ).filter((row) => row.kind === "session" && row.sessionId === nextSession.sessionId);
+            assert.equal(finalSessions.filter((row) => row.status === "CLOSED").length, 1);
+            assert.deepEqual(
+              await readRecord(finalUse.receipt.executionRecordDigest),
+              finalInitial
+            );
+            await fixed.close();
             return;
           }
           await fs.unlink(backupAcknowledgement);

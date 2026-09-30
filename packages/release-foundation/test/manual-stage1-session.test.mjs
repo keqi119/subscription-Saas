@@ -3453,7 +3453,12 @@ test("R3 final creation cannot complete through source methods and remains UNKNO
     "completeCleanup"
   ])
     await assert.rejects(session[method](), { code: "MANUAL_SESSION_UNVERIFIED" });
-  for (const method of ["verifyFinalOriginals", "custodyFinalOriginals", "completeFinal"]) {
+  for (const method of [
+    "verifyFinalOriginals",
+    "custodyFinalOriginals",
+    "completeFinal",
+    "acknowledgeFinal"
+  ]) {
     assert.equal(typeof session[method], "function");
     await assert.rejects(session[method](), { code: "MANUAL_SESSION_UNVERIFIED" });
   }
@@ -3693,7 +3698,11 @@ test("R3 creation consumes once and persists UNKNOWN before returning", async (t
       "verifySourceOriginals",
       "custodySourceOriginals",
       "completeSource",
+      "verifyFinalOriginals",
+      "custodyFinalOriginals",
+      "completeFinal",
       "acknowledgeSource",
+      "acknowledgeFinal",
       "completeCleanup",
       "closeIncomplete",
       "record",

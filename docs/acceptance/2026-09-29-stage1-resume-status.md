@@ -2,9 +2,37 @@
 
 阶段 1 尚未完成。保持原定范围：不增加业务功能，不采用商用 KMS，不重复已通过且未受改动影响的长测试。
 
-已接入原生 H1 final 调用、最终镜像的固定私有入口，以及 final 原件重建和核心成功终态/双份保管。原生 H1 完整成功路径、final 正向历史回放仍未实跑；final 负责人签收、最终清理和 hosted 工作流仍未完成，不能据此发布或宣布阶段 1 完成。
+已接入原生 H1 final 调用、最终镜像的固定私有入口、final 原件重建与核心成功终态/双份保管，以及独立负责人签收、按阶段清理和共享槽位释放。source→final 的真实核心/文件保管正向组合已通过；其原件读取和外部观察边界仍为合成数据。原生 H1 完整成功路径和 hosted 工作流仍未完成，不能据此发布或宣布阶段 1 完成。
 
-## 当前增量：final 原件重建与核心终态
+## 当前增量：final 签收与清理（2026-09-30）
+
+从 `aac669fc` 恢复，预检 `9765f6` 确认暂停后无新改动；本地 migrate status 仍因缺 datasource.url 在连接前失败，Prisma `7755c9` 通过。本轮只改发布基础设施，没有业务、云端或数据库改动。
+
+final 完成后仍需独立调用 `acknowledgeFinal({executionRecordDigest})`。核心重新验证完整历史、final 原件和匹配 source，再把签收记录保存在 archive/backup 两处。source 与 final 清理记录使用各自的终态、结果和签收摘要；schema 拒绝混用阶段或字段。清理证明必须包含对应终态的签收、hosted 目标删除/工作区消除证据、转发关闭和八份保管记录。关闭前再读历史并检查转发确已停止，才释放两个共享槽位；物理目标锁记录和原始 UNKNOWN 保留，`promotionEligible` 始终为 false。
+
+核心方法前置检查先 RED `f45341` 后 GREEN `fb2354`。整合后的签收、schema 与核心边界短测 `8869e7` 为 4/4，无跳过；原生入口 `666b24` 为 1/1。限定源码 lint `e065e3`/`662499` 通过，独立代码审查未发现阻断问题。它们尚不证明完整正向闭环或真实 H1 执行；本轮复用既有 source 清理 fixture 接续 final，避免另建大型测试框架或重跑无关矩阵。
+
+首次 Linux 组合验证 `bfa8e7` 自然退出 1：source 签收、清理和 CLOSED 已通过，final 在创建初始记录读取处失败。根因为新增 fixture 从 archive 读取仅写入 journal 的 target-create 初始记录；candidate-use 初始记录才同时写入 archive/backup。已修正测试读取位置，语法 `ed8a1d`、限定 lint `882c26` 和差异检查通过，随后只重跑该受影响用例。首次原始日志及冻结代码摘要均保留；尚未将组合验证记为通过。
+
+第二次组合验证 `e2967b` 自然退出 1：source 已 CLOSED、final 创建已完成，但候选消费前准入重查失败。短回归 `2d2ebf`（1/1）确认 fixture 顺序错误：在固定私有父目录后新建证据目录会触发 `R3_JOB_ADMISSION_UNAVAILABLE`；先准备目录再固定准入，导入与重查均通过。已调整为正式启动器既有顺序，没有削弱目录身份校验。格式/语法/差异 `fa4258`、限定 lint `cc88b6` 通过。
+
+第三次组合验证 `472cd2` 自然退出 1（用例约 23.8 分钟）：source 已 CLOSED，final 创建、候选消费和生命周期目标登记已通过，跨过前两次断点；final 原件核验前因临时仓库缺少 `migration-global-object-policy.v1.json` 而失败。该文件已补入 fixture，并在构建摘要生成前纳入目录。完整夹具短验证 `434f95` 为 1/1，格式/语法/限定 lint/差异 `c48b7a` 通过。
+
+第四次组合验证 `47701a` 仍自然退出 1（用例约 23.8 分钟）：final 原件入口从证据图查找 build proof 时失败。定位确认，既有 R1/R2 baseline 会先把已核验 proof 的 canonical 字节写入 archive 对象目录，原夹具仅准备了 `inputs/build` 原始文件，遗漏该前置对象。现按真实路径在所有固定句柄建立前补入 canonical 归档；短回归 `cdcb58` 为 1/1，核对归档字节、摘要、策略文件及准备顺序，限定 lint/差异 `d0cb33` 通过。错误 source 声明的负向检查增加了读取完成见证，防止更早的同码错误被误当作预期拒绝。生产校验未放宽。
+
+四次原始失败日志及各自冻结摘要均保留。验证方式已调整：在 source 回放前，先核对 final 所需配置、canonical proof、源码、仓库及迁移摘要；短回归主动删除 proof 确认立即拒绝，恢复后再验证完整准入。`701a4e` 为 1/1，`183a01` 格式/限定 lint/语法/差异检查通过。此前短检查误将无独立 schema 的配置交给注册表（`d9eb71`）已修正为既有读取方式，不新增 schema。
+
+第五次 `705fcd` 在初始化约 2.7 秒即退出：新增 canonical proof 已创建对象目录，而会话 fixture 仍用非递归 mkdir 要求目录不存在，尚未开始 source 回放。现保留已有私有对象目录，并让短检查使用与长用例相同的 session/forward fixture；`ba4e94` 为 1/1，`2c706f` 限定 lint/语法/差异通过。第五次日志及冻结摘要亦保留。
+
+第六次同用例 `cfaffb` → `bed605` 自然退出 0：1 pass / 0 fail / 0 skip，用例 2470481.275995 ms，进程 2506531.196232 ms。真实核心和私有文件保管完成 source CLOSED 后的独立 final 创建/候选消费、错误 source 声明拒绝、79 项原件与 158 份保管、SUCCEEDED、单独 ACK、八份清理保管和 final CLOSED。关闭前 85 个锁，关闭后保留 83 个物理锁记录，仅删除两个共享转发槽；原 UNKNOWN 未改写。完成结果不自动 ACK，错误阶段的 ACK 被拒绝。
+
+成功日志 `final-close-native-success.log` 的 SHA-256 为 `d43c34a06d3772e18311e336af3e1e0970e391bb80acba91ee81bd61ff0edb70`，冻结清单摘要为 `a125d9c8a3a0c05b5948ef78c568423a86a770e163bec2e7504eea4e8b9ad477`，与前五次失败原件分开保留。`efdcf5` 确认本轮九个代码/测试文件与冻结副本逐字节相同。GitHub/Engine/PG 与纯原件读取器是测试替身；这一成功不证明完整原生 holder/实际镜像/真实 H1 或 CI 验收。不再重跑本次已通过的长组合。
+
+契约 `af35b1` 为 256 文件、87 schemas、128 migrations、13 commands，摘要 `sha256:4ac80d4c675aa9264b08fb36f7754dccc40b5e38ea75d1fdcdd8ed76b2d05d51`；发现清单 `76d149` 为 99 候选 / 39 清单文件 / 60 例外 / 0 未分类。现有 CI 仍调用旧 self-hosted 入口；后续必须连接既定 hosted/H1 执行流程，再完成同候选真实 fresh/snapshot、两项 Staging 迁移和 R4。合法数据库快照来源仍待确认。
+
+调用路径只读审查进一步确认：创建/清理证据的 exporter 和 importer 都只有本机接口，负责人 ACK 后到 hosted holder 的清理通知也没有实际通道。用户已于 2026-09-30 明确批准[受限 SFTP 交付设计](../superpowers/specs/2026-09-30-stage1-r3-evidence-delivery-design.md)及必要账号/SSH 配置：新增独立低权限文件交换账号，保持原转发账号及关闭核验不变。尚未实施，不再重复申请该项批准；现有 final 组合验证独立继续。
+
+## 前序增量：final 原件重建与核心终态
 
 预检 `9e402f` 开始于干净的 `bda6867a`；本地 migrate status 仍因缺 datasource.url 在连接前失败，Prisma `fe9214` 通过。没有业务改动、云端/数据库写入、push/merge 或 workflow dispatch。
 

@@ -1700,6 +1700,48 @@ test("R3 v3 records close session scope and the two stages without future target
   invalid("manual-operation-record.v3", { ...r3Record("custody"), retentionDays: 180 });
 });
 
+test("R3 cleanup observations require phase-specific digest fields", () => {
+  const scope = r3Record("session").scope;
+  const source = {
+    schemaVersion: "manual-operation-record.v3",
+    kind: "cleanup-observation",
+    profileDigest: D,
+    recordedAt: NOW,
+    promotionEligible: false,
+    sessionId: UUID,
+    sessionNonce: "a".repeat(64),
+    ownerId: "test-owner",
+    scope: { ...scope, phase: "source" },
+    operationRef: UUID,
+    sessionRecordDigest: D,
+    sourceExecutionRecordDigest: D,
+    sourceResultDigest: D,
+    sourceAcknowledgementRecordDigest: D,
+    cleanupBundleDigest: D,
+    creationEvidenceDigest: D,
+    forwardEvidenceDigest: D,
+    forwardObservationDigest: D
+  };
+  const final = { ...source, scope: { ...scope, phase: "final" } };
+  for (const [oldField, newField] of [
+    ["sourceExecutionRecordDigest", "finalExecutionRecordDigest"],
+    ["sourceResultDigest", "finalResultDigest"],
+    ["sourceAcknowledgementRecordDigest", "finalAcknowledgementRecordDigest"]
+  ]) {
+    final[newField] = final[oldField];
+    delete final[oldField];
+  }
+  validateContract("manual-operation-record.v3", source);
+  validateContract("manual-operation-record.v3", final);
+  invalid("manual-operation-record.v3", { ...source, scope: final.scope });
+  invalid("manual-operation-record.v3", { ...final, scope: source.scope });
+  invalid("manual-operation-record.v3", { ...source, finalResultDigest: D });
+  invalid("manual-operation-record.v3", { ...final, sourceResultDigest: D });
+  const missing = { ...final };
+  delete missing.finalResultDigest;
+  invalid("manual-operation-record.v3", missing);
+});
+
 test("R3 v3 execution preserves nullable unknown and failed evidence while success needs result and process", () => {
   const execution = r3Record("execution");
   validateContract("manual-operation-record.v3", {

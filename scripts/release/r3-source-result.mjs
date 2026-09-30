@@ -675,7 +675,84 @@ function acknowledgementTime(value) {
 
 // Projection only: the native holder supplies the verified originals and live
 // target. Public delivery still requires its separate owner ACK and CLOSED.
-export function buildR3SourceFreshGateEvidence({
+export function buildR3SourceFreshGateEvidence(input) {
+  if (input?.spec?.chain !== "fresh")
+    throw Object.assign(new Error("R3_SOURCE_GATE_RESULT_INVALID"), {
+      code: "R3_SOURCE_GATE_RESULT_INVALID"
+    });
+  return buildR3SourceGateEvidence(input);
+}
+
+function sourceSnapshotProjection(snapshot, source) {
+  const { metadata, bundleInputs, execution, result } = snapshot;
+  validateContract("snapshot-metadata.v1", metadata);
+  validateContract("manual-operation-record.v3", execution);
+  need(
+    execution.kind === "execution" &&
+      execution.stage === "snapshot-consumer" &&
+      execution.status === "SUCCEEDED" &&
+      execution.reasonCode === null &&
+      execution.promotionEligible === false &&
+      execution.operationId === source.operationRef &&
+      ["profileDigest", "sessionId", "sessionNonce"].every(
+        (field) => execution[field] === source[field]
+      ) &&
+      sha256Canonical(execution) === source.preparationExecutionRecordDigest &&
+      execution.resultDigest === sha256Canonical(result) &&
+      execution.processEvidenceDigest === result.processEvidenceDigest &&
+      execution.predecessorExecutionRecordDigest === result.consumerExecutionRecordDigest &&
+      result.recordVersion === "r3-snapshot-consumer-result.v1" &&
+      !Object.hasOwn(result, "phase") &&
+      result.promotionEligible === false &&
+      result.operationRef === source.operationRef &&
+      result.sessionId === source.sessionId &&
+      result.destinationDigest === source.destinationAdmissionDigest &&
+      result.snapshotDigest === metadata.dumpDigest &&
+      result.metadataDigest === sha256Canonical(metadata) &&
+      result.ownershipMapDigest === metadata.ownershipMapDigest
+  );
+  need(
+    acknowledgementTime(result.completedAt) <= acknowledgementTime(execution.finishedAt) &&
+      acknowledgementTime(execution.finishedAt) <= acknowledgementTime(execution.recordedAt) &&
+      acknowledgementTime(execution.recordedAt) <= acknowledgementTime(source.completedAt)
+  );
+  // This is the admitted declaration, usable here only after the native holder
+  // has completed the real consumer and retained its matching result above.
+  const bundle = bundleInputs.manifest;
+  need(
+    Object.keys(bundle).length === 5 &&
+      bundle.dumpDigest === metadata.dumpDigest &&
+      bundle.metadataDigest === result.metadataDigest &&
+      bundle.privilegeObservationDigest === metadata.sourcePrivilegeObservationDigest &&
+      DIGEST.test(bundle.fingerprintObservationDigest) &&
+      bundle.scanDigest === metadata.scanDigest &&
+      sha256Canonical(bundle) === bundleInputs.digest
+  );
+  need(Array.isArray(result.databaseResults) && result.databaseResults.length > 0);
+  const names = new Set();
+  const observations = result.databaseResults.map((database) => {
+    need(
+      /^s1ci_[0-9a-f]{24}$/u.test(database.databaseName) &&
+        /^[1-9][0-9]*$/u.test(database.databaseOid) &&
+        !names.has(database.databaseName) &&
+        DIGEST.test(database.ownershipObservationDigest)
+    );
+    names.add(database.databaseName);
+    return {
+      databaseName: database.databaseName,
+      ownershipObservationDigest: database.ownershipObservationDigest
+    };
+  });
+  return Object.freeze({
+    snapshotMetadataDigest: result.metadataDigest,
+    snapshotBundleDigest: bundleInputs.digest,
+    sourceMigrationHead: metadata.sourceMigrationHead,
+    ownershipMapDigest: result.ownershipMapDigest,
+    ownershipObservationDigest: sha256Canonical(observations)
+  });
+}
+
+export function buildR3SourceGateEvidence({
   spec,
   job,
   execution,
@@ -683,11 +760,13 @@ export function buildR3SourceFreshGateEvidence({
   reconstructed,
   postgres,
   migrationCatalogDigest,
-  repositoryContractDigest
+  repositoryContractDigest,
+  snapshot
 }) {
   const code = "R3_SOURCE_GATE_RESULT_INVALID";
   try {
-    need(spec.phase === "source" && spec.chain === "fresh");
+    need(spec.phase === "source" && ["fresh", "snapshot"].includes(spec.chain));
+    need(spec.chain === "snapshot" ? snapshot !== undefined : snapshot === undefined);
     need(
       result.schemaVersion === "manual-r3-source-result.v1" && result.promotionEligible === false
     );
@@ -728,7 +807,7 @@ export function buildR3SourceFreshGateEvidence({
       counts = report.counts,
       ci = job.ci;
     need(
-      report.chain === "fresh" &&
+      report.chain === spec.chain &&
         report.terminalStatus === "PASSED" &&
         counts.executed > 0 &&
         counts.collected === counts.selected &&
@@ -742,8 +821,8 @@ export function buildR3SourceFreshGateEvidence({
         ci.runAttempt === 1 &&
         ci.workflowPath === ".github/workflows/release-candidate-gate.yml" &&
         ci.callerWorkflowPath === ci.workflowPath &&
-        ci.jobKey === "source-fresh" &&
-        ci.jobName === "source-fresh"
+        ci.jobKey === `source-${spec.chain}` &&
+        ci.jobName === `source-${spec.chain}`
     );
     need(
       acknowledgementTime(result.completedAt) <= acknowledgementTime(execution.finishedAt) &&
@@ -758,6 +837,9 @@ export function buildR3SourceFreshGateEvidence({
       schemaDiffDigest: reconstructed.schemaDiffDigest,
       migrationStatusDigest: reconstructed.migrationStatusDigest,
       postSchemaDigest: reconstructed.postSchemaDigest,
+      ...(spec.chain === "snapshot"
+        ? { snapshot: sourceSnapshotProjection(snapshot, result) }
+        : {}),
       provenance: Object.freeze({
         generatedAt: result.completedAt,
         ciRunRef: `github://${ci.repository}/actions/runs/${ci.runId}/attempts/${ci.runAttempt}`,

@@ -220,4 +220,102 @@ test("CLOSED message requires matching actual session record", () => {
     sessionBytes: encodeManualJson({ ...session, recordedAt: "2099-01-01T00:00:00.000Z" })
   });
   assert.throws(() => decodeR3ClosedReceived({ bytes: receipt, request, closedBytes: changed }));
+  const metadata = {
+    schemaVersion: "snapshot-metadata.v1",
+    dumpDigest: d("1"),
+    sourceMigrationHead: "20260925091000_stage1_operational_completion_settlement_guard",
+    sourcePrivilegeObservationDigest: d("2"),
+    sourceFingerprintBeforeDigest: d("3"),
+    sourceFingerprintAfterDigest: d("3"),
+    sanitizationContractDigest: d("4"),
+    ownershipMapDigest: d("5"),
+    ownershipContractVersion: "1",
+    scanDigest: d("6"),
+    scanSubjectDigest: d("1"),
+    exportToolVersion: "fixture.v1",
+    scanToolVersion: "fixture.v1",
+    createdAt: "2026-09-27T00:00:00.000Z",
+    reviewAt: "2026-09-27T00:00:00.000Z",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    owner: "owner",
+    readers: ["reader"],
+    accessPolicyRef: "fixture-policy",
+    workflowRunRef: "fixture-run"
+  };
+  const snapshotMetadataBytes = encodeManualJson(metadata);
+  const snapshotGate = {
+    ...publicEvidence,
+    chain: "snapshot",
+    snapshot: {
+      snapshotMetadataDigest: sha256Bytes(snapshotMetadataBytes),
+      snapshotBundleDigest: d("7"),
+      sourceMigrationHead: metadata.sourceMigrationHead,
+      ownershipMapDigest: metadata.ownershipMapDigest,
+      ownershipObservationDigest: d("8")
+    }
+  };
+  const snapshotRequest = { ...request, chain: "snapshot" };
+  const snapshotInput = {
+    request: snapshotRequest,
+    sessionBytes: encodeManualJson({ ...session, scope: { ...session.scope, chain: "snapshot" } }),
+    sourceGateEvidenceBytes: encodeManualJson(snapshotGate),
+    snapshotMetadataBytes
+  };
+  const snapshotClosed = encodeR3Closed(snapshotInput);
+  const snapshotDecoded = decodeR3Closed({ bytes: snapshotClosed, request: snapshotRequest });
+  assert.deepEqual(snapshotDecoded.snapshotMetadataBytes, snapshotMetadataBytes);
+  assert.deepEqual(snapshotDecoded.sourceGateEvidence, snapshotGate);
+  assert.equal(snapshotDecoded.snapshotMetadataDigest, sha256Bytes(snapshotMetadataBytes));
+  assert.throws(() => encodeR3Closed({ ...snapshotInput, snapshotMetadataBytes: undefined }));
+  assert.throws(() =>
+    encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes, snapshotMetadataBytes })
+  );
+  assert.throws(() =>
+    encodeR3Closed({
+      ...snapshotInput,
+      snapshotMetadataBytes: encodeManualJson({ ...metadata, owner: "different" })
+    })
+  );
+  assert.throws(() =>
+    encodeR3Closed({
+      ...snapshotInput,
+      snapshotMetadataBytes: Buffer.from(JSON.stringify(metadata))
+    })
+  );
+  for (const field of ["snapshotMetadataDigest", "snapshotMetadata"]) {
+    const changed = JSON.parse(snapshotClosed);
+    if (field === "snapshotMetadata") changed.snapshotMetadata.owner = "different";
+    else changed[field] = d("0");
+    assert.throws(() =>
+      decodeR3Closed({ bytes: encodeManualJson(changed), request: snapshotRequest })
+    );
+  }
+  const snapshotReceipt = encodeR3ClosedReceived({
+    request: snapshotRequest,
+    closedBytes: snapshotClosed
+  });
+  assert.equal(
+    decodeR3ClosedReceived({
+      bytes: snapshotReceipt,
+      request: snapshotRequest,
+      closedBytes: snapshotClosed
+    }).closedDigest,
+    sha256Bytes(snapshotClosed)
+  );
+  const otherMetadata = encodeManualJson({ ...metadata, owner: "different" });
+  const changedSnapshotClosed = encodeR3Closed({
+    ...snapshotInput,
+    snapshotMetadataBytes: otherMetadata,
+    sourceGateEvidenceBytes: encodeManualJson({
+      ...snapshotGate,
+      snapshot: { ...snapshotGate.snapshot, snapshotMetadataDigest: sha256Bytes(otherMetadata) }
+    })
+  });
+  assert.throws(() =>
+    decodeR3ClosedReceived({
+      bytes: snapshotReceipt,
+      request: snapshotRequest,
+      closedBytes: changedSnapshotClosed
+    })
+  );
 });

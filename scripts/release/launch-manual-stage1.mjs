@@ -77,7 +77,7 @@ import {
 } from "./r3-source-suite.mjs";
 import {
   buildR3SourceResult,
-  buildR3SourceFreshGateEvidence,
+  buildR3SourceGateEvidence,
   assertR3SourceAcknowledgement
 } from "./r3-source-result.mjs";
 import { buildDatabaseSuiteReport } from "../../packages/release-foundation/src/database-test-launcher.mjs";
@@ -4037,26 +4037,35 @@ export async function launchR3TargetCreate(input) {
         execution: execution.value,
         result: result.value
       };
-      let sourceGateEvidence;
-      if (fixed.spec.chain === "fresh") {
-        const [migrations, repository] = await Promise.all([
-          computeMigrationCatalog(repoRoot),
-          computeRepositoryContract(repoRoot)
-        ]);
-        sourceGateEvidence = buildR3SourceFreshGateEvidence({
-          spec: fixed.spec,
-          job: fixed.admission,
-          execution: execution.value,
-          result: result.value,
-          reconstructed,
-          postgres: {
-            imageDigest: postgresTarget.imageDigest,
-            serverVersionNum: String(postgresTarget.postgres.serverVersionNum)
-          },
-          migrationCatalogDigest: migrations.digest,
-          repositoryContractDigest: repository.digest
-        });
-      }
+      const [migrations, repository] = await Promise.all([
+        computeMigrationCatalog(repoRoot),
+        computeRepositoryContract(repoRoot)
+      ]);
+      const snapshotMetadata =
+        fixed.spec.chain === "snapshot" ? consumerInput.restoreInputs.metadata : undefined;
+      const sourceGateEvidence = buildR3SourceGateEvidence({
+        spec: fixed.spec,
+        job: fixed.admission,
+        execution: execution.value,
+        result: result.value,
+        reconstructed,
+        postgres: {
+          imageDigest: postgresTarget.imageDigest,
+          serverVersionNum: String(postgresTarget.postgres.serverVersionNum)
+        },
+        migrationCatalogDigest: migrations.digest,
+        repositoryContractDigest: repository.digest,
+        ...(snapshotMetadata
+          ? {
+              snapshot: {
+                metadata: snapshotMetadata,
+                bundleInputs: consumerInput.bundleInputs,
+                execution: snapshotCompletionRecord.execution,
+                result: snapshotCompletionRecord.result
+              }
+            }
+          : {})
+      });
       // The held H2 reader independently binds these current catalog digests to
       // the admitted build; a local catalog computation is not build admission.
       await sourceCheck();
@@ -4071,7 +4080,8 @@ export async function launchR3TargetCreate(input) {
         resultDigest: completed.resultDigest,
         resultCustodyRecordDigests: completed.custodyRecordDigests,
         counts: Object.freeze({ ...manifestReport.counts }),
-        ...(sourceGateEvidence ? { sourceGateEvidence } : {}),
+        sourceGateEvidence,
+        ...(snapshotMetadata ? { snapshotMetadata } : {}),
         promotionEligible: false
       });
     } catch (cause) {
@@ -4537,6 +4547,7 @@ export async function launchR3TargetCreate(input) {
       originals.push({ digest: custodyDigest, bytes: custody.bytes, roles: ["archive"] });
     }
     if (custodyPairs.size !== 4) fail(code);
+    let completedResult;
     for (const originalDigest of new Set([
       ...result.originalDigests,
       result.resultDigest,
@@ -4544,13 +4555,19 @@ export async function launchR3TargetCreate(input) {
     ])) {
       const original = await archive.get(originalDigest, "archive");
       if (sha256Bytes(original.bytes) !== originalDigest) fail(code);
+      if (originalDigest === result.resultDigest) completedResult = original.value;
       originals.push({
         digest: originalDigest,
         bytes: original.bytes,
         roles: ["archive", "backup"]
       });
     }
-    snapshotCompletionRecord = { originals, executionRecordDigest: result.executionRecordDigest };
+    snapshotCompletionRecord = {
+      originals,
+      executionRecordDigest: result.executionRecordDigest,
+      execution: execution.value,
+      result: completedResult
+    };
     await recheckResources();
     if (stopping) fail(code);
     snapshotCompletionReady = true;

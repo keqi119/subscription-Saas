@@ -797,6 +797,7 @@ test("R3 source originals require matching fixed dual readbacks and reject later
     buildR3SourceResult,
     buildR3SourceCompletion,
     buildR3SourceFreshGateEvidence,
+    buildR3SourceGateEvidence,
     buildR3SourceAcknowledgement,
     assertR3SourceAcknowledgement,
     readR3SourceOriginals
@@ -1020,6 +1021,157 @@ test("R3 source originals require matching fixed dual readbacks and reject later
   assert.equal(publicEvidence.migrationStatusDigest, reconstructed.migrationStatusDigest);
   assert.equal(publicEvidence.sanitizedLogDigest, reconstructed.manifestReport.sanitizedLogDigest);
   assert.deepEqual(publicEvidence.counts, reconstructed.manifestReport.counts);
+  // Projection fixture only: no real snapshot, database or hosted CI is used.
+  const snapshotProjection = structuredClone(projectionInput);
+  snapshotProjection.spec.chain = "snapshot";
+  snapshotProjection.job.chain = "snapshot";
+  snapshotProjection.job.ci.jobKey = "source-snapshot";
+  snapshotProjection.job.ci.jobName = "source-snapshot";
+  snapshotProjection.result.chain = "snapshot";
+  snapshotProjection.reconstructed.manifestReport.chain = "snapshot";
+  for (const suite of snapshotProjection.reconstructed.manifestReport.suiteReports)
+    suite.chain = "snapshot";
+  const metadata = {
+    schemaVersion: "snapshot-metadata.v1",
+    dumpDigest: `sha256:${"1".repeat(64)}`,
+    sourceMigrationHead: "20260925091000_stage1_operational_completion_settlement_guard",
+    sourcePrivilegeObservationDigest: `sha256:${"2".repeat(64)}`,
+    sourceFingerprintBeforeDigest: `sha256:${"3".repeat(64)}`,
+    sourceFingerprintAfterDigest: `sha256:${"3".repeat(64)}`,
+    sanitizationContractDigest: `sha256:${"4".repeat(64)}`,
+    ownershipMapDigest: `sha256:${"5".repeat(64)}`,
+    ownershipContractVersion: "1",
+    scanDigest: `sha256:${"6".repeat(64)}`,
+    scanSubjectDigest: `sha256:${"1".repeat(64)}`,
+    exportToolVersion: "fixture.v1",
+    scanToolVersion: "fixture.v1",
+    createdAt: "2026-09-27T00:00:00.000Z",
+    reviewAt: "2026-09-27T00:00:00.000Z",
+    expiresAt: "2026-10-27T00:00:00.000Z",
+    owner: "owner",
+    readers: ["reader"],
+    accessPolicyRef: "fixture-policy",
+    workflowRunRef: "fixture-run"
+  };
+  const bundleManifest = {
+    dumpDigest: metadata.dumpDigest,
+    metadataDigest: sha256Canonical(metadata),
+    privilegeObservationDigest: metadata.sourcePrivilegeObservationDigest,
+    fingerprintObservationDigest: `sha256:${"7".repeat(64)}`,
+    scanDigest: metadata.scanDigest
+  };
+  const snapshotResult = {
+    recordVersion: "r3-snapshot-consumer-result.v1",
+    operationRef,
+    sessionId: completion.sessionId,
+    consumerExecutionRecordDigest: `sha256:${"8".repeat(64)}`,
+    inputIndexDigest: `sha256:${"9".repeat(64)}`,
+    destinationDigest: completion.destinationAdmissionDigest,
+    snapshotDigest: metadata.dumpDigest,
+    metadataDigest: sha256Canonical(metadata),
+    ownershipMapDigest: metadata.ownershipMapDigest,
+    processEvidenceDigest: `sha256:${"a".repeat(64)}`,
+    databaseResults: fixture.records.map(({ databaseName, databaseOid }) => ({
+      databaseName,
+      databaseOid,
+      ownershipObservationDigest: `sha256:${"b".repeat(64)}`
+    })),
+    completedAt: "2026-09-27T23:59:58.000Z",
+    promotionEligible: false
+  };
+  snapshotProjection.snapshot = {
+    metadata,
+    bundleInputs: { manifest: bundleManifest, digest: sha256Canonical(bundleManifest) },
+    result: snapshotResult,
+    execution: {
+      ...terminal,
+      stage: "snapshot-consumer",
+      predecessorExecutionRecordDigest: snapshotResult.consumerExecutionRecordDigest,
+      resultDigest: sha256Canonical(snapshotResult),
+      processEvidenceDigest: snapshotResult.processEvidenceDigest,
+      startedAt: "2026-09-27T23:59:57.000Z",
+      finishedAt: "2026-09-27T23:59:59.000Z",
+      recordedAt: "2026-09-28T00:00:00.000Z"
+    }
+  };
+  const sealProjection = (value) => {
+    if (value.snapshot) {
+      value.snapshot.execution.resultDigest = sha256Canonical(value.snapshot.result);
+      value.result.preparationExecutionRecordDigest = sha256Canonical(value.snapshot.execution);
+    }
+    value.result.creationSpecDigest = sha256Canonical(value.spec);
+    value.job.creationSpecDigest = value.result.creationSpecDigest;
+    value.result.jobAdmissionDigest = sha256Canonical(value.job);
+    value.result.reconstructedDigest = sha256Canonical(value.reconstructed);
+    value.execution.resultDigest = sha256Canonical(value.result);
+  };
+  sealProjection(snapshotProjection);
+  const snapshotEvidence = buildR3SourceGateEvidence(snapshotProjection);
+  assert.equal(snapshotEvidence.chain, "snapshot");
+  assert.deepEqual(snapshotEvidence.snapshot, {
+    snapshotMetadataDigest: sha256Canonical(metadata),
+    snapshotBundleDigest: sha256Canonical(bundleManifest),
+    sourceMigrationHead: metadata.sourceMigrationHead,
+    ownershipMapDigest: metadata.ownershipMapDigest,
+    ownershipObservationDigest: sha256Canonical(
+      snapshotResult.databaseResults.map(({ databaseName, ownershipObservationDigest }) => ({
+        databaseName,
+        ownershipObservationDigest
+      }))
+    )
+  });
+  for (const mutate of [
+    (value) => {
+      delete value.snapshot;
+    },
+    (value) => {
+      value.snapshot.execution.status = "INTERRUPTED_UNKNOWN";
+    },
+    (value) => {
+      value.snapshot.execution.sessionNonce = "0".repeat(64);
+    },
+    (value) => {
+      value.snapshot.result.phase = "final";
+    },
+    (value) => {
+      value.snapshot.result.destinationDigest = `sha256:${"0".repeat(64)}`;
+    },
+    (value) => {
+      value.snapshot.metadata.owner = "different-owner";
+    },
+    (value) => {
+      value.snapshot.bundleInputs.manifest.scanDigest = `sha256:${"0".repeat(64)}`;
+    },
+    (value) => {
+      value.snapshot.result.databaseResults = [];
+    },
+    (value) => {
+      value.snapshot.result.databaseResults.push(value.snapshot.result.databaseResults[0]);
+    },
+    (value) => {
+      value.snapshot.result.completedAt = "2026-09-28T00:00:03.000Z";
+    }
+  ]) {
+    const value = structuredClone(snapshotProjection);
+    mutate(value);
+    sealProjection(value);
+    assert.throws(() => buildR3SourceGateEvidence(value), {
+      code: "R3_SOURCE_GATE_RESULT_INVALID"
+    });
+  }
+  const foreignPredecessor = structuredClone(snapshotProjection);
+  foreignPredecessor.result.preparationExecutionRecordDigest = `sha256:${"0".repeat(64)}`;
+  foreignPredecessor.execution.resultDigest = sha256Canonical(foreignPredecessor.result);
+  assert.throws(() => buildR3SourceGateEvidence(foreignPredecessor), {
+    code: "R3_SOURCE_GATE_RESULT_INVALID"
+  });
+  assert.throws(() => buildR3SourceFreshGateEvidence(snapshotProjection), {
+    code: "R3_SOURCE_GATE_RESULT_INVALID"
+  });
+  assert.throws(
+    () => buildR3SourceGateEvidence({ ...projectionInput, snapshot: snapshotProjection.snapshot }),
+    { code: "R3_SOURCE_GATE_RESULT_INVALID" }
+  );
   for (const mutate of [
     (value) => {
       value.execution.status = "INTERRUPTED_UNKNOWN";

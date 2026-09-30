@@ -45,3 +45,13 @@ source 原件短测 `5a726e` 为 1/1；caller `2b4b06` 先复现缺少交付字�
 4. 按已批准范围对齐 Staging 两项待迁移，再完成 R4 真实验收与收口记录。
 
 不新增业务功能，不引入商用 KMS，不扩大测试矩阵。已批准的 SSH、Docker 和账号配置无需重复申请。
+
+## Snapshot 公开结果增量
+
+source/snapshot 已沿用 fresh 的公开结果投影入口。native holder 保留已有双保管核验的 snapshot 完成 execution/result，与源测试的准备前驱摘要、同一操作/会话/目标和实际 admitted 元数据逐项绑定。bundle 摘要来自既有准入声明，只有实际 consumer 完成记录匹配时才用于公开结果；它本身不冒充保管回执。公开 ownership 摘要取自该完成结果内各数据库的真实观察摘要。当前返回精确元数据，后续仍需接通两端 snapshot 调用和 hosted 固定文件保存。
+
+既有 source-original 测试增加纯投影用例：缺少消费结果、错误前驱、跨会话、final 消费结果、目标或元数据不符、空/重复观察及时间倒置均拒绝。`7d36d7` 先复现缺少 helper，`cd4a0a` 为 1/1 通过且无跳过；该用例的数据库和 CI 边界是合成输入，不是实际快照验收。`bda41c` 限定 lint、差异和合同检查通过：263 文件、87 schemas、13 commands、128 migrations。没有重跑长组合、变更数据库或启动 CI。
+
+既有 CLOSED 消息与 H1 适配器已支持共同交付 source/snapshot 的公开 gate 和精确元数据。元数据摘要、迁移头、ownership map 必须与 gate 一致；fresh/final 消息不允许混入元数据。仍使用原文件名、完整消息的精确回执和 1 MiB 限制，不增加权限。codec `d8bec6` 先失败，`1cb3ce` 为 4/4 通过；最终 Linux codec/hosted adapter/既有 fresh callers `a1f3d6` 为 8/8，无跳过，约 19.2 秒。限定独立审查与小范围补充核对均无可证实 P1/P2。`1cf632` 限定 lint、差异和合同检查通过，仓库合同摘要 `sha256:da90f03f8d10e2abab1be886173aed698de06197bfcafbd0dba0a25b6d36952a`，迁移摘要未变。
+
+final 字段追踪确认还有独立执行缺口：native `matchingSourceEvidenceDigest` 指向 source 终态 execution，aggregate 所需摘要指向公开 source-gate 原件，两者不能直接互换。native final 数据库 manifest 成功也不包含旧 final-compose 的 Compose、API 进程/会话/就绪检查、真实浏览器请求和分阶段保管证据；后续必须复用并执行这些既有检查，不能填充虚构的 `PASSED`。

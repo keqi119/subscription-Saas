@@ -227,7 +227,12 @@ export function decodeR3CleanupImported({ bytes, request, bundleDigest }) {
   return Object.freeze(value);
 }
 
-export function encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes }) {
+export function encodeR3Closed({
+  request,
+  sessionBytes,
+  sourceGateEvidenceBytes,
+  snapshotMetadataBytes
+}) {
   const fields = requestFields({
     schemaVersion: "manual-r3-evidence-delivery.v1",
     kind: "cleanup-request",
@@ -255,9 +260,10 @@ export function encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes 
         "chain"
       ].every((field) => session.scope[field] === fields[field])
   );
-  const freshSource = fields.phase === "source" && fields.chain === "fresh";
-  let sourceGateEvidence;
-  if (freshSource) {
+  const source = fields.phase === "source";
+  const snapshotSource = source && fields.chain === "snapshot";
+  let sourceGateEvidence, snapshotMetadata;
+  if (source) {
     sourceGateEvidence = parse(sourceGateEvidenceBytes);
     try {
       validateContract("source-gate-evidence.v1", sourceGateEvidence);
@@ -268,7 +274,7 @@ export function encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes 
       counts = gate.counts;
     need(
       gate.sourceSha === fields.sourceSha &&
-        gate.chain === "fresh" &&
+        gate.chain === fields.chain &&
         gate.terminalStatus === "PASSED" &&
         gate.provenance.ciRunRef === fields.ciRunRef &&
         gate.provenance.executorVersion === "manual-r3-source-database-gate.v1" &&
@@ -279,12 +285,28 @@ export function encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes 
         ["failed", "skipped", "todo", "filtered", "cancelled"].every((field) => counts[field] === 0)
     );
   } else need(sourceGateEvidenceBytes === undefined);
+  if (snapshotSource) {
+    snapshotMetadata = parse(snapshotMetadataBytes);
+    try {
+      validateContract("snapshot-metadata.v1", snapshotMetadata);
+    } catch {
+      fail();
+    }
+    need(
+      sourceGateEvidence.snapshot.snapshotMetadataDigest === sha256Bytes(snapshotMetadataBytes) &&
+        sourceGateEvidence.snapshot.sourceMigrationHead === snapshotMetadata.sourceMigrationHead &&
+        sourceGateEvidence.snapshot.ownershipMapDigest === snapshotMetadata.ownershipMapDigest
+    );
+  } else need(snapshotMetadataBytes === undefined);
   return encoded({
     schemaVersion: "manual-r3-evidence-delivery.v1",
     kind: "closed",
     ...fields,
-    ...(freshSource
+    ...(source
       ? { sourceGateEvidenceDigest: sha256Bytes(sourceGateEvidenceBytes), sourceGateEvidence }
+      : {}),
+    ...(snapshotSource
+      ? { snapshotMetadataDigest: sha256Bytes(snapshotMetadataBytes), snapshotMetadata }
       : {}),
     sessionDigest: sha256Bytes(sessionBytes),
     session
@@ -298,11 +320,22 @@ export function decodeR3Closed({ bytes, request }) {
   const sourceGateEvidenceBytes = Object.hasOwn(value, "sourceGateEvidence")
     ? encoded(value.sourceGateEvidence)
     : undefined;
-  need(encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes }).equals(bytes));
+  const snapshotMetadataBytes = Object.hasOwn(value, "snapshotMetadata")
+    ? encoded(value.snapshotMetadata)
+    : undefined;
+  need(
+    encodeR3Closed({
+      request,
+      sessionBytes,
+      sourceGateEvidenceBytes,
+      snapshotMetadataBytes
+    }).equals(bytes)
+  );
   return Object.freeze({
     ...value,
     sessionBytes,
-    ...(sourceGateEvidenceBytes ? { sourceGateEvidenceBytes } : {})
+    ...(sourceGateEvidenceBytes ? { sourceGateEvidenceBytes } : {}),
+    ...(snapshotMetadataBytes ? { snapshotMetadataBytes } : {})
   });
 }
 

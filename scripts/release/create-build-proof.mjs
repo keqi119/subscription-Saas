@@ -9,6 +9,7 @@ import {
   sha256Canonical,
   validateContract
 } from "../../packages/release-foundation/src/index.mjs";
+import { validateBuildWebClient } from "./verify-build-materials.mjs";
 
 const digestPattern = /^sha256:[0-9a-f]{64}$/u;
 const sourceShaPattern = /^[0-9a-f]{40}$/u;
@@ -107,6 +108,14 @@ function buildMaterials(observation) {
       reference: sha256Canonical(observation)
     },
     { name: "builder", reference: observation.builder.provenanceRef },
+    ...(Object.hasOwn(observation, "webClient")
+      ? [
+          {
+            name: "web-public-api-base",
+            reference: validateBuildWebClient(observation.webClient, observation.images).apiBaseUrl
+          }
+        ]
+      : []),
     ...observation.externalActions.map(({ name, commitSha }) => ({
       name: `action:${name}`,
       reference: commitSha

@@ -85,3 +85,13 @@ source 的旧明文 dump artifact 下载和旧执行器已移出该 job，由 na
 后续工作已集中到 `docs/superpowers/plans/2026-10-01-stage1-final-application-integration.md`。网络核对确认 Web 候选镜像在构建时固化 HTTPS API 地址，不能靠运行时环境变量改指隔离 API。下一步必须保留候选镜像身份并建立真实可达的应用验收路径，再接公开证据、final 调用器和工作流；不能用另一个测试镜像或模拟响应替代。
 
 本增量经一次限定独立审查，无可证实 P1/P2。下一依赖是将构建工作流已验证的 API 地址与 Web 镜像摘要一并留在可信构建证据中，供隔离网络中的真实 TLS 请求使用；不修改生产 DNS，不关闭浏览器 TLS 校验，也不引入商用 KMS。
+
+## Web 构建地址绑定增量
+
+受保护构建 observer 现将已经由 build-web 按不可变镜像核对的 `apiBaseUrl`，与实际选出的 Web 平台镜像摘要一起保存为 `webClient`。构建 proof 同时保留唯一的地址 material，验证时要求与原 observation、Web 镜像和 observation 整体摘要一致，拒绝重复或未绑定地址。历史证据没有此字段时仍能读取，但新的 `assertBuildWebClient` 会明确拒绝其用于应用地址检查；该消费检查尚待 final 应用 runtime 接入。
+
+既有两个 build 测试文件 `95902f` 为 54/54、无跳过；覆盖错误镜像、非预期 URL、地址篡改/重复/丢失和历史兼容。`0cb6db` 工作流重复键、十段 shell、三段内嵌 JS 语法通过；`2d6981` 限定 lint、差异和合同检查通过，`ae4b96` 格式通过。构建 producer/verifier 已纳入合同清单，当前为 265 文件、87 schemas、13 commands、128 migrations；仓库合同摘要 `sha256:6b17be0af3bb9860f04e8837b48e93f974753d7a4a3282f9e23a1598c6241860`。一次限定独立审查无可证实 P1/P2；未实际构建、推送镜像或触发 CI。
+
+另有一项如实保留的既有检查失败：静态 CLI `verify-build-materials.mjs --workflow` 返回 `RUNNER_DEPENDENCY_COPY_TOO_BROAD`（`5f58e2`）。旧检查只接受治理脚本逐文件清单，而当前 Runner 为完整数据库测试已复制整个 scripts/API 源目录；该函数与本增量前相同（`ae4b96`）。工作流 observer 实际使用 `--input`，但完整构建检查仍需对齐此差距，不能记为全部通过。
+
+本轮应用库迁移和构建地址绑定均为代码进展。阶段 1 仍缺实际 API/Web/TLS 验收路径、final 公开证据与两端调用/工作流，以及合法快照输入、同候选 R2/R3、Staging 两项迁移和 R4 真实验收。

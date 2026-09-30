@@ -317,6 +317,7 @@ jobs:
           API_INDEX_DIGEST: ${{ needs.build-api.outputs.index-digest }}
           WEB_IMAGE: ${{ needs.build-web.outputs.image }}
           WEB_INDEX_DIGEST: ${{ needs.build-web.outputs.index-digest }}
+          API_BASE_URL: ${{ inputs.apiBaseUrl }}
           RUNNER_IMAGE: ${{ needs.build-runner.outputs.image }}
           RUNNER_INDEX_DIGEST: ${{ needs.build-runner.outputs.index-digest }}
           SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
@@ -409,6 +410,10 @@ jobs:
             repositoryContractDigest: contracts.repositoryContractDigest,
             migrationCatalogDigest: contracts.migrationCatalogDigest,
             images,
+            webClient: {
+              imageDigest: images.find(({ name }) => name === "web").digest,
+              apiBaseUrl: process.env.API_BASE_URL
+            },
             externalActions: Object.entries(policy.externalActions).map(([name, commitSha]) => ({ name, commitSha })),
             builder: {
               name: images[0]?.builderName,

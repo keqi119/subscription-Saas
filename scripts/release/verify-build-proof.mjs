@@ -9,6 +9,7 @@ import {
   sha256Canonical,
   validateContract
 } from "../../packages/release-foundation/src/index.mjs";
+import { validateBuildWebClient } from "./verify-build-materials.mjs";
 
 const allowedExecutionScopes = new Set(["full-rc", "migration-schema"]);
 const legacyCustodyPolicyKeys = Object.freeze([
@@ -92,6 +93,16 @@ export function assertBuildIdentity(input) {
   if (materialReference?.reference !== sha256Canonical(observation)) {
     throw proofError("BUILD_PROOF_REGISTRY_SUBJECT_MISMATCH");
   }
+  const webMaterials = proof.provenance.materials.filter(
+    ({ name }) => name === "web-public-api-base"
+  );
+  if (Object.hasOwn(observation, "webClient")) {
+    const webClient = validateBuildWebClient(observation.webClient, observation.images);
+    if (webMaterials.length !== 1 || webMaterials[0].reference !== webClient.apiBaseUrl)
+      throw proofError("BUILD_PROOF_PROVENANCE_MISMATCH");
+  } else if (webMaterials.length !== 0) {
+    throw proofError("BUILD_PROOF_PROVENANCE_MISMATCH");
+  }
   for (const name of ["api", "web", "runner"]) {
     const expected = proof.identity.images[name];
     const observed = observation.images.find((image) => image.name === name);
@@ -139,6 +150,18 @@ export function assertBuildIdentity(input) {
   ) {
     throw proofError("BUILD_PROOF_PROVENANCE_MISMATCH");
   }
+}
+
+// Historical proofs remain readable, but cannot supply a missing application
+// endpoint. This check is not a substitute for attestation/custody admission.
+export function assertBuildWebClient(input) {
+  assertBuildIdentity(input);
+  if (!Object.hasOwn(input.buildMaterialObservation, "webClient"))
+    throw proofError("BUILD_WEB_CLIENT_REQUIRED");
+  return validateBuildWebClient(
+    input.buildMaterialObservation.webClient,
+    input.buildMaterialObservation.images
+  );
 }
 
 function assertTrustedAttestation({ proofDigest, proof, trustRoot, verifiedAttestation }) {

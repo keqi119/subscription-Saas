@@ -82,6 +82,63 @@ function createValidProof(buildObservation = observation()) {
   });
 }
 
+test("binds one exact Web API material and requires it for the application consumer", () => {
+  const buildMaterialObservation = observation();
+  buildMaterialObservation.webClient = {
+    imageDigest: buildMaterialObservation.images.find(({ name }) => name === "web").digest,
+    apiBaseUrl: "https://api.example.com/api"
+  };
+  const proof = createValidProof(buildMaterialObservation);
+  const entry = proof.provenance.materials.find(({ name }) => name === "web-public-api-base");
+  assert.equal(entry.reference, buildMaterialObservation.webClient.apiBaseUrl);
+  assert.deepEqual(
+    buildProofVerifier.assertBuildWebClient({ proof, buildMaterialObservation }),
+    buildMaterialObservation.webClient
+  );
+  assert.doesNotThrow(() =>
+    assertBuildIdentity({ proof: createValidProof(), buildMaterialObservation: observation() })
+  );
+  assert.throws(
+    () =>
+      buildProofVerifier.assertBuildWebClient({
+        proof: createValidProof(),
+        buildMaterialObservation: observation()
+      }),
+    { code: "BUILD_WEB_CLIENT_REQUIRED" }
+  );
+  for (const mutate of [
+    (p) => {
+      p.provenance.materials.find(({ name }) => name === "web-public-api-base").reference =
+        "https://foreign.example.com/api";
+    },
+    (p) => {
+      p.provenance.materials.push({ ...entry });
+    },
+    (p) => {
+      p.provenance.materials = p.provenance.materials.filter(
+        ({ name }) => name !== "web-public-api-base"
+      );
+    }
+  ]) {
+    const altered = structuredClone(proof);
+    mutate(altered);
+    assert.throws(() => assertBuildIdentity({ proof: altered, buildMaterialObservation }), {
+      code: "BUILD_PROOF_PROVENANCE_MISMATCH"
+    });
+  }
+  const legacy = structuredClone(createValidProof());
+  legacy.provenance.materials.push(entry);
+  assert.throws(
+    () => assertBuildIdentity({ proof: legacy, buildMaterialObservation: observation() }),
+    { code: "BUILD_PROOF_PROVENANCE_MISMATCH" }
+  );
+  const changed = structuredClone(buildMaterialObservation);
+  changed.webClient.apiBaseUrl = "https://foreign.example.com/api";
+  assert.throws(() => assertBuildIdentity({ proof, buildMaterialObservation: changed }), {
+    code: "BUILD_PROOF_REGISTRY_SUBJECT_MISMATCH"
+  });
+});
+
 function trustFixture(proof, buildObservation = observation(), executionScope = "full-rc") {
   const proofDigest = sha256Canonical(proof);
   const attestationRef = "https://github.com/keqi119/subscription-Saas/attestations/2801";
@@ -480,6 +537,12 @@ test("protected aggregation is the only proof issuer and exposes non-promotable 
   const registry = JSON.parse(readFileSync("release/contracts/command-registry.v1.json", "utf8"));
   assert.equal(workflow.match(/create-build-proof\.mjs/gu)?.length, 1);
   assert.match(workflow, /observe-build-materials:[\s\S]*environment: trusted-image-build/u);
+  const observer = workflow.slice(workflow.indexOf("  observe-build-materials:"));
+  assert.match(observer, /API_BASE_URL:\s*\$\{\{ inputs\.apiBaseUrl \}\}/u);
+  assert.match(
+    observer,
+    /webClient:\s*\{\s*imageDigest: images\.find\(\(\{ name \}\) => name === "web"\)\.digest,\s*apiBaseUrl: process\.env\.API_BASE_URL/u
+  );
   assert.match(workflow, /attestations: write/u);
   assert.match(workflow, /id-token: write/u);
   assert.match(workflow, /uses: actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6/u);

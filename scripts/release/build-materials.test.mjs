@@ -171,6 +171,47 @@ test("accepts exactly one trusted three-image build material observation", () =>
   assert.equal(result.promotionEligibility, "trusted-candidate");
 });
 
+test("retains the validated Web API address bound to its selected platform image", () => {
+  const input = validInput();
+  input.webClient = {
+    imageDigest: input.images.find(({ name }) => name === "web").digest,
+    apiBaseUrl: "https://api.example.com/api"
+  };
+  const result = verifyBuildMaterials(input);
+  assert.deepEqual(result.webClient, input.webClient);
+  assert.ok(Object.isFrozen(result.webClient));
+  for (const change of [
+    (v) => {
+      v.imageDigest = input.images[0].digest;
+    },
+    (v) => {
+      v.apiBaseUrl = "http://127.0.0.1:33001/api";
+    },
+    (v) => {
+      v.apiBaseUrl = "https://api.example.com:443/api";
+    },
+    (v) => {
+      v.apiBaseUrl = "https://user:password@api.example.com/api";
+    },
+    (v) => {
+      v.apiBaseUrl = "https://api.example.com/api?x=1";
+    },
+    (v) => {
+      v.apiBaseUrl = "https://api.example.com/api/";
+    },
+    (v) => {
+      v.apiBaseUrl = " https://api.example.com/api";
+    },
+    (v) => {
+      v.override = true;
+    }
+  ]) {
+    const altered = structuredClone(input);
+    change(altered.webClient);
+    assert.throws(() => verifyBuildMaterials(altered), { code: "BUILD_WEB_CLIENT_INVALID" });
+  }
+});
+
 test("BUILD_ACTION_UNPINNED rejects a mutable external action reference", () => {
   assert.throws(
     () =>

@@ -18,6 +18,42 @@ function materialError(code, details) {
   return Object.assign(new Error(code), { code, details });
 }
 
+// Consistency only: the protected build job verifies the immutable image's
+// bundle; attestation/custody admission authenticates the resulting observation.
+export function validateBuildWebClient(webClient, images) {
+  try {
+    if (
+      !webClient ||
+      typeof webClient !== "object" ||
+      Array.isArray(webClient) ||
+      Object.keys(webClient).sort().join(",") !== "apiBaseUrl,imageDigest" ||
+      !digestPattern.test(webClient.imageDigest) ||
+      !Array.isArray(images) ||
+      images.filter(({ name }) => name === "web").length !== 1 ||
+      webClient.imageDigest !== images.find(({ name }) => name === "web").digest ||
+      typeof webClient.apiBaseUrl !== "string" ||
+      webClient.apiBaseUrl.length > 2048
+    )
+      throw new Error();
+    const url = new URL(webClient.apiBaseUrl);
+    if (
+      url.protocol !== "https:" ||
+      !url.hostname ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.search ||
+      url.hash ||
+      url.pathname !== "/api" ||
+      webClient.apiBaseUrl !== `${url.origin}/api`
+    )
+      throw new Error();
+    return Object.freeze({ imageDigest: webClient.imageDigest, apiBaseUrl: webClient.apiBaseUrl });
+  } catch {
+    throw materialError("BUILD_WEB_CLIENT_INVALID");
+  }
+}
+
 function deepFreeze(value) {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -90,7 +126,7 @@ function workflowJob(workflow, jobName) {
   if (start < 0) throw materialError("BUILD_WORKFLOW_JOB_MISSING", { jobName });
   let end = lines.length;
   for (let index = start + 1; index < lines.length; index += 1) {
-    if (/^  [a-zA-Z0-9_-]+:\s*$/u.test(lines[index])) {
+    if (/^ {2}[a-zA-Z0-9_-]+:\s*$/u.test(lines[index])) {
       end = index;
       break;
     }
@@ -110,7 +146,7 @@ function workflowActions(workflow) {
 function includesTrustedRunGuard(workflow, policy) {
   const escapedRef = policy.trustedBuild.ref.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   return (
-    new RegExp(`github\\.ref\\s*==\\s*['\"]${escapedRef}['\"]`, "u").test(workflow) &&
+    new RegExp(`github\\.ref\\s*==\\s*['"]${escapedRef}['"]`, "u").test(workflow) &&
     /github\.run_attempt\s*==\s*1/u.test(workflow)
   );
 }
@@ -420,6 +456,9 @@ export function verifyBuildMaterials(input) {
     migrationCatalogDigest: input.migrationCatalogDigest,
     policyDigest: sha256Canonical(policy),
     promotionEligibility: "trusted-candidate",
+    ...(Object.hasOwn(input, "webClient")
+      ? { webClient: validateBuildWebClient(input.webClient, images) }
+      : {}),
     images,
     externalActions: externalActions
       .map(({ name, commitSha }) => ({ name, commitSha }))

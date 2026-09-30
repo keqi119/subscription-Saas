@@ -94,9 +94,9 @@ export function assessR3ApplicationPostgresObservation(input) {
       identity.operationRef === input.operationRef &&
         identity.postgresAddress === input.postgres?.serverAddress &&
         Array.isArray(application.images) &&
-        application.images.length <= 2 &&
+        application.images.length <= 3 &&
         Array.isArray(application.containers) &&
-        application.containers.length <= 2 &&
+        application.containers.length <= 3 &&
         Array.isArray(application.imageObservations) &&
         application.imageObservations.length === application.images.length &&
         Array.isArray(application.containerObservations) &&
@@ -107,9 +107,9 @@ export function assessR3ApplicationPostgresObservation(input) {
     for (const [index, held] of application.images.entries()) {
       keys(held, ["role", "reference", "imageId"]);
       need(
-        ["api", "web"].includes(held.role) &&
+        ["api", "web", "browser"].includes(held.role) &&
           !imageByRole.has(held.role) &&
-          held.reference === identity[held.role].imageReference
+          held.reference === specs[held.role].body.Image
       );
       const observed = application.imageObservations[index];
       need(
@@ -132,7 +132,7 @@ export function assessR3ApplicationPostgresObservation(input) {
     for (const [index, held] of application.containers.entries()) {
       keys(held, ["id", "role", "name", "state", "imageId"]);
       need(
-        ["api", "web"].includes(held.role) &&
+        ["api", "web", "browser"].includes(held.role) &&
           !seenRoles.has(held.role) &&
           held.name === specs[held.role].name &&
           imageByRole.has(held.role) &&

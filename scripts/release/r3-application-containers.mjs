@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
 import { API_APPLICATION_ENTRYPOINT } from "./r3-application-bootstrap.mjs";
+import { R3_BROWSER_ENTRYPOINT, R3_BROWSER_IMAGE } from "./r3-browser-runtime.mjs";
 import { openR3EngineAttach } from "./r3-engine-attach.mjs";
 
 const CODE = "R3_APPLICATION_CONTAINER_FAILED";
@@ -24,6 +25,7 @@ const COMMANDS = Object.freeze({
   web: ["node", "apps/web/server.js"]
 });
 const WEB_ORIGIN = "http://web:3000";
+const BROWSER_REPO_DIGEST = R3_BROWSER_IMAGE.replace(":v1.62.1-noble@", "@");
 
 export function applicationContainerSpecs(identity) {
   need(
@@ -40,46 +42,59 @@ export function applicationContainerSpecs(identity) {
     need(/^[a-z][a-z0-9_]{0,62}$/u.test(identity[field]));
   const suffix = identity.operationRef.replaceAll("-", "");
   return Object.fromEntries(
-    ["api", "web"].map((role) => {
-      need(
-        digest.test(identity[role]?.imageDigest) &&
-          identity[role].imageReference ===
-            `ghcr.io/keqi119/subscription-${role}@${identity[role].imageDigest}`
-      );
+    ["api", "web", "browser"].map((role) => {
+      if (role !== "browser")
+        need(
+          digest.test(identity[role]?.imageDigest) &&
+            identity[role].imageReference ===
+              `ghcr.io/keqi119/subscription-${role}@${identity[role].imageDigest}`
+        );
       const privateTmpfs = "rw,nosuid,nodev,noexec,size=33554432,mode=0700,uid=1000,gid=1000";
+      const browser = role === "browser";
       return [
         role,
         {
           name: `s1r3${role}_${suffix}`,
           body: {
-            Image: identity[role].imageReference,
+            Image: browser ? R3_BROWSER_IMAGE : identity[role].imageReference,
             User: "1000:1000",
-            WorkingDir: "/app",
-            Entrypoint: role === "api" ? [...API_APPLICATION_ENTRYPOINT] : [],
-            Cmd: [...COMMANDS[role]],
-            Env: [
-              "NODE_ENV=production",
-              "HOME=/tmp",
-              "PATH=/usr/local/bin:/usr/bin:/bin",
-              `PORT=${role === "api" ? 3001 : 3000}`,
-              ...(role === "api"
-                ? [
-                    "RELEASE_FINAL_GATE=true",
-                    `DATABASE_MANIFEST_ID=${identity.apiManifestId}`,
-                    `DATABASE_SESSION_NONCE=${identity.apiSessionNonce}`,
-                    "DATABASE_POOL_MAX=1",
-                    "DATABASE_POOL_IDLE_TIMEOUT_MS=300000",
-                    `CORS_ORIGIN=${WEB_ORIGIN}`
-                  ]
-                : ["HOSTNAME=0.0.0.0"])
-            ],
+            WorkingDir: browser ? "/tmp" : "/app",
+            Entrypoint: browser
+              ? [...R3_BROWSER_ENTRYPOINT]
+              : role === "api"
+                ? [...API_APPLICATION_ENTRYPOINT]
+                : [],
+            Cmd: browser ? [] : [...COMMANDS[role]],
+            Env: browser
+              ? [
+                  "HOME=/tmp/r3-browser/home",
+                  "PATH=/usr/bin:/bin",
+                  "NODE_ENV=production",
+                  "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright"
+                ]
+              : [
+                  "NODE_ENV=production",
+                  "HOME=/tmp",
+                  "PATH=/usr/local/bin:/usr/bin:/bin",
+                  `PORT=${role === "api" ? 3001 : 3000}`,
+                  ...(role === "api"
+                    ? [
+                        "RELEASE_FINAL_GATE=true",
+                        `DATABASE_MANIFEST_ID=${identity.apiManifestId}`,
+                        `DATABASE_SESSION_NONCE=${identity.apiSessionNonce}`,
+                        "DATABASE_POOL_MAX=1",
+                        "DATABASE_POOL_IDLE_TIMEOUT_MS=300000",
+                        `CORS_ORIGIN=${WEB_ORIGIN}`
+                      ]
+                    : ["HOSTNAME=0.0.0.0"])
+                ],
             Labels: {
               "com.subscription.release.operation-ref": identity.operationRef,
               "com.subscription.release.container-role": role
             },
-            OpenStdin: role === "api",
+            OpenStdin: role !== "web",
             StdinOnce: false,
-            AttachStdin: role === "api",
+            AttachStdin: role !== "web",
             AttachStdout: true,
             AttachStderr: true,
             Tty: false,
@@ -98,10 +113,14 @@ export function applicationContainerSpecs(identity) {
               PidsLimit: 256,
               ExtraHosts: role === "api" ? [`postgres:${identity.postgresAddress}`] : [],
               Tmpfs: {
-                "/tmp": "rw,nosuid,nodev,noexec,size=268435456,mode=1777",
-                ...(role === "api"
-                  ? { "/app/uploads": privateTmpfs, "/app/apps/api/uploads": privateTmpfs }
-                  : { "/app/apps/web/.next/cache": privateTmpfs })
+                "/tmp": browser
+                  ? "rw,nosuid,nodev,noexec,size=536870912,mode=1777"
+                  : "rw,nosuid,nodev,noexec,size=268435456,mode=1777",
+                ...(browser
+                  ? { "/dev/shm": "rw,nosuid,nodev,noexec,size=268435456,mode=1777" }
+                  : role === "api"
+                    ? { "/app/uploads": privateTmpfs, "/app/apps/api/uploads": privateTmpfs }
+                    : { "/app/apps/web/.next/cache": privateTmpfs })
               },
               PortBindings: {},
               PublishAllPorts: false,
@@ -119,9 +138,12 @@ function checkImage(image, identity, role) {
     digest.test(image?.Id) &&
       image.Os === "linux" &&
       image.Architecture === "amd64" &&
-      image.RepoDigests?.includes(identity[role].imageReference) &&
-      image.Config?.Labels?.["org.opencontainers.image.revision"] === identity.sourceSha &&
-      same(image.Config.Cmd, COMMANDS[role]) &&
+      (role === "browser"
+        ? same(image.RepoDigests, [BROWSER_REPO_DIGEST])
+        : image.RepoDigests?.includes(identity[role].imageReference)) &&
+      (role === "browser" ||
+        image.Config?.Labels?.["org.opencontainers.image.revision"] === identity.sourceSha) &&
+      (role === "browser" || same(image.Config.Cmd, COMMANDS[role])) &&
       empty(image.Config.Volumes)
   );
   need(
@@ -156,7 +178,7 @@ function inspectOwned(value, held, state) {
     "Tty"
   ])
     need(
-      key === "Entrypoint" && role === "web"
+      (key === "Entrypoint" && role === "web") || (key === "Cmd" && role === "browser")
         ? empty(config?.[key])
         : same(config?.[key], spec.body[key])
     );
@@ -229,14 +251,18 @@ function inspectOwned(value, held, state) {
         ipv4(attachment.IPAddress)
     );
   const ports = value.NetworkSettings.Ports;
-  need(empty(ports) || same(ports, { [`${role === "api" ? 3001 : 3000}/tcp`]: null }));
+  need(
+    role === "browser"
+      ? empty(ports)
+      : empty(ports) || same(ports, { [`${role === "api" ? 3001 : 3000}/tcp`]: null })
+  );
   return running ? attachment.IPAddress : null;
 }
 
 // Pure checks for independent native Engine readback. These facts do not grant
 // image use, credential access or cleanup authority.
 export function assessR3ApplicationImage({ identity, role, image }) {
-  need(["api", "web"].includes(role));
+  need(["api", "web", "browser"].includes(role));
   applicationContainerSpecs(identity);
   checkImage(image, identity, role);
   return image.Id;
@@ -335,8 +361,8 @@ export async function withR3ApplicationContainers({
   };
   try {
     await observeCurrent();
-    for (const role of ["api", "web"]) {
-      const reference = identity[role].imageReference;
+    for (const role of ["api", "web", "browser"]) {
+      const reference = specs[role].body.Image;
       pendingImage = true;
       const bytes = await call(
         "POST",
@@ -384,7 +410,7 @@ export async function withR3ApplicationContainers({
       held.attached = attached;
       // Runtime output can contain error details. Retain only bounded byte counts
       // and hashes, never raw API/Web stdout or a credential-bearing transcript.
-      for (const stream of ["stdout", "stderr"]) {
+      for (const stream of role === "browser" ? ["stderr"] : ["stdout", "stderr"]) {
         const hash = createHash("sha256");
         let count = 0;
         attached[stream].on("data", (bytes) => {
@@ -461,6 +487,11 @@ export async function withR3ApplicationContainers({
               containerId: containers[1].id,
               address: containers[1].address
             }),
+            browser: Object.freeze({
+              containerId: containers[2].id,
+              address: containers[2].address,
+              attached: containers[2].attached
+            }),
             publicWebOrigin: WEB_ORIGIN,
             applicationName: `subscription-api/${identity.apiManifestId}/${identity.apiSessionNonce}`,
             signal: controller.signal,
@@ -520,10 +551,10 @@ export async function withR3ApplicationContainers({
         failed ??= failure();
       }
       if (held.attached)
-        originals.streams[held.role] = {
-          stdout: held.stdoutSummary(),
-          stderr: held.stderrSummary()
-        };
+        originals.streams[held.role] =
+          held.role === "browser"
+            ? { stderr: held.stderrSummary() }
+            : { stdout: held.stdoutSummary(), stderr: held.stderrSummary() };
     }
     for (const held of [...images].reverse()) {
       if (containers.some((item) => item.image.Id === held.image.Id && !item.deleted)) {

@@ -33,16 +33,22 @@ async function fixture({
     events.push({ method, url, body });
     if (url.startsWith("/images/create?")) {
       const ref = new URL(`http://engine${url}`).searchParams.get("fromImage");
-      const role = ref.includes("subscription-api@") ? "api" : "web";
+      const role = ref.includes("subscription-api@")
+        ? "api"
+        : ref.includes("subscription-web@")
+          ? "web"
+          : "browser";
+      assert.equal(ref, specs[role].body.Image);
       images.set(ref, {
-        Id: d(role === "api" ? "3" : "4"),
+        Id: d(role === "api" ? "3" : role === "web" ? "4" : "7"),
         Os: "linux",
         Architecture: "amd64",
-        RepoDigests: [ref],
+        RepoDigests: [role === "browser" ? ref.replace(":v1.62.1-noble@", "@") : ref],
         Config: {
           Cmd: specs[role].body.Cmd,
           Env: [],
-          Labels: { "org.opencontainers.image.revision": identity.sourceSha }
+          Labels:
+            role === "browser" ? {} : { "org.opencontainers.image.revision": identity.sourceSha }
         }
       });
       return replies({ status: "downloaded" });
@@ -66,7 +72,7 @@ async function fixture({
     }
     if (url.startsWith("/containers/create?")) {
       const role = body.Labels["com.subscription.release.container-role"];
-      const id = (role === "api" ? "5" : "6").repeat(64);
+      const id = (role === "api" ? "5" : role === "web" ? "6" : "8").repeat(64);
       containers.set(id, { role, spec: { name: specs[role].name, body }, state: "created" });
       return replies({ Id: id, Warnings: [] });
     }
@@ -109,17 +115,24 @@ async function fixture({
         Restarting: false,
         Dead: false,
         OOMKilled: false,
-        Pid: running ? 101 + (entry.role === "web" ? 1 : 0) : 0,
+        Pid: running ? 101 + ["api", "web", "browser"].indexOf(entry.role) : 0,
         ExitCode: 0,
         Error: ""
       },
       NetworkSettings: {
-        Ports: running ? { [entry.role === "api" ? "3001/tcp" : "3000/tcp"]: null } : {},
+        Ports:
+          running && entry.role !== "browser"
+            ? { [entry.role === "api" ? "3001/tcp" : "3000/tcp"]: null }
+            : {},
         Networks: {
           [entry.spec.body.HostConfig.NetworkMode]: {
             NetworkID: running ? "7".repeat(64) : "",
-            EndpointID: running ? (entry.role === "api" ? "8" : "9").repeat(64) : "",
-            IPAddress: running ? `172.28.0.${entry.role === "api" ? 3 : 4}` : ""
+            EndpointID: running
+              ? ["8", "9", "a"][["api", "web", "browser"].indexOf(entry.role)].repeat(64)
+              : "",
+            IPAddress: running
+              ? `172.28.0.${3 + ["api", "web", "browser"].indexOf(entry.role)}`
+              : ""
           }
         }
       }
@@ -144,7 +157,10 @@ async function fixture({
       stdin,
       stdout,
       stderr,
-      ready: Promise.resolve().then(() => events.push({ attach: containerId })),
+      ready: Promise.resolve().then(() => {
+        events.push({ attach: containerId });
+        if (containerId === "8".repeat(64)) stdout.write("browser-protocol-line\n");
+      }),
       completed: new Promise(() => {}),
       close: async () => {
         stdout.end();
@@ -174,6 +190,12 @@ async function fixture({
         assert.ok(queuedCredential.includes(Buffer.from("postgresql://")));
         assert.equal(applications.api.address, "172.28.0.3");
         assert.equal(applications.web.address, "172.28.0.4");
+        assert.equal(applications.browser.address, "172.28.0.5");
+        assert.ok(applications.browser.attached?.stdout);
+        assert.equal(
+          applications.browser.attached.stdout.read()?.toString(),
+          "browser-protocol-line\n"
+        );
         assert.equal(applications.publicWebOrigin, "http://web:3000");
         if (failVerification) throw new Error("verification failed");
         await applications.assertRunning();
@@ -191,11 +213,50 @@ test("candidate applications attach and inspect before credentials, then retain 
   assert.equal(f.credentials(), 1);
   assert.equal(f.containers.size, 0);
   assert.equal(f.images.size, 0);
+  assert.equal(result.originals.streams.browser.stderr.bytes, 0);
   const sent = f.events.findIndex((e) => e.credentialSent);
   assert.ok(sent > f.events.findIndex((e) => e.url?.endsWith("/start")));
   assert.equal(f.events[sent - 1].observation.containers[0].state, "running");
   assert.ok(!JSON.stringify(result).includes("test-private-password"));
   assert.ok(!JSON.stringify(f.events).includes("test-private-password"));
+});
+
+test("browser role has a fixed image, private limits, and readable attached stdout", async () => {
+  const { applicationContainerSpecs, assessR3ApplicationImage } =
+    await import("./r3-application-containers.mjs");
+  const specs = applicationContainerSpecs(identity);
+  assert.deepEqual(Object.keys(specs), ["api", "web", "browser"]);
+  const browser = specs.browser.body;
+  assert.equal(
+    browser.Image,
+    "mcr.microsoft.com/playwright:v1.62.1-noble@sha256:c091b21d9fae78c76e85cd4356431e9b018402f172a214fc7d7a5e9a7e29d8ac"
+  );
+  assert.equal(browser.User, "1000:1000");
+  assert.equal(browser.WorkingDir, "/tmp");
+  assert.deepEqual(browser.Cmd, []);
+  assert.equal(browser.OpenStdin, true);
+  assert.equal(browser.HostConfig.ReadonlyRootfs, true);
+  assert.equal(browser.HostConfig.Memory, 1073741824);
+  assert.equal(browser.HostConfig.MemorySwap, 1073741824);
+  assert.equal(
+    browser.HostConfig.Tmpfs["/dev/shm"],
+    "rw,nosuid,nodev,noexec,size=268435456,mode=1777"
+  );
+  const image = {
+    Id: d("7"),
+    Os: "linux",
+    Architecture: "amd64",
+    RepoDigests: [browser.Image.replace(":v1.62.1-noble@", "@")],
+    Config: { Labels: {}, Cmd: ["node", "tooling.js"], Volumes: null, Env: ["NODE_ENV=production"] }
+  };
+  assert.equal(assessR3ApplicationImage({ identity, role: "browser", image }), image.Id);
+  image.RepoDigests.push(`foreign.example.test/browser@${d("7")}`);
+  assert.throws(() => assessR3ApplicationImage({ identity, role: "browser", image }), {
+    code: "R3_APPLICATION_CONTAINER_FAILED"
+  });
+  const f = await fixture();
+  await f.run();
+  assert.equal(f.events.filter((e) => e.credentialSent).length, 1);
 });
 
 test("wrong running ownership prevents credential release and still cleans known owned containers", async () => {

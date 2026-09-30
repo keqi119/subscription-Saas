@@ -123,21 +123,26 @@ function applicationFixture(states = []) {
   const imageObservations = [];
   const containerObservations = [];
   for (const [index, state] of states.entries()) {
-    const role = index === 0 ? "api" : "web";
+    const role = ["api", "web", "browser"][index];
     const spec = specs[role];
     const heldImage = {
       role,
-      reference: identity[role].imageReference,
+      reference: spec.body.Image,
       imageId: `sha256:${String(index + 3).repeat(64)}`
     };
     const rawImage = {
       Id: heldImage.imageId,
       Os: "linux",
       Architecture: "amd64",
-      RepoDigests: [heldImage.reference],
+      RepoDigests: [
+        role === "browser"
+          ? heldImage.reference.replace(":v1.62.1-noble@", "@")
+          : heldImage.reference
+      ],
       Config: {
-        Labels: { "org.opencontainers.image.revision": identity.sourceSha },
-        Cmd: spec.body.Cmd,
+        Labels:
+          role === "browser" ? {} : { "org.opencontainers.image.revision": identity.sourceSha },
+        Cmd: role === "browser" ? ["node", "tooling.js"] : spec.body.Cmd,
         Volumes: null,
         Env: ["NODE_ENV=production"]
       }
@@ -223,8 +228,17 @@ function applicationFixture(states = []) {
   return input;
 }
 
-test("R3 application observation accepts empty, image, created and running held states", () => {
-  for (const states of [[], ["image"], ["created"], ["running"], ["running", "running"]]) {
+test("R3 application observation accepts transitional held states through a running browser", () => {
+  for (const states of [
+    [],
+    ["image"],
+    ["created"],
+    ["running"],
+    ["running", "running"],
+    ["running", "running", "image"],
+    ["running", "running", "created"],
+    ["running", "running", "running"]
+  ]) {
     const input = applicationFixture(states);
     const observed = assessR3ApplicationPostgresObservation(input);
     assert.deepEqual(
@@ -285,6 +299,23 @@ test("R3 application observation rejects foreign inventory, network, identity an
     mutate(input);
     assert.throws(() => assessR3ApplicationPostgresObservation(input), invalid);
   }
+  const wrongBrowser = applicationFixture(["running", "running", "running"]);
+  wrongBrowser.applicationResources.images[2].reference =
+    wrongBrowser.applicationResources.identity.web.imageReference;
+  assert.throws(() => assessR3ApplicationPostgresObservation(wrongBrowser), invalid);
+  const missingBrowserMember = applicationFixture(["running", "running", "running"]);
+  delete missingBrowserMember.network.Containers[
+    missingBrowserMember.applicationResources.containers[2].id
+  ];
+  assert.throws(() => assessR3ApplicationPostgresObservation(missingBrowserMember), invalid);
+  const browserSecret = applicationFixture(["running", "running", "running"]);
+  browserSecret.applicationResources.imageObservations[2].Config.Env.push("DATABASE_URL=secret");
+  assert.throws(() => assessR3ApplicationPostgresObservation(browserSecret), invalid);
+  const browserPort = applicationFixture(["running", "running", "running"]);
+  browserPort.applicationResources.containerObservations[2].NetworkSettings.Ports = {
+    "8080/tcp": null
+  };
+  assert.throws(() => assessR3ApplicationPostgresObservation(browserPort), invalid);
 });
 
 test("R3 application PG readback binds independent PG output to held application inventory", () => {

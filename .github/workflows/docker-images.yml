@@ -308,6 +308,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .release-output
+          node scripts/release/verify-build-materials.mjs --workflow .github/workflows/docker-images.yml
           pnpm release:contracts:verify | tee .release-output/repository-contract-result.json
 
       - name: Resolve registry subjects and attestation manifests

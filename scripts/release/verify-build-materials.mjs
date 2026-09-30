@@ -267,13 +267,108 @@ export function verifyDockerfileBaseImages({ dockerfiles, policy }) {
   return deepFreeze({ status: "verified", observations });
 }
 
-export function verifyRunnerDependencyClosure({ dockerfile, inventory, requiredAssets = [] }) {
+// The final test image intentionally contains source trees. Validate its actual
+// runtime-stage copy layout, not the old governance-only file-copy layout.
+function runnerRuntimeSources(dockerfile, runtimeCopies) {
+  const invalid = () => {
+    throw materialError("RUNNER_RUNTIME_LAYOUT_INVALID");
+  };
+  const normalized = String(dockerfile ?? "").replace(/\\\r?\n\s*/gu, " ");
+  const stages = [...normalized.matchAll(/^FROM\s+.*$/gimu)];
+  const stageNames = stages.map(([line]) => /\sAS\s([a-z][a-z0-9-]*)\s*$/iu.exec(line)?.[1]);
+  if (
+    !stages.length ||
+    stageNames.at(-1) !== "runtime" ||
+    stageNames.some((name) => !name) ||
+    new Set(stageNames).size !== stageNames.length
+  )
+    invalid();
+  const runtime = normalized.slice(stages.at(-1).index);
+  const instructions = runtime.split(/\r?\n/u).map((line) => line.trim().replace(/\s+/gu, " "));
+  const actual = instructions.filter((line) => /^COPY\b/iu.test(line));
+  if (
+    !Array.isArray(runtimeCopies) ||
+    !runtimeCopies.length ||
+    runtimeCopies.some((line) => typeof line !== "string") ||
+    new Set(runtimeCopies).size !== runtimeCopies.length ||
+    JSON.stringify(actual) !== JSON.stringify(runtimeCopies) ||
+    instructions.some((line) => /^ADD\b/iu.test(line)) ||
+    JSON.stringify(instructions.filter((line) => /^WORKDIR\b/iu.test(line))) !==
+      JSON.stringify(["WORKDIR /app"])
+  )
+    invalid();
+  const sources = [];
+  for (const line of actual) {
+    const tokens = line.split(" ");
+    if (tokens.shift() !== "COPY") invalid();
+    if (tokens[0]?.startsWith("--from=")) {
+      if (!stageNames.slice(0, -1).includes(tokens[0].slice(7)) || tokens.length !== 3) invalid();
+      continue;
+    }
+    const destination = tokens.pop();
+    if (!tokens.length) invalid();
+    for (const source of tokens) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/u.test(source) ||
+        source.split("/").some((part) => !part || part === "." || part === "..")
+      )
+        invalid();
+      // All current source copies preserve repository-relative paths in /app.
+      if (
+        tokens.length > 1
+          ? destination !== "./" || source.includes("/")
+          : destination !== `./${source}`
+      )
+        invalid();
+      sources.push(source);
+    }
+  }
+  if (new Set(sources).size !== sources.length) invalid();
+  return sources;
+}
+
+export function verifyRunnerDependencyClosure({
+  dockerfile,
+  inventory,
+  requiredAssets = [],
+  runtimeCopies,
+  databaseTestManifest
+}) {
   const expected = (inventory?.files ?? [])
     .filter(({ disposition }) => disposition === "runner-only")
     .map(({ repositorySource }) => repositorySource)
     .sort();
   if (expected.length === 0 || new Set(expected).size !== expected.length) {
     throw materialError("RUNNER_DEPENDENCY_INVENTORY_INVALID");
+  }
+
+  if (runtimeCopies !== undefined) {
+    const sources = runnerRuntimeSources(dockerfile, runtimeCopies);
+    validateContract("database-test-manifest.v1", databaseTestManifest);
+    const manifestFiles = [
+      ...new Set(
+        databaseTestManifest.suites.flatMap((suite) => [
+          ...suite.files,
+          ...Object.values(suite.fixtures ?? {})
+        ])
+      )
+    ].sort();
+    const covered = (file) =>
+      typeof file === "string" &&
+      file.split("/").every((part) => part && part !== "." && part !== "..") &&
+      sources.some((source) => file === source || file.startsWith(`${source}/`));
+    const missingAssets = [...expected, ...requiredAssets, ...manifestFiles].filter(
+      (file) => !covered(file)
+    );
+    if (missingAssets.length)
+      throw materialError("RUNNER_REQUIRED_ASSET_MISSING", { missingAssets });
+    return deepFreeze({
+      status: "verified",
+      files: expected,
+      requiredAssets: [...requiredAssets],
+      manifestFiles,
+      runtimeCopies: [...runtimeCopies]
+    });
   }
 
   const normalized = String(dockerfile ?? "").replace(/\\\r?\n\s*/gu, " ");
@@ -484,13 +579,17 @@ async function main() {
   const inputPath = argument("--input");
   const outputPath = argument("--output");
   if (workflowPath) {
-    const [workflow, api, web, runner, runnerInventory] = await Promise.all([
+    const [workflow, api, web, runner, runnerInventory, databaseTestManifest] = await Promise.all([
       readFile(path.resolve(repoRoot, workflowPath), "utf8"),
       readFile(path.join(repoRoot, "Dockerfile.api"), "utf8"),
       readFile(path.join(repoRoot, "Dockerfile.web"), "utf8"),
       readFile(path.join(repoRoot, "Dockerfile.runner"), "utf8"),
       readFile(
         path.join(repoRoot, "release/contracts/api-runtime-governance-inventory.v1.json"),
+        "utf8"
+      ).then(JSON.parse),
+      readFile(
+        path.join(repoRoot, "release/contracts/database-test-manifest.v1.json"),
         "utf8"
       ).then(JSON.parse)
     ]);
@@ -502,13 +601,16 @@ async function main() {
     const runnerDependencies = verifyRunnerDependencyClosure({
       dockerfile: runner,
       inventory: runnerInventory,
-      requiredAssets: policy.requiredRunnerAssets
+      requiredAssets: policy.requiredRunnerAssets,
+      runtimeCopies: policy.runnerRuntimeCopies,
+      databaseTestManifest
     });
     process.stdout.write(
       `${JSON.stringify({
         ...result,
         baseImages: baseImages.observations,
-        runnerDependencies: runnerDependencies.files
+        runnerDependencies: runnerDependencies.files,
+        runnerManifestFiles: runnerDependencies.manifestFiles
       })}\n`
     );
     return;

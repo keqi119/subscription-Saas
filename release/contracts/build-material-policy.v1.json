@@ -32,6 +32,24 @@
     "apps/api/prisma/schema.prisma",
     "apps/api/src/billing-automation/stage1-acceptance-forbidden-domains.json"
   ],
+  "runnerRuntimeCopies": [
+    "COPY --from=deps /usr/local/bin/node /usr/local/bin/node",
+    "COPY --from=deps /pnpm /pnpm",
+    "COPY --from=test-build /app/node_modules ./node_modules",
+    "COPY --from=test-build /app/apps/api/node_modules ./apps/api/node_modules",
+    "COPY --from=test-build /app/apps/release-runner/node_modules ./apps/release-runner/node_modules",
+    "COPY --from=test-build /app/packages/release-foundation/node_modules ./packages/release-foundation/node_modules",
+    "COPY --from=test-build /app/packages/shared/node_modules ./packages/shared/node_modules",
+    "COPY --from=test-build /app/packages/shared/dist ./packages/shared/dist",
+    "COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./",
+    "COPY apps/api ./apps/api",
+    "COPY apps/release-runner ./apps/release-runner",
+    "COPY packages/release-foundation ./packages/release-foundation",
+    "COPY packages/shared ./packages/shared",
+    "COPY release ./release",
+    "COPY scripts ./scripts",
+    "COPY docs/runbooks ./docs/runbooks"
+  ],
   "requireRegistryDigest": true,
   "requireBuildAttestation": true,
   "requireBuilderProvenance": true

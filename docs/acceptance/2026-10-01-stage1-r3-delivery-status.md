@@ -95,3 +95,11 @@ source 的旧明文 dump artifact 下载和旧执行器已移出该 job，由 na
 另有一项如实保留的既有检查失败：静态 CLI `verify-build-materials.mjs --workflow` 返回 `RUNNER_DEPENDENCY_COPY_TOO_BROAD`（`5f58e2`）。旧检查只接受治理脚本逐文件清单，而当前 Runner 为完整数据库测试已复制整个 scripts/API 源目录；该函数与本增量前相同（`ae4b96`）。工作流 observer 实际使用 `--input`，但完整构建检查仍需对齐此差距，不能记为全部通过。
 
 本轮应用库迁移和构建地址绑定均为代码进展。阶段 1 仍缺实际 API/Web/TLS 验收路径、final 公开证据与两端调用/工作流，以及合法快照输入、同候选 R2/R3、Staging 两项迁移和 R4 真实验收。
+
+## Runner 构建布局检查修复
+
+此前 `RUNNER_DEPENDENCY_COPY_TOO_BROAD` 已修复。检查现在核对当前 Dockerfile 最终阶段的固定、按序 COPY 清单，并确认治理文件、必要资产及数据库测试清单中的源码和夹具均包含在镜像来源目录内；拒绝额外 COPY、ADD、错误目标、未知构建阶段及仓库根复制。Dockerfile 和镜像内容未改变。受保护的 build observer 会在生成构建证据前执行此检查。
+
+`fb7878` 先复现旧检查失败；`79dc99` 两个受影响测试文件 56/56 通过、无跳过，原失败 CLI 也已通过（25 个治理文件、45 个清单源码/夹具、3 个基础镜像观察）。`b9689a`/`40b635` 限定 lint、工作流重复键及十段 shell/三段 JS 语法、差异和合同检查通过，合同为 265 文件、87 schemas、13 commands、128 migrations，仓库合同摘要 `sha256:f768ddcd80baae9c12babcece96ec93c8cacd8689b10bea679c0f48bcda31795`。一次限定独立审查无可证实 P1/P2。没有实际构建镜像、操作数据库、触发 CI 或重跑长组合测试。
+
+下一步仍是接通同候选 API/Web 的真实应用执行、TLS/浏览器检查和保管；本修复不代表阶段 1 已完成。

@@ -537,6 +537,10 @@ test("protected aggregation is the only proof issuer and exposes non-promotable 
   const registry = JSON.parse(readFileSync("release/contracts/command-registry.v1.json", "utf8"));
   assert.equal(workflow.match(/create-build-proof\.mjs/gu)?.length, 1);
   assert.match(workflow, /observe-build-materials:[\s\S]*environment: trusted-image-build/u);
+  assert.match(
+    workflow,
+    /node scripts\/release\/verify-build-materials\.mjs --workflow \.github\/workflows\/docker-images\.yml/u
+  );
   const observer = workflow.slice(workflow.indexOf("  observe-build-materials:"));
   assert.match(observer, /API_BASE_URL:\s*\$\{\{ inputs\.apiBaseUrl \}\}/u);
   assert.match(

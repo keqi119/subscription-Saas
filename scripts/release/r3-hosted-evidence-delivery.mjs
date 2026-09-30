@@ -267,7 +267,8 @@ export async function openR3HostedEvidenceDelivery(input) {
     busy = false,
     closing,
     request = null,
-    cleanupDigest = null;
+    cleanupDigest = null,
+    closedReceipt = null;
   try {
     key = await readR3HostedOperationKey({ operationRef: scope.operationRef });
     need(
@@ -391,15 +392,19 @@ export async function openR3HostedEvidenceDelivery(input) {
         });
       },
       receiveClosed() {
-        return action("imported", "closed-received", async () => {
+        return action("imported", "closed-read", async () => {
           const bytes = await receive("closed.json");
           const closedNotice = decodeR3Closed({ bytes, request });
-          await upload(
-            "closed-received.json",
-            encodeR3ClosedReceived({ request, closedBytes: bytes })
-          );
+          closedReceipt = encodeR3ClosedReceived({ request, closedBytes: bytes });
           return closedNotice;
         });
+      },
+      confirmClosedReceived() {
+        // The caller first persists the public RC evidence. Keep the receipt
+        // bound to our validated bytes, never to a caller-supplied notice.
+        return action("closed-read", "closed-received", () =>
+          upload("closed-received.json", closedReceipt)
+        );
       },
       recheck,
       async close() {

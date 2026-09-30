@@ -29,6 +29,12 @@ H1 正式配置已应用（`c0064c`），备份位于 `/var/backups/stage1-r3-ev
 
 ## 阶段 1 剩余顺序
 
+同日后续增量已将 source/fresh 的实际完成结果映射为既有 `source-gate-evidence.v1`。来源是 native 持有并核验的 execution、result、重建 manifest、实际 PostgreSQL 身份和固定 job；完整计数等式、候选、CI run 与摘要必须一致。H1 仍须经过负责人 ACK、清理和真实 CLOSED 才交付，不能把 CLOSED 状态直接当作数据库通过。
+
+hosted 现在先以禁止覆盖方式保存并读回固定公开文件 `.release-output/source-fresh/source-gate-fresh.v1.json`，随后才发送确切 CLOSED 回执、关闭通道并删除临时私钥。公开目录/文件显式为 0755/0644，兼容私有进程的 umask 0077；不会复制私有原件。保存失败或已有文件时没有回执，保留失败状态与交换现场。这一顺序调整防止交换清理早于公开原件落盘。
+
+source 原件短测 `5a726e` 为 1/1；caller `2b4b06` 先复现缺少交付字段，`df0075` 修复为 2/2。最终受影响的 transport/adapter/caller 短测 `769b9b` 为 8/8、无跳过，约 11.7 秒。独立限定审查未见可证实的 P1/P2。格式、限定 lint 和合同检查 `2016b0` 通过，仍为 263 文件、87 schemas、13 commands、128 migrations；本增量仓库合同摘要为 `sha256:cbd874834bce9c87a9af42136be8ad0207ffbfc03adae58d497d0e0e689129d6`。外部 GitHub、SSH、native 和数据库边界仍有测试替身，未据此宣称真实 RC 成功。本增量未修改服务器、工作流、迁移或业务代码。
+
 1. 将 protected workflow 的输入、job attestation 和 artifact 交付接入真实 hosted 路径；对齐公开 RC 证据与已有 native 原件的映射。当前旧 workflow 仍是 self-hosted，不能宣称已接通。
 2. 沿同一路径接通 source/snapshot 和两个 final 分支；快照必须有明确、合法的数据库来源。现有 OSS 加密恢复卷不是数据库快照。
 3. 固定同一候选完成实际 R2/R3 双链。此前模拟外部边界的检查不得替代真实执行。

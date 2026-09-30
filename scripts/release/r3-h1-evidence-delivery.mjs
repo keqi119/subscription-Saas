@@ -398,10 +398,11 @@ export async function openR3H1EvidenceDelivery(input) {
         imported = true;
         return { digest: sha256Bytes(bytes), bytes: Buffer.from(bytes) };
       },
-      async publishClosed({ sessionBytes }) {
+      async publishClosed({ sessionBytes, sourceGateEvidenceBytes }) {
         need(request && imported && !publishedClosed);
+        // Freeze the caller's bytes before the first asynchronous boundary.
+        const bytes = encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes });
         await recheck();
-        const bytes = encodeR3Closed({ request, sessionBytes });
         await publish("closed.json", bytes, gid);
         publishedClosed = true;
         closedBytes = Buffer.from(bytes);

@@ -796,6 +796,7 @@ test("R3 source originals require matching fixed dual readbacks and reject later
   const {
     buildR3SourceResult,
     buildR3SourceCompletion,
+    buildR3SourceFreshGateEvidence,
     buildR3SourceAcknowledgement,
     assertR3SourceAcknowledgement,
     readR3SourceOriginals
@@ -880,6 +881,29 @@ test("R3 source originals require matching fixed dual readbacks and reject later
     })
   );
   assert.ok(Object.isFrozen(result.originals) && result.originals.every(Object.isFrozen));
+  const publicSpec = {
+    operationRef,
+    profileDigest: fixture.binding.profileDigest,
+    ownerId: "owner",
+    sourceSha: fixture.binding.sourceSha,
+    buildProofDigest: `sha256:${"7".repeat(64)}`,
+    targetPolicyDigest: `sha256:${"4".repeat(64)}`,
+    phase: "source",
+    chain: "fresh"
+  };
+  const publicJob = {
+    ...publicSpec,
+    creationSpecDigest: sha256Canonical(publicSpec),
+    ci: {
+      repository: "keqi119/subscription-Saas",
+      runId: "123",
+      runAttempt: 1,
+      workflowPath: ".github/workflows/release-candidate-gate.yml",
+      callerWorkflowPath: ".github/workflows/release-candidate-gate.yml",
+      jobKey: "source-fresh",
+      jobName: "source-fresh"
+    }
+  };
   const request = {
     schemaVersion: "manual-runner-request.v5",
     profileDigest: fixture.binding.profileDigest,
@@ -897,8 +921,8 @@ test("R3 source originals require matching fixed dual readbacks and reject later
     chain: "fresh",
     sourceSha: fixture.binding.sourceSha,
     targetPolicyDigest: `sha256:${"4".repeat(64)}`,
-    creationSpecDigest: `sha256:${"5".repeat(64)}`,
-    jobAdmissionDigest: `sha256:${"6".repeat(64)}`,
+    creationSpecDigest: sha256Canonical(publicSpec),
+    jobAdmissionDigest: sha256Canonical(publicJob),
     candidate: { buildProofDigest: `sha256:${"7".repeat(64)}` },
     destinationAdmissionDigest: fixture.binding.destinationDigest,
     preparationExecutionRecordDigest: `sha256:${"8".repeat(64)}`,
@@ -974,6 +998,54 @@ test("R3 source originals require matching fixed dual readbacks and reject later
     resultDigest: sha256Canonical(completion),
     processEvidenceDigest: completion.readbackDigest
   };
+  const projectionInput = {
+    spec: publicSpec,
+    job: publicJob,
+    execution: terminal,
+    result: completion,
+    reconstructed,
+    postgres: { imageDigest: `sha256:${"c".repeat(64)}`, serverVersionNum: "170006" },
+    migrationCatalogDigest: `sha256:${"d".repeat(64)}`,
+    repositoryContractDigest: `sha256:${"e".repeat(64)}`
+  };
+  const publicEvidence = buildR3SourceFreshGateEvidence(projectionInput);
+  assert.equal(publicEvidence.schemaVersion, "source-gate-evidence.v1");
+  assert.equal(
+    publicEvidence.provenance.ciRunRef,
+    "github://keqi119/subscription-Saas/actions/runs/123/attempts/1"
+  );
+  assert.equal(publicEvidence.provenance.generatedAt, completion.completedAt);
+  assert.equal(publicEvidence.postSchemaDigest, reconstructed.postSchemaDigest);
+  assert.equal(publicEvidence.schemaDiffDigest, reconstructed.schemaDiffDigest);
+  assert.equal(publicEvidence.migrationStatusDigest, reconstructed.migrationStatusDigest);
+  assert.equal(publicEvidence.sanitizedLogDigest, reconstructed.manifestReport.sanitizedLogDigest);
+  assert.deepEqual(publicEvidence.counts, reconstructed.manifestReport.counts);
+  for (const mutate of [
+    (value) => {
+      value.execution.status = "INTERRUPTED_UNKNOWN";
+    },
+    (value) => {
+      value.reconstructed.postSchemaDigest = `sha256:${"0".repeat(64)}`;
+    },
+    (value) => {
+      value.result.sourceSha = "0".repeat(40);
+    },
+    (value) => {
+      value.spec.chain = "snapshot";
+    },
+    (value) => {
+      value.job.ci.runId = "456";
+    },
+    (value) => {
+      value.postgres.serverVersionNum = "160001";
+    }
+  ]) {
+    const value = structuredClone(projectionInput);
+    mutate(value);
+    assert.throws(() => buildR3SourceFreshGateEvidence(value), {
+      code: "R3_SOURCE_GATE_RESULT_INVALID"
+    });
+  }
   const acknowledgementInput = {
     profileDigest: request.profileDigest,
     ownerId: request.ownerId,

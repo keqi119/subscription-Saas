@@ -101,6 +101,55 @@ async function original(profile, role, digest) {
   need(sha256Bytes(bytes) === digest && encodeManualJson(JSON.parse(bytes)).equals(bytes));
   return bytes;
 }
+async function persistSourceGateEvidence(repoRoot, bytes) {
+  need(Buffer.isBuffer(bytes) && bytes.length > 0 && bytes.length <= 1048576);
+  const directories = [
+    path.join(repoRoot, ".release-output"),
+    path.join(repoRoot, ".release-output/source-fresh")
+  ];
+  for (const directory of directories) {
+    try {
+      await fs.mkdir(directory, { mode: 0o755 });
+      await fs.chmod(directory, 0o755);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    const stat = await fs.lstat(directory, { bigint: true });
+    need(
+      stat.isDirectory() &&
+        !stat.isSymbolicLink() &&
+        stat.uid === 0n &&
+        stat.gid === 0n &&
+        (stat.mode & 0o7777n) === 0o755n
+    );
+  }
+  const file = path.join(directories[1], "source-gate-fresh.v1.json");
+  const handle = await fs.open(
+    file,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o644
+  );
+  try {
+    // This is public gate evidence, readable by the subsequent Actions steps.
+    // No private native originals or signing material are copied here.
+    await handle.chmod(0o644);
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  need((await stableRead(file, 0o644)).equals(bytes));
+  const parent = await fs.open(
+    directories[1],
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+  );
+  try {
+    await parent.sync();
+  } finally {
+    await parent.close();
+  }
+  return file;
+}
 async function waitForwardKey(admission, operationRef, failed) {
   const publicKey = createPublicKey(admission.host.forwardingPublicKeyPem);
   need(publicKey.asymmetricKeyType === "ed25519");
@@ -210,6 +259,7 @@ export async function runR3SourceFreshH1(input) {
     await native.completeCreation();
     const result = await native.runSourceManifest();
     need(result.executionStatus === "SUCCEEDED" && DIGEST.test(result.executionRecordDigest));
+    const sourceGateEvidenceBytes = encodeManualJson(result.sourceGateEvidence);
     const executionBytes = await original(profile, "journal", result.executionRecordDigest);
     await ownerAcknowledgement(result.executionRecordDigest, admission.admission.expiresAt);
     const acknowledgement = await native.acknowledgeSource({
@@ -238,7 +288,7 @@ export async function runR3SourceFreshH1(input) {
         session.sessionId === native.session.sessionId &&
         session.sessionNonce === native.session.sessionNonce
     );
-    await delivery.publishClosed({ sessionBytes });
+    await delivery.publishClosed({ sessionBytes, sourceGateEvidenceBytes });
     await delivery.close();
     deliveryClosed = true;
     return Object.freeze({
@@ -381,6 +431,15 @@ export async function runR3SourceFreshHosted(input) {
     await forward.close();
     forwardClosed = true;
     const closed = await delivery.receiveClosed();
+    const sourceGateEvidenceBytes = Buffer.from(closed.sourceGateEvidenceBytes);
+    need(sha256Bytes(sourceGateEvidenceBytes) === closed.sourceGateEvidenceDigest);
+    const sourceGateEvidence = JSON.parse(sourceGateEvidenceBytes);
+    need(encodeManualJson(sourceGateEvidence).equals(sourceGateEvidenceBytes));
+    const sourceGateEvidenceFile = await persistSourceGateEvidence(
+      input.repoRoot,
+      sourceGateEvidenceBytes
+    );
+    await delivery.confirmClosedReceived();
     await delivery.close();
     deliveryClosed = true;
     await key.recheck();
@@ -392,6 +451,9 @@ export async function runR3SourceFreshHosted(input) {
       status: "CLOSED",
       operationRef: input.operationRef,
       sessionRecordDigest: closed.sessionDigest,
+      sourceGateEvidence,
+      sourceGateEvidenceDigest: closed.sourceGateEvidenceDigest,
+      sourceGateEvidenceFile,
       promotionEligible: false
     });
   } catch {

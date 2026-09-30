@@ -39,7 +39,8 @@ const job = {
   buildProofDigest: spec.buildProofDigest,
   phase: spec.phase,
   chain: spec.chain,
-  expiresAt: spec.expiresAt
+  expiresAt: spec.expiresAt,
+  ci: { repository: "keqi119/subscription-Saas", runId: "123", runAttempt: 1 }
 };
 const jobBytes = encodeManualJson(job);
 const scope = r3EvidenceScope({ creationSpecBytes: specBytes, jobAdmissionBytes: jobBytes });
@@ -70,6 +71,38 @@ const acknowledgement = {
   reasonCode: null
 };
 const acknowledgementBytes = encodeManualJson(acknowledgement);
+const publicEvidence = {
+  schemaVersion: "source-gate-evidence.v1",
+  sourceSha: spec.sourceSha,
+  migrationCatalogDigest: d("5"),
+  repositoryContractDigest: d("6"),
+  databaseTestManifestDigest: d("7"),
+  databaseTestDiscoveryDigest: d("8"),
+  postgres: { imageDigest: d("9"), serverVersionNum: "170006" },
+  chain: "fresh",
+  counts: {
+    collected: 2,
+    selected: 2,
+    executed: 2,
+    passed: 2,
+    failed: 0,
+    skipped: 0,
+    todo: 0,
+    filtered: 0,
+    cancelled: 0
+  },
+  terminalStatus: "PASSED",
+  schemaDiffDigest: d("a"),
+  migrationStatusDigest: d("b"),
+  postSchemaDigest: d("c"),
+  sanitizedLogDigest: d("d"),
+  provenance: {
+    generatedAt: "2026-10-01T00:00:00.000Z",
+    ciRunRef: "github://keqi119/subscription-Saas/actions/runs/123/attempts/1",
+    executorVersion: "manual-r3-source-database-gate.v1"
+  }
+};
+const sourceGateEvidenceBytes = encodeManualJson(publicEvidence);
 
 test("cleanup request carries exact terminal and owner acknowledgement records", () => {
   const bytes = encodeR3CleanupRequest({ scope, executionBytes, acknowledgementBytes });
@@ -135,11 +168,44 @@ test("CLOSED message requires matching actual session record", () => {
     }
   };
   const sessionBytes = encodeManualJson(session);
-  const bytes = encodeR3Closed({ request, sessionBytes });
+  const bytes = encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes });
   assert.deepEqual(decodeR3Closed({ bytes, request }).sessionBytes, sessionBytes);
+  assert.deepEqual(
+    decodeR3Closed({ bytes, request }).sourceGateEvidenceBytes,
+    sourceGateEvidenceBytes
+  );
+  assert.equal(decodeR3Closed({ bytes, request }).resultDigest, execution.resultDigest);
+  assert.throws(() => encodeR3Closed({ request, sessionBytes }));
+  for (const mutate of [
+    (value) => {
+      value.sourceSha = "0".repeat(40);
+    },
+    (value) => {
+      value.chain = "snapshot";
+    },
+    (value) => {
+      value.provenance.ciRunRef = "github://keqi119/subscription-Saas/actions/runs/456/attempts/1";
+    },
+    (value) => {
+      value.counts.filtered = 1;
+    },
+    (value) => {
+      value.terminalStatus = "FAILED";
+    }
+  ]) {
+    const value = structuredClone(publicEvidence);
+    mutate(value);
+    assert.throws(() =>
+      encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes: encodeManualJson(value) })
+    );
+  }
+  const changedProjection = JSON.parse(bytes);
+  changedProjection.sourceGateEvidenceDigest = d("0");
+  assert.throws(() => decodeR3Closed({ bytes: encodeManualJson(changedProjection), request }));
   assert.throws(() =>
     encodeR3Closed({
       request,
+      sourceGateEvidenceBytes,
       sessionBytes: encodeManualJson({ ...session, status: "INTERRUPTED_UNKNOWN" })
     })
   );
@@ -150,6 +216,7 @@ test("CLOSED message requires matching actual session record", () => {
   );
   const changed = encodeR3Closed({
     request,
+    sourceGateEvidenceBytes,
     sessionBytes: encodeManualJson({ ...session, recordedAt: "2099-01-01T00:00:00.000Z" })
   });
   assert.throws(() => decodeR3ClosedReceived({ bytes: receipt, request, closedBytes: changed }));

@@ -75,7 +75,11 @@ import {
   r3RuntimeBoundary,
   r3RuntimeBoundarySql
 } from "./r3-source-suite.mjs";
-import { buildR3SourceResult, assertR3SourceAcknowledgement } from "./r3-source-result.mjs";
+import {
+  buildR3SourceResult,
+  buildR3SourceFreshGateEvidence,
+  assertR3SourceAcknowledgement
+} from "./r3-source-result.mjs";
 import { buildDatabaseSuiteReport } from "../../packages/release-foundation/src/database-test-launcher.mjs";
 import { databaseTestCounts, summarizeDatabaseTestLog } from "./database-test-launcher-runtime.mjs";
 import {
@@ -4033,6 +4037,28 @@ export async function launchR3TargetCreate(input) {
         execution: execution.value,
         result: result.value
       };
+      let sourceGateEvidence;
+      if (fixed.spec.chain === "fresh") {
+        const [migrations, repository] = await Promise.all([
+          computeMigrationCatalog(repoRoot),
+          computeRepositoryContract(repoRoot)
+        ]);
+        sourceGateEvidence = buildR3SourceFreshGateEvidence({
+          spec: fixed.spec,
+          job: fixed.admission,
+          execution: execution.value,
+          result: result.value,
+          reconstructed,
+          postgres: {
+            imageDigest: postgresTarget.imageDigest,
+            serverVersionNum: String(postgresTarget.postgres.serverVersionNum)
+          },
+          migrationCatalogDigest: migrations.digest,
+          repositoryContractDigest: repository.digest
+        });
+      }
+      // The held H2 reader independently binds these current catalog digests to
+      // the admitted build; a local catalog computation is not build admission.
       await sourceCheck();
       sourceReady = true;
       return Object.freeze({
@@ -4045,6 +4071,7 @@ export async function launchR3TargetCreate(input) {
         resultDigest: completed.resultDigest,
         resultCustodyRecordDigests: completed.custodyRecordDigests,
         counts: Object.freeze({ ...manifestReport.counts }),
+        ...(sourceGateEvidence ? { sourceGateEvidence } : {}),
         promotionEligible: false
       });
     } catch (cause) {

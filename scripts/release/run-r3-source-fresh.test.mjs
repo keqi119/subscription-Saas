@@ -20,6 +20,40 @@ const profile = {
 };
 const key = generateKeyPairSync("ed25519").publicKey;
 const spec = { operationRef, phase: "source", chain: "fresh" };
+const d = (value) => `sha256:${value.repeat(64)}`;
+const sourceGateEvidence = {
+  schemaVersion: "source-gate-evidence.v1",
+  sourceSha: "a".repeat(40),
+  migrationCatalogDigest: d("1"),
+  repositoryContractDigest: d("2"),
+  databaseTestManifestDigest: d("3"),
+  databaseTestDiscoveryDigest: d("4"),
+  postgres: { imageDigest: d("5"), serverVersionNum: "170006" },
+  chain: "fresh",
+  counts: {
+    collected: 2,
+    selected: 2,
+    executed: 2,
+    passed: 2,
+    failed: 0,
+    skipped: 0,
+    todo: 0,
+    filtered: 0,
+    cancelled: 0
+  },
+  terminalStatus: "PASSED",
+  schemaDiffDigest: d("6"),
+  migrationStatusDigest: d("7"),
+  postSchemaDigest: d("8"),
+  sanitizedLogDigest: d("9"),
+  provenance: {
+    generatedAt: "2026-10-01T00:00:00.000Z",
+    ciRunRef: "github://keqi119/subscription-Saas/actions/runs/123/attempts/1",
+    executorVersion: "manual-r3-source-database-gate.v1"
+  }
+};
+const sourceGateEvidenceBytes = encodeManualJson(sourceGateEvidence);
+const outputFile = `${root}/output/source-fresh/source-gate-fresh.v1.json`;
 const job = {
   expiresAt: new Date(Date.now() + 120000).toISOString(),
   host: { forwardingPublicKeyPem: key.export({ type: "spki", format: "pem" }) }
@@ -99,7 +133,7 @@ mock.module("./launch-manual-stage1.mjs", {
         async runSourceManifest() {
           events.push("manifest");
           await writeObject("journal", executionRecordDigest, executionBytes);
-          return { executionStatus: "SUCCEEDED", executionRecordDigest };
+          return { executionStatus: "SUCCEEDED", executionRecordDigest, sourceGateEvidence };
         },
         async acknowledgeSource(input) {
           events.push("owner-ack");
@@ -146,6 +180,7 @@ mock.module("./r3-h1-evidence-delivery.mjs", {
       async publishClosed(input) {
         events.push("closed-delivery");
         assert.deepEqual(input.sessionBytes, closedBytes);
+        assert.deepEqual(input.sourceGateEvidenceBytes, sourceGateEvidenceBytes);
       },
       async close() {
         events.push("delivery-close");
@@ -218,7 +253,15 @@ mock.module("./r3-hosted-evidence-delivery.mjs", {
         async receiveClosed() {
           events.push("closed-receive");
           assert.ok(events.includes("forward-exit"));
-          return { sessionDigest: closedDigest };
+          return {
+            sessionDigest: closedDigest,
+            sourceGateEvidenceBytes,
+            sourceGateEvidenceDigest: sha256Bytes(sourceGateEvidenceBytes)
+          };
+        },
+        async confirmClosedReceived() {
+          events.push("closed-receipt");
+          assert.deepEqual(await fs.readFile(outputFile), sourceGateEvidenceBytes);
         },
         async close() {
           events.push("sftp-close");
@@ -340,10 +383,35 @@ test("hosted caller waits for imported cleanup and actual forward exit before CL
   });
   const { runR3SourceFreshHosted } = await import("./run-r3-source-fresh.mjs");
   const input = { repoRoot: path.resolve(import.meta.dirname, "../.."), operationRef };
+  const outputRoot = path.join(input.repoRoot, ".release-output");
+  const mapped = (file) =>
+    typeof file === "string" && (file === outputRoot || file.startsWith(`${outputRoot}/`))
+      ? `${root}/output${file.slice(outputRoot.length)}`
+      : file;
+  for (const method of ["open", "lstat", "mkdir", "chmod"]) {
+    const actual = fs[method].bind(fs);
+    mock.method(fs, method, (file, ...rest) => actual(mapped(file), ...rest));
+  }
   for (const name of ["forwarding.key", "signing-key.pem"])
     await fs.writeFile(`${root}/${name}`, "synthetic private file", { mode: 0o600 });
   events.length = 0;
-  assert.equal((await runR3SourceFreshHosted(input)).status, "CLOSED");
+  const originalMask = process.umask(0o077);
+  let result;
+  try {
+    result = await runR3SourceFreshHosted(input);
+  } finally {
+    process.umask(originalMask);
+  }
+  assert.equal(result.status, "CLOSED");
+  assert.deepEqual(result.sourceGateEvidence, sourceGateEvidence);
+  assert.equal(result.sourceGateEvidenceDigest, sha256Bytes(sourceGateEvidenceBytes));
+  assert.equal(
+    result.sourceGateEvidenceFile,
+    path.join(outputRoot, "source-fresh/source-gate-fresh.v1.json")
+  );
+  assert.deepEqual(await fs.readFile(outputFile), sourceGateEvidenceBytes);
+  assert.equal((await fs.lstat(path.dirname(outputFile))).mode & 0o777, 0o755);
+  assert.equal((await fs.lstat(outputFile)).mode & 0o777, 0o644);
   assert.deepEqual(
     events.filter((event) => !event.startsWith("key-")),
     [
@@ -358,6 +426,7 @@ test("hosted caller waits for imported cleanup and actual forward exit before CL
       "imported-receive",
       "forward-exit",
       "closed-receive",
+      "closed-receipt",
       "sftp-close",
       "controller-close"
     ]
@@ -365,6 +434,12 @@ test("hosted caller waits for imported cleanup and actual forward exit before CL
   await assert.rejects(fs.lstat(`${root}/forwarding.key`), { code: "ENOENT" });
   for (const name of ["forwarding.key", "signing-key.pem"])
     await fs.writeFile(`${root}/${name}`, "synthetic private file", { mode: 0o600 });
+  // A previously created file cannot be overwritten or acknowledged away.
+  events.length = 0;
+  await assert.rejects(runR3SourceFreshHosted(input), { code: "R3_SOURCE_FRESH_CALLER_INVALID" });
+  assert.equal(events.includes("closed-receipt"), false);
+  assert.deepEqual(await fs.readFile(outputFile), sourceGateEvidenceBytes);
+  assert.ok((await fs.lstat(`${root}/forwarding.key`)).isFile());
   earlyExit = true;
   events.length = 0;
   await assert.rejects(runR3SourceFreshHosted(input), { code: "R3_SOURCE_FRESH_CALLER_INVALID" });

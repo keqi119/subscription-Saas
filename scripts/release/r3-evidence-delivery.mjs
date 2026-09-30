@@ -2,6 +2,7 @@
 // their bindings; only the native holder can authorize the corresponding action.
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
+import { validateContract } from "../../packages/release-foundation/src/schema-registry.mjs";
 
 const CODE = "R3_EVIDENCE_DELIVERY_INVALID";
 const LIMIT = 1048576;
@@ -56,6 +57,11 @@ function scopeFields(scope) {
       ["fresh", "snapshot"].includes(scope.chain)
   );
   expiry(scope.expiresAt);
+  need(
+    /^github:\/\/keqi119\/subscription-Saas\/actions\/runs\/[1-9][0-9]*\/attempts\/1$/u.test(
+      scope.ciRunRef
+    )
+  );
   return {
     operationRef: scope.operationRef,
     profileDigest: scope.profileDigest,
@@ -67,7 +73,8 @@ function scopeFields(scope) {
     jobAdmissionDigest: scope.jobAdmissionDigest,
     phase: scope.phase,
     chain: scope.chain,
-    expiresAt: scope.expiresAt
+    expiresAt: scope.expiresAt,
+    ciRunRef: scope.ciRunRef
   };
 }
 function sameScope(value, scope) {
@@ -81,13 +88,18 @@ function requestFields(request) {
   );
   sameScope(request, request);
   need(UUID.test(request.sessionId) && /^[0-9a-f]{64}$/u.test(request.sessionNonce));
-  need(DIGEST.test(request.executionDigest) && DIGEST.test(request.acknowledgementDigest));
+  need(
+    DIGEST.test(request.executionDigest) &&
+      DIGEST.test(request.acknowledgementDigest) &&
+      DIGEST.test(request.resultDigest)
+  );
   return {
     ...scopeFields(request),
     sessionId: request.sessionId,
     sessionNonce: request.sessionNonce,
     executionDigest: request.executionDigest,
-    acknowledgementDigest: request.acknowledgementDigest
+    acknowledgementDigest: request.acknowledgementDigest,
+    resultDigest: request.resultDigest
   };
 }
 function assertExecution(execution, scope) {
@@ -126,6 +138,11 @@ export function r3EvidenceScope({ creationSpecBytes, jobAdmissionBytes }) {
   const spec = parse(creationSpecBytes),
     job = parse(jobAdmissionBytes);
   need(
+    job.ci?.repository === "keqi119/subscription-Saas" &&
+      job.ci.runAttempt === 1 &&
+      /^[1-9][0-9]*$/u.test(job.ci.runId)
+  );
+  need(
     UUID.test(spec.operationRef) &&
       job.operationRef === spec.operationRef &&
       job.creationSpecDigest === sha256Bytes(creationSpecBytes) &&
@@ -144,7 +161,8 @@ export function r3EvidenceScope({ creationSpecBytes, jobAdmissionBytes }) {
     jobAdmissionDigest: sha256Bytes(jobAdmissionBytes),
     phase: spec.phase,
     chain: spec.chain,
-    expiresAt: job.expiresAt
+    expiresAt: job.expiresAt,
+    ciRunRef: `github://${job.ci.repository}/actions/runs/${job.ci.runId}/attempts/${job.ci.runAttempt}`
   });
   need(Date.parse(job.expiresAt) <= Date.parse(spec.expiresAt));
   return Object.freeze(result);
@@ -164,6 +182,7 @@ export function encodeR3CleanupRequest({ scope, executionBytes, acknowledgementB
     sessionId: execution.sessionId,
     sessionNonce: execution.sessionNonce,
     executionDigest,
+    resultDigest: execution.resultDigest,
     acknowledgementDigest: sha256Bytes(acknowledgementBytes),
     execution,
     acknowledgement
@@ -208,7 +227,7 @@ export function decodeR3CleanupImported({ bytes, request, bundleDigest }) {
   return Object.freeze(value);
 }
 
-export function encodeR3Closed({ request, sessionBytes }) {
+export function encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes }) {
   const fields = requestFields({
     schemaVersion: "manual-r3-evidence-delivery.v1",
     kind: "cleanup-request",
@@ -236,10 +255,37 @@ export function encodeR3Closed({ request, sessionBytes }) {
         "chain"
       ].every((field) => session.scope[field] === fields[field])
   );
+  const freshSource = fields.phase === "source" && fields.chain === "fresh";
+  let sourceGateEvidence;
+  if (freshSource) {
+    sourceGateEvidence = parse(sourceGateEvidenceBytes);
+    try {
+      validateContract("source-gate-evidence.v1", sourceGateEvidence);
+    } catch {
+      fail();
+    }
+    const gate = sourceGateEvidence,
+      counts = gate.counts;
+    need(
+      gate.sourceSha === fields.sourceSha &&
+        gate.chain === "fresh" &&
+        gate.terminalStatus === "PASSED" &&
+        gate.provenance.ciRunRef === fields.ciRunRef &&
+        gate.provenance.executorVersion === "manual-r3-source-database-gate.v1" &&
+        counts.executed > 0 &&
+        counts.collected === counts.selected &&
+        counts.selected === counts.executed &&
+        counts.executed === counts.passed &&
+        ["failed", "skipped", "todo", "filtered", "cancelled"].every((field) => counts[field] === 0)
+    );
+  } else need(sourceGateEvidenceBytes === undefined);
   return encoded({
     schemaVersion: "manual-r3-evidence-delivery.v1",
     kind: "closed",
     ...fields,
+    ...(freshSource
+      ? { sourceGateEvidenceDigest: sha256Bytes(sourceGateEvidenceBytes), sourceGateEvidence }
+      : {}),
     sessionDigest: sha256Bytes(sessionBytes),
     session
   });
@@ -249,8 +295,15 @@ export function decodeR3Closed({ bytes, request }) {
   const value = parse(bytes);
   need(value.kind === "closed");
   const sessionBytes = encoded(value.session);
-  need(encodeR3Closed({ request, sessionBytes }).equals(bytes));
-  return Object.freeze({ ...value, sessionBytes });
+  const sourceGateEvidenceBytes = Object.hasOwn(value, "sourceGateEvidence")
+    ? encoded(value.sourceGateEvidence)
+    : undefined;
+  need(encodeR3Closed({ request, sessionBytes, sourceGateEvidenceBytes }).equals(bytes));
+  return Object.freeze({
+    ...value,
+    sessionBytes,
+    ...(sourceGateEvidenceBytes ? { sourceGateEvidenceBytes } : {})
+  });
 }
 
 // This only confirms the hosted holder read the precise CLOSED notice. It is

@@ -8,7 +8,8 @@ import {
 } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import {
   buildDatabaseSuiteReport,
-  runDatabaseManifest
+  runDatabaseManifest,
+  runSourceDatabaseGate
 } from "../../packages/release-foundation/src/database-test-launcher.mjs";
 import { bindR3SourceManifest } from "./r3-database-targets.mjs";
 import {
@@ -670,6 +671,102 @@ function acknowledgementTime(value) {
       new Date(value).toISOString() === value
   );
   return Date.parse(value);
+}
+
+// Projection only: the native holder supplies the verified originals and live
+// target. Public delivery still requires its separate owner ACK and CLOSED.
+export function buildR3SourceFreshGateEvidence({
+  spec,
+  job,
+  execution,
+  result,
+  reconstructed,
+  postgres,
+  migrationCatalogDigest,
+  repositoryContractDigest
+}) {
+  const code = "R3_SOURCE_GATE_RESULT_INVALID";
+  try {
+    need(spec.phase === "source" && spec.chain === "fresh");
+    need(
+      result.schemaVersion === "manual-r3-source-result.v1" && result.promotionEligible === false
+    );
+    need(result.operationRef === spec.operationRef && job.operationRef === spec.operationRef);
+    for (const field of [
+      "profileDigest",
+      "ownerId",
+      "sourceSha",
+      "buildProofDigest",
+      "targetPolicyDigest",
+      "phase",
+      "chain"
+    ])
+      need(
+        result[field] === spec[field] &&
+          (field === "targetPolicyDigest" || job[field] === spec[field])
+      );
+    need(
+      result.creationSpecDigest === sha256Canonical(spec) &&
+        job.creationSpecDigest === result.creationSpecDigest &&
+        result.jobAdmissionDigest === sha256Canonical(job) &&
+        execution.schemaVersion === "manual-operation-record.v3" &&
+        execution.kind === "execution" &&
+        execution.stage === "candidate-use" &&
+        execution.status === "SUCCEEDED" &&
+        execution.reasonCode === null &&
+        execution.promotionEligible === false &&
+        execution.operationId === spec.operationRef &&
+        execution.resultDigest === sha256Canonical(result) &&
+        execution.processEvidenceDigest === result.readbackDigest &&
+        ["profileDigest", "sessionId", "sessionNonce"].every(
+          (field) => execution[field] === result[field]
+        ) &&
+        result.reconstructedDigest === sha256Canonical(reconstructed) &&
+        result.databaseTestManifestDigest === reconstructed.manifestReport.manifestDigest
+    );
+    const report = reconstructed.manifestReport,
+      counts = report.counts,
+      ci = job.ci;
+    need(
+      report.chain === "fresh" &&
+        report.terminalStatus === "PASSED" &&
+        counts.executed > 0 &&
+        counts.collected === counts.selected &&
+        counts.selected === counts.executed &&
+        counts.executed === counts.passed &&
+        ["failed", "skipped", "todo", "filtered", "cancelled"].every((field) => counts[field] === 0)
+    );
+    need(
+      ci.repository === "keqi119/subscription-Saas" &&
+        /^[1-9][0-9]*$/u.test(ci.runId) &&
+        ci.runAttempt === 1 &&
+        ci.workflowPath === ".github/workflows/release-candidate-gate.yml" &&
+        ci.callerWorkflowPath === ci.workflowPath &&
+        ci.jobKey === "source-fresh" &&
+        ci.jobName === "source-fresh"
+    );
+    need(
+      acknowledgementTime(result.completedAt) <= acknowledgementTime(execution.finishedAt) &&
+        acknowledgementTime(execution.finishedAt) <= acknowledgementTime(execution.recordedAt)
+    );
+    return runSourceDatabaseGate({
+      manifestReport: report,
+      sourceSha: spec.sourceSha,
+      migrationCatalogDigest,
+      repositoryContractDigest,
+      postgres: Object.freeze({ ...postgres }),
+      schemaDiffDigest: reconstructed.schemaDiffDigest,
+      migrationStatusDigest: reconstructed.migrationStatusDigest,
+      postSchemaDigest: reconstructed.postSchemaDigest,
+      provenance: Object.freeze({
+        generatedAt: result.completedAt,
+        ciRunRef: `github://${ci.repository}/actions/runs/${ci.runId}/attempts/${ci.runAttempt}`,
+        executorVersion: "manual-r3-source-database-gate.v1"
+      })
+    });
+  } catch {
+    throw Object.assign(new Error(code), { code });
+  }
 }
 
 // A record shape only. The caller must first replay the complete source proof

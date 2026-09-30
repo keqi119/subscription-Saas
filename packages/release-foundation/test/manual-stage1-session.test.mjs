@@ -3284,8 +3284,51 @@ function r3MatchingFacts(chain = "fresh", stage = "candidate-use") {
     engineId: "source-engine",
     containerId: "a".repeat(64),
     systemIdentifier: "123",
-    targetLocks: [D]
+    targetLocks: [D],
+    sourceGateEvidence: {
+      schemaVersion: "source-gate-evidence.v1",
+      sourceSha: "a".repeat(40),
+      chain,
+      migrationCatalogDigest: D,
+      repositoryContractDigest: D,
+      databaseTestManifestDigest: D,
+      databaseTestDiscoveryDigest: D,
+      postgres: { imageDigest: D, serverVersionNum: "170011" },
+      counts: {
+        collected: 1,
+        selected: 1,
+        executed: 1,
+        passed: 1,
+        failed: 0,
+        skipped: 0,
+        todo: 0,
+        filtered: 0,
+        cancelled: 0
+      },
+      terminalStatus: "PASSED",
+      schemaDiffDigest: D,
+      migrationStatusDigest: D,
+      postSchemaDigest: sha256Canonical("source-schema"),
+      sanitizedLogDigest: D,
+      provenance: {
+        generatedAt: NOW,
+        ciRunRef: "github://owner/repo/actions/runs/34/attempts/1",
+        executorVersion: "manual-r3-source-database-gate.v1"
+      },
+      ...(chain === "snapshot"
+        ? {
+            snapshot: {
+              snapshotMetadataDigest: D,
+              snapshotBundleDigest: D,
+              sourceMigrationHead: "20260927000000_source",
+              ownershipMapDigest: D,
+              ownershipObservationDigest: D
+            }
+          }
+        : {})
+    }
   };
+  source.sourceGateEvidenceDigest = sha256Canonical(source.sourceGateEvidence);
   const final = {
     ...structuredClone(source),
     stage,
@@ -3323,6 +3366,8 @@ test("R3 final matching returns immutable reconstructed source facts only for a 
           "resultDigest",
           "reconstructedDigest",
           "postSchemaDigest",
+          "sourceGateEvidence",
+          "sourceGateEvidenceDigest",
           "operationRef",
           "sessionId",
           "sessionNonce"
@@ -3330,6 +3375,13 @@ test("R3 final matching returns immutable reconstructed source facts only for a 
       )
     );
     assert.ok(Object.isFrozen(receipt));
+    assert.ok(Object.isFrozen(receipt.sourceGateEvidence));
+    assert.ok(Object.isFrozen(receipt.sourceGateEvidence.postgres));
+    source.sourceGateEvidence.postgres.imageDigest = sha256Canonical("later-image");
+    assert.notEqual(
+      receipt.sourceGateEvidence.postgres.imageDigest,
+      source.sourceGateEvidence.postgres.imageDigest
+    );
     source.postSchemaDigest = sha256Canonical("later-change");
     assert.notEqual(receipt.postSchemaDigest, source.postSchemaDigest);
     source.closedAt = null;
@@ -3343,7 +3395,8 @@ test("R3 completed final claims must agree with independently reconstructed sour
   final.sourceClaims = {
     matchingSourceEvidenceDigest: source.terminalDigest,
     matchingSourceResultDigest: source.resultDigest,
-    expectedSchemaDigest: source.postSchemaDigest
+    expectedSchemaDigest: source.postSchemaDigest,
+    sourceGateEvidenceDigest: source.sourceGateEvidenceDigest
   };
   assert.doesNotThrow(() => checkR3MatchingFacts(source, final));
   for (const field of Object.keys(final.sourceClaims)) {
@@ -3404,6 +3457,12 @@ test("R3 final matching rejects wrong chain payload selector consumer closure or
   });
   reject(({ source }) => {
     source.closedAt = time(1);
+  });
+  reject(({ source }) => {
+    source.sourceGateEvidence.postSchemaDigest = sha256Canonical("tampered-schema");
+  });
+  reject(({ source }) => {
+    source.sourceGateEvidenceDigest = sha256Canonical("tampered-gate");
   });
   reject((facts) => {
     facts.extraSources = [{ ...facts.source, terminalDigest: "sha256:" + "1".repeat(64) }];

@@ -798,6 +798,7 @@ test("R3 source originals require matching fixed dual readbacks and reject later
     buildR3SourceCompletion,
     buildR3SourceFreshGateEvidence,
     buildR3SourceGateEvidence,
+    assertR3SourceGateOriginal,
     buildR3SourceAcknowledgement,
     assertR3SourceAcknowledgement,
     readR3SourceOriginals
@@ -1010,6 +1011,32 @@ test("R3 source originals require matching fixed dual readbacks and reject later
     repositoryContractDigest: `sha256:${"e".repeat(64)}`
   };
   const publicEvidence = buildR3SourceFreshGateEvidence(projectionInput);
+  assert.ok(result.reconstructed);
+  assert.equal(sha256Canonical(result.reconstructed), sha256Canonical(reconstructed));
+  assert.ok(Object.isFrozen(result.reconstructed.manifestReport));
+  const assertPublicOriginal = (gate) => {
+    const bytes = encodeManualJson(gate);
+    const expectedDigest = sha256Canonical(gate);
+    const bound = assertR3SourceGateOriginal({ bytes, expected: gate, expectedDigest });
+    assert.deepEqual(bound.sourceGateEvidence, gate);
+    assert.equal(bound.sourceGateEvidenceDigest, expectedDigest);
+    assert.ok(Object.isFrozen(bound) && Object.isFrozen(bound.sourceGateEvidence.counts));
+    for (const invalid of [
+      { bytes: Buffer.concat([bytes, Buffer.from("\n")]), expected: gate, expectedDigest },
+      { bytes: Buffer.alloc(1048577), expected: gate, expectedDigest },
+      { bytes, expected: gate, expectedDigest: sha256Canonical(terminal) },
+      {
+        bytes: encodeManualJson({ ...gate, postSchemaDigest: `sha256:${"0".repeat(64)}` }),
+        expected: gate,
+        expectedDigest
+      },
+      { bytes, expected: { ...gate, sourceSha: "0".repeat(40) }, expectedDigest }
+    ])
+      assert.throws(() => assertR3SourceGateOriginal(invalid), {
+        code: "R3_SOURCE_GATE_ORIGINAL_INVALID"
+      });
+  };
+  assertPublicOriginal(publicEvidence);
   assert.equal(publicEvidence.schemaVersion, "source-gate-evidence.v1");
   assert.equal(
     publicEvidence.provenance.ciRunRef,
@@ -1107,6 +1134,7 @@ test("R3 source originals require matching fixed dual readbacks and reject later
   };
   sealProjection(snapshotProjection);
   const snapshotEvidence = buildR3SourceGateEvidence(snapshotProjection);
+  assertPublicOriginal(snapshotEvidence);
   assert.equal(snapshotEvidence.chain, "snapshot");
   assert.deepEqual(snapshotEvidence.snapshot, {
     snapshotMetadataDigest: sha256Canonical(metadata),

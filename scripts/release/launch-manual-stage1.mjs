@@ -83,6 +83,7 @@ import {
 import {
   buildR3SourceResult,
   buildR3SourceGateEvidence,
+  assertR3SourceGateOriginal,
   assertR3SourceAcknowledgement
 } from "./r3-source-result.mjs";
 import { buildDatabaseSuiteReport } from "../../packages/release-foundation/src/database-test-launcher.mjs";
@@ -3000,6 +3001,7 @@ export async function launchR3TargetCreate(input) {
   const finalStore = async (name, value) => {
     const allowed = [
       "attempt",
+      "source",
       "manifest",
       "runtime",
       "application",
@@ -3031,7 +3033,7 @@ export async function launchR3TargetCreate(input) {
     }
     return digest;
   };
-  const runFinalManifest = async (matchingSourceEvidenceDigest) => {
+  const runFinalManifest = async (matchingSourceEvidenceDigest, sourceGateEvidenceBytes) => {
     const observations = [],
       physicalLocks = new Map(),
       migrationAttempts = new Set();
@@ -3048,6 +3050,12 @@ export async function launchR3TargetCreate(input) {
       await consumeCandidateUse(matchingSourceEvidenceDigest);
       const request = candidateUseRecord.request;
       const matchedSource = candidateUseRecord.admission.matchedSource;
+      if (matchedSource.terminalDigest !== matchingSourceEvidenceDigest) fail(code);
+      const sourceOriginal = assertR3SourceGateOriginal({
+        bytes: sourceGateEvidenceBytes,
+        expected: matchedSource.sourceGateEvidence,
+        expectedDigest: matchedSource.sourceGateEvidenceDigest
+      });
       await finalStore("attempt", {
         status: "FINAL_MANIFEST_INTERRUPTED_UNKNOWN",
         operationRef: fixed.spec.operationRef,
@@ -3055,6 +3063,13 @@ export async function launchR3TargetCreate(input) {
         sessionNonce: session.sessionNonce,
         candidateUseExecutionRecordDigest: candidateUseRecord.executionRecordDigest,
         matchingSourceEvidenceDigest,
+        promotionEligible: false
+      });
+      await finalStore("source", {
+        status: "FINAL_SOURCE_GATE_OBSERVED",
+        matchingSourceEvidenceDigest,
+        sourceGateEvidenceDigest: sourceOriginal.sourceGateEvidenceDigest,
+        sourceGateEvidence: sourceOriginal.sourceGateEvidence,
         promotionEligible: false
       });
       const load = async (name) =>
@@ -3739,6 +3754,7 @@ export async function launchR3TargetCreate(input) {
         envelope,
         manifestReport: runtime.result.manifestReport,
         applicationEvidenceDigest,
+        sourceGateEvidenceDigest: sourceOriginal.sourceGateEvidenceDigest,
         observations,
         promotionEligible: false
       });
@@ -5247,8 +5263,11 @@ export async function launchR3TargetCreate(input) {
       async runFinalManifest(...args) {
         if (
           args.length !== 1 ||
-          !exact(args[0], ["matchingSourceEvidenceDigest"]) ||
+          !exact(args[0], ["matchingSourceEvidenceDigest", "sourceGateEvidenceBytes"]) ||
           !/^sha256:[0-9a-f]{64}$/u.test(args[0].matchingSourceEvidenceDigest ?? "") ||
+          !(args[0].sourceGateEvidenceBytes instanceof Uint8Array) ||
+          args[0].sourceGateEvidenceBytes.byteLength === 0 ||
+          args[0].sourceGateEvidenceBytes.byteLength > 1048576 ||
           stopping ||
           closed ||
           finalAttempted ||
@@ -5259,8 +5278,12 @@ export async function launchR3TargetCreate(input) {
           (session.scope.chain === "snapshot" ? !snapshotCompletionReady : consumerAttempted)
         )
           fail(code);
+        const sourceGateEvidenceBytes = Buffer.from(args[0].sourceGateEvidenceBytes);
         finalAttempted = true;
-        finalPending = runFinalManifest(args[0].matchingSourceEvidenceDigest);
+        finalPending = runFinalManifest(
+          args[0].matchingSourceEvidenceDigest,
+          sourceGateEvidenceBytes
+        );
         return finalPending;
       },
       async runSourceManifest(...args) {

@@ -4928,13 +4928,15 @@ for (const mode of [
               });
             }
           }
+          const syntheticReconstructed = Object.freeze({
+            kind: "synthetic-source-reconstruction",
+            originals: sourceOriginals
+          });
           const syntheticVerified = Object.freeze({
             readbackDigest: sourceOriginals.at(-1).digest,
             postSchemaDigest: sha256Canonical({ kind: "synthetic-source-post-schema" }),
-            reconstructedDigest: sha256Canonical({
-              kind: "synthetic-source-reconstruction",
-              originals: sourceOriginals
-            }),
+            reconstructedDigest: sha256Canonical(syntheticReconstructed),
+            reconstructed: syntheticReconstructed,
             suiteReadbacks: Object.freeze(
               sourceManifest.suites.map(({ suiteId }, index) =>
                 Object.freeze({
@@ -4948,9 +4950,50 @@ for (const mode of [
           });
           const sourceModule = await import("./r3-source-result.mjs");
           let mockedReaderCalls = 0;
+          let syntheticSourceGateEvidence = null;
           const sourceMock = t.mock.module("./r3-source-result.mjs", {
             namedExports: {
               ...sourceModule,
+              buildR3SourceGateEvidence(input) {
+                // The 39 private originals are synthetic in this history test.
+                // The production projector is exercised by its focused tests.
+                assert.equal(
+                  sha256Canonical(input.reconstructed),
+                  input.result.reconstructedDigest
+                );
+                syntheticSourceGateEvidence = Object.freeze({
+                  schemaVersion: "source-gate-evidence.v1",
+                  sourceSha: input.spec.sourceSha,
+                  migrationCatalogDigest: input.migrationCatalogDigest,
+                  repositoryContractDigest: input.repositoryContractDigest,
+                  databaseTestManifestDigest: request.databaseTestManifestDigest,
+                  databaseTestDiscoveryDigest: sha256Canonical("synthetic-discovery"),
+                  postgres: input.postgres,
+                  chain: input.spec.chain,
+                  counts: {
+                    collected: 1,
+                    selected: 1,
+                    executed: 1,
+                    passed: 1,
+                    failed: 0,
+                    skipped: 0,
+                    todo: 0,
+                    filtered: 0,
+                    cancelled: 0
+                  },
+                  terminalStatus: "PASSED",
+                  schemaDiffDigest: sha256Canonical("synthetic-schema-diff"),
+                  migrationStatusDigest: sha256Canonical("synthetic-migration-status"),
+                  postSchemaDigest: syntheticVerified.postSchemaDigest,
+                  sanitizedLogDigest: sha256Canonical("synthetic-log"),
+                  provenance: {
+                    generatedAt: input.result.completedAt,
+                    ciRunRef: `github://${input.job.ci.repository}/actions/runs/${input.job.ci.runId}/attempts/${input.job.ci.runAttempt}`,
+                    executorVersion: "manual-r3-source-database-gate.v1"
+                  }
+                });
+                return syntheticSourceGateEvidence;
+              },
               async readR3SourceOriginals({ manifest, binding, readObservation, recheck }) {
                 mockedReaderCalls++;
                 assert.equal(sha256Canonical(manifest), request.databaseTestManifestDigest);
@@ -5461,6 +5504,8 @@ for (const mode of [
                 resultDigest: sourceTerminal.resultDigest,
                 reconstructedDigest: syntheticVerified.reconstructedDigest,
                 postSchemaDigest: syntheticVerified.postSchemaDigest,
+                sourceGateEvidence: syntheticSourceGateEvidence,
+                sourceGateEvidenceDigest: sha256Canonical(syntheticSourceGateEvidence),
                 operationRef: f.operationRef,
                 sessionId: launched.session.sessionId,
                 sessionNonce: launched.session.sessionNonce
@@ -5501,7 +5546,7 @@ for (const mode of [
               manifest: sourceManifest,
               plan: nextPlan
             });
-            assert.equal(finalNames.length, 80);
+            assert.equal(finalNames.length, 81);
             assert.equal(finalNames.filter((name) => name === "application").length, 1);
             const finalOriginals = [];
             for (const name of finalNames) {
@@ -5534,7 +5579,8 @@ for (const mode of [
               sourceClaims: {
                 matchingSourceEvidenceDigest: sourceTerminal.executionRecordDigest,
                 matchingSourceResultDigest: sourceTerminal.resultDigest,
-                expectedSchemaDigest: syntheticVerified.postSchemaDigest
+                expectedSchemaDigest: syntheticVerified.postSchemaDigest,
+                sourceGateEvidenceDigest: sha256Canonical(syntheticSourceGateEvidence)
               },
               originals: finalOriginals,
               suiteReadbacks: sourceManifest.suites.map(({ suiteId }) => ({
@@ -5592,7 +5638,7 @@ for (const mode of [
             assert.deepEqual(await nextSession.verifyFinalOriginals(), finalVerified);
             releaseMockHistory();
             const finalCustody = await nextSession.custodyFinalOriginals();
-            assert.equal(finalCustody.custodyRecordDigests.length, 158);
+            assert.equal(finalCustody.custodyRecordDigests.length, 162);
             assert.deepEqual(finalCustody.originals, finalOriginals);
             releaseMockHistory();
             const finalTerminal = await nextSession.completeFinal();
@@ -5607,7 +5653,7 @@ for (const mode of [
               await readRecord(finalUse.receipt.executionRecordDigest),
               finalInitial
             );
-            assert.equal((await readRecord(finalTerminal.resultDigest)).originals.length, 79);
+            assert.equal((await readRecord(finalTerminal.resultDigest)).originals.length, 81);
             const ownerAcks = async () =>
               (
                 await Promise.all(

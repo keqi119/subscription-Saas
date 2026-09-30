@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
-import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
+import {
+  encodeManualJson,
+  encodePrivateObservationJson
+} from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { planR3DatabaseTargets } from "./r3-database-targets.mjs";
 import {
   assertR3FinalAcknowledgement,
@@ -87,7 +90,8 @@ function fixture() {
     sourceClaims: {
       matchingSourceEvidenceDigest: request.matchingSourceEvidenceDigest,
       matchingSourceResultDigest: digest("source result"),
-      expectedSchemaDigest: digest("schema")
+      expectedSchemaDigest: digest("schema"),
+      sourceGateEvidenceDigest: digest("source gate")
     },
     originals,
     suiteReadbacks: manifest.suites.map(({ suiteId }) => ({
@@ -142,6 +146,11 @@ test("final completion binds fixed observations and two custody copies per origi
   assert.equal(result.originals.filter(({ name }) => name === "application").length, 1);
   assert.equal(f.verified.suiteReadbacks.length, manifest.suites.length);
   assert.equal(result.matchingSourceEvidenceDigest, f.request.matchingSourceEvidenceDigest);
+  assert.equal(
+    result.sourceClaims.sourceGateEvidenceDigest,
+    f.verified.sourceClaims.sourceGateEvidenceDigest
+  );
+  assert.equal(result.originals.find(({ name }) => name === "source")?.bytes, 10);
   assert.equal(result.promotionEligible, false);
   assert.equal(result.candidateUseExecutionRecordDigest, sha256Canonical(f.initialExecution));
   assert.ok(encodeManualJson(result).length <= 1048576);
@@ -149,6 +158,9 @@ test("final completion binds fixed observations and two custody copies per origi
 
 test("final completion rejects missing custody, mismatched source, time and original order", () => {
   for (const mutate of [
+    (f) => {
+      f.verified.originals = f.verified.originals.filter(({ name }) => name !== "source");
+    },
     (f) => {
       f.verified.originals = f.verified.originals.filter(({ name }) => name !== "application");
     },
@@ -161,6 +173,9 @@ test("final completion rejects missing custody, mismatched source, time and orig
     (f) => f.custodyRecords.pop(),
     (f) => {
       f.verified.sourceClaims.matchingSourceEvidenceDigest = digest("other source");
+    },
+    (f) => {
+      f.verified.sourceClaims.sourceGateEvidenceDigest = "invalid source gate digest";
     },
     (f) => {
       f.completedAt = "2026-09-28T23:59:59.000Z";
@@ -230,6 +245,9 @@ test("final acknowledgement binds the successful candidate-use terminal and fina
       value.result.sourceClaims.matchingSourceEvidenceDigest = digest("different source");
     },
     (value) => {
+      value.result.sourceClaims.sourceGateEvidenceDigest = "invalid source gate digest";
+    },
+    (value) => {
       value.observedAt = "2026-09-29T00:00:03.000Z";
     }
   ]) {
@@ -264,5 +282,47 @@ test("final original reader rejects archive/backup byte disagreement before clai
           Buffer.from(storageRole === "archive" ? "{}" : '{"x":1}')
       }),
     { code: "R3_FINAL_RESULT_INVALID" }
+  );
+});
+
+test("final original reader rejects malformed retained source gate evidence", async () => {
+  const f = fixture();
+  const values = {
+    attempt: {
+      status: "FINAL_MANIFEST_INTERRUPTED_UNKNOWN",
+      operationRef: f.request.operationId,
+      sessionId: f.request.sessionId,
+      sessionNonce: f.request.sessionNonce,
+      candidateUseExecutionRecordDigest: sha256Canonical(f.initialExecution),
+      matchingSourceEvidenceDigest: f.request.matchingSourceEvidenceDigest,
+      promotionEligible: false
+    },
+    source: {
+      status: "FINAL_SOURCE_GATE_OBSERVED",
+      matchingSourceEvidenceDigest: f.request.matchingSourceEvidenceDigest,
+      sourceGateEvidenceDigest: digest("gate"),
+      sourceGateEvidence: {},
+      promotionEligible: false
+    }
+  };
+  await assert.rejects(
+    () =>
+      readR3FinalOriginals({
+        manifest: f.manifest,
+        plan: f.plan,
+        discovery: { classification: { unclassified: [] }, discoveryDigest: digest("discovery") },
+        request: f.request,
+        initialExecution: f.initialExecution,
+        destination: f.destination,
+        buildProof: f.buildProof,
+        migrationCatalog: { digest: f.buildProof.identity.migrationCatalogDigest },
+        globalObjectPolicy: {},
+        lifecycleRecords: [],
+        repoRoot: "/app",
+        recheck: async () => {},
+        readObservation: async ({ name }) => encodePrivateObservationJson(values[name] ?? {})
+      }),
+    (error) =>
+      error.code === "R3_FINAL_RESULT_INVALID" && error.cause?.code === "CONTRACT_SCHEMA_INVALID"
   );
 });

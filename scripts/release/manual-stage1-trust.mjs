@@ -2270,6 +2270,7 @@ export async function prepareR3HostedEvidenceImport(input) {
               ? [
                   "runtime",
                   "application",
+                  "source",
                   ...[...finalPlan.targets, ...finalPlan.reservations].map(
                     ({ databaseName }) => databaseName
                   )

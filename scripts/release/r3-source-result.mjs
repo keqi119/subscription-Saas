@@ -27,6 +27,13 @@ const need = (value) => {
   if (!value) throw Object.assign(new Error(CODE), { code: CODE });
 };
 const same = (a, b) => sha256Canonical(a) === sha256Canonical(b);
+function freeze(value) {
+  if (value && typeof value === "object") {
+    Object.values(value).forEach(freeze);
+    Object.freeze(value);
+  }
+  return value;
+}
 const commands = () => [
   ["migrate", "deploy", "--schema", "prisma/schema.prisma"],
   ["migrate", "status", "--schema", "prisma/schema.prisma"],
@@ -478,6 +485,7 @@ export async function readR3SourceOriginals({
     return Object.freeze({
       readbackDigest: sha256Canonical(observed),
       reconstructedDigest: sha256Canonical(reconstructed),
+      reconstructed: freeze(reconstructed),
       // Internal derived fact, not a new field in the persisted source result.
       postSchemaDigest: reconstructed.postSchemaDigest,
       suiteReadbacks: reconstructed.suiteReadbacks,
@@ -846,6 +854,28 @@ export function buildR3SourceGateEvidence({
         executorVersion: "manual-r3-source-database-gate.v1"
       })
     });
+  } catch {
+    throw Object.assign(new Error(code), { code });
+  }
+}
+
+// The expected gate comes only from authenticated source-history replay.
+// Uploaded bytes remain untrusted until their whole canonical object matches.
+export function assertR3SourceGateOriginal({ bytes, expected, expectedDigest }) {
+  const code = "R3_SOURCE_GATE_ORIGINAL_INVALID";
+  try {
+    need(bytes instanceof Uint8Array && bytes.byteLength > 0 && bytes.byteLength <= 1048576);
+    const original = Buffer.from(bytes);
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(original));
+    validateContract("source-gate-evidence.v1", value);
+    need(
+      encodeManualJson(value).equals(original) &&
+        DIGEST.test(expectedDigest) &&
+        sha256Bytes(original) === expectedDigest &&
+        sha256Canonical(expected) === expectedDigest &&
+        same(value, expected)
+    );
+    return freeze({ sourceGateEvidence: value, sourceGateEvidenceDigest: expectedDigest });
   } catch {
     throw Object.assign(new Error(code), { code });
   }

@@ -45,6 +45,7 @@ export function r3FinalObservationNames({ manifest, plan }) {
   need(same(plan, expected));
   const names = [
     "attempt",
+    "source",
     ...plan.targets.map(({ databaseName }) => databaseName),
     ...plan.reservations.map(({ databaseName }) => databaseName),
     "runtime",
@@ -144,6 +145,7 @@ export async function readR3FinalOriginals({
       originals.push({ name, digest: sha256Bytes(first), bytes: first.length });
     }
     const attempt = values.get("attempt"),
+      source = values.get("source"),
       runtime = values.get("runtime"),
       observed = values.get("manifest");
     need(
@@ -157,16 +159,48 @@ export async function readR3FinalOriginals({
         promotionEligible: false
       })
     );
+    // This retained public gate is a claim until the core compares its digest
+    // with the independently authenticated source-history projection.
+    validateContract("source-gate-evidence.v1", source?.sourceGateEvidence);
+    need(
+      exact(source, [
+        "status",
+        "matchingSourceEvidenceDigest",
+        "sourceGateEvidenceDigest",
+        "sourceGateEvidence",
+        "promotionEligible"
+      ]) &&
+        source.status === "FINAL_SOURCE_GATE_OBSERVED" &&
+        source.promotionEligible === false &&
+        source.matchingSourceEvidenceDigest === request.matchingSourceEvidenceDigest &&
+        DIGEST.test(source.sourceGateEvidenceDigest) &&
+        encodeManualJson(source.sourceGateEvidence).length <= 1048576 &&
+        source.sourceGateEvidenceDigest === sha256Canonical(source.sourceGateEvidence) &&
+        source.sourceGateEvidence.sourceSha === request.sourceSha &&
+        source.sourceGateEvidence.chain === request.chain &&
+        source.sourceGateEvidence.terminalStatus === "PASSED" &&
+        source.sourceGateEvidence.migrationCatalogDigest === migrationCatalog.digest &&
+        source.sourceGateEvidence.repositoryContractDigest ===
+          buildProof.identity.repositoryContractDigest &&
+        source.sourceGateEvidence.databaseTestManifestDigest ===
+          request.databaseTestManifestDigest &&
+        source.sourceGateEvidence.databaseTestDiscoveryDigest === discovery.discoveryDigest &&
+        source.sourceGateEvidence.postgres.imageDigest === destination.postgres.imageDigest &&
+        source.sourceGateEvidence.postgres.serverVersionNum ===
+          String(destination.postgres.postgres.serverVersionNum)
+    );
     need(
       exact(observed, [
         "status",
         "envelope",
         "manifestReport",
         "applicationEvidenceDigest",
+        "sourceGateEvidenceDigest",
         "observations",
         "promotionEligible"
       ]) &&
         observed.status === "FINAL_MANIFEST_OBSERVED" &&
+        observed.sourceGateEvidenceDigest === source.sourceGateEvidenceDigest &&
         observed.promotionEligible === false &&
         runtime.promotionEligible === false &&
         same(runtime.envelope, observed.envelope)
@@ -279,7 +313,8 @@ export async function readR3FinalOriginals({
       const claims = {
         matchingSourceEvidenceDigest: input.matchingSourceEvidenceDigest,
         matchingSourceResultDigest: input.matchingSourceResultDigest,
-        expectedSchemaDigest: input.expectedSchemaDigest
+        expectedSchemaDigest: input.expectedSchemaDigest,
+        sourceGateEvidenceDigest: source.sourceGateEvidenceDigest
       };
       need(Object.values(claims).every((value) => DIGEST.test(value)));
       if (sourceClaims) need(same(sourceClaims, claims));
@@ -355,6 +390,7 @@ export async function readR3FinalOriginals({
       }
       migrationDigests.push({ databaseName: record.databaseName, digest: sha256Canonical(saved) });
     }
+    need(source.sourceGateEvidence.postSchemaDigest === sourceClaims.expectedSchemaDigest);
     const suiteReadbacks = manifest.suites.map(({ suiteId }) => values.get(suiteId));
     const result = { manifestReport: observed.manifestReport, suiteReadbacks };
     need(runtime.resultDigest === sha256Canonical(result));
@@ -448,6 +484,7 @@ export async function readR3FinalOriginals({
         manifestReport: reconstructed.manifestReport,
         migrationDigests,
         sourceClaims,
+        sourceOriginalDigest: originals.find(({ name }) => name === "source").digest,
         applicationDigest: sha256Canonical(application),
         applicationReconstructedDigest: sha256Canonical(applicationReconstructed),
         runtimeDigest: sha256Canonical(runtime)
@@ -502,7 +539,8 @@ export function buildR3FinalCompletion({
       exact(verified.sourceClaims, [
         "matchingSourceEvidenceDigest",
         "matchingSourceResultDigest",
-        "expectedSchemaDigest"
+        "expectedSchemaDigest",
+        "sourceGateEvidenceDigest"
       ]) &&
       Object.values(verified.sourceClaims).every((value) => DIGEST.test(value)) &&
       verified.sourceClaims.matchingSourceEvidenceDigest === request.matchingSourceEvidenceDigest &&
@@ -641,7 +679,8 @@ export function buildR3FinalAcknowledgement({
         exact(result.sourceClaims, [
           "matchingSourceEvidenceDigest",
           "matchingSourceResultDigest",
-          "expectedSchemaDigest"
+          "expectedSchemaDigest",
+          "sourceGateEvidenceDigest"
         ]) &&
         Object.values(result.sourceClaims).every((value) => DIGEST.test(value)) &&
         result.sourceClaims.matchingSourceEvidenceDigest === result.matchingSourceEvidenceDigest &&

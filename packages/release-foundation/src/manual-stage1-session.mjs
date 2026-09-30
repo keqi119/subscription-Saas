@@ -1874,12 +1874,50 @@ function createManualHistoryVerifier(runtime) {
               r3Acknowledgements.add(digest);
             }
             if (identity.scope.phase === "source") {
+              const destination = graph.get(request.destinationAdmissionDigest)?.value;
+              const buildProof = graph.get(request.candidate.buildProofDigest)?.value;
+              requireThat(
+                destination?.postgres &&
+                  buildProof?.identity &&
+                  sha256Canonical(destination) === request.destinationAdmissionDigest &&
+                  sha256Canonical(buildProof) === request.candidate.buildProofDigest,
+                EVIDENCE
+              );
+              const { buildR3SourceGateEvidence } =
+                await import("../../../scripts/release/r3-source-result.mjs");
+              const sourceGateEvidence = buildR3SourceGateEvidence({
+                spec: r3Context.creationSpec,
+                job: r3Context.jobAdmission,
+                execution: completed,
+                result: proof.result,
+                reconstructed: proof.verified.reconstructed,
+                postgres: {
+                  imageDigest: destination.postgres.imageDigest,
+                  serverVersionNum: String(destination.postgres.postgres.serverVersionNum)
+                },
+                migrationCatalogDigest: buildProof.identity.migrationCatalogDigest,
+                repositoryContractDigest: buildProof.identity.repositoryContractDigest,
+                ...(identity.scope.chain === "snapshot"
+                  ? {
+                      snapshot: {
+                        metadata: snapshotReader?.restoreInputs?.metadata,
+                        bundleInputs: snapshotReader?.bundleInputs,
+                        execution: graph.get(request.preparationExecutionRecordDigest)?.value,
+                        result: graph.get(
+                          graph.get(request.preparationExecutionRecordDigest)?.value?.resultDigest
+                        )?.value
+                      }
+                    }
+                  : {})
+              });
               accumulator.r3SourceProofs.set(
                 sha256Canonical(completed),
                 freeze({
                   resultDigest: completed.resultDigest,
                   reconstructedDigest: proof.result.reconstructedDigest,
-                  postSchemaDigest: proof.verified.postSchemaDigest
+                  postSchemaDigest: proof.verified.postSchemaDigest,
+                  sourceGateEvidence: freeze(snapshot(sourceGateEvidence)),
+                  sourceGateEvidenceDigest: sha256Canonical(sourceGateEvidence)
                 })
               );
             } else {
@@ -4594,7 +4632,8 @@ export async function openManualSession({
       requireThat(
         claims?.matchingSourceEvidenceDigest === matched.terminalDigest &&
           claims.matchingSourceResultDigest === matched.resultDigest &&
-          claims.expectedSchemaDigest === matched.postSchemaDigest,
+          claims.expectedSchemaDigest === matched.postSchemaDigest &&
+          claims.sourceGateEvidenceDigest === matched.sourceGateEvidenceDigest,
         EVIDENCE
       );
       await finalHistory();

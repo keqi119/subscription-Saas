@@ -1,11 +1,24 @@
 // Internal comparison only; no evidence reader, authority or public-barrel API.
 import { encodeManualJson } from "./manual-stage1-contracts.mjs";
+import { sha256Canonical } from "./digest.mjs";
+import { validateContract } from "./schema-registry.mjs";
 
 const EVIDENCE = "MANUAL_EVIDENCE_BINDING_MISMATCH";
 const requireThat = (condition, code = EVIDENCE) => {
   if (!condition) throw Object.assign(new Error(code), { code });
 };
 const equal = (a, b) => encodeManualJson(a).equals(encodeManualJson(b));
+const frozenCopy = (value) => {
+  const copy = JSON.parse(encodeManualJson(value));
+  const freeze = (part) => {
+    if (part && typeof part === "object") {
+      Object.values(part).forEach(freeze);
+      Object.freeze(part);
+    }
+    return part;
+  };
+  return freeze(copy);
+};
 function instant(value) {
   const n = Date.parse(value);
   requireThat(
@@ -45,6 +58,11 @@ export function assertR3MatchingSources(accumulator) {
     );
     requireThat(matches.length === 1, EVIDENCE);
     const source = matches[0];
+    try {
+      validateContract("source-gate-evidence.v1", source.sourceGateEvidence);
+    } catch {
+      requireThat(false, EVIDENCE);
+    }
     requireThat(
       source.terminalDigest === final.matchingSourceEvidenceDigest &&
         instant(source.closedAt) <= instant(final.allocatedAt) &&
@@ -61,9 +79,22 @@ export function assertR3MatchingSources(accumulator) {
     // These scalars come from the complete source-original proof in the core,
     // never from a final caller's claimed schema or an unverified result JSON.
     requireThat(
-      ["terminalDigest", "resultDigest", "reconstructedDigest", "postSchemaDigest"].every(
+      [
+        "terminalDigest",
+        "resultDigest",
+        "reconstructedDigest",
+        "postSchemaDigest",
+        "sourceGateEvidenceDigest"
+      ].every(
         (key) => typeof source[key] === "string" && /^sha256:[0-9a-f]{64}$/u.test(source[key])
-      )
+      ) &&
+        source.sourceGateEvidence?.schemaVersion === "source-gate-evidence.v1" &&
+        source.sourceGateEvidenceDigest === sha256Canonical(source.sourceGateEvidence) &&
+        source.sourceGateEvidence.sourceSha === source.sourceSha &&
+        source.sourceGateEvidence.chain === source.chain &&
+        source.sourceGateEvidence.databaseTestManifestDigest === source.manifestDigest &&
+        source.sourceGateEvidence.postSchemaDigest === source.postSchemaDigest &&
+        source.sourceGateEvidence.terminalStatus === "PASSED"
     );
     if (Object.hasOwn(final, "sourceClaims")) {
       const claims = final.sourceClaims;
@@ -73,10 +104,11 @@ export function assertR3MatchingSources(accumulator) {
           typeof claims === "object" &&
           !Array.isArray(claims) &&
           Object.keys(claims).sort().join(",") ===
-            "expectedSchemaDigest,matchingSourceEvidenceDigest,matchingSourceResultDigest" &&
+            "expectedSchemaDigest,matchingSourceEvidenceDigest,matchingSourceResultDigest,sourceGateEvidenceDigest" &&
           claims.matchingSourceEvidenceDigest === source.terminalDigest &&
           claims.matchingSourceResultDigest === source.resultDigest &&
-          claims.expectedSchemaDigest === source.postSchemaDigest
+          claims.expectedSchemaDigest === source.postSchemaDigest &&
+          claims.sourceGateEvidenceDigest === source.sourceGateEvidenceDigest
       );
     }
     matchedSources.set(
@@ -88,10 +120,15 @@ export function assertR3MatchingSources(accumulator) {
             "resultDigest",
             "reconstructedDigest",
             "postSchemaDigest",
+            "sourceGateEvidence",
+            "sourceGateEvidenceDigest",
             "operationRef",
             "sessionId",
             "sessionNonce"
-          ].map((key) => [key, source[key]])
+          ].map((key) => [
+            key,
+            key === "sourceGateEvidence" ? frozenCopy(source[key]) : source[key]
+          ])
         )
       )
     );

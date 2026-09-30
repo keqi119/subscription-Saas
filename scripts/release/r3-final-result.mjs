@@ -49,6 +49,7 @@ export function r3FinalObservationNames({ manifest, plan }) {
     ...plan.reservations.map(({ databaseName }) => databaseName),
     "runtime",
     ...manifest.suites.map(({ suiteId }) => suiteId),
+    "application",
     "manifest"
   ];
   need(
@@ -161,6 +162,7 @@ export async function readR3FinalOriginals({
         "status",
         "envelope",
         "manifestReport",
+        "applicationEvidenceDigest",
         "observations",
         "promotionEligible"
       ]) &&
@@ -397,6 +399,44 @@ export async function readR3FinalOriginals({
       repoRoot
     });
     need(same(reconstructed.manifestReport, observed.manifestReport));
+    const application = values.get("application");
+    need(
+      exact(application, [
+        "status",
+        "observedAt",
+        "buildMaterialObservation",
+        "observation",
+        "inventoryReadbacks",
+        "reconstructed",
+        "promotionEligible"
+      ]) &&
+        application.status === "FINAL_APPLICATION_OBSERVED" &&
+        application.promotionEligible === false &&
+        observed.applicationEvidenceDigest === sha256Canonical(application)
+    );
+    const applicationTarget = plan.targets.find(({ kind }) => kind === "application");
+    const applicationRecord = records.find(
+      ({ databaseName }) => databaseName === applicationTarget?.databaseName
+    );
+    need(applicationTarget && applicationRecord);
+    const { assessR3ApplicationOriginals } = await import("./r3-application-originals.mjs");
+    const applicationReconstructed = await assessR3ApplicationOriginals({
+      context: {
+        request,
+        buildProof,
+        buildMaterialObservation: application.buildMaterialObservation,
+        postgres: destination.postgres,
+        record: applicationRecord,
+        migration: values.get(applicationTarget.databaseName),
+        creationEvidenceDigest: destination.hostedEvidenceDigest,
+        targetPolicyRef: `release/contracts/manual-stage1-r3-target-policy.v1.json@${request.targetPolicyDigest}`,
+        observedAt: application.observedAt
+      },
+      observation: application.observation,
+      inventoryReadbacks: application.inventoryReadbacks,
+      repoRoot
+    });
+    need(same(applicationReconstructed, application.reconstructed));
     await recheck();
     for (const { storageRole, name, bytes } of held) {
       const current = await readObservation({ storageRole, name });
@@ -408,6 +448,8 @@ export async function readR3FinalOriginals({
         manifestReport: reconstructed.manifestReport,
         migrationDigests,
         sourceClaims,
+        applicationDigest: sha256Canonical(application),
+        applicationReconstructedDigest: sha256Canonical(applicationReconstructed),
         runtimeDigest: sha256Canonical(runtime)
       }),
       sourceClaims,

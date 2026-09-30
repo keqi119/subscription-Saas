@@ -57,6 +57,9 @@ import {
   executeR3FinalRuntimeContainer
 } from "./r3-final-migration-container.mjs";
 import { createR3FinalMigrationAssessment } from "./r3-final-migration-result.mjs";
+import { buildR3ApplicationPlan, executeR3FinalApplication } from "./r3-final-application.mjs";
+import { assessR3ApplicationOriginals } from "./r3-application-originals.mjs";
+import { API_DATABASE_SESSION_SQL } from "./run-final-compose-gate.mjs";
 import { assessFinalRuntimePreparation } from "../../apps/release-runner/src/final-runtime-preparation.mjs";
 import { observeFinalRuntimeBoundary } from "../../apps/release-runner/src/final-database-runtime.mjs";
 import { validateFinalDatabaseTestAssignments } from "../../apps/release-runner/src/database-test-envelope.mjs";
@@ -1123,6 +1126,7 @@ export async function launchR3TargetCreate(input) {
     finalReady = false,
     finalPending,
     finalResources,
+    applicationResources,
     finalCompletionRecord,
     sourceCompletionRecord,
     acknowledgementAttempted = false,
@@ -1153,6 +1157,7 @@ export async function launchR3TargetCreate(input) {
   const sourceContexts = [];
   const sourceValues = new Map();
   const finalReadbacks = [];
+  const applicationReadbacks = [];
   const finalMigrations = new Map();
   const lifecycleRegisteredRecords = [];
   const fetchAbort = new AbortController();
@@ -2114,7 +2119,9 @@ export async function launchR3TargetCreate(input) {
     );
     if (current.engine.ID !== boundEngineId) fail(code);
     if (postgresAttempted) {
-      const observed = await inspectPg(boundEngineId);
+      const inspection = await inspectPg(boundEngineId, undefined, applicationResources);
+      const observed = applicationResources ? inspection.facts : inspection;
+      if (applicationResources) applicationReadbacks.push(inspection.readback);
       if (
         Object.keys(postgresTarget)
           .filter((key) => !["credentialRef", "status"].includes(key))
@@ -2846,7 +2853,16 @@ export async function launchR3TargetCreate(input) {
     const held = databaseSecretByName.get(filename);
     if (
       !planned ||
-      !["migrate", "runtime-test"].includes(profile) ||
+      (!["migrate", "runtime-test"].includes(profile) &&
+        !(
+          profile === "api-runtime" &&
+          planned.kind === "application" &&
+          session.scope.phase === "final" &&
+          finalAttempted &&
+          !finalReady &&
+          applicationResources?.identity.databaseName === record.databaseName &&
+          applicationResources.identity.runtimeRole === record.roles[profile]
+        )) ||
       !held ||
       record.roles[profile] !== planned.roles[profile] ||
       record.secretReferences[profile] !==
@@ -2865,7 +2881,7 @@ export async function launchR3TargetCreate(input) {
       fail(code);
     return secret;
   };
-  const sourceCredential = async (record, profile, sql) => {
+  const sourceCredential = async (record, profile, sql, parameters = []) => {
     await sourceCheck();
     const secret = await sourceSecret(record, profile);
     const connection = await createPostgresConnector()({
@@ -2896,7 +2912,7 @@ export async function launchR3TargetCreate(input) {
         fail(code);
       await connection.execute("SET statement_timeout = '30s'");
       await connection.execute("SET lock_timeout = '5s'");
-      const rows = JSON.parse(JSON.stringify([...(await connection.query(sql))]));
+      const rows = JSON.parse(JSON.stringify([...(await connection.query(sql, parameters))]));
       await sourceCheck();
       return { rows };
     } finally {
@@ -2986,6 +3002,7 @@ export async function launchR3TargetCreate(input) {
       "attempt",
       "manifest",
       "runtime",
+      "application",
       ...fixed.databaseTestManifest.suites.map(({ suiteId }) => suiteId),
       ...databaseTargetSet.plan.targets.map(({ databaseName }) => databaseName),
       ...databaseTargetSet.plan.reservations.map(({ databaseName }) => databaseName)
@@ -3021,6 +3038,7 @@ export async function launchR3TargetCreate(input) {
     let runtime,
       runtimeWritten = false,
       manifestWritten = false,
+      applicationWritten = false,
       envelope,
       lifecycleReport;
     const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -3292,7 +3310,7 @@ export async function launchR3TargetCreate(input) {
           });
           throw error;
         }
-        const migrationEvidenceDigest = await finalStore(record.databaseName, {
+        const migrationObservation = {
           status: "FINAL_MIGRATION_OBSERVED",
           input: migrationInput,
           physical,
@@ -3301,7 +3319,8 @@ export async function launchR3TargetCreate(input) {
           boundary,
           originals: owned.originals,
           promotionEligible: false
-        });
+        };
+        const migrationEvidenceDigest = await finalStore(record.databaseName, migrationObservation);
         const runtimeDatabase = {
           ...database,
           runtimeRole: runtimeSecret.username,
@@ -3317,7 +3336,8 @@ export async function launchR3TargetCreate(input) {
         finalMigrations.set(record.databaseName, {
           database: runtimeDatabase,
           preparation,
-          boundary
+          boundary,
+          observation: migrationObservation
         });
         await sourceCheck();
         return { exitCode: 0, signal: null };
@@ -3591,11 +3611,134 @@ export async function launchR3TargetCreate(input) {
         promotionEligible: false
       });
       await recheckResources();
+      // The database manifest is not final application acceptance. Run the same
+      // admitted API/Web images against its migrated application target before
+      // custody can produce the native final terminal.
+      const applicationTarget = plan.targets.find((item) => item.kind === "application");
+      const applicationRecord = databaseTargetSet.records.find(
+        (item) => item.databaseName === applicationTarget?.databaseName
+      );
+      const applicationMigration = finalMigrations.get(
+        applicationTarget?.databaseName
+      )?.observation;
+      if (!applicationRecord || !applicationMigration || finalResources || applicationResources)
+        fail(code);
+      const applicationContext = {
+        request,
+        buildProof,
+        buildMaterialObservation: fixed.buildMaterialObservation,
+        postgres: postgresTarget,
+        record: applicationRecord,
+        migration: applicationMigration,
+        creationEvidenceDigest: hostedEvidence.bundleDigest,
+        targetPolicyRef: `release/contracts/manual-stage1-r3-target-policy.v1.json@${request.targetPolicyDigest}`,
+        observedAt: new Date().toISOString()
+      };
+      const applicationPlan = buildR3ApplicationPlan(applicationContext);
+      applicationResources = { identity: applicationPlan.identity, images: [], containers: [] };
+      const recheckApplication = async () => {
+        await sourceCheck();
+        const inspection = await inspectPg(boundEngineId, undefined, applicationResources);
+        if (
+          Object.keys(postgresTarget)
+            .filter((key) => !["credentialRef", "status"].includes(key))
+            .some(
+              (key) =>
+                sha256Canonical(inspection.facts[key]) !== sha256Canonical(postgresTarget[key])
+            )
+        )
+          fail(code);
+        applicationReadbacks.push(inspection.readback);
+      };
+      let applicationObservation, applicationReconstructed;
+      try {
+        await recheckResources();
+        const tlsDirectory = path.join(
+          lease.profile.storage.credentialRoot,
+          "r3",
+          fixed.spec.operationRef
+        );
+        await checkedPrivatePath(tlsDirectory, {
+          principal: { platform: "posix", uid: process.getuid() },
+          privateRoot: lease.profile.storage.credentialRoot,
+          directory: true
+        });
+        applicationObservation = await executeR3FinalApplication({
+          plan: applicationPlan,
+          buildProof,
+          repoRoot,
+          tlsDirectory,
+          signal: sourceAbort.signal,
+          engineCall,
+          recheck: sourceCheck,
+          observe: async (registry) => {
+            applicationResources = {
+              ...structuredClone(registry),
+              identity: applicationPlan.identity
+            };
+            await recheckApplication();
+          },
+          readCredential: () => sourceSecret(applicationRecord, "api-runtime"),
+          queryApiSessions: async ({ applicationName, databaseOid, runtimeRole }) => {
+            if (
+              applicationName !==
+                `subscription-api/${applicationPlan.identity.apiManifestId}/${applicationPlan.identity.apiSessionNonce}` ||
+              String(databaseOid) !== String(applicationRecord.databaseOid) ||
+              runtimeRole !== applicationRecord.roles["api-runtime"]
+            )
+              fail(code);
+            await recheckApplication();
+            const value = await sourceCredential(
+              applicationRecord,
+              "api-runtime",
+              API_DATABASE_SESSION_SQL,
+              [applicationName]
+            );
+            await recheckApplication();
+            return value.rows;
+          }
+        });
+        applicationReconstructed = await assessR3ApplicationOriginals({
+          context: applicationContext,
+          observation: applicationObservation,
+          inventoryReadbacks: applicationReadbacks,
+          repoRoot
+        });
+      } catch (error) {
+        applicationWritten = true;
+        await finalStore("application", {
+          status: "FINAL_APPLICATION_INTERRUPTED_UNKNOWN",
+          observedAt: applicationContext.observedAt,
+          originals: error.originals ?? applicationObservation ?? null,
+          inventoryReadbacks: applicationReadbacks,
+          promotionEligible: false
+        });
+        throw error;
+      } finally {
+        if (
+          applicationResources.images.length === 0 &&
+          applicationResources.containers.length === 0
+        )
+          applicationResources = undefined;
+      }
+      if (applicationResources) fail(code);
+      applicationWritten = true;
+      const applicationEvidenceDigest = await finalStore("application", {
+        status: "FINAL_APPLICATION_OBSERVED",
+        observedAt: applicationContext.observedAt,
+        buildMaterialObservation: fixed.buildMaterialObservation,
+        observation: applicationObservation,
+        inventoryReadbacks: applicationReadbacks,
+        reconstructed: applicationReconstructed,
+        promotionEligible: false
+      });
+      await recheckResources();
       manifestWritten = true;
       const readbackDigest = await finalStore("manifest", {
         status: "FINAL_MANIFEST_OBSERVED",
         envelope,
         manifestReport: runtime.result.manifestReport,
+        applicationEvidenceDigest,
         observations,
         promotionEligible: false
       });
@@ -3716,6 +3859,15 @@ export async function launchR3TargetCreate(input) {
         promotionEligible: false
       });
     } catch (error) {
+      if (candidateUseRecord && !applicationWritten) {
+        applicationWritten = true;
+        await finalStore("application", {
+          status: "FINAL_APPLICATION_INTERRUPTED_UNKNOWN",
+          originals: null,
+          inventoryReadbacks: applicationReadbacks,
+          promotionEligible: false
+        }).catch(() => {});
+      }
       if (candidateUseRecord && !runtimeWritten && error.originals) {
         runtimeWritten = true;
         await finalStore("runtime", {

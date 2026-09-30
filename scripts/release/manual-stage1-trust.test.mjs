@@ -5501,7 +5501,8 @@ for (const mode of [
               manifest: sourceManifest,
               plan: nextPlan
             });
-            assert.equal(finalNames.length, 79);
+            assert.equal(finalNames.length, 80);
+            assert.equal(finalNames.filter((name) => name === "application").length, 1);
             const finalOriginals = [];
             for (const name of finalNames) {
               const bytes = encodeManualJson({

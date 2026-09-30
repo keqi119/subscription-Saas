@@ -139,6 +139,7 @@ test("final completion binds fixed observations and two custody copies per origi
   assert.equal(result.custodyRecordDigests.length, result.originals.length * 2);
   const application = f.plan.targets.find(({ kind }) => kind === "application");
   assert.equal(result.originals.filter(({ name }) => name === application.databaseName).length, 1);
+  assert.equal(result.originals.filter(({ name }) => name === "application").length, 1);
   assert.equal(f.verified.suiteReadbacks.length, manifest.suites.length);
   assert.equal(result.matchingSourceEvidenceDigest, f.request.matchingSourceEvidenceDigest);
   assert.equal(result.promotionEligible, false);
@@ -148,6 +149,9 @@ test("final completion binds fixed observations and two custody copies per origi
 
 test("final completion rejects missing custody, mismatched source, time and original order", () => {
   for (const mutate of [
+    (f) => {
+      f.verified.originals = f.verified.originals.filter(({ name }) => name !== "application");
+    },
     (f) => {
       const application = f.plan.targets.find(({ kind }) => kind === "application");
       f.verified.originals = f.verified.originals.filter(

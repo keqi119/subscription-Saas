@@ -1408,6 +1408,7 @@ export async function readFixedR3CreationSpec(input) {
       databaseTestManifest: policyInput.databaseTestManifest,
       databaseTestManifestRawDigest: policyInput.databaseTestManifestRawDigest,
       build: policyInput.build,
+      buildMaterialObservation: freeze(json(materialBytes)),
       sourceSha: policyInput.sourceSha,
       recheck,
       close
@@ -1664,6 +1665,7 @@ export async function readFixedR3JobAdmission(input) {
       databaseTestManifest: creation.databaseTestManifest,
       databaseTestManifestRawDigest: creation.databaseTestManifestRawDigest,
       build: creation.build,
+      buildMaterialObservation: creation.buildMaterialObservation,
       sourceSha: creation.sourceSha,
       verifiedAttestation,
       ...readback,
@@ -2267,6 +2269,7 @@ export async function prepareR3HostedEvidenceImport(input) {
             ...(state === "final"
               ? [
                   "runtime",
+                  "application",
                   ...[...finalPlan.targets, ...finalPlan.reservations].map(
                     ({ databaseName }) => databaseName
                   )

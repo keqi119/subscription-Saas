@@ -19,6 +19,14 @@ on:
         description: Canonical public source/snapshot creation-spec JSON already reserved on H1
         required: true
         type: string
+      finalFreshCreationSpec:
+        description: Canonical public final/fresh creation-spec JSON already reserved on H1
+        required: true
+        type: string
+      finalSnapshotCreationSpec:
+        description: Canonical public final/snapshot creation-spec JSON already reserved on H1
+        required: true
+        type: string
       snapshotRunId:
         description: Protected sanitized snapshot run
         required: true
@@ -487,23 +495,23 @@ jobs:
           overwrite: false
 
   final-fresh:
-    needs: [source-fresh, admit-build]
+    needs: [source-fresh, source-snapshot, admit-build]
     uses: ./.github/workflows/release-final-chain.yml
     with:
       chain: fresh
       artifactSuffix: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      snapshotRunId: ${{ inputs.snapshotRunId }}
-      snapshotArtifactName: ${{ inputs.snapshotArtifactName }}
+      creationSpec: ${{ inputs.finalFreshCreationSpec }}
+      buildProofDigestHex: ${{ inputs.buildProofDigestHex }}
     secrets: inherit
 
   final-snapshot:
-    needs: [source-snapshot, admit-build]
+    needs: [source-snapshot, admit-build, final-fresh]
     uses: ./.github/workflows/release-final-chain.yml
     with:
       chain: snapshot
       artifactSuffix: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      snapshotRunId: ${{ inputs.snapshotRunId }}
-      snapshotArtifactName: ${{ inputs.snapshotArtifactName }}
+      creationSpec: ${{ inputs.finalSnapshotCreationSpec }}
+      buildProofDigestHex: ${{ inputs.buildProofDigestHex }}
     secrets: inherit
 
   aggregate-proof:
@@ -525,16 +533,16 @@ jobs:
       - name: Assemble the current-run aggregate input
         run: node scripts/release/assemble-release-aggregate-input.mjs --input-root .release-inputs/current-run --output-file .release-output/aggregate-input.v1.json
       - name: Aggregate only the selected same-run proof set
-        run: node scripts/release/aggregate-release-proof.mjs --input-file .release-output/aggregate-input.v1.json --output-file .release-output/release-aggregate-proof.v1.json
+        run: node scripts/release/aggregate-release-proof.mjs --input-file .release-output/aggregate-input.v1.json --output-file .release-output/release-native-aggregate-proof.v1.json
       - id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
-          subject-path: .release-output/release-aggregate-proof.v1.json
+          subject-path: .release-output/release-native-aggregate-proof.v1.json
       - id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: rc-aggregate-${{ env.RC_ARTIFACT_SUFFIX }}
-          path: .release-output/release-aggregate-proof.v1.json
+          path: .release-output/release-native-aggregate-proof.v1.json
           if-no-files-found: error
           retention-days: 180
           overwrite: false
@@ -549,8 +557,8 @@ jobs:
           ATTESTATION_REF: ${{ steps.attest.outputs.attestation-url }}
         run: |
           node scripts/release/workflow-custody-record.mjs \
-            --original-file .release-output/release-aggregate-proof.v1.json \
-            --readback-file .release-readback/aggregate/release-aggregate-proof.v1.json \
+            --original-file .release-output/release-native-aggregate-proof.v1.json \
+            --readback-file .release-readback/aggregate/release-native-aggregate-proof.v1.json \
             --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$STORE_REF" \
             --attestation-ref "$ATTESTATION_REF" \
             --output-file .release-output/release-aggregate-custody-record.v1.json
@@ -601,7 +609,7 @@ jobs:
             --signer-workflow github.com/keqi119/subscription-Saas/.github/workflows/release-owner-attestations.yml \
             --source-digest "$GITHUB_SHA" --format json > "$RUNNER_TEMP/owner-attestation-verification.json"
       - name: Derive repository observations and exit input after aggregation
-        run: node scripts/release/assemble-s1-exit-input.mjs --aggregate-file .release-inputs/aggregate/release-aggregate-proof.v1.json --aggregate-custody-file .release-inputs/aggregate-custody/release-aggregate-custody-record.v1.json --owner-attestations-file .release-inputs/owner-attestations/s1-owner-attestations.v1.json --output-file .release-output/s1-exit-input.v1.json
+        run: node scripts/release/assemble-s1-exit-input.mjs --aggregate-file .release-inputs/aggregate/release-native-aggregate-proof.v1.json --aggregate-custody-file .release-inputs/aggregate-custody/release-aggregate-custody-record.v1.json --owner-attestations-file .release-inputs/owner-attestations/s1-owner-attestations.v1.json --output-file .release-output/s1-exit-input.v1.json
       - name: Generate the non-audited S1 checkpoint
         run: node scripts/release/generate-s1-exit-evidence.mjs --input-file .release-output/s1-exit-input.v1.json --output-file .release-output/s1-exit-evidence.v1.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

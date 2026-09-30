@@ -260,6 +260,33 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
     }),
     admitted
   );
+  for (const chain of ["fresh", "snapshot"]) {
+    const finalInput = { ...input, operationRef: randomUUID() };
+    const prepare =
+      chain === "fresh" ? inputs.prepareR3FinalFreshSpec : inputs.prepareR3FinalSnapshotSpec;
+    const finalBytes = await prepare(finalInput);
+    assert.equal(JSON.parse(finalBytes).phase, "final");
+    assert.equal(JSON.parse(finalBytes).chain, chain);
+    const importInput = {
+      repoRoot: input.repoRoot,
+      operationRef: finalInput.operationRef,
+      runId: "1234"
+    };
+    await assert.rejects(inputs.importR3SourceFreshJob(importInput), {
+      code: "R3_OPERATION_INPUT_INVALID"
+    });
+    importedOperationRef = finalInput.operationRef;
+    admitted = encodeManualJson({
+      ...JSON.parse(admitted),
+      operationRef: importedOperationRef,
+      creationSpecDigest: sha256Bytes(finalBytes)
+    });
+    zip = (await exec("python3", ["-c", zipScript, admitted.toString()], { encoding: "buffer" }))
+      .stdout;
+    const importFinal =
+      chain === "fresh" ? inputs.importR3FinalFreshJob : inputs.importR3FinalSnapshotJob;
+    assert.deepEqual(await importFinal(importInput), admitted);
+  }
 });
 
 test("fixed hosted key holder binds actual files, job and machine and rejects replacement", async (t) => {
@@ -531,4 +558,49 @@ test("fixed hosted key holder binds actual files, job and machine and rejects re
   assert.deepEqual(snapshotKey.creationSpecBytes, snapshotInput.creationSpecBytes);
   assert.deepEqual(snapshotKey.jobAdmissionBytes, producedSnapshot.jobAdmissionBytes);
   await snapshotKey.close();
+  for (const chain of ["fresh", "snapshot"]) {
+    const finalRef = randomUUID(),
+      finalId = finalRef.replaceAll("-", "");
+    t.after(() =>
+      fs.rm(`/dev/shm/stage1-keys/r3-job-${finalId}`, { recursive: true, force: true })
+    );
+    const finalSpec = {
+      ...preparedSpec,
+      operationRef: finalRef,
+      phase: "final",
+      chain,
+      workspace: {
+        ...preparedSpec.workspace,
+        id: finalId,
+        backingFile: `/var/lib/stage1-snapshots/${finalId}.luks`,
+        mountPath: `/srv/stage1-snapshot/${finalId}`,
+        keyFile: `/dev/shm/stage1-keys/${finalId}.key`,
+        mapperName: `s1snap_${finalId}`
+      }
+    };
+    const finalInput = { ...prepareInput, creationSpecBytes: encodeManualJson(finalSpec) };
+    const prepareFinal =
+      chain === "fresh"
+        ? inputs.prepareR3FinalFreshHostedJob
+        : inputs.prepareR3FinalSnapshotHostedJob;
+    await assert.rejects(inputs.prepareR3SourceSnapshotHostedJob(finalInput), {
+      code: "R3_OPERATION_INPUT_INVALID"
+    });
+    process.env.GITHUB_JOB = "execute";
+    apiJob.name = `final-${chain} / execute`;
+    process.env.GITHUB_WORKFLOW_REF = `${job.ci.repository}/${policy.hosted.final.workflowPath}@refs/heads/main`;
+    await assert.rejects(prepareFinal(finalInput), { code: "R3_OPERATION_INPUT_INVALID" });
+    process.env.GITHUB_WORKFLOW_REF = environment.GITHUB_WORKFLOW_REF;
+    const finalJob = JSON.parse((await prepareFinal(finalInput)).jobAdmissionBytes);
+    assert.equal(finalJob.phase, "final");
+    assert.equal(finalJob.chain, chain);
+    assert.equal(finalJob.ci.workflowPath, policy.hosted.final.workflowPath);
+    assert.equal(finalJob.ci.callerWorkflowPath, policy.hosted.final.callerWorkflowPath);
+    assert.equal(finalJob.ci.jobKey, "execute");
+    assert.equal(finalJob.ci.jobName, apiJob.name);
+    assert.equal(finalJob.ci.environment, policy.hosted.final.environment);
+    const finalKey = await inputs.readR3HostedOperationKey({ operationRef: finalRef });
+    await finalKey.recheck();
+    await finalKey.close();
+  }
 });

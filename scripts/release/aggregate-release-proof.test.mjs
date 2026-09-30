@@ -132,7 +132,22 @@ test("release workflow contains only same-run final and generated-exit DAG input
   assert.match(workflow, /checkpoint-custody:[\s\S]*needs:[\s\S]*generate-exit-evidence/u);
   assert.match(workflow, /release-owner-attestations\.yml[\s\S]*--source-digest "\$GITHUB_SHA"/u);
   const finalWorkflow = await readFile(".github/workflows/release-final-chain.yml", "utf8");
-  assert.match(finalWorkflow, /sanitized-snapshot\.yml[\s\S]*--source-ref refs\/heads\/main/u);
+  assert.match(finalWorkflow, /runs-on: ubuntu-24\.04/u);
+  assert.match(finalWorkflow, /prepareR3FinalFreshHostedJob/u);
+  assert.match(finalWorkflow, /prepareR3FinalSnapshotHostedJob/u);
+  assert.match(finalWorkflow, /runR3FinalFreshHosted/u);
+  assert.match(finalWorkflow, /runR3FinalSnapshotHosted/u);
+  assert.match(finalWorkflow, /final-native-[\s\S]*custody-record/u);
+  assert.doesNotMatch(
+    finalWorkflow,
+    /self-hosted|sanitized-snapshot\.dump|final-compose|final-attempt-history/u
+  );
+  assert.match(workflow, /final-fresh:\n\s+needs: \[source-fresh, source-snapshot, admit-build\]/u);
+  assert.match(
+    workflow,
+    /final-snapshot:\n\s+needs: \[source-snapshot, admit-build, final-fresh\]/u
+  );
+  assert.match(workflow, /release-native-aggregate-proof\.v1\.json/u);
   assert.doesNotMatch(workflow, /audit-s1-exit/u);
   const fresh = workflow.split("  source-fresh:\n")[1]?.split("  source-snapshot:\n")[0];
   assert.ok(fresh);

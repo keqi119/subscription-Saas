@@ -3,6 +3,7 @@
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { validateContract } from "../../packages/release-foundation/src/schema-registry.mjs";
+import { validateR3FinalGateEvidence } from "./r3-final-evidence.mjs";
 
 const CODE = "R3_EVIDENCE_DELIVERY_INVALID";
 const LIMIT = 1048576;
@@ -231,7 +232,8 @@ export function encodeR3Closed({
   request,
   sessionBytes,
   sourceGateEvidenceBytes,
-  snapshotMetadataBytes
+  snapshotMetadataBytes,
+  finalNativeEvidenceBytes
 }) {
   const fields = requestFields({
     schemaVersion: "manual-r3-evidence-delivery.v1",
@@ -262,7 +264,7 @@ export function encodeR3Closed({
   );
   const source = fields.phase === "source";
   const snapshotSource = source && fields.chain === "snapshot";
-  let sourceGateEvidence, snapshotMetadata;
+  let sourceGateEvidence, snapshotMetadata, finalNativeEvidence;
   if (source) {
     sourceGateEvidence = parse(sourceGateEvidenceBytes);
     try {
@@ -298,6 +300,44 @@ export function encodeR3Closed({
         sourceGateEvidence.snapshot.ownershipMapDigest === snapshotMetadata.ownershipMapDigest
     );
   } else need(snapshotMetadataBytes === undefined);
+  if (source) need(finalNativeEvidenceBytes === undefined);
+  else {
+    finalNativeEvidence = parse(finalNativeEvidenceBytes);
+    try {
+      validateR3FinalGateEvidence(finalNativeEvidence);
+    } catch {
+      fail();
+    }
+    const execution = request.executionBytes ? parse(request.executionBytes) : request.execution;
+    const acknowledgement = request.acknowledgementBytes
+      ? parse(request.acknowledgementBytes)
+      : request.acknowledgement;
+    need(
+      execution &&
+        acknowledgement &&
+        sha256Bytes(encoded(execution)) === fields.executionDigest &&
+        sha256Bytes(encoded(acknowledgement)) === fields.acknowledgementDigest &&
+        execution.requestDigest === finalNativeEvidence.native.requestDigest &&
+        execution.attemptId === finalNativeEvidence.attemptId &&
+        acknowledgement.subjectDigest === fields.executionDigest &&
+        finalNativeEvidence.operationId === fields.operationRef &&
+        finalNativeEvidence.chain === fields.chain &&
+        finalNativeEvidence.sourceSha === fields.sourceSha &&
+        finalNativeEvidence.buildProofDigest === fields.buildProofDigest &&
+        finalNativeEvidence.native.terminalExecutionDigest === fields.executionDigest &&
+        finalNativeEvidence.native.resultDigest === fields.resultDigest &&
+        finalNativeEvidence.native.acknowledgementDigest === fields.acknowledgementDigest &&
+        finalNativeEvidence.native.closedSessionDigest === sha256Bytes(sessionBytes) &&
+        finalNativeEvidence.producedAt === session.recordedAt &&
+        finalNativeEvidence.attemptHistory.profileDigest === fields.profileDigest &&
+        finalNativeEvidence.attemptHistory.ownerId === fields.ownerId &&
+        finalNativeEvidence.attemptHistory.selected.sessionId === fields.sessionId &&
+        finalNativeEvidence.attemptHistory.selected.sessionNonceDigest ===
+          sha256Bytes(Buffer.from(fields.sessionNonce, "utf8")) &&
+        `github://${finalNativeEvidence.attemptHistory.ci.repository}/actions/runs/${finalNativeEvidence.attemptHistory.ci.runId}/attempts/${finalNativeEvidence.attemptHistory.ci.runAttempt}` ===
+          fields.ciRunRef
+    );
+  }
   return encoded({
     schemaVersion: "manual-r3-evidence-delivery.v1",
     kind: "closed",
@@ -308,6 +348,12 @@ export function encodeR3Closed({
     ...(snapshotSource
       ? { snapshotMetadataDigest: sha256Bytes(snapshotMetadataBytes), snapshotMetadata }
       : {}),
+    ...(source
+      ? {}
+      : {
+          finalNativeEvidenceDigest: sha256Bytes(finalNativeEvidenceBytes),
+          finalNativeEvidence
+        }),
     sessionDigest: sha256Bytes(sessionBytes),
     session
   });
@@ -323,19 +369,26 @@ export function decodeR3Closed({ bytes, request }) {
   const snapshotMetadataBytes = Object.hasOwn(value, "snapshotMetadata")
     ? encoded(value.snapshotMetadata)
     : undefined;
+  const finalNativeEvidenceBytes = Object.hasOwn(value, "finalNativeEvidence")
+    ? encoded(value.finalNativeEvidence)
+    : undefined;
   need(
     encodeR3Closed({
       request,
       sessionBytes,
       sourceGateEvidenceBytes,
-      snapshotMetadataBytes
+      snapshotMetadataBytes,
+      finalNativeEvidenceBytes
     }).equals(bytes)
   );
   return Object.freeze({
     ...value,
     sessionBytes,
     ...(sourceGateEvidenceBytes ? { sourceGateEvidenceBytes } : {}),
-    ...(snapshotMetadataBytes ? { snapshotMetadataBytes } : {})
+    ...(snapshotMetadataBytes ? { snapshotMetadataBytes } : {}),
+    ...(finalNativeEvidenceBytes
+      ? { finalNativeEvidenceBytes: Buffer.from(finalNativeEvidenceBytes) }
+      : {})
   });
 }
 

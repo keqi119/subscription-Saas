@@ -7,7 +7,12 @@ import { fileURLToPath } from "node:url";
 import { createPublicKey } from "node:crypto";
 import childProcess from "node:child_process";
 import readline from "node:readline/promises";
-import { loadFixedManualProfile, readFixedR3JobAdmission } from "./manual-stage1-trust.mjs";
+import {
+  loadFixedManualProfile,
+  readFixedR3JobAdmission,
+  readTrustedR3SourceCompletion,
+  readTrustedR3FinalCompletion
+} from "./manual-stage1-trust.mjs";
 import { launchR3TargetCreate } from "./launch-manual-stage1.mjs";
 import { openR3HostedCreationControl } from "./r3-hosted-creation-control.mjs";
 import { openR3H1EvidenceDelivery } from "./r3-h1-evidence-delivery.mjs";
@@ -15,6 +20,7 @@ import { openR3HostedEvidenceDelivery } from "./r3-hosted-evidence-delivery.mjs"
 import { readR3HostedOperationKey } from "./r3-operation-inputs.mjs";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
+import { buildR3FinalGateEvidence, validateR3FinalGateEvidence } from "./r3-final-evidence.mjs";
 
 const CODE = "R3_SOURCE_FRESH_CALLER_INVALID";
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
@@ -105,11 +111,11 @@ async function persistSourceEvidence(repoRoot, chain, kind, bytes) {
   need(Buffer.isBuffer(bytes) && bytes.length > 0 && bytes.length <= 1048576);
   need(
     ["fresh", "snapshot"].includes(chain) &&
-      (kind === "gate" || (chain === "snapshot" && kind === "metadata"))
+      (kind === "gate" || kind === "final" || (chain === "snapshot" && kind === "metadata"))
   );
   const directories = [
     path.join(repoRoot, ".release-output"),
-    path.join(repoRoot, `.release-output/source-${chain}`)
+    path.join(repoRoot, `.release-output/${kind === "final" ? "final" : "source"}-${chain}`)
   ];
   for (const directory of directories) {
     try {
@@ -129,7 +135,11 @@ async function persistSourceEvidence(repoRoot, chain, kind, bytes) {
   }
   const file = path.join(
     directories[1],
-    kind === "gate" ? `source-gate-${chain}.v1.json` : "snapshot-metadata.v1.json"
+    kind === "gate"
+      ? `source-gate-${chain}.v1.json`
+      : kind === "final"
+        ? `final-native-${chain}.v1.json`
+        : "snapshot-metadata.v1.json"
   );
   const handle = await fs.open(
     file,
@@ -192,13 +202,48 @@ async function ownerAnswer(prompt, expiresAt) {
     terminal.close();
   }
 }
-async function ownerAcknowledgement(executionRecordDigest, expiresAt) {
+async function ownerAcknowledgement(executionRecordDigest, expiresAt, phase = "source") {
   need(DIGEST.test(executionRecordDigest));
   const answer = await ownerAnswer(
-    `Source manifest completed. To acknowledge this exact terminal record, type ACK ${executionRecordDigest}\n> `,
+    `${phase === "final" ? "Final" : "Source"} manifest completed. To acknowledge this exact terminal record, type ACK ${executionRecordDigest}\n> `,
     expiresAt
   );
   need(answer === `ACK ${executionRecordDigest}`);
+}
+async function ownerSourceSelection(profile, expiresAt, chain, repoRoot) {
+  const answer = await ownerAnswer(
+    `Select the CLOSED ${chain} source terminal by typing SOURCE <sha256 digest>\n> `,
+    expiresAt
+  );
+  need(typeof answer === "string" && /^SOURCE sha256:[0-9a-f]{64}$/u.test(answer));
+  const terminalDigest = answer.slice(7);
+  const terminal = JSON.parse(await original(profile, "journal", terminalDigest));
+  need(
+    terminal.kind === "execution" &&
+      terminal.stage === "candidate-use" &&
+      terminal.status === "SUCCEEDED" &&
+      UUID.test(terminal.operationId)
+  );
+  const held = await readTrustedR3SourceCompletion({
+    repoRoot,
+    operationRef: terminal.operationId,
+    executionRecordDigest: terminalDigest
+  });
+  try {
+    await held.recheck();
+    need(
+      held.scope.phase === "source" &&
+        held.scope.chain === chain &&
+        typeof held.closedAt === "string" &&
+        held.executionRecordDigest === terminalDigest &&
+        DIGEST.test(held.sourceGateEvidenceDigest)
+    );
+    const sourceGateEvidenceBytes = encodeManualJson(held.sourceGateEvidence);
+    need(sha256Bytes(sourceGateEvidenceBytes) === held.sourceGateEvidenceDigest);
+    return { matchingSourceEvidenceDigest: terminalDigest, sourceGateEvidenceBytes };
+  } finally {
+    await held.close();
+  }
 }
 async function ownerSnapshotInput(destinationDigest, expiresAt) {
   need(DIGEST.test(destinationDigest));
@@ -248,21 +293,28 @@ async function waitForwardExit() {
 
 export const runR3SourceFreshH1 = (input) => runR3SourceH1(input, "fresh");
 export const runR3SourceSnapshotH1 = (input) => runR3SourceH1(input, "snapshot");
+export const runR3FinalFreshH1 = (input) => runR3SourceH1(input, "fresh", "final");
+export const runR3FinalSnapshotH1 = (input) => runR3SourceH1(input, "snapshot", "final");
 
-async function runR3SourceH1(input, chain) {
+async function runR3SourceH1(input, chain, phase = "source") {
   let admission,
     native,
     delivery,
     launch,
     launchFailure,
     nativeClosed = false,
-    deliveryClosed = false;
+    deliveryClosed = false,
+    finalHistory;
   try {
     inputs(input);
     input = Object.freeze({ ...input });
     admission = await readFixedR3JobAdmission(input);
-    need(admission.spec.phase === "source" && admission.spec.chain === chain);
+    need(admission.spec.phase === phase && admission.spec.chain === chain);
     const profile = await loadFixedManualProfile({ repoRoot: input.repoRoot });
+    const selectedSource =
+      phase === "final"
+        ? await ownerSourceSelection(profile, admission.admission.expiresAt, chain, input.repoRoot)
+        : null;
     launch = launchR3TargetCreate(input);
     launch.then(
       (value) => {
@@ -287,7 +339,12 @@ async function runR3SourceH1(input, chain) {
         creation.destinationDigest,
         admission.admission.expiresAt
       );
-      await native.consumeSnapshot({ inputReference });
+      await native.consumeSnapshot({
+        inputReference,
+        ...(selectedSource
+          ? { matchingSourceEvidenceDigest: selectedSource.matchingSourceEvidenceDigest }
+          : {})
+      });
       await native.fetchSnapshot();
       await native.decryptSnapshot();
       await native.copySnapshot();
@@ -295,14 +352,22 @@ async function runR3SourceH1(input, chain) {
       await native.cleanupSnapshot();
       await native.completeSnapshot();
     }
-    const result = await native.runSourceManifest();
+    const result = selectedSource
+      ? await native.runFinalManifest(selectedSource)
+      : await native.runSourceManifest();
     need(result.executionStatus === "SUCCEEDED" && DIGEST.test(result.executionRecordDigest));
-    const sourceGateEvidenceBytes = encodeManualJson(result.sourceGateEvidence);
+    const sourceGateEvidenceBytes = selectedSource
+      ? undefined
+      : encodeManualJson(result.sourceGateEvidence);
     const snapshotMetadataBytes =
-      chain === "snapshot" ? encodeManualJson(result.snapshotMetadata) : undefined;
+      chain === "snapshot" && !selectedSource
+        ? encodeManualJson(result.snapshotMetadata)
+        : undefined;
     const executionBytes = await original(profile, "journal", result.executionRecordDigest);
-    await ownerAcknowledgement(result.executionRecordDigest, admission.admission.expiresAt);
-    const acknowledgement = await native.acknowledgeSource({
+    await ownerAcknowledgement(result.executionRecordDigest, admission.admission.expiresAt, phase);
+    const acknowledgement = await (
+      selectedSource ? native.acknowledgeFinal : native.acknowledgeSource
+    )({
       executionRecordDigest: result.executionRecordDigest
     });
     const acknowledgementBytes = await original(
@@ -316,7 +381,7 @@ async function runR3SourceH1(input, chain) {
     need(imported.bundleDigest === sha256Bytes(cleanupBytes));
     await delivery.publishCleanupImported({ bundleDigest: imported.bundleDigest });
     await waitForwardExit();
-    await native.completeCleanup();
+    const cleanupReceipt = await native.completeCleanup();
     const sessionRecordDigest = await native.close();
     nativeClosed = true;
     const sessionBytes = await original(profile, "journal", sessionRecordDigest),
@@ -328,11 +393,35 @@ async function runR3SourceH1(input, chain) {
         session.sessionId === native.session.sessionId &&
         session.sessionNonce === native.session.sessionNonce
     );
-    await delivery.publishClosed({
-      sessionBytes,
-      sourceGateEvidenceBytes,
-      ...(snapshotMetadataBytes ? { snapshotMetadataBytes } : {})
-    });
+    if (selectedSource) {
+      finalHistory = await readTrustedR3FinalCompletion({
+        repoRoot: input.repoRoot,
+        operationRef: input.operationRef,
+        executionRecordDigest: result.executionRecordDigest
+      });
+      const execution = JSON.parse(executionBytes);
+      const request = JSON.parse(await original(profile, "journal", execution.requestDigest));
+      const savedResult = JSON.parse(await original(profile, "archive", execution.resultDigest));
+      const acknowledged = JSON.parse(acknowledgementBytes);
+      const finalNativeEvidence = buildR3FinalGateEvidence({
+        request,
+        execution,
+        result: savedResult,
+        reconstructed: result.reconstructed,
+        acknowledgement: acknowledged,
+        cleanupReceipt,
+        sessionRecord: session,
+        attemptHistory: finalHistory.attemptHistory
+      });
+      const finalNativeEvidenceBytes = encodeManualJson(finalNativeEvidence);
+      await finalHistory.recheck();
+      await delivery.publishClosed({ sessionBytes, finalNativeEvidenceBytes });
+    } else
+      await delivery.publishClosed({
+        sessionBytes,
+        sourceGateEvidenceBytes,
+        ...(snapshotMetadataBytes ? { snapshotMetadataBytes } : {})
+      });
     await delivery.close();
     deliveryClosed = true;
     return Object.freeze({
@@ -347,6 +436,7 @@ async function runR3SourceH1(input, chain) {
     if (launch && !native) native = await launch.catch(() => undefined);
     if (!nativeClosed) await native?.close().catch(() => {});
     if (!deliveryClosed) await delivery?.close().catch(() => {});
+    await finalHistory?.close();
     await admission?.close();
   }
 }
@@ -442,8 +532,10 @@ function forwardChild(key, socketPath) {
 
 export const runR3SourceFreshHosted = (input) => runR3SourceHosted(input, "fresh");
 export const runR3SourceSnapshotHosted = (input) => runR3SourceHosted(input, "snapshot");
+export const runR3FinalFreshHosted = (input) => runR3SourceHosted(input, "fresh", "final");
+export const runR3FinalSnapshotHosted = (input) => runR3SourceHosted(input, "snapshot", "final");
 
-async function runR3SourceHosted(input, chain) {
+async function runR3SourceHosted(input, chain, phase = "source") {
   let key,
     control,
     delivery,
@@ -458,7 +550,7 @@ async function runR3SourceHosted(input, chain) {
     const creationSpecBytes = key.creationSpecBytes,
       jobAdmissionBytes = key.jobAdmissionBytes;
     const spec = JSON.parse(creationSpecBytes);
-    need(spec.phase === "source" && spec.chain === chain);
+    need(spec.phase === phase && spec.chain === chain);
     delivery = await openR3HostedEvidenceDelivery({ creationSpecBytes, jobAdmissionBytes });
     control = await openR3HostedCreationControl({ creationSpecBytes, jobAdmissionBytes });
     await key.recheck();
@@ -478,6 +570,39 @@ async function runR3SourceHosted(input, chain) {
     await forward.close();
     forwardClosed = true;
     const closed = await delivery.receiveClosed();
+    if (phase === "final") {
+      const finalNativeEvidenceBytes = Buffer.from(closed.finalNativeEvidenceBytes);
+      need(sha256Bytes(finalNativeEvidenceBytes) === closed.finalNativeEvidenceDigest);
+      const finalNativeEvidence = JSON.parse(finalNativeEvidenceBytes);
+      need(
+        finalNativeEvidence.schemaVersion === "final-native-evidence.v1" &&
+          finalNativeEvidence.chain === chain &&
+          finalNativeEvidence.operationId === input.operationRef &&
+          encodeManualJson(finalNativeEvidence).equals(finalNativeEvidenceBytes) &&
+          validateR3FinalGateEvidence(finalNativeEvidence)
+      );
+      const finalNativeEvidenceFile = await persistSourceEvidence(
+        input.repoRoot,
+        chain,
+        "final",
+        finalNativeEvidenceBytes
+      );
+      await delivery.confirmClosedReceived();
+      await delivery.close();
+      deliveryClosed = true;
+      await key.recheck();
+      await fs.unlink(key.sshPrivateKeyPath);
+      await fs.unlink(path.join(path.dirname(key.sshPrivateKeyPath), "signing-key.pem"));
+      return Object.freeze({
+        status: "CLOSED",
+        operationRef: input.operationRef,
+        sessionRecordDigest: closed.sessionDigest,
+        finalNativeEvidence,
+        finalNativeEvidenceDigest: closed.finalNativeEvidenceDigest,
+        finalNativeEvidenceFile,
+        promotionEligible: false
+      });
+    }
     const sourceGateEvidenceBytes = Buffer.from(closed.sourceGateEvidenceBytes);
     need(sha256Bytes(sourceGateEvidenceBytes) === closed.sourceGateEvidenceDigest);
     const sourceGateEvidence = JSON.parse(sourceGateEvidenceBytes);
@@ -542,22 +667,38 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const args = process.argv.slice(2);
     need(
-      (args.length === 4 ||
-        (args.length === 6 && args[4] === "--chain" && ["fresh", "snapshot"].includes(args[5]))) &&
+      args.length >= 4 &&
+        args.length <= 8 &&
+        args.length % 2 === 0 &&
         args[0] === "--side" &&
         ["h1", "hosted"].includes(args[1]) &&
         args[2] === "--operation-ref" &&
         UUID.test(args[3])
     );
-    const chain = args[5] ?? "fresh";
+    const options = new Map();
+    for (let index = 4; index < args.length; index += 2) {
+      need(["--chain", "--phase"].includes(args[index]) && !options.has(args[index]));
+      options.set(args[index], args[index + 1]);
+    }
+    const chain = options.get("--chain") ?? "fresh";
+    const phase = options.get("--phase") ?? "source";
+    need(["fresh", "snapshot"].includes(chain) && ["source", "final"].includes(phase));
     const run =
       args[1] === "h1"
-        ? chain === "snapshot"
-          ? runR3SourceSnapshotH1
-          : runR3SourceFreshH1
-        : chain === "snapshot"
-          ? runR3SourceSnapshotHosted
-          : runR3SourceFreshHosted;
+        ? phase === "final"
+          ? chain === "snapshot"
+            ? runR3FinalSnapshotH1
+            : runR3FinalFreshH1
+          : chain === "snapshot"
+            ? runR3SourceSnapshotH1
+            : runR3SourceFreshH1
+        : phase === "final"
+          ? chain === "snapshot"
+            ? runR3FinalSnapshotHosted
+            : runR3FinalFreshHosted
+          : chain === "snapshot"
+            ? runR3SourceSnapshotHosted
+            : runR3SourceFreshHosted;
     const result = await run({ repoRoot: INSTALLED_ROOT, operationRef: args[3] });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch {

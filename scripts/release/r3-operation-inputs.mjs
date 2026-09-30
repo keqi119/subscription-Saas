@@ -435,10 +435,12 @@ async function createInput(file, bytes) {
   }
 }
 
-export const prepareR3SourceFreshSpec = (input) => prepareR3SourceSpec(input, "fresh");
-export const prepareR3SourceSnapshotSpec = (input) => prepareR3SourceSpec(input, "snapshot");
+export const prepareR3SourceFreshSpec = (input) => prepareR3Spec(input, "source", "fresh");
+export const prepareR3SourceSnapshotSpec = (input) => prepareR3Spec(input, "source", "snapshot");
+export const prepareR3FinalFreshSpec = (input) => prepareR3Spec(input, "final", "fresh");
+export const prepareR3FinalSnapshotSpec = (input) => prepareR3Spec(input, "final", "snapshot");
 
-async function prepareR3SourceSpec(input, chain) {
+async function prepareR3Spec(input, phase, chain) {
   const opened = [];
   try {
     exact(input, [
@@ -507,7 +509,7 @@ async function prepareR3SourceSpec(input, chain) {
       proofRawDigest: input.proofRawDigest,
       materialRawDigest: input.materialRawDigest,
       targetPolicyDigest: policy.policyRawDigest,
-      phase: "source",
+      phase,
       chain,
       createdAt: new Date().toISOString(),
       expiresAt: input.expiresAt,
@@ -572,11 +574,15 @@ async function githubJson(endpoint) {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
 }
 
-export const prepareR3SourceFreshHostedJob = (input) => prepareR3SourceHostedJob(input, "fresh");
+export const prepareR3SourceFreshHostedJob = (input) =>
+  prepareR3HostedJob(input, "source", "fresh");
 export const prepareR3SourceSnapshotHostedJob = (input) =>
-  prepareR3SourceHostedJob(input, "snapshot");
+  prepareR3HostedJob(input, "source", "snapshot");
+export const prepareR3FinalFreshHostedJob = (input) => prepareR3HostedJob(input, "final", "fresh");
+export const prepareR3FinalSnapshotHostedJob = (input) =>
+  prepareR3HostedJob(input, "final", "snapshot");
 
-async function prepareR3SourceHostedJob(input, chain) {
+async function prepareR3HostedJob(input, phase, chain) {
   let pem, sshBytes;
   try {
     exact(input, ["repoRoot", "creationSpecBytes"]);
@@ -591,7 +597,7 @@ async function prepareR3SourceHostedJob(input, chain) {
     await privateMemory();
     need(
       encodeManualJson(spec).equals(specBytes) &&
-        spec.phase === "source" &&
+        spec.phase === phase &&
         spec.chain === chain &&
         UUID.test(spec.operationRef)
     );
@@ -600,7 +606,10 @@ async function prepareR3SourceHostedJob(input, chain) {
     );
     const policy = JSON.parse(policyBytes),
       hosted = policy.hosted,
-      source = hosted.source;
+      workflow = hosted[phase],
+      callerWorkflowPath = phase === "source" ? workflow.workflowPath : workflow.callerWorkflowPath,
+      jobKey = phase === "source" ? workflow.jobs[chain] : workflow.jobId,
+      jobName = phase === "source" ? jobKey : `${workflow.callerJobs[chain]} / ${jobKey}`;
     need(
       spec.profileDigest === policy.profileDigest &&
         spec.targetPolicyDigest === sha256Bytes(policyBytes) &&
@@ -611,9 +620,9 @@ async function prepareR3SourceHostedJob(input, chain) {
         process.env.GITHUB_REF === hosted.workflowRef &&
         process.env.GITHUB_SHA === spec.sourceSha &&
         process.env.GITHUB_RUN_ATTEMPT === "1" &&
-        process.env.GITHUB_JOB === source.jobs[chain] &&
+        process.env.GITHUB_JOB === jobKey &&
         process.env.GITHUB_WORKFLOW_REF ===
-          `${hosted.repository}/${source.workflowPath}@${hosted.workflowRef}` &&
+          `${hosted.repository}/${callerWorkflowPath}@${hosted.workflowRef}` &&
         /^[1-9][0-9]*$/u.test(process.env.GITHUB_RUN_ID ?? "") &&
         Number.isSafeInteger(Number(process.env.GITHUB_RUN_ID))
     );
@@ -624,7 +633,7 @@ async function prepareR3SourceHostedJob(input, chain) {
         run.run_attempt === 1 &&
         run.head_sha === spec.sourceSha &&
         run.head_branch === "main" &&
-        run.path === source.workflowPath &&
+        run.path === callerWorkflowPath &&
         run.status === "in_progress" &&
         run.conclusion === null
     );
@@ -648,7 +657,7 @@ async function prepareR3SourceHostedJob(input, chain) {
       }
       need(result.jobs.length === 100 && page < 10);
     }
-    const matches = jobs.filter((job) => job.name === source.jobs[chain]);
+    const matches = jobs.filter((job) => job.name === jobName);
     need(matches.length === 1);
     const observed = matches[0];
     need(
@@ -683,12 +692,12 @@ async function prepareR3SourceHostedJob(input, chain) {
         repositoryId: hosted.repositoryId,
         runId,
         runAttempt: 1,
-        workflowPath: source.workflowPath,
-        callerWorkflowPath: source.workflowPath,
-        jobKey: source.jobs[chain],
+        workflowPath: workflow.workflowPath,
+        callerWorkflowPath,
+        jobKey,
         jobId: String(observed.id),
-        jobName: source.jobs[chain],
-        environment: source.environment,
+        jobName,
+        environment: workflow.environment,
         runnerClass: hosted.runnerClass
       },
       host: {
@@ -776,10 +785,12 @@ with zipfile.ZipFile(io.BytesIO(data)) as z:
     sys.stdout.buffer.write(value)
 `;
 
-export const importR3SourceFreshJob = (input) => importR3SourceJob(input, "fresh");
-export const importR3SourceSnapshotJob = (input) => importR3SourceJob(input, "snapshot");
+export const importR3SourceFreshJob = (input) => importR3Job(input, "source", "fresh");
+export const importR3SourceSnapshotJob = (input) => importR3Job(input, "source", "snapshot");
+export const importR3FinalFreshJob = (input) => importR3Job(input, "final", "fresh");
+export const importR3FinalSnapshotJob = (input) => importR3Job(input, "final", "snapshot");
 
-async function importR3SourceJob(input, chain) {
+async function importR3Job(input, phase, chain) {
   const opened = [];
   try {
     exact(input, ["repoRoot", "operationRef", "runId"]);
@@ -799,7 +810,7 @@ async function importR3SourceJob(input, chain) {
       operationRef: input.operationRef
     });
     opened.push(creation);
-    need(creation.spec.phase === "source" && creation.spec.chain === chain);
+    need(creation.spec.phase === phase && creation.spec.chain === chain);
     const profile = await trust.loadFixedManualProfile({ repoRoot: input.repoRoot });
     const archiveRoot = profile.storage.archiveRoot,
       directory = `${archiveRoot}/inputs/r3/${input.operationRef}`;

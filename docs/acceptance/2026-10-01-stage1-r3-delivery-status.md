@@ -1,6 +1,6 @@
 # 阶段 1：R3 证据交付增量
 
-本轮范围是用户已批准的 H1 与 hosted job 双向证据交付，以及 source/fresh 调用器。阶段 1 尚未收口；本轮不推送、合并或触发工作流。
+已批准的 H1 与 hosted job 双向证据交付现已延伸到 source/final 两条链、原生聚合和工作流接线。下文按增量保留实现与验证记录。阶段 1 尚未收口；未推送、合并或触发工作流。
 
 ## 已实现
 
@@ -167,3 +167,17 @@ final 现在要求公开 source 原件与已认证、已关闭的 source 执行�
 限定组合检查 `273e56` 为 37/37、无跳过，覆盖历史选择、公开证据、聚合、制品组装和退出证据。lint 首次发现同一测试文件既有未使用参数，移除该参数后 `7e32c4` 限定 lint 与差异检查通过；格式检查通过。合同 `597a87` 为 277 文件、90 schemas、13 commands、128 项未改变迁移，摘要 `sha256:4d7973fabf57974861387dd40864b8af6aba0290661ea9a5abce714d86251b1b`。一次限定独立审查无新增明确 P1/P2。完整历史读取复用既有原件认证链，本轮未执行长核心夹具、真实候选、数据库或 CI；本地前置迁移检查仍因缺少 datasource.url 在连接前停止，Prisma schema 校验通过。
 
 下一项为 final H1/hosted 调用与 CLOSED 证据交付，再接串行工作流。合法快照源事实与输入索引、同候选 R2/R3、两项 Staging 迁移和 R4 真实验收仍待完成。
+
+## Final 两端调用与工作流接线
+
+final fresh/snapshot 现复用既有 H1/hosted 生命周期。H1 在启动新会话前选择 source 终态，从完整认证历史取得公开 source 原件，并要求 source 已关闭；实际 native 准入仍独立核对同候选匹配。执行完成后继续要求负责人精确 ACK、实际清理和 CLOSED，再认证 final 历史，以保留的 request/result/ACK/session 和真实独立重建生成公开 final。已有 UNKNOWN source 历史仍可读取，只是不能用于 final。
+
+CLOSED 通道要求 final 原件与请求、终态、结果、ACK、会话和 CI 身份逐项一致，完整消息仍受 1 MiB 上限限制。hosted 将公开 final 文件独占写入、同步并读回后才发接收回执；已存在文件或保存失败不能发回执。新的 final Spec/Job/Import 入口沿用已有密钥、机器、只写一次文件及 H1 attestation 准入检查。正式 SFTP 账号沿用此前已批准并回读成功的配置，本轮没有重复修改服务器账号。
+
+两个 final 工作流现使用 Ubuntu 24.04 hosted 隔离路径，接收预留的 final creation-spec，沿 source fresh → source snapshot → final fresh → final snapshot 串行执行。快照走已有准入、解密及恢复路径；公开 final 经 attestation、上传、独立下载回读后记录保管。聚合与退出入口统一使用 `release-native-aggregate-proof.v1.json`。H1 运行方式为原脚本加 `--phase final --chain fresh|snapshot`，对应 `prepareR3FinalFreshSpec` / `prepareR3FinalSnapshotSpec` 和 `importR3FinalFreshJob` / `importR3FinalSnapshotJob`；不会自动代替负责人确认。
+
+限定验证：作业输入 `191f3c` 3/3，交付与两端调用组合 `386acf` 12/12，均无跳过；工作流检查由 `9d2b08` 失败转为 `3b7be5` 通过。YAML 重复键、31 段 shell、7 段内嵌 JS 及其本地导出检查 `b90eb8` 通过。限定 lint/差异 `7960b1`、格式及合同 `d537a2` 通过；合同仍为 277 文件、90 schemas、13 commands、128 项未变迁移，摘要 `sha256:3be9934bc1d1ed117ccc354c42c0dc76c58cc6f8da4bc0ed4d7a20b0db26b570`。一次分段限定独立审查无新增明确 P1/P2。
+
+作业测试最初同时暴露缺少 final 入口和本地 WSL swap 已恢复；在限定测试期间暂停该零使用量 swap，检查完成后已恢复。caller 早期失败为运行身份/夹具问题，不记为功能性 RED。本轮 GitHub/SSH/native/数据库边界仍有替身，真实文件与临时密钥检查不能替代实际候选运行；未重跑长核心夹具，也未操作 H1、业务库或启动 CI。
+
+下一步进入实际候选准备与验收：仍须补齐待确认的数据库快照来源事实及输入索引，再固定同一候选执行 R2/R3、应用两项已批准的 Staging 迁移，完成 R4。当前没有新的 RAM 或 OAuth 审批需求；阶段 1 尚未完成。

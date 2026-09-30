@@ -1985,6 +1985,9 @@ export async function readTrustedR3SourceCompletion(input) {
       executionRecordDigest: history.executionRecordDigest,
       resultDigest: history.resultDigest,
       acknowledgementRecordDigest: history.acknowledgementRecordDigest,
+      sourceGateEvidence: freeze(JSON.parse(encodeManualJson(history.sourceGateEvidence))),
+      sourceGateEvidenceDigest: history.sourceGateEvidenceDigest,
+      closedAt: history.closedAt,
       promotionEligible: false,
       recheck,
       close

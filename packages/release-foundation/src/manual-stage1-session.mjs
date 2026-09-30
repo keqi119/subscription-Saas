@@ -3291,7 +3291,13 @@ export async function readManualR3SourceHistory(input) {
       (value) =>
         value.sessionId === selected.sessionId && value.sessionNonce === selected.sessionNonce
     );
-    requireThat(selectedContext, SESSION);
+    const source = accumulator.r3Sources.get(terminalExecutionRecordDigest);
+    requireThat(
+      selectedContext &&
+        source &&
+        source.sourceGateEvidenceDigest === sha256Canonical(source.sourceGateEvidence),
+      SESSION
+    );
     await capture.recheck();
     return freeze({
       profileDigest,
@@ -3299,6 +3305,9 @@ export async function readManualR3SourceHistory(input) {
       executionRecordDigest: terminalExecutionRecordDigest,
       resultDigest: selected.resultDigest,
       acknowledgementRecordDigest: sha256Canonical(acknowledgements[0]),
+      sourceGateEvidence: snapshot(source.sourceGateEvidence),
+      sourceGateEvidenceDigest: source.sourceGateEvidenceDigest,
+      closedAt: source.closedAt,
       promotionEligible: false,
       verifiedContexts,
       recheck: async () => {

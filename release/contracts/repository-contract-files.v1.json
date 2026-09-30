@@ -225,6 +225,8 @@
     "scripts/release/manual-runner-source-inputs.mjs",
     "scripts/release/manual-stage1-trust.mjs",
     "scripts/release/prepare-final-compose-launch.mjs",
+    "scripts/release/r3-application-bootstrap.mjs",
+    "scripts/release/r3-application-containers.mjs",
     "scripts/release/r3-containerd-observation.mjs",
     "scripts/release/r3-database-targets.mjs",
     "scripts/release/r3-destination.mjs",

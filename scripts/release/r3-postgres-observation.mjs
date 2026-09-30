@@ -1,5 +1,10 @@
 // Pure consistency check for one observed PG17 container in the admitted Engine.
 // The resulting facts grant neither destination use nor cleanup authority.
+import {
+  assessR3ApplicationContainer,
+  assessR3ApplicationImage,
+  applicationContainerSpecs
+} from "./r3-application-containers.mjs";
 const CODE = "R3_POSTGRES_OBSERVATION_INVALID";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
@@ -36,11 +41,204 @@ function unpublished(value, hostConfig = false) {
     );
 }
 function freeze(value) {
-  if (object(value)) {
+  if (object(value) || Array.isArray(value)) {
     for (const item of Object.values(value)) freeze(item);
     Object.freeze(value);
   }
   return value;
+}
+
+// The application holder supplies its private registry. Bind every held ID to
+// full independent Engine observations before returning PG and application facts.
+export function assessR3ApplicationPostgresObservation(input) {
+  try {
+    keys(input, [
+      "operationRef",
+      "workspaceMountPath",
+      "engineId",
+      "imageDigest",
+      "engine",
+      "image",
+      "container",
+      "network",
+      "volume",
+      "postgres",
+      "applicationResources",
+      "containerInventory",
+      "imageInventory"
+    ]);
+    const application = input.applicationResources;
+    keys(application, [
+      "identity",
+      "images",
+      "containers",
+      "imageObservations",
+      "containerObservations"
+    ]);
+    const identity = application.identity;
+    keys(identity, [
+      "operationRef",
+      "sourceSha",
+      "postgresAddress",
+      "api",
+      "web",
+      "apiManifestId",
+      "apiSessionNonce",
+      "databaseName",
+      "runtimeRole"
+    ]);
+    keys(identity.api, ["imageDigest", "imageReference"]);
+    keys(identity.web, ["imageDigest", "imageReference"]);
+    const specs = applicationContainerSpecs(identity);
+    need(
+      identity.operationRef === input.operationRef &&
+        identity.postgresAddress === input.postgres?.serverAddress &&
+        Array.isArray(application.images) &&
+        application.images.length <= 2 &&
+        Array.isArray(application.containers) &&
+        application.containers.length <= 2 &&
+        Array.isArray(application.imageObservations) &&
+        application.imageObservations.length === application.images.length &&
+        Array.isArray(application.containerObservations) &&
+        application.containerObservations.length === application.containers.length
+    );
+    const imageIds = [input.image?.Id];
+    const imageByRole = new Map();
+    for (const [index, held] of application.images.entries()) {
+      keys(held, ["role", "reference", "imageId"]);
+      need(
+        ["api", "web"].includes(held.role) &&
+          !imageByRole.has(held.role) &&
+          held.reference === identity[held.role].imageReference
+      );
+      const observed = application.imageObservations[index];
+      need(
+        held.imageId ===
+          assessR3ApplicationImage({
+            identity,
+            role: held.role,
+            image: observed
+          }) && !imageIds.includes(held.imageId)
+      );
+      imageIds.push(held.imageId);
+      imageByRole.set(held.role, observed);
+    }
+    const containerIds = [input.container?.Id];
+    const networkIds = [input.container?.Id];
+    const addresses = new Set([input.postgres?.serverAddress]);
+    const pids = new Set([input.container?.State?.Pid]);
+    const applicationAddresses = [];
+    const seenRoles = new Set();
+    for (const [index, held] of application.containers.entries()) {
+      keys(held, ["id", "role", "name", "state", "imageId"]);
+      need(
+        ["api", "web"].includes(held.role) &&
+          !seenRoles.has(held.role) &&
+          held.name === specs[held.role].name &&
+          imageByRole.has(held.role) &&
+          held.imageId === imageByRole.get(held.role).Id &&
+          !containerIds.includes(held.id)
+      );
+      const observed = application.containerObservations[index];
+      const facts = assessR3ApplicationContainer({
+        identity,
+        role: held.role,
+        id: held.id,
+        state: held.state,
+        image: imageByRole.get(held.role),
+        container: observed
+      });
+      containerIds.push(facts.containerId);
+      seenRoles.add(held.role);
+      if (facts.state === "running") {
+        need(
+          facts.networkId === input.network?.Id &&
+            !addresses.has(facts.address) &&
+            !pids.has(facts.pid)
+        );
+        addresses.add(facts.address);
+        pids.add(facts.pid);
+        applicationAddresses.push(facts.address);
+        networkIds.push(facts.containerId);
+        const member = input.network?.Containers?.[facts.containerId];
+        const cidr = typeof member?.IPv4Address === "string" ? member.IPv4Address.split("/") : [];
+        need(
+          member?.Name === held.name &&
+            cidr.length === 2 &&
+            cidr[0] === facts.address &&
+            /^[1-9][0-9]?$/u.test(cidr[1]) &&
+            Number(cidr[1]) <= 32
+        );
+      } else {
+        need(
+          facts.address === null &&
+            facts.networkId === "" &&
+            facts.pid === 0 &&
+            input.network?.Containers?.[facts.containerId] === undefined
+        );
+      }
+    }
+    need(
+      input.engine?.Containers === containerIds.length && input.engine.Images === imageIds.length
+    );
+    keys(input.network?.Containers, networkIds);
+    const postgres = assessR3PostgresObservation({
+      ...input,
+      network: {
+        ...input.network,
+        Containers: { [input.container.Id]: input.network.Containers[input.container.Id] }
+      }
+    });
+    need(
+      Array.isArray(input.containerInventory) &&
+        input.containerInventory.length === containerIds.length &&
+        new Set(input.containerInventory.map((entry) => entry?.Id)).size === containerIds.length &&
+        containerIds.every((containerId) =>
+          input.containerInventory.some((entry) => entry.Id === containerId)
+        )
+    );
+    for (const observed of [input.container, ...application.containerObservations]) {
+      const summary = input.containerInventory.find((entry) => entry.Id === observed.Id);
+      const labels = observed.Config?.Labels;
+      need(
+        Array.isArray(summary.Names) &&
+          summary.Names.length === 1 &&
+          summary.Names[0] === observed.Name &&
+          summary.ImageID === observed.Image &&
+          summary.Image === observed.Config.Image &&
+          summary.State ===
+            (observed.Id === input.container.Id ? "running" : observed.State.Status) &&
+          object(labels) &&
+          object(summary.Labels) &&
+          Reflect.ownKeys(summary.Labels).length === Reflect.ownKeys(labels).length &&
+          Object.entries(labels).every(([key, value]) => summary.Labels[key] === value)
+      );
+    }
+    need(
+      Array.isArray(input.imageInventory) &&
+        input.imageInventory.length === imageIds.length &&
+        new Set(input.imageInventory.map((entry) => entry?.Id)).size === imageIds.length &&
+        imageIds.every((imageId) => input.imageInventory.some((entry) => entry.Id === imageId))
+    );
+    for (const observed of [input.image, ...application.imageObservations]) {
+      const summary = input.imageInventory.find((entry) => entry.Id === observed.Id);
+      need(
+        Array.isArray(observed.RepoDigests) &&
+          Array.isArray(summary.RepoDigests) &&
+          observed.RepoDigests.every((digest) => summary.RepoDigests.includes(digest))
+      );
+    }
+    return freeze({
+      ...postgres,
+      applicationContainerIds: containerIds.slice(1),
+      applicationImageIds: imageIds.slice(1),
+      applicationContainerAddresses: applicationAddresses,
+      sourceSha: identity.sourceSha,
+      promotionEligible: false
+    });
+  } catch {
+    fail();
+  }
 }
 function ipv4(value) {
   if (typeof value !== "string" || !IPV4.test(value)) return false;

@@ -27,6 +27,7 @@ async function fixture({
     containers = new Map(),
     images = new Map();
   let credentialReads = 0;
+  let queuedCredential;
   const replies = (value) => Buffer.from(JSON.stringify(value));
   const engineCall = async (method, url, body, status) => {
     events.push({ method, url, body });
@@ -131,6 +132,9 @@ async function fixture({
       stdout = new PassThrough(),
       stderr = new PassThrough();
     stdin.on("data", (chunk) => {
+      // A PassThrough write can complete while its downstream socket still
+      // holds this exact buffer. Consume it later, as a backed-up socket would.
+      queuedCredential = chunk;
       events.push({ credentialSent: containerId });
       // Keep secret bytes out of test diagnostics as well as owner observations.
       assert.ok(JSON.parse(chunk).databaseUrl.startsWith("postgresql://"));
@@ -167,6 +171,7 @@ async function fixture({
         };
       },
       execute: async (applications) => {
+        assert.ok(queuedCredential.includes(Buffer.from("postgresql://")));
         assert.equal(applications.api.address, "172.28.0.3");
         assert.equal(applications.web.address, "172.28.0.4");
         assert.equal(applications.publicWebOrigin, "http://web:3000");

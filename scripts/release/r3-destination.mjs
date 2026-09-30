@@ -7,7 +7,8 @@ import { validateContract } from "../../packages/release-foundation/src/schema-r
 import { planR3DatabaseTargets, recheckR3DatabaseTargets } from "./r3-database-targets.mjs";
 import {
   assessR3PostgresObservation,
-  assessR3FinalPostgresObservation
+  assessR3FinalPostgresObservation,
+  assessR3ApplicationPostgresObservation
 } from "./r3-postgres-observation.mjs";
 
 const CODE = "R3_DESTINATION_INVALID";
@@ -93,7 +94,7 @@ function selectRow(row) {
   if (row.rows.length) exact(row.rows[0], columns);
 }
 
-function assessPostgresReadback(readback, final) {
+function assessPostgresReadback(readback, mode) {
   try {
     exact(readback, ["resources", "execution", "streamBase64", "completed"]);
     const resources = readback.resources;
@@ -108,11 +109,20 @@ function assessPostgresReadback(readback, final) {
       "network",
       "volume",
       "postgres",
-      ...(final ? ["finalResources", "containerInventory", "imageInventory"] : [])
+      ...(mode
+        ? [
+            mode === "final" ? "finalResources" : "applicationResources",
+            "containerInventory",
+            "imageInventory"
+          ]
+        : [])
     ]);
-    const facts = final
-      ? assessR3FinalPostgresObservation(resources)
-      : assessR3PostgresObservation(resources);
+    const facts =
+      mode === "application"
+        ? assessR3ApplicationPostgresObservation(resources)
+        : mode === "final"
+          ? assessR3FinalPostgresObservation(resources)
+          : assessR3PostgresObservation(resources);
     need(
       readback.execution &&
         typeof readback.execution === "object" &&
@@ -159,8 +169,11 @@ function assessPostgresReadback(readback, final) {
   }
 }
 
-export const assessR3PostgresReadback = (readback) => assessPostgresReadback(readback, false);
-export const assessR3FinalPostgresReadback = (readback) => assessPostgresReadback(readback, true);
+export const assessR3PostgresReadback = (readback) => assessPostgresReadback(readback, null);
+export const assessR3FinalPostgresReadback = (readback) =>
+  assessPostgresReadback(readback, "final");
+export const assessR3ApplicationPostgresReadback = (readback) =>
+  assessPostgresReadback(readback, "application");
 
 export async function buildR3Destination(input) {
   try {

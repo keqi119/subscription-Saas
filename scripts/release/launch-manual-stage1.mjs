@@ -43,11 +43,13 @@ import {
 import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
 import {
   assessR3PostgresObservation,
-  assessR3FinalPostgresObservation
+  assessR3FinalPostgresObservation,
+  assessR3ApplicationPostgresObservation
 } from "./r3-postgres-observation.mjs";
 import {
   assessR3PostgresReadback,
   assessR3FinalPostgresReadback,
+  assessR3ApplicationPostgresReadback,
   buildR3Destination
 } from "./r3-destination.mjs";
 import {
@@ -1443,13 +1445,14 @@ export async function launchR3TargetCreate(input) {
       await connection.close();
     }
   };
-  const inspectPg = async (expectedEngineId, suppliedIdentity) => {
+  const inspectPg = async (expectedEngineId, suppliedIdentity, applicationRegistry) => {
     const names = pgNames(),
       imageDigest = fixed.databaseTargetPolicy.requiredImageDigest;
     const { engine } = await engineReadback(false, savePgExchange);
     if (
       engine.ID !== expectedEngineId ||
-      (!finalResources && (engine.Containers !== 1 || engine.Images !== 1))
+      (finalResources && applicationRegistry) ||
+      (!finalResources && !applicationRegistry && (engine.Containers !== 1 || engine.Images !== 1))
     )
       fail(code);
     const container = await engineJson(
@@ -1495,6 +1498,28 @@ export async function launchR3TargetCreate(input) {
           ].map((id) => engineJson("GET", `/containers/${id}/json`, undefined, 200))
         )
       };
+    }
+    if (applicationRegistry) {
+      if (
+        applicationRegistry.identity?.operationRef !== fixed.spec.operationRef ||
+        applicationRegistry.identity.sourceSha !== fixed.spec.sourceSha
+      )
+        fail(code);
+      resources.applicationResources = {
+        ...structuredClone(applicationRegistry),
+        imageObservations: await Promise.all(
+          applicationRegistry.images.map(({ reference }) =>
+            engineJson("GET", `/images/${encodeURIComponent(reference)}/json`, undefined, 200)
+          )
+        ),
+        containerObservations: await Promise.all(
+          applicationRegistry.containers.map(({ id }) =>
+            engineJson("GET", `/containers/${id}/json`, undefined, 200)
+          )
+        )
+      };
+    }
+    if (finalResources || applicationRegistry) {
       resources.containerInventory = await engineJson(
         "GET",
         "/containers/json?all=1",
@@ -1503,9 +1528,11 @@ export async function launchR3TargetCreate(input) {
       );
       resources.imageInventory = await engineJson("GET", "/images/json", undefined, 200);
     }
-    const facts = finalResources
-      ? assessR3FinalPostgresObservation(resources)
-      : assessR3PostgresObservation(resources);
+    const facts = applicationRegistry
+      ? assessR3ApplicationPostgresObservation(resources)
+      : finalResources
+        ? assessR3FinalPostgresObservation(resources)
+        : assessR3PostgresObservation(resources);
     // Independent read through the owned CID must identify the very same PG
     // reached over the other SSH forward. A published-port claim alone is insufficient.
     const execution = await engineJson(
@@ -1539,9 +1566,11 @@ export async function launchR3TargetCreate(input) {
     const readback = { resources, execution, streamBase64: stream.toString("base64"), completed };
     let checked;
     try {
-      checked = finalResources
-        ? assessR3FinalPostgresReadback(readback)
-        : assessR3PostgresReadback(readback);
+      checked = applicationRegistry
+        ? assessR3ApplicationPostgresReadback(readback)
+        : finalResources
+          ? assessR3FinalPostgresReadback(readback)
+          : assessR3PostgresReadback(readback);
     } catch {
       fail(code);
     }
@@ -1553,7 +1582,9 @@ export async function launchR3TargetCreate(input) {
       });
     await check();
     if (!candidateUseRecord) postgresReadback = JSON.parse(JSON.stringify(readback));
-    return facts;
+    // Application execution must retain the actual inventory and independent
+    // PG stream for its later reconstruction/custody, not only derived facts.
+    return applicationRegistry ? { facts, readback } : facts;
   };
   const provisionPg = async (expectedEngineId) => {
     await check();

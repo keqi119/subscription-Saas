@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assessR3ApplicationPostgresObservation,
   assessR3FinalPostgresObservation,
   assessR3PostgresObservation,
   assessR3PostgresResources
 } from "./r3-postgres-observation.mjs";
-import { assessR3FinalPostgresReadback } from "./r3-destination.mjs";
+import {
+  assessR3ApplicationPostgresReadback,
+  assessR3FinalPostgresReadback
+} from "./r3-destination.mjs";
+import { applicationContainerSpecs } from "./r3-application-containers.mjs";
 
 const operationRef = "10000000-0000-4000-8000-000000000001";
 const id = operationRef.replaceAll("-", "");
@@ -92,6 +97,221 @@ function fixture() {
     }
   };
 }
+
+function applicationFixture(states = []) {
+  const input = fixture();
+  const identity = {
+    operationRef,
+    sourceSha: "7".repeat(40),
+    postgresAddress: input.postgres.serverAddress,
+    api: {
+      imageDigest: `sha256:${"1".repeat(64)}`,
+      imageReference: `ghcr.io/keqi119/subscription-api@sha256:${"1".repeat(64)}`
+    },
+    web: {
+      imageDigest: `sha256:${"2".repeat(64)}`,
+      imageReference: `ghcr.io/keqi119/subscription-web@sha256:${"2".repeat(64)}`
+    },
+    apiManifestId: "manifest01",
+    apiSessionNonce: "session01",
+    databaseName: "s1ci_test",
+    runtimeRole: "s1_app"
+  };
+  const specs = applicationContainerSpecs(identity);
+  const images = [];
+  const containers = [];
+  const imageObservations = [];
+  const containerObservations = [];
+  for (const [index, state] of states.entries()) {
+    const role = index === 0 ? "api" : "web";
+    const spec = specs[role];
+    const heldImage = {
+      role,
+      reference: identity[role].imageReference,
+      imageId: `sha256:${String(index + 3).repeat(64)}`
+    };
+    const rawImage = {
+      Id: heldImage.imageId,
+      Os: "linux",
+      Architecture: "amd64",
+      RepoDigests: [heldImage.reference],
+      Config: {
+        Labels: { "org.opencontainers.image.revision": identity.sourceSha },
+        Cmd: spec.body.Cmd,
+        Volumes: null,
+        Env: ["NODE_ENV=production"]
+      }
+    };
+    images.push(heldImage);
+    imageObservations.push(rawImage);
+    if (state === "image") continue;
+    const id = String(index + 4).repeat(64);
+    const address = `172.28.0.${index + 3}`;
+    const heldContainer = {
+      id,
+      role,
+      name: spec.name,
+      state,
+      imageId: rawImage.Id
+    };
+    const rawContainer = {
+      Id: id,
+      Name: `/${spec.name}`,
+      Image: rawImage.Id,
+      Config: {
+        ...spec.body,
+        Labels: { ...rawImage.Config.Labels, ...spec.body.Labels },
+        Env: [
+          ...new Map(
+            [...rawImage.Config.Env, ...spec.body.Env].map((entry) => [
+              entry.slice(0, entry.indexOf("=")),
+              entry
+            ])
+          ).values()
+        ],
+        Volumes: null
+      },
+      HostConfig: { ...spec.body.HostConfig, Binds: null, Mounts: [], AutoRemove: false },
+      Mounts: [],
+      State: {
+        Status: state,
+        Running: state === "running",
+        Paused: false,
+        Restarting: false,
+        Dead: false,
+        OOMKilled: false,
+        Error: "",
+        Pid: state === "running" ? index + 322 : 0
+      },
+      NetworkSettings: {
+        Networks: {
+          [networkName]: {
+            NetworkID: state === "running" ? input.network.Id : "",
+            EndpointID: state === "running" ? String(index + 6).repeat(64) : "",
+            IPAddress: state === "running" ? address : ""
+          }
+        },
+        Ports: {}
+      }
+    };
+    if (state === "running")
+      input.network.Containers[id] = { Name: spec.name, IPv4Address: `${address}/16` };
+    containers.push(heldContainer);
+    containerObservations.push(rawContainer);
+  }
+  input.applicationResources = {
+    identity,
+    images,
+    containers,
+    imageObservations,
+    containerObservations
+  };
+  input.engine.Containers = 1 + containers.length;
+  input.engine.Images = 1 + images.length;
+  input.containerInventory = [input.container, ...containerObservations].map((raw) => ({
+    Id: raw.Id,
+    Names: [raw.Name],
+    ImageID: raw.Image,
+    Image: raw.Config.Image,
+    State: raw.Id === cid ? "running" : raw.State.Status,
+    Labels: raw.Config.Labels
+  }));
+  input.imageInventory = [input.image, ...imageObservations].map((raw) => ({
+    Id: raw.Id,
+    RepoDigests: raw.RepoDigests
+  }));
+  return input;
+}
+
+test("R3 application observation accepts empty, image, created and running held states", () => {
+  for (const states of [[], ["image"], ["created"], ["running"], ["running", "running"]]) {
+    const input = applicationFixture(states);
+    const observed = assessR3ApplicationPostgresObservation(input);
+    assert.deepEqual(
+      observed.applicationImageIds,
+      input.applicationResources.images.map((x) => x.imageId)
+    );
+    assert.deepEqual(
+      observed.applicationContainerIds,
+      input.applicationResources.containers.map((x) => x.id)
+    );
+    assert.deepEqual(
+      observed.applicationContainerAddresses,
+      states
+        .map((state, index) => (state === "running" ? `172.28.0.${index + 3}` : null))
+        .filter(Boolean)
+    );
+    assert.equal(observed.sourceSha, input.applicationResources.identity.sourceSha);
+    assert.equal(observed.promotionEligible, false);
+    assert.ok(Object.isFrozen(observed));
+  }
+});
+
+test("R3 application observation rejects foreign inventory, network, identity and unsafe containers", () => {
+  const mutations = [
+    (f) => f.containerInventory.push({ ...f.containerInventory[1], Id: "0".repeat(64) }),
+    (f) => f.imageInventory.push({ Id: `sha256:${"0".repeat(64)}`, RepoDigests: [] }),
+    (f) => {
+      f.network.Containers["0".repeat(64)] = { Name: "foreign", IPv4Address: "172.28.0.9/16" };
+    },
+    (f) => {
+      f.applicationResources.images[0].imageId = f.image.Id;
+    },
+    (f) => {
+      f.applicationResources.identity.postgresAddress = "172.28.0.9";
+    },
+    (f) => {
+      f.applicationResources.containerObservations[0].HostConfig.Binds = [
+        "/var/run/docker.sock:/sock"
+      ];
+    },
+    (f) => {
+      f.applicationResources.containerObservations[0].Config.Env.push("DATABASE_URL=secret");
+    },
+    (f) => {
+      f.applicationResources.containerObservations[0].NetworkSettings.Networks[
+        networkName
+      ].NetworkID = "0".repeat(64);
+    },
+    (f) => {
+      f.network.Containers[f.applicationResources.containers[0].id].IPv4Address = "172.28.0.9/16";
+    },
+    (f) => {
+      f.finalResources = {};
+    }
+  ];
+  for (const mutate of mutations) {
+    const input = applicationFixture(["running"]);
+    mutate(input);
+    assert.throws(() => assessR3ApplicationPostgresObservation(input), invalid);
+  }
+});
+
+test("R3 application PG readback binds independent PG output to held application inventory", () => {
+  const resources = applicationFixture(["running", "running"]);
+  const stream = (postgres) => {
+    const encoded = Buffer.from(JSON.stringify(postgres));
+    const header = Buffer.alloc(8);
+    header[0] = 1;
+    header.writeUInt32BE(encoded.length, 4);
+    return Buffer.concat([header, encoded]).toString("base64");
+  };
+  const readback = {
+    resources,
+    execution: { Id: "1".repeat(64) },
+    streamBase64: stream(resources.postgres),
+    completed: { ContainerID: cid, Running: false, ExitCode: 0 }
+  };
+  assert.deepEqual(assessR3ApplicationPostgresReadback(readback).applicationContainerAddresses, [
+    "172.28.0.3",
+    "172.28.0.4"
+  ]);
+  const forged = structuredClone(readback);
+  forged.streamBase64 = stream({ ...resources.postgres, systemIdentifier: "7340000000000000002" });
+  assert.throws(() => assessR3ApplicationPostgresReadback(forged), {
+    code: "R3_DESTINATION_INVALID"
+  });
+});
 
 const runnerCid = "d".repeat(64);
 const migrationCid = "f".repeat(64);

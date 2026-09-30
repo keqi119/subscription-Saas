@@ -233,6 +233,30 @@ function inspectOwned(value, held, state) {
   return running ? attachment.IPAddress : null;
 }
 
+// Pure checks for independent native Engine readback. These facts do not grant
+// image use, credential access or cleanup authority.
+export function assessR3ApplicationImage({ identity, role, image }) {
+  need(["api", "web"].includes(role));
+  applicationContainerSpecs(identity);
+  checkImage(image, identity, role);
+  return image.Id;
+}
+
+export function assessR3ApplicationContainer({ identity, role, id, state, image, container }) {
+  need(cid.test(id) && ["created", "running"].includes(state));
+  assessR3ApplicationImage({ identity, role, image });
+  const spec = applicationContainerSpecs(identity)[role];
+  const address = inspectOwned(container, { id, image, spec, role }, state);
+  return Object.freeze({
+    containerId: id,
+    role,
+    state,
+    address,
+    networkId: container.NetworkSettings.Networks[spec.body.HostConfig.NetworkMode].NetworkID,
+    pid: container.State.Pid
+  });
+}
+
 export async function withR3ApplicationContainers({
   identity,
   signal,
@@ -410,7 +434,11 @@ export async function withR3ApplicationContainers({
         try {
           need(bytes.length <= 16384);
           await new Promise((resolve, reject) =>
-            attached.stdin.write(bytes, (error) => (error ? reject(failure()) : resolve()))
+            // PassThrough completion is not socket flush. The transport owns
+            // a separate copy so wiping our buffer cannot corrupt queued data.
+            attached.stdin.write(Buffer.from(bytes), (error) =>
+              error ? reject(failure()) : resolve()
+            )
           );
         } finally {
           bytes.fill(0);

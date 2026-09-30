@@ -87,6 +87,25 @@ test("release workflow contains only same-run final and generated-exit DAG input
   assert.match(workflow, /release-owner-attestations\.yml[\s\S]*--source-digest "\$GITHUB_SHA"/u);
   assert.match(workflow, /sanitized-snapshot\.yml[\s\S]*--source-ref refs\/heads\/main/u);
   assert.doesNotMatch(workflow, /audit-s1-exit/u);
+  const fresh = workflow.split("  source-fresh:\n")[1]?.split("  source-snapshot:\n")[0];
+  assert.ok(fresh);
+  assert.match(fresh, /runs-on: ubuntu-24\.04/u);
+  assert.match(fresh, /environment: trusted-source-database-gate/u);
+  assert.match(fresh, /SOURCE_FRESH_CREATION_SPEC: \$\{\{ inputs.sourceFreshCreationSpec \}\}/u);
+  assert.match(fresh, /prepareR3SourceFreshHostedJob/u);
+  assert.match(fresh, /id: attest-job[\s\S]*job-admission\.json[\s\S]*id: upload-job/u);
+  assert.equal((fresh.match(/include-hidden-files: true/gu) ?? []).length, 3);
+  assert.match(fresh, /runR3SourceFreshHosted[\s\S]*status !== "CLOSED"/u);
+  assert.equal((fresh.match(/stage1-root "\$\(command -v node\)"/gu) ?? []).length, 2);
+  assert.match(
+    fresh,
+    /sudo "\$\(command -v node\)" scripts\/release\/workflow-custody-record\.mjs/u
+  );
+  assert.doesNotMatch(fresh, /run-source-database-gate\.mjs|source-fresh\.raw\.json/u);
+  assert.match(
+    fresh,
+    /id: attest\n[\s\S]*id: upload\n[\s\S]*Freeze the same-run source custody record/u
+  );
 });
 
 test("owner facts have a protected, attested and read-back producer", async () => {

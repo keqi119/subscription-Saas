@@ -35,7 +35,11 @@ hosted 现在先以禁止覆盖方式保存并读回固定公开文件 `.release
 
 source 原件短测 `5a726e` 为 1/1；caller `2b4b06` 先复现缺少交付字段，`df0075` 修复为 2/2。最终受影响的 transport/adapter/caller 短测 `769b9b` 为 8/8、无跳过，约 11.7 秒。独立限定审查未见可证实的 P1/P2。格式、限定 lint 和合同检查 `2016b0` 通过，仍为 263 文件、87 schemas、13 commands、128 migrations；本增量仓库合同摘要为 `sha256:cbd874834bce9c87a9af42136be8ad0207ffbfc03adae58d497d0e0e689129d6`。外部 GitHub、SSH、native 和数据库边界仍有测试替身，未据此宣称真实 RC 成功。本增量未修改服务器、工作流、迁移或业务代码。
 
-1. 将 protected workflow 的输入、job attestation 和 artifact 交付接入真实 hosted 路径；对齐公开 RC 证据与已有 native 原件的映射。当前旧 workflow 仍是 self-hosted，不能宣称已接通。
+随后 source/fresh 工作流接线已完成：使用受保护的 Ubuntu 24.04 hosted job、既有 H1 creation-spec 输入、当前 job 公开描述的 attestation/单文件上传，以及 CLOSED 公开文件核对；之后继续原有 RC attestation、上传、回读和 custody。它不会自动代替 H1 import、owner 启动或负责人 ACK。初次 SFTP 等待放宽为最多十分钟，并始终受准入到期时间限制。root Node 使用 setup-node 选出的绝对路径；三个公开文件上传显式包含隐藏目录内的准确路径。
+
+工作流 DAG 短测由 `94556b` 失败转为 `e29a9c` 通过。`sudo` PATH 覆盖已由 `e6462b` 实际复现，修正后的绝对 Node 路径由 `2be64c` 运行成功。最后 `afee9d` 为 DAG 1/1、YAML 重复键检查、五段 shell 和两段内嵌 JavaScript 语法通过。增量独立审查无剩余可证实 P1/P2。工作流尚未推送或触发，hosted Engine/containerd 的实际兼容性仍待真实执行；本地与服务器的服务、swap、数据未因 YAML 修改而变化。
+
+1. source/fresh 接线已具备代码与静态验证；真实 CI 运行仍待同候选执行，H1 需先用既有 `prepareR3SourceFreshSpec` 预留操作，运行中用 `importR3SourceFreshJob` 导入准确 job artifact，再启动 `run-r3-source-fresh.mjs --side h1 --operation-ref ...` 并由负责人确认实际终态。
 2. 沿同一路径接通 source/snapshot 和两个 final 分支；快照必须有明确、合法的数据库来源。现有 OSS 加密恢复卷不是数据库快照。
 3. 固定同一候选完成实际 R2/R3 双链。此前模拟外部边界的检查不得替代真实执行。
 4. 按已批准范围对齐 Staging 两项待迁移，再完成 R4 真实验收与收口记录。

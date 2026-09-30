@@ -1177,6 +1177,7 @@ export async function launchR3TargetCreate(input) {
       // Revoking the key prevents new connections; it does not kill sshd or
       // imply the hosted Engine stopped. Consumed session locks stay UNKNOWN.
       const errors = [];
+      let sessionCloseRef;
       // Keep the existing, still-checked lease and transport available for the
       // current target's bounded restore/revoke/credential cleanup. A stop
       // cannot start another target or publish a completed restore set.
@@ -1239,12 +1240,14 @@ export async function launchR3TargetCreate(input) {
         try {
           if (handle === session && session && (errors.length || !targetCleanupReady))
             await session.closeIncomplete();
+          else if (handle === session && session) sessionCloseRef = await session.close();
           else await handle?.close();
         } catch (error) {
           errors.push(error);
         }
       }
       if (errors.length) throw new AggregateError(errors, code);
+      return sessionCloseRef;
     })();
     return closing;
   };

@@ -60,6 +60,9 @@ Match User stage1-r3-evidence
 | `in/cleanup.bundle.json`    | hosted → H1 | 现有清理证据 exporter 的签名字节，最多 1 MiB                     |
 | `out/cleanup-imported.json` | H1 → hosted | 确认 H1 已验证并导入指定清理 bundle，可关闭原转发连接            |
 | `out/closed.json`           | H1 → hosted | H1 正常关闭后的精确 CLOSED 记录读回；不冒充旧 RC public evidence |
+| `in/closed-received.json`   | hosted → H1 | 确认已取得精确 CLOSED 字节，仅用于清除本次交付临时目录           |
+
+实施修正（2026-09-30）：仅发布 CLOSED 或看到 SFTP 退出，不能证明 hosted 已收到 CLOSED，故在同一已批准 inbox 写权限内增加上述固定交付回执。它绑定完整既有 scope 与 CLOSED 原件摘要，不是负责人 ACK、CLOSED 证据或执行授权；没有回执或摘要不符时保留旧交换目录。此项不增加账号权限、端口、密钥或服务。
 
 上传先写固定 `.part` 文件再改名。H1 限长读入稳定的普通单链接文件，验证现有签名、operation/spec/job 和摘要，才调用原 import；到达或文件名不代表成功。入站临时目录内容始终不受信任，不能直接成为私有 archive。
 
@@ -73,7 +76,7 @@ H1 的通知由持有原生会话的 owner 进程写入 root-only 出站目录�
 4. hosted 验证通知，调用自己的 `cleanupOwnedTarget`，导出并上传清理 bundle。H1 导入并核验后发布 imported；此时还没有 CLOSED。
 5. hosted 收到匹配的 imported 后终止原转发 SSH 并等待实际退出。独立 SFTP 会话继续存活。
 6. H1 执行 `completeCleanup`、正常 `close`，确认原 UID 994 进程与两个监听消失，仅释放既有两个共享槽位。然后发布真实 CLOSED 读回。
-7. hosted 取回 CLOSED 后结束文件交付。H1 撤销新账号临时 key，确认其进程退出，保留必要诊断到既有私有存储，再清除此操作临时交换目录。未完成交付的目录阻止下个交付操作复用，不能据此重做已消费操作。
+7. hosted 取回并验证 CLOSED 后上传精确交付回执，再结束文件交付。H1 验证回执、撤销新账号临时 key，确认其进程退出，保留必要诊断到既有私有存储，再清除此操作临时交换目录。未完成交付的目录阻止下个交付操作复用，不能据此重做已消费操作。
 
 任一步错位、摘要不符、超时、job 结束或连接中断，均保留原 UNKNOWN/失败事实与现有锁规则；不触发新的自动操作。账号或目录清理只针对本次实际持有资源。新增账号没有 DB/Engine 访问权，也不能写 root 出站通知。
 

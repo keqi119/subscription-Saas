@@ -228,6 +228,16 @@ async function currentJob(spec, job) {
   );
   return machine;
 }
+// Shared local context check for the fixed key holder. H1 attestation/API
+// admission remains separate; this function neither creates nor admits a target.
+export async function checkR3HostedOperationContext(input) {
+  exact(input, ["creationSpecBytes", "jobAdmissionBytes"]);
+  const specInput = parse(input.creationSpecBytes);
+  const jobInput = parse(input.jobAdmissionBytes);
+  boundInputs(specInput.value, jobInput.value, specInput.bytes);
+  await currentJob(specInput.value, jobInput.value);
+  return { spec: specInput.value, job: jobInput.value };
+}
 async function readBody(request, length) {
   const parts = [];
   let size = 0;

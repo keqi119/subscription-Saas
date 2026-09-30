@@ -3872,6 +3872,9 @@ export async function launchR3TargetCreate(input) {
         custodyRecordDigests: verified.custodyRecordDigests,
         resultCustodyRecordDigests: completed.custodyRecordDigests,
         counts: Object.freeze({ ...runtime.result.manifestReport.counts }),
+        // Bound by the retained result; public success still requires ACK,
+        // complete target cleanup and the CLOSED session in the projector.
+        reconstructed: finalVerified.reconstructed,
         promotionEligible: false
       });
     } catch (error) {

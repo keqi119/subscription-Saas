@@ -86,6 +86,7 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/r3-operation-inputs.mjs",
   "scripts/release/r3-final-migration-channel.mjs",
   "scripts/release/r3-final-application.mjs",
+  "scripts/release/r3-final-evidence.mjs",
   "scripts/release/r3-final-migration-container.mjs",
   "scripts/release/r3-final-migration-result.mjs",
   "scripts/release/r3-final-result.mjs",

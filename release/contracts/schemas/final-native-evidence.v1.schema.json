@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "final-native-evidence.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "chain",
+    "terminalStatus",
+    "sourceSha",
+    "buildProofDigest",
+    "releaseImages",
+    "contracts",
+    "sourceGateEvidenceDigest",
+    "operationId",
+    "runId",
+    "attemptId",
+    "manifestDigest",
+    "manifestIdentityDigest",
+    "databaseIdentityFingerprint",
+    "apiSessionNonceDigest",
+    "databaseTests",
+    "apiReadiness",
+    "webClient",
+    "native",
+    "producedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "final-native-evidence.v1" },
+    "chain": { "enum": ["fresh", "snapshot"] },
+    "terminalStatus": { "const": "PASSED" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "buildProofDigest": { "$ref": "#/$defs/digest" },
+    "releaseImages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["api", "web", "runner"],
+      "properties": {
+        "api": { "$ref": "#/$defs/image" },
+        "web": { "$ref": "#/$defs/image" },
+        "runner": { "$ref": "#/$defs/image" }
+      }
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "migrationCatalogDigest",
+        "repositoryContractDigest",
+        "databaseTestManifestDigest",
+        "databaseTestDiscoveryDigest",
+        "postgresImageDigest",
+        "snapshotMetadataDigest"
+      ],
+      "properties": {
+        "migrationCatalogDigest": { "$ref": "#/$defs/digest" },
+        "repositoryContractDigest": { "$ref": "#/$defs/digest" },
+        "databaseTestManifestDigest": { "$ref": "#/$defs/digest" },
+        "databaseTestDiscoveryDigest": { "$ref": "#/$defs/digest" },
+        "postgresImageDigest": { "$ref": "#/$defs/digest" },
+        "snapshotMetadataDigest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] }
+      }
+    },
+    "sourceGateEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "operationId": { "$ref": "#/$defs/uuid" },
+    "runId": { "$ref": "#/$defs/uuid" },
+    "attemptId": { "$ref": "#/$defs/uuid" },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "manifestIdentityDigest": { "$ref": "#/$defs/digest" },
+    "databaseIdentityFingerprint": { "$ref": "#/$defs/digest" },
+    "apiSessionNonceDigest": { "$ref": "#/$defs/digest" },
+    "databaseTests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reportDigest", "counts"],
+      "properties": {
+        "reportDigest": { "$ref": "#/$defs/digest" },
+        "counts": { "$ref": "#/$defs/counts" }
+      }
+    },
+    "apiReadiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "healthStatus",
+        "catalogStatus",
+        "applicationName",
+        "databaseOid",
+        "runtimeRole",
+        "tls",
+        "sessionState",
+        "evidenceDigest"
+      ],
+      "properties": {
+        "healthStatus": { "const": 200 },
+        "catalogStatus": { "const": 200 },
+        "applicationName": {
+          "type": "string",
+          "pattern": "^subscription-api/[a-z0-9][a-z0-9-]+/[a-z0-9][a-z0-9-]+$",
+          "maxLength": 63
+        },
+        "databaseOid": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "runtimeRole": { "type": "string", "minLength": 1 },
+        "tls": { "const": true },
+        "sessionState": { "enum": ["active", "idle", "idle in transaction"] },
+        "evidenceDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "webClient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "operationId",
+        "buildProofDigest",
+        "manifestDigest",
+        "publicApiBase",
+        "webOrigin",
+        "embeddedApiBase",
+        "actualRequestUrl",
+        "corsAllowOrigin",
+        "responseStatus",
+        "bundleContainsEmbeddedApiBase",
+        "mockedNetwork",
+        "traceDigest",
+        "observedAt",
+        "evidenceDigest"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "web-public-api-evidence.v1" },
+        "operationId": { "$ref": "#/$defs/uuid" },
+        "buildProofDigest": { "$ref": "#/$defs/digest" },
+        "manifestDigest": { "$ref": "#/$defs/digest" },
+        "publicApiBase": { "$ref": "#/$defs/https" },
+        "webOrigin": { "const": "http://web:3000" },
+        "embeddedApiBase": { "$ref": "#/$defs/https" },
+        "actualRequestUrl": { "$ref": "#/$defs/https" },
+        "corsAllowOrigin": { "const": "http://web:3000" },
+        "responseStatus": { "const": 200 },
+        "bundleContainsEmbeddedApiBase": { "const": true },
+        "mockedNetwork": { "const": false },
+        "traceDigest": { "$ref": "#/$defs/digest" },
+        "observedAt": { "$ref": "#/$defs/timestamp" },
+        "scriptSetDigest": { "$ref": "#/$defs/digest" },
+        "networkSetDigest": { "$ref": "#/$defs/digest" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "native": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestDigest",
+        "terminalExecutionDigest",
+        "resultDigest",
+        "readbackDigest",
+        "reconstructedDigest",
+        "originalSetDigest",
+        "originalCustodyRecordDigests",
+        "sourceOriginalDigest",
+        "applicationOriginalDigest",
+        "applicationReconstructedDigest",
+        "runtimeDigest",
+        "migrationObservationsDigest",
+        "destination",
+        "applicationAssessmentDigest",
+        "browserTraceDigest",
+        "acknowledgementDigest",
+        "cleanupObservationDigest",
+        "cleanupBundleDigest",
+        "cleanupCustodyRecordDigests",
+        "closedSessionDigest",
+        "previousSessionRecordDigest"
+      ],
+      "properties": {
+        "requestDigest": { "$ref": "#/$defs/digest" },
+        "terminalExecutionDigest": { "$ref": "#/$defs/digest" },
+        "resultDigest": { "$ref": "#/$defs/digest" },
+        "readbackDigest": { "$ref": "#/$defs/digest" },
+        "reconstructedDigest": { "$ref": "#/$defs/digest" },
+        "originalSetDigest": { "$ref": "#/$defs/digest" },
+        "originalCustodyRecordDigests": { "$ref": "#/$defs/digests" },
+        "sourceOriginalDigest": { "$ref": "#/$defs/digest" },
+        "applicationOriginalDigest": { "$ref": "#/$defs/digest" },
+        "applicationReconstructedDigest": { "$ref": "#/$defs/digest" },
+        "runtimeDigest": { "$ref": "#/$defs/digest" },
+        "migrationObservationsDigest": { "$ref": "#/$defs/digest" },
+        "destination": { "$ref": "#/$defs/destination" },
+        "applicationAssessmentDigest": { "$ref": "#/$defs/digest" },
+        "browserTraceDigest": { "$ref": "#/$defs/digest" },
+        "acknowledgementDigest": { "$ref": "#/$defs/digest" },
+        "cleanupObservationDigest": { "$ref": "#/$defs/digest" },
+        "cleanupBundleDigest": { "$ref": "#/$defs/digest" },
+        "cleanupCustodyRecordDigests": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/digest" }
+        },
+        "closedSessionDigest": { "$ref": "#/$defs/digest" },
+        "previousSessionRecordDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "producedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "digests": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" }
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "image": { "type": "string", "pattern": "^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$" },
+    "https": { "type": "string", "pattern": "^https://[^\\s]+$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "collected",
+        "selected",
+        "executed",
+        "passed",
+        "failed",
+        "skipped",
+        "todo",
+        "filtered",
+        "cancelled"
+      ],
+      "properties": {
+        "collected": { "type": "integer", "minimum": 1 },
+        "selected": { "type": "integer", "minimum": 1 },
+        "executed": { "type": "integer", "minimum": 1 },
+        "passed": { "type": "integer", "minimum": 1 },
+        "failed": { "const": 0 },
+        "skipped": { "const": 0 },
+        "todo": { "const": 0 },
+        "filtered": { "const": 0 },
+        "cancelled": { "const": 0 }
+      }
+    },
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "admissionDigest",
+        "creationEvidenceDigest",
+        "targetPlanDigest",
+        "engineId",
+        "containerId",
+        "systemIdentifier",
+        "imageDigest",
+        "serverVersionNum"
+      ],
+      "properties": {
+        "admissionDigest": { "$ref": "#/$defs/digest" },
+        "creationEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "targetPlanDigest": { "$ref": "#/$defs/digest" },
+        "engineId": { "type": "string", "minLength": 1 },
+        "containerId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "systemIdentifier": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "imageDigest": { "$ref": "#/$defs/digest" },
+        "serverVersionNum": { "type": "string", "pattern": "^17[0-9]{4}$" }
+      }
+    }
+  }
+}

@@ -12,6 +12,7 @@ import {
   assertR3FinalAcknowledgement,
   buildR3FinalAcknowledgement,
   buildR3FinalCompletion,
+  projectR3FinalPublicFacts,
   r3FinalObservationNames,
   readR3FinalOriginals
 } from "./r3-final-result.mjs";
@@ -20,6 +21,84 @@ const manifest = JSON.parse(
   readFileSync(new URL("../../release/contracts/database-test-manifest.v1.json", import.meta.url))
 );
 const digest = (value) => sha256Bytes(Buffer.from(value));
+
+test("projects bounded public facts from independently checked final originals", () => {
+  const f = fixture();
+  const image = (name) => ({
+    registry: `ghcr.io/keqi119/subscription-${name}`,
+    imageDigest: digest(name)
+  });
+  const buildProof = {
+    identity: {
+      ...f.buildProof.identity,
+      repositoryContractDigest: digest("repository"),
+      images: { api: image("api"), web: image("web"), runner: image("runner") }
+    }
+  };
+  const destination = {
+    postgres: {
+      engineId: digest("engine"),
+      containerId: "a".repeat(64),
+      imageDigest: digest("postgres"),
+      postgres: { systemIdentifier: "123456789", serverVersionNum: 170006 }
+    },
+    hostedEvidenceDigest: digest("creation")
+  };
+  const sourceGateEvidence = { chain: "fresh", terminalStatus: "PASSED" };
+  const applicationObservation = {
+    plan: {
+      manifest: { identity: { databaseIdentityFingerprint: digest("database identity") } },
+      identity: { apiSessionNonce: "nonce-123" }
+    },
+    observations: {
+      verifyApi: { apiReadiness: { evidenceDigest: digest("readiness") } },
+      verifyWebClient: { evidenceDigest: digest("browser") }
+    }
+  };
+  const applicationAssessment = { browserTraceDigest: digest("trace"), promotionEligible: false };
+  const facts = projectR3FinalPublicFacts({
+    request: f.request,
+    buildProof,
+    migrationCatalog: { digest: buildProof.identity.migrationCatalogDigest },
+    discovery: { discoveryDigest: digest("discovery") },
+    destination,
+    targetPlan: f.plan,
+    sourceGateEvidence,
+    applicationObservation,
+    applicationAssessment
+  });
+  assert.deepEqual(Object.keys(facts), [
+    "releaseImages",
+    "contracts",
+    "sourceGateEvidence",
+    "destination",
+    "application"
+  ]);
+  assert.equal(facts.releaseImages.api, `${image("api").registry}@${image("api").imageDigest}`);
+  assert.equal(facts.contracts.snapshotMetadataDigest, null);
+  assert.equal(facts.destination.serverVersionNum, "170006");
+  assert.equal(facts.application.apiSessionNonceDigest, digest("nonce-123"));
+  assert.equal(
+    facts.application.manifestDigest,
+    sha256Canonical(applicationObservation.plan.manifest)
+  );
+  assert.deepEqual(facts.application.assessment, applicationAssessment);
+  assert.equal("traceBase64" in facts.application, false);
+  assert.ok(Object.isFrozen(facts) && Object.isFrozen(facts.application));
+  sourceGateEvidence.snapshot = { snapshotMetadataDigest: digest("snapshot") };
+  const snapshotFacts = projectR3FinalPublicFacts({
+    request: f.request,
+    buildProof,
+    migrationCatalog: { digest: buildProof.identity.migrationCatalogDigest },
+    discovery: { discoveryDigest: digest("discovery") },
+    destination,
+    targetPlan: f.plan,
+    sourceGateEvidence,
+    applicationObservation,
+    applicationAssessment
+  });
+  assert.equal(snapshotFacts.contracts.snapshotMetadataDigest, digest("snapshot"));
+});
 
 function fixture() {
   const operationId = "10000000-0000-4000-8000-000000000001";

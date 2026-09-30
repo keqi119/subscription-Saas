@@ -60,6 +60,66 @@ export function r3FinalObservationNames({ manifest, plan }) {
   return Object.freeze(names);
 }
 
+// A data projection only. The reader calls this after independently checking
+// the retained originals; calling it alone does not authenticate those inputs.
+export function projectR3FinalPublicFacts({
+  request,
+  buildProof,
+  migrationCatalog,
+  discovery,
+  destination,
+  targetPlan,
+  sourceGateEvidence,
+  applicationObservation,
+  applicationAssessment
+}) {
+  try {
+    const images = buildProof.identity.images;
+    const applicationPlan = applicationObservation.plan;
+    const postgres = destination.postgres;
+    const facts = {
+      releaseImages: Object.fromEntries(
+        ["api", "web", "runner"].map((role) => [
+          role,
+          `${images[role].registry}@${images[role].imageDigest}`
+        ])
+      ),
+      contracts: {
+        migrationCatalogDigest: migrationCatalog.digest,
+        repositoryContractDigest: buildProof.identity.repositoryContractDigest,
+        databaseTestManifestDigest: request.databaseTestManifestDigest,
+        databaseTestDiscoveryDigest: discovery.discoveryDigest,
+        postgresImageDigest: postgres.imageDigest,
+        snapshotMetadataDigest: sourceGateEvidence.snapshot?.snapshotMetadataDigest ?? null
+      },
+      sourceGateEvidence,
+      destination: {
+        admissionDigest: request.destinationAdmissionDigest,
+        creationEvidenceDigest: destination.hostedEvidenceDigest,
+        targetPlanDigest: sha256Canonical(targetPlan),
+        engineId: postgres.engineId,
+        containerId: postgres.containerId,
+        systemIdentifier: postgres.postgres.systemIdentifier,
+        imageDigest: postgres.imageDigest,
+        serverVersionNum: String(postgres.postgres.serverVersionNum)
+      },
+      application: {
+        manifestDigest: sha256Canonical(applicationPlan.manifest),
+        manifestIdentityDigest: sha256Canonical(applicationPlan.manifest.identity),
+        databaseIdentityFingerprint: applicationPlan.manifest.identity.databaseIdentityFingerprint,
+        apiSessionNonceDigest: sha256Bytes(Buffer.from(applicationPlan.identity.apiSessionNonce)),
+        apiReadiness: applicationObservation.observations.verifyApi.apiReadiness,
+        webClient: applicationObservation.observations.verifyWebClient,
+        assessment: applicationAssessment
+      }
+    };
+    need(encodeManualJson(facts).length <= 1048576);
+    return freeze(globalThis.structuredClone(facts));
+  } catch {
+    throw Object.assign(new Error(CODE), { code: CODE });
+  }
+}
+
 function candidate(request, initialExecution, manifest) {
   validateContract("manual-runner-request.v5", request);
   validateContract("manual-operation-record.v3", initialExecution);
@@ -478,17 +538,31 @@ export async function readR3FinalOriginals({
       const current = await readObservation({ storageRole, name });
       need(current instanceof Uint8Array && Buffer.from(current).equals(bytes));
     }
+    const publicFacts = projectR3FinalPublicFacts({
+      request,
+      buildProof,
+      migrationCatalog,
+      discovery,
+      destination,
+      targetPlan: plan,
+      sourceGateEvidence: source.sourceGateEvidence,
+      applicationObservation: application.observation,
+      applicationAssessment: applicationReconstructed
+    });
+    const finalReconstructed = freeze({
+      manifestReport: reconstructed.manifestReport,
+      migrationDigests,
+      sourceClaims,
+      sourceOriginalDigest: originals.find(({ name }) => name === "source").digest,
+      applicationDigest: sha256Canonical(application),
+      applicationReconstructedDigest: sha256Canonical(applicationReconstructed),
+      runtimeDigest: sha256Canonical(runtime),
+      publicFacts
+    });
     return freeze({
       readbackDigest: sha256Canonical(observed),
-      reconstructedDigest: sha256Canonical({
-        manifestReport: reconstructed.manifestReport,
-        migrationDigests,
-        sourceClaims,
-        sourceOriginalDigest: originals.find(({ name }) => name === "source").digest,
-        applicationDigest: sha256Canonical(application),
-        applicationReconstructedDigest: sha256Canonical(applicationReconstructed),
-        runtimeDigest: sha256Canonical(runtime)
-      }),
+      reconstructedDigest: sha256Canonical(finalReconstructed),
+      reconstructed: finalReconstructed,
       sourceClaims,
       suiteReadbacks: suiteReadbacks.map((item) => ({
         suiteId: item.suiteId,

@@ -229,3 +229,22 @@ H1 只读回查 `00775e`：源库 PostgreSQL 17.10，57,349,811 bytes、171 张 
 `54d774` 合同及分类通过：281 文件、91 schemas、13 commands、128 项迁移摘要未变，102 candidates、39 manifested、63 excepted、0 unclassified。`254aac` 格式通过，Docker 仅剩原有两个容器；`77f465` 新文件 lint 通过，`0e7665` 比较现有导出两文件的 HEAD 与当前诊断无新增，六项原有诊断保留。本轮 preflight `9fc695` 仍在本地数据库连接前缺 URL，`787458` Prisma schema 有效。
 
 H1 只读函数元数据回查 `ab5dd3` 确认 schema owner 别名与实际数据库 owner，另外发现 pgcrypto 随机/加密函数及业务触发器函数均带 VOLATILE 和 PUBLIC EXECUTE；当前保守源检查会将它们一律当可写。后续须在实际函数身份和可调用性上作最小区分，保留真正可写函数拒绝；不通过修改业务 PUBLIC 权限规避。尚未创建源导出角色、读取业务行、制作真实 Staging 快照或触发最终候选构建。
+
+## 源函数准入与真实数据源检查
+
+隔离脱敏增量已提交并推送 `159f2ab2`。H1 函数元数据 `b5fe08` 确认官方 pgcrypto 1.3 的十二个随机/加密签名及其 C 实现符号。本轮对这些函数同时核验真实扩展依赖、版本、语言、库、参数及返回类型 OID 和符号；对 trigger/event_trigger 仅在角色无写入、CREATE 和特权能力时允许，且都必须非 SECURITY DEFINER。其余未知 VOLATILE 或特权函数仍拒绝，没有修改源库 PUBLIC 权限。
+
+真实 PostgreSQL 探针先 `bc61e3` 复现误拒，最终 `11def4` 通过官方函数准入、直接调用触发器的 0A000 拒绝、将同一个 pgcrypto 成员替换为 SQL 实现后的拒绝，以及既有列级授权、只读事务、MVCC 导出和清理检查。限定测试先 RED `542531`，后 `718ec3` 为 19/19；格式、限定 lint 和独立窄审通过。`50ce15` 合同为 281 文件、91 schemas、13 commands、128 项未变迁移，摘要 `sha256:d0030c0ce7e1d5f59780657fbac0a3bebc07baedabb3b225acd96c9a25eb10ed`。
+
+按用户明确要求，已从 `/opt/subscription-saas/.env.staging.images` 和运行中的 `postgres:17-alpine` 容器读取必要连接参数，生成仅本次进程使用的 DATABASE_URL，通过临时 SSH loopback 隧道连接。没有将口令或完整 URL 写入仓库、日志或本地配置。真实读回 `2ad8e9`：数据库 `subscription_saas_staging`、角色 `subscription_saas`、PostgreSQL 17.10，探针连接的默认事务只读为 on。Prisma migrate status 读取 128 项迁移，exit 1 的原因明确为下列两项尚未应用，已不再是缺少 URL：
+
+- `20260925090000_stage1_operational_completion_terminal_shape`
+- `20260925091000_stage1_operational_completion_settlement_guard`
+
+本次 SSH 隧道已关闭。后续运行忽略目录内的 `.superpowers/sdd/2026-10-01-stage1-source-rc-delivery/prisma-staging-preflight.mjs` 可重新取配置并完成同一只读检查；结果保存为相邻的脱密 JSON。没有执行 migrate deploy、reset 或业务数据写入。
+
+## 快照受保护环境实际配置
+
+GitHub 实际读取 `58f757` 显示注册 runner 数量为零，`34ecb5` / `1ff2f0` 证实此前没有 `stage1-snapshot-export` 环境。按既有 GitHub 操作授权与现有准入策略，已创建该专用环境（`8a32a7`），ID `23175152803`：指定 keqi119 / `275060624` 审核，`prevent_self_review=false`、等待 0、`can_admins_bypass=false`；仅允许 `main` 分支（规则 ID `61601943`，`643e42`），没有 tag 规则。独立 API 重新读取并逐项比较通过（`d35ae4` / `41b1eb`），原有两个环境未修改。
+
+环境原始读回 SHA-256 为 `98ec3c83f0e6cf85eae1de02f9b1957b610c85feb36b236e0edab70582c80d45`，分支规则为 `a61d8da451b9ed8919857a300c9bc0e6c4f2dea4362c2a93a6dee03605ca8031`。公件位于同一忽略目录。尚未注册 runner、安装制作入口或触发快照工作流；这些配置读回不代表实际快照、加密发布或 R2/R3/R4 完成。

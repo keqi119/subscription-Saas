@@ -161,7 +161,8 @@ function postgresClientFixture({
   failOn,
   readOnly = "on",
   rollbackFails = false,
-  owner = "subscription"
+  owner = "subscription",
+  functionRows = []
 } = {}) {
   const statements = [];
   const client = {
@@ -196,7 +197,7 @@ function postgresClientFixture({
         return { rows: [{ schema_name: "public", owner, can_create: false }] };
       if (sql.includes("has_table_privilege")) return { rows: [] };
       if (sql.includes("has_sequence_privilege")) return { rows: [] };
-      if (sql.includes("has_function_privilege")) return { rows: [] };
+      if (sql.includes("has_function_privilege")) return { rows: functionRows };
       if (sql.includes("has_database_privilege")) return { rows: [{ can_create: false }] };
       if (sql.includes("transaction_isolation"))
         return { rows: [{ isolation_level: "repeatable read", read_only: readOnly }] };
@@ -221,6 +222,58 @@ function postgresClientFixture({
   };
   return { client, statements };
 }
+
+test("PostgreSQL source admits only catalog-proven trigger and pgcrypto functions", async () => {
+  const base = {
+    schema_name: "public",
+    can_execute: true,
+    volatility: "v",
+    security_definer: false,
+    trigger_return: false,
+    event_trigger_return: false,
+    pgcrypto_member: false,
+    language: "c",
+    library: "$libdir/pgcrypto",
+    argument_type_oids: "25",
+    return_type_oid: "25",
+    symbol: "pg_gen_salt"
+  };
+  const trigger = {
+    ...base,
+    function_name: "fixture_guard",
+    trigger_return: true,
+    language: "plpgsql",
+    library: "",
+    argument_type_oids: "",
+    return_type_oid: "2279",
+    symbol: "fixture_guard"
+  };
+  const crypto = { ...base, function_name: "gen_salt", pgcrypto_member: true };
+  const observe = async (functionRows) => {
+    const { client } = postgresClientFixture({ functionRows });
+    const source = createPostgresSnapshotSource({
+      client,
+      exportDump: async () => Buffer.from("PGDMP")
+    });
+    try {
+      return await assertReadOnlySnapshotSource({
+        source,
+        secretReference: "secret://stage1-snapshot-export/source",
+        ownershipMap
+      });
+    } finally {
+      await source.closeSnapshot();
+    }
+  };
+  const accepted = await observe([trigger, crypto]);
+  assert.equal(accepted.capabilities.writableFunctionExecutePrivilegeCount, 0);
+  for (const unsafe of [
+    { ...crypto, pgcrypto_member: false, language: "sql", library: "" },
+    { ...trigger, security_definer: true }
+  ]) {
+    await assert.rejects(observe([unsafe]), { code: "SNAPSHOT_SOURCE_WRITE_CAPABILITY_FORBIDDEN" });
+  }
+});
 
 test("PostgreSQL source uses real catalog queries and one held read-only snapshot", async () => {
   const { client, statements } = postgresClientFixture();

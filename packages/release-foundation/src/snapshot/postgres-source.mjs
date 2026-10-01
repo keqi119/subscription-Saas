@@ -10,6 +10,20 @@ const contractUrl = new URL(
 const TABLE = /^public\.[a-z_][a-z0-9_]*$/u;
 const SNAPSHOT = /^[0-9a-fA-F-]+$/u;
 const PAGE_SIZE = 500;
+const PGCRYPTO_FUNCTIONS = new Map([
+  ["gen_salt|25|25", "pg_gen_salt"],
+  ["gen_salt|25 23|25", "pg_gen_salt_rounds"],
+  ["gen_random_bytes|23|17", "pg_random_bytes"],
+  ["gen_random_uuid||2950", "pg_random_uuid"],
+  ["pgp_sym_encrypt|25 25|17", "pgp_sym_encrypt_text"],
+  ["pgp_sym_encrypt|25 25 25|17", "pgp_sym_encrypt_text"],
+  ["pgp_sym_encrypt_bytea|17 25|17", "pgp_sym_encrypt_bytea"],
+  ["pgp_sym_encrypt_bytea|17 25 25|17", "pgp_sym_encrypt_bytea"],
+  ["pgp_pub_encrypt|25 17|17", "pgp_pub_encrypt_text"],
+  ["pgp_pub_encrypt|25 17 25|17", "pgp_pub_encrypt_text"],
+  ["pgp_pub_encrypt_bytea|17 17|17", "pgp_pub_encrypt_bytea"],
+  ["pgp_pub_encrypt_bytea|17 17 25|17", "pgp_pub_encrypt_bytea"]
+]);
 
 function fail(code) {
   throw Object.assign(new Error(code), { code });
@@ -103,8 +117,22 @@ const SEQUENCE_PRIVILEGE_SQL = `SELECT n.nspname AS schema_name, c.relname AS se
 
 const FUNCTION_PRIVILEGE_SQL = `SELECT n.nspname AS schema_name, p.proname AS function_name,
   has_function_privilege(p.oid, 'EXECUTE') AS can_execute,
-  p.provolatile AS volatility, p.prosecdef AS security_definer
+  p.provolatile AS volatility, p.prosecdef AS security_definer,
+  p.prorettype = 'pg_catalog.trigger'::regtype AS trigger_return,
+  p.prorettype = 'pg_catalog.event_trigger'::regtype AS event_trigger_return,
+  p.proargtypes::text AS argument_type_oids, p.prorettype::text AS return_type_oid,
+  language.lanname AS language, COALESCE(p.probin, '') AS library, p.prosrc AS symbol,
+  EXISTS (
+    SELECT 1 FROM pg_depend dependency
+    JOIN pg_extension extension ON extension.oid = dependency.refobjid
+    WHERE dependency.classid = 'pg_catalog.pg_proc'::regclass
+      AND dependency.objid = p.oid AND dependency.objsubid = 0
+      AND dependency.refclassid = 'pg_catalog.pg_extension'::regclass
+      AND dependency.deptype = 'e' AND extension.extname = 'pgcrypto'
+      AND extension.extversion = '1.3'
+  ) AS pgcrypto_member
   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  JOIN pg_language language ON language.oid = p.prolang
   WHERE n.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' AND n.nspname <> 'information_schema'`;
 
 export function createPostgresSnapshotSource({ client, exportDump } = {}) {
@@ -232,12 +260,6 @@ export function createPostgresSnapshotSource({ client, exportDump } = {}) {
       const truncate = queryRows(tables)
         .filter((row) => row.can_truncate === true)
         .map((row) => `${row.schema_name}.${row.relation_name}`);
-      const executable = queryRows(functions)
-        .filter(
-          (row) =>
-            row.can_execute === true && (row.volatility === "v" || row.security_definer === true)
-        )
-        .map((row) => `${row.schema_name}.${row.function_name}`);
       const knownBooleans = (row, keys) => keys.every((key) => typeof row[key] === "boolean");
       if (
         !knownBooleans(role, ["superuser", "create_database", "create_role", "bypass_rls"]) ||
@@ -247,7 +269,26 @@ export function createPostgresSnapshotSource({ client, exportDump } = {}) {
           (row) => !knownBooleans(row, ["can_insert", "can_update", "can_delete", "can_truncate"])
         ) ||
         queryRows(sequences).some((row) => !knownBooleans(row, ["can_use", "can_update"])) ||
-        queryRows(functions).some((row) => !knownBooleans(row, ["can_execute", "security_definer"]))
+        queryRows(functions).some(
+          (row) =>
+            !knownBooleans(row, [
+              "can_execute",
+              "security_definer",
+              "trigger_return",
+              "event_trigger_return",
+              "pgcrypto_member"
+            ]) ||
+            !["i", "s", "v"].includes(row.volatility) ||
+            [
+              "schema_name",
+              "function_name",
+              "argument_type_oids",
+              "return_type_oid",
+              "language",
+              "library",
+              "symbol"
+            ].some((key) => typeof row[key] !== "string")
+        )
       ) {
         fail("SNAPSHOT_SOURCE_CAPABILITY_UNKNOWN");
       }
@@ -261,6 +302,29 @@ export function createPostgresSnapshotSource({ client, exportDump } = {}) {
           fail("SNAPSHOT_SOURCE_CAPABILITY_UNKNOWN");
         }
       }
+      const noWriteCapability =
+        !role.superuser &&
+        !role.create_database &&
+        !role.create_role &&
+        !role.bypass_rls &&
+        !single(database).can_create &&
+        !schemaRows.some((row) => row.can_create || row.owner === pinned.roleName) &&
+        write.length === 0 &&
+        truncate.length === 0;
+      const executable = queryRows(functions)
+        .filter((row) => row.can_execute && (row.volatility === "v" || row.security_definer))
+        .filter((row) => {
+          if (row.security_definer) return true;
+          if (noWriteCapability && (row.trigger_return || row.event_trigger_return)) return false;
+          const signature = `${row.function_name}|${row.argument_type_oids}|${row.return_type_oid}`;
+          return !(
+            row.pgcrypto_member &&
+            row.language === "c" &&
+            row.library === "$libdir/pgcrypto" &&
+            PGCRYPTO_FUNCTIONS.get(signature) === row.symbol
+          );
+        })
+        .map((row) => `${row.schema_name}.${row.function_name}`);
       return {
         ...ids,
         superuser: role.superuser,

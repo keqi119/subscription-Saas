@@ -1,6 +1,6 @@
 # 阶段 1：R3 证据交付增量
 
-已批准的 H1 与 hosted job 双向证据交付现已延伸到 source/final 两条链、原生聚合和工作流接线。用户已批准 GitHub 推送、合并和工作流触发；分支已推送并创建 PR #318，正在修复真实 CI 发现的问题，尚未合并或完成候选构建。下文按增量保留实现与验证记录；阶段 1 尚未收口。
+已批准的 H1 与 hosted job 双向证据交付现已延伸到 source/final 两条链、原生聚合和工作流接线。用户已批准 GitHub 推送、合并和工作流触发；PR #318 的完整 CI 已通过，并于 2026-10-01 合并至主分支 `d705fb979acc5ee86311beeafeb4b5b61adb39b2`。后续快照归档扫描修正已在独立分支提交，真实制作适配器仍待接通，最终候选镜像尚未构建。下文按增量保留实现与验证记录；阶段 1 尚未收口。
 
 ## 已实现
 
@@ -201,3 +201,7 @@ CLOSED 通道要求 final 原件与请求、终态、结果、ACK、会话和 CI
 限定验证：导出测试 `b4aca2` 为 24/24、无跳过；其中真实降级回归先在 `342b62` 复现失败再修正。子代理的 Linux R3 输入定向测试为 8/8，无跳过。`254983` 合同、格式和差异检查通过：278 文件、91 schemas、13 commands，128 项迁移摘要未变。`61ab27` 以原 ESLint 规则补充 Node globals 后比较 HEAD 和当前五个文件，无新增诊断；六项既有诊断仍保留。展开回调在这些测试中为替身，不能据此宣称实际 `pg_restore`、云端发布或恢复已经完成。
 
 H1 只读回查 `00775e`：源库 PostgreSQL 17.10，57,349,811 bytes、171 张 public 表，owner 为已登记的 `subscription_saas`，迁移头为 `20260901010000_stage1_schema_drift_convergence`，未发现名称含 snapshot 的角色。宿主机没有 `pg_dump/pg_restore`，仅 Staging PostgreSQL 容器运行，swap 仍启用。未导出源数据、修改数据库或恢复业务容器。后续仍须接真实受限源适配器、隔离转换与展开进程、v2 加密、OSS 独立读回及私有索引，再执行同候选 R2/R3、两项 Staging 迁移和 R4。
+
+## 已完成的候选代码集成
+
+[第五轮完整 CI](https://github.com/keqi119/subscription-Saas/actions/runs/36810455041) 于 2026-10-01 通过，日志明确记录 `PASS release check`（`a3fb33` / `c22bd6`）。核对 PR 头提交 `503efbead957a8c5b58bed86129a7bc255585e6e` 与绿色检查一致、可合并后，按用户既有授权完成 [PR #318](https://github.com/keqi119/subscription-Saas/pull/318) 合并（`d45a60`），未绕过检查。主分支自动 CI `36812101507` 随合并启动。快照扫描修正 `fed2adc2` 已推送 `feat/stage1-snapshot-archive-scan`，一次限定独立审查未发现明确 P1/P2；该分支尚未合并，实际快照和阶段 1 发布验收仍未完成。

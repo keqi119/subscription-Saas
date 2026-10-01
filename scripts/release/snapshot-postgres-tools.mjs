@@ -2,7 +2,7 @@
 // and an admitted private workspace. This helper does not grant either authority.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdtemp, realpath, rmdir } from "node:fs/promises";
+import { lstat, mkdtemp, realpath, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 
@@ -10,7 +10,12 @@ export const SNAPSHOT_POSTGRES_TOOL_IMAGE =
   "postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0";
 const MAX_BYTES = 1073741824;
 const CID = /^[0-9a-f]{64}$/u;
-const VERSION = /^pg_restore \(PostgreSQL\) 17\.11(?: [^\r\n]+)?$/u;
+const NAME = /^[a-z_][a-z0-9_]*$/u;
+const SNAPSHOT = /^[0-9a-fA-F]+(?:-[0-9a-fA-F]+)+$/u;
+const VERSIONS = Object.freeze({
+  "/usr/bin/pg_restore": /^pg_restore \(PostgreSQL\) 17\.11(?: [^\r\n]+)?$/u,
+  "/usr/bin/pg_dump": /^pg_dump \(PostgreSQL\) 17\.11(?: [^\r\n]+)?$/u
+});
 const decode = (bytes) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 const error = (code = "SNAPSHOT_ARCHIVE_TOOL_FAILED", details) =>
   Object.assign(new Error(code), { code, details });
@@ -23,10 +28,10 @@ async function nativeDocker(args, { input, maxBytes = 65536, signal } = {}) {
       env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C" }
     });
     let failed = false;
-    const stdout = [],
-      stderr = [];
-    let outLength = 0,
-      errLength = 0;
+    const stdout = [];
+    const stderr = [];
+    let outLength = 0;
+    let errLength = 0;
     const stop = () => {
       failed = true;
       child.kill("SIGKILL");
@@ -76,46 +81,63 @@ function succeeded(result) {
     result.signal ||
     !Buffer.isBuffer(result.stdout) ||
     !Buffer.isBuffer(result.stderr)
-  ) {
+  )
     throw error();
-  }
   return result.stdout;
 }
 
-// runDocker is an internal test seam, never a CLI/record/environment selection.
-export async function expandPostgresSnapshotArchive(
-  { archive, expectedArchiveDigest, maxExpandedBytes },
-  { workspaceDirectory, signal, runDocker = nativeDocker }
-) {
+async function assertPrivateWorkspace(workspaceDirectory) {
   if (
     process.platform !== "linux" ||
-    !Buffer.isBuffer(archive) ||
-    archive.length < 5 ||
-    archive.length > MAX_BYTES ||
-    !archive.subarray(0, 5).equals(Buffer.from("PGDMP")) ||
-    expectedArchiveDigest !== sha256Bytes(archive) ||
-    maxExpandedBytes !== MAX_BYTES ||
     typeof workspaceDirectory !== "string" ||
     !path.isAbsolute(workspaceDirectory) ||
-    path.resolve(workspaceDirectory) !== workspaceDirectory ||
-    signal?.aborted
+    path.resolve(workspaceDirectory) !== workspaceDirectory
   )
     throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
-  const stat = await lstat(workspaceDirectory);
-  if (
-    !stat.isDirectory() ||
-    stat.isSymbolicLink() ||
-    stat.uid !== process.getuid() ||
-    (stat.mode & 0o777) !== 0o700 ||
-    (await realpath(workspaceDirectory)) !== workspaceDirectory
-  ) {
+  let stat;
+  try {
+    stat = await lstat(workspaceDirectory);
+    if (
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      stat.uid !== process.getuid() ||
+      (stat.mode & 0o777) !== 0o700 ||
+      (await realpath(workspaceDirectory)) !== workspaceDirectory
+    )
+      throw error("SNAPSHOT_ARCHIVE_TOOL_WORKSPACE_INVALID");
+  } catch (cause) {
+    if (cause?.code === "SNAPSHOT_ARCHIVE_TOOL_WORKSPACE_INVALID") throw cause;
     throw error("SNAPSHOT_ARCHIVE_TOOL_WORKSPACE_INVALID");
   }
+}
+
+// Both archive expansion and connected tools use this exact create/start/inspect/remove lifecycle.
+async function withToolSession(
+  { workspaceDirectory, signal, runDocker = nativeDocker },
+  operation
+) {
+  await assertPrivateWorkspace(workspaceDirectory);
+  if (signal?.aborted || typeof runDocker !== "function")
+    throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
   const config = await mkdtemp(path.join(workspaceDirectory, "snapshot-docker-"));
   const prefix = ["--config", config, "--host", "unix:///var/run/docker.sock"];
-  const operation = randomUUID();
+  const operationId = randomUUID();
   const run = async (args, options) => runDocker([...prefix, ...args], options);
-  const runTool = async (toolArgs, input, maxBytes) => {
+  const runTool = async ({
+    entrypoint,
+    args,
+    input,
+    maxBytes = 65536,
+    network = "none",
+    passfile
+  }) => {
+    if (
+      !Object.hasOwn(VERSIONS, entrypoint) ||
+      !Array.isArray(args) ||
+      (network !== "none" && !/^container:[0-9a-f]{64}$/u.test(network))
+    ) {
+      throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+    }
     const name = `stage1-snapshot-tool-${randomUUID()}`;
     let id;
     let failure;
@@ -131,8 +153,8 @@ export async function expandPostgresSnapshotArchive(
             "--name",
             name,
             "--label",
-            `stage1.snapshot-operation=${operation}`,
-            "--network=none",
+            `stage1.snapshot-operation=${operationId}`,
+            `--network=${network}`,
             "--read-only",
             "--cap-drop=ALL",
             "--tmpfs=/var/lib/postgresql/data:rw,noexec,nosuid,nodev,size=1048576,mode=0700",
@@ -141,9 +163,16 @@ export async function expandPostgresSnapshotArchive(
             "--memory=512m",
             "--memory-swap=512m",
             "--log-driver=none",
-            "--entrypoint=/usr/bin/pg_restore",
+            ...(passfile ? [`--user=${process.getuid()}:${process.getgid()}`] : []),
+            ...(passfile
+              ? [
+                  `--mount=type=bind,src=${passfile},dst=/run/secrets/pgpass,readonly`,
+                  "--env=PGPASSFILE=/run/secrets/pgpass"
+                ]
+              : []),
+            `--entrypoint=${entrypoint}`,
             SNAPSHOT_POSTGRES_TOOL_IMAGE,
-            ...toolArgs
+            ...args
           ],
           { signal }
         )
@@ -182,57 +211,86 @@ export async function expandPostgresSnapshotArchive(
               "--filter",
               `name=^/${name}$`,
               "--filter",
-              `label=stage1.snapshot-operation=${operation}`,
+              `label=stage1.snapshot-operation=${operationId}`,
               "--format",
               "{{.ID}}"
             ])
           )
         ).trim();
         // An empty readback cannot rule out a create request still in flight.
-        // Preserve uncertainty so the producer cannot certify workspace cleanup.
         if (!CID.test(found)) throw error();
         id = found;
       } catch {
         throw error("SNAPSHOT_ARCHIVE_TOOL_CLEANUP_FAILED", {
           containerName: name,
-          operation,
+          operation: operationId,
           primaryCode: failure?.code
         });
       }
     }
-    if (id) {
-      try {
-        const removed = decode(succeeded(await run(["rm", "--force", "--volumes", id]))).trim();
-        if (removed !== id) throw error();
-        const remaining = decode(
-          succeeded(
-            await run([
-              "container",
-              "ls",
-              "--all",
-              "--no-trunc",
-              "--filter",
-              `id=${id}`,
-              "--format",
-              "{{.ID}}"
-            ])
-          )
-        ).trim();
-        if (remaining) throw error();
-      } catch {
-        throw error("SNAPSHOT_ARCHIVE_TOOL_CLEANUP_FAILED", {
-          containerId: id,
-          primaryCode: failure?.code
-        });
-      }
+    try {
+      const removed = decode(succeeded(await run(["rm", "--force", "--volumes", id]))).trim();
+      if (removed !== id) throw error();
+      const remaining = decode(
+        succeeded(
+          await run([
+            "container",
+            "ls",
+            "--all",
+            "--no-trunc",
+            "--filter",
+            `id=${id}`,
+            "--format",
+            "{{.ID}}"
+          ])
+        )
+      ).trim();
+      if (remaining) throw error();
+    } catch {
+      throw error("SNAPSHOT_ARCHIVE_TOOL_CLEANUP_FAILED", {
+        containerId: id,
+        primaryCode: failure?.code
+      });
     }
     if (failure) throw failure;
     return output;
   };
   try {
-    const pgRestoreVersion = decode(await runTool(["--version"], undefined, 1024)).trim();
-    if (pgRestoreVersion.length > 256 || !VERSION.test(pgRestoreVersion)) throw error();
-    const expandedBytes = await runTool(["--file=-"], archive, maxExpandedBytes);
+    return await operation({ config, runTool });
+  } finally {
+    // The caller removes only credentials it created; this directory is otherwise empty.
+    await rmdir(config);
+  }
+}
+
+async function checkedVersion(runTool, entrypoint) {
+  const line = decode(await runTool({ entrypoint, args: ["--version"], maxBytes: 1024 })).trim();
+  if (line.length > 256 || !VERSIONS[entrypoint].test(line)) throw error();
+  return line;
+}
+
+// runDocker is an internal test seam, never a CLI/record/environment selection.
+export async function expandPostgresSnapshotArchive(
+  { archive, expectedArchiveDigest, maxExpandedBytes },
+  { workspaceDirectory, signal, runDocker = nativeDocker }
+) {
+  if (
+    !Buffer.isBuffer(archive) ||
+    archive.length < 5 ||
+    archive.length > MAX_BYTES ||
+    !archive.subarray(0, 5).equals(Buffer.from("PGDMP")) ||
+    expectedArchiveDigest !== sha256Bytes(archive) ||
+    maxExpandedBytes !== MAX_BYTES
+  )
+    throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+  return withToolSession({ workspaceDirectory, signal, runDocker }, async ({ runTool }) => {
+    const pgRestoreVersion = await checkedVersion(runTool, "/usr/bin/pg_restore");
+    const expandedBytes = await runTool({
+      entrypoint: "/usr/bin/pg_restore",
+      args: ["--file=-"],
+      input: archive,
+      maxBytes: maxExpandedBytes
+    });
     if (
       !expandedBytes.length ||
       expandedBytes.length > maxExpandedBytes ||
@@ -240,8 +298,103 @@ export async function expandPostgresSnapshotArchive(
     )
       throw error();
     return { archiveDigest: expectedArchiveDigest, expandedBytes, exitCode: 0, pgRestoreVersion };
-  } finally {
-    // Only our empty, nonsecret Docker config directory; never caller files.
-    await rmdir(config);
+  });
+}
+
+// The caller supplies verified container/database/role identities and host authority.
+// The factory never resolves a URL or grants access to either PostgreSQL container.
+export function createPostgresSnapshotToolCallbacks(
+  { workspaceDirectory, containerId, databaseName, roleName, password, purpose },
+  { runDocker = nativeDocker } = {}
+) {
+  if (
+    !CID.test(containerId ?? "") ||
+    !NAME.test(databaseName ?? "") ||
+    !NAME.test(roleName ?? "") ||
+    typeof workspaceDirectory !== "string" ||
+    /[,\r\n\0]/u.test(workspaceDirectory) ||
+    typeof password !== "string" ||
+    password.length < 1 ||
+    password.length > 1024 ||
+    /[\r\n\0]/u.test(password) ||
+    !["source", "workspace"].includes(purpose) ||
+    typeof runDocker !== "function"
+  )
+    throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+  const connection = [
+    "--host=127.0.0.1",
+    "--port=5432",
+    `--username=${roleName}`,
+    `--dbname=${databaseName}`,
+    "--no-password"
+  ];
+  const invoke = async (entrypoint, args, input, maxBytes) =>
+    withToolSession({ workspaceDirectory, runDocker }, async ({ config, runTool }) => {
+      await checkedVersion(runTool, entrypoint);
+      const passfile = path.join(config, "pgpass");
+      const escaped = password.replaceAll("\\", "\\\\").replaceAll(":", "\\:");
+      try {
+        await writeFile(passfile, `127.0.0.1:5432:${databaseName}:${roleName}:${escaped}\n`, {
+          flag: "wx",
+          mode: 0o600
+        });
+        return await runTool({
+          entrypoint,
+          args: [...connection, ...args],
+          input,
+          maxBytes,
+          network: `container:${containerId}`,
+          passfile
+        });
+      } finally {
+        try {
+          await unlink(passfile);
+        } catch (cause) {
+          if (cause?.code !== "ENOENT") throw error("SNAPSHOT_ARCHIVE_TOOL_CLEANUP_FAILED");
+        }
+      }
+    });
+  if (purpose === "source") {
+    return Object.freeze({
+      exportDump: async ({ snapshotId } = {}) => {
+        if (typeof snapshotId !== "string" || !SNAPSHOT.test(snapshotId))
+          throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+        const bytes = await invoke(
+          "/usr/bin/pg_dump",
+          ["--format=custom", "--no-owner", "--no-acl", `--snapshot=${snapshotId}`],
+          undefined,
+          MAX_BYTES
+        );
+        if (bytes.length < 5 || !bytes.subarray(0, 5).equals(Buffer.from("PGDMP"))) throw error();
+        return bytes;
+      }
+    });
   }
+  return Object.freeze({
+    restoreDump: async (raw) => {
+      if (
+        !Buffer.isBuffer(raw) ||
+        raw.length < 5 ||
+        raw.length > MAX_BYTES ||
+        !raw.subarray(0, 5).equals(Buffer.from("PGDMP"))
+      )
+        throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+      await invoke(
+        "/usr/bin/pg_restore",
+        ["--single-transaction", "--exit-on-error", "--no-owner", "--no-acl"],
+        raw,
+        65536
+      );
+    },
+    exportDump: async () => {
+      const bytes = await invoke(
+        "/usr/bin/pg_dump",
+        ["--format=custom", "--no-owner", "--no-acl"],
+        undefined,
+        MAX_BYTES
+      );
+      if (bytes.length < 5 || !bytes.subarray(0, 5).equals(Buffer.from("PGDMP"))) throw error();
+      return bytes;
+    }
+  });
 }

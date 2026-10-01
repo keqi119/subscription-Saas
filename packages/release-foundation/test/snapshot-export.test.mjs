@@ -355,6 +355,29 @@ function runExport(input) {
   return exportSanitizedSnapshot(operation);
 }
 
+test("private bundle preparation completes cleanup without a publication receipt", async () => {
+  const { prepareSanitizedSnapshotBundle } = await import("../src/snapshot/export-sanitized.mjs");
+  const input = exportFixture();
+  const { uploads, events, fingerprintCalls, ...operation } = input;
+  delete operation.publisher;
+  const bundle = await prepareSanitizedSnapshotBundle(operation);
+  assert.equal(bundle.metadata.dumpDigest, sha256Bytes(bundle.dump));
+  assert.equal(bundle.metadata.scanDigest, sha256Canonical(bundle.scan));
+  assert.equal(fingerprintCalls(), 2);
+  assert.equal(uploads.length, 0);
+  assert.deepEqual(events.slice(-2), ["snapshot-closed", "workspace-destroyed"]);
+  assert.equal(Object.hasOwn(bundle, "custodyReceipt"), false);
+  const failed = exportFixture();
+  failed.workspace.destroy = async () => {
+    throw new Error("cleanup unavailable");
+  };
+  const failedOperation = { ...operation, source: failed.source, workspace: failed.workspace };
+  await assert.rejects(prepareSanitizedSnapshotBundle(failedOperation), {
+    code: "SNAPSHOT_SECURE_CLEANUP_FAILED"
+  });
+  assert.equal(failed.uploads.length, 0);
+});
+
 test("exports only a scanned final bundle after matching source fingerprints", async () => {
   const input = exportFixture();
   const metadata = await runExport(input);

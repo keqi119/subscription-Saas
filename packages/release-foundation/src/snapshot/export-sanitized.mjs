@@ -229,12 +229,14 @@ export function snapshotBundleDigest(bundle) {
   });
 }
 
-export async function exportSanitizedSnapshot({
+// Internal producer seam: the caller already holds plaintext-host authority.
+// This returns private scanned bytes only after source/workspace cleanup, without
+// claiming publication, encryption authorization or custody of those bytes.
+export async function prepareSanitizedSnapshotBundle({
   contract,
   ownershipMap,
   source,
   workspace,
-  publisher,
   secretReference,
   tokenizationSecretReference,
   workflowRunRef,
@@ -244,7 +246,6 @@ export async function exportSanitizedSnapshot({
   if (
     Object.keys(forbidden).length > 0 ||
     workspace?.trustPolicy !== "isolated-sanitization-workspace/v1" ||
-    publisher?.trustPolicy !== "snapshot-final-bundle/v1" ||
     typeof source?.openReadOnlySnapshot !== "function" ||
     typeof source?.exportRaw !== "function" ||
     typeof source?.closeSnapshot !== "function" ||
@@ -252,7 +253,6 @@ export async function exportSanitizedSnapshot({
     typeof workspace?.applyTransformations !== "function" ||
     typeof workspace?.exportSanitized !== "function" ||
     typeof workspace?.destroy !== "function" ||
-    typeof publisher?.publishFinalBundle !== "function" ||
     typeof tokenizationSecretReference !== "string" ||
     !/^secret:\/\/[a-z0-9][a-z0-9./_-]+$/.test(tokenizationSecretReference) ||
     typeof workflowRunRef !== "string" ||
@@ -373,20 +373,7 @@ export async function exportSanitizedSnapshot({
     } catch (error) {
       throw snapshotError("SNAPSHOT_SECURE_CLEANUP_FAILED", { cause: error?.code });
     }
-    const receipt = await publisher.publishFinalBundle(bundle);
-    const expectedBundleDigest = snapshotBundleDigest(bundle);
-    try {
-      assertCustodyComplete(receipt, expectedBundleDigest);
-    } catch (error) {
-      throw snapshotError("SNAPSHOT_CUSTODY_INVALID", { cause: error?.code });
-    }
-    if (
-      receipt.owner !== contract.lifecycle.owner ||
-      canonicalJson(receipt.readers) !== canonicalJson(contract.lifecycle.readers)
-    ) {
-      throw snapshotError("SNAPSHOT_CUSTODY_INVALID");
-    }
-    return metadata;
+    return bundle;
   } catch (error) {
     if (error?.code?.startsWith("SNAPSHOT_")) throw error;
     throw snapshotError("SNAPSHOT_PUBLICATION_INCOMPLETE_FORBIDDEN", {
@@ -403,5 +390,33 @@ export async function exportSanitizedSnapshot({
     if (cleanupErrors.length > 0) {
       throw snapshotError("SNAPSHOT_SECURE_CLEANUP_FAILED");
     }
+  }
+}
+
+export async function exportSanitizedSnapshot({ publisher, ...preparation }) {
+  if (
+    publisher?.trustPolicy !== "snapshot-final-bundle/v1" ||
+    typeof publisher?.publishFinalBundle !== "function"
+  ) {
+    throw snapshotError("SNAPSHOT_EXPORT_INPUT_INVALID");
+  }
+  const bundle = await prepareSanitizedSnapshotBundle(preparation);
+  try {
+    const receipt = await publisher.publishFinalBundle(bundle);
+    try {
+      assertCustodyComplete(receipt, snapshotBundleDigest(bundle));
+    } catch (error) {
+      throw snapshotError("SNAPSHOT_CUSTODY_INVALID", { cause: error?.code });
+    }
+    if (
+      receipt.owner !== preparation.contract.lifecycle.owner ||
+      canonicalJson(receipt.readers) !== canonicalJson(preparation.contract.lifecycle.readers)
+    ) {
+      throw snapshotError("SNAPSHOT_CUSTODY_INVALID");
+    }
+    return bundle.metadata;
+  } catch (error) {
+    if (error?.code?.startsWith("SNAPSHOT_")) throw error;
+    throw snapshotError("SNAPSHOT_PUBLICATION_INCOMPLETE_FORBIDDEN", { cause: error?.code });
   }
 }

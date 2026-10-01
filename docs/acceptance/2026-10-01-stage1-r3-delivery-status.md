@@ -248,3 +248,23 @@ H1 只读函数元数据回查 `ab5dd3` 确认 schema owner 别名与实际数�
 GitHub 实际读取 `58f757` 显示注册 runner 数量为零，`34ecb5` / `1ff2f0` 证实此前没有 `stage1-snapshot-export` 环境。按既有 GitHub 操作授权与现有准入策略，已创建该专用环境（`8a32a7`），ID `23175152803`：指定 keqi119 / `275060624` 审核，`prevent_self_review=false`、等待 0、`can_admins_bypass=false`；仅允许 `main` 分支（规则 ID `61601943`，`643e42`），没有 tag 规则。独立 API 重新读取并逐项比较通过（`d35ae4` / `41b1eb`），原有两个环境未修改。
 
 环境原始读回 SHA-256 为 `98ec3c83f0e6cf85eae1de02f9b1957b610c85feb36b236e0edab70582c80d45`，分支规则为 `a61d8da451b9ed8919857a300c9bc0e6c4f2dea4362c2a93a6dee03605ca8031`。公件位于同一忽略目录。尚未注册 runner、安装制作入口或触发快照工作流；这些配置读回不代表实际快照、加密发布或 R2/R3/R4 完成。
+
+## 固定 PostgreSQL 工具与私有结果包
+
+本轮从已推送的 `0a3b9bb4` 继续。前置检查 `9120bb` 已使用服务器生成的连接，仍只有两项已知待迁移；`d93a30` Prisma schema 有效。没有修改业务代码或迁移文件。
+
+现有工具适配器新增固定 `pg_dump` / `pg_restore` 回调，复用相同容器创建、退出观察和精确清理流程。版本固定 PostgreSQL 17.11，连接只使用已核实容器的网络空间和 `127.0.0.1:5432`；源导出要求同一 MVCC snapshot，恢复固定为单事务、遇错退出。密码只写自建私有目录内的 0600 passfile，容器以宿主进程 UID/GID 读取只读挂载，密码不进入 argv 或环境变量。工厂不授予主机、源库或目标准入权限。
+
+原导出核心提取内部 `prepareSanitizedSnapshotBundle`，继续执行相同源权限、双指纹、脱敏、归档扫描和清理；仅在源会话关闭且隔离资源销毁后返回私有结果包。旧导出入口继续调用 publisher 并验证旧 custody，不为新加密链伪造明文发布回执。这个入口尚未连接真实 v2 加密及 OSS 发布。
+
+限定新增断言先 `211cd8` RED，受影响导出短测 `f14a58` 为 27/27；固定工具短测 `2cce43` 为 6/6，补充固定 UID/GID 后 `9d0e91` 仍为 6/6。一次限定独立审查无明确 P1/P2。真实 Linux PostgreSQL 17.11 组合探针 `efd239` exit 0：两个独立容器、TCP SCRAM 密码文件认证（含冒号和反斜线）、持有快照排除并发插入、恢复、15 张表共 19 条转换、再导出、真实展开与 v2 扫描、返回结果前销毁目标，最终探针资源全部清理。全部为合成数据。
+
+保留两次探针失败：`5757cb` 已跑通组合，但 `2a2d0b` 在本地目录清理遇到强制终止 PostgreSQL 遗留的 socket，精确清理 `295703` 完成；随后 `0aa603` 因 Docker Desktop 新版 CLI 将 `stop --time` 弃用提示写入 stdout 导致探针清理断言失败，两个容器实际已正常退出，精确回读及清理 `45015f` 完成。探针改用 `--timeout`，最终完整复核为上述 `efd239`；没有把失败记成通过。旧的其他启动失败目录仍保留，不涉及此前被自动审批拒绝的删除操作。
+
+`b5c38f` 合同检查通过：281 文件、91 schemas、13 commands、128 项迁移及摘要不变，仓库合同摘要 `sha256:2a90ee0afbd1a25ac8f76a4d09f60fdf814a910c121dcb48948f4c8c893a9230`。格式及差异检查通过。限定 lint 的 Node globals 参数首次使用错误（`4fe681`），正确参数后仅剩既有测试文件五项诊断（`d17cbf`）；对 HEAD 使用相同参数得到完全相同的五项（`45015f`），新增实现与测试无新增诊断。
+
+## 真实源库只读角色准备
+
+H1 读取 `4186c8` 确认角色此前不存在，在单一事务内创建 `stage1_snapshot_reader`（`96d53e`）。该角色保持 NOLOGIN、无密码、NOINHERIT 及全部特权能力关闭；仅授予指定 Staging 数据库 CONNECT、public schema USAGE、当前表与序列 SELECT，以及读取实际集群身份所需的 `pg_control_system()` EXECUTE。未改变 PUBLIC 或业务角色权限，没有授予未来对象的默认权限。角色默认事务只读、statement timeout 120 秒。
+
+独立新连接以该角色的 session authorization 回读 `63f51f`：OID `85641`，171/171 张 public 表可读，表与序列写能力均为 0，database/schema CREATE 均为 false，成员关系、已拥有业务对象和可执行 SECURITY DEFINER 函数均为 0，所有特权和 LOGIN 均为 false。此步骤只配置并读取权限元数据，没有导出真实行、设置登录口令或运行迁移。实际制作时仍需受准入约束的短期登录、私有主机工作区、v2 加密授权与 OSS 独立发布/读回；本次准备不代替这些条件。

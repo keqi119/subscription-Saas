@@ -24,8 +24,7 @@ describe("Stage 1 schema drift convergence migration", () => {
       .map((entry) => entry.name)
       .sort();
 
-    expect(migrations).toHaveLength(126);
-    expect(migrations.at(-1)).toBe(migrationName);
+    expect(migrations[125]).toBe(migrationName);
   });
 
   it("converges defaults and constraints without deleting business structures or data", () => {

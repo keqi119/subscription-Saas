@@ -288,3 +288,13 @@ H1 读取 `4186c8` 确认角色此前不存在，在单一事务内创建 `stage
 实际刷新验证第一次 `267053` 只让本地 STS 缓存过期，OAuth access token 仍有效，因此未发生 refresh token 轮换，探针明确失败为 `REFRESH_NOT_PERSISTED`；不能把这次当刷新通过。随后同时让两层本地缓存提前过期，`158332` 确认官方 CLI 实际轮换 refresh token 并写回同一个默认配置，紧接 RAM 只读查询成功。配置文件访问者仍只有当前用户，令牌值未输出或写入仓库。实际未分页截断的角色查询只发现既有 evidence-writer、evidence-audit-reader 和 snapshot-consumer，尚无 snapshot publisher；后续按真实 producer run 的 exact slots 准備精确权限变更并按用户要求确认，不提前授予 prefix 写权限。
 
 本轮代码已提交、推送 `c5919ec02f77d45444e03fad38320fac83f95fe8`（`170cda` / `4f0d5c`），工作区干净。登录恢复和上述读取不代表真实快照制作、发布、迁移或 R2/R3/R4 已完成。
+
+## 制作主机实际条件与待决选择
+
+后续前置 `ca4abc` 使用实际 Staging 连接，仍只有上述两项待迁移；`b5d0e3` Prisma schema 有效。Windows 实测 `d64a3b` / `9f1277` 表明 C、D 均未启用 BitLocker，C 页面文件 25,600 MiB、小型崩溃转储开启；`7a1c77` 确认 TPM 可用、休眠可用。按照已批准安全附录，当前环境不能直接执行真实 WSL 制作。没有修改系统加密、swap、WSL 配置或注册 Runner。
+
+H1 只读 `277288`：仅 Staging PostgreSQL 在运行，RAM 可用 1,208 MiB、swap 已用 387 MiB、磁盘余 9.2 GiB，既有加密主卷/恢复卷未挂载。限定兼容审查确认现有 Actions 准入强制精确 self-hosted 标签和三 job lineage，但未硬编码 WSL：H1 仅承接精确 JIT 数据 job 的改动面小于改为 hosted job 远程发起制作。现有 consumer/密钥恢复证明不能替代新制作与销毁证明。
+
+已准备[主机选择草案](2026-10-01-stage1-snapshot-producer-host-decision.md)，SHA-256 `d0f4b6a92781de81ff5c0948565b490940900fc401363e9c467955b32d94765d`，请求负责人在“仅 H1 一次性制作 job”与“先加密本机 C 盘、专用 WSL 全部置于 C 盘”间选择。选择前不变更已批准制作主机边界，云端 RAM 确认规则不变。
+
+独立 OSS 属性读回 `ee99c9` / `052ba1` / `a350ac` 均成功：指定 bucket 所有者正确、ACL private、WORM ID `9A0E27AED3264497AEBC5F1C55E18485`、Locked/210 天、VersioningConfiguration 无 Status（保持禁用）。没有上传对象或修改保留/权限。原始非秘密读回保存于忽略目录 `oss-bucket-current-readback.json`。这仅证明当前 bucket 配置，不代替未来对象的 writer/reader 独立读回和发布证明。

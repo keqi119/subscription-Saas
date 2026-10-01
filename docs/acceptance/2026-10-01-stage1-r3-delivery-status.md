@@ -298,3 +298,13 @@ H1 只读 `277288`：仅 Staging PostgreSQL 在运行，RAM 可用 1,208 MiB、s
 已准备[主机选择草案](2026-10-01-stage1-snapshot-producer-host-decision.md)，SHA-256 `d0f4b6a92781de81ff5c0948565b490940900fc401363e9c467955b32d94765d`，请求负责人在“仅 H1 一次性制作 job”与“先加密本机 C 盘、专用 WSL 全部置于 C 盘”间选择。选择前不变更已批准制作主机边界，云端 RAM 确认规则不变。
 
 独立 OSS 属性读回 `ee99c9` / `052ba1` / `a350ac` 均成功：指定 bucket 所有者正确、ACL private、WORM ID `9A0E27AED3264497AEBC5F1C55E18485`、Locked/210 天、VersioningConfiguration 无 Status（保持禁用）。没有上传对象或修改保留/权限。原始非秘密读回保存于忽略目录 `oss-bucket-current-readback.json`。这仅证明当前 bucket 配置，不代替未来对象的 writer/reader 独立读回和发布证明。
+
+## 精确 OSS 对象传输增量
+
+新增 `snapshot-oss-storage.mjs`：publisher 与 reader 分属两个入口，各持一份已获准、最长 900 秒的 STS。只接受指定 bucket 和当前 attempt/run 的五个固定文件；publisher 条件创建且不重试、不覆盖，reader 独立核验 HEAD/GET 的实际字节摘要、大小、ETag、时间及 bucket 私有 ACL、210 天 WORM 和禁用版本状态。入口不签发凭据、不证明制作进程终止，也不生成虚假的完整 custody。
+
+一次限定审查发现异步等待后读取可变输入、两种 STS ARN 形状不兼容，已统一固定原始输入并规范化身份；另修复合法 SHA 摘要数字片段误判为手机号。`0d9deb` / `ca06c7` 保留修复前失败，`b66c45` 定向传输 4/4、策略 1/1 均通过且无跳过。测试使用 SDK 替身，没有据此宣称真实对象已经发布。
+
+仓库 v2 策略遗漏 `GetBucketVersioning`。实际 RAM `GetPolicy` 读回 `8d527a` 确认 9 月 29 日已批准的 snapshot-consumer 策略 **已有该权限**，因此本轮只对齐仓库声明和 schema，没有新增 RAM 授权。publisher 角色仍未配置，后续必须依据真实 producer run 的精确对象提出具体草案。
+
+`3cdba8` 新入口及测试 ESLint、格式、差异检查通过。首次合同检查 `fc65ad` 报新模块未进入发现清单；对齐两处清单后 `96e10e` 通过：282 文件、91 schemas、13 commands，128 项迁移摘要未变，仓库合同摘要 `sha256:71f2a8ab58b3bd1863d43e96456af957b249cadd151ad878b3463bf5441403e4`。没有扩大数据库测试豁免或测试矩阵。真实主机选择仍待负责人答复；真实快照、同候选 R2/R3、两项 Staging 迁移及 R4 尚未完成。

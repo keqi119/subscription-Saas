@@ -23,7 +23,8 @@
         "oss:HeadObject",
         "oss:GetObject",
         "oss:GetBucketAcl",
-        "oss:GetBucketWorm"
+        "oss:GetBucketWorm",
+        "oss:GetBucketVersioning"
       ],
       "conditionalCreateOnly": false,
       "liveRoleProvisioned": true,

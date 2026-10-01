@@ -128,7 +128,13 @@
       ],
       "properties": {
         "allowedActions": {
-          "const": ["oss:HeadObject", "oss:GetObject", "oss:GetBucketAcl", "oss:GetBucketWorm"]
+          "const": [
+            "oss:HeadObject",
+            "oss:GetObject",
+            "oss:GetBucketAcl",
+            "oss:GetBucketWorm",
+            "oss:GetBucketVersioning"
+          ]
         },
         "conditionalCreateOnly": {
           "const": false

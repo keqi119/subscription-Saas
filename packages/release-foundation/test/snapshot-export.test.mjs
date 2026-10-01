@@ -9,7 +9,7 @@ import {
   transformRecord,
   verifySnapshotMetadata
 } from "../src/snapshot/export-sanitized.mjs";
-import { scanSanitizedArtifact } from "../src/snapshot/scan-artifact.mjs";
+import { scanSanitizedArchive, scanSanitizedArtifact } from "../src/snapshot/scan-artifact.mjs";
 import { canonicalJson, sha256Bytes, sha256Canonical } from "../src/index.mjs";
 import {
   cleanupProtectedSnapshotWorkspace,
@@ -122,6 +122,49 @@ for (const [name, value] of [
     );
   });
 }
+
+test("PGDMP cannot pass the historical text scan and requires a complete matching expansion", async () => {
+  const archive = Buffer.from("PGDMP\0synthetic archive");
+  const expandedBytes = Buffer.from("COPY public.customer (mobile) FROM stdin;\n\\.\n");
+  const valid = {
+    archiveDigest: sha256Bytes(archive),
+    expandedBytes,
+    exitCode: 0,
+    pgRestoreVersion: "pg_restore (PostgreSQL) 17.11"
+  };
+  await assert.rejects(() => scanSanitizedArtifact({ bytes: archive, contract: contract() }), {
+    code: "SNAPSHOT_ARCHIVE_EXPANSION_REQUIRED"
+  });
+  const scan = await scanSanitizedArchive({
+    bytes: archive,
+    expansion: valid,
+    contract: contract()
+  });
+  assert.equal(scan.schemaVersion, "sanitization-scan.v2");
+  assert.equal(scan.subjectDigest, sha256Bytes(archive));
+  assert.equal(scan.expandedDigest, sha256Bytes(expandedBytes));
+  for (const expansion of [
+    undefined,
+    { ...valid, archiveDigest: sha256Bytes(Buffer.from("different archive")) },
+    { ...valid, exitCode: 1 },
+    { ...valid, pgRestoreVersion: "pg_restore (PostgreSQL) 16.9" },
+    { ...valid, expandedBytes: Buffer.from([0xff]) }
+  ]) {
+    await assert.rejects(
+      () => scanSanitizedArchive({ bytes: archive, expansion, contract: contract() }),
+      { code: /^SNAPSHOT_(?:ARCHIVE_EXPANSION_INVALID|SCAN_SUBJECT_INVALID)$/ }
+    );
+  }
+  await assert.rejects(
+    () =>
+      scanSanitizedArchive({
+        bytes: archive,
+        expansion: { ...valid, expandedBytes: Buffer.from("COPY 13800138000\\n") },
+        contract: contract()
+      }),
+    { code: "SNAPSHOT_SENSITIVE_DATA_DETECTED" }
+  );
+});
 
 function exportFixture(overrides = {}) {
   const policy = contract();
@@ -253,6 +296,51 @@ test("exports only a scanned final bundle after matching source fingerprints", a
   assert.equal(input.uploads.length, 1);
   assert.equal(metadata.dumpDigest, sha256Bytes(input.uploads[0].dump));
   assert.deepEqual(input.events.slice(-2), ["snapshot-closed", "workspace-destroyed"]);
+});
+
+test("exports a PGDMP only after its trusted workspace expands the same archive", async () => {
+  const input = exportFixture();
+  const archive = Buffer.from("PGDMP\0synthetic archive");
+  const expandedBytes = Buffer.from("COPY public.customer (mobile) FROM stdin;\n\\.\n");
+  input.workspace.exportSanitized = async () => archive;
+  input.workspace.expandSanitizedArchive = async ({
+    archive: received,
+    expectedArchiveDigest,
+    maxExpandedBytes
+  }) => {
+    assert.deepEqual(received, archive);
+    assert.equal(expectedArchiveDigest, sha256Bytes(archive));
+    assert.equal(maxExpandedBytes, 1073741824);
+    return {
+      archiveDigest: sha256Bytes(received),
+      expandedBytes,
+      exitCode: 0,
+      pgRestoreVersion: "pg_restore (PostgreSQL) 17.11"
+    };
+  };
+  const metadata = await runExport(input);
+  assert.equal(input.uploads.length, 1);
+  assert.equal(input.uploads[0].scan.schemaVersion, "sanitization-scan.v2");
+  assert.equal(input.uploads[0].scan.expandedDigest, sha256Bytes(expandedBytes));
+  assert.equal(metadata.scanSubjectDigest, sha256Bytes(archive));
+  const legacyScan = { ...input.uploads[0].scan, schemaVersion: "sanitization-scan.v1" };
+  delete legacyScan.expandedDigest;
+  delete legacyScan.pgRestoreVersion;
+  delete legacyScan.archiveFormat;
+  assert.throws(
+    () =>
+      verifySnapshotMetadata({
+        metadata: { ...metadata, scanDigest: sha256Canonical(legacyScan) },
+        contract: input.contract,
+        ownershipMap: input.ownershipMap,
+        dump: archive,
+        scan: legacyScan,
+        now: fixedNow
+      }),
+    { code: "SNAPSHOT_SCAN_INVALID" }
+  );
+  delete input.workspace.expandSanitizedArchive;
+  await assert.rejects(runExport(input), { code: "SNAPSHOT_ARCHIVE_EXPANSION_INVALID" });
 });
 
 for (const [name, transaction] of [

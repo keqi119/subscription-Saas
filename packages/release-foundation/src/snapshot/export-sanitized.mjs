@@ -8,7 +8,7 @@ import {
   assertReadOnlySnapshotSource,
   fingerprintSourceSnapshot
 } from "./source-readonly-guard.mjs";
-import { scanSanitizedArtifact } from "./scan-artifact.mjs";
+import { scanSanitizedArchive, scanSanitizedArtifact } from "./scan-artifact.mjs";
 
 function snapshotError(code, details) {
   return Object.assign(new Error(code), { code, details });
@@ -142,6 +142,22 @@ function verifySnapshotMetadataFields(input, verifyDump) {
   ) {
     throw snapshotError("SNAPSHOT_SCAN_INVALID");
   }
+  if (scan.schemaVersion === "sanitization-scan.v2") {
+    try {
+      validateContract("sanitization-scan.v2", scan);
+    } catch (error) {
+      throw snapshotError("SNAPSHOT_SCAN_INVALID", { cause: error?.code });
+    }
+  } else if (scan.schemaVersion !== "sanitization-scan.v1") {
+    throw snapshotError("SNAPSHOT_SCAN_INVALID");
+  }
+  if (
+    verifyDump &&
+    (scan.schemaVersion === "sanitization-scan.v2") !==
+      Buffer.from(input.dump).subarray(0, 5).equals(Buffer.from("PGDMP"))
+  ) {
+    throw snapshotError("SNAPSHOT_SCAN_INVALID");
+  }
   if (
     metadata.sourceFingerprintBeforeDigest !== metadata.sourceFingerprintAfterDigest ||
     metadata.owner !== contract.lifecycle.owner ||
@@ -245,7 +261,22 @@ export async function exportSanitizedSnapshot({
       sourceDatabaseAccess: "forbidden"
     });
     const sanitized = Buffer.from(await workspace.exportSanitized());
-    const scan = await scanSanitizedArtifact({ bytes: sanitized, contract, scannedAt: createdAt });
+    const isArchive = sanitized.subarray(0, 5).equals(Buffer.from("PGDMP"));
+    const scan = isArchive
+      ? await scanSanitizedArchive({
+          bytes: sanitized,
+          expansion:
+            typeof workspace.expandSanitizedArchive === "function"
+              ? await workspace.expandSanitizedArchive({
+                  archive: Buffer.from(sanitized),
+                  expectedArchiveDigest: sha256Bytes(sanitized),
+                  maxExpandedBytes: 1073741824
+                })
+              : undefined,
+          contract,
+          scannedAt: createdAt
+        })
+      : await scanSanitizedArtifact({ bytes: sanitized, contract, scannedAt: createdAt });
     const after = await fingerprintSourceSnapshot({
       source,
       snapshotId: snapshot.snapshotId,

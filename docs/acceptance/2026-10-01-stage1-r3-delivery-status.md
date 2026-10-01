@@ -193,3 +193,11 @@ CLOSED 通道要求 final 原件与请求、终态、结果、ACK、会话和 CI
 用户已确认 `subscription_saas_staging` 除受控手机号尾号 0212 对应用户外均为模拟数据，可用于功能和验收测试。该受控标识及关联字段仍须执行现有脱敏转换和扫描。现行非商用 v2 密钥、RAM 读取身份、H1 输入准入及消费链已有实现；实际来源适配器、导出至 v2 加密的制作入口、OSS 不可覆盖发布与独立读回及私有输入索引仍需接通。旧工作流的明文脱敏 dump artifact 不能替代该流程，既有 OSS 恢复卷也不是数据库快照。
 
 [第四轮 CI](https://github.com/keqi119/subscription-Saas/actions/runs/36807554362) 仍在三个 Customer 车辆边界夹具失败：事务内重新加载申请时未返回完整测试申请，且已确认方案缺少当前商业快照字段。现已补齐事务读取、完整方案快照、revision 和生产算法生成的 hash，保留真实申请锁、车辆限制查询、商业一致性校验及冲突／零写入断言。随后 Windows 原生受控单套 PostgreSQL 运行 `183fc7` 成功：28 collected、28 executed、28 passed、0 skipped，进程退出 0；Docker 回读仅剩原有两个容器。此前 27/28 的真实失败与两个启动失败记录仍保留，不计为通过；完整 PR CI 尚待本次推送后确认。
+
+## 快照归档内容扫描修正
+
+实际制作接缝审查发现，旧扫描器直接将 dump 字节按 UTF-8 做正则检查，不能据此证明压缩 PostgreSQL 归档已经脱敏。PGDMP 现必须由受信 workspace 使用既有固定 PostgreSQL 17.11 工具展开最终归档；输入摘要不符、展开失败、非 UTF-8、NUL、超过 1 GiB 或发现敏感字段均拒绝。新 `sanitization-scan.v2` 同时绑定原归档摘要、展开内容摘要和工具版本，metadata 与 R3 声明入口接受该前向版本。历史纯文本 v1 保持可读；读取实际 PGDMP 字节时不得将扫描记录降级为 v1。源库 17.10 与候选工具 17.11 的角色不同，不将源容器中的旧工具版本伪称为候选工具。
+
+限定验证：导出测试 `b4aca2` 为 24/24、无跳过；其中真实降级回归先在 `342b62` 复现失败再修正。子代理的 Linux R3 输入定向测试为 8/8，无跳过。`254983` 合同、格式和差异检查通过：278 文件、91 schemas、13 commands，128 项迁移摘要未变。`61ab27` 以原 ESLint 规则补充 Node globals 后比较 HEAD 和当前五个文件，无新增诊断；六项既有诊断仍保留。展开回调在这些测试中为替身，不能据此宣称实际 `pg_restore`、云端发布或恢复已经完成。
+
+H1 只读回查 `00775e`：源库 PostgreSQL 17.10，57,349,811 bytes、171 张 public 表，owner 为已登记的 `subscription_saas`，迁移头为 `20260901010000_stage1_schema_drift_convergence`，未发现名称含 snapshot 的角色。宿主机没有 `pg_dump/pg_restore`，仅 Staging PostgreSQL 容器运行，swap 仍启用。未导出源数据、修改数据库或恢复业务容器。后续仍须接真实受限源适配器、隔离转换与展开进程、v2 加密、OSS 独立读回及私有索引，再执行同候选 R2/R3、两项 Staging 迁移和 R4。

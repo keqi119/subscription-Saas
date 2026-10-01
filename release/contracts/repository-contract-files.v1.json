@@ -189,6 +189,7 @@
     "release/contracts/schemas/s1-exit-evidence.v1.schema.json",
     "release/contracts/schemas/s1-owner-attestations.v1.schema.json",
     "release/contracts/schemas/sanitization-contract.v1.schema.json",
+    "release/contracts/schemas/sanitization-scan.v2.schema.json",
     "release/contracts/schemas/snapshot-admission-verification.v1.schema.json",
     "release/contracts/schemas/snapshot-admission.v1.schema.json",
     "release/contracts/schemas/snapshot-cloud-policy.v1.schema.json",

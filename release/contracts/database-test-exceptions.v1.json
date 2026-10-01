@@ -401,6 +401,13 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "scripts/release/r3-application-bootstrap.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises bootstrap input validation and child-process lifecycle using a temporary synthetic API entrypoint; it never connects to PostgreSQL. Real R3 application database gates remain required.",
+      "scope": "process-boundary",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "scripts/release/r3-postgres-observation.test.mjs",
       "owner": "release-engineering",
       "reason": "Validates pure Engine, container, network, volume and PostgreSQL observation objects; it performs no I/O and never connects to a database. Real R3 database gates remain required.",

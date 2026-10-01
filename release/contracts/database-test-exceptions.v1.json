@@ -415,6 +415,13 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "scripts/release/snapshot-postgres-tools.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises fixed archive tooling and failure cleanup through injected process doubles; it never starts Docker or connects to PostgreSQL. Real snapshot production and database gates remain required.",
+      "scope": "mock-process-boundary",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "apps/release-runner/test/manual/manual-runner-migration-postgres.integration.test.mjs",
       "owner": "stage1-r2-owner",
       "reason": "Outside source CI DB suites; required real final-image gate runs explicitly with node --test apps/release-runner/test/manual/manual-runner-migration-postgres.integration.test.mjs under the independently approved operation. This exception does not waive the final gate.",

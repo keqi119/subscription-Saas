@@ -205,3 +205,15 @@ H1 只读回查 `00775e`：源库 PostgreSQL 17.10，57,349,811 bytes、171 张 
 ## 已完成的候选代码集成
 
 [第五轮完整 CI](https://github.com/keqi119/subscription-Saas/actions/runs/36810455041) 于 2026-10-01 通过，日志明确记录 `PASS release check`（`a3fb33` / `c22bd6`）。核对 PR 头提交 `503efbead957a8c5b58bed86129a7bc255585e6e` 与绿色检查一致、可合并后，按用户既有授权完成 [PR #318](https://github.com/keqi119/subscription-Saas/pull/318) 合并（`d45a60`），未绕过检查。主分支自动 CI `36812101507` 随合并启动。快照扫描修正 `fed2adc2` 已推送 `feat/stage1-snapshot-archive-scan`，一次限定独立审查未发现明确 P1/P2；该分支尚未合并，实际快照和阶段 1 发布验收仍未完成。
+
+## 真实源读取与归档工具适配器
+
+[主分支 CI](https://github.com/keqi119/subscription-Saas/actions/runs/36812101507) 已确认成功（`40342f`）。新增源读取适配器查询实际 PostgreSQL 身份、权限和对象 owner，保持同一只读 REPEATABLE READ 事务，分页计算四张关键表指纹，并把实际导出 snapshot ID 交给固定 dump 调用。默认 `pg_database_owner` 解析为当前数据库实际 owner，函数和类型纳入 owner 集合；同一 Client 顺序查询。公开方法失败自行关闭，导出入口在外层权限拒绝时也承担关闭责任，清理无法确认时保留失败。
+
+固定 Linux 归档工具使用已锁定的 PostgreSQL 17.11 镜像、禁网只读容器和有界 stdin/stdout，实际检查工具版本、退出状态和归档摘要。独立审查发现的 create 响应丢失清理漏洞已修正：按操作标签和唯一名称找回容器后清理；无确定读回时保持清理失败。另一次审查发现仅列级 INSERT/UPDATE 授权漏检，已改为表级与列级权限共同检查。没有放宽源权限或归档扫描要求。
+
+实际合成归档探针 `3feecf` 通过：真实压缩 PGDMP 展开后检出合成手机号、转换后 v2 扫描通过、截断归档被真实 pg_restore 拒绝。实际源探针先在 `4ba54c` 复现 owner 别名拒绝、在 `86341c` 复现列级写权限漏检；最终 `ad260a` 通过：列级授权被拒绝、事务 DML 返回 25006、四表指纹不变、实际 dump 排除并发新增行，临时容器清理回读成功。均仅使用本地合成数据，未导出 Staging 数据。
+
+限定短测：源适配器 18/18（`626383`），导出 25/25（`645e7b`）及清理失败定向断言（`a59828`），归档工具 4/4（`447cb2`）；真实失败记录保留。限定新增文件 lint 通过。合同和测试分类 `a71a70` 通过：280 文件、91 schemas、13 commands、128 项未变迁移，101 candidates、39 manifested、62 excepted、0 unclassified。新归档测试仅使用进程替身，其分类不免除实际数据库门槛。
+
+上述适配器尚未组成完整制作入口。后续接通隔离数据库脱敏、v2 加密、OSS 不可覆盖发布与独立读回及私有输入索引；随后固定同候选执行 R2/R3、应用两项已批准 Staging 迁移并完成 R4。旧明文 artifact 工作流仍不能当成 v2 制作链执行。本轮未修改业务功能、服务器或数据库迁移。

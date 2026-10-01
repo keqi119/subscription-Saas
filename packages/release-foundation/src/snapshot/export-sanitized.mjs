@@ -221,11 +221,11 @@ export async function exportSanitizedSnapshot({
   }
   assertContractSemantics(contract);
   validateContract("ownership-map.v1", ownershipMap);
-  let opened = false;
+  let sourceNeedsClose = false;
   let workspaceDestroyed = false;
-  let primaryError;
   try {
     const createdAt = now();
+    sourceNeedsClose = true;
     const privilegeObservation = await assertReadOnlySnapshotSource({
       source,
       secretReference,
@@ -233,7 +233,6 @@ export async function exportSanitizedSnapshot({
       now: createdAt
     });
     const snapshot = await source.openReadOnlySnapshot({ secretReference });
-    opened = true;
     // PostgreSQL's DEFERRABLE flag has no effect at REPEATABLE READ. Safety here
     // requires the read-only transaction and the same exported MVCC snapshot.
     if (
@@ -327,7 +326,7 @@ export async function exportSanitizedSnapshot({
     });
     try {
       await source.closeSnapshot();
-      opened = false;
+      sourceNeedsClose = false;
       await workspace.destroy();
       workspaceDestroyed = true;
     } catch (error) {
@@ -348,20 +347,19 @@ export async function exportSanitizedSnapshot({
     }
     return metadata;
   } catch (error) {
-    primaryError = error;
     if (error?.code?.startsWith("SNAPSHOT_")) throw error;
     throw snapshotError("SNAPSHOT_PUBLICATION_INCOMPLETE_FORBIDDEN", {
       cause: error?.code ?? error?.message
     });
   } finally {
     const cleanupErrors = [];
-    if (opened) {
+    if (sourceNeedsClose) {
       await source.closeSnapshot().catch((error) => cleanupErrors.push(error));
     }
     if (!workspaceDestroyed) {
       await workspace.destroy().catch((error) => cleanupErrors.push(error));
     }
-    if (!primaryError && cleanupErrors.length > 0) {
+    if (cleanupErrors.length > 0) {
       throw snapshotError("SNAPSHOT_SECURE_CLEANUP_FAILED");
     }
   }

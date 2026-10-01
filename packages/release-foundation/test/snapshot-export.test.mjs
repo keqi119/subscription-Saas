@@ -298,6 +298,32 @@ test("exports only a scanned final bundle after matching source fingerprints", a
   assert.deepEqual(input.events.slice(-2), ["snapshot-closed", "workspace-destroyed"]);
 });
 
+test("closes the source when privilege admission rejects it before a snapshot opens", async () => {
+  const input = exportFixture();
+  const observe = input.source.observePrivileges;
+  input.source.observePrivileges = async (...args) => ({
+    ...(await observe(...args)),
+    superuser: true
+  });
+  await assert.rejects(runExport(input), { code: "SNAPSHOT_SOURCE_WRITE_CAPABILITY_FORBIDDEN" });
+  assert.equal(input.events.includes("snapshot-opened"), false);
+  assert.equal(input.events.filter((event) => event === "snapshot-closed").length, 1);
+  assert.equal(input.uploads.length, 0);
+  const uncertain = exportFixture();
+  const observeUncertain = uncertain.source.observePrivileges;
+  uncertain.source.observePrivileges = async (...args) => ({
+    ...(await observeUncertain(...args)),
+    superuser: true
+  });
+  uncertain.source.closeSnapshot = async () => {
+    throw Object.assign(new Error("source cleanup uncertain"), {
+      code: "SNAPSHOT_SOURCE_CLEANUP_UNKNOWN"
+    });
+  };
+  await assert.rejects(runExport(uncertain), { code: "SNAPSHOT_SECURE_CLEANUP_FAILED" });
+  assert.equal(uncertain.uploads.length, 0);
+});
+
 test("exports a PGDMP only after its trusted workspace expands the same archive", async () => {
   const input = exportFixture();
   const archive = Buffer.from("PGDMP\0synthetic archive");

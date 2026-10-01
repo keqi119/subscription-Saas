@@ -561,7 +561,13 @@ describe("authoritative vehicle availability PostgreSQL boundaries", () => {
         scope: VehicleOperationalRestrictionScope.INVENTORY_RELEASE,
         severity: VehicleOperationalRestrictionSeverity.BLOCKING
       });
-      const boundary = createCustomerReleaseBoundary(prisma, service, vehicleId, userId, operation);
+      const boundary = await createCustomerReleaseBoundary(
+        prisma,
+        service,
+        vehicleId,
+        userId,
+        operation
+      );
 
       expectConflict(
         await rejected(boundary.invoke()),
@@ -793,12 +799,20 @@ async function createCustomerBoundary(
     where: { id: vehicleId }
   });
   const applicationId = randomUUID();
+  const customerId = randomUUID();
+  await createRawApplicationFixture(
+    prisma,
+    applicationId,
+    customerId,
+    actorId,
+    "customer-boundary"
+  );
   const application = {
     applicationNo: `${FIXTURE_PREFIX}-customer-boundary`,
     applicationSource: "SALES_ASSISTED",
     creditReviewStatus: "APPROVED",
     customerGrade: "A",
-    customerId: randomUUID(),
+    customerId,
     customerSelectedSnapshot: null,
     deletedAt: null,
     depositRuleSnapshot: {},
@@ -1040,18 +1054,27 @@ function createProductBoundary(
   };
 }
 
-function createCustomerReleaseBoundary(
+async function createCustomerReleaseBoundary(
   prisma: PrismaService,
   assetOperationsService: AssetOperationsService,
   vehicleId: string,
   actorId: string,
   operation: "cancel" | "reject"
 ) {
+  const applicationId = randomUUID();
+  const customerId = randomUUID();
+  await createRawApplicationFixture(
+    prisma,
+    applicationId,
+    customerId,
+    actorId,
+    `customer-${operation}-release`
+  );
   const application = {
     applicationNo: `${FIXTURE_PREFIX}-${operation}`,
-    customerId: randomUUID(),
+    customerId,
     deletedAt: null,
-    id: randomUUID(),
+    id: applicationId,
     orders: [],
     salesUserId: actorId,
     softReservedVehicleId: vehicleId,

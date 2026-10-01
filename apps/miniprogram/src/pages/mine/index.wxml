@@ -1,0 +1,45 @@
+<view class="page bottom-space"
+  ><demo-banner /><view class="eyebrow">ACCOUNT / 我的</view
+  ><view class="title">你的订阅档案。</view
+  ><view wx:if="{{loading}}" class="empty">正在读取账户信息…</view
+  ><view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="reload">重新加载</button></view
+  ><block wx:else
+    ><view class="card identity"
+      ><view class="profile-mark">人</view
+      ><view class="identity-text"
+        ><view class="section-title">{{profile.name || '演示访客'}}</view
+        ><view class="muted">{{profile.mobile || '尚未填写示例联系方式'}}</view></view
+      ><button class="text-button" data-url="/pages/profile/index" bindtap="open"
+        >编辑</button
+      ></view
+    ><view class="notice">当前为本地演示档案，无真实登录会话。请勿填写真实证件信息。</view
+    ><view class="card"
+      ><button class="menu-row" bindtap="openApplication"
+        ><view
+          ><view>我的申请</view
+          ><view class="muted small"
+            >{{application ? application.statusText : '尚未提交，前往选车'}}</view
+          ></view
+        ><text>→</text></button
+      ></view
+    ><view class="card"
+      ><button
+        wx:for="{{links}}"
+        wx:key="type"
+        class="menu-row"
+        data-type="{{item.type}}"
+        bindtap="openRecords"
+        ><text>{{item.title}}</text><text class="muted">→</text></button
+      ></view
+    ></block
+  ><view class="card"
+    ><button class="menu-row" data-url="/pages/legal/index?type=privacy" bindtap="open"
+      ><text>隐私说明</text><text class="muted">→</text></button
+    ><button class="menu-row" data-url="/pages/legal/index?type=terms" bindtap="open"
+      ><text>服务与费用说明</text><text class="muted">→</text></button
+    ><button class="menu-row" data-url="/pages/settings/index" bindtap="open"
+      ><text>演示设置</text><text class="muted">→</text></button
+    ></view
+  ></view
+>

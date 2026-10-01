@@ -1,0 +1,83 @@
+<view class="page bottom-space">
+  <demo-banner />
+  <view class="eyebrow">YOUR DRIVE / 用车</view><view class="title">每段路，都有照应。</view>
+  <view wx:if="{{loading}}" class="empty">正在读取用车信息…</view>
+  <view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="reload">重新加载</button></view
+  >
+  <block wx:else>
+    <view wx:if="{{todos.length}}" class="notice"
+      ><view class="section-title">接下来要做</view
+      ><view wx:for="{{todos}}" wx:key="title" class="todo"
+        ><view>{{item.title}}</view><view class="muted">{{item.description}}</view
+        ><button wx:if="{{item.url}}" class="text-button" data-url="{{item.url}}" bindtap="open"
+          >查看详情 →</button
+        ></view
+      ></view
+    >
+    <view wx:if="{{subscription}}" class="card current-car"
+      ><view class="row between"
+        ><text class="eyebrow">当前订阅 · 示例</text><text class="tag">用车中</text></view
+      ><view class="vehicle-name">{{subscription.vehicleName}}</view
+      ><view class="muted">{{subscription.planTitle}}</view><view class="divider" /><view
+        class="grid-2"
+        ><view
+          ><view class="label">套餐月费</view
+          ><view class="price">{{subscription.monthlyFeeText}}</view></view
+        ><view
+          ><view class="label">最近确认里程</view
+          ><view>{{subscription.mileageText || '待确认'}}</view></view
+        ></view
+      ><button class="text-button" data-url="/pages/records/index?type=orders" bindtap="open"
+        >查看订阅详情 →</button
+      ></view
+    >
+    <view wx:elif="{{application}}" class="card"
+      ><view class="tag">{{application.statusText}}</view
+      ><view class="section-title">{{application.vehicleName}}</view
+      ><view class="muted">{{application.planTitle}}</view
+      ><view class="notice">提交申请后需要审核与最终方案确认。</view
+      ><button class="primary" bindtap="openApplication">查看申请进度</button></view
+    >
+    <view wx:else class="empty"
+      ><view class="section-title">还没有开始的订阅</view
+      ><view class="muted">从一辆适合你的纯电汽车开始。</view
+      ><button class="primary" data-url="/pages/catalog/index" bindtap="open"
+        >查看可订阅车辆</button
+      ></view
+    >
+    <view wx:if="{{bill}}" class="card"
+      ><view class="row between"
+        ><view class="section-title">{{bill.title}}</view
+        ><text class="tag">{{bill.statusText}}</text></view
+      ><view class="price">{{bill.amountText}}</view><view class="muted">{{bill.subtitle}}</view
+      ><view wx:if="{{subscription.nextDueDate}}" class="muted"
+        >应付日期 {{subscription.nextDueDate}}</view
+      ><button class="secondary" bindtap="openBill">查看账单</button></view
+    >
+    <block wx:if="{{subscription}}"
+      ><view class="section-title section-gap">用车服务</view
+      ><view class="grid-2"
+        ><button class="service-tile" data-url="/pages/service/index?type=rescue" bindtap="open"
+          ><text class="tile-number">01</text><text>道路救援</text
+          ><text class="muted">记录地点与问题</text></button
+        ><button class="service-tile" data-url="/pages/service/index?type=accident" bindtap="open"
+          ><text class="tile-number">02</text><text>事故报案</text
+          ><text class="muted">补充情况与附件</text></button
+        ><button class="service-tile" data-url="/pages/mileage/index" bindtap="open"
+          ><text class="tile-number">03</text><text>月度里程</text
+          ><text class="muted">提交读数与凭证</text></button
+        ><button class="service-tile" data-url="/pages/handover/index" bindtap="open"
+          ><text class="tile-number">04</text><text>车辆交接</text
+          ><text class="muted">核对证据与确认</text></button
+        ></view
+      ><view class="card"
+        ><button class="menu-row" data-url="/pages/records/index?type=entitlements" bindtap="open"
+          ><text>权益明细</text><text>→</text></button
+        ><button class="menu-row" data-url="/pages/records/index?type=services" bindtap="open"
+          ><text>服务记录</text><text>→</text></button
+        ></view
+      ></block
+    >
+  </block>
+</view>

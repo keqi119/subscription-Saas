@@ -1,0 +1,139 @@
+<view class="page bottom-space vehicle-page">
+  <demo-banner />
+  <view wx:if="{{loading}}" class="empty" role="status">正在加载车辆与预设套餐…</view>
+  <view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="refresh">重新加载</button
+    ><button class="text-button" bindtap="openCatalog">返回选车</button></view
+  >
+  <view wx:elif="{{!vehicle}}" class="empty"
+    ><view class="section-title">没有找到这台车辆</view
+    ><button class="secondary" bindtap="openCatalog">返回选车</button></view
+  >
+  <block wx:else>
+    <view class="vehicle-hero"
+      ><image wx:if="{{vehicle.imageUrl}}" src="{{vehicle.imageUrl}}" mode="aspectFit" /><view
+        wx:else
+        class="missing-photo"
+        >车辆图片待补充</view
+      ><text class="vehicle-status">{{vehicle.statusText}}</text></view
+    >
+    <view class="vehicle-intro"
+      ><view class="eyebrow">{{vehicle.brand}} · {{vehicle.city}}</view
+      ><view class="title">{{vehicle.name}}</view
+      ><view class="muted">{{vehicle.tagline}}</view></view
+    >
+    <view class="facts-grid"
+      ><view
+        ><text class="fact-value">{{vehicle.registrationText}}</text
+        ><text class="fact-label">上牌时间</text></view
+      ><view
+        ><text class="fact-value">{{vehicle.mileageText}}</text
+        ><text class="fact-label">表显里程</text></view
+      ><view
+        ><text class="fact-value">{{vehicle.rangeText}}</text
+        ><text class="fact-label">续航参考</text></view
+      ><view
+        ><text class="fact-value">{{vehicle.bodyType}}</text
+        ><text class="fact-label">车身形式</text></view
+      ></view
+    >
+    <view class="report-section"
+      ><button class="disclosure row between" bindtap="toggleReport" aria-expanded="{{showReport}}"
+        ><text>车况资料</text><text>{{showReport ? '−' : '+'}}</text></button
+      ><view wx:if="{{showReport}}" class="report-content"
+        ><block wx:if="{{report}}"
+          ><view>{{report.summary}}</view
+          ><view wx:for="{{report.items}}" wx:key="label" class="detail-row row between"
+            ><text class="muted">{{item.label}}</text><text>{{item.value}}</text></view
+          ><view class="report-images"
+            ><image
+              wx:for="{{report.images}}"
+              wx:key="*this"
+              src="{{item}}"
+              mode="widthFix"
+              bindtap="previewReport"
+              data-src="{{item}}"
+              aria-label="打开车况资料图片" /></view
+          ><view wx:if="{{report.images.length}}" class="muted small-note"
+            >点击图片查看原始资料。</view
+          ><view class="muted small-note">{{report.notice}}</view></block
+        ><view wx:else class="muted">车况资料待补充，请在确认方案前核实实车与交付材料。</view></view
+      ></view
+    >
+    <view wx:if="{{!vehicle.available}}" class="notice availability-note"
+      >{{vehicle.statusText}}。当前不能提交新申请，可返回选择其他车辆。</view
+    >
+    <view class="plans-heading"
+      ><view class="eyebrow">YOUR SUBSCRIPTION</view><view class="section-title">选择预设套餐</view
+      ><view class="muted">期限、里程和权益随套餐一同确定。</view></view
+    >
+    <view wx:if="{{!plans.length}}" class="empty"
+      ><view>暂时没有可用套餐</view
+      ><button class="secondary" bindtap="refresh">刷新套餐</button></view
+    >
+    <button
+      wx:for="{{plans}}"
+      wx:key="id"
+      class="plan-card {{selectedPlan.id === item.id ? 'selected' : ''}} {{!item.available ? 'disabled-plan' : ''}}"
+      bindtap="selectPlan"
+      data-id="{{item.id}}"
+      disabled="{{!item.available}}"
+      aria-pressed="{{selectedPlan.id === item.id}}"
+      ><view class="row between"
+        ><view class="plan-title">{{item.title}}</view
+        ><text class="selection-mark"
+          >{{selectedPlan.id === item.id ? '已选择 ✓' : item.available ? '可选择' :
+          '暂不可售'}}</text
+        ></view
+      ><view class="plan-term">{{item.termMonths}} 个月 · {{item.mileageText}}</view
+      ><view class="plan-price"
+        ><text>{{item.monthlyFeeText}}</text><text class="muted"> / 月</text></view
+      ></button
+    >
+    <view wx:if="{{selectedPlan}}" class="fee-section"
+      ><view class="section-title">这份套餐包含什么</view
+      ><view class="detail-row row between"
+        ><text class="muted">订阅期限</text><text>{{selectedPlan.termMonths}} 个月</text></view
+      ><view class="detail-row row between"
+        ><text class="muted">包含里程</text><text>{{selectedPlan.mileageText}}</text></view
+      ><view class="detail-row row between"
+        ><text class="muted">能源说明</text><text>{{selectedPlan.energyText}}</text></view
+      ><view class="benefit" wx:for="{{selectedPlan.benefits}}" wx:key="*this"
+        ><text class="benefit-check">✓</text><text>{{item}}</text></view
+      ><view class="fee-total row between"
+        ><text>预估月费</text><text class="price">{{selectedPlan.monthlyFeeText}}</text></view
+      ><view class="detail-row row between"
+        ><text class="muted">押金</text
+        ><text>{{selectedPlan.depositText || '待审核确认'}}</text></view
+      ><view class="muted small-note">月费为所选预设套餐总额，最终应付以确认方案及账单为准。</view
+      ><button
+        class="disclosure row between"
+        bindtap="toggleConditions"
+        aria-expanded="{{showConditions}}"
+        ><text>费用与使用条件</text><text>{{showConditions ? '−' : '+'}}</text></button
+      ><view wx:if="{{showConditions}}" class="conditions"
+        ><view>{{selectedPlan.notes || '具体使用条件待最终方案确认。'}}</view
+        ><view class="muted"
+          >押金在申请阶段待确认。超里程、违章、损坏及提前退出等费用，按最终方案和合同约定处理；不承诺所有费用全包。</view
+        ></view
+      ></view
+    >
+    <view class="notice application-note"
+      >提交的是订阅意向申请，审核通过后还需阅读并确认最终方案，再进入订单、签约和支付流程。</view
+    >
+    <view class="sticky-actions"
+      ><view wx:if="{{vehicle.available && selectedPlan}}" class="action-price"
+        ><text class="price">{{selectedPlan.monthlyFeeText}}</text
+        ><text class="muted"> / 月</text></view
+      ><button class="primary" bindtap="apply" disabled="{{!vehicle.available || !selectedPlan}}"
+        >{{!vehicle.available ? '车辆暂不可申请' : !selectedPlan ? '暂无可售套餐' :
+        '申请此方案'}}</button
+      ><button
+        wx:if="{{!vehicle.available || !selectedPlan}}"
+        class="text-button"
+        bindtap="openCatalog"
+        >查看其他车辆</button
+      ></view
+    >
+  </block>
+</view>

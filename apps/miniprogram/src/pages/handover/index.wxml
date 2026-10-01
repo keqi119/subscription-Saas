@@ -1,0 +1,102 @@
+<view class="page bottom-space"
+  ><demo-banner /><view class="eyebrow">HANDOVER / 车辆交接</view
+  ><view class="title">核对，再确认。</view
+  ><view wx:if="{{loading}}" class="empty">正在读取交接信息…</view
+  ><view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="reload">重新加载</button
+    ><button class="text-button" bindtap="openUse">返回用车</button></view
+  ><view wx:elif="{{submitted}}" class="card"
+    ><view class="tag">仅本地演示</view><view class="section-title">交接意见已保存</view
+    ><view class="muted"
+      >{{decision === 'dispute' ? '异议保留在演示记录中，不视为交接完成。' :
+      '已保存确认意见，正式交接与交接单签署仍需后台接入。'}}</view
+    ><button class="primary" bindtap="openRecord">查看记录</button></view
+  ><view wx:elif="{{!subscription}}" class="empty"
+    ><view class="section-title">暂无待办理的交接</view
+    ><button class="secondary" bindtap="openUse">返回用车</button></view
+  ><block wx:else
+    ><view class="notice"
+      >本页使用示例证据，不代表真实车况。确认仅保存本机意见，不会签署交接单或完成真实交付。</view
+    ><view class="card"
+      ><view class="label">交接车辆</view
+      ><view class="section-title">{{subscription.vehicleName}}</view
+      ><view class="muted">{{subscription.planTitle}}</view></view
+    ><view class="card"
+      ><view class="row between"
+        ><view class="section-title">01 / 阅读交接证据</view
+        ><text class="tag">{{evidenceRead ? '已阅读' : '待阅读'}}</text></view
+      ><button class="secondary" bindtap="showEvidence"
+        >{{evidenceOpen ? '收起示例证据' : '展开示例证据'}}</button
+      ><view wx:if="{{evidenceOpen}}" class="evidence"
+        ><view class="evidence-item"
+          ><view class="label">示例 · 外观记录</view
+          ><view>车身前后、两侧及轮胎应逐项核对。当前没有接入真实现场照片。</view></view
+        ><view class="evidence-item"
+          ><view class="label">示例 · 仪表与里程</view
+          ><view
+            >最近确认读数：{{subscription.mileageText ||
+            '待确认'}}。现场读数、剩余电量以正式交接单为准。</view
+          ></view
+        ><view class="evidence-item"
+          ><view class="label">示例 · 随车物品</view
+          ><view>钥匙、充电附件与证件清单需在现场核对。发现缺失请提出异议。</view></view
+        ><button class="text-button" bindtap="acknowledgeEvidence"
+          >{{evidenceRead ? '已阅读全部示例证据 ✓' : '我已阅读全部示例证据'}}</button
+        ></view
+      ></view
+    ><view class="card"
+      ><view class="section-title">02 / 选择交接意见</view
+      ><view class="grid-2"
+        ><button
+          class="decision {{decision === 'confirm' ? 'selected' : ''}}"
+          data-value="confirm"
+          bindtap="selectDecision"
+          disabled="{{busy}}"
+          >{{decision === 'confirm' ? '● ' : '○ '}}确认无异议</button
+        ><button
+          class="decision {{decision === 'dispute' ? 'selected' : ''}}"
+          data-value="dispute"
+          bindtap="selectDecision"
+          disabled="{{busy}}"
+          >{{decision === 'dispute' ? '● ' : '○ '}}提出异议</button
+        ></view
+      ><view class="field"
+        ><view class="label">示例确认人姓名</view
+        ><input
+          class="input"
+          value="{{name}}"
+          placeholder="请输入示例姓名"
+          maxlength="30"
+          data-field="name"
+          bindinput="input"
+          disabled="{{busy}}" /></view
+      ><view class="field"
+        ><view class="label"
+          >{{decision === 'dispute' ? '异议说明（必填）' : '补充说明（选填）'}}</view
+        ><textarea
+          class="textarea"
+          value="{{note}}"
+          placeholder="请说明需要核对的项目"
+          maxlength="500"
+          data-field="note"
+          bindinput="input"
+          disabled="{{busy}}"
+        /></view
+      ><checkbox-group bindchange="consent"
+        ><label class="consent-row"
+          ><checkbox
+            value="accepted"
+            checked="{{accepted}}"
+            disabled="{{busy}}"
+            color="#252723"
+          /><text
+            >我已阅读示例证据，并确认保存当前{{decision === 'dispute' ? '异议' :
+            '确认'}}意见。此操作不构成真实签署。</text
+          ></label
+        ></checkbox-group
+      ></view
+    ><button class="primary" bindtap="submit" loading="{{busy}}" disabled="{{busy}}"
+      >{{decision === 'dispute' ? '保存演示异议' : '保存演示确认意见'}}</button
+    ></block
+  ></view
+>

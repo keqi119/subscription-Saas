@@ -1,0 +1,56 @@
+.evidence {
+  margin-top: 24rpx;
+  padding-top: 4rpx;
+}
+.evidence-item {
+  padding: 22rpx 0;
+  border-bottom: 1rpx solid #e1e0d9;
+  font-size: 28rpx;
+  line-height: 1.7;
+}
+.decision {
+  font-size: 28rpx;
+  background: #f4f3ef;
+  color: #252723;
+  border: 1rpx solid #d2d2c8;
+  padding: 20rpx 12rpx;
+  line-height: 1.5;
+  border-radius: 6rpx;
+  width: 100%;
+}
+.decision.selected {
+  border: 2rpx solid #252723;
+  background: #e9e9e1;
+}
+.grid-2 {
+  margin-bottom: 32rpx;
+}
+.consent-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14rpx;
+  font-size: 26rpx;
+  line-height: 1.7;
+}
+.consent-row checkbox {
+  flex-shrink: 0;
+}
+.card .primary {
+  margin-top: 28rpx;
+}
+
+.page {
+  padding-bottom: calc(64rpx + env(safe-area-inset-bottom));
+}
+.card {
+  margin-top: 24rpx;
+  margin-bottom: 24rpx;
+}
+.notice {
+  margin-top: 24rpx;
+  margin-bottom: 24rpx;
+}
+.row .section-title {
+  margin-top: 0;
+  margin-bottom: 0;
+}

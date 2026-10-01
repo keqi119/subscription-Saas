@@ -283,4 +283,8 @@ H1 读取 `4186c8` 确认角色此前不存在，在单一事务内创建 `stage
 
 只读 `sts GetCallerIdentity` 在 `e4de81` 成功确认 OSS 账号 `1457643390906675`，紧接的 RAM 查询 `42eaff` 返回 `invalid_grant (refresh token is not the newest.)`，没有执行 RAM 变更。只读配置元数据 `f045a8` 显示指定配置文件未更新，而默认配置在前一次调用时更新但没有 OAuth profile。对照 [CLI 3.5.1 OAuth 刷新实现](https://github.com/aliyun/aliyun-cli/blob/v3.5.1/config/profile.go) 和[配置读写实现](https://github.com/aliyun/aliyun-cli/blob/v3.5.1/config/configuration.go)，刷新路径调用默认配置读写函数，未沿用显式 `--config-path`，解释了首次刷新成功、后续旧 refresh token 被拒绝的现象。
 
-已将默认 `.aliyun` 目录和配置文件权限收紧为当前用户，新的官方 OAuth 登录使用默认路径，使加载与刷新写回位置一致。旧指定路径保留但不再用于后续调用；尚未把新的登录恢复记为成功。Edge 自动化仍返回连接错误，续期页向任务浏览器返回 queued，并已提供本次链接请用户确认。无需重新发送密钥，也未重新申请或扩展 RAM 权限。完成登录后须连续只读调用并检查 profile 实际写回，再判断凭据恢复。
+已将默认 `.aliyun` 目录和配置文件权限收紧为当前用户，新的官方 OAuth 登录使用默认路径，使加载与刷新写回位置一致。旧指定路径保留但不再用于后续调用。Edge 自动化仍返回连接错误，续期页向任务浏览器返回 queued；用户通过所提供链接完成授权，CLI 回调及配置保存 `f114a9` 成功，身份查询 `37e904` 确认正确账号。没有重新发送密钥或扩展 RAM 权限。
+
+实际刷新验证第一次 `267053` 只让本地 STS 缓存过期，OAuth access token 仍有效，因此未发生 refresh token 轮换，探针明确失败为 `REFRESH_NOT_PERSISTED`；不能把这次当刷新通过。随后同时让两层本地缓存提前过期，`158332` 确认官方 CLI 实际轮换 refresh token 并写回同一个默认配置，紧接 RAM 只读查询成功。配置文件访问者仍只有当前用户，令牌值未输出或写入仓库。实际未分页截断的角色查询只发现既有 evidence-writer、evidence-audit-reader 和 snapshot-consumer，尚无 snapshot publisher；后续按真实 producer run 的 exact slots 准備精确权限变更并按用户要求确认，不提前授予 prefix 写权限。
+
+本轮代码已提交、推送 `c5919ec02f77d45444e03fad38320fac83f95fe8`（`170cda` / `4f0d5c`），工作区干净。登录恢复和上述读取不代表真实快照制作、发布、迁移或 R2/R3/R4 已完成。

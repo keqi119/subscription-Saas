@@ -11,6 +11,22 @@ on:
         description: Build proof SHA-256 without the sha256 prefix
         required: true
         type: string
+      sourceFreshCreationSpec:
+        description: Canonical public source/fresh creation-spec JSON already reserved on H1
+        required: true
+        type: string
+      sourceSnapshotCreationSpec:
+        description: Canonical public source/snapshot creation-spec JSON already reserved on H1
+        required: true
+        type: string
+      finalFreshCreationSpec:
+        description: Canonical public final/fresh creation-spec JSON already reserved on H1
+        required: true
+        type: string
+      finalSnapshotCreationSpec:
+        description: Canonical public final/snapshot creation-spec JSON already reserved on H1
+        required: true
+        type: string
       snapshotRunId:
         description: Protected sanitized snapshot run
         required: true
@@ -35,7 +51,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: stage1-s1-release-candidate-${{ github.sha }}
+  group: stage1-s1-release-candidate-h1
   cancel-in-progress: false
 
 env:
@@ -76,26 +92,111 @@ jobs:
 
   source-fresh:
     needs: source-static
-    runs-on: [self-hosted, linux, stage1-release-source]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
     environment: trusted-source-database-gate
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ needs.source-static.outputs.source-sha }}
           persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
       - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
-      - name: Execute the complete fresh source database gate
+      - name: Prepare the ephemeral hosted isolation prerequisites
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/release/run-source-database-gate.mjs --chain fresh > "$RUNNER_TEMP/source-fresh.raw.json"
-          mkdir -p .release-output/source-fresh
-          node --input-type=module <<'NODE'
-          import { readFile, writeFile } from "node:fs/promises";
-          import { canonicalJson, validateContract } from "./packages/release-foundation/src/index.mjs";
-          const value = JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/source-fresh.raw.json`, "utf8"));
-          validateContract("source-gate-evidence.v1", value);
-          await writeFile(".release-output/source-fresh/source-gate-fresh.v1.json", canonicalJson(value), { flag: "wx" });
+          test "$GITHUB_ACTIONS" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$RUNNER_OS" = Linux
+          test "$GITHUB_REPOSITORY" = keqi119/subscription-Saas
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cryptsetup-bin dmsetup e2fsprogs openssh-client
+          sudo systemctl mask --runtime --now docker.service docker.socket containerd.service
+          test ! -e /run/containerd/containerd.sock
+          test ! -L /run/containerd/containerd.sock
+          sudo swapoff --all
+          test "$(wc -l < /proc/swaps)" -eq 1
+          for directory in /dev/shm/stage1-keys /var/lib/stage1-snapshots /srv/stage1-snapshot; do
+            test ! -e "$directory"
+            test ! -L "$directory"
+            sudo install -d -o root -g root -m 0700 "$directory"
+          done
+          for binary in /usr/bin/dockerd /usr/bin/containerd /usr/sbin/cryptsetup /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/bin/findmnt /usr/bin/lsblk /usr/bin/sftp /usr/bin/ssh; do
+            test -x "$binary"
+          done
+      - id: prepare-job
+        name: Freeze the current hosted job and its public attestation input
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_FRESH_CREATION_SPEC: ${{ inputs.sourceFreshCreationSpec }}
+          BUILD_PROOF_DIGEST_HEX: ${{ inputs.buildProofDigestHex }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=GH_TOKEN,SOURCE_FRESH_CREATION_SPEC,BUILD_PROOF_DIGEST_HEX,GITHUB_ACTIONS,GITHUB_REPOSITORY,GITHUB_REPOSITORY_ID,GITHUB_REF,GITHUB_SHA,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,GITHUB_JOB,GITHUB_WORKFLOW_REF,RUNNER_OS,RUNNER_NAME \
+            /bin/bash -ceu 'ulimit -S -c 0; ulimit -H -c 0; exec "$1" --input-type=module' stage1-root "$(command -v node)" >> "$GITHUB_OUTPUT" <<'NODE'
+          import { mkdir, chmod, open, readFile } from "node:fs/promises";
+          import { prepareR3SourceFreshHostedJob } from "./scripts/release/r3-operation-inputs.mjs";
+          const creationSpecBytes = Buffer.from(process.env.SOURCE_FRESH_CREATION_SPEC, "utf8");
+          const spec = JSON.parse(creationSpecBytes);
+          if (!/^[0-9a-f]{64}$/.test(process.env.BUILD_PROOF_DIGEST_HEX ?? "") ||
+              spec.buildProofDigest !== `sha256:${process.env.BUILD_PROOF_DIGEST_HEX}` ||
+              spec.sourceSha !== process.env.GITHUB_SHA) throw new Error("R3_WORKFLOW_CANDIDATE_MISMATCH");
+          const job = await prepareR3SourceFreshHostedJob({ repoRoot: process.cwd(), creationSpecBytes });
+          // Publish only this non-secret description; the original and keys stay in tmpfs.
+          await mkdir(".release-inputs", { mode: 0o755 });
+          await mkdir(".release-inputs/r3-source-fresh", { mode: 0o755 });
+          await chmod(".release-inputs", 0o755);
+          await chmod(".release-inputs/r3-source-fresh", 0o755);
+          const file = ".release-inputs/r3-source-fresh/job-admission.json";
+          const handle = await open(file, "wx", 0o644);
+          try { await handle.chmod(0o644); await handle.writeFile(job.jobAdmissionBytes); await handle.sync(); }
+          finally { await handle.close(); }
+          if (!(await readFile(file)).equals(job.jobAdmissionBytes)) throw new Error("R3_JOB_PUBLIC_COPY_MISMATCH");
+          process.stdout.write(`operation-ref=${spec.operationRef}\nartifact-name=${job.artifactName}\n`);
+          NODE
+      - id: attest-job
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-inputs/r3-source-fresh/job-admission.json
+      - id: upload-job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.prepare-job.outputs.artifact-name }}
+          path: .release-inputs/r3-source-fresh/job-admission.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - name: Execute the held source fresh exchange through verified CLOSED
+        env:
+          OPERATION_REF: ${{ steps.prepare-job.outputs.operation-ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # H1 imports the attested job artifact and starts its fixed owner caller.
+          # The hosted caller waits for that independent process; it cannot ACK for the owner.
+          sudo --preserve-env=OPERATION_REF,GITHUB_ACTIONS,GITHUB_REPOSITORY,GITHUB_REPOSITORY_ID,GITHUB_REF,GITHUB_SHA,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,GITHUB_JOB,GITHUB_WORKFLOW_REF,RUNNER_OS,RUNNER_NAME \
+            /bin/bash -ceu 'ulimit -S -c 0; ulimit -H -c 0; exec "$1" --input-type=module' stage1-root "$(command -v node)" <<'NODE'
+          import { readFile } from "node:fs/promises";
+          import { runR3SourceFreshHosted } from "./scripts/release/run-r3-source-fresh.mjs";
+          import { encodeManualJson } from "./packages/release-foundation/src/manual-stage1-contracts.mjs";
+          import { sha256Bytes } from "./packages/release-foundation/src/digest.mjs";
+          const result = await runR3SourceFreshHosted({ repoRoot: process.cwd(), operationRef: process.env.OPERATION_REF });
+          const file = `${process.cwd()}/.release-output/source-fresh/source-gate-fresh.v1.json`;
+          const bytes = await readFile(file);
+          if (result.status !== "CLOSED" || result.sourceGateEvidenceFile !== file ||
+              result.sourceGateEvidenceDigest !== sha256Bytes(bytes) ||
+              !encodeManualJson(result.sourceGateEvidence).equals(bytes)) throw new Error("R3_SOURCE_PUBLIC_RESULT_MISMATCH");
+          process.stdout.write(`Source fresh CLOSED: ${result.sessionRecordDigest}\n`);
           NODE
       - id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
@@ -106,6 +207,7 @@ jobs:
         with:
           name: rc-source-fresh-${{ env.RC_ARTIFACT_SUFFIX }}
           path: .release-output/source-fresh/source-gate-fresh.v1.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 180
           overwrite: false
@@ -119,7 +221,7 @@ jobs:
           STORE_REF: ${{ steps.upload.outputs.artifact-url }}
           ATTESTATION_REF: ${{ steps.attest.outputs.attestation-url }}
         run: |
-          node scripts/release/workflow-custody-record.mjs \
+          sudo "$(command -v node)" scripts/release/workflow-custody-record.mjs \
             --original-file .release-output/source-fresh/source-gate-fresh.v1.json \
             --readback-file .release-readback/source-fresh/source-gate-fresh.v1.json \
             --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$STORE_REF" \
@@ -129,67 +231,128 @@ jobs:
         with:
           name: rc-source-fresh-custody-${{ env.RC_ARTIFACT_SUFFIX }}
           path: .release-output/source-fresh/source-gate-fresh-custody-record.v1.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 180
           overwrite: false
 
   source-snapshot:
-    needs: source-static
-    runs-on: [self-hosted, linux, stage1-release-source]
+    needs: [source-static, source-fresh]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
     environment: trusted-source-database-gate
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ needs.source-static.outputs.source-sha }}
           persist-credentials: false
-      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.snapshotRunId }}
-          name: ${{ inputs.snapshotArtifactName }}
-          path: ${{ runner.temp }}/snapshot-input
-      - name: Verify the protected snapshot artifact before database access
+          node-version: "22"
+      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+      - name: Prepare the ephemeral hosted isolation prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_ACTIONS" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$RUNNER_OS" = Linux
+          test "$GITHUB_REPOSITORY" = keqi119/subscription-Saas
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cryptsetup-bin dmsetup e2fsprogs openssh-client
+          sudo systemctl mask --runtime --now docker.service docker.socket containerd.service
+          test ! -e /run/containerd/containerd.sock
+          test ! -L /run/containerd/containerd.sock
+          sudo swapoff --all
+          test "$(wc -l < /proc/swaps)" -eq 1
+          for directory in /dev/shm/stage1-keys /var/lib/stage1-snapshots /srv/stage1-snapshot; do
+            test ! -e "$directory"
+            test ! -L "$directory"
+            sudo install -d -o root -g root -m 0700 "$directory"
+          done
+          for binary in /usr/bin/dockerd /usr/bin/containerd /usr/sbin/cryptsetup /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/bin/findmnt /usr/bin/lsblk /usr/bin/sftp /usr/bin/ssh; do
+            test -x "$binary"
+          done
+      - id: prepare-job
+        name: Freeze the current hosted job and its public attestation input
         env:
           GH_TOKEN: ${{ github.token }}
-          SNAPSHOT_ARTIFACT_NAME: ${{ inputs.snapshotArtifactName }}
+          SOURCE_SNAPSHOT_CREATION_SPEC: ${{ inputs.sourceSnapshotCreationSpec }}
+          BUILD_PROOF_DIGEST_HEX: ${{ inputs.buildProofDigestHex }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=GH_TOKEN,SOURCE_SNAPSHOT_CREATION_SPEC,BUILD_PROOF_DIGEST_HEX,GITHUB_ACTIONS,GITHUB_REPOSITORY,GITHUB_REPOSITORY_ID,GITHUB_REF,GITHUB_SHA,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,GITHUB_JOB,GITHUB_WORKFLOW_REF,RUNNER_OS,RUNNER_NAME \
+            /bin/bash -ceu 'ulimit -S -c 0; ulimit -H -c 0; exec "$1" --input-type=module' stage1-root "$(command -v node)" >> "$GITHUB_OUTPUT" <<'NODE'
+          import { mkdir, chmod, open, readFile } from "node:fs/promises";
+          import { prepareR3SourceSnapshotHostedJob } from "./scripts/release/r3-operation-inputs.mjs";
+          const creationSpecBytes = Buffer.from(process.env.SOURCE_SNAPSHOT_CREATION_SPEC, "utf8");
+          const spec = JSON.parse(creationSpecBytes);
+          if (!/^[0-9a-f]{64}$/.test(process.env.BUILD_PROOF_DIGEST_HEX ?? "") ||
+              spec.buildProofDigest !== `sha256:${process.env.BUILD_PROOF_DIGEST_HEX}` ||
+              spec.sourceSha !== process.env.GITHUB_SHA) throw new Error("R3_WORKFLOW_CANDIDATE_MISMATCH");
+          const job = await prepareR3SourceSnapshotHostedJob({ repoRoot: process.cwd(), creationSpecBytes });
+          // Publish only this non-secret description; the original and keys stay in tmpfs.
+          await mkdir(".release-inputs", { mode: 0o755 });
+          await mkdir(".release-inputs/r3-source-snapshot", { mode: 0o755 });
+          await chmod(".release-inputs", 0o755);
+          await chmod(".release-inputs/r3-source-snapshot", 0o755);
+          const file = ".release-inputs/r3-source-snapshot/job-admission.json";
+          const handle = await open(file, "wx", 0o644);
+          try { await handle.chmod(0o644); await handle.writeFile(job.jobAdmissionBytes); await handle.sync(); }
+          finally { await handle.close(); }
+          if (!(await readFile(file)).equals(job.jobAdmissionBytes)) throw new Error("R3_JOB_PUBLIC_COPY_MISMATCH");
+          process.stdout.write(`operation-ref=${spec.operationRef}\nartifact-name=${job.artifactName}\n`);
+          NODE
+      - id: attest-job
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: .release-inputs/r3-source-snapshot/job-admission.json
+      - id: upload-job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.prepare-job.outputs.artifact-name }}
+          path: .release-inputs/r3-source-snapshot/job-admission.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
+      - name: Execute the held source snapshot exchange through verified CLOSED
+        env:
+          OPERATION_REF: ${{ steps.prepare-job.outputs.operation-ref }}
           SNAPSHOT_RUN_ID: ${{ inputs.snapshotRunId }}
         shell: bash
         run: |
           set -euo pipefail
-          test "$SNAPSHOT_ARTIFACT_NAME" = "sanitized-snapshot-$SNAPSHOT_RUN_ID"
-          gh attestation verify "$RUNNER_TEMP/snapshot-input/sanitized-snapshot.dump" \
-            --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow github.com/keqi119/subscription-Saas/.github/workflows/sanitized-snapshot.yml \
-            --source-ref refs/heads/main --format json > "$RUNNER_TEMP/snapshot-dump-attestation.json"
-          gh attestation verify "$RUNNER_TEMP/snapshot-input/snapshot-metadata.v1.json" \
-            --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow github.com/keqi119/subscription-Saas/.github/workflows/sanitized-snapshot.yml \
-            --source-ref refs/heads/main --format json > "$RUNNER_TEMP/snapshot-metadata-attestation.json"
-          node --input-type=module <<'NODE'
+          # H1 imports the attested job artifact and starts its fixed owner caller.
+          # The hosted caller waits for that independent process; it cannot ACK for the owner.
+          sudo --preserve-env=OPERATION_REF,SNAPSHOT_RUN_ID,GITHUB_ACTIONS,GITHUB_REPOSITORY,GITHUB_REPOSITORY_ID,GITHUB_REF,GITHUB_SHA,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,GITHUB_JOB,GITHUB_WORKFLOW_REF,RUNNER_OS,RUNNER_NAME \
+            /bin/bash -ceu 'ulimit -S -c 0; ulimit -H -c 0; exec "$1" --input-type=module' stage1-root "$(command -v node)" <<'NODE'
           import { readFile } from "node:fs/promises";
-          const metadata = JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/snapshot-input/snapshot-metadata.v1.json`, "utf8"));
-          const expected = `github://${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.SNAPSHOT_RUN_ID}`;
-          if (metadata.workflowRunRef !== expected) throw new Error("SNAPSHOT_WORKFLOW_IDENTITY_MISMATCH");
-          NODE
-      - name: Execute the complete snapshot source database gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/release/run-source-database-gate.mjs --chain snapshot \
-            --snapshot-metadata-file "$RUNNER_TEMP/snapshot-input/snapshot-metadata.v1.json" \
-            > "$RUNNER_TEMP/source-snapshot.raw.json"
-          mkdir -p .release-output/source-snapshot
-          node --input-type=module <<'NODE'
-          import { readFile, writeFile } from "node:fs/promises";
-          import { canonicalJson, validateContract } from "./packages/release-foundation/src/index.mjs";
-          const source = JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/source-snapshot.raw.json`, "utf8"));
-          const snapshot = JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/snapshot-input/snapshot-metadata.v1.json`, "utf8"));
-          validateContract("source-gate-evidence.v1", source);
-          validateContract("snapshot-metadata.v1", snapshot);
-          await writeFile(".release-output/source-snapshot/source-gate-snapshot.v1.json", canonicalJson(source), { flag: "wx" });
-          await writeFile(".release-output/source-snapshot/snapshot-metadata.v1.json", canonicalJson(snapshot), { flag: "wx" });
+          import { runR3SourceSnapshotHosted } from "./scripts/release/run-r3-source-fresh.mjs";
+          import { encodeManualJson } from "./packages/release-foundation/src/manual-stage1-contracts.mjs";
+          import { sha256Bytes } from "./packages/release-foundation/src/digest.mjs";
+          if (!/^[1-9][0-9]*$/.test(process.env.SNAPSHOT_RUN_ID ?? "")) throw new Error("SNAPSHOT_WORKFLOW_IDENTITY_MISMATCH");
+          const result = await runR3SourceSnapshotHosted({ repoRoot: process.cwd(), operationRef: process.env.OPERATION_REF });
+          const file = `${process.cwd()}/.release-output/source-snapshot/source-gate-snapshot.v1.json`;
+          const bytes = await readFile(file);
+          if (result.status !== "CLOSED" || result.sourceGateEvidenceFile !== file ||
+              result.sourceGateEvidenceDigest !== sha256Bytes(bytes) ||
+              !encodeManualJson(result.sourceGateEvidence).equals(bytes)) throw new Error("R3_SOURCE_PUBLIC_RESULT_MISMATCH");
+          const metadataFile = `${process.cwd()}/.release-output/source-snapshot/snapshot-metadata.v1.json`;
+          const metadataBytes = await readFile(metadataFile);
+          const expectedSnapshotRun = `github://${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.SNAPSHOT_RUN_ID}`;
+          if (result.snapshotMetadataFile !== metadataFile ||
+              result.snapshotMetadataDigest !== sha256Bytes(metadataBytes) ||
+              !encodeManualJson(result.snapshotMetadata).equals(metadataBytes) ||
+              result.snapshotMetadata.workflowRunRef !== expectedSnapshotRun)
+            throw new Error("R3_SNAPSHOT_PUBLIC_RESULT_MISMATCH");
+          process.stdout.write(`Source snapshot CLOSED: ${result.sessionRecordDigest}\n`);
           NODE
       - id: attest-source
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
@@ -200,6 +363,7 @@ jobs:
         with:
           name: rc-source-snapshot-${{ env.RC_ARTIFACT_SUFFIX }}
           path: .release-output/source-snapshot/source-gate-snapshot.v1.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 180
           overwrite: false
@@ -213,6 +377,7 @@ jobs:
         with:
           name: rc-snapshot-metadata-${{ env.RC_ARTIFACT_SUFFIX }}
           path: .release-output/source-snapshot/snapshot-metadata.v1.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 180
           overwrite: false
@@ -232,13 +397,13 @@ jobs:
           SNAPSHOT_STORE_REF: ${{ steps.upload-snapshot.outputs.artifact-url }}
           SNAPSHOT_ATTESTATION_REF: ${{ steps.attest-snapshot.outputs.attestation-url }}
         run: |
-          node scripts/release/workflow-custody-record.mjs \
+          sudo "$(command -v node)" scripts/release/workflow-custody-record.mjs \
             --original-file .release-output/source-snapshot/source-gate-snapshot.v1.json \
             --readback-file .release-readback/source-snapshot/source-gate-snapshot.v1.json \
             --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$SOURCE_STORE_REF" \
             --attestation-ref "$SOURCE_ATTESTATION_REF" \
             --output-file .release-output/source-snapshot/source-gate-snapshot-custody-record.v1.json
-          node scripts/release/workflow-custody-record.mjs \
+          sudo "$(command -v node)" scripts/release/workflow-custody-record.mjs \
             --original-file .release-output/source-snapshot/snapshot-metadata.v1.json \
             --readback-file .release-readback/snapshot-metadata/snapshot-metadata.v1.json \
             --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$SNAPSHOT_STORE_REF" \
@@ -250,6 +415,7 @@ jobs:
           path: |
             .release-output/source-snapshot/source-gate-snapshot-custody-record.v1.json
             .release-output/source-snapshot/snapshot-metadata-custody-record.v1.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 180
           overwrite: false
@@ -329,23 +495,23 @@ jobs:
           overwrite: false
 
   final-fresh:
-    needs: [source-fresh, admit-build]
+    needs: [source-fresh, source-snapshot, admit-build]
     uses: ./.github/workflows/release-final-chain.yml
     with:
       chain: fresh
       artifactSuffix: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      snapshotRunId: ${{ inputs.snapshotRunId }}
-      snapshotArtifactName: ${{ inputs.snapshotArtifactName }}
+      creationSpec: ${{ inputs.finalFreshCreationSpec }}
+      buildProofDigestHex: ${{ inputs.buildProofDigestHex }}
     secrets: inherit
 
   final-snapshot:
-    needs: [source-snapshot, admit-build]
+    needs: [source-snapshot, admit-build, final-fresh]
     uses: ./.github/workflows/release-final-chain.yml
     with:
       chain: snapshot
       artifactSuffix: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      snapshotRunId: ${{ inputs.snapshotRunId }}
-      snapshotArtifactName: ${{ inputs.snapshotArtifactName }}
+      creationSpec: ${{ inputs.finalSnapshotCreationSpec }}
+      buildProofDigestHex: ${{ inputs.buildProofDigestHex }}
     secrets: inherit
 
   aggregate-proof:
@@ -367,16 +533,16 @@ jobs:
       - name: Assemble the current-run aggregate input
         run: node scripts/release/assemble-release-aggregate-input.mjs --input-root .release-inputs/current-run --output-file .release-output/aggregate-input.v1.json
       - name: Aggregate only the selected same-run proof set
-        run: node scripts/release/aggregate-release-proof.mjs --input-file .release-output/aggregate-input.v1.json --output-file .release-output/release-aggregate-proof.v1.json
+        run: node scripts/release/aggregate-release-proof.mjs --input-file .release-output/aggregate-input.v1.json --output-file .release-output/release-native-aggregate-proof.v1.json
       - id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
-          subject-path: .release-output/release-aggregate-proof.v1.json
+          subject-path: .release-output/release-native-aggregate-proof.v1.json
       - id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: rc-aggregate-${{ env.RC_ARTIFACT_SUFFIX }}
-          path: .release-output/release-aggregate-proof.v1.json
+          path: .release-output/release-native-aggregate-proof.v1.json
           if-no-files-found: error
           retention-days: 180
           overwrite: false
@@ -391,8 +557,8 @@ jobs:
           ATTESTATION_REF: ${{ steps.attest.outputs.attestation-url }}
         run: |
           node scripts/release/workflow-custody-record.mjs \
-            --original-file .release-output/release-aggregate-proof.v1.json \
-            --readback-file .release-readback/aggregate/release-aggregate-proof.v1.json \
+            --original-file .release-output/release-native-aggregate-proof.v1.json \
+            --readback-file .release-readback/aggregate/release-native-aggregate-proof.v1.json \
             --workflow-run-ref "$WORKFLOW_RUN_REF" --store-ref "$STORE_REF" \
             --attestation-ref "$ATTESTATION_REF" \
             --output-file .release-output/release-aggregate-custody-record.v1.json
@@ -443,7 +609,7 @@ jobs:
             --signer-workflow github.com/keqi119/subscription-Saas/.github/workflows/release-owner-attestations.yml \
             --source-digest "$GITHUB_SHA" --format json > "$RUNNER_TEMP/owner-attestation-verification.json"
       - name: Derive repository observations and exit input after aggregation
-        run: node scripts/release/assemble-s1-exit-input.mjs --aggregate-file .release-inputs/aggregate/release-aggregate-proof.v1.json --aggregate-custody-file .release-inputs/aggregate-custody/release-aggregate-custody-record.v1.json --owner-attestations-file .release-inputs/owner-attestations/s1-owner-attestations.v1.json --output-file .release-output/s1-exit-input.v1.json
+        run: node scripts/release/assemble-s1-exit-input.mjs --aggregate-file .release-inputs/aggregate/release-native-aggregate-proof.v1.json --aggregate-custody-file .release-inputs/aggregate-custody/release-aggregate-custody-record.v1.json --owner-attestations-file .release-inputs/owner-attestations/s1-owner-attestations.v1.json --output-file .release-output/s1-exit-input.v1.json
       - name: Generate the non-audited S1 checkpoint
         run: node scripts/release/generate-s1-exit-evidence.mjs --input-file .release-output/s1-exit-input.v1.json --output-file .release-output/s1-exit-evidence.v1.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

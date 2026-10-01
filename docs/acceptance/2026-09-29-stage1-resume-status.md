@@ -1,0 +1,272 @@
+# 阶段 1 恢复执行记录（2026-09-29）
+
+阶段 1 尚未完成。保持原定范围：不增加业务功能，不采用商用 KMS，不重复已通过且未受改动影响的长测试。
+
+已接入原生 H1 final 调用、最终镜像的固定私有入口、final 原件重建与核心成功终态/双份保管，以及独立负责人签收、按阶段清理和共享槽位释放。source→final 的真实核心/文件保管正向组合已通过；其原件读取和外部观察边界仍为合成数据。原生 H1 完整成功路径和 hosted 工作流仍未完成，不能据此发布或宣布阶段 1 完成。
+
+## 当前增量：final 签收与清理（2026-09-30）
+
+从 `aac669fc` 恢复，预检 `9765f6` 确认暂停后无新改动；本地 migrate status 仍因缺 datasource.url 在连接前失败，Prisma `7755c9` 通过。本轮只改发布基础设施，没有业务、云端或数据库改动。
+
+final 完成后仍需独立调用 `acknowledgeFinal({executionRecordDigest})`。核心重新验证完整历史、final 原件和匹配 source，再把签收记录保存在 archive/backup 两处。source 与 final 清理记录使用各自的终态、结果和签收摘要；schema 拒绝混用阶段或字段。清理证明必须包含对应终态的签收、hosted 目标删除/工作区消除证据、转发关闭和八份保管记录。关闭前再读历史并检查转发确已停止，才释放两个共享槽位；物理目标锁记录和原始 UNKNOWN 保留，`promotionEligible` 始终为 false。
+
+核心方法前置检查先 RED `f45341` 后 GREEN `fb2354`。整合后的签收、schema 与核心边界短测 `8869e7` 为 4/4，无跳过；原生入口 `666b24` 为 1/1。限定源码 lint `e065e3`/`662499` 通过，独立代码审查未发现阻断问题。它们尚不证明完整正向闭环或真实 H1 执行；本轮复用既有 source 清理 fixture 接续 final，避免另建大型测试框架或重跑无关矩阵。
+
+首次 Linux 组合验证 `bfa8e7` 自然退出 1：source 签收、清理和 CLOSED 已通过，final 在创建初始记录读取处失败。根因为新增 fixture 从 archive 读取仅写入 journal 的 target-create 初始记录；candidate-use 初始记录才同时写入 archive/backup。已修正测试读取位置，语法 `ed8a1d`、限定 lint `882c26` 和差异检查通过，随后只重跑该受影响用例。首次原始日志及冻结代码摘要均保留；尚未将组合验证记为通过。
+
+第二次组合验证 `e2967b` 自然退出 1：source 已 CLOSED、final 创建已完成，但候选消费前准入重查失败。短回归 `2d2ebf`（1/1）确认 fixture 顺序错误：在固定私有父目录后新建证据目录会触发 `R3_JOB_ADMISSION_UNAVAILABLE`；先准备目录再固定准入，导入与重查均通过。已调整为正式启动器既有顺序，没有削弱目录身份校验。格式/语法/差异 `fa4258`、限定 lint `cc88b6` 通过。
+
+第三次组合验证 `472cd2` 自然退出 1（用例约 23.8 分钟）：source 已 CLOSED，final 创建、候选消费和生命周期目标登记已通过，跨过前两次断点；final 原件核验前因临时仓库缺少 `migration-global-object-policy.v1.json` 而失败。该文件已补入 fixture，并在构建摘要生成前纳入目录。完整夹具短验证 `434f95` 为 1/1，格式/语法/限定 lint/差异 `c48b7a` 通过。
+
+第四次组合验证 `47701a` 仍自然退出 1（用例约 23.8 分钟）：final 原件入口从证据图查找 build proof 时失败。定位确认，既有 R1/R2 baseline 会先把已核验 proof 的 canonical 字节写入 archive 对象目录，原夹具仅准备了 `inputs/build` 原始文件，遗漏该前置对象。现按真实路径在所有固定句柄建立前补入 canonical 归档；短回归 `cdcb58` 为 1/1，核对归档字节、摘要、策略文件及准备顺序，限定 lint/差异 `d0cb33` 通过。错误 source 声明的负向检查增加了读取完成见证，防止更早的同码错误被误当作预期拒绝。生产校验未放宽。
+
+四次原始失败日志及各自冻结摘要均保留。验证方式已调整：在 source 回放前，先核对 final 所需配置、canonical proof、源码、仓库及迁移摘要；短回归主动删除 proof 确认立即拒绝，恢复后再验证完整准入。`701a4e` 为 1/1，`183a01` 格式/限定 lint/语法/差异检查通过。此前短检查误将无独立 schema 的配置交给注册表（`d9eb71`）已修正为既有读取方式，不新增 schema。
+
+第五次 `705fcd` 在初始化约 2.7 秒即退出：新增 canonical proof 已创建对象目录，而会话 fixture 仍用非递归 mkdir 要求目录不存在，尚未开始 source 回放。现保留已有私有对象目录，并让短检查使用与长用例相同的 session/forward fixture；`ba4e94` 为 1/1，`2c706f` 限定 lint/语法/差异通过。第五次日志及冻结摘要亦保留。
+
+第六次同用例 `cfaffb` → `bed605` 自然退出 0：1 pass / 0 fail / 0 skip，用例 2470481.275995 ms，进程 2506531.196232 ms。真实核心和私有文件保管完成 source CLOSED 后的独立 final 创建/候选消费、错误 source 声明拒绝、79 项原件与 158 份保管、SUCCEEDED、单独 ACK、八份清理保管和 final CLOSED。关闭前 85 个锁，关闭后保留 83 个物理锁记录，仅删除两个共享转发槽；原 UNKNOWN 未改写。完成结果不自动 ACK，错误阶段的 ACK 被拒绝。
+
+成功日志 `final-close-native-success.log` 的 SHA-256 为 `d43c34a06d3772e18311e336af3e1e0970e391bb80acba91ee81bd61ff0edb70`，冻结清单摘要为 `a125d9c8a3a0c05b5948ef78c568423a86a770e163bec2e7504eea4e8b9ad477`，与前五次失败原件分开保留。`efdcf5` 确认本轮九个代码/测试文件与冻结副本逐字节相同。GitHub/Engine/PG 与纯原件读取器是测试替身；这一成功不证明完整原生 holder/实际镜像/真实 H1 或 CI 验收。不再重跑本次已通过的长组合。
+
+契约 `af35b1` 为 256 文件、87 schemas、128 migrations、13 commands，摘要 `sha256:4ac80d4c675aa9264b08fb36f7754dccc40b5e38ea75d1fdcdd8ed76b2d05d51`；发现清单 `76d149` 为 99 候选 / 39 清单文件 / 60 例外 / 0 未分类。现有 CI 仍调用旧 self-hosted 入口；后续必须连接既定 hosted/H1 执行流程，再完成同候选真实 fresh/snapshot、两项 Staging 迁移和 R4。合法数据库快照来源仍待确认。
+
+调用路径只读审查进一步确认：创建/清理证据的 exporter 和 importer 都只有本机接口，负责人 ACK 后到 hosted holder 的清理通知也没有实际通道。用户已于 2026-09-30 明确批准[受限 SFTP 交付设计](../superpowers/specs/2026-09-30-stage1-r3-evidence-delivery-design.md)及必要账号/SSH 配置：新增独立低权限文件交换账号，保持原转发账号及关闭核验不变。尚未实施，不再重复申请该项批准；现有 final 组合验证独立继续。
+
+## 前序增量：final 原件重建与核心终态
+
+预检 `9e402f` 开始于干净的 `bda6867a`；本地 migrate status 仍因缺 datasource.url 在连接前失败，Prisma `fe9214` 通过。没有业务改动、云端/数据库写入、push/merge 或 workflow dispatch。
+
+独立读取器按固定顺序读取全部 79 项 final 原件的 archive/backup 两份字节，再检查重读一致。它重新检查固定镜像/容器创建与隔离、实际启动/退出/流结束/删除和独立 404、迁移四阶段及物理身份、运行权限与 fixture，再从普通套件的实际命令/上下文/输出和生命周期观测重建 37 套件报告。START 中的秘密输入只保留摘要及长度，不声称能从摘要重构密码；双份私有存储和 H1 准入仍由核心验证。
+
+核心新增零参数 `verifyFinalOriginals`、`custodyFinalOriginals`、`completeFinal`。final 引用的 source 终态、结果和结构摘要必须与完整 source 历史独立核验所得值一致；历史读取先重建各自原件，再在全部上下文收集后匹配，避免相互递归。原始 UNKNOWN 不改写；成功追加记录仍为 `promotionEligible=false`。原生 final holder 已接这三步并回读终态/结果/双份保管，后续 recheck 保持绑定。final 尚不允许 ACK/cleanup/解锁，关闭仍保留 UNKNOWN 会话和锁。审查发现的孤立 final 结果及其保管记录误放行已用短测复现并拒绝。
+
+定向验证：容器原件 4/4（`3ab0ed`），包括真实 owner 返回值到迁移读取器及 8 项篡改；现有 runtime 正常用例接入独立评估器 1/1（`99cc0d`），实际执行两个 Node 测试、19 动作和 49 帧，Engine/H1/普通汇总仍用替身。套件重建及生产原件记录 5/5（`b5fc22`）；根联合 completion/套件短测 `cb030e` 5/5，无跳过。核心 sourceClaims 匹配、方法边界和孤立结果先 RED 后 GREEN；这些不是完整 final 正向历史成功证据。原生入口边界 `38aa56` 1/1。未重跑旧 source/cleanup 长链。
+
+受限 Node 源码检查 `d85e3a` 通过，最终核心修改复查 `dafc46` 通过；明确保留既有清理/秘密清除写法的检查例外，首次套用通用 TS lint 时的 Node/旧代码诊断没有被当作通过。最终核心短测 `a9aaae` 3/3，格式/语法/差异 `33d29f` 通过。契约 `dafc46` 为 256 文件、87 schemas、128 migrations、13 commands，摘要 `sha256:3450963be9208da87d78898f1c29c22fd9452681f3ecba668a5112f657e40351`；发现清单 `50e10e` 为 99 候选 / 39 清单文件 / 60 例外 / 0 未分类。
+
+下一步接 final 负责人签收与清理/锁释放，在这条完整路径上复用既有 fixture 做一次正向核心回放，不另建大型测试框架；再连接受控工作流并执行一次同候选真实 fresh/snapshot。合法数据库快照来源仍待确认；两项 Staging 迁移和恢复 API/Web 后的 R4 仍未执行。
+
+## 前序增量：原生 H1 与最终镜像接线
+
+预检 `98eea8` 为干净的 `fd9492e5`；本地 migrate status 缺 datasource.url，在连接前退出；Prisma `f8f046` 通过。本轮没有业务改动、线上写入、push/merge 或 workflow dispatch。
+
+原生 holder 新增一次性 `runFinalManifest({matchingSourceEvidenceDigest})`。它消费 final 候选后固定核心回放得到的 source 事实，校验仓库与候选摘要，创建尚未启动的 runtime；逐普通库从同一候选镜像创建迁移容器，执行并独立核验 plan/apply/verify/prepare 和实际 PG 物理身份，确认退出与精确删除后才生成输入。runtime 启动后的实际 CID/权限/挂载/网络复核先于私有输入交付。迁移与运行角色凭据仍隔离。
+
+固定 `r3-final-runtime` 入口不接受命令或路径参数。它只读 `/app` 中的固定清单和策略，在限额 tmpfs 中写入精确运行凭据和上下文，执行全部既有测试选择及 seed。普通 suite 的运行上下文使用实际 runId，数据库、标记和锁仍使用原 operationId 分配。生命周期通过单一外层 parser 复用原 19 个动作，H1 负责 provision、同镜像迁移、独立运行权限复核及 cleanup；最终镜像实际执行原两个 Node 测试，按完整 `/app` 文件路径检查原件。
+
+H1 保留双份私有原件、原始失败和初始 UNKNOWN。新增结果明确只是 `FINAL_MANIFEST_OBSERVED`，仍为 `promotionEligible=false`；没有使用报告汇总替代完整原件认证，没有写 final SUCCEEDED。既有通用 v1 路径的 v2 拒绝保持不变，新的能力只由固定私有入口与已消费 H1 调用连接。
+
+移除未发布 v2 输入中没有实际消费者的三个旧字段：custodyPolicyDigest、custodyPolicyReference、journalReference。H1 原有身份、保管和台账验证继续执行，镜像内不生成虚假 custody policy。v1 不变。
+
+定向验证：
+
+- 清单执行与固定入口 `b49322` 5/5；CLI 与 v2 输入 `41d74c` 17/17，包括真实 CLI 在未认证 stdin 关闭后仅输出 HELLO 并失败。
+- 外层通道正常/拒绝 `4f685f` 2/2，实际导入两个 Node 测试及 19 个固定动作。随后将正常用例接入容器 owner，`b02795` 1/1，复用同一用例验证启动回调、返回结果、退出、精确删除与独立 404。H1/Engine/PG、普通 manifest 汇总和 `/app` 路径投影仍是明确的模拟边界，不能声称真实镜像验收。
+- final PG 双端读回及权限配置 `905d76` 8/8，迁移容器时序 `1c3c5a` 3/3；原生入口拒绝替换参数 `feea20` 1/1。未重复旧长链。
+- 交叉审查修复了 selection 缺 databaseAssignment、角色边界字段、Node 计数转换及未注册单套件 schema 调用；这些静态修复不替代原生 H1 正向整合验证。
+- 限定源码检查 `7878d6` 通过，保留此前两个未使用导入和解构排除字段的例外。误选的宽范围 `release:check` 在完成 Prisma 校验/生成后主动停止，不作为发布检查通过记录。发现清单 `e4310f` 仍为 99 候选文件 / 39 清单文件 / 60 例外 / 0 未分类；实际清单为 37 套件。
+
+最终格式 `66016e`、语法与差异检查 `8e20d5` 通过。合同 `285df1` 为 254 文件、87 schemas、128 migrations、13 commands，摘要 `sha256:1f7db38b81c5429ab091e65cb9afd0d3c10d287cbf78ddc1ff8a4102e5a8b727`；首次新增路径顺序错误已修复，未隐去失败。
+
+下一步只补 final 原件独立读取/重建及核心成功终态、保管和清理接线，再连接受控工作流并做一次同候选真实 fresh/snapshot 验收。合法数据库快照来源仍待确认；两项 Staging 迁移和恢复 API/Web 后的 R4 仍未执行。
+
+## 前序增量：迁移评估和运行准备
+
+预检 `07745e` 为干净的 `14de6c5b`；本地迁移状态仍因缺 datasource.url 在连接前失败，Prisma 校验 `2f5709` 通过。本轮未更改业务、云端或数据库。
+
+H1 侧评估器在允许 apply 前，从 plan 返回的前六份观测重建基线、原件摘要和迁移计划；verify 必须保留完全相同的六份观测，并核对完整过程输出和独立物理目标回调结果。物理目标回调尚须接入原生 H1 查询，不能用测试替身的成功代替真实证据。
+
+私有迁移通道现为 plan→apply→verify→prepare 四步、11 帧。只有 H1 接受基础结构结果后才发送运行准备指令；迁移容器按固定清单，在同一事务中完成角色授权和 schema fixture，读取前后权限并保留实际执行记录。runtime 密码和 seed DML 不进入该迁移能力。原生命周期 provision 遗留 PUBLIC TEMP 权限已改为先撤销全部 PUBLIC 数据库权限，再恢复精确角色 CONNECT；没有放宽权限核验。
+
+定向验证：schema 原件评估有效 RED `0f4e2f` → GREEN `d90abc` 4/4；接入真实 plan producer 的组合 `7a1507` 16/16；受修改影响的通道/准备/runtime `2259a2` 8/8，覆盖 verify 拒绝后不执行准备及过早准备拒绝；TEMP 回归 `86e9e6` → `db6cee` 8/8。准备模块最初缺失 RED `ca0831` → `5dbcda` 2/2。均为本地替身边界，没有真实 PostgreSQL/Docker 或整条 H1 正向执行；既有长链没有重跑。
+
+最终资源核验增加明确的 `runtimeState=created|running`：未启动的 runtime 必须仍无网络端点，实际活动网络成员只包含 PG 和正在运行的迁移容器；容器总清单仍须包含该 runtime。依据固定 Docker 26.1.3 创建与 inspect 实现处理空端点和空 Ports，未把两种状态混为“运行成功”。观察器 RED `3541fd`，与无回填评估器的联合 GREEN `312a96` 11/11。实际镜像读回仍待完整 H1 执行。
+
+限定源码检查 `7b6b23`、`6973e5` 与差异检查通过。合同 `f6ed1c`：251 文件、87 schemas、128 migrations、13 commands，摘要 `sha256:cba19ba4240e250e69985d7c762f0652c6f25e70f4935ddc07366dc2037dd7e6`；发现清单 `0a4d27` 为 99/39/60/0。
+
+接下来的固定顺序：原生 H1 消费 final 候选并固定匹配 source → 创建并持有尚未启动的 runtime 容器 → 各普通库独立迁移/准备及回收 → 构建 v2 输入并启动完整 runtime → 接通 lifecycle 同一路径、final 终态/清理及 hosted 工作流。清单是 37 个套件，39 是发现清单中的文件数量。runtime 需固定、限额的 `/app/.release-local` 临时目录，不能复用要求 H1 uid 0 和本机转发端口的 source context。之后才运行一次同候选真实双链及既有 R4 验收。
+
+## 最新增量：最终镜像迁移内部实现
+
+预检 `b9502e` 为干净的 `3822bea2`；本地迁移查询仍因缺少 datasource.url 在数据库连接前失败，Prisma 校验 `b27238` 通过。本轮没有业务改动、数据库写入、远程容器操作或商用 KMS 配置。
+
+新增输入把普通套件或生命周期库绑定到已消费的候选、匹配 source 结果、运行时和迁移容器、实际库标记/OID/物理锁及迁移身份。扩展只采用仓库既定策略加 PostgreSQL 内置 plpgsql。此校验仅证明内部一致性；H1 仍须独立认证源结果、镜像和容器身份。
+
+执行会话从数据库实际读取基线，复用既有 plan/apply/verify 算法并绑定逐步前驱。取得迁移锁后，使用同一 transaction 重查库身份、标记、迁移前缀和结构，避免单连接池自锁。审查发现的并发失效后仍可能启动写入问题已复现并修复：RED `31596d` → GREEN `f034bc`。完整快照仍验证结构，但没有 pending 迁移时不重复 deploy。
+
+内部 runtime 只从固定镜像文件装载清单和策略，连接前核对迁移凭据，移除子进程的宿主环境继承；实际连接配置具有读取和锁等待上限。进程仅允许固定 Prisma/psql 参数，保留退出码、信号与有界输出；取消时等待终止记录，未确认 close 不伪造成功。它不创建容器，也不证明容器已删除。
+
+验证：输入 `6a002c` 3/3；会话及相关输入/适配器 `30b17a` 9/9；进程 `d2b4bc` 5/5；最终 runtime、适配器和既有迁移算法兼容性 `6f13a2` 11/11，均无跳过。数据库、子进程和身份观测使用定向替身；本轮未运行真实 PostgreSQL、Docker 或阶段 1 发布验收。最初会话测试 `ab49f0` 因同时编写的新 schema 暂时不完整而失败，不作为迁移缺口的有效 RED。
+
+限定源码 lint `87e16c` 通过。合同 `c379bd` 为 245 文件、87 schemas、128 migrations、13 commands，摘要 `sha256:8668b0250dc9882b2c4d02adb1c196700a202aa49b08487b58d77cce0bfa988e`；发现清单 `94e989` 仍为 99/39/60/0。没有重跑已通过的长链或此前进程探针。
+
+下一步把内部 runtime 接到 H1 持有的同一固定镜像独立迁移容器：检查实际 CID/命名空间，交付私有输入和迁移凭据，逐步核对结果及原始输出，确认退出和删除，再生成普通库的 migrationEvidenceDigest。然后接通完整套件、生命周期通道、final 原件评估与终态/清理。合法快照来源、同候选真实 R2/R3、两项 Staging 迁移和 R4 仍待完成。
+
+## 当前环境事实
+
+- SSH 只读查询 `506f37`：139.196.227.195 可连接；`subauto-staging-postgres-1` 健康运行，Staging API/Web 停止，其余列出的容器停止。本轮未启动或停止容器。
+- 配置定位 `4dbf26` 与脱敏读回 `731ffd`：服务器使用 `/opt/subscription-saas/.env.staging.images`，已有 DATABASE_URL，容器内目标为 `postgres:5432/subscription_saas_staging`。凭据未输出或写入仓库。此前本地缺少 datasource.url，不能据此推断服务器也缺少配置。
+- 线上迁移只读核对 `731ffd`、`97db00`：128 项本地迁移中 126 项已应用；线上 127 行记录包含一项已回滚历史记录及其后续成功记录。无未解决失败、无服务器独有迁移、无同名校验和漂移。
+- 仅待应用 `20260925090000_stage1_operational_completion_terminal_shape` 与 `20260925091000_stage1_operational_completion_settlement_guard`。仍按原发布顺序，在候选证据齐备后执行；本轮未写数据库。
+- 脱敏查询结果保存在忽略目录，SHA-256：`a6fc04fb2aae74c0f16e7fc52542a1c63c9d53fbcbcaa2b70aadd6d0e08692a1`。初次查询受服务器 Python 3.6 不支持 capture_output 参数影响，兼容修正后只读查询成功；未更改服务器 Python。
+
+## 本轮代码范围
+
+在既有 source 终态之后增加独立的负责人签收入口。它只接受当前会话已完成的准确终态摘要，重新核对原件和撤销链，将签收记录写入 archive/backup 并独立读回。完成 source 不会自动签收；历史读取拒绝孤立、重复或缺失副本的签收。此记录代表负责人绑定会话的一次独立动作，不等于独立人类签名，也不证明跨会话读取或阶段 1 验收完成。
+
+API 入口定向测试 RED `1bca05`、GREEN `d2fb45`（1/1）；纯签收构建/校验定向测试先失败后通过（1/1）。有限只读审查未发现阻断问题。仓库合同检查 `fd25c5` 通过：234 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:7a2275800b75314145c2e4838a16696c35c4b7903a6363c9601bbdcf998aab35`。
+
+仅为新增签收与缺失备份拒绝运行一次既有 Linux 集成用例：`4dc3be` 自然退出 0，1 pass / 0 fail / 0 skip（测试体 1,386,828.753669 ms，进程 1,448,595.395569 ms）。七份暂存源码与冻结测试副本一致（`6d802a`）。日志 SHA-256：`2b1efbc4613d4354d58b0e1e1073dd6e11c9df2bd1a8992a29d642fb7df8fa47`。
+
+正向验证覆盖真实私有文件、可信会话的独立 ACK、双副本、历史重读及删除备份后的拒绝，保留原 UNKNOWN 和 43 项锁。host、GitHub、Engine、PG、39-original reader 仍为合成边界。native holder 的新入口验证了前置条件拒绝；完整 runSourceManifest 生产器及其 holder 正向签收尚未在真实 H1 运行，不能据此宣布线上验收通过。
+
+随后抽取共享撤销链检查，为跨会话读取提供默认零写入的内部接口。原会话显式保留既有 checkpoint 创建行为；只读分支在缺失、孤立或回退时拒绝。新增 3 项定向检查通过；接回原会话后，签名后撤销/回退定向用例 `f46c64` 通过（1/1）。当前全部代码的合同检查 `59bd7a` 通过：235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:ea8673abf21d032d261ece4d92108172bfe7e1cab7c92424795f720c00d6e214`。此抽取由独立定向检查覆盖，不在此前冻结的 ACK 长测试副本内；完整跨会话 source 读取仍待实现。
+
+## 后续顺序
+
+1. 签收和关闭会话后的只读入口已在本地集成验证，继续保留真实 H1 验收未完成的状态。
+2. 完成最终镜像内的迁移、逐套件运行和生命周期通道接线，再接通 final 原件评估、终态、清理及 hosted 工作流。既有 R2 固定目标授权不可直接套用于 R3 动态目标；不增加独立平台或业务功能。
+3. 获得合法数据库快照来源确认，完成同一候选的真实 R2/R3 证据。既有 RAM/加密凭据配置已完成，不重建；之前的 RSA 恢复卷不是数据库快照。
+4. 应用上述两项 Staging 迁移、恢复对应 API/Web，完成真实 R4 验收。
+
+数据库快照来源问题仍待答复；现有断点也未授权 push、merge 或 workflow dispatch。当前离线工作不依赖这些动作，继续推进。
+
+## 跨会话读取增量
+
+本轮预检 `c8dd75` 为干净的 `8879f03b`；`a11b48` 迁移状态因本地缺少 datasource.url 在连接前退出，`32caf1` Prisma 校验通过。改动仅涉及发布证据读取，未修改业务或线上环境。
+
+共享历史校验按完整档案中的会话分组，复用原件、签名、消费、终态、物理目标记录、source 保管及签收校验，并保留全图孤立记录和 R2 检查。只读入口不创建 OPEN、锁或撤销 checkpoint，不读签名私钥。快照声明在原执行时间重建；现有实时入口仍按当前时间拒绝过期输入。native 入口逐组独立核验固定 H1、构建证明和 GitHub 身份，历史任务允许已结束，返回后仍可检查原件是否变化。
+
+当前证据：新增 API 的缺失入口 RED `2877ea`，GREEN `64b6be`；相关入口防覆盖检查 `fb3a66` 为 3/3。快照事件时间与实时过期检查通过；共享 core 定向 8/8。合同检查 `4daf3e` 为 235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:ba78b6ad6768c2d5ca544861bb21506509fc6e09255ed4ed8c296f7e47fbed71`；格式检查 `377a7b`、限定源码的未定义/未使用变量与差异检查 `7d41a7` 通过。快照声明抽取已本地提交为 `7c29b99e`。
+
+最终 Linux 整合 `1527d3` 自然退出 0：2 pass / 0 fail / 0 skip，完整 source/历史用例耗时 1,139,894.78711 ms，总进程 1,169,447.709067 ms。它验证原实时 job 门槛、真实私有文件中的 source/ACK/关闭记录、配置过期后的历史读取、无签名密钥读取、证据目录前后不变，以及篡改备份 ACK 后拒绝重读。八份代码/合同文件与冻结副本一致（`10368c`）；日志 SHA-256 为 `fd5e52211764b8085f3bcf7bf72bba9bfb7b8b7de18d42b82ff6d8866f8b8329`。此整合覆盖单个关闭的 fresh source 会话，host/GitHub/Engine/PG 和 39-original reader 为合成边界；不代表真实 H1、完整 native source 生产器或多旧会话接续验收。既有完整快照和数据库长测试未重复运行。
+
+该次提交的剩余边界：只读入口支持按多个历史会话分组，但实时签发仍有全图单会话限制。后续 final 不能直接借只读成功绕过执行授权，必须复用同一校验逻辑接入新会话检查。source 工作区清理及 matching final 仍待接通；上述本地校验不等于真实 H1/R2/R3 或 R4 通过。
+
+## 完整历史接入实时会话（本地验证通过）
+
+预检 `d7a1ee` 为干净的 `c337f266`；`5ca34f` 因本地缺少 datasource.url 在数据库连接前退出，`dab735` Prisma 校验通过。本轮只修改发布基础设施。
+
+旧会话与只读出口现共用完整上下文装载器。旧 source 必须有创建成功、候选执行成功和唯一 ACK；snapshot 分支还必须有完成的消费阶段。当前会话继续独立处理 pending、计数和锁句柄。每次动作重新枚举完整档案，验证旧上下文的原件及固定 H1/H2 来源，然后关闭本次读取对象，避免把前一次读取快照用于合法的新写入。未删除或放宽任何生产环境锁。
+
+新增 Linux 定向检查 `1f114b` 为 3/3、0 skip：已结束 final job 的历史输入在 profile 过期后仍可验证；job 结束时间早于已记录执行时拒绝；两个 API 拒绝调用方权威覆盖。core 原有消费一次、UNKNOWN 不复用及只读缺失终态定向检查 3/3 通过。合同检查 `be623b` 通过，仍为 235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:7147ad54654066940242604f4425e33f113ebbfd8653b8f8f8693fa84f0f12bb`。格式与限定 Node 源码检查 `5607b2` 通过。
+
+扩展组合验证 `0acec9`（会话 `9397`）自然退出 0，1 pass / 0 fail / 0 skip；测试体 1,378,366.974033 ms，总进程 1,408,549.927154 ms。用例保留真实私有文件、已关闭 source/ACK、41 个物理目标锁，再模拟后续清理已释放两个共享端口槽，验证新会话签发及消费 UNKNOWN、重复签发拒绝及旧 ACK 副本改动后拒绝。新动作确实重新查询旧 job 的来源；消费后的合法档案写入不会使下一次历史捕获失效。三份改动源码与冻结测试副本一致（`be1909`），日志 SHA-256：`52c5bac0aaf9153d2d51c72042cb4f9cc369e3fd28a0b28d0cc1b88471c42aaf`。
+
+测试中的端口槽释放只是明确标注的前提，不是清理实现或清理验收；host/GitHub/Engine/PG 和 39-original 重建仍为合成边界。新会话从固定 job 读取器取得输入后进入真实 core；本用例不声称完整 native holder 的第二轮执行或新目标完成。下一步在已持有同一 job/资源的 hosted 控制程序中显式完成清理，独立读回验证后由 H1 释放两个共享端口槽，继续保留 41 个旧目标锁原件用于历史验证。阶段 1 仍未完成。
+
+## 持有资源的显式清理（本地定向验证）
+
+本轮预检 `a57a88` 为干净的 `f33d788c`；`8baa1d` 因本地缺少 datasource.url 在连接前失败；`75ef04` Prisma 校验通过。只修改发布清理基础设施，未操作云端或数据库。
+
+hosted control 新增无参数的一次性清理入口，从自己仍持有的创建结果、Engine 子进程、containerd、同一 job 和 PG 资源观测取得身份。它关闭转发，依次停止并读回目标容器、删除并读回容器/网络/卷/镜像，确认 Engine 空闲后停止自有进程，再清理工作区。工作区仅接受进程内保留的原创建结果，复查当前配置、磁盘/密钥/挂载身份后，执行普通卸载和固定 mapper 关闭，逐个删除原密钥、backing file、空挂载目录，并独立观测缺席。不使用递归删除、强制卸载或 prune。部分失败保留已执行前缀；普通 close 不自动删除工作区。
+
+控制程序初始接口 RED `d64087`，首次绿色验证的断言不匹配实际退出对象，修正后 `fbd00e` 为 4/4。只读审查随后发现 HTTP 空闲超时及 SIGKILL 后无界等待：精准回归 `90395c` 为 4 pass / 2 fail，修复后的 Linux `f752ca` 为 6 pass / 0 fail / 0 skip，总计 2,838.237504 ms。请求采用独立 15 秒截止计时器，Engine SIGKILL 后最多再等 2 秒；未确认退出保持 UNKNOWN，不清理工作区。RED/GREEN 日志 SHA-256 分别为 `194a993911ecb7452aa56014ff2c7dda7e2bcec6d6bfa56a58524be03c3fbee5` / `1bcad813ebf129bf9a444c169c94727d126b0792c7275a6ae19f2810c2e63b95`。
+
+工作区初始接口 RED `8f24ba`、9/9 GREEN `bf3b84`；新增命令不退出的定向回归先失败，最终 `ee9757` 为 10/10，总计 13,621.2485 ms。120 秒期限后请求终止，最多再等 2 秒；未确认 close 保留 PID、空退出字段和 INCOMPLETE，不继续删除。该文件的测试由 Windows 上的模块替身模拟 Linux/文件系统/命令；控制测试使用实际 Linux Unix socket 和 Node 子进程替代 Engine。两者均不能证明真实 Docker/LUKS 清理或 H1 验收。工作区最终运行没有单独日志文件，以已返回工具输出为记录。
+
+格式、差异和限定 Node 全局变量的源码检查 `c13f40` 通过；第一次通用 ESLint 调用因该目录未配置 Node 全局变量失败，未据此声称全仓 lint 通过。合同检查 `8cdc00` 通过：235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:577d32e44887d963dcdf5c239baec1334689e3850d15fc6bbb4acf8cd60203b0`。未重复此前 19–51 分钟的历史/source/snapshot 链。
+
+下一步在现有 job 签名和 custody 机制内保存并独立验证清理证据，核对 source/ACK 与转发关闭后只释放两个共享端口槽；41 个旧目标锁原件继续保留。不新增清理授权格式或远程删除服务。合法数据库快照来源、实际同候选 R2/R3、两项 Staging 迁移和 R4 仍待完成。
+
+## 清理证据签名与独立校验（本地验证通过）
+
+资源清理增量已本地提交为 `150a1c1b`。下一轮预检 `e5da6a` 为该提交的干净状态，本地迁移查询仍因缺 datasource.url 在连接前退出；Prisma `98e215` 校验通过。
+
+既有 hosted control 只接受任务私钥，使用内部保存的成功清理记录导出证据，拒绝未完成或调用方替换记录。新增校验复用原始工作区、PG 和创建证据校验器，使用独立签名域绑定原创建字节、operation/spec/job，核对 11 个固定请求、进程实际退出、两个进程缺席、工作区清理命令及最终缺席报告。它证明观测一致性；H1 仍须核对来源目标、source 终态和唯一 ACK、双份保管与转发关闭，之后才可释放两个共享锁。
+
+导出入口有效 RED `f0ec5a`，Linux GREEN `d7aede` 为 6/6、0 skip，总计 2,942.19775 ms；该层使用 codec 替身，覆盖持有记录不可替换和失败不能导出。签名校验器 RED `7682be`，定向 GREEN `489241` 3/3；固定 Docker 版本语义复核发现正常镜像删除还返回数据层摘要，另发现权限 mode 数字的截断边界。两例 RED `964799` 后定向 GREEN `3705c9`，最终校验文件 `21953c` 为 13/13，总计 2,219.0125 ms。随后明确拒绝非字符串 mode，受影响单例 `6730ae` 为 1/1（1,443.7242 ms），未重复全文件。codec 测试为合成数据，只有工具输出，没有独立日志；不代表真实 Docker/LUKS/H1 清理已验收。[固定 Docker 源码](https://raw.githubusercontent.com/moby/moby/v26.1.3/daemon/images/image_delete.go)明确将删除的 layer ChainID 加入响应，发生在 noprune 判断之前。
+
+导出 RED/GREEN 日志 SHA-256：`10e351d0d3e35110ff1e472a3c6e968e78bd0994b3f462602d2d60bafde9eeab` / `28b65618a3b811c6621ffbfc7334a0644984c98af21fd6382d432f658da59435`；两份 control 文件与 Linux 测试副本一致（`367df4`）。当前工作流尚未调用新 hosted holder；这与 H1 清理台账、matching final、合法数据库快照、实际 R2/R3、两项 Staging 迁移和 R4 一并保持未完成。
+
+最终格式、限定 Node 源码与差异检查 `36108c` 通过。合同检查 `71882d` 为 235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:2baad22bbff67fab28a0b161bdf96079c897f8d9be5d0d5ac0a4bcc5393e701d`。无新增注册 schema、远程操作或业务变更。
+
+## H1 清理证据与关闭边界（当前增量）
+
+预检 `6294f9` 为干净的 `a5e9b126`；本地迁移查询 `659d96` 因缺少 datasource.url 在连接前退出，Prisma `0f24b7` 校验通过。仅修改发布基础设施。
+
+固定导入器预留 cleanup 目录，只接受同一 job 签名、绑定原创建包的清理证据，先保存备份再保存归档；独立读取两个副本并重新验证原创建报告。既有 v3 台账增加严格 cleanup-observation 分支，绑定 source 终态、唯一负责人 ACK、清理原件和 H1 转发关闭观测；四个对象分别取得双份 custody，历史拒绝孤立或缺失副本。转发观测检查固定密钥文件为空、两个端口无监听、专用 UID 无进程；命令超时或未确认退出保留 INCOMPLETE。
+
+正常 close 重新核验后仅释放两个原共享端口锁，保留 41 个原目标锁及初始 UNKNOWN 消费记录。审查发现外层复核失败仍可能走正常关闭，已补只能降低权限的 closeIncomplete：消费后保留两槽，不能沿用此前的清理成功记录释放锁。历史 CI 结束时间同时覆盖执行和 hosted 清理，使用独立 latestCleanupAt 字段，不将清理冒充执行。
+
+验证记录：
+
+- 新导入 API 的有效 RED `9bf31f`，GREEN `9410cc`；Linux 定向 `188e2e` 为 4/4、零跳过（总计 63,985.352546 ms），覆盖固定目录准备、真实签名导入、复制隔离、重复导入拒绝、备份篡改拒绝及 CI 结束时间边界。日志 SHA-256：`0e7c22660aef7d23f96ad6cc49ff8954863fd6da475943f51edb41435374d560`。
+- core 新分支 5/5；保守关闭 RED `f621ee`、GREEN `bc61a0` 为 2/2、零跳过。原件/锁是实际测试文件，外部环境为合成边界。
+- 转发观察 6/6；身份字段的数值 mode/负 inode 精准回归先失败，受影响单例 `efbdde` 通过。共享 cleanup 夹具抽取后签名校验文件 `e43fa3` 为 13/13；未新增测试矩阵。
+- 外层复核失败的 Linux 定向 `ed4367` 为 1/1、零跳过，确认只调用保守关闭；此例用 core 替身专门控制复核失败点，不宣称完整 core 清理已通过。日志 SHA-256：`68db13ce86a1c91ceabc431b34c8d92cb36694e1729f633df6eb168d2021d37e`。
+- 格式 `a22c07`、修正命令全局变量传参后的限定源码检查 `4d6160` 通过；后者保留既有两个未使用导入的例外，不代表全仓 lint。合同 `d82dd1` 通过：235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:e9cefbce844099bcc569322e09c03cc242045fd484398a0d70e7c9840656da01`。
+
+新增 source→ACK→实际签名 cleanup→共享槽释放整合 `65833` 已自然退出 1（`15114c`），测试体 997,899.556703 ms、进程 1,099,790.625342 ms。失败发生在 source 原件检查，尚未到 cleanup：新加的所有 v3 custody 均须有 JSON 对象的检查，错误拒绝原有 raw/<digest>.bin 证据。失败日志保存在 `.superpowers/h1-cleanup-integrated-red.log`，此整合不算通过。该冻结副本早于 closeIncomplete 修正；修正由独立失败定向覆盖。没有修改 H1、OSS、Staging 数据库或容器。
+
+针对整合失败，已仅移除过宽的 JSON 主体要求，保留原 source 原始证据链检查。短回归 RED `c18b83` 精确复现原失败；GREEN `a60b26` 为 2/2、零跳过，同时确认三种新增清理原件的孤立记录仍被拒绝。没有扩大 pending 放行范围。
+
+另外修正正常关闭的回调传参：直接传入结束函数会把上一个操作的返回记录误当作“保留锁”选项。RED `18b8dc` 后改为显式无参数调用；正确文件脚本采集的 `b97ae7` 为 1/1、零跳过、实际退出 0，验证正常与复核失败两种分支（总计 39,977.322448 ms）。此前两次内联脚本的参数捕获异常已保留，不能声称其包装进程退出正常。
+
+修正后合同 `813907` 通过：235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:47cddabeda20452d17bfad751730e8975547627141cbd3a025dbab29ecc9a734`；限定源码检查 `832e31` 通过。唯一重跑为受上述失败影响的清理整合 `52645`，未重跑其他长链。
+
+清理整合最终结果 `926e0c`：自然退出 0，1 pass / 0 fail / 0 skip，测试体 948724.602681 ms、进程 972933.063548 ms。日志 SHA-256 为 `1e6ec8138341d9de2fc548933874dbee9d64f62f7e46ef55d56c38a5d909c699`；正常关闭回调回归日志为 `4cbf4511b9fcad538454b3411ad4e5ef9eacbea075f54008a2ac2ea7d87b980d`。整合使用真实私有文件、签名、核心会话和本地转发关闭观察，验证清理的八份保管记录、双副本、CLOSED 以及共享锁从 43 减为 41，原 UNKNOWN 保留。外部主机、GitHub、Engine、PG 和 source 原件生产边界为合成输入；未证明完整 native source 生产器/holder 正向完成，也不等于真实 H1 或阶段 1 验收。
+
+## 最终快照消费匹配（代码已接通，完整正向验证待完成）
+
+预检 `9b1f26` 为干净的 `77364d42`，本地 migrate status 因 datasource.url 缺失在连接前退出；`cc41aa` Prisma 校验通过。未修改业务逻辑、线上服务或数据库。
+
+复用已有 v3 request / v2 allocation 的 matchingSourceEvidenceDigest，明确指向 source 成功执行记录；创建阶段仍只负责准备资源，前序保持 null。核心完整回放所有旧上下文后，统一检查唯一 source 终态、ACK、已验证清理及 CLOSED，关闭时间须早于 final 消费分配；核对同候选、源码、清单、CI attempt 和独立实际目标。新零参数重查入口在下载、解密、复制、恢复、临时文件清理、消费完成及对外 recheck 的明确边界复核，不为每次底层 Engine 读取重复全图验证。重查失败保留已消费锁和 UNKNOWN。
+
+双方各自验证用途授权。授权索引绑定各自实际 destination/job，不能要求 source 提前知道 final 目标；因此比较同一 metadata、bundle、加密 envelope、密文以及精确 OSS 对象版本，允许两阶段使用不同权限索引。这不扩大 source 授权，也不改变既有 schema。source 持久化快照结果字段和摘要保持兼容，final 结果明确绑定 final phase。
+
+验证：core 新入口 RED `08f431` → GREEN `f92f81`（3/3、0 skip），追加消费后守卫 `daee33`（1/1、0 skip）；native 包装入口 RED `20f3e9` → GREEN `11f522`（1/1、0 skip，自然退出 0）；纯结果文件 `f92af3` 为 4/4。native 用例对 core 使用 mock，core 短用例未达到完整 source→final 匹配正向条件，不能据此宣布链路验收通过。未新增大型模拟框架或重复旧的 50 分钟恢复矩阵。
+
+合同检查 `0952e1` 通过，仍为 235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:c165139aa15fafc4620b3045c77555b91a4cb3055fdeed4abde896f2c9830b19`；限定源码检查 `40f2cf`、格式和差异检查 `fdc68e` 通过。后续仍需 final/fresh 匹配、最终候选执行/清理、受控工作流接线及一次实际候选完整验证，再推进 Staging 两项迁移和 R4。
+
+有限独立静态审查未发现阻断问题，核对了 selector 捕获、分阶段前后重查、失败保锁、完整历史后统一匹配和 source 历史字段兼容；该审查不补足未执行的正向链。
+
+## 最终候选执行契约（本地验证通过，尚未启用执行）
+
+预检 `b52f8c` 为干净的 `437089ec`；本地迁移查询仍因缺 datasource.url 在连接前退出，Prisma 校验 `1db929` 通过。现有 v5 请求、v5 签名授权及 v2 分配增加互斥 final 分支：必须使用 final 执行能力并绑定 matchingSourceEvidenceDigest；source 字段和签名语义不变，继续禁止该字段。final 准备前驱仍须是本会话成功创建（fresh）或消费（snapshot），不能用 source 记录替代。完整 source 原件匹配由后续 core 接线负责，本切片不启用 final 执行。
+
+短用例 RED `64b06e` → GREEN `b15589`；受影响契约测试文件 `c00780` 为 95/95，12,681.0248 ms。格式 `351885`、限定源码 lint 与差异检查 `131d4f` 通过。合同检查 `bc3b53` 通过：235 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:ab92770132121db844c1cf81d2a543589254c7cc856e89c3bd95debc38715403`。未重跑长链、操作云端或变更业务代码；阶段 1 仍未完成。
+
+## 最终候选历史匹配与测试目标分配（本地增量）
+
+契约已提交为 `4981b1e6`。预检 `9e67e0` 工作区干净，本地迁移查询仍因 datasource.url 缺失在连接前退出；Prisma `d0ca1e` 通过。完整历史校验现在为 fresh 和 snapshot 构建 source 事实，final 候选签发、消费及重查共用同候选、同链、同 CI attempt、已签收清理关闭且物理目标独立的匹配规则。snapshot 候选还须保留自身已成功 consumer 的 source 摘要。final 仍保留初始 UNKNOWN，明确拒绝使用 source 成功终态或完成方法。
+
+内部 final 清单绑定复用既有 source 逻辑，保持全部测试套件的原命令、文件、独立数据库和生命周期预留目标。额外应用数据库仍通过完整计划校验，但不作为测试套件目标。此处是分配逻辑，尚未修复旧 final Runner 入口的单库执行路径。
+
+匹配规则 RED `978fb4`（2 fail）→ GREEN `83151d`（4/4、0 skip、36.4 秒）；增强规则及真实 core 的 final 创建消费后拒绝 source 方法、保持 UNKNOWN 检查 `306816`（3/3、0 skip、20.7 秒）。纯比较用例不验证历史原件认证；真实 core 用例也没有完成 final 候选链。final 清单用例缺导出 RED 后，相关四个纯计划/绑定用例 4/4，通过格式检查；子 agent 未保存这些工具编号，未补造编号。
+
+合同检查 `99db67` 为 236 文件、85 schemas、128 migrations、13 commands，摘要 `sha256:7d0fb18dce5808b48cb66a0365836130d7cb62eaad54f796a089b57ec3506f50`。限定 lint 初次遗漏 Node 的 structuredClone 全局声明，补齐检查配置后 `a4e1c9` 通过；格式和差异检查 `4bc37f` 通过。有限独立静态审查未发现此次绑定的阻断问题。未搭建新的大型模拟链、重跑旧长测试或操作云端。
+
+剩余重点为 final Runner 分套件入口与生命周期接线、真实 final 终态及清理、受控工作流和同候选完整 R2/R3 验证；合法快照来源仍待确认。随后才能对齐 Staging 两项迁移、恢复 API/Web 并完成 R4。以上本地增量不代表阶段 1 收口。
+
+## 最终 Runner v2 输入（校验完成，执行仍未开放）
+
+前一增量已提交为 `41359050`。本轮预检 `4c3c12` 工作区干净，迁移状态仍在连接前因本地 datasource.url 缺失退出，Prisma `6dfebc` 通过。新增严格 v2 envelope，保留 v1；内外入口按明确版本分派。内部校验器重建完整 final 目标计划与套件选择，核对清单全集、target/source 拓扑、角色、marker、物理锁、独立凭据摘要及固定运行时引用，并从镜像内固定位置核对 discovery 摘要。生命周期只接受两条预留信息，不接收未创建的 OID 或成功声明。H1 原件认证和实际镜像/容器观测仍由后续执行接线负责，这个纯一致性校验器不赋予权限。
+
+v2 校验通过后明确返回最终执行器尚不可用的错误，在读取凭据或接触数据库前停止；直接调用旧执行器的 v2 请求也被拒绝。尚未实现最终镜像迁移、生命周期通道及终态，不能将这一步计为 final 测试通过。
+
+schema RED `a83787` → GREEN `8d448a`（2/2）；语义及两层入口 RED `5d6b32`（各 2 fail）→ GREEN `4091ec`（各 2/2）。相关三个入口测试文件 `8cb62e` 为 14/14，3,590.506 ms，含旧 v1 回归。独立审查发现共享 registry 关闭 format 校验，v2 UUID 仅写 format 会放行错误 ID；回归 RED `e4ef64` 后，仅 v2 增加 UUID pattern，GREEN `f611a9` 及最终语义文件 `eefba3`（3/3）通过。v1 和 registry 行为不变。
+
+合同清单检查先发现新增文件排序及显式入口表漏项（`168037` / `7ab0e1`），已修正；最终 `8ff6e0` 通过：238 文件、86 schemas、128 migrations、13 commands，摘要 `sha256:878d88d2622ce463070f7a597e7a4aef5038d81b8318502cc3d6c6117d3df7c3`。测试发现 `2bc1d3` 为 99 candidates、39 manifested、60 excepted、0 unclassified；限定源码 lint `f476c5`、最终格式及差异检查 `0c4f00` 通过。未运行数据库长链或操作线上环境。下一实施点仍是最终镜像执行与生命周期接线，阶段 1 未完成。
+
+## 逐库核验与生命周期进程通道（当前增量）
+
+逐库运行时核验使用固定只读 SQL，要求实际 DB/OID/marker、所有者、角色、TLS 与分配一致，并拒绝 CREATE/TEMP、对象所有权、角色继承/复制/成员关系等越权。生命周期通道只转发已有测试所需的 19 次固定操作和一次完成握手；使用两份宿主持有的数据库记录，不接收任意 SQL、路径或命令。通道失败后的操作竞争和失败记录丢失已修复，相关两个文件 `09d475` 为 7/7；测试文件移至既有目录后 `263ddd` 为 5/5。这些逐库检查使用模拟连接，尚未连接真实 PG。
+
+用户暂停后按明确通知恢复。预检 `e680b6` 保留原工作区；本地迁移查询 `8ac6e8` 仍因缺 datasource.url 在连接前退出，Prisma `8b3a04` / `227dd2` 通过。没有操作云端、线上数据库或容器。
+
+独立子进程探针的初始超时不能算通过。诊断 `18354f` 定位到探针错误使用 `--input-type=module`，导致实际文件导入产生 `ERR_INPUT_TYPE_NOT_ALLOWED`；同时暴露运行器未及时终止单个加载失败的问题。现已在异常顶层终态立即中止，正常路径仍要求两个固定测试完整 PASS 和严格 summary 校验。真实子进程回归 RED `0d18b4`（10 秒外部终止）→ GREEN `ebcbb2`（1/1，156.6 ms），保留失败 TAP 和错误原件；有限独立审查无阻断问题。
+
+本轮合同检查 `5948da` 通过：240 文件、86 schemas、128 migrations、13 commands，摘要 `sha256:99a448008786b99ffcdf4f92123521e98567a7499bfa96e5f4dd7d8859900939`；限定源码检查与差异检查 `4f6245`、格式 `7fb111` 通过。最终镜像迁移将使用同镜像的独立临时容器，凭据与运行测试的容器隔离；期望结构取自完整验证过的 matched source 结果。输入、实际启动、终态及 hosted 接线仍待实施，v2 执行守卫继续保留。
+
+改用真实 `.mjs` 子进程入口后，实际两项固定测试最终通过 `5fc06e`，Node 22.22.2、25.25 秒、exit 0、零跳过，读取真实 128 项迁移目录并完成 19 次模拟宿主调用；双方 40 帧原件一致。根代理读回 `c3457b` 再确认 counts 2/2。完整 TAP/events SHA-256 为 `aaaf5d487f1b340f7ef12e47032222876bddc17b6b842dd0830c2ca531cf55ba`，宿主 transcript 为 `cd6d6f8c52cae07945ecbf144db5ef95a2e75aa518a9e9ee9e92d760cfe17e3c`，均保存在忽略目录 `.superpowers/r3-lifecycle-probe-*.log`。诊断期间旧测试路径、过短超时、探针遗漏日志函数导入造成的失败均保留，不归因于生产通道。这个结果仅证明实际进程、固定测试与通道兼容，未连接 PG/Docker，不计为 final 验收。发现检查 `03bef1` 保持 99 candidates / 39 manifested / 60 excepted / 0 unclassified。
+
+## 最终迁移入口与容器执行组件（本轮增量）
+
+预检 `685aab` 从干净的 `9153e116` 开始；本地迁移查询仍因缺 datasource.url 在连接前退出，Prisma 校验 `42156d` 通过。此前已补齐逐库迁移输入、真实基线生成及固定命令运行时，本轮补上固定镜像入口、九帧迁移通道、Docker attach 和单迁移容器创建/检查/退出/删除组件。凭据只经私有输入发送，通道留存其摘要及长度。容器连接必须先收到有效升级响应，再启动并核验进程，之后才发送凭据；实际退出码、完整输出、删除及独立 404 回读分别核验，无法确认删除时保留记录。
+
+完整 source 历史验证现在可向 final 返回独立重建的结构摘要，持久化 source result 格式未改。final 专用资源观察核对当前持有的准确容器、镜像与网络成员集合，原 PG-only 限制保持不变。根据固定 Docker 源码核对镜像继承卷行为后，明确使用两个临时内存挂载，避免意外创建匿名持久卷；详见[实施计划](../superpowers/plans/2026-09-29-stage1-r3-lifecycle-execution.md)。此配置还没有真实 final 镜像的 inspect 验证。
+
+只运行受影响的有限验证：source 匹配 3/3（`66d5e4`），原件重建及篡改拒绝 1/1（`b9bc87`）；最终入口/通道/容器组件 19/19（`7bb566`）；资源观察和 attach 在 Windows Node 24 与 Linux Node 22 均 10/10（`1300c8`、`679fb8`）。新增两项时序问题均先复现再修复：部分多余数据可能先启动 apply（`c139e7`→`2c56c3`），协议结束后的多余输出被遗漏（`ae98bd`→`005610`）。直接 ESLint 曾因 Node globals、既有 rest-unused 及新通道两项问题失败；修正新问题并按 Node 源码上下文运行，最终限定检查 `6036f5` 通过。合同 `a4d503` 为 249 文件、87 schemas、128 migrations、13 commands，摘要 `sha256:5f7c7e0b7ea14dd464539a145f93025344dd8e5c41d322eeaed6cfff36986944`。
+
+以上 Engine/数据库验证仍使用合成边界，实际 CLI 子进程仅验证未授权输入关闭时拒绝执行。新增容器组件尚未接入 native H1 final holder，独立迁移结果评估、完整普通套件/生命周期执行、final 终态与工作流仍待接通；v2 不可执行守卫继续保留。本轮未操作线上容器、数据库或云配置，也未推送、合并或触发工作流。下一步先完成该接线，再做真实同候选 R2/R3；合法快照来源、两项 Staging 迁移及 R4 仍是收口剩余项。

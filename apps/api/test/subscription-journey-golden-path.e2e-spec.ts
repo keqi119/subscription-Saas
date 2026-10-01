@@ -36,6 +36,11 @@ import { SubscriptionJourneyRepository } from "../src/subscription-journey/subsc
 import { SubscriptionJourneySignalService } from "../src/subscription-journey/subscription-journey-signal.service";
 import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
 import { insertRuntimeOrderGraph } from "./helpers/runtime-domain-fixture";
+import {
+  activationTruth,
+  expectActivated,
+  prepareActivation
+} from "./helpers/stage1-activation-fixture";
 
 const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
   "apps/api/test/subscription-journey-golden-path.e2e-spec.ts"
@@ -74,6 +79,34 @@ describe("Stage 1 subscription Journey Golden Path", () => {
     expect(portal.manualTaskTypes).toEqual(["FINAL_PLAN_DECISION", "DELIVERY_EVIDENCE_DECISION"]);
     expect(stripEntrySpecificFacts(admin)).toEqual(stripEntrySpecificFacts(portal));
   });
+
+  it.each([ApplicationSource.SELF_SERVICE, ApplicationSource.SALES_ASSISTED])(
+    "B4 activates %s through the real journey and engine, then replays without writes",
+    async (source) => {
+      const h = await prepareActivation(prisma, source);
+      const before = await activationTruth(prisma, h);
+      expect(before.leases).toEqual([]);
+      expect(before.segments).toEqual([]);
+      expect(before.periods).toEqual([]);
+      const [claimed] = await prisma.$transaction((tx) => h.repository.claimJobs(tx, 1, 120_000));
+      expect(claimed?.id).toBe(h.jobId);
+      const result = await h.service.activateSubscriptionJob(claimed!);
+      expect(result).toMatchObject({ action: "SUBSCRIPTION_ACTIVATED", orderId: h.orderId });
+      const activated = await activationTruth(prisma, h);
+      expectActivated(activated);
+      expect(activated.bills).toEqual(before.bills);
+      expect(activated.payments).toEqual(before.payments);
+      expect(activated.writeOffs).toEqual(before.writeOffs);
+      expect(await h.service.activateSubscriptionJob(claimed!)).toEqual({
+        action: "SUBSCRIPTION_ALREADY_ACTIVATED",
+        orderId: h.orderId
+      });
+      expect(await activationTruth(prisma, h)).toEqual(activated);
+      await prisma.$transaction((tx) =>
+        h.repository.completeJob(tx, h.jobId, claimed!.leaseToken, result)
+      );
+    }
+  );
 });
 
 async function driveGoldenPath(

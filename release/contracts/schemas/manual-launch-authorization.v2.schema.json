@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manual-launch-authorization.v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["payload", "signature"],
+  "properties": {
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "authorizationId",
+        "issuedAt",
+        "expiresAt",
+        "requestDigest",
+        "profileDigest",
+        "ownerId",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "stage",
+        "capability",
+        "purpose",
+        "phase",
+        "scopeAuthorizationDigest"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "manual-launch-authorization.v2" },
+        "authorizationId": { "$ref": "#/$defs/uuid" },
+        "issuedAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" },
+        "requestDigest": { "$ref": "#/$defs/digest" },
+        "profileDigest": { "$ref": "#/$defs/digest" },
+        "ownerId": { "$ref": "#/$defs/label" },
+        "sessionId": { "$ref": "#/$defs/uuid" },
+        "sessionNonce": { "$ref": "#/$defs/nonce" },
+        "operationId": { "$ref": "#/$defs/uuid" },
+        "idempotencyKey": { "$ref": "#/$defs/label" },
+        "stage": { "const": "snapshot-consumer" },
+        "capability": { "const": "read-decrypt-use" },
+        "purpose": { "const": "sanitized-snapshot-test-input" },
+        "phase": { "enum": ["prebuild-source", "rc-source", "final"] },
+        "scopeAuthorizationDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "label": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "nonce": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}

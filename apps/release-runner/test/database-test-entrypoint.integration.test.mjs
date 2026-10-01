@@ -15,6 +15,55 @@ const digest = (character) => `sha256:${character.repeat(64)}`;
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const fromRepo = (...segments) => path.resolve(repoRoot, ...segments);
 
+test("final v2 validates all assignments before refusing the unavailable image executor", async (t) => {
+  const { finalDatabaseEnvelopeFixture } = await import("./fixtures/final-database-envelope.mjs");
+  const { envelope, manifest } = await finalDatabaseEnvelopeFixture();
+  const root = await mkdtemp(path.join(tmpdir(), "runner-final-envelope-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const roots = {
+    launch: root,
+    secrets: path.join(root, "secrets"),
+    evidence: path.join(root, "evidence")
+  };
+  await writeFile(path.join(root, "database-test-manifest.json"), JSON.stringify(manifest));
+  let credentialReads = 0,
+    executions = 0,
+    connections = 0;
+  const input = {
+    envelope,
+    roots,
+    readCredential: async () => {
+      credentialReads++;
+      throw new Error("unexpected credential read");
+    },
+    executeManifest: async () => {
+      executions++;
+      throw new Error("unexpected legacy executor");
+    }
+  };
+  await assert.rejects(executeDatabaseTestEnvelope(input), {
+    code: "DATABASE_TEST_FINAL_EXECUTOR_UNAVAILABLE"
+  });
+  const first = Object.values(envelope.suiteAssignments).find(({ kind }) => kind === "suite");
+  first.databases.target.marker = "unbound";
+  await assert.rejects(executeDatabaseTestEnvelope(input), {
+    code: "DATABASE_TEST_TARGET_ASSIGNMENT_MISMATCH"
+  });
+  await assert.rejects(
+    executeFinalDatabaseManifest({
+      envelope,
+      manifest,
+      connectDatabase: async () => {
+        connections++;
+      }
+    }),
+    { code: "DATABASE_TEST_FINAL_EXECUTOR_UNAVAILABLE" }
+  );
+  assert.equal(credentialReads, 0);
+  assert.equal(executions, 0);
+  assert.equal(connections, 0);
+});
+
 test("executes only the integrity-bound manifest with the runtime-test identity", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "runner-database-test-"));
   const roots = {

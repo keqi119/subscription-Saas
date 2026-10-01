@@ -8,6 +8,7 @@ const migrationsRoot = join(process.cwd(), "prisma", "migrations");
 const migrationPath = join(migrationsRoot, migrationName, "migration.sql");
 const ciWorkflowPath = join(process.cwd(), "..", "..", ".github", "workflows", "ci.yml");
 const apiPackagePath = join(process.cwd(), "package.json");
+const releaseCheckPath = join(process.cwd(), "..", "..", "scripts", "release-check.mjs");
 const databaseLauncherPath = join(
   process.cwd(),
   "..",
@@ -24,8 +25,7 @@ describe("Stage 1 schema drift convergence migration", () => {
       .map((entry) => entry.name)
       .sort();
 
-    expect(migrations).toHaveLength(126);
-    expect(migrations.at(-1)).toBe(migrationName);
+    expect(migrations[125]).toBe(migrationName);
   });
 
   it("converges defaults and constraints without deleting business structures or data", () => {
@@ -49,15 +49,21 @@ describe("Stage 1 schema drift convergence migration", () => {
     expect(sql).not.toMatch(/DROP\s+(?:COLUMN|TABLE|TYPE)\b/i);
   });
 
-  it("keeps a fresh PostgreSQL schema drift gate in CI", () => {
+  it("runs the complete API database gate once through the CI release check", () => {
     const workflow = readFileSync(ciWorkflowPath, "utf8");
+    const releaseCheck = readFileSync(releaseCheckPath, "utf8");
     const apiPackage = JSON.parse(readFileSync(apiPackagePath, "utf8")) as {
       scripts: Record<string, string>;
     };
     const launcher = readFileSync(databaseLauncherPath, "utf8");
 
-    expect(workflow).toContain("- name: Run complete API test gate");
-    expect(workflow).toContain("pnpm --filter @subscription-saas/api test");
+    expect(workflow.match(/run: pnpm release:check/g)).toHaveLength(1);
+    expect(workflow).not.toContain("pnpm --filter @subscription-saas/api test");
+    expect(
+      releaseCheck.match(
+        /\["API tests", "pnpm", \["--filter", "@subscription-saas\/api", "test"\]\]/g
+      )
+    ).toHaveLength(1);
     expect(workflow).not.toContain("image: postgres:16");
     expect(workflow).not.toContain("DATABASE_URL:");
     expect(apiPackage.scripts["test:database"]).toContain("run-source-database-gate.mjs");

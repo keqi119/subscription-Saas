@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "snapshot-private-custody.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseAttemptId",
+    "snapshotRunId",
+    "sourceSha",
+    "bucket",
+    "object",
+    "conditionalCreate",
+    "headReadback",
+    "getReadback",
+    "identities",
+    "acl",
+    "accessPolicyDigest",
+    "expiresAt",
+    "terminalAt",
+    "downstreamRetainUntil",
+    "legalHoldUntil",
+    "provisional",
+    "worm",
+    "authoritativeObservationDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "snapshot-private-custody.v1" },
+    "releaseAttemptId": { "$ref": "#/$defs/id" },
+    "snapshotRunId": { "$ref": "#/$defs/runId" },
+    "sourceSha": { "$ref": "#/$defs/sha" },
+    "bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "fingerprint", "region"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^subscription-saas-stage1-snapshot-[0-9a-f]{12}-cn-shanghai$"
+        },
+        "fingerprint": { "$ref": "#/$defs/digest" },
+        "region": { "const": "oss-cn-shanghai" }
+      }
+    },
+    "object": { "$ref": "#/$defs/object" },
+    "conditionalCreate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "forbidOverwrite", "requestId"],
+      "properties": {
+        "result": { "const": "CREATED" },
+        "forbidOverwrite": { "const": true },
+        "requestId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "headReadback": { "$ref": "#/$defs/readback" },
+    "getReadback": { "$ref": "#/$defs/readback" },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["writer", "reader"],
+      "properties": { "writer": { "$ref": "#/$defs/id" }, "reader": { "$ref": "#/$defs/id" } }
+    },
+    "acl": { "const": "private" },
+    "accessPolicyDigest": { "$ref": "#/$defs/digest" },
+    "expiresAt": { "$ref": "#/$defs/timestamp" },
+    "terminalAt": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+    "downstreamRetainUntil": { "$ref": "#/$defs/timestamp" },
+    "legalHoldUntil": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+    "provisional": { "type": "boolean" },
+    "worm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "retentionDays", "lastModified", "retainUntil", "readbackAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "state": { "const": "Locked" },
+        "retentionDays": { "type": "integer", "minimum": 1, "maximum": 36500 },
+        "lastModified": { "$ref": "#/$defs/timestamp" },
+        "retainUntil": { "$ref": "#/$defs/timestamp" },
+        "readbackAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "authoritativeObservationDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "version",
+        "etag",
+        "ciphertextDigest",
+        "ciphertextSizeBytes",
+        "envelopeDigest"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^snapshot-slots/v2/[^/*?]+/[^/*?]+/snapshot\\.enc$"
+        },
+        "version": { "$ref": "#/$defs/id" },
+        "etag": { "$ref": "#/$defs/id" },
+        "ciphertextDigest": { "$ref": "#/$defs/digest" },
+        "ciphertextSizeBytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
+        "envelopeDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "readback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "version", "etag", "digest", "sizeBytes"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/$defs/id" },
+        "etag": { "$ref": "#/$defs/id" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "sizeBytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 }
+      }
+    }
+  }
+}

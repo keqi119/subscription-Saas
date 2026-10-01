@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "environment-policy-identity.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "repository",
+    "environment",
+    "requiredReviewerId",
+    "branchPolicy",
+    "canAdminsBypass",
+    "preventSelfReview",
+    "allowedActorId",
+    "waitTimerSeconds",
+    "workflowPath",
+    "workflowBlobDigest",
+    "actionCommitAllowlist",
+    "canonicalizationVersion"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "environment-policy-identity.v1" },
+    "repository": { "$ref": "#/$defs/repository" },
+    "environment": { "$ref": "#/$defs/namedId" },
+    "requiredReviewerId": { "$ref": "#/$defs/id" },
+    "branchPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protectedBranches", "tagRules"],
+      "properties": {
+        "protectedBranches": { "type": "array", "minItems": 1, "items": { "const": "main" } },
+        "tagRules": { "type": "array", "maxItems": 0 }
+      }
+    },
+    "canAdminsBypass": { "const": false },
+    "preventSelfReview": { "const": false },
+    "allowedActorId": { "$ref": "#/$defs/id" },
+    "waitTimerSeconds": { "type": "integer", "minimum": 0 },
+    "workflowPath": { "type": "string", "pattern": "^\\.github/workflows/[a-z0-9._-]+\\.ya?ml$" },
+    "workflowBlobDigest": { "$ref": "#/$defs/digest" },
+    "actionCommitAllowlist": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "commit"],
+        "properties": {
+          "action": { "type": "string", "pattern": "^[a-z0-9_.-]+/[a-z0-9_.-]+$" },
+          "commit": { "$ref": "#/$defs/sha" }
+        }
+      }
+    },
+    "canonicalizationVersion": { "const": "RFC8785" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "namedId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": { "id": { "$ref": "#/$defs/id" }, "name": { "type": "string", "minLength": 1 } }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" }
+      }
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+  }
+}

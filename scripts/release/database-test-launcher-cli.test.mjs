@@ -1,15 +1,23 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import { readFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
 import {
   selectManifestSuites,
-  sha256Canonical
+  sha256Canonical,
+  sha256Bytes,
+  snapshotBundleDigest
 } from "../../packages/release-foundation/src/index.mjs";
 import {
   assertSourceGateCheckout,
+  executeLauncherRequest,
   parseLauncherArguments,
   resolveLauncherRepositoryRoot,
   runLauncherCli,
@@ -536,4 +544,273 @@ test("Vitest diagnostics retain bounded repository source stack locations", () =
     "apps/api/src/subscription-closure/subscription-closure.repository.ts:2757:11"
   ]);
   assert.equal(JSON.stringify(summary).includes("customer.txt"), false);
+});
+
+// Native boundaries are mocked; this exercises the production launcher/restore adapter,
+// not a shared restore callback or an admitted candidate-use channel.
+async function withSnapshotNativeFixture(fault, action) {
+  const originalSpawn = childProcess.spawn,
+    originalRead = fs.promises.readFile;
+  const contract = JSON.parse(
+    await originalRead(
+      path.join(repositoryRoot, "release/contracts/sanitization-contract.v1.json"),
+      "utf8"
+    )
+  );
+  const ownershipMap = JSON.parse(
+    await originalRead(
+      path.join(repositoryRoot, "release/contracts/snapshot-ownership-map.v1.json"),
+      "utf8"
+    )
+  );
+  const imageContract = JSON.parse(
+    await originalRead(
+      path.join(repositoryRoot, "release/contracts/postgres-image.v1.json"),
+      "utf8"
+    )
+  );
+  const dump = Buffer.from("sanitized custom dump native fixture"),
+    dumpDigest = sha256Bytes(dump);
+  const createdAt = new Date(Date.now() - 60_000).toISOString(),
+    expiresAt = new Date(Date.now() + 86_400_000).toISOString();
+  const privilegeObservation = {
+    schemaVersion: "source-privilege-observation.v1",
+    capabilityDigest: digest
+  };
+  const fingerprintObservation = {
+    schemaVersion: "source-fingerprint.v1",
+    identity: {
+      migrationHead: contract.source.knownMigrationHeads[0],
+      databaseIdentityFingerprint: digest
+    }
+  };
+  const scan = {
+    schemaVersion: "sanitization-scan.v1",
+    subjectDigest: dumpDigest,
+    contractDigest: sha256Canonical(contract),
+    scannerVersion: "snapshot-scan/1",
+    status: "PASSED",
+    findingsCount: 0,
+    scannedAt: createdAt
+  };
+  const metadata = {
+    schemaVersion: "snapshot-metadata.v1",
+    dumpDigest,
+    sourceMigrationHead: contract.source.knownMigrationHeads[0],
+    sourcePrivilegeObservationDigest: sha256Canonical(privilegeObservation),
+    sourceFingerprintBeforeDigest: sha256Canonical(fingerprintObservation.identity),
+    sourceFingerprintAfterDigest: sha256Canonical(fingerprintObservation.identity),
+    sanitizationContractDigest: sha256Canonical(contract),
+    ownershipMapDigest: sha256Canonical(ownershipMap),
+    ownershipContractVersion: ownershipMap.mapVersion,
+    scanDigest: sha256Canonical(scan),
+    scanSubjectDigest: dumpDigest,
+    exportToolVersion: "snapshot-export/1",
+    scanToolVersion: "snapshot-scan/1",
+    createdAt,
+    reviewAt: expiresAt,
+    expiresAt,
+    owner: contract.lifecycle.owner,
+    readers: contract.lifecycle.readers,
+    accessPolicyRef: contract.lifecycle.accessPolicyRef,
+    workflowRunRef: "github://keqi119/subscription-Saas/actions/runs/1"
+  };
+  const bundleDigest = snapshotBundleDigest({
+    dump,
+    metadata,
+    scan,
+    privilegeObservation,
+    fingerprintObservation
+  });
+  const custodyReceipt = {
+    schemaVersion: "custody-receipt.v1",
+    receiptId: "ea4d51a1-4e63-491a-80ca-fc478b2fd53f",
+    contentDigest: bundleDigest,
+    contentSizeBytes: dump.length,
+    storeRef: "artifact://release/native-fixture",
+    uploadedAt: createdAt,
+    readbackAt: createdAt,
+    readbackDigest: bundleDigest,
+    owner: contract.lifecycle.owner,
+    readers: contract.lifecycle.readers,
+    retainUntil: new Date(Date.parse(createdAt) + 180 * 86_400_000).toISOString(),
+    expiryDisposition: "review",
+    attestationRef: "attestation://release/native-fixture"
+  };
+  const inputs = new Map(
+    Object.entries({
+      "snapshot-metadata.json": metadata,
+      "sanitized-snapshot.dump": dump,
+      "sanitization-scan.v1.json": scan,
+      "source-privilege-observation.v1.json": privilegeObservation,
+      "source-fingerprint.v1.json": fingerprintObservation,
+      "custody-receipt.v1.json": custodyReceipt
+    }).map(([name, value]) => [
+      path.join(repositoryRoot, ".release-inputs", name),
+      Buffer.isBuffer(value) ? value : JSON.stringify(value)
+    ])
+  );
+  const calls = [],
+    containerId = "c".repeat(64),
+    image = imageContract.repository + "@" + imageContract.resolvedDigest;
+  let runId, databaseName, marker, copiedPath, directoryPath;
+  const dispatch = (executable, args, input) => {
+    if (executable !== "docker") {
+      assert.ok(
+        executable === "icacls" || executable === process.execPath,
+        "only fixture-local native commands"
+      );
+      return { stdout: "", code: 0 };
+    }
+    calls.push({ args: [...args] });
+    if (args[0] === "pull") return { stdout: "pulled", code: 0 };
+    if (args[0] === "run") {
+      runId = args
+        .find((value) => value.startsWith("subscription-s1-launcher.run-id="))
+        .split("=")[1];
+      return { stdout: containerId + "\n", code: 0 };
+    }
+    if (args[0] === "inspect")
+      return {
+        stdout: JSON.stringify([
+          {
+            Id: containerId,
+            Config: {
+              Image: image,
+              Labels: {
+                "subscription-s1-controlled": "v1",
+                "subscription-s1-launcher.run-id": runId
+              }
+            },
+            NetworkSettings: { Ports: { "5432/tcp": [{ HostPort: "15432" }] } }
+          }
+        ]),
+        code: 0
+      };
+    if (args[0] === "cp") {
+      copiedPath = args[2].slice(containerId.length + 1);
+      return { stdout: "", code: 0 };
+    }
+    if (args.includes("pg_restore")) return { stdout: "", code: 1 }; // Stops the control after observing the real adapter's restore command.
+    if (args.includes("mkdir")) {
+      directoryPath = args.at(-1);
+      return { stdout: "", code: fault === "directory-exists" ? 1 : 0 };
+    }
+    if (args.includes("stat")) {
+      const directory = args.at(-1) === directoryPath;
+      return {
+        stdout: directory ? "41c0:0:700:0:1:101\n" : "8180:0:600:" + dump.length + ":1:102\n",
+        code: 0
+      };
+    }
+    if (args.includes("chmod") || args.includes("rm")) return { stdout: "", code: 0 };
+    if (args.includes("sha256sum"))
+      return {
+        stdout: (fault === "sha" ? "f".repeat(64) : dumpDigest.slice(7)) + "  " + copiedPath + "\n",
+        code: 0
+      };
+    assert.ok(args.includes("psql"), "expected fixed fixture Docker command");
+    if (input.trim() === "SHOW server_version_num;") return { stdout: "170011\n", code: 0 };
+    const created = input.match(/CREATE DATABASE "(s1ci_[0-9a-f]{24})"/);
+    if (created) databaseName = created[1];
+    const comment = input.match(/COMMENT ON DATABASE "s1ci_[0-9a-f]{24}" IS '([^']+)'/);
+    if (comment) marker = comment[1];
+    if (input.includes("FROM pg_roles")) return { stdout: "f\tf\tf\tf\tf\n", code: 0 };
+    if (input.includes("FROM pg_database") && input.includes("current_database()")) {
+      const role = args[args.indexOf("--username") + 1],
+        owner = "s1m_" + sha256Bytes(Buffer.from(databaseName)).slice(7, 31);
+      return {
+        stdout:
+          [databaseName, role, fault === "oid" ? "19002" : "19001", marker, owner, "170011"].join(
+            "\t"
+          ) + "\n",
+        code: 0
+      };
+    }
+    if (input.includes("FROM pg_database")) return { stdout: "19001\t" + marker + "\n", code: 0 };
+    return { stdout: "", code: 0 };
+  };
+  fs.promises.readFile = async (file, options) =>
+    inputs.has(String(file)) ? inputs.get(String(file)) : originalRead(file, options);
+  childProcess.spawn = function fixtureNativeSpawn(executable, args) {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new PassThrough();
+    child.kill = () => {};
+    let input = "";
+    child.stdin.on("data", (chunk) => {
+      input += chunk.toString();
+    });
+    let completed = false;
+    const complete = () => {
+      if (completed) return;
+      completed = true;
+      queueMicrotask(() => {
+        try {
+          const result = dispatch(executable, args, input);
+          child.stdout.end(result.stdout);
+          child.stderr.end();
+          child.emit("exit", result.code, null);
+        } catch (error) {
+          child.emit("error", error);
+        }
+      });
+    };
+    if (executable === "docker") child.stdin.on("finish", complete);
+    else complete();
+    return child;
+  };
+  syncBuiltinESMExports();
+  try {
+    await action({
+      calls,
+      containerId,
+      dumpDigest,
+      get copiedPath() {
+        return copiedPath;
+      }
+    });
+  } finally {
+    childProcess.spawn = originalSpawn;
+    fs.promises.readFile = originalRead;
+    syncBuiltinESMExports();
+    if (runId) {
+      assert.match(runId, /^[0-9a-f-]{36}$/);
+      const runsRoot = path.join(repositoryRoot, ".release-local", "runs"),
+        ownedRoot = path.resolve(runsRoot, runId);
+      assert.equal(path.dirname(ownedRoot), runsRoot);
+      await fs.promises.rm(ownedRoot, { recursive: true, force: true });
+    }
+  }
+}
+
+test("snapshot native adapter verifies copied bytes and actual target before restore", async (t) => {
+  for (const fault of ["none", "sha", "oid"])
+    await t.test(fault, async () => {
+      await withSnapshotNativeFixture(fault, async (fixture) => {
+        let error;
+        try {
+          await executeLauncherRequest({
+            mode: "suite",
+            chain: "snapshot",
+            suiteId: "release.launcher.fixture",
+            snapshotMetadataFile: ".release-inputs/snapshot-metadata.json"
+          });
+        } catch (caught) {
+          error = caught;
+        }
+        const restores = fixture.calls.filter((call) => call.args.includes("pg_restore"));
+        assert.equal(restores.length, fault === "none" ? 1 : 0);
+        assert.equal(
+          error?.code,
+          fault === "none"
+            ? "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED"
+            : fault === "sha"
+              ? "SNAPSHOT_RESTORE_COPY_MISMATCH"
+              : "SNAPSHOT_RESTORE_TARGET_MISMATCH"
+        );
+        assert.equal(fixture.calls.filter((call) => call.args[0] === "cp").length, 1);
+      });
+    });
 });

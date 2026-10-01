@@ -17,8 +17,15 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
 import { SubscriptionJourneyService } from "../src/subscription-journey/subscription-journey.service";
+import { SubscriptionJourneyError } from "../src/subscription-journey/subscription-journey.errors";
 import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
 import { insertRuntimeOrderGraph } from "./helpers/runtime-domain-fixture";
+import {
+  activationServices,
+  activationTruth,
+  expectActivated,
+  prepareActivation
+} from "./helpers/stage1-activation-fixture";
 
 const TEST_DATABASE_URL = requiredReleaseDatabaseTestContext(
   "apps/api/test/subscription-journey-failure-recovery.e2e-spec.ts"
@@ -429,6 +436,317 @@ describe("Stage 1 subscription Journey failure recovery", () => {
       ).resolves.toMatchObject({ status: SubscriptionJourneyJobStatus.CANCELLED });
       expect(audit.write).toHaveBeenCalledOnce();
     });
+  });
+  it.each([
+    "paused journey",
+    "cancelled journey",
+    "different job type",
+    "different step",
+    "incomplete step",
+    "step completion clock missing",
+    "different current step",
+    "incomplete current step",
+    "journey completion clock missing",
+    "different order",
+    "stale revision",
+    "missing revision",
+    "null revision",
+    "string revision",
+    "future availability",
+    "unexpired processing lease",
+    "completed job",
+    "cancelled job",
+    "dead-letter job"
+  ])("B4 terminal ACK recovery refuses %s without claim mutations", async (reason) => {
+    // These are eligibility-only fixtures inside a rollback transaction. The
+    // following worker cases separately prove real activation and ACK recovery.
+    await rolledBack(prisma, async (tx) => {
+      const fixture = await createFixture(tx, "AUTHORITATIVE_ACTIVATION", "COMPLETED", "COMPLETED");
+      const orderId = await createRawOrder(tx, fixture);
+      const completedAt = new Date("2026-09-01T00:00:00.000Z");
+      await tx.application.update({
+        data: { finalPlanRevision: 1 },
+        where: { id: fixture.applicationId }
+      });
+      await tx.subscriptionJourney.update({
+        data: { orderId, completedAt },
+        where: { id: fixture.journeyId }
+      });
+      await tx.subscriptionJourneyStep.update({
+        data: { completedAt },
+        where: { id: fixture.stepId }
+      });
+      const payload: Prisma.InputJsonObject = { orderId, finalPlanRevision: 1 };
+      const job = await repository.enqueueJob(tx, {
+        availableAt: new Date("2000-01-01T00:00:00.000Z"),
+        jobType: "ACTIVATE_SUBSCRIPTION",
+        journeyId: fixture.journeyId,
+        payload,
+        sourceKey: `${fixture.prefix}:terminal-guard`,
+        stepId: fixture.stepId
+      });
+      const journeyPatch: Prisma.SubscriptionJourneyUpdateInput = {};
+      const stepPatch: Prisma.SubscriptionJourneyStepUpdateInput = {};
+      const jobPatch: Prisma.SubscriptionJourneyJobUpdateInput = {};
+      switch (reason) {
+        case "paused journey":
+          journeyPatch.status = "PAUSED";
+          break;
+        case "cancelled journey":
+          journeyPatch.status = "CANCELLED";
+          break;
+        case "different job type":
+          jobPatch.jobType = "CREATE_HANDOVER";
+          break;
+        case "different step":
+          stepPatch.code = "APPLICATION_VALIDATION";
+          break;
+        case "incomplete step":
+          stepPatch.status = "PENDING";
+          break;
+        case "step completion clock missing":
+          stepPatch.completedAt = null;
+          break;
+        case "different current step":
+          journeyPatch.currentStepCode = "APPLICATION_VALIDATION";
+          break;
+        case "incomplete current step":
+          journeyPatch.currentStepStatus = "PENDING";
+          break;
+        case "journey completion clock missing":
+          journeyPatch.completedAt = null;
+          break;
+        case "different order":
+          jobPatch.payload = { ...payload, orderId: randomUUID() };
+          break;
+        case "stale revision":
+          jobPatch.payload = { ...payload, finalPlanRevision: 0 };
+          break;
+        case "missing revision":
+          jobPatch.payload = { orderId };
+          break;
+        case "null revision":
+          jobPatch.payload = { ...payload, finalPlanRevision: null };
+          break;
+        case "string revision":
+          jobPatch.payload = { ...payload, finalPlanRevision: "1" };
+          break;
+        case "future availability":
+          jobPatch.availableAt = new Date("2999-01-01T00:00:00.000Z");
+          break;
+        case "unexpired processing lease":
+          Object.assign(jobPatch, {
+            status: "PROCESSING",
+            leaseToken: "active-lease",
+            leaseExpiresAt: new Date("2999-01-01T00:00:00.000Z")
+          });
+          break;
+        case "completed job":
+          Object.assign(jobPatch, { status: "COMPLETED", completedAt });
+          break;
+        case "cancelled job":
+          jobPatch.status = "CANCELLED";
+          break;
+        case "dead-letter job":
+          jobPatch.status = "DEAD_LETTER";
+          break;
+        default:
+          throw new Error(`Unknown claim guard: ${reason}`);
+      }
+      await tx.subscriptionJourney.update({ data: journeyPatch, where: { id: fixture.journeyId } });
+      await tx.subscriptionJourneyStep.update({ data: stepPatch, where: { id: fixture.stepId } });
+      await tx.subscriptionJourneyJob.update({ data: jobPatch, where: { id: job.id } });
+      const snapshot = () =>
+        Promise.all([
+          tx.subscriptionJourneyJob.findUniqueOrThrow({ where: { id: job.id } }),
+          tx.subscriptionJourney.findUniqueOrThrow({ where: { id: fixture.journeyId } }),
+          tx.subscriptionJourneyStep.findUniqueOrThrow({ where: { id: fixture.stepId } })
+        ]);
+      const before = await snapshot();
+      expect(await repository.claimJobs(tx, 100, 120_000)).toEqual([]);
+      expect(await snapshot()).toEqual(before);
+    });
+  });
+
+  it("B4 refuses missing inspection facts without activation residue and permits recovery", async () => {
+    const h = await prepareActivation(prisma);
+    await prisma.vehicleInspection.update({
+      data: { status: "PENDING" },
+      where: { orderId: h.orderId }
+    });
+    const [claimed] = await prisma.$transaction((tx) => h.repository.claimJobs(tx, 1, 120_000));
+    expect(claimed?.id).toBe(h.jobId);
+    const before = await activationTruth(prisma, h);
+    await expect(h.service.activateSubscriptionJob(claimed!)).rejects.toMatchObject({
+      response: { canActivate: false, missingConditions: ["INSPECTION_PASSED"] }
+    });
+    expect(await activationTruth(prisma, h)).toEqual(before);
+    await prisma.vehicleInspection.update({
+      data: { status: "PASSED" },
+      where: { orderId: h.orderId }
+    });
+    const result = await h.service.activateSubscriptionJob(claimed!);
+    expectActivated(await activationTruth(prisma, h));
+    await prisma.$transaction((tx) =>
+      h.repository.completeJob(tx, h.jobId, claimed!.leaseToken, result)
+    );
+  });
+
+  it.each(["subscriptionContractSegment", "vehicleSubscriptionPeriod"] as const)(
+    "B4 rolls back every real activation fact after the %s write and retries once",
+    async (model) => {
+      const h = await prepareActivation(prisma);
+      const [claimed] = await prisma.$transaction((tx) => h.repository.claimJobs(tx, 1, 120_000));
+      expect(claimed?.id).toBe(h.jobId);
+      const before = await activationTruth(prisma, h);
+      const failure = new Error(`B4_AFTER_${model}_WRITE`);
+      let reached = false;
+      const failingPrisma = new Proxy(prisma, {
+        get(target, property, receiver) {
+          if (property === "$transaction") {
+            return (work: (tx: Tx) => Promise<unknown>, options?: { timeout?: number }) =>
+              prisma.$transaction(
+                (tx) =>
+                  work(
+                    new Proxy(tx, {
+                      get(transaction, delegateName) {
+                        const delegate = Reflect.get(transaction, delegateName);
+                        if (delegateName !== model) return delegate;
+                        return new Proxy(delegate, {
+                          get(realDelegate, method) {
+                            const value = Reflect.get(realDelegate, method);
+                            if (method !== "create")
+                              return typeof value === "function" ? value.bind(realDelegate) : value;
+                            return async (args: unknown) => {
+                              const row = await value.call(realDelegate, args);
+                              expect(
+                                await realDelegate.findUnique({ where: { id: row.id } })
+                              ).not.toBeNull();
+                              reached = true;
+                              throw failure;
+                            };
+                          }
+                        });
+                      }
+                    })
+                  ),
+                options
+              );
+          }
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+      }) as PrismaService;
+      await expect(
+        activationServices(failingPrisma).service.activateSubscriptionJob(claimed!)
+      ).rejects.toBe(failure);
+      expect(reached).toBe(true);
+      expect(await activationTruth(prisma, h)).toEqual(before);
+      const result = await h.service.activateSubscriptionJob(claimed!);
+      expectActivated(await activationTruth(prisma, h));
+      await prisma.$transaction((tx) =>
+        h.repository.completeJob(tx, h.jobId, claimed!.leaseToken, result)
+      );
+    }
+  );
+
+  it("B4 recovers an ACK transaction failure after real activation has committed without repeating business writes", async () => {
+    const h = await prepareActivation(prisma);
+    const complete = h.repository.completeJob.bind(h.repository);
+    let reached = false;
+    const ack = vi
+      .spyOn(h.repository, "completeJob")
+      .mockImplementationOnce(async (tx, id, token, result) => {
+        expect(id).toBe(h.jobId);
+        await complete(tx, id, token, result);
+        expect(await tx.subscriptionJourneyJob.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: "COMPLETED"
+        });
+        reached = true;
+        throw new SubscriptionJourneyError({
+          code: "JOURNEY_EXECUTION_ERROR",
+          message: "B4 controlled ACK rollback",
+          retryable: true,
+          retryAfterMs: 0
+        });
+      });
+    try {
+      await h.worker.runOnce();
+      expect(reached).toBe(true);
+      const activated = await activationTruth(prisma, h);
+      expectActivated(activated);
+      expect(
+        await prisma.subscriptionJourneyJob.findUniqueOrThrow({ where: { id: h.jobId } })
+      ).toMatchObject({
+        attemptCount: 1,
+        completedAt: null,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: "RETRY_SCHEDULED"
+      });
+      const due = await prisma.$queryRaw<Array<{ due: boolean }>>(Prisma.sql`
+        SELECT "available_at" <= clock_timestamp() AS "due" FROM "subscription_journey_job" WHERE "id" = ${h.jobId}
+      `);
+      expect(due).toEqual([{ due: true }]);
+      await h.worker.runOnce();
+      expect(
+        await prisma.subscriptionJourneyJob.findUniqueOrThrow({ where: { id: h.jobId } })
+      ).toMatchObject({
+        attemptCount: 1,
+        status: "COMPLETED",
+        completedAt: expect.any(Date),
+        leaseToken: null
+      });
+      expect(ack).toHaveBeenLastCalledWith(expect.anything(), h.jobId, expect.any(String), {
+        action: "SUBSCRIPTION_ALREADY_ACTIVATED",
+        orderId: h.orderId
+      });
+      expect(await activationTruth(prisma, h)).toEqual(activated);
+      expect(
+        await prisma.subscriptionJourneyJob.findMany({
+          where: { journeyId: h.journeyId, jobType: "ACTIVATE_SUBSCRIPTION" }
+        })
+      ).toEqual([expect.objectContaining({ id: h.jobId, status: "COMPLETED" })]);
+    } finally {
+      ack.mockRestore();
+    }
+  });
+
+  it("B4 reclaims an actually expired activation lease after business commit without an ACK", async () => {
+    const h = await prepareActivation(prisma);
+    const [claimed] = await prisma.$transaction((tx) => h.repository.claimJobs(tx, 1, 1_000));
+    expect(claimed?.id).toBe(h.jobId);
+    await h.service.activateSubscriptionJob(claimed!);
+    const activated = await activationTruth(prisma, h);
+    expectActivated(activated);
+    // Model a process loss after the committed business call: deliberately no
+    // ACK/reschedule. Observe real lease expiry without rewriting job clocks.
+    let expired = false;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const rows = await prisma.$queryRaw<Array<{ expired: boolean }>>(Prisma.sql`
+        SELECT "status" = 'PROCESSING' AND "lease_expires_at" <= clock_timestamp() AS "expired"
+        FROM "subscription_journey_job" WHERE "id" = ${h.jobId}
+      `);
+      if (rows[0]?.expired) {
+        expired = true;
+        break;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(expired).toBe(true);
+    await h.worker.runOnce();
+    expect(
+      await prisma.subscriptionJourneyJob.findMany({ where: { journeyId: h.journeyId } })
+    ).toEqual([
+      expect.objectContaining({
+        id: h.jobId,
+        status: "COMPLETED",
+        completedAt: expect.any(Date),
+        leaseToken: null
+      })
+    ]);
+    expect(await activationTruth(prisma, h)).toEqual(activated);
   });
 });
 

@@ -1,7 +1,9 @@
 "use client";
 
 import { Alert, App, Button, Card, Descriptions, Input, Select, Space, Table, Tag, Typography } from "antd";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { ApiError } from "../../lib/api";
 
 import {
   advanceSubscriptionClosureSettlement,
@@ -19,24 +21,254 @@ import {
   type SubscriptionClosureChargeLineView,
   type SubscriptionClosureDeltaItemView
 } from "../../lib/subscription-closure-view-model";
+import { ReturnInspectionWorkOrder } from "./return-inspection-work-order";
 
 type Responsibility = "CUSTOMER" | "PLATFORM" | "THIRD_PARTY" | "NORMAL_WEAR";
+
+type RefreshBinding = { closureCaseId: string; settlementRevisionId: string; canRefresh: boolean };
+type RefreshPending = {
+  closureCaseId: string;
+  settlementRevisionId: string;
+  command: Readonly<{ idempotencyKey: string; occurredAt: string }>;
+  committed: boolean;
+  changed: boolean;
+  response: { id: string; resultHash: string } | null;
+};
+type RefreshSnapshot = {
+  pending: RefreshPending | null;
+  busy: boolean;
+  error: string | null;
+  readback: "idle" | "ready" | "unknown" | "refresh-required" | "changed";
+};
+const emptyRefreshSnapshot = (): RefreshSnapshot => ({
+  pending: null,
+  busy: false,
+  error: null,
+  readback: "idle"
+});
+
+export function createReturnSettlementRefreshController(callbacks: {
+  reloadClosure: () => Promise<AdminSubscriptionClosureView>;
+  onChanged: (view: AdminSubscriptionClosureView) => Promise<void> | void;
+  onState: (snapshot: RefreshSnapshot) => void;
+}) {
+  let binding: RefreshBinding | null = null;
+  let generation = 0;
+  let readSequence = 0;
+  let disposed = false;
+  let snapshot = emptyRefreshSnapshot();
+  const current = (token: number) => !disposed && generation === token;
+  function publish(patch: Partial<RefreshSnapshot>) {
+    snapshot = { ...snapshot, ...patch };
+    callbacks.onState(snapshot);
+  }
+  async function read(token: number) {
+    const sequence = ++readSequence;
+    const view = await callbacks.reloadClosure();
+    if (!current(token) || sequence !== readSequence) return null;
+    if (view.closureCaseId !== binding!.closureCaseId) throw new Error("结算读回与当前结案不符。");
+    return view;
+  }
+  async function reconcile(token: number, pending: RefreshPending) {
+    const view = await read(token);
+    if (!view || !current(token)) return;
+    const revision = view.settlementRevisions.at(-1);
+    const matchesResponse =
+      pending.response &&
+      revision?.id === pending.response.id &&
+      revision.resultHash === pending.response.resultHash &&
+      revision.stage === "PROPOSED";
+    const changed =
+      pending.changed ||
+      (pending.committed ? !matchesResponse : revision?.id !== pending.settlementRevisionId);
+    if (changed) {
+      pending = { ...pending, changed: true };
+      publish({
+        pending,
+        readback: "changed",
+        error: "结算状态已变化，需核对当前草案。请勿重复生成或直接发布。"
+      });
+    } else if (!pending.committed) {
+      publish({
+        readback: "unknown",
+        error: "更新草案结果尚未确认，可先重新读取，必要时重试原操作。"
+      });
+    } else {
+      publish({ readback: "refresh-required" });
+    }
+    await callbacks.onChanged(view);
+    if (!current(token)) return;
+    if (matchesResponse && !changed) publish({ pending: null, readback: "ready", error: null });
+  }
+  async function execute(pending: RefreshPending, send: boolean) {
+    const token = generation;
+    publish({ pending, busy: true, error: null });
+    try {
+      if (send) {
+        try {
+          const response = await advanceSubscriptionClosureSettlement(
+            pending.closureCaseId,
+            "propose",
+            pending.command
+          );
+          if (!current(token)) return;
+          const valid =
+            response &&
+            response.closureCaseId === pending.closureCaseId &&
+            response.stage === "PROPOSED" &&
+            typeof response.id === "string" &&
+            response.id.length > 0 &&
+            response.id !== pending.settlementRevisionId &&
+            typeof response.resultHash === "string" &&
+            response.resultHash.length > 0;
+          pending = {
+            ...pending,
+            committed: true,
+            response: valid
+              ? { id: response.id as string, resultHash: response.resultHash as string }
+              : null
+          };
+          publish({ pending });
+        } catch (error) {
+          if (!current(token)) return;
+          if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+            pending = { ...pending, changed: true };
+            publish({ pending });
+          }
+        }
+      }
+      await reconcile(token, pending);
+    } catch (error) {
+      if (current(token))
+        publish({
+          error: error instanceof Error ? error.message : "结算刷新失败，请重新读取。",
+          readback: snapshot.pending?.committed
+            ? "refresh-required"
+            : snapshot.pending?.changed
+              ? "changed"
+              : "unknown"
+        });
+    } finally {
+      if (current(token)) publish({ busy: false });
+    }
+  }
+  return {
+    bind(context: RefreshBinding) {
+      if (disposed || JSON.stringify(binding) === JSON.stringify(context)) return;
+      binding = { ...context };
+      generation++;
+      readSequence++;
+      snapshot = emptyRefreshSnapshot();
+      callbacks.onState(snapshot);
+    },
+    async refresh() {
+      if (disposed || !binding?.canRefresh || snapshot.busy || snapshot.pending) return;
+      return execute(
+        {
+          closureCaseId: binding.closureCaseId,
+          settlementRevisionId: binding.settlementRevisionId,
+          command: Object.freeze({
+            idempotencyKey: crypto.randomUUID(),
+            occurredAt: new Date().toISOString()
+          }),
+          committed: false,
+          changed: false,
+          response: null
+        },
+        true
+      );
+    },
+    async retry() {
+      if (disposed || !binding?.canRefresh || snapshot.busy || !snapshot.pending) return;
+      return execute(snapshot.pending, !snapshot.pending.committed && !snapshot.pending.changed);
+    },
+    async reload() {
+      if (disposed || !binding?.canRefresh || (snapshot.busy && snapshot.pending)) return;
+      if (snapshot.pending) return execute(snapshot.pending, false);
+      const token = generation;
+      const sequence = readSequence + 1;
+      publish({ busy: true, error: null });
+      try {
+        const view = await read(token);
+        if (!view || !current(token)) return;
+        await callbacks.onChanged(view);
+        if (current(token) && sequence === readSequence) publish({ readback: "ready" });
+      } catch (error) {
+        if (current(token) && sequence === readSequence)
+          publish({ error: error instanceof Error ? error.message : "结算读取失败。" });
+      } finally {
+        if (current(token) && sequence === readSequence) publish({ busy: false });
+      }
+    },
+    dispose() {
+      disposed = true;
+      generation++;
+      readSequence++;
+      snapshot = emptyRefreshSnapshot();
+    },
+    getSnapshot() {
+      return snapshot;
+    }
+  };
+}
+
+export function ReturnSettlementProposalActions({
+  mode,
+  busy,
+  onPropose
+}: {
+  mode: "initial" | "refresh" | "dispute" | "hidden";
+  busy: boolean;
+  onPropose: () => void;
+}) {
+  if (mode === "hidden") return null;
+  return (
+    <Button
+      disabled={busy}
+      loading={busy}
+      onClick={onPropose}
+      style={{ marginTop: 16 }}
+      type="primary"
+    >
+      {mode === "refresh"
+        ? "更新结算草案"
+        : mode === "dispute"
+          ? "生成争议调整后继结算"
+          : "生成结算草案"}
+    </Button>
+  );
+}
 
 export function ReturnPricingStage({
   canApproveApproval,
   canRequestApproval,
+  canViewAssetWorkOrder,
+  canManageAssetWorkOrder,
   closure,
   currentUserId,
-  onChanged
+  onChanged,
+  reloadClosure,
+  onClosureReadback
 }: {
   canApproveApproval: boolean;
   canRequestApproval: boolean;
+  canViewAssetWorkOrder: boolean;
+  canManageAssetWorkOrder: boolean;
   closure: AdminSubscriptionClosureView;
   currentUserId: string | null;
   onChanged: () => Promise<void> | void;
+  reloadClosure: () => Promise<AdminSubscriptionClosureView>;
+  onClosureReadback: (view: AdminSubscriptionClosureView) => Promise<void> | void;
 }) {
   const { message } = App.useApp();
   const [busy, setBusy] = useState<string | null>(null);
+  const [closedInspectionBinding, setClosedInspectionBinding] = useState<string | null>(null);
+  const inspectionBinding = `${closure.closureCaseId}:${closure.returnAssetWorkOrderId}`;
+  const normalInspection = closure.returnThreeStageEnabled && closure.closureType === "NORMAL_COMPLETION" &&
+    closure.physicalControlMode === "VOLUNTARY_RETURN" && closure.status === "RETURN_INSPECTION";
+  const inspectionWorkOrderClosed = !normalInspection || (canViewAssetWorkOrder &&
+    closedInspectionBinding === inspectionBinding && closure.workOrders.some((workOrder) =>
+      workOrder.id === closure.returnAssetWorkOrderId && workOrder.status === "CLOSED"));
   const [responsibilities, setResponsibilities] = useState<Record<string, Responsibility>>({});
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [clauseByItem, setClauseByItem] = useState<Record<string, string>>({});
@@ -56,6 +288,35 @@ export function ReturnPricingStage({
   const canProposeSettlement =
     closure.capabilities.settle && allowedActionKeys.has("PROPOSE_SETTLEMENT");
   const currentSettlement = closure.settlementRevisions.at(-1) ?? null;
+  const needsPricingProposalRefresh = canProposeSettlement && closure.status === "PENDING_SETTLEMENT" &&
+    currentSettlement?.stage === "PROPOSED";
+  const refreshBindingKey = JSON.stringify({
+    closureCaseId: closure.closureCaseId,
+    settlementRevisionId: currentSettlement?.id ?? "",
+    canRefresh: needsPricingProposalRefresh
+  } satisfies RefreshBinding);
+  const refreshController = useRef<ReturnType<typeof createReturnSettlementRefreshController> | null>(null);
+  const [refreshState, setRefreshState] = useState({ key: refreshBindingKey, snapshot: emptyRefreshSnapshot() });
+  useEffect(() => {
+    let lastNotice: string | null = null;
+    const instance = createReturnSettlementRefreshController({
+      reloadClosure,
+      onChanged: onClosureReadback,
+      onState: (snapshot) => {
+        setRefreshState({ key: refreshBindingKey, snapshot });
+        if (snapshot.readback === "changed" && snapshot.error && snapshot.error !== lastNotice) {
+          lastNotice = snapshot.error;
+          void message.warning(snapshot.error);
+        }
+      }
+    });
+    refreshController.current = instance;
+    instance.bind(JSON.parse(refreshBindingKey) as RefreshBinding);
+    return () => { instance.dispose(); if (refreshController.current === instance) refreshController.current = null; };
+  }, [refreshBindingKey, reloadClosure, onClosureReadback, message]);
+  const refreshSnapshot = refreshState.key === refreshBindingKey ? refreshState.snapshot : emptyRefreshSnapshot();
+  const refreshLocked = refreshSnapshot.busy || Boolean(refreshSnapshot.pending);
+  const conflictingBusy = Boolean(busy) || refreshLocked;
   const finalizedSettlement =
     currentSettlement?.stage === "SETTLED"
       ? closure.settlementRevisions.find(
@@ -100,6 +361,7 @@ export function ReturnPricingStage({
   }, [closure.checklist, closure.evidenceLinks]);
 
   async function run(key: string, action: () => Promise<unknown>, success: string) {
+    if (refreshController.current?.getSnapshot().busy || refreshController.current?.getSnapshot().pending) return;
     setBusy(key);
     try {
       await action();
@@ -262,7 +524,7 @@ export function ReturnPricingStage({
   }
 
   async function previewPricing() {
-    if (!currentSettlement) return;
+    if (!currentSettlement || refreshController.current?.getSnapshot().busy || refreshController.current?.getSnapshot().pending) return;
     setBusy("preview");
     try {
       const value = await createSubscriptionClosurePricing(closure.closureCaseId, {
@@ -282,6 +544,19 @@ export function ReturnPricingStage({
 
   return (
     <Card title="节点 2 · 交付/退回差异与合同计费">
+      {normalInspection && closure.capabilities.inspect && <ReturnInspectionWorkOrder
+        closure={closure}
+        canView={canViewAssetWorkOrder}
+        canManage={canManageAssetWorkOrder}
+        reloadClosure={reloadClosure}
+        onChanged={onClosureReadback}
+        onClosedReadback={(closed) => setClosedInspectionBinding(closed ? inspectionBinding : null)}
+      />}
+      {normalInspection && !inspectionWorkOrderClosed && <Alert
+        type="info"
+        title="先提交并验收关闭关联检查工单，再生成差异、确认责任并完成车况检查。"
+        style={{ marginTop: 12 }}
+      />}
       <Alert
         message="差异只从已归档交车文件与当前受管退车清单计算；客户收费必须同时绑定合同条款、差异项和现场证据。"
         showIcon
@@ -290,7 +565,7 @@ export function ReturnPricingStage({
       />
       {!closure.delta ? (
         <Button
-          disabled={!canGenerateConditionDelta}
+          disabled={!canGenerateConditionDelta || conflictingBusy}
           loading={busy === "delta"}
           onClick={() =>
             void run(
@@ -369,7 +644,7 @@ export function ReturnPricingStage({
             </Space>
           ))}
           <Button
-            disabled={!canRecordReturnInspection}
+            disabled={!canRecordReturnInspection || conflictingBusy}
             loading={busy === "responsibility"}
             onClick={confirmResponsibilities}
             type="primary"
@@ -381,7 +656,7 @@ export function ReturnPricingStage({
 
       {closure.delta && unresolved.length === 0 && closure.status === "RETURN_INSPECTION" ? (
         <Button
-          disabled={!canRecordReturnInspection}
+          disabled={!canRecordReturnInspection || !inspectionWorkOrderClosed || conflictingBusy}
           loading={busy === "inspection"}
           onClick={() =>
             void run(
@@ -397,25 +672,35 @@ export function ReturnPricingStage({
         </Button>
       ) : null}
 
-      {canProposeSettlement &&
-      closure.status === "PENDING_SETTLEMENT" &&
-      (!currentSettlement ||
-        (currentSettlement.stage === "FINALIZED" && acceptedDisputeLineIds.size > 0)) ? (
-        <Button
-          loading={busy === "propose"}
-          onClick={() =>
+      {needsPricingProposalRefresh && <Alert
+        title="正式收费已生成账单，请更新草案后重新绑定收费清单"
+        type="info"
+        style={{ marginTop: 16 }}
+      />}
+      {refreshSnapshot.error && <Alert title={refreshSnapshot.error} type="warning" style={{ marginTop: 12 }} />}
+      <ReturnSettlementProposalActions
+        mode={!canProposeSettlement || closure.status !== "PENDING_SETTLEMENT" ? "hidden" :
+          needsPricingProposalRefresh ? "refresh" : !currentSettlement ? "initial" :
+            currentSettlement.stage === "FINALIZED" && acceptedDisputeLineIds.size > 0 ? "dispute" : "hidden"}
+        busy={conflictingBusy}
+        onPropose={() => {
+          if (needsPricingProposalRefresh) {
+            if (!busy) void refreshController.current?.refresh();
+          } else {
             void run(
               "propose",
               () => advanceSubscriptionClosureSettlement(closure.closureCaseId, "propose"),
               currentSettlement ? "争议调整后的后继结算草案已生成。" : "结算草案已生成。"
-            )
+            );
           }
-          style={{ marginTop: 16 }}
-          type="primary"
-        >
-          {currentSettlement ? "生成争议调整后继结算" : "生成结算草案"}
-        </Button>
-      ) : null}
+        }}
+      />
+      {refreshSnapshot.pending && <Space style={{ marginLeft: 8 }}>
+        <Button disabled={Boolean(busy) || refreshSnapshot.busy} onClick={() => void refreshController.current?.reload()}>重新读取结算</Button>
+        {!refreshSnapshot.pending.changed && <Button disabled={Boolean(busy) || refreshSnapshot.busy} onClick={() => void refreshController.current?.retry()}>
+          {refreshSnapshot.pending.committed ? "重试刷新" : "重试原更新"}
+        </Button>}
+      </Space>}
 
       {currentSettlement?.stage === "PROPOSED" ? (
         <div style={{ marginTop: 18 }}>
@@ -474,6 +759,7 @@ export function ReturnPricingStage({
                         return canRequestApproval ? (
                           <Button
                             loading={busy === `approval-request:${item.id}`}
+                            disabled={conflictingBusy}
                             onClick={() => void requestPricingApproval(item)}
                           >
                             发起人工定价审批
@@ -505,6 +791,7 @@ export function ReturnPricingStage({
                                 />
                                 <Button
                                   loading={busy === `approval-decision:${item.id}`}
+                                  disabled={conflictingBusy}
                                   onClick={() =>
                                     void decidePricingApproval(item, approval, "APPROVED")
                                   }
@@ -515,6 +802,7 @@ export function ReturnPricingStage({
                                 <Button
                                   danger
                                   loading={busy === `approval-decision:${item.id}`}
+                                  disabled={conflictingBusy}
                                   onClick={() =>
                                     void decidePricingApproval(item, approval, "REJECTED")
                                   }
@@ -538,6 +826,7 @@ export function ReturnPricingStage({
                           {approval.status !== "APPROVED" && canRequestApproval ? (
                             <Button
                               loading={busy === `approval-request:${item.id}`}
+                              disabled={conflictingBusy}
                               onClick={() => void requestPricingApproval(item)}
                             >
                               重新发起审批
@@ -565,12 +854,13 @@ export function ReturnPricingStage({
           <Space wrap>
             {canPreviewPricing ? <Button
               loading={busy === "preview"}
+              disabled={conflictingBusy}
               onClick={() => void previewPricing()}
             >
               预览合同计费
             </Button> : null}
             {canFinalizePricing ? <Button
-              disabled={!finalPricingReady}
+              disabled={!finalPricingReady || conflictingBusy || needsPricingProposalRefresh}
               loading={busy === "pricing"}
               onClick={() =>
                 void run(
@@ -613,6 +903,7 @@ export function ReturnPricingStage({
           (currentFinalLines.length > 0 || (customerItems.length === 0 && finalPricingReady)) ? (
             <Button
               loading={busy === "finalize"}
+              disabled={needsPricingProposalRefresh || conflictingBusy}
               onClick={() =>
                 void run(
                   "finalize",

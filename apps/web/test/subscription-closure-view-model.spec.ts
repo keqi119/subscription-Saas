@@ -9,6 +9,38 @@ import {
 } from "../src/lib/subscription-closure-view-model";
 
 describe("subscription closure view model", () => {
+  it("preserves only the exact return inspection pointer and never guesses from the list", () => {
+    const aggregate = {
+      closureCase: {
+        id: "closure-1",
+        caseNo: "SC-1",
+        closureType: "NORMAL_COMPLETION",
+        status: "RETURN_INSPECTION",
+        returnAssetWorkOrderId: "return-2"
+      },
+      workOrders: [
+        { id: "other-1", workOrderType: "RETURN_INBOUND", status: "CLOSED" },
+        { id: "return-2", workOrderType: "RETURN_INBOUND", status: "IN_PROGRESS" }
+      ]
+    };
+    expect(buildAdminSubscriptionClosureView(aggregate, new Set())).toHaveProperty(
+      "returnAssetWorkOrderId",
+      "return-2"
+    );
+    expect(
+      buildAdminSubscriptionClosureView(
+        {
+          ...aggregate,
+          closureCase: {
+            ...aggregate.closureCase,
+            returnAssetWorkOrderId: undefined
+          }
+        },
+        new Set()
+      )
+    ).toHaveProperty("returnAssetWorkOrderId", null);
+  });
+
   it("keeps accepted disputes excluded after a successor pricing draft is created", () => {
     expect(
       acceptedDisputeDeltaItemIds({

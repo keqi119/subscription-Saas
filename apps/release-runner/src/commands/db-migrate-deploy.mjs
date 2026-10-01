@@ -72,7 +72,38 @@ function postcondition(id, expected, actual) {
   });
 }
 
-export async function applyMigration(context, approved) {
+const executionIdentityKeys = ["operationId", "attemptId", "runId"];
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+export async function applyMigration(context, approved, options = {}) {
+  if (
+    !options ||
+    typeof options !== "object" ||
+    Array.isArray(options) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(options)) ||
+    Reflect.ownKeys(options).some((key) => key !== "executionIdentity")
+  )
+    throw runnerError("RUNNER_EXECUTION_IDENTITY_INVALID");
+  const { executionIdentity } = options;
+  if (
+    (Object.hasOwn(options, "executionIdentity") && executionIdentity === undefined) ||
+    (executionIdentity !== undefined &&
+      (!executionIdentity ||
+        typeof executionIdentity !== "object" ||
+        Array.isArray(executionIdentity) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(executionIdentity)) ||
+        Reflect.ownKeys(executionIdentity).length !== executionIdentityKeys.length ||
+        executionIdentityKeys.some(
+          (key) =>
+            !Object.hasOwn(executionIdentity, key) ||
+            typeof executionIdentity[key] !== "string" ||
+            !uuidPattern.test(executionIdentity[key]) ||
+            Object.hasOwn(approved?.input ?? {}, key)
+        )))
+  ) {
+    throw runnerError("RUNNER_EXECUTION_IDENTITY_INVALID");
+  }
+  const effectiveIdentity = executionIdentity ?? approved.input;
   assertRequiredFunction(context, "withMigrationLock");
   assertRequiredFunction(context, "executePrismaMigrateDeploy");
   return context.withMigrationLock(async () => {
@@ -106,9 +137,9 @@ export async function applyMigration(context, approved) {
       )
     ];
     return buildPostStateObservation({
-      operationId: approved.input.operationId,
-      attemptId: approved.input.attemptId,
-      runId: approved.input.runId,
+      operationId: effectiveIdentity.operationId,
+      attemptId: effectiveIdentity.attemptId,
+      runId: effectiveIdentity.runId,
       baselineManifestIdentityDigest: approved.input.baselineManifestIdentityDigest,
       baselineManifestDigest: approved.input.baselineManifestDigest,
       commandId: "db.migrate.deploy",

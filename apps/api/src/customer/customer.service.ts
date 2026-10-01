@@ -59,8 +59,8 @@ import {
   classifyApplicationReadiness,
   type ApplicationReadinessResult
 } from "../subscription-journey/application-readiness";
-import { journeyError } from "../subscription-journey/subscription-journey.errors";
-import { commercialPlanHash } from "../subscription-journey/subscription-journey-json";
+import { ConfirmedCommercialPlanChanged, journeyError, SubscriptionJourneyError } from "../subscription-journey/subscription-journey.errors";
+import { commercialPlanHash, orderCommercialPlanSnapshot, sameJourneyJson } from "../subscription-journey/subscription-journey-json";
 import {
   buildApplicationCustomerProfileSnapshot,
   parseApplicationCustomerProfileSnapshot
@@ -636,17 +636,23 @@ export class CustomerService {
     const decision = applicationReviewDecision(dto);
     const comment = applicationReviewComment(dto);
     assertApplicationReviewDecision(decision);
-    const before = await this.findApplicationOrThrow(id);
+    let before = await this.findApplicationOrThrow(id);
     ensureCanAccessApplication(before, user);
     ensureApplicationReviewWorkflowAllowed(before);
     assertApplicationHasNoOrder(before);
+
+    const reviewTransaction = <T>(run: (tx: Tx) => Promise<T>) => this.prisma.$transaction(async (tx) => {
+      before = await this.lockApplicationForChange(tx, id, user);
+      ensureApplicationReviewWorkflowAllowed(before);
+      return run(tx);
+    });
 
     if (decision === OrderReviewStatus.REJECTED) {
       return this.rejectApplicationWithReviewType(id, dto, user, context, reviewType, before);
     }
 
     if (decision === OrderReviewStatus.NEED_MORE_INFO) {
-      const application = await this.prisma.$transaction(async (tx) => {
+      const application = await reviewTransaction(async (tx) => {
         await tx.application.update({
           data: {
             [applicationReviewStatusField(reviewType)]: OrderReviewStatus.NEED_MORE_INFO,
@@ -683,7 +689,7 @@ export class CustomerService {
     }
 
     if (reviewType === "material") {
-      const application = await this.prisma.$transaction(async (tx) => {
+      const application = await reviewTransaction(async (tx) => {
         const updated = await tx.application.update({
           data: {
             materialReviewStatus: OrderReviewStatus.APPROVED,
@@ -723,7 +729,7 @@ export class CustomerService {
         throw new BadRequestException("客户资质审核通过时必须选择客户等级。");
       }
 
-      const result = await this.prisma.$transaction(async (tx) => {
+      const result = await reviewTransaction(async (tx) => {
         const depositRule = await findActiveApplicationDepositRule(tx, customerGrade);
         if (!depositRule) {
           throw new BadRequestException(`No active deposit rule configured for grade ${customerGrade}.`);
@@ -799,7 +805,7 @@ export class CustomerService {
     }
 
     if (reviewType === "product") {
-      const application = await this.prisma.$transaction(async (tx) => {
+      const application = await reviewTransaction(async (tx) => {
         const details = await loadApplicationFinalPlanDetails(tx, before, dto);
         const updated = await tx.application.update({
           data: {
@@ -839,7 +845,7 @@ export class CustomerService {
     }
 
     if (reviewType === "vehicle") {
-      const application = await this.prisma.$transaction(async (tx) => {
+      const application = await reviewTransaction(async (tx) => {
         const journey = await tx.subscriptionJourney.findUnique({
           select: { currentStepCode: true },
           where: { applicationId: id }
@@ -994,8 +1000,34 @@ export class CustomerService {
     }
 
     const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+      await lockJourneyApplication(tx, id);
+      const before = await this.findApplicationOrThrow(id, tx);
+      ensureCanAccessApplication(before, user);
+      assertApplicationCanCreateOrder(before);
+      const currentJourney = await tx.subscriptionJourney.findUnique({
+        select: { currentStepCode: true, status: true },
+        where: { applicationId: id }
+      });
+      if (currentJourney && (
+        currentJourney.currentStepCode !== "ORDER_AND_CONTRACT_CREATION" ||
+        ["PAUSED", "CANCELLED", "COMPLETED"].includes(currentJourney.status)
+      )) {
+        throw new BadRequestException("FINAL_PLAN_REVISION_STALE: 当前流程尚不允许建单，请完成最终方案发布与客户确认。");
+      }
+      const finalDepositAmount = before.finalDepositAmount;
+      if (finalDepositAmount === null) {
+        throw new BadRequestException("押金确认后才可以生成订单。");
+      }
+      await lockVehicleAvailabilityAuthorities(tx, [resolveApplicationFinalPlanInput(before).vehicleId]);
       const details = await loadApplicationFinalPlanDetails(tx, before);
-      await lockVehicleAvailabilityAuthorities(tx, [details.vehicle.id]);
+      try {
+        assertConfirmedCommercialPlanUnchanged(before, details);
+      } catch (error) {
+        if (error instanceof SubscriptionJourneyError && error.code === "FINAL_PLAN_REVISION_STALE") {
+          throw new BadRequestException(`${error.code}: ${error.message}`);
+        }
+        throw error;
+      }
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: details.vehicle.id } });
       assertApplicationVehicleCanEnterOrder(before, vehicleBefore);
       await this.assetOperationsService?.assertVehicleAvailable(
@@ -1284,6 +1316,7 @@ export class CustomerService {
       );
     }
 
+    assertConfirmedCommercialPlanUnchanged(application, details);
     const vehicleUpdate = await tx.vehicle.updateMany({
       data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
       where: {
@@ -2230,7 +2263,7 @@ export class CustomerService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const before = await this.findApplicationOrThrow(id);
+    let before = await this.findApplicationOrThrow(id);
     ensureCanManageApplication(before, user);
     assertApplicationHasNoOrder(before);
 
@@ -2241,6 +2274,12 @@ export class CustomerService {
     const submittedAt = new Date();
 
     const application = await this.prisma.$transaction(async (tx) => {
+      before = await this.lockApplicationForChange(tx, id, user);
+      ensureCanManageApplication(before, user);
+      if (!canEditApplication(before.status)) {
+        throw new BadRequestException("Only draft or need-more-info applications can be submitted.");
+      }
+      assertCanSubmitApplication(before);
       const currentCustomer = await tx.customer.findUniqueOrThrow({
         include: { identity: true, profile: true },
         where: { id: before.customerId }
@@ -2542,13 +2581,13 @@ export class CustomerService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const application = await this.findApplicationOrThrow(id);
+    let application = await this.findApplicationOrThrow(id);
     ensureCanAccessApplication(application, user);
     assertApplicationHasNoOrder(application);
     assertCanReviewMaterialGroup(application, user);
     assertReviewMaterialInput(dto.status, dto.comment);
 
-    const before = await this.prisma.applicationMaterialGroup.findFirst({
+    let before = await this.prisma.applicationMaterialGroup.findFirst({
       include: materialGroupInclude,
       where: { applicationId: id, deletedAt: null, id: materialGroupId }
     });
@@ -2562,6 +2601,14 @@ export class CustomerService {
     const reviewedAt = new Date();
     const comment = normalizeOptionalText(dto.comment);
     const group = await this.prisma.$transaction(async (tx) => {
+      application = await this.lockApplicationForChange(tx, id, user);
+      assertCanReviewMaterialGroup(application, user);
+      before = await tx.applicationMaterialGroup.findFirst({
+        include: materialGroupInclude,
+        where: { applicationId: id, deletedAt: null, id: materialGroupId }
+      });
+      if (!before) throw new NotFoundException("Application material group not found.");
+      assertCanReviewMaterialGroupStatus(before, dto.status);
       const updated = await tx.applicationMaterialGroup.update({
         data: {
           reviewComment: comment,
@@ -2693,12 +2740,14 @@ export class CustomerService {
   }
 
   async needMoreInfo(id: string, dto: NeedMoreInfoDto, user: RequestUser, context: RequestContext) {
-    const before = await this.findApplicationOrThrow(id);
+    let before = await this.findApplicationOrThrow(id);
     assertApplicationHasNoOrder(before);
     ensureReviewable(before);
     const comment = normalizeRequiredText(dto.comment ?? dto.reason, "comment");
 
     const application = await this.prisma.$transaction(async (tx) => {
+      before = await this.lockApplicationForChange(tx, id, user);
+      ensureReviewable(before);
       await tx.application.update({
         data: {
           ...(before.applicationSource === ApplicationSource.SELF_SERVICE
@@ -2742,7 +2791,7 @@ export class CustomerService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const before = await this.findApplicationOrThrow(id);
+    let before = await this.findApplicationOrThrow(id);
     assertApplicationHasNoOrder(before);
     ensureReviewable(before);
     assertCanApproveApplication(before);
@@ -2750,6 +2799,9 @@ export class CustomerService {
     const comment = normalizeOptionalText(dto.comment ?? dto.remark);
 
     const { application, riskResult } = await this.prisma.$transaction(async (tx) => {
+      before = await this.lockApplicationForChange(tx, id, user);
+      ensureReviewable(before);
+      assertCanApproveApplication(before);
       await tx.application.update({
         data: {
           approvedAt,
@@ -2874,6 +2926,13 @@ export class CustomerService {
     const comment = normalizeRequiredText(dto.comment ?? dto.reason, "comment");
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockJourneyApplication(tx, id);
+      const before = await this.findApplicationOrThrow(id, tx);
+      ensureCanAccessApplication(before, user);
+      assertApplicationHasNoOrder(before);
+      if (before.status === ApplicationStatus.CANCELLED || before.status === ApplicationStatus.REJECTED) {
+        throw new BadRequestException("当前进件状态不允许取消。");
+      }
       const vehicleRelease = await releaseApplicationSoftReservedVehicle(
         tx,
         before,
@@ -2910,10 +2969,10 @@ export class CustomerService {
         reason: comment
       });
 
-      return { application, vehicleRelease };
+      return { application, before, vehicleRelease };
     });
 
-    await this.auditApplicationChange(AuditAction.UPDATE, before, result.application, user, context);
+    await this.auditApplicationChange(AuditAction.UPDATE, result.before, result.application, user, context);
     if (result.vehicleRelease) {
       await this.auditService.write({
         action: AuditAction.UPDATE,
@@ -2945,6 +3004,11 @@ export class CustomerService {
     const comment = normalizeRequiredText(dto.comment ?? dto.reason ?? dto.remark, "comment");
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockJourneyApplication(tx, id);
+      const before = await this.findApplicationOrThrow(id, tx);
+      ensureCanAccessApplication(before, user);
+      ensureApplicationReviewWorkflowAllowed(before);
+      assertApplicationHasNoOrder(before);
       const vehicleRelease = await releaseApplicationSoftReservedVehicle(
         tx,
         before,
@@ -2991,10 +3055,10 @@ export class CustomerService {
         reason: comment
       });
 
-      return { application, vehicleRelease };
+      return { application, before, vehicleRelease };
     });
 
-    await this.auditApplicationChange(AuditAction.REJECT, before, result.application, user, context);
+    await this.auditApplicationChange(AuditAction.REJECT, result.before, result.application, user, context);
     if (result.vehicleRelease) {
       await this.auditService.write({
         action: AuditAction.UPDATE,
@@ -3038,8 +3102,16 @@ export class CustomerService {
     return customer;
   }
 
-  private async findApplicationOrThrow(id: string) {
-    const application = await this.prisma.application.findUnique({
+  private async lockApplicationForChange(tx: Tx, id: string, user: RequestUser) {
+    await lockJourneyApplication(tx, id);
+    const application = await this.findApplicationOrThrow(id, tx);
+    ensureCanAccessApplication(application, user);
+    assertApplicationHasNoOrder(application);
+    return application;
+  }
+
+  private async findApplicationOrThrow(id: string, client: Tx = this.prisma) {
+    const application = await client.application.findUnique({
       include: applicationInclude,
       where: { id }
     });
@@ -3194,11 +3266,19 @@ async function lockVehicleAvailabilityAuthorities(
 }
 
 async function lockJourneyApplication(tx: Tx, applicationId: string) {
+  // Match bootstrap's Journey -> Application -> Vehicle authority lock order.
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id"
+    FROM "subscription_journey"
+    WHERE "application_id" = ${applicationId}::uuid
+    FOR UPDATE
+  `);
+  // State writes keep the primary key; allow material-file FK checks to take KEY SHARE.
   const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT "id"
     FROM "application"
     WHERE "id" = ${applicationId}::uuid
-    FOR UPDATE
+    FOR NO KEY UPDATE
   `);
   if (rows.length !== 1) {
     throw journeyError(
@@ -4059,6 +4139,31 @@ function toSelfServicePackageSnapshot(row: SelfServicePackage) {
 
 function toJsonSnapshot(value: unknown): Prisma.InputJsonValue {
   return toAuditSnapshot(value) as Prisma.InputJsonValue;
+}
+
+function assertConfirmedCommercialPlanUnchanged(
+  application: ApplicationWithDetails,
+  details: ApplicationFinalPlanDetails
+) {
+  const snapshot = application.finalPlanSnapshot;
+  if (
+    !isPlainRecord(snapshot) ||
+    (application.finalPlanRevision > 0 && (
+      application.customerConfirmedPlanRevision !== application.finalPlanRevision ||
+      application.finalPlanCommercialHash !== commercialPlanHash(snapshot)
+    ))
+  ) {
+    throw journeyError("FINAL_PLAN_REVISION_STALE", "The confirmed commercial snapshot is not bound to its plan revision.");
+  }
+  let confirmed: Prisma.InputJsonObject;
+  try {
+    confirmed = orderCommercialPlanSnapshot(snapshot);
+  } catch {
+    throw journeyError("FINAL_PLAN_REVISION_STALE", "The confirmed commercial snapshot is incomplete.");
+  }
+  if (!sameJourneyJson(confirmed, orderCommercialPlanSnapshot(details.finalPlanSnapshot))) {
+    throw new ConfirmedCommercialPlanChanged();
+  }
 }
 
 function commercialPlanChanged(

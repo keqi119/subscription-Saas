@@ -20,6 +20,8 @@ import {
 import { runnerError } from "./error-codes.mjs";
 import { createRuntimeAdapters } from "./runtime-adapters.mjs";
 import { runTrustedEntrypoint } from "./trusted-entrypoint.mjs";
+import { runFinalMigrationEntrypoint } from "./final-migration-entrypoint.mjs";
+import { runFinalRuntimeEntrypoint } from "./final-runtime-entrypoint.mjs";
 
 function parseInvocation(argv) {
   if (
@@ -62,9 +64,25 @@ export async function runProductionEntrypoint({
   environment = process.env,
   adapters,
   createAdapters = createRuntimeAdapters,
+  executeFinalMigration = runFinalMigrationEntrypoint,
+  executeFinalRuntime = runFinalRuntimeEntrypoint,
   executeTrusted = runTrustedEntrypoint
 } = {}) {
   const envelopeFile = environment.RUNNER_LAUNCH_ENVELOPE_FILE;
+  if (environment.RUNNER_EXECUTION_MODE !== undefined) {
+    if (["r3-final-migration", "r3-final-runtime"].includes(environment.RUNNER_EXECUTION_MODE)) {
+      if (envelopeFile !== undefined) throw runnerError("RUNNER_EXECUTION_MODE_REJECTED");
+      if (argv.length !== 0) throw runnerError("RUNNER_ENTRYPOINT_OVERRIDE_REJECTED");
+      return environment.RUNNER_EXECUTION_MODE === "r3-final-runtime"
+        ? executeFinalRuntime()
+        : executeFinalMigration();
+    }
+    if (environment.RUNNER_EXECUTION_MODE !== "manual-stage1" || envelopeFile !== undefined)
+      throw runnerError("RUNNER_EXECUTION_MODE_REJECTED");
+    if (argv.length !== 0) throw runnerError("RUNNER_ENTRYPOINT_OVERRIDE_REJECTED");
+    // Mode selection grants no authority. The fixed MS2 input boundary is required.
+    throw runnerError("MANUAL_AUTHORIZATION_REQUIRED");
+  }
   const runtimeAdapters =
     adapters ?? (argv.length === 0 && envelopeFile ? createAdapters() : undefined);
   const result = await executeTrusted({
@@ -98,7 +116,9 @@ export function finalizeRunnerExecution(result) {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   runProductionEntrypoint({ argv: process.argv.slice(2) })
-    .then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))
+    .then((result) => {
+      if (result !== undefined) process.stdout.write(`${JSON.stringify(result)}\n`);
+    })
     .catch((error) => {
       process.stderr.write(`${error?.code ?? "RUNNER_FAILED"}\n`);
       process.exitCode = 1;

@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prebuild-sanitized-input-binding.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "bindingId",
+    "sourceExecutionPurpose",
+    "qualification",
+    "sourceSha",
+    "snapshotReleaseAttemptId",
+    "snapshotRunId",
+    "sanitizationContractDigest",
+    "snapshotDigest",
+    "envelopeDigest",
+    "ciphertext",
+    "snapshotExpiresAt",
+    "custody",
+    "readDecryptUseAuthority",
+    "capacityUpperBounds",
+    "issuedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "prebuild-sanitized-input-binding.v1" },
+    "bindingId": { "$ref": "#/$defs/id" },
+    "sourceExecutionPurpose": { "const": "release-candidate" },
+    "qualification": { "const": false },
+    "sourceSha": { "$ref": "#/$defs/sha" },
+    "snapshotReleaseAttemptId": { "$ref": "#/$defs/id" },
+    "snapshotRunId": { "$ref": "#/$defs/runId" },
+    "sanitizationContractDigest": { "$ref": "#/$defs/digest" },
+    "snapshotDigest": { "$ref": "#/$defs/digest" },
+    "envelopeDigest": { "$ref": "#/$defs/digest" },
+    "ciphertext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objectKey", "objectVersion", "etag", "digest", "sizeBytes"],
+      "properties": {
+        "objectKey": {
+          "type": "string",
+          "pattern": "^snapshot-slots/v2/[^/*?]+/[^/*?]+/snapshot\\.enc$"
+        },
+        "objectVersion": { "$ref": "#/$defs/id" },
+        "etag": { "$ref": "#/$defs/id" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "sizeBytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 }
+      }
+    },
+    "snapshotExpiresAt": { "$ref": "#/$defs/timestamp" },
+    "custody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "authoritativeObservationDigest",
+        "archiveAccessReceiptDigest",
+        "retainUntil"
+      ],
+      "properties": {
+        "available": { "const": true },
+        "authoritativeObservationDigest": { "$ref": "#/$defs/digest" },
+        "archiveAccessReceiptDigest": { "$ref": "#/$defs/digest" },
+        "retainUntil": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "readDecryptUseAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorityKind",
+        "authorityDigest",
+        "issuer",
+        "consumerPrincipal",
+        "sourceProducerPrincipal",
+        "sourcePublisherPrincipal",
+        "exactObjectKey",
+        "validFrom",
+        "validUntil",
+        "verificationProtocol"
+      ],
+      "properties": {
+        "authorityKind": { "const": "prebuild-independent-read-decrypt-use" },
+        "authorityDigest": { "$ref": "#/$defs/digest" },
+        "issuer": { "$ref": "#/$defs/id" },
+        "consumerPrincipal": { "$ref": "#/$defs/id" },
+        "sourceProducerPrincipal": { "$ref": "#/$defs/id" },
+        "sourcePublisherPrincipal": { "$ref": "#/$defs/id" },
+        "exactObjectKey": {
+          "type": "string",
+          "pattern": "^snapshot-slots/v2/[^/*?]+/[^/*?]+/snapshot\\.enc$"
+        },
+        "validFrom": { "$ref": "#/$defs/timestamp" },
+        "validUntil": { "$ref": "#/$defs/timestamp" },
+        "verificationProtocol": { "const": "external-facts-required-task17b" }
+      }
+    },
+    "capacityUpperBounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ciphertextBytes", "plaintextBytes", "restoredDatabaseBytes"],
+      "properties": {
+        "ciphertextBytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
+        "plaintextBytes": { "type": "integer", "minimum": 1, "maximum": 1099511627776 },
+        "restoredDatabaseBytes": { "type": "integer", "minimum": 1, "maximum": 4398046511104 }
+      }
+    },
+    "issuedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true }
+  }
+}

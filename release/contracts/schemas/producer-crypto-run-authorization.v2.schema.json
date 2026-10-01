@@ -1,0 +1,353 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "producer-crypto-run-authorization.v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "authorizationId",
+    "executionPurpose",
+    "repository",
+    "sourceSha",
+    "releaseAttemptId",
+    "snapshotRunId",
+    "snapshotAllocatedAt",
+    "producer",
+    "bindings",
+    "issuer",
+    "localKey",
+    "execution",
+    "handoff",
+    "prerequisites",
+    "issuedAt",
+    "notBefore",
+    "notAfter",
+    "revocationPolicyDigest",
+    "custodyAuthorizationDigest"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "producer-crypto-run-authorization.v2"
+    },
+    "authorizationId": {
+      "$ref": "#/$defs/id"
+    },
+    "executionPurpose": {
+      "enum": ["qualification", "release-candidate"]
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "id"],
+      "properties": {
+        "name": {
+          "const": "keqi119/subscription-Saas"
+        },
+        "id": {
+          "const": "1253231368"
+        }
+      }
+    },
+    "sourceSha": {
+      "$ref": "#/$defs/sha"
+    },
+    "releaseAttemptId": {
+      "$ref": "#/$defs/id"
+    },
+    "snapshotRunId": {
+      "$ref": "#/$defs/runId"
+    },
+    "snapshotAllocatedAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflowPath",
+        "runId",
+        "runAttempt",
+        "jobId",
+        "phase",
+        "pendingDeploymentId",
+        "environment"
+      ],
+      "properties": {
+        "workflowPath": {
+          "const": ".github/workflows/sanitized-snapshot.yml"
+        },
+        "runId": {
+          "$ref": "#/$defs/runId"
+        },
+        "runAttempt": {
+          "const": 1
+        },
+        "jobId": {
+          "const": "snapshot-data"
+        },
+        "phase": {
+          "const": "encryption"
+        },
+        "pendingDeploymentId": {
+          "$ref": "#/$defs/id"
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "id", "policyIdentityDigest"],
+          "properties": {
+            "name": {
+              "const": "stage1-snapshot-export"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "policyIdentityDigest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatchAuthorizationDigest",
+        "sourceGateEvidenceDigest",
+        "buildProofDigest",
+        "buildBundleDigest",
+        "repositoryContractDigest",
+        "adapterExecutableDigest",
+        "cryptoExecutableDigest"
+      ],
+      "properties": {
+        "dispatchAuthorizationDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sourceGateEvidenceDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "buildProofDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "buildBundleDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "repositoryContractDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "adapterExecutableDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "cryptoExecutableDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "issuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuerId", "principal", "cryptoPrincipal", "publisherBrokerPrincipal"],
+      "properties": {
+        "issuerId": {
+          "$ref": "#/$defs/id"
+        },
+        "principal": {
+          "$ref": "#/$defs/id"
+        },
+        "publisherBrokerPrincipal": {
+          "$ref": "#/$defs/id"
+        },
+        "cryptoPrincipal": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "publicKeyOnly", "privateKey"],
+      "properties": {
+        "protocol": {
+          "const": "public-key-object-v1"
+        },
+        "publicKeyOnly": {
+          "const": true
+        },
+        "privateKey": {
+          "const": false
+        }
+      }
+    },
+    "prerequisites": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "changePlanDigest",
+        "externalChangeApprovalDigest",
+        "applyProofDigest",
+        "keyReadbackDigest",
+        "recoveryReadbackDigest",
+        "admissionPolicyReadbackDigest",
+        "readbackDigest",
+        "completedAt"
+      ],
+      "properties": {
+        "changePlanDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "externalChangeApprovalDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "applyProofDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "keyReadbackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recoveryReadbackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "admissionPolicyReadbackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "readbackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "completedAt": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "issuedAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "notBefore": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "notAfter": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "revocationPolicyDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "custodyAuthorizationDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "localKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "keyFingerprint",
+        "keyReadbackDigest",
+        "recoveryReadbackDigest",
+        "action",
+        "keySpec",
+        "maxCalls",
+        "context",
+        "contextDigest"
+      ],
+      "properties": {
+        "kind": {
+          "const": "local-rsa-oaep-sha256.v1"
+        },
+        "keyFingerprint": {
+          "$ref": "#/$defs/digest"
+        },
+        "keyReadbackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recoveryReadbackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "action": {
+          "const": "local:GenerateAndWrapDataKey"
+        },
+        "keySpec": {
+          "const": "AES_256"
+        },
+        "maxCalls": {
+          "const": 1
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "contextDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestedDurationSeconds", "maxDurationSeconds"],
+      "properties": {
+        "requestedDurationSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 900
+        },
+        "maxDurationSeconds": {
+          "const": 900
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "rfc3339Finite": true
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositoryId",
+        "sourceSha",
+        "releaseAttemptId",
+        "snapshotRunId",
+        "sanitizationContractDigest",
+        "expiresAt"
+      ],
+      "properties": {
+        "repositoryId": {
+          "const": "1253231368"
+        },
+        "sourceSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "releaseAttemptId": {
+          "$ref": "#/$defs/id"
+        },
+        "snapshotRunId": {
+          "$ref": "#/$defs/runId"
+        },
+        "sanitizationContractDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    }
+  }
+}

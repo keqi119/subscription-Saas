@@ -8,6 +8,21 @@ export {
 } from "./catalogs.mjs";
 export { compileAllSchemas, validateContract } from "./schema-registry.mjs";
 export {
+  encodeManualJson,
+  signManualAuthorization,
+  verifyManualAuthorization,
+  assertManualDecision,
+  verifyManualHandoff,
+  assertManualHandoffDecision
+} from "./manual-stage1-contracts.mjs";
+export { openManualSession } from "./manual-stage1-session.mjs";
+export { verifyExternalChangeApproval } from "./external-change-approval.mjs";
+export {
+  assertVerifiedDispatchAuthorization,
+  dispatchAuthorizationSigningBytes,
+  verifyDispatchAuthorization
+} from "./dispatch-authorization.mjs";
+export {
   candidateReasons,
   classifyDatabaseTests,
   discoverDatabaseTestCandidates,
@@ -18,6 +33,7 @@ export { cleanupSuiteDatabase, provisionSuiteDatabase } from "./database-lifecyc
 export { grantRuntimeEquivalentAccess, sqlIdentifier, sqlLiteral } from "./database-roles.mjs";
 export { scanMigrationGlobalObjects } from "./migration-global-object-scan.mjs";
 export {
+  buildDatabaseSuiteReport,
   normalizeDatabaseTestCounts,
   requiredReleaseDatabaseTestContext,
   runDatabaseManifest,
@@ -34,7 +50,8 @@ export {
   assertCustodyComplete,
   assertCustodyDeletionAllowed,
   custodyEvidence,
-  redactEvidence
+  redactEvidence,
+  verifyAuthoritativeCustodyObservation
 } from "./evidence-custody.mjs";
 export { assertApprovalDecision, verifyApproval } from "./approval.mjs";
 export {
@@ -62,12 +79,36 @@ export {
 } from "./snapshot/export-sanitized.mjs";
 export { scanSanitizedArtifact } from "./snapshot/scan-artifact.mjs";
 export {
+  decryptSnapshotStream,
+  encryptSnapshotStream,
+  wipeKeyBuffer
+} from "./snapshot/envelope-crypto.mjs";
+export {
   assertReadOnlySnapshotSource,
   createReadOnlySourceExecutor,
   fingerprintSourceSnapshot
 } from "./snapshot/source-readonly-guard.mjs";
 export { normalizeSnapshotOwnership, verifyOwnershipMap } from "./snapshot/normalize-ownership.mjs";
 export {
+  buildEnvironmentPolicyIdentity,
+  buildEnvironmentPolicyObservation,
+  verifyPostApprovalObservation
+} from "./snapshot/environment-policy.mjs";
+export {
+  buildSnapshotAdmission,
+  createUntrustedSnapshotAdmissionInput,
+  uniqueRouteLabel
+} from "./snapshot/snapshot-admission.mjs";
+export { verifyAndSignSnapshotAdmission } from "./snapshot/snapshot-admission-verification.mjs";
+export {
   assertSnapshotSchemaDiffResult,
   restoreSanitizedSnapshot
 } from "./snapshot/restore-sanitized.mjs";
+export {
+  computeManualClusterFingerprint,
+  validateManualRunnerRequest,
+  assessManualRunnerEvidence,
+  encodeManualRunnerFrame,
+  parseManualRunnerFrames,
+  validateManualRunnerProtocol
+} from "./manual-runner-evidence.mjs";

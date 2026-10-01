@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "h1-snapshot-key-creation-readback.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "ownerId",
+    "principal",
+    "hostFingerprint",
+    "profileDigest",
+    "createdAt",
+    "algorithm",
+    "modulusLength",
+    "publicExponent",
+    "keyRef",
+    "keyFingerprint",
+    "publicKeyPem",
+    "softwareKeyExportable",
+    "challengeDomain",
+    "challengeDigest",
+    "wrappedChallengeDigest",
+    "roundtripVerified",
+    "promotionEligible"
+  ],
+  "properties": {
+    "kind": {
+      "const": "h1-snapshot-key-creation-readback"
+    },
+    "ownerId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "uid"],
+      "properties": {
+        "platform": {
+          "const": "posix"
+        },
+        "uid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "hostFingerprint": {
+      "$ref": "#/$defs/digest"
+    },
+    "profileDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "createdAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "algorithm": {
+      "const": "RSA-OAEP-SHA256"
+    },
+    "modulusLength": {
+      "const": 3072
+    },
+    "publicExponent": {
+      "const": 65537
+    },
+    "keyRef": {
+      "const": "snapshot-rsa3072.pk8.der"
+    },
+    "keyFingerprint": {
+      "$ref": "#/$defs/digest"
+    },
+    "publicKeyPem": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "softwareKeyExportable": {
+      "const": true
+    },
+    "challengeDomain": {
+      "const": "subscription-saas/H1-snapshot-key-creation/v1"
+    },
+    "challengeDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "wrappedChallengeDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "roundtripVerified": {
+      "const": true
+    },
+    "promotionEligible": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "rfc3339Finite": true
+    }
+  }
+}

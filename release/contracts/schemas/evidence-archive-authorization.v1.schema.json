@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-archive-authorization.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "authorizationId",
+    "operationId",
+    "profile",
+    "executor",
+    "resource",
+    "objects",
+    "permissions",
+    "chain",
+    "identities",
+    "issuer",
+    "issuedAt",
+    "notAfter",
+    "revocationPolicyDigest",
+    "custodyPolicyDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "evidence-archive-authorization.v1" },
+    "authorizationId": { "$ref": "#/$defs/id" },
+    "operationId": { "$ref": "#/$defs/id" },
+    "profile": { "enum": ["archive-create-only-writer", "archive-readback-reader"] },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceDigest", "runtimeDigest", "principal", "publicKeyDigest"],
+      "properties": {
+        "sourceDigest": { "$ref": "#/$defs/digest" },
+        "runtimeDigest": { "$ref": "#/$defs/digest" },
+        "principal": { "$ref": "#/$defs/id" },
+        "publicKeyDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["region", "bucket", "bucketFingerprint", "policyDigest"],
+      "properties": {
+        "region": { "const": "oss-cn-shanghai" },
+        "bucket": {
+          "type": "string",
+          "pattern": "^subscription-saas-stage1-snapshot-[0-9a-f]{12}-cn-shanghai$"
+        },
+        "bucketFingerprint": { "$ref": "#/$defs/digest" },
+        "policyDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/object" }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actions", "conditionalCreate", "exactKeysOnly"],
+      "properties": {
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "oss:PutObject",
+              "oss:HeadObject",
+              "oss:GetObject",
+              "oss:GetBucketAcl",
+              "oss:GetBucketWorm"
+            ]
+          }
+        },
+        "conditionalCreate": { "type": "boolean" },
+        "exactKeysOnly": { "const": true }
+      }
+    },
+    "chain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "changePlanDigest",
+        "externalChangeApprovalDigest",
+        "applyProofDigest",
+        "resourceReadbackDigest",
+        "predecessorTerminalReceiptDigest"
+      ],
+      "properties": {
+        "changePlanDigest": { "$ref": "#/$defs/digest" },
+        "externalChangeApprovalDigest": { "$ref": "#/$defs/digest" },
+        "applyProofDigest": { "$ref": "#/$defs/digest" },
+        "resourceReadbackDigest": { "$ref": "#/$defs/digest" },
+        "predecessorTerminalReceiptDigest": {
+          "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+        }
+      }
+    },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["management", "writer", "reader"],
+      "properties": {
+        "management": { "$ref": "#/$defs/id" },
+        "writer": { "$ref": "#/$defs/id" },
+        "reader": { "$ref": "#/$defs/id" }
+      }
+    },
+    "issuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "keyId"],
+      "properties": { "id": { "$ref": "#/$defs/id" }, "keyId": { "$ref": "#/$defs/id" } }
+    },
+    "issuedAt": { "$ref": "#/$defs/timestamp" },
+    "notAfter": { "$ref": "#/$defs/timestamp" },
+    "revocationPolicyDigest": { "$ref": "#/$defs/digest" },
+    "custodyPolicyDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true },
+    "proofType": {
+      "enum": [
+        "approval-record.v1",
+        "approval-revocations.v1",
+        "external-change-approval.v1",
+        "authoritative-custody-observation.v1",
+        "custody-receipt.v1",
+        "rc-dispatch-authorization.v1",
+        "environment-policy-observation.v1",
+        "infrastructure-change.v1",
+        "producer-crypto-run-authorization.v1",
+        "producer-crypto-run-authorization.v2",
+        "producer-crypto-use-proof.v1",
+        "producer-crypto-use-proof.v2",
+        "evidence-archive-authorization.v1",
+        "evidence-archive-access-receipt.v1",
+        "evidence-custody-bootstrap-readback.v1",
+        "producer-terminal-observation.v1",
+        "snapshot-jit-launch-proof.v1",
+        "snapshot-producer-completion.v1",
+        "snapshot-private-custody.v1",
+        "snapshot-destruction-receipt.v1",
+        "snapshot-retention-receipt.v1",
+        "evidence-lineage-retention-receipt.v1",
+        "build-proof.v1",
+        "build-material-observation.v1",
+        "post-state-observation.v1",
+        "launch-attestation.v1",
+        "prebuild-sanitized-input-binding.v1",
+        "source-gate-evidence.v1",
+        "execution-proof.v1",
+        "final-compose-evidence.v1",
+        "exact-capability-approval.v1",
+        "exact-capability-approval.v2",
+        "exact-run-capability-plan.v1",
+        "exact-run-capability-readback.v1",
+        "exact-run-capability-revocation.v1",
+        "publisher-sts-use-proof.v1",
+        "oidc-cloud-role-use-proof.v1",
+        "jit-registration-use-proof.v1",
+        "lineage-oss-role-use-proof.v1",
+        "lineage-storage-access-receipt.v1",
+        "bootstrap-canary-run-authorization.v1",
+        "bootstrap-canary-execution-proof.v1",
+        "bootstrap-canary-checkpoint.v1",
+        "snapshot-adapter-build-plan.v1",
+        "snapshot-adapter-build-proof.v1",
+        "snapshot-adapter-artifact-custody.v1",
+        "three-image-bundle-build-plan.v1",
+        "apply-proof.v1",
+        "readback-observation.v1",
+        "credential-use-proof.v1",
+        "terminal-receipt.v1",
+        "access-receipt.v1",
+        "attestation.v1",
+        "failure-evidence.v1",
+        "qualification-stop.v1"
+      ]
+    },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proofType", "canonicalDigest", "exactKey", "contentDigest", "contentSizeBytes"],
+      "properties": {
+        "proofType": { "$ref": "#/$defs/proofType" },
+        "canonicalDigest": { "$ref": "#/$defs/digest" },
+        "exactKey": {
+          "type": "string",
+          "pattern": "^control-evidence/v1/[a-z0-9.-]+/sha256:[0-9a-f]{64}$",
+          "maxLength": 1024
+        },
+        "contentDigest": { "$ref": "#/$defs/digest" },
+        "contentSizeBytes": { "type": "integer", "minimum": 1, "maximum": 1048576 }
+      }
+    }
+  }
+}

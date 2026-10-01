@@ -1,0 +1,80 @@
+{
+  "contractVersion": "evidence-lineage-storage-policy.v1",
+  "approvalSchemaVersion": "exact-capability-approval.v2",
+  "lane": "rc",
+  "capabilityKind": "lineage-oss-role",
+  "region": "oss-cn-shanghai",
+  "namespace": "private-lineage",
+  "claimKeyTemplate": "evidence/claims/v1/${rawProofType}/${rawProofDigest.slice(7)}",
+  "objectKeyTemplate": "evidence/v1/${releaseAttemptId}/${rcWorkflowRunId}/${objectType}/${digest.slice(7)}",
+  "exactKeysOnly": true,
+  "matrix": [
+    {
+      "permissionProfile": "lineage-create-only-writer",
+      "jobId": "lineage-purpose-store",
+      "environment": "trusted-release-execution",
+      "lineageNodeKind": "purpose",
+      "allowedActions": ["ConditionalCreate"]
+    },
+    {
+      "permissionProfile": "lineage-readback-reader",
+      "jobId": "lineage-purpose-readback",
+      "environment": "trusted-release-execution",
+      "lineageNodeKind": "purpose",
+      "allowedActions": ["Head", "Get"]
+    },
+    {
+      "permissionProfile": "lineage-create-only-writer",
+      "jobId": "lineage-custody-store",
+      "environment": "trusted-release-execution",
+      "lineageNodeKind": "custody",
+      "allowedActions": ["ConditionalCreate"]
+    },
+    {
+      "permissionProfile": "lineage-readback-reader",
+      "jobId": "lineage-custody-readback",
+      "environment": "trusted-release-execution",
+      "lineageNodeKind": "custody",
+      "allowedActions": ["Head", "Get"]
+    },
+    {
+      "permissionProfile": "lineage-create-only-writer",
+      "jobId": "lineage-aggregate-store",
+      "environment": "trusted-release-candidate",
+      "lineageNodeKind": "aggregate",
+      "allowedActions": ["ConditionalCreate"]
+    },
+    {
+      "permissionProfile": "lineage-readback-reader",
+      "jobId": "lineage-aggregate-readback",
+      "environment": "trusted-release-candidate",
+      "lineageNodeKind": "aggregate",
+      "allowedActions": ["Head", "Get"]
+    },
+    {
+      "permissionProfile": "lineage-create-only-writer",
+      "jobId": "lineage-exit-store",
+      "environment": "trusted-release-candidate",
+      "lineageNodeKind": "exit",
+      "allowedActions": ["ConditionalCreate"]
+    },
+    {
+      "permissionProfile": "lineage-readback-reader",
+      "jobId": "lineage-exit-readback",
+      "environment": "trusted-release-candidate",
+      "lineageNodeKind": "exit",
+      "allowedActions": ["Head", "Get"]
+    }
+  ],
+  "deniedActions": ["List", "Delete", "KMS", "Database", "Snapshot", "JIT"],
+  "retention": {
+    "bucketWormMinimumDays": 210,
+    "claimMinimumDays": 180,
+    "accessReceiptMinimumDays": 180,
+    "runtimeProfile": null,
+    "liveRoleProvisioned": false,
+    "requiresSeparateExactKeyApproval": true,
+    "requiresWholeLineageBoundary": true,
+    "legalHoldBlocksDisposition": true
+  }
+}

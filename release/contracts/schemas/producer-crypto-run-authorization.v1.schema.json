@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "producer-crypto-run-authorization.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "authorizationId",
+    "executionPurpose",
+    "repository",
+    "sourceSha",
+    "releaseAttemptId",
+    "snapshotRunId",
+    "snapshotAllocatedAt",
+    "producer",
+    "bindings",
+    "issuer",
+    "kms",
+    "session",
+    "handoff",
+    "prerequisites",
+    "issuedAt",
+    "notBefore",
+    "notAfter",
+    "revocationPolicyDigest",
+    "custodyAuthorizationDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "producer-crypto-run-authorization.v1" },
+    "authorizationId": { "$ref": "#/$defs/id" },
+    "executionPurpose": { "enum": ["qualification", "release-candidate"] },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "id"],
+      "properties": {
+        "name": { "const": "keqi119/subscription-Saas" },
+        "id": { "const": "1253231368" }
+      }
+    },
+    "sourceSha": { "$ref": "#/$defs/sha" },
+    "releaseAttemptId": { "$ref": "#/$defs/id" },
+    "snapshotRunId": { "$ref": "#/$defs/runId" },
+    "snapshotAllocatedAt": { "$ref": "#/$defs/timestamp" },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflowPath",
+        "runId",
+        "runAttempt",
+        "jobId",
+        "phase",
+        "pendingDeploymentId",
+        "environment"
+      ],
+      "properties": {
+        "workflowPath": { "const": ".github/workflows/sanitized-snapshot.yml" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "runAttempt": { "const": 1 },
+        "jobId": { "const": "snapshot-data" },
+        "phase": { "const": "encryption" },
+        "pendingDeploymentId": { "$ref": "#/$defs/id" },
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "id", "policyIdentityDigest"],
+          "properties": {
+            "name": { "const": "stage1-snapshot-export" },
+            "id": { "$ref": "#/$defs/id" },
+            "policyIdentityDigest": { "$ref": "#/$defs/digest" }
+          }
+        }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatchAuthorizationDigest",
+        "sourceGateEvidenceDigest",
+        "buildProofDigest",
+        "buildBundleDigest",
+        "repositoryContractDigest",
+        "adapterExecutableDigest",
+        "cryptoExecutableDigest"
+      ],
+      "properties": {
+        "dispatchAuthorizationDigest": { "$ref": "#/$defs/digest" },
+        "sourceGateEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "buildProofDigest": { "$ref": "#/$defs/digest" },
+        "buildBundleDigest": { "$ref": "#/$defs/digest" },
+        "repositoryContractDigest": { "$ref": "#/$defs/digest" },
+        "adapterExecutableDigest": { "$ref": "#/$defs/digest" },
+        "cryptoExecutableDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "issuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuerId", "principal", "roleArn", "publisherBrokerPrincipal"],
+      "properties": {
+        "issuerId": { "$ref": "#/$defs/id" },
+        "principal": { "$ref": "#/$defs/id" },
+        "roleArn": { "$ref": "#/$defs/id" },
+        "publisherBrokerPrincipal": { "$ref": "#/$defs/id" }
+      }
+    },
+    "kms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "region",
+        "endpoint",
+        "keyId",
+        "keyAlias",
+        "keyAliasReadbackId",
+        "action",
+        "keySpec",
+        "maxCalls",
+        "context",
+        "contextDigest",
+        "allowedActions",
+        "deniedActions"
+      ],
+      "properties": {
+        "region": { "const": "cn-shanghai" },
+        "endpoint": { "const": "kms.cn-shanghai.aliyuncs.com" },
+        "keyId": { "$ref": "#/$defs/id" },
+        "keyAlias": { "const": "alias/stage1-snapshot-custody" },
+        "keyAliasReadbackId": { "$ref": "#/$defs/id" },
+        "action": { "const": "kms:GenerateDataKey" },
+        "keySpec": { "const": "AES_256" },
+        "maxCalls": { "const": 1 },
+        "context": { "$ref": "#/$defs/context" },
+        "contextDigest": { "$ref": "#/$defs/digest" },
+        "allowedActions": { "const": ["kms:GenerateDataKey"] },
+        "deniedActions": {
+          "const": [
+            "kms:Decrypt",
+            "kms:Encrypt",
+            "kms:AsymmetricDecrypt",
+            "kms:ManageKey",
+            "oss:*",
+            "database:*",
+            "jit:*",
+            "sts:AssumeRole"
+          ]
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestedDurationSeconds", "maxDurationSeconds"],
+      "properties": {
+        "requestedDurationSeconds": { "type": "integer", "minimum": 1, "maximum": 900 },
+        "maxDurationSeconds": { "const": 900 }
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "sealedFdOnly", "environment", "argv", "stdin", "workspace"],
+      "properties": {
+        "protocol": { "const": "sealed-fd-v1" },
+        "sealedFdOnly": { "const": true },
+        "environment": { "const": false },
+        "argv": { "const": false },
+        "stdin": { "const": false },
+        "workspace": { "const": false }
+      }
+    },
+    "prerequisites": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "changePlanDigest",
+        "externalChangeApprovalDigest",
+        "applyProofDigest",
+        "providerReadbackDigest",
+        "rolePolicyReadbackDigest",
+        "keyPolicyReadbackDigest",
+        "sessionPolicyReadbackDigest",
+        "readbackDigest",
+        "completedAt"
+      ],
+      "properties": {
+        "changePlanDigest": { "$ref": "#/$defs/digest" },
+        "externalChangeApprovalDigest": { "$ref": "#/$defs/digest" },
+        "applyProofDigest": { "$ref": "#/$defs/digest" },
+        "providerReadbackDigest": { "$ref": "#/$defs/digest" },
+        "rolePolicyReadbackDigest": { "$ref": "#/$defs/digest" },
+        "keyPolicyReadbackDigest": { "$ref": "#/$defs/digest" },
+        "sessionPolicyReadbackDigest": { "$ref": "#/$defs/digest" },
+        "readbackDigest": { "$ref": "#/$defs/digest" },
+        "completedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "issuedAt": { "$ref": "#/$defs/timestamp" },
+    "notBefore": { "$ref": "#/$defs/timestamp" },
+    "notAfter": { "$ref": "#/$defs/timestamp" },
+    "revocationPolicyDigest": { "$ref": "#/$defs/digest" },
+    "custodyAuthorizationDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositoryId",
+        "sourceSha",
+        "releaseAttemptId",
+        "snapshotRunId",
+        "sanitizationContractDigest",
+        "expiresAt"
+      ],
+      "properties": {
+        "repositoryId": { "const": "1253231368" },
+        "sourceSha": { "$ref": "#/$defs/sha" },
+        "releaseAttemptId": { "$ref": "#/$defs/id" },
+        "snapshotRunId": { "$ref": "#/$defs/runId" },
+        "sanitizationContractDigest": { "$ref": "#/$defs/digest" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  }
+}

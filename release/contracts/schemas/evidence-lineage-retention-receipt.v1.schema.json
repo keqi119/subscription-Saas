@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-lineage-retention-receipt.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseAttemptId",
+    "rcWorkflowRunId",
+    "objects",
+    "latestWholeLineageRetainUntil",
+    "legalHoldUntil",
+    "dispositionPlanDigest",
+    "approvalDigest",
+    "operatorIdentity",
+    "action",
+    "appliedAt",
+    "terminalReadback"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "evidence-lineage-retention-receipt.v1" },
+    "releaseAttemptId": { "$ref": "#/$defs/id" },
+    "rcWorkflowRunId": { "$ref": "#/$defs/runId" },
+    "objects": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "addressingKind",
+          "objectType",
+          "key",
+          "version",
+          "digest",
+          "rawProofType",
+          "rawProofDigest",
+          "custodyObservationDigest"
+        ],
+        "properties": {
+          "addressingKind": { "enum": ["claim", "lineage"] },
+          "objectType": {
+            "enum": [
+              "execution-purpose-envelope.v1",
+              "purpose-claim.v1",
+              "custody-receipt.v2",
+              "release-aggregate-proof.v2",
+              "s1-exit-evidence.v2"
+            ]
+          },
+          "key": {
+            "type": "string",
+            "pattern": "^(?:evidence/claims/v1|evidence/v1)/[^*?]+$",
+            "maxLength": 1024
+          },
+          "version": { "$ref": "#/$defs/id" },
+          "digest": { "$ref": "#/$defs/digest" },
+          "rawProofType": {
+            "anyOf": [
+              {
+                "enum": [
+                  "source-gate-evidence.v1",
+                  "execution-proof.v1",
+                  "final-compose-evidence.v1"
+                ]
+              },
+              { "type": "null" }
+            ]
+          },
+          "rawProofDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+          "custodyObservationDigest": { "$ref": "#/$defs/digest" }
+        },
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "addressingKind": { "const": "claim" },
+              "objectType": { "const": "purpose-claim.v1" },
+              "rawProofType": { "type": "string" },
+              "rawProofDigest": { "$ref": "#/$defs/digest" }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "addressingKind": { "const": "lineage" },
+              "objectType": {
+                "enum": [
+                  "execution-purpose-envelope.v1",
+                  "custody-receipt.v2",
+                  "release-aggregate-proof.v2",
+                  "s1-exit-evidence.v2"
+                ]
+              },
+              "rawProofType": { "type": "null" },
+              "rawProofDigest": { "type": "null" }
+            }
+          }
+        ]
+      }
+    },
+    "latestWholeLineageRetainUntil": { "$ref": "#/$defs/timestamp" },
+    "legalHoldUntil": { "anyOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+    "dispositionPlanDigest": { "$ref": "#/$defs/digest" },
+    "approvalDigest": { "$ref": "#/$defs/digest" },
+    "operatorIdentity": { "$ref": "#/$defs/id" },
+    "action": { "enum": ["DELETE", "TRANSFER_TO_COMPLIANCE_STORAGE"] },
+    "appliedAt": { "$ref": "#/$defs/timestamp" },
+    "terminalReadback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "verifiedAt", "digest"],
+      "properties": {
+        "disposition": { "enum": ["DELETED", "TRANSFERRED"] },
+        "verifiedAt": { "$ref": "#/$defs/timestamp" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true }
+  }
+}

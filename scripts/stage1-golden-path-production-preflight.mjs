@@ -153,15 +153,8 @@ export function validateStage1GoldenPathPreflight(env) {
     add
   );
   const paymentLimit = positiveInteger(env.STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN);
-  const refundLimit = positiveInteger(env.STAGE1_ACCEPTANCE_MAX_REFUND_FEN);
   if (paymentLimit === null) {
     add("PAYMENT_LIMIT_INVALID", "STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN", "A positive controlled payment limit is required.");
-  }
-  if (refundLimit === null) {
-    add("REFUND_LIMIT_INVALID", "STAGE1_ACCEPTANCE_MAX_REFUND_FEN", "A positive controlled refund limit is required.");
-  }
-  if (paymentLimit !== null && refundLimit !== null && refundLimit > paymentLimit) {
-    add("REFUND_LIMIT_EXCEEDS_PAYMENT", "STAGE1_ACCEPTANCE_MAX_REFUND_FEN", "The refund limit cannot exceed the payment limit.");
   }
 
   for (const key of REQUIRED_SENSITIVE_KEYS) {

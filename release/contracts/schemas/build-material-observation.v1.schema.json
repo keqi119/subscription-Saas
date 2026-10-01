@@ -26,6 +26,20 @@
     "migrationCatalogDigest": { "$ref": "#/$defs/digest" },
     "policyDigest": { "$ref": "#/$defs/digest" },
     "promotionEligibility": { "const": "trusted-candidate" },
+    "webClient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["imageDigest", "apiBaseUrl"],
+      "properties": {
+        "imageDigest": { "$ref": "#/$defs/digest" },
+        "apiBaseUrl": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^https://[^/?#@\\s]+/api$"
+        }
+      }
+    },
     "images": {
       "type": "array",
       "minItems": 3,

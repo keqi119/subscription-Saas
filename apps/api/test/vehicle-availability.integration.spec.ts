@@ -37,6 +37,7 @@ import { PrismaService } from "../src/prisma/prisma.service";
 import { ProductService } from "../src/product/product.service";
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
 import { SubscriptionJourneyService } from "../src/subscription-journey/subscription-journey.service";
+import { commercialPlanHash } from "../src/subscription-journey/subscription-journey-json";
 import { ContractSegmentService } from "../src/subscription-change/contract-segment.service";
 import { requiredReleaseDatabaseTestContext } from "./helpers/release-database-test-context";
 import {
@@ -561,7 +562,13 @@ describe("authoritative vehicle availability PostgreSQL boundaries", () => {
         scope: VehicleOperationalRestrictionScope.INVENTORY_RELEASE,
         severity: VehicleOperationalRestrictionSeverity.BLOCKING
       });
-      const boundary = createCustomerReleaseBoundary(prisma, service, vehicleId, userId, operation);
+      const boundary = await createCustomerReleaseBoundary(
+        prisma,
+        service,
+        vehicleId,
+        userId,
+        operation
+      );
 
       expectConflict(
         await rejected(boundary.invoke()),
@@ -793,12 +800,23 @@ async function createCustomerBoundary(
     where: { id: vehicleId }
   });
   const applicationId = randomUUID();
+  const customerId = randomUUID();
+  await createRawApplicationFixture(
+    prisma,
+    applicationId,
+    customerId,
+    actorId,
+    "customer-boundary"
+  );
+  const plan = buildBoundaryPlan(vehicle);
+  const finalPlanSnapshot = buildBoundaryCommercialSnapshot(plan, vehicle);
   const application = {
     applicationNo: `${FIXTURE_PREFIX}-customer-boundary`,
     applicationSource: "SALES_ASSISTED",
     creditReviewStatus: "APPROVED",
+    customerConfirmedPlanRevision: 1,
     customerGrade: "A",
-    customerId: randomUUID(),
+    customerId,
     customerSelectedSnapshot: null,
     deletedAt: null,
     depositRuleSnapshot: {},
@@ -806,7 +824,9 @@ async function createCustomerBoundary(
     finalDepositAmount: 100000n,
     finalPeriodMonths: 12,
     finalPlanConfirmedAt: new Date(),
-    finalPlanSnapshot: { subscriptionPlanId: "plan", vehicleId },
+    finalPlanCommercialHash: commercialPlanHash(finalPlanSnapshot),
+    finalPlanRevision: 1,
+    finalPlanSnapshot,
     finalSubscriptionPlanId: "plan",
     finalVehicleId: vehicleId,
     id: applicationId,
@@ -822,7 +842,6 @@ async function createCustomerBoundary(
     status: "APPROVED",
     vehicleReviewStatus: "APPROVED"
   };
-  const plan = buildBoundaryPlan(vehicle);
   let writes = 0;
   const prismaFacade = {
     application: { findUnique: async () => application },
@@ -830,6 +849,7 @@ async function createCustomerBoundary(
       prisma.$transaction((realTx) =>
         callback(
           transactionProxy(realTx, {
+            application: { findUnique: async () => application },
             subscriptionPlan: { findUnique: async () => plan },
             subscriptionOrder: {
               create: async () => {
@@ -941,6 +961,130 @@ function buildBoundaryPlan(vehicle: { modelDefinition: unknown; modelDefinitionI
   };
 }
 
+function buildBoundaryCommercialSnapshot(
+  plan: ReturnType<typeof buildBoundaryPlan>,
+  vehicle: Prisma.VehicleGetPayload<{ include: { modelDefinition: true } }>
+) {
+  const salePrice = Number(vehicle.currentSalePriceAmount);
+  const fixedRate = Number(plan.monthlyFeeRate);
+  const vehicleBaseFeeAmount = Math.floor(salePrice * fixedRate);
+  const vehicleBaseFeeCapAmount = Math.floor(
+    salePrice * Number(plan.vehiclePackage.monthlyFeeRate)
+  );
+  const vehicleBaseFeeModeLabel = "固定费率";
+  const packageBase = (row: {
+    id: string;
+    packageName: string;
+    packageNo: string;
+    productId: string;
+    productVersionId: string;
+    status: string;
+  }) => ({
+    id: row.id,
+    packageName: row.packageName,
+    packageNo: row.packageNo,
+    productId: row.productId,
+    productVersionId: row.productVersionId,
+    status: row.status
+  });
+  const subscriptionPlan = {
+    baseMonthlyFeeAmount: null,
+    benefitPackageId: plan.benefitPackageId,
+    effectiveFrom: plan.effectiveFrom.toISOString().slice(0, 10),
+    effectiveTo: null,
+    energyPackageId: plan.energyPackageId,
+    id: plan.id,
+    maxPeriodMonths: plan.maxPeriodMonths,
+    mileagePackageId: plan.mileagePackageId,
+    minPeriodMonths: plan.minPeriodMonths,
+    monthlyFeeCapRate: null,
+    monthlyFeeMode: plan.monthlyFeeMode,
+    monthlyFeeModeLabel: vehicleBaseFeeModeLabel,
+    monthlyFeeRate: fixedRate,
+    planName: plan.planName,
+    planNo: plan.planNo,
+    productId: plan.productId,
+    productVersionId: plan.productVersionId,
+    status: plan.status,
+    vehiclePackageId: plan.vehiclePackageId
+  };
+  const pricing = {
+    benefitPackagePriceAmount: 0,
+    currentSalePriceAmount: salePrice,
+    energyPackagePriceAmount: Number(plan.energyPackage.priceAmount),
+    fixedRate,
+    mileagePackagePriceAmount: Number(plan.mileagePackage.priceAmount),
+    monthlyFeeAmount:
+      vehicleBaseFeeAmount +
+      Number(plan.energyPackage.priceAmount) +
+      Number(plan.mileagePackage.priceAmount),
+    vehicleBaseFeeAmount,
+    vehicleBaseFeeCapAmount,
+    vehicleBaseFeeMode: plan.monthlyFeeMode,
+    vehicleBaseFeeModeLabel
+  };
+  const packageSnapshot = {
+    benefitPackage: null,
+    energyPackage: {
+      ...packageBase(plan.energyPackage),
+      monthlyEnergyCount: plan.energyPackage.monthlyEnergyCount,
+      monthlyEnergyKwh: plan.energyPackage.monthlyEnergyKwh,
+      priceAmount: Number(plan.energyPackage.priceAmount)
+    },
+    mileagePackage: {
+      ...packageBase(plan.mileagePackage),
+      monthlyMileageKm: plan.mileagePackage.monthlyMileageKm,
+      overMileageFeeAmount: Number(plan.mileagePackage.overMileageFeeAmount),
+      priceAmount: Number(plan.mileagePackage.priceAmount)
+    },
+    pricing,
+    subscriptionPlan,
+    vehicleBaseFeeAmount,
+    vehicleBaseFeeCapAmount,
+    vehicleBaseFeeMode: plan.monthlyFeeMode,
+    vehicleBaseFeeModeLabel,
+    vehiclePackage: {
+      ...packageBase(plan.vehiclePackage),
+      configName: plan.vehiclePackage.configName,
+      maxPurchasePriceAmount: null,
+      minPurchasePriceAmount: null,
+      modelCode: vehicle.modelDefinition.modelCode,
+      modelDefinitionId: vehicle.modelDefinitionId,
+      modelDisplayName: vehicle.modelDefinition.displayName,
+      monthlyFeeRate: Number(plan.vehiclePackage.monthlyFeeRate)
+    }
+  };
+  return {
+    depositAmount: 100000,
+    depositRuleSnapshot: {},
+    packageSnapshot,
+    periodMonths: 12,
+    pricing,
+    subscriptionPlan,
+    subscriptionPlanId: plan.id,
+    vehicleId: vehicle.id,
+    vehicleSnapshot: {
+      assetLocation: vehicle.assetLocation,
+      batteryCapacityKwh: vehicle.batteryCapacityKwh?.toNumber() ?? null,
+      batteryUsageType: vehicle.batteryUsageType,
+      batteryUsageTypeLabel: vehicle.batteryUsageType === "BAAS" ? "BaaS / 电池租用" : "电池买断",
+      brand: vehicle.brand,
+      currentMileageKm: vehicle.currentMileageKm,
+      currentSalePriceAmount: salePrice,
+      model: vehicle.model,
+      modelYear: vehicle.modelYear,
+      modelCodeSnapshot: vehicle.modelDefinition.modelCode,
+      modelDefinitionIdSnapshot: vehicle.modelDefinitionId,
+      modelDisplayNameSnapshot: vehicle.modelDefinition.displayName,
+      plateNo: vehicle.plateNo,
+      series: vehicle.series,
+      status: vehicle.status,
+      vehicleNo: vehicle.vehicleNo,
+      vin: vehicle.vin
+    }
+  };
+}
+
 function createProductBoundary(
   prisma: PrismaService,
   assetOperationsService: AssetOperationsService,
@@ -1040,18 +1184,27 @@ function createProductBoundary(
   };
 }
 
-function createCustomerReleaseBoundary(
+async function createCustomerReleaseBoundary(
   prisma: PrismaService,
   assetOperationsService: AssetOperationsService,
   vehicleId: string,
   actorId: string,
   operation: "cancel" | "reject"
 ) {
+  const applicationId = randomUUID();
+  const customerId = randomUUID();
+  await createRawApplicationFixture(
+    prisma,
+    applicationId,
+    customerId,
+    actorId,
+    `customer-${operation}-release`
+  );
   const application = {
     applicationNo: `${FIXTURE_PREFIX}-${operation}`,
-    customerId: randomUUID(),
+    customerId,
     deletedAt: null,
-    id: randomUUID(),
+    id: applicationId,
     orders: [],
     salesUserId: actorId,
     softReservedVehicleId: vehicleId,
@@ -1070,7 +1223,7 @@ function createCustomerReleaseBoundary(
       prisma.$transaction((realTx) =>
         callback(
           transactionProxy(realTx, {
-            application: blockedWrites,
+            application: { findUnique: async () => application, update: blockedWrites.update },
             applicationActionLog: { create: blockedWrites.update },
             customer: blockedWrites
           })

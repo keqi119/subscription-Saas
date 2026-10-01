@@ -1,5 +1,6 @@
 import { ConfigService } from "@nestjs/config";
 import {
+  BillingScheduleStatus,
   BillStatus,
   BillType,
   OrderMileageReviewStatus,
@@ -123,6 +124,69 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
     expect(indexes[1]?.indexdef).toContain(
       "WHERE ((case_status = 'ACTIVE'::collection_case_status) AND (deleted_at IS NULL))"
     );
+  });
+
+  it("reports positive due work on repeated maintenance scans without duplicating the generation job", async () => {
+    const orderId = randomUUID();
+    const scheduleId = randomUUID();
+    const now = new Date("2026-09-06T04:00:00.000Z");
+    const periodStart = new Date("2026-09-10T00:00:00.000Z");
+    const periodEnd = new Date("2026-10-09T00:00:00.000Z");
+    const sourceKey = billingSourceKey(orderId, periodStart);
+    const service = new BillingAutomationService(
+      prisma,
+      repository,
+      {} as never,
+      new AutoDebitScheduler(),
+      {} as never,
+      () => now
+    );
+    const dueBefore = await prisma.billingSchedule.count({
+      where: { nextGenerateAt: { lte: now }, status: BillingScheduleStatus.ACTIVE }
+    });
+    await prisma.$transaction(async (tx) => {
+      await insertRuntimeOrderGraph(tx, {
+        label: "B5-MAINTENANCE-REPLAY",
+        orderId,
+        vehicleId: null
+      });
+      await tx.billingSchedule.create({
+        data: {
+          id: scheduleId,
+          nextCycleNo: 1,
+          nextGenerateAt: new Date("2026-09-06T03:59:00.000Z"),
+          nextPeriodEnd: periodEnd,
+          nextPeriodStart: periodStart,
+          orderId,
+          status: BillingScheduleStatus.ACTIVE
+        }
+      });
+    });
+    try {
+      await expect(service.enqueueDueSchedules(now)).resolves.toEqual({
+        dueCount: dueBefore + 1,
+        enqueuedCount: dueBefore + 1
+      });
+      await expect(service.enqueueDueSchedules(now)).resolves.toEqual({
+        dueCount: dueBefore + 1,
+        enqueuedCount: dueBefore + 1
+      });
+      await expect(
+        prisma.subscriptionAutomationJob.count({ where: { idempotencyKey: sourceKey } })
+      ).resolves.toBe(1);
+      await expect(
+        prisma.subscriptionAutomationJob.findUniqueOrThrow({
+          where: { idempotencyKey: sourceKey }
+        })
+      ).resolves.toMatchObject({
+        billingScheduleId: scheduleId,
+        jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
+        orderId
+      });
+    } finally {
+      await prisma.subscriptionAutomationJob.deleteMany({ where: { idempotencyKey: sourceKey } });
+      await prisma.billingSchedule.deleteMany({ where: { id: scheduleId } });
+    }
   });
 
   it("does not lease a generation job while its schedule is paused", async () => {

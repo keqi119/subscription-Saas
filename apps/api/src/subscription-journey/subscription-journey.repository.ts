@@ -566,6 +566,97 @@ export class SubscriptionJourneyRepository {
     return task;
   }
 
+  async returnToFinalPlanDecision(
+    tx: Tx,
+    input: {
+      eventKey: string;
+      expectedVersion: number;
+      finalPlanRevision: number;
+      journeyId: string;
+      stepId: string;
+    }
+  ): Promise<void> {
+    const locked = await lockJourneyStep(tx, input.journeyId, input.stepId);
+    validateCurrentStep(locked, input.expectedVersion);
+    const journey = await tx.subscriptionJourney.findUniqueOrThrow({
+      select: { applicationId: true, orderId: true },
+      where: { id: input.journeyId }
+    });
+    if (
+      locked.stepCode !== SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION ||
+      journey.orderId ||
+      await tx.subscriptionOrder.count({ where: { applicationId: journey.applicationId, deletedAt: null } })
+    ) {
+      throw journeyError("JOURNEY_INVALID_TRANSITION", "Only an uncommitted order bootstrap can return to final-plan review.");
+    }
+    // Keep historical events/tasks. The same step records must be usable by a
+    // new revision, including vehicle allocation's normal two-step completion.
+    await tx.subscriptionJourneyStep.updateMany({
+      data: {
+        completedAt: null,
+        lastErrorCode: null,
+        startedAt: null,
+        status: SubscriptionJourneyStepStatus.PENDING,
+        waitingAt: null,
+        waitingReasonSnapshot: Prisma.DbNull
+      },
+      where: {
+        journeyId: input.journeyId,
+        code: { in: [
+          SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+          SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION,
+          SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+          SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION
+        ] }
+      }
+    });
+    const reason = {
+      finalPlanRevision: input.finalPlanRevision,
+      reason: "FINAL_PLAN_REVISION_STALE"
+    } satisfies Prisma.InputJsonValue;
+    const planStep = await tx.subscriptionJourneyStep.upsert({
+      create: {
+        code: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+        journeyId: input.journeyId,
+        status: SubscriptionJourneyStepStatus.WAITING_MANUAL,
+        waitingAt: new Date(),
+        waitingReasonSnapshot: reason
+      },
+      update: {
+        status: SubscriptionJourneyStepStatus.WAITING_MANUAL,
+        waitingAt: new Date(),
+        waitingReasonSnapshot: reason
+      },
+      where: { journeyId_code: { code: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION, journeyId: input.journeyId } }
+    });
+    const task = await tx.subscriptionJourneyManualTask.create({
+      data: {
+        inputSnapshot: { applicationId: journey.applicationId, ...reason },
+        journeyId: input.journeyId,
+        stepId: planStep.id,
+        taskType: "FINAL_PLAN_DECISION"
+      }
+    });
+    await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {
+      currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+      currentStepStatus: SubscriptionJourneyStepStatus.WAITING_MANUAL,
+      status: SubscriptionJourneyStatus.WAITING_MANUAL,
+      version: { increment: 1 }
+    });
+    await this.writeEventAndOutbox(tx, {
+      eventKey: input.eventKey,
+      eventType: SubscriptionJourneyEventType.STEP_WAITING_MANUAL,
+      journeyId: input.journeyId,
+      payload: {
+        operation: "REQUIRE_FINAL_PLAN_REQUOTE",
+        ...reason,
+        stepId: input.stepId,
+        taskId: task.id
+      },
+      sequence: input.expectedVersion + 1
+    });
+  }
+
   async returnToCustomerConfirmation(
     tx: Tx,
     input: {
@@ -975,7 +1066,30 @@ export class SubscriptionJourneyRepository {
         (job."status" IN ('PENDING', 'RETRY_SCHEDULED') AND job."available_at" <= clock_timestamp())
         OR (job."status" = 'PROCESSING' AND job."lease_expires_at" <= clock_timestamp())
       )
-        AND journey."status" NOT IN ('PAUSED', 'CANCELLED', 'COMPLETED')
+        AND (
+          journey."status" NOT IN ('PAUSED', 'CANCELLED', 'COMPLETED')
+          OR (
+            journey."status" = 'COMPLETED'
+            AND journey."current_step_code" = 'AUTHORITATIVE_ACTIVATION'
+            AND journey."current_step_status" = 'COMPLETED'
+            AND journey."completed_at" IS NOT NULL
+            AND job."job_type" = 'ACTIVATE_SUBSCRIPTION'
+            AND job."payload"->>'orderId' = journey."order_id"::text
+            AND EXISTS (
+              SELECT 1 FROM "subscription_journey_step" step
+              WHERE step."id" = job."step_id"
+                AND step."journey_id" = journey."id"
+                AND step."code" = 'AUTHORITATIVE_ACTIVATION'
+                AND step."status" = 'COMPLETED'
+                AND step."completed_at" IS NOT NULL
+            )
+            AND EXISTS (
+              SELECT 1 FROM "application" application
+              WHERE application."id" = journey."application_id"
+                AND job."payload"->'finalPlanRevision' = to_jsonb(application."final_plan_revision")
+            )
+          )
+        )
       ORDER BY job."available_at" ASC, job."created_at" ASC
       LIMIT ${limit}
       FOR UPDATE OF job SKIP LOCKED

@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-archive-access-receipt.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "receiptId",
+    "authorizationDigest",
+    "operationId",
+    "profile",
+    "session",
+    "actions",
+    "objectResults",
+    "observationDigest",
+    "issuer",
+    "issuedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "evidence-archive-access-receipt.v1" },
+    "receiptId": { "$ref": "#/$defs/id" },
+    "authorizationDigest": { "$ref": "#/$defs/digest" },
+    "operationId": { "$ref": "#/$defs/id" },
+    "profile": { "enum": ["archive-create-only-writer", "archive-readback-reader"] },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fingerprint",
+        "principal",
+        "issuedAt",
+        "expiresAt",
+        "terminalState",
+        "terminalAt",
+        "terminalReceiptDigest"
+      ],
+      "properties": {
+        "fingerprint": { "$ref": "#/$defs/digest" },
+        "principal": { "$ref": "#/$defs/id" },
+        "issuedAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" },
+        "terminalState": { "enum": ["REVOKED", "EXPIRED"] },
+        "terminalAt": { "$ref": "#/$defs/timestamp" },
+        "terminalReceiptDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["objectKey", "action", "result", "conditionalCreate", "requestId"],
+        "properties": {
+          "objectKey": {
+            "type": "string",
+            "pattern": "^control-evidence/v1/[^*?]+$",
+            "maxLength": 1024
+          },
+          "action": {
+            "enum": [
+              "oss:PutObject",
+              "oss:HeadObject",
+              "oss:GetObject",
+              "oss:GetBucketAcl",
+              "oss:GetBucketWorm"
+            ]
+          },
+          "result": { "const": "SUCCESS" },
+          "conditionalCreate": { "type": "boolean" },
+          "requestId": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "objectResults": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["objectKey", "objectVersion", "etag", "contentDigest", "contentSizeBytes"],
+        "properties": {
+          "objectKey": {
+            "type": "string",
+            "pattern": "^control-evidence/v1/[^*?]+$",
+            "maxLength": 1024
+          },
+          "objectVersion": { "$ref": "#/$defs/id" },
+          "etag": { "$ref": "#/$defs/id" },
+          "contentDigest": { "$ref": "#/$defs/digest" },
+          "contentSizeBytes": { "type": "integer", "minimum": 1, "maximum": 1048576 }
+        }
+      }
+    },
+    "observationDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "issuer": { "$ref": "#/$defs/id" },
+    "issuedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-lineage-storage-policy.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "approvalSchemaVersion",
+    "lane",
+    "capabilityKind",
+    "region",
+    "namespace",
+    "claimKeyTemplate",
+    "objectKeyTemplate",
+    "exactKeysOnly",
+    "matrix",
+    "deniedActions",
+    "retention"
+  ],
+  "properties": {
+    "contractVersion": { "const": "evidence-lineage-storage-policy.v1" },
+    "approvalSchemaVersion": { "const": "exact-capability-approval.v2" },
+    "lane": { "const": "rc" },
+    "capabilityKind": { "const": "lineage-oss-role" },
+    "region": { "const": "oss-cn-shanghai" },
+    "namespace": { "const": "private-lineage" },
+    "claimKeyTemplate": {
+      "const": "evidence/claims/v1/${rawProofType}/${rawProofDigest.slice(7)}"
+    },
+    "objectKeyTemplate": {
+      "const": "evidence/v1/${releaseAttemptId}/${rcWorkflowRunId}/${objectType}/${digest.slice(7)}"
+    },
+    "exactKeysOnly": { "const": true },
+    "matrix": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/matrixEntry" }
+    },
+    "deniedActions": { "const": ["List", "Delete", "KMS", "Database", "Snapshot", "JIT"] },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bucketWormMinimumDays",
+        "claimMinimumDays",
+        "accessReceiptMinimumDays",
+        "runtimeProfile",
+        "liveRoleProvisioned",
+        "requiresSeparateExactKeyApproval",
+        "requiresWholeLineageBoundary",
+        "legalHoldBlocksDisposition"
+      ],
+      "properties": {
+        "bucketWormMinimumDays": { "const": 210 },
+        "claimMinimumDays": { "const": 180 },
+        "accessReceiptMinimumDays": { "const": 180 },
+        "runtimeProfile": { "type": "null" },
+        "liveRoleProvisioned": { "const": false },
+        "requiresSeparateExactKeyApproval": { "const": true },
+        "requiresWholeLineageBoundary": { "const": true },
+        "legalHoldBlocksDisposition": { "const": true }
+      }
+    }
+  },
+  "$defs": {
+    "matrixEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "permissionProfile",
+        "jobId",
+        "environment",
+        "lineageNodeKind",
+        "allowedActions"
+      ],
+      "properties": {
+        "permissionProfile": { "enum": ["lineage-create-only-writer", "lineage-readback-reader"] },
+        "jobId": {
+          "enum": [
+            "lineage-purpose-store",
+            "lineage-purpose-readback",
+            "lineage-custody-store",
+            "lineage-custody-readback",
+            "lineage-aggregate-store",
+            "lineage-aggregate-readback",
+            "lineage-exit-store",
+            "lineage-exit-readback"
+          ]
+        },
+        "environment": { "enum": ["trusted-release-execution", "trusted-release-candidate"] },
+        "lineageNodeKind": { "enum": ["purpose", "custody", "aggregate", "exit"] },
+        "allowedActions": {
+          "oneOf": [{ "const": ["ConditionalCreate"] }, { "const": ["Head", "Get"] }]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "h1-snapshot-key-recovery-readback.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "verifiedAt",
+    "ownerId",
+    "hostFingerprint",
+    "profileDigest",
+    "keyFingerprint",
+    "creationReadbackRawDigest",
+    "publicKeyPem",
+    "primaryVolumeClosed",
+    "sameHostIndependentEncryptedVolumeRestore",
+    "offHostRecoveryVerified",
+    "challengeDomain",
+    "challengeDigest",
+    "wrappedChallengeDigest",
+    "roundtripVerified",
+    "promotionEligible"
+  ],
+  "properties": {
+    "kind": {
+      "const": "h1-snapshot-key-recovery-readback"
+    },
+    "verifiedAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "ownerId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "hostFingerprint": {
+      "$ref": "#/$defs/digest"
+    },
+    "profileDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "keyFingerprint": {
+      "$ref": "#/$defs/digest"
+    },
+    "creationReadbackRawDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "publicKeyPem": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "primaryVolumeClosed": {
+      "const": true
+    },
+    "sameHostIndependentEncryptedVolumeRestore": {
+      "const": true
+    },
+    "offHostRecoveryVerified": {
+      "const": false
+    },
+    "challengeDomain": {
+      "const": "subscription-saas/H1-snapshot-independent-recovery/v1"
+    },
+    "challengeDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "wrappedChallengeDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "roundtripVerified": {
+      "const": true
+    },
+    "promotionEligible": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "rfc3339Finite": true
+    }
+  }
+}

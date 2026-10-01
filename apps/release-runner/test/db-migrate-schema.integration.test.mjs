@@ -121,6 +121,63 @@ test("plans an ordered deterministic migration prefix and recomputes it under lo
   );
 });
 
+test("manual apply keeps the stable plan input and records the fresh execution identity", async () => {
+  const { applyMigration, planMigration } = await import("../src/commands/db-migrate-deploy.mjs");
+  const context = migrationContext();
+  const stableInput = input();
+  for (const key of ["operationId", "attemptId", "runId"]) delete stableInput[key];
+  const plan = await planMigration(context, stableInput);
+  const executionIdentity = {
+    operationId: operation.operationId,
+    attemptId: "a7b40b89-b459-4b2e-8c87-3fc49c0a47ee",
+    runId: "c7e45b79-b459-4b2e-8c87-3fc49c0a47ee"
+  };
+  const postState = await applyMigration(
+    context,
+    { input: stableInput, planDigest: deterministicPlanDigest(plan) },
+    { executionIdentity }
+  );
+  assert.equal(postState.attemptId, executionIdentity.attemptId);
+  assert.equal(postState.runId, executionIdentity.runId);
+  assert.equal(postState.operationId, executionIdentity.operationId);
+  assert.equal(plan.identity.inputDigest, sha256Canonical(stableInput));
+});
+
+test("manual apply rejects duplicate or invalid execution identity before the lock", async () => {
+  const { applyMigration } = await import("../src/commands/db-migrate-deploy.mjs");
+  const context = migrationContext();
+  await assert.rejects(
+    () =>
+      applyMigration(
+        context,
+        { input: input(), planDigest: digest("f") },
+        {
+          executionIdentity: operation
+        }
+      ),
+    { code: "RUNNER_EXECUTION_IDENTITY_INVALID" }
+  );
+  assert.deepEqual(context.calls, []);
+  for (const executionIdentity of [
+    null,
+    "operation",
+    { operationId: operation.operationId, attemptId: operation.attemptId, runId: "not-a-uuid" }
+  ]) {
+    await assert.rejects(
+      () =>
+        applyMigration(context, { input: input(), planDigest: digest("f") }, { executionIdentity }),
+      { code: "RUNNER_EXECUTION_IDENTITY_INVALID" }
+    );
+  }
+  for (const options of [null, { ignored: true }, { executionIdentity: undefined }]) {
+    await assert.rejects(
+      () => applyMigration(context, { input: input(), planDigest: digest("f") }, options),
+      { code: "RUNNER_EXECUTION_IDENTITY_INVALID" }
+    );
+  }
+  assert.deepEqual(context.calls, []);
+});
+
 test("rejects migration plan drift before deploy", async () => {
   const { applyMigration } = await import("../src/commands/db-migrate-deploy.mjs");
   const context = migrationContext();

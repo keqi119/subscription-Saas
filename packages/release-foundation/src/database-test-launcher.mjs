@@ -1,9 +1,9 @@
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { assertCustodyComplete } from "./evidence-custody.mjs";
-import { sha256Bytes, sha256Canonical } from "./digest.mjs";
+import { sha256Bytes, sha256Canonical, sha256Text } from "./digest.mjs";
 import { validateContract } from "./schema-registry.mjs";
 import { suiteDatabaseName } from "./database-target.mjs";
 
@@ -334,40 +334,18 @@ function roleBoundaryReport(entry) {
   };
 }
 
-export async function runDatabaseSuite({
-  execution,
-  provision,
-  deployMigrations,
-  grantRuntimeAccess,
-  executeTest,
-  custody,
-  cleanup,
-  operationId
-}) {
-  if (
-    typeof provision !== "function" ||
-    typeof deployMigrations !== "function" ||
-    typeof grantRuntimeAccess !== "function" ||
-    typeof executeTest !== "function" ||
-    typeof custody !== "function" ||
-    typeof cleanup !== "function" ||
-    typeof operationId !== "string" ||
-    operationId.length === 0
-  ) {
+export function buildDatabaseSuiteReport({ execution, provisioned, result, operationId }) {
+  if (typeof operationId !== "string" || operationId.length === 0) {
     throw launcherError("DATABASE_TEST_EXECUTION_INPUT_INVALID");
   }
-  const provisioned = await provision(execution);
   assertProvisioned(execution, provisioned);
-  await deployMigrations({ execution, provisioned });
-  await grantRuntimeAccess({ execution, provisioned });
-  const result = await executeTest({ execution, provisioned });
   const counts = normalizeDatabaseTestCounts(result?.counts, execution.expectedCountPolicy);
   assertFixtureObservations(execution, result?.fixtureObservations);
   const roleBoundaries = assertRoleBoundaries(execution, result?.roleBoundaries);
   if (!/^sha256:[0-9a-f]{64}$/.test(result?.sanitizedLogDigest ?? "")) {
     throw launcherError("DATABASE_TEST_LOG_DIGEST_INVALID");
   }
-  const report = Object.freeze({
+  return Object.freeze({
     schemaVersion: "database-suite-report.v1",
     operationId,
     runId: execution.runId,
@@ -403,6 +381,39 @@ export async function runDatabaseSuite({
     sanitizedLogDigest: result.sanitizedLogDigest,
     terminalStatus: counts.failed === 0 ? "PASSED" : "FAILED"
   });
+}
+
+export async function runDatabaseSuite({
+  execution,
+  provision,
+  deployMigrations,
+  grantRuntimeAccess,
+  executeTest,
+  custody,
+  cleanup,
+  operationId
+}) {
+  if (execution?.r3ExecutionMode === "lifecycle-owned") {
+    throw launcherError("DATABASE_TEST_LIFECYCLE_RUNNER_REQUIRED");
+  }
+  if (
+    typeof provision !== "function" ||
+    typeof deployMigrations !== "function" ||
+    typeof grantRuntimeAccess !== "function" ||
+    typeof executeTest !== "function" ||
+    typeof custody !== "function" ||
+    typeof cleanup !== "function" ||
+    typeof operationId !== "string" ||
+    operationId.length === 0
+  ) {
+    throw launcherError("DATABASE_TEST_EXECUTION_INPUT_INVALID");
+  }
+  const provisioned = await provision(execution);
+  assertProvisioned(execution, provisioned);
+  await deployMigrations({ execution, provisioned });
+  await grantRuntimeAccess({ execution, provisioned });
+  const result = await executeTest({ execution, provisioned });
+  const report = buildDatabaseSuiteReport({ execution, provisioned, result, operationId });
   const reportDigest = sha256Canonical(report);
   const custodyReceipt = await custody({ report, digest: reportDigest, execution, provisioned });
   assertCustodyComplete(custodyReceipt, reportDigest);
@@ -599,8 +610,58 @@ function resolvedLocalReference(repoRoot, reference, suffixPattern) {
   return absolute;
 }
 
-function defaultLoadJson(filePath) {
+// H1's admitted parent pins these inputs and checks the encrypted mount. The
+// synchronous test API still checks its own read, without copying secrets into
+// the checkout or accepting a caller-selected credential root.
+function readPrivateContext(filePath, privateRoot) {
+  if (process.platform !== "linux" || process.getuid() !== 0) {
+    throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
+  }
+  const snapshots = [];
+  let current = "/";
+  for (const part of filePath.slice(1).split("/")) {
+    current = path.posix.join(current, part);
+    const stat = lstatSync(current, { bigint: true });
+    const privatePath = current === privateRoot || current.startsWith(`${privateRoot}/`);
+    if (
+      stat.isSymbolicLink() ||
+      (current === filePath ? !stat.isFile() || stat.nlink !== 1n : !stat.isDirectory()) ||
+      (stat.mode & BigInt(privatePath ? 0o077 : 0o022)) !== 0n ||
+      stat.uid !== 0n
+    )
+      throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
+    snapshots.push({ filename: current, stat });
+  }
+  const expected = snapshots.at(-1).stat;
+  if (expected.size > 1048576n) throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
+  const same = (a, b) =>
+    ["dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtimeNs", "ctimeNs"].every(
+      (key) => a[key] === b[key]
+    );
+  const fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
+    if (!same(expected, fstatSync(fd, { bigint: true })))
+      throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
+    const bytes = readFileSync(fd);
+    try {
+      if (
+        !same(expected, fstatSync(fd, { bigint: true })) ||
+        snapshots.some(({ filename, stat }) => !same(stat, lstatSync(filename, { bigint: true })))
+      ) {
+        throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
+      }
+      return JSON.parse(bytes.toString("utf8"));
+    } finally {
+      bytes.fill(0);
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function defaultLoadJson(filePath, { privateRoot } = {}) {
+  try {
+    if (privateRoot) return readPrivateContext(filePath, privateRoot);
     return JSON.parse(readFileSync(filePath, "utf8"));
   } catch {
     throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
@@ -611,13 +672,25 @@ function databaseUrl(secret) {
   return `postgresql://${encodeURIComponent(secret.username)}:${encodeURIComponent(secret.password)}@${secret.host}:${secret.port}/${encodeURIComponent(secret.database)}?sslmode=${encodeURIComponent(secret.tlsMode)}`;
 }
 
-function loadRuntimeDatabase({ context, repoRoot, loadJson }) {
-  const secretPath = resolvedLocalReference(
-    repoRoot,
-    context.runtimeSecretReference,
-    /\/runtime-test\.json$/
-  );
-  const secret = loadJson(secretPath);
+function loadRuntimeDatabase({ context, repoRoot, loadJson, h1 }) {
+  let secretPath;
+  if (h1) {
+    const expected = `r3/${h1.operationRef}/database-credentials/${context.databaseName}-runtime-test.json`;
+    if (
+      !/^s1ci_[0-9a-f]{24}$/u.test(context.databaseName ?? "") ||
+      context.runtimeSecretReference !== expected
+    ) {
+      throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_REFERENCE_INVALID");
+    }
+    secretPath = path.posix.join(h1.privateRoot, expected);
+  } else {
+    secretPath = resolvedLocalReference(
+      repoRoot,
+      context.runtimeSecretReference,
+      /\/runtime-test\.json$/
+    );
+  }
+  const secret = loadJson(secretPath, h1 ? { privateRoot: h1.privateRoot } : undefined);
   if (
     !/^s1ci_[0-9a-f]{24}$/.test(context.databaseName ?? "") ||
     !/^[0-9]+$/.test(context.databaseOid ?? "") ||
@@ -635,10 +708,13 @@ function loadRuntimeDatabase({ context, repoRoot, loadJson }) {
     !Number.isInteger(secret.port) ||
     secret.port < 1 ||
     secret.port > 65535 ||
-    !(
-      (secret.host === "127.0.0.1" && secret.tlsMode === "disable") ||
-      (secret.host === "postgres" && secret.tlsMode === "require")
-    )
+    !(h1
+      ? secret.username === `s1r_${sha256Text(context.databaseName).slice(0, 24)}` &&
+        secret.host === "127.0.0.1" &&
+        secret.port === 55441 &&
+        secret.tlsMode === "require"
+      : (secret.host === "127.0.0.1" && secret.tlsMode === "disable") ||
+        (secret.host === "postgres" && secret.tlsMode === "require"))
   ) {
     throw launcherError("RELEASE_DATABASE_TEST_SECRET_INVALID");
   }
@@ -656,17 +732,51 @@ export function requiredReleaseDatabaseTestContext(
   if (environment.S1_RELEASE_DATABASE_TEST !== "1") {
     throw launcherError("RELEASE_DATABASE_TEST_LAUNCHER_REQUIRED");
   }
-  const contextPath = resolvedLocalReference(
-    repoRoot,
-    environment.S1_RELEASE_DATABASE_CONTEXT,
-    /\/context\.json$/
-  );
-  const context = loadJson(contextPath);
+  const reference = environment.S1_RELEASE_DATABASE_CONTEXT;
+  let h1, contextPath;
+  if (typeof reference === "string" && reference.startsWith("r3/")) {
+    const match =
+      /^r3\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/database-test-contexts\/([a-z0-9][a-z0-9.-]{0,127})\/context\.json$/u.exec(
+        reference
+      );
+    if (!match) throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_REFERENCE_INVALID");
+    const profile = loadJson(
+      path.resolve(repoRoot, "release/contracts/manual-stage1-profile.v2.json")
+    );
+    try {
+      validateContract("manual-stage1-profile.v2", profile);
+    } catch {
+      throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
+    }
+    const privateRoot = profile.storage.credentialRoot;
+    if (
+      !path.posix.isAbsolute(privateRoot) ||
+      privateRoot === "/" ||
+      path.posix.normalize(privateRoot) !== privateRoot ||
+      privateRoot.includes("\\")
+    ) {
+      throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_REFERENCE_INVALID");
+    }
+    h1 = {
+      privateRoot,
+      operationRef: match[1],
+      suiteId: match[2],
+      profileDigest: sha256Canonical(profile)
+    };
+    contextPath = path.posix.join(privateRoot, reference);
+  } else {
+    contextPath = resolvedLocalReference(repoRoot, reference, /\/context\.json$/);
+  }
+  const context = loadJson(contextPath, h1 ? { privateRoot: h1.privateRoot } : undefined);
   if (
     context?.schemaVersion !== "release-database-test-context.v1" ||
     !Array.isArray(context.allowedFiles) ||
     context.allowedFiles.length === 0 ||
-    !/^[0-9a-f]{12,64}$/.test(context.containerId ?? "")
+    !/^[0-9a-f]{12,64}$/.test(context.containerId ?? "") ||
+    (h1 &&
+      (context.operationRef !== h1.operationRef ||
+        context.suiteId !== h1.suiteId ||
+        context.profileDigest !== h1.profileDigest))
   ) {
     throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_INVALID");
   }
@@ -675,10 +785,20 @@ export function requiredReleaseDatabaseTestContext(
       ? fileURLToPath(moduleUrl)
       : path.resolve(repoRoot, String(moduleUrl))
   ).replaceAll("\\", "/");
-  if (!context.allowedFiles.some((file) => caller.endsWith(`/${file}`))) {
+  const permittedCaller = h1
+    ? context.allowedFiles.some(
+        (file) =>
+          typeof file === "string" &&
+          !path.posix.isAbsolute(file) &&
+          !file.includes("\\") &&
+          !file.split("/").some((part) => ["", ".", ".."].includes(part)) &&
+          caller === path.resolve(repoRoot, file).replaceAll("\\", "/")
+      )
+    : context.allowedFiles.some((file) => caller.endsWith(`/${file}`));
+  if (!permittedCaller) {
     throw launcherError("RELEASE_DATABASE_TEST_CONTEXT_CALLER_FORBIDDEN");
   }
-  const primary = loadRuntimeDatabase({ context, repoRoot, loadJson });
+  const primary = loadRuntimeDatabase({ context, repoRoot, loadJson, h1 });
   if (context.namedDatabases === undefined) return primary;
   if (
     context.namedDatabases === null ||
@@ -693,7 +813,7 @@ export function requiredReleaseDatabaseTestContext(
     Object.fromEntries(
       Object.entries(context.namedDatabases).map(([name, database]) => [
         name,
-        loadRuntimeDatabase({ context: database, repoRoot, loadJson })
+        loadRuntimeDatabase({ context: database, repoRoot, loadJson, h1 })
       ])
     )
   );

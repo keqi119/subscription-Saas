@@ -2,6 +2,7 @@ import { runnerError } from "./error-codes.mjs";
 import { sha256Canonical, validateContract } from "@subscription-saas/release-foundation";
 
 import { loadCommandRegistry, registeredCommand } from "./command-registry.mjs";
+import { validateDatabaseTestEnvelopeVersion } from "./database-test-envelope.mjs";
 
 function requireAdapter(adapters, name) {
   if (typeof adapters?.[name] !== "function") {
@@ -28,7 +29,7 @@ export async function runTrustedEntrypoint({ envelopeFile, argv = [], adapters }
   const envelope = await adapters.readEnvelope(envelopeFile);
   if (envelope?.executionMode === "database-test") {
     requireAdapter(adapters, "runDatabaseTests");
-    validateContract("database-test-launch-envelope.v1", envelope);
+    validateDatabaseTestEnvelopeVersion(envelope);
     if (containsRawSecret(envelope)) {
       throw runnerError("RUNNER_LAUNCH_ENVELOPE_SECRET_FORBIDDEN");
     }

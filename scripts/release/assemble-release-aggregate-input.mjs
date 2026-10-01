@@ -24,6 +24,19 @@ const requiredFiles = Object.freeze([
   "final-attempt-history-fresh.v1.json",
   "final-attempt-history-snapshot.v1.json"
 ]);
+const nativeFinalFiles = Object.freeze([
+  "final-native-fresh.v1.json",
+  "final-native-snapshot.v1.json",
+  "final-native-fresh-custody-record.v1.json",
+  "final-native-snapshot-custody-record.v1.json"
+]);
+const legacyOnly = (name) =>
+  name.startsWith("final-compose-") || name.startsWith("final-attempt-history-");
+const nativeRequiredFiles = Object.freeze([
+  ...requiredFiles.filter((name) => !legacyOnly(name)),
+  ...nativeFinalFiles
+]);
+const knownFiles = new Set([...requiredFiles, ...nativeFinalFiles]);
 
 function assemblyError(code, details) {
   return Object.assign(new Error(code), { code, details });
@@ -33,7 +46,7 @@ async function discoverFiles(root, directory = root, result = new Map()) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const absolute = path.join(directory, entry.name);
     if (entry.isDirectory()) await discoverFiles(root, absolute, result);
-    else if (entry.isFile() && requiredFiles.includes(entry.name)) {
+    else if (entry.isFile() && knownFiles.has(entry.name)) {
       if (result.has(entry.name)) {
         throw assemblyError("RELEASE_DAG_ARTIFACT_DUPLICATE", { name: entry.name });
       }
@@ -80,8 +93,14 @@ export async function assembleReleaseAggregateInput({
   now = () => new Date()
 }) {
   const files = await discoverFiles(path.resolve(inputRoot));
+  const native = nativeFinalFiles.some((name) => files.has(name));
+  if (native && [...files.keys()].some(legacyOnly)) {
+    throw assemblyError("RELEASE_DAG_EXECUTION_MODE_MISMATCH");
+  }
+  const selectedFiles = native ? nativeRequiredFiles : requiredFiles;
+  const finalPrefix = native ? "final-native" : "final-compose";
   const values = Object.fromEntries(
-    await Promise.all(requiredFiles.map(async (name) => [name, await readRequired(files, name)]))
+    await Promise.all(selectedFiles.map(async (name) => [name, await readRequired(files, name)]))
   );
   const workflowRun = trustedWorkflowRun(environment);
   if (values["build-proof.v1.json"]?.identity?.sourceSha !== workflowRun.sourceSha) {
@@ -89,7 +108,7 @@ export async function assembleReleaseAggregateInput({
   }
   const freshHistory = values["final-attempt-history-fresh.v1.json"];
   const snapshotHistory = values["final-attempt-history-snapshot.v1.json"];
-  if (freshHistory?.chain !== "fresh" || snapshotHistory?.chain !== "snapshot") {
+  if (!native && (freshHistory?.chain !== "fresh" || snapshotHistory?.chain !== "snapshot")) {
     throw assemblyError("RELEASE_DAG_ATTEMPT_HISTORY_INVALID");
   }
   const instant = now();
@@ -104,22 +123,26 @@ export async function assembleReleaseAggregateInput({
       fresh: values["source-gate-fresh.v1.json"],
       snapshot: values["source-gate-snapshot.v1.json"]
     },
-    finalComposeEvidence: {
-      fresh: values["final-compose-fresh.v1.json"],
-      snapshot: values["final-compose-snapshot.v1.json"]
+    [native ? "finalNativeEvidence" : "finalComposeEvidence"]: {
+      fresh: values[`${finalPrefix}-fresh.v1.json`],
+      snapshot: values[`${finalPrefix}-snapshot.v1.json`]
     },
     custodyRecords: {
       buildProof: values["build-proof-custody-record.v1.json"],
       snapshotMetadata: values["snapshot-metadata-custody-record.v1.json"],
       sourceFresh: values["source-gate-fresh-custody-record.v1.json"],
       sourceSnapshot: values["source-gate-snapshot-custody-record.v1.json"],
-      finalFresh: values["final-compose-fresh-custody-record.v1.json"],
-      finalSnapshot: values["final-compose-snapshot-custody-record.v1.json"]
+      finalFresh: values[`${finalPrefix}-fresh-custody-record.v1.json`],
+      finalSnapshot: values[`${finalPrefix}-snapshot-custody-record.v1.json`]
     },
-    attemptHistory: {
-      fresh: freshHistory.attempts,
-      snapshot: snapshotHistory.attempts
-    },
+    ...(!native
+      ? {
+          attemptHistory: {
+            fresh: freshHistory.attempts,
+            snapshot: snapshotHistory.attempts
+          }
+        }
+      : {}),
     aggregatedAt: instant.toISOString()
   });
 }

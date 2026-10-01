@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "snapshot-producer-completion.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "snapshotAdmissionVerificationDigest",
+    "producerRun",
+    "dataJob",
+    "dataExportDigest",
+    "scanReportDigest",
+    "encryptedObject",
+    "cryptoUseProofDigest",
+    "publisherUseProofDigest",
+    "destructionReceiptDigest",
+    "dataCustodyReceiptDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "snapshot-producer-completion.v1" },
+    "snapshotAdmissionVerificationDigest": { "$ref": "#/$defs/digest" },
+    "producerRun": { "$ref": "#/$defs/run" },
+    "dataJob": { "$ref": "#/$defs/job" },
+    "dataExportDigest": { "$ref": "#/$defs/digest" },
+    "scanReportDigest": { "$ref": "#/$defs/digest" },
+    "encryptedObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objectDigest", "objectVersion", "custodyReference"],
+      "properties": {
+        "objectDigest": { "$ref": "#/$defs/digest" },
+        "objectVersion": { "type": "string", "minLength": 1 },
+        "custodyReference": { "type": "string", "minLength": 1 }
+      }
+    },
+    "cryptoUseProofDigest": { "$ref": "#/$defs/digest" },
+    "publisherUseProofDigest": { "$ref": "#/$defs/digest" },
+    "destructionReceiptDigest": { "$ref": "#/$defs/digest" },
+    "dataCustodyReceiptDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "runId", "runAttempt", "workflowPath", "sourceSha"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "runAttempt": { "const": 1 },
+        "workflowPath": {
+          "type": "string",
+          "pattern": "^\\.github/workflows/[a-z0-9._-]+\\.ya?ml$"
+        },
+        "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "name": { "const": "snapshot-data" }
+      }
+    }
+  }
+}

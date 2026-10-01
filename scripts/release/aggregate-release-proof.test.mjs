@@ -5,7 +5,53 @@ import test from "node:test";
 import { sha256Canonical } from "../../packages/release-foundation/src/index.mjs";
 
 import { aggregateReleaseProof } from "./aggregate-release-proof.mjs";
-import { aggregateInput, digest } from "./task29r-proof-fixtures.mjs";
+import { aggregateInput, digest, nativeAggregateInput } from "./task29r-proof-fixtures.mjs";
+
+test("aggregates native final records and embedded authenticated history without Compose claims", () => {
+  const input = nativeAggregateInput();
+  const result = aggregateReleaseProof(input);
+  assert.equal(result.schemaVersion, "release-native-aggregate-proof.v1");
+  assert.equal(result.finalNativeEvidence.fresh, sha256Canonical(input.finalNativeEvidence.fresh));
+  assert.equal(
+    result.nativeExecutions.snapshot.resultDigest,
+    input.finalNativeEvidence.snapshot.native.resultDigest
+  );
+  assert.equal(
+    result.attemptHistoryDigest,
+    sha256Canonical({
+      fresh: input.finalNativeEvidence.fresh.attemptHistory,
+      snapshot: input.finalNativeEvidence.snapshot.attemptHistory
+    })
+  );
+  assert.equal(Object.hasOwn(result, "composeEvidenceDigest"), false);
+});
+
+test("native aggregate rejects mixed execution modes and cross-run or unbound history", () => {
+  for (const mutate of [
+    (x) => {
+      x.finalComposeEvidence = aggregateInput().finalComposeEvidence;
+    },
+    (x) => {
+      x.finalNativeEvidence.snapshot = aggregateInput().finalComposeEvidence.snapshot;
+    },
+    (x) => {
+      x.finalNativeEvidence.fresh.attemptHistory.ci.runId = "902";
+    },
+    (x) => {
+      x.finalNativeEvidence.fresh.attemptHistory.selected.terminalExecutionDigest = digest("0");
+    },
+    (x) => {
+      x.finalNativeEvidence.fresh.attemptHistory.matchingRequestDigests.push(digest("0"));
+    },
+    (x) => {
+      x.custodyRecords.finalFresh.receipt.readbackDigest = digest("0");
+    }
+  ]) {
+    const input = nativeAggregateInput();
+    mutate(input);
+    assert.throws(() => aggregateReleaseProof(input));
+  }
+});
 
 test("selects one same-run, custodied fresh/snapshot proof set", () => {
   const input = aggregateInput();
@@ -85,8 +131,76 @@ test("release workflow contains only same-run final and generated-exit DAG input
   assert.match(workflow, /generate-exit-evidence:[\s\S]*needs:[\s\S]*aggregate-proof/u);
   assert.match(workflow, /checkpoint-custody:[\s\S]*needs:[\s\S]*generate-exit-evidence/u);
   assert.match(workflow, /release-owner-attestations\.yml[\s\S]*--source-digest "\$GITHUB_SHA"/u);
-  assert.match(workflow, /sanitized-snapshot\.yml[\s\S]*--source-ref refs\/heads\/main/u);
+  const finalWorkflow = await readFile(".github/workflows/release-final-chain.yml", "utf8");
+  assert.match(finalWorkflow, /runs-on: ubuntu-24\.04/u);
+  assert.match(finalWorkflow, /prepareR3FinalFreshHostedJob/u);
+  assert.match(finalWorkflow, /prepareR3FinalSnapshotHostedJob/u);
+  assert.match(finalWorkflow, /runR3FinalFreshHosted/u);
+  assert.match(finalWorkflow, /runR3FinalSnapshotHosted/u);
+  assert.match(finalWorkflow, /final-native-[\s\S]*custody-record/u);
+  assert.doesNotMatch(
+    finalWorkflow,
+    /self-hosted|sanitized-snapshot\.dump|final-compose|final-attempt-history/u
+  );
+  assert.match(workflow, /final-fresh:\n\s+needs: \[source-fresh, source-snapshot, admit-build\]/u);
+  assert.match(
+    workflow,
+    /final-snapshot:\n\s+needs: \[source-snapshot, admit-build, final-fresh\]/u
+  );
+  assert.match(workflow, /release-native-aggregate-proof\.v1\.json/u);
   assert.doesNotMatch(workflow, /audit-s1-exit/u);
+  const fresh = workflow.split("  source-fresh:\n")[1]?.split("  source-snapshot:\n")[0];
+  assert.ok(fresh);
+  assert.match(fresh, /runs-on: ubuntu-24\.04/u);
+  assert.match(fresh, /environment: trusted-source-database-gate/u);
+  assert.match(fresh, /SOURCE_FRESH_CREATION_SPEC: \$\{\{ inputs.sourceFreshCreationSpec \}\}/u);
+  assert.match(fresh, /prepareR3SourceFreshHostedJob/u);
+  assert.match(fresh, /id: attest-job[\s\S]*job-admission\.json[\s\S]*id: upload-job/u);
+  assert.equal((fresh.match(/include-hidden-files: true/gu) ?? []).length, 3);
+  assert.match(fresh, /runR3SourceFreshHosted[\s\S]*status !== "CLOSED"/u);
+  assert.equal((fresh.match(/stage1-root "\$\(command -v node\)"/gu) ?? []).length, 2);
+  assert.match(
+    fresh,
+    /sudo "\$\(command -v node\)" scripts\/release\/workflow-custody-record\.mjs/u
+  );
+  assert.doesNotMatch(fresh, /run-source-database-gate\.mjs|source-fresh\.raw\.json/u);
+  assert.match(
+    fresh,
+    /id: attest\n[\s\S]*id: upload\n[\s\S]*Freeze the same-run source custody record/u
+  );
+  const snapshot = workflow.split("  source-snapshot:\n")[1]?.split("  admit-build:\n")[0];
+  assert.ok(snapshot);
+  assert.match(workflow, /group: stage1-s1-release-candidate-h1\n/u);
+  assert.match(snapshot, /needs: \[source-static, source-fresh\]/u);
+  assert.match(snapshot, /runs-on: ubuntu-24\.04/u);
+  assert.match(
+    snapshot,
+    /SOURCE_SNAPSHOT_CREATION_SPEC: \$\{\{ inputs.sourceSnapshotCreationSpec \}\}/u
+  );
+  assert.match(snapshot, /prepareR3SourceSnapshotHostedJob/u);
+  assert.match(
+    snapshot,
+    /runR3SourceSnapshotHosted[\s\S]*snapshotMetadataFile[\s\S]*snapshotMetadataDigest/u
+  );
+  assert.match(snapshot, /snapshotMetadata\.workflowRunRef !== expectedSnapshotRun/u);
+  assert.match(
+    snapshot,
+    /id: attest-job[\s\S]*id: upload-job[\s\S]*id: attest-source[\s\S]*id: attest-snapshot/u
+  );
+  assert.equal((snapshot.match(/include-hidden-files: true/gu) ?? []).length, 4);
+  assert.equal((snapshot.match(/stage1-root "\$\(command -v node\)"/gu) ?? []).length, 2);
+  assert.equal(
+    (
+      snapshot.match(
+        /sudo "\$\(command -v node\)" scripts\/release\/workflow-custody-record\.mjs/gu
+      ) ?? []
+    ).length,
+    2
+  );
+  assert.doesNotMatch(
+    snapshot,
+    /run-source-database-gate\.mjs|sanitized-snapshot\.dump|source-snapshot\.raw\.json/u
+  );
 });
 
 test("owner facts have a protected, attested and read-back producer", async () => {

@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "database-test-launch-envelope.v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "executionMode",
+    "phase",
+    "chain",
+    "buildProof",
+    "buildProofDigest",
+    "actualRunnerDigest",
+    "profileDigest",
+    "candidateUseExecutionRecordDigest",
+    "matchingSourceEvidenceDigest",
+    "destinationAdmissionDigest",
+    "creationEvidenceDigest",
+    "databaseTargetPlanDigest",
+    "databaseTestManifestDigest",
+    "databaseTestDiscoveryDigest",
+    "sourceSha",
+    "runnerContainerId",
+    "sessionId",
+    "sessionNonce",
+    "operationId",
+    "runId",
+    "attemptId",
+    "databaseTestManifestReference",
+    "postgres",
+    "suiteAssignments"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "database-test-launch-envelope.v2" },
+    "executionMode": { "const": "database-test" },
+    "phase": { "const": "final" },
+    "chain": { "enum": ["fresh", "snapshot"] },
+    "buildProof": { "$ref": "build-proof.v1" },
+    "buildProofDigest": { "$ref": "#/$defs/digest" },
+    "actualRunnerDigest": { "$ref": "#/$defs/digest" },
+    "profileDigest": { "$ref": "#/$defs/digest" },
+    "candidateUseExecutionRecordDigest": { "$ref": "#/$defs/digest" },
+    "matchingSourceEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "destinationAdmissionDigest": { "$ref": "#/$defs/digest" },
+    "creationEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "databaseTargetPlanDigest": { "$ref": "#/$defs/digest" },
+    "databaseTestManifestDigest": { "$ref": "#/$defs/digest" },
+    "databaseTestDiscoveryDigest": { "$ref": "#/$defs/digest" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "runnerContainerId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sessionId": { "$ref": "#/$defs/uuid" },
+    "sessionNonce": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "operationId": { "$ref": "#/$defs/uuid" },
+    "runId": { "$ref": "#/$defs/uuid" },
+    "attemptId": { "$ref": "#/$defs/uuid" },
+    "databaseTestManifestReference": { "$ref": "#/$defs/launchReference" },
+    "postgres": { "$ref": "#/$defs/postgres" },
+    "suiteAssignments": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "oneOf": [{ "$ref": "#/$defs/suiteAssignment" }, { "$ref": "#/$defs/lifecycleAssignment" }]
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "launchReference": {
+      "type": "string",
+      "pattern": "^launch-file:///run/launch/[A-Za-z0-9._/-]+$"
+    },
+    "postgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engineId",
+        "containerId",
+        "systemIdentifier",
+        "imageDigest",
+        "hostname",
+        "port",
+        "tlsMode"
+      ],
+      "properties": {
+        "engineId": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,128}$" },
+        "containerId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "systemIdentifier": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "imageDigest": { "$ref": "#/$defs/digest" },
+        "hostname": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "tlsMode": { "const": "require" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "databaseName",
+        "databaseOid",
+        "marker",
+        "runtimeRole",
+        "migrationRole",
+        "runtimeCredentialFingerprint",
+        "migrationCredentialFingerprint",
+        "databaseIdentityFingerprint",
+        "targetLockDigest",
+        "migrationEvidenceDigest",
+        "runtimeSecretReference"
+      ],
+      "properties": {
+        "databaseName": { "type": "string", "pattern": "^s1ci_[0-9a-f]{24}$" },
+        "databaseOid": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "marker": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "runtimeRole": { "type": "string", "pattern": "^s1r_[0-9a-f]{24}$" },
+        "migrationRole": { "type": "string", "pattern": "^s1m_[0-9a-f]{24}$" },
+        "runtimeCredentialFingerprint": { "$ref": "#/$defs/digest" },
+        "migrationCredentialFingerprint": { "$ref": "#/$defs/digest" },
+        "databaseIdentityFingerprint": { "$ref": "#/$defs/digest" },
+        "targetLockDigest": { "$ref": "#/$defs/digest" },
+        "migrationEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "runtimeSecretReference": {
+          "type": "string",
+          "pattern": "^secret-file:///run/secrets/[A-Za-z0-9._-]+$"
+        }
+      }
+    },
+    "reservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shard", "databaseName", "roles", "targetLockDigest"],
+      "properties": {
+        "shard": { "enum": [0, 1] },
+        "databaseName": { "type": "string", "pattern": "^s1ci_[0-9a-f]{24}$" },
+        "roles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["migrate", "runtime-test"],
+          "properties": {
+            "migrate": { "type": "string", "pattern": "^s1m_[0-9a-f]{24}$" },
+            "runtime-test": { "type": "string", "pattern": "^s1r_[0-9a-f]{24}$" },
+            "restore": { "type": "string", "pattern": "^s1x_[0-9a-f]{24}$" }
+          }
+        },
+        "targetLockDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "suiteAssignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "databases"],
+      "properties": {
+        "kind": { "const": "suite" },
+        "databases": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["target"],
+          "properties": {
+            "target": { "$ref": "#/$defs/database" },
+            "source": { "$ref": "#/$defs/database" }
+          }
+        }
+      }
+    },
+    "lifecycleAssignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reservations"],
+      "properties": {
+        "kind": { "const": "lifecycle-owned" },
+        "reservations": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/reservation" }
+        }
+      }
+    }
+  }
+}

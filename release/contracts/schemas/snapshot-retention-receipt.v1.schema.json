@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "snapshot-retention-receipt.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseAttemptId",
+    "snapshotRunId",
+    "object",
+    "custodyObservationDigest",
+    "dispositionPolicyDigest",
+    "approvalDigest",
+    "operator",
+    "eligibleAt",
+    "action",
+    "appliedAt",
+    "terminalReadback",
+    "legalHold",
+    "issuer"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "snapshot-retention-receipt.v1" },
+    "releaseAttemptId": { "$ref": "#/$defs/id" },
+    "snapshotRunId": { "$ref": "#/$defs/runId" },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "version", "etag", "digest"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^snapshot-slots/v2/[^/*?]+/[^/*?]+/snapshot\\.enc$"
+        },
+        "version": { "$ref": "#/$defs/id" },
+        "etag": { "$ref": "#/$defs/id" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "custodyObservationDigest": { "$ref": "#/$defs/digest" },
+    "dispositionPolicyDigest": { "$ref": "#/$defs/digest" },
+    "approvalDigest": { "$ref": "#/$defs/digest" },
+    "operator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "independentFromPublisherConsumer"],
+      "properties": {
+        "identity": { "$ref": "#/$defs/id" },
+        "independentFromPublisherConsumer": { "const": true }
+      }
+    },
+    "eligibleAt": { "$ref": "#/$defs/timestamp" },
+    "action": {
+      "enum": ["DELETE_CIPHERTEXT_AND_DISABLE_KEY_ACCESS", "TRANSFER_TO_COMPLIANCE_STORAGE"]
+    },
+    "appliedAt": { "$ref": "#/$defs/timestamp" },
+    "terminalReadback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objectAccessDisposition", "keyAccessDisposition", "verifiedAt", "digest"],
+      "properties": {
+        "objectAccessDisposition": { "enum": ["DELETED", "TRANSFERRED"] },
+        "keyAccessDisposition": { "enum": ["DISABLED", "TRANSFERRED"] },
+        "verifiedAt": { "$ref": "#/$defs/timestamp" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "legalHold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active", "readbackDigest"],
+      "properties": { "active": { "const": false }, "readbackDigest": { "$ref": "#/$defs/digest" } }
+    },
+    "issuer": { "$ref": "#/$defs/id" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true }
+  }
+}

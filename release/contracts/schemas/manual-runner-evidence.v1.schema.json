@@ -1,0 +1,1206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manual-runner-evidence.v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "profileDigest",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "attemptId",
+        "runId",
+        "stage",
+        "phaseKey",
+        "allocatedAt",
+        "targetIntent",
+        "predecessorExecutionRecordDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-runner-evidence.v1"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "attempt-allocation"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/label"
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "stage": {
+          "enum": ["target-observe", "runner-command"]
+        },
+        "phaseKey": {
+          "enum": ["target-observe", "dry-run", "apply", "verify", "replay", "reconcile"]
+        },
+        "allocatedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "targetIntent": {
+          "$ref": "#/$defs/targetIntent"
+        },
+        "predecessorExecutionRecordDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "profileDigest",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "attemptId",
+        "runId",
+        "attemptAllocationDigest",
+        "requestDigest",
+        "previousProcessEvidenceDigest",
+        "events",
+        "closedAt",
+        "protocol"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-runner-evidence.v1"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "process"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/label"
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attemptAllocationDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requestDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previousProcessEvidenceDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "protocol": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stdoutPrefix", "parentFrames"],
+          "properties": {
+            "stdoutPrefix": { "$ref": "#/$defs/rawRef" },
+            "parentFrames": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/rawRef" },
+              "uniqueItems": true
+            }
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/event"
+          }
+        },
+        "closedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "profileDigest",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "attemptId",
+        "runId",
+        "requestDigest",
+        "observedAt",
+        "physicalIdentity",
+        "roleObservation",
+        "catalog",
+        "schema",
+        "processEvidenceDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-runner-evidence.v1"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "observation"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/label"
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "observedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "physicalIdentity": {
+          "$ref": "#/$defs/physicalIdentity"
+        },
+        "roleObservation": {
+          "$ref": "#/$defs/roleObservation"
+        },
+        "catalog": {
+          "$ref": "#/$defs/catalog"
+        },
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/schemaObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "processEvidenceDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "buildProofDigest",
+        "sourceSchemaDigest",
+        "prismaVersion",
+        "script",
+        "sourceSchemaPath"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-runner-evidence.v1"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "schema-expectation"
+        },
+        "buildProofDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sourceSchemaDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "prismaVersion": {
+          "$ref": "#/$defs/report"
+        },
+        "script": {
+          "$ref": "#/$defs/rawRef"
+        },
+        "sourceSchemaPath": {
+          "const": "apps/api/prisma/schema.prisma"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "recordedAt",
+        "promotionEligible",
+        "kind",
+        "profileDigest",
+        "sessionId",
+        "sessionNonce",
+        "operationId",
+        "idempotencyKey",
+        "attemptId",
+        "runId",
+        "requestDigest",
+        "phaseKey",
+        "attemptAllocationDigest",
+        "startedAt",
+        "finishedAt",
+        "outcome",
+        "reasonCode",
+        "plan",
+        "postState",
+        "observationDigest",
+        "processEvidenceDigest",
+        "statements",
+        "originalExecutionRecordDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "manual-runner-evidence.v1"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "promotionEligible": {
+          "const": false
+        },
+        "kind": {
+          "const": "manual-command-result"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionNonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/label"
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "phaseKey": {
+          "enum": ["target-observe", "dry-run", "apply", "verify", "replay", "reconcile"]
+        },
+        "attemptAllocationDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "enum": ["RETURNED", "THREW", "INTERRUPTED"]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/plan"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "postState": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/postState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observationDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "processEvidenceDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "statements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "originalExecutionRecordDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "targetIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpointPolicyId", "databaseName"],
+      "properties": {
+        "endpointPolicyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "databaseName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "physicalIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpointPolicyId", "databaseName", "databaseOid", "clusterFingerprint"],
+      "properties": {
+        "endpointPolicyId": {
+          "$ref": "#/$defs/label"
+        },
+        "databaseName": {
+          "$ref": "#/$defs/label"
+        },
+        "databaseOid": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "clusterFingerprint": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "roleObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "tls", "schemaObservationDigest"],
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/label"
+        },
+        "tls": {
+          "const": true
+        },
+        "schemaObservationDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "integer": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "error": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+    },
+    "report": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1048576
+    },
+    "domainInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "databaseIdentityFingerprint",
+        "baselineManifestIdentityDigest",
+        "baselineManifestDigest",
+        "expectedSchemaDigest",
+        "expectedOwner",
+        "allowedExtensions"
+      ],
+      "properties": {
+        "databaseIdentityFingerprint": {
+          "$ref": "#/$defs/digest"
+        },
+        "baselineManifestIdentityDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "baselineManifestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "expectedSchemaDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "expectedOwner": {
+          "$ref": "#/$defs/label"
+        },
+        "allowedExtensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/label"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "rawRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "bytes"],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "bytes": {
+          "$ref": "#/$defs/integer"
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["order", "path", "sha256"],
+      "properties": {
+        "order": {
+          "$ref": "#/$defs/integer"
+        },
+        "path": {
+          "$ref": "#/$defs/label"
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objectClass", "objectName", "owner"],
+      "properties": {
+        "objectClass": {
+          "$ref": "#/$defs/label"
+        },
+        "objectName": {
+          "$ref": "#/$defs/label"
+        },
+        "owner": {
+          "$ref": "#/$defs/label"
+        }
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "migrationName",
+        "checksum",
+        "startedAt",
+        "finishedAt",
+        "rolledBackAt",
+        "appliedStepsCount"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/label"
+        },
+        "migrationName": {
+          "$ref": "#/$defs/label"
+        },
+        "checksum": {
+          "$ref": "#/$defs/digest"
+        },
+        "startedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rolledBackAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "appliedStepsCount": {
+          "$ref": "#/$defs/integer"
+        }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "migrationTableOid",
+        "migrationRows",
+        "schemaOwner",
+        "ownerInventory",
+        "extensions",
+        "postgresqlVersion"
+      ],
+      "properties": {
+        "migrationTableOid": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "migrationRows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/row"
+          }
+        },
+        "schemaOwner": {
+          "$ref": "#/$defs/label"
+        },
+        "ownerInventory": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/inventory"
+          }
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/label"
+          },
+          "uniqueItems": true
+        },
+        "postgresqlVersion": {
+          "$ref": "#/$defs/label"
+        }
+      }
+    },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["postgresql", "prisma", "psql"],
+      "properties": {
+        "postgresql": {
+          "$ref": "#/$defs/label"
+        },
+        "prisma": {
+          "$ref": "#/$defs/report"
+        },
+        "psql": {
+          "$ref": "#/$defs/label"
+        }
+      }
+    },
+    "schemaObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "catalogDigest",
+        "migrationHead",
+        "migrationChecksums",
+        "schemaDigest",
+        "schemaOwner",
+        "ownerInventory",
+        "extensions",
+        "schemaDiff",
+        "toolVersions",
+        "statementLogDigest",
+        "terminalStatus"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "schema-observation.v1"
+        },
+        "catalogDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "migrationHead": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/label"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "migrationChecksums": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "schemaDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "schemaOwner": {
+          "$ref": "#/$defs/label"
+        },
+        "ownerInventory": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/inventory"
+          }
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/label"
+          },
+          "uniqueItems": true
+        },
+        "schemaDiff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exitCode", "stdout"],
+          "properties": {
+            "exitCode": {
+              "type": "integer"
+            },
+            "stdout": {
+              "type": "string"
+            }
+          }
+        },
+        "toolVersions": {
+          "$ref": "#/$defs/versions"
+        },
+        "statementLogDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "terminalStatus": {
+          "const": "PASSED"
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "identity", "provenance"],
+      "properties": {
+        "schemaVersion": {
+          "const": "deterministic-plan.v1"
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "planType",
+            "commandKey",
+            "inputDigest",
+            "databaseIdentityFingerprint",
+            "baselineManifestIdentityDigest",
+            "baselineManifestDigest",
+            "migrationCatalogDigest",
+            "currentMigrationHead",
+            "pendingMigrations",
+            "expectedPostMigrationHead",
+            "expectedSchemaDigest",
+            "expectedOwner",
+            "allowedExtensions",
+            "expectedWriteScope"
+          ],
+          "properties": {
+            "planType": {
+              "const": "migration-plan.v1"
+            },
+            "commandKey": {
+              "const": "db.migrate.deploy@1"
+            },
+            "inputDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "databaseIdentityFingerprint": {
+              "$ref": "#/$defs/digest"
+            },
+            "baselineManifestIdentityDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "baselineManifestDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "migrationCatalogDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "currentMigrationHead": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/label"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pendingMigrations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/entry"
+              }
+            },
+            "expectedPostMigrationHead": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/label"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "expectedSchemaDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "expectedOwner": {
+              "$ref": "#/$defs/label"
+            },
+            "allowedExtensions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/label"
+              },
+              "uniqueItems": true
+            },
+            "expectedWriteScope": {
+              "const": ["_prisma_migrations", "schema-ddl"]
+            }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["planner", "toolVersions"],
+          "properties": {
+            "planner": {
+              "const": "db.migrate.deploy@1"
+            },
+            "toolVersions": {
+              "$ref": "#/$defs/versions"
+            }
+          }
+        }
+      }
+    },
+    "nonEmpty": {
+      "type": "string",
+      "minLength": 1
+    },
+    "postState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "operationId",
+        "attemptId",
+        "runId",
+        "baselineManifestIdentityDigest",
+        "baselineManifestDigest",
+        "commandId",
+        "commandVersion",
+        "planDigest",
+        "databaseIdentityFingerprint",
+        "postMigrationHead",
+        "postSchemaDigest",
+        "configurationFingerprint",
+        "postconditions",
+        "observedAt"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "post-state-observation.v1"
+        },
+        "operationId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "runId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "baselineManifestIdentityDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "baselineManifestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "commandId": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "commandVersion": {
+          "$ref": "#/$defs/nonEmpty"
+        },
+        "planDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "databaseIdentityFingerprint": {
+          "$ref": "#/$defs/digest"
+        },
+        "postMigrationHead": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]{14}_[a-z0-9_]+$"
+            }
+          ]
+        },
+        "postSchemaDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "configurationFingerprint": {
+          "$ref": "#/$defs/digest"
+        },
+        "postconditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "status", "expectedDigest", "actualDigest"],
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/nonEmpty"
+              },
+              "status": {
+                "enum": ["PASSED", "FAILED"]
+              },
+              "expectedDigest": {
+                "$ref": "#/$defs/digest"
+              },
+              "actualDigest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        "observedAt": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "processSequence",
+        "source",
+        "tool",
+        "event",
+        "at",
+        "containerId",
+        "pid",
+        "argvDigest",
+        "exitCode",
+        "signal",
+        "reasonCode",
+        "stdout",
+        "stderr"
+      ],
+      "properties": {
+        "sequence": {
+          "$ref": "#/$defs/integer"
+        },
+        "processSequence": {
+          "$ref": "#/$defs/integer"
+        },
+        "source": {
+          "enum": ["parent", "runner"]
+        },
+        "tool": {
+          "enum": [
+            "runner",
+            "prisma-version",
+            "psql-version",
+            "prisma-deploy",
+            "prisma-diff",
+            "prisma-script",
+            "target-observe"
+          ]
+        },
+        "event": {
+          "enum": ["PREPARED", "SPAWNED", "CLOSED", "SPAWN_FAILED", "DISPATCH_CLOSED"]
+        },
+        "at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "containerId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nonce"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pid": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/pid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "argvDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exitCode": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/label"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stdout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/rawRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stderr": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/rawRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

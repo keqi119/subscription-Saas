@@ -1,0 +1,13 @@
+{
+  "contractVersion": "snapshot-object-addressing.v2",
+  "prefixTemplate": "snapshot-slots/v2/${releaseAttemptId}/${snapshotRunId}/",
+  "exactKeysOnly": true,
+  "versioning": "Disabled",
+  "outputs": [
+    { "filename": "snapshot.enc", "maxSizeBytes": 1073741824 },
+    { "filename": "encryption-envelope.json", "maxSizeBytes": 1048576 },
+    { "filename": "snapshot-proof.json", "maxSizeBytes": 1048576 },
+    { "filename": "diagnostics.redacted.json", "maxSizeBytes": 1048576 },
+    { "filename": "data-result.json", "maxSizeBytes": 1048576 }
+  ]
+}

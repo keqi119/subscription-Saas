@@ -8,16 +8,21 @@ import { fileURLToPath } from "node:url";
 
 import {
   cleanupSuiteDatabase,
+  computeMigrationCatalog,
   grantRuntimeEquivalentAccess,
   provisionSuiteDatabase,
   scanMigrationGlobalObjects,
-  sha256Canonical
+  sha256Canonical,
+  sqlLiteral,
+  suiteDatabaseName,
+  assertApprovedEphemeralTarget
 } from "../src/index.mjs";
 import {
   executeDockerCommand,
   hardenOwnerOnlyFile,
   pullExactPostgresImage
 } from "../../../scripts/release/bootstrap-controlled-postgres.mjs";
+import { takeR3LifecycleAdapter } from "./r3-lifecycle-adapter-slot.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -39,7 +44,7 @@ function controlledChildEnvironment(overrides = {}) {
 }
 
 function databaseUrl(secret) {
-  return `postgresql://${encodeURIComponent(secret.username)}:${encodeURIComponent(secret.password)}@${secret.host}:${secret.port}/${encodeURIComponent(secret.database)}?sslmode=disable`;
+  return `postgresql://${encodeURIComponent(secret.username)}:${encodeURIComponent(secret.password)}@${secret.host}:${secret.port}/${encodeURIComponent(secret.database)}?sslmode=${encodeURIComponent(secret.tlsMode)}`;
 }
 
 async function runCommand(executable, args, { environment = process.env } = {}) {
@@ -169,8 +174,75 @@ async function assertExactContainer(containerId, runId, image) {
   }
 }
 
+async function runLifecycleAssertions(adapter, migrationCatalog) {
+  assertApprovedEphemeralTarget(adapter.target, adapter.policy);
+  assert.equal(adapter.reservations.length, 2);
+  for (const shard of [0, 1]) {
+    assert.equal(
+      adapter.reservations[shard].databaseName,
+      suiteDatabaseName(adapter.runId, "database-lifecycle", shard)
+    );
+  }
+  const provisioned = await Promise.all([0, 1].map((shard) => adapter.provision(shard)));
+  assert.equal(new Set(provisioned.map((record) => record.databaseName)).size, 2);
+  for (const [shard, record] of provisioned.entries()) {
+    assert.equal(record.databaseName, adapter.reservations[shard].databaseName);
+    assert.equal(record.targetFingerprint, adapter.target.clusterFingerprint);
+    assert.equal(record.runId, adapter.runId);
+    assert.equal(record.suiteId, "database-lifecycle");
+    assert.equal(record.shard, shard);
+  }
+
+  await Promise.all(provisioned.map((record) => adapter.migrate(record)));
+  await Promise.all(provisioned.map((record) => adapter.grantRuntimeAccess(record)));
+
+  for (const record of provisioned) {
+    const role = await adapter.runtimeRole(record);
+    assert.deepEqual(role.rows[0], {
+      super: "false",
+      createdb: "false",
+      createrole: "false",
+      bypassrls: "false",
+      login: "true"
+    });
+    const ownership = await adapter.migrationOwnership(record);
+    assert.equal(ownership.rows[0]?.schemaOwner, record.roles.migrate);
+    assert.equal(ownership.rows[0]?.migrationOwner, record.roles.migrate);
+    assert.equal(ownership.rows[0]?.canCreate, "false");
+    assert.equal(ownership.rows[0]?.memberships, "0");
+    assert.equal(Number(ownership.rows[0]?.migrationCount), migrationCatalog.entries.length);
+    await assert.rejects(
+      adapter.attemptRuntimeCreate(record),
+      (error) =>
+        error?.code === "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED" || error?.code === "42501"
+    );
+  }
+
+  await assert.rejects(
+    adapter.cleanup({ ...provisioned[0], databaseName: `${provisioned[0].databaseName}_forged` }),
+    { code: "CLEANUP_IDENTITY_MISMATCH" }
+  );
+  await assert.rejects(adapter.cleanup({ ...provisioned[0], marker: "forged" }), {
+    code: "CLEANUP_IDENTITY_MISMATCH"
+  });
+
+  const interruptedRecord = provisioned.shift();
+  const siblingRecord = provisioned[0];
+  await adapter.cleanup(interruptedRecord);
+  const interruptedResidue = await adapter.countDatabase(interruptedRecord);
+  assert.equal(interruptedResidue.rows[0]?.count, "0");
+  const sibling = await adapter.siblingDatabase(siblingRecord);
+  assert.equal(sibling.rows[0]?.databaseName, siblingRecord.databaseName);
+
+  for (const record of provisioned) await adapter.cleanup(record);
+  provisioned.length = 0;
+  const residue = await adapter.countOwned();
+  assert.equal(residue.rows[0]?.count, "0");
+}
+
 export async function runDatabaseLifecyclePostgresContract() {
   if (process.env.DATABASE_URL) throw contractError("AMBIENT_DATABASE_URL_FORBIDDEN");
+  const r3Adapter = takeR3LifecycleAdapter();
   const imageContract = JSON.parse(
     await readFile(path.join(repoRoot, "release/contracts/postgres-image.v1.json"), "utf8")
   );
@@ -187,11 +259,19 @@ export async function runDatabaseLifecyclePostgresContract() {
     )
   );
   const policy = targetPolicies.policies.find(
-    (candidate) => candidate.policyId === "s1-release-ephemeral"
+    (candidate) =>
+      candidate.policyId === (r3Adapter ? "s1-release-compose-ephemeral" : "s1-release-ephemeral")
   );
   assert.ok(policy);
   const migrationScan = await scanMigrationGlobalObjects(repoRoot, migrationPolicy);
   assert.deepEqual(migrationScan.extensions, ["btree_gist", "pgcrypto"]);
+  const migrationCatalog = await computeMigrationCatalog(repoRoot);
+  assert.equal(migrationCatalog.digest, migrationScan.migrationCatalogDigest);
+  if (r3Adapter) {
+    assert.deepEqual(r3Adapter.policy, policy);
+    await runLifecycleAssertions(r3Adapter, migrationCatalog);
+    return;
+  }
 
   const runId = randomUUID();
   const provisioner = {
@@ -206,7 +286,6 @@ export async function runDatabaseLifecyclePostgresContract() {
   await hardenOwnerOnlyFile(passwordPath);
 
   let containerId;
-  const provisioned = [];
   try {
     await pullExactPostgresImage({ image });
     const repoDigests = JSON.parse(
@@ -294,28 +373,25 @@ export async function runDatabaseLifecyclePostgresContract() {
         columns: sql.includes("AS oid") ? ["oid", "marker"] : []
       });
 
-    provisioned.push(
-      ...(await Promise.all(
-        [0, 1].map((shard) =>
-          provisionSuiteDatabase({
-            target,
-            policy,
-            runId,
-            suiteId: "database-lifecycle",
-            shard,
-            executeAdmin,
-            secretStore
-          })
-        )
-      ))
-    );
-    assert.equal(new Set(provisioned.map((record) => record.databaseName)).size, 2);
-
-    await Promise.all(
-      provisioned.map((record) => runMigration(credentials.get(`${record.databaseName}:migrate`)))
-    );
-    await Promise.all(
-      provisioned.map((record) =>
+    const adapter = {
+      runId,
+      policy,
+      target,
+      reservations: [0, 1].map((shard) => ({
+        databaseName: suiteDatabaseName(runId, "database-lifecycle", shard)
+      })),
+      provision: (shard) =>
+        provisionSuiteDatabase({
+          target,
+          policy,
+          runId,
+          suiteId: "database-lifecycle",
+          shard,
+          executeAdmin,
+          secretStore
+        }),
+      migrate: (record) => runMigration(credentials.get(`${record.databaseName}:migrate`)),
+      grantRuntimeAccess: (record) =>
         grantRuntimeEquivalentAccess({
           databaseName: record.databaseName,
           migrationRole: record.roles.migrate,
@@ -327,107 +403,70 @@ export async function runDatabaseLifecyclePostgresContract() {
               databaseName,
               sql
             })
-        })
-      )
-    );
-
-    for (const record of provisioned) {
-      const runtime = credentials.get(`${record.databaseName}:runtime-test`);
-      const role = await executePsql({
-        containerId,
-        credential: runtime,
-        databaseName: record.databaseName,
-        sql: [
-          "SELECT rolsuper::text, rolcreatedb::text, rolcreaterole::text,",
-          "       rolbypassrls::text, rolcanlogin::text",
-          "FROM pg_roles WHERE rolname = current_user;"
-        ].join(" "),
-        columns: ["super", "createdb", "createrole", "bypassrls", "login"]
-      });
-      assert.deepEqual(role.rows[0], {
-        super: "false",
-        createdb: "false",
-        createrole: "false",
-        bypassrls: "false",
-        login: "true"
-      });
-      const ownership = await executePsql({
-        containerId,
-        credential: runtime,
-        databaseName: record.databaseName,
-        sql: [
-          "SELECT pg_get_userbyid(n.nspowner) AS schema_owner,",
-          "       (SELECT tableowner FROM pg_tables WHERE schemaname = 'public' AND tablename = '_prisma_migrations') AS migration_owner,",
-          "       has_schema_privilege(current_user, 'public', 'CREATE')::text AS can_create,",
-          "       (SELECT COUNT(*)::text FROM pg_auth_members WHERE member = (SELECT oid FROM pg_roles WHERE rolname = current_user)) AS memberships,",
-          "       (SELECT COUNT(*)::text FROM public._prisma_migrations) AS migration_count",
-          "FROM pg_namespace AS n WHERE n.nspname = 'public';"
-        ].join(" "),
-        columns: ["schemaOwner", "migrationOwner", "canCreate", "memberships", "migrationCount"]
-      });
-      assert.equal(ownership.rows[0]?.schemaOwner, record.roles.migrate);
-      assert.equal(ownership.rows[0]?.migrationOwner, record.roles.migrate);
-      assert.equal(ownership.rows[0]?.canCreate, "false");
-      assert.equal(ownership.rows[0]?.memberships, "0");
-      assert.equal(Number(ownership.rows[0]?.migrationCount), 126);
-      await assert.rejects(
+        }),
+      runtimeRole: (record) =>
         executePsql({
           containerId,
-          credential: runtime,
+          credential: credentials.get(`${record.databaseName}:runtime-test`),
+          databaseName: record.databaseName,
+          sql: [
+            "SELECT rolsuper::text, rolcreatedb::text, rolcreaterole::text,",
+            "       rolbypassrls::text, rolcanlogin::text",
+            "FROM pg_roles WHERE rolname = current_user;"
+          ].join(" "),
+          columns: ["super", "createdb", "createrole", "bypassrls", "login"]
+        }),
+      migrationOwnership: (record) =>
+        executePsql({
+          containerId,
+          credential: credentials.get(`${record.databaseName}:runtime-test`),
+          databaseName: record.databaseName,
+          sql: [
+            "SELECT pg_get_userbyid(n.nspowner) AS schema_owner,",
+            "       (SELECT tableowner FROM pg_tables WHERE schemaname = 'public' AND tablename = '_prisma_migrations') AS migration_owner,",
+            "       has_schema_privilege(current_user, 'public', 'CREATE')::text AS can_create,",
+            "       (SELECT COUNT(*)::text FROM pg_auth_members WHERE member = (SELECT oid FROM pg_roles WHERE rolname = current_user)) AS memberships,",
+            "       (SELECT COUNT(*)::text FROM public._prisma_migrations) AS migration_count",
+            "FROM pg_namespace AS n WHERE n.nspname = 'public';"
+          ].join(" "),
+          columns: ["schemaOwner", "migrationOwner", "canCreate", "memberships", "migrationCount"]
+        }),
+      attemptRuntimeCreate: (record) =>
+        executePsql({
+          containerId,
+          credential: credentials.get(`${record.databaseName}:runtime-test`),
           databaseName: record.databaseName,
           sql: 'CREATE TABLE "runtime_must_not_create" ("id" integer);'
         }),
-        { code: "CONTROLLED_TARGET_DOCKER_COMMAND_FAILED" }
-      );
-    }
-
-    await assert.rejects(
-      cleanupSuiteDatabase(
-        { ...provisioned[0], databaseName: `${provisioned[0].databaseName}_forged` },
-        { target, policy, executeAdmin }
-      ),
-      { code: "CLEANUP_IDENTITY_MISMATCH" }
-    );
-    await assert.rejects(
-      cleanupSuiteDatabase(
-        { ...provisioned[0], marker: "forged" },
-        { target, policy, executeAdmin }
-      ),
-      { code: "CLEANUP_IDENTITY_MISMATCH" }
-    );
-
-    const interruptedRecord = provisioned.shift();
-    const siblingRecord = provisioned[0];
-    await cleanupSuiteDatabase(interruptedRecord, { target, policy, executeAdmin });
-    const interruptedResidue = await executePsql({
-      containerId,
-      credential: provisioner,
-      databaseName: "postgres",
-      sql: `SELECT COUNT(*)::text FROM pg_database WHERE datname = '${interruptedRecord.databaseName}';`,
-      columns: ["count"]
-    });
-    assert.equal(interruptedResidue.rows[0]?.count, "0");
-    const sibling = await executePsql({
-      containerId,
-      credential: credentials.get(`${siblingRecord.databaseName}:runtime-test`),
-      databaseName: siblingRecord.databaseName,
-      sql: "SELECT current_database() AS database_name;",
-      columns: ["databaseName"]
-    });
-    assert.equal(sibling.rows[0]?.databaseName, siblingRecord.databaseName);
-
-    for (const record of provisioned) {
-      await cleanupSuiteDatabase(record, { target, policy, executeAdmin });
-    }
-    provisioned.length = 0;
-    const residue = await executePsql({
-      containerId,
-      credential: provisioner,
-      databaseName: "postgres",
-      sql: "SELECT COUNT(*)::text FROM pg_database WHERE datname LIKE 's1ci\\_%' ESCAPE '\\';",
-      columns: ["count"]
-    });
-    assert.equal(residue.rows[0]?.count, "0");
+      cleanup: (record) => cleanupSuiteDatabase(record, { target, policy, executeAdmin }),
+      countDatabase: (record) =>
+        executePsql({
+          containerId,
+          credential: provisioner,
+          databaseName: "postgres",
+          sql: `SELECT COUNT(*)::text FROM pg_database WHERE datname = ${sqlLiteral(record.databaseName)};`,
+          columns: ["count"]
+        }),
+      siblingDatabase: (record) =>
+        executePsql({
+          containerId,
+          credential: credentials.get(`${record.databaseName}:runtime-test`),
+          databaseName: record.databaseName,
+          sql: "SELECT current_database() AS database_name;",
+          columns: ["databaseName"]
+        }),
+      countOwned: () =>
+        executePsql({
+          containerId,
+          credential: provisioner,
+          databaseName: "postgres",
+          sql: `SELECT COUNT(*)::text FROM pg_database WHERE datname IN (${[0, 1]
+            .map((shard) => sqlLiteral(suiteDatabaseName(runId, "database-lifecycle", shard)))
+            .join(", ")});`,
+          columns: ["count"]
+        })
+    };
+    await runLifecycleAssertions(adapter, migrationCatalog);
   } finally {
     await rm(passwordPath, { force: true });
     if (containerId) {

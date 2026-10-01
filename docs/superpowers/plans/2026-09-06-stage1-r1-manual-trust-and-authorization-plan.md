@@ -1,0 +1,844 @@
+# Stage 1 R1 固定信任与人工授权实施计划
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development，子 agent 逐任务实施，主 agent 审查；也可在用户明确改变模式后使用 superpowers:executing-plans。Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 建立一个可离线反例验证、但不能用测试身份放行真实操作的人工授权内核，供 R2 的两个数据库命令消费。
+
+**Architecture:** 不替换现有 `build-proof.v1`，不改旧 full-RC/approval 验证规则。新增的本地人工入口使用固定 profile、Node Ed25519 和在场父会话；首次真实身份与可信 CI 构建是单独的人工作业门槛，不在单元测试成功后自动建立。
+
+**Tech Stack:** 现有 Node 22 发布运行时、Node `crypto`/`fs`、现有 Ajv 与 canonical JSON/digest kernel、GitHub CLI attestation verifier。无新 npm 依赖、云 KMS 或常驻服务。
+
+**Spec:** [最小受控发布决策 §3](../specs/2026-09-06-stage1-minimal-controlled-release-decision.zh-CN.md)、[覆盖路线图 R1/R2](./2026-09-06-stage1-mainline-minimal-release-implementation-plan.md)、[P0/P1 实际执行索引](../../acceptance/2026-09-06-stage1-mainline-execution-index.md)。决策文档仍保留其自身审批状态；本稿不代替对新增人工路径的批准。
+
+## 2026-09-27 MS2 原始总输出的有限前向修正
+
+主控依据实际 402,009-byte 离线 SQL 和独立容量审查，在既有收口实施范围内裁决：**仅 MS2 的完整 child stdout 与经协议、方向、请求／进程绑定核验的 stdout-prefix raw，上限前向改为 2,097,152 bytes。** 两次完整 SQL base64 自身已为 1,072,024 bytes，旧完整流 1 MiB 无法运输此真实规模负载。它是本地 schema 投影，不是实际 datasource/reference 原件；本修正不宣称数据库已执行通过。
+
+本节仅覆盖下文对上述新 MS2 两类总流原件的泛化 1 MiB 限制。MS1 全部旧限制以及 MS2 每件 JSON/canonical、完整单帧、单工具 stdout+stderr 合计、stdin、公开 parentFrames 合计、Runner stderr、普通 raw、expected/reference/H1/H2/H3 输入均保持原 1 MiB。不得整体扩大 JSON encoder 或所有 raw reader；普通工具原件不能凭 `MS2 ` 前缀或未验证的过程引用获取例外。同一原件在每个角色的使用处仍须满足该角色限额。
+
+共享 session 的 history/raw 读回必须与既有 MS2 过程引用和共享协议解析器一致，保留 CreateNew、路径/ACL/stat、完整摘要和独立重开；不能只扩大 collector 而留下保管链拒绝，也不能放松签名、消费、撤销、30 秒 handoff 或 UNKNOWN 语义。此改动不增加 Schema 字段、授权机制、CLI/环境可调上限或依赖。2 MiB 仍为硬上限；溢出保持真实失败及有限原件。
+
+施工及最小验证按 [R2 同日修正](./2026-09-06-stage1-r2-runner-migrate-verify-plan.md#2026-09-27-ms2-真实规模运输修正)执行。规范裁决不是生产实现或验收通过；实际大负载完整运输、独立档案重开和边界拒绝未验证前，容量缺口仍开放。
+
+2026-09-26 前向验收：本节限域修复已与R2.1同源完整验证，实际source `ba57efea` 的八文件343/343、exit0，代码与原件独立终审ACCEPT。见[本地组合记录](../../acceptance/2026-09-26-stage1-r21-offline-integration-validation.md)；保留先前RED/聚焦/339轮及默认lint、历史parser格式限制。该结论不替代R2.2实际collector、来源门槛或Node22/H3真实执行。
+
+## Global Constraints
+
+### 2026-09-25 审计收口：MS2 真实工具调用 schedule（限域补充）
+
+本补充属于用户已批准的 Stage 1 审计收口 Task 9/R2 离线实施，由独立 R1 owner 修改且仅修改 `packages/release-foundation/src/manual-runner-evidence.mjs`、既有 `packages/release-foundation/test/manual-runner-evidence.test.mjs`、`packages/release-foundation/test/manual-stage1-session.test.mjs` 与本计划。先记录本限域说明，再以 RED → GREEN 修复共享成功证据谓词；主控负责独立审查和提交。第四文件由独立审查发现必要依赖后经主控精确纳入：其独立 runnerFixture 的 MS2 单轮 apply 是既有 UNKNOWN/replay 测试 seal 成功前件，故仅升级该 MS2 fixture 工具 schedule，原断言和 MS1 默认不变。Schema、session 实现、parser、旧 MS1、R2 handler/runtime/CLI、manifest、历史运行记录与冻结摘要均不修改。所有验证离线，不执行 AGENTS 的 ambient 数据库 preflight，不连接 DB、不使用秘密、不运行 Docker/网络；真实 Prisma/DB 门禁只由主控获准 fresh launcher 执行。
+
+R2.1 的真实 adapter 在 `applyMigration` 锁内重算 plan 并验证 schema，返回后再读取完整 catalog 与 `verifySchema` 取得最终完整 SQL 日志。因此非空 apply 的真实工具调用是 Prisma/psql 版本各三次、deploy 一次、diff/script 各两次；先前 MS2 单轮成功 fixture 遗漏既有 handler 调用，不能代表真实 R2 运行证明。旧成功测试只升级进程 facts 并保留原断言，另保留 MS2 单轮 apply 必须拒绝的反例；不为 MS2 添加虚构历史回退，MS1 单轮历史判定保持原样。
+
+仅从已验证实际 MS2 frames 选择前向 schedule：dry-run 版本各一次且无 deploy/diff/script；verify/replay/reconcile 版本各一次、diff/script 各一次且无 deploy；非空 apply 版本各三次、deploy 一次、diff/script 各两次，runner 始终唯一。apply 按每工具序号及完整 PREPARED/CLOSED 证明首轮两版本全部关闭后才准备 deploy，deploy 关闭后才开始第一组四工具，该组全部关闭后才开始第二组四工具；组内允许真实 Promise.all 并发。全部调用必须完整 custody、exit 0、signal/reason null；每轮完整 Prisma/psql trim 报告逐字一致，两轮 script 均绑定 expected digest、diff 均 exit 0 且 stdout.trim 为空。只有全部验证后才绑定末组 schema 字段；postState 算法、非空 pending/deploy 成功条件和原失败/UNKNOWN 分类不变。不删除真实调用记录，不缓存 schema 事实，不只取末组掩盖失败，不把 observer 塞入锁内。
+
+真实并发 RED 另证实既有 `protocolEvent` 的 PREPARED 全前件串行守卫先于成功判定拒绝 Promise.all。主控据此将同一生产文件内 MS2 私有 validator 前向分支精确纳入本修复：协议只从实际已核 `frameProtocol(child)` 传入私有函数，复用同一固定 schedule 校验 live/archive 的合法前缀和最终完整调用。组内每工具最多一次且保留每调用 PREPARED → ACK → SPAWNED → CLOSED/失败与唯一序号；跨组须前组全部 CLOSED、exit 0、signal/reason null，且 close 必须属于同一 runner 来源、tool 与 processSequence，不能借用父进程 close。失败/未完成前缀仍可保管、同组已启动 peer 仍可关闭，不要求尚未发生的未来组齐全；完整次数仅作为成功条件。MS1 全串行守卫不改。仅既有测试为本次组合正例离线动态导入真实 Runner runtime/旧 handler，生产 foundation 无 Runner 反向依赖、IO、新依赖或新导出。该正例证明真实调用轨迹进入共享判定，不证明真实进程/PID、数据库或 R2.2 collector 原件；R2.1 完整 adapter 组合仍独立验收。
+
+验证必须覆盖早组非零/超时/缺 close 但末组成功、任一完整版本报告变化、首轮 script 漂移/diff 非零、多/少/乱序调用、跨 attempt 混入；正例对接 R2.1 真实 runtime 的离线 runProcess 轨迹。原件和精确 RED/GREEN 计数写 ignored `node_modules/.cache/sdd/r1-tool-evidence-schedule`。小范围验证先行，长共享门禁与主控 PostgreSQL 重负载串行，未执行门禁不得记作通过。
+
+- 当前状态（本轮文档修订）：R1.3 已在 `aebbb6b0` 本地通过并获用户接受；不返工其代码或历史证据。本稿与 R2 的 H3 原件传输局部草案待本轮复审；新增 Task R1.3H 是唯一未来纯协议施工单元，位于 R1.3 之后、R2.1 之前，尚未获施工批准。本轮只修订两份计划并分别本地提交复审，不启动 R1.3H/R2 代码、GitHub/DB/Docker/网络/密钥或 H1/H2/H3/Task 30。
+- 以下 RP6 状态、§1.1 的 RP 收口段及末尾原交接状态均为当时历史记录，不覆盖上一条当前状态。
+- 状态：**RP1–RP5 已按获批的 90 日同步计划交付代码；RP6 初次 frozen compatibility 183/185、exit 1 的 STOP 原件保留为历史，随后获批的同字节 scratch-only 完整重验 185/185、exit 0，后置核验 exit 0，独立 evidence review 为 `PASS/LEGACY_SCRATCH_RETRY_CONFIRMED`。RP6 获批的本地执行/审查范围 `LOCAL_COMPLETE`，仅待本地文档提交与 metadata final check；R1.3 的“90 天代码同步”前置已解除，但 R1.3 尚未实施且未因本结论获得施工批准**。R1.1 `a7dae491`、R1.1E `f618b2d2`、R1.2 `a42c2041` 及其历史 150+44 证据不改写；RP1–RP5 实现提交为 `0ce02461`/`fb5c3d36`、`41dfaf37`/`8f5402c0`、`b9aaa55e`、`a7377cc1`、`6f834aaa`。H1/H2/H3、真实 profile/key/credential、DB/Docker/网络操作或 Task 30 仍未批准。既有 session `objects/raw`、冻结 stash `b299ceeed80374d181998f8ef485629beba56b5f` 与未追踪 scheduler 原样保留。
+- P0/P1 本地准入已结束，两个测试目标均退役。不能读取归档凭证、重建旧 record，或访问 ambient `DATABASE_URL`；R1 所有代码测试均不连接数据库。
+- Task 6、29R/30、I 系列和冻结 stash `b299ceeed80374d181998f8ef485629beba56b5f` 不动。API/Web、业务模型、迁移、应用 RBAC、工作流、OSS/WORM 均不在文件修改范围内。
+- 单 JSON 输入/输出实际 UTF-8 字节数最多 `1048576`，读取、规范化前后均计数；不能只在 Schema 写上限。新人工管道另按 §2.5.4 对每帧及 stdin/stdout 各自完整流（含全部 header/payload）执行同一 1 MiB 上限；旧单 JSON 路径及其限额不变。私钥不得进入 Git、镜像、环境变量、argv、日志、聊天或测试报告。
+- 只交付人工路径；decision、operation record 和人工业务结果固定 `promotionEligible:false`（不向 Buffer/KeyObject/void 附加字段）。R4/A3 才可能对指定 Staging 签字，不将本路径结果包装为旧 full-RC 或 Task 30 证明。
+- 本稿内 Task R1.1–R1.3 是既有代码实施审批单元；Task R1.3H 是本轮新增、待复审且未启动的局部补充单元。H1/H2 是尚未具备输入的人工停止点。计划批准不等于真实 key、目录、签发、上传或构建操作批准。
+
+## 1. 当前事实与交付界面
+
+| 现有位置                                                      | 已有能力                                                                                         | R1 的精确增量                                                                                |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `scripts/release/verify-build-proof.mjs`                      | 三镜像/source/catalog/contract 绑定；旧路径接收 `verifiedAttestation` 对象及旧 custody receipt   | 实际执行密码学验证；复用共享身份与既有 custody 校验，不以调用方对象建立信任、不放宽旧语义    |
+| `packages/release-foundation/src/execution-state-machine.mjs` | plan 漂移、apply/replay/UNKNOWN 的纯状态机                                                       | 外层本地会话、真实撤销/消费日志与内容读回；不另造第二个迁移状态机                            |
+| `packages/release-foundation/src/schema-registry.mjs`         | 自动发现 Schema、实际有限时间检查、结构化错误                                                    | 新人工契约复用；错误断言使用 `code` 和 `details.errors[].keyword`                            |
+| `scripts/release/trusted-launch-runner.mjs`、Runner 生产入口  | 旧受信执行路径已存在                                                                             | R1 不声称它们是占位代码；R2 才接入新的人工消费路径                                           |
+| `.github/workflows/docker-images.yml`                         | RP5 已配置两份 `retention-days: 90` 交付 artifact 及 metadata/readback 核对；未执行真实 workflow | 结果固定 delivery-only/`promotionEligible:false`；不生成 H2 私密权威 receipt，不伪造完成证明 |
+
+用户已于 2026-09-10 明确将新执行的保留策略从 180 日改为 **90 日**；180 日不再是新候选的目标门槛。RP1–RP5 已交付前向 v2/90 profile/record、显式 retention90 custody 分支、manual 当前链生产/消费、RP4 共享 build 断言及 Actions 90 天交付核对；旧 full-RC verifier 仍固定 v1/180。Actions 交付明确返回 `authorityCustody:"INPUT_REQUIRED"` 与 `promotionEligible:false`，不生成权威 receipt。因此 CI delivery **本地代码/静态配置已交付**不等于实际 CI 或 H2 就绪；真实 workflow/Actions readback、私密权威保管、receipt 独立 attestation 及整条引用闭包读回仍为 `NOT_RUN/INPUT_UNAVAILABLE`。
+
+R1 交付顺序：`R1.1（a7dae491）→ R1.1E（f618b2d2）→ R1.2（a42c2041，历史收口不返工）→ RP1–RP5 前向 90 天同步 → RP6 联合验证/主控与独立审查 → R1.3 固定入口/读取器/真实验签适配 → H1 v2 profile 与真实 owner/host 绑定 → H2 新 main 可信构建原件导入及独立验证 → R2.2 prepareManualOperation → H3-A`。只有 RP6 实际验证与审查通过才可解除 R1.3 的代码同步前置；R2.0 的既有修正为 `5a16ca8a`，R2 真实最终镜像执行仍须通过 H1/H2/H3 与 R2.1 预期 Schema 原件门槛。
+
+### 1.1 90 日策略决定、已交付代码与未执行真实边界
+
+**已决定的目标：** 新的构建 proof/material/receipt、批准与撤销、access receipt 及其必要引用、人工 journal/archive/backup 和失败/UNKNOWN 证据，统一采用 **90 日** 保留策略，不继续以 180 日作为新执行前置。除天数外，原 owner、最小读取权限、不可覆盖、真实读回、到期 review/处置及独立审批要求不变；不授权立即删除或缩短任何既有证据的实际保管。已签名原件、旧 source/policy 与历史测试结果只读保留，不改字节、摘要或时间，不把旧 180 日证据重写成 90 日。
+
+**可判定门槛：** 90 日从各类证据原已规定的起算事件计算，不改成“本次检查时间 + 90 日”，也不借此提前起算。构建 receipt 的要求仍从真实上传时刻起算；有独立失效/终态起算要求的引用按原起算事件只替换天数。实际 object/artifact 的独立 Get/Head/到期或保留策略 readback 必须覆盖该截止日期；配置值、签名字段或本地日期加法都不是存储事实。proof、receipt、attestation/材料及批准/撤销等必要引用必须覆盖同一可复核区间；缺任一输入、实际不足 90 日或到期处置不明仍 STOP。private 资料不能因“90 日可配置”转存 public artifact；本地档案不自称 WORM。
+
+**源码现状与唯一归属：** RP1–RP5 已在不改写旧 v1/180 及 210 天 WORM 事实的前提下完成前向代码；RP6 只同步本计划的未来消费边界，不写 R1.3 代码或执行 H1/H2：
+
+| 边界                           | RP1–RP5 已交付事实                                                                                                                                   | 仍保留的限制/审查                                                                                                 |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| manual profile/record 与消费链 | RP1–RP3 新增 v2/90 Schema，并令 contracts、live/archive assessor 与 session 当前链显式绑定 canonical `profileBytes`；历史 v1 按原 profile 路由重评估 | 当前新入口只允许 v2/90；v1/180 仅用于历史兼容，未解决 UNKNOWN 不能通过换 profile 绕过                             |
+| 共享 custody 与 build verifier | RP1/RP4 新增显式 `custody-receipt.retention90.v1` 分支，RP4 已导出 `assertProofCustody` 与 `assertBuildIdentity` 并完成 verifier/catalog 纳管        | 旧 `verifyBuildProof` 的完整 scope 仍严格 v1/180；R1.3 只消费两个共享断言，不再修改或重新登记 verifier            |
+| CI 交付                        | RP5 将 proof/supporting-evidence 两份 artifact 设为 90 天并核对服务 metadata/readback，结果固定非提升                                                | 这只是公开交付；不生成 H2 私密权威 receipt，不建存储/授权，不可以代替 receipt 独立 attestation 或完整引用闭包保管 |
+| 历史/冻结路径                  | 旧 profile/record/receipt Schema 保持 180，snapshot/lineage WORM 保持 210；新契约已进入既有 manifest/catalog                                         | RP6 必须完整跑旧纯测试文件并核对冻结摘要；不将旧结果计入本次通过，不将冻结平台声明为已迁移                        |
+
+**停止点与历史区分：** R1.2 `a42c2041` 的收口及 150+44 证据不返工、不追认成 90 日实现。下文已完成 R1.1/R1.1E/R1.2 中的 `retentionDays:180` 是历史契约原样记录，**不适用于新的 90 日执行**。RP6 当前路径、offline gates、获批 scratch-only 完整兼容重验及独立 evidence review 已完成，故本稿只解除 R1.3 的“90 天代码同步”前置；R1.3 尚未实施或获本轮施工批准，H1/H2/H3、R2 真实执行、Task 30 和其余外部边界始终保持暂停。初次 183/185 STOP 原件仍按历史保留。
+
+## 2. 唯一字段契约
+
+以下新类型只属于人工路径，已有 v1/v2 文件语义保持不变。
+
+| 类型                             | 必填信息与约束                                                                                                                                                                                                                                                          |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manual-stage1-profile.v1`       | 历史专用的原字节/180 日 profile；只按原 profile digest 校验已存记录，不作新固定入口 fallback                                                                                                                                                                            |
+| `manual-stage1-profile.v2`       | 新执行的唯一固定 profile；owner immutable ID、公钥 PEM/指纹、有效期、仓库/workflow/main/issuer 固定约束、允许目标、仅 `db.migrate.deploy@1`/`db.schema.verify@1`、固定 key/journal/archive/backup/credential roots，`retentionDays` 固定 90；不含秘密或未来 build proof |
+| `manual-launch-authorization.v1` | `profileDigest`、owner、`authorizationId`、`sessionId/sessionNonce`、`operationId/idempotencyKey`、issued/expires、单一 stage/capability、请求 digest；Ed25519 签名覆盖整个 canonical payload，不覆盖签名自身                                                           |
+| `manual-operation-record.v1`     | 历史 v1/180 的八种 kind 原样保留；只用于历史验证和 RP3 按被评估请求的原 profile 路由                                                                                                                                                                                    |
+| `manual-operation-record.v2`     | 新执行 v2/90 的 session、revocation、consumption、consumption-handoff、post-state、execution、custody、signoff 八种封闭 kind；不新增通用 payload                                                                                                                        |
+
+R1 只启用两个互斥 stage：
+
+1. `target-observe`：`verify`、精确目标意图和用途 `synthetic-fresh` 或 `staging-mainline`；不引用尚未知的 DB OID/Manifest/plan。R2 在连接后生成 observation，不由审批者填“已验证”。
+2. `runner-command`：已核验 `buildProofDigest`、baseline manifest digest、目标观察 digest、实际 DB 标识/OID、预期角色/TLS、命令版本和 phase。`migrate/apply` 另需相同会话 dry-run record digest、确定性 plan digest；`verify` 不假装存在 apply plan；`replay/reconcile` 引用前序执行记录及原幂等键。
+
+`source-read/export`、`restore/sanitize/scan`、`candidate-use` 数据消费尚归 R3：本实现拒绝这些 stage，不能靠自由 `stage` 字符串扩权。`qualification`/`release-candidate` 属旧证明体系，不能作为本地授权 purpose 别名。
+
+数据库跨角色比较使用不含角色的目标身份 `{endpointPolicyId, databaseName, databaseOid, clusterFingerprint}`；每次执行仍单独绑定 `{role, tls, schemaObservationDigest}`。不能修改现有 connector 中包含 role 的 `databaseIdentityFingerprint` 定义，R2 必须保留两层区别。
+
+### 2.1 封闭表示与摘要字节
+
+下表是已批准 R1.1 三个 Schema 和共享投影的唯一字段词典；R1.1 本身不新增导出函数、Schema 文件或生产 factory。独立前置 R1.1E 的新增/移交范围只见 §2.5 与其 Files。`{a:T,b:U}` 列出的键均必填、递归 `additionalProperties:false`；仅显式写 `?` 的条件键可以缺省，`T|null` 必须有键且允许 JSON null。禁止 undefined、任意 metadata/payload、自由附加属性；失败时不得用空字符串、零 UUID、虚构 digest 补事实。
+
+| 记号                                   | 唯一表示/运行时约束                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `D` / `UUID` / `N`                     | `^sha256:[0-9a-f]{64}$`；小写 RFC UUID；密码学随机 32 bytes 的 64 位小写 hex。摘要不是 UUID，nonce/challenge 不是调用者自选 ID                                                                                                                                                                                                                                                                                                                                                                    |
+| `T` / `S` / `E`                        | `T` 为 UTC `YYYY-MM-DDTHH:mm:ss.sssZ`，必须实际解析为有限时间且 round-trip 完全相等；`S` 为 1–256 字符非秘密非空字符串；`E` 为 `^[A-Z][A-Z0-9_]{0,127}$` 的非秘密错误码。Schema 的 `format` 不代替运行时有限时间检查                                                                                                                                                                                                                                                                              |
+| `Path` / `Ref`                         | 无令牌的规范绝对路径；`Ref` 为固定根内非空相对路径，禁止绝对路径、空段、`.`、`..`。只描述位置，真实 realpath/ACL/句柄检查归 R1.2/3；不能由请求覆盖                                                                                                                                                                                                                                                                                                                                                |
+| `TargetIntent`                         | `{endpointPolicyId:S,databaseName:S}`；DB OID 未知前，父锁以固定 profile 解析并规范化的 `endpoint + databaseName` 定位同一目标，不把 profileDigest/role/授权摘要放入锁键。已批准的端点别名必须映射到同一锁键，不能证明唯一时拒绝；profile/root/别名变更仍需 H1 独立审批，不靠换 profile 绕过原锁或 UNKNOWN                                                                                                                                                                                        |
+| `PhysicalIdentity` / `RoleObservation` | `{endpointPolicyId:S,databaseName:S,databaseOid:string,clusterFingerprint:D}`，OID 为十进制正整数文本；`{role:S,tls:true,schemaObservationDigest:D}`。字段名/Schema 不变，含义按载体区分：baseline/observation 中 role/tls 是实际 observer 或本次获准连接的观察；runner request/authorization 中 role/tls 是固定 profile/H3 批准的预期角色与 true，schemaObservationDigest 仍引用已实际读回的 catalog，不冒称已建立该角色连接。它不是 profile 的 TLS 策略字符串，也不是 Prisma script/diff digest |
+| `ChildObservation`                     | `{containerId:string,runnerImageDigest:D,childChallenge:N}`，containerId 为实际完整 64 位小写 hex ID。形状及 kernel 等式不变：父方从本次真实 create/start/inspect、已核验 registry/platform digest 与本管道 child 自产 nonce 组成；子方仅从 AUTHORIZE 的非秘密 launchContext 取得前两项，与自己保留的 nonce 组成，不从 request/授权/receipt 抄回。不声称 child 自主 inspect；来源与可信父管道边界见 §2.5.4。                                                                                      |
+| `SessionBinding` / `OperationBinding`  | 分别为 `{sessionId:UUID,sessionNonce:N}` / `{operationId:UUID,idempotencyKey:S}`；下文 `&` 仅展开这些精确键，不引入任意属性                                                                                                                                                                                                                                                                                                                                                                       |
+
+所有 digest 均为 `sha256Canonical(完整对象)`，即现有 canonical JSON 的 UTF-8 bytes SHA-256，以 `sha256:` 加小写 hex 表示；输入原始 bytes 和 canonical bytes 各自执行 1 MiB 上限。对象内**不保存自身 digest**。`profileDigest` 覆盖完整 profile；`requestDigest` 覆盖完整 R2 请求（含共享投影及全部 R2 命令输入，不含自摘要键）；`authorizationDigest` 覆盖整个已签 `{payload,signature}`；record digest 覆盖完整 record，handoff 也包括 signature。对原始工具 stdout 等非 JSON，R2 保留原始 bytes hash，不拿它冒充 canonical record digest。
+
+授权外壳唯一为 `{payload:AuthorizationPayload,signature:string}`；signature 为 64 bytes Ed25519 签名的 RFC 4648 标准 base64（含 `==` padding，解码后重编码必须相同），不接收 base64url、hex、PEM 签名。授权签名 bytes 是 `UTF8("subscription-saas/manual-launch/v1\n") || UTF8(canonicalJson(payload))`。handoff 签名 bytes 是 `UTF8("subscription-saas/manual-consumption/v1\n") || UTF8(canonicalJson(receipt 去掉 signature 键))`；仅此签名字段被排除，两个域不得互换。profile 公钥为 Ed25519 SPKI PEM；fingerprint 为 `sha256:` 加 `createPublicKey(publicKeyPem).export({type:"spki",format:"der"})` 原始 DER bytes 的 SHA-256，小写 hex。签发前私钥导出公钥以同一算法匹配，不从授权取公钥。
+
+### 2.2 profile、授权与 R2 请求的共享投影
+
+`manual-stage1-profile.v1` 精确字段如下；这是非秘密配置形状，不提供任何真实实例值。H1 未批准仍不得建立生产文件。
+
+| 字段                                                                              | 类型及条件                                                                                                                                                                                                                                                             |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schemaVersion,profileId,ownerId,publicKeyPem,keyFingerprint,validFrom,expiresAt` | 分别为字面量 `manual-stage1-profile.v1`、`UUID`、`S`、SPKI PEM、`D`、`T`、`T`；`validFrom < expiresAt`                                                                                                                                                                 |
+| `buildTrust`                                                                      | `{repository:"keqi119/subscription-Saas",workflow:"keqi119/subscription-Saas/.github/workflows/docker-images.yml",sourceRef:"refs/heads/main",oidcIssuer:"https://token.actions.githubusercontent.com",runnerClass:"github-hosted"}`；不含未来 proof/source SHA        |
+| `allowedCommands`                                                                 | 恰为 `[{commandId:"db.migrate.deploy",commandVersion:"1",capability:"migrate"},{commandId:"db.schema.verify",commandVersion:"1",capability:"verify"}]`，不重复、不扩展                                                                                                 |
+| `allowedTargets`                                                                  | 非空数组，元素 `{endpointPolicyId:S,endpoint:S,databaseName:S,purposes:Purpose[],roles:{observer:S,migrate:S,verify:S},tls:"required"}`；endpointPolicyId 唯一，purposes 非空且不重复；endpoint 为固定无凭证端点。精确集群/H3 分配原件仍由 R2 读回，不以本字段自报代替 |
+| `storage`                                                                         | `{keyRoot:Path,keyRef:Ref,journalRoot:Path,archiveRoot:Path,backupRoot:Path,credentialRoot:Path,retentionDays:180}`；backupRoot 独立于执行/主档案目录，私钥引用只能在 keyRoot 内。加密/权限/恢复是否真实成立由 H1 和 R1.2/3 检查，不增加成功布尔值                     |
+
+`Purpose = "synthetic-fresh" | "staging-mainline"`。`ManualBinding` 为下列共用键与**恰一个** stage 行的并集：共用键 `profileDigest:D,ownerId:S,sessionId:UUID,sessionNonce:N,operationId:UUID,idempotencyKey:S,purpose:Purpose,targetIntent:TargetIntent`。
+
+| stage                | 额外必填键及互斥条件                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `target-observe`     | `stage:"target-observe",capability:"verify"`。禁止 command/version/phase、buildProof/baseline/observation/DB OID/plan/前序 execution/container/challenge 字段；只能先消费后读 observer 凭证并连接                                                                                                                                                                                                                        |
+| `runner-command`     | `stage:"runner-command",commandId,commandVersion:"1",capability,phase,buildProofDigest:D,baselineManifestDigest:D,targetObservationDigest:D,physicalIdentity:PhysicalIdentity,roleObservation:RoleObservation,containerId,runnerImageDigest,childChallenge`；末三项类型同 ChildObservation，必须已实际产生。physicalIdentity 的 endpointPolicyId/databaseName 等于 targetIntent                                          |
+| runner 的 phase 条件 | `db.migrate.deploy` 恰配 `migrate` 与 `dry-run\|apply\|replay\|reconcile`；`db.schema.verify` 恰配 `verify` 与 `verify`。仅 apply 另必填 `dryRunRecordDigest:D,approvedPlanDigest:D`；仅 replay/reconcile 另必填 `predecessorExecutionRecordDigest:D,originalIdempotencyKey:S` 且等于 idempotencyKey。verify 如核验迁移后状态，另必填 `predecessorExecutionRecordDigest:D`；首次只读核验无该字段。其他分支禁止这些条件键 |
+
+`AuthorizationPayload = {schemaVersion:"manual-launch-authorization.v1",authorizationId:UUID,issuedAt:T,expiresAt:T,requestDigest:D} & ManualBinding`，不另放第二份自由 payload。授权窗口必须满足 `profile.validFrom <= issuedAt <= now < expiresAt <= profile.expiresAt`，且 `expiresAt <= issuedAt + 300000ms`；两个 verifier 都核对此五分钟上界，不能只约束 session.sign 而接受更长的已签授权。所有身份、stage、用途、命令和 phase 既属于签名覆盖，也属于实际 request 的摘要覆盖。
+
+R1 六函数中的 `request` 输入精确为 `{canonicalBytes:Buffer,binding:ManualBinding}`：bytes 是完整请求的 canonical JSON，R1 重解析、重新规范化并要求 bytes 相等；逐一从请求**同名顶层键**抽取共用及该 stage 的全部键，与封闭 binding 比较，禁止另一 stage 的键，重算完整 requestDigest。完整 `manual-runner-request.v1` 和 `manual-baseline-manifest.v1` Schema 的唯一所有者移至 R1.1E；R2 仍独占实际 observer、baseline/request 构造与 handler 映射。R1.1 不改为调用这些 Schema，也不增加第二份 request factory。R1-only 投影验签**不代表**完整请求可执行；R1.2 签发/交凭证前和 R2 子方构造 connector 前均调用同一共享完整校验，R2 再检查真实输入来源和 handler 映射。
+
+R2 完整请求中的稳定 `domainInput` 与本次授权/实际 child envelope 分层；现有 `planMigration` 摘要覆盖完整 input，`applyMigration` 又从该 input 取 operation/attempt/run，因此不能声称只改 wrapper 即兼容。R2.1 显式拥有 `applyMigration` 可选第三参数的窄接缝及旧两参数回归，见 §2.5；R1 不改 handler、不造 plan 算法、不复用 attempt。`schemaObservationDigest` 只绑定实时 catalog，不能填充 expected Prisma schema digest；预期脚本原件的真实构建/输入来源归 R2 验证，当前没有已确认可用的生产原件，缺失即 STOP，不倒填 baseline 或从本次 DB 观察推导期望。
+
+### 2.3 八种 operation record 的封闭表
+
+每行都包含公共键 `schemaVersion:"manual-operation-record.v1",kind:<该行字面量>,profileDigest:D,recordedAt:T,promotionEligible:false`；表中附加键全部必填，只有明确条件键例外。每一记录在所列生产时点 create-only，digest 覆盖公共键及该行**全部实际键**；任何前序引用必须已经存在且独立读回，不能引用自己或未来 record。这里独立读回指重开读取并重算原始/canonical bytes，不要求为每个 custody 再造 custody。`session.record(kind,value)` 的 value 即该完整 record，kind 必须相等，固定 IO 层核对身份/时间/前序而非信任 caller 声明。profile/session/request 尚未可信产生的入口 preflight 错误只输出固定受限错误及实际进程日志，不强造 UUID/digest 或计作 manual execution；完整 record 仅在其全部非空身份前提已经建立后可写。
+
+| kind                  | 附加字段、合法分支和生产时点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `session`             | `SessionBinding & {ownerId:S,targetIntent:TargetIntent,status:"OPEN"\|"CLOSED"\|"INTERRUPTED_UNKNOWN",openedAt:T,previousSessionRecordDigest:D\|null,reasonCode:E\|null}`。R1.2 持锁且真实 owner/路径核对后写 OPEN：previous/reason 均 null，recordedAt=openedAt。close 写 CLOSED：引用上一 session record，reason null；存活父方或恢复核对写 UNKNOWN：引用前序、reason 非 null。后两者 recordedAt>=openedAt；异常死亡不能假造已写 CLOSED，缺关闭记录按未知拒绝旧 session                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `revocation`          | `{ownerId:S,sequence:integer>=0,previousRevocationDigest:D\|null,action:"GENESIS"\|"REVOKE_AUTHORIZATION"\|"REVOKE_PROFILE",authorizationId:UUID\|null,reasonCode:E\|null}`。H1 初始台账 GENESIS：sequence=0、三个 nullable 字段为 null；R1.2 受控 owner 撤销追加：sequence=前序+1、previous 非 null、reason 非 null，仅 REVOKE_AUTHORIZATION 的 authorizationId 非 null。其他两分支 authorizationId=null；缺链、回退或未知均拒绝，不生成“未撤销”伪成功记录                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `consumption`         | `SessionBinding & OperationBinding & {ownerId:S,authorizationDigest:D,requestDigest:D,stage:"target-observe"\|"runner-command",sessionRecordDigest:D,revocationRecordDigest:D,revocationSequence:integer>=0,status:"CONSUMED"}`。R1.2 锁内最终核验后原子占用该 authorizationId 对应唯一消费槽、写原件；授权 ID 由 authorizationDigest 的原件解析，不能允许同 ID 换签名产生第二槽。这里只记已发生的消费承诺，没有 receipt/结果/未来读回字段；写是否成功不明即占用未知，不写另一条 CONSUMED 代替                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `consumption-handoff` | `SessionBinding & OperationBinding & {authorizationDigest:D,requestDigest:D,containerId,runnerImageDigest,childChallenge,consumptionRecordDigest:D,consumptionReadbackDigest:D,revocationSequence:integer>=0,issuedAt:T,expiresAt:T,signature:string}`（类型同 §2.1）。R1.2 在消费原件与成功独立读回后签发；recordedAt=issuedAt，`expiresAt=min(授权 expiresAt, issuedAt+30000ms)`，只适用于 runner-command。signature 算法见 §2.1；不含自己的 custody、post-state 或 execution                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `post-state`          | `SessionBinding & OperationBinding & {requestDigest:D,consumptionRecordDigest:D,outcome:"OBSERVED"\|"UNAVAILABLE",observationDigest:D\|null,observedAt:T\|null,reasonCode:E\|null}`。R2 实际观察后由 R1.2 归档；OBSERVED 必须有已读回的 R2 observation digest/真实 observedAt、reason null；UNAVAILABLE 的前两项 null、reason 非 null。recordedAt>=observedAt（有值时），只记录确实发生的观察，不合成 OID/role/迁移成功                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `execution`           | `SessionBinding & OperationBinding & {attemptId:UUID,requestDigest:D,authorizationDigest:D\|null,consumptionRecordDigest:D\|null,handoffRecordDigest:D\|null,handoffReadbackDigest:D\|null,postStateRecordDigest:D\|null,predecessorExecutionRecordDigest:D\|null,startedAt:T\|null,finishedAt:T\|null,status:"PREFLIGHT_REJECTED"\|"FAILED"\|"SUCCEEDED"\|"INTERRUPTED_UNKNOWN",reasonCode:E\|null,resultDigest:D\|null,processEvidenceDigest:D\|null}`。R1.2 保管 R2 真实结果/父进程事件；startedAt/finishedAt 只记录可证明的实际开始/结束，有值均不晚于 recordedAt，两者都有值时 startedAt<=finishedAt。null 表示事实尚未产生/不可证，绝非成功空值。SUCCEEDED 必须有开始/结束、授权/消费/post-state/result，reason null；runner SUCCEEDED 另必须有 handoff、其成功 custody 和实际 processEvidence，target-observe 三者均 null。PREFLIGHT_REJECTED 必须 reason 非 null、startedAt/finishedAt/result null；只允许引用失败前实际存在的授权/消费/handoff。FAILED 必须非 null reason 和足以证明未执行或已知失败的 result/process evidence（目标只读失败可只有 result）；一旦无法证明是否提交/证据丢失则用 UNKNOWN，不准 FAILED。UNKNOWN 必须 reason 非 null，无法证明进程结束时 finishedAt=null，未获得的后置/process/result 等字段保持 null；不是成功结果。apply/replay/reconcile 的前序引用与 §2.4 对照；失败记录在默认180日保管治理期内不覆盖，不新增永久保留政策 |
+| `custody`             | `{ownerId:S,subjectDigest:D,subjectType:"profile"\|"authorization"\|"record"\|"r2-artifact",purpose:"consumption-readback"\|"handoff-readback"\|"archive-readback"\|"backup-readback"\|"owner-acknowledgement",outcome:"MATCH"\|"FAILED"\|"UNKNOWN",observedDigest:D\|null,observedAt:T\|null,storageRole:"journal"\|"archive"\|"backup",retentionDays:180,reasonCode:E\|null}`。R1.2 独立重开读取或 owner 真实签收后追加，不使用写入响应。MATCH 要求 observedDigest=subjectDigest、真实 observedAt<=recordedAt、reason null；FAILED/UNKNOWN 必须 reason 非 null，观察不到的 digest/time 为 null，若有不同 digest 必须保留且不可称 MATCH。consumption-readback 只指已存在消费原件、journal；handoff-readback 只指已存在 receipt、archive；backup-readback 只取独立 backup。subject 不得为 custody 自己或另一 custody，避免无限“读回自己的读回”；签收/180日是承诺与当时观察，不是未来保管证明                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `signoff`             | `SessionBinding & OperationBinding & {ownerId:S,executionRecordDigest:D,executionReadbackDigest:D,backupReadbackDigest:D,decision:"ACCEPTED"\|"REJECTED",reasonCode:E\|null}`。owner 在 execution、archive/backup 的 MATCH custody 均实际存在后签收本次结果；两个读回均必须指向该 execution 原件。ACCEPTED 仅允许完整 SUCCEEDED，reason null；REJECTED 必须 reason 非 null，可引用失败/UNKNOWN 但不能赋予成功含义。recordedAt 不早于全部前序记录；这不是 R4/A3 Staging 验收签字或新密码学签名域                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+
+`post-state/execution` 的 R2 artifact 只以已存在的 digest 引用；具体工具版本/PID/退出码/字节数/DB catalog/result 的唯一契约和纯判定器归 R1.1E §2.5，实际原件由 R2.1/2 生产并由 R1.2/R2.3 独立读回；H3 人工权限原件另走固定 IO 准入，不复制成共享 Schema。记录前序必须核对 kind、profile/session/operation 及同请求关系；custody 无 session 键时通过 subject 原件归属。**R1.2 写 SUCCEEDED 和 R2 result reader 接受该状态前，还必须独立读回 post-state=OBSERVED、其实际 observation，以及 command/phase 相符且满足该 phase 全部成功断言的真实 result/process artifact**；非空 digest、Schema 合法、工具退出0或同链身份本身不足。UNAVAILABLE post-state、失败 artifact、错误 phase/subject、MATCH custody 指向另一原件均拒绝成功/ACCEPTED signoff。根 profile 不引用 build；OPEN/GENESIS → 授权和请求 → consumption → 该 consumption 的 custody → handoff → 该 handoff 的 custody → 实际操作 → post-state → execution → execution 的 archive/backup custody → signoff。target-observe 跳过 handoff；拒绝/UNKNOWN 链在实际已有节点结束，后续恢复只追加，不能回写缺失事实。撤销链独立按 sequence 单向追加并由 consumption 引用当时头，后来的撤销不能倒写进旧 receipt。
+
+### 2.4 六函数的输入、结论和拒绝分层
+
+`verifyManualAuthorization` 的 `session` 为封闭 `{record:SessionRecord,recordDigest:D,readAt:T,predecessor:ExecutionRecord|null}`；`revocation` 为 `{records:RevocationRecord[],headDigest:D,checkpoint:{sequence:integer>=0,digest:D},readAt:T}`，records 必须从 GENESIS 至当前头完整连续非空，checkpoint 必须是其中同序同 digest 节点。R1.2 从固定 owner-only IO 在锁内生成二者；session.record 是最新可证明 OPEN，readAt 不晚于 now、不早于该 record；revocation 同样约束，固定 IO 还保证实际“当前读回”，纯 kernel 不声称时间戳或路径来源真实。
+
+| 既有公开签名/输入                                                                                                                                                     | 确定性行为与成功结果                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `encodeManualJson(value):Buffer`                                                                                                                                      | 拒绝非 I-JSON/超限，返回现有 canonical UTF-8 bytes；不签发或建立品牌                                                                                                                                                                                                                                                                                  |
+| `signManualAuthorization({payload:AuthorizationPayload,privateKey:KeyObject}):Authorization`                                                                          | 封闭 Schema/有限时间表示和 Ed25519 私钥类型通过后按 §2.1 签名；无 IO，不证明允许签发；profile/key/session 的真实准入仍由 session.sign 校验                                                                                                                                                                                                            |
+| `verifyManualAuthorization({authorization:Authorization,profile:Profile,request:RequestInput,session:SessionInput,revocation:RevocationInput,now:T}):ParentDecision`  | 完整限额/结构 → profile 时间/指纹 → 授权签名 → requestDigest及全部绑定 → OPEN session/前序/撤销链/时序。返回深冻结 `{kind:"manual-parent-decision",authorizationDigest:D,requestDigest:D,profileDigest:D,stage,sessionId,sessionNonce,operationId,idempotencyKey,promotionEligible:false}`，仅模块内 parent WeakSet 品牌；不是“已消费”证明            |
+| `assertManualDecision(decision):void`                                                                                                                                 | 仅接受 parent WeakSet 内对象；JSON/复制/child 对象拒绝，不读取日志或改变消费状态                                                                                                                                                                                                                                                                      |
+| `verifyManualHandoff({authorization:Authorization,receipt:HandoffRecord,profile:Profile,request:RequestInput,childObservation:ChildObservation,now:T}):ChildDecision` | 复验结构/profile/授权签名/完整请求及 stage runner-command → 独立域 receipt 签名 → 下表全部绑定及窗口。返回深冻结 `{kind:"manual-child-decision",authorizationDigest:D,requestDigest:D,profileDigest:D,receiptDigest:D,containerId,runnerImageDigest,childChallenge,promotionEligible:false}`，仅 child WeakSet 品牌；不读取宿主台账，也不重新消费授权 |
+| `assertManualHandoffDecision(decision):void`                                                                                                                          | 仅接受 child WeakSet 内对象；parent/复制对象拒绝。六函数均不导出品牌构造器；Buffer、KeyObject、void 返回不附加字段，两个 decision 固定 promotionEligible=false                                                                                                                                                                                        |
+
+| 必验等式/状态           | 规则及输入权威                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| profile/owner/目标/能力 | 授权与 request.binding 所有 ManualBinding 键逐项相等；profileDigest=完整 profile digest，ownerId=profile.ownerId；targetIntent/用途/角色/TLS/command-version-capability 均在固定 profile 的同一目标项内。target-observe 无需未来 DB/Runner；runner 实际镜像 digest 与已核验 build 的对应项由 R2 在签发前读取并比对，内核不把一个 buildProofDigest 当 build 验真                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| session                 | recordDigest=record digest；profile、owner、sessionId/nonce、targetIntent 等于授权；status=OPEN；openedAt<=authorization.issuedAt<=session.readAt<=now。生产最新 session/lock/存活性不能由 caller JSON 自报                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| 前序                    | dry-run 和 target-observe 的 predecessor=null；apply 的 predecessor 是同会话、同 operation/idempotency、同 request 所绑定 build/baseline/physical target 的 SUCCEEDED dry-run execution，digest=dryRunRecordDigest，已读回 result 的 plan digest=approvedPlanDigest；replay 仅从同 operation/key 的 SUCCEEDED 原件，reconcile 仅从 INTERRUPTED_UNKNOWN 原件（R1.1 可见前序检查不变；R1.1E/R1.2 完整历史进一步限定两者均追溯原 apply，未决 replay 禁止后续签发），digest=predecessorExecutionRecordDigest。verify 有前序时必须同 operation 链所引用的已知迁移结果；其自身可以使用新的只读 operationId，不能冒用迁移 capability。前序 request/result 原件检查和现有 `assertApplyAllowed/transitionExecution` 在 R1.2/R2 完成；纯 kernel 只检查所传 execution 的可见字段/digest，不从不存在的未来 result 推断 |
+| 撤销                    | records 全链 digest/sequence/前序相连、profile/owner 相等、时间单调不晚于 readAt；headDigest=最后 record digest，checkpoint 不得缺失/越过/回退。任一 REVOKE_PROFILE 或授权 ID 的 REVOKE_AUTHORIZATION 即拒绝；纯函数不能证明记录没被 caller 截短，当前头/checkpoint 的真实读取由父 IO 保证                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| handoff                 | receipt 的 authorization/request/profile digest、sessionId/nonce、operationId/idempotencyKey 全等于授权；containerId/image/challenge 同时等于授权绑定及本次 childObservation；receipt.issuedAt>=authorization.issuedAt，recordedAt=issuedAt，issuedAt<=now<expiresAt，expiresAt=min(授权到期,issuedAt+30秒)。consumptionRecordDigest/consumptionReadbackDigest 是签名覆盖的父方承诺，子 verifier 无原件输入不能伪称独立证实其存在；父 IO 在签发前已完成对应 kind/digest/MATCH 检查，R2 result reader 后续再次读取                                                                                                                                                                                                                                                                                          |
+
+拒绝按首次失败的层分类，不把“Schema 通过”记为验签或消费通过：结构复用 `validateContract` 的既有结构化错误（测试断言其 `code` 与 `details.errors[].keyword`）；字节超限 `MANUAL_JSON_LIMIT`；Ed25519 类型/PEM/指纹/签名编码/验签失败 `MANUAL_SIGNATURE_INVALID`；有限时间/窗口 `MANUAL_TIME_INVALID`；身份、字段、摘要、stage/命令或前序不等 `MANUAL_BINDING_MISMATCH`；完整链中命中撤销 `MANUAL_AUTHORIZATION_REVOKED`；不可证明的 session/revocation 结构外状态/链/回退 `MANUAL_SESSION_UNVERIFIED` / `MANUAL_REVOCATION_UNVERIFIED`；两种品牌分别 `MANUAL_DECISION_UNTRUSTED` / `MANUAL_HANDOFF_UNTRUSTED`。真实 IO 的权限/读回失败仍 `MANUAL_STORAGE_UNVERIFIED`，消费槽重复 `MANUAL_AUTHORIZATION_CONSUMED`，重复协议 frame `MANUAL_HANDOFF_REUSED`；后两者不由纯 verifier 发出。
+
+纯 verifier 对同一合法输入重复调用可以再次产生各自品牌 decision，**不修改持久或模块级 anti-replay 状态**；WeakSet 只证明本模块判定来源。重复使用授权的权威拒绝属于 R1.2 单一 journal/锁；单一 Runner 本次管道只接受一个授权/credential 交接属于 R2.2 的现有单次 handler。不能以 WeakSet 代替实际消费，也不新增 seen-receipt 全局表、第二持久防重放机制或新服务。
+
+### 2.5 R1/R2 唯一共享请求、原件与派生判定契约（R1.1E 所有）
+
+本节补齐 §2.3 原先留给 R2 的 artifact 定义；**Schema、字节校验、MS1 parser/validator 及下表谓词只实现一次，位于 foundation，先于 R1.2**。R2.1 只生成领域观察/返回映射；R2.2 唯一收发管道、采集工具原 bytes 与保存/读回/ACK，R1.2 与 R2.3 的固定 IO 各自重开读回后调用同一纯校验器。纯函数不能证明时间/路径/进程/DB 来源真实；来源、完整档案枚举、排他锁、实际输入准入必须由各自固定 IO 证明，不能传 `verified/committed/rolledBack/success` 布尔值或 caller 回调代替。没有新授权 stage、签名域、品牌、业务模型、状态机或证据服务。
+
+#### 2.5.1 封闭字段与原始生产者
+
+局部 `Report` 为严格有效 UTF-8 的非空完整文本，允许多行；实际 UTF-8 bytes 为 1–1048576，不套用标签 `S` 的 256 字符上限。仅用于下表 SchemaObservation/MigrationPlan 的 `toolVersions.prisma` 和 schema-expectation.prismaVersion；不是放宽其他身份字段。其值严格等于对应已保存 prisma-version stdout 原始 Buffer → fatal UTF-8 解码 → 既有 `.trim()`，保留所有内部行/字段，不截短、不抽成单个 `7.8.0`。raw stdout 本身仍独立按原始 bytes 计数/摘要；Report 放入 result/plan/expectation 后，每件完整 JSON 的原始 UTF-8 与 canonical bytes 仍各受现有 1 MiB 上限，即使单个 Report 未超限，转义/其余字段令整件超限也必须拒绝。无需新 64 KiB 界限、输出转换模块或生产 runtime 改动。
+
+沿用 §2.1 的 D/UUID/N/T/S/E/PhysicalIdentity/ManualBinding。`I` 为 0–9007199254740991 安全整数，`PID` 为正安全整数；所有对象封闭，数组禁止洞/重复 identity，按明确次序保存。以下共用 `A={profileDigest:D,sessionId:UUID,sessionNonce:N,operationId:UUID,idempotencyKey:S,attemptId:UUID,runId:UUID}`；`B={schemaVersion:"manual-runner-evidence.v1",recordedAt:T,promotionEligible:false}`。`runId` 是固定操作索引已分配的本次运行组 UUID，可跨 dry-run/apply 保持；不等于 attemptId、不作幂等键，不从失败后新建值补位。`phaseKey` 只用于证据/派生输出，取 `target-observe|dry-run|apply|verify|replay|reconcile`；不向 target-observe 授权/请求增加 phase 键。
+
+| 原件/类型                     | 全部字段（公共键显式展开规则）与生产时点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manual-runner-request.v1`    | `{schemaVersion:"manual-runner-request.v1",attemptId:UUID,runId:UUID,attemptAllocationDigest:D} & ManualBinding`；runner 再且仅再有 `domainInput:DomainInput,expectedSchemaEvidenceDigest:D`，target-observe 禁止这两键。R2.2 在当前 OPEN session、父锁内先分配并读回 allocation；runner 等实际 child 产生后冻结完整 request，归档读回后才 sign。不存在 authorizationId/requestDigest 自字段，不含凭证、任意路径或 handler 选择。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `DomainInput`                 | `{databaseIdentityFingerprint:D,baselineManifestIdentityDigest:D,baselineManifestDigest:D,expectedSchemaDigest:D,expectedOwner:S,allowedExtensions:S[]}`。fingerprint 是签发前按下文既有四字段算法计算的预期连接值，不是本次 capability 已连接的事实；baseline 两 digest 分别覆盖下行完整 `identity` / 完整 manifest。extensions 去重排序。dry-run→apply 逐字相等；operation/attempt/run/session/phase/challenge/授权不在此对象。verify/replay/reconcile 按各 phase 既有 capability 对应的获批角色计算预期 fingerprint，但不重算或取代原 apply plan；只读行为不改变现有 capability/role 映射。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `manual-baseline-manifest.v1` | `{schemaVersion:"manual-baseline-manifest.v1",identity:{buildProofDigest:D,purpose:Purpose,targetObservationDigest:D,physicalIdentity:PhysicalIdentity,roleObservation:RoleObservation,preStateDigest:D,authorizationDigest:D},createdAt:T,promotionEligible:false}`。R2.1 factory 只在 target-observe 原件/授权及独立读回已存在后构造；preStateDigest 覆盖完整下行 `CatalogObservation`，不是 schemaScript。identity 的 physical/role/catalog 均来自 targetObservationDigest 原件；authorizationDigest 指该已消费 target-observe 授权。不放未来 Runner 授权或重复 build identity。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `attempt-allocation`          | `B & A & {kind:"attempt-allocation",stage:"target-observe"\| "runner-command",phaseKey,allocatedAt:T,targetIntent:TargetIntent,predecessorExecutionRecordDigest:D\| null}`。R2.2 在任何本 attempt 的签发/credential-read/DB 调用前生成随机新 attemptId，检查本目标历史不重复，create-only/独立读回。allocatedAt=recordedAt；无未来 requestDigest/child/result。apply predecessor 指 dry-run；replay/reconcile 指请求的前序；observe/dry-run 为 null；verify 按请求可为 null。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `process`                     | `B & A & {kind:"process",attemptAllocationDigest:D,requestDigest:D\| null,previousProcessEvidenceDigest:D\| null,events:ProcessEvent[],closedAt:T\| null,protocol:{stdoutPrefix:RawRef,parentFrames:RawRef[]}}`。R2.2 父启动方记录前台容器及交付/关闭事实，R2.2 固定 runProcess 包装器记录工具进程，汇入同一 attempt 的 append-only 快照链；第一件 previous=null；requestDigest 的严格 null→D 分支见下文，每件都绑定同一 allocation。除一次只绑定请求的新快照外，每次追加只增加事件、不得改既有事件。开始/结束事件在事实发生时保管，丢失或未读回不得补成功。closedAt 非 null 仅在固定调度器已终止、所有已准备进程均有真实终态、管道已关闭后；它不证明 deploy 已提交。                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `ProcessEvent`                | `{sequence:I,processSequence:I,source:"parent"\| "runner",tool:"runner"\| "prisma-version"\| "psql-version" \| "prisma-deploy"\| "prisma-diff"\| "prisma-script"\| "target-observe",event:"PREPARED" \| "SPAWNED"\| "CLOSED"\| "SPAWN_FAILED"\| "DISPATCH_CLOSED",at:T,containerId:N \| null,pid:PID \| null,argvDigest:D \| null,exitCode:integer \| null,signal:S \| null,reasonCode:E \| null,stdout:RawRef \| null,stderr:RawRef \| null}`。sequence 从 0 连续；processSequence 为本 attempt 内工具调用序号，不新增恢复 UUID。PREPARED 在 spawn 前持久化读回；仅 runner 工具等待 MS1 ACK，parent 零凭证启动不等 child ACK，pid/退出/流均 null；SPAWNED 取真实 PID/镜像容器，退出/流 null；CLOSED 取 close 事件实际退出码或 signal、两流 RawRef；SPAWN_FAILED 有真实 reason、pid/退出/流 null。DISPATCH_CLOSED 为调度器实际拒绝或正常结束后的终结事件，无 PID/argv/流/退出字段值（均 null），禁止随后新增调用。每个已 PREPARED 无确定终态的工具都是未知，不能以无 SPAWNED 推定未调用。runner argvDigest 覆盖实际固定非秘密 Docker 参数，工具覆盖实际 `{command,args}`；不记录 env/secret frame。 |
+| `RawRef`                      | `{digest:D,bytes:I}`，digest=`sha256Bytes(实际原始 Buffer)`；固定私密内容寻址目录独立保存同 bytes，重开按原始字节计数/摘要。stdout/stderr 各上限 1048576 bytes；超过时终止对应精确子进程、记录 `MANUAL_OUTPUT_LIMIT`，保留已有受限前缀但不称完整输出；任何超限/超时/缺流/无 close 不满足成功。有效 UTF-8 严格解码后才给旧 runtime 的 stdout/stderr 字符串，不对替换字符重编码冒充原始 hash。凭证 frame 从来不入该集合；工具意外输出秘密按私密档案治理，不在报告/聊天输出。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `observation`                 | `B & A & {kind:"observation",requestDigest:D,observedAt:T,physicalIdentity:PhysicalIdentity,roleObservation:RoleObservation,catalog:CatalogObservation,schema:SchemaObservation\| null,processEvidenceDigest:D\| null}`。R2.1 从固定 connector 查询实际读取，不抄 request 自称 observation；target-observe/dry-run 的 schema=null，verify/apply/replay 的成功 schema 非 null；reconcile 即使 verifySchema 抛错仍保存实际可读 catalog，schema 不可得时 null 并不能消除 UNKNOWN。target-observe processEvidenceDigest=null，runner 取已产生 process 快照。observedAt 为完整查询完成时刻，<=recordedAt。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `CatalogObservation`          | `{migrationTableOid:string\| null,migrationRows:MigrationRow[],schemaOwner:S,ownerInventory:{objectClass:S,objectName:S,owner:S}[],extensions:S[],postgresqlVersion:S}`。table OID 正整数文本；实际 `to_regclass` 不存在才是 null+空 rows，权限/查询失败不是空表。所有行按 startedAt/migrationName/id 排序；inventory 按 objectClass/objectName 排序；extensions 排序。roleObservation.schemaObservationDigest=`sha256Canonical(catalog)`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `MigrationRow`                | `{id:S,migrationName:S,checksum:D,startedAt:T,finishedAt:T\| null,rolledBackAt:T\| null,appliedStepsCount:I}`。固定查询读取 `_prisma_migrations`的 id/migration_name/checksum/started_at/finished_at/rolled_back_at/applied_steps_count **全部行、不加成功过滤**；checksum 仅规范化`sha256:` 前缀，日期实际 round-trip。保留失败/未完成/回滚行；本契约不采可能含秘密的 logs。旧 runtime 的完成行投影不足以构造此原件。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `SchemaObservation`           | 严格复用 `verifySchema` 当前输出全部键：`{schemaVersion:"schema-observation.v1",catalogDigest:D,migrationHead:S\| null,migrationChecksums:{order:I,path:S,sha256:D}[],schemaDigest:D,schemaOwner:S,ownerInventory:{objectClass:S,objectName:S,owner:S}[],extensions:S[],schemaDiff:{exitCode:integer,stdout:string},toolVersions:{postgresql:S,prisma:Report,psql:S},statementLogDigest:D,terminalStatus:"PASSED"}`。schemaDigest 覆盖实际 prisma-script stdout 原始 bytes；schemaDiff 对应实际 prisma-diff 原始结果，不从 catalog digest 复制。共享 reader 从实际 catalog、工具输出及下行 result 的语句原件重新核算所有成功断言；terminalStatus 不构成提交证据。                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `schema-expectation`          | `B & {kind:"schema-expectation",buildProofDigest:D,sourceSchemaDigest:D,prismaVersion:Report,script:RawRef,sourceSchemaPath:"apps/api/prisma/schema.prisma"}`。只接受 R2 签发前从已核验 H2/批准命令输入读回的预期脚本原件，sourceSchemaDigest 对应同 build 的 `apps/api/prisma/schema.prisma` bytes，script.digest 是 domainInput.expectedSchemaDigest。sourceSchemaPath 固定且 sourceSchemaDigest 由同 build 的真实源码 bytes 重算；这只证明字节关系，不证明预期脚本的生产来源。R2 固定 IO 必须另行实际验证预期脚本的 H2/批准输入来源，descriptor/build-proof/digest 不能自证该来源；当前仓库未确认该原件的生产来源，R2.1 真实准入明确 STOP（`MANUAL_EXPECTED_SCHEMA_INPUT_REQUIRED`）。本修订不增加脚本生成器、不假定 H2 已产生此字段、不把数据库输出反填为期望；来源缺失需要单独窄范围输入决定。                                                                                                                                                                                                                                                                                                 |
+| `manual-command-result`       | `B & A & {kind:"manual-command-result",requestDigest:D,phaseKey,attemptAllocationDigest:D,startedAt:T\| null,finishedAt:T\| null,outcome:"RETURNED"\| "THREW"\| "INTERRUPTED",reasonCode:E \| null,plan:MigrationPlan \| null,postState:PostStateObservation \| null,observationDigest:D\| null,processEvidenceDigest:D \| null,statements:string[],originalExecutionRecordDigest:D \| null}`。R2.1 在真实 handler 返回/抛错时生成；R2.2 只保管，不将缺失结果重造为 RETURNED。RETURNED 开始/结束非 null、reason=null；THREW 有实际 reason/结束，未开始时 startedAt=null；INTERRUPTED reason 非 null、不可证时 finishedAt=null。dry-run 成功只有 plan；apply 成功只有 postState；observe/verify/replay/reconcile 的 plan/postState 均 null；已产生 observation/process 才引用，不以空 digest 占位。replay/reconcile originalExecutionRecordDigest 指历史中真正原 apply，不是本次或 dry-run；其他 phase 为 null。statements 是本次 connector 实际 statementLog 快照（缺失不伪造），不是外部 Prisma 的完整 SQL/提交证据。                                                                              |
+
+`MigrationPlan` 的唯一形状取当前 `planMigration` 返回：`{schemaVersion:"deterministic-plan.v1",identity:{planType:"migration-plan.v1",commandKey:"db.migrate.deploy@1",inputDigest:D,databaseIdentityFingerprint:D,baselineManifestIdentityDigest:D,baselineManifestDigest:D,migrationCatalogDigest:D,currentMigrationHead:S|null,pendingMigrations:{order:I,path:S,sha256:D}[],expectedPostMigrationHead:S|null,expectedSchemaDigest:D,expectedOwner:S,allowedExtensions:S[],expectedWriteScope:["_prisma_migrations","schema-ddl"]},provenance:{planner:"db.migrate.deploy@1",toolVersions:{postgresql:S,prisma:Report,psql:S}}}`。复用 `deterministicPlanDigest(plan)`，它只覆盖 `{schemaVersion:"deterministic-plan-digest.v1",identity}`，**不是完整 result/plan 原件 digest**；provenance 仍受完整 result digest 覆盖。`PostStateObservation` 复用已有 `post-state-observation.v1`：共享 union 的 local $defs 只封闭其现有字段/类型，纯函数再调用 `validateContract("post-state-observation.v1",value)`，独立验证四个实际 postconditions 及 operation/attempt/run/plan/目标/Schema 等式。expectedWriteScope 是旧 plan 标签，不能由此声称历史 SQL 没有 DML。
+
+JSON 原件均按 §2.1 完整 canonical UTF-8 摘要，无自摘要键；raw 工具流只用 RawRef。`artifactBytes` 读回集包含每个已有请求、allocation、process 快照、observation、result、baseline、schema-expectation、R1 八 kind、既有 build-proof 和下述现有 MigrationCatalog 返回对象的原始 JSON bytes；已有 build-proof 使用其既有 Schema，不另造 build 类型。引用必须在当前原件形成前已存在，记录时间与实际生产日志一致。process→observation→result→R1 post-state→execution→custody→signoff 单向；result 不引用未来 execution。request→allocation；allocation 不引用未来 request。后续 process 快照以 attemptAllocationDigest 绑定同一 allocation，并用 previousProcessEvidenceDigest 引用前快照，不新增 resultDigest 字段；其父方 CLOSED 的真实 raw stdout 可以包含已产生 result frame，独立解析须与已存 result bytes 相同。最终 execution 可引用晚于 result 的真实父进程关闭快照，child result 不反向引用未来容器 exit。
+
+**process 的严格 nullable 分支（同一个 kind，不新增事件类型）：** `attemptAllocationDigest` 始终指向已独立读回的同 A allocation。仅该 allocation.stage=`runner-command` 的零凭证启动/早期失败允许 `requestDigest=null`，全部事件只能是 `source:"parent",tool:"runner"`，event 只取已有 PREPARED/SPAWNED/CLOSED/SPAWN_FAILED/DISPATCH_CLOSED。PREPARED 必须在 spawn 前持久化读回；SPAWNED/CLOSED 等仅追加真实发生值；DISPATCH_CLOSED 在此分支只表示实际拒绝并关闭，reasonCode 非 null。null 分支无 DB/工具调用、无凭证读取/交付、无授权消费、无 execution/result 成功结论；早期失败只保留 allocation/启动事实，缺完整 request 继续 STOP，不造 execution。
+
+上述字段表的 `process` 完整形状另必填 §2.5.4 明确披露的 protocol 对象，producer 归 R2.2（包括工具 runProcess 包装器），不是 R2.1。表中 PREPARED 的“ACK”仅指 source=runner 的工具调用等待 MS1 ACK；source=parent/tool=runner 的初始零凭证 PREPARED 只在父方持久化及独立读回后启动，不要求尚未存在的 child/管道 ACK。这些是该两行的明确局部补充，A/ProcessEvent 的键/枚举不变。
+
+实际 challenge 仍由 R2.2 固定管道读回并在冻结 request 的既有 childChallenge 字段绑定，不能向 ProcessEvent 添加未定义 challenge 字段。在实际 request 独立读回后，新快照将 requestDigest 设为该全件 D、previousProcessEvidenceDigest 指最后 null 快照，并保留完全相同 allocation/A 和已有 events 前缀；该唯一绑定快照可不增加事件，不能重写前件、补 PREPARED 或改旧 at/recordedAt。runner 整条 process 链的根必须是上述 null 启动原件，禁止直接从 D 快照起链省略启动证据；绑定本身不解除消费/凭证门槛。任何 D→null、D→另一 D、换 allocation/A 或从无原件的 SPAWNED 重造 PREPARED 都拒绝；终结的 null 早期失败链不得重新绑定运行。null 原件写入/读回是否完成未知即保留未知并停止，缺一段不是“未启动”证明。
+
+**runner-command 预期 fingerprint 的唯一四字段等式：** 签发前固定 IO 只使用已读回 targetObservation.physicalIdentity 的 databaseName/databaseOid，与固定 profile 同一目标的 `roles[request.capability]`（H3 精确角色批准必须一致）计算下式。既有 R1.1 的 `request.roleObservation.role === target.roles[request.capability]` 不变，不能让 phase 自由选择另一角色。request.physicalIdentity 必须等于已读回的真实 physicalIdentity；request.roleObservation.role/tls 是获批预期，schemaObservationDigest 等于所引用实际观察 catalog 的摘要。baseline 仍保留实际 observer 的 role/tls/catalog，绝不将其改成未来 migrate/verify 的观察。target-observe 无 domainInput/该预期字段，虽 capability=verify 仍按既有 stage 规则使用 roles.observer；不抽取跨 stage 的 capability 角色 helper。
+
+```js
+// 签发前的预期值；没有 connect/observeIdentity 调用，不新增算法或导出。
+const expectedFingerprint = sha256Canonical({
+  databaseName: request.physicalIdentity.databaseName,
+  databaseOid: String(request.physicalIdentity.databaseOid),
+  role: request.roleObservation.role,
+  tls: true
+});
+// R1.1E 校验 request.domainInput.databaseIdentityFingerprint === expectedFingerprint。
+```
+
+此式与现有 postgres-connector.observeIdentity 的四字段算法完全相同；不包含 endpoint/cluster/role catalog，不复用 observer 的带 role 指纹，不为取“实际 migrate 指纹”提前读凭证或连接。子方只在 R1 消费/handoff/childDecision 完成后建立本次单能力连接，再 `await observeIdentity()` 取得真正 actual 值（connect 返回时 fingerprint 尚未被观察，不据此比较），逐字段核对 databaseName/OID/role/TLS 与预期，并单独比对实际 physical cluster/endpoint。任何不符在调用领域 handler/deploy 前拒绝；计算预期成功本身不是实际观察成功。R2.1/2 负责该连接后核对与前置来源；E 纯校验只重算等式，不引入另一个身份系统。
+
+补充两个**已有数据形状**的精确读取规则，不新增 Schema 文件/生成器：
+
+- `MigrationCatalog={catalogVersion:"migration-catalog.v1",entries:{order:I,path:S,sha256:D}[],digest:D}` 严格等于现有 `computeMigrationCatalog` 返回。order 从 1 连续，path 按现有规则为 `apps/api/prisma/migrations/<14位时间_小写名称>/migration.sql` 且排序/唯一；每条 sha256 对应 rawBlobs 内实际 migration.sql bytes；catalog.digest 只覆盖 `{catalogVersion,entries}`（这是**已有**返回对象的自带 identity digest，不新增自摘要字段）。它必须等于已核验 buildProof.identity.migrationCatalogDigest；将完整返回对象当原件引用时仍单独重算全件 digest。source Schema bytes 也在 rawBlobs，固定 IO 对同 attested source 路径读回；纯函数只验其 sha256，不将 hash 当 source 可信。
+- 每个非 null argvDigest 必须在 rawBlobs 中找到 canonical UTF-8 `{command:string,args:string[]}` 原件并重算；command/args 非秘密，严禁环境/凭证。R2.2 固定 IO 验实际进程启动，纯函数校验工具选择与确定的参数模板：version 为固定 prisma/psql 的 `["--version"]`；deploy/diff/script 与 R2.0 三个数组完全一致，runner 为 R2.2 固定 Docker 约束。宿主绝对 repoRoot/实际镜像映射由固定 IO 从当前可信代码根/已核验 build 读取，不能由 request 或任意 argvDigest 指定；无法解析/核对实际参数模板则 STOP。零参数相同输出也不能代替实际调用。
+
+进程快照不是可覆写日志：每件 previous digest 覆盖前件全部字节，events 只追加（首次 null→D 的绑定快照允许 events 原样不增）；observation/result 仅引用当时已存在快照，R1 execution.processEvidenceDigest 引用最终真实父方关闭快照。共享 reader 验其包含 result 所引同一快照的完整单向前缀及全部真实终态，不要求 result 预先引用未来父退出。缺最终快照/尾段未确认即 UNKNOWN；不会将 result 的非空 process 引用直接当最终关闭。
+
+#### 2.5.2 调用前持久化、精确等式与函数边界
+
+1. R2.2 当前 OPEN session 内已有 operationId/key/runId → fresh attempt allocation 写入/重开 → runner 零凭证 PREPARED 的 requestDigest=null 快照写入/重开 → 实际 spawn/SPAWNED、固定 IO 读回实际 child/challenge → 完整 request 写入/重开 → 新 requestDigest=D 绑定快照写入/重开 → R1 sign/consume/handoff → 单能力凭证交付 → DB/工具的 request-bound PREPARED 写入/重开/ACK → 实际调用/事件/观察 → result → R1 execution。零凭证启动 PREPARED 必须在真实 spawn 前已存在，不能在 request 冻结后后补；绑定快照只引用并保留原事件/原时间。target-observe 无零凭证 Runner，沿原 allocation→完整请求→消费→观察分支，禁止使用 null process 分支取得 DB 访问。
+2. `execution.attemptId = request.attemptId = allocation.attemptId = result.attemptId = process/observation.attemptId`；同链 A 字段、非 null requestDigest、attemptAllocationDigest、实际 child/container/challenge 与签名绑定逐项相等；null 启动快照只与同一 allocation/A 比对，不伪造未来 requestDigest。runId 从分配索引取，不从旧 attempt 复制当新 attempt。apply 的 domainInput 与 dry-run 完全相同；approvedPlanDigest 等于前序 result.plan 的 deterministicPlanDigest；锁内重算相等才允许 APPLY_STARTED。replay/reconcile 沿前序 execution→request/result 原件追到原 apply，保留原 operation/key/build/baseline/physical target 和原 plan；本次 request/授权/session/challenge/attempt 是新的，不能复用旧 attempt。
+3. `validateManualRunnerRequest(request):void`：复用 `encodeManualJson`、`validateContract("manual-runner-request.v1",...)`，校验完整封闭字段/phase/DomainInput 等式，并由 request.physicalIdentity 与 request.roleObservation 重算上述预期 fingerprint 四字段等式；它不建立品牌、不验 DB/签发。R1.2/R2 子方均调用；R1.1 六函数不变。
+4. `assessManualRunnerEvidence({requestBytes:Buffer,artifactBytes:Buffer[],rawBlobs:Buffer[]}):Assessment`：只允许这三键；集合按重算 digest 索引，拒绝重复/冲突、非法 UTF-8、超限、非 canonical JSON、额外类型及环。接受类型仅为上表三新 Schema、既有 manual-operation-record、manual-launch-authorization、build-proof，以及上面精确定义的 MigrationCatalog 返回形状；不接收自由 JSON、H3 操作单或未定义 sourceArtifact 类型。函数不读 fs、不调用 R2、不接收成功 callback；验证前序、摘要/时间、实际输出相等及下面谓词。固定 IO 必须先完整枚举该目标历史和对应 artifact 并验证来源，不能仅传调用者选择的成功子集。真实 H1/H2/H3、expected-script 来源、实际进程停止/排他性属于 R1.2/R2.3 的独立固定 IO 前置，不作为未定义 JSON/布尔参数传入；Assessment 只说明这些前置成立时的字节关系与 phase 分类，前置不足时固定 IO 必须 STOP/保留原 UNKNOWN，不能采用 committed 输出。
+5. `Assessment={attemptId:UUID,phaseKey,executionStatus:"PREFLIGHT_REJECTED"|"FAILED"|"SUCCEEDED"|"INTERRUPTED_UNKNOWN",originalDatabaseOutcome:"committed"|"not-committed"|"unknown"|"not-applicable",reasonCode:E|null,planDigest:D|null,proofDigest:D|null,promotionEligible:false}`，深冻结，无品牌/自摘要。proofDigest 仅取已存在的本次 result 全件 digest；planDigest 仅取已存在原 plan 的 deterministicPlanDigest。身份/引用不实抛 `MANUAL_EVIDENCE_BINDING_MISMATCH`；身份或恢复原件不存在抛 `MANUAL_EVIDENCE_INPUT_REQUIRED` 并 STOP，不输出虚构 Assessment/attempt。已确认身份但运行证据不足时返回 UNKNOWN，实际只读失败可 FAILED；无 result 的 preflight/中断 proofDigest=null，不能喂给需要 proof 的事件。
+
+调用时点不循环：allocation/request 与 R1 session/revocation/consumption/handoff 记录只校验已存在身份、结构、时间与前序，不调用“本次执行成功”评估。R2.1 原始 result 在 handler 返回/抛错时生成，可引用当时 process 快照，不等待未来父退出或 post-state/signoff。R2.2 收集/关闭实际 child 后归档最终 process，再由 R1.2 根据已存在 observation 写 post-state OBSERVED/UNAVAILABLE；只有写 execution 终态与接受 signoff 时才对完整已有集合调用 assessor（前序成功准入则评估已有前序集合）。失败时允许无 result/最终 process/post-state，nullable 不补造，assessor 按已证身份返回 UNKNOWN 或 INPUT_REQUIRED；不能为了记录消费而要求未来 result。R2.3 只读全链重复同一终态评估。signoff/本次 execution 不是 assessor 得出本次成功的前置，避免反向依赖。
+
+**assessor 只解析以下显式 typed edges，不把任意 D 都当文件引用：**
+
+- request 的 attemptAllocationDigest→allocation；runner 的 baselineManifestDigest→baseline、buildProofDigest→既有 build-proof、targetObservationDigest→observation、expectedSchemaEvidenceDigest→schema-expectation；dryRunRecordDigest/predecessorExecutionRecordDigest→指定 phase 的既有 R1 execution。allocation 的非 null predecessorExecutionRecordDigest→该同一前序 execution；process 的 attemptAllocationDigest→allocation、非 null requestDigest→request、previousProcessEvidenceDigest→前一 process（null 根为终点）。observation/result 的 requestDigest→request，result 的 attemptAllocationDigest→allocation、observationDigest→observation、processEvidenceDigest→当时 process、originalExecutionRecordDigest→原 apply execution；observation 的 processEvidenceDigest→当时 process。
+- baseline.identity 的 buildProofDigest→build-proof、targetObservationDigest→observation、authorizationDigest→该观察的已存在 manual-launch-authorization；schema-expectation.buildProofDigest→build-proof。catalog 按已有 identity digest 与 buildProof.identity.migrationCatalogDigest/plan.identity.migrationCatalogDigest 精确配对，不对同名字段盲目查全件 digest。schema-expectation 的 script/sourceSchemaDigest、catalog.entries[].sha256、process events 的 argvDigest/stdout/stderr，只沿已定义 RawRef/源码/argv 字节规则在 rawBlobs 中解析，不能进一步遍历字节中出现的任意 digest。
+- 必要 R1 records 只沿 §2.3 已定义的 previousSessionRecordDigest/previousRevocationDigest 链、consumption 的 request/authorization/sessionRecord/revocationRecord 引用、handoff 的 request/authorization/consumption 及其 readback 引用、post-state 的 request/consumption/observation 引用、execution 的 request/authorization/consumption/handoff/readback/postState/predecessor/result/process 引用、signoff 的 execution/archive/backup readback 引用；custody 仅按既有 subjectType=authorization/record/r2-artifact 解析允许类型的实际 subject（request 属 r2-artifact，不新增 subjectType），并校验 observedDigest 等式。profile subject 的 custody 只核对固定 IO 已验证的 profileDigest 等式，不在 artifactBytes 中要求 profile 类型。nullable 引用在分支允许为空时止步，未来节点不能成为前置。
+- approvedPlanDigest/planDigest、plan.identity.inputDigest、baselineManifestIdentityDigest、preStateDigest、schemaObservationDigest、statementLogDigest、configurationFingerprint 与 postcondition expected/actualDigest 只对已列嵌套对象/字段重算比较，不要求额外“digest 原像记录”。profileDigest/keyFingerprint、DB/cluster fingerprint、镜像/source/catalog 的可信来源以及 H1/H2/H3 准入属于同链等式或既有固定 IO 前置，不扩大 accepted types；schema 实际 script 的原始字节仅按上述 process RawRef 读取。assessor 不重新加载 profile、公钥或重做 R1.1 授权/receipt 密码学验签；验签/来源前置由既有 R1 kernel 和固定 IO 完成，不新增调用方验证布尔值。匹配 digest 只证明该显式边的字节关系。
+
+#### 2.5.3 成功及三态提交谓词（纯实现唯一位置）
+
+共用成功条件：完整原件读回和 A/目标/请求/时间链一致，真实开始/结束、无输出超限/超时/缺失事件；runner 的最终 process.closedAt 非 null，实际镜像及对应工具版本原件齐全；observe 不要求尚无的 Runner。outcome=RETURNED 只是必要条件。schema 检查从原 catalog 完整完成行投影重算 catalog 顺序/checksum/head，owner/inventory、扩展、raw script digest=**独立预期** digest、实际 diff exit0 且 trim(stdout)=""，tool versions 和 statements digest 相等；不接受 PASSED 字符串、process exit0 或空非空 digest 独立通过。
+
+| phase/派生值                | 必须读回的原件与精确结论                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| target-observe SUCCEEDED    | allocation/request/已消费授权、完整实际 catalog/physical/role/TLS observation、开始/结束 result、R1 post-state OBSERVED。plan/postState/process 均 null；不调用迁移状态机。                                                                                                                                                                                                                                                                                      |
+| dry-run SUCCEEDED           | 真实迁移 catalog/source digest 与 build 相等，固定版本进程输出、当前完整 rows 为已批准前缀且无失败/回滚/未完成行，owner/目标相等；result.plan 按上表所有 identity 项重算，inputDigest=sha256Canonical(domainInput)。没有 deploy PREPARED/SPAWNED；非空 pending 才能进入 R2 fresh 正向门禁。                                                                                                                                                                      |
+| apply SUCCEEDED / committed | 同 session 成功 dry-run 原件与批准 plan、当前 apply 的 fresh attempt、锁内重算、真实原 deploy 进程结束、非空原 pending 集的每条 path/checksum **全部**出现唯一完成未回滚行；原前缀不变、无额外/失败/回滚/未完成行。schema 全部断言通过、postState 四条断言及其 digest 从实际观察重算、实际目标/build/批准输入一致。当前 result/process/档案完整后才能 SUCCEEDED；仅已证明 commit 但 result/保管缺失仍 UNKNOWN（committed-result-unproved），不能伪造原 success。 |
+| verify / replay SUCCEEDED   | 完整只读观察+schema 断言+工具原件，deploy 调用数为 0；replay 还要求可追溯的原 apply 已有 committed 成功链，原计划/目标/build/baseline 不变。不能用 SUCCEEDED dry-run/verify 或“reconcile 查询成功但原未提交”作为可 replay 原件。                                                                                                                                                                                                                                 |
+| reconcile 的 committed      | 本次只读 query 完整，原 UNKNOWN apply 的 allocation/request/消费/批准非空 pending plan 可读回；**原进程已停止且写者排他历史可证**，实际原前缀与全部 pending path/checksum/完成时间吻合，完整 rows 无异常且 schema 断言通过。原 deploy 结束码可以非 0，但单独的非 0/0 都不决定结果。原 result 缺失可由这次真实只读观察提供新 result，不回写原 result；归因不足（锁中断且可能有其他写者、未知管理写入、缺原进程停止事实）仍 unknown。                              |
+| reconcile 的 not-committed  | 仅当原 attempt 的完整可信调度/消费/管道链证明 **deploy 从未 dispatch**：没有 deploy PREPARED，固定父方在凭证释放前实际拒绝并 DISPATCH_CLOSED，原 child 已退出/管道关闭、无未决 handoff/丢失片段。原 schema/head 不变只能辅助，不能替代这一证明。已存在 deploy PREPARED 而缺 spawn 事件也算未知；不添加 rolledBack/committed 自报字段。                                                                                                                           |
+| unknown / 缺失 / 失败       | Prisma 子进程独立 DB 连接，父 `$transaction` 不包围其所有迁移提交；历史迁移还含 DML。已 dispatch 后，部分完成前缀、failed row、rolled-back row、无成功行、仅 schema 匹配、仅 unchanged schema/catalog、exit非0/超时/断管/无权限/原件不全均不能证明全未提交。保留原 operation/key/plan/UNKNOWN，不自动重跑 apply。reconcile query 本身失败可记本次 FAILED；原 outcome 仍 unknown。成功查到上述不充分事实，本次 INTERRUPTED_UNKNOWN 而非清除原 UNKNOWN。           |
+
+写者排他不是新布尔字段：R1.2 独立枚举同一规范目标锁/session/consumption 全历史，R2.2 读回原 Docker 容器实际退出/受限管道结束、H3 精确暂停范围与恢复授权原件；R2.1 在获准角色下读实际 target/活动连接/catalog。原 DB 进程/额外写者无法据现有权限辨别，或 H3 管理过程存在未授权写入空档，即 `MANUAL_COMMIT_ATTRIBUTION_UNAVAILABLE` 保持 UNKNOWN；不要求为通过而新增超级权限、审计平台或所有 SQL 记录。R2 真实中断场景若无法建立这些事实，门禁 BLOCKED，不以测试 fixture 的完整事实冒充生产可得。
+
+R1.2 仅按已有 `execution-state-machine.mjs` 归约历史：DRY_RUN_SUCCEEDED 用 dry-run attempt/result digest/plan digest；APPLY_STARTED 用本次 apply attempt+原 operation/key+两个 plan digest；只有派生 committed 才 APPLY_COMMITTED，完整 apply result 才 ATTEMPT_PROVED。仅 apply 的 APPLYING/APPLY_COMMITTED_PENDING_PROOF 丢失可用 PROCESS_LOST（由上述谓词派生 unknown/committed-result-unproved；not-committed 仅满足未 dispatch 证明）。replay 只从已保管的原 apply 成功 checkpoint 形成瞬时 REPLAY_STARTED，完整成功才以 fresh replay attempt/本次 result digest 做 ATTEMPT_PROVED；失联分支见下文，不持久化一个无法正确完成的 REPLAYING 状态。reconcile 可先形成瞬时 RECONCILE_STARTED；只有完整派生 committed/not-committed 才 RECONCILE_RESOLVED，proofDigest 指本次只读 result。stillunknown 或 query 失败没有相应 resolved event：保留最后持久原 UNKNOWN，另存本次 attempt 记录，不用 ATTEMPT_FAILED 抹掉原未知、不改状态机。
+
+**本次只读尝试和原 apply 是两个结论。** reconcile 完整证明 not-committed 时，本次 execution 可 SUCCEEDED（调查完成），原 operation 由 RECONCILE_RESOLVED 成 FAILED；签收只可表明该只读调查结果，不得作为迁移成功、后续 replay/apply 或 R2 整体 PASS 的凭据。原 state 不从 FAILED 自动回 READY；再次 apply 不属本恢复权限。缺原 attempt 的崩溃只保留已有消费槽/session 原件并 STOP，不新造 execution ID，也不声称已具备 reconcile 前序。
+
+**replay 中断的独立出口：** `PROCESS_LOST` 不接受 REPLAYING，不能借 `ATTEMPT_FAILED` 把失联降为已知失败。R1.2 以已保管、已证明原 apply committed 的 SUCCEEDED checkpoint 为起点，只在内存形成 REPLAY_STARTED；完整 replay result/实际结束证据齐全才 ATTEMPT_PROVED。replay 失联时 create-only 保存该 fresh replay attempt 的 manual execution `INTERRUPTED_UNKNOWN` 及已存在原件，结束不可证则 finishedAt=null；共享 E 纯分类可同时返回本次 UNKNOWN、已证明的 originalDatabaseOutcome=committed。原 apply 成功 checkpoint/提交事实不改，但整个目标未决 replay 历史必须使后续签发/消费 STOP；不得拿旧 SUCCEEDED 继续 replay/apply、复用该 attempt 或自动将该 replay UNKNOWN 送入原 apply reconcile。只恢复可证明历史并报告停止点，不新增状态机事件/持久状态类型/恢复框架；原 `execution-state-machine.test.mjs` 只读回归。
+
+#### 2.5.4 人工管道 MS1：唯一 framing、持久化 ACK 与结果提取契约
+
+**历史语义保留：** 本节记录已交付 MS1 的三键 encoder、八键 AUTHORIZE 与两键 launchContext，不全局替换或追改 R1.1E/R1.2/RP 已接受证据。新 R2 必须显式使用 §2.5.5 的 MS2；MS1 只用于历史兼容回归，不是新执行 fallback。本节与 RP3 已交付 `profileBytes` 前向输入约束同时阅读；本轮不撤销其 v2/90 绑定。
+
+本局部协议只实现前述单次人工交接/证据传输，不新增授权、恢复状态机、签名域、服务或通用 transport。旧 `cli.mjs` 单 JSON+LF 输出及旧完整 stdout JSON reader 原样保留；它们不解析 MS1，人工分支也不以旧 reader 猜测多帧。以下规范唯一 owner 为 R1.1E；R2.2 的现有 launcher/entrypoint 文件负责真实 IO，R2.1 只映射领域返回/抛错与观察。
+
+**局部 shape/导出增量披露。** 不改 A、ProcessEvent、R1 已批准八 kind 或六函数。只在尚未发布的 `manual-runner-evidence.v1` 的 `process` 分支新增必填 `protocol:{stdoutPrefix:RawRef,parentFrames:RawRef[]}`；同一个 process 可混合 parent/runner/tool events，该属性始终描述这一 attempt 的 Runner 管道，而非某个 event 的流。只有 allocation.stage=`runner-command` 可以有 process 原件，target-observe 仍无 process。无新 Schema 文件或 artifact kind，以下 frame 的封闭 local 定义/验证只在 `manual-runner-evidence.mjs`，不把任意 frame JSON 加入 artifactBytes。
+
+- 最早的 null-request PREPARED 快照中，stdoutPrefix 指已实际保存的空 Buffer（bytes=0，真实空字节 hash），parentFrames=[]；Runner 未启动时不能声称已收到 challenge。后续 stdoutPrefix 是截止该快照确实已收到的 stdout bytes 原样前缀，包含 header、payload、可遇到的半帧；相邻快照对应 raw bytes 必须前缀扩展，不能覆盖/重排。D 绑定快照已包含完整合法 CHALLENGE，仍无 AUTHORIZE/凭证。除既有 null→D 绑定外，仍只有追加实际 ProcessEvent 才产生新 process 快照，不为每个协议字节新增空事件快照。
+- parentFrames 按实际发送顺序只列 AUTHORIZE 与 ACK 的完整非秘密原 frame RawRef，前缀只追加；CREDENTIAL 的 bytes/hash/片段、完整 stdin 或双向合并 transcript 一律禁止入档。即将发送的 ACK 不得出现在它自身携带/引用的 process 快照中；它只可出现在之后事件产生的快照。AUTHORIZE 同样不能列入其携带的 D 绑定快照。该数组是获准类型的单帧集合，不伪称完整 stdin。
+- 最终父 runner CLOSED.stdout 必须等于最终 protocol.stdoutPrefix（digest/bytes 及独立重开 bytes 全等）；它是从第一个 CHALLENGE 字节至真实 stdout EOF 的完整 stdout，不是抽出的 result。输出受限前缀可留存，但有超限、半帧、未知尾部或未证 EOF/close 时不能称为完整成功证据。
+- R1.1E 在原七文件内另外导出 `encodeManualRunnerFrame({type,sequence,payload}):Buffer`、`parseManualRunnerFrames({direction,bytes,ended}):ParsedFrames`、`validateManualRunnerProtocol(input:ArchiveProtocolInput|LiveAckProtocolInput):void`；加上原两个共五个导出。direction 只取 `parent-to-child|child-to-parent`，ended 为调用现场已观察到 EOF 的本地事实，不是外部“已验证”输入；离线最终 reader 仅在已有 CLOSED 原件/固定 IO EOF 前置成立时传 true。此布尔仅决定语法是否允许未完后缀，不建立信任或执行成功。validator 的两个互斥封闭调用形状如下，不新增第六函数、callback、CLI parser/模块路径或 caller Assessment。
+
+**同一 validator 的 archive / live-ack 输入。** `ArchiveProtocolInput={requestBytes:Buffer,artifactBytes:Buffer[],rawBlobs:Buffer[]}`，恰保留原三个必填数据键，不含 mode 或 live 键；此形状即 archive 分支。assessor 内部和 R2.3 只可调用此分支，沿下文显式 typed edges 验完整已归档链；合法短前缀不伪称成功，缺终态仍按既有分层处理。`LiveAckProtocolInput={mode:"live-ack",requestBytes:Buffer,authorizationBytes:Buffer,previousProcessBytes:Buffer,childFrameBytes:Buffer,ackFrameBytes:Buffer,stdoutPrefixBytes:Buffer,parentFrameBytes:Buffer[]}`，恰八个必填键，禁止 artifactBytes/rawBlobs/额外属性，不能将两个形状混合。两个分支均只返回 void 或按本节固定错误拒绝，不产生品牌、ACK授权令牌、Assessment 或成功标记；live 成功仅说明当前 ACK 及已发生前缀的结构/字节等式可接受，不证明 fs 来源、实际发送/收到或未来执行成功。
+
+live 的各原始 Buffer 来源/范围固定：requestBytes/authorizationBytes 是本 attempt 已冻结原件，父方实际独立重开，子方从本管道唯一 AUTHORIZE 内的 canonical 原件提取；previousProcessBytes 是当前待 ACK frame 发生前的最后已知真实 process（初次为 AUTHORIZE 携带且已读回的 D 绑定快照，以后为已接收前一 process ACK 的 subject，OBSERVATION ACK 不更换 process）。childFrameBytes 是当前唯一待 ACK 的完整 PREPARED/EVENT/OBSERVATION 原 frame，父方从真实 stdout 收到，子方取自己确实已写出的 bytes；ackFrameBytes 在父方是原件/custody 已持久化并独立重开之后编码的候选 ACK，在子方是刚实际收到的完整 ACK bytes。stdoutPrefixBytes 是截至当前 childFrame 末字节的实际 stdout 完整前缀，父方实际采集、子方取自己写出的同一前缀；不包含任何后继 SPAWNED/RESULT/close。parentFrameBytes 按顺序包含此前实际发送（父）/收到（子）的完整公开 AUTHORIZE 和 ACK 原帧，**不含当前 ackFrameBytes 或 CREDENTIAL**。初次只有 AUTHORIZE；先前 ACK 的 subject/readback 均已存在于其原 payload，不为 live 补造 artifact 或未来 process。
+
+live 复用同模块私有 frame/payload decoder 和与 archive 相同的绑定/ACK谓词：逐件严格 UTF-8/canonical/byte 限额；AUTHORIZE 中 request/authorization 原 bytes 必须分别与两个输入相等，allocation/receipt/baseline/child 与既有绑定一致；previousProcess 的 A/allocation/request 和原件全件 digest重算，必须等于最后一个既存 process subject（初次等于 AUTHORIZE.process），其 protocol.stdoutPrefix 必须等于 stdoutPrefixBytes 的对应长度精确前缀，parentFrames 必须是 parentFrameBytes 按 RawRef 重算的已发生前缀。stdoutPrefixBytes 必须在当前 childFrame 的精确边界结束，最后一帧 bytes 与 childFrameBytes 全等，无待 ACK 的更早帧；此前 previousAck/READY/CREDENTIAL_RECEIVED 只按真实已有公开帧匹配，禁止跳序、换 attempt、秘密或未来 frame。
+
+候选/收到 ACK 的 sequence 必须紧接 parentFrameBytes 最后一个 ACK（没有先前 ACK 时为2），acknowledgedFrame 的 digest/bytes 必须等于 childFrameBytes，WireBinding 全等。PREPARED/EVENT 对应 subject.process 必须仅向 previousProcess 的 events 追加当前 exact event，其 previousProcessEvidenceDigest 指 previousProcess 全件 digest、protocol.stdoutPrefix 指当前 stdoutPrefixBytes、parentFrames 恰为此前公开 parentFrameBytes 的全部 RawRef；所有既有事件/身份/时间不改，当前 ACK 不得在其中。OBSERVATION 对应 subject.observation 必须与当前 payload 原件全等、processEvidenceDigest 指 previousProcess，不能新造 process 快照。readback 按本节唯一 custody kind/subject/MATCH/摘要/时间规则核对，当前 raw 输出以 EVENT base64 解码核 RawRef；没有保存读回原件的父 IO 不得调用 live 伪装候选。缺任一必填输入、错 current frame/subject/序号/前缀/读回、跨请求/未来/self引用均拒绝，不能因 live 不要求后继结果而放宽这些实际已有事实。
+
+R2.2 父方实际保存/独立重开 subject 和 custody 后、发送前调用 live；child 实际收完整 ACK 后、spawn/下一步前调用同一 live。此时不查将来才会把当前 ACK 加入 parentFrames 的后继 process，不等待/伪造 SPAWNED、RESULT 或 parent close；父调用通过仍不证明 child 收到。真实 stdin/stdout 累计字节数（包括不持久化的 CREDENTIAL）由两端当前固定 IO 从第一次读写起连续计数，发送候选 ACK 前/接收当前 ACK 时执行完整流上限；纯 live 只验证所提供公开 bytes 的长度/等式，不以公开帧长度冒充含秘密的完整 stdin 计数。
+
+**字节 grammar（双方各一条流）。** 每帧恰为 `ASCII("MS1 " + type + " " + sequence + " " + payloadByteLength + "\n") || payloadBytes`；payloadBytes 是一个非空、无 BOM、fatal UTF-8 解码且重新 canonical 后逐 byte 相等的 JSON。没有 payload 后换行、分隔符或填充；下一字节只能是下一帧的 `M` 或真实 EOF。type 只取下表大写字面量；sequence 是本方向从 0 连续递增的 I，payloadByteLength 是 1–1048576 的十进制整数，均不准符号、空格、前导零（sequence=0 例外）或指数。header 必须恰有三个 ASCII 空格和一个 LF，不接收 CRLF/其他版本/扩展键。数字扫描分别最多16/7位并检查安全整数/实际边界，不能为未终止 header 无界缓存。
+
+每个完整 frame 的 header+payload 总 bytes <=1048576；stdin 与 stdout 的全部 frame/header/payload bytes 各自累计 <=1048576，彼此独立、不是合并后共享额度。既有每件 JSON 原始/canonical 及每条工具 raw stdout/stderr 的 1 MiB 限额也都保留。即使原 raw 合法，base64/JSON/header 或重复 ACK 使帧/整流超限也拒绝，不能另开无界文件/管道旁路或静默放大限额。旧工具 stdout 可以多行；它在 EVENT 的 base64 字段运输，不得直接混入 Runner 协议 stdout。
+
+`ParsedFrames={frames:{type,sequence,frameBytes:Buffer,payloadBytes:Buffer,payload:object}[],consumedBytes:I,pendingBytes:Buffer}`：各 Buffer 是所提供 bytes 的精确切片副本，绝不通过对象重编码冒充原文；consumedBytes 是完整帧前缀长度，pendingBytes 是尚不完整的唯一后缀。纯 parser 无 IO、无模块级累计状态，R2.2 在本次闭合管道内按累计原始 Buffer 反复调用，IO 先计累计限额再拼接；Node `data` chunk 不是 frame，header、UTF-8 多字节和 payload 可任意 split，多帧可 coalesce。ended=false 只暂留语法仍可能合法的半帧；已可判定的乱码/错误长度/类型/序号/顺序立即拒绝。ended=true 有任何 pending bytes 即拒绝；完整 RESULT 后任何 bytes（包括空白、第二 RESULT、日志）立即拒绝，不等待挑选“最后 JSON”。
+
+`WireBinding=A & {attemptAllocationDigest:D,requestDigest:D,authorizationDigest:D,containerId:N,runnerImageDigest:D,childChallenge:N}`，除 CHALLENGE/AUTHORIZE 和原形 RESULT 外每个 payload 都包含必填 `binding:WireBinding`，递归封闭。全部键从同一 allocation/request/authorization 与真实 child 逐项核对；RESULT 的原有 A/requestDigest/allocation 与这一 binding 等式连接，其 auth/container/challenge 通过完整 request 和唯一 AUTHORIZE 连接，不向 result 添加重复或未来字段。`FrameRef=RawRef` 在此仅指某个完整合法非秘密 frame 的精确 bytes，不是 JSON canonical digest。
+
+下表大写类型名只作为既有完整形状的别名：AttemptAllocation/Process/Observation/ManualCommandResult 分别取 §2.5.1 对应 kind，ManualRunnerRequest/ManualBaseline 取对应完整 request/manifest，CustodyRecord 取 §2.3 的 custody；不是新 Schema 或自由 payload。
+
+子方 verifyManualHandoff 的 profile 唯一来自可信最终镜像内固定 `/app/release/contracts/manual-stage1-profile.v2.json`：H1 将来批准/提交的非秘密 v2 profile 由现有 Dockerfile.runner 的 `COPY release ./release` 原样进入 H2 验真镜像，无额外挂载或 Dockerfile 修改。child 从固定路径严格读回并取 canonical `profileBytes`，核对 `request.profileDigest`、authorization payload 绑定后传给既有 verifier；父方在 H2/实际镜像来源核验时确认同一 bytes。AUTHORIZE 不接受替代 profile/公钥/路径，v1 文件不存在新入口 fallback；缺文件/摘要不符即停止在 READY/凭证前。
+
+launchContext 的信任只来自现有固定父 launcher 与其唯一私密管道：父方将本次实际 create/start 返回的完整 containerId、该确切容器 inspect 的实际镜像、已验真 registry/platform digest 及 OCI source 逐项对应，并在冻结request前完成来源核对；AUTHORIZE 仅运输这两个既存非秘密事实，不新增 INIT/序号/record、签名域或信任根。child 不拥有宿主 Docker socket，不能自行 inspect，也不把 HOSTNAME、旧 launch envelope、镜像自报摘要或从授权复制的相同值称为独立观察。它只用自己原有nonce加受信父IO传来的两字段构造既有ChildObservation；R1 kernel 仍执行相同结构/签名/等式，不能据此声称 kernel 验证了实际Docker来源。父方实际观察及对应process/公开AUTHORIZE原bytes仍按既有档案与独立reader门槛保存/核对，缺实际来源即在request冻结/签发/交凭证前STOP。
+
+live-ack 与 archive 共用的额外等式仅沿这两个已定义 frame：首个 CHALLENGE.payload.childChallenge 等于 request/authorization/receipt 及所有 WireBinding 的 childChallenge；AUTHORIZE.launchContext 两字段分别等于 request/authorization/receipt/WireBinding 和实际 parent runner process 的 container/image 绑定（process 无 image 自字段，只沿 request/原启动参数与固定IO来源核对，不新增键）。child 进入 READY 前还必须与其本进程自留nonce比较；父方进入签发及发送前必须与冻结request之前的独立 create/start/inspect/registry 读回比较。纯 validator 只重算这些现有字节关系，不把相同值证明为实际 inspect，也不把 launchContext 当新 artifact/摘要原像。launchContext 错值/缺键/额外键或首帧含额外 childObservation/container/image 均拒绝；archive 再按已有独立IO门槛核父方来源，不以 live 返回void代替。
+
+| type / 唯一发送方向                | payload 全部字段与准入                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CHALLENGE / child→parent           | `{childChallenge:N}`，恰一个键；child 本次以密码学随机32 bytes产生nonce并只在本进程保留，stdout sequence=0，不含 container/image、request/auth/A 或未来字段。parent 从本次唯一管道读此nonce，再与自己实际 create/start/inspect 和 registry 读回共同确认 launchContext，之后才冻结 request。                                                                                                                                                                                                                                                                                                                                                                               |
+| AUTHORIZE / parent→child           | `{launchContext:{containerId:N,runnerImageDigest:D},allocation:AttemptAllocation,request:ManualRunnerRequest,authorization:Authorization,receipt:HandoffRecord,baseline:ManualBaseline,process:Process,processReadback:CustodyRecord}`；stdin sequence=0。launchContext 精确两键、来源为冻结request之前的父方实际读回，不从待签request/授权/receipt复制。其余原件已存在并独立读回，process 是 CHALLENGE 后的 D 绑定快照；processReadback 是下文精确 archive-readback。child 用自己保留的nonce和launchContext组成既有ChildObservation，核固定profile、完整request、授权/receipt/其余原件全部绑定并调用既有 verifyManualHandoff 后才可回READY；不传key、journal或成功品牌。 |
+| READY / child→parent               | `{binding:WireBinding,authorizeFrame:FrameRef}`；stdout sequence=1，仅在真正通过上述校验后发出，引用实际收到的 AUTHORIZE bytes。binding.childChallenge 必须等于 child 自留nonce/首帧，containerId/runnerImageDigest 必须等于该 AUTHORIZE.launchContext，且与request/授权/receipt等式相符。parent 另与自己实际读回来源核对后才读本次能力凭证；READY 自身不是签名授权或消费证明。                                                                                                                                                                                                                                                                                           |
+| CREDENTIAL / parent→child          | `{binding:WireBinding,credential:string}`；stdin sequence=1，仅一个非空、无 NUL 的本次能力连接凭证字符串，不含 provision/第二角色/自由选项。parent 仅在 R1 消费、receipt 保管/读回、最后撤销重查和 READY 全部通过后发送，仍以实际整个帧/流字节数计限额。该 frame 只存在本次内存/管道，不记录 digest 或正文；child 只交给既有单能力 connector。                                                                                                                                                                                                                                                                                                                            |
+| CREDENTIAL_RECEIVED / child→parent | `{binding:WireBinding,authorizeFrame:FrameRef}`；stdout sequence=2，child 实际收到并核对唯一 CREDENTIAL 后、DB/领域调用前发送，不复制/hash 凭证。它证明可信固定 child 的非秘密控制流到达，不证明父消费独立读回，也不代替真实 DB 身份观察。                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| PREPARED / child→parent            | `{binding:WireBinding,previousAck:FrameRef                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | null,event:ProcessEvent}`；event 必须 source=runner、event=PREPARED，包含确切 sequence/processSequence/tool/argvDigest/at，其他 nullable 按既有表。只携将追加的 event，禁止携带将由 parent 因它生成的 process digest。previousAck 按下文唯一 nullable 规则，不跳过已收到的 ACK。                                          |
+| EVENT / child→parent               | `{binding:WireBinding,previousAck:FrameRef                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | null,event:ProcessEvent,stdoutBase64:string                                                                                                                                                                                                                                                                               | null,stderrBase64:string | null}`；仅 runner 的 SPAWNED/CLOSED/SPAWN_FAILED/DISPATCH_CLOSED。CLOSED 两个 base64 必填字符串（空流为空串），按标准 RFC4648 canonical 编码/解码相等，解码 raw bytes 与 event RawRef 精确匹配；其他事件两字段 null。previousAck 必须是上一条需要 ACK 的实际 child frame 所得到的 ACK，不可跳过；SPAWNED/SPAWN_FAILED 特别必须回指本工具 PREPARED ACK，只有零工具 DISPATCH_CLOSED 可按下文取 null。 |
+| OBSERVATION / child→parent         | `{binding:WireBinding,previousAck:FrameRef                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | null,observation:Observation}`；仅传本 attempt 已实际生成的 observation，processEvidenceDigest 指最后已收到 ACK 的既存 process，无工具/尚无 ACK 时仅可指 AUTHORIZE 携带的已读回 D 绑定快照；parent 以原 canonical observation bytes create-only 保管、独立重开再 ACK。不接收任意 artifact/source 类型。                   |
+| ACK / parent→child                 | `{binding:WireBinding,acknowledgedFrame:FrameRef,subject:{kind:"process",process:Process}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | {kind:"observation",observation:Observation},readback:CustodyRecord}`；仅回应当前唯一未 ACK 的 PREPARED/EVENT/OBSERVATION。subject.kind 为局部封闭判别，前两者必须 process，后者 observation；frame ref 指实际收到的完整 frame。readback 精确规则见下文。没有 caller verified/received 布尔值、重试或仅以“write ok”回应。 |
+| ACK_RECEIVED / child→parent        | `{binding:WireBinding,previousAck:FrameRef}`；仅一次，严格在实际收到并校验最终 runner DISPATCH_CLOSED 的 ACK 后、RESULT 前发出，previousAck 精确指该 ACK。它是最后一个 ACK 的接收边，不新造 ProcessEvent 或要求 parent 再 ACK。                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| RESULT / child→parent              | payload 恰为已定义 `ManualCommandResult` 的完整 canonical 原件，无 envelope；一次且最后一帧。只在 handler 已返回/抛错、已发送的观察获 ACK、工具都终态且 runner DISPATCH_CLOSED 获 ACK/ACK_RECEIVED 已发送后发出。processEvidenceDigest 保持 R2.1 生成原 result 时已存在且经 ACK 读回的快照，最终快照必须包含它的完整前缀；不为引用之后的 DISPATCH_CLOSED 而改写原 result，绝不含未来 parent CLOSED、完整 stdout digest 或本次 execution。缺结果只能保留缺失，父方不能造结果替发。                                                                                                                                                                                         |
+
+**事件/ACK 的唯一顺序。** 正常管道为 `CHALLENGE → AUTHORIZE → READY → CREDENTIAL → CREDENTIAL_RECEIVED → (PREPARED → ACK → SPAWNED/SPAWN_FAILED → ACK → CLOSED(已spawn时) → ACK)* → OBSERVATION/ACK(若产生) → DISPATCH_CLOSED/ACK → ACK_RECEIVED → RESULT → stdout EOF → 实际 parent runner close`。实际 handler 可在工具之间产生 observation，但每次只允许一个等待 ACK 的 PREPARED/EVENT/OBSERVATION，下一 frame/工具调用必须等该 ACK 已完整校验；RESULT 只取最终领域结果，不能在 RESULT 后补 observation。每个工具 processSequence 从1开始连续且一次只运行一个工具，parent runner 为0；全局 ProcessEvent.sequence 从已 ACK process.events 的下一序号取，parent 不并发插入其他事件（最终 runner CLOSED 在 child 结束后追加）。同 processSequence 的 tool/argv/container 绑定不变；重复 PREPARED、跳序、错工具或未终态就准备下一个工具均拒绝。失败前不足以产生 READY/receipt/result 的链允许停止在真实前缀，不补未来帧；停止不是完整成功流。
+
+parent 收到 PREPARED/EVENT 后先核对 frame、绑定与 event 序号，实际 create-only 保存 raw 输出/argv 原件和追加的 process 快照，独立重开 bytes/重算 digest；再按既有 R1 record 规则写 `custody{subjectType:"r2-artifact",subjectDigest:该process全件digest,purpose:"archive-readback",storageRole:"archive",outcome:"MATCH",observedDigest:同subjectDigest,observedAt:实际重开时刻,recordedAt:不早于observedAt,...}`，其余键严格沿 §2.3（reason=null、owner/profile/180日/false 等），并独立重开 custody 核对后，才编码/留存该非秘密 ACK 原 frame 并实际发送。OBSERVATION 的 ACK 同理但 subjectDigest 指该 observation 原件。任何保存/读回结果未知都不 ACK，不 spawn/start；已可能交凭证/执行则 UNKNOWN，不将无 SPAWNED 当未执行。
+
+DISPATCH_CLOSED 是既有调度终止事件，不是新增工具调用：固定 `tool:"runner",processSequence:0`，source 在子调度结束为 runner、父方实际早期拒绝为 parent，containerId 在实际已知时取本次 container、未启动时为 null。它不占用新的工具调用序号、不要求额外 PREPARED/SPAWNED；pid/argvDigest/stdout/stderr/exitCode/signal 按既有形状均 null，正常结束 reasonCode=null、实际拒绝为非 null。这是“同 processSequence 的 tool/argv/container 绑定不变”的明确终止事件例外，不能要求其 null argvDigest 等于 parent runner 启动参数 digest；其后的真实 parent runner CLOSED 仍保留该真实启动参数与真实退出/流，不把 DISPATCH_CLOSED 当已进程关闭。
+
+child 校验 ACK 的 acknowledgedFrame 与自己刚发送的 frame bytes 全等，binding 全等；process subject 是最后快照的合法 append-only 后继，A/allocation/request 相同、刚发 event 在准确 sequence/processSequence/tool 处逐字段相等，stdoutPrefix 截止该完整 frame 且与 child 自己截至此帧实际写出的 stdout bytes 相等。custody 的 subject/kind/MATCH/摘要/时间与所携完整 subject 重算相等；PREPARED 的 at <= process.recordedAt <= custody.observedAt <= custody.recordedAt，且实际 ACK 接收后才 spawn。OBSERVATION ACK 的 subject 与刚发原件相等。子校验只证明父方已读回承诺的结构/字节对应，真实独立 fs 读回归父 IO，不能自称子方读了宿主档案。ACK 不是 consumption-handoff；不扩展已批准 record kind。
+
+下一 child EVENT/PREPARED/OBSERVATION 的 previousAck 必须等于实际已收 ACK bytes 的 FrameRef；同一 ACK 不允许再次开启工具调用。最后 DISPATCH_CLOSED 的 ACK 由紧随的 ACK_RECEIVED.previousAck 精确证明接收，RESULT 随后保留原有 result bytes/当时 process 引用。parent 仅写出 ACK 不证明 child 收到；缺该后继引用只能证明 ACK 曾被写出，不能据此断言已 spawn、已完成或未执行。secret 交付不存原流；READY/CREDENTIAL_RECEIVED、R1 实际 consumption/handoff/custody、后续 PREPARED/ACK/event 的绑定共同提供非秘密控制流证据，不由单个 receipt 或父写响应推定交付。
+
+**显式 typed edges 与完整结果提取。** protocol.stdoutPrefix→rawBlobs 原 bytes；protocol.parentFrames→仅 AUTHORIZE/ACK 的 raw frame bytes。解析 stdout 的 READY/CREDENTIAL_RECEIVED.authorizeFrame 与 subsequent.previousAck/ACK.acknowledgedFrame 时，前者只能指该数组中的 AUTHORIZE、previousAck 只能指该数组中的 ACK，acknowledgedFrame 只能指该 stdout 原始帧边界切片；不得以相同内容的另一个 attempt/位置替代。AUTHORIZE 内各原件、ACK.subject/readback 只沿已定义 allocation/request/authorization/handoff/baseline/process/observation/custody 类型到 artifactBytes 中逐 byte 核已归档 canonical 原件；不扫描所有 D，不把 credential 或任意 frame 当新 artifact。ACK 内 process 不得包含该 ACK 或未来 stdout，引用顺序形成有向无环图。工具 CLOSED 的 base64 解码 bytes 沿其 RawRef 到 rawBlobs，argv 原件必须由实际固定 command/args 在父子各自生成并按 argvDigest 核对，不从任意 stdin JSON 选择命令。
+
+archive 的公开 parentFrames 和 live 的 parentFrameBytes 均由同一模块私有**单帧** decoder 逐件解析，只允许 AUTHORIZE sequence=0、ACK sequence 从2连续；唯一缺口1由同 stdout 的 CREDENTIAL_RECEIVED 绑定及两端真实 IO 的一次性交付/完整流计数共同证明，纯函数不宣称读回 secret。早期空数组/仅 AUTHORIZE 是合法前缀，已有 ACK 则不得缺首个 AUTHORIZE/先前 ACK；绝不把公开数组拼接后送完整 parent-stream parser，也不补 CREDENTIAL 或秘密摘要凑序号。
+
+previousAck 的 null 只表示当前 child 尚未收到任何 ACK，且没有待 ACK 的 child frame；此时只可在第一个 PREPARED、工具前真实 OBSERVATION 或零工具失败的 DISPATCH_CLOSED 使用。一旦任意 ACK 已收到，后续必指最后一个实际 ACK，不可回 null；首次 SPAWNED/SPAWN_FAILED/CLOSED 与最终 ACK_RECEIVED 永不为 null。零工具已授权失败可沿 CREDENTIAL_RECEIVED→DISPATCH_CLOSED(null)/ACK→ACK_RECEIVED→真实 THREW RESULT 结束，result 只引用生成时已存在的 D 绑定快照；若无真实 handler 返回/抛错结果，则在真实已收前缀停止并保留缺 RESULT/UNKNOWN，绝不造 ACK 或 result。
+
+方向专有结束规则：parent-to-child 正常流只有 AUTHORIZE、CREDENTIAL 和逐项 ACK，从不要求/允许 RESULT；子方 RESULT 后父方结束 stdin，partial parent frame 仍拒绝。child-to-parent 的成功候选才要求 ACK_RECEIVED 后唯一末尾 RESULT 与真实 EOF。parser 的 ended=true 仅严格检查本方向字节边界/顺序；早期拒绝可有零帧或合法短前缀，是否缺结果/证据不足由共享 protocol validator/assessor 按当前已有阶段判定，不能把缺未来帧当此前消费记录非法，也不因 parent 流无 RESULT 拒绝正常交接。
+
+最终 reader 先取得真实 parent runner CLOSED.stdout 的完整原始 Buffer/RawRef，按 child-to-parent 严格解析至真实 EOF，验证全部协议/typed edges；必须恰有一个末尾 RESULT，直接取该帧 `payloadBytes`，与 artifactBytes 中同 request/attempt 的唯一 canonical manual-command-result 原件逐 byte 相等并重算 digest。禁止 last-JSON/search/substring 猜测、JSON 重编码替代原 bytes、从 stderr 提取、删除 challenge/event 后把截取结果冒充 full raw。合法唯一 RESULT 不等于 process close：无真实 stdout EOF、父 close/最终快照、ACK/观察原件、完整工具流或既有成功谓词中的任何一项都不能成功；有 result 后追加空白/日志/第二 result 也不例外。
+
+错误分层固定为：grammar/非法 UTF-8/非 canonical/错 version/type/direction/边界/尾垃圾 `MANUAL_FRAME_INVALID`；重复一次性交接或 RESULT `MANUAL_HANDOFF_REUSED`；序号/阶段/ACK 目标或绑定不等 `MANUAL_FRAME_ORDER_INVALID`（跨请求身份仍适用既有 `MANUAL_EVIDENCE_BINDING_MISMATCH`）；帧/完整管道/工具输出超限 `MANUAL_OUTPUT_LIMIT`，既有独立 JSON 入口仍 `MANUAL_JSON_LIMIT`；EOF 半帧/缺 RESULT/缺 ACK 后继 `MANUAL_FRAME_INCOMPLETE`。这些错误不是“未提交”结论：已确认 attempt 身份且凭证可能已交付、PREPARED 已存在或执行可能发生时，assessor 将运行证据不足保留为 INTERRUPTED_UNKNOWN，既有 originalDatabaseOutcome 谓词不放宽；无完整身份继续 INPUT_REQUIRED/STOP，不能造失败成功原件。
+
+#### 2.5.5 MS2 前向 H3 目标原件投影（Task R1.3H；本轮待复审）
+
+**缺口与最小边界。** Runner 的实际 DB 核对需要 H3 post-create 的 systemIdentifier、数据库容器/专属卷/PostgreSQL 镜像/marker/服务器端点原件；request 的 clusterFingerprint 不是这些原件，原八键 AUTHORIZE 和两键 launchContext 不能暗增字段。本节只给既有管道增加显式 MS2 格式和一个非秘密 `targetContext`，复用同一 encoder/parser/protocol validator/assessor。无新授权、签名域、profile 字段、Schema/artifact kind、process 字段、通用 metadata/IO factory 或第二信任内核；launchContext 仍只描述 Runner，不塞 DB 身份。
+
+**版本选择和封闭接口。** 既有 `encodeManualRunnerFrame({type,sequence,payload}):Buffer` 原样只编码 MS1；新增同一函数的封闭四键输入 `encodeManualRunnerFrame({protocol:"MS2",type,sequence,payload}):Buffer` 只编码 MS2。四键的 `protocol:"MS1"`、未知版本、缺键、额外键均拒绝，不能由 payload 猜版本或失败后降级。MS2 header 恰为 `ASCII("MS2 " + type + " " + sequence + " " + payloadByteLength + "\n") || payloadBytes`，其余 §2.5.4 数字、UTF-8/canonical、逐 frame/完整方向流 1048576 bytes、顺序、nonce、ACK、EOF 与秘密禁入档规则不变；除 AUTHORIZE 必填新增一键 targetContext 外，所有 payload 原样保留。
+
+`parseManualRunnerFrames({direction,bytes,ended})` 的三键输入和 `{frames,consumedBytes,pendingBytes}` 返回完全不改，frame 返回键也不加 protocol。它从本方向首个 header 选择一次 MS1/MS2，再以私有 decoder 将这一版本绑定整条流；空流/合法半 header 按原 prefix 规则处理，已可证明非法的版本立即拒绝。双向及全部公开单帧、候选 ACK 必须同版本；live/archive 由首个实际 CHALLENGE header 与 AUTHORIZE/ACK 原 header 比对，而不是把公开 parentFrames 拼成完整 stdin。任何混版在未完前缀中也不得被等待吞掉。新 R2 固定编码 MS2，并在收取首 header/调用共享 validator 之前拒绝 MS1；共享模块仍能按原规则复评历史 MS1，不能以“共享 decoder 支持旧版”为新入口降级授权。
+
+保留 RP3 当前实际接口：v2/90 的 `assessManualRunnerEvidence`/archive validator 接收封闭 `{requestBytes,artifactBytes,rawBlobs,profileBytes}`，live-ack 接收原八键加 `profileBytes` 的封闭九键；旧 v1 历史分支仍按其已交付规则。MS2 不改变这些输入/返回，不新增 expectedProtocol/targetContext 参数；context 只沿真实 AUTHORIZE bytes 到达，current profileBytes 仍 canonical 且绑定 request。只新增一个纯导出 `computeManualClusterFingerprint(cluster:ClusterOrigin):D`，在本模块与 package index 导出；它只验证封闭数据与重算摘要，不生成品牌或宣称来源可信。
+
+**唯一封闭形状。** `TargetIntent`、`UUID`、`D`、`S`、`RawRef` 沿既有定义。下列每个键必填、递归 closed；`databaseContainerId` 为完整 64 位小写 hex 实际 Docker ID（形状沿 N，不声称它是随机 nonce）。正十进制文本仅 `[1-9][0-9]*`，systemIdentifier 另以 BigInt 检查 `<=18446744073709551615`，禁止 Number 精度丢失。
+
+```text
+TargetContext={contextVersion:"manual-h3-target-context.v1",operationRef:UUID,
+ indexDigest:D,runId:UUID,profileDigest:D,targetIntent:TargetIntent,
+ databaseOid:positive-decimal-string,h3Approval:RawRef,h3Readback:RawRef,
+ cluster:ClusterOrigin}
+ClusterOrigin={systemIdentifier:positive-decimal-uint64-string,
+ databaseContainerId:N,dataVolumeName:S,postgresImageDigest:D,marker:S,
+ serverAddress:S,serverPort:integer1..65535}
+```
+
+serverAddress 只取 `host(inet_server_addr())` 实际原文本，须为合法 IPv4/IPv6 地址文本；无 DNS、URL、zone、调用方选址或格式替换。serverPort 只取实际 `inet_server_port()`，是 PostgreSQL 内部端口，不等同 host published port；固定 profile endpoint 与精确 Docker published 映射在父方另验。NULL/Unix socket、含 subnet 的 inet 输出、未知地址或端口均 STOP，不能填 profile endpoint 冒充 SQL 原件。H3 readback 固定保存这组实际值，后续读回逐项相等。
+
+```js
+// 唯一纯算法；先完成上面的 closed/值域校验，再调用现有 canonical digest。
+const clusterFingerprint = sha256Canonical({
+  domain: "manual-postgres-cluster.v1",
+  ...cluster
+});
+```
+
+该 fingerprint 只含上述固定物理 tuple；不含 databaseOid、run/profile/operation/attempt/session、审批/读回引用、时间、role/TLS/catalog/head/权限。数据库名/OID 和端点 policy 仍在原 PhysicalIdentity 单独绑定；观察、migrate、verify、replay/reconcile 对同 cluster 计算相同值，不因跨角色或恢复更换包装上下文漂移。更换数据库容器、专属卷、系统标识、镜像、marker 或实际 serverAddress/port 是不同物理目标，不以新 run/摘要绕过原审批。
+
+**来源与时序。** H3-A approval 先于 create，仅批准 R2 H3-A 固定 creationSpec（容器名、专属卷、PG digest、marker、精确 published endpoint、内部 port）及当时已有 operation/index/目标；不能预填未来 systemIdentifier、实际 containerId、serverAddress 或 databaseOid。create 后的 `h3-a-readback.json` 才保存实际 create/inspect/SQL 事实，并逐项对应该 creationSpec。parent 经 `readFixedManualOperation` 取得实际 operation/indexDigest，再只从同一 `archiveRoot/inputs/operations/{operationRef}/h3-a-approval.json` 与 `h3-a-readback.json` 按既有固定 IO/ACL/句柄/pre-post identity/完整 raw byte 限额独立读回。R2 按其 §2.1 的两固定原件形状校验 index/operation/profile/run/target/审批与 post-create 对应关系，并即时重读 Docker/卷/镜像/marker/端点映射，仅把核对后的非秘密字段投影为 targetContext。systemIdentifier、DB OID、serverAddress/port 此时来自先前获准的 H3-A 实际 SQL readback；本次 SQL 实测必须等对应 target-observe 或 child 授权消费后，不为生成 context 提前连接，不从 request/授权/旧摘要还原“原件”。
+
+父方每次即时资源检查只要求已批准的稳定物理身份、creationSpec 与精确 endpoint 映射未变；不重新要求原 H3-A 的 catalog/head/权限仍未变化，否则合法 migration 与 H3-B 撤写无法继续。当前角色/TLS/权限和 schema 状态仍由各 phase 的既有实际门禁单独核验，不能把“不冻结旧 catalog”解释为跳过它们。H3-A/H3-B 外部批准、create 或读取真实数据库均不由本任务执行。
+
+以下 request.physicalIdentity/baseline 等式仅适用于 runner-command。parent 将 targetContext.runId/profileDigest/targetIntent 与 request 同名字段逐项对应；`databaseOid` 同时等于 request.physicalIdentity.databaseOid 与 baseline.identity.physicalIdentity.databaseOid，`computeManualClusterFingerprint(cluster)` 同时等于这两处 physicalIdentity.clusterFingerprint。baseline 本身不新增 run/profile/target 字段。targetContext.operationRef/indexDigest 必须等于 reader 对当前 operation 的实际读回。后两项不是 request 字段，不给 request 或签名加字段，child 无法凭这两个 digest 自证固定路径或人审来源。首次 target-observe 仍在 parent、无 Runner/process/MS2 帧：只核已有 ref/index/run/profile/target 与 H3 来源，不读取该请求禁止的 physicalIdentity/domainInput 或不存在的 baseline；消费其原授权后，父方从相同 H3 原件与实际 DB 只读查询形成 observation，再由既有流程生成 baseline。之后 child 在 READY 前核 MS2/context closed、run/profile/target 及 baseline/request 的上述物理等式；只信已有固定父管道传来的 H3 非秘密来源。credential/handoff 门槛过后，再以本能力只读 SQL 实测 databaseName/OID、systemIdentifier、serverAddress/port、role/TLS；实际值对 context/request 不符时在 handler/deploy 前拒绝。marker 是父方实际 Docker/卷标签读回事实，不新增数据库字段或 child marker 查询。child 不独立验证 GitHub/H3 人工批准，不 inspect Docker，不接收宿主 key、H3 路径、凭证引用或 caller 选择的 context。
+
+**原 bytes 与归档核对。** h3Approval/h3Readback 分别是固定两份完整原件 raw bytes 的 `RawRef`，不是 creationSpec/context 投影摘要。两原件按现有 90 日 inputs/档案/备份边界保管；R2.2 在 AUTHORIZE 前将这两份完整 bytes 通过既有 raw 写入/独立重开存入 archiveRoot/raw/{rawDigestHex}.bin，与固定 inputs 原件逐字节一致，才供现有 session.archiveInput 枚举为 rawBlobs。已存在同 digest 路径只能独立核同字节，缺失/冲突/不确定停止，不能覆盖。不是新 H3 source 子文件或新存储体系；MS2 AUTHORIZE 完整 frame（含 context）归既有 `process.protocol.parentFrames` 的 raw custody，context 不另建 artifact/record，秘密仍不入 rawBlobs。archive validator/assessor 只沿 MS2 AUTHORIZE.targetContext 的这两个明确 RawRef 在 rawBlobs 找到完整 bytes、重算 bytes/hash；不把原件 JSON 放入 artifactBytes、不递归扫描其 digest，不新增 H3 Schema 或把 hash 宣称为来源证明。R2 独立 reader 还须从同 operation 的固定原件重开核相等，并重做完整 closed/审批/投影等式；pure live-ack 只有 frame 原件，不接收 H3 文件 Buffer，也不声称完成此 IO 门禁。
+
+MS2 live/archive 共用相同 context→request/baseline 的 closed/物理绑定谓词。单改 context 的 cluster/databaseOid/run/profile/target，即便同步重算 frame RawRef、READY/ACK 及 raw 引用，仍因签名请求/既存 baseline 不匹配拒绝；改 h3Approval/h3Readback bytes 而只保留旧 RawRef 拒绝。把伪造 H3 原件和它的 RawRef 一起更换且内部字节自洽，纯模块不能证明人审或来源真假，必须由 R2 的实际 fixed-source/完整原件比较反例拒绝，不能在 R1.3H 测试中冒称已证明 Docker/存储事实。错误沿既有 FRAME/ORDER/OUTPUT、`MANUAL_EVIDENCE_BINDING_MISMATCH`/`MANUAL_EVIDENCE_INPUT_REQUIRED` 分层；不新造状态或错误协议。
+
+### 2.6 固定 H1/build/operation 输入权威（R1.3 与 R2.2 的唯一边界）
+
+本节只闭合原计划尚未存在的生产输入，不改变 §2.1–2.5、R1.1E 的五个导出、R1.2 状态机或 session `objects/raw` 档案。新执行的唯一固定 profile 为 `release/contracts/manual-stage1-profile.v2.json`，其 Schema 固定 v2/90；历史 v1 只在 RP3 已存记录路由中读取，不是 loader fallback。新增 `inputs` 子目录只供 R1.3/H2 和 R2.2 metadata 固定 IO 使用，不加入现有 session 原件 union。
+
+上段是 R1.3 原审批范围；本轮 §2.5.5 的单一纯导出/MS2 由独立 Task R1.3H 拥有，不返工 R1.3。H3 两份固定原件的完整读取/验证和 targetContext 投影由 R2 固定 IO 拥有；R1.3 reader 四接口、index 形状以及本节 H1/H2 规则不扩展，不能让 readFixedManualOperation 额外返回 H3 或可信 wrapper。
+
+**H1 owner/host 绑定。** 固定仓库文件 `release/contracts/manual-stage1-owner-binding.v1.json` 由与 profile 相同的 attested source/repository contract 锚定；不新增 profile 字段、Schema 或 foundation 权限模型。R1.3 私有 closed validator 只接受：
+
+```text
+{schemaVersion:"manual-stage1-owner-binding.v1",profileDigest:D,ownerId:S,
+ principal:{platform:"win32",sid:S}|{platform:"posix",uid:integer>=0},
+ hostFingerprint:D,approvedAt:T,approvalReference:Ref,approvalDigest:D,
+ promotionEligible:false}
+```
+
+`approvalDigest=sha256Bytes(approvalBytes)`；`approvalReference` 必须恰为 `inputs/h1/{approvalDigest 去掉 sha256:}.approval.json`。该原件是在 sidecar 发布前由用户批准的 canonical closed JSON，顶层恰为：
+
+```text
+{schemaVersion:"manual-stage1-owner-approval.v1",profileDigest:D,ownerId:S,
+ principal:{platform:"win32",sid:S}|{platform:"posix",uid:integer>=0},
+ hostFingerprint:D,approvedAt:T,promotionEligible:false}
+```
+
+不得含 future build/session/operation/成功字段，也不由尚不存在的 runtime session 签名。H1 将其以 CreateNew 存入 `profile.storage.archiveRoot/{approvalReference}` 并从新只读句柄独立读回；sidecar 的 `profileDigest/ownerId/principal/hostFingerprint/approvedAt/promotionEligible` 六项必须与原件逐项相等。运行时同时验证 sidecar/profile/approval 原件、实际 host/principal 及 profile 五个 storage root 的 ACL owner；当前进程“等于自己”、operation index 的 owner 字段或调用方布尔值都不能建立 owner 信任。
+
+上述非秘密 H1 全链唯一归现有导出 `loadFixedManualProfile({repoRoot})`：它每次固定读取 profile/sidecar/approval，实际探测 host/principal，核对五个 storage root ACL owner 后才返回深冻结 Profile；全程不读 private key、不打开 session、不写 operation index。该预先 readonly loader 只证明当前本机 H1 输入一致，不能代替之后 `verifyManualBuild` 对 attested source/repository contract 的独立绑定。
+
+`hostFingerprint` 的唯一编码为：Windows 只用固定绝对程序 `C:\Windows\System32\reg.exe ["QUERY","HKLM\\SOFTWARE\\Microsoft\\Cryptography","/v","MachineGuid","/reg:64"]` 读 `MachineGuid`，去首尾空白/花括号后要求小写 RFC UUID，再计算 `sha256Bytes(UTF8("subscription-saas/win32-machine-guid/v1\n"+guid))`；SID 只用 `C:\Windows\System32\whoami.exe ["/user","/fo","csv","/nh"]` 并严格解析唯一行。执行前后对两个 exe 的固定绝对路径做 realpath/file identity/owner ACL 读回，系统目录不是该精确位置或无法证明即 STOP，不使用 PATH/PATHEXT/SystemRoot env 选程序。Linux 从固定 `/etc/machine-id` 读 bytes，严格 trim 后要求 32 位小写 hex，以 `sha256Bytes(UTF8("subscription-saas/linux-machine-id/v1\n"+machineId))` 计算，principal 取 `process.getuid()`。两个 Windows probe 均复用现有 fixed `execFile`/ACL adapter 语义、参数数组、`shell:false`，单次 timeout `5000 ms`，stdout 与 stderr 各最多 `8192 bytes`；Linux 固定文件也按 `8192 bytes` 上限读取。不新增通用 host-probe framework；失败、歧义或不支持的平台拒绝，不 fallback 到 hostname/env。
+
+**H2 原始构建输入。** `verifyManualBuild({proofBytes,materialBytes,repoRoot})` 每次先调用上述 `loadFixedManualProfile` 完成非秘密 H1 门禁，随后分别计算 `proofRawDigest=sha256Bytes(proofBytes)` 与 `materialRawDigest=sha256Bytes(materialBytes)`，再只从 `archiveRoot/inputs/build/{proofRawHex}.proof.json`、`{materialRawHex}.material.json` 和 `{proofRawHex}.custody-receipt.retention90.v1.json` 打开已由 H2 独立批准 import 以 CreateNew 发布并读回的原始 bytes；第三个名称只用于本地 import 寻址，不冒充 publisher storage key。旧 `{proofRawHex}.custody-receipt.v1.json`、其他文件名或 receipt 自报版本都不存在 fallback。每个调用 Buffer、实际文件 pre/post stat bytes 和解析后的 canonical JSON bytes 均各自不超过 1 MiB；fatal UTF-8、JSON/Schema/identity 不符拒绝。proof 原始 bytes 无须等于 canonical bytes：`buildProofDigest=sha256Canonical(parsedProof)` 与 `proofRawDigest` 明确不同；proof 的 `gh` subject 必须等于后者，同时保留旧 verifier 的 source/main/workflow/issuer/runner class、三镜像、material、catalog、contract 与 custody 等式。loader 通过后仍须完成 attested source/contract 验证；两者不是可互换的通行证。
+
+custody receipt 原件必须 canonical，`custodyReceiptRawDigest=sha256Bytes(receiptBytes)`；其 `contentDigest/readbackDigest` 仍等于 canonical `buildProofDigest`，`contentSizeBytes` 等于 canonical proof bytes 长度，proof raw/canonical 不同时仍不得改绑 raw digest。`receipt.attestationRef` 仍等于本次 proof attestation ref；receipt 自身另由同一可信 workflow/source SHA/run ID/run attempt 在真实权威 storage 读回后单独 attest，R1.3 对 receipt fixed path 再执行 `gh attestation verify`，subject 必须等于 `custodyReceiptRawDigest`，且两次 gh 的 repo/workflow/main/issuer/hosted class/run identity 完全相同。
+
+manual trust 的目标固定 custody policy 恰为 `{owner:"release-engineering",readers:["release","qa","security","audit"],retentionDays:90,expiryDisposition:"review",receiptContract:"custody-receipt.retention90.v1"}`，随 `manual-stage1-trust.mjs` 的同一 attested source/repository contract 锚定。RP4 已在 `verify-build-proof.mjs` 导出 `assertProofCustody({proofDigest,custodyReceipt,trustRoot,verifiedAttestation})` 与 `assertBuildIdentity({proof,buildMaterialObservation})`；R1.3 只以内部固定 policy 消费它们，不让 caller、receipt 或 operation index 选择/反推策略。local import、合法 receipt JSON、receipt 签名或 RP5 public Actions delivery 本身都不证明 publisher storage：必须由同一可信 CI 对真实私密权威 storage 执行独立 Get/Head/retention readback 后产生 receipt 与事实，并单独 attest receipt。这些真实输入尚未提供，因此 H2 继续 `MANUAL_BUILD_CUSTODY_INPUT_REQUIRED`/`TRUSTED_BUILD_UNAVAILABLE` STOP；本计划不新建 storage、权限或第二 producer。
+
+固定 IO 对 proof/material/receipt 均逐级拒绝 link/reparse/escape，核对 owner ACL/realpath并持有只读句柄；在相应 `gh` 前后复核句柄和路径 identity/size/mtime/realpath。proof/material 的 caller Buffer、句柄读回及路径 pre/post bytes 必须逐字节相等；receipt 的句柄与路径 pre/post bytes 同样相等，两份被验签文件各自的 raw hash 还必须等于其 gh 已验证 subject。任何 altered/missing/oversize/readback/timeout、receipt 缺失/自报 policy 或路径 ABA 无法闭合时，在 index 写入、session 建立及 private-key/sign/credential 访问前拒绝；预先只读 index 不建立信任。不为 `gh` 假设未经证明的 stdin 模式，也不让 verifier 创建 temp 文件；三个 H2 import 与其外部批准是另一个人工动作，不是 verifier 导出或隐含副作用。
+
+**非授权 operation index。** 唯一 producer 是既有 R2.2 launcher 内新接口 `prepareManualOperation({proofBytes,materialBytes,targetIntent,scenario})`；无新 CLI/path/env authority。它必须先调用 `verifyManualBuild`，从而先完成其内部 readonly H1 loader 与 H2 attested build/custody 门禁；prepare 前禁止读取 key、打开 session 或写任何 index。全部核验成功后且仍在 H3-A 操作单批准前，才固定生成 lowercase UUID `operationRef/runId` 及 observe/migrate/verify 三个随机 `operationId`；三项幂等键分别且恰为 `manual-stage1:${operationRef}:observe`、`manual-stage1:${operationRef}:migrate`、`manual-stage1:${operationRef}:verify`，并以 CreateNew 写入 `archiveRoot/inputs/operations/{operationRef}/index.json`：
+
+```text
+{schemaVersion:"manual-operation-input.v1",operationRef:UUID,runId:UUID,createdAt:T,
+ profileDigest:D,buildProofDigest:D,proofRawDigest:D,materialRawDigest:D,custodyReceiptRawDigest:D,
+ targetIntent:TargetIntent,purpose:"synthetic-fresh",scenario:"normal"|"apply-interrupted",
+ operations:{observe:{operationId:UUID,idempotencyKey:S},
+             migrate:{operationId:UUID,idempotencyKey:S},
+             verify:{operationId:UUID,idempotencyKey:S}},promotionEligible:false}
+```
+
+index 必须是 fatal UTF-8、canonical JSON、完整对象不超过 1 MiB、递归 closed；`indexDigest=sha256Canonical(index)` 外部引用而不自存。禁止 owner/approved/success、session/attempt/allocation/DB OID、H3/baseline/result 字段。H3-A 后不得重新 prepare；H3-A 的 `h3-a-approval.json` 与实际后置 `h3-a-readback.json`、H3-B 的 `h3-b-approval.json` 与后置 `h3-b-readback.json` 均在同一 operation 目录 CreateNew，分别绑定既有 indexDigest、精确目标和当时已存在事实，绝不覆盖 index 或写入未来字段。launcher 必须独立读回相应真实 approval/readback 才可连接；index 不是批准，也不能绕过 R1.2 的单目标锁和 UNKNOWN 全历史。
+
+producer 的 CreateNew collision、已存在 operationRef、H1 loader 或 H2 未通过仍试图写 index、H3-A 后再次 prepare 反例归 R2.2 既有 `scripts/release/launch-manual-stage1.test.mjs`；H1 任一失败必须同时断言 index-write/session-open/private-key-read 均为 0。这是明确新增的 R2.2 prepare 接口，不是给 R1.1E 增加 factory。R1.3 测试只覆盖固定 reader/source gate，不写 index。
+
+R1.3 是唯一 reader/parser：`readFixedManualOperation({repoRoot,operationRef})` 返回 `{operation,indexDigest,proofBytes,materialBytes}`，其中 `operation` 是上述完整深冻结对象，两个 Buffer 是按 raw digest 固定路径从只读句柄独立读回的副本；这些值只证明冻结描述与来源 bytes，不授予 session/credential/DB 权限，不返回 `verified/approved/trusted` wrapper。R2.2/R2.3 不复制 parser；R2.4 migration/verification 始终消费同一 operationRef/runId/原 observe-migrate-verify identities，attempt allocation 仍只在已开的 session 内按 §2.5 创建，replay/reconcile 继续绑定原 migrate operation/key，不另添 index 身份。
+
+## Task R1.1：封闭契约和无副作用签名 kernel
+
+**历史交付状态：** 本任务原有七文件/六函数已在 `a7dae491` 批准；以下原始步骤保留作为交付范围，不重新执行、不把 R1.1E 纳入原验收。
+
+**Files:**
+
+- Create: `release/contracts/schemas/manual-stage1-profile.v1.schema.json`
+- Create: `release/contracts/schemas/manual-launch-authorization.v1.schema.json`
+- Create: `release/contracts/schemas/manual-operation-record.v1.schema.json`
+- Create: `packages/release-foundation/src/manual-stage1-contracts.mjs`
+- Create/Test: `packages/release-foundation/test/manual-stage1-contracts.test.mjs`
+- Modify: `packages/release-foundation/src/index.mjs`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+
+**Interfaces:**
+
+- Consumes: `canonicalJson(value)`、`sha256Canonical(value)`、`validateContract(schemaId,value)`、Node `createPrivateKey/createPublicKey/sign/verify`。
+- Produces: §2.4 精确定义的 `encodeManualJson`、`signManualAuthorization`、`verifyManualAuthorization`、`assertManualDecision`、`verifyManualHandoff`、`assertManualHandoffDecision`，仍仅六个公开函数。parent/child 为不同 WeakSet 品牌，JSON 或 `{verified:true}` 无法还原；签名验证不是 journal 消费或管道使用。
+- 本模块只验字节/签名/字段，不宣称会话、撤销来自真实 IO；真实可信读取在 R1.2，R2 不能直接将请求体作为这些参数。
+
+- [ ] **1. 写 RED：用测试进程临时生成 Ed25519 KeyObject，不落私钥文件。** 使用相同测试局部的合法 profile/payload factory；工厂逐字段填 §2 必需值，不导出为生产 profile。
+
+```js
+import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import test from "node:test";
+import { encodeManualJson, assertManualDecision } from "../src/manual-stage1-contracts.mjs";
+
+test("rejects caller-made verification and counts UTF-8 bytes", () => {
+  assert.throws(() => assertManualDecision({ verified: true }), {
+    code: "MANUAL_DECISION_UNTRUSTED"
+  });
+  assert.throws(() => encodeManualJson({ value: "汉".repeat(400000) }), {
+    code: "MANUAL_JSON_LIMIT"
+  });
+  const keys = generateKeyPairSync("ed25519");
+  assert.equal(keys.privateKey.asymmetricKeyType, "ed25519");
+});
+```
+
+- [ ] **2. 运行入口 RED。** `node --test packages/release-foundation/test/manual-stage1-contracts.test.mjs`，预期缺模块；记录原件后建立模块/三个 Schema，先只通过上述两个拒绝断言。
+- [ ] **3. 增加逐项签名反例并运行 RED。** 改签名字节、profile key、purpose、request digest、过期/未来授权、会话 nonce、撤销 ID、stage 额外字段、migrate apply 缺 plan、verify 带写 capability。另以合法 key 签出超过五分钟上界 1ms 的授权，父/子 verifier 均拒绝 `MANUAL_TIME_INVALID`，不以签名有效放行。每个反例使用真正签名基线后仅变一个字段；结构、签名、时间、绑定、撤销分层按 §2.4 断言，不以 Schema 成功代表授权有效。
+- [ ] **4. 实现最小验签顺序。** 原始字节限额 → Schema → 固定 profile 有效期/指纹 → 真正验签 → 请求/会话/撤销/命令绑定 → 对应 WeakSet decision。授权签发与验证使用完全相同字节：
+
+```js
+const bytes = Buffer.concat([
+  Buffer.from("subscription-saas/manual-launch/v1\n", "utf8"),
+  Buffer.from(canonicalJson(payload), "utf8")
+]);
+const signature = sign(null, bytes, privateKey);
+const valid = verify(null, bytes, publicKey, signature);
+```
+
+交接 receipt 的域独立为 `subscription-saas/manual-consumption/v1\n`，不能跨域重放。禁止从 payload 读取公钥、profile 路径或信任策略。对应签名仅证明 parent 消费承诺，不把子进程自报 session/revocation 当本机台账读回。
+
+- [ ] **5. GREEN 与归属检查。** 重跑该测试、`pnpm release:contracts:verify`；新 Schema 与模块路径显式纳入 contract manifest。六个函数均有精确导出，不导出可伪造两种 decision 的构造器；补未签消费 receipt、错授权/挑战、父/子 decision 互换、域错、超期负例。相同合法 handoff 重复纯验证应可再次产生 childDecision，但不产生任何消费/DB/凭证 IO；真正重复使用的拒绝断言归 R1.2/R2.2，不增加 kernel replay cache。
+- [ ] **6. 独立审查后提交。** 精确七文件运行 Prettier、`git diff --check`；只暂存 Files 中七文件，`git diff --cached --check` 及 staged 清单复核后提交 `feat(release): define closed manual authorization contracts`。无 profile 实例、真实 key、DB 或工作流修改。
+
+## Task R1.1E：先交付唯一共享请求/证据 Schema 与纯判定器
+
+**历史交付状态：** 本任务七文件和五个导出已在 `f618b2d2` 完成；以下原始范围与步骤保留作为审计记录，不重新执行、不因本次 fixed-input 补全增加 Schema、导出或 factory。下列前两个 Schema 原计划由 R2.1 新建，已移交给本任务且不重复创建；evidence union/module/test 为三个净新增文件。七文件之外不追改 R1.1 kernel/三旧 manual Schema/状态机/Runner/DB。
+
+**Files:**
+
+- Create（从 R2.1 移入）: `release/contracts/schemas/manual-runner-request.v1.schema.json`
+- Create（从 R2.1 移入）: `release/contracts/schemas/manual-baseline-manifest.v1.schema.json`
+- Create: `release/contracts/schemas/manual-runner-evidence.v1.schema.json`
+- Create: `packages/release-foundation/src/manual-runner-evidence.mjs`
+- Create/Test: `packages/release-foundation/test/manual-runner-evidence.test.mjs`
+- Modify: `packages/release-foundation/src/index.mjs`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+
+**Interfaces:** Consumes 已批准 R1.1 `encodeManualJson`、现有 `canonicalJson/sha256Bytes/sha256Canonical/validateContract/deterministicPlanDigest` 与既有 manual/build/post-state Schema。Produces §2.5 的 `validateManualRunnerRequest(request):void`、`assessManualRunnerEvidence({requestBytes,artifactBytes,rawBlobs}):Assessment`，及 §2.5.4 完整定义的 `encodeManualRunnerFrame({type,sequence,payload}):Buffer`、`parseManualRunnerFrames({direction,bytes,ended}):ParsedFrames`、`validateManualRunnerProtocol(input:ArchiveProtocolInput|LiveAckProtocolInput):void`，恰五个导出。类型封闭、无 IO、无 callback/brand，不导出 request/plan/authorization factory。R1.2/R2.3 经 assessor 复用，R2.2 同时调用相同 encoder/parser/validator；禁止 foundation 导入 `apps/release-runner` 或 `scripts/release`，禁止 R2 复制 grammar、提取规则或成功谓词。state machine 由 R1.2 调用，本纯判定器不实现第二归约器。
+
+- [ ] **1. 写共享 RED。** 在唯一新增 test 文件用 §2.5 全字段的测试局部 factory 构造 canonical bytes/真实 raw Buffer；先测试缺导出与多余字段、错误原件类型/phase、1 MiB+1，运行 `node --test packages/release-foundation/test/manual-runner-evidence.test.mjs`，预期缺模块。测试 fixture 不生成生产 profile/key，不导出生产工厂。入口反例直接使用以下代码，后续正例必须一起通过，不能以此全拒绝 stub 结束：
+
+```js
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  assessManualRunnerEvidence,
+  validateManualRunnerRequest
+} from "../src/manual-runner-evidence.mjs";
+
+test("does not replace missing originals with a caller commit claim", () => {
+  assert.throws(() => validateManualRunnerRequest({ committed: true }));
+  assert.throws(() =>
+    assessManualRunnerEvidence({
+      requestBytes: Buffer.from("{}"),
+      artifactBytes: [],
+      rawBlobs: []
+    })
+  );
+});
+```
+
+- [ ] **2. 实现三个 Schema 与最小字节校验，GREEN。** request/manifest 完整封闭，evidence 以 kind 为判别的唯一 union，对 post-state local 封闭形状加运行时既有 Schema 校验；当前 registry 按文件名立即编译，禁止新增指向排序更后 Schema 的外部 $ref，也不改 registry；函数使用现有 canonical/digest/registry，而非另一序列化器。`validateManualRunnerRequest` 的合法 observe 与五个 runner phase 都必须通过，删任一必填键/加跨 stage 字段/错 digest 映射必须拒绝。
+- [ ] **3. 先补 phase/提交谓词 RED 再 GREEN。** 同一测试文件逐项按 §2.5.3 提供合法 observe、dry-run、apply、verify、replay、reconcile committed 与 not-committed 完整原件；逐项只改一个事实：result phase/attempt、raw 输出1字节、时间、catalog checksum/owner、缺原进程终态、前序指向 dry-run、部分/失败/回滚行、仅 schema 匹配、DISPATCH_CLOSED 前有 deploy PREPARED、缺消费/hand-off 读回。断言正例 exact Assessment 与负例 UNKNOWN/固定错误，不准只交付全拒绝 stub。原件不包含 caller commit boolean；给额外布尔字段应 Schema 拒绝。
+- [ ] **4. 固定身份/缺失原件 RED → GREEN。** dry-run 与 apply 使用不同 attempt/child envelope、**相同 sessionId/sessionNonce**、完全相同 domainInput，断言 plan digest 稳定；修改 domainInput 必须漂移，换 session 的 apply 拒绝。reconcile 使用新 attempt/session，runId 来自该已批准运行索引而非恢复生成；只按 §2.5 等式绑定，不为缺失原 apply allocation/request补 UUID。无原身份抛 INPUT_REQUIRED；有原身份但不充分证据保留 originalDatabaseOutcome=unknown；完整只读未提交证明返回本次 SUCCEEDED/原 not-committed，不能当迁移成功。replay 缺结果/实际结束时，已有原 apply 成功链仍派生 originalDatabaseOutcome=committed，但本次 executionStatus=INTERRUPTED_UNKNOWN；缺可信原 checkpoint 则保持未知/INPUT_REQUIRED，不伪造 committed。增加合法 null 零凭证启动原件→D 绑定→正常执行正例，以及缺 null 原件、错 allocation/A、null 分支提前 DB/工具/凭证、spawn 后补 PREPARED、D→null/换 D、重写原 events/时间反例；typed-edge 测试拒绝错误目标类型/缺真实引用，但不给 profile/DB fingerprint 添加未定义原像仍可通过，证明不扫描任意 digest 建闭包。
+- [ ] **4a. MS1 纯协议 RED → GREEN（仅未来批准实施时）。** 同一个 `manual-runner-evidence.test.mjs` 构造 §2.5.4 完整 CHALLENGE/授权/凭证接收/多工具 PREPARED-ACK/原 raw 流/observation/RESULT/真实关闭原件的合法 archive 链；逐 byte split 与合并成一个 chunk 结果相同，包含多字节 UTF-8 和完整多行 Prisma Report，断言提取 payloadBytes 等于归档 result、完整 stdout 包含所有 frame。逐一变更 version/type/direction/序号/长度/UTF-8/canonical、1 MiB frame及整流（包含header/base64开销）、duplicate/missing RESULT、EOF半帧、RESULT后LF/日志、stderr-only result、错误ACK目标/tool/processSequence/A/request、只保存无独立custody、ACK无child后继、future/self引用、secret混入parentFrames均拒绝成功；已可能执行时派生 UNKNOWN。合法 prefix 的 parse ended=false 可等待，不能接受为完整结果。process.protocol 的初始空前缀、D绑定、PREPARED截止、ACK只在后继快照出现及最终全stdout相等必须正反例覆盖，不放宽原 A/ProcessEvent。另以精确八键 live-ack 输入证明：只有已存在request/authorization/前一process/当前PREPARED前缀及候选ACK，没有后继SPAWNED/RESULT/close、当前ACK不在快照parentFrames时仍可返回void；改ACK当前frame/subject/custody/序号/前缀任一项则拒绝，混合archive/live键也拒绝。覆盖OBSERVATION ACK不更新process、公开单帧序号0/2/3合法而0/3缺ACK拒绝、DISPATCH_CLOSED的runner/0/null argv例外和真实CLOSED仍核启动argv。纯单测使用测试内 synthetic secret，绝不保存 CREDENTIAL bytes/hash 到 fixture档案或报告，不运行生产管道。
+- [ ] **5. 纯离线回归及独立 gate。** `node --test packages/release-foundation/test/manual-runner-evidence.test.mjs packages/release-foundation/test/manual-stage1-contracts.test.mjs packages/release-foundation/test/execution-state-machine.test.mjs`；`pnpm release:contracts:verify`，精确七文件格式/unstaged/staged diff 检查。检查新增模块没有 fs/child_process/Runner 反向依赖，清单纳管共享模块和三个 Schema，index 只新增本任务明确列出的五个导出。独立 reviewer 确认正例/反例与原 R1.1 不变后，由主控提交 `feat(release): define shared manual runner evidence contract`；提交通过才重新派发 R1.2，不等待未实现 R2 正向返回值。
+
+R1.1E 同一 `manual-runner-evidence.test.mjs` 对 live/archive 两分支补精确首帧单nonce及两字段launchContext正例；首帧多余container/image、context缺键/额外键/与request或receipt不等、nonce不等逐一拒绝。这些纯等式测试不声称证明nonce随机来源或真实inspect；实际自产nonce/父IO来源反例归下列R2.2既有测试，不新增文件/导出/record。
+
+R1.1E 的 GREEN 仅证明纯契约，不证明真实 PID/SQL/expected-script/ACL 或 H2/H3 可用。R1.2 负责档案来源/时序及状态机归约；R2.1/2 的生产收集与 R2.3 独立读回分别有自己的 gate。共享 Schema 需要再变更时停止回到此单一 owner 审查，不允许消费者临时多接字段。
+
+以下是**将来 R1.1E 经授权实施后**的精确七文件门禁，非本 DOC-ONLY 回合命令；只有主控在独立审查通过后暂存/提交：
+
+```powershell
+$r11eFiles = @(
+  'release/contracts/schemas/manual-runner-request.v1.schema.json'
+  'release/contracts/schemas/manual-baseline-manifest.v1.schema.json'
+  'release/contracts/schemas/manual-runner-evidence.v1.schema.json'
+  'packages/release-foundation/src/manual-runner-evidence.mjs'
+  'packages/release-foundation/test/manual-runner-evidence.test.mjs'
+  'packages/release-foundation/src/index.mjs'
+  'release/contracts/repository-contract-files.v1.json'
+)
+foreach ($r11eFile in $r11eFiles) {
+  pnpm exec prettier --write $r11eFile
+  if ($LASTEXITCODE -ne 0) { throw "R1.1E formatting failed" }
+  pnpm exec prettier --check $r11eFile
+  if ($LASTEXITCODE -ne 0) { throw "R1.1E format check failed" }
+}
+git diff --check -- @r11eFiles
+if ($LASTEXITCODE -ne 0) { throw "R1.1E unstaged diff check failed" }
+git add -- @r11eFiles
+if ($LASTEXITCODE -ne 0) { throw "R1.1E exact staging failed" }
+git diff --cached --check
+if ($LASTEXITCODE -ne 0) { throw "R1.1E staged diff check failed" }
+$r11eStaged = @(git diff --cached --name-only)
+if ($LASTEXITCODE -ne 0) { throw "R1.1E staged listing failed" }
+if (Compare-Object ($r11eFiles | Sort-Object) ($r11eStaged | Sort-Object)) {
+  throw "R1.1E staged set is not exactly the seven owned files"
+}
+git commit -m "feat(release): define shared manual runner evidence contract"
+if ($LASTEXITCODE -ne 0) { throw "R1.1E commit failed" }
+```
+
+staged 清单必须恰为上述七文件；保留其他修改，不宽泛暂存。任何失败停止提交。
+
+R1.1E 本任务既有 `manual-runner-evidence.test.mjs` 同时负责这三组契约断言：按上式正确预期 fingerprint 可通过、仅替换 observer 的带 role 指纹或错 name/OID/role/TLS 被拒绝（不进行本次 capability 连接）；Report 的合法多行完整值、空值/非法 UTF-8、raw/完整 canonical JSON 超限及裁成单版本后的不等式；replay 完整成功与缺实际结束/结果的纯分类对照。Report 正例读取本地已安装固定 Prisma 7.8.0 的完整 `--version` stdout（>256 字符且多行），不只用短字符串 fixture；未来测试可在受控空 cwd、无 DB 凭证的白名单环境调用该现有 CLI，不安装/下载、不读取 ambient DB。该测试只验证 raw→严格解码→trim→Report 的契约；跨真实 runtime.readToolVersions 返回映射的组合正例由 R2.1 已列 test 拥有，不让 foundation 生产模块反向导入 Runner，也不增加 fixture 文件。本 DOC-ONLY 回合不运行 CLI。
+
+## Task R1.2：单父会话、撤销消费与私密记录
+
+**历史交付状态：** 本任务四文件已在 `a42c2041` 完成，接受证据为 Node 22 下 150+44；以下正文保留为已交付接口和审计约束，本轮不重跑、不追改。R1.3 只能以固定输入构造该现有 session，不能把 H1 sidecar/index 变成新的 session 权限层。
+
+**Files:**
+
+- Create: `packages/release-foundation/src/manual-stage1-session.mjs`
+- Create/Test: `packages/release-foundation/test/manual-stage1-session.test.mjs`
+- Modify: `packages/release-foundation/src/index.mjs`
+- Modify: `release/contracts/repository-contract-files.v1.json`
+
+**Interfaces:**
+
+- Consumes: 已批准 R1.1、已独立审查提交的 R1.1E 两个纯函数及 `createExecutionState/transitionExecution/assertApplyAllowed`。既有状态机只处理迁移执行状态；只读 verify/observe 不捏造 dry-run。session.sign/consume 先调用共享完整 request 校验；session.record 在写 execution 终态及接受 signoff 时从固定 IO 重开 §2.5 原件调用共享 assessor，前置记录仅核对已有前序、不要求未来结果；不接受外部 Assessment/成功 callback。
+- Produces: `openManualSession({profile,ownerObservation,io,now,signingKey}):Promise<Session>`；`session.sign(request:RequestInput):Promise<Authorization>`；`session.consume({authorization:Authorization,request:RequestInput,childObservation?:ChildObservation}):Promise<ConsumptionResult>`；`session.record(kind,value):Promise<RecordRef>`；`session.close():Promise<RecordRef>`。consume 仅 runner-command 必须传实际 childObservation，target-observe 禁止该键；这是给既有消费接口补齐真实子上下文的 typed input，不增加权限、stage、服务或导出。signingKey 只接受内存中的 Ed25519 KeyObject；生产加载唯一归 R1.3，测试使用进程内临时 key。`io` 是同模块生产文件适配器或本文件测试私有工厂，正式 CLI 无 IO/module 路径选择项。
+- `ownerObservation` 精确为 `{ownerId:S,principal:({platform:"win32",sid:S}|{platform:"posix",uid:integer>=0}),targetIntent:TargetIntent,observedAt:T}`。R1.3 固定本机读取实际 SID/uid，并与 H1 owner/权限映射核对；targetIntent 只从现有 operationRef 的固定索引独立读回、匹配 profile，不能由索引自报 owner 有效。它唯一确定本次 open 的目标，不在多个 allowedTargets 中猜选。`now` 是生产固定时钟函数 `():T`，每次 sign/consume/record/close 重读，再向纯 kernel 传该时刻的 T；测试时钟只允许单测注入。session.sign 在人工确认之后生成新随机 UUID authorizationId，以当次时钟为 issuedAt、`min(profile.expiresAt,issuedAt+300000ms)` 为 expiresAt（固定最长5分钟，不提供 argv/env 延长选项），复制核对后的 binding 并重算完整 requestDigest；时间已无有效区间即拒绝。
+- session 产生 UUID/随机 nonce、持有精确目标排他锁和当前授权队列；主进程结束后不再签发/消费。`consume` 返回封闭联合：`target-observe` 仅为 `{stage,parentDecision,consumptionReadbackDigest}`，供父方只读目标探测，不引用尚不存在的子进程；`runner-command` 为 `{stage,parentDecision,handoffReceipt}`，先持久化消费原件并独立读回，再签发并 create-only 保管交接 receipt，最后才交出使用权。禁止跨 stage 字段，只有后一分支可交接子进程凭证。
+- `Session` 仅暴露深冻结身份 `{sessionId,sessionNonce,profileDigest,targetIntent}` 及上述四个方法，锁/队列/密钥/IO 不可取出；`ConsumptionResult` 即上行封闭联合。`RecordRef={recordDigest:D}` 仅在 create-only 原件写入并独立读回成功后返回；record 不自动递归生成 custody。close 持锁写 CLOSED/独立读回后释放锁与内存 key，再返回其 RecordRef；失败则拒绝 Promise、尽力保留 UNKNOWN，不能返回 CLOSED 成功。底层 fs 不是新公共 IO 框架；固定适配器和故障注入工厂仅限本模块私有构造及本任务既有测试受控临时目录，生产只由 R1.3 构造，无 CLI/env/module 路径注入。
+
+交接 receipt 的唯一封闭形状、字节域和 30 秒窗口见 §2.1/2.3；不得在此或 R2 再定义另一 receipt。`consume` 的固定顺序和中断含义如下。
+
+| 时点           | 唯一责任与失败结果                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 签发前         | R2 先真实 target-observe/归档读回，再冻结 baseline（其中 authorizationDigest 指已存在的 target-observe 授权，不是未来 Runner 授权），再启动零凭证 child。R2 读回实际 image/container/challenge 并完成完整请求 Schema；R1.2 sign 在活跃父锁内读当前 session/撤销、核对固定 profile/key、人工确认后签发。目标观察与 Runner 期间不释放重取目标锁，不用含 role 的 fingerprint 分锁                                                                                                                                                                                                                                                                                                   |
+| 消费承诺       | R1.2 在同一锁内从固定 journal 独立读回 current session、完整撤销链/checkpoint、该目标全部未决 operation 历史，调用纯 verifier 并核对已有状态机前序。以 `profileDigest/authorizationId` 为同一 journal 内唯一 CreateNew 消费槽，槽内写完整 consumption 原件，再按规范 digest 建档；内容寻址本身不能取代唯一槽。槽存在或写成败不明均拒绝再次消费，禁止换签名/recordedAt/digest 创建第二个槽                                                                                                                                                                                                                                                                                        |
+| 交接准备       | 消费原件 → 独立重开读回并写 MATCH custody → 使用同一内存 key 签 handoff → create-only 保管 receipt → 独立读回并写 MATCH custody。任一 write/readback/sign 中断，保留已有节点、仅按可证明原 attempt 保存 manual execution INTERRUPTED_UNKNOWN；原 apply checkpoint 依其已证状态保留，replay 不改原成功 checkpoint 并按 §2.5.3 STOP，不交凭证、不重新签 receipt。target-observe 只做到消费读回，不触及未来 child                                                                                                                                                                                                                                                                   |
+| 最后释放界点   | consume 在上述结果齐全后、仍持父目标锁时最后重读当前撤销/会话并检查原子消费槽；重查发现撤销/关闭即拒绝释放，保留已消费事实。成功返回是本次不可重试释放承诺的线性化点，固定 R2 launcher 随即仅向同一管道交当前 capability 的一次凭证；不能缓存返回值另开 child/重复发送。返回后至实际写管道之间中断也按 UNKNOWN，不重试消费/receipt；这不宣称撤销能与跨进程字节交付或 DB commit 原子化                                                                                                                                                                                                                                                                                            |
+| 子方一次使用   | R2.2 同一前台 entrypoint 只接一个 challenge 对应的授权/receipt 和一个 credential frame；完整请求检查及 verifyManualHandoff 通过后才建 connector/调用一次 handler，随后结束。第二授权/receipt/credential frame 或换管道触发 MANUAL_HANDOFF_REUSED，未打开新 DB 调用；这是已有单次管道流程的使用约束，不是另一持久消费表。child 不加载宿主 key/journal/backup                                                                                                                                                                                                                                                                                                                      |
+| 中断与重新进入 | 父死亡/锁或 journal 不可证则旧未消费授权失效；已消费凭证是否到达/DB是否提交未知不能说回滚。新可信父会话可从同一目标 journal 独立读回原件，用**同一既有 execution-state-machine** 恢复已知状态，不新建迁移状态机。UNKNOWN 禁止换 authorizationId/operationId/idempotencyKey 重新 apply；仅原 apply UNKNOWN 可按既有规则申请新的只读 reconcile 授权/attempt/challenge，绑定原 operationId/key/前序 UNKNOWN、原 build/baseline/physical target。replay UNKNOWN 按 §2.5.3 保存其独立未决历史并 STOP，不能借原成功 checkpoint 继续签发或自动转原 apply reconcile。同会话要求只限定 dry-run→apply；后续 verify/replay/reconcile 可用新 session/nonce，但不复活旧授权，不覆盖原失败历史 |
+
+reconcile 本次只读尝试失败与原 apply 是否提交是不同事实，唯一谓词与状态机映射见 §2.5.3；原 unknown 不能被 PASSED、读回失败或 ATTEMPT_FAILED 清除。R2.1 仅拥有明确披露的 handler 可选身份接缝，expectedSchemaDigest 原件/原进程停止/排他归因不足仍按精确代码 STOP，不顺带改事务/状态机或建设补救平台。H3-B 仅在真实产生后作为独立人工批准/权限读回输入；不新增 R1 stage，不要求首个消费引用未来 H3-B/signoff。
+
+R1.2 `manual-stage1-session.test.mjs` 和 R2.3 `scripts/release/verify-manual-runner-result.test.mjs` 均须增加同身份但 post-state=UNAVAILABLE、result 实际失败/错 phase、custody=MATCH 但 subject 指另一原件的反例；断言拒绝写入/接受 SUCCEEDED 和 ACCEPTED signoff，不因外层 digest 齐全通过。
+
+恢复身份例外必须显式停止：execution.attemptId 只能取 R2 在调用开始前已实际分配并保管的完整 request/启动事件原件（包括 target-observe），受完整 requestDigest/原件摘要覆盖，不是事后生成的补位 UUID。消费成功而 execution 尚未落档时，只有原 attempt/请求/身份可独立证实时才能追加该原 attempt 的 UNKNOWN；仅原 phase=apply 才可按现有规则申请只读 reconcile，phase=replay 则保留原 apply 成功 checkpoint 并按未决 replay STOP；任一必填身份未产生或不可证，只保留已消费槽、已有 session/未关闭事实并 STOP，不能伪造完整 execution 或声称已具备 reconcile 前序。存活恢复者在能够满足 session kind 的身份条件时可追加 session UNKNOWN，不回写旧记录。此分支由 R1.2 既有测试覆盖，重复消费仍被原槽拒绝，不新增恢复服务或 record kind。
+
+| 计划测试归属（本 DOC-ONLY 修订不执行/不生成测试）                                                                           | 精确断言                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| R1.1 `manual-stage1-contracts.test.mjs`                                                                                     | 八 kind 各一个合法 factory；逐一删除必填键/添加额外键/错 kind/错误 nullable 分支均拒绝；未来/自身引用由记录 IO 验证测试补充。覆盖 SPKI DER fingerprint、两个签名域、签名整外壳 digest、完整 request 一字节/非投影字段改变、target-observe 未来字段、时间 round-trip/边界、前序/nonce/撤销链/两种品牌及重复纯验证无 IO                                                                                                                                  |
+| R1.2 `manual-stage1-session.test.mjs`                                                                                       | 同 ID 并发/跨 session/换签名消费槽只成功一次；写成败不明/原件读回失败/receipt 保管失败/最后撤销均释放凭证计数 0；原 UNKNOWN 换 ID apply 仍拒绝；仅原 apply UNKNOWN 的新 session 同原 key 只读 reconcile可准入；replay 失联必须保存新 attempt UNKNOWN/finishedAt=null、原 apply checkpoint 不变，旧成功不能绕过未决 replay 签发。八 kind 的生产时点、MATCH 原件等式、前序同链、拒绝未来/self/custody递归引用，缺失字段不伪造，所有失败 create-only 保留 |
+| R2.1 `apps/release-runner/test/manual-command-adapter.test.mjs`、`apps/release-runner/test/manual-target-observer.test.mjs` | 完整 request Schema/封闭映射先于 DB；稳定领域 plan input 不被新 envelope 自漂移且不复用 attempt；preState catalog 不冒充 expected schema script；缺少 reconcile 原提交证据不能以 schema PASSED 消除 UNKNOWN。消费者断言复用 R1.1E；R2.1 唯一额外范围为已披露的 handler 身份接缝及其既有回归测试                                                                                                                                                        |
+| R2.2 `scripts/release/launch-manual-stage1.test.mjs`、`apps/release-runner/test/manual-entrypoint.test.mjs`                 | 未过完整 request Schema 时 credential-read/DB-connect=0；actual child 上下文不可从 receipt 复制；第二 frame/换 child/challenge 拒绝；父锁跨角色/别名排他，最后撤销与返回后断管保留已消费/UNKNOWN                                                                                                                                                                                                                                                       |
+| R2.3 `scripts/release/verify-manual-runner-result.test.mjs`                                                                 | reader 独立核对真实 artifact/读回与失败历史；未知不能被 schema PASSED 判成功；第一阶段不要求未来 H3-B，第二阶段缺 H3-B/真实权限读回不能整体 PASS                                                                                                                                                                                                                                                                                                       |
+
+- [ ] **0. 核对 R1.1E 已提交、测试已审查。** 缺共享完整契约/纯校验器即停在 RED 前，不能用 R2 callback、fixture 的自报 status 或反向 import 补依赖。本步骤不重跑 R1.1 交付。
+- [ ] **1. 为未实现的父会话写 RED。** `node --test packages/release-foundation/test/manual-stage1-session.test.mjs`。用 `mkdtemp` 的测试根及测试 owner observation，覆盖第二父进程抢同一目标、请求指定 archiveRoot、路径逃逸/链接、已关闭会话消费；预期缺模块，不连接数据库。
+- [ ] **2. 建立最小父会话并 GREEN。** 排他创建锁文件，真实 owner-only 权限观察、文件句柄/nonce 与内存会话绑定；固定 profile 路径逐级 realpath/reparse 核对，原子 CreateNew 记录。不要把 `chmod` 在 Windows 上当作 ACL 验证：Windows 用固定 `icacls` 参数数组读回，POSIX 用 uid/mode；读回未知即 `MANUAL_STORAGE_UNVERIFIED`。
+- [ ] **3. 写撤销/一次性 RED。** 先签后撤销、台账缺失/损坏/序号回退、并发消费同一 ID、write 成功/readback 失败、父进程死亡后旧授权、新 operation 尝试绕过原 UNKNOWN；消费后/凭证交接前撤销、未消费授权生成 handoff、错挑战重放同一 receipt 也拒绝。断言任何失败均未交凭证；失败历史与原消费文件不被覆盖。
+- [ ] **4. 实现后 GREEN。** 消费前在父会话锁内重新读取 owner-only 日志，核对 hash 链/单调序号和已观察 checkpoint，禁止使用请求内 revocation。消费/记录文件以规范化 digest 内容寻址；记录失败不能称为“未执行”，使用 `INTERRUPTED_UNKNOWN`。原 execution-state-machine 保持不变，仅原 apply UNKNOWN 允许相同幂等键的只读 reconcile；未决 replay UNKNOWN 单独 STOP，不发 PROCESS_LOST/ATTEMPT_FAILED、不转原 apply reconcile，不能创建新 apply。
+- [ ] **5. 写保管 RED → GREEN。** session/post-state/execution/signoff 按前序 digest 单向连接，签字晚于执行记录；输入/批准/失败/撤销引用均纳入档案。独立读回不使用写入响应；恢复测试使用第二测试根，修改一字节即拒绝。增加 §2.5 的完整正向成功档案与对应错 phase、缺原 attempt、部分迁移、成功只读未提交判定；增加 replay 完整成功与丢 close/丢 result 的对照：成功仅用 REPLAY_STARTED→ATTEMPT_PROVED，失联仅保存新 manual attempt UNKNOWN、不可证 finishedAt=null，原 apply checkpoint 不变；断言不发 PROCESS_LOST/ATTEMPT_FAILED，且未决全历史阻断签发/消费、再次 replay/apply 和自动原 apply reconcile。用真实临时文件读回调用共享 assessor，再按原状态机归约，断言 not-committed 用例本次调查成功但原 state=FAILED，不能 replay/迁移签收。缺原结果时只保留可证明原件；不复制造假 result。本已完成任务按历史 180 日契约验收；新执行的 90 日目标及同步边界见 §1.1，仍需 owner 签收、权限及备份读回，本地文件不标为 WORM；不凭 `now+90d` 宣称已证明未来保管。
+- [ ] **6. 格式/契约/独立审查后提交。** 本任务 session 测试与 R1.1/E 既有离线测试执行，`packages/release-foundation/test/execution-state-machine.test.mjs` 只读回归不修改，`pnpm release:contracts:verify`。精确四文件 Prettier、unstaged/staged diff 检查后提交 `feat(release): bind manual approval to live local session`。
+
+测试 IO 只允许单测直接调用，不能由生产参数/环境加载。跨进程生产消费只能由 R2 固定父会话交接；R1.2 不创建通用 broker、HTTP 服务或后台签名进程。对控制宿主或签名 owner 的攻击不作不成立的抵抗承诺。
+
+## Task R1.3：固定 profile loader 与真实构建验签适配
+
+**已接受状态：** 本任务已在 `aebbb6b0` 本地通过并获用户接受；下列四文件、四接口与原步骤保留为历史范围，不因本轮 H3 传输补充返工。新增工作只归 Task R1.3H，后者仍待复审与施工批准。
+
+**Files:**
+
+- Create: `scripts/release/manual-stage1-trust.mjs`
+- Create/Test: `scripts/release/manual-stage1-trust.test.mjs`
+- Modify: `packages/release-foundation/src/catalogs.mjs`（只登记 `manual-stage1-trust.mjs`；`verify-build-proof.mjs` 已由 RP4 登记）
+- Modify: `release/contracts/repository-contract-files.v1.json`（只加入 R1.3 新文件；保留 RP4 条目）
+- Read-only dependency: `scripts/release/verify-build-proof.mjs`、`scripts/release/build-proof.test.mjs`
+
+**Interfaces:**
+
+- Consumes: 已完成 R1.1/R1.1E/R1.2、§2.6 fixed-input 契约，以及 RP4 已交付并登记的 `assertBuildIdentity({proof,buildMaterialObservation})`、`assertProofCustody({proofDigest,custodyReceipt,trustRoot,verifiedAttestation})`；不修改这两个共享导出、旧 `verifyBuildProof()`、前述 Schema、五个 evidence 导出或 R1.2 接口。
+- Produces 恰四个显式接口：`loadFixedManualProfile({repoRoot}):Promise<Profile>`；`readFixedManualOperation({repoRoot,operationRef}):Promise<{operation,indexDigest,proofBytes,materialBytes}>`；`verifyManualBuild({proofBytes,materialBytes,repoRoot}):Promise<{buildProofDigest,proofRawDigest,materialRawDigest,custodyReceiptRawDigest,promotionEligible:false}>`；`openTrustedManualSession({repoRoot,proofBytes,materialBytes,operationRef}):Promise<Session>`。loader 自行完成 profile/sidecar/approval/actual host-principal/五 roots ACL 的非秘密校验且不读 key；build verifier 每次先调用 loader，再完成 raw/gh/build/custody 与 attested source/contract 验证。最后一个函数重新调用 loader、reader 和 build verifier，将 caller 两个 Buffer 与 fixed-path readback 逐字节比较并核对 index 四个 fixed-build digest，所有步骤通过后才加载固定 key、构造既有 R1.2 session。生产调用方不能传文件路径、targetIntent、ownerObservation、signingKey、IO、decision 或任意 `verified/approved` 值；`verifyManualBuild` 返回只供报告的冻结事实，没有 public consumer 接受它作为通行证，`openTrustedManualSession` 不接受 caller result。不增加第五个导出。
+- `readFixedManualOperation` 只接受 lowercase UUID；digest alias、绝对/相对路径、大小写变体、额外键均拒绝。返回 Buffer 为独立副本且不进入 JSON/log/error；函数只证明 fixed-path source/bytes，不能读私钥、签名、开 session 或检查 H3。R2.2/3 调用本 reader，禁止复制 index parser；H3-A/B approval/readback 的 closed validator 和实际门禁仍由对应 R2 固定 IO 在 launch/result reader 中拥有。
+- RP4 已完成两个共享导出的提取、保留旧 `verifyBuildProof()` v1/180 scope、`verify-build-proof.mjs` 的 catalog/manifest 登记及其 `build-proof.test.mjs` 回归；这些文件、步骤、暂存项和提交所有权不再属于 R1.3。manual adapter 调 `assertProofCustody` 时只传内部固定 retention90 trustRoot 与 **proof** 的真实 `verifiedAttestation`；receipt 自身 gh 结果只在 helper 外核其 raw subject/同 run，绝不能替换 receipt 字段或传成 proof attestation。旧 fixture 路径仍不可提升，新路径不修改旧 execution scope 或伪造 custody。
+- R1.3 的生产提交恰为上列四个可写文件；H1 sidecar 不在该提交中生成。catalog/manifest 只新增 `scripts/release/manual-stage1-trust.mjs`，并保留 RP4 已登记的 `scripts/release/verify-build-proof.mjs`，使 H2 repository contract 同时覆盖二者。`manual-stage1-trust.test.mjs` 必须保留冻结 verifier 依赖回归：在隔离 contract fixture 中只改 `verify-build-proof.mjs` 一字节，重算 contract identity 必须失败。
+
+- [ ] **1. 固定 profile/sidecar/operation reader RED。** 在既有 `manual-stage1-trust.test.mjs` 用隔离 Git/临时 storage roots 预置原件，先分别破坏 profile/sidecar/approval、actual host/principal 与五 roots ACL，断言 `loadFixedManualProfile` 拒绝且 private-key-read/session-open 为 0；R2.2 对应测试另断言 index-write=0。再测 index 缺失、非 canonical/非法 UTF-8/1 MiB+1/额外或未来字段，operationRef 为 digest/path/大写 UUID，raw digest 与 fixed build 文件不符、link/reparse/escape；argv `--trust-root/--profile-file/--archive-root` 与环境 override 均不能选择来源。合法 index 返回完整 deep-frozen operation、外部 indexDigest 和两个 Buffer 副本，调用前后源文件一字节改变拒绝；不得新增 fixture、Schema、R1.3 production factory 或 R2 文件。
+- [ ] **2. 实现 fixed loaders 与 checkout 绑定，GREEN。** 固定读 `release/contracts/manual-stage1-profile.v2.json`、`manual-stage1-owner-binding.v1.json`、manifest、index 和 proof/material/`{proofRawHex}.custody-receipt.retention90.v1.json` 三个 raw build 文件；v1 profile 或旧 receipt 文件名均不得 fallback。全部要求 fatal UTF-8/JSON/closed/bytes 上限，approval/sidecar/index/receipt 原件 canonical，proof/material 允许合法 pretty JSON并另算 canonical 对象摘要。逐级 realpath/reparse/ACL、只读句柄与 pre/post path identity 按 §2.6 拒绝失败。实际 checkout HEAD/source 与 proof/receipt 两份 attestation source 相同，重算 repository contract 单独等于 `proof.identity.repositoryContractDigest`；重算 profile canonical digest分别等于 sidecar/index 的 `profileDigest`。不同摘要域不得互等，也不能仅信任任一文件自报摘要。
+- [ ] **3. 原始 proof/material/receipt/gh 反例 RED。** 覆盖任一原件缺失/oversize/readback/link/ABA、caller Buffer 与文件不等，proofRawDigest 与 canonical buildProofDigest 混用，receipt 非 canonical、未单独 attest、receipt gh subject 不等 receipt raw digest、与 proof 不同 workflow/source/run/self-hosted，receipt content/readback 误绑 proofRawDigest、canonical proof size 错、owner/readers 顺序/固定 90 日 policy/expiry/attestationRef 不符，caller trustRoot 或 receipt 自报 policy、public artifact 无权威 custody，以及旧 issuer/material/三镜像/catalog/contract/timeout/输出超限；全部在 index 写入、session 建立及 private-key/sign/credential 访问前拒绝。正例覆盖同 run 的两个独立 gh 验证及完整 custody 链，同时保留 raw/canonical proof 不同的合法等式；不得偷偷要求 proof raw bytes canonical。
+- [ ] **4. 实现固定进程调用，GREEN。** 使用 `spawn`/`execFile` 参数数组、`shell:false`；`gh` 单次 timeout 固定 `120000 ms`，stdout/stderr 各自最多 `1048576 bytes`。两次调用分别只接 R1.3 已核对的 fixed proof path 和 fixed receipt path，以下以 proof 为例，receipt 调用仅换为固定 receipt 文件：
+
+```text
+gh attestation verify <受限非秘密 proof 文件>
+  --repo keqi119/subscription-Saas
+  --signer-workflow keqi119/subscription-Saas/.github/workflows/docker-images.yml
+  --source-ref refs/heads/main
+  --source-digest <proof.identity.sourceSha>
+  --cert-oidc-issuer https://token.actions.githubusercontent.com
+  --deny-self-hosted-runners --format json
+```
+
+上面是 proof 与 receipt 两次固定调用共用的参数映射，不是 CLI 文件参数。必须从 gh 已验证证书/subject 取得各自 raw subject hash并核对同一 run；workflow predicate 或 `{verified:true}` 不能代替。固定 repo/workflow run 终态仍须真实 GitHub 只读核验；具体选项见 [官方 gh verifier](https://cli.github.com/manual/gh_attestation_verify)。真实版本/输出格式到 H2 才留证，不兼容即停止。
+
+- [ ] **5. actual host/principal/approval/key RED → GREEN。** Windows MachineGuid/SID、Linux machine-id/uid 按 §2.6 精确编码；wrong host/SID/uid、sidecar 或 approval 一字节变化、approval 未先存在/未独立读回、任一 storage root ACL owner 不等 anchored principal、当前进程只自报相同、index 伪造 owner均使 loader/build/open 拒绝。R1.3 test 断言 session-open/private-key-read=0，R2.2 对应 prepare test 断言 index-write/session-open/private-key-read=0。通过非秘密 loader 与完整 build verifier 后，只有 `openTrustedManualSession` 才调用 `loadFixedSigningKey`：逐级核对固定 keyRef/ACL/句柄/path identity、解析 Ed25519、导出公钥指纹匹配；错 key/替换/链接/越界拒绝。会话关闭后清零原始 Buffer/释放 KeyObject仅属 best effort，不声明物理擦除。
+- [ ] **6. 回归、纳管、独立审查后提交。** 运行 `node --test scripts/release/build-proof.test.mjs scripts/release/manual-stage1-trust.test.mjs` 与 `pnpm release:contracts:verify`；`build-proof.test.mjs` 为 RP4 只读依赖回归，不进入 R1.3 暂存清单，旧 issuer/custody/full-RC/fixture 负例保持。隔离 contract fixture 仅改 `verify-build-proof.mjs` 一字节，真实重算必须使 proof contract identity 失败且 key/sign/credential read=0。精确四个可写文件 Prettier、diff/staged 清单复核后提交 `feat(release): verify fixed manual operation inputs`；不建立第二 verifier、importer、CLI/path authority 或新 shared trust wrapper。
+
+```powershell
+$r13Files = @(
+  'scripts/release/manual-stage1-trust.mjs', 'scripts/release/manual-stage1-trust.test.mjs',
+  'packages/release-foundation/src/catalogs.mjs',
+  'release/contracts/repository-contract-files.v1.json'
+)
+pnpm exec prettier --write -- $r13Files
+if ($LASTEXITCODE -ne 0) { throw 'R13_FORMAT_FAILED' }
+git add -- $r13Files
+if ($LASTEXITCODE -ne 0) { throw 'R13_STAGE_FAILED' }
+git diff --cached --check
+if ($LASTEXITCODE -ne 0) { throw 'R13_STAGED_DIFF_INVALID' }
+$r13Staged = @(git diff --cached --name-only)
+if ($LASTEXITCODE -ne 0) { throw 'R13_STAGED_LIST_UNAVAILABLE' }
+if (@(Compare-Object ($r13Files | Sort-Object) ($r13Staged | Sort-Object)).Count -ne 0) {
+  throw 'R13_STAGED_SCOPE_MISMATCH'
+}
+git commit -m "feat(release): verify fixed manual operation inputs"
+if ($LASTEXITCODE -ne 0) { throw 'R13_COMMIT_FAILED' }
+```
+
+只在全部命令成功且 staged 清单恰为上述四个可写文件时提交；保留任何无关修改。
+
+## Task R1.3H：MS2 的 H3 目标原件投影纯闭环（待本轮复审；未启动）
+
+**前置与范围：** R1.3 `aebbb6b0` 已接受；本任务位于其后、R2.1 前。本轮只批准文档局部修订和分别本地提交复审，不执行下列代码、测试或提交步骤。后续只有两计划复审通过且用户单独批准施工后才按此任务进行；不重新开 R1.1/E/2/RP/R1.3，不提前执行 H1/H2/H3 或 R2。
+
+**Files（恰四个，均 Modify）：**
+
+- `packages/release-foundation/src/manual-runner-evidence.mjs`：同一个私有 framing/payload/绑定实现支持 MS1 历史与 MS2 前向，新增唯一纯 cluster fingerprint 导出。
+- `packages/release-foundation/test/manual-runner-evidence.test.mjs`：扩展现有私有 fixture 与纯正反例，不新增 fixture 文件/生产 factory。
+- `packages/release-foundation/src/index.mjs`：只重导出 `computeManualClusterFingerprint`。
+- `packages/release-foundation/test/manual-stage1-session.test.mjs`：真实临时根读回调用既有 session，验证 MS2 与旧历史/UNKNOWN 不回归；不修改 session 生产模块。
+
+两个生产文件（evidence/index）已在 repository contract manifest 纳管，两个测试继续由既有 Foundation 测试发现入口选中；本任务不重新登记、不改 catalog/manifest、Schema、profile、kernel、session 生产文件或 R2 文件。旧 pure parser/validator/assessor 五导出签名按 §2.5.5 保留，encoder 仅增加显式四键 MS2 分支；总计新增一个纯导出，无 IO/身份品牌。
+
+**Interfaces：** Consumes §2.5.5 的 TargetContext/ClusterOrigin、现有 `sha256Canonical`/`encodeManualJson`、现有 MS1 codec、RP3 v2/90 `profileBytes` 和真实 `openManualSession`。Produces `computeManualClusterFingerprint(cluster):D`；同 `encodeManualRunnerFrame` 新 closed MS2 输入；parser 原返回与 validator/assessor 原当前输入/结果。R2.1/R2.2/R2.3 只有本任务获接受后才消费这些接口，并由自己的固定 IO 保证 H3 来源和拒绝 MS1 新入口。
+
+- [ ] **1. 写纯 RED，并记录真实失败。** 在 evidence 测试内通过模块 namespace 断言新增导出，不把旧 fixture 全局改成 MS2；以下测试向量不来自真实 DB/密钥，UInt64 不经 Number 转换。
+
+```js
+test("MS2 cluster fingerprint is the closed physical tuple", async () => {
+  const module = await import("../src/manual-runner-evidence.mjs");
+  assert.equal(typeof module.computeManualClusterFingerprint, "function");
+  const cluster = {
+    systemIdentifier: "18446744073709551615",
+    databaseContainerId: "1".repeat(64),
+    dataVolumeName: "test-h3-volume",
+    postgresImageDigest: "sha256:" + "2".repeat(64),
+    marker: "test-h3-marker",
+    serverAddress: "192.0.2.10",
+    serverPort: 5432
+  };
+  assert.equal(
+    module.computeManualClusterFingerprint(cluster),
+    sha256Canonical({ domain: "manual-postgres-cluster.v1", ...cluster })
+  );
+  for (const bad of [
+    { ...cluster, systemIdentifier: "18446744073709551616" },
+    { ...cluster, systemIdentifier: "01" },
+    { ...cluster, systemIdentifier: 1 },
+    { ...cluster, serverAddress: "db.invalid" },
+    { ...cluster, serverAddress: "fe80::1%eth0" },
+    { ...cluster, serverPort: 0 },
+    { ...cluster, role: "test-migrate" },
+    { ...cluster, runId: uuid(90) }
+  ])
+    assert.throws(() => module.computeManualClusterFingerprint(bad));
+});
+```
+
+Run `node --test --test-name-pattern="MS2" packages/release-foundation/test/manual-runner-evidence.test.mjs`；预期缺导出/四键被旧 encoder 拒绝，记录 RED 原件。随后新增完整 cluster 的缺键/额外 symbol/accessor（不执行 getter）、非法 IPv4/IPv6、空/零/负值/指数和 upper uint64 边界反例，所有有效字段逐一改动须改变 hash；合法 IPv4 与无 zone IPv6 均覆盖。
+
+- [ ] **2. 为 MS2 正常链和 live/archive 写 RED。** 仅给测试内既有 `fixtureFrame`/`runnerFixture` 新增显式 `options.protocol:"MS2"` 分支，旧默认始终 MS1；MS2 分支在 build/baseline/request 冻结和测试签名前用同一 ClusterOrigin 重算 physicalIdentity，并将同 run/profile/target、两个测试完整 H3 raw bytes 的 RawRef 放入 AUTHORIZE.targetContext。由原有按事件顺序的 fixture 建图/重算，不对最终档案逐字符串替换 MS1。私有 fixture 参数不是生产接口；H3 synthetic bytes 只测试 raw 关系，不称人审或 Docker 证据。扩展 existing fixture90 所依赖的 options 透传，增加以下测试：
+
+```js
+test("MS2 bound 90-day archive and every live ACK use the same target context", () => {
+  const dry = fixture90("dry-run", null, { protocol: "MS2" });
+  const apply = fixture90("apply", dry, { protocol: "MS2" });
+  const replay = fixture90("replay", apply, { protocol: "MS2" });
+  for (const current of [dry, apply, replay]) {
+    const input = current.archive.input(current.request);
+    assert.equal(assessManualRunnerEvidence(input).executionStatus, "SUCCEEDED");
+    assert.equal(validateManualRunnerProtocol(input), undefined);
+    for (const live of current.liveInputs)
+      assert.equal(validateManualRunnerProtocol(live), undefined);
+  }
+});
+```
+
+同一组增加 verify、apply UNKNOWN→reconcile、合法跨角色/新 attempt 与新恢复 session；相同 cluster 的 hash 不随包装 run/profile/审批引用改变，但 context outer 必须始终绑定其当前 request。target-observe 保留 parent-only/no-process 分支，以父方 synthetic H3 readback 与实际观察形状构建初始 baseline，不造 MS2 observe 帧。
+
+- [ ] **3. 写拒绝矩阵并逐项运行 RED。** MS2 AUTHORIZE 缺 targetContext、context/cluster/RawRef 缺键/多键；旧八键 payload；databaseOid、run/profile/target 或 cluster 身份不符；旧 context 跨 run 重用；MS1 payload 偷带 context；四键 protocol 为 MS1/未知；方向内或跨方向/公开 parentFrames/候选 ACK 混版。live 与 archive 对身份错同时拒绝；archive 缺 H3 raw bytes 或 bytes/hash 不匹配分别断言 INPUT_REQUIRED/绑定失败。另重建内部一致 frame/READY/ACK/raw 引用但只改 context（不改已签 request/既存 baseline），仍必须拒绝 `MANUAL_EVIDENCE_BINDING_MISMATCH`。完全换原件+RawRef 的自洽伪造仅能由 R2 固定 source reader 拒绝，归 R2.2/R2.3 测试，不将该能力计入本任务。
+
+- [ ] **4. 最小实现后 GREEN。** 在同 evidence 模块新增私有 closed ClusterOrigin/TargetContext 检查，纯导出只做该检查与 §2.5.5 唯一 hash；encoder 用互斥三/四键分支，私有 header/prefix decoder 识别首版并向后绑定，同一 authorizeMatches/protocolTrace 谓词接入 context→request/baseline 等式，archive 只新增两个显式 RawRef raw edges。live 使用已有 frame 中 context，不加 Buffer 参数；未知版本、混版、缺 context 不 fallback。index 只加一个重导出；所有 request/authorization/receipt/profile/process Schema 和 session 生产代码保持字节不动。再次运行 Step 1 命令须 PASS，再运行 evidence 整文件；失败时不能扩为第二 codec、Schema 或 H3 生产 IO。
+
+- [ ] **5. 边界与实际 session 回归 RED → GREEN。** evidence 同一完整合法 MS2 archive/live 流逐 byte split、逐多字节 UTF-8 split、所有帧 coalesce 后重解析必须相同，ParsedFrames/frame 返回 own keys 与旧版完全一致；覆盖 1 MiB header+payload 与整 stdin/stdout（含 CREDENTIAL 但绝不归档秘密）的上限/加一、有限 header、RESULT prefix、EOF 半帧、重复/缺 RESULT、尾日志、wrong ACK/自引用/future 引用和秘密混入公开数组。沿旧 error/UNKNOWN 分层，不删弱化 MS1 原测试。session 测试仅扩展现有私有 fixture 的显式 MS2 分支，并用 `liveRoot(t,{profileVersion:"v2"})`、`liveRunner`、`acceptExecution`/`sealExecution` 与临时文件真实重开证明 MS2 handoff→archive→90 日 signoff；再覆盖 apply/replay 丢 result/close 的 UNKNOWN、旧 v1/MS1 未决历史仍阻断 v2 签发/消费/ACCEPTED、一次性消费/撤销/排他锁不回归。session 只按既有 assessor 读取 raw；不加生产 factory/参数，不调用 DB/Docker/网络、生产 secret 或真实 profile。
+
+- [ ] **6. 完整离线验证、精确范围审查，另行获批后提交。** 运行以下完整测试，不以仅 MS2 pattern 的通过计整体完成；记录实际 Node、各命令完整计数/exit，核旧 MS1/RP/UNKNOWN 断言未改弱、只有一个新导出/四个文件。按 requesting-code-review/verification-before-completion 做独立审查和证据核对；这是未来施工收口，不是本轮文档任务允许的执行。
+
+```powershell
+node --test packages/release-foundation/test/manual-runner-evidence.test.mjs packages/release-foundation/test/manual-stage1-session.test.mjs packages/release-foundation/test/manual-stage1-contracts.test.mjs packages/release-foundation/test/execution-state-machine.test.mjs
+if ($LASTEXITCODE -ne 0) { throw 'R13H_OFFLINE_FAILED' }
+pnpm release:contracts:verify
+if ($LASTEXITCODE -ne 0) { throw 'R13H_CONTRACT_FAILED' }
+$r13hFiles = @(
+  'packages/release-foundation/src/manual-runner-evidence.mjs',
+  'packages/release-foundation/test/manual-runner-evidence.test.mjs',
+  'packages/release-foundation/src/index.mjs',
+  'packages/release-foundation/test/manual-stage1-session.test.mjs'
+)
+pnpm exec prettier --write -- $r13hFiles
+if ($LASTEXITCODE -ne 0) { throw 'R13H_FORMAT_FAILED' }
+git diff --check
+if ($LASTEXITCODE -ne 0) { throw 'R13H_DIFF_INVALID' }
+git add -- $r13hFiles
+if ($LASTEXITCODE -ne 0) { throw 'R13H_STAGE_FAILED' }
+git diff --cached --check
+if ($LASTEXITCODE -ne 0) { throw 'R13H_STAGED_DIFF_INVALID' }
+$r13hStaged = @(git diff --cached --name-only)
+if ($LASTEXITCODE -ne 0) { throw 'R13H_STAGED_LIST_UNAVAILABLE' }
+if (@(Compare-Object ($r13hFiles | Sort-Object) ($r13hStaged | Sort-Object)).Count -ne 0) {
+  throw 'R13H_STAGED_SCOPE_MISMATCH'
+}
+git commit -m "feat(release): bind MS2 manual target context"
+if ($LASTEXITCODE -ne 0) { throw 'R13H_COMMIT_FAILED' }
+```
+
+验收只说明同一纯协议内的结构/绑定与真实临时档案回归；新 R2 拒绝旧 MS1 的生产入口、H3 fixed-source/完整原件投影、即时 Docker/SQL 身份及 archive 实际源错反例，仍由 R2.1/R2.2/R2.3 在各自批准范围实现。本任务接受后停在 R2.1 施工批准门前，不自动执行下一任务。
+
+## H1：首次实际身份、路径与备份——人工停止点
+
+这不是自动执行任务。R1.3 代码审查通过后才提交**非秘密精确摘要**：owner ID、actual principal、按 §2.6 算出的 hostFingerprint、加密 key/journal/archive/backup/credential roots、权限/恢复步骤及撤销处置。当前真实值尚未提供；不猜目录、SID/uid、MachineGuid/machine-id、公钥或批准时间。credential root 此时无 DB 凭证；H3 后续批准精确身份/内部引用，不改 profile/owner binding。
+
+- [ ] **顺序固定为 profile 草案 → digest → H1 真实批准原件 → sidecar → manifest。** 用户先分别批准真实 key 创建、精确 storage roots 和实际 host/principal；owner 环境才生成 Ed25519/指纹/GENESIS，验证独立加密 backup 可恢复同一公钥及测试签名。形成 profile bytes 并算 profileDigest 后，再由用户批准包含精确 profileDigest/ownerId/principal/hostFingerprint/approvedAt 的 closed approval 原件；该原件在 sidecar 之前 CreateNew 保存并独立读回，不能由 runtime session 或未来 build 签名。
+- [ ] H1 仓库提交从原计划两文件明确增为三文件：Create `release/contracts/manual-stage1-profile.v2.json`；Create `release/contracts/manual-stage1-owner-binding.v1.json`；Modify `release/contracts/repository-contract-files.v1.json`。三者同一独立审查提交；sidecar/approval 必须逐项相等且 profile/sidecar 均进入 contract。owner-binding.v1 的 closed 结构保持不变，只把 `profileDigest` 绑定 v2 canonical bytes；此授权增量不属于 R1.3 四个生产任务文件，不新增/修改 profile Schema 或 foundation 模块。
+- [ ] R1.3 固定 loader 在候选提交上只读演练 profile/sidecar/approval/ACL/backup readback；任何来源、权限、恢复或逐项等式失败保持 `H1_INPUT_UNAVAILABLE`。测试 fixture 绝不复制成真实值；本计划不自动执行 key 创建、ACL 写入、磁盘配置、上传或 Git 操作。
+
+## H2：可信构建与消费验真——真实执行前的停止点
+
+- [ ] H1 三文件经审查合并后冻结准确 main SHA，由既有可信 CI 生成三镜像、proof 和 material；同一 workflow/source/run 必须在真实私密权威 storage 独立读回 proof 后生成 `custody-receipt.retention90.v1`，再单独 attest receipt。RP5 Actions 仅交付两个 public artifact，明确不生成该 receipt；实际 90 日权威保管及 receipt attestation 尚未读回，故保持 `MANUAL_BUILD_CUSTODY_INPUT_REQUIRED`/`TRUSTED_BUILD_UNAVAILABLE`。
+- [ ] 用户另行批准精确 proof/material/receipt 三原件 import；importer 不是 R1.3 导出。外部操作在 `archiveRoot/inputs/build/` 按 §2.6 固定名称 CreateNew 发布原 bytes，从新只读句柄独立读回并记录 owner ACL/realpath/identity/bytes。冲突、失败或读回不等停止，不覆盖、不用 verifier temp write 修补。本地 raw import 仅证明私密 fixed-input bytes，不替代完成 §1.1 同步后的共享 verifier 的权威 custody/90 日门槛；不能伪造 receipt 或从其字段反推 policy。
+- [ ] 对上述 readonly H2 bytes 调 `verifyManualBuild({proofBytes,materialBytes,repoRoot})`，在任何 H3 index/session/attempt 之前保管实际 Node/gh 版本、proof/receipt 两份证书及 subject raw hash、同一 repo/workflow/main/source/run、材料、custody 等式、准确输出计数/exit 和 pre/post file identity。该只读验证可独立完成，不需要 operationRef；任一失败不得写 index、读 private key、签名或凭证。
+- [ ] 独立 reviewer 同时确认 H1 owner/host/ACL/approval/恢复读回与 H2 source/contract/profile/sidecar/proof/material/custody receipt、receipt attestation及权威 storage readback。只有 H1/H2 都有事实，R2.2 才可调用一次 `prepareManualOperation`，把 verifier 返回的 `custodyReceiptRawDigest` 连同其余 fixed-build digest 写入非授权 index 供 H3-A 审批；H3-A 批准后外部操作不得重新 prepare。R1 内核测试或 index 存在均不表示 H1/H2/H3 已批准。
+
+## 完成与交接
+
+当前交接优先级：R1.3 `aebbb6b0` 已本地通过并获接受；本轮仅交付 R1/R2 两份局部计划修订，等待复审。Task R1.3H 与 R2 代码均未启动，H1/H2/H3/Task 30 保持冻结。下面 RP6 的收口描述是历史状态，不再表示 R1.3 尚未实施，也不构成 R1.3H 施工批准。
+
+代码审查报告分别列：R1.1/R1.1E/R1.2 历史提交与已接受计数、R1.3 新测试计数、实际 Node 版本、contract digest 变更、旧路径回归、H1/H2 状态；没有真实验证的项目保持 `NOT_RUN/INPUT_UNAVAILABLE`。RP6 本地执行/审查范围现为 `LOCAL_COMPLETE`，仅待本地文档提交与 metadata final check；该状态只解除 R1.3 的代码同步前置，不作 R1.3/H1/H2 批准或真实施工完成声明。
+
+R2 只由 `openTrustedManualSession({repoRoot,proofBytes,materialBytes,operationRef})` 建立父方，caller bytes 必须与 `readFixedManualOperation` 独立读回的同一原件逐字节一致；R2.2/R2.3 只用该 reader 取得同一冻结描述/bytes，不复制 parser、不接收 caller trust decision。parentDecision 仍是交凭证条件；子方消费 handoff 并生成不同 childDecision，不加载 host key/journal/backup。新增 `inputs` 不改变 session `objectPath/archiveRoot/raw` union。B1/B3/B5 可在各自批准后独立测试；产品/DB/RBAC/workflow/Task 30、R3 数据 stage/隔离副本/主机安全及 R4/A3 外部批准均未在本计划扩入。

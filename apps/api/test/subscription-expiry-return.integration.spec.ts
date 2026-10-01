@@ -1,4 +1,9 @@
+import "reflect-metadata";
+
+import { type INestApplication, ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { Reflector } from "@nestjs/core";
+import { Test } from "@nestjs/testing";
 import {
   CollectionActionResult,
   CollectionActionType,
@@ -17,10 +22,17 @@ import {
   VehicleReturnStatus,
   VehicleStatus
 } from "@prisma/client";
+import { PermissionCode } from "@subscription-saas/shared";
 import { createHash, randomUUID } from "node:crypto";
+import { request as requestHttp } from "node:http";
+import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AuditService } from "../src/audit/audit.service";
+import { AuthGuard, type AuthenticatedRequest } from "../src/auth/auth.guard";
+import { AuthService } from "../src/auth/auth.service";
+import type { RequestUser } from "../src/auth/auth.types";
+import { PermissionsGuard } from "../src/auth/permissions.guard";
 import { AutoDebitScheduler } from "../src/auto-debit/auto-debit.scheduler";
 import { AssetAccountingRepository } from "../src/asset-accounting/asset-accounting.repository";
 import {
@@ -30,6 +42,7 @@ import {
 import { AssetFactsRepository } from "../src/asset-facts/asset-facts.repository";
 import { AssetFactsService } from "../src/asset-facts/asset-facts.service";
 import { AssetOperationsRepository } from "../src/asset-operations/asset-operations.repository";
+import { AssetOperationsController } from "../src/asset-operations/asset-operations.controller";
 import { AssetOperationsService } from "../src/asset-operations/asset-operations.service";
 import {
   billingSourceKey,
@@ -49,9 +62,11 @@ import { SubscriptionExpiryService } from "../src/subscription-change/subscripti
 import { ContractSegmentService } from "../src/subscription-change/contract-segment.service";
 import { subscriptionEffectiveBoundaryOwner } from "../src/subscription-change/subscription-effective-boundary";
 import { SubscriptionClosureRepository } from "../src/subscription-closure/subscription-closure.repository";
+import { SubscriptionClosureController } from "../src/subscription-closure/subscription-closure.controller";
 import { SubscriptionClosureProjectionService } from "../src/subscription-closure/subscription-closure.projection";
 import { SubscriptionClosureSettlementResolver } from "../src/subscription-closure/subscription-closure.settlement-resolver";
 import { SubscriptionClosureService } from "../src/subscription-closure/subscription-closure.service";
+import { SubscriptionReturnGovernanceService } from "../src/subscription-closure/subscription-return-governance.service";
 import { canonicalSubscriptionClosureJson } from "../src/subscription-closure/subscription-closure.domain";
 import { VehicleMileageRepository } from "../src/vehicle-mileage/vehicle-mileage.repository";
 import { VehicleMileageService } from "../src/vehicle-mileage/vehicle-mileage.service";
@@ -79,6 +94,392 @@ function rethrowRecoveryAssessmentIntegrationError(error: unknown): never {
     throw new Error(`INTEGRATION_RECOVERY_ASSESSMENT_${code}`);
   }
   throw error;
+}
+
+describe("normal return inspection through the authenticated HTTP boundary", () => {
+  let prisma: PrismaService;
+
+  beforeAll(async () => {
+    prisma = new PrismaService(new ConfigService({ DATABASE_URL: TEST_DATABASE_URL }));
+    await prisma.onModuleInit();
+  });
+  afterAll(async () => prisma.onModuleDestroy());
+
+  it("uses the exact closure work order, two manual commands, and authenticated audit actors", async () => {
+    const scenario = await setupFocusedPhysicalReceipt(prisma, { undamaged: true });
+    let http: Awaited<ReturnType<typeof returnInspectionHttp>> | undefined;
+    try {
+      await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
+      http = await returnInspectionHttp(scenario);
+      const workOrderId = scenario.closureCase.returnAssetWorkOrderId!;
+      const before = await completionTruth(prisma, scenario.fixture);
+      const initial = await http.detail(workOrderId);
+      expect(initial.workOrder).toMatchObject({
+        id: workOrderId,
+        status: "IN_PROGRESS",
+        workOrderType: "RETURN_INBOUND",
+        costConfirmationRequired: false
+      });
+      const beforeEvents = await prisma.assetWorkOrderEvent.count({ where: { workOrderId } });
+      const beforeAudits = await prisma.auditLog.count({
+        where: { operatorId: scenario.fixture.actorId }
+      });
+      const command = inspectionHttpCommand(
+        scenario,
+        initial.workOrder.version,
+        "PENDING_ACCEPTANCE"
+      );
+      const truth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      const getSpy = vi.spyOn(scenario.operations, "getWorkOrderDetail");
+      const postSpy = vi.spyOn(scenario.operations, "transitionWorkOrder");
+      expect((await http.get(workOrderId, "work")).status).toBe(403);
+      expect((await http.post(workOrderId, command, "view")).status).toBe(403);
+      expect(getSpy).not.toHaveBeenCalled();
+      expect(postSpy).not.toHaveBeenCalled();
+      getSpy.mockRestore();
+      postSpy.mockRestore();
+      expect(await snapshotPhysicalReturnTruth(prisma, scenario.fixture)).toEqual(truth);
+
+      const missing = await http.post(randomUUID(), command);
+      expect(missing.status).toBe(404);
+      for (const [invalid, code] of [
+        [{ ...command, targetStatus: "CLOSED" }, "ASSET_WORK_ORDER_TRANSITION_INVALID"],
+        [
+          { ...command, occurredAt: new Date(Date.now() + 86_400_000).toISOString() },
+          "ASSET_WORK_ORDER_EVENT_TIME_INVALID"
+        ]
+      ] as const) {
+        const response = await http.post(workOrderId, invalid);
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ code });
+        expect(await snapshotPhysicalReturnTruth(prisma, scenario.fixture)).toEqual(truth);
+      }
+
+      const submit = await http.post(workOrderId, {
+        ...command,
+        actorId: randomUUID(),
+        permissions: ["spoofed:permission"]
+      });
+      expect(submit.status).toBe(201);
+      const submitted = await submit.json();
+      expect(submitted.workOrder).toMatchObject({
+        status: "PENDING_ACCEPTANCE",
+        version: initial.workOrder.version + 1
+      });
+      const submittedTruth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      const replay = await http.post(workOrderId, command);
+      expect(replay.status).toBe(201);
+      expect(await replay.json()).toEqual(submitted);
+      expect(await snapshotPhysicalReturnTruth(prisma, scenario.fixture)).toEqual(submittedTruth);
+      const changed = await http.post(workOrderId, {
+        ...command,
+        solution: "changed after submission"
+      });
+      expect(changed.status).toBe(409);
+      expect(await changed.json()).toMatchObject({ code: "ASSET_OPERATION_SOURCE_CONFLICT" });
+      expect(await snapshotPhysicalReturnTruth(prisma, scenario.fixture)).toEqual(submittedTruth);
+
+      const latest = await http.detail(workOrderId);
+      const close = inspectionHttpCommand(scenario, latest.workOrder.version, "CLOSED");
+      const cost = await http.post(workOrderId, {
+        ...close,
+        targetStatus: "PENDING_COST_CONFIRMATION"
+      });
+      expect(cost.status).toBe(409);
+      expect(await cost.json()).toMatchObject({ code: "ASSET_WORK_ORDER_TRANSITION_INVALID" });
+      expect(await snapshotPhysicalReturnTruth(prisma, scenario.fixture)).toEqual(submittedTruth);
+      const accepted = await http.post(workOrderId, close);
+      expect(accepted.status).toBe(201);
+      expect((await http.detail(workOrderId)).workOrder).toMatchObject({
+        status: "CLOSED",
+        version: initial.workOrder.version + 2
+      });
+      const closedTruth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      expect((await http.post(workOrderId, close)).status).toBe(201);
+      expect(await snapshotPhysicalReturnTruth(prisma, scenario.fixture)).toEqual(closedTruth);
+
+      const events = await prisma.assetWorkOrderEvent.findMany({
+        where: { workOrderId, sourceKey: { in: [command.source.key, close.source.key] } },
+        orderBy: { sequence: "asc" }
+      });
+      expect(events).toEqual([
+        expect.objectContaining({
+          sourceType: "MANUAL_OPERATION",
+          sourceId: command.source.id,
+          actorId: scenario.fixture.actorId,
+          afterStatus: "PENDING_ACCEPTANCE"
+        }),
+        expect.objectContaining({
+          sourceType: "MANUAL_OPERATION",
+          sourceId: close.source.id,
+          actorId: scenario.fixture.actorId,
+          afterStatus: "CLOSED"
+        })
+      ]);
+      expect(await prisma.assetWorkOrderEvent.count({ where: { workOrderId } })).toBe(
+        beforeEvents + 2
+      );
+      const audits = await prisma.auditLog.findMany({
+        where: { module: "asset_operations", entityId: { in: events.map(({ id }) => id) } }
+      });
+      expect(audits).toHaveLength(2);
+      expect(
+        audits.every(
+          ({ action, operatorId }) => action === "CREATE" && operatorId === scenario.fixture.actorId
+        )
+      ).toBe(true);
+      expect(await prisma.auditLog.count({ where: { operatorId: scenario.fixture.actorId } })).toBe(
+        beforeAudits + 4
+      );
+      const after = await completionTruth(prisma, scenario.fixture);
+      expect({ closure: after.closure, order: after.order, contract: after.contract }).toEqual({
+        closure: before.closure,
+        order: before.order,
+        contract: before.contract
+      });
+    } finally {
+      try {
+        await http?.close();
+      } finally {
+        await isolateReturnInspectionHttpFixture(prisma, scenario.fixture);
+      }
+    }
+  });
+
+  it("allows one concurrent transition and preserves the stale command version", async () => {
+    const scenario = await setupFocusedPhysicalReceipt(prisma, { undamaged: true });
+    let http: Awaited<ReturnType<typeof returnInspectionHttp>> | undefined;
+    try {
+      await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
+      http = await returnInspectionHttp(scenario);
+      const workOrderId = scenario.closureCase.returnAssetWorkOrderId!;
+      const initial = await http.detail(workOrderId);
+      const count = await prisma.assetWorkOrderEvent.count({ where: { workOrderId } });
+      const commands = [0, 1].map(() =>
+        inspectionHttpCommand(scenario, initial.workOrder.version, "PENDING_ACCEPTANCE")
+      );
+      const responses = await Promise.all(
+        commands.map((command) => http!.post(workOrderId, command))
+      );
+      expect(responses.map(({ status }) => status).sort()).toEqual([201, 409]);
+      const rejectedIndex = responses.findIndex(({ status }) => status === 409);
+      const rejected = await responses[rejectedIndex]!.json();
+      expect(["ASSET_WORK_ORDER_VERSION_CONFLICT", "ASSET_OPERATION_AUTHORITY_BUSY"]).toContain(
+        rejected.code
+      );
+      expect(await prisma.assetWorkOrderEvent.count({ where: { workOrderId } })).toBe(count + 1);
+      expect((await http.detail(workOrderId)).workOrder.version).toBe(
+        initial.workOrder.version + 1
+      );
+      const truth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      const retry = await http.post(workOrderId, commands[rejectedIndex]!);
+      expect(retry.status).toBe(409);
+      expect(await retry.json()).toMatchObject({ code: "ASSET_WORK_ORDER_VERSION_CONFLICT" });
+      expect(await snapshotPhysicalReturnTruth(prisma, scenario.fixture)).toEqual(truth);
+    } finally {
+      try {
+        await http?.close();
+      } finally {
+        await isolateReturnInspectionHttpFixture(prisma, scenario.fixture);
+      }
+    }
+  });
+
+  it("rejects stale authority and rolls back the transition when its audit fails", async () => {
+    const scenario = await setupFocusedPhysicalReceipt(prisma, { undamaged: true });
+    let http: Awaited<ReturnType<typeof returnInspectionHttp>> | undefined;
+    try {
+      await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
+      http = await returnInspectionHttp(scenario);
+      const workOrderId = scenario.closureCase.returnAssetWorkOrderId!;
+      const initial = await http.detail(workOrderId);
+      const command = inspectionHttpCommand(
+        scenario,
+        initial.workOrder.version,
+        "PENDING_ACCEPTANCE"
+      );
+      await prisma.vehicle.update({
+        where: { id: scenario.fixture.vehicleId },
+        data: { deletedAt: new Date() }
+      });
+      const staleTruth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      const stale = await http.post(workOrderId, command);
+      expect(stale.status).toBe(404);
+      expect(await stale.json()).toMatchObject({ code: "ASSET_OPERATION_VEHICLE_NOT_FOUND" });
+      expect(await snapshotPhysicalReturnTruth(prisma, scenario.fixture)).toEqual(staleTruth);
+      await prisma.vehicle.update({
+        where: { id: scenario.fixture.vehicleId },
+        data: { deletedAt: null }
+      });
+      const truth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      const auditFailure = vi
+        .spyOn(AuditService.prototype, "write")
+        .mockRejectedValueOnce(new Error("return-inspection-audit-failure"));
+      try {
+        expect((await http.post(workOrderId, command)).status).toBe(500);
+        expect(auditFailure).toHaveBeenCalledOnce();
+      } finally {
+        auditFailure.mockRestore();
+      }
+      expect(await snapshotPhysicalReturnTruth(prisma, scenario.fixture)).toEqual(truth);
+      expect((await http.post(workOrderId, command)).status).toBe(201);
+      expect((await http.detail(workOrderId)).workOrder.version).toBe(
+        initial.workOrder.version + 1
+      );
+    } finally {
+      try {
+        await http?.close();
+      } finally {
+        await isolateReturnInspectionHttpFixture(prisma, scenario.fixture);
+      }
+    }
+  });
+});
+
+async function isolateReturnInspectionHttpFixture(
+  prisma: PrismaService,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>
+) {
+  // Only after all HTTP/business assertions: isolate this retained test fixture
+  // from later suite-wide scheduler checks. Immutable facts stay for custody.
+  const before = await prisma.billingSchedule.findUniqueOrThrow({
+    where: { id: fixture.scheduleId }
+  });
+  const pauseReason = "R4_HTTP_FIXTURE_ASSERTIONS_FINISHED";
+  const changed = await prisma.billingSchedule.updateMany({
+    where: { id: fixture.scheduleId, orderId: fixture.orderId, status: "ACTIVE" },
+    data: { status: "PAUSED", pauseReason, version: { increment: 1 } }
+  });
+  expect(changed.count).toBe(1);
+  expect(
+    await prisma.billingSchedule.findUniqueOrThrow({ where: { id: fixture.scheduleId } })
+  ).toMatchObject({
+    id: fixture.scheduleId,
+    orderId: fixture.orderId,
+    status: "PAUSED",
+    pauseReason,
+    version: before.version + 1
+  });
+}
+
+function inspectionHttpCommand(
+  scenario: Awaited<ReturnType<typeof setupFocusedPhysicalReceipt>>,
+  expectedVersion: number,
+  targetStatus: "PENDING_ACCEPTANCE" | "CLOSED"
+) {
+  const id = randomUUID();
+  return {
+    source: { type: "MANUAL_OPERATION", id, key: `return-inspection:${id}` },
+    expectedVersion,
+    targetStatus,
+    occurredAt: scenario.occurredAt.toISOString(),
+    detailSnapshot: { closureCaseId: scenario.closureCase.id },
+    closeReason:
+      targetStatus === "CLOSED" ? "Inspection acceptance recorded by the operator" : null,
+    solution: "Inspected the returned vehicle against the archived checklist"
+  };
+}
+
+function requestInspectionHttp(
+  url: string,
+  options: { body?: string; headers?: Record<string, string>; method?: string } = {}
+): Promise<Response> {
+  // Exercise the actual HTTP server on its assigned loopback port without the
+  // browser fetch client's unrelated forbidden-port policy.
+  return new Promise((resolve, reject) => {
+    const request = requestHttp(
+      url,
+      { method: options.method, headers: options.headers },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.once("error", reject);
+        res.once("aborted", () => reject(new Error("Inspection HTTP response aborted")));
+        res.once("end", () => {
+          resolve(new Response(Buffer.concat(chunks).toString("utf8"), { status: res.statusCode }));
+        });
+      }
+    );
+    request.once("error", reject);
+    request.setTimeout(5_000, () =>
+      request.destroy(new Error("Inspection HTTP request timed out"))
+    );
+    request.end(options.body);
+  });
+}
+
+async function returnInspectionHttp(
+  scenario: Awaited<ReturnType<typeof setupFocusedPhysicalReceipt>>
+) {
+  // Only authentication is synthetic. The HTTP guards, DTOs, service, repository,
+  // audit and database are the real implementations on the suite's fresh target.
+  const moduleRef = await Test.createTestingModule({
+    controllers: [AssetOperationsController],
+    providers: [
+      { provide: AssetOperationsService, useValue: scenario.operations },
+      {
+        provide: AuthService,
+        useValue: {
+          validateToken: async (token: string) => ({
+            id: scenario.fixture.actorId,
+            username: "return-inspection-http",
+            name: "Inspection operator",
+            roles: [],
+            menus: [],
+            permissions:
+              token === "view"
+                ? [PermissionCode.ASSET_OPERATIONS_VIEW]
+                : token === "work"
+                  ? [PermissionCode.ASSET_WORK_ORDER_MANAGE]
+                  : token === "all"
+                    ? [PermissionCode.ASSET_OPERATIONS_VIEW, PermissionCode.ASSET_WORK_ORDER_MANAGE]
+                    : []
+          })
+        }
+      },
+      AuthGuard,
+      PermissionsGuard,
+      Reflector
+    ]
+  }).compile();
+  const app: INestApplication = moduleRef.createNestApplication();
+  app.useLogger(false);
+  app.setGlobalPrefix("api");
+  app.useGlobalPipes(
+    new ValidationPipe({ forbidNonWhitelisted: false, transform: true, whitelist: true })
+  );
+  await app.listen(0, "127.0.0.1");
+  const baseUrl = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}/api/asset-operations/work-orders`;
+  const get = (id: string, token = "all") =>
+    requestInspectionHttp(`${baseUrl}/${id}`, { headers: { authorization: `Bearer ${token}` } });
+  return {
+    close: () => app.close(),
+    get,
+    async detail(id: string) {
+      const response = await get(id);
+      expect(response.status).toBe(200);
+      return (await response.json()) as {
+        workOrder: {
+          id: string;
+          version: number;
+          status: string;
+          workOrderType: string;
+          costConfirmationRequired: boolean;
+        };
+      };
+    },
+    post<Body extends { source: { key: string } }>(id: string, body: Body, token = "all") {
+      return requestInspectionHttp(`${baseUrl}/${id}/transition`, {
+        method: "POST",
+        body: JSON.stringify(body),
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "Idempotency-Key": body.source.key
+        }
+      });
+    }
+  };
 }
 
 describe("SubscriptionClosureService Task 7 early-termination initiation", () => {
@@ -7567,6 +7968,1118 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       await cleanupManagedExpiryFixture(prisma, fixture);
     }
   });
+
+  it("B6 completes a paid normal expiry through the current operational entry and replays without writes", async () => {
+    const h = await prepareGovernedCompletion(prisma);
+    const before = await completionTruth(prisma, h.scenario.fixture);
+    expect(await h.complete()).toMatchObject({
+      financialStatus: "SETTLED",
+      replayed: false,
+      status: "COMPLETED"
+    });
+    const after = await completionTruth(prisma, h.scenario.fixture);
+    expect(after.closure).toMatchObject({
+      closureType: "NORMAL_COMPLETION",
+      financialStatus: "SETTLED",
+      operationalCompletedAt: h.occurredAt,
+      settledAt: null,
+      status: "COMPLETED"
+    });
+    expect(after.order.orderStatus).toBe("COMPLETED");
+    expect(after.contract.status).toBe("COMPLETED");
+    expect(after.vehicle.status).toBe("AVAILABLE");
+    expect(after.lease?.status).toBe("COMPLETED");
+    expect(after.periods).toHaveLength(1);
+    expect(after.periods[0]?.endedAt).toBeInstanceOf(Date);
+    expect(after.bills).toEqual([
+      expect.objectContaining({
+        amount: 100n,
+        billStatus: "PAID",
+        paidAmount: 100n,
+        remainingAmount: 0n
+      })
+    ]);
+    expect(after.payments).toEqual([expect.objectContaining({ paymentAmount: 100n })]);
+    expect(after.writeOffs).toEqual([expect.objectContaining({ writeOffAmount: 100n })]);
+    expect({
+      lease: after.lease,
+      periods: after.periods,
+      bills: after.bills,
+      payments: after.payments,
+      writeOffs: after.writeOffs,
+      vehicle: after.vehicle
+    }).toEqual({
+      lease: before.lease,
+      periods: before.periods,
+      bills: before.bills,
+      payments: before.payments,
+      writeOffs: before.writeOffs,
+      vehicle: before.vehicle
+    });
+    const completionAudits = after.audits.filter(
+      ({ entityType }) => entityType === "subscription_closure_case"
+    );
+    expect(completionAudits).toEqual([
+      expect.objectContaining({
+        action: "UPDATE",
+        beforeSnapshot: {
+          closureCaseId: h.scenario.closureCase.id,
+          closureStatus: before.closure.status,
+          contractId: before.contract.id,
+          contractStatus: before.contract.status,
+          financialStatus: before.closure.financialStatus,
+          orderId: before.order.id,
+          orderStatus: before.order.orderStatus
+        },
+        afterSnapshot: {
+          closureCaseId: h.scenario.closureCase.id,
+          closureStatus: "COMPLETED",
+          contractId: before.contract.id,
+          contractStatus: "COMPLETED",
+          financialStatus: "SETTLED",
+          idempotencyKey: h.input.idempotencyKey,
+          orderId: before.order.id,
+          orderStatus: "COMPLETED"
+        },
+        createdAt: h.occurredAt,
+        entityId: h.scenario.closureCase.id,
+        operatorId: h.scenario.fixture.actorId
+      })
+    ]);
+    await expect(h.complete()).resolves.toMatchObject({ replayed: true, status: "COMPLETED" });
+    await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(after);
+  });
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "replays the same %s request after the server clock passes its persisted requestedAt",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      try {
+        const input = Object.freeze({
+          approvalType,
+          billId: h.billId,
+          evidenceIds: Object.freeze([h.evidenceId, h.proof.fileId]),
+          settlementRevisionId: h.base.settlement.id,
+          idempotencyKey: "financial-cross-millisecond-request",
+          requestReason: "Financial proof independently reviewed"
+        });
+        const request = () => h.governance.requestApproval(h.caseId, input, h.requester, {});
+        const first = await request();
+        const before = await h.truth();
+        expect(before.approvals).toHaveLength(1);
+        expect(before.receipts).toHaveLength(1);
+        expect(before.approvalAudits).toHaveLength(1);
+        const approval = before.approvals[0]!;
+        expect(approval).toMatchObject({ id: first.id, status: "PENDING", version: 0 });
+        expect(before.receipts[0]).toMatchObject({
+          approvalId: first.id,
+          commandType: "EXCEPTION_REQUEST",
+          payloadSnapshot: { requestedAt: approval.requestedAt.toISOString() }
+        });
+        const observedBeforeRetry = await waitForFinancialRetryClock(approval.requestedAt);
+        console.info("FINANCIAL_APPROVAL_REQUEST_RETRY_BEFORE", {
+          approvalType,
+          sourceId: h.caseId,
+          sourceKey: before.receipts[0]!.sourceKey,
+          persistedAt: approval.requestedAt,
+          observedBeforeRetry
+        });
+        try {
+          await expect(financialRetryAttempt(request)).resolves.toEqual(first);
+        } finally {
+          const after = await h.truth();
+          expect(after).toEqual(before);
+        }
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+      }
+    }
+  );
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "replays the same %s decision after the server clock passes its persisted decidedAt",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      try {
+        // A separate fixture/first request keeps request-retry RED from hiding decision RED.
+        const requested = await h.request();
+        const pending = await prisma.businessExceptionApproval.findUniqueOrThrow({
+          where: { id: requested.id }
+        });
+        const input = Object.freeze({
+          decision: "APPROVED" as const,
+          decisionComment: "Independent financial approval",
+          expectedVersion: pending.version,
+          idempotencyKey: "financial-cross-millisecond-decision"
+        });
+        const decide = () =>
+          h.governance.decideApproval(h.caseId, pending.id, input, h.decider, {});
+        const first = await decide();
+        const before = await h.truth();
+        expect(before.approvals).toHaveLength(1);
+        expect(before.receipts).toHaveLength(2);
+        expect(before.approvalAudits).toHaveLength(2);
+        const approval = before.approvals[0]!;
+        expect(approval).toMatchObject({
+          id: first.id,
+          status: "APPROVED",
+          decidedBy: h.decider.id,
+          version: pending.version + 1
+        });
+        if (!approval.decidedAt) throw new Error("Expected the persisted decision time");
+        expect(before.receipts.find((row) => row.commandType === "EXCEPTION_DECIDE")).toMatchObject(
+          {
+            approvalId: first.id,
+            payloadSnapshot: {
+              decidedAt: approval.decidedAt.toISOString(),
+              expectedVersion: pending.version
+            }
+          }
+        );
+        const observedBeforeRetry = await waitForFinancialRetryClock(approval.decidedAt);
+        console.info("FINANCIAL_APPROVAL_DECISION_RETRY_BEFORE", {
+          approvalType,
+          sourceId: h.caseId,
+          sourceKey: before.receipts.find((row) => row.commandType === "EXCEPTION_DECIDE")!
+            .sourceKey,
+          persistedAt: approval.decidedAt,
+          observedBeforeRetry
+        });
+        try {
+          await expect(financialRetryAttempt(decide)).resolves.toEqual(first);
+        } finally {
+          const after = await h.truth();
+          expect(after).toEqual(before);
+        }
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+      }
+    }
+  );
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "serializes overlapping same-key %s request and decision into one receipt and audit each",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      try {
+        const requests = await raceFinancialApprovalCommands(
+          prisma,
+          h.audit,
+          () => h.request(),
+          () => h.request()
+        );
+        expect(requests[0].status).toBe("fulfilled");
+        expect(requests[1]).toEqual(requests[0]);
+        const pendingTruth = await h.truth();
+        expect(pendingTruth.approvals).toHaveLength(1);
+        expect(pendingTruth.receipts).toHaveLength(1);
+        expect(pendingTruth.approvalAudits).toHaveLength(1);
+        const pending = pendingTruth.approvals[0]!;
+        expect(pending).toMatchObject({ status: "PENDING", version: 0 });
+        const decisions = await raceFinancialApprovalCommands(
+          prisma,
+          h.audit,
+          () => h.decide(pending.id, pending.version),
+          () => h.decide(pending.id, pending.version)
+        );
+        expect(decisions[0].status).toBe("fulfilled");
+        expect(decisions[1]).toEqual(decisions[0]);
+        const after = await h.truth();
+        expect(after.approvals).toEqual([
+          expect.objectContaining({ id: pending.id, status: "APPROVED", version: 1 })
+        ]);
+        expect(after.receipts).toHaveLength(2);
+        expect(after.approvalAudits).toHaveLength(2);
+        expect(after.joint).toEqual(pendingTruth.joint);
+        expect(after.dispositions).toEqual(pendingTruth.dispositions);
+        expect(after.settlements).toEqual(pendingTruth.settlements);
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+      }
+    }
+  );
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "rejects a different body waiting on the same %s request or decision source",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      try {
+        const changedRequest = () =>
+          h.governance.requestApproval(
+            h.caseId,
+            {
+              ...financialRetryRequestInput(h, approvalType),
+              requestReason: "Changed request rationale"
+            },
+            h.requester,
+            {}
+          );
+        const requests = await raceFinancialApprovalCommands(
+          prisma,
+          h.audit,
+          () => h.request(),
+          changedRequest
+        );
+        expect(requests[0].status).toBe("fulfilled");
+        expect(requests[1]).toMatchObject({
+          status: "rejected",
+          reason: { response: { code: "ASSET_ACCOUNTING_SOURCE_CONFLICT" } }
+        });
+        const pendingTruth = await h.truth();
+        expect(pendingTruth.receipts).toHaveLength(1);
+        expect(pendingTruth.approvalAudits).toHaveLength(1);
+        const pending = pendingTruth.approvals[0]!;
+        const decisions = await raceFinancialApprovalCommands(
+          prisma,
+          h.audit,
+          () => h.decide(pending.id, pending.version),
+          () =>
+            h.governance.decideApproval(
+              h.caseId,
+              pending.id,
+              {
+                ...financialRetryDecisionInput(pending.version),
+                decisionComment: "Changed decision rationale"
+              },
+              h.decider,
+              {}
+            )
+        );
+        expect(decisions[0].status).toBe("fulfilled");
+        expect(decisions[1]).toMatchObject({
+          status: "rejected",
+          reason: { response: { code: "ASSET_ACCOUNTING_SOURCE_CONFLICT" } }
+        });
+        const after = await h.truth();
+        expect(after.approvals).toHaveLength(1);
+        expect(after.approvals[0]).toMatchObject({
+          status: "APPROVED",
+          version: 1,
+          decisionComment: "Independent financial approval"
+        });
+        expect(after.receipts).toHaveLength(2);
+        expect(after.approvalAudits).toHaveLength(2);
+        expect(after.joint).toEqual(pendingTruth.joint);
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+      }
+    }
+  );
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "replays historical %s acknowledgements while retaining current actor, payload and authority guards",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      try {
+        const requested = await h.request();
+        const approved = await h.decide(requested.id, 0);
+        let before = await h.truth();
+        await waitForFinancialRetryClock(before.approvals[0]!.decidedAt!);
+        expect(await h.request([h.proof.fileId, h.evidenceId, h.evidenceId])).toEqual(requested);
+        expect(requested).toMatchObject({ status: "PENDING", version: 0 });
+        expect(await h.decide(requested.id, 0)).toEqual(approved);
+        expect(await h.truth()).toEqual(before);
+        const thirdId = randomUUID();
+        await prisma.$transaction((tx) => insertRuntimeUser(tx, thirdId, "financial-third-actor"));
+        const third = { ...h.decider, id: thirdId, username: thirdId };
+        before = await h.truth([thirdId]);
+        const denials: Array<[() => Promise<unknown>, string]> = [
+          [
+            () => h.request(undefined, { ...h.requester, permissions: [] }),
+            "ASSET_ACCOUNTING_PERMISSION_REQUIRED"
+          ],
+          [
+            () => h.decide(requested.id, 0, { ...h.decider, permissions: [] }),
+            "ASSET_ACCOUNTING_PERMISSION_REQUIRED"
+          ],
+          [
+            () => h.request(undefined, { ...h.requester, id: thirdId, username: thirdId }),
+            "ASSET_ACCOUNTING_SOURCE_CONFLICT"
+          ],
+          [() => h.decide(requested.id, 0, third), "ASSET_ACCOUNTING_SOURCE_CONFLICT"],
+          [
+            () =>
+              h.decide(requested.id, 0, {
+                ...h.requester,
+                permissions: ["business_exception:approve"]
+              }),
+            "ASSET_ACCOUNTING_SELF_APPROVAL_FORBIDDEN"
+          ],
+          [() => h.decide(requested.id, 1), "ASSET_ACCOUNTING_SOURCE_CONFLICT"],
+          [
+            () =>
+              h.governance.decideApproval(
+                h.caseId,
+                requested.id,
+                { ...financialRetryDecisionInput(0), decision: "REJECTED" },
+                h.decider,
+                {}
+              ),
+            "ASSET_ACCOUNTING_SOURCE_CONFLICT"
+          ]
+        ];
+        for (const [invoke, code] of denials) {
+          await expect(invoke()).rejects.toMatchObject({ response: { code } });
+          expect(await h.truth([thirdId])).toEqual(before);
+        }
+        for (const [actorId, invoke] of [
+          [h.requester.id, () => h.request()],
+          [h.decider.id, () => h.decide(requested.id, 0)]
+        ] as const) {
+          for (const change of [{ status: "DISABLED" as const }, { deletedAt: new Date() }]) {
+            await prisma.user.update({ where: { id: actorId }, data: change });
+            try {
+              await expect(invoke()).rejects.toMatchObject({
+                response: { code: "ASSET_ACCOUNTING_AUTHORITY_NOT_LIVE" }
+              });
+              expect(await h.truth([thirdId])).toEqual(before);
+            } finally {
+              await prisma.user.update({
+                where: { id: actorId },
+                data: { status: "ACTIVE", deletedAt: null }
+              });
+            }
+          }
+        }
+        const additionalProof = await h.uploadProof(h.caseId, h.requester.id);
+        await expect(
+          h.request([h.evidenceId, h.proof.fileId, additionalProof.fileId])
+        ).rejects.toMatchObject({ response: { code: "ASSET_ACCOUNTING_SOURCE_CONFLICT" } });
+        expect(await h.truth([thirdId])).toEqual(before);
+        await settleTask6Bill(
+          prisma,
+          new FinanceService(new AuditService(prisma), prisma),
+          h.base.scenario.fixture,
+          h.billId,
+          1n,
+          0
+        );
+        before = await h.truth([thirdId]);
+        expect(before.joint.bills).toEqual([
+          expect.objectContaining({ id: h.billId, remainingAmount: 99n })
+        ]);
+        for (const invoke of [() => h.request(), () => h.decide(requested.id, 0)]) {
+          await expect(invoke()).rejects.toMatchObject({
+            response: { code: "ASSET_ACCOUNTING_SOURCE_CONFLICT" }
+          });
+          expect(await h.truth([thirdId])).toEqual(before);
+        }
+        await expireFinancialApprovalAfterBalanceDrift(prisma, h, requested.id);
+        const expired = await h.truth([thirdId]);
+        expect(expired.approvals[0]).toMatchObject({
+          status: "EXPIRED",
+          version: 2,
+          decision: "APPROVED"
+        });
+        await expect(h.request()).rejects.toMatchObject({
+          response: { code: "ASSET_ACCOUNTING_SOURCE_CONFLICT" }
+        });
+        await expect(h.decide(requested.id, 0)).rejects.toMatchObject({
+          response: { code: "ASSET_ACCOUNTING_SOURCE_CONFLICT" }
+        });
+        await expect(h.dispose(requested.id)).rejects.toMatchObject({
+          response: { code: "CLOSURE_DISPOSITION_APPROVAL_REQUIRED" }
+        });
+        expect(await h.truth([thirdId])).toEqual(expired);
+        const command = async (suffix: string) => ({
+          actorId: h.requester.id,
+          closureCaseId: h.caseId,
+          occurredAt: await readTestDatabaseClock(prisma),
+          idempotencyKey: `financial-retry-${suffix}`,
+          waiverApprovalId: null,
+          writeOffApprovalId: null
+        });
+        await h.base.scenario.closure.proposeManagedSettlement(await command("repropose"));
+        await h.base.scenario.closure.finalizeManagedSettlement(await command("refinalize"));
+        const refinalized = await h.truth([thirdId]);
+        expect(refinalized.joint.closure.currentSettlementRevisionId).not.toBe(
+          h.base.settlement.id
+        );
+        for (const invoke of [() => h.request(), () => h.decide(requested.id, 0)]) {
+          await expect(invoke()).rejects.toMatchObject({
+            response: { code: "CLOSURE_APPROVAL_STALE" }
+          });
+          expect(await h.truth([thirdId])).toEqual(refinalized);
+        }
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+      }
+    }
+  );
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "rolls back %s approval, receipt and actual audit together before retrying the first write",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      const actualWrite = h.audit.write.bind(h.audit);
+      try {
+        let approvalId: string | null = null;
+        for (const phase of ["request", "decision"] as const) {
+          const before = await h.truth();
+          const invoke = () => (phase === "request" ? h.request() : h.decide(approvalId!, 0));
+          const hook = vi.spyOn(h.audit, "write").mockImplementationOnce(async (input, client) => {
+            await actualWrite(input, client);
+            throw new Error("FINANCIAL_RETRY_AFTER_REAL_AUDIT");
+          });
+          try {
+            await expect(invoke()).rejects.toThrow("FINANCIAL_RETRY_AFTER_REAL_AUDIT");
+          } finally {
+            hook.mockRestore();
+          }
+          expect(await h.truth()).toEqual(before);
+          const committed = await invoke();
+          approvalId = committed.id;
+          const after = await h.truth();
+          expect(after.approvals).toHaveLength(1);
+          expect(after.approvals[0]).toMatchObject({
+            id: approvalId,
+            status: phase === "request" ? "PENDING" : "APPROVED",
+            version: phase === "request" ? 0 : 1
+          });
+          expect(after.receipts).toHaveLength(phase === "request" ? 1 : 2);
+          expect(after.approvalAudits).toHaveLength(phase === "request" ? 1 : 2);
+          const priorAuditIds = new Set(before.approvalAudits.map((audit) => audit.id));
+          const addedAudits = after.approvalAudits.filter((audit) => !priorAuditIds.has(audit.id));
+          expect(addedAudits).toHaveLength(1);
+          const addedAudit = addedAudits[0]!;
+          expect(addedAudit).toMatchObject({
+            module: "asset_accounting",
+            entityType: "business_exception_approval",
+            entityId: committed.id,
+            action: phase === "request" ? "CREATE" : "APPROVE",
+            operatorId: phase === "request" ? h.requester.id : h.decider.id,
+            afterSnapshot: {
+              fact: committed,
+              snapshotHash: committed.subjectSnapshotHash,
+              source: {
+                type: "SUBSCRIPTION_CLOSURE_APPROVAL",
+                id: h.caseId,
+                key:
+                  phase === "request"
+                    ? "closure-approval-request:financial-request"
+                    : "closure-approval-decision:financial-decision"
+              }
+            }
+          });
+          expect(after.approvalAudits.filter((audit) => audit.id !== addedAudit.id)).toEqual(
+            before.approvalAudits
+          );
+          const expectedJointAudits = [...before.joint.audits];
+          if (addedAudit.operatorId === h.base.scenario.fixture.actorId) {
+            expectedJointAudits.push(addedAudit);
+          }
+          expectedJointAudits.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+          expect(after.joint).toEqual({ ...before.joint, audits: expectedJointAudits });
+        }
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+      }
+    }
+  );
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "keeps a genuinely expired pending %s request guarded by its changed current authority",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      try {
+        const requested = await h.request();
+        await settleTask6Bill(
+          prisma,
+          new FinanceService(new AuditService(prisma), prisma),
+          h.base.scenario.fixture,
+          h.billId,
+          1n,
+          0
+        );
+        await expireFinancialApprovalAfterBalanceDrift(prisma, h, requested.id);
+        const before = await h.truth();
+        expect(before.approvals[0]).toMatchObject({
+          status: "EXPIRED",
+          decision: null,
+          version: 1
+        });
+        expect(before.receipts).toHaveLength(2);
+        expect(before.approvalAudits).toHaveLength(2);
+        await expect(h.request()).rejects.toMatchObject({
+          response: { code: "ASSET_ACCOUNTING_SOURCE_CONFLICT" }
+        });
+        expect(await h.truth()).toEqual(before);
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+      }
+    }
+  );
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "requires complete evidence and an independent real approval before %s disposition",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      const foreign = await setupFocusedPhysicalReceipt(prisma, { undamaged: true });
+      try {
+        const foreignProof = await h.uploadProof(foreign.closureCase.id, foreign.fixture.actorId);
+        const missingId = randomUUID();
+        expect(await prisma.fileObject.findUnique({ where: { id: missingId } })).toBeNull();
+        expect(
+          await prisma.vehicleReturnEvidenceLink.count({ where: { evidenceId: missingId } })
+        ).toBe(0);
+        expect(
+          await prisma.fileObject.findUniqueOrThrow({ where: { id: foreignProof.fileId } })
+        ).toMatchObject({
+          objectKey: expect.stringContaining(
+            `subscription-closure/${foreign.closureCase.id}/financial-proof/`
+          )
+        });
+        const untouched = await h.truth();
+        for (const extra of [missingId, foreignProof.fileId]) {
+          await expect(h.request([h.evidenceId, extra, h.proof.fileId])).rejects.toMatchObject({
+            response: { code: "CLOSURE_FINANCIAL_APPROVAL_AUTHORITY_MISMATCH" }
+          });
+          expect(await h.truth()).toEqual(untouched);
+        }
+        await expect(
+          h.request(undefined, { ...h.requester, permissions: [] })
+        ).rejects.toMatchObject({
+          response: { code: "ASSET_ACCOUNTING_PERMISSION_REQUIRED" }
+        });
+        expect(await h.truth()).toEqual(untouched);
+
+        const requested = await h.request([h.evidenceId, h.evidenceId, h.proof.fileId]);
+        const pending = await prisma.businessExceptionApproval.findUniqueOrThrow({
+          where: { id: requested.id }
+        });
+        expect(pending).toMatchObject({
+          status: "PENDING",
+          decision: null,
+          requestedBy: h.requester.id,
+          subjectSnapshot: {
+            evidenceIds: [h.evidenceId, h.proof.fileId].sort(),
+            amountCents: "100",
+            billId: h.billId,
+            settlementRevisionId: h.base.settlement.id,
+            settlementResultHash: h.base.settlement.resultHash
+          }
+        });
+        const beforeDecision = await h.truth();
+        const decisionGuards: Array<[RequestUser, number, string]> = [
+          [
+            { ...h.decider, permissions: [] },
+            pending.version,
+            "ASSET_ACCOUNTING_PERMISSION_REQUIRED"
+          ],
+          [
+            { ...h.requester, permissions: ["business_exception:approve"] },
+            pending.version,
+            "ASSET_ACCOUNTING_SELF_APPROVAL_FORBIDDEN"
+          ],
+          [h.decider, pending.version + 1, "ASSET_ACCOUNTING_APPROVAL_VERSION_CONFLICT"]
+        ];
+        for (const [user, version, code] of decisionGuards) {
+          await expect(h.decide(pending.id, version, user)).rejects.toMatchObject({
+            response: { code }
+          });
+          expect(await h.truth()).toEqual(beforeDecision);
+        }
+        await h.decide(pending.id, pending.version);
+        const approved = await prisma.businessExceptionApproval.findUniqueOrThrow({
+          where: { id: pending.id }
+        });
+        expect(approved).toMatchObject({
+          status: "APPROVED",
+          decision: "APPROVED",
+          decidedBy: h.decider.id,
+          subjectSnapshot: pending.subjectSnapshot,
+          subjectSnapshotHash: pending.subjectSnapshotHash,
+          version: pending.version + 1
+        });
+        expect(h.requester.id).not.toBe(h.decider.id);
+        const otherProof = await h.uploadProof(h.caseId, h.requester.id);
+        const beforeDisposition = await h.truth();
+        for (const override of [{ approvalId: null }, { proofFileId: otherProof.fileId }]) {
+          await expect(h.dispose(approved.id, override)).rejects.toMatchObject({
+            response: { code: "CLOSURE_DISPOSITION_APPROVAL_REQUIRED" }
+          });
+          expect(await h.truth()).toEqual(beforeDisposition);
+        }
+        const disposed = await h.dispose(approved.id);
+        expect(disposed).toMatchObject({
+          approvalId: approved.id,
+          billId: h.billId,
+          amountCents: 100n,
+          disposition: approvalType === "WAIVER" ? "WAIVED" : "WRITTEN_OFF",
+          proofFileId: h.proof.fileId,
+          createdBy: h.requester.id
+        });
+        const after = await h.truth();
+        expect(after.joint.bills).toEqual([
+          expect.objectContaining({
+            id: h.billId,
+            billStatus: "CANCELLED",
+            paidAmount: 0n,
+            remainingAmount: 0n
+          })
+        ]);
+        expect(after.joint.closure).toMatchObject({
+          financialStatus: approvalType === "WAIVER" ? "SETTLED" : "WRITTEN_OFF",
+          status: beforeDisposition.joint.closure.status,
+          operationalCompletedAt: beforeDisposition.joint.closure.operationalCompletedAt,
+          currentSettlementRevisionId: h.base.settlement.id
+        });
+        expect(after.joint.payments).toEqual(beforeDisposition.joint.payments);
+        expect(after.joint.writeOffs).toEqual(beforeDisposition.joint.writeOffs);
+        expect(after.joint.order).toEqual(beforeDisposition.joint.order);
+        expect(after.joint.contract).toEqual(beforeDisposition.joint.contract);
+        expect(after.settlements).toEqual(beforeDisposition.settlements);
+        expect(after.dispositions).toEqual([disposed]);
+        expect(after.approvalAudits).toHaveLength(2);
+        expect(after.approvalAudits).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              action: "CREATE",
+              operatorId: h.requester.id,
+              entityId: approved.id,
+              afterSnapshot: expect.objectContaining({
+                snapshotHash: approved.subjectSnapshotHash,
+                source: {
+                  id: h.caseId,
+                  key: "closure-approval-request:financial-request",
+                  type: "SUBSCRIPTION_CLOSURE_APPROVAL"
+                }
+              })
+            }),
+            expect.objectContaining({
+              action: "APPROVE",
+              operatorId: h.decider.id,
+              entityId: approved.id,
+              afterSnapshot: expect.objectContaining({
+                snapshotHash: approved.subjectSnapshotHash,
+                source: {
+                  id: h.caseId,
+                  key: "closure-approval-decision:financial-decision",
+                  type: "SUBSCRIPTION_CLOSURE_APPROVAL"
+                }
+              })
+            })
+          ])
+        );
+        expect(after.receipts).toHaveLength(2);
+        expect(after.receipts).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              approvalId: approved.id,
+              commandType: "EXCEPTION_REQUEST",
+              actorId: h.requester.id
+            }),
+            expect.objectContaining({
+              approvalId: approved.id,
+              commandType: "EXCEPTION_DECIDE",
+              actorId: h.decider.id
+            })
+          ])
+        );
+        expect(await h.dispose(approved.id)).toEqual(disposed);
+        expect(await h.truth()).toEqual(after);
+        await expect(
+          h.dispose(approved.id, { detail: { reason: "changed body" } })
+        ).rejects.toMatchObject({
+          response: { code: "CLOSURE_DISPOSITION_IDEMPOTENCY_CONFLICT" }
+        });
+        expect(await h.truth()).toEqual(after);
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+        await isolateFinancialApprovalFixture(prisma, foreign.fixture);
+      }
+    }
+  );
+
+  it.each(["WAIVER", "WRITE_OFF"] as const)(
+    "rejects %s approval and disposition after actual balance or settlement drift",
+    async (approvalType) => {
+      const h = await prepareFinancialApproval(prisma, approvalType);
+      try {
+        const requested = await h.request();
+        const pending = await prisma.businessExceptionApproval.findUniqueOrThrow({
+          where: { id: requested.id }
+        });
+        await settleTask6Bill(
+          prisma,
+          new FinanceService(new AuditService(prisma), prisma),
+          h.base.scenario.fixture,
+          h.billId,
+          1n,
+          0
+        );
+        expect(
+          await prisma.receivableBill.findUniqueOrThrow({ where: { id: h.billId } })
+        ).toMatchObject({ remainingAmount: 99n });
+        const beforeDecision = await h.truth();
+        await expect(h.decide(pending.id, pending.version)).rejects.toMatchObject({
+          response: { code: "ASSET_ACCOUNTING_APPROVAL_SNAPSHOT_MISMATCH" }
+        });
+        expect(await h.truth()).toEqual(beforeDecision);
+
+        const current = await h.request(undefined, undefined, "financial-current-request");
+        const currentPending = await prisma.businessExceptionApproval.findUniqueOrThrow({
+          where: { id: current.id }
+        });
+        await h.decide(current.id, currentPending.version, undefined, "financial-current-decision");
+        await settleTask6Bill(
+          prisma,
+          new FinanceService(new AuditService(prisma), prisma),
+          h.base.scenario.fixture,
+          h.billId,
+          1n,
+          1
+        );
+        const beforeAmountDrift = await h.truth();
+        await expect(h.dispose(current.id)).rejects.toMatchObject({
+          response: { code: "CLOSURE_DISPOSITION_APPROVAL_REQUIRED" }
+        });
+        expect(await h.truth()).toEqual(beforeAmountDrift);
+
+        const revisionRequest = await h.request(undefined, undefined, "financial-revision-request");
+        const revisionPending = await prisma.businessExceptionApproval.findUniqueOrThrow({
+          where: { id: revisionRequest.id }
+        });
+        await h.decide(
+          revisionPending.id,
+          revisionPending.version,
+          undefined,
+          "financial-revision-decision"
+        );
+        const revisionApproval = await prisma.businessExceptionApproval.findUniqueOrThrow({
+          where: { id: revisionPending.id }
+        });
+        const beforeRevision = await h.truth();
+        expect(beforeRevision.joint.bills).toEqual([
+          expect.objectContaining({ id: h.billId, remainingAmount: 98n })
+        ]);
+        expect(revisionApproval).toMatchObject({
+          status: "APPROVED",
+          decision: "APPROVED",
+          subjectSnapshot: {
+            amountCents: "98",
+            billId: h.billId,
+            settlementRevisionId: beforeRevision.joint.closure.currentSettlementRevisionId,
+            settlementResultHash: h.base.settlement.resultHash
+          }
+        });
+        const settlementCommand = async (suffix: string) => ({
+          actorId: h.requester.id,
+          closureCaseId: h.caseId,
+          occurredAt: await readTestDatabaseClock(prisma),
+          idempotencyKey: `financial-${suffix}`,
+          waiverApprovalId: null,
+          writeOffApprovalId: null
+        });
+        await h.base.scenario.closure.proposeManagedSettlement(
+          await settlementCommand("repropose")
+        );
+        await h.base.scenario.closure.finalizeManagedSettlement(
+          await settlementCommand("refinalize")
+        );
+        const afterRevision = await h.truth();
+        expect(afterRevision.joint.closure.currentSettlementRevisionId).not.toBe(
+          h.base.settlement.id
+        );
+        expect(afterRevision.settlements.find((row) => row.id === h.base.settlement.id)).toEqual(
+          h.base.settlement
+        );
+        expect(afterRevision.joint.bills).toEqual(beforeRevision.joint.bills);
+        expect(afterRevision.approvals).toEqual(beforeRevision.approvals);
+        const newSettlement = afterRevision.settlements.find(
+          (row) => row.id === afterRevision.joint.closure.currentSettlementRevisionId
+        );
+        expect(newSettlement).toMatchObject({ stage: "FINALIZED" });
+        if (!newSettlement) throw new Error("Expected the actual finalized successor");
+        // This records observed hash drift without manufacturing it; the
+        // rejection below isolates revision binding even if a hash is reused.
+        console.info("FINANCIAL_APPROVAL_REVISION_DRIFT", {
+          approvalType,
+          amountCents: "98",
+          revisionChanged: true,
+          resultHashChanged: newSettlement.resultHash !== h.base.settlement.resultHash
+        });
+        await expect(h.dispose(revisionApproval.id)).rejects.toMatchObject({
+          response: { code: "CLOSURE_DISPOSITION_APPROVAL_REQUIRED" }
+        });
+        expect(await h.truth()).toEqual(afterRevision);
+      } finally {
+        await isolateFinancialApprovalFixture(prisma, h.base.scenario.fixture);
+      }
+    }
+  );
+
+  it("B6 replays the exact captured checklist without new facts and rejects a changed item", async () => {
+    const h = await prepareGovernedCompletion(prisma, { replayChecklist: true });
+    expect(await h.complete()).toMatchObject({ status: "COMPLETED" });
+  });
+
+  it("refreshes a priced proposal through the controller and reuses its bill without changing history", async () => {
+    const h = await prepareGovernedCompletion(prisma, {
+      damageResponsibility: "CUSTOMER",
+      verifyBrowserPricing: true
+    });
+    expect(h.settlement.stage).toBe("FINALIZED");
+    const responses = await prisma.subscriptionClosureCustomerResponse.findMany({
+      where: { closureCaseId: h.scenario.closureCase.id }
+    });
+    expect(responses).toEqual([
+      expect.objectContaining({
+        settlementRevisionId: h.settlement.id,
+        settlementHash: h.settlement.resultHash,
+        status: "ACCEPTED"
+      })
+    ]);
+  });
+
+  it("B6 completes operations with governed collection ownership and preserves the unpaid debt", async () => {
+    const h = await prepareGovernedCompletion(prisma, { paid: false });
+    const beforeOwnership = await completionTruth(prisma, h.scenario.fixture);
+    await expect(h.complete()).rejects.toMatchObject({
+      response: { code: "CLOSURE_OPERATIONAL_FINANCIAL_OWNER_REQUIRED" }
+    });
+    expect(await completionTruth(prisma, h.scenario.fixture)).toEqual(beforeOwnership);
+    await h.governance.recordDisposition(
+      h.scenario.closureCase.id,
+      {
+        approvalId: null,
+        billId: beforeOwnership.bills[0]!.id,
+        chargeLineId: null,
+        detail: { reason: "Assigned collection after the accepted final settlement" },
+        disposition: "COLLECTION_PENDING",
+        idempotencyKey: "b6-collection-owner",
+        ownerId: h.scenario.fixture.actorId,
+        ownerType: "FINANCE",
+        proofFileId: null
+      },
+      h.scenario.fixture.actorId
+    );
+    const before = await completionTruth(prisma, h.scenario.fixture);
+    expect(
+      await h.governance.completeOperations(
+        h.scenario.closureCase.id,
+        {
+          idempotencyKey: "b6-owned-debt-complete",
+          occurredAt: await readTestDatabaseClock(prisma)
+        },
+        h.scenario.fixture.actorId
+      )
+    ).toMatchObject({ status: "COMPLETED", financialStatus: "COLLECTION_PENDING" });
+    const after = await completionTruth(prisma, h.scenario.fixture);
+    expect(after.closure).toMatchObject({
+      status: "COMPLETED",
+      financialStatus: "COLLECTION_PENDING",
+      settledAt: null
+    });
+    expect(after.closure.operationalCompletedAt).toBeInstanceOf(Date);
+    expect(after.order.orderStatus).toBe("COMPLETED");
+    expect(after.contract.status).toBe("COMPLETED");
+    expect(after.vehicle.status).toBe("AVAILABLE");
+    expect(after.lease?.status).toBe("COMPLETED");
+    expect(after.bills).toEqual(before.bills);
+    expect(after.bills).toEqual([
+      expect.objectContaining({ amount: 100n, paidAmount: 0n, remainingAmount: 100n })
+    ]);
+    expect(after.payments).toEqual([]);
+    expect(after.writeOffs).toEqual([]);
+    expect(
+      await prisma.subscriptionClosureSettlementRevision.findUniqueOrThrow({
+        where: { id: h.settlement.id }
+      })
+    ).toEqual(h.settlement);
+    expect(h.settlement.stage).toBe("FINALIZED");
+  });
+
+  it("B6 retains the terminal database guard when neither completion clock is present", async () => {
+    const h = await prepareGovernedCompletion(prisma);
+    const before = await completionTruth(prisma, h.scenario.fixture);
+    expect(before.closure).toMatchObject({ operationalCompletedAt: null, settledAt: null });
+    await expect(
+      prisma.subscriptionClosureCase.update({
+        data: { closedAt: h.occurredAt, status: "COMPLETED", version: { increment: 1 } },
+        where: { id: h.scenario.closureCase.id }
+      })
+    ).rejects.toThrow("subscription_closure_case_terminal_shape_chk");
+    expect(await completionTruth(prisma, h.scenario.fixture)).toEqual(before);
+    expect(await h.complete()).toMatchObject({ status: "COMPLETED" });
+  });
+
+  it("B6 rejects an unresolved inspection and completes only after a governed responsibility decision", async () => {
+    const h = await prepareGovernedCompletion(prisma, { damageResponsibility: "PLATFORM" });
+    // The helper proves the real inspection rejection before confirmDelta. A
+    // finalized/unresolved combination cannot be produced through this workflow.
+    expect(await h.complete()).toMatchObject({ status: "COMPLETED" });
+  });
+
+  it("B6 refuses both an open charge dispute and an accepted dispute awaiting a new settlement", async () => {
+    const h = await prepareGovernedCompletion(prisma, {
+      damageResponsibility: "CUSTOMER",
+      accept: false
+    });
+    const { fixture, closureCase } = h.scenario;
+    expect(h.chargeLineId).not.toBeNull();
+    await h.governance.recordCustomerResponse(fixture.orderId, fixture.customerId, {
+      disputes: [
+        {
+          chargeLineId: h.chargeLineId!,
+          evidenceIds: [h.evidenceIds.get("VEHICLE_EXTERIOR")!],
+          reason: "B6 disputed responsibility"
+        }
+      ],
+      idempotencyKey: "b6-dispute",
+      settlementHash: h.settlement.resultHash,
+      settlementRevisionId: h.settlement.id,
+      status: "DISPUTED"
+    });
+    const disputes = () =>
+      prisma.subscriptionClosureChargeDispute.findMany({
+        include: { decision: true },
+        where: { closureCaseId: closureCase.id },
+        orderBy: { id: "asc" }
+      });
+    const open = await disputes();
+    expect(open).toEqual([expect.objectContaining({ status: "OPEN", decision: null })]);
+    const before = await completionTruth(prisma, fixture);
+    await expect(h.complete()).rejects.toMatchObject({
+      response: { code: "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED" }
+    });
+    expect(await completionTruth(prisma, fixture)).toEqual(before);
+    expect(await disputes()).toEqual(open);
+
+    await h.governance.decideDispute(
+      closureCase.id,
+      open[0]!.id,
+      {
+        decision: "ACCEPTED_BY_PLATFORM",
+        evidenceIds: [h.evidenceIds.get("VEHICLE_EXTERIOR")!],
+        idempotencyKey: "b6-accept-dispute",
+        occurredAt: await readTestDatabaseClock(prisma),
+        rationale: "B6 independent review accepts the customer objection"
+      },
+      fixture.actorId
+    );
+    const decided = await disputes();
+    expect(decided).toEqual([
+      expect.objectContaining({
+        decision: expect.objectContaining({ decision: "ACCEPTED_BY_PLATFORM" })
+      })
+    ]);
+    expect(
+      await prisma.subscriptionClosureChargeDispute.count({
+        where: { closureCaseId: closureCase.id, status: "OPEN", decision: null }
+      })
+    ).toBe(0);
+    const accepted = await completionTruth(prisma, fixture);
+    expect(
+      accepted.bills.some(
+        (bill) =>
+          bill.billStatus === "CANCELLED" && bill.amount === 200n && bill.remainingAmount === 0n
+      )
+    ).toBe(true);
+    await expect(h.complete()).rejects.toMatchObject({
+      response: { code: "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED" }
+    });
+    expect(await completionTruth(prisma, fixture)).toEqual(accepted);
+    expect(await disputes()).toEqual(decided);
+    expect(
+      await prisma.subscriptionClosureSettlementRevision.findUniqueOrThrow({
+        where: { id: h.settlement.id }
+      })
+    ).toEqual(h.settlement);
+  });
+
+  it.each([
+    [
+      "missing customer acceptance",
+      { accept: false },
+      "CLOSURE_OPERATIONAL_CUSTOMER_RESPONSE_REQUIRED"
+    ],
+    [
+      "unassigned unpaid receivable",
+      { paid: false },
+      "CLOSURE_OPERATIONAL_FINANCIAL_OWNER_REQUIRED"
+    ]
+  ] as const)("B6 refuses %s without changing any joint facts", async (_name, options, code) => {
+    const h = await prepareGovernedCompletion(prisma, options);
+    const before = await completionTruth(prisma, h.scenario.fixture);
+    await expect(h.complete()).rejects.toMatchObject({ response: { code } });
+    await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(before);
+  });
+
+  it.each(["contract", "auditLog"] as const)(
+    "F6 rolls back real completion after the %s write and permits an exact retry",
+    async (model) => {
+      const h = await prepareGovernedCompletion(prisma);
+      const before = await completionTruth(prisma, h.scenario.fixture);
+      const failure = new Error(`F6_AFTER_${model}_WRITE`);
+      let reached = false;
+      const hooked = new Proxy(prisma, {
+        get(target, property) {
+          if (property !== "$transaction") return Reflect.get(target, property);
+          return (work: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+            target.$transaction(async (tx) => {
+              const hookedTx = new Proxy(tx, {
+                get(transaction, delegate) {
+                  const value = Reflect.get(transaction, delegate);
+                  if (delegate !== model) return value;
+                  return new Proxy(value, {
+                    get(actualDelegate, method) {
+                      const original = Reflect.get(actualDelegate, method);
+                      if (method !== (model === "contract" ? "update" : "create")) return original;
+                      return async (...args: unknown[]) => {
+                        await Reflect.apply(original, actualDelegate, args);
+                        if (model === "auditLog") {
+                          expect(
+                            await tx.auditLog.count({
+                              where: {
+                                entityId: h.scenario.closureCase.id,
+                                entityType: "subscription_closure_case"
+                              }
+                            })
+                          ).toBe(1);
+                          expect(
+                            await tx.subscriptionClosureCase.findUniqueOrThrow({
+                              where: { id: h.scenario.closureCase.id }
+                            })
+                          ).toMatchObject({ status: "COMPLETED" });
+                        } else {
+                          expect(
+                            await tx.contract.findUniqueOrThrow({
+                              where: { id: h.scenario.fixture.contractId }
+                            })
+                          ).toMatchObject({ status: "COMPLETED" });
+                        }
+                        reached = true;
+                        throw failure;
+                      };
+                    }
+                  });
+                }
+              });
+              return work(hookedTx);
+            });
+        }
+      });
+      await expect(
+        completionGovernance(hooked).completeOperations(
+          h.scenario.closureCase.id,
+          h.input,
+          h.scenario.fixture.actorId
+        )
+      ).rejects.toBe(failure);
+      expect(reached).toBe(true);
+      await expect(completionTruth(prisma, h.scenario.fixture)).resolves.toEqual(before);
+      await expect(h.complete()).resolves.toMatchObject({ replayed: false, status: "COMPLETED" });
+      await expect(
+        prisma.auditLog.count({
+          where: {
+            entityId: h.scenario.closureCase.id,
+            entityType: "subscription_closure_case"
+          }
+        })
+      ).resolves.toBe(1);
+    }
+  );
 });
 
 function passthroughClosureOrchestrator() {
@@ -8365,14 +9878,14 @@ async function createManagedExpiryFixture(prisma: PrismaService) {
 
 async function setupFocusedPhysicalReceipt(
   prisma: PrismaService,
-  options: Readonly<{ early?: boolean; skipManifestSuccessors?: boolean }> = {}
+  options: Readonly<{ early?: boolean; skipManifestSuccessors?: boolean; undamaged?: boolean }> = {}
 ) {
   const fixture = await createManagedExpiryFixture(prisma);
   const checklist = {
     batteryCheckedConfirmed: true,
     chargingEquipmentReturnedConfirmed: true,
     customerItemsClearedConfirmed: true,
-    damageFound: !options.early,
+    damageFound: !options.early && !options.undamaged,
     exteriorCheckedConfirmed: true,
     interiorCheckedConfirmed: true,
     keysReturnedConfirmed: true,
@@ -8512,18 +10025,19 @@ async function setupFocusedPhysicalReceipt(
   const receipt = {
     actorId: fixture.actorId,
     checklist,
-    damages: options.early
-      ? []
-      : [
-          {
-            damageLevel: "MEDIUM",
-            damageType: "EXTERIOR",
-            description: "Focused rear door scratch",
-            estimatedRepairAmount: 3600n,
-            photoUrls: ["focused-rear-door-1.jpg", "focused-rear-door-2.jpg"],
-            responsibleParty: "CUSTOMER"
-          }
-        ],
+    damages:
+      options.early || options.undamaged
+        ? []
+        : [
+            {
+              damageLevel: "MEDIUM",
+              damageType: "EXTERIOR",
+              description: "Focused rear door scratch",
+              estimatedRepairAmount: 3600n,
+              photoUrls: ["focused-rear-door-1.jpg", "focused-rear-door-2.jpg"],
+              responsibleParty: "CUSTOMER"
+            }
+          ],
     orderId: fixture.orderId,
     physicalControlMode: "VOLUNTARY_RETURN" as const,
     remark: "focused receipt",
@@ -8544,6 +10058,1124 @@ async function setupFocusedPhysicalReceipt(
     signedFileHash,
     signedFileId
   };
+}
+
+function completionGovernance(prisma: PrismaService, storage: unknown = {}) {
+  return new SubscriptionReturnGovernanceService(
+    prisma,
+    storage as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    new ConfigService({ SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "true" })
+  );
+}
+
+async function prepareGovernedCompletion(
+  prisma: PrismaService,
+  options: Readonly<{
+    accept?: boolean;
+    paid?: boolean;
+    replayChecklist?: boolean;
+    verifyBrowserPricing?: boolean;
+    damageResponsibility?: "CUSTOMER" | "PLATFORM";
+  }> = {}
+) {
+  const base = await setupFocusedPhysicalReceipt(prisma, {
+    skipManifestSuccessors: true,
+    undamaged: true
+  });
+  const { fixture, closureCase } = base;
+  const evidenceObjects = new Map<string, Buffer>();
+  const governance = completionGovernance(prisma, {
+    async putSubscriptionReturnEvidence(input: { buffer: Buffer; objectIdentity: string }) {
+      const objectKey = `${closureCase.id}/${input.objectIdentity}`;
+      evidenceObjects.set(objectKey, Buffer.from(input.buffer));
+      return { bucket: "synthetic-b6-evidence", objectKey };
+    },
+    async deleteObject(_bucket: string, objectKey: string) {
+      evidenceObjects.delete(objectKey);
+    }
+  });
+  // The mature lease/BASE/open period and signed delivery baseline are fixture
+  // inputs; receipt, delta, inspection, settlement, payment and completion below
+  // use current services. The signing provider/storage remain deterministic.
+  const deliveryFile = await prisma.fileObject.create({
+    data: {
+      bucket: "synthetic-b6",
+      contentSha256: "e".repeat(64),
+      mimeType: "application/pdf",
+      objectKey: `b6/${fixture.orderId}/delivery.pdf`,
+      originalName: "delivery.pdf",
+      sizeBytes: 100n,
+      uploadedBy: fixture.actorId
+    }
+  });
+  const delivery = await prisma.vehicleDeliveryHandover.create({
+    data: {
+      archiveStatus: "ARCHIVED",
+      archivedAt: new Date("2026-03-03T02:00:00.000Z"),
+      completedAt: new Date("2026-03-03T02:00:00.000Z"),
+      manifestHash: "d".repeat(64),
+      orderId: fixture.orderId,
+      signedDocumentFileId: deliveryFile.id,
+      signedObjectKey: deliveryFile.objectKey,
+      signedPdfHash: "e".repeat(64),
+      stage1ContractId: fixture.contractId,
+      status: "ARCHIVED"
+    }
+  });
+  await prisma.vehicleHandoverWorkOrder.create({
+    data: {
+      accessoryItems: [{ code: "CHARGER", name: "Charger", quantity: 1, state: "PRESENT" }],
+      assignedInternalUserId: fixture.actorId,
+      fieldCompletedAt: new Date("2026-03-03T02:00:00.000Z"),
+      handoverId: delivery.id,
+      handoverMileageKm: 1200,
+      handoverType: "DELIVERY_OUTBOUND",
+      keyState: "COMPLETE",
+      orderId: fixture.orderId,
+      primaryKeyCount: 1,
+      registrationDocumentState: "HANDED_OVER",
+      spareKeyCount: 1,
+      status: "OPS_REVIEWED",
+      vehicleConditionConfirmed: true
+    }
+  });
+  const quantities = {
+    ACCESSORIES: 1,
+    BATTERY: 1,
+    CHARGING_EQUIPMENT: 1,
+    CUSTOMER_ITEMS: 0,
+    KEY: 2,
+    MILEAGE: 1200,
+    REGISTRATION_CERTIFICATE: 1,
+    VEHICLE_EXTERIOR: 1,
+    VEHICLE_INTERIOR: 1
+  };
+  const checklistInput = {
+    attestationEvidenceIds: [],
+    attestationMode: "CUSTOMER_SIGNED" as const,
+    attestationReason: null,
+    capturedAt: await readTestDatabaseClock(prisma),
+    customerComments: null,
+    idempotencyKey: "b6-checklist",
+    items: Object.entries(quantities).map(([itemCode, quantity]) => ({
+      expectedQuantity: quantity,
+      itemCode,
+      returnedQuantity: quantity,
+      state:
+        options.damageResponsibility && itemCode === "VEHICLE_EXTERIOR"
+          ? ("DAMAGED" as const)
+          : ("NORMAL" as const)
+    })),
+    witnesses: []
+  };
+  const checklist = await governance.captureChecklist(
+    closureCase.id,
+    checklistInput,
+    fixture.actorId
+  );
+  const attestations = await prisma.$queryRaw<Array<{ mode: string; sqlNull: boolean }>>(
+    Prisma.sql`SELECT "attestation_mode" AS "mode", "attestation_snapshot" IS NULL AS "sqlNull"
+      FROM "vehicle_return_checklist_revision" WHERE "closure_case_id" = ${closureCase.id}::uuid`
+  );
+  expect(attestations).toEqual([{ mode: "CUSTOMER_SIGNED", sqlNull: true }]);
+  if (options.replayChecklist) {
+    const readChecklistFacts = () =>
+      Promise.all([
+        prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } }),
+        prisma.vehicleReturn.findUniqueOrThrow({ where: { id: closureCase.vehicleReturnId! } }),
+        prisma.vehicleReturnChecklistRevision.findMany({
+          include: { items: { orderBy: { itemCode: "asc" } } },
+          orderBy: { id: "asc" },
+          where: { closureCaseId: closureCase.id }
+        }),
+        prisma.subscriptionAutomationJob.findMany({
+          orderBy: { id: "asc" },
+          where: { orderId: fixture.orderId }
+        })
+      ]);
+    const captured = await readChecklistFacts();
+    await expect(
+      governance.captureChecklist(
+        closureCase.id,
+        {
+          ...checklistInput,
+          items: [...checklistInput.items].reverse()
+        },
+        fixture.actorId
+      )
+    ).resolves.toEqual({ ...checklist, replayed: true });
+    expect(await readChecklistFacts()).toEqual(captured);
+    await expect(
+      governance.captureChecklist(
+        closureCase.id,
+        {
+          ...checklistInput,
+          items: checklistInput.items.map((item) =>
+            item.itemCode === "KEY" ? { ...item, returnedQuantity: 0 } : item
+          )
+        },
+        fixture.actorId
+      )
+    ).rejects.toMatchObject({ response: { code: "RETURN_CHECKLIST_IDEMPOTENCY_CONFLICT" } });
+    expect(await readChecklistFacts()).toEqual(captured);
+  }
+  // Current receipt authority binds the captured revision/hash plus the four
+  // required item proofs. Bytes/storage are synthetic; upload and linkage are real.
+  const evidenceIds = new Map<string, string>();
+  const checklistItems = await prisma.vehicleReturnChecklistItem.findMany({
+    where: { revisionId: String(checklist.revisionId) }
+  });
+  const image = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4XsAAAAASUVORK5CYII=",
+    "base64"
+  );
+  for (const itemCode of [
+    "KEY",
+    "REGISTRATION_CERTIFICATE",
+    "VEHICLE_EXTERIOR",
+    "VEHICLE_INTERIOR"
+  ]) {
+    const item = checklistItems.find((row) => row.itemCode === itemCode)!;
+    const uploaded = await governance.uploadEvidence(
+      closureCase.id,
+      {
+        capturedAt: await readTestDatabaseClock(prisma),
+        evidenceType: "PHOTO",
+        idempotencyKey: `b6-proof-${itemCode}`,
+        supersedesEvidenceId: null,
+        targetId: item.id,
+        targetType: "CHECKLIST_ITEM",
+        visibility: "CUSTOMER_VISIBLE"
+      },
+      { buffer: image, mimetype: "image/png", originalname: `${itemCode}.png`, size: image.length },
+      fixture.actorId
+    );
+    evidenceIds.set(itemCode, String(uploaded.evidenceId));
+  }
+  expect(evidenceObjects.size).toBe(4);
+  const signed = await produceReturnManifestSuccessors(prisma, {
+    actorId: fixture.actorId,
+    closureCaseId: closureCase.id,
+    idempotencyKey: "b6-return-manifest"
+  });
+  const receiptAt = await readTestDatabaseClock(prisma);
+  const scenario = {
+    ...base,
+    occurredAt: receiptAt,
+    receipt: {
+      ...base.receipt,
+      returnedAt: receiptAt,
+      checklistRevisionId: String(checklist.revisionId),
+      checklistManifestHash: String(checklist.manifestHash),
+      damages: options.damageResponsibility
+        ? [
+            {
+              checklistItemId: checklistItems.find((row) => row.itemCode === "VEHICLE_EXTERIOR")!
+                .id,
+              evidenceIds: [evidenceIds.get("VEHICLE_EXTERIOR")!],
+              damageLevel: "MEDIUM",
+              damageType: "EXTERIOR",
+              description: "B6 synthetic exterior damage",
+              estimatedRepairAmount: 200n,
+              photoUrls: [],
+              responsibleParty: "CUSTOMER"
+            }
+          ]
+        : []
+    },
+    signedFileHash: signed.finalized.signedFileHash,
+    signedFileId: signed.finalized.signedFileId
+  };
+  expect(
+    await prisma.lease.findUniqueOrThrow({ where: { orderId: fixture.orderId } })
+  ).toMatchObject({ status: "RETURN_DUE" });
+  expect(
+    await prisma.vehicleSubscriptionPeriod.findMany({ where: { orderId: fixture.orderId } })
+  ).toEqual([expect.objectContaining({ endedAt: null })]);
+  await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
+  expect(
+    await prisma.lease.findUniqueOrThrow({ where: { orderId: fixture.orderId } })
+  ).toMatchObject({ status: "COMPLETED" });
+  expect(
+    await prisma.vehicleSubscriptionPeriod.findMany({ where: { orderId: fixture.orderId } })
+  ).toEqual([expect.objectContaining({ endedAt: receiptAt })]);
+  expect(
+    await prisma.vehicleOperationalRestriction.count({
+      where: {
+        vehicleId: fixture.vehicleId,
+        status: "ACTIVE"
+      }
+    })
+  ).toBeGreaterThan(0);
+  let delta = await governance.generateDelta(
+    closureCase.id,
+    { idempotencyKey: "b6-delta" },
+    fixture.actorId
+  );
+  await closeFocusedInspectionWorkOrder(scenario);
+  const inspection = {
+    accepted: true,
+    actorId: fixture.actorId,
+    closureCaseId: closureCase.id,
+    costs: [],
+    evidence: [],
+    occurredAt: await readTestDatabaseClock(prisma),
+    reconditioningRequired: false
+  };
+  if (options.damageResponsibility) {
+    const exterior = delta.items.find(({ itemCode }) => itemCode === "VEHICLE_EXTERIOR")!;
+    expect(exterior).toMatchObject({
+      responsibility: "UNDETERMINED",
+      wearClassification: "NEW_DAMAGE"
+    });
+    const unresolved = await completionTruth(prisma, fixture);
+    await expect(
+      scenario.closure.recordManagedReturnInspection(inspection, {})
+    ).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" }
+    });
+    expect(await completionTruth(prisma, fixture)).toEqual(unresolved);
+    delta = await governance.confirmDelta(
+      closureCase.id,
+      {
+        baseRevisionId: delta.id,
+        idempotencyKey: "b6-responsibility",
+        decisions: [
+          {
+            itemId: exterior.id,
+            responsibility: options.damageResponsibility,
+            decisionReason: "B6 governed review of captured exterior evidence"
+          }
+        ]
+      },
+      fixture.actorId
+    );
+  } else {
+    expect(delta.items.every(({ responsibility }) => responsibility === "NORMAL_WEAR")).toBe(true);
+  }
+  await scenario.closure.recordManagedReturnInspection(inspection, {});
+  await prisma.vehicle.update({
+    data: { currentSalePriceAmount: 10000000n, salePriceStatus: "EFFECTIVE" },
+    where: { id: fixture.vehicleId }
+  });
+  await scenario.closure.releaseManagedReturnInventory(
+    {
+      actorId: fixture.actorId,
+      closureCaseId: closureCase.id,
+      occurredAt: await readTestDatabaseClock(prisma),
+      releaseReason: "B6 governed inspection complete"
+    },
+    {}
+  );
+  expect(
+    await prisma.vehicleOperationalRestriction.count({
+      where: {
+        vehicleId: fixture.vehicleId,
+        status: "ACTIVE"
+      }
+    })
+  ).toBe(0);
+  expect(
+    await prisma.vehicle.findUniqueOrThrow({ where: { id: fixture.vehicleId } })
+  ).toMatchObject({ status: "AVAILABLE" });
+  const bill = await prisma.receivableBill.create({
+    data: {
+      amount: 100n,
+      billNo: `B6-${randomUUID()}`,
+      billType: "MONTHLY_RENT",
+      customerId: fixture.customerId,
+      dueDate: new Date("2026-08-20T00:00:00.000Z"),
+      orderId: fixture.orderId,
+      remainingAmount: 100n
+    }
+  });
+  if (options.paid !== false) {
+    await settleTask6Bill(
+      prisma,
+      new FinanceService(new AuditService(prisma), prisma),
+      fixture,
+      bill.id,
+      100n,
+      0
+    );
+  }
+  const settlementInput = async (suffix: string) => ({
+    actorId: fixture.actorId,
+    closureCaseId: closureCase.id,
+    idempotencyKey: `b6-${suffix}`,
+    occurredAt: await readTestDatabaseClock(prisma),
+    waiverApprovalId: null,
+    writeOffApprovalId: null
+  });
+  const projection = new SubscriptionClosureProjectionService(
+    prisma,
+    new ConfigService({
+      SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "true"
+    })
+  );
+  const controller = new SubscriptionClosureController(
+    scenario.closure,
+    projection,
+    undefined,
+    governance
+  );
+  const request = { user: { id: fixture.actorId } } as AuthenticatedRequest;
+  const advance = async (action: "propose" | "finalize", suffix: string) => {
+    const input = await settlementInput(suffix);
+    if (!options.verifyBrowserPricing) {
+      return action === "propose"
+        ? scenario.closure.proposeManagedSettlement(input)
+        : scenario.closure.finalizeManagedSettlement(input);
+    }
+    const dto = {
+      idempotencyKey: input.idempotencyKey,
+      occurredAt: input.occurredAt.toISOString(),
+      waiverApprovalId: null,
+      writeOffApprovalId: null
+    };
+    return action === "propose"
+      ? controller.proposeSettlement(closureCase.id, dto, request)
+      : controller.finalizeSettlement(closureCase.id, dto, request);
+  };
+  const proposed = await advance("propose", "propose");
+  let chargeLineId: string | null = null;
+  if (options.damageResponsibility === "CUSTOMER") {
+    // Archived contract clause is an input fixture; price/bill production is real.
+    const clause = await prisma.contractChargeClauseSnapshot.create({
+      data: {
+        contractId: fixture.contractId,
+        clauseCode: "B6_EXTERIOR",
+        clauseVersion: 1,
+        status: "EXECUTABLE",
+        chargeType: "DAMAGE_VEHICLE_EXTERIOR",
+        unit: "ITEM",
+        pricingSnapshot: { unitPriceCents: "200" },
+        evidenceRequirementSnapshot: { photo: true },
+        exemptionSnapshot: {},
+        sourceTextLocator: "synthetic-archived-contract:exterior",
+        sourceTextHash: "c".repeat(64),
+        compilationHash: "d".repeat(64),
+        createdBy: fixture.actorId
+      }
+    });
+    const pricingInput: Parameters<SubscriptionReturnGovernanceService["createPricing"]>[1] = {
+      finalize: true,
+      idempotencyKey: "b6-pricing",
+      settlementRevisionId: proposed.id,
+      lines: [
+        {
+          chargeType: "DAMAGE_VEHICLE_EXTERIOR",
+          clauseSnapshotId: clause.id,
+          deltaItemId: delta.items.find(({ itemCode }) => itemCode === "VEHICLE_EXTERIOR")!.id,
+          evidenceIds: [evidenceIds.get("VEHICLE_EXTERIOR")!],
+          exceptionApprovalId: null,
+          lineCode: "B6_EXTERIOR",
+          quantity: 1,
+          responsibility: "CUSTOMER"
+        }
+      ]
+    };
+    const price = (input: typeof pricingInput) =>
+      options.verifyBrowserPricing
+        ? controller.createPricing(
+            closureCase.id,
+            {
+              ...input,
+              lines: input.lines.map((line) => ({ ...line, evidenceIds: [...line.evidenceIds] }))
+            },
+            request
+          )
+        : governance.createPricing(closureCase.id, input, fixture.actorId);
+    const proposalBeforePricing =
+      await prisma.subscriptionClosureSettlementRevision.findUniqueOrThrow({
+        where: { id: proposed.id }
+      });
+    const billsBeforePricing = await prisma.receivableBill.count({
+      where: { orderId: fixture.orderId }
+    });
+    if (options.verifyBrowserPricing) {
+      expect((await projection.getAdminById(closureCase.id)).allowedActions).not.toContain(
+        "PROPOSE_SETTLEMENT"
+      );
+    }
+    const lines = await price(pricingInput);
+    expect(lines).toEqual([
+      expect.objectContaining({ status: "FINAL", amountCents: 200n, billId: expect.any(String) })
+    ]);
+    const pricedTruth = await completionTruth(prisma, fixture);
+    await expect(price(pricingInput)).resolves.toEqual(lines);
+    expect(await completionTruth(prisma, fixture)).toEqual(pricedTruth);
+    if (options.verifyBrowserPricing) {
+      expect(await prisma.receivableBill.count({ where: { orderId: fixture.orderId } })).toBe(
+        billsBeforePricing + 1
+      );
+      await expect(advance("finalize", "stale-finalize")).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_SETTLEMENT_FACT_DRIFT" }
+      });
+      expect(await completionTruth(prisma, fixture)).toEqual(pricedTruth);
+      expect((await projection.getAdminById(closureCase.id)).allowedActions).toContain(
+        "PROPOSE_SETTLEMENT"
+      );
+      await expect(
+        price({ ...pricingInput, lines: [{ ...pricingInput.lines[0]!, quantity: 2 }] })
+      ).rejects.toMatchObject({
+        response: { code: "CLOSURE_PRICING_IDEMPOTENCY_CONFLICT" }
+      });
+      expect(await completionTruth(prisma, fixture)).toEqual(pricedTruth);
+    }
+    // Pricing creates the bill after proposal. Refresh the real financial facts,
+    // then carry the existing bill into the new proposal through createPricing.
+    const repricedProposal = await advance("propose", "repropose-after-pricing");
+    expect(repricedProposal.id).not.toBe(proposed.id);
+    const successorInput = {
+      ...pricingInput,
+      idempotencyKey: "b6-pricing-successor",
+      settlementRevisionId: repricedProposal.id
+    };
+    if (options.verifyBrowserPricing) {
+      expect(
+        await prisma.subscriptionClosureSettlementRevision.findUniqueOrThrow({
+          where: { id: repricedProposal.id }
+        })
+      ).toMatchObject({ supersedesRevisionId: proposed.id });
+      expect(
+        await prisma.subscriptionClosureChargeLine.count({
+          where: { settlementRevisionId: repricedProposal.id, status: "FINAL" }
+        })
+      ).toBe(0);
+      const frozenFinancialFacts = async () =>
+        Promise.all([
+          prisma.receivableBill.findMany({
+            where: { orderId: fixture.orderId },
+            orderBy: { id: "asc" }
+          }),
+          prisma.subscriptionClosureChargeLine.findMany({
+            where: { closureCaseId: closureCase.id },
+            orderBy: { id: "asc" }
+          }),
+          prisma.subscriptionClosureSettlementRevision.findMany({
+            where: { closureCaseId: closureCase.id },
+            orderBy: { id: "asc" }
+          })
+        ]);
+      const successorBefore = await frozenFinancialFacts();
+      const originalLine = pricingInput.lines[0]!;
+      for (const [line, code] of [
+        [{ ...originalLine, evidenceIds: [randomUUID()] }, "CLOSURE_PRICING_EVIDENCE_MISMATCH"],
+        [{ ...originalLine, quantity: 2 }, "CLOSURE_PRICING_DELTA_MISMATCH"],
+        [{ ...originalLine, clauseSnapshotId: null }, "CLOSURE_PRICING_EXECUTABLE_CLAUSE_REQUIRED"]
+      ] as const) {
+        await expect(price({ ...successorInput, lines: [line] })).rejects.toMatchObject({
+          response: { code }
+        });
+        expect(await frozenFinancialFacts()).toEqual(successorBefore);
+      }
+      const alternativeClause = await prisma.contractChargeClauseSnapshot.create({
+        data: {
+          contractId: clause.contractId,
+          clauseCode: "R4_ALTERNATE_EXTERIOR",
+          clauseVersion: 1,
+          status: "EXECUTABLE",
+          chargeType: clause.chargeType,
+          unit: clause.unit,
+          pricingSnapshot: { unitPriceCents: "200" },
+          evidenceRequirementSnapshot: { photo: true },
+          exemptionSnapshot: {},
+          sourceTextLocator: "synthetic-archived-contract:alternate-exterior",
+          sourceTextHash: "c".repeat(64),
+          compilationHash: "d".repeat(64),
+          createdBy: fixture.actorId
+        }
+      });
+      await expect(
+        price({
+          ...successorInput,
+          lines: [{ ...originalLine, clauseSnapshotId: alternativeClause.id }]
+        })
+      ).rejects.toMatchObject({
+        response: { code: "CLOSURE_PRICING_ACTIVE_BILL_REPLACEMENT_REQUIRED" }
+      });
+      expect(await frozenFinancialFacts()).toEqual(successorBefore);
+      const manualClause = await prisma.contractChargeClauseSnapshot.create({
+        data: {
+          contractId: clause.contractId,
+          clauseCode: "R4_MANUAL_EXTERIOR",
+          clauseVersion: 1,
+          status: "MANUAL_CLAUSE_REVIEW_REQUIRED",
+          chargeType: clause.chargeType,
+          unit: clause.unit,
+          pricingSnapshot: {},
+          evidenceRequirementSnapshot: { photo: true },
+          exemptionSnapshot: {},
+          sourceTextLocator: "synthetic-archived-contract:manual-exterior",
+          sourceTextHash: "c".repeat(64),
+          compilationHash: "d".repeat(64),
+          createdBy: fixture.actorId
+        }
+      });
+      // Both links are produced by real upload/receipt services, not duplicated
+      // test inserts. One proof can support the checklist and the damage record.
+      const manualEvidenceLinks = await prisma.vehicleReturnEvidenceLink.findMany({
+        where: { closureCaseId: closureCase.id, evidenceId: originalLine.evidenceIds[0] },
+        select: { checklistItemId: true, damageId: true, evidenceId: true, evidencePurpose: true }
+      });
+      expect(manualEvidenceLinks).toHaveLength(2);
+      expect(manualEvidenceLinks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            checklistItemId: expect.any(String),
+            damageId: null,
+            evidencePurpose: "CHECKLIST_PROOF"
+          }),
+          expect.objectContaining({
+            checklistItemId: null,
+            damageId: expect.any(String),
+            evidencePurpose: "DAMAGE_PROOF"
+          })
+        ])
+      );
+      expect(new Set(manualEvidenceLinks.map(({ evidenceId }) => evidenceId)).size).toBe(1);
+      await expect(
+        price({
+          ...successorInput,
+          lines: [
+            {
+              ...originalLine,
+              clauseSnapshotId: manualClause.id,
+              exceptionApprovalId: randomUUID(),
+              manualBasis: "Manual repair estimate",
+              manualUnitPriceCents: "200"
+            }
+          ]
+        })
+      ).rejects.toMatchObject({
+        response: { code: "CLOSURE_PRICING_APPROVAL_REQUIRED" }
+      });
+      expect(await frozenFinancialFacts()).toEqual(successorBefore);
+    }
+    const successorLines = await price(successorInput);
+    expect(successorLines).toEqual([
+      expect.objectContaining({
+        status: "FINAL",
+        amountCents: 200n,
+        billId: lines[0]!.billId,
+        supersedesLineId: lines[0]!.id
+      })
+    ]);
+    expect(await prisma.receivableBill.count({ where: { orderId: fixture.orderId } })).toBe(2);
+    if (options.verifyBrowserPricing) {
+      expect(
+        await prisma.subscriptionClosureSettlementRevision.findUniqueOrThrow({
+          where: { id: proposed.id }
+        })
+      ).toEqual(proposalBeforePricing);
+      expect(
+        await prisma.subscriptionClosureChargeLine.findUniqueOrThrow({
+          where: { id: lines[0]!.id }
+        })
+      ).toEqual(lines[0]);
+      const successorTruth = await completionTruth(prisma, fixture);
+      expect(await price(successorInput)).toEqual(successorLines);
+      expect(await completionTruth(prisma, fixture)).toEqual(successorTruth);
+      expect((await projection.getAdminById(closureCase.id)).allowedActions).not.toContain(
+        "PROPOSE_SETTLEMENT"
+      );
+    }
+    chargeLineId = successorLines[0]!.id;
+  }
+  const finalized = await advance("finalize", "finalize");
+  const settlement = await prisma.subscriptionClosureSettlementRevision.findUniqueOrThrow({
+    where: { id: finalized.id }
+  });
+  if (options.verifyBrowserPricing) {
+    await expect(
+      governance.recordCustomerResponse(fixture.orderId, fixture.customerId, {
+        disputes: [],
+        idempotencyKey: "r4-stale-response",
+        settlementHash: proposed.resultHash,
+        settlementRevisionId: proposed.id,
+        status: "ACCEPTED"
+      })
+    ).rejects.toMatchObject({ response: { code: "CLOSURE_RESPONSE_STALE_REVISION" } });
+    expect(
+      await prisma.subscriptionClosureCustomerResponse.count({
+        where: { closureCaseId: closureCase.id }
+      })
+    ).toBe(0);
+  }
+  if (options.accept !== false) {
+    await governance.recordCustomerResponse(fixture.orderId, fixture.customerId, {
+      disputes: [],
+      idempotencyKey: "b6-accept",
+      settlementHash: settlement.resultHash,
+      settlementRevisionId: settlement.id,
+      status: "ACCEPTED"
+    });
+  }
+  const occurredAt = await readTestDatabaseClock(prisma);
+  const input = { idempotencyKey: "b6-complete", occurredAt };
+  return {
+    chargeLineId,
+    complete: () => governance.completeOperations(closureCase.id, input, fixture.actorId),
+    governance,
+    evidenceIds,
+    input,
+    occurredAt,
+    scenario,
+    settlement
+  };
+}
+
+async function completionTruth(
+  prisma: PrismaService,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>
+) {
+  const [closure, order, contract, vehicle, lease, periods, bills, payments, writeOffs, audits] =
+    await Promise.all([
+      prisma.subscriptionClosureCase.findFirstOrThrow({
+        where: { orderId: fixture.orderId, retiredAt: null }
+      }),
+      prisma.subscriptionOrder.findUniqueOrThrow({ where: { id: fixture.orderId } }),
+      prisma.contract.findUniqueOrThrow({ where: { id: fixture.contractId } }),
+      prisma.vehicle.findUniqueOrThrow({ where: { id: fixture.vehicleId } }),
+      prisma.lease.findUnique({ where: { orderId: fixture.orderId } }),
+      prisma.vehicleSubscriptionPeriod.findMany({
+        orderBy: { id: "asc" },
+        where: { orderId: fixture.orderId }
+      }),
+      prisma.receivableBill.findMany({
+        orderBy: { id: "asc" },
+        where: { orderId: fixture.orderId }
+      }),
+      prisma.paymentRecord.findMany({
+        orderBy: { id: "asc" },
+        where: { orderId: fixture.orderId }
+      }),
+      prisma.paymentWriteOff.findMany({
+        orderBy: { id: "asc" },
+        where: { orderId: fixture.orderId }
+      }),
+      prisma.auditLog.findMany({ orderBy: { id: "asc" }, where: { operatorId: fixture.actorId } })
+    ]);
+  return { closure, order, contract, vehicle, lease, periods, bills, payments, writeOffs, audits };
+}
+
+function financialRetryRequestInput(
+  h: Awaited<ReturnType<typeof prepareFinancialApproval>>,
+  approvalType: "WAIVER" | "WRITE_OFF"
+) {
+  return {
+    approvalType,
+    billId: h.billId,
+    evidenceIds: [h.evidenceId, h.proof.fileId],
+    settlementRevisionId: h.base.settlement.id,
+    idempotencyKey: "financial-request",
+    requestReason: "Financial proof independently reviewed"
+  };
+}
+
+function financialRetryDecisionInput(expectedVersion: number) {
+  return {
+    decision: "APPROVED" as const,
+    decisionComment: "Independent financial approval",
+    expectedVersion,
+    idempotencyKey: "financial-decision"
+  };
+}
+
+async function raceFinancialApprovalCommands<T>(
+  prisma: PrismaService,
+  audit: AuditService,
+  first: () => Promise<T>,
+  second: () => Promise<T>
+) {
+  const barrier = createBarrier();
+  const actualWrite = audit.write.bind(audit);
+  let blockerPid: number | undefined;
+  const hook = vi.spyOn(audit, "write").mockImplementationOnce(async (input, client) => {
+    await actualWrite(input, client);
+    const tx = client as Prisma.TransactionClient;
+    const rows = await tx.$queryRaw<Array<{ pid: number }>>(
+      Prisma.sql`SELECT pg_backend_pid() AS pid`
+    );
+    blockerPid = rows[0]!.pid;
+    barrier.enter();
+    await barrier.released;
+  });
+  const inFlight: Promise<T>[] = [];
+  try {
+    inFlight.push(first());
+    // Install rejection handlers immediately while the first real transaction is held.
+    const firstResult = Promise.allSettled(inFlight);
+    await waitForTask6BarrierEntry(barrier, inFlight, "financial approval audit");
+    inFlight.push(second());
+    const results = Promise.allSettled(inFlight);
+    let observed = false;
+    for (let attempt = 0; attempt < 500; attempt++) {
+      const rows = await prisma.$queryRaw<Array<{ waiting: boolean }>>(Prisma.sql`
+        SELECT EXISTS (
+          SELECT 1 FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'
+            AND ${blockerPid!}::integer = ANY(pg_blocking_pids(pid))
+        ) AS waiting
+      `);
+      if (rows[0]?.waiting) {
+        observed = true;
+        break;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(observed, "second approval transaction must actually wait for the first backend").toBe(
+      true
+    );
+    barrier.release();
+    await firstResult;
+    const settled = await results;
+    return [settled[0]!, settled[1]!] as const;
+  } finally {
+    barrier.release();
+    await Promise.allSettled(inFlight);
+    hook.mockRestore();
+  }
+}
+
+async function expireFinancialApprovalAfterBalanceDrift(
+  prisma: PrismaService,
+  h: Awaited<ReturnType<typeof prepareFinancialApproval>>,
+  approvalId: string
+) {
+  return prisma.$transaction(async (tx) => {
+    // Preserve closure -> bill -> accounting source/subject lock order.
+    await tx.$queryRaw(
+      Prisma.sql`SELECT id FROM subscription_closure_case WHERE id = ${h.caseId}::uuid FOR UPDATE`
+    );
+    await tx.$queryRaw(
+      Prisma.sql`SELECT id FROM receivable_bill WHERE id = ${h.billId}::uuid FOR UPDATE`
+    );
+    const approval = await tx.businessExceptionApproval.findUniqueOrThrow({
+      where: { id: approvalId }
+    });
+    const bill = await tx.receivableBill.findUniqueOrThrow({ where: { id: h.billId } });
+    expect(bill.remainingAmount).toBe(99n);
+    const originalSnapshot = approval.subjectSnapshot as Prisma.JsonObject;
+    expect(originalSnapshot.amountCents).toBe("100");
+    const source = {
+      type: "SUBSCRIPTION_CLOSURE_APPROVAL",
+      id: h.caseId,
+      key: "financial-retry-expiry"
+    };
+    return h.accounting.expireStaleApprovalsInTransaction(
+      tx,
+      {
+        approvalId,
+        exceptionType: approval.exceptionType,
+        expectedVersion: approval.version,
+        expiredAt: new Date(),
+        expiryReason: "Actual partial payment changed the outstanding financial authority",
+        source,
+        subject: {
+          subjectType: approval.subjectType,
+          subjectId: approval.subjectId,
+          subjectField: approval.subjectField
+        }
+      },
+      {
+        actorId: h.requester.id,
+        permissions: [ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST],
+        idempotencyKey: source.key
+      },
+      async () => ({ ...originalSnapshot, amountCents: bill.remainingAmount.toString() })
+    );
+  });
+}
+
+async function waitForFinancialRetryClock(persistedAt: Date) {
+  const persistedMillis = persistedAt.getTime();
+  expect(Number.isFinite(persistedMillis)).toBe(true);
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const observed = Date.now();
+    if (observed > persistedMillis) return observed;
+    if (observed >= deadline) throw new Error("Server clock did not pass persisted approval time");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+async function financialRetryAttempt<T>(attempt: () => Promise<T>) {
+  try {
+    return await attempt();
+  } catch (error) {
+    console.info("FINANCIAL_APPROVAL_RETRY_REJECTED", {
+      code: (error as { response?: { code?: string } }).response?.code
+    });
+    throw error;
+  }
+}
+
+async function prepareFinancialApproval(
+  prisma: PrismaService,
+  approvalType: "WAIVER" | "WRITE_OFF"
+) {
+  const base = await prepareGovernedCompletion(prisma, {
+    paid: false,
+    damageResponsibility: "PLATFORM"
+  });
+  const { fixture, closureCase } = base.scenario;
+  const caseId = closureCase.id;
+  const deciderId = randomUUID();
+  await prisma.$transaction((tx) => insertRuntimeUser(tx, deciderId, "financial-decider"));
+  const requester: RequestUser = {
+    id: fixture.actorId,
+    menus: [],
+    name: "Financial requester",
+    username: fixture.actorId,
+    roles: ["OP"],
+    permissions: ["business_exception:request"]
+  };
+  const decider: RequestUser = {
+    id: deciderId,
+    menus: [],
+    name: "Independent financial decider",
+    username: deciderId,
+    roles: ["OP"],
+    permissions: ["business_exception:approve"]
+  };
+  expect(
+    await prisma.user.findMany({
+      where: { id: { in: [requester.id, decider.id] } },
+      select: { id: true, status: true, deletedAt: true }
+    })
+  ).toEqual(
+    expect.arrayContaining([
+      { id: requester.id, status: "ACTIVE", deletedAt: null },
+      { id: decider.id, status: "ACTIVE", deletedAt: null }
+    ])
+  );
+  const evidenceId = base.evidenceIds.get("VEHICLE_EXTERIOR");
+  if (!evidenceId) throw new Error("Expected the real exterior upload evidence");
+  const links = await prisma.vehicleReturnEvidenceLink.findMany({
+    where: { closureCaseId: caseId, evidenceId },
+    select: { evidenceId: true, checklistItemId: true, damageId: true, evidencePurpose: true }
+  });
+  expect(links).toHaveLength(2);
+  expect(links).toEqual(
+    expect.arrayContaining([
+      {
+        evidenceId,
+        checklistItemId: expect.any(String),
+        damageId: null,
+        evidencePurpose: "CHECKLIST_PROOF"
+      },
+      {
+        evidenceId,
+        checklistItemId: null,
+        damageId: expect.any(String),
+        evidencePurpose: "DAMAGE_PROOF"
+      }
+    ])
+  );
+  expect(new Set(links.map((row) => row.evidenceId)).size).toBe(1);
+  expect(base.settlement).toMatchObject({ stage: "FINALIZED", resultHash: expect.any(String) });
+  expect(base.settlement.resultHash.length).toBeGreaterThan(0);
+  const bills = await prisma.receivableBill.findMany({ where: { orderId: fixture.orderId } });
+  expect(bills).toHaveLength(1);
+  const billId = bills[0]!.id;
+  expect(bills[0]).toMatchObject({ remainingAmount: 100n, paidAmount: 0n });
+  // Storage/provider bytes are synthetic. Upload, link producers, approval
+  // repository, audit and disposition use their real services and PostgreSQL.
+  const objects = new Map<string, Buffer>();
+  const storage = {
+    async putSubscriptionClosureFinancialProof(input: {
+      buffer: Buffer;
+      closureCaseId: string;
+      objectIdentity: string;
+      originalName: string;
+    }) {
+      const objectKey = `subscription-closure/${input.closureCaseId}/financial-proof/${input.objectIdentity}-${input.originalName}`;
+      objects.set(objectKey, Buffer.from(input.buffer));
+      return { bucket: "synthetic-financial-proof", objectKey };
+    },
+    async deleteObject(_bucket: string, objectKey: string) {
+      objects.delete(objectKey);
+    }
+  };
+  const audit = new AuditService(prisma);
+  const accounting = new AssetAccountingService(prisma, new AssetAccountingRepository(), audit);
+  const governance = new SubscriptionReturnGovernanceService(
+    prisma,
+    storage as never,
+    undefined,
+    undefined,
+    undefined,
+    accounting,
+    new ConfigService({ SUBSCRIPTION_RETURN_THREE_STAGE_ENABLED: "true" })
+  );
+  const uploadProof = async (targetCaseId: string, actorId: string) => {
+    const bytes = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4XsAAAAASUVORK5CYII=",
+      "base64"
+    );
+    const uploaded = await governance.uploadFinancialProof(
+      targetCaseId,
+      {
+        buffer: bytes,
+        mimetype: "image/png",
+        originalname: "financial-proof.png",
+        size: bytes.length
+      },
+      actorId
+    );
+    const file = await prisma.fileObject.findUniqueOrThrow({ where: { id: uploaded.fileId } });
+    expect(file).toMatchObject({
+      contentSha256: createHash("sha256").update(bytes).digest("hex"),
+      sizeBytes: BigInt(bytes.length),
+      mimeType: "image/png",
+      uploadedBy: actorId
+    });
+    expect(file.objectKey.startsWith(`subscription-closure/${targetCaseId}/financial-proof/`)).toBe(
+      true
+    );
+    expect(objects.get(file.objectKey)).toEqual(bytes);
+    return uploaded;
+  };
+  const proof = await uploadProof(caseId, requester.id);
+  const truth = async (additionalActorIds: readonly string[] = []) => {
+    const [joint, approvals, receipts, approvalAudits, dispositions, settlements] =
+      await Promise.all([
+        completionTruth(prisma, fixture),
+        prisma.businessExceptionApproval.findMany({
+          where: { subjectType: "SETTLEMENT_CASE", subjectId: caseId },
+          orderBy: { id: "asc" }
+        }),
+        prisma.assetAccountingCommandReceipt.findMany({
+          where: { sourceType: "SUBSCRIPTION_CLOSURE_APPROVAL", sourceId: caseId },
+          orderBy: { id: "asc" }
+        }),
+        prisma.auditLog.findMany({
+          where: {
+            module: "asset_accounting",
+            entityType: "business_exception_approval",
+            operatorId: { in: [...new Set([requester.id, decider.id, ...additionalActorIds])] }
+          },
+          orderBy: { id: "asc" }
+        }),
+        prisma.subscriptionClosureReceivableDisposition.findMany({
+          where: { closureCaseId: caseId },
+          orderBy: { id: "asc" }
+        }),
+        prisma.subscriptionClosureSettlementRevision.findMany({
+          where: { closureCaseId: caseId },
+          orderBy: { id: "asc" }
+        })
+      ]);
+    return { joint, approvals, receipts, approvalAudits, dispositions, settlements };
+  };
+  return {
+    base,
+    caseId,
+    billId,
+    evidenceId,
+    proof,
+    requester,
+    decider,
+    governance,
+    audit,
+    accounting,
+    uploadProof,
+    truth,
+    request: (
+      evidenceIds: readonly string[] = [evidenceId, proof.fileId],
+      user = requester,
+      idempotencyKey = "financial-request"
+    ) =>
+      governance.requestApproval(
+        caseId,
+        {
+          approvalType,
+          billId,
+          evidenceIds,
+          settlementRevisionId: base.settlement.id,
+          idempotencyKey,
+          requestReason: "Financial proof independently reviewed"
+        },
+        user,
+        {}
+      ),
+    decide: (
+      approvalId: string,
+      expectedVersion: number,
+      user = decider,
+      idempotencyKey = "financial-decision"
+    ) =>
+      governance.decideApproval(
+        caseId,
+        approvalId,
+        {
+          decision: "APPROVED",
+          decisionComment: "Independent financial approval",
+          expectedVersion,
+          idempotencyKey
+        },
+        user,
+        {}
+      ),
+    dispose: (
+      approvalId: string,
+      overrides: Partial<
+        Parameters<SubscriptionReturnGovernanceService["recordDisposition"]>[1]
+      > = {}
+    ) =>
+      governance.recordDisposition(
+        caseId,
+        {
+          approvalId,
+          billId,
+          chargeLineId: null,
+          proofFileId: proof.fileId,
+          disposition: approvalType === "WAIVER" ? "WAIVED" : "WRITTEN_OFF",
+          ownerId: requester.id,
+          ownerType: "FINANCE",
+          idempotencyKey: "financial-disposition",
+          detail: { reason: "Approved financial disposition" },
+          ...overrides
+        },
+        requester.id
+      )
+  };
+}
+
+async function isolateFinancialApprovalFixture(
+  prisma: PrismaService,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>
+) {
+  const before = await prisma.billingSchedule.findUniqueOrThrow({
+    where: { id: fixture.scheduleId }
+  });
+  expect(before.orderId).toBe(fixture.orderId);
+  // This is test isolation after assertions, never a business completion fact.
+  if (before.status !== "ACTIVE") return;
+  const pauseReason = "FINANCIAL_APPROVAL_FIXTURE_ASSERTIONS_FINISHED";
+  const changed = await prisma.billingSchedule.updateMany({
+    where: {
+      id: fixture.scheduleId,
+      orderId: fixture.orderId,
+      status: "ACTIVE",
+      version: before.version
+    },
+    data: { status: "PAUSED", pauseReason, version: { increment: 1 } }
+  });
+  expect(changed.count).toBe(1);
+  expect(
+    await prisma.billingSchedule.findUniqueOrThrow({ where: { id: fixture.scheduleId } })
+  ).toMatchObject({
+    status: "PAUSED",
+    pauseReason,
+    version: before.version + 1
+  });
 }
 
 function createReturnManifestESignHarness(prisma: PrismaService) {

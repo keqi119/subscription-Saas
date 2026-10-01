@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 
 import {
   provenanceMaterialMatchesBase,
@@ -171,6 +172,47 @@ test("accepts exactly one trusted three-image build material observation", () =>
   assert.equal(result.promotionEligibility, "trusted-candidate");
 });
 
+test("retains the validated Web API address bound to its selected platform image", () => {
+  const input = validInput();
+  input.webClient = {
+    imageDigest: input.images.find(({ name }) => name === "web").digest,
+    apiBaseUrl: "https://api.example.com/api"
+  };
+  const result = verifyBuildMaterials(input);
+  assert.deepEqual(result.webClient, input.webClient);
+  assert.ok(Object.isFrozen(result.webClient));
+  for (const change of [
+    (v) => {
+      v.imageDigest = input.images[0].digest;
+    },
+    (v) => {
+      v.apiBaseUrl = "http://127.0.0.1:33001/api";
+    },
+    (v) => {
+      v.apiBaseUrl = "https://api.example.com:443/api";
+    },
+    (v) => {
+      v.apiBaseUrl = "https://user:password@api.example.com/api";
+    },
+    (v) => {
+      v.apiBaseUrl = "https://api.example.com/api?x=1";
+    },
+    (v) => {
+      v.apiBaseUrl = "https://api.example.com/api/";
+    },
+    (v) => {
+      v.apiBaseUrl = " https://api.example.com/api";
+    },
+    (v) => {
+      v.override = true;
+    }
+  ]) {
+    const altered = structuredClone(input);
+    change(altered.webClient);
+    assert.throws(() => verifyBuildMaterials(altered), { code: "BUILD_WEB_CLIENT_INVALID" });
+  }
+});
+
 test("BUILD_ACTION_UNPINNED rejects a mutable external action reference", () => {
   assert.throws(
     () =>
@@ -261,6 +303,76 @@ test("RUNNER_DEPENDENCY_COPY_TOO_BROAD rejects copying the scripts directory", (
       }),
     { code: "RUNNER_DEPENDENCY_COPY_TOO_BROAD" }
   );
+});
+
+function runtimeLayoutFixture() {
+  const readJson = (file) =>
+    JSON.parse(readFileSync(new URL(`../../${file}`, import.meta.url), "utf8"));
+  const actualPolicy = readJson("release/contracts/build-material-policy.v1.json");
+  return {
+    dockerfile: readFileSync(new URL("../../Dockerfile.runner", import.meta.url), "utf8"),
+    inventory: readJson("release/contracts/api-runtime-governance-inventory.v1.json"),
+    requiredAssets: actualPolicy.requiredRunnerAssets,
+    runtimeCopies: actualPolicy.runnerRuntimeCopies,
+    databaseTestManifest: readJson("release/contracts/database-test-manifest.v1.json")
+  };
+}
+
+test("current Runner layout covers governance, migrations and every database suite and fixture", () => {
+  const f = runtimeLayoutFixture();
+  const result = verifyRunnerDependencyClosure(f);
+  assert.deepEqual(result.runtimeCopies, f.runtimeCopies);
+  assert.deepEqual(result.requiredAssets, f.requiredAssets);
+  for (const suite of f.databaseTestManifest.suites) {
+    for (const file of [...suite.files, ...Object.values(suite.fixtures ?? {})]) {
+      assert.ok(result.manifestFiles.includes(file));
+    }
+  }
+  assert.equal(result.manifestFiles.length, new Set(result.manifestFiles).size);
+});
+
+test("runtime layout rejects extra content, retargeted or absent copies and uncovered tests", () => {
+  for (const mutate of [
+    (f) => {
+      f.dockerfile += "\nCOPY . /app\n";
+    },
+    (f) => {
+      f.dockerfile += "\nADD injected.tar /app\n";
+    },
+    (f) => {
+      f.dockerfile += "\nFROM node:22 AS other\n";
+    },
+    (f) => {
+      f.dockerfile = f.dockerfile.replace("COPY scripts ./scripts", "COPY scripts ./wrong");
+    },
+    (f) => {
+      f.dockerfile = f.dockerfile.replace("COPY release ./release", "");
+    },
+    (f) => {
+      f.runtimeCopies = [];
+    },
+    (f) => {
+      f.requiredAssets.push("not-copied/required.json");
+    },
+    (f) => {
+      f.databaseTestManifest.suites[0].files = ["not-copied/test.mjs"];
+    },
+    (f) => {
+      f.dockerfile += "\nCOPY . /app\n";
+      f.runtimeCopies.push("COPY . /app");
+    },
+    (f) => {
+      f.dockerfile = f.dockerfile.replace(
+        "COPY --from=deps /pnpm /pnpm",
+        "COPY --from=foreign /pnpm /pnpm"
+      );
+      f.runtimeCopies[1] = "COPY --from=foreign /pnpm /pnpm";
+    }
+  ]) {
+    const f = runtimeLayoutFixture();
+    mutate(f);
+    assert.throws(() => verifyRunnerDependencyClosure(f), /RUNNER_/u);
+  }
 });
 
 test("RUNNER_DEPENDENCY_CLOSURE_MISMATCH rejects a missing registered dependency", () => {

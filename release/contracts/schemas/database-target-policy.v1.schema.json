@@ -25,15 +25,12 @@
         ],
         "properties": {
           "schemaVersion": { "const": "database-target-policy.v1" },
-          "policyId": { "const": "s1-release-ephemeral" },
+          "policyId": { "enum": ["s1-release-ephemeral", "s1-release-compose-ephemeral"] },
           "allowedEnvironments": {
             "type": "array",
             "uniqueItems": true,
-            "items": { "enum": ["ci", "local-controlled"] },
-            "allOf": [
-              { "contains": { "const": "ci" } },
-              { "contains": { "const": "local-controlled" } }
-            ]
+            "minItems": 2,
+            "maxItems": 2
           },
           "allowedHosts": {
             "type": "array",
@@ -49,7 +46,36 @@
           },
           "requiredServerVersionMajor": { "const": 17 },
           "databaseNamePattern": { "const": "^s1ci_[0-9a-f]{24}$" }
-        }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "policyId": { "const": "s1-release-ephemeral" },
+              "allowedEnvironments": {
+                "type": "array",
+                "items": { "enum": ["ci", "local-controlled"] },
+                "allOf": [
+                  { "contains": { "const": "ci" } },
+                  { "contains": { "const": "local-controlled" } }
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "policyId": { "const": "s1-release-compose-ephemeral" },
+              "allowedEnvironments": {
+                "type": "array",
+                "items": { "enum": ["ci-fresh", "ci-snapshot"] },
+                "allOf": [
+                  { "contains": { "const": "ci-fresh" } },
+                  { "contains": { "const": "ci-snapshot" } }
+                ]
+              },
+              "allowedHosts": { "const": ["127.0.0.1"] }
+            }
+          }
+        ]
       }
     }
   }

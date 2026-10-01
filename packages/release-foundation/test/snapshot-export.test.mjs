@@ -155,7 +155,7 @@ function exportFixture(overrides = {}) {
         snapshotId: "00000003-0000001A-1",
         isolationLevel: "REPEATABLE READ",
         readOnly: true,
-        deferrable: true
+        deferrable: false
       };
     },
     async readFingerprint() {
@@ -255,6 +255,27 @@ test("exports only a scanned final bundle after matching source fingerprints", a
   assert.deepEqual(input.events.slice(-2), ["snapshot-closed", "workspace-destroyed"]);
 });
 
+for (const [name, transaction] of [
+  ["READ COMMITTED", { isolationLevel: "READ COMMITTED" }],
+  ["READ WRITE", { readOnly: false }]
+]) {
+  test(`DEFERRABLE does not admit a ${name} source transaction`, async () => {
+    const input = exportFixture();
+    const openSnapshot = input.source.openReadOnlySnapshot;
+    input.source.openReadOnlySnapshot = async (...args) => ({
+      ...(await openSnapshot(...args)),
+      deferrable: true,
+      ...transaction
+    });
+    await assert.rejects(() => runExport(input), { code: "SNAPSHOT_SOURCE_TRANSACTION_INVALID" });
+    assert.equal(input.fingerprintCalls(), 0);
+    assert.equal(input.events.includes("raw-exported"), false);
+    assert.equal(input.events.includes("raw-restored"), false);
+    assert.equal(input.uploads.length, 0);
+    assert.deepEqual(input.events, ["snapshot-opened", "snapshot-closed", "workspace-destroyed"]);
+  });
+}
+
 test("source fingerprint drift prevents all publication", async () => {
   const input = exportFixture();
   const readFingerprint = input.source.readFingerprint;
@@ -332,6 +353,62 @@ test("metadata verification rejects expiry, contract drift, unknown head, and du
   }
 });
 
+test("metadata declarations validate without opening dump bytes", async () => {
+  const { verifySnapshotMetadataDeclarations } =
+    await import("../src/snapshot/export-sanitized.mjs");
+  assert.equal(typeof verifySnapshotMetadataDeclarations, "function");
+  const input = exportFixture(),
+    metadata = await runExport(input),
+    bundle = input.uploads[0],
+    events = [...input.events];
+  assert.equal(
+    verifySnapshotMetadataDeclarations({
+      metadata,
+      contract: input.contract,
+      ownershipMap: input.ownershipMap,
+      scan: bundle.scan,
+      now: fixedNow,
+      get dump() {
+        assert.fail("declaration validation must not request plaintext dump bytes");
+      }
+    }),
+    metadata
+  );
+  assert.deepEqual(input.events, events);
+});
+
+test("metadata declarations preserve scan and source binding refusals", async () => {
+  const { verifySnapshotMetadataDeclarations } =
+    await import("../src/snapshot/export-sanitized.mjs");
+  assert.equal(typeof verifySnapshotMetadataDeclarations, "function");
+  const input = exportFixture(),
+    metadata = await runExport(input),
+    bundle = input.uploads[0],
+    original = {
+      metadata,
+      contract: input.contract,
+      ownershipMap: input.ownershipMap,
+      scan: bundle.scan,
+      now: fixedNow
+    };
+  for (const [overrides, code] of [
+    [{ scan: { ...bundle.scan, findingsCount: 1 } }, "SNAPSHOT_SCAN_INVALID"],
+    [{ scan: { ...bundle.scan, subjectDigest: digest("f") } }, "SNAPSHOT_SCAN_INVALID"],
+    [
+      { metadata: { ...metadata, sourceFingerprintAfterDigest: digest("f") } },
+      "SNAPSHOT_METADATA_SOURCE_MISMATCH"
+    ],
+    [{ now: new Date("2026-10-03T08:00:00.000Z") }, "SNAPSHOT_EXPIRED"]
+  ]) {
+    assert.throws(() => verifySnapshotMetadataDeclarations({ ...original, ...overrides }), {
+      code
+    });
+  }
+  assert.throws(() => verifySnapshotMetadata({ ...original, dump: Buffer.from("changed") }), {
+    code: "SNAPSHOT_DUMP_DIGEST_MISMATCH"
+  });
+});
+
 test("protected entrypoint accepts only secret references and a complete publication", async () => {
   const input = exportFixture();
   const request = {
@@ -391,7 +468,7 @@ test("protected workflow exposes no PR trigger or raw artifact upload", async ()
   assert.equal(/raw|partial/i.test(uploadBlock), false);
 });
 
-test("repository sanitization contract targets current tables and migration head", async () => {
+test("repository sanitization contract supports reviewed Staging and current migration heads", async () => {
   const [policy, prismaSchema, migrationEntries] = await Promise.all([
     readFile(
       new URL("../../../release/contracts/sanitization-contract.v1.json", import.meta.url),
@@ -407,7 +484,11 @@ test("repository sanitization contract targets current tables and migration head
     .map(({ name }) => name)
     .sort()
     .at(-1);
-  assert.deepEqual(policy.source.knownMigrationHeads, [migrationHead]);
+  assert.equal(policy.contractVersion, "2");
+  assert.deepEqual(policy.source.knownMigrationHeads, [
+    "20260901010000_stage1_schema_drift_convergence",
+    migrationHead
+  ]);
   const mappedTables = new Set(
     [...prismaSchema.matchAll(/@@map\("([a-z][a-z0-9_]*)"\)/g)].map((match) => `public.${match[1]}`)
   );

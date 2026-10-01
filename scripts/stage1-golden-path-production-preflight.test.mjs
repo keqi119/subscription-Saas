@@ -181,14 +181,25 @@ test("requires dedicated non-operational acceptance assets and controlled limits
     "TEST_VEHICLE_NOT_CONFIRMED_NON_OPERATIONAL"
   );
   expectBlocker({ STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN: "0" }, "PAYMENT_LIMIT_INVALID");
-  expectBlocker({ STAGE1_ACCEPTANCE_MAX_REFUND_FEN: "" }, "REFUND_LIMIT_INVALID");
-  expectBlocker(
-    {
-      STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN: "100",
-      STAGE1_ACCEPTANCE_MAX_REFUND_FEN: "101"
-    },
-    "REFUND_LIMIT_EXCEEDS_PAYMENT"
-  );
+});
+
+test("mainline preflight does not require independent refund funding", () => {
+  const env = validEnv();
+  delete env.STAGE1_ACCEPTANCE_MAX_REFUND_FEN;
+  const result = validateStage1GoldenPathPreflight(env);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+});
+
+test("independent refund limits do not block the mainline", () => {
+  for (const refundLimit of ["", "0", "101"]) {
+    const result = validateStage1GoldenPathPreflight({
+      ...validEnv(),
+      STAGE1_ACCEPTANCE_MAX_REFUND_FEN: refundLimit
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.blockers, []);
+  }
 });
 
 test("never returns raw secrets, keys, certificates, passwords, tokens, or OpenIDs", () => {

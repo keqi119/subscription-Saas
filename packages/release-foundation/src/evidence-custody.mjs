@@ -1,5 +1,8 @@
+import { createPublicKey, verify } from "node:crypto";
+
 import { canonicalJson } from "./canonical-json.mjs";
 import { sha256Bytes } from "./digest.mjs";
+import { validateContract } from "./schema-registry.mjs";
 
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -20,6 +23,24 @@ const receiptKeys = Object.freeze([
   "storeRef",
   "uploadedAt"
 ]);
+const storageMetadataKeys = Object.freeze([
+  "contentSizeBytes",
+  "retainUntil",
+  "storedAt",
+  "storeRef"
+]);
+const receiptPolicies = Object.freeze({
+  "custody-receipt.v1": Object.freeze({
+    schemaId: "custody-receipt.v1",
+    days: 180,
+    legacy: true
+  }),
+  "custody-receipt.retention90.v1": Object.freeze({
+    schemaId: "custody-receipt.retention90.v1",
+    days: 90,
+    legacy: false
+  })
+});
 const forbiddenValuePatterns = [
   /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s]+/i,
   /\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s/@:]+:[^\s/@]+@/,
@@ -34,7 +55,34 @@ function custodyError(code, details) {
   return Object.assign(new Error(code), { code, details });
 }
 
-function assertPolicy(policy) {
+function selectReceiptPolicy(options = {}) {
+  if (
+    options === null ||
+    typeof options !== "object" ||
+    Array.isArray(options) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(options))
+  ) {
+    throw custodyError("EVIDENCE_CUSTODY_INPUT_INVALID");
+  }
+  const keys = Reflect.ownKeys(options);
+  if (keys.some((key) => key !== "receiptContract") || keys.length > 1) {
+    throw custodyError("EVIDENCE_CUSTODY_INPUT_INVALID");
+  }
+  let receiptContract = "custody-receipt.v1";
+  if (keys.length === 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(options, "receiptContract");
+    if (!descriptor?.enumerable || !("value" in descriptor)) {
+      throw custodyError("EVIDENCE_CUSTODY_INPUT_INVALID");
+    }
+    receiptContract = descriptor.value;
+  }
+  if (typeof receiptContract !== "string" || !Object.hasOwn(receiptPolicies, receiptContract)) {
+    throw custodyError("EVIDENCE_CUSTODY_INPUT_INVALID");
+  }
+  return receiptPolicies[receiptContract];
+}
+
+function assertPolicy(policy, receiptPolicy) {
   if (
     typeof policy?.owner !== "string" ||
     policy.owner.length === 0 ||
@@ -42,7 +90,7 @@ function assertPolicy(policy) {
     policy.readers.length === 0 ||
     policy.readers.some((reader) => typeof reader !== "string" || reader.length === 0) ||
     new Set(policy.readers).size !== policy.readers.length ||
-    policy.retentionDays !== 180 ||
+    policy.retentionDays !== receiptPolicy.days ||
     !["delete", "review", "retain-approved"].includes(policy.expiryDisposition) ||
     forbiddenValuePatterns.some(
       (pattern) =>
@@ -81,21 +129,72 @@ function asBytes(value, missingCode) {
   throw custodyError(missingCode);
 }
 
-function assertStorageResult(result, { expectedSize, expectedRetainUntil }) {
-  if (result?.created !== true) throw custodyError("EVIDENCE_OVERWRITE_REFUSED");
+function isCanonicalTimestamp(value) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function assertStoredFacts(
+  result,
+  { expectedSize, expectedRetainUntil, minimumRetainUntil, receiptPolicy }
+) {
+  const storedAt = Date.parse(result?.storedAt);
+  const retainUntil = Date.parse(result?.retainUntil);
+  const retentionMinimum = Number.isFinite(storedAt)
+    ? addUtcDays(new Date(storedAt), receiptPolicy.days).getTime()
+    : Number.NaN;
   if (
-    typeof result.storeRef !== "string" ||
+    typeof result?.storeRef !== "string" ||
     result.storeRef.length === 0 ||
     result.contentSizeBytes !== expectedSize ||
-    !Number.isFinite(Date.parse(result.storedAt)) ||
-    result.retainUntil !== expectedRetainUntil
+    !Number.isFinite(storedAt) ||
+    (receiptPolicy.legacy
+      ? result.retainUntil !== expectedRetainUntil
+      : !isCanonicalTimestamp(result.storedAt) ||
+        !isCanonicalTimestamp(result.retainUntil) ||
+        !Number.isFinite(retentionMinimum) ||
+        retainUntil < retentionMinimum ||
+        retainUntil < (minimumRetainUntil ?? 0))
   ) {
     throw custodyError("EVIDENCE_STORAGE_RECEIPT_INVALID");
   }
   if (forbiddenValuePatterns.some((pattern) => pattern.test(result.storeRef))) {
     throw custodyError("EVIDENCE_SECRET_DETECTED", { path: "$.storeRef" });
   }
-  return result;
+  return Object.freeze({
+    storeRef: result.storeRef,
+    contentSizeBytes: result.contentSizeBytes,
+    storedAt: result.storedAt,
+    retainUntil: result.retainUntil
+  });
+}
+
+function assertStorageResult(result, expectations) {
+  if (result?.created !== true) throw custodyError("EVIDENCE_OVERWRITE_REFUSED");
+  return assertStoredFacts(result, expectations);
+}
+
+function assertStorageMetadata(result, created, expectations) {
+  const keys = result && typeof result === "object" ? Reflect.ownKeys(result) : [];
+  if (
+    result === null ||
+    typeof result !== "object" ||
+    Array.isArray(result) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(result)) ||
+    keys.length !== storageMetadataKeys.length ||
+    keys.some((key) => typeof key !== "string" || !storageMetadataKeys.includes(key)) ||
+    storageMetadataKeys.some((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(result, key);
+      return !descriptor?.enumerable || !("value" in descriptor);
+    })
+  ) {
+    throw custodyError("EVIDENCE_STORAGE_RECEIPT_INVALID");
+  }
+  const observed = assertStoredFacts(result, expectations);
+  if (storageMetadataKeys.some((key) => observed[key] !== created[key])) {
+    throw custodyError("EVIDENCE_STORAGE_RECEIPT_INVALID");
+  }
+  return observed;
 }
 
 function addUtcDays(date, days) {
@@ -104,8 +203,9 @@ function addUtcDays(date, days) {
   return result;
 }
 
-export function redactEvidence(value, policy) {
-  assertPolicy(policy);
+export function redactEvidence(value, policy, options = {}) {
+  const receiptPolicy = selectReceiptPolicy(options);
+  assertPolicy(policy, receiptPolicy);
   assertNoSensitiveValue(value);
   try {
     return JSON.parse(canonicalJson(value));
@@ -121,12 +221,15 @@ export async function custodyEvidence({
   storage,
   now = () => new Date(),
   createReceiptId,
-  attestationRef
+  attestationRef,
+  receiptContract = "custody-receipt.v1"
 }) {
-  assertPolicy(policy);
+  const receiptPolicy = selectReceiptPolicy({ receiptContract });
+  assertPolicy(policy, receiptPolicy);
   if (
     typeof storage?.createOnly !== "function" ||
     typeof storage?.read !== "function" ||
+    (!receiptPolicy.legacy && typeof storage?.readMetadata !== "function") ||
     storage.trustPolicy !== "immutable-content-addressed/v1" ||
     typeof storage.writerIdentity !== "string" ||
     storage.writerIdentity.length === 0 ||
@@ -144,7 +247,14 @@ export async function custodyEvidence({
   ) {
     throw custodyError("EVIDENCE_SECRET_DETECTED", { path: "$.custody-metadata" });
   }
-  const accepted = redactEvidence(value, policy);
+  const acceptedPolicy = Object.freeze({
+    owner: policy.owner,
+    readers: Object.freeze([...policy.readers]),
+    retentionDays: policy.retentionDays,
+    expiryDisposition: policy.expiryDisposition
+  });
+  const options = { receiptContract: receiptPolicy.schemaId };
+  const accepted = redactEvidence(value, acceptedPolicy, options);
   const contentBytes = Buffer.from(canonicalJson(accepted), "utf8");
   const contentDigest = sha256Bytes(contentBytes);
   const contentKey = `evidence/${contentDigest.slice("sha256:".length)}.json`;
@@ -152,7 +262,7 @@ export async function custodyEvidence({
   if (!(uploadStartedAt instanceof Date) || Number.isNaN(uploadStartedAt.getTime())) {
     throw custodyError("EVIDENCE_CUSTODY_CLOCK_INVALID");
   }
-  const retainUntil = addUtcDays(uploadStartedAt, policy.retentionDays).toISOString();
+  const retainUntil = addUtcDays(uploadStartedAt, receiptPolicy.days).toISOString();
   const contentUpload = assertStorageResult(
     await storage.createOnly({
       key: contentKey,
@@ -161,10 +271,21 @@ export async function custodyEvidence({
       requestedAt: uploadStartedAt.toISOString(),
       retainUntil
     }),
-    { expectedSize: contentBytes.byteLength, expectedRetainUntil: retainUntil }
+    {
+      expectedSize: contentBytes.byteLength,
+      expectedRetainUntil: retainUntil,
+      receiptPolicy
+    }
   );
+  const contentMetadata = receiptPolicy.legacy
+    ? contentUpload
+    : assertStorageMetadata(
+        await storage.readMetadata({ key: contentKey, identity: "audit-reader" }),
+        contentUpload,
+        { expectedSize: contentBytes.byteLength, receiptPolicy }
+      );
   const contentReadback = asBytes(
-    await storage.read({ key: contentKey, identity: storage.auditReaderIdentity }),
+    await storage.read({ key: contentKey, identity: "audit-reader" }),
     "EVIDENCE_READBACK_MISSING"
   );
   if (sha256Bytes(contentReadback) !== contentDigest) {
@@ -178,35 +299,60 @@ export async function custodyEvidence({
   const receiptId = createReceiptId();
   if (!uuidPattern.test(receiptId ?? "")) throw custodyError("CUSTODY_RECEIPT_ID_INVALID");
   const receipt = {
-    schemaVersion: "custody-receipt.v1",
+    schemaVersion: receiptPolicy.schemaId,
     receiptId,
     contentDigest,
     contentSizeBytes: contentBytes.byteLength,
-    storeRef: contentUpload.storeRef,
-    uploadedAt: contentUpload.storedAt,
+    storeRef: contentMetadata.storeRef,
+    uploadedAt: contentMetadata.storedAt,
     readbackAt: readbackAtDate.toISOString(),
     readbackDigest: contentDigest,
-    owner: policy.owner,
-    readers: [...policy.readers],
-    retainUntil: contentUpload.retainUntil,
-    expiryDisposition: policy.expiryDisposition,
+    owner: acceptedPolicy.owner,
+    readers: [...acceptedPolicy.readers],
+    retainUntil: contentMetadata.retainUntil,
+    expiryDisposition: acceptedPolicy.expiryDisposition,
     attestationRef
   };
   const receiptBytes = Buffer.from(canonicalJson(receipt), "utf8");
   const receiptDigest = sha256Bytes(receiptBytes);
   const receiptKey = `receipts/${receiptId}.json`;
-  assertStorageResult(
+  const receiptRequestedAt = receiptPolicy.legacy ? uploadStartedAt : readbackAtDate;
+  const receiptRetainUntil = receiptPolicy.legacy
+    ? retainUntil
+    : new Date(
+        Math.max(
+          Date.parse(contentMetadata.retainUntil),
+          addUtcDays(receiptRequestedAt, receiptPolicy.days).getTime()
+        )
+      ).toISOString();
+  const receiptUpload = assertStorageResult(
     await storage.createOnly({
       key: receiptKey,
       bytes: receiptBytes,
       contentDigest: receiptDigest,
-      requestedAt: uploadStartedAt.toISOString(),
-      retainUntil
+      requestedAt: receiptRequestedAt.toISOString(),
+      retainUntil: receiptRetainUntil
     }),
-    { expectedSize: receiptBytes.byteLength, expectedRetainUntil: retainUntil }
+    {
+      expectedSize: receiptBytes.byteLength,
+      expectedRetainUntil: retainUntil,
+      minimumRetainUntil: Date.parse(contentMetadata.retainUntil),
+      receiptPolicy
+    }
   );
+  if (!receiptPolicy.legacy) {
+    assertStorageMetadata(
+      await storage.readMetadata({ key: receiptKey, identity: "audit-reader" }),
+      receiptUpload,
+      {
+        expectedSize: receiptBytes.byteLength,
+        minimumRetainUntil: Date.parse(contentMetadata.retainUntil),
+        receiptPolicy
+      }
+    );
+  }
   const receiptReadback = asBytes(
-    await storage.read({ key: receiptKey, identity: storage.auditReaderIdentity }),
+    await storage.read({ key: receiptKey, identity: "audit-reader" }),
     "CUSTODY_RECEIPT_MISSING"
   );
   if (sha256Bytes(receiptReadback) !== receiptDigest) {
@@ -218,23 +364,25 @@ export async function custodyEvidence({
   } catch {
     throw custodyError("CUSTODY_RECEIPT_READBACK_INVALID");
   }
-  assertCustodyComplete(storedReceipt, contentDigest);
+  assertCustodyComplete(storedReceipt, contentDigest, options);
   return Object.freeze(storedReceipt);
 }
 
-export function assertCustodyComplete(receipt, expectedDigest) {
+export function assertCustodyComplete(receipt, expectedDigest, options = {}) {
+  const receiptPolicy = selectReceiptPolicy(options);
   const uploadedAt = Date.parse(receipt?.uploadedAt);
   const readbackAt = Date.parse(receipt?.readbackAt);
   const retainUntil = Date.parse(receipt?.retainUntil);
-  const expectedRetainUntil = Number.isFinite(uploadedAt)
-    ? addUtcDays(new Date(uploadedAt), 180).toISOString()
+  const expectedRetainUntilDate = Number.isFinite(uploadedAt)
+    ? addUtcDays(new Date(uploadedAt), receiptPolicy.days)
     : undefined;
+  const expectedRetainUntil = expectedRetainUntilDate?.toISOString();
   if (
     receipt === null ||
     typeof receipt !== "object" ||
     Array.isArray(receipt) ||
     JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(receiptKeys) ||
-    receipt?.schemaVersion !== "custody-receipt.v1" ||
+    receipt?.schemaVersion !== receiptPolicy.schemaId ||
     !uuidPattern.test(receipt.receiptId ?? "") ||
     !digestPattern.test(expectedDigest ?? "") ||
     receipt.contentDigest !== expectedDigest ||
@@ -257,7 +405,9 @@ export function assertCustodyComplete(receipt, expectedDigest) {
     new Set(receipt.readers).size !== receipt.readers.length ||
     !Number.isFinite(retainUntil) ||
     new Date(retainUntil).toISOString() !== receipt.retainUntil ||
-    receipt.retainUntil !== expectedRetainUntil ||
+    (receiptPolicy.legacy
+      ? receipt.retainUntil !== expectedRetainUntil
+      : retainUntil < expectedRetainUntilDate?.getTime()) ||
     !["delete", "review", "retain-approved"].includes(receipt.expiryDisposition) ||
     typeof receipt.attestationRef !== "string" ||
     receipt.attestationRef.length === 0 ||
@@ -285,4 +435,212 @@ export function assertCustodyDeletionAllowed(receipt, at = new Date()) {
     throw custodyError("EVIDENCE_DELETION_APPROVAL_REQUIRED");
   }
   return receipt;
+}
+
+// This read-only verifier deliberately does not use the legacy uploadedAt+180 receipt
+// assertion. Only authenticated independent Head/Get/ACL/GetBucketWorm facts decide
+// actual retention. Existing receipt producers and their raw v1 format are unchanged.
+export function verifyAuthoritativeCustodyObservation(input) {
+  try {
+    const closed = (value, keys) => {
+      if (
+        !value ||
+        typeof value !== "object" ||
+        Array.isArray(value) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(value)) ||
+        Reflect.ownKeys(value).length !== keys.length ||
+        keys.some(
+          (key) =>
+            !Object.getOwnPropertyDescriptor(value, key)?.enumerable ||
+            !("value" in Object.getOwnPropertyDescriptor(value, key))
+        )
+      )
+        throw new Error();
+    };
+    const copy = (value, seen = new WeakSet()) => {
+      if (value === null || ["string", "boolean"].includes(typeof value)) return value;
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (!value || typeof value !== "object" || seen.has(value)) throw new Error();
+      seen.add(value);
+      try {
+        if (Array.isArray(value)) {
+          if (Reflect.ownKeys(value).length !== value.length + 1) throw new Error();
+          return Array.from({ length: value.length }, (_, index) => {
+            const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+            if (!descriptor?.enumerable || !("value" in descriptor)) throw new Error();
+            return copy(descriptor.value, seen);
+          });
+        }
+        if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new Error();
+        const result = {};
+        for (const key of Reflect.ownKeys(value)) {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          if (typeof key !== "string" || !descriptor.enumerable || !("value" in descriptor))
+            throw new Error();
+          Object.defineProperty(result, key, {
+            value: copy(descriptor.value, seen),
+            enumerable: true
+          });
+        }
+        return result;
+      } finally {
+        seen.delete(value);
+      }
+    };
+    closed(input, [
+      "originalBytes",
+      "receipt",
+      "observation",
+      "signature",
+      "expected",
+      "trustPolicy",
+      "now"
+    ]);
+    if (!(input.originalBytes instanceof Uint8Array) || input.originalBytes.byteLength > 1048576)
+      throw new Error();
+    const originalBytes = Buffer.from(input.originalBytes);
+    const { receipt, observation, signature, expected, trustPolicy, now } = copy({
+      receipt: input.receipt,
+      observation: input.observation,
+      signature: input.signature,
+      expected: input.expected,
+      trustPolicy: input.trustPolicy,
+      now: input.now
+    });
+    const instant = (value) => {
+      if (typeof value !== "string") throw new Error();
+      const ms = Date.parse(value);
+      if (
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value) ||
+        !Number.isFinite(ms) ||
+        new Date(ms).toISOString().slice(0, 19) !== value.slice(0, 19)
+      )
+        throw new Error();
+      return ms;
+    };
+    const text = (value) => typeof value === "string" && value.length > 0 && value.length <= 2048;
+    closed(trustPolicy, [
+      "signer",
+      "writerIdentity",
+      "readerIdentity",
+      "storeRef",
+      "owner",
+      "readers"
+    ]);
+    closed(trustPolicy.signer, ["issuer", "keyId", "publicKey"]);
+    closed(expected, [
+      "contentDigest",
+      "storeRef",
+      "objectKey",
+      "objectVersion",
+      "terminalAt",
+      "snapshotExpiresAt",
+      "downstreamRetainUntil",
+      "legalHoldUntil"
+    ]);
+    closed(signature, ["algorithm", "issuer", "keyId", "subjectDigest", "signature"]);
+    closed(receipt, receiptKeys);
+    if (
+      ![
+        trustPolicy.writerIdentity,
+        trustPolicy.readerIdentity,
+        trustPolicy.storeRef,
+        trustPolicy.owner,
+        ...Object.values(trustPolicy.signer)
+      ].every(text) ||
+      trustPolicy.writerIdentity === trustPolicy.readerIdentity ||
+      !Array.isArray(trustPolicy.readers) ||
+      !trustPolicy.readers.length ||
+      !trustPolicy.readers.every(text) ||
+      new Set(trustPolicy.readers).size !== trustPolicy.readers.length ||
+      ![expected.storeRef, expected.objectKey, expected.objectVersion].every(text) ||
+      !digestPattern.test(expected.contentDigest) ||
+      !(originalBytes instanceof Uint8Array) ||
+      originalBytes.byteLength > 1048576
+    )
+      throw new Error();
+    validateContract("authoritative-custody-observation.v1", observation);
+    validateContract("custody-receipt.v1", receipt);
+    const digest = sha256Bytes(originalBytes);
+    const observationBytes = Buffer.from(canonicalJson(observation));
+    const key = createPublicKey(trustPolicy.signer.publicKey);
+    if (
+      key.asymmetricKeyType !== "ed25519" ||
+      signature.algorithm !== "Ed25519" ||
+      signature.issuer !== trustPolicy.signer.issuer ||
+      signature.keyId !== trustPolicy.signer.keyId ||
+      observation.issuer !== signature.issuer ||
+      observation.keyId !== signature.keyId ||
+      signature.subjectDigest !== sha256Bytes(observationBytes) ||
+      typeof signature.signature !== "string" ||
+      !/^[A-Za-z0-9+/]{86}==$/.test(signature.signature) ||
+      Buffer.from(signature.signature, "base64").toString("base64") !== signature.signature ||
+      !verify(
+        null,
+        Buffer.from(canonicalJson({ domain: "authoritative-custody-observation.v1", observation })),
+        key,
+        Buffer.from(signature.signature, "base64")
+      )
+    )
+      throw new Error();
+    for (const [field, value] of Object.entries(expected)) {
+      if (observation[field] !== value) throw new Error();
+    }
+    if (
+      digest !== expected.contentDigest ||
+      receipt.contentDigest !== digest ||
+      receipt.readbackDigest !== digest ||
+      observation.headDigest !== digest ||
+      observation.getDigest !== digest ||
+      observation.receiptDigest !== sha256Bytes(Buffer.from(canonicalJson(receipt))) ||
+      observation.contentSizeBytes !== originalBytes.byteLength ||
+      receipt.contentSizeBytes !== originalBytes.byteLength ||
+      observation.storeRef !== trustPolicy.storeRef ||
+      receipt.storeRef !== trustPolicy.storeRef ||
+      observation.writerIdentity !== trustPolicy.writerIdentity ||
+      observation.readerIdentity !== trustPolicy.readerIdentity ||
+      receipt.owner !== trustPolicy.owner ||
+      canonicalJson(receipt.readers) !== canonicalJson(trustPolicy.readers)
+    )
+      throw new Error();
+    const at = instant(now);
+    const terminal = instant(observation.terminalAt);
+    const modified = instant(observation.lastModified);
+    const readback = instant(observation.readbackAt);
+    const uploaded = instant(receipt.uploadedAt);
+    const receiptReadback = instant(receipt.readbackAt);
+    const required = Math.max(
+      terminal + 180 * 86400000,
+      observation.snapshotExpiresAt === null
+        ? 0
+        : instant(observation.snapshotExpiresAt) + 180 * 86400000,
+      instant(observation.downstreamRetainUntil),
+      observation.legalHoldUntil === null ? 0 : instant(observation.legalHoldUntil)
+    );
+    const retain = instant(observation.worm.retainUntil);
+    if (
+      terminal > at ||
+      modified > readback ||
+      terminal > readback ||
+      readback > at ||
+      uploaded !== modified ||
+      receiptReadback < modified ||
+      receiptReadback > readback ||
+      retain < required ||
+      modified + observation.worm.retentionDays * 86400000 < required ||
+      instant(receipt.retainUntil) < required
+    )
+      throw new Error();
+    return Object.freeze({
+      contentDigest: digest,
+      objectVersion: observation.objectVersion,
+      observationDigest: signature.subjectDigest,
+      requiredRetainUntil: new Date(required).toISOString(),
+      retainUntil: new Date(
+        Math.min(retain, modified + observation.worm.retentionDays * 86400000)
+      ).toISOString()
+    });
+  } catch {
+    throw custodyError("AUTHORITATIVE_CUSTODY_INVALID");
+  }
 }

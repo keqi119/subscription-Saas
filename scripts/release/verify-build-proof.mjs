@@ -9,8 +9,16 @@ import {
   sha256Canonical,
   validateContract
 } from "../../packages/release-foundation/src/index.mjs";
+import { validateBuildWebClient } from "./verify-build-materials.mjs";
 
 const allowedExecutionScopes = new Set(["full-rc", "migration-schema"]);
+const legacyCustodyPolicyKeys = Object.freeze([
+  "owner",
+  "readers",
+  "retentionDays",
+  "expiryDisposition"
+]);
+const retention90CustodyPolicyKeys = Object.freeze([...legacyCustodyPolicyKeys, "receiptContract"]);
 
 function proofError(code, details) {
   return Object.assign(new Error(code), { code, details });
@@ -25,6 +33,26 @@ function sameArray(left, right) {
   );
 }
 
+function hasExactDataProperties(value, expectedKeys) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+  ) {
+    return false;
+  }
+  const keys = Reflect.ownKeys(value);
+  return (
+    keys.length === expectedKeys.length &&
+    keys.every((key) => typeof key === "string" && expectedKeys.includes(key)) &&
+    expectedKeys.every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor?.enumerable && "value" in descriptor;
+    })
+  );
+}
+
 function validateArtifact(schemaId, value, code) {
   try {
     validateContract(schemaId, value);
@@ -33,7 +61,15 @@ function validateArtifact(schemaId, value, code) {
   }
 }
 
-function assertCompleteIdentity(proof, observation) {
+export function assertBuildIdentity(input) {
+  const { proof, buildMaterialObservation } = input;
+  validateArtifact("build-proof.v1", proof, "BUILD_PROOF_CONTRACT_INVALID");
+  validateArtifact(
+    "build-material-observation.v1",
+    buildMaterialObservation,
+    "BUILD_PROOF_MATERIAL_OBSERVATION_INVALID"
+  );
+  const observation = buildMaterialObservation;
   if (
     proof.identity.sourceSha !== observation.sourceSha ||
     proof.identity.sourceSha !== observation.checkoutRef ||
@@ -56,6 +92,16 @@ function assertCompleteIdentity(proof, observation) {
   );
   if (materialReference?.reference !== sha256Canonical(observation)) {
     throw proofError("BUILD_PROOF_REGISTRY_SUBJECT_MISMATCH");
+  }
+  const webMaterials = proof.provenance.materials.filter(
+    ({ name }) => name === "web-public-api-base"
+  );
+  if (Object.hasOwn(observation, "webClient")) {
+    const webClient = validateBuildWebClient(observation.webClient, observation.images);
+    if (webMaterials.length !== 1 || webMaterials[0].reference !== webClient.apiBaseUrl)
+      throw proofError("BUILD_PROOF_PROVENANCE_MISMATCH");
+  } else if (webMaterials.length !== 0) {
+    throw proofError("BUILD_PROOF_PROVENANCE_MISMATCH");
   }
   for (const name of ["api", "web", "runner"]) {
     const expected = proof.identity.images[name];
@@ -106,6 +152,18 @@ function assertCompleteIdentity(proof, observation) {
   }
 }
 
+// Historical proofs remain readable, but cannot supply a missing application
+// endpoint. This check is not a substitute for attestation/custody admission.
+export function assertBuildWebClient(input) {
+  assertBuildIdentity(input);
+  if (!Object.hasOwn(input.buildMaterialObservation, "webClient"))
+    throw proofError("BUILD_WEB_CLIENT_REQUIRED");
+  return validateBuildWebClient(
+    input.buildMaterialObservation.webClient,
+    input.buildMaterialObservation.images
+  );
+}
+
 function assertTrustedAttestation({ proofDigest, proof, trustRoot, verifiedAttestation }) {
   if (
     typeof trustRoot?.issuer !== "string" ||
@@ -136,17 +194,32 @@ function assertTrustedAttestation({ proofDigest, proof, trustRoot, verifiedAttes
   }
 }
 
-function assertProofCustody({ proofDigest, custodyReceipt, trustRoot, verifiedAttestation }) {
+export function assertProofCustody({
+  proofDigest,
+  custodyReceipt,
+  trustRoot,
+  verifiedAttestation
+}) {
+  const policy = trustRoot?.custody;
+  const legacyPolicy = hasExactDataProperties(policy, legacyCustodyPolicyKeys);
+  const retention90Policy =
+    hasExactDataProperties(policy, retention90CustodyPolicyKeys) &&
+    policy.receiptContract === "custody-receipt.retention90.v1";
+  if (!legacyPolicy && !retention90Policy) {
+    throw proofError("BUILD_PROOF_CUSTODY_INVALID");
+  }
+  const receiptContract = retention90Policy
+    ? "custody-receipt.retention90.v1"
+    : "custody-receipt.v1";
   try {
-    assertCustodyComplete(custodyReceipt, proofDigest);
+    assertCustodyComplete(custodyReceipt, proofDigest, { receiptContract });
   } catch (error) {
     throw proofError("BUILD_PROOF_CUSTODY_INVALID", { cause: error?.code });
   }
-  const policy = trustRoot?.custody;
   if (
     custodyReceipt.owner !== policy?.owner ||
     !sameArray(custodyReceipt.readers, policy?.readers) ||
-    policy?.retentionDays !== 180 ||
+    policy?.retentionDays !== (retention90Policy ? 90 : 180) ||
     custodyReceipt.expiryDisposition !== policy?.expiryDisposition ||
     custodyReceipt.attestationRef !== verifiedAttestation.attestationRef
   ) {
@@ -171,9 +244,15 @@ export function verifyBuildProof({
   if (!allowedExecutionScopes.has(executionScope)) {
     throw proofError("BUILD_PROOF_EXECUTION_SCOPE_INVALID");
   }
-  assertCompleteIdentity(proof, buildMaterialObservation);
+  assertBuildIdentity({ proof, buildMaterialObservation });
   const proofDigest = sha256Canonical(proof);
   assertTrustedAttestation({ proofDigest, proof, trustRoot, verifiedAttestation });
+  if (
+    !hasExactDataProperties(trustRoot?.custody, legacyCustodyPolicyKeys) ||
+    custodyReceipt?.schemaVersion !== "custody-receipt.v1"
+  ) {
+    throw proofError("BUILD_PROOF_CUSTODY_INVALID");
+  }
   assertProofCustody({ proofDigest, custodyReceipt, trustRoot, verifiedAttestation });
   return Object.freeze({
     status: "verified",

@@ -24,6 +24,7 @@ import {
   VehicleOperationalRestrictionType
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
+import { request as requestHttp } from "node:http";
 import { AddressInfo, createConnection } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -147,6 +148,36 @@ describe("AssetOperationsController governed boundary", () => {
       SOURCE_KEY
     );
     expect(response.status).toBe(403);
+  });
+
+  it("keeps return-inspection read and transition permissions independent", async () => {
+    const path = `/api/asset-operations/work-orders/${WORK_ORDER_ID}`;
+    const command = {
+      ...transitionBody(),
+      detailSnapshot: { closureCaseId: SOURCE_ID },
+      targetStatus: AssetWorkOrderStatus.PENDING_ACCEPTANCE
+    };
+    expect((await get(path, "work")).status).toBe(403);
+    expect((await post(`${path}/transition`, command, "view", SOURCE_KEY)).status).toBe(403);
+    expect(service.getWorkOrderDetail).not.toHaveBeenCalled();
+    expect(service.transitionWorkOrder).not.toHaveBeenCalled();
+
+    expect((await get(path, "view")).status).toBe(200);
+    expect((await post(`${path}/transition`, command, "work", SOURCE_KEY)).status).toBe(201);
+    expect(service.getWorkOrderDetail).toHaveBeenCalledExactlyOnceWith(WORK_ORDER_ID);
+    expect(service.transitionWorkOrder).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        detailSnapshot: { closureCaseId: SOURCE_ID },
+        expectedVersion: command.expectedVersion,
+        source: { type: "MANUAL_OPERATION", id: SOURCE_ID, key: SOURCE_KEY },
+        targetStatus: AssetWorkOrderStatus.PENDING_ACCEPTANCE,
+        workOrderId: WORK_ORDER_ID
+      }),
+      expect.objectContaining({
+        actorId: ACTOR_ID,
+        permissions: [PermissionCode.ASSET_WORK_ORDER_MANAGE]
+      })
+    );
   });
 
   it("allows either ordinary or approval release permission to reach type-specific service authorization", async () => {
@@ -482,13 +513,13 @@ describe("AssetOperationsController governed boundary", () => {
   );
 
   function get(path: string, token?: string) {
-    return fetch(`${baseUrl}${path}`, {
+    return requestControllerHttp(`${baseUrl}${path}`, {
       headers: token ? { authorization: `Bearer ${token}` } : undefined
     });
   }
 
   function post(path: string, body: object, token: string, idempotencyKey?: string) {
-    return fetch(`${baseUrl}${path}`, {
+    return requestControllerHttp(`${baseUrl}${path}`, {
       body: JSON.stringify(body),
       headers: {
         authorization: `Bearer ${token}`,
@@ -556,6 +587,34 @@ describe("AssetOperationsModule registration", () => {
     );
   });
 });
+
+function requestControllerHttp(
+  url: string,
+  options: { body?: string; headers?: Record<string, string>; method?: string } = {}
+): Promise<Response> {
+  // A real loopback HTTP client: OS-assigned port 0 can select a port that the
+  // browser-compatible fetch client blocks before reaching the test server.
+  return new Promise((resolve, reject) => {
+    const request = requestHttp(
+      url,
+      { method: options.method, headers: options.headers },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.once("error", reject);
+        res.once("aborted", () => reject(new Error("Controller HTTP response aborted")));
+        res.once("end", () => {
+          resolve(new Response(Buffer.concat(chunks).toString("utf8"), { status: res.statusCode }));
+        });
+      }
+    );
+    request.once("error", reject);
+    request.setTimeout(5_000, () =>
+      request.destroy(new Error("Controller HTTP request timed out"))
+    );
+    request.end(options.body);
+  });
+}
 
 function testUser(token: string) {
   const permissionsByToken: Record<string, PermissionCode[]> = {

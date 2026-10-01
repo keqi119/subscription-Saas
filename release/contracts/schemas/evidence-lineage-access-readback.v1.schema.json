@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-lineage-access-readback.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "approvalSchemaVersion",
+    "lane",
+    "capabilityKind",
+    "repository",
+    "releaseAttemptId",
+    "rcWorkflowRunId",
+    "job",
+    "exactObjects",
+    "namespace",
+    "providerRolePolicy",
+    "prerequisite",
+    "acl",
+    "worm",
+    "deniedActions",
+    "observationKind",
+    "credentialIssued",
+    "contentReadbackPerformed",
+    "accessReceiptDigest",
+    "observationAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "evidence-lineage-access-readback.v1" },
+    "approvalSchemaVersion": { "const": "exact-capability-approval.v2" },
+    "lane": { "const": "rc" },
+    "capabilityKind": { "const": "lineage-oss-role" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "id"],
+      "properties": {
+        "name": { "const": "keqi119/subscription-Saas" },
+        "id": { "const": "1253231368" }
+      }
+    },
+    "releaseAttemptId": { "$ref": "#/$defs/id" },
+    "rcWorkflowRunId": { "$ref": "#/$defs/runId" },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "instanceId", "environment", "permissionProfile", "lineageNodeKind"],
+      "properties": {
+        "id": {
+          "enum": [
+            "lineage-purpose-store",
+            "lineage-purpose-readback",
+            "lineage-custody-store",
+            "lineage-custody-readback",
+            "lineage-aggregate-store",
+            "lineage-aggregate-readback",
+            "lineage-exit-store",
+            "lineage-exit-readback"
+          ]
+        },
+        "instanceId": { "$ref": "#/$defs/id" },
+        "environment": { "enum": ["trusted-release-execution", "trusted-release-candidate"] },
+        "permissionProfile": { "enum": ["lineage-create-only-writer", "lineage-readback-reader"] },
+        "lineageNodeKind": { "enum": ["purpose", "custody", "aggregate", "exit"] }
+      }
+    },
+    "exactObjects": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/object" }
+    },
+    "namespace": { "const": "private-lineage" },
+    "providerRolePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "providerArn",
+        "roleArn",
+        "trustPolicyDigest",
+        "permissionPolicyDigest",
+        "resourceReadbackDigest"
+      ],
+      "properties": {
+        "providerArn": { "$ref": "#/$defs/id" },
+        "roleArn": { "$ref": "#/$defs/id" },
+        "trustPolicyDigest": { "$ref": "#/$defs/digest" },
+        "permissionPolicyDigest": { "$ref": "#/$defs/digest" },
+        "resourceReadbackDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "prerequisite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "changePlanDigest",
+        "externalChangeApprovalDigest",
+        "applyProofDigest",
+        "rolePolicyReadbackDigest",
+        "appliedAt",
+        "approvalIssuedAt"
+      ],
+      "properties": {
+        "changePlanDigest": { "$ref": "#/$defs/digest" },
+        "externalChangeApprovalDigest": { "$ref": "#/$defs/digest" },
+        "applyProofDigest": { "$ref": "#/$defs/digest" },
+        "rolePolicyReadbackDigest": { "$ref": "#/$defs/digest" },
+        "appliedAt": { "$ref": "#/$defs/timestamp" },
+        "approvalIssuedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "acl": { "const": "private" },
+    "worm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "retentionDays", "readbackAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "state": { "const": "Locked" },
+        "retentionDays": { "type": "integer", "minimum": 210, "maximum": 36500 },
+        "readbackAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "deniedActions": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["Head", "Get", "Put", "List", "Delete", "KMS", "Database", "Snapshot", "JIT"]
+      }
+    },
+    "observationKind": { "const": "PREREQUISITE_ONLY" },
+    "credentialIssued": { "const": false },
+    "contentReadbackPerformed": { "const": false },
+    "accessReceiptDigest": { "type": "null" },
+    "observationAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "addressingKind",
+        "objectType",
+        "digest",
+        "expectedDigest",
+        "rawProofType",
+        "rawProofDigest",
+        "key"
+      ],
+      "properties": {
+        "addressingKind": { "enum": ["claim", "lineage"] },
+        "objectType": {
+          "enum": [
+            "execution-purpose-envelope.v1",
+            "purpose-claim.v1",
+            "custody-receipt.v2",
+            "release-aggregate-proof.v2",
+            "s1-exit-evidence.v2"
+          ]
+        },
+        "digest": { "$ref": "#/$defs/digest" },
+        "expectedDigest": { "$ref": "#/$defs/digest" },
+        "rawProofType": {
+          "anyOf": [
+            {
+              "enum": ["source-gate-evidence.v1", "execution-proof.v1", "final-compose-evidence.v1"]
+            },
+            { "type": "null" }
+          ]
+        },
+        "rawProofDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "key": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^*?]+$" }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "addressingKind": { "const": "claim" },
+            "objectType": { "const": "purpose-claim.v1" },
+            "rawProofType": { "type": "string" },
+            "rawProofDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "addressingKind": { "const": "lineage" },
+            "objectType": {
+              "enum": [
+                "execution-purpose-envelope.v1",
+                "custody-receipt.v2",
+                "release-aggregate-proof.v2",
+                "s1-exit-evidence.v2"
+              ]
+            },
+            "rawProofType": { "type": "null" },
+            "rawProofDigest": { "type": "null" }
+          }
+        }
+      ]
+    }
+  }
+}

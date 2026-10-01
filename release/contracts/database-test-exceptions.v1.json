@@ -392,6 +392,41 @@
       "reason": "Uses injected process and filesystem doubles; it does not connect to PostgreSQL.",
       "scope": "mock-process-boundary",
       "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "scripts/release/manual-expected-schema-producer.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises expected-schema production with injected host and reference process doubles; it never starts Docker or connects to PostgreSQL.",
+      "scope": "mock-process-boundary",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "scripts/release/r3-application-bootstrap.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises bootstrap input validation and child-process lifecycle using a temporary synthetic API entrypoint; it never connects to PostgreSQL. Real R3 application database gates remain required.",
+      "scope": "process-boundary",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "scripts/release/r3-postgres-observation.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Validates pure Engine, container, network, volume and PostgreSQL observation objects; it performs no I/O and never connects to a database. Real R3 database gates remain required.",
+      "scope": "source-contract",
+      "reviewDate": "2026-12-01"
+    },
+    {
+      "path": "apps/release-runner/test/manual/manual-runner-migration-postgres.integration.test.mjs",
+      "owner": "stage1-r2-owner",
+      "reason": "Outside source CI DB suites; required real final-image gate runs explicitly with node --test apps/release-runner/test/manual/manual-runner-migration-postgres.integration.test.mjs under the independently approved operation. This exception does not waive the final gate.",
+      "scope": "manual-final-image-gate",
+      "reviewDate": "2026-12-06"
+    },
+    {
+      "path": "apps/release-runner/test/manual/manual-runner-verification-postgres.integration.test.mjs",
+      "owner": "stage1-r2-owner",
+      "reason": "Outside source CI DB suites; required real final-image gate runs explicitly with node --test apps/release-runner/test/manual/manual-runner-verification-postgres.integration.test.mjs under the independently approved operation. This exception does not waive the final gate.",
+      "scope": "manual-final-image-gate",
+      "reviewDate": "2026-12-06"
     }
   ]
 }

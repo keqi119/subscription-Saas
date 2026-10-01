@@ -16,6 +16,10 @@ import {
   releaseImageReferences,
   validateFinalComposeEvidence
 } from "./run-final-compose-gate.mjs";
+import {
+  assertIndependentNativeChainEvidence,
+  validateR3FinalGateEvidence
+} from "./r3-final-evidence.mjs";
 
 const digestPattern = /^sha256:[0-9a-f]{64}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -85,11 +89,15 @@ function assertSourceEvidence({ source, chain, proof, expectedWorkflowRunRef }) 
   }
 }
 
-function assertFinalEvidence({ evidence, chain, proof, source, snapshotMetadataDigest }) {
+function assertFinalEvidence({ evidence, chain, proof, source, snapshotMetadataDigest, native }) {
   try {
-    validateFinalComposeEvidence(evidence);
+    if (native) validateR3FinalGateEvidence(evidence);
+    else validateFinalComposeEvidence(evidence);
   } catch (error) {
-    throw aggregateError("RELEASE_FINAL_COMPOSE_INVALID", { chain, cause: error?.code });
+    throw aggregateError(
+      native ? "RELEASE_FINAL_NATIVE_INVALID" : "RELEASE_FINAL_COMPOSE_INVALID",
+      { chain, cause: error?.code }
+    );
   }
   if (
     evidence.chain !== chain ||
@@ -108,6 +116,12 @@ function assertFinalEvidence({ evidence, chain, proof, source, snapshotMetadataD
     throw aggregateError("RELEASE_CONTRACT_IDENTITY_MISMATCH", { chain });
   }
   if (evidence.contracts.databaseTestManifestDigest !== source.databaseTestManifestDigest) {
+    throw aggregateError("RELEASE_TEST_MANIFEST_MISMATCH", { chain });
+  }
+  if (
+    native &&
+    evidence.contracts.databaseTestDiscoveryDigest !== source.databaseTestDiscoveryDigest
+  ) {
     throw aggregateError("RELEASE_TEST_MANIFEST_MISMATCH", { chain });
   }
   if (
@@ -148,7 +162,7 @@ function retryIdentity(input, chain) {
   });
 }
 
-function assertAttemptHistory(input) {
+function assertAttemptHistory(input, finalEvidence) {
   const allProofDigests = new Set();
   for (const history of Object.values(input.attemptHistory ?? {})) {
     if (!Array.isArray(history)) continue;
@@ -162,7 +176,7 @@ function assertAttemptHistory(input) {
   allProofDigests.clear();
   for (const chain of ["fresh", "snapshot"]) {
     const history = input.attemptHistory?.[chain];
-    const selected = input.finalComposeEvidence[chain];
+    const selected = finalEvidence[chain];
     const expectedIdentity = retryIdentity(input, chain);
     if (!Array.isArray(history) || history.length === 0) {
       throw aggregateError("RELEASE_ATTEMPT_HISTORY_INCOMPLETE", { chain });
@@ -207,6 +221,44 @@ function assertAttemptHistory(input) {
   }
 }
 
+function assertNativeHistory(input, finalEvidence, expectedWorkflowRunRef) {
+  // Native history is part of each custodied final object. A separate legacy
+  // list cannot override or erase the authenticated selection.
+  if (Object.hasOwn(input, "attemptHistory"))
+    throw aggregateError("RELEASE_ATTEMPT_HISTORY_INVALID");
+  for (const chain of ["fresh", "snapshot"]) {
+    const history = finalEvidence[chain].attemptHistory;
+    if (workflowRunRef(history.ci) !== expectedWorkflowRunRef) {
+      throw aggregateError("RELEASE_WORKFLOW_RUN_MISMATCH", { chain });
+    }
+    const verifiedAt = Date.parse(history.verifiedAt),
+      aggregatedAt = Date.parse(input.aggregatedAt);
+    if (
+      !Number.isFinite(aggregatedAt) ||
+      !Number.isFinite(verifiedAt) ||
+      verifiedAt > aggregatedAt
+    ) {
+      throw aggregateError("RELEASE_ATTEMPT_HISTORY_INVALID", { chain });
+    }
+  }
+}
+
+function nativeExecutionSummary(evidence) {
+  return {
+    ...Object.fromEntries(
+      [
+        "requestDigest",
+        "terminalExecutionDigest",
+        "resultDigest",
+        "readbackDigest",
+        "reconstructedDigest",
+        "closedSessionDigest"
+      ].map((key) => [key, evidence.native[key]])
+    ),
+    historyDigest: sha256Canonical(evidence.attemptHistory)
+  };
+}
+
 function executionSummary(evidence) {
   return Object.freeze({
     manifestDigest: evidence.manifestDigest,
@@ -217,6 +269,11 @@ function executionSummary(evidence) {
 }
 
 export function aggregateReleaseProof(input) {
+  const native = Object.hasOwn(input ?? {}, "finalNativeEvidence");
+  if (native && Object.hasOwn(input, "finalComposeEvidence")) {
+    throw aggregateError("RELEASE_FINAL_EXECUTION_MODE_MISMATCH");
+  }
+  const finalEvidence = native ? input.finalNativeEvidence : input?.finalComposeEvidence;
   validateAs("build-proof.v1", input?.buildProof, "RELEASE_BUILD_PROOF_INVALID");
   validateAs("snapshot-metadata.v1", input?.snapshotMetadata, "RELEASE_SNAPSHOT_INVALID");
   assertWorkflowRun(input.workflowRun, input.buildProof.identity.sourceSha);
@@ -255,24 +312,26 @@ export function aggregateReleaseProof(input) {
   }
 
   assertFinalEvidence({
-    evidence: input.finalComposeEvidence?.fresh,
+    evidence: finalEvidence?.fresh,
     chain: "fresh",
     proof: input.buildProof,
     source: input.sourceGateEvidence.fresh,
-    snapshotMetadataDigest: null
+    snapshotMetadataDigest: null,
+    native
   });
   assertFinalEvidence({
-    evidence: input.finalComposeEvidence?.snapshot,
+    evidence: finalEvidence?.snapshot,
     chain: "snapshot",
     proof: input.buildProof,
     source: input.sourceGateEvidence.snapshot,
-    snapshotMetadataDigest
+    snapshotMetadataDigest,
+    native
   });
   try {
-    assertIndependentChainEvidence(
-      input.finalComposeEvidence.fresh,
-      input.finalComposeEvidence.snapshot
-    );
+    const assertIndependent = native
+      ? assertIndependentNativeChainEvidence
+      : assertIndependentChainEvidence;
+    assertIndependent(finalEvidence.fresh, finalEvidence.snapshot);
   } catch (error) {
     throw aggregateError("RELEASE_CHAIN_EVIDENCE_MISMATCH", { cause: error?.code });
   }
@@ -282,16 +341,17 @@ export function aggregateReleaseProof(input) {
     snapshotMetadata: input.snapshotMetadata,
     sourceFresh: input.sourceGateEvidence.fresh,
     sourceSnapshot: input.sourceGateEvidence.snapshot,
-    finalFresh: input.finalComposeEvidence.fresh,
-    finalSnapshot: input.finalComposeEvidence.snapshot
+    finalFresh: finalEvidence.fresh,
+    finalSnapshot: finalEvidence.snapshot
   };
   for (const [key, content] of Object.entries(custodyContents)) {
     assertCustodyRecord(input.custodyRecords?.[key], content, expectedWorkflowRunRef);
   }
-  assertAttemptHistory(input);
+  if (native) assertNativeHistory(input, finalEvidence, expectedWorkflowRunRef);
+  else assertAttemptHistory(input, finalEvidence);
 
   const proof = {
-    schemaVersion: "release-aggregate-proof.v1",
+    schemaVersion: native ? "release-native-aggregate-proof.v1" : "release-aggregate-proof.v1",
     sourceSha: input.buildProof.identity.sourceSha,
     workflowRun: { ...input.workflowRun },
     buildProofDigest: sha256Canonical(input.buildProof),
@@ -308,25 +368,42 @@ export function aggregateReleaseProof(input) {
       fresh: sha256Canonical(input.sourceGateEvidence.fresh),
       snapshot: sha256Canonical(input.sourceGateEvidence.snapshot)
     },
-    finalComposeEvidence: {
-      fresh: sha256Canonical(input.finalComposeEvidence.fresh),
-      snapshot: sha256Canonical(input.finalComposeEvidence.snapshot)
-    },
-    finalArtifactExecutions: {
-      fresh: executionSummary(input.finalComposeEvidence.fresh),
-      snapshot: executionSummary(input.finalComposeEvidence.snapshot)
-    },
-    composeEvidenceDigest: sha256Canonical({
-      fresh: input.finalComposeEvidence.fresh.compose,
-      snapshot: input.finalComposeEvidence.snapshot.compose
-    }),
+    ...(native
+      ? {
+          finalNativeEvidence: {
+            fresh: sha256Canonical(finalEvidence.fresh),
+            snapshot: sha256Canonical(finalEvidence.snapshot)
+          },
+          nativeExecutions: {
+            fresh: nativeExecutionSummary(finalEvidence.fresh),
+            snapshot: nativeExecutionSummary(finalEvidence.snapshot)
+          },
+          nativeExecutionEvidenceDigest: sha256Canonical({
+            fresh: finalEvidence.fresh.native,
+            snapshot: finalEvidence.snapshot.native
+          })
+        }
+      : {
+          finalComposeEvidence: {
+            fresh: sha256Canonical(finalEvidence.fresh),
+            snapshot: sha256Canonical(finalEvidence.snapshot)
+          },
+          finalArtifactExecutions: {
+            fresh: executionSummary(finalEvidence.fresh),
+            snapshot: executionSummary(finalEvidence.snapshot)
+          },
+          composeEvidenceDigest: sha256Canonical({
+            fresh: finalEvidence.fresh.compose,
+            snapshot: finalEvidence.snapshot.compose
+          })
+        }),
     apiReadinessEvidenceDigest: sha256Canonical({
-      fresh: input.finalComposeEvidence.fresh.apiReadiness,
-      snapshot: input.finalComposeEvidence.snapshot.apiReadiness
+      fresh: finalEvidence.fresh.apiReadiness,
+      snapshot: finalEvidence.snapshot.apiReadiness
     }),
     webClientEvidenceDigest: sha256Canonical({
-      fresh: input.finalComposeEvidence.fresh.webClient,
-      snapshot: input.finalComposeEvidence.snapshot.webClient
+      fresh: finalEvidence.fresh.webClient,
+      snapshot: finalEvidence.snapshot.webClient
     }),
     custodyReceiptDigests: Object.fromEntries(
       Object.entries(input.custodyRecords).map(([key, record]) => [
@@ -334,10 +411,17 @@ export function aggregateReleaseProof(input) {
         sha256Canonical(record.receipt)
       ])
     ),
-    attemptHistoryDigest: sha256Canonical(input.attemptHistory),
+    attemptHistoryDigest: sha256Canonical(
+      native
+        ? {
+            fresh: finalEvidence.fresh.attemptHistory,
+            snapshot: finalEvidence.snapshot.attemptHistory
+          }
+        : input.attemptHistory
+    ),
     aggregatedAt: input.aggregatedAt
   };
-  validateAs("release-aggregate-proof.v1", proof, "RELEASE_AGGREGATE_CONTRACT_INVALID");
+  validateAs(proof.schemaVersion, proof, "RELEASE_AGGREGATE_CONTRACT_INVALID");
   return Object.freeze(JSON.parse(canonicalJson(proof)));
 }
 

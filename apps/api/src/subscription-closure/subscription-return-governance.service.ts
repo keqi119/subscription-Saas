@@ -240,8 +240,8 @@ export class SubscriptionReturnGovernanceService {
       if (replay) {
         if (
           replay.manifestHash !== manifestHash ||
-          canonicalSubscriptionClosureJson(replay.items as never) !==
-            canonicalSubscriptionClosureJson(normalizedItems as never)
+          canonicalSubscriptionClosureJson({ items: normalizeChecklistItems(replay.items) }) !==
+            canonicalSubscriptionClosureJson({ items: normalizedItems })
         ) {
           throw conflict("RETURN_CHECKLIST_IDEMPOTENCY_CONFLICT", "幂等键已用于其他退车清单。");
         }
@@ -327,7 +327,7 @@ export class SubscriptionReturnGovernanceService {
           attestationMode: input.attestationMode,
           attestationSnapshot: attestationSnapshot
             ? (attestationSnapshot as Prisma.InputJsonValue)
-            : Prisma.JsonNull,
+            : Prisma.DbNull,
           capturedAt: input.capturedAt,
           capturedBy: actorId,
           closureCaseId: closureCase.id,
@@ -1276,34 +1276,45 @@ export class SubscriptionReturnGovernanceService {
       throw conflict("CLOSURE_APPROVAL_SERVICE_UNAVAILABLE", "例外审批服务不可用。");
     }
     const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey", 180);
+    const source = {
+      id: closureCaseId,
+      key: `closure-approval-request:${idempotencyKey}`,
+      type: "SUBSCRIPTION_CLOSURE_APPROVAL"
+    } as const;
     return this.prisma.$transaction(async (tx) => {
       const authority = await resolveClosureApprovalAuthority(tx, closureCaseId, input);
-      return this.assetAccounting!.requestApprovalInTransaction(
-        tx,
-        {
-          exceptionType: authority.exceptionType,
-          requestEvidenceSnapshot: { evidenceIds: authority.snapshot.evidenceIds },
-          requestReason: requiredText(input.requestReason, "requestReason", 2000),
-          requestedAt: new Date(),
-          source: {
-            id: closureCaseId,
-            key: `closure-approval-request:${idempotencyKey}`,
-            type: "SUBSCRIPTION_CLOSURE_APPROVAL"
-          },
-          subject: {
-            subjectField: authority.subjectField,
-            subjectId: closureCaseId,
-            subjectType: "SETTLEMENT_CASE"
-          }
-        },
-        {
-          actorId: user.id,
-          ipAddress: context.ipAddress,
-          permissions: user.permissions,
-          userAgent: context.userAgent
-        },
-        async () => authority.snapshot
-      );
+      const command = {
+        exceptionType: authority.exceptionType,
+        requestEvidenceSnapshot: { evidenceIds: authority.snapshot.evidenceIds },
+        requestReason: requiredText(input.requestReason, "requestReason", 2000),
+        source,
+        subject: {
+          subjectField: authority.subjectField,
+          subjectId: closureCaseId,
+          subjectType: "SETTLEMENT_CASE" as const
+        }
+      };
+      const accountingContext = {
+        actorId: user.id,
+        idempotencyKey: source.key,
+        ipAddress: context.ipAddress,
+        permissions: user.permissions,
+        userAgent: context.userAgent
+      };
+      return authority.exceptionType === "SETTLEMENT_WAIVER" ||
+        authority.exceptionType === "SETTLEMENT_WRITE_OFF"
+        ? this.assetAccounting!.requestClosureFinancialApprovalInTransaction(
+            tx,
+            command,
+            accountingContext,
+            async () => authority.snapshot
+          )
+        : this.assetAccounting!.requestApprovalInTransaction(
+            tx,
+            { ...command, requestedAt: new Date() },
+            accountingContext,
+            async () => authority.snapshot
+          );
     });
   }
 
@@ -1324,6 +1335,11 @@ export class SubscriptionReturnGovernanceService {
       throw conflict("CLOSURE_APPROVAL_SERVICE_UNAVAILABLE", "例外审批服务不可用。");
     }
     const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey", 180);
+    const source = {
+      id: closureCaseId,
+      key: `closure-approval-decision:${idempotencyKey}`,
+      type: "SUBSCRIPTION_CLOSURE_APPROVAL"
+    } as const;
     return this.prisma.$transaction(async (tx) => {
       const approval = await tx.businessExceptionApproval.findUnique({ where: { id: approvalId } });
       if (
@@ -1355,34 +1371,40 @@ export class SubscriptionReturnGovernanceService {
       ) {
         throw conflict("CLOSURE_APPROVAL_STALE", "审批绑定的退车结算事实已变化，请重新发起审批。");
       }
-      const result = await this.assetAccounting!.decideApprovalInTransaction(
-        tx,
-        {
-          approvalId,
-          decidedAt: new Date(),
-          decision: input.decision,
-          decisionComment: requiredText(input.decisionComment, "decisionComment", 2000),
-          exceptionType: authority.exceptionType,
-          expectedVersion: input.expectedVersion,
-          source: {
-            id: closureCaseId,
-            key: `closure-approval-decision:${idempotencyKey}`,
-            type: "SUBSCRIPTION_CLOSURE_APPROVAL"
-          },
-          subject: {
-            subjectField: authority.subjectField,
-            subjectId: closureCaseId,
-            subjectType: "SETTLEMENT_CASE"
-          }
-        },
-        {
-          actorId: user.id,
-          ipAddress: context.ipAddress,
-          permissions: user.permissions,
-          userAgent: context.userAgent
-        },
-        async () => authority.snapshot
-      );
+      const command = {
+        approvalId,
+        decision: input.decision,
+        decisionComment: requiredText(input.decisionComment, "decisionComment", 2000),
+        exceptionType: authority.exceptionType,
+        expectedVersion: input.expectedVersion,
+        source,
+        subject: {
+          subjectField: authority.subjectField,
+          subjectId: closureCaseId,
+          subjectType: "SETTLEMENT_CASE" as const
+        }
+      };
+      const accountingContext = {
+        actorId: user.id,
+        idempotencyKey: source.key,
+        ipAddress: context.ipAddress,
+        permissions: user.permissions,
+        userAgent: context.userAgent
+      };
+      const result = authority.exceptionType === "SETTLEMENT_WAIVER" ||
+        authority.exceptionType === "SETTLEMENT_WRITE_OFF"
+        ? await this.assetAccounting!.decideClosureFinancialApprovalInTransaction(
+            tx,
+            command,
+            accountingContext,
+            async () => authority.snapshot
+          )
+        : await this.assetAccounting!.decideApprovalInTransaction(
+            tx,
+            { ...command, decidedAt: new Date() },
+            accountingContext,
+            async () => authority.snapshot
+          );
       if (
         input.decision === "APPROVED" &&
         authority.exceptionType === "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
@@ -1531,10 +1553,10 @@ export class SubscriptionReturnGovernanceService {
                 (typeof calculation.manualBasis === "string"
                   ? calculation.manualBasis
                   : null) ||
-              canonicalSubscriptionClosureJson(
-                (Array.isArray(evidence) ? [...evidence].sort() : []) as never
-              ) !==
-                canonicalSubscriptionClosureJson([...requested.evidenceIds].sort() as never)
+              canonicalSubscriptionClosureJson({
+                evidenceIds: Array.isArray(evidence) ? [...evidence].sort() : []
+              }) !==
+                canonicalSubscriptionClosureJson({ evidenceIds: [...requested.evidenceIds].sort() })
             );
           })
         ) {
@@ -1669,9 +1691,9 @@ export class SubscriptionReturnGovernanceService {
             priorFinalLine.clauseSnapshotId !== line.clauseSnapshotId ||
             Number(priorFinalLine.quantity) !== line.quantity ||
             priorFinalLine.responsibility !== line.responsibility ||
-            canonicalSubscriptionClosureJson(
-              (Array.isArray(priorEvidence) ? [...priorEvidence].sort() : []) as never
-            ) !== canonicalSubscriptionClosureJson([...line.evidenceIds].sort() as never) ||
+            canonicalSubscriptionClosureJson({
+              evidenceIds: Array.isArray(priorEvidence) ? [...priorEvidence].sort() : []
+            }) !== canonicalSubscriptionClosureJson({ evidenceIds: [...line.evidenceIds].sort() }) ||
             (line.manualBasis?.trim() || null) !==
               (typeof priorCalculation.manualBasis === "string"
                 ? priorCalculation.manualBasis
@@ -3205,7 +3227,7 @@ export class SubscriptionReturnGovernanceService {
   ) {
     await this.assertThreeStageWriteAllowed(closureCaseId);
     return this.prisma.$transaction(async (tx) => {
-      requiredText(input.idempotencyKey, "idempotencyKey", 180);
+      const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey", 180);
       await tx.$queryRaw(
         Prisma.sql`SELECT "id" FROM "subscription_closure_case" WHERE "id" = ${closureCaseId}::uuid FOR UPDATE`
       );
@@ -3326,7 +3348,26 @@ export class SubscriptionReturnGovernanceService {
         closureCase.finalDisposition === "TERMINATE"
           ? ContractStatus.TERMINATED
           : ContractStatus.COMPLETED;
-      await Promise.all([
+      const [previousOrder, previousContract] = await Promise.all([
+        tx.subscriptionOrder.findUniqueOrThrow({
+          select: { id: true, orderStatus: true },
+          where: { id: closureCase.orderId }
+        }),
+        tx.contract.findUniqueOrThrow({
+          select: { id: true, status: true },
+          where: { id: closureCase.contractId }
+        })
+      ]);
+      const beforeSnapshot = {
+        closureCaseId: closureCase.id,
+        closureStatus: closureCase.status,
+        contractId: previousContract.id,
+        contractStatus: previousContract.status,
+        financialStatus: closureCase.financialStatus,
+        orderId: previousOrder.id,
+        orderStatus: previousOrder.orderStatus
+      };
+      const [updatedOrder, updatedContract, updatedClosure] = await Promise.all([
         tx.subscriptionOrder.update({
           data: { orderStatus, updatedBy: actorId },
           where: { id: closureCase.orderId }
@@ -3347,6 +3388,27 @@ export class SubscriptionReturnGovernanceService {
           where: { id: closureCase.id }
         })
       ]);
+      await tx.auditLog.create({
+        data: {
+          action: AuditAction.UPDATE,
+          afterSnapshot: {
+            closureCaseId: updatedClosure.id,
+            closureStatus: updatedClosure.status,
+            contractId: updatedContract.id,
+            contractStatus: updatedContract.status,
+            financialStatus: updatedClosure.financialStatus,
+            idempotencyKey,
+            orderId: updatedOrder.id,
+            orderStatus: updatedOrder.orderStatus
+          },
+          beforeSnapshot,
+          createdAt: input.occurredAt,
+          entityId: closureCase.id,
+          entityType: "subscription_closure_case",
+          module: "subscription_closure",
+          operatorId: actorId
+        }
+      });
       return { closureCaseId, financialStatus: financial.financialStatus, replayed: false, status: targetStatus };
     });
   }
@@ -3621,20 +3683,22 @@ async function resolveClosureApprovalAuthority(
         "人工定价审批必须绑定当前草案、差异项、人工审查条款、价格、依据和证据。"
       );
     }
-    const [clause, deltaItem, evidenceCount] = await Promise.all([
+    const [clause, deltaItem, evidenceLinks] = await Promise.all([
       tx.contractChargeClauseSnapshot.findUnique({ where: { id: input.clauseSnapshotId } }),
       tx.vehicleConditionDeltaItem.findUnique({ where: { id: input.deltaItemId } }),
-      tx.vehicleReturnEvidenceLink.count({
-        where: { closureCaseId, evidenceId: { in: evidenceIds } }
+      tx.vehicleReturnEvidenceLink.findMany({
+        where: { closureCaseId, evidenceId: { in: evidenceIds } },
+        select: { evidenceId: true }
       })
     ]);
+    const linkedEvidenceIds = new Set(evidenceLinks.map(({ evidenceId }) => evidenceId));
     if (
       !clause ||
       clause.contractId !== closureCase.contractId ||
       clause.status !== "MANUAL_CLAUSE_REVIEW_REQUIRED" ||
       !deltaItem ||
       deltaItem.revisionId !== closureCase.currentDeltaRevisionId ||
-      evidenceCount !== evidenceIds.length
+      evidenceIds.some((id) => !linkedEvidenceIds.has(id))
     ) {
       throw conflict(
         "CLOSURE_PRICING_APPROVAL_AUTHORITY_MISMATCH",
@@ -3671,21 +3735,27 @@ async function resolveClosureApprovalAuthority(
   );
   const bill = await tx.receivableBill.findUnique({ where: { id: input.billId } });
   const [linkedEvidence, financialProofs] = await Promise.all([
-    tx.vehicleReturnEvidenceLink.count({
-      where: { closureCaseId, evidenceId: { in: evidenceIds } }
+    tx.vehicleReturnEvidenceLink.findMany({
+      where: { closureCaseId, evidenceId: { in: evidenceIds } },
+      select: { evidenceId: true }
     }),
-    tx.fileObject.count({
+    tx.fileObject.findMany({
       where: {
         id: { in: evidenceIds },
         objectKey: { startsWith: `subscription-closure/${closureCaseId}/financial-proof/` }
-      }
+      },
+      select: { id: true }
     })
+  ]);
+  const coveredEvidenceIds = new Set([
+    ...linkedEvidence.map(({ evidenceId }) => evidenceId),
+    ...financialProofs.map(({ id }) => id)
   ]);
   if (
     !bill ||
     bill.orderId !== closureCase.orderId ||
     bill.remainingAmount <= 0n ||
-    linkedEvidence + financialProofs < evidenceIds.length
+    evidenceIds.some((id) => !coveredEvidenceIds.has(id))
   ) {
     throw conflict(
       "CLOSURE_FINANCIAL_APPROVAL_AUTHORITY_MISMATCH",

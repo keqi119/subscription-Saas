@@ -62,8 +62,5 @@ jobs:
       - name: Web tests
         run: pnpm --filter @subscription-saas/web test
 
-      - name: Run complete API test gate
-        run: pnpm --filter @subscription-saas/api test
-
       - name: Release check
         run: pnpm release:check

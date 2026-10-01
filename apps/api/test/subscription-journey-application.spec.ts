@@ -24,6 +24,106 @@ import type {
 const FINAL_PLAN_COMMERCIAL_HASH = `sha256:${"a".repeat(64)}`;
 
 describe("subscription journey application validation", () => {
+  it.each([ApplicationSource.SELF_SERVICE, ApplicationSource.SALES_ASSISTED])(
+    "derives the %s manual wait from Application review facts",
+    async (source) => {
+      const harness = composedValidationHarness({
+        applicationSource: source,
+        creditReviewStatus: OrderReviewStatus.PENDING,
+        depositStatus: DepositStatus.PENDING_CONFIRM,
+        finalDepositAmount: null,
+        journeyFactVersion: 7,
+        materialReviewStatus: OrderReviewStatus.PENDING
+      });
+
+      await expect(harness.service.validateApplicationJob(validationJob())).resolves.toEqual({
+        action: "APPLICATION_VALIDATION_WAITING_MANUAL",
+        applicationId: harness.application.id,
+        factVersion: 7,
+        reasonCodes: [
+          "MATERIAL_REVIEW_PENDING",
+          "CREDIT_REVIEW_PENDING",
+          "DEPOSIT_CONFIRMATION_PENDING"
+        ]
+      });
+      expect(harness.tx.application.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: harness.application.id } })
+      );
+      expect(harness.repository.waitForManual).toHaveBeenCalledWith(
+        harness.tx,
+        expect.objectContaining({
+          factVersion: 7,
+          journeyId: "journey-1",
+          stepId: "step-validation"
+        })
+      );
+      expect(harness.repository.waitForCustomer).not.toHaveBeenCalled();
+      expect(harness.repository.completeStep).not.toHaveBeenCalled();
+      expect(harness.repository.rejectForApplication).not.toHaveBeenCalled();
+    }
+  );
+
+  it("derives customer supplementation from Application material facts", async () => {
+    const harness = composedValidationHarness({
+      applicationSource: ApplicationSource.SELF_SERVICE,
+      journeyFactVersion: 8,
+      materialReviewStatus: OrderReviewStatus.NEED_MORE_INFO,
+      status: ApplicationStatus.NEED_MORE_INFO
+    });
+
+    await expect(harness.service.validateApplicationJob(validationJob())).resolves.toEqual({
+      action: "APPLICATION_VALIDATION_WAITING_CUSTOMER",
+      applicationId: harness.application.id,
+      factVersion: 8,
+      reasonCodes: ["MATERIAL_SUPPLEMENT_REQUIRED"]
+    });
+    expect(harness.repository.waitForCustomer).toHaveBeenCalledWith(
+      harness.tx,
+      expect.objectContaining({
+        factVersion: 8,
+        payload: {
+          factVersion: 8,
+          reasonCodes: ["MATERIAL_SUPPLEMENT_REQUIRED"]
+        }
+      })
+    );
+    expect(harness.repository.waitForManual).not.toHaveBeenCalled();
+    expect(harness.repository.completeStep).not.toHaveBeenCalled();
+    expect(harness.repository.rejectForApplication).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [ApplicationStatus.REJECTED, "APPLICATION_REJECTED"],
+    [ApplicationStatus.CANCELLED, "APPLICATION_CANCELLED"]
+  ] as const)(
+    "terminates validation from authoritative Application status %s",
+    async (status, reasonCode) => {
+      const harness = composedValidationHarness({
+        journeyFactVersion: 9,
+        softReservedVehicleId: null,
+        status
+      });
+
+      await expect(harness.service.validateApplicationJob(validationJob())).resolves.toEqual({
+        action: "APPLICATION_VALIDATION_REJECTED",
+        applicationId: harness.application.id,
+        factVersion: 9,
+        reasonCodes: [reasonCode]
+      });
+      expect(harness.repository.rejectForApplication).toHaveBeenCalledWith(
+        harness.tx,
+        expect.objectContaining({
+          activeJobId: "job-validation",
+          factVersion: 9,
+          payload: { factVersion: 9, reasonCodes: [reasonCode] }
+        })
+      );
+      expect(harness.repository.waitForCustomer).not.toHaveBeenCalled();
+      expect(harness.repository.waitForManual).not.toHaveBeenCalled();
+      expect(harness.repository.completeStep).not.toHaveBeenCalled();
+    }
+  );
+
   it("runs validation and completes APPLICATION_VALIDATION in one transaction", async () => {
     const tx = validationTransaction();
     const prisma = transactionHost(tx);
@@ -727,6 +827,16 @@ describe("subscription journey manual application decisions", () => {
 });
 
 describe("subscription journey final-plan command replay", () => {
+  it("does not report the current publication as the result of a different command version", async () => {
+    const harness = finalPlanReplayHarness();
+    await expect(harness.service.decideFinalPlan("journey-1", {
+      finalPeriodMonths: 12,
+      finalSubscriptionPlanId: "plan-1",
+      finalVehicleId: "vehicle-1",
+      version: 0
+    }, harness.user, harness.context)).rejects.toMatchObject({ code: "FINAL_PLAN_REVISION_STALE" });
+  });
+
   it("returns the committed publication for an exact stale-version replay", async () => {
     const harness = finalPlanReplayHarness();
 
@@ -856,6 +966,9 @@ function finalPlanReplayHarness() {
   };
   const tx = {
     $queryRaw: vi.fn(async () => [{ id: journey.id }]),
+    subscriptionJourneyEvent: {
+      findUnique: vi.fn(async () => ({ sequence: 3 }))
+    },
     subscriptionJourney: {
       findUnique: vi.fn(async () => journey)
     }
@@ -903,6 +1016,33 @@ function validationTransaction(overrides: Record<string, unknown> = {}) {
       }))
     }
   };
+}
+
+function composedValidationHarness(
+  applicationOverrides: Record<string, unknown>,
+  journeyOverrides: Record<string, unknown> = {}
+) {
+  const application = readyApplication(applicationOverrides);
+  const tx = {
+    $queryRaw: vi.fn(async () => [{ id: application.id }]),
+    application: {
+      findUnique: vi.fn(async () => application)
+    },
+    subscriptionJourney: validationTransaction(journeyOverrides).subscriptionJourney
+  };
+  const repository = {
+    completeStep: vi.fn(async () => undefined),
+    rejectForApplication: vi.fn(async () => undefined),
+    waitForCustomer: vi.fn(async () => undefined),
+    waitForManual: vi.fn(async () => undefined)
+  };
+  const customerService = new CustomerService({} as never, {} as never, {} as never, {} as never);
+  const service = new SubscriptionJourneyService(
+    repository as never,
+    transactionHost(tx) as never,
+    customerService
+  );
+  return { application, repository, service, tx };
 }
 
 function transactionHost(tx: unknown) {

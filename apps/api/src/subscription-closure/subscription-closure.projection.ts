@@ -658,7 +658,9 @@ export function governedAllowedActions(
     ["RETURN_INSPECTION", "RECONDITIONING", "PENDING_SETTLEMENT"].includes(status) &&
     (!settlementStage ||
       (settlementStage === "FINALIZED" &&
-        currentDisputes.some((item) => item.status === "ACCEPTED_BY_PLATFORM")))
+        currentDisputes.some((item) => item.status === "ACCEPTED_BY_PLATFORM")) ||
+      (status === "PENDING_SETTLEMENT" && settlementStage === "PROPOSED" &&
+        hasUncapturedPricingBill(currentSettlement, governed, receivableBills)))
   ) {
     actions.push("PROPOSE_SETTLEMENT");
   }
@@ -780,4 +782,22 @@ function nonNegativeBigInt(value: unknown) {
   } catch {
     return 0n;
   }
+}
+
+function hasUncapturedPricingBill(
+  currentSettlement: Record<string, unknown>,
+  governed: Readonly<Record<string, unknown>>,
+  receivableBills: Array<Record<string, unknown>>
+) {
+  const capturedBillIds = new Set(
+    asRecordArray(asRecord(currentSettlement.billInputSnapshot).bills).map((bill) => bill.id)
+  );
+  const liveBillIds = new Set(
+    receivableBills.filter((bill) => bill.billStatus !== "CANCELLED").map((bill) => bill.id)
+  );
+  return asRecordArray(governed.chargeLines).some((line) =>
+    line.settlementRevisionId === currentSettlement.id && line.status === "FINAL" &&
+    line.responsibility === "CUSTOMER" && nonNegativeBigInt(line.amountCents) > 0n &&
+    typeof line.billId === "string" && liveBillIds.has(line.billId) && !capturedBillIds.has(line.billId)
+  );
 }

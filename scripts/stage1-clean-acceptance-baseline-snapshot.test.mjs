@@ -1511,7 +1511,7 @@ test("target loader counts exact whitelist and verifies the fixed local canonica
   assert.equal(target.tableCounts.customer, 2);
   assert.equal(target.tableCounts.vehicle, 1);
   assert.equal(target.schemaCanonical, true);
-  assert.equal(target.migrationCatalog.length, 126);
+  assert.equal(target.migrationCatalog.length, CANONICAL_MIGRATIONS.length);
   assert.equal(
     target.schemaFingerprint[0].schemaFingerprintSha256,
     "c73669a688470e5927c59f55e565eab2f0a16933c15dbd9573481fe4113d9a78"

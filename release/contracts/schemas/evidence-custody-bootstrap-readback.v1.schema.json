@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-custody-bootstrap-readback.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "operationId",
+    "repository",
+    "custodyBackend",
+    "executorSourceDigest",
+    "executorRuntimeDigest",
+    "signerRootDigest",
+    "bucket",
+    "identities",
+    "importedOriginals",
+    "writerAccessReceiptDigest",
+    "readerAccessReceiptDigest",
+    "revocationReadbackDigest",
+    "closedAt",
+    "status"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "evidence-custody-bootstrap-readback.v1" },
+    "operationId": { "$ref": "#/$defs/id" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "id"],
+      "properties": {
+        "name": { "const": "keqi119/subscription-Saas" },
+        "id": { "const": "1253231368" }
+      }
+    },
+    "custodyBackend": { "const": "private-oss-worm" },
+    "executorSourceDigest": { "$ref": "#/$defs/digest" },
+    "executorRuntimeDigest": { "$ref": "#/$defs/digest" },
+    "signerRootDigest": { "$ref": "#/$defs/digest" },
+    "bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["region", "name", "fingerprint", "acl", "versioning", "forbidOverwrite", "worm"],
+      "properties": {
+        "region": { "const": "oss-cn-shanghai" },
+        "name": {
+          "type": "string",
+          "pattern": "^subscription-saas-stage1-snapshot-[0-9a-f]{12}-cn-shanghai$"
+        },
+        "fingerprint": { "$ref": "#/$defs/digest" },
+        "acl": { "const": "private" },
+        "versioning": { "const": "Disabled" },
+        "forbidOverwrite": { "const": true },
+        "worm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "state", "retentionDays"],
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "state": { "const": "Locked" },
+            "retentionDays": { "type": "integer", "minimum": 210, "maximum": 36500 }
+          }
+        }
+      }
+    },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["management", "writer", "reader"],
+      "properties": {
+        "management": { "$ref": "#/$defs/id" },
+        "writer": { "$ref": "#/$defs/id" },
+        "reader": { "$ref": "#/$defs/id" }
+      }
+    },
+    "importedOriginals": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "subjectType",
+          "originalBytesDigest",
+          "originalBytesSize",
+          "objectKey",
+          "objectVersion",
+          "authoritativeObservationDigest"
+        ],
+        "properties": {
+          "subjectType": { "type": "string", "pattern": "^[a-z0-9.-]+$", "maxLength": 128 },
+          "originalBytesDigest": { "$ref": "#/$defs/digest" },
+          "originalBytesSize": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+          "objectKey": {
+            "type": "string",
+            "pattern": "^control-evidence/v1/[^*?]+$",
+            "maxLength": 1024
+          },
+          "objectVersion": { "$ref": "#/$defs/id" },
+          "authoritativeObservationDigest": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    "writerAccessReceiptDigest": { "$ref": "#/$defs/digest" },
+    "readerAccessReceiptDigest": { "$ref": "#/$defs/digest" },
+    "revocationReadbackDigest": { "$ref": "#/$defs/digest" },
+    "closedAt": { "$ref": "#/$defs/timestamp" },
+    "status": { "const": "I0_CLOSED" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true }
+  }
+}

@@ -24,7 +24,7 @@ import {
   VehicleStatus
 } from "@prisma/client";
 
-import { journeyError } from "./subscription-journey.errors";
+import { ConfirmedCommercialPlanChanged, journeyError } from "./subscription-journey.errors";
 import { AssetOperationsService } from "../asset-operations/asset-operations.service";
 import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { SubscriptionJourneyRepository } from "./subscription-journey.repository";
@@ -526,7 +526,7 @@ export class SubscriptionJourneyService {
     return prisma.$transaction(async (tx) => {
       const journey = await this.lockAdminJourney(tx, journeyId);
       if (journey.version !== dto.version) {
-        const replay = this.resolveFinalPlanReplay(journey, dto);
+        const replay = await this.resolveFinalPlanReplay(tx, journey, dto);
         if (replay) return replay;
         throw new ConflictException("JOURNEY_OPTIMISTIC_LOCK_CONFLICT");
       }
@@ -1074,14 +1074,35 @@ export class SubscriptionJourneyService {
           "The subscription journey was not found."
         );
       }
+      const requestedRevision = isRecord(job.payload)
+        ? job.payload.finalPlanRevision
+        : undefined;
+      const requoteResult = {
+        action: "ORDER_AND_CONTRACT_WAITING_REQUOTE",
+        applicationId: journey.applicationId,
+        finalPlanRevision: typeof requestedRevision === "number" ? requestedRevision : null
+      };
       if (
-        journey.currentStepCode !==
-        SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION
+        journey.currentStepCode !== SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION ||
+        requestedRevision !== journey.application.finalPlanRevision
       ) {
+        const recovery = await tx.subscriptionJourneyEvent.findUnique({
+          where: { eventKey: `${job.sourceKey}:requote` }
+        });
+        if (
+          recovery?.journeyId === journey.id &&
+          isRecord(recovery.payload) &&
+          recovery.payload.operation === "REQUIRE_FINAL_PLAN_REQUOTE" &&
+          recovery.payload.finalPlanRevision === requestedRevision &&
+          recovery.payload.stepId === job.stepId
+        ) {
+          return requoteResult;
+        }
         if (!journey.orderId) {
           throw journeyError(
-            "JOURNEY_IDEMPOTENCY_CONFLICT",
-            "The journey advanced without an attached order."
+            requestedRevision !== journey.application.finalPlanRevision
+              ? "FINAL_PLAN_REVISION_STALE" : "JOURNEY_IDEMPOTENCY_CONFLICT",
+            "The order bootstrap no longer matches the current step and revision."
           );
         }
         return {
@@ -1100,9 +1121,6 @@ export class SubscriptionJourneyService {
           "The order bootstrap job does not match the current journey step."
         );
       }
-      const requestedRevision = isRecord(job.payload)
-        ? job.payload.finalPlanRevision
-        : undefined;
       if (
         requestedRevision !== journey.application.finalPlanRevision ||
         requestedRevision < 1
@@ -1124,12 +1142,25 @@ export class SubscriptionJourneyService {
         ipAddress: "127.0.0.1",
         userAgent: "subscription-journey-worker"
       };
-      const order = await this.customerService!.createOrderFromApplicationInTransaction(
-        tx,
-        journey.applicationId,
-        actor,
-        context
-      );
+      let order;
+      try {
+        order = await this.customerService!.createOrderFromApplicationInTransaction(
+          tx,
+          journey.applicationId,
+          actor,
+          context
+        );
+      } catch (error) {
+        if (!(error instanceof ConfirmedCommercialPlanChanged)) throw error;
+        await this.repository.returnToFinalPlanDecision(tx, {
+          eventKey: `${job.sourceKey}:requote`,
+          expectedVersion: journey.version,
+          finalPlanRevision: journey.application.finalPlanRevision,
+          journeyId: journey.id,
+          stepId: step.id
+        });
+        return requoteResult;
+      }
       await this.attachOrder(tx, journey.id, order.id);
       const contract = await this.orderService!.createJourneyContractInTransaction(
         tx,
@@ -1534,7 +1565,8 @@ export class SubscriptionJourneyService {
     return journey;
   }
 
-  private resolveFinalPlanReplay(
+  private async resolveFinalPlanReplay(
+    tx: Tx,
     journey: AdminJourney,
     dto: FinalPlanDecisionDto
   ) {
@@ -1547,6 +1579,16 @@ export class SubscriptionJourneyService {
           status === SubscriptionJourneyStepStatus.COMPLETED
       );
     if (!published || dto.version > journey.version) return null;
+
+    const hashKey = journey.application.finalPlanCommercialHash!.slice("sha256:".length, 23);
+    const publication = await tx.subscriptionJourneyEvent.findUnique({
+      where: {
+        eventKey: `journey:${journey.id}:step:FINAL_PLAN_DECISION:revision:${journey.application.finalPlanRevision}:hash:${hashKey}`
+      }
+    });
+    if (!publication || publication.sequence !== dto.version + 1) {
+      throw journeyError("FINAL_PLAN_REVISION_STALE", "This command version does not identify the current final-plan publication.");
+    }
 
     const exact =
       journey.application.finalPeriodMonths === dto.finalPeriodMonths &&

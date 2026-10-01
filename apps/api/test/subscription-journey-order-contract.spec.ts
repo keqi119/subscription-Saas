@@ -180,6 +180,7 @@ function orderContractTransaction(
   };
   return {
     $queryRaw: vi.fn(async () => [{ id: journey.id }]),
+    subscriptionJourneyEvent: { findUnique: vi.fn(async () => null) },
     subscriptionJourney: {
       findUnique: vi.fn(async () => journey),
       updateMany: vi.fn(async () => ({ count: 1 }))

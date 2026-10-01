@@ -10,11 +10,14 @@ import {
 
 test("uses only fixed Prisma argv and rejects a schema outside the image contract", () => {
   const schema = path.resolve("C:/app/apps/api/prisma/schema.prisma");
+  const config = path.resolve("C:/app/apps/api/prisma.config.ts");
   assert.deepEqual(prismaMigrateDeployArgs({ schema, repoRoot: "C:/app" }), [
     "migrate",
     "deploy",
     "--schema",
-    schema
+    schema,
+    "--config",
+    config
   ]);
   assert.deepEqual(prismaSchemaDiffArgs({ schema, repoRoot: "C:/app" }), [
     "migrate",
@@ -22,7 +25,9 @@ test("uses only fixed Prisma argv and rejects a schema outside the image contrac
     "--from-config-datasource",
     "--to-schema",
     schema,
-    "--exit-code"
+    "--exit-code",
+    "--config",
+    config
   ]);
   assert.throws(
     () => prismaMigrateDeployArgs({ schema: "C:/tmp/schema.prisma", repoRoot: "C:/app" }),
@@ -72,6 +77,7 @@ test("observes migration and schema facts and keeps the database URL out of argv
       tlsMode: "require"
     },
     repoRoot: "C:/app",
+    environment: { PATH: "fixed-image-path", NODE_ENV: "production" },
     async runProcess(command, args, options) {
       calls.push({ command, args, options });
       if (args.includes("--version")) return { exitCode: 0, signal: null, stdout: "tool 1\n" };
@@ -85,6 +91,32 @@ test("observes migration and schema facts and keeps the database URL out of argv
   const migration = await adapter.observeMigrationState();
   const schema = await adapter.observeSchema();
   const versions = await adapter.readToolVersions();
+  await adapter.withMigrationLock(async (transaction) => {
+    assert.equal(transaction, database);
+  });
+
+  const schemaDiffCall = calls.find(({ args }) => args.includes("--to-schema"));
+  const schemaScriptCall = calls.find(({ args }) => args.includes("--script"));
+  assert.deepEqual(schemaDiffCall.args, [
+    "migrate",
+    "diff",
+    "--from-config-datasource",
+    "--to-schema",
+    path.resolve("C:/app/apps/api/prisma/schema.prisma"),
+    "--exit-code",
+    "--config",
+    path.resolve("C:/app/apps/api/prisma.config.ts")
+  ]);
+  assert.deepEqual(schemaScriptCall.args, [
+    "migrate",
+    "diff",
+    "--from-empty",
+    "--to-config-datasource",
+    "--script",
+    "--config",
+    path.resolve("C:/app/apps/api/prisma.config.ts")
+  ]);
+  assert.equal(schemaScriptCall.args.includes("--schema"), false);
 
   assert.equal(migration.schemaOwner, "s1m_owner");
   assert.equal(schema.schemaOwner, "s1m_owner");
@@ -98,4 +130,10 @@ test("observes migration and schema facts and keeps the database URL out of argv
     calls.every(({ options }) => options.environment.DATABASE_URL.includes("postgresql://")),
     true
   );
+  assert.deepEqual(Object.keys(calls[0].options.environment).sort(), [
+    "DATABASE_URL",
+    "NODE_ENV",
+    "PATH",
+    "STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV"
+  ]);
 });

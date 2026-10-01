@@ -18,6 +18,7 @@
     {
       "batchId": "batch-b",
       "suiteIds": [
+        "api.stage1-contract-archive.postgres",
         "api.stage2-handover-pdf.postgres",
         "api.stage2-handover-provider-reconciliation.postgres",
         "api.stage2-handover-workflow.postgres",
@@ -229,6 +230,22 @@
       "expectedCountPolicy": { "mode": "complete" }
     },
     {
+      "suiteId": "api.stage1-contract-archive.postgres",
+      "runner": "vitest",
+      "files": ["apps/api/test/stage1-contract-archive.integration.spec.ts"],
+      "chainApplicability": {
+        "fresh": { "status": "required" },
+        "snapshot": { "status": "required" }
+      },
+      "databaseRole": "runtime-equivalent-test",
+      "parallelism": { "mode": "parallel", "maxShards": 1 },
+      "timeoutMs": 900000,
+      "barrier": "database",
+      "externalDependency": "none",
+      "owner": "api-database-test",
+      "expectedCountPolicy": { "mode": "complete" }
+    },
+    {
       "suiteId": "api.stage2-handover-pdf.postgres",
       "runner": "vitest",
       "files": ["apps/api/test/stage2-handover-pdf.integration.spec.ts"],
@@ -327,7 +344,10 @@
     {
       "suiteId": "api.subscription-journey-integrity.postgres",
       "runner": "vitest",
-      "files": ["apps/api/test/subscription-journey-integrity.integration.spec.ts"],
+      "files": [
+        "apps/api/test/subscription-journey-integrity.integration.spec.ts",
+        "apps/api/test/stage1-application-order-authority.integration.spec.ts"
+      ],
       "chainApplicability": {
         "fresh": { "status": "required" },
         "snapshot": { "status": "required" }
@@ -423,7 +443,10 @@
     {
       "suiteId": "api.billing-automation.postgres",
       "runner": "vitest",
-      "files": ["apps/api/test/billing-automation.integration.spec.ts"],
+      "files": [
+        "apps/api/test/billing-automation.integration.spec.ts",
+        "apps/api/test/payment-authority.integration.spec.ts"
+      ],
       "chainApplicability": {
         "fresh": { "status": "required" },
         "snapshot": { "status": "required" }

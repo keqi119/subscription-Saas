@@ -233,6 +233,110 @@ export function custodyRecord(content, name) {
   };
 }
 
+// Synthetic public artifacts only; this does not authenticate native history.
+export function nativeAggregateInput() {
+  const input = aggregateInput();
+  input.finalNativeEvidence = {};
+  for (const chain of ["fresh", "snapshot"]) {
+    const { compose, executions, custodyReceiptDigests, priorFailureProofDigests, ...evidence } =
+      input.finalComposeEvidence[chain];
+    const h = (name) => sha256Canonical({ chain, name });
+    evidence.schemaVersion = "final-native-evidence.v1";
+    evidence.contracts.databaseTestDiscoveryDigest =
+      input.sourceGateEvidence[chain].databaseTestDiscoveryDigest;
+    const { evidenceDigest, ...web } = evidence.webClient;
+    Object.assign(web, {
+      publicApiBase: "https://api.example.test/api",
+      embeddedApiBase: "https://api.example.test/api",
+      actualRequestUrl: "https://api.example.test/api/portal/catalog/model-definitions",
+      webOrigin: "http://web:3000",
+      corsAllowOrigin: "http://web:3000",
+      traceDigest: h("trace")
+    });
+    evidence.webClient = { ...web, evidenceDigest: sha256Canonical(web) };
+    evidence.native = Object.fromEntries(
+      [
+        "requestDigest",
+        "terminalExecutionDigest",
+        "resultDigest",
+        "readbackDigest",
+        "reconstructedDigest",
+        "originalSetDigest",
+        "sourceOriginalDigest",
+        "applicationOriginalDigest",
+        "applicationReconstructedDigest",
+        "runtimeDigest",
+        "migrationObservationsDigest",
+        "applicationAssessmentDigest",
+        "acknowledgementDigest",
+        "cleanupObservationDigest",
+        "cleanupBundleDigest",
+        "closedSessionDigest",
+        "previousSessionRecordDigest"
+      ].map((key) => [key, h(key)])
+    );
+    Object.assign(evidence.native, {
+      browserTraceDigest: web.traceDigest,
+      originalCustodyRecordDigests: Array.from({ length: 10 }, (_, i) =>
+        h(`original-custody-${i}`)
+      ),
+      cleanupCustodyRecordDigests: Array.from({ length: 8 }, (_, i) => h(`cleanup-custody-${i}`)),
+      destination: {
+        admissionDigest: h("destination"),
+        creationEvidenceDigest: h("creation"),
+        targetPlanDigest: h("plan"),
+        engineId: `engine-${chain}`,
+        containerId: (chain === "fresh" ? "5" : "6").repeat(64),
+        systemIdentifier: chain === "fresh" ? "90001" : "90002",
+        imageDigest: evidence.contracts.postgresImageDigest,
+        serverVersionNum: "170011"
+      }
+    });
+    evidence.attemptHistory = {
+      schemaVersion: "final-native-attempt-history.v1",
+      profileDigest: digest("1"),
+      ownerId: "keqi119",
+      chain,
+      sourceSha: evidence.sourceSha,
+      buildProofDigest: evidence.buildProofDigest,
+      matchingSourceEvidenceDigest: h("source-terminal"),
+      sourceGateEvidenceDigest: evidence.sourceGateEvidenceDigest,
+      ci: {
+        repository: "keqi119/subscription-Saas",
+        runId: "901",
+        runAttempt: 1,
+        workflowPath: ".github/workflows/release-final-chain.yml",
+        callerWorkflowPath: ".github/workflows/release-candidate-gate.yml",
+        jobId: chain === "fresh" ? "991" : "992"
+      },
+      matchingRequestDigests: [evidence.native.requestDigest],
+      selected: {
+        operationId: evidence.operationId,
+        runId: evidence.runId,
+        attemptId: evidence.attemptId,
+        sessionId: uuid(chain === "fresh" ? "b" : "c"),
+        sessionNonceDigest: h("session-nonce"),
+        requestDigest: evidence.native.requestDigest,
+        initialExecutionDigest: h("initial-execution"),
+        terminalExecutionDigest: evidence.native.terminalExecutionDigest,
+        resultDigest: evidence.native.resultDigest,
+        acknowledgementRecordDigest: evidence.native.acknowledgementDigest,
+        cleanupObservationRecordDigest: evidence.native.cleanupObservationDigest,
+        closedSessionRecordDigest: evidence.native.closedSessionDigest
+      },
+      verifiedAt: "2026-09-03T02:00:01.000Z"
+    };
+    input.finalNativeEvidence[chain] = evidence;
+    input.custodyRecords[chain === "fresh" ? "finalFresh" : "finalSnapshot"] = custodyRecord(
+      evidence,
+      chain === "fresh" ? "5" : "6"
+    );
+  }
+  delete input.finalComposeEvidence;
+  delete input.attemptHistory;
+  return input;
+}
+
 export function aggregateInput() {
   const proof = buildProof();
   const snapshot = snapshotMetadata();

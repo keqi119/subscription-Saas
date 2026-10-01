@@ -380,6 +380,13 @@
       "reviewDate": "2026-12-01"
     },
     {
+      "path": "packages/release-foundation/test/snapshot-postgres-workspace.test.mjs",
+      "owner": "release-engineering",
+      "reason": "Exercises isolated transformation and failure cleanup with injected SQL and process doubles; it never connects to PostgreSQL. Real snapshot production and database gates remain required.",
+      "scope": "mock-protected-boundary",
+      "reviewDate": "2026-12-01"
+    },
+    {
       "path": "scripts/release/bootstrap-controlled-postgres.mjs",
       "owner": "release-engineering",
       "reason": "This is the controlled target implementation, not a test entrypoint.",

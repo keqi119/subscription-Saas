@@ -1,7 +1,7 @@
 {
   "schemaVersion": "sanitization-contract.v1",
   "contractId": "stage1-staging-snapshot",
-  "contractVersion": "2",
+  "contractVersion": "3",
   "source": {
     "allowedEnvironment": "staging",
     "keyTables": [
@@ -16,6 +16,13 @@
     ]
   },
   "transformations": [
+    {
+      "table": "public.application",
+      "column": "customer_profile_snapshot",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key",
+      "jsonFields": ["mobile", "emergencyContactMobile", "idCardNo"]
+    },
     {
       "table": "public.customer",
       "column": "mobile",
@@ -41,8 +48,75 @@
       "keyReference": "secret://stage1-snapshot-export/tokenization-key"
     },
     {
+      "table": "public.customer_verification_code",
+      "column": "phone",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.sms_send_log",
+      "column": "phone",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.field_operator_otp",
+      "column": "phone",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.field_operator_session",
+      "column": "phone",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.field_operator_audit_log",
+      "column": "phone",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.service_case",
+      "column": "contact_phone",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.service_case",
+      "column": "customer_snapshot",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key",
+      "jsonFields": ["mobile"]
+    },
+    {
+      "table": "public.notification_record",
+      "column": "recipient_phone",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
       "table": "public.vehicle_handover_work_order",
       "column": "access_token_hash",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.vehicle_handover_work_order",
+      "column": "external_operator_phone",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.vehicle_handover_work_order",
+      "column": "field_operator_phone",
+      "method": "deterministic-token",
+      "keyReference": "secret://stage1-snapshot-export/tokenization-key"
+    },
+    {
+      "table": "public.contract_esign_signer",
+      "column": "signer_phone",
       "method": "deterministic-token",
       "keyReference": "secret://stage1-snapshot-export/tokenization-key"
     },

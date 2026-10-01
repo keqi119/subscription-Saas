@@ -106,6 +106,73 @@ test("applies deterministic field transformations without retaining source value
   assert.equal(first.name, "Alice");
 });
 
+test("tokens only named JSON snapshot fields and rejects malformed sensitive values", () => {
+  const policy = contract();
+  policy.transformations.push({
+    table: "public.application",
+    column: "customer_profile_snapshot",
+    method: "deterministic-token",
+    keyReference: "secret://stage1-snapshot-export/tokenization-key",
+    jsonFields: ["mobile", "emergencyContactMobile", "idCardNo"]
+  });
+  const original = {
+    customer_profile_snapshot: {
+      mobile: "13800138000",
+      emergencyContactMobile: null,
+      idCardNo: "110101199001010011",
+      name: "Synthetic Customer",
+      snapshotVersion: 1
+    }
+  };
+  const options = {
+    table: "public.application",
+    contract: policy,
+    tokenizationKey: Buffer.from("unit-test-key")
+  };
+  const transformed = transformRecord(original, options);
+  assert.equal(transformed.customer_profile_snapshot.name, "Synthetic Customer");
+  assert.equal(transformed.customer_profile_snapshot.snapshotVersion, 1);
+  assert.equal(transformed.customer_profile_snapshot.emergencyContactMobile, null);
+  assert.notEqual(
+    transformed.customer_profile_snapshot.mobile,
+    original.customer_profile_snapshot.mobile
+  );
+  assert.notEqual(
+    transformed.customer_profile_snapshot.idCardNo,
+    original.customer_profile_snapshot.idCardNo
+  );
+  assert.equal(original.customer_profile_snapshot.mobile, "13800138000");
+  assert.throws(
+    () =>
+      transformRecord(
+        { customer_profile_snapshot: { ...original.customer_profile_snapshot, mobile: 123 } },
+        options
+      ),
+    { code: "SNAPSHOT_TRANSFORM_JSON_INVALID" }
+  );
+  assert.throws(
+    () =>
+      transformRecord(
+        { customer_profile_snapshot: JSON.stringify(original.customer_profile_snapshot) },
+        options
+      ),
+    { code: "SNAPSHOT_TRANSFORM_JSON_INVALID" }
+  );
+  policy.transformations.push({
+    table: "public.service_case",
+    column: "customer_snapshot",
+    method: "deterministic-token",
+    keyReference: "secret://stage1-snapshot-export/tokenization-key",
+    jsonFields: ["mobile"]
+  });
+  const serviceCase = transformRecord(
+    { customer_snapshot: { mobile: "13800138000", name: "Synthetic Customer" } },
+    { ...options, table: "public.service_case" }
+  );
+  assert.equal(serviceCase.customer_snapshot.mobile, transformed.customer_profile_snapshot.mobile);
+  assert.equal(serviceCase.customer_snapshot.name, "Synthetic Customer");
+});
+
 for (const [name, value] of [
   ["phone", "18616570212"],
   ["identity", "310101199001011234"],
@@ -598,7 +665,7 @@ test("repository sanitization contract supports reviewed Staging and current mig
     .map(({ name }) => name)
     .sort()
     .at(-1);
-  assert.equal(policy.contractVersion, "2");
+  assert.equal(policy.contractVersion, "3");
   assert.deepEqual(policy.source.knownMigrationHeads, [
     "20260901010000_stage1_schema_drift_convergence",
     migrationHead

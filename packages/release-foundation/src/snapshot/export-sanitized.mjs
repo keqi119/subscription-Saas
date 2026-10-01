@@ -47,12 +47,24 @@ function assertContractSemantics(contract) {
   if (new Set(keys).size !== keys.length) {
     throw snapshotError("SNAPSHOT_CONTRACT_TRANSFORMATION_DUPLICATE");
   }
+  const allowedJsonFields = new Map([
+    [
+      "public.application\u0000customer_profile_snapshot",
+      ["mobile", "emergencyContactMobile", "idCardNo"]
+    ],
+    ["public.service_case\u0000customer_snapshot", ["mobile"]]
+  ]);
   for (const rule of contract.transformations) {
+    const allowedFields = allowedJsonFields.get(`${rule.table}\u0000${rule.column}`);
     if (
       (rule.method === "deterministic-token" && !rule.keyReference) ||
       (rule.method === "fixed-disabled-value" && !rule.fixedValue) ||
       (["null-out", "redact-url"].includes(rule.method) &&
-        (rule.keyReference !== undefined || rule.fixedValue !== undefined))
+        (rule.keyReference !== undefined || rule.fixedValue !== undefined)) ||
+      (rule.jsonFields !== undefined &&
+        (rule.method !== "deterministic-token" ||
+          !allowedFields ||
+          canonicalJson([...rule.jsonFields].sort()) !== canonicalJson([...allowedFields].sort())))
     ) {
       throw snapshotError("SNAPSHOT_CONTRACT_TRANSFORMATION_INVALID");
     }
@@ -71,15 +83,44 @@ export function transformRecord(record, { table, contract, tokenizationKey }) {
   }
   const output = { ...record };
   for (const rule of contract.transformations.filter((entry) => entry.table === table)) {
-    if (!(rule.column in output) || output[rule.column] === null) continue;
+    if (!(rule.column in output)) {
+      if (rule.jsonFields !== undefined) throw snapshotError("SNAPSHOT_TRANSFORM_JSON_INVALID");
+      continue;
+    }
+    if (output[rule.column] === null) continue;
     if (rule.method === "deterministic-token") {
       if (!Buffer.isBuffer(tokenizationKey) || tokenizationKey.byteLength < 8) {
         throw snapshotError("SNAPSHOT_TOKENIZATION_KEY_INVALID");
       }
-      output[rule.column] = `snap_${createHmac("sha256", tokenizationKey)
-        .update(String(output[rule.column]), "utf8")
-        .digest("hex")
-        .slice(0, 24)}`;
+      const token = (value) =>
+        `snap_${createHmac("sha256", tokenizationKey)
+          .update(value, "utf8")
+          .digest("hex")
+          .slice(0, 24)}`;
+      if (rule.jsonFields !== undefined) {
+        const original = output[rule.column];
+        if (
+          !original ||
+          typeof original !== "object" ||
+          Array.isArray(original) ||
+          ![Object.prototype, null].includes(Object.getPrototypeOf(original))
+        ) {
+          throw snapshotError("SNAPSHOT_TRANSFORM_JSON_INVALID");
+        }
+        const transformed = { ...original };
+        for (const field of rule.jsonFields) {
+          if (
+            !Object.hasOwn(original, field) ||
+            (original[field] !== null && typeof original[field] !== "string")
+          ) {
+            throw snapshotError("SNAPSHOT_TRANSFORM_JSON_INVALID");
+          }
+          if (original[field] !== null) transformed[field] = token(original[field]);
+        }
+        output[rule.column] = transformed;
+      } else {
+        output[rule.column] = token(String(output[rule.column]));
+      }
     } else if (rule.method === "fixed-disabled-value") {
       output[rule.column] = rule.fixedValue;
     } else if (rule.method === "null-out") {

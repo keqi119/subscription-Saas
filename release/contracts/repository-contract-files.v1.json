@@ -72,6 +72,7 @@
     "packages/release-foundation/src/snapshot/local-envelope-key.mjs",
     "packages/release-foundation/src/snapshot/normalize-ownership.mjs",
     "packages/release-foundation/src/snapshot/postgres-source.mjs",
+    "packages/release-foundation/src/snapshot/postgres-workspace.mjs",
     "packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs",
     "packages/release-foundation/src/snapshot/restore-sanitized.mjs",
     "packages/release-foundation/src/snapshot/scan-artifact.mjs",

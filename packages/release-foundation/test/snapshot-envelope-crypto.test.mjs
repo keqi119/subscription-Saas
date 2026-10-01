@@ -137,6 +137,173 @@ test("v2 executes real local RSA envelope encryption and decrypts with the origi
   assert.deepEqual(await readFile(restored), bytes);
 });
 
+async function privateExportFixture(t, { cleanupFails = false } = {}) {
+  const { runProtectedSnapshotEncryption } =
+    await import("../../../scripts/release/export-sanitized-snapshot.mjs");
+  const contract = JSON.parse(
+    await readFile(
+      new URL("../../../release/contracts/sanitization-contract.v1.json", import.meta.url),
+      "utf8"
+    )
+  );
+  const ownershipMap = JSON.parse(
+    await readFile(
+      new URL("../../../release/contracts/snapshot-ownership-map.v1.json", import.meta.url),
+      "utf8"
+    )
+  );
+  const workspaceDirectory = await mkdtemp(join(tmpdir(), "snapshot-protected-v2-"));
+  t.after(() => rm(workspaceDirectory, { recursive: true, force: true }));
+  const plaintext = Buffer.from("COPY public.customer (mobile) FROM stdin;\n\\.\n");
+  const aad = {
+    ...expectedAad(plaintext),
+    sanitizationContractDigest: sha256Canonical(contract)
+  };
+  const authorization = producerAuthorization(aad);
+  const events = [];
+  const fingerprint = {
+    migrationHead: contract.source.knownMigrationHeads.at(-1),
+    databaseIdentityFingerprint: `sha256:${"2".repeat(64)}`,
+    roleIdentityFingerprint: `sha256:${"1".repeat(64)}`,
+    tables: contract.source.keyTables.map((table) => ({
+      table,
+      rowCount: 1,
+      checksum: `sha256:${"3".repeat(64)}`
+    }))
+  };
+  const source = {
+    trustPolicy: "protected-snapshot-source/v1",
+    async observePrivileges() {
+      events.push("observed");
+      return {
+        roleIdentityFingerprint: fingerprint.roleIdentityFingerprint,
+        databaseIdentityFingerprint: fingerprint.databaseIdentityFingerprint,
+        superuser: false,
+        createDatabase: false,
+        createRole: false,
+        bypassRls: false,
+        schemaOwner: false,
+        canCreateSchema: false,
+        tableWritePrivileges: [],
+        tableTruncatePrivileges: [],
+        writableFunctionExecutePrivileges: [],
+        objectOwners: ["subscription"]
+      };
+    },
+    async openReadOnlySnapshot() {
+      events.push("opened");
+      return {
+        snapshotId: "00000003-0000001A-1",
+        isolationLevel: "REPEATABLE READ",
+        readOnly: true
+      };
+    },
+    async readFingerprint() {
+      return fingerprint;
+    },
+    async exportRaw() {
+      return Buffer.from("PGDMP\0synthetic raw");
+    },
+    async closeSnapshot() {
+      events.push("closed");
+    }
+  };
+  const workspace = {
+    trustPolicy: "isolated-sanitization-workspace/v1",
+    async restoreRaw() {},
+    async applyTransformations() {},
+    async exportSanitized() {
+      return Buffer.from(plaintext);
+    },
+    async destroy() {
+      events.push("destroyed");
+      if (cleanupFails) throw new Error("synthetic cleanup failure");
+    }
+  };
+  const request = {
+    environmentClass: "staging",
+    sourceSecretReference: "secret://stage1-snapshot-export/source",
+    tokenizationSecretReference: "secret://stage1-snapshot-export/tokenization-key",
+    workflowRunRef: `github://${authorization.repository.name}/actions/runs/${authorization.snapshotRunId}`
+  };
+  return {
+    runProtectedSnapshotEncryption,
+    contract,
+    ownershipMap,
+    workspaceDirectory,
+    authorization,
+    publicKey: keys.publicKey,
+    request,
+    adapters: { trustPolicy: "protected-snapshot-adapters/v1", source, workspace },
+    plaintext,
+    events,
+    aad
+  };
+}
+
+function encryptionInput(f) {
+  return {
+    request: f.request,
+    contract: f.contract,
+    ownershipMap: f.ownershipMap,
+    adapters: f.adapters,
+    authorization: f.authorization,
+    publicKey: f.publicKey,
+    workspaceDirectory: f.workspaceDirectory
+  };
+}
+
+test("protected private bundle encrypts the cleaned scan result with its allocated v2 identity", async (t) => {
+  const f = await privateExportFixture(t);
+  const started = Date.now();
+  const result = await f.runProtectedSnapshotEncryption(encryptionInput(f));
+  const finished = Date.now();
+  assert.equal(result.metadata.dumpDigest, digest(f.plaintext));
+  assert.equal(result.metadata.createdAt, f.authorization.snapshotAllocatedAt);
+  assert.equal(result.envelope.expiresAt, result.metadata.expiresAt);
+  for (const observedAt of [
+    result.privilegeObservation.observedAt,
+    result.fingerprintObservation.provenance.observedAt,
+    result.scan.scannedAt
+  ]) {
+    assert.ok(Date.parse(observedAt) >= started && Date.parse(observedAt) <= finished);
+    assert.notEqual(observedAt, f.authorization.snapshotAllocatedAt);
+  }
+  assert.deepEqual(f.events.slice(-2), ["closed", "destroyed"]);
+  assert.equal("dump" in result, false);
+  assert.equal(result.ciphertextPath, join(f.workspaceDirectory, "snapshot.enc"));
+  assert.deepEqual(await readdir(f.workspaceDirectory), ["snapshot.enc"]);
+  const restored = join(f.workspaceDirectory, "restored.sql");
+  await decryptSnapshotStream({
+    source: replayableFile(result.ciphertextPath).source,
+    destination: restored,
+    aad: f.aad,
+    authorization: f.authorization,
+    envelope: result.envelope,
+    privateKey: keys.privateKey
+  });
+  assert.deepEqual(await readFile(restored), f.plaintext);
+});
+
+test("protected encryption rejects changed run or contract and cleanup failure before ciphertext", async (t) => {
+  for (const kind of ["run", "contract", "cleanup"]) {
+    const f = await privateExportFixture(t, { cleanupFails: kind === "cleanup" });
+    const input = encryptionInput(f);
+    if (kind === "run")
+      input.request.workflowRunRef = "github://keqi119/subscription-Saas/actions/runs/9002";
+    if (kind === "contract")
+      input.authorization.localKey.context.sanitizationContractDigest = `sha256:${"0".repeat(64)}`;
+    await assert.rejects(f.runProtectedSnapshotEncryption(input), {
+      code:
+        kind === "cleanup"
+          ? "SNAPSHOT_SECURE_CLEANUP_FAILED"
+          : "SNAPSHOT_ENCRYPTION_ADMISSION_INVALID"
+    });
+    assert.equal((await readdir(f.workspaceDirectory)).includes("snapshot.enc"), false);
+    if (kind !== "cleanup") assert.deepEqual(f.events, []);
+  }
+});
+
 const digest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 function expectedAad(bytes) {

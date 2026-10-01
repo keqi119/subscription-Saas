@@ -268,3 +268,19 @@ GitHub 实际读取 `58f757` 显示注册 runner 数量为零，`34ecb5` / `1ff2
 H1 读取 `4186c8` 确认角色此前不存在，在单一事务内创建 `stage1_snapshot_reader`（`96d53e`）。该角色保持 NOLOGIN、无密码、NOINHERIT 及全部特权能力关闭；仅授予指定 Staging 数据库 CONNECT、public schema USAGE、当前表与序列 SELECT，以及读取实际集群身份所需的 `pg_control_system()` EXECUTE。未改变 PUBLIC 或业务角色权限，没有授予未来对象的默认权限。角色默认事务只读、statement timeout 120 秒。
 
 独立新连接以该角色的 session authorization 回读 `63f51f`：OID `85641`，171/171 张 public 表可读，表与序列写能力均为 0，database/schema CREATE 均为 false，成员关系、已拥有业务对象和可执行 SECURITY DEFINER 函数均为 0，所有特权和 LOGIN 均为 false。此步骤只配置并读取权限元数据，没有导出真实行、设置登录口令或运行迁移。实际制作时仍需受准入约束的短期登录、私有主机工作区、v2 加密授权与 OSS 独立发布/读回；本次准备不代替这些条件。
+
+## 私有快照包与非商用加密接线
+
+从已推送的 `b1bb76e9` 继续，前置检查 `13b36f` 使用实际服务器连接，仍只有上述两项待迁移；`205dd8` Prisma schema 有效。新增内部 `runProtectedSnapshotEncryption`：调用方须已取得真实主机和制作授权；函数固定复制 v2 授权、合同和请求，核对 run、合同摘要与当前授权窗口，在 Linux 本用户拥有的真实 0700 目录内操作。它复用既有脱敏、扫描及源/目标清理，再将同一私有 Buffer 双遍交给现有 RSA-OAEP/AES-GCM 实现，固定输出 `snapshot.enc`，返回 metadata、scan、envelope 和密文位置，不返回明文 dump。不生成进程退出、云端保管或工作流完成证明。
+
+快照分配时刻只控制 metadata 生命周期和授权到期；源权限观察、前后指纹及扫描记录各自实际执行时刻。原导出入口拒绝新增分配时刻参数，保留原 publisher/custody 规则。持有的明文 Buffer 在 finally 中尽力清零，不声称 JavaScript 全部内存副本已物理擦除。
+
+新增生命周期断言先 `7b60ea` RED；实现后的 `6e7a5d` 仅因新断言错误读取 fingerprint 时间字段而失败，修正为既有 `provenance.observedAt` 后 `3f2af7` 为 28/28。加密接线先 `8736ec` RED，Linux `2a8b91` 两项短组合通过，root 提交前 `3b05f7` 复核同样 2/2、0 skip：真实 RSA 加解密一致，生命周期与实际观察时间分离，run/合同不符和清理失败均不生成密文。数据库边界在这两项中使用合成适配器；实际 PostgreSQL 组合仍以上一节 `efd239` 为依据。限定独立审查未发现可证明 P1/P2。`b147c7` 格式、差异和合同检查通过，281 文件、91 schemas、13 commands、128 项迁移摘要不变；仓库合同摘要 `sha256:e82a7602a0b1e3e2f8109fe57fd985bfdb298cf6c658286ee9864dac7f2630b2`。限定 lint `93a9fb` 保留与上一轮相同的五项既有测试诊断；新增代码无诊断。旧 CLI、工作流和真实云端数据路径尚未切换。
+
+执行拓扑以已批准安全附录及 9 月 27 日非商用修订共同为准：制作数据平面仍在本地专用 WSL 加密隔离环境，H1 持有独立解封私钥并承担已批准 consumer。非商用修订没有把整个 producer 迁到 H1。现有 Ubuntu/Docker Desktop 环境和本地合成探针不能代替专用环境、固定安装入口、受限源连接和实际准入证据。
+
+## 阿里云 CLI 刷新凭据问题
+
+只读 `sts GetCallerIdentity` 在 `e4de81` 成功确认 OSS 账号 `1457643390906675`，紧接的 RAM 查询 `42eaff` 返回 `invalid_grant (refresh token is not the newest.)`，没有执行 RAM 变更。只读配置元数据 `f045a8` 显示指定配置文件未更新，而默认配置在前一次调用时更新但没有 OAuth profile。对照 [CLI 3.5.1 OAuth 刷新实现](https://github.com/aliyun/aliyun-cli/blob/v3.5.1/config/profile.go) 和[配置读写实现](https://github.com/aliyun/aliyun-cli/blob/v3.5.1/config/configuration.go)，刷新路径调用默认配置读写函数，未沿用显式 `--config-path`，解释了首次刷新成功、后续旧 refresh token 被拒绝的现象。
+
+已将默认 `.aliyun` 目录和配置文件权限收紧为当前用户，新的官方 OAuth 登录使用默认路径，使加载与刷新写回位置一致。旧指定路径保留但不再用于后续调用；尚未把新的登录恢复记为成功。Edge 自动化仍返回连接错误，续期页向任务浏览器返回 queued，并已提供本次链接请用户确认。无需重新发送密钥，也未重新申请或扩展 RAM 权限。完成登录后须连续只读调用并检查 profile 实际写回，再判断凭据恢复。

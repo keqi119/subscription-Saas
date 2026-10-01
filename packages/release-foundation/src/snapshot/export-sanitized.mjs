@@ -240,6 +240,7 @@ export async function prepareSanitizedSnapshotBundle({
   secretReference,
   tokenizationSecretReference,
   workflowRunRef,
+  snapshotAllocatedAt,
   now = () => new Date(),
   ...forbidden
 }) {
@@ -265,13 +266,29 @@ export async function prepareSanitizedSnapshotBundle({
   let sourceNeedsClose = false;
   let workspaceDestroyed = false;
   try {
-    const createdAt = now();
+    const observedAt = now();
+    if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) {
+      throw snapshotError("SNAPSHOT_CLOCK_INVALID");
+    }
+    // The admitted allocation starts the snapshot's lifetime; observation clocks
+    // below retain the actual operation time and must never be backdated to it.
+    const createdAt =
+      snapshotAllocatedAt === undefined ? observedAt : new Date(snapshotAllocatedAt);
+    if (
+      !Number.isFinite(createdAt.getTime()) ||
+      createdAt > observedAt ||
+      (snapshotAllocatedAt !== undefined &&
+        (typeof snapshotAllocatedAt !== "string" ||
+          createdAt.toISOString() !== snapshotAllocatedAt))
+    ) {
+      throw snapshotError("SNAPSHOT_CLOCK_INVALID");
+    }
     sourceNeedsClose = true;
     const privilegeObservation = await assertReadOnlySnapshotSource({
       source,
       secretReference,
       ownershipMap,
-      now: createdAt
+      now: observedAt
     });
     const snapshot = await source.openReadOnlySnapshot({ secretReference });
     // PostgreSQL's DEFERRABLE flag has no effect at REPEATABLE READ. Safety here
@@ -288,7 +305,7 @@ export async function prepareSanitizedSnapshotBundle({
       source,
       snapshotId: snapshot.snapshotId,
       keyTables: contract.source.keyTables,
-      now: createdAt
+      now: now()
     });
     const raw = await source.exportRaw({ snapshotId: snapshot.snapshotId });
     if (!Buffer.isBuffer(raw) && !(raw instanceof Uint8Array)) {
@@ -314,14 +331,14 @@ export async function prepareSanitizedSnapshotBundle({
                 })
               : undefined,
           contract,
-          scannedAt: createdAt
+          scannedAt: now()
         })
-      : await scanSanitizedArtifact({ bytes: sanitized, contract, scannedAt: createdAt });
+      : await scanSanitizedArtifact({ bytes: sanitized, contract, scannedAt: now() });
     const after = await fingerprintSourceSnapshot({
       source,
       snapshotId: snapshot.snapshotId,
       keyTables: contract.source.keyTables,
-      now: createdAt
+      now: now()
     });
     const beforeIdentityDigest = sha256Canonical(before.identity);
     const afterIdentityDigest = sha256Canonical(after.identity);
@@ -356,7 +373,7 @@ export async function prepareSanitizedSnapshotBundle({
       ownershipMap,
       dump: sanitized,
       scan,
-      now: createdAt
+      now: now()
     });
     const bundle = Object.freeze({
       dump: sanitized,
@@ -395,6 +412,7 @@ export async function prepareSanitizedSnapshotBundle({
 
 export async function exportSanitizedSnapshot({ publisher, ...preparation }) {
   if (
+    Object.hasOwn(preparation, "snapshotAllocatedAt") ||
     publisher?.trustPolicy !== "snapshot-final-bundle/v1" ||
     typeof publisher?.publishFinalBundle !== "function"
   ) {

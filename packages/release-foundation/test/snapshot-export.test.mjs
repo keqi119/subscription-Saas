@@ -378,6 +378,27 @@ test("private bundle preparation completes cleanup without a publication receipt
   assert.equal(failed.uploads.length, 0);
 });
 
+test("allocated snapshot lifetime does not backdate source or scan observations", async () => {
+  const { prepareSanitizedSnapshotBundle } = await import("../src/snapshot/export-sanitized.mjs");
+  const fixture = exportFixture();
+  const operation = Object.fromEntries(
+    Object.entries(fixture).filter(
+      ([name]) => !["uploads", "events", "fingerprintCalls", "publisher"].includes(name)
+    )
+  );
+  let clock = fixedNow.getTime() + 300000;
+  operation.now = () => new Date((clock += 1000));
+  operation.snapshotAllocatedAt = fixedNow.toISOString();
+  const bundle = await prepareSanitizedSnapshotBundle(operation);
+  assert.equal(bundle.metadata.createdAt, fixedNow.toISOString());
+  assert.equal(bundle.metadata.expiresAt, "2026-10-02T08:00:00.000Z");
+  assert.ok(bundle.privilegeObservation.observedAt > bundle.metadata.createdAt);
+  assert.ok(bundle.scan.scannedAt > bundle.privilegeObservation.observedAt);
+  assert.ok(bundle.fingerprintObservation.provenance.observedAt > bundle.scan.scannedAt);
+  const future = { ...operation, snapshotAllocatedAt: "2026-09-03T08:00:00.000Z" };
+  await assert.rejects(prepareSanitizedSnapshotBundle(future), { code: "SNAPSHOT_CLOCK_INVALID" });
+});
+
 test("exports only a scanned final bundle after matching source fingerprints", async () => {
   const input = exportFixture();
   const metadata = await runExport(input);

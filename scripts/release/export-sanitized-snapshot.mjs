@@ -1,13 +1,18 @@
 #!/usr/bin/env node
 
-import { readFile, rm } from "node:fs/promises";
+import { lstat, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 
 import {
+  encryptSnapshotStream,
   exportSanitizedSnapshot,
   validateContract
 } from "../../packages/release-foundation/src/index.mjs";
+import { sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
+import { prepareSanitizedSnapshotBundle } from "../../packages/release-foundation/src/snapshot/export-sanitized.mjs";
+import { validateProducerCryptoAuthorization } from "../../packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs";
 
 const requestPath = ".release-inputs/snapshot-export-request.v1.json";
 const publicationDirectory = ".release-output/sanitized-snapshot";
@@ -95,6 +100,129 @@ export async function runProtectedSnapshotExport({
     throw commandError("SNAPSHOT_PUBLICATION_INCOMPLETE_FORBIDDEN");
   }
   return metadata;
+}
+
+// Internal v2 producer seam. Host, source, key-readback and authorization authority
+// remain with the caller; this only binds an already admitted private bundle to encryption.
+export async function runProtectedSnapshotEncryption({
+  request,
+  contract,
+  ownershipMap,
+  adapters,
+  authorization,
+  publicKey,
+  workspaceDirectory
+}) {
+  const acceptedRequest = assertRequest(request);
+  let acceptedAuthorization;
+  let acceptedContract;
+  let acceptedOwnershipMap;
+  try {
+    // Own these JSON facts before the first await; caller mutation cannot retarget a run.
+    acceptedAuthorization = JSON.parse(JSON.stringify(authorization));
+    acceptedContract = JSON.parse(JSON.stringify(contract));
+    acceptedOwnershipMap = JSON.parse(JSON.stringify(ownershipMap));
+    if (acceptedAuthorization?.schemaVersion !== "producer-crypto-run-authorization.v2") {
+      throw new Error();
+    }
+    validateProducerCryptoAuthorization(acceptedAuthorization);
+    validateContract("sanitization-contract.v1", acceptedContract);
+    validateContract("ownership-map.v1", acceptedOwnershipMap);
+  } catch {
+    throw commandError("SNAPSHOT_ENCRYPTION_ADMISSION_INVALID");
+  }
+  const contractDigest = sha256Canonical(acceptedContract);
+  const allocatedAt = Date.parse(acceptedAuthorization.snapshotAllocatedAt);
+  const expiresAt = acceptedAuthorization.localKey.context.expiresAt;
+  const now = Date.now();
+  if (
+    adapters?.trustPolicy !== "protected-snapshot-adapters/v1" ||
+    adapters.source?.trustPolicy !== "protected-snapshot-source/v1" ||
+    adapters.workspace?.trustPolicy !== "isolated-sanitization-workspace/v1" ||
+    acceptedRequest.workflowRunRef !==
+      `github://${acceptedAuthorization.repository.name}/actions/runs/${acceptedAuthorization.snapshotRunId}` ||
+    acceptedAuthorization.localKey.context.sanitizationContractDigest !== contractDigest ||
+    now < allocatedAt ||
+    now >= Date.parse(expiresAt) ||
+    now < Date.parse(acceptedAuthorization.notBefore) ||
+    now >= Date.parse(acceptedAuthorization.notAfter)
+  )
+    throw commandError("SNAPSHOT_ENCRYPTION_ADMISSION_INVALID");
+  if (
+    process.platform !== "linux" ||
+    typeof workspaceDirectory !== "string" ||
+    !path.isAbsolute(workspaceDirectory) ||
+    path.resolve(workspaceDirectory) !== workspaceDirectory
+  )
+    throw commandError("SNAPSHOT_ENCRYPTION_WORKSPACE_INVALID");
+  try {
+    const stat = await lstat(workspaceDirectory);
+    if (
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      stat.uid !== process.getuid() ||
+      (stat.mode & 0o777) !== 0o700 ||
+      (await realpath(workspaceDirectory)) !== workspaceDirectory
+    )
+      throw new Error();
+  } catch {
+    throw commandError("SNAPSHOT_ENCRYPTION_WORKSPACE_INVALID");
+  }
+  const ciphertextPath = path.join(workspaceDirectory, "snapshot.enc");
+  let bundle;
+  try {
+    bundle = await prepareSanitizedSnapshotBundle({
+      contract: acceptedContract,
+      ownershipMap: acceptedOwnershipMap,
+      source: adapters.source,
+      workspace: adapters.workspace,
+      secretReference: acceptedRequest.sourceSecretReference,
+      tokenizationSecretReference: acceptedRequest.tokenizationSecretReference,
+      workflowRunRef: acceptedRequest.workflowRunRef,
+      // V2 allocatedAt fixes only this snapshot's lifecycle. Source/scan observations
+      // in the shared preparation retain their actual operation clock.
+      snapshotAllocatedAt: acceptedAuthorization.snapshotAllocatedAt
+    });
+    if (
+      bundle.metadata.sanitizationContractDigest !== contractDigest ||
+      bundle.metadata.workflowRunRef !== acceptedRequest.workflowRunRef ||
+      bundle.metadata.expiresAt !== expiresAt
+    )
+      throw commandError("SNAPSHOT_ENCRYPTION_ADMISSION_INVALID");
+    const aad = {
+      repositoryId: acceptedAuthorization.repository.id,
+      sourceSha: acceptedAuthorization.sourceSha,
+      releaseAttemptId: acceptedAuthorization.releaseAttemptId,
+      snapshotRunId: acceptedAuthorization.snapshotRunId,
+      snapshotAllocatedAt: acceptedAuthorization.snapshotAllocatedAt,
+      expiresAt,
+      sanitizationContractDigest: contractDigest,
+      snapshotDigest: bundle.metadata.dumpDigest
+    };
+    const envelope = await encryptSnapshotStream({
+      source: { open: () => Readable.from([bundle.dump]) },
+      destination: ciphertextPath,
+      aad,
+      authorization: acceptedAuthorization,
+      publicKey
+    });
+    if (
+      envelope.expiresAt !== bundle.metadata.expiresAt ||
+      envelope.snapshotDigest !== bundle.metadata.dumpDigest
+    )
+      throw commandError("SNAPSHOT_ENCRYPTION_ADMISSION_INVALID");
+    return Object.freeze({
+      metadata: bundle.metadata,
+      privilegeObservation: bundle.privilegeObservation,
+      fingerprintObservation: bundle.fingerprintObservation,
+      scan: bundle.scan,
+      envelope,
+      ciphertextPath
+    });
+  } finally {
+    // Best effort for the Buffer owned by this function; JS/runtime copies are not claimed erased.
+    bundle?.dump?.fill(0);
+  }
 }
 
 function assertedDescendant(root, child) {

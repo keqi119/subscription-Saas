@@ -8,11 +8,16 @@ import base64
 import copy
 import datetime
 import hashlib
+import io
 import json
 import re
 import ssl
+import stat
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import zipfile
 
 
 REPOSITORY = 'keqi119/subscription-Saas'
@@ -29,6 +34,7 @@ APP_PERMISSIONS = {'administration': 'write', 'actions': 'read',
                    'contents': 'read', 'deployments': 'read', 'metadata': 'read'}
 READ_PERMISSIONS = dict(APP_PERMISSIONS, administration='read')
 MAX_BYTES = 1048576
+MAX_ARCHIVE_BYTES = 8 * MAX_BYTES
 CHECK_DEPLOYMENT_QUERY = '''query($id:ID!) {
   node(id:$id) { ... on CheckRun {
     id databaseId name status
@@ -60,6 +66,97 @@ def _frame(pairs):
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, url):
         raise GitHubFailure('H1_GITHUB_REDIRECT_REJECTED')
+
+
+class StopRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, url):
+        return None
+
+
+def _artifact_storage_url(location):
+    require(type(location) is str and len(location) <= 8192, 'ARTIFACT_REDIRECT_INVALID')
+    try:
+        parsed = urllib.parse.urlsplit(location)
+        host = parsed.hostname
+        valid_host = (host == 'results-receiver.actions.githubusercontent.com' or
+                      re.fullmatch(r'[a-z0-9-]+\.blob\.core\.windows\.net', host or '') is not None)
+        require(parsed.scheme == 'https' and valid_host and parsed.port is None and
+                parsed.username is None and parsed.password is None and
+                parsed.fragment == '' and parsed.path.startswith('/'),
+                'ARTIFACT_REDIRECT_INVALID')
+    except ValueError:
+        raise GitHubFailure('H1_GITHUB_ARTIFACT_REDIRECT_INVALID') from None
+    return location
+
+
+def _download_artifact(artifact_id, token):
+    # GitHub's fixed API route returns a 302. Inspect Location without allowing
+    # urllib to carry the installation token to the storage host.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()), StopRedirect())
+    headers = {'Accept': 'application/vnd.github+json',
+               'X-GitHub-Api-Version': '2022-11-28',
+               'User-Agent': 'stage1-h1-snapshot-root',
+               'Authorization': 'Bearer ' + token}
+    request = urllib.request.Request('https://api.github.com' + PREFIX +
+                                     '/actions/artifacts/' + _id(artifact_id) + '/zip',
+                                     headers=headers, method='GET')
+    try:
+        with opener.open(request, timeout=30) as response:
+            raise GitHubFailure('H1_GITHUB_ARTIFACT_REDIRECT_INVALID')
+    except urllib.error.HTTPError as cause:
+        try:
+            require(cause.code == 302, 'HTTP_' + str(cause.code))
+            location = _artifact_storage_url(cause.headers.get('Location'))
+        finally:
+            cause.close()
+    except (OSError, ValueError):
+        raise GitHubFailure('H1_GITHUB_REQUEST_FAILED') from None
+    # One credential-free hop; redirects at storage are rejected as well.
+    storage_request = urllib.request.Request(location,
+        headers={'User-Agent': 'stage1-h1-snapshot-root'}, method='GET')
+    deadline = time.monotonic() + 30
+    try:
+        with opener.open(storage_request, timeout=30) as response:
+            require(response.status == 200, 'HTTP_' + str(response.status))
+            chunks = []
+            size = 0
+            while True:
+                require(time.monotonic() < deadline, 'ARTIFACT_TIMEOUT')
+                chunk = response.read1(min(65536, MAX_ARCHIVE_BYTES + 1 - size))
+                size += len(chunk)
+                require(size <= MAX_ARCHIVE_BYTES, 'ARTIFACT_TOO_LARGE')
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b''.join(chunks)
+    except urllib.error.HTTPError as cause:
+        status = cause.code
+        cause.close()
+        raise GitHubFailure('H1_GITHUB_HTTP_' + str(status)) from None
+    except (OSError, ValueError):
+        raise GitHubFailure('H1_GITHUB_REQUEST_FAILED') from None
+
+
+def _admission_member(archive):
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive), 'r') as source:
+            members = source.infolist()
+            require(len(members) == 1, 'ARTIFACT_ZIP_INVALID')
+            member = members[0]
+            mode = member.external_attr >> 16
+            require(member.filename == 'snapshot-admission.v1.json' and
+                    not member.is_dir() and stat.S_IFMT(mode) in (0, stat.S_IFREG) and
+                    not member.flag_bits & 1 and
+                    member.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) and
+                    0 < member.file_size <= MAX_BYTES and
+                    member.compress_size <= MAX_ARCHIVE_BYTES, 'ARTIFACT_ZIP_INVALID')
+            with source.open(member, 'r') as content:
+                raw = content.read(MAX_BYTES + 1)
+                require(len(raw) == member.file_size, 'ARTIFACT_ZIP_INVALID')
+                return raw
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, NotImplementedError):
+        raise GitHubFailure('H1_GITHUB_ARTIFACT_ZIP_INVALID') from None
 
 
 def _api(method, route, credential, body=None, expected=(200,)):
@@ -286,6 +383,31 @@ class H1SnapshotGitHub:
     def read_artifacts(self, run_id):
         return _list(self._get(PREFIX + '/actions/runs/' + _id(run_id) +
                               '/artifacts?per_page=100'), 'artifacts')
+
+    def read_admission_artifact(self, run_id, artifact_id):
+        _id(run_id)
+        _id(artifact_id)
+        run = self.read_run(run_id)
+        candidates = [row for row in self.read_artifacts(run_id)
+                      if row.get('name') == 'snapshot-admission']
+        require(len(candidates) == 1 and candidates[0].get('id') == int(artifact_id),
+                'ARTIFACT_MISMATCH')
+        artifact = candidates[0]
+        workflow_run = artifact.get('workflow_run')
+        require(type(workflow_run) is dict and workflow_run.get('id') == run['id'] and
+                workflow_run.get('repository_id') == REPO_ID and
+                workflow_run.get('head_sha') == run.get('head_sha') and
+                artifact.get('expired') is False and
+                type(artifact.get('size_in_bytes')) is int and
+                0 < artifact['size_in_bytes'] <= MAX_ARCHIVE_BYTES and
+                type(artifact.get('digest')) is str and
+                re.fullmatch(r'sha256:[a-f0-9]{64}', artifact['digest']) is not None,
+                'ARTIFACT_MISMATCH')
+        archive = _download_artifact(artifact_id, self._token)
+        require(len(archive) == artifact['size_in_bytes'] and
+                'sha256:' + hashlib.sha256(archive).hexdigest() == artifact['digest'],
+                'ARTIFACT_DIGEST_MISMATCH')
+        return {'metadata': artifact, 'bytes': _admission_member(archive)}
 
     def read_runners(self):
         return _list(self._get(PREFIX + '/actions/runners?per_page=100'), 'runners')

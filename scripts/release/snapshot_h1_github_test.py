@@ -3,8 +3,12 @@ import base64
 import datetime
 import hashlib
 import importlib.util
+import io
 import os
+import stat
 import unittest
+import urllib.error
+import zipfile
 from unittest.mock import patch
 
 
@@ -54,6 +58,129 @@ class GitHubTests(unittest.TestCase):
 
     def revocations(self):
         return [call for call in self.calls if call[0:2] == ('DELETE', '/installation/token')]
+
+    def artifact_fixture(self, contents=b'{"schema":"snapshot-admission.v1"}'):
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
+            output.writestr('snapshot-admission.v1.json', contents)
+        raw = archive.getvalue()
+        prefix = '/repos/keqi119/subscription-Saas'
+        self.responses[prefix + '/actions/runs/123/attempts/1'] = {
+            'id': 123, 'run_attempt': 1, 'head_sha': 'a' * 40,
+            'repository': self.repo, 'head_repository': self.repo}
+        artifact = {'id': 456, 'name': 'snapshot-admission', 'expired': False,
+                    'size_in_bytes': len(raw), 'digest': 'sha256:' + hashlib.sha256(raw).hexdigest(),
+                    'workflow_run': {'id': 123, 'repository_id': 1253231368,
+                                     'head_sha': 'a' * 40}}
+        self.responses[prefix + '/actions/runs/123/artifacts?per_page=100'] = {
+            'total_count': 1, 'artifacts': [artifact]}
+        return raw, artifact
+
+    def download_transport(self, archive, location='https://results-receiver.actions.githubusercontent.com/download?sig=fake'):
+        requests = []
+        class Response:
+            status = 200
+            def __init__(self, raw):
+                self.body = io.BytesIO(raw)
+            def read(self, count):
+                return self.body.read(count)
+            def read1(self, count):
+                return self.body.read(count)
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.body.close()
+        class Opener:
+            def open(self, request, timeout):
+                requests.append(request)
+                if len(requests) == 1:
+                    raise urllib.error.HTTPError(request.full_url, 302, 'Found',
+                                                 {'Location': location}, io.BytesIO())
+                return Response(archive)
+        return Opener(), requests
+
+    def test_admission_artifact_download_checks_identity_digest_and_strips_token(self):
+        archive, artifact = self.artifact_fixture()
+        opener, requests = self.download_transport(archive)
+        with patch.object(self.module, '_api', self.api), \
+             patch.object(self.module.urllib.request, 'build_opener', return_value=opener):
+            with self.session() as github:
+                result = github.read_admission_artifact('123', '456')
+        self.assertIs(result['metadata'], artifact)
+        self.assertEqual(result['bytes'], b'{"schema":"snapshot-admission.v1"}')
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0].get_header('Authorization'), 'Bearer ' + self.token)
+        self.assertIsNone(requests[1].get_header('Authorization'))
+        self.assertEqual(len(self.revocations()), 1)
+
+    def test_admission_artifact_rejects_digest_mismatch_and_foreign_redirect(self):
+        archive, artifact = self.artifact_fixture()
+        artifact['digest'] = 'sha256:' + '0' * 64
+        opener, requests = self.download_transport(archive)
+        with patch.object(self.module, '_api', self.api), \
+             patch.object(self.module.urllib.request, 'build_opener', return_value=opener):
+            with self.session() as github:
+                with self.assertRaises(self.module.GitHubFailure):
+                    github.read_admission_artifact('123', '456')
+        self.assertEqual(len(requests), 2)
+        artifact['digest'] = 'sha256:' + hashlib.sha256(archive).hexdigest()
+        opener, requests = self.download_transport(archive, 'https://attacker.example/steal')
+        with patch.object(self.module, '_api', self.api), \
+             patch.object(self.module.urllib.request, 'build_opener', return_value=opener):
+            with self.session() as github:
+                with self.assertRaises(self.module.GitHubFailure):
+                    github.read_admission_artifact('123', '456')
+        self.assertEqual(len(requests), 1)
+
+    def test_admission_artifact_rejects_wrong_run_and_unsafe_zip_member(self):
+        archive, artifact = self.artifact_fixture()
+        artifact['workflow_run']['id'] = 999
+        opener, requests = self.download_transport(archive)
+        with patch.object(self.module, '_api', self.api), \
+             patch.object(self.module.urllib.request, 'build_opener', return_value=opener):
+            with self.session() as github:
+                with self.assertRaises(self.module.GitHubFailure):
+                    github.read_admission_artifact('123', '456')
+        self.assertEqual(requests, [])
+        artifact['workflow_run']['id'] = 123
+        for name in ('../snapshot-admission.v1.json', 'nested/snapshot-admission.v1.json'):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, 'w') as output:
+                output.writestr(name, b'{}')
+            archive = buffer.getvalue()
+            artifact['size_in_bytes'] = len(archive)
+            artifact['digest'] = 'sha256:' + hashlib.sha256(archive).hexdigest()
+            opener, _ = self.download_transport(archive)
+            with patch.object(self.module, '_api', self.api), \
+                 patch.object(self.module.urllib.request, 'build_opener', return_value=opener):
+                with self.session() as github:
+                    with self.assertRaises(self.module.GitHubFailure):
+                        github.read_admission_artifact('123', '456')
+
+    def test_admission_artifact_rejects_symlink_and_oversize_member(self):
+        _, artifact = self.artifact_fixture()
+        symlink = zipfile.ZipInfo('snapshot-admission.v1.json')
+        symlink.create_system = 3
+        symlink.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archives = []
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as output:
+            output.writestr(symlink, b'target')
+        archives.append(buffer.getvalue())
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as output:
+            output.writestr('snapshot-admission.v1.json', b'a' * (1048576 + 1))
+        archives.append(buffer.getvalue())
+        for archive in archives:
+            artifact['size_in_bytes'] = len(archive)
+            artifact['digest'] = 'sha256:' + hashlib.sha256(archive).hexdigest()
+            opener, _ = self.download_transport(archive)
+            with patch.object(self.module, '_api', self.api), \
+                 patch.object(self.module.urllib.request, 'build_opener', return_value=opener):
+                with self.session() as github:
+                    with self.assertRaisesRegex(self.module.GitHubFailure,
+                                                '^H1_GITHUB_ARTIFACT_ZIP_INVALID$'):
+                        github.read_admission_artifact('123', '456')
 
     def test_exact_repository_read_scope_and_final_revocation(self):
         with patch.object(self.module, '_api', self.api):

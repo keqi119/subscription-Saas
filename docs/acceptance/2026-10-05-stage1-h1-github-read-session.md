@@ -53,3 +53,17 @@ run approvals 可以读取真实 `state`、`user` 和 `environments`，因此应
 `59eb0d` 合同检查通过：290 文件、91 schemas、13 commands、128 项迁移摘要不变，仓库合同摘要 `sha256:1ac5efa33acc7057b605475de45b0aa912a061d0c22ffa643e0a19369221c3ce`。本轮 preflight `04168d`（2026-10-05T13:23:49.388Z）仍只有原两项待迁移，`0b242a` schema validate 通过，临时隧道已关闭。
 
 下一项是将这些真实关系接入 post-approval observation 与 root `readExact` 工厂，取消并未由 API 提供的批准时刻字段，同时保留实际 reviewer/environment/deployment/queued job 的核验。审批 history 的 user/state/environment 已有正式读取入口；不得移除人工批准要求。生产 dispatch/revocation 来源、JIT、完整制作与阶段 1 其余收口项仍未完成。
+
+## 追加：真实审批映射和 admission artifact 下载
+
+[environment-policy.mjs](../../packages/release-foundation/src/snapshot/environment-policy.mjs) 的 `buildPostApprovalObservationFromGitHub` 现在从实际 REST run/job、GraphQL CheckRun 和审批 history 构造并立即验证 observation。要求 attempt 1、指定 actor/main/workflow、精确 job→check→run/repository/commit→deployment 关系、queued 状态、无 pending deployment request，以及目标 environment 唯一且由指定 reviewer 批准的记录。冲突或不完整的审批历史拒绝使用。`approved` 是这些事实联合推导的结果；不再要求 GitHub 未提供的 `approvedAt`、review.deploymentId 或 bypassed 字段，也不把观测时刻当成批准时刻。
+
+当前 Environment 策略、五分钟新鲜度、五个精确标签、admission 与独立 selection 的绑定仍须通过原有验证。输入被复制并冻结；原始 API 响应摘要保留于 observation。`e2d5ba` 先复现新入口缺失，`a4e373` / 最终 `1643fa` 九项针对性测试通过，相关 ESLint 和格式化检查通过。尚未出现真实 snapshot queued job，所以这些有限测试不能作为线上人工批准成功的证据。
+
+Python 固定接口新增 `read_admission_artifact(run_id, artifact_id)`：读取实际 attempt 1 和完整 artifact 列表，核对唯一 `snapshot-admission` 名称、ID、run/repository/SHA、未过期状态、大小和必需的 SHA-256 digest。仅向固定 GitHub artifact ZIP 接口发送令牌，接收其 302 后，在独立、不带 Authorization 的请求中访问官方存储域名；拒绝后续跳转、代理、调用方 URL。签名下载地址既不返回也不记录。[官方 artifact 下载接口](https://docs.github.com/en/rest/actions/artifacts#download-an-artifact)及[存储域名说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+
+ZIP 在内存中处理，下载上限 8 MiB，并核对整个 ZIP 的大小和摘要；只允许一个名为 `snapshot-admission.v1.json` 的普通成员，解压上限 1 MiB，拒绝目录、路径前缀、软链接、加密成员和额外成员。返回原始成员字节，后续 canonical admission 校验不变。`f4260e` 十二项 Python HTTP 边界/真实内存 ZIP 测试通过。限定 Luna 审查未发现重要问题；当前 App 权限不包含 Checks read，既有 public 仓库的实际读取成功事实仍以前项 `f3d8e2` 为准，没有增加权限。
+
+`0ef94b` 已安装并回读最终 Python 模块：root:root 0555，SHA-256 `bbdd5e0e57204b88903dba2f7936520dbdca6715fc481bcfe56b374bc1c42bdc`；H1 Python 3.6 加载通过，主备卷/mapper 关闭、attempt 根目录为空、Staging PostgreSQL 健康，swap/core 维持既有空闲配置。此次安装没有调用 GitHub、签发令牌或读取业务数据。真实 producer artifact 尚不存在，线上下载仍待首次 producer 验证，不能记为成功。
+
+本轮前置 `c40b35` 于 2026-10-05T13:42:21.813Z 核实 Staging PostgreSQL 17.10，128 项迁移仍只有原两项待执行；`1e2c8a` 的终态返回 Prisma validate 成功，临时隧道已关闭。未改业务行为或执行迁移。后续仍需将实际读数接入 root `readExact` / production policy / dispatch 与撤销来源，再接 JIT、完整 attempt 和真实三 job；阶段 1 未收口。

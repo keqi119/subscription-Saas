@@ -57,3 +57,22 @@
 - [x] 更新固定入口清单、相关 lint/合同检查和限定静态审查；记录见 `docs/acceptance/2026-10-05-stage1-h1-data-worker-readback.md`。正式 root controller 仍须独立核验，不能把本探针或 worker 回显当作生产证明。
 
 本步骤使用已批准 H1 数据平面方案内的实现细化，不再请求制作主机、Docker 或 GitHub App 批准。仍未完成的 root JIT/controller、adapter 安装闭包、三个真实 jobs、独立 OSS 身份、真实 producer、R2/R3、迁移与 R4 保持原范围和门槛。
+
+## Task 4：固定运行包安装
+
+**Files:** `scripts/release/snapshot-h1-runtime-bundle.mjs`；本计划忽略目录保留一次性安装脚本及只读回执。
+
+**Interfaces:** 打包器只读取当前 checkout 中固定 worker 的静态相对 import 闭包、固定合同/schema 与已经锁定的 pg/ajv/canonicalize 依赖，不执行下载或安装。返回含每个相对路径、字节数、SHA-256 和内容的固定安装包；整个运行包摘要同时绑定既有 root Node 摘要和固定 PostgreSQL 工具镜像。H1 安装到 root 管理的 `v2/bundles/<digest>` 新目录，仅允许 root 所有、文件 0444/目录 0555，无软链接、不覆盖现有不同内容；正式准入仍须固定这个摘要。
+
+- [x] 有限依赖闭包：401 文件、20 包、1,432,599 字节；digest `239b95e7d513cd80956f71f7616b6bd3ea7bfc99afb80af594422b82b9b17b4f`。
+- [x] H1 `17cb3a` 安装并逐文件回读；无网络 UID 65532 容器加载成功且实际拒绝非法输入，容器已移除。
+- [x] `docs/acceptance/2026-10-05-stage1-h1-runtime-installation.md` 记录安装事实和 Runner/job 隔离裁定；正式准入及真实制作仍未完成。
+
+## Task 5：一次性 Runner 与受限 root 交接
+
+沿用上项裁定，仅实现固定版本官方 container hooks 所需 prepare/run/cleanup，禁止通用命令、Docker API 或新业务功能。先封闭 root 状态机与不同 UID 的两个 socket，再接已有准入/撤销核验及 JIT；生产制作必须等待全部准入成立。
+
+- [ ] 官方 Runner 2.337.0 distribution 摘要核验及只读缓存（不配置/注册）。
+- [ ] 固定 hook→root 管理通道、独立 job→root 请求通道及实际容器隔离；一次性 job 只执行固定入口。
+- [ ] root 签名准入、当前撤销和 GitHub 实际 job 观测接线，JIT 唯一路由与结束后不可路由证明。
+- [ ] 本次 attempt 的加密卷/源角色/目标数据库/worker/publisher 工序以及独立终态检查，最后接真实 workflow。

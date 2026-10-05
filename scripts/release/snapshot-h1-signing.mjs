@@ -597,6 +597,12 @@ export async function publishH1SnapshotData(verified) {
     releaseAttemptId: auth.releaseAttemptId,
     snapshotRunId: auth.snapshotRunId,
     publicationDigest: sha256Bytes(marker),
+    writer: {
+      arn: publication.writerArn,
+      issuedAt: publication.writerIssuedAt,
+      expiresAt: publication.writerExpiresAt
+    },
+    publishedAt: publication.publishedAt,
     objects: [...receipts, final]
   };
 }

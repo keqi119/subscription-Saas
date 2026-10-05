@@ -85,3 +85,15 @@ producer 在实际移除 worker/target 容器、复核固定源库 reader 为禁
 安装回读 `741495` / `735852` / `c2b59a`：worker 为 `sha256:128ace637be59ff23e221f9824a732c5d7952dd2a7ba4adb494d25e54cfc53fc`（402 文件，1,435,146 字节），control 为 `sha256:f76107d6b9d26b8e83576916091238456b770766aa08c19cec2e4a79ff46b34b`（2,422 文件，11,881,184 字节），adapter 为 `sha256:43177a1c5c886ab7eb45e5555a9b47e981efd283c89358901c87180e1d9c2bfd`。全文件摘要、只读属主及非法入口拒绝通过；`de245b` 直接调用已安装 producer 的 bundle verifier 通过。
 
 `43f481` 定向格式、diff 和合同检查通过，合同仍为 316 文件、92 schemas、13 commands、128 migrations，摘要 `sha256:d40263572cdf7cf9a960d3a2e3cabbdb5df381b77e1f266de7058d0e92a39418`。预检 `fdf458` Prisma validate 通过；`27e323` 实际 Staging 仍仅上述两项迁移待执行，专用隧道已关闭。未触发真实 producer/STS/OSS/RAM/JIT/迁移/工作流。下一步采集 publisher 进程退出、固定凭据文件移除及会话确定失效，再经独立归档路径形成既有 destruction/completion 证据。
+
+## 独立 publisher 终态观察入口
+
+现有 H1 attempt 入口增加独立 `publish` 操作，只接受准确的 attempt/run，authority 在上传前与受保护授权核对二者。返回公开的 writer 身份、签发/到期时间及实际五份上传回执，父进程不读取凭据值。该操作不是 data-result 的一部分，也不修改已签名的发布标志。
+
+根进程持有跨 attempt 的 flock 和保留的单次尝试锁；先记录固定凭据文件身份，再调用固定发布子进程。子进程成功退出后，只有原文件身份、root/0600/nlink 仍符合时才删除并 fsync。实际经过完整会话 TTL 的单调计时且系统时间已到期，再复核凭据路径为空，才原子写入 `publisher-terminal.json`。TTL 上限 900 秒，每次等待不超过 5 秒，超出有界等待仍为 UNKNOWN。失败写 `publisher-failure.json` 并保留尝试锁，不能自动重试未知 PUT。后续装配必须拒绝失败记录或冲突记录，不能仅凭文件名判定成功。
+
+本地 terminal 是独立根进程观察，尚未生成完整销毁回执、publisher use proof、外部归档或 producer completion。真实发布时仍须将这些观察与签名 data/publication 原件绑定，并在实际 GitHub 终态后重新取得 OSS 回读；不能用本轮 probe 代替真实记录。
+
+验证：`82ea12` 先复现缺少 attempt/run 的 publish 仍进入保护配置读取；修正后 `994de1` 两项 authority 检查和定向 lint 通过。Sol high 完成有限 Python 控制器，根审查修正原文件身份、全局互斥、到期后再次确认文件不存在、完整写入及无毫秒 STS 时间兼容。`a0498f` H1 Python 3.6.8 的 26 项相关测试通过；`8f5c44` / 最终 `8f7116` 在隔离 `/run` 目录验证实际 flock、替换文件拒绝、凭据路径重新出现时拒绝、0600/root 原子记录、create-only 及超时子进程 kill/wait 回收，probe 已移除。主密钥卷、实际凭据、数据库和云对象均未用于该 probe。
+
+`163859` / `3a3bca` 安装回读：control `sha256:ebf288b67553a9548a41c4cf314ff012599d27658b1c483ac173f78834cb0980`（2,422 文件、11,882,021 字节），adapter `sha256:39bb8bd16ed4430e4df432732cb801ed5a9172b746956084613e73ae1704fb56`；worker 保持上一段版本。全部文件摘要、root 只读属主和非法 private 请求拒绝通过，主/恢复卷关闭、无运行中的 attempt。最终合同摘要 `sha256:b9c8db85267ff3c92fbd42d22d0227bcf08ca37ee2ee4cefdcbfefcbd631aa5f`，数量和迁移摘要不变。阶段 1 仍未收口，无新增 RAM 授权或真实上传。

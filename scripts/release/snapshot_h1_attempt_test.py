@@ -141,6 +141,123 @@ class AttemptTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'PLAINTEXT_RESIDUAL'):
                 attempt._observe_data_disposal()
 
+    def test_publish_records_only_after_authority_exit_removal_and_expiry(self):
+        module = self.module
+        identity = '11111111-2222-4333-8444-555555555555'
+        request = {'operation': 'publish', 'releaseAttemptId': identity, 'snapshotRunId': '123'}
+        events = []
+        prefix = 'snapshot-slots/v2/' + identity + '/123/'
+        names = ['snapshot.enc', 'encryption-envelope.json', 'snapshot-proof.json',
+                 'data-result.json', 'diagnostics.redacted.json']
+        objects = [{'key': prefix + name, 'digest': 'sha256:' + 'a' * 64,
+                    'sizeBytes': 1, 'requestId': 'request', 'etag': None,
+                    'putObservation': {}} for name in names]
+        published = {'status': 'PUBLISHED', 'releaseAttemptId': identity, 'snapshotRunId': '123',
+                     'publicationDigest': 'sha256:' + 'a' * 64, 'objects': objects,
+                     'writer': {'arn': 'acs:ram::1457643390906675:assumed-role/subscription-saas-stage1-snapshot-publisher/stage1-publisher-123-attempt-1',
+                                'issuedAt': '2026-10-06T00:00:00.000Z',
+                                'expiresAt': '2026-10-06T00:00:01.000Z'},
+                     'publishedAt': '2026-10-06T00:00:00.100Z'}
+        with patch.object(module, '_installation', return_value={'controlBundleDigest': 'sha256:' + 'b' * 64}), \
+             patch.object(module.H1SnapshotPublisher, '_lock', lambda self: events.append('lock')), \
+             patch.object(module.H1SnapshotPublisher, '_observe_session', lambda self: None), \
+             patch.object(module.H1SnapshotPublisher, '_session_absent', lambda self: True), \
+             patch.object(module.H1SnapshotPublisher, '_authority',
+                          lambda self, op, req: events.append('authority') or published), \
+             patch.object(module.H1SnapshotPublisher, '_remove_session',
+                          lambda self: events.append('remove') or self.session.update({
+                              'removed': True, 'absent': True,
+                              'removedAt': '2026-10-06T00:00:00.200Z'})), \
+             patch.object(module.H1SnapshotPublisher, '_wait_expiry',
+                          lambda self, writer, start: events.append('wait') or '2026-10-06T00:00:01.000Z'), \
+             patch.object(module.H1SnapshotPublisher, '_write_record',
+                          lambda self, name, value: events.append(name) or module.digest(module.canonical(value))), \
+             patch.object(module, '_publisher_utc', side_effect=[
+                 '2026-10-06T00:00:00.000Z', '2026-10-06T00:00:00.150Z']):
+            module.H1SnapshotPublisher(request)._validate_published(published)
+            result = module.H1SnapshotPublisher(request).run()
+        self.assertEqual(events, ['lock', 'authority', 'remove', 'wait', 'publisher-terminal.json'])
+        self.assertRegex(result['observationDigest'], r'^sha256:[0-9a-f]{64}$')
+
+    def test_publish_authority_failure_still_removes_session_without_terminal(self):
+        module = self.module
+        identity = '11111111-2222-4333-8444-555555555555'
+        events = []
+        request = {'operation': 'publish', 'releaseAttemptId': identity, 'snapshotRunId': '123'}
+        def fail(*args):
+            events.append('authority')
+            raise RuntimeError('H1_ATTEMPT_AUTHORITY_REJECTED')
+        with patch.object(module, '_installation', return_value={'controlBundleDigest': 'sha256:' + 'b' * 64}), \
+             patch.object(module.H1SnapshotPublisher, '_lock', lambda self: events.append('lock')), \
+             patch.object(module.H1SnapshotPublisher, '_observe_session', lambda self: None), \
+             patch.object(module.H1SnapshotPublisher, '_authority', fail), \
+             patch.object(module.H1SnapshotPublisher, '_remove_session',
+                          lambda self: events.append('remove') or '2026-10-06T00:00:00.200Z'), \
+             patch.object(module.H1SnapshotPublisher, '_write_record',
+                          lambda self, name, value: events.append(name)):
+            with self.assertRaisesRegex(RuntimeError, 'AUTHORITY_REJECTED'):
+                module.H1SnapshotPublisher(request).run()
+        self.assertEqual(events, ['lock', 'authority', 'remove', 'publisher-failure.json'])
+
+    def test_expiry_requires_monotonic_ttl_even_after_wall_clock_leaps(self):
+        module = self.module
+        publisher = object.__new__(module.H1SnapshotPublisher)
+        writer = {'issuedAt': '2026-10-06T00:00:00Z',
+                  'expiresAt': '2026-10-06T00:00:01Z'}
+        expired = module._publisher_time(writer['expiresAt'])
+        with patch.object(module.time, 'monotonic', side_effect=[0, 1]), \
+             patch.object(module.time, 'time', side_effect=[expired + 100, expired + 100]), \
+             patch.object(module.time, 'sleep') as sleep, \
+             patch.object(module, '_publisher_utc', return_value='2026-10-06T00:00:01.000Z'):
+            self.assertEqual(publisher._wait_expiry(writer, 0), '2026-10-06T00:00:01.000Z')
+            sleep.assert_called_once()
+            self.assertLessEqual(sleep.call_args[0][0], 5)
+
+    def test_changed_session_inode_is_never_unlinked(self):
+        module = self.module
+        publisher = object.__new__(module.H1SnapshotPublisher)
+        publisher.session = {}
+        original = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0,
+            st_nlink=1, st_dev=1, st_ino=10, st_size=4, st_mtime_ns=1, st_ctime_ns=1)
+        replaced = types.SimpleNamespace(**vars(original))
+        replaced.st_ino = 11
+        publisher.session_before = original
+        directory = types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0, st_gid=0,
+            st_nlink=2, st_dev=1, st_ino=1, st_size=4096, st_mtime_ns=1, st_ctime_ns=1)
+        with patch.object(module, '_safe_root_directory', return_value=directory), \
+             patch.object(module.os, 'O_DIRECTORY', 0, create=True), \
+             patch.object(module.os, 'O_NOFOLLOW', 0, create=True), \
+             patch.object(module.os, 'O_NONBLOCK', 0, create=True), \
+             patch.object(module.os, 'open', side_effect=[100, 101]), \
+             patch.object(module.os, 'stat', side_effect=[original, replaced]), \
+             patch.object(module.os, 'fstat', side_effect=[directory, original]), \
+             patch.object(module.os, 'unlink') as unlink, \
+             patch.object(module.os, 'close'):
+            with self.assertRaisesRegex(RuntimeError, 'SESSION_CHANGED'):
+                publisher._remove_session()
+            unlink.assert_not_called()
+
+    def test_existing_publish_lock_refuses_retry_before_authority(self):
+        module = self.module
+        publisher = object.__new__(module.H1SnapshotPublisher)
+        publisher.spool = module.OUTPUT + '/11111111-2222-4333-8444-555555555555'
+        publisher.request = {'releaseAttemptId': '11111111-2222-4333-8444-555555555555',
+                             'snapshotRunId': '123'}
+        info = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0,
+            st_nlink=1, st_dev=1, st_ino=1, st_size=0, st_mtime_ns=1, st_ctime_ns=1)
+        fake_fcntl = types.SimpleNamespace(flock=lambda *args: None, LOCK_EX=1, LOCK_NB=2)
+        with patch.object(module, '_safe_root_directory'), \
+             patch.object(module, 'fcntl', fake_fcntl), \
+             patch.object(module.os, 'O_NOFOLLOW', 0, create=True), \
+             patch.object(module.os, 'open', side_effect=[100, FileExistsError]), \
+             patch.object(module.os, 'fstat', return_value=info), \
+             patch.object(module.os, 'lstat', return_value=info), \
+             patch.object(module.os, 'close'), \
+             patch.object(publisher, '_authority') as authority:
+            with self.assertRaises(FileExistsError):
+                publisher.run()
+            authority.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

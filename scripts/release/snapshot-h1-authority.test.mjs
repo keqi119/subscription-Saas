@@ -8,6 +8,7 @@ test("private authority rejects caller paths, sessions and operations before pro
     { operation: "shell", request: {} },
     { operation: "jwt", request: { path: "/tmp/key.pem" } },
     { operation: "seal", request: { proof: {} } },
+    { operation: "publish", request: {} },
     { operation: "publish", request: { session: {} } },
     { operation: "admit", request: { selection: {}, approvalSelection: {}, session: {} } },
     {

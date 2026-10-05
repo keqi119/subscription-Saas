@@ -64,7 +64,21 @@ export async function runH1AttemptAuthority(input) {
     return { jwt: await createH1GitHubJwtSupplier()() };
   }
   if (operation === "seal" || operation === "publish") {
-    assertKernelFrame(request, [], CODE);
+    assertKernelFrame(
+      request,
+      operation === "publish" ? ["releaseAttemptId", "snapshotRunId"] : [],
+      CODE
+    );
+    if (operation === "publish") {
+      requireThat(
+        typeof request.releaseAttemptId === "string" &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+            request.releaseAttemptId
+          ) &&
+          typeof request.snapshotRunId === "string" &&
+          /^[1-9][0-9]*$/u.test(request.snapshotRunId)
+      );
+    }
     const { dispatchVerification } = await createInstalledH1DispatchVerification();
     const production = await readH1SnapshotProductionInputs();
     requireThat(
@@ -73,6 +87,10 @@ export async function runH1AttemptAuthority(input) {
     );
     const verified = await verifyDispatchAuthorization(dispatchVerification);
     if (operation === "publish") {
+      requireThat(
+        production.authorization.releaseAttemptId === request.releaseAttemptId &&
+          production.authorization.snapshotRunId === request.snapshotRunId
+      );
       const published = await publishH1SnapshotData({
         authorizationDigest: sha256Canonical(production.authorization),
         dispatchAuthorizationDigest: sha256Canonical(dispatchVerification.authorization),

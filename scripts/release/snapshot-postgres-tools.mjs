@@ -1,9 +1,13 @@
 // Internal tool adapter. The producer must already hold plaintext-host authority
 // and an admitted private workspace. This helper does not grant either authority.
 import { spawn } from "node:child_process";
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, realpath, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
+import { clearTimeout, setTimeout } from "node:timers";
+import { TextDecoder } from "node:util";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 
 export const SNAPSHOT_POSTGRES_TOOL_IMAGE =
@@ -397,4 +401,299 @@ export function createPostgresSnapshotToolCallbacks(
       return bytes;
     }
   });
+}
+
+const NATIVE_ENV = Object.freeze({ PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C" });
+
+// Private process seam for tests. Runtime callers cannot select an executable or environment.
+async function nativePostgresProcess(binary, args, { input, maxBytes = 65536, signal, env }) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(binary, args, {
+        shell: false,
+        detached: true,
+        stdio: ["pipe", "pipe", "pipe"],
+        env
+      });
+    } catch {
+      resolve({
+        exitCode: null,
+        signal: null,
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.alloc(0),
+        cleanupUnknown: false
+      });
+      return;
+    }
+    const stdout = [];
+    const stderr = [];
+    let outLength = 0;
+    let errLength = 0;
+    let stopped = false;
+    let settled = false;
+    let watchdog;
+    const groupGone = () => {
+      try {
+        process.kill(-child.pid, 0);
+        return false;
+      } catch (cause) {
+        return cause?.code === "ESRCH";
+      }
+    };
+    const finish = (exitCode, exitSignal, cleanupUnknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(watchdog);
+      signal?.removeEventListener("abort", stop);
+      resolve({
+        exitCode: stopped ? null : exitCode,
+        signal: exitSignal,
+        stdout: Buffer.concat(stdout),
+        stderr: Buffer.concat(stderr),
+        cleanupUnknown
+      });
+    };
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        /* close/readback decides whether cleanup is known. */
+      }
+      watchdog = setTimeout(() => finish(null, "SIGKILL", true), 5000);
+    };
+    const timer = setTimeout(stop, 120000);
+    signal?.addEventListener("abort", stop, { once: true });
+    if (signal?.aborted) stop();
+    child.stdout.on("data", (bytes) => {
+      outLength += bytes.length;
+      if (outLength > maxBytes) stop();
+      else if (!stopped) stdout.push(bytes);
+    });
+    child.stderr.on("data", (bytes) => {
+      errLength += bytes.length;
+      if (errLength > 65536) stop();
+      else if (!stopped) stderr.push(bytes);
+    });
+    child.stdin.on("error", stop);
+    child.once("error", () => finish(null, null, !groupGone()));
+    child.once("close", async (exitCode, exitSignal) => {
+      if (!groupGone()) {
+        stop();
+        for (let attempt = 0; attempt < 10 && !groupGone(); attempt++)
+          await new Promise((done) => setTimeout(done, 50));
+      }
+      finish(exitCode, exitSignal, !groupGone());
+    });
+    child.stdin.end(input);
+  });
+}
+
+async function nativeTool(runNative, binary, args, options = {}) {
+  let result;
+  try {
+    result = await runNative(binary, args, {
+      ...options,
+      env: { ...NATIVE_ENV, ...(options.passfile ? { PGPASSFILE: options.passfile } : {}) }
+    });
+  } catch {
+    throw error("SNAPSHOT_ARCHIVE_TOOL_CLEANUP_FAILED", { cleanupUnknown: true });
+  }
+  if (result?.cleanupUnknown)
+    throw error("SNAPSHOT_ARCHIVE_TOOL_CLEANUP_FAILED", { cleanupUnknown: true });
+  if (
+    result?.exitCode !== 0 ||
+    result.signal ||
+    !Buffer.isBuffer(result.stdout) ||
+    !Buffer.isBuffer(result.stderr) ||
+    result.stdout.length > (options.maxBytes ?? 65536) ||
+    result.stderr.length > 65536
+  )
+    throw error();
+  return result.stdout;
+}
+
+async function nativeVersion(runNative, binary, signal) {
+  const line = decode(
+    await nativeTool(runNative, binary, ["--version"], { maxBytes: 1024, signal })
+  ).trim();
+  if (line.length > 256 || !VERSIONS[binary].test(line)) throw error();
+  return line;
+}
+
+async function nativeConnected(
+  {
+    workspaceDirectory,
+    port,
+    databaseName,
+    roleName,
+    password,
+    runNative,
+    assertWorkspace,
+    signal
+  },
+  binary,
+  args,
+  input,
+  maxBytes
+) {
+  await assertWorkspace(workspaceDirectory);
+  if (signal?.aborted) throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+  await nativeVersion(runNative, binary, signal);
+  const directory = await mkdtemp(path.join(workspaceDirectory, "snapshot-native-"));
+  const passfile = path.join(directory, "pgpass");
+  const escaped = password.replaceAll("\\", "\\\\").replaceAll(":", "\\:");
+  let output;
+  let primaryFailure;
+  try {
+    await writeFile(passfile, `127.0.0.1:${port}:${databaseName}:${roleName}:${escaped}\n`, {
+      flag: "wx",
+      mode: 0o600
+    });
+    output = await nativeTool(
+      runNative,
+      binary,
+      [
+        "--host=127.0.0.1",
+        `--port=${port}`,
+        `--username=${roleName}`,
+        `--dbname=${databaseName}`,
+        "--no-password",
+        ...args
+      ],
+      { input, maxBytes, signal, passfile }
+    );
+  } catch (cause) {
+    primaryFailure = cause;
+  }
+  if (primaryFailure?.details?.cleanupUnknown === true) throw primaryFailure;
+  try {
+    await unlink(passfile);
+  } catch (cause) {
+    if (cause?.code !== "ENOENT") throw error("SNAPSHOT_ARCHIVE_TOOL_CLEANUP_FAILED");
+  }
+  try {
+    await rmdir(directory);
+  } catch {
+    throw error("SNAPSHOT_ARCHIVE_TOOL_CLEANUP_FAILED");
+  }
+  if (primaryFailure) throw primaryFailure;
+  return output;
+}
+
+// runNative/assertWorkspace are private test dependencies, never CLI/env/record inputs.
+export function createNativePostgresSnapshotToolCallbacks(
+  { workspaceDirectory, port, databaseName, roleName, password, purpose },
+  { runNative = nativePostgresProcess, assertWorkspace = assertPrivateWorkspace, signal } = {}
+) {
+  if (
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535 ||
+    !NAME.test(databaseName ?? "") ||
+    !NAME.test(roleName ?? "") ||
+    typeof password !== "string" ||
+    password.length < 1 ||
+    password.length > 1024 ||
+    /[\r\n\0]/u.test(password) ||
+    !["source", "workspace"].includes(purpose) ||
+    typeof workspaceDirectory !== "string" ||
+    typeof runNative !== "function" ||
+    typeof assertWorkspace !== "function"
+  )
+    throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+  const invoke = (binary, args, input, maxBytes) =>
+    nativeConnected(
+      {
+        workspaceDirectory,
+        port,
+        databaseName,
+        roleName,
+        password,
+        runNative,
+        assertWorkspace,
+        signal
+      },
+      binary,
+      args,
+      input,
+      maxBytes
+    );
+  if (purpose === "source")
+    return Object.freeze({
+      exportDump: async ({ snapshotId } = {}) => {
+        if (typeof snapshotId !== "string" || !SNAPSHOT.test(snapshotId))
+          throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+        const bytes = await invoke(
+          "/usr/bin/pg_dump",
+          ["--format=custom", "--no-owner", "--no-acl", `--snapshot=${snapshotId}`],
+          undefined,
+          MAX_BYTES
+        );
+        if (bytes.length < 5 || !bytes.subarray(0, 5).equals(Buffer.from("PGDMP"))) throw error();
+        return bytes;
+      }
+    });
+  return Object.freeze({
+    restoreDump: async (raw) => {
+      if (
+        !Buffer.isBuffer(raw) ||
+        raw.length < 5 ||
+        raw.length > MAX_BYTES ||
+        !raw.subarray(0, 5).equals(Buffer.from("PGDMP"))
+      )
+        throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+      await invoke(
+        "/usr/bin/pg_restore",
+        ["--single-transaction", "--exit-on-error", "--no-owner", "--no-acl"],
+        raw,
+        65536
+      );
+    },
+    exportDump: async () => {
+      const bytes = await invoke(
+        "/usr/bin/pg_dump",
+        ["--format=custom", "--no-owner", "--no-acl"],
+        undefined,
+        MAX_BYTES
+      );
+      if (bytes.length < 5 || !bytes.subarray(0, 5).equals(Buffer.from("PGDMP"))) throw error();
+      return bytes;
+    }
+  });
+}
+
+export async function expandNativePostgresSnapshotArchive(
+  { archive, expectedArchiveDigest, maxExpandedBytes },
+  {
+    workspaceDirectory,
+    signal,
+    runNative = nativePostgresProcess,
+    assertWorkspace = assertPrivateWorkspace
+  } = {}
+) {
+  if (
+    !Buffer.isBuffer(archive) ||
+    archive.length < 5 ||
+    archive.length > MAX_BYTES ||
+    !archive.subarray(0, 5).equals(Buffer.from("PGDMP")) ||
+    expectedArchiveDigest !== sha256Bytes(archive) ||
+    maxExpandedBytes !== MAX_BYTES ||
+    typeof runNative !== "function" ||
+    typeof assertWorkspace !== "function"
+  )
+    throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+  await assertWorkspace(workspaceDirectory);
+  if (signal?.aborted) throw error("SNAPSHOT_ARCHIVE_TOOL_INPUT_INVALID");
+  const pgRestoreVersion = await nativeVersion(runNative, "/usr/bin/pg_restore", signal);
+  const expandedBytes = await nativeTool(runNative, "/usr/bin/pg_restore", ["--file=-"], {
+    input: archive,
+    maxBytes: maxExpandedBytes,
+    signal
+  });
+  if (!expandedBytes.length || sha256Bytes(archive) !== expectedArchiveDigest) throw error();
+  return { archiveDigest: expectedArchiveDigest, expandedBytes, exitCode: 0, pgRestoreVersion };
 }

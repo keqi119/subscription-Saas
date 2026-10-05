@@ -111,3 +111,21 @@ JWT 固定 RS256、client ID issuer、iat 回退 60 秒、exp 为当前时间后
 本轮预检 `c4b02b` 于 2026-10-05T14:30:34.774Z 核实 PostgreSQL 17.10、128 项迁移仍仅有 `20260925090000_stage1_operational_completion_terminal_shape` 和 `20260925091000_stage1_operational_completion_settlement_guard` 待执行；`1ac52d` Prisma validate 通过，临时隧道关闭。业务行为及数据库迁移未变。
 
 剩余接线明确为：固定 root policy 与受限 Ed25519 签名描述符、真实 dispatch 授权原件/签名及独立 custody 读取、串行的当前撤销源和其真实初始 checkpoint。现有 manual profile 公钥锚可复用，但原 manual-launch 签名 API 不能直接当作 dispatch 签名来源；测试 fixtures 不构成生产授权。随后仍须 JIT 实际分配/结束证明、完整 attempt、三个真实 jobs、精确 OSS publisher/custody 身份、真实 producer 和同候选 R2/R3、获准迁移及 R4。阶段 1 未收口。
+
+## 追加：既有 H1 Ed25519 身份的固定签名入口
+
+[snapshot-h1-signing.mjs](../../scripts/release/snapshot-h1-signing.mjs) 新增固定 `verifyAndSignH1SnapshotAdmission`，复用唯一 `verifyAndSignSnapshotAdmission` 决策，不提供任意 payload/domain、私钥或路径入口。它从已安装的 root 只读包读取既有 profile/owner binding，要求 canonical digest 分别为原批准的 `49df6dae...` 和 `68a62706...`，核对有效期、owner、host machine-id 指纹、主卷中原始批准字节及 Ed25519 公钥指纹。原 profile 与 `promotionEligible=false` 保持原件；密钥持有不扩大原有数据库权限，也不产生新的 release-candidate 准入结论。
+
+入口只在既有 verifier 完成实际 GitHub 观测、当前 dispatch 核验、artifact/admission 重建与比较之后，通过一次性 descriptor 读取固定 `key/signing-ed25519.pk8.pem`。读取前重算身份、有效期、主机和批准原件，并同步重核 root/swap/core；私钥文件有界读取、权限/链接/身份前后校验，SPKI 必须仍匹配 `sha256:7146f2e00f4a8e70183a64f3e8c7ebfa8e66926f60d18442e3d5ac4a09e408ef`。密钥对象不返回调用方，原始缓冲清零；不声称运行时字符串或 KeyObject 的物理擦除。
+
+`challengeH1SnapshotSigningKey()` 只签内部生成的随机 nonce、当前身份与时间，固定域为 `h1-snapshot-key-challenge.v1`；无调用方载荷。它用于部署时核对实际密钥持有，不能作为 dispatch、admission、custody 或 release 证明。`46c3c3` 在 H1 既有加密卷和现有私钥上完成该挑战，核对签名、profile/owner/host 和固定 signer；合法 signer 加缺失 root-policy 输入仍被原 verifier 拒绝。没有生成真实 admission、dispatch 或授权成功原件，没有读取源库、注册 Runner 或发起 GitHub 请求。
+
+`bbe272` 在本机用仓库中原批准公钥独立验证返回签名，readback digest 为 `sha256:e846c58bb51f349566b84457df45a563c92ca5173e775539058ffb8060557143`；随后独立 SSH 确认主备卷/mapper 关闭、swap 恢复、core guard 释放、attempt 根为空、route nonce 仍为 0、生产 dispatch checkpoint 未初始化、PostgreSQL 健康。加密卷与密钥没有重建或更换。
+
+为复用同一实际主卷检查，原 JWT 中的保护逻辑机械提取到 [snapshot-h1-key-volume.mjs](../../scripts/release/snapshot-h1-key-volume.mjs)。路径、UUID、loop/mapper/mount 及权限要求不变；共享检查在返回前再次同步核对内存保护，保留原 JWT 返回前检查的时序。限定测试 `4bfa93` 先因签名入口缺失而失败，`89ada8` 新入口两项通过，最终 `e3a8f0` 加既有 JWT 两项共四项通过；同步保护拒绝/通过断言并入原两项。限定 Luna 审查未发现重要问题，明确剩余 root policy 与 dispatch 来源仍必须由 root 私有装配提供。
+
+`9da33a` 安装最终控制包 `/opt/subscription-saas/snapshot-adapter/v2/bundles/cf12e7ac2bc26b4c008d78a4447d14ef5ce352b11d94b0dfdd148f2cd12761db`：306 文件、1,093,247 字节、逐文件摘要与 root 只读权限通过。新增的两个 public profile 文件是原件复制；没有私钥进入运行包。`6b8531` 合同校验通过，298 文件、91 schemas、13 commands、128 项迁移摘要不变，仓库合同摘要 `sha256:362d71cf16c9fff5218aa1671fe456cbc6191390111750d23db3ab536a3158f4`。
+
+本轮只读盘点还明确了 I0 的实际缺口：现有 `subscription-saas-stage1-evidence-writer` / `subscription-saas-stage1-evidence-audit-reader` 仅信任 `trusted-image-build` OIDC；H1 的 snapshot-consumer 只读 `snapshot-slots/v2/*`。前者不能成为独立于待测 build/OIDC 的签发控制面根保管身份，后者没有控制证据的写/读权限。需先形成独立控制面 writer/reader 与冻结对象集合的具体 RAM 差额草案，按用户要求确认后应用；不能扩展现有 consumer、借用管理员会话伪装 writer/reader 或将策略配置当作实际保管成功。尚未执行新的 RAM 变更。
+
+预检 `cc3abd` 于 2026-10-05T14:58:10.471Z 仍仅有原两条待迁移，SSH 临时隧道已关闭；`5d156b` Prisma validate 通过。下一步继续真实 dispatch 签发/当前撤销源及 I0 私有权威保管、root 固定策略，然后连接 JIT 与真实 producer。阶段 1、R2/R3、待执行迁移和 R4 均保持原目标，未宣称收口。

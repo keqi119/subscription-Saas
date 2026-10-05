@@ -1,19 +1,15 @@
 // Root-private credential source. The launcher unlocks the existing main volume;
 // this module neither unlocks it nor accepts paths, keys, claims or environment input.
 import { Buffer } from "node:buffer";
-import { execFile } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readFile, realpath } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import path from "node:path";
-import process from "node:process";
+import { assertH1KeyVolume } from "./snapshot-h1-key-volume.mjs";
 
 const CODE = "H1_GITHUB_JWT_UNAVAILABLE";
 const MOUNT = "/var/lib/stage1-volumes/main";
-const BACKING = "/var/lib/stage1-ciphertext/main.luks";
-const MAPPER = "/dev/mapper/stage1-h1-main";
 const CONFIG = `${MOUNT}/credential/github-app-stage1-snapshot/config.json`;
-const UUID = "97c61d0d-fa2c-42bb-9ba7-66f8724bc29b";
 const CLIENT = "Iv23liv1am29eM85IzZH";
 const FINGERPRINT = "5d3ed578d6090079cbaa4d5c54c24cd2bda1175aa5b4fe53cf89e8e464c41291";
 const PERMISSIONS = {
@@ -33,7 +29,6 @@ const identity = (left, right) =>
   ["dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtimeMs", "ctimeMs"].every(
     (key) => left[key] === right[key]
   );
-
 async function directories(file) {
   let current = path.posix.dirname(file);
   while (true) {
@@ -46,76 +41,6 @@ async function directories(file) {
     if (current === "/") break;
     current = path.posix.dirname(current);
   }
-}
-
-async function command(file, args) {
-  return new Promise((resolve, reject) => {
-    execFile(
-      file,
-      args,
-      {
-        cwd: "/",
-        env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LC_ALL: "C" },
-        encoding: "utf8",
-        maxBuffer: 8192,
-        timeout: 10000
-      },
-      (error, stdout) => (error ? reject(new Error(CODE)) : resolve(stdout.trim()))
-    );
-  });
-}
-
-async function protection() {
-  requireThat(process.platform === "linux" && process.getuid() === 0 && process.getgid() === 0);
-  requireThat((await readFile("/proc/swaps", "utf8")).trim().split(/\r?\n/).length === 1);
-  requireThat((await readFile("/proc/sys/kernel/core_pattern", "utf8")).trim() === "|/bin/false");
-  requireThat(
-    /^Max core file size\s+0\s+0\s+bytes\s*$/m.test(await readFile("/proc/self/limits", "utf8"))
-  );
-}
-
-async function volume() {
-  await directories(BACKING);
-  const backing = await lstat(BACKING);
-  requireThat(
-    backing.isFile() &&
-      backing.uid === 0 &&
-      backing.gid === 0 &&
-      backing.nlink === 1 &&
-      (backing.mode & 0o777) === 0o600 &&
-      backing.size === 1073741824
-  );
-  requireThat((await command("/usr/sbin/cryptsetup", ["luksUUID", BACKING])) === UUID);
-  const status = await command("/usr/sbin/cryptsetup", ["status", "stage1-h1-main"]);
-  requireThat(/^\s*type:\s+LUKS2\s*$/m.test(status));
-  const loop = status.match(/^\s*device:\s*(\/dev\/loop[0-9]+)\s*$/m)?.[1];
-  requireThat(
-    loop &&
-      (await command("/usr/sbin/losetup", ["-j", BACKING]))
-        .split("\n")
-        .some((line) => line.startsWith(`${loop}:`))
-  );
-  const found = JSON.parse(
-    await command("/usr/bin/findmnt", [
-      "--json",
-      "--mountpoint",
-      MOUNT,
-      "--output",
-      "TARGET,SOURCE,FSTYPE,OPTIONS"
-    ])
-  );
-  requireThat(Array.isArray(found.filesystems) && found.filesystems.length === 1);
-  const mount = found.filesystems[0];
-  requireThat(
-    mount.target === MOUNT &&
-      mount.fstype === "ext4" &&
-      !mount.children &&
-      typeof mount.source === "string" &&
-      typeof mount.options === "string" &&
-      ["nosuid", "nodev", "noexec"].every((flag) => mount.options.split(",").includes(flag)) &&
-      (await realpath(mount.source)) === (await realpath(MAPPER))
-  );
-  requireThat(identity(backing, await lstat(BACKING)));
 }
 
 function appKey(raw) {
@@ -155,8 +80,7 @@ export function createH1GitHubJwtSupplier(...args) {
     let handle, raw;
     try {
       requireThat(request.length === 0);
-      await protection();
-      await volume();
+      await assertH1KeyVolume();
       await directories(CONFIG);
       handle = await open(CONFIG, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const before = await handle.stat();
@@ -177,8 +101,7 @@ export function createH1GitHubJwtSupplier(...args) {
       const key = appKey(raw.subarray(0, bytesRead));
       requireThat(identity(before, await handle.stat()) && identity(before, await lstat(CONFIG)));
       await directories(CONFIG);
-      await volume();
-      await protection();
+      await assertH1KeyVolume();
       const now = Math.floor(Date.now() / 1000);
       requireThat(Number.isSafeInteger(now) && now > 0);
       const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");

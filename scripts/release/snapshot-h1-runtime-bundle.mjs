@@ -184,12 +184,16 @@ async function buildFixedRuntime(repoRoot, control) {
   for (const entry of control
     ? [
         "scripts/release/snapshot-h1-dispatch-journal.mjs",
+        "scripts/release/snapshot-h1-signing.mjs",
         "scripts/release/snapshot-h1-observations.mjs",
         "scripts/release/snapshot-h1-github-reader.mjs"
       ]
     : [worker])
     await source(entry);
   for (const name of fixedFiles) await addRootFile(name);
+  if (control)
+    for (const name of ["manual-stage1-profile.v2.json", "manual-stage1-owner-binding.v1.json"])
+      await addRootFile(`release/contracts/${name}`);
   await tree(await rootDirectory("release/contracts/schemas"), "release/contracts/schemas");
   for (const name of [
     ...(control ? [] : ["apps/api/node_modules/pg"]),

@@ -49,6 +49,8 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/database-test-launcher-runtime.mjs",
   "scripts/release/create-build-proof.mjs",
   "scripts/release/create-final-attempt-history.mjs",
+  "scripts/release/dispatch-evidence-oss-storage.mjs",
+  "scripts/release/dispatch-evidence-scope.mjs",
   "scripts/release/evidence-archive-ram-policy.mjs",
   "scripts/release/export-final-compose-environment.mjs",
   "scripts/release/export-sanitized-snapshot.mjs",

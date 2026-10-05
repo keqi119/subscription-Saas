@@ -72,6 +72,8 @@
 
 沿用上项裁定，仅实现固定版本官方 container hooks 所需 prepare/run/cleanup，禁止通用命令、Docker API 或新业务功能。先封闭 root 状态机与不同 UID 的两个 socket，再接已有准入/撤销核验及 JIT；生产制作必须等待全部准入成立。
 
+**2026-10-06 范围纠正：** 旧 2026-09-03 计划首页的 Task6/I 系列冻结仍有效。本任务复用当前 dispatch verifier 所需的两份原件及真实 custody，不以 `I0_CLOSED` 或完整 I0 bootstrap 为前置，不扩建通用 API/批准原件归档、在线撤销服务或自动批准平台。已获用户精确批准并创建的独立 RAM 身份保留；该批准不扩展为对象权限。具体有限接口与后续顺序见 [dispatch 证据范围核对](../../acceptance/2026-10-06-stage1-dispatch-evidence-scope.md)。原 verifier 的签名、fresh nonce 撤销检查、真实 custody、持久 checkpoint 及 GitHub 准入均保持。
+
 - [x] 官方 Runner 2.337.0 distribution 摘要核验及只读缓存（不配置/注册）；`44273c` 隔离容器版本检查及 `eefb48` 独立目录/清理回读通过。
 - [x] 固定 hook→root 管理通道、独立 job→root 请求通道及实际容器隔离；`bf79ad` 真实 hook/UID 65533 容器合成探针与 `6e51c2` 独立回读通过。生产准入和制作回调仍由下面两项接线。
 - [x] root 专用 GitHub 只读接口，真实 App/run/job/Environment 读取及令牌撤销；`5cf1dd` 实际 API、`0e3b01` 最终代码安装回读通过。首轮令牌格式失败及撤销 UNKNOWN 保留于 `docs/acceptance/2026-10-05-stage1-h1-github-read-session.md`。本项不是准入签名或 JIT 注册。

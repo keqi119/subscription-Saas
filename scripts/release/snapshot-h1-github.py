@@ -209,6 +209,16 @@ def _sha(value):
     return value
 
 
+def _github_time(value, code):
+    require(type(value) is str and re.fullmatch(
+        r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z', value) is not None, code)
+    try:
+        pattern = '%Y-%m-%dT%H:%M:%S.%fZ' if '.' in value else '%Y-%m-%dT%H:%M:%SZ'
+        return datetime.datetime.strptime(value, pattern).replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        raise GitHubFailure('H1_GITHUB_' + code) from None
+
+
 def _owner(value):
     return (type(value) is dict and value.get('id') == OWNER_ID and
             value.get('login') == 'keqi119')
@@ -363,7 +373,85 @@ class H1SnapshotGitHub:
 
     def read_jobs(self, run_id):
         return _list(self._get(PREFIX + '/actions/runs/' + _id(run_id) +
-                              '/attempts/1/jobs?per_page=100'), 'jobs')
+                               '/attempts/1/jobs?per_page=100'), 'jobs')
+
+    def read_terminal_inputs(self, selection):
+        """Retain GitHub's completed run and three jobs as external terminal originals."""
+        fields = {'repository', 'runId', 'runAttempt', 'sourceSha', 'admissionJobId',
+                  'jobId', 'custodyJobId'}
+        require(type(selection) is dict and set(selection) == fields and
+                selection['repository'] == {'id': str(REPO_ID), 'name': REPOSITORY} and
+                type(selection['runAttempt']) is int and selection['runAttempt'] == 1,
+                'INPUT_INVALID')
+        for key in ('runId', 'admissionJobId', 'jobId', 'custodyJobId'):
+            _id(selection[key])
+        source_sha = _sha(selection['sourceSha'])
+        require(len({selection['admissionJobId'], selection['jobId'],
+                     selection['custodyJobId']}) == 3, 'INPUT_INVALID')
+        run_id = selection['runId']
+        first = self.read_run(run_id)
+        jobs = self.read_jobs(run_id)
+        latest = self._get(PREFIX + '/actions/runs/' + run_id)
+        final = self.read_run(run_id)
+        stable = ('id', 'run_attempt', 'head_sha', 'head_branch', 'repository',
+                  'head_repository', 'actor', 'event', 'path', 'status', 'conclusion',
+                  'created_at', 'updated_at')
+        require(type(latest) is dict and all(
+            first.get(key) == latest.get(key) == final.get(key) for key in stable) and
+            type(latest.get('id')) is int and latest['id'] == int(run_id) and
+            type(latest.get('run_attempt')) is int and latest['run_attempt'] == 1 and
+            _repository(latest.get('repository')) and
+            _repository(latest.get('head_repository')) and
+            latest.get('head_sha') == source_sha and latest.get('head_branch') == 'main' and
+            latest.get('event') == 'workflow_dispatch' and latest.get('path') == WORKFLOW and
+            _owner(latest.get('actor')) and latest.get('status') == 'completed' and
+            latest.get('conclusion') == 'success', 'RUN_MISMATCH')
+        observed = datetime.datetime.now(datetime.timezone.utc)
+        created = _github_time(latest.get('created_at'), 'RUN_MISMATCH')
+        updated = _github_time(latest.get('updated_at'), 'RUN_MISMATCH')
+        require(created <= updated <= observed, 'RUN_MISMATCH')
+        selected = {'admission': selection['admissionJobId'],
+                    'snapshot-data': selection['jobId'],
+                    'snapshot-custody': selection['custodyJobId']}
+        require(len(jobs) == 3 and set(job.get('name') for job in jobs) == set(selected),
+                'TERMINAL_JOB_MISMATCH')
+        times = {}
+        for job in jobs:
+            name = job['name']
+            labels = job.get('labels')
+            require(type(job.get('id')) is int and job['id'] == int(selected[name]) and
+                    type(job.get('run_id')) is int and job['run_id'] == int(run_id) and
+                    type(job.get('run_attempt')) is int and job['run_attempt'] == 1 and
+                    job.get('head_sha') == source_sha and
+                    job.get('status') == 'completed' and job.get('conclusion') == 'success' and
+                    type(job.get('runner_id')) is int and job['runner_id'] > 0 and
+                    type(job.get('runner_name')) is str and job['runner_name'] and
+                    type(labels) is list and all(type(label) is str for label in labels),
+                    'TERMINAL_JOB_MISMATCH')
+            started = _github_time(job.get('started_at'), 'TERMINAL_JOB_MISMATCH')
+            completed = _github_time(job.get('completed_at'), 'TERMINAL_JOB_MISMATCH')
+            require(created <= started <= completed <= updated <= observed,
+                    'TERMINAL_JOB_MISMATCH')
+            times[name] = (started, completed)
+            if name == 'snapshot-data':
+                match = re.fullmatch(r'stage1-snapshot-([a-f0-9]{32})', job['runner_name'])
+                expected_labels = _jit_labels(run_id, match.group(1)) if match else []
+                lowered = [label.lower() for label in labels]
+                require(match is not None and type(job.get('runner_group_id')) is int and
+                        job['runner_group_id'] == 1 and
+                        len(labels) == len(expected_labels) and
+                        len(set(lowered)) == len(expected_labels) and
+                        set(lowered) == set(expected_labels),
+                        'TERMINAL_JOB_MISMATCH')
+            else:
+                require(job['runner_name'].startswith('GitHub Actions ') and
+                        labels == ['ubuntu-latest'], 'TERMINAL_JOB_MISMATCH')
+        require(times['admission'][1] <= times['snapshot-data'][0] and
+                times['snapshot-data'][1] <= times['snapshot-custody'][0],
+                'TERMINAL_JOB_MISMATCH')
+        observed_at = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        return {'selection': copy.deepcopy(selection), 'run': final, 'jobs': jobs,
+                'observedAt': observed_at}
 
     def read_active_jobs(self):
         # These five fixed queries observe every active status in this repo.

@@ -58,18 +58,25 @@ def main():
     packet = sys.stdin.buffer.read(32769)
     require(len(packet) <= 32768)
     request = json.loads(packet.decode('utf8'), object_pairs_hook=pairs)
-    require(type(request) is dict and set(request) == {'jwt', 'selection'})
+    require(type(request) is dict and
+            (set(request) == {'jwt', 'selection'} or
+             set(request) == {'jwt', 'selection', 'operation'} and
+             request['operation'] == 'terminal'))
+    terminal = request.get('operation') == 'terminal'
     sys.dont_write_bytecode = True
     module = load_module(MODULE, 'snapshot_h1_github')
-    journal = load_module(JOURNAL, 'snapshot_h1_route_journal')
-    journal.read_used_route_nonces()  # Missing or corrupt state fails before issuing a token.
+    if not terminal:
+        journal = load_module(JOURNAL, 'snapshot_h1_route_journal')
+        journal.read_used_route_nonces()  # Missing or corrupt state fails before issuing a token.
     with module.H1SnapshotGitHub(lambda: request['jwt']) as github:
-        observed = github.read_admission_inputs(request['selection'])
-    observed['usedRouteNonces'] = journal.read_used_route_nonces()
-    # Only return data after token revocation succeeds. No token or signed URL
-    # appears in the observation; both binary values use canonical base64.
-    observed['workflowBytes'] = base64.b64encode(observed['workflowBytes']).decode('ascii')
-    observed['artifact']['bytes'] = base64.b64encode(observed['artifact']['bytes']).decode('ascii')
+        observed = (github.read_terminal_inputs(request['selection']) if terminal else
+                    github.read_admission_inputs(request['selection']))
+    # Only return after token revocation succeeds. Terminal reads do not consume
+    # route journal state or project admission-only binary originals.
+    if not terminal:
+        observed['usedRouteNonces'] = journal.read_used_route_nonces()
+        observed['workflowBytes'] = base64.b64encode(observed['workflowBytes']).decode('ascii')
+        observed['artifact']['bytes'] = base64.b64encode(observed['artifact']['bytes']).decode('ascii')
     encoded = json.dumps(observed, separators=(',', ':')).encode('utf8')
     require(len(encoded) <= 16 * 1024 * 1024)
     signal.alarm(0)

@@ -59,6 +59,69 @@ class GitHubTests(unittest.TestCase):
     def revocations(self):
         return [call for call in self.calls if call[0:2] == ('DELETE', '/installation/token')]
 
+    def terminal_fixture(self):
+        sha = 'a' * 40
+        selection = {'repository': {'id': '1253231368', 'name': 'keqi119/subscription-Saas'},
+                     'runId': '123', 'runAttempt': 1, 'sourceSha': sha,
+                     'admissionJobId': '700', 'jobId': '701', 'custodyJobId': '702'}
+        run = {'id': 123, 'run_attempt': 1, 'head_sha': sha, 'repository': self.repo,
+               'head_repository': self.repo, 'actor': self.repo['owner'],
+               'head_branch': 'main', 'event': 'workflow_dispatch',
+               'path': '.github/workflows/sanitized-snapshot.yml',
+               'status': 'completed', 'conclusion': 'success',
+               'created_at': '2026-10-01T00:00:00Z', 'updated_at': '2026-10-01T00:04:00Z'}
+        def job(id, name, start, end, labels, runner):
+            return {'id': id, 'run_id': 123, 'run_attempt': 1, 'head_sha': sha,
+                    'name': name, 'status': 'completed', 'conclusion': 'success',
+                    'started_at': start, 'completed_at': end, 'labels': labels,
+                    'runner_id': id + 1000, 'runner_name': runner,
+                    'runner_group_id': 1 if name == 'snapshot-data' else None}
+        nonce = 'b' * 32
+        jobs = [job(700, 'admission', '2026-10-01T00:00:10Z', '2026-10-01T00:01:00Z',
+                    ['ubuntu-latest'], 'GitHub Actions 1'),
+                job(701, 'snapshot-data', '2026-10-01T00:01:10Z', '2026-10-01T00:02:00Z',
+                    ['STAGE1-SNAPSHOT-EXPORT-123-' + nonce, 'x64', 'SELF-HOSTED',
+                     'stage1-snapshot-export', 'Linux'], 'stage1-snapshot-' + nonce),
+                job(702, 'snapshot-custody', '2026-10-01T00:02:10Z', '2026-10-01T00:03:00Z',
+                    ['ubuntu-latest'], 'GitHub Actions 2')]
+        base = '/repos/keqi119/subscription-Saas/actions/runs/123'
+        self.responses[base + '/attempts/1'] = run
+        self.responses[base + '/attempts/1/jobs?per_page=100'] = {'total_count': 3, 'jobs': jobs}
+        self.responses[base] = dict(run)
+        return selection, run, jobs
+
+    def test_terminal_inputs_retains_three_actual_completed_jobs(self):
+        selection, run, jobs = self.terminal_fixture()
+        with patch.object(self.module, '_api', self.api):
+            with self.session() as github:
+                value = github.read_terminal_inputs(selection)
+        self.assertEqual(value['selection'], selection)
+        self.assertEqual(value['run'], run)
+        self.assertEqual(value['jobs'], jobs)
+        self.assertIn('observedAt', value)
+        self.assertEqual(len(self.revocations()), 1)
+
+    def test_terminal_inputs_rejects_wrong_or_failed_job(self):
+        selection, _, jobs = self.terminal_fixture()
+        route = '/repos/keqi119/subscription-Saas/actions/runs/123/attempts/1/jobs?per_page=100'
+        for changed in ({'id': 999}, {'conclusion': 'failure'}, {'run_id': 456}):
+            bad = [dict(item) for item in jobs]
+            bad[2].update(changed)
+            self.responses[route] = {'total_count': 3, 'jobs': bad}
+            with patch.object(self.module, '_api', self.api):
+                with self.session() as github:
+                    with self.assertRaises(self.module.GitHubFailure):
+                        github.read_terminal_inputs(selection)
+
+    def test_terminal_inputs_rejects_run_change_between_reads(self):
+        selection, _, _ = self.terminal_fixture()
+        route = '/repos/keqi119/subscription-Saas/actions/runs/123'
+        self.responses[route]['run_attempt'] = 2
+        with patch.object(self.module, '_api', self.api):
+            with self.session() as github:
+                with self.assertRaises(self.module.GitHubFailure):
+                    github.read_terminal_inputs(selection)
+
     def active_fixture(self):
         prefix = '/repos/keqi119/subscription-Saas/actions/runs'
         statuses = ('in_progress', 'queued', 'requested', 'waiting', 'pending')

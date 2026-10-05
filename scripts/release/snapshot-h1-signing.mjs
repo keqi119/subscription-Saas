@@ -561,6 +561,7 @@ export async function publishH1SnapshotData(verified) {
   const publication = {
     ...expected,
     writerArn: session.arn,
+    writerIdentityOriginal: writer.identityOriginal,
     writerIssuedAt: session.issuedAt,
     writerExpiresAt: session.expiresAt,
     cryptoExitedAt: prepared.sealed.proof.cleanup.processExitedAt,

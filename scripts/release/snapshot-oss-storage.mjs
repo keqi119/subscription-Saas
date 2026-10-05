@@ -6,6 +6,8 @@ import { URL } from "node:url";
 import { TextDecoder } from "node:util";
 import { canonicalJson } from "../../packages/release-foundation/src/canonical-json.mjs";
 import { validateProducerCryptoAuthorization } from "../../packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs";
+import { readSnapshotStsIdentity } from "./snapshot-sts-identity.mjs";
+import { readSnapshotOssOriginals } from "./snapshot-oss-originals.mjs";
 
 const ACCOUNT = "1457643390906675";
 const BUCKET = "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai";
@@ -95,6 +97,20 @@ function slot(prefix, key) {
   };
 }
 
+function readRequest(prefix, request) {
+  if (!exact(request, ["key", "contentDigest", "sizeBytes"])) fail("SNAPSHOT_OSS_INPUT_INVALID");
+  const subject = slot(prefix, request.key);
+  if (
+    typeof request.contentDigest !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/u.test(request.contentDigest) ||
+    !Number.isSafeInteger(request.sizeBytes) ||
+    request.sizeBytes < 1 ||
+    request.sizeBytes > subject.maxSizeBytes
+  )
+    fail("SNAPSHOT_OSS_INPUT_INVALID");
+  return { key: subject.key, contentDigest: request.contentDigest, sizeBytes: request.sizeBytes };
+}
+
 function time(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value))
     return NaN;
@@ -159,7 +175,9 @@ function dependencies(value) {
     !value ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    Reflect.ownKeys(value).some((key) => !["createOssClient", "now"].includes(key))
+    Reflect.ownKeys(value).some(
+      (key) => !["createOssClient", "createStsClient", "now"].includes(key)
+    )
   ) {
     fail("SNAPSHOT_OSS_INPUT_INVALID");
   }
@@ -167,9 +185,12 @@ function dependencies(value) {
     fail("SNAPSHOT_OSS_INPUT_INVALID");
   if (value.createOssClient !== undefined && typeof value.createOssClient !== "function")
     fail("SNAPSHOT_OSS_INPUT_INVALID");
+  if (value.createStsClient !== undefined && typeof value.createStsClient !== "function")
+    fail("SNAPSHOT_OSS_INPUT_INVALID");
   return {
     now: value.now ?? (() => new Date()),
-    createOssClient: value.createOssClient ?? ((options) => new (requireApi("ali-oss"))(options))
+    createOssClient: value.createOssClient ?? ((options) => new (requireApi("ali-oss"))(options)),
+    createStsClient: value.createStsClient
   };
 }
 
@@ -397,9 +418,15 @@ export async function createSnapshotPublisherTransport(input, lowLevelDependenci
     deps = dependencies(lowLevelDependencies);
   const credential = session(input.session, current(deps.now));
   assertDebugDisabled();
+  const identityOriginal = await readSnapshotStsIdentity(
+    credential,
+    deps.now,
+    deps.createStsClient
+  );
   const writer = client(credential, deps.createOssClient);
   if (typeof writer.put !== "function") fail("SNAPSHOT_OSS_CLIENT_INVALID");
   return Object.freeze({
+    identityOriginal,
     async createOnly(request) {
       const subject = allowedBytes(request, prefix);
       assertLive(credential, deps.now);
@@ -511,6 +538,11 @@ export async function createSnapshotReaderTransport(input, lowLevelDependencies 
     fail("SNAPSHOT_OSS_SESSION_INVALID");
   }
   assertDebugDisabled();
+  const identityOriginal = await readSnapshotStsIdentity(
+    credential,
+    deps.now,
+    deps.createStsClient
+  );
   const reader = client(credential, deps.createOssClient);
   if (
     ["getBucketACL", "getBucketWorm", "request", "head", "get"].some(
@@ -520,6 +552,7 @@ export async function createSnapshotReaderTransport(input, lowLevelDependencies 
     fail("SNAPSHOT_OSS_CLIENT_INVALID");
   }
   return Object.freeze({
+    identityOriginal,
     // Bounded bootstrap for the signed publication marker and its public
     // documents. Returned JSON is untrusted until the H1 signatures validate.
     async readPublicJson(request) {
@@ -575,34 +608,18 @@ export async function createSnapshotReaderTransport(input, lowLevelDependencies 
       };
     },
     async readback(request) {
-      if (!exact(request, ["key", "contentDigest", "sizeBytes"]))
-        fail("SNAPSHOT_OSS_INPUT_INVALID");
-      const subject = slot(prefix, request.key);
-      if (
-        typeof request.contentDigest !== "string" ||
-        !/^sha256:[0-9a-f]{64}$/u.test(request.contentDigest) ||
-        !Number.isSafeInteger(request.sizeBytes) ||
-        request.sizeBytes < 1 ||
-        request.sizeBytes > subject.maxSizeBytes
-      ) {
-        fail("SNAPSHOT_OSS_INPUT_INVALID");
-      }
-      const expected = {
-        key: subject.key,
-        contentDigest: request.contentDigest,
-        sizeBytes: request.sizeBytes
-      };
+      const expected = readRequest(prefix, request);
       assertLive(credential, deps.now);
       const bucket = await bucketFacts(reader);
       let head, get;
       try {
-        head = await reader.head(subject.key);
+        head = await reader.head(expected.key);
       } catch {
         fail("SNAPSHOT_OSS_READBACK_UNKNOWN");
       }
       const headFacts = responseFacts(head, expected);
       try {
-        get = await reader.get(subject.key);
+        get = await reader.get(expected.key);
       } catch {
         fail("SNAPSHOT_OSS_READBACK_UNKNOWN");
       }
@@ -611,12 +628,26 @@ export async function createSnapshotReaderTransport(input, lowLevelDependencies 
       if (headFacts.etag !== getFacts.etag || headFacts.lastModified !== getFacts.lastModified) {
         fail("SNAPSHOT_OSS_READBACK_INVALID");
       }
+      assertLive(credential, deps.now);
       return Object.freeze({
         bucket,
         readerArn: credential.arn,
         expectedWriterArn: writerArn,
         head: headFacts,
         get: getFacts
+      });
+    },
+    async readbackOriginals(request) {
+      const expected = readRequest(prefix, request);
+      if (expected.key !== prefix + "snapshot.enc") fail("SNAPSHOT_OSS_INPUT_INVALID");
+      assertLive(credential, deps.now);
+      const result = await readSnapshotOssOriginals(reader, expected, credential.arn, deps.now);
+      assertLive(credential, deps.now);
+      return Object.freeze({
+        ...result,
+        readerArn: credential.arn,
+        expectedWriterArn: writerArn,
+        readerIdentityOriginal: identityOriginal
       });
     }
   });

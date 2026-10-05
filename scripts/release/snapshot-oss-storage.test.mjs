@@ -23,7 +23,18 @@ const session = (arn, suffix) => ({
 });
 const key = "snapshot-slots/v2/attempt-1/12345/snapshot.enc";
 const identity = { releaseAttemptId: "attempt-1", snapshotRunId: "12345" };
-const res = (headers = {}) => ({ res: { status: 200, headers }, status: 200 });
+const res = (headers = {}, data = Buffer.alloc(0)) => ({
+  res: {
+    status: 200,
+    data,
+    headers: {
+      date: "Thu, 01 Oct 2026 00:00:00 GMT",
+      "x-oss-request-id": "read-request",
+      ...headers
+    }
+  },
+  status: 200
+});
 
 function fixture() {
   const objects = new Map(),
@@ -77,13 +88,14 @@ function fixture() {
         creationDate: now
       }),
       request: async ({ subres }) => {
-        assert.equal(subres, "versioning");
-        return {
-          ...res(),
-          data: Buffer.from(
+        const bodies = {
+          acl: "<AccessControlPolicy><Owner><ID>1457643390906675</ID><DisplayName>owner</DisplayName></Owner><AccessControlList><Grant>private</Grant></AccessControlList></AccessControlPolicy>",
+          worm: `<WormConfiguration><WormId>worm-id</WormId><State>Locked</State><RetentionPeriodInDays>210</RetentionPeriodInDays><CreationDate>${now}</CreationDate></WormConfiguration>`,
+          versioning:
             '<VersioningConfiguration xmlns="http://doc.oss-cn-hangzhou.aliyuncs.com"></VersioningConfiguration>'
-          )
         };
+        const data = Buffer.from(bodies[subres]);
+        return { ...res({}, data), data };
       },
       head: async (actualKey) => {
         calls.push(["head", actualKey]);
@@ -98,12 +110,15 @@ function fixture() {
         calls.push(["get", actualKey]);
         const bytes = objects.get(actualKey);
         return {
-          ...res({
-            "content-length": String(bytes.length),
-            etag: '"etag-one"',
-            "last-modified": "Thu, 01 Oct 2026 00:00:00 GMT",
-            "x-oss-server-side-encryption": "AES256"
-          }),
+          ...res(
+            {
+              "content-length": String(bytes.length),
+              etag: '"etag-one"',
+              "last-modified": "Thu, 01 Oct 2026 00:00:00 GMT",
+              "x-oss-server-side-encryption": "AES256"
+            },
+            state.corrupt ? Buffer.from("wrong") : Buffer.from(bytes)
+          ),
           content: state.corrupt ? Buffer.from("wrong") : Buffer.from(bytes)
         };
       }
@@ -114,7 +129,21 @@ function fixture() {
     calls,
     clients,
     objects,
-    dependencies: { createOssClient, now: () => new Date(now) }
+    dependencies: {
+      createOssClient,
+      now: () => new Date(now),
+      createStsClient: (options) => ({
+        callApi: async () => ({
+          statusCode: 200,
+          body: {
+            AccountId: owner,
+            Arn: options.accessKeyId === "STS.writer" ? writerArn : readerArn,
+            IdentityType: "AssumedRoleUser",
+            RequestId: "identity-request"
+          }
+        })
+      })
+    }
   };
 }
 
@@ -125,7 +154,8 @@ test("publisher uses only fixed slot, freezes bytes, and reader independently ve
     f.dependencies
   );
   assert.equal(f.clients.length, 1);
-  assert.deepEqual(Object.keys(publisher), ["createOnly"]);
+  assert.deepEqual(Object.keys(publisher), ["identityOriginal", "createOnly"]);
+  assert.equal(publisher.identityOriginal.Arn, writerArn);
   const bytes = Buffer.from("PGDMP archive bytes");
   const expected = digest(bytes);
   const pending = publisher.createOnly({ key, bytes, contentDigest: expected });
@@ -187,7 +217,13 @@ test("publisher uses only fixed slot, freezes bytes, and reader independently ve
     f.dependencies
   );
   assert.equal(f.clients.length, 2);
-  assert.deepEqual(Object.keys(reader), ["readPublicJson", "readback"]);
+  assert.deepEqual(Object.keys(reader), [
+    "identityOriginal",
+    "readPublicJson",
+    "readback",
+    "readbackOriginals"
+  ]);
+  assert.equal(reader.identityOriginal.Arn, readerArn);
   const readback = await reader.readback({
     key,
     contentDigest: expected,
@@ -198,6 +234,23 @@ test("publisher uses only fixed slot, freezes bytes, and reader independently ve
   assert.equal(readback.bucket.worm.state, "Locked");
   assert.equal(readback.bucket.versioning, "Disabled");
   assert.equal(readback.head.version, "null-version-disabled");
+  const originalReadback = await reader.readbackOriginals({
+    key,
+    contentDigest: expected,
+    sizeBytes: f.objects.get(key).length
+  });
+  assert.deepEqual(originalReadback.readerIdentityOriginal, reader.identityOriginal);
+  assert.equal(originalReadback.expectedWriterArn, writerArn);
+  assert.equal(originalReadback.evidence.records.get.principal, readerArn);
+  assert.equal(originalReadback.evidence.originals.length, 11);
+  await assert.rejects(
+    reader.readbackOriginals({
+      key: jsonKey,
+      contentDigest: digest(metadata),
+      sizeBytes: metadata.length
+    }),
+    { code: "SNAPSHOT_OSS_INPUT_INVALID" }
+  );
   const document = await reader.readPublicJson({ key: jsonKey });
   assert.deepEqual(document.bytes, metadata);
   assert.equal(document.observation.get.digest, digest(metadata));

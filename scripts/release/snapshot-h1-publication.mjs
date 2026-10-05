@@ -149,6 +149,17 @@ export function prepareH1SnapshotObjects({
   };
 }
 
+function verifyIdentityOriginal(value, arn) {
+  assertKernelFrame(value, ["AccountId", "Arn", "IdentityType", "RequestId"], CODE);
+  requireThat(
+    value.AccountId === "1457643390906675" &&
+      value.Arn === arn.replace(":role/", ":assumed-role/") &&
+      value.IdentityType === "AssumedRoleUser" &&
+      typeof value.RequestId === "string" &&
+      /^[A-Za-z0-9-]{1,256}$/.test(value.RequestId)
+  );
+}
+
 function verifyPutObservation(item, publication) {
   const capture = item.putObservation;
   assertKernelFrame(capture, ["record", "bodyBase64"], CODE);
@@ -222,6 +233,7 @@ export function verifyH1SnapshotPublication({ bytes, expected, signer }) {
         "sourceSha",
         "dispatchAuthorizationDigest",
         "writerArn",
+        "writerIdentityOriginal",
         "writerIssuedAt",
         "writerExpiresAt",
         "cryptoExitedAt",
@@ -231,6 +243,7 @@ export function verifyH1SnapshotPublication({ bytes, expected, signer }) {
       CODE
     );
     signature("h1-snapshot-publication.v1", value, sealed.signature, signer);
+    verifyIdentityOriginal(value.writerIdentityOriginal, value.writerArn);
     requireThat(
       Object.entries(expected).every(([key, expectedValue]) => value[key] === expectedValue) &&
         /^acs:ram::1457643390906675:(?:assumed-role|role)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.test(
@@ -288,6 +301,7 @@ export async function readH1SnapshotPublication({ reader, expected, signer }) {
   expectedIdentity(expected);
   const prefix = `snapshot-slots/v2/${expected.releaseAttemptId}/${expected.snapshotRunId}/`;
   const marker = await reader.readPublicJson({ key: prefix + "diagnostics.redacted.json" });
+  verifyIdentityOriginal(reader.identityOriginal, marker.observation.readerArn);
   const publication = verifyH1SnapshotPublication({ bytes: marker.bytes, expected, signer });
   requireThat(
     publication.writerArn.replace(":role/", ":assumed-role/") ===
@@ -333,9 +347,102 @@ export async function readH1SnapshotPublication({ reader, expected, signer }) {
       publication,
       data: verified.result,
       proof: verified.sealed,
+      readerIdentityOriginal: reader.identityOriginal,
       observations,
       observedAt: new Date().toISOString()
     },
+    CODE
+  );
+}
+
+// Captures R3 storage originals. The caller must perform this again AFTER the
+// independently observed workflow terminal. This function grants no terminal
+// status and cannot turn a provisional custody receipt into a final receipt.
+export async function readH1SnapshotStorageOriginals({
+  reader,
+  publicationBytes,
+  expected,
+  signer
+}) {
+  const publication = verifyH1SnapshotPublication({ bytes: publicationBytes, expected, signer });
+  const object = publication.objects[0];
+  const observation = await reader.readbackOriginals({
+    key: object.key,
+    contentDigest: object.digest,
+    sizeBytes: object.sizeBytes
+  });
+  verifyIdentityOriginal(observation.readerIdentityOriginal, observation.readerArn);
+  requireThat(
+    publication.writerIdentityOriginal.Arn === observation.expectedWriterArn &&
+      observation.readerArn !== observation.expectedWriterArn &&
+      observation.head.etag === object.etag &&
+      observation.get.etag === object.etag &&
+      [observation.head, observation.get].every(
+        (value) =>
+          value.key === object.key &&
+          value.digest === object.digest &&
+          value.sizeBytes === object.sizeBytes
+      )
+  );
+  const originals = new Map();
+  const retain = (bytes) => {
+    requireThat(Buffer.isBuffer(bytes) && bytes.length <= 1048576);
+    const digest = sha256Bytes(bytes);
+    originals.set(digest, { digest, bytesBase64: bytes.toString("base64") });
+    return { digest, bytes: bytes.length };
+  };
+  for (const original of observation.evidence.originals) {
+    assertKernelFrame(original, ["digest", "bytesBase64"], CODE);
+    const bytes = Buffer.from(original.bytesBase64, "base64");
+    requireThat(
+      bytes.toString("base64") === original.bytesBase64 && sha256Bytes(bytes) === original.digest
+    );
+    retain(bytes);
+  }
+  const json = (value) => retain(Buffer.from(canonicalJson(value)));
+  const storageReadback = {
+    recordVersion: "r3-snapshot-storage-readback.v1",
+    bucket: object.putObservation.record.bucket,
+    objectKey: object.key,
+    writerIdentity: publication.writerIdentityOriginal.Arn,
+    readerIdentity: observation.readerArn,
+    writerIdentityOriginal: json(publication.writerIdentityOriginal),
+    readerIdentityOriginal: json(observation.readerIdentityOriginal),
+    conditionalCreate: json(object.putObservation.record)
+  };
+  retain(Buffer.from(object.putObservation.bodyBase64, "base64"));
+  const operations = {
+    head: "HeadObject",
+    get: "GetObject",
+    bucketAcl: "GetBucketAcl",
+    objectAcl: "GetObjectAcl",
+    versioning: "GetBucketVersioning",
+    worm: "GetBucketWorm"
+  };
+  assertKernelFrame(observation.evidence.records, Object.keys(operations), CODE);
+  for (const [name, operation] of Object.entries(operations)) {
+    const record = observation.evidence.records[name];
+    requireThat(
+      record.operation === operation &&
+        record.bucket === storageReadback.bucket &&
+        record.principal === storageReadback.readerIdentity &&
+        record.objectKey === (["head", "get", "objectAcl"].includes(name) ? object.key : null)
+    );
+    // The ciphertext reference is intentionally excluded from declaration originals.
+    if (name !== "get") {
+      const body = originals.get(record.response.body.digest);
+      requireThat(
+        body && Buffer.from(body.bytesBase64, "base64").length === record.response.body.bytes
+      );
+    } else
+      requireThat(
+        record.response.body.digest === object.digest &&
+          record.response.body.bytes === object.sizeBytes
+      );
+    storageReadback[name] = json(record);
+  }
+  return snapshotKernelData(
+    { storageReadback, originals: [...originals.values()], observation },
     CODE
   );
 }

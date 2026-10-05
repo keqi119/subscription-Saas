@@ -44,6 +44,14 @@ async function installed(name, digest) {
 }
 
 export function createH1GitHubReader(input) {
+  return createReader(input, false);
+}
+
+export function createH1GitHubTerminalReader(input) {
+  return createReader(input, true);
+}
+
+function createReader(input, terminal) {
   assertKernelFrame(input, ["jwtSupplier", "installation"], CODE);
   const { jwtSupplier, installation } = snapshotKernelData(input, CODE, true);
   assertKernelFrame(installation, FILES, CODE);
@@ -67,7 +75,9 @@ export function createH1GitHubReader(input) {
           jwt.length <= 4096 &&
           /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(jwt)
       );
-      packet = Buffer.from(JSON.stringify({ jwt, selection: captured }));
+      packet = Buffer.from(
+        JSON.stringify({ jwt, selection: captured, ...(terminal ? { operation: "terminal" } : {}) })
+      );
     }
     requireThat(packet.length <= 32768);
     try {
@@ -95,8 +105,12 @@ export function createH1GitHubReader(input) {
         requireThat(buffer.toString("base64") === value && buffer.length <= 1048576);
         return buffer;
       };
-      result.workflowBytes = decode(result.workflowBytes);
-      result.artifact.bytes = decode(result.artifact.bytes);
+      if (terminal) {
+        assertKernelFrame(result, ["selection", "run", "jobs", "observedAt"], CODE);
+      } else {
+        result.workflowBytes = decode(result.workflowBytes);
+        result.artifact.bytes = decode(result.artifact.bytes);
+      }
       return snapshotKernelData(result, CODE);
     } catch {
       fail();

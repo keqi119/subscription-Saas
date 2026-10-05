@@ -168,6 +168,10 @@ async function buildFixedRuntime(repoRoot, control) {
       ...manifest.dependencies,
       ...manifest.optionalDependencies
     })) {
+      // OpenAPI's generated SDK declares several versions of Node compiler
+      // types as dependencies. This JS-only bundle already excludes .ts files;
+      // those type packages (and their undici-types closure) have no runtime code.
+      if (control && name === "@types/node") continue;
       let cursor = packageRoot;
       let found;
       while (within(cursor)) {
@@ -208,7 +212,9 @@ async function buildFixedRuntime(repoRoot, control) {
   }
   await tree(await rootDirectory("release/contracts/schemas"), "release/contracts/schemas");
   for (const name of [
-    ...(control ? ["apps/api/node_modules/ali-oss"] : ["apps/api/node_modules/pg"]),
+    ...(control
+      ? ["apps/api/node_modules/ali-oss", "apps/api/node_modules/@alicloud/openapi-client"]
+      : ["apps/api/node_modules/pg"]),
     "packages/release-foundation/node_modules/ajv",
     "packages/release-foundation/node_modules/canonicalize"
   ])

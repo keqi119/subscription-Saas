@@ -55,3 +55,21 @@
 4. 将实际 RAM 策略回读摘要写入受保护配置，配置 H1 authority/producer inputs，再执行首次真实 producer、同候选 R2/R3、两项 Staging 迁移及 R4。
 
 预检 `650e5c` Prisma validate 通过；`cc34d6` 实际 Staging 128 项迁移仍只有 `20260925090000_stage1_operational_completion_terminal_shape` 和 `20260925091000_stage1_operational_completion_settlement_guard` 待执行，专用隧道已关闭。本轮未新增 RAM/AccessKey、解锁主密钥卷、上传 OSS 对象或触发 GitHub 工作流。
+
+## 身份、R3 回读原件与外部终态读取补充
+
+本段 supersedes 上述“无身份原件/无终态读取入口”的实现状态，仍不代表真实 producer 或最终收口已经完成。
+
+- publisher/reader 在创建 OSS 传输前用其实际 STS 调用 GetCallerIdentity，核对账号、assumed-role ARN、身份类型、请求号及会话有效期，仅返回公开身份字段。writer 身份原件纳入 H1 publication 签名，reader 回读时验证对应身份。没有保存或输出 STS 凭据。
+- 固定 `snapshot.enc` 路径新增六项原件采集：GetBucketAcl、GetBucketWorm、GetBucketVersioning、HeadObject、GetObjectAcl、GetObject。保留 SDK 实际响应体、必要响应头及观察时间，验证 XML、私有 ACL、WORM 210 天、版本关闭、AES256、摘要和大小。先验证 HEAD 再下载；GET 密文只保留摘要/字节数引用，不混入声明原件。
+- `readH1SnapshotStorageOriginals` 将经过签名验证的 PUT/身份原件与独立回读装配为既有 `r3-snapshot-storage-readback.v1`，输出可按摘要解析的原件。它不声称工作流已结束，不修改 provisional；最终调用方必须先读取真实终态，再重新读 OSS。
+- 现有 `H1SnapshotGitHub` 增加固定 terminal 查询，通过 attempt-1 run、jobs、当前 run、再次 attempt-1 run，确认同仓库/main/dispatch/SHA/actor、准确三个 job 的成功终态及时间顺序。data runner 标签按既有规则忽略顺序/大小写并拒绝重复。private query pipe 与 JS reader 已接线；只在 GitHub token 撤销成功后返回 API 正文，不消费 route nonce。
+- 控制包加入现有 OpenAPI SDK。初次构建 `d811b6` 因 SDK 的多版本 `@types/node` 编译期依赖发生冲突；排除 JS 运行包不使用的该类型包后构建成功，运行时依赖版本未替换。新模块同时加入 repository contract 清单。
+
+必要验证：`e7b9c1` 先复现错误 HEAD 大小仍触发 GET，修复后 `7e0c65` 的 13 项身份、存储原件、发布衔接及 provisional 边界检查通过；`11b10b` 的两项 H1 原生加密/签名 fixture 检查通过；`4a8e30` 的 GitHub 相关 21 项测试在 H1 Python 3.6.8 通过。上述云调用由替身提供，不是实际发布证据。`301353` 只读查询既有 GitHub run，确认 jobs 的真实字段形状，没有创建或触发 run。定向 lint、format、diff 检查通过；初次 lint 的测试未使用常量已修复。
+
+`434b89` / `162ce0` 安装并回读：control `sha256:9cb795e97fef8d49e05a1dc734ca75893892b8eee988e515e883685e07c230f1`，2,422 文件、11,878,719 字节；adapter `sha256:390d8c4542bbba73ff16fed38e78dacb92b127d8e1b0cdb72dbcf981ec11bf8d`。全部文件摘要、只读属主、SDK 加载及非法 private 请求拒绝通过；主/恢复卷保持关闭，attempt 无运行资源。worker 未改动或重装。`72b902` 合同目录为 316 文件、92 schemas、13 commands、128 migrations，摘要 `sha256:69fa52c0cd5017a49b8beddc7ffe860e2a5c22d6d0afceaefffe182da38ebc52`。
+
+下一步只补既有收口链：从实际 tokenization key 生命周期、凭证清除和固定路径残留检查生成 destruction receipt，复用 publication 实际事实生成 publisher use proof 与 producer completion；随后串接上述真实 terminal 读取和终态后的 OSS 回读，生成最终 custody/R3 声明包。当前尚缺这段装配和采集，不能用 `cleanup:true` 推断全部销毁事实，也不声称物理擦除。完成后再固定候选、实际 build/source-fresh、精确 RAM 差额和首次真实 producer/R2/R3/两项迁移/R4。
+
+本轮预检 `3bd055` Prisma validate 通过；`35b958` 实际 Staging 仍只有上述两项迁移待执行，隧道已关闭。未执行新的 RAM 授权、AccessKey 创建、真实 STS/OSS 读写、JIT、源数据导出、迁移或工作流触发。

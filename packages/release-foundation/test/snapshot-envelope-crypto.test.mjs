@@ -411,6 +411,12 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
   const publication = {
     ...expected,
     writerArn,
+    writerIdentityOriginal: {
+      AccountId: "1457643390906675",
+      Arn: writerArn,
+      IdentityType: "AssumedRoleUser",
+      RequestId: "fixture-request"
+    },
     writerIssuedAt: after,
     writerExpiresAt: new Date(finished + 60000).toISOString(),
     cryptoExitedAt: after,
@@ -460,7 +466,7 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
   const observationFor = (key) => ({
     bucket: { fixture: true },
     expectedWriterArn: writerArn,
-    readerArn: "fixture-independent-reader",
+    readerArn: "acs:ram::1457643390906675:assumed-role/fixture-reader/fixture-session",
     get: {
       digest: digest(stored.get(key)),
       sizeBytes: stored.get(key).length,
@@ -468,6 +474,12 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
     }
   });
   const reader = {
+    identityOriginal: {
+      AccountId: "1457643390906675",
+      Arn: "acs:ram::1457643390906675:assumed-role/fixture-reader/fixture-session",
+      IdentityType: "AssumedRoleUser",
+      RequestId: "fixture-reader-request"
+    },
     readPublicJson: async ({ key }) => ({
       bytes: stored.get(key),
       observation: observationFor(key)

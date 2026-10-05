@@ -32,12 +32,16 @@ function proofTypeOf(parsed) {
   const receipt = parsed?.receipt;
   const looksLikeKnownWrapper =
     (proof?.schemaVersion === "producer-crypto-use-proof.v2" ||
+      proof?.schemaVersion === "publisher-sts-use-proof.v1" ||
       receipt?.schemaVersion === "snapshot-destruction-receipt.v1") &&
     Object.hasOwn(parsed, "signature");
   if (!looksLikeKnownWrapper && parsed?.schemaVersion) return parsed.schemaVersion;
   const snapshotProof =
     exactKeys(parsed, ["proof", "dataResultDigest", "signature"]) &&
     proof?.schemaVersion === "producer-crypto-use-proof.v2";
+  const publisherProof =
+    exactKeys(parsed, ["proof", "signature"]) &&
+    proof?.schemaVersion === "publisher-sts-use-proof.v1";
   const destructionProof =
     exactKeys(parsed, [
       "receipt",
@@ -47,11 +51,18 @@ function proofTypeOf(parsed) {
       "publisherTerminalDigest",
       "signature"
     ]) && receipt?.schemaVersion === "snapshot-destruction-receipt.v1";
-  if (!snapshotProof && !destructionProof) return null;
+  if (!snapshotProof && !publisherProof && !destructionProof) return null;
   const digest = /^sha256:[0-9a-f]{64}$/u;
-  const names = snapshotProof
-    ? ["dataResultDigest"]
-    : ["dataResultDigest", "cryptoUseProofDigest", "publicationDigest", "publisherTerminalDigest"];
+  const names = publisherProof
+    ? []
+    : snapshotProof
+      ? ["dataResultDigest"]
+      : [
+          "dataResultDigest",
+          "cryptoUseProofDigest",
+          "publicationDigest",
+          "publisherTerminalDigest"
+        ];
   if (!names.every((name) => digest.test(parsed[name]))) return null;
   const signed = parsed.signature;
   const subject = { ...parsed };
@@ -69,7 +80,7 @@ function proofTypeOf(parsed) {
     Buffer.from(signed.signature, "base64").length !== 64
   )
     return null;
-  return snapshotProof ? proof.schemaVersion : receipt.schemaVersion;
+  return snapshotProof || publisherProof ? proof.schemaVersion : receipt.schemaVersion;
 }
 
 export function assertEvidenceArchiveOriginal(object, rawBytes) {

@@ -389,7 +389,9 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
     prepareH1SnapshotObjects,
     readH1SnapshotPublication,
     buildH1SnapshotDestructionSubject,
-    verifyH1SnapshotDestruction
+    verifyH1SnapshotDestruction,
+    buildH1SnapshotPublisherUseSubject,
+    verifyH1SnapshotPublisherUse
   } = await import("../../../scripts/release/snapshot-h1-publication.mjs");
   const { assertSnapshotPublicationObject } =
     await import("../../../scripts/release/snapshot-oss-storage.mjs");
@@ -450,13 +452,14 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
       snapshotRunId: expected.snapshotRunId,
       ...object
     });
-  const writerArn = `acs:ram::1457643390906675:assumed-role/subscription-saas-stage1-snapshot-publisher/stage1-publisher-${expected.snapshotRunId}-attempt-1`;
+  const writerArn = `acs:ram::1457643390906675:role/subscription-saas-stage1-snapshot-publisher/stage1-publisher-${expected.snapshotRunId}-attempt-1`;
+  const assumedWriterArn = writerArn.replace(":role/", ":assumed-role/");
   const publication = {
     ...expected,
     writerArn,
     writerIdentityOriginal: {
       AccountId: "1457643390906675",
-      Arn: writerArn,
+      Arn: assumedWriterArn,
       IdentityType: "AssumedRoleUser",
       RequestId: "fixture-request"
     },
@@ -476,7 +479,7 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
           operation: "PutObject",
           bucket: "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai",
           objectKey: x.key,
-          principal: writerArn,
+          principal: assumedWriterArn,
           observedAt: after,
           requestHeaders: { "x-oss-forbid-overwrite": "true" },
           response: {
@@ -552,6 +555,39 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
     verifyH1SnapshotDestruction({ ...destructionInput, destructionBytes }),
     destructionSubject
   );
+  const publisherUseSubject = buildH1SnapshotPublisherUseSubject(destructionInput);
+  assert.equal(publisherUseSubject.proof.writer.arn, assumedWriterArn);
+  assert.equal(publisherUseSubject.proof.session.state, "EXPIRED");
+  assert.equal(publisherUseSubject.proof.objects.length, 5);
+  assert.equal(
+    publisherUseSubject.proof.publisherTerminalDigest,
+    digest(destructionInput.terminalBytes)
+  );
+  const publisherUseBytes = Buffer.from(
+    canonicalJson({
+      ...publisherUseSubject,
+      signature: signature("h1-snapshot-publisher-use.v1", publisherUseSubject)
+    })
+  );
+  assert.deepEqual(
+    verifyH1SnapshotPublisherUse({ ...destructionInput, publisherUseBytes }),
+    publisherUseSubject
+  );
+  const wrongPublisherUseSubject = structuredClone(publisherUseSubject);
+  wrongPublisherUseSubject.proof.publisherTerminalDigest = fixtureDigest;
+  assert.throws(
+    () =>
+      verifyH1SnapshotPublisherUse({
+        ...destructionInput,
+        publisherUseBytes: Buffer.from(
+          canonicalJson({
+            ...wrongPublisherUseSubject,
+            signature: signature("h1-snapshot-publisher-use.v1", wrongPublisherUseSubject)
+          })
+        )
+      }),
+    { code: "H1_SNAPSHOT_PUBLICATION_REJECTED" }
+  );
   for (const change of [
     (x) => {
       x.publisherSession.absent = false;
@@ -573,12 +609,21 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
         }),
       { code: "H1_SNAPSHOT_PUBLICATION_REJECTED" }
     );
+    assert.throws(
+      () =>
+        verifyH1SnapshotPublisherUse({
+          ...destructionInput,
+          terminalBytes: Buffer.from(canonicalJson(invalid)),
+          publisherUseBytes
+        }),
+      { code: "H1_SNAPSHOT_PUBLICATION_REJECTED" }
+    );
   }
   const stored = new Map(prepared.objects.map((x) => [x.key, x.bytes]));
   stored.set(markerKey, markerBytes);
   const observationFor = (key) => ({
     bucket: { fixture: true },
-    expectedWriterArn: writerArn,
+    expectedWriterArn: assumedWriterArn,
     readerArn: "acs:ram::1457643390906675:assumed-role/fixture-reader/fixture-session",
     get: {
       digest: digest(stored.get(key)),

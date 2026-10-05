@@ -41,7 +41,7 @@ ENTRIES = ('snapshot-h1-container-hook.js', 'snapshot-h1-job-client.mjs',
            'snapshot-h1-runner-entry.mjs')
 READ_ONLY = {'snapshot-h1-volume.py', 'snapshot-h1-runner.py',
              'snapshot-h1-producer.py', 'snapshot-h1-runner-entry.mjs'}
-WORKER = 'sha256:4f2ced908d88ea64a59e14baa259f9c5b811c616bef55227a1f1529fe1594848'
+WORKER = 'sha256:3cccfc7484628e3e8ae7564983ae52db17c539138bfa519728d35323a8c8ec8d'
 
 
 def require(value, code):
@@ -624,9 +624,13 @@ class H1SnapshotPublisher:
         # Separate signing only: never invoke the terminated publisher again.
         _safe_root_directory(OUTPUT, 0o700)
         _safe_root_directory(self.spool, 0o700)
-        sealed = self._authority('seal-destruction', {
+        terminal = self._authority('seal-destruction', {
             'releaseAttemptId': self.request['releaseAttemptId'],
             'snapshotRunId': self.request['snapshotRunId']})
+        require(type(terminal) is dict and set(terminal) == {
+            'destructionProof', 'publisherUseProof'}, 'DESTRUCTION_RESULT_INVALID')
+        sealed = terminal['destructionProof']
+        use = terminal['publisherUseProof']
         require(type(sealed) is dict and set(sealed) == {
             'receipt', 'signature', 'dataResultDigest', 'cryptoUseProofDigest',
             'publicationDigest', 'publisherTerminalDigest'} and
@@ -634,11 +638,21 @@ class H1SnapshotPublisher:
             sealed['receipt'].get('releaseAttemptId') == self.request['releaseAttemptId'] and
             sealed['receipt'].get('snapshotRunId') == self.request['snapshotRunId'],
             'DESTRUCTION_RESULT_INVALID')
+        require(type(use) is dict and set(use) == {'proof', 'signature'} and
+            type(use['proof']) is dict and
+            use['proof'].get('releaseAttemptId') == self.request['releaseAttemptId'] and
+            use['proof'].get('snapshotRunId') == self.request['snapshotRunId'] and
+            all(use['proof'].get(name) == sealed[name] for name in (
+                'dataResultDigest', 'cryptoUseProofDigest', 'publicationDigest',
+                'publisherTerminalDigest')), 'DESTRUCTION_RESULT_INVALID')
         proof_digest = self._write_record('snapshot-destruction-proof.json', sealed)
+        publisher_digest = self._write_record('publisher-use-proof.json', use)
         receipt_digest = self._write_record('snapshot-destruction-receipt.json', sealed['receipt'])
         return {'status': 'DESTRUCTION_SEALED', 'releaseAttemptId': self.request['releaseAttemptId'],
                 'snapshotRunId': self.request['snapshotRunId'],
-                'proofDigest': proof_digest, 'receiptDigest': receipt_digest}
+                'proofDigest': proof_digest, 'publisherUseArchiveDigest': publisher_digest,
+                'publisherUseProofDigest': digest(canonical(use['proof'])),
+                'receiptDigest': receipt_digest}
 
     def _run_locked(self):
         published = None

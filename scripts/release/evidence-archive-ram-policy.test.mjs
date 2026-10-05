@@ -134,7 +134,7 @@ test("rejects altered originals, scope expansion, and accessor inputs", () => {
   assert.throws(() => buildEvidenceArchiveRamPolicy(future));
 });
 
-test("accepts only the two signed H1 wrapper shapes under their embedded proof types", () => {
+test("accepts only the three signed H1 wrapper shapes under their embedded proof types", () => {
   const signature = (subject) => ({
     algorithm: "Ed25519",
     issuer: "h1-root",
@@ -144,6 +144,7 @@ test("accepts only the two signed H1 wrapper shapes under their embedded proof t
   });
   for (const [proofType, field, extra] of [
     ["producer-crypto-use-proof.v2", "proof", { dataResultDigest: digest("2") }],
+    ["publisher-sts-use-proof.v1", "proof", {}],
     [
       "snapshot-destruction-receipt.v1",
       "receipt",

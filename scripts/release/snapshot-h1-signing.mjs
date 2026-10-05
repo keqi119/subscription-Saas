@@ -31,7 +31,9 @@ import {
   prepareH1SnapshotObjects,
   verifyH1SnapshotPublication,
   buildH1SnapshotDestructionSubject,
-  verifyH1SnapshotDestruction
+  verifyH1SnapshotDestruction,
+  buildH1SnapshotPublisherUseSubject,
+  verifyH1SnapshotPublisherUse
 } from "./snapshot-h1-publication.mjs";
 import {
   assertSnapshotPublicationObject,
@@ -516,7 +518,7 @@ function requireAbsent(file) {
 
 // A new root signing operation after the publisher has terminated. It cannot
 // publish, receive credentials, select a payload, or attest its own storage.
-export async function sealH1SnapshotDestructionProof(...args) {
+export async function sealH1SnapshotTerminalProofs(...args) {
   requireThat(args.length === 0);
   const trusted = await admittedIdentity();
   const production = await readH1SnapshotProductionInputs(),
@@ -534,7 +536,9 @@ export async function sealH1SnapshotDestructionProof(...args) {
     "snapshot-destruction-receipt.json",
     "snapshot-destruction-receipt.json.pending",
     "snapshot-destruction-proof.json",
-    "snapshot-destruction-proof.json.pending"
+    "snapshot-destruction-proof.json.pending",
+    "publisher-use-proof.json",
+    "publisher-use-proof.json.pending"
   ])
     requireAbsent(`${directory}/${name}`);
   requireAbsent(`${AUTHORITY}/publisher-session.json`);
@@ -562,23 +566,30 @@ export async function sealH1SnapshotDestructionProof(...args) {
     issuedAt: new Date().toISOString()
   };
   requireThat(same(JSON.parse(input.dataResultBytes.toString("utf8")).cryptoAuthorization, auth));
-  const subject = buildH1SnapshotDestructionSubject(input);
-  const sealed = {
+  const destructionSubject = buildH1SnapshotDestructionSubject(input);
+  const publisherSubject = buildH1SnapshotPublisherUseSubject(input);
+  const key = readSigningKey(trusted);
+  const seal = (domain, subject) => ({
     ...subject,
     signature: {
       algorithm: "Ed25519",
       issuer: trusted.signer.issuer,
       keyId: trusted.signer.keyId,
       subjectDigest: sha256Canonical(subject),
-      signature: sign(
-        null,
-        Buffer.from(canonicalJson({ domain: "h1-snapshot-destruction.v1", subject })),
-        readSigningKey(trusted)
-      ).toString("base64")
+      signature: sign(null, Buffer.from(canonicalJson({ domain, subject })), key).toString("base64")
     }
-  };
-  verifyH1SnapshotDestruction({ ...input, destructionBytes: Buffer.from(canonicalJson(sealed)) });
-  return snapshotKernelData(sealed, CODE);
+  });
+  const destructionProof = seal("h1-snapshot-destruction.v1", destructionSubject);
+  const publisherUseProof = seal("h1-snapshot-publisher-use.v1", publisherSubject);
+  verifyH1SnapshotDestruction({
+    ...input,
+    destructionBytes: Buffer.from(canonicalJson(destructionProof))
+  });
+  verifyH1SnapshotPublisherUse({
+    ...input,
+    publisherUseBytes: Buffer.from(canonicalJson(publisherUseProof))
+  });
+  return snapshotKernelData({ destructionProof, publisherUseProof }, CODE);
 }
 
 // The approved controller invokes this separate fixed operation only after

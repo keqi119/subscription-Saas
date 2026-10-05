@@ -4,6 +4,7 @@ import { createPublicKey, verify } from "node:crypto";
 import { TextDecoder } from "node:util";
 import { canonicalJson } from "../../packages/release-foundation/src/canonical-json.mjs";
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
+import { validateContract } from "../../packages/release-foundation/src/schema-registry.mjs";
 import {
   assertKernelFrame,
   snapshotKernelData
@@ -350,6 +351,71 @@ export function verifyH1SnapshotDestruction(input) {
     const rebuilt = buildH1SnapshotDestructionSubject({
       ...input,
       issuedAt: value.receipt.issuedAt
+    });
+    requireThat(same(rebuilt, subject));
+    return snapshotKernelData(subject, CODE);
+  } catch {
+    fail();
+  }
+}
+
+export function buildH1SnapshotPublisherUseSubject(input) {
+  try {
+    const destruction = buildH1SnapshotDestructionSubject(input);
+    const publication = readPublicSnapshotJson(input.publicationBytes).publication;
+    const terminal = readPublicSnapshotJson(input.terminalBytes);
+    const proof = {
+      schemaVersion: "publisher-sts-use-proof.v1",
+      releaseAttemptId: input.expected.releaseAttemptId,
+      snapshotRunId: input.expected.snapshotRunId,
+      dataResultDigest: destruction.dataResultDigest,
+      cryptoUseProofDigest: destruction.cryptoUseProofDigest,
+      publicationDigest: destruction.publicationDigest,
+      publisherTerminalDigest: destruction.publisherTerminalDigest,
+      writer: {
+        arn: publication.writerArn.replace(":role/", ":assumed-role/"),
+        issuedAt: publication.writerIssuedAt,
+        expiresAt: publication.writerExpiresAt
+      },
+      objects: terminal.objects.map(({ key, digest, sizeBytes, requestId, etag }) => ({
+        key,
+        digest,
+        sizeBytes,
+        requestId,
+        etag
+      })),
+      process: {
+        startedAt: terminal.authority.startedAt,
+        finishedAt: terminal.authority.finishedAt,
+        exited: true,
+        exitCode: 0
+      },
+      session: {
+        state: "EXPIRED",
+        removedAt: terminal.publisherSession.removedAt,
+        absent: true,
+        observedAt: terminal.publisherSession.observedAt
+      },
+      issuer: input.signer.issuer,
+      issuedAt: input.issuedAt
+    };
+    validateContract("publisher-sts-use-proof.v1", proof);
+    return snapshotKernelData({ proof }, CODE);
+  } catch {
+    fail();
+  }
+}
+
+export function verifyH1SnapshotPublisherUse(input) {
+  try {
+    const value = readPublicSnapshotJson(input.publisherUseBytes);
+    assertKernelFrame(value, ["proof", "signature"], CODE);
+    const subject = { proof: value.proof };
+    signature("h1-snapshot-publisher-use.v1", subject, value.signature, input.signer);
+    validateContract("publisher-sts-use-proof.v1", value.proof);
+    const rebuilt = buildH1SnapshotPublisherUseSubject({
+      ...input,
+      issuedAt: value.proof.issuedAt
     });
     requireThat(same(rebuilt, subject));
     return snapshotKernelData(subject, CODE);

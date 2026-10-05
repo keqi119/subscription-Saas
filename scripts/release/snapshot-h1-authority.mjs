@@ -18,7 +18,7 @@ import { createH1GitHubJwtSupplier } from "./snapshot-h1-github-jwt.mjs";
 import {
   readH1SnapshotProductionInputs,
   sealH1SnapshotDataProof,
-  sealH1SnapshotDestructionProof,
+  sealH1SnapshotTerminalProofs,
   publishH1SnapshotData
 } from "./snapshot-h1-signing.mjs";
 
@@ -95,10 +95,12 @@ export async function runH1AttemptAuthority(input) {
           production.authorization.snapshotRunId === request.snapshotRunId
       );
       if (operation === "seal-destruction") {
-        const sealed = await sealH1SnapshotDestructionProof();
+        const sealed = await sealH1SnapshotTerminalProofs();
         requireThat(
-          sealed.receipt.releaseAttemptId === request.releaseAttemptId &&
-            sealed.receipt.snapshotRunId === request.snapshotRunId &&
+          sealed.destructionProof.receipt.releaseAttemptId === request.releaseAttemptId &&
+            sealed.destructionProof.receipt.snapshotRunId === request.snapshotRunId &&
+            sealed.publisherUseProof.proof.releaseAttemptId === request.releaseAttemptId &&
+            sealed.publisherUseProof.proof.snapshotRunId === request.snapshotRunId &&
             Date.now() < Date.parse(verified.notAfter)
         );
         return sealed;

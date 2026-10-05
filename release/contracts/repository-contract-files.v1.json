@@ -183,6 +183,7 @@
     "release/contracts/schemas/producer-crypto-use-proof.v1.schema.json",
     "release/contracts/schemas/producer-crypto-use-proof.v2.schema.json",
     "release/contracts/schemas/producer-terminal-observation.v1.schema.json",
+    "release/contracts/schemas/publisher-sts-use-proof.v1.schema.json",
     "release/contracts/schemas/r3-final-migration-input.v1.schema.json",
     "release/contracts/schemas/rc-dispatch-authorization.v1.schema.json",
     "release/contracts/schemas/release-aggregate-proof.v1.schema.json",

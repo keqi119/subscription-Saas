@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "publisher-sts-use-proof.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseAttemptId",
+    "snapshotRunId",
+    "dataResultDigest",
+    "cryptoUseProofDigest",
+    "publicationDigest",
+    "publisherTerminalDigest",
+    "writer",
+    "objects",
+    "process",
+    "session",
+    "issuer",
+    "issuedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "publisher-sts-use-proof.v1" },
+    "releaseAttemptId": { "$ref": "#/$defs/attemptId" },
+    "snapshotRunId": { "$ref": "#/$defs/runId" },
+    "dataResultDigest": { "$ref": "#/$defs/digest" },
+    "cryptoUseProofDigest": { "$ref": "#/$defs/digest" },
+    "publicationDigest": { "$ref": "#/$defs/digest" },
+    "publisherTerminalDigest": { "$ref": "#/$defs/digest" },
+    "writer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["arn", "issuedAt", "expiresAt"],
+      "properties": {
+        "arn": {
+          "type": "string",
+          "pattern": "^acs:ram::1457643390906675:assumed-role/subscription-saas-stage1-snapshot-publisher/stage1-publisher-[1-9][0-9]*-attempt-1$"
+        },
+        "issuedAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "digest", "sizeBytes", "requestId", "etag"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^snapshot-slots/v2/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/[1-9][0-9]*/(snapshot\\.enc|encryption-envelope\\.json|snapshot-proof\\.json|data-result\\.json|diagnostics\\.redacted\\.json)$"
+          },
+          "digest": { "$ref": "#/$defs/digest" },
+          "sizeBytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
+          "requestId": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "etag": { "type": "string", "minLength": 1, "maxLength": 2048 }
+        }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startedAt", "finishedAt", "exited", "exitCode"],
+      "properties": {
+        "startedAt": { "$ref": "#/$defs/timestamp" },
+        "finishedAt": { "$ref": "#/$defs/timestamp" },
+        "exited": { "const": true },
+        "exitCode": { "const": 0 }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "removedAt", "absent", "observedAt"],
+      "properties": {
+        "state": { "const": "EXPIRED" },
+        "removedAt": { "$ref": "#/$defs/timestamp" },
+        "absent": { "const": true },
+        "observedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "issuer": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "issuedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "attemptId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "rfc3339Finite": true }
+  }
+}

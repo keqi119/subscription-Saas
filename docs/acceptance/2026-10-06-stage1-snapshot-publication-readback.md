@@ -109,3 +109,13 @@ producer 在实际移除 worker/target 容器、复核固定源库 reader 为禁
 实际安装：`bf22c7` worker 为 `sha256:4f2ced908d88ea64a59e14baa259f9c5b811c616bef55227a1f1529fe1594848`（402 文件，1,435,221 字节）；`3ad6bb` control 为 `sha256:2f4507311e80f9eb7887a5d6b25b28f9e28f4f25bf22692e8175923f0c470b47`（2,425 文件，11,933,592 字节）；`1dc155` adapter 为 `sha256:4414a3c887f8db1a433e7e2222b8928bfd82d6c91157833b53896226c745327b`。全部文件、root 只读属性、SDK/入口加载及非法输入拒绝均回读通过，`2b0766` 已安装 producer 的 bundle verifier 通过。`630833` 最终合同摘要为 `sha256:cc26cd893eae056cc1b84792ff4ce5624dddb6abba95d8b674b2a0938976b466`，317 文件、92 schemas、13 commands、128 migrations。
 
 预检 `648a4f` Prisma validate 通过，`0631a4` 实际 Staging 仍仅前述两项迁移待执行，隧道已关闭。本段未新增 RAM/AccessKey、解锁主密钥卷、真实 STS/OSS 调用、JIT、源数据导出、迁移或工作流。仍需 publisher-use 证明、固定归档作业及独立终态/保管装配，再固定候选并执行真实 R2/R3、迁移和 R4；阶段 1 未完成。
+
+## Publisher-use 证明接入
+
+后续补齐已批准的 `publisher-sts-use-proof.v1`。构造器复用上述完整销毁事实核验，导出精确五对象回执、发布进程退出和 STS 到期观察；独立签名域为 `h1-snapshot-publisher-use.v1`。根入口在同一次终态 seal 中分别签署销毁与 publisher-use 两份证明，不重新运行 publisher。Python 分别 create-only 保存两个签名原件和裸销毁回执，任一步失败不报告完成。返回的 publisher-use 正文摘要供 completion 引用，签名原件摘要供归档使用，二者明确区分。
+
+schema 限定既有对象大小上限 1 GiB；实际 STS 的 `role/` ARN 在新证明中规范化为 `assumed-role/`，保留已签 publication 原件。归档解析器只增加这一种准确的签名封套，不增加泛化类型。原生 fixture 覆盖 raw role ARN、签名成功、即使重签的错误来源摘要及更改 terminal 均拒绝。限定验证：`ca022b`、`cb70e8` 分别确认 Python 旧返回协议和归档旧封套拒绝；接线后 `5d7727` 的 H1 27 项及归档 4 项通过，`a826a1` 两项原生 fixture 通过，`b31d28` authority 2 项和定向 lint 通过。Sol medium 的独立规格与质量审查均通过，未重复测试。
+
+最终安装回读：`a086f0` worker `sha256:3cccfc7484628e3e8ae7564983ae52db17c539138bfa519728d35323a8c8ec8d`（403 文件，1,438,635 字节）；`ce3fb6` control `sha256:e7db7dd67dbc98ee6107537f1a196f2a75bb3bd301b8cd4c1bd6d08d5f422fc9`（2,426 文件，11,940,425 字节）；`af7471` adapter `sha256:f959d48745eab5d56766b6758f3b0efb7e3addaac574e3cfa41f95b61e744875`。全部摘要和入口加载核验通过，已安装 producer 的 bundle verifier 通过；主/恢复卷关闭，无实际 attempt 资源。`76b172` 格式/diff/合同检查通过，合同摘要 `sha256:e35e97ffccbf9e04ceeaf09b6a93ca26eaa29ea97103ffbba1bc823aa3ceba1e`，318 文件、93 schemas、13 commands、128 migrations，迁移摘要不变。
+
+当前剩余实现集中于固定归档 writer/reader 进程和会话终态、独立保管及 producer completion/最终 R3 装配。随后才能固定候选、申请精确 RAM 对象权限并执行真实 producer、同候选 R2/R3、两项迁移和 R4。上述 fixture、安装及代码审查都不代替真实发布证据。

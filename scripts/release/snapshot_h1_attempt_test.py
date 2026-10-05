@@ -264,15 +264,27 @@ class AttemptTests(unittest.TestCase):
         sealed = {'receipt': {'releaseAttemptId': request['releaseAttemptId'], 'snapshotRunId': '123'},
                   'signature': {}, 'dataResultDigest': 'sha256:'+'a'*64, 'cryptoUseProofDigest': 'sha256:'+'b'*64,
                   'publicationDigest': 'sha256:'+'c'*64, 'publisherTerminalDigest': 'sha256:'+'d'*64}
+        use = {'proof': {'releaseAttemptId': request['releaseAttemptId'], 'snapshotRunId': '123',
+                        'dataResultDigest': sealed['dataResultDigest'],
+                        'cryptoUseProofDigest': sealed['cryptoUseProofDigest'],
+                        'publicationDigest': sealed['publicationDigest'],
+                        'publisherTerminalDigest': sealed['publisherTerminalDigest']}, 'signature': {}}
+        terminal = {'destructionProof': sealed, 'publisherUseProof': use}
         with patch.object(module, '_installation', return_value={'controlBundleDigest': 'sha256:'+'f'*64}), \
              patch.object(module, '_safe_root_directory'), \
-             patch.object(module.H1SnapshotPublisher, '_authority', return_value=sealed) as authority, \
+             patch.object(module.H1SnapshotPublisher, '_authority', return_value=terminal) as authority, \
              patch.object(module.H1SnapshotPublisher, '_write_record', return_value='sha256:'+'e'*64) as write:
             publisher = module.H1SnapshotPublisher(request)
             result = publisher.seal_destruction()
             authority.assert_called_once_with('seal-destruction', {'releaseAttemptId': request['releaseAttemptId'], 'snapshotRunId': '123'})
             self.assertEqual(result['status'], 'DESTRUCTION_SEALED')
-            self.assertEqual([call[0][0] for call in write.call_args_list], ['snapshot-destruction-proof.json', 'snapshot-destruction-receipt.json'])
+            self.assertEqual(result['publisherUseProofDigest'], module.digest(module.canonical(use['proof'])))
+            self.assertEqual(result['publisherUseArchiveDigest'], 'sha256:'+'e'*64)
+            self.assertEqual([call[0][0] for call in write.call_args_list], ['snapshot-destruction-proof.json', 'publisher-use-proof.json', 'snapshot-destruction-receipt.json'])
+            write.reset_mock();use['proof']['publicationDigest']='sha256:'+'f'*64
+            with self.assertRaisesRegex(RuntimeError, 'DESTRUCTION_RESULT_INVALID'):
+                publisher.seal_destruction()
+            write.assert_not_called();use['proof']['publicationDigest']=sealed['publicationDigest']
             write.reset_mock();sealed['receipt']['snapshotRunId']='124'
             with self.assertRaisesRegex(RuntimeError, 'DESTRUCTION_RESULT_INVALID'):
                 publisher.seal_destruction()

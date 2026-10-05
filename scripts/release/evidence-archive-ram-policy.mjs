@@ -17,7 +17,62 @@ const fail = (code = CODE) => {
   throw Object.assign(new Error(code), { code });
 };
 
-function assertRawOriginal(object, rawBytes) {
+function exactKeys(value, keys) {
+  return (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+function proofTypeOf(parsed) {
+  const proof = parsed?.proof;
+  const receipt = parsed?.receipt;
+  const looksLikeKnownWrapper =
+    (proof?.schemaVersion === "producer-crypto-use-proof.v2" ||
+      receipt?.schemaVersion === "snapshot-destruction-receipt.v1") &&
+    Object.hasOwn(parsed, "signature");
+  if (!looksLikeKnownWrapper && parsed?.schemaVersion) return parsed.schemaVersion;
+  const snapshotProof =
+    exactKeys(parsed, ["proof", "dataResultDigest", "signature"]) &&
+    proof?.schemaVersion === "producer-crypto-use-proof.v2";
+  const destructionProof =
+    exactKeys(parsed, [
+      "receipt",
+      "dataResultDigest",
+      "cryptoUseProofDigest",
+      "publicationDigest",
+      "publisherTerminalDigest",
+      "signature"
+    ]) && receipt?.schemaVersion === "snapshot-destruction-receipt.v1";
+  if (!snapshotProof && !destructionProof) return null;
+  const digest = /^sha256:[0-9a-f]{64}$/u;
+  const names = snapshotProof
+    ? ["dataResultDigest"]
+    : ["dataResultDigest", "cryptoUseProofDigest", "publicationDigest", "publisherTerminalDigest"];
+  if (!names.every((name) => digest.test(parsed[name]))) return null;
+  const signed = parsed.signature;
+  const subject = { ...parsed };
+  delete subject.signature;
+  if (
+    !exactKeys(signed, ["algorithm", "issuer", "keyId", "subjectDigest", "signature"]) ||
+    signed.algorithm !== "Ed25519" ||
+    typeof signed.issuer !== "string" ||
+    signed.issuer.length < 1 ||
+    signed.issuer.length > 2048 ||
+    !digest.test(signed.keyId) ||
+    signed.subjectDigest !== sha256Canonical(subject) ||
+    typeof signed.signature !== "string" ||
+    !/^[A-Za-z0-9+/]{86}==$/u.test(signed.signature) ||
+    Buffer.from(signed.signature, "base64").length !== 64
+  )
+    return null;
+  return snapshotProof ? proof.schemaVersion : receipt.schemaVersion;
+}
+
+export function assertEvidenceArchiveOriginal(object, rawBytes) {
   if (!Buffer.isBuffer(rawBytes) || rawBytes.length === 0 || rawBytes.length > 1_048_576) {
     fail("EVIDENCE_ARCHIVE_ORIGINAL_SIZE_INVALID");
   }
@@ -38,7 +93,7 @@ function assertRawOriginal(object, rawBytes) {
   if (
     !parsed ||
     Array.isArray(parsed) ||
-    parsed.schemaVersion !== object.proofType ||
+    proofTypeOf(parsed) !== object.proofType ||
     sha256Canonical(parsed) !== object.canonicalDigest
   ) {
     fail("EVIDENCE_ARCHIVE_ORIGINAL_CANONICAL_MISMATCH");
@@ -88,7 +143,7 @@ export function buildEvidenceArchiveRamPolicy(input) {
   }
   for (const object of authorization.objects) {
     if (!originalsByKey.has(object.exactKey)) fail("EVIDENCE_ARCHIVE_ORIGINAL_SET_MISMATCH");
-    assertRawOriginal(object, originalsByKey.get(object.exactKey));
+    assertEvidenceArchiveOriginal(object, originalsByKey.get(object.exactKey));
   }
   if (originalsByKey.size !== authorization.objects.length) {
     fail("EVIDENCE_ARCHIVE_ORIGINAL_SET_MISMATCH");
@@ -109,8 +164,9 @@ export function buildEvidenceArchiveRamPolicy(input) {
           Version: "1",
           Statement: [
             secureStatement(["oss:GetObject"], resources),
+            secureStatement(["oss:GetObjectAcl"], resources),
             secureStatement(
-              ["oss:GetBucketAcl", "oss:GetBucketWorm"],
+              ["oss:GetBucketAcl", "oss:GetBucketWorm", "oss:GetBucketVersioning"],
               [`acs:oss:*:${ACCOUNT}:${BUCKET}`]
             )
           ]

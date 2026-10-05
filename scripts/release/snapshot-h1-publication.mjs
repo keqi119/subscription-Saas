@@ -9,6 +9,7 @@ import {
   snapshotKernelData
 } from "../../packages/release-foundation/src/snapshot/environment-policy.mjs";
 import { buildH1CryptoUseProof } from "./snapshot-h1-data-proof.mjs";
+import { validateSnapshotDestructionReceipt } from "../../packages/release-foundation/src/snapshot/custody-contracts.mjs";
 
 const CODE = "H1_SNAPSHOT_PUBLICATION_REJECTED";
 const NAMES = [
@@ -148,6 +149,213 @@ export function prepareH1SnapshotObjects({
       contentDigest: sha256Bytes(bytes[index])
     }))
   };
+}
+
+function observationTime(value) {
+  requireThat(
+    typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(value)
+  );
+  const instant = Date.parse(value);
+  requireThat(
+    Number.isFinite(instant) && new Date(instant).toISOString().slice(0, 19) === value.slice(0, 19)
+  );
+  return instant;
+}
+
+// The terminal bytes must come from the fixed root controller. This assembler
+// binds them to signed data/publication; it does not observe a process or cloud
+// session itself. Only the protected signer can turn this subject into evidence.
+export function buildH1SnapshotDestructionSubject({
+  dataResultBytes,
+  proofBytes,
+  publicationBytes,
+  terminalBytes,
+  expected,
+  signer,
+  issuedAt
+}) {
+  try {
+    const { result, sealed } = verifyH1SnapshotData({
+      dataResultBytes,
+      proofBytes,
+      expected,
+      signer
+    });
+    const publication = verifyH1SnapshotPublication({ bytes: publicationBytes, expected, signer });
+    const terminal = readPublicSnapshotJson(terminalBytes);
+    assertKernelFrame(
+      terminal,
+      [
+        "status",
+        "releaseAttemptId",
+        "snapshotRunId",
+        "publicationDigest",
+        "objects",
+        "writer",
+        "publishedAt",
+        "authority",
+        "publisherSession"
+      ],
+      CODE
+    );
+    assertKernelFrame(terminal.writer, ["arn", "issuedAt", "expiresAt"], CODE);
+    assertKernelFrame(terminal.authority, ["startedAt", "finishedAt", "exited", "exitCode"], CODE);
+    assertKernelFrame(
+      terminal.publisherSession,
+      ["path", "removed", "removedAt", "absent", "expiresAt", "observedAt"],
+      CODE
+    );
+    const authority = terminal.authority,
+      session = terminal.publisherSession;
+    const prefix = `snapshot-slots/v2/${expected.releaseAttemptId}/${expected.snapshotRunId}/`;
+    requireThat(
+      terminal.status === "PUBLISHER_TERMINAL_OBSERVED" &&
+        terminal.releaseAttemptId === expected.releaseAttemptId &&
+        terminal.snapshotRunId === expected.snapshotRunId &&
+        terminal.publicationDigest === sha256Bytes(publicationBytes) &&
+        same(terminal.writer, {
+          arn: publication.writerArn,
+          issuedAt: publication.writerIssuedAt,
+          expiresAt: publication.writerExpiresAt
+        }) &&
+        terminal.writer.arn.replace(":role/", ":assumed-role/") ===
+          `acs:ram::1457643390906675:assumed-role/subscription-saas-stage1-snapshot-publisher/stage1-publisher-${expected.snapshotRunId}-attempt-1` &&
+        terminal.publishedAt === publication.publishedAt &&
+        publication.cryptoExitedAt === sealed.proof.cleanup.processExitedAt &&
+        Array.isArray(terminal.objects) &&
+        terminal.objects.length === 5 &&
+        same(terminal.objects.slice(0, 4), publication.objects) &&
+        authority.exited === true &&
+        authority.exitCode === 0 &&
+        session.removed === true &&
+        session.absent === true &&
+        session.path === "/var/lib/stage1-volumes/main/snapshot-authority/publisher-session.json" &&
+        session.expiresAt === publication.writerExpiresAt
+    );
+    const contents = [
+      result.data.envelope.ciphertextDigest,
+      sha256Canonical(result.data.envelope),
+      sha256Bytes(proofBytes),
+      sha256Bytes(dataResultBytes)
+    ];
+    const sizes = [
+      result.data.envelope.ciphertextSizeBytes,
+      Buffer.byteLength(canonicalJson(result.data.envelope)),
+      proofBytes.length,
+      dataResultBytes.length
+    ];
+    requireThat(
+      publication.objects.every(
+        (item, index) => item.digest === contents[index] && item.sizeBytes === sizes[index]
+      )
+    );
+    const last = terminal.objects[4];
+    assertKernelFrame(
+      last,
+      ["key", "digest", "sizeBytes", "requestId", "etag", "putObservation"],
+      CODE
+    );
+    requireThat(
+      last.key === prefix + "diagnostics.redacted.json" &&
+        last.digest === sha256Bytes(publicationBytes) &&
+        last.sizeBytes === publicationBytes.length &&
+        typeof last.requestId === "string" &&
+        last.requestId.length > 0 &&
+        typeof last.etag === "string" &&
+        last.etag.length > 0
+    );
+    verifyPutObservation(last, { ...publication, publishedAt: authority.finishedAt });
+    const dataTerminalAt = observationTime(sealed.proof.execution.terminalAt),
+      issued = observationTime(publication.writerIssuedAt),
+      started = observationTime(authority.startedAt),
+      published = observationTime(publication.publishedAt),
+      finished = observationTime(authority.finishedAt),
+      removed = observationTime(session.removedAt),
+      expires = observationTime(session.expiresAt),
+      observed = observationTime(session.observedAt),
+      sealedAt = observationTime(issuedAt);
+    requireThat(
+      dataTerminalAt <= issued &&
+        issued <= started &&
+        started <= published &&
+        published <= finished &&
+        finished <= removed &&
+        removed <= observed &&
+        expires <= observed &&
+        observed <= sealedAt &&
+        observationTime(last.putObservation.record.observedAt) >= published &&
+        observationTime(last.putObservation.record.observedAt) < expires
+    );
+    const volume = result.volumeObservation;
+    const receipt = {
+      schemaVersion: "snapshot-destruction-receipt.v1",
+      releaseAttemptId: expected.releaseAttemptId,
+      snapshotRunId: expected.snapshotRunId,
+      claim: "KEY_INVALIDATION_ONLY",
+      volume: {
+        backingFile: `/var/lib/subscription-saas/snapshot-volumes/${expected.releaseAttemptId}.luks`,
+        mapper: `subscription-s1-${expected.releaseAttemptId}`,
+        luksUuid: volume.luksUuid,
+        keySlotsBefore: volume.keyslotsBefore,
+        keySlotsInvalidated: volume.keyslotsBefore,
+        unlockAttemptResult: "DENIED"
+      },
+      keyDisposition: {
+        dekBufferClear: result.data.cryptoOperation.keyBufferClear,
+        tokenizationKeyDestroyed: true,
+        credentialsRemoved: true
+      },
+      residualScan: result.disposalObservation.residualScan,
+      processTerminal: {
+        cryptoExited: true,
+        publisherIssuedAfterCryptoTerminal: true,
+        terminalAt: session.observedAt
+      },
+      issuer: signer.issuer,
+      issuedAt
+    };
+    validateSnapshotDestructionReceipt(receipt);
+    return snapshotKernelData(
+      {
+        receipt,
+        dataResultDigest: sealed.dataResultDigest,
+        cryptoUseProofDigest: sha256Canonical(sealed.proof),
+        publicationDigest: sha256Bytes(publicationBytes),
+        publisherTerminalDigest: sha256Bytes(terminalBytes)
+      },
+      CODE
+    );
+  } catch {
+    fail();
+  }
+}
+
+export function verifyH1SnapshotDestruction(input) {
+  try {
+    const value = readPublicSnapshotJson(input.destructionBytes);
+    assertKernelFrame(
+      value,
+      [
+        "receipt",
+        "dataResultDigest",
+        "cryptoUseProofDigest",
+        "publicationDigest",
+        "publisherTerminalDigest",
+        "signature"
+      ],
+      CODE
+    );
+    const { signature: signed, ...subject } = value;
+    signature("h1-snapshot-destruction.v1", subject, signed, input.signer);
+    const rebuilt = buildH1SnapshotDestructionSubject({
+      ...input,
+      issuedAt: value.receipt.issuedAt
+    });
+    requireThat(same(rebuilt, subject));
+    return snapshotKernelData(subject, CODE);
+  } catch {
+    fail();
+  }
 }
 
 function verifyIdentityOriginal(value, arn) {

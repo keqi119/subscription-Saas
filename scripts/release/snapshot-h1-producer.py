@@ -36,7 +36,7 @@ TARGET_DATABASE = 'stage1_snapshot_workspace'
 TARGET_ROLE = 'stage1_snapshot_migrate'
 NODE = '/opt/subscription-saas/snapshot-adapter/v2/runtime/node'
 NODE_SHA = 'fde6a4bf8d0562f7751d1a2d6cb9b417c4cfe107bbcb0aa3e9a24e125e348f48'
-BUNDLE_DIGEST = 'sha256:128ace637be59ff23e221f9824a732c5d7952dd2a7ba4adb494d25e54cfc53fc'
+BUNDLE_DIGEST = 'sha256:4f2ced908d88ea64a59e14baa259f9c5b811c616bef55227a1f1529fe1594848'
 BUNDLE = '/opt/subscription-saas/snapshot-adapter/v2/bundles/' + BUNDLE_DIGEST[7:]
 VOLUMES = '/var/lib/subscription-saas/snapshot-volumes'
 MAX_WORKER_LINE = 2097152
@@ -44,7 +44,7 @@ TARGET_MEMORY = 192 * 1048576
 WORKER_MEMORY = 192 * 1048576
 AUTH_VALIDATOR = r'''
 import { createPublicKey, createHash } from 'node:crypto';
-import { validateProducerCryptoAuthorization } from '/opt/subscription-saas/snapshot-adapter/v2/bundles/128ace637be59ff23e221f9824a732c5d7952dd2a7ba4adb494d25e54cfc53fc/packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs';
+import { validateProducerCryptoAuthorization } from '/opt/subscription-saas/snapshot-adapter/v2/bundles/4f2ced908d88ea64a59e14baa259f9c5b811c616bef55227a1f1529fe1594848/packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs';
 let raw = '';
 for await (const chunk of process.stdin) { raw += chunk; if (raw.length > 1048576) process.exit(1); }
 try {
@@ -254,7 +254,7 @@ def _verify_bundle():
                     'BUNDLE_INVALID')
             expected[name] = item
         require('scripts/release/snapshot-h1-data-worker.mjs' in expected and
-                sum(item['sizeBytes'] for item in expected.values()) == 1435146,
+                sum(item['sizeBytes'] for item in expected.values()) == 1435221,
                 'BUNDLE_INVALID')
         observed = set()
         for parent, directories, files in os.walk(BUNDLE, followlinks=False):

@@ -195,6 +195,7 @@ async function buildFixedRuntime(repoRoot, control) {
         "scripts/release/snapshot-h1-admit.mjs",
         "scripts/release/snapshot-h1-authority.mjs",
         "scripts/release/snapshot-h1-observations.mjs",
+        "scripts/release/evidence-archive-storage.mjs",
         "scripts/release/snapshot-h1-github-reader.mjs"
       ]
     : [worker])

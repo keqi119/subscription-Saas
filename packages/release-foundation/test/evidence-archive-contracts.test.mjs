@@ -96,7 +96,14 @@ function validArchiveAuthorization(profile = "archive-create-only-writer") {
       profile === "archive-create-only-writer"
         ? { actions: ["oss:PutObject"], conditionalCreate: true, exactKeysOnly: true }
         : {
-            actions: ["oss:HeadObject", "oss:GetObject", "oss:GetBucketAcl", "oss:GetBucketWorm"],
+            actions: [
+              "oss:HeadObject",
+              "oss:GetObject",
+              "oss:GetObjectAcl",
+              "oss:GetBucketAcl",
+              "oss:GetBucketWorm",
+              "oss:GetBucketVersioning"
+            ],
             conditionalCreate: false,
             exactKeysOnly: true
           },

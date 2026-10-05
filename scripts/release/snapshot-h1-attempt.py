@@ -41,7 +41,7 @@ ENTRIES = ('snapshot-h1-container-hook.js', 'snapshot-h1-job-client.mjs',
            'snapshot-h1-runner-entry.mjs')
 READ_ONLY = {'snapshot-h1-volume.py', 'snapshot-h1-runner.py',
              'snapshot-h1-producer.py', 'snapshot-h1-runner-entry.mjs'}
-WORKER = 'sha256:128ace637be59ff23e221f9824a732c5d7952dd2a7ba4adb494d25e54cfc53fc'
+WORKER = 'sha256:4f2ced908d88ea64a59e14baa259f9c5b811c616bef55227a1f1529fe1594848'
 
 
 def require(value, code):
@@ -620,6 +620,26 @@ class H1SnapshotPublisher:
                 os.close(self.global_lock)
                 self.global_lock = None
 
+    def seal_destruction(self):
+        # Separate signing only: never invoke the terminated publisher again.
+        _safe_root_directory(OUTPUT, 0o700)
+        _safe_root_directory(self.spool, 0o700)
+        sealed = self._authority('seal-destruction', {
+            'releaseAttemptId': self.request['releaseAttemptId'],
+            'snapshotRunId': self.request['snapshotRunId']})
+        require(type(sealed) is dict and set(sealed) == {
+            'receipt', 'signature', 'dataResultDigest', 'cryptoUseProofDigest',
+            'publicationDigest', 'publisherTerminalDigest'} and
+            type(sealed['receipt']) is dict and
+            sealed['receipt'].get('releaseAttemptId') == self.request['releaseAttemptId'] and
+            sealed['receipt'].get('snapshotRunId') == self.request['snapshotRunId'],
+            'DESTRUCTION_RESULT_INVALID')
+        proof_digest = self._write_record('snapshot-destruction-proof.json', sealed)
+        receipt_digest = self._write_record('snapshot-destruction-receipt.json', sealed['receipt'])
+        return {'status': 'DESTRUCTION_SEALED', 'releaseAttemptId': self.request['releaseAttemptId'],
+                'snapshotRunId': self.request['snapshotRunId'],
+                'proofDigest': proof_digest, 'receiptDigest': receipt_digest}
+
     def _run_locked(self):
         published = None
         error_code = None
@@ -683,8 +703,10 @@ def main():
     require(len(raw) <= 16384, 'INPUT_INVALID')
     request = json.loads(raw.decode('utf8'), object_pairs_hook=pairs)
     require(raw == canonical(request), 'INPUT_INVALID')
-    if type(request) is dict and request.get('operation') == 'publish':
-        result = H1SnapshotPublisher(request).run()
+    if type(request) is dict and request.get('operation') in ('publish', 'seal-destruction'):
+        operation = request['operation']
+        publisher = H1SnapshotPublisher(dict(request, operation='publish'))
+        result = publisher.run() if operation == 'publish' else publisher.seal_destruction()
     else:
         result = H1SnapshotAttempt(request).run()
     sys.stdout.write(json.dumps(result, separators=(',', ':')))

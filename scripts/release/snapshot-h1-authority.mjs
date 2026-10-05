@@ -18,6 +18,7 @@ import { createH1GitHubJwtSupplier } from "./snapshot-h1-github-jwt.mjs";
 import {
   readH1SnapshotProductionInputs,
   sealH1SnapshotDataProof,
+  sealH1SnapshotDestructionProof,
   publishH1SnapshotData
 } from "./snapshot-h1-signing.mjs";
 
@@ -58,18 +59,20 @@ export async function runH1AttemptAuthority(input) {
   assertKernelFrame(input, ["operation", "request"], CODE);
   const captured = snapshotKernelData(input, CODE);
   const { operation, request } = captured;
-  requireThat(["admit", "recheck", "jwt", "seal", "publish"].includes(operation));
+  requireThat(
+    ["admit", "recheck", "jwt", "seal", "publish", "seal-destruction"].includes(operation)
+  );
   if (operation === "jwt") {
     assertKernelFrame(request, [], CODE);
     return { jwt: await createH1GitHubJwtSupplier()() };
   }
-  if (operation === "seal" || operation === "publish") {
+  if (["seal", "publish", "seal-destruction"].includes(operation)) {
     assertKernelFrame(
       request,
-      operation === "publish" ? ["releaseAttemptId", "snapshotRunId"] : [],
+      operation !== "seal" ? ["releaseAttemptId", "snapshotRunId"] : [],
       CODE
     );
-    if (operation === "publish") {
+    if (operation !== "seal") {
       requireThat(
         typeof request.releaseAttemptId === "string" &&
           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
@@ -86,11 +89,20 @@ export async function runH1AttemptAuthority(input) {
         sha256Canonical(dispatchVerification.authorization)
     );
     const verified = await verifyDispatchAuthorization(dispatchVerification);
-    if (operation === "publish") {
+    if (operation !== "seal") {
       requireThat(
         production.authorization.releaseAttemptId === request.releaseAttemptId &&
           production.authorization.snapshotRunId === request.snapshotRunId
       );
+      if (operation === "seal-destruction") {
+        const sealed = await sealH1SnapshotDestructionProof();
+        requireThat(
+          sealed.receipt.releaseAttemptId === request.releaseAttemptId &&
+            sealed.receipt.snapshotRunId === request.snapshotRunId &&
+            Date.now() < Date.parse(verified.notAfter)
+        );
+        return sealed;
+      }
       const published = await publishH1SnapshotData({
         authorizationDigest: sha256Canonical(production.authorization),
         dispatchAuthorizationDigest: sha256Canonical(dispatchVerification.authorization),

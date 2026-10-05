@@ -29,7 +29,9 @@ import { assertH1KeyMemory, assertH1KeyVolume } from "./snapshot-h1-key-volume.m
 import { buildH1CryptoUseProof } from "./snapshot-h1-data-proof.mjs";
 import {
   prepareH1SnapshotObjects,
-  verifyH1SnapshotPublication
+  verifyH1SnapshotPublication,
+  buildH1SnapshotDestructionSubject,
+  verifyH1SnapshotDestruction
 } from "./snapshot-h1-publication.mjs";
 import {
   assertSnapshotPublicationObject,
@@ -502,6 +504,83 @@ function writeNewPublicationFile(file, bytes) {
   }
 }
 
+function requireAbsent(file) {
+  try {
+    lstatSync(file);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    fail();
+  }
+  fail();
+}
+
+// A new root signing operation after the publisher has terminated. It cannot
+// publish, receive credentials, select a payload, or attest its own storage.
+export async function sealH1SnapshotDestructionProof(...args) {
+  requireThat(args.length === 0);
+  const trusted = await admittedIdentity();
+  const production = await readH1SnapshotProductionInputs(),
+    auth = production.authorization;
+  requireThat(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+      auth.releaseAttemptId
+    )
+  );
+  const directory = `/var/lib/subscription-saas/snapshot-output/${auth.releaseAttemptId}`;
+  for (const name of [
+    "publisher-failure.json",
+    "publisher-failure.json.pending",
+    "publisher-terminal.json.pending",
+    "snapshot-destruction-receipt.json",
+    "snapshot-destruction-receipt.json.pending",
+    "snapshot-destruction-proof.json",
+    "snapshot-destruction-proof.json.pending"
+  ])
+    requireAbsent(`${directory}/${name}`);
+  requireAbsent(`${AUTHORITY}/publisher-session.json`);
+  const input = {
+    dataResultBytes: readFixed(`${directory}/data-result.json`, {
+      privateFile: true,
+      max: 1048576
+    }),
+    proofBytes: readFixed(`${directory}/snapshot-proof.json`, { privateFile: true, max: 1048576 }),
+    publicationBytes: readFixed(`${directory}/diagnostics.redacted.json`, {
+      privateFile: true,
+      max: 1048576
+    }),
+    terminalBytes: readFixed(`${directory}/publisher-terminal.json`, {
+      privateFile: true,
+      max: 1048576
+    }),
+    expected: {
+      releaseAttemptId: auth.releaseAttemptId,
+      snapshotRunId: auth.snapshotRunId,
+      sourceSha: auth.sourceSha,
+      dispatchAuthorizationDigest: auth.bindings.dispatchAuthorizationDigest
+    },
+    signer: trusted.signer,
+    issuedAt: new Date().toISOString()
+  };
+  requireThat(same(JSON.parse(input.dataResultBytes.toString("utf8")).cryptoAuthorization, auth));
+  const subject = buildH1SnapshotDestructionSubject(input);
+  const sealed = {
+    ...subject,
+    signature: {
+      algorithm: "Ed25519",
+      issuer: trusted.signer.issuer,
+      keyId: trusted.signer.keyId,
+      subjectDigest: sha256Canonical(subject),
+      signature: sign(
+        null,
+        Buffer.from(canonicalJson({ domain: "h1-snapshot-destruction.v1", subject })),
+        readSigningKey(trusted)
+      ).toString("base64")
+    }
+  };
+  verifyH1SnapshotDestruction({ ...input, destructionBytes: Buffer.from(canonicalJson(sealed)) });
+  return snapshotKernelData(sealed, CODE);
+}
+
 // The approved controller invokes this separate fixed operation only after
 // crypto cleanup and issuance of the one-off publisher STS. Never retry an
 // unknown PUT by overwriting or mint the STS before the crypto process exits.
@@ -551,7 +630,7 @@ export async function publishH1SnapshotData(verified) {
         `acs:ram::1457643390906675:assumed-role/subscription-saas-stage1-snapshot-publisher/stage1-publisher-${auth.snapshotRunId}-attempt-1`
   );
   requireThat(
-    Date.parse(session.issuedAt) >= Date.parse(prepared.sealed.proof.cleanup.processExitedAt)
+    Date.parse(session.issuedAt) >= Date.parse(prepared.sealed.proof.execution.terminalAt)
   );
   const writer = await createSnapshotPublisherTransport({ ...identity, session });
   const receipts = [];

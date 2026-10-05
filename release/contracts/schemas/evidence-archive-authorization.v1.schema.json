@@ -71,8 +71,10 @@
               "oss:PutObject",
               "oss:HeadObject",
               "oss:GetObject",
+              "oss:GetObjectAcl",
               "oss:GetBucketAcl",
-              "oss:GetBucketWorm"
+              "oss:GetBucketWorm",
+              "oss:GetBucketVersioning"
             ]
           }
         },

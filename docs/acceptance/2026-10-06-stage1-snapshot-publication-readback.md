@@ -97,3 +97,15 @@ producer 在实际移除 worker/target 容器、复核固定源库 reader 为禁
 验证：`82ea12` 先复现缺少 attempt/run 的 publish 仍进入保护配置读取；修正后 `994de1` 两项 authority 检查和定向 lint 通过。Sol high 完成有限 Python 控制器，根审查修正原文件身份、全局互斥、到期后再次确认文件不存在、完整写入及无毫秒 STS 时间兼容。`a0498f` H1 Python 3.6.8 的 26 项相关测试通过；`8f5c44` / 最终 `8f7116` 在隔离 `/run` 目录验证实际 flock、替换文件拒绝、凭据路径重新出现时拒绝、0600/root 原子记录、create-only 及超时子进程 kill/wait 回收，probe 已移除。主密钥卷、实际凭据、数据库和云对象均未用于该 probe。
 
 `163859` / `3a3bca` 安装回读：control `sha256:ebf288b67553a9548a41c4cf314ff012599d27658b1c483ac173f78834cb0980`（2,422 文件、11,882,021 字节），adapter `sha256:39bb8bd16ed4430e4df432732cb801ed5a9172b746956084613e73ae1704fb56`；worker 保持上一段版本。全部文件摘要、root 只读属主和非法 private 请求拒绝通过，主/恢复卷关闭、无运行中的 attempt。最终合同摘要 `sha256:b9c8db85267ff3c92fbd42d22d0227bcf08ca37ee2ee4cefdcbfefcbd631aa5f`，数量和迁移摘要不变。阶段 1 仍未收口，无新增 RAM 授权或真实上传。
+
+## 销毁签名与精确对象归档传输
+
+新增独立 `seal-destruction` 操作：从固定 root 路径重新校验已签 data、crypto proof、publication 和实际 publisher terminal，绑定五份上传结果、进程退出、凭据文件移除及会话到期。只有顺序、摘要、大小与身份全部一致才签署现有 `snapshot-destruction-receipt.v1` 的完整封套。失败记录、临时记录、残留 publisher 凭据或已有输出均拒绝；调用者不能传入正文或路径。Python 入口先保全签名封套，再保全裸回执，任一步失败保持可见且不重新上传。该入口尚未签署真实 producer 的销毁证明。
+
+新增归档 writer/reader 传输，仅接受已冻结的精确对象和独立角色。writer 对每个原件只发起一次禁止覆盖的 PUT；reader 保留实际 SDK 回应，核验对象及 bucket 私有 ACL、版本关闭、WORM 210 天、AES256、HEAD/GET 长度和内容。两种既有 H1 签名封套按内层 proofType 归档，但摘要覆盖整个原件；传输层不代替上游签名验证。读者合同增加实际核验所需的 `GetObjectAcl`、`GetBucketVersioning`，尚未应用这些云权限。每次请求均检查 STS 和授权期限；PUT 回应越界记为结果未知，不重试。
+
+限定验证：`c70a18`、`fa8f60` 先确认缺失的 JS/Python 销毁入口；`9aa1c1` 两项 H1 原生 fixture 加密/签名检查通过，包含销毁绑定和篡改拒绝。首次 fixture 打包缺少依赖的失败 `03f84d` 已修复。`d0db4b` H1 Python 3.6.8 的 27 项相关检查通过；`c38cc8` 归档、时限和 authority 的 32 项检查通过，`e1ad90` 定向 lint/diff 通过。云响应与 publisher 终态为测试替身，不能作为真实发布原件。Luna 完成销毁路径限定审查，未发现阻断问题；未重复数据库或卷生命周期测试。
+
+实际安装：`bf22c7` worker 为 `sha256:4f2ced908d88ea64a59e14baa259f9c5b811c616bef55227a1f1529fe1594848`（402 文件，1,435,221 字节）；`3ad6bb` control 为 `sha256:2f4507311e80f9eb7887a5d6b25b28f9e28f4f25bf22692e8175923f0c470b47`（2,425 文件，11,933,592 字节）；`1dc155` adapter 为 `sha256:4414a3c887f8db1a433e7e2222b8928bfd82d6c91157833b53896226c745327b`。全部文件、root 只读属性、SDK/入口加载及非法输入拒绝均回读通过，`2b0766` 已安装 producer 的 bundle verifier 通过。`630833` 最终合同摘要为 `sha256:cc26cd893eae056cc1b84792ff4ce5624dddb6abba95d8b674b2a0938976b466`，317 文件、92 schemas、13 commands、128 migrations。
+
+预检 `648a4f` Prisma validate 通过，`0631a4` 实际 Staging 仍仅前述两项迁移待执行，隧道已关闭。本段未新增 RAM/AccessKey、解锁主密钥卷、真实 STS/OSS 调用、JIT、源数据导出、迁移或工作流。仍需 publisher-use 证明、固定归档作业及独立终态/保管装配，再固定候选并执行真实 R2/R3、迁移和 R4；阶段 1 未完成。

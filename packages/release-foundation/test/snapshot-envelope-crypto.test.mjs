@@ -385,8 +385,12 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
   assert.equal(proof.cleanup.memoryLocked, false);
   assert.equal(proof.cleanup.hostSwapDisabled, true);
   assert.equal(proof.dataObservationDigest, sha256Canonical(observation));
-  const { prepareH1SnapshotObjects, readH1SnapshotPublication } =
-    await import("../../../scripts/release/snapshot-h1-publication.mjs");
+  const {
+    prepareH1SnapshotObjects,
+    readH1SnapshotPublication,
+    buildH1SnapshotDestructionSubject,
+    verifyH1SnapshotDestruction
+  } = await import("../../../scripts/release/snapshot-h1-publication.mjs");
   const { assertSnapshotPublicationObject } =
     await import("../../../scripts/release/snapshot-oss-storage.mjs");
   const signingKeys = generateKeyPairSync("ed25519");
@@ -446,7 +450,7 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
       snapshotRunId: expected.snapshotRunId,
       ...object
     });
-  const writerArn = "acs:ram::1457643390906675:assumed-role/fixture-writer/fixture-session";
+  const writerArn = `acs:ram::1457643390906675:assumed-role/subscription-saas-stage1-snapshot-publisher/stage1-publisher-${expected.snapshotRunId}-attempt-1`;
   const publication = {
     ...expected,
     writerArn,
@@ -500,6 +504,76 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
     bytes: markerBytes,
     contentDigest: digest(markerBytes)
   });
+  const expiredAt = new Date(finished + 60000).toISOString();
+  const lastPut = structuredClone(publication.objects[0]);
+  Object.assign(lastPut, {
+    key: markerKey,
+    digest: digest(markerBytes),
+    sizeBytes: markerBytes.length
+  });
+  lastPut.putObservation.record.objectKey = markerKey;
+  const publisherTerminal = {
+    status: "PUBLISHER_TERMINAL_OBSERVED",
+    releaseAttemptId: expected.releaseAttemptId,
+    snapshotRunId: expected.snapshotRunId,
+    publicationDigest: digest(markerBytes),
+    objects: [...publication.objects, lastPut],
+    writer: { arn: writerArn, issuedAt: after, expiresAt: expiredAt },
+    publishedAt: after,
+    authority: { startedAt: after, finishedAt: after, exited: true, exitCode: 0 },
+    publisherSession: {
+      path: "/var/lib/stage1-volumes/main/snapshot-authority/publisher-session.json",
+      removed: true,
+      removedAt: after,
+      absent: true,
+      expiresAt: expiredAt,
+      observedAt: expiredAt
+    }
+  };
+  const destructionInput = {
+    dataResultBytes,
+    proofBytes,
+    publicationBytes: markerBytes,
+    terminalBytes: Buffer.from(canonicalJson(publisherTerminal)),
+    expected,
+    signer,
+    issuedAt: expiredAt
+  };
+  const destructionSubject = buildH1SnapshotDestructionSubject(destructionInput);
+  assert.equal(destructionSubject.receipt.claim, "KEY_INVALIDATION_ONLY");
+  assert.equal(destructionSubject.receipt.processTerminal.terminalAt, expiredAt);
+  const destructionBytes = Buffer.from(
+    canonicalJson({
+      ...destructionSubject,
+      signature: signature("h1-snapshot-destruction.v1", destructionSubject)
+    })
+  );
+  assert.deepEqual(
+    verifyH1SnapshotDestruction({ ...destructionInput, destructionBytes }),
+    destructionSubject
+  );
+  for (const change of [
+    (x) => {
+      x.publisherSession.absent = false;
+    },
+    (x) => {
+      x.publisherSession.observedAt = after;
+    },
+    (x) => {
+      x.objects[4].digest = "sha256:" + "f".repeat(64);
+    }
+  ]) {
+    const invalid = structuredClone(publisherTerminal);
+    change(invalid);
+    assert.throws(
+      () =>
+        buildH1SnapshotDestructionSubject({
+          ...destructionInput,
+          terminalBytes: Buffer.from(canonicalJson(invalid))
+        }),
+      { code: "H1_SNAPSHOT_PUBLICATION_REJECTED" }
+    );
+  }
   const stored = new Map(prepared.objects.map((x) => [x.key, x.bytes]));
   stored.set(markerKey, markerBytes);
   const observationFor = (key) => ({

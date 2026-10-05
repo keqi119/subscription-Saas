@@ -10,6 +10,7 @@ import { canonicalJson } from "../../packages/release-foundation/src/canonical-j
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
 import { validateContract } from "../../packages/release-foundation/src/schema-registry.mjs";
 import { verifyAuthoritativeCustodyObservation } from "../../packages/release-foundation/src/evidence-custody.mjs";
+import { validateProducerCryptoAuthorization } from "../../packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs";
 import {
   assertKernelFrame,
   snapshotKernelData
@@ -298,6 +299,29 @@ export async function readH1SnapshotDispatchInputs(...args) {
     { ...trusted, authorization, state, session: privateJson("reader-session", 32768) },
     CODE
   );
+}
+
+export async function readH1SnapshotProductionInputs(...args) {
+  requireThat(args.length === 0);
+  await admittedIdentity();
+  const input = privateJson("producer-inputs");
+  assertKernelFrame(input, ["authorization", "publicKey"], CODE);
+  validateProducerCryptoAuthorization(input.authorization);
+  requireThat(
+    input.authorization.schemaVersion === "producer-crypto-run-authorization.v2" &&
+      typeof input.publicKey === "string" &&
+      input.publicKey.startsWith("-----BEGIN PUBLIC KEY-----\n")
+  );
+  const key = createPublicKey(input.publicKey);
+  const fingerprint = sha256Bytes(key.export({ type: "spki", format: "der" }));
+  requireThat(
+    key.asymmetricKeyType === "rsa" &&
+      key.asymmetricKeyDetails?.modulusLength === 3072 &&
+      key.asymmetricKeyDetails?.publicExponent === 65537n &&
+      fingerprint === "sha256:97dd86420772ba557ce9ddeaef1e762f79cebebe39cf0319d7195ede273ada01" &&
+      fingerprint === input.authorization.localKey.keyFingerprint
+  );
+  return input;
 }
 
 // A read is linearized at the checked read of current-revocation.json. The root

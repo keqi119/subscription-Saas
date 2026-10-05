@@ -624,3 +624,97 @@ class H1SnapshotJitGitHub(H1SnapshotGitHub):
         require(self._get(route, expected=(200, 404)) is None,
                 'JIT_REMOVE_UNCONFIRMED')
         return True
+
+    def read_running_job(self, selection):
+        """Read the actual in-progress snapshot-data job on this created runner."""
+        require(self._token is not None and not self._closed, 'SESSION_CLOSED')
+        fields = {'runId', 'jobId', 'sourceSha', 'routeNonce'}
+        require(type(selection) is dict and set(selection) == fields, 'INPUT_INVALID')
+        run_id = _id(selection['runId'])
+        job_id = _id(selection['jobId'])
+        source_sha = _sha(selection['sourceSha'])
+        nonce = selection['routeNonce']
+        require(type(nonce) is str and re.fullmatch(r'[a-f0-9]{32}', nonce) is not None,
+                'INPUT_INVALID')
+        runner_id = self._created_runner_id
+        runner_name = self._created_runner_name
+        labels = self._created_runner_labels
+        expected_name = 'stage1-snapshot-' + nonce
+        expected_labels = _jit_labels(run_id, nonce)
+        require(type(runner_id) is int and 0 < runner_id < 10 ** 19 and
+                runner_name == expected_name and labels == expected_labels,
+                'JIT_RUNNER_UNASSIGNED')
+
+        # The attempt-specific route below identifies attempt one, but it does
+        # not establish that a later rerun has not become current. Read the
+        # canonical run resource as well and reject unless its current attempt
+        # is still one and its facts match the original attempt.
+        run = self.read_run(run_id)
+        latest = self._get(PREFIX + '/actions/runs/' + run_id)
+        require(type(latest) is dict and type(latest.get('id')) is int and
+                latest.get('id') == int(run_id) and
+                type(latest.get('run_attempt')) is int and latest.get('run_attempt') == 1 and
+                all(latest.get(key) == run.get(key) for key in
+                    ('head_sha', 'status', 'repository', 'head_repository', 'actor',
+                     'head_branch', 'event', 'path')), 'RUN_MISMATCH')
+        run = latest
+        actor = run.get('actor')
+        require(run.get('head_sha') == source_sha and run.get('status') == 'in_progress' and
+                run.get('head_branch') == 'main' and run.get('event') == 'workflow_dispatch' and
+                run.get('path') == WORKFLOW and type(actor) is dict and
+                type(actor.get('id')) is int and actor.get('id') == OWNER_ID and
+                actor.get('login') == 'keqi119', 'RUN_MISMATCH')
+
+        jobs = self.read_jobs(run_id)
+        named = [job for job in jobs if job.get('name') == 'snapshot-data']
+        selected = [job for job in jobs if job.get('id') == int(job_id)]
+        require(len(named) == 1 and len(selected) == 1 and selected[0] is named[0],
+                'RUNNING_JOB_MISMATCH')
+        job = selected[0]
+        job_labels = job.get('labels')
+        require(job.get('run_id') == int(run_id) and job.get('head_sha') == source_sha and
+                job.get('name') == 'snapshot-data' and job.get('status') == 'in_progress' and
+                job.get('conclusion') is None and type(job.get('runner_id')) is int and
+                job.get('runner_id') == runner_id and job.get('runner_name') == runner_name and
+                type(job.get('runner_group_id')) is int and job.get('runner_group_id') == 1 and
+                type(job_labels) is list and len(job_labels) == len(expected_labels) and
+                all(type(label) is str for label in job_labels) and
+                len(set(label.lower() for label in job_labels)) == len(expected_labels) and
+                set(label.lower() for label in job_labels) == set(expected_labels),
+                'RUNNING_JOB_MISMATCH')
+
+        runner = self.read_runner(str(runner_id))
+        require(type(runner) is dict and runner.get('id') == runner_id and
+                runner.get('name') == runner_name and runner.get('os') == 'linux' and
+                runner.get('status') == 'online' and runner.get('busy') is True,
+                'JIT_RUNNER_MISMATCH')
+        actual_labels = runner.get('labels')
+        require(type(actual_labels) is list and len(actual_labels) == len(expected_labels),
+                'JIT_RUNNER_MISMATCH')
+        runner_labels = []
+        for label in actual_labels:
+            require(type(label) is dict and type(label.get('name')) is str,
+                    'JIT_RUNNER_MISMATCH')
+            runner_labels.append(label['name'].lower())
+        require(len(set(runner_labels)) == len(expected_labels) and
+                set(runner_labels) == set(expected_labels), 'JIT_RUNNER_MISMATCH')
+
+        return {
+            'run': {
+                'id': run_id, 'runAttempt': 1, 'sourceSha': source_sha,
+                'repository': REPOSITORY, 'headRepository': REPOSITORY,
+                'actorId': str(OWNER_ID), 'path': WORKFLOW, 'event': 'workflow_dispatch',
+                'headBranch': 'main', 'status': 'in_progress'
+            },
+            'job': {
+                'id': job_id, 'runId': run_id, 'sourceSha': source_sha,
+                'name': 'snapshot-data', 'status': 'in_progress', 'conclusion': None,
+                'runnerId': str(runner_id), 'runnerName': runner_name,
+                'runnerGroupId': 1, 'labels': list(job_labels)
+            },
+            'runner': {
+                'id': runner_id, 'name': runner_name, 'os': 'linux',
+                'status': 'online', 'busy': True,
+                'labels': [label['name'] for label in actual_labels]
+            }
+        }

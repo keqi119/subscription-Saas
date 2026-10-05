@@ -466,6 +466,82 @@ class H1FixedSnapshotProducer:
                 'container:' + self.source_id, 'WORKER_MISMATCH')
         return value
 
+    def _confined(self, kind):
+        # Ownership is intentionally checked separately so drift cannot block cleanup.
+        value = self._target_owned() if kind == 'target' else self._worker_owned()
+        require(value is not None, kind.upper() + '_CONFINEMENT_INVALID')
+        code = kind.upper() + '_CONFINEMENT_INVALID'
+        try:
+            config, host = value['Config'], value['HostConfig']
+            expected_binds = ([(self.target_pgdata, '/var/lib/postgresql/data', True),
+                               (self.target_secret, '/run/bootstrap-password', False)]
+                              if kind == 'target' else
+                              [(BUNDLE, '/bundle', False), (NODE, '/fixed-node', False),
+                               (self.crypto, '/work/crypto', True)])
+            tmpfs = ({'/var/run/postgresql':
+                      'rw,nosuid,nodev,size=1m,mode=0700,uid=999,gid=999',
+                      '/tmp': 'rw,nosuid,nodev,noexec,size=16m,mode=1777'}
+                     if kind == 'target' else
+                     {'/var/lib/postgresql/data':
+                      'rw,nosuid,nodev,noexec,size=64k,mode=000',
+                      '/tmp': 'rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=65532,gid=65532'})
+            mounts = value['Mounts']
+            binds = [(item['Source'], item['Destination'], item['RW']) for item in mounts
+                     if item['Type'] == 'bind']
+            other = [item for item in mounts if item['Type'] != 'bind']
+            require(len(binds) == len(expected_binds) and
+                    set(binds) == set(expected_binds) and
+                    all(item['Type'] == 'tmpfs' and item['Destination'] in tmpfs and
+                        item['RW'] is True for item in other) and
+                    len({item['Destination'] for item in mounts}) == len(mounts) and
+                    host['Tmpfs'] == tmpfs and host['ReadonlyRootfs'] is True and
+                    host['Privileged'] is False and host['CapDrop'] == ['ALL'] and
+                    not host.get('CapAdd') and
+                    host['SecurityOpt'] in (['no-new-privileges'],
+                                            ['no-new-privileges:true']) and
+                    host['Memory'] == host['MemorySwap'] == TARGET_MEMORY and
+                    host['PidsLimit'] == 128 and
+                    {'Name': 'core', 'Soft': 0, 'Hard': 0} in host['Ulimits'] and
+                    host['LogConfig']['Type'] == 'none' and
+                    host['RestartPolicy']['Name'] == 'no' and
+                    not host.get('Binds') and not host.get('VolumesFrom') and
+                    not host.get('Devices') and not host.get('DeviceRequests') and
+                    not host.get('PortBindings') and
+                    config['OpenStdin'] is True and config['Tty'] is False,
+                    code)
+            if kind == 'target':
+                require(config['Entrypoint'] == ['/usr/local/bin/docker-entrypoint.sh'] and
+                        config['Cmd'] == ['postgres', '-p', '5433', '-c',
+                                          'listen_addresses=127.0.0.1'], code)
+                additions = ['POSTGRES_PASSWORD_FILE=/run/bootstrap-password',
+                             'POSTGRES_HOST_AUTH_METHOD=scram-sha-256',
+                             'POSTGRES_DB=' + TARGET_DATABASE]
+            else:
+                require(config['Entrypoint'] == ['/fixed-node'] and
+                        config['Cmd'] == ['/bundle/scripts/release/snapshot-h1-data-worker.mjs']
+                        and config['WorkingDir'] == '/bundle', code)
+                additions = []
+            # Compare with the pinned image's inherited environment so extra
+            # container variables cannot change either fixed entrypoint.
+            image = self._docker(['image', 'inspect', IMAGE])
+            require(image.returncode == 0 and len(image.stdout) <= 65536, code)
+            rows = json.loads(image.stdout.decode('utf-8'))
+            require(type(rows) is list and len(rows) == 1 and
+                    value['Image'] == rows[0]['Id'], code)
+            expected_env = rows[0]['Config']['Env'] + additions
+            actual_env = config['Env']
+            # Docker may put explicit variables before inherited image values.
+            # Exact names and values matter; ordering does not. Duplicate names
+            # are rejected rather than letting process-specific precedence win.
+            require(type(actual_env) is list and
+                    all(type(item) is str and '=' in item for item in actual_env) and
+                    len(actual_env) == len(expected_env) and
+                    len({item.split('=', 1)[0] for item in actual_env}) == len(actual_env) and
+                    set(actual_env) == set(expected_env), code)
+            return value
+        except (KeyError, TypeError, ValueError, UnicodeError):
+            raise ProducerFailure('H1_PRODUCER_' + code) from None
+
     def _assert_port_free(self):
         self._source_owned()
         result = self._docker(['exec', self.source_id, 'cat', '/proc/net/tcp',
@@ -530,6 +606,7 @@ class H1FixedSnapshotProducer:
         require(re.fullmatch(r'[a-f0-9]{64}', identity), 'TARGET_CREATE_UNKNOWN')
         self.target_id = identity
         require(self._target_owned() is not None, 'TARGET_MISMATCH')
+        self._confined('target')
         require(self._docker(['start', self.target_id]).returncode == 0,
                 'TARGET_START_UNKNOWN')
         deadline = time.monotonic() + 30
@@ -542,7 +619,7 @@ class H1FixedSnapshotProducer:
             time.sleep(0.5)
         else:
             raise ProducerFailure('H1_PRODUCER_TARGET_NOT_READY')
-        require(self._target_owned().get('State', {}).get('Running') is True,
+        require(self._confined('target').get('State', {}).get('Running') is True,
                 'TARGET_NOT_READY')
         sql = "CREATE ROLE stage1_snapshot_migrate LOGIN PASSWORD '" + \
             self._target_password + "' NOSUPERUSER NOCREATEDB NOCREATEROLE " + \
@@ -584,6 +661,7 @@ class H1FixedSnapshotProducer:
         require(re.fullmatch(r'[a-f0-9]{64}', identity), 'WORKER_CREATE_UNKNOWN')
         self.worker_id = identity
         require(self._worker_owned() is not None, 'WORKER_MISMATCH')
+        self._confined('worker')
 
     def _spawn_worker(self):
         try:
@@ -654,6 +732,8 @@ class H1FixedSnapshotProducer:
         self._worker_process.stdin.close()
 
     def _worker_protocol(self, source_fingerprint, target_fingerprint):
+        self._confined('target')
+        self._confined('worker')
         self._worker_process = self._spawn_worker()
         config = {'kind': 'configure', 'authorization': self.authorization,
                   'publicKey': self.public_key,
@@ -664,6 +744,8 @@ class H1FixedSnapshotProducer:
                   'tokenizationKeyBase64': base64.b64encode(os.urandom(32)).decode('ascii')}
         payload = (json.dumps(config, separators=(',', ':')) + '\n').encode('utf-8')
         require(len(payload) <= 1048576, 'CONFIG_TOO_LARGE')
+        self._confined('target')
+        self._confined('worker')
         self._worker_process.stdin.write(payload)
         self._worker_process.stdin.flush()
         first = self._next_worker_record(900)
@@ -724,6 +806,7 @@ class H1FixedSnapshotProducer:
             self._assert_port_free()
             self._prepare_directories()
             target_fingerprint = self._create_target()
+            self._confined('target')
             self._set_reader(True)
             self._create_worker()
             source_fingerprint = _fingerprint(SOURCE_DATABASE, SOURCE_OID, SOURCE_SYSTEM)

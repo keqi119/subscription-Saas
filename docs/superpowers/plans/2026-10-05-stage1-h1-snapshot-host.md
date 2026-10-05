@@ -84,6 +84,7 @@
 - [x] 本次 attempt 的生产临时卷生命周期：固定 UUID/1 GiB、排斥并发、swap/core 保护、独立实际销毁和恢复；`e8db0f` 新模块 H1 实测、`3c1e36` 独立回读通过，7 项边界测试通过。未读业务数据，制作其余工序仍待下项；详见 `docs/acceptance/2026-10-06-stage1-h1-production-data-runtime.md`。
 - [x] 固定源角色/目标 PostgreSQL/worker 的 root 私有操作实现；`e75444` 新目标库实际 5433/加密目录/清理通过，`659c24` 最终 Python 3.6.8 上 14 项测试及安装/清理回读通过。尚未启用真实源角色或调用完整 producer，不作真实制作证明；同上 acceptance 记录保留限界。
 - [ ] root 签名准入、当前撤销和 GitHub 实际 job 观测接线，JIT 唯一路由与结束后不可路由证明。
+- [x] 固定 root attempt 编排及运行中 job/本次 Runner 读取已实现并安装；`23633c` 校验绑定入口自身的安装配置，`efa298` 实际目标库和未启动 worker 的新增约束核验通过，`39a056` 原生测试及独立清理回读通过。真实准入/JIT/制作与终态证明仍归上一未完成项，详见 `docs/acceptance/2026-10-06-stage1-h1-attempt-controller.md`。
 - [x] hosted 未受信 admission 文件生成及 H1 固定准入入口、实际 OSS dispatch reader、固定当前 head 签名接线；`04b8f2` 控制包原生依赖/拒绝检查、`066977` Python controls 对齐完成。尚未装配真实原件/session 或取得成功准入，不能勾选上一项完整 JIT 编排；详见 `docs/acceptance/2026-10-06-stage1-h1-admission-entry.md`。
 - [ ] publisher/独立 reader 接线，将上述固定操作接入实际准入并核验实际运行约束与终态证据，完成真实制作和三个 jobs 的 workflow。
 

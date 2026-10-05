@@ -33,6 +33,106 @@ class ProducerTests(unittest.TestCase):
         return self.module.H1FixedSnapshotProducer(self.attempt, self.authorization,
                                                     self.public_key, self.bundle_digest)
 
+    def inspect_record(self, runtime, kind):
+        target = kind == 'target'
+        identity = 'd' * 64 if target else 'e' * 64
+        runtime.source_id = 'c' * 64
+        setattr(runtime, kind + '_id', identity)
+        binds = ([(runtime.target_pgdata, '/var/lib/postgresql/data', True),
+                  (runtime.target_secret, '/run/bootstrap-password', False)] if target else
+                 [(self.module.BUNDLE, '/bundle', False),
+                  (self.module.NODE, '/fixed-node', False),
+                  (runtime.crypto, '/work/crypto', True)])
+        tmpfs = ({'/var/run/postgresql':
+                  'rw,nosuid,nodev,size=1m,mode=0700,uid=999,gid=999',
+                  '/tmp': 'rw,nosuid,nodev,noexec,size=16m,mode=1777'} if target else
+                 {'/var/lib/postgresql/data':
+                  'rw,nosuid,nodev,noexec,size=64k,mode=000',
+                  '/tmp': 'rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=65532,gid=65532'})
+        env = ['PATH=/usr/local/bin', 'POSTGRES_PASSWORD_FILE=/run/bootstrap-password',
+               'POSTGRES_HOST_AUTH_METHOD=scram-sha-256',
+               'POSTGRES_DB=' + self.module.TARGET_DATABASE] if target else \
+              ['PATH=/usr/local/bin']
+        return {'Id': identity, 'Name': '/' + getattr(runtime, kind + '_name'),
+                'Image': 'sha256:' + 'a' * 64,
+                'Config': {'Image': self.module.IMAGE,
+                           'User': '999:999' if target else '65532:65532',
+                           'Labels': {'stage1.attempt': self.attempt},
+                           'OpenStdin': True, 'Tty': False, 'Env': env,
+                           'Entrypoint': ['/usr/local/bin/docker-entrypoint.sh'] if target
+                           else ['/fixed-node'],
+                           'Cmd': ['postgres', '-p', '5433', '-c',
+                                   'listen_addresses=127.0.0.1'] if target else
+                                  ['/bundle/scripts/release/snapshot-h1-data-worker.mjs'],
+                           'WorkingDir': '/bundle' if not target else ''},
+                'HostConfig': {'NetworkMode': 'container:' + runtime.source_id,
+                               'Tmpfs': tmpfs, 'ReadonlyRootfs': True,
+                               'Privileged': False, 'CapDrop': ['ALL'],
+                               'SecurityOpt': ['no-new-privileges:true'],
+                               'Memory': self.module.TARGET_MEMORY,
+                               'MemorySwap': self.module.TARGET_MEMORY,
+                               'PidsLimit': 128,
+                               'Ulimits': [{'Name': 'core', 'Soft': 0, 'Hard': 0}],
+                               'LogConfig': {'Type': 'none'},
+                               'RestartPolicy': {'Name': 'no'}},
+                'Mounts': [{'Type': 'bind', 'Source': source,
+                            'Destination': destination, 'RW': writable}
+                           for source, destination, writable in binds]}
+
+    def test_unsafe_inspect_blocks_credentials_but_owned_drift_can_be_removed(self):
+        runtime = self.producer()
+        target = self.inspect_record(runtime, 'target')
+        worker = self.inspect_record(runtime, 'worker')
+        worker['Mounts'][0]['RW'] = True
+        runtime.worker_attempted = True
+        records = {runtime.target_id: target, runtime.worker_id: worker}
+        calls = []
+        def docker(argv, data=None, timeout=30, discard=False):
+            calls.append(argv)
+            if argv[:2] == ['image', 'inspect']:
+                return Result(json.dumps([{'Id': target['Image'],
+                                           'Config': {'Env': ['PATH=/usr/local/bin']}}])
+                              .encode('utf-8'))
+            if argv[0] == 'rm':
+                records.pop(argv[-1])
+            return Result()
+        with patch.object(runtime, '_inspect', side_effect=lambda identity: records.get(identity)), \
+             patch.object(runtime, '_docker', side_effect=docker), \
+             patch.object(runtime, '_spawn_worker') as spawn:
+            with self.assertRaisesRegex(self.module.ProducerFailure,
+                                        'WORKER_CONFINEMENT_INVALID'):
+                runtime._worker_protocol('source', 'target')
+            spawn.assert_not_called()
+            self.assertTrue(runtime._remove_owned('worker'))
+        self.assertEqual(calls[-1], ['rm', '--force', '--volumes', runtime.worker_id])
+
+    def test_target_inspect_env_drift_fails_before_bootstrap(self):
+        runtime = self.producer()
+        target = self.inspect_record(runtime, 'target')
+        target['Config']['Env'].append('LD_PRELOAD=/tmp/inject.so')
+        with patch.object(runtime, '_inspect', return_value=target), \
+             patch.object(runtime, '_docker', return_value=Result(json.dumps([{
+                 'Id': target['Image'], 'Config': {'Env': ['PATH=/usr/local/bin']}}])
+                 .encode('utf-8'))):
+            with self.assertRaisesRegex(self.module.ProducerFailure,
+                                        'TARGET_CONFINEMENT_INVALID'):
+                runtime._confined('target')
+
+    def test_explicit_environment_can_precede_image_defaults_without_duplicates(self):
+        runtime = self.producer()
+        target = self.inspect_record(runtime, 'target')
+        env = target['Config']['Env']
+        target['Config']['Env'] = env[1:] + env[:1]
+        with patch.object(runtime, '_inspect', return_value=target), \
+             patch.object(runtime, '_docker', return_value=Result(json.dumps([{
+                 'Id': target['Image'], 'Config': {'Env': ['PATH=/usr/local/bin']}}])
+                 .encode('utf-8'))):
+            self.assertIs(runtime._confined('target'), target)
+            target['Config']['Env'].append('PATH=/usr/local/bin')
+            with self.assertRaisesRegex(self.module.ProducerFailure,
+                                        'TARGET_CONFINEMENT_INVALID'):
+                runtime._confined('target')
+
     def test_constructor_accepts_only_fixed_one_off_identity_without_side_effects(self):
         runtime = self.producer()
         self.assertEqual(runtime.attempt_id, self.attempt)

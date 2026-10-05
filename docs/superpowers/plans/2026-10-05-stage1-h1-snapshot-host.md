@@ -82,8 +82,9 @@
 - [x] 用户精确批准的独立 I0 archive writer/reader 身份初始化，`5be00e` 实际 RAM 回读、`724bef` 十条云审计记录核验完成；角色未附 OSS 权限、无 AccessKey。精确原件 policy 编译器和既有撤销状态归档类型已补齐。实际归档/资源 readback/后续精确 RAM 差额仍待实施，不能作为 I0_CLOSED；详见 `docs/acceptance/2026-10-05-stage1-i0-archive-identities-readback.md`。
 - [x] 固定 JIT 注册/精确退役 transport 本地接线，以及 H1 Runner 容器/专用临时网络/私有 stdin 入口的实际边界检查；`29de75` 非法 JIT 明确拒绝并完成真实清理，`88fd47` 相关 35 项通过。不是云端注册或真实 producer，完整事实及失败修正见 `docs/acceptance/2026-10-06-stage1-h1-jit-runtime.md`。
 - [x] 本次 attempt 的生产临时卷生命周期：固定 UUID/1 GiB、排斥并发、swap/core 保护、独立实际销毁和恢复；`e8db0f` 新模块 H1 实测、`3c1e36` 独立回读通过，7 项边界测试通过。未读业务数据，制作其余工序仍待下项；详见 `docs/acceptance/2026-10-06-stage1-h1-production-data-runtime.md`。
+- [x] 固定源角色/目标 PostgreSQL/worker 的 root 私有操作实现；`e75444` 新目标库实际 5433/加密目录/清理通过，`659c24` 最终 Python 3.6.8 上 14 项测试及安装/清理回读通过。尚未启用真实源角色或调用完整 producer，不作真实制作证明；同上 acceptance 记录保留限界。
 - [ ] root 签名准入、当前撤销和 GitHub 实际 job 观测接线，JIT 唯一路由与结束后不可路由证明。
-- [ ] 本次 attempt 的加密卷/源角色/目标数据库/worker/publisher 工序以及独立终态检查，最后接真实 workflow。
+- [ ] publisher/独立 reader 接线，将上述固定操作接入实际准入并核验实际运行约束与终态证据，完成真实制作和三个 jobs 的 workflow。
 
 **固定版本接口核对：** v2.337.0 的 hook JSON 使用 `args.container`，并为 prepare/run/cleanup 均生成 `<runner-root>/_work/_temp/_runner_hook_responses/<GUID>.json`；部分在线示例使用的 `jobContainer`/null responseFile 不适用此版本。prepare 最少回写 `isAlpine:false`，state 仅为不可信关联信息；脚本结果取 hook 退出码，不使用 JSON exitCode。root 状态机必须自行绑定 attempt、最多执行一次固定入口；不接收 workflow 的 shell/script/env/mount 指令。核对依据为固定 tag 的 HookInput、HookResponse 和 ContainerHookManager；后续直接按该接口实施，不重复做版本调研。
 

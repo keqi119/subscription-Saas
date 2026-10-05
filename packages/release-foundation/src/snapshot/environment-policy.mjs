@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { canonicalJson } from "../canonical-json.mjs";
 import { sha256Canonical } from "../digest.mjs";
 import { validateContract } from "../schema-registry.mjs";
@@ -281,6 +282,129 @@ export function buildEnvironmentPolicyObservation(input = {}) {
   return snapshotKernelData(value, "ENVIRONMENT_OBSERVATION_INVALID");
 }
 
+function githubApprovalFacts(facts, policyIdentity) {
+  const code = "ENVIRONMENT_OBSERVATION_INVALID";
+  closed(facts, ["observedAt", "run", "job", "checkRun", "reviews"], code);
+  const id = (value) => {
+    if (!Number.isSafeInteger(value) || value <= 0) fail(code);
+    return String(value);
+  };
+  const { run, job, checkRun: check, reviews } = facts;
+  for (const value of [run, job, check]) plain(value, code);
+  for (const value of [
+    run.repository,
+    run.head_repository,
+    run.actor,
+    check.repository,
+    check.checkSuite
+  ])
+    plain(value, code);
+  plain(check.checkSuite.commit, code);
+  plain(check.checkSuite.workflowRun, code);
+  plain(check.deployment, code);
+  const runId = id(run.id);
+  const checkId = id(check.databaseId);
+  if (
+    id(run.repository.id) !== REPOSITORY.id ||
+    run.repository.full_name !== REPOSITORY.name ||
+    id(run.head_repository.id) !== REPOSITORY.id ||
+    run.head_repository.full_name !== REPOSITORY.name ||
+    id(run.actor.id) !== ACTOR_ID ||
+    run.run_attempt !== 1 ||
+    run.event !== "workflow_dispatch" ||
+    run.path !== WORKFLOW_PATH ||
+    run.head_branch !== "main" ||
+    !SHA.test(run.head_sha) ||
+    id(job.run_id) !== runId ||
+    job.head_sha !== run.head_sha ||
+    job.name !== "snapshot-data" ||
+    job.status !== "queued" ||
+    !Array.isArray(job.labels) ||
+    job.labels.some((label) => typeof label !== "string") ||
+    job.check_run_url !== `https://api.github.com/repos/${REPOSITORY.name}/check-runs/${checkId}` ||
+    typeof check.id !== "string" ||
+    check.id.length < 1 ||
+    check.id.length > 256 ||
+    check.name !== job.name ||
+    check.status !== "QUEUED" ||
+    id(check.repository.databaseId) !== REPOSITORY.id ||
+    check.repository.nameWithOwner !== REPOSITORY.name ||
+    id(check.checkSuite.workflowRun.databaseId) !== runId ||
+    check.checkSuite.commit.oid !== run.head_sha ||
+    check.deployment.environment !== policyIdentity.environment.name ||
+    check.deployment.commitOid !== run.head_sha ||
+    check.pendingDeploymentRequest !== null ||
+    !Array.isArray(reviews) ||
+    reviews.length > 100
+  )
+    fail(code);
+  const relevant = [];
+  for (const review of reviews) {
+    plain(review, code);
+    if (!Array.isArray(review.environments) || review.environments.length === 0) fail(code);
+    let matched = false;
+    for (const environment of review.environments) {
+      plain(environment, code);
+      const environmentId = id(environment.id);
+      if (
+        environmentId === policyIdentity.environment.id ||
+        environment.name === ENVIRONMENT_NAME
+      ) {
+        if (
+          environmentId !== policyIdentity.environment.id ||
+          environment.name !== ENVIRONMENT_NAME ||
+          matched
+        )
+          fail(code);
+        matched = true;
+      }
+    }
+    if (matched) relevant.push(review);
+  }
+  // The run is attempt 1. Require an unambiguous review for this exact environment;
+  // do not invent ordering/timestamps when the history contains conflicting entries.
+  if (relevant.length !== 1) fail(code);
+  plain(relevant[0].user, code);
+  if (relevant[0].state !== "approved" || id(relevant[0].user.id) !== ACTOR_ID) fail(code);
+  return {
+    run: {
+      repository: run.repository.full_name,
+      runId,
+      runAttempt: run.run_attempt,
+      workflowPath: run.path,
+      workflowRef: run.head_branch,
+      sourceSha: run.head_sha
+    },
+    job: { id: id(job.id), name: job.name, status: job.status, labels: job.labels },
+    // "approved" is derived from actual review + queued check with no pending gate;
+    // it is not a fabricated native GitHub deployment status or approval timestamp.
+    deployment: { id: id(check.deployment.databaseId), state: "approved" },
+    review: { reviewerId: id(relevant[0].user.id), state: relevant[0].state }
+  };
+}
+
+export function buildPostApprovalObservationFromGitHub(input = {}) {
+  const code = "ENVIRONMENT_OBSERVATION_INVALID";
+  closed(
+    input,
+    ["rootPolicy", "apiPolicy", "admission", "approvalSelection", "now", "maxAgeMs"],
+    code
+  );
+  const captured = snapshotKernelData(input, code);
+  const { rootPolicy, apiPolicy } = captured;
+  const policyIdentity = buildEnvironmentPolicyIdentity({ rootPolicy, apiPolicy });
+  const observed = githubApprovalFacts(apiPolicy.approval, policyIdentity);
+  const observation = buildEnvironmentPolicyObservation({
+    identity: policyIdentity,
+    apiPolicy,
+    observedAt: apiPolicy.approval.observedAt,
+    phase: "approved-queued",
+    ...observed
+  });
+  verifyPostApprovalObservation({ ...captured, identity: policyIdentity, observation });
+  return snapshotKernelData({ identity: policyIdentity, observation }, code);
+}
+
 export function verifyPostApprovalObservation(input = {}) {
   const {
     rootPolicy,
@@ -333,58 +457,19 @@ export function verifyPostApprovalObservation(input = {}) {
     fail("ENVIRONMENT_OBSERVATION_INVALID");
   const code = "ENVIRONMENT_OBSERVATION_INVALID";
   closed(approvalSelection, ["runId", "runAttempt", "jobId", "deploymentId"], code);
-  const facts = apiPolicy.approval;
-  closed(
-    facts,
-    [
-      "repositoryId",
-      "environmentId",
-      "bypassed",
-      "observedAt",
-      "run",
-      "deployment",
-      "job",
-      "review"
-    ],
-    code
-  );
-  closed(facts.deployment, ["id", "state", "runId", "runAttempt", "approvedAt"], code);
-  closed(
-    facts.job,
-    ["id", "name", "status", "labels", "runId", "runAttempt", "deploymentId"],
-    code
-  );
-  closed(facts.review, ["reviewerId", "state", "deploymentId", "approvedAt"], code);
-  const approvedAt = instant(facts.deployment.approvedAt, code);
+  const facts = githubApprovalFacts(apiPolicy.approval, latestIdentity);
   if (
-    facts.repositoryId !== REPOSITORY.id ||
-    facts.environmentId !== latestIdentity.environment.id ||
-    facts.bypassed !== false ||
     approvalSelection.runId !== snapshotAdmission.producerRun.runId ||
     approvalSelection.runAttempt !== 1 ||
     !ID.test(approvalSelection.jobId) ||
     !ID.test(approvalSelection.deploymentId) ||
     !same(facts.run, observation.run) ||
     facts.deployment.id !== approvalSelection.deploymentId ||
-    facts.deployment.runId !== approvalSelection.runId ||
-    facts.deployment.runAttempt !== 1 ||
-    !same(observation.deployment, { id: facts.deployment.id, state: facts.deployment.state }) ||
+    !same(observation.deployment, facts.deployment) ||
     facts.job.id !== approvalSelection.jobId ||
-    facts.job.runId !== approvalSelection.runId ||
-    facts.job.runAttempt !== 1 ||
-    facts.job.deploymentId !== approvalSelection.deploymentId ||
-    facts.job.name !== "snapshot-data" ||
-    !same(observation.job, {
-      id: facts.job.id,
-      name: facts.job.name,
-      status: facts.job.status,
-      labels: facts.job.labels
-    }) ||
-    facts.review.deploymentId !== approvalSelection.deploymentId ||
-    !same(observation.review, { reviewerId: facts.review.reviewerId, state: facts.review.state }) ||
-    instant(facts.review.approvedAt, code) !== approvedAt ||
-    approvedAt > observedAt ||
-    instant(facts.observedAt, code) !== observedAt
+    !same(observation.job, facts.job) ||
+    !same(observation.review, facts.review) ||
+    instant(apiPolicy.approval.observedAt, code) !== observedAt
   )
     fail(code);
 }

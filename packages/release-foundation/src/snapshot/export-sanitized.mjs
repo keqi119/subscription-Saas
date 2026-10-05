@@ -8,7 +8,7 @@ import {
   assertReadOnlySnapshotSource,
   fingerprintSourceSnapshot
 } from "./source-readonly-guard.mjs";
-import { scanSanitizedArtifact } from "./scan-artifact.mjs";
+import { scanSanitizedArchive, scanSanitizedArtifact } from "./scan-artifact.mjs";
 
 function snapshotError(code, details) {
   return Object.assign(new Error(code), { code, details });
@@ -47,12 +47,24 @@ function assertContractSemantics(contract) {
   if (new Set(keys).size !== keys.length) {
     throw snapshotError("SNAPSHOT_CONTRACT_TRANSFORMATION_DUPLICATE");
   }
+  const allowedJsonFields = new Map([
+    [
+      "public.application\u0000customer_profile_snapshot",
+      ["mobile", "emergencyContactMobile", "idCardNo"]
+    ],
+    ["public.service_case\u0000customer_snapshot", ["mobile"]]
+  ]);
   for (const rule of contract.transformations) {
+    const allowedFields = allowedJsonFields.get(`${rule.table}\u0000${rule.column}`);
     if (
       (rule.method === "deterministic-token" && !rule.keyReference) ||
       (rule.method === "fixed-disabled-value" && !rule.fixedValue) ||
       (["null-out", "redact-url"].includes(rule.method) &&
-        (rule.keyReference !== undefined || rule.fixedValue !== undefined))
+        (rule.keyReference !== undefined || rule.fixedValue !== undefined)) ||
+      (rule.jsonFields !== undefined &&
+        (rule.method !== "deterministic-token" ||
+          !allowedFields ||
+          canonicalJson([...rule.jsonFields].sort()) !== canonicalJson([...allowedFields].sort())))
     ) {
       throw snapshotError("SNAPSHOT_CONTRACT_TRANSFORMATION_INVALID");
     }
@@ -71,15 +83,44 @@ export function transformRecord(record, { table, contract, tokenizationKey }) {
   }
   const output = { ...record };
   for (const rule of contract.transformations.filter((entry) => entry.table === table)) {
-    if (!(rule.column in output) || output[rule.column] === null) continue;
+    if (!(rule.column in output)) {
+      if (rule.jsonFields !== undefined) throw snapshotError("SNAPSHOT_TRANSFORM_JSON_INVALID");
+      continue;
+    }
+    if (output[rule.column] === null) continue;
     if (rule.method === "deterministic-token") {
       if (!Buffer.isBuffer(tokenizationKey) || tokenizationKey.byteLength < 8) {
         throw snapshotError("SNAPSHOT_TOKENIZATION_KEY_INVALID");
       }
-      output[rule.column] = `snap_${createHmac("sha256", tokenizationKey)
-        .update(String(output[rule.column]), "utf8")
-        .digest("hex")
-        .slice(0, 24)}`;
+      const token = (value) =>
+        `snap_${createHmac("sha256", tokenizationKey)
+          .update(value, "utf8")
+          .digest("hex")
+          .slice(0, 24)}`;
+      if (rule.jsonFields !== undefined) {
+        const original = output[rule.column];
+        if (
+          !original ||
+          typeof original !== "object" ||
+          Array.isArray(original) ||
+          ![Object.prototype, null].includes(Object.getPrototypeOf(original))
+        ) {
+          throw snapshotError("SNAPSHOT_TRANSFORM_JSON_INVALID");
+        }
+        const transformed = { ...original };
+        for (const field of rule.jsonFields) {
+          if (
+            !Object.hasOwn(original, field) ||
+            (original[field] !== null && typeof original[field] !== "string")
+          ) {
+            throw snapshotError("SNAPSHOT_TRANSFORM_JSON_INVALID");
+          }
+          if (original[field] !== null) transformed[field] = token(original[field]);
+        }
+        output[rule.column] = transformed;
+      } else {
+        output[rule.column] = token(String(output[rule.column]));
+      }
     } else if (rule.method === "fixed-disabled-value") {
       output[rule.column] = rule.fixedValue;
     } else if (rule.method === "null-out") {
@@ -142,6 +183,22 @@ function verifySnapshotMetadataFields(input, verifyDump) {
   ) {
     throw snapshotError("SNAPSHOT_SCAN_INVALID");
   }
+  if (scan.schemaVersion === "sanitization-scan.v2") {
+    try {
+      validateContract("sanitization-scan.v2", scan);
+    } catch (error) {
+      throw snapshotError("SNAPSHOT_SCAN_INVALID", { cause: error?.code });
+    }
+  } else if (scan.schemaVersion !== "sanitization-scan.v1") {
+    throw snapshotError("SNAPSHOT_SCAN_INVALID");
+  }
+  if (
+    verifyDump &&
+    (scan.schemaVersion === "sanitization-scan.v2") !==
+      Buffer.from(input.dump).subarray(0, 5).equals(Buffer.from("PGDMP"))
+  ) {
+    throw snapshotError("SNAPSHOT_SCAN_INVALID");
+  }
   if (
     metadata.sourceFingerprintBeforeDigest !== metadata.sourceFingerprintAfterDigest ||
     metadata.owner !== contract.lifecycle.owner ||
@@ -172,22 +229,24 @@ export function snapshotBundleDigest(bundle) {
   });
 }
 
-export async function exportSanitizedSnapshot({
+// Internal producer seam: the caller already holds plaintext-host authority.
+// This returns private scanned bytes only after source/workspace cleanup, without
+// claiming publication, encryption authorization or custody of those bytes.
+export async function prepareSanitizedSnapshotBundle({
   contract,
   ownershipMap,
   source,
   workspace,
-  publisher,
   secretReference,
   tokenizationSecretReference,
   workflowRunRef,
+  snapshotAllocatedAt,
   now = () => new Date(),
   ...forbidden
 }) {
   if (
     Object.keys(forbidden).length > 0 ||
     workspace?.trustPolicy !== "isolated-sanitization-workspace/v1" ||
-    publisher?.trustPolicy !== "snapshot-final-bundle/v1" ||
     typeof source?.openReadOnlySnapshot !== "function" ||
     typeof source?.exportRaw !== "function" ||
     typeof source?.closeSnapshot !== "function" ||
@@ -195,7 +254,6 @@ export async function exportSanitizedSnapshot({
     typeof workspace?.applyTransformations !== "function" ||
     typeof workspace?.exportSanitized !== "function" ||
     typeof workspace?.destroy !== "function" ||
-    typeof publisher?.publishFinalBundle !== "function" ||
     typeof tokenizationSecretReference !== "string" ||
     !/^secret:\/\/[a-z0-9][a-z0-9./_-]+$/.test(tokenizationSecretReference) ||
     typeof workflowRunRef !== "string" ||
@@ -205,19 +263,34 @@ export async function exportSanitizedSnapshot({
   }
   assertContractSemantics(contract);
   validateContract("ownership-map.v1", ownershipMap);
-  let opened = false;
+  let sourceNeedsClose = false;
   let workspaceDestroyed = false;
-  let primaryError;
   try {
-    const createdAt = now();
+    const observedAt = now();
+    if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) {
+      throw snapshotError("SNAPSHOT_CLOCK_INVALID");
+    }
+    // The admitted allocation starts the snapshot's lifetime; observation clocks
+    // below retain the actual operation time and must never be backdated to it.
+    const createdAt =
+      snapshotAllocatedAt === undefined ? observedAt : new Date(snapshotAllocatedAt);
+    if (
+      !Number.isFinite(createdAt.getTime()) ||
+      createdAt > observedAt ||
+      (snapshotAllocatedAt !== undefined &&
+        (typeof snapshotAllocatedAt !== "string" ||
+          createdAt.toISOString() !== snapshotAllocatedAt))
+    ) {
+      throw snapshotError("SNAPSHOT_CLOCK_INVALID");
+    }
+    sourceNeedsClose = true;
     const privilegeObservation = await assertReadOnlySnapshotSource({
       source,
       secretReference,
       ownershipMap,
-      now: createdAt
+      now: observedAt
     });
     const snapshot = await source.openReadOnlySnapshot({ secretReference });
-    opened = true;
     // PostgreSQL's DEFERRABLE flag has no effect at REPEATABLE READ. Safety here
     // requires the read-only transaction and the same exported MVCC snapshot.
     if (
@@ -232,7 +305,7 @@ export async function exportSanitizedSnapshot({
       source,
       snapshotId: snapshot.snapshotId,
       keyTables: contract.source.keyTables,
-      now: createdAt
+      now: now()
     });
     const raw = await source.exportRaw({ snapshotId: snapshot.snapshotId });
     if (!Buffer.isBuffer(raw) && !(raw instanceof Uint8Array)) {
@@ -245,12 +318,27 @@ export async function exportSanitizedSnapshot({
       sourceDatabaseAccess: "forbidden"
     });
     const sanitized = Buffer.from(await workspace.exportSanitized());
-    const scan = await scanSanitizedArtifact({ bytes: sanitized, contract, scannedAt: createdAt });
+    const isArchive = sanitized.subarray(0, 5).equals(Buffer.from("PGDMP"));
+    const scan = isArchive
+      ? await scanSanitizedArchive({
+          bytes: sanitized,
+          expansion:
+            typeof workspace.expandSanitizedArchive === "function"
+              ? await workspace.expandSanitizedArchive({
+                  archive: Buffer.from(sanitized),
+                  expectedArchiveDigest: sha256Bytes(sanitized),
+                  maxExpandedBytes: 1073741824
+                })
+              : undefined,
+          contract,
+          scannedAt: now()
+        })
+      : await scanSanitizedArtifact({ bytes: sanitized, contract, scannedAt: now() });
     const after = await fingerprintSourceSnapshot({
       source,
       snapshotId: snapshot.snapshotId,
       keyTables: contract.source.keyTables,
-      now: createdAt
+      now: now()
     });
     const beforeIdentityDigest = sha256Canonical(before.identity);
     const afterIdentityDigest = sha256Canonical(after.identity);
@@ -285,7 +373,7 @@ export async function exportSanitizedSnapshot({
       ownershipMap,
       dump: sanitized,
       scan,
-      now: createdAt
+      now: now()
     });
     const bundle = Object.freeze({
       dump: sanitized,
@@ -296,42 +384,57 @@ export async function exportSanitizedSnapshot({
     });
     try {
       await source.closeSnapshot();
-      opened = false;
+      sourceNeedsClose = false;
       await workspace.destroy();
       workspaceDestroyed = true;
     } catch (error) {
       throw snapshotError("SNAPSHOT_SECURE_CLEANUP_FAILED", { cause: error?.code });
     }
-    const receipt = await publisher.publishFinalBundle(bundle);
-    const expectedBundleDigest = snapshotBundleDigest(bundle);
-    try {
-      assertCustodyComplete(receipt, expectedBundleDigest);
-    } catch (error) {
-      throw snapshotError("SNAPSHOT_CUSTODY_INVALID", { cause: error?.code });
-    }
-    if (
-      receipt.owner !== contract.lifecycle.owner ||
-      canonicalJson(receipt.readers) !== canonicalJson(contract.lifecycle.readers)
-    ) {
-      throw snapshotError("SNAPSHOT_CUSTODY_INVALID");
-    }
-    return metadata;
+    return bundle;
   } catch (error) {
-    primaryError = error;
     if (error?.code?.startsWith("SNAPSHOT_")) throw error;
     throw snapshotError("SNAPSHOT_PUBLICATION_INCOMPLETE_FORBIDDEN", {
       cause: error?.code ?? error?.message
     });
   } finally {
     const cleanupErrors = [];
-    if (opened) {
+    if (sourceNeedsClose) {
       await source.closeSnapshot().catch((error) => cleanupErrors.push(error));
     }
     if (!workspaceDestroyed) {
       await workspace.destroy().catch((error) => cleanupErrors.push(error));
     }
-    if (!primaryError && cleanupErrors.length > 0) {
+    if (cleanupErrors.length > 0) {
       throw snapshotError("SNAPSHOT_SECURE_CLEANUP_FAILED");
     }
+  }
+}
+
+export async function exportSanitizedSnapshot({ publisher, ...preparation }) {
+  if (
+    Object.hasOwn(preparation, "snapshotAllocatedAt") ||
+    publisher?.trustPolicy !== "snapshot-final-bundle/v1" ||
+    typeof publisher?.publishFinalBundle !== "function"
+  ) {
+    throw snapshotError("SNAPSHOT_EXPORT_INPUT_INVALID");
+  }
+  const bundle = await prepareSanitizedSnapshotBundle(preparation);
+  try {
+    const receipt = await publisher.publishFinalBundle(bundle);
+    try {
+      assertCustodyComplete(receipt, snapshotBundleDigest(bundle));
+    } catch (error) {
+      throw snapshotError("SNAPSHOT_CUSTODY_INVALID", { cause: error?.code });
+    }
+    if (
+      receipt.owner !== preparation.contract.lifecycle.owner ||
+      canonicalJson(receipt.readers) !== canonicalJson(preparation.contract.lifecycle.readers)
+    ) {
+      throw snapshotError("SNAPSHOT_CUSTODY_INVALID");
+    }
+    return bundle.metadata;
+  } catch (error) {
+    if (error?.code?.startsWith("SNAPSHOT_")) throw error;
+    throw snapshotError("SNAPSHOT_PUBLICATION_INCOMPLETE_FORBIDDEN", { cause: error?.code });
   }
 }

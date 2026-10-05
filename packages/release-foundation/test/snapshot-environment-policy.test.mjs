@@ -5,6 +5,7 @@ import { sha256Canonical } from "../src/digest.mjs";
 import {
   buildEnvironmentPolicyIdentity,
   buildEnvironmentPolicyObservation,
+  buildPostApprovalObservationFromGitHub,
   verifyPostApprovalObservation
 } from "../src/snapshot/environment-policy.mjs";
 
@@ -12,6 +13,7 @@ const DIGEST = `sha256:${"a".repeat(64)}`;
 const SHA = "b".repeat(40);
 const NOW = "2026-09-03T00:00:00.000Z";
 const nonce = "c".repeat(32);
+const { structuredClone } = globalThis;
 
 function rootPolicy() {
   return {
@@ -112,14 +114,44 @@ function approvedFixture() {
   });
   const approvalSelection = { runId: "123", runAttempt: 1, jobId: "99", deploymentId: "88" };
   api.approval = {
-    repositoryId: "1253231368",
-    environmentId: "44",
-    bypassed: false,
     observedAt: NOW,
-    run: structuredClone(observation.run),
-    deployment: { ...observation.deployment, runId: "123", runAttempt: 1, approvedAt: NOW },
-    job: { ...structuredClone(observation.job), runId: "123", runAttempt: 1, deploymentId: "88" },
-    review: { ...observation.review, deploymentId: "88", approvedAt: NOW }
+    run: {
+      id: 123,
+      run_attempt: 1,
+      head_sha: SHA,
+      head_branch: "main",
+      event: "workflow_dispatch",
+      path: ".github/workflows/sanitized-snapshot.yml",
+      actor: { id: 275060624 },
+      repository: { id: 1253231368, full_name: "keqi119/subscription-Saas" },
+      head_repository: { id: 1253231368, full_name: "keqi119/subscription-Saas" }
+    },
+    job: {
+      id: 99,
+      name: "snapshot-data",
+      status: "queued",
+      labels: [...observation.job.labels],
+      run_id: 123,
+      head_sha: SHA,
+      check_run_url: "https://api.github.com/repos/keqi119/subscription-Saas/check-runs/555"
+    },
+    checkRun: {
+      id: "CR_actual_api_node",
+      databaseId: 555,
+      name: "snapshot-data",
+      status: "QUEUED",
+      repository: { databaseId: 1253231368, nameWithOwner: "keqi119/subscription-Saas" },
+      checkSuite: { commit: { oid: SHA }, workflowRun: { databaseId: 123 } },
+      deployment: { databaseId: 88, environment: "stage1-snapshot-export", commitOid: SHA },
+      pendingDeploymentRequest: null
+    },
+    reviews: [
+      {
+        state: "approved",
+        user: { id: 275060624 },
+        environments: [{ id: 44, name: "stage1-snapshot-export" }]
+      }
+    ]
   };
   const boundObservation = { ...observation, apiResponseDigest: sha256Canonical(api) };
   return {
@@ -279,19 +311,19 @@ test("postapproval accepts independently bound approval and rejects forged prove
       f.observation.deployment.id = "89";
     },
     (f) => {
-      f.api.approval.job.runId = "124";
+      f.api.approval.job.run_id = 124;
     },
     (f) => {
-      f.api.approval.review.deploymentId = "89";
+      f.api.approval.reviews[0].environments[0].id = 45;
     },
     (f) => {
       f.api.approval.bypassed = true;
     },
     (f) => {
-      f.api.approval.deployment.approvedAt = "2026-09-03T00:00:01Z";
+      f.api.approval.checkRun.deployment.commitOid = "e".repeat(40);
     },
     (f) => {
-      f.api.approval.review.state = "pending";
+      f.api.approval.reviews[0].state = "rejected";
     },
     (f) => {
       f.api.approval.observedAt = "2026-09-02T00:00:00Z";
@@ -304,6 +336,74 @@ test("postapproval accepts independently bound approval and rejects forged prove
     mutate(f);
     f.observation.apiResponseDigest = sha256Canonical(f.api);
     assert.throws(() => check(f), { code: "ENVIRONMENT_OBSERVATION_INVALID" });
+  }
+});
+
+test("postapproval builder accepts actual REST and GraphQL fields without fabricated approval time", () => {
+  const f = approvedFixture();
+  const result = buildPostApprovalObservationFromGitHub({
+    rootPolicy: f.root,
+    apiPolicy: f.api,
+    admission: f.snapshotAdmission,
+    approvalSelection: f.approvalSelection,
+    now: NOW,
+    maxAgeMs: 300000
+  });
+  assert.deepEqual(result.identity, f.identity);
+  assert.deepEqual(result.observation, f.observation);
+  assert.equal(JSON.stringify(f.api.approval).includes("approvedAt"), false);
+});
+
+test("actual approval relationship rejects missing, pending, cross-run or conflicting evidence", () => {
+  for (const mutate of [
+    (f) => {
+      f.api.approval.checkRun.deployment = null;
+    },
+    (f) => {
+      f.api.approval.checkRun.pendingDeploymentRequest = {
+        environment: { name: "stage1-snapshot-export" }
+      };
+    },
+    (f) => {
+      f.api.approval.checkRun.checkSuite.workflowRun.databaseId = 124;
+    },
+    (f) => {
+      f.api.approval.job.check_run_url =
+        "https://api.github.com/repos/other/project/check-runs/555";
+    },
+    (f) => {
+      f.api.approval.run.actor.id = 12;
+    },
+    (f) => {
+      f.api.approval.reviews[0].user.id = 12;
+    },
+    (f) => {
+      f.api.approval.reviews.push({
+        ...structuredClone(f.api.approval.reviews[0]),
+        state: "rejected"
+      });
+    },
+    (f) => {
+      f.api.approval.job.status = "waiting";
+    },
+    (f) => {
+      f.api.approval.checkRun.status = "IN_PROGRESS";
+    }
+  ]) {
+    const f = approvedFixture();
+    mutate(f);
+    assert.throws(
+      () =>
+        buildPostApprovalObservationFromGitHub({
+          rootPolicy: f.root,
+          apiPolicy: f.api,
+          admission: f.snapshotAdmission,
+          approvalSelection: f.approvalSelection,
+          now: NOW,
+          maxAgeMs: 300000
+        }),
+      { code: "ENVIRONMENT_OBSERVATION_INVALID" }
+    );
   }
 });
 

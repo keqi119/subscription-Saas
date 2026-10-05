@@ -323,6 +323,43 @@ test("v2 local proof observes process exit and admission closure without cloud r
   assert.throws(() => validateProducerCryptoUseProof(uncleared, { authorization, envelope }));
 });
 
+test("v2 successful cleanup accepts unlocked memory only with observed swap disabled", () => {
+  const authorization = localAuthorization(),
+    envelope = localEnvelope(authorization),
+    locked = localUseProof(authorization, envelope);
+  assert.doesNotThrow(() => validateProducerCryptoUseProof(locked, { authorization, envelope }));
+
+  const swapProtected = structuredClone(locked);
+  swapProtected.cleanup.memoryLocked = false;
+  swapProtected.cleanup.hostSwapDisabled = true;
+  assert.doesNotThrow(() =>
+    validateProducerCryptoUseProof(swapProtected, { authorization, envelope })
+  );
+
+  for (const flag of [undefined, false, null]) {
+    const unprotected = structuredClone(swapProtected);
+    if (flag === undefined) delete unprotected.cleanup.hostSwapDisabled;
+    else unprotected.cleanup.hostSwapDisabled = flag;
+    assert.throws(() => validateProducerCryptoUseProof(unprotected, { authorization, envelope }), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
+  }
+
+  const disguisedFailure = structuredClone(swapProtected);
+  disguisedFailure.publishable = false;
+  disguisedFailure.failureKind = "FAILED";
+  assert.throws(() => validateContract("producer-crypto-use-proof.v2", disguisedFailure), {
+    code: "CONTRACT_SCHEMA_INVALID"
+  });
+
+  for (const flag of [true, false, null]) {
+    const failed = structuredClone(disguisedFailure);
+    failed.cleanup.hostSwapDisabled = flag;
+    failed.cleanup.keyBufferClear = "FAILED";
+    assert.doesNotThrow(() => validateContract("producer-crypto-use-proof.v2", failed));
+  }
+});
+
 test("v2 publishability requires independent successful process terminal facts", () => {
   const authorization = localAuthorization(),
     envelope = localEnvelope(authorization),

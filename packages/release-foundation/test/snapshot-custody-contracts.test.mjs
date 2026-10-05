@@ -328,6 +328,7 @@ test("v2 fixed cloud policy keeps OSS identities separate from H1 software decry
   assert.equal(Object.hasOwn(policy, "kms"), false);
   assert.equal(policy.localKey.hardwareNonExportable, false);
   assert.equal(policy.localKey.consumerAdmission, "separate-h1-read-decrypt-use");
+  assert.ok(policy.profiles["custody-reader"].allowedActions.includes("oss:GetBucketVersioning"));
   assert.equal(policy.bucket.worm.retentionDays, 210);
   assert.equal(policy.bucket.forbidOverwrite, true);
   assert.equal(policy.bucket.versioning, "Disabled");

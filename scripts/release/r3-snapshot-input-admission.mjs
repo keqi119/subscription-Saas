@@ -100,18 +100,28 @@ function checkSources(s, now) {
     instant(m.reviewAt) === instant(m.createdAt) + contract.lifecycle.reviewAfterDays * 86400000 &&
       instant(m.expiresAt) === instant(m.createdAt) + contract.lifecycle.expiresAfterDays * 86400000
   );
+  const scanFields = [
+    "schemaVersion",
+    "subjectDigest",
+    "contractDigest",
+    "scannerVersion",
+    "status",
+    "findingsCount",
+    "scannedAt"
+  ];
+  if (scan?.schemaVersion === "sanitization-scan.v2") {
+    validateContract("sanitization-scan.v2", scan);
+    requireThat(
+      exact(scan, [...scanFields, "expandedDigest", "pgRestoreVersion", "archiveFormat"]) &&
+        scan.archiveFormat === "PGDMP" &&
+        DIGEST.test(scan.expandedDigest) &&
+        /^pg_restore \(PostgreSQL\) 17\.11(?: [^\r\n]+)?$/u.test(scan.pgRestoreVersion)
+    );
+  } else {
+    requireThat(exact(scan, scanFields) && scan?.schemaVersion === "sanitization-scan.v1");
+  }
   requireThat(
-    exact(scan, [
-      "schemaVersion",
-      "subjectDigest",
-      "contractDigest",
-      "scannerVersion",
-      "status",
-      "findingsCount",
-      "scannedAt"
-    ]) &&
-      scan.schemaVersion === "sanitization-scan.v1" &&
-      scan.scannerVersion === m.scanToolVersion &&
+    scan.scannerVersion === m.scanToolVersion &&
       scan.scannerVersion === contract.tools.scannerVersion &&
       m.exportToolVersion === contract.tools.exporterVersion &&
       instant(scan.scannedAt) <= now

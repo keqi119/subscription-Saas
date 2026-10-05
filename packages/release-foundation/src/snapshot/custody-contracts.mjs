@@ -242,7 +242,14 @@ export function validateEvidenceArchiveAuthorization(authorization) {
   const expectedActions =
     authorization.profile === "archive-create-only-writer"
       ? ["oss:PutObject"]
-      : ["oss:HeadObject", "oss:GetObject", "oss:GetBucketAcl", "oss:GetBucketWorm"];
+      : [
+          "oss:HeadObject",
+          "oss:GetObject",
+          "oss:GetObjectAcl",
+          "oss:GetBucketAcl",
+          "oss:GetBucketWorm",
+          "oss:GetBucketVersioning"
+        ];
   const expectedPrincipal =
     authorization.profile === "archive-create-only-writer" ? writer : reader;
   if (

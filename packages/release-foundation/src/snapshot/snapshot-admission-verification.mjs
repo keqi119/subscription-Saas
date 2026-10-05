@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { createPublicKey, sign } from "node:crypto";
 
 import { canonicalJson } from "../canonical-json.mjs";
@@ -124,12 +125,23 @@ function exact(raw, selection) {
   assertKernelFrame(value.workflow, ["repositoryId", "path", "sourceSha", "bytes"], code);
   assertKernelFrame(
     value.admissionJob,
-    ["repository", "runId", "runAttempt", "id", "name", "status", "conclusion", "sourceSha"],
+    [
+      "repository",
+      "runId",
+      "runAttempt",
+      "id",
+      "name",
+      "status",
+      "conclusion",
+      "sourceSha",
+      "startedAt",
+      "completedAt"
+    ],
     code
   );
   assertKernelFrame(
     value.artifact,
-    ["id", "name", "repositoryId", "runId", "runAttempt", "jobId", "sourceSha", "bytes"],
+    ["id", "name", "repositoryId", "runId", "sourceSha", "createdAt", "bytes"],
     code
   );
   const { producerRun: run, workflow, artifact } = value;
@@ -158,8 +170,6 @@ function exact(raw, selection) {
     artifact.name !== selection.artifactName ||
     artifact.repositoryId !== selection.repository.id ||
     artifact.runId !== selection.runId ||
-    artifact.runAttempt !== 1 ||
-    artifact.jobId !== selection.admissionJobId ||
     artifact.sourceSha !== selection.sourceSha ||
     !Buffer.isBuffer(artifact.bytes) ||
     artifact.bytes.length > 1048576 ||
@@ -167,28 +177,43 @@ function exact(raw, selection) {
     !Array.isArray(value.usedRouteNonces)
   )
     fail(code);
+  const time = (text) => {
+    if (typeof text !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(text))
+      fail(code);
+    const result = Date.parse(text);
+    if (
+      !Number.isFinite(result) ||
+      new Date(result).toISOString().slice(0, 19) !== text.slice(0, 19)
+    )
+      fail(code);
+    return result;
+  };
+  const started = time(value.admissionJob.startedAt);
+  const completed = time(value.admissionJob.completedAt);
+  const created = time(artifact.createdAt);
+  if (started > completed || created < started || created > completed) fail(code);
   return value;
 }
 
 // Closed YAML subset: two-space block mappings and mapping-item sequences, plain keys,
-// and single-line plain scalar values. Every non-comment line is consumed. Quoting,
+// and single-line plain scalar values. Every non-comment line is consumed. Whole-value quoting,
 // flow forms, aliases, document directives and block scalars are unsupported. A whole
 // single-line ${{ ... }} scalar with the restricted character set below is opaque text;
 // it is never evaluated and cannot supply an action reference or a mapping key.
 // Action keys are permitted only in jobs.<job>.steps[n], never inferred from script text.
-function pinnedActions(workflowBytes) {
+function parsedWorkflow(workflowBytes) {
   const code = "SNAPSHOT_ADMISSION_WORKFLOW_INVALID";
   const source = workflowBytes.toString("utf8");
   if (!Buffer.from(source, "utf8").equals(workflowBytes)) fail(code);
   const tokens = [];
   for (const line of source.split(/\r?\n/)) {
     if (/^ *(?:#.*)?$/.test(line)) continue;
-    const match = line.trimEnd().match(/^((?:  )*)(- )?([A-Za-z_][A-Za-z0-9_-]*):(?: (.*))?$/);
+    const match = line.trimEnd().match(/^((?: {2})*)(- )?([A-Za-z_][A-Za-z0-9_-]*):(?: (.*))?$/);
     if (!match) fail(code);
     const scalar = match[4] === undefined ? "" : match[4];
     if (
       scalar !== "" &&
-      !/^[A-Za-z0-9_./@][A-Za-z0-9_./@ -]*$/.test(scalar) &&
+      !(/^[A-Za-z0-9_./@][A-Za-z0-9_./@ $'":*-]*$/.test(scalar) && !scalar.includes(": ")) &&
       !/^\$\{\{ [A-Za-z0-9_.()'" !=&|,+*/-]+ \}\}$/.test(scalar)
     )
       fail(code);
@@ -257,7 +282,86 @@ function pinnedActions(workflowBytes) {
   const uniqueActions = [
     ...new Map(actions.map((action) => [canonicalJson(action), action])).values()
   ];
-  return uniqueActions.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
+  return {
+    document,
+    actions: uniqueActions.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)))
+  };
+}
+
+function admissionUploader(document, admissionJob) {
+  const code = "SNAPSHOT_ADMISSION_WORKFLOW_INVALID";
+  const jobs = document.jobs;
+  const names = ["admission", "snapshot-custody", "snapshot-data"];
+  if (!same(Object.keys(jobs).sort(), names)) fail(code);
+  for (const name of names) {
+    const job = jobs[name];
+    if (
+      !job ||
+      typeof job !== "object" ||
+      Array.isArray(job) ||
+      (job.name !== undefined && job.name !== name) ||
+      job.strategy !== undefined ||
+      !Array.isArray(job.steps) ||
+      job.steps.length === 0
+    )
+      fail(code);
+  }
+  if (
+    jobs.admission.needs !== undefined ||
+    jobs.admission.environment !== undefined ||
+    jobs["snapshot-data"].needs !== "admission" ||
+    jobs["snapshot-custody"].needs !== "snapshot-data" ||
+    jobs["snapshot-data"].steps.length !== 1 ||
+    typeof jobs["snapshot-data"].steps[0].run !== "string" ||
+    jobs["snapshot-data"].steps[0].uses !== undefined
+  )
+    fail(code);
+  const uploaders = [];
+  for (const name of names) {
+    for (const [index, step] of jobs[name].steps.entries()) {
+      if (!step.uses?.startsWith("actions/upload-artifact@")) continue;
+      const target = step.with?.name;
+      // An expression could resolve to the admission name; only fixed names can
+      // establish a unique declared uploader from the independently pinned file.
+      if (typeof target !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(target))
+        fail(code);
+      if (target === "snapshot-admission") uploaders.push({ name, index, step });
+    }
+  }
+  if (
+    uploaders.length !== 1 ||
+    uploaders[0].name !== "admission" ||
+    uploaders[0].step.with.path !== ".release-output/snapshot-admission.v1.json" ||
+    uploaders[0].step.with.overwrite !== "false" ||
+    uploaders[0].step.with["if-no-files-found"] !== "error"
+  )
+    fail(code);
+  // This is a derivation from the approved workflow and observed completed job,
+  // not a job_id field on GitHub's artifact API (which has no such field).
+  return {
+    method: "unique-pinned-workflow-uploader",
+    workflowJob: "admission",
+    jobId: admissionJob.id,
+    stepIndex: uploaders[0].index,
+    action: uploaders[0].step.uses,
+    artifactPath: uploaders[0].step.with.path
+  };
+}
+
+// Share the exact parser with the root API adapter; action pins are derived
+// from fetched bytes, never copied from the independently installed policy.
+export function readSnapshotWorkflowIdentity(workflowBytes) {
+  if (
+    !Buffer.isBuffer(workflowBytes) ||
+    workflowBytes.length === 0 ||
+    workflowBytes.length > 1048576
+  )
+    fail("SNAPSHOT_ADMISSION_WORKFLOW_INVALID");
+  const { actions } = parsedWorkflow(workflowBytes);
+  return snapshotKernelData(
+    { blobDigest: sha256Bytes(workflowBytes), actionCommits: actions },
+    "SNAPSHOT_ADMISSION_WORKFLOW_INVALID"
+  );
 }
 
 function keyDescriptor(privateKeyFd, expectedPublicKey) {
@@ -339,7 +443,7 @@ export async function verifyAndSignSnapshotAdmission(input = {}) {
     rootPolicy,
     apiPolicy: received.environmentPolicy
   });
-  const actions = pinnedActions(received.workflow.bytes);
+  const { actions, document } = parsedWorkflow(received.workflow.bytes);
   if (
     !same(identity, rootPolicy.environmentPolicyIdentity) ||
     sha256Bytes(received.workflow.bytes) !== rootPolicy.workflow.blobDigest ||
@@ -355,6 +459,7 @@ export async function verifyAndSignSnapshotAdmission(input = {}) {
     )
   )
     fail("SNAPSHOT_ADMISSION_WORKFLOW_INVALID");
+  const derivedArtifactProvenance = admissionUploader(document, received.admissionJob);
   let verifiedDispatch;
   try {
     verifiedDispatch = await verifyDispatchAuthorization(dispatchVerification);
@@ -412,11 +517,11 @@ export async function verifyAndSignSnapshotAdmission(input = {}) {
         name: received.artifact.name,
         repositoryId: received.artifact.repositoryId,
         runId: received.artifact.runId,
-        runAttempt: received.artifact.runAttempt,
-        jobId: received.artifact.jobId,
         sourceSha: received.artifact.sourceSha,
+        createdAt: received.artifact.createdAt,
         digest: sha256Bytes(received.artifact.bytes)
       },
+      derivedArtifactProvenance,
       queuedJobs: received.queuedJobs,
       usedRouteNonces: received.usedRouteNonces,
       selection

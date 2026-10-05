@@ -1,0 +1,131 @@
+# H1 GitHub 实际读取接线
+
+本次完成已批准 GitHub App 的固定读取接口，并在 H1 使用真实身份调用。App 安装 `168113687`、仓库 `keqi119/subscription-Saas`（ID `1253231368`）已确认，无需再次安装或提供私钥。此记录不代表快照准入、JIT 注册或阶段 1 收口。
+
+## 实现与范围
+
+新增 [snapshot-h1-github.py](../../scripts/release/snapshot-h1-github.py)，仅供 root 控制代码导入，没有 CLI、job 参数或环境令牌入口。受信调用者通过私有回调提供已保护的短期 App JWT。接口核对 App、安装及唯一仓库，并申请该仓库的只读安装令牌：administration/actions/contents/deployments/metadata 均为 read。实际注册 Runner 所需的 write 尚未接入。
+
+HTTP 主机固定为 `api.github.com`，不使用代理环境或跟随重定向，不输出错误正文/凭据。查询路径固定，run/job 读取限定 attempt 1；工作流按完整 commit SHA 读取并核对 Git blob 摘要。超过 100 条或不完整的分页结果拒绝使用。返回 API 原始事实，不把调用方选择的 ID 转换成审批或产物来源证明。
+
+正常退出及初始化中的校验失败均撤销已取得的令牌。撤销最多尝试两次；仍失败则关闭所有读取能力并返回明确失败，私有对象保留后续清理能力。不能把失败或无法确认改记为已撤销。`repository()` 返回独立副本，避免调用方修改内部缓存。
+
+## 有限验证与实际读回
+
+- `c64245`：实现缺失时六项测试失败；实现后通过。真实 API 暴露令牌格式限制，增加一项回归后 `e653c2` 复现；修正后共七项通过。
+- GitHub 官方已于 2026 年开始发布更长、含点号的 stateless 安装令牌，旧长度/字符限制不适用。实现只限制头安全字符及大小，不解析其内部身份。[官方接口说明](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app)
+- 首次 H1 `55f331` / `11bc32` 返回 `H1_GITHUB_TOKEN_INVALID`。令牌未保存或输出；因失败发生在旧代码捕获令牌之前，**该次撤销状态为 UNKNOWN**。`228a2a` 独立确认主备卷/mapper 已关闭，swap/core 已恢复。后续成功不能覆盖此失败。
+- 修正后的实际读取 `5cf1dd` 成功：仅指定仓库；旧 CI run `36805384635`、attempt 1、SHA `f3187bd3778de94083d4a870c573279c16768fce`，真实结论仍是 failure。读取到 1 个 job、0 个 approvals、0 个 artifacts、0 个 Runner。该 PR run 仅用于接口核验，不能作为 producer 准入。
+- Environment `23175152803` 的真实策略：仅 `main` 分支，required reviewer 为 keqi119（ID `275060624`），`can_admins_bypass=false`，`prevent_self_review=false`。读取快照 workflow 2998 字节，SHA-256 `68ea4a546ceb42f4c0ef93551fbcd6d62237e2da0aed8a948bdec83509e5a0a6`。仍是旧 workflow，未触发。
+- 该次只读令牌收到 DELETE 204 后才记 `tokenRevoked=true`；随后关闭主备卷并恢复 swap/core。未连接业务数据库、注册 Runner 或制作快照。
+- 一次限定 Luna 审查提出撤销失败后无法重试和浅副本两点，已修正。前者 `34e67b` 先复现，`167ed4` 七项通过；没有增加全量测试矩阵。
+
+实际 API 调用使用修正令牌格式后的代码 SHA `4f1dc93c945607cb9c73ef2f175d0bb0f26a38c14a28f6a5ddcbab66d61a1529`。随后仅修改撤销失败重试及返回副本，未重复请求云端令牌。最终 `0e3b01` 安装/回读为 root:root 0555：
+
+`/opt/subscription-saas/snapshot-adapter/v2/control/snapshot-h1-github.py`
+
+最终文件 SHA-256：`f219489d8ccd2e6a01d7c4093044e598e9a199d52c40dd1c9c9969c448ebac24`。H1 Python 3.6 实际加载通过，主备卷关闭，attempt 根目录为空，Staging PostgreSQL 健康。源码同时加入仓库合同声明和发现清单。
+
+## 后续接线的事实限制
+
+REST artifact 元数据没有上传 job ID 或 run attempt；必须通过精确 workflow、唯一上传步骤及实际 run/job 事实核对来源，不能复制 caller ID 伪装为 API 字段。[Artifact API](https://docs.github.com/en/rest/actions/artifacts)
+
+run approvals 可以读取真实 `state`、`user` 和 `environments`，因此应保留审核人身份验证；它不直接给出批准时刻或 deployment/job 关联。当前 verifier/test 中的额外字段需要对齐真实可验证关系，不能将观测时间当批准时间，也不能因字段缺失直接去掉人工批准门槛。[审批历史 API](https://docs.github.com/en/rest/actions/workflow-runs#get-the-review-history-for-a-workflow-run)
+
+仍待完成：生产 root policy 与 dispatch/current-revocation 来源、上述准入观测适配、JIT 路由和完整 attempt 工序、三 job workflow、精确 OSS publisher/custody 身份及真实快照。之后仍需同候选 R2/R3、两项待迁移和 R4。前置 `67eabf` 确认 Staging PostgreSQL 17.10、128 项迁移中仅 `20260925090000_stage1_operational_completion_terminal_shape` 与 `20260925091000_stage1_operational_completion_settlement_guard` 待执行；`f5ce73` Prisma validate 通过，本次未改业务代码或应用迁移。
+
+## 追加：对齐产物来源和 deployment 查询
+
+[snapshot-admission-verification.mjs](../../packages/release-foundation/src/snapshot/snapshot-admission-verification.mjs) 已删除对 artifact `jobId` / `runAttempt` 伪字段的依赖。现在读取真实 artifact 的 run、SHA、创建时刻，并验证该时刻落在已成功完成的 admission job 起止范围。来源判断还必须同时满足独立固定的 workflow 摘要、action commit 清单、精确三个 jobs 及 needs 链，以及唯一固定名的 `actions/upload-artifact` 步骤；该步骤只上传 `.release-output/snapshot-admission.v1.json`，显式禁止 overwrite，缺文件报错。时间窗口不能单独证明 job 来源。
+
+推导出的 workflow job、实际 job ID、step index、action 和固定路径作为 `derivedArtifactProvenance` 单独纳入签名摘要，没有冒充 GitHub artifact API 字段。仍先完成真实 GitHub 观测和 workflow 核验，再执行当前 dispatch/revocation 验证、canonical admission 重建，最后才读取签名密钥。原有 actor、attempt 1、五标签唯一队列、nonce、用途和撤销门槛保留。
+
+`a62077` 先复现真实字段形状无法通过旧验证器；修改后相关 18 项测试 `aa999a` / 最终 `cd6bdb` 全部通过。一次限定 Luna 审查未发现可证明的重要问题，并明确来源证明依赖受信 workflow 与时间/实际 job 的组合。对这两个已修改文件的 lint/format 检查 `b55399` 通过；初次 lint 的 Buffer/structuredClone 全局声明与正则空格问题已在原文件内修正，没有扩大到其他文件。
+
+审批关联采用 GitHub 官方 `CheckRun.deployment`，从 attempt jobs 的真实 `check_run_url` 取得 CheckRun node ID，再用固定 GraphQL query 读取其 repository、workflow run、commit 和对应 deployment。不能从相同 SHA、时间相近或展示用 log URL 猜测该关系。[官方 CheckRun 字段](https://docs.github.com/en/graphql/reference/checks)
+
+`54765f` 确认此仓库当前为 public；`6efd57` 用现有 GitHub 登录读取旧 CI job，`f3d8e2` 随后在 H1 以现有 App 的五项只读权限实际读取同一关系成功，无需增加 `checks` 权限或修改 App 安装范围。实际 check ID `110188443914`、node ID `CR_kwDOSrLLCM8AAAAZp745Cg`、run `36805384635`、SHA 与原始 job 一致。该普通 CI job 的 deployment/pending 均为 null，**不能作为快照批准证据**；真实 snapshot queued job 的非空关联仍待其实际 run 核验。该次安装令牌已撤销，主备卷关闭，swap/core 恢复，没有触发 workflow 或读取业务数据。
+
+固定接口新增 `read_job_deployment(run_id, job_id)`，只沿实际 API 关系查询，逐项匹配 repository/run/SHA/job/check/node，不接受调用方提供查询文本或 URL。GraphQL 错误/身份不一致拒绝；缺少 deployment 如实返回 null，后续准入必须拒绝放行。`6b2432` 先复现接口缺失，`e45023` 八项 Python 测试通过；其尾部 `rg` 无匹配退出 1 仅确认这些验证器文件不在既有 worker bundle 内，不是测试失败，无需重装 worker。
+
+最终 Python 读取模块由 `24faa8` 安装/回读：root:root 0555，SHA-256 `c4b29236e41dd2af8460deb6a9f13e2973025e05560fce2c292fe09f9107d816`。H1 Python 实际加载通过，主备卷关闭、attempt 根目录为空、Staging PostgreSQL 健康。实际 API 查询发生在接口封装前；封装后的身份拒绝分支由上述有限测试覆盖，未为同一路径重复签发令牌。
+
+`59eb0d` 合同检查通过：290 文件、91 schemas、13 commands、128 项迁移摘要不变，仓库合同摘要 `sha256:1ac5efa33acc7057b605475de45b0aa912a061d0c22ffa643e0a19369221c3ce`。本轮 preflight `04168d`（2026-10-05T13:23:49.388Z）仍只有原两项待迁移，`0b242a` schema validate 通过，临时隧道已关闭。
+
+下一项是将这些真实关系接入 post-approval observation 与 root `readExact` 工厂，取消并未由 API 提供的批准时刻字段，同时保留实际 reviewer/environment/deployment/queued job 的核验。审批 history 的 user/state/environment 已有正式读取入口；不得移除人工批准要求。生产 dispatch/revocation 来源、JIT、完整制作与阶段 1 其余收口项仍未完成。
+
+## 追加：真实审批映射和 admission artifact 下载
+
+[environment-policy.mjs](../../packages/release-foundation/src/snapshot/environment-policy.mjs) 的 `buildPostApprovalObservationFromGitHub` 现在从实际 REST run/job、GraphQL CheckRun 和审批 history 构造并立即验证 observation。要求 attempt 1、指定 actor/main/workflow、精确 job→check→run/repository/commit→deployment 关系、queued 状态、无 pending deployment request，以及目标 environment 唯一且由指定 reviewer 批准的记录。冲突或不完整的审批历史拒绝使用。`approved` 是这些事实联合推导的结果；不再要求 GitHub 未提供的 `approvedAt`、review.deploymentId 或 bypassed 字段，也不把观测时刻当成批准时刻。
+
+当前 Environment 策略、五分钟新鲜度、五个精确标签、admission 与独立 selection 的绑定仍须通过原有验证。输入被复制并冻结；原始 API 响应摘要保留于 observation。`e2d5ba` 先复现新入口缺失，`a4e373` / 最终 `1643fa` 九项针对性测试通过，相关 ESLint 和格式化检查通过。尚未出现真实 snapshot queued job，所以这些有限测试不能作为线上人工批准成功的证据。
+
+Python 固定接口新增 `read_admission_artifact(run_id, artifact_id)`：读取实际 attempt 1 和完整 artifact 列表，核对唯一 `snapshot-admission` 名称、ID、run/repository/SHA、未过期状态、大小和必需的 SHA-256 digest。仅向固定 GitHub artifact ZIP 接口发送令牌，接收其 302 后，在独立、不带 Authorization 的请求中访问官方存储域名；拒绝后续跳转、代理、调用方 URL。签名下载地址既不返回也不记录。[官方 artifact 下载接口](https://docs.github.com/en/rest/actions/artifacts#download-an-artifact)及[存储域名说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+
+ZIP 在内存中处理，下载上限 8 MiB，并核对整个 ZIP 的大小和摘要；只允许一个名为 `snapshot-admission.v1.json` 的普通成员，解压上限 1 MiB，拒绝目录、路径前缀、软链接、加密成员和额外成员。返回原始成员字节，后续 canonical admission 校验不变。`f4260e` 十二项 Python HTTP 边界/真实内存 ZIP 测试通过。限定 Luna 审查未发现重要问题；当前 App 权限不包含 Checks read，既有 public 仓库的实际读取成功事实仍以前项 `f3d8e2` 为准，没有增加权限。
+
+`0ef94b` 已安装并回读最终 Python 模块：root:root 0555，SHA-256 `bbdd5e0e57204b88903dba2f7936520dbdca6715fc481bcfe56b374bc1c42bdc`；H1 Python 3.6 加载通过，主备卷/mapper 关闭、attempt 根目录为空、Staging PostgreSQL 健康，swap/core 维持既有空闲配置。此次安装没有调用 GitHub、签发令牌或读取业务数据。真实 producer artifact 尚不存在，线上下载仍待首次 producer 验证，不能记为成功。
+
+本轮前置 `c40b35` 于 2026-10-05T13:42:21.813Z 核实 Staging PostgreSQL 17.10，128 项迁移仍只有原两项待执行；`1e2c8a` 的终态返回 Prisma validate 成功，临时隧道已关闭。未改业务行为或执行迁移。后续仍需将实际读数接入 root `readExact` / production policy / dispatch 与撤销来源，再接 JIT、完整 attempt 和真实三 job；阶段 1 未收口。
+
+## 追加：root 实际观测工厂与 nonce 台账
+
+[snapshot-h1-observations.mjs](../../scripts/release/snapshot-h1-observations.mjs) 新增 `createInstalledH1SnapshotObservations`，通过固定私有 reader 为现有 `verifyAndSignSnapshotAdmission` 提供 `githubObservations.readExact`，并提供每次重新读取的 `readPostApproval`。它从真实 Environment protection rules、deployment branch policies 和 workflow bytes 计算策略身份；action commit 清单复用准入验证器的同一封闭解析器，不复制 root policy 冒充 API 事实。当前 run/job/artifact 与独立 selection 必须一致，观测超过五分钟、当前队列缺少目标 run、身份变化、策略弱化或真实 deployment 缺失均拒绝。
+
+Python `read_active_jobs()` 分别读取 `in_progress`、`queued`、`requested`、`waiting`、`pending` 的完整仓库列表，不过滤其他 workflow、fork 来源或重跑；每个实际 run 按其真实 attempt 查询 jobs。每次响应要求 `total_count` 与返回条数一致，总 run 和 job 各最多 100；截断、超量、冲突 run 或重复 job 拒绝。JS 中的队列来源因此依赖这个 root 固定 reader 的完整性检查，不依赖调用方自报的 `hasMore=false`。结果是当前观测，并非原子队列锁；注册前检查与实际 job 分配仍须由后续 JIT controller 完成。[官方 run 状态与过滤接口](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository)、[attempt jobs 接口](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt)
+
+[snapshot-h1-github-reader.mjs](../../scripts/release/snapshot-h1-github-reader.mjs) / [snapshot-h1-github-query.py](../../scripts/release/snapshot-h1-github-query.py) 将安装的 Python reader 接到 root Node 侧。固定程序和路径，禁止 shell；在取 JWT 前校验 root 身份、安装摘要、目录/文件权限、swap 关闭及 core 管道禁用。短期 App JWT 仅经子进程 stdin 传递，没有 argv/env/job/workspace 入口。Python 有总时限，先核对实际 nonce 台账，读取 API 原件并成功撤销安装令牌后才输出有界 JSON；两项二进制原件经 canonical base64 私有传递，Node 侧解码后交现有验证器。签名 URL、令牌和原始错误正文不输出。实际 root policy、JWT supplier 和 dispatch/revocation 输入仍须由后续受保护启动器提供，本工厂不能自行授权制作。
+
+[snapshot-h1-route-journal.py](../../scripts/release/snapshot-h1-route-journal.py) 使用固定 root 台账 `/var/lib/subscription-saas/snapshot-root-state/route-nonces`。显式初始化，读取不自动重建；目录 0700、记录 0600、root:root、无符号链接或多链接，所有父目录禁止组/其他用户写入。`claim` 先检查既有记录，再以 `O_EXCL` 原子消费 nonce，绑定 run/job/admission digest 并 fsync 文件及目录；任何失败都不删除或回收 nonce。未知/损坏记录拒绝继续，模块没有删除或 reset 接口。它不声称能抵御恶意 root 回滚；同一 attempt 后续核验不应重复 claim 或重新签发准入。
+
+有限验证与实际部署：
+
+- `73df92` 新工厂缺失时失败；实现后 `4a826a` 三项通过。将 nonce 纳入实际私有管道时 `d6c318` 先失败，`6a3282` / 终态 `0538dd` 三项通过。共享解析器影响的既有准入测试与新映射测试 `b0a4a3` 共 21 项通过。
+- Sol 子 agent 完成 active-run 读取与台账主体；root 完成聚合、私有管道、实际安装，并接管子 agent 容量错误后未完成的台账校验。`528b5f` Python GitHub 18 项通过。台账新增父目录校验后 `2e4c2c` 正确拒绝 `/tmp` 的可写父目录；测试改用 WSL 用户目录后 `ae220c` 四项 POSIX 文件测试通过。仅 root UID/所有者在本地测试中替代，实际权限另由 H1 核验。
+- `ee09c7` H1 实际 root 并发探针只有一次 claim 成功，核对真实 0600/root/nlink，损坏后禁止新 claim，探针目录已移除；正式台账已显式初始化并保持 **0 条生产 nonce**。主备卷关闭、attempt 根目录为空、Staging PostgreSQL 健康；未开启源角色或导出数据。
+- 同次安装三份 Python 文件为 root:root 0555：`snapshot-h1-github.py` SHA-256 `b7d4da38840e356c6edf68a929f09df5faec34b62a0c9039d2c953aee057b98f`；`snapshot-h1-github-query.py` 为 `60a0bc40c41a8fb305ae91e8b1eec90c3fb3e83f6e47b9ed1ae59f6cdc8cc6bd`；`snapshot-h1-route-journal.py` 为 `02d81a8a683a18b6a8ec5dc0abcf7e9e98ba45e20299cde32e384bbeb5894611`。私有 query 在未停用 swap 的宿主状态下实际拒绝，stdout 为空，未调用 GitHub。
+- 最终控制闭包 `9824ef` 安装为 `/opt/subscription-saas/snapshot-adapter/v2/bundles/424eec92eb857df6c247ed92e17baa58eac20bd02ef9ff94d9bbc2a4e96e0999`：300 文件、1,062,832 字节、root 只读，逐文件摘要和真实 Node import/非法输入拒绝通过。`4cfd39` 重建确认相同控制摘要，原 worker bundle 摘要 `239b95e7d513cd80956f71f7616b6bd3ea7bfc99afb80af594422b82b9b17b4f` 未变，没有重装或重复运行 worker。
+- `e9c621` 使用 H1 现有 App 只读身份实际查询上述五种状态成功，观测时 active runs 为 0；安装令牌已撤销、主备卷关闭、swap/core 恢复。没有注册 Runner 或触发 workflow。该事实验证新 API 读取路径；**完整私有管道的成功准入/真实 artifact 下载仍待 producer run**，不能以这次空队列读取或本地合成数据替代。
+- 限定 Luna 审查未发现重要问题；其完整分页疑问由 Python `total_count` 和超量拒绝落实，没有添加自报证明字段或权限。`4cfd39` scoped lint、`fdb9e7` format/diff 通过。初次合同检查 `ae220c` 报文件次序错误，调整两个清单中的次序后 `9824ef` 通过：294 文件、91 schemas、13 commands、128 项迁移摘要不变。
+
+本轮前置 `ed3aef`（2026-10-05T13:58:51.872Z）仍只有原两项待迁移；`607fc4` Prisma schema validate 通过，临时 SSH 隧道已关闭。下一步是受保护 root policy、签名描述符和真实 dispatch/current-revocation 来源，再接准入后的 nonce claim、JIT 注册/实际分配/退出以及完整 attempt 工序。三 job workflow、OSS 精确身份、真实 producer、同候选 R2/R3、两项迁移与 R4 仍未完成；阶段 1 保持 active。
+
+## 追加：固定 App 凭据来源与持久撤销 checkpoint
+
+[snapshot-h1-github-jwt.mjs](../../scripts/release/snapshot-h1-github-jwt.mjs) 补上真实 JWT supplier；`createInstalledH1SnapshotObservations` 现在直接构造该 supplier，不再接收调用方提供的 JWT callback。仅 root 可从既有主卷的固定 App 配置读取：先验证 swap 关闭、core 管道禁用及本进程 core 软/硬限额为零，再验证 LUKS UUID、实际 loop/mapper/mount、nosuid/nodev/noexec、root 目录与 0600 单链接文件。读取有界，读取前后身份与保护条件重核；App/owner/client ID、权限、事件及 RSA SPKI 固定。返回值仅进入现有私有管道，不提供打印 JWT 的 CLI。原始缓冲清零不构成 JS 字符串或 KeyObject 的物理擦除证明。
+
+JWT 固定 RS256、client ID issuer、iat 回退 60 秒、exp 为当前时间后 120 秒；没有新增依赖、App 权限或安装令牌范围。[GitHub JWT 官方说明](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
+
+保留实测失败：首次 H1 `133de9` 返回 `COMMAND_FAILED`；只输出代码行号的诊断 `ce2ff8` 定位 App 元数据检查，`a42559` 确认实际存储的 manifest-conversion 响应**没有 `public` 字段**。实现原先错误地要求字段为 false。现允许响应省略这个字段，若出现 true 仍拒绝；省略不当作新取得的私有可见性事实，既有 App 创建记录和其他身份绑定仍保留。修正后 `bd8997` 在实际主备卷及既有私钥上验证 JWT 签名和全部固定 claims，通过后关闭两卷、恢复 swap/core。该探针没有 GitHub 请求、安装令牌创建、Runner 注册或业务数据读取；短期 JWT 未返回本机或日志。
+
+[snapshot-h1-dispatch-journal.mjs](../../scripts/release/snapshot-h1-dispatch-journal.mjs) 为现有 dispatch verifier 提供固定持久 checkpoint 接口，目录为 `/var/lib/subscription-saas/snapshot-root-state/dispatch-checkpoints`。仅显式初始化可创建某一 policy 的初始记录，读操作不重建缺失状态；root:root、目录 0700、记录 0600、单链接且无不安全父目录。输入在 await 前复制冻结，FD 读取限 1025 字节并回读身份；mkdir 锁串行化跨进程操作，竞争或残留锁直接拒绝，不推测锁已过期。推进使用文件 fsync、rename 和目录 fsync；序号下降、同序异 digest、损坏记录或无法释放锁均拒绝。没有声称抵御恶意 root 回滚。
+
+有限验证与安装：
+
+- `a4cfe8` 新 supplier 缺失时先失败；`c40129`、最终 `2f2a28` 两项凭据拒绝边界及三项既有观测组合通过。Luna 只实现台账和限定静态审查；台账三项测试覆盖显式初始化、重启持久、输入修改/accessor、序号冲突、独立进程竞争和损坏状态，目标 lint/format 通过，没有增加数据库或业务测试矩阵。
+- `268aa7` 最终控制包安装为 `/opt/subscription-saas/snapshot-adapter/v2/bundles/10d2b093cea62009669086113cb4083e10fd0f950833dc0786bb8626f70124e1`，302 文件、1,081,245 字节，逐文件摘要及 root 只读权限校验通过。此前 `f7a186...` 包含已修正的 public 字段错误，不作为最终控制包；`f2ee74...` 是 JWT 实测版本，新增台账后以本项完整包为准。
+- `89e153` 在 H1 真实 Linux root 下，使用**隔离合成目录**及相同生产权限检查，验证持久回读、两个独立写入进程恰好一个成功、真实 0700/0600/root/单链接，以及弱化权限和损坏记录拒绝；探针目录已删除。正式 dispatch checkpoint **尚未初始化**，不能把合成 head 当作当前撤销原件。正式 route nonce 仍为 0。
+- 同次独立 SSH 读回确认主备卷/mapper 关闭、两项 swap 恢复、core 配置恢复、attempt 根为空、Staging PostgreSQL 健康。原 worker 未改动或重复运行。
+- 最终限定 ESLint `9bd398`、Prettier `7ba47b` 通过；`361344` 合同校验通过：296 文件、91 schemas、13 commands，128 项 migration catalog 摘要仍为 `65ebe3208fc618ae82ad24f66b793e9bddd7464526dd45b8a0d9893d24a0ff62`。仓库合同摘要为 `sha256:9fb0322d0d15702c65a73d76ff77b023b6489f14c210100422ac91f79856b20b`。
+
+本轮预检 `c4b02b` 于 2026-10-05T14:30:34.774Z 核实 PostgreSQL 17.10、128 项迁移仍仅有 `20260925090000_stage1_operational_completion_terminal_shape` 和 `20260925091000_stage1_operational_completion_settlement_guard` 待执行；`1ac52d` Prisma validate 通过，临时隧道关闭。业务行为及数据库迁移未变。
+
+剩余接线明确为：固定 root policy 与受限 Ed25519 签名描述符、真实 dispatch 授权原件/签名及独立 custody 读取、串行的当前撤销源和其真实初始 checkpoint。现有 manual profile 公钥锚可复用，但原 manual-launch 签名 API 不能直接当作 dispatch 签名来源；测试 fixtures 不构成生产授权。随后仍须 JIT 实际分配/结束证明、完整 attempt、三个真实 jobs、精确 OSS publisher/custody 身份、真实 producer 和同候选 R2/R3、获准迁移及 R4。阶段 1 未收口。
+
+## 追加：既有 H1 Ed25519 身份的固定签名入口
+
+[snapshot-h1-signing.mjs](../../scripts/release/snapshot-h1-signing.mjs) 新增固定 `verifyAndSignH1SnapshotAdmission`，复用唯一 `verifyAndSignSnapshotAdmission` 决策，不提供任意 payload/domain、私钥或路径入口。它从已安装的 root 只读包读取既有 profile/owner binding，要求 canonical digest 分别为原批准的 `49df6dae...` 和 `68a62706...`，核对有效期、owner、host machine-id 指纹、主卷中原始批准字节及 Ed25519 公钥指纹。原 profile 与 `promotionEligible=false` 保持原件；密钥持有不扩大原有数据库权限，也不产生新的 release-candidate 准入结论。
+
+入口只在既有 verifier 完成实际 GitHub 观测、当前 dispatch 核验、artifact/admission 重建与比较之后，通过一次性 descriptor 读取固定 `key/signing-ed25519.pk8.pem`。读取前重算身份、有效期、主机和批准原件，并同步重核 root/swap/core；私钥文件有界读取、权限/链接/身份前后校验，SPKI 必须仍匹配 `sha256:7146f2e00f4a8e70183a64f3e8c7ebfa8e66926f60d18442e3d5ac4a09e408ef`。密钥对象不返回调用方，原始缓冲清零；不声称运行时字符串或 KeyObject 的物理擦除。
+
+`challengeH1SnapshotSigningKey()` 只签内部生成的随机 nonce、当前身份与时间，固定域为 `h1-snapshot-key-challenge.v1`；无调用方载荷。它用于部署时核对实际密钥持有，不能作为 dispatch、admission、custody 或 release 证明。`46c3c3` 在 H1 既有加密卷和现有私钥上完成该挑战，核对签名、profile/owner/host 和固定 signer；合法 signer 加缺失 root-policy 输入仍被原 verifier 拒绝。没有生成真实 admission、dispatch 或授权成功原件，没有读取源库、注册 Runner 或发起 GitHub 请求。
+
+`bbe272` 在本机用仓库中原批准公钥独立验证返回签名，readback digest 为 `sha256:e846c58bb51f349566b84457df45a563c92ca5173e775539058ffb8060557143`；随后独立 SSH 确认主备卷/mapper 关闭、swap 恢复、core guard 释放、attempt 根为空、route nonce 仍为 0、生产 dispatch checkpoint 未初始化、PostgreSQL 健康。加密卷与密钥没有重建或更换。
+
+为复用同一实际主卷检查，原 JWT 中的保护逻辑机械提取到 [snapshot-h1-key-volume.mjs](../../scripts/release/snapshot-h1-key-volume.mjs)。路径、UUID、loop/mapper/mount 及权限要求不变；共享检查在返回前再次同步核对内存保护，保留原 JWT 返回前检查的时序。限定测试 `4bfa93` 先因签名入口缺失而失败，`89ada8` 新入口两项通过，最终 `e3a8f0` 加既有 JWT 两项共四项通过；同步保护拒绝/通过断言并入原两项。限定 Luna 审查未发现重要问题，明确剩余 root policy 与 dispatch 来源仍必须由 root 私有装配提供。
+
+`9da33a` 安装最终控制包 `/opt/subscription-saas/snapshot-adapter/v2/bundles/cf12e7ac2bc26b4c008d78a4447d14ef5ce352b11d94b0dfdd148f2cd12761db`：306 文件、1,093,247 字节、逐文件摘要与 root 只读权限通过。新增的两个 public profile 文件是原件复制；没有私钥进入运行包。`6b8531` 合同校验通过，298 文件、91 schemas、13 commands、128 项迁移摘要不变，仓库合同摘要 `sha256:362d71cf16c9fff5218aa1671fe456cbc6191390111750d23db3ab536a3158f4`。
+
+本轮只读盘点还明确了 I0 的实际缺口：现有 `subscription-saas-stage1-evidence-writer` / `subscription-saas-stage1-evidence-audit-reader` 仅信任 `trusted-image-build` OIDC；H1 的 snapshot-consumer 只读 `snapshot-slots/v2/*`。前者不能成为独立于待测 build/OIDC 的签发控制面根保管身份，后者没有控制证据的写/读权限。需先形成独立控制面 writer/reader 与冻结对象集合的具体 RAM 差额草案，按用户要求确认后应用；不能扩展现有 consumer、借用管理员会话伪装 writer/reader 或将策略配置当作实际保管成功。尚未执行新的 RAM 变更。
+
+预检 `cc3abd` 于 2026-10-05T14:58:10.471Z 仍仅有原两条待迁移，SSH 临时隧道已关闭；`5d156b` Prisma validate 通过。下一步继续真实 dispatch 签发/当前撤销源及 I0 私有权威保管、root 固定策略，然后连接 JIT 与真实 producer。阶段 1、R2/R3、待执行迁移和 R4 均保持原目标，未宣称收口。

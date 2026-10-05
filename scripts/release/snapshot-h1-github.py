@@ -1,0 +1,808 @@
+"""Fixed GitHub read session for the H1 root controller (Python 3.6+).
+
+The trusted caller supplies a short-lived App JWT from the protected key process.
+There is no CLI, job input, environment token, arbitrary URL or runner registration
+interface. API observations remain raw facts; they are not signed admission.
+"""
+import base64
+import copy
+import datetime
+import hashlib
+import io
+import json
+import re
+import ssl
+import stat
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+
+
+REPOSITORY = 'keqi119/subscription-Saas'
+REPO_ID = 1253231368
+OWNER_ID = 275060624
+APP_ID = 5196151
+INSTALLATION_ID = 168113687
+APP_SLUG = 'keqi119-stage1-snapshot-jit'
+PREFIX = '/repos/' + REPOSITORY
+WORKFLOW = '.github/workflows/sanitized-snapshot.yml'
+ENVIRONMENT = 'stage1-snapshot-export'
+ENVIRONMENT_ID = 23175152803
+APP_PERMISSIONS = {'administration': 'write', 'actions': 'read',
+                   'contents': 'read', 'deployments': 'read', 'metadata': 'read'}
+READ_PERMISSIONS = dict(APP_PERMISSIONS, administration='read')
+JIT_PERMISSIONS = {'administration': 'write', 'actions': 'read', 'metadata': 'read'}
+ACTIVE_RUN_STATUSES = ('in_progress', 'queued', 'requested', 'waiting', 'pending')
+MAX_BYTES = 1048576
+MAX_ARCHIVE_BYTES = 8 * MAX_BYTES
+CHECK_DEPLOYMENT_QUERY = '''query($id:ID!) {
+  node(id:$id) { ... on CheckRun {
+    id databaseId name status
+    repository { databaseId nameWithOwner }
+    checkSuite { commit { oid } workflowRun { databaseId } }
+    deployment { id databaseId environment commitOid createdAt latestStatus { state } }
+    pendingDeploymentRequest { environment { id name } }
+  } }
+}'''
+
+
+class GitHubFailure(Exception):
+    """Only fixed, non-secret error codes cross the controller boundary."""
+
+
+def require(condition, code):
+    if not condition:
+        raise GitHubFailure('H1_GITHUB_' + code)
+
+
+def _frame(pairs):
+    value = {}
+    for key, item in pairs:
+        require(key not in value, 'RESPONSE_INVALID')
+        value[key] = item
+    return value
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, url):
+        raise GitHubFailure('H1_GITHUB_REDIRECT_REJECTED')
+
+
+class StopRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, url):
+        return None
+
+
+def _artifact_storage_url(location):
+    require(type(location) is str and len(location) <= 8192, 'ARTIFACT_REDIRECT_INVALID')
+    try:
+        parsed = urllib.parse.urlsplit(location)
+        host = parsed.hostname
+        valid_host = (host == 'results-receiver.actions.githubusercontent.com' or
+                      re.fullmatch(r'[a-z0-9-]+\.blob\.core\.windows\.net', host or '') is not None)
+        require(parsed.scheme == 'https' and valid_host and parsed.port is None and
+                parsed.username is None and parsed.password is None and
+                parsed.fragment == '' and parsed.path.startswith('/'),
+                'ARTIFACT_REDIRECT_INVALID')
+    except ValueError:
+        raise GitHubFailure('H1_GITHUB_ARTIFACT_REDIRECT_INVALID') from None
+    return location
+
+
+def _download_artifact(artifact_id, token):
+    # GitHub's fixed API route returns a 302. Inspect Location without allowing
+    # urllib to carry the installation token to the storage host.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()), StopRedirect())
+    headers = {'Accept': 'application/vnd.github+json',
+               'X-GitHub-Api-Version': '2022-11-28',
+               'User-Agent': 'stage1-h1-snapshot-root',
+               'Authorization': 'Bearer ' + token}
+    request = urllib.request.Request('https://api.github.com' + PREFIX +
+                                     '/actions/artifacts/' + _id(artifact_id) + '/zip',
+                                     headers=headers, method='GET')
+    try:
+        with opener.open(request, timeout=30) as response:
+            raise GitHubFailure('H1_GITHUB_ARTIFACT_REDIRECT_INVALID')
+    except urllib.error.HTTPError as cause:
+        try:
+            require(cause.code == 302, 'HTTP_' + str(cause.code))
+            location = _artifact_storage_url(cause.headers.get('Location'))
+        finally:
+            cause.close()
+    except (OSError, ValueError):
+        raise GitHubFailure('H1_GITHUB_REQUEST_FAILED') from None
+    # One credential-free hop; redirects at storage are rejected as well.
+    storage_request = urllib.request.Request(location,
+        headers={'User-Agent': 'stage1-h1-snapshot-root'}, method='GET')
+    deadline = time.monotonic() + 30
+    try:
+        with opener.open(storage_request, timeout=30) as response:
+            require(response.status == 200, 'HTTP_' + str(response.status))
+            chunks = []
+            size = 0
+            while True:
+                require(time.monotonic() < deadline, 'ARTIFACT_TIMEOUT')
+                chunk = response.read1(min(65536, MAX_ARCHIVE_BYTES + 1 - size))
+                size += len(chunk)
+                require(size <= MAX_ARCHIVE_BYTES, 'ARTIFACT_TOO_LARGE')
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b''.join(chunks)
+    except urllib.error.HTTPError as cause:
+        status = cause.code
+        cause.close()
+        raise GitHubFailure('H1_GITHUB_HTTP_' + str(status)) from None
+    except (OSError, ValueError):
+        raise GitHubFailure('H1_GITHUB_REQUEST_FAILED') from None
+
+
+def _admission_member(archive):
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive), 'r') as source:
+            members = source.infolist()
+            require(len(members) == 1, 'ARTIFACT_ZIP_INVALID')
+            member = members[0]
+            mode = member.external_attr >> 16
+            require(member.filename == 'snapshot-admission.v1.json' and
+                    not member.is_dir() and stat.S_IFMT(mode) in (0, stat.S_IFREG) and
+                    not member.flag_bits & 1 and
+                    member.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) and
+                    0 < member.file_size <= MAX_BYTES and
+                    member.compress_size <= MAX_ARCHIVE_BYTES, 'ARTIFACT_ZIP_INVALID')
+            with source.open(member, 'r') as content:
+                raw = content.read(MAX_BYTES + 1)
+                require(len(raw) == member.file_size, 'ARTIFACT_ZIP_INVALID')
+                return raw
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, NotImplementedError):
+        raise GitHubFailure('H1_GITHUB_ARTIFACT_ZIP_INVALID') from None
+
+
+def _api(method, route, credential, body=None, expected=(200,)):
+    # All callers below construct fixed routes. Never honor proxy environment or
+    # forward Authorization to a redirect/download_url supplied by a response.
+    require(route.startswith('/') and not route.startswith('//') and
+            not any(char in route for char in ('\r', '\n', '#', '\\')), 'INPUT_INVALID')
+    headers = {'Accept': 'application/vnd.github+json',
+               'X-GitHub-Api-Version': '2022-11-28',
+               'User-Agent': 'stage1-h1-snapshot-root',
+               'Authorization': 'Bearer ' + credential}
+    data = None
+    if body is not None:
+        headers['Content-Type'] = 'application/json'
+        data = json.dumps(body, separators=(',', ':')).encode('ascii')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()), NoRedirect())
+    request = urllib.request.Request('https://api.github.com' + route,
+                                    data=data, headers=headers, method=method)
+    try:
+        with opener.open(request, timeout=30) as response:
+            require(response.status in expected, 'HTTP_' + str(response.status))
+            raw = response.read(MAX_BYTES + 1)
+            require(len(raw) <= MAX_BYTES, 'RESPONSE_TOO_LARGE')
+            if response.status == 204:
+                require(not raw, 'RESPONSE_INVALID')
+                return None
+        return json.loads(raw.decode('utf-8'), object_pairs_hook=_frame)
+    except urllib.error.HTTPError as cause:
+        status = cause.code
+        cause.close()
+        if status == 404 and 404 in expected:
+            return None
+        raise GitHubFailure('H1_GITHUB_HTTP_' + str(status)) from None
+    except (OSError, ValueError, UnicodeError):
+        raise GitHubFailure('H1_GITHUB_REQUEST_FAILED') from None
+
+
+def _id(value):
+    require(type(value) is str and re.fullmatch(r'[1-9][0-9]{0,18}', value) is not None,
+            'INPUT_INVALID')
+    return value
+
+
+def _sha(value):
+    require(type(value) is str and re.fullmatch(r'[a-f0-9]{40}', value) is not None,
+            'INPUT_INVALID')
+    return value
+
+
+def _github_time(value, code):
+    require(type(value) is str and re.fullmatch(
+        r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z', value) is not None, code)
+    try:
+        pattern = '%Y-%m-%dT%H:%M:%S.%fZ' if '.' in value else '%Y-%m-%dT%H:%M:%SZ'
+        return datetime.datetime.strptime(value, pattern).replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        raise GitHubFailure('H1_GITHUB_' + code) from None
+
+
+def _owner(value):
+    return (type(value) is dict and value.get('id') == OWNER_ID and
+            value.get('login') == 'keqi119')
+
+
+def _repository(value):
+    return (type(value) is dict and value.get('id') == REPO_ID and
+            value.get('full_name') == REPOSITORY and _owner(value.get('owner')))
+
+
+def _list(value, key):
+    require(type(value) is dict and type(value.get('total_count')) is int and
+            0 <= value['total_count'] <= 100 and type(value.get(key)) is list and
+            len(value[key]) == value['total_count'] and
+            all(type(row) is dict for row in value[key]), 'LIST_INCOMPLETE')
+    return value[key]
+
+
+def _jit_labels(run_id, nonce):
+    return ['self-hosted', 'linux', 'x64', ENVIRONMENT,
+            ENVIRONMENT + '-' + run_id + '-' + nonce]
+
+
+def _jit_runner_matches(value, runner_id, name, labels):
+    if type(value) is not dict or type(value.get('id')) is not int or \
+            value['id'] != runner_id or value.get('name') != name or \
+            value.get('os') not in ('unknown', 'linux'):
+        return False
+    if 'runner_group_id' in value and value['runner_group_id'] != 1:
+        return False
+    actual = value.get('labels')
+    if type(actual) is not list or len(actual) != len(labels):
+        return False
+    names = []
+    for item in actual:
+        if type(item) is not dict or type(item.get('name')) is not str:
+            return False
+        names.append(item['name'].lower())
+    return len(set(names)) == len(labels) and set(names) == set(labels)
+
+
+def _valid_jit_config(value):
+    if type(value) is not str or not 0 < len(value) <= MAX_BYTES:
+        return False
+    try:
+        raw = base64.b64decode(value.encode('ascii'), validate=True)
+    except (ValueError, UnicodeError):
+        return False
+    return 0 < len(raw) <= MAX_BYTES and base64.b64encode(raw).decode('ascii') == value
+
+
+class H1SnapshotGitHub:
+    """One private read session. The token is revoked even when __enter__ fails."""
+    def __init__(self, jwt_supplier):
+        require(callable(jwt_supplier), 'INPUT_INVALID')
+        self._jwt_supplier = jwt_supplier
+        self._token = None
+        self._used = False
+        self._closed = False
+        self._repository = None
+
+    def _token_permissions(self):
+        return READ_PERMISSIONS
+
+    def __enter__(self):
+        require(not self._used and not self._closed, 'SESSION_CLOSED')
+        self._used = True
+        try:
+            jwt = self._jwt_supplier()
+            require(type(jwt) is str and len(jwt) <= 4096 and
+                    re.fullmatch(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', jwt),
+                    'JWT_INVALID')
+            app = _api('GET', '/app', jwt)
+            require(type(app) is dict and app.get('id') == APP_ID and
+                    app.get('slug') == APP_SLUG and _owner(app.get('owner')) and
+                    app.get('permissions') == APP_PERMISSIONS and app.get('events') == [],
+                    'APP_MISMATCH')
+            installation = _api('GET', PREFIX + '/installation', jwt)
+            require(type(installation) is dict and installation.get('id') == INSTALLATION_ID and
+                    installation.get('app_id') == APP_ID and installation.get('app_slug') == APP_SLUG and
+                    _owner(installation.get('account')) and installation.get('target_id') == OWNER_ID and
+                    installation.get('target_type') == 'User' and
+                    installation.get('repository_selection') == 'selected' and
+                    installation.get('permissions') == APP_PERMISSIONS and
+                    installation.get('events') == [] and installation.get('suspended_at') is None and
+                    installation.get('suspended_by') is None, 'INSTALLATION_MISMATCH')
+            permissions = self._token_permissions()
+            created = _api('POST', '/app/installations/' + str(INSTALLATION_ID) + '/access_tokens',
+                           jwt, {'repository_ids': [REPO_ID], 'permissions': dict(permissions)},
+                           expected=(201,))
+            require(type(created) is dict and type(created.get('token')) is str and
+                    re.fullmatch(r'[\x21-\x7e]{1,16384}', created['token']), 'TOKEN_INVALID')
+            self._token = created['token']
+            # Capture first so all later validation failures also revoke it.
+            # Installation tokens are opaque; GitHub's stateless format has dots
+            # and is longer than the legacy token. Only bound header-safe bytes.
+            require(re.fullmatch(r'[A-Za-z0-9._~+/=-]{20,16384}', self._token), 'TOKEN_INVALID')
+            require(created.get('permissions') == permissions and
+                    created.get('repository_selection') == 'selected', 'TOKEN_SCOPE_MISMATCH')
+            try:
+                expires = datetime.datetime.strptime(created['expires_at'], '%Y-%m-%dT%H:%M:%SZ')
+                expires = expires.replace(tzinfo=datetime.timezone.utc)
+                seconds = (expires - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+            except (ValueError, KeyError, TypeError):
+                raise GitHubFailure('H1_GITHUB_TOKEN_INVALID') from None
+            require(60 <= seconds <= 3700, 'TOKEN_INVALID')
+            rows = _list(self._get('/installation/repositories?per_page=100'), 'repositories')
+            require(len(rows) == 1 and _repository(rows[0]), 'REPOSITORY_MISMATCH')
+            self._repository = rows[0]
+            return self
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            self._jwt_supplier = None
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
+    def close(self):
+        self._closed = True
+        self._repository = None
+        if self._token is None:
+            return
+        # One bounded retry for a transient network/service failure. On unknown
+        # cleanup, keep only the private retry capability; reads stay closed.
+        for attempt in range(2):
+            try:
+                _api('DELETE', '/installation/token', self._token, expected=(204,))
+            except Exception:
+                continue
+            self._token = None
+            return
+        raise GitHubFailure('H1_GITHUB_TOKEN_REVOCATION_FAILED') from None
+
+    def _get(self, route, expected=(200,)):
+        require(self._token is not None and not self._closed, 'SESSION_CLOSED')
+        return _api('GET', route, self._token, expected=expected)
+
+    def repository(self):
+        require(self._token is not None and not self._closed and self._repository is not None,
+                'SESSION_CLOSED')
+        return copy.deepcopy(self._repository)
+
+    def read_run(self, run_id):
+        value = self._get(PREFIX + '/actions/runs/' + _id(run_id) + '/attempts/1')
+        require(type(value) is dict and value.get('id') == int(run_id) and
+                value.get('run_attempt') == 1 and _repository(value.get('repository')) and
+                _repository(value.get('head_repository')), 'RUN_MISMATCH')
+        return value
+
+    def read_jobs(self, run_id):
+        return _list(self._get(PREFIX + '/actions/runs/' + _id(run_id) +
+                               '/attempts/1/jobs?per_page=100'), 'jobs')
+
+    def read_terminal_inputs(self, selection):
+        """Retain GitHub's completed run and three jobs as external terminal originals."""
+        fields = {'repository', 'runId', 'runAttempt', 'sourceSha', 'admissionJobId',
+                  'jobId', 'custodyJobId'}
+        require(type(selection) is dict and set(selection) == fields and
+                selection['repository'] == {'id': str(REPO_ID), 'name': REPOSITORY} and
+                type(selection['runAttempt']) is int and selection['runAttempt'] == 1,
+                'INPUT_INVALID')
+        for key in ('runId', 'admissionJobId', 'jobId', 'custodyJobId'):
+            _id(selection[key])
+        source_sha = _sha(selection['sourceSha'])
+        require(len({selection['admissionJobId'], selection['jobId'],
+                     selection['custodyJobId']}) == 3, 'INPUT_INVALID')
+        run_id = selection['runId']
+        first = self.read_run(run_id)
+        jobs = self.read_jobs(run_id)
+        latest = self._get(PREFIX + '/actions/runs/' + run_id)
+        final = self.read_run(run_id)
+        stable = ('id', 'run_attempt', 'head_sha', 'head_branch', 'repository',
+                  'head_repository', 'actor', 'event', 'path', 'status', 'conclusion',
+                  'created_at', 'updated_at')
+        require(type(latest) is dict and all(
+            first.get(key) == latest.get(key) == final.get(key) for key in stable) and
+            type(latest.get('id')) is int and latest['id'] == int(run_id) and
+            type(latest.get('run_attempt')) is int and latest['run_attempt'] == 1 and
+            _repository(latest.get('repository')) and
+            _repository(latest.get('head_repository')) and
+            latest.get('head_sha') == source_sha and latest.get('head_branch') == 'main' and
+            latest.get('event') == 'workflow_dispatch' and latest.get('path') == WORKFLOW and
+            _owner(latest.get('actor')) and latest.get('status') == 'completed' and
+            latest.get('conclusion') == 'success', 'RUN_MISMATCH')
+        observed = datetime.datetime.now(datetime.timezone.utc)
+        created = _github_time(latest.get('created_at'), 'RUN_MISMATCH')
+        updated = _github_time(latest.get('updated_at'), 'RUN_MISMATCH')
+        require(created <= updated <= observed, 'RUN_MISMATCH')
+        selected = {'admission': selection['admissionJobId'],
+                    'snapshot-data': selection['jobId'],
+                    'snapshot-custody': selection['custodyJobId']}
+        require(len(jobs) == 3 and set(job.get('name') for job in jobs) == set(selected),
+                'TERMINAL_JOB_MISMATCH')
+        times = {}
+        for job in jobs:
+            name = job['name']
+            labels = job.get('labels')
+            require(type(job.get('id')) is int and job['id'] == int(selected[name]) and
+                    type(job.get('run_id')) is int and job['run_id'] == int(run_id) and
+                    type(job.get('run_attempt')) is int and job['run_attempt'] == 1 and
+                    job.get('head_sha') == source_sha and
+                    job.get('status') == 'completed' and job.get('conclusion') == 'success' and
+                    type(job.get('runner_id')) is int and job['runner_id'] > 0 and
+                    type(job.get('runner_name')) is str and job['runner_name'] and
+                    type(labels) is list and all(type(label) is str for label in labels),
+                    'TERMINAL_JOB_MISMATCH')
+            started = _github_time(job.get('started_at'), 'TERMINAL_JOB_MISMATCH')
+            completed = _github_time(job.get('completed_at'), 'TERMINAL_JOB_MISMATCH')
+            require(created <= started <= completed <= updated <= observed,
+                    'TERMINAL_JOB_MISMATCH')
+            times[name] = (started, completed)
+            if name == 'snapshot-data':
+                match = re.fullmatch(r'stage1-snapshot-([a-f0-9]{32})', job['runner_name'])
+                expected_labels = _jit_labels(run_id, match.group(1)) if match else []
+                lowered = [label.lower() for label in labels]
+                require(match is not None and type(job.get('runner_group_id')) is int and
+                        job['runner_group_id'] == 1 and
+                        len(labels) == len(expected_labels) and
+                        len(set(lowered)) == len(expected_labels) and
+                        set(lowered) == set(expected_labels),
+                        'TERMINAL_JOB_MISMATCH')
+            else:
+                require(job['runner_name'].startswith('GitHub Actions ') and
+                        labels == ['ubuntu-latest'], 'TERMINAL_JOB_MISMATCH')
+        require(times['admission'][1] <= times['snapshot-data'][0] and
+                times['snapshot-data'][1] <= times['snapshot-custody'][0],
+                'TERMINAL_JOB_MISMATCH')
+        observed_at = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        return {'selection': copy.deepcopy(selection), 'run': final, 'jobs': jobs,
+                'observedAt': observed_at}
+
+    def read_active_jobs(self):
+        # These five fixed queries observe every active status in this repo.
+        # The result is a bounded observation, not an atomic lease on runners.
+        runs = {}
+        for status in ACTIVE_RUN_STATUSES:
+            rows = _list(self._get(PREFIX + '/actions/runs?status=' + status +
+                                   '&per_page=100'), 'workflow_runs')
+            for run in rows:
+                run_id = run.get('id')
+                attempt = run.get('run_attempt')
+                sha = run.get('head_sha')
+                require(type(run_id) is int and 0 < run_id < 10 ** 19 and
+                        type(attempt) is int and 0 < attempt < 10 ** 19 and
+                        type(sha) is str and re.fullmatch(r'[a-f0-9]{40}', sha) is not None and
+                        _repository(run.get('repository')) and
+                        run.get('status') in ACTIVE_RUN_STATUSES,
+                        'ACTIVE_RUN_INVALID')
+                if run_id in runs:
+                    previous = runs[run_id]
+                    require(all(previous.get(key) == run.get(key) for key in
+                                ('run_attempt', 'head_sha', 'repository', 'status')),
+                            'ACTIVE_RUN_INVALID')
+                else:
+                    runs[run_id] = run
+                require(len(runs) <= 100, 'ACTIVE_RUN_LIMIT')
+        observed = []
+        job_ids = set()
+        for run in runs.values():
+            route = (PREFIX + '/actions/runs/' + str(run['id']) + '/attempts/' +
+                     str(run['run_attempt']) + '/jobs?per_page=100')
+            jobs = _list(self._get(route), 'jobs')
+            for job in jobs:
+                job_id = job.get('id')
+                require(type(job_id) is int and 0 < job_id < 10 ** 19 and
+                        job_id not in job_ids and
+                        type(job.get('run_id')) is int and job['run_id'] == run['id'] and
+                        job.get('head_sha') == run['head_sha'], 'ACTIVE_JOB_INVALID')
+                job_ids.add(job_id)
+                require(len(job_ids) <= 100, 'ACTIVE_JOB_LIMIT')
+            observed.append({'run': run, 'jobs': jobs})
+        return observed
+
+    def read_admission_inputs(self, selection):
+        # Private root selection, never job-provided facts or URLs. Binary values
+        # remain bytes until the separate private pipe serializer encodes them.
+        fields = {'repository', 'runId', 'runAttempt', 'sourceSha', 'admissionJobId',
+                  'jobId', 'artifactId', 'artifactName'}
+        require(type(selection) is dict and set(selection) == fields and
+                selection['repository'] == {'id': str(REPO_ID), 'name': REPOSITORY} and
+                selection['runAttempt'] == 1 and type(selection['runAttempt']) is int and
+                selection['artifactName'] == 'snapshot-admission', 'INPUT_INVALID')
+        for key in ('runId', 'admissionJobId', 'jobId', 'artifactId'):
+            _id(selection[key])
+        _sha(selection['sourceSha'])
+        require(selection['admissionJobId'] != selection['jobId'], 'INPUT_INVALID')
+        observed_at = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        run = self.read_run(selection['runId'])
+        require(run.get('head_sha') == selection['sourceSha'], 'RUN_MISMATCH')
+        workflow = self.read_workflow(selection['sourceSha'])
+        artifact = self.read_admission_artifact(selection['runId'], selection['artifactId'])
+        environment = self.read_environment()
+        branches = self.read_branch_policies()
+        reviews = self.read_approvals(selection['runId'])
+        deployment = self.read_job_deployment(selection['runId'], selection['jobId'])
+        active = self.read_active_jobs()
+        selected = [group for group in active if group['run']['id'] == int(selection['runId'])]
+        require(len(selected) == 1 and selected[0]['run']['run_attempt'] == 1 and
+                selected[0]['run']['head_sha'] == selection['sourceSha'], 'ACTIVE_RUN_INVALID')
+        final_run = self.read_run(selection['runId'])
+        require(all(final_run.get(key) == run.get(key) for key in
+                    ('id', 'run_attempt', 'head_sha', 'head_branch', 'repository',
+                     'head_repository', 'actor', 'event', 'path')) and
+                final_run.get('status') in ACTIVE_RUN_STATUSES, 'RUN_MISMATCH')
+        return {'observedAt': observed_at, 'repository': self.repository(), 'run': final_run,
+                'jobs': selected[0]['jobs'], 'environment': environment,
+                'branchPolicies': branches, 'workflowBytes': workflow,
+                'artifact': artifact, 'activeRuns': active,
+                'deployment': deployment, 'reviews': reviews}
+
+    def read_approvals(self, run_id):
+        value = self._get(PREFIX + '/actions/runs/' + _id(run_id) + '/approvals')
+        require(type(value) is list and len(value) <= 100 and
+                all(type(row) is dict for row in value), 'RESPONSE_INVALID')
+        return value
+
+    def read_job_deployment(self, run_id, job_id):
+        _id(run_id)
+        _id(job_id)
+        run = self.read_run(run_id)
+        jobs = [job for job in self.read_jobs(run_id) if job.get('id') == int(job_id)]
+        code = 'DEPLOYMENT_BINDING_INVALID'
+        require(len(jobs) == 1 and jobs[0].get('run_id') == int(run_id) and
+                jobs[0].get('head_sha') == run.get('head_sha'), code)
+        job = jobs[0]
+        link = job.get('check_run_url')
+        match = re.fullmatch(r'https://api\.github\.com/repos/keqi119/subscription-Saas/check-runs/([1-9][0-9]*)',
+                             link) if type(link) is str else None
+        require(match is not None, code)
+        checked = self._get(PREFIX + '/check-runs/' + _id(match.group(1)))
+        require(type(checked) is dict and checked.get('id') == int(match.group(1)) and
+                checked.get('head_sha') == run.get('head_sha') and
+                checked.get('name') == job.get('name') and type(checked.get('node_id')) is str and
+                1 <= len(checked['node_id']) <= 256, code)
+        graph = _api('POST', '/graphql', self._token,
+                     {'query': CHECK_DEPLOYMENT_QUERY, 'variables': {'id': checked['node_id']}})
+        require(type(graph) is dict and not graph.get('errors'), code)
+        try:
+            item = graph['data']['node']
+            require(type(item) is dict and item['id'] == checked['node_id'] and
+                    item['databaseId'] == checked['id'] and item['name'] == job['name'] and
+                    item['repository']['databaseId'] == REPO_ID and
+                    item['repository']['nameWithOwner'] == REPOSITORY and
+                    item['checkSuite']['workflowRun']['databaseId'] == run['id'] and
+                    item['checkSuite']['commit']['oid'] == run['head_sha'] and
+                    (item['deployment'] is None or type(item['deployment']) is dict) and
+                    (item['pendingDeploymentRequest'] is None or
+                     type(item['pendingDeploymentRequest']) is dict), code)
+        except (KeyError, TypeError):
+            raise GitHubFailure('H1_GITHUB_' + code) from None
+        # Nullable deployment is returned honestly. The admission verifier must
+        # still require a real deployment, matching policy and approval history.
+        return {'job': job, 'checkRun': item}
+
+    def read_environment(self):
+        value = self._get(PREFIX + '/environments/' + ENVIRONMENT)
+        require(type(value) is dict and value.get('id') == ENVIRONMENT_ID and
+                value.get('name') == ENVIRONMENT, 'ENVIRONMENT_MISMATCH')
+        return value
+
+    def read_branch_policies(self):
+        return _list(self._get(PREFIX + '/environments/' + ENVIRONMENT +
+                              '/deployment-branch-policies?per_page=100'), 'branch_policies')
+
+    def read_artifacts(self, run_id):
+        return _list(self._get(PREFIX + '/actions/runs/' + _id(run_id) +
+                              '/artifacts?per_page=100'), 'artifacts')
+
+    def read_admission_artifact(self, run_id, artifact_id):
+        _id(run_id)
+        _id(artifact_id)
+        run = self.read_run(run_id)
+        candidates = [row for row in self.read_artifacts(run_id)
+                      if row.get('name') == 'snapshot-admission']
+        require(len(candidates) == 1 and candidates[0].get('id') == int(artifact_id),
+                'ARTIFACT_MISMATCH')
+        artifact = candidates[0]
+        workflow_run = artifact.get('workflow_run')
+        require(type(workflow_run) is dict and workflow_run.get('id') == run['id'] and
+                workflow_run.get('repository_id') == REPO_ID and
+                workflow_run.get('head_sha') == run.get('head_sha') and
+                artifact.get('expired') is False and
+                type(artifact.get('size_in_bytes')) is int and
+                0 < artifact['size_in_bytes'] <= MAX_ARCHIVE_BYTES and
+                type(artifact.get('digest')) is str and
+                re.fullmatch(r'sha256:[a-f0-9]{64}', artifact['digest']) is not None,
+                'ARTIFACT_MISMATCH')
+        archive = _download_artifact(artifact_id, self._token)
+        require(len(archive) == artifact['size_in_bytes'] and
+                'sha256:' + hashlib.sha256(archive).hexdigest() == artifact['digest'],
+                'ARTIFACT_DIGEST_MISMATCH')
+        return {'metadata': artifact, 'bytes': _admission_member(archive)}
+
+    def read_runners(self):
+        return _list(self._get(PREFIX + '/actions/runners?per_page=100'), 'runners')
+
+    def read_runner(self, runner_id):
+        value = self._get(PREFIX + '/actions/runners/' + _id(runner_id), expected=(200, 404))
+        require(value is None or type(value) is dict and value.get('id') == int(runner_id),
+                'RUNNER_MISMATCH')
+        return value
+
+    def read_workflow(self, source_sha):
+        value = self._get(PREFIX + '/contents/' + WORKFLOW + '?ref=' + _sha(source_sha))
+        require(type(value) is dict and value.get('type') == 'file' and
+                value.get('path') == WORKFLOW and value.get('encoding') == 'base64' and
+                type(value.get('size')) is int and 0 < value['size'] <= MAX_BYTES and
+                type(value.get('content')) is str, 'WORKFLOW_INVALID')
+        try:
+            raw = base64.b64decode(value['content'].replace('\n', ''), validate=True)
+        except (ValueError, UnicodeError):
+            raise GitHubFailure('H1_GITHUB_WORKFLOW_INVALID') from None
+        blob = hashlib.sha1(b'blob ' + str(len(raw)).encode('ascii') + b'\0' + raw).hexdigest()
+        require(len(raw) == value['size'] and blob == value.get('sha'), 'WORKFLOW_INVALID')
+        return raw
+
+
+class H1SnapshotJitGitHub(H1SnapshotGitHub):
+    """One fixed-route JIT allocation; token revocation and runner removal differ."""
+
+    def __init__(self, jwt_supplier):
+        super().__init__(jwt_supplier)
+        self._jit_attempted = False
+        self._created_runner_id = None
+        self._created_runner_name = None
+        self._created_runner_labels = None
+
+    def _token_permissions(self):
+        return JIT_PERMISSIONS
+
+    def create_jit(self, run_id, route_nonce):
+        require(self._token is not None and not self._closed, 'SESSION_CLOSED')
+        run_id = _id(run_id)
+        require(type(route_nonce) is str and
+                re.fullmatch(r'[a-f0-9]{32}', route_nonce) is not None, 'INPUT_INVALID')
+        require(not self._jit_attempted, 'JIT_ALREADY_ATTEMPTED')
+        self._jit_attempted = True
+        name = 'stage1-snapshot-' + route_nonce
+        labels = _jit_labels(run_id, route_nonce)
+        existing = _list(self._get(PREFIX + '/actions/runners?per_page=100'), 'runners')
+        for runner in existing:
+            require(type(runner.get('name')) is str and
+                    type(runner.get('labels')) is list, 'RUNNER_LIST_INVALID')
+            listed_labels = []
+            for label in runner['labels']:
+                require(type(label) is dict and type(label.get('name')) is str,
+                        'RUNNER_LIST_INVALID')
+                listed_labels.append(label['name'].lower())
+            require(runner['name'] != name and labels[-1] not in listed_labels,
+                    'JIT_ROUTE_EXISTS')
+        # This mark precedes the one allowed POST, including ambiguous network outcomes.
+        try:
+            response = _api('POST', PREFIX + '/actions/runners/generate-jitconfig',
+                            self._token, {'name': name, 'runner_group_id': 1,
+                                          'labels': labels, 'work_folder': '_work'},
+                            expected=(201,))
+        except Exception:
+            raise GitHubFailure('H1_GITHUB_JIT_CREATE_UNKNOWN') from None
+        require(type(response) is dict, 'JIT_RESPONSE_INVALID')
+        runner = response.get('runner')
+        runner_id = runner.get('id') if type(runner) is dict else None
+        require(type(runner_id) is int and 0 < runner_id < 10 ** 19 and
+                _jit_runner_matches(runner, runner_id, name, labels),
+                'JIT_RUNNER_MISMATCH')
+        # Preserve exact response identity for a later verified cleanup, even if
+        # the config or readback is invalid. Never infer an ID from a list.
+        self._created_runner_id = runner_id
+        self._created_runner_name = name
+        self._created_runner_labels = labels
+        encoded = response.get('encoded_jit_config')
+        require(_valid_jit_config(encoded), 'JIT_CONFIG_INVALID')
+        actual = self._get(PREFIX + '/actions/runners/' + str(runner_id))
+        require(_jit_runner_matches(actual, runner_id, name, labels),
+                'JIT_RUNNER_MISMATCH')
+        return {'runner': actual, 'encoded_jit_config': encoded}
+
+    def remove_created_runner(self):
+        require(self._token is not None and not self._closed, 'SESSION_CLOSED')
+        require(self._created_runner_id is not None, 'JIT_RUNNER_UNASSIGNED')
+        runner_id = self._created_runner_id
+        route = PREFIX + '/actions/runners/' + str(runner_id)
+        current = self._get(route, expected=(200, 404))
+        if current is None:
+            return True
+        require(_jit_runner_matches(current, runner_id, self._created_runner_name,
+                                    self._created_runner_labels), 'JIT_RUNNER_MISMATCH')
+        _api('DELETE', route, self._token, expected=(204,))
+        require(self._get(route, expected=(200, 404)) is None,
+                'JIT_REMOVE_UNCONFIRMED')
+        return True
+
+    def read_running_job(self, selection):
+        """Read the actual in-progress snapshot-data job on this created runner."""
+        require(self._token is not None and not self._closed, 'SESSION_CLOSED')
+        fields = {'runId', 'jobId', 'sourceSha', 'routeNonce'}
+        require(type(selection) is dict and set(selection) == fields, 'INPUT_INVALID')
+        run_id = _id(selection['runId'])
+        job_id = _id(selection['jobId'])
+        source_sha = _sha(selection['sourceSha'])
+        nonce = selection['routeNonce']
+        require(type(nonce) is str and re.fullmatch(r'[a-f0-9]{32}', nonce) is not None,
+                'INPUT_INVALID')
+        runner_id = self._created_runner_id
+        runner_name = self._created_runner_name
+        labels = self._created_runner_labels
+        expected_name = 'stage1-snapshot-' + nonce
+        expected_labels = _jit_labels(run_id, nonce)
+        require(type(runner_id) is int and 0 < runner_id < 10 ** 19 and
+                runner_name == expected_name and labels == expected_labels,
+                'JIT_RUNNER_UNASSIGNED')
+
+        # The attempt-specific route below identifies attempt one, but it does
+        # not establish that a later rerun has not become current. Read the
+        # canonical run resource as well and reject unless its current attempt
+        # is still one and its facts match the original attempt.
+        run = self.read_run(run_id)
+        latest = self._get(PREFIX + '/actions/runs/' + run_id)
+        require(type(latest) is dict and type(latest.get('id')) is int and
+                latest.get('id') == int(run_id) and
+                type(latest.get('run_attempt')) is int and latest.get('run_attempt') == 1 and
+                all(latest.get(key) == run.get(key) for key in
+                    ('head_sha', 'status', 'repository', 'head_repository', 'actor',
+                     'head_branch', 'event', 'path')), 'RUN_MISMATCH')
+        run = latest
+        actor = run.get('actor')
+        require(run.get('head_sha') == source_sha and run.get('status') == 'in_progress' and
+                run.get('head_branch') == 'main' and run.get('event') == 'workflow_dispatch' and
+                run.get('path') == WORKFLOW and type(actor) is dict and
+                type(actor.get('id')) is int and actor.get('id') == OWNER_ID and
+                actor.get('login') == 'keqi119', 'RUN_MISMATCH')
+
+        jobs = self.read_jobs(run_id)
+        named = [job for job in jobs if job.get('name') == 'snapshot-data']
+        selected = [job for job in jobs if job.get('id') == int(job_id)]
+        require(len(named) == 1 and len(selected) == 1 and selected[0] is named[0],
+                'RUNNING_JOB_MISMATCH')
+        job = selected[0]
+        job_labels = job.get('labels')
+        require(job.get('run_id') == int(run_id) and job.get('head_sha') == source_sha and
+                job.get('name') == 'snapshot-data' and job.get('status') == 'in_progress' and
+                job.get('conclusion') is None and type(job.get('runner_id')) is int and
+                job.get('runner_id') == runner_id and job.get('runner_name') == runner_name and
+                type(job.get('runner_group_id')) is int and job.get('runner_group_id') == 1 and
+                type(job_labels) is list and len(job_labels) == len(expected_labels) and
+                all(type(label) is str for label in job_labels) and
+                len(set(label.lower() for label in job_labels)) == len(expected_labels) and
+                set(label.lower() for label in job_labels) == set(expected_labels),
+                'RUNNING_JOB_MISMATCH')
+
+        runner = self.read_runner(str(runner_id))
+        require(type(runner) is dict and runner.get('id') == runner_id and
+                runner.get('name') == runner_name and runner.get('os') == 'linux' and
+                runner.get('status') == 'online' and runner.get('busy') is True,
+                'JIT_RUNNER_MISMATCH')
+        actual_labels = runner.get('labels')
+        require(type(actual_labels) is list and len(actual_labels) == len(expected_labels),
+                'JIT_RUNNER_MISMATCH')
+        runner_labels = []
+        for label in actual_labels:
+            require(type(label) is dict and type(label.get('name')) is str,
+                    'JIT_RUNNER_MISMATCH')
+            runner_labels.append(label['name'].lower())
+        require(len(set(runner_labels)) == len(expected_labels) and
+                set(runner_labels) == set(expected_labels), 'JIT_RUNNER_MISMATCH')
+
+        return {
+            'run': {
+                'id': run_id, 'runAttempt': 1, 'sourceSha': source_sha,
+                'repository': REPOSITORY, 'headRepository': REPOSITORY,
+                'actorId': str(OWNER_ID), 'path': WORKFLOW, 'event': 'workflow_dispatch',
+                'headBranch': 'main', 'status': 'in_progress'
+            },
+            'job': {
+                'id': job_id, 'runId': run_id, 'sourceSha': source_sha,
+                'name': 'snapshot-data', 'status': 'in_progress', 'conclusion': None,
+                'runnerId': str(runner_id), 'runnerName': runner_name,
+                'runnerGroupId': 1, 'labels': list(job_labels)
+            },
+            'runner': {
+                'id': runner_id, 'name': runner_name, 'os': 'linux',
+                'status': 'online', 'busy': True,
+                'labels': [label['name'] for label in actual_labels]
+            }
+        }

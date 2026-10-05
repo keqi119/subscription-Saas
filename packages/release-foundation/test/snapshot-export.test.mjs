@@ -9,7 +9,7 @@ import {
   transformRecord,
   verifySnapshotMetadata
 } from "../src/snapshot/export-sanitized.mjs";
-import { scanSanitizedArtifact } from "../src/snapshot/scan-artifact.mjs";
+import { scanSanitizedArchive, scanSanitizedArtifact } from "../src/snapshot/scan-artifact.mjs";
 import { canonicalJson, sha256Bytes, sha256Canonical } from "../src/index.mjs";
 import {
   cleanupProtectedSnapshotWorkspace,
@@ -106,6 +106,73 @@ test("applies deterministic field transformations without retaining source value
   assert.equal(first.name, "Alice");
 });
 
+test("tokens only named JSON snapshot fields and rejects malformed sensitive values", () => {
+  const policy = contract();
+  policy.transformations.push({
+    table: "public.application",
+    column: "customer_profile_snapshot",
+    method: "deterministic-token",
+    keyReference: "secret://stage1-snapshot-export/tokenization-key",
+    jsonFields: ["mobile", "emergencyContactMobile", "idCardNo"]
+  });
+  const original = {
+    customer_profile_snapshot: {
+      mobile: "13800138000",
+      emergencyContactMobile: null,
+      idCardNo: "110101199001010011",
+      name: "Synthetic Customer",
+      snapshotVersion: 1
+    }
+  };
+  const options = {
+    table: "public.application",
+    contract: policy,
+    tokenizationKey: Buffer.from("unit-test-key")
+  };
+  const transformed = transformRecord(original, options);
+  assert.equal(transformed.customer_profile_snapshot.name, "Synthetic Customer");
+  assert.equal(transformed.customer_profile_snapshot.snapshotVersion, 1);
+  assert.equal(transformed.customer_profile_snapshot.emergencyContactMobile, null);
+  assert.notEqual(
+    transformed.customer_profile_snapshot.mobile,
+    original.customer_profile_snapshot.mobile
+  );
+  assert.notEqual(
+    transformed.customer_profile_snapshot.idCardNo,
+    original.customer_profile_snapshot.idCardNo
+  );
+  assert.equal(original.customer_profile_snapshot.mobile, "13800138000");
+  assert.throws(
+    () =>
+      transformRecord(
+        { customer_profile_snapshot: { ...original.customer_profile_snapshot, mobile: 123 } },
+        options
+      ),
+    { code: "SNAPSHOT_TRANSFORM_JSON_INVALID" }
+  );
+  assert.throws(
+    () =>
+      transformRecord(
+        { customer_profile_snapshot: JSON.stringify(original.customer_profile_snapshot) },
+        options
+      ),
+    { code: "SNAPSHOT_TRANSFORM_JSON_INVALID" }
+  );
+  policy.transformations.push({
+    table: "public.service_case",
+    column: "customer_snapshot",
+    method: "deterministic-token",
+    keyReference: "secret://stage1-snapshot-export/tokenization-key",
+    jsonFields: ["mobile"]
+  });
+  const serviceCase = transformRecord(
+    { customer_snapshot: { mobile: "13800138000", name: "Synthetic Customer" } },
+    { ...options, table: "public.service_case" }
+  );
+  assert.equal(serviceCase.customer_snapshot.mobile, transformed.customer_profile_snapshot.mobile);
+  assert.equal(serviceCase.customer_snapshot.name, "Synthetic Customer");
+});
+
 for (const [name, value] of [
   ["phone", "18616570212"],
   ["identity", "310101199001011234"],
@@ -122,6 +189,49 @@ for (const [name, value] of [
     );
   });
 }
+
+test("PGDMP cannot pass the historical text scan and requires a complete matching expansion", async () => {
+  const archive = Buffer.from("PGDMP\0synthetic archive");
+  const expandedBytes = Buffer.from("COPY public.customer (mobile) FROM stdin;\n\\.\n");
+  const valid = {
+    archiveDigest: sha256Bytes(archive),
+    expandedBytes,
+    exitCode: 0,
+    pgRestoreVersion: "pg_restore (PostgreSQL) 17.11"
+  };
+  await assert.rejects(() => scanSanitizedArtifact({ bytes: archive, contract: contract() }), {
+    code: "SNAPSHOT_ARCHIVE_EXPANSION_REQUIRED"
+  });
+  const scan = await scanSanitizedArchive({
+    bytes: archive,
+    expansion: valid,
+    contract: contract()
+  });
+  assert.equal(scan.schemaVersion, "sanitization-scan.v2");
+  assert.equal(scan.subjectDigest, sha256Bytes(archive));
+  assert.equal(scan.expandedDigest, sha256Bytes(expandedBytes));
+  for (const expansion of [
+    undefined,
+    { ...valid, archiveDigest: sha256Bytes(Buffer.from("different archive")) },
+    { ...valid, exitCode: 1 },
+    { ...valid, pgRestoreVersion: "pg_restore (PostgreSQL) 16.9" },
+    { ...valid, expandedBytes: Buffer.from([0xff]) }
+  ]) {
+    await assert.rejects(
+      () => scanSanitizedArchive({ bytes: archive, expansion, contract: contract() }),
+      { code: /^SNAPSHOT_(?:ARCHIVE_EXPANSION_INVALID|SCAN_SUBJECT_INVALID)$/ }
+    );
+  }
+  await assert.rejects(
+    () =>
+      scanSanitizedArchive({
+        bytes: archive,
+        expansion: { ...valid, expandedBytes: Buffer.from("COPY 13800138000\\n") },
+        contract: contract()
+      }),
+    { code: "SNAPSHOT_SENSITIVE_DATA_DETECTED" }
+  );
+});
 
 function exportFixture(overrides = {}) {
   const policy = contract();
@@ -245,6 +355,50 @@ function runExport(input) {
   return exportSanitizedSnapshot(operation);
 }
 
+test("private bundle preparation completes cleanup without a publication receipt", async () => {
+  const { prepareSanitizedSnapshotBundle } = await import("../src/snapshot/export-sanitized.mjs");
+  const input = exportFixture();
+  const { uploads, events, fingerprintCalls, ...operation } = input;
+  delete operation.publisher;
+  const bundle = await prepareSanitizedSnapshotBundle(operation);
+  assert.equal(bundle.metadata.dumpDigest, sha256Bytes(bundle.dump));
+  assert.equal(bundle.metadata.scanDigest, sha256Canonical(bundle.scan));
+  assert.equal(fingerprintCalls(), 2);
+  assert.equal(uploads.length, 0);
+  assert.deepEqual(events.slice(-2), ["snapshot-closed", "workspace-destroyed"]);
+  assert.equal(Object.hasOwn(bundle, "custodyReceipt"), false);
+  const failed = exportFixture();
+  failed.workspace.destroy = async () => {
+    throw new Error("cleanup unavailable");
+  };
+  const failedOperation = { ...operation, source: failed.source, workspace: failed.workspace };
+  await assert.rejects(prepareSanitizedSnapshotBundle(failedOperation), {
+    code: "SNAPSHOT_SECURE_CLEANUP_FAILED"
+  });
+  assert.equal(failed.uploads.length, 0);
+});
+
+test("allocated snapshot lifetime does not backdate source or scan observations", async () => {
+  const { prepareSanitizedSnapshotBundle } = await import("../src/snapshot/export-sanitized.mjs");
+  const fixture = exportFixture();
+  const operation = Object.fromEntries(
+    Object.entries(fixture).filter(
+      ([name]) => !["uploads", "events", "fingerprintCalls", "publisher"].includes(name)
+    )
+  );
+  let clock = fixedNow.getTime() + 300000;
+  operation.now = () => new Date((clock += 1000));
+  operation.snapshotAllocatedAt = fixedNow.toISOString();
+  const bundle = await prepareSanitizedSnapshotBundle(operation);
+  assert.equal(bundle.metadata.createdAt, fixedNow.toISOString());
+  assert.equal(bundle.metadata.expiresAt, "2026-10-02T08:00:00.000Z");
+  assert.ok(bundle.privilegeObservation.observedAt > bundle.metadata.createdAt);
+  assert.ok(bundle.scan.scannedAt > bundle.privilegeObservation.observedAt);
+  assert.ok(bundle.fingerprintObservation.provenance.observedAt > bundle.scan.scannedAt);
+  const future = { ...operation, snapshotAllocatedAt: "2026-09-03T08:00:00.000Z" };
+  await assert.rejects(prepareSanitizedSnapshotBundle(future), { code: "SNAPSHOT_CLOCK_INVALID" });
+});
+
 test("exports only a scanned final bundle after matching source fingerprints", async () => {
   const input = exportFixture();
   const metadata = await runExport(input);
@@ -253,6 +407,77 @@ test("exports only a scanned final bundle after matching source fingerprints", a
   assert.equal(input.uploads.length, 1);
   assert.equal(metadata.dumpDigest, sha256Bytes(input.uploads[0].dump));
   assert.deepEqual(input.events.slice(-2), ["snapshot-closed", "workspace-destroyed"]);
+});
+
+test("closes the source when privilege admission rejects it before a snapshot opens", async () => {
+  const input = exportFixture();
+  const observe = input.source.observePrivileges;
+  input.source.observePrivileges = async (...args) => ({
+    ...(await observe(...args)),
+    superuser: true
+  });
+  await assert.rejects(runExport(input), { code: "SNAPSHOT_SOURCE_WRITE_CAPABILITY_FORBIDDEN" });
+  assert.equal(input.events.includes("snapshot-opened"), false);
+  assert.equal(input.events.filter((event) => event === "snapshot-closed").length, 1);
+  assert.equal(input.uploads.length, 0);
+  const uncertain = exportFixture();
+  const observeUncertain = uncertain.source.observePrivileges;
+  uncertain.source.observePrivileges = async (...args) => ({
+    ...(await observeUncertain(...args)),
+    superuser: true
+  });
+  uncertain.source.closeSnapshot = async () => {
+    throw Object.assign(new Error("source cleanup uncertain"), {
+      code: "SNAPSHOT_SOURCE_CLEANUP_UNKNOWN"
+    });
+  };
+  await assert.rejects(runExport(uncertain), { code: "SNAPSHOT_SECURE_CLEANUP_FAILED" });
+  assert.equal(uncertain.uploads.length, 0);
+});
+
+test("exports a PGDMP only after its trusted workspace expands the same archive", async () => {
+  const input = exportFixture();
+  const archive = Buffer.from("PGDMP\0synthetic archive");
+  const expandedBytes = Buffer.from("COPY public.customer (mobile) FROM stdin;\n\\.\n");
+  input.workspace.exportSanitized = async () => archive;
+  input.workspace.expandSanitizedArchive = async ({
+    archive: received,
+    expectedArchiveDigest,
+    maxExpandedBytes
+  }) => {
+    assert.deepEqual(received, archive);
+    assert.equal(expectedArchiveDigest, sha256Bytes(archive));
+    assert.equal(maxExpandedBytes, 1073741824);
+    return {
+      archiveDigest: sha256Bytes(received),
+      expandedBytes,
+      exitCode: 0,
+      pgRestoreVersion: "pg_restore (PostgreSQL) 17.11"
+    };
+  };
+  const metadata = await runExport(input);
+  assert.equal(input.uploads.length, 1);
+  assert.equal(input.uploads[0].scan.schemaVersion, "sanitization-scan.v2");
+  assert.equal(input.uploads[0].scan.expandedDigest, sha256Bytes(expandedBytes));
+  assert.equal(metadata.scanSubjectDigest, sha256Bytes(archive));
+  const legacyScan = { ...input.uploads[0].scan, schemaVersion: "sanitization-scan.v1" };
+  delete legacyScan.expandedDigest;
+  delete legacyScan.pgRestoreVersion;
+  delete legacyScan.archiveFormat;
+  assert.throws(
+    () =>
+      verifySnapshotMetadata({
+        metadata: { ...metadata, scanDigest: sha256Canonical(legacyScan) },
+        contract: input.contract,
+        ownershipMap: input.ownershipMap,
+        dump: archive,
+        scan: legacyScan,
+        now: fixedNow
+      }),
+    { code: "SNAPSHOT_SCAN_INVALID" }
+  );
+  delete input.workspace.expandSanitizedArchive;
+  await assert.rejects(runExport(input), { code: "SNAPSHOT_ARCHIVE_EXPANSION_INVALID" });
 });
 
 for (const [name, transaction] of [
@@ -484,7 +709,7 @@ test("repository sanitization contract supports reviewed Staging and current mig
     .map(({ name }) => name)
     .sort()
     .at(-1);
-  assert.equal(policy.contractVersion, "2");
+  assert.equal(policy.contractVersion, "3");
   assert.deepEqual(policy.source.knownMigrationHeads, [
     "20260901010000_stage1_schema_drift_convergence",
     migrationHead

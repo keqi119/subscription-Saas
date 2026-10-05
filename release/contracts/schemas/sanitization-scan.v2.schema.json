@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sanitization-scan.v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "subjectDigest",
+    "contractDigest",
+    "scannerVersion",
+    "status",
+    "findingsCount",
+    "scannedAt",
+    "archiveFormat",
+    "expandedDigest",
+    "pgRestoreVersion"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "sanitization-scan.v2" },
+    "subjectDigest": { "$ref": "#/$defs/digest" },
+    "contractDigest": { "$ref": "#/$defs/digest" },
+    "scannerVersion": { "type": "string", "minLength": 1 },
+    "status": { "const": "PASSED" },
+    "findingsCount": { "const": 0 },
+    "scannedAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$",
+      "rfc3339Finite": true
+    },
+    "archiveFormat": { "const": "PGDMP" },
+    "expandedDigest": { "$ref": "#/$defs/digest" },
+    "pgRestoreVersion": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^pg_restore \\(PostgreSQL\\) 17\\.11(?: [^\\r\\n]+)?$"
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

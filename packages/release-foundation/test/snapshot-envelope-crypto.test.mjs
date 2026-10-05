@@ -25,6 +25,7 @@ import {
 } from "../src/snapshot/envelope-crypto.mjs";
 import { validateSnapshotEncryptionEnvelope } from "../src/snapshot/producer-crypto-contracts.mjs";
 import { sha256Canonical } from "../src/digest.mjs";
+import { canonicalJson } from "../src/canonical-json.mjs";
 
 const keys = generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 });
 const keyFingerprint = `sha256:${createHash("sha256")
@@ -135,6 +136,620 @@ test("v2 executes real local RSA envelope encryption and decrypts with the origi
     privateKey: keys.privateKey
   });
   assert.deepEqual(await readFile(restored), bytes);
+});
+
+async function privateExportFixture(t, { cleanupFails = false } = {}) {
+  const { runProtectedSnapshotEncryption } =
+    await import("../../../scripts/release/export-sanitized-snapshot.mjs");
+  const contract = JSON.parse(
+    await readFile(
+      new URL("../../../release/contracts/sanitization-contract.v1.json", import.meta.url),
+      "utf8"
+    )
+  );
+  const ownershipMap = JSON.parse(
+    await readFile(
+      new URL("../../../release/contracts/snapshot-ownership-map.v1.json", import.meta.url),
+      "utf8"
+    )
+  );
+  const workspaceDirectory = await mkdtemp(join(tmpdir(), "snapshot-protected-v2-"));
+  t.after(() => rm(workspaceDirectory, { recursive: true, force: true }));
+  const plaintext = Buffer.from("COPY public.customer (mobile) FROM stdin;\n\\.\n");
+  const aad = {
+    ...expectedAad(plaintext),
+    releaseAttemptId: "11111111-2222-4333-8444-555555555555",
+    sanitizationContractDigest: sha256Canonical(contract)
+  };
+  const authorization = producerAuthorization(aad);
+  const events = [];
+  const fingerprint = {
+    migrationHead: contract.source.knownMigrationHeads.at(-1),
+    databaseIdentityFingerprint: `sha256:${"2".repeat(64)}`,
+    roleIdentityFingerprint: `sha256:${"1".repeat(64)}`,
+    tables: contract.source.keyTables.map((table) => ({
+      table,
+      rowCount: 1,
+      checksum: `sha256:${"3".repeat(64)}`
+    }))
+  };
+  const source = {
+    trustPolicy: "protected-snapshot-source/v1",
+    async observePrivileges() {
+      events.push("observed");
+      return {
+        roleIdentityFingerprint: fingerprint.roleIdentityFingerprint,
+        databaseIdentityFingerprint: fingerprint.databaseIdentityFingerprint,
+        superuser: false,
+        createDatabase: false,
+        createRole: false,
+        bypassRls: false,
+        schemaOwner: false,
+        canCreateSchema: false,
+        tableWritePrivileges: [],
+        tableTruncatePrivileges: [],
+        writableFunctionExecutePrivileges: [],
+        objectOwners: ["subscription"]
+      };
+    },
+    async openReadOnlySnapshot() {
+      events.push("opened");
+      return {
+        snapshotId: "00000003-0000001A-1",
+        isolationLevel: "REPEATABLE READ",
+        readOnly: true
+      };
+    },
+    async readFingerprint() {
+      return fingerprint;
+    },
+    async exportRaw() {
+      return Buffer.from("PGDMP\0synthetic raw");
+    },
+    async closeSnapshot() {
+      events.push("closed");
+    }
+  };
+  const workspace = {
+    trustPolicy: "isolated-sanitization-workspace/v1",
+    async restoreRaw() {},
+    async applyTransformations() {},
+    async exportSanitized() {
+      return Buffer.from(plaintext);
+    },
+    async destroy() {
+      events.push("destroyed");
+      if (cleanupFails) throw new Error("synthetic cleanup failure");
+    }
+  };
+  const request = {
+    environmentClass: "staging",
+    sourceSecretReference: "secret://stage1-snapshot-export/source",
+    tokenizationSecretReference: "secret://stage1-snapshot-export/tokenization-key",
+    workflowRunRef: `github://${authorization.repository.name}/actions/runs/${authorization.snapshotRunId}`
+  };
+  return {
+    runProtectedSnapshotEncryption,
+    contract,
+    ownershipMap,
+    workspaceDirectory,
+    authorization,
+    publicKey: keys.publicKey,
+    request,
+    adapters: { trustPolicy: "protected-snapshot-adapters/v1", source, workspace },
+    plaintext,
+    events,
+    aad
+  };
+}
+
+function encryptionInput(f) {
+  return {
+    request: f.request,
+    contract: f.contract,
+    ownershipMap: f.ownershipMap,
+    adapters: f.adapters,
+    authorization: f.authorization,
+    publicKey: f.publicKey,
+    workspaceDirectory: f.workspaceDirectory
+  };
+}
+
+test("protected private bundle encrypts the cleaned scan result with its allocated v2 identity", async (t) => {
+  const f = await privateExportFixture(t);
+  const started = Date.now();
+  const result = await f.runProtectedSnapshotEncryption(encryptionInput(f));
+  const finished = Date.now();
+  assert.equal(result.metadata.dumpDigest, digest(f.plaintext));
+  assert.equal(result.metadata.createdAt, f.authorization.snapshotAllocatedAt);
+  assert.equal(result.envelope.expiresAt, result.metadata.expiresAt);
+  assert.equal(result.cryptoOperation.action, "local:GenerateAndWrapDataKey");
+  assert.equal(result.cryptoOperation.callCount, 1);
+  assert.equal(result.cryptoOperation.outcome, "SUCCESS");
+  assert.equal(result.cryptoOperation.envelopeDigest, sha256Canonical(result.envelope));
+  assert.equal(result.cryptoOperation.keyBufferClear, "BEST_EFFORT_COMPLETED");
+  assert.match(result.cryptoOperation.requestId, /^[0-9a-f-]{36}$/);
+  assert.ok(Date.parse(result.cryptoOperation.startedAt) >= started);
+  assert.ok(Date.parse(result.cryptoOperation.finishedAt) <= finished);
+  assert.ok(
+    Date.parse(result.cryptoOperation.finishedAt) >= Date.parse(result.cryptoOperation.startedAt)
+  );
+  // Real fixture encryption above; host observations below are explicitly unit
+  // fixtures for the private proof assembler, never production attestation.
+  const { buildH1CryptoUseProof } =
+    await import("../../../scripts/release/snapshot-h1-data-proof.mjs");
+  const before = new Date(started).toISOString(),
+    after = new Date(finished).toISOString();
+  const memory = (observedAt) => ({
+    observedAt,
+    hostSwapDisabled: true,
+    coreDumpDisabled: true,
+    swapTableDigest: sha256Canonical([]),
+    corePatternDigest: sha256Canonical("|/bin/false"),
+    coreLimit: [0, 0]
+  });
+  const observation = {
+    attemptId: f.authorization.releaseAttemptId,
+    snapshotRunId: f.authorization.snapshotRunId,
+    authorizationDigest: sha256Canonical(f.authorization),
+    workerBundleDigest: f.authorization.bindings.cryptoExecutableDigest,
+    issuedAt: before,
+    expiresAt: new Date(started + 60000).toISOString(),
+    memoryBefore: memory(before),
+    memoryAfter: memory(after),
+    processExit: {
+      workerId: "a".repeat(64),
+      image:
+        "postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0",
+      startedAt: before,
+      finishedAt: after,
+      observedAt: after,
+      exitCode: 0,
+      signal: null,
+      oomKilled: false,
+      stdoutClosed: true,
+      toolExitCode: 0
+    }
+  };
+  const cleanup = Object.fromEntries(
+    [
+      "runnerStopped",
+      "controlStopped",
+      "producerStopped",
+      "runnerNotRoutable",
+      "githubTokenRevoked",
+      "volumeDestroyed"
+    ].map((key) => [key, true])
+  );
+  const volume = {
+    attemptId: f.authorization.releaseAttemptId,
+    destroyed: true,
+    keyslotsBefore: [0],
+    keyslotsAfter: [],
+    oldKeyRejected: true,
+    luksUuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    destroyedAt: after
+  };
+  const attemptId = f.authorization.releaseAttemptId;
+  const disposal = {
+    producerCleanup: {
+      observedAt: after,
+      workerContainerRemoved: true,
+      targetContainerRemoved: true,
+      accessReferencesCleared: true,
+      sourceReader: {
+        databaseOid: "16384",
+        systemIdentifier: "7661173341297905697",
+        readerOid: "85641",
+        login: false,
+        authenticationPresent: false,
+        sessions: 0
+      }
+    },
+    residualScan: {
+      performedAt: after,
+      plaintextArtifactsFound: 0,
+      pathsChecked: [
+        `/var/lib/subscription-saas/snapshot-volumes/${attemptId}.mnt`,
+        `/var/lib/subscription-saas/snapshot-volumes/${attemptId}.luks`,
+        `/dev/mapper/subscription-s1-${attemptId}`,
+        `/var/lib/subscription-saas/snapshot-output/${attemptId}`
+      ]
+    }
+  };
+  const terminal = {
+    observedAt: after,
+    disposalObservationDigest: sha256Canonical(disposal),
+    cleanupFactsDigest: sha256Canonical(cleanup),
+    volumeObservationDigest: sha256Canonical(volume),
+    runningJobObservationDigest: sha256Canonical({ fixture: true })
+  };
+  const input = {
+    authorization: f.authorization,
+    data: {
+      status: "COMPLETE",
+      ...result,
+      keyCleanup: {
+        tokenizationKeyBufferCleared: true,
+        workspaceKeyBufferCleared: true,
+        observedAt: after
+      }
+    },
+    observation,
+    terminal,
+    cleanup,
+    volume,
+    disposal
+  };
+  const proof = buildH1CryptoUseProof(input);
+  assert.equal(proof.cleanup.memoryLocked, false);
+  assert.equal(proof.cleanup.hostSwapDisabled, true);
+  assert.equal(proof.dataObservationDigest, sha256Canonical(observation));
+  const {
+    prepareH1SnapshotObjects,
+    readH1SnapshotPublication,
+    buildH1SnapshotDestructionSubject,
+    verifyH1SnapshotDestruction,
+    buildH1SnapshotPublisherUseSubject,
+    verifyH1SnapshotPublisherUse
+  } = await import("../../../scripts/release/snapshot-h1-publication.mjs");
+  const { assertSnapshotPublicationObject } =
+    await import("../../../scripts/release/snapshot-oss-storage.mjs");
+  const signingKeys = generateKeyPairSync("ed25519");
+  const signer = {
+    issuer: f.authorization.issuer.issuerId,
+    keyId: digest(signingKeys.publicKey.export({ type: "spki", format: "der" })),
+    publicKey: signingKeys.publicKey.export({ type: "spki", format: "pem" })
+  };
+  const signature = (domain, subject) => ({
+    algorithm: "Ed25519",
+    issuer: signer.issuer,
+    keyId: signer.keyId,
+    subjectDigest: sha256Canonical(subject),
+    signature: crypto
+      .sign(null, Buffer.from(canonicalJson({ domain, subject })), signingKeys.privateKey)
+      .toString("base64")
+  });
+  const expected = {
+    releaseAttemptId: f.authorization.releaseAttemptId,
+    snapshotRunId: f.authorization.snapshotRunId,
+    sourceSha: f.authorization.sourceSha,
+    dispatchAuthorizationDigest: f.authorization.bindings.dispatchAuthorizationDigest
+  };
+  const dataResult = {
+    status: "DATA_PREPARED",
+    cryptoAuthorization: f.authorization,
+    admission: {
+      releaseAttemptId: expected.releaseAttemptId,
+      producerRun: { runId: expected.snapshotRunId, sourceSha: expected.sourceSha },
+      dispatchAuthorizationDigest: expected.dispatchAuthorizationDigest,
+      adapterDigest: f.authorization.bindings.adapterExecutableDigest
+    },
+    data: input.data,
+    executionObservation: observation,
+    terminalObservation: terminal,
+    cleanup,
+    volumeObservation: volume,
+    disposalObservation: disposal,
+    runningJobObservation: { fixture: true }
+  };
+  const dataResultBytes = Buffer.from(canonicalJson(dataResult));
+  const subject = { proof, dataResultDigest: digest(dataResultBytes) };
+  const proofBytes = Buffer.from(
+    canonicalJson({ ...subject, signature: signature("h1-snapshot-data-proof.v1", subject) })
+  );
+  const ciphertext = await readFile(result.ciphertextPath);
+  const prepared = prepareH1SnapshotObjects({
+    dataResultBytes,
+    proofBytes,
+    ciphertext,
+    expected,
+    signer
+  });
+  for (const object of prepared.objects)
+    assertSnapshotPublicationObject({
+      releaseAttemptId: expected.releaseAttemptId,
+      snapshotRunId: expected.snapshotRunId,
+      ...object
+    });
+  const writerArn = `acs:ram::1457643390906675:role/subscription-saas-stage1-snapshot-publisher/stage1-publisher-${expected.snapshotRunId}-attempt-1`;
+  const assumedWriterArn = writerArn.replace(":role/", ":assumed-role/");
+  const publication = {
+    ...expected,
+    writerArn,
+    writerIdentityOriginal: {
+      AccountId: "1457643390906675",
+      Arn: assumedWriterArn,
+      IdentityType: "AssumedRoleUser",
+      RequestId: "fixture-request"
+    },
+    writerIssuedAt: after,
+    writerExpiresAt: new Date(finished + 60000).toISOString(),
+    cryptoExitedAt: after,
+    publishedAt: after,
+    objects: prepared.objects.map((x) => ({
+      key: x.key,
+      digest: x.contentDigest,
+      sizeBytes: x.bytes.length,
+      requestId: "fixture-put",
+      etag: '"fixture-etag"',
+      putObservation: {
+        record: {
+          recordVersion: "r3-snapshot-oss-response.v1",
+          operation: "PutObject",
+          bucket: "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai",
+          objectKey: x.key,
+          principal: assumedWriterArn,
+          observedAt: after,
+          requestHeaders: { "x-oss-forbid-overwrite": "true" },
+          response: {
+            status: 200,
+            headers: {
+              date: new Date(after).toUTCString(),
+              "x-oss-request-id": "fixture-put",
+              etag: '"fixture-etag"'
+            },
+            body: { digest: digest(Buffer.alloc(0)), bytes: 0 }
+          }
+        },
+        bodyBase64: ""
+      }
+    }))
+  };
+  const markerBytes = Buffer.from(
+    canonicalJson({ publication, signature: signature("h1-snapshot-publication.v1", publication) })
+  );
+  const markerKey = `snapshot-slots/v2/${expected.releaseAttemptId}/${expected.snapshotRunId}/diagnostics.redacted.json`;
+  assertSnapshotPublicationObject({
+    releaseAttemptId: expected.releaseAttemptId,
+    snapshotRunId: expected.snapshotRunId,
+    key: markerKey,
+    bytes: markerBytes,
+    contentDigest: digest(markerBytes)
+  });
+  const expiredAt = new Date(finished + 60000).toISOString();
+  const lastPut = structuredClone(publication.objects[0]);
+  Object.assign(lastPut, {
+    key: markerKey,
+    digest: digest(markerBytes),
+    sizeBytes: markerBytes.length
+  });
+  lastPut.putObservation.record.objectKey = markerKey;
+  const publisherTerminal = {
+    status: "PUBLISHER_TERMINAL_OBSERVED",
+    releaseAttemptId: expected.releaseAttemptId,
+    snapshotRunId: expected.snapshotRunId,
+    publicationDigest: digest(markerBytes),
+    objects: [...publication.objects, lastPut],
+    writer: { arn: writerArn, issuedAt: after, expiresAt: expiredAt },
+    publishedAt: after,
+    authority: { startedAt: after, finishedAt: after, exited: true, exitCode: 0 },
+    publisherSession: {
+      path: "/var/lib/stage1-volumes/main/snapshot-authority/publisher-session.json",
+      removed: true,
+      removedAt: after,
+      absent: true,
+      expiresAt: expiredAt,
+      observedAt: expiredAt
+    }
+  };
+  const destructionInput = {
+    dataResultBytes,
+    proofBytes,
+    publicationBytes: markerBytes,
+    terminalBytes: Buffer.from(canonicalJson(publisherTerminal)),
+    expected,
+    signer,
+    issuedAt: expiredAt
+  };
+  const destructionSubject = buildH1SnapshotDestructionSubject(destructionInput);
+  assert.equal(destructionSubject.receipt.claim, "KEY_INVALIDATION_ONLY");
+  assert.equal(destructionSubject.receipt.processTerminal.terminalAt, expiredAt);
+  const destructionBytes = Buffer.from(
+    canonicalJson({
+      ...destructionSubject,
+      signature: signature("h1-snapshot-destruction.v1", destructionSubject)
+    })
+  );
+  assert.deepEqual(
+    verifyH1SnapshotDestruction({ ...destructionInput, destructionBytes }),
+    destructionSubject
+  );
+  const publisherUseSubject = buildH1SnapshotPublisherUseSubject(destructionInput);
+  assert.equal(publisherUseSubject.proof.writer.arn, assumedWriterArn);
+  assert.equal(publisherUseSubject.proof.session.state, "EXPIRED");
+  assert.equal(publisherUseSubject.proof.objects.length, 5);
+  assert.equal(
+    publisherUseSubject.proof.publisherTerminalDigest,
+    digest(destructionInput.terminalBytes)
+  );
+  const publisherUseBytes = Buffer.from(
+    canonicalJson({
+      ...publisherUseSubject,
+      signature: signature("h1-snapshot-publisher-use.v1", publisherUseSubject)
+    })
+  );
+  assert.deepEqual(
+    verifyH1SnapshotPublisherUse({ ...destructionInput, publisherUseBytes }),
+    publisherUseSubject
+  );
+  const wrongPublisherUseSubject = structuredClone(publisherUseSubject);
+  wrongPublisherUseSubject.proof.publisherTerminalDigest = fixtureDigest;
+  assert.throws(
+    () =>
+      verifyH1SnapshotPublisherUse({
+        ...destructionInput,
+        publisherUseBytes: Buffer.from(
+          canonicalJson({
+            ...wrongPublisherUseSubject,
+            signature: signature("h1-snapshot-publisher-use.v1", wrongPublisherUseSubject)
+          })
+        )
+      }),
+    { code: "H1_SNAPSHOT_PUBLICATION_REJECTED" }
+  );
+  for (const change of [
+    (x) => {
+      x.publisherSession.absent = false;
+    },
+    (x) => {
+      x.publisherSession.observedAt = after;
+    },
+    (x) => {
+      x.objects[4].digest = "sha256:" + "f".repeat(64);
+    }
+  ]) {
+    const invalid = structuredClone(publisherTerminal);
+    change(invalid);
+    assert.throws(
+      () =>
+        buildH1SnapshotDestructionSubject({
+          ...destructionInput,
+          terminalBytes: Buffer.from(canonicalJson(invalid))
+        }),
+      { code: "H1_SNAPSHOT_PUBLICATION_REJECTED" }
+    );
+    assert.throws(
+      () =>
+        verifyH1SnapshotPublisherUse({
+          ...destructionInput,
+          terminalBytes: Buffer.from(canonicalJson(invalid)),
+          publisherUseBytes
+        }),
+      { code: "H1_SNAPSHOT_PUBLICATION_REJECTED" }
+    );
+  }
+  const stored = new Map(prepared.objects.map((x) => [x.key, x.bytes]));
+  stored.set(markerKey, markerBytes);
+  const observationFor = (key) => ({
+    bucket: { fixture: true },
+    expectedWriterArn: assumedWriterArn,
+    readerArn: "acs:ram::1457643390906675:assumed-role/fixture-reader/fixture-session",
+    get: {
+      digest: digest(stored.get(key)),
+      sizeBytes: stored.get(key).length,
+      etag: '"fixture-etag"'
+    }
+  });
+  const reader = {
+    identityOriginal: {
+      AccountId: "1457643390906675",
+      Arn: "acs:ram::1457643390906675:assumed-role/fixture-reader/fixture-session",
+      IdentityType: "AssumedRoleUser",
+      RequestId: "fixture-reader-request"
+    },
+    readPublicJson: async ({ key }) => ({
+      bytes: stored.get(key),
+      observation: observationFor(key)
+    }),
+    readback: async ({ key, contentDigest }) => {
+      assert.equal(digest(stored.get(key)), contentDigest);
+      return observationFor(key);
+    }
+  };
+  assert.equal(
+    (await readH1SnapshotPublication({ reader, expected, signer })).status,
+    "READBACK_VERIFIED"
+  );
+  const wrongPut = JSON.parse(canonicalJson(publication));
+  wrongPut.objects[0].putObservation.record.objectKey += ".wrong";
+  stored.set(
+    markerKey,
+    Buffer.from(
+      canonicalJson({
+        publication: wrongPut,
+        signature: signature("h1-snapshot-publication.v1", wrongPut)
+      })
+    )
+  );
+  await assert.rejects(readH1SnapshotPublication({ reader, expected, signer }), {
+    code: "H1_SNAPSHOT_PUBLICATION_REJECTED"
+  });
+  stored.set(markerKey, markerBytes);
+  const changed = Buffer.from(dataResultBytes);
+  changed[changed.length - 2] ^= 1;
+  assert.throws(
+    () =>
+      prepareH1SnapshotObjects({
+        dataResultBytes: changed,
+        proofBytes,
+        ciphertext,
+        expected,
+        signer
+      }),
+    { code: "H1_SNAPSHOT_PUBLICATION_REJECTED" }
+  );
+  stored.set(prepared.objects[3].key, Buffer.from('{"changed":true}'));
+  await assert.rejects(readH1SnapshotPublication({ reader, expected, signer }), {
+    code: "H1_SNAPSHOT_PUBLICATION_REJECTED"
+  });
+  for (const change of [
+    (x) => {
+      x.observation.processExit.exitCode = 1;
+    },
+    (x) => {
+      x.observation.memoryAfter.hostSwapDisabled = false;
+    },
+    (x) => {
+      x.cleanup.runnerNotRoutable = false;
+    },
+    (x) => {
+      x.data.keyCleanup.workspaceKeyBufferCleared = false;
+    },
+    (x) => {
+      x.disposal.producerCleanup.sourceReader.login = true;
+      x.terminal.disposalObservationDigest = sha256Canonical(x.disposal);
+    },
+    (x) => {
+      x.disposal.residualScan.plaintextArtifactsFound = 1;
+      x.terminal.disposalObservationDigest = sha256Canonical(x.disposal);
+    }
+  ]) {
+    const invalid = structuredClone(input);
+    change(invalid);
+    assert.throws(() => buildH1CryptoUseProof(invalid), { code: "H1_DATA_PROOF_REJECTED" });
+  }
+  for (const observedAt of [
+    result.privilegeObservation.observedAt,
+    result.fingerprintObservation.provenance.observedAt,
+    result.scan.scannedAt
+  ]) {
+    assert.ok(Date.parse(observedAt) >= started && Date.parse(observedAt) <= finished);
+    assert.notEqual(observedAt, f.authorization.snapshotAllocatedAt);
+  }
+  assert.deepEqual(f.events.slice(-2), ["closed", "destroyed"]);
+  assert.equal("dump" in result, false);
+  assert.equal(result.ciphertextPath, join(f.workspaceDirectory, "snapshot.enc"));
+  assert.deepEqual(await readdir(f.workspaceDirectory), ["snapshot.enc"]);
+  const restored = join(f.workspaceDirectory, "restored.sql");
+  await decryptSnapshotStream({
+    source: replayableFile(result.ciphertextPath).source,
+    destination: restored,
+    aad: f.aad,
+    authorization: f.authorization,
+    envelope: result.envelope,
+    privateKey: keys.privateKey
+  });
+  assert.deepEqual(await readFile(restored), f.plaintext);
+});
+
+test("protected encryption rejects changed run or contract and cleanup failure before ciphertext", async (t) => {
+  for (const kind of ["run", "contract", "cleanup"]) {
+    const f = await privateExportFixture(t, { cleanupFails: kind === "cleanup" });
+    const input = encryptionInput(f);
+    if (kind === "run")
+      input.request.workflowRunRef = "github://keqi119/subscription-Saas/actions/runs/9002";
+    if (kind === "contract")
+      input.authorization.localKey.context.sanitizationContractDigest = `sha256:${"0".repeat(64)}`;
+    await assert.rejects(f.runProtectedSnapshotEncryption(input), {
+      code:
+        kind === "cleanup"
+          ? "SNAPSHOT_SECURE_CLEANUP_FAILED"
+          : "SNAPSHOT_ENCRYPTION_ADMISSION_INVALID"
+    });
+    assert.equal((await readdir(f.workspaceDirectory)).includes("snapshot.enc"), false);
+    if (kind !== "cleanup") assert.deepEqual(f.events, []);
+  }
 });
 
 const digest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;

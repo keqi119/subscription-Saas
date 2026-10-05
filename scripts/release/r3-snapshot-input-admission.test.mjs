@@ -432,6 +432,58 @@ test("R3 snapshot declarations reconstruct at their event time without reviving 
   await assert.rejects(live.recheck(), { code: "R3_SNAPSHOT_INPUT_UNAVAILABLE" });
 });
 
+test("R3 admits a bound archive expansion scan and rejects incomplete v2 declarations", async (t) => {
+  const f = await inputFixture(t);
+  const scan = {
+    ...f.declarations.scan,
+    schemaVersion: "sanitization-scan.v2",
+    archiveFormat: "PGDMP",
+    expandedDigest: sha256Bytes(Buffer.from("expanded SQL")),
+    pgRestoreVersion: "pg_restore (PostgreSQL) 17.11"
+  };
+  const metadata = { ...f.declarations.metadata, scanDigest: sha256Canonical(scan) };
+  const index = {
+    ...f.index,
+    scan: await f.publish(scan),
+    metadata: await f.publish(metadata)
+  };
+  const readDeclarations = (value) =>
+    production.readR3SnapshotDeclarations({
+      profile: f.profile,
+      indexBytes: encodeManualJson(value),
+      inputReference: f.input.inputReference,
+      observedAt: "2026-09-28T00:00:00.000Z",
+      readRaw: (digest) => fs.readFile(f.rawPath({ digest }))
+    });
+  const held = await readDeclarations(index);
+  assert.equal(held.metadataDigest, sha256Canonical(metadata));
+  for (const mutation of [
+    (value) => {
+      delete value.expandedDigest;
+    },
+    (value) => {
+      value.pgRestoreVersion = "pg_restore (PostgreSQL) 16.9";
+    },
+    (value) => {
+      value.subjectDigest = d("f");
+    }
+  ]) {
+    const changed = structuredClone(scan);
+    mutation(changed);
+    const changedMetadata = { ...metadata, scanDigest: sha256Canonical(changed) };
+    await assert.rejects(
+      readDeclarations({
+        ...index,
+        scan: await f.publish(changed),
+        metadata: await f.publish(changedMetadata)
+      }),
+      {
+        code: /^(?:CONTRACT_SCHEMA_INVALID|R3_SNAPSHOT_INPUT_BINDING_INVALID|SNAPSHOT_SCAN_INVALID)$/
+      }
+    );
+  }
+});
+
 test("R3 refuses inconsistent source, scan, permission and native storage originals", async (t) => {
   const f = await inputFixture(t);
   const original = structuredClone(f.index);

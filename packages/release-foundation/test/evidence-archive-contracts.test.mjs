@@ -18,6 +18,7 @@ const knownArchiveProofTypes = [
   "authoritative-custody-observation.v1",
   "custody-receipt.v1",
   "rc-dispatch-authorization.v1",
+  "i0-revocation-state.v1",
   "environment-policy-observation.v1",
   "infrastructure-change.v1",
   "producer-crypto-run-authorization.v1",
@@ -95,7 +96,14 @@ function validArchiveAuthorization(profile = "archive-create-only-writer") {
       profile === "archive-create-only-writer"
         ? { actions: ["oss:PutObject"], conditionalCreate: true, exactKeysOnly: true }
         : {
-            actions: ["oss:HeadObject", "oss:GetObject", "oss:GetBucketAcl", "oss:GetBucketWorm"],
+            actions: [
+              "oss:HeadObject",
+              "oss:GetObject",
+              "oss:GetObjectAcl",
+              "oss:GetBucketAcl",
+              "oss:GetBucketWorm",
+              "oss:GetBucketVersioning"
+            ],
             conditionalCreate: false,
             exactKeysOnly: true
           },
@@ -281,6 +289,40 @@ test("archive authorization requires complete frozen byte facts", () => {
   assert.throws(() => validateEvidenceArchiveAuthorization(candidate), {
     code: "CONTRACT_SCHEMA_INVALID"
   });
+});
+
+test("I0 revocation state archives its existing closed dispatch-verifier body", () => {
+  const state = {
+    schemaVersion: "i0-revocation-state.v1",
+    policyDigest: digest("a"),
+    sequence: 0,
+    revokedAuthorizationIds: [],
+    revokedAuthorizationDigests: []
+  };
+  assert.doesNotThrow(() => validateContract("i0-revocation-state.v1", state));
+  const authorization = validArchiveAuthorization();
+  const stateDigest = sha256Canonical(state);
+  authorization.objects[0] = {
+    proofType: state.schemaVersion,
+    canonicalDigest: stateDigest,
+    exactKey: `control-evidence/v1/${state.schemaVersion}/${stateDigest}`,
+    contentDigest: stateDigest,
+    contentSizeBytes: JSON.stringify(state).length
+  };
+  assert.doesNotThrow(() => validateEvidenceArchiveAuthorization(authorization));
+  for (const change of [
+    { schemaVersion: "approval-revocations.v1" },
+    { sequence: -1 },
+    { sequence: Number.MAX_SAFE_INTEGER + 1 },
+    { revokedAuthorizationIds: ["same", "same"] },
+    { revokedAuthorizationIds: Array.from({ length: 10001 }, (_, i) => `auth-${i}`) },
+    { revokedAuthorizationDigests: ["unverified"] },
+    { nonce: "online-response-is-not-the-state" }
+  ]) {
+    assert.throws(() => validateContract("i0-revocation-state.v1", { ...state, ...change }), {
+      code: "CONTRACT_SCHEMA_INVALID"
+    });
+  }
 });
 
 test("archive authorization closes over every known control-evidence proof type only", () => {

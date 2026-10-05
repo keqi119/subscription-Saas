@@ -1,0 +1,75 @@
+{
+  "purpose": "stage1-i0-independent-archive-identities-initialization",
+  "accountId": "1457643390906675",
+  "host": "139.196.227.195",
+  "owner": "keqi119",
+  "bucket": "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai",
+  "maxSessionDuration": 3600,
+  "operationSessionDurationSeconds": 900,
+  "consoleLogin": false,
+  "initialRolePolicies": [],
+  "identities": [
+    {
+      "profile": "archive-create-only-writer",
+      "userName": "subscription-saas-stage1-archive-writer-user",
+      "roleName": "subscription-saas-stage1-archive-writer",
+      "assumePolicyName": "subscription-saas-stage1-archive-writer-assume",
+      "assumePolicy": {
+        "Version": "1",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Resource": ["acs:ram::1457643390906675:role/subscription-saas-stage1-archive-writer"]
+          }
+        ]
+      },
+      "trustPolicy": {
+        "Version": "1",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Principal": {
+              "RAM": ["acs:ram::1457643390906675:user/subscription-saas-stage1-archive-writer-user"]
+            }
+          }
+        ]
+      },
+      "credentialMainPath": "/var/lib/stage1-volumes/main/credential/evidence-archive-writer/config.json",
+      "credentialRecoveryPath": "/var/lib/stage1-volumes/recovery/credential/evidence-archive-writer/config.json",
+      "maxAccessKeys": 1
+    },
+    {
+      "profile": "archive-readback-reader",
+      "userName": "subscription-saas-stage1-archive-reader-user",
+      "roleName": "subscription-saas-stage1-archive-reader",
+      "assumePolicyName": "subscription-saas-stage1-archive-reader-assume",
+      "assumePolicy": {
+        "Version": "1",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Resource": ["acs:ram::1457643390906675:role/subscription-saas-stage1-archive-reader"]
+          }
+        ]
+      },
+      "trustPolicy": {
+        "Version": "1",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Principal": {
+              "RAM": ["acs:ram::1457643390906675:user/subscription-saas-stage1-archive-reader-user"]
+            }
+          }
+        ]
+      },
+      "credentialMainPath": "/var/lib/stage1-volumes/main/credential/evidence-archive-reader/config.json",
+      "credentialRecoveryPath": "/var/lib/stage1-volumes/recovery/credential/evidence-archive-reader/config.json",
+      "maxAccessKeys": 1
+    }
+  ]
+}

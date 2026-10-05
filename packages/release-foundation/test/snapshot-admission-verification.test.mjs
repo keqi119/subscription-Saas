@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { generateKeyPairSync, sign, verify } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { canonicalJson } from "../src/canonical-json.mjs";
@@ -14,6 +16,7 @@ import {
 const DIGEST = `sha256:${"a".repeat(64)}`;
 const SHA = "b".repeat(40);
 const nonce = "c".repeat(32);
+const { structuredClone } = globalThis;
 
 function signer(issuer) {
   const keys = generateKeyPairSync("ed25519");
@@ -240,11 +243,20 @@ function validDispatch(workflowDigest, calls, authorizationPatch = {}) {
   };
 }
 
-function fixture(workflowSource, authorizationPatch) {
+const uploadStep = `      - uses: actions/upload-artifact@${"e".repeat(40)}\n        with:\n          name: snapshot-admission\n          path: .release-output/snapshot-admission.v1.json\n          overwrite: false\n          if-no-files-found: error\n`;
+
+function fixture(
+  workflowSource,
+  authorizationPatch,
+  actionCommits = [
+    { action: "actions/checkout", commit: "d".repeat(40) },
+    { action: "actions/upload-artifact", commit: "e".repeat(40) }
+  ]
+) {
   const pair = generateKeyPairSync("ed25519");
   const workflowBytes = Buffer.from(
     workflowSource ??
-      `jobs:\n  admission:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n  snapshot-data:\n    needs: admission\n    runs-on: \u0024{{ needs.admission.outputs.labels }}\n    steps:\n      - run: /usr/local/bin/stage1-snapshot-export\n  snapshot-custody:\n    needs: snapshot-data\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n`
+      `jobs:\n  admission:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n${uploadStep}  snapshot-data:\n    needs: admission\n    runs-on: \u0024{{ needs.admission.outputs.labels }}\n    steps:\n      - run: /usr/local/bin/stage1-snapshot-export\n  snapshot-custody:\n    needs: snapshot-data\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n`
   );
   const workflowDigest = sha256Bytes(workflowBytes);
   const rootPolicy = {
@@ -255,7 +267,7 @@ function fixture(workflowSource, authorizationPatch) {
       path: ".github/workflows/sanitized-snapshot.yml",
       ref: "main",
       blobDigest: workflowDigest,
-      actionCommits: [{ action: "actions/checkout", commit: "d".repeat(40) }]
+      actionCommits: structuredClone(actionCommits)
     },
     environmentPolicyIdentity: {
       schemaVersion: "environment-policy-identity.v1",
@@ -269,7 +281,7 @@ function fixture(workflowSource, authorizationPatch) {
       waitTimerSeconds: 0,
       workflowPath: ".github/workflows/sanitized-snapshot.yml",
       workflowBlobDigest: workflowDigest,
-      actionCommitAllowlist: [{ action: "actions/checkout", commit: "d".repeat(40) }],
+      actionCommitAllowlist: structuredClone(actionCommits),
       canonicalizationVersion: "RFC8785"
     },
     rootSigner: {
@@ -332,7 +344,9 @@ function fixture(workflowSource, authorizationPatch) {
       name: "admission",
       status: "completed",
       conclusion: "success",
-      sourceSha: SHA
+      sourceSha: SHA,
+      startedAt: "2026-09-03T00:00:10Z",
+      completedAt: "2026-09-03T00:00:30Z"
     },
     workflow: {
       repositoryId: "1253231368",
@@ -358,9 +372,8 @@ function fixture(workflowSource, authorizationPatch) {
       name: "snapshot-admission",
       repositoryId: "1253231368",
       runId: "123",
-      runAttempt: 1,
-      jobId: "98",
       sourceSha: SHA,
+      createdAt: "2026-09-03T00:00:20Z",
       bytes: Buffer.from(canonicalJson(admission))
     },
     queuedJobs: [
@@ -441,6 +454,71 @@ const noPrivilege = (f) => {
   assert.equal(f.calls.key, 0);
   assert.equal(f.calls.jit, 0);
 };
+
+test("repository workflow satisfies the complete admission verifier with its approved action pins", async () => {
+  const source = readFileSync(
+    new URL("../../../.github/workflows/sanitized-snapshot.yml", import.meta.url)
+  );
+  const f = fixture(source, undefined, [
+    { action: "actions/checkout", commit: "11d5960a326750d5838078e36cf38b85af677262" },
+    { action: "actions/setup-node", commit: "49933ea5288caeca8642d1e84afbd3f7d6820020" },
+    { action: "actions/upload-artifact", commit: "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" }
+  ]);
+  const result = await signFixture(f);
+  assert.equal(result.workflowBlobDigest, sha256Bytes(source));
+  assert.equal(f.calls.key, 1);
+});
+
+test("real artifact metadata binds through the unique declared uploader without invented job fields", async () => {
+  const f = fixture();
+  assert.equal(Object.hasOwn(f.facts.artifact, "jobId"), false);
+  assert.equal(Object.hasOwn(f.facts.artifact, "runAttempt"), false);
+  const verified = await signFixture(f);
+  assert.equal(verified.snapshotAdmissionDigest, sha256Canonical(f.admission));
+  assert.equal(f.calls.key, 1);
+});
+
+test("artifact must be created inside the actual completed admission job window", async () => {
+  for (const mutate of [
+    (f) => {
+      f.facts.artifact.createdAt = "2026-09-03T00:00:09Z";
+    },
+    (f) => {
+      f.facts.artifact.createdAt = "2026-09-03T00:00:31Z";
+    },
+    (f) => {
+      f.facts.admissionJob.startedAt = "2026-09-03T00:00:31Z";
+    },
+    (f) => {
+      f.facts.artifact.createdAt = "2026-02-30T00:00:20Z";
+    }
+  ]) {
+    const f = fixture();
+    mutate(f);
+    await assert.rejects(signFixture(f), { code: "SNAPSHOT_ADMISSION_OBSERVATION_INVALID" });
+    noPrivilege(f);
+  }
+});
+
+test("protected workflow bytes must declare one immutable admission uploader in the three-job chain", async () => {
+  const source = fixture().facts.workflow.bytes.toString();
+  for (const altered of [
+    source.replace(uploadStep, ""),
+    source.replace(uploadStep, uploadStep + uploadStep),
+    source.replace(uploadStep, "") + uploadStep,
+    source.replace("name: snapshot-admission", "name: ${{ inputs.artifact }}"),
+    source.replace("overwrite: false", "overwrite: true"),
+    source.replace("    needs: snapshot-data", "    needs: admission"),
+    source.replace(
+      "  admission:\n",
+      "  admission:\n    strategy:\n      matrix:\n        os: ubuntu-latest\n"
+    )
+  ]) {
+    const f = fixture(altered);
+    await assert.rejects(signFixture(f), { code: "SNAPSHOT_ADMISSION_WORKFLOW_INVALID" });
+    noPrivilege(f);
+  }
+});
 
 test("independent selection denies wrong actor, job, artifact and workflow provenance", async () => {
   for (const mutate of [
@@ -653,7 +731,7 @@ test("unsupported YAML structures cannot hide actions even with matching protect
 
 test("closed workflow grammar accepts ordinary route expressions without treating script text as actions", async () => {
   const f = fixture(
-    `name: Snapshot\non:\n  workflow_dispatch:\npermissions:\n  contents: read\njobs:\n  admission:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n        with:\n          ref: \u0024{{ github.sha }}\n      - run: node scripts/uses-helper.mjs\n  snapshot-data:\n    needs: admission\n    runs-on: \u0024{{ needs.admission.outputs.labels }}\n    steps:\n      - run: /usr/local/bin/stage1-snapshot-export\n  snapshot-custody:\n    needs: snapshot-data\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n`
+    `name: Snapshot\non:\n  workflow_dispatch:\npermissions:\n  contents: read\njobs:\n  admission:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n        with:\n          ref: \u0024{{ github.sha }}\n      - run: node scripts/uses-helper.mjs\n${uploadStep}  snapshot-data:\n    needs: admission\n    runs-on: \u0024{{ needs.admission.outputs.labels }}\n    steps:\n      - run: /usr/local/bin/stage1-snapshot-export\n  snapshot-custody:\n    needs: snapshot-data\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@${"d".repeat(40)}\n`
   );
   const result = await signFixture(f);
   assert.equal(result.workflowBlobDigest, f.rootPolicy.workflow.blobDigest);

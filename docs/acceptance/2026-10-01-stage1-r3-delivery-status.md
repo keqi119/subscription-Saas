@@ -1,6 +1,6 @@
 # 阶段 1：R3 证据交付增量
 
-已批准的 H1 与 hosted job 双向证据交付现已延伸到 source/final 两条链、原生聚合和工作流接线。用户已批准 GitHub 推送、合并和工作流触发；分支已推送并创建 PR #318，正在修复真实 CI 发现的问题，尚未合并或完成候选构建。下文按增量保留实现与验证记录；阶段 1 尚未收口。
+已批准的 H1 与 hosted job 双向证据交付现已延伸到 source/final 两条链、原生聚合和工作流接线。用户已批准 GitHub 推送、合并和工作流触发；PR #318 的完整 CI 已通过，并于 2026-10-01 合并至主分支 `d705fb979acc5ee86311beeafeb4b5b61adb39b2`。后续快照归档扫描修正已在独立分支提交，真实制作适配器仍待接通，最终候选镜像尚未构建。下文按增量保留实现与验证记录；阶段 1 尚未收口。
 
 ## 已实现
 
@@ -193,3 +193,118 @@ CLOSED 通道要求 final 原件与请求、终态、结果、ACK、会话和 CI
 用户已确认 `subscription_saas_staging` 除受控手机号尾号 0212 对应用户外均为模拟数据，可用于功能和验收测试。该受控标识及关联字段仍须执行现有脱敏转换和扫描。现行非商用 v2 密钥、RAM 读取身份、H1 输入准入及消费链已有实现；实际来源适配器、导出至 v2 加密的制作入口、OSS 不可覆盖发布与独立读回及私有输入索引仍需接通。旧工作流的明文脱敏 dump artifact 不能替代该流程，既有 OSS 恢复卷也不是数据库快照。
 
 [第四轮 CI](https://github.com/keqi119/subscription-Saas/actions/runs/36807554362) 仍在三个 Customer 车辆边界夹具失败：事务内重新加载申请时未返回完整测试申请，且已确认方案缺少当前商业快照字段。现已补齐事务读取、完整方案快照、revision 和生产算法生成的 hash，保留真实申请锁、车辆限制查询、商业一致性校验及冲突／零写入断言。随后 Windows 原生受控单套 PostgreSQL 运行 `183fc7` 成功：28 collected、28 executed、28 passed、0 skipped，进程退出 0；Docker 回读仅剩原有两个容器。此前 27/28 的真实失败与两个启动失败记录仍保留，不计为通过；完整 PR CI 尚待本次推送后确认。
+
+## 快照归档内容扫描修正
+
+实际制作接缝审查发现，旧扫描器直接将 dump 字节按 UTF-8 做正则检查，不能据此证明压缩 PostgreSQL 归档已经脱敏。PGDMP 现必须由受信 workspace 使用既有固定 PostgreSQL 17.11 工具展开最终归档；输入摘要不符、展开失败、非 UTF-8、NUL、超过 1 GiB 或发现敏感字段均拒绝。新 `sanitization-scan.v2` 同时绑定原归档摘要、展开内容摘要和工具版本，metadata 与 R3 声明入口接受该前向版本。历史纯文本 v1 保持可读；读取实际 PGDMP 字节时不得将扫描记录降级为 v1。源库 17.10 与候选工具 17.11 的角色不同，不将源容器中的旧工具版本伪称为候选工具。
+
+限定验证：导出测试 `b4aca2` 为 24/24、无跳过；其中真实降级回归先在 `342b62` 复现失败再修正。子代理的 Linux R3 输入定向测试为 8/8，无跳过。`254983` 合同、格式和差异检查通过：278 文件、91 schemas、13 commands，128 项迁移摘要未变。`61ab27` 以原 ESLint 规则补充 Node globals 后比较 HEAD 和当前五个文件，无新增诊断；六项既有诊断仍保留。展开回调在这些测试中为替身，不能据此宣称实际 `pg_restore`、云端发布或恢复已经完成。
+
+H1 只读回查 `00775e`：源库 PostgreSQL 17.10，57,349,811 bytes、171 张 public 表，owner 为已登记的 `subscription_saas`，迁移头为 `20260901010000_stage1_schema_drift_convergence`，未发现名称含 snapshot 的角色。宿主机没有 `pg_dump/pg_restore`，仅 Staging PostgreSQL 容器运行，swap 仍启用。未导出源数据、修改数据库或恢复业务容器。后续仍须接真实受限源适配器、隔离转换与展开进程、v2 加密、OSS 独立读回及私有索引，再执行同候选 R2/R3、两项 Staging 迁移和 R4。
+
+## 已完成的候选代码集成
+
+[第五轮完整 CI](https://github.com/keqi119/subscription-Saas/actions/runs/36810455041) 于 2026-10-01 通过，日志明确记录 `PASS release check`（`a3fb33` / `c22bd6`）。核对 PR 头提交 `503efbead957a8c5b58bed86129a7bc255585e6e` 与绿色检查一致、可合并后，按用户既有授权完成 [PR #318](https://github.com/keqi119/subscription-Saas/pull/318) 合并（`d45a60`），未绕过检查。主分支自动 CI `36812101507` 随合并启动。快照扫描修正 `fed2adc2` 已推送 `feat/stage1-snapshot-archive-scan`，一次限定独立审查未发现明确 P1/P2；该分支尚未合并，实际快照和阶段 1 发布验收仍未完成。
+
+## 真实源读取与归档工具适配器
+
+[主分支 CI](https://github.com/keqi119/subscription-Saas/actions/runs/36812101507) 已确认成功（`40342f`）。新增源读取适配器查询实际 PostgreSQL 身份、权限和对象 owner，保持同一只读 REPEATABLE READ 事务，分页计算四张关键表指纹，并把实际导出 snapshot ID 交给固定 dump 调用。默认 `pg_database_owner` 解析为当前数据库实际 owner，函数和类型纳入 owner 集合；同一 Client 顺序查询。公开方法失败自行关闭，导出入口在外层权限拒绝时也承担关闭责任，清理无法确认时保留失败。
+
+固定 Linux 归档工具使用已锁定的 PostgreSQL 17.11 镜像、禁网只读容器和有界 stdin/stdout，实际检查工具版本、退出状态和归档摘要。独立审查发现的 create 响应丢失清理漏洞已修正：按操作标签和唯一名称找回容器后清理；无确定读回时保持清理失败。另一次审查发现仅列级 INSERT/UPDATE 授权漏检，已改为表级与列级权限共同检查。没有放宽源权限或归档扫描要求。
+
+实际合成归档探针 `3feecf` 通过：真实压缩 PGDMP 展开后检出合成手机号、转换后 v2 扫描通过、截断归档被真实 pg_restore 拒绝。实际源探针先在 `4ba54c` 复现 owner 别名拒绝、在 `86341c` 复现列级写权限漏检；最终 `ad260a` 通过：列级授权被拒绝、事务 DML 返回 25006、四表指纹不变、实际 dump 排除并发新增行，临时容器清理回读成功。均仅使用本地合成数据，未导出 Staging 数据。
+
+限定短测：源适配器 18/18（`626383`），导出 25/25（`645e7b`）及清理失败定向断言（`a59828`），归档工具 4/4（`447cb2`）；真实失败记录保留。限定新增文件 lint 通过。合同和测试分类 `a71a70` 通过：280 文件、91 schemas、13 commands、128 项未变迁移，101 candidates、39 manifested、62 excepted、0 unclassified。新归档测试仅使用进程替身，其分类不免除实际数据库门槛。
+
+上述适配器尚未组成完整制作入口。后续接通隔离数据库脱敏、v2 加密、OSS 不可覆盖发布与独立读回及私有输入索引；随后固定同候选执行 R2/R3、应用两项已批准 Staging 迁移并完成 R4。旧明文 artifact 工作流仍不能当成 v2 制作链执行。本轮未修改业务功能、服务器或数据库迁移。
+
+## 隔离数据库脱敏增量
+
+源读取和归档工具已提交、推送 `e540dbd0`（`5d8990` / `8ab755`）。后续隔离 workspace 适配器拒绝源库身份，固定目标数据库、backend 和角色；空目标恢复、按固定列分批转换、事务提交、导出和最终归档展开均要求相同身份。任一失败尝试回滚、结束连接、销毁调用方拥有的隔离资源并清零内部密钥副本；无法确认清理即失败。私有主机准入、资源创建与实际工具回调仍由生产入口负责，适配器自身不授予该权限。
+
+脱敏契约版本由 2 前进到 3：新增代码已确认的十个直列手机号位置；对 application.customer_profile_snapshot 的 mobile、emergencyContactMobile、idCardNo，以及 service_case.customer_snapshot 的 mobile 作明确字段转换。JSON 结构、其他字段及 null 保留，异常类型或缺少规定键拒绝；没有添加通用递归规则或放宽全文扫描。
+
+真实 PostgreSQL 17.11 隔离探针 `c489d9` 完成恢复、15 张表共 19 条转换、再导出与真实 pg_restore 展开，最终 `sanitization-scan.v2` 通过；源值不变、JSON 非敏感内容保留，目标数据库及容器均已清理回读。首次 `da705c` 在初始化临时 socket 关闭时失败，未记为通过；探针改为等待最终 TCP 服务后才运行。全部使用本地合成数据。新增 workspace 短测 2/2（`848109`）；JSON 转换先 `e43aeb` RED，后 `538e43` 导出短测 26/26。一次限定独立审查无明确 P1/P2。
+
+`54d774` 合同及分类通过：281 文件、91 schemas、13 commands、128 项迁移摘要未变，102 candidates、39 manifested、63 excepted、0 unclassified。`254aac` 格式通过，Docker 仅剩原有两个容器；`77f465` 新文件 lint 通过，`0e7665` 比较现有导出两文件的 HEAD 与当前诊断无新增，六项原有诊断保留。本轮 preflight `9fc695` 仍在本地数据库连接前缺 URL，`787458` Prisma schema 有效。
+
+H1 只读函数元数据回查 `ab5dd3` 确认 schema owner 别名与实际数据库 owner，另外发现 pgcrypto 随机/加密函数及业务触发器函数均带 VOLATILE 和 PUBLIC EXECUTE；当前保守源检查会将它们一律当可写。后续须在实际函数身份和可调用性上作最小区分，保留真正可写函数拒绝；不通过修改业务 PUBLIC 权限规避。尚未创建源导出角色、读取业务行、制作真实 Staging 快照或触发最终候选构建。
+
+## 源函数准入与真实数据源检查
+
+隔离脱敏增量已提交并推送 `159f2ab2`。H1 函数元数据 `b5fe08` 确认官方 pgcrypto 1.3 的十二个随机/加密签名及其 C 实现符号。本轮对这些函数同时核验真实扩展依赖、版本、语言、库、参数及返回类型 OID 和符号；对 trigger/event_trigger 仅在角色无写入、CREATE 和特权能力时允许，且都必须非 SECURITY DEFINER。其余未知 VOLATILE 或特权函数仍拒绝，没有修改源库 PUBLIC 权限。
+
+真实 PostgreSQL 探针先 `bc61e3` 复现误拒，最终 `11def4` 通过官方函数准入、直接调用触发器的 0A000 拒绝、将同一个 pgcrypto 成员替换为 SQL 实现后的拒绝，以及既有列级授权、只读事务、MVCC 导出和清理检查。限定测试先 RED `542531`，后 `718ec3` 为 19/19；格式、限定 lint 和独立窄审通过。`50ce15` 合同为 281 文件、91 schemas、13 commands、128 项未变迁移，摘要 `sha256:d0030c0ce7e1d5f59780657fbac0a3bebc07baedabb3b225acd96c9a25eb10ed`。
+
+按用户明确要求，已从 `/opt/subscription-saas/.env.staging.images` 和运行中的 `postgres:17-alpine` 容器读取必要连接参数，生成仅本次进程使用的 DATABASE_URL，通过临时 SSH loopback 隧道连接。没有将口令或完整 URL 写入仓库、日志或本地配置。真实读回 `2ad8e9`：数据库 `subscription_saas_staging`、角色 `subscription_saas`、PostgreSQL 17.10，探针连接的默认事务只读为 on。Prisma migrate status 读取 128 项迁移，exit 1 的原因明确为下列两项尚未应用，已不再是缺少 URL：
+
+- `20260925090000_stage1_operational_completion_terminal_shape`
+- `20260925091000_stage1_operational_completion_settlement_guard`
+
+本次 SSH 隧道已关闭。后续运行忽略目录内的 `.superpowers/sdd/2026-10-01-stage1-source-rc-delivery/prisma-staging-preflight.mjs` 可重新取配置并完成同一只读检查；结果保存为相邻的脱密 JSON。没有执行 migrate deploy、reset 或业务数据写入。
+
+## 快照受保护环境实际配置
+
+GitHub 实际读取 `58f757` 显示注册 runner 数量为零，`34ecb5` / `1ff2f0` 证实此前没有 `stage1-snapshot-export` 环境。按既有 GitHub 操作授权与现有准入策略，已创建该专用环境（`8a32a7`），ID `23175152803`：指定 keqi119 / `275060624` 审核，`prevent_self_review=false`、等待 0、`can_admins_bypass=false`；仅允许 `main` 分支（规则 ID `61601943`，`643e42`），没有 tag 规则。独立 API 重新读取并逐项比较通过（`d35ae4` / `41b1eb`），原有两个环境未修改。
+
+环境原始读回 SHA-256 为 `98ec3c83f0e6cf85eae1de02f9b1957b610c85feb36b236e0edab70582c80d45`，分支规则为 `a61d8da451b9ed8919857a300c9bc0e6c4f2dea4362c2a93a6dee03605ca8031`。公件位于同一忽略目录。尚未注册 runner、安装制作入口或触发快照工作流；这些配置读回不代表实际快照、加密发布或 R2/R3/R4 完成。
+
+## 固定 PostgreSQL 工具与私有结果包
+
+本轮从已推送的 `0a3b9bb4` 继续。前置检查 `9120bb` 已使用服务器生成的连接，仍只有两项已知待迁移；`d93a30` Prisma schema 有效。没有修改业务代码或迁移文件。
+
+现有工具适配器新增固定 `pg_dump` / `pg_restore` 回调，复用相同容器创建、退出观察和精确清理流程。版本固定 PostgreSQL 17.11，连接只使用已核实容器的网络空间和 `127.0.0.1:5432`；源导出要求同一 MVCC snapshot，恢复固定为单事务、遇错退出。密码只写自建私有目录内的 0600 passfile，容器以宿主进程 UID/GID 读取只读挂载，密码不进入 argv 或环境变量。工厂不授予主机、源库或目标准入权限。
+
+原导出核心提取内部 `prepareSanitizedSnapshotBundle`，继续执行相同源权限、双指纹、脱敏、归档扫描和清理；仅在源会话关闭且隔离资源销毁后返回私有结果包。旧导出入口继续调用 publisher 并验证旧 custody，不为新加密链伪造明文发布回执。这个入口尚未连接真实 v2 加密及 OSS 发布。
+
+限定新增断言先 `211cd8` RED，受影响导出短测 `f14a58` 为 27/27；固定工具短测 `2cce43` 为 6/6，补充固定 UID/GID 后 `9d0e91` 仍为 6/6。一次限定独立审查无明确 P1/P2。真实 Linux PostgreSQL 17.11 组合探针 `efd239` exit 0：两个独立容器、TCP SCRAM 密码文件认证（含冒号和反斜线）、持有快照排除并发插入、恢复、15 张表共 19 条转换、再导出、真实展开与 v2 扫描、返回结果前销毁目标，最终探针资源全部清理。全部为合成数据。
+
+保留两次探针失败：`5757cb` 已跑通组合，但 `2a2d0b` 在本地目录清理遇到强制终止 PostgreSQL 遗留的 socket，精确清理 `295703` 完成；随后 `0aa603` 因 Docker Desktop 新版 CLI 将 `stop --time` 弃用提示写入 stdout 导致探针清理断言失败，两个容器实际已正常退出，精确回读及清理 `45015f` 完成。探针改用 `--timeout`，最终完整复核为上述 `efd239`；没有把失败记成通过。旧的其他启动失败目录仍保留，不涉及此前被自动审批拒绝的删除操作。
+
+`b5c38f` 合同检查通过：281 文件、91 schemas、13 commands、128 项迁移及摘要不变，仓库合同摘要 `sha256:2a90ee0afbd1a25ac8f76a4d09f60fdf814a910c121dcb48948f4c8c893a9230`。格式及差异检查通过。限定 lint 的 Node globals 参数首次使用错误（`4fe681`），正确参数后仅剩既有测试文件五项诊断（`d17cbf`）；对 HEAD 使用相同参数得到完全相同的五项（`45015f`），新增实现与测试无新增诊断。
+
+## 真实源库只读角色准备
+
+H1 读取 `4186c8` 确认角色此前不存在，在单一事务内创建 `stage1_snapshot_reader`（`96d53e`）。该角色保持 NOLOGIN、无密码、NOINHERIT 及全部特权能力关闭；仅授予指定 Staging 数据库 CONNECT、public schema USAGE、当前表与序列 SELECT，以及读取实际集群身份所需的 `pg_control_system()` EXECUTE。未改变 PUBLIC 或业务角色权限，没有授予未来对象的默认权限。角色默认事务只读、statement timeout 120 秒。
+
+独立新连接以该角色的 session authorization 回读 `63f51f`：OID `85641`，171/171 张 public 表可读，表与序列写能力均为 0，database/schema CREATE 均为 false，成员关系、已拥有业务对象和可执行 SECURITY DEFINER 函数均为 0，所有特权和 LOGIN 均为 false。此步骤只配置并读取权限元数据，没有导出真实行、设置登录口令或运行迁移。实际制作时仍需受准入约束的短期登录、私有主机工作区、v2 加密授权与 OSS 独立发布/读回；本次准备不代替这些条件。
+
+## 私有快照包与非商用加密接线
+
+从已推送的 `b1bb76e9` 继续，前置检查 `13b36f` 使用实际服务器连接，仍只有上述两项待迁移；`205dd8` Prisma schema 有效。新增内部 `runProtectedSnapshotEncryption`：调用方须已取得真实主机和制作授权；函数固定复制 v2 授权、合同和请求，核对 run、合同摘要与当前授权窗口，在 Linux 本用户拥有的真实 0700 目录内操作。它复用既有脱敏、扫描及源/目标清理，再将同一私有 Buffer 双遍交给现有 RSA-OAEP/AES-GCM 实现，固定输出 `snapshot.enc`，返回 metadata、scan、envelope 和密文位置，不返回明文 dump。不生成进程退出、云端保管或工作流完成证明。
+
+快照分配时刻只控制 metadata 生命周期和授权到期；源权限观察、前后指纹及扫描记录各自实际执行时刻。原导出入口拒绝新增分配时刻参数，保留原 publisher/custody 规则。持有的明文 Buffer 在 finally 中尽力清零，不声称 JavaScript 全部内存副本已物理擦除。
+
+新增生命周期断言先 `7b60ea` RED；实现后的 `6e7a5d` 仅因新断言错误读取 fingerprint 时间字段而失败，修正为既有 `provenance.observedAt` 后 `3f2af7` 为 28/28。加密接线先 `8736ec` RED，Linux `2a8b91` 两项短组合通过，root 提交前 `3b05f7` 复核同样 2/2、0 skip：真实 RSA 加解密一致，生命周期与实际观察时间分离，run/合同不符和清理失败均不生成密文。数据库边界在这两项中使用合成适配器；实际 PostgreSQL 组合仍以上一节 `efd239` 为依据。限定独立审查未发现可证明 P1/P2。`b147c7` 格式、差异和合同检查通过，281 文件、91 schemas、13 commands、128 项迁移摘要不变；仓库合同摘要 `sha256:e82a7602a0b1e3e2f8109fe57fd985bfdb298cf6c658286ee9864dac7f2630b2`。限定 lint `93a9fb` 保留与上一轮相同的五项既有测试诊断；新增代码无诊断。旧 CLI、工作流和真实云端数据路径尚未切换。
+
+执行拓扑以已批准安全附录及 9 月 27 日非商用修订共同为准：制作数据平面仍在本地专用 WSL 加密隔离环境，H1 持有独立解封私钥并承担已批准 consumer。非商用修订没有把整个 producer 迁到 H1。现有 Ubuntu/Docker Desktop 环境和本地合成探针不能代替专用环境、固定安装入口、受限源连接和实际准入证据。
+
+## 阿里云 CLI 刷新凭据问题
+
+只读 `sts GetCallerIdentity` 在 `e4de81` 成功确认 OSS 账号 `1457643390906675`，紧接的 RAM 查询 `42eaff` 返回 `invalid_grant (refresh token is not the newest.)`，没有执行 RAM 变更。只读配置元数据 `f045a8` 显示指定配置文件未更新，而默认配置在前一次调用时更新但没有 OAuth profile。对照 [CLI 3.5.1 OAuth 刷新实现](https://github.com/aliyun/aliyun-cli/blob/v3.5.1/config/profile.go) 和[配置读写实现](https://github.com/aliyun/aliyun-cli/blob/v3.5.1/config/configuration.go)，刷新路径调用默认配置读写函数，未沿用显式 `--config-path`，解释了首次刷新成功、后续旧 refresh token 被拒绝的现象。
+
+已将默认 `.aliyun` 目录和配置文件权限收紧为当前用户，新的官方 OAuth 登录使用默认路径，使加载与刷新写回位置一致。旧指定路径保留但不再用于后续调用。Edge 自动化仍返回连接错误，续期页向任务浏览器返回 queued；用户通过所提供链接完成授权，CLI 回调及配置保存 `f114a9` 成功，身份查询 `37e904` 确认正确账号。没有重新发送密钥或扩展 RAM 权限。
+
+实际刷新验证第一次 `267053` 只让本地 STS 缓存过期，OAuth access token 仍有效，因此未发生 refresh token 轮换，探针明确失败为 `REFRESH_NOT_PERSISTED`；不能把这次当刷新通过。随后同时让两层本地缓存提前过期，`158332` 确认官方 CLI 实际轮换 refresh token 并写回同一个默认配置，紧接 RAM 只读查询成功。配置文件访问者仍只有当前用户，令牌值未输出或写入仓库。实际未分页截断的角色查询只发现既有 evidence-writer、evidence-audit-reader 和 snapshot-consumer，尚无 snapshot publisher；后续按真实 producer run 的 exact slots 准備精确权限变更并按用户要求确认，不提前授予 prefix 写权限。
+
+本轮代码已提交、推送 `c5919ec02f77d45444e03fad38320fac83f95fe8`（`170cda` / `4f0d5c`），工作区干净。登录恢复和上述读取不代表真实快照制作、发布、迁移或 R2/R3/R4 已完成。
+
+## 制作主机实际条件与待决选择
+
+后续前置 `ca4abc` 使用实际 Staging 连接，仍只有上述两项待迁移；`b5d0e3` Prisma schema 有效。Windows 实测 `d64a3b` / `9f1277` 表明 C、D 均未启用 BitLocker，C 页面文件 25,600 MiB、小型崩溃转储开启；`7a1c77` 确认 TPM 可用、休眠可用。按照已批准安全附录，当前环境不能直接执行真实 WSL 制作。没有修改系统加密、swap、WSL 配置或注册 Runner。
+
+H1 只读 `277288`：仅 Staging PostgreSQL 在运行，RAM 可用 1,208 MiB、swap 已用 387 MiB、磁盘余 9.2 GiB，既有加密主卷/恢复卷未挂载。限定兼容审查确认现有 Actions 准入强制精确 self-hosted 标签和三 job lineage，但未硬编码 WSL：H1 仅承接精确 JIT 数据 job 的改动面小于改为 hosted job 远程发起制作。现有 consumer/密钥恢复证明不能替代新制作与销毁证明。
+
+已准备[主机选择草案](2026-10-01-stage1-snapshot-producer-host-decision.md)，SHA-256 `d0f4b6a92781de81ff5c0948565b490940900fc401363e9c467955b32d94765d`，请求负责人在“仅 H1 一次性制作 job”与“先加密本机 C 盘、专用 WSL 全部置于 C 盘”间选择。选择前不变更已批准制作主机边界，云端 RAM 确认规则不变。
+
+独立 OSS 属性读回 `ee99c9` / `052ba1` / `a350ac` 均成功：指定 bucket 所有者正确、ACL private、WORM ID `9A0E27AED3264497AEBC5F1C55E18485`、Locked/210 天、VersioningConfiguration 无 Status（保持禁用）。没有上传对象或修改保留/权限。原始非秘密读回保存于忽略目录 `oss-bucket-current-readback.json`。这仅证明当前 bucket 配置，不代替未来对象的 writer/reader 独立读回和发布证明。
+
+## 精确 OSS 对象传输增量
+
+新增 `snapshot-oss-storage.mjs`：publisher 与 reader 分属两个入口，各持一份已获准、最长 900 秒的 STS。只接受指定 bucket 和当前 attempt/run 的五个固定文件；publisher 条件创建且不重试、不覆盖，reader 独立核验 HEAD/GET 的实际字节摘要、大小、ETag、时间及 bucket 私有 ACL、210 天 WORM 和禁用版本状态。入口不签发凭据、不证明制作进程终止，也不生成虚假的完整 custody。
+
+一次限定审查发现异步等待后读取可变输入、两种 STS ARN 形状不兼容，已统一固定原始输入并规范化身份；另修复合法 SHA 摘要数字片段误判为手机号。`0d9deb` / `ca06c7` 保留修复前失败，`b66c45` 定向传输 4/4、策略 1/1 均通过且无跳过。测试使用 SDK 替身，没有据此宣称真实对象已经发布。
+
+仓库 v2 策略遗漏 `GetBucketVersioning`。实际 RAM `GetPolicy` 读回 `8d527a` 确认 9 月 29 日已批准的 snapshot-consumer 策略 **已有该权限**，因此本轮只对齐仓库声明和 schema，没有新增 RAM 授权。publisher 角色仍未配置，后续必须依据真实 producer run 的精确对象提出具体草案。
+
+`3cdba8` 新入口及测试 ESLint、格式、差异检查通过。首次合同检查 `fc65ad` 报新模块未进入发现清单；对齐两处清单后 `96e10e` 通过：282 文件、91 schemas、13 commands，128 项迁移摘要未变，仓库合同摘要 `sha256:71f2a8ab58b3bd1863d43e96456af957b249cadd151ad878b3463bf5441403e4`。没有扩大数据库测试豁免或测试矩阵。真实主机选择仍待负责人答复；真实快照、同候选 R2/R3、两项 Staging 迁移及 R4 尚未完成。

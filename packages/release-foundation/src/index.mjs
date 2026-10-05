@@ -92,6 +92,7 @@ export { normalizeSnapshotOwnership, verifyOwnershipMap } from "./snapshot/norma
 export {
   buildEnvironmentPolicyIdentity,
   buildEnvironmentPolicyObservation,
+  buildPostApprovalObservationFromGitHub,
   verifyPostApprovalObservation
 } from "./snapshot/environment-policy.mjs";
 export {

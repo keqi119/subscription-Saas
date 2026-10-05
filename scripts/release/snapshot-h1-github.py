@@ -29,6 +29,15 @@ APP_PERMISSIONS = {'administration': 'write', 'actions': 'read',
                    'contents': 'read', 'deployments': 'read', 'metadata': 'read'}
 READ_PERMISSIONS = dict(APP_PERMISSIONS, administration='read')
 MAX_BYTES = 1048576
+CHECK_DEPLOYMENT_QUERY = '''query($id:ID!) {
+  node(id:$id) { ... on CheckRun {
+    id databaseId name status
+    repository { databaseId nameWithOwner }
+    checkSuite { commit { oid } workflowRun { databaseId } }
+    deployment { id databaseId environment commitOid createdAt latestStatus { state } }
+    pendingDeploymentRequest { environment { id name } }
+  } }
+}'''
 
 
 class GitHubFailure(Exception):
@@ -225,6 +234,44 @@ class H1SnapshotGitHub:
         require(type(value) is list and len(value) <= 100 and
                 all(type(row) is dict for row in value), 'RESPONSE_INVALID')
         return value
+
+    def read_job_deployment(self, run_id, job_id):
+        _id(run_id)
+        _id(job_id)
+        run = self.read_run(run_id)
+        jobs = [job for job in self.read_jobs(run_id) if job.get('id') == int(job_id)]
+        code = 'DEPLOYMENT_BINDING_INVALID'
+        require(len(jobs) == 1 and jobs[0].get('run_id') == int(run_id) and
+                jobs[0].get('head_sha') == run.get('head_sha'), code)
+        job = jobs[0]
+        link = job.get('check_run_url')
+        match = re.fullmatch(r'https://api\.github\.com/repos/keqi119/subscription-Saas/check-runs/([1-9][0-9]*)',
+                             link) if type(link) is str else None
+        require(match is not None, code)
+        checked = self._get(PREFIX + '/check-runs/' + _id(match.group(1)))
+        require(type(checked) is dict and checked.get('id') == int(match.group(1)) and
+                checked.get('head_sha') == run.get('head_sha') and
+                checked.get('name') == job.get('name') and type(checked.get('node_id')) is str and
+                1 <= len(checked['node_id']) <= 256, code)
+        graph = _api('POST', '/graphql', self._token,
+                     {'query': CHECK_DEPLOYMENT_QUERY, 'variables': {'id': checked['node_id']}})
+        require(type(graph) is dict and not graph.get('errors'), code)
+        try:
+            item = graph['data']['node']
+            require(type(item) is dict and item['id'] == checked['node_id'] and
+                    item['databaseId'] == checked['id'] and item['name'] == job['name'] and
+                    item['repository']['databaseId'] == REPO_ID and
+                    item['repository']['nameWithOwner'] == REPOSITORY and
+                    item['checkSuite']['workflowRun']['databaseId'] == run['id'] and
+                    item['checkSuite']['commit']['oid'] == run['head_sha'] and
+                    (item['deployment'] is None or type(item['deployment']) is dict) and
+                    (item['pendingDeploymentRequest'] is None or
+                     type(item['pendingDeploymentRequest']) is dict), code)
+        except (KeyError, TypeError):
+            raise GitHubFailure('H1_GITHUB_' + code) from None
+        # Nullable deployment is returned honestly. The admission verifier must
+        # still require a real deployment, matching policy and approval history.
+        return {'job': job, 'checkRun': item}
 
     def read_environment(self):
         value = self._get(PREFIX + '/environments/' + ENVIRONMENT)

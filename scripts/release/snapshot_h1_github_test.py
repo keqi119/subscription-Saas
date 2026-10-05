@@ -128,6 +128,39 @@ class GitHubTests(unittest.TestCase):
                 self.responses[jobs] = {'total_count': 1, 'jobs': [{'id': 999, 'run_id': 123}]}
                 self.assertEqual(github.read_jobs('123'), [{'id': 999, 'run_id': 123}])
 
+    def test_job_deployment_uses_the_actual_check_run_link_and_graphql_identity(self):
+        sha = 'a' * 40
+        prefix = '/repos/keqi119/subscription-Saas'
+        self.responses[prefix + '/actions/runs/123/attempts/1'] = {
+            'id': 123, 'run_attempt': 1, 'head_sha': sha,
+            'repository': self.repo, 'head_repository': self.repo}
+        job = {'id': 999, 'run_id': 123, 'head_sha': sha, 'name': 'snapshot-data',
+               'check_run_url': 'https://api.github.com' + prefix + '/check-runs/456'}
+        self.responses[prefix + '/actions/runs/123/attempts/1/jobs?per_page=100'] = {
+            'total_count': 1, 'jobs': [job]}
+        self.responses[prefix + '/check-runs/456'] = {
+            'id': 456, 'node_id': 'CR_fixed_node', 'head_sha': sha, 'name': 'snapshot-data'}
+        node = {'id': 'CR_fixed_node', 'databaseId': 456, 'name': 'snapshot-data',
+                'repository': {'databaseId': 1253231368, 'nameWithOwner': 'keqi119/subscription-Saas'},
+                'checkSuite': {'commit': {'oid': sha}, 'workflowRun': {'databaseId': 123}},
+                'deployment': {'databaseId': 789, 'environment': 'stage1-snapshot-export'},
+                'pendingDeploymentRequest': None}
+        self.responses['/graphql'] = {'data': {'node': node}}
+        with patch.object(self.module, '_api', self.api):
+            with self.session() as github:
+                result = github.read_job_deployment('123', '999')
+                self.assertEqual(result['checkRun']['deployment']['databaseId'], 789)
+                graph_call = [call for call in self.calls if call[1] == '/graphql'][0]
+                self.assertEqual(graph_call[3]['variables'], {'id': 'CR_fixed_node'})
+                node['checkSuite']['workflowRun']['databaseId'] = 124
+                with self.assertRaisesRegex(self.module.GitHubFailure, '^H1_GITHUB_DEPLOYMENT_BINDING_INVALID$'):
+                    github.read_job_deployment('123', '999')
+                job['check_run_url'] = 'https://invalid.example/check-runs/456'
+                before = len(self.calls)
+                with self.assertRaisesRegex(self.module.GitHubFailure, '^H1_GITHUB_DEPLOYMENT_BINDING_INVALID$'):
+                    github.read_job_deployment('123', '999')
+                self.assertEqual(len(self.calls) - before, 2)  # run and jobs only; no foreign request
+
     def test_failed_revocation_never_reports_success_or_leaks_response(self):
         self.responses['/installation/token'] = self.module.GitHubFailure('H1_GITHUB_HTTP_500')
         github = self.session()

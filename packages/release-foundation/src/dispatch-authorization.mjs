@@ -1,5 +1,7 @@
+import { Buffer } from "node:buffer";
 import { createPublicKey, randomBytes, verify } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { clearTimeout, setTimeout } from "node:timers";
 
 import { canonicalJson } from "./canonical-json.mjs";
 import { sha256Bytes, sha256Canonical } from "./digest.mjs";
@@ -307,6 +309,7 @@ function responseValid(response, signature, request, policy, now) {
     revokedAuthorizationIds: response.revokedAuthorizationIds,
     revokedAuthorizationDigests: response.revokedAuthorizationDigests
   };
+  validateContract("i0-revocation-state.v1", state);
   if (sha256Canonical(state) !== response.headDigest) fail();
   archiveValid(response.archive);
   const issued = instant(response.issuedAt);
@@ -470,7 +473,8 @@ export async function verifyDispatchAuthorization(input) {
         fail();
       signatureValid(body, frame.signature, root, domain, name);
       if (detached && !same(frame.signature, detached)) fail();
-      const { reference, ...object } = archive;
+      const object = { ...archive };
+      delete object.reference;
       verifyAuthoritativeCustodyObservation({
         originalBytes,
         receipt: frame.receipt,

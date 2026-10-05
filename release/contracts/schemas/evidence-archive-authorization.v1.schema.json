@@ -133,6 +133,7 @@
         "authoritative-custody-observation.v1",
         "custody-receipt.v1",
         "rc-dispatch-authorization.v1",
+        "i0-revocation-state.v1",
         "environment-policy-observation.v1",
         "infrastructure-change.v1",
         "producer-crypto-run-authorization.v1",

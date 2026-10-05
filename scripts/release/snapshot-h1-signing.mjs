@@ -3,7 +3,16 @@
 // or replace the snapshot dispatch, custody, revocation or GitHub decisions.
 import { Buffer } from "node:buffer";
 import { createPrivateKey, createPublicKey, randomBytes, sign, verify } from "node:crypto";
-import { constants, closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import {
+  constants,
+  closeSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readSync,
+  writeFileSync
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { canonicalJson } from "../../packages/release-foundation/src/canonical-json.mjs";
@@ -18,6 +27,14 @@ import {
 import { verifyAndSignSnapshotAdmission } from "../../packages/release-foundation/src/snapshot/snapshot-admission-verification.mjs";
 import { assertH1KeyMemory, assertH1KeyVolume } from "./snapshot-h1-key-volume.mjs";
 import { buildH1CryptoUseProof } from "./snapshot-h1-data-proof.mjs";
+import {
+  prepareH1SnapshotObjects,
+  verifyH1SnapshotPublication
+} from "./snapshot-h1-publication.mjs";
+import {
+  assertSnapshotPublicationObject,
+  createSnapshotPublisherTransport
+} from "./snapshot-oss-storage.mjs";
 
 const CODE = "H1_SNAPSHOT_SIGNING_REJECTED";
 const MAIN = "/var/lib/stage1-volumes/main";
@@ -425,6 +442,7 @@ export async function sealH1SnapshotDataProof(...args) {
   const raw = readFixed(`${directory}/data-result.json`, { privateFile: true, max: 4194304 });
   const result = JSON.parse(raw.toString("utf8"));
   requireThat(raw.equals(Buffer.from(canonicalJson(result))) && result.status === "DATA_PREPARED");
+  requireThat(same(result.cryptoAuthorization, auth));
   validateContract("snapshot-admission.v1", result.admission);
   requireThat(
     result.admission.releaseAttemptId === auth.releaseAttemptId &&
@@ -467,6 +485,118 @@ export async function sealH1SnapshotDataProof(...args) {
     },
     CODE
   );
+}
+
+function writeNewPublicationFile(file, bytes) {
+  const fd = openSync(
+    file,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600
+  );
+  try {
+    writeFileSync(fd, bytes);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// The approved controller invokes this separate fixed operation only after
+// crypto cleanup and issuance of the one-off publisher STS. Never retry an
+// unknown PUT by overwriting or mint the STS before the crypto process exits.
+export async function publishH1SnapshotData(verified) {
+  assertKernelFrame(
+    verified,
+    ["authorizationDigest", "dispatchAuthorizationDigest", "notAfter"],
+    CODE
+  );
+  const trusted = await admittedIdentity();
+  const production = await readH1SnapshotProductionInputs(),
+    auth = production.authorization;
+  requireThat(
+    sha256Canonical(auth) === verified.authorizationDigest &&
+      auth.bindings.dispatchAuthorizationDigest === verified.dispatchAuthorizationDigest
+  );
+  const expected = {
+    releaseAttemptId: auth.releaseAttemptId,
+    snapshotRunId: auth.snapshotRunId,
+    sourceSha: auth.sourceSha,
+    dispatchAuthorizationDigest: auth.bindings.dispatchAuthorizationDigest
+  };
+  requireThat(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      auth.releaseAttemptId
+    )
+  );
+  const directory = `/var/lib/subscription-saas/snapshot-output/${auth.releaseAttemptId}`;
+  const prepared = prepareH1SnapshotObjects({
+    dataResultBytes: readFixed(`${directory}/data-result.json`, {
+      privateFile: true,
+      max: 1048576
+    }),
+    proofBytes: readFixed(`${directory}/snapshot-proof.json`, { privateFile: true, max: 1048576 }),
+    ciphertext: readFixed(`${directory}/snapshot.enc`, { privateFile: true, max: 134217728 }),
+    expected,
+    signer: trusted.signer
+  });
+  requireThat(same(prepared.result.cryptoAuthorization, auth));
+  const identity = { releaseAttemptId: auth.releaseAttemptId, snapshotRunId: auth.snapshotRunId };
+  for (const object of prepared.objects)
+    assertSnapshotPublicationObject({ ...identity, ...object });
+  const session = privateJson("publisher-session", 32768);
+  requireThat(
+    typeof session.arn === "string" &&
+      session.arn.replace(":role/", ":assumed-role/") ===
+        `acs:ram::1457643390906675:assumed-role/subscription-saas-stage1-snapshot-publisher/stage1-publisher-${auth.snapshotRunId}-attempt-1`
+  );
+  requireThat(
+    Date.parse(session.issuedAt) >= Date.parse(prepared.sealed.proof.cleanup.processExitedAt)
+  );
+  const writer = await createSnapshotPublisherTransport({ ...identity, session });
+  const receipts = [];
+  for (const object of prepared.objects) {
+    requireThat(Date.now() < Date.parse(verified.notAfter));
+    receipts.push(await writer.createOnly(object));
+  }
+  const publication = {
+    ...expected,
+    writerArn: session.arn,
+    writerIssuedAt: session.issuedAt,
+    writerExpiresAt: session.expiresAt,
+    cryptoExitedAt: prepared.sealed.proof.cleanup.processExitedAt,
+    publishedAt: new Date().toISOString(),
+    objects: receipts
+  };
+  const signature = {
+    algorithm: "Ed25519",
+    issuer: trusted.signer.issuer,
+    keyId: trusted.signer.keyId,
+    subjectDigest: sha256Canonical(publication),
+    signature: sign(
+      null,
+      Buffer.from(canonicalJson({ domain: "h1-snapshot-publication.v1", subject: publication })),
+      readSigningKey(trusted)
+    ).toString("base64")
+  };
+  const marker = Buffer.from(canonicalJson({ publication, signature }));
+  verifyH1SnapshotPublication({ bytes: marker, expected, signer: trusted.signer });
+  writeNewPublicationFile(`${directory}/encryption-envelope.json`, prepared.objects[1].bytes);
+  // Preserve local evidence before the final conditional write. On an unknown
+  // result the operator must inspect exact objects, never blindly retry.
+  writeNewPublicationFile(`${directory}/diagnostics.redacted.json`, marker);
+  requireThat(Date.now() < Date.parse(verified.notAfter));
+  const final = await writer.createOnly({
+    key: `snapshot-slots/v2/${auth.releaseAttemptId}/${auth.snapshotRunId}/diagnostics.redacted.json`,
+    bytes: marker,
+    contentDigest: sha256Bytes(marker)
+  });
+  return {
+    status: "PUBLISHED",
+    releaseAttemptId: auth.releaseAttemptId,
+    snapshotRunId: auth.snapshotRunId,
+    publicationDigest: sha256Bytes(marker),
+    objects: [...receipts, final]
+  };
 }
 
 export async function verifyAndSignH1SnapshotAdmission(input) {

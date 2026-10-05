@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { URL } from "node:url";
 import { TextDecoder } from "node:util";
-import { canonicalJson } from "../../packages/release-foundation/src/index.mjs";
+import { canonicalJson } from "../../packages/release-foundation/src/canonical-json.mjs";
+import { validateProducerCryptoAuthorization } from "../../packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs";
 
 const ACCOUNT = "1457643390906675";
 const BUCKET = "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai";
@@ -228,11 +229,21 @@ function allowedBytes(input, prefix) {
       throw new Error();
     const forbidden =
       /(?:private.?key|password|access.?key|security.?token|sts.?token|client.?secret|credential)/iu;
-    const check = (value) => {
+    const check = (value, path = []) => {
       if (value && typeof value === "object")
         for (const [key, child] of Object.entries(value)) {
-          if (forbidden.test(key)) throw new Error();
-          check(child);
+          if (forbidden.test(key)) {
+            // This is a closed, public v2 authorization assertion, never key
+            // material. All other private-key/credential fields stay denied.
+            if (
+              subject.filename !== "data-result.json" ||
+              [...path, key].join(".") !== "cryptoAuthorization.handoff.privateKey" ||
+              child !== false
+            )
+              throw new Error();
+            validateProducerCryptoAuthorization(parsed.cryptoAuthorization);
+          }
+          check(child, [...path, key]);
         }
       // Fixed hash encodings can legitimately contain digit runs resembling identifiers.
       if (typeof value === "string" && /^(?:sha256:[0-9a-f]{64}|[0-9a-f]{40})$/u.test(value))
@@ -250,6 +261,17 @@ function allowedBytes(input, prefix) {
     fail("SNAPSHOT_OSS_INPUT_INVALID");
   }
   return { ...subject, bytes };
+}
+
+// Validate every object before the first irreversible conditional write.
+export function assertSnapshotPublicationObject(input) {
+  assertPolicy();
+  if (!exact(input, ["releaseAttemptId", "snapshotRunId", "key", "bytes", "contentDigest"]))
+    fail("SNAPSHOT_OSS_INPUT_INVALID");
+  allowedBytes(
+    { key: input.key, bytes: input.bytes, contentDigest: input.contentDigest },
+    identity(input)
+  );
 }
 
 function status200(result) {
@@ -440,6 +462,60 @@ export async function createSnapshotReaderTransport(input, lowLevelDependencies 
     fail("SNAPSHOT_OSS_CLIENT_INVALID");
   }
   return Object.freeze({
+    // Bounded bootstrap for the signed publication marker and its public
+    // documents. Returned JSON is untrusted until the H1 signatures validate.
+    async readPublicJson(request) {
+      if (!exact(request, ["key"])) fail("SNAPSHOT_OSS_INPUT_INVALID");
+      const subject = slot(prefix, request.key);
+      if (subject.filename === "snapshot.enc") fail("SNAPSHOT_OSS_INPUT_INVALID");
+      assertLive(credential, deps.now);
+      let head, get;
+      try {
+        head = await reader.head(subject.key);
+      } catch (error) {
+        if (error?.status === 404 && error?.code === "NoSuchKey")
+          fail("SNAPSHOT_OSS_OBJECT_NOT_READY");
+        fail("SNAPSHOT_OSS_READBACK_UNKNOWN");
+      }
+      const length = headers(head)["content-length"];
+      if (
+        typeof length !== "string" ||
+        !/^[1-9][0-9]*$/.test(length) ||
+        Number(length) > subject.maxSizeBytes
+      )
+        fail("SNAPSHOT_OSS_READBACK_INVALID");
+      try {
+        get = await reader.get(subject.key);
+      } catch {
+        fail("SNAPSHOT_OSS_READBACK_UNKNOWN");
+      }
+      if (!Buffer.isBuffer(get.content)) fail("SNAPSHOT_OSS_READBACK_INVALID");
+      const expected = {
+        key: subject.key,
+        sizeBytes: Number(length),
+        contentDigest: digest(get.content)
+      };
+      const headFacts = responseFacts(head, expected),
+        getFacts = responseFacts(get, expected, get.content);
+      if (headFacts.etag !== getFacts.etag || headFacts.lastModified !== getFacts.lastModified)
+        fail("SNAPSHOT_OSS_READBACK_INVALID");
+      allowedBytes(
+        { key: subject.key, bytes: get.content, contentDigest: expected.contentDigest },
+        prefix
+      );
+      const bucket = await bucketFacts(reader);
+      assertLive(credential, deps.now);
+      return {
+        bytes: Buffer.from(get.content),
+        observation: Object.freeze({
+          bucket,
+          readerArn: credential.arn,
+          expectedWriterArn: writerArn,
+          head: headFacts,
+          get: getFacts
+        })
+      };
+    },
     async readback(request) {
       if (!exact(request, ["key", "contentDigest", "sizeBytes"]))
         fail("SNAPSHOT_OSS_INPUT_INVALID");

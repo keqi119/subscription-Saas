@@ -12,28 +12,9 @@ import { canonicalJson } from "../../packages/release-foundation/src/canonical-j
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 
 const script = fileURLToPath(new URL("./prepare-snapshot-admission.mjs", import.meta.url));
-const workflow = Buffer.from(`name: Snapshot admission
-on:
-  workflow_dispatch:
-jobs:
-  admission:
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: snapshot-admission
-          path: .release-output/snapshot-admission.v1.json
-          overwrite: false
-          if-no-files-found: error
-  snapshot-custody:
-    needs: snapshot-data
-    steps:
-      - run: custody
-  snapshot-data:
-    needs: admission
-    steps:
-      - run: produce
-`);
+const workflow = await readFile(
+  new URL("../../.github/workflows/sanitized-snapshot.yml", import.meta.url)
+);
 const digest = `sha256:${"a".repeat(64)}`;
 
 function authorization(sourceSha = "b".repeat(40)) {
@@ -95,7 +76,7 @@ async function run(fx) {
   return spawnSync(process.execPath, [script], { cwd: fx.cwd, env: fx.env, encoding: "utf8" });
 }
 
-test("writes canonical untrusted admission once and emits only digest and route label", async () => {
+test("writes canonical untrusted admission once and emits digest and complete runner labels", async () => {
   const fx = await fixture();
   try {
     const result = await run(fx);
@@ -108,9 +89,9 @@ test("writes canonical untrusted admission once and emits only digest and route 
     assert.equal(admission.producerRun.runId, "23456");
     assert.match(admission.route.label, /^stage1-snapshot-export-23456-[0-9a-f]{32}$/);
     const output = await readFile(fx.outputPath, "utf8");
-    assert.match(
+    assert.equal(
       output,
-      new RegExp(`^admission_ref=${sha256Bytes(bytes)}\\nroute_label=${admission.route.label}\\n$`)
+      `admission_ref=${sha256Bytes(bytes)}\nroute_label=${admission.route.label}\nrunner_labels=${JSON.stringify(["self-hosted", "linux", "x64", "stage1-snapshot-export", admission.route.label])}\n`
     );
     assert.doesNotMatch(output, /authorization|signature|token/i);
     assert.equal((await run(fx)).status, 1, "second invocation must not overwrite admission");

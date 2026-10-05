@@ -174,7 +174,7 @@ async function appendGitHubOutput(outputPath, prepared) {
       fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_NOFOLLOW
     );
     await handle.writeFile(
-      `admission_ref=${prepared.admissionRef}\nroute_label=${prepared.routeLabel}\n`,
+      `admission_ref=${prepared.admissionRef}\nroute_label=${prepared.routeLabel}\nrunner_labels=${JSON.stringify([...QUEUED_LABELS, prepared.routeLabel])}\n`,
       "utf8"
     );
     await handle.sync();

@@ -33,7 +33,7 @@ ENTRIES = ('snapshot-h1-container-hook.js', 'snapshot-h1-job-client.mjs',
            'snapshot-h1-runner-entry.mjs')
 READ_ONLY = {'snapshot-h1-volume.py', 'snapshot-h1-runner.py',
              'snapshot-h1-producer.py', 'snapshot-h1-runner-entry.mjs'}
-WORKER = 'sha256:88ac6e79d17249612748a079c0a7d05046a0e3b12bddc26c09ecde5d9ebb333d'
+WORKER = 'sha256:bc827ff4e845aefa07f5b4ab6db22e478d95a68cbc89ecbfe41b9e437de3fead'
 
 
 def require(value, code):
@@ -334,6 +334,7 @@ class H1SnapshotAttempt:
             'volumeObservationDigest': digest(canonical(self.volume.observation)),
             'runningJobObservationDigest': digest(canonical(self.last_running_observation))}
         result = {'status': 'DATA_PREPARED', 'admission': self.admitted['admission'],
+            'cryptoAuthorization': self.admitted['production']['authorization'],
             'admissionVerification': self.admitted['verification'],
             'postApproval': self.admitted['postApproval'],
             'runningJobObservation': self.last_running_observation,

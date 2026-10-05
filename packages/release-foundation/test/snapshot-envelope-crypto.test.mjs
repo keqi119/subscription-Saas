@@ -25,6 +25,7 @@ import {
 } from "../src/snapshot/envelope-crypto.mjs";
 import { validateSnapshotEncryptionEnvelope } from "../src/snapshot/producer-crypto-contracts.mjs";
 import { sha256Canonical } from "../src/digest.mjs";
+import { canonicalJson } from "../src/canonical-json.mjs";
 
 const keys = generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 });
 const keyFingerprint = `sha256:${createHash("sha256")
@@ -157,6 +158,7 @@ async function privateExportFixture(t, { cleanupFails = false } = {}) {
   const plaintext = Buffer.from("COPY public.customer (mobile) FROM stdin;\n\\.\n");
   const aad = {
     ...expectedAad(plaintext),
+    releaseAttemptId: "11111111-2222-4333-8444-555555555555",
     sanitizationContractDigest: sha256Canonical(contract)
   };
   const authorization = producerAuthorization(aad);
@@ -345,6 +347,125 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
   assert.equal(proof.cleanup.memoryLocked, false);
   assert.equal(proof.cleanup.hostSwapDisabled, true);
   assert.equal(proof.dataObservationDigest, sha256Canonical(observation));
+  const { prepareH1SnapshotObjects, readH1SnapshotPublication } =
+    await import("../../../scripts/release/snapshot-h1-publication.mjs");
+  const { assertSnapshotPublicationObject } =
+    await import("../../../scripts/release/snapshot-oss-storage.mjs");
+  const signingKeys = generateKeyPairSync("ed25519");
+  const signer = {
+    issuer: f.authorization.issuer.issuerId,
+    keyId: digest(signingKeys.publicKey.export({ type: "spki", format: "der" })),
+    publicKey: signingKeys.publicKey.export({ type: "spki", format: "pem" })
+  };
+  const signature = (domain, subject) => ({
+    algorithm: "Ed25519",
+    issuer: signer.issuer,
+    keyId: signer.keyId,
+    subjectDigest: sha256Canonical(subject),
+    signature: crypto
+      .sign(null, Buffer.from(canonicalJson({ domain, subject })), signingKeys.privateKey)
+      .toString("base64")
+  });
+  const expected = {
+    releaseAttemptId: f.authorization.releaseAttemptId,
+    snapshotRunId: f.authorization.snapshotRunId,
+    sourceSha: f.authorization.sourceSha,
+    dispatchAuthorizationDigest: f.authorization.bindings.dispatchAuthorizationDigest
+  };
+  const dataResult = {
+    status: "DATA_PREPARED",
+    cryptoAuthorization: f.authorization,
+    admission: {
+      releaseAttemptId: expected.releaseAttemptId,
+      producerRun: { runId: expected.snapshotRunId, sourceSha: expected.sourceSha },
+      dispatchAuthorizationDigest: expected.dispatchAuthorizationDigest,
+      adapterDigest: f.authorization.bindings.adapterExecutableDigest
+    },
+    data: input.data,
+    executionObservation: observation,
+    terminalObservation: terminal,
+    cleanup,
+    volumeObservation: volume,
+    runningJobObservation: { fixture: true }
+  };
+  const dataResultBytes = Buffer.from(canonicalJson(dataResult));
+  const subject = { proof, dataResultDigest: digest(dataResultBytes) };
+  const proofBytes = Buffer.from(
+    canonicalJson({ ...subject, signature: signature("h1-snapshot-data-proof.v1", subject) })
+  );
+  const ciphertext = await readFile(result.ciphertextPath);
+  const prepared = prepareH1SnapshotObjects({
+    dataResultBytes,
+    proofBytes,
+    ciphertext,
+    expected,
+    signer
+  });
+  for (const object of prepared.objects)
+    assertSnapshotPublicationObject({
+      releaseAttemptId: expected.releaseAttemptId,
+      snapshotRunId: expected.snapshotRunId,
+      ...object
+    });
+  const writerArn = "acs:ram::1457643390906675:assumed-role/fixture-writer/fixture-session";
+  const publication = {
+    ...expected,
+    writerArn,
+    writerIssuedAt: after,
+    writerExpiresAt: new Date(finished + 60000).toISOString(),
+    cryptoExitedAt: after,
+    publishedAt: after,
+    objects: prepared.objects.map((x) => ({
+      key: x.key,
+      digest: x.contentDigest,
+      sizeBytes: x.bytes.length,
+      requestId: "fixture-put",
+      etag: null
+    }))
+  };
+  const markerBytes = Buffer.from(
+    canonicalJson({ publication, signature: signature("h1-snapshot-publication.v1", publication) })
+  );
+  const markerKey = `snapshot-slots/v2/${expected.releaseAttemptId}/${expected.snapshotRunId}/diagnostics.redacted.json`;
+  const stored = new Map(prepared.objects.map((x) => [x.key, x.bytes]));
+  stored.set(markerKey, markerBytes);
+  const observationFor = (key) => ({
+    bucket: { fixture: true },
+    expectedWriterArn: writerArn,
+    readerArn: "fixture-independent-reader",
+    get: { digest: digest(stored.get(key)), sizeBytes: stored.get(key).length }
+  });
+  const reader = {
+    readPublicJson: async ({ key }) => ({
+      bytes: stored.get(key),
+      observation: observationFor(key)
+    }),
+    readback: async ({ key, contentDigest }) => {
+      assert.equal(digest(stored.get(key)), contentDigest);
+      return observationFor(key);
+    }
+  };
+  assert.equal(
+    (await readH1SnapshotPublication({ reader, expected, signer })).status,
+    "READBACK_VERIFIED"
+  );
+  const changed = Buffer.from(dataResultBytes);
+  changed[changed.length - 2] ^= 1;
+  assert.throws(
+    () =>
+      prepareH1SnapshotObjects({
+        dataResultBytes: changed,
+        proofBytes,
+        ciphertext,
+        expected,
+        signer
+      }),
+    { code: "H1_SNAPSHOT_PUBLICATION_REJECTED" }
+  );
+  stored.set(prepared.objects[3].key, Buffer.from('{"changed":true}'));
+  await assert.rejects(readH1SnapshotPublication({ reader, expected, signer }), {
+    code: "H1_SNAPSHOT_PUBLICATION_REJECTED"
+  });
   for (const change of [
     (x) => {
       x.observation.processExit.exitCode = 1;

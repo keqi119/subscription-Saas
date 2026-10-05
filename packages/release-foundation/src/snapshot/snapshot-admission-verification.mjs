@@ -196,7 +196,7 @@ function exact(raw, selection) {
 }
 
 // Closed YAML subset: two-space block mappings and mapping-item sequences, plain keys,
-// and single-line plain scalar values. Every non-comment line is consumed. Quoting,
+// and single-line plain scalar values. Every non-comment line is consumed. Whole-value quoting,
 // flow forms, aliases, document directives and block scalars are unsupported. A whole
 // single-line ${{ ... }} scalar with the restricted character set below is opaque text;
 // it is never evaluated and cannot supply an action reference or a mapping key.
@@ -213,7 +213,7 @@ function parsedWorkflow(workflowBytes) {
     const scalar = match[4] === undefined ? "" : match[4];
     if (
       scalar !== "" &&
-      !/^[A-Za-z0-9_./@][A-Za-z0-9_./@ -]*$/.test(scalar) &&
+      !(/^[A-Za-z0-9_./@][A-Za-z0-9_./@ $'":*-]*$/.test(scalar) && !scalar.includes(": ")) &&
       !/^\$\{\{ [A-Za-z0-9_.()'" !=&|,+*/-]+ \}\}$/.test(scalar)
     )
       fail(code);

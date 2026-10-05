@@ -155,7 +155,7 @@ test("publisher uses only fixed slot, freezes bytes, and reader independently ve
     f.dependencies
   );
   assert.equal(f.clients.length, 2);
-  assert.deepEqual(Object.keys(reader), ["readback"]);
+  assert.deepEqual(Object.keys(reader), ["readPublicJson", "readback"]);
   const readback = await reader.readback({
     key,
     contentDigest: expected,
@@ -166,6 +166,10 @@ test("publisher uses only fixed slot, freezes bytes, and reader independently ve
   assert.equal(readback.bucket.worm.state, "Locked");
   assert.equal(readback.bucket.versioning, "Disabled");
   assert.equal(readback.head.version, "null-version-disabled");
+  const document = await reader.readPublicJson({ key: jsonKey });
+  assert.deepEqual(document.bytes, metadata);
+  assert.equal(document.observation.get.digest, digest(metadata));
+  await assert.rejects(reader.readPublicJson({ key }), { code: "SNAPSHOT_OSS_INPUT_INVALID" });
   f.state.corrupt = true;
   await assert.rejects(
     reader.readback({ key, contentDigest: expected, sizeBytes: f.objects.get(key).length }),

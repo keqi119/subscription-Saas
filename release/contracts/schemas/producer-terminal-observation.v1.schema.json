@@ -94,7 +94,10 @@
     "admissionJob": {
       "allOf": [
         { "$ref": "#/$defs/job" },
-        { "type": "object", "properties": { "name": { "const": "snapshot-admission" } } }
+        {
+          "type": "object",
+          "properties": { "name": { "enum": ["snapshot-admission", "admission"] } }
+        }
       ]
     },
     "dataJob": {

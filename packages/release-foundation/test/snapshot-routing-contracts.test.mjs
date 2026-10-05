@@ -198,6 +198,15 @@ test("terminal observation rejects non-success runs and required job conclusions
     }
   };
   validateContract("producer-terminal-observation.v1", observation);
+  const currentAdmissionName = structuredClone(observation);
+  currentAdmissionName.requiredJobs[0].name = "admission";
+  validateContract("producer-terminal-observation.v1", currentAdmissionName);
+  const unsupportedAdmissionAlias = structuredClone(observation);
+  unsupportedAdmissionAlias.requiredJobs[0].name = "admit";
+  assert.throws(
+    () => validateContract("producer-terminal-observation.v1", unsupportedAdmissionAlias),
+    { code: "CONTRACT_SCHEMA_INVALID" }
+  );
   for (const [name, mutate] of [
     [
       "PRODUCER_RUN_NOT_TERMINAL_SUCCESS",

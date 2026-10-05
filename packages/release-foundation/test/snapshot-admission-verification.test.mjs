@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { generateKeyPairSync, sign, verify } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { canonicalJson } from "../src/canonical-json.mjs";
@@ -244,7 +245,14 @@ function validDispatch(workflowDigest, calls, authorizationPatch = {}) {
 
 const uploadStep = `      - uses: actions/upload-artifact@${"e".repeat(40)}\n        with:\n          name: snapshot-admission\n          path: .release-output/snapshot-admission.v1.json\n          overwrite: false\n          if-no-files-found: error\n`;
 
-function fixture(workflowSource, authorizationPatch) {
+function fixture(
+  workflowSource,
+  authorizationPatch,
+  actionCommits = [
+    { action: "actions/checkout", commit: "d".repeat(40) },
+    { action: "actions/upload-artifact", commit: "e".repeat(40) }
+  ]
+) {
   const pair = generateKeyPairSync("ed25519");
   const workflowBytes = Buffer.from(
     workflowSource ??
@@ -259,10 +267,7 @@ function fixture(workflowSource, authorizationPatch) {
       path: ".github/workflows/sanitized-snapshot.yml",
       ref: "main",
       blobDigest: workflowDigest,
-      actionCommits: [
-        { action: "actions/checkout", commit: "d".repeat(40) },
-        { action: "actions/upload-artifact", commit: "e".repeat(40) }
-      ]
+      actionCommits: structuredClone(actionCommits)
     },
     environmentPolicyIdentity: {
       schemaVersion: "environment-policy-identity.v1",
@@ -276,10 +281,7 @@ function fixture(workflowSource, authorizationPatch) {
       waitTimerSeconds: 0,
       workflowPath: ".github/workflows/sanitized-snapshot.yml",
       workflowBlobDigest: workflowDigest,
-      actionCommitAllowlist: [
-        { action: "actions/checkout", commit: "d".repeat(40) },
-        { action: "actions/upload-artifact", commit: "e".repeat(40) }
-      ],
+      actionCommitAllowlist: structuredClone(actionCommits),
       canonicalizationVersion: "RFC8785"
     },
     rootSigner: {
@@ -452,6 +454,20 @@ const noPrivilege = (f) => {
   assert.equal(f.calls.key, 0);
   assert.equal(f.calls.jit, 0);
 };
+
+test("repository workflow satisfies the complete admission verifier with its approved action pins", async () => {
+  const source = readFileSync(
+    new URL("../../../.github/workflows/sanitized-snapshot.yml", import.meta.url)
+  );
+  const f = fixture(source, undefined, [
+    { action: "actions/checkout", commit: "11d5960a326750d5838078e36cf38b85af677262" },
+    { action: "actions/setup-node", commit: "49933ea5288caeca8642d1e84afbd3f7d6820020" },
+    { action: "actions/upload-artifact", commit: "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" }
+  ]);
+  const result = await signFixture(f);
+  assert.equal(result.workflowBlobDigest, sha256Bytes(source));
+  assert.equal(f.calls.key, 1);
+});
 
 test("real artifact metadata binds through the unique declared uploader without invented job fields", async () => {
   const f = fixture();

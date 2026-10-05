@@ -15,7 +15,11 @@ import {
 import { admitH1Snapshot } from "./snapshot-h1-admit.mjs";
 import { createInstalledH1DispatchVerification } from "./snapshot-h1-dispatch.mjs";
 import { createH1GitHubJwtSupplier } from "./snapshot-h1-github-jwt.mjs";
-import { readH1SnapshotProductionInputs, sealH1SnapshotDataProof } from "./snapshot-h1-signing.mjs";
+import {
+  readH1SnapshotProductionInputs,
+  sealH1SnapshotDataProof,
+  publishH1SnapshotData
+} from "./snapshot-h1-signing.mjs";
 
 const CODE = "H1_ATTEMPT_AUTHORITY_REJECTED";
 const requireThat = (value) => {
@@ -54,12 +58,12 @@ export async function runH1AttemptAuthority(input) {
   assertKernelFrame(input, ["operation", "request"], CODE);
   const captured = snapshotKernelData(input, CODE);
   const { operation, request } = captured;
-  requireThat(["admit", "recheck", "jwt", "seal"].includes(operation));
+  requireThat(["admit", "recheck", "jwt", "seal", "publish"].includes(operation));
   if (operation === "jwt") {
     assertKernelFrame(request, [], CODE);
     return { jwt: await createH1GitHubJwtSupplier()() };
   }
-  if (operation === "seal") {
+  if (operation === "seal" || operation === "publish") {
     assertKernelFrame(request, [], CODE);
     const { dispatchVerification } = await createInstalledH1DispatchVerification();
     const production = await readH1SnapshotProductionInputs();
@@ -68,6 +72,15 @@ export async function runH1AttemptAuthority(input) {
         sha256Canonical(dispatchVerification.authorization)
     );
     const verified = await verifyDispatchAuthorization(dispatchVerification);
+    if (operation === "publish") {
+      const published = await publishH1SnapshotData({
+        authorizationDigest: sha256Canonical(production.authorization),
+        dispatchAuthorizationDigest: sha256Canonical(dispatchVerification.authorization),
+        notAfter: verified.notAfter
+      });
+      requireThat(Date.now() < Date.parse(verified.notAfter));
+      return published;
+    }
     const sealed = await sealH1SnapshotDataProof();
     requireThat(
       sealed.proof.authorizationDigest === sha256Canonical(production.authorization) &&

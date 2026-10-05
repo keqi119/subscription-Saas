@@ -149,6 +149,65 @@ export function prepareH1SnapshotObjects({
   };
 }
 
+function verifyPutObservation(item, publication) {
+  const capture = item.putObservation;
+  assertKernelFrame(capture, ["record", "bodyBase64"], CODE);
+  const record = capture.record;
+  assertKernelFrame(
+    record,
+    [
+      "recordVersion",
+      "operation",
+      "bucket",
+      "objectKey",
+      "principal",
+      "observedAt",
+      "requestHeaders",
+      "response"
+    ],
+    CODE
+  );
+  assertKernelFrame(record.requestHeaders, ["x-oss-forbid-overwrite"], CODE);
+  assertKernelFrame(record.response, ["status", "headers", "body"], CODE);
+  assertKernelFrame(record.response.body, ["digest", "bytes"], CODE);
+  const headers = record.response.headers,
+    observed = Date.parse(record.observedAt);
+  requireThat(
+    record.recordVersion === "r3-snapshot-oss-response.v1" &&
+      record.operation === "PutObject" &&
+      record.bucket === "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai" &&
+      record.objectKey === item.key &&
+      record.principal === publication.writerArn.replace(":role/", ":assumed-role/") &&
+      Number.isFinite(observed) &&
+      new Date(observed).toISOString() === record.observedAt &&
+      observed >= Date.parse(publication.writerIssuedAt) &&
+      observed <= Date.parse(publication.publishedAt) &&
+      record.requestHeaders["x-oss-forbid-overwrite"] === "true" &&
+      record.response.status === 200 &&
+      capture.bodyBase64 === "" &&
+      record.response.body.bytes === 0 &&
+      record.response.body.digest === sha256Bytes(Buffer.alloc(0)) &&
+      headers &&
+      typeof headers === "object" &&
+      !Array.isArray(headers) &&
+      Object.entries(headers).every(
+        ([name, value]) =>
+          ["date", "x-oss-request-id", "etag", "content-length"].includes(name) &&
+          typeof value === "string" &&
+          value.length > 0 &&
+          value.length <= 2048 &&
+          ![...value].some(
+            (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127
+          )
+      ) &&
+      Number.isFinite(Date.parse(headers.date)) &&
+      Date.parse(headers.date) <= observed &&
+      headers["x-oss-request-id"] === item.requestId &&
+      headers.etag === item.etag &&
+      (headers["content-length"] === undefined || headers["content-length"] === "0")
+  );
+}
+
 export function verifyH1SnapshotPublication({ bytes, expected, signer }) {
   try {
     expectedIdentity(expected);
@@ -198,7 +257,11 @@ export function verifyH1SnapshotPublication({ bytes, expected, signer }) {
     );
     const prefix = `snapshot-slots/v2/${expected.releaseAttemptId}/${expected.snapshotRunId}/`;
     for (const [index, item] of value.objects.entries()) {
-      assertKernelFrame(item, ["key", "digest", "sizeBytes", "requestId", "etag"], CODE);
+      assertKernelFrame(
+        item,
+        ["key", "digest", "sizeBytes", "requestId", "etag", "putObservation"],
+        CODE
+      );
       requireThat(
         item.key === prefix + NAMES[index] &&
           /^sha256:[a-f0-9]{64}$/.test(item.digest) &&
@@ -207,8 +270,10 @@ export function verifyH1SnapshotPublication({ bytes, expected, signer }) {
           item.sizeBytes <= (index === 0 ? 134217728 : 1048576) &&
           typeof item.requestId === "string" &&
           item.requestId.length > 0 &&
-          (item.etag === null || (typeof item.etag === "string" && item.etag.length > 0))
+          typeof item.etag === "string" &&
+          item.etag.length > 0
       );
+      verifyPutObservation(item, value);
     }
     return snapshotKernelData(value, CODE);
   } catch {
@@ -243,6 +308,7 @@ export async function readH1SnapshotPublication({ reader, expected, signer }) {
       documents.set(object.key.slice(prefix.length), value.bytes);
       observations.push(value.observation);
     }
+    requireThat(observations.at(-1).get.etag === object.etag);
   }
   const verified = verifyH1SnapshotData({
     dataResultBytes: documents.get("data-result.json"),

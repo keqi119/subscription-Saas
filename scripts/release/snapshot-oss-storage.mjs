@@ -426,12 +426,70 @@ export async function createSnapshotPublisherTransport(input, lowLevelDependenci
         !result.res.headers["x-oss-request-id"]
       )
         fail("SNAPSHOT_OSS_WRITE_OUTCOME_UNKNOWN");
+      // ali-oss put() preserves the urllib response under `res`, including its
+      // original body bytes. A completed PUT with no original is an unknown receipt.
+      const nativeBody = result.res.data;
+      const observedAt = new Date(current(deps.now)).toISOString();
+      const sourceHeaders = result.res.headers;
+      const capturedHeaders = {};
+      for (const name of [
+        "date",
+        "x-oss-request-id",
+        "etag",
+        "content-length",
+        "x-oss-version-id"
+      ]) {
+        const value = sourceHeaders[name];
+        if (value !== undefined) {
+          if (
+            typeof value !== "string" ||
+            value.length === 0 ||
+            value.length > 2048 ||
+            [...value].some(
+              (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127
+            )
+          )
+            fail("SNAPSHOT_OSS_WRITE_OUTCOME_UNKNOWN");
+          capturedHeaders[name] = value;
+        }
+      }
+      if (
+        !Buffer.isBuffer(nativeBody) ||
+        nativeBody.length !== 0 ||
+        !Number.isFinite(Date.parse(capturedHeaders.date)) ||
+        Date.parse(capturedHeaders.date) > Date.parse(observedAt) ||
+        !capturedHeaders["x-oss-request-id"] ||
+        !capturedHeaders.etag ||
+        capturedHeaders["x-oss-version-id"] !== undefined ||
+        (capturedHeaders["content-length"] !== undefined &&
+          capturedHeaders["content-length"] !== "0")
+      )
+        fail("SNAPSHOT_OSS_WRITE_OUTCOME_UNKNOWN");
+      const body = Buffer.from(nativeBody);
+      const putObservation = {
+        record: {
+          recordVersion: "r3-snapshot-oss-response.v1",
+          operation: "PutObject",
+          bucket: BUCKET,
+          objectKey: subject.key,
+          principal: credential.arn,
+          observedAt,
+          requestHeaders: { "x-oss-forbid-overwrite": "true" },
+          response: {
+            status: result.res.status,
+            headers: capturedHeaders,
+            body: { digest: digest(body), bytes: body.length }
+          }
+        },
+        bodyBase64: body.toString("base64")
+      };
       return Object.freeze({
         key: subject.key,
         digest: digest(subject.bytes),
         sizeBytes: subject.bytes.length,
         requestId: result.res.headers["x-oss-request-id"],
-        etag: result.res.headers.etag ?? null
+        etag: result.res.headers.etag ?? null,
+        putObservation
       });
     }
   });

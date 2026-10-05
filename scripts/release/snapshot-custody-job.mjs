@@ -121,10 +121,13 @@ export function provisionalSnapshotCustody(readback, accessPolicyDigest) {
   const object = readback.publication.objects[0];
   const observed = readback.observations.find((item) => item.get.key === object.key);
   requireThat(readback.status === "READBACK_VERIFIED" && observed);
-  const select = (value) =>
-    Object.fromEntries(
+  const etag = (value) => value.replace(/^"|"$/gu, "");
+  const select = (value) => ({
+    ...Object.fromEntries(
       ["key", "version", "etag", "digest", "sizeBytes"].map((key) => [key, value[key]])
-    );
+    ),
+    etag: etag(value.etag)
+  });
   const receipt = {
     schemaVersion: "snapshot-private-custody.v1",
     releaseAttemptId: envelope.releaseAttemptId,
@@ -138,7 +141,7 @@ export function provisionalSnapshotCustody(readback, accessPolicyDigest) {
     object: {
       key: object.key,
       version: observed.get.version,
-      etag: observed.get.etag,
+      etag: etag(observed.get.etag),
       ciphertextDigest: envelope.ciphertextDigest,
       ciphertextSizeBytes: envelope.ciphertextSizeBytes,
       envelopeDigest: sha256Canonical(envelope)

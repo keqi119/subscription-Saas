@@ -35,6 +35,18 @@
 - 最终 `4c4f8f` 的 19 项完整准入测试通过；`172f18` 合同目录摘要为 `sha256:203011eb8ae1726d45c318312538aaaa1c15d06c5c6a87c0d28b9bc0fb02f431`。三个 foundation 测试文件补 Node globals 后，两个无诊断，routing 文件只有与 HEAD 一致的既有 `_removed` 未使用诊断；不扩改历史 lint 问题。
 - Sol medium 分别只读审查核心发布及 hosted 入口；Luna 对齐 job 名兼容并验证。审查确认 `accessPolicyDigest` 目前是受保护配置提供的摘要，脚本不读取 RAM 管理策略。正式验收必须保留与其匹配的实际 RAM 回读原件；不能把该字段当成已完成云权限核验。
 
+## R3 原件对齐补充
+
+同轮后续核对 `readR3SnapshotDeclarations.checkStorage`，确认首次 PutObject 响应不能事后补造。publisher 现保存实际 SDK `res.data` 和必要响应头的安全投影，记录真实时间、principal、请求号、ETag 与空响应体摘要；只接受 SDK 实际提供的零字节 Buffer，不以缺字段推断空响应。缺失、非法或未知回执仍停止且不重试。
+
+四份 PutObject 原件随发布标志签名，独立读者检查其对象地址、writer、时间、响应摘要与 ETag；ETag 同时与实际 GET 对齐。凭证中的 ETag 去掉 HTTP 外层引号以匹配既有 R3 消费契约，原始响应头仍保留引号。没有改动消费门槛。
+
+`3e9904`、`405e59` 分别确认新签名回执字段和 quoted ETag 的回归失败；修复后 `370324` 两项 H1 fixture 测试通过，包含重新签名的错对象 PutObject 原件拒绝、最终 marker 的公开字段扫描。`44e850` 定向 lint 和六项 storage/custody 测试通过；初次 lint 的控制字符正则诊断已改为字符编码检查。没有重复数据库/卷生命周期检查。
+
+`cbd361` / `179c15` 最终 H1 control 为 `sha256:ad39ebb6b10872803e3af27c6b2d6ff02477d57a404007fc2d6e1cbb00c5df2f`，2,338 文件、11,509,498 字节；最终 adapter 为 `sha256:e0b4b5d6a6dab140f20b34dd6b3ec2d81f04ccf50e29ffb8546703afe168d2ea`。worker 与 Python 文件未再次改变，全部 bundle 文件和安装配置回读通过。`9594a6` 最终合同目录摘要为 `sha256:ab283852bccb5c96d876db74c5653a35af392d4b514a329e393dc7fdf1731d03`，其余数量和迁移摘要不变。
+
+真实首次上传尚未发生。R3 仍需要双方身份原件，以及工作流终态之后重新捕获的 Head/Get、GetObjectAcl、GetBucketAcl、Versioning、Worm 响应，不能将当前 normalized/provisional 回读改名作为这些原件。最终 completion/terminal 契约当前无生产生成器，但已批准的基础设施 addendum 明确要求它们，不能因旧消费入口未直接引用而省略。
+
 ## 必须继续完成
 
 1. 补齐真实 workflow terminal、publisher 会话销毁及完整 destruction/completion 证据的既有收口路径；只使用实际观察，不新增通用平台。

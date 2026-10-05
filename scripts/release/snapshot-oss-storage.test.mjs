@@ -53,7 +53,18 @@ function fixture() {
             });
           objects.set(actualKey, Buffer.from(bytes));
           if (state.unknown) throw new Error("private vendor text");
-          return res({ "x-oss-request-id": "put-request" });
+          return {
+            res: {
+              status: 200,
+              data: state.missingBody ? undefined : Buffer.alloc(0),
+              headers: {
+                date: "Thu, 01 Oct 2026 00:00:00 GMT",
+                "x-oss-request-id": "put-request",
+                etag: '"etag-one"',
+                authorization: "must-not-leak"
+              }
+            }
+          };
         }
       };
     return {
@@ -121,6 +132,27 @@ test("publisher uses only fixed slot, freezes bytes, and reader independently ve
   bytes.fill(0);
   const written = await pending;
   assert.equal(written.requestId, "put-request");
+  assert.deepEqual(written.putObservation, {
+    record: {
+      recordVersion: "r3-snapshot-oss-response.v1",
+      operation: "PutObject",
+      bucket,
+      objectKey: key,
+      principal: writerArn,
+      observedAt: now,
+      requestHeaders: { "x-oss-forbid-overwrite": "true" },
+      response: {
+        status: 200,
+        headers: {
+          date: "Thu, 01 Oct 2026 00:00:00 GMT",
+          "x-oss-request-id": "put-request",
+          etag: '"etag-one"'
+        },
+        body: { digest: digest(Buffer.alloc(0)), bytes: 0 }
+      }
+    },
+    bodyBase64: ""
+  });
   assert.equal(digest(f.objects.get(key)), expected);
   const jsonKey = "snapshot-slots/v2/attempt-1/12345/data-result.json";
   const json = Buffer.from('{"status":"complete"}');
@@ -196,6 +228,10 @@ test("conditional overwrite and unknown write outcome never retry or expose vend
     return true;
   });
   assert.equal(f.calls.filter(([operation]) => operation === "put").length, 2);
+  f.state.unknown = false;
+  f.state.missingBody = true;
+  await assert.rejects(publisher.createOnly(input), { code: "SNAPSHOT_OSS_WRITE_OUTCOME_UNKNOWN" });
+  assert.equal(f.calls.filter(([operation]) => operation === "put").length, 3);
 });
 
 test("separate transports reject same identity and expired or overlong sessions", async () => {

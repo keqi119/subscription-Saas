@@ -420,20 +420,52 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
       digest: x.contentDigest,
       sizeBytes: x.bytes.length,
       requestId: "fixture-put",
-      etag: null
+      etag: '"fixture-etag"',
+      putObservation: {
+        record: {
+          recordVersion: "r3-snapshot-oss-response.v1",
+          operation: "PutObject",
+          bucket: "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai",
+          objectKey: x.key,
+          principal: writerArn,
+          observedAt: after,
+          requestHeaders: { "x-oss-forbid-overwrite": "true" },
+          response: {
+            status: 200,
+            headers: {
+              date: new Date(after).toUTCString(),
+              "x-oss-request-id": "fixture-put",
+              etag: '"fixture-etag"'
+            },
+            body: { digest: digest(Buffer.alloc(0)), bytes: 0 }
+          }
+        },
+        bodyBase64: ""
+      }
     }))
   };
   const markerBytes = Buffer.from(
     canonicalJson({ publication, signature: signature("h1-snapshot-publication.v1", publication) })
   );
   const markerKey = `snapshot-slots/v2/${expected.releaseAttemptId}/${expected.snapshotRunId}/diagnostics.redacted.json`;
+  assertSnapshotPublicationObject({
+    releaseAttemptId: expected.releaseAttemptId,
+    snapshotRunId: expected.snapshotRunId,
+    key: markerKey,
+    bytes: markerBytes,
+    contentDigest: digest(markerBytes)
+  });
   const stored = new Map(prepared.objects.map((x) => [x.key, x.bytes]));
   stored.set(markerKey, markerBytes);
   const observationFor = (key) => ({
     bucket: { fixture: true },
     expectedWriterArn: writerArn,
     readerArn: "fixture-independent-reader",
-    get: { digest: digest(stored.get(key)), sizeBytes: stored.get(key).length }
+    get: {
+      digest: digest(stored.get(key)),
+      sizeBytes: stored.get(key).length,
+      etag: '"fixture-etag"'
+    }
   });
   const reader = {
     readPublicJson: async ({ key }) => ({
@@ -449,6 +481,21 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
     (await readH1SnapshotPublication({ reader, expected, signer })).status,
     "READBACK_VERIFIED"
   );
+  const wrongPut = JSON.parse(canonicalJson(publication));
+  wrongPut.objects[0].putObservation.record.objectKey += ".wrong";
+  stored.set(
+    markerKey,
+    Buffer.from(
+      canonicalJson({
+        publication: wrongPut,
+        signature: signature("h1-snapshot-publication.v1", wrongPut)
+      })
+    )
+  );
+  await assert.rejects(readH1SnapshotPublication({ reader, expected, signer }), {
+    code: "H1_SNAPSHOT_PUBLICATION_REJECTED"
+  });
+  stored.set(markerKey, markerBytes);
   const changed = Buffer.from(dataResultBytes);
   changed[changed.length - 2] ^= 1;
   assert.throws(

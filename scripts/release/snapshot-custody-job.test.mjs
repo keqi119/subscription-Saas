@@ -76,7 +76,7 @@ function readbackFixture() {
   const read = {
     key: object.key,
     version: "null-version-disabled",
-    etag: "etag-one",
+    etag: '"etag-one"',
     digest,
     sizeBytes: 8192,
     lastModified: "2026-10-06T00:01:00.000Z"
@@ -103,6 +103,7 @@ test("readback produces only provisional custody and keeps independent identitie
   assert.equal(result.provisional, true);
   assert.equal(result.terminalAt, null);
   assert.equal(result.conditionalCreate.requestId, "actual-put");
+  assert.equal(result.object.etag, "etag-one");
   assert.equal(result.worm.retainUntil, "2027-05-04T00:01:00.000Z");
   assert.throws(() => validateSnapshotCustody(result), {
     code: "SNAPSHOT_CUSTODY_TERMINAL_REVALIDATION_REQUIRED"

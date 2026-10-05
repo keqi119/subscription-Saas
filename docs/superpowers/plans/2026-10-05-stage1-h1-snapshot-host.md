@@ -80,6 +80,7 @@
 - [x] 固定主卷 App JWT supplier 与持久 dispatch checkpoint 接口；`bd8997` 实际签名/claims 验证，`89e153` Linux root 隔离台账验证通过。真实 dispatch/current-revocation 来源及其初始 checkpoint 仍由下一项接线，不能以本项合成 head 初始化生产状态。
 - [x] 既有 H1 Ed25519 固定描述符及实际持有挑战；`46c3c3` H1 签名、`bbe272` 本机独立验签/SSH 清理回读通过。完整准入仍须下项的真实 dispatch/current-revocation/custody 来源与固定 root policy，挑战不是准入成功证明。
 - [x] 用户精确批准的独立 I0 archive writer/reader 身份初始化，`5be00e` 实际 RAM 回读、`724bef` 十条云审计记录核验完成；角色未附 OSS 权限、无 AccessKey。精确原件 policy 编译器和既有撤销状态归档类型已补齐。实际归档/资源 readback/后续精确 RAM 差额仍待实施，不能作为 I0_CLOSED；详见 `docs/acceptance/2026-10-05-stage1-i0-archive-identities-readback.md`。
+- [x] 固定 JIT 注册/精确退役 transport 本地接线，以及 H1 Runner 容器/专用临时网络/私有 stdin 入口的实际边界检查；`29de75` 非法 JIT 明确拒绝并完成真实清理，`88fd47` 相关 35 项通过。不是云端注册或真实 producer，完整事实及失败修正见 `docs/acceptance/2026-10-06-stage1-h1-jit-runtime.md`。
 - [ ] root 签名准入、当前撤销和 GitHub 实际 job 观测接线，JIT 唯一路由与结束后不可路由证明。
 - [ ] 本次 attempt 的加密卷/源角色/目标数据库/worker/publisher 工序以及独立终态检查，最后接真实 workflow。
 

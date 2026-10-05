@@ -33,6 +33,7 @@ ENVIRONMENT_ID = 23175152803
 APP_PERMISSIONS = {'administration': 'write', 'actions': 'read',
                    'contents': 'read', 'deployments': 'read', 'metadata': 'read'}
 READ_PERMISSIONS = dict(APP_PERMISSIONS, administration='read')
+JIT_PERMISSIONS = {'administration': 'write', 'actions': 'read', 'metadata': 'read'}
 ACTIVE_RUN_STATUSES = ('in_progress', 'queued', 'requested', 'waiting', 'pending')
 MAX_BYTES = 1048576
 MAX_ARCHIVE_BYTES = 8 * MAX_BYTES
@@ -226,6 +227,39 @@ def _list(value, key):
     return value[key]
 
 
+def _jit_labels(run_id, nonce):
+    return ['self-hosted', 'linux', 'x64', ENVIRONMENT,
+            ENVIRONMENT + '-' + run_id + '-' + nonce]
+
+
+def _jit_runner_matches(value, runner_id, name, labels):
+    if type(value) is not dict or type(value.get('id')) is not int or \
+            value['id'] != runner_id or value.get('name') != name or \
+            value.get('os') not in ('unknown', 'linux'):
+        return False
+    if 'runner_group_id' in value and value['runner_group_id'] != 1:
+        return False
+    actual = value.get('labels')
+    if type(actual) is not list or len(actual) != len(labels):
+        return False
+    names = []
+    for item in actual:
+        if type(item) is not dict or type(item.get('name')) is not str:
+            return False
+        names.append(item['name'].lower())
+    return len(set(names)) == len(labels) and set(names) == set(labels)
+
+
+def _valid_jit_config(value):
+    if type(value) is not str or not 0 < len(value) <= MAX_BYTES:
+        return False
+    try:
+        raw = base64.b64decode(value.encode('ascii'), validate=True)
+    except (ValueError, UnicodeError):
+        return False
+    return 0 < len(raw) <= MAX_BYTES and base64.b64encode(raw).decode('ascii') == value
+
+
 class H1SnapshotGitHub:
     """One private read session. The token is revoked even when __enter__ fails."""
     def __init__(self, jwt_supplier):
@@ -235,6 +269,9 @@ class H1SnapshotGitHub:
         self._used = False
         self._closed = False
         self._repository = None
+
+    def _token_permissions(self):
+        return READ_PERMISSIONS
 
     def __enter__(self):
         require(not self._used and not self._closed, 'SESSION_CLOSED')
@@ -258,8 +295,9 @@ class H1SnapshotGitHub:
                     installation.get('permissions') == APP_PERMISSIONS and
                     installation.get('events') == [] and installation.get('suspended_at') is None and
                     installation.get('suspended_by') is None, 'INSTALLATION_MISMATCH')
+            permissions = self._token_permissions()
             created = _api('POST', '/app/installations/' + str(INSTALLATION_ID) + '/access_tokens',
-                           jwt, {'repository_ids': [REPO_ID], 'permissions': dict(READ_PERMISSIONS)},
+                           jwt, {'repository_ids': [REPO_ID], 'permissions': dict(permissions)},
                            expected=(201,))
             require(type(created) is dict and type(created.get('token')) is str and
                     re.fullmatch(r'[\x21-\x7e]{1,16384}', created['token']), 'TOKEN_INVALID')
@@ -268,7 +306,7 @@ class H1SnapshotGitHub:
             # Installation tokens are opaque; GitHub's stateless format has dots
             # and is longer than the legacy token. Only bound header-safe bytes.
             require(re.fullmatch(r'[A-Za-z0-9._~+/=-]{20,16384}', self._token), 'TOKEN_INVALID')
-            require(created.get('permissions') == READ_PERMISSIONS and
+            require(created.get('permissions') == permissions and
                     created.get('repository_selection') == 'selected', 'TOKEN_SCOPE_MISMATCH')
             try:
                 expires = datetime.datetime.strptime(created['expires_at'], '%Y-%m-%dT%H:%M:%SZ')
@@ -511,3 +549,78 @@ class H1SnapshotGitHub:
         blob = hashlib.sha1(b'blob ' + str(len(raw)).encode('ascii') + b'\0' + raw).hexdigest()
         require(len(raw) == value['size'] and blob == value.get('sha'), 'WORKFLOW_INVALID')
         return raw
+
+
+class H1SnapshotJitGitHub(H1SnapshotGitHub):
+    """One fixed-route JIT allocation; token revocation and runner removal differ."""
+
+    def __init__(self, jwt_supplier):
+        super().__init__(jwt_supplier)
+        self._jit_attempted = False
+        self._created_runner_id = None
+        self._created_runner_name = None
+        self._created_runner_labels = None
+
+    def _token_permissions(self):
+        return JIT_PERMISSIONS
+
+    def create_jit(self, run_id, route_nonce):
+        require(self._token is not None and not self._closed, 'SESSION_CLOSED')
+        run_id = _id(run_id)
+        require(type(route_nonce) is str and
+                re.fullmatch(r'[a-f0-9]{32}', route_nonce) is not None, 'INPUT_INVALID')
+        require(not self._jit_attempted, 'JIT_ALREADY_ATTEMPTED')
+        self._jit_attempted = True
+        name = 'stage1-snapshot-' + route_nonce
+        labels = _jit_labels(run_id, route_nonce)
+        existing = _list(self._get(PREFIX + '/actions/runners?per_page=100'), 'runners')
+        for runner in existing:
+            require(type(runner.get('name')) is str and
+                    type(runner.get('labels')) is list, 'RUNNER_LIST_INVALID')
+            listed_labels = []
+            for label in runner['labels']:
+                require(type(label) is dict and type(label.get('name')) is str,
+                        'RUNNER_LIST_INVALID')
+                listed_labels.append(label['name'].lower())
+            require(runner['name'] != name and labels[-1] not in listed_labels,
+                    'JIT_ROUTE_EXISTS')
+        # This mark precedes the one allowed POST, including ambiguous network outcomes.
+        try:
+            response = _api('POST', PREFIX + '/actions/runners/generate-jitconfig',
+                            self._token, {'name': name, 'runner_group_id': 1,
+                                          'labels': labels, 'work_folder': '_work'},
+                            expected=(201,))
+        except Exception:
+            raise GitHubFailure('H1_GITHUB_JIT_CREATE_UNKNOWN') from None
+        require(type(response) is dict, 'JIT_RESPONSE_INVALID')
+        runner = response.get('runner')
+        runner_id = runner.get('id') if type(runner) is dict else None
+        require(type(runner_id) is int and 0 < runner_id < 10 ** 19 and
+                _jit_runner_matches(runner, runner_id, name, labels),
+                'JIT_RUNNER_MISMATCH')
+        # Preserve exact response identity for a later verified cleanup, even if
+        # the config or readback is invalid. Never infer an ID from a list.
+        self._created_runner_id = runner_id
+        self._created_runner_name = name
+        self._created_runner_labels = labels
+        encoded = response.get('encoded_jit_config')
+        require(_valid_jit_config(encoded), 'JIT_CONFIG_INVALID')
+        actual = self._get(PREFIX + '/actions/runners/' + str(runner_id))
+        require(_jit_runner_matches(actual, runner_id, name, labels),
+                'JIT_RUNNER_MISMATCH')
+        return {'runner': actual, 'encoded_jit_config': encoded}
+
+    def remove_created_runner(self):
+        require(self._token is not None and not self._closed, 'SESSION_CLOSED')
+        require(self._created_runner_id is not None, 'JIT_RUNNER_UNASSIGNED')
+        runner_id = self._created_runner_id
+        route = PREFIX + '/actions/runners/' + str(runner_id)
+        current = self._get(route, expected=(200, 404))
+        if current is None:
+            return True
+        require(_jit_runner_matches(current, runner_id, self._created_runner_name,
+                                    self._created_runner_labels), 'JIT_RUNNER_MISMATCH')
+        _api('DELETE', route, self._token, expected=(204,))
+        require(self._get(route, expected=(200, 404)) is None,
+                'JIT_REMOVE_UNCONFIRMED')
+        return True

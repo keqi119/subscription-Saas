@@ -64,6 +64,7 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/manual-stage1-trust.mjs",
   "scripts/release/verify-manual-runner-result.mjs",
   "scripts/release/prepare-final-compose-launch.mjs",
+  "scripts/release/prepare-h1-snapshot-host.py",
   "scripts/release/r3-application-bootstrap.mjs",
   "scripts/release/r3-application-containers.mjs",
   "scripts/release/r3-application-originals.mjs",

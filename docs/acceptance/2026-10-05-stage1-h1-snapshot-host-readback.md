@@ -20,9 +20,19 @@ H1 实测为 cryptsetup 2.3.7、systemd 239/cgroup v1。单次探针只使用合
 
 保留的失败：`e16144` 因 2.3.7 不支持 `--dump-json-metadata` 而未完成，`945c66` 确认实际能力后改用固定 C locale 的 LUKS2 文本节；该失败卷经空 keyslots/无关联核验后清理（`ba10e6`）。`c39830` 的实际创建、读写、擦除均完成，但把“无可用 keyslot”的退出码误设为 2；`65733f` 确认为退出 1 及固定两行错误，再清理该卷（`fd51ad`）。只有后续 `ab4985` 计完整通过，没有把早期失败改称成功。
 
+## 固定运行时准备
+
+固定 PostgreSQL 工具镜像已按 `postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0` 拉取完成（`6142a0`，退出 0），没有用浮动 tag 替换既有工具摘要。
+
+低权限容器的第一次前置检查 `b66254` 在创建容器前拒绝旧 Node；`d68378` 确认 `/opt/stage1-tools/node-v22.23.3-linux-x64/bin/node` 为 UID/GID 1000（`www`）所有，不能直接作为 root 固定入口的可信运行时。没有更改该服务正在使用的原路径。
+
+通过官方 HTTPS [Node 22.23.3 校验文件](https://nodejs.org/dist/v22.23.3/SHASUMS256.txt) 读取 Linux x64 archive 的 SHA-256（`8dfba9`），既有 root 所有 archive 的实际摘要相符（`9d34fa`）：`df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de`。仅从经核验的 archive 提取固定 Node 与 LICENSE 两个普通文件至新 `/opt/subscription-saas/snapshot-adapter/v2/runtime/`，分别为 root:root 0555/0444，写入只读 runtime manifest（`8ddd0e`）。Node 二进制 SHA-256 为 `fde6a4bf8d0562f7751d1a2d6cb9b417c4cfe107bbcb0aa3e9a24e125e348f48`；这只是运行时准备，尚无可供 job 调用的 adapter 入口。
+
+新 SSH `23e4d5` 重新核验 root 所有权、0555 与二进制摘要后，在固定 PostgreSQL 工具镜像内以 UID/GID 992/988、无网络、只读 rootfs、无 capabilities、no-new-privileges、128 MiB/32 pids 执行版本检查：Node v22.23.3、pg_dump/pg_restore 17.11 均自然退出 0，无 stderr。该合成依赖容器确认已删除，没有将 Docker socket 交给低权限进程，也未启动数据库实例。此检查不等同于数据库制作或完整资源准入。
+
 ## 仍未完成
 
-固定 PostgreSQL 工具镜像已按 `postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0` 拉取完成（`6142a0`，退出 0）。没有用浮动 tag 替换既有工具摘要，也没有启动工具容器。一轮限定独立审查未发现该账号脚本可证明的 P1/P2；没有为此重复数据库套件。
+一轮限定独立审查未发现该账号脚本可证明的 P1/P2；没有为此重复数据库套件。
 
 `b2d0b0` 合同、格式及差异检查通过：283 文件、91 schemas、13 commands，128 项迁移摘要不变；仓库合同摘要 `sha256:5b4b2efa99b04b4f5e65f2fc364723957255549045c3ee490b2126ee89346184`。账号脚本已同时进入声明和发现清单；没有新增测试豁免。
 

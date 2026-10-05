@@ -72,7 +72,9 @@
 
 沿用上项裁定，仅实现固定版本官方 container hooks 所需 prepare/run/cleanup，禁止通用命令、Docker API 或新业务功能。先封闭 root 状态机与不同 UID 的两个 socket，再接已有准入/撤销核验及 JIT；生产制作必须等待全部准入成立。
 
-- [ ] 官方 Runner 2.337.0 distribution 摘要核验及只读缓存（不配置/注册）。
+- [x] 官方 Runner 2.337.0 distribution 摘要核验及只读缓存（不配置/注册）；`44273c` 隔离容器版本检查及 `eefb48` 独立目录/清理回读通过。
 - [ ] 固定 hook→root 管理通道、独立 job→root 请求通道及实际容器隔离；一次性 job 只执行固定入口。
 - [ ] root 签名准入、当前撤销和 GitHub 实际 job 观测接线，JIT 唯一路由与结束后不可路由证明。
 - [ ] 本次 attempt 的加密卷/源角色/目标数据库/worker/publisher 工序以及独立终态检查，最后接真实 workflow。
+
+**固定版本接口核对：** v2.337.0 的 hook JSON 使用 `args.container`，并为 prepare/run/cleanup 均生成 `<runner-root>/_work/_temp/_runner_hook_responses/<GUID>.json`；部分在线示例使用的 `jobContainer`/null responseFile 不适用此版本。prepare 最少回写 `isAlpine:false`，state 仅为不可信关联信息；脚本结果取 hook 退出码，不使用 JSON exitCode。root 状态机必须自行绑定 attempt、最多执行一次固定入口；不接收 workflow 的 shell/script/env/mount 指令。核对依据为固定 tag 的 HookInput、HookResponse 和 ContainerHookManager；后续直接按该接口实施，不重复做版本调研。

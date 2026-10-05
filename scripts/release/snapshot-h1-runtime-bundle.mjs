@@ -36,6 +36,14 @@ function safePath(name) {
 }
 
 export async function buildH1SnapshotRuntimeBundle(repoRoot) {
+  return buildFixedRuntime(repoRoot, false);
+}
+
+export async function buildH1SnapshotControlRuntimeBundle(repoRoot) {
+  return buildFixedRuntime(repoRoot, true);
+}
+
+async function buildFixedRuntime(repoRoot, control) {
   if (typeof repoRoot !== "string" || !path.isAbsolute(repoRoot)) fail("H1_BUNDLE_ROOT_INVALID");
   const root = await realpath(repoRoot);
   if (!(await lstat(root)).isDirectory()) fail("H1_BUNDLE_ROOT_INVALID");
@@ -173,18 +181,24 @@ export async function buildH1SnapshotRuntimeBundle(repoRoot) {
     }
   }
 
-  await source(worker);
+  for (const entry of control
+    ? [
+        "scripts/release/snapshot-h1-observations.mjs",
+        "scripts/release/snapshot-h1-github-reader.mjs"
+      ]
+    : [worker])
+    await source(entry);
   for (const name of fixedFiles) await addRootFile(name);
   await tree(await rootDirectory("release/contracts/schemas"), "release/contracts/schemas");
   for (const name of [
-    "apps/api/node_modules/pg",
+    ...(control ? [] : ["apps/api/node_modules/pg"]),
     "packages/release-foundation/node_modules/ajv",
     "packages/release-foundation/node_modules/canonicalize"
   ])
     await dependency(path.join(root, ...name.split("/")));
 
   const manifest = {
-    format: "stage1-h1-worker-runtime/v1",
+    format: control ? "stage1-h1-control-runtime/v1" : "stage1-h1-worker-runtime/v1",
     nodeSha256: NODE_SHA256,
     postgresImage: SNAPSHOT_POSTGRES_TOOL_IMAGE,
     packages: [...packageVersions]

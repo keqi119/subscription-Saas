@@ -33,6 +33,7 @@ ENVIRONMENT_ID = 23175152803
 APP_PERMISSIONS = {'administration': 'write', 'actions': 'read',
                    'contents': 'read', 'deployments': 'read', 'metadata': 'read'}
 READ_PERMISSIONS = dict(APP_PERMISSIONS, administration='read')
+ACTIVE_RUN_STATUSES = ('in_progress', 'queued', 'requested', 'waiting', 'pending')
 MAX_BYTES = 1048576
 MAX_ARCHIVE_BYTES = 8 * MAX_BYTES
 CHECK_DEPLOYMENT_QUERY = '''query($id:ID!) {
@@ -325,6 +326,85 @@ class H1SnapshotGitHub:
     def read_jobs(self, run_id):
         return _list(self._get(PREFIX + '/actions/runs/' + _id(run_id) +
                               '/attempts/1/jobs?per_page=100'), 'jobs')
+
+    def read_active_jobs(self):
+        # These five fixed queries observe every active status in this repo.
+        # The result is a bounded observation, not an atomic lease on runners.
+        runs = {}
+        for status in ACTIVE_RUN_STATUSES:
+            rows = _list(self._get(PREFIX + '/actions/runs?status=' + status +
+                                   '&per_page=100'), 'workflow_runs')
+            for run in rows:
+                run_id = run.get('id')
+                attempt = run.get('run_attempt')
+                sha = run.get('head_sha')
+                require(type(run_id) is int and 0 < run_id < 10 ** 19 and
+                        type(attempt) is int and 0 < attempt < 10 ** 19 and
+                        type(sha) is str and re.fullmatch(r'[a-f0-9]{40}', sha) is not None and
+                        _repository(run.get('repository')) and
+                        run.get('status') in ACTIVE_RUN_STATUSES,
+                        'ACTIVE_RUN_INVALID')
+                if run_id in runs:
+                    previous = runs[run_id]
+                    require(all(previous.get(key) == run.get(key) for key in
+                                ('run_attempt', 'head_sha', 'repository', 'status')),
+                            'ACTIVE_RUN_INVALID')
+                else:
+                    runs[run_id] = run
+                require(len(runs) <= 100, 'ACTIVE_RUN_LIMIT')
+        observed = []
+        job_ids = set()
+        for run in runs.values():
+            route = (PREFIX + '/actions/runs/' + str(run['id']) + '/attempts/' +
+                     str(run['run_attempt']) + '/jobs?per_page=100')
+            jobs = _list(self._get(route), 'jobs')
+            for job in jobs:
+                job_id = job.get('id')
+                require(type(job_id) is int and 0 < job_id < 10 ** 19 and
+                        job_id not in job_ids and
+                        type(job.get('run_id')) is int and job['run_id'] == run['id'] and
+                        job.get('head_sha') == run['head_sha'], 'ACTIVE_JOB_INVALID')
+                job_ids.add(job_id)
+                require(len(job_ids) <= 100, 'ACTIVE_JOB_LIMIT')
+            observed.append({'run': run, 'jobs': jobs})
+        return observed
+
+    def read_admission_inputs(self, selection):
+        # Private root selection, never job-provided facts or URLs. Binary values
+        # remain bytes until the separate private pipe serializer encodes them.
+        fields = {'repository', 'runId', 'runAttempt', 'sourceSha', 'admissionJobId',
+                  'jobId', 'artifactId', 'artifactName'}
+        require(type(selection) is dict and set(selection) == fields and
+                selection['repository'] == {'id': str(REPO_ID), 'name': REPOSITORY} and
+                selection['runAttempt'] == 1 and type(selection['runAttempt']) is int and
+                selection['artifactName'] == 'snapshot-admission', 'INPUT_INVALID')
+        for key in ('runId', 'admissionJobId', 'jobId', 'artifactId'):
+            _id(selection[key])
+        _sha(selection['sourceSha'])
+        require(selection['admissionJobId'] != selection['jobId'], 'INPUT_INVALID')
+        observed_at = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        run = self.read_run(selection['runId'])
+        require(run.get('head_sha') == selection['sourceSha'], 'RUN_MISMATCH')
+        workflow = self.read_workflow(selection['sourceSha'])
+        artifact = self.read_admission_artifact(selection['runId'], selection['artifactId'])
+        environment = self.read_environment()
+        branches = self.read_branch_policies()
+        reviews = self.read_approvals(selection['runId'])
+        deployment = self.read_job_deployment(selection['runId'], selection['jobId'])
+        active = self.read_active_jobs()
+        selected = [group for group in active if group['run']['id'] == int(selection['runId'])]
+        require(len(selected) == 1 and selected[0]['run']['run_attempt'] == 1 and
+                selected[0]['run']['head_sha'] == selection['sourceSha'], 'ACTIVE_RUN_INVALID')
+        final_run = self.read_run(selection['runId'])
+        require(all(final_run.get(key) == run.get(key) for key in
+                    ('id', 'run_attempt', 'head_sha', 'head_branch', 'repository',
+                     'head_repository', 'actor', 'event', 'path')) and
+                final_run.get('status') in ACTIVE_RUN_STATUSES, 'RUN_MISMATCH')
+        return {'observedAt': observed_at, 'repository': self.repository(), 'run': final_run,
+                'jobs': selected[0]['jobs'], 'environment': environment,
+                'branchPolicies': branches, 'workflowBytes': workflow,
+                'artifact': artifact, 'activeRuns': active,
+                'deployment': deployment, 'reviews': reviews}
 
     def read_approvals(self, run_id):
         value = self._get(PREFIX + '/actions/runs/' + _id(run_id) + '/approvals')

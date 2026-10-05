@@ -59,6 +59,106 @@ class GitHubTests(unittest.TestCase):
     def revocations(self):
         return [call for call in self.calls if call[0:2] == ('DELETE', '/installation/token')]
 
+    def active_fixture(self):
+        prefix = '/repos/keqi119/subscription-Saas/actions/runs'
+        statuses = ('in_progress', 'queued', 'requested', 'waiting', 'pending')
+        for status in statuses:
+            self.responses[prefix + '?status=' + status + '&per_page=100'] = {
+                'total_count': 0, 'workflow_runs': []}
+        other_workflow = {'id': 123, 'run_attempt': 1, 'head_sha': 'a' * 40,
+                          'status': 'in_progress', 'repository': self.repo,
+                          'head_repository': self.repo, 'name': 'other-workflow'}
+        fork_rerun = {'id': 456, 'run_attempt': 3, 'head_sha': 'b' * 40,
+                      'status': 'waiting', 'repository': self.repo,
+                      'head_repository': {'id': 999, 'full_name': 'fork/project'},
+                      'name': 'fork-rerun'}
+        self.responses[prefix + '?status=in_progress&per_page=100'] = {
+            'total_count': 1, 'workflow_runs': [other_workflow]}
+        self.responses[prefix + '?status=waiting&per_page=100'] = {
+            'total_count': 1, 'workflow_runs': [fork_rerun]}
+        jobs = {
+            prefix + '/123/attempts/1/jobs?per_page=100':
+                {'total_count': 1, 'jobs': [{'id': 700, 'run_id': 123, 'head_sha': 'a' * 40}]},
+            prefix + '/456/attempts/3/jobs?per_page=100':
+                {'total_count': 1, 'jobs': [{'id': 701, 'run_id': 456, 'head_sha': 'b' * 40}]}}
+        self.responses.update(jobs)
+        return prefix, statuses, other_workflow, fork_rerun
+
+    def test_active_jobs_scans_all_five_statuses_and_actual_rerun_attempt(self):
+        prefix, statuses, other_workflow, fork_rerun = self.active_fixture()
+        with patch.object(self.module, '_api', self.api):
+            with self.session() as github:
+                observed = github.read_active_jobs()
+        self.assertEqual([item['run'] for item in observed], [other_workflow, fork_rerun])
+        self.assertEqual([item['jobs'][0]['id'] for item in observed], [700, 701])
+        routes = [call[1] for call in self.calls]
+        for status in statuses:
+            self.assertIn(prefix + '?status=' + status + '&per_page=100', routes)
+        self.assertIn(prefix + '/456/attempts/3/jobs?per_page=100', routes)
+        self.assertEqual(len(self.revocations()), 1)
+
+    def test_active_jobs_rejects_conflicting_duplicate_and_truncated_list(self):
+        prefix, _, run, _ = self.active_fixture()
+        duplicate = dict(run, status='queued')
+        self.responses[prefix + '?status=queued&per_page=100'] = {
+            'total_count': 1, 'workflow_runs': [duplicate]}
+        with patch.object(self.module, '_api', self.api):
+            with self.session() as github:
+                with self.assertRaisesRegex(self.module.GitHubFailure,
+                                            '^H1_GITHUB_ACTIVE_RUN_INVALID$'):
+                    github.read_active_jobs()
+        self.responses[prefix + '?status=queued&per_page=100'] = {
+            'total_count': 2, 'workflow_runs': [run]}
+        with patch.object(self.module, '_api', self.api):
+            with self.session() as github:
+                with self.assertRaisesRegex(self.module.GitHubFailure,
+                                            '^H1_GITHUB_LIST_INCOMPLETE$'):
+                    github.read_active_jobs()
+
+    def test_active_jobs_rejects_duplicate_job_and_cross_run_binding(self):
+        prefix, _, _, _ = self.active_fixture()
+        route = prefix + '/456/attempts/3/jobs?per_page=100'
+        original = self.responses[route]
+        for bad_job in ({'id': 700, 'run_id': 456, 'head_sha': 'b' * 40},
+                        {'id': 702, 'run_id': 123, 'head_sha': 'b' * 40}):
+            self.responses[route] = {'total_count': 1, 'jobs': [bad_job]}
+            with patch.object(self.module, '_api', self.api):
+                with self.session() as github:
+                    with self.assertRaisesRegex(self.module.GitHubFailure,
+                                                '^H1_GITHUB_ACTIVE_JOB_INVALID$'):
+                        github.read_active_jobs()
+        self.responses[route] = original
+
+    def test_active_jobs_rejects_invalid_ids_and_global_job_limit(self):
+        prefix, _, run, _ = self.active_fixture()
+        run['id'] = True
+        with patch.object(self.module, '_api', self.api):
+            with self.session() as github:
+                with self.assertRaisesRegex(self.module.GitHubFailure,
+                                            '^H1_GITHUB_ACTIVE_RUN_INVALID$'):
+                    github.read_active_jobs()
+        run['id'] = 123
+        first = prefix + '/123/attempts/1/jobs?per_page=100'
+        self.responses[first] = {'total_count': 100, 'jobs': [
+            {'id': 1000 + number, 'run_id': 123, 'head_sha': 'a' * 40}
+            for number in range(100)]}
+        with patch.object(self.module, '_api', self.api):
+            with self.session() as github:
+                with self.assertRaisesRegex(self.module.GitHubFailure,
+                                            '^H1_GITHUB_ACTIVE_JOB_LIMIT$'):
+                    github.read_active_jobs()
+
+    def test_active_jobs_merges_identical_run_seen_in_two_status_queries(self):
+        prefix, _, run, _ = self.active_fixture()
+        self.responses[prefix + '?status=queued&per_page=100'] = {
+            'total_count': 1, 'workflow_runs': [dict(run)]}
+        with patch.object(self.module, '_api', self.api):
+            with self.session() as github:
+                observed = github.read_active_jobs()
+        self.assertEqual(len(observed), 2)
+        self.assertEqual(len([call for call in self.calls if
+                             call[1] == prefix + '/123/attempts/1/jobs?per_page=100']), 1)
+
     def artifact_fixture(self, contents=b'{"schema":"snapshot-admission.v1"}'):
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
@@ -75,6 +175,39 @@ class GitHubTests(unittest.TestCase):
         self.responses[prefix + '/actions/runs/123/artifacts?per_page=100'] = {
             'total_count': 1, 'artifacts': [artifact]}
         return raw, artifact
+
+    def test_private_collector_binds_selected_run_and_keeps_binary_members(self):
+        selection = {'repository': {'id': '1253231368', 'name': 'keqi119/subscription-Saas'},
+                     'runId': '123', 'runAttempt': 1, 'sourceSha': 'a' * 40,
+                     'admissionJobId': '77', 'jobId': '99', 'artifactId': '456',
+                     'artifactName': 'snapshot-admission'}
+        run = {'id': 123, 'run_attempt': 1, 'head_sha': 'a' * 40,
+               'repository': self.repo, 'head_repository': self.repo,
+               'actor': self.repo['owner'], 'event': 'workflow_dispatch',
+               'head_branch': 'main', 'path': self.module.WORKFLOW, 'status': 'in_progress'}
+        jobs = [{'id': 77, 'run_id': 123}, {'id': 99, 'run_id': 123}]
+        original = {'metadata': {'id': 456}, 'bytes': b'{}'}
+        with patch.object(self.module, '_api', self.api):
+            with self.session() as github:
+                with patch.object(github, 'read_run', return_value=run), \
+                     patch.object(github, 'read_workflow', return_value=b'name: snapshot\n'), \
+                     patch.object(github, 'read_admission_artifact', return_value=original), \
+                     patch.object(github, 'read_environment', return_value={'id': 1}), \
+                     patch.object(github, 'read_branch_policies', return_value=[]), \
+                     patch.object(github, 'read_approvals', return_value=[]), \
+                     patch.object(github, 'read_job_deployment', return_value={'job': jobs[1], 'checkRun': {}}), \
+                     patch.object(github, 'read_active_jobs', return_value=[{'run': run, 'jobs': jobs}]) as active:
+                    value = github.read_admission_inputs(selection)
+                    self.assertEqual(value['artifact']['bytes'], b'{}')
+                    self.assertEqual(value['workflowBytes'], b'name: snapshot\n')
+                    self.assertEqual(value['jobs'], jobs)
+                    self.assertNotIn(self.token, repr(value))
+                    active.return_value = []
+                    with self.assertRaisesRegex(self.module.GitHubFailure, '^H1_GITHUB_ACTIVE_RUN_INVALID$'):
+                        github.read_admission_inputs(selection)
+                    with self.assertRaisesRegex(self.module.GitHubFailure, '^H1_GITHUB_INPUT_INVALID$'):
+                        github.read_admission_inputs(dict(selection, url='https://invalid.example'))
+        self.assertEqual(len(self.revocations()), 1)
 
     def download_transport(self, archive, location='https://results-receiver.actions.githubusercontent.com/download?sig=fake'):
         requests = []

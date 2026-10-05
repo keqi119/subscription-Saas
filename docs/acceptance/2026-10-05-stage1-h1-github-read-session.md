@@ -67,3 +67,25 @@ ZIP 在内存中处理，下载上限 8 MiB，并核对整个 ZIP 的大小和�
 `0ef94b` 已安装并回读最终 Python 模块：root:root 0555，SHA-256 `bbdd5e0e57204b88903dba2f7936520dbdca6715fc481bcfe56b374bc1c42bdc`；H1 Python 3.6 加载通过，主备卷/mapper 关闭、attempt 根目录为空、Staging PostgreSQL 健康，swap/core 维持既有空闲配置。此次安装没有调用 GitHub、签发令牌或读取业务数据。真实 producer artifact 尚不存在，线上下载仍待首次 producer 验证，不能记为成功。
 
 本轮前置 `c40b35` 于 2026-10-05T13:42:21.813Z 核实 Staging PostgreSQL 17.10，128 项迁移仍只有原两项待执行；`1e2c8a` 的终态返回 Prisma validate 成功，临时隧道已关闭。未改业务行为或执行迁移。后续仍需将实际读数接入 root `readExact` / production policy / dispatch 与撤销来源，再接 JIT、完整 attempt 和真实三 job；阶段 1 未收口。
+
+## 追加：root 实际观测工厂与 nonce 台账
+
+[snapshot-h1-observations.mjs](../../scripts/release/snapshot-h1-observations.mjs) 新增 `createInstalledH1SnapshotObservations`，通过固定私有 reader 为现有 `verifyAndSignSnapshotAdmission` 提供 `githubObservations.readExact`，并提供每次重新读取的 `readPostApproval`。它从真实 Environment protection rules、deployment branch policies 和 workflow bytes 计算策略身份；action commit 清单复用准入验证器的同一封闭解析器，不复制 root policy 冒充 API 事实。当前 run/job/artifact 与独立 selection 必须一致，观测超过五分钟、当前队列缺少目标 run、身份变化、策略弱化或真实 deployment 缺失均拒绝。
+
+Python `read_active_jobs()` 分别读取 `in_progress`、`queued`、`requested`、`waiting`、`pending` 的完整仓库列表，不过滤其他 workflow、fork 来源或重跑；每个实际 run 按其真实 attempt 查询 jobs。每次响应要求 `total_count` 与返回条数一致，总 run 和 job 各最多 100；截断、超量、冲突 run 或重复 job 拒绝。JS 中的队列来源因此依赖这个 root 固定 reader 的完整性检查，不依赖调用方自报的 `hasMore=false`。结果是当前观测，并非原子队列锁；注册前检查与实际 job 分配仍须由后续 JIT controller 完成。[官方 run 状态与过滤接口](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository)、[attempt jobs 接口](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt)
+
+[snapshot-h1-github-reader.mjs](../../scripts/release/snapshot-h1-github-reader.mjs) / [snapshot-h1-github-query.py](../../scripts/release/snapshot-h1-github-query.py) 将安装的 Python reader 接到 root Node 侧。固定程序和路径，禁止 shell；在取 JWT 前校验 root 身份、安装摘要、目录/文件权限、swap 关闭及 core 管道禁用。短期 App JWT 仅经子进程 stdin 传递，没有 argv/env/job/workspace 入口。Python 有总时限，先核对实际 nonce 台账，读取 API 原件并成功撤销安装令牌后才输出有界 JSON；两项二进制原件经 canonical base64 私有传递，Node 侧解码后交现有验证器。签名 URL、令牌和原始错误正文不输出。实际 root policy、JWT supplier 和 dispatch/revocation 输入仍须由后续受保护启动器提供，本工厂不能自行授权制作。
+
+[snapshot-h1-route-journal.py](../../scripts/release/snapshot-h1-route-journal.py) 使用固定 root 台账 `/var/lib/subscription-saas/snapshot-root-state/route-nonces`。显式初始化，读取不自动重建；目录 0700、记录 0600、root:root、无符号链接或多链接，所有父目录禁止组/其他用户写入。`claim` 先检查既有记录，再以 `O_EXCL` 原子消费 nonce，绑定 run/job/admission digest 并 fsync 文件及目录；任何失败都不删除或回收 nonce。未知/损坏记录拒绝继续，模块没有删除或 reset 接口。它不声称能抵御恶意 root 回滚；同一 attempt 后续核验不应重复 claim 或重新签发准入。
+
+有限验证与实际部署：
+
+- `73df92` 新工厂缺失时失败；实现后 `4a826a` 三项通过。将 nonce 纳入实际私有管道时 `d6c318` 先失败，`6a3282` / 终态 `0538dd` 三项通过。共享解析器影响的既有准入测试与新映射测试 `b0a4a3` 共 21 项通过。
+- Sol 子 agent 完成 active-run 读取与台账主体；root 完成聚合、私有管道、实际安装，并接管子 agent 容量错误后未完成的台账校验。`528b5f` Python GitHub 18 项通过。台账新增父目录校验后 `2e4c2c` 正确拒绝 `/tmp` 的可写父目录；测试改用 WSL 用户目录后 `ae220c` 四项 POSIX 文件测试通过。仅 root UID/所有者在本地测试中替代，实际权限另由 H1 核验。
+- `ee09c7` H1 实际 root 并发探针只有一次 claim 成功，核对真实 0600/root/nlink，损坏后禁止新 claim，探针目录已移除；正式台账已显式初始化并保持 **0 条生产 nonce**。主备卷关闭、attempt 根目录为空、Staging PostgreSQL 健康；未开启源角色或导出数据。
+- 同次安装三份 Python 文件为 root:root 0555：`snapshot-h1-github.py` SHA-256 `b7d4da38840e356c6edf68a929f09df5faec34b62a0c9039d2c953aee057b98f`；`snapshot-h1-github-query.py` 为 `60a0bc40c41a8fb305ae91e8b1eec90c3fb3e83f6e47b9ed1ae59f6cdc8cc6bd`；`snapshot-h1-route-journal.py` 为 `02d81a8a683a18b6a8ec5dc0abcf7e9e98ba45e20299cde32e384bbeb5894611`。私有 query 在未停用 swap 的宿主状态下实际拒绝，stdout 为空，未调用 GitHub。
+- 最终控制闭包 `9824ef` 安装为 `/opt/subscription-saas/snapshot-adapter/v2/bundles/424eec92eb857df6c247ed92e17baa58eac20bd02ef9ff94d9bbc2a4e96e0999`：300 文件、1,062,832 字节、root 只读，逐文件摘要和真实 Node import/非法输入拒绝通过。`4cfd39` 重建确认相同控制摘要，原 worker bundle 摘要 `239b95e7d513cd80956f71f7616b6bd3ea7bfc99afb80af594422b82b9b17b4f` 未变，没有重装或重复运行 worker。
+- `e9c621` 使用 H1 现有 App 只读身份实际查询上述五种状态成功，观测时 active runs 为 0；安装令牌已撤销、主备卷关闭、swap/core 恢复。没有注册 Runner 或触发 workflow。该事实验证新 API 读取路径；**完整私有管道的成功准入/真实 artifact 下载仍待 producer run**，不能以这次空队列读取或本地合成数据替代。
+- 限定 Luna 审查未发现重要问题；其完整分页疑问由 Python `total_count` 和超量拒绝落实，没有添加自报证明字段或权限。`4cfd39` scoped lint、`fdb9e7` format/diff 通过。初次合同检查 `ae220c` 报文件次序错误，调整两个清单中的次序后 `9824ef` 通过：294 文件、91 schemas、13 commands、128 项迁移摘要不变。
+
+本轮前置 `ed3aef`（2026-10-05T13:58:51.872Z）仍只有原两项待迁移；`607fc4` Prisma schema validate 通过，临时 SSH 隧道已关闭。下一步是受保护 root policy、签名描述符和真实 dispatch/current-revocation 来源，再接准入后的 nonce claim、JIT 注册/实际分配/退出以及完整 attempt 工序。三 job workflow、OSS 精确身份、真实 producer、同候选 R2/R3、两项迁移与 R4 仍未完成；阶段 1 保持 active。

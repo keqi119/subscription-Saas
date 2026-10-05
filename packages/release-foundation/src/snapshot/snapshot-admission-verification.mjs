@@ -348,6 +348,22 @@ function admissionUploader(document, admissionJob) {
   };
 }
 
+// Share the exact parser with the root API adapter; action pins are derived
+// from fetched bytes, never copied from the independently installed policy.
+export function readSnapshotWorkflowIdentity(workflowBytes) {
+  if (
+    !Buffer.isBuffer(workflowBytes) ||
+    workflowBytes.length === 0 ||
+    workflowBytes.length > 1048576
+  )
+    fail("SNAPSHOT_ADMISSION_WORKFLOW_INVALID");
+  const { actions } = parsedWorkflow(workflowBytes);
+  return snapshotKernelData(
+    { blobDigest: sha256Bytes(workflowBytes), actionCommits: actions },
+    "SNAPSHOT_ADMISSION_WORKFLOW_INVALID"
+  );
+}
+
 function keyDescriptor(privateKeyFd, expectedPublicKey) {
   if (
     !privateKeyFd ||

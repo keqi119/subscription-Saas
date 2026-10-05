@@ -2,16 +2,17 @@
 
 import { lstat, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 
+import { validateContract } from "../../packages/release-foundation/src/schema-registry.mjs";
+import { encryptSnapshotStream } from "../../packages/release-foundation/src/snapshot/envelope-crypto.mjs";
 import {
-  encryptSnapshotStream,
   exportSanitizedSnapshot,
-  validateContract
-} from "../../packages/release-foundation/src/index.mjs";
+  prepareSanitizedSnapshotBundle
+} from "../../packages/release-foundation/src/snapshot/export-sanitized.mjs";
 import { sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
-import { prepareSanitizedSnapshotBundle } from "../../packages/release-foundation/src/snapshot/export-sanitized.mjs";
 import { validateProducerCryptoAuthorization } from "../../packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs";
 
 const requestPath = ".release-inputs/snapshot-export-request.v1.json";

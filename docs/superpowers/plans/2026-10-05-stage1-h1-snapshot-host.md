@@ -43,3 +43,17 @@
 ## 后续真实接线
 
 以上事实通过后继续固定 adapter、低权限进程/数据库工具的受限交接和 root JIT 控制。替换旧明文 workflow 为 admission/data/custody；实际 run 确定后，按用户既有要求提交精确 publisher/custody RAM 草案。随后只构建必要的同一最终候选并运行 R2/R3、获准迁移与 R4。不得把本宿主切片作为阶段 1 收口。
+
+## Task 3：固定加密子进程入口
+
+**Files:** `scripts/release/snapshot-h1-data-worker.mjs`、相关有限测试；复用现有 PostgreSQL source/workspace、native 工具和 `runProtectedSnapshotEncryption`，不再设计一套扫描或加密协议。
+
+**Interfaces:** root 控制面通过专用 stdin pipe 发送一条封闭 JSON 配置，含既有 v2 crypto authorization、公钥、两个已核实的 loopback 端口与物理数据库指纹、一次性数据库口令和 tokenization key。代码固定源数据库/只读角色、临时目标数据库/角色、合同文件和 `/work/crypto`；不接收 URL、SQL、模块/脚本路径、输出目录或任意命令。子进程 stdout 只发固定的销毁请求及完成/失败记录；root 实际销毁本次目标容器后才回传唯一确认并关闭输入管道，子进程收到确认及 EOF 后才允许进入加密。Job 本身仍只有 opaque admission reference，不能直接使用该私有 pipe。
+
+**Ruling:** Runner 保持 UID 992/GID 988；处理凭据和明文的固定容器使用不同的数值 UID/GID 65532，根控制面每次验证该宿主 UID 未被占用。`9c5530` 实测没有账号/进程占用；不创建登录账号。其目录仅在 root 控制的 attempt 卷内挂载给容器。两个独立进程身份用于阻止 Runner 从 `/proc` 或目录读取加密子进程凭据，不能只依赖同 UID 的文件 0600。
+
+- [x] 5 项有限协议测试通过，包括无确认和确认后的延迟额外数据；既有加密组合相关 2 项通过。
+- [x] 专用 worker 复用原有 native/source/workspace/crypto；H1 `91463c` 实际合成整链通过，父进程在 ACK 前核查源/目标会话关闭及目标容器删除，worker 退出后真实解密验证摘要。
+- [x] 更新固定入口清单、相关 lint/合同检查和限定静态审查；记录见 `docs/acceptance/2026-10-05-stage1-h1-data-worker-readback.md`。正式 root controller 仍须独立核验，不能把本探针或 worker 回显当作生产证明。
+
+本步骤使用已批准 H1 数据平面方案内的实现细化，不再请求制作主机、Docker 或 GitHub App 批准。仍未完成的 root JIT/controller、adapter 安装闭包、三个真实 jobs、独立 OSS 身份、真实 producer、R2/R3、迁移与 R4 保持原范围和门槛。

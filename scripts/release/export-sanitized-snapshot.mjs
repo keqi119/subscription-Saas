@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { lstat, readFile, realpath, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { Readable } from "node:stream";
@@ -200,6 +201,7 @@ export async function runProtectedSnapshotEncryption({
       sanitizationContractDigest: contractDigest,
       snapshotDigest: bundle.metadata.dumpDigest
     };
+    const operation = { requestId: randomUUID(), startedAt: new Date().toISOString() };
     const envelope = await encryptSnapshotStream({
       source: { open: () => Readable.from([bundle.dump]) },
       destination: ciphertextPath,
@@ -218,6 +220,18 @@ export async function runProtectedSnapshotEncryption({
       fingerprintObservation: bundle.fingerprintObservation,
       scan: bundle.scan,
       envelope,
+      // The one fixed encryption call returned after its key-clearing finally
+      // block. This records best-effort mutable-buffer clearing, not erasure of
+      // runtime copies or an independently observed process exit.
+      cryptoOperation: Object.freeze({
+        ...operation,
+        action: "local:GenerateAndWrapDataKey",
+        callCount: 1,
+        outcome: "SUCCESS",
+        finishedAt: new Date().toISOString(),
+        envelopeDigest: sha256Canonical(envelope),
+        keyBufferClear: "BEST_EFFORT_COMPLETED"
+      }),
       ciphertextPath
     });
   } finally {

@@ -6,6 +6,7 @@ The separate attempt volume owner destroys the LUKS workspace after cleanup.
 """
 import base64
 import copy
+import datetime
 import hashlib
 import json
 import os
@@ -35,7 +36,7 @@ TARGET_DATABASE = 'stage1_snapshot_workspace'
 TARGET_ROLE = 'stage1_snapshot_migrate'
 NODE = '/opt/subscription-saas/snapshot-adapter/v2/runtime/node'
 NODE_SHA = 'fde6a4bf8d0562f7751d1a2d6cb9b417c4cfe107bbcb0aa3e9a24e125e348f48'
-BUNDLE_DIGEST = 'sha256:239b95e7d513cd80956f71f7616b6bd3ea7bfc99afb80af594422b82b9b17b4f'
+BUNDLE_DIGEST = 'sha256:88ac6e79d17249612748a079c0a7d05046a0e3b12bddc26c09ecde5d9ebb333d'
 BUNDLE = '/opt/subscription-saas/snapshot-adapter/v2/bundles/' + BUNDLE_DIGEST[7:]
 VOLUMES = '/var/lib/subscription-saas/snapshot-volumes'
 MAX_WORKER_LINE = 2097152
@@ -43,7 +44,7 @@ TARGET_MEMORY = 192 * 1048576
 WORKER_MEMORY = 192 * 1048576
 AUTH_VALIDATOR = r'''
 import { createPublicKey, createHash } from 'node:crypto';
-import { validateProducerCryptoAuthorization } from '/opt/subscription-saas/snapshot-adapter/v2/bundles/239b95e7d513cd80956f71f7616b6bd3ea7bfc99afb80af594422b82b9b17b4f/packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs';
+import { validateProducerCryptoAuthorization } from '/opt/subscription-saas/snapshot-adapter/v2/bundles/88ac6e79d17249612748a079c0a7d05046a0e3b12bddc26c09ecde5d9ebb333d/packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs';
 let raw = '';
 for await (const chunk of process.stdin) { raw += chunk; if (raw.length > 1048576) process.exit(1); }
 try {
@@ -98,6 +99,33 @@ def _canonical(value):
 
 def _digest(raw):
     return 'sha256:' + hashlib.sha256(raw).hexdigest()
+
+
+def _utc(epoch=None):
+    at = datetime.datetime.fromtimestamp(time.time() if epoch is None else epoch,
+                                         datetime.timezone.utc)
+    return at.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+
+
+def _docker_time(value):
+    match = re.fullmatch(r'([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})\.([0-9]{1,9})Z', value or '')
+    require(match is not None, 'WORKER_TIME_INVALID')
+    parsed = datetime.datetime.strptime(match.group(1), '%Y-%m-%dT%H:%M:%S')
+    require(parsed.year >= 2026, 'WORKER_TIME_INVALID')
+    return match.group(1) + '.' + (match.group(2) + '000')[:3] + 'Z'
+
+
+def _memory_protection():
+    with open('/proc/swaps', 'rb') as source:
+        swaps = source.read(8193)
+    with open('/proc/sys/kernel/core_pattern', 'rb') as source:
+        core = source.read(129)
+    limits = resource.getrlimit(resource.RLIMIT_CORE)
+    require(0 < len(swaps) <= 8192 and len(swaps.splitlines()) == 1 and
+            core.strip() == b'|/bin/false' and limits == (0, 0), 'MEMORY_PROTECTION_CHANGED')
+    return {'observedAt': _utc(), 'hostSwapDisabled': True, 'coreDumpDisabled': True,
+            'swapTableDigest': _digest(swaps), 'corePatternDigest': _digest(core),
+            'coreLimit': list(limits)}
 
 
 def _fingerprint(name, oid, system):
@@ -211,7 +239,7 @@ def _verify_bundle():
                     'format', 'nodeSha256', 'postgresImage', 'packages', 'files'} and
                 manifest['format'] == 'stage1-h1-worker-runtime/v1' and
                 manifest['nodeSha256'] == NODE_SHA and manifest['postgresImage'] == IMAGE and
-                type(manifest['files']) is list and len(manifest['files']) == 401,
+                type(manifest['files']) is list and len(manifest['files']) == 402,
                 'BUNDLE_INVALID')
         expected = {}
         for item in manifest['files']:
@@ -226,7 +254,7 @@ def _verify_bundle():
                     'BUNDLE_INVALID')
             expected[name] = item
         require('scripts/release/snapshot-h1-data-worker.mjs' in expected and
-                sum(item['sizeBytes'] for item in expected.values()) == 1432599,
+                sum(item['sizeBytes'] for item in expected.values()) == 1434970,
                 'BUNDLE_INVALID')
         observed = set()
         for parent, directories, files in os.walk(BUNDLE, followlinks=False):
@@ -301,6 +329,7 @@ class H1FixedSnapshotProducer:
         self.role_touched = False
         self.started = False
         self.complete = None
+        self.observation = None
         self._worker_process = None
         self._worker_buffer = bytearray()
         self._source_password = None
@@ -760,7 +789,9 @@ class H1FixedSnapshotProducer:
                 type(terminal.get('scan')) is dict and
                 terminal['scan'].get('schemaVersion') == 'sanitization-scan.v2' and
                 type(terminal.get('envelope')) is dict and
-                terminal['envelope'].get('schemaVersion') == 'snapshot-encryption-envelope.v2',
+                terminal['envelope'].get('schemaVersion') == 'snapshot-encryption-envelope.v2' and
+                type(terminal.get('cryptoOperation')) is dict and
+                terminal['cryptoOperation'].get('envelopeDigest') == _digest(_canonical(terminal['envelope'])),
                 'WORKER_RESULT_INVALID')
         remaining = self._deadline - time.monotonic()
         require(remaining > 0, 'WORKER_TIMEOUT')
@@ -772,6 +803,13 @@ class H1FixedSnapshotProducer:
         state = self._worker_owned().get('State', {})
         require(state.get('Status') == 'exited' and state.get('ExitCode') == 0 and
                 state.get('OOMKilled') is False, 'WORKER_EXIT_INVALID')
+        self.observation['processExit'] = {
+            'workerId': self.worker_id, 'image': IMAGE,
+            'startedAt': _docker_time(state.get('StartedAt')),
+            'finishedAt': _docker_time(state.get('FinishedAt')), 'observedAt': _utc(),
+            'exitCode': state['ExitCode'], 'signal': None, 'oomKilled': state['OOMKilled'],
+            'stdoutClosed': True, 'toolExitCode': self._worker_process.returncode}
+        self.observation['memoryAfter'] = _memory_protection()
         ciphertext = self.crypto + '/snapshot.enc'
         info = os.lstat(ciphertext)
         require(stat.S_ISREG(info.st_mode) and info.st_uid == 65532 and
@@ -801,6 +839,13 @@ class H1FixedSnapshotProducer:
             require(type(duration) is int and 0 < duration <= 900 and remaining > 0,
                     'AUTHORIZATION_EXPIRED')
             self._deadline = time.monotonic() + min(duration, remaining)
+            issued = time.time()
+            self.observation = {'attemptId': self.attempt_id,
+                'snapshotRunId': self.authorization['snapshotRunId'],
+                'authorizationDigest': _digest(_canonical(self.authorization)),
+                'workerBundleDigest': BUNDLE_DIGEST,
+                'issuedAt': _utc(issued), 'expiresAt': _utc(min(expires_at, issued + duration)),
+                'memoryBefore': _memory_protection()}
             self._resolve_source()
             self._source_readback(self.source_id)
             self._assert_port_free()

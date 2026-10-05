@@ -17,6 +17,7 @@ import {
 } from "../../packages/release-foundation/src/snapshot/environment-policy.mjs";
 import { verifyAndSignSnapshotAdmission } from "../../packages/release-foundation/src/snapshot/snapshot-admission-verification.mjs";
 import { assertH1KeyMemory, assertH1KeyVolume } from "./snapshot-h1-key-volume.mjs";
+import { buildH1CryptoUseProof } from "./snapshot-h1-data-proof.mjs";
 
 const CODE = "H1_SNAPSHOT_SIGNING_REJECTED";
 const MAIN = "/var/lib/stage1-volumes/main";
@@ -405,6 +406,67 @@ function readSigningKey(expectedIdentity) {
   } finally {
     raw?.fill(0);
   }
+}
+
+// Only the fixed root controller calls this after fresh dispatch verification.
+// The caller selects no payload or path: both are read from the protected
+// production authorization and the completed, root-owned attempt output.
+export async function sealH1SnapshotDataProof(...args) {
+  requireThat(args.length === 0);
+  const trusted = await admittedIdentity();
+  const production = await readH1SnapshotProductionInputs();
+  const auth = production.authorization;
+  requireThat(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      auth.releaseAttemptId
+    ) && auth.issuer.issuerId === trusted.signer.issuer
+  );
+  const directory = `/var/lib/subscription-saas/snapshot-output/${auth.releaseAttemptId}`;
+  const raw = readFixed(`${directory}/data-result.json`, { privateFile: true, max: 4194304 });
+  const result = JSON.parse(raw.toString("utf8"));
+  requireThat(raw.equals(Buffer.from(canonicalJson(result))) && result.status === "DATA_PREPARED");
+  validateContract("snapshot-admission.v1", result.admission);
+  requireThat(
+    result.admission.releaseAttemptId === auth.releaseAttemptId &&
+      result.admission.producerRun.runId === auth.snapshotRunId &&
+      result.admission.producerRun.sourceSha === auth.sourceSha &&
+      result.admission.dispatchAuthorizationDigest === auth.bindings.dispatchAuthorizationDigest &&
+      result.admission.adapterDigest === auth.bindings.adapterExecutableDigest &&
+      result.terminalObservation.runningJobObservationDigest ===
+        sha256Canonical(result.runningJobObservation)
+  );
+  const ciphertext = readFixed(`${directory}/snapshot.enc`, { privateFile: true, max: 134217728 });
+  requireThat(
+    ciphertext.length === result.data.envelope.ciphertextSizeBytes &&
+      sha256Bytes(ciphertext) === result.data.envelope.ciphertextDigest
+  );
+  const proof = buildH1CryptoUseProof({
+    authorization: auth,
+    data: result.data,
+    observation: result.executionObservation,
+    terminal: result.terminalObservation,
+    cleanup: result.cleanup,
+    volume: result.volumeObservation
+  });
+  const subject = { proof, dataResultDigest: sha256Bytes(raw) };
+  const signature = sign(
+    null,
+    Buffer.from(canonicalJson({ domain: "h1-snapshot-data-proof.v1", subject })),
+    readSigningKey(trusted)
+  ).toString("base64");
+  return snapshotKernelData(
+    {
+      ...subject,
+      signature: {
+        algorithm: "Ed25519",
+        issuer: trusted.signer.issuer,
+        keyId: trusted.signer.keyId,
+        subjectDigest: sha256Canonical(subject),
+        signature
+      }
+    },
+    CODE
+  );
 }
 
 export async function verifyAndSignH1SnapshotAdmission(input) {

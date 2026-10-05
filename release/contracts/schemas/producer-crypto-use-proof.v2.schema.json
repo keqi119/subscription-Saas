@@ -541,12 +541,35 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["coreDumpDisabled", "memoryLocked", "keyBufferClear", "processExitedAt"],
+      "anyOf": [
+        {
+          "properties": {
+            "memoryLocked": {
+              "const": true
+            }
+          }
+        },
+        {
+          "required": ["hostSwapDisabled"],
+          "properties": {
+            "memoryLocked": {
+              "const": false
+            },
+            "hostSwapDisabled": {
+              "const": true
+            }
+          }
+        }
+      ],
       "properties": {
         "coreDumpDisabled": {
           "const": true
         },
         "memoryLocked": {
-          "const": true
+          "type": "boolean"
+        },
+        "hostSwapDisabled": {
+          "type": "boolean"
         },
         "keyBufferClear": {
           "const": "BEST_EFFORT_COMPLETED"
@@ -572,6 +595,16 @@
           ]
         },
         "memoryLocked": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hostSwapDisabled": {
           "anyOf": [
             {
               "type": "boolean"

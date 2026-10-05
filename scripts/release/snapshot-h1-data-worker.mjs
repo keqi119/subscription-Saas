@@ -439,6 +439,7 @@ export async function runH1DataWorker({ input, output, deps = DEFAULT_DEPS } = {
     fingerprintObservation: result.fingerprintObservation,
     scan: result.scan,
     envelope: result.envelope,
+    cryptoOperation: result.cryptoOperation,
     ciphertextPath: result.ciphertextPath
   });
   return true;

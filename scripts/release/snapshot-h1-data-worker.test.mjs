@@ -137,7 +137,8 @@ function fixture() {
         fingerprintObservation: {},
         scan: {},
         envelope: {},
-        ciphertextPath: "/work/crypto/snapshot.enc"
+        ciphertextPath: "/work/crypto/snapshot.enc",
+        cryptoOperation: { requestId: "synthetic-operation-handoff" }
       };
     },
     ackTimeoutMs: 20
@@ -202,6 +203,13 @@ test("split configure line and correct ACK followed by EOF permit completion", a
   await running;
   assert.equal(replied, true);
   assert.ok(f.text().includes('"status":"COMPLETE"'), f.text());
+  const complete = f
+    .text()
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+    .at(-1);
+  assert.deepEqual(complete.cryptoOperation, { requestId: "synthetic-operation-handoff" });
   assert.deepEqual(
     f.events.filter((event) => event === "end:55431"),
     ["end:55431"]

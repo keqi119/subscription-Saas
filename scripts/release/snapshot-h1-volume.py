@@ -5,6 +5,7 @@ stop all attempt consumers before cleanup. A failed cleanup keeps protections
 and the exclusive lock; it never reports destruction from intent alone.
 """
 import json
+import datetime
 import os
 import re
 import stat
@@ -194,7 +195,9 @@ class H1SnapshotAttemptVolume:
             _run(['cryptsetup', 'luksFormat', '--type', 'luks2', '--cipher', 'aes-xts-plain64',
                   '--key-size', '512', '--pbkdf', 'pbkdf2', '--pbkdf-force-iterations', '100000',
                   '--batch-mode', '--key-file', '-', self.backing], bytes(self._key))
-            require(self._keyslots() == ['0'], 'KEYSLOT_SHAPE')
+            slots = self._keyslots()
+            require(slots == ['0'], 'KEYSLOT_SHAPE')
+            self.observation['keyslotsBefore'] = [int(slot) for slot in slots]
             luks_uuid = _run(['cryptsetup', 'luksUUID', self.backing]).stdout.decode('ascii').strip()
             require(re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', luks_uuid)
                     is not None, 'LUKS_UUID_INVALID')
@@ -251,6 +254,8 @@ class H1SnapshotAttemptVolume:
         require(not os.path.lexists(self.backing) and not os.path.lexists(self.mount),
                 'FILES_REMAIN')
         self.observation['destroyed'] = True
+        self.observation['destroyedAt'] = datetime.datetime.now(
+            datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
     def _restore(self):
         if self._original_swaps is not None:

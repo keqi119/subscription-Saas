@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import io
+import types
 import unittest
 from unittest.mock import patch
 
@@ -27,7 +28,31 @@ class ProducerTests(unittest.TestCase):
             'snapshotRunId': '123', 'releaseAttemptId': self.attempt,
             'localKey': {'keyFingerprint': 'sha256:' + hashlib.sha256(b'abc').hexdigest()}
         }
-        self.bundle_digest = 'sha256:239b95e7d513cd80956f71f7616b6bd3ea7bfc99afb80af594422b82b9b17b4f'
+        self.bundle_digest = self.module.BUNDLE_DIGEST
+
+    def test_terminal_time_and_memory_observations_reject_invalid_host_facts(self):
+        self.assertEqual(self.module._docker_time('2026-10-06T12:34:56.123456789Z'),
+                         '2026-10-06T12:34:56.123Z')
+        for value in (None, '', '0001-01-01T00:00:00Z', '2026-10-06T12:34:56Z'):
+            with self.assertRaises(self.module.ProducerFailure):
+                self.module._docker_time(value)
+        swaps = b'Filename\tType\tSize\tUsed\tPriority\n'
+        core = b'|/bin/false\n'
+        limits = types.SimpleNamespace(RLIMIT_CORE=4, getrlimit=lambda _: (0, 0))
+        with patch.object(self.module, 'resource', limits), \
+             patch('builtins.open', side_effect=lambda path, mode: io.BytesIO(
+                 swaps if path == '/proc/swaps' else core)):
+            observed = self.module._memory_protection()
+            self.assertTrue(observed['hostSwapDisabled'])
+            self.assertEqual(observed['swapTableDigest'], self.module._digest(swaps))
+            self.assertEqual(observed['coreLimit'], [0, 0])
+            swaps += b'/swapfile\tfile\t1024\t0\t-2\n'
+            with self.assertRaisesRegex(self.module.ProducerFailure, 'MEMORY_PROTECTION_CHANGED'):
+                self.module._memory_protection()
+            swaps = swaps.splitlines(keepends=True)[0]
+            core = b'core.%p\n'
+            with self.assertRaisesRegex(self.module.ProducerFailure, 'MEMORY_PROTECTION_CHANGED'):
+                self.module._memory_protection()
 
     def producer(self):
         return self.module.H1FixedSnapshotProducer(self.attempt, self.authorization,

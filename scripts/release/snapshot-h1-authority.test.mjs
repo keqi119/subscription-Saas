@@ -7,6 +7,7 @@ test("private authority rejects caller paths, sessions and operations before pro
   for (const input of [
     { operation: "shell", request: {} },
     { operation: "jwt", request: { path: "/tmp/key.pem" } },
+    { operation: "seal", request: { proof: {} } },
     { operation: "admit", request: { selection: {}, approvalSelection: {}, session: {} } },
     {
       operation: "recheck",

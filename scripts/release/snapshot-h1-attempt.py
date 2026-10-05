@@ -33,7 +33,7 @@ ENTRIES = ('snapshot-h1-container-hook.js', 'snapshot-h1-job-client.mjs',
            'snapshot-h1-runner-entry.mjs')
 READ_ONLY = {'snapshot-h1-volume.py', 'snapshot-h1-runner.py',
              'snapshot-h1-producer.py', 'snapshot-h1-runner-entry.mjs'}
-WORKER = 'sha256:239b95e7d513cd80956f71f7616b6bd3ea7bfc99afb80af594422b82b9b17b4f'
+WORKER = 'sha256:88ac6e79d17249612748a079c0a7d05046a0e3b12bddc26c09ecde5d9ebb333d'
 
 
 def require(value, code):
@@ -328,16 +328,26 @@ class H1SnapshotAttempt:
         cleaned = self.cleanup()
         require(cleaned, 'CLEANUP_UNKNOWN')
         if failure is not None: raise RuntimeError(failure)
+        terminal = {
+            'observedAt': self.modules['snapshot-h1-producer.py']._utc(),
+            'cleanupFactsDigest': digest(canonical(self.cleanup_facts)),
+            'volumeObservationDigest': digest(canonical(self.volume.observation)),
+            'runningJobObservationDigest': digest(canonical(self.last_running_observation))}
         result = {'status': 'DATA_PREPARED', 'admission': self.admitted['admission'],
             'admissionVerification': self.admitted['verification'],
             'postApproval': self.admitted['postApproval'],
             'runningJobObservation': self.last_running_observation,
             'data': self.producer.complete, 'cleanup': self.cleanup_facts,
-            'volumeObservation': self.volume.observation}
+            'volumeObservation': self.volume.observation,
+            'executionObservation': self.producer.observation, 'terminalObservation': terminal}
         raw = canonical(result)
         require(len(raw) <= 4194304, 'RESULT_TOO_LARGE')
         with open(self.spool + '/data-result.json', 'xb') as output:
             output.write(raw);output.flush();os.fsync(output.fileno())
+        sealed = self._authority('seal', {})
+        require(sealed.get('dataResultDigest') == digest(raw), 'RESULT_CHANGED')
+        with open(self.spool + '/snapshot-proof.json', 'xb') as output:
+            output.write(canonical(sealed));output.flush();os.fsync(output.fileno())
         return {'status': 'DATA_PREPARED', 'releaseAttemptId': self.producer.attempt_id,
                 'resultDigest': digest(raw)}
 

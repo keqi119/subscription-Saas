@@ -261,6 +261,105 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
   assert.equal(result.metadata.dumpDigest, digest(f.plaintext));
   assert.equal(result.metadata.createdAt, f.authorization.snapshotAllocatedAt);
   assert.equal(result.envelope.expiresAt, result.metadata.expiresAt);
+  assert.equal(result.cryptoOperation.action, "local:GenerateAndWrapDataKey");
+  assert.equal(result.cryptoOperation.callCount, 1);
+  assert.equal(result.cryptoOperation.outcome, "SUCCESS");
+  assert.equal(result.cryptoOperation.envelopeDigest, sha256Canonical(result.envelope));
+  assert.equal(result.cryptoOperation.keyBufferClear, "BEST_EFFORT_COMPLETED");
+  assert.match(result.cryptoOperation.requestId, /^[0-9a-f-]{36}$/);
+  assert.ok(Date.parse(result.cryptoOperation.startedAt) >= started);
+  assert.ok(Date.parse(result.cryptoOperation.finishedAt) <= finished);
+  assert.ok(
+    Date.parse(result.cryptoOperation.finishedAt) >= Date.parse(result.cryptoOperation.startedAt)
+  );
+  // Real fixture encryption above; host observations below are explicitly unit
+  // fixtures for the private proof assembler, never production attestation.
+  const { buildH1CryptoUseProof } =
+    await import("../../../scripts/release/snapshot-h1-data-proof.mjs");
+  const before = new Date(started).toISOString(),
+    after = new Date(finished).toISOString();
+  const memory = (observedAt) => ({
+    observedAt,
+    hostSwapDisabled: true,
+    coreDumpDisabled: true,
+    swapTableDigest: sha256Canonical([]),
+    corePatternDigest: sha256Canonical("|/bin/false"),
+    coreLimit: [0, 0]
+  });
+  const observation = {
+    attemptId: f.authorization.releaseAttemptId,
+    snapshotRunId: f.authorization.snapshotRunId,
+    authorizationDigest: sha256Canonical(f.authorization),
+    workerBundleDigest: f.authorization.bindings.cryptoExecutableDigest,
+    issuedAt: before,
+    expiresAt: new Date(started + 60000).toISOString(),
+    memoryBefore: memory(before),
+    memoryAfter: memory(after),
+    processExit: {
+      workerId: "a".repeat(64),
+      image:
+        "postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0",
+      startedAt: before,
+      finishedAt: after,
+      observedAt: after,
+      exitCode: 0,
+      signal: null,
+      oomKilled: false,
+      stdoutClosed: true,
+      toolExitCode: 0
+    }
+  };
+  const cleanup = Object.fromEntries(
+    [
+      "runnerStopped",
+      "controlStopped",
+      "producerStopped",
+      "runnerNotRoutable",
+      "githubTokenRevoked",
+      "volumeDestroyed"
+    ].map((key) => [key, true])
+  );
+  const volume = {
+    attemptId: f.authorization.releaseAttemptId,
+    destroyed: true,
+    keyslotsBefore: [0],
+    keyslotsAfter: [],
+    oldKeyRejected: true,
+    destroyedAt: after
+  };
+  const terminal = {
+    observedAt: after,
+    cleanupFactsDigest: sha256Canonical(cleanup),
+    volumeObservationDigest: sha256Canonical(volume),
+    runningJobObservationDigest: sha256Canonical({ fixture: true })
+  };
+  const input = {
+    authorization: f.authorization,
+    data: { status: "COMPLETE", ...result },
+    observation,
+    terminal,
+    cleanup,
+    volume
+  };
+  const proof = buildH1CryptoUseProof(input);
+  assert.equal(proof.cleanup.memoryLocked, false);
+  assert.equal(proof.cleanup.hostSwapDisabled, true);
+  assert.equal(proof.dataObservationDigest, sha256Canonical(observation));
+  for (const change of [
+    (x) => {
+      x.observation.processExit.exitCode = 1;
+    },
+    (x) => {
+      x.observation.memoryAfter.hostSwapDisabled = false;
+    },
+    (x) => {
+      x.cleanup.runnerNotRoutable = false;
+    }
+  ]) {
+    const invalid = structuredClone(input);
+    change(invalid);
+    assert.throws(() => buildH1CryptoUseProof(invalid), { code: "H1_DATA_PROOF_REJECTED" });
+  }
   for (const observedAt of [
     result.privilegeObservation.observedAt,
     result.fingerprintObservation.provenance.observedAt,

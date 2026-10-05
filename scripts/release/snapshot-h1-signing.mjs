@@ -2,12 +2,14 @@
 // This preserves the existing approved manual profile; it does not promote it
 // or replace the snapshot dispatch, custody, revocation or GitHub decisions.
 import { Buffer } from "node:buffer";
-import { createPrivateKey, createPublicKey, randomBytes, sign } from "node:crypto";
+import { createPrivateKey, createPublicKey, randomBytes, sign, verify } from "node:crypto";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { canonicalJson } from "../../packages/release-foundation/src/canonical-json.mjs";
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
+import { validateContract } from "../../packages/release-foundation/src/schema-registry.mjs";
+import { verifyAuthoritativeCustodyObservation } from "../../packages/release-foundation/src/evidence-custody.mjs";
 import {
   assertKernelFrame,
   snapshotKernelData
@@ -21,6 +23,11 @@ const KEY = `${MAIN}/key/signing-ed25519.pk8.pem`;
 const PROFILE = "sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541";
 const OWNER = "sha256:68a627061f135ee52f811f81e9c39283aa3adc9c00a01be566b08a76ec82c9c2";
 const FINGERPRINT = "sha256:7146f2e00f4a8e70183a64f3e8c7ebfa8e66926f60d18442e3d5ac4a09e408ef";
+const AUTHORITY = `${MAIN}/snapshot-authority`;
+const READER = {
+  identity: "keqi119-h1-current-revocation",
+  endpoint: "h1://139.196.227.195/stage1/current-revocation"
+};
 const fail = () => {
   throw Object.assign(new Error(CODE), { code: CODE });
 };
@@ -152,11 +159,213 @@ async function admittedIdentity() {
   }
 }
 
+function privateJson(name, max = 1048576) {
+  const file = `${AUTHORITY}/${name}.json`;
+  const raw = readFixed(file, { privateFile: true, max });
+  try {
+    requireThat(lstatSync(file).dev === lstatSync(MAIN).dev);
+    const value = JSON.parse(raw.toString("utf8"));
+    requireThat(Buffer.from(canonicalJson(value)).equals(raw));
+    return snapshotKernelData(value, CODE);
+  } finally {
+    raw.fill(0);
+  }
+}
+
+function authority(identity) {
+  const value = privateJson("authority");
+  assertKernelFrame(value, ["rootPolicy", "expected", "trustPolicy"], CODE);
+  for (const signer of [
+    value.rootPolicy.rootSigner,
+    value.trustPolicy.dispatchSigner,
+    value.trustPolicy.revocation.signer,
+    value.trustPolicy.custody.signer
+  ])
+    requireThat(same(signer, identity.signer));
+  requireThat(same(value.trustPolicy.revocation.reader, READER));
+  const custody = value.trustPolicy.custody;
+  requireThat(
+    custody.writerIdentity ===
+      "acs:ram::1457643390906675:role/subscription-saas-stage1-archive-writer" &&
+      custody.readerIdentity ===
+        "acs:ram::1457643390906675:role/subscription-saas-stage1-archive-reader" &&
+      custody.storeRef === "oss://subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai"
+  );
+  return value;
+}
+
+// Verification only: this cannot issue an original or a custody observation.
+// Production callers supply packets read from the fixed protected directory.
+export function verifyH1ArchivedDispatchPacket({ packet, trustPolicy, kind, now }) {
+  try {
+    const captured = snapshotKernelData({ packet, trustPolicy, kind, now }, CODE);
+    ({ packet, trustPolicy, kind, now } = captured);
+    requireThat(kind === "authorization" || kind === "state");
+    assertKernelFrame(
+      packet,
+      ["body", "signature", "archive", "receipt", "observation", "observationSignature"],
+      CODE
+    );
+    const domain =
+      kind === "authorization" ? "rc-dispatch-authorization.v1" : "i0-revocation-state.v1";
+    validateContract(domain, packet.body);
+    const signer =
+      kind === "authorization" ? trustPolicy.dispatchSigner : trustPolicy.revocation.signer;
+    const detached = packet.signature;
+    assertKernelFrame(
+      detached,
+      ["algorithm", "issuer", "keyId", "subjectDigest", "signature"],
+      CODE
+    );
+    const raw = Buffer.from(canonicalJson(packet.body));
+    const digest = sha256Bytes(raw);
+    const key = createPublicKey(signer.publicKey);
+    requireThat(
+      key.asymmetricKeyType === "ed25519" &&
+        detached.algorithm === "Ed25519" &&
+        detached.issuer === signer.issuer &&
+        detached.keyId === signer.keyId &&
+        detached.subjectDigest === digest &&
+        typeof detached.signature === "string" &&
+        /^[A-Za-z0-9+/]{86}==$/.test(detached.signature) &&
+        Buffer.from(detached.signature, "base64").toString("base64") === detached.signature &&
+        verify(
+          null,
+          Buffer.from(canonicalJson({ domain, [kind]: packet.body })),
+          key,
+          Buffer.from(detached.signature, "base64")
+        )
+    );
+    requireThat(
+      (kind === "authorization" ? packet.body.revocationPolicyDigest : packet.body.policyDigest) ===
+        trustPolicy.revocation.policyDigest
+    );
+    assertKernelFrame(
+      packet.archive,
+      [
+        "reference",
+        "objectKey",
+        "objectVersion",
+        "terminalAt",
+        "snapshotExpiresAt",
+        "downstreamRetainUntil",
+        "legalHoldUntil"
+      ],
+      CODE
+    );
+    requireThat(
+      packet.archive.reference === packet.archive.objectKey &&
+        packet.archive.objectKey === `control-evidence/v1/${domain}/${digest}` &&
+        packet.archive.objectVersion === "null-version-disabled"
+    );
+    const { reference, ...object } = packet.archive;
+    requireThat(reference.length > 0);
+    verifyAuthoritativeCustodyObservation({
+      originalBytes: raw,
+      receipt: packet.receipt,
+      observation: packet.observation,
+      signature: packet.observationSignature,
+      expected: { ...object, contentDigest: digest, storeRef: trustPolicy.custody.storeRef },
+      trustPolicy: trustPolicy.custody,
+      now
+    });
+    return captured.packet;
+  } catch {
+    fail();
+  }
+}
+
+function archived(name, trusted, kind, now) {
+  return verifyH1ArchivedDispatchPacket({
+    packet: privateJson(name),
+    trustPolicy: trusted.trustPolicy,
+    kind,
+    now
+  });
+}
+
+// No caller paths, keys or evidence sources. Missing originals/receipts fail;
+// setup must install real signed, archived records and a live independent STS session.
+export async function readH1SnapshotDispatchInputs(...args) {
+  requireThat(args.length === 0);
+  const identity = await admittedIdentity();
+  const trusted = authority(identity);
+  const now = new Date().toISOString();
+  const authorization = archived("authorization", trusted, "authorization", now);
+  const state = archived("current-revocation", trusted, "state", now);
+  requireThat(same(authorization.archive, trusted.expected.authorizationCustody));
+  return snapshotKernelData(
+    { ...trusted, authorization, state, session: privateJson("reader-session", 32768) },
+    CODE
+  );
+}
+
+// A read is linearized at the checked read of current-revocation.json. The root
+// authority commits a new fully archived/signed head by atomic rename of that
+// one file. There is no cached response, timer, network revocation service or
+// caller-supplied state. The verifier's durable journal independently rejects rollback.
+export async function readAndSignH1CurrentRevocation(input) {
+  assertKernelFrame(input, ["policyDigest", "authorizationDigest", "nonce"], CODE);
+  const request = snapshotKernelData(input, CODE);
+  requireThat(
+    /^sha256:[a-f0-9]{64}$/.test(request.policyDigest) &&
+      /^sha256:[a-f0-9]{64}$/.test(request.authorizationDigest) &&
+      typeof request.nonce === "string" &&
+      /^[a-f0-9]{64}$/.test(request.nonce)
+  );
+  const identity = await admittedIdentity();
+  const trusted = authority(identity);
+  const now = new Date().toISOString();
+  const authorization = archived("authorization", trusted, "authorization", now);
+  const state = archived("current-revocation", trusted, "state", now);
+  requireThat(
+    request.policyDigest === trusted.trustPolicy.revocation.policyDigest &&
+      request.authorizationDigest === sha256Canonical(authorization.body)
+  );
+  const at = Date.parse(now);
+  const age = trusted.trustPolicy.revocation.maxAgeMs;
+  requireThat(
+    Number.isSafeInteger(age) &&
+      age > 0 &&
+      age <= 300000 &&
+      Date.parse(authorization.body.issuedAt) <= at &&
+      at < Date.parse(authorization.body.notAfter)
+  );
+  const response = {
+    schemaVersion: "i0-revocation-read.v1",
+    ...request,
+    issuer: identity.signer.issuer,
+    keyId: identity.signer.keyId,
+    sequence: state.body.sequence,
+    headDigest: sha256Canonical(state.body),
+    issuedAt: now,
+    notAfter: new Date(
+      Math.min(at + Math.min(age, 30000), Date.parse(authorization.body.notAfter))
+    ).toISOString(),
+    revokedAuthorizationIds: state.body.revokedAuthorizationIds,
+    revokedAuthorizationDigests: state.body.revokedAuthorizationDigests,
+    archive: state.archive
+  };
+  const signature = {
+    algorithm: "Ed25519",
+    issuer: identity.signer.issuer,
+    keyId: identity.signer.keyId,
+    subjectDigest: sha256Canonical(response),
+    signature: sign(
+      null,
+      Buffer.from(canonicalJson({ domain: "i0-revocation-read.v1", response })),
+      readSigningKey(identity)
+    ).toString("base64")
+  };
+  return snapshotKernelData({ response, signature }, CODE);
+}
+
 function readSigningKey(expectedIdentity) {
   let raw;
   try {
-    // Called only at the verifier's final signing boundary, after fresh actual
-    // observations and dispatch verification. No key bytes are loaded earlier.
+    // Called at a fixed operation's signing boundary: verified admission, an
+    // archived current-head read, or the explicitly diagnostic key challenge.
+    // No arbitrary caller-selected signing domain or key export is available.
     requireThat(same(fixedIdentity(), expectedIdentity));
     raw = readFixed(KEY, { privateFile: true });
     requireThat(lstatSync(KEY).dev === lstatSync(MAIN).dev);

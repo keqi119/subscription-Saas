@@ -8,6 +8,9 @@ const NODE_SHA256 = "fde6a4bf8d0562f7751d1a2d6cb9b417c4cfe107bbcb0aa3e9a24e125e3
 const LIMIT_BYTES = 32 * 1024 * 1024;
 const LIMIT_FILE = 4 * 1024 * 1024;
 const LIMIT_COUNT = 2000;
+// The pinned ali-oss dependency closure adds 2,000 files to the control bundle.
+// Worker limits and its unchanged installed bytes remain separate.
+const CONTROL_LIMIT_COUNT = 4096;
 const worker = "scripts/release/snapshot-h1-data-worker.mjs";
 const fixedFiles = [
   "apps/api/package.json",
@@ -72,7 +75,7 @@ async function buildFixedRuntime(repoRoot, control) {
     const bytes = await readFile(source);
     if (
       bytes.length > LIMIT_FILE ||
-      encoded.size >= LIMIT_COUNT ||
+      encoded.size >= (control ? CONTROL_LIMIT_COUNT : LIMIT_COUNT) ||
       total + bytes.length > LIMIT_BYTES
     )
       fail("H1_BUNDLE_LIMIT");
@@ -185,18 +188,26 @@ async function buildFixedRuntime(repoRoot, control) {
     ? [
         "scripts/release/snapshot-h1-dispatch-journal.mjs",
         "scripts/release/snapshot-h1-signing.mjs",
+        "scripts/release/snapshot-h1-admit.mjs",
         "scripts/release/snapshot-h1-observations.mjs",
         "scripts/release/snapshot-h1-github-reader.mjs"
       ]
     : [worker])
     await source(entry);
   for (const name of fixedFiles) await addRootFile(name);
-  if (control)
+  if (control) {
     for (const name of ["manual-stage1-profile.v2.json", "manual-stage1-owner-binding.v1.json"])
       await addRootFile(`release/contracts/${name}`);
+    for (const name of [
+      "snapshot-h1-github-query.py",
+      "snapshot-h1-github.py",
+      "snapshot-h1-route-journal.py"
+    ])
+      await addRootFile(`scripts/release/${name}`);
+  }
   await tree(await rootDirectory("release/contracts/schemas"), "release/contracts/schemas");
   for (const name of [
-    ...(control ? [] : ["apps/api/node_modules/pg"]),
+    ...(control ? ["apps/api/node_modules/ali-oss"] : ["apps/api/node_modules/pg"]),
     "packages/release-foundation/node_modules/ajv",
     "packages/release-foundation/node_modules/canonicalize"
   ])

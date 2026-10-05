@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
+import { canonicalJson } from "../../packages/release-foundation/src/canonical-json.mjs";
+import * as operation from "./evidence-archive-operation.mjs";
 
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
 import {
@@ -28,6 +31,294 @@ const worm =
   "<WormConfiguration><WormId>worm-1</WormId><State>Locked</State><RetentionPeriodInDays>210</RetentionPeriodInDays><CreationDate>2026-09-01T00:00:00Z</CreationDate></WormConfiguration>";
 const versioning =
   '<VersioningConfiguration xmlns="http://doc.oss-cn-hangzhou.aliyuncs.com"></VersioningConfiguration>';
+
+const keyPair = generateKeyPairSync("ed25519");
+const archiveSigner = {
+  issuer: "keqi119",
+  keyId: sha256Bytes(keyPair.publicKey.export({ type: "spki", format: "der" })),
+  publicKey: keyPair.publicKey.export({ type: "spki", format: "pem" })
+};
+function detached(domain, name, body) {
+  return {
+    algorithm: "Ed25519",
+    issuer: archiveSigner.issuer,
+    keyId: archiveSigner.keyId,
+    subjectDigest: sha256Canonical(body),
+    signature: sign(
+      null,
+      Buffer.from(canonicalJson({ domain, [name]: body })),
+      keyPair.privateKey
+    ).toString("base64")
+  };
+}
+function authorized(kind) {
+  const auth = authorization(operation.ARCHIVE_PROFILES[kind]);
+  auth.issuer = { id: archiveSigner.issuer, keyId: archiveSigner.keyId };
+  auth.executor.publicKeyDigest = archiveSigner.keyId;
+  auth.identities.management = `acs:ram::${account}:root`;
+  const policy = {
+    managementIdentity: auth.identities.management,
+    revocationPolicyDigest: auth.revocationPolicyDigest,
+    owner: archiveSigner.issuer,
+    readers: [readerRole],
+    downstreamRetainUntil: "2027-03-31T00:00:00.000Z",
+    snapshotExpiresAt: null,
+    legalHoldUntil: null
+  };
+  auth.custodyPolicyDigest = sha256Canonical(policy);
+  const chainOriginals = Object.fromEntries(
+    [
+      "changePlanDigest",
+      "externalChangeApprovalDigest",
+      "applyProofDigest",
+      "resourceReadbackDigest"
+    ].map((name) => [name, { fixture: name }])
+  );
+  for (const [name, body] of Object.entries(chainOriginals))
+    auth.chain[name] = sha256Canonical(body);
+  const state = {
+    schemaVersion: "i0-revocation-state.v1",
+    policyDigest: auth.revocationPolicyDigest,
+    sequence: 0,
+    revokedAuthorizationIds: [],
+    revokedAuthorizationDigests: []
+  };
+  return {
+    packet: {
+      authorization: auth,
+      signature: detached("evidence-archive-authorization.v1", "authorization", auth)
+    },
+    policy,
+    chainOriginals,
+    revocation: { state, signature: detached("i0-revocation-state.v1", "state", state) },
+    expected: {
+      authorizationDigest: sha256Canonical(auth),
+      kind,
+      sourceDigest: auth.executor.sourceDigest,
+      runtimeDigest: auth.executor.runtimeDigest
+    },
+    signer: archiveSigner,
+    now: "2026-10-01T00:00:01.000Z",
+    active: true
+  };
+}
+
+async function archiveObserved(kind) {
+  const input = authorized(kind),
+    auth = input.packet.authorization;
+  const role = kind === "writer" ? writerRole : readerRole;
+  const fixture = harness(role),
+    sts = session(role);
+  const transport =
+    kind === "writer"
+      ? await createEvidenceArchiveWriterTransport(
+          {
+            authorization: auth,
+            originals: [{ exactKey: object.exactKey, originalBytes: bytes }],
+            session: sts
+          },
+          fixture.deps
+        )
+      : await createEvidenceArchiveReaderTransport(
+          { authorization: auth, session: sts },
+          fixture.deps
+        );
+  const result =
+    kind === "writer"
+      ? await transport.createOnly({ exactKey: object.exactKey, originalBytes: bytes })
+      : await transport.readback({ exactKey: object.exactKey });
+  const publicSession = {
+    arn: sts.arn,
+    issuedAt: sts.issuedAt,
+    expiresAt: sts.expiresAt,
+    fingerprint: operation.archiveSessionFingerprint(sts, transport.identityOriginal)
+  };
+  const io = {
+    status: "ARCHIVE_IO_OBSERVED",
+    authorizationDigest: input.expected.authorizationDigest,
+    profile: auth.profile,
+    operationId: auth.operationId,
+    session: publicSession,
+    identityOriginal: transport.identityOriginal,
+    startedAt: input.now,
+    observedAt: input.now,
+    objects: [{ exactKey: object.exactKey, result }]
+  };
+  const terminal = {
+    status: "ARCHIVE_TERMINAL_OBSERVED",
+    authorizationDigest: io.authorizationDigest,
+    profile: auth.profile,
+    operationId: auth.operationId,
+    ioDigest: sha256Canonical(io),
+    session: publicSession,
+    ioObservedAt: io.observedAt,
+    authority: {
+      startedAt: input.now,
+      finishedAt: "2026-10-01T00:00:02.000Z",
+      exited: true,
+      exitCode: 0
+    },
+    sessionDisposal: {
+      path: `/var/lib/stage1-volumes/main/snapshot-authority/archive-${kind}-session.json`,
+      removed: true,
+      removedAt: "2026-10-01T00:00:03.000Z",
+      absent: true,
+      expiresAt: publicSession.expiresAt,
+      observedAt: "2026-10-01T00:10:01.000Z"
+    }
+  };
+  return {
+    authorization: auth,
+    io,
+    terminal,
+    signer: archiveSigner,
+    issuedAt: "2026-10-01T00:10:02.000Z"
+  };
+}
+
+test("archive authorization verifies protected signer, frozen originals, live revocation and time", () => {
+  const input = authorized("writer");
+  assert.deepEqual(
+    operation.verifyArchiveOperationAuthorization(input),
+    input.packet.authorization
+  );
+  for (const mutate of [
+    (x) => {
+      x.chainOriginals.applyProofDigest.fixture = "changed";
+    },
+    (x) => {
+      x.expected.runtimeDigest = d("f");
+    },
+    (x) => {
+      x.packet.signature.signature = Buffer.alloc(64).toString("base64");
+    },
+    (x) => {
+      x.now = x.packet.authorization.notAfter;
+    },
+    (x) => {
+      x.revocation.state.revokedAuthorizationDigests.push(x.expected.authorizationDigest);
+      x.revocation.signature = detached("i0-revocation-state.v1", "state", x.revocation.state);
+    }
+  ]) {
+    const changed = globalThis.structuredClone(input);
+    mutate(changed);
+    assert.throws(() => operation.verifyArchiveOperationAuthorization(changed));
+  }
+  assert.doesNotThrow(() =>
+    operation.verifyArchiveOperationAuthorization({
+      ...input,
+      active: false,
+      now: "2026-10-02T00:00:00.000Z"
+    })
+  );
+});
+
+test("archive access proof binds actual IO to exited child and disposed expired session", async () => {
+  for (const kind of ["writer", "reader"]) {
+    const input = await archiveObserved(kind);
+    const subject = await operation.buildArchiveAccessSubject(input);
+    const proof = {
+      ...subject,
+      signature: detached("h1-evidence-archive-access.v1", "subject", subject)
+    };
+    assert.deepEqual(
+      await operation.verifyArchiveAccessProof({
+        proof,
+        authorization: input.authorization,
+        io: input.io,
+        terminal: input.terminal,
+        signer: input.signer
+      }),
+      subject
+    );
+    assert.equal(subject.receipt.actions.length, kind === "writer" ? 1 : 2);
+    for (const mutate of [
+      (x) => {
+        x.terminal.authority.exited = false;
+      },
+      (x) => {
+        x.terminal.sessionDisposal.absent = false;
+      },
+      (x) => {
+        x.terminal.sessionDisposal.observedAt = "2026-10-01T00:05:00.000Z";
+      },
+      (x) => {
+        x.io.objects[0].result.exactKey = "wrong";
+        if (kind === "reader") x.io.objects[0].result.get.digest = d("f");
+        x.terminal.ioDigest = sha256Canonical(x.io);
+      }
+    ]) {
+      const changed = globalThis.structuredClone(input);
+      mutate(changed);
+      await assert.rejects(operation.buildArchiveAccessSubject(changed));
+    }
+    const changed = globalThis.structuredClone(proof);
+    changed.receipt.issuer = "other";
+    await assert.rejects(() =>
+      operation.verifyArchiveAccessProof({
+        proof: changed,
+        authorization: input.authorization,
+        io: input.io,
+        terminal: input.terminal,
+        signer: input.signer
+      })
+    );
+  }
+});
+
+test("archive read waits for the signed writer terminal for the identical objects", async () => {
+  const writer = await archiveObserved("writer");
+  const reader = authorized("reader").packet.authorization;
+  const writerSubject = await operation.buildArchiveAccessSubject(writer);
+  reader.chain.predecessorTerminalReceiptDigest = sha256Canonical(writerSubject.receipt);
+  const input = {
+    authorization: reader,
+    predecessor: writerSubject.receipt,
+    predecessorAuthorization: writer.authorization,
+    sessionIssuedAt: "2026-10-01T00:10:02.000Z"
+  };
+  assert.equal(typeof operation.verifyArchiveReadPredecessor, "function");
+  assert.doesNotThrow(() => operation.verifyArchiveReadPredecessor(input));
+  for (const mutate of [
+    (x) => {
+      x.sessionIssuedAt = "2026-10-01T00:00:01.000Z";
+    },
+    (x) => {
+      x.authorization.chain.predecessorTerminalReceiptDigest = d("f");
+    },
+    (x) => {
+      x.authorization.objects[0].contentDigest = d("f");
+    }
+  ]) {
+    const changed = globalThis.structuredClone(input);
+    mutate(changed);
+    assert.throws(() => operation.verifyArchiveReadPredecessor(changed));
+  }
+});
+
+test("archive reader sealing rejects missing or inconsistent raw OSS response evidence", async () => {
+  const input = await archiveObserved("reader");
+  for (const mutate of [
+    (x) => {
+      delete x.io.objects[0].result.evidence;
+    },
+    (x) => {
+      x.io.objects[0].result.evidence.originals[0].bytesBase64 =
+        Buffer.from("other").toString("base64");
+    },
+    (x) => {
+      x.io.objects[0].result.evidence.records[3].response.headers.etag = '"different"';
+    },
+    (x) => {
+      x.io.objects[0].result.bucket.worm.id = "different";
+    }
+  ]) {
+    const changed = globalThis.structuredClone(input);
+    mutate(changed);
+    changed.terminal.ioDigest = sha256Canonical(changed.io);
+    await assert.rejects(async () => operation.buildArchiveAccessSubject(changed));
+  }
+});
 
 function authorization(profile) {
   const writer = profile === "archive-create-only-writer";

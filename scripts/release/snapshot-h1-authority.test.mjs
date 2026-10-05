@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import process from "node:process";
 import { runH1AttemptAuthority } from "./snapshot-h1-authority.mjs";
 import { readH1SnapshotProductionInputs } from "./snapshot-h1-signing.mjs";
 
@@ -12,6 +13,12 @@ test("private authority rejects caller paths, sessions and operations before pro
     { operation: "seal-destruction", request: {} },
     { operation: "seal-destruction", request: { receipt: {} } },
     { operation: "publish", request: { session: {} } },
+    { operation: "archive-write", request: { authorizationDigest: "x" } },
+    {
+      operation: "archive-read",
+      request: { authorizationDigest: "sha256:" + "1".repeat(64), session: {} }
+    },
+    { operation: "archive-seal-write", request: { proof: {} } },
     { operation: "admit", request: { selection: {}, approvalSelection: {}, session: {} } },
     {
       operation: "recheck",
@@ -22,6 +29,23 @@ test("private authority rejects caller paths, sessions and operations before pro
   await assert.rejects(readH1SnapshotProductionInputs({ path: "/tmp/inputs.json" }), {
     code: "H1_SNAPSHOT_SIGNING_REJECTED"
   });
+});
+
+test("archive authority routes fixed selectors to protected H1 inputs without requiring dispatch", async () => {
+  if (process.platform !== "win32") return;
+  for (const operation of [
+    "archive-write",
+    "archive-read",
+    "archive-seal-write",
+    "archive-seal-read"
+  ])
+    await assert.rejects(
+      runH1AttemptAuthority({
+        operation,
+        request: { authorizationDigest: "sha256:" + "1".repeat(64) }
+      }),
+      { code: "H1_SNAPSHOT_SIGNING_REJECTED" }
+    );
 });
 
 test("private authority does not evaluate caller getters", async () => {

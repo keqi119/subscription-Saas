@@ -19,7 +19,9 @@ import {
   readH1SnapshotProductionInputs,
   sealH1SnapshotDataProof,
   sealH1SnapshotTerminalProofs,
-  publishH1SnapshotData
+  publishH1SnapshotData,
+  runH1EvidenceArchiveIO,
+  sealH1EvidenceArchiveAccess
 } from "./snapshot-h1-signing.mjs";
 
 const CODE = "H1_ATTEMPT_AUTHORITY_REJECTED";
@@ -60,8 +62,30 @@ export async function runH1AttemptAuthority(input) {
   const captured = snapshotKernelData(input, CODE);
   const { operation, request } = captured;
   requireThat(
-    ["admit", "recheck", "jwt", "seal", "publish", "seal-destruction"].includes(operation)
+    [
+      "admit",
+      "recheck",
+      "jwt",
+      "seal",
+      "publish",
+      "seal-destruction",
+      "archive-write",
+      "archive-read",
+      "archive-seal-write",
+      "archive-seal-read"
+    ].includes(operation)
   );
+  if (operation.startsWith("archive-")) {
+    assertKernelFrame(request, ["authorizationDigest"], CODE);
+    requireThat(
+      typeof request.authorizationDigest === "string" &&
+        /^sha256:[a-f0-9]{64}$/u.test(request.authorizationDigest)
+    );
+    const kind = operation.endsWith("write") ? "writer" : "reader";
+    return operation.startsWith("archive-seal-")
+      ? sealH1EvidenceArchiveAccess(kind, request.authorizationDigest)
+      : runH1EvidenceArchiveIO(kind, request.authorizationDigest);
+  }
   if (operation === "jwt") {
     assertKernelFrame(request, [], CODE);
     return { jwt: await createH1GitHubJwtSupplier()() };

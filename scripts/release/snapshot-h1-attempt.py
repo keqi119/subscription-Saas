@@ -34,6 +34,9 @@ CONFIG = CONTROL + '/snapshot-h1-attempt-installation.json'
 OUTPUT = '/var/lib/subscription-saas/snapshot-output'
 VOLUMES = '/var/lib/subscription-saas/snapshot-volumes'
 PUBLISHER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/publisher-session.json'
+ARCHIVE_OUTPUT = '/var/lib/subscription-saas/evidence-archive'
+ARCHIVE_WRITER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/archive-writer-session.json'
+ARCHIVE_READER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/archive-reader-session.json'
 MODULES = ('snapshot-h1-github.py', 'snapshot-h1-route-journal.py',
            'snapshot-h1-volume.py', 'snapshot-h1-runner.py',
            'snapshot-h1-control.py', 'snapshot-h1-producer.py')
@@ -428,6 +431,10 @@ def _publisher_write(fd, raw):
 
 class H1SnapshotPublisher:
     """Single fixed root publication; its file is a local observation only."""
+    LOCK_NAME = 'publisher.lock'
+    SESSION_UNKNOWN = 'PUBLISH_SESSION_UNKNOWN'
+    SESSION_CHANGED = 'PUBLISH_SESSION_CHANGED'
+    EXPIRY_UNKNOWN = 'PUBLISH_EXPIRY_UNKNOWN'
     def __init__(self, request):
         require(type(request) is dict and set(request) == {
             'operation', 'releaseAttemptId', 'snapshotRunId'} and
@@ -438,12 +445,15 @@ class H1SnapshotPublisher:
             type(request['snapshotRunId']) is str and
             re.fullmatch(r'[1-9][0-9]*', request['snapshotRunId']), 'INPUT_INVALID')
         self.request = copy.deepcopy(request)
+        self._init_process(OUTPUT + '/' + request['releaseAttemptId'], PUBLISHER_SESSION)
+
+    def _init_process(self, spool, session_path):
         self.installation = _installation()
         self.bundle = BASE + '/bundles/' + self.installation['controlBundleDigest'][7:]
-        self.spool = OUTPUT + '/' + request['releaseAttemptId']
+        self.spool = spool
         self.authority = {'startedAt': None, 'finishedAt': None,
                           'exited': False, 'exitCode': None}
-        self.session = {'path': PUBLISHER_SESSION, 'removed': False,
+        self.session = {'path': session_path, 'removed': False,
                         'removedAt': None, 'absent': False}
         self.session_before = None
         self.global_lock = None
@@ -451,9 +461,16 @@ class H1SnapshotPublisher:
     def _authority(self, operation, request):
         return H1SnapshotAttempt._authority(self, operation, request)
 
-    def _lock(self):
+    def _ensure_spool(self):
         _safe_root_directory(OUTPUT, 0o700)
         _safe_root_directory(self.spool, 0o700)
+
+    def _lock_payload(self):
+        return {'releaseAttemptId': self.request['releaseAttemptId'],
+                'snapshotRunId': self.request['snapshotRunId']}
+
+    def _lock(self):
+        self._ensure_spool()
         require(fcntl is not None, 'PUBLISH_LOCK_UNKNOWN')
         global_path = OUTPUT + '/publisher-global.lock'
         global_fd = os.open(global_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -463,11 +480,10 @@ class H1SnapshotPublisher:
                     stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1 and
                     _same(info, os.lstat(global_path)), 'PUBLISH_LOCK_UNKNOWN')
             fcntl.flock(global_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fd = os.open(self.spool + '/publisher.lock',
+            fd = os.open(self.spool + '/' + self.LOCK_NAME,
                          os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             try:
-                _publisher_write(fd, canonical({'releaseAttemptId': self.request['releaseAttemptId'],
-                                                'snapshotRunId': self.request['snapshotRunId']}))
+                _publisher_write(fd, canonical(self._lock_payload()))
                 os.fsync(fd)
             finally:
                 os.close(fd)
@@ -480,55 +496,57 @@ class H1SnapshotPublisher:
             raise
 
     def _observe_session(self):
-        parent_path = os.path.dirname(PUBLISHER_SESSION)
+        parent_path = os.path.dirname(self.session['path'])
         directory_info = _safe_root_directory(parent_path)
         parent = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            require(_same(directory_info, os.fstat(parent)), 'PUBLISH_SESSION_UNKNOWN')
-            info = os.stat('publisher-session.json', dir_fd=parent, follow_symlinks=False)
+            require(_same(directory_info, os.fstat(parent)), self.SESSION_UNKNOWN)
+            info = os.stat(os.path.basename(self.session['path']), dir_fd=parent,
+                           follow_symlinks=False)
             require(stat.S_ISREG(info.st_mode) and info.st_uid == info.st_gid == 0 and
                     stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1,
-                    'PUBLISH_SESSION_UNKNOWN')
+                    self.SESSION_UNKNOWN)
             self.session_before = info
         finally:
             os.close(parent)
 
     def _session_absent(self):
         self.session['absent'] = False
-        parent_path = os.path.dirname(PUBLISHER_SESSION)
+        parent_path = os.path.dirname(self.session['path'])
         directory_info = _safe_root_directory(parent_path)
         parent = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            require(_same(directory_info, os.fstat(parent)), 'PUBLISH_SESSION_UNKNOWN')
+            require(_same(directory_info, os.fstat(parent)), self.SESSION_UNKNOWN)
             try:
-                os.stat('publisher-session.json', dir_fd=parent, follow_symlinks=False)
+                os.stat(os.path.basename(self.session['path']), dir_fd=parent,
+                        follow_symlinks=False)
             except FileNotFoundError:
                 self.session['absent'] = True
                 return True
-            raise RuntimeError('H1_ATTEMPT_PUBLISH_SESSION_UNKNOWN')
+            raise RuntimeError('H1_ATTEMPT_' + self.SESSION_UNKNOWN)
         finally:
             os.close(parent)
 
     def _remove_session(self):
-        parent_path = os.path.dirname(PUBLISHER_SESSION)
+        parent_path = os.path.dirname(self.session['path'])
         directory_info = _safe_root_directory(parent_path)
         parent = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            require(_same(directory_info, os.fstat(parent)), 'PUBLISH_SESSION_UNKNOWN')
-            name = 'publisher-session.json'
+            require(_same(directory_info, os.fstat(parent)), self.SESSION_UNKNOWN)
+            name = os.path.basename(self.session['path'])
             before = os.stat(name, dir_fd=parent, follow_symlinks=False)
             require(self.session_before is not None and _same(self.session_before, before) and
                     stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0 and
                     stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1,
-                    'PUBLISH_SESSION_UNKNOWN')
+                    self.SESSION_UNKNOWN)
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
             try:
                 require(_same(before, os.fstat(fd)) and
                         _same(before, os.stat(name, dir_fd=parent, follow_symlinks=False)),
-                        'PUBLISH_SESSION_CHANGED')
+                        self.SESSION_CHANGED)
                 # A root-only directory plus this second inode comparison confines unlink.
                 os.unlink(name, dir_fd=parent)
-                require(os.fstat(fd).st_nlink == 0, 'PUBLISH_SESSION_CHANGED')
+                require(os.fstat(fd).st_nlink == 0, self.SESSION_CHANGED)
             finally:
                 os.close(fd)
             os.fsync(parent)
@@ -584,7 +602,7 @@ class H1SnapshotPublisher:
         deadline = started_mono + ttl + 30
         while True:
             now_mono, now_wall = time.monotonic(), time.time()
-            require(now_mono <= deadline, 'PUBLISH_EXPIRY_UNKNOWN')
+            require(now_mono <= deadline, self.EXPIRY_UNKNOWN)
             if now_mono - started_mono >= ttl and now_wall >= expires:
                 return _publisher_utc(now_wall)
             time.sleep(min(5, max(0.01, max(started_mono + ttl - now_mono,
@@ -707,6 +725,150 @@ class H1SnapshotPublisher:
         raise RuntimeError(error_code)
 
 
+class H1EvidenceArchiveOperation(H1SnapshotPublisher):
+    """Observe one fixed archive child, session disposal, and full expiry."""
+    LOCK_NAME = 'archive.lock'
+    SESSION_UNKNOWN = 'ARCHIVE_SESSION_UNKNOWN'
+    SESSION_CHANGED = 'ARCHIVE_SESSION_CHANGED'
+    EXPIRY_UNKNOWN = 'ARCHIVE_EXPIRY_UNKNOWN'
+
+    def __init__(self, request):
+        require(type(request) is dict and set(request) == {
+            'operation', 'authorizationDigest'} and
+            request['operation'] in ('archive-write', 'archive-read') and
+            type(request['authorizationDigest']) is str and
+            re.fullmatch(r'sha256:[a-f0-9]{64}', request['authorizationDigest']),
+            'INPUT_INVALID')
+        self.request = copy.deepcopy(request)
+        self.operation = request['operation']
+        self.profile = ('archive-create-only-writer' if self.operation == 'archive-write'
+                        else 'archive-readback-reader')
+        session_path = (ARCHIVE_WRITER_SESSION if self.operation == 'archive-write'
+                        else ARCHIVE_READER_SESSION)
+        self._init_process(ARCHIVE_OUTPUT + '/' + request['authorizationDigest'][7:],
+                           session_path)
+
+    def _ensure_spool(self):
+        # Both operations share the publisher mutex. The archive root and
+        # digest spool are fixed, private, and never supplied as paths by a caller.
+        _safe_root_directory(OUTPUT, 0o700)
+        _safe_root_directory(os.path.dirname(ARCHIVE_OUTPUT))
+        if not os.path.lexists(ARCHIVE_OUTPUT):
+            os.mkdir(ARCHIVE_OUTPUT, 0o700)
+        _safe_root_directory(ARCHIVE_OUTPUT, 0o700)
+        if not os.path.lexists(self.spool):
+            os.mkdir(self.spool, 0o700)
+        _safe_root_directory(self.spool, 0o700)
+
+    def _lock_payload(self):
+        return self.request
+
+    def seal_access(self):
+        _safe_root_directory(ARCHIVE_OUTPUT, 0o700)
+        _safe_root_directory(self.spool, 0o700)
+        sealed = self._authority(self.operation.replace('archive-', 'archive-seal-'), {
+            'authorizationDigest': self.request['authorizationDigest']})
+        require(type(sealed) is dict and set(sealed) == {
+            'status', 'authorizationDigest', 'profile', 'proofDigest', 'receiptDigest'} and
+            sealed['status'] == 'ARCHIVE_ACCESS_SEALED' and
+            sealed['authorizationDigest'] == self.request['authorizationDigest'] and
+            sealed['profile'] == self.profile and all(
+                type(sealed[name]) is str and re.fullmatch(r'sha256:[a-f0-9]{64}', sealed[name])
+                for name in ('proofDigest', 'receiptDigest')), 'ARCHIVE_RESULT_INVALID')
+        return sealed
+
+    @staticmethod
+    def _time(value):
+        try:
+            return _publisher_time(value)
+        except BaseException:
+            raise RuntimeError('H1_ATTEMPT_ARCHIVE_RESULT_INVALID')
+
+    def _validate_io(self, value):
+        require(type(value) is dict and set(value) == {
+            'status', 'authorizationDigest', 'profile', 'operationId',
+            'session', 'ioDigest', 'observedAt'} and
+            value['status'] == 'ARCHIVE_IO_OBSERVED' and
+            value['authorizationDigest'] == self.request['authorizationDigest'] and
+            value['profile'] == self.profile and
+            type(value['operationId']) is str and 0 < len(value['operationId']) <= 256 and
+            type(value['ioDigest']) is str and
+            re.fullmatch(r'sha256:[a-f0-9]{64}', value['ioDigest']) and
+            type(value['session']) is dict and set(value['session']) == {
+                'arn', 'issuedAt', 'expiresAt', 'fingerprint'},
+            'ARCHIVE_RESULT_INVALID')
+        session = value['session']
+        role = ('subscription-saas-stage1-archive-writer' if self.operation == 'archive-write'
+                else 'subscription-saas-stage1-archive-reader')
+        require(type(session['arn']) is str and re.fullmatch(
+            r'acs:ram::1457643390906675:(?:role|assumed-role)/' + role +
+            r'/[A-Za-z0-9_-]{1,64}', session['arn']) and
+            type(session['fingerprint']) is str and
+            re.fullmatch(r'sha256:[a-f0-9]{64}', session['fingerprint']),
+            'ARCHIVE_RESULT_INVALID')
+        issued = self._time(session['issuedAt'])
+        expires = self._time(session['expiresAt'])
+        observed = self._time(value['observedAt'])
+        started = self._time(self.authority['startedAt'])
+        finished = self._time(self.authority['finishedAt'])
+        require(0 < expires - issued <= 900 and
+                issued <= started <= observed <= finished and observed < expires,
+                'ARCHIVE_RESULT_INVALID')
+        _safe_root_directory(self.spool, 0o700)
+        require('sha256:' + _file(self.spool + '/archive-io.json', 0o600,
+                                  8388608, hash_only=True) == value['ioDigest'],
+                'ARCHIVE_IO_CHANGED')
+
+    def _run_locked(self):
+        observed = None
+        error_code = None
+        started_mono = time.monotonic()
+        try:
+            self._observe_session()
+            self.authority['startedAt'] = _publisher_utc()
+            observed = self._authority(self.operation, {
+                'authorizationDigest': self.request['authorizationDigest']})
+            self.authority.update({'finishedAt': _publisher_utc(), 'exited': True,
+                                   'exitCode': 0})
+            self._validate_io(observed)
+        except BaseException as error:
+            error_code = (str(error) if re.fullmatch(r'H1_ATTEMPT_[A-Z0-9_]{1,100}', str(error))
+                          else 'H1_ATTEMPT_ARCHIVE_OUTCOME_UNKNOWN')
+            self.authority['finishedAt'] = _publisher_utc()
+        try:
+            self._remove_session()
+        except BaseException:
+            error_code = 'H1_ATTEMPT_ARCHIVE_SESSION_UNKNOWN'
+        if error_code is None:
+            try:
+                self.session['expiresAt'] = observed['session']['expiresAt']
+                self.session['observedAt'] = self._wait_expiry(observed['session'], started_mono)
+                self._session_absent()
+                require(self.session['removed'] and self.session['absent'] and
+                        self._time(self.authority['finishedAt']) <=
+                        self._time(self.session['removedAt']) <=
+                        self._time(self.session['observedAt']), 'ARCHIVE_ORDER_INVALID')
+                record = {'status': 'ARCHIVE_TERMINAL_OBSERVED',
+                          'authorizationDigest': self.request['authorizationDigest'],
+                          'profile': self.profile, 'operationId': observed['operationId'],
+                          'ioDigest': observed['ioDigest'], 'session': observed['session'],
+                          'ioObservedAt': observed['observedAt'],
+                          'authority': self.authority, 'sessionDisposal': self.session}
+                terminal_digest = self._write_record('archive-terminal.json', record)
+                return {'status': 'ARCHIVE_TERMINAL_OBSERVED',
+                        'authorizationDigest': self.request['authorizationDigest'],
+                        'profile': self.profile, 'observationDigest': terminal_digest}
+            except BaseException as error:
+                error_code = (str(error) if re.fullmatch(r'H1_ATTEMPT_[A-Z0-9_]{1,100}', str(error))
+                              else 'H1_ATTEMPT_ARCHIVE_OUTCOME_UNKNOWN')
+        failure = {'status': 'ARCHIVE_OUTCOME_UNKNOWN',
+                   'authorizationDigest': self.request['authorizationDigest'],
+                   'profile': self.profile, 'errorCode': error_code,
+                   'authority': self.authority, 'sessionDisposal': self.session}
+        self._write_record('archive-failure.json', failure)
+        raise RuntimeError(error_code)
+
+
 def main():
     require(len(sys.argv) == 1 and os.name == 'posix' and os.geteuid() == 0, 'ROOT_REQUIRED')
     require(os.path.abspath(__file__) == CONTROL + '/snapshot-h1-attempt.py', 'ENTRY_INVALID')
@@ -721,6 +883,12 @@ def main():
         operation = request['operation']
         publisher = H1SnapshotPublisher(dict(request, operation='publish'))
         result = publisher.run() if operation == 'publish' else publisher.seal_destruction()
+    elif type(request) is dict and request.get('operation') in (
+            'archive-write', 'archive-read', 'archive-seal-write', 'archive-seal-read'):
+        seal = request['operation'].startswith('archive-seal-')
+        archive = H1EvidenceArchiveOperation(dict(request,
+            operation=request['operation'].replace('archive-seal-', 'archive-')))
+        result = archive.seal_access() if seal else archive.run()
     else:
         result = H1SnapshotAttempt(request).run()
     sys.stdout.write(json.dumps(result, separators=(',', ':')))

@@ -39,6 +39,19 @@ import {
   assertSnapshotPublicationObject,
   createSnapshotPublisherTransport
 } from "./snapshot-oss-storage.mjs";
+import { buildEvidenceArchiveRamPolicy } from "./evidence-archive-ram-policy.mjs";
+import {
+  createEvidenceArchiveWriterTransport,
+  createEvidenceArchiveReaderTransport
+} from "./evidence-archive-storage.mjs";
+import {
+  ARCHIVE_PROFILES,
+  verifyArchiveOperationAuthorization,
+  archiveSessionFingerprint,
+  buildArchiveAccessSubject,
+  verifyArchiveAccessProof,
+  verifyArchiveReadPredecessor
+} from "./evidence-archive-operation.mjs";
 
 const CODE = "H1_SNAPSHOT_SIGNING_REJECTED";
 const MAIN = "/var/lib/stage1-volumes/main";
@@ -514,6 +527,308 @@ function requireAbsent(file) {
     fail();
   }
   fail();
+}
+
+function archiveSelector(kind, authorizationDigest) {
+  requireThat(
+    Object.hasOwn(ARCHIVE_PROFILES, kind) &&
+      typeof authorizationDigest === "string" &&
+      /^sha256:[a-f0-9]{64}$/u.test(authorizationDigest)
+  );
+  return authorizationDigest.slice(7);
+}
+
+function archiveJson(file, max = 8388608) {
+  const raw = readFixed(file, { privateFile: true, max });
+  const value = JSON.parse(raw.toString("utf8"));
+  requireThat(raw.equals(Buffer.from(canonicalJson(value))));
+  return snapshotKernelData(value, CODE);
+}
+
+function archiveSpool(kind, authorizationDigest) {
+  const hex = archiveSelector(kind, authorizationDigest);
+  const directory = `/var/lib/subscription-saas/evidence-archive/${hex}`;
+  for (const name of [path.posix.dirname(directory), directory]) {
+    const info = lstatSync(name);
+    requireThat(
+      info.isDirectory() && info.uid === 0 && info.gid === 0 && (info.mode & 0o777) === 0o700
+    );
+  }
+  requireThat(
+    same(archiveJson(`${directory}/archive.lock`, 16384), {
+      operation: kind === "writer" ? "archive-write" : "archive-read",
+      authorizationDigest
+    })
+  );
+  return directory;
+}
+
+function archiveContext(kind, authorizationDigest, trusted, active) {
+  const hex = archiveSelector(kind, authorizationDigest),
+    prefix = `archive/${hex}`;
+  const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/u, "");
+  const manifestRaw = readFixed(`${root}/runtime-installation.json`, {
+    readOnly: true,
+    max: 1048576
+  });
+  const manifest = JSON.parse(manifestRaw.toString("utf8"));
+  const runtimeDigest = `sha256:${path.posix.basename(root)}`;
+  requireThat(
+    sha256Bytes(manifestRaw) === runtimeDigest &&
+      manifestRaw.equals(Buffer.from(canonicalJson(manifest))) &&
+      manifest.format === "stage1-h1-control-runtime/v1" &&
+      Array.isArray(manifest.files)
+  );
+  // This is the installed source inventory, excluding vendored dependencies.
+  // The Python parent verifies every installed byte before calling this pipe.
+  const sourceDigest = sha256Canonical(
+    manifest.files.filter(({ path: name }) => !name.startsWith("node_modules/"))
+  );
+  const packet = privateJson(`${prefix}/authorization`),
+    policy = privateJson(`${prefix}/policy`);
+  const chainOriginals = Object.fromEntries(
+    [
+      "changePlanDigest",
+      "externalChangeApprovalDigest",
+      "applyProofDigest",
+      "resourceReadbackDigest"
+    ].map((name) => [name, privateJson(`${prefix}/${name}`)])
+  );
+  let previousRevocation = null;
+  const recheck = () => {
+    const revocation = privateJson("archive-revocation");
+    const auth = verifyArchiveOperationAuthorization({
+      packet,
+      policy,
+      chainOriginals,
+      revocation,
+      expected: { kind, authorizationDigest, sourceDigest, runtimeDigest },
+      signer: trusted.signer,
+      now: new Date().toISOString(),
+      active
+    });
+    const current = {
+      sequence: revocation.state.sequence,
+      digest: sha256Canonical(revocation.state)
+    };
+    if (previousRevocation)
+      requireThat(
+        current.sequence > previousRevocation.sequence ||
+          (current.sequence === previousRevocation.sequence &&
+            current.digest === previousRevocation.digest)
+      );
+    previousRevocation = current;
+    return auth;
+  };
+  const authorization = recheck();
+  const originals = authorization.objects.map((object) => {
+    const file = `${AUTHORITY}/${prefix}/originals/${object.contentDigest.slice(7)}.json`;
+    const originalBytes = readFixed(file, { privateFile: true, max: 1048576 });
+    requireThat(lstatSync(file).dev === lstatSync(MAIN).dev);
+    return { exactKey: object.exactKey, originalBytes };
+  });
+  requireThat(
+    sha256Canonical(buildEvidenceArchiveRamPolicy({ authorization, originals })) ===
+      authorization.resource.policyDigest
+  );
+  return { authorization, policy, originals, recheck, prefix };
+}
+
+function archiveCompleted(kind, authorizationDigest) {
+  const directory = archiveSpool(kind, authorizationDigest);
+  for (const name of [
+    "archive-failure.json",
+    "archive-io-failure.json",
+    "archive-io.json.pending",
+    "archive-terminal.json.pending",
+    "archive-failure.json.pending",
+    "archive-access-proof.json.pending"
+  ])
+    requireAbsent(`${directory}/${name}`);
+  requireAbsent(`${AUTHORITY}/archive-${kind}-session.json`);
+  return {
+    directory,
+    io: archiveJson(`${directory}/archive-io.json`),
+    terminal: archiveJson(`${directory}/archive-terminal.json`)
+  };
+}
+
+async function archivePredecessor(context, trusted, sessionIssuedAt) {
+  if (context.authorization.profile !== ARCHIVE_PROFILES.reader) return;
+  const selector = privateJson(`${context.prefix}/predecessor`);
+  assertKernelFrame(selector, ["authorizationDigest"], CODE);
+  const previous = archiveContext("writer", selector.authorizationDigest, trusted, false);
+  const completed = archiveCompleted("writer", selector.authorizationDigest);
+  const proof = archiveJson(`${completed.directory}/archive-access-proof.json`);
+  const subject = await verifyArchiveAccessProof({
+    proof,
+    authorization: previous.authorization,
+    io: completed.io,
+    terminal: completed.terminal,
+    signer: trusted.signer
+  });
+  verifyArchiveReadPredecessor({
+    authorization: context.authorization,
+    predecessor: subject.receipt,
+    predecessorAuthorization: previous.authorization,
+    sessionIssuedAt
+  });
+}
+
+function writeArchiveRecord(directory, name, value) {
+  const bytes = Buffer.from(canonicalJson(value));
+  requireThat(bytes.length > 0 && bytes.length <= 8388608);
+  writeNewPublicationFile(`${directory}/${name}`, bytes);
+  const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  return sha256Bytes(bytes);
+}
+
+// Fixed root operation only. It accepts a digest selector, never evidence,
+// credentials, keys, paths, a caller clock, or a signing domain.
+export async function runH1EvidenceArchiveIO(kind, authorizationDigest) {
+  archiveSelector(kind, authorizationDigest);
+  const trusted = await admittedIdentity(),
+    context = archiveContext(kind, authorizationDigest, trusted, true);
+  const directory = archiveSpool(kind, authorizationDigest);
+  for (const name of [
+    "archive-io.json",
+    "archive-io-failure.json",
+    "archive-terminal.json",
+    "archive-failure.json",
+    "archive-access-proof.json"
+  ])
+    requireAbsent(`${directory}/${name}`);
+  const startedAt = new Date().toISOString(),
+    auth = context.authorization;
+  const objects = [];
+  let publicSession = null,
+    identityOriginal = null;
+  try {
+    const session = privateJson(`archive-${kind}-session`, 32768);
+    await archivePredecessor(context, trusted, session.issuedAt);
+    context.recheck();
+    const dependencies = {
+      now: () => {
+        context.recheck();
+        return new Date();
+      }
+    };
+    const transport =
+      kind === "writer"
+        ? await createEvidenceArchiveWriterTransport(
+            { authorization: auth, originals: context.originals, session },
+            dependencies
+          )
+        : await createEvidenceArchiveReaderTransport(
+            { authorization: auth, session },
+            dependencies
+          );
+    identityOriginal = transport.identityOriginal;
+    publicSession = {
+      arn: identityOriginal.Arn,
+      issuedAt: session.issuedAt,
+      expiresAt: session.expiresAt,
+      fingerprint: archiveSessionFingerprint(session, identityOriginal)
+    };
+    for (const original of context.originals) {
+      context.recheck();
+      const result =
+        kind === "writer"
+          ? await transport.createOnly(original)
+          : await transport.readback({ exactKey: original.exactKey });
+      objects.push({ exactKey: original.exactKey, result });
+      context.recheck();
+    }
+    const observedAt = new Date().toISOString();
+    requireThat(Date.parse(observedAt) < Date.parse(publicSession.expiresAt));
+    const io = {
+      status: "ARCHIVE_IO_OBSERVED",
+      authorizationDigest,
+      profile: auth.profile,
+      operationId: auth.operationId,
+      session: publicSession,
+      identityOriginal,
+      startedAt,
+      observedAt,
+      objects
+    };
+    const ioDigest = writeArchiveRecord(directory, "archive-io.json", io);
+    return snapshotKernelData(
+      {
+        status: io.status,
+        authorizationDigest,
+        profile: auth.profile,
+        operationId: auth.operationId,
+        session: publicSession,
+        ioDigest,
+        observedAt
+      },
+      CODE
+    );
+  } catch {
+    writeArchiveRecord(directory, "archive-io-failure.json", {
+      status: "ARCHIVE_OUTCOME_UNKNOWN",
+      authorizationDigest,
+      profile: auth.profile,
+      operationId: auth.operationId,
+      session: publicSession,
+      identityOriginal,
+      startedAt,
+      observedAt: new Date().toISOString(),
+      objects
+    });
+    fail();
+  }
+}
+
+// Separate from IO: this reads the parent's terminal record only after that
+// process exited and the fixed session file was removed and expired.
+export async function sealH1EvidenceArchiveAccess(kind, authorizationDigest) {
+  archiveSelector(kind, authorizationDigest);
+  const trusted = await admittedIdentity(),
+    context = archiveContext(kind, authorizationDigest, trusted, false);
+  const completed = archiveCompleted(kind, authorizationDigest);
+  requireAbsent(`${completed.directory}/archive-access-proof.json`);
+  await archivePredecessor(context, trusted, completed.io.session.issuedAt);
+  const input = {
+    authorization: context.authorization,
+    io: completed.io,
+    terminal: completed.terminal,
+    signer: trusted.signer,
+    issuedAt: new Date().toISOString()
+  };
+  const subject = await buildArchiveAccessSubject(input);
+  const proof = {
+    ...subject,
+    signature: {
+      algorithm: "Ed25519",
+      issuer: trusted.signer.issuer,
+      keyId: trusted.signer.keyId,
+      subjectDigest: sha256Canonical(subject),
+      signature: sign(
+        null,
+        Buffer.from(canonicalJson({ domain: "h1-evidence-archive-access.v1", subject })),
+        readSigningKey(trusted)
+      ).toString("base64")
+    }
+  };
+  const { issuedAt, ...verification } = input;
+  requireThat(issuedAt === proof.receipt.issuedAt);
+  await verifyArchiveAccessProof({ ...verification, proof });
+  context.recheck();
+  const proofDigest = writeArchiveRecord(completed.directory, "archive-access-proof.json", proof);
+  return {
+    status: "ARCHIVE_ACCESS_SEALED",
+    authorizationDigest,
+    profile: context.authorization.profile,
+    proofDigest,
+    receiptDigest: sha256Canonical(proof.receipt)
+  };
 }
 
 // A new root signing operation after the publisher has terminated. It cannot

@@ -222,6 +222,7 @@
     "scripts/release/database-test-launcher-runtime.mjs",
     "scripts/release/dispatch-evidence-oss-storage.mjs",
     "scripts/release/dispatch-evidence-scope.mjs",
+    "scripts/release/evidence-archive-operation.mjs",
     "scripts/release/evidence-archive-ram-policy.mjs",
     "scripts/release/evidence-archive-storage.mjs",
     "scripts/release/export-final-compose-environment.mjs",

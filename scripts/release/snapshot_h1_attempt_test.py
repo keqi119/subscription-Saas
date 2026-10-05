@@ -216,7 +216,7 @@ class AttemptTests(unittest.TestCase):
     def test_changed_session_inode_is_never_unlinked(self):
         module = self.module
         publisher = object.__new__(module.H1SnapshotPublisher)
-        publisher.session = {}
+        publisher.session = {'path': module.PUBLISHER_SESSION}
         original = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0,
             st_nlink=1, st_dev=1, st_ino=10, st_size=4, st_mtime_ns=1, st_ctime_ns=1)
         replaced = types.SimpleNamespace(**vars(original))
@@ -289,6 +289,134 @@ class AttemptTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'DESTRUCTION_RESULT_INVALID'):
                 publisher.seal_destruction()
             write.assert_not_called()
+
+    def _archive_observed(self, operation):
+        profile = ('archive-create-only-writer' if operation == 'archive-write'
+                   else 'archive-readback-reader')
+        role = ('subscription-saas-stage1-archive-writer' if operation == 'archive-write'
+                else 'subscription-saas-stage1-archive-reader')
+        return {'status': 'ARCHIVE_IO_OBSERVED',
+                'authorizationDigest': 'sha256:' + 'a' * 64,
+                'profile': profile, 'operationId': 'archive-operation-1',
+                'session': {'arn': 'acs:ram::1457643390906675:assumed-role/' + role + '/session_1',
+                            'issuedAt': '2026-10-06T00:00:00.000Z',
+                            'expiresAt': '2026-10-06T00:00:01.000Z',
+                            'fingerprint': 'sha256:' + 'b' * 64},
+                'ioDigest': 'sha256:' + 'c' * 64,
+                'observedAt': '2026-10-06T00:00:00.200Z'}
+
+    def test_archive_writer_and_reader_route_to_fixed_sessions_and_authority(self):
+        module = self.module
+        for operation, session_path in (
+                ('archive-write', module.ARCHIVE_WRITER_SESSION),
+                ('archive-read', module.ARCHIVE_READER_SESSION)):
+            with self.subTest(operation=operation):
+                events = []
+                observed = self._archive_observed(operation)
+                request = {'operation': operation, 'authorizationDigest': 'sha256:' + 'a' * 64}
+                def authority(instance, selected, body):
+                    self.assertEqual(selected, operation)
+                    self.assertEqual(body, {'authorizationDigest': request['authorizationDigest']})
+                    events.append('authority')
+                    return observed
+                def remove(instance):
+                    events.append('remove')
+                    instance.session.update({'removed': True, 'absent': True,
+                                             'removedAt': '2026-10-06T00:00:00.400Z'})
+                with patch.object(module, '_installation', return_value={
+                        'controlBundleDigest': 'sha256:' + 'd' * 64}), \
+                     patch.object(module.H1EvidenceArchiveOperation, '_lock',
+                                  lambda instance: events.append('lock')), \
+                     patch.object(module.H1EvidenceArchiveOperation, '_observe_session',
+                                  lambda instance: events.append('observe')), \
+                     patch.object(module.H1EvidenceArchiveOperation, '_authority', authority), \
+                     patch.object(module.H1EvidenceArchiveOperation, '_remove_session', remove), \
+                     patch.object(module.H1EvidenceArchiveOperation, '_session_absent',
+                                  lambda instance: True), \
+                     patch.object(module.H1EvidenceArchiveOperation, '_wait_expiry',
+                                  lambda instance, session, start: events.append('wait') or
+                                  '2026-10-06T00:00:01.000Z'), \
+                     patch.object(module.H1EvidenceArchiveOperation, '_write_record',
+                                  lambda instance, name, value: events.append(name) or
+                                  module.digest(module.canonical(value))), \
+                     patch.object(module, '_safe_root_directory'), \
+                     patch.object(module, '_file', return_value='c' * 64), \
+                     patch.object(module, '_publisher_utc', side_effect=[
+                         '2026-10-06T00:00:00.100Z', '2026-10-06T00:00:00.300Z']):
+                    archive = module.H1EvidenceArchiveOperation(request)
+                    self.assertEqual(archive.session['path'], session_path)
+                    self.assertEqual(archive.LOCK_NAME, 'archive.lock')
+                    result = archive.run()
+                self.assertEqual(events, ['lock', 'observe', 'authority', 'remove',
+                                          'wait', 'archive-terminal.json'])
+                self.assertEqual(result['status'], 'ARCHIVE_TERMINAL_OBSERVED')
+                self.assertEqual(result['profile'], observed['profile'])
+
+    def test_archive_rejects_wrong_role_and_io_digest(self):
+        module = self.module
+        request = {'operation': 'archive-read', 'authorizationDigest': 'sha256:' + 'a' * 64}
+        with patch.object(module, '_installation', return_value={
+                'controlBundleDigest': 'sha256:' + 'd' * 64}), \
+             patch.object(module, '_safe_root_directory'), \
+             patch.object(module, '_file', return_value='c' * 64):
+            archive = module.H1EvidenceArchiveOperation(request)
+            archive.authority.update({'startedAt': '2026-10-06T00:00:00.100Z',
+                                      'finishedAt': '2026-10-06T00:00:00.300Z'})
+            observed = self._archive_observed('archive-read')
+            observed['session']['arn'] = observed['session']['arn'].replace(
+                'archive-reader', 'archive-writer')
+            with self.assertRaisesRegex(RuntimeError, 'ARCHIVE_RESULT_INVALID'):
+                archive._validate_io(observed)
+            observed = self._archive_observed('archive-read')
+            observed['ioDigest'] = 'sha256:' + 'e' * 64
+            with self.assertRaisesRegex(RuntimeError, 'ARCHIVE_IO_CHANGED'):
+                archive._validate_io(observed)
+
+    def test_archive_failure_removes_session_and_writes_no_terminal(self):
+        module = self.module
+        events = []
+        request = {'operation': 'archive-write', 'authorizationDigest': 'sha256:' + 'a' * 64}
+        def fail(*args):
+            events.append('authority')
+            raise RuntimeError('H1_ATTEMPT_AUTHORITY_REJECTED')
+        with patch.object(module, '_installation', return_value={
+                'controlBundleDigest': 'sha256:' + 'd' * 64}), \
+             patch.object(module.H1EvidenceArchiveOperation, '_lock',
+                          lambda instance: events.append('lock')), \
+             patch.object(module.H1EvidenceArchiveOperation, '_observe_session',
+                          lambda instance: events.append('observe')), \
+             patch.object(module.H1EvidenceArchiveOperation, '_authority', fail), \
+             patch.object(module.H1EvidenceArchiveOperation, '_remove_session',
+                          lambda instance: events.append('remove')), \
+             patch.object(module.H1EvidenceArchiveOperation, '_write_record',
+                          lambda instance, name, value: events.append(name)), \
+             patch.object(module, '_publisher_utc', return_value='2026-10-06T00:00:00.100Z'):
+            with self.assertRaisesRegex(RuntimeError, 'AUTHORITY_REJECTED'):
+                module.H1EvidenceArchiveOperation(request).run()
+        self.assertEqual(events, ['lock', 'observe', 'authority', 'remove',
+                                  'archive-failure.json'])
+
+    def test_archive_sealing_does_not_repeat_io(self):
+        module = self.module
+        for operation in ('archive-write', 'archive-read'):
+            request = {'operation': operation, 'authorizationDigest': 'sha256:' + 'a' * 64}
+            profile = ('archive-create-only-writer' if operation == 'archive-write'
+                       else 'archive-readback-reader')
+            sealed = {'status': 'ARCHIVE_ACCESS_SEALED', 'authorizationDigest': request['authorizationDigest'],
+                      'profile': profile, 'proofDigest': 'sha256:' + 'b' * 64,
+                      'receiptDigest': 'sha256:' + 'c' * 64}
+            with patch.object(module, '_installation', return_value={'controlBundleDigest': 'sha256:' + 'd' * 64}), \
+                 patch.object(module, '_safe_root_directory'), \
+                 patch.object(module.H1EvidenceArchiveOperation, '_authority', return_value=sealed) as authority, \
+                 patch.object(module.H1EvidenceArchiveOperation, '_run_locked') as run:
+                archive = module.H1EvidenceArchiveOperation(request)
+                self.assertEqual(archive.seal_access(), sealed)
+                authority.assert_called_once_with(operation.replace('archive-', 'archive-seal-'),
+                                                  {'authorizationDigest': request['authorizationDigest']})
+                run.assert_not_called()
+                sealed['authorizationDigest'] = 'sha256:' + 'e' * 64
+                with self.assertRaisesRegex(RuntimeError, 'ARCHIVE_RESULT_INVALID'):
+                    archive.seal_access()
 
 
 if __name__ == '__main__':

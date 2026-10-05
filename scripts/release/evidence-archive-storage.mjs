@@ -291,6 +291,120 @@ function objectFacts(record, object) {
   };
 }
 
+function wormFacts(worm) {
+  check(
+    worm &&
+      Object.keys(worm).length === 4 &&
+      typeof worm.WormId === "string" &&
+      worm.WormId &&
+      worm.State === "Locked" &&
+      worm.RetentionPeriodInDays === "210" &&
+      Number.isFinite(Date.parse(worm.CreationDate))
+  );
+  return { id: worm.WormId, state: "Locked", retentionDays: 210, creationDate: worm.CreationDate };
+}
+
+function assertVersioningDisabled(versioning) {
+  check(
+    (typeof versioning === "string" && versioning.trim() === "") ||
+      (versioning &&
+        typeof versioning === "object" &&
+        Object.keys(versioning).every((key) => key === "Status") &&
+        (versioning.Status === undefined || versioning.Status === ""))
+  );
+}
+
+// Offline verification at the later signing boundary. Reuse the transport's
+// parsers and response projection; summaries alone are not readback originals.
+export async function verifyEvidenceArchiveReaderObservation(input) {
+  assertKernelFrame(
+    input,
+    ["result", "object", "identityOriginal", "startedAt", "observedAt"],
+    CODE
+  );
+  const { result, object, identityOriginal, startedAt, observedAt } = snapshotKernelData(
+    input,
+    CODE
+  );
+  assertKernelFrame(
+    result,
+    ["identityOriginal", "bucket", "head", "get", "observedAt", "evidence"],
+    CODE
+  );
+  assertKernelFrame(result.evidence, ["records", "originals"], CODE);
+  const { records, originals } = result.evidence;
+  check(
+    Array.isArray(records) &&
+      records.length === 6 &&
+      Array.isArray(originals) &&
+      originals.length === 12 &&
+      canonicalJson(result.identityOriginal) === canonicalJson(identityOriginal) &&
+      instant(startedAt) <= instant(result.observedAt) &&
+      instant(result.observedAt) <= instant(observedAt)
+  );
+  const decode = (entry) => {
+    assertKernelFrame(entry, ["digest", "bytesBase64"], CODE);
+    check(typeof entry.bytesBase64 === "string" && entry.bytesBase64.length <= 1398104);
+    const body = Buffer.from(entry.bytesBase64, "base64");
+    check(
+      body.toString("base64") === entry.bytesBase64 &&
+        sha256Bytes(body) === entry.digest &&
+        body.length <= 1048576
+    );
+    return body;
+  };
+  const operations = [
+    "GetBucketAcl",
+    "GetBucketWorm",
+    "GetBucketVersioning",
+    "HeadObject",
+    "GetObjectAcl",
+    "GetObject"
+  ];
+  const bodies = [];
+  let previousAt = instant(startedAt);
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index],
+      body = decode(originals[index * 2]);
+    check(
+      decode(originals[index * 2 + 1]).equals(Buffer.from(canonicalJson(record))) &&
+        previousAt <= instant(record.observedAt) &&
+        instant(record.observedAt) <= instant(result.observedAt)
+    );
+    const rebuilt = safeResponse(
+      operations[index],
+      { res: { status: record.response?.status, headers: record.response?.headers } },
+      body,
+      index < 3 ? null : object.exactKey,
+      identityOriginal.Arn,
+      () => new Date(record.observedAt)
+    );
+    check(canonicalJson(rebuilt) === canonicalJson(record));
+    previousAt = instant(record.observedAt);
+    bodies.push(body);
+  }
+  check(
+    aclPrivate(await parseXml(bodies[0], "AccessControlPolicy")) &&
+      aclPrivate(await parseXml(bodies[4], "AccessControlPolicy"))
+  );
+  const worm = wormFacts(await parseXml(bodies[1], "WormConfiguration"));
+  assertVersioningDisabled(await parseXml(bodies[2], "VersioningConfiguration"));
+  const head = objectFacts(records[3], object),
+    get = objectFacts(records[5], object);
+  check(
+    bodies[3].length === 0 &&
+      head.etag === get.etag &&
+      head.lastModified === get.lastModified &&
+      Date.parse(worm.creationDate) <= Date.parse(head.lastModified) &&
+      canonicalJson(head) === canonicalJson(result.head) &&
+      canonicalJson(get) === canonicalJson(result.get) &&
+      canonicalJson(result.bucket) ===
+        canonicalJson({ acl: "private", ownerId: ACCOUNT, versioning: "Disabled", worm })
+  );
+  assertEvidenceArchiveOriginal(object, bodies[5]);
+  return result;
+}
+
 /** Scoped transport only; authorization signatures and session terminal receipts belong to the caller. */
 export async function createEvidenceArchiveWriterTransport(input, lowLevelDependencies = {}) {
   assertKernelFrame(input, ["authorization", "originals", "session"], CODE);
@@ -440,28 +554,14 @@ export async function createEvidenceArchiveReaderTransport(input, lowLevelDepend
         const bucketAcl = await metadata("acl", null, "GetBucketAcl", "AccessControlPolicy");
         check(aclPrivate(bucketAcl));
         const worm = await metadata("worm", null, "GetBucketWorm", "WormConfiguration");
-        check(
-          worm &&
-            Object.keys(worm).length === 4 &&
-            typeof worm.WormId === "string" &&
-            worm.WormId &&
-            worm.State === "Locked" &&
-            worm.RetentionPeriodInDays === "210" &&
-            Number.isFinite(Date.parse(worm.CreationDate))
-        );
+        const observedWorm = wormFacts(worm);
         const versioning = await metadata(
           "versioning",
           null,
           "GetBucketVersioning",
           "VersioningConfiguration"
         );
-        check(
-          (typeof versioning === "string" && versioning.trim() === "") ||
-            (versioning &&
-              typeof versioning === "object" &&
-              Object.keys(versioning).every((key) => key === "Status") &&
-              (versioning.Status === undefined || versioning.Status === ""))
-        );
+        assertVersioningDisabled(versioning);
         assertLive(session, deps.now);
         const headResponse = await reader.head(exactKey);
         assertLive(session, deps.now);
@@ -490,12 +590,7 @@ export async function createEvidenceArchiveReaderTransport(input, lowLevelDepend
             acl: "private",
             ownerId: ACCOUNT,
             versioning: "Disabled",
-            worm: {
-              id: worm.WormId,
-              state: "Locked",
-              retentionDays: 210,
-              creationDate: worm.CreationDate
-            }
+            worm: observedWorm
           },
           head,
           get,

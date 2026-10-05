@@ -89,3 +89,25 @@ Python `read_active_jobs()` 分别读取 `in_progress`、`queued`、`requested`�
 - 限定 Luna 审查未发现重要问题；其完整分页疑问由 Python `total_count` 和超量拒绝落实，没有添加自报证明字段或权限。`4cfd39` scoped lint、`fdb9e7` format/diff 通过。初次合同检查 `ae220c` 报文件次序错误，调整两个清单中的次序后 `9824ef` 通过：294 文件、91 schemas、13 commands、128 项迁移摘要不变。
 
 本轮前置 `ed3aef`（2026-10-05T13:58:51.872Z）仍只有原两项待迁移；`607fc4` Prisma schema validate 通过，临时 SSH 隧道已关闭。下一步是受保护 root policy、签名描述符和真实 dispatch/current-revocation 来源，再接准入后的 nonce claim、JIT 注册/实际分配/退出以及完整 attempt 工序。三 job workflow、OSS 精确身份、真实 producer、同候选 R2/R3、两项迁移与 R4 仍未完成；阶段 1 保持 active。
+
+## 追加：固定 App 凭据来源与持久撤销 checkpoint
+
+[snapshot-h1-github-jwt.mjs](../../scripts/release/snapshot-h1-github-jwt.mjs) 补上真实 JWT supplier；`createInstalledH1SnapshotObservations` 现在直接构造该 supplier，不再接收调用方提供的 JWT callback。仅 root 可从既有主卷的固定 App 配置读取：先验证 swap 关闭、core 管道禁用及本进程 core 软/硬限额为零，再验证 LUKS UUID、实际 loop/mapper/mount、nosuid/nodev/noexec、root 目录与 0600 单链接文件。读取有界，读取前后身份与保护条件重核；App/owner/client ID、权限、事件及 RSA SPKI 固定。返回值仅进入现有私有管道，不提供打印 JWT 的 CLI。原始缓冲清零不构成 JS 字符串或 KeyObject 的物理擦除证明。
+
+JWT 固定 RS256、client ID issuer、iat 回退 60 秒、exp 为当前时间后 120 秒；没有新增依赖、App 权限或安装令牌范围。[GitHub JWT 官方说明](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
+
+保留实测失败：首次 H1 `133de9` 返回 `COMMAND_FAILED`；只输出代码行号的诊断 `ce2ff8` 定位 App 元数据检查，`a42559` 确认实际存储的 manifest-conversion 响应**没有 `public` 字段**。实现原先错误地要求字段为 false。现允许响应省略这个字段，若出现 true 仍拒绝；省略不当作新取得的私有可见性事实，既有 App 创建记录和其他身份绑定仍保留。修正后 `bd8997` 在实际主备卷及既有私钥上验证 JWT 签名和全部固定 claims，通过后关闭两卷、恢复 swap/core。该探针没有 GitHub 请求、安装令牌创建、Runner 注册或业务数据读取；短期 JWT 未返回本机或日志。
+
+[snapshot-h1-dispatch-journal.mjs](../../scripts/release/snapshot-h1-dispatch-journal.mjs) 为现有 dispatch verifier 提供固定持久 checkpoint 接口，目录为 `/var/lib/subscription-saas/snapshot-root-state/dispatch-checkpoints`。仅显式初始化可创建某一 policy 的初始记录，读操作不重建缺失状态；root:root、目录 0700、记录 0600、单链接且无不安全父目录。输入在 await 前复制冻结，FD 读取限 1025 字节并回读身份；mkdir 锁串行化跨进程操作，竞争或残留锁直接拒绝，不推测锁已过期。推进使用文件 fsync、rename 和目录 fsync；序号下降、同序异 digest、损坏记录或无法释放锁均拒绝。没有声称抵御恶意 root 回滚。
+
+有限验证与安装：
+
+- `a4cfe8` 新 supplier 缺失时先失败；`c40129`、最终 `2f2a28` 两项凭据拒绝边界及三项既有观测组合通过。Luna 只实现台账和限定静态审查；台账三项测试覆盖显式初始化、重启持久、输入修改/accessor、序号冲突、独立进程竞争和损坏状态，目标 lint/format 通过，没有增加数据库或业务测试矩阵。
+- `268aa7` 最终控制包安装为 `/opt/subscription-saas/snapshot-adapter/v2/bundles/10d2b093cea62009669086113cb4083e10fd0f950833dc0786bb8626f70124e1`，302 文件、1,081,245 字节，逐文件摘要及 root 只读权限校验通过。此前 `f7a186...` 包含已修正的 public 字段错误，不作为最终控制包；`f2ee74...` 是 JWT 实测版本，新增台账后以本项完整包为准。
+- `89e153` 在 H1 真实 Linux root 下，使用**隔离合成目录**及相同生产权限检查，验证持久回读、两个独立写入进程恰好一个成功、真实 0700/0600/root/单链接，以及弱化权限和损坏记录拒绝；探针目录已删除。正式 dispatch checkpoint **尚未初始化**，不能把合成 head 当作当前撤销原件。正式 route nonce 仍为 0。
+- 同次独立 SSH 读回确认主备卷/mapper 关闭、两项 swap 恢复、core 配置恢复、attempt 根为空、Staging PostgreSQL 健康。原 worker 未改动或重复运行。
+- 最终限定 ESLint `9bd398`、Prettier `7ba47b` 通过；`361344` 合同校验通过：296 文件、91 schemas、13 commands，128 项 migration catalog 摘要仍为 `65ebe3208fc618ae82ad24f66b793e9bddd7464526dd45b8a0d9893d24a0ff62`。仓库合同摘要为 `sha256:9fb0322d0d15702c65a73d76ff77b023b6489f14c210100422ac91f79856b20b`。
+
+本轮预检 `c4b02b` 于 2026-10-05T14:30:34.774Z 核实 PostgreSQL 17.10、128 项迁移仍仅有 `20260925090000_stage1_operational_completion_terminal_shape` 和 `20260925091000_stage1_operational_completion_settlement_guard` 待执行；`1ac52d` Prisma validate 通过，临时隧道关闭。业务行为及数据库迁移未变。
+
+剩余接线明确为：固定 root policy 与受限 Ed25519 签名描述符、真实 dispatch 授权原件/签名及独立 custody 读取、串行的当前撤销源和其真实初始 checkpoint。现有 manual profile 公钥锚可复用，但原 manual-launch 签名 API 不能直接当作 dispatch 签名来源；测试 fixtures 不构成生产授权。随后仍须 JIT 实际分配/结束证明、完整 attempt、三个真实 jobs、精确 OSS publisher/custody 身份、真实 producer 和同候选 R2/R3、获准迁移及 R4。阶段 1 未收口。

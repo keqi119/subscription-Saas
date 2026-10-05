@@ -109,6 +109,8 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/snapshot-h1-container-hook.js",
   "scripts/release/snapshot-h1-control.py",
   "scripts/release/snapshot-h1-data-worker.mjs",
+  "scripts/release/snapshot-h1-dispatch-journal.mjs",
+  "scripts/release/snapshot-h1-github-jwt.mjs",
   "scripts/release/snapshot-h1-github-query.py",
   "scripts/release/snapshot-h1-github-reader.mjs",
   "scripts/release/snapshot-h1-github.py",

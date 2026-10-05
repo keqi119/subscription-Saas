@@ -10,6 +10,7 @@ import {
 } from "../../packages/release-foundation/src/snapshot/environment-policy.mjs";
 import { readSnapshotWorkflowIdentity } from "../../packages/release-foundation/src/snapshot/snapshot-admission-verification.mjs";
 import { createH1GitHubReader } from "./snapshot-h1-github-reader.mjs";
+import { createH1GitHubJwtSupplier } from "./snapshot-h1-github-jwt.mjs";
 
 const CODE = "H1_GITHUB_OBSERVATION_INVALID";
 const REPOSITORY = { id: "1253231368", name: "keqi119/subscription-Saas" };
@@ -342,16 +343,12 @@ export function createH1SnapshotObservations(input) {
 }
 
 export function createInstalledH1SnapshotObservations(input) {
-  frame(input, ["selection", "rootPolicy", "jwtSupplier", "installation", "clock"]);
-  const { selection, rootPolicy, jwtSupplier, installation, clock } = snapshotKernelData(
-    input,
-    CODE,
-    true
-  );
+  frame(input, ["selection", "rootPolicy", "installation", "clock"]);
+  const { selection, rootPolicy, installation, clock } = snapshotKernelData(input, CODE, true);
   return createH1SnapshotObservations({
     selection,
     rootPolicy,
     clock,
-    readGitHub: createH1GitHubReader({ jwtSupplier, installation })
+    readGitHub: createH1GitHubReader({ jwtSupplier: createH1GitHubJwtSupplier(), installation })
   });
 }

@@ -183,6 +183,7 @@ async function buildFixedRuntime(repoRoot, control) {
 
   for (const entry of control
     ? [
+        "scripts/release/snapshot-h1-dispatch-journal.mjs",
         "scripts/release/snapshot-h1-observations.mjs",
         "scripts/release/snapshot-h1-github-reader.mjs"
       ]

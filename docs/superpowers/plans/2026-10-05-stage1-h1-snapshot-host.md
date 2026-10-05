@@ -75,6 +75,7 @@
 - [x] 官方 Runner 2.337.0 distribution 摘要核验及只读缓存（不配置/注册）；`44273c` 隔离容器版本检查及 `eefb48` 独立目录/清理回读通过。
 - [x] 固定 hook→root 管理通道、独立 job→root 请求通道及实际容器隔离；`bf79ad` 真实 hook/UID 65533 容器合成探针与 `6e51c2` 独立回读通过。生产准入和制作回调仍由下面两项接线。
 - [x] root 专用 GitHub 只读接口，真实 App/run/job/Environment 读取及令牌撤销；`5cf1dd` 实际 API、`0e3b01` 最终代码安装回读通过。首轮令牌格式失败及撤销 UNKNOWN 保留于 `docs/acceptance/2026-10-05-stage1-h1-github-read-session.md`。本项不是准入签名或 JIT 注册。
+- [x] 固定主卷 App JWT supplier 与持久 dispatch checkpoint 接口；`bd8997` 实际签名/claims 验证，`89e153` Linux root 隔离台账验证通过。真实 dispatch/current-revocation 来源及其初始 checkpoint 仍由下一项接线，不能以本项合成 head 初始化生产状态。
 - [ ] root 签名准入、当前撤销和 GitHub 实际 job 观测接线，JIT 唯一路由与结束后不可路由证明。
 - [ ] 本次 attempt 的加密卷/源角色/目标数据库/worker/publisher 工序以及独立终态检查，最后接真实 workflow。
 

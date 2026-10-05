@@ -1,6 +1,7 @@
 // GitHub-hosted, read-only custody step. No H1 access or decryption credentials.
 import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFile, mkdir, open, lstat } from "node:fs/promises";
 import { constants } from "node:fs";
 import process from "node:process";
@@ -77,6 +78,8 @@ async function readerSession(env, runId) {
     Action: "AssumeRoleWithOIDC",
     Version: "2015-04-01",
     Format: "JSON",
+    Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/u, "Z"),
+    SignatureNonce: randomUUID(),
     OIDCProviderArn: PROVIDER,
     RoleArn: ROLE,
     RoleSessionName: sessionName,

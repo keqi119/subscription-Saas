@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import process from "node:process";
 import { fileURLToPath, URL, URLSearchParams } from "node:url";
@@ -106,6 +106,7 @@ function validTime(value) {
 async function assumeRole({ fetch, token, role, session, now }) {
   const code = "MANUAL_BUILD_STORAGE_STS_INVALID";
   const body = new URLSearchParams({ Action: "AssumeRoleWithOIDC", Version: "2015-04-01", Format: "JSON",
+    Timestamp: new Date(clock(now)).toISOString().replace(/\.\d{3}Z$/u, "Z"), SignatureNonce: randomUUID(),
     OIDCProviderArn: PROVIDER, RoleArn: role, RoleSessionName: session, DurationSeconds: "900", OIDCToken: token });
   const response = await sanitizedCall(() => fetch("https://sts.aliyuncs.com/", {
     method: "POST", redirect: "error", signal: globalThis.AbortSignal.timeout(30000),

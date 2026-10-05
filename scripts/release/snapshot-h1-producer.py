@@ -36,7 +36,7 @@ TARGET_DATABASE = 'stage1_snapshot_workspace'
 TARGET_ROLE = 'stage1_snapshot_migrate'
 NODE = '/opt/subscription-saas/snapshot-adapter/v2/runtime/node'
 NODE_SHA = 'fde6a4bf8d0562f7751d1a2d6cb9b417c4cfe107bbcb0aa3e9a24e125e348f48'
-BUNDLE_DIGEST = 'sha256:bc827ff4e845aefa07f5b4ab6db22e478d95a68cbc89ecbfe41b9e437de3fead'
+BUNDLE_DIGEST = 'sha256:128ace637be59ff23e221f9824a732c5d7952dd2a7ba4adb494d25e54cfc53fc'
 BUNDLE = '/opt/subscription-saas/snapshot-adapter/v2/bundles/' + BUNDLE_DIGEST[7:]
 VOLUMES = '/var/lib/subscription-saas/snapshot-volumes'
 MAX_WORKER_LINE = 2097152
@@ -44,7 +44,7 @@ TARGET_MEMORY = 192 * 1048576
 WORKER_MEMORY = 192 * 1048576
 AUTH_VALIDATOR = r'''
 import { createPublicKey, createHash } from 'node:crypto';
-import { validateProducerCryptoAuthorization } from '/opt/subscription-saas/snapshot-adapter/v2/bundles/bc827ff4e845aefa07f5b4ab6db22e478d95a68cbc89ecbfe41b9e437de3fead/packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs';
+import { validateProducerCryptoAuthorization } from '/opt/subscription-saas/snapshot-adapter/v2/bundles/128ace637be59ff23e221f9824a732c5d7952dd2a7ba4adb494d25e54cfc53fc/packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs';
 let raw = '';
 for await (const chunk of process.stdin) { raw += chunk; if (raw.length > 1048576) process.exit(1); }
 try {
@@ -254,7 +254,7 @@ def _verify_bundle():
                     'BUNDLE_INVALID')
             expected[name] = item
         require('scripts/release/snapshot-h1-data-worker.mjs' in expected and
-                sum(item['sizeBytes'] for item in expected.values()) == 1435012,
+                sum(item['sizeBytes'] for item in expected.values()) == 1435146,
                 'BUNDLE_INVALID')
         observed = set()
         for parent, directories, files in os.walk(BUNDLE, followlinks=False):
@@ -329,6 +329,7 @@ class H1FixedSnapshotProducer:
         self.role_touched = False
         self.started = False
         self.complete = None
+        self.cleanup_observation = None
         self.observation = None
         self._worker_process = None
         self._worker_buffer = bytearray()
@@ -769,14 +770,19 @@ class H1FixedSnapshotProducer:
                   'source': {'port': 5432, 'password': self._source_password,
                              'identityFingerprint': source_fingerprint},
                   'workspace': {'port': 5433, 'password': self._target_password,
-                                'identityFingerprint': target_fingerprint},
-                  'tokenizationKeyBase64': base64.b64encode(os.urandom(32)).decode('ascii')}
-        payload = (json.dumps(config, separators=(',', ':')) + '\n').encode('utf-8')
+                                'identityFingerprint': target_fingerprint}}
+        payload = bytearray((json.dumps(config, separators=(',', ':')) + '\n').encode('utf-8'))
         require(len(payload) <= 1048576, 'CONFIG_TOO_LARGE')
         self._confined('target')
         self._confined('worker')
-        self._worker_process.stdin.write(payload)
-        self._worker_process.stdin.flush()
+        try:
+            self._worker_process.stdin.write(payload)
+            self._worker_process.stdin.flush()
+        finally:
+            # Drop parent-side credential copies; tokenization material is now
+            # generated only in the worker. This is not a physical-memory wipe.
+            for index in range(len(payload)): payload[index] = 0
+            config = payload = None
         first = self._next_worker_record(900)
         require(first.get('kind') == 'workspace-destroy-request', 'WORKER_FAILED')
         self._destroy_ack(first)
@@ -790,6 +796,14 @@ class H1FixedSnapshotProducer:
                 terminal['scan'].get('schemaVersion') == 'sanitization-scan.v2' and
                 type(terminal.get('envelope')) is dict and
                 terminal['envelope'].get('schemaVersion') == 'snapshot-encryption-envelope.v2' and
+                type(terminal.get('keyCleanup')) is dict and
+                set(terminal['keyCleanup']) == {'tokenizationKeyBufferCleared',
+                    'workspaceKeyBufferCleared', 'observedAt'} and
+                terminal['keyCleanup']['tokenizationKeyBufferCleared'] is True and
+                terminal['keyCleanup']['workspaceKeyBufferCleared'] is True and
+                type(terminal['keyCleanup']['observedAt']) is str and
+                re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z',
+                    terminal['keyCleanup']['observedAt']) is not None and
                 type(terminal.get('cryptoOperation')) is dict and
                 terminal['cryptoOperation'].get('envelopeDigest') == _digest(_canonical(terminal['envelope'])),
                 'WORKER_RESULT_INVALID')
@@ -866,9 +880,11 @@ class H1FixedSnapshotProducer:
 
     def cleanup(self):
         failed = False
+        self.cleanup_observation = None
+        source_readback = None
         # Terminating the exact worker container closes its source connection.
         try:
-            self._remove_owned('worker')
+            require(self._remove_owned('worker') is True, 'WORKER_REMOVE_UNKNOWN')
         except Exception:
             failed = True
         try:
@@ -880,17 +896,27 @@ class H1FixedSnapshotProducer:
             if self.role_touched:
                 self._source_owned()
                 self._set_reader(False)
-                self._source_readback(self.source_id, dormant=True, admission_checks=False)
+                source_readback = self._source_readback(self.source_id, dormant=True, admission_checks=False)
             elif self.source_id is not None:
                 self._source_owned()
-                self._source_readback(self.source_id, dormant=True, admission_checks=False)
+                source_readback = self._source_readback(self.source_id, dormant=True, admission_checks=False)
         except Exception:
             failed = True
         try:
-            self._remove_owned('target')
+            require(self._remove_owned('target') is True, 'TARGET_REMOVE_UNKNOWN')
         except Exception:
             failed = True
         self._source_password = None
         self._target_password = None
         require(not failed, 'CLEANUP_UNKNOWN')
+        if source_readback is not None and self.worker_attempted and self.target_attempted:
+            self.cleanup_observation = {
+                'observedAt': _utc(), 'workerContainerRemoved': True,
+                'targetContainerRemoved': True,
+                'accessReferencesCleared': self._source_password is None and self._target_password is None,
+                'sourceReader': dict({name: source_readback[name] for name in
+                    ('databaseOid', 'systemIdentifier', 'readerOid')},
+                    login=source_readback['readerLogin'],
+                    authenticationPresent=source_readback['readerPasswordSet'],
+                    sessions=source_readback['readerSessions'])}
         return True

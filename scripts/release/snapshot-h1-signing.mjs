@@ -464,7 +464,8 @@ export async function sealH1SnapshotDataProof(...args) {
     observation: result.executionObservation,
     terminal: result.terminalObservation,
     cleanup: result.cleanup,
-    volume: result.volumeObservation
+    volume: result.volumeObservation,
+    disposal: result.disposalObservation
   });
   const subject = { proof, dataResultDigest: sha256Bytes(raw) };
   const signature = sign(

@@ -26,6 +26,7 @@ NODE = BASE + '/runtime/node'
 NODE_SHA = 'fde6a4bf8d0562f7751d1a2d6cb9b417c4cfe107bbcb0aa3e9a24e125e348f48'
 CONFIG = CONTROL + '/snapshot-h1-attempt-installation.json'
 OUTPUT = '/var/lib/subscription-saas/snapshot-output'
+VOLUMES = '/var/lib/subscription-saas/snapshot-volumes'
 MODULES = ('snapshot-h1-github.py', 'snapshot-h1-route-journal.py',
            'snapshot-h1-volume.py', 'snapshot-h1-runner.py',
            'snapshot-h1-control.py', 'snapshot-h1-producer.py')
@@ -33,7 +34,7 @@ ENTRIES = ('snapshot-h1-container-hook.js', 'snapshot-h1-job-client.mjs',
            'snapshot-h1-runner-entry.mjs')
 READ_ONLY = {'snapshot-h1-volume.py', 'snapshot-h1-runner.py',
              'snapshot-h1-producer.py', 'snapshot-h1-runner-entry.mjs'}
-WORKER = 'sha256:bc827ff4e845aefa07f5b4ab6db22e478d95a68cbc89ecbfe41b9e437de3fead'
+WORKER = 'sha256:128ace637be59ff23e221f9824a732c5d7952dd2a7ba4adb494d25e54cfc53fc'
 
 
 def require(value, code):
@@ -281,6 +282,29 @@ class H1SnapshotAttempt:
                 ok = False
         return ok
 
+    def _observe_data_disposal(self):
+        # Only this attempt's fixed, confined locations are checked. Ciphertext
+        # is allowed in its exact spool; the plaintext workspace must be absent.
+        attempt_id = self.producer.attempt_id
+        require(self.spool == OUTPUT + '/' + attempt_id, 'RESIDUAL_SCAN_INVALID')
+        paths = [VOLUMES + '/' + attempt_id + '.mnt',
+                 VOLUMES + '/' + attempt_id + '.luks',
+                 '/dev/mapper/subscription-s1-' + attempt_id]
+        require(all(not os.path.lexists(p) for p in paths), 'PLAINTEXT_RESIDUAL')
+        info = os.lstat(self.spool)
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == info.st_gid == 0 and
+                stat.S_IMODE(info.st_mode) == 0o700 and os.path.realpath(self.spool) == self.spool,
+                'RESIDUAL_SCAN_INVALID')
+        require(os.listdir(self.spool) == ['snapshot.enc'], 'PLAINTEXT_RESIDUAL')
+        envelope = self.producer.complete['envelope']
+        require('sha256:' + _file(self.spool + '/snapshot.enc', 0o600, 134217728, hash_only=True) ==
+                envelope['ciphertextDigest'], 'CIPHERTEXT_CHANGED')
+        observed = self.producer.cleanup_observation
+        require(type(observed) is dict, 'PRODUCER_CLEANUP_UNKNOWN')
+        return {'producerCleanup': copy.deepcopy(observed),
+                'residualScan': {'performedAt': self.modules['snapshot-h1-producer.py']._utc(),
+                    'pathsChecked': paths + [self.spool], 'plaintextArtifactsFound': 0}}
+
     def run(self):
         failure = None
         try:
@@ -328,8 +352,10 @@ class H1SnapshotAttempt:
         cleaned = self.cleanup()
         require(cleaned, 'CLEANUP_UNKNOWN')
         if failure is not None: raise RuntimeError(failure)
+        disposal = self._observe_data_disposal()
         terminal = {
             'observedAt': self.modules['snapshot-h1-producer.py']._utc(),
+            'disposalObservationDigest': digest(canonical(disposal)),
             'cleanupFactsDigest': digest(canonical(self.cleanup_facts)),
             'volumeObservationDigest': digest(canonical(self.volume.observation)),
             'runningJobObservationDigest': digest(canonical(self.last_running_observation))}
@@ -339,6 +365,7 @@ class H1SnapshotAttempt:
             'postApproval': self.admitted['postApproval'],
             'runningJobObservation': self.last_running_observation,
             'data': self.producer.complete, 'cleanup': self.cleanup_facts,
+            'disposalObservation': disposal,
             'volumeObservation': self.volume.observation,
             'executionObservation': self.producer.observation, 'terminalObservation': terminal}
         raw = canonical(result)

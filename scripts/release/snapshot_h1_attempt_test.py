@@ -1,6 +1,7 @@
 import importlib.util
 import copy
 import os
+import stat
 import time
 import types
 import unittest
@@ -114,6 +115,31 @@ class AttemptTests(unittest.TestCase):
         self.assertTrue(attempt.cleanup())
         self.assertEqual(events, ['runner', 'control', 'producer', 'github-runner', 'token', 'volume'])
         self.assertTrue(attempt.cleanup_facts['volumeDestroyed'])
+
+    def test_residual_scan_allows_only_bound_ciphertext_after_workspace_absence(self):
+        module = self.module
+        attempt = object.__new__(module.H1SnapshotAttempt)
+        identity = '11111111-2222-4333-8444-555555555555'
+        attempt.spool = module.OUTPUT + '/' + identity
+        attempt.producer = types.SimpleNamespace(attempt_id=identity, cleanup_observation={},
+            complete={'envelope': {'ciphertextDigest': 'sha256:' + 'a' * 64}})
+        attempt.modules = {'snapshot-h1-producer.py': types.SimpleNamespace(_utc=lambda: '2026-10-06T00:00:00.000Z')}
+        directory = types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0, st_gid=0)
+        with patch.object(module.os.path, 'lexists', return_value=False) as exists, \
+             patch.object(module.os.path, 'realpath', side_effect=lambda p: p), \
+             patch.object(module.os, 'lstat', return_value=directory), \
+             patch.object(module.os, 'listdir', return_value=['snapshot.enc']) as listing, \
+             patch.object(module, '_file', return_value='a' * 64):
+            observed = attempt._observe_data_disposal()
+            self.assertEqual(observed['residualScan']['plaintextArtifactsFound'], 0)
+            self.assertEqual(observed['residualScan']['pathsChecked'][-1], attempt.spool)
+            listing.return_value.append('plaintext.sql')
+            with self.assertRaisesRegex(RuntimeError, 'PLAINTEXT_RESIDUAL'):
+                attempt._observe_data_disposal()
+            listing.return_value = ['snapshot.enc']
+            exists.return_value = True
+            with self.assertRaisesRegex(RuntimeError, 'PLAINTEXT_RESIDUAL'):
+                attempt._observe_data_disposal()
 
 
 if __name__ == '__main__':

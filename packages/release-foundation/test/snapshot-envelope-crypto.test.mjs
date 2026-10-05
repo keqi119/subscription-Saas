@@ -327,21 +327,59 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
     keyslotsBefore: [0],
     keyslotsAfter: [],
     oldKeyRejected: true,
+    luksUuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     destroyedAt: after
+  };
+  const attemptId = f.authorization.releaseAttemptId;
+  const disposal = {
+    producerCleanup: {
+      observedAt: after,
+      workerContainerRemoved: true,
+      targetContainerRemoved: true,
+      accessReferencesCleared: true,
+      sourceReader: {
+        databaseOid: "16384",
+        systemIdentifier: "7661173341297905697",
+        readerOid: "85641",
+        login: false,
+        authenticationPresent: false,
+        sessions: 0
+      }
+    },
+    residualScan: {
+      performedAt: after,
+      plaintextArtifactsFound: 0,
+      pathsChecked: [
+        `/var/lib/subscription-saas/snapshot-volumes/${attemptId}.mnt`,
+        `/var/lib/subscription-saas/snapshot-volumes/${attemptId}.luks`,
+        `/dev/mapper/subscription-s1-${attemptId}`,
+        `/var/lib/subscription-saas/snapshot-output/${attemptId}`
+      ]
+    }
   };
   const terminal = {
     observedAt: after,
+    disposalObservationDigest: sha256Canonical(disposal),
     cleanupFactsDigest: sha256Canonical(cleanup),
     volumeObservationDigest: sha256Canonical(volume),
     runningJobObservationDigest: sha256Canonical({ fixture: true })
   };
   const input = {
     authorization: f.authorization,
-    data: { status: "COMPLETE", ...result },
+    data: {
+      status: "COMPLETE",
+      ...result,
+      keyCleanup: {
+        tokenizationKeyBufferCleared: true,
+        workspaceKeyBufferCleared: true,
+        observedAt: after
+      }
+    },
     observation,
     terminal,
     cleanup,
-    volume
+    volume,
+    disposal
   };
   const proof = buildH1CryptoUseProof(input);
   assert.equal(proof.cleanup.memoryLocked, false);
@@ -386,6 +424,7 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
     terminalObservation: terminal,
     cleanup,
     volumeObservation: volume,
+    disposalObservation: disposal,
     runningJobObservation: { fixture: true }
   };
   const dataResultBytes = Buffer.from(canonicalJson(dataResult));
@@ -534,6 +573,17 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
     },
     (x) => {
       x.cleanup.runnerNotRoutable = false;
+    },
+    (x) => {
+      x.data.keyCleanup.workspaceKeyBufferCleared = false;
+    },
+    (x) => {
+      x.disposal.producerCleanup.sourceReader.login = true;
+      x.terminal.disposalObservationDigest = sha256Canonical(x.disposal);
+    },
+    (x) => {
+      x.disposal.residualScan.plaintextArtifactsFound = 1;
+      x.terminal.disposalObservationDigest = sha256Canonical(x.disposal);
     }
   ]) {
     const invalid = structuredClone(input);

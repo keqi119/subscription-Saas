@@ -31,9 +31,10 @@ const VOLUME_KEYS = [
   "keyslotsBefore",
   "keyslotsAfter",
   "oldKeyRejected",
+  "luksUuid",
   "destroyedAt"
 ];
-const VOLUME_OPTIONAL = ["capacityBytes", "luksUuid", "swapRestored", "corePatternRestored"];
+const VOLUME_OPTIONAL = ["capacityBytes", "swapRestored", "corePatternRestored"];
 const reject = () => {
   throw Object.assign(new Error(CODE), { code: CODE });
 };
@@ -105,11 +106,17 @@ function volumeObservation(value, attemptId) {
 
 export function buildH1CryptoUseProof(input) {
   try {
-    frame(input, ["authorization", "data", "observation", "terminal", "cleanup", "volume"]);
-    const { authorization, data, observation, terminal, cleanup, volume } = snapshotKernelData(
-      input,
-      CODE
-    );
+    frame(input, [
+      "authorization",
+      "data",
+      "observation",
+      "terminal",
+      "cleanup",
+      "volume",
+      "disposal"
+    ]);
+    const { authorization, data, observation, terminal, cleanup, volume, disposal } =
+      snapshotKernelData(input, CODE);
     validateProducerCryptoAuthorization(authorization);
     requireThat(authorization.schemaVersion === "producer-crypto-run-authorization.v2");
     frame(data, [
@@ -120,9 +127,19 @@ export function buildH1CryptoUseProof(input) {
       "scan",
       "envelope",
       "ciphertextPath",
-      "cryptoOperation"
+      "cryptoOperation",
+      "keyCleanup"
     ]);
     requireThat(data.status === "COMPLETE");
+    frame(data.keyCleanup, [
+      "tokenizationKeyBufferCleared",
+      "workspaceKeyBufferCleared",
+      "observedAt"
+    ]);
+    requireThat(
+      data.keyCleanup.tokenizationKeyBufferCleared === true &&
+        data.keyCleanup.workspaceKeyBufferCleared === true
+    );
     validateSnapshotEncryptionEnvelope(data.envelope, { authorization });
     const operation = data.cryptoOperation;
     frame(operation, [
@@ -189,6 +206,7 @@ export function buildH1CryptoUseProof(input) {
       "observedAt",
       "cleanupFactsDigest",
       "volumeObservationDigest",
+      "disposalObservationDigest",
       "runningJobObservationDigest"
     ]);
     frame(cleanup, CLEANUP_KEYS);
@@ -197,7 +215,49 @@ export function buildH1CryptoUseProof(input) {
     requireThat(
       terminal.cleanupFactsDigest === sha256Canonical(cleanup) &&
         terminal.volumeObservationDigest === sha256Canonical(volume) &&
+        terminal.disposalObservationDigest === sha256Canonical(disposal) &&
         digest(terminal.runningJobObservationDigest)
+    );
+    frame(disposal, ["producerCleanup", "residualScan"]);
+    const disposed = disposal.producerCleanup,
+      scan = disposal.residualScan;
+    frame(disposed, [
+      "observedAt",
+      "workerContainerRemoved",
+      "targetContainerRemoved",
+      "accessReferencesCleared",
+      "sourceReader"
+    ]);
+    frame(disposed.sourceReader, [
+      "databaseOid",
+      "systemIdentifier",
+      "readerOid",
+      "login",
+      "authenticationPresent",
+      "sessions"
+    ]);
+    requireThat(
+      disposed.workerContainerRemoved === true &&
+        disposed.targetContainerRemoved === true &&
+        disposed.accessReferencesCleared === true &&
+        disposed.sourceReader.databaseOid === "16384" &&
+        disposed.sourceReader.systemIdentifier === "7661173341297905697" &&
+        disposed.sourceReader.readerOid === "85641" &&
+        disposed.sourceReader.login === false &&
+        disposed.sourceReader.authenticationPresent === false &&
+        disposed.sourceReader.sessions === 0
+    );
+    frame(scan, ["performedAt", "pathsChecked", "plaintextArtifactsFound"]);
+    const base = `/var/lib/subscription-saas/snapshot-volumes/${authorization.releaseAttemptId}`;
+    requireThat(
+      scan.plaintextArtifactsFound === 0 &&
+        sha256Canonical(scan.pathsChecked) ===
+          sha256Canonical([
+            `${base}.mnt`,
+            `${base}.luks`,
+            `/dev/mapper/subscription-s1-${authorization.releaseAttemptId}`,
+            `/var/lib/subscription-saas/snapshot-output/${authorization.releaseAttemptId}`
+          ])
     );
 
     const issued = instant(observation.issuedAt);
@@ -216,10 +276,16 @@ export function buildH1CryptoUseProof(input) {
         processStarted <= cryptoStarted &&
         cryptoStarted <= cryptoFinished &&
         cryptoFinished <= processFinished &&
+        cryptoFinished <= instant(data.keyCleanup.observedAt) &&
+        instant(data.keyCleanup.observedAt) <= processFinished &&
         processFinished <= expires &&
         processFinished <= processObserved &&
         processFinished <= volumeDestroyed &&
         volumeDestroyed <= closed &&
+        processObserved <= instant(disposed.observedAt) &&
+        instant(disposed.observedAt) <= volumeDestroyed &&
+        volumeDestroyed <= instant(scan.performedAt) &&
+        instant(scan.performedAt) <= closed &&
         processObserved <= closed &&
         processFinished <= after &&
         after <= closed

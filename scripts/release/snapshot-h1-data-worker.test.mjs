@@ -46,8 +46,7 @@ const configure = () => ({
     port: 55432,
     password: "workspace-secret",
     identityFingerprint: fingerprint(workspaceRow)
-  },
-  tokenizationKeyBase64: Buffer.alloc(32, 7).toString("base64")
+  }
 });
 
 function fixture() {
@@ -59,6 +58,7 @@ function fixture() {
   });
   const events = [];
   const clients = [];
+  const keys = { local: null, workspace: null };
   class Client {
     constructor(options) {
       this.options = options;
@@ -104,9 +104,13 @@ function fixture() {
         }
       };
     },
-    createWorkspace: ({ client, restoreDump, destroyResource }) => {
+    createWorkspace: ({ client, restoreDump, destroyResource, tokenizationKey }) => {
       events.push("workspace-factory");
       assert.equal(typeof restoreDump, "function");
+      assert.equal(Buffer.isBuffer(tokenizationKey), true);
+      assert.equal(tokenizationKey.length, 32);
+      keys.local = tokenizationKey;
+      keys.workspace = Buffer.from(tokenizationKey);
       return {
         trustPolicy: "isolated-sanitization-workspace/v1",
         destroy: (() => {
@@ -115,6 +119,7 @@ function fixture() {
             pending ??= (async () => {
               await client.end();
               await destroyResource();
+              keys.workspace.fill(0);
             })();
             return pending;
           };
@@ -143,12 +148,17 @@ function fixture() {
     },
     ackTimeoutMs: 20
   };
-  return { input, output, events, clients, deps, text: () => text };
+  return { input, output, events, clients, keys, deps, text: () => text };
 }
 
-test("closed configure rejects extra field before any client", async () => {
+test("closed configure rejects externally supplied tokenization key before any client", async () => {
   const f = fixture();
-  f.input.end(JSON.stringify({ ...configure(), extra: true }) + "\n");
+  f.input.end(
+    JSON.stringify({
+      ...configure(),
+      tokenizationKeyBase64: Buffer.alloc(32, 7).toString("base64")
+    }) + "\n"
+  );
   await runH1DataWorker({ input: f.input, output: f.output, deps: f.deps });
   assert.equal(f.clients.length, 0);
   assert.match(f.text(), /"status":"FAILED"/u);
@@ -180,6 +190,7 @@ test("unconfirmed target destruction cannot produce success after real wiring or
   ]);
   assert.ok(f.text().includes("workspace-destroy-request"));
   assert.ok(!f.text().includes("COMPLETE"));
+  assert.ok(!f.text().includes("keyCleanup"));
   assert.ok(f.events.includes("encryption-start"));
   assert.ok(!f.events.includes("encryption-after-destroy"));
 });
@@ -190,6 +201,10 @@ test("split configure line and correct ACK followed by EOF permit completion", a
   f.output.on("data", (chunk) => {
     for (const line of chunk.toString().trim().split("\n")) {
       const message = JSON.parse(line);
+      if (message.status === "COMPLETE") {
+        assert.ok(f.keys.local.every((byte) => byte === 0));
+        assert.ok(f.keys.workspace.every((byte) => byte === 0));
+      }
       if (message.kind === "workspace-destroy-request") {
         replied = true;
         f.input.end(`${JSON.stringify({ ...message, kind: "workspace-destroyed" })}\n`);
@@ -210,6 +225,14 @@ test("split configure line and correct ACK followed by EOF permit completion", a
     .map((line) => JSON.parse(line))
     .at(-1);
   assert.deepEqual(complete.cryptoOperation, { requestId: "synthetic-operation-handoff" });
+  assert.deepEqual(complete.keyCleanup, {
+    tokenizationKeyBufferCleared: true,
+    workspaceKeyBufferCleared: true,
+    observedAt: complete.keyCleanup?.observedAt
+  });
+  assert.match(complete.keyCleanup?.observedAt ?? "", /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u);
+  assert.ok(f.keys.local.every((byte) => byte === 0));
+  assert.ok(f.keys.workspace.every((byte) => byte === 0));
   assert.deepEqual(
     f.events.filter((event) => event === "end:55431"),
     ["end:55431"]

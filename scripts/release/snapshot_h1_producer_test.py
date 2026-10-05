@@ -58,6 +58,29 @@ class ProducerTests(unittest.TestCase):
         return self.module.H1FixedSnapshotProducer(self.attempt, self.authorization,
                                                     self.public_key, self.bundle_digest)
 
+    def test_cleanup_records_actual_dormant_reader_and_discards_unknown_observation(self):
+        runtime = self.producer()
+        runtime.source_id = 'c' * 64
+        runtime.worker_attempted = runtime.target_attempted = True
+        runtime._source_password = runtime._target_password = 'fixture-credential'
+        dormant = {'databaseOid': '16384', 'systemIdentifier': '7661173341297905697',
+                   'readerOid': '85641', 'readerLogin': False,
+                   'readerPasswordSet': False, 'readerSessions': 0}
+        with patch.object(runtime, '_remove_owned', return_value=True), \
+             patch.object(runtime, '_source_owned'), \
+             patch.object(runtime, '_source_readback', return_value=dormant) as readback:
+            self.assertTrue(runtime.cleanup())
+            observed = runtime.cleanup_observation
+            self.assertEqual(observed['sourceReader'], {'databaseOid': '16384',
+                'systemIdentifier': '7661173341297905697', 'readerOid': '85641',
+                'login': False, 'authenticationPresent': False, 'sessions': 0})
+            self.assertTrue(observed['accessReferencesCleared'])
+            self.assertNotIn('fixture-credential', repr(observed))
+            readback.side_effect = RuntimeError('unknown actual source state')
+            with self.assertRaisesRegex(self.module.ProducerFailure, 'CLEANUP_UNKNOWN'):
+                runtime.cleanup()
+            self.assertIsNone(runtime.cleanup_observation)
+
     def inspect_record(self, runtime, kind):
         target = kind == 'target'
         identity = 'd' * 64 if target else 'e' * 64

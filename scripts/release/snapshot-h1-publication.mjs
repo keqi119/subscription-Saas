@@ -114,7 +114,8 @@ export function verifyH1SnapshotData({ dataResultBytes, proofBytes, expected, si
       observation: result.executionObservation,
       terminal: result.terminalObservation,
       cleanup: result.cleanup,
-      volume: result.volumeObservation
+      volume: result.volumeObservation,
+      disposal: result.disposalObservation
     });
     requireThat(same(rebuilt, sealed.proof));
     return snapshotKernelData({ result, sealed }, CODE);

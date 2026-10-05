@@ -122,14 +122,7 @@ function channel(input) {
 
 function configure(value, validateAuthorization) {
   if (
-    !keys(value, [
-      "kind",
-      "authorization",
-      "publicKey",
-      "source",
-      "workspace",
-      "tokenizationKeyBase64"
-    ]) ||
+    !keys(value, ["kind", "authorization", "publicKey", "source", "workspace"]) ||
     value.kind !== "configure" ||
     !keys(value.source, ["port", "password", "identityFingerprint"]) ||
     !keys(value.workspace, ["port", "password", "identityFingerprint"]) ||
@@ -155,9 +148,7 @@ function configure(value, validateAuthorization) {
   }
   if (
     owned.source.port === owned.workspace.port ||
-    owned.source.identityFingerprint === owned.workspace.identityFingerprint ||
-    typeof owned.tokenizationKeyBase64 !== "string" ||
-    !/^[A-Za-z0-9+/]{43}=$/u.test(owned.tokenizationKeyBase64)
+    owned.source.identityFingerprint === owned.workspace.identityFingerprint
   )
     throw err("H1_CONFIG_INVALID");
   try {
@@ -180,15 +171,7 @@ function configure(value, validateAuthorization) {
     !auth.releaseAttemptId
   )
     throw err("H1_AUTHORIZATION_INVALID");
-  const tokenizationKey = Buffer.from(owned.tokenizationKeyBase64, "base64");
-  if (
-    tokenizationKey.length !== 32 ||
-    tokenizationKey.toString("base64") !== owned.tokenizationKeyBase64
-  ) {
-    tokenizationKey.fill(0);
-    throw err("H1_CONFIG_INVALID");
-  }
-  return { value: owned, tokenizationKey };
+  return owned;
 }
 
 async function assertRuntime() {
@@ -283,12 +266,11 @@ export async function runH1DataWorker({ input, output, deps = DEFAULT_DEPS } = {
   let failure,
     result,
     destroyRequested = false,
+    workspaceDestroyed = false,
     connectionError = false;
   try {
     await deps.assertRuntime();
-    const config = configure(await pipe.next(MAX_CONFIG, 30000), deps.validateAuthorization);
-    tokenizationKey = config.tokenizationKey;
-    const c = config.value;
+    const c = configure(await pipe.next(MAX_CONFIG, 30000), deps.validateAuthorization);
     if (
       !/^-----BEGIN PUBLIC KEY-----\r?\n(?:[A-Za-z0-9+/=]+\r?\n)+-----END PUBLIC KEY-----\r?\n?$/u.test(
         c.publicKey
@@ -354,6 +336,7 @@ export async function runH1DataWorker({ input, output, deps = DEFAULT_DEPS } = {
       purpose: "workspace"
     });
     source = deps.createSource({ client: sourceClient, exportDump: sourceTools.exportDump });
+    tokenizationKey = randomBytes(32);
     workspace = deps.createWorkspace({
       client: workspaceClient,
       sourceDatabaseIdentityFingerprint: c.source.identityFingerprint,
@@ -422,8 +405,10 @@ export async function runH1DataWorker({ input, output, deps = DEFAULT_DEPS } = {
     failure = "H1_CLEANUP_UNKNOWN";
   }
   try {
-    if (workspace) await workspace.destroy();
-    else if (workspaceClient) await workspaceClient.end();
+    if (workspace) {
+      await workspace.destroy();
+      workspaceDestroyed = true;
+    } else if (workspaceClient) await workspaceClient.end();
   } catch {
     failure = "H1_CLEANUP_UNKNOWN";
   }
@@ -432,8 +417,20 @@ export async function runH1DataWorker({ input, output, deps = DEFAULT_DEPS } = {
     await writeLine(output, { status: "FAILED", code: failure ?? "H1_WORKER_FAILED" });
     return false;
   }
+  // A successful workspace.destroy() clears its private copy; the local buffer
+  // is cleared above. This reports process-observable cleanup, not physical erasure.
+  const keyCleanup = {
+    tokenizationKeyBufferCleared: tokenizationKey?.every((byte) => byte === 0) === true,
+    workspaceKeyBufferCleared: workspaceDestroyed,
+    observedAt: new Date().toISOString()
+  };
+  if (!keyCleanup.tokenizationKeyBufferCleared || !keyCleanup.workspaceKeyBufferCleared) {
+    await writeLine(output, { status: "FAILED", code: "H1_CLEANUP_UNKNOWN" });
+    return false;
+  }
   await writeLine(output, {
     status: "COMPLETE",
+    keyCleanup,
     metadata: result.metadata,
     privilegeObservation: result.privilegeObservation,
     fingerprintObservation: result.fingerprintObservation,

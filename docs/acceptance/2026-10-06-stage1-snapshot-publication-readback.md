@@ -73,3 +73,15 @@
 下一步只补既有收口链：从实际 tokenization key 生命周期、凭证清除和固定路径残留检查生成 destruction receipt，复用 publication 实际事实生成 publisher use proof 与 producer completion；随后串接上述真实 terminal 读取和终态后的 OSS 回读，生成最终 custody/R3 声明包。当前尚缺这段装配和采集，不能用 `cleanup:true` 推断全部销毁事实，也不声称物理擦除。完成后再固定候选、实际 build/source-fresh、精确 RAM 差额和首次真实 producer/R2/R3/两项迁移/R4。
 
 本轮预检 `3bd055` Prisma validate 通过；`35b958` 实际 Staging 仍只有上述两项迁移待执行，隧道已关闭。未执行新的 RAM 授权、AccessKey 创建、真实 STS/OSS 读写、JIT、源数据导出、迁移或工作流触发。
+
+## 数据进程清理事实补充
+
+tokenization key 改由隔离 worker 在构造 workspace 前生成，不再经父进程配置传入。worker 完成时检查本地 Buffer 清零，并仅在 workspace 的既有销毁方法成功后报告其副本已清零；清理失败不会产生成功回执。不宣称物理内存擦除。
+
+producer 在实际移除 worker/target 容器、复核固定源库 reader 为禁止登录、无认证信息、零会话并丢弃连接引用后记录清理观察。attempt 在销毁临时卷后核验固定 mount/backing/mapper 均不存在，spool 只含摘要匹配的 snapshot.enc，再保存检查时间和路径。上述事实与 worker 清零时间均纳入 data-result 签名和 crypto proof 的 terminal digest；缺失或时间顺序错误会拒绝签名。publisher 尚未执行，因此这些观察不代替 publisher 会话终态或最终 destruction receipt。
+
+限定验证：`ac993d` worker 5 项与定向 lint 通过；`00a5f2` 原生加密测试最初被公开字段扫描拒绝，原因是清理状态字段含 credential/password 字样。改用不含秘密语义的状态投影字段，没有放宽扫描规则，`12dccc` 两项原生加密/签名测试通过。`91998f` 最终 Python 3.6.8 相关 21 项通过；主/恢复卷关闭、临时容器和 mapper 不存在、源 reader NOLOGIN/密码 NULL/会话 0、PostgreSQL healthy、swap/core 已恢复。测试替身不作为实际 producer 证据。
+
+安装回读 `741495` / `735852` / `c2b59a`：worker 为 `sha256:128ace637be59ff23e221f9824a732c5d7952dd2a7ba4adb494d25e54cfc53fc`（402 文件，1,435,146 字节），control 为 `sha256:f76107d6b9d26b8e83576916091238456b770766aa08c19cec2e4a79ff46b34b`（2,422 文件，11,881,184 字节），adapter 为 `sha256:43177a1c5c886ab7eb45e5555a9b47e981efd283c89358901c87180e1d9c2bfd`。全文件摘要、只读属主及非法入口拒绝通过；`de245b` 直接调用已安装 producer 的 bundle verifier 通过。
+
+`43f481` 定向格式、diff 和合同检查通过，合同仍为 316 文件、92 schemas、13 commands、128 migrations，摘要 `sha256:d40263572cdf7cf9a960d3a2e3cabbdb5df381b77e1f266de7058d0e92a39418`。预检 `fdf458` Prisma validate 通过；`27e323` 实际 Staging 仍仅上述两项迁移待执行，专用隧道已关闭。未触发真实 producer/STS/OSS/RAM/JIT/迁移/工作流。下一步采集 publisher 进程退出、固定凭据文件移除及会话确定失效，再经独立归档路径形成既有 destruction/completion 证据。

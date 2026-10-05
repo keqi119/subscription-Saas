@@ -37,6 +37,7 @@ PUBLISHER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/publisher-s
 ARCHIVE_OUTPUT = '/var/lib/subscription-saas/evidence-archive'
 ARCHIVE_WRITER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/archive-writer-session.json'
 ARCHIVE_READER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/archive-reader-session.json'
+SNAPSHOT_FINAL_READER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/snapshot-final-reader-session.json'
 MODULES = ('snapshot-h1-github.py', 'snapshot-h1-route-journal.py',
            'snapshot-h1-volume.py', 'snapshot-h1-runner.py',
            'snapshot-h1-control.py', 'snapshot-h1-producer.py')
@@ -769,12 +770,15 @@ class H1EvidenceArchiveOperation(H1SnapshotPublisher):
         sealed = self._authority(self.operation.replace('archive-', 'archive-seal-'), {
             'authorizationDigest': self.request['authorizationDigest']})
         require(type(sealed) is dict and set(sealed) == {
-            'status', 'authorizationDigest', 'profile', 'proofDigest', 'receiptDigest'} and
+            'status', 'authorizationDigest', 'profile', 'proofDigest', 'receiptDigest', 'custodyDigest'} and
             sealed['status'] == 'ARCHIVE_ACCESS_SEALED' and
             sealed['authorizationDigest'] == self.request['authorizationDigest'] and
             sealed['profile'] == self.profile and all(
                 type(sealed[name]) is str and re.fullmatch(r'sha256:[a-f0-9]{64}', sealed[name])
                 for name in ('proofDigest', 'receiptDigest')), 'ARCHIVE_RESULT_INVALID')
+        require(sealed['custodyDigest'] is None if self.operation == 'archive-write' else
+                type(sealed['custodyDigest']) is str and
+                re.fullmatch(r'sha256:[a-f0-9]{64}', sealed['custodyDigest']), 'ARCHIVE_RESULT_INVALID')
         return sealed
 
     @staticmethod
@@ -869,6 +873,170 @@ class H1EvidenceArchiveOperation(H1SnapshotPublisher):
         raise RuntimeError(error_code)
 
 
+def _final_identity(request, operation, extra_fields=()):
+    require(type(request) is dict and set(request) == {
+        'operation', 'releaseAttemptId', 'snapshotRunId'} | set(extra_fields) and
+        request['operation'] == operation and
+        type(request['releaseAttemptId']) is str and
+        re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
+                     request['releaseAttemptId']) and
+        type(request['snapshotRunId']) is str and
+        re.fullmatch(r'[1-9][0-9]*', request['snapshotRunId']), 'INPUT_INVALID')
+    return {'releaseAttemptId': request['releaseAttemptId'],
+            'snapshotRunId': request['snapshotRunId']}
+
+
+class H1SnapshotFinalReadback(H1SnapshotPublisher):
+    """Observe the fixed final consumer child and its session termination."""
+    LOCK_NAME = 'snapshot-final-readback.lock'
+    SESSION_UNKNOWN = 'FINAL_READBACK_SESSION_UNKNOWN'
+    SESSION_CHANGED = 'FINAL_READBACK_SESSION_CHANGED'
+    EXPIRY_UNKNOWN = 'FINAL_READBACK_EXPIRY_UNKNOWN'
+
+    def __init__(self, request):
+        _final_identity(request, 'snapshot-final-readback')
+        self.request = copy.deepcopy(request)
+        self._init_process(OUTPUT + '/' + request['releaseAttemptId'],
+                           SNAPSHOT_FINAL_READER_SESSION)
+
+    def _lock_payload(self):
+        return self.request
+
+    @staticmethod
+    def _time(value):
+        try:
+            return _publisher_time(value)
+        except BaseException:
+            raise RuntimeError('H1_ATTEMPT_FINAL_READBACK_RESULT_INVALID')
+
+    def _validate_readback(self, value):
+        require(type(value) is dict and set(value) == {
+            'status', 'releaseAttemptId', 'snapshotRunId', 'session',
+            'readbackDigest', 'observedAt'} and
+            value['status'] == 'SNAPSHOT_FINAL_READBACK_OBSERVED' and
+            value['releaseAttemptId'] == self.request['releaseAttemptId'] and
+            value['snapshotRunId'] == self.request['snapshotRunId'] and
+            type(value['readbackDigest']) is str and
+            re.fullmatch(r'sha256:[a-f0-9]{64}', value['readbackDigest']) and
+            type(value['session']) is dict and set(value['session']) == {
+                'arn', 'issuedAt', 'expiresAt', 'fingerprint'},
+            'FINAL_READBACK_RESULT_INVALID')
+        session = value['session']
+        require(type(session['arn']) is str and re.fullmatch(
+            r'acs:ram::1457643390906675:(?:role|assumed-role)/'
+            r'subscription-saas-stage1-snapshot-consumer/[A-Za-z0-9_-]{1,64}',
+            session['arn']) and type(session['fingerprint']) is str and
+            re.fullmatch(r'sha256:[a-f0-9]{64}', session['fingerprint']),
+            'FINAL_READBACK_RESULT_INVALID')
+        issued = self._time(session['issuedAt'])
+        expires = self._time(session['expiresAt'])
+        observed = self._time(value['observedAt'])
+        started = self._time(self.authority['startedAt'])
+        finished = self._time(self.authority['finishedAt'])
+        require(0 < expires - issued <= 900 and
+                issued <= started <= observed <= finished and observed < expires,
+                'FINAL_READBACK_RESULT_INVALID')
+        _safe_root_directory(self.spool, 0o700)
+        require('sha256:' + _file(self.spool + '/snapshot-final-readback.json', 0o600,
+                                  8388608, hash_only=True) == value['readbackDigest'],
+                'FINAL_READBACK_FILE_CHANGED')
+
+    def _run_locked(self):
+        observed = None
+        error_code = None
+        started_mono = time.monotonic()
+        identity = _final_identity(self.request, 'snapshot-final-readback')
+        try:
+            self._observe_session()
+            self.authority['startedAt'] = _publisher_utc()
+            observed = self._authority('snapshot-final-readback', identity)
+            self.authority.update({'finishedAt': _publisher_utc(), 'exited': True,
+                                   'exitCode': 0})
+            self._validate_readback(observed)
+        except BaseException as error:
+            error_code = (str(error) if re.fullmatch(r'H1_ATTEMPT_[A-Z0-9_]{1,100}', str(error))
+                          else 'H1_ATTEMPT_FINAL_READBACK_OUTCOME_UNKNOWN')
+            self.authority['finishedAt'] = _publisher_utc()
+        try:
+            self._remove_session()
+        except BaseException:
+            error_code = 'H1_ATTEMPT_FINAL_READBACK_SESSION_UNKNOWN'
+        if error_code is None:
+            try:
+                self.session['expiresAt'] = observed['session']['expiresAt']
+                self.session['observedAt'] = self._wait_expiry(observed['session'], started_mono)
+                self._session_absent()
+                require(self.session['removed'] and self.session['absent'] and
+                        self._time(self.authority['finishedAt']) <=
+                        self._time(self.session['removedAt']) <=
+                        self._time(self.session['observedAt']), 'FINAL_READBACK_ORDER_INVALID')
+                terminal = {'status': 'SNAPSHOT_FINAL_READER_TERMINAL_OBSERVED',
+                            'releaseAttemptId': identity['releaseAttemptId'],
+                            'snapshotRunId': identity['snapshotRunId'],
+                            'readbackDigest': observed['readbackDigest'],
+                            'session': observed['session'],
+                            'ioObservedAt': observed['observedAt'],
+                            'authority': self.authority, 'sessionDisposal': self.session}
+                terminal_digest = self._write_record('snapshot-final-reader-terminal.json', terminal)
+                return {'status': 'SNAPSHOT_FINAL_READER_TERMINAL_OBSERVED',
+                        'releaseAttemptId': identity['releaseAttemptId'],
+                        'snapshotRunId': identity['snapshotRunId'],
+                        'observationDigest': terminal_digest}
+            except BaseException as error:
+                error_code = (str(error) if re.fullmatch(r'H1_ATTEMPT_[A-Z0-9_]{1,100}', str(error))
+                              else 'H1_ATTEMPT_FINAL_READBACK_OUTCOME_UNKNOWN')
+        failure = {'status': 'SNAPSHOT_FINAL_READBACK_OUTCOME_UNKNOWN',
+                   'releaseAttemptId': identity['releaseAttemptId'],
+                   'snapshotRunId': identity['snapshotRunId'],
+                   'errorCode': error_code, 'authority': self.authority,
+                   'sessionDisposal': self.session}
+        self._write_record('snapshot-final-readback-failure.json', failure)
+        raise RuntimeError(error_code)
+
+
+def _seal_authority(operation, body):
+    installation = _installation()
+    authority = object.__new__(H1SnapshotAttempt)
+    authority.bundle = BASE + '/bundles/' + installation['controlBundleDigest'][7:]
+    return authority._authority(operation, body)
+
+
+def _seal_completion(request):
+    identity = _final_identity(request, 'seal-completion')
+    sealed = _seal_authority('seal-completion', identity)
+    require(type(sealed) is dict and set(sealed) == {
+        'status', 'releaseAttemptId', 'snapshotRunId', 'completionDigest',
+        'custodyDigest', 'readbackDigest'} and
+        sealed['status'] == 'SNAPSHOT_COMPLETION_SEALED' and
+        sealed['releaseAttemptId'] == identity['releaseAttemptId'] and
+        sealed['snapshotRunId'] == identity['snapshotRunId'] and all(
+            type(sealed[name]) is str and re.fullmatch(r'sha256:[a-f0-9]{64}', sealed[name])
+            for name in ('completionDigest', 'custodyDigest', 'readbackDigest')),
+        'COMPLETION_RESULT_INVALID')
+    return sealed
+
+
+def _seal_producer_terminal(request):
+    identity = _final_identity(request, 'seal-producer-terminal',
+                               ('archiveAuthorizationDigest',))
+    authorization_digest = request['archiveAuthorizationDigest']
+    require(type(authorization_digest) is str and
+            re.fullmatch(r'sha256:[a-f0-9]{64}', authorization_digest), 'INPUT_INVALID')
+    _safe_root_directory(OUTPUT, 0o700)
+    _safe_root_directory(OUTPUT + '/' + identity['releaseAttemptId'], 0o700)
+    body = dict(identity, archiveAuthorizationDigest=authorization_digest)
+    sealed = _seal_authority('seal-producer-terminal', body)
+    require(type(sealed) is dict and set(sealed) == {
+        'status', 'releaseAttemptId', 'snapshotRunId', 'completionDigest', 'terminalDigest'} and
+        sealed['status'] == 'SNAPSHOT_PRODUCER_TERMINAL_SEALED' and
+        sealed['releaseAttemptId'] == identity['releaseAttemptId'] and
+        sealed['snapshotRunId'] == identity['snapshotRunId'] and all(
+            type(sealed[name]) is str and re.fullmatch(r'sha256:[a-f0-9]{64}', sealed[name])
+            for name in ('completionDigest', 'terminalDigest')),
+        'PRODUCER_TERMINAL_RESULT_INVALID')
+    return sealed
+
+
 def main():
     require(len(sys.argv) == 1 and os.name == 'posix' and os.geteuid() == 0, 'ROOT_REQUIRED')
     require(os.path.abspath(__file__) == CONTROL + '/snapshot-h1-attempt.py', 'ENTRY_INVALID')
@@ -889,6 +1057,12 @@ def main():
         archive = H1EvidenceArchiveOperation(dict(request,
             operation=request['operation'].replace('archive-seal-', 'archive-')))
         result = archive.seal_access() if seal else archive.run()
+    elif type(request) is dict and request.get('operation') == 'snapshot-final-readback':
+        result = H1SnapshotFinalReadback(request).run()
+    elif type(request) is dict and request.get('operation') == 'seal-completion':
+        result = _seal_completion(request)
+    elif type(request) is dict and request.get('operation') == 'seal-producer-terminal':
+        result = _seal_producer_terminal(request)
     else:
         result = H1SnapshotAttempt(request).run()
     sys.stdout.write(json.dumps(result, separators=(',', ':')))

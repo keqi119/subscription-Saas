@@ -14,6 +14,16 @@ H1 固定 root 入口增加 `archive-write`、`archive-read`、`archive-seal-wri
 
 访问回执仅证明授权内的 IO 和会话终态，尚不代表该回执自身已经独立保管，也不代表阶段 1 已完成。
 
+## 独立保管补齐
+
+接续 `a844d17b` 的实现新增 reader seal 内的既有 `custody-receipt.v1` 和 `authoritative-custody-observation.v1` 生成。先重验六项实际 OSS 响应及原文字节，再核对同对象的已签名 writer 终态、ETag、正文摘要和字节数。保留期限严格来自实际 Last-Modified 加 Locked WORM 天数，必须覆盖 writer 终态、快照有效期及下游保留要求；不足时拒绝。
+
+每个 observation 使用既有独立签名域。`archive-custody.json` 是这些既有对象及签名的有序包，含授权摘要、writer 访问证明摘要和保管策略；reader 访问回执的 `observationDigest` 绑定**整个包**，防止只签 observation 数组时遗漏 writer 证明关联。`ioDigest` 仍独立绑定实际 IO。此前未生成真实访问回执，不涉及历史签名转换。
+
+reader seal 先以 create-only 写出 `archive-custody.json`，再写出最后的 `archive-access-proof.json`；公开响应增加 `custodyDigest`，writer 对应值为 null。不会把此包自身标为已独立保管。
+
+定向验证：`07caba` 缺少 builder 的失败后实现；`a46976` 先复现 writer 证明摘要未绑定的问题，修正全包摘要后 `1fa552` 通过。最终 `45c853` 的 21 项归档/入口/终态检查通过；只读审查确认此归档改动无剩余 Critical/Important。对应 Python 协议随完成记录入口合并验证，见下述完成记录实施文档。
+
 ## 固定输入和输出
 
 固定加密根目录为 `/var/lib/stage1-volumes/main/snapshot-authority`。调用方不能传入路径、时钟、凭据或签名正文。

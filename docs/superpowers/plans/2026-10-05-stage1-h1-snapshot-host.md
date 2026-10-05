@@ -87,6 +87,7 @@
 - [x] 固定 root attempt 编排及运行中 job/本次 Runner 读取已实现并安装；`23633c` 校验绑定入口自身的安装配置，`efa298` 实际目标库和未启动 worker 的新增约束核验通过，`39a056` 原生测试及独立清理回读通过。真实准入/JIT/制作与终态证明仍归上一未完成项，详见 `docs/acceptance/2026-10-06-stage1-h1-attempt-controller.md`。
 - [x] hosted 未受信 admission 文件生成及 H1 固定准入入口、实际 OSS dispatch reader、固定当前 head 签名接线；`04b8f2` 控制包原生依赖/拒绝检查、`066977` Python controls 对齐完成。尚未装配真实原件/session 或取得成功准入，不能勾选上一项完整 JIT 编排；详见 `docs/acceptance/2026-10-06-stage1-h1-admission-entry.md`。
 - [ ] publisher/独立 reader 接线，将上述固定操作接入实际准入并核验实际运行约束与终态证据，完成真实制作和三个 jobs 的 workflow。
+- [x] 有限 archive custody、工作流结束后的独立 snapshot-consumer 读回、进程/会话到期观察、completion 与独立归档后的外部终态入口已实现并安装。`8fbfee`/`890114` 安装回读及定向检查通过；具体边界见 [完成记录实施回读](../../acceptance/2026-10-06-stage1-snapshot-completion-readback.md)。此项是固定执行能力，上一项的真实三 jobs 制作、精确对象权限及成功证据仍未完成。
 - [x] 固定数据结果证明装配/签名已实现并更新 H1 安装；实际宿主 swap/core、临时卷 keyslot/销毁观察与本次加密操作、完整结果摘要绑定。`3cbe52` 新卷目标库/未启动 worker 检查及 `ca4049` 独立清理回读通过，完整事实和首次安装对齐失败见 [H1 数据证明回读](../../acceptance/2026-10-06-stage1-h1-data-proof-readback.md)。尚非真实 producer/JIT/OSS/custody 成功。
 
 **固定版本接口核对：** v2.337.0 的 hook JSON 使用 `args.container`，并为 prepare/run/cleanup 均生成 `<runner-root>/_work/_temp/_runner_hook_responses/<GUID>.json`；部分在线示例使用的 `jobContainer`/null responseFile 不适用此版本。prepare 最少回写 `isAlpine:false`，state 仅为不可信关联信息；脚本结果取 hook 退出码，不使用 JSON exitCode。root 状态机必须自行绑定 attempt、最多执行一次固定入口；不接收 workflow 的 shell/script/env/mount 指令。核对依据为固定 tag 的 HookInput、HookResponse 和 ContainerHookManager；后续直接按该接口实施，不重复做版本调研。

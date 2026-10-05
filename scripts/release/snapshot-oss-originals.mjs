@@ -250,3 +250,190 @@ export async function readSnapshotOssOriginals(reader, expected, principal, now)
     fail();
   }
 }
+
+// Re-run the fixed OSS parser over retained response originals. No request is
+// sent: the replay reader can return only the six captured responses in order.
+export async function verifySnapshotOssOriginals({
+  observation,
+  expected,
+  ciphertext,
+  startedAt,
+  observedAt
+}) {
+  try {
+    const names = ["bucketAcl", "worm", "versioning", "head", "objectAcl", "get"];
+    const operations = [
+      "GetBucketAcl",
+      "GetBucketWorm",
+      "GetBucketVersioning",
+      "HeadObject",
+      "GetObjectAcl",
+      "GetObject"
+    ];
+    const time = (value) => {
+      check(typeof value === "string" && /^\d{4}-\d{2}-\d{2}T.*Z$/u.test(value));
+      const parsed = Date.parse(value);
+      check(Number.isFinite(parsed));
+      return parsed;
+    };
+    check(
+      exact(observation, [
+        "bucket",
+        "head",
+        "get",
+        "observedAt",
+        "evidence",
+        "readerArn",
+        "expectedWriterArn",
+        "readerIdentityOriginal"
+      ]) &&
+        exact(observation.evidence, ["records", "originals"]) &&
+        exact(expected, ["key", "contentDigest", "sizeBytes"]) &&
+        /^snapshot-slots\/v2\/[^/*?]+\/[1-9][0-9]*\/snapshot\.enc$/u.test(expected.key) &&
+        Buffer.isBuffer(ciphertext) &&
+        ciphertext.length === expected.sizeBytes &&
+        ciphertext.length > 0 &&
+        ciphertext.length <= 134217728 &&
+        sha256Bytes(ciphertext) === expected.contentDigest &&
+        typeof observation.readerArn === "string" &&
+        /^acs:ram::1457643390906675:assumed-role\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/u.test(
+          observation.readerArn
+        ) &&
+        typeof observation.expectedWriterArn === "string" &&
+        /^acs:ram::1457643390906675:assumed-role\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/u.test(
+          observation.expectedWriterArn
+        ) &&
+        observation.readerArn !== observation.expectedWriterArn &&
+        exact(observation.readerIdentityOriginal, [
+          "AccountId",
+          "Arn",
+          "IdentityType",
+          "RequestId"
+        ]) &&
+        observation.readerIdentityOriginal.AccountId === ACCOUNT &&
+        observation.readerIdentityOriginal.Arn === observation.readerArn &&
+        observation.readerIdentityOriginal.IdentityType === "AssumedRoleUser" &&
+        typeof observation.readerIdentityOriginal.RequestId === "string" &&
+        /^[A-Za-z0-9-]{1,256}$/u.test(observation.readerIdentityOriginal.RequestId) &&
+        Array.isArray(observation.evidence.originals) &&
+        observation.evidence.originals.length === 11 &&
+        exact(observation.evidence.records, names)
+    );
+    const start = time(startedAt),
+      end = time(observedAt),
+      completed = time(observation.observedAt);
+    check(start <= completed && completed <= end);
+    const retained = observation.evidence.originals;
+    const decode = (item) => {
+      check(
+        exact(item, ["digest", "bytesBase64"]) &&
+          typeof item.bytesBase64 === "string" &&
+          item.bytesBase64.length <= 1398104 &&
+          /^sha256:[0-9a-f]{64}$/u.test(item.digest)
+      );
+      const bytes = Buffer.from(item.bytesBase64, "base64");
+      check(
+        bytes.length <= 1048576 &&
+          bytes.toString("base64") === item.bytesBase64 &&
+          sha256Bytes(bytes) === item.digest
+      );
+      return bytes;
+    };
+    const responses = [];
+    const clock = [];
+    let index = 0;
+    for (const [position, name] of names.entries()) {
+      const record = observation.evidence.records[name];
+      check(
+        exact(record, [
+          "recordVersion",
+          "operation",
+          "bucket",
+          "objectKey",
+          "principal",
+          "observedAt",
+          "requestHeaders",
+          "response"
+        ])
+      );
+      const body = name === "get" ? ciphertext : decode(retained[index++]);
+      const recordBytes = decode(retained[index++]);
+      check(
+        recordBytes.equals(Buffer.from(canonicalJson(record))) &&
+          record.recordVersion === "r3-snapshot-oss-response.v1" &&
+          record.operation === operations[position] &&
+          record.bucket === BUCKET &&
+          record.objectKey ===
+            (["head", "objectAcl", "get"].includes(name) ? expected.key : null) &&
+          record.principal === observation.readerArn &&
+          exact(record.requestHeaders, []) &&
+          exact(record.response, ["status", "headers", "body"]) &&
+          exact(record.response.body, ["digest", "bytes"]) &&
+          record.response.status === 200 &&
+          record.response.body.digest === sha256Bytes(body) &&
+          record.response.body.bytes === body.length
+      );
+      const at = time(record.observedAt);
+      check(at >= start && at <= completed && (clock.length === 0 || at >= time(clock.at(-1))));
+      clock.push(record.observedAt);
+      responses.push({
+        status: 200,
+        content: body,
+        res: { status: 200, data: body, headers: record.response.headers }
+      });
+    }
+    check(index === retained.length && time(clock.at(-1)) <= completed);
+    clock.push(observation.observedAt);
+    let next = 0;
+    const take = (position) => {
+      check(next === position);
+      return responses[next++];
+    };
+    const reader = {
+      request(input) {
+        const position = next;
+        const subres = ["acl", "worm", "versioning", null, "acl", null][position];
+        check(
+          subres !== null &&
+            exact(input, [
+              "method",
+              "bucket",
+              "subres",
+              "successStatuses",
+              "xmlResponse",
+              ...(position === 4 ? ["object"] : [])
+            ]) &&
+            input.method === "GET" &&
+            input.bucket === BUCKET &&
+            input.subres === subres &&
+            input.xmlResponse === false &&
+            input.successStatuses.length === 1 &&
+            input.successStatuses[0] === 200 &&
+            (position !== 4 || input.object === expected.key)
+        );
+        return take(position);
+      },
+      head(key) {
+        check(key === expected.key);
+        return take(3);
+      },
+      get(key) {
+        check(key === expected.key);
+        return take(5);
+      }
+    };
+    let tick = 0;
+    const replayed = await readSnapshotOssOriginals(
+      reader,
+      expected,
+      observation.readerArn,
+      () => new Date(clock[tick++])
+    );
+    check(next === 6 && tick === 7);
+    for (const field of ["bucket", "head", "get", "observedAt", "evidence"])
+      check(canonicalJson(replayed[field]) === canonicalJson(observation[field]));
+    return observation;
+  } catch {
+    fail();
+  }
+}

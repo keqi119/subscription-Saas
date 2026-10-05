@@ -14,6 +14,7 @@ import {
   validateEvidenceArchiveAccessReceipt
 } from "../../packages/release-foundation/src/snapshot/custody-contracts.mjs";
 import { verifyEvidenceArchiveReaderObservation } from "./evidence-archive-storage.mjs";
+import { verifyAuthoritativeCustodyObservation } from "../../packages/release-foundation/src/evidence-custody.mjs";
 
 const CODE = "H1_EVIDENCE_ARCHIVE_REJECTED";
 const ACCOUNT = "1457643390906675";
@@ -172,7 +173,7 @@ export function archiveSessionFingerprint(session, identity) {
   });
 }
 
-export async function buildArchiveAccessSubject(input) {
+async function archiveAccessFacts(input) {
   frame(input, ["authorization", "io", "terminal", "signer", "issuedAt"]);
   const { authorization, io, terminal, signer, issuedAt } = snapshotKernelData(input, CODE);
   validateEvidenceArchiveAuthorization(authorization);
@@ -238,7 +239,9 @@ export async function buildArchiveAccessSubject(input) {
       disposed.expiresAt === session.expiresAt
   );
   check(
-    time(authorization.issuedAt) <= time(session.issuedAt) &&
+    time(session.expiresAt) > time(session.issuedAt) &&
+      time(session.expiresAt) - time(session.issuedAt) <= 900000 &&
+      time(authorization.issuedAt) <= time(session.issuedAt) &&
       time(session.issuedAt) <= time(process.startedAt) &&
       time(process.startedAt) <= time(io.startedAt) &&
       time(io.startedAt) <= time(io.observedAt) &&
@@ -357,17 +360,194 @@ export async function buildArchiveAccessSubject(input) {
     },
     actions,
     objectResults,
-    observationDigest: kind === "reader" ? sha256Canonical(io) : null,
+    observationDigest: null,
     issuer: signer.issuer,
     issuedAt
   };
-  validateEvidenceArchiveAccessReceipt(receipt, { authorization });
   return {
     receipt,
     ioDigest: sha256Canonical(io),
     terminalDigest: sha256Canonical(terminal),
     identityDigest: sha256Canonical(io.identityOriginal)
   };
+}
+
+function custodyPolicy(policy, authorization, signer) {
+  frame(policy, [
+    "managementIdentity",
+    "revocationPolicyDigest",
+    "owner",
+    "readers",
+    "downstreamRetainUntil",
+    "snapshotExpiresAt",
+    "legalHoldUntil"
+  ]);
+  check(
+    sha256Canonical(policy) === authorization.custodyPolicyDigest &&
+      policy.owner === signer.issuer &&
+      policy.managementIdentity === authorization.identities.management &&
+      policy.revocationPolicyDigest === authorization.revocationPolicyDigest &&
+      same(policy.readers, [ARCHIVE_ROLES.reader])
+  );
+  time(policy.downstreamRetainUntil);
+  for (const value of [policy.snapshotExpiresAt, policy.legalHoldUntil])
+    if (value !== null) time(value);
+}
+
+// Produce only the existing v1 receipt and observation bodies. The fixed H1
+// signer signs observations later; no fixture, current clock or upload echo
+// can substitute for the service-side Last-Modified/WORM readback.
+export async function buildArchiveCustodyRecords(input) {
+  frame(input, ["authorization", "io", "terminal", "policy", "predecessor", "signer", "issuedAt"]);
+  const { authorization, io, terminal, policy, predecessor, signer, issuedAt } = snapshotKernelData(
+    input,
+    CODE
+  );
+  check(authorization.profile === ARCHIVE_PROFILES.reader);
+  await archiveAccessFacts({ authorization, io, terminal, signer, issuedAt });
+  custodyPolicy(policy, authorization, signer);
+  frame(predecessor, ["authorization", "io", "terminal", "proof"]);
+  const writer = await verifyArchiveAccessProof({ ...predecessor, signer, custody: null });
+  verifyArchiveReadPredecessor({
+    authorization,
+    predecessor: writer.receipt,
+    predecessorAuthorization: predecessor.authorization,
+    sessionIssuedAt: io.session.issuedAt
+  });
+  const terminalAt = writer.receipt.session.terminalAt;
+  const storeRef = `oss://${ARCHIVE_BUCKET}`;
+  const objects = authorization.objects.map((object, index) => {
+    const result = io.objects[index].result,
+      written = writer.receipt.objectResults[index];
+    check(written.objectKey === object.exactKey && written.etag === result.get.etag);
+    const lastModified = result.get.lastModified;
+    const retainMs = time(lastModified) + result.bucket.worm.retentionDays * 86400000;
+    const required = Math.max(
+      time(terminalAt) + 180 * 86400000,
+      policy.snapshotExpiresAt === null ? 0 : time(policy.snapshotExpiresAt) + 180 * 86400000,
+      time(policy.downstreamRetainUntil),
+      policy.legalHoldUntil === null ? 0 : time(policy.legalHoldUntil)
+    );
+    check(Number.isFinite(retainMs) && retainMs >= required);
+    const retainUntil = new Date(retainMs).toISOString();
+    const id = sha256Canonical([sha256Canonical(authorization), object.exactKey]).slice(7, 39);
+    const receipt = {
+      schemaVersion: "custody-receipt.v1",
+      receiptId: `${id.slice(0, 8)}-${id.slice(8, 12)}-4${id.slice(13, 16)}-8${id.slice(17, 20)}-${id.slice(20, 32)}`,
+      contentDigest: object.contentDigest,
+      contentSizeBytes: object.contentSizeBytes,
+      storeRef,
+      uploadedAt: lastModified,
+      readbackAt: result.observedAt,
+      readbackDigest: result.get.digest,
+      owner: policy.owner,
+      readers: policy.readers,
+      retainUntil,
+      expiryDisposition: "review",
+      attestationRef: `h1://139.196.227.195/stage1/evidence-archive/${sha256Canonical(authorization).slice(7)}`
+    };
+    validateContract("custody-receipt.v1", receipt);
+    const observation = {
+      schemaVersion: "authoritative-custody-observation.v1",
+      issuer: signer.issuer,
+      keyId: signer.keyId,
+      storeRef,
+      objectKey: object.exactKey,
+      objectVersion: result.get.version,
+      writerIdentity: ARCHIVE_ROLES.writer,
+      readerIdentity: ARCHIVE_ROLES.reader,
+      contentDigest: object.contentDigest,
+      receiptDigest: sha256Canonical(receipt),
+      headDigest: result.head.digest,
+      getDigest: result.get.digest,
+      contentSizeBytes: object.contentSizeBytes,
+      conditionalCreate: "created",
+      acl: "private",
+      lastModified,
+      readbackAt: result.observedAt,
+      terminalAt,
+      downstreamRetainUntil: policy.downstreamRetainUntil,
+      snapshotExpiresAt: policy.snapshotExpiresAt,
+      legalHoldUntil: policy.legalHoldUntil,
+      worm: {
+        id: result.bucket.worm.id,
+        state: "Locked",
+        retentionDays: result.bucket.worm.retentionDays,
+        retainUntil
+      }
+    };
+    validateContract("authoritative-custody-observation.v1", observation);
+    return { objectKey: object.exactKey, receipt, observation };
+  });
+  return {
+    authorizationDigest: sha256Canonical(authorization),
+    writerAccessProofDigest: sha256Canonical(predecessor.proof),
+    policy,
+    objects
+  };
+}
+
+export async function buildArchiveAccessSubject(input) {
+  frame(input, ["authorization", "io", "terminal", "signer", "issuedAt", "custody"]);
+  const { custody, ...facts } = snapshotKernelData(input, CODE);
+  const subject = await archiveAccessFacts(facts);
+  const { authorization, io, signer, issuedAt } = facts;
+  if (authorization.profile === ARCHIVE_PROFILES.writer) check(custody === null);
+  else {
+    frame(custody, ["authorizationDigest", "writerAccessProofDigest", "policy", "objects"]);
+    custodyPolicy(custody.policy, authorization, signer);
+    check(
+      custody.authorizationDigest === sha256Canonical(authorization) &&
+        digest(custody.writerAccessProofDigest) &&
+        Array.isArray(custody.objects) &&
+        custody.objects.length === authorization.objects.length
+    );
+    for (let index = 0; index < authorization.objects.length; index++) {
+      const object = authorization.objects[index],
+        entry = custody.objects[index],
+        actual = io.objects[index].result;
+      frame(entry, ["objectKey", "receipt", "observation", "signature"]);
+      check(
+        entry.objectKey === object.exactKey &&
+          entry.observation.lastModified === actual.get.lastModified &&
+          entry.observation.readbackAt === actual.observedAt &&
+          entry.observation.worm.id === actual.bucket.worm.id &&
+          entry.observation.worm.retentionDays === actual.bucket.worm.retentionDays &&
+          time(entry.observation.worm.retainUntil) ===
+            time(actual.get.lastModified) + actual.bucket.worm.retentionDays * 86400000
+      );
+      verifyAuthoritativeCustodyObservation({
+        originalBytes: Buffer.from(actual.evidence.originals[10].bytesBase64, "base64"),
+        receipt: entry.receipt,
+        observation: entry.observation,
+        signature: entry.signature,
+        expected: {
+          contentDigest: object.contentDigest,
+          storeRef: `oss://${ARCHIVE_BUCKET}`,
+          objectKey: object.exactKey,
+          objectVersion: actual.get.version,
+          terminalAt: entry.observation.terminalAt,
+          snapshotExpiresAt: custody.policy.snapshotExpiresAt,
+          downstreamRetainUntil: custody.policy.downstreamRetainUntil,
+          legalHoldUntil: custody.policy.legalHoldUntil
+        },
+        trustPolicy: {
+          signer,
+          writerIdentity: ARCHIVE_ROLES.writer,
+          readerIdentity: ARCHIVE_ROLES.reader,
+          storeRef: `oss://${ARCHIVE_BUCKET}`,
+          owner: custody.policy.owner,
+          readers: custody.policy.readers
+        },
+        now: issuedAt
+      });
+    }
+    // One checkpoint covers the ordered, signed custody records plus their
+    // policy and writer-proof link; members keep the existing v1 contracts.
+    subject.receipt.observationDigest = sha256Canonical(custody);
+  }
+  validateEvidenceArchiveAccessReceipt(subject.receipt, { authorization });
+  return subject;
 }
 
 export async function verifyArchiveAccessProof({ proof, ...input }) {

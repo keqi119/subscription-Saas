@@ -33,12 +33,22 @@ import {
   buildH1SnapshotDestructionSubject,
   verifyH1SnapshotDestruction,
   buildH1SnapshotPublisherUseSubject,
-  verifyH1SnapshotPublisherUse
+  verifyH1SnapshotPublisherUse,
+  readH1SnapshotPublication,
+  readH1SnapshotStorageOriginals
 } from "./snapshot-h1-publication.mjs";
 import {
   assertSnapshotPublicationObject,
-  createSnapshotPublisherTransport
+  createSnapshotPublisherTransport,
+  createSnapshotReaderTransport
 } from "./snapshot-oss-storage.mjs";
+import { createH1GitHubTerminalReader } from "./snapshot-h1-github-reader.mjs";
+import { createH1GitHubJwtSupplier } from "./snapshot-h1-github-jwt.mjs";
+import { verifySnapshotOssOriginals } from "./snapshot-oss-originals.mjs";
+import {
+  buildH1SnapshotCompletion,
+  buildH1SnapshotTerminalObservation
+} from "./snapshot-h1-completion.mjs";
 import { buildEvidenceArchiveRamPolicy } from "./evidence-archive-ram-policy.mjs";
 import {
   createEvidenceArchiveWriterTransport,
@@ -49,6 +59,7 @@ import {
   verifyArchiveOperationAuthorization,
   archiveSessionFingerprint,
   buildArchiveAccessSubject,
+  buildArchiveCustodyRecords,
   verifyArchiveAccessProof,
   verifyArchiveReadPredecessor
 } from "./evidence-archive-operation.mjs";
@@ -665,7 +676,8 @@ async function archivePredecessor(context, trusted, sessionIssuedAt) {
     authorization: previous.authorization,
     io: completed.io,
     terminal: completed.terminal,
-    signer: trusted.signer
+    signer: trusted.signer,
+    custody: null
   });
   verifyArchiveReadPredecessor({
     authorization: context.authorization,
@@ -673,6 +685,12 @@ async function archivePredecessor(context, trusted, sessionIssuedAt) {
     predecessorAuthorization: previous.authorization,
     sessionIssuedAt
   });
+  return {
+    authorization: previous.authorization,
+    io: completed.io,
+    terminal: completed.terminal,
+    proof
+  };
 }
 
 function writeArchiveRecord(directory, name, value) {
@@ -794,14 +812,49 @@ export async function sealH1EvidenceArchiveAccess(kind, authorizationDigest) {
     context = archiveContext(kind, authorizationDigest, trusted, false);
   const completed = archiveCompleted(kind, authorizationDigest);
   requireAbsent(`${completed.directory}/archive-access-proof.json`);
-  await archivePredecessor(context, trusted, completed.io.session.issuedAt);
+  requireAbsent(`${completed.directory}/archive-custody.json`);
+  const predecessor = await archivePredecessor(context, trusted, completed.io.session.issuedAt);
   const input = {
     authorization: context.authorization,
     io: completed.io,
     terminal: completed.terminal,
     signer: trusted.signer,
-    issuedAt: new Date().toISOString()
+    issuedAt: new Date().toISOString(),
+    custody: null
   };
+  let key;
+  if (kind === "reader") {
+    const { custody, ...facts } = input;
+    requireThat(custody === null);
+    const records = await buildArchiveCustodyRecords({
+      ...facts,
+      predecessor,
+      policy: context.policy
+    });
+    key = readSigningKey(trusted);
+    input.custody = {
+      ...records,
+      objects: records.objects.map((entry) => ({
+        ...entry,
+        signature: {
+          algorithm: "Ed25519",
+          issuer: trusted.signer.issuer,
+          keyId: trusted.signer.keyId,
+          subjectDigest: sha256Canonical(entry.observation),
+          signature: sign(
+            null,
+            Buffer.from(
+              canonicalJson({
+                domain: "authoritative-custody-observation.v1",
+                observation: entry.observation
+              })
+            ),
+            key
+          ).toString("base64")
+        }
+      }))
+    };
+  }
   const subject = await buildArchiveAccessSubject(input);
   const proof = {
     ...subject,
@@ -813,7 +866,7 @@ export async function sealH1EvidenceArchiveAccess(kind, authorizationDigest) {
       signature: sign(
         null,
         Buffer.from(canonicalJson({ domain: "h1-evidence-archive-access.v1", subject })),
-        readSigningKey(trusted)
+        key ?? readSigningKey(trusted)
       ).toString("base64")
     }
   };
@@ -821,13 +874,441 @@ export async function sealH1EvidenceArchiveAccess(kind, authorizationDigest) {
   requireThat(issuedAt === proof.receipt.issuedAt);
   await verifyArchiveAccessProof({ ...verification, proof });
   context.recheck();
+  const custodyDigest =
+    input.custody === null
+      ? null
+      : writeArchiveRecord(completed.directory, "archive-custody.json", input.custody);
   const proofDigest = writeArchiveRecord(completed.directory, "archive-access-proof.json", proof);
   return {
     status: "ARCHIVE_ACCESS_SEALED",
     authorizationDigest,
     profile: context.authorization.profile,
     proofDigest,
-    receiptDigest: sha256Canonical(proof.receipt)
+    receiptDigest: sha256Canonical(proof.receipt),
+    custodyDigest
+  };
+}
+
+function completionOriginals(auth, trusted) {
+  const directory = `/var/lib/subscription-saas/snapshot-output/${auth.releaseAttemptId}`;
+  for (const name of ["publisher-failure.json", "publisher-failure.json.pending"])
+    requireAbsent(`${directory}/${name}`);
+  requireAbsent(`${AUTHORITY}/publisher-session.json`);
+  const files = {
+    dataResultBytes: "data-result.json",
+    proofBytes: "snapshot-proof.json",
+    publicationBytes: "diagnostics.redacted.json",
+    terminalBytes: "publisher-terminal.json",
+    destructionBytes: "snapshot-destruction-proof.json",
+    publisherUseBytes: "publisher-use-proof.json"
+  };
+  const input = {
+    expected: {
+      releaseAttemptId: auth.releaseAttemptId,
+      snapshotRunId: auth.snapshotRunId,
+      sourceSha: auth.sourceSha,
+      dispatchAuthorizationDigest: auth.bindings.dispatchAuthorizationDigest
+    },
+    signer: trusted.signer,
+    ...Object.fromEntries(
+      Object.entries(files).map(([field, name]) => [
+        field,
+        readFixed(`${directory}/${name}`, { privateFile: true, max: 1048576 })
+      ])
+    )
+  };
+  requireThat(same(JSON.parse(input.dataResultBytes.toString("utf8")).cryptoAuthorization, auth));
+  const destruction = verifyH1SnapshotDestruction(input);
+  verifyH1SnapshotPublisherUse(input);
+  return { directory, input, destruction };
+}
+
+// Read-only evidence collection after all three jobs are terminal. This uses
+// the previously approved consumer identity, never the control archive reader.
+export async function readH1SnapshotFinalEvidence(request) {
+  assertKernelFrame(request, ["releaseAttemptId", "snapshotRunId"], CODE);
+  const trusted = await admittedIdentity();
+  const { authorization: auth } = await readH1SnapshotProductionInputs();
+  requireThat(
+    request.releaseAttemptId === auth.releaseAttemptId &&
+      request.snapshotRunId === auth.snapshotRunId
+  );
+  const { directory, input, destruction } = completionOriginals(auth, trusted);
+  for (const name of [
+    "snapshot-final-readback.json",
+    "snapshot-final-readback.json.pending",
+    "snapshot-final-reader-terminal.json",
+    "snapshot-final-reader-terminal.json.pending",
+    "snapshot-final-readback-failure.json",
+    "snapshot-final-readback-failure.json.pending",
+    "snapshot-producer-completion.json"
+  ])
+    requireAbsent(`${directory}/${name}`);
+  const configuration = privateJson("snapshot-final-inputs");
+  assertKernelFrame(configuration, ["selection", "accessPolicyDigest"], CODE);
+  const selection = configuration.selection;
+  const data = JSON.parse(input.dataResultBytes.toString("utf8"));
+  requireThat(
+    selection.runId === auth.snapshotRunId &&
+      selection.sourceSha === auth.sourceSha &&
+      selection.jobId === data.runningJobObservation.job.id &&
+      configuration.accessPolicyDigest ===
+        sha256Canonical(privateJson("snapshot-access-policy-readback"))
+  );
+  const installation = {};
+  for (const name of [
+    "snapshot-h1-github-query.py",
+    "snapshot-h1-github.py",
+    "snapshot-h1-route-journal.py"
+  ])
+    installation[name] = sha256Bytes(
+      readFixed(fileURLToPath(new URL(`./${name}`, import.meta.url)), {
+        readOnly: true,
+        max: 1048576
+      })
+    );
+  const githubTerminalReadback = await createH1GitHubTerminalReader({
+    jwtSupplier: createH1GitHubJwtSupplier(),
+    installation
+  })(selection);
+  const session = privateJson("snapshot-final-reader-session", 32768);
+  requireThat(
+    typeof session.arn === "string" &&
+      /^acs:ram::1457643390906675:(?:role|assumed-role)\/subscription-saas-stage1-snapshot-consumer\/[A-Za-z0-9_-]{1,64}$/u.test(
+        session.arn
+      ) &&
+      Date.parse(session.issuedAt) >= Date.parse(destruction.receipt.issuedAt)
+  );
+  const publication = verifyH1SnapshotPublication({
+    bytes: input.publicationBytes,
+    expected: input.expected,
+    signer: trusted.signer
+  });
+  const reader = await createSnapshotReaderTransport({
+    ...request,
+    session,
+    writerArn: publication.writerArn
+  });
+  const finalSnapshotReadback = await readH1SnapshotPublication({
+    reader,
+    expected: input.expected,
+    signer: trusted.signer
+  });
+  const storageOriginals = await readH1SnapshotStorageOriginals({
+    reader,
+    publicationBytes: input.publicationBytes,
+    expected: input.expected,
+    signer: trusted.signer
+  });
+  // Validate the complete projection while live, but do not publish completion
+  // until the parent has independently observed this process/session terminal.
+  buildH1SnapshotCompletion({
+    ...input,
+    githubTerminalReadback,
+    finalSnapshotReadback,
+    accessPolicyDigest: configuration.accessPolicyDigest
+  });
+  const publicSession = {
+    arn: session.arn,
+    issuedAt: session.issuedAt,
+    expiresAt: session.expiresAt,
+    fingerprint: archiveSessionFingerprint(session, reader.identityOriginal)
+  };
+  const io = {
+    status: "SNAPSHOT_FINAL_READBACK_OBSERVED",
+    ...request,
+    session: publicSession,
+    githubTerminalReadback,
+    finalSnapshotReadback,
+    storageOriginals,
+    accessPolicyDigest: configuration.accessPolicyDigest,
+    observedAt: new Date().toISOString()
+  };
+  requireThat(Date.parse(io.observedAt) < Date.parse(session.expiresAt));
+  const readbackDigest = writeArchiveRecord(directory, "snapshot-final-readback.json", io);
+  return {
+    status: io.status,
+    ...request,
+    session: publicSession,
+    readbackDigest,
+    observedAt: io.observedAt
+  };
+}
+
+// A pure consistency check of the fixed parent's observations. Only protected
+// on-host files, never workflow-supplied records, feed it in production.
+export function verifyH1SnapshotFinalReaderTerminal({
+  io,
+  terminal,
+  now,
+  configuration,
+  accessPolicyReadback
+}) {
+  assertKernelFrame(configuration, ["selection", "accessPolicyDigest"], CODE);
+  requireThat(
+    configuration.accessPolicyDigest === io.accessPolicyDigest &&
+      sha256Canonical(accessPolicyReadback) === io.accessPolicyDigest &&
+      same(configuration.selection, io.githubTerminalReadback.selection)
+  );
+  assertKernelFrame(
+    io,
+    [
+      "status",
+      "releaseAttemptId",
+      "snapshotRunId",
+      "session",
+      "githubTerminalReadback",
+      "finalSnapshotReadback",
+      "storageOriginals",
+      "accessPolicyDigest",
+      "observedAt"
+    ],
+    CODE
+  );
+  assertKernelFrame(
+    terminal,
+    [
+      "status",
+      "releaseAttemptId",
+      "snapshotRunId",
+      "readbackDigest",
+      "session",
+      "ioObservedAt",
+      "authority",
+      "sessionDisposal"
+    ],
+    CODE
+  );
+  assertKernelFrame(io.session, ["arn", "issuedAt", "expiresAt", "fingerprint"], CODE);
+  assertKernelFrame(terminal.authority, ["startedAt", "finishedAt", "exited", "exitCode"], CODE);
+  assertKernelFrame(
+    terminal.sessionDisposal,
+    ["path", "removed", "removedAt", "absent", "expiresAt", "observedAt"],
+    CODE
+  );
+  const process = terminal.authority,
+    disposed = terminal.sessionDisposal,
+    session = io.session;
+  requireThat(
+    io.status === "SNAPSHOT_FINAL_READBACK_OBSERVED" &&
+      terminal.status === "SNAPSHOT_FINAL_READER_TERMINAL_OBSERVED" &&
+      terminal.releaseAttemptId === io.releaseAttemptId &&
+      terminal.snapshotRunId === io.snapshotRunId &&
+      terminal.readbackDigest === sha256Canonical(io) &&
+      terminal.ioObservedAt === io.observedAt &&
+      same(terminal.session, session) &&
+      /^acs:ram::1457643390906675:(?:role|assumed-role)\/subscription-saas-stage1-snapshot-consumer\/[A-Za-z0-9_-]{1,64}$/u.test(
+        session.arn
+      ) &&
+      session.fingerprint ===
+        archiveSessionFingerprint(session, io.finalSnapshotReadback.readerIdentityOriginal) &&
+      io.finalSnapshotReadback.readerIdentityOriginal.Arn ===
+        session.arn.replace(":role/", ":assumed-role/") &&
+      process.exited === true &&
+      process.exitCode === 0 &&
+      disposed.removed === true &&
+      disposed.absent === true &&
+      disposed.path === `${AUTHORITY}/snapshot-final-reader-session.json` &&
+      disposed.expiresAt === session.expiresAt
+  );
+  const at = (value) => {
+    const parsed = Date.parse(value);
+    requireThat(
+      typeof value === "string" &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(value) &&
+        Number.isFinite(parsed) &&
+        new Date(parsed).toISOString().slice(0, 19) === value.slice(0, 19)
+    );
+    return parsed;
+  };
+  const expires = at(session.expiresAt),
+    issued = at(session.issuedAt);
+  const ordered = [
+    session.issuedAt,
+    process.startedAt,
+    io.githubTerminalReadback.observedAt,
+    io.finalSnapshotReadback.observedAt,
+    io.storageOriginals.observation.observedAt,
+    io.observedAt,
+    process.finishedAt,
+    disposed.removedAt,
+    disposed.observedAt,
+    now
+  ].map(at);
+  requireThat(
+    expires > issued &&
+      expires - issued <= 900000 &&
+      at(io.observedAt) < expires &&
+      expires <= at(disposed.observedAt) &&
+      ordered.every((value, index) => index === 0 || ordered[index - 1] <= value)
+  );
+  return io;
+}
+
+async function finalSnapshotRecords(directory) {
+  for (const name of [
+    "snapshot-final-readback-failure.json",
+    "snapshot-final-readback-failure.json.pending",
+    "snapshot-final-readback.json.pending",
+    "snapshot-final-reader-terminal.json.pending"
+  ])
+    requireAbsent(`${directory}/${name}`);
+  requireAbsent(`${AUTHORITY}/snapshot-final-reader-session.json`);
+  const io = verifyH1SnapshotFinalReaderTerminal({
+    io: archiveJson(`${directory}/snapshot-final-readback.json`),
+    terminal: archiveJson(`${directory}/snapshot-final-reader-terminal.json`),
+    now: new Date().toISOString(),
+    configuration: privateJson("snapshot-final-inputs"),
+    accessPolicyReadback: privateJson("snapshot-access-policy-readback")
+  });
+  const key = `snapshot-slots/v2/${io.releaseAttemptId}/${io.snapshotRunId}/snapshot.enc`;
+  const matching = io.finalSnapshotReadback.observations.filter((value) => value.get.key === key);
+  requireThat(matching.length === 1);
+  const summary = matching[0],
+    raw = io.storageOriginals.observation;
+  const expected = { key, contentDigest: summary.get.digest, sizeBytes: summary.get.sizeBytes };
+  await verifySnapshotOssOriginals({
+    observation: raw,
+    expected,
+    ciphertext: readFixed(`${directory}/snapshot.enc`, { privateFile: true, max: 134217728 }),
+    startedAt: io.githubTerminalReadback.observedAt,
+    observedAt: io.observedAt
+  });
+  requireThat(
+    same(raw.bucket, summary.bucket) &&
+      raw.readerArn === summary.readerArn &&
+      raw.expectedWriterArn === summary.expectedWriterArn &&
+      same(raw.readerIdentityOriginal, io.finalSnapshotReadback.readerIdentityOriginal)
+  );
+  for (const name of ["head", "get"]) {
+    const { requestId: rawRequestId, ...rawFacts } = raw[name];
+    const { requestId: summaryRequestId, ...summaryFacts } = summary[name];
+    requireThat(rawRequestId && summaryRequestId && same(rawFacts, summaryFacts));
+  }
+  return io;
+}
+
+export async function sealH1SnapshotCompletion(request) {
+  assertKernelFrame(request, ["releaseAttemptId", "snapshotRunId"], CODE);
+  const trusted = await admittedIdentity();
+  const { authorization: auth } = await readH1SnapshotProductionInputs();
+  requireThat(
+    request.releaseAttemptId === auth.releaseAttemptId &&
+      request.snapshotRunId === auth.snapshotRunId
+  );
+  const { directory, input } = completionOriginals(auth, trusted);
+  for (const name of [
+    "snapshot-producer-completion.json",
+    "snapshot-producer-completion.json.pending",
+    "snapshot-private-custody.json",
+    "snapshot-private-custody.json.pending"
+  ])
+    requireAbsent(`${directory}/${name}`);
+  const io = await finalSnapshotRecords(directory);
+  requireThat(
+    io.releaseAttemptId === auth.releaseAttemptId && io.snapshotRunId === auth.snapshotRunId
+  );
+  const { completion, finalCustody } = buildH1SnapshotCompletion({
+    ...input,
+    githubTerminalReadback: io.githubTerminalReadback,
+    finalSnapshotReadback: io.finalSnapshotReadback,
+    accessPolicyDigest: io.accessPolicyDigest
+  });
+  const custodyDigest = writeArchiveRecord(
+    directory,
+    "snapshot-private-custody.json",
+    finalCustody
+  );
+  const completionDigest = writeArchiveRecord(
+    directory,
+    "snapshot-producer-completion.json",
+    completion
+  );
+  return {
+    status: "SNAPSHOT_COMPLETION_SEALED",
+    ...request,
+    completionDigest,
+    custodyDigest,
+    readbackDigest: sha256Canonical(io)
+  };
+}
+
+export async function sealH1SnapshotProducerTerminal(request) {
+  assertKernelFrame(
+    request,
+    ["releaseAttemptId", "snapshotRunId", "archiveAuthorizationDigest"],
+    CODE
+  );
+  const trusted = await admittedIdentity();
+  const { authorization: auth } = await readH1SnapshotProductionInputs();
+  requireThat(
+    request.releaseAttemptId === auth.releaseAttemptId &&
+      request.snapshotRunId === auth.snapshotRunId
+  );
+  const { directory, input } = completionOriginals(auth, trusted);
+  requireAbsent(`${directory}/producer-terminal-observation.json`);
+  requireAbsent(`${directory}/producer-terminal-observation.json.pending`);
+  const io = await finalSnapshotRecords(directory);
+  const rebuilt = buildH1SnapshotCompletion({
+    ...input,
+    githubTerminalReadback: io.githubTerminalReadback,
+    finalSnapshotReadback: io.finalSnapshotReadback,
+    accessPolicyDigest: io.accessPolicyDigest
+  });
+  const completion = archiveJson(`${directory}/snapshot-producer-completion.json`);
+  requireThat(
+    same(completion, rebuilt.completion) &&
+      same(archiveJson(`${directory}/snapshot-private-custody.json`), rebuilt.finalCustody)
+  );
+  const context = archiveContext("reader", request.archiveAuthorizationDigest, trusted, false);
+  const completed = archiveCompleted("reader", request.archiveAuthorizationDigest);
+  await archivePredecessor(context, trusted, completed.io.session.issuedAt);
+  const custody = archiveJson(`${completed.directory}/archive-custody.json`);
+  await verifyArchiveAccessProof({
+    authorization: context.authorization,
+    io: completed.io,
+    terminal: completed.terminal,
+    signer: trusted.signer,
+    custody,
+    proof: archiveJson(`${completed.directory}/archive-access-proof.json`)
+  });
+  const matches = context.authorization.objects.filter(
+    (object) =>
+      object.proofType === "snapshot-producer-completion.v1" &&
+      object.contentDigest === sha256Canonical(completion)
+  );
+  requireThat(matches.length === 1);
+  const object = matches[0],
+    entry = completed.io.objects.find((value) => value.exactKey === object.exactKey);
+  requireThat(entry);
+  const observation = custody.objects.find(
+    (value) => value.objectKey === object.exactKey
+  ).observation;
+  const body = entry.result.evidence.originals.find(
+    (value) => value.digest === object.contentDigest
+  );
+  requireThat(body);
+  const terminal = buildH1SnapshotTerminalObservation({
+    completion,
+    githubTerminalReadback: io.githubTerminalReadback,
+    externalCompletionReadback: {
+      reference: `${observation.storeRef}/${object.exactKey}`,
+      bytes: Buffer.from(body.bytesBase64, "base64"),
+      observedAt: entry.result.observedAt
+    }
+  });
+  context.recheck();
+  const terminalDigest = writeArchiveRecord(
+    directory,
+    "producer-terminal-observation.json",
+    terminal
+  );
+  return {
+    status: "SNAPSHOT_PRODUCER_TERMINAL_SEALED",
+    releaseAttemptId: request.releaseAttemptId,
+    snapshotRunId: request.snapshotRunId,
+    completionDigest: sha256Canonical(completion),
+    terminalDigest
   };
 }
 

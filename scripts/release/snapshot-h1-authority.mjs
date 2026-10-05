@@ -21,7 +21,10 @@ import {
   sealH1SnapshotTerminalProofs,
   publishH1SnapshotData,
   runH1EvidenceArchiveIO,
-  sealH1EvidenceArchiveAccess
+  sealH1EvidenceArchiveAccess,
+  readH1SnapshotFinalEvidence,
+  sealH1SnapshotCompletion,
+  sealH1SnapshotProducerTerminal
 } from "./snapshot-h1-signing.mjs";
 
 const CODE = "H1_ATTEMPT_AUTHORITY_REJECTED";
@@ -72,9 +75,43 @@ export async function runH1AttemptAuthority(input) {
       "archive-write",
       "archive-read",
       "archive-seal-write",
-      "archive-seal-read"
+      "archive-seal-read",
+      "snapshot-final-readback",
+      "seal-completion",
+      "seal-producer-terminal"
     ].includes(operation)
   );
+  if (
+    ["snapshot-final-readback", "seal-completion", "seal-producer-terminal"].includes(operation)
+  ) {
+    assertKernelFrame(
+      request,
+      [
+        "releaseAttemptId",
+        "snapshotRunId",
+        ...(operation === "seal-producer-terminal" ? ["archiveAuthorizationDigest"] : [])
+      ],
+      CODE
+    );
+    requireThat(
+      typeof request.releaseAttemptId === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+          request.releaseAttemptId
+        ) &&
+        typeof request.snapshotRunId === "string" &&
+        /^[1-9][0-9]*$/u.test(request.snapshotRunId)
+    );
+    if (operation === "seal-producer-terminal") {
+      requireThat(
+        typeof request.archiveAuthorizationDigest === "string" &&
+          /^sha256:[a-f0-9]{64}$/u.test(request.archiveAuthorizationDigest)
+      );
+      return sealH1SnapshotProducerTerminal(request);
+    }
+    return operation === "seal-completion"
+      ? sealH1SnapshotCompletion(request)
+      : readH1SnapshotFinalEvidence(request);
+  }
   if (operation.startsWith("archive-")) {
     assertKernelFrame(request, ["authorizationDigest"], CODE);
     requireThat(

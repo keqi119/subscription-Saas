@@ -404,7 +404,8 @@ class AttemptTests(unittest.TestCase):
                        else 'archive-readback-reader')
             sealed = {'status': 'ARCHIVE_ACCESS_SEALED', 'authorizationDigest': request['authorizationDigest'],
                       'profile': profile, 'proofDigest': 'sha256:' + 'b' * 64,
-                      'receiptDigest': 'sha256:' + 'c' * 64}
+                      'receiptDigest': 'sha256:' + 'c' * 64,
+                      'custodyDigest': 'sha256:' + 'e' * 64 if operation == 'archive-read' else None}
             with patch.object(module, '_installation', return_value={'controlBundleDigest': 'sha256:' + 'd' * 64}), \
                  patch.object(module, '_safe_root_directory'), \
                  patch.object(module.H1EvidenceArchiveOperation, '_authority', return_value=sealed) as authority, \
@@ -417,6 +418,155 @@ class AttemptTests(unittest.TestCase):
                 sealed['authorizationDigest'] = 'sha256:' + 'e' * 64
                 with self.assertRaisesRegex(RuntimeError, 'ARCHIVE_RESULT_INVALID'):
                     archive.seal_access()
+
+    def _final_readback_observed(self):
+        return {'status': 'SNAPSHOT_FINAL_READBACK_OBSERVED',
+                'releaseAttemptId': '11111111-2222-4333-8444-555555555555',
+                'snapshotRunId': '123',
+                'session': {'arn': 'acs:ram::1457643390906675:assumed-role/subscription-saas-stage1-snapshot-consumer/session_1',
+                            'issuedAt': '2026-10-06T00:00:00.000Z',
+                            'expiresAt': '2026-10-06T00:00:01.000Z',
+                            'fingerprint': 'sha256:' + 'b' * 64},
+                'readbackDigest': 'sha256:' + 'c' * 64,
+                'observedAt': '2026-10-06T00:00:00.200Z'}
+
+    def test_final_readback_uses_fixed_reader_and_terminal_lifecycle(self):
+        module = self.module
+        observed = self._final_readback_observed()
+        request = {'operation': 'snapshot-final-readback',
+                   'releaseAttemptId': observed['releaseAttemptId'], 'snapshotRunId': '123'}
+        events = []
+        def authority(instance, operation, body):
+            self.assertEqual(operation, 'snapshot-final-readback')
+            self.assertEqual(body, {key: request[key] for key in ('releaseAttemptId', 'snapshotRunId')})
+            events.append('authority')
+            return observed
+        def remove(instance):
+            events.append('remove')
+            instance.session.update({'removed': True, 'absent': True,
+                                     'removedAt': '2026-10-06T00:00:00.400Z'})
+        with patch.object(module, '_installation', return_value={
+                'controlBundleDigest': 'sha256:' + 'd' * 64}), \
+             patch.object(module.H1SnapshotFinalReadback, '_lock',
+                          lambda instance: events.append('lock')), \
+             patch.object(module.H1SnapshotFinalReadback, '_observe_session',
+                          lambda instance: events.append('observe')), \
+             patch.object(module.H1SnapshotFinalReadback, '_authority', authority), \
+             patch.object(module.H1SnapshotFinalReadback, '_remove_session', remove), \
+             patch.object(module.H1SnapshotFinalReadback, '_session_absent',
+                          lambda instance: True), \
+             patch.object(module.H1SnapshotFinalReadback, '_wait_expiry',
+                          lambda instance, session, start: events.append('wait') or
+                          '2026-10-06T00:00:01.000Z'), \
+             patch.object(module.H1SnapshotFinalReadback, '_write_record',
+                          lambda instance, name, value: events.append(name) or
+                          module.digest(module.canonical(value))), \
+             patch.object(module, '_safe_root_directory'), \
+             patch.object(module, '_file', return_value='c' * 64), \
+             patch.object(module, '_publisher_utc', side_effect=[
+                 '2026-10-06T00:00:00.100Z', '2026-10-06T00:00:00.300Z']):
+            reader = module.H1SnapshotFinalReadback(request)
+            self.assertEqual(reader.LOCK_NAME, 'snapshot-final-readback.lock')
+            self.assertEqual(reader.session['path'], module.SNAPSHOT_FINAL_READER_SESSION)
+            result = reader.run()
+        self.assertEqual(events, ['lock', 'observe', 'authority', 'remove', 'wait',
+                                  'snapshot-final-reader-terminal.json'])
+        self.assertEqual(result['status'], 'SNAPSHOT_FINAL_READER_TERMINAL_OBSERVED')
+
+    def test_final_readback_rejects_wrong_role_and_file_digest(self):
+        module = self.module
+        observed = self._final_readback_observed()
+        request = {'operation': 'snapshot-final-readback',
+                   'releaseAttemptId': observed['releaseAttemptId'], 'snapshotRunId': '123'}
+        with patch.object(module, '_installation', return_value={
+                'controlBundleDigest': 'sha256:' + 'd' * 64}), \
+             patch.object(module, '_safe_root_directory'), \
+             patch.object(module, '_file', return_value='c' * 64):
+            reader = module.H1SnapshotFinalReadback(request)
+            reader.authority.update({'startedAt': '2026-10-06T00:00:00.100Z',
+                                     'finishedAt': '2026-10-06T00:00:00.300Z'})
+            observed['session']['arn'] = observed['session']['arn'].replace(
+                'snapshot-consumer', 'archive-reader')
+            with self.assertRaisesRegex(RuntimeError, 'FINAL_READBACK_RESULT_INVALID'):
+                reader._validate_readback(observed)
+            observed = self._final_readback_observed()
+            observed['readbackDigest'] = 'sha256:' + 'e' * 64
+            with self.assertRaisesRegex(RuntimeError, 'FINAL_READBACK_FILE_CHANGED'):
+                reader._validate_readback(observed)
+
+    def test_final_readback_failure_removes_session_without_terminal(self):
+        module = self.module
+        observed = self._final_readback_observed()
+        request = {'operation': 'snapshot-final-readback',
+                   'releaseAttemptId': observed['releaseAttemptId'], 'snapshotRunId': '123'}
+        events = []
+        def fail(*args):
+            events.append('authority')
+            raise RuntimeError('H1_ATTEMPT_AUTHORITY_REJECTED')
+        with patch.object(module, '_installation', return_value={
+                'controlBundleDigest': 'sha256:' + 'd' * 64}), \
+             patch.object(module.H1SnapshotFinalReadback, '_lock',
+                          lambda instance: events.append('lock')), \
+             patch.object(module.H1SnapshotFinalReadback, '_observe_session',
+                          lambda instance: events.append('observe')), \
+             patch.object(module.H1SnapshotFinalReadback, '_authority', fail), \
+             patch.object(module.H1SnapshotFinalReadback, '_remove_session',
+                          lambda instance: events.append('remove')), \
+             patch.object(module.H1SnapshotFinalReadback, '_write_record',
+                          lambda instance, name, value: events.append(name)), \
+             patch.object(module, '_publisher_utc', return_value='2026-10-06T00:00:00.100Z'):
+            with self.assertRaisesRegex(RuntimeError, 'AUTHORITY_REJECTED'):
+                module.H1SnapshotFinalReadback(request).run()
+        self.assertEqual(events, ['lock', 'observe', 'authority', 'remove',
+                                  'snapshot-final-readback-failure.json'])
+
+    def test_seal_completion_validates_exact_response_without_reader_lifecycle(self):
+        module = self.module
+        observed = self._final_readback_observed()
+        request = {'operation': 'seal-completion',
+                   'releaseAttemptId': observed['releaseAttemptId'], 'snapshotRunId': '123'}
+        sealed = {'status': 'SNAPSHOT_COMPLETION_SEALED',
+                  'releaseAttemptId': request['releaseAttemptId'], 'snapshotRunId': '123',
+                  'completionDigest': 'sha256:' + 'a' * 64,
+                  'custodyDigest': 'sha256:' + 'b' * 64,
+                  'readbackDigest': 'sha256:' + 'c' * 64}
+        with patch.object(module, '_installation', return_value={
+                'controlBundleDigest': 'sha256:' + 'd' * 64}), \
+             patch.object(module.H1SnapshotAttempt, '_authority', return_value=sealed) as authority, \
+             patch.object(module.H1SnapshotFinalReadback, 'run') as run:
+            self.assertEqual(module._seal_completion(request), sealed)
+            authority.assert_called_once_with('seal-completion', {
+                'releaseAttemptId': request['releaseAttemptId'], 'snapshotRunId': '123'})
+            run.assert_not_called()
+            sealed['custodyDigest'] = 'sha256:' + 'X' * 64
+            with self.assertRaisesRegex(RuntimeError, 'COMPLETION_RESULT_INVALID'):
+                module._seal_completion(request)
+
+    def test_seal_producer_terminal_routes_fixed_spool_and_validates_response(self):
+        module = self.module
+        request = {'operation': 'seal-producer-terminal',
+                   'releaseAttemptId': '11111111-2222-4333-8444-555555555555',
+                   'snapshotRunId': '123', 'archiveAuthorizationDigest': 'sha256:' + 'a' * 64}
+        sealed = {'status': 'SNAPSHOT_PRODUCER_TERMINAL_SEALED',
+                  'releaseAttemptId': request['releaseAttemptId'], 'snapshotRunId': '123',
+                  'completionDigest': 'sha256:' + 'b' * 64,
+                  'terminalDigest': 'sha256:' + 'c' * 64}
+        with patch.object(module, '_installation', return_value={
+                'controlBundleDigest': 'sha256:' + 'd' * 64}), \
+             patch.object(module, '_safe_root_directory') as directory, \
+             patch.object(module.H1SnapshotAttempt, '_authority', return_value=sealed) as authority:
+            self.assertEqual(module._seal_producer_terminal(request), sealed)
+            authority.assert_called_once_with('seal-producer-terminal', {
+                'releaseAttemptId': request['releaseAttemptId'], 'snapshotRunId': '123',
+                'archiveAuthorizationDigest': request['archiveAuthorizationDigest']})
+            self.assertEqual([call[0][0] for call in directory.call_args_list], [
+                module.OUTPUT, module.OUTPUT + '/' + request['releaseAttemptId']])
+            sealed['terminalDigest'] = 'sha256:' + 'X' * 64
+            with self.assertRaisesRegex(RuntimeError, 'PRODUCER_TERMINAL_RESULT_INVALID'):
+                module._seal_producer_terminal(request)
+            request['archiveAuthorizationDigest'] = 'sha256:' + 'X' * 64
+            with self.assertRaisesRegex(RuntimeError, 'INPUT_INVALID'):
+                module._seal_producer_terminal(request)
 
 
 if __name__ == '__main__':

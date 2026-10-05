@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { readSnapshotOssOriginals } from "./snapshot-oss-originals.mjs";
+import { canonicalJson } from "../../packages/release-foundation/src/canonical-json.mjs";
+import { readSnapshotOssOriginals, verifySnapshotOssOriginals } from "./snapshot-oss-originals.mjs";
 
 const bucket = "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai";
 const principal = "acs:ram::1457643390906675:assumed-role/reader/session-1";
@@ -145,5 +146,58 @@ test("rejects an unexpected HEAD size before downloading ciphertext", async () =
   assert.equal(
     f.calls.some((call) => Array.isArray(call) && call[0] === "get"),
     false
+  );
+});
+
+test("replays exact stored OSS originals against ciphertext and rejects missing or altered evidence", async () => {
+  const f = fixture();
+  const expected = { key, contentDigest: digest(bytes), sizeBytes: bytes.length };
+  const collected = await readSnapshotOssOriginals(
+    f.reader,
+    expected,
+    principal,
+    () => new Date("2026-10-01T00:00:01.000Z")
+  );
+  const observation = {
+    ...collected,
+    readerArn: principal,
+    expectedWriterArn: "acs:ram::1457643390906675:assumed-role/writer/session-1",
+    readerIdentityOriginal: {
+      AccountId: "1457643390906675",
+      Arn: principal,
+      IdentityType: "AssumedRoleUser",
+      RequestId: "reader-identity"
+    }
+  };
+  const input = {
+    observation,
+    expected,
+    ciphertext: bytes,
+    startedAt: "2026-10-01T00:00:00.000Z",
+    observedAt: "2026-10-01T00:00:02.000Z"
+  };
+  assert.deepEqual(await verifySnapshotOssOriginals(input), observation);
+  const missing = globalThis.structuredClone(observation);
+  missing.evidence.originals.pop();
+  await assert.rejects(verifySnapshotOssOriginals({ ...input, observation: missing }));
+  const tampered = globalThis.structuredClone(observation);
+  tampered.evidence.records.head.response.headers.etag = '"changed"';
+  const rewritten = Buffer.from(canonicalJson(tampered.evidence.records.head));
+  tampered.evidence.originals[7] = {
+    digest: digest(rewritten),
+    bytesBase64: rewritten.toString("base64")
+  };
+  await assert.rejects(verifySnapshotOssOriginals({ ...input, observation: tampered }));
+  const extra = globalThis.structuredClone(observation);
+  extra.evidence.originals.push(extra.evidence.originals[0]);
+  await assert.rejects(verifySnapshotOssOriginals({ ...input, observation: extra }));
+  await assert.rejects(
+    verifySnapshotOssOriginals({ ...input, ciphertext: Buffer.from("wrongbytes") })
+  );
+  await assert.rejects(
+    verifySnapshotOssOriginals({
+      ...input,
+      startedAt: "2026-10-01T00:00:02.000Z"
+    })
   );
 });

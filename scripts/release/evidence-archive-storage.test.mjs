@@ -4,6 +4,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 import { canonicalJson } from "../../packages/release-foundation/src/canonical-json.mjs";
 import * as operation from "./evidence-archive-operation.mjs";
+import { verifyAuthoritativeCustodyObservation } from "../../packages/release-foundation/src/evidence-custody.mjs";
 
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
 import {
@@ -176,6 +177,196 @@ async function archiveObserved(kind) {
   };
 }
 
+async function custodyFixture(policy = authorized("reader").policy) {
+  const writer = globalThis.structuredClone(await archiveObserved("writer"));
+  writer.authorization.custodyPolicyDigest = sha256Canonical(policy);
+  writer.io.authorizationDigest = writer.terminal.authorizationDigest = sha256Canonical(
+    writer.authorization
+  );
+  writer.terminal.ioDigest = sha256Canonical(writer.io);
+  const writerSubject = await operation.buildArchiveAccessSubject({ ...writer, custody: null });
+  const writerProof = {
+    ...writerSubject,
+    signature: detached("h1-evidence-archive-access.v1", "subject", writerSubject)
+  };
+  const reader = globalThis.structuredClone(await archiveObserved("reader"));
+  reader.authorization.custodyPolicyDigest = sha256Canonical(policy);
+  reader.authorization.notAfter = "2026-10-01T00:30:00.000Z";
+  reader.authorization.chain.predecessorTerminalReceiptDigest = sha256Canonical(
+    writerSubject.receipt
+  );
+  reader.io.authorizationDigest = sha256Canonical(reader.authorization);
+  reader.terminal.authorizationDigest = reader.io.authorizationDigest;
+  reader.io.session.issuedAt = "2026-10-01T00:10:03.000Z";
+  reader.io.session.expiresAt = "2026-10-01T00:20:03.000Z";
+  reader.io.session.fingerprint = operation.archiveSessionFingerprint(
+    reader.io.session,
+    reader.io.identityOriginal
+  );
+  reader.io.startedAt = reader.io.observedAt = "2026-10-01T00:10:04.000Z";
+  const result = reader.io.objects[0].result;
+  result.observedAt = reader.io.observedAt;
+  for (let i = 0; i < result.evidence.records.length; i++) {
+    result.evidence.records[i].observedAt = reader.io.observedAt;
+    const raw = Buffer.from(canonicalJson(result.evidence.records[i]));
+    result.evidence.originals[i * 2 + 1] = {
+      digest: sha256Bytes(raw),
+      bytesBase64: raw.toString("base64")
+    };
+  }
+  reader.terminal.session = reader.io.session;
+  reader.terminal.ioObservedAt = reader.io.observedAt;
+  reader.terminal.ioDigest = sha256Canonical(reader.io);
+  reader.terminal.authority.startedAt = reader.io.startedAt;
+  reader.terminal.authority.finishedAt = "2026-10-01T00:10:05.000Z";
+  reader.terminal.sessionDisposal.removedAt = "2026-10-01T00:10:06.000Z";
+  reader.terminal.sessionDisposal.expiresAt = reader.io.session.expiresAt;
+  reader.terminal.sessionDisposal.observedAt = "2026-10-01T00:20:04.000Z";
+  reader.issuedAt = "2026-10-01T00:20:05.000Z";
+  return {
+    reader,
+    predecessor: {
+      authorization: writer.authorization,
+      io: writer.io,
+      terminal: writer.terminal,
+      proof: writerProof
+    },
+    policy
+  };
+}
+
+const signedCustody = (records) => ({
+  ...records,
+  objects: records.objects.map((entry) => ({
+    ...entry,
+    signature: detached("authoritative-custody-observation.v1", "observation", entry.observation)
+  }))
+});
+async function readerAccessInput() {
+  const f = await custodyFixture();
+  return {
+    ...f.reader,
+    custody: signedCustody(
+      await operation.buildArchiveCustodyRecords({
+        ...f.reader,
+        predecessor: f.predecessor,
+        policy: f.policy
+      })
+    )
+  };
+}
+
+test("authoritative archive custody uses actual readback, writer terminal and physical retention", async () => {
+  assert.equal(typeof operation.buildArchiveCustodyRecords, "function");
+  const f = await custodyFixture();
+  const records = await operation.buildArchiveCustodyRecords({
+    ...f.reader,
+    predecessor: f.predecessor,
+    policy: f.policy
+  });
+  const packet = signedCustody(records);
+  const entry = packet.objects[0],
+    observation = entry.observation;
+  assert.equal(observation.lastModified, "2026-10-01T00:00:00.000Z");
+  assert.equal(observation.worm.retainUntil, "2027-04-29T00:00:00.000Z");
+  assert.equal(observation.terminalAt, f.predecessor.proof.receipt.session.terminalAt);
+  const {
+    contentDigest,
+    storeRef,
+    objectKey,
+    objectVersion,
+    terminalAt,
+    snapshotExpiresAt,
+    downstreamRetainUntil,
+    legalHoldUntil
+  } = observation;
+  assert.doesNotThrow(() =>
+    verifyAuthoritativeCustodyObservation({
+      originalBytes: bytes,
+      receipt: entry.receipt,
+      observation,
+      signature: entry.signature,
+      expected: {
+        contentDigest,
+        storeRef,
+        objectKey,
+        objectVersion,
+        terminalAt,
+        snapshotExpiresAt,
+        downstreamRetainUntil,
+        legalHoldUntil
+      },
+      trustPolicy: {
+        signer: archiveSigner,
+        writerIdentity: writerRole,
+        readerIdentity: readerRole,
+        storeRef,
+        owner: f.policy.owner,
+        readers: f.policy.readers
+      },
+      now: f.reader.issuedAt
+    })
+  );
+  const subject = await operation.buildArchiveAccessSubject({ ...f.reader, custody: packet });
+  assert.equal(subject.receipt.observationDigest, sha256Canonical(packet));
+  const proof = {
+    ...subject,
+    signature: detached("h1-evidence-archive-access.v1", "subject", subject)
+  };
+  const { issuedAt, ...verifyInput } = f.reader;
+  assert.equal(issuedAt, proof.receipt.issuedAt);
+  await operation.verifyArchiveAccessProof({ ...verifyInput, custody: packet, proof });
+  const wrongPredecessor = globalThis.structuredClone(packet);
+  wrongPredecessor.writerAccessProofDigest = d("f");
+  await assert.rejects(
+    operation.verifyArchiveAccessProof({ ...verifyInput, custody: wrongPredecessor, proof })
+  );
+  const changed = globalThis.structuredClone(packet);
+  changed.objects[0].observation.lastModified = "2026-10-01T00:00:01.000Z";
+  await assert.rejects(operation.buildArchiveAccessSubject({ ...f.reader, custody: changed }));
+});
+
+test("archive custody rejects missing originals, wrong writer ETag and insufficient WORM coverage", async () => {
+  assert.equal(typeof operation.buildArchiveCustodyRecords, "function");
+  const missing = await custodyFixture();
+  missing.reader.io.objects[0].result.evidence.originals = [];
+  missing.reader.terminal.ioDigest = sha256Canonical(missing.reader.io);
+  const wrongEtag = await custodyFixture();
+  wrongEtag.predecessor.io.objects[0].result.putObservation.record.response.headers.etag =
+    '"other"';
+  wrongEtag.predecessor.terminal.ioDigest = sha256Canonical(wrongEtag.predecessor.io);
+  const { proof: oldProof, ...prior } = wrongEtag.predecessor;
+  const subject = await operation.buildArchiveAccessSubject({
+    ...prior,
+    signer: archiveSigner,
+    custody: null,
+    issuedAt: oldProof.receipt.issuedAt
+  });
+  wrongEtag.predecessor.proof = {
+    ...subject,
+    signature: detached("h1-evidence-archive-access.v1", "subject", subject)
+  };
+  wrongEtag.reader.authorization.chain.predecessorTerminalReceiptDigest = sha256Canonical(
+    subject.receipt
+  );
+  wrongEtag.reader.io.authorizationDigest = wrongEtag.reader.terminal.authorizationDigest =
+    sha256Canonical(wrongEtag.reader.authorization);
+  wrongEtag.reader.terminal.ioDigest = sha256Canonical(wrongEtag.reader.io);
+  const insufficient = await custodyFixture({
+    ...authorized("reader").policy,
+    downstreamRetainUntil: "2027-05-01T00:00:00.000Z"
+  });
+  for (const f of [missing, wrongEtag, insufficient]) {
+    await assert.rejects(
+      operation.buildArchiveCustodyRecords({
+        ...f.reader,
+        predecessor: f.predecessor,
+        policy: f.policy
+      })
+    );
+  }
+});
+
 test("archive authorization verifies protected signer, frozen originals, live revocation and time", () => {
   const input = authorized("writer");
   assert.deepEqual(
@@ -215,7 +406,10 @@ test("archive authorization verifies protected signer, frozen originals, live re
 
 test("archive access proof binds actual IO to exited child and disposed expired session", async () => {
   for (const kind of ["writer", "reader"]) {
-    const input = await archiveObserved(kind);
+    const input =
+      kind === "reader"
+        ? await readerAccessInput()
+        : { ...(await archiveObserved(kind)), custody: null };
     const subject = await operation.buildArchiveAccessSubject(input);
     const proof = {
       ...subject,
@@ -227,7 +421,8 @@ test("archive access proof binds actual IO to exited child and disposed expired 
         authorization: input.authorization,
         io: input.io,
         terminal: input.terminal,
-        signer: input.signer
+        signer: input.signer,
+        custody: input.custody
       }),
       subject
     );
@@ -260,7 +455,8 @@ test("archive access proof binds actual IO to exited child and disposed expired 
         authorization: input.authorization,
         io: input.io,
         terminal: input.terminal,
-        signer: input.signer
+        signer: input.signer,
+        custody: input.custody
       })
     );
   }
@@ -269,7 +465,7 @@ test("archive access proof binds actual IO to exited child and disposed expired 
 test("archive read waits for the signed writer terminal for the identical objects", async () => {
   const writer = await archiveObserved("writer");
   const reader = authorized("reader").packet.authorization;
-  const writerSubject = await operation.buildArchiveAccessSubject(writer);
+  const writerSubject = await operation.buildArchiveAccessSubject({ ...writer, custody: null });
   reader.chain.predecessorTerminalReceiptDigest = sha256Canonical(writerSubject.receipt);
   const input = {
     authorization: reader,
@@ -297,7 +493,7 @@ test("archive read waits for the signed writer terminal for the identical object
 });
 
 test("archive reader sealing rejects missing or inconsistent raw OSS response evidence", async () => {
-  const input = await archiveObserved("reader");
+  const input = await readerAccessInput();
   for (const mutate of [
     (x) => {
       delete x.io.objects[0].result.evidence;

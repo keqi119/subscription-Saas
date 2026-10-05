@@ -12,6 +12,9 @@ test("private authority rejects caller paths, sessions and operations before pro
     { operation: "publish", request: {} },
     { operation: "seal-destruction", request: {} },
     { operation: "seal-destruction", request: { receipt: {} } },
+    { operation: "snapshot-final-readback", request: { session: {} } },
+    { operation: "seal-completion", request: { completion: {} } },
+    { operation: "seal-producer-terminal", request: { now: "2099" } },
     { operation: "publish", request: { session: {} } },
     { operation: "archive-write", request: { authorizationDigest: "x" } },
     {
@@ -29,6 +32,24 @@ test("private authority rejects caller paths, sessions and operations before pro
   await assert.rejects(readH1SnapshotProductionInputs({ path: "/tmp/inputs.json" }), {
     code: "H1_SNAPSHOT_SIGNING_REJECTED"
   });
+});
+
+test("completion authority routes only fixed identity selectors to protected H1 inputs", async () => {
+  if (process.platform !== "win32") return;
+  for (const operation of ["snapshot-final-readback", "seal-completion", "seal-producer-terminal"])
+    await assert.rejects(
+      runH1AttemptAuthority({
+        operation,
+        request: {
+          releaseAttemptId: "11111111-1111-4111-8111-111111111111",
+          snapshotRunId: "123",
+          ...(operation === "seal-producer-terminal"
+            ? { archiveAuthorizationDigest: "sha256:" + "1".repeat(64) }
+            : {})
+        }
+      }),
+      { code: "H1_SNAPSHOT_SIGNING_REJECTED" }
+    );
 });
 
 test("archive authority routes fixed selectors to protected H1 inputs without requiring dispatch", async () => {

@@ -125,6 +125,7 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/snapshot-h1-runner.py",
   "scripts/release/snapshot-h1-runtime-bundle.mjs",
   "scripts/release/snapshot-h1-signing.mjs",
+  "scripts/release/snapshot-h1-volume.py",
   "scripts/release/snapshot-oss-storage.mjs",
   "scripts/release/snapshot-postgres-tools.mjs",
   "scripts/release/trusted-launch-production-adapters.mjs",

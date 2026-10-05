@@ -534,6 +534,14 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
         prisma.subscriptionContractSegment.update({
           data: { endDate: window.endDate },
           where: { id: fixture.segmentId }
+        }),
+        prisma.subscriptionAutomationJob.update({
+          data: { payload: { periodStart: window.cycle.periodStart.toISOString().slice(0, 10) } },
+          where: { id: fixture.earnedJobId }
+        }),
+        prisma.subscriptionAutomationJob.update({
+          data: { payload: { periodStart: window.endDate.toISOString().slice(0, 10) } },
+          where: { id: fixture.futureJobId }
         })
       ]);
       const earnedBill = await prisma.receivableBill.create({

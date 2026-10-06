@@ -678,19 +678,42 @@ test("protected workflow exposes no PR trigger or raw artifact upload", async ()
     new URL("../../../.github/workflows/sanitized-snapshot.yml", import.meta.url),
     "utf8"
   );
-  assert.match(workflow, /environment: stage1-snapshot-export/);
-  assert.match(workflow, /runs-on: \[self-hosted, linux, stage1-snapshot-export\]/);
-  assert.match(workflow, /if: always\(\)/);
-  assert.match(workflow, /node scripts\/release\/export-sanitized-snapshot\.mjs --cleanup/);
-  assert.match(workflow, /actions\/checkout@11d5960a326750d5838078e36cf38b85af677262/);
-  assert.match(workflow, /actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6/);
-  assert.match(workflow, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/);
-  assert.doesNotMatch(workflow, /uses:\s*[^\s]+@(v\d+|main|master|latest)\b/);
-  assert.equal(/pull_request:/.test(workflow), false);
-  const uploadBlock = workflow.slice(
-    workflow.indexOf("Upload only the complete final publication")
+  const triggerBlock = workflow.slice(
+    workflow.indexOf("on:\n"),
+    workflow.indexOf("\nconcurrency:")
   );
-  assert.equal(/raw|partial/i.test(uploadBlock), false);
+  assert.deepEqual(
+    [...triggerBlock.matchAll(/^  ([a-z_]+):/gm)].map((match) => match[1]),
+    ["workflow_dispatch"]
+  );
+  const admission = workflow.match(/^  admission:\n([\s\S]*?)(?=^  snapshot-data:)/m)?.[1];
+  const data = workflow.match(/^  snapshot-data:\n([\s\S]*?)(?=^  snapshot-custody:)/m)?.[1];
+  const custody = workflow.match(/^  snapshot-custody:\n([\s\S]*)$/m)?.[1];
+  assert.ok(admission && data && custody);
+  assert.match(admission, /runs-on: ubuntu-latest/);
+  assert.match(admission, /node scripts\/release\/prepare-snapshot-admission\.mjs/);
+  assert.match(data, /needs: admission/);
+  assert.match(data, /runs-on: \$\{\{ fromJSON\(needs\.admission\.outputs\.runner_labels\) \}\}/);
+  assert.match(data, /environment: stage1-snapshot-export/);
+  assert.match(data, /contents: none/);
+  assert.match(data, /snapshot-h1-job-client\.mjs --admission-ref/);
+  assert.doesNotMatch(data, /\$\{\{\s*secrets\.|DATABASE_URL|PGPASSWORD|POSTGRES_PASSWORD/);
+  assert.match(custody, /needs: snapshot-data/);
+  assert.match(custody, /environment: stage1-snapshot-custody/);
+  assert.match(custody, /id-token: write/);
+  assert.match(custody, /node scripts\/release\/snapshot-custody-job\.mjs/);
+  assert.match(workflow, /actions\/checkout@11d5960a326750d5838078e36cf38b85af677262/);
+  assert.doesNotMatch(workflow, /uses:\s*[^\s]+@(v\d+|main|master|latest)\b/);
+  const uploads = [
+    ...workflow.matchAll(
+      /^\s+- uses: actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a\n\s+with:\n\s+name: ([^\n]+)\n\s+path: ([^\n]+)/gm
+    )
+  ].map((match) => [match[1], match[2]]);
+  assert.deepEqual(uploads, [
+    ["snapshot-admission", ".release-output/snapshot-admission.v1.json"],
+    ["snapshot-custody", ".release-output/snapshot-*.json"]
+  ]);
+  assert.equal([...workflow.matchAll(/uses:\s+actions\/upload-artifact@/g)].length, uploads.length);
 });
 
 test("repository sanitization contract supports reviewed Staging and current migration heads", async () => {

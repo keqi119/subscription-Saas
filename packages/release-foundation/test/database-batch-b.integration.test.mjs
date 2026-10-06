@@ -7,6 +7,10 @@ import { selectManifestSuites, sha256Canonical } from "../src/index.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const batchB = Object.freeze([
+  [
+    "api.stage1-contract-archive.postgres",
+    "apps/api/test/stage1-contract-archive.integration.spec.ts"
+  ],
   ["api.stage2-handover-pdf.postgres", "apps/api/test/stage2-handover-pdf.integration.spec.ts"],
   [
     "api.stage2-handover-provider-reconciliation.postgres",
@@ -30,7 +34,10 @@ const batchB = Object.freeze([
   ],
   [
     "api.subscription-journey-integrity.postgres",
-    "apps/api/test/subscription-journey-integrity.integration.spec.ts"
+    [
+      "apps/api/test/subscription-journey-integrity.integration.spec.ts",
+      "apps/api/test/stage1-application-order-authority.integration.spec.ts"
+    ]
   ],
   [
     "api.subscription-journey-repository.postgres",
@@ -44,15 +51,15 @@ async function loadManifest() {
   );
 }
 
-test("batch B declares eight isolated one-file suites", async () => {
+test("batch B declares nine isolated complete suites", async () => {
   const manifest = await loadManifest();
   const expectedIds = batchB.map(([suiteId]) => suiteId);
   const batch = manifest.batches.find(({ batchId }) => batchId === "batch-b");
   assert.deepEqual(batch?.suiteIds, expectedIds);
 
-  for (const [suiteId, file] of batchB) {
+  for (const [suiteId, entry] of batchB) {
     const suite = manifest.suites.find((candidate) => candidate.suiteId === suiteId);
-    assert.deepEqual(suite?.files, [file]);
+    assert.deepEqual(suite?.files, Array.isArray(entry) ? entry : [entry]);
     assert.equal(suite?.parallelism.mode, "parallel");
   }
 
@@ -65,7 +72,7 @@ test("batch B declares eight isolated one-file suites", async () => {
     runId: "batch-b-run",
     secretRootRef: ".release-local/runs/batch-b-run"
   });
-  assert.equal(new Set(selections.map(({ assignment }) => assignment.databaseName)).size, 8);
+  assert.equal(new Set(selections.map(({ assignment }) => assignment.databaseName)).size, 9);
   const concurrentJourneySelections = selections.filter(({ suiteId }) =>
     [
       "api.subscription-journey-golden-path.postgres",
@@ -80,7 +87,7 @@ test("batch B declares eight isolated one-file suites", async () => {
 });
 
 test("batch B source files use only the injected runtime-equivalent database", async () => {
-  for (const [, file] of batchB) {
+  for (const file of batchB.flatMap(([, entry]) => (Array.isArray(entry) ? entry : [entry]))) {
     const source = await readFile(resolve(repoRoot, ...file.split("/")), "utf8");
     assert.match(source, /requiredReleaseDatabaseTestContext\(/);
     assert.doesNotMatch(source, /process\.env\.DATABASE_URL/);

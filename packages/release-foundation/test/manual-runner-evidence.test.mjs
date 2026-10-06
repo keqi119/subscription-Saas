@@ -3422,7 +3422,7 @@ function eventFrameCompletingStream(protocol, binding, prefixLength, streamLengt
   assert.fail(`unable to construct ${streamLength}-byte child stream`);
 }
 
-test("MS2 exact 1 MiB frames and complete stdin/stdout streams reject one byte more", () => {
+test("MS2 frames and stdin keep one MiB limits while stdout may continue", () => {
   const limit = 1048576;
   const current = fixture90("dry-run", null, { protocol: "MS2" });
   const binding = fixtureDecode(current.parentFrames[1]).payload.binding;
@@ -3492,6 +3492,14 @@ test("MS2 exact 1 MiB frames and complete stdin/stdout streams reject one byte m
       .length,
     4
   );
+  // MS2 stdout has a separate two MiB bound; a valid next-frame prefix may continue.
+  assert.doesNotThrow(() =>
+    parseManualRunnerFrames({
+      direction: "child-to-parent",
+      bytes: Buffer.concat([stdout, Buffer.from("M")]),
+      ended: false
+    })
+  );
   assert.throws(
     () =>
       parseManualRunnerFrames({
@@ -3499,7 +3507,7 @@ test("MS2 exact 1 MiB frames and complete stdin/stdout streams reject one byte m
         bytes: Buffer.concat([stdout, Buffer.from("x")]),
         ended: false
       }),
-    { code: "MANUAL_OUTPUT_LIMIT" }
+    { code: "MANUAL_FRAME_INVALID" }
   );
 });
 

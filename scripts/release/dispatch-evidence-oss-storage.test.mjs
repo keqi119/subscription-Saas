@@ -56,7 +56,7 @@ function fixture(profile = "reader") {
   const items = originals(),
     objects = new Map(
       items.map(({ originalBytes }) => [
-        `control-evidence/v1/${JSON.parse(originalBytes).schemaVersion}/${sha256Bytes(originalBytes)}`,
+        `control-evidence/v1/${JSON.parse(originalBytes).schemaVersion}/${sha256Bytes(originalBytes).replace(":", "-")}`,
         Buffer.from(originalBytes)
       ])
     );

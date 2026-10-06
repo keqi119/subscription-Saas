@@ -13,6 +13,7 @@
 ## 本次实现
 
 - `dispatch-evidence-scope.mjs` 只接受两种已注册 schema 各一份、每份不超过 1 MiB 的 canonical 原字节，核对相同 revocation policy，复制输入并生成两条精确内容地址。它没有签发权限。
+- 实际 RAM `ValidatePolicy` 拒绝了对象路径中的 `sha256:<64hex>`；本次精确对象键统一为 `control-evidence/v1/<proofType>/sha256-<64hex>`，而 `canonicalDigest`/`contentDigest` 字段仍为 `sha256:<64hex>`。旧冒号键在授权及归档验证处拒绝，不改变 account、action、condition 或对象数量。
 - `buildDispatchEvidenceRamPolicy` 只生成有限 RAM 草案。writer 仅两条精确对象的 Put；reader 仅这两条对象的 Get/GetObjectAcl 和固定 bucket 的六项必要属性读取。没有对象通配、写读混合、删除或 KMS；超过 2048 字节拒绝。旧 `evidence-archive-authorization.v1` 及其编译器保持不变，本接口不冒充该授权或其链条。
 - `dispatch-evidence-oss-storage.mjs` 是 root 私有接口，无 workflow/CLI 参数入口。它只接受上述两个原件和固定 writer 或 reader 角色的至多 900 秒 STS，不负责取得凭据或授权；父控制面仍须先完成实际管理批准、IAM/STS 身份核验和固定安装核对。
 - writer 发送禁止覆盖、private ACL、AES256 请求，关闭 SDK 重试；同一个实例中每条对象只尝试一次。冲突与结果未知区分，未知结果不能换对象/重新上传来改写历史。重启后也必须由父控制面对原操作 reconcile。

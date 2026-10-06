@@ -268,7 +268,7 @@ export function validateEvidenceArchiveAuthorization(authorization) {
   }
   const keys = new Set();
   for (const object of authorization.objects) {
-    const expectedKey = `control-evidence/v1/${object.proofType}/${object.canonicalDigest}`;
+    const expectedKey = `control-evidence/v1/${object.proofType}/${object.canonicalDigest.replace(":", "-")}`;
     if (object.exactKey !== expectedKey || keys.has(expectedKey)) {
       throw contractError("EVIDENCE_ARCHIVE_OBJECT_SCOPE_INVALID");
     }
@@ -360,7 +360,7 @@ export function validateEvidenceCustodyBootstrapReadback(readback) {
     readback.importedOriginals.some(
       (original) =>
         original.objectKey !==
-        `control-evidence/v1/${original.subjectType}/${original.originalBytesDigest}`
+        `control-evidence/v1/${original.subjectType}/${original.originalBytesDigest.replace(":", "-")}`
     )
   ) {
     throw contractError("EVIDENCE_CUSTODY_BOOTSTRAP_INVALID");

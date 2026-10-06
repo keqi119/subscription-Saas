@@ -16,7 +16,7 @@ function fixture(profile = "archive-create-only-writer") {
   const bytes = Buffer.from('{"schemaVersion":"approval-record.v1","decision":"approve"}');
   const original = JSON.parse(bytes.toString("utf8"));
   const canonicalDigest = sha256Canonical(original);
-  const exactKey = `control-evidence/v1/${original.schemaVersion}/${canonicalDigest}`;
+  const exactKey = `control-evidence/v1/${original.schemaVersion}/${canonicalDigest.replace(":", "-")}`;
   const expectedPrincipal = profile === "archive-create-only-writer" ? writer : reader;
   return {
     authorization: {
@@ -87,7 +87,7 @@ test("compiles isolated writer and reader policies with Head mapped to GetObject
   const write = buildEvidenceArchiveRamPolicy(fixture());
   assert.deepEqual(write.Statement[0].Action, ["oss:PutObject"]);
   assert.deepEqual(write.Statement[0].Resource, [
-    `acs:oss:*:${account}:${bucket}/control-evidence/v1/approval-record.v1/${fixture().authorization.objects[0].canonicalDigest}`
+    `acs:oss:*:${account}:${bucket}/control-evidence/v1/approval-record.v1/${fixture().authorization.objects[0].canonicalDigest.replace(":", "-")}`
   ]);
   assert.equal(write.Statement[0].Condition.Bool["acs:SecureTransport"], "true");
   assert.equal(write.Statement[0].Condition.StringEquals["oss:x-oss-object-acl"], "private");
@@ -163,7 +163,7 @@ test("accepts only the three signed H1 wrapper shapes under their embedded proof
     input.authorization.objects[0] = {
       proofType,
       canonicalDigest: sha256Canonical(value),
-      exactKey: `control-evidence/v1/${proofType}/${sha256Canonical(value)}`,
+      exactKey: `control-evidence/v1/${proofType}/${sha256Canonical(value).replace(":", "-")}`,
       contentDigest: sha256Bytes(raw),
       contentSizeBytes: raw.length
     };
@@ -174,7 +174,7 @@ test("accepts only the three signed H1 wrapper shapes under their embedded proof
     input.authorization.objects[0].contentDigest = sha256Bytes(input.originals[0].originalBytes);
     input.authorization.objects[0].contentSizeBytes = input.originals[0].originalBytes.length;
     input.authorization.objects[0].canonicalDigest = sha256Canonical(extended);
-    input.authorization.objects[0].exactKey = `control-evidence/v1/${proofType}/${sha256Canonical(extended)}`;
+    input.authorization.objects[0].exactKey = `control-evidence/v1/${proofType}/${sha256Canonical(extended).replace(":", "-")}`;
     input.originals[0].exactKey = input.authorization.objects[0].exactKey;
     assert.throws(() => buildEvidenceArchiveRamPolicy(input), {
       code: "EVIDENCE_ARCHIVE_ORIGINAL_CANONICAL_MISMATCH"
@@ -184,7 +184,7 @@ test("accepts only the three signed H1 wrapper shapes under their embedded proof
     input.authorization.objects[0].contentDigest = sha256Bytes(input.originals[0].originalBytes);
     input.authorization.objects[0].contentSizeBytes = input.originals[0].originalBytes.length;
     input.authorization.objects[0].canonicalDigest = sha256Canonical(value);
-    input.authorization.objects[0].exactKey = `control-evidence/v1/${proofType}/${sha256Canonical(value)}`;
+    input.authorization.objects[0].exactKey = `control-evidence/v1/${proofType}/${sha256Canonical(value).replace(":", "-")}`;
     input.originals[0].exactKey = input.authorization.objects[0].exactKey;
     assert.throws(() => buildEvidenceArchiveRamPolicy(input), {
       code: "EVIDENCE_ARCHIVE_ORIGINAL_CANONICAL_MISMATCH"
@@ -198,7 +198,7 @@ test("rejects policies whose canonical UTF-8 representation exceeds 2048 bytes",
     const proofType = "approval-record.v1";
     const parsed = { schemaVersion: proofType, id: index };
     const canonicalDigest = sha256Canonical(parsed);
-    const exactKey = `control-evidence/v1/${proofType}/${canonicalDigest}`;
+    const exactKey = `control-evidence/v1/${proofType}/${canonicalDigest.replace(":", "-")}`;
     const original = Buffer.from(canonicalJson(parsed));
     return {
       proofType,

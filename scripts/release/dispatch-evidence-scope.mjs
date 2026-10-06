@@ -72,7 +72,7 @@ export function captureDispatchEvidenceScope(input) {
       const canonicalDigest = sha256Canonical(parsed);
       return {
         proofType,
-        exactKey: `control-evidence/v1/${proofType}/${canonicalDigest}`,
+        exactKey: `control-evidence/v1/${proofType}/${canonicalDigest.replace(":", "-")}`,
         contentDigest: sha256Bytes(originalBytes),
         contentSizeBytes: originalBytes.length,
         originalBytes

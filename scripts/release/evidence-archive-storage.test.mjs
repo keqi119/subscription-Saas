@@ -21,7 +21,7 @@ const parsed = JSON.parse(bytes.toString());
 const object = {
   proofType: parsed.schemaVersion,
   canonicalDigest: sha256Canonical(parsed),
-  exactKey: `control-evidence/v1/${parsed.schemaVersion}/${sha256Canonical(parsed)}`,
+  exactKey: `control-evidence/v1/${parsed.schemaVersion}/${sha256Canonical(parsed).replace(":", "-")}`,
   contentDigest: sha256Bytes(bytes),
   contentSizeBytes: bytes.length
 };

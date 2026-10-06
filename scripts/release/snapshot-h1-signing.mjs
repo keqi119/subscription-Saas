@@ -302,7 +302,7 @@ export function verifyH1ArchivedDispatchPacket({ packet, trustPolicy, kind, now 
     );
     requireThat(
       packet.archive.reference === packet.archive.objectKey &&
-        packet.archive.objectKey === `control-evidence/v1/${domain}/${digest}` &&
+        packet.archive.objectKey === `control-evidence/v1/${domain}/${digest.replace(":", "-")}` &&
         packet.archive.objectVersion === "null-version-disabled"
     );
     const { reference, ...object } = packet.archive;

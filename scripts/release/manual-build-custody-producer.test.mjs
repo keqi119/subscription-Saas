@@ -212,6 +212,15 @@ async function sameJobFixture(t, fault) {
   return { input, runProcess: expected.runProcess, writes, evidenceReads, calls: expected.calls };
 }
 
+test("same-job workflow inputs generate a receipt ID without a test-supplied factory", async (t) => {
+  const f = await sameJobFixture(t);
+  delete f.input.createReceiptId;
+  const output = await custodyProducer.produceManualTrustedBuildInputs(f.input, { runProcess: f.runProcess });
+  assert.match(output.receipt.receiptId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  assert.notEqual(output.receipt.receiptId, receiptId);
+  assert.ok(f.input.objects.has(`receipts/${output.receipt.receiptId}.json`));
+});
+
 test("same-job composition creates proof once and retains exact real two-reference subject closure", async (t) => {
   assert.equal(typeof custodyProducer.produceManualTrustedBuildInputs, "function");
   const f = await sameJobFixture(t);

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   canonicalJson,
   custodyEvidence,
@@ -138,7 +140,7 @@ export async function produceManualBuildCustody({
   buildIdentity,
   storage,
   now = () => new Date(),
-  createReceiptId
+  createReceiptId = randomUUID
 }) {
   const { bytes: proofRaw, parsed: proof } = parseBytes(proofBytes, "MANUAL_BUILD_CUSTODY_PROOF_RAW_INVALID");
   const { bytes: materialRaw, parsed: material } = parseBytes(materialBytes, "MANUAL_BUILD_CUSTODY_MATERIAL_RAW_INVALID");

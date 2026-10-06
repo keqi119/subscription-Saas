@@ -565,6 +565,10 @@ test("protected aggregation is the only proof issuer and exposes non-promotable 
     /name: build-proof-evidence-\$\{\{ steps\.proof-identity\.outputs\.digest-hex \}\}/u
   );
   assert.match(workflow, /node scripts\/release\/verify-build-delivery\.mjs/u);
+  assert.match(
+    workflow,
+    /gh api "repos\/\$GITHUB_REPOSITORY\/actions\/runs\/\$GITHUB_RUN_ID" \\\s*> \.release-output\/build-run-metadata\.json/u
+  );
   assert.match(workflow, /delivery-verified/u);
   assert.match(workflow, /authorityCustody=INPUT_REQUIRED/u);
   assert.match(workflow, /promotionEligible=false/u);

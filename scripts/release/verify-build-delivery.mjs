@@ -20,7 +20,7 @@ const decimalIdPattern = /^[1-9][0-9]*$/u;
 const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const utcTimestampPattern =
   /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,3}))?Z$/u;
-const inputKeys = Object.freeze(["expected", "entries", "observedAt"]);
+const inputKeys = Object.freeze(["expected", "runMetadataBytes", "entries", "observedAt"]);
 const expectedKeys = Object.freeze([
   "repository",
   "workflowRunId",
@@ -145,6 +145,31 @@ function assertExpected(expected) {
   positiveDecimalId(expected.workflowRunId);
 }
 
+function assertRunMetadata(bytes, expected) {
+  const metadata = parseJsonBytes(bytes);
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) {
+    throw deliveryError("BUILD_DELIVERY_JSON_INVALID");
+  }
+  if (metadata.repository?.full_name !== expected.repository) {
+    throw deliveryError("BUILD_DELIVERY_REPOSITORY_MISMATCH");
+  }
+  if (
+    !Number.isSafeInteger(metadata.id) ||
+    metadata.id !== positiveDecimalId(expected.workflowRunId) ||
+    metadata.run_attempt !== expected.runAttempt
+  ) {
+    throw deliveryError("BUILD_DELIVERY_RUN_MISMATCH");
+  }
+  if (metadata.head_sha !== expected.sourceSha) {
+    throw deliveryError("BUILD_DELIVERY_SOURCE_MISMATCH");
+  }
+  return {
+    createdAt: metadata.created_at,
+    created: parseUtcTimestamp(metadata.created_at, "BUILD_DELIVERY_RETENTION_INVALID"),
+    digest: sha256Bytes(bytes)
+  };
+}
+
 function assertFileArray(files, wantedPaths) {
   if (!Array.isArray(files) || files.length !== wantedPaths.length) {
     throw deliveryError("BUILD_DELIVERY_FILE_SET_INVALID");
@@ -191,7 +216,7 @@ function assertReadback(candidate, wantedPaths) {
   return original;
 }
 
-function assertMetadata(candidate, expected, observedAt, expectedName) {
+function assertMetadata(candidate, expected, runCreatedAt, observedAt, expectedName) {
   const artifactId = positiveDecimalId(candidate.artifactId, "BUILD_DELIVERY_ARTIFACT_ID_INVALID");
   const metadata = parseJsonBytes(candidate.metadataBytes);
   if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) {
@@ -224,8 +249,9 @@ function assertMetadata(candidate, expected, observedAt, expectedName) {
   if (metadata.expired !== false) throw deliveryError("BUILD_DELIVERY_EXPIRED");
   const created = parseUtcTimestamp(metadata.created_at, "BUILD_DELIVERY_RETENTION_INVALID");
   const expires = parseUtcTimestamp(metadata.expires_at, "BUILD_DELIVERY_RETENTION_INVALID");
-  const minimumExpires = created + RETENTION_MILLISECONDS;
-  if (!Number.isFinite(minimumExpires) || expires < minimumExpires) {
+  // Actions delivery is measured from the workflow run, not the later artifact upload.
+  const minimumExpires = runCreatedAt + RETENTION_MILLISECONDS;
+  if (!Number.isFinite(minimumExpires) || created < runCreatedAt || expires < minimumExpires) {
     throw deliveryError("BUILD_DELIVERY_RETENTION_INVALID");
   }
   if (observedAt < created || observedAt >= expires) {
@@ -243,6 +269,7 @@ export function verifyBuildDelivery(input) {
     throw deliveryError("BUILD_DELIVERY_INPUT_INVALID");
   }
   assertExpected(input.expected);
+  const runMetadata = assertRunMetadata(input.runMetadataBytes, input.expected);
   const observedAt = parseUtcTimestamp(input.observedAt, "BUILD_DELIVERY_OBSERVED_AT_INVALID");
   if (!Array.isArray(input.entries) || input.entries.length !== 2) {
     throw deliveryError("BUILD_DELIVERY_ARTIFACT_SET_INVALID");
@@ -319,7 +346,13 @@ export function verifyBuildDelivery(input) {
   ]) {
     const expectedName =
       kind === "proof" ? `build-proof-${digestHex}` : `build-proof-evidence-${digestHex}`;
-    const metadataResult = assertMetadata(candidate, input.expected, observedAt, expectedName);
+    const metadataResult = assertMetadata(
+      candidate,
+      input.expected,
+      runMetadata.created,
+      observedAt,
+      expectedName
+    );
     const originals = filesByPath(candidate.originalFiles);
     artifactResults.push({
       artifactId: metadataResult.artifactId,
@@ -341,6 +374,8 @@ export function verifyBuildDelivery(input) {
     sourceSha: input.expected.sourceSha,
     workflowRunId: input.expected.workflowRunId,
     runAttempt: input.expected.runAttempt,
+    runCreatedAt: runMetadata.createdAt,
+    runMetadataDigest: runMetadata.digest,
     promotionEligible: false,
     authorityCustody: "INPUT_REQUIRED",
     artifacts: artifactResults
@@ -453,6 +488,7 @@ async function main() {
     attestationBytes,
     proofMetadataBytes,
     evidenceMetadataBytes,
+    runMetadataBytes,
     proofReadbackBytes,
     materialReadbackBytes,
     attestationReadbackBytes
@@ -462,6 +498,7 @@ async function main() {
     assertRegularPath(outputRoot, "build-proof-attestation-verification.json"),
     assertRegularPath(outputRoot, "build-proof-artifact-metadata.json"),
     assertRegularPath(outputRoot, "build-evidence-artifact-metadata.json"),
+    assertRegularPath(outputRoot, "build-run-metadata.json"),
     assertRegularPath(readbackRoot, "proof", "build-proof.v1.json"),
     assertRegularPath(readbackRoot, "evidence", "build-material-observation.v1.json"),
     assertRegularPath(readbackRoot, "evidence", "build-proof-attestation-verification.json")
@@ -474,6 +511,7 @@ async function main() {
       sourceSha: process.env.SOURCE_SHA,
       buildProofDigest: process.env.PROOF_DIGEST
     },
+    runMetadataBytes,
     entries: [
       {
         kind: "proof",

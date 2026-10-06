@@ -1747,6 +1747,10 @@ function expectedText(bytes) {
     fail("MANUAL_EXPECTED_SCHEMA_RAW_INVALID");
   }
 }
+function expectedNoDifferenceOutput(bytes) {
+  const output = expectedText(bytes).trim();
+  return output === "" || output === "No difference detected.";
+}
 function expectedJson(bytes, canonical = false) {
   expectedRequire(
     Buffer.isBuffer(bytes) && bytes.length <= expectedLimit,
@@ -1943,6 +1947,9 @@ function expectedProvenanceShape(p, facts, proof) {
     expectedRequire(exact(p[key], ["path", "raw"]) && p[key].path === location);
     expectedRawRef(p[key].raw);
   }
+  const runnerBases = expectedJson(facts.fixed.materialBytes).images?.find(
+    (image) => image.name === "runner"
+  )?.baseImageDigests;
   expectedRequire(
     exact(p.toolchain, [
       "runnerImageDigest",
@@ -1954,8 +1961,14 @@ function expectedProvenanceShape(p, facts, proof) {
     ]) &&
       p.toolchain.runnerImageDigest === proof.identity.images.runner.imageDigest &&
       p.toolchain.postgresImageDigest === expectedPgDigest &&
-      proof.provenance.baseImages.some(
-        (v) => v.name === "postgres:17.11-bookworm" && v.resolvedDigest === expectedPgDigest
+      Array.isArray(runnerBases) &&
+      runnerBases.some(
+        (base) =>
+          base.image === "postgres:17.11-bookworm" &&
+          base.declaredDigest === expectedPgDigest &&
+          proof.provenance.baseImages.some(
+            (v) => v.name === base.image && v.resolvedDigest === base.digest
+          )
       ) &&
       /^v22\.\d+\.\d+$/u.test(p.toolchain.nodeVersion) &&
       /^17\.11(?: \([^()]+\))?$/u.test(p.toolchain.postgresqlVersion) &&
@@ -2352,7 +2365,7 @@ async function expectedReference(reference, p, raw, proof, target, catalog, exte
       expectedEqual(get("prisma-version").call.stdout, p.toolchain.prismaVersionRaw) &&
       expectedText(get("prisma-version").stdout).trim() === p.toolchain.prismaVersion &&
       expectedEqual(get("prisma-script").call.stdout, p.expectedScript) &&
-      expectedText(get("prisma-diff").stdout).trim() === ""
+      expectedNoDifferenceOutput(get("prisma-diff").stdout)
   );
   expectedRequire(
     r.createdAt === get("database-create").call.closedAt &&
@@ -3245,10 +3258,12 @@ export {
   expectedLimit,
   expectedRequire,
   expectedText,
+  expectedNoDifferenceOutput,
   expectedJson,
   expectedEqual,
   expectedOrder,
   expectedGhArgv,
   expectedGhResult,
+  expectedProvenanceShape,
   openManualExpectedSchemaInputs
 };

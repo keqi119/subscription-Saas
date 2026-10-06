@@ -56,7 +56,7 @@ export async function fixture(t, fault, baseBinding = "index") {
     assert.equal(options.environment.DATABASE_URL, undefined);
     if (command === "git") return result(argv.includes("status") ? "" : `${fault === "source" ? "9".repeat(40) : sourceSha}\n`);
     if (command === "pnpm") return result("11.4.0\n");
-    const operation = argv.find((v) => ["create", "inspect", "start", "stop", "rm", "cp"].includes(v));
+    const operation = argv.find((v) => ["create", "inspect", "start", "stop", "rm", "exec", "cp"].includes(v));
     if (operation === "create") {
       assert.ok(argv.includes("--network=none")); assert.ok(argv.includes("--user=postgres")); assert.ok(argv.includes("--pull=never"));
       const id = String(++ordinal).repeat(64); containers.set(id, { ordinal }); return result(`${id}\n`);
@@ -104,19 +104,21 @@ export async function fixture(t, fault, baseBinding = "index") {
       container.done = true;
       return result(Buffer.concat([manifest, Buffer.from("\n")]));
     }
-    if (operation === "cp") {
-      const source = argv.at(-2), destination = argv.at(-1);
-      const match = /^([0-9a-f]{64}):\/tmp\/manual-expected-schema-output\/([0-9a-f]{64})\.bin$/u.exec(source);
-      assert.ok(match);
-      const owner = containers.get(match[1]);
+    if (operation === "exec") {
+      assert.ok(argv.includes("--user=postgres"));
+      assert.ok(argv.includes("/usr/local/bin/node"));
+      const id = argv[argv.indexOf("--user=postgres") + 1];
+      const rawDigest = argv.at(-1);
+      assert.match(rawDigest, /^[0-9a-f]{64}$/u);
+      const owner = containers.get(id);
       assert.equal(owner.done, undefined);
       assert.equal(owner.released, undefined);
-      let raw = owner.rawBlobs.get(`sha256:${match[2]}`);
+      let raw = owner.rawBlobs.get(`sha256:${rawDigest}`);
       assert.ok(raw);
       if (fault === "raw-copy") raw = Buffer.from("changed");
-      await fs.writeFile(destination, raw, { flag: "wx", mode: 0o600 });
-      return result();
+      return result(raw);
     }
+    if (operation === "cp") throw new Error("docker cp cannot read the tmpfs handoff");
     if (operation === "stop") return result("", fault === "stop" ? 1 : 0);
     if (operation === "rm") { containers.delete(id); return result(`${id}\n`); }
     throw new Error(`unexpected offline process ${command} ${argv.join(" ")}`);
@@ -230,18 +232,20 @@ test("downstream diff reader accepts only empty or the fixed no-difference marke
   assert.equal(expectedNoDifferenceOutput(Buffer.from("No difference detected.\nALTER TABLE x;")), false);
 });
 
-test("transfers large host source and individual raw subjects without an aggregate base64 packet", async (t) => {
+test("reads exact and empty raw subjects from tmpfs without an aggregate base64 packet", async (t) => {
   const f = await fixture(t, "large");
   const output = await produceManualExpectedSchema(f.input, { runProcess: f.runProcess });
   assert.equal(output.sourceSchemaBytes.length, 462831);
   assert.equal(output.scriptBytes.length, 400000);
   assert.ok(output.producerRecordBytes.length <= 1048576);
-  assert.ok(f.calls.some((c) => c.argv.includes("cp")));
+  assert.ok(f.calls.some((c) => c.argv.includes("exec")));
+  assert.equal(f.calls.some((c) => c.argv.includes("cp")), false);
+  assert.ok([...output.rawBlobs.values()].some((raw) => raw.length === 0));
   assert.ok([...output.rawBlobs.values()].reduce((sum, b) => sum + b.length, 0) > 1048576);
   assert.equal(f.containers.size, 0);
 });
 
-test("rejects missing real PID, pre-creation process times and altered copied raw bytes", async (t) => {
+test("rejects missing real PID, pre-creation process times and altered streamed raw bytes", async (t) => {
   for (const fault of ["missing-pid", "time", "raw-copy"]) {
     const f = await fixture(t, fault);
     await assert.rejects(produceManualExpectedSchema(f.input, { runProcess: f.runProcess }));

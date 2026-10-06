@@ -150,6 +150,21 @@ const rejected = (promise, code) => assert.rejects(promise, (error) => {
   return true;
 });
 
+test("anonymous STS requests retain the required timestamp and a distinct nonce per role", async () => {
+  const f = fixture();
+  await f.open();
+  const requests = f.http.slice(1).map(({ options }) => new URLSearchParams(options.body));
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    assert.equal(request.get("Timestamp"), "2026-09-27T01:00:01Z");
+    assert.match(request.get("SignatureNonce"), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+    for (const name of ["AccessKeyId", "Signature", "SignatureMethod", "SignatureVersion"]) {
+      assert.equal(request.has(name), false);
+    }
+  }
+  assert.notEqual(requests[0].get("SignatureNonce"), requests[1].get("SignatureNonce"));
+});
+
 test("creates once through writer and independently reads exact physical run namespace and metadata", async () => {
   const f = fixture(), storage = await f.open(), input = upload();
   assert.equal(f.clients.length, 2);
@@ -397,7 +412,7 @@ test("native readback refuses missing divergent malformed encoded or inconsisten
     ["missing request id", (f) => { delete f.responses.get("GetBucketPublicAccessBlock").headers["x-oss-request-id"]; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
     ["nonstring bounded header", (f) => { f.responses.get("GetObject").headers.date = ["Sun, 27 Sep 2026 01:00:01 GMT"]; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
     ["service storedAt after readback", (f) => { for (const op of ["GetObject", "HeadObject"]) f.responses.get(op).headers["last-modified"] = "Sun, 27 Sep 2026 01:00:02 GMT"; }, "MANUAL_BUILD_STORAGE_READBACK_INVALID"],
-    ["clock goes backwards", (f) => { let count = 0; f.dependencies.now = () => new Date(count++ < 3 ? now : now.getTime() - 1); }, "MANUAL_BUILD_STORAGE_CLOCK_INVALID"]
+    ["clock goes backwards", (f) => { f.dependencies.now = () => new Date(f.requests.length < 2 ? now : now.getTime() - 1); }, "MANUAL_BUILD_STORAGE_CLOCK_INVALID"]
   ];
   for (const [name, change, code] of cases) {
     const f = nativeFixture(); change(f); const storage = await f.open();

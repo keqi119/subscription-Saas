@@ -481,6 +481,7 @@ jobs:
           import { canonicalJson } from "./packages/release-foundation/src/index.mjs";
           import { createManualBuildCustodyStorage } from "./scripts/release/manual-build-custody-storage.mjs";
           import { produceManualTrustedBuildInputs } from "./scripts/release/manual-build-custody-producer.mjs";
+          let phase = "identity";
           try {
             if (process.env.SOURCE_SHA !== process.env.GITHUB_SHA) throw new Error("source");
             const buildIdentity = { sourceSha: process.env.GITHUB_SHA, repository: process.env.GITHUB_REPOSITORY,
@@ -488,11 +489,14 @@ jobs:
               runId: process.env.GITHUB_RUN_ID, runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
               protectedEnvironment: "trusted-image-build" };
             const verifiedProofAttestationBytes = await readFile(".release-output/build-proof-attestation-verification.json");
+            phase = "storage";
             const storage = await createManualBuildCustodyStorage({ buildIdentity });
+            phase = "custody";
             const output = await produceManualTrustedBuildInputs({ repoRoot: process.cwd(),
               proofBytes: await readFile(".release-output/build-proof.v1.json"),
               materialBytes: await readFile(".release-output/build-material-observation.v1.json"),
               verifiedProofAttestationBytes, verifiedProofAttestation: JSON.parse(verifiedProofAttestationBytes), buildIdentity, storage });
+            phase = "persist";
             const directory = ".release-local/same-job-custody";
             await mkdir(`${directory}/raw`, { recursive: true, mode: 0o700 });
             for (const folder of [".release-local", directory, `${directory}/raw`]) await chmod(folder, 0o700);
@@ -503,8 +507,21 @@ jobs:
             for (const [digest, bytes] of output.rawBlobs) await put(`raw/${digest.slice(7)}.bin`, bytes);
             await put("inventory.pending.json", output.pendingBytes);
             await appendFile(process.env.GITHUB_OUTPUT, `pending-digest=${output.pendingDigest}\n`);
-          } catch {
-            console.error("MANUAL_TRUSTED_BUILD_INPUTS_FAILED"); process.exitCode = 1;
+          } catch (error) {
+            // Only fixed local codes; never print vendor errors, bodies or credentials.
+            const safeCodes = new Set([
+              "MANUAL_BUILD_STORAGE_IDENTITY_INVALID", "MANUAL_BUILD_STORAGE_DEBUG_UNSAFE",
+              "MANUAL_BUILD_STORAGE_OIDC_INVALID", "MANUAL_BUILD_STORAGE_OIDC_FAILED",
+              "MANUAL_BUILD_STORAGE_STS_INVALID", "MANUAL_BUILD_STORAGE_STS_FAILED",
+              "MANUAL_BUILD_STORAGE_CLIENT_INVALID", "MANUAL_BUILD_STORAGE_BUCKET_INVALID",
+              "MANUAL_BUILD_STORAGE_METADATA_INVALID", "MANUAL_BUILD_STORAGE_WRITE_FAILED",
+              "MANUAL_BUILD_STORAGE_READ_FAILED", "MANUAL_BUILD_STORAGE_READBACK_INVALID",
+              "MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID", "MANUAL_BUILD_CUSTODY_PROOF_RAW_INVALID",
+              "MANUAL_BUILD_CUSTODY_MATERIAL_RAW_INVALID", "MANUAL_BUILD_CUSTODY_IDENTITY_INVALID",
+              "EVIDENCE_OVERWRITE_REFUSED"
+            ]);
+            const code = safeCodes.has(error?.code) ? error.code : "UNCLASSIFIED";
+            console.error(`MANUAL_TRUSTED_BUILD_INPUTS_FAILED:${phase}:${code}`); process.exitCode = 1;
           }
           NODE
 

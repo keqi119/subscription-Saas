@@ -129,8 +129,19 @@ test("returns existing frozen retention90 receipt only after exact proof, receip
 });
 
 const certificate = (input) => input.verifiedProofAttestation[0].verificationResult.signature.certificate;
+
+test("accepts current gh string SAN while preserving the exact workflow binding", async () => {
+  const input = fixture();
+  certificate(input).subjectAlternativeName = certificate(input).subjectAlternativeName.value;
+  const receipt = await produceManualBuildCustody(input);
+  assert.equal(receipt.contentDigest, sha256Bytes(input.proofBytes));
+  assert.equal(input.objects.size, 3);
+});
+
 const materialKey = (input) => `evidence/${sha256Bytes(input.materialBytes).slice(7)}.json`;
 const failures = [
+  ["string SAN workflow differs", (i) => { certificate(i).subjectAlternativeName = certificate(i).subjectAlternativeName.value + "/other"; }, "MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID"],
+  ["legacy SAN is not URI", (i) => { certificate(i).subjectAlternativeName.type = "DNS"; }, "MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID"],
   ["actual checkout differs", (i) => { i.buildIdentity.sourceSha = "9".repeat(40); }, "MANUAL_BUILD_CUSTODY_IDENTITY_INVALID"],
   ["identity has dispatch field", (i) => { i.buildIdentity.bucket = "caller"; }, "MANUAL_BUILD_CUSTODY_IDENTITY_INVALID"],
   ["certificate source differs", (i) => { certificate(i).sourceRepositoryDigest = "9".repeat(40); }, "MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID"],

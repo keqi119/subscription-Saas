@@ -843,8 +843,9 @@ function attestation(
     caller = `https://github.com/${REPOSITORY}/${workflow.caller}@refs/heads/main`;
   requireThat(
     cert?.issuer === ISSUER &&
-      cert?.subjectAlternativeName?.type === "URI" &&
-      cert.subjectAlternativeName.value === signer &&
+      (cert?.subjectAlternativeName === signer ||
+        (cert?.subjectAlternativeName?.type === "URI" &&
+          cert.subjectAlternativeName.value === signer)) &&
       cert.buildSignerURI === signer &&
       cert.buildSignerDigest === sourceSha &&
       cert.runnerEnvironment === "github-hosted" &&

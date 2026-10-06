@@ -80,8 +80,10 @@ function proofAttestationRef(output, { proofDigest, sourceSha, runRef, earliest,
   const cert = result?.signature?.certificate;
   const statement = result?.statement;
   const signer = `https://github.com/${REPOSITORY}/${WORKFLOW}@${SOURCE_REF}`;
-  if (cert?.issuer !== ISSUER || cert?.subjectAlternativeName?.type !== "URI" ||
-      cert.subjectAlternativeName.value !== signer || cert.buildSignerURI !== signer ||
+  if (cert?.issuer !== ISSUER ||
+      !(cert.subjectAlternativeName === signer ||
+        (cert.subjectAlternativeName?.type === "URI" && cert.subjectAlternativeName.value === signer)) ||
+      cert.buildSignerURI !== signer ||
       cert.buildSignerDigest !== sourceSha || cert.runnerEnvironment !== "github-hosted" ||
       cert.sourceRepositoryURI !== `https://github.com/${REPOSITORY}` ||
       cert.sourceRepositoryDigest !== sourceSha || cert.sourceRepositoryRef !== SOURCE_REF ||

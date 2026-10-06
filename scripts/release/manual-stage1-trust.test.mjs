@@ -2789,6 +2789,19 @@ test("H2 PRODUCED rejects internally bound legacy github run reference before cu
   noAuthorityAccess(f);
 });
 
+test("H2 accepts current gh string SAN for independently verified proof and receipt", async (t) => {
+  verifier();
+  const f = await buildFixture(t);
+  for (const output of [f.gh.proof, f.gh.receipt]) {
+    const cert = output[0].verificationResult.signature.certificate;
+    cert.subjectAlternativeName = cert.subjectAlternativeName.value;
+  }
+  const result = await verifyFixture(f);
+  assert.equal(result.buildProofDigest, sha256Canonical(f.proof));
+  assert.equal(result.promotionEligible, false);
+  noAuthorityAccess(f);
+});
+
 test("H2 accepts two independently verified same-run subjects while separating raw and canonical proof digests", async (t) => {
   verifier();
   const f = await buildFixture(t);

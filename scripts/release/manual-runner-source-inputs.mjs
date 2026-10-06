@@ -2661,8 +2661,9 @@ function expectedGhResult({ subject, p, processResult, startedAt, argvRaw, stdou
       "https://github.com/keqi119/subscription-Saas/.github/workflows/docker-images.yml@refs/heads/main";
   expectedRequire(
     cert?.issuer === "https://token.actions.githubusercontent.com" &&
-      cert.subjectAlternativeName?.type === "URI" &&
-      cert.subjectAlternativeName.value === signer &&
+      (cert.subjectAlternativeName === signer ||
+        (cert.subjectAlternativeName?.type === "URI" &&
+          cert.subjectAlternativeName.value === signer)) &&
       cert.buildSignerURI === signer &&
       cert.buildSignerDigest === p.sourceSha &&
       cert.runnerEnvironment === "github-hosted" &&

@@ -53,3 +53,15 @@ writer 仅生成精确对象 PutObject、HTTPS/private ACL 条件；reader 的 H
 本轮新增 RAM 初始化批准已落实，无待答复问题。下一步是实际有限原件归档流程、独立 writer/reader 进程和真实资源 readback，冻结完整对象键后另给用户精确 RAM 差额。需对齐原始人工/API 证据的归档类型及 reader 所需实际 ACL 等只读动作，不能只靠本轮的 schema-tagged proof 编译器宣称 I0 完成。继而接 dispatch 签发/当前撤销源、固定 root policy、JIT 与完整 attempt、三个真实 jobs、实际 producer、同候选 R2/R3、两条获准迁移和 R4。
 
 已安装 H1 控制包仍是上一轮 `cf12e7ac2bc26b4c008d78a4447d14ef5ce352b11d94b0dfdd148f2cd12761db`；本轮尚未重装新增合同/工具。生产 dispatch checkpoint 未初始化，旧明文 sanitized-snapshot workflow 仍禁止触发。阶段 1 保持未完成。
+
+## 2026-10-06 专用凭据安装增量
+
+上述 2026-10-05 的零凭据状态保留为历史。按原精确草案内已批准的凭据范围，为现有 dispatch 两份原件的后续归档准备 writer/reader 专用凭据；执行范围遵循 [dispatch 证据范围核对](2026-10-06-stage1-dispatch-evidence-scope.md)，不扩展为完整 I0 bootstrap。
+
+`379441` 于 01:55:04Z 实际核验主卷和恢复卷的固定 LUKS UUID、挂载来源与保护选项、目标路径为空，并确认 swap/core 保护及结束后的卸载、mapper 关闭和设置恢复。随后 `8ca9f8` 在独占本机锁内，逐用户核实管理账号及零 AccessKey 后各创建一把 Active 凭据，立即以 CurrentUser DPAPI 和本人专有 ACL 保全。writer/reader 创建 RequestId 分别为 `01A10EEC-497B-5E30-A213-69FA3419B4AE`、`01A10EEC-54D7-598B-AF8B-14C86968E9A0`；没有第二次创建或凭据输出。
+
+`1b9cda` 于 01:55:42Z 通过私有 SSH stdin 交付后，在再次核验的两个加密卷内保存到草案规定的 `credential/evidence-archive-writer/config.json` 与 `credential/evidence-archive-reader/config.json`。四份文件均为 root:root 0600、目录 0700；独立读回字节、元数据及跨卷一致性通过。两份本机保全为 `Stage1VaultKeys/archive-writer.dpapi`、`Stage1VaultKeys/archive-reader.dpapi`，不包含于仓库。固定 H1 安装脚本 SHA-256 为 `f95876c77026ee0fb0bcc9ab2220e61103c185df6a0c11f3aeb60ac76c0ed375`。
+
+独立 RAM 回读 `50b6c0` 确认每用户恰好一把 Active 凭据、两角色附加策略仍为空；独立 SSH `67980f` 确认两个挂载及 mapper 均已关闭、两个 swap 已恢复、临时 core guard 已移除、Staging PostgreSQL healthy。非秘密记录保留于 `.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/archive-credential-*-result.json` 和 `archive-credential-independent-ram-readback.json`。
+
+实施前的限定审查已修正本机并发锁、保护探针记录的 ACL、私有 stdin 的超时，以及官方 CreateAccessKey 响应不含 UserName 的兼容问题；这些修正均发生于首次真实创建之前。此增量只证明凭据的受控创建和加密安装，尚未授予 OSS 对象权限、验证归档 STS 会话或产生真实归档保管结论。实际对象键冻结后仍按用户要求提交精确 RAM 差额。

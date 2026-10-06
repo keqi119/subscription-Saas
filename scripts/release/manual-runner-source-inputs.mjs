@@ -1943,6 +1943,9 @@ function expectedProvenanceShape(p, facts, proof) {
     expectedRequire(exact(p[key], ["path", "raw"]) && p[key].path === location);
     expectedRawRef(p[key].raw);
   }
+  const runnerBases = expectedJson(facts.fixed.materialBytes).images?.find(
+    (image) => image.name === "runner"
+  )?.baseImageDigests;
   expectedRequire(
     exact(p.toolchain, [
       "runnerImageDigest",
@@ -1954,8 +1957,14 @@ function expectedProvenanceShape(p, facts, proof) {
     ]) &&
       p.toolchain.runnerImageDigest === proof.identity.images.runner.imageDigest &&
       p.toolchain.postgresImageDigest === expectedPgDigest &&
-      proof.provenance.baseImages.some(
-        (v) => v.name === "postgres:17.11-bookworm" && v.resolvedDigest === expectedPgDigest
+      Array.isArray(runnerBases) &&
+      runnerBases.some(
+        (base) =>
+          base.image === "postgres:17.11-bookworm" &&
+          base.declaredDigest === expectedPgDigest &&
+          proof.provenance.baseImages.some(
+            (v) => v.name === base.image && v.resolvedDigest === base.digest
+          )
       ) &&
       /^v22\.\d+\.\d+$/u.test(p.toolchain.nodeVersion) &&
       /^17\.11(?: \([^()]+\))?$/u.test(p.toolchain.postgresqlVersion) &&
@@ -3250,5 +3259,6 @@ export {
   expectedOrder,
   expectedGhArgv,
   expectedGhResult,
+  expectedProvenanceShape,
   openManualExpectedSchemaInputs
 };

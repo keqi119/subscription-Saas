@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import test from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -7,6 +8,7 @@ import { URL } from "node:url";
 import { canonicalJson, computeMigrationCatalog, computeRepositoryContract, sha256Bytes } from "../../packages/release-foundation/src/index.mjs";
 import { createBuildProof } from "./create-build-proof.mjs";
 import { produceManualExpectedSchema, runReferenceExpectedSchema } from "./manual-expected-schema-producer.mjs";
+import { expectedProvenanceShape } from "./manual-runner-source-inputs.mjs";
 
 const sourceSha = "1".repeat(40);
 const digest = (c) => `sha256:${c.repeat(64)}`;
@@ -15,7 +17,7 @@ const pgBase = "postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6
 let fakePid = 1000;
 const result = (stdout = "", exitCode = 0) => { const time = new Date().toISOString(); return { stdout: Buffer.from(stdout), stderr: Buffer.alloc(0), exitCode, signal: null, pid: ++fakePid, preparedAt: time, spawnedAt: time, closedAt: time }; };
 
-export async function fixture(t, fault) {
+export async function fixture(t, fault, baseBinding = "index") {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "expected-schema-test-"));
   t.after(() => fs.rm(repoRoot, { recursive: true, force: true }));
   async function put(file, bytes) { await fs.mkdir(path.dirname(path.join(repoRoot, file)), { recursive: true }); await fs.writeFile(path.join(repoRoot, file), bytes); }
@@ -32,11 +34,20 @@ export async function fixture(t, fault) {
   const contract = await computeRepositoryContract(repoRoot);
   const ciRunRef = "https://github.com/keqi119/subscription-Saas/actions/runs/2801";
   const bases = [nodeBase, pgBase].map((base) => { const [image, hex] = base.split("@sha256:"); return { image, declaredDigest: `sha256:${hex}`, digest: `sha256:${hex}` }; });
+  if (baseBinding === "platform") {
+    bases[0].digest = "sha256:8607a9064d4a571140998ae9e52a3b3fcf9cff361d04642d5971e6cd76d39e27";
+    bases[1].digest = "sha256:7bade6d532592ca8ce7ee32def7399dad2607c4ea5583839fc4352a095a11ea6";
+  } else if (baseBinding === "wrong-declared") {
+    bases[1].declaredDigest = digest("8");
+  }
   const material = { schemaVersion: "build-material-observation.v1", sourceSha, checkoutRef: sourceSha, ciRunRef,
     repositoryContractDigest: contract.digest, migrationCatalogDigest: catalog.digest, policyDigest: digest("f"), promotionEligibility: "trusted-candidate",
     images: ["api", "web", "runner"].map((name, i) => { const image = `ghcr.io/keqi119/subscription-${name}`, d = digest(String(i + 1)); return { name, image, platform: "linux/amd64", digest: d, sourceRevision: sourceSha, baseImageDigests: bases, builderName: "https://mobyproject.org/buildkit@v1", buildAttestationRef: `oci://${image}@${d}#provenance=${digest("c")}`, registrySubject: `${image}@${d}`, buildRunRef: ciRunRef }; }),
     externalActions: [{ name: "actions/checkout", commitSha: "2".repeat(40) }], builder: { name: "https://mobyproject.org/buildkit@v1", provenanceRef: `build-material-attestations:${digest("4")}` }, observedAt: "2026-09-02T16:00:00.000Z" };
-  const proof = createBuildProof({ sourceSha, images: material.images, migrationCatalog: catalog, repositoryContract: contract, provenance: { generatedAt: material.observedAt, ciRunRef, attestationRef: material.builder.provenanceRef, checkoutRef: sourceSha, buildMaterialObservation: material } });
+  const proof = globalThis.structuredClone(createBuildProof({ sourceSha, images: material.images, migrationCatalog: catalog, repositoryContract: contract, provenance: { generatedAt: material.observedAt, ciRunRef, attestationRef: material.builder.provenanceRef, checkoutRef: sourceSha, buildMaterialObservation: material } }));
+  if (baseBinding === "wrong-resolved") {
+    proof.provenance.baseImages.find((base) => base.name === "postgres:17.11-bookworm").resolvedDigest = digest("8");
+  }
   const calls = [], containers = new Map();
   let ordinal = 0;
   async function runProcess(command, argv, options) {
@@ -112,6 +123,38 @@ export async function fixture(t, fault) {
   }
   return { input: { repoRoot, proofBytes: Buffer.from(canonicalJson(proof)), materialBytes: Buffer.from(canonicalJson(material)), buildIdentity: { sourceSha, repository: "keqi119/subscription-Saas", workflowPath: ".github/workflows/docker-images.yml", sourceRef: "refs/heads/main", runId: "2801", runAttempt: 1, protectedEnvironment: "trusted-image-build" } }, runProcess, calls, containers };
 }
+
+test("accepts declared image indexes bound to distinct linux/amd64 digests by material and proof", async (t) => {
+  const f = await fixture(t, undefined, "platform");
+  const output = await produceManualExpectedSchema(f.input, { runProcess: f.runProcess });
+  const record = JSON.parse(output.producerRecordBytes);
+  assert.equal(record.toolchain.postgresImageDigest, pgBase.split("@")[1]);
+  assert.equal(f.calls.filter((c) => c.argv.includes("create")).length, 2);
+  assert.equal(f.containers.size, 0);
+});
+
+test("downstream provenance validates declared Postgres index through material to resolved proof", async (t) => {
+  const f = await fixture(t, undefined, "platform");
+  const output = await produceManualExpectedSchema(f.input, { runProcess: f.runProcess });
+  const record = JSON.parse(output.producerRecordBytes), proof = JSON.parse(f.input.proofBytes);
+  const facts = { build: { buildProofDigest: record.buildProofDigest, proofRawDigest: sha256Bytes(f.input.proofBytes) }, fixed: { proofBytes: f.input.proofBytes, materialBytes: f.input.materialBytes } };
+  assert.equal(expectedProvenanceShape(record, facts, proof), "2801");
+  const wrongMaterial = JSON.parse(f.input.materialBytes);
+  wrongMaterial.images.find((image) => image.name === "runner").baseImageDigests.find((base) => base.image === "postgres:17.11-bookworm").declaredDigest = digest("8");
+  assert.throws(() => expectedProvenanceShape(record, { ...facts, fixed: { ...facts.fixed, materialBytes: Buffer.from(canonicalJson(wrongMaterial)) } }, proof), { code: "MANUAL_EXPECTED_SCHEMA_SOURCE_INVALID" });
+});
+
+test("rejects a declared index that does not match the pinned Dockerfile", async (t) => {
+  const f = await fixture(t, undefined, "wrong-declared");
+  await assert.rejects(produceManualExpectedSchema(f.input, { runProcess: f.runProcess }), { code: "MANUAL_EXPECTED_SCHEMA_TOOLCHAIN_INVALID" });
+  assert.equal(f.calls.some((c) => c.argv.includes("create")), false);
+});
+
+test("rejects a proof resolved digest that differs from bound material", async (t) => {
+  const f = await fixture(t, undefined, "wrong-resolved");
+  await assert.rejects(produceManualExpectedSchema(f.input, { runProcess: f.runProcess }), { code: "BUILD_PROOF_PROVENANCE_MISMATCH" });
+  assert.equal(f.calls.length, 0);
+});
 
 test("orchestrates two fresh pinned references and preserves exact subjects with closed unpublished provenance", async (t) => {
   const f = await fixture(t);

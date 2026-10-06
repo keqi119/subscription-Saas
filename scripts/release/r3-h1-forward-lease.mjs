@@ -10,7 +10,11 @@ import {
   sha256Bytes,
   sha256Canonical
 } from "../../packages/release-foundation/src/index.mjs";
-import { loadFixedManualProfile, readFixedR3JobAdmission } from "./manual-stage1-trust.mjs";
+import {
+  borrowFixedR3JobAdmission,
+  loadFixedManualProfile,
+  readFixedR3JobAdmission
+} from "./manual-stage1-trust.mjs";
 
 const CODE = "R3_H1_FORWARD_LEASE_UNAVAILABLE";
 const SHUTDOWN_CODE = "R3_H1_FORWARD_SHUTDOWN_UNVERIFIED";
@@ -279,7 +283,7 @@ async function transport(preinstall) {
   }
 }
 
-export async function openR3H1ForwardLease(input) {
+export async function openR3H1ForwardLease(input, verifiedAdmission) {
   let admission,
     key,
     locks = [],
@@ -321,7 +325,9 @@ export async function openR3H1ForwardLease(input) {
         typeof input.operationRef === "string" &&
         UUID.test(input.operationRef)
     );
-    admission = await readFixedR3JobAdmission(input);
+    admission = verifiedAdmission
+      ? await borrowFixedR3JobAdmission(verifiedAdmission, input)
+      : await readFixedR3JobAdmission(input);
     const profile = await loadFixedManualProfile({ repoRoot: input.repoRoot });
     need(sha256Canonical(profile) === admission.spec.profileDigest);
     const scope = Object.freeze({

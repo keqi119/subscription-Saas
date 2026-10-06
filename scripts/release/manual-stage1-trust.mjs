@@ -36,6 +36,7 @@ const ROOTS = ["keyRoot", "journalRoot", "archiveRoot", "backupRoot", "credentia
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const REPOSITORY = "keqi119/subscription-Saas";
+const fixedR3JobOwners = new WeakMap();
 const WORKFLOW = ".github/workflows/docker-images.yml";
 const ISSUER = "https://token.actions.githubusercontent.com";
 const SYSTEM = "C:\\Windows\\System32\\";
@@ -1656,7 +1657,7 @@ export async function readFixedR3JobAdmission(input) {
       }
     };
     const readback = await recheck();
-    return Object.freeze({
+    const owner = Object.freeze({
       admission: freeze(admission),
       jobAdmissionDigest: sha256Bytes(held.bytes),
       creationSpecDigest: creation.creationSpecDigest,
@@ -1673,8 +1674,43 @@ export async function readFixedR3JobAdmission(input) {
       recheck,
       close
     });
+    fixedR3JobOwners.set(owner, { repoRoot, operationRef, isClosed: () => closed });
+    return owner;
   } catch {
     await close();
+    fail(code);
+  }
+}
+
+export async function borrowFixedR3JobAdmission(owner, selector) {
+  const code = "R3_JOB_ADMISSION_UNAVAILABLE";
+  try {
+    exact(selector, ["repoRoot", "operationRef"]);
+    const registered = fixedR3JobOwners.get(owner);
+    requireThat(
+      registered &&
+        !registered.isClosed() &&
+        absolute(selector.repoRoot) === registered.repoRoot &&
+        selector.operationRef === registered.operationRef &&
+        UUID.test(selector.operationRef),
+      code
+    );
+    await owner.recheck();
+    requireThat(!registered.isClosed(), code);
+    let closed = false;
+    return Object.freeze({
+      ...owner,
+      recheck: async () => {
+        requireThat(!closed, code);
+        const result = await owner.recheck();
+        requireThat(!closed && !registered.isClosed(), code);
+        return result;
+      },
+      close: async () => {
+        closed = true;
+      }
+    });
+  } catch {
     fail(code);
   }
 }
@@ -2807,7 +2843,7 @@ export async function importR3HostedCleanupEvidence(input) {
 // Creation has no future destination facts. Its fixed live job and creation
 // plan establish the scope before the existing H1 signing key is opened. The
 // session itself owns the original revocation/consumption journal and locks.
-export async function openTrustedR3CreationSession(input) {
+export async function openTrustedR3CreationSession(input, verifiedAdmission) {
   const code = "R3_CREATION_SESSION_UNAVAILABLE";
   let fixed,
     session,
@@ -2868,7 +2904,9 @@ export async function openTrustedR3CreationSession(input) {
     );
     const repoRoot = absolute(input.repoRoot),
       operationRef = input.operationRef;
-    fixed = await readFixedR3JobAdmission({ repoRoot, operationRef });
+    fixed = verifiedAdmission
+      ? await borrowFixedR3JobAdmission(verifiedAdmission, { repoRoot, operationRef })
+      : await readFixedR3JobAdmission({ repoRoot, operationRef });
     const profile = await loadFixedManualProfile({ repoRoot }),
       { principal } = await actualHost(),
       spec = fixed.spec,

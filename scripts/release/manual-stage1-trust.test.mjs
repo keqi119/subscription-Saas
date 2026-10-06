@@ -1066,7 +1066,8 @@ async function buildFixture(
     canonicalProof = false,
     extraEntrypoints = [],
     r3TargetPolicy = false,
-    sourceReadback = false
+    sourceReadback = false,
+    historicalModuleVersion = false
   } = {}
 ) {
   const f = await fixture(t);
@@ -1082,6 +1083,11 @@ async function buildFixture(
     await fs.copyFile(
       new URL(`./${path.basename(file)}`, import.meta.url),
       path.join(f.repoRoot, file)
+    );
+  if (historicalModuleVersion)
+    await fs.appendFile(
+      path.join(f.repoRoot, "scripts/release/manual-stage1-trust.mjs"),
+      "\n// Historical verified source version.\n"
     );
   const extraContracts = [];
   if (r3TargetPolicy) {
@@ -1489,11 +1495,14 @@ async function r3CreationFixture(
     phase = "source",
     chain = "snapshot",
     sourceReadback = false,
+    historicalModuleVersion = false,
     base = null,
     observedAgoMs = 0
   } = {}
 ) {
-  const f = base ?? (await buildFixture(t, { r3TargetPolicy: true, sourceReadback }));
+  const f =
+    base ??
+    (await buildFixture(t, { r3TargetPolicy: true, sourceReadback, historicalModuleVersion }));
   const policyBytes = await fs.readFile(
     path.join(f.repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json")
   );
@@ -1895,6 +1904,124 @@ test(
     noAuthorityAccess(f);
   }
 );
+
+for (const mutation of [
+  "none",
+  "unknown-binding",
+  "old-head",
+  "old-contract",
+  "verifier-bytes",
+  "verifier-head"
+])
+  test(
+    `R3 HISTORY CONTEXT older source binding: ${mutation}`,
+    { skip: process.platform !== "linux" },
+    async (t) => {
+      const f = await r3JobFixture(t, {
+        phase: "source",
+        chain: "fresh",
+        historicalModuleVersion: true
+      });
+      const verifierRoot = path.join(f.root, "verifier");
+      await git(f.root, "clone", f.repoRoot, verifierRoot);
+      await fs.copyFile(
+        new URL("./manual-stage1-trust.mjs", import.meta.url),
+        path.join(verifierRoot, "scripts/release/manual-stage1-trust.mjs")
+      );
+      await git(verifierRoot, "add", "--all");
+      await git(verifierRoot, "commit", "--no-verify", "-m", "Current verifier version");
+      const incident = await import("../../packages/release-foundation/src/manual-r3-incident.mjs");
+      let bindingInput;
+      const binding = t.mock.module(
+        "../../packages/release-foundation/src/manual-r3-incident.mjs",
+        {
+          namedExports: {
+            ...incident,
+            approvedR3HistoricalSourceBinding(input) {
+              bindingInput = input;
+              return mutation === "unknown-binding" ? null : f.repoRoot;
+            }
+          }
+        }
+      );
+      t.after(() => binding.restore());
+      const isolated = await import(
+        `./manual-stage1-trust.mjs?historical-source-binding-${mutation}`
+      );
+      assert.deepEqual(
+        await isolated.loadFixedManualProfile({ repoRoot: verifierRoot }),
+        f.profile
+      );
+      const latestExecutionAt = new Date().toISOString();
+      f.apiRun.status = f.apiJob.status = "completed";
+      f.apiRun.conclusion = f.apiJob.conclusion = "success";
+      f.apiJob.completed_at = latestExecutionAt;
+      const scope = {
+        targetPolicyDigest: f.spec.targetPolicyDigest,
+        creationSpecDigest: sha256Bytes(f.specBytes),
+        jobAdmissionDigest: sha256Bytes(f.admissionBytes),
+        buildProofDigest: f.spec.buildProofDigest,
+        sourceSha: f.sourceSha,
+        phase: f.spec.phase,
+        chain: f.spec.chain
+      };
+      const input = {
+        repoRoot: verifierRoot,
+        operationRef: f.operationRef,
+        scope,
+        latestExecutionAt
+      };
+      if (mutation === "unknown-binding") {
+        await assert.rejects(isolated.readTrustedR3HistoricalContext(input), {
+          code: "R3_HISTORY_CONTEXT_UNAVAILABLE"
+        });
+        assert.ok(bindingInput);
+        noAuthorityAccess(f);
+        return;
+      }
+      const held = await isolated.readTrustedR3HistoricalContext(input);
+      assert.deepEqual(bindingInput, {
+        operationRef: f.operationRef,
+        profileDigest: sha256Canonical(f.profile),
+        sourceSha: f.sourceSha,
+        proofRawDigest: sha256Bytes(f.proofBytes),
+        materialRawDigest: sha256Bytes(f.materialBytes),
+        creationSpecDigest: sha256Bytes(f.specBytes),
+        jobAdmissionDigest: sha256Bytes(f.admissionBytes)
+      });
+      t.after(() => held.close());
+      await held.recheck();
+      await assert.rejects(
+        isolated.verifyManualBuild({
+          repoRoot: verifierRoot,
+          proofBytes: f.proofBytes,
+          materialBytes: f.materialBytes
+        }),
+        { code: "TRUSTED_BUILD_UNAVAILABLE" }
+      );
+      if (mutation === "old-head" || mutation === "verifier-head") {
+        const target = mutation === "old-head" ? f.repoRoot : verifierRoot;
+        await git(
+          target,
+          "commit",
+          "--allow-empty",
+          "--no-verify",
+          "-m",
+          "Changed source identity"
+        );
+      } else if (mutation === "old-contract") {
+        await fs.appendFile(path.join(f.repoRoot, profileName), "\n");
+      } else if (mutation === "verifier-bytes") {
+        await fs.appendFile(
+          path.join(verifierRoot, "scripts/release/manual-stage1-trust.mjs"),
+          "\n// changed\n"
+        );
+      }
+      if (mutation !== "none")
+        await assert.rejects(held.recheck(), { code: "R3_HISTORY_CONTEXT_UNAVAILABLE" });
+      noAuthorityAccess(f);
+    }
+  );
 
 test("R3 JOB API rejects overrides and accessors before native IO", async (t) => {
   assert.equal(typeof trust.readFixedR3JobAdmission, "function");

@@ -23,6 +23,7 @@ import {
   verifyR3HostedEvidence,
   verifyR3HostedCleanupEvidence
 } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
+import { approvedR3HistoricalSourceBinding } from "../../packages/release-foundation/src/manual-r3-incident.mjs";
 
 const LIMIT = 1048576;
 const H1 = "H1_INPUT_UNAVAILABLE";
@@ -805,6 +806,29 @@ async function checkoutSource(repoRoot, sourceSha) {
   requireThat((await output("rev-parse", "--verify", "HEAD")) === sourceSha);
   requireThat((await output("status", "--porcelain=v1", "--untracked-files=all")) === "");
 }
+async function checkoutCurrentVerifier(repoRoot) {
+  const sourceSha = new TextDecoder("utf-8", { fatal: true })
+    .decode(
+      await processOutput(
+        "git",
+        [
+          "--no-optional-locks",
+          "-c",
+          "core.fsmonitor=false",
+          "-C",
+          repoRoot,
+          "rev-parse",
+          "--verify",
+          "HEAD"
+        ],
+        { timeout: 10000, env: fixedProcessEnvironment("git") }
+      )
+    )
+    .trim();
+  requireThat(/^[0-9a-f]{40}$/u.test(sourceSha));
+  await checkoutSource(repoRoot, sourceSha);
+  return sourceSha;
+}
 function fixedProcessEnvironment(kind) {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([name]) =>
@@ -965,21 +989,37 @@ export async function verifyManualBuild(input) {
   return verifyManualBuildInput(input, true);
 }
 
-async function verifyManualBuildInput(input, requireCurrentValidity) {
+async function verifyManualBuildInput(
+  input,
+  requireCurrentValidity,
+  verifierRepoRoot = input.repoRoot
+) {
   const opened = [];
   try {
     exact(input, ["proofBytes", "materialBytes", "repoRoot"]);
     const profile = await loadManualProfile({ repoRoot: input.repoRoot }, requireCurrentValidity);
+    const separateVerifier = verifierRepoRoot !== input.repoRoot;
+    if (separateVerifier) {
+      requireThat(
+        typeof verifierRepoRoot === "string" && absolute(verifierRepoRoot) === verifierRepoRoot
+      );
+      requireThat(
+        equal(
+          await loadManualProfile({ repoRoot: verifierRepoRoot }, requireCurrentValidity),
+          profile
+        )
+      );
+    }
     const proofBytes = inputBytes(input.proofBytes),
       materialBytes = inputBytes(input.materialBytes);
     const proofRawDigest = sha256Bytes(proofBytes),
       materialRawDigest = sha256Bytes(materialBytes);
     const { principal } = await actualHost();
-    const read = async (file, privateRoot) => {
+    const read = async (file, privateRoot, sourceRoot = input.repoRoot) => {
       const snapshot = await openInput(file, {
         principal,
         privateRoot,
-        sourceRoot: privateRoot ? undefined : input.repoRoot
+        sourceRoot: privateRoot ? undefined : sourceRoot
       });
       opened.push(snapshot);
       return snapshot;
@@ -1042,13 +1082,41 @@ async function verifyManualBuildInput(input, requireCurrentValidity) {
       );
       sourceInputs.set(file, await read(path.join(input.repoRoot, ...file.split("/"))));
     }
-    // This closes accidental cross-checkout use; it is not a claim that a
-    // compromised verifier can establish its own integrity or replace H2's
-    // trusted execution environment.
-    for (const name of ["manual-stage1-trust.mjs", "verify-build-proof.mjs"]) {
-      const executing = await read(fileURLToPath(new URL(`./${name}`, import.meta.url)));
-      requireThat(executing.bytes.equals(sourceInputs.get(`scripts/release/${name}`).bytes));
+    // The public build verifier always compares against its proof checkout.
+    // Only the fixed historical reader may separately bind the executing
+    // verifier to its current checkout while authenticating the old source.
+    if (separateVerifier) {
+      const verifierProfile = await read(
+        path.join(verifierRepoRoot, PROFILE),
+        undefined,
+        verifierRepoRoot
+      );
+      const verifierOwner = await read(
+        path.join(verifierRepoRoot, OWNER),
+        undefined,
+        verifierRepoRoot
+      );
+      requireThat(equal(json(verifierProfile.bytes), profile));
+      requireThat(verifierOwner.bytes.equals(sourceInputs.get(OWNER).bytes));
     }
+    for (const name of ["manual-stage1-trust.mjs", "verify-build-proof.mjs"]) {
+      const executing = await read(
+        fileURLToPath(new URL(`./${name}`, import.meta.url)),
+        undefined,
+        verifierRepoRoot
+      );
+      const verifier = separateVerifier
+        ? await read(
+            path.join(verifierRepoRoot, "scripts/release", name),
+            undefined,
+            verifierRepoRoot
+          )
+        : sourceInputs.get(`scripts/release/${name}`);
+      requireThat(executing.bytes.equals(verifier.bytes));
+    }
+    const verifierSourceSha = separateVerifier
+      ? await checkoutCurrentVerifier(verifierRepoRoot)
+      : null;
     const inspectSource = async () => {
       requireThat(
         (await computeRepositoryContract(input.repoRoot)).digest ===
@@ -1059,6 +1127,7 @@ async function verifyManualBuildInput(input, requireCurrentValidity) {
           proof.identity.migrationCatalogDigest
       );
       await checkoutSource(input.repoRoot, proof.identity.sourceSha);
+      if (separateVerifier) await checkoutSource(verifierRepoRoot, verifierSourceSha);
     };
     await inspectSource();
     for (const item of opened) await item.recheck();
@@ -1121,7 +1190,11 @@ export async function readFixedR3TargetPolicy(input) {
   return readR3TargetPolicyInput(input, true);
 }
 
-async function readR3TargetPolicyInput(input, requireCurrentValidity) {
+async function readR3TargetPolicyInput(
+  input,
+  requireCurrentValidity,
+  verifierRepoRoot = input.repoRoot
+) {
   const code = "R3_TARGET_POLICY_INPUT_UNAVAILABLE";
   const opened = [];
   let closed = false,
@@ -1157,7 +1230,29 @@ async function readR3TargetPolicyInput(input, requireCurrentValidity) {
       return item.bytes;
     };
     requireThat(equal(json(await read(path.join(repoRoot, PROFILE))), profile));
-    await read(path.join(repoRoot, OWNER));
+    const ownerBytes = await read(path.join(repoRoot, OWNER));
+    let verifierSourceSha;
+    if (verifierRepoRoot !== repoRoot) {
+      const verifierOptions = { principal: actual.principal, sourceRoot: verifierRepoRoot };
+      requireThat(
+        equal(json(await read(path.join(verifierRepoRoot, PROFILE), verifierOptions)), profile)
+      );
+      requireThat(
+        (await read(path.join(verifierRepoRoot, OWNER), verifierOptions)).equals(ownerBytes)
+      );
+      for (const name of ["manual-stage1-trust.mjs", "verify-build-proof.mjs"]) {
+        const executing = await read(
+          fileURLToPath(new URL(`./${name}`, import.meta.url)),
+          verifierOptions
+        );
+        const current = await read(
+          path.join(verifierRepoRoot, "scripts/release", name),
+          verifierOptions
+        );
+        requireThat(executing.equals(current));
+      }
+      verifierSourceSha = await checkoutCurrentVerifier(verifierRepoRoot);
+    }
     const policyName = "release/contracts/manual-stage1-r3-target-policy.v1.json",
       targetsName = "release/contracts/database-target-policies.v1.json",
       suitesName = "release/contracts/database-test-manifest.v1.json",
@@ -1203,7 +1298,8 @@ async function readR3TargetPolicyInput(input, requireCurrentValidity) {
     );
     const build = await verifyManualBuildInput(
         { repoRoot, proofBytes, materialBytes },
-        requireCurrentValidity
+        requireCurrentValidity,
+        verifierRepoRoot
       ),
       proof = json(proofBytes);
     requireThat(build.custodyReceiptRawDigest === sha256Bytes(receiptBytes));
@@ -1229,6 +1325,7 @@ async function readR3TargetPolicyInput(input, requireCurrentValidity) {
           (await computeMigrationCatalog(repoRoot)).digest === proof.identity.migrationCatalogDigest
         );
         await checkoutSource(repoRoot, proof.identity.sourceSha);
+        if (verifierSourceSha) await checkoutSource(verifierRepoRoot, verifierSourceSha);
         for (const item of opened) await item.recheck();
         checkWindow();
         requireThat(!closed);
@@ -1800,6 +1897,15 @@ export async function readTrustedR3HistoricalContext(input) {
             (field) => spec[field] === scope[field]
           )
       );
+      const historicalSourceRoot = approvedR3HistoricalSourceBinding({
+        operationRef: context.operationRef,
+        profileDigest,
+        sourceSha: spec.sourceSha,
+        proofRawDigest: spec.proofRawDigest,
+        materialRawDigest: spec.materialRawDigest,
+        creationSpecDigest: scope.creationSpecDigest,
+        jobAdmissionDigest: scope.jobAdmissionDigest
+      });
       const policyKey = `${spec.proofRawDigest}/${spec.materialRawDigest}`;
       if (!policies.has(policyKey)) {
         const buildRoot = path.join(archiveRoot, "inputs", "build"),
@@ -1815,7 +1921,11 @@ export async function readTrustedR3HistoricalContext(input) {
         );
         policies.set(
           policyKey,
-          await readR3TargetPolicyInput({ repoRoot, proofBytes, materialBytes }, false)
+          await readR3TargetPolicyInput(
+            { repoRoot: historicalSourceRoot ?? repoRoot, proofBytes, materialBytes },
+            false,
+            repoRoot
+          )
         );
       }
       const policyInput = policies.get(policyKey),

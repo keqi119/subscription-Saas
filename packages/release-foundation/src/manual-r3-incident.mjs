@@ -65,6 +65,35 @@ export const APPROVED_R3_INCIDENT = freeze({
   executeNotAfter: "2026-10-07T06:53:54.742Z"
 });
 
+// The approved incident's original source is installed independently of later
+// verifier releases. This binding grants no authority; the historical reader
+// still authenticates every archived input, source file and CI attestation.
+const APPROVED_R3_HISTORICAL_SOURCE = freeze({
+  operationRef: "3b451859-631a-49d7-9059-d8051cb9e7d9",
+  profileDigest: "sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541",
+  sourceSha: "127a9eb281a65b216b53e863ad9734ac4650399e",
+  proofRawDigest: "sha256:08dbcfa5fba486e15e919745ce79c83145d0489faddba7325bd4bf5d6958ef16",
+  materialRawDigest: "sha256:601d61606ace6e4566c6ed632d06880ff0f9d2f7ba8f19793aaa4bfb07c15aab",
+  creationSpecDigest: "sha256:36ccc8274c9c5b3688581faf63a4346138b9fc9248eec2b715b34b559777de54",
+  jobAdmissionDigest: "sha256:211fdcd1327da1dae8dc348d70dc35f445f4173a65a964705dc29a8536e5129e",
+  sourceRoot: "/opt/stage1-r3-candidate-127a9eb"
+});
+
+export function approvedR3HistoricalSourceBinding(input) {
+  exact(input, [
+    "operationRef",
+    "profileDigest",
+    "sourceSha",
+    "proofRawDigest",
+    "materialRawDigest",
+    "creationSpecDigest",
+    "jobAdmissionDigest"
+  ]);
+  return Object.entries(input).every(([key, value]) => APPROVED_R3_HISTORICAL_SOURCE[key] === value)
+    ? APPROVED_R3_HISTORICAL_SOURCE.sourceRoot
+    : null;
+}
+
 export function r3IncidentFileIdentity(stat) {
   return Object.fromEntries(
     ["dev", "ino", "uid", "gid", "mode", "nlink", "size"].map((key) => [key, String(stat[key])])

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -24,8 +25,9 @@ const sourceSha = "1".repeat(40);
 const materialObservedAt = "2026-09-01T00:00:00.000Z";
 const generatedAt = "2026-09-01T00:00:01.000Z";
 const deliveryObservedAt = "2026-09-03T00:00:00.000Z";
+const runCreatedAt = "2026-09-01T23:42:00Z";
 const createdAt = "2026-09-02T00:00:00Z";
-const exact90ExpiresAt = "2026-12-01T00:00:00Z";
+const exact90ExpiresAt = "2026-11-30T23:42:00Z";
 const proofArtifactId = "9001";
 const evidenceArtifactId = "9002";
 const digest = (character) => `sha256:${character.repeat(64)}`;
@@ -146,7 +148,20 @@ function file(pathname, bytes) {
   return { path: pathname, bytes };
 }
 
+function runMetadata({ fixtureRunCreatedAt = runCreatedAt } = {}) {
+  return Buffer.from(
+    `${JSON.stringify({
+      id: Number(workflowRunId),
+      run_attempt: runAttempt,
+      head_sha: sourceSha,
+      repository: { full_name: repository },
+      created_at: fixtureRunCreatedAt
+    })}\n`
+  );
+}
+
 function deliveryFixture({
+  fixtureRunCreatedAt = runCreatedAt,
   fixtureCreatedAt = createdAt,
   fixtureExpiresAt = exact90ExpiresAt,
   fixtureRepository = repository,
@@ -195,6 +210,7 @@ function deliveryFixture({
       sourceSha,
       buildProofDigest
     },
+    runMetadataBytes: runMetadata({ fixtureRunCreatedAt }),
     entries: [
       {
         kind: "proof",
@@ -271,7 +287,7 @@ function replaceRunReferences(input, proofRunRef, materialRunRef = proofRunRef) 
   input.expected.buildProofDigest = sha256Canonical(updatedProof);
 }
 
-test("verifies exact producer/readback bytes at the 90-day boundary without promoting", () => {
+test("verifies upload-delayed producer/readback bytes at the run-based 90-day boundary", () => {
   const input = deliveryFixture();
   const result = verify(input);
   assert.deepEqual(result, {
@@ -280,6 +296,8 @@ test("verifies exact producer/readback bytes at the 90-day boundary without prom
     sourceSha,
     workflowRunId,
     runAttempt,
+    runCreatedAt,
+    runMetadataDigest: hash(input.runMetadataBytes),
     promotionEligible: false,
     authorityCustody: "INPUT_REQUIRED",
     artifacts: input.entries.map((candidate) => {
@@ -737,6 +755,36 @@ test("rejects 89 days of service-observed retention", () => {
   assert.throws(() => verify(input), { code: "BUILD_DELIVERY_RETENTION_INVALID" });
 });
 
+test("rejects expiration one millisecond before the run-based boundary", () => {
+  const input = deliveryFixture({ fixtureExpiresAt: "2026-11-30T23:41:59.999Z" });
+  assert.throws(() => verify(input), { code: "BUILD_DELIVERY_RETENTION_INVALID" });
+});
+
+for (const [field, value, code] of [
+  ["id", 2802, "BUILD_DELIVERY_RUN_MISMATCH"],
+  ["run_attempt", 2, "BUILD_DELIVERY_RUN_MISMATCH"],
+  ["head_sha", "9".repeat(40), "BUILD_DELIVERY_SOURCE_MISMATCH"],
+  ["repository", { full_name: "other/repository" }, "BUILD_DELIVERY_REPOSITORY_MISMATCH"]
+]) {
+  test(`rejects run metadata with mismatched ${field}`, () => {
+    const input = deliveryFixture();
+    const metadata = JSON.parse(input.runMetadataBytes);
+    metadata[field] = value;
+    input.runMetadataBytes = Buffer.from(`${JSON.stringify(metadata)}\n`);
+    assert.throws(() => verify(input), { code });
+  });
+}
+
+test("rejects an artifact uploaded before its run was created", () => {
+  const input = deliveryFixture({ fixtureRunCreatedAt: "2026-09-02T00:00:01Z" });
+  assert.throws(() => verify(input), { code: "BUILD_DELIVERY_RETENTION_INVALID" });
+});
+
+test("rejects an invalid run creation timestamp", () => {
+  const input = deliveryFixture({ fixtureRunCreatedAt: "2026-09-01T23:42:00+00:00" });
+  assert.throws(() => verify(input), { code: "BUILD_DELIVERY_RETENTION_INVALID" });
+});
+
 for (const observedAt of ["not-a-date", "2026-09-01T23:59:59.999Z", exact90ExpiresAt]) {
   test(`rejects delivery observation outside the live artifact interval: ${observedAt}`, () => {
     const input = deliveryFixture();
@@ -751,6 +799,7 @@ async function writeCliFixture({ oversizedAttestation = false } = {}) {
   const proofReadback = path.join(root, ".release-readback", "proof");
   const evidenceReadback = path.join(root, ".release-readback", "evidence");
   const input = deliveryFixture({
+    fixtureRunCreatedAt: "2019-12-31T23:42:00Z",
     fixtureCreatedAt: "2020-01-01T00:00:00Z",
     fixtureExpiresAt: "2099-01-01T00:00:00Z"
   });
@@ -779,6 +828,7 @@ async function writeCliFixture({ oversizedAttestation = false } = {}) {
     ),
     writeFile(path.join(output, "build-proof-artifact-metadata.json"), proof.metadataBytes),
     writeFile(path.join(output, "build-evidence-artifact-metadata.json"), supporting.metadataBytes),
+    writeFile(path.join(output, "build-run-metadata.json"), input.runMetadataBytes),
     writeFile(path.join(proofReadback, "build-proof.v1.json"), proof.readbackFiles[0].bytes),
     writeFile(
       path.join(evidenceReadback, "build-material-observation.v1.json"),
@@ -991,6 +1041,7 @@ test("CLI fixed file names match the workflow-owned delivery boundary", async ()
     ".release-output/build-proof-attestation-verification.json",
     ".release-output/build-proof-artifact-metadata.json",
     ".release-output/build-evidence-artifact-metadata.json",
+    ".release-output/build-run-metadata.json",
     ".release-readback/proof/build-proof.v1.json",
     ".release-readback/evidence/build-material-observation.v1.json",
     ".release-readback/evidence/build-proof-attestation-verification.json"

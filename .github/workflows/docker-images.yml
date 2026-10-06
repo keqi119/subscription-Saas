@@ -661,7 +661,7 @@ jobs:
           artifact-ids: ${{ steps.evidence-upload.outputs.artifact-id }}
           path: .release-readback/evidence
 
-      - name: Verify 90-day artifact delivery without claiming authority custody
+      - name: Verify run-based 90-day artifact delivery without claiming authority custody
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -678,6 +678,8 @@ jobs:
             > .release-output/build-proof-artifact-metadata.json
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$EVIDENCE_ARTIFACT_ID" \
             > .release-output/build-evidence-artifact-metadata.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            > .release-output/build-run-metadata.json
           node scripts/release/verify-build-delivery.mjs --directory .release-output \
             | tee .release-output/build-delivery-verification.json
           node -e 'const d=require("./.release-output/build-delivery-verification.json"); if(d.status!=="delivery-verified"||d.authorityCustody!=="INPUT_REQUIRED"||d.promotionEligible!==false||d.buildProofDigest!==process.env.PROOF_DIGEST) process.exit(1)'

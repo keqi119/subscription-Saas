@@ -32,6 +32,8 @@
 
 ## Review Focus
 
+For the two public Actions delivery artifacts, the 90-day service window is checked against the same workflow run's actual `created_at`; their later upload `created_at` and actual `expires_at` remain recorded. This delivery check does not establish 90 days after upload or replace independent private OSS custody and readback.
+
 1. A profile with a correct digest but the wrong actual host/principal or a root with a wrong owner must fail H1 before key/session/index access; Task 1's read-only gate records this.
 2. An Actions delivery object, local copy, receipt with a requested 90-day date, or writer's own readback must not satisfy H2; Task 2 tests independent Get/Head/reader and service retention.
 3. A receipt attested by another workflow, source, run ID, or run attempt must fail even if its JSON and proof digest match; Task 2 binds both attestation results to one frozen run.

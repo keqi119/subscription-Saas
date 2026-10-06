@@ -1898,6 +1898,7 @@ test(
 
 test("R3 JOB API rejects overrides and accessors before native IO", async (t) => {
   assert.equal(typeof trust.readFixedR3JobAdmission, "function");
+  assert.equal(typeof trust.borrowFixedR3JobAdmission, "function");
   let effects = 0;
   const denied = () => {
     effects++;
@@ -1952,6 +1953,68 @@ test(
     await assert.rejects(result.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
     await result.close();
     await assert.rejects(result.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+    noAuthorityAccess(f);
+  }
+);
+
+test(
+  "R3 JOB borrowing keeps one live verified owner and rejects forged or stale authority",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+    const selector = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    const owner = await trust.readFixedR3JobAdmission(selector);
+    t.after(() => owner.close());
+    const attestationCalls = () =>
+      f.gh.calls.filter(({ args }) => args[0] === "attestation").length;
+    const apiCalls = () => f.gh.calls.filter(({ args }) => args[0] === "api").length;
+    const initialAttestations = attestationCalls();
+    const initialApiCalls = apiCalls();
+    await assert.rejects(trust.borrowFixedR3JobAdmission({ ...owner }, selector), {
+      code: "R3_JOB_ADMISSION_UNAVAILABLE"
+    });
+    await assert.rejects(
+      trust.borrowFixedR3JobAdmission(owner, { ...selector, operationRef: randomUUID() }),
+      {
+        code: "R3_JOB_ADMISSION_UNAVAILABLE"
+      }
+    );
+    const first = await trust.borrowFixedR3JobAdmission(owner, selector);
+    await first.close();
+    await assert.rejects(first.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+    const second = await trust.borrowFixedR3JobAdmission(owner, selector);
+    await second.recheck();
+    assert.equal(attestationCalls(), initialAttestations);
+    assert.ok(apiCalls() > initialApiCalls);
+    const third = await trust.borrowFixedR3JobAdmission(owner, selector);
+    let entered, release;
+    const blocked = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const resume = new Promise((resolve) => {
+      release = resolve;
+    });
+    let paused = false;
+    f.gh.before = async (args) => {
+      if (!paused && args[0] === "api") {
+        paused = true;
+        entered();
+        await resume;
+      }
+    };
+    const pending = third.recheck();
+    await blocked;
+    await third.close();
+    release();
+    await assert.rejects(pending, { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+    f.gh.before = null;
+    f.apiJob.status = "completed";
+    f.apiJob.conclusion = "success";
+    f.apiJob.completed_at = new Date().toISOString();
+    await assert.rejects(second.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+    await assert.rejects(trust.borrowFixedR3JobAdmission(owner, selector), {
+      code: "R3_JOB_ADMISSION_UNAVAILABLE"
+    });
     noAuthorityAccess(f);
   }
 );
@@ -4406,8 +4469,12 @@ for (const mode of [
         t.mock.module("./r3-h1-forward-lease.mjs", {
           namedExports: {
             ...forwardModule,
-            async openR3H1ForwardLease(input) {
-              capturedForwardLease = await forwardModule.openR3H1ForwardLease(input);
+            async openR3H1ForwardLease(input, verifiedAdmission) {
+              assert.ok(verifiedAdmission);
+              capturedForwardLease = await forwardModule.openR3H1ForwardLease(
+                input,
+                verifiedAdmission
+              );
               return capturedForwardLease;
             }
           }
@@ -4417,8 +4484,12 @@ for (const mode of [
         t.mock.module("./manual-stage1-trust.mjs", {
           namedExports: {
             ...trust,
-            async openTrustedR3CreationSession(input) {
-              capturedTrustedSession = await trust.openTrustedR3CreationSession(input);
+            async openTrustedR3CreationSession(input, verifiedAdmission) {
+              assert.ok(verifiedAdmission);
+              capturedTrustedSession = await trust.openTrustedR3CreationSession(
+                input,
+                verifiedAdmission
+              );
               return capturedTrustedSession;
             }
           }

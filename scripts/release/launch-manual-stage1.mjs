@@ -4874,8 +4874,8 @@ export async function launchR3TargetCreate(input) {
     input = Object.freeze({ repoRoot: input.repoRoot, operationRef: input.operationRef });
     await prepareR3HostedEvidenceImport(input);
     fixed = await readFixedR3JobAdmission(input);
-    session = await openTrustedR3CreationSession(input);
-    lease = await openR3H1ForwardLease(input);
+    session = await openTrustedR3CreationSession(input, fixed);
+    lease = await openR3H1ForwardLease(input, fixed);
     if (
       sha256Canonical(lease.scope) !== sha256Canonical(session.scope) ||
       sha256Canonical(lease.admission) !== fixed.jobAdmissionDigest
@@ -4888,9 +4888,11 @@ export async function launchR3TargetCreate(input) {
     });
     // Install the sole job key before waiting for its SSH reverse-forward.
     // Connect once before consuming, then send on that very connection only.
-    const deadline = Date.now() + 60000;
+    const deadline = Math.min(Date.now() + 600000, Date.parse(fixed.admission.expiresAt));
     while (!socket) {
+      if (Date.now() >= deadline) fail(code);
       await check();
+      if (Date.now() >= deadline) fail(code);
       try {
         socket = await new Promise((resolve, reject) => {
           const pending = net.createConnection({ host: "127.0.0.1", port: 55440 });
@@ -4904,7 +4906,10 @@ export async function launchR3TargetCreate(input) {
           });
           pending.once("connect", () => {
             clearTimeout(timer);
-            resolve(pending);
+            if (Date.now() >= deadline) {
+              pending.destroy();
+              reject(Object.assign(new Error(code), { code }));
+            } else resolve(pending);
           });
         });
       } catch (error) {

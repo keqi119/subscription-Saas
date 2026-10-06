@@ -177,11 +177,12 @@ async function waitForwardKey(admission, operationRef, failed) {
   const expected = Buffer.from(
     `restrict,port-forwarding,permitlisten="127.0.0.1:55440",permitlisten="127.0.0.1:55441" ssh-ed25519 ${blob.toString("base64")} r3-${operationRef}\n`
   );
-  const deadline = Date.now() + 60000;
+  const deadline = Math.min(Date.now() + 600000, Date.parse(admission.expiresAt));
   while (Date.now() < deadline) {
     need(!failed());
     const bytes = await stableRead("/etc/ssh/stage1-r3-forward/authorized_keys", 0o644);
     if (bytes.length) {
+      need(Date.now() < deadline && !failed());
       need(bytes.equals(expected));
       return;
     }

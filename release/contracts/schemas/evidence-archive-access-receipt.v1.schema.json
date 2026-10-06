@@ -55,7 +55,7 @@
         "properties": {
           "objectKey": {
             "type": "string",
-            "pattern": "^control-evidence/v1/[^*?]+$",
+            "pattern": "^control-evidence/v1/[a-z0-9.-]+/sha256-[0-9a-f]{64}$",
             "maxLength": 1024
           },
           "action": {
@@ -85,7 +85,7 @@
         "properties": {
           "objectKey": {
             "type": "string",
-            "pattern": "^control-evidence/v1/[^*?]+$",
+            "pattern": "^control-evidence/v1/[a-z0-9.-]+/sha256-[0-9a-f]{64}$",
             "maxLength": 1024
           },
           "objectVersion": { "$ref": "#/$defs/id" },

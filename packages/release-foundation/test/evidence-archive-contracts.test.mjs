@@ -87,7 +87,7 @@ function validArchiveAuthorization(profile = "archive-create-only-writer") {
       {
         proofType: "approval-record.v1",
         canonicalDigest: contentDigest,
-        exactKey: `control-evidence/v1/approval-record.v1/${contentDigest}`,
+        exactKey: `control-evidence/v1/approval-record.v1/${contentDigest.replace(":", "-")}`,
         contentDigest,
         contentSizeBytes: 2048
       }
@@ -200,7 +200,7 @@ function validBootstrapReadback() {
         subjectType: "approval-record.v1",
         originalBytesDigest: digest("5"),
         originalBytesSize: 2048,
-        objectKey: `control-evidence/v1/approval-record.v1/${digest("5")}`,
+        objectKey: `control-evidence/v1/approval-record.v1/${digest("5").replace(":", "-")}`,
         objectVersion: "null-version-disabled",
         authoritativeObservationDigest: digest("6")
       }
@@ -272,6 +272,8 @@ test("archive authorization accepts exact create-only and readback-only profiles
 test("archive authorization rejects prefixes, combined identity, and v1/v2 capability substitution", () => {
   for (const mutate of [
     (value) => (value.objects[0].exactKey = "control-evidence/v1/approval-record.v1/*"),
+    (value) =>
+      (value.objects[0].exactKey = `control-evidence/v1/approval-record.v1/${value.objects[0].canonicalDigest}`),
     (value) => (value.identities.reader = value.identities.writer),
     (value) => (value.issuer.id = value.identities.writer),
     (value) => (value.profile = "publisher-sts"),
@@ -281,6 +283,14 @@ test("archive authorization rejects prefixes, combined identity, and v1/v2 capab
     mutate(candidate);
     assert.throws(() => validateEvidenceArchiveAuthorization(candidate));
   }
+});
+
+test("bootstrap readback rejects the former colon object key", () => {
+  const readback = validBootstrapReadback();
+  readback.importedOriginals[0].objectKey = `control-evidence/v1/approval-record.v1/${readback.importedOriginals[0].originalBytesDigest}`;
+  assert.throws(() => validateEvidenceCustodyBootstrapReadback(readback), {
+    code: "CONTRACT_SCHEMA_INVALID"
+  });
 });
 
 test("archive authorization requires complete frozen byte facts", () => {
@@ -305,7 +315,7 @@ test("I0 revocation state archives its existing closed dispatch-verifier body", 
   authorization.objects[0] = {
     proofType: state.schemaVersion,
     canonicalDigest: stateDigest,
-    exactKey: `control-evidence/v1/${state.schemaVersion}/${stateDigest}`,
+    exactKey: `control-evidence/v1/${state.schemaVersion}/${stateDigest.replace(":", "-")}`,
     contentDigest: stateDigest,
     contentSizeBytes: JSON.stringify(state).length
   };
@@ -329,7 +339,7 @@ test("archive authorization closes over every known control-evidence proof type 
   for (const proofType of knownArchiveProofTypes) {
     const candidate = validArchiveAuthorization();
     candidate.objects[0].proofType = proofType;
-    candidate.objects[0].exactKey = `control-evidence/v1/${proofType}/${candidate.objects[0].canonicalDigest}`;
+    candidate.objects[0].exactKey = `control-evidence/v1/${proofType}/${candidate.objects[0].canonicalDigest.replace(":", "-")}`;
     assert.doesNotThrow(() => validateEvidenceArchiveAuthorization(candidate), proofType);
   }
   for (const proofType of [
@@ -342,7 +352,7 @@ test("archive authorization closes over every known control-evidence proof type 
   ]) {
     const candidate = validArchiveAuthorization();
     candidate.objects[0].proofType = proofType;
-    candidate.objects[0].exactKey = `control-evidence/v1/${proofType}/${candidate.objects[0].canonicalDigest}`;
+    candidate.objects[0].exactKey = `control-evidence/v1/${proofType}/${candidate.objects[0].canonicalDigest.replace(":", "-")}`;
     assert.throws(() => validateEvidenceArchiveAuthorization(candidate), {
       code: "CONTRACT_SCHEMA_INVALID"
     });
@@ -433,7 +443,7 @@ test("archive receipt requires one result for every authorized exact key", () =>
   authorization.objects.push({
     proofType: "external-change-approval.v1",
     canonicalDigest: digest("2"),
-    exactKey: `control-evidence/v1/external-change-approval.v1/${digest("2")}`,
+    exactKey: `control-evidence/v1/external-change-approval.v1/${digest("2").replace(":", "-")}`,
     contentDigest: digest("2"),
     contentSizeBytes: 4096
   });

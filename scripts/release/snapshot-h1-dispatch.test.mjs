@@ -39,7 +39,7 @@ function fixture() {
     revokedAuthorizationDigests: []
   };
   const digest = sha256Canonical(body);
-  const key = `control-evidence/v1/i0-revocation-state.v1/${digest}`;
+  const key = `control-evidence/v1/i0-revocation-state.v1/${digest.replace(":", "-")}`;
   const uploadedAt = "2026-10-06T00:00:00.000Z";
   const now = "2026-10-06T00:01:00.000Z";
   const retainUntil = new Date(Date.parse(uploadedAt) + 210 * 86400000).toISOString();

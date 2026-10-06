@@ -61,7 +61,10 @@ test("captures exactly canonical dispatch authorization and revocation state", (
   assert.equal(captured.length, 2);
   for (const item of captured) {
     const parsed = JSON.parse(item.originalBytes.toString("utf8"));
-    assert.equal(item.exactKey, `control-evidence/v1/${item.proofType}/${sha256Canonical(parsed)}`);
+    assert.equal(
+      item.exactKey,
+      `control-evidence/v1/${item.proofType}/${sha256Canonical(parsed).replace(":", "-")}`
+    );
     assert.equal(item.contentDigest, sha256Bytes(item.originalBytes));
     assert.equal(item.contentSizeBytes, item.originalBytes.length);
   }
@@ -114,8 +117,8 @@ test("compiles exact two-object writer and reader policies under 2048 bytes", ()
     assert.deepEqual(
       objectResources.sort(),
       [
-        `acs:oss:*:${account}:${bucket}/control-evidence/v1/i0-revocation-state.v1/${sha256Canonical(JSON.parse(source[1].originalBytes.toString("utf8")))}`,
-        `acs:oss:*:${account}:${bucket}/control-evidence/v1/rc-dispatch-authorization.v1/${sha256Canonical(JSON.parse(source[0].originalBytes.toString("utf8")))}`
+        `acs:oss:*:${account}:${bucket}/control-evidence/v1/i0-revocation-state.v1/${sha256Canonical(JSON.parse(source[1].originalBytes.toString("utf8"))).replace(":", "-")}`,
+        `acs:oss:*:${account}:${bucket}/control-evidence/v1/rc-dispatch-authorization.v1/${sha256Canonical(JSON.parse(source[0].originalBytes.toString("utf8"))).replace(":", "-")}`
       ].sort()
     );
     const actions = policy.Statement.flatMap((statement) => statement.Action);

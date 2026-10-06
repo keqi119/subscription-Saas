@@ -67,6 +67,7 @@ import { readR3SnapshotInput } from "./r3-snapshot-input-admission.mjs";
 import { fetchR3SnapshotCiphertext } from "./r3-snapshot-payload.mjs";
 import { decryptR3SnapshotCiphertext } from "./r3-h1-snapshot-decrypt.mjs";
 import { exchangeR3Engine } from "./r3-engine-exchange.mjs";
+import { r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 import { copyR3SnapshotToPostgres } from "./r3-remote-snapshot-copy.mjs";
 import { restoreR3SnapshotDatabase } from "./r3-remote-snapshot-restore.mjs";
 import { createR3LifecycleAdapter } from "./r3-lifecycle-adapter.mjs";
@@ -1053,6 +1054,7 @@ function targetArchive({ profile, principal, recheck }) {
 // No CLI/workflow calls this entry until the destination/cleanup graph is wired.
 export async function launchR3TargetCreate(input) {
   const code = "R3_TARGET_CREATE_UNAVAILABLE";
+  const diagnostic = r3FailureTracker("H1_CREATE");
   let fixed,
     session,
     lease,
@@ -4874,8 +4876,8 @@ export async function launchR3TargetCreate(input) {
     input = Object.freeze({ repoRoot: input.repoRoot, operationRef: input.operationRef });
     await prepareR3HostedEvidenceImport(input);
     fixed = await readFixedR3JobAdmission(input);
-    session = await openTrustedR3CreationSession(input, fixed);
-    lease = await openR3H1ForwardLease(input, fixed);
+    session = await diagnostic.run("SESSION", () => openTrustedR3CreationSession(input, fixed));
+    lease = await diagnostic.run("LEASE", () => openR3H1ForwardLease(input, fixed));
     if (
       sha256Canonical(lease.scope) !== sha256Canonical(session.scope) ||
       sha256Canonical(lease.admission) !== fixed.jobAdmissionDigest
@@ -4889,6 +4891,7 @@ export async function launchR3TargetCreate(input) {
     // Install the sole job key before waiting for its SSH reverse-forward.
     // Connect once before consuming, then send on that very connection only.
     const deadline = Math.min(Date.now() + 600000, Date.parse(fixed.admission.expiresAt));
+    diagnostic.enter("SOCKET");
     while (!socket) {
       if (Date.now() >= deadline) fail(code);
       await check();
@@ -4991,7 +4994,7 @@ export async function launchR3TargetCreate(input) {
       ...binding
     } = request;
     const requestInput = { binding, canonicalBytes: encodeManualJson(request) };
-    const authorization = await session.sign(requestInput);
+    const authorization = await diagnostic.run("SIGN", () => session.sign(requestInput));
     const body = encodeManualJson({ request, authorization });
     if (body.length > 1048576) fail(code);
     diagnostics.push({ name: "creation-request", body: await archive.raw(body) });
@@ -4999,16 +5002,22 @@ export async function launchR3TargetCreate(input) {
     if (socket.destroyed) fail(code);
     // This call writes consumption + its readback + pending UNKNOWN before it
     // returns. No request bytes may reach the network above this boundary.
-    consumption = await session.consume({ authorization, request: requestInput });
-    const delivered = await exchange("POST", "/stage1-r3/target-create", body, socket);
+    consumption = await diagnostic.run("CONSUME", () =>
+      session.consume({ authorization, request: requestInput })
+    );
+    const delivered = await diagnostic.run("POST", () =>
+      exchange("POST", "/stage1-r3/target-create", body, socket)
+    );
+    diagnostic.enter("ACK");
     await saveExchange("creation-ack", delivered);
     if (delivered.status !== 202 || delivered.body.length !== 0) fail(code);
+    diagnostic.complete();
     const readyDeadline = Date.now() + 120000;
     let readback;
     while (!readback) {
       await check();
       try {
-        readback = await engineReadback();
+        readback = await diagnostic.run("ENGINE", () => engineReadback());
       } catch (error) {
         if (
           !["ECONNREFUSED", "ECONNRESET", "EPIPE", "R3_HANDOFF_PENDING"].includes(error.code) ||
@@ -5516,12 +5525,16 @@ export async function launchR3TargetCreate(input) {
     } catch (error) {
       cleanupError = error;
     }
-    throw Object.assign(new Error(code, { cause }), {
-      code,
-      consumption,
-      diagnostics,
+    throw diagnostic.decorate(
+      Object.assign(new Error(code, { cause }), {
+        code,
+        consumption,
+        diagnostics,
+        cleanupError
+      }),
+      cause,
       cleanupError
-    });
+    );
   }
 }
 

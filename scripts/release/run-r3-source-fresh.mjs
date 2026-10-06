@@ -21,6 +21,11 @@ import { readR3HostedOperationKey } from "./r3-operation-inputs.mjs";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { buildR3FinalGateEvidence, validateR3FinalGateEvidence } from "./r3-final-evidence.mjs";
+import {
+  r3FailureTracker,
+  getR3FailureDiagnostic,
+  closeR3FailureResources
+} from "./r3-failure-diagnostic.mjs";
 
 const CODE = "R3_SOURCE_FRESH_CALLER_INVALID";
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
@@ -298,24 +303,27 @@ export const runR3FinalFreshH1 = (input) => runR3SourceH1(input, "fresh", "final
 export const runR3FinalSnapshotH1 = (input) => runR3SourceH1(input, "snapshot", "final");
 
 async function runR3SourceH1(input, chain, phase = "source") {
+  const diagnostic = r3FailureTracker("H1_CALLER");
   let admission,
     native,
     delivery,
     launch,
     launchFailure,
+    primaryFailure,
     nativeClosed = false,
     deliveryClosed = false,
     finalHistory;
   try {
     inputs(input);
     input = Object.freeze({ ...input });
-    admission = await readFixedR3JobAdmission(input);
+    admission = await diagnostic.run("ADMISSION", () => readFixedR3JobAdmission(input));
     need(admission.spec.phase === phase && admission.spec.chain === chain);
     const profile = await loadFixedManualProfile({ repoRoot: input.repoRoot });
     const selectedSource =
       phase === "final"
         ? await ownerSourceSelection(profile, admission.admission.expiresAt, chain, input.repoRoot)
         : null;
+    diagnostic.enter("LAUNCH");
     launch = launchR3TargetCreate(input);
     launch.then(
       (value) => {
@@ -328,7 +336,8 @@ async function runR3SourceH1(input, chain, phase = "source") {
     // This is startup ordering only. The native holder itself owns the lease
     // and admission; observing a key never substitutes for either authority.
     await waitForwardKey(admission.admission, input.operationRef, () => launchFailure);
-    delivery = await openR3H1EvidenceDelivery(input);
+    delivery = await diagnostic.run("DELIVERY", () => openR3H1EvidenceDelivery(input));
+    diagnostic.enter("CREATION");
     native = await launch;
     await native.importHostedEvidence(await delivery.receiveCreation());
     await native.provisionPostgres();
@@ -353,6 +362,7 @@ async function runR3SourceH1(input, chain, phase = "source") {
       await native.cleanupSnapshot();
       await native.completeSnapshot();
     }
+    diagnostic.enter("EXECUTION");
     const result = selectedSource
       ? await native.runFinalManifest(selectedSource)
       : await native.runSourceManifest();
@@ -376,6 +386,7 @@ async function runR3SourceH1(input, chain, phase = "source") {
       "archive",
       acknowledgement.acknowledgementRecordDigest
     );
+    diagnostic.enter("CLEANUP");
     await delivery.publishCleanupRequest({ executionBytes, acknowledgementBytes });
     const cleanupBytes = await delivery.receiveCleanup();
     const imported = await native.importHostedCleanupEvidence(cleanupBytes);
@@ -431,14 +442,20 @@ async function runR3SourceH1(input, chain, phase = "source") {
       sessionRecordDigest,
       promotionEligible: false
     });
-  } catch {
-    fail();
+  } catch (cause) {
+    primaryFailure = diagnostic.decorate(
+      Object.assign(new Error(CODE), { code: CODE }),
+      launchFailure ?? cause
+    );
+    throw primaryFailure;
   } finally {
     if (launch && !native) native = await launch.catch(() => undefined);
-    if (!nativeClosed) await native?.close().catch(() => {});
-    if (!deliveryClosed) await delivery?.close().catch(() => {});
-    await finalHistory?.close();
-    await admission?.close();
+    await closeR3FailureResources(diagnostic, primaryFailure, [
+      () => !nativeClosed && native?.close(),
+      () => !deliveryClosed && delivery?.close(),
+      () => finalHistory?.close(),
+      () => admission?.close()
+    ]);
   }
 }
 
@@ -495,8 +512,14 @@ function forwardChild(key, socketPath) {
       resolve({ code, signal });
     });
   });
-  const unexpected = exit.then(() => {
-    if (!stopping) fail();
+  const unexpected = exit.then((result) => {
+    if (!stopping)
+      throw r3FailureTracker("SSH_FORWARD").decorate(
+        Object.assign(new Error(CODE), { code: CODE }),
+        null,
+        null,
+        result
+      );
   });
   unexpected.catch(() => {});
   for (const stream of [child.stdout, child.stderr])
@@ -537,32 +560,43 @@ export const runR3FinalFreshHosted = (input) => runR3SourceHosted(input, "fresh"
 export const runR3FinalSnapshotHosted = (input) => runR3SourceHosted(input, "snapshot", "final");
 
 async function runR3SourceHosted(input, chain, phase = "source") {
+  const diagnostic = r3FailureTracker("HOSTED_CALLER");
   let key,
     control,
     delivery,
     forward,
+    primaryFailure,
     forwardClosed = false,
     deliveryClosed = false;
   try {
     inputs(input);
     input = Object.freeze({ ...input });
     need(input.repoRoot === INSTALLED_ROOT);
-    key = await readR3HostedOperationKey({ operationRef: input.operationRef });
+    key = await diagnostic.run("KEY", () =>
+      readR3HostedOperationKey({ operationRef: input.operationRef })
+    );
     const creationSpecBytes = key.creationSpecBytes,
       jobAdmissionBytes = key.jobAdmissionBytes;
     const spec = JSON.parse(creationSpecBytes);
     need(spec.phase === phase && spec.chain === chain);
-    delivery = await openR3HostedEvidenceDelivery({ creationSpecBytes, jobAdmissionBytes });
-    control = await openR3HostedCreationControl({ creationSpecBytes, jobAdmissionBytes });
+    delivery = await diagnostic.run("DELIVERY", () =>
+      openR3HostedEvidenceDelivery({ creationSpecBytes, jobAdmissionBytes })
+    );
+    control = await diagnostic.run("CONTROL", () =>
+      openR3HostedCreationControl({ creationSpecBytes, jobAdmissionBytes })
+    );
     await key.recheck();
+    diagnostic.enter("FORWARD");
     forward = forwardChild(key, control.socketPath);
     const active = (promise) => Promise.race([promise, forward.unexpected]);
-    await active(control.created);
+    await diagnostic.run("CREATION", () => active(control.created));
     await active(
       delivery.sendCreation(await control.exportEvidence({ privateKey: key.privateKey }))
     );
+    diagnostic.enter("EXECUTION");
     await active(delivery.receiveCleanupRequest());
     await active(control.postgresForward);
+    diagnostic.enter("CLEANUP");
     await active(control.cleanupOwnedTarget());
     await key.recheck();
     const bytes = await control.exportCleanupEvidence({ privateKey: key.privateKey });
@@ -654,13 +688,16 @@ async function runR3SourceHosted(input, chain, phase = "source") {
         : {}),
       promotionEligible: false
     });
-  } catch {
-    fail();
+  } catch (cause) {
+    primaryFailure = diagnostic.decorate(Object.assign(new Error(CODE), { code: CODE }), cause);
+    throw primaryFailure;
   } finally {
-    if (!forwardClosed) await forward?.close().catch(() => {});
-    if (!deliveryClosed) await delivery?.close().catch(() => {});
-    await control?.close().catch(() => {});
-    await key?.close();
+    await closeR3FailureResources(diagnostic, primaryFailure, [
+      () => !forwardClosed && forward?.close(),
+      () => !deliveryClosed && delivery?.close(),
+      () => control?.close(),
+      () => key?.close()
+    ]);
   }
 }
 
@@ -702,7 +739,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
             : runR3SourceFreshHosted;
     const result = await run({ repoRoot: INSTALLED_ROOT, operationRef: args[3] });
     process.stdout.write(`${JSON.stringify(result)}\n`);
-  } catch {
+  } catch (cause) {
+    const diagnostic = getR3FailureDiagnostic(cause);
+    if (diagnostic) process.stderr.write(`${JSON.stringify(diagnostic)}\n`);
     process.stderr.write(`${CODE}\n`);
     process.exitCode = 1;
   }

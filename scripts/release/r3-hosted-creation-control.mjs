@@ -6,6 +6,7 @@ import { constants } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import childProcess from "node:child_process";
+import { r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 import {
   encodeManualJson,
   validateManualTargetCreationRequest
@@ -713,6 +714,7 @@ async function startPostgresRelay({ spec, job, engine, socketPath, shouldClose }
 }
 
 export async function openR3HostedCreationControl(input) {
+  const diagnostic = r3FailureTracker("HOSTED_CREATE");
   let server,
     ownSocket,
     engine = null,
@@ -838,6 +840,7 @@ export async function openR3HostedCreationControl(input) {
       handler = (async () => {
         let workspaceResult;
         try {
+          diagnostic.enter("HEADERS");
           request.setTimeout(10000, () => request.destroy());
           requireThat(
             request.method === "POST" &&
@@ -849,6 +852,7 @@ export async function openR3HostedCreationControl(input) {
           );
           const length = Number(request.headers["content-length"]);
           requireThat(Number.isSafeInteger(length) && length > 0 && length <= LIMIT);
+          diagnostic.enter("BODY");
           const received = parse(await readBody(request, length));
           exact(received.value, ["request", "authorization"]);
           const requestBytes = encodeManualJson(received.value.request);
@@ -861,12 +865,14 @@ export async function openR3HostedCreationControl(input) {
               operation.phase === spec.phase &&
               operation.chain === spec.chain
           );
-          await currentJob(spec, job);
+          await diagnostic.run("CURRENT_JOB", () => currentJob(spec, job));
           requireThat(!closing);
+          diagnostic.enter("ACK");
           await new Promise((resolve) => {
             response.writeHead(202, { "Content-Length": "0", Connection: "close" });
             response.end(resolve);
           });
+          diagnostic.complete();
           if (!request.socket.destroyed)
             await new Promise((resolve) => {
               request.socket.once("close", resolve);
@@ -874,16 +880,20 @@ export async function openR3HostedCreationControl(input) {
             });
           await closeListener();
           requireThat(!closing && (await absent(socketPath)));
-          workspaceResult = await createR3HostedWorkspace({
-            requestBytes,
-            authorizationBytes,
-            creationSpecBytes: specInput.bytes,
-            jobAdmissionBytes: jobInput.bytes
-          });
+          workspaceResult = await diagnostic.run("WORKSPACE", () =>
+            createR3HostedWorkspace({
+              requestBytes,
+              authorizationBytes,
+              creationSpecBytes: specInput.bytes,
+              jobAdmissionBytes: jobInput.bytes
+            })
+          );
           ownedWorkspace = workspaceResult;
           requireThat(!closing);
           await currentJob(spec, job);
-          engine = await startEngine(workspaceResult, spec.workspace, socketPath, () => closing);
+          engine = await diagnostic.run("ENGINE", () =>
+            startEngine(workspaceResult, spec.workspace, socketPath, () => closing)
+          );
           evidenceSeed = copyResult({
             workspace: workspaceResult,
             engine: engine.result,
@@ -929,20 +939,23 @@ export async function openR3HostedCreationControl(input) {
           if (!request.socket.destroyed) request.socket.destroy();
           await closeListener().catch(() => {});
           settle(
-            closedError(cause, {
-              accepted,
-              workspace: workspaceResult ?? null,
-              creatorFailure: cause?.creation
-                ? {
-                    creation: cause.creation,
-                    rawInputs: cause.rawInputs ?? null,
-                    observationEvidence: cause.observationEvidence ?? null
-                  }
-                : null,
-              engineAttempt: cause?.engineAttempt ?? null,
-              workspaceRemoved: false,
-              keyRemoved: false
-            }),
+            diagnostic.decorate(
+              closedError(cause, {
+                accepted,
+                workspace: workspaceResult ?? null,
+                creatorFailure: cause?.creation
+                  ? {
+                      creation: cause.creation,
+                      rawInputs: cause.rawInputs ?? null,
+                      observationEvidence: cause.observationEvidence ?? null
+                    }
+                  : null,
+                engineAttempt: cause?.engineAttempt ?? null,
+                workspaceRemoved: false,
+                keyRemoved: false
+              }),
+              cause
+            ),
             null
           );
           rejectForward(closedError(cause));
@@ -1209,6 +1222,6 @@ export async function openR3HostedCreationControl(input) {
     await closeListener().catch(() => {});
     settle(closedError(cause, { accepted, workspaceRemoved: false, keyRemoved: false }), null);
     rejectForward(closedError(cause));
-    throw closedError(cause);
+    throw diagnostic.decorate(closedError(cause), cause);
   }
 }

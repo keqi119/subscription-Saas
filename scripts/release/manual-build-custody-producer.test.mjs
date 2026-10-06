@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import test from "node:test";
+import { clearTimeout, setTimeout } from "node:timers";
 
 import { canonicalJson, sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/index.mjs";
 import { createBuildProof } from "./create-build-proof.mjs";
@@ -310,6 +312,50 @@ test("same-job finalizer retains finite native and attestation raws once and cre
     assert.equal(sha256Bytes(f.input.objects.get(facts.key).bytes), attestation[field].digest);
   }
   assert.equal("ownerId" in root, false); assert.equal("profileDigest" in root, false); assert.equal(root.promotionEligible, false);
+});
+
+test("same-job finalizer bounds independent audit reads at eight and still writes root last", async (t) => {
+  const f = await finalizerFixture(t);
+  const head = f.final.storage.readMetadata;
+  let active = 0, peak = 0;
+  f.final.storage.readMetadata = async (args) => {
+    active++; peak = Math.max(peak, active);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      return head(args);
+    } finally { active--; }
+  };
+  const result = await custodyProducer.finalizeManualTrustedBuildInputs(f.final);
+  assert.ok(peak > 1, `expected parallel audit reads, saw ${peak}`);
+  assert.ok(peak <= 8, `audit reads exceeded fixed bound: ${peak}`);
+  assert.equal(active, 0);
+  assert.equal(result.rootKey, f.writes.at(-1));
+  assert.equal(new Set(f.writes).size, f.writes.length);
+});
+
+test("same-job finalizer stops claiming after failure, drains in-flight creates, and never writes root", async (t) => {
+  const f = await finalizerFixture(t), create = f.final.storage.createOnly;
+  const failure = Object.assign(new Error("first support create failed"), { code: "FIRST_SUPPORT_CREATE_FAILED" });
+  let started = 0, active = 0, release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const timeout = setTimeout(release, 100);
+  f.final.storage.createOnly = async (args) => {
+    // All preexisting facts are audited without CreateNew; only support reaches here.
+    const ordinal = ++started;
+    active++;
+    if (started === 8) release();
+    await gate;
+    active--;
+    if (ordinal === 1) throw failure;
+    return create(args);
+  };
+  try {
+    await assert.rejects(custodyProducer.finalizeManualTrustedBuildInputs(f.final), (error) => error === failure);
+  } finally { clearTimeout(timeout); }
+  assert.equal(started, 8, "no new support task should start after the first failure");
+  assert.equal(active, 0, "all in-flight creates must settle before rejection");
+  assert.equal(new Set(f.writes).size, f.writes.length, "each key is attempted at most once");
+  assert.ok(![...f.input.objects.values()].some((o) => o.bytes.includes(Buffer.from('"recordVersion":"manual-trusted-build-custody-root.v1"'))));
 });
 
 for (const failure of ["pending-switch", "missing-raw", "attestation-run", "reused-bytes", "reused-metadata", "support-collision", "support-uncertain"]) {

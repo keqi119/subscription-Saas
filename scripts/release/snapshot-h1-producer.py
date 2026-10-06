@@ -254,7 +254,7 @@ def _verify_bundle():
                     'BUNDLE_INVALID')
             expected[name] = item
         require('scripts/release/snapshot-h1-data-worker.mjs' in expected and
-                sum(item['sizeBytes'] for item in expected.values()) == 1438635,
+                sum(item['sizeBytes'] for item in expected.values()) == 1438710,
                 'BUNDLE_INVALID')
         observed = set()
         for parent, directories, files in os.walk(BUNDLE, followlinks=False):

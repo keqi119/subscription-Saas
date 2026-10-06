@@ -805,20 +805,35 @@ async function importR3Job(input, phase, chain) {
         Number.isSafeInteger(Number(input.runId))
     );
     const trust = await import("./manual-stage1-trust.mjs");
-    const creation = await trust.readFixedR3CreationSpec({
+    let creation = await trust.readFixedR3CreationSpec({
       repoRoot: input.repoRoot,
       operationRef: input.operationRef
     });
     opened.push(creation);
     need(creation.spec.phase === phase && creation.spec.chain === chain);
+    const creationSpecDigest = creation.creationSpecDigest;
     const profile = await trust.loadFixedManualProfile({ repoRoot: input.repoRoot });
     const archiveRoot = profile.storage.archiveRoot,
       directory = `${archiveRoot}/inputs/r3/${input.operationRef}`;
     await privateArchiveDirectory(directory, archiveRoot);
     // A partial/failed import keeps its reserved directory and cannot be silently retried.
     const staging = `${directory}/job-import`;
+    // Creating staging changes the private parent directory's identity snapshot.
+    // Reopen only after the valid phase/chain is known, and bind to the same spec.
+    await creation.close();
+    opened.pop();
     await fs.mkdir(staging, { mode: 0o700 });
     await privateArchiveDirectory(staging, archiveRoot);
+    creation = await trust.readFixedR3CreationSpec({
+      repoRoot: input.repoRoot,
+      operationRef: input.operationRef
+    });
+    opened.push(creation);
+    need(
+      creation.creationSpecDigest === creationSpecDigest &&
+        creation.spec.phase === phase &&
+        creation.spec.chain === chain
+    );
     const artifactName = `stage1-r3-job-${input.operationRef}-${input.runId}-1`,
       artifacts = [];
     const api = (endpoint) =>

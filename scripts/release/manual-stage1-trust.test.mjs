@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import fs from "node:fs/promises";
 import childProcess from "node:child_process";
 import http from "node:http";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import process from "node:process";
 import test from "node:test";
 import { syncBuiltinESMExports } from "node:module";
 import {
@@ -31,6 +33,7 @@ import {
   installR3SnapshotSdkFixture,
   r3SnapshotBootstrapFixture
 } from "./r3-snapshot-payload-fixture.mjs";
+import { importR3SourceFreshJob } from "./r3-operation-inputs.mjs";
 
 // The first RED is an assertion, not an import crash. Subsequent assertions
 // exercise the production entrypoint; there is no trusted-result mock.
@@ -1326,11 +1329,39 @@ async function buildFixture(
           args[1] === `repos/${repository}/actions/jobs/${retainedJob.job.id}`
         )
           value = retainedJob.job;
+        else if (
+          gh.importArtifact &&
+          args[0] === "api" &&
+          args[1] ===
+            `repos/${repository}/actions/runs/${gh.importArtifact.runId}/artifacts?per_page=100&page=1`
+        )
+          value = {
+            total_count: 1,
+            artifacts: [
+              {
+                id: gh.importArtifact.id,
+                name: gh.importArtifact.name,
+                expired: false,
+                size_in_bytes: gh.importArtifact.zip.length,
+                workflow_run: { id: Number(gh.importArtifact.runId), head_sha: sourceSha }
+              }
+            ]
+          };
+        else if (
+          gh.importArtifact &&
+          args[0] === "api" &&
+          args[1] === `repos/${repository}/actions/artifacts/${gh.importArtifact.id}/zip`
+        )
+          value = gh.importArtifact.zip;
         else throw new Error("Unexpected synthetic gh invocation");
-        callback(null, gh.raw ?? Buffer.from(JSON.stringify(value)), gh.stderr);
+        callback(
+          null,
+          gh.raw ?? (Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value))),
+          gh.stderr
+        );
       })
       .catch((error) => callback(error, Buffer.alloc(0), Buffer.alloc(0)));
-    return { kill() {} };
+    return { kill() {}, stdin: { on() {}, end() {} } };
   });
   syncBuiltinESMExports();
   return {
@@ -1730,6 +1761,91 @@ async function r3JobFixture(t, options = {}) {
     forwardingPrivateKey: forwardingKeys.privateKey
   };
 }
+
+test(
+  "R3 IMPORT keeps the real creation reader valid after its one-time staging directory",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+    const zipScript =
+      "import base64,io,sys,zipfile; b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('job-admission.json',base64.b64decode(sys.argv[1])); z.close(); sys.stdout.buffer.write(b.getvalue())";
+    const zip = await new Promise((resolve, reject) =>
+      nativeExecFile(
+        "python3",
+        ["-c", zipScript, f.admissionBytes.toString("base64")],
+        { encoding: "buffer", timeout: 10000, maxBuffer: 1048576 },
+        (error, stdout) => (error ? reject(error) : resolve(Buffer.from(stdout)))
+      )
+    );
+    f.gh.importArtifact = {
+      runId: f.admission.ci.runId,
+      id: 789,
+      name: `stage1-r3-job-${f.operationRef}-${f.admission.ci.runId}-1`,
+      zip
+    };
+    await fs.unlink(f.admissionPath);
+    const result = await importR3SourceFreshJob({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef,
+      runId: f.admission.ci.runId
+    });
+    assert.deepEqual(result, f.admissionBytes);
+    assert.deepEqual(await fs.readFile(f.admissionPath), f.admissionBytes);
+    assert.deepEqual(
+      await fs.readFile(path.join(path.dirname(f.specPath), "job-import", "artifact.zip")),
+      zip
+    );
+    await assert.rejects(
+      importR3SourceFreshJob({
+        repoRoot: f.repoRoot,
+        operationRef: f.operationRef,
+        runId: f.admission.ci.runId
+      }),
+      { code: "R3_OPERATION_INPUT_INVALID" }
+    );
+  }
+);
+
+test(
+  "R3 IMPORT rejects a wrong chain before claiming its one-time staging directory",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3CreationFixture(t, { phase: "source", chain: "snapshot" });
+    const staging = path.join(path.dirname(f.specPath), "job-import");
+    await assert.rejects(
+      importR3SourceFreshJob({ repoRoot: f.repoRoot, operationRef: f.operationRef, runId: "3801" }),
+      { code: "R3_OPERATION_INPUT_INVALID" }
+    );
+    await assert.rejects(fs.lstat(staging), { code: "ENOENT" });
+    assert.deepEqual(await fs.readFile(f.specPath), f.specBytes);
+  }
+);
+
+test(
+  "R3 IMPORT rejects a changed creation spec across close and staging claim",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3CreationFixture(t, { phase: "source", chain: "fresh" });
+    const staging = path.join(path.dirname(f.specPath), "job-import");
+    const nativeMkdir = fs.mkdir.bind(fs);
+    t.mock.method(fs, "mkdir", async (directory, options) => {
+      if (directory === staging) {
+        const replaced = {
+          ...f.spec,
+          createdAt: new Date(Date.parse(f.spec.createdAt) + 1).toISOString()
+        };
+        await fs.writeFile(f.specPath, encodeManualJson(replaced));
+      }
+      return nativeMkdir(directory, options);
+    });
+    await assert.rejects(
+      importR3SourceFreshJob({ repoRoot: f.repoRoot, operationRef: f.operationRef, runId: "3801" }),
+      { code: "R3_OPERATION_INPUT_INVALID" }
+    );
+    assert.ok((await fs.lstat(staging)).isDirectory());
+    await assert.rejects(fs.lstat(path.join(staging, "artifact.zip")), { code: "ENOENT" });
+  }
+);
 
 test(
   "R3 HISTORY CONTEXT authenticates completed final inputs and refuses early job completion",

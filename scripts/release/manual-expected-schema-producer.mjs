@@ -49,6 +49,7 @@ function fail(code, details) { throw Object.assign(new Error(code), { code, deta
 function exact(v, keys) { return v && typeof v === "object" && !Array.isArray(v) && [Object.prototype, null].includes(Object.getPrototypeOf(v)) && Reflect.ownKeys(v).length === keys.length && keys.every((k) => { const d = Object.getOwnPropertyDescriptor(v, k); return d?.enumerable && "value" in d; }); }
 function bytes(v) { if (!(v instanceof Uint8Array) || v.byteLength > LIMIT) fail("MANUAL_EXPECTED_SCHEMA_RAW_INVALID"); return Buffer.from(v); }
 function text(v) { try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes(v)); } catch { fail("MANUAL_EXPECTED_SCHEMA_RAW_INVALID"); } }
+function noDifferenceOutput(v) { const output = text(v).trim(); return output === "" || output === "No difference detected."; }
 function json(v) { try { return JSON.parse(text(v)); } catch { fail("MANUAL_EXPECTED_SCHEMA_JSON_INVALID"); } }
 function encode(v) { return bytes(encodeManualJson(v)); }
 function canonical(v) { const raw = bytes(v), value = json(raw); if (!encode(value).equals(raw)) fail("MANUAL_EXPECTED_SCHEMA_JSON_INVALID"); return value; }
@@ -160,7 +161,7 @@ export async function runReferenceExpectedSchema(envelope, { repoRoot = "/app", 
     const version = await run("prisma-version", PRISMA, prismaArgs("prisma-version"), calls), prismaVersion = text(version.raw).trim();
     if (!/^prisma\s*:\s*7\.8\.0\s*$/mu.test(prismaVersion) || !prismaVersion.includes("\n")) fail("MANUAL_EXPECTED_SCHEMA_TOOLCHAIN_INVALID");
     await run("prisma-deploy", PRISMA, prismaArgs("prisma-deploy"), calls);
-    const diff = await run("prisma-diff", PRISMA, prismaArgs("prisma-diff"), calls); if (text(diff.raw).trim() !== "") fail("MANUAL_EXPECTED_SCHEMA_DIFF_INVALID");
+    const diff = await run("prisma-diff", PRISMA, prismaArgs("prisma-diff"), calls); if (!noDifferenceOutput(diff.raw)) fail("MANUAL_EXPECTED_SCHEMA_DIFF_INVALID");
     const script = await run("prisma-script", PRISMA, prismaArgs("prisma-script"), calls); if (script.raw.length === 0) fail("MANUAL_EXPECTED_SCHEMA_RAW_INVALID");
     const identity = json((await run("identity-after", pg("psql"), [...psqlArgs, IDENTITY_SQL], readbackCalls)).raw); databaseIdentity(identity, data, socket);
     if (before.databaseOid !== identity.databaseOid || before.systemIdentifier !== identity.systemIdentifier) fail("MANUAL_EXPECTED_SCHEMA_REFERENCE_IDENTITY_INVALID");
@@ -203,7 +204,7 @@ function validateManifest(m, raws, subjects) {
   const catalog = catalogFromRows(json(rawAt(raws, m.readbackCalls[1].stdout)), subjects.catalog);
   if (!rawAt(raws, m.migrationCatalog).equals(encode(catalog)) || m.migrationCatalog.digest !== subjects.catalog.digest || m.migrationHead !== catalog.entries.at(-1).path.split("/").at(-2) || m.migrationOwner !== ROLE || after.ownerInventory.filter((i) => i.objectName === "_prisma_migrations" && i.objectClass === "relation" && i.owner === ROLE).length !== 1 || !encode(m.allowedExtensions).equals(encode(after.extensions))) fail("MANUAL_EXPECTED_SCHEMA_MIGRATIONS_INVALID");
   if (!exact(m.toolchain, ["nodeVersion", "postgresqlVersion", "prismaVersion", "prismaVersionRaw"]) || m.toolchain.nodeVersion !== text(rawAt(raws, m.creationCalls[0].stdout)).trim() || !/^v22\.\d+\.\d+$/u.test(m.toolchain.nodeVersion) || m.toolchain.postgresqlVersion !== after.serverVersion || !encode(m.toolchain.prismaVersionRaw).equals(encode(m.calls[0].stdout)) || m.toolchain.prismaVersion !== text(rawAt(raws, m.calls[0].stdout)).trim() || !/^prisma\s*:\s*7\.8\.0\s*$/mu.test(m.toolchain.prismaVersion) || !encode(m.expectedScript).equals(encode(m.calls[3].stdout)) || rawAt(raws, m.expectedScript).length === 0) fail("MANUAL_EXPECTED_SCHEMA_TOOLCHAIN_INVALID");
-  if (text(rawAt(raws, m.calls[2].stdout)).trim() !== "") fail("MANUAL_EXPECTED_SCHEMA_DIFF_INVALID");
+  if (!noDifferenceOutput(rawAt(raws, m.calls[2].stdout))) fail("MANUAL_EXPECTED_SCHEMA_DIFF_INVALID");
   if (m.createdAt !== m.creationCalls[4].closedAt || m.readbackAt !== m.readbackCalls[1].closedAt || m.calls.some((c) => !ordered([m.createdAt, c.preparedAt, c.spawnedAt, c.closedAt, m.readbackAt]))) fail("MANUAL_EXPECTED_SCHEMA_PROCESS_INVALID");
   needed.add(m.migrationCatalog.digest); if (needed.size !== raws.size || [...raws.keys()].some((d) => !needed.has(d))) fail("MANUAL_EXPECTED_SCHEMA_RAW_INVALID");
 }

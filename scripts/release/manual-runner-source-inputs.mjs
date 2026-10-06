@@ -1747,6 +1747,10 @@ function expectedText(bytes) {
     fail("MANUAL_EXPECTED_SCHEMA_RAW_INVALID");
   }
 }
+function expectedNoDifferenceOutput(bytes) {
+  const output = expectedText(bytes).trim();
+  return output === "" || output === "No difference detected.";
+}
 function expectedJson(bytes, canonical = false) {
   expectedRequire(
     Buffer.isBuffer(bytes) && bytes.length <= expectedLimit,
@@ -2361,7 +2365,7 @@ async function expectedReference(reference, p, raw, proof, target, catalog, exte
       expectedEqual(get("prisma-version").call.stdout, p.toolchain.prismaVersionRaw) &&
       expectedText(get("prisma-version").stdout).trim() === p.toolchain.prismaVersion &&
       expectedEqual(get("prisma-script").call.stdout, p.expectedScript) &&
-      expectedText(get("prisma-diff").stdout).trim() === ""
+      expectedNoDifferenceOutput(get("prisma-diff").stdout)
   );
   expectedRequire(
     r.createdAt === get("database-create").call.closedAt &&
@@ -3254,6 +3258,7 @@ export {
   expectedLimit,
   expectedRequire,
   expectedText,
+  expectedNoDifferenceOutput,
   expectedJson,
   expectedEqual,
   expectedOrder,

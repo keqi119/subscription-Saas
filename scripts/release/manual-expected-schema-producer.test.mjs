@@ -8,7 +8,7 @@ import { URL } from "node:url";
 import { canonicalJson, computeMigrationCatalog, computeRepositoryContract, sha256Bytes } from "../../packages/release-foundation/src/index.mjs";
 import { createBuildProof } from "./create-build-proof.mjs";
 import { produceManualExpectedSchema, runReferenceExpectedSchema } from "./manual-expected-schema-producer.mjs";
-import { expectedProvenanceShape } from "./manual-runner-source-inputs.mjs";
+import { expectedNoDifferenceOutput, expectedProvenanceShape } from "./manual-runner-source-inputs.mjs";
 
 const sourceSha = "1".repeat(40);
 const digest = (c) => `sha256:${c.repeat(64)}`;
@@ -86,7 +86,7 @@ export async function fixture(t, fault, baseBinding = "index") {
           if (sql.includes("_prisma_migrations")) return result(JSON.stringify(catalog.entries.map((e) => ({ name: e.path.split("/").at(-2), checksum: e.sha256.slice(7), finished: true, rolledBack: false, appliedSteps: 1 }))));
           return result();
         }
-        if (args.includes("--exit-code")) return result(fault === "diff-output" ? "unexpected difference\n" : "", fault === "diff" ? 2 : 0);
+        if (args.includes("--exit-code")) return result(fault === "diff-marker" ? "No difference detected." : fault === "diff-output" ? "unexpected difference\n" : "", fault === "diff" ? 2 : 0);
         if (args.includes("--script")) return fault === "utf8" ? { ...result(), stdout: Buffer.from([255]) } : result(fault === "large" ? Buffer.alloc(400000, "x") : container.ordinal === 2 && fault === "reproduction" ? "changed\n" : "CREATE TABLE example(id integer PRIMARY KEY);\r\n");
         if (args.includes("deploy")) container.deployed = true;
         return result();
@@ -209,6 +209,25 @@ test("rejects nonempty diff stdout even when the real command exits zero", async
   const f = await fixture(t, "diff-output");
   await assert.rejects(produceManualExpectedSchema(f.input, { runProcess: f.runProcess }), { code: "MANUAL_EXPECTED_SCHEMA_DIFF_INVALID" });
   assert.equal(f.containers.size, 0);
+});
+
+test("accepts Prisma's fixed no-difference marker while retaining exact raw stdout", async (t) => {
+  const f = await fixture(t, "diff-marker");
+  const output = await produceManualExpectedSchema(f.input, { runProcess: f.runProcess });
+  const record = JSON.parse(output.producerRecordBytes);
+  for (const reference of record.references) {
+    const ref = reference.calls.find((call) => call.tool === "prisma-diff").stdout;
+    assert.equal(output.rawBlobs.get(ref.digest).toString(), "No difference detected.");
+  }
+  assert.equal(f.containers.size, 0);
+});
+
+test("downstream diff reader accepts only empty or the fixed no-difference marker", () => {
+  assert.equal(expectedNoDifferenceOutput(Buffer.alloc(0)), true);
+  assert.equal(expectedNoDifferenceOutput(Buffer.from("No difference detected.")), true);
+  assert.equal(expectedNoDifferenceOutput(Buffer.from("No difference detected.\n")), true);
+  assert.equal(expectedNoDifferenceOutput(Buffer.from("unexpected difference\n")), false);
+  assert.equal(expectedNoDifferenceOutput(Buffer.from("No difference detected.\nALTER TABLE x;")), false);
 });
 
 test("transfers large host source and individual raw subjects without an aggregate base64 packet", async (t) => {

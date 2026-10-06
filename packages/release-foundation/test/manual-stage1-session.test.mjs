@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -3867,6 +3867,188 @@ test("R3 creation UNKNOWN blocks a new operation and slot reacquisition", async 
   );
   await assert.rejects(r3CreationSession(t, f), { code: "MANUAL_SESSION_UNVERIFIED" });
 });
+
+test(
+  "approved failed R3 history still authenticates the old hosted job before new authorization",
+  {
+    skip: typeof mock.module !== "function"
+  },
+  async (t) => {
+    const f = await fixture(t, { profileVersion: "v2" });
+    const repoRoot = path.join(f.root, "repository");
+    const contractDir = path.join(repoRoot, "release", "contracts");
+    await fs.mkdir(contractDir, { recursive: true, mode: 0o700 });
+    const policy = JSON.parse(
+      await fs.readFile(
+        new URL(
+          "../../../release/contracts/manual-stage1-r3-target-policy.v1.json",
+          import.meta.url
+        )
+      )
+    );
+    policy.profileDigest = sha256Canonical(f.profile);
+    await fs.writeFile(
+      path.join(contractDir, "manual-stage1-r3-target-policy.v1.json"),
+      encodeManualJson(policy),
+      { mode: 0o600 }
+    );
+    for (const name of ["database-target-policies.v1.json", "database-test-manifest.v1.json"])
+      await fs.copyFile(
+        new URL(`../../../release/contracts/${name}`, import.meta.url),
+        path.join(contractDir, name)
+      );
+    const context = r3CreationFixture(f);
+    context.creationSpec.targetPolicyDigest = sha256Canonical(policy);
+    context.jobAdmission.creationSpecDigest = sha256Canonical(context.creationSpec);
+    context.scope.targetPolicyDigest = sha256Canonical(policy);
+    context.scope.creationSpecDigest = sha256Canonical(context.creationSpec);
+    context.scope.jobAdmissionDigest = sha256Canonical(context.jobAdmission);
+    const old = await r3CreationSession(t, f, context);
+    const request = await r3CreationRequest(f, old);
+    const signed = await old.sign(request);
+    await old.consume({ authorization: signed, request });
+    await old.closeIncomplete();
+    const oldBytes = await Promise.all(
+      (await fs.readdir(path.join(f.profile.storage.journalRoot, "objects"))).map(async (name) => [
+        name,
+        await fs.readFile(path.join(f.profile.storage.journalRoot, "objects", name))
+      ])
+    );
+    const oldConsumption = (await f.records("consumption"))[0];
+    const oldExecution = (await f.records("execution"))[0];
+    // The native incident reader/retirer has its own signature and inode tests.
+    // This boundary test supplies its completed classification only, to ensure
+    // history never turns that classification into an H2 authentication bypass.
+    const accepted = Object.freeze({ status: "OWNER_ACCEPTED_UNRESOLVED_FAILURE" });
+    t.mock.module("../src/manual-r3-incident.mjs", {
+      namedExports: {
+        readApprovedR3IncidentDisposition: async () => accepted,
+        matchesR3IncidentDisposition: (receipt, consumed, execution) =>
+          receipt === accepted &&
+          sha256Canonical(consumed) === sha256Canonical(oldConsumption) &&
+          sha256Canonical(execution) === sha256Canonical(oldExecution)
+      }
+    });
+    let authenticated = 0,
+      rejectHostedIdentity = true;
+    t.mock.module("../../../scripts/release/manual-stage1-trust.mjs", {
+      namedExports: {
+        readTrustedR3HistoricalContext: async (input) => {
+          authenticated++;
+          assert.equal(input.operationRef, context.creationSpec.operationRef);
+          assert.deepEqual(input.scope, context.scope);
+          assert.equal(input.latestExecutionAt, oldExecution.recordedAt);
+          if (rejectHostedIdentity)
+            throw Object.assign(new Error("old hosted job attestation mismatch"), {
+              code: "H1_INPUT_UNAVAILABLE"
+            });
+          return {
+            ...input,
+            profileDigest: sha256Canonical(f.profile),
+            recheck: async () => {},
+            close: async () => {}
+          };
+        }
+      }
+    });
+    const operationDirectory = path.join(
+      f.profile.storage.archiveRoot,
+      "inputs",
+      "r3",
+      context.creationSpec.operationRef
+    );
+    await fs.mkdir(operationDirectory, { recursive: true, mode: 0o700 });
+    for (const [name, value] of [
+      ["creation-spec", context.creationSpec],
+      ["job-admission", context.jobAdmission]
+    ])
+      await fs.writeFile(path.join(operationDirectory, `${name}.json`), encodeManualJson(value), {
+        mode: 0o600
+      });
+    const lockDir = path.join(f.profile.storage.journalRoot, "locks");
+    for (const name of await fs.readdir(lockDir))
+      await fs.rename(path.join(lockDir, name), path.join(f.root, name));
+    const next = JSON.parse(
+      JSON.stringify(context)
+        .replaceAll(uuid(701), uuid(702))
+        .replaceAll(uuid(701).replaceAll("-", ""), uuid(702).replaceAll("-", ""))
+    );
+    next.jobAdmission.creationSpecDigest = sha256Canonical(next.creationSpec);
+    next.scope.creationSpecDigest = sha256Canonical(next.creationSpec);
+    next.scope.jobAdmissionDigest = sha256Canonical(next.jobAdmission);
+    next.snapshotInputs = { repoRoot };
+    const fresh = await import("../src/manual-stage1-session.mjs?incident-authentication-test");
+    const session = await fresh.openManualSession({
+      profile: f.profile,
+      ownerObservation: {
+        ownerId: f.profile.ownerId,
+        principal: f.ownerObservation.principal,
+        scope: next.scope,
+        observedAt: NOW
+      },
+      r3CreationContext: next,
+      io: f.io,
+      now: () => NOW,
+      signingKey: f.keys.privateKey
+    });
+    t.after(() => session.close().catch(() => {}));
+    f.r3OperationId = uuid(702);
+    const nextRequest = await r3CreationRequest(f, session);
+    await assert.rejects(session.sign(nextRequest), { code: "H1_INPUT_UNAVAILABLE" });
+    assert.equal(authenticated, 1);
+    rejectHostedIdentity = false;
+    await assert.doesNotReject(session.sign(nextRequest));
+    assert.equal((await f.records("consumption")).length, 1);
+    const historyInput = {
+      profile: f.profile,
+      ownerObservation: {
+        ownerId: f.profile.ownerId,
+        principal: f.ownerObservation.principal,
+        observedAt: NOW
+      },
+      repoRoot,
+      terminalExecutionRecordDigest: sha256Canonical(oldExecution),
+      now: () => NOW,
+      io: f.io
+    };
+    await assert.rejects(fresh.readManualR3SourceHistory(historyInput), {
+      code: "MANUAL_SESSION_UNVERIFIED"
+    });
+    await assert.rejects(fresh.readManualR3FinalHistory(historyInput), {
+      code: "MANUAL_SESSION_UNVERIFIED"
+    });
+    await session.close();
+    f.r3OperationId = uuid(701);
+    await assert.rejects(
+      async () => {
+        const replay = await fresh.openManualSession({
+          profile: f.profile,
+          ownerObservation: {
+            ownerId: f.profile.ownerId,
+            principal: f.ownerObservation.principal,
+            scope: context.scope,
+            observedAt: NOW
+          },
+          r3CreationContext: { ...context, snapshotInputs: { repoRoot } },
+          io: f.io,
+          now: () => NOW,
+          signingKey: f.keys.privateKey
+        });
+        try {
+          await replay.sign(await r3CreationRequest(f, replay));
+        } finally {
+          await replay.close();
+        }
+      },
+      { code: "MANUAL_SESSION_UNVERIFIED" }
+    );
+    for (const [name, bytes] of oldBytes)
+      assert.deepEqual(
+        await fs.readFile(path.join(f.profile.storage.journalRoot, "objects", name)),
+        bytes
+      );
+  }
+);
 
 function r3LockInput() {
   return {

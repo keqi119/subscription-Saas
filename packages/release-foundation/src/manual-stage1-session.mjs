@@ -48,6 +48,10 @@ import {
 } from "./database-test-discovery.mjs";
 import { scanDatabaseFrameworkBypasses } from "./node-database-test-runner.mjs";
 import { computeMigrationCatalog, computeRepositoryContract } from "./catalogs.mjs";
+import {
+  readApprovedR3IncidentDisposition,
+  matchesR3IncidentDisposition
+} from "./manual-r3-incident.mjs";
 
 const STORAGE = "MANUAL_STORAGE_UNVERIFIED";
 const SESSION = "MANUAL_SESSION_UNVERIFIED";
@@ -1519,7 +1523,8 @@ function createManualHistoryVerifier(runtime) {
       stamp,
       revocations,
       snapshotReader,
-      candidateUseReceipt
+      candidateUseReceipt,
+      incidentDisposition
     } = runtime();
     const values = [...graph.values()].map((entry) => entry.value);
     const { r3Originals, r3Validated, r3Acknowledgements } = accumulator;
@@ -2057,6 +2062,18 @@ function createManualHistoryVerifier(runtime) {
           historicalConsumerDestination = request.destinationAdmissionDigest;
           for (const ref of snapshotReader.rawReferences) r3Originals.raws.add(ref.digest);
           collectFinalUse(graph, accumulator, request);
+          r3Validated.add(digest);
+          continue;
+        }
+        if (matchesR3IncidentDisposition(incidentDisposition, consumed, execution)) {
+          requireThat(
+            creation &&
+              linked.length === 1 &&
+              execution.reasonCode === "MANUAL_EVIDENCE_INCOMPLETE",
+            SESSION
+          );
+          // All normal request/allocation/signature/revocation/custody checks
+          // above still run. This adds no source proof or successful result.
           r3Validated.add(digest);
           continue;
         }
@@ -2634,7 +2651,8 @@ function historicalManualStore(profile, principal, io) {
   const base = fileStore(profile, principal, io);
   const files = new Map(),
     directories = new Map(),
-    repositories = new Map();
+    repositories = new Map(),
+    pinnedIdentities = new Map();
   let closed = false;
   const available = () => requireThat(!closed, SESSION);
   const remember = (file, bytes, read) => {
@@ -2724,6 +2742,12 @@ function historicalManualStore(profile, principal, io) {
     store,
     readPublic,
     available,
+    pinIdentity(file, identity) {
+      available();
+      const prior = pinnedIdentities.get(file);
+      requireThat(!prior || equal(prior, identity), STORAGE);
+      pinnedIdentities.set(file, snapshot(identity));
+    },
     async recheck() {
       available();
       for (const [dir, names] of directories) {
@@ -2732,6 +2756,13 @@ function historicalManualStore(profile, principal, io) {
       }
       for (const { bytes, read } of files.values())
         requireThat((await read()).equals(bytes), STORAGE);
+      for (const [file, expected] of pinnedIdentities) {
+        const stat = await base.checkedPath(file);
+        const actual = Object.fromEntries(
+          Object.keys(expected).map((key) => [key, String(stat[key])])
+        );
+        requireThat(equal(actual, expected), STORAGE);
+      }
       for (const [repoRoot, index] of repositories)
         requireThat((await repositoryIndex(repoRoot)).equals(index), STORAGE);
       available();
@@ -2741,6 +2772,7 @@ function historicalManualStore(profile, principal, io) {
       files.clear();
       directories.clear();
       repositories.clear();
+      pinnedIdentities.clear();
     }
   };
 }
@@ -2961,6 +2993,58 @@ async function readCompletedR3Context(
   const executions = values.filter(
     (value) => value.kind === "execution" && value.sessionId === sessionId
   );
+  const incidentDisposition = await readApprovedR3IncidentDisposition(
+    environment,
+    graph,
+    sessionRecordDigest,
+    consumptions
+  );
+  if (incidentDisposition) {
+    const state = {
+      profile,
+      profileBytes,
+      profileDigest,
+      recordSchema: "manual-operation-record.v3",
+      retentionDays: 90,
+      store,
+      identity,
+      sessionId,
+      sessionNonce,
+      current,
+      r3Context,
+      stamp,
+      revocations,
+      targetLocks: new Map(),
+      lifecycleTargetLocks: new Map(),
+      snapshotReader: null,
+      creationCompletionDigest: null,
+      consumerCompletionDigest: null,
+      candidateUseReceipt: null,
+      creationReceipt: null,
+      consumerReceipt: null,
+      r3: true,
+      target: null,
+      incidentDisposition,
+      evidenceState: async () => capture.available(),
+      evidenceTime: (eventAt) => eventAt
+    };
+    await createManualHistoryVerifier(() => state).validateR3Context(
+      graph,
+      slots,
+      consumptions,
+      accumulator
+    );
+    return {
+      abandoned: true,
+      summary: {
+        operationRef,
+        sessionId,
+        sessionNonce,
+        scope: snapshot(identity.scope),
+        latestExecutionAt: executions[0].recordedAt
+      }
+    };
+  }
   const stagePair = (stage, required) => {
     const initial = executions.filter(
       (value) => value.stage === stage && value.status === "INTERRUPTED_UNKNOWN"

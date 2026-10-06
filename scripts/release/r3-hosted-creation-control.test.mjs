@@ -925,7 +925,18 @@ test("R3 control keeps UNKNOWN on accepted creator failure and close only remove
   const control = await openR3HostedCreationControl(inputs);
   const response = await post(socketPath, body(inputs));
   assert.equal(response.status, 202);
-  await assert.rejects(control.created, { code: "R3_HOSTED_CREATION_CONTROL_INVALID" });
+  await assert.rejects(control.created, (error) => {
+    assert.equal(error.code, "R3_HOSTED_CREATION_CONTROL_INVALID");
+    assert.equal(error.failureDiagnostic.component, "HOSTED_CREATE");
+    assert.equal(error.failureDiagnostic.stage, "WORKSPACE");
+    assert.equal(error.failureDiagnostic.completed, false);
+    assert.equal(error.failureDiagnostic.causeCode, "UNCLASSIFIED");
+    assert.equal(
+      JSON.stringify(error.failureDiagnostic).includes("synthetic creator failure"),
+      false
+    );
+    return true;
+  });
   assert.equal(creationCalls.length, 1);
   assert.equal(f.commands.length, 0);
   const closed = await control.close();

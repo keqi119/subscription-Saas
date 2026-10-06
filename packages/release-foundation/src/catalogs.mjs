@@ -112,6 +112,8 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/r3-postgres-observation.mjs",
   "scripts/release/run-final-compose-gate.mjs",
   "scripts/release/run-r3-source-fresh.mjs",
+  "scripts/release/r3-failure-diagnostic.mjs",
+  "scripts/release/retire-r3-incident-3b451859.mjs",
   "scripts/release/snapshot-custody-job.mjs",
   "scripts/release/snapshot-h1-admit.mjs",
   "scripts/release/snapshot-h1-attempt.py",

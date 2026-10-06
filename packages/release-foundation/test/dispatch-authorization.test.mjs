@@ -855,8 +855,10 @@ test("public dispatch handler surface is read-only and has no forward runtime im
   assert.ok(
     imports.every((name) =>
       [
+        "node:buffer",
         "node:crypto",
         "node:perf_hooks",
+        "node:timers",
         "./canonical-json.mjs",
         "./digest.mjs",
         "./schema-registry.mjs",
@@ -864,5 +866,6 @@ test("public dispatch handler surface is read-only and has no forward runtime im
       ].includes(name)
     )
   );
+  assert.ok(!/\b(?:import|require)\s*\(/.test(source));
   assert.ok(!/\b(?:sign|spawn|exec|fetch)\s*\(/.test(source));
 });

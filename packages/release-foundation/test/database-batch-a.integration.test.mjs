@@ -17,7 +17,13 @@ const batchA = Object.freeze([
     "apps/api/test/asset-operations.repository.integration.spec.ts"
   ],
   ["api.auto-debit-settlement.postgres", "apps/api/test/auto-debit-settlement.integration.spec.ts"],
-  ["api.billing-automation.postgres", "apps/api/test/billing-automation.integration.spec.ts"],
+  [
+    "api.billing-automation.postgres",
+    [
+      "apps/api/test/billing-automation.integration.spec.ts",
+      "apps/api/test/payment-authority.integration.spec.ts"
+    ]
+  ],
   ["api.contract-segment.postgres", "apps/api/test/contract-segment.integration.spec.ts"],
   ["api.vehicle-availability.postgres", "apps/api/test/vehicle-availability.integration.spec.ts"],
   ["api.mileage-review.postgres", "apps/api/test/mileage-review-e2e.spec.ts"],
@@ -30,14 +36,14 @@ async function loadManifest() {
   );
 }
 
-test("batch A declares nine one-file suites with distinct assignments", async () => {
+test("batch A declares nine complete suites with distinct assignments", async () => {
   const manifest = await loadManifest();
   const expectedIds = batchA.map(([suiteId]) => suiteId);
   const batch = manifest.batches.find(({ batchId }) => batchId === "batch-a");
   assert.deepEqual(batch?.suiteIds, expectedIds);
-  for (const [suiteId, file] of batchA) {
+  for (const [suiteId, entry] of batchA) {
     const suite = manifest.suites.find((candidate) => candidate.suiteId === suiteId);
-    assert.deepEqual(suite?.files, [file]);
+    assert.deepEqual(suite?.files, Array.isArray(entry) ? entry : [entry]);
     assert.equal(suite?.parallelism.mode, "parallel");
   }
 
@@ -58,7 +64,7 @@ test("batch A declares nine one-file suites with distinct assignments", async ()
 });
 
 test("batch A source files require the canonical launcher context without ambient fallback", async () => {
-  for (const [, file] of batchA) {
+  for (const file of batchA.flatMap(([, entry]) => (Array.isArray(entry) ? entry : [entry]))) {
     const source = await readFile(resolve(repoRoot, ...file.split("/")), "utf8");
     assert.match(source, /requiredReleaseDatabaseTestContext\(/);
     assert.doesNotMatch(source, /process\.env\.DATABASE_URL/);

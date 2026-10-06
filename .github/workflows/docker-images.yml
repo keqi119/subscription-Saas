@@ -612,8 +612,16 @@ jobs:
               rawBlobs, verifiedAttestations, buildIdentity, storage });
             await appendFile(process.env.GITHUB_OUTPUT, `digest=${result.rootDigest}\nkey=${result.rootKey}\n`);
             await appendFile(process.env.GITHUB_STEP_SUMMARY, `Private custody inventory: ${result.rootDigest} / ${result.rootKey}\n`);
-          } catch {
-            console.error("MANUAL_TRUSTED_BUILD_CUSTODY_FINALIZE_FAILED"); process.exitCode = 1;
+          } catch (error) {
+            const safeCodes = new Set([
+              "EVIDENCE_OVERWRITE_REFUSED", "MANUAL_BUILD_STORAGE_BUCKET_INVALID",
+              "MANUAL_BUILD_STORAGE_WRITE_FAILED", "MANUAL_BUILD_STORAGE_READ_FAILED",
+              "MANUAL_BUILD_STORAGE_METADATA_INVALID", "MANUAL_BUILD_CUSTODY_ATTESTATION_INVALID",
+              "MANUAL_TRUSTED_INPUT_PENDING_INVALID", "MANUAL_TRUSTED_INPUT_RAW_INVALID",
+              "MANUAL_TRUSTED_INPUT_METADATA_INVALID"
+            ]);
+            const code = safeCodes.has(error?.code) ? error.code : "UNCLASSIFIED";
+            console.error(`MANUAL_TRUSTED_BUILD_CUSTODY_FINALIZE_FAILED:${code}`); process.exitCode = 1;
           }
           NODE
 

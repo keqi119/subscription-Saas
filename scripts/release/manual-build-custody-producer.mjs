@@ -377,12 +377,31 @@ export async function finalizeManualTrustedBuildInputs({ pendingBytes, pendingDi
     compareRead(metadata, bytes, facts.metadata, raw, minimum);
   }
   // Every reused creation fact is independently re-read. Existence cannot populate this map.
+  // Workers claim unique keys once; on failure they stop claiming and drain in-flight IO.
   const retained = new Map();
-  for (const facts of created.values()) { await reopen(facts, atRef(rawBlobs, facts.subject)); retained.set(facts.subject.digest, facts); }
-  for (const [digest, raw] of [...rawBlobs].sort(([a], [b]) => a.localeCompare(b))) {
-    if (retained.has(digest)) continue;
-    const facts = await createRaw(storage, raw, now, minimum); await reopen(facts, raw); retained.set(digest, facts);
+  const tasks = [], existingDigests = new Set();
+  for (const facts of created.values()) {
+    tasks.push({ digest: facts.subject.digest, facts, raw: atRef(rawBlobs, facts.subject) });
+    existingDigests.add(facts.subject.digest);
   }
+  for (const [digest, raw] of [...rawBlobs].sort(([a], [b]) => a.localeCompare(b))) {
+    if (!existingDigests.has(digest)) tasks.push({ digest, raw });
+  }
+  let next = 0, stopped = false, firstFailure;
+  async function worker() {
+    while (!stopped && next < tasks.length) {
+      const task = tasks[next++];
+      try {
+        const facts = task.facts ?? await createRaw(storage, task.raw, now, minimum);
+        await reopen(facts, task.raw);
+        retained.set(task.digest, facts);
+      } catch (error) {
+        if (!stopped) { stopped = true; firstFailure = error; }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(8, tasks.length) }, () => worker()));
+  if (stopped) throw firstFailure;
   const subjectDigests = new Set(subjects.map((s) => s.digest)), root = {
     recordVersion: "manual-trusted-build-custody-root.v1", buildIdentity: { ...buildIdentity }, pendingDigest,
     receiptRaw: pending.receiptRaw, materialRaw: pending.materialRaw, producerRecord: pending.producerRecord, proofVerification: pending.proofVerification,

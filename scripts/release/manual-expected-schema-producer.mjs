@@ -14,6 +14,7 @@ const PRISMA = "/app/apps/release-runner/node_modules/.bin/prisma";
 const NODE_BASE = "node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3";
 const PG_BASE = "postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0";
 const PG_DIGEST = PG_BASE.split("@")[1], OUTPUT = "/tmp/manual-expected-schema-output";
+const READ_RAW = `const fs=require("node:fs");const name=process.argv[1];if(!/^[0-9a-f]{64}$/u.test(name))process.exit(2);const fd=fs.openSync("${OUTPUT}/"+name+".bin",fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const stat=fs.fstatSync(fd);if(!stat.isFile()||stat.nlink!==1||(stat.mode&0o077)!==0||stat.size>1048576)process.exit(2);const raw=fs.readFileSync(fd);if(raw.length!==stat.size)process.exit(2);process.stdout.write(raw)}finally{fs.closeSync(fd)}`;
 const ENVELOPE_KEYS = ["sourceSha", "migrationCatalogDigest", "sourceSchemaDigest", "configDigest", "lockDigest", "producerDigest", "pnpmVersion"];
 const IDENTITY_KEYS = ["sourceSha", "repository", "workflowPath", "sourceRef", "runId", "runAttempt", "protectedEnvironment"];
 const PROCESS_KEYS = ["stdout", "stderr", "exitCode", "signal", "pid", "preparedAt", "spawnedAt", "closedAt"];
@@ -257,7 +258,10 @@ export async function produceManualExpectedSchema(input, { runProcess = spawnRaw
             if (!exact(ref, ["digest", "bytes"]) || !digest(ref.digest) || !Number.isSafeInteger(ref.bytes) || ref.bytes < 0 || ref.bytes > LIMIT || ref.digest <= previous) fail("MANUAL_EXPECTED_SCHEMA_RAW_INVALID"); previous = ref.digest;
             if (Date.now() >= handoffDeadline) fail("MANUAL_EXPECTED_SCHEMA_HANDOFF_INVALID");
             const name = `${ref.digest.slice(7)}.bin`, destination = path.join(copyRoot, name);
-            await host(docker, [...prefix, "cp", `${id}:${OUTPUT}/${name}`, destination], { timeoutMs: 20000 }); addRaw(localRaws, await reopenPrivate(destination, ref));
+            const raw = (await host(docker, [...prefix, "exec", "--user=postgres", id, "/usr/local/bin/node", "--eval", READ_RAW, ref.digest.slice(7)], { timeoutMs: 20000 })).stdout;
+            const handle = await fs.open(destination, "wx", 0o600);
+            try { await handle.writeFile(raw); await handle.sync(); } finally { await handle.close(); }
+            addRaw(localRaws, await reopenPrivate(destination, ref));
           }
           if (Date.now() >= handoffDeadline) fail("MANUAL_EXPECTED_SCHEMA_HANDOFF_INVALID"); validateManifest(manifest, localRaws, subjects);
         } });

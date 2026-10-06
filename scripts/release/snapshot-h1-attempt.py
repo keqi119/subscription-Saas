@@ -45,7 +45,7 @@ ENTRIES = ('snapshot-h1-container-hook.js', 'snapshot-h1-job-client.mjs',
            'snapshot-h1-runner-entry.mjs')
 READ_ONLY = {'snapshot-h1-volume.py', 'snapshot-h1-runner.py',
              'snapshot-h1-producer.py', 'snapshot-h1-runner-entry.mjs'}
-WORKER = 'sha256:3cccfc7484628e3e8ae7564983ae52db17c539138bfa519728d35323a8c8ec8d'
+WORKER = 'sha256:cf0d859bee9022916b312cce869cd417a56b9a17e125f322a36cbbab1fab611e'
 
 
 def require(value, code):

@@ -36,7 +36,7 @@ TARGET_DATABASE = 'stage1_snapshot_workspace'
 TARGET_ROLE = 'stage1_snapshot_migrate'
 NODE = '/opt/subscription-saas/snapshot-adapter/v2/runtime/node'
 NODE_SHA = 'fde6a4bf8d0562f7751d1a2d6cb9b417c4cfe107bbcb0aa3e9a24e125e348f48'
-BUNDLE_DIGEST = 'sha256:3cccfc7484628e3e8ae7564983ae52db17c539138bfa519728d35323a8c8ec8d'
+BUNDLE_DIGEST = 'sha256:cf0d859bee9022916b312cce869cd417a56b9a17e125f322a36cbbab1fab611e'
 BUNDLE = '/opt/subscription-saas/snapshot-adapter/v2/bundles/' + BUNDLE_DIGEST[7:]
 VOLUMES = '/var/lib/subscription-saas/snapshot-volumes'
 MAX_WORKER_LINE = 2097152
@@ -44,7 +44,7 @@ TARGET_MEMORY = 192 * 1048576
 WORKER_MEMORY = 192 * 1048576
 AUTH_VALIDATOR = r'''
 import { createPublicKey, createHash } from 'node:crypto';
-import { validateProducerCryptoAuthorization } from '/opt/subscription-saas/snapshot-adapter/v2/bundles/3cccfc7484628e3e8ae7564983ae52db17c539138bfa519728d35323a8c8ec8d/packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs';
+import { validateProducerCryptoAuthorization } from '/opt/subscription-saas/snapshot-adapter/v2/bundles/cf0d859bee9022916b312cce869cd417a56b9a17e125f322a36cbbab1fab611e/packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs';
 let raw = '';
 for await (const chunk of process.stdin) { raw += chunk; if (raw.length > 1048576) process.exit(1); }
 try {

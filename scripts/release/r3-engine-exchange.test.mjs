@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import http from "node:http";
+import net from "node:net";
+import { once } from "node:events";
 import { PassThrough, Readable } from "node:stream";
+import { clearTimeout, setTimeout } from "node:timers";
 import test from "node:test";
 import { exchangeR3Engine } from "./r3-engine-exchange.mjs";
 
@@ -17,6 +21,30 @@ async function endpoint(t, handler) {
         server.close(resolve);
       })
   );
+  return server;
+}
+
+async function connectedSocket() {
+  const socket = net.createConnection({ host: "127.0.0.1", port: 55440 });
+  await once(socket, "connect");
+  return socket;
+}
+
+async function rejectsPromptly(promise) {
+  let timer;
+  try {
+    await assert.rejects(
+      Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("exchange did not settle")), 500);
+        })
+      ]),
+      { code: "R3_ENGINE_EXCHANGE_UNAVAILABLE" }
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 test("fixed Engine exchange streams exact bytes and closes the source", async (t) => {
@@ -101,4 +129,52 @@ test("truncated and oversized body sources cannot complete an Engine upload", as
     );
     assert.equal(source.closed, true);
   }
+});
+
+test("a preclosed connected socket rejects instead of leaving the exchange pending", async (t) => {
+  await endpoint(t, () => {});
+  const socket = await connectedSocket();
+  socket.destroy();
+  await once(socket, "close");
+  await rejectsPromptly(
+    exchangeR3Engine("POST", "/create", Buffer.from("{}"), socket, { timeout: 50 })
+  );
+});
+
+test("peer close after request delivery rejects instead of leaving the exchange pending", async (t) => {
+  await endpoint(t, (request) => {
+    request.resume();
+    request.once("end", () => request.socket.destroy());
+  });
+  const socket = await connectedSocket();
+  await rejectsPromptly(
+    exchangeR3Engine("POST", "/create", Buffer.from("{}"), socket, { timeout: 50 })
+  );
+});
+
+test("a preclosed connected socket settles a streamed upload", async (t) => {
+  await endpoint(t, () => {});
+  const socket = await connectedSocket();
+  socket.destroy();
+  await once(socket, "close");
+  const source = Readable.from([Buffer.from("data")]);
+  let opened = 0;
+  await rejectsPromptly(
+    exchangeR3Engine("PUT", "/archive", null, socket, {
+      timeout: 50,
+      bodySource: {
+        contentLength: 4,
+        open: async () => {
+          opened++;
+          return source;
+        }
+      }
+    })
+  );
+  assert.equal(opened, 0);
+});
+
+test("an unresponsive peer reaches the configured exchange timeout", async (t) => {
+  await endpoint(t, (request) => request.resume());
+  await rejectsPromptly(exchangeR3Engine("GET", "/slow", null, null, { timeout: 50 }));
 });

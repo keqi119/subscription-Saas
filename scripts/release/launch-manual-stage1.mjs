@@ -4888,39 +4888,8 @@ export async function launchR3TargetCreate(input) {
       principal: { platform: "posix", uid: process.getuid() },
       recheck: check
     });
-    // Install the sole job key before waiting for its SSH reverse-forward.
-    // Connect once before consuming, then send on that very connection only.
+    // Keep the original forward deadline across preparation and signing.
     const deadline = Math.min(Date.now() + 600000, Date.parse(fixed.admission.expiresAt));
-    diagnostic.enter("SOCKET");
-    while (!socket) {
-      if (Date.now() >= deadline) fail(code);
-      await check();
-      if (Date.now() >= deadline) fail(code);
-      try {
-        socket = await new Promise((resolve, reject) => {
-          const pending = net.createConnection({ host: "127.0.0.1", port: 55440 });
-          const timer = setTimeout(
-            () => pending.destroy(Object.assign(new Error(code), { code })),
-            3000
-          );
-          pending.once("error", (error) => {
-            clearTimeout(timer);
-            reject(error);
-          });
-          pending.once("connect", () => {
-            clearTimeout(timer);
-            if (Date.now() >= deadline) {
-              pending.destroy();
-              reject(Object.assign(new Error(code), { code }));
-            } else resolve(pending);
-          });
-        });
-      } catch (error) {
-        if (!["ECONNREFUSED", "ECONNRESET"].includes(error.code) || Date.now() >= deadline)
-          throw error;
-        await pause();
-      }
-    }
     await check();
     const current = [...(await archive.graph()).entries()].filter(
       ([, item]) =>
@@ -4929,7 +4898,7 @@ export async function launchR3TargetCreate(input) {
         item.value.sessionId === session.sessionId &&
         item.value.status === "OPEN"
     );
-    if (current.length !== 1 || socket.destroyed) fail(code);
+    if (current.length !== 1) fail(code);
     const now = new Date().toISOString();
     const request = {
       schemaVersion: "manual-runner-request.v4",
@@ -4998,6 +4967,39 @@ export async function launchR3TargetCreate(input) {
     const body = encodeManualJson({ request, authorization });
     if (body.length > 1048576) fail(code);
     diagnostics.push({ name: "creation-request", body: await archive.raw(body) });
+    await check();
+    // Connect once before consuming, then send on that same connection only.
+    // Signing and durable request preparation do not use its idle window.
+    diagnostic.enter("SOCKET");
+    while (!socket) {
+      if (Date.now() >= deadline) fail(code);
+      await check();
+      if (Date.now() >= deadline) fail(code);
+      try {
+        socket = await new Promise((resolve, reject) => {
+          const pending = net.createConnection({ host: "127.0.0.1", port: 55440 });
+          const timer = setTimeout(
+            () => pending.destroy(Object.assign(new Error(code), { code })),
+            3000
+          );
+          pending.once("error", (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+          pending.once("connect", () => {
+            clearTimeout(timer);
+            if (Date.now() >= deadline) {
+              pending.destroy();
+              reject(Object.assign(new Error(code), { code }));
+            } else resolve(pending);
+          });
+        });
+      } catch (error) {
+        if (!["ECONNREFUSED", "ECONNRESET"].includes(error.code) || Date.now() >= deadline)
+          throw error;
+        await pause();
+      }
+    }
     await check();
     if (socket.destroyed) fail(code);
     // This call writes consumption + its readback + pending UNKNOWN before it

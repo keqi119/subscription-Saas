@@ -391,6 +391,55 @@ test("absent observation proves only topology absence and refuses residual or in
   }
 });
 
+test("absent observation allows unrelated stacked system mounts", () => {
+  const f = fixture("absent");
+  f.mounts.filesystems.push(
+    {
+      target: "/proc/sys/fs/binfmt_misc",
+      source: "systemd-1",
+      fstype: "autofs",
+      options: "rw,relatime,fd=36,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=8913",
+      "maj:min": "0:34"
+    },
+    {
+      target: "/proc/sys/fs/binfmt_misc",
+      source: "binfmt_misc",
+      fstype: "binfmt_misc",
+      options: "rw,relatime",
+      "maj:min": "0:37"
+    }
+  );
+  assert.equal(assess(f).state, "absent");
+});
+
+test("absent observation rejects stacked mounts on protected paths", () => {
+  for (const target of [
+    "/dev/shm",
+    "/var/lib/stage1-snapshots",
+    "/srv/stage1-snapshot",
+    `${workspace.mountPath}/nested`
+  ]) {
+    const f = fixture("absent");
+    f.mounts.filesystems.push(
+      {
+        target,
+        source: "tmpfs",
+        fstype: "tmpfs",
+        options: "rw,nosuid,nodev",
+        "maj:min": "0:41"
+      },
+      {
+        target,
+        source: "tmpfs",
+        fstype: "tmpfs",
+        options: "rw,nosuid,nodev",
+        "maj:min": "0:42"
+      }
+    );
+    rejected(f);
+  }
+});
+
 test("observation accepts only fixed inert workspace and complete stdout buffers without secret or success overrides", () => {
   assert.equal(typeof parser?.assessR3WorkspaceObservation, "function");
   const base = input(fixture());

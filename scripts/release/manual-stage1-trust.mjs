@@ -23,7 +23,10 @@ import {
   verifyR3HostedEvidence,
   verifyR3HostedCleanupEvidence
 } from "../../packages/release-foundation/src/r3-hosted-evidence.mjs";
-import { approvedR3HistoricalSourceBinding } from "../../packages/release-foundation/src/manual-r3-incident.mjs";
+import {
+  approvedR3HistoricalSourceBinding,
+  approvedR3HistoricalContractCompatibility
+} from "../../packages/release-foundation/src/manual-r3-incident.mjs";
 
 const LIMIT = 1048576;
 const H1 = "H1_INPUT_UNAVAILABLE";
@@ -806,6 +809,49 @@ async function checkoutSource(repoRoot, sourceSha) {
   requireThat((await output("rev-parse", "--verify", "HEAD")) === sourceSha);
   requireThat((await output("status", "--porcelain=v1", "--untracked-files=all")) === "");
 }
+
+// Only the fixed historical reader supplies this source-pinned compatibility.
+// Discovery still runs; exactly one known unlisted entrypoint is tolerated.
+async function repositoryContractForSource(repoRoot, sourceSha, compatibility = null) {
+  if (compatibility === null) return computeRepositoryContract(repoRoot);
+  requireThat(
+    compatibility.sourceRoot === repoRoot &&
+      compatibility.sourceSha === sourceSha &&
+      compatibility.unlistedEntrypoint === "scripts/release/retire-r3-incident-0af9c545.mjs"
+  );
+  await checkoutSource(repoRoot, sourceSha);
+  let current, drift;
+  try {
+    current = await computeRepositoryContract(repoRoot);
+  } catch (error) {
+    drift = error;
+  }
+  if (current) {
+    await checkoutSource(repoRoot, sourceSha);
+    return current;
+  }
+  requireThat(drift?.code === "CONTRACT_FILE_SET_DRIFT");
+  const { declared, discovered } = drift.details ?? {};
+  requireThat(
+    Array.isArray(declared) &&
+      Array.isArray(discovered) &&
+      !declared.includes(compatibility.unlistedEntrypoint) &&
+      equal(discovered, [...declared, compatibility.unlistedEntrypoint].sort())
+  );
+  const entries = await Promise.all(
+    declared.map(async (file) => ({
+      path: file,
+      sha256: sha256Bytes(await fs.readFile(path.join(repoRoot, ...file.split("/"))))
+    }))
+  );
+  const identity = {
+    catalogVersion: "repository-contract.v1",
+    canonicalization: "RFC8785",
+    entries
+  };
+  await checkoutSource(repoRoot, sourceSha);
+  return Object.freeze({ ...identity, digest: sha256Canonical(identity) });
+}
 async function checkoutCurrentVerifier(repoRoot) {
   const sourceSha = new TextDecoder("utf-8", { fatal: true })
     .decode(
@@ -992,7 +1038,8 @@ export async function verifyManualBuild(input) {
 async function verifyManualBuildInput(
   input,
   requireCurrentValidity,
-  verifierRepoRoot = input.repoRoot
+  verifierRepoRoot = input.repoRoot,
+  historicalContract = null
 ) {
   const opened = [];
   try {
@@ -1119,8 +1166,13 @@ async function verifyManualBuildInput(
       : null;
     const inspectSource = async () => {
       requireThat(
-        (await computeRepositoryContract(input.repoRoot)).digest ===
-          proof.identity.repositoryContractDigest
+        (
+          await repositoryContractForSource(
+            input.repoRoot,
+            proof.identity.sourceSha,
+            historicalContract
+          )
+        ).digest === proof.identity.repositoryContractDigest
       );
       requireThat(
         (await computeMigrationCatalog(input.repoRoot)).digest ===
@@ -1193,7 +1245,8 @@ export async function readFixedR3TargetPolicy(input) {
 async function readR3TargetPolicyInput(
   input,
   requireCurrentValidity,
-  verifierRepoRoot = input.repoRoot
+  verifierRepoRoot = input.repoRoot,
+  historicalContract = null
 ) {
   const code = "R3_TARGET_POLICY_INPUT_UNAVAILABLE";
   const opened = [];
@@ -1299,7 +1352,8 @@ async function readR3TargetPolicyInput(
     const build = await verifyManualBuildInput(
         { repoRoot, proofBytes, materialBytes },
         requireCurrentValidity,
-        verifierRepoRoot
+        verifierRepoRoot,
+        historicalContract
       ),
       proof = json(proofBytes);
     requireThat(build.custodyReceiptRawDigest === sha256Bytes(receiptBytes));
@@ -1318,8 +1372,13 @@ async function readR3TargetPolicyInput(
             profileDigest
         );
         requireThat(
-          (await computeRepositoryContract(repoRoot)).digest ===
-            proof.identity.repositoryContractDigest
+          (
+            await repositoryContractForSource(
+              repoRoot,
+              proof.identity.sourceSha,
+              historicalContract
+            )
+          ).digest === proof.identity.repositoryContractDigest
         );
         requireThat(
           (await computeMigrationCatalog(repoRoot)).digest === proof.identity.migrationCatalogDigest
@@ -1897,7 +1956,7 @@ export async function readTrustedR3HistoricalContext(input) {
             (field) => spec[field] === scope[field]
           )
       );
-      const historicalSourceRoot = approvedR3HistoricalSourceBinding({
+      const historicalBinding = {
         operationRef: context.operationRef,
         profileDigest,
         sourceSha: spec.sourceSha,
@@ -1905,7 +1964,13 @@ export async function readTrustedR3HistoricalContext(input) {
         materialRawDigest: spec.materialRawDigest,
         creationSpecDigest: scope.creationSpecDigest,
         jobAdmissionDigest: scope.jobAdmissionDigest
-      });
+      };
+      const historicalSourceRoot = approvedR3HistoricalSourceBinding(historicalBinding),
+        historicalContract = approvedR3HistoricalContractCompatibility(historicalBinding);
+      if (historicalContract) {
+        requireThat(historicalContract.sourceRoot === historicalSourceRoot);
+        await checkoutSource(historicalSourceRoot, spec.sourceSha);
+      }
       const policyKey = `${spec.proofRawDigest}/${spec.materialRawDigest}`;
       if (!policies.has(policyKey)) {
         const buildRoot = path.join(archiveRoot, "inputs", "build"),
@@ -1924,7 +1989,8 @@ export async function readTrustedR3HistoricalContext(input) {
           await readR3TargetPolicyInput(
             { repoRoot: historicalSourceRoot ?? repoRoot, proofBytes, materialBytes },
             false,
-            repoRoot
+            repoRoot,
+            historicalContract
           )
         );
       }

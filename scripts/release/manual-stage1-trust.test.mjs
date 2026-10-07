@@ -9,6 +9,7 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 import { syncBuiltinESMExports } from "node:module";
+import { URL } from "node:url";
 import {
   encodeManualJson,
   computeMigrationCatalog,
@@ -1067,7 +1068,8 @@ async function buildFixture(
     extraEntrypoints = [],
     r3TargetPolicy = false,
     sourceReadback = false,
-    historicalModuleVersion = false
+    historicalModuleVersion = false,
+    historicalExtraEntrypoint = false
   } = {}
 ) {
   const f = await fixture(t);
@@ -1154,8 +1156,26 @@ async function buildFixture(
   await git(f.repoRoot, "init", "--initial-branch=main");
   await git(f.repoRoot, "add", "--all");
   await git(f.repoRoot, "commit", "--no-verify", "-m", "Synthetic fixed trust inputs");
-  const sourceSha = await git(f.repoRoot, "rev-parse", "HEAD");
   const contract = await computeRepositoryContract(f.repoRoot);
+  if (historicalModuleVersion) {
+    // The old source contains this fixed executor, but its original catalogue
+    // predates the entrypoint. Its signed proof covers the old manifest scope.
+    await fs.copyFile(
+      new URL("./retire-r3-incident-0af9c545.mjs", import.meta.url),
+      path.join(f.repoRoot, "scripts/release/retire-r3-incident-0af9c545.mjs")
+    );
+    if (historicalExtraEntrypoint)
+      await fs.copyFile(
+        new URL("./retire-r3-incident-588da0dc.mjs", import.meta.url),
+        path.join(f.repoRoot, "scripts/release/retire-r3-incident-588da0dc.mjs")
+      );
+    await git(f.repoRoot, "add", "--all");
+    await git(f.repoRoot, "commit", "--no-verify", "-m", "Historical unlisted entrypoint");
+    await assert.rejects(computeRepositoryContract(f.repoRoot), {
+      code: "CONTRACT_FILE_SET_DRIFT"
+    });
+  }
+  const sourceSha = await git(f.repoRoot, "rev-parse", "HEAD");
   const catalog = await computeMigrationCatalog(f.repoRoot);
   const ciRunRef = `https://github.com/${repository}/actions/runs/${runId}`;
   const images = ["api", "web", "runner"].map((name, index) => {
@@ -1496,13 +1516,19 @@ async function r3CreationFixture(
     chain = "snapshot",
     sourceReadback = false,
     historicalModuleVersion = false,
+    historicalExtraEntrypoint = false,
     base = null,
     observedAgoMs = 0
   } = {}
 ) {
   const f =
     base ??
-    (await buildFixture(t, { r3TargetPolicy: true, sourceReadback, historicalModuleVersion }));
+    (await buildFixture(t, {
+      r3TargetPolicy: true,
+      sourceReadback,
+      historicalModuleVersion,
+      historicalExtraEntrypoint
+    }));
   const policyBytes = await fs.readFile(
     path.join(f.repoRoot, "release/contracts/manual-stage1-r3-target-policy.v1.json")
   );
@@ -1907,6 +1933,7 @@ test(
 
 for (const mutation of [
   "none",
+  "extra-entrypoint",
   "unknown-binding",
   "old-head",
   "old-contract",
@@ -1920,7 +1947,8 @@ for (const mutation of [
       const f = await r3JobFixture(t, {
         phase: "source",
         chain: "fresh",
-        historicalModuleVersion: true
+        historicalModuleVersion: true,
+        historicalExtraEntrypoint: mutation === "extra-entrypoint"
       });
       const verifierRoot = path.join(f.root, "verifier");
       await git(f.root, "clone", f.repoRoot, verifierRoot);
@@ -1940,6 +1968,16 @@ for (const mutation of [
             approvedR3HistoricalSourceBinding(input) {
               bindingInput = input;
               return mutation === "unknown-binding" ? null : f.repoRoot;
+            },
+            approvedR3HistoricalContractCompatibility(input) {
+              assert.deepEqual(input, bindingInput);
+              return mutation === "unknown-binding"
+                ? null
+                : {
+                    sourceRoot: f.repoRoot,
+                    sourceSha: f.sourceSha,
+                    unlistedEntrypoint: "scripts/release/retire-r3-incident-0af9c545.mjs"
+                  };
             }
           }
         }
@@ -1976,6 +2014,13 @@ for (const mutation of [
           code: "R3_HISTORY_CONTEXT_UNAVAILABLE"
         });
         assert.ok(bindingInput);
+        noAuthorityAccess(f);
+        return;
+      }
+      if (mutation === "extra-entrypoint") {
+        await assert.rejects(isolated.readTrustedR3HistoricalContext(input), {
+          code: "R3_HISTORY_CONTEXT_UNAVAILABLE"
+        });
         noAuthorityAccess(f);
         return;
       }

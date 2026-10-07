@@ -284,6 +284,11 @@ test("approved 588 incident binds its own failed job, historical source and real
     incident.approvedR3HistoricalSourceBinding(binding),
     "/opt/stage1-r3-candidate-8928a0f"
   );
+  assert.deepEqual(incident.approvedR3HistoricalContractCompatibility(binding), {
+    sourceRoot: "/opt/stage1-r3-candidate-8928a0f",
+    sourceSha: "8928a0ffa3c29609e0da99144de2415438c9d081",
+    unlistedEntrypoint: "scripts/release/retire-r3-incident-0af9c545.mjs"
+  });
   assert.equal(
     incident.approvedR3HistoricalSourceBinding({
       ...binding,
@@ -295,6 +300,13 @@ test("approved 588 incident binds its own failed job, historical source and real
     incident.approvedR3HistoricalSourceBinding({
       ...binding,
       creationSpecDigest: incident.APPROVED_R3_INCIDENT_0AF9C545.executionDigest
+    }),
+    null
+  );
+  assert.equal(
+    incident.approvedR3HistoricalContractCompatibility({
+      ...binding,
+      operationRef: incident.APPROVED_R3_INCIDENT_0AF9C545.operationRef
     }),
     null
   );

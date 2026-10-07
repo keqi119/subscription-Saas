@@ -253,3 +253,65 @@ test("only the fixed open session shape is accepted for the unclosed incident", 
     code: "MANUAL_R3_INCIDENT_UNVERIFIED"
   });
 });
+
+test("approved 588 incident binds its own failed job, historical source and real closing session", () => {
+  const p = incident.APPROVED_R3_INCIDENT_588DA0DC;
+  assert.equal(p.operationRef, "588da0dc-713a-4832-ab04-96421ed50236");
+  assert.equal(
+    p.proposalDigest,
+    "sha256:e891c70738cebae883bb0032f9bd3c20c08c11542a6415ab69cbce0eed64f6d3"
+  );
+  assert.equal(
+    p.approvalDigest,
+    "sha256:5944c7bc7c638135f718950a8001718c7cf5527441d92f4a7558ea8bc881e3c4"
+  );
+  assert.equal(p.github.jobId, "112583597083");
+  assert.equal(p.github.conclusion, "failure");
+  assert.equal(
+    p.sessionDigest,
+    "sha256:64fd3913b34cd24602bb5d0a22c4245a166fa79108a1ef5293b2e57462107015"
+  );
+  const binding = {
+    operationRef: p.operationRef,
+    profileDigest: p.profileDigest,
+    sourceSha: "8928a0ffa3c29609e0da99144de2415438c9d081",
+    proofRawDigest: "sha256:db884e1a359b40e5085b72f90d77e428d52557b03613838904d4748a3f867c3f",
+    materialRawDigest: "sha256:c845f7a0edf3a88685c77823f9fd2ab2135ee0083c54a117eaf8f44a134a7d4d",
+    creationSpecDigest: "sha256:de38862595bf073531fc8ce6a987f1583dd45e4207f1ff5455dfb76ffd692555",
+    jobAdmissionDigest: "sha256:49836924c8b071bd7f19bf09b6f15f88279c83d6f38214b6864029d7739eb6d4"
+  };
+  assert.equal(
+    incident.approvedR3HistoricalSourceBinding(binding),
+    "/opt/stage1-r3-candidate-8928a0f"
+  );
+  assert.equal(
+    incident.approvedR3HistoricalSourceBinding({
+      ...binding,
+      operationRef: incident.APPROVED_R3_INCIDENT_0AF9C545.operationRef
+    }),
+    null
+  );
+  assert.equal(
+    incident.approvedR3HistoricalSourceBinding({
+      ...binding,
+      creationSpecDigest: incident.APPROVED_R3_INCIDENT_0AF9C545.executionDigest
+    }),
+    null
+  );
+  const graph = new Map([
+    [p.openingDigest, { value: { kind: "session", sessionId: p.sessionId, status: "OPEN" } }],
+    [
+      p.executionDigest,
+      { value: { kind: "execution", sessionId: p.sessionId, status: "INTERRUPTED_UNKNOWN" } }
+    ],
+    [
+      p.sessionDigest,
+      { value: { kind: "session", sessionId: p.sessionId, status: "INTERRUPTED_UNKNOWN" } }
+    ]
+  ]);
+  assert.doesNotThrow(() => incident.assertR3IncidentSessionShape(p, graph));
+  graph.delete(p.sessionDigest);
+  assert.throws(() => incident.assertR3IncidentSessionShape(p, graph), {
+    code: "MANUAL_R3_INCIDENT_UNVERIFIED"
+  });
+});

@@ -37,11 +37,22 @@ const codes = new Set([
   "ECONNREFUSED",
   "EPIPE",
   "ETIMEDOUT",
+  "R3_CONNECTED_WINDOW_EXHAUSTED",
+  "R3_CONNECTED_SOCKET_CLOSED",
   "ENOENT",
   "EACCES"
 ]);
 const signals = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP", "SPAWN_ERROR"]);
 const trusted = new WeakMap();
+const transportCauses = new Set([
+  "R3_POST_PRE_CLOSED",
+  "R3_POST_TIMER",
+  "R3_POST_REQUEST_ERROR",
+  "R3_POST_RESPONSE_INCOMPLETE",
+  "R3_CONNECTED_WINDOW_EXHAUSTED",
+  "R3_CONNECTED_SOCKET_CLOSED"
+]);
+const trustedCause = new WeakMap();
 const own = (value, key) => {
   if (!value || (typeof value !== "object" && typeof value !== "function")) return undefined;
   try {
@@ -50,7 +61,21 @@ const own = (value, key) => {
     return undefined;
   }
 };
-const code = (error) => (codes.has(own(error, "code")) ? own(error, "code") : "UNCLASSIFIED");
+const code = (error) =>
+  trustedCause.get(error) ?? (codes.has(own(error, "code")) ? own(error, "code") : "UNCLASSIFIED");
+
+export function markR3FailureCause(error, causeCode) {
+  if (!error || typeof error !== "object" || !transportCauses.has(causeCode))
+    throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
+  if (!trustedCause.has(error)) trustedCause.set(error, causeCode);
+  return error;
+}
+
+export function inheritR3FailureCause(error, cause) {
+  const inherited = code(cause);
+  if (inherited !== "UNCLASSIFIED" && !trustedCause.has(error)) trustedCause.set(error, inherited);
+  return error;
+}
 
 export function getR3FailureDiagnostic(error) {
   return error && (typeof error === "object" || typeof error === "function")

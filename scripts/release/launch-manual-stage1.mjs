@@ -41,6 +41,7 @@ import {
   openTrustedR3CreationSession
 } from "./manual-stage1-trust.mjs";
 import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
+import { withR3ConnectedWindow, connectedPostTimeout } from "./r3-connected-window.mjs";
 import {
   assessR3PostgresObservation,
   assessR3FinalPostgresObservation,
@@ -5000,16 +5001,20 @@ export async function launchR3TargetCreate(input) {
         await pause();
       }
     }
-    await check();
-    if (socket.destroyed) fail(code);
-    // This call writes consumption + its readback + pending UNKNOWN before it
-    // returns. No request bytes may reach the network above this boundary.
-    consumption = await diagnostic.run("CONSUME", () =>
-      session.consume({ authorization, request: requestInput })
-    );
-    const delivered = await diagnostic.run("POST", () =>
-      exchange("POST", "/stage1-r3/target-create", body, socket)
-    );
+    const delivered = await withR3ConnectedWindow(socket, async () => {
+      await check();
+      if (socket.destroyed) fail(code);
+      // This call writes consumption + its readback + pending UNKNOWN before it
+      // returns. No request bytes may reach the network above this boundary.
+      consumption = await diagnostic.run("CONSUME", () =>
+        session.consume({ authorization, request: requestInput })
+      );
+      return diagnostic.run("POST", () =>
+        exchange("POST", "/stage1-r3/target-create", body, socket, {
+          timeout: connectedPostTimeout()
+        })
+      );
+    });
     diagnostic.enter("ACK");
     await saveExchange("creation-ack", delivered);
     if (delivered.status !== 202 || delivered.body.length !== 0) fail(code);

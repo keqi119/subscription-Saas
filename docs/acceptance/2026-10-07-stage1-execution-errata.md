@@ -69,7 +69,9 @@
 | E22 / P                        | 交互协议漏项               | 后续三条链不能复制仅识别 Source ACK 的 bridge：sourceSnapshot 需要 SNAPSHOT，finalFresh 需要 SOURCE＋Final ACK，finalSnapshot 三类输入均需要。[生产入口](../../scripts/release/run-r3-source-fresh.mjs):214、221、257；[当前单 ACK wrapper](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/r3-source-fresh-owner-5b940705.py):185。                                                                                                                                                                                                   | 为每条链列真实提示、顺序、选择对象及消费者；离线有限协议检查覆盖分片/重复/早到输入。选择值与终端 ACK 由用户真实提供，不自动填充；生产验证器继续验证绑定。                                                            | 仅已识别缺口，后续 bridge 未就绪；不得等待线上超时才发现。                                                                                                                                                                                                |
 | E23 / C、P                     | 旧时限/签名依赖编排        | 续期草案 v1 遗漏 owner facts 到期，旧 expiry 被用于一次 owner workflow；在 environment 审批前取消，v2 才完整覆盖。P:390–393。旧 PENDING 仍保存，容易被误用；本轮实际用的是获批新窗口。                                                                                                                                                                                                                                                                                                                                                           | 方案必须列出 profile、facts、spec、dispatch、STS、job 和预计清理结束的全部时间依赖；使用时先验实际签名字节和时区。不能只替一个 expiry，也不能把旧草案存在判为新执行过期。                                            | v2 已批准；执行截止 `2026-10-08T06:53:54.742Z`，profile 另有自身期限；不足就停止依赖步骤。                                                                                                                                                                |
 | E24 / P；运行缺口 C            | 打包绑定＋审核覆盖         | H1 bundle 用 HEAD 导出、installer 却要求 origin/main，执行前发现并保留拒绝包，P:293。多次 normalized diff/syntax 均 PASS 后实际仍失败（P:245、401），说明这些检查不足以证明宿主、状态和协议兼容。                                                                                                                                                                                                                                                                                                                                                | reviewer 必须同时核对新参数、所有嵌入值、真实入口及其运行前提。模板差异相等、语法通过只能签“静态一致”，不能签“可执行成功”；已通过的静态检查不重复跑整套。                                                            | 作为下一轮必审规则；不新建通用测试平台。                                                                                                                                                                                                                  |
-| E25 / P                        | 会话生命周期接线缺口       | 公开控制安装结束后会删除 reader-session 并等 STS 过期；snapshot initial 的 admit、recheck 及最后 seal 仍要读取有效会话，现有 initial parent 没有发行/更新入口。单次 900 秒也不能覆盖允许 1200 秒的 runner attach 及后续 seal。见 [只读调用链与最小范围](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/snapshot-initial-reader-session-gap-37623325751.md)。                                                                                                                                                                          | 数据环境准入前，在既有受保护执行范围内补齐固定 reader 身份的有界会话准备、并发同步、到期前更新及清理；不扩大 TTL/RAM/身份，不重跑一次性公件安装器，不凭一次快速通过证明足够。                                        | 代码调用链确认的执行前缺口；限定本地修正及回归已通过，尚未安装或进行真实 initial 尝试；不是环境抖动。                                                                                                                                                     |
+| E25 / P                        | 会话生命周期接线缺口       | 公开控制安装结束后会删除 reader-session 并等 STS 过期；snapshot initial 的 admit、recheck 及最后 seal 仍要读取有效会话，现有 initial parent 没有发行/更新入口。单次 900 秒也不能覆盖允许 1200 秒的 runner attach 及后续 seal。见 [只读调用链与最小范围](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/snapshot-initial-reader-session-gap-37623325751.md)。                                                                                                                                                                          | 数据环境准入前，在既有受保护执行范围内补齐固定 reader 身份的有界会话准备、并发同步、到期前更新及清理；不扩大 TTL/RAM/身份，不重跑一次性公件安装器，不凭一次快速通过证明足够。                                        | 代码调用链确认的执行前缺口；限定回归及真实 H1 安装已通过并独立回读，尚无真实 initial；新绑定和精确 RAM 差额待完成，不是环境抖动。                                                                                                                         |
+
+| E26 / C（时序）＋U（导入首因） | 执行编排缺口；诊断覆盖不足 | 当前 RC `37676724380` 的 hosted DELIVERY 从 `21:00:11Z` 等待至 `21:10:13Z` 后失败；[生产连接期限](../../scripts/release/r3-hosted-evidence-delivery.mjs):301 为 600 秒。实际 [本地验签完成](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/r3-rc-sourcefresh416-actual/source-fresh-admission/verification-summary.json)为 `21:07:53.778Z`，[owner 启动](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/r3-follow-on-owner-bridges-e22-DRAFT/sourceFresh416-run37676724380-ACTIVE/execute-started.json)为 `21:09:13.678Z`，仅余约 59 秒。H1 子进程约 125.888 秒后以 IMPORT 失败退出；[独立读回](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/r3-follow-on-owner-bridges-e22-DRAFT/sourceFresh416-run37676724380-ACTIVE/failure-public-readback.json)证实 CHILD_EXIT，未观察 EOF/信号，清理三项为 true，无结果/ACK。 | 外层 13000 秒和签名有效期不能覆盖另一个进程的 600 秒启动期限。必须在 Environment 前完成全部静态准备；实际收集→固定输入→启动不可穿插无界人工/模型处理；进入 once 前检查实际 hosted 连接期限剩余量。归档操作预算与跨进程会合预算分别核算；缺具体导入首因时只读核查，不把此次或旧 5b 失败称作环境抖动。 | 原失败/once 保留；hosted 已失败，不再触发依赖链。本轮尚未运行数据库测试。一次有限只读核查与独立回读已完成：spec/ZIP/admission 匹配，admission 在 job 结束后才写入；后续 current-job 校验已必然不满足。内层首个抛错仍 U，原 once 保留；不以新 ref 整链试跑排错。 |
 
 ## 本轮核查纠正的表述
 
@@ -83,7 +85,7 @@
 
 ## 后续使用规则
 
-- [下一轮验证方案](../superpowers/plans/2026-10-07-stage1-next-validation-plan.md)逐组引用 E01–E25；每次方案必须列出适用项、证据和不适用理由，不能只写“已参考勘误”。
+- [下一轮验证方案](../superpowers/plans/2026-10-07-stage1-next-validation-plan.md)逐组引用 E01–E27；每次方案必须列出适用项、证据和不适用理由，不能只写“已参考勘误”。
 - 同一原因未改变输入/代码/状态、没有新增鉴别证据时，不允许再次启动整链。故障先确定停在哪个边界，再决定一个最小诊断；诊断也须预算和审核。
 - 一个新操作最多一次真实 Execute；结果未知只读回。状态恢复单独命名、保留旧失败并审核，不等于重试许可。独立 writer/reader 等不同必需步骤分别预算，不被误删。
 - 只对实际修改的行为增加必要回归。文档、已核对的固定字段以及低风险可逆调整，不因此新增通用测试框架或反复全量测试。
@@ -96,7 +98,7 @@
 
 E25 修正须进入受信 attempt 入口并更新 installation/adapter 摘要；额外的外部子类不在摘要覆盖范围内，不能作为修正后的正式入口。现有 admission 绑定旧 adapter，不能直接移用于修改后的实现。成功 build、四 spec 对账、签名、RAM 和保管证据均保留；下一轮按字段核定复用范围，不能笼统宣布全部仍可执行，也不能不经核定就重建整链。
 
-仍缺 E25 受信安装及对应绑定（本地修正已通过限定回归）、真实快照、R3 四组合终端证据、Staging 两项迁移及 R4 真实验收。两项待迁移为 `20260925090000_stage1_operational_completion_terminal_shape`、`20260925091000_stage1_operational_completion_settlement_guard`；本轮没有修改业务代码或写入业务数据库。
+E25 受信安装已独立回读；对应新签名及 Writer/Reader 保管证明也已完成。本轮公开凭据安装已完成会话清理及独立回读（raw `53fb822d…`）；sourceFresh416 在 IMPORT 停止，详见 E26。之后尚需成功的 R3 四组合终端证据、真实快照、Staging 两项迁移及 R4 真实验收。两项待迁移为 `20260925090000_stage1_operational_completion_terminal_shape`、`20260925091000_stage1_operational_completion_settlement_guard`；本轮没有修改业务代码或写入业务数据库。
 
 ## E25 限定修正记录（2026-10-08）
 
@@ -105,3 +107,67 @@ E25 修正须进入受信 attempt 入口并更新 installation/adapter 摘要；
 最小回归先证明旧入口因缺 live session 拒绝，再修正。Python 生命周期及现有 attempt 组 28 项通过；Node issuer、authority 与 signing 相关组 13 项通过。新增用例覆盖初始缺会话、超过 TTL 的最终 seal、并发时 inode 稳定、发行未知、历史残留和退出清理。时钟与外部 STS 被模拟；Node 文件字节/O_EXCL 实际写读，root 所有权与 POSIX 权限在跨平台夹具中明确模拟。这些结果不等于真实 STS、H1 安装或快照成功。
 
 该组检查发现的晚清理期限判断顺序错误已修正；一个旧 `object.__new__` 夹具未初始化新资源，也已补齐。前者是实现缺陷，后者是夹具缺口；两者均保留原失败输出，不称为环境抖动。固定入口与发行端完成定向独立审核；本地 bundle 实际闭包已包含新模块。下一步必须完成安装摘要、授权绑定及初始 parent 完整预算，不能继续执行旧 `child=7200s` 模板。
+
+## 执行前勘误补记（2026-10-08，北京时间）
+
+- **E24／P，脚本接口瑕疵：** 新精确 RAM 草案的两项 archive grant 不含可推导的 `roleArn`，也没有顶层 `host`；准备/应用脚本却把这些字段当必填。按固定账号与角色名称派生 ARN，存在显式 ARN 时仍核对一致；宿主绑定取已批准身份及实际安装证据，签名前另做真实挑战。保持已提交审批的草案字节不变，不能修改审批对象来迁就脚本。另将 RAM 返回的分页字段缺省与 `true` 区分，这是实际 API 形态兼容，不是瞬态抖动。
+- **E24／P，跨脚本消费合同漏项：** 新设计只签 dispatch 和 writer 两份，复用已保管的 seq1 状态；Node/Python 已一致，外层 PowerShell 仍要求第三份 `revocationState`。已将外层断言对齐到两份签名，审核需核对所有生产者与消费者的集合、摘要和字段形态。此问题在签名/云端执行前拦住，不能计为真实发布失败；不需要一次线上失败证明它存在。
+- **E20／P，状态复用裁定：** 新 auth 在既有 seq1 下未被撤销，生产验证器支持其独立归档；无需为此推进 seq2、重签状态或重新 PUT 已存在对象。复用完整旧 state packet 及其原 custody，仅新建一个 auth 对象，保留历史 once 和失败材料。
+- **实际进展：** E25 控制安装及独立回读已完成；[安装回读](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/e25-reader-lifecycle-install-ACTIVE/e25-readback-client-result.json) raw SHA-256 为 `54fa0da60e8a10e076a848c2637f95ea59416ebb22645cad38da1624b8f99b7f`。旧 snapshot run `37623325751` 已取消；新 `37661486120` 的 hosted admission 成功、数据 job 尚未准入。六对象四策略草案已完成官方只读校验及独立审核，仍待原审批请求的答复，未应用权限。新 admission 不等于 H1 签名、真实快照或阶段 1 完成。
+
+上述同质问题归入现有 E20/E24，不增加整链测试轮次或重开已通过检查。原 E21 断连仍为 U；无新证据证明其属于环境抖动。
+
+### 精确批准后的勘误与事实更新（2026-10-08，北京时间）
+
+- **E07／P，嵌套时限漏算：** 未执行的两签名 wrapper 把两卷挂载和 Node 签名都放在 180 秒 worker 内；其中外部命令的独立上限合计为 780 秒。外层有余量不能弥补内层提前终止。新专用副本按实际作用域改为 worker 1200 秒、外层 3300 秒，并在本地与 H1 开始前检查原执行窗口。文件检查没有硬墙钟上限，420／770 秒余量仅是操作预算；不能写成必然完成保证。[预算与逐项调用](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/e25-dispatch-issuance-budget-ACTIVE/budget.md)已经定向审核，此瑕疵在实际签名前发现，归入编排问题而非环境抖动。
+- **E21／P，交互时序与缓存：** 后续四个 owner bridge 已对提示分片、先后顺序、重复／早到输入及提前成功结果做有限本地协议检查。复核发现 `Console.In` 预读会使管道的早到检测漏掉缓存，已在专用副本改为同一原始输入句柄逐字节读取。保留同一外层时钟，不能每个提示重置时限；本地结果不代表真实 SSH／PTY 或业务链通过。历史断连原因仍为 U。
+- **实际完成：** 用户精确批准 `461f37b1…` 与 `fabbd0ba…` 已分别留存原件。六对象四策略已实际应用、独立回读；新 sourceFresh `416b8be8…` 已预留且独立回读，spec 为 `53da9265…`，清理三项均真。旧 `5b…` 失败记录与旧 RC 保留、不重放。新的 writer unsigned 已生成一次，后续不得重新生成 `issuedAt` 来替代该原件。
+- **G2 继承检查补充：** 当前 public installer 模板原为 seq0→1；本次必须做专用 seq1→同 seq1 新 auth 副本，不能把已完成的状态迁移再执行一次。archive generator 则须使用当前 E25 bundle／attempt／manifest，不能只更换授权摘要而遗留旧运行时绑定。
+
+本次复用已通过的业务构建、相关回归和 CI，不追加整链试跑。独立读回、签名与归档、R3 真实运行、迁移和 R4 各自按实际证据记账；前一步通过不替代后一步。
+
+执行前复核另拦截三处同类漏项：archive PS 的余窗判断在上传之前，须在真正受保护调用前再检查，归 E07／P；writer manifest 的 sourceDigest 最后一个字符抄错，但真实 Node 与授权字节正确，归 E24／P，修 manifest 并保留旧版本；新 RC 请求从历史请求复制出已取消的 snapshot run `37623325751`，须对齐实际新 admission `37661486120`，归 E20／P。它们均未触发相应真实运行，不计线上失败或环境抖动。后续计划审核须从当前已验证原件派生摘要和 run 身份，不能仅因“除一个字段外不变”就判定旧请求可复用。
+
+同轮的有限实际原件核查还发现：reader 准备脚本错误要求两份 RAM API 回读为 canonical JSON，而原件保留 CLI 原始格式；专用 v2 仅对这两份取消 canonical 比较，仍严格验证固定 raw SHA，其他签名与合约不变，归 E11/E24／P。新 RC dispatcher 从旧脚本移植时遗漏 collection／owner 的 run ID 断言，并指向续期前的 owner 目录；定向审核补齐实际 `-renewed` 路径、run ID 和 `notAfter` 后才调度，归 E20/E23/E24／P。固定本地输入路径的存在性和字段形态应在远程调用前一起核对，而不是靠一次失败去发现。上述准备错误没有被记为生产 RED，也没有触发额外真实用例。
+
+reader 实际离线准备还暴露了一个手工抄写的 65 位公件摘要，停止点在 reader 输出和签名之前；改为从已验证原件计算固定值后才成功生成唯一 unsigned。此次对后续待用模板做了一次有限的摘要字面量检查，未发现其他同类格式错误。该问题仍归 E24／P。检查清单同时明确：仅对当前操作必需的未知输入判定阻断，不能用全文搜索 `PENDING` 否定合法的“未来 reader session 尚待产生”状态。失败脚本原字节保留，不通过修改原件或降低摘要检查绕过失败。
+
+本轮将 E07 同类缺口继续前移拦截：E25 public installer 的 Execute 首次 SSH 前、进入受保护调用前及 Python begin_once 前均要求完整 3900 秒余窗；sourceFresh416 的本地准备入口要求 16600 秒、进入 owner 交互及 Python 父控制流程入口要求完整 13000 秒。不能只以 worker 的 11200 秒覆盖父流程准备与清理。Readback 不受新执行余窗限制。这些是调用模板的确定性编排瑕疵，已在真实调用前发现；旧执行原件保留，新副本仍待实际输入后激活，不能算真实链通过。
+
+E26 是本轮已审核调用包仍遗漏的跨进程启动期限，不以既有 E07 审核或“模板语法通过”消除责任。新的传输诊断缩小了 CHILD_EXIT/EOF 的范围，但 import 内部的泛化 catch 仍没有保留具体失败步骤；不能把该诊断改进当成完整根因定位。
+
+E26 只读核查补记：执行 `f8fd85` 与[独立回读](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/r3-source-fresh-import-probe-416b8be8/independent-readback.json)一致（result raw `9251a887f0c09b4f6c7dbf74a09039741be3589f264d1cf9849d185c560d60fd`）。H1 ZIP 于 `21:10:53.133Z`、admission 于 `21:10:53.795Z` 写入，均晚于 job `21:10:14Z` 的终态；原件摘要和 ref/run/job 均正确。由生产顺序可排除本次初始 spec 检查及下载/写入失败，范围缩小到 admission 写入后的可信重验/收尾；若到达当前 job 状态核验，已必然拒绝，不能确定最先抛错的具体步骤。不扫描 journal，亦不据此次结果声称全局未消费。清理三项及独立卷关闭确认通过。
+
+本地 ZIP/admission 保存于 `21:07:39.204Z`，attestation 保存于 `21:07:51.989Z`，最后 run/job 校验及 summary 为 `21:07:53.778Z`；下载后的本地验签/回读约 14.57 秒。Environment 到 summary 的约 7 分 42 秒包含未细分的准备与模型轮次，不能写成 collector 本身耗时，也不能以此移除本地验签。串行 GH 命令上限合计超过 hosted 600 秒是预算缺口，不能当作这些命令实际超时的证据。
+
+只读探针也在执行前再发现 E07 同类漏项：每卷挂载内已核验身份，worker 又重复两次核验，遗漏 8 个 60 秒命令预算。删除重复校验后保留必要挂载/清理检查，worker 1200、外层 2700 秒经定向审查才执行；不扩为新测试轮次。
+
+E26 后续限定修正已形成[串接 DRAFT](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/source-fresh-e26-handoff-DRAFT/REVIEW.md)及[79fe owner DRAFT](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/source-fresh-416-partial-replacement-proposal-DRAFT/owner-review-DRAFT/REVIEW.md)：准备/审核移至准入前，连续验签→冻结→启动；本地、首 SSH、受保护调用及 once 前检查实际步骤开始时间与最早截止，保留完整验签和真实 ACK。有限离线顺序/失败阻断/输入透传，以及未来时钟、早截止、步骤尚未出现、采集后步骤已结束、双流回收超时检查通过；联合静态审核通过。新引用尚待精确批准，全部 DRAFT 停止守卫保留，不能计为真实 R3 通过。
+
+本次 E26 不是“过期签名被接受”：已保存 creation-spec 的截止仍为 `2026-10-08T06:53:54.742Z`，失败发生时尚未到期；失配的是 hosted 连接期限和 job 活动状态。后续新引用不会复用旧 run/admission，也不为该差额重签既有 dispatch/seq1 或扩大 RAM。
+
+79fe 执行补记：负责人已精确批准该替换，实际预留及独立回读成功（spec `b657a22b…`，readback `ccd07c6a…`），不重放 416。准入前复核在未执行的 reservation 模板中发现 E07 同类缺口：缺少自动全余窗检查；专用 `reservation-window-ACTIVE` 在首次 SSH、受保护调用与 begin_once 前补齐 3900 秒门槛，原模板保留。此项为确定性编排瑕疵、执行前拦截，不归类环境抖动。后续唯一 RC `37697010723` 已触发；交接与数据库结果仍待真实运行。
+
+E11/E24／P 本地入口实测补记：79fe 协调入口第一次启动在 Environment 准入和 GH/H1 调用前停止。PowerShell 7.6 的 `ConvertFrom-Json` 自动把 ISO 时间变成 `DateTime`，导致固定截止字符串比较失败；同一路径若继续将 `DateTime` 隐式字符串化后 `Parse`，会丢失 UTC Kind，固定 22:45:11Z 样本被转换为 14:45:11Z。根因由实际配置和当前解释器重现，属于确定性代码消费合同瑕疵，不是时钟或网络抖动。已有合成顺序检查没有覆盖真实 JSON→类型→UTC 转换，静态审核也漏掉了它。仅对协调入口及 GH JSON 消费显式保留日期字符串，保留原 ACTIVE 原件；用实际 config 与一个 UTC job 样本补足定向回归，复用其他已通过检查。同一 run/job 仍等待，不新建 RC 或引用。
+
+### E27 / U（实际 POST 首因）＋P（时限合同）——79fe 创建交换失败
+
+本次批准的新 ref 为 `79feaa9a-f5ba-4a48-a781-e406726e6580`，RC 为 `37697010723`，job 为 `113052793748`。source-static 成功；实际 admission 完整验签成功，协调进程在验签后 205 毫秒完成 owner 冻结；H1 once 在 hosted 执行步骤开始约 27.4 秒后创建。此前 E26 的人工/模型交接间隙已移除，但不能以此宣称 R3 通过。
+
+[H1 独立回读](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/r3-rc-sourcefresh79fe-actual/owner-public-failure-readback.json)（raw SHA `2efb056d3a85963c2e02895c4a4e7b0169b33205476e8c5ff7cbacbde8f06109`）记录：IMPORT 已返回，随后 `H1_CREATE / POST / R3_ENGINE_EXCHANGE_UNAVAILABLE`；RUN child 551457 毫秒后 exit 1，无 ACK/result/CLOSED，H1 清理三项真且 mappers 均不存在。根据生产顺序，POST 前 `session.consume` 已返回，不得重放或宣称本 ref 全局未消费；尚未对加密 journal 做独立逐项对账。
+
+H1 退出后 hosted 仍等待，已单次取消以停止空耗；run/job 最终均 `cancelled`，job 于 `2026-10-07T23:01:13Z` 完成。[原始日志](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/r3-rc-sourcefresh79fe-actual/source-fresh-job.log) raw SHA 为 `e112e3478c994e205e45905622c1f5409828187c37d438e1997ed89ef6ad8af6`，只有取消事件，没有 HOSTED_CREATE 的细分诊断。H1 清理事实不能替代 hosted 自身 CLOSED 证据。
+
+离线代码审核确认两处合同缺口：连接后 `check()` 与 `session.consume()` 前后复核至少串行调用 10 次 GH API，每次最多 120 秒，而 hosted socket idle 仅 120 秒；创建 POST 又使用 5 秒默认客户端期限，hosted 请求允许 10 秒。后者的 `currentJob` 是本地身份/环境核验，不能误记为 hosted 的 GH 网络请求。现有连接成功/关闭测试未覆盖连接建立后长复核的实际时序。`exchangeR3Engine` 将预先关闭、传输异常、超时和不完整响应合并为同一码，无法由 551 秒总时长推导 POST 耗时，也无法确认对端是否收到请求或发送 202。
+
+下一轮必须先收敛最小修正：保留全部权威复核与 durable consume→请求字节顺序，消除已连接 socket 上的无界等待；保留最少的分阶段单调耗时和传输终止原因；只做缩尺本地时序与响应期限用例。不得单纯增大 POST timeout 后再试一条真实链。实际首因保持 U，不归为“环境抖动”；旧 once、失败和消费不覆盖，现有证据不能支持自动重试。
+
+E27 设计边界补记：固定设计要求消费前连接身份核定及同连接单次 POST；调整连接到消费之后会改变已批准的安全合同，不能作为无须评审的时序修复。缺诊断也不能用新引用线上试跑补齐。本轮只确认时间合同缺口；未修改生产握手语义，也没有对未知首因作环境抖动归因。
+
+E27 本地实现审核补记：修复中须等待子进程实际 `close`，不能把 AbortSignal 的错误回调当作已退出；[Node 22 实现](https://raw.githubusercontent.com/nodejs/node/v22.23.0/lib/child_process.js)的 errorhandler 可直接触发 callback。并行 GET 须等所有子进程结束，保留实际先观察到的失败；外层 catch 不能按后来的 socket 状态或耗时改写原因。创建 POST 的细分码只用于该固定路径，不能把后续 Engine GET 失败误标为 POST。上述问题在本地审核阶段发现，属于实现/诊断瑕疵；不是新的线上失败，也不计环境抖动。只核验这些改变涉及的边界，不追加整链测试。
+
+E27 限定实现已完成并经独立静态审核：共享单调窗口、全部子命令退出、并行 GET、同 socket 单次 POST 和有限首因码均已接线，未延长原 job/签名。主 agent 独立运行 19 项定向测试全部通过，随后只将其中成功 POST 用例增加 5100 毫秒实际服务端等待并单独验证通过，证明新窗口接纳超过旧 5 秒的响应；合同校验也通过。未运行真实 R3 或业务矩阵。一次误选的 Linux 原生夹具在 Windows 平台断言处失败，仅为本地用例选择瑕疵，不计产品 RED 或线上故障；没有为此修改生产平台限制。
+
+79fe [只读独立回读](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/r3-sourcefresh79fe-journal-readonly-ACTIVE/independent-readback.json)（raw `dedc893a05ee5778d531a86832455b3f8c894edbebbd855eb609fdd01cdd0c6f`）确认一份 `CONSUMED`、一份 `INTERRUPTED_UNKNOWN` execution 和真实 `INTERRUPTED_UNKNOWN` closing；两通道锁属于会话 `bb0e1696-6bbf-46bf-9815-aeec696d68d6`。消费记于 `22:57:22.202Z`，closing 记于 `22:57:25.189Z`；这是墙钟记录，仍不能还原缺失的 connect/POST 单调时序。不得声称全局无消费、自动重放或用本地修复抹去此未决失败。
+
+E20/E27 残留补记：[公共传输回读](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/r3-sourcefresh79fe-journal-readonly-ACTIVE/transport-exact-metadata.json)显示专用 evidence 用户仍有两个 sshd 与 systemd/sd-pam 进程，空的 8 MiB 证据 tmpfs 仍挂载；两把 job 公钥已撤销，转发端口无监听，原 owner 进程已退出。生产 `r3-h1-evidence-delivery.mjs` 的失败路径有意保留挂载供取证，这属于需要处理的历史残留，不是环境抖动；LUKS/core/swap 清理成功不能外推全部传输资源已退役。只能核验并清理本次固定资源，台账及通道锁继续保留到精确事故处置获批。

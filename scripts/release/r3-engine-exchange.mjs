@@ -2,9 +2,13 @@
 import http from "node:http";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { markR3FailureCause } from "./r3-failure-diagnostic.mjs";
 
 const CODE = "R3_ENGINE_EXCHANGE_UNAVAILABLE";
-const failure = () => Object.assign(new Error(CODE), { code: CODE });
+const failure = (reason = null) => {
+  const error = Object.assign(new Error(CODE), { code: CODE });
+  return reason ? markR3FailureCause(error, reason) : error;
+};
 
 export async function exchangeR3Engine(
   method,
@@ -19,13 +23,14 @@ export async function exchangeR3Engine(
   const streamLength = options.bodySource?.contentLength;
   const open = options.bodySource?.open;
   const streamed = options.bodySource !== undefined;
+  const creationPost = connected && method === "POST" && pathname === "/stage1-r3/target-create";
+  if (connected?.destroyed) throw failure(creationPost ? "R3_POST_PRE_CLOSED" : null);
   if (
     (body !== null && !Buffer.isBuffer(body)) ||
     !Number.isSafeInteger(timeout) ||
     timeout < 1 ||
     timeout > (streamed ? 120000 : 300000) ||
     signal?.aborted ||
-    connected?.destroyed ||
     (streamed &&
       (body !== null ||
         !Number.isSafeInteger(streamLength) ||
@@ -37,29 +42,41 @@ export async function exchangeR3Engine(
   let source;
   try {
     source = streamed ? await open() : null;
-    if (
-      signal?.aborted ||
-      connected?.destroyed ||
-      (streamed &&
-        (!source ||
-          typeof source.pipe !== "function" ||
-          typeof source.destroy !== "function" ||
-          typeof source[Symbol.asyncIterator] !== "function"))
-    )
-      throw failure();
   } catch {
+    source?.destroy?.();
+    throw failure();
+  }
+  if (connected?.destroyed) {
+    source?.destroy?.();
+    throw failure(creationPost ? "R3_POST_PRE_CLOSED" : null);
+  }
+  if (
+    signal?.aborted ||
+    (streamed &&
+      (!source ||
+        typeof source.pipe !== "function" ||
+        typeof source.destroy !== "function" ||
+        typeof source[Symbol.asyncIterator] !== "function"))
+  ) {
     source?.destroy?.();
     throw failure();
   }
   const agent = new http.Agent({ keepAlive: false });
   if (connected) agent.createConnection = () => connected;
-  let request, timer, upload;
+  let request,
+    timer,
+    upload,
+    firstCause,
+    responseDone = false;
+  const remember = (reason) => (firstCause ??= failure(creationPost ? reason : null));
   let sent = 0;
   let onConnectedClose;
   const responseResult = new Promise((resolve, reject) => {
     onConnectedClose = () => {
-      reject(failure());
-      request?.destroy(failure());
+      if (responseDone) return;
+      const error = remember("R3_POST_REQUEST_ERROR");
+      reject(error);
+      request?.destroy(error);
     };
     connected?.once("close", onConnectedClose);
     connected?.once("error", onConnectedClose);
@@ -84,8 +101,9 @@ export async function exchangeR3Engine(
       (response) => {
         // A server response cannot stand in for a body that was never sent.
         if (streamed && sent !== streamLength) {
-          reject(failure());
-          request.destroy(failure());
+          const error = remember("R3_POST_RESPONSE_INCOMPLETE");
+          reject(error);
+          request.destroy(error);
           response.destroy();
           return;
         }
@@ -93,12 +111,13 @@ export async function exchangeR3Engine(
         let bytes = 0;
         response.on("data", (chunk) => {
           bytes += chunk.length;
-          if (bytes > 1048576) request.destroy(failure());
+          if (bytes > 1048576) request.destroy(remember("R3_POST_RESPONSE_INCOMPLETE"));
           else chunks.push(chunk);
         });
-        response.once("error", reject);
+        response.once("error", () => reject(remember("R3_POST_RESPONSE_INCOMPLETE")));
         response.once("end", () => {
-          if (!response.complete) return reject(failure());
+          if (!response.complete) return reject(remember("R3_POST_RESPONSE_INCOMPLETE"));
+          responseDone = true;
           resolve({
             status: response.statusCode,
             headers: response.rawHeaders,
@@ -107,11 +126,14 @@ export async function exchangeR3Engine(
         });
       }
     );
-    request.once("error", reject);
-    request.once("close", () => reject(failure()));
+    request.once("error", () => reject(remember("R3_POST_REQUEST_ERROR")));
+    request.once("close", () => {
+      if (!responseDone) reject(remember("R3_POST_REQUEST_ERROR"));
+    });
     timer = setTimeout(() => {
-      reject(failure());
-      request.destroy(failure());
+      const error = remember("R3_POST_TIMER");
+      reject(error);
+      request.destroy(error);
     }, timeout);
   });
   try {
@@ -135,10 +157,11 @@ export async function exchangeR3Engine(
     const [response] = await Promise.all([responseResult, upload]);
     return response;
   } catch {
+    const observed = firstCause;
     request?.destroy(failure());
     source?.destroy();
     await Promise.allSettled([responseResult, upload]);
-    throw failure();
+    throw observed ?? failure();
   } finally {
     clearTimeout(timer);
     connected?.off("close", onConnectedClose);

@@ -78,6 +78,7 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/r3-application-tls.mjs",
   "scripts/release/r3-browser-packages.mjs",
   "scripts/release/r3-browser-runtime.mjs",
+  "scripts/release/r3-connected-window.mjs",
   "scripts/release/r3-snapshot-input-admission.mjs",
   "scripts/release/r3-snapshot-payload.mjs",
   "scripts/release/r3-containerd-observation.mjs",

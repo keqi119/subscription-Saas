@@ -109,3 +109,15 @@ test("untrusted diagnostic fields, getters, messages and SSH output never become
   assert.equal(rejected.failureDiagnostic.sshSignal, null);
   assert.equal(JSON.stringify(rejected.failureDiagnostic).includes(secret), false);
 });
+
+test("internal transport cause is finite and does not expose an error message", () => {
+  const error = Object.assign(new Error("private request bytes"), {
+    code: "R3_ENGINE_EXCHANGE_UNAVAILABLE"
+  });
+  diagnostics.markR3FailureCause(error, "R3_POST_RESPONSE_INCOMPLETE");
+  diagnostics.markR3FailureCause(error, "R3_CONNECTED_SOCKET_CLOSED");
+  const result = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), error);
+  assert.equal(result.failureDiagnostic.causeCode, "R3_POST_RESPONSE_INCOMPLETE");
+  assert.equal(JSON.stringify(result.failureDiagnostic).includes("private"), false);
+  assert.throws(() => diagnostics.markR3FailureCause(error, "private"));
+});

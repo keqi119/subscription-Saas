@@ -6,6 +6,14 @@ import childProcess from "node:child_process";
 import path from "node:path";
 import { createPublicKey } from "node:crypto";
 import {
+  checkR3ConnectedWindow,
+  connectedChildTimeout,
+  connectedChildSignal,
+  connectedStopReason,
+  settledR3ExecFile
+} from "./r3-connected-window.mjs";
+import { inheritR3FailureCause, markR3FailureCause } from "./r3-failure-diagnostic.mjs";
+import {
   encodeManualJson,
   sha256Bytes,
   sha256Canonical
@@ -54,23 +62,27 @@ function same(left, right) {
   );
 }
 async function command(binary, args, expected = 0) {
-  const outcome = await new Promise((resolve) =>
-    childProcess.execFile(
-      binary,
-      args,
-      {
-        shell: false,
-        encoding: "buffer",
-        timeout: 10000,
-        maxBuffer: 65536,
-        windowsHide: true,
-        env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C" }
-      },
-      (error, stdout, stderr) =>
-        resolve({ error, stdout: Buffer.from(stdout ?? ""), stderr: Buffer.from(stderr ?? "") })
-    )
-  );
-  need((outcome.error?.code ?? 0) === expected && outcome.stderr.length <= 4096);
+  checkR3ConnectedWindow();
+  const result = await settledR3ExecFile(binary, args, {
+    shell: false,
+    encoding: "buffer",
+    timeout: connectedChildTimeout(10000),
+    ...(connectedChildSignal() ? { signal: connectedChildSignal() } : {}),
+    maxBuffer: 65536,
+    windowsHide: true,
+    env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C" }
+  });
+  const outcome = {
+    error: result.error,
+    stdout: Buffer.from(result.stdout ?? ""),
+    stderr: Buffer.from(result.stderr ?? "")
+  };
+  if (outcome.error?.code === "ABORT_ERR" && connectedStopReason())
+    markR3FailureCause(outcome.error, connectedStopReason());
+  if ((outcome.error?.code ?? 0) !== expected)
+    throw inheritR3FailureCause(Object.assign(new Error(CODE), { code: CODE }), outcome.error);
+  checkR3ConnectedWindow();
+  need(outcome.stderr.length <= 4096);
   return outcome.stdout.toString("utf8");
 }
 async function privateDirectory(directory) {
@@ -381,8 +393,8 @@ export async function openR3H1ForwardLease(input, verifiedAdmission) {
         await admission.recheck();
         for (const item of locks) need((await item.read()).equals(lockBytes));
         need((await key.read()).equals(line));
-      } catch {
-        fail();
+      } catch (cause) {
+        throw inheritR3FailureCause(Object.assign(new Error(CODE), { code: CODE }), cause);
       }
     };
     await recheck();

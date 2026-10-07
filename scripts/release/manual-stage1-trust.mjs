@@ -1,8 +1,15 @@
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import childProcess from "node:child_process";
 import { fileURLToPath } from "node:url";
+import {
+  checkR3ConnectedWindow,
+  connectedChildTimeout,
+  connectedChildSignal,
+  connectedStopReason,
+  settledR3ExecFile
+} from "./r3-connected-window.mjs";
+import { inheritR3FailureCause, markR3FailureCause } from "./r3-failure-diagnostic.mjs";
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import {
   encodeManualJson,
@@ -58,6 +65,9 @@ const CUSTODY_POLICY = Object.freeze({
 });
 const fail = (code = H1) => {
   throw Object.assign(new Error(code), { code });
+};
+const failWithCause = (code, cause) => {
+  throw inheritR3FailureCause(Object.assign(new Error(code), { code }), cause);
 };
 const requireThat = (condition, code = H1) => {
   if (!condition) fail(code);
@@ -159,21 +169,23 @@ async function checkedPath(file, { principal, privateRoot, sourceRoot, system = 
   return segments;
 }
 async function processOutput(file, args, { timeout = 120000, maxBuffer = LIMIT, env } = {}) {
-  const result = await new Promise((resolve, reject) =>
-    childProcess.execFile(
-      file,
-      args,
-      {
-        shell: false,
-        windowsHide: true,
-        encoding: "buffer",
-        timeout,
-        maxBuffer,
-        ...(env ? { env } : {})
-      },
-      (error, stdout, stderr) => (error ? reject(error) : resolve({ stdout, stderr }))
-    )
-  );
+  checkR3ConnectedWindow();
+  timeout = connectedChildTimeout(timeout);
+  const result = await settledR3ExecFile(file, args, {
+    shell: false,
+    windowsHide: true,
+    encoding: "buffer",
+    timeout,
+    ...(connectedChildSignal() ? { signal: connectedChildSignal() } : {}),
+    maxBuffer,
+    ...(env ? { env } : {})
+  });
+  if (result.error) {
+    if (result.error.code === "ABORT_ERR" && connectedStopReason())
+      markR3FailureCause(result.error, connectedStopReason());
+    throw result.error;
+  }
+  checkR3ConnectedWindow();
   const stdout = Buffer.from(result.stdout),
     stderr = Buffer.from(result.stderr);
   requireThat(stdout.length <= maxBuffer && stderr.length <= maxBuffer);
@@ -1388,9 +1400,9 @@ async function readR3TargetPolicyInput(
         for (const item of opened) await item.recheck();
         checkWindow();
         requireThat(!closed);
-      } catch {
-        await close();
-        fail(code);
+      } catch (cause) {
+        await close().catch(() => {});
+        failWithCause(code, cause);
       }
     };
     await recheck();
@@ -1550,9 +1562,9 @@ export async function readFixedR3CreationSpec(input) {
         for (const item of opened) await item.recheck();
         checkWindow();
         requireThat(!closed);
-      } catch {
-        await close();
-        fail(code);
+      } catch (cause) {
+        await close().catch(() => {});
+        failWithCause(code, cause);
       }
     };
     await recheck();
@@ -1775,8 +1787,19 @@ export async function readFixedR3JobAdmission(input) {
         checkWindow();
         await creation.recheck();
         await held.recheck();
-        const runBytes = await api(`repos/${REPOSITORY}/actions/runs/${ci.runId}/attempts/1`),
-          jobBytes = await api(`repos/${REPOSITORY}/actions/jobs/${ci.jobId}`),
+        let firstFailure;
+        const observe = (promise) =>
+          promise.catch((error) => {
+            firstFailure ??= error;
+            throw error;
+          });
+        const responses = await Promise.allSettled([
+          observe(api(`repos/${REPOSITORY}/actions/runs/${ci.runId}/attempts/1`)),
+          observe(api(`repos/${REPOSITORY}/actions/jobs/${ci.jobId}`))
+        ]);
+        if (firstFailure) throw firstFailure;
+        const runBytes = responses[0].value,
+          jobBytes = responses[1].value,
           run = json(runBytes),
           job = json(jobBytes);
         r3JobApiIdentity(admission, run, job);
@@ -1807,9 +1830,9 @@ export async function readFixedR3JobAdmission(input) {
           )
         });
         return Object.freeze({ observations, rawInputs });
-      } catch {
-        await close();
-        fail(code);
+      } catch (cause) {
+        await close().catch(() => {});
+        failWithCause(code, cause);
       }
     };
     const readback = await recheck();
@@ -1832,9 +1855,9 @@ export async function readFixedR3JobAdmission(input) {
     });
     fixedR3JobOwners.set(owner, { repoRoot, operationRef, isClosed: () => closed });
     return owner;
-  } catch {
-    await close();
-    fail(code);
+  } catch (cause) {
+    await close().catch(() => {});
+    failWithCause(code, cause);
   }
 }
 
@@ -3066,8 +3089,8 @@ export async function openTrustedR3CreationSession(input, verifiedAdmission) {
       requireThat(!closed);
       await fixed.recheck();
       await policyInput?.recheck();
-    } catch {
-      fail(code);
+    } catch (cause) {
+      failWithCause(code, cause);
     }
   };
   try {

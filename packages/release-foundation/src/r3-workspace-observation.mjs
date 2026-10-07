@@ -191,7 +191,17 @@ export function assessR3WorkspaceObservation(input) {
         )
       );
     }
-    requireThat(new Set(mounts.map((row) => row.target)).size === mounts.length);
+    const protectedMounts = mounts.filter((row) => {
+      const target = undeleted(row.target);
+      return (
+        [workspace.keyFile, workspace.backingFile, workspace.mountPath].some((file) =>
+          within(target, file)
+        ) || within(workspace.mountPath, target)
+      );
+    });
+    requireThat(
+      new Set(protectedMounts.map((row) => undeleted(row.target))).size === protectedMounts.length
+    );
     for (const row of loops) {
       requireThat(/^\/dev\/loop[0-9]+$/u.test(row.name));
       absolute(undeleted(row["back-file"]));

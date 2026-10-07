@@ -159,6 +159,19 @@ const APPROVED_R3_HISTORICAL_SOURCE_588DA0DC = freeze({
   sourceRoot: "/opt/stage1-r3-candidate-8928a0f"
 });
 
+const APPROVED_R3_HISTORICAL_CONTRACT_588DA0DC = freeze({
+  sourceRoot: APPROVED_R3_HISTORICAL_SOURCE_588DA0DC.sourceRoot,
+  sourceSha: APPROVED_R3_HISTORICAL_SOURCE_588DA0DC.sourceSha,
+  unlistedEntrypoint: "scripts/release/retire-r3-incident-0af9c545.mjs"
+});
+
+export function approvedR3HistoricalContractCompatibility(input) {
+  return approvedR3HistoricalSourceBinding(input) ===
+    APPROVED_R3_HISTORICAL_SOURCE_588DA0DC.sourceRoot
+    ? APPROVED_R3_HISTORICAL_CONTRACT_588DA0DC
+    : null;
+}
+
 export function approvedR3HistoricalSourceBinding(input) {
   exact(input, [
     "operationRef",

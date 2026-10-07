@@ -20,6 +20,7 @@ import re
 import stat
 import subprocess
 import sys
+import threading
 import time
 try:
     import resource
@@ -38,6 +39,7 @@ ARCHIVE_OUTPUT = '/var/lib/subscription-saas/evidence-archive'
 ARCHIVE_WRITER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/archive-writer-session.json'
 ARCHIVE_READER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/archive-reader-session.json'
 SNAPSHOT_FINAL_READER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/snapshot-final-reader-session.json'
+DISPATCH_READER_SESSION = '/var/lib/stage1-volumes/main/snapshot-authority/reader-session.json'
 MODULES = ('snapshot-h1-github.py', 'snapshot-h1-route-journal.py',
            'snapshot-h1-volume.py', 'snapshot-h1-runner.py',
            'snapshot-h1-control.py', 'snapshot-h1-producer.py')
@@ -154,6 +156,129 @@ def _load(name):
     return module
 
 
+class H1DispatchReaderSession:
+    """One initial attempt owns this fixed session through its final seal.
+
+    Every reader and replacement shares the lock. The 900-second role lifetime
+    is unchanged; no refresh thread may replace an inode while Node reads it.
+    """
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.before = self.session_digest = None
+        self.expires = self.live_mono = 0
+        self.wait_wall = self.wait_mono = 0
+        self.started = time.monotonic()
+        self.last_wall = time.time()
+        self.count = 0
+        self.failed = self.closed = False
+
+    def _pin(self):
+        before = os.lstat(DISPATCH_READER_SESSION)
+        raw = _file(DISPATCH_READER_SESSION, 0o600, 32768)
+        require(_same(before, os.lstat(DISPATCH_READER_SESSION)), 'READER_SESSION_CHANGED')
+        value = json.loads(raw.decode('utf8'), object_pairs_hook=pairs)
+        require(raw == canonical(value) and type(value) is dict and set(value) == {
+            'arn', 'accessKeyId', 'accessKeySecret', 'stsToken', 'issuedAt', 'expiresAt'},
+            'READER_SESSION_INVALID')
+        require(type(value['arn']) is str and re.fullmatch(
+            r'acs:ram::1457643390906675:(?:assumed-role|role)/'
+            r'subscription-saas-stage1-archive-reader/[A-Za-z0-9_-]{2,64}', value['arn']),
+            'READER_SESSION_INVALID')
+        issued, expires = _publisher_time(value['issuedAt']), _publisher_time(value['expiresAt'])
+        require(0 < expires - issued <= 900, 'READER_SESSION_INVALID')
+        return before, digest(raw), issued, expires
+
+    def _remove(self):
+        directory = os.path.dirname(DISPATCH_READER_SESSION)
+        info = _safe_root_directory(directory, 0o700)
+        parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            require(_same(info, os.fstat(parent)), 'READER_SESSION_CHANGED')
+            name = os.path.basename(DISPATCH_READER_SESSION)
+            before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            require(self.before is not None and _same(before, self.before), 'READER_SESSION_CHANGED')
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            try:
+                require(_same(before, os.fstat(fd)) and
+                        _same(before, os.stat(name, dir_fd=parent, follow_symlinks=False)),
+                        'READER_SESSION_CHANGED')
+                os.unlink(name, dir_fd=parent)
+                require(os.fstat(fd).st_nlink == 0, 'READER_SESSION_CHANGED')
+            finally:
+                os.close(fd)
+            os.fsync(parent)
+            require(not os.path.lexists(DISPATCH_READER_SESSION), 'READER_SESSION_CHANGED')
+            self.before = self.session_digest = None
+        finally:
+            os.close(parent)
+
+    def call(self, invoke, operation, request):
+        require(operation in ('admit', 'recheck', 'seal'), 'READER_OPERATION_INVALID')
+        with self.lock:
+            require(not self.closed and not self.failed, 'READER_SESSION_CLOSED')
+            wall, mono = time.time(), time.monotonic()
+            require(wall >= self.last_wall and mono + 400 <= self.started + 7200,
+                    'READER_TIME_INVALID')
+            self.last_wall = wall
+            if self.before is not None:
+                pinned, current, _, _ = self._pin()
+                require(_same(pinned, self.before) and current == self.session_digest,
+                        'READER_SESSION_CHANGED')
+                # Authority is bounded to 280 s. Retain at least 50 s margin.
+                if min(self.expires - wall, self.live_mono - mono) <= 330:
+                    self._remove()
+            if self.before is None:
+                require(not os.path.lexists(DISPATCH_READER_SESSION), 'READER_SESSION_PRESENT')
+                require(self.count < 16, 'READER_ISSUANCE_LIMIT')
+                self.count += 1
+                self.failed = True  # An unknown issue is never retried.
+                try:
+                    result = invoke('prepare-dispatch-reader', {})
+                finally:
+                    # Even a timed-out issuer may have created an STS identity.
+                    self.wait_mono = max(self.wait_mono, time.monotonic() + 900)
+                    self.wait_wall = max(self.wait_wall, time.time() + 900)
+                pinned, current, issued, expires = self._pin()
+                require(type(result) is dict and set(result) == {
+                    'status', 'issuedAt', 'expiresAt', 'sessionDigest'} and
+                    result['status'] == 'READER_SESSION_READY' and
+                    result['sessionDigest'] == current and
+                    _publisher_time(result['issuedAt']) == issued and
+                    _publisher_time(result['expiresAt']) == expires and
+                    self.last_wall <= issued <= time.time() and
+                    840 <= expires - time.time() <= 900, 'READER_SESSION_INVALID')
+                self.before, self.session_digest, self.expires = pinned, current, expires
+                self.live_mono = time.monotonic() + expires - time.time()
+                self.failed = False
+            result = invoke(operation, request)
+            pinned, current, _, _ = self._pin()
+            require(_same(pinned, self.before) and current == self.session_digest and
+                    time.time() >= self.last_wall and time.time() < self.expires and
+                    time.monotonic() < self.live_mono, 'READER_SESSION_CHANGED')
+            self.last_wall = time.time()
+            return result
+
+    def close(self):
+        with self.lock:
+            self.closed = True
+            problem = None
+            try:
+                if self.before is not None:
+                    self._remove()
+                require(not os.path.lexists(DISPATCH_READER_SESSION), 'READER_SESSION_UNKNOWN')
+            except BaseException as error:
+                problem = error
+            # Require both elapsed TTL and wall expiry; bound clock-skew waiting.
+            while self.wait_mono or self.wait_wall:
+                mono, wall = time.monotonic(), time.time()
+                if mono >= self.wait_mono and wall >= self.wait_wall:
+                    break
+                require(mono <= self.wait_mono + 30, 'READER_EXPIRY_UNKNOWN')
+                time.sleep(min(5, max(0.01, max(self.wait_mono - mono, self.wait_wall - wall))))
+            if problem is not None:
+                raise problem
+
+
 class H1SnapshotAttempt:
     def __init__(self, request):
         require(type(request) is dict and set(request) == {'selection', 'approvalSelection'},
@@ -170,12 +295,19 @@ class H1SnapshotAttempt:
         self.spool = None
         self.produced = False
         self.last_running_observation = None
+        self.reader_session = H1DispatchReaderSession()
 
     def _authority(self, operation, request):
+        if operation == 'jwt':
+            return self._invoke_authority(operation, request)
+        return self.reader_session.call(self._invoke_authority, operation, request)
+
+    def _invoke_authority(self, operation, request):
         packet = canonical({'operation': operation, 'request': request})
         require(len(packet) <= 1048576, 'INPUT_INVALID')
         result = subprocess.run([NODE, self.bundle + '/scripts/release/snapshot-h1-authority.mjs'],
-            input=packet, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=280,
+            input=packet, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=120 if operation == 'prepare-dispatch-reader' else 280,
             cwd='/', env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'})
         require(result.returncode == 0 and 0 < len(result.stdout) <= 4194304, 'AUTHORITY_REJECTED')
         value = json.loads(result.stdout.decode('utf8'), object_pairs_hook=pairs)
@@ -317,6 +449,12 @@ class H1SnapshotAttempt:
                     'pathsChecked': paths + [self.spool], 'plaintextArtifactsFound': 0}}
 
     def run(self):
+        try:
+            return self._run()
+        finally:
+            self.reader_session.close()
+
+    def _run(self):
         failure = None
         try:
             self.admitted = self._authority('admit', self.request)
@@ -460,7 +598,7 @@ class H1SnapshotPublisher:
         self.global_lock = None
 
     def _authority(self, operation, request):
-        return H1SnapshotAttempt._authority(self, operation, request)
+        return H1SnapshotAttempt._invoke_authority(self, operation, request)
 
     def _ensure_spool(self):
         _safe_root_directory(OUTPUT, 0o700)

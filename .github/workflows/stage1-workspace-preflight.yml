@@ -74,6 +74,14 @@ jobs:
             result.absentObservation = error.evidence?.observation ?? null;
             result.observationFailure = error.code === "R3_WORKSPACE_OBSERVATION_INVALID"
               ? error.code : "UNCLASSIFIED";
+            // Only fixed public kernel topology from this disposable runner.
+            result.toolJson = Object.fromEntries(
+              ["mounts.stdout", "loops.stdout", "blocks.stdout"].map((name) => {
+                const bytes = error.evidence?.rawInputs?.[name];
+                if (!Buffer.isBuffer(bytes) || bytes.length > 16384) throw new Error("PREFLIGHT_TOOL_OUTPUT_INVALID");
+                return [name, JSON.parse(bytes.toString("utf8"))];
+              })
+            );
           }
           console.log(JSON.stringify(result));
           if (!result.capacitySatisfied || result.observationFailure) process.exitCode = 1;

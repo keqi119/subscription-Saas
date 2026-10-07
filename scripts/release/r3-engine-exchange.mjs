@@ -25,6 +25,7 @@ export async function exchangeR3Engine(
     timeout < 1 ||
     timeout > (streamed ? 120000 : 300000) ||
     signal?.aborted ||
+    connected?.destroyed ||
     (streamed &&
       (body !== null ||
         !Number.isSafeInteger(streamLength) ||
@@ -38,6 +39,7 @@ export async function exchangeR3Engine(
     source = streamed ? await open() : null;
     if (
       signal?.aborted ||
+      connected?.destroyed ||
       (streamed &&
         (!source ||
           typeof source.pipe !== "function" ||
@@ -53,7 +55,14 @@ export async function exchangeR3Engine(
   if (connected) agent.createConnection = () => connected;
   let request, timer, upload;
   let sent = 0;
+  let onConnectedClose;
   const responseResult = new Promise((resolve, reject) => {
+    onConnectedClose = () => {
+      reject(failure());
+      request?.destroy(failure());
+    };
+    connected?.once("close", onConnectedClose);
+    connected?.once("error", onConnectedClose);
     request = http.request(
       {
         hostname: "127.0.0.1",
@@ -99,7 +108,11 @@ export async function exchangeR3Engine(
       }
     );
     request.once("error", reject);
-    timer = setTimeout(() => request.destroy(failure()), timeout);
+    request.once("close", () => reject(failure()));
+    timer = setTimeout(() => {
+      reject(failure());
+      request.destroy(failure());
+    }, timeout);
   });
   try {
     if (streamed) {
@@ -128,6 +141,8 @@ export async function exchangeR3Engine(
     throw failure();
   } finally {
     clearTimeout(timer);
+    connected?.off("close", onConnectedClose);
+    connected?.off("error", onConnectedClose);
     agent.destroy();
   }
 }

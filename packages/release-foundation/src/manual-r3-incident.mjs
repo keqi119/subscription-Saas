@@ -65,6 +65,35 @@ export const APPROVED_R3_INCIDENT = freeze({
   executeNotAfter: "2026-10-07T06:53:54.742Z"
 });
 
+export const APPROVED_R3_INCIDENT_0AF9C545 = freeze({
+  proposalDigest: "sha256:fb7cc8b7ad1cf061df318652531a5951f71723f506c6dff88171d9171550b21e",
+  approvalDigest: "sha256:d7134cd9149590d8c5bf489918e0763a576c1916b8d29845552455bc0da49a76",
+  profileDigest: "sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541",
+  ownerId: "keqi119",
+  operationRef: "0af9c545-8cbc-4d1a-9027-e840c39ce9fd",
+  sessionId: "c8ba1430-b06a-401a-a047-dc0d131a88ac",
+  openingDigest: "sha256:805e81d3662e0c7144a3d72dfa8ea7cd9c9eb908307ca7ca02e034da4fe96b13",
+  requestDigest: "sha256:93933ebd31e5cb043d9f898b84979ded260f2281ca44f40819760944c349bc69",
+  consumptionDigest: "sha256:a7ba9e8f521880b36ec38cef73eec2acf53df338b853ad14b5e1c14c834bc041",
+  executionDigest: "sha256:ec58b4714b7919c0b33b09a080ab32eacdab471aac489af930f12c8c0f3dc450",
+  sessionDigest: null,
+  lockDigest: "sha256:98286db237d1a7cdda84d309e8206f8c1c9bc091284327686f746ae8f230e7e6",
+  lockNames: [
+    "a52de7e6885d8285e8b9fea11dc44012a5e465c55f18701a176bef30b865386b.json",
+    "13d8b7b5c1aaf60b6b2a5b36f861b0dda7df2b80f8feb3013120d190f332130b.json"
+  ],
+  github: {
+    repository: "keqi119/subscription-Saas",
+    runId: "37545515835",
+    runAttempt: 1,
+    jobId: "112549922961",
+    status: "completed",
+    conclusion: "cancelled",
+    completedAt: "2026-10-06T23:32:26Z"
+  },
+  executeNotAfter: "2026-10-07T06:53:54.742Z"
+});
+
 // The approved incident's original source is installed independently of later
 // verifier releases. This binding grants no authority; the historical reader
 // still authenticates every archived input, source file and CI attestation.
@@ -79,6 +108,17 @@ const APPROVED_R3_HISTORICAL_SOURCE = freeze({
   sourceRoot: "/opt/stage1-r3-candidate-127a9eb"
 });
 
+const APPROVED_R3_HISTORICAL_SOURCE_0AF9C545 = freeze({
+  operationRef: APPROVED_R3_INCIDENT_0AF9C545.operationRef,
+  profileDigest: APPROVED_R3_INCIDENT_0AF9C545.profileDigest,
+  sourceSha: "b16f5aebb6b8599eb807c65751018a4d4efe224b",
+  proofRawDigest: "sha256:4541fd36e754bd2c86fbef8a30f69050c3c5e480c54cae2d94c7dc9d7e1d776a",
+  materialRawDigest: "sha256:59f6f9e61a8676d3113b73f7e6bbf193f09d2822d4d533f38d5596e428ae028d",
+  creationSpecDigest: "sha256:b67f92679b7af2130714a765bda0b92462e166e436058f033cd638e20fc213f7",
+  jobAdmissionDigest: "sha256:89e88f63fb306e16634cd0952fe7c03a7e87004abfc2199fc2e79f1be60ba301",
+  sourceRoot: "/opt/stage1-r3-candidate-b16f5ae"
+});
+
 export function approvedR3HistoricalSourceBinding(input) {
   exact(input, [
     "operationRef",
@@ -89,9 +129,10 @@ export function approvedR3HistoricalSourceBinding(input) {
     "creationSpecDigest",
     "jobAdmissionDigest"
   ]);
-  return Object.entries(input).every(([key, value]) => APPROVED_R3_HISTORICAL_SOURCE[key] === value)
-    ? APPROVED_R3_HISTORICAL_SOURCE.sourceRoot
-    : null;
+  for (const binding of [APPROVED_R3_HISTORICAL_SOURCE, APPROVED_R3_HISTORICAL_SOURCE_0AF9C545])
+    if (Object.entries(input).every(([key, value]) => binding[key] === value))
+      return binding.sourceRoot;
+  return null;
 }
 
 export function r3IncidentFileIdentity(stat) {
@@ -269,14 +310,40 @@ export function assessR3IncidentRecords({
   }
 }
 
-const dispositions = new WeakSet();
+const dispositions = new WeakMap();
 export function matchesR3IncidentDisposition(receipt, consumed, execution) {
+  const policy = receipt && dispositions.get(receipt);
   return Boolean(
-    receipt &&
-    dispositions.has(receipt) &&
-    sha256Canonical(consumed) === APPROVED_R3_INCIDENT.consumptionDigest &&
-    sha256Canonical(execution) === APPROVED_R3_INCIDENT.executionDigest
+    policy &&
+    sha256Canonical(consumed) === policy.consumptionDigest &&
+    sha256Canonical(execution) === policy.executionDigest
   );
+}
+
+export function assertR3IncidentSessionShape(policy, graph) {
+  const opening = graph.get(policy.openingDigest)?.value;
+  const execution = graph.get(policy.executionDigest)?.value;
+  const sessionRecords = [...graph.entries()].filter(
+    ([, item]) => item.value.kind === "session" && item.value.sessionId === policy.sessionId
+  );
+  const executions = [...graph.entries()].filter(
+    ([, item]) => item.value.kind === "execution" && item.value.sessionId === policy.sessionId
+  );
+  need(opening?.kind === "session" && opening.status === "OPEN");
+  need(execution?.kind === "execution" && execution.status === "INTERRUPTED_UNKNOWN");
+  need(executions.length === 1 && executions[0][0] === policy.executionDigest);
+  if (policy.sessionDigest === null) {
+    need(sessionRecords.length === 1 && sessionRecords[0][0] === policy.openingDigest);
+  } else {
+    need(
+      sessionRecords.length === 2 &&
+        sessionRecords.some(([digest]) => digest === policy.openingDigest) &&
+        sessionRecords.some(
+          ([digest, item]) =>
+            digest === policy.sessionDigest && item.value.status === "INTERRUPTED_UNKNOWN"
+        )
+    );
+  }
 }
 
 // Only this native reader brands a disposition. Ordinary assessments, booleans,
@@ -287,13 +354,17 @@ export async function readApprovedR3IncidentDisposition(
   openingDigest,
   consumptions
 ) {
-  const p = APPROVED_R3_INCIDENT;
   const opening = graph.get(openingDigest)?.value;
-  const relevant =
-    opening?.sessionId === p.sessionId ||
-    consumptions.some((value) => value.operationId === p.operationRef);
-  if (!relevant) return null;
+  const policies = [APPROVED_R3_INCIDENT, APPROVED_R3_INCIDENT_0AF9C545];
+  const matched = policies.filter(
+    (policy) =>
+      opening?.sessionId === policy.sessionId ||
+      consumptions.some((value) => value.operationId === policy.operationRef)
+  );
+  if (matched.length === 0) return null;
   try {
+    need(matched.length === 1);
+    const p = matched[0];
     const { profile, store, retainedLocks, stamp } = environment;
     need(
       sha256Canonical(profile) === p.profileDigest &&
@@ -305,9 +376,9 @@ export async function readApprovedR3IncidentDisposition(
       [p.openingDigest, "journal"],
       [p.consumptionDigest, "journal"],
       [p.executionDigest, "journal"],
-      [p.sessionDigest, "journal"],
       [p.requestDigest, "archive"]
     ];
+    if (p.sessionDigest !== null) originals.push([p.sessionDigest, "journal"]);
     for (const [digest, role] of originals) {
       const item = graph.get(digest);
       need(
@@ -323,14 +394,8 @@ export async function readApprovedR3IncidentDisposition(
         ).equals(item.bytes)
       );
     }
-    const values = [...graph.values()].map((item) => item.value);
-    need(
-      values.filter((v) => v.kind === "execution" && v.sessionId === p.sessionId).length === 1 &&
-        values.filter((v) => v.kind === "session" && v.sessionId === p.sessionId).length === 2 &&
-        graph.get(p.executionDigest).value.status === "INTERRUPTED_UNKNOWN" &&
-        graph.get(p.sessionDigest).value.status === "INTERRUPTED_UNKNOWN" &&
-        retainedLocks.every(({ value }) => value.sessionId !== p.sessionId)
-    );
+    assertR3IncidentSessionShape(p, graph);
+    need(retainedLocks.every(({ value }) => value.sessionId !== p.sessionId));
     const root = path.join(profile.storage.archiveRoot, "incidents", p.operationRef);
     await store.checkedPath(root);
     need(
@@ -385,7 +450,7 @@ export async function readApprovedR3IncidentDisposition(
         now: at
       });
     }
-    dispositions.add(receipt);
+    dispositions.set(receipt, p);
     return receipt;
   } catch {
     fail();

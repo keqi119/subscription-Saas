@@ -197,3 +197,59 @@ test("pure signed assessments and caller supplied booleans cannot authorize hist
     false
   );
 });
+
+test("the second approved incident has its own exact historical source and cancelled job", () => {
+  const p = incident.APPROVED_R3_INCIDENT_0AF9C545;
+  assert.equal(p.operationRef, "0af9c545-8cbc-4d1a-9027-e840c39ce9fd");
+  assert.equal(p.github.jobId, "112549922961");
+  assert.equal(p.github.conclusion, "cancelled");
+  assert.equal(p.sessionDigest, null);
+  const binding = {
+    operationRef: p.operationRef,
+    profileDigest: p.profileDigest,
+    sourceSha: "b16f5aebb6b8599eb807c65751018a4d4efe224b",
+    proofRawDigest: "sha256:4541fd36e754bd2c86fbef8a30f69050c3c5e480c54cae2d94c7dc9d7e1d776a",
+    materialRawDigest: "sha256:59f6f9e61a8676d3113b73f7e6bbf193f09d2822d4d533f38d5596e428ae028d",
+    creationSpecDigest: "sha256:b67f92679b7af2130714a765bda0b92462e166e436058f033cd638e20fc213f7",
+    jobAdmissionDigest: "sha256:89e88f63fb306e16634cd0952fe7c03a7e87004abfc2199fc2e79f1be60ba301"
+  };
+  assert.equal(
+    incident.approvedR3HistoricalSourceBinding(binding),
+    "/opt/stage1-r3-candidate-b16f5ae"
+  );
+  assert.equal(
+    incident.approvedR3HistoricalSourceBinding({
+      ...binding,
+      operationRef: incident.APPROVED_R3_INCIDENT.operationRef
+    }),
+    null
+  );
+  assert.equal(
+    incident.approvedR3HistoricalSourceBinding({
+      ...binding,
+      sourceSha: "127a9eb281a65b216b53e863ad9734ac4650399e"
+    }),
+    null
+  );
+});
+
+test("only the fixed open session shape is accepted for the unclosed incident", () => {
+  const p = incident.APPROVED_R3_INCIDENT_0AF9C545;
+  const graph = new Map([
+    [p.openingDigest, { value: { kind: "session", sessionId: p.sessionId, status: "OPEN" } }],
+    [
+      p.executionDigest,
+      { value: { kind: "execution", sessionId: p.sessionId, status: "INTERRUPTED_UNKNOWN" } }
+    ]
+  ]);
+  assert.doesNotThrow(() => incident.assertR3IncidentSessionShape(p, graph));
+  graph.set("sha256:" + "f".repeat(64), {
+    value: { kind: "session", sessionId: p.sessionId, status: "INTERRUPTED_UNKNOWN" }
+  });
+  assert.throws(() => incident.assertR3IncidentSessionShape(p, graph), {
+    code: "MANUAL_R3_INCIDENT_UNVERIFIED"
+  });
+  assert.throws(() => incident.assertR3IncidentSessionShape(incident.APPROVED_R3_INCIDENT, graph), {
+    code: "MANUAL_R3_INCIDENT_UNVERIFIED"
+  });
+});

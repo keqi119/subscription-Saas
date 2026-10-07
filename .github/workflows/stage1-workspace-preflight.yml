@@ -1,0 +1,80 @@
+name: Stage 1 isolated workspace preflight
+
+on:
+  push:
+    branches:
+      - stage1-workspace-preflight-588da0dc
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 8928a0ffa3c29609e0da99144de2415438c9d081
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+      - run: corepack enable && corepack prepare pnpm@11.4.0 --activate && pnpm install --frozen-lockfile
+      - name: Match the failed job's ephemeral host prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_ACTIONS" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$RUNNER_OS" = Linux
+          test "$(git rev-parse HEAD)" = 8928a0ffa3c29609e0da99144de2415438c9d081
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cryptsetup-bin dmsetup e2fsprogs openssh-client
+          sudo systemctl mask --runtime --now docker.service docker.socket containerd.service
+          test ! -e /run/containerd/containerd.sock
+          test ! -L /run/containerd/containerd.sock
+          sudo swapoff --all
+          test "$(wc -l < /proc/swaps)" -eq 1
+          for directory in /dev/shm/stage1-keys /var/lib/stage1-snapshots /srv/stage1-snapshot; do
+            test ! -e "$directory"
+            test ! -L "$directory"
+            sudo install -d -o root -g root -m 0700 "$directory"
+          done
+      - name: Observe actual capacity and absent workspace without creating a target
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /bin/bash -ceu 'ulimit -S -c 0; ulimit -H -c 0; exec "$1" --input-type=module' stage1-root "$(command -v node)" <<'NODE'
+          import fs from "node:fs/promises";
+          import { observeR3EncryptedWorkspace } from "./scripts/release/r3-encrypted-workspace-observer.mjs";
+          const capacityBytes = 17179869184;
+          const backing = await fs.statfs("/var/lib/stage1-snapshots", { bigint: true });
+          const keys = await fs.statfs("/dev/shm/stage1-keys", { bigint: true });
+          const available = backing.bsize * backing.bavail;
+          const result = {
+            purpose: "READ_ONLY_HOSTED_PREREQUISITE_DIAGNOSTIC_NOT_RELEASE_EVIDENCE",
+            sourceSha: "8928a0ffa3c29609e0da99144de2415438c9d081",
+            requestedCapacityBytes: capacityBytes,
+            backingAvailableBytes: available.toString(),
+            backingTotalBytes: (backing.bsize * backing.blocks).toString(),
+            keyAvailableBytes: (keys.bsize * keys.bavail).toString(),
+            capacitySatisfied: available >= BigInt(capacityBytes),
+            promotionEligible: false,
+            targetCreated: false
+          };
+          try {
+            const observed = await observeR3EncryptedWorkspace({
+              operationRef: "588da0dc-713a-4832-ab04-96421ed50236",
+              capacityBytes,
+              state: "absent"
+            });
+            result.absentObservation = observed.observation;
+          } catch (error) {
+            result.absentObservation = error.evidence?.observation ?? null;
+            result.observationFailure = error.code === "R3_WORKSPACE_OBSERVATION_INVALID"
+              ? error.code : "UNCLASSIFIED";
+          }
+          console.log(JSON.stringify(result));
+          if (!result.capacitySatisfied || result.observationFailure) process.exitCode = 1;
+          NODE

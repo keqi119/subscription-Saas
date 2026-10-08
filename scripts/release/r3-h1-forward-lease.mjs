@@ -12,6 +12,11 @@ import {
   connectedStopReason,
   settledR3ExecFile
 } from "./r3-connected-window.mjs";
+import {
+  assertR3StartupActive,
+  currentR3StartupScope,
+  settledR3StartupExecFile
+} from "./r3-startup-deadline.mjs";
 import { inheritR3FailureCause, markR3FailureCause } from "./r3-failure-diagnostic.mjs";
 import {
   encodeManualJson,
@@ -63,15 +68,22 @@ function same(left, right) {
 }
 async function command(binary, args, expected = 0) {
   checkR3ConnectedWindow();
-  const result = await settledR3ExecFile(binary, args, {
-    shell: false,
-    encoding: "buffer",
-    timeout: connectedChildTimeout(10000),
-    ...(connectedChildSignal() ? { signal: connectedChildSignal() } : {}),
-    maxBuffer: 65536,
-    windowsHide: true,
-    env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C" }
-  });
+  const startup = currentR3StartupScope(),
+    startupActive = Boolean(startup && !startup.connected),
+    options = {
+      shell: false,
+      encoding: "buffer",
+      timeout: connectedChildTimeout(10000),
+      ...(connectedChildSignal() ? { signal: connectedChildSignal() } : {}),
+      maxBuffer: 65536,
+      windowsHide: true,
+      env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C" }
+    };
+  if (startupActive) assertR3StartupActive();
+  const result = startupActive
+    ? await settledR3StartupExecFile(binary, args, options)
+    : await settledR3ExecFile(binary, args, options);
+  if (startupActive) assertR3StartupActive();
   const outcome = {
     error: result.error,
     stdout: Buffer.from(result.stdout ?? ""),

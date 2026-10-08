@@ -233,16 +233,37 @@ function fileStore(profile, principal, io) {
       fail(STORAGE);
     }
   }
-  async function create(file, bytes, duplicateCode = STORAGE) {
-    let handle;
+  async function create(file, bytes, duplicateCode = STORAGE, beforePersist = undefined) {
+    let handle,
+      createdIdentity,
+      persisted = false;
     try {
       await checkedPath(path.dirname(file));
       requireThat(bytes.length <= LIMIT, "MANUAL_JSON_LIMIT");
       handle = await fs.open(file, "wx", 0o600);
+      createdIdentity = await handle.stat({ bigint: true });
       await setNewOwner(file);
+      beforePersist?.();
       await handle.writeFile(bytes);
+      persisted = true;
       await handle.sync();
     } catch (error) {
+      if (typeof error?.code === "string" && error.code.startsWith("R3_STARTUP_")) {
+        try {
+          await handle?.close();
+          handle = null;
+          if (!persisted && createdIdentity) {
+            const visible = await fs.lstat(file, { bigint: true });
+            if (
+              visible.dev === createdIdentity.dev &&
+              visible.ino === createdIdentity.ino &&
+              visible.size === 0n
+            )
+              await fs.unlink(file);
+          }
+        } catch {}
+        throw error;
+      }
       if (error.code === "EEXIST") fail(duplicateCode);
       fail(STORAGE);
     } finally {
@@ -259,10 +280,10 @@ function fileStore(profile, principal, io) {
         maxBuffer: LIMIT
       });
   }
-  async function put(value, role = "archive") {
+  async function put(value, role = "archive", beforePersist = undefined) {
     const bytes = encodeManualJson(value),
       digest = sha256Bytes(bytes);
-    await create(objectPath(profile.storage[`${role}Root`], digest), bytes);
+    await create(objectPath(profile.storage[`${role}Root`], digest), bytes, STORAGE, beforePersist);
     return Object.freeze({ recordDigest: digest });
   }
   async function roots() {
@@ -5075,9 +5096,12 @@ export async function openManualSession({
     };
     return freeze({
       ...identity,
-      sign(input) {
+      sign(input, assertStillAuthorized = undefined) {
         return serial(async () => {
+          if (assertStillAuthorized !== undefined)
+            requireThat(typeof assertStillAuthorized === "function", SESSION);
           await active();
+          assertStillAuthorized?.();
           r3Live();
           const request = await r3CheckedRequest(input);
           if (request.request.stage === "candidate-use")
@@ -5087,6 +5111,7 @@ export async function openManualSession({
             await boundSnapshot(request.request);
           }
           await r3History(request.request);
+          assertStillAuthorized?.();
           const issuedAt = stamp(),
             ctx = await context(
               request.request,
@@ -5102,6 +5127,7 @@ export async function openManualSession({
                 instant(issuedAt) + 300000
               )
             ).toISOString();
+          assertStillAuthorized?.();
           requireThat(instant(issuedAt) < instant(expiresAt), "MANUAL_TIME_INVALID");
           const authorization = signManualAuthorization({
             payload: {
@@ -5120,7 +5146,8 @@ export async function openManualSession({
             privateKey: key
           });
           verify(authorization, request, ctx);
-          await store.put(authorization);
+          assertStillAuthorized?.();
+          await store.put(authorization, "archive", assertStillAuthorized);
           issued.set(authorization.payload.authorizationId, sha256Canonical(authorization));
           if (request.request.stage === "snapshot-consumer") consumerAuthorizationIssued = true;
           if (request.request.stage === "candidate-use") candidateUseAuthorizationIssued = true;

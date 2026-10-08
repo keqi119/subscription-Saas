@@ -55,6 +55,17 @@ test("fixed callers preserve the failed boundary without publishing rejected inp
   }
 });
 
+test("startup cutoff failures preserve only the fixed startup cause code", () => {
+  const tracker = r3FailureTracker("H1_CREATE");
+  tracker.enter("SIGN");
+  const failure = tracker.decorate(
+    new Error("fixed"),
+    Object.assign(new Error("deadline"), { code: "R3_STARTUP_DEADLINE_EXCEEDED" })
+  );
+  assert.equal(getR3FailureDiagnostic(failure).causeCode, "R3_STARTUP_DEADLINE_EXCEEDED");
+  assert.equal(JSON.stringify(getR3FailureDiagnostic(failure)).includes("deadline"), false);
+});
+
 test("consumption failure remains the primary boundary through cleanup and caller wrapping", async () => {
   const tracker = r3FailureTracker("H1_CREATE");
   let posted = false;

@@ -197,6 +197,44 @@ check() {
   fi
 }
 
+check_idle() {
+  require_root
+  require_tools
+  command -v ss >/dev/null 2>&1 || die 'missing ss'
+  "$sshd" -t -f "$config" >/dev/null 2>&1 || die 'existing sshd configuration fails syntax check'
+  [[ $(account_state) == exact && $(path_state) == empty && $(config_state) == exact ]] || die 'evidence surface is not IDLE'
+  [[ -d $exchange && ! -L $exchange ]] && owner_mode "$exchange" '0:0:755' || die 'formal evidence root missing'
+  local mount_status=0
+  mountpoint -q -- "$exchange" || mount_status=$?
+  [[ $mount_status == 32 ]] || die 'evidence root mounted or mount state unknown'
+  local root_entry
+  root_entry=$(find "$exchange" -mindepth 1 -maxdepth 1 -print -quit) || die 'evidence root entries unknown'
+  [[ -z $root_entry ]] || die 'evidence root is not empty'
+  [[ -f $key_file && ! -L $key_file ]] && owner_mode "$key_file" '0:0:644' &&
+    [[ $(stat -c '%h' -- "$key_file") == 1 && ! -s $key_file ]] || die 'evidence key is not IDLE'
+  local forward_key=/etc/ssh/stage1-r3-forward/authorized_keys
+  local forward_owner forward_mode
+  [[ -d ${forward_key%/*} && ! -L ${forward_key%/*} ]] || die 'forward key directory differs'
+  IFS=: read -r forward_owner forward_mode < <(stat -c '%u:%a' -- "${forward_key%/*}")
+  [[ $forward_owner == 0 && $forward_mode =~ ^[0-7]{3,4}$ &&
+    $((8#$forward_mode & 0022)) == 0 ]] || die 'forward key directory is writable'
+  local forward_file_owner forward_file_mode forward_links forward_size
+  [[ -f $forward_key && ! -L $forward_key ]] || die 'forward key is not regular'
+  IFS=: read -r forward_file_owner forward_file_mode forward_links forward_size < <(stat -c '%u:%a:%h:%s' -- "$forward_key")
+  [[ $forward_file_owner == 0 && $forward_file_mode == 644 && $forward_links == 1 && $forward_size == 0 ]] || die 'forward key is not IDLE'
+  local evidence_uid forward_status=0 evidence_status=0 listeners current
+  evidence_uid=$(id -u "$account") || die 'evidence UID unknown'
+  pgrep -u "$evidence_uid" >/dev/null 2>&1 || evidence_status=$?
+  [[ $evidence_status == 1 ]] || die 'evidence process present or state unknown'
+  pgrep -u 994 >/dev/null 2>&1 || forward_status=$?
+  [[ $forward_status == 1 ]] || die 'forward process present or state unknown'
+  listeners=$(ss -H -ltn 'sport = :55440 or sport = :55441') || die 'forward listeners unknown'
+  [[ -z $listeners ]] || die 'forward listener remains'
+  current=$(effective "$config" "$account") || die 'effective evidence Match unavailable'
+  assert_effective <(printf '%s\n' "$current")
+  printf 'IDLE: formal evidence and forward surfaces are empty; check-only made no changes\n'
+}
+
 apply() {
   require_root
   require_tools
@@ -301,9 +339,10 @@ apply() {
   printf 'READY: applied exact account/Match; backup=%s\n' "$backup"
 }
 
-[[ $# == 1 ]] || die 'usage: stage1-r3-evidence-account.sh check|apply'
+[[ $# == 1 ]] || die 'usage: stage1-r3-evidence-account.sh check|check-idle|apply'
 case $1 in
   check) check ;;
+  check-idle) check_idle ;;
   apply) apply ;;
-  *) die 'usage: stage1-r3-evidence-account.sh check|apply' ;;
+  *) die 'usage: stage1-r3-evidence-account.sh check|check-idle|apply' ;;
 esac

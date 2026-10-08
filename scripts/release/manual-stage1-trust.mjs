@@ -9,6 +9,11 @@ import {
   connectedStopReason,
   settledR3ExecFile
 } from "./r3-connected-window.mjs";
+import {
+  assertR3StartupActive,
+  currentR3StartupScope,
+  settledR3StartupExecFile
+} from "./r3-startup-deadline.mjs";
 import { inheritR3FailureCause, markR3FailureCause } from "./r3-failure-diagnostic.mjs";
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import {
@@ -171,15 +176,22 @@ async function checkedPath(file, { principal, privateRoot, sourceRoot, system = 
 async function processOutput(file, args, { timeout = 120000, maxBuffer = LIMIT, env } = {}) {
   checkR3ConnectedWindow();
   timeout = connectedChildTimeout(timeout);
-  const result = await settledR3ExecFile(file, args, {
-    shell: false,
-    windowsHide: true,
-    encoding: "buffer",
-    timeout,
-    ...(connectedChildSignal() ? { signal: connectedChildSignal() } : {}),
-    maxBuffer,
-    ...(env ? { env } : {})
-  });
+  const startup = currentR3StartupScope(),
+    startupActive = Boolean(startup && !startup.connected),
+    options = {
+      shell: false,
+      windowsHide: true,
+      encoding: "buffer",
+      timeout,
+      ...(connectedChildSignal() ? { signal: connectedChildSignal() } : {}),
+      maxBuffer,
+      ...(env ? { env } : {})
+    };
+  if (startupActive) assertR3StartupActive();
+  const result = startupActive
+    ? await settledR3StartupExecFile(file, args, options)
+    : await settledR3ExecFile(file, args, options);
+  if (startupActive) assertR3StartupActive();
   if (result.error) {
     if (result.error.code === "ABORT_ERR" && connectedStopReason())
       markR3FailureCause(result.error, connectedStopReason());
@@ -3220,7 +3232,8 @@ export async function openTrustedR3CreationSession(input, verifiedAdmission) {
       sessionId: session.sessionId,
       sessionNonce: session.sessionNonce,
       scope,
-      sign: (value) => action("sign", [value]),
+      sign: (value, assertStillAuthorized = undefined) =>
+        action("sign", [value, assertStillAuthorized]),
       consume: (value) => action("consume", [value]),
       holdTargets: (value) => action("holdTargets", [value]),
       completeCreation: (value) => action("completeCreation", [value]),

@@ -41,6 +41,18 @@ import {
   openTrustedR3CreationSession
 } from "./manual-stage1-trust.mjs";
 import { openR3H1ForwardLease } from "./r3-h1-forward-lease.mjs";
+import { assertR3H1EvidenceReady } from "./r3-h1-evidence-delivery.mjs";
+import {
+  assertR3StartupActive,
+  createR3StartupDeadline,
+  emitR3StartupPhaseSummary,
+  enterR3StartupDeadline,
+  markR3StartupConnected,
+  recordR3StartupPhase,
+  r3StartupAbortSignal,
+  r3StartupRemainingMs,
+  runR3StartupCleanup
+} from "./r3-startup-deadline.mjs";
 import { withR3ConnectedWindow, connectedPostTimeout } from "./r3-connected-window.mjs";
 import {
   assessR3PostgresObservation,
@@ -993,7 +1005,7 @@ function targetArchive({ profile, principal, recheck }) {
     raw,
     read,
     get,
-    async put(value, schema, role = "archive") {
+    async put(value, schema, role = "archive", beforePersist = undefined) {
       if (schema) validateContract(schema, value);
       const bytes = encodeManualJson(value),
         digest = sha256Bytes(bytes),
@@ -1004,22 +1016,41 @@ function targetArchive({ profile, principal, recheck }) {
         privateRoot: profile.storage[role + "Root"],
         directory: true
       });
+      let handle,
+        createdIdentity,
+        persisted = false;
       try {
-        const handle = await fs.open(file, "wx", 0o600);
-        try {
-          const chain = await checkedPrivatePath(file, {
-            principal,
-            privateRoot: profile.storage[role + "Root"]
-          });
-          if (!sameIdentity(chain.at(-1).stat, await handle.stat({ bigint: true })))
-            fail("MANUAL_STORAGE_UNVERIFIED");
-          await handle.writeFile(bytes);
-          await handle.sync();
-        } finally {
-          await handle.close();
-        }
+        handle = await fs.open(file, "wx", 0o600);
+        createdIdentity = await handle.stat({ bigint: true });
+        const chain = await checkedPrivatePath(file, {
+          principal,
+          privateRoot: profile.storage[role + "Root"]
+        });
+        if (!sameIdentity(chain.at(-1).stat, createdIdentity)) fail("MANUAL_STORAGE_UNVERIFIED");
+        beforePersist?.();
+        await handle.writeFile(bytes);
+        persisted = true;
+        await handle.sync();
       } catch (error) {
+        if (typeof error?.code === "string" && error.code.startsWith("R3_STARTUP_")) {
+          try {
+            await handle?.close();
+            handle = null;
+            if (!persisted && createdIdentity) {
+              const visible = await fs.lstat(file, { bigint: true });
+              if (
+                visible.dev === createdIdentity.dev &&
+                visible.ino === createdIdentity.ino &&
+                visible.size === 0n
+              )
+                await fs.unlink(file);
+            }
+          } catch {}
+          throw error;
+        }
         if (error.code !== "EEXIST") throw error;
+      } finally {
+        await handle?.close();
       }
       if (!(await get(digest, role)).bytes.equals(bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
       await recheck();
@@ -1057,6 +1088,7 @@ export async function launchR3TargetCreate(input) {
   const code = "R3_TARGET_CREATE_UNAVAILABLE";
   const diagnostic = r3FailureTracker("H1_CREATE");
   let fixed,
+    startupLease,
     session,
     lease,
     socket,
@@ -1328,7 +1360,7 @@ export async function launchR3TargetCreate(input) {
       for (const role of roles)
         if (!(await archive.get(digest, role)).bytes.equals(bytes)) fail(code);
   };
-  const pause = () => new Promise((resolve) => setTimeout(resolve, 500));
+  const pause = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms));
   const exchange = (method, pathname, body = null, connected = null, options = {}) =>
     exchangeR3Engine(method, pathname, body, connected, {
       ...options,
@@ -2230,6 +2262,7 @@ export async function launchR3TargetCreate(input) {
       ...(session.scope.phase === "final" ? { matchingSourceEvidenceDigest } : {}),
       candidate: { buildProofDigest: session.scope.buildProofDigest }
     };
+    assertR3StartupActive();
     request.attemptAllocationDigest = await archive.put(
       {
         schemaVersion: "manual-runner-evidence.v2",
@@ -4877,8 +4910,26 @@ export async function launchR3TargetCreate(input) {
     input = Object.freeze({ repoRoot: input.repoRoot, operationRef: input.operationRef });
     await prepareR3HostedEvidenceImport(input);
     fixed = await readFixedR3JobAdmission(input);
+    const startupBinding = createR3StartupDeadline({
+      rawJob: fixed.rawInputs.job,
+      admission: {
+        ...fixed.admission,
+        phase: fixed.spec.phase,
+        chain: fixed.spec.chain
+      },
+      operationRef: input.operationRef
+    });
+    startupLease = enterR3StartupDeadline(startupBinding);
+    assertR3StartupActive();
+    await assertR3H1EvidenceReady();
+    assertR3StartupActive();
+    recordR3StartupPhase("evidence_gate");
     session = await diagnostic.run("SESSION", () => openTrustedR3CreationSession(input, fixed));
+    assertR3StartupActive();
+    recordR3StartupPhase("session_ready");
     lease = await diagnostic.run("LEASE", () => openR3H1ForwardLease(input, fixed));
+    assertR3StartupActive();
+    recordR3StartupPhase("lease_ready");
     if (
       sha256Canonical(lease.scope) !== sha256Canonical(session.scope) ||
       sha256Canonical(lease.admission) !== fixed.jobAdmissionDigest
@@ -4889,9 +4940,10 @@ export async function launchR3TargetCreate(input) {
       principal: { platform: "posix", uid: process.getuid() },
       recheck: check
     });
-    // Keep the original forward deadline across preparation and signing.
-    const deadline = Math.min(Date.now() + 600000, Date.parse(fixed.admission.expiresAt));
+    // Keep the verified Execute deadline across preparation and signing.
+    const deadline = startupBinding.deadlineAtMs;
     await check();
+    assertR3StartupActive();
     const current = [...(await archive.graph()).entries()].filter(
       ([, item]) =>
         item.value.schemaVersion === "manual-operation-record.v3" &&
@@ -4899,6 +4951,7 @@ export async function launchR3TargetCreate(input) {
         item.value.sessionId === session.sessionId &&
         item.value.status === "OPEN"
     );
+    assertR3StartupActive();
     if (current.length !== 1) fail(code);
     const now = new Date().toISOString();
     const request = {
@@ -4951,9 +5004,14 @@ export async function launchR3TargetCreate(input) {
         buildProofDigest: session.scope.buildProofDigest,
         predecessorExecutionRecordDigest: null
       },
-      "manual-runner-evidence.v2"
+      "manual-runner-evidence.v2",
+      "archive",
+      assertR3StartupActive
     );
-    await archive.put(request, "manual-runner-request.v4");
+    assertR3StartupActive();
+    await archive.put(request, "manual-runner-request.v4", "archive", assertR3StartupActive);
+    recordR3StartupPhase("attempt_allocated");
+    assertR3StartupActive();
     const {
       schemaVersion,
       attemptId,
@@ -4964,41 +5022,83 @@ export async function launchR3TargetCreate(input) {
       ...binding
     } = request;
     const requestInput = { binding, canonicalBytes: encodeManualJson(request) };
-    const authorization = await diagnostic.run("SIGN", () => session.sign(requestInput));
+    recordR3StartupPhase("sign_started");
+    const authorization = await diagnostic.run("SIGN", () =>
+      session.sign(requestInput, assertR3StartupActive)
+    );
+    assertR3StartupActive();
+    recordR3StartupPhase("authorization_persisted");
     const body = encodeManualJson({ request, authorization });
     if (body.length > 1048576) fail(code);
     diagnostics.push({ name: "creation-request", body: await archive.raw(body) });
+    assertR3StartupActive();
     await check();
     // Connect once before consuming, then send on that same connection only.
     // Signing and durable request preparation do not use its idle window.
     diagnostic.enter("SOCKET");
     while (!socket) {
+      assertR3StartupActive();
       if (Date.now() >= deadline) fail(code);
       await check();
       if (Date.now() >= deadline) fail(code);
       try {
         socket = await new Promise((resolve, reject) => {
           const pending = net.createConnection({ host: "127.0.0.1", port: 55440 });
+          const signal = r3StartupAbortSignal(),
+            onAbort = () =>
+              pending.destroy(
+                signal.reason ??
+                  Object.assign(new Error("R3_STARTUP_CANCELLED"), {
+                    code: "R3_STARTUP_CANCELLED"
+                  })
+              );
           const timer = setTimeout(
-            () => pending.destroy(Object.assign(new Error(code), { code })),
-            3000
+            () =>
+              pending.destroy(
+                Object.assign(new Error("R3_STARTUP_DEADLINE_EXCEEDED"), {
+                  code: "R3_STARTUP_DEADLINE_EXCEEDED"
+                })
+              ),
+            Math.min(3000, r3StartupRemainingMs())
           );
           pending.once("error", (error) => {
             clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
             reject(error);
           });
           pending.once("connect", () => {
             clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            try {
+              assertR3StartupActive();
+            } catch (error) {
+              pending.destroy();
+              reject(error);
+              return;
+            }
             if (Date.now() >= deadline) {
               pending.destroy();
-              reject(Object.assign(new Error(code), { code }));
-            } else resolve(pending);
+              reject(
+                Object.assign(new Error("R3_STARTUP_DEADLINE_EXCEEDED"), {
+                  code: "R3_STARTUP_DEADLINE_EXCEEDED"
+                })
+              );
+              return;
+            }
+            markR3StartupConnected();
+            resolve(pending);
           });
+          if (signal?.aborted) onAbort();
+          else signal?.addEventListener("abort", onAbort, { once: true });
         });
       } catch (error) {
-        if (!["ECONNREFUSED", "ECONNRESET"].includes(error.code) || Date.now() >= deadline)
+        if (
+          !["ECONNREFUSED", "ECONNRESET"].includes(error.code) ||
+          Date.now() >= deadline ||
+          r3StartupRemainingMs() <= 0
+        )
           throw error;
-        await pause();
+        await pause(Math.min(250, r3StartupRemainingMs()));
       }
     }
     const delivered = await withR3ConnectedWindow(socket, async () => {
@@ -5526,9 +5626,10 @@ export async function launchR3TargetCreate(input) {
       close
     });
   } catch (cause) {
+    emitR3StartupPhaseSummary(startupLease?.scope);
     let cleanupError;
     try {
-      await close();
+      await runR3StartupCleanup(() => close());
     } catch (error) {
       cleanupError = error;
     }
@@ -5542,6 +5643,8 @@ export async function launchR3TargetCreate(input) {
       cause,
       cleanupError
     );
+  } finally {
+    startupLease?.restore();
   }
 }
 

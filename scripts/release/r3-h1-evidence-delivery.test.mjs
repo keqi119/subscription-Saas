@@ -11,6 +11,36 @@ import { cancelR3Startup, runWithR3StartupDeadline } from "./r3-startup-deadline
 
 const { readR3StableInboxFile } = delivery;
 
+test(
+  "H1 idle mount gate accepts a kernel table and rejects mounted or unknown state",
+  { skip: process.platform !== "linux" },
+  async () => {
+    const maintenance = await fs.readFile(
+      new URL("./maintenance/stage1-r3-evidence-account.sh", import.meta.url),
+      "utf8"
+    );
+    const match = maintenance.match(/^assert_unmounted_exchange\(\) \{\n[\s\S]*?^\}/m);
+    assert.ok(match, "exercise the actual production shell gate");
+    const cases = [
+      { table: "/\n/run\n", status: 0, accepted: true },
+      { table: "/\n/run/stage1-r3-evidence\n", status: 0, accepted: false },
+      { table: "", status: 0, accepted: false },
+      { table: "/\n", status: 1, accepted: false }
+    ];
+    for (const fixture of cases) {
+      const source = `set -Eeuo pipefail\nexchange=/run/stage1-r3-evidence\ndie() { exit 1; }\nfindmnt() { printf '%s' "$MOUNT_TABLE"; return "$MOUNT_STATUS"; }\n${match[0]}\nassert_unmounted_exchange\n`;
+      const result = childProcess.spawnSync("bash", ["-s"], {
+        input: source,
+        encoding: "utf8",
+        env: { ...process.env, MOUNT_TABLE: fixture.table, MOUNT_STATUS: String(fixture.status) },
+        timeout: 1000
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status === 0, fixture.accepted, JSON.stringify(fixture));
+    }
+  }
+);
+
 test("pre-dispatch evidence gate accepts only a formal idle surface without writes", async (t) => {
   assert.equal(typeof delivery.assertR3H1EvidenceReady, "function");
   const oldPlatform = Object.getOwnPropertyDescriptor(process, "platform");

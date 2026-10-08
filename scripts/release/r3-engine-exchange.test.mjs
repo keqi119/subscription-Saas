@@ -7,6 +7,8 @@ import { PassThrough, Readable } from "node:stream";
 import { clearTimeout, setTimeout } from "node:timers";
 import test from "node:test";
 import { exchangeR3Engine } from "./r3-engine-exchange.mjs";
+import { withR3ConnectedWindow, connectedPostTimeout } from "./r3-connected-window.mjs";
+import { r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 
 async function endpoint(t, handler) {
   const server = http.createServer(handler);
@@ -139,6 +141,61 @@ test("a preclosed connected socket rejects instead of leaving the exchange pendi
   await rejectsPromptly(
     exchangeR3Engine("POST", "/create", Buffer.from("{}"), socket, { timeout: 50 })
   );
+});
+
+test("one connected socket delivers one POST and accepts a response beyond the old five-second limit", async (t) => {
+  const server = await endpoint(t, async (request, response) => {
+    assert.equal(request.url, "/stage1-r3/target-create");
+    for await (const chunk of request) assert.ok(Buffer.isBuffer(chunk));
+    await new Promise((resolve) => setTimeout(resolve, 5100));
+    response.writeHead(202, { "Content-Length": "0" });
+    response.end();
+  });
+  let connections = 0;
+  server.on("connection", () => connections++);
+  const socket = await connectedSocket();
+  let consumed = false;
+  const delivered = await withR3ConnectedWindow(socket, async () => {
+    consumed = true;
+    assert.equal(connections, 1);
+    return exchangeR3Engine("POST", "/stage1-r3/target-create", Buffer.from("{}"), socket, {
+      timeout: connectedPostTimeout()
+    });
+  });
+  assert.equal(consumed, true);
+  assert.equal(connections, 1);
+  assert.equal(delivered.status, 202);
+});
+
+test("preclosed socket and POST timer have finite public causes", async (t) => {
+  await endpoint(t, (request) => request.resume());
+  const socket = await connectedSocket();
+  socket.destroy();
+  await once(socket, "close");
+  await assert.rejects(
+    exchangeR3Engine("POST", "/stage1-r3/target-create", Buffer.from("{}"), socket),
+    (error) => {
+      const diagnostic = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), error);
+      assert.equal(diagnostic.failureDiagnostic.causeCode, "R3_POST_PRE_CLOSED");
+      return true;
+    }
+  );
+  const connected = await connectedSocket();
+  await assert.rejects(
+    exchangeR3Engine("POST", "/stage1-r3/target-create", Buffer.from("{}"), connected, {
+      timeout: 20
+    }),
+    (error) => {
+      const diagnostic = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), error);
+      assert.equal(diagnostic.failureDiagnostic.causeCode, "R3_POST_TIMER");
+      return true;
+    }
+  );
+  await assert.rejects(exchangeR3Engine("GET", "/slow", null, null, { timeout: 20 }), (error) => {
+    const diagnostic = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), error);
+    assert.equal(diagnostic.failureDiagnostic.causeCode, "R3_ENGINE_EXCHANGE_UNAVAILABLE");
+    return true;
+  });
 });
 
 test("peer close after request delivery rejects instead of leaving the exchange pending", async (t) => {

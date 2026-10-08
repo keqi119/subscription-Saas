@@ -15,6 +15,7 @@ import {
 import { admitH1Snapshot } from "./snapshot-h1-admit.mjs";
 import { createInstalledH1DispatchVerification } from "./snapshot-h1-dispatch.mjs";
 import { createH1GitHubJwtSupplier } from "./snapshot-h1-github-jwt.mjs";
+import { prepareH1SnapshotDispatchReaderSession } from "./snapshot-h1-reader-session.mjs";
 import {
   readH1SnapshotProductionInputs,
   sealH1SnapshotDataProof,
@@ -67,6 +68,7 @@ export async function runH1AttemptAuthority(input) {
   requireThat(
     [
       "admit",
+      "prepare-dispatch-reader",
       "recheck",
       "jwt",
       "seal",
@@ -81,6 +83,10 @@ export async function runH1AttemptAuthority(input) {
       "seal-producer-terminal"
     ].includes(operation)
   );
+  if (operation === "prepare-dispatch-reader") {
+    assertKernelFrame(request, [], CODE);
+    return prepareH1SnapshotDispatchReaderSession();
+  }
   if (
     ["snapshot-final-readback", "seal-completion", "seal-producer-terminal"].includes(operation)
   ) {

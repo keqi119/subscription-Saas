@@ -8,6 +8,8 @@ test("private authority rejects caller paths, sessions and operations before pro
   for (const input of [
     { operation: "shell", request: {} },
     { operation: "jwt", request: { path: "/tmp/key.pem" } },
+    { operation: "prepare-dispatch-reader", request: { path: "/tmp/key.pem" } },
+    { operation: "prepare-dispatch-reader", request: { durationSeconds: 900 } },
     { operation: "seal", request: { proof: {} } },
     { operation: "publish", request: {} },
     { operation: "seal-destruction", request: {} },
@@ -32,6 +34,14 @@ test("private authority rejects caller paths, sessions and operations before pro
   await assert.rejects(readH1SnapshotProductionInputs({ path: "/tmp/inputs.json" }), {
     code: "H1_SNAPSHOT_SIGNING_REJECTED"
   });
+});
+
+test("prepare-dispatch-reader accepts only empty request and reaches fixed protected issuer", async () => {
+  if (process.platform !== "win32") return;
+  await assert.rejects(
+    runH1AttemptAuthority({ operation: "prepare-dispatch-reader", request: {} }),
+    { code: "H1_DISPATCH_READER_SESSION_REJECTED" }
+  );
 });
 
 test("completion authority routes only fixed identity selectors to protected H1 inputs", async () => {

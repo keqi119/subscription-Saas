@@ -53,6 +53,7 @@ class AttemptTests(unittest.TestCase):
         attempt.request = {'selection': {'jobId': '1'}, 'approvalSelection': {}}
         attempt.adapter_digest = 'fixed'
         attempt.installation = {'entries': {}, 'runnerDistributionDigest': 'fixed'}
+        attempt.reader_session = types.SimpleNamespace(close=lambda: None)
         attempt.jit_attempted = False
         admission = {'adapterDigest': 'fixed', 'releaseAttemptId': 'attempt',
                      'route': {'nonce': 'nonce'}, 'producerRun': {'runId': '2'}}

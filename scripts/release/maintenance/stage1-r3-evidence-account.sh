@@ -197,6 +197,19 @@ check() {
   fi
 }
 
+assert_unmounted_exchange() {
+  # util-linux 2.32 reports a non-mountpoint as 1; newer versions use 32.
+  # Read a successful, nonempty kernel table instead of guessing from that code.
+  local targets target root_seen=0
+  targets=$(findmnt --kernel --noheadings --raw --output TARGET 2>&1) || die 'mount table unavailable'
+  while IFS= read -r target; do
+    [[ $target == /* ]] || die 'mount table invalid'
+    [[ $target != "$exchange" ]] || die 'evidence root mounted'
+    [[ $target != / ]] || root_seen=1
+  done <<< "$targets"
+  [[ $root_seen == 1 ]] || die 'mount table root missing'
+}
+
 check_idle() {
   require_root
   require_tools
@@ -204,9 +217,7 @@ check_idle() {
   "$sshd" -t -f "$config" >/dev/null 2>&1 || die 'existing sshd configuration fails syntax check'
   [[ $(account_state) == exact && $(path_state) == empty && $(config_state) == exact ]] || die 'evidence surface is not IDLE'
   [[ -d $exchange && ! -L $exchange ]] && owner_mode "$exchange" '0:0:755' || die 'formal evidence root missing'
-  local mount_status=0
-  mountpoint -q -- "$exchange" || mount_status=$?
-  [[ $mount_status == 32 ]] || die 'evidence root mounted or mount state unknown'
+  assert_unmounted_exchange
   local root_entry
   root_entry=$(find "$exchange" -mindepth 1 -maxdepth 1 -print -quit) || die 'evidence root entries unknown'
   [[ -z $root_entry ]] || die 'evidence root is not empty'

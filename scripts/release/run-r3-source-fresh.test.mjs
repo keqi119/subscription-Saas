@@ -9,6 +9,7 @@ import { PassThrough } from "node:stream";
 import path from "node:path";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
+import { currentR3StartupScope } from "./r3-startup-deadline.mjs";
 
 const operationRef = randomUUID(),
   sourceOperationRef = randomUUID(),
@@ -101,10 +102,13 @@ const currentGateBytes = () =>
   spec.chain === "snapshot" ? snapshotGateBytes : sourceGateEvidenceBytes;
 const job = {
   expiresAt: new Date(Date.now() + 120000).toISOString(),
+  ci: { runId: "37787742897", jobId: "113348580001", jobName: "synthetic-source-job" },
   host: { forwardingPublicKeyPem: key.export({ type: "spki", format: "pem" }) }
 };
 const events = [];
 let answerMode = "correct";
+let failDeliveryOnOpen = false,
+  holdLaunchUntilCancelled = false;
 let sourceClosedAt = "2026-10-01T00:00:00.000Z";
 const execution = {
   schemaVersion: "manual-operation-record.v3",
@@ -181,12 +185,37 @@ const writeObject = (role, digest, bytes) =>
 mock.module("./manual-stage1-trust.mjs", {
   namedExports: {
     loadFixedManualProfile: async () => profile,
-    readFixedR3JobAdmission: async () => ({
-      spec,
-      admission: job,
-      recheck: async () => {},
-      close: async () => {}
-    }),
+    readFixedR3JobAdmission: async () => {
+      const executeName =
+        spec.phase === "source"
+          ? `Execute the held source ${spec.chain} exchange through verified CLOSED`
+          : "Execute final migration, database tests, API and Web through verified CLOSED";
+      return {
+        spec,
+        admission: job,
+        rawInputs: {
+          job: Buffer.from(
+            JSON.stringify({
+              id: Number(job.ci.jobId),
+              run_id: Number(job.ci.runId),
+              name: job.ci.jobName,
+              steps: [
+                {
+                  number: 9,
+                  name: executeName,
+                  status: "in_progress",
+                  conclusion: null,
+                  started_at: new Date(Date.now() - 1000).toISOString(),
+                  completed_at: null
+                }
+              ]
+            })
+          )
+        },
+        recheck: async () => {},
+        close: async () => {}
+      };
+    },
     readTrustedR3SourceCompletion: async (selector) => {
       events.push("source-history-open");
       assert.deepEqual(selector, {
@@ -251,6 +280,20 @@ mock.module("./launch-manual-stage1.mjs", {
   namedExports: {
     launchR3TargetCreate: async () => {
       events.push("launch");
+      if (holdLaunchUntilCancelled) {
+        const signal = currentR3StartupScope()?.signal;
+        assert.ok(signal);
+        return await new Promise((resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              events.push("launch-settled-cancelled");
+              reject(signal.reason);
+            },
+            { once: true }
+          );
+        });
+      }
       return {
         session: { sessionId, sessionNonce },
         async importHostedEvidence() {
@@ -353,49 +396,56 @@ mock.module("./launch-manual-stage1.mjs", {
 });
 mock.module("./r3-h1-evidence-delivery.mjs", {
   namedExports: {
-    openR3H1EvidenceDelivery: async () => ({
-      async receiveCreation() {
-        events.push("creation-receive");
-        return Buffer.from("signed creation fixture");
-      },
-      async publishCleanupRequest(input) {
-        events.push("cleanup-request");
-        assert.deepEqual(
-          input,
-          spec.phase === "final"
-            ? {
-                executionBytes: finalExecutionBytes,
-                acknowledgementBytes: finalAcknowledgementBytes
-              }
-            : { executionBytes, acknowledgementBytes }
-        );
-      },
-      async receiveCleanup() {
-        events.push("cleanup-receive");
-        return cleanupBytes;
-      },
-      async publishCleanupImported(input) {
-        events.push("cleanup-imported");
-        assert.equal(input.bundleDigest, sha256Bytes(cleanupBytes));
-      },
-      async publishClosed(input) {
-        events.push("closed-delivery");
-        assert.deepEqual(input.sessionBytes, closedBytes);
-        if (spec.phase === "final") {
-          assert.deepEqual(input.finalNativeEvidenceBytes, currentFinalEvidenceBytes());
-          return;
-        }
-        assert.deepEqual(input.sourceGateEvidenceBytes, currentGateBytes());
-        assert.deepEqual(
-          input.snapshotMetadataBytes,
-          spec.chain === "snapshot" ? snapshotMetadataBytes : undefined
-        );
-      },
-      async close() {
-        events.push("delivery-close");
-      },
-      recheck: async () => {}
-    })
+    assertR3H1EvidenceReady: async () => {},
+    openR3H1EvidenceDelivery: async () => {
+      if (failDeliveryOnOpen) {
+        events.push("delivery-open-failed");
+        throw new Error("synthetic delivery failure");
+      }
+      return {
+        async receiveCreation() {
+          events.push("creation-receive");
+          return Buffer.from("signed creation fixture");
+        },
+        async publishCleanupRequest(input) {
+          events.push("cleanup-request");
+          assert.deepEqual(
+            input,
+            spec.phase === "final"
+              ? {
+                  executionBytes: finalExecutionBytes,
+                  acknowledgementBytes: finalAcknowledgementBytes
+                }
+              : { executionBytes, acknowledgementBytes }
+          );
+        },
+        async receiveCleanup() {
+          events.push("cleanup-receive");
+          return cleanupBytes;
+        },
+        async publishCleanupImported(input) {
+          events.push("cleanup-imported");
+          assert.equal(input.bundleDigest, sha256Bytes(cleanupBytes));
+        },
+        async publishClosed(input) {
+          events.push("closed-delivery");
+          assert.deepEqual(input.sessionBytes, closedBytes);
+          if (spec.phase === "final") {
+            assert.deepEqual(input.finalNativeEvidenceBytes, currentFinalEvidenceBytes());
+            return;
+          }
+          assert.deepEqual(input.sourceGateEvidenceBytes, currentGateBytes());
+          assert.deepEqual(
+            input.snapshotMetadataBytes,
+            spec.chain === "snapshot" ? snapshotMetadataBytes : undefined
+          );
+        },
+        async close() {
+          events.push("delivery-close");
+        },
+        recheck: async () => {}
+      };
+    }
   }
 });
 mock.module("./r3-operation-inputs.mjs", {
@@ -592,6 +642,20 @@ test("source fresh caller requires exact owner ACK before cleanup and publishes 
     "closed-delivery",
     "delivery-close"
   ]);
+  failDeliveryOnOpen = true;
+  holdLaunchUntilCancelled = true;
+  events.length = 0;
+  await assert.rejects(runR3SourceFreshH1({ repoRoot: "/synthetic-h1", operationRef }));
+  assert.ok(events.includes("launch"));
+  assert.ok(events.includes("delivery-open-failed"));
+  assert.ok(events.includes("launch-settled-cancelled"));
+  assert.ok(
+    events.indexOf("delivery-open-failed") < events.indexOf("launch-settled-cancelled"),
+    JSON.stringify(events)
+  );
+  failDeliveryOnOpen = false;
+  holdLaunchUntilCancelled = false;
+  events.length = 0;
   for (const mode of ["wrong", "eof"]) {
     answerMode = mode;
     events.length = 0;
@@ -599,7 +663,7 @@ test("source fresh caller requires exact owner ACK before cleanup and publishes 
       code: "R3_SOURCE_FRESH_CALLER_INVALID"
     });
     assert.ok(events.includes("manifest"));
-    assert.ok(events.includes("prompt"));
+    assert.ok(events.includes("prompt"), `${mode}: ${JSON.stringify(events)}`);
     assert.equal(events.includes("owner-ack"), false);
     assert.equal(events.includes("cleanup-import"), false);
     assert.equal(events.includes("cleanup-complete"), false);

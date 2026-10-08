@@ -2,8 +2,13 @@
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import childProcess from "node:child_process";
 import { createPublicKey } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import {
+  assertR3StartupActive,
+  runR3StartupCleanup,
+  settledR3StartupExecFile
+} from "./r3-startup-deadline.mjs";
 import { readFixedR3JobAdmission } from "./manual-stage1-trust.mjs";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
@@ -39,27 +44,28 @@ function exact(value, fields) {
   );
 }
 async function command(file, args, expected = 0) {
-  const result = await new Promise((resolve) =>
-    childProcess.execFile(
-      file,
-      args,
-      {
-        shell: false,
-        encoding: "buffer",
-        timeout: 10000,
-        maxBuffer: 65536,
-        env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C" }
-      },
-      (error, stdout, stderr) =>
-        resolve({ error, stdout: Buffer.from(stdout ?? ""), stderr: Buffer.from(stderr ?? "") })
-    )
-  );
+  assertR3StartupActive();
+  const result = await settledR3StartupExecFile(file, args, {
+    shell: false,
+    encoding: "buffer",
+    timeout: 10000,
+    maxBuffer: 65536,
+    env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C", LC_ALL: "C" }
+  });
+  assertR3StartupActive();
+  const stdout = Buffer.from(result.stdout ?? "");
+  const stderr = Buffer.from(result.stderr ?? "");
   const code = result.error?.code ?? 0;
   need(
-    (Array.isArray(expected) ? expected.includes(code) : code === expected) &&
-      result.stderr.length <= 4096
+    (Array.isArray(expected) ? expected.includes(code) : code === expected) && stderr.length <= 4096
   );
-  return result.stdout.toString("utf8");
+  return stdout.toString("utf8");
+}
+async function startupChecked(action) {
+  assertR3StartupActive();
+  const value = await action();
+  assertR3StartupActive();
+  return value;
 }
 async function account() {
   const uid = Number((await command("/usr/bin/id", ["-u", "stage1-r3-evidence"])).trim());
@@ -123,7 +129,7 @@ async function effectiveSsh() {
   };
   need(Object.entries(expected).every(([field, value]) => config[field] === value));
 }
-async function pristine(accountUid) {
+async function pristineSurface(accountUid) {
   for (const directory of ["/run", ROOT, "/etc/ssh", path.dirname(KEY)]) {
     const stat = await fs.lstat(directory, { bigint: true });
     need(
@@ -143,15 +149,32 @@ async function pristine(accountUid) {
   );
   need(((await fs.lstat(path.dirname(KEY), { bigint: true })).mode & 0o777n) === 0o755n);
   need((await fs.readdir(ROOT)).length === 0);
+  const mounts = await fs.readFile("/proc/self/mountinfo", "utf8");
+  need(!mounts.split("\n").some((line) => line.split(" ")[4] === ROOT));
+  need((await command("/usr/bin/pgrep", ["-u", String(accountUid)], 1)).trim() === "");
+  return key;
+}
+async function pristine(accountUid) {
+  const key = await pristineSurface(accountUid);
   need((await fs.readFile("/proc/swaps", "utf8")).trim().split("\n").length === 1);
   const coreLimit = (await fs.readFile("/proc/self/limits", "utf8"))
     .split("\n")
     .find((line) => line.startsWith("Max core file size"));
   need(coreLimit && /^Max core file size\s+0\s+0\s+bytes\s*$/u.test(coreLimit));
-  const mounts = await fs.readFile("/proc/self/mountinfo", "utf8");
-  need(!mounts.split("\n").some((line) => line.split(" ")[4] === ROOT));
-  need((await command("/usr/bin/pgrep", ["-u", String(accountUid)], 1)).trim() === "");
   return key;
+}
+
+export async function assertR3H1EvidenceReady() {
+  need(arguments.length === 0 && process.platform === "linux" && process.getuid?.() === 0);
+  assertR3StartupActive();
+  const { uid } = await account();
+  await effectiveSsh();
+  await pristineSurface(uid);
+  const maintenance = fileURLToPath(
+    new URL("./maintenance/stage1-r3-evidence-account.sh", import.meta.url)
+  );
+  await command("/usr/bin/bash", [maintenance, "check-idle"]);
+  assertR3StartupActive();
 }
 async function mounted(uid, gid) {
   const stat = await fs.lstat(ROOT, { bigint: true });
@@ -291,11 +314,13 @@ export async function openR3H1EvidenceDelivery(input) {
     creationReceived = false;
   const { repoRoot, operationRef } = input;
   try {
+    assertR3StartupActive();
     admission = await readFixedR3JobAdmission({ repoRoot, operationRef });
+    assertR3StartupActive();
     const { uid, gid } = await account();
-    await effectiveSsh();
-    await pristine(uid);
-    await admission.recheck();
+    await startupChecked(effectiveSsh);
+    await startupChecked(() => pristine(uid));
+    await startupChecked(() => admission.recheck());
     const scope = r3EvidenceScope({
       creationSpecBytes: encodeManualJson(admission.spec),
       jobAdmissionBytes: admission.rawInputs.admission
@@ -315,14 +340,17 @@ export async function openR3H1EvidenceDelivery(input) {
       ROOT
     ]);
     ownMount = true;
-    await fs.mkdir(path.join(ROOT, "in"), { mode: 0o700 });
-    await fs.chown(path.join(ROOT, "in"), uid, gid);
-    await fs.mkdir(path.join(ROOT, "out"), { mode: 0o750 });
-    await fs.chown(path.join(ROOT, "out"), 0, gid);
-    await fs.chmod(path.join(ROOT, "out"), 0o750);
-    await mounted(uid, gid);
+    assertR3StartupActive();
+    await startupChecked(() => fs.mkdir(path.join(ROOT, "in"), { mode: 0o700 }));
+    await startupChecked(() => fs.chown(path.join(ROOT, "in"), uid, gid));
+    await startupChecked(() => fs.mkdir(path.join(ROOT, "out"), { mode: 0o750 }));
+    await startupChecked(() => fs.chown(path.join(ROOT, "out"), 0, gid));
+    await startupChecked(() => fs.chmod(path.join(ROOT, "out"), 0o750));
+    await startupChecked(() => mounted(uid, gid));
+    assertR3StartupActive();
     keyHandle = await fs.open(KEY, constants.O_RDWR | constants.O_NOFOLLOW);
-    const before = await keyHandle.stat({ bigint: true });
+    assertR3StartupActive();
+    const before = await startupChecked(() => keyHandle.stat({ bigint: true }));
     need(
       before.uid === 0n &&
         before.gid === 0n &&
@@ -330,16 +358,22 @@ export async function openR3H1EvidenceDelivery(input) {
         before.nlink === 1n &&
         (before.mode & 0o777n) === 0o644n
     );
-    const visibleBefore = await fs.lstat(KEY, { bigint: true });
+    const visibleBefore = await startupChecked(() => fs.lstat(KEY, { bigint: true }));
     need(before.dev === visibleBefore.dev && before.ino === visibleBefore.ino);
     const line = Buffer.from(
       `restrict ${sshKey(admission.admission.host.forwardingPublicKeyPem)} r3-${operationRef}\n`
     );
-    need((await keyHandle.write(line, 0, line.length, 0)).bytesWritten === line.length);
-    await keyHandle.sync();
+    assertR3StartupActive();
+    // A partial or interrupted write must still enter the existing key cleanup.
     installed = line;
-    keyIdentity = await keyHandle.stat({ bigint: true });
+    need(
+      (await startupChecked(() => keyHandle.write(line, 0, line.length, 0))).bytesWritten ===
+        line.length
+    );
+    await startupChecked(() => keyHandle.sync());
+    keyIdentity = await startupChecked(() => keyHandle.stat({ bigint: true }));
     const recheck = async () => {
+      assertR3StartupActive();
       need(!closed);
       await admission.recheck();
       await effectiveSsh();
@@ -355,17 +389,21 @@ export async function openR3H1EvidenceDelivery(input) {
       const current = await stable(KEY, 0, 0, 0o644, 65536);
       need(current.equals(installed));
       await admission.recheck();
+      assertR3StartupActive();
     };
-    await recheck();
+    await startupChecked(recheck);
     const receive = async (name) => {
       for (let attempt = 0; attempt < 60; attempt++) {
         await recheck();
         try {
-          return await stable(path.join(ROOT, "in", name), uid, gid, 0o600);
+          const bytes = await stable(path.join(ROOT, "in", name), uid, gid, 0o600);
+          assertR3StartupActive();
+          return bytes;
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
         }
         await delay(2000);
+        assertR3StartupActive();
       }
       fail();
     };
@@ -421,65 +459,69 @@ export async function openR3H1EvidenceDelivery(input) {
       },
       recheck,
       async close() {
-        if (closed) return;
-        try {
-          let delivered = false;
-          if (publishedClosed) {
-            const receipt = await receive("closed-received.json");
-            decodeR3ClosedReceived({ bytes: receipt, request, closedBytes });
-            delivered = true;
-          }
-          if (installed && keyHandle) {
-            const held = await keyHandle.stat({ bigint: true });
-            const visible = await fs.lstat(KEY, { bigint: true });
-            need(
-              held.dev === keyIdentity.dev &&
-                held.ino === keyIdentity.ino &&
-                visible.dev === keyIdentity.dev &&
-                visible.ino === keyIdentity.ino &&
-                held.size === BigInt(installed.length)
-            );
-            const contents = Buffer.alloc(installed.length);
-            need(
-              (await keyHandle.read(contents, 0, contents.length, 0)).bytesRead ===
-                contents.length && contents.equals(installed)
-            );
-            await keyHandle.truncate(0);
-            await keyHandle.sync();
-          }
-          await keyHandle?.close();
-          keyHandle = null;
-          if (delivered) {
-            let processesGone = false;
-            for (let attempt = 0; attempt < 60; attempt++) {
-              if ((await command("/usr/bin/pgrep", ["-u", String(uid)], [0, 1])).trim() === "") {
-                processesGone = true;
-                break;
-              }
-              await delay(2000);
+        return runR3StartupCleanup(async () => {
+          if (closed) return;
+          try {
+            let delivered = false;
+            if (publishedClosed) {
+              const receipt = await receive("closed-received.json");
+              decodeR3ClosedReceived({ bytes: receipt, request, closedBytes });
+              delivered = true;
             }
-            need(processesGone);
-            // A successful unmount drops the entire operation exchange at once.
-            // On a failed unmount, all original files remain for diagnosis.
-            await command("/usr/bin/umount", [ROOT]);
-            ownMount = false;
+            if (installed && keyHandle) {
+              const held = await keyHandle.stat({ bigint: true });
+              const visible = await fs.lstat(KEY, { bigint: true });
+              need(
+                held.dev === keyIdentity.dev &&
+                  held.ino === keyIdentity.ino &&
+                  visible.dev === keyIdentity.dev &&
+                  visible.ino === keyIdentity.ino &&
+                  held.size === BigInt(installed.length)
+              );
+              const contents = Buffer.alloc(installed.length);
+              need(
+                (await keyHandle.read(contents, 0, contents.length, 0)).bytesRead ===
+                  contents.length && contents.equals(installed)
+              );
+              await keyHandle.truncate(0);
+              await keyHandle.sync();
+            }
+            await keyHandle?.close();
+            keyHandle = null;
+            if (delivered) {
+              let processesGone = false;
+              for (let attempt = 0; attempt < 60; attempt++) {
+                if ((await command("/usr/bin/pgrep", ["-u", String(uid)], [0, 1])).trim() === "") {
+                  processesGone = true;
+                  break;
+                }
+                await delay(2000);
+              }
+              need(processesGone);
+              // A successful unmount drops the entire operation exchange at once.
+              // On a failed unmount, all original files remain for diagnosis.
+              await command("/usr/bin/umount", [ROOT]);
+              ownMount = false;
+            }
+          } finally {
+            closed = true;
+            if (keyHandle) {
+              if (installed) await keyHandle.truncate(0).catch(() => {});
+              await keyHandle.close().catch(() => {});
+            }
+            await admission.close();
           }
-        } finally {
-          closed = true;
-          if (keyHandle) {
-            if (installed) await keyHandle.truncate(0).catch(() => {});
-            await keyHandle.close().catch(() => {});
-          }
-          await admission.close();
-        }
+        });
       }
     });
   } catch (error) {
-    if (keyHandle) {
-      if (installed) await keyHandle.truncate(0).catch(() => {});
-      await keyHandle.close().catch(() => {});
-    }
-    await admission?.close().catch(() => {});
+    await runR3StartupCleanup(async () => {
+      if (keyHandle) {
+        if (installed) await keyHandle.truncate(0).catch(() => {});
+        await keyHandle.close().catch(() => {});
+      }
+      await admission?.close().catch(() => {});
+    });
     // A failed exchange remains mounted for diagnosis and blocks reuse.
     if (ownMount) void ownMount;
     throw error;

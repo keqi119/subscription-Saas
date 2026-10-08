@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import fs from "node:fs/promises";
 import childProcess from "node:child_process";
 import http from "node:http";
+import { EventEmitter } from "node:events";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -48,6 +49,15 @@ const machineId = "0123456789abcdef0123456789abcdef";
 const profileName = "release/contracts/manual-stage1-profile.v2.json";
 const bindingName = "release/contracts/manual-stage1-owner-binding.v1.json";
 const rootNames = ["key", "journal", "archive", "backup", "credential"];
+
+async function copyFixtureSource(source, destination) {
+  // Copy bytes into a native fixture file: copyFile can retain DrvFS ownership
+  // and writable mode even when its destination is a Linux temporary directory.
+  await fs.writeFile(destination, await fs.readFile(source), { mode: 0o644 });
+  const stat = await fs.stat(destination);
+  assert.equal(stat.uid, process.getuid());
+  assert.equal(stat.mode & 0o022, 0);
+}
 
 async function fixture(t) {
   assert.equal(
@@ -1083,7 +1093,7 @@ async function buildFixture(
   await fs.mkdir(path.join(f.repoRoot, "scripts", "release"), { recursive: true });
   await fs.mkdir(path.join(f.repoRoot, "apps", "api", "prisma", "migrations"), { recursive: true });
   for (const file of entrypoints)
-    await fs.copyFile(
+    await copyFixtureSource(
       new URL(`./${path.basename(file)}`, import.meta.url),
       path.join(f.repoRoot, file)
     );
@@ -1118,7 +1128,10 @@ async function buildFixture(
       "migration-global-object-policy.v1.json"
     ]) {
       const file = `release/contracts/${name}`;
-      await fs.copyFile(new URL(`../../${file}`, import.meta.url), path.join(f.repoRoot, file));
+      await copyFixtureSource(
+        new URL(`../../${file}`, import.meta.url),
+        path.join(f.repoRoot, file)
+      );
       extraContracts.push(file);
     }
     const testManifest = JSON.parse(
@@ -1134,7 +1147,7 @@ async function buildFixture(
     for (const file of [...testFiles].sort()) {
       const destination = path.join(f.repoRoot, ...file.split("/"));
       await fs.mkdir(path.dirname(destination), { recursive: true });
-      await fs.copyFile(new URL(`../../${file}`, import.meta.url), destination);
+      await copyFixtureSource(new URL(`../../${file}`, import.meta.url), destination);
     }
     // The repository catalog also discovers these copied release entrypoints.
     const cataloguedTests = [
@@ -1161,12 +1174,12 @@ async function buildFixture(
   if (historicalModuleVersion) {
     // The old source contains this fixed executor, but its original catalogue
     // predates the entrypoint. Its signed proof covers the old manifest scope.
-    await fs.copyFile(
+    await copyFixtureSource(
       new URL("./retire-r3-incident-0af9c545.mjs", import.meta.url),
       path.join(f.repoRoot, "scripts/release/retire-r3-incident-0af9c545.mjs")
     );
     if (historicalExtraEntrypoint)
-      await fs.copyFile(
+      await copyFixtureSource(
         new URL("./retire-r3-incident-588da0dc.mjs", import.meta.url),
         path.join(f.repoRoot, "scripts/release/retire-r3-incident-588da0dc.mjs")
       );
@@ -1306,13 +1319,20 @@ async function buildFixture(
   gh.paths = { proof: proofPath, receipt: receiptPath };
   t.mock.method(childProcess, "execFile", (file, args, options, callback) => {
     if (file !== "gh") return nativeExecFile(file, args, options, callback);
+    const child = new EventEmitter();
+    child.kill = () => {};
+    child.stdin = { on() {}, end() {} };
+    const done = (error, stdout, stderr) => {
+      callback(error, stdout, stderr);
+      child.emit("close", error ? (Number.isInteger(error.code) ? error.code : 1) : 0, null);
+    };
     gh.calls.push({ file, args: [...args], options: { ...options } });
     Promise.resolve()
       .then(async () => {
         if (gh.before) await gh.before(args);
-        if (gh.error) return callback(gh.error, Buffer.alloc(0), gh.stderr);
+        if (gh.error) return done(gh.error, Buffer.alloc(0), gh.stderr);
         if ((options.env?.GH_HOST ?? process.env.GH_HOST ?? "github.com") !== "github.com")
-          return callback(
+          return done(
             new Error("Synthetic gh was routed to a different host"),
             Buffer.alloc(0),
             Buffer.alloc(0)
@@ -1381,14 +1401,14 @@ async function buildFixture(
         )
           value = gh.importArtifact.zip;
         else throw new Error("Unexpected synthetic gh invocation");
-        callback(
+        done(
           null,
           gh.raw ?? (Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value))),
           gh.stderr
         );
       })
-      .catch((error) => callback(error, Buffer.alloc(0), Buffer.alloc(0)));
-    return { kill() {}, stdin: { on() {}, end() {} } };
+      .catch((error) => done(error, Buffer.alloc(0), Buffer.alloc(0)));
+    return child;
   });
   syncBuiltinESMExports();
   return {
@@ -1782,7 +1802,20 @@ async function r3JobFixture(t, options = {}) {
     status: "in_progress",
     conclusion: null,
     completed_at: null,
-    started_at: f.spec.createdAt
+    started_at: generated,
+    steps: [
+      {
+        number: 9,
+        name:
+          phase === "source"
+            ? `Execute the held source ${chain} exchange through verified CLOSED`
+            : "Execute final migration, database tests, API and Web through verified CLOSED",
+        status: "in_progress",
+        conclusion: null,
+        started_at: generated,
+        completed_at: null
+      }
+    ]
   };
   if (f.gh.jobAdmission) (f.gh.previousJobAdmissions ??= []).push(f.gh.jobAdmission);
   f.gh.jobAdmission = { path: admissionPath, attestation, run: apiRun, job: apiJob };
@@ -2001,7 +2034,7 @@ for (const mutation of [
       });
       const verifierRoot = path.join(f.root, "verifier");
       await git(f.root, "clone", f.repoRoot, verifierRoot);
-      await fs.copyFile(
+      await copyFixtureSource(
         new URL("./manual-stage1-trust.mjs", import.meta.url),
         path.join(verifierRoot, "scripts/release/manual-stage1-trust.mjs")
       );
@@ -3791,6 +3824,107 @@ async function r3SessionFixture(t, options = { phase: "source", chain: "fresh" }
 }
 
 test(
+  "R3 SESSION rejects startup expiry immediately before authorization persistence",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3SessionFixture(t);
+    const session = await production().openTrustedR3CreationSession({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef
+    });
+    t.after(() => session.close());
+    const archiveObjects = path.join(f.profile.storage.archiveRoot, "objects");
+    const journalObjects = path.join(f.profile.storage.journalRoot, "objects");
+    const current = [];
+    for (const name of await fs.readdir(journalObjects)) {
+      const value = JSON.parse(await fs.readFile(path.join(journalObjects, name)));
+      if (
+        value.kind === "session" &&
+        value.sessionId === session.sessionId &&
+        value.status === "OPEN"
+      )
+        current.push(value);
+    }
+    assert.equal(current.length, 1);
+    const put = async (value) => {
+      validateContract(value.schemaVersion, value);
+      const bytes = encodeManualJson(value);
+      const digest = sha256Bytes(bytes);
+      await fs.writeFile(path.join(archiveObjects, `${digest.slice(7)}.json`), bytes, {
+        flag: "wx",
+        mode: 0o600
+      });
+      return digest;
+    };
+    const { buildProofDigest, ...scope } = session.scope;
+    const request = {
+      schemaVersion: "manual-runner-request.v4",
+      profileDigest: session.profileDigest,
+      ownerId: f.profile.ownerId,
+      sessionId: session.sessionId,
+      sessionNonce: session.sessionNonce,
+      operationId: f.operationRef,
+      idempotencyKey: `r3:${f.operationRef}`,
+      attemptId: randomUUID(),
+      runId: randomUUID(),
+      stage: "target-create",
+      capability: "create-isolated-target",
+      purpose: "stage1-isolated-database-tests",
+      ...scope,
+      candidate: { buildProofDigest }
+    };
+    const {
+      schemaVersion: version,
+      ownerId,
+      capability,
+      purpose,
+      candidate: proof,
+      ...allocationFields
+    } = request;
+    const now = new Date().toISOString();
+    request.attemptAllocationDigest = await put({
+      schemaVersion: "manual-runner-evidence.v2",
+      kind: "attempt-allocation",
+      recordedAt: now,
+      promotionEligible: false,
+      ...allocationFields,
+      sessionRecordDigest: sha256Canonical(current[0]),
+      allocatedAt: now,
+      buildProofDigest,
+      predecessorExecutionRecordDigest: null
+    });
+    await put(request);
+    const {
+      schemaVersion,
+      attemptId,
+      runId,
+      attemptAllocationDigest,
+      sourceSha,
+      candidate,
+      ...binding
+    } = request;
+    const before = await fs.readdir(archiveObjects);
+    let guardChecks = 0;
+    await assert.rejects(
+      session.sign({ binding, canonicalBytes: encodeManualJson(request) }, () => {
+        guardChecks++;
+        if (guardChecks === 5)
+          throw Object.assign(new Error("expired startup"), {
+            code: "R3_STARTUP_DEADLINE_EXCEEDED"
+          });
+      }),
+      { code: "R3_STARTUP_DEADLINE_EXCEEDED" }
+    );
+    assert.equal(guardChecks, 5, "guard reaches the actual fileStore pre-write boundary");
+    assert.deepEqual(
+      await fs.readdir(archiveObjects),
+      before,
+      "no authorization or empty object remains"
+    );
+  }
+);
+
+test(
   "R3 SESSION failed post-cleanup trust recheck uses incomplete close",
   { skip: process.platform !== "linux" },
   async (t) => {
@@ -3969,6 +4103,9 @@ async function r3ForwardFixture(t, options) {
   };
   const rules = new Map();
   t.mock.method(childProcess, "execFile", (file, args, options, callback) => {
+    const child = new EventEmitter();
+    child.kill = () => {};
+    child.stdin = { on() {}, end() {} };
     let text = "",
       error = null;
     if (file === "/usr/sbin/sshd")
@@ -3989,7 +4126,18 @@ async function r3ForwardFixture(t, options) {
     } else if (file === "/usr/bin/pgrep")
       error = Object.assign(new Error("no sessions"), { code: 1 });
     else if (file !== "/usr/bin/ss") return original.execFile(file, args, options, callback);
-    queueMicrotask(() => callback(error, Buffer.from(text), Buffer.alloc(0)));
+    queueMicrotask(() => {
+      callback(error, Buffer.from(text), Buffer.alloc(0));
+      child.emit("close", error ? (Number.isInteger(error.code) ? error.code : 1) : 0, null);
+    });
+    return child;
+  });
+  const delivery = await import("./r3-h1-evidence-delivery.mjs");
+  t.mock.module("./r3-h1-evidence-delivery.mjs", {
+    namedExports: {
+      ...delivery,
+      async assertR3H1EvidenceReady() {}
+    }
   });
   return { ...f, forwardKey: keyPath };
 }

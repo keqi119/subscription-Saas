@@ -283,6 +283,7 @@
     "scripts/release/r3-snapshot-payload.mjs",
     "scripts/release/r3-source-result.mjs",
     "scripts/release/r3-source-suite.mjs",
+    "scripts/release/r3-startup-deadline.mjs",
     "scripts/release/retire-r3-incident-0af9c545.mjs",
     "scripts/release/retire-r3-incident-3b451859.mjs",
     "scripts/release/retire-r3-incident-588da0dc.mjs",

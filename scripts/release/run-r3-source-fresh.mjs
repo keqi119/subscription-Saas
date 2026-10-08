@@ -15,7 +15,7 @@ import {
 } from "./manual-stage1-trust.mjs";
 import { launchR3TargetCreate } from "./launch-manual-stage1.mjs";
 import { openR3HostedCreationControl } from "./r3-hosted-creation-control.mjs";
-import { openR3H1EvidenceDelivery } from "./r3-h1-evidence-delivery.mjs";
+import { assertR3H1EvidenceReady, openR3H1EvidenceDelivery } from "./r3-h1-evidence-delivery.mjs";
 import { openR3HostedEvidenceDelivery } from "./r3-hosted-evidence-delivery.mjs";
 import { readR3HostedOperationKey } from "./r3-operation-inputs.mjs";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
@@ -26,6 +26,14 @@ import {
   getR3FailureDiagnostic,
   closeR3FailureResources
 } from "./r3-failure-diagnostic.mjs";
+import {
+  assertR3StartupActive,
+  cancelR3Startup,
+  createR3StartupDeadline,
+  enterR3StartupDeadline,
+  r3StartupAbortSignal,
+  r3StartupRemainingMs
+} from "./r3-startup-deadline.mjs";
 
 const CODE = "R3_SOURCE_FRESH_CALLER_INVALID";
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
@@ -37,7 +45,30 @@ const fail = () => {
 const need = (condition) => {
   if (!condition) fail();
 };
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const delay = (ms, signal = null) =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(
+        signal.reason ??
+          Object.assign(new Error("R3_STARTUP_CANCELLED"), { code: "R3_STARTUP_CANCELLED" })
+      );
+      return;
+    }
+    const timer = setTimeout(done, ms);
+    function done() {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    function onAbort() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(
+        signal.reason ??
+          Object.assign(new Error("R3_STARTUP_CANCELLED"), { code: "R3_STARTUP_CANCELLED" })
+      );
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 function inputs(input) {
   need(
     input &&
@@ -182,18 +213,19 @@ async function waitForwardKey(admission, operationRef, failed) {
   const expected = Buffer.from(
     `restrict,port-forwarding,permitlisten="127.0.0.1:55440",permitlisten="127.0.0.1:55441" ssh-ed25519 ${blob.toString("base64")} r3-${operationRef}\n`
   );
-  const deadline = Math.min(Date.now() + 600000, Date.parse(admission.expiresAt));
-  while (Date.now() < deadline) {
+  const signal = r3StartupAbortSignal();
+  while (true) {
+    assertR3StartupActive();
     need(!failed());
     const bytes = await stableRead("/etc/ssh/stage1-r3-forward/authorized_keys", 0o644);
+    assertR3StartupActive();
     if (bytes.length) {
-      need(Date.now() < deadline && !failed());
+      need(!failed());
       need(bytes.equals(expected));
       return;
     }
-    await delay(500);
+    await delay(Math.min(500, r3StartupRemainingMs()), signal);
   }
-  fail();
 }
 async function ownerAnswer(prompt, expiresAt) {
   need(process.stdin.isTTY === true);
@@ -201,8 +233,11 @@ async function ownerAnswer(prompt, expiresAt) {
   need(Number.isFinite(remaining) && remaining > 0);
   const terminal = readline.createInterface({ input: process.stdin, output: process.stderr });
   try {
+    const startupSignal = r3StartupAbortSignal(),
+      timeout = Math.min(remaining, r3StartupRemainingMs() ?? remaining),
+      timeoutSignal = AbortSignal.timeout(Math.min(timeout, 2147483647));
     return await terminal.question(prompt, {
-      signal: AbortSignal.timeout(Math.min(remaining, 2147483647))
+      signal: startupSignal ? AbortSignal.any([timeoutSignal, startupSignal]) : timeoutSignal
     });
   } finally {
     terminal.close();
@@ -312,13 +347,28 @@ async function runR3SourceH1(input, chain, phase = "source") {
     primaryFailure,
     nativeClosed = false,
     deliveryClosed = false,
-    finalHistory;
+    finalHistory,
+    startupLease;
   try {
     inputs(input);
     input = Object.freeze({ ...input });
     admission = await diagnostic.run("ADMISSION", () => readFixedR3JobAdmission(input));
     need(admission.spec.phase === phase && admission.spec.chain === chain);
+    const startupBinding = createR3StartupDeadline({
+      rawJob: admission.rawInputs.job,
+      admission: {
+        ...admission.admission,
+        phase: admission.spec.phase,
+        chain: admission.spec.chain
+      },
+      operationRef: input.operationRef
+    });
+    startupLease = enterR3StartupDeadline(startupBinding);
+    assertR3StartupActive();
+    await assertR3H1EvidenceReady();
+    assertR3StartupActive();
     const profile = await loadFixedManualProfile({ repoRoot: input.repoRoot });
+    assertR3StartupActive();
     const selectedSource =
       phase === "final"
         ? await ownerSourceSelection(profile, admission.admission.expiresAt, chain, input.repoRoot)
@@ -336,7 +386,9 @@ async function runR3SourceH1(input, chain, phase = "source") {
     // This is startup ordering only. The native holder itself owns the lease
     // and admission; observing a key never substitutes for either authority.
     await waitForwardKey(admission.admission, input.operationRef, () => launchFailure);
+    assertR3StartupActive();
     delivery = await diagnostic.run("DELIVERY", () => openR3H1EvidenceDelivery(input));
+    assertR3StartupActive();
     diagnostic.enter("CREATION");
     native = await launch;
     await native.importHostedEvidence(await delivery.receiveCreation());
@@ -443,19 +495,29 @@ async function runR3SourceH1(input, chain, phase = "source") {
       promotionEligible: false
     });
   } catch (cause) {
+    if (startupLease && !startupLease.scope.connected)
+      cancelR3Startup("R3_STARTUP_CANCELLED", startupLease.scope);
     primaryFailure = diagnostic.decorate(
       Object.assign(new Error(CODE), { code: CODE }),
       launchFailure ?? cause
     );
     throw primaryFailure;
   } finally {
-    if (launch && !native) native = await launch.catch(() => undefined);
-    await closeR3FailureResources(diagnostic, primaryFailure, [
-      () => !nativeClosed && native?.close(),
-      () => !deliveryClosed && delivery?.close(),
-      () => finalHistory?.close(),
-      () => admission?.close()
-    ]);
+    if (launch && !native) {
+      if (startupLease && !startupLease.scope.connected)
+        cancelR3Startup("R3_STARTUP_CANCELLED", startupLease.scope);
+      native = await launch.catch(() => undefined);
+    }
+    try {
+      await closeR3FailureResources(diagnostic, primaryFailure, [
+        () => !nativeClosed && native?.close(),
+        () => !deliveryClosed && delivery?.close(),
+        () => finalHistory?.close(),
+        () => admission?.close()
+      ]);
+    } finally {
+      startupLease?.restore();
+    }
   }
 }
 

@@ -121,3 +121,21 @@ test("internal transport cause is finite and does not expose an error message", 
   assert.equal(JSON.stringify(result.failureDiagnostic).includes("private"), false);
   assert.throws(() => diagnostics.markR3FailureCause(error, "private"));
 });
+
+test("safe admission and history codes survive wrapping without exposing their messages", () => {
+  for (const causeCode of [
+    "R3_JOB_ADMISSION_UNAVAILABLE",
+    "R3_HISTORY_CONTEXT_UNAVAILABLE",
+    "MANUAL_EVIDENCE_INPUT_REQUIRED",
+    "MANUAL_AUTHORIZATION_CONSUMED"
+  ]) {
+    const cause = Object.assign(new Error("private-job-response"), { code: causeCode });
+    const error = diagnostics.inheritR3FailureCause(
+      Object.assign(new Error("fixed"), { code: "H1_INPUT_UNAVAILABLE" }),
+      cause
+    );
+    const wrapped = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), error);
+    assert.equal(wrapped.failureDiagnostic.causeCode, causeCode);
+    assert.equal(JSON.stringify(wrapped.failureDiagnostic).includes("private-job-response"), false);
+  }
+});

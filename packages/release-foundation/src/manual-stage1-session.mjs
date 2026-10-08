@@ -24,6 +24,7 @@ import {
 } from "./manual-stage1-contracts.mjs";
 import { sha256Bytes, sha256Canonical } from "./digest.mjs";
 import { validateContract } from "./schema-registry.mjs";
+import { r3FailureTracker } from "../../../scripts/release/r3-failure-diagnostic.mjs";
 import {
   validateManualRunnerRequest,
   assessManualRunnerEvidence
@@ -5127,29 +5128,38 @@ export async function openManualSession({
         });
       },
       consume(input) {
+        const diagnostic = r3FailureTracker("H1_CONSUME");
         return serial(async () => {
           await active();
           r3Live();
+          diagnostic.enter("REQUEST");
           exact(input, ["authorization", "request"]);
           const authorization = snapshot(input.authorization),
             request = await r3CheckedRequest(input.request);
+          diagnostic.enter("UNUSED");
           await unused(authorization.payload.authorizationId);
+          diagnostic.enter("ELIGIBILITY");
           if (request.request.stage === "candidate-use")
             requireThat(candidateUseAuthorizationIssued && !candidateUseAttempted, SESSION);
           if (request.request.stage === "snapshot-consumer") {
             requireThat(consumerAuthorizationIssued && !consumerAttempted, SESSION);
             await boundSnapshot(request.request);
           }
+          diagnostic.enter("HISTORY");
           await r3History(request.request);
+          diagnostic.enter("CONTEXT");
           const ctx = await context(
-              request.request,
-              request.allocation.predecessorExecutionRecordDigest
-            ),
-            parentDecision = verify(authorization, request, ctx);
+            request.request,
+            request.allocation.predecessorExecutionRecordDigest
+          );
+          diagnostic.enter("AUTHORIZATION");
+          const parentDecision = verify(authorization, request, ctx);
+          diagnostic.enter("ISSUED");
           requireThat(
             issued.get(authorization.payload.authorizationId) === sha256Canonical(authorization),
             SESSION
           );
+          diagnostic.enter("ARCHIVE");
           requireThat(
             (
               await store.read(
@@ -5158,6 +5168,7 @@ export async function openManualSession({
             ).equals(encodeManualJson(authorization)),
             STORAGE
           );
+          diagnostic.enter("RECORD");
           const consumption = {
             ...common("consumption", stamp()),
             sessionId,
@@ -5176,6 +5187,7 @@ export async function openManualSession({
           validateContract(recordSchema, consumption);
           // Once create-only slot insertion begins, every failure retains both
           // forward slots. A missing execution is reconstructed as uncertainty.
+          diagnostic.enter("SLOT_CREATE");
           consumedOrUncertain = true;
           if (request.request.stage === "snapshot-consumer") consumerAttempted = true;
           if (request.request.stage === "candidate-use") candidateUseAttempted = true;
@@ -5184,8 +5196,11 @@ export async function openManualSession({
             encodeManualJson(consumption),
             "MANUAL_AUTHORIZATION_CONSUMED"
           );
+          diagnostic.enter("JOURNAL");
           await store.put(consumption, "journal");
+          diagnostic.enter("READBACK");
           const readback = await consumptionReadback(consumption);
+          diagnostic.enter("EXECUTION");
           const execution = {
             ...common("execution", stamp()),
             stage: request.request.stage,
@@ -5219,11 +5234,14 @@ export async function openManualSession({
             ),
             STORAGE
           );
+          diagnostic.enter("FINAL_CONTEXT");
           const final = await context(
             request.request,
             request.allocation.predecessorExecutionRecordDigest
           );
+          diagnostic.enter("FINAL_AUTHORIZATION");
           verify(authorization, request, final);
+          diagnostic.enter("RECEIPT");
           const receipt = freeze({
             stage: request.request.stage,
             parentDecision,
@@ -5243,6 +5261,15 @@ export async function openManualSession({
             await r3History(request.request, null, null, creationCompletionDigest);
           }
           return receipt;
+        }).catch((cause) => {
+          // The diagnostic is observational only; rejection and all mutation
+          // boundaries remain unchanged, including uncertain slot insertion.
+          try {
+            diagnostic.decorate(cause, cause);
+          } catch {
+            // Frozen errors or non-object rejections cannot carry an annotation.
+          }
+          throw cause;
         });
       },
       assertSnapshotConsumption(...args) {

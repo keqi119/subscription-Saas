@@ -1242,7 +1242,7 @@ async function verifyManualBuildInput(
       promotionEligible: false
     });
   } catch (error) {
-    fail(error?.code === CUSTODY_REQUIRED ? CUSTODY_REQUIRED : BUILD);
+    failWithCause(error?.code === CUSTODY_REQUIRED ? CUSTODY_REQUIRED : BUILD, error);
   } finally {
     await Promise.all(opened.map((item) => item.close()));
   }
@@ -1419,9 +1419,9 @@ async function readR3TargetPolicyInput(
       recheck,
       close
     });
-  } catch {
+  } catch (cause) {
     await close();
-    fail(code);
+    failWithCause(code, cause);
   }
 }
 
@@ -2106,9 +2106,9 @@ export async function readTrustedR3HistoricalContext(input) {
         }
         for (const item of opened) await item.recheck();
         requireThat(!closed);
-      } catch {
+      } catch (cause) {
         await close();
-        fail(code);
+        failWithCause(code, cause);
       }
     };
     await recheck();
@@ -2121,9 +2121,9 @@ export async function readTrustedR3HistoricalContext(input) {
       recheck,
       close
     });
-  } catch {
+  } catch (cause) {
     await close();
-    fail(code);
+    failWithCause(code, cause);
   }
 }
 

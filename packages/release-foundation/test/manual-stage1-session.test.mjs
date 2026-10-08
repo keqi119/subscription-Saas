@@ -14,6 +14,10 @@ import { deterministicPlanDigest } from "../src/proof-builders.mjs";
 import { assessManualRunnerEvidence } from "../src/manual-runner-evidence.mjs";
 import { validateContract } from "../src/schema-registry.mjs";
 import { assertR3MatchingSources } from "../src/manual-r3-source-matching.mjs";
+import {
+  getR3FailureDiagnostic,
+  r3FailureTracker
+} from "../../../scripts/release/r3-failure-diagnostic.mjs";
 
 // Private offline artifact factories follow the approved E fixtures. They only
 // construct bytes; the session tests below persist and reopen every original.
@@ -3734,6 +3738,68 @@ async function r3CreationRequest(f, session, fields = {}) {
   } = request;
   return { binding, canonicalBytes: encodeManualJson(request) };
 }
+
+test("R3 consume diagnostics distinguish pre-write failures without creating consumption", async (t) => {
+  for (const [phase, expectedCode] of [
+    ["REQUEST", "MANUAL_BINDING_MISMATCH"],
+    ["UNUSED", "MANUAL_AUTHORIZATION_CONSUMED"],
+    ["HISTORY", "MANUAL_EVIDENCE_BINDING_MISMATCH"]
+  ]) {
+    await t.test(phase, async (t) => {
+      const f = await fixture(t, { profileVersion: "v2" });
+      const session = await r3CreationSession(t, f);
+      const request = await r3CreationRequest(f, session);
+      const authorization = await session.sign(request);
+      const slot = path.join(
+        f.profile.storage.journalRoot,
+        "consumptions",
+        `${session.profileDigest.slice(7)}-${authorization.payload.authorizationId}.json`
+      );
+      const sentinel = "private-existing-slot";
+      if (phase === "REQUEST") request.binding.ownerId = "private-invalid-owner";
+      if (phase === "UNUSED") await fs.writeFile(slot, sentinel, { flag: "wx", mode: 0o600 });
+      if (phase === "HISTORY")
+        await f.put({
+          schemaVersion: "manual-r3-forward-shutdown-evidence.v1",
+          observation: { status: "OBSERVED" },
+          rawInputs: {}
+        });
+      await assert.rejects(session.consume({ authorization, request }), (error) => {
+        assert.equal(error.code, expectedCode);
+        const wrapped = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), error);
+        const diagnostic = getR3FailureDiagnostic(wrapped);
+        assert.equal(diagnostic?.component, "H1_CONSUME");
+        assert.equal(diagnostic?.stage, phase);
+        assert.equal(diagnostic?.causeCode, expectedCode);
+        assert.equal(diagnostic?.completed, false);
+        assert.equal(JSON.stringify(diagnostic).includes("private-"), false);
+        return true;
+      });
+      assert.equal((await f.records("consumption")).length, 0);
+      assert.equal((await f.records("execution")).length, 0);
+      if (phase === "UNUSED") assert.equal(await fs.readFile(slot, "utf8"), sentinel);
+      else await assert.rejects(fs.lstat(slot), { code: "ENOENT" });
+    });
+  }
+});
+
+test("R3 consume diagnostics never replace an unannotatable rejection", async (t) => {
+  const f = await fixture(t, { profileVersion: "v2" });
+  const session = await r3CreationSession(t, f);
+  for (const rejection of [Object.freeze(new Error("private-original")), "private-original"]) {
+    const input = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw rejection;
+        }
+      }
+    );
+    await assert.rejects(session.consume(input), (error) => error === rejection);
+  }
+  assert.equal((await f.records("consumption")).length, 0);
+  assert.equal((await f.records("execution")).length, 0);
+});
 
 test("R3 creation consumes once and persists UNKNOWN before returning", async (t) => {
   const f = await fixture(t, { profileVersion: "v2" });

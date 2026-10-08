@@ -35,6 +35,7 @@ import {
   r3SnapshotBootstrapFixture
 } from "./r3-snapshot-payload-fixture.mjs";
 import { importR3SourceFreshJob } from "./r3-operation-inputs.mjs";
+import { r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 
 // The first RED is an assertion, not an import crash. Subsequent assertions
 // exercise the production entrypoint; there is no trusted-result mock.
@@ -1927,6 +1928,54 @@ test(
     await assert.rejects(cleanupContext.recheck(), { code: "R3_HISTORY_CONTEXT_UNAVAILABLE" });
     f.apiJob.completed_at = new Date(Date.parse(latestExecutionAt) - 1000).toISOString();
     await assert.rejects(retained.recheck(), { code: "R3_HISTORY_CONTEXT_UNAVAILABLE" });
+    noAuthorityAccess(f);
+  }
+);
+
+test(
+  "R3 HISTORY CONTEXT retains a safe subprocess failure through cleanup",
+  {
+    skip: process.platform !== "linux"
+  },
+  async (t) => {
+    const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+    const latestExecutionAt = new Date().toISOString();
+    f.apiRun.status = f.apiJob.status = "completed";
+    f.apiRun.conclusion = f.apiJob.conclusion = "success";
+    f.apiJob.completed_at = latestExecutionAt;
+    const input = {
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef,
+      latestExecutionAt,
+      scope: {
+        targetPolicyDigest: f.spec.targetPolicyDigest,
+        creationSpecDigest: sha256Bytes(f.specBytes),
+        jobAdmissionDigest: sha256Bytes(f.admissionBytes),
+        buildProofDigest: f.spec.buildProofDigest,
+        sourceSha: f.sourceSha,
+        phase: "source",
+        chain: "fresh"
+      }
+    };
+    const held = await trust.readTrustedR3HistoricalContext(input);
+    t.after(() => held.close());
+    const exec = childProcess.execFile;
+    t.mock.method(childProcess, "execFile", (file, ...args) => {
+      if (path.basename(file) === "gh")
+        throw Object.assign(new Error("private-token-in-subprocess-error"), {
+          code: "R3_CONNECTED_WINDOW_EXHAUSTED"
+        });
+      return exec(file, ...args);
+    });
+    const check = (error) => {
+      assert.equal(error.code, "R3_HISTORY_CONTEXT_UNAVAILABLE");
+      const wrapped = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), error);
+      assert.equal(wrapped.failureDiagnostic.causeCode, "R3_CONNECTED_WINDOW_EXHAUSTED");
+      assert.equal(JSON.stringify(wrapped.failureDiagnostic).includes("private-token"), false);
+      return true;
+    };
+    await assert.rejects(held.recheck(), check);
+    await assert.rejects(trust.readTrustedR3HistoricalContext(input), check);
     noAuthorityAccess(f);
   }
 );

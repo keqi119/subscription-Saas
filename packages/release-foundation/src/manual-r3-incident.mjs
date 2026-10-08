@@ -123,6 +123,55 @@ export const APPROVED_R3_INCIDENT_588DA0DC = freeze({
   executeNotAfter: "2026-10-07T06:53:54.742Z"
 });
 
+export const APPROVED_R3_INCIDENT_79FEAA9A = freeze({
+  proposalDigest: "sha256:c99ac9fadc0a296bd1392a886d4253140b2fef28edb1710aa90a6440bf4eb014",
+  approvalDigest: "sha256:11510ebcdbc5b8df5e7c997e67942b3bec2ef61f2f38faf37be09089943d6a77",
+  profileDigest: "sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541",
+  ownerId: "keqi119",
+  operationRef: "79feaa9a-f5ba-4a48-a781-e406726e6580",
+  sessionId: "bb0e1696-6bbf-46bf-9815-aeec696d68d6",
+  openingDigest: "sha256:bad4969c36b9da1e14fcfe2d75ebd3fef2b20c0675ed15ecc8d971b0cd954e4a",
+  requestDigest: "sha256:df666481bd711f507803511fa155799764d180b13c56e432aaa5de9ef9fc0f7d",
+  consumptionDigest: "sha256:c9a657e24ae7e2276696d87cc48812c28b610c558c769074a6e56d7b0c704c76",
+  executionDigest: "sha256:556f031351b8472d837a8cb1160b1644509019d58b4ab364c62ee6e47a2eb764",
+  sessionDigest: "sha256:f90ffde7bbd78518de09a92e4b1970f41ba839fbf56141c63dad2cc23e04ede6",
+  lockDigest: "sha256:5bb9b5a2a8695054d2379af1a1c099f0083ea8f3bc358bd4a7dac8f8570afe85",
+  lockNames: [
+    "13d8b7b5c1aaf60b6b2a5b36f861b0dda7df2b80f8feb3013120d190f332130b.json",
+    "a52de7e6885d8285e8b9fea11dc44012a5e465c55f18701a176bef30b865386b.json"
+  ],
+  lockIdentities: {
+    "13d8b7b5c1aaf60b6b2a5b36f861b0dda7df2b80f8feb3013120d190f332130b.json": {
+      dev: "64512",
+      ino: "1519",
+      uid: "0",
+      gid: "0",
+      mode: "33152",
+      nlink: "1",
+      size: "713"
+    },
+    "a52de7e6885d8285e8b9fea11dc44012a5e465c55f18701a176bef30b865386b.json": {
+      dev: "64512",
+      ino: "1518",
+      uid: "0",
+      gid: "0",
+      mode: "33152",
+      nlink: "1",
+      size: "713"
+    }
+  },
+  github: {
+    repository: "keqi119/subscription-Saas",
+    runId: "37697010723",
+    runAttempt: 1,
+    jobId: "113052793748",
+    status: "completed",
+    conclusion: "cancelled",
+    completedAt: "2026-10-07T23:01:13Z"
+  },
+  executeNotAfter: "2026-10-08T06:53:54.742Z"
+});
+
 // The approved incident's original source is installed independently of later
 // verifier releases. This binding grants no authority; the historical reader
 // still authenticates every archived input, source file and CI attestation.
@@ -159,6 +208,17 @@ const APPROVED_R3_HISTORICAL_SOURCE_588DA0DC = freeze({
   sourceRoot: "/opt/stage1-r3-candidate-8928a0f"
 });
 
+const APPROVED_R3_HISTORICAL_SOURCE_79FEAA9A = freeze({
+  operationRef: APPROVED_R3_INCIDENT_79FEAA9A.operationRef,
+  profileDigest: APPROVED_R3_INCIDENT_79FEAA9A.profileDigest,
+  sourceSha: "ba872d6cb2c0e054e5ab099a8218b7220a215301",
+  proofRawDigest: "sha256:d2c9299bb48f07c2831766e4c57458e3913f12cf8000fc7e970ea3ab5615ffbd",
+  materialRawDigest: "sha256:50fccc8485815b014de94e0cfbb6c225af3c011d91ba46c7c0678871c7a7e89e",
+  creationSpecDigest: "sha256:b657a22b04bea481da2f0ec20d310e4fdc6c03712ba815a3015cf9f0a59d9a0f",
+  jobAdmissionDigest: "sha256:07b2dcb0eb606d8f232bd282fca01bc9f68cefd5daf9c2e53db69d6fa0b77b84",
+  sourceRoot: "/opt/stage1-r3-candidate-ba872d6"
+});
+
 const APPROVED_R3_HISTORICAL_CONTRACT_588DA0DC = freeze({
   sourceRoot: APPROVED_R3_HISTORICAL_SOURCE_588DA0DC.sourceRoot,
   sourceSha: APPROVED_R3_HISTORICAL_SOURCE_588DA0DC.sourceSha,
@@ -185,7 +245,8 @@ export function approvedR3HistoricalSourceBinding(input) {
   for (const binding of [
     APPROVED_R3_HISTORICAL_SOURCE,
     APPROVED_R3_HISTORICAL_SOURCE_0AF9C545,
-    APPROVED_R3_HISTORICAL_SOURCE_588DA0DC
+    APPROVED_R3_HISTORICAL_SOURCE_588DA0DC,
+    APPROVED_R3_HISTORICAL_SOURCE_79FEAA9A
   ])
     if (Object.entries(input).every(([key, value]) => binding[key] === value))
       return binding.sourceRoot;
@@ -415,7 +476,8 @@ export async function readApprovedR3IncidentDisposition(
   const policies = [
     APPROVED_R3_INCIDENT,
     APPROVED_R3_INCIDENT_0AF9C545,
-    APPROVED_R3_INCIDENT_588DA0DC
+    APPROVED_R3_INCIDENT_588DA0DC,
+    APPROVED_R3_INCIDENT_79FEAA9A
   ];
   const matched = policies.filter(
     (policy) =>

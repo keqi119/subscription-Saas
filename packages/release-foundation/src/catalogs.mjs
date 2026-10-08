@@ -117,6 +117,7 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/retire-r3-incident-0af9c545.mjs",
   "scripts/release/retire-r3-incident-3b451859.mjs",
   "scripts/release/retire-r3-incident-588da0dc.mjs",
+  "scripts/release/retire-r3-incident-79feaa9a.mjs",
   "scripts/release/snapshot-custody-job.mjs",
   "scripts/release/snapshot-h1-admit.mjs",
   "scripts/release/snapshot-h1-attempt.py",

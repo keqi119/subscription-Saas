@@ -1312,6 +1312,7 @@ async function buildFixture(
     },
     calls: [],
     before: null,
+    forCall: null,
     error: null,
     stderr: Buffer.alloc(0),
     raw: null
@@ -1330,6 +1331,9 @@ async function buildFixture(
     Promise.resolve()
       .then(async () => {
         if (gh.before) await gh.before(args);
+        const scripted = gh.forCall?.(args);
+        if (scripted?.error)
+          return done(scripted.error, Buffer.alloc(0), scripted.stderr ?? Buffer.alloc(0));
         if (gh.error) return done(gh.error, Buffer.alloc(0), gh.stderr);
         if ((options.env?.GH_HOST ?? process.env.GH_HOST ?? "github.com") !== "github.com")
           return done(
@@ -1403,7 +1407,9 @@ async function buildFixture(
         else throw new Error("Unexpected synthetic gh invocation");
         done(
           null,
-          gh.raw ?? (Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value))),
+          scripted?.raw ??
+            gh.raw ??
+            (Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value))),
           gh.stderr
         );
       })
@@ -2265,6 +2271,62 @@ test(
     noAuthorityAccess(f);
   }
 );
+
+for (const scenario of [
+  {
+    name: "attestation command exit",
+    matches: (args, f) =>
+      args[0] === "attestation" && args[1] === "verify" && args[2] === f.admissionPath,
+    response: () => ({
+      error: Object.assign(new Error("private-gh-token-and-response"), { code: 1 }),
+      stderr: Buffer.from("private-gh-token-and-response")
+    }),
+    causeCode: "R3_JOB_ATTESTATION_COMMAND_FAILED"
+  },
+  {
+    name: "run API command timeout",
+    matches: (args, f) =>
+      args[0] === "api" &&
+      args[1] === `repos/${repository}/actions/runs/${f.admission.ci.runId}/attempts/1`,
+    response: () => ({
+      error: Object.assign(new Error("private-gh-token-and-response"), {
+        code: null,
+        killed: true,
+        signal: "SIGTERM"
+      })
+    }),
+    causeCode: "R3_JOB_RUN_API_COMMAND_TIMEOUT"
+  },
+  {
+    name: "job API response parse",
+    matches: (args, f) =>
+      args[0] === "api" && args[1] === `repos/${repository}/actions/jobs/${f.admission.ci.jobId}`,
+    response: () => ({ raw: Buffer.from("{private-gh-token-and-response") }),
+    causeCode: "R3_JOB_JOB_API_RESPONSE_INVALID"
+  }
+])
+  test(
+    `R3 JOB reports ${scenario.name} without exposing gh output`,
+    { skip: process.platform !== "linux" },
+    async (t) => {
+      const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+      f.gh.forCall = (args) => (scenario.matches(args, f) ? scenario.response() : null);
+      await assert.rejects(
+        trust.readFixedR3JobAdmission({ repoRoot: f.repoRoot, operationRef: f.operationRef }),
+        (error) => {
+          assert.equal(error.code, "R3_JOB_ADMISSION_UNAVAILABLE");
+          const wrapped = r3FailureTracker("H1_CALLER").decorate(new Error("fixed"), error);
+          assert.equal(wrapped.failureDiagnostic.causeCode, scenario.causeCode);
+          assert.equal(
+            JSON.stringify(wrapped.failureDiagnostic).includes("private-gh-token-and-response"),
+            false
+          );
+          return true;
+        }
+      );
+      noAuthorityAccess(f);
+    }
+  );
 
 test(
   "R3 JOB borrowing keeps one live verified owner and rejects forged or stale authority",

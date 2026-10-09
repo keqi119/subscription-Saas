@@ -34,7 +34,19 @@ const stages = {
   HOSTED_CREATE: ["INPUT", "HEADERS", "BODY", "CURRENT_JOB", "ACK", "WORKSPACE", "ENGINE"],
   SSH_FORWARD: ["EXIT"]
 };
+const jobAdmissionCauses = new Set([
+  "R3_JOB_ATTESTATION_COMMAND_FAILED",
+  "R3_JOB_ATTESTATION_COMMAND_TIMEOUT",
+  "R3_JOB_ATTESTATION_RESPONSE_INVALID",
+  "R3_JOB_RUN_API_COMMAND_FAILED",
+  "R3_JOB_RUN_API_COMMAND_TIMEOUT",
+  "R3_JOB_RUN_API_RESPONSE_INVALID",
+  "R3_JOB_JOB_API_COMMAND_FAILED",
+  "R3_JOB_JOB_API_COMMAND_TIMEOUT",
+  "R3_JOB_JOB_API_RESPONSE_INVALID"
+]);
 const codes = new Set([
+  ...jobAdmissionCauses,
   "R3_SOURCE_FRESH_CALLER_INVALID",
   "R3_TARGET_CREATE_UNAVAILABLE",
   "R3_HOSTED_CREATION_CONTROL_INVALID",
@@ -96,6 +108,14 @@ export function markR3FailureCause(error, causeCode) {
   if (!error || typeof error !== "object" || !transportCauses.has(causeCode))
     throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
   if (!trustedCause.has(error)) trustedCause.set(error, causeCode);
+  return error;
+}
+
+export function markR3JobAdmissionCause(error, causeCode) {
+  if (!error || typeof error !== "object" || !jobAdmissionCauses.has(causeCode))
+    throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
+  if (code(error) === "UNCLASSIFIED" && !trustedCause.has(error))
+    trustedCause.set(error, causeCode);
   return error;
 }
 

@@ -150,3 +150,28 @@ test("safe admission and history codes survive wrapping without exposing their m
     assert.equal(JSON.stringify(wrapped.failureDiagnostic).includes("private-job-response"), false);
   }
 });
+
+test("job admission classifies only finite command causes and retains an existing startup cause", () => {
+  const secret = "private-gh-token-and-response";
+  const command = Object.assign(new Error(secret), {
+    code: 1,
+    stdout: secret,
+    stderr: secret,
+    path: secret
+  });
+  diagnostics.markR3JobAdmissionCause(command, "R3_JOB_RUN_API_COMMAND_FAILED");
+  const wrapped = diagnostics.inheritR3FailureCause(
+    Object.assign(new Error("fixed"), { code: "R3_JOB_ADMISSION_UNAVAILABLE" }),
+    command
+  );
+  const failure = r3FailureTracker("H1_CALLER").decorate(new Error("fixed"), wrapped);
+  assert.equal(wrapped.code, "R3_JOB_ADMISSION_UNAVAILABLE");
+  assert.equal(failure.failureDiagnostic.causeCode, "R3_JOB_RUN_API_COMMAND_FAILED");
+  assert.equal(JSON.stringify(failure.failureDiagnostic).includes(secret), false);
+  assert.throws(() => diagnostics.markR3JobAdmissionCause(command, secret));
+
+  const deadline = Object.assign(new Error(secret), { code: "R3_STARTUP_DEADLINE_EXCEEDED" });
+  diagnostics.markR3JobAdmissionCause(deadline, "R3_JOB_RUN_API_COMMAND_TIMEOUT");
+  const preserved = r3FailureTracker("H1_CALLER").decorate(new Error("fixed"), deadline);
+  assert.equal(preserved.failureDiagnostic.causeCode, "R3_STARTUP_DEADLINE_EXCEEDED");
+});

@@ -3810,6 +3810,15 @@ export async function openManualSession({
   const issued = new Map();
   const targetLocks = new Map();
   const lifecycleTargetLocks = new Map();
+  let historicalInputs = null,
+    historicalInputKeys = null;
+  const closeHistoricalInputs = async () => {
+    const held = historicalInputs;
+    historicalInputs = null;
+    if (!held) return;
+    const outcomes = await Promise.allSettled([...held.values()].map((input) => input.close()));
+    if (outcomes.some((outcome) => outcome.status === "rejected")) fail(SESSION);
+  };
   let snapshotReader = null,
     creationCompletionDigest = null,
     consumerCompletionDigest = null,
@@ -3834,7 +3843,10 @@ export async function openManualSession({
       "MANUAL_TIME_INVALID"
     );
   const serial = (work) => {
-    const result = queue.then(work);
+    const result = queue.then(work).catch(async (error) => {
+      await closeHistoricalInputs().catch(() => {});
+      throw error;
+    });
     queue = result.catch(() => {});
     return result;
   };
@@ -4712,7 +4724,6 @@ export async function openManualSession({
     };
     let { groups, legacy } = groupManualR3History(graph, profileDigest, live);
     let capture = null;
-    const trustInputs = [];
     try {
       const accumulator = historyAccumulator();
       const completedContexts = [];
@@ -4772,22 +4783,35 @@ export async function openManualSession({
         checkedLegacy,
         request
       );
+      const selectors = completedContexts.map((context) => ({
+        repoRoot: r3Context.snapshotInputs.repoRoot,
+        operationRef: context.operationRef,
+        scope: context.scope,
+        latestExecutionAt: context.latestExecutionAt,
+        ...(Object.hasOwn(context, "latestCleanupAt")
+          ? { latestCleanupAt: context.latestCleanupAt }
+          : {})
+      }));
+      const keys = selectors.map((selector) => sha256Canonical({ profileDigest, ...selector }));
+      requireThat(new Set(keys).size === keys.length, SESSION);
+      const sortedKeys = [...keys].sort();
+      if (historicalInputKeys !== null)
+        requireThat(equal(historicalInputKeys, sortedKeys), SESSION);
+      historicalInputs ??= new Map();
       if (completedContexts.length) {
         // This is fixed H1/H2 input authentication, separate from the complete
-        // execution/original proof above. No caller may supply a trusted flag.
+        // execution/original proof above. Only this session retains these owners;
+        // their recheck refreshes files/source and GitHub build/run/job state.
+        // No graph decision or caller-supplied trusted flag is retained.
         const { readTrustedR3HistoricalContext } =
           await import("../../../scripts/release/manual-stage1-trust.mjs");
-        for (const context of completedContexts) {
-          const held = await readTrustedR3HistoricalContext({
-            repoRoot: r3Context.snapshotInputs.repoRoot,
-            operationRef: context.operationRef,
-            scope: context.scope,
-            latestExecutionAt: context.latestExecutionAt,
-            ...(Object.hasOwn(context, "latestCleanupAt")
-              ? { latestCleanupAt: context.latestCleanupAt }
-              : {})
-          });
-          trustInputs.push(held);
+        for (const [index, context] of completedContexts.entries()) {
+          const selectorKey = keys[index];
+          let held = historicalInputs.get(selectorKey);
+          if (!held) {
+            held = await readTrustedR3HistoricalContext(selectors[index]);
+            historicalInputs.set(selectorKey, held);
+          }
           requireThat(
             held.profileDigest === profileDigest &&
               held.operationRef === context.operationRef &&
@@ -4801,7 +4825,7 @@ export async function openManualSession({
             SESSION
           );
         }
-        for (const held of trustInputs) await held.recheck();
+        for (const held of historicalInputs.values()) await held.recheck();
         await capture.recheck();
         await active();
         r3Live();
@@ -4820,11 +4844,10 @@ export async function openManualSession({
           (request.stage === "candidate-use" && consumerCompletionDigest !== null),
         SESSION
       );
+      historicalInputKeys ??= sortedKeys;
       return { graph, matchedSources };
     } finally {
-      const closedInputs = await Promise.allSettled(trustInputs.map((held) => held.close()));
       capture?.close();
-      if (closedInputs.some((value) => value.status === "rejected")) fail(SESSION);
     }
   }
   const r3History = async (...args) => (await verifyR3History(...args)).graph;
@@ -5062,6 +5085,7 @@ export async function openManualSession({
         key = null;
         await snapshotReader?.close();
         snapshotReader = null;
+        await closeHistoricalInputs();
         await closeTargetHandles();
         await observerLockHandle.close();
         await lockHandle.close();
@@ -5086,6 +5110,7 @@ export async function openManualSession({
         key = null;
         await snapshotReader?.close().catch(() => {});
         snapshotReader = null;
+        await closeHistoricalInputs().catch(() => {});
         await closeTargetHandles().catch(() => {});
         await observerLockHandle?.close().catch(() => {});
         await lockHandle?.close().catch(() => {});

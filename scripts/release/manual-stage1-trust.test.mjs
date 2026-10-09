@@ -2013,6 +2013,61 @@ test(
   }
 );
 
+test(
+  "R3 HISTORY CONTEXT rechecks the build run without repeating fixed attestations",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+    const latestExecutionAt = new Date().toISOString();
+    f.apiRun.status = f.apiJob.status = "completed";
+    f.apiRun.conclusion = f.apiJob.conclusion = "success";
+    f.apiJob.completed_at = latestExecutionAt;
+    t.mock.timers.enable({ apis: ["Date"], now: Date.parse(f.profile.expiresAt) + 1000 });
+    t.after(() => t.mock.timers.reset());
+    const input = {
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef,
+      latestExecutionAt,
+      scope: {
+        targetPolicyDigest: f.spec.targetPolicyDigest,
+        creationSpecDigest: sha256Bytes(f.specBytes),
+        jobAdmissionDigest: sha256Bytes(f.admissionBytes),
+        buildProofDigest: f.spec.buildProofDigest,
+        sourceSha: f.sourceSha,
+        phase: "source",
+        chain: "fresh"
+      }
+    };
+    const held = await trust.readTrustedR3HistoricalContext(input);
+    t.after(() => held.close());
+    const count = (kind, endpoint) =>
+      f.gh.calls.filter(({ args }) => args[0] === kind && (!endpoint || args[1] === endpoint))
+        .length;
+    const buildRun = `repos/${repository}/actions/runs/${f.gh.run.id}/attempts/1`;
+    const historicalRun = `repos/${repository}/actions/runs/${f.apiRun.id}/attempts/1`;
+    const historicalJob = `repos/${repository}/actions/jobs/${f.apiJob.id}`;
+    const attested = count("attestation");
+    const before = [buildRun, historicalRun, historicalJob].map((endpoint) =>
+      count("api", endpoint)
+    );
+    await held.recheck();
+    assert.equal(count("attestation"), attested);
+    assert.deepEqual(
+      [buildRun, historicalRun, historicalJob].map((endpoint) => count("api", endpoint)),
+      before.map((value) => value + 1)
+    );
+    f.gh.run.conclusion = "failure";
+    await assert.rejects(held.recheck(), { code: "R3_HISTORY_CONTEXT_UNAVAILABLE" });
+
+    f.gh.run.conclusion = "success";
+    const changedProof = await trust.readTrustedR3HistoricalContext(input);
+    t.after(() => changedProof.close());
+    await fs.appendFile(f.gh.paths.proof, " ");
+    await assert.rejects(changedProof.recheck(), { code: "R3_HISTORY_CONTEXT_UNAVAILABLE" });
+    noAuthorityAccess(f);
+  }
+);
+
 for (const mutation of [
   "none",
   "extra-entrypoint",

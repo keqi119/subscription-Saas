@@ -1063,7 +1063,8 @@ async function verifyManualBuildInput(
   input,
   requireCurrentValidity,
   verifierRepoRoot = input.repoRoot,
-  historicalContract = null
+  historicalContract = null,
+  captureVerifiedBuildRun = null
 ) {
   const opened = [];
   try {
@@ -1246,6 +1247,8 @@ async function verifyManualBuildInput(
         await loadManualProfile({ repoRoot: input.repoRoot }, requireCurrentValidity)
       ) === sha256Canonical(profile)
     );
+    if (captureVerifiedBuildRun)
+      captureVerifiedBuildRun(() => successfulRun(proof, proofAttestation));
     return Object.freeze({
       buildProofDigest,
       proofRawDigest,
@@ -1274,6 +1277,7 @@ async function readR3TargetPolicyInput(
 ) {
   const code = "R3_TARGET_POLICY_INPUT_UNAVAILABLE";
   const opened = [];
+  let recheckVerifiedBuildRun = null;
   let closed = false,
     closing;
   const close = () => {
@@ -1377,7 +1381,12 @@ async function readR3TargetPolicyInput(
         { repoRoot, proofBytes, materialBytes },
         requireCurrentValidity,
         verifierRepoRoot,
-        historicalContract
+        historicalContract,
+        requireCurrentValidity
+          ? null
+          : (recheck) => {
+              recheckVerifiedBuildRun = recheck;
+            }
       ),
       proof = json(proofBytes);
     requireThat(build.custodyReceiptRawDigest === sha256Bytes(receiptBytes));
@@ -1386,38 +1395,40 @@ async function readR3TargetPolicyInput(
       if (requireCurrentValidity)
         requireThat(instant(profile.validFrom) <= now && now < instant(profile.expiresAt));
     };
+    const checkFixed = async () => {
+      requireThat(!closed);
+      checkWindow();
+      requireThat(equal(await actualHost(), actual));
+      requireThat(
+        sha256Canonical(await loadManualProfile({ repoRoot }, requireCurrentValidity)) ===
+          profileDigest
+      );
+      requireThat(
+        (await repositoryContractForSource(repoRoot, proof.identity.sourceSha, historicalContract))
+          .digest === proof.identity.repositoryContractDigest
+      );
+      requireThat(
+        (await computeMigrationCatalog(repoRoot)).digest === proof.identity.migrationCatalogDigest
+      );
+      await checkoutSource(repoRoot, proof.identity.sourceSha);
+      if (verifierSourceSha) await checkoutSource(verifierRepoRoot, verifierSourceSha);
+      for (const item of opened) await item.recheck();
+      checkWindow();
+      requireThat(!closed);
+    };
     const recheck = async () => {
       try {
-        requireThat(!closed);
-        checkWindow();
-        requireThat(equal(await actualHost(), actual));
-        requireThat(
-          sha256Canonical(await loadManualProfile({ repoRoot }, requireCurrentValidity)) ===
-            profileDigest
-        );
-        requireThat(
-          (
-            await repositoryContractForSource(
-              repoRoot,
-              proof.identity.sourceSha,
-              historicalContract
-            )
-          ).digest === proof.identity.repositoryContractDigest
-        );
-        requireThat(
-          (await computeMigrationCatalog(repoRoot)).digest === proof.identity.migrationCatalogDigest
-        );
-        await checkoutSource(repoRoot, proof.identity.sourceSha);
-        if (verifierSourceSha) await checkoutSource(verifierRepoRoot, verifierSourceSha);
-        for (const item of opened) await item.recheck();
-        checkWindow();
-        requireThat(!closed);
+        await checkFixed();
+        if (recheckVerifiedBuildRun) {
+          await recheckVerifiedBuildRun();
+          await checkFixed();
+        }
       } catch (cause) {
         await close().catch(() => {});
         failWithCause(code, cause);
       }
     };
-    await recheck();
+    await checkFixed();
     return Object.freeze({
       profileDigest,
       policy: freeze(policy),

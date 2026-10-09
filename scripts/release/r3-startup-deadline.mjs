@@ -128,6 +128,7 @@ function makeState(binding) {
     reason: null,
     phaseMarks: new Map(),
     phaseSummaryEmitted: false,
+    scopeEnteredAt: new Date().toISOString(),
     startedAtMonoMs: monoNow,
     deadlineAtMonoMs: monoNow + wallRemaining,
     timer: null,
@@ -274,6 +275,10 @@ export function emitR3StartupPhaseSummary(explicit) {
         operationRef: context.operationRef,
         runId: context.runId,
         jobId: context.jobId,
+        elapsedOrigin: "scope_entered",
+        scopeEnteredAt: context.scopeEnteredAt,
+        executeStartedAt: context.executeStartedAt,
+        deadlineAt: new Date(context.deadlineAtMs).toISOString(),
         stages
       })}\n`
     );

@@ -195,6 +195,10 @@ test("R3 connected marker is emitted once only from an active verified startup s
   const timing = JSON.parse(writes[0]);
   assert.equal(timing.brand, "R3_STARTUP_PHASE_TIMING");
   assert.equal(timing.operationRef, operationRef);
+  assert.equal(timing.elapsedOrigin, "scope_entered");
+  assert.equal(timing.executeStartedAt, startedAt);
+  assert.equal(timing.deadlineAt, new Date(deadline.deadlineAtMs).toISOString());
+  assert.ok(Date.parse(timing.scopeEnteredAt) >= Date.parse(timing.executeStartedAt));
   assert.equal(timing.stages.length, 7);
   assert.ok(timing.stages.every((stage) => stage.completed && Number.isInteger(stage.elapsedMs)));
   assert.ok(

@@ -25,6 +25,7 @@ import {
 import { sha256Bytes, sha256Canonical } from "./digest.mjs";
 import { validateContract } from "./schema-registry.mjs";
 import { r3FailureTracker } from "../../../scripts/release/r3-failure-diagnostic.mjs";
+import { runR3StartupTiming } from "../../../scripts/release/r3-startup-detail-timing.mjs";
 import {
   validateManualRunnerRequest,
   assessManualRunnerEvidence
@@ -5125,22 +5126,31 @@ export async function openManualSession({
         return serial(async () => {
           if (assertStillAuthorized !== undefined)
             requireThat(typeof assertStillAuthorized === "function", SESSION);
-          await active();
+          await runR3StartupTiming(r3Context.creationSpec.operationRef, "SIGN_ACTIVE", () =>
+            active()
+          );
           assertStillAuthorized?.();
           r3Live();
-          const request = await r3CheckedRequest(input);
+          const request = await runR3StartupTiming(
+            r3Context.creationSpec.operationRef,
+            "SIGN_REQUEST",
+            () => r3CheckedRequest(input)
+          );
           if (request.request.stage === "candidate-use")
             requireThat(!candidateUseAuthorizationIssued && !candidateUseAttempted, SESSION);
           if (request.request.stage === "snapshot-consumer") {
             requireThat(!consumerAuthorizationIssued && !consumerAttempted, SESSION);
             await boundSnapshot(request.request);
           }
-          await r3History(request.request);
+          await runR3StartupTiming(r3Context.creationSpec.operationRef, "SIGN_HISTORY", () =>
+            r3History(request.request)
+          );
           assertStillAuthorized?.();
           const issuedAt = stamp(),
-            ctx = await context(
-              request.request,
-              request.allocation.predecessorExecutionRecordDigest
+            ctx = await runR3StartupTiming(
+              r3Context.creationSpec.operationRef,
+              "SIGN_CONTEXT",
+              () => context(request.request, request.allocation.predecessorExecutionRecordDigest)
             ),
             expiresAt = new Date(
               Math.min(
@@ -5172,7 +5182,9 @@ export async function openManualSession({
           });
           verify(authorization, request, ctx);
           assertStillAuthorized?.();
-          await store.put(authorization, "archive", assertStillAuthorized);
+          await runR3StartupTiming(r3Context.creationSpec.operationRef, "SIGN_PERSIST", () =>
+            store.put(authorization, "archive", assertStillAuthorized)
+          );
           issued.set(authorization.payload.authorizationId, sha256Canonical(authorization));
           if (request.request.stage === "snapshot-consumer") consumerAuthorizationIssued = true;
           if (request.request.stage === "candidate-use") candidateUseAuthorizationIssued = true;

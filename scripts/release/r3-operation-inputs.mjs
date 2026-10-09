@@ -14,6 +14,7 @@ import childProcess from "node:child_process";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { checkR3HostedOperationContext } from "./r3-hosted-creation-control.mjs";
+import { runR3StartupTiming } from "./r3-startup-detail-timing.mjs";
 
 const CODE = "R3_OPERATION_INPUT_INVALID";
 const MAGIC = Buffer.from("openssh-key-v1\0");
@@ -805,14 +806,18 @@ async function importR3Job(input, phase, chain) {
         Number.isSafeInteger(Number(input.runId))
     );
     const trust = await import("./manual-stage1-trust.mjs");
-    let creation = await trust.readFixedR3CreationSpec({
-      repoRoot: input.repoRoot,
-      operationRef: input.operationRef
-    });
+    let creation = await runR3StartupTiming(input.operationRef, "IMPORT_SPEC", () =>
+      trust.readFixedR3CreationSpec({
+        repoRoot: input.repoRoot,
+        operationRef: input.operationRef
+      })
+    );
     opened.push(creation);
     need(creation.spec.phase === phase && creation.spec.chain === chain);
     const creationSpecDigest = creation.creationSpecDigest;
-    const profile = await trust.loadFixedManualProfile({ repoRoot: input.repoRoot });
+    const profile = await runR3StartupTiming(input.operationRef, "IMPORT_PROFILE", () =>
+      trust.loadFixedManualProfile({ repoRoot: input.repoRoot })
+    );
     const archiveRoot = profile.storage.archiveRoot,
       directory = `${archiveRoot}/inputs/r3/${input.operationRef}`;
     await privateArchiveDirectory(directory, archiveRoot);
@@ -824,10 +829,12 @@ async function importR3Job(input, phase, chain) {
     opened.pop();
     await fs.mkdir(staging, { mode: 0o700 });
     await privateArchiveDirectory(staging, archiveRoot);
-    creation = await trust.readFixedR3CreationSpec({
-      repoRoot: input.repoRoot,
-      operationRef: input.operationRef
-    });
+    creation = await runR3StartupTiming(input.operationRef, "IMPORT_SPEC_REOPEN", () =>
+      trust.readFixedR3CreationSpec({
+        repoRoot: input.repoRoot,
+        operationRef: input.operationRef
+      })
+    );
     opened.push(creation);
     need(
       creation.creationSpecDigest === creationSpecDigest &&
@@ -838,22 +845,24 @@ async function importR3Job(input, phase, chain) {
       artifacts = [];
     const api = (endpoint) =>
       fixedCommand("gh", ["api", `repos/keqi119/subscription-Saas/${endpoint}`]);
-    for (let page = 1; page <= 10; page++) {
-      const bytes = await api(`actions/runs/${input.runId}/artifacts?per_page=100&page=${page}`);
-      const result = JSON.parse(bytes);
-      need(
-        Number.isSafeInteger(result.total_count) &&
-          result.total_count >= 0 &&
-          result.total_count <= 1000 &&
-          Array.isArray(result.artifacts)
-      );
-      artifacts.push(...result.artifacts);
-      if (artifacts.length >= result.total_count) {
-        need(artifacts.length === result.total_count);
-        break;
+    await runR3StartupTiming(input.operationRef, "IMPORT_ARTIFACT_LIST", async () => {
+      for (let page = 1; page <= 10; page++) {
+        const bytes = await api(`actions/runs/${input.runId}/artifacts?per_page=100&page=${page}`);
+        const result = JSON.parse(bytes);
+        need(
+          Number.isSafeInteger(result.total_count) &&
+            result.total_count >= 0 &&
+            result.total_count <= 1000 &&
+            Array.isArray(result.artifacts)
+        );
+        artifacts.push(...result.artifacts);
+        if (artifacts.length >= result.total_count) {
+          need(artifacts.length === result.total_count);
+          break;
+        }
+        need(result.artifacts.length === 100 && page < 10);
       }
-      need(result.artifacts.length === 100 && page < 10);
-    }
+    });
     const matches = artifacts.filter((artifact) => artifact.name === artifactName);
     need(matches.length === 1);
     const artifact = matches[0];
@@ -867,11 +876,15 @@ async function importR3Job(input, phase, chain) {
         artifact.workflow_run?.id === Number(input.runId) &&
         artifact.workflow_run?.head_sha === creation.spec.sourceSha
     );
-    await creation.recheck();
-    const zip = await api(`actions/artifacts/${artifact.id}/zip`);
+    await runR3StartupTiming(input.operationRef, "IMPORT_SPEC_RECHECK", () => creation.recheck());
+    const zip = await runR3StartupTiming(input.operationRef, "IMPORT_ARTIFACT_ZIP", () =>
+      api(`actions/artifacts/${artifact.id}/zip`)
+    );
     need(zip.length > 0 && zip.length <= 1048576);
     await createInput(`${staging}/artifact.zip`, zip);
-    const bytes = await fixedCommand("python3", ["-I", "-c", SINGLE_JOB_ZIP], zip);
+    const bytes = await runR3StartupTiming(input.operationRef, "IMPORT_ZIP_DECODE", () =>
+      fixedCommand("python3", ["-I", "-c", SINGLE_JOB_ZIP], zip)
+    );
     need(bytes.length > 0 && bytes.length <= 1048576);
     const admission = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     need(
@@ -882,17 +895,21 @@ async function importR3Job(input, phase, chain) {
         admission.ci?.runId === input.runId &&
         admission.ci?.runAttempt === 1
     );
-    await creation.recheck();
+    await runR3StartupTiming(input.operationRef, "IMPORT_SPEC_RECHECK", () => creation.recheck());
     await privateArchiveDirectory(directory, archiveRoot);
     await createInput(`${directory}/job-admission.json`, bytes);
     // Neither artifact metadata nor download success admits the job. Existing
     // GitHub attestation plus independent current run/job API must both pass.
-    const admitted = await trust.readFixedR3JobAdmission({
-      repoRoot: input.repoRoot,
-      operationRef: input.operationRef
-    });
+    const admitted = await runR3StartupTiming(input.operationRef, "IMPORT_ADMISSION", () =>
+      trust.readFixedR3JobAdmission({
+        repoRoot: input.repoRoot,
+        operationRef: input.operationRef
+      })
+    );
     opened.push(admitted);
-    await admitted.recheck();
+    await runR3StartupTiming(input.operationRef, "IMPORT_ADMISSION_RECHECK", () =>
+      admitted.recheck()
+    );
     need(admitted.rawInputs.admission.equals(bytes));
     return Buffer.from(bytes);
   } catch {

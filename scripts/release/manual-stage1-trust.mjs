@@ -19,6 +19,7 @@ import {
   markR3FailureCause,
   markR3JobAdmissionCause
 } from "./r3-failure-diagnostic.mjs";
+import { runR3StartupTiming } from "./r3-startup-detail-timing.mjs";
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import {
   encodeManualJson,
@@ -3253,9 +3254,13 @@ export async function openTrustedR3CreationSession(input, verifiedAdmission) {
       serial(async () => {
         requireThat(!closed, code);
         try {
-          await recheck();
+          if (method === "sign")
+            await runR3StartupTiming(operationRef, "SIGN_OUTER_RECHECK", () => recheck());
+          else await recheck();
           const result = await session[method](...args);
-          await recheck();
+          if (method === "sign")
+            await runR3StartupTiming(operationRef, "SIGN_OUTER_RECHECK", () => recheck());
+          else await recheck();
           return result;
         } catch (error) {
           // The local session must retain consumed UNKNOWN locks even when the

@@ -54,6 +54,7 @@ import {
   runR3StartupCleanup
 } from "./r3-startup-deadline.mjs";
 import { withR3ConnectedWindow, connectedPostTimeout } from "./r3-connected-window.mjs";
+import { runR3StartupTiming } from "./r3-startup-detail-timing.mjs";
 import {
   assessR3PostgresObservation,
   assessR3FinalPostgresObservation,
@@ -4908,8 +4909,12 @@ export async function launchR3TargetCreate(input) {
     )
       fail(code);
     input = Object.freeze({ repoRoot: input.repoRoot, operationRef: input.operationRef });
-    await prepareR3HostedEvidenceImport(input);
-    fixed = await readFixedR3JobAdmission(input);
+    await runR3StartupTiming(input.operationRef, "NATIVE_HOSTED_IMPORT", () =>
+      prepareR3HostedEvidenceImport(input)
+    );
+    fixed = await runR3StartupTiming(input.operationRef, "NATIVE_ADMISSION", () =>
+      readFixedR3JobAdmission(input)
+    );
     const startupBinding = createR3StartupDeadline({
       rawJob: fixed.rawInputs.job,
       admission: {
@@ -4921,13 +4926,23 @@ export async function launchR3TargetCreate(input) {
     });
     startupLease = enterR3StartupDeadline(startupBinding);
     assertR3StartupActive();
-    await assertR3H1EvidenceReady();
+    await runR3StartupTiming(input.operationRef, "NATIVE_EVIDENCE_READY", () =>
+      assertR3H1EvidenceReady()
+    );
     assertR3StartupActive();
     recordR3StartupPhase("evidence_gate");
-    session = await diagnostic.run("SESSION", () => openTrustedR3CreationSession(input, fixed));
+    session = await diagnostic.run("SESSION", () =>
+      runR3StartupTiming(input.operationRef, "NATIVE_SESSION_OPEN", () =>
+        openTrustedR3CreationSession(input, fixed)
+      )
+    );
     assertR3StartupActive();
     recordR3StartupPhase("session_ready");
-    lease = await diagnostic.run("LEASE", () => openR3H1ForwardLease(input, fixed));
+    lease = await diagnostic.run("LEASE", () =>
+      runR3StartupTiming(input.operationRef, "NATIVE_LEASE_OPEN", () =>
+        openR3H1ForwardLease(input, fixed)
+      )
+    );
     assertR3StartupActive();
     recordR3StartupPhase("lease_ready");
     if (
@@ -4942,9 +4957,13 @@ export async function launchR3TargetCreate(input) {
     });
     // Keep the verified Execute deadline across preparation and signing.
     const deadline = startupBinding.deadlineAtMs;
-    await check();
+    await runR3StartupTiming(input.operationRef, "NATIVE_PRE_SIGN_CHECK", () => check());
     assertR3StartupActive();
-    const current = [...(await archive.graph()).entries()].filter(
+    const current = [
+      ...(
+        await runR3StartupTiming(input.operationRef, "NATIVE_GRAPH", () => archive.graph())
+      ).entries()
+    ].filter(
       ([, item]) =>
         item.value.schemaVersion === "manual-operation-record.v3" &&
         item.value.kind === "session" &&
@@ -4977,39 +4996,46 @@ export async function launchR3TargetCreate(input) {
       ]),
       candidate: { buildProofDigest: session.scope.buildProofDigest }
     };
-    request.attemptAllocationDigest = await archive.put(
-      {
-        schemaVersion: "manual-runner-evidence.v2",
-        kind: "attempt-allocation",
-        recordedAt: now,
-        promotionEligible: false,
-        ...fieldsFrom(request, [
-          "profileDigest",
-          "sessionId",
-          "sessionNonce",
-          "operationId",
-          "idempotencyKey",
-          "attemptId",
-          "runId",
-          "stage",
-          "phase",
-          "chain",
-          "sourceSha",
-          "targetPolicyDigest",
-          "creationSpecDigest",
-          "jobAdmissionDigest"
-        ]),
-        sessionRecordDigest: current[0][0],
-        allocatedAt: now,
-        buildProofDigest: session.scope.buildProofDigest,
-        predecessorExecutionRecordDigest: null
-      },
-      "manual-runner-evidence.v2",
-      "archive",
-      assertR3StartupActive
+    request.attemptAllocationDigest = await runR3StartupTiming(
+      input.operationRef,
+      "NATIVE_ATTEMPT_ALLOCATE",
+      () =>
+        archive.put(
+          {
+            schemaVersion: "manual-runner-evidence.v2",
+            kind: "attempt-allocation",
+            recordedAt: now,
+            promotionEligible: false,
+            ...fieldsFrom(request, [
+              "profileDigest",
+              "sessionId",
+              "sessionNonce",
+              "operationId",
+              "idempotencyKey",
+              "attemptId",
+              "runId",
+              "stage",
+              "phase",
+              "chain",
+              "sourceSha",
+              "targetPolicyDigest",
+              "creationSpecDigest",
+              "jobAdmissionDigest"
+            ]),
+            sessionRecordDigest: current[0][0],
+            allocatedAt: now,
+            buildProofDigest: session.scope.buildProofDigest,
+            predecessorExecutionRecordDigest: null
+          },
+          "manual-runner-evidence.v2",
+          "archive",
+          assertR3StartupActive
+        )
     );
     assertR3StartupActive();
-    await archive.put(request, "manual-runner-request.v4", "archive", assertR3StartupActive);
+    await runR3StartupTiming(input.operationRef, "NATIVE_REQUEST_PERSIST", () =>
+      archive.put(request, "manual-runner-request.v4", "archive", assertR3StartupActive)
+    );
     recordR3StartupPhase("attempt_allocated");
     assertR3StartupActive();
     const {

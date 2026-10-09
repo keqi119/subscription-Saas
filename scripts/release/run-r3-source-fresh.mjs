@@ -14,6 +14,7 @@ import {
   readTrustedR3FinalCompletion
 } from "./manual-stage1-trust.mjs";
 import { launchR3TargetCreate } from "./launch-manual-stage1.mjs";
+import { runR3StartupTiming } from "./r3-startup-detail-timing.mjs";
 import { openR3HostedCreationControl } from "./r3-hosted-creation-control.mjs";
 import { assertR3H1EvidenceReady, openR3H1EvidenceDelivery } from "./r3-h1-evidence-delivery.mjs";
 import { openR3HostedEvidenceDelivery } from "./r3-hosted-evidence-delivery.mjs";
@@ -352,7 +353,11 @@ async function runR3SourceH1(input, chain, phase = "source") {
   try {
     inputs(input);
     input = Object.freeze({ ...input });
-    admission = await diagnostic.run("ADMISSION", () => readFixedR3JobAdmission(input));
+    admission = await diagnostic.run("ADMISSION", () =>
+      runR3StartupTiming(input.operationRef, "CALLER_ADMISSION", () =>
+        readFixedR3JobAdmission(input)
+      )
+    );
     need(admission.spec.phase === phase && admission.spec.chain === chain);
     const startupBinding = createR3StartupDeadline({
       rawJob: admission.rawInputs.job,

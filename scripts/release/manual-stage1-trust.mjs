@@ -14,7 +14,11 @@ import {
   currentR3StartupScope,
   settledR3StartupExecFile
 } from "./r3-startup-deadline.mjs";
-import { inheritR3FailureCause, markR3FailureCause } from "./r3-failure-diagnostic.mjs";
+import {
+  inheritR3FailureCause,
+  markR3FailureCause,
+  markR3JobAdmissionCause
+} from "./r3-failure-diagnostic.mjs";
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import {
   encodeManualJson,
@@ -1789,21 +1793,43 @@ export async function readFixedR3JobAdmission(input) {
     };
     checkWindow();
     const ci = admission.ci,
-      environment = fixedProcessEnvironment("gh"),
-      attestationBytes = await processOutput(
-        "gh",
-        attestationArgs(file, admission.sourceSha, ci.workflowPath),
-        { env: environment }
-      ),
-      verifiedAttestation = attestation(
+      environment = fixedProcessEnvironment("gh");
+    const command = async (args, boundary) => {
+      try {
+        return await processOutput("gh", args, { env: environment });
+      } catch (cause) {
+        const timeout = cause?.killed === true && cause?.signal === "SIGTERM";
+        markR3JobAdmissionCause(
+          cause,
+          `R3_JOB_${boundary}_COMMAND_${timeout ? "TIMEOUT" : "FAILED"}`
+        );
+        throw cause;
+      }
+    };
+    const parsed = (boundary, action) => {
+      try {
+        return action();
+      } catch (cause) {
+        if (cause instanceof SyntaxError || cause instanceof TypeError)
+          markR3JobAdmissionCause(cause, `R3_JOB_${boundary}_RESPONSE_INVALID`);
+        throw cause;
+      }
+    };
+    const attestationBytes = await command(
+      attestationArgs(file, admission.sourceSha, ci.workflowPath),
+      "ATTESTATION"
+    );
+    const verifiedAttestation = parsed("ATTESTATION", () =>
+      attestation(
         attestationBytes,
         sha256Bytes(held.bytes),
         admission.sourceSha,
         Math.floor(instant(admission.generatedAt) / 1000) * 1000,
         { signer: ci.workflowPath, caller: ci.callerWorkflowPath, repositoryId: ci.repositoryId }
-      );
+      )
+    );
     requireThat(verifiedAttestation.workflowRunId === ci.runId);
-    const api = async (endpoint) => processOutput("gh", ["api", endpoint], { env: environment });
+    const api = async (endpoint, boundary) => command(["api", endpoint], boundary);
     const recheck = async () => {
       try {
         requireThat(!closed);
@@ -1817,14 +1843,14 @@ export async function readFixedR3JobAdmission(input) {
             throw error;
           });
         const responses = await Promise.allSettled([
-          observe(api(`repos/${REPOSITORY}/actions/runs/${ci.runId}/attempts/1`)),
-          observe(api(`repos/${REPOSITORY}/actions/jobs/${ci.jobId}`))
+          observe(api(`repos/${REPOSITORY}/actions/runs/${ci.runId}/attempts/1`, "RUN_API")),
+          observe(api(`repos/${REPOSITORY}/actions/jobs/${ci.jobId}`, "JOB_API"))
         ]);
         if (firstFailure) throw firstFailure;
         const runBytes = responses[0].value,
           jobBytes = responses[1].value,
-          run = json(runBytes),
-          job = json(jobBytes);
+          run = parsed("RUN_API", () => json(runBytes)),
+          job = parsed("JOB_API", () => json(jobBytes));
         r3JobApiIdentity(admission, run, job);
         requireThat(
           run.status === "in_progress" &&

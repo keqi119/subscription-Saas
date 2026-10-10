@@ -3,6 +3,83 @@ import assert from "node:assert/strict";
 import { runR3SourceFreshH1, runR3SourceFreshHosted } from "./run-r3-source-fresh.mjs";
 import { r3FailureTracker, getR3FailureDiagnostic } from "./r3-failure-diagnostic.mjs";
 import * as diagnostics from "./r3-failure-diagnostic.mjs";
+import * as launcher from "./launch-manual-stage1.mjs";
+
+test("creation ACK archive failure keeps its exact boundary through caller wrapping", async () => {
+  for (const [failAt, stage] of [
+    [1, "ACK_RESPONSE"],
+    [2, "ACK_BODY"]
+  ]) {
+    const saved = [],
+      records = [];
+    const archive = {
+      raw: async (bytes) => {
+        saved.push(Buffer.from(bytes));
+        if (saved.length === failAt)
+          throw Object.assign(new Error("private-archive-credential"), {
+            code: "H1_INPUT_UNAVAILABLE"
+          });
+        return "private-archive-reference";
+      }
+    };
+    await assert.rejects(
+      async () => {
+        try {
+          await launcher.recordR3CreationAck(
+            archive,
+            { status: 202, headers: {}, body: Buffer.alloc(0) },
+            records
+          );
+        } catch (cause) {
+          throw r3FailureTracker("H1_CALLER").decorate(new Error("fixed"), cause);
+        }
+      },
+      (error) => {
+        const fact = getR3FailureDiagnostic(error);
+        assert.equal(fact?.component, "H1_CREATE");
+        assert.equal(fact?.stage, stage);
+        assert.equal(fact?.causeCode, "H1_INPUT_UNAVAILABLE");
+        assert.equal(fact?.completed, false);
+        assert.equal(JSON.stringify(fact).includes("private-"), false);
+        return true;
+      }
+    );
+    assert.equal(saved.length, failAt);
+    assert.deepEqual(records, []);
+  }
+});
+
+test("creation ACK archives in order before validation and accepts only empty 202", async () => {
+  for (const response of [
+    { status: 202, headers: {}, body: Buffer.alloc(0) },
+    { status: 200, headers: {}, body: Buffer.alloc(0) },
+    { status: 202, headers: {}, body: Buffer.from("private-body") }
+  ]) {
+    const saved = [],
+      records = [];
+    const archive = {
+      raw: async (bytes) => {
+        saved.push(Buffer.from(bytes));
+        return `raw-${saved.length}`;
+      }
+    };
+    const outcome = launcher.recordR3CreationAck(archive, response, records);
+    if (response.status === 202 && response.body.length === 0) await outcome;
+    else
+      await assert.rejects(outcome, (error) => {
+        assert.equal(error.code, "R3_TARGET_CREATE_UNAVAILABLE");
+        const fact = getR3FailureDiagnostic(error);
+        assert.equal(fact?.stage, "ACK_VALIDATE");
+        assert.equal(fact?.completed, false);
+        assert.equal(JSON.stringify(fact).includes("private-"), false);
+        return true;
+      });
+    assert.equal(saved.length, 2);
+    assert.deepEqual(JSON.parse(saved[0]), { status: response.status, headers: {} });
+    assert.deepEqual(saved[1], response.body);
+    assert.deepEqual(records, [{ name: "creation-ack", response: "raw-1", body: "raw-2" }]);
+  }
+});
 
 test("finally cleanup preserves the primary failure and attempts every closer", async () => {
   const tracker = r3FailureTracker("H1_CALLER");

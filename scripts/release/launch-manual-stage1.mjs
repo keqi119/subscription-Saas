@@ -1082,6 +1082,24 @@ function targetArchive({ profile, principal, recheck }) {
   };
 }
 
+export async function recordR3CreationAck(archive, response, diagnostics) {
+  const diagnostic = r3FailureTracker("H1_CREATE");
+  try {
+    diagnostics.push({
+      name: "creation-ack",
+      response: await diagnostic.run("ACK_RESPONSE", () =>
+        archive.raw(encodeManualJson({ status: response.status, headers: response.headers }))
+      ),
+      body: await diagnostic.run("ACK_BODY", () => archive.raw(response.body))
+    });
+    diagnostic.enter("ACK_VALIDATE");
+    if (response.status !== 202 || response.body.length !== 0) fail("R3_TARGET_CREATE_UNAVAILABLE");
+    diagnostic.complete();
+  } catch (error) {
+    throw diagnostic.decorate(error, error);
+  }
+}
+
 // H1 owns the session and durable consume. The hosted control socket receives
 // only this fixed request; its 202 is delivery acknowledgement, never success.
 // No CLI/workflow calls this entry until the destination/cleanup graph is wired.
@@ -5142,8 +5160,7 @@ export async function launchR3TargetCreate(input) {
       );
     });
     diagnostic.enter("ACK");
-    await saveExchange("creation-ack", delivered);
-    if (delivered.status !== 202 || delivered.body.length !== 0) fail(code);
+    await recordR3CreationAck(archive, delivered, diagnostics);
     diagnostic.complete();
     const readyDeadline = Date.now() + 120000;
     let readback;

@@ -15,6 +15,7 @@ import {
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
 import { validateContract } from "../../packages/release-foundation/src/schema-registry.mjs";
 import { observeR3EncryptedWorkspace } from "./r3-encrypted-workspace-observer.mjs";
+import { r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 
 const CODE = "R3_HOSTED_WORKSPACE_CREATE_INVALID";
 const CLEANUP_CODE = "R3_HOSTED_WORKSPACE_CLEANUP_INVALID";
@@ -318,6 +319,7 @@ function enough(stat, bytes) {
 }
 
 export async function createR3HostedWorkspace(input) {
+  const diagnostic = r3FailureTracker("HOSTED_WORKSPACE");
   const creation = {
     operationRef: null,
     promotionEligible: false,
@@ -411,7 +413,9 @@ export async function createR3HostedWorkspace(input) {
       });
       noSwapAndCore(await fs.readFile("/proc/swaps"), await fs.readFile("/proc/self/limits"));
     };
+    diagnostic.enter("PREFLIGHT");
     await recheck();
+    diagnostic.enter("ABSENT");
     const absent = await observeR3EncryptedWorkspace({
       operationRef: spec.operationRef,
       capacityBytes: workspace.capacityBytes,
@@ -426,12 +430,14 @@ export async function createR3HostedWorkspace(input) {
         absent.observation.policyDigest === spec.targetPolicyDigest &&
         sha256Canonical(absent.observation.workspace) === sha256Canonical(workspace)
     );
+    diagnostic.enter("PREFLIGHT");
     enough(
       await fs.statfs(policy.workspace.backingRoot, { bigint: true }),
       workspace.capacityBytes
     );
     enough(await fs.statfs(policy.workspace.keyRoot, { bigint: true }), 64);
     const run = async (name, command, args) => {
+      diagnostic.enter("PREFLIGHT");
       await recheck();
       const before = await fs.stat(command, { bigint: true });
       requireThat(
@@ -454,6 +460,15 @@ export async function createR3HostedWorkspace(input) {
         stderr: null
       };
       creation.processes.push(call);
+      diagnostic.enter(
+        {
+          preallocate: "PREALLOCATE",
+          luksFormat: "LUKS_FORMAT",
+          luksOpen: "LUKS_OPEN",
+          mkfs: "MKFS",
+          mount: "MOUNT"
+        }[name]
+      );
       const result = await new Promise((resolve) => {
         let child,
           timer,
@@ -528,6 +543,7 @@ export async function createR3HostedWorkspace(input) {
       constants.O_NOFOLLOW |
       constants.O_CLOEXEC;
     await recheck();
+    diagnostic.enter("ALLOCATE");
     const keyBytes = randomBytes(64);
     try {
       const key = await fs.open(workspace.keyFile, flags, 0o600);
@@ -572,6 +588,7 @@ export async function createR3HostedWorkspace(input) {
     ]);
     creation.ownedPaths.push(`/dev/mapper/${workspace.mapperName}`);
     await run("mkfs", "/usr/sbin/mkfs.ext4", ["-F", "-q", `/dev/mapper/${workspace.mapperName}`]);
+    diagnostic.enter("MOUNT");
     await fs.mkdir(workspace.mountPath, { mode: 0o700 });
     creation.ownedPaths.push(workspace.mountPath);
     const unmountedLeaf = await fs.lstat(workspace.mountPath, { bigint: true });
@@ -596,6 +613,7 @@ export async function createR3HostedWorkspace(input) {
         mountedRoot.gid === 0n &&
         (mountedRoot.mode & 0o777n) === 0o700n
     );
+    diagnostic.enter("ACTIVE");
     const observation = await observeR3EncryptedWorkspace({
       operationRef: spec.operationRef,
       capacityBytes: workspace.capacityBytes,
@@ -643,6 +661,7 @@ export async function createR3HostedWorkspace(input) {
       leafIdentity: stableIdentity(unmountedLeaf),
       ownedPaths: [...creation.ownedPaths]
     });
+    diagnostic.complete();
     return result;
   } catch (cause) {
     // Never undo partial resources here. The H1 UNKNOWN slot remains held and
@@ -658,7 +677,7 @@ export async function createR3HostedWorkspace(input) {
       capture("failedObservation", cause.evidence.rawInputs);
       error.rawInputs = rawCopies();
     }
-    throw error;
+    throw diagnostic.decorate(error, error);
   }
 }
 

@@ -11,7 +11,20 @@ const stages = {
     "EXECUTION",
     "CLEANUP"
   ],
-  H1_CREATE: ["INPUT", "SESSION", "LEASE", "SOCKET", "SIGN", "CONSUME", "POST", "ACK", "ENGINE"],
+  H1_CREATE: [
+    "INPUT",
+    "SESSION",
+    "LEASE",
+    "SOCKET",
+    "SIGN",
+    "CONSUME",
+    "POST",
+    "ACK",
+    "ACK_RESPONSE",
+    "ACK_BODY",
+    "ACK_VALIDATE",
+    "ENGINE"
+  ],
   H1_CONSUME: [
     "SESSION",
     "REQUEST",
@@ -32,6 +45,18 @@ const stages = {
     "RECEIPT"
   ],
   HOSTED_CREATE: ["INPUT", "HEADERS", "BODY", "CURRENT_JOB", "ACK", "WORKSPACE", "ENGINE"],
+  HOSTED_WORKSPACE: [
+    "INPUT",
+    "PREFLIGHT",
+    "ABSENT",
+    "ALLOCATE",
+    "PREALLOCATE",
+    "LUKS_FORMAT",
+    "LUKS_OPEN",
+    "MKFS",
+    "MOUNT",
+    "ACTIVE"
+  ],
   SSH_FORWARD: ["EXIT"]
 };
 const jobAdmissionCauses = new Set([
@@ -50,6 +75,7 @@ const codes = new Set([
   "R3_SOURCE_FRESH_CALLER_INVALID",
   "R3_TARGET_CREATE_UNAVAILABLE",
   "R3_HOSTED_CREATION_CONTROL_INVALID",
+  "R3_HOSTED_WORKSPACE_CREATE_INVALID",
   "R3_ENGINE_EXCHANGE_UNAVAILABLE",
   "R3_H1_FORWARD_LEASE_UNAVAILABLE",
   "R3_H1_EVIDENCE_DELIVERY_UNAVAILABLE",

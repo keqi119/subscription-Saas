@@ -559,6 +559,16 @@ test("R3 creator retains partial resources and process failure without cleanup",
   const f = await fixture(t, "crypt-open");
   await assert.rejects(f.run(), (error) => {
     assert.equal(error.code, "R3_HOSTED_WORKSPACE_CREATE_INVALID");
+    assert.deepEqual(error.failureDiagnostic, {
+      schemaVersion: "r3-failure-diagnostic.v1",
+      component: "HOSTED_WORKSPACE",
+      stage: "LUKS_OPEN",
+      completed: false,
+      causeCode: "R3_HOSTED_WORKSPACE_CREATE_INVALID",
+      cleanupCode: null,
+      sshExitCode: null,
+      sshSignal: null
+    });
     assert.equal(error.creation.processes.at(-1).exitCode, 1);
     assert.ok(error.creation.ownedPaths.includes(f.workspace.keyFile));
     assert.ok(error.creation.ownedPaths.includes(f.workspace.backingFile));

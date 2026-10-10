@@ -7,6 +7,7 @@ import childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
+import { r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 
 const originalOpen = fs.open.bind(fs);
 const originalMkdir = fs.mkdir.bind(fs);
@@ -75,6 +76,7 @@ mock.module("./r3-hosted-workspace-create.mjs", {
   namedExports: {
     createR3HostedWorkspace: async (input) => {
       creationCalls.push(input);
+      if (creatorFailure instanceof Error) throw creatorFailure;
       if (creatorFailure)
         throw Object.assign(new Error("synthetic creator failure"), { code: "SYNTHETIC" });
       const owned = {
@@ -917,32 +919,48 @@ test("R3 control relays only opaque bytes to its observed PG and closes the loop
   );
 });
 
-test("R3 control keeps UNKNOWN on accepted creator failure and close only removes own socket", async (t) => {
-  const f = await setup(t);
-  if (!f) return;
-  creatorFailure = true;
-  const inputs = admission();
-  const control = await openR3HostedCreationControl(inputs);
-  const response = await post(socketPath, body(inputs));
-  assert.equal(response.status, 202);
-  await assert.rejects(control.created, (error) => {
-    assert.equal(error.code, "R3_HOSTED_CREATION_CONTROL_INVALID");
-    assert.equal(error.failureDiagnostic.component, "HOSTED_CREATE");
-    assert.equal(error.failureDiagnostic.stage, "WORKSPACE");
-    assert.equal(error.failureDiagnostic.completed, false);
-    assert.equal(error.failureDiagnostic.causeCode, "UNCLASSIFIED");
-    assert.equal(
-      JSON.stringify(error.failureDiagnostic).includes("synthetic creator failure"),
-      false
-    );
-    return true;
+for (const nested of [false, true])
+  test(`R3 control keeps UNKNOWN on accepted creator failure${nested ? " with workspace diagnostics" : ""} and close only removes own socket`, async (t) => {
+    const f = await setup(t);
+    if (!f) return;
+    creatorFailure = true;
+    if (nested) {
+      const tracker = r3FailureTracker("HOSTED_WORKSPACE");
+      tracker.enter("LUKS_OPEN");
+      const cause = Object.assign(new Error("private workspace response"), {
+        code: "R3_HOSTED_WORKSPACE_CREATE_INVALID"
+      });
+      creatorFailure = tracker.decorate(cause, cause);
+    }
+    const inputs = admission();
+    const control = await openR3HostedCreationControl(inputs);
+    const response = await post(socketPath, body(inputs));
+    assert.equal(response.status, 202);
+    await assert.rejects(control.created, (error) => {
+      assert.equal(error.code, "R3_HOSTED_CREATION_CONTROL_INVALID");
+      assert.equal(
+        error.failureDiagnostic.component,
+        nested ? "HOSTED_WORKSPACE" : "HOSTED_CREATE"
+      );
+      assert.equal(error.failureDiagnostic.stage, nested ? "LUKS_OPEN" : "WORKSPACE");
+      assert.equal(error.failureDiagnostic.completed, false);
+      assert.equal(
+        error.failureDiagnostic.causeCode,
+        nested ? "R3_HOSTED_WORKSPACE_CREATE_INVALID" : "UNCLASSIFIED"
+      );
+      assert.equal(
+        JSON.stringify(error.failureDiagnostic).includes("synthetic creator failure"),
+        false
+      );
+      assert.equal(JSON.stringify(error.failureDiagnostic).includes("private workspace"), false);
+      return true;
+    });
+    assert.equal(creationCalls.length, 1);
+    assert.equal(f.commands.length, 0);
+    const closed = await control.close();
+    assert.equal(closed.workspaceRemoved, false);
+    await assert.rejects(fs.lstat(socketPath), { code: "ENOENT" });
   });
-  assert.equal(creationCalls.length, 1);
-  assert.equal(f.commands.length, 0);
-  const closed = await control.close();
-  assert.equal(closed.workspaceRemoved, false);
-  await assert.rejects(fs.lstat(socketPath), { code: "ENOENT" });
-});
 
 test("R3 control retains workspace and actual daemon exit on rejected Engine facts", async (t) => {
   const f = await setup(t);

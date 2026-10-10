@@ -10,6 +10,7 @@ import path from "node:path";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { currentR3StartupScope } from "./r3-startup-deadline.mjs";
+import { r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 
 const operationRef = randomUUID(),
   sourceOperationRef = randomUUID(),
@@ -177,6 +178,7 @@ const currentFinalEvidenceBytes = () => encodeManualJson(currentFinalEvidence())
 const cleanupBytes = Buffer.from("signed cleanup fixture");
 let sshChild,
   earlyExit = false;
+let creationFailure = null;
 const writeObject = (role, digest, bytes) =>
   fs.writeFile(`${profile.storage[`${role}Root`]}/objects/${digest.slice(7)}.json`, bytes, {
     mode: 0o600
@@ -468,7 +470,7 @@ mock.module("./r3-hosted-creation-control.mjs", {
   namedExports: {
     openR3HostedCreationControl: async () => ({
       socketPath: `/dev/shm/stage1-keys/${operationRef.replaceAll("-", "")}.sock`,
-      created: Promise.resolve(),
+      created: creationFailure ? Promise.reject(creationFailure) : Promise.resolve(),
       postgresForward: Promise.resolve(),
       async exportEvidence() {
         events.push("creation-sign");
@@ -554,6 +556,53 @@ mock.module("./r3-hosted-evidence-delivery.mjs", {
       };
     }
   }
+});
+
+test("hosted caller preserves nested workspace diagnostic while closing transport without target cleanup", async (t) => {
+  const workspace = r3FailureTracker("HOSTED_WORKSPACE");
+  workspace.enter("LUKS_OPEN");
+  const error = Object.assign(new Error("private-workspace-output"), {
+    code: "R3_HOSTED_WORKSPACE_CREATE_INVALID"
+  });
+  const nested = workspace.decorate(error, error);
+  creationFailure = r3FailureTracker("HOSTED_CREATE").decorate(new Error("fixed"), nested);
+  t.after(() => {
+    creationFailure = null;
+  });
+  events.length = 0;
+  t.mock.method(childProcess, "spawn", () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = (signal) => {
+      queueMicrotask(() => {
+        events.push("forward-exit");
+        child.emit("close", null, signal);
+      });
+      return true;
+    };
+    return child;
+  });
+  const { runR3SourceFreshHosted } = await import("./run-r3-source-fresh.mjs");
+  await assert.rejects(
+    runR3SourceFreshHosted({ repoRoot: path.resolve(import.meta.dirname, "../.."), operationRef }),
+    (cause) => {
+      assert.equal(cause.code, "R3_SOURCE_FRESH_CALLER_INVALID");
+      assert.equal(cause.failureDiagnostic.component, "HOSTED_WORKSPACE");
+      assert.equal(cause.failureDiagnostic.stage, "LUKS_OPEN");
+      assert.equal(cause.failureDiagnostic.causeCode, "R3_HOSTED_WORKSPACE_CREATE_INVALID");
+      assert.equal(JSON.stringify(cause.failureDiagnostic).includes("private-"), false);
+      return true;
+    }
+  );
+  assert.deepEqual(events, [
+    "sftp-ready",
+    "key-recheck",
+    "forward-exit",
+    "sftp-close",
+    "controller-close",
+    "key-close"
+  ]);
 });
 
 test("source fresh caller requires exact owner ACK before cleanup and publishes actual close readback", async (t) => {

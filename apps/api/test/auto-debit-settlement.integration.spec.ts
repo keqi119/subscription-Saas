@@ -10,6 +10,7 @@ import {
   PaymentChannel,
   PaymentOrderStatus,
   PaymentProviderType,
+  Prisma,
   SubscriptionAutomationJobStatus,
   SubscriptionAutomationJobType
 } from "@prisma/client";
@@ -214,17 +215,100 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
   it("creates only one attempt when DUE and D+1 slots race", async () => {
     const ids = settlementIds();
     const finance = new FinanceService(new AuditService(prisma), prisma);
-    const provider = processingProvider();
-    const service = new DebitAttemptService(prisma, provider, finance);
+    const submitGate = deferred<void>();
+    const submitStarted = deferred<void>();
+    const queryJobHeld = deferred<void>();
+    const releaseQueryJob = deferred<void>();
+    const secondQueryJobStarted = deferred<void>();
+    const provider = processingProvider({ submitGate, submitStarted });
+    let queryJobCount = 0;
+    let heldBackendPid = 0;
+    let secondBackendPid = 0;
+    let secondQueryJobFinished = false;
+    const controlledPrisma = new Proxy(prisma, {
+      get(target, property) {
+        if (property !== "$transaction") {
+          return Reflect.get(target, property, target);
+        }
+        return (operation: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          target.$transaction((tx) =>
+            operation(
+              new Proxy(tx, {
+                get(transaction, transactionProperty) {
+                  if (transactionProperty !== "subscriptionAutomationJob") {
+                    return Reflect.get(transaction, transactionProperty, transaction);
+                  }
+                  return new Proxy(transaction.subscriptionAutomationJob, {
+                    get(delegate, delegateProperty) {
+                      if (delegateProperty !== "createMany") {
+                        return Reflect.get(delegate, delegateProperty, delegate);
+                      }
+                      const createMany = delegate.createMany.bind(delegate);
+                      return async (...args: Parameters<typeof createMany>) => {
+                        const queryJobNumber = ++queryJobCount;
+                        const pid = (
+                          await tx.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`
+                        )[0]?.pid;
+                        if (pid === undefined) throw new Error("Query job backend PID missing");
+                        if (queryJobNumber === 1) {
+                          heldBackendPid = pid;
+                          queryJobHeld.resolve();
+                          await releaseQueryJob.promise;
+                        } else {
+                          secondBackendPid = pid;
+                          secondQueryJobStarted.resolve();
+                        }
+                        try {
+                          return await createMany(...args);
+                        } finally {
+                          if (queryJobNumber > 1) secondQueryJobFinished = true;
+                        }
+                      };
+                    }
+                  });
+                }
+              })
+            )
+          );
+      }
+    }) as PrismaService;
+    const service = new DebitAttemptService(controlledPrisma, provider, finance);
+    let dueSubmission: Promise<unknown> | undefined;
+    let d1Submission: Promise<unknown> | undefined;
 
     try {
       await seedSettlementFixture(prisma, ids, uniqueNo("PYOA"), uniqueNo("PYOB"));
       await resetFixtureForDebitSubmission(prisma, ids);
 
-      await Promise.all([
-        service.submitBillDebit(claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.DUE)),
-        service.submitBillDebit(claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.D1))
-      ]);
+      dueSubmission = service.submitBillDebit(
+        claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.DUE)
+      );
+      await submitStarted.promise;
+      d1Submission = service.submitBillDebit(
+        claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.D1)
+      );
+      await queryJobHeld.promise;
+      submitGate.resolve();
+      await secondQueryJobStarted.promise;
+
+      // The result transaction must reach its FK check while D+1 holds the bill lock.
+      // With compatible row locks, its insert finishes; otherwise PostgreSQL reports
+      // D+1 as its blocker before both transactions contend for the unique job key.
+      const deadline = Date.now() + 5_000;
+      let observedBillBlock = false;
+      while (!secondQueryJobFinished && Date.now() < deadline) {
+        const blocked = (await prisma.$queryRaw<{ blocked: boolean }[]>`
+          SELECT ${heldBackendPid}::int = ANY(pg_blocking_pids(${secondBackendPid}::int)) AS blocked
+        `)[0]?.blocked;
+        if (blocked) {
+          observedBillBlock = true;
+          break;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+      expect(secondQueryJobFinished || observedBillBlock).toBe(true);
+      releaseQueryJob.resolve();
+      await Promise.all([dueSubmission, d1Submission]);
 
       await expect(prisma.debitAttempt.count({ where: { billId: ids.bill } })).resolves.toBe(1);
       await expect(
@@ -242,9 +326,14 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
         })
       ).resolves.toBe(1);
     } finally {
+      submitGate.resolve();
+      releaseQueryJob.resolve();
+      await Promise.allSettled(
+        [dueSubmission, d1Submission].filter((item) => item !== undefined)
+      );
       await cleanupSettlementFixture(prisma, ids);
     }
-  }, 15_000);
+  }, 25_000);
 
   it("keeps SUCCEEDED and PAID absorbing when a stale submit result arrives", async () => {
     const ids = settlementIds();

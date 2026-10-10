@@ -51,3 +51,13 @@ RC `38062185834` 的 sourceFresh 在连接前 `SIGN_HISTORY` 阶段到达 Execut
 - 诊断中的本地检查器曾错误要求 allocation 存在 `ownerId`；实际 schema 不包含该字段。原失败保留，修正后只补做只读确认。
 - 独立 IDLE 收集器曾将 sshd 的已知 `RSAAuthentication` 弃用告警误视为命令失败。最终以退出码、精确 IDLE 输出及两条固定告警共同校验，没有忽略未知 stderr 或修改 SSH 配置。
 - 新候选仍须绑定其真实构建、准入和有效授权；SOURCE/ACK 由负责人在真实终端完成。
+
+## 2026-10-11：分段验证发现的扣款并发死锁
+
+PR 346 的 CI `38065639722` 在既有 `api.auto-debit-settlement.postgres` 套件失败：DUE 与 D+1 同时提交账单扣款时报告 `deadlock detected`。该次 API 单元测试 305 文件、4575 项通过，不能因此将数据库失败归为环境抖动或直接重跑 CI。
+
+局部复现将原并发用例改为受控交错：先暂停 DUE 的渠道响应，让 D+1 持有账单锁并停在查询任务插入前；再放行 DUE 结果回写，观察实际 `pg_blocking_pids`。DUE 插入查询任务时，其外键检查等待 D+1 的账单 `FOR UPDATE` 锁；放行 D+1 后，它又等待 DUE 持有的同一任务唯一键，构成锁环。隔离单套件修复前 6 项执行、5 项通过、该项死锁失败，归为代码并发缺陷。
+
+该准备事务不修改账单键，因此只将账单锁改为 `FOR NO KEY UPDATE`：仍串行化账单提交，允许任务外键的 `KEY SHARE`，解除本次锁环。锁兼容关系见 [PostgreSQL 17 文档](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS)。没有增加支付重试、改变渠道调用或放宽“仅一个扣款尝试、支付单、查询任务”的断言。
+
+修复后，同一隔离套件一次执行 6 项全部通过，无跳过。失败与通过原件分别保存于当前操作记录 `pr346-ci-38065639722-ACTUAL/debit-deadlock-red.log` 和 `debit-deadlock-green.log`。未重跑 R3、未生成候选镜像、未操作 Staging 测试数据；此前与本改动无关的启动预算/SFTP 局部结果继续保留。后续审核先查实际锁顺序、外键隐式锁和唯一键争用；不能因并发错误间歇出现就认定是环境抖动。

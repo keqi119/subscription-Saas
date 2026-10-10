@@ -761,8 +761,9 @@ async function lockRow(
   id: string
 ) {
   if (table === "receivable_bill") {
+    // Serialize submissions while allowing query-job FK checks to take KEY SHARE.
     await tx.$queryRaw(Prisma.sql`
-      SELECT "id" FROM "receivable_bill" WHERE "id" = ${id}::uuid FOR UPDATE
+      SELECT "id" FROM "receivable_bill" WHERE "id" = ${id}::uuid FOR NO KEY UPDATE
     `);
     return;
   }

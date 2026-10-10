@@ -1,0 +1,136 @@
+.catalog-header {
+  padding: 34rpx 0 32rpx;
+}
+.catalog-header .title {
+  margin: 20rpx 0;
+}
+.search-bar {
+  border: 1rpx solid #c9cbc1;
+  background: #fbfaf7;
+  padding: 8rpx 8rpx 8rpx 24rpx;
+  gap: 12rpx;
+}
+.search-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 28rpx;
+  height: 74rpx;
+}
+.search-button {
+  margin: 0;
+  padding: 0 24rpx;
+  line-height: 74rpx;
+  font-size: 25rpx;
+  border-radius: 2rpx;
+  background: #252723;
+  color: #fff;
+}
+.search-button::after {
+  border: 0;
+}
+.brand-scroll {
+  width: 100%;
+  margin: 24rpx 0;
+}
+.brand-options {
+  display: flex;
+  gap: 12rpx;
+  white-space: nowrap;
+}
+.brand-chip {
+  display: inline-block;
+  flex-shrink: 0;
+  margin: 0;
+  border: 1rpx solid #d0d2c7;
+  background: transparent;
+  color: #55594f;
+  line-height: 68rpx;
+  font-size: 24rpx;
+  padding: 0 24rpx;
+  border-radius: 4rpx;
+}
+.brand-chip::after {
+  border: 0;
+}
+.brand-chip.is-selected {
+  color: #fff;
+  background: #252723;
+  border-color: #252723;
+}
+.result-summary {
+  color: #686c61;
+  font-size: 23rpx;
+  min-height: 60rpx;
+  margin-bottom: 18rpx;
+}
+.catalog-card {
+  border: 1rpx solid #d9dcd1;
+  background: #fbfaf7;
+  margin-bottom: 30rpx;
+}
+.vehicle-photo {
+  height: 300rpx;
+  position: relative;
+  background: #e9eae3;
+}
+.vehicle-photo image {
+  width: 100%;
+  height: 100%;
+}
+.missing-photo {
+  padding-top: 126rpx;
+  text-align: center;
+  font-size: 24rpx;
+  color: #7a7c71;
+}
+.status-pill {
+  position: absolute;
+  top: 22rpx;
+  left: 22rpx;
+  background: #f7f7f0;
+  padding: 8rpx 14rpx;
+  font-size: 21rpx;
+  color: #415446;
+}
+.status-pill.unavailable {
+  color: #76776f;
+}
+.vehicle-body {
+  padding: 28rpx;
+}
+.vehicle-name {
+  font-size: 34rpx;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.vehicle-arrow {
+  font-size: 34rpx;
+  margin-left: 18rpx;
+}
+.vehicle-facts {
+  margin: 12rpx 0;
+  font-size: 24rpx;
+}
+.vehicle-tagline {
+  font-size: 24rpx;
+  color: #73776b;
+  margin-bottom: 22rpx;
+}
+.price-line {
+  align-items: baseline;
+}
+.view-label {
+  font-size: 23rpx;
+  color: #484c41;
+}
+.price-note {
+  font-size: 21rpx;
+  color: #777a70;
+  margin-top: 14rpx;
+  line-height: 1.6;
+}
+.catalog-note {
+  font-size: 23rpx;
+  line-height: 1.8;
+  margin: 40rpx 0;
+}

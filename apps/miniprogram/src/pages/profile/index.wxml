@@ -1,0 +1,54 @@
+<view class="page"
+  ><demo-banner /><view class="eyebrow">PROFILE / 个人资料</view
+  ><view class="title">认识用车的人。</view
+  ><view wx:if="{{loading}}" class="empty">正在读取资料…</view
+  ><view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="reload">重新加载</button></view
+  ><block wx:else
+    ><view class="notice"
+      >仅保存本机示例姓名、手机号与驾龄。请填写虚构信息；此页面不采集或上传身份证、驾驶证。</view
+    ><view class="card"
+      ><view class="field"
+        ><view class="label">示例姓名</view
+        ><input
+          class="input"
+          value="{{name}}"
+          maxlength="30"
+          placeholder="例如：演示用户"
+          data-field="name"
+          bindinput="input"
+          disabled="{{busy}}" /></view
+      ><view class="field"
+        ><view class="label">示例手机号</view
+        ><input
+          class="input"
+          type="number"
+          value="{{mobile}}"
+          maxlength="11"
+          placeholder="11 位示例号码"
+          data-field="mobile"
+          bindinput="input"
+          disabled="{{busy}}" /></view
+      ><view class="field"
+        ><view class="label">驾龄（年）</view
+        ><input
+          class="input"
+          type="number"
+          value="{{drivingYears}}"
+          maxlength="2"
+          placeholder="0–70"
+          data-field="drivingYears"
+          bindinput="input"
+          disabled="{{busy}}" /></view></view
+    ><view wx:if="{{message}}" class="notice">{{message}}</view
+    ><button
+      class="primary"
+      loading="{{busy}}"
+      disabled="{{busy || mode !== 'mock'}}"
+      bindtap="submit"
+      >保存示例资料</button
+    ><view wx:if="{{mode !== 'mock'}}" class="notice"
+      >客户资料接口尚未接入，当前模式无法保存。</view
+    ></block
+  ></view
+>

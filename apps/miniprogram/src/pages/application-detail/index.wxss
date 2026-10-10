@@ -1,0 +1,173 @@
+.status-header {
+  padding: 36rpx 0 40rpx;
+  border-bottom: 1rpx solid #d1d6c7;
+}
+.status-symbol {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 76rpx;
+  height: 76rpx;
+  background: #e9e7db;
+  border: 1rpx solid #d4d4c5;
+  border-radius: 50%;
+  color: #b44919;
+  font-size: 45rpx;
+  margin: 32rpx 0 22rpx;
+}
+.status-header .title {
+  margin: 14rpx 0;
+}
+.application-id {
+  font-size: 21rpx;
+  color: #747b6b;
+  margin-top: 24rpx;
+  word-break: break-all;
+}
+.summary-card {
+  padding: 30rpx 0;
+}
+.summary-card > .section-title {
+  margin-bottom: 18rpx;
+}
+.summary-row {
+  align-items: flex-start;
+  gap: 26rpx;
+  padding: 17rpx 0;
+  font-size: 26rpx;
+  line-height: 1.6;
+}
+.summary-row > text:last-child {
+  text-align: right;
+  max-width: 67%;
+}
+.progress-section {
+  border-top: 1rpx solid #d1d6c7;
+  padding: 32rpx 0;
+}
+.progress-section > .section-title {
+  margin-bottom: 30rpx;
+}
+.timeline-item {
+  display: flex;
+  gap: 24rpx;
+  position: relative;
+  padding-bottom: 32rpx;
+  min-height: 88rpx;
+}
+.timeline-item:before {
+  content: '';
+  position: absolute;
+  left: 17rpx;
+  top: 38rpx;
+  bottom: 0;
+  width: 1rpx;
+  background: #d3d8ca;
+}
+.timeline-item:last-child:before {
+  display: none;
+}
+.timeline-marker {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 36rpx;
+  height: 36rpx;
+  flex-shrink: 0;
+  border: 1rpx solid #c3cbb8;
+  border-radius: 50%;
+  color: #8b9282;
+  background: #f4f3ef;
+  font-size: 25rpx;
+  box-sizing: border-box;
+}
+.done .timeline-marker {
+  background: #4b5f45;
+  border-color: #4b5f45;
+  color: #fff;
+  font-size: 20rpx;
+}
+.timeline-title {
+  font-size: 28rpx;
+  line-height: 1.5;
+  margin-bottom: 8rpx;
+}
+.timeline-copy .muted {
+  font-size: 24rpx;
+  line-height: 1.7;
+}
+.final-plan {
+  padding: 28rpx;
+  border: 1rpx solid #b44919;
+  background: #faf6ee;
+}
+.version {
+  font-size: 22rpx;
+  color: #b44919;
+}
+.final-plan .section-title {
+  margin: 18rpx 0;
+}
+.final-caption {
+  font-size: 24rpx;
+  line-height: 1.7;
+  margin-bottom: 16rpx;
+}
+.final-price {
+  padding: 22rpx 0;
+  border-top: 1rpx solid #dedbce;
+  margin-top: 12rpx;
+  gap: 20rpx;
+}
+.plan-notes {
+  font-size: 24rpx;
+  line-height: 1.8;
+  margin-top: 18rpx;
+  white-space: pre-wrap;
+}
+.plan-read {
+  display: flex;
+  gap: 12rpx;
+  font-size: 25rpx;
+  line-height: 1.7;
+  border-top: 1rpx solid #dedbce;
+  margin-top: 26rpx;
+  padding-top: 24rpx;
+}
+.plan-read checkbox {
+  flex-shrink: 0;
+  transform: scale(0.85);
+  transform-origin: top left;
+}
+.action-error {
+  padding: 24rpx;
+  background: #f4e5dd;
+  color: #9b3817;
+  font-size: 25rpx;
+  line-height: 1.7;
+  margin-top: 26rpx;
+}
+.flow-note,
+.action-message {
+  margin: 26rpx 0;
+}
+.detail-navigation {
+  padding-top: 10rpx;
+}
+.detail-page {
+  padding-bottom: 270rpx;
+}
+.final-benefits {
+  font-size: 26rpx;
+  line-height: 1.7;
+  padding: 17rpx 0;
+}
+.final-benefit {
+  display: flex;
+  gap: 14rpx;
+  padding-top: 14rpx;
+}
+.benefit-check {
+  color: #4b5f45;
+  flex-shrink: 0;
+}

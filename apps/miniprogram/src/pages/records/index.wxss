@@ -1,0 +1,49 @@
+.record-count {
+  margin: 32rpx 0 24rpx;
+}
+.record-card {
+  display: block;
+  width: 100%;
+  background: #fffefa;
+  padding: 32rpx;
+  margin-bottom: 20rpx;
+  border: 1rpx solid #dfded6;
+  border-radius: 8rpx;
+  text-align: left;
+  line-height: 1.5;
+}
+.record-title {
+  font-size: 32rpx;
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  padding-right: 12rpx;
+}
+.record-subtitle {
+  margin: 18rpx 0 28rpx;
+  font-size: 26rpx;
+}
+.record-amount {
+  font-size: 34rpx;
+  font-variant-numeric: tabular-nums;
+}
+.record-link {
+  font-size: 26rpx;
+  margin-left: auto;
+}
+
+.page {
+  padding-bottom: calc(64rpx + env(safe-area-inset-bottom));
+}
+.card {
+  margin-top: 24rpx;
+  margin-bottom: 24rpx;
+}
+.notice {
+  margin-top: 24rpx;
+  margin-bottom: 24rpx;
+}
+.row .section-title {
+  margin-top: 0;
+  margin-bottom: 0;
+}

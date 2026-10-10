@@ -1,0 +1,20 @@
+.demo {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  min-height: 64rpx;
+  color: #74776f;
+  font-size: 21rpx;
+  letter-spacing: 1rpx;
+  padding: 8rpx 0 18rpx;
+}
+.dot {
+  width: 8rpx;
+  height: 8rpx;
+  border-radius: 50%;
+  background: #b44919;
+}
+.arrow {
+  margin-left: auto;
+  font-size: 26rpx;
+}

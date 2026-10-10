@@ -3,6 +3,8 @@ import childProcess from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { clearTimeout, setTimeout } from "node:timers";
 
+export const R3_STARTUP_WINDOW_MS = 1200000;
+
 const state = new AsyncLocalStorage();
 const STEP_NAMES = Object.freeze({
   "source:fresh": "Execute the held source fresh exchange through verified CLOSED",
@@ -74,7 +76,7 @@ export function createR3StartupDeadline({ rawJob, admission, operationRef }) {
       fail("R3_STARTUP_DEADLINE_INVALID");
     const started = Date.parse(steps[0].started_at),
       admissionExpires = Date.parse(admission.expiresAt),
-      deadlineAtMs = Math.min(started + 600000, admissionExpires);
+      deadlineAtMs = Math.min(started + R3_STARTUP_WINDOW_MS, admissionExpires);
     if (
       !Number.isFinite(started) ||
       !Number.isFinite(admissionExpires) ||
@@ -254,7 +256,10 @@ export function recordR3StartupPhase(stage, explicit) {
     return false;
   context.phaseMarks.set(
     stage,
-    Math.min(600000, Math.max(0, Math.floor(performance.now() - context.startedAtMonoMs)))
+    Math.min(
+      R3_STARTUP_WINDOW_MS,
+      Math.max(0, Math.floor(performance.now() - context.startedAtMonoMs))
+    )
   );
   return true;
 }
@@ -324,7 +329,10 @@ export function markR3StartupConnected(explicit) {
     if (context.phaseMarks.size === PHASES.length - 1)
       context.phaseMarks.set(
         "socket_connected",
-        Math.min(600000, Math.max(0, Math.floor(performance.now() - context.startedAtMonoMs)))
+        Math.min(
+          R3_STARTUP_WINDOW_MS,
+          Math.max(0, Math.floor(performance.now() - context.startedAtMonoMs))
+        )
       );
     emitR3StartupPhaseSummary(context);
   }

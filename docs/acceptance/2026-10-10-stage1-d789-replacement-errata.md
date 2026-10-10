@@ -1,5 +1,7 @@
 # d789 替代执行失败核查与下一轮勘误
 
+最新处置状态（2026-10-10 04:53:53Z）：负责人批准的 eb5a 精确事故处置及独立回读均已完成，详见下方“精确事故处置实际结果”。下文未移锁、等待批准等描述保留其对应历史时点，不能作为当前状态。
+
 本记录承接[多轮勘误总表](2026-10-07-stage1-execution-errata.md)及[启动计时勘误](2026-10-10-stage1-startup-timing-errata.md)。C 为证据已确认的代码或编排缺陷，P 为执行前拦截或取证工具错误，U 为实际首因未确定。环境抖动须有独立证据，不能从慢调用、泛化错误或后一次成功倒推。
 
 ## 当前实际结论
@@ -92,6 +94,19 @@ PR head 与合并提交的文件树均为 `6b8d29c7cbf12280c4aa95293f2bbd699063f
 负责人随后确认 eb5a 精确事故草案（proposal `e73900c4…`，批准原件 `bedce8cb…`），仅允许保留 UNKNOWN 和已消费原件、将两枚固定锁按同一签名意向移入事故保留目录。专用处置入口已补入固定事故登记，未扩大为一般 UNKNOWN 豁免；新候选执行、RC 和 RAM 权限不在本次范围内。实际线上结果以本机事故目录的 `RECONCILIATION.json` 为准，不能把离线测试或 EXECUTED 标签当作独立回读完成。
 
 执行前审查发现并修正两项可复发问题，均属于代码或操作模板瑕疵，不是环境抖动：旧 once 控制器会阻断已批准的部分移锁恢复，现仅提供必须持有同一批准、同一处置代码及既有签名意向的显式 Resume；顺序执行器不自动重试。安装回读模板曾把 Node 和公共清单套用私有 JSON 的 0600 权限，现场只读核实分别为 0555 和 0444，必须各自校验权限与原字节摘要。专用入口定向测试通过，涵盖原件保留、单锁中断、身份替换拒绝、同意向恢复和完成后的只读核验。发布合同校验为 329 文件、93 schema、128 migration、13 command，未触发新整链测试。
+
+### 精确事故处置实际结果
+
+本地专用处置提交 `708db3de449c6c570cd3f85e50977a8671af2244` 已通过固定 Git bundle 安装到 H1 `/opt/stage1-incident-eb5a1850-708db3d`。独立回读确认源码、原件摘要及 2,289 个既有依赖文件一致，未推送该提交、触发构建或启动新 RC。
+
+获批执行仅运行一次，随后由另一次受保护调用独立回读；两次均 exit 0、无 stderr，返回相同处置摘要 `sha256:8466adb0e0443c4abedd9702ff937b0e314b1a0c9d54a3e538badded1aec2f4c`。两枚锁在现场身份签入意向后同卷移入本事故保留目录，原七项历史记录及 CONSUMED 槽保留。没有执行 Resume 或自动重试。
+
+结论仅为 `OWNER_ACCEPTED_UNRESOLVED_FAILURE`。formal IDLE、两加密卷关闭及 swap/core 恢复通过；remoteCreationKnown、remoteCleanupVerified、humanAckVerified、r3ClosedVerified、promotionEligible 全部仍为 false。ACK/WORKSPACE 实际首因仍未知，本结果不改变失败分类，也不授权重用旧引用或签名。
+
+- [源码安装独立回读](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/incident-eb5a1850-source-install-ACTIVE/RECONCILIATION.json)
+- [事故处置及独立回读](../../.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/incident-eb5a1850-host-708db3d-ACTIVE/RECONCILIATION.json)
+
+当前阻断已从“等待 eb5a 事故处置”转为下一候选实际执行前的精确绑定与批准。后续仍须将诊断修补和 owner 解析器落实到同一候选，完成实际输入及勘误映射后才编排新执行。四条 R3、既定两项迁移与聚焦 R4 均不能由本事故处置抵扣。
 
 以下为本机保留原件；不会因本文提交自动发布到 GitHub。原始失败日志、probe 初版及读回误判均未覆盖。
 

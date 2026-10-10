@@ -4,11 +4,13 @@ import test from "node:test";
 import { custodyEvidence, sha256Canonical } from "@subscription-saas/release-foundation";
 
 import { commandHandlers } from "../src/command-handlers.mjs";
+import { createDatabaseRuntimeAdapter } from "../src/database-runtime-adapter.mjs";
 
 import {
   BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_SHA256,
   BILLING_MAINTENANCE_FORBIDDEN_DOMAIN_SET_VERSION,
   BILLING_MAINTENANCE_FORBIDDEN_KEYS,
+  hashBillingMaintenanceEvidenceDatabaseIdentity,
   hashBillingMaintenanceEvidenceValue
 } from "../../../scripts/billing-maintenance-cycle-evidence-core.mjs";
 
@@ -24,6 +26,125 @@ const INPUT = Object.freeze({
   expectedDatabaseIdentitySha256: DATABASE_IDENTITY_SHA256,
   notBefore: NOT_BEFORE,
   timeoutSeconds: 60
+});
+
+test("production database adapter supplies billing identity and bounded read-only facts to the collector", async () => {
+  const identity = { databaseName: "s1ci_billing", systemIdentifier: "7340000000000000002" };
+  const expectedDatabaseIdentitySha256 = hashBillingMaintenanceEvidenceDatabaseIdentity(identity);
+  const statements = [];
+  const statementTimeouts = [];
+  let readOnlyTransactions = 0;
+  const transaction = {
+    async $queryRawUnsafe(sql, ...parameters) {
+      statements.push(String(sql));
+      if (String(sql).includes("pg_control_system()")) return [identity];
+      if (String(sql).includes("set_config('statement_timeout'")) {
+        statementTimeouts.push(parameters[0]);
+        return [{ set_config: parameters[0] }];
+      }
+      if (String(sql).includes('FROM "billing_maintenance_cycle_fact"')) {
+        assert.deepEqual(parameters, [RUN_ID]);
+        return [1, 2].map((sequence) => ({
+          ...completedFact(sequence),
+          databaseIdentitySha256: expectedDatabaseIdentitySha256
+        }));
+      }
+      throw new Error("UNEXPECTED_SQL");
+    }
+  };
+  const database = {
+    databaseIdentityFingerprint: `sha256:${"e".repeat(64)}`,
+    databaseIdentitySha256: `sha256:${"e".repeat(64)}`,
+    statementLog: statements,
+    custodyEvidence: async ({ value }) => custodize(value),
+    async withReadOnlyTransaction(callback) {
+      readOnlyTransactions += 1;
+      return callback(transaction);
+    }
+  };
+  const adapter = createDatabaseRuntimeAdapter({
+    database,
+    credential: { username: "billing_reader", password: "unused" },
+    target: { hostname: "postgres", databaseName: identity.databaseName }
+  });
+
+  const response = await commandHandlers.get("stage1.billing-maintenance.evidence@1")({
+    baseline: { databaseName: identity.databaseName },
+    request: { input: { ...INPUT, expectedDatabaseIdentitySha256 } },
+    database: adapter
+  });
+  const result = response.result;
+
+  assert.equal(response.terminalStatus, "PASSED");
+  assert.equal(result.terminalStatus, "PASSED");
+  assert.equal(result.databaseIdentitySha256, expectedDatabaseIdentitySha256);
+  assert.equal(adapter.databaseIdentityFingerprint, `sha256:${"e".repeat(64)}`);
+  assert.equal(adapter.databaseIdentitySha256, `sha256:${"e".repeat(64)}`);
+  assert.equal(readOnlyTransactions, 2);
+  assert.deepEqual(statementTimeouts, ["4950", "29950"]);
+  assert.equal(
+    statements.filter((sql) => sql.includes('FROM "billing_maintenance_cycle_fact"')).length,
+    1
+  );
+  await assert.rejects(
+    () =>
+      adapter.queryBillingMaintenanceFacts({
+        runId: "not-an-exact-run-id",
+        queryTimeoutMilliseconds: 1_000,
+        remainingMilliseconds: 2_000
+      }),
+    { code: "BILLING_MAINTENANCE_OPTIONS_INVALID" }
+  );
+  assert.equal(readOnlyTransactions, 2);
+});
+
+test("identity observation that exhausts the approved clock never reads facts or creates custody", async () => {
+  const identity = { databaseName: "s1ci_billing", systemIdentifier: "7340000000000000002" };
+  const expectedDatabaseIdentitySha256 = hashBillingMaintenanceEvidenceDatabaseIdentity(identity);
+  let elapsed = 0;
+  let factQueries = 0;
+  let custodyCalls = 0;
+  const database = {
+    databaseIdentityFingerprint: `sha256:${"e".repeat(64)}`,
+    databaseIdentitySha256: `sha256:${"e".repeat(64)}`,
+    statementLog: [],
+    async custodyEvidence() {
+      custodyCalls += 1;
+    },
+    async withReadOnlyTransaction(callback) {
+      return callback({
+        async $queryRawUnsafe(sql) {
+          database.statementLog.push(String(sql));
+          if (String(sql).includes("set_config('statement_timeout'")) return [];
+          if (String(sql).includes("pg_control_system()")) {
+            elapsed += 1_000;
+            return [identity];
+          }
+          factQueries += 1;
+          return [];
+        }
+      });
+    }
+  };
+  const adapter = createDatabaseRuntimeAdapter({
+    database,
+    credential: { username: "billing_reader", password: "unused" },
+    target: { hostname: "postgres", databaseName: identity.databaseName },
+    now: () => elapsed
+  });
+
+  await assert.rejects(
+    () =>
+      commandHandlers.get("stage1.billing-maintenance.evidence@1")({
+        baseline: { databaseName: identity.databaseName },
+        request: { input: { ...INPUT, expectedDatabaseIdentitySha256, timeoutSeconds: 1 } },
+        database: adapter
+      }),
+    { code: "BILLING_MAINTENANCE_EVIDENCE_TIMEOUT" }
+  );
+  assert.equal(factQueries, 0);
+  assert.equal(custodyCalls, 0);
+  assert.equal(adapter.databaseIdentitySha256, `sha256:${"e".repeat(64)}`);
 });
 
 test("registers the billing-maintenance evidence handler", () => {

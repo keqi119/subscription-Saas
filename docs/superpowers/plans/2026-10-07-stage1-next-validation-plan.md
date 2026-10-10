@@ -1,5 +1,16 @@
 # 阶段 1 下一轮验证与勘误实施计划
 
+## 当前执行游标（2026-10-10，eb5a 处置之后）
+
+本节取代下文历史候选、待批和截止状态；历史原件仍保留。d789 替代 RC `38018148143` 已失败，eb5a 的精确负责人事故处置于 `2026-10-10T04:53:53Z` 独立回读完成，处置摘要为 `sha256:8466adb0e0443c4abedd9702ff937b0e314b1a0c9d54a3e538badded1aec2f4c`。两枚锁已保留式退役，UNKNOWN、CONSUMED 及未知远端状态不变；这不是 R3 CLOSED。
+
+1. 下一候选必须包含已合并的 ACK/WORKSPACE 诊断修补及 eb5a 精确历史识别代码。仅完成必要的一次整合与实际构建，不重复诊断测试或历史整链。
+2. 审核最新实际 d789 替代运行的 collector/freezer/handoff/owner 原件及新的有限诊断解析器。重点固定 30 秒 attestation、实际 Execute 起点、600 秒 startup、90 秒 history 和 480 秒 reserve；检查真实调用链、目录权限、空响应归档和失败传播，不能只核模板表面相等。
+3. 新候选的 source/build/ref/owner/同源 snapshot 必须重新精确绑定。当前获批截止为北京时间 10 月 10 日 16:00，剩余已不足既有 24,600 秒完整准备及验证预算，不能据此启动新候选。待实际构建证据齐备，提交具体候选及新截止草案；本计划不自动续期。新增 RAM 固定对象仍单独精确确认，真人 SOURCE/SNAPSHOT/ACK 不代答。
+4. 获批后按真实依赖完成 sourceFresh CLOSED → snapshot initial 与 completion custody → sourceSnapshot/finalFresh/finalSnapshot CLOSED → 两项原有 Staging 迁移 → 聚焦 R4。失败或未知先独立对账，不自动重试、不把清理成功当作验收成功。
+
+当前两项 pending 仍为 `20260925090000_stage1_operational_completion_terminal_shape`、`20260925091000_stage1_operational_completion_settlement_guard`。沿用现有 datasource；不增加业务功能、商业 KMS 或额外测试矩阵。详见[本轮勘误及实际证据](../../acceptance/2026-10-10-stage1-d789-replacement-errata.md)。
+
 > **For agentic workers:** 使用 `superpowers:executing-plans` 逐项执行；已有定向子 agent 只承担明确的离线实现或独立审核，不另开大规模并行复盘。复用已有授权；本计划的技术 HOLD 不要求用户重复批准。
 
 **Goal:** 将已知失败机制前置排除，以有限的必要验证完成阶段 1；不扩功能、不扩大权限、不以整链重跑代替排错。

@@ -288,6 +288,7 @@
     "scripts/release/retire-r3-incident-3b451859.mjs",
     "scripts/release/retire-r3-incident-588da0dc.mjs",
     "scripts/release/retire-r3-incident-79feaa9a.mjs",
+    "scripts/release/retire-r3-incident-eb5a1850.mjs",
     "scripts/release/run-final-compose-gate.mjs",
     "scripts/release/run-r3-source-fresh.mjs",
     "scripts/release/snapshot-custody-job.mjs",

@@ -3,10 +3,30 @@ import path from "node:path";
 
 import { computeMigrationCatalog, sha256Bytes } from "@subscription-saas/release-foundation";
 
+import { hashBillingMaintenanceEvidenceDatabaseIdentity } from "../../../scripts/billing-maintenance-cycle-evidence-core.mjs";
 import { runnerError } from "./error-codes.mjs";
 
 const schemaRelativePath = "apps/api/prisma/schema.prisma";
 const configRelativePath = "apps/api/prisma.config.ts";
+const billingRunId = /^[0-9a-f]{64}$/u;
+const billingIdentityStatement =
+  'SELECT current_database() AS "databaseName", (pg_control_system()).system_identifier::text AS "systemIdentifier"';
+const billingFactsStatement = `
+  SELECT id::text AS id, sequence, status::text AS status,
+         evidence_run_id AS "evidenceRunId", release_sha AS "releaseSha",
+         image_digest AS "imageDigest", database_identity_sha256 AS "databaseIdentitySha256",
+         forbidden_domain_set_version AS "forbiddenDomainSetVersion",
+         forbidden_domain_set_sha256 AS "forbiddenDomainSetSha256",
+         cycle_started_at AS "cycleStartedAt",
+         reconciliation_completed_at AS "reconciliationCompletedAt",
+         enqueue_completed_at AS "enqueueCompletedAt", completed_at AS "completedAt",
+         blocked_count AS "blockedCount", reconciliation_summary AS "reconciliationSummary",
+         enqueue_summary AS "enqueueSummary", before_counts AS "beforeCounts",
+         before_counts_sha256 AS "beforeCountsSha256", after_counts AS "afterCounts",
+         after_counts_sha256 AS "afterCountsSha256"
+  FROM "billing_maintenance_cycle_fact"
+  WHERE evidence_run_id = $1
+  ORDER BY sequence`;
 
 function assertSchemaPath(schema, repoRoot) {
   const expected = path.resolve(repoRoot, schemaRelativePath);
@@ -114,6 +134,24 @@ export function createDatabaseRuntimeAdapter({
   });
   let activeDatabase = database;
 
+  async function billingReadOnlyQuery(statement, parameters, timeoutMilliseconds) {
+    if (
+      typeof database.withReadOnlyTransaction !== "function" ||
+      !Number.isSafeInteger(timeoutMilliseconds) ||
+      timeoutMilliseconds < 1 ||
+      timeoutMilliseconds > 30_000
+    ) {
+      throw runnerError("BILLING_MAINTENANCE_OPTIONS_INVALID");
+    }
+    return database.withReadOnlyTransaction(async (transaction) => {
+      await transaction.$queryRawUnsafe(
+        "SELECT set_config('statement_timeout', $1, true)",
+        String(Math.max(1, timeoutMilliseconds - 50))
+      );
+      return transaction.$queryRawUnsafe(statement, ...parameters);
+    });
+  }
+
   async function appliedMigrations() {
     const exists = await activeDatabase.$queryRawUnsafe(
       "SELECT to_regclass('public._prisma_migrations')::text AS name"
@@ -131,6 +169,33 @@ export function createDatabaseRuntimeAdapter({
 
   return Object.assign(database, {
     now,
+    async observeBillingMaintenanceIdentity(queryTimeoutMilliseconds) {
+      const rows = await billingReadOnlyQuery(
+        billingIdentityStatement,
+        [],
+        queryTimeoutMilliseconds
+      );
+      if (
+        !Array.isArray(rows) ||
+        rows.length !== 1 ||
+        rows[0]?.databaseName !== target.databaseName
+      ) {
+        throw runnerError("BILLING_MAINTENANCE_DATABASE_IDENTITY_INVALID");
+      }
+      return hashBillingMaintenanceEvidenceDatabaseIdentity(rows[0]);
+    },
+    async queryBillingMaintenanceFacts({ runId, queryTimeoutMilliseconds, remainingMilliseconds }) {
+      if (
+        typeof runId !== "string" ||
+        !billingRunId.test(runId) ||
+        !Number.isSafeInteger(remainingMilliseconds) ||
+        remainingMilliseconds < 1 ||
+        queryTimeoutMilliseconds > remainingMilliseconds
+      ) {
+        throw runnerError("BILLING_MAINTENANCE_OPTIONS_INVALID");
+      }
+      return billingReadOnlyQuery(billingFactsStatement, [runId], queryTimeoutMilliseconds);
+    },
     async loadMigrationCatalog() {
       return computeMigrationCatalog(repoRoot);
     },

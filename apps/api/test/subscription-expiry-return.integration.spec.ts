@@ -12307,7 +12307,7 @@ async function createExpiryFixture(prisma: PrismaService) {
   const scheduleId = randomUUID();
   const segmentId = randomUUID();
   const vehicleId = randomUUID();
-  await prisma.$transaction(async (tx) => {
+  const fixtureTransaction = prisma.$transaction(async (tx) => {
     await insertRuntimeOrderGraph(tx, {
       customerId,
       label: `expiry-${orderId}`,
@@ -12316,7 +12316,8 @@ async function createExpiryFixture(prisma: PrismaService) {
     });
     await tx.vehicle.update({
       data: {
-        plateNo: `TEST${vehicleId.replaceAll("-", "").slice(0, 5)}`,
+        // Keep the full unique vehicle identity within plate_no's 32-character limit.
+        plateNo: vehicleId.replaceAll("-", ""),
         purchasePriceAmount: 20_000_000n,
         status: VehicleStatus.LEASED
       },
@@ -12363,6 +12364,13 @@ async function createExpiryFixture(prisma: PrismaService) {
         ) VALUES (${job.id}::uuid, ${scheduleId}::uuid, ${orderId}::uuid, 'GENERATE_MONTHLY_RENT_BILL', 'PENDING', ${`expiry-integration:${job.id}`}, clock_timestamp(), ${JSON.stringify({ periodStart: job.periodStart })}::jsonb, clock_timestamp(), clock_timestamp())
       `);
     }
+  });
+  await fixtureTransaction.catch((error: unknown) => {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && /^P\d{4}$/.test(error.code)) {
+      // The launcher retains this bounded code, not Prisma's raw SQL or values.
+      throw new Error(`INTEGRATION_EXPIRY_FIXTURE_PRISMA_ERROR ${error.code}`, { cause: error });
+    }
+    throw error;
   });
   return { customerId, earnedJobId, futureJobId, orderId, scheduleId, segmentId, vehicleId };
 }

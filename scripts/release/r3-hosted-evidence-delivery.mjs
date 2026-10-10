@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import path from "node:path";
 import childProcess from "node:child_process";
 import { readR3HostedOperationKey } from "./r3-operation-inputs.mjs";
+import { R3_STARTUP_WINDOW_MS } from "./r3-startup-deadline.mjs";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import {
   r3EvidenceScope,
@@ -298,7 +299,10 @@ export async function openR3HostedEvidenceDelivery(input) {
     await recheck();
     // The protected job publishes its attested input before H1 can import and
     // start the owner holder. This wait never extends the admitted expiry.
-    const connectDeadline = Math.min(Date.now() + 600000, Date.parse(scope.expiresAt));
+    const connectDeadline = Math.min(
+      Date.now() + R3_STARTUP_WINDOW_MS,
+      Date.parse(scope.expiresAt)
+    );
     while (!sftp && Date.now() < connectDeadline) {
       await recheck();
       const attempt = startSftp(key.sshPrivateKeyPath);

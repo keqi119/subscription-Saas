@@ -76,7 +76,7 @@ test("R3 startup deadline binds each chain's exact live Execute step and job ide
         runId: ci.runId,
         jobId: ci.jobId,
         executeStartedAt: startedAt,
-        deadlineAtMs: Date.parse(startedAt) + 600000
+        deadlineAtMs: Date.parse(startedAt) + 1200000
       }
     );
   }
@@ -95,8 +95,19 @@ test("R3 startup deadline binds each chain's exact live Execute step and job ide
   );
 });
 
+test("R3 startup deadline allows a live start beyond ten minutes but stops at twenty", () => {
+  const admission = admissionFor();
+  const startedAt = new Date(Date.now() - 600001).toISOString();
+  const deadline = createR3StartupDeadline({
+    rawJob: jobBytes(startedAt, stepName("source", "fresh"), admission),
+    admission,
+    operationRef
+  });
+  assert.equal(deadline.deadlineAtMs, Date.parse(startedAt) + 1200000);
+});
+
 test("R3 startup deadline rejects invalid Execute evidence and survives a wall-clock rollback", async (t) => {
-  const expired = new Date(Date.now() - 600001).toISOString();
+  const expired = new Date(Date.now() - 1200001).toISOString();
   const admission = admissionFor();
   assert.throws(
     () =>

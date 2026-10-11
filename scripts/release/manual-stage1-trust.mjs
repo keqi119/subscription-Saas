@@ -17,7 +17,8 @@ import {
 import {
   inheritR3FailureCause,
   markR3FailureCause,
-  markR3JobAdmissionCause
+  markR3JobAdmissionCause,
+  r3FailureTracker
 } from "./r3-failure-diagnostic.mjs";
 import { runR3StartupTiming } from "./r3-startup-detail-timing.mjs";
 import { createPrivateKey, createPublicKey } from "node:crypto";
@@ -58,6 +59,7 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const REPOSITORY = "keqi119/subscription-Saas";
 const fixedR3JobOwners = new WeakMap();
+const fixedR3BuildAttestationScopes = new WeakMap();
 const WORKFLOW = ".github/workflows/docker-images.yml";
 const ISSUER = "https://token.actions.githubusercontent.com";
 const SYSTEM = "C:\\Windows\\System32\\";
@@ -329,7 +331,7 @@ async function openInput(file, options = {}) {
       }
     };
     await recheck();
-    return { bytes: initial.bytes, recheck, close: () => handle.close() };
+    return { bytes: initial.bytes, identity: initial.stat, recheck, close: () => handle.close() };
   } catch (error) {
     initial?.bytes.fill(0);
     await handle.close();
@@ -1064,16 +1066,78 @@ export async function verifyManualBuild(input) {
   return verifyManualBuildInput(input, true);
 }
 
+// A single awaited owner/import call may reuse successful cryptographic
+// verification of the same immutable build originals; live checks still run.
+export async function withFixedR3BuildAttestationScope(selector, consume) {
+  exact(selector, ["repoRoot", "operationRef"]);
+  requireThat(
+    typeof consume === "function" &&
+      typeof selector.operationRef === "string" &&
+      UUID.test(selector.operationRef)
+  );
+  const scope = Object.freeze(Object.create(null));
+  const state = {
+    repoRoot: absolute(selector.repoRoot),
+    operationRef: selector.operationRef,
+    closed: false,
+    busy: false,
+    verified: null
+  };
+  fixedR3BuildAttestationScopes.set(scope, state);
+  try {
+    return await consume(scope);
+  } finally {
+    state.closed = true;
+    state.verified = null;
+    fixedR3BuildAttestationScopes.delete(scope);
+  }
+}
+
+function activeR3BuildAttestationScope(scope, repoRoot, operationRef) {
+  if (scope === undefined) return null;
+  const state = fixedR3BuildAttestationScopes.get(scope);
+  requireThat(
+    state && !state.closed && state.repoRoot === repoRoot && state.operationRef === operationRef,
+    "R3_BUILD_ATTESTATION_SCOPE_UNAVAILABLE"
+  );
+  return state;
+}
+
 async function verifyManualBuildInput(
   input,
   requireCurrentValidity,
   verifierRepoRoot = input.repoRoot,
   historicalContract = null,
-  captureVerifiedBuildRun = null
+  captureVerifiedBuildRun = null,
+  buildAttestationScope = undefined,
+  operationRef = undefined
 ) {
   const opened = [];
+  let scoped,
+    scopeBusy = false,
+    primaryError;
   try {
     exact(input, ["proofBytes", "materialBytes", "repoRoot"]);
+    scoped =
+      buildAttestationScope === undefined
+        ? null
+        : activeR3BuildAttestationScope(
+            buildAttestationScope,
+            absolute(input.repoRoot),
+            operationRef
+          );
+    requireThat(
+      !scoped ||
+        (requireCurrentValidity &&
+          verifierRepoRoot === input.repoRoot &&
+          historicalContract === null &&
+          captureVerifiedBuildRun === null)
+    );
+    if (scoped) {
+      requireThat(!scoped.busy);
+      scoped.busy = true;
+      scopeBusy = true;
+    }
     const profile = await loadManualProfile({ repoRoot: input.repoRoot }, requireCurrentValidity);
     const separateVerifier = verifierRepoRoot !== input.repoRoot;
     if (separateVerifier) {
@@ -1213,19 +1277,57 @@ async function verifyManualBuildInput(
     };
     await inspectSource();
     for (const item of opened) await item.recheck();
-    const proofAttestation = await verifyAttestedInput(
-      proofPath,
-      proofBytes,
-      proof.identity.sourceSha,
-      instant(proof.provenance.generatedAt)
-    );
+    const binding = scoped
+      ? sha256Canonical({
+          repoRoot: input.repoRoot,
+          operationRef: scoped.operationRef,
+          verifierRepoRoot,
+          proofPath,
+          receiptPath,
+          proofRawDigest,
+          materialRawDigest,
+          receiptRawDigest: sha256Bytes(receiptInput.bytes),
+          sourceSha: proof.identity.sourceSha,
+          profileDigest: sha256Canonical(profile),
+          proofEarliest: instant(proof.provenance.generatedAt),
+          receiptEarliest: instant(receipt.readbackAt),
+          proofVerifierArgs: attestationArgs(proofPath, proof.identity.sourceSha),
+          receiptVerifierArgs: attestationArgs(receiptPath, proof.identity.sourceSha)
+        })
+      : null;
+    const previous = scoped?.verified;
+    if (scoped)
+      requireThat(
+        activeR3BuildAttestationScope(
+          buildAttestationScope,
+          absolute(input.repoRoot),
+          operationRef
+        ) === scoped && scoped.busy
+      );
+    if (previous)
+      requireThat(
+        previous.binding === binding &&
+          sameIdentity(previous.proofIdentity, proofInput.identity) &&
+          sameIdentity(previous.materialIdentity, materialInput.identity) &&
+          sameIdentity(previous.receiptIdentity, receiptInput.identity)
+      );
+    const proofAttestation = previous
+      ? previous.proofAttestation
+      : await verifyAttestedInput(
+          proofPath,
+          proofBytes,
+          proof.identity.sourceSha,
+          instant(proof.provenance.generatedAt)
+        );
     for (const item of opened) await item.recheck();
-    const receiptAttestation = await verifyAttestedInput(
-      receiptPath,
-      receiptInput.bytes,
-      proof.identity.sourceSha,
-      instant(receipt.readbackAt)
-    );
+    const receiptAttestation = previous
+      ? previous.receiptAttestation
+      : await verifyAttestedInput(
+          receiptPath,
+          receiptInput.bytes,
+          proof.identity.sourceSha,
+          instant(receipt.readbackAt)
+        );
     for (const item of opened) await item.recheck();
     for (const field of [
       "sourceSha",
@@ -1254,6 +1356,23 @@ async function verifyManualBuildInput(
     );
     if (captureVerifiedBuildRun)
       captureVerifiedBuildRun(() => successfulRun(proof, proofAttestation));
+    if (scoped)
+      requireThat(
+        activeR3BuildAttestationScope(
+          buildAttestationScope,
+          absolute(input.repoRoot),
+          operationRef
+        ) === scoped && scoped.busy
+      );
+    if (scoped && !previous)
+      scoped.verified = {
+        binding,
+        proofIdentity: proofInput.identity,
+        materialIdentity: materialInput.identity,
+        receiptIdentity: receiptInput.identity,
+        proofAttestation,
+        receiptAttestation
+      };
     return Object.freeze({
       buildProofDigest,
       proofRawDigest,
@@ -1262,23 +1381,59 @@ async function verifyManualBuildInput(
       promotionEligible: false
     });
   } catch (error) {
-    failWithCause(error?.code === CUSTODY_REQUIRED ? CUSTODY_REQUIRED : BUILD, error);
+    if (scopeBusy) {
+      scoped.closed = true;
+      scoped.verified = null;
+    }
+    primaryError = inheritR3FailureCause(
+      Object.assign(new Error(error?.code === CUSTODY_REQUIRED ? CUSTODY_REQUIRED : BUILD), {
+        code: error?.code === CUSTODY_REQUIRED ? CUSTODY_REQUIRED : BUILD
+      }),
+      error
+    );
+    throw primaryError;
   } finally {
-    await Promise.all(opened.map((item) => item.close()));
+    const closed = await Promise.allSettled(opened.map((item) => item.close()));
+    if (scopeBusy) scoped.busy = false;
+    const rejection = closed.find((item) => item.status === "rejected");
+    if (rejection) {
+      const cleanup = rejection.reason ?? new Error("R3_BUILD_INPUT_CLOSE_FAILED");
+      if (scopeBusy) {
+        scoped.closed = true;
+        scoped.verified = null;
+      }
+      const tracker = r3FailureTracker("H1_CALLER");
+      tracker.enter("CLEANUP");
+      if (primaryError) throw tracker.decorate(primaryError, primaryError, cleanup);
+      const error = inheritR3FailureCause(
+        Object.assign(new Error(BUILD), { code: BUILD }),
+        cleanup
+      );
+      throw tracker.decorate(error, cleanup, cleanup);
+    }
   }
 }
 
 // Fixed R3 policy plus the existing H2 verification. This holds trusted inputs;
 // it does not create a session, grant a capability or admit a hosted destination.
-export async function readFixedR3TargetPolicy(input) {
-  return readR3TargetPolicyInput(input, true);
+export async function readFixedR3TargetPolicy(input, buildAttestationScope, operationRef) {
+  return readR3TargetPolicyInput(
+    input,
+    true,
+    input.repoRoot,
+    null,
+    buildAttestationScope,
+    operationRef
+  );
 }
 
 async function readR3TargetPolicyInput(
   input,
   requireCurrentValidity,
   verifierRepoRoot = input.repoRoot,
-  historicalContract = null
+  historicalContract = null,
+  buildAttestationScope = undefined,
+  operationRef = undefined
 ) {
   const code = "R3_TARGET_POLICY_INPUT_UNAVAILABLE";
   const opened = [];
@@ -1391,7 +1546,9 @@ async function readR3TargetPolicyInput(
           ? null
           : (recheck) => {
               recheckVerifiedBuildRun = recheck;
-            }
+            },
+        buildAttestationScope,
+        operationRef
       ),
       proof = json(proofBytes);
     requireThat(build.custodyReceiptRawDigest === sha256Bytes(receiptBytes));
@@ -1499,7 +1656,7 @@ function r3CreationSpec(value, operationRef, profile) {
 
 // Fixed owner-imported plan only. Actual hosted job admission and manual
 // consumption must precede creation; no key, payload or remote target is opened.
-export async function readFixedR3CreationSpec(input) {
+export async function readFixedR3CreationSpec(input, buildAttestationScope) {
   const code = "R3_CREATION_INPUT_UNAVAILABLE",
     opened = [];
   let policyInput,
@@ -1527,6 +1684,7 @@ export async function readFixedR3CreationSpec(input) {
     );
     const repoRoot = absolute(input.repoRoot),
       operationRef = input.operationRef;
+    activeR3BuildAttestationScope(buildAttestationScope, repoRoot, operationRef);
     requireThat(process.platform === "linux");
     const profile = await loadFixedManualProfile({ repoRoot }),
       actual = await actualHost(),
@@ -1565,7 +1723,11 @@ export async function readFixedR3CreationSpec(input) {
       sha256Bytes(proofBytes) === spec.proofRawDigest &&
         sha256Bytes(materialBytes) === spec.materialRawDigest
     );
-    policyInput = await readFixedR3TargetPolicy({ repoRoot, proofBytes, materialBytes });
+    policyInput = await readFixedR3TargetPolicy(
+      { repoRoot, proofBytes, materialBytes },
+      buildAttestationScope,
+      operationRef
+    );
     requireThat(
       spec.buildProofDigest === policyInput.build.buildProofDigest &&
         spec.sourceSha === policyInput.sourceSha &&
@@ -1737,7 +1899,7 @@ function r3JobApiIdentity(admission, run, job) {
 
 // A signed hosted-job declaration plus independent current API readbacks.
 // This returns evidence, not a manual consume decision or a connected target.
-export async function readFixedR3JobAdmission(input) {
+export async function readFixedR3JobAdmission(input, buildAttestationScope) {
   const code = "R3_JOB_ADMISSION_UNAVAILABLE";
   let creation,
     held,
@@ -1765,8 +1927,9 @@ export async function readFixedR3JobAdmission(input) {
     );
     const repoRoot = absolute(input.repoRoot),
       operationRef = input.operationRef;
+    activeR3BuildAttestationScope(buildAttestationScope, repoRoot, operationRef);
     requireThat(process.platform === "linux");
-    creation = await readFixedR3CreationSpec({ repoRoot, operationRef });
+    creation = await readFixedR3CreationSpec({ repoRoot, operationRef }, buildAttestationScope);
     const profile = await loadFixedManualProfile({ repoRoot }),
       { principal } = await actualHost(),
       file = path.join(

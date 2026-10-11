@@ -789,16 +789,44 @@ with zipfile.ZipFile(io.BytesIO(data)) as z:
 
 // A consumer may borrow the live verified admission only during this call.
 // Without a consumer the existing bytes-only import contract is unchanged.
-export const importR3SourceFreshJob = (input, consume) =>
-  importR3Job(input, "source", "fresh", consume);
-export const importR3SourceSnapshotJob = (input, consume) =>
-  importR3Job(input, "source", "snapshot", consume);
-export const importR3FinalFreshJob = (input, consume) =>
-  importR3Job(input, "final", "fresh", consume);
-export const importR3FinalSnapshotJob = (input, consume) =>
-  importR3Job(input, "final", "snapshot", consume);
+export const importR3SourceFreshJob = (input, consume, buildAttestationScope) =>
+  importR3Job(input, "source", "fresh", consume, buildAttestationScope);
+export const importR3SourceSnapshotJob = (input, consume, buildAttestationScope) =>
+  importR3Job(input, "source", "snapshot", consume, buildAttestationScope);
+export const importR3FinalFreshJob = (input, consume, buildAttestationScope) =>
+  importR3Job(input, "final", "fresh", consume, buildAttestationScope);
+export const importR3FinalSnapshotJob = (input, consume, buildAttestationScope) =>
+  importR3Job(input, "final", "snapshot", consume, buildAttestationScope);
 
-async function importR3Job(input, phase, chain, consume) {
+async function importR3Job(input, phase, chain, consume, buildAttestationScope) {
+  if (buildAttestationScope === undefined) {
+    try {
+      exact(input, ["repoRoot", "operationRef", "runId"]);
+      need(consume === undefined || typeof consume === "function");
+      need(
+        process.platform === "linux" &&
+          process.getuid?.() === 0 &&
+          typeof input.repoRoot === "string" &&
+          path.isAbsolute(input.repoRoot) &&
+          path.normalize(input.repoRoot) === input.repoRoot &&
+          UUID.test(input.operationRef) &&
+          typeof input.runId === "string" &&
+          /^[1-9][0-9]*$/u.test(input.runId) &&
+          Number.isSafeInteger(Number(input.runId))
+      );
+    } catch {
+      fail();
+    }
+    const trust = await import("./manual-stage1-trust.mjs");
+    return trust.withFixedR3BuildAttestationScope(
+      { repoRoot: input.repoRoot, operationRef: input.operationRef },
+      (scope) => importR3JobInScope(input, phase, chain, consume, scope)
+    );
+  }
+  return importR3JobInScope(input, phase, chain, consume, buildAttestationScope);
+}
+
+async function importR3JobInScope(input, phase, chain, consume, buildAttestationScope) {
   const opened = [];
   let consuming = false,
     primary;
@@ -817,10 +845,13 @@ async function importR3Job(input, phase, chain, consume) {
     );
     const trust = await import("./manual-stage1-trust.mjs");
     let creation = await runR3StartupTiming(input.operationRef, "IMPORT_SPEC", () =>
-      trust.readFixedR3CreationSpec({
-        repoRoot: input.repoRoot,
-        operationRef: input.operationRef
-      })
+      trust.readFixedR3CreationSpec(
+        {
+          repoRoot: input.repoRoot,
+          operationRef: input.operationRef
+        },
+        buildAttestationScope
+      )
     );
     opened.push(creation);
     need(creation.spec.phase === phase && creation.spec.chain === chain);
@@ -840,10 +871,13 @@ async function importR3Job(input, phase, chain, consume) {
     await fs.mkdir(staging, { mode: 0o700 });
     await privateArchiveDirectory(staging, archiveRoot);
     creation = await runR3StartupTiming(input.operationRef, "IMPORT_SPEC_REOPEN", () =>
-      trust.readFixedR3CreationSpec({
-        repoRoot: input.repoRoot,
-        operationRef: input.operationRef
-      })
+      trust.readFixedR3CreationSpec(
+        {
+          repoRoot: input.repoRoot,
+          operationRef: input.operationRef
+        },
+        buildAttestationScope
+      )
     );
     opened.push(creation);
     need(
@@ -918,10 +952,13 @@ async function importR3Job(input, phase, chain, consume) {
     // Neither artifact metadata nor download success admits the job. Existing
     // GitHub attestation plus independent current run/job API must both pass.
     const admitted = await runR3StartupTiming(input.operationRef, "IMPORT_ADMISSION", () =>
-      trust.readFixedR3JobAdmission({
-        repoRoot: input.repoRoot,
-        operationRef: input.operationRef
-      })
+      trust.readFixedR3JobAdmission(
+        {
+          repoRoot: input.repoRoot,
+          operationRef: input.operationRef
+        },
+        buildAttestationScope
+      )
     );
     opened.push(admitted);
     await runR3StartupTiming(input.operationRef, "IMPORT_ADMISSION_RECHECK", () =>

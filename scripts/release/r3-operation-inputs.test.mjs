@@ -93,6 +93,7 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
   // H1/H2 readers are synthetic here; the writer's create-only files are actual tmpfs.
   const mocked = mock.module("./manual-stage1-trust.mjs", {
     namedExports: {
+      withFixedR3BuildAttestationScope: async (_selector, consume) => consume(Object.freeze({})),
       loadFixedManualProfile: async () => ({
         ownerId: "keqi119",
         expiresAt,

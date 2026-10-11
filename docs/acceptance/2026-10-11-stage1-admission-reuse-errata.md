@@ -20,7 +20,19 @@
 
 H1 caller、目标创建、转发租约、创建会话、证据传输及 hosted evidence/cleanup reader 复用同一个原始 WeakMap owner，通过已有 borrower 每次重新检查当前文件、主机/负责人、创建规格、有效期、构建状态与 run/job API。没有磁盘验签缓存、跨进程复用、跨 RC 复用或自动重试。借用者关闭不能关闭原始 owner；原 owner 关闭后不可再借用。最终历史回读仍独立验证。
 
-本次消除的是同一 live admission 下游重复验证。导入阶段三个 creation reader 的 proof/receipt 验证仍保留；不能宣称已消除所有在线验签，不能将请求次数减少等同于根除外部抖动。
+上述首次修复消除的是同一 live admission 下游重复验证。9c65de4 发起前复查确认，导入阶段三个 creation reader 仍各自验证 proof/receipt，实际 owner wrapper 的 `OWNER_SPEC` 还会各验证一次。同一负责人调用合计 proof 4 次、receipt 4 次、admission 1 次。这是尚未处理完的代码重复调用，不是新的环境抖动；因此 9c65de4 长链尚未发起。
+
+## 构建证明与回执重复验证补修
+
+补修仅在同一 `repoRoot + operationRef`、同一进程的受控异步作用域内，复用成功的 proof/receipt 密码学验证结果。实际 owner wrapper 的 `OWNER_SPEC` 与 importer 必须共同使用该作用域；只改 importer 会遗漏入口处的第四次验证。
+
+每次重新打开仍检查受保护路径、文件身份、原字节摘要、source/contract/profile、有效期，构建成功状态以及当前 run/job 状态仍实时回读。退出作用域后不再可借用；失败结果、跨操作、跨进程及独立历史回读不复用。验签命令参数也必须完全一致。此修复不延长时限、不跳过初次签名检查，也不改变真实终端 SOURCE／SNAPSHOT／ACK 要求。
+
+局部 RED 已用原生 Linux 的真实 reader 复现：importer 内 proof 验签次数为 3，断言预期为 1，admission 仍为 1。补修后，真实 reader 的导入复用、完整 `OWNER_SPEC → IMPORT` 共享、原件变化拒绝三项通过；修正后的清理失败负例单独通过，无跳过。完整入口计数为 proof 1、receipt 1、admission 1，动态 API 回读仍增加。独立代码审查无剩余阻断，四个未绑定新候选的 STOP 入口模板通过语法和结构检查。请求次数减少不能作为外部 TUF 请求停滞已经解决的证据，也不代表正式 R3 已通过。
+
+补修中的定向清理负例曾把“同一路径第一次打开”当成内部验证句柄，实际命中外层 reader，导致 `Missing expected rejection`。这是测试定位缺陷，不是环境抖动或实际发布失败。后续故障注入必须对应被测层的实际关闭阶段，并检查确实触发；只修正、重跑受影响用例，不重复已经通过且源码未变的用例。
+
+现有模拟 writer 用例在导入前被本机 `/dev/shm` 的 1755 权限阻断，代码要求 1777；同环境未修改的 9c65de4 基线也复现相同错误。这是确定的测试环境配置差异，既不算补修回归，也不算通过或偶发网络抖动。未修改共享挂载权限，未重复该组合。补修原始记录位于本工作区 `.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/build-attestation-import-reuse-fix/`。
 
 ## 下次发起前
 
@@ -42,4 +54,4 @@ H1 caller、目标创建、转发租约、创建会话、证据传输及 hosted 
 - 较大组合测试触及 300 秒本地预算；单条带诊断复核走过目标创建，进入证据导入后触及 150 秒预算。它们未完成，不能归类为通过或声称根因已查明。后续采用上述传递边界与实际 reader 的分段结果，不反复运行完整组合。
 - 合同验证、改动文件格式及 diff 空白检查通过。没有触发新 RC，没有实际 ACK 或 R3 CLOSED。
 
-开发前 Prisma validate 通过；当前 shell 的 migrate status 因未注入既有 datasource 配置失败。本补丁不修改业务、迁移或数据库，不代表两个既有待应用迁移已经发布。
+首次补丁开发前 Prisma validate 通过，migrate status 曾因当前 shell 未注入既有 datasource 配置失败。后续补修复用服务器历史配置完成实际回读：共 128 个迁移，仍有 `20260925090000_stage1_operational_completion_terminal_shape` 与 `20260925091000_stage1_operational_completion_settlement_guard` 两项待应用；Prisma validate 再次通过。本补丁不修改业务、迁移或数据库，也不代表这两项已发布。

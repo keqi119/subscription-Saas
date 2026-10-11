@@ -1917,6 +1917,11 @@ test(
             .length,
           1
         );
+        for (const file of [f.proofPath, f.receiptPath])
+          assert.equal(
+            f.gh.calls.filter(({ args }) => args[0] === "attestation" && args[2] === file).length,
+            1
+          );
         return "CONSUMED";
       }
     );
@@ -1924,6 +1929,112 @@ test(
     await assert.rejects(retained.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
     await assert.rejects(trust.borrowFixedR3JobAdmission(retained, selector), {
       code: "R3_JOB_ADMISSION_UNAVAILABLE"
+    });
+  }
+);
+
+test(
+  "R3 IMPORT shares build attestations only within one live owner scope",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3ImportFixture(t);
+    const selector = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    const count = (file) =>
+      f.gh.calls.filter(({ args }) => args[0] === "attestation" && args[2] === file).length;
+    let retained;
+    await trust.withFixedR3BuildAttestationScope(selector, async (scope) => {
+      retained = scope;
+      const checked = await trust.readFixedR3CreationSpec(selector, scope);
+      await checked.recheck();
+      await checked.close();
+      await assert.rejects(
+        trust.readFixedR3CreationSpec({ ...selector, operationRef: randomUUID() }, scope),
+        { code: "R3_CREATION_INPUT_UNAVAILABLE" }
+      );
+      const result = await importR3SourceFreshJob(
+        { ...selector, runId: f.admission.ci.runId },
+        async (owner) => {
+          await owner.recheck();
+          return "CONSUMED";
+        },
+        scope
+      );
+      assert.equal(result, "CONSUMED");
+      assert.equal(count(f.proofPath), 1);
+      assert.equal(count(f.receiptPath), 1);
+      assert.equal(count(f.admissionPath), 1);
+    });
+    await assert.rejects(trust.readFixedR3CreationSpec(selector, retained), {
+      code: "R3_CREATION_INPUT_UNAVAILABLE"
+    });
+  }
+);
+
+test(
+  "R3 IMPORT refuses changed receipt inside a live build attestation scope",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3ImportFixture(t);
+    const selector = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    await trust.withFixedR3BuildAttestationScope(selector, async (scope) => {
+      const checked = await trust.readFixedR3CreationSpec(selector, scope);
+      await checked.close();
+      await fs.appendFile(f.receiptPath, " ");
+      await assert.rejects(
+        importR3SourceFreshJob(
+          { ...selector, runId: f.admission.ci.runId },
+          async () => "UNREACHABLE",
+          scope
+        ),
+        { code: "R3_OPERATION_INPUT_INVALID" }
+      );
+      assert.equal(
+        f.gh.calls.filter(({ args }) => args[0] === "attestation" && args[2] === f.receiptPath)
+          .length,
+        1
+      );
+    });
+  }
+);
+
+test(
+  "R3 IMPORT closes the build attestation scope after input close failure",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3ImportFixture(t);
+    const selector = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    const originalOpen = fs.open.bind(fs);
+    let injected = false;
+    t.mock.method(fs, "open", async (file, ...args) => {
+      const handle = await originalOpen(file, ...args);
+      if (
+        file === f.proofPath &&
+        !injected &&
+        new Error().stack.includes("verifyManualBuildInput")
+      ) {
+        injected = true;
+        const close = handle.close.bind(handle);
+        handle.close = async () => {
+          await close();
+          throw Object.assign(new Error("synthetic close failure"), { code: "EACCES" });
+        };
+      }
+      return handle;
+    });
+    await trust.withFixedR3BuildAttestationScope(selector, async (scope) => {
+      await assert.rejects(
+        trust.readFixedR3CreationSpec(selector, scope).then(async (held) => {
+          await held.close();
+          return held;
+        }),
+        {
+          code: "R3_CREATION_INPUT_UNAVAILABLE"
+        }
+      );
+      assert.equal(injected, true);
+      await assert.rejects(trust.readFixedR3CreationSpec(selector, scope), {
+        code: "R3_CREATION_INPUT_UNAVAILABLE"
+      });
     });
   }
 );

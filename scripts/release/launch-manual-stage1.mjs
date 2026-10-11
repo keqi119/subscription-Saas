@@ -35,6 +35,7 @@ import {
   verifyManualBuild,
   openTrustedManualSession,
   readFixedR3JobAdmission,
+  borrowFixedR3JobAdmission,
   prepareR3HostedEvidenceImport,
   importR3HostedEvidence,
   importR3HostedCleanupEvidence,
@@ -1103,7 +1104,7 @@ export async function recordR3CreationAck(archive, response, diagnostics) {
 // H1 owns the session and durable consume. The hosted control socket receives
 // only this fixed request; its 202 is delivery acknowledgement, never success.
 // No CLI/workflow calls this entry until the destination/cleanup graph is wired.
-export async function launchR3TargetCreate(input) {
+export async function launchR3TargetCreate(input, verifiedAdmission) {
   const code = "R3_TARGET_CREATE_UNAVAILABLE";
   const diagnostic = r3FailureTracker("H1_CREATE");
   let fixed,
@@ -4931,7 +4932,9 @@ export async function launchR3TargetCreate(input) {
       prepareR3HostedEvidenceImport(input)
     );
     fixed = await runR3StartupTiming(input.operationRef, "NATIVE_ADMISSION", () =>
-      readFixedR3JobAdmission(input)
+      verifiedAdmission === undefined
+        ? readFixedR3JobAdmission(input)
+        : borrowFixedR3JobAdmission(verifiedAdmission, input)
     );
     const startupBinding = createR3StartupDeadline({
       rawJob: fixed.rawInputs.job,
@@ -4951,14 +4954,14 @@ export async function launchR3TargetCreate(input) {
     recordR3StartupPhase("evidence_gate");
     session = await diagnostic.run("SESSION", () =>
       runR3StartupTiming(input.operationRef, "NATIVE_SESSION_OPEN", () =>
-        openTrustedR3CreationSession(input, fixed)
+        openTrustedR3CreationSession(input, verifiedAdmission ?? fixed)
       )
     );
     assertR3StartupActive();
     recordR3StartupPhase("session_ready");
     lease = await diagnostic.run("LEASE", () =>
       runR3StartupTiming(input.operationRef, "NATIVE_LEASE_OPEN", () =>
-        openR3H1ForwardLease(input, fixed)
+        openR3H1ForwardLease(input, verifiedAdmission ?? fixed)
       )
     );
     assertR3StartupActive();
@@ -5207,7 +5210,10 @@ export async function launchR3TargetCreate(input) {
         const bytes = Buffer.from(bundleBytes);
         hostedImportPending = (async () => {
           await check();
-          hostedEvidence = await importR3HostedEvidence({ ...input, bundleBytes: bytes });
+          hostedEvidence = await importR3HostedEvidence(
+            { ...input, bundleBytes: bytes },
+            verifiedAdmission ?? fixed
+          );
           const observed = await engineReadback(!postgresAttempted);
           if (
             hostedEvidence.engine.id !== boundEngineId ||
@@ -5350,7 +5356,10 @@ export async function launchR3TargetCreate(input) {
           // The Engine is already gone; retain trust/original checks without
           // attempting another request against the removed target.
           await check();
-          const held = await importR3HostedCleanupEvidence({ ...input, bundleBytes });
+          const held = await importR3HostedCleanupEvidence(
+            { ...input, bundleBytes },
+            verifiedAdmission ?? fixed
+          );
           targetCleanupEvidence = held;
           if (
             held.creationEvidenceDigest !== hostedEvidence.bundleDigest ||

@@ -184,15 +184,26 @@ const writeObject = (role, digest, bytes) =>
     mode: 0o600
   });
 
+let lastAdmission;
+let admissionReads = 0,
+  admissionBorrows = 0;
 mock.module("./manual-stage1-trust.mjs", {
   namedExports: {
     loadFixedManualProfile: async () => profile,
+    prepareR3HostedEvidenceImport: async () => {},
+    borrowFixedR3JobAdmission: async (owner, selector) => {
+      assert.equal(owner, lastAdmission);
+      assert.equal(selector.operationRef, operationRef);
+      admissionBorrows++;
+      return { ...owner, close: async () => {} };
+    },
     readFixedR3JobAdmission: async () => {
+      admissionReads++;
       const executeName =
         spec.phase === "source"
           ? `Execute the held source ${spec.chain} exchange through verified CLOSED`
           : "Execute final migration, database tests, API and Web through verified CLOSED";
-      return {
+      lastAdmission = {
         spec,
         admission: job,
         rawInputs: {
@@ -217,6 +228,7 @@ mock.module("./manual-stage1-trust.mjs", {
         recheck: async () => {},
         close: async () => {}
       };
+      return lastAdmission;
     },
     readTrustedR3SourceCompletion: async (selector) => {
       events.push("source-history-open");
@@ -280,7 +292,8 @@ mock.module("./r3-final-evidence.mjs", {
 });
 mock.module("./launch-manual-stage1.mjs", {
   namedExports: {
-    launchR3TargetCreate: async () => {
+    launchR3TargetCreate: async (_input, verifiedAdmission) => {
+      assert.equal(verifiedAdmission, lastAdmission);
       events.push("launch");
       if (holdLaunchUntilCancelled) {
         const signal = currentR3StartupScope()?.signal;
@@ -399,7 +412,8 @@ mock.module("./launch-manual-stage1.mjs", {
 mock.module("./r3-h1-evidence-delivery.mjs", {
   namedExports: {
     assertR3H1EvidenceReady: async () => {},
-    openR3H1EvidenceDelivery: async () => {
+    openR3H1EvidenceDelivery: async (_input, verifiedAdmission) => {
+      assert.equal(verifiedAdmission, lastAdmission);
       if (failDeliveryOnOpen) {
         events.push("delivery-open-failed");
         throw new Error("synthetic delivery failure");
@@ -606,6 +620,8 @@ test("hosted caller preserves nested workspace diagnostic while closing transpor
 });
 
 test("source fresh caller requires exact owner ACK before cleanup and publishes actual close readback", async (t) => {
+  events.length = 0;
+  admissionBorrows = 0;
   await fs.mkdir(root, { mode: 0o700 });
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const value of Object.values(profile.storage)) {
@@ -666,7 +682,12 @@ test("source fresh caller requires exact owner ACK before cleanup and publishes 
   }));
   const { runR3SourceFreshH1, runR3SourceSnapshotH1, runR3FinalFreshH1, runR3FinalSnapshotH1 } =
     await import("./run-r3-source-fresh.mjs");
-  const result = await runR3SourceFreshH1({ repoRoot: "/synthetic-h1", operationRef });
+  const trustReader = await import("./manual-stage1-trust.mjs");
+  const retained = await trustReader.readFixedR3JobAdmission();
+  const readsBefore = admissionReads;
+  const result = await runR3SourceFreshH1({ repoRoot: "/synthetic-h1", operationRef }, retained);
+  assert.equal(admissionReads, readsBefore);
+  assert.equal(admissionBorrows, 1);
   assert.equal(result.status, "CLOSED");
   assert.equal(result.sessionRecordDigest, closedDigest);
   assert.deepEqual(events, [

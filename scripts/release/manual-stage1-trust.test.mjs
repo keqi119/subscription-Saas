@@ -1837,28 +1837,34 @@ async function r3JobFixture(t, options = {}) {
   };
 }
 
+async function r3ImportFixture(t) {
+  const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+  const zipScript =
+    "import base64,io,sys,zipfile; b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('job-admission.json',base64.b64decode(sys.argv[1])); z.close(); sys.stdout.buffer.write(b.getvalue())";
+  const zip = await new Promise((resolve, reject) =>
+    nativeExecFile(
+      "python3",
+      ["-c", zipScript, f.admissionBytes.toString("base64")],
+      { encoding: "buffer", timeout: 10000, maxBuffer: 1048576 },
+      (error, stdout) => (error ? reject(error) : resolve(Buffer.from(stdout)))
+    )
+  );
+  f.gh.importArtifact = {
+    runId: f.admission.ci.runId,
+    id: 789,
+    name: `stage1-r3-job-${f.operationRef}-${f.admission.ci.runId}-1`,
+    zip
+  };
+  await fs.unlink(f.admissionPath);
+  return { ...f, zip };
+}
+
 test(
   "R3 IMPORT keeps the real creation reader valid after its one-time staging directory",
   { skip: process.platform !== "linux" },
   async (t) => {
-    const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
-    const zipScript =
-      "import base64,io,sys,zipfile; b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('job-admission.json',base64.b64decode(sys.argv[1])); z.close(); sys.stdout.buffer.write(b.getvalue())";
-    const zip = await new Promise((resolve, reject) =>
-      nativeExecFile(
-        "python3",
-        ["-c", zipScript, f.admissionBytes.toString("base64")],
-        { encoding: "buffer", timeout: 10000, maxBuffer: 1048576 },
-        (error, stdout) => (error ? reject(error) : resolve(Buffer.from(stdout)))
-      )
-    );
-    f.gh.importArtifact = {
-      runId: f.admission.ci.runId,
-      id: 789,
-      name: `stage1-r3-job-${f.operationRef}-${f.admission.ci.runId}-1`,
-      zip
-    };
-    await fs.unlink(f.admissionPath);
+    const f = await r3ImportFixture(t);
+    const { zip } = f;
     const result = await importR3SourceFreshJob({
       repoRoot: f.repoRoot,
       operationRef: f.operationRef,
@@ -1877,6 +1883,116 @@ test(
         runId: f.admission.ci.runId
       }),
       { code: "R3_OPERATION_INPUT_INVALID" }
+    );
+  }
+);
+
+test(
+  "R3 IMPORT retains one admission only within the awaited consumer and closes it afterward",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3ImportFixture(t);
+    const selector = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    let retained;
+    const attestationCalls = () =>
+      f.gh.calls.filter(({ args }) => args[0] === "attestation").length;
+    const apiCalls = () => f.gh.calls.filter(({ args }) => args[0] === "api").length;
+    const result = await importR3SourceFreshJob(
+      { ...selector, runId: f.admission.ci.runId },
+      async (owner) => {
+        retained = owner;
+        assert.deepEqual(owner.rawInputs.admission, f.admissionBytes);
+        const attestations = attestationCalls(),
+          apis = apiCalls();
+        // The launcher's idempotent preparation must not invalidate this owner.
+        await trust.prepareR3HostedEvidenceImport(selector);
+        const borrowed = await trust.borrowFixedR3JobAdmission(owner, selector);
+        await borrowed.recheck();
+        await borrowed.close();
+        await owner.recheck();
+        assert.equal(attestationCalls(), attestations);
+        assert.ok(apiCalls() > apis);
+        assert.equal(
+          f.gh.calls.filter(({ args }) => args[0] === "attestation" && args[2] === f.admissionPath)
+            .length,
+          1
+        );
+        return "CONSUMED";
+      }
+    );
+    assert.equal(result, "CONSUMED");
+    await assert.rejects(retained.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+    await assert.rejects(trust.borrowFixedR3JobAdmission(retained, selector), {
+      code: "R3_JOB_ADMISSION_UNAVAILABLE"
+    });
+  }
+);
+
+test(
+  "R3 IMPORT closes retained admission on consumer failure without replacing its diagnostic",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3ImportFixture(t);
+    const selector = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    const failure = new Error("CONSUMER_FAILED");
+    let retained;
+    await assert.rejects(
+      importR3SourceFreshJob({ ...selector, runId: f.admission.ci.runId }, async (owner) => {
+        retained = owner;
+        f.apiJob.status = "completed";
+        f.apiJob.conclusion = "success";
+        f.apiJob.completed_at = new Date().toISOString();
+        await assert.rejects(trust.borrowFixedR3JobAdmission(owner, selector), {
+          code: "R3_JOB_ADMISSION_UNAVAILABLE"
+        });
+        throw failure;
+      }),
+      (error) => error === failure
+    );
+    await assert.rejects(retained.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+  }
+);
+
+test(
+  "R3 IMPORT retains the caller diagnostic when admission close also fails",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3ImportFixture(t);
+    const nativeOpen = fs.open.bind(fs);
+    let closing = false;
+    t.mock.method(fs, "open", async (...args) => {
+      const handle = await nativeOpen(...args);
+      if (args[0] === f.admissionPath) {
+        const close = handle.close.bind(handle);
+        t.mock.method(handle, "close", async () => {
+          await close();
+          if (closing) throw new Error("synthetic close failure");
+        });
+      }
+      return handle;
+    });
+    const tracker = r3FailureTracker("H1_CALLER");
+    tracker.enter("ADMISSION");
+    const failure = tracker.decorate(new Error("caller failed"), new Error("unavailable"));
+    await assert.rejects(
+      importR3SourceFreshJob(
+        {
+          repoRoot: f.repoRoot,
+          operationRef: f.operationRef,
+          runId: f.admission.ci.runId
+        },
+        async () => {
+          closing = true;
+          throw failure;
+        }
+      ),
+      (error) => {
+        assert.equal(error.failureDiagnostic?.component, "H1_CALLER");
+        assert.equal(error.failureDiagnostic?.stage, "ADMISSION");
+        assert.equal(error.failureDiagnostic?.causeCode, failure.failureDiagnostic.causeCode);
+        assert.equal(error.failureDiagnostic?.cleanupCode, "R3_JOB_ADMISSION_UNAVAILABLE");
+        return true;
+      }
     );
   }
 );
@@ -2938,11 +3054,19 @@ test(
     const f = await r3WorkspaceFixture(t, "active", false, job);
     const absent = await r3WorkspaceFixture(t, "absent", false, job);
     const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    const live = await trust.readFixedR3JobAdmission(input);
+    t.after(() => live.close());
+    const attestationCalls = () =>
+      f.gh.calls.filter(({ args }) => args[0] === "attestation").length;
+    const initialAttestations = attestationCalls();
     const creationEvidenceBytes = r3HostedBundle(f);
-    const creation = await trust.importR3HostedEvidence({
-      ...input,
-      bundleBytes: creationEvidenceBytes
-    });
+    const creation = await trust.importR3HostedEvidence(
+      {
+        ...input,
+        bundleBytes: creationEvidenceBytes
+      },
+      live
+    );
     t.after(() => creation.close());
     const cleanup = r3CleanupFixture({
       spec: f.spec,
@@ -2969,7 +3093,8 @@ test(
       privateKey: f.forwardingPrivateKey,
       now: new Date().toISOString()
     });
-    const imported = await trust.importR3HostedCleanupEvidence({ ...input, bundleBytes });
+    const imported = await trust.importR3HostedCleanupEvidence({ ...input, bundleBytes }, live);
+    assert.equal(attestationCalls(), initialAttestations);
     t.after(() => imported.close());
     assert.equal(imported.bundleDigest, sha256Bytes(bundleBytes));
     assert.equal(imported.creationEvidenceDigest, sha256Bytes(creationEvidenceBytes));
@@ -3015,7 +3140,11 @@ test(
     const live = await trust.readFixedR3JobAdmission(input);
     t.after(() => live.close());
     const bundleBytes = r3HostedBundle(f);
-    const imported = await trust.importR3HostedEvidence({ ...input, bundleBytes });
+    const attestationCalls = () =>
+      f.gh.calls.filter(({ args }) => args[0] === "attestation").length;
+    const initialAttestations = attestationCalls();
+    const imported = await trust.importR3HostedEvidence({ ...input, bundleBytes }, live);
+    assert.equal(attestationCalls(), initialAttestations);
     t.after(() => imported.close());
     assert.equal(imported.bundleDigest, sha256Bytes(bundleBytes));
     assert.deepEqual(imported.workspaceObservation, f.observation);
@@ -4123,6 +4252,46 @@ test(
     await normal.close();
     assert.equal(normalCloses, 1, "a prior action result must not become a close option");
     assert.equal(incompleteCloses, 1);
+  }
+);
+
+test(
+  "R3 LAUNCH borrows the retained admission before the native readiness boundary",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+    const selector = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    await trust.prepareR3HostedEvidenceImport(selector);
+    const owner = await trust.readFixedR3JobAdmission(selector);
+    t.after(() => owner.close());
+    const attestationCalls = () =>
+      f.gh.calls.filter(({ args }) => args[0] === "attestation").length;
+    const apiCalls = () => f.gh.calls.filter(({ args }) => args[0] === "api").length;
+    const initialAttestations = attestationCalls(),
+      initialApis = apiCalls();
+    let readiness = 0;
+    const gate = t.mock.module("./r3-h1-evidence-delivery.mjs", {
+      namedExports: {
+        assertR3H1EvidenceReady: async () => {
+          readiness++;
+          throw new Error("SYNTHETIC_READINESS_STOP");
+        }
+      }
+    });
+    t.after(() => gate.restore());
+    const { launchR3TargetCreate } = await import("./launch-manual-stage1.mjs?retained-admission");
+    await assert.rejects(launchR3TargetCreate(selector, owner), {
+      code: "R3_TARGET_CREATE_UNAVAILABLE"
+    });
+    assert.equal(readiness, 1);
+    assert.equal(attestationCalls(), initialAttestations);
+    assert.ok(apiCalls() > initialApis);
+    await owner.recheck();
+    await assert.rejects(launchR3TargetCreate(selector, { ...owner }), {
+      code: "R3_TARGET_CREATE_UNAVAILABLE"
+    });
+    assert.equal(readiness, 1, "forged authority never reaches native readiness");
+    noAuthorityAccess(f);
   }
 );
 

@@ -15,6 +15,7 @@ import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import { checkR3HostedOperationContext } from "./r3-hosted-creation-control.mjs";
 import { runR3StartupTiming } from "./r3-startup-detail-timing.mjs";
+import { closeR3FailureResources, r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 
 const CODE = "R3_OPERATION_INPUT_INVALID";
 const MAGIC = Buffer.from("openssh-key-v1\0");
@@ -786,14 +787,23 @@ with zipfile.ZipFile(io.BytesIO(data)) as z:
     sys.stdout.buffer.write(value)
 `;
 
-export const importR3SourceFreshJob = (input) => importR3Job(input, "source", "fresh");
-export const importR3SourceSnapshotJob = (input) => importR3Job(input, "source", "snapshot");
-export const importR3FinalFreshJob = (input) => importR3Job(input, "final", "fresh");
-export const importR3FinalSnapshotJob = (input) => importR3Job(input, "final", "snapshot");
+// A consumer may borrow the live verified admission only during this call.
+// Without a consumer the existing bytes-only import contract is unchanged.
+export const importR3SourceFreshJob = (input, consume) =>
+  importR3Job(input, "source", "fresh", consume);
+export const importR3SourceSnapshotJob = (input, consume) =>
+  importR3Job(input, "source", "snapshot", consume);
+export const importR3FinalFreshJob = (input, consume) =>
+  importR3Job(input, "final", "fresh", consume);
+export const importR3FinalSnapshotJob = (input, consume) =>
+  importR3Job(input, "final", "snapshot", consume);
 
-async function importR3Job(input, phase, chain) {
+async function importR3Job(input, phase, chain, consume) {
   const opened = [];
+  let consuming = false,
+    primary;
   try {
+    need(consume === undefined || typeof consume === "function");
     exact(input, ["repoRoot", "operationRef", "runId"]);
     input = Object.freeze({ ...input });
     need(
@@ -898,6 +908,13 @@ async function importR3Job(input, phase, chain) {
     await runR3StartupTiming(input.operationRef, "IMPORT_SPEC_RECHECK", () => creation.recheck());
     await privateArchiveDirectory(directory, archiveRoot);
     await createInput(`${directory}/job-admission.json`, bytes);
+    // Reserve all evidence parents before the retained admission pins them.
+    // Later launcher preparation is idempotent and must not stale these handles.
+    if (consume !== undefined)
+      await trust.prepareR3HostedEvidenceImport({
+        repoRoot: input.repoRoot,
+        operationRef: input.operationRef
+      });
     // Neither artifact metadata nor download success admits the job. Existing
     // GitHub attestation plus independent current run/job API must both pass.
     const admitted = await runR3StartupTiming(input.operationRef, "IMPORT_ADMISSION", () =>
@@ -911,10 +928,24 @@ async function importR3Job(input, phase, chain) {
       admitted.recheck()
     );
     need(admitted.rawInputs.admission.equals(bytes));
+    if (consume !== undefined) {
+      consuming = true;
+      return await consume(admitted);
+    }
     return Buffer.from(bytes);
-  } catch {
+  } catch (error) {
+    if (consuming) {
+      primary = error;
+      throw error;
+    }
     fail();
   } finally {
-    await Promise.all(opened.map((item) => item.close()));
+    if (consuming)
+      await closeR3FailureResources(
+        r3FailureTracker("H1_CALLER"),
+        primary,
+        opened.map((item) => () => item.close())
+      );
+    else await Promise.all(opened.map((item) => item.close()));
   }
 }

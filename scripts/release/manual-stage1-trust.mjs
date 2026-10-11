@@ -2395,7 +2395,7 @@ export async function readTrustedR3FinalCompletion(input) {
 // Job-key provenance and independently reconstructed storage facts only. Even
 // an absent observation still needs its original live job; it cannot release a
 // resource lock or stand in for the complete Engine/PG cleanup result.
-export async function readFixedR3WorkspaceObservation(input) {
+export async function readFixedR3WorkspaceObservation(input, verifiedAdmission) {
   const code = "R3_WORKSPACE_INPUT_UNAVAILABLE",
     opened = [];
   let job,
@@ -2427,7 +2427,10 @@ export async function readFixedR3WorkspaceObservation(input) {
     const repoRoot = absolute(input.repoRoot),
       { operationRef, state } = input;
     requireThat(process.platform === "linux");
-    job = await readFixedR3JobAdmission({ repoRoot, operationRef });
+    job =
+      verifiedAdmission === undefined
+        ? await readFixedR3JobAdmission({ repoRoot, operationRef })
+        : await borrowFixedR3JobAdmission(verifiedAdmission, { repoRoot, operationRef });
     admissionBytes = Buffer.from(job.rawInputs.admission);
     const profile = await loadFixedManualProfile({ repoRoot }),
       { principal } = await actualHost(),
@@ -2710,7 +2713,7 @@ export async function prepareR3HostedEvidenceImport(input) {
 
 // The only input bytes here are untrusted evidence. A verified live job and its
 // attested code/key establish provenance; import does not make creation succeed.
-export async function importR3HostedEvidence(input) {
+export async function importR3HostedEvidence(input, verifiedAdmission) {
   const code = "R3_HOSTED_EVIDENCE_INPUT_UNAVAILABLE";
   let job, policy;
   try {
@@ -2721,7 +2724,10 @@ export async function importR3HostedEvidence(input) {
         input.bundleBytes.length <= LIMIT
     );
     const bundleBytes = Buffer.from(input.bundleBytes);
-    job = await readFixedR3JobAdmission(selector);
+    job =
+      verifiedAdmission === undefined
+        ? await readFixedR3JobAdmission(selector)
+        : await borrowFixedR3JobAdmission(verifiedAdmission, selector);
     const profile = await loadFixedManualProfile({ repoRoot: selector.repoRoot });
     const { principal } = await actualHost();
     policy = await openInput(
@@ -2825,7 +2831,7 @@ export async function importR3HostedEvidence(input) {
     policy = null;
     await job.close();
     job = null;
-    return await readFixedR3HostedEvidence(selector);
+    return await readFixedR3HostedEvidence(selector, verifiedAdmission);
   } catch {
     fail(code);
   } finally {
@@ -2834,7 +2840,7 @@ export async function importR3HostedEvidence(input) {
   }
 }
 
-export async function readFixedR3HostedEvidence(input) {
+export async function readFixedR3HostedEvidence(input, verifiedAdmission) {
   const code = "R3_HOSTED_EVIDENCE_INPUT_UNAVAILABLE";
   let workspace,
     bundle,
@@ -2851,7 +2857,10 @@ export async function readFixedR3HostedEvidence(input) {
   };
   try {
     const selector = r3EvidenceSelector(input);
-    workspace = await readFixedR3WorkspaceObservation({ ...selector, state: "active" });
+    workspace = await readFixedR3WorkspaceObservation(
+      { ...selector, state: "active" },
+      verifiedAdmission
+    );
     const profile = await loadFixedManualProfile({ repoRoot: selector.repoRoot });
     const { principal } = await actualHost();
     bundle = await openInput(
@@ -2916,7 +2925,7 @@ export async function readFixedR3HostedEvidence(input) {
 
 // Retained active reports identify the original owned workspace; this readback
 // does not require that the cleaned workspace or its Engine still exists.
-export async function readFixedR3HostedCleanupEvidence(input) {
+export async function readFixedR3HostedCleanupEvidence(input, verifiedAdmission) {
   const code = "R3_HOSTED_CLEANUP_INPUT_UNAVAILABLE";
   let creation,
     bundle,
@@ -2938,7 +2947,7 @@ export async function readFixedR3HostedCleanupEvidence(input) {
   };
   try {
     const selector = r3EvidenceSelector(input);
-    creation = await readFixedR3HostedEvidence(selector);
+    creation = await readFixedR3HostedEvidence(selector, verifiedAdmission);
     const profile = await loadFixedManualProfile({ repoRoot: selector.repoRoot });
     const { principal } = await actualHost();
     const read = (storageRoot) =>
@@ -2995,7 +3004,7 @@ export async function readFixedR3HostedCleanupEvidence(input) {
 
 // One import attempt, backup first, at reserved fixed paths. These untrusted
 // bytes never grant cleanup success or release a session's locks by themselves.
-export async function importR3HostedCleanupEvidence(input) {
+export async function importR3HostedCleanupEvidence(input, verifiedAdmission) {
   const code = "R3_HOSTED_CLEANUP_INPUT_UNAVAILABLE";
   let creation;
   try {
@@ -3006,7 +3015,7 @@ export async function importR3HostedCleanupEvidence(input) {
         input.bundleBytes.length <= LIMIT
     );
     const bytes = Buffer.from(input.bundleBytes);
-    creation = await readFixedR3HostedEvidence(selector);
+    creation = await readFixedR3HostedEvidence(selector, verifiedAdmission);
     const verified = verifyR3HostedCleanupEvidence({
       bundleBytes: bytes,
       creationEvidenceBytes: creation.rawBundle,
@@ -3081,7 +3090,7 @@ export async function importR3HostedCleanupEvidence(input) {
     await write(directories[0], "hosted-cleanup.json", bytes);
     await creation.close();
     creation = null;
-    return await readFixedR3HostedCleanupEvidence(selector);
+    return await readFixedR3HostedCleanupEvidence(selector, verifiedAdmission);
   } catch {
     fail(code);
   } finally {

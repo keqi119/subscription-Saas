@@ -10,6 +10,8 @@ import readline from "node:readline/promises";
 import {
   loadFixedManualProfile,
   readFixedR3JobAdmission,
+  borrowFixedR3JobAdmission,
+  prepareR3HostedEvidenceImport,
   readTrustedR3SourceCompletion,
   readTrustedR3FinalCompletion
 } from "./manual-stage1-trust.mjs";
@@ -333,12 +335,16 @@ async function waitForwardExit() {
   fail();
 }
 
-export const runR3SourceFreshH1 = (input) => runR3SourceH1(input, "fresh");
-export const runR3SourceSnapshotH1 = (input) => runR3SourceH1(input, "snapshot");
-export const runR3FinalFreshH1 = (input) => runR3SourceH1(input, "fresh", "final");
-export const runR3FinalSnapshotH1 = (input) => runR3SourceH1(input, "snapshot", "final");
+export const runR3SourceFreshH1 = (input, admission) =>
+  runR3SourceH1(input, "fresh", "source", admission);
+export const runR3SourceSnapshotH1 = (input, admission) =>
+  runR3SourceH1(input, "snapshot", "source", admission);
+export const runR3FinalFreshH1 = (input, admission) =>
+  runR3SourceH1(input, "fresh", "final", admission);
+export const runR3FinalSnapshotH1 = (input, admission) =>
+  runR3SourceH1(input, "snapshot", "final", admission);
 
-async function runR3SourceH1(input, chain, phase = "source") {
+async function runR3SourceH1(input, chain, phase, verifiedAdmission) {
   const diagnostic = r3FailureTracker("H1_CALLER");
   let admission,
     native,
@@ -353,9 +359,12 @@ async function runR3SourceH1(input, chain, phase = "source") {
   try {
     inputs(input);
     input = Object.freeze({ ...input });
+    if (verifiedAdmission === undefined) await prepareR3HostedEvidenceImport(input);
     admission = await diagnostic.run("ADMISSION", () =>
       runR3StartupTiming(input.operationRef, "CALLER_ADMISSION", () =>
-        readFixedR3JobAdmission(input)
+        verifiedAdmission === undefined
+          ? readFixedR3JobAdmission(input)
+          : borrowFixedR3JobAdmission(verifiedAdmission, input)
       )
     );
     need(admission.spec.phase === phase && admission.spec.chain === chain);
@@ -379,7 +388,7 @@ async function runR3SourceH1(input, chain, phase = "source") {
         ? await ownerSourceSelection(profile, admission.admission.expiresAt, chain, input.repoRoot)
         : null;
     diagnostic.enter("LAUNCH");
-    launch = launchR3TargetCreate(input);
+    launch = launchR3TargetCreate(input, verifiedAdmission ?? admission);
     launch.then(
       (value) => {
         native = value;
@@ -392,7 +401,9 @@ async function runR3SourceH1(input, chain, phase = "source") {
     // and admission; observing a key never substitutes for either authority.
     await waitForwardKey(admission.admission, input.operationRef, () => launchFailure);
     assertR3StartupActive();
-    delivery = await diagnostic.run("DELIVERY", () => openR3H1EvidenceDelivery(input));
+    delivery = await diagnostic.run("DELIVERY", () =>
+      openR3H1EvidenceDelivery(input, verifiedAdmission ?? admission)
+    );
     assertR3StartupActive();
     diagnostic.enter("CREATION");
     native = await launch;

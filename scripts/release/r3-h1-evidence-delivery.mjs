@@ -9,7 +9,7 @@ import {
   runR3StartupCleanup,
   settledR3StartupExecFile
 } from "./r3-startup-deadline.mjs";
-import { readFixedR3JobAdmission } from "./manual-stage1-trust.mjs";
+import { readFixedR3JobAdmission, borrowFixedR3JobAdmission } from "./manual-stage1-trust.mjs";
 import { sha256Bytes } from "../../packages/release-foundation/src/digest.mjs";
 import { encodeManualJson } from "../../packages/release-foundation/src/manual-stage1-contracts.mjs";
 import {
@@ -290,7 +290,7 @@ async function publish(name, bytes, gid) {
   }
 }
 
-export async function openR3H1EvidenceDelivery(input) {
+export async function openR3H1EvidenceDelivery(input, verifiedAdmission) {
   exact(input, ["repoRoot", "operationRef"]);
   need(
     process.platform === "linux" &&
@@ -315,7 +315,10 @@ export async function openR3H1EvidenceDelivery(input) {
   const { repoRoot, operationRef } = input;
   try {
     assertR3StartupActive();
-    admission = await readFixedR3JobAdmission({ repoRoot, operationRef });
+    admission =
+      verifiedAdmission === undefined
+        ? await readFixedR3JobAdmission({ repoRoot, operationRef })
+        : await borrowFixedR3JobAdmission(verifiedAdmission, { repoRoot, operationRef });
     assertR3StartupActive();
     const { uid, gid } = await account();
     await startupChecked(effectiveSsh);

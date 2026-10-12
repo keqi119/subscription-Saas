@@ -16,10 +16,20 @@
 
 ## 修复与验证范围
 
-生产改动只有 limits 表头正则，增加 `[ \t]*`。解析器回归使用原生尾空格，并验证额外文本仍被拒绝；相邻观察器和创建器 fixture 同步为原生表头格式。既有 core/swap、设备对应、私有目录及资源身份检查保持原义。
+首个补丁仅修改 limits 表头正则，增加 `[ \t]*`。解析器回归使用原生尾空格，并验证额外文本仍被拒绝；相邻观察器和创建器 fixture 同步为原生表头格式。既有 core/swap、设备对应、私有目录及资源身份检查保持原义。
 
 新增回归先在原代码失败，修复后解析器 9 项通过；Linux Node 22 的相邻观察器与创建器定向测试 14 项通过、无跳过。同一份隔离采集结果经明确标记的两项输入调整后，修复前解析失败、修复后解析通过；这只证明局部解析修复，不能替代 hosted 原始证据或实际 SOURCE／SNAPSHOT／ACK。
 
 本轮开发前工作区干净，Prisma validate 通过。复用既有服务器 datasource 配置回读，128 个迁移中仍有 `20260925090000_stage1_operational_completion_terminal_shape` 与 `20260925091000_stage1_operational_completion_settlement_guard` 两项待应用；未执行迁移。此补丁不改变业务行为，也不使阶段 1 自动收口。
 
 局部原件保存在工作区 `.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/` 下的 `candidate-4af1e8b-rc-failure-ACTUAL`、`candidate-4af1e8b-sourcefresh-readback-ACTUAL` 和 `candidate-4af1e8b-workspace-local-probe-ROOT_DIAGNOSTIC/capture-once`。后续只推进受影响分段；候选、签名、引用和一次性状态必须按真实绑定重新核对，不能直接重放失败运行。
+
+## 分段诊断补充
+
+后续补丁使观察器保留固定的失败子阶段，创建器和调用者包装错误时继续保留首个可信诊断。外层日志只包含预定义的阶段和错误代码，原始输出仍按私有证据路径处理。新增回归以错误的原生拓扑输出触发 `WORKSPACE_OBSERVATION / TOPOLOGY_PARSE`，验证包装后诊断未丢失，也未泄露原始文本；不放宽任何工作区接受条件。
+
+手动工作流 `stage1-workspace-diagnostic.yml` 仅在本仓库 main 的首次执行、一次性 GitHub-hosted Ubuntu 24 主机上运行。它用一个随机引用创建 64 MiB 临时 LUKS2 工作区，调用真实观察器核对 absent → active → 清理后 absent，并保留固定工具输出以便离线排查。它不调用 H1、数据库或 OSS，不生成发布授权，也不覆盖 `/dev/shm`。结果明确标记 `diagnosticOnly=true`、`R3Passed=false`；只有实际运行和原件回读才能证明该局部分段结果。
+
+本地诊断回归为 22 项通过、3 项 Linux 专用用例跳过；随后仅在既有 WSL 补跑观察器文件，4 项全部通过、无跳过。诊断摘要的两项针对性测试通过，YAML 解析及手动触发结构检查通过，契约清单核验为 332 文件、93 schema、128 迁移、13 命令。独立审查未发现阻断项，并已在临时 VM 的 swap 准备前补充显式运行身份断言。这里尚不记录 hosted 原生作业为通过。
+
+c820 事故已于 `2026-10-12T05:51:24Z` 按负责人精确批准完成处置并独立回读：先持久化签名处置，再将两把指定锁移入本事故保留目录，原始 UNKNOWN、消费槽和历史原件保留。结论为 `OWNER_ACCEPTED_UNRESOLVED_FAILURE`；不证明 hosted 清理、人工 ACK 或 R3 收口，不授权重试旧 RC。

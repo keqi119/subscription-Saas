@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
 import { validateContract } from "../../packages/release-foundation/src/schema-registry.mjs";
 import { assessR3WorkspaceObservation } from "../../packages/release-foundation/src/r3-workspace-observation.mjs";
+import { r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 
 const INPUT = "R3_WORKSPACE_INPUT_INVALID";
 const INVALID = "R3_WORKSPACE_OBSERVATION_INVALID";
@@ -62,6 +63,7 @@ const sameIdentity = (left, right) => identityKeys.every((key) => left[key] === 
 const text = (bytes) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 
 export async function observeR3EncryptedWorkspace(input) {
+  const diagnostic = r3FailureTracker("WORKSPACE_OBSERVATION");
   requireThat(exact(input, ["operationRef", "capacityBytes", "state"]), INPUT);
   const { operationRef, capacityBytes, state } = input;
   requireThat(
@@ -115,6 +117,7 @@ export async function observeR3EncryptedWorkspace(input) {
     return bytes;
   };
   const execute = async (name, command, args) => {
+    diagnostic.enter(`NATIVE_${name.toUpperCase()}`);
     // Fixed executables and an isolated environment: no ambient Docker, loader,
     // libmount, key, profile or PostgreSQL variables can select another source.
     const before = await fs.stat(command, { bigint: true });
@@ -199,8 +202,11 @@ export async function observeR3EncryptedWorkspace(input) {
     captured[name] = result.stdout;
   };
   try {
+    diagnostic.enter("POLICY_READ");
     const policyBytes = await read("policy", policyPath);
+    diagnostic.enter("POLICY_PARSE");
     const policy = JSON.parse(text(policyBytes));
+    diagnostic.enter("POLICY_CONTRACT");
     validateContract("manual-stage1-r3-target-policy.v1", policy);
     policyDigest = sha256Bytes(policyBytes);
     const id = operationRef.replaceAll("-", ""),
@@ -213,7 +219,10 @@ export async function observeR3EncryptedWorkspace(input) {
       keyFile: `${roots.keyRoot}/${id}.key`,
       mapperName: `${roots.mapperPrefix}${id}`
     };
-    const machine = text(await read("machineId", "/etc/machine-id")).trim();
+    diagnostic.enter("MACHINE_READ");
+    const machineBytes = await read("machineId", "/etc/machine-id");
+    diagnostic.enter("MACHINE_PARSE");
+    const machine = text(machineBytes).trim();
     requireThat(/^[0-9a-f]{32}$/u.test(machine));
     hostFingerprint = sha256Bytes(Buffer.from(`subscription-saas/linux-machine-id/v1\n${machine}`));
     const privateRoots = [roots.backingRoot, roots.mountRoot, roots.keyRoot];
@@ -273,6 +282,7 @@ export async function observeR3EncryptedWorkspace(input) {
       return leaf;
     };
     const absent = state === "absent";
+    diagnostic.enter("PATH_INSPECT");
     const backing = await inspect(workspace.backingFile, "backing", absent);
     const key = await inspect(workspace.keyFile, "key", absent);
     const mount = await inspect(workspace.mountPath, "directory", absent);
@@ -322,9 +332,11 @@ export async function observeR3EncryptedWorkspace(input) {
       captured.swaps = await read("swaps", "/proc/swaps");
       captured.limits = await read("limits", "/proc/self/limits");
     }
+    diagnostic.enter("TOPOLOGY_PARSE");
     const facts = assessR3WorkspaceObservation({ workspace, state, captured });
     // Keep path/owner/inode identities stable during this observation. Directory
     // timestamps/nlink may change with other entries; leaf metadata may not.
+    diagnostic.enter("PATH_RECHECK");
     for (const held of heldPaths) {
       let current;
       try {
@@ -342,12 +354,15 @@ export async function observeR3EncryptedWorkspace(input) {
           : sameIdentity(current, held.stat)
       );
     }
+    diagnostic.enter("POLICY_RECHECK");
     requireThat((await fs.readFile(policyPath)).equals(policyBytes));
+    diagnostic.enter("MACHINE_RECHECK");
     requireThat(text(await fs.readFile("/etc/machine-id")).trim() === machine);
     return evidence(facts);
   } catch (cause) {
     // Preserve actual partial observations for the caller's private archive.
     // No stderr, key material or arbitrary host error is put in the message.
-    throw Object.assign(new Error(INVALID), { code: INVALID, evidence: evidence() });
+    const error = Object.assign(new Error(INVALID), { code: INVALID, evidence: evidence() });
+    throw diagnostic.decorate(error, cause);
   }
 }

@@ -303,7 +303,7 @@ export function assessR3WorkspaceObservation(input) {
     const swaps = text(captured.swaps).trim().split(/\r?\n/u);
     requireThat(swaps.length === 1 && /^Filename\s+Type\s+Size\s+Used\s+Priority$/u.test(swaps[0]));
     const limits = text(captured.limits).trim().split(/\r?\n/u);
-    requireThat(/^Limit\s+Soft Limit\s+Hard Limit\s+Units$/u.test(limits[0]));
+    requireThat(/^Limit\s+Soft Limit\s+Hard Limit\s+Units[ \t]*$/u.test(limits[0]));
     const cores = limits.filter((line) => /^Max core file size\s/u.test(line));
     requireThat(cores.length === 1 && /^Max core file size\s+0\s+0\s+bytes\s*$/u.test(cores[0]));
     return freeze({

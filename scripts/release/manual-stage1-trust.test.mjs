@@ -35,7 +35,7 @@ import {
   installR3SnapshotSdkFixture,
   r3SnapshotBootstrapFixture
 } from "./r3-snapshot-payload-fixture.mjs";
-import { importR3SourceFreshJob } from "./r3-operation-inputs.mjs";
+import { importR3SourceFreshJob, prepareR3SourceFreshSpec } from "./r3-operation-inputs.mjs";
 import { r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 
 // The first RED is an assertion, not an import crash. Subsequent assertions
@@ -59,15 +59,16 @@ async function copyFixtureSource(source, destination) {
   assert.equal(stat.mode & 0o022, 0);
 }
 
-async function fixture(t) {
+async function fixture(t, { privateArchiveRoot = false } = {}) {
   assert.equal(
     process.platform,
     "linux",
     "Synthetic native filesystem fixture runs on isolated Linux"
   );
-  const root = await fs.mkdtemp(path.join(tmpdir(), "r13-trust-"));
+  const fixtureParent = privateArchiveRoot ? "/dev/shm" : tmpdir();
+  const root = await fs.mkdtemp(path.join(fixtureParent, "r13-trust-"));
   t.after(async () => {
-    assert.equal(path.dirname(root), path.resolve(tmpdir()));
+    assert.equal(path.dirname(root), path.resolve(fixtureParent));
     assert.ok(path.basename(root).startsWith("r13-trust-"));
     await fs.rm(root, { recursive: true, force: true });
   });
@@ -1080,10 +1081,11 @@ async function buildFixture(
     r3TargetPolicy = false,
     sourceReadback = false,
     historicalModuleVersion = false,
-    historicalExtraEntrypoint = false
+    historicalExtraEntrypoint = false,
+    privateArchiveRoot = false
   } = {}
 ) {
-  const f = await fixture(t);
+  const f = await fixture(t, { privateArchiveRoot });
   const manifest = "release/contracts/repository-contract-files.v1.json";
   const entrypoints = [
     "scripts/release/manual-stage1-trust.mjs",
@@ -1598,6 +1600,28 @@ async function r3CreationFixture(
   await fs.writeFile(specPath, specBytes, { flag: "wx", mode: 0o600 });
   return { ...f, operationRef, policy, spec, specPath, specBytes };
 }
+
+test(
+  "R3 prepare source fresh reuses real build attestations across policy and creation readers",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await buildFixture(t, { r3TargetPolicy: true, privateArchiveRoot: true });
+    const operationRef = randomUUID();
+    const bytes = await prepareR3SourceFreshSpec({
+      repoRoot: f.repoRoot,
+      operationRef,
+      proofRawDigest: sha256Bytes(f.proofBytes),
+      materialRawDigest: sha256Bytes(f.materialBytes),
+      capacityBytes: 64 * 1024 * 1024,
+      expiresAt: new Date(Date.now() + 3600000).toISOString()
+    });
+    assert.equal(JSON.parse(bytes).operationRef, operationRef);
+    const count = (file) =>
+      f.gh.calls.filter(({ args }) => args[0] === "attestation" && args[2] === file).length;
+    assert.equal(count(f.proofPath), 1);
+    assert.equal(count(f.receiptPath), 1);
+  }
+);
 
 test("R3 CREATION API rejects overrides and accessors before native IO", async (t) => {
   assert.equal(typeof trust.readFixedR3CreationSpec, "function");

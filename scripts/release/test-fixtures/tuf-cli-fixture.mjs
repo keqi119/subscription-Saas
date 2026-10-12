@@ -9,6 +9,12 @@ export async function tufCliFixture(options, { wrongIssuer = false, expired = fa
     await fs.readFile(new URL("./tuf-issuer-certificates.json", import.meta.url))
   );
   const roots = [];
+  // The official CLI writes device state independently of its config/cache.
+  if (options.env.XDG_STATE_HOME) {
+    const state = path.join(options.env.XDG_STATE_HOME, "gh");
+    await fs.mkdir(state, { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(state, "device-id"), "fixture-device-state");
+  }
   for (const [host, issuer] of [
     ["tuf-repo-cdn.sigstore.dev", "publicGood"],
     ["tuf-repo.github.com", "github"]

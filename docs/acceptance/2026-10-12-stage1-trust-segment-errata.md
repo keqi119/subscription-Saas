@@ -33,6 +33,8 @@
 | H1 gh 别名是符号链接，实际文件 uid/gid=1001            | 代码部署假设与确定性环境配置不一致       | 固定到已核对的真实路径，原文件改为 root:root/0555，版本和 SHA 不变；二进制拒绝原因固定化 |
 | WSL 公开根获取失败                                     | 环境相关失败，深层原因未确认             | 留存 TUF_CLIENT/GITHUB/ROOT 与退出码；未归因为抖动，不继续盲目重试                       |
 
+补充：实际隔离探针在工作目录留下了 gh 设备标识，官方 `go-gh v2.16.1` 的 `StateDir()` 证实未设置 HOME/XDG_STATE_HOME 时会退化为相对路径。这是新隔离代码缺口；根获取进程的 HOME、state、data 现均限定在其私有目录，夹具模拟设备标识写入并验证目录整体清理。只重验该段，保留此前密码学对照成果；同一 PR 的旧 CI 已取消以避免并行重复开销。
+
 ## 已冻结的验证段
 
 证据目录：`.superpowers/sdd/2026-10-05-stage1-h1-snapshot-host/trust-material-implementation/`。文件摘要及控制模板摘要统一见其中 `SEGMENT-MANIFEST.json`。

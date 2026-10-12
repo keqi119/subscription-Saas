@@ -402,8 +402,11 @@ export async function withR3TufMaterialScope(binding, consume) {
         GH_HOST: "github.com",
         GH_PROMPT_DISABLED: "1",
         GH_DEBUG: "1",
+        HOME: state.dir,
         GH_CONFIG_DIR: path.join(state.dir, "config"),
-        XDG_CACHE_HOME: path.join(state.dir, "cache")
+        XDG_CACHE_HOME: path.join(state.dir, "cache"),
+        XDG_STATE_HOME: path.join(state.dir, "state"),
+        XDG_DATA_HOME: path.join(state.dir, "data")
       },
       Math.min(120000, remaining(state)),
       state

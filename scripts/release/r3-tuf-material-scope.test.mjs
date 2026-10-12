@@ -129,6 +129,15 @@ test(
       };
     });
     assert.equal(calls.length, 1);
+    const env = calls[0].options.env;
+    const directory = path.dirname(file);
+    assert.equal(env.HOME, directory);
+    for (const [key, suffix] of [
+      ["XDG_STATE_HOME", "state"],
+      ["XDG_DATA_HOME", "data"]
+    ])
+      assert.equal(env[key], path.join(directory, suffix));
+    await assert.rejects(fs.stat(directory), { code: "ENOENT" });
     await assert.rejects(fs.stat(file), { code: "ENOENT" });
     afterClose.resolve();
     await assert.rejects(afterClose.use, { code: "R3_TUF_SCOPE_CLOSED" });

@@ -89,17 +89,41 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
   );
   const expiresAt = new Date(Date.now() + 60000).toISOString();
   let opens = 0,
-    closes = 0;
+    closes = 0,
+    activeScope = null,
+    activeRef = null,
+    scopeStarts = 0,
+    scopeCloses = 0,
+    failReadbackRef = null,
+    failCloseRef = null,
+    delayedCloseObserved = false;
   // H1/H2 readers are synthetic here; the writer's create-only files are actual tmpfs.
   const mocked = mock.module("./manual-stage1-trust.mjs", {
     namedExports: {
-      withFixedR3BuildAttestationScope: async (_selector, consume) => consume(Object.freeze({})),
+      withFixedR3BuildAttestationScope: async (selector, consume) => {
+        assert.equal(selector.repoRoot, "/synthetic-checked-repo");
+        assert.equal(activeScope, null);
+        const scope = Object.freeze({});
+        activeScope = scope;
+        activeRef = selector.operationRef;
+        scopeStarts++;
+        try {
+          return await consume(scope);
+        } finally {
+          activeScope = null;
+          activeRef = null;
+          scopeCloses++;
+        }
+      },
       loadFixedManualProfile: async () => ({
         ownerId: "keqi119",
         expiresAt,
         storage: { archiveRoot: directory }
       }),
-      readFixedR3TargetPolicy: async (value) => {
+      readFixedR3TargetPolicy: async (value, scope, operationRef) => {
+        assert.equal(scope, activeScope);
+        assert.ok(scope);
+        assert.equal(operationRef, activeRef);
         assert.deepEqual(value.proofBytes, proof);
         assert.deepEqual(value.materialBytes, material);
         return {
@@ -111,14 +135,19 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
           recheck: async () => {},
           close: async () => {
             closes++;
+            if (operationRef === failCloseRef) throw new Error("synthetic close failure");
           }
         };
       },
-      readFixedR3CreationSpec: async ({ operationRef }) => {
+      readFixedR3CreationSpec: async ({ operationRef }, scope) => {
+        assert.equal(scope, activeScope);
+        assert.ok(scope);
+        assert.equal(operationRef, activeRef);
         opens++;
         const spec = JSON.parse(
           await fs.readFile(`${directory}/inputs/r3/${operationRef}/creation-spec.json`)
         );
+        if (operationRef === failReadbackRef) throw new Error("synthetic readback failure");
         assert.equal(spec.ownerId, "keqi119");
         assert.equal(spec.sourceSha, "a".repeat(40));
         assert.equal(spec.buildProofDigest, `sha256:${"8".repeat(64)}`);
@@ -126,6 +155,11 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
           spec,
           recheck: async () => {},
           close: async () => {
+            if (operationRef === failCloseRef) {
+              await new Promise((resolve) => setTimeout(resolve, 25));
+              assert.equal(scope, activeScope);
+              delayedCloseObserved = true;
+            }
             closes++;
           }
         };
@@ -149,6 +183,8 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
     expiresAt
   };
   const bytes = await inputs.prepareR3SourceFreshSpec(input);
+  assert.equal(activeScope, null);
+  assert.equal(scopeStarts, scopeCloses);
   const spec = JSON.parse(bytes);
   assert.equal(spec.phase, "source");
   assert.equal(spec.chain, "fresh");
@@ -174,8 +210,12 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
   const racing = inputs.prepareR3SourceFreshSpec(racedInput);
   racedInput.operationRef = randomUUID();
   assert.equal(JSON.parse(await racing).operationRef, originalRef);
+  assert.equal(activeScope, null);
+  assert.equal(scopeStarts, scopeCloses);
   const snapshotInput = { ...input, operationRef: randomUUID() };
   const snapshotBytes = await inputs.prepareR3SourceSnapshotSpec(snapshotInput);
+  assert.equal(activeScope, null);
+  assert.equal(scopeStarts, scopeCloses);
   assert.equal(JSON.parse(snapshotBytes).chain, "snapshot");
   assert.equal(JSON.parse(snapshotBytes).phase, "source");
   await assert.rejects(
@@ -266,6 +306,8 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
     const prepare =
       chain === "fresh" ? inputs.prepareR3FinalFreshSpec : inputs.prepareR3FinalSnapshotSpec;
     const finalBytes = await prepare(finalInput);
+    assert.equal(activeScope, null);
+    assert.equal(scopeStarts, scopeCloses);
     assert.equal(JSON.parse(finalBytes).phase, "final");
     assert.equal(JSON.parse(finalBytes).chain, chain);
     const importInput = {
@@ -288,6 +330,39 @@ test("source fresh spec writer derives H2 fields and preserves create-only input
       chain === "fresh" ? inputs.importR3FinalFreshJob : inputs.importR3FinalSnapshotJob;
     assert.deepEqual(await importFinal(importInput), admitted);
   }
+  failReadbackRef = randomUUID();
+  const failedInput = { ...input, operationRef: failReadbackRef };
+  await assert.rejects(inputs.prepareR3SourceFreshSpec(failedInput), {
+    code: "R3_OPERATION_INPUT_INVALID"
+  });
+  const failedSpecPath = `${directory}/inputs/r3/${failReadbackRef}/creation-spec.json`;
+  assert.equal(JSON.parse(await fs.readFile(failedSpecPath)).operationRef, failReadbackRef);
+  assert.equal(activeScope, null);
+  assert.equal(scopeStarts, scopeCloses);
+  await assert.rejects(inputs.prepareR3SourceFreshSpec(failedInput), {
+    code: "R3_OPERATION_INPUT_INVALID"
+  });
+  assert.equal(JSON.parse(await fs.readFile(failedSpecPath)).operationRef, failReadbackRef);
+  assert.equal(activeScope, null);
+  assert.equal(scopeStarts, scopeCloses);
+  failCloseRef = randomUUID();
+  await assert.rejects(inputs.prepareR3SourceFreshSpec({ ...input, operationRef: failCloseRef }), {
+    code: "R3_OPERATION_INPUT_INVALID"
+  });
+  assert.equal(delayedCloseObserved, true);
+  assert.equal(activeScope, null);
+  assert.equal(scopeStarts, scopeCloses);
+  const changedRef = randomUUID();
+  await fs.writeFile(
+    `${directory}/inputs/build/${proofRawDigest.slice(7)}.proof.json`,
+    encodeManualJson({ synthetic: "changed proof" })
+  );
+  await assert.rejects(inputs.prepareR3SourceFreshSpec({ ...input, operationRef: changedRef }), {
+    code: "R3_OPERATION_INPUT_INVALID"
+  });
+  await assert.rejects(fs.stat(`${directory}/inputs/r3/${changedRef}`), { code: "ENOENT" });
+  assert.equal(activeScope, null);
+  assert.equal(scopeStarts, scopeCloses);
 });
 
 test("fixed hosted key holder binds actual files, job and machine and rejects replacement", async (t) => {

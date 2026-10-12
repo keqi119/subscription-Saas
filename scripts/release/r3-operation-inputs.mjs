@@ -475,77 +475,93 @@ async function prepareR3Spec(input, phase, chain) {
         Date.now() < Date.parse(input.expiresAt)
     );
     const trust = await import("./manual-stage1-trust.mjs");
-    const profile = await trust.loadFixedManualProfile({ repoRoot: input.repoRoot });
-    need(Date.parse(input.expiresAt) <= Date.parse(profile.expiresAt));
-    const archiveRoot = profile.storage.archiveRoot;
-    await privateArchiveDirectory(`${archiveRoot}/inputs/build`, archiveRoot);
-    const proof = await holdInput(
-      `${archiveRoot}/inputs/build/${input.proofRawDigest.slice(7)}.proof.json`,
-      1048576
+    return await trust.withFixedR3BuildAttestationScope(
+      { repoRoot: input.repoRoot, operationRef: input.operationRef },
+      async (buildAttestationScope) => {
+        try {
+          const profile = await trust.loadFixedManualProfile({ repoRoot: input.repoRoot });
+          need(Date.parse(input.expiresAt) <= Date.parse(profile.expiresAt));
+          const archiveRoot = profile.storage.archiveRoot;
+          await privateArchiveDirectory(`${archiveRoot}/inputs/build`, archiveRoot);
+          const proof = await holdInput(
+            `${archiveRoot}/inputs/build/${input.proofRawDigest.slice(7)}.proof.json`,
+            1048576
+          );
+          opened.push(proof);
+          const material = await holdInput(
+            `${archiveRoot}/inputs/build/${input.materialRawDigest.slice(7)}.material.json`,
+            1048576
+          );
+          opened.push(material);
+          need(
+            sha256Bytes(proof.bytes) === input.proofRawDigest &&
+              sha256Bytes(material.bytes) === input.materialRawDigest
+          );
+          const policy = await trust.readFixedR3TargetPolicy(
+            {
+              repoRoot: input.repoRoot,
+              proofBytes: proof.bytes,
+              materialBytes: material.bytes
+            },
+            buildAttestationScope,
+            input.operationRef
+          );
+          opened.push(policy);
+          const id = input.operationRef.replaceAll("-", ""),
+            roots = policy.policy.workspace;
+          const spec = {
+            schemaVersion: "manual-r3-creation-spec.v1",
+            operationRef: input.operationRef,
+            profileDigest: policy.profileDigest,
+            ownerId: profile.ownerId,
+            sourceSha: policy.sourceSha,
+            buildProofDigest: policy.build.buildProofDigest,
+            proofRawDigest: input.proofRawDigest,
+            materialRawDigest: input.materialRawDigest,
+            targetPolicyDigest: policy.policyRawDigest,
+            phase,
+            chain,
+            createdAt: new Date().toISOString(),
+            expiresAt: input.expiresAt,
+            workspace: {
+              id,
+              capacityBytes: input.capacityBytes,
+              backingFile: `${roots.backingRoot}/${id}.luks`,
+              mountPath: `${roots.mountRoot}/${id}`,
+              keyFile: `${roots.keyRoot}/${id}.key`,
+              mapperName: `${roots.mapperPrefix}${id}`
+            },
+            cleanup: "stop-owned-engine-and-remove-workspace"
+          };
+          for (const item of opened) await item.recheck();
+          const parent = `${archiveRoot}/inputs/r3`,
+            directory = `${parent}/${input.operationRef}`;
+          await privateArchiveDirectory(parent, archiveRoot, true);
+          // Reserving a failed operation is intentional: no overwrite or implicit retry.
+          await fs.mkdir(directory, { mode: 0o700 });
+          await privateArchiveDirectory(directory, archiveRoot);
+          const bytes = encodeManualJson(spec);
+          await createInput(`${directory}/creation-spec.json`, bytes);
+          const reopened = await trust.readFixedR3CreationSpec(
+            {
+              repoRoot: input.repoRoot,
+              operationRef: input.operationRef
+            },
+            buildAttestationScope
+          );
+          opened.push(reopened);
+          await reopened.recheck();
+          need(encodeManualJson(reopened.spec).equals(bytes));
+          return bytes;
+        } finally {
+          const closes = await Promise.allSettled(opened.map((item) => item.close()));
+          const failed = closes.find((result) => result.status === "rejected");
+          if (failed) throw failed.reason;
+        }
+      }
     );
-    opened.push(proof);
-    const material = await holdInput(
-      `${archiveRoot}/inputs/build/${input.materialRawDigest.slice(7)}.material.json`,
-      1048576
-    );
-    opened.push(material);
-    need(
-      sha256Bytes(proof.bytes) === input.proofRawDigest &&
-        sha256Bytes(material.bytes) === input.materialRawDigest
-    );
-    const policy = await trust.readFixedR3TargetPolicy({
-      repoRoot: input.repoRoot,
-      proofBytes: proof.bytes,
-      materialBytes: material.bytes
-    });
-    opened.push(policy);
-    const id = input.operationRef.replaceAll("-", ""),
-      roots = policy.policy.workspace;
-    const spec = {
-      schemaVersion: "manual-r3-creation-spec.v1",
-      operationRef: input.operationRef,
-      profileDigest: policy.profileDigest,
-      ownerId: profile.ownerId,
-      sourceSha: policy.sourceSha,
-      buildProofDigest: policy.build.buildProofDigest,
-      proofRawDigest: input.proofRawDigest,
-      materialRawDigest: input.materialRawDigest,
-      targetPolicyDigest: policy.policyRawDigest,
-      phase,
-      chain,
-      createdAt: new Date().toISOString(),
-      expiresAt: input.expiresAt,
-      workspace: {
-        id,
-        capacityBytes: input.capacityBytes,
-        backingFile: `${roots.backingRoot}/${id}.luks`,
-        mountPath: `${roots.mountRoot}/${id}`,
-        keyFile: `${roots.keyRoot}/${id}.key`,
-        mapperName: `${roots.mapperPrefix}${id}`
-      },
-      cleanup: "stop-owned-engine-and-remove-workspace"
-    };
-    for (const item of opened) await item.recheck();
-    const parent = `${archiveRoot}/inputs/r3`,
-      directory = `${parent}/${input.operationRef}`;
-    await privateArchiveDirectory(parent, archiveRoot, true);
-    // Reserving a failed operation is intentional: no overwrite or implicit retry.
-    await fs.mkdir(directory, { mode: 0o700 });
-    await privateArchiveDirectory(directory, archiveRoot);
-    const bytes = encodeManualJson(spec);
-    await createInput(`${directory}/creation-spec.json`, bytes);
-    const reopened = await trust.readFixedR3CreationSpec({
-      repoRoot: input.repoRoot,
-      operationRef: input.operationRef
-    });
-    opened.push(reopened);
-    await reopened.recheck();
-    need(encodeManualJson(reopened.spec).equals(bytes));
-    return bytes;
   } catch {
     fail();
-  } finally {
-    await Promise.all(opened.map((item) => item.close()));
   }
 }
 

@@ -304,6 +304,8 @@ test(
       denied.run(),
       (error) =>
         error.code === "R3_WORKSPACE_OBSERVATION_INVALID" &&
+        error.failureDiagnostic?.component === "WORKSPACE_OBSERVATION" &&
+        error.failureDiagnostic?.stage === "PATH_INSPECT" &&
         error.evidence.observation.status === "INCOMPLETE" &&
         error.evidence.observation.facts === null
     );
@@ -321,6 +323,11 @@ test(
         assert.equal(error.code, "R3_WORKSPACE_OBSERVATION_INVALID");
         assert.equal(error.evidence.observation.status, "INCOMPLETE");
         assert.equal(error.evidence.observation.facts, null);
+        assert.equal(error.failureDiagnostic?.component, "WORKSPACE_OBSERVATION");
+        assert.equal(
+          error.failureDiagnostic?.stage,
+          fault === "command-failed" ? "NATIVE_MOUNTS" : "PATH_RECHECK"
+        );
         if (fault === "command-failed") {
           const [call] = error.evidence.observation.processes;
           assert.equal(call.exitCode, 1);

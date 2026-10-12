@@ -1,0 +1,75 @@
+name: Stage1 native workspace diagnostic only
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-workspace:
+    if: ${{ github.repository_id == 1253231368 && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.23.3
+      - name: Install locked repository dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: Ensure native workspace tools exist
+        run: |
+          if ! command -v cryptsetup >/dev/null 2>&1 || \
+             ! command -v dmsetup >/dev/null 2>&1 || \
+             ! command -v mkfs.ext4 >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y cryptsetup-bin dmsetup e2fsprogs
+          fi
+      - name: Observe one scratch LUKS workspace
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_REPOSITORY_ID" = 1253231368
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          # Only this disposable hosted VM receives the required no-swap/core setup.
+          sudo -n swapoff -a
+          ulimit -c 0
+          NODE_BINARY="$(command -v node)"
+          sudo -n env \
+            GITHUB_REPOSITORY_ID="$GITHUB_REPOSITORY_ID" \
+            GITHUB_REF="$GITHUB_REF" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            /usr/bin/prlimit --core=0:0 -- "$NODE_BINARY" \
+            scripts/release/diagnose-r3-native-workspace.mjs
+      - name: Upload diagnostic-only summary and fixed raw outputs
+        if: ${{ always() && github.repository_id == 1253231368 && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: r3-native-workspace-diagnostic-only
+          path: |
+            .release-output/native-workspace-diagnostic/summary.json
+            .release-output/native-workspace-diagnostic/absent-before/mounts.stdout
+            .release-output/native-workspace-diagnostic/absent-before/loops.stdout
+            .release-output/native-workspace-diagnostic/absent-before/blocks.stdout
+            .release-output/native-workspace-diagnostic/active/mounts.stdout
+            .release-output/native-workspace-diagnostic/active/loops.stdout
+            .release-output/native-workspace-diagnostic/active/blocks.stdout
+            .release-output/native-workspace-diagnostic/active/mapper.stdout
+            .release-output/native-workspace-diagnostic/active/header.stdout
+            .release-output/native-workspace-diagnostic/active/uuid.stdout
+            .release-output/native-workspace-diagnostic/active/swaps
+            .release-output/native-workspace-diagnostic/active/limits
+            .release-output/native-workspace-diagnostic/absent-after/mounts.stdout
+            .release-output/native-workspace-diagnostic/absent-after/loops.stdout
+            .release-output/native-workspace-diagnostic/absent-after/blocks.stdout
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

@@ -613,14 +613,16 @@ export async function createR3HostedWorkspace(input) {
         mountedRoot.gid === 0n &&
         (mountedRoot.mode & 0o777n) === 0o700n
     );
-    diagnostic.enter("ACTIVE");
+    diagnostic.enter("ACTIVE_OBSERVE");
     const observation = await observeR3EncryptedWorkspace({
       operationRef: spec.operationRef,
       capacityBytes: workspace.capacityBytes,
       state: "active"
     });
     capture("active", observation.rawInputs);
+    diagnostic.enter("ACTIVE_RECHECK");
     await recheck();
+    diagnostic.enter("ACTIVE_BIND");
     requireThat(
       observation.observation.status === "OBSERVED" &&
         observation.observation.facts.state === "active" &&
@@ -629,6 +631,7 @@ export async function createR3HostedWorkspace(input) {
         sha256Canonical(observation.observation.workspace) === sha256Canonical(workspace)
     );
     creation.status = "WORKSPACE_OBSERVED";
+    diagnostic.enter("OWNED_IDENTITY");
     const ownedKey = await fs.lstat(workspace.keyFile, { bigint: true });
     const ownedBacking = await fs.lstat(workspace.backingFile, { bigint: true });
     requireThat(
@@ -677,7 +680,7 @@ export async function createR3HostedWorkspace(input) {
       capture("failedObservation", cause.evidence.rawInputs);
       error.rawInputs = rawCopies();
     }
-    throw diagnostic.decorate(error, error);
+    throw diagnostic.decorate(error, cause);
   }
 }
 

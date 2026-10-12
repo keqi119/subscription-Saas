@@ -5,6 +5,7 @@ import childProcess from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { sha256Bytes, sha256Canonical } from "../../packages/release-foundation/src/digest.mjs";
+import { getR3FailureDiagnostic, r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 import {
   encodeManualJson,
   signManualAuthorization
@@ -349,6 +350,8 @@ async function fixture(t, fault = null, { phase = "source", chain = "fresh" } = 
       created.has(`/dev/mapper/${workspace.mapperName}`) &&
       created.has(workspace.mountPath) &&
       mounted;
+    if (tool === "findmnt" && fault === "active-topology-parse" && active)
+      return "private-token-in-native-output-not-json\n";
     if (tool === "findmnt")
       return (
         JSON.stringify({
@@ -586,6 +589,23 @@ test("R3 creator retains partial resources and process failure without cleanup",
     false
   );
   assert.equal(f.created.has(f.workspace.keyFile), true);
+});
+
+test("active observation parse failure remains a fixed inner diagnostic through caller wrapping", async (t) => {
+  const f = await fixture(t, "active-topology-parse");
+  await assert.rejects(f.run(), (error) => {
+    assert.equal(error.code, "R3_HOSTED_WORKSPACE_CREATE_INVALID");
+    const diagnostic = getR3FailureDiagnostic(error);
+    assert.equal(diagnostic.component, "WORKSPACE_OBSERVATION");
+    assert.equal(diagnostic.stage, "TOPOLOGY_PARSE");
+    const wrapped = r3FailureTracker("HOSTED_CALLER").decorate(new Error("fixed"), error);
+    assert.deepEqual(getR3FailureDiagnostic(wrapped), diagnostic);
+    assert.equal(JSON.stringify(diagnostic).includes("private-token"), false);
+    assert.equal(error.message.includes("private-token"), false);
+    assert.equal(error.observationEvidence.status, "INCOMPLETE");
+    assert.ok(Buffer.isBuffer(error.rawInputs["failedObservation.mounts.stdout"]));
+    return true;
+  });
 });
 
 test("R3 final snapshot binds caller workflow env while signer remains reusable workflow", async (t) => {

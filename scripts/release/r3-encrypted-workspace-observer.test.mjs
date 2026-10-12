@@ -130,7 +130,7 @@ async function nativeFixture(t, state, fault = null) {
     if (name === "/proc/swaps") return Buffer.from("Filename\tType\tSize\tUsed\tPriority\n");
     if (name === "/proc/self/limits")
       return Buffer.from(
-        "Limit Soft Limit Hard Limit Units\nMax core file size        0                    0                    bytes\n"
+        "Limit Soft Limit Hard Limit Units     \nMax core file size        0                    0                    bytes\n"
       );
     assert.fail(`Unexpected content read: ${name}`);
   });

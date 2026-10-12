@@ -201,6 +201,19 @@ test("active observation joins real explicit-column output by device number and 
   }
 });
 
+test("active observation accepts the padded native Linux limits header", () => {
+  const f = fixture();
+  // /proc/self/limits pads the Units column even on the header line.
+  f.limits = f.limits.replace(
+    "Limit                     Soft Limit           Hard Limit           Units\n",
+    "Limit                     Soft Limit           Hard Limit           Units     \n"
+  );
+  assert.deepEqual(assess(f).coreLimit, { soft: 0, hard: 0 });
+
+  f.limits = f.limits.replace("Units     \n", "Units unexpected\n");
+  rejected(f);
+});
+
 test("active observation refuses incorrect mount mapper UUID parent and backing correspondence", () => {
   for (const mutate of [
     (f) => {

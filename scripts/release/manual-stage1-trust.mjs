@@ -21,6 +21,8 @@ import {
   r3FailureTracker
 } from "./r3-failure-diagnostic.mjs";
 import { runR3StartupTiming } from "./r3-startup-detail-timing.mjs";
+import { withR3TufMaterialScope, withR3TufAttestation } from "./r3-tuf-material-scope.mjs";
+import { withR3AttestationDiagnostic } from "./r3-attestation-diagnostic.mjs";
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import {
   encodeManualJson,
@@ -1032,9 +1034,18 @@ function attestationArgs(file, sourceSha, workflowPath = WORKFLOW) {
     "json"
   ];
 }
-async function verifyAttestedInput(file, bytes, sourceSha, earliest) {
-  const output = await processOutput("gh", attestationArgs(file, sourceSha), {
-    env: fixedProcessEnvironment("gh")
+async function attestationOutput(args, binding, env = fixedProcessEnvironment("gh")) {
+  return withR3AttestationDiagnostic(binding, () =>
+    withR3TufAttestation(args, (actual, executable, timeout) =>
+      processOutput(executable, actual, { env, timeout })
+    )
+  );
+}
+async function verifyAttestedInput(file, bytes, sourceSha, earliest, kind, operationRef) {
+  const output = await attestationOutput(attestationArgs(file, sourceSha), {
+    kind,
+    inputRawDigest: sha256Bytes(bytes),
+    operationRef: operationRef ?? null
   });
   return attestation(output, sha256Bytes(bytes), sourceSha, earliest);
 }
@@ -1064,6 +1075,25 @@ async function successfulRun(proof, verified) {
 
 export async function verifyManualBuild(input) {
   return verifyManualBuildInput(input, true);
+}
+
+// The caller is the fixed owner control and supplies the ORIGINAL Execute
+// deadline. Root material is acquired before OWNER_SPEC/IMPORT, never renewed.
+export async function withFixedR3TrustMaterialScope(selector, consume) {
+  exact(selector, ["repoRoot", "operationRef", "deadlineAtMs"]);
+  requireThat(
+    typeof consume === "function" &&
+      typeof selector.operationRef === "string" &&
+      UUID.test(selector.operationRef) &&
+      Number.isSafeInteger(selector.deadlineAtMs),
+    "R3_TUF_SCOPE_INVALID"
+  );
+  const repoRoot = absolute(selector.repoRoot);
+  await loadFixedManualProfile({ repoRoot });
+  return withR3TufMaterialScope(
+    { operationRef: selector.operationRef, deadlineAtMs: selector.deadlineAtMs },
+    consume
+  );
 }
 
 // A single awaited owner/import call may reuse successful cryptographic
@@ -1317,7 +1347,9 @@ async function verifyManualBuildInput(
           proofPath,
           proofBytes,
           proof.identity.sourceSha,
-          instant(proof.provenance.generatedAt)
+          instant(proof.provenance.generatedAt),
+          "proof",
+          operationRef
         );
     for (const item of opened) await item.recheck();
     const receiptAttestation = previous
@@ -1326,7 +1358,9 @@ async function verifyManualBuildInput(
           receiptPath,
           receiptInput.bytes,
           proof.identity.sourceSha,
-          instant(receipt.readbackAt)
+          instant(receipt.readbackAt),
+          "receipt",
+          operationRef
         );
     for (const item of opened) await item.recheck();
     for (const field of [
@@ -1960,7 +1994,13 @@ export async function readFixedR3JobAdmission(input, buildAttestationScope) {
       environment = fixedProcessEnvironment("gh");
     const command = async (args, boundary) => {
       try {
-        return await processOutput("gh", args, { env: environment });
+        return boundary === "ATTESTATION"
+          ? await attestationOutput(
+              args,
+              { kind: "current-admission", inputRawDigest: sha256Bytes(held.bytes), operationRef },
+              environment
+            )
+          : await processOutput("gh", args, { env: environment });
       } catch (cause) {
         const timeout = cause?.killed === true && cause?.signal === "SIGTERM";
         markR3JobAdmissionCause(
@@ -2264,10 +2304,14 @@ export async function readTrustedR3HistoricalContext(input) {
           latestHostedAt <= Date.now()
       );
       const ci = admission.ci,
-        attestationBytes = await processOutput(
-          "gh",
+        attestationBytes = await attestationOutput(
           attestationArgs(admissionPath, admission.sourceSha, ci.workflowPath),
-          { env: environment }
+          {
+            kind: "historical-admission",
+            inputRawDigest: sha256Bytes(admissionBytes),
+            operationRef: context.operationRef
+          },
+          environment
         ),
         verified = attestation(
           attestationBytes,

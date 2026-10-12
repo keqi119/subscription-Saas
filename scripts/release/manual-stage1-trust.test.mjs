@@ -22,6 +22,7 @@ import {
 } from "../../packages/release-foundation/src/index.mjs";
 import { createBuildProof } from "./create-build-proof.mjs";
 import { produceManualBuildCustody } from "./manual-build-custody-producer.mjs";
+import { tufCliFixture } from "./test-fixtures/tuf-cli-fixture.mjs";
 import { assessR3WorkspaceObservation } from "../../packages/release-foundation/src/r3-workspace-observation.mjs";
 import { signR3WorkspaceBinding } from "../../packages/release-foundation/src/r3-workspace-report.mjs";
 import {
@@ -1321,7 +1322,8 @@ async function buildFixture(
   };
   gh.paths = { proof: proofPath, receipt: receiptPath };
   t.mock.method(childProcess, "execFile", (file, args, options, callback) => {
-    if (file !== "gh") return nativeExecFile(file, args, options, callback);
+    if (file !== "gh" && file !== "/opt/stage1-tools/gh_2.101.0_linux_amd64/bin/gh")
+      return nativeExecFile(file, args, options, callback);
     const child = new EventEmitter();
     child.kill = () => {};
     child.stdin = { on() {}, end() {} };
@@ -1344,6 +1346,8 @@ async function buildFixture(
             Buffer.alloc(0)
           );
         let value;
+        if (args[0] === "attestation" && args[1] === "trusted-root")
+          return done(null, await tufCliFixture(options), Buffer.alloc(0));
         const jobs = [gh.jobAdmission, ...(gh.previousJobAdmissions ?? [])].filter(Boolean);
         const retainedJob = jobs.find(
           (entry) =>
@@ -1991,6 +1995,65 @@ test(
     await assert.rejects(trust.readFixedR3CreationSpec(selector, retained), {
       code: "R3_CREATION_INPUT_UNAVAILABLE"
     });
+  }
+);
+
+test(
+  "R3 trust material scope covers IMPORT and history while live job checks remain active",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3ImportFixture(t);
+    const selector = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+    await trust.withFixedR3TrustMaterialScope(
+      { ...selector, deadlineAtMs: Date.now() + 60000 },
+      async () => {
+        await trust.withFixedR3BuildAttestationScope(selector, async (scope) => {
+          const checked = await trust.readFixedR3CreationSpec(selector, scope);
+          await checked.close();
+          await importR3SourceFreshJob(
+            { ...selector, runId: f.admission.ci.runId },
+            async (owner) => {
+              await owner.recheck();
+              f.apiJob.status = "completed";
+              f.apiJob.conclusion = "success";
+              f.apiJob.completed_at = new Date().toISOString();
+              await assert.rejects(owner.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+            },
+            scope
+          );
+        });
+        f.apiRun.status = "completed";
+        f.apiRun.conclusion = "success";
+        const latestExecutionAt = f.apiJob.completed_at;
+        const scope = Object.fromEntries(
+          ["targetPolicyDigest", "buildProofDigest", "sourceSha", "phase", "chain"].map((key) => [
+            key,
+            f.spec[key]
+          ])
+        );
+        scope.creationSpecDigest = sha256Bytes(f.specBytes);
+        scope.jobAdmissionDigest = sha256Bytes(f.admissionBytes);
+        const held = await trust.readTrustedR3HistoricalContext({
+          ...selector,
+          scope,
+          latestExecutionAt
+        });
+        await held.recheck();
+        await held.close();
+      }
+    );
+    assert.equal(f.gh.calls.filter(({ args }) => args[1] === "trusted-root").length, 1);
+    const verifications = f.gh.calls.filter(
+      ({ args }) => args[0] === "attestation" && args[1] === "verify"
+    );
+    assert.ok(verifications.length >= 4);
+    assert.equal(verifications.filter(({ args }) => args[2] === f.admissionPath).length, 2);
+    for (const call of verifications) {
+      assert.equal(call.file, "/opt/stage1-tools/gh_2.101.0_linux_amd64/bin/gh");
+      assert.equal(call.args.at(-2), "--custom-trusted-root");
+      assert.ok(call.args.includes("--deny-self-hosted-runners"));
+    }
+    assert.equal(new Set(verifications.map(({ args }) => args.at(-1))).size, 1);
   }
 );
 

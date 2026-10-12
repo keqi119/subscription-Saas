@@ -49,7 +49,7 @@ jobs:
             RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
             /usr/bin/prlimit --core=0:0 -- "$NODE_BINARY" \
             scripts/release/diagnose-r3-native-workspace.mjs
-      - name: Upload diagnostic-only safe summary
+      - name: Upload diagnostic-only summary and fixed raw outputs
         if: ${{ always() && github.repository_id == 1253231368 && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -70,5 +70,6 @@ jobs:
             .release-output/native-workspace-diagnostic/absent-after/mounts.stdout
             .release-output/native-workspace-diagnostic/absent-after/loops.stdout
             .release-output/native-workspace-diagnostic/absent-after/blocks.stdout
-          if-no-files-found: warn
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 7

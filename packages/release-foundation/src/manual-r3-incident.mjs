@@ -260,6 +260,50 @@ export const APPROVED_R3_INCIDENT_C820B449 = freeze({
   executeNotAfter: "2026-10-12T16:00:00.000Z"
 });
 
+// One consumed 8e sourceFresh failure. Its signed disposition preserves the
+// original UNKNOWN and only retires the two approved local lock slots.
+export const APPROVED_R3_INCIDENT_7E2DF1BA = freeze({
+  proposalDigest: "sha256:6c73530a2c93028de4b9f1968787747ca167e5d5ecf3916eaa1193d23f8348e2",
+  approvalDigest: "sha256:15a06b67c0a6607d5011efcc1a6f358d0c4583f7688ed6dbad7f62414447994a",
+  profileDigest: "sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541",
+  ownerId: "keqi119",
+  operationRef: "7e2df1ba-5b43-45a7-b167-78fa649d9cec",
+  sessionId: "fde52291-32fa-405b-a4dc-dd7c35d70709",
+  openingDigest: "sha256:304206362e3048781fb15b096afbb5af0db0fa1472e179cb9fcf0e4f9b5834d9",
+  allocationDigest: "sha256:ff8186877b8f1fb6e5c8adaf67816bf6a4a7fe1b1e903718f8a2131c68de5665",
+  requestDigest: "sha256:cd75d1077f388dbf5b76ef93222b74e222025e9cd0d94bfe08c0efe014c2030c",
+  authorizationDigest: "sha256:4057738da889e2e8d5351c105662c69c8a9ad6880044d58bc2cf0670aded4b3b",
+  consumptionDigest: "sha256:e330c5ab0bb36f5cd5784940d5d8445dedd40196c7075a3d3345def43759deb2",
+  executionDigest: "sha256:b8e9da2cb02f3d19dfb16def43e755943e71dd011627bc44defda6fd72a52637",
+  sessionDigest: "sha256:e1a4e22cae3f777a478cd26aaa740c3b723da8ce3434cba8e94ba4016378fa08",
+  consumptionSlotName:
+    "49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541-42102724-2ec1-48fa-9d65-a8ea2bea8fad.json",
+  lockDigest: "sha256:f7885dbc5b45157a2ee48811fdb94bcfe1c595bedad55c5175a881107a02b2ab",
+  lockNames: [
+    "13d8b7b5c1aaf60b6b2a5b36f861b0dda7df2b80f8feb3013120d190f332130b.json",
+    "a52de7e6885d8285e8b9fea11dc44012a5e465c55f18701a176bef30b865386b.json"
+  ],
+  lockScope: {
+    targetPolicyDigest: "sha256:fb9707e26b2ad5e00d4cd61d88e6835b0aeb3210d01e9c6fbbfb9bc4a47cb8d5",
+    creationSpecDigest: "sha256:15d222b72eaf84247f0e176d26a9665ea640713f91711cfe0ff662d8fed94925",
+    jobAdmissionDigest: "sha256:66f55dd3e477d1556b0f66373c8d8d54ef018682c13f7b2b79a369e1e14504fa",
+    buildProofDigest: "sha256:fb0f4e36bef00b37e00254333feba621d7bd309774cec803069f77e44a35b38c",
+    sourceSha: "8e1743ad90705240dcaaeace45a9f130ecc3b565",
+    phase: "source",
+    chain: "fresh"
+  },
+  github: {
+    repository: "keqi119/subscription-Saas",
+    runId: "38339681721",
+    runAttempt: 1,
+    jobId: "115108883590",
+    status: "completed",
+    conclusion: "failure",
+    completedAt: "2026-10-13T03:15:37Z"
+  },
+  executeNotAfter: "2026-10-13T16:00:00.000Z"
+});
+
 // The approved incident's original source is installed independently of later
 // verifier releases. This binding grants no authority; the historical reader
 // still authenticates every archived input, source file and CI attestation.
@@ -329,6 +373,17 @@ const APPROVED_R3_HISTORICAL_SOURCE_C820B449 = freeze({
   sourceRoot: "/opt/stage1-r3-candidate-4af1e8b"
 });
 
+const APPROVED_R3_HISTORICAL_SOURCE_7E2DF1BA = freeze({
+  operationRef: APPROVED_R3_INCIDENT_7E2DF1BA.operationRef,
+  profileDigest: APPROVED_R3_INCIDENT_7E2DF1BA.profileDigest,
+  sourceSha: APPROVED_R3_INCIDENT_7E2DF1BA.lockScope.sourceSha,
+  proofRawDigest: "sha256:fb0f4e36bef00b37e00254333feba621d7bd309774cec803069f77e44a35b38c",
+  materialRawDigest: "sha256:2cbc480b3accb81efb9abcf60a16e97166382de8ad570140c39b85fda762fb1a",
+  creationSpecDigest: APPROVED_R3_INCIDENT_7E2DF1BA.lockScope.creationSpecDigest,
+  jobAdmissionDigest: APPROVED_R3_INCIDENT_7E2DF1BA.lockScope.jobAdmissionDigest,
+  sourceRoot: "/opt/stage1-r3-candidate-8e1743a"
+});
+
 const APPROVED_R3_HISTORICAL_CONTRACT_588DA0DC = freeze({
   sourceRoot: APPROVED_R3_HISTORICAL_SOURCE_588DA0DC.sourceRoot,
   sourceSha: APPROVED_R3_HISTORICAL_SOURCE_588DA0DC.sourceSha,
@@ -358,7 +413,8 @@ export function approvedR3HistoricalSourceBinding(input) {
     APPROVED_R3_HISTORICAL_SOURCE_588DA0DC,
     APPROVED_R3_HISTORICAL_SOURCE_79FEAA9A,
     APPROVED_R3_HISTORICAL_SOURCE_EB5A1850,
-    APPROVED_R3_HISTORICAL_SOURCE_C820B449
+    APPROVED_R3_HISTORICAL_SOURCE_C820B449,
+    APPROVED_R3_HISTORICAL_SOURCE_7E2DF1BA
   ])
     if (Object.entries(input).every(([key, value]) => binding[key] === value))
       return binding.sourceRoot;
@@ -591,7 +647,8 @@ export async function readApprovedR3IncidentDisposition(
     APPROVED_R3_INCIDENT_588DA0DC,
     APPROVED_R3_INCIDENT_79FEAA9A,
     APPROVED_R3_INCIDENT_EB5A1850,
-    APPROVED_R3_INCIDENT_C820B449
+    APPROVED_R3_INCIDENT_C820B449,
+    APPROVED_R3_INCIDENT_7E2DF1BA
   ];
   const matched = policies.filter(
     (policy) =>
@@ -616,7 +673,11 @@ export async function readApprovedR3IncidentDisposition(
       [p.requestDigest, "archive"]
     ];
     if (p.sessionDigest !== null) originals.push([p.sessionDigest, "journal"]);
-    if (p === APPROVED_R3_INCIDENT_EB5A1850 || p === APPROVED_R3_INCIDENT_C820B449) {
+    if (
+      p === APPROVED_R3_INCIDENT_EB5A1850 ||
+      p === APPROVED_R3_INCIDENT_C820B449 ||
+      p === APPROVED_R3_INCIDENT_7E2DF1BA
+    ) {
       originals.push([p.allocationDigest, "archive"], [p.authorizationDigest, "archive"]);
       const consumptionBytes = graph.get(p.consumptionDigest)?.bytes;
       need(

@@ -3,6 +3,7 @@ import test from "node:test";
 import fs from "node:fs/promises";
 
 import { observeR3ManagedContainerd } from "./r3-containerd-observation.mjs";
+import { extractR3ContainerdSocketRows } from "../../packages/release-foundation/src/r3-containerd-raw.mjs";
 
 const mountPath = "/srv/stage1-snapshot/123e4567e89b42d3a456426614174000";
 const base = `${mountPath}/exec/containerd`;
@@ -28,7 +29,7 @@ function fixture(t, changes = {}) {
     [`/proc/${pid}/cmdline`, `containerd\0--config\0${config}\0`],
     [
       "/proc/net/unix",
-      `Num RefCount Protocol Flags Type St Inode Path\n000: 2 0 10000 1 01 8001 ${grpc}\n001: 2 0 10000 1 01 8002 ${debug}\n`
+      `Num RefCount Protocol Flags Type St Inode Path\n000: 2 0 00010000 0001 01 8001 ${grpc}\n001: 2 0 00000000 0001 03 8003 ${grpc}\n002: 2 0 00000000 0001 03 8004 ${grpc}\n003: 2 0 00000000 0001 03 8005 ${grpc}\n004: 2 0 00010000 0001 01 8002 ${debug}\n`
     ]
   ]);
   let statReads = 0;
@@ -108,6 +109,24 @@ test("R3 containerd observes fixed encrypted paths and owned listeners", async (
     { path: `/proc/${pid}/fd/3`, target: "socket:[8001]" },
     { path: `/proc/${pid}/fd/4`, target: "socket:[8002]" }
   ]);
+});
+
+test("R3 containerd socket rows reject duplicate, missing and malformed listeners", () => {
+  const listener = `000: 2 0 00010000 0001 01 8001 ${grpc}`;
+  const accepted = `001: 2 0 00000000 0001 03 8003 ${grpc}`;
+  const debugListener = `002: 2 0 00010000 0001 01 8002 ${debug}`;
+  const rows = (...lines) =>
+    Buffer.from(`Num RefCount Protocol Flags Type St Inode Path\n${lines.join("\n")}\n`);
+  for (const lines of [
+    [listener, listener, debugListener],
+    [accepted, debugListener],
+    [listener, accepted.replace(" 03 ", " 02 "), debugListener],
+    [listener, accepted.replace("001:", "bad"), debugListener]
+  ]) {
+    assert.throws(() => extractR3ContainerdSocketRows({ mountPath, unixBytes: rows(...lines) }), {
+      code: "R3_CONTAINERD_RAW_INVALID"
+    });
+  }
 });
 
 test("R3 containerd rejects config escape and wrong parent", async (t) => {

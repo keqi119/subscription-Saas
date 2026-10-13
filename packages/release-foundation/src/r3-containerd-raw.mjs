@@ -207,9 +207,10 @@ function socketRow(line, expectedPath) {
       columns[7] === expectedPath &&
       POSITIVE.test(columns[6]) &&
       /^[0-9a-fA-F]+$/u.test(columns[3]) &&
-      (Number.parseInt(columns[3], 16) & 0x10000) !== 0 &&
+      Number.parseInt(columns[3], 16) === 0x10000 &&
       /^[0-9a-fA-F]+$/u.test(columns[4]) &&
-      Number.parseInt(columns[4], 16) === 1
+      Number.parseInt(columns[4], 16) === 1 &&
+      columns[5] === "01"
   );
   return { inode: columns[6], line: value };
 }
@@ -222,8 +223,27 @@ export function extractR3ContainerdSocketRows({ mountPath, unixBytes }) {
       .filter((line) => line.trim());
     const select = (path) => {
       const matches = rows.filter((line) => line.trim().split(/\s+/u).at(-1) === path);
-      need(matches.length === 1);
-      return socketRow(Buffer.from(matches[0]), path);
+      const listeners = [];
+      for (const line of matches) {
+        const columns = line.trim().split(/\s+/u);
+        need(
+          columns.length === 8 &&
+            /^[0-9a-fA-F]+:$/u.test(columns[0]) &&
+            /^[0-9a-fA-F]+$/u.test(columns[1]) &&
+            /^[0-9a-fA-F]+$/u.test(columns[2]) &&
+            Number.parseInt(columns[2], 16) === 0 &&
+            /^[0-9a-fA-F]+$/u.test(columns[3]) &&
+            /^[0-9a-fA-F]+$/u.test(columns[4]) &&
+            Number.parseInt(columns[4], 16) === 1 &&
+            POSITIVE.test(columns[6])
+        );
+        const flags = Number.parseInt(columns[3], 16);
+        if (flags === 0 && columns[5] === "03") continue;
+        need(flags === 0x10000 && columns[5] === "01");
+        listeners.push(line);
+      }
+      need(listeners.length === 1);
+      return socketRow(Buffer.from(listeners[0]), path);
     };
     return Object.freeze({ grpc: select(expected.grpc), debug: select(expected.debug) });
   } catch {

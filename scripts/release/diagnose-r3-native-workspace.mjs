@@ -435,6 +435,33 @@ async function main() {
           rawRefs: engine.result.rawRefs
         };
       } catch (error) {
+        // These are originals from this credential-free scratch VM only. The
+        // production RC failure writer continues to export hashes, never bytes.
+        const originals = error.engineAttempt?.containerdFailure?.rawInputs;
+        const rawDirectory = path.join(OUTPUT, "engine-containerd");
+        status.engineRawCapture = {};
+        try {
+          for (const name of [
+            "pidFile",
+            "stat",
+            "cmdline",
+            "config",
+            "socketOwners",
+            "grpcSocketRow",
+            "debugSocketRow"
+          ]) {
+            const bytes = originals?.[name];
+            if (!Buffer.isBuffer(bytes) || bytes.length > 1048576) continue;
+            await fs.mkdir(rawDirectory, { recursive: true, mode: 0o755 });
+            await fs.chmod(rawDirectory, 0o755);
+            const file = path.join(rawDirectory, name);
+            await fs.writeFile(file, bytes, { flag: "wx", mode: 0o644 });
+            await fs.chmod(file, 0o644);
+            status.engineRawCapture[name] = { bytes: bytes.length, digest: digest(bytes) };
+          }
+        } catch {
+          status.engineRawCaptureFailed = true;
+        }
         status.engine = projectR3HostedFailure({
           evidence: { engineAttempt: error.engineAttempt },
           failureDiagnostic: {

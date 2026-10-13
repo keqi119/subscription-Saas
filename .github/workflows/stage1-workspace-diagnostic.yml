@@ -60,6 +60,13 @@ jobs:
           name: r3-native-workspace-diagnostic-only
           path: |
             .release-output/native-workspace-diagnostic/summary.json
+            .release-output/native-workspace-diagnostic/engine-containerd/pidFile
+            .release-output/native-workspace-diagnostic/engine-containerd/stat
+            .release-output/native-workspace-diagnostic/engine-containerd/cmdline
+            .release-output/native-workspace-diagnostic/engine-containerd/config
+            .release-output/native-workspace-diagnostic/engine-containerd/socketOwners
+            .release-output/native-workspace-diagnostic/engine-containerd/grpcSocketRow
+            .release-output/native-workspace-diagnostic/engine-containerd/debugSocketRow
             .release-output/native-workspace-diagnostic/absent-before/mounts.stdout
             .release-output/native-workspace-diagnostic/absent-before/loops.stdout
             .release-output/native-workspace-diagnostic/absent-before/blocks.stdout

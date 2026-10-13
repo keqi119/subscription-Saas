@@ -130,6 +130,23 @@ test("repository manifest rejects duplicate paths", async () => {
   });
 });
 
+test("shared R3 hosted and native diagnostic static imports are contract-bound", async () => {
+  const manifest = await loadContractFileManifest(repoRoot);
+  const declared = new Set(manifest.files);
+  for (const entry of [
+    "scripts/release/run-r3-source-fresh.mjs",
+    "scripts/release/diagnose-r3-native-workspace.mjs"
+  ]) {
+    const source = await readFile(path.join(repoRoot, entry), "utf8");
+    for (const [, specifier] of source.matchAll(/(?:from\s+|import\s*)["'](\.[^"']+)["']/gu)) {
+      const dependency = path.posix.normalize(
+        path.posix.join(path.posix.dirname(entry), specifier)
+      );
+      assert.ok(declared.has(dependency), `${entry} imports unbound ${dependency}`);
+    }
+  }
+});
+
 test("repository contract rejects missing and unclassified files", async () => {
   await withTempRepo(async (root) => {
     const manifestPath = "release/contracts/repository-contract-files.v1.json";

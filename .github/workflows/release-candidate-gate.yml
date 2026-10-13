@@ -198,6 +198,17 @@ jobs:
               !encodeManualJson(result.sourceGateEvidence).equals(bytes)) throw new Error("R3_SOURCE_PUBLIC_RESULT_MISMATCH");
           process.stdout.write(`Source fresh CLOSED: ${result.sessionRecordDigest}\n`);
           NODE
+      - name: Upload bounded hosted failure diagnostic
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-source-fresh-hosted-failure-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/r3-hosted-failure/engine-diagnostic.v1.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
       - id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
@@ -354,6 +365,17 @@ jobs:
             throw new Error("R3_SNAPSHOT_PUBLIC_RESULT_MISMATCH");
           process.stdout.write(`Source snapshot CLOSED: ${result.sessionRecordDigest}\n`);
           NODE
+      - name: Upload bounded hosted failure diagnostic
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-source-snapshot-hosted-failure-${{ env.RC_ARTIFACT_SUFFIX }}
+          path: .release-output/r3-hosted-failure/engine-diagnostic.v1.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
       - id: attest-source
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:

@@ -29,6 +29,7 @@ import {
   getR3FailureDiagnostic,
   closeR3FailureResources
 } from "./r3-failure-diagnostic.mjs";
+import { writeR3HostedFailureDiagnostic } from "./r3-hosted-failure-diagnostic.mjs";
 import {
   assertR3StartupActive,
   cancelR3Startup,
@@ -767,6 +768,13 @@ async function runR3SourceHosted(input, chain, phase = "source") {
       promotionEligible: false
     });
   } catch (cause) {
+    // The hosted control's private evidence is lost by the caller wrapper. Persist only
+    // its fixed projection; diagnostic I/O must never replace the original failure.
+    try {
+      await writeR3HostedFailureDiagnostic(input?.repoRoot, cause);
+    } catch {
+      // Preserve the original failure and the existing resource cleanup path.
+    }
     primaryFailure = diagnostic.decorate(Object.assign(new Error(CODE), { code: CODE }), cause);
     throw primaryFailure;
   } finally {

@@ -525,7 +525,11 @@ test("R3 control refuses implicit reuse of the system containerd", async (t) => 
   const control = await openR3HostedCreationControl(inputs);
   t.after(() => control.close());
   assert.equal((await post(socketPath, body(inputs))).status, 202);
-  await assert.rejects(control.created, { code: "R3_HOSTED_CREATION_CONTROL_INVALID" });
+  await assert.rejects(control.created, (error) => {
+    assert.equal(error.code, "R3_HOSTED_CREATION_CONTROL_INVALID");
+    assert.equal(error.evidence.engineAttempt.checkpoint, "SYSTEM_CONTAINERD");
+    return true;
+  });
   assert.equal(f.commands.length, 0);
   await assert.rejects(control.postgresForward);
 });
@@ -974,6 +978,7 @@ test("R3 control retains workspace and actual daemon exit on rejected Engine fac
     assert.equal(error.code, "R3_HOSTED_CREATION_CONTROL_INVALID");
     assert.equal(error.evidence.workspace.creation.status, "WORKSPACE_OBSERVED");
     assert.ok(error.evidence.engineAttempt.pid > 0);
+    assert.equal(error.evidence.engineAttempt.checkpoint, "INFO_STORAGE");
     assert.equal(error.evidence.engineAttempt.exit.exitCode, 0);
     assert.equal(error.evidence.engineAttempt.logPath, `${mountPath}/daemon.log`);
     assert.equal(error.evidence.workspaceRemoved, false);

@@ -11,6 +11,15 @@ import {
 const CODE = "R3_CONTAINERD_OBSERVATION_INVALID";
 const LIMIT = 1048576;
 const MOUNT = /^\/srv\/stage1-snapshot\/[0-9a-f]{32}$/u;
+const CAUSE_CODES = new Set([
+  "R3_CONTAINERD_OBSERVATION_INVALID",
+  "R3_CONTAINERD_RAW_INVALID",
+  "ENOENT",
+  "EACCES",
+  "EPERM",
+  "EIO",
+  "EINVAL"
+]);
 const fail = () => {
   throw Object.assign(new Error(CODE), { code: CODE });
 };
@@ -52,7 +61,7 @@ async function owned(path, mountDev, type) {
   if (type !== "socket") need((stat.mode & 0o022n) === 0n);
   return metadata(path, stat);
 }
-async function sample(mountPath, dockerdPid, evidence) {
+async function sample(mountPath, dockerdPid, evidence, progress) {
   const base = `${mountPath}/exec/containerd`;
   const expected = {
     base,
@@ -61,6 +70,7 @@ async function sample(mountPath, dockerdPid, evidence) {
     grpc: `${base}/containerd.sock`,
     debug: `${base}/containerd-debug.sock`
   };
+  progress.checkpoint = "MOUNT";
   const mount = await fs.lstat(mountPath, { bigint: true });
   need(
     mount.isDirectory() &&
@@ -70,6 +80,7 @@ async function sample(mountPath, dockerdPid, evidence) {
       !mount.isSymbolicLink() &&
       (await fs.realpath(mountPath)) === mountPath
   );
+  progress.checkpoint = "OWNED_PATHS";
   for (const directory of [
     `${mountPath}/docker`,
     `${mountPath}/docker/containerd`,
@@ -85,8 +96,10 @@ async function sample(mountPath, dockerdPid, evidence) {
     configPath = `${base}/containerd.toml`;
   const pidFileIdentity = await owned(pidPath, mount.dev, "file");
   const configIdentity = await owned(configPath, mount.dev, "file");
+  progress.checkpoint = "PID";
   const pidFile = await read(pidPath, evidence, "pidFile");
   const pid = readR3ContainerdPidFile(pidFile);
+  progress.checkpoint = "PROCESS";
   const stat = await read(`/proc/${pid}/stat`, evidence, "stat");
   const cmdline = await read(`/proc/${pid}/cmdline`, evidence, "cmdline");
   const executablePath = await fs.readlink(`/proc/${pid}/exe`);
@@ -98,18 +111,22 @@ async function sample(mountPath, dockerdPid, evidence) {
       (executable.mode & 0o111n) !== 0n &&
       (executable.mode & 0o022n) === 0n
   );
+  progress.checkpoint = "CONFIG";
   const config = await read(configPath, evidence, "config");
+  progress.checkpoint = "IDENTITY";
   need(
     JSON.stringify(await owned(pidPath, mount.dev, "file")) === JSON.stringify(pidFileIdentity) &&
       JSON.stringify(await owned(configPath, mount.dev, "file")) === JSON.stringify(configIdentity)
   );
-  const unix = await read("/proc/net/unix", evidence);
+  progress.checkpoint = "SOCKET_ROWS";
+  const unix = await read("/proc/net/unix", evidence, "unix");
   const { grpc: grpcRow, debug: debugRow } = extractR3ContainerdSocketRows({
     mountPath,
     unixBytes: unix
   });
   evidence.grpcSocketRow = Buffer.from(grpcRow.line);
   evidence.debugSocketRow = Buffer.from(debugRow.line);
+  progress.checkpoint = "SOCKET_OWNERS";
   const descriptors = await fs.readdir(`/proc/${pid}/fd`);
   need(Array.isArray(descriptors) && descriptors.length <= 65536);
   const held = new Set();
@@ -130,6 +147,7 @@ async function sample(mountPath, dockerdPid, evidence) {
   }
   evidence.socketOwners = Buffer.from(JSON.stringify(socketOwners));
   need(held.size === 2);
+  progress.checkpoint = "RAW_ASSESS";
   const process = assessR3ContainerdRaw({
     mountPath,
     dockerdPid,
@@ -178,6 +196,7 @@ async function sample(mountPath, dockerdPid, evidence) {
 
 export async function observeR3ManagedContainerd(input) {
   const evidence = {};
+  const progress = { checkpoint: "INPUT" };
   try {
     keys(input, ["mountPath", "dockerdPid"]);
     const { mountPath, dockerdPid } = input;
@@ -188,8 +207,9 @@ export async function observeR3ManagedContainerd(input) {
         Number.isSafeInteger(dockerdPid) &&
         dockerdPid > 0
     );
-    const first = await sample(mountPath, dockerdPid, evidence);
-    const second = await sample(mountPath, dockerdPid, evidence);
+    const first = await sample(mountPath, dockerdPid, evidence, progress);
+    const second = await sample(mountPath, dockerdPid, evidence, progress);
+    progress.checkpoint = "STABILITY";
     need(JSON.stringify(first.facts) === JSON.stringify(second.facts));
     return Object.freeze({
       facts: Object.freeze({ ...second.facts }),
@@ -202,6 +222,8 @@ export async function observeR3ManagedContainerd(input) {
   } catch (cause) {
     throw Object.assign(new Error(CODE, { cause }), {
       code: CODE,
+      checkpoint: progress.checkpoint,
+      causeCode: CAUSE_CODES.has(cause?.code) ? cause.code : null,
       rawInputs: Object.freeze(
         Object.fromEntries(
           Object.entries(evidence).map(([name, bytes]) => [name, Buffer.from(bytes)])

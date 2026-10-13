@@ -1,4 +1,4 @@
-name: Stage1 native workspace diagnostic only
+name: Stage1 native workspace and engine diagnostic only
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   native-workspace:
-    if: ${{ github.repository_id == 1253231368 && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    if: ${{ github.repository_id == 1253231368 && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/stage1-engine-diagnostic') && github.run_attempt == 1 }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -36,10 +36,13 @@ jobs:
           set -euo pipefail
           test "$RUNNER_ENVIRONMENT" = github-hosted
           test "$GITHUB_REPOSITORY_ID" = 1253231368
-          test "$GITHUB_REF" = refs/heads/main
+          case "$GITHUB_REF" in refs/heads/main|refs/heads/codex/stage1-engine-diagnostic) ;; *) exit 1 ;; esac
           test "$GITHUB_RUN_ATTEMPT" = 1
           # Only this disposable hosted VM receives the required no-swap/core setup.
           sudo -n swapoff -a
+          sudo systemctl mask --runtime --now docker.service docker.socket containerd.service
+          test ! -e /run/containerd/containerd.sock
+          test ! -L /run/containerd/containerd.sock
           ulimit -c 0
           NODE_BINARY="$(command -v node)"
           sudo -n env \
@@ -47,15 +50,24 @@ jobs:
             GITHUB_REF="$GITHUB_REF" \
             GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
             RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            STAGE1_DIAGNOSTIC_ENGINE=1 \
             /usr/bin/prlimit --core=0:0 -- "$NODE_BINARY" \
             scripts/release/diagnose-r3-native-workspace.mjs
       - name: Upload diagnostic-only summary and fixed raw outputs
-        if: ${{ always() && github.repository_id == 1253231368 && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+        if: ${{ always() && github.repository_id == 1253231368 && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/stage1-engine-diagnostic') && github.run_attempt == 1 }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: r3-native-workspace-diagnostic-only
           path: |
             .release-output/native-workspace-diagnostic/summary.json
+            .release-output/native-workspace-diagnostic/engine-containerd/pidFile
+            .release-output/native-workspace-diagnostic/engine-containerd/stat
+            .release-output/native-workspace-diagnostic/engine-containerd/cmdline
+            .release-output/native-workspace-diagnostic/engine-containerd/config
+            .release-output/native-workspace-diagnostic/engine-containerd/unix
+            .release-output/native-workspace-diagnostic/engine-containerd/socketOwners
+            .release-output/native-workspace-diagnostic/engine-containerd/grpcSocketRow
+            .release-output/native-workspace-diagnostic/engine-containerd/debugSocketRow
             .release-output/native-workspace-diagnostic/absent-before/mounts.stdout
             .release-output/native-workspace-diagnostic/absent-before/loops.stdout
             .release-output/native-workspace-diagnostic/absent-before/blocks.stdout

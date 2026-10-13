@@ -9,6 +9,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { observeR3EncryptedWorkspace } from "./r3-encrypted-workspace-observer.mjs";
 import { getR3FailureDiagnostic } from "./r3-failure-diagnostic.mjs";
+import { startR3HostedEngineForDiagnostic } from "./r3-hosted-creation-control.mjs";
+import { projectR3HostedFailure } from "./r3-hosted-failure-diagnostic.mjs";
 
 const exec = promisify(execFile);
 const OUTPUT = ".release-output/native-workspace-diagnostic";
@@ -181,6 +183,7 @@ async function observe(stage, state) {
       value.observation.status === "OBSERVED" && value.observation.facts?.state === state,
       "OBSERVER_STATE_INVALID"
     );
+    return value;
   } catch (error) {
     if (error.evidence) {
       await saveRaw(stage, error.evidence);
@@ -302,7 +305,9 @@ async function main() {
     need(process.platform === "linux" && process.getuid?.() === 0, "HOST_IDENTITY_INVALID");
     need(
       process.env.GITHUB_REPOSITORY_ID === "1253231368" &&
-        process.env.GITHUB_REF === "refs/heads/main" &&
+        ["refs/heads/main", "refs/heads/codex/stage1-engine-diagnostic"].includes(
+          process.env.GITHUB_REF
+        ) &&
         process.env.GITHUB_RUN_ATTEMPT === "1" &&
         process.env.RUNNER_ENVIRONMENT === "github-hosted",
       "HOSTED_DISPATCH_INVALID"
@@ -400,7 +405,113 @@ async function main() {
     owned.mounted = true;
     await fs.chown(owned.mount, 0, 0);
     await fs.chmod(owned.mount, 0o700);
-    await observe("ACTIVE", "active");
+    const observation = await observe("ACTIVE", "active");
+    if (process.env.STAGE1_DIAGNOSTIC_ENGINE === "1") {
+      status.phase = "ENGINE";
+      let engine;
+      try {
+        // No H1, credentials, images, containers or target creation are involved.
+        // The same engine checks run against this fresh scratch LUKS filesystem.
+        const version = await exec("/usr/bin/dockerd", ["--version"], {
+          timeout: 5000,
+          maxBuffer: 512,
+          encoding: "utf8"
+        });
+        need(
+          /^Docker version [0-9A-Za-z., +~_-]+\n?$/u.test(version.stdout),
+          "TOOL_PACKAGE_INVALID"
+        );
+        status.dockerdVersion = version.stdout.trim();
+        engine = await startR3HostedEngineForDiagnostic(
+          { observation, creation: { status: "WORKSPACE_OBSERVED" } },
+          observation.observation.workspace,
+          `${owned.mount}/engine.sock`,
+          () => false
+        );
+        status.engine = {
+          diagnosticOnly: true,
+          R3Passed: false,
+          checkpoint: "COMPLETE",
+          rawRefs: engine.result.rawRefs
+        };
+      } catch (error) {
+        // These are originals from this credential-free scratch VM only. The
+        // production RC failure writer continues to export hashes, never bytes.
+        const originals = error.engineAttempt?.containerdFailure?.rawInputs;
+        const rawDirectory = path.join(OUTPUT, "engine-containerd");
+        status.engineRawCapture = {};
+        try {
+          for (const name of [
+            "pidFile",
+            "stat",
+            "cmdline",
+            "config",
+            "unix",
+            "socketOwners",
+            "grpcSocketRow",
+            "debugSocketRow"
+          ]) {
+            const bytes = originals?.[name];
+            if (!Buffer.isBuffer(bytes) || bytes.length > 1048576) continue;
+            await fs.mkdir(rawDirectory, { recursive: true, mode: 0o755 });
+            await fs.chmod(rawDirectory, 0o755);
+            const file = path.join(rawDirectory, name);
+            await fs.writeFile(file, bytes, { flag: "wx", mode: 0o644 });
+            await fs.chmod(file, 0o644);
+            status.engineRawCapture[name] = { bytes: bytes.length, digest: digest(bytes) };
+          }
+        } catch {
+          status.engineRawCaptureFailed = true;
+        }
+        status.engine = projectR3HostedFailure({
+          evidence: { engineAttempt: error.engineAttempt },
+          failureDiagnostic: {
+            component: "HOSTED_CREATE",
+            stage: "ENGINE",
+            causeCode: "R3_HOSTED_CREATION_CONTROL_INVALID"
+          }
+        });
+        throw error;
+      } finally {
+        if (engine) {
+          if (engine.exitState.value === null) engine.child.kill("SIGTERM");
+          let timer;
+          let exit;
+          try {
+            exit = await Promise.race([
+              engine.exited,
+              new Promise((resolve) => {
+                timer = setTimeout(() => resolve(null), 10000);
+              })
+            ]);
+          } finally {
+            clearTimeout(timer);
+          }
+          if (!exit) {
+            engine.child.kill("SIGKILL");
+            try {
+              exit = await Promise.race([
+                engine.exited,
+                new Promise((resolve) => {
+                  timer = setTimeout(() => resolve(null), 2000);
+                })
+              ]);
+            } finally {
+              clearTimeout(timer);
+            }
+          }
+          status.engineStop = {
+            completed: Boolean(exit),
+            exitCode: exit?.exitCode ?? null,
+            signal: exit?.signal ?? null
+          };
+          if (!exit || exit.exitCode !== 0 || exit.signal !== null) {
+            status.cleanup.failures.push("engine_stop");
+            fail("DIAGNOSTIC_PHASE_FAILED");
+          }
+        }
+      }
+    }
     status.result = "NATIVE_DIAGNOSTIC_OBSERVED";
   } catch (error) {
     status.result = "PARTIAL_FAILURE";

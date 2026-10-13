@@ -136,6 +136,17 @@ jobs:
               !encodeManualJson(result.finalNativeEvidence).equals(bytes)) throw new Error("R3_FINAL_PUBLIC_RESULT_MISMATCH");
           process.stdout.write(`Final ${process.env.CHAIN} CLOSED: ${result.sessionRecordDigest}\n`);
           NODE
+      - name: Upload bounded hosted failure diagnostic
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-final-${{ inputs.chain }}-hosted-failure-${{ inputs.artifactSuffix }}
+          path: .release-output/r3-hosted-failure/engine-diagnostic.v1.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 180
+          overwrite: false
+          compression-level: 0
       - id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:

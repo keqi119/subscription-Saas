@@ -337,10 +337,51 @@ async function waitReady(socketPath, child, exitState, shouldClose) {
   fail();
 }
 async function startEngine(workspaceResult, expectedWorkspace, socketPath, shouldClose) {
+  const progress = { checkpoint: "SYSTEM_CONTAINERD" };
+  try {
+    return await startObservedEngine(
+      workspaceResult,
+      expectedWorkspace,
+      socketPath,
+      shouldClose,
+      progress
+    );
+  } catch (cause) {
+    throw Object.assign(new Error(CODE), {
+      code: CODE,
+      engineAttempt: freeze({
+        command: "/usr/bin/dockerd",
+        startedAt: null,
+        pid: null,
+        exit: null,
+        rawRefs: {},
+        ...cause?.engineAttempt,
+        checkpoint: progress.checkpoint,
+        httpStatus:
+          Number.isInteger(cause?.status) && cause.status >= 100 && cause.status <= 599
+            ? cause.status
+            : null
+      })
+    });
+  }
+}
+
+// Shared with the diagnostic-only scratch VM exercise. This does not create a
+// target, consume an authorization, or produce release evidence.
+export { startEngine as startR3HostedEngineForDiagnostic };
+
+async function startObservedEngine(
+  workspaceResult,
+  expectedWorkspace,
+  socketPath,
+  shouldClose,
+  progress
+) {
   // Otherwise dockerd silently adopts the system containerd, whose persistent
   // metadata would escape the operation's encrypted data/exec roots. Hosted
   // job preparation must stop its default Docker/containerd services first.
   requireThat(await absent("/run/containerd/containerd.sock"));
+  progress.checkpoint = "WORKSPACE";
   const observation = workspaceResult?.observation?.observation;
   requireThat(
     observation?.status === "OBSERVED" &&
@@ -361,6 +402,7 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
     configPath = `${mount}/daemon.json`,
     logPath = `${mount}/daemon.log`,
     pidfile = `${mount}/dockerd.pid`;
+  progress.checkpoint = "PATHS";
   for (const directory of [dataRoot, execRoot, tmpRoot, home])
     await fs.mkdir(directory, { mode: 0o700 });
   const config = freeze({
@@ -379,6 +421,7 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
     "userland-proxy": false,
     "live-restore": false
   });
+  progress.checkpoint = "CONFIG";
   const flags =
     constants.O_WRONLY |
     constants.O_CREAT |
@@ -403,6 +446,7 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
     rawRefs: {}
   };
   try {
+    progress.checkpoint = "EXECUTABLE";
     const command = "/usr/bin/dockerd";
     const before = await fs.stat(command, { bigint: true });
     requireThat(
@@ -421,6 +465,7 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
       TMPDIR: tmpRoot
     };
     attempt.startedAt = new Date().toISOString();
+    progress.checkpoint = "SPAWN";
     child = childProcess.spawn(command, args, {
       shell: false,
       windowsHide: true,
@@ -446,45 +491,54 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
       JSON.stringify(statIdentity(before)) ===
         JSON.stringify(statIdentity(await fs.stat(command, { bigint: true })))
     );
+    progress.checkpoint = "PING";
     const ping = await waitReady(socketPath, child, exitState, shouldClose);
     attempt.rawRefs.ping = ref(ping);
+    progress.checkpoint = "INFO";
     const infoBytes = await getEngine(socketPath, "/v1.45/info");
     attempt.rawRefs.info = ref(infoBytes);
+    progress.checkpoint = "VERSION";
     const versionBytes = await getEngine(socketPath, "/v1.45/version");
     attempt.rawRefs.version = ref(versionBytes);
     const info = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(infoBytes));
     const version = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(versionBytes));
+    progress.checkpoint = "INFO_ID";
+    requireThat(info && typeof info === "object" && UUID.test(info.ID));
+    progress.checkpoint = "INFO_ROOT";
+    requireThat(info.DockerRootDir === dataRoot);
+    progress.checkpoint = "INFO_STORAGE";
+    requireThat(info.Driver === "overlay2" && info.LoggingDriver === "json-file");
+    progress.checkpoint = "INFO_EMPTY";
+    requireThat(info.Containers === 0 && info.Images === 0);
+    progress.checkpoint = "INFO_DRIVER_STATUS";
     requireThat(
-      info &&
-        typeof info === "object" &&
-        UUID.test(info.ID) &&
-        info.DockerRootDir === dataRoot &&
-        info.Driver === "overlay2" &&
-        info.LoggingDriver === "json-file" &&
-        info.Containers === 0 &&
-        info.Images === 0 &&
-        Array.isArray(info.DriverStatus) &&
+      Array.isArray(info.DriverStatus) &&
         info.DriverStatus.every(
           (row) =>
             Array.isArray(row) &&
             row.length === 2 &&
             row.every((cell) => typeof cell === "string") &&
             row[0] !== "driver-type"
-        ) &&
-        version &&
-        typeof version.Version === "string" &&
-        typeof version.ApiVersion === "string" &&
-        !shouldClose() &&
-        exitState.value === null
+        )
     );
+    progress.checkpoint = "VERSION_FIELDS";
+    requireThat(
+      version && typeof version.Version === "string" && typeof version.ApiVersion === "string"
+    );
+    progress.checkpoint = "LIVENESS";
+    requireThat(!shouldClose() && exitState.value === null);
+    progress.checkpoint = "SYSTEM_CONTAINERD";
     requireThat(await absent("/run/containerd/containerd.sock"));
+    progress.checkpoint = "SOCKET";
     const socket = await fs.lstat(socketPath, { bigint: true });
     requireThat(socket.isSocket() && socket.uid === 0n);
+    progress.checkpoint = "CONTAINERD";
     const containerd = await observeR3ManagedContainerd({
       mountPath: mount,
       dockerdPid: child.pid
     });
     requireThat(!shouldClose() && exitState.value === null);
+    progress.checkpoint = "CONTAINERD_MOUNT";
     requireThat(
       containerd.facts.mount.path === mount &&
         containerd.facts.mount.dev === mountEvidence[0].identity.dev &&
@@ -521,6 +575,7 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
       ),
       promotionEligible: false
     });
+    progress.checkpoint = "COMPLETE";
     return {
       result,
       rawInputs,
@@ -548,12 +603,18 @@ async function startEngine(workspaceResult, expectedWorkspace, socketPath, shoul
     attempt.exit = exitState?.value ?? null;
     throw Object.assign(new Error(CODE), {
       code: CODE,
+      status: cause?.status,
       engineAttempt: freeze({
         ...attempt,
         rawRefs: { ...attempt.rawRefs },
         containerdFailure:
           cause?.code === "R3_CONTAINERD_OBSERVATION_INVALID"
-            ? { code: cause.code, rawInputs: cause.rawInputs ?? {} }
+            ? {
+                code: cause.code,
+                checkpoint: cause.checkpoint ?? null,
+                causeCode: cause.causeCode ?? null,
+                rawInputs: cause.rawInputs ?? {}
+              }
             : null
       })
     });

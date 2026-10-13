@@ -130,7 +130,14 @@ test("R3 containerd rejects config escape and wrong parent", async (t) => {
 
 test("R3 containerd rejects socket escape, wrong fd ownership and starttime drift", async (t) => {
   fixture(t, { badRealpath: true });
-  await invalid(() => observeR3ManagedContainerd({ mountPath, dockerdPid }));
+  await assert.rejects(
+    () => observeR3ManagedContainerd({ mountPath, dockerdPid }),
+    (error) => {
+      assert.equal(error.code, "R3_CONTAINERD_OBSERVATION_INVALID");
+      assert.equal(error.checkpoint, "OWNED_PATHS");
+      return true;
+    }
+  );
   fs.realpath = async (path) => path;
   fs.readlink = async (path) =>
     path === `/proc/${pid}/exe` ? "/usr/bin/containerd" : "socket:[9002]";

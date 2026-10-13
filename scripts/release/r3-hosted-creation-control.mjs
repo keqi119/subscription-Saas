@@ -609,7 +609,12 @@ async function startObservedEngine(
         rawRefs: { ...attempt.rawRefs },
         containerdFailure:
           cause?.code === "R3_CONTAINERD_OBSERVATION_INVALID"
-            ? { code: cause.code, rawInputs: cause.rawInputs ?? {} }
+            ? {
+                code: cause.code,
+                checkpoint: cause.checkpoint ?? null,
+                causeCode: cause.causeCode ?? null,
+                rawInputs: cause.rawInputs ?? {}
+              }
             : null
       })
     });

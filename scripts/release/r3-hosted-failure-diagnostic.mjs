@@ -26,6 +26,28 @@ const CHECKPOINTS = new Set([
   "CONTAINERD_MOUNT",
   "COMPLETE"
 ]);
+const CONTAINERD_CHECKPOINTS = new Set([
+  "INPUT",
+  "MOUNT",
+  "OWNED_PATHS",
+  "PID",
+  "PROCESS",
+  "CONFIG",
+  "IDENTITY",
+  "SOCKET_ROWS",
+  "SOCKET_OWNERS",
+  "RAW_ASSESS",
+  "STABILITY"
+]);
+const CONTAINERD_CAUSES = new Set([
+  "R3_CONTAINERD_OBSERVATION_INVALID",
+  "R3_CONTAINERD_RAW_INVALID",
+  "ENOENT",
+  "EACCES",
+  "EPERM",
+  "EIO",
+  "EINVAL"
+]);
 const RAW_NAMES = [
   "ping",
   "info",
@@ -89,7 +111,12 @@ export function projectR3HostedFailure(cause) {
           containerdFailureCode:
             engine.containerdFailure?.code === "R3_CONTAINERD_OBSERVATION_INVALID"
               ? "R3_CONTAINERD_OBSERVATION_INVALID"
-              : null
+              : null,
+          containerdCheckpoint: select(
+            engine.containerdFailure?.checkpoint,
+            CONTAINERD_CHECKPOINTS
+          ),
+          containerdCauseCode: select(engine.containerdFailure?.causeCode, CONTAINERD_CAUSES)
         }
       : null,
     creatorFailure: creator

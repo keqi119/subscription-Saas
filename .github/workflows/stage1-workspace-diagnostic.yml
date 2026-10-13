@@ -64,6 +64,7 @@ jobs:
             .release-output/native-workspace-diagnostic/engine-containerd/stat
             .release-output/native-workspace-diagnostic/engine-containerd/cmdline
             .release-output/native-workspace-diagnostic/engine-containerd/config
+            .release-output/native-workspace-diagnostic/engine-containerd/unix
             .release-output/native-workspace-diagnostic/engine-containerd/socketOwners
             .release-output/native-workspace-diagnostic/engine-containerd/grpcSocketRow
             .release-output/native-workspace-diagnostic/engine-containerd/debugSocketRow

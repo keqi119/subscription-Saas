@@ -446,6 +446,7 @@ async function main() {
             "stat",
             "cmdline",
             "config",
+            "unix",
             "socketOwners",
             "grpcSocketRow",
             "debugSocketRow"

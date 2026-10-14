@@ -92,8 +92,23 @@ const jobAdmissionCauses = new Set([
   "R3_JOB_JOB_API_COMMAND_TIMEOUT",
   "R3_JOB_JOB_API_RESPONSE_INVALID"
 ]);
+const profileStages = [
+  "R3_PROFILE_INPUT",
+  "R3_PROFILE_DOCUMENT",
+  "R3_PROFILE_VALIDITY",
+  "R3_PROFILE_KEY",
+  "R3_PROFILE_BINDING",
+  "R3_PROFILE_HOST",
+  "R3_PROFILE_STORAGE",
+  "R3_PROFILE_APPROVAL",
+  "R3_PROFILE_RECHECK"
+];
+const profileCauses = new Set(
+  profileStages.flatMap((stage) => [stage, `${stage}_ENOENT`, `${stage}_EACCES`])
+);
 const codes = new Set([
   ...jobAdmissionCauses,
+  ...profileCauses,
   "R3_TUF_SCOPE_INVALID",
   "R3_TUF_SCOPE_EXPIRED",
   "R3_TUF_SCOPE_CLOSED",
@@ -176,6 +191,21 @@ export function markR3JobAdmissionCause(error, causeCode) {
     throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
   if (code(error) === "UNCLASSIFIED" && !trustedCause.has(error))
     trustedCause.set(error, causeCode);
+  return error;
+}
+
+export function markR3ProfileCause(error, causeCode) {
+  if (!error || typeof error !== "object" || !profileStages.includes(causeCode))
+    throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
+  const previous = code(error);
+  if (
+    !trustedCause.has(error) &&
+    ["UNCLASSIFIED", "H1_INPUT_UNAVAILABLE", "ENOENT", "EACCES"].includes(previous)
+  )
+    trustedCause.set(
+      error,
+      previous === "ENOENT" || previous === "EACCES" ? `${causeCode}_${previous}` : causeCode
+    );
   return error;
 }
 

@@ -329,7 +329,7 @@ test("approved 588 incident binds its own failed job, historical source and real
   });
 });
 
-test("all seven approved historical identities select pinned catalog descriptors exactly", () => {
+test("all eight approved historical identities select pinned catalog descriptors exactly", () => {
   const rows = [
     [
       incident.APPROVED_R3_INCIDENT,
@@ -393,6 +393,15 @@ test("all seven approved historical identities select pinned catalog descriptors
       "15d222b72eaf84247f0e176d26a9665ea640713f91711cfe0ff662d8fed94925",
       "66f55dd3e477d1556b0f66373c8d8d54ef018682c13f7b2b79a369e1e14504fa",
       "606292d7c0294a8cbf2152382f5033f02417923d296eb4aafcf47fd4e9b10c74"
+    ],
+    [
+      incident.APPROVED_R3_INCIDENT_B7A1429C,
+      "1c8ecfdc52c46fa1c6ead634fe2c6eaa1b664825",
+      "24191b964fff0a79c8b9a5553279b6230e6f78b29597d8bdb1950e7a0a8f0287",
+      "bfe57da0fe69bd47162e3281186dfa0c3b8c57bdca944b97cf558317b6934fd2",
+      "fae0fffbdeb9d792181a705cf32ba264305928941e5b867c20635a4e6d656cb8",
+      "065afd61c7f2454be5eff3a3c27fc0eafdb13c3316972cbcec143fcc123ed569",
+      "83e468c86b4f4eefd66f9076f346606fcd261be9de553c344fca06dd4a58781f"
     ]
   ];
   for (const [policy, sourceSha, proof, material, spec, admission, catalog] of rows) {

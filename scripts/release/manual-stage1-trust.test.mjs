@@ -2642,7 +2642,15 @@ test(
     f.apiJob.status = "completed";
     f.apiJob.conclusion = "success";
     f.apiJob.completed_at = new Date().toISOString();
-    await assert.rejects(result.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
+    await assert.rejects(result.recheck(), (error) => {
+      assert.equal(error.code, "R3_JOB_ADMISSION_UNAVAILABLE");
+      const diagnostic = r3FailureTracker("H1_CALLER").decorate(
+        new Error("fixed"),
+        error
+      ).failureDiagnostic;
+      assert.equal(diagnostic.causeCode, "R3_JOB_RECHECK_STATUS");
+      return true;
+    });
     await result.close();
     await assert.rejects(result.recheck(), { code: "R3_JOB_ADMISSION_UNAVAILABLE" });
     noAuthorityAccess(f);

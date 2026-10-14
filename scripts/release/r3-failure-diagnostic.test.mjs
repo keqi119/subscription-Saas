@@ -5,6 +5,24 @@ import { r3FailureTracker, getR3FailureDiagnostic } from "./r3-failure-diagnosti
 import * as diagnostics from "./r3-failure-diagnostic.mjs";
 import * as launcher from "./launch-manual-stage1.mjs";
 
+test("job status recheck replaces only a generic H1 cause", () => {
+  const generic = diagnostics.inheritR3FailureCause(
+    Object.assign(new Error("private status"), { code: "R3_JOB_ADMISSION_UNAVAILABLE" }),
+    Object.assign(new Error("private nested"), { code: "H1_INPUT_UNAVAILABLE" })
+  );
+  diagnostics.markR3JobRecheckCause(generic, "R3_JOB_RECHECK_STATUS");
+  assert.equal(
+    r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), generic).failureDiagnostic.causeCode,
+    "R3_JOB_RECHECK_STATUS"
+  );
+
+  const specific = diagnostics.markR3PolicyCause(new Error("private policy"), "R3_POLICY_SOURCE");
+  diagnostics.markR3JobRecheckCause(specific, "R3_JOB_RECHECK_CREATION");
+  const fact = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), specific);
+  assert.equal(fact.failureDiagnostic.causeCode, "R3_POLICY_SOURCE");
+  assert.equal(JSON.stringify(fact.failureDiagnostic).includes("private"), false);
+});
+
 test("policy recheck reports its safe boundary without hiding a profile cause", () => {
   assert.equal(typeof diagnostics.markR3PolicyCause, "function");
   const generic = Object.assign(new Error("private policy input"), {

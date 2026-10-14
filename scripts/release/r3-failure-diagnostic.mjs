@@ -92,6 +92,19 @@ const jobAdmissionCauses = new Set([
   "R3_JOB_JOB_API_COMMAND_TIMEOUT",
   "R3_JOB_JOB_API_RESPONSE_INVALID"
 ]);
+const jobRecheckStages = [
+  "R3_JOB_RECHECK_STATE",
+  "R3_JOB_RECHECK_WINDOW",
+  "R3_JOB_RECHECK_CREATION",
+  "R3_JOB_RECHECK_HELD",
+  "R3_JOB_RECHECK_API",
+  "R3_JOB_RECHECK_IDENTITY",
+  "R3_JOB_RECHECK_STATUS",
+  "R3_JOB_RECHECK_OBSERVATION"
+];
+const jobRecheckCauses = new Set(
+  jobRecheckStages.flatMap((stage) => [stage, `${stage}_ENOENT`, `${stage}_EACCES`])
+);
 const profileStages = [
   "R3_PROFILE_INPUT",
   "R3_PROFILE_DOCUMENT",
@@ -134,6 +147,7 @@ const rawArchiveCauses = new Set(
 );
 const codes = new Set([
   ...jobAdmissionCauses,
+  ...jobRecheckCauses,
   ...profileCauses,
   ...policyCauses,
   ...rawArchiveCauses,
@@ -219,6 +233,21 @@ export function markR3JobAdmissionCause(error, causeCode) {
     throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
   if (code(error) === "UNCLASSIFIED" && !trustedCause.has(error))
     trustedCause.set(error, causeCode);
+  return error;
+}
+
+export function markR3JobRecheckCause(error, causeCode) {
+  if (!error || typeof error !== "object" || !jobRecheckStages.includes(causeCode))
+    throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
+  const previous = code(error);
+  if (
+    (previous === "H1_INPUT_UNAVAILABLE" || !trustedCause.has(error)) &&
+    ["UNCLASSIFIED", "H1_INPUT_UNAVAILABLE", "ENOENT", "EACCES"].includes(previous)
+  )
+    trustedCause.set(
+      error,
+      previous === "ENOENT" || previous === "EACCES" ? `${causeCode}_${previous}` : causeCode
+    );
   return error;
 }
 

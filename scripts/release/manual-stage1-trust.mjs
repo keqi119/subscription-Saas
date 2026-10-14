@@ -18,6 +18,7 @@ import {
   inheritR3FailureCause,
   markR3FailureCause,
   markR3JobAdmissionCause,
+  markR3JobRecheckCause,
   markR3PolicyCause,
   markR3ProfileCause,
   r3FailureTracker
@@ -2052,10 +2053,14 @@ export async function readFixedR3JobAdmission(input, buildAttestationScope) {
     requireThat(verifiedAttestation.workflowRunId === ci.runId);
     const api = async (endpoint, boundary) => command(["api", endpoint], boundary);
     const recheck = async () => {
+      let phase = "STATE";
       try {
         requireThat(!closed);
+        phase = "WINDOW";
         checkWindow();
+        phase = "CREATION";
         await creation.recheck();
+        phase = "HELD";
         await held.recheck();
         let firstFailure;
         const observe = (promise) =>
@@ -2063,6 +2068,7 @@ export async function readFixedR3JobAdmission(input, buildAttestationScope) {
             firstFailure ??= error;
             throw error;
           });
+        phase = "API";
         const responses = await Promise.allSettled([
           observe(api(`repos/${REPOSITORY}/actions/runs/${ci.runId}/attempts/1`, "RUN_API")),
           observe(api(`repos/${REPOSITORY}/actions/jobs/${ci.jobId}`, "JOB_API"))
@@ -2072,7 +2078,9 @@ export async function readFixedR3JobAdmission(input, buildAttestationScope) {
           jobBytes = responses[1].value,
           run = parsed("RUN_API", () => json(runBytes)),
           job = parsed("JOB_API", () => json(jobBytes));
+        phase = "IDENTITY";
         r3JobApiIdentity(admission, run, job);
+        phase = "STATUS";
         requireThat(
           run.status === "in_progress" &&
             run.conclusion === null &&
@@ -2080,10 +2088,15 @@ export async function readFixedR3JobAdmission(input, buildAttestationScope) {
             job.conclusion === null &&
             job.completed_at === null
         );
+        phase = "HELD";
         await held.recheck();
+        phase = "CREATION";
         await creation.recheck();
+        phase = "WINDOW";
         checkWindow();
+        phase = "STATE";
         requireThat(!closed);
+        phase = "OBSERVATION";
         const rawInputs = Object.freeze({
           admission: Buffer.from(held.bytes),
           attestation: Buffer.from(attestationBytes),
@@ -2101,6 +2114,7 @@ export async function readFixedR3JobAdmission(input, buildAttestationScope) {
         });
         return Object.freeze({ observations, rawInputs });
       } catch (cause) {
+        markR3JobRecheckCause(cause, `R3_JOB_RECHECK_${phase}`);
         await close().catch(() => {});
         failWithCause(code, cause);
       }

@@ -27,7 +27,8 @@ test("hosted adapter rejects caller-supplied path, host, key and process overrid
   }
 });
 
-test("SFTP keeps private download permissions and waits for explicit CLOSED receipt", async () => {
+let fixtureNumber = 0;
+async function withDeliveryFixture(firstDownloadError, run) {
   const originalMask = process.umask(0o022);
   const bytes = Buffer.from("{}");
   const scope = {
@@ -53,6 +54,8 @@ test("SFTP keeps private download permissions and waits for explicit CLOSED rece
     scripts = [];
   const notice = Buffer.from("validated CLOSED fixture");
   const receipt = Buffer.from("exact CLOSED receipt fixture");
+  let delivery,
+    downloadCount = 0;
   const fileStat = (file) => ({
     ...stat(false),
     mode: 0o100600n,
@@ -88,10 +91,13 @@ test("SFTP keeps private download permissions and waits for explicit CLOSED rece
     });
     mock.module("node:fs/promises", {
       defaultExport: {
-        lstat: async (file) =>
-          files.has(file)
+        lstat: async (file) => {
+          if (typeof file === "string" && file.endsWith(".json") && !files.has(file))
+            throw Object.assign(new Error("fixture absent"), { code: "ENOENT" });
+          return files.has(file)
             ? fileStat(file)
-            : stat(typeof file === "string" && file.endsWith("/transfer")),
+            : stat(typeof file === "string" && file.endsWith("/transfer"));
+        },
         unlink: async (file) => {
           files.delete(file);
         },
@@ -125,45 +131,74 @@ test("SFTP keeps private download permissions and waits for explicit CLOSED rece
         write: (script, callback) => {
           scripts.push(script);
           const download = /^-get \/out\/[^ ]+ ([^\n]+)\n/u.exec(script);
-          if (download) files.set(download[1], notice);
+          const missing = download && ++downloadCount === 1 && firstDownloadError;
+          if (download && !missing) files.set(download[1], notice);
           if (script.includes("put ") && script.includes("closed-received.json")) {
             assert.deepEqual(files.get(script.split(" ")[1]), receipt);
           }
           callback();
-          queueMicrotask(() =>
-            child.stdout.emit("data", Buffer.from("Remote working directory: /\n"))
-          );
+          queueMicrotask(() => {
+            if (missing) child.stderr.emit("data", Buffer.from(firstDownloadError));
+            child.stdout.emit("data", Buffer.from("Remote working directory: /\n"));
+          });
         },
         end: () => queueMicrotask(() => child.emit("close", 0, null))
       };
       child.kill = () => queueMicrotask(() => child.emit("close", null, "SIGKILL"));
       return child;
     });
-    const { openR3HostedEvidenceDelivery: open } =
-      await import("./r3-hosted-evidence-delivery.mjs?private-download-mask");
-    const delivery = await open({ creationSpecBytes: bytes, jobAdmissionBytes: bytes });
-    await delivery.sendCreation(bytes);
-    await delivery.receiveCleanupRequest();
-    await delivery.sendCleanup(bytes);
-    await delivery.receiveCleanupImported({ bundleDigest: sha256Bytes(bytes) });
-    const closed = await delivery.receiveClosed();
-    assert.deepEqual(closed.sourceGateEvidenceBytes, Buffer.from("public evidence"));
-    assert.equal(
-      scripts.some((script) => script.includes("closed-received.json")),
-      false
+    const { openR3HostedEvidenceDelivery: open } = await import(
+      `./r3-hosted-evidence-delivery.mjs?delivery-fixture=${++fixtureNumber}`
     );
-    // Mutating the returned value cannot alter the adapter's retained receipt.
-    closed.sourceGateEvidenceBytes.fill(0);
-    await delivery.confirmClosedReceived();
-    assert.equal(scripts.filter((script) => script.includes("closed-received.json")).length, 1);
-    await assert.rejects(delivery.confirmClosedReceived(), {
-      code: "R3_HOSTED_EVIDENCE_DELIVERY_UNAVAILABLE"
-    });
-    await delivery.close();
+    delivery = await open({ creationSpecBytes: bytes, jobAdmissionBytes: bytes });
+    await delivery.sendCreation(bytes);
+    await run(delivery, { scripts, bytes, downloads: () => downloadCount });
     assert.equal(inheritedMask, 0o077);
     assert.equal(process.umask(), 0o022);
   } finally {
+    await delivery?.close();
     process.umask(originalMask);
     mock.restoreAll();
+  }
+}
+
+test("SFTP waits for the exact missing file, keeps private downloads and requires CLOSED receipt", async () => {
+  await withDeliveryFixture(
+    'File "/out/cleanup-request.json" not found.\n',
+    async (delivery, { scripts, bytes, downloads }) => {
+      await delivery.receiveCleanupRequest();
+      assert.equal(downloads(), 2);
+      await delivery.sendCleanup(bytes);
+      await delivery.receiveCleanupImported({ bundleDigest: sha256Bytes(bytes) });
+      const closed = await delivery.receiveClosed();
+      assert.deepEqual(closed.sourceGateEvidenceBytes, Buffer.from("public evidence"));
+      assert.equal(
+        scripts.some((script) => script.includes("closed-received.json")),
+        false
+      );
+      // Mutating the returned value cannot alter the adapter's retained receipt.
+      closed.sourceGateEvidenceBytes.fill(0);
+      await delivery.confirmClosedReceived();
+      assert.equal(scripts.filter((script) => script.includes("closed-received.json")).length, 1);
+      await assert.rejects(delivery.confirmClosedReceived(), {
+        code: "R3_HOSTED_EVIDENCE_DELIVERY_UNAVAILABLE"
+      });
+      await delivery.close();
+    }
+  );
+});
+
+test("SFTP stops on permission errors and missing-file messages for a different path", async () => {
+  for (const stderr of [
+    'remote open("/out/cleanup-request.json"): Permission denied\n',
+    'File "/out/other.json" not found.\n',
+    'File "/out/cleanup-request.json" not found.\nPermission denied\n'
+  ]) {
+    await withDeliveryFixture(stderr, async (delivery, { downloads }) => {
+      await assert.rejects(delivery.receiveCleanupRequest(), {
+        code: "R3_HOSTED_EVIDENCE_DELIVERY_UNAVAILABLE"
+      });
+      assert.equal(downloads(), 1);
+    });
   }
 });

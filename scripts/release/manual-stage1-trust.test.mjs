@@ -729,6 +729,53 @@ test("EDGE never falls back to a historical v1 profile filename", async (t) => {
   });
   noAuthorityAccess(f);
 });
+test("EDGE keeps a safe fixed-profile substage when rejection propagates through H1_CREATE", async (t) => {
+  const cases = [
+    {
+      name: "expired",
+      mutate: async (f) => {
+        f.profile.expiresAt = "2020-01-02T00:00:00.000Z";
+        await rebind(f);
+      },
+      expected: "R3_PROFILE_VALIDITY"
+    },
+    {
+      name: "document",
+      mutate: (f) => fs.writeFile(path.join(f.repoRoot, profileName), "{broken"),
+      expected: "R3_PROFILE_DOCUMENT"
+    },
+    {
+      name: "approval",
+      mutate: (f) => fs.rm(f.approvalPath),
+      expected: "R3_PROFILE_APPROVAL_ENOENT"
+    }
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async (inner) => {
+      const f = await fixture(inner);
+      await item.mutate(f);
+      const tracker = r3FailureTracker("H1_CREATE");
+      let rejected;
+      try {
+        await tracker.run("ACK_BODY", () =>
+          production().loadFixedManualProfile({ repoRoot: f.repoRoot })
+        );
+      } catch (error) {
+        rejected = tracker.decorate(error, error);
+      }
+      assert.equal(rejected?.code, "H1_INPUT_UNAVAILABLE");
+      assert.deepEqual(
+        {
+          component: rejected.failureDiagnostic.component,
+          stage: rejected.failureDiagnostic.stage,
+          causeCode: rejected.failureDiagnostic.causeCode
+        },
+        { component: "H1_CREATE", stage: "ACK_BODY", causeCode: item.expected }
+      );
+      noAuthorityAccess(f);
+    });
+  }
+});
 test("EDGE rejects a fully self-consistent approval for a different actual uid", async (t) => {
   const f = await fixture(t);
   f.approval.principal.uid++;

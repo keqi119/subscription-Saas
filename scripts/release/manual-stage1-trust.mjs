@@ -18,6 +18,7 @@ import {
   inheritR3FailureCause,
   markR3FailureCause,
   markR3JobAdmissionCause,
+  markR3ProfileCause,
   r3FailureTracker
 } from "./r3-failure-diagnostic.mjs";
 import { runR3StartupTiming } from "./r3-startup-detail-timing.mjs";
@@ -461,6 +462,7 @@ export async function loadFixedManualProfile(input) {
 // callers cannot select this policy through their input or exported API.
 async function loadManualProfile(input, requireCurrentValidity) {
   const opened = [];
+  let phase = "INPUT";
   try {
     exact(input, ["repoRoot"]);
     const repoRoot = absolute(input.repoRoot);
@@ -470,13 +472,16 @@ async function loadManualProfile(input, requireCurrentValidity) {
       opened.push(item);
       return item.bytes;
     };
+    phase = "DOCUMENT";
     const profile = json(await read(path.join(repoRoot, PROFILE), sourceOptions));
     validateContract("manual-stage1-profile.v2", profile);
+    phase = "VALIDITY";
     requireThat(instant(profile.validFrom) < instant(profile.expiresAt));
     if (requireCurrentValidity)
       requireThat(
         instant(profile.validFrom) <= Date.now() && Date.now() < instant(profile.expiresAt)
       );
+    phase = "KEY";
     requireThat(
       /^-----BEGIN PUBLIC KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-----END PUBLIC KEY-----\r?\n?$/u.test(
         profile.publicKeyPem
@@ -487,11 +492,13 @@ async function loadManualProfile(input, requireCurrentValidity) {
       publicKey.asymmetricKeyType === "ed25519" &&
         sha256Bytes(publicKey.export({ type: "spki", format: "der" })) === profile.keyFingerprint
     );
+    phase = "BINDING";
     const binding = json(await read(path.join(repoRoot, OWNER), sourceOptions), true);
     validateOwner(binding, true);
     requireThat(
       binding.profileDigest === sha256Canonical(profile) && binding.ownerId === profile.ownerId
     );
+    phase = "HOST";
     const actual = await actualHost();
     requireThat(
       equal(binding.principal, actual.principal) &&
@@ -500,6 +507,7 @@ async function loadManualProfile(input, requireCurrentValidity) {
     Object.assign(sourceOptions, { principal: actual.principal, sourceRoot: repoRoot });
     for (const name of [PROFILE, OWNER])
       await checkedPath(path.join(repoRoot, name), sourceOptions);
+    phase = "STORAGE";
     const roots = ROOTS.map((name) => absolute(profile.storage[name]));
     const rootSnapshots = [];
     for (let i = 0; i < roots.length; i++) {
@@ -512,6 +520,7 @@ async function loadManualProfile(input, requireCurrentValidity) {
       for (let j = 0; j < i; j++)
         requireThat(!within(roots[i], roots[j]) && !within(roots[j], roots[i]));
     }
+    phase = "APPROVAL";
     const approvalBytes = await read(
       path.join(profile.storage.archiveRoot, binding.approvalReference),
       { principal: actual.principal, privateRoot: profile.storage.archiveRoot }
@@ -528,6 +537,7 @@ async function loadManualProfile(input, requireCurrentValidity) {
       "promotionEligible"
     ])
       requireThat(equal(binding[key], approval[key]));
+    phase = "RECHECK";
     for (const item of opened) await item.recheck();
     for (let index = 0; index < roots.length; index++) {
       const after = await checkedPath(roots[index], {
@@ -542,8 +552,8 @@ async function loadManualProfile(input, requireCurrentValidity) {
       );
     }
     return freeze(profile);
-  } catch {
-    fail(H1);
+  } catch (cause) {
+    failWithCause(H1, markR3ProfileCause(cause, `R3_PROFILE_${phase}`));
   } finally {
     await Promise.all(opened.map((item) => item.close()));
   }

@@ -260,6 +260,21 @@ const DEFAULT_DEPS = {
 };
 
 // The dependency argument is a private test seam. CLI input cannot select dependencies.
+export function projectH1DataWorkerComplete(result, keyCleanup) {
+  return {
+    status: "COMPLETE",
+    keyCleanup,
+    metadata: result.metadata,
+    privilegeObservation: result.privilegeObservation,
+    fingerprintObservationBefore: result.fingerprintObservationBefore,
+    fingerprintObservation: result.fingerprintObservation,
+    scan: result.scan,
+    envelope: result.envelope,
+    cryptoOperation: result.cryptoOperation,
+    ciphertextPath: result.ciphertextPath
+  };
+}
+
 export async function runH1DataWorker({ input, output, deps = DEFAULT_DEPS } = {}) {
   const pipe = channel(input);
   let sourceClient, workspaceClient, source, workspace, tokenizationKey;
@@ -428,17 +443,7 @@ export async function runH1DataWorker({ input, output, deps = DEFAULT_DEPS } = {
     await writeLine(output, { status: "FAILED", code: "H1_CLEANUP_UNKNOWN" });
     return false;
   }
-  await writeLine(output, {
-    status: "COMPLETE",
-    keyCleanup,
-    metadata: result.metadata,
-    privilegeObservation: result.privilegeObservation,
-    fingerprintObservation: result.fingerprintObservation,
-    scan: result.scan,
-    envelope: result.envelope,
-    cryptoOperation: result.cryptoOperation,
-    ciphertextPath: result.ciphertextPath
-  });
+  await writeLine(output, projectH1DataWorkerComplete(result, keyCleanup));
   return true;
 }
 

@@ -363,6 +363,12 @@ test("private bundle preparation completes cleanup without a publication receipt
   const bundle = await prepareSanitizedSnapshotBundle(operation);
   assert.equal(bundle.metadata.dumpDigest, sha256Bytes(bundle.dump));
   assert.equal(bundle.metadata.scanDigest, sha256Canonical(bundle.scan));
+  assert.equal(bundle.fingerprintObservationBefore.schemaVersion, "source-fingerprint.v1");
+  assert.deepEqual(bundle.fingerprintObservationBefore.identity, bundle.fingerprintObservation.identity);
+  assert.ok(
+    bundle.fingerprintObservationBefore.provenance.observedAt <= bundle.scan.scannedAt &&
+      bundle.scan.scannedAt <= bundle.fingerprintObservation.provenance.observedAt
+  );
   assert.equal(fingerprintCalls(), 2);
   assert.equal(uploads.length, 0);
   assert.deepEqual(events.slice(-2), ["snapshot-closed", "workspace-destroyed"]);

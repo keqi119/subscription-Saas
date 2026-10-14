@@ -1006,6 +1006,7 @@ export async function readH1SnapshotFinalEvidence(request) {
     ...input,
     githubTerminalReadback,
     finalSnapshotReadback,
+    storageOriginals,
     accessPolicyDigest: configuration.accessPolicyDigest
   });
   const publicSession = {
@@ -1212,6 +1213,7 @@ export async function sealH1SnapshotCompletion(request) {
     ...input,
     githubTerminalReadback: io.githubTerminalReadback,
     finalSnapshotReadback: io.finalSnapshotReadback,
+    storageOriginals: io.storageOriginals,
     accessPolicyDigest: io.accessPolicyDigest
   });
   const custodyDigest = writeArchiveRecord(
@@ -1253,6 +1255,7 @@ export async function sealH1SnapshotProducerTerminal(request) {
     ...input,
     githubTerminalReadback: io.githubTerminalReadback,
     finalSnapshotReadback: io.finalSnapshotReadback,
+    storageOriginals: io.storageOriginals,
     accessPolicyDigest: io.accessPolicyDigest
   });
   const completion = archiveJson(`${directory}/snapshot-producer-completion.json`);

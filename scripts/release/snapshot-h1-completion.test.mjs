@@ -152,6 +152,7 @@ function finalReadback() {
   const key = `snapshot-slots/v2/${releaseAttemptId}/12345/snapshot.enc`;
   const read = {
     key,
+    requestId: "fixture-read",
     version: "null-version-disabled",
     etag: '"etag-one"',
     digest: digest("a"),
@@ -186,6 +187,43 @@ function finalReadback() {
   };
 }
 
+function storageOriginalsFor(readback) {
+  const observation = readback.observations[0];
+  const records = {
+    conditionalCreate: { operation: "PutObject" },
+    head: { operation: "HeadObject" },
+    get: { operation: "GetObject" },
+    bucketAcl: { operation: "GetBucketAcl" },
+    objectAcl: { operation: "GetObjectAcl" },
+    versioning: { operation: "GetBucketVersioning" },
+    worm: { operation: "GetBucketWorm" }
+  };
+  const originals = [];
+  const ref = (value) => {
+    const bytes = Buffer.from(canonicalJson(value));
+    const digest = sha256Bytes(bytes);
+    originals.push({ digest, bytesBase64: bytes.toString("base64") });
+    return { digest, bytes: bytes.length };
+  };
+  const storageReadback = {
+    recordVersion: "r3-snapshot-storage-readback.v1",
+    bucket: "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai",
+    objectKey: observation.get.key,
+    writerIdentity: observation.expectedWriterArn,
+    readerIdentity: observation.readerArn,
+    writerIdentityOriginal: ref({ Arn: observation.expectedWriterArn }),
+    readerIdentityOriginal: ref({ Arn: observation.readerArn }),
+    conditionalCreate: ref(records.conditionalCreate),
+    head: ref(records.head),
+    get: ref(records.get),
+    bucketAcl: ref(records.bucketAcl),
+    objectAcl: ref(records.objectAcl),
+    versioning: ref(records.versioning),
+    worm: ref(records.worm)
+  };
+  return { storageReadback, observation: { ...observation, evidence: { records } }, originals };
+}
+
 test("derives final custody only from a later independent snapshot readback and terminal GitHub read", () => {
   const input = {
     expected: {
@@ -197,11 +235,12 @@ test("derives final custody only from a later independent snapshot readback and 
     finalSnapshotReadback: finalReadback(),
     accessPolicyDigest: digest("4")
   };
+  input.storageOriginals = storageOriginalsFor(input.finalSnapshotReadback);
   const result = buildH1FinalSnapshotCustody(input);
   assert.equal(result.provisional, false);
   assert.equal(result.terminalAt, observedAt);
   assert.equal(result.worm.readbackAt, input.finalSnapshotReadback.observedAt);
-  assert.equal(result.authoritativeObservationDigest, sha256Canonical(input.finalSnapshotReadback));
+  assert.equal(result.authoritativeObservationDigest, sha256Canonical(input.storageOriginals.storageReadback));
   for (const change of [
     (value) => {
       value.finalSnapshotReadback.observedAt = "2026-10-06T01:02:00.000Z";
@@ -214,6 +253,9 @@ test("derives final custody only from a later independent snapshot readback and 
     },
     (value) => {
       value.githubTerminalReadback.success = true;
+    },
+    (value) => {
+      value.storageOriginals.storageReadback.get.digest = digest("0");
     }
   ]) {
     const invalid = globalThis.structuredClone(input);
@@ -348,7 +390,11 @@ test("assembles completion from signed H1 originals and rejects wrapper tamperin
     envelope,
     ciphertextPath: "/fixture/snapshot.enc",
     privilegeObservation: {},
-    fingerprintObservation: {},
+    fingerprintObservationBefore: fixture.s.beforeFingerprint,
+    fingerprintObservation: {
+      ...fixture.s.afterFingerprint,
+      provenance: { observedAt: after }
+    },
     cryptoOperation: {
       requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       action: "local:GenerateAndWrapDataKey",
@@ -365,7 +411,7 @@ test("assembles completion from signed H1 originals and rejects wrapper tamperin
       observedAt: after
     }
   };
-  const proof = buildH1CryptoUseProof({
+  const proofInput = {
     authorization,
     data,
     observation,
@@ -373,7 +419,31 @@ test("assembles completion from signed H1 originals and rejects wrapper tamperin
     cleanup,
     volume,
     disposal
-  });
+  };
+  const proof = buildH1CryptoUseProof(proofInput);
+  const sameMillisecondData = {
+    ...data,
+    fingerprintObservation: {
+      ...data.fingerprintObservation,
+      provenance: { observedAt: data.scan.scannedAt }
+    }
+  };
+  assert.deepEqual(
+    sameMillisecondData.fingerprintObservation,
+    sameMillisecondData.fingerprintObservationBefore
+  );
+  assert.equal(
+    buildH1CryptoUseProof({ ...proofInput, data: sameMillisecondData }).publishable,
+    true
+  );
+  assert.throws(
+    () =>
+      buildH1CryptoUseProof({
+        ...proofInput,
+        data: { ...data, fingerprintObservationBefore: undefined }
+      }),
+    { code: "H1_DATA_PROOF_REJECTED" }
+  );
   const keys = generateKeyPairSync("ed25519");
   const signer = {
     issuer: authorization.issuer.issuerId,
@@ -577,6 +647,7 @@ test("assembles completion from signed H1 originals and rejects wrapper tamperin
   });
   const read = {
     key: envelope.slotObjectKey,
+    requestId: "fixture-read",
     version: "null-version-disabled",
     etag: '"fixture-etag"',
     digest: envelope.ciphertextDigest,
@@ -613,6 +684,7 @@ test("assembles completion from signed H1 originals and rejects wrapper tamperin
     publisherUseBytes,
     githubTerminalReadback,
     finalSnapshotReadback,
+    storageOriginals: storageOriginalsFor(finalSnapshotReadback),
     accessPolicyDigest: digest("8")
   };
   const assembled = buildH1SnapshotCompletion(input);

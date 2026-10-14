@@ -379,6 +379,7 @@ export async function prepareSanitizedSnapshotBundle({
       dump: sanitized,
       metadata,
       privilegeObservation,
+      fingerprintObservationBefore: before,
       fingerprintObservation: after,
       scan
     });

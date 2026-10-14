@@ -86,6 +86,8 @@ const RELEASE_GATE_ENTRY_POINTS = Object.freeze([
   "scripts/release/r3-startup-deadline.mjs",
   "scripts/release/r3-startup-detail-timing.mjs",
   "scripts/release/r3-snapshot-input-admission.mjs",
+  "scripts/release/prepare-h1-r3-snapshot-input.mjs",
+  "scripts/release/r3-snapshot-input-install.mjs",
   "scripts/release/r3-snapshot-payload.mjs",
   "scripts/release/r3-containerd-observation.mjs",
   "scripts/release/r3-database-targets.mjs",
@@ -209,7 +211,7 @@ async function listFiles(root, relativeDirectory) {
   return result.sort(comparePaths);
 }
 
-async function discoverRepositoryContractFiles(repoRoot) {
+async function discoverRepositoryContractFiles(repoRoot, entrypoints) {
   const contractFiles = await listFiles(repoRoot, "release/contracts");
   const foundationFiles = ["packages/release-foundation/package.json"];
   foundationFiles.push(...(await listFiles(repoRoot, "packages/release-foundation/src")));
@@ -223,7 +225,7 @@ async function discoverRepositoryContractFiles(repoRoot) {
     }
   }
   const existingReleaseGateEntryPoints = [];
-  for (const relativePath of RELEASE_GATE_ENTRY_POINTS) {
+  for (const relativePath of entrypoints) {
     try {
       await readFile(path.join(repoRoot, ...relativePath.split("/")));
       existingReleaseGateEntryPoints.push(relativePath);
@@ -270,7 +272,7 @@ export async function loadContractFileManifest(repoRoot) {
   });
 }
 
-export async function computeRepositoryContract(repoRoot, { ignore } = {}) {
+async function computeRepositoryContractWithEntryPoints(repoRoot, entrypoints, { ignore } = {}) {
   const manifest = await loadContractFileManifest(repoRoot);
   const declared = manifest.files.filter((relativePath) => relativePath !== ignore);
   const fileBytes = new Map();
@@ -284,7 +286,7 @@ export async function computeRepositoryContract(repoRoot, { ignore } = {}) {
       throw error;
     }
   }
-  const discovered = await discoverRepositoryContractFiles(repoRoot);
+  const discovered = await discoverRepositoryContractFiles(repoRoot, entrypoints);
   if (canonicalJson(declared) !== canonicalJson(discovered)) {
     throw codeError("CONTRACT_FILE_SET_DRIFT", { declared, discovered });
   }
@@ -298,6 +300,76 @@ export async function computeRepositoryContract(repoRoot, { ignore } = {}) {
     entries
   };
   return Object.freeze({ ...identity, digest: sha256Canonical(identity) });
+}
+
+export async function computeRepositoryContract(repoRoot, { ignore } = {}) {
+  return computeRepositoryContractWithEntryPoints(repoRoot, RELEASE_GATE_ENTRY_POINTS, { ignore });
+}
+
+function historicalEntryPoints(catalogBytes, catalogRawDigest) {
+  const invalid = () => codeError("CONTRACT_HISTORICAL_CATALOG_INVALID");
+  if (
+    !Buffer.isBuffer(catalogBytes) ||
+    catalogBytes.length === 0 ||
+    catalogBytes.length > 1048576 ||
+    typeof catalogRawDigest !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/u.test(catalogRawDigest)
+  )
+    throw invalid();
+  if (sha256Bytes(catalogBytes) !== catalogRawDigest)
+    throw codeError("CONTRACT_HISTORICAL_CATALOG_CHANGED");
+  let source;
+  try {
+    source = new TextDecoder("utf-8", { fatal: true }).decode(catalogBytes);
+  } catch {
+    throw invalid();
+  }
+  const start = "const RELEASE_GATE_ENTRY_POINTS = Object.freeze([";
+  const first = source.indexOf(start);
+  if (first < 0 || source.indexOf(start, first + start.length) >= 0) throw invalid();
+  const begin = first + start.length;
+  const end = source.indexOf("]);", begin);
+  if (end < 0) throw invalid();
+  const body = source.slice(begin, end);
+  const files = [];
+  let at = 0;
+  const whitespace = () => {
+    while (at < body.length && /\s/u.test(body[at])) at++;
+  };
+  whitespace();
+  if (at === body.length) throw invalid();
+  while (at < body.length) {
+    if (body[at++] !== '"') throw invalid();
+    const next = body.indexOf('"', at);
+    if (next < 0) throw invalid();
+    const file = body.slice(at, next);
+    if (file.includes("\\") || file.includes("\n") || file.includes("\r")) throw invalid();
+    try {
+      assertRepositoryPath(file);
+    } catch {
+      throw invalid();
+    }
+    if (file.split("/").some((part) => part === "" || part === "." || part === ".."))
+      throw invalid();
+    files.push(file);
+    at = next + 1;
+    whitespace();
+    if (at === body.length) break;
+    if (body[at++] !== ",") throw invalid();
+    whitespace();
+  }
+  if (new Set(files).size !== files.length) throw invalid();
+  return Object.freeze(files);
+}
+
+// The trust reader alone supplies bytes and a source-bound digest; this
+// calculator never executes the historical module or accepts an ignore list.
+export async function computeHistoricalRepositoryContract(
+  repoRoot,
+  { catalogBytes, catalogRawDigest }
+) {
+  const entrypoints = historicalEntryPoints(catalogBytes, catalogRawDigest);
+  return computeRepositoryContractWithEntryPoints(repoRoot, entrypoints);
 }
 
 export async function computeMigrationCatalog(repoRoot) {

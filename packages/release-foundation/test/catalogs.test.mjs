@@ -11,6 +11,8 @@ import {
   loadContractFileManifest,
   verifyMigrationCatalog
 } from "../src/index.mjs";
+import * as historicalCatalogs from "../src/catalogs.mjs";
+import { sha256Bytes } from "../src/digest.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -201,5 +203,78 @@ test("repository contract binds the final release gate entry points", async () =
     await writeFile(path.join(root, composePath), "services: { api: {} }\n", "utf8");
     const after = await computeRepositoryContract(root);
     assert.notEqual(after.digest, before.digest);
+  });
+});
+
+test("historical repository discovery uses only a pinned literal old entrypoint list", async () => {
+  await withTempRepo(async (root) => {
+    const manifestPath = "release/contracts/repository-contract-files.v1.json";
+    const legacy = "scripts/release/legacy.mjs";
+    await writeRepositoryContractFixture(
+      root,
+      [manifestPath, "release/contracts/schemas/example.json", legacy].sort()
+    );
+    await mkdir(path.join(root, "scripts/release"), { recursive: true });
+    await writeFile(path.join(root, legacy), "export const old = true;\n");
+    await writeFile(
+      path.join(root, "scripts/release/r3-startup-detail-timing.mjs"),
+      "export const newer = true;\n"
+    );
+    await assert.rejects(computeRepositoryContract(root), { code: "CONTRACT_FILE_SET_DRIFT" });
+    assert.equal(typeof historicalCatalogs.computeHistoricalRepositoryContract, "function");
+    const catalogBytes = Buffer.from(
+      'const RELEASE_GATE_ENTRY_POINTS = Object.freeze([\n  "scripts/release/legacy.mjs",\n]);\n'
+    );
+    const input = { catalogBytes, catalogRawDigest: sha256Bytes(catalogBytes) };
+    const old = await historicalCatalogs.computeHistoricalRepositoryContract(root, input);
+    assert.equal(old.entries.length, 3);
+    await writeFile(path.join(root, legacy), "export const old = false;\n");
+    assert.notEqual(
+      (await historicalCatalogs.computeHistoricalRepositoryContract(root, input)).digest,
+      old.digest
+    );
+    await writeFile(path.join(root, "release/contracts/schemas/extra.json"), "{}\n");
+    await assert.rejects(historicalCatalogs.computeHistoricalRepositoryContract(root, input), {
+      code: "CONTRACT_FILE_SET_DRIFT"
+    });
+  });
+});
+
+test("historical catalog parser rejects changed bytes and executable list syntax", async () => {
+  await withTempRepo(async (root) => {
+    await writeRepositoryContractFixture(root, [
+      "release/contracts/repository-contract-files.v1.json",
+      "release/contracts/schemas/example.json"
+    ]);
+    assert.equal(typeof historicalCatalogs.computeHistoricalRepositoryContract, "function");
+    const valid = Buffer.from(
+      'const RELEASE_GATE_ENTRY_POINTS = Object.freeze(["scripts/release/legacy.mjs"]);'
+    );
+    await assert.rejects(
+      historicalCatalogs.computeHistoricalRepositoryContract(root, {
+        catalogBytes: valid,
+        catalogRawDigest: `sha256:${"0".repeat(64)}`
+      }),
+      { code: "CONTRACT_HISTORICAL_CATALOG_CHANGED" }
+    );
+    for (const body of [
+      '"scripts/release/a.mjs", ...more',
+      '"scripts/release/a.mjs" // comment',
+      '"scripts/release/a\\x2emjs"',
+      '"scripts/release/a.mjs", "scripts/release/a.mjs"',
+      '"../outside.mjs"',
+      '"scripts/release/a.mjs" + "suffix"'
+    ]) {
+      const catalogBytes = Buffer.from(
+        `const RELEASE_GATE_ENTRY_POINTS = Object.freeze([${body}]);`
+      );
+      await assert.rejects(
+        historicalCatalogs.computeHistoricalRepositoryContract(root, {
+          catalogBytes,
+          catalogRawDigest: sha256Bytes(catalogBytes)
+        }),
+        { code: "CONTRACT_HISTORICAL_CATALOG_INVALID" }
+      );
+    }
   });
 });

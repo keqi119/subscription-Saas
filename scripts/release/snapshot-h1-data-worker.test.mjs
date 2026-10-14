@@ -139,6 +139,7 @@ function fixture() {
       return {
         metadata: {},
         privilegeObservation: {},
+        fingerprintObservationBefore: { provenance: { observedAt: "2026-10-01T00:00:00.000Z" } },
         fingerprintObservation: {},
         scan: {},
         envelope: {},
@@ -225,6 +226,9 @@ test("split configure line and correct ACK followed by EOF permit completion", a
     .map((line) => JSON.parse(line))
     .at(-1);
   assert.deepEqual(complete.cryptoOperation, { requestId: "synthetic-operation-handoff" });
+  assert.deepEqual(complete.fingerprintObservationBefore, {
+    provenance: { observedAt: "2026-10-01T00:00:00.000Z" }
+  });
   assert.deepEqual(complete.keyCleanup, {
     tokenizationKeyBufferCleared: true,
     workspaceKeyBufferCleared: true,

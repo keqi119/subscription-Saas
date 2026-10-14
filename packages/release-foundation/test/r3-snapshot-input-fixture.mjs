@@ -12,13 +12,16 @@ import { readCapturedOssXml } from "../../../scripts/release/manual-runner-sourc
 const repo = fileURLToPath(new URL("../../../", import.meta.url));
 const load = (name) => JSON.parse(readFileSync(path.join(repo, "release/contracts", name), "utf8"));
 const d = (c) => "sha256:" + c.repeat(64);
-function snapshotDeclarations({ dumpDigest = d("4"), keyFingerprint = d("a") } = {}) {
+function snapshotDeclarations({
+  dumpDigest = d("4"),
+  keyFingerprint = d("a"),
+  sourceSha = "b".repeat(40)
+} = {}) {
   const contract = load("sanitization-contract.v1.json"),
     ownershipMap = load("snapshot-ownership-map.v1.json");
   const createdAt = "2026-09-03T00:00:00.000Z",
     expiresAt = "2026-10-03T00:00:00.000Z";
   const contractDigest = sha256Canonical(contract),
-    sourceSha = "b".repeat(40),
     releaseAttemptId = "attempt-20260903-001",
     snapshotRunId = "9001";
   const identity = {
@@ -265,15 +268,19 @@ export async function publishR3SnapshotFixture(
     inputReference = randomUUID(),
     payload,
     storageAccount = "1234567890123456",
-    bucketName
+    bucketName,
+    sourceSha = "b".repeat(40)
   } = {}
 ) {
-  const s = snapshotDeclarations(
-    payload && {
-      dumpDigest: sha256Bytes(payload.bytes),
-      keyFingerprint: sha256Bytes(payload.publicKey.export({ type: "spki", format: "der" }))
-    }
-  );
+  const s = snapshotDeclarations({
+    sourceSha,
+    ...(payload
+      ? {
+          dumpDigest: sha256Bytes(payload.bytes),
+          keyFingerprint: sha256Bytes(payload.publicKey.export({ type: "spki", format: "der" }))
+        }
+      : {})
+  });
   let ciphertextPath;
   if (payload) {
     // Allocation describes the historical snapshot; producer execution may be

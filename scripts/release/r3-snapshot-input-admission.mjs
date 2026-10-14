@@ -202,28 +202,7 @@ function checkSources(s, now) {
     requireThat(privilege[key] === s.beforeFingerprint.identity[key]);
 }
 
-async function checkPermission(s, index, profile, raw, now) {
-  const p = s.permission;
-  requireThat(
-    exact(p, [
-      "recordVersion",
-      "inputReference",
-      "ownerId",
-      "profileDigest",
-      "sourceAuthority",
-      "sourceIdentity",
-      "allowedPurpose",
-      "allowedUses",
-      "validUntil",
-      "restrictionOriginals"
-    ]) &&
-      p.recordVersion === "r3-snapshot-input-permission.v1" &&
-      p.inputReference === index.inputReference &&
-      p.ownerId === profile.ownerId &&
-      p.profileDigest === index.profileDigest &&
-      p.allowedPurpose === "sanitized-snapshot-test-input" &&
-      instant(p.validUntil) > now
-  );
+async function checkSourceAuthorization(s, p, raw) {
   const authority = json(await raw(p.sourceAuthority));
   requireThat(
     exact(authority, [
@@ -270,6 +249,35 @@ async function checkPermission(s, index, profile, raw, now) {
       ) &&
       sha256Canonical(identity.objectOwners) === s.sourcePrivilege.capabilities.objectOwnerSetDigest
   );
+  requireThat(Array.isArray(p.restrictionOriginals) && p.restrictionOriginals.length <= 16);
+  // Preserve underlying statements/restrictions without claiming automated legal
+  // interpretation. The later manual scope must match these exact originals.
+  for (const ref of [...authority.originals, ...p.restrictionOriginals]) await raw(ref);
+}
+
+async function checkPermission(s, index, profile, raw, now) {
+  const p = s.permission;
+  requireThat(
+    exact(p, [
+      "recordVersion",
+      "inputReference",
+      "ownerId",
+      "profileDigest",
+      "sourceAuthority",
+      "sourceIdentity",
+      "allowedPurpose",
+      "allowedUses",
+      "validUntil",
+      "restrictionOriginals"
+    ]) &&
+      p.recordVersion === "r3-snapshot-input-permission.v1" &&
+      p.inputReference === index.inputReference &&
+      p.ownerId === profile.ownerId &&
+      p.profileDigest === index.profileDigest &&
+      p.allowedPurpose === "sanitized-snapshot-test-input" &&
+      instant(p.validUntil) > now
+  );
+  await checkSourceAuthorization(s, p, raw);
   requireThat(
     Array.isArray(p.allowedUses) &&
       p.allowedUses.length > 0 &&
@@ -289,10 +297,6 @@ async function checkPermission(s, index, profile, raw, now) {
         DIGEST.test(use.destinationAdmissionDigest) &&
         [use.readerPrincipal, use.decryptorPrincipal, use.userPrincipal].every((v) => text(v))
     );
-  requireThat(Array.isArray(p.restrictionOriginals) && p.restrictionOriginals.length <= 16);
-  // Preserve underlying statements/restrictions without claiming automated legal
-  // interpretation. The later manual scope must match these exact originals.
-  for (const ref of [...authority.originals, ...p.restrictionOriginals]) await raw(ref);
 }
 
 async function checkStorage(s, raw, now) {
@@ -459,6 +463,41 @@ async function checkStorage(s, raw, now) {
   }
 }
 
+async function checkSnapshotOriginals(s, rawDigest, raw, now) {
+  checkSources(s, now);
+  // The envelope's digest is a reference; open the actual producer original.
+  requireThat(s.envelope.schemaVersion === "snapshot-encryption-envelope.v2");
+  const authorization = json(await rawDigest(s.envelope.authorizationDigest));
+  requireThat(authorization.schemaVersion === "producer-crypto-run-authorization.v2");
+  validateSnapshotEncryptionEnvelope(s.envelope, { authorization });
+  validateSnapshotCustody(s.custody);
+  const e = s.envelope,
+    c = s.custody,
+    m = s.metadata;
+  requireThat(
+    e.snapshotDigest === m.dumpDigest &&
+      e.sanitizationContractDigest === m.sanitizationContractDigest &&
+      e.expiresAt === m.expiresAt &&
+      c.expiresAt === m.expiresAt &&
+      c.object.envelopeDigest === sha256Canonical(e) &&
+      c.object.ciphertextDigest === e.ciphertextDigest &&
+      c.object.ciphertextSizeBytes === e.ciphertextSizeBytes &&
+      c.object.key === e.slotObjectKey &&
+      ["sourceSha", "releaseAttemptId", "snapshotRunId"].every((key) => c[key] === e[key])
+  );
+  const bundleManifest = {
+    dumpDigest: m.dumpDigest,
+    metadataDigest: sha256Canonical(m),
+    privilegeObservationDigest: sha256Canonical(s.sourcePrivilege),
+    fingerprintObservationDigest: sha256Canonical(s.afterFingerprint),
+    scanDigest: sha256Canonical(s.scan)
+  };
+  // This reconstructs a declaration digest, not a dump custody receipt.
+  const bundleInputs = { manifest: bundleManifest, digest: sha256Canonical(bundleManifest) };
+  await checkStorage(s, raw, now);
+  return { authorization, bundleInputs };
+}
+
 // Rebuild retained declarations at an event time. The supplied reader provides
 // bytes only; this does not observe current storage, decrypt, or grant use.
 export async function readR3SnapshotDeclarations(input) {
@@ -506,38 +545,9 @@ export async function readR3SnapshotDeclarations(input) {
   };
   const s = {};
   for (const name of subjects) s[name] = json(await raw(index[name]));
-  checkSources(s, now);
-  // The envelope's digest is a reference; open the actual producer original.
-  requireThat(s.envelope.schemaVersion === "snapshot-encryption-envelope.v2");
-  const authorization = json(await rawDigest(s.envelope.authorizationDigest));
-  requireThat(authorization.schemaVersion === "producer-crypto-run-authorization.v2");
-  validateSnapshotEncryptionEnvelope(s.envelope, { authorization });
-  validateSnapshotCustody(s.custody);
-  const e = s.envelope,
-    c = s.custody,
-    m = s.metadata;
-  requireThat(
-    e.snapshotDigest === m.dumpDigest &&
-      e.sanitizationContractDigest === m.sanitizationContractDigest &&
-      e.expiresAt === m.expiresAt &&
-      c.expiresAt === m.expiresAt &&
-      c.object.envelopeDigest === sha256Canonical(e) &&
-      c.object.ciphertextDigest === e.ciphertextDigest &&
-      c.object.ciphertextSizeBytes === e.ciphertextSizeBytes &&
-      c.object.key === e.slotObjectKey &&
-      ["sourceSha", "releaseAttemptId", "snapshotRunId"].every((key) => c[key] === e[key])
-  );
-  const bundleManifest = {
-    dumpDigest: m.dumpDigest,
-    metadataDigest: sha256Canonical(m),
-    privilegeObservationDigest: sha256Canonical(s.sourcePrivilege),
-    fingerprintObservationDigest: sha256Canonical(s.afterFingerprint),
-    scanDigest: sha256Canonical(s.scan)
-  };
-  // This reconstructs a declaration digest, not a dump custody receipt.
-  const bundleInputs = { manifest: bundleManifest, digest: sha256Canonical(bundleManifest) };
+  const { authorization, bundleInputs } = await checkSnapshotOriginals(s, rawDigest, raw, now);
+  const { envelope: e, custody: c, metadata: m } = s;
   await checkPermission(s, index, capturedProfile, raw, now);
-  await checkStorage(s, raw, now);
   const deadline = Math.min(
     instant(m.expiresAt),
     instant(s.permission.validUntil),
@@ -616,6 +626,96 @@ export async function readR3SnapshotDeclarations(input) {
       .map(([digest, bytes]) => ({ digest, bytes: bytes.length }))
       .sort((a, b) => a.digest.localeCompare(b.digest)),
     assertConsumerBinding
+  });
+}
+
+// Permission-free preparation validation; this cannot authorize a consumer.
+export async function readR3SnapshotPreparationDeclarations(input) {
+  requireThat(exact(input, ["profile", "preparationBytes", "observedAt", "readRaw"]));
+  const { profile, preparationBytes, observedAt, readRaw } = input;
+  requireThat(
+    Buffer.isBuffer(preparationBytes) &&
+      preparationBytes.length > 0 &&
+      preparationBytes.length <= LIMIT &&
+      typeof readRaw === "function"
+  );
+  const now = instant(observedAt);
+  validateContract("manual-stage1-profile.v2", profile);
+  const p = json(Buffer.from(preparationBytes));
+  const originals = subjects.filter((name) => name !== "permission");
+  requireThat(
+    exact(p, [
+      "recordVersion",
+      "inputReference",
+      "operationRef",
+      "creationSpecDigest",
+      "sourceSha",
+      "phase",
+      "profileDigest",
+      "ownerId",
+      "releaseAttemptId",
+      "snapshotRunId",
+      "validUntil",
+      "sourceAuthority",
+      "sourceIdentity",
+      "restrictionOriginals",
+      ...originals
+    ])
+  );
+  requireThat(
+    p.recordVersion === "r3-snapshot-input-preparation.v1" &&
+      UUID.test(p.inputReference) &&
+      UUID.test(p.operationRef) &&
+      DIGEST.test(p.creationSpecDigest) &&
+      /^[0-9a-f]{40}$/u.test(p.sourceSha) &&
+      ["source", "final"].includes(p.phase) &&
+      p.profileDigest === sha256Canonical(profile) &&
+      p.ownerId === profile.ownerId &&
+      text(p.releaseAttemptId) &&
+      /^[1-9][0-9]*$/u.test(p.snapshotRunId)
+  );
+  requireThat(
+    instant(profile.validFrom) <= now &&
+      now < instant(profile.expiresAt) &&
+      now < instant(p.validUntil) &&
+      instant(p.validUntil) <= instant(profile.expiresAt)
+  );
+  const refs = new Map();
+  const rawDigest = async (digest) => {
+    requireThat(typeof digest === "string" && DIGEST.test(digest));
+    if (!refs.has(digest)) {
+      requireThat(refs.size < 128);
+      const bytes = await readRaw(digest);
+      requireThat(Buffer.isBuffer(bytes) && bytes.length <= LIMIT && sha256Bytes(bytes) === digest);
+      refs.set(digest, Buffer.from(bytes));
+    }
+    return refs.get(digest);
+  };
+  const raw = async (ref) => {
+    rawRef(ref);
+    const bytes = await rawDigest(ref.digest);
+    requireThat(bytes.length === ref.bytes);
+    return bytes;
+  };
+  const s = {};
+  for (const name of originals) s[name] = json(await raw(p[name]));
+  await checkSnapshotOriginals(s, rawDigest, raw, now);
+  await checkSourceAuthorization(s, p, raw);
+  requireThat(
+    ["sourceSha", "releaseAttemptId", "snapshotRunId"].every((key) => p[key] === s.envelope[key])
+  );
+  requireThat(instant(p.validUntil) <= instant(s.metadata.expiresAt));
+  return freeze({
+    preparationDigest: sha256Bytes(preparationBytes),
+    inputReference: p.inputReference,
+    operationRef: p.operationRef,
+    creationSpecDigest: p.creationSpecDigest,
+    sourceSha: p.sourceSha,
+    phase: p.phase,
+    expiresAt: p.validUntil,
+    rawReferences: [...refs]
+      .map(([digest, bytes]) => ({ digest, bytes: bytes.length }))
+      .sort((a, b) => a.digest.localeCompare(b.digest))
   });
 }
 

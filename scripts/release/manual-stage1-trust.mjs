@@ -33,6 +33,7 @@ import {
   computeMigrationCatalog,
   openManualSession
 } from "../../packages/release-foundation/src/index.mjs";
+import { computeHistoricalRepositoryContract } from "../../packages/release-foundation/src/catalogs.mjs";
 import { assertBuildIdentity, assertProofCustody } from "./verify-build-proof.mjs";
 import { validateH1SnapshotPublicKeyReadbacks } from "../../packages/release-foundation/src/snapshot/producer-crypto-contracts.mjs";
 import {
@@ -850,40 +851,24 @@ async function repositoryContractForSource(repoRoot, sourceSha, compatibility = 
   requireThat(
     compatibility.sourceRoot === repoRoot &&
       compatibility.sourceSha === sourceSha &&
-      compatibility.unlistedEntrypoint === "scripts/release/retire-r3-incident-0af9c545.mjs"
+      compatibility.discoveryVersion === "r3-historical-entrypoints-literal.v1" &&
+      typeof compatibility.catalogRawDigest === "string" &&
+      /^sha256:[0-9a-f]{64}$/u.test(compatibility.catalogRawDigest)
   );
   await checkoutSource(repoRoot, sourceSha);
-  let current, drift;
+  let historical;
   try {
-    current = await computeRepositoryContract(repoRoot);
-  } catch (error) {
-    drift = error;
-  }
-  if (current) {
+    const catalogBytes = await fs.readFile(
+      path.join(repoRoot, "packages/release-foundation/src/catalogs.mjs")
+    );
+    historical = await computeHistoricalRepositoryContract(repoRoot, {
+      catalogBytes,
+      catalogRawDigest: compatibility.catalogRawDigest
+    });
+  } finally {
     await checkoutSource(repoRoot, sourceSha);
-    return current;
   }
-  requireThat(drift?.code === "CONTRACT_FILE_SET_DRIFT");
-  const { declared, discovered } = drift.details ?? {};
-  requireThat(
-    Array.isArray(declared) &&
-      Array.isArray(discovered) &&
-      !declared.includes(compatibility.unlistedEntrypoint) &&
-      equal(discovered, [...declared, compatibility.unlistedEntrypoint].sort())
-  );
-  const entries = await Promise.all(
-    declared.map(async (file) => ({
-      path: file,
-      sha256: sha256Bytes(await fs.readFile(path.join(repoRoot, ...file.split("/"))))
-    }))
-  );
-  const identity = {
-    catalogVersion: "repository-contract.v1",
-    canonicalization: "RFC8785",
-    entries
-  };
-  await checkoutSource(repoRoot, sourceSha);
-  return Object.freeze({ ...identity, digest: sha256Canonical(identity) });
+  return historical;
 }
 async function checkoutCurrentVerifier(repoRoot) {
   const sourceSha = new TextDecoder("utf-8", { fatal: true })

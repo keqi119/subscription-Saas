@@ -327,6 +327,11 @@ mock.module("./launch-manual-stage1.mjs", {
           events.push("creation-complete");
           return { destinationDigest: d("d") };
         },
+        async installSnapshotInputForCreatedTarget(...args) {
+          assert.equal(args.length, 0);
+          events.push("snapshot-install");
+          return { inputReference: snapshotRef };
+        },
         async consumeSnapshot(selector) {
           events.push("snapshot-consume");
           assert.deepEqual(selector, {
@@ -667,7 +672,7 @@ test("source fresh caller requires exact owner ACK before cleanup and publishes 
       if (prompt.includes("SNAPSHOT")) {
         events.push("snapshot-selector");
         assert.ok(prompt.includes(d("d")));
-        return snapshotSelectorValid ? `SNAPSHOT ${snapshotRef}` : "SNAPSHOT ../foreign";
+        return snapshotSelectorValid ? `SNAPSHOT ${snapshotRef}` : `SNAPSHOT ${randomUUID()}`;
       }
       events.push("prompt");
       assert.ok(
@@ -755,6 +760,7 @@ test("source fresh caller requires exact owner ACK before cleanup and publishes 
     events.slice(events.indexOf("creation-complete"), events.indexOf("manifest") + 1),
     [
       "creation-complete",
+      "snapshot-install",
       "snapshot-selector",
       "snapshot-consume",
       "snapshot-fetch",

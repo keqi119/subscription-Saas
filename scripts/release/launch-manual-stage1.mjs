@@ -79,6 +79,10 @@ import { assessFinalRuntimePreparation } from "../../apps/release-runner/src/fin
 import { observeFinalRuntimeBoundary } from "../../apps/release-runner/src/final-database-runtime.mjs";
 import { validateFinalDatabaseTestAssignments } from "../../apps/release-runner/src/database-test-envelope.mjs";
 import { readR3SnapshotInput } from "./r3-snapshot-input-admission.mjs";
+import {
+  readPreparedR3SnapshotInput,
+  installR3SnapshotInputForCreatedTarget
+} from "./r3-snapshot-input-install.mjs";
 import { fetchR3SnapshotCiphertext } from "./r3-snapshot-payload.mjs";
 import { decryptR3SnapshotCiphertext } from "./r3-h1-snapshot-decrypt.mjs";
 import { exchangeR3Engine } from "./r3-engine-exchange.mjs";
@@ -1135,6 +1139,10 @@ export async function launchR3TargetCreate(input, verifiedAdmission) {
     completionReady = false,
     completionPending,
     completionRecord,
+    snapshotPreparation,
+    snapshotInstallAttempted = false,
+    snapshotInstallPending,
+    snapshotInstallation,
     consumerAttempted = false,
     consumerReady = false,
     consumerPending,
@@ -1261,6 +1269,7 @@ export async function launchR3TargetCreate(input, verifiedAdmission) {
       await decryptPending?.catch(() => {});
       await fetchPending?.catch(() => {});
       await consumerPending?.catch(() => {});
+      await snapshotInstallPending?.catch(() => {});
       await completionPending?.catch(() => {});
       await destinationPending?.catch(() => {});
       await databasesPending?.catch(() => {});
@@ -2252,6 +2261,11 @@ export async function launchR3TargetCreate(input, verifiedAdmission) {
       inputReference,
       now: new Date()
     });
+    if (
+      consumerInput.inputIndexDigest !== snapshotInstallation.inputIndexDigest ||
+      consumerInput.permissionDigest !== snapshotInstallation.permissionDigest
+    )
+      fail(code);
     const opened = [...(await archive.graph()).entries()].filter(
       ([, item]) =>
         item.value.schemaVersion === "manual-operation-record.v3" &&
@@ -4952,6 +4966,36 @@ export async function launchR3TargetCreate(input, verifiedAdmission) {
     );
     assertR3StartupActive();
     recordR3StartupPhase("evidence_gate");
+    if (fixed.spec.chain === "snapshot") {
+      const profile = await loadFixedManualProfile({ repoRoot: input.repoRoot });
+      const prepared = await readPreparedR3SnapshotInput({
+        profile,
+        operationRef: input.operationRef,
+        scope: {
+          chain: fixed.spec.chain,
+          phase: fixed.spec.phase,
+          sourceSha: fixed.spec.sourceSha,
+          creationSpecDigest: fixed.creationSpecDigest
+        }
+      });
+      const declaration = JSON.parse(prepared.preparationBytes.toString("utf8"));
+      if (!(Date.parse(declaration.validUntil) <= Date.parse(fixed.spec.expiresAt))) fail(code);
+      // Connection ends the startup window. Installation remains bounded by
+      // the existing job/package authorization, using the original clock mapping.
+      const authorizationDeadlineAtMs = Math.min(
+        Date.parse(fixed.admission.expiresAt),
+        Date.parse(declaration.validUntil)
+      );
+      snapshotPreparation = Object.freeze({
+        preparationDigest: prepared.preparationDigest,
+        profileDigest: sha256Canonical(profile),
+        deadlineAtMs: authorizationDeadlineAtMs,
+        deadlineAtMonoMs:
+          startupLease.scope.deadlineAtMonoMs +
+          (authorizationDeadlineAtMs - startupLease.scope.deadlineAtMs)
+      });
+      assertR3StartupActive();
+    }
     session = await diagnostic.run("SESSION", () =>
       runR3StartupTiming(input.operationRef, "NATIVE_SESSION_OPEN", () =>
         openTrustedR3CreationSession(input, verifiedAdmission ?? fixed)
@@ -5319,8 +5363,37 @@ export async function launchR3TargetCreate(input, verifiedAdmission) {
           });
         }
       },
+      async installSnapshotInputForCreatedTarget(...args) {
+        if (
+          args.length !== 0 ||
+          stopping ||
+          closed ||
+          !completionReady ||
+          snapshotInstallAttempted ||
+          consumerAttempted ||
+          consumerInput ||
+          session.scope.chain !== "snapshot" ||
+          !snapshotPreparation ||
+          snapshotPreparation.profileDigest !== session.profileDigest
+        )
+          fail(code);
+        snapshotInstallAttempted = true;
+        snapshotInstallPending = installR3SnapshotInputForCreatedTarget({
+          profile: lease.profile,
+          scope: session.scope,
+          operationRef: input.operationRef,
+          preparationDigest: snapshotPreparation.preparationDigest,
+          destinationDigest: destinationRecord.destinationDigest,
+          deadlineAtMs: snapshotPreparation.deadlineAtMs,
+          deadlineAtMonoMs: snapshotPreparation.deadlineAtMonoMs
+        });
+        snapshotInstallation = await snapshotInstallPending;
+        if (stopping || closed) fail(code);
+        return snapshotInstallation;
+      },
       async recheck() {
         if (stopping) fail(code);
+        if (snapshotInstallAttempted && !snapshotInstallation) fail(code);
         if (completionAttempted && !completionReady) fail(code);
         if (consumerAttempted && !consumerReady) fail(code);
         if (fetchAttempted && !fetchReady) fail(code);
@@ -5657,6 +5730,8 @@ export async function launchR3TargetCreate(input, verifiedAdmission) {
           closed ||
           consumerAttempted ||
           !completionReady ||
+          !snapshotInstallation ||
+          selector.inputReference !== snapshotInstallation.inputReference ||
           session.scope.chain !== "snapshot"
         )
           fail(code);

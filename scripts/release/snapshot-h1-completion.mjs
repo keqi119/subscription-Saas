@@ -128,6 +128,7 @@ export function buildH1FinalSnapshotCustody({
   expected,
   githubTerminalReadback,
   finalSnapshotReadback,
+  storageOriginals,
   accessPolicyDigest
 }) {
   try {
@@ -137,10 +138,70 @@ export function buildH1FinalSnapshotCustody({
         instant(github.observedAt) <= instant(finalSnapshotReadback.observedAt)
     );
     const provisional = provisionalSnapshotCustody(finalSnapshotReadback, accessPolicyDigest);
+    exact(storageOriginals, ["storageReadback", "originals", "observation"]);
+    const storage = storageOriginals?.storageReadback;
+    const observed = finalSnapshotReadback.observations.filter(
+      (value) => value.get.key === provisional.object.key
+    );
+    exact(storage, [
+      "recordVersion", "bucket", "objectKey", "writerIdentity", "readerIdentity",
+      "writerIdentityOriginal", "readerIdentityOriginal", "conditionalCreate",
+      "head", "get", "bucketAcl", "objectAcl", "versioning", "worm"
+    ]);
+    const references = [
+      "writerIdentityOriginal", "readerIdentityOriginal", "conditionalCreate",
+      "head", "get", "bucketAcl", "objectAcl", "versioning", "worm"
+    ];
+    requireThat(Array.isArray(storageOriginals.originals));
+    const originals = new Map();
+    for (const original of storageOriginals.originals) {
+      exact(original, ["digest", "bytesBase64"]);
+      requireThat(typeof original.bytesBase64 === "string");
+      const bytes = Buffer.from(original.bytesBase64, "base64");
+      requireThat(
+        bytes.toString("base64") === original.bytesBase64 &&
+          sha256Bytes(bytes) === original.digest && !originals.has(original.digest)
+      );
+      originals.set(original.digest, bytes);
+    }
+    for (const key of references) {
+      const reference = storage[key];
+      exact(reference, ["digest", "bytes"]);
+      requireThat(
+        Number.isSafeInteger(reference.bytes) && reference.bytes >= 0 &&
+          originals.get(reference.digest)?.length === reference.bytes
+      );
+    }
+    const originalJson = (key) => JSON.parse(originals.get(storage[key].digest).toString("utf8"));
+    requireThat(
+      originalJson("writerIdentityOriginal").Arn === storage.writerIdentity &&
+        originalJson("readerIdentityOriginal").Arn === storage.readerIdentity
+    );
+    for (const key of ["head", "get", "bucketAcl", "objectAcl", "versioning", "worm"])
+      requireThat(
+        same(originalJson(key), storageOriginals.observation?.evidence?.records?.[key])
+      );
+    for (const key of ["head", "get"]) {
+      const { requestId: rawRequestId, ...rawFacts } = storageOriginals.observation[key];
+      const { requestId: observedRequestId, ...observedFacts } = observed[0][key];
+      requireThat(rawRequestId && observedRequestId && same(rawFacts, observedFacts));
+    }
+    requireThat(
+      storage.recordVersion === "r3-snapshot-storage-readback.v1" &&
+        storage.bucket === provisional.bucket.name &&
+        storage.objectKey === provisional.object.key &&
+        storage.writerIdentity === provisional.identities.writer &&
+        storage.readerIdentity === provisional.identities.reader &&
+        observed.length === 1 &&
+        storageOriginals.observation?.get?.key === observed[0].get.key &&
+        storageOriginals.observation?.expectedWriterArn === observed[0].expectedWriterArn &&
+        storageOriginals.observation?.readerArn === observed[0].readerArn
+    );
     const finalCustody = {
       ...provisional,
       terminalAt: github.observedAt,
-      provisional: false
+      provisional: false,
+      authoritativeObservationDigest: sha256Canonical(storage)
     };
     validateSnapshotCustody(finalCustody);
     requireThat(
@@ -167,6 +228,7 @@ export function buildH1SnapshotCompletion(input) {
       publisherUseBytes,
       githubTerminalReadback,
       finalSnapshotReadback,
+      storageOriginals,
       accessPolicyDigest
     } = input;
     for (const bytes of [
@@ -225,6 +287,7 @@ export function buildH1SnapshotCompletion(input) {
       expected,
       githubTerminalReadback,
       finalSnapshotReadback,
+      storageOriginals,
       accessPolicyDigest
     });
     requireThat(
@@ -238,7 +301,8 @@ export function buildH1SnapshotCompletion(input) {
         same(finalSnapshotReadback.data, result) &&
         same(finalSnapshotReadback.proof, sealed) &&
         finalCustody.worm.readbackAt === finalSnapshotReadback.observedAt &&
-        finalCustody.authoritativeObservationDigest === sha256Canonical(finalSnapshotReadback)
+        finalCustody.authoritativeObservationDigest ===
+          sha256Canonical(storageOriginals.storageReadback)
     );
     const completion = {
       schemaVersion: "snapshot-producer-completion.v1",

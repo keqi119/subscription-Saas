@@ -119,10 +119,24 @@ const policyStages = [
 const policyCauses = new Set(
   policyStages.flatMap((stage) => [stage, `${stage}_ENOENT`, `${stage}_EACCES`])
 );
+const rawArchiveStages = [
+  "R3_RAW_ARCHIVE_PRECHECK",
+  "R3_RAW_ARCHIVE_DIRECTORY",
+  "R3_RAW_ARCHIVE_OPEN",
+  "R3_RAW_ARCHIVE_WRITE",
+  "R3_RAW_ARCHIVE_PIN",
+  "R3_RAW_ARCHIVE_VERIFY",
+  "R3_RAW_ARCHIVE_CLOSE",
+  "R3_RAW_ARCHIVE_POSTCHECK"
+];
+const rawArchiveCauses = new Set(
+  rawArchiveStages.flatMap((stage) => [stage, `${stage}_ENOENT`, `${stage}_EACCES`])
+);
 const codes = new Set([
   ...jobAdmissionCauses,
   ...profileCauses,
   ...policyCauses,
+  ...rawArchiveCauses,
   "R3_TUF_SCOPE_INVALID",
   "R3_TUF_SCOPE_EXPIRED",
   "R3_TUF_SCOPE_CLOSED",
@@ -225,6 +239,21 @@ export function markR3ProfileCause(error, causeCode) {
 
 export function markR3PolicyCause(error, causeCode) {
   if (!error || typeof error !== "object" || !policyStages.includes(causeCode))
+    throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
+  const previous = code(error);
+  if (
+    !trustedCause.has(error) &&
+    ["UNCLASSIFIED", "H1_INPUT_UNAVAILABLE", "ENOENT", "EACCES"].includes(previous)
+  )
+    trustedCause.set(
+      error,
+      previous === "ENOENT" || previous === "EACCES" ? `${causeCode}_${previous}` : causeCode
+    );
+  return error;
+}
+
+export function markR3RawArchiveCause(error, causeCode) {
+  if (!error || typeof error !== "object" || !rawArchiveStages.includes(causeCode))
     throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
   const previous = code(error);
   if (

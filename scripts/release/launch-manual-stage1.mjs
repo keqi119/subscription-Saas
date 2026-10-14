@@ -86,7 +86,7 @@ import {
 import { fetchR3SnapshotCiphertext } from "./r3-snapshot-payload.mjs";
 import { decryptR3SnapshotCiphertext } from "./r3-h1-snapshot-decrypt.mjs";
 import { exchangeR3Engine } from "./r3-engine-exchange.mjs";
-import { r3FailureTracker } from "./r3-failure-diagnostic.mjs";
+import { markR3RawArchiveCause, r3FailureTracker } from "./r3-failure-diagnostic.mjs";
 import { copyR3SnapshotToPostgres } from "./r3-remote-snapshot-copy.mjs";
 import { restoreR3SnapshotDatabase } from "./r3-remote-snapshot-restore.mjs";
 import { createR3LifecycleAdapter } from "./r3-lifecycle-adapter.mjs";
@@ -895,6 +895,13 @@ function stdoutPrefixCandidates(graph) {
 
 function targetArchive({ profile, principal, recheck }) {
   const read = (file, root) => readCanonicalPrivateInput(file, { principal, privateRoot: root });
+  const rawStep = async (stage, action) => {
+    try {
+      return await action();
+    } catch (error) {
+      throw markR3RawArchiveCause(error, stage);
+    }
+  };
   const get = async (digest, role = "archive") => {
     const item = await read(
       objectFile(profile.storage[`${role}Root`], digest),
@@ -967,44 +974,52 @@ function targetArchive({ profile, principal, recheck }) {
     }
     const digest = sha256Bytes(bytes),
       file = path.join(profile.storage.archiveRoot, "raw", `${digest.slice(7)}.bin`);
-    await recheck();
-    await checkedPrivatePath(path.dirname(file), {
-      principal,
-      privateRoot: profile.storage.archiveRoot,
-      directory: true
-    });
+    await rawStep("R3_RAW_ARCHIVE_PRECHECK", () => recheck());
+    await rawStep("R3_RAW_ARCHIVE_DIRECTORY", () =>
+      checkedPrivatePath(path.dirname(file), {
+        principal,
+        privateRoot: profile.storage.archiveRoot,
+        directory: true
+      })
+    );
     try {
       const handle = await fs.open(file, "wx", 0o600);
       try {
-        const chain = await checkedPrivatePath(file, {
-          principal,
-          privateRoot: profile.storage.archiveRoot
+        await rawStep("R3_RAW_ARCHIVE_WRITE", async () => {
+          const chain = await checkedPrivatePath(file, {
+            principal,
+            privateRoot: profile.storage.archiveRoot
+          });
+          if (!sameIdentity(chain.at(-1).stat, await handle.stat({ bigint: true })))
+            fail("MANUAL_STORAGE_UNVERIFIED");
+          await handle.writeFile(bytes);
+          await handle.sync();
         });
-        if (!sameIdentity(chain.at(-1).stat, await handle.stat({ bigint: true })))
-          fail("MANUAL_STORAGE_UNVERIFIED");
-        await handle.writeFile(bytes);
-        await handle.sync();
       } finally {
-        await handle.close();
+        await rawStep("R3_RAW_ARCHIVE_CLOSE", () => handle.close());
       }
     } catch (error) {
-      if (error.code !== "EEXIST") throw error;
+      if (error.code !== "EEXIST") throw markR3RawArchiveCause(error, "R3_RAW_ARCHIVE_OPEN");
     }
-    const input = await pinPrivateInput(
-      file,
-      {
-        principal,
-        privateRoot: profile.storage.archiveRoot
-      },
-      limit
+    const input = await rawStep("R3_RAW_ARCHIVE_PIN", () =>
+      pinPrivateInput(
+        file,
+        {
+          principal,
+          privateRoot: profile.storage.archiveRoot
+        },
+        limit
+      )
     );
     try {
-      if (!input.bytes.equals(bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
-      await input.recheck();
+      await rawStep("R3_RAW_ARCHIVE_VERIFY", async () => {
+        if (!input.bytes.equals(bytes)) fail("MANUAL_STORAGE_UNVERIFIED");
+        await input.recheck();
+      });
     } finally {
-      await input.close();
+      await rawStep("R3_RAW_ARCHIVE_CLOSE", () => input.close());
     }
-    await recheck();
+    await rawStep("R3_RAW_ARCHIVE_POSTCHECK", () => recheck());
     return { digest, bytes: bytes.length };
   };
   return {

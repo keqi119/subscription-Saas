@@ -5,6 +5,25 @@ import { r3FailureTracker, getR3FailureDiagnostic } from "./r3-failure-diagnosti
 import * as diagnostics from "./r3-failure-diagnostic.mjs";
 import * as launcher from "./launch-manual-stage1.mjs";
 
+test("policy recheck reports its safe boundary without hiding a profile cause", () => {
+  assert.equal(typeof diagnostics.markR3PolicyCause, "function");
+  const generic = Object.assign(new Error("private policy input"), {
+    code: "H1_INPUT_UNAVAILABLE"
+  });
+  const policy = diagnostics.markR3PolicyCause(generic, "R3_POLICY_CONTRACT");
+  const fact = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), policy);
+  assert.equal(fact.failureDiagnostic.causeCode, "R3_POLICY_CONTRACT");
+  assert.equal(JSON.stringify(fact.failureDiagnostic).includes("private"), false);
+
+  const profile = diagnostics.markR3ProfileCause(
+    Object.assign(new Error("private profile input"), { code: "H1_INPUT_UNAVAILABLE" }),
+    "R3_PROFILE_STORAGE"
+  );
+  const preserved = diagnostics.markR3PolicyCause(profile, "R3_POLICY_PROFILE");
+  const nested = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), preserved);
+  assert.equal(nested.failureDiagnostic.causeCode, "R3_PROFILE_STORAGE");
+});
+
 test("creation ACK archive failure keeps its exact boundary through caller wrapping", async () => {
   for (const [failAt, stage] of [
     [1, "ACK_RESPONSE"],

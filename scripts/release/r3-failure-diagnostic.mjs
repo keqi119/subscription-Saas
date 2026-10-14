@@ -106,9 +106,23 @@ const profileStages = [
 const profileCauses = new Set(
   profileStages.flatMap((stage) => [stage, `${stage}_ENOENT`, `${stage}_EACCES`])
 );
+const policyStages = [
+  "R3_POLICY_STATE",
+  "R3_POLICY_HOST",
+  "R3_POLICY_PROFILE",
+  "R3_POLICY_CONTRACT",
+  "R3_POLICY_MIGRATION",
+  "R3_POLICY_SOURCE",
+  "R3_POLICY_INPUTS",
+  "R3_POLICY_BUILD_RUN"
+];
+const policyCauses = new Set(
+  policyStages.flatMap((stage) => [stage, `${stage}_ENOENT`, `${stage}_EACCES`])
+);
 const codes = new Set([
   ...jobAdmissionCauses,
   ...profileCauses,
+  ...policyCauses,
   "R3_TUF_SCOPE_INVALID",
   "R3_TUF_SCOPE_EXPIRED",
   "R3_TUF_SCOPE_CLOSED",
@@ -196,6 +210,21 @@ export function markR3JobAdmissionCause(error, causeCode) {
 
 export function markR3ProfileCause(error, causeCode) {
   if (!error || typeof error !== "object" || !profileStages.includes(causeCode))
+    throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
+  const previous = code(error);
+  if (
+    !trustedCause.has(error) &&
+    ["UNCLASSIFIED", "H1_INPUT_UNAVAILABLE", "ENOENT", "EACCES"].includes(previous)
+  )
+    trustedCause.set(
+      error,
+      previous === "ENOENT" || previous === "EACCES" ? `${causeCode}_${previous}` : causeCode
+    );
+  return error;
+}
+
+export function markR3PolicyCause(error, causeCode) {
+  if (!error || typeof error !== "object" || !policyStages.includes(causeCode))
     throw new TypeError("R3_DIAGNOSTIC_CAUSE_INVALID");
   const previous = code(error);
   if (

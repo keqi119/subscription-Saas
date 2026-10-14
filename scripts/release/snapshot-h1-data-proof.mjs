@@ -123,6 +123,7 @@ export function buildH1CryptoUseProof(input) {
       "status",
       "metadata",
       "privilegeObservation",
+      "fingerprintObservationBefore",
       "fingerprintObservation",
       "scan",
       "envelope",
@@ -131,6 +132,21 @@ export function buildH1CryptoUseProof(input) {
       "keyCleanup"
     ]);
     requireThat(data.status === "COMPLETE");
+    for (const observed of [data.fingerprintObservationBefore, data.fingerprintObservation]) {
+      frame(observed, ["schemaVersion", "identity", "provenance"]);
+      frame(observed.provenance, ["observedAt"]);
+      requireThat(observed.schemaVersion === "source-fingerprint.v1");
+    }
+    requireThat(
+      sha256Canonical(data.fingerprintObservationBefore.identity) ===
+        data.metadata.sourceFingerprintBeforeDigest &&
+        sha256Canonical(data.fingerprintObservation.identity) ===
+          data.metadata.sourceFingerprintAfterDigest &&
+        instant(data.fingerprintObservationBefore.provenance.observedAt) <=
+          instant(data.scan.scannedAt) &&
+        instant(data.scan.scannedAt) <=
+          instant(data.fingerprintObservation.provenance.observedAt)
+    );
     frame(data.keyCleanup, [
       "tokenizationKeyBufferCleared",
       "workspaceKeyBufferCleared",

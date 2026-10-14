@@ -290,13 +290,14 @@ async function ownerSourceSelection(profile, expiresAt, chain, repoRoot) {
     await held.close();
   }
 }
-async function ownerSnapshotInput(destinationDigest, expiresAt) {
-  need(DIGEST.test(destinationDigest));
+async function ownerSnapshotInput(destinationDigest, expiresAt, expectedReference) {
+  need(DIGEST.test(destinationDigest) && UUID.test(expectedReference));
   const answer = await ownerAnswer(
-    `Snapshot destination: ${destinationDigest}\nPrepare the existing fixed snapshot input index and permission for this destination and current job. Select its input UUID with SNAPSHOT <uuid>; this does not grant source permission.\n> `,
+    `Snapshot destination: ${destinationDigest}\nThe verified input index and permission are installed for this destination and current job. Enter SNAPSHOT ${expectedReference}; this does not grant source permission.\n> `,
     expiresAt
   );
   need(typeof answer === "string" && answer.startsWith("SNAPSHOT ") && UUID.test(answer.slice(9)));
+  need(answer.slice(9) === expectedReference);
   return answer.slice(9);
 }
 async function readProcess(binary, args) {
@@ -414,9 +415,11 @@ async function runR3SourceH1(input, chain, phase, verifiedAdmission) {
     await native.recordDestination();
     const creation = await native.completeCreation();
     if (chain === "snapshot") {
+      const installed = await native.installSnapshotInputForCreatedTarget();
       const inputReference = await ownerSnapshotInput(
         creation.destinationDigest,
-        admission.admission.expiresAt
+        admission.admission.expiresAt,
+        installed.inputReference
       );
       await native.consumeSnapshot({
         inputReference,

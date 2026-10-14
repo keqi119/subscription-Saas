@@ -260,6 +260,21 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
   const started = Date.now();
   const result = await f.runProtectedSnapshotEncryption(encryptionInput(f));
   const finished = Date.now();
+  assert.equal(result.fingerprintObservationBefore.schemaVersion, "source-fingerprint.v1");
+  assert.deepEqual(result.fingerprintObservationBefore.identity, result.fingerprintObservation.identity);
+  assert.ok(
+    result.fingerprintObservationBefore.provenance.observedAt <= result.scan.scannedAt &&
+      result.scan.scannedAt <= result.fingerprintObservation.provenance.observedAt
+  );
+  const { projectH1DataWorkerComplete } =
+    await import("../../../scripts/release/snapshot-h1-data-worker.mjs");
+  const complete = projectH1DataWorkerComplete(result, {
+    tokenizationKeyBufferCleared: true,
+    workspaceKeyBufferCleared: true,
+    observedAt: new Date().toISOString()
+  });
+  assert.deepEqual(complete.fingerprintObservationBefore, result.fingerprintObservationBefore);
+  assert.deepEqual(complete.fingerprintObservation, result.fingerprintObservation);
   assert.equal(result.metadata.dumpDigest, digest(f.plaintext));
   assert.equal(result.metadata.createdAt, f.authorization.snapshotAllocatedAt);
   assert.equal(result.envelope.expiresAt, result.metadata.expiresAt);
@@ -367,8 +382,7 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
   const input = {
     authorization: f.authorization,
     data: {
-      status: "COMPLETE",
-      ...result,
+      ...complete,
       keyCleanup: {
         tokenizationKeyBufferCleared: true,
         workspaceKeyBufferCleared: true,
@@ -382,6 +396,7 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
     disposal
   };
   const proof = buildH1CryptoUseProof(input);
+  assert.deepEqual(input.data.fingerprintObservationBefore, result.fingerprintObservationBefore);
   assert.equal(proof.cleanup.memoryLocked, false);
   assert.equal(proof.cleanup.hostSwapDisabled, true);
   assert.equal(proof.dataObservationDigest, sha256Canonical(observation));
@@ -684,6 +699,13 @@ test("protected private bundle encrypts the cleaned scan result with its allocat
     code: "H1_SNAPSHOT_PUBLICATION_REJECTED"
   });
   for (const change of [
+    (x) => {
+      x.data.fingerprintObservationBefore = x.data.fingerprintObservation;
+    },
+    (x) => {
+      x.data.fingerprintObservationBefore.identity.databaseIdentityFingerprint =
+        "sha256:" + "0".repeat(64);
+    },
     (x) => {
       x.observation.processExit.exitCode = 1;
     },

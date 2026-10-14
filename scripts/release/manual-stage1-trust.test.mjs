@@ -1106,6 +1106,15 @@ async function buildFixture(
       "\n// Historical verified source version.\n"
     );
   const extraContracts = [];
+  const historicalCatalogBytes = historicalModuleVersion
+    ? Buffer.from('const RELEASE_GATE_ENTRY_POINTS = Object.freeze([\n  "scripts/release/manual-stage1-trust.mjs",\n  "scripts/release/verify-build-proof.mjs",\n]);\n')
+    : null;
+  if (historicalCatalogBytes) {
+    const catalogFile = "packages/release-foundation/src/catalogs.mjs";
+    await fs.mkdir(path.join(f.repoRoot, "packages/release-foundation/src"), { recursive: true });
+    await fs.writeFile(path.join(f.repoRoot, catalogFile), historicalCatalogBytes, { mode: 0o600 });
+    extraContracts.push(catalogFile);
+  }
   if (r3TargetPolicy) {
     for (const name of [
       "manual-stage1-r3-target-policy.v1.json",
@@ -1182,10 +1191,7 @@ async function buildFixture(
       path.join(f.repoRoot, "scripts/release/retire-r3-incident-0af9c545.mjs")
     );
     if (historicalExtraEntrypoint)
-      await copyFixtureSource(
-        new URL("./retire-r3-incident-588da0dc.mjs", import.meta.url),
-        path.join(f.repoRoot, "scripts/release/retire-r3-incident-588da0dc.mjs")
-      );
+      await fs.writeFile(path.join(f.repoRoot, "release/contracts/unlisted-extra.json"), "{}\n", { mode: 0o600 });
     await git(f.repoRoot, "add", "--all");
     await git(f.repoRoot, "commit", "--no-verify", "-m", "Historical unlisted entrypoint");
     await assert.rejects(computeRepositoryContract(f.repoRoot), {
@@ -1432,6 +1438,7 @@ async function buildFixture(
     materialBytes,
     proofPath,
     materialPath,
+    historicalCatalogBytes,
     receipt,
     receiptBytes,
     receiptPath,
@@ -2433,7 +2440,8 @@ for (const mutation of [
                 : {
                     sourceRoot: f.repoRoot,
                     sourceSha: f.sourceSha,
-                    unlistedEntrypoint: "scripts/release/retire-r3-incident-0af9c545.mjs"
+                    catalogRawDigest: sha256Bytes(f.historicalCatalogBytes),
+                    discoveryVersion: "r3-historical-entrypoints-literal.v1"
                   };
             }
           }
@@ -4673,11 +4681,59 @@ for (const mode of [
     `R3 LAUNCH ${cleanupMode ? "closes verified cleanup and releases only shared slots" : mode === "lifecycle-locks" ? "retains lifecycle locks and completes the source terminal with private custody" : closingRestore ? "drains current restore cleanup before closing its transport" : evidenceOnly ? "imports hosted evidence into the same consumed session" : dropped ? "delivery loss keeps consumed UNKNOWN" : "records destination and completes creation with retained originals and locks"}`,
     { skip: process.platform !== "linux" },
     async (t) => {
+      // These retained synthetic snapshot originals have a September validity window.
+      if (mode === "accepted" || closingRestore)
+        t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-28T00:00:00.000Z") });
       const f = await r3ForwardFixture(t, {
         phase: "source",
         chain: mode === "accepted" || closingRestore ? "snapshot" : "fresh",
         sourceReadback: sourceMode
       });
+      let snapshot;
+      if (f.spec.chain === "snapshot") {
+        snapshot = await publishR3SnapshotFixture(f, {
+          sourceSha: f.spec.sourceSha,
+          payload: {
+            bytes: Buffer.from("R3 native fetch synthetic sanitized dump\n"),
+            publicKey: generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 }).publicKey
+          },
+          storageAccount: "1457643390906675",
+          bucketName: "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai"
+        });
+        const { permission, recordVersion, ...subjects } = snapshot.index;
+        const preparation = {
+          recordVersion: "r3-snapshot-input-preparation.v1",
+          ...subjects,
+          operationRef: f.operationRef,
+          creationSpecDigest: sha256Bytes(f.specBytes),
+          sourceSha: f.spec.sourceSha,
+          phase: f.spec.phase,
+          releaseAttemptId: snapshot.s.envelope.releaseAttemptId,
+          snapshotRunId: snapshot.s.envelope.snapshotRunId,
+          validUntil: new Date(
+            Math.min(Date.parse(f.spec.expiresAt), Date.parse(snapshot.declarations.permission.validUntil))
+          ).toISOString(),
+          sourceAuthority: snapshot.declarations.permission.sourceAuthority,
+          sourceIdentity: snapshot.declarations.permission.sourceIdentity,
+          restrictionOriginals: snapshot.declarations.permission.restrictionOriginals
+        };
+        const { assembleR3SnapshotPreparation } = await import("./r3-snapshot-input-install.mjs");
+        const assembled = await assembleR3SnapshotPreparation({
+          profile: f.profile, preparation, observedAt: new Date().toISOString(),
+          readRaw: (digest) => fs.readFile(snapshot.rawPath({ digest }))
+        });
+        const prepared = path.join(
+          f.profile.storage.archiveRoot, "inputs", "snapshots", "prepared", f.operationRef
+        );
+        await fs.mkdir(path.join(prepared, "raw"), { recursive: true, mode: 0o700 });
+        for (const item of assembled.rawOriginals)
+          await fs.writeFile(
+            path.join(prepared, "raw", `${item.digest.slice(7)}.bin`), item.bytes,
+            { flag: "wx", mode: 0o600 }
+          );
+        await fs.writeFile(path.join(prepared, "package.json"), assembled.preparationBytes, { flag: "wx", mode: 0o600 });
+        await fs.rm(path.dirname(snapshot.indexPath), { recursive: true });
+      }
       if (cleanupMode) await assertR3FinalFixturePrerequisites(f);
       const imageDigest = JSON.parse(
         await fs.readFile(
@@ -5529,6 +5585,12 @@ for (const mode of [
           })
       );
       const input = { repoRoot: f.repoRoot, operationRef: f.operationRef };
+      // Hosted observation parents must exist before the genuine admission
+      // captures their immutable ancestor identities, as in the production importer.
+      const snapshotSource = f.spec.chain === "snapshot"
+        ? await r3WorkspaceFixture(t, "active", false, f) : null;
+      let activeSnapshotSession;
+      const exercise = async (verifiedAdmission) => {
       if (dropped)
         await assert.rejects(launchR3TargetCreate(input), { code: "R3_TARGET_CREATE_UNAVAILABLE" });
       else if (evidenceOnly) {
@@ -5556,11 +5618,12 @@ for (const mode of [
         await assert.rejects(launched.decryptSnapshot());
         assert.equal(decryptCalls, 0);
       } else {
-        const source = await r3WorkspaceFixture(t, "active", false, f);
+        const source = snapshotSource ?? await r3WorkspaceFixture(t, "active", false, f);
         const hostedBundle = r3HostedBundle(source);
-        const launched = await launchR3TargetCreate(input).catch((error) => {
+        const launched = await launchR3TargetCreate(input, verifiedAdmission).catch((error) => {
           throw error.cause ?? error;
         });
+        if (f.spec.chain === "snapshot") activeSnapshotSession = launched;
         t.after(() => launched.close());
         assert.equal(launched.engine.ID, "69a59aea-54ef-4181-808e-cf8d6cdb05e6");
         assert.equal(launched.status, "INTERRUPTED_UNKNOWN");
@@ -5599,6 +5662,8 @@ for (const mode of [
         await assert.rejects(launched.cleanupSnapshot());
         await assert.rejects(launched.copySnapshot());
         await assert.rejects(launched.fetchSnapshot());
+        await assert.rejects(launched.installSnapshotInputForCreatedTarget({ approved: true }));
+        await assert.rejects(launched.installSnapshotInputForCreatedTarget());
         await assert.rejects(launched.consumeSnapshot({ inputReference: randomUUID() }));
         await assert.rejects(launched.completeCreation());
         await assert.rejects(launched.recordDestination());
@@ -7145,17 +7210,10 @@ for (const mode of [
           return;
         }
         releaseMockHistory();
-        const snapshot = await publishR3SnapshotFixture(f, {
-          destinationAdmissionDigest: recorded.destinationDigest,
-          jobAdmissionDigest: sha256Canonical(f.admission),
-          payload: {
-            bytes: Buffer.from("R3 native fetch synthetic sanitized dump\n"),
-            publicKey: generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 })
-              .publicKey
-          },
-          storageAccount: "1457643390906675",
-          bucketName: "subscription-saas-stage1-snapshot-8fb45106fba9-cn-shanghai"
-        });
+        const installed = await launched.installSnapshotInputForCreatedTarget();
+        assert.equal(installed.inputReference, snapshot.input.inputReference);
+        await assert.rejects(launched.installSnapshotInputForCreatedTarget());
+        snapshot.index = JSON.parse(await fs.readFile(snapshot.indexPath));
         const selector = { inputReference: snapshot.input.inputReference };
         await assert.rejects(launched.consumeSnapshot({ ...selector, destination: "override" }));
         await assert.rejects(launched.consumeSnapshot(selector, { approved: true }));
@@ -7473,6 +7531,22 @@ for (const mode of [
         dropped || evidenceOnly ? 2 : 41
       );
       await assert.rejects(production().openTrustedR3CreationSession(input));
+      };
+      if (f.spec.chain === "snapshot") {
+        // Match the production import -> owner lifetime: genuine fixed-reader
+        // admission reuses only verified immutable build facts; live gates stay active.
+        await trust.withFixedR3BuildAttestationScope(input, async (scope) => {
+          const admission = await trust.readFixedR3JobAdmission(input, scope);
+          try {
+            await exercise(admission);
+          } finally {
+            try { await activeSnapshotSession?.close(); }
+            finally { await admission.close(); }
+          }
+        });
+      } else {
+        await exercise();
+      }
     }
   );
 }

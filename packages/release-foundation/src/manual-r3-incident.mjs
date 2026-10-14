@@ -384,17 +384,51 @@ const APPROVED_R3_HISTORICAL_SOURCE_7E2DF1BA = freeze({
   sourceRoot: "/opt/stage1-r3-candidate-8e1743a"
 });
 
-const APPROVED_R3_HISTORICAL_CONTRACT_588DA0DC = freeze({
-  sourceRoot: APPROVED_R3_HISTORICAL_SOURCE_588DA0DC.sourceRoot,
-  sourceSha: APPROVED_R3_HISTORICAL_SOURCE_588DA0DC.sourceSha,
-  unlistedEntrypoint: "scripts/release/retire-r3-incident-0af9c545.mjs"
-});
+const HISTORICAL_DISCOVERY_VERSION = "r3-historical-entrypoints-literal.v1";
+const APPROVED_R3_HISTORICAL_CATALOGS = freeze([
+  [
+    APPROVED_R3_HISTORICAL_SOURCE,
+    "sha256:093bf133860d113e31c7ecd1e4c4f2ff17e9f2c0720f0b6a722b5f6e44f47c95"
+  ],
+  [
+    APPROVED_R3_HISTORICAL_SOURCE_0AF9C545,
+    "sha256:f74e7ad905e0c02764cb312708b88765f6cf304b204bd6b32edf2fb3ac67b7f8"
+  ],
+  [
+    APPROVED_R3_HISTORICAL_SOURCE_588DA0DC,
+    "sha256:f74e7ad905e0c02764cb312708b88765f6cf304b204bd6b32edf2fb3ac67b7f8"
+  ],
+  [
+    APPROVED_R3_HISTORICAL_SOURCE_79FEAA9A,
+    "sha256:eff52b42151eba49db32040e7003fec4aeb991e7e644545dba3492c94bad910e"
+  ],
+  [
+    APPROVED_R3_HISTORICAL_SOURCE_EB5A1850,
+    "sha256:b90945d2e8df4155f55432eb9f5a5f091ff990a6857918f1eefa409a3f702f6e"
+  ],
+  [
+    APPROVED_R3_HISTORICAL_SOURCE_C820B449,
+    "sha256:d2a8bdef9f1b7aa85334946d962d6476dafce3ca36472c248b6baf5a0317a7cd"
+  ],
+  [
+    APPROVED_R3_HISTORICAL_SOURCE_7E2DF1BA,
+    "sha256:606292d7c0294a8cbf2152382f5033f02417923d296eb4aafcf47fd4e9b10c74"
+  ]
+]);
 
 export function approvedR3HistoricalContractCompatibility(input) {
-  return approvedR3HistoricalSourceBinding(input) ===
-    APPROVED_R3_HISTORICAL_SOURCE_588DA0DC.sourceRoot
-    ? APPROVED_R3_HISTORICAL_CONTRACT_588DA0DC
-    : null;
+  const sourceRoot = approvedR3HistoricalSourceBinding(input);
+  if (!sourceRoot) return null;
+  const selected = APPROVED_R3_HISTORICAL_CATALOGS.find(
+    ([source]) => source.sourceRoot === sourceRoot
+  );
+  need(selected);
+  return freeze({
+    sourceRoot: selected[0].sourceRoot,
+    sourceSha: selected[0].sourceSha,
+    catalogRawDigest: selected[1],
+    discoveryVersion: HISTORICAL_DISCOVERY_VERSION
+  });
 }
 
 export function approvedR3HistoricalSourceBinding(input) {

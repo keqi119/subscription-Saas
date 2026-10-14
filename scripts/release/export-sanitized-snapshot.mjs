@@ -217,6 +217,7 @@ export async function runProtectedSnapshotEncryption({
     return Object.freeze({
       metadata: bundle.metadata,
       privilegeObservation: bundle.privilegeObservation,
+      fingerprintObservationBefore: bundle.fingerprintObservationBefore,
       fingerprintObservation: bundle.fingerprintObservation,
       scan: bundle.scan,
       envelope,

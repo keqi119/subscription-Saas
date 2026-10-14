@@ -16,6 +16,7 @@ import {
 } from "./r3-startup-deadline.mjs";
 import {
   inheritR3FailureCause,
+  markR3CreationCause,
   markR3FailureCause,
   markR3JobAdmissionCause,
   markR3JobRecheckCause,
@@ -1796,15 +1797,23 @@ export async function readFixedR3CreationSpec(input, buildAttestationScope) {
         workspace.mapperName === `${roots.mapperPrefix}${id}`
     );
     const recheck = async () => {
+      let phase = "STATE";
       try {
         requireThat(!closed);
+        phase = "WINDOW";
         checkWindow();
+        phase = "HOST";
         requireThat(equal(await actualHost(), actual));
+        phase = "POLICY";
         await policyInput.recheck();
+        phase = "INPUTS";
         for (const item of opened) await item.recheck();
+        phase = "WINDOW";
         checkWindow();
+        phase = "STATE";
         requireThat(!closed);
       } catch (cause) {
+        markR3CreationCause(cause, `R3_CREATION_${phase}`);
         await close().catch(() => {});
         failWithCause(code, cause);
       }

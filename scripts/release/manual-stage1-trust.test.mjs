@@ -1558,7 +1558,15 @@ test(
       "release/contracts/manual-stage1-r3-target-policy.v1.json"
     );
     await fs.appendFile(policyPath, " ");
-    await assert.rejects(result.recheck(), { code: "R3_TARGET_POLICY_INPUT_UNAVAILABLE" });
+    await assert.rejects(result.recheck(), (error) => {
+      assert.equal(error.code, "R3_TARGET_POLICY_INPUT_UNAVAILABLE");
+      const diagnostic = r3FailureTracker("H1_CREATE").decorate(
+        new Error("fixed"),
+        error
+      ).failureDiagnostic;
+      assert.equal(diagnostic.causeCode, "R3_POLICY_CONTRACT");
+      return true;
+    });
     await result.close();
     await assert.rejects(result.recheck(), { code: "R3_TARGET_POLICY_INPUT_UNAVAILABLE" });
     noAuthorityAccess(f);

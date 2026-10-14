@@ -5,6 +5,63 @@ import { r3FailureTracker, getR3FailureDiagnostic } from "./r3-failure-diagnosti
 import * as diagnostics from "./r3-failure-diagnostic.mjs";
 import * as launcher from "./launch-manual-stage1.mjs";
 
+test("policy recheck reports its safe boundary without hiding a profile cause", () => {
+  assert.equal(typeof diagnostics.markR3PolicyCause, "function");
+  const generic = Object.assign(new Error("private policy input"), {
+    code: "H1_INPUT_UNAVAILABLE"
+  });
+  const policy = diagnostics.markR3PolicyCause(generic, "R3_POLICY_CONTRACT");
+  const fact = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), policy);
+  assert.equal(fact.failureDiagnostic.causeCode, "R3_POLICY_CONTRACT");
+  assert.equal(JSON.stringify(fact.failureDiagnostic).includes("private"), false);
+
+  const profile = diagnostics.markR3ProfileCause(
+    Object.assign(new Error("private profile input"), { code: "H1_INPUT_UNAVAILABLE" }),
+    "R3_PROFILE_STORAGE"
+  );
+  const preserved = diagnostics.markR3PolicyCause(profile, "R3_POLICY_PROFILE");
+  const nested = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), preserved);
+  assert.equal(nested.failureDiagnostic.causeCode, "R3_PROFILE_STORAGE");
+});
+
+test("raw archive cause retains the ACK body boundary through caller wrapping", async () => {
+  const records = [];
+  let writes = 0;
+  const archive = {
+    raw: async () => {
+      writes++;
+      if (writes === 2) {
+        const error = Object.assign(new Error("private archive path"), { code: "EACCES" });
+        throw diagnostics.markR3RawArchiveCause(error, "R3_RAW_ARCHIVE_PIN");
+      }
+      return "private-archive-reference";
+    }
+  };
+  await assert.rejects(
+    async () => {
+      try {
+        await launcher.recordR3CreationAck(
+          archive,
+          { status: 202, headers: {}, body: Buffer.alloc(0) },
+          records
+        );
+      } catch (cause) {
+        throw r3FailureTracker("H1_CALLER").decorate(new Error("fixed"), cause);
+      }
+    },
+    (error) => {
+      const fact = getR3FailureDiagnostic(error);
+      assert.equal(fact?.component, "H1_CREATE");
+      assert.equal(fact?.stage, "ACK_BODY");
+      assert.equal(fact?.causeCode, "R3_RAW_ARCHIVE_PIN_EACCES");
+      assert.equal(JSON.stringify(fact).includes("private"), false);
+      return true;
+    }
+  );
+  assert.equal(writes, 2);
+  assert.deepEqual(records, []);
+});
+
 test("creation ACK archive failure keeps its exact boundary through caller wrapping", async () => {
   for (const [failAt, stage] of [
     [1, "ACK_RESPONSE"],

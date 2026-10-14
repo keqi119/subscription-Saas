@@ -18,6 +18,7 @@ import {
   inheritR3FailureCause,
   markR3FailureCause,
   markR3JobAdmissionCause,
+  markR3PolicyCause,
   markR3ProfileCause,
   r3FailureTracker
 } from "./r3-failure-diagnostic.mjs";
@@ -1587,31 +1588,52 @@ async function readR3TargetPolicyInput(
         requireThat(instant(profile.validFrom) <= now && now < instant(profile.expiresAt));
     };
     const checkFixed = async () => {
-      requireThat(!closed);
-      checkWindow();
-      requireThat(equal(await actualHost(), actual));
-      requireThat(
-        sha256Canonical(await loadManualProfile({ repoRoot }, requireCurrentValidity)) ===
-          profileDigest
-      );
-      requireThat(
-        (await repositoryContractForSource(repoRoot, proof.identity.sourceSha, historicalContract))
-          .digest === proof.identity.repositoryContractDigest
-      );
-      requireThat(
-        (await computeMigrationCatalog(repoRoot)).digest === proof.identity.migrationCatalogDigest
-      );
-      await checkoutSource(repoRoot, proof.identity.sourceSha);
-      if (verifierSourceSha) await checkoutSource(verifierRepoRoot, verifierSourceSha);
-      for (const item of opened) await item.recheck();
-      checkWindow();
-      requireThat(!closed);
+      let phase = "STATE";
+      try {
+        requireThat(!closed);
+        checkWindow();
+        phase = "HOST";
+        requireThat(equal(await actualHost(), actual));
+        phase = "PROFILE";
+        requireThat(
+          sha256Canonical(await loadManualProfile({ repoRoot }, requireCurrentValidity)) ===
+            profileDigest
+        );
+        phase = "CONTRACT";
+        requireThat(
+          (
+            await repositoryContractForSource(
+              repoRoot,
+              proof.identity.sourceSha,
+              historicalContract
+            )
+          ).digest === proof.identity.repositoryContractDigest
+        );
+        phase = "MIGRATION";
+        requireThat(
+          (await computeMigrationCatalog(repoRoot)).digest === proof.identity.migrationCatalogDigest
+        );
+        phase = "SOURCE";
+        await checkoutSource(repoRoot, proof.identity.sourceSha);
+        if (verifierSourceSha) await checkoutSource(verifierRepoRoot, verifierSourceSha);
+        phase = "INPUTS";
+        for (const item of opened) await item.recheck();
+        phase = "STATE";
+        checkWindow();
+        requireThat(!closed);
+      } catch (cause) {
+        throw markR3PolicyCause(cause, `R3_POLICY_${phase}`);
+      }
     };
     const recheck = async () => {
       try {
         await checkFixed();
         if (recheckVerifiedBuildRun) {
-          await recheckVerifiedBuildRun();
+          try {
+            await recheckVerifiedBuildRun();
+          } catch (cause) {
+            throw markR3PolicyCause(cause, "R3_POLICY_BUILD_RUN");
+          }
           await checkFixed();
         }
       } catch (cause) {

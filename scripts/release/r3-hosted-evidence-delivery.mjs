@@ -363,7 +363,9 @@ export async function openR3HostedEvidenceDelivery(input) {
           return bytes;
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
-          need(/No such file|File not found/iu.test(result.stderr) && result.stderr.length <= 1024);
+          // OpenSSH includes the requested path between "File" and "not found".
+          // Only this exact absence may wait; other SFTP errors remain fatal.
+          need(result.stderr.replaceAll("\r\n", "\n") === `File "/out/${name}" not found.\n`);
         }
         await delay(2000);
       }

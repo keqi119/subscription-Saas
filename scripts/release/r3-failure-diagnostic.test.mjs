@@ -21,6 +21,17 @@ test("job status recheck replaces only a generic H1 cause", () => {
   const fact = r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), specific);
   assert.equal(fact.failureDiagnostic.causeCode, "R3_POLICY_SOURCE");
   assert.equal(JSON.stringify(fact.failureDiagnostic).includes("private"), false);
+
+  const creation = diagnostics.markR3CreationCause(
+    Object.assign(new Error("private creation"), { code: "H1_INPUT_UNAVAILABLE" }),
+    "R3_CREATION_INPUTS"
+  );
+  diagnostics.markR3JobRecheckCause(creation, "R3_JOB_RECHECK_CREATION");
+  assert.equal(
+    r3FailureTracker("H1_CREATE").decorate(new Error("fixed"), creation).failureDiagnostic
+      .causeCode,
+    "R3_CREATION_INPUTS"
+  );
 });
 
 test("policy recheck reports its safe boundary without hiding a profile cause", () => {

@@ -2657,6 +2657,30 @@ test(
   }
 );
 
+test(
+  "R3 JOB recheck retains the creation input drift phase",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const f = await r3JobFixture(t, { phase: "source", chain: "fresh" });
+    const result = await trust.readFixedR3JobAdmission({
+      repoRoot: f.repoRoot,
+      operationRef: f.operationRef
+    });
+    t.after(() => result.close());
+    await fs.appendFile(f.specPath, " ");
+    await assert.rejects(result.recheck(), (error) => {
+      assert.equal(error.code, "R3_JOB_ADMISSION_UNAVAILABLE");
+      const diagnostic = r3FailureTracker("H1_CALLER").decorate(
+        new Error("fixed"),
+        error
+      ).failureDiagnostic;
+      assert.equal(diagnostic.causeCode, "R3_CREATION_INPUTS");
+      return true;
+    });
+    noAuthorityAccess(f);
+  }
+);
+
 for (const scenario of [
   {
     name: "attestation command exit",

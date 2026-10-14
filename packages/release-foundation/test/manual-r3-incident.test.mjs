@@ -43,6 +43,9 @@ function fixture() {
       size: "200"
     }
   }));
+  policy.lockIdentities = Object.fromEntries(
+    locks.map(({ name, identity }) => [name, structuredClone(identity)])
+  );
   const intent = {
     schemaVersion: "manual-r3-incident-intent.v1",
     policyDigest: sha256Canonical(policy),
@@ -137,6 +140,19 @@ test("partial retirement, substituted lock or mismatched approval never admits a
       code: "MANUAL_R3_INCIDENT_UNVERIFIED"
     });
   }
+});
+
+test("signed replacement inode cannot substitute for an approved original lock", () => {
+  const f = fixture();
+  f.intent.locks[0].identity.ino = "999";
+  f.disposition.locks[0].identity.ino = "999";
+  f.input.retiredLocks[0].identity.ino = "999";
+  f.input.intentBytes = f.seal(f.intent);
+  f.disposition.intentDigest = sha256Bytes(f.input.intentBytes);
+  f.input.dispositionBytes = f.seal(f.disposition);
+  assert.throws(() => assessR3IncidentRecords(f.input), {
+    code: "MANUAL_R3_INCIDENT_UNVERIFIED"
+  });
 });
 
 test("wrong signing key or tampered signed intent remains blocked", () => {

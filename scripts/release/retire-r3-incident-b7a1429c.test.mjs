@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { constants } from "node:fs";
+import { constants, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { generateKeyPairSync } from "node:crypto";
@@ -140,6 +140,12 @@ test("b7a executor binds seven originals, live identity, signed partial resume a
   put("/run/stage1-github-app-convert.lock", "");
   dir("/proc", 0o755n);
   dir("/run/stage1-r3-evidence", 0o755n);
+  const accountPath =
+    "/opt/stage1-r3-candidate-1c8ecfd/scripts/release/maintenance/stage1-r3-evidence-account.sh";
+  const accountBytes = readFileSync(
+    new URL("./maintenance/stage1-r3-evidence-account.sh", import.meta.url)
+  );
+  put(accountPath, accountBytes);
   for (const name of ["evidence", "forward"]) put(`/etc/ssh/stage1-r3-${name}/authorized_keys`, "");
   for (const name of ["evidence", "forward"])
     entries.get(`/etc/ssh/stage1-r3-${name}/authorized_keys`).stat.mode = 33188n;
@@ -309,6 +315,13 @@ test("b7a executor binds seven originals, live identity, signed partial resume a
   assert.equal(moveCount, 0);
   assert.equal(entries.has(posix.join(root, "intent.json")), false);
   entries.get(firstLock).stat.ino = approvedIno;
+  entries.get(accountPath).bytes = Buffer.from("echo forged-idle\n");
+  entries.get(accountPath).stat.size = BigInt(entries.get(accountPath).bytes.length);
+  await assert.rejects(retireApprovedR3Incident(input), { code: "MANUAL_R3_INCIDENT_UNVERIFIED" });
+  assert.equal(moveCount, 0);
+  assert.equal(entries.has(posix.join(root, "intent.json")), false);
+  entries.get(accountPath).bytes = accountBytes;
+  entries.get(accountPath).stat.size = BigInt(accountBytes.length);
   const wrongScopeBytes = encodeManualJson({
     sessionId: p.sessionId,
     pid: 938945,

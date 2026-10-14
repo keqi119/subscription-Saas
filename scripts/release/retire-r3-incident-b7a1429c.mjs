@@ -23,6 +23,8 @@ import { loadFixedManualProfile } from "./manual-stage1-trust.mjs";
 import { observeR3H1ForwardShutdown, assessR3H1ForwardShutdown } from "./r3-h1-forward-lease.mjs";
 
 const EXPECTED_JOB_SOURCE = "1c8ecfdc52c46fa1c6ead634fe2c6eaa1b664825";
+const HISTORICAL_IDLE_SHA256 =
+  "sha256:6d6d68bcfeea6291443be9ca14a121afe288f909acd5e487479e026732caa5dc";
 
 const execute = promisify(execFile);
 const CODE = "MANUAL_R3_INCIDENT_UNVERIFIED";
@@ -252,6 +254,43 @@ async function evidenceTransportAbsent() {
 async function formalIdle() {
   const account =
     "/opt/stage1-r3-candidate-1c8ecfd/scripts/release/maintenance/stage1-r3-evidence-account.sh";
+  const authenticate = async () => {
+    let part = path.parse(account).root;
+    for (const segment of account.slice(part.length).split(path.sep).filter(Boolean)) {
+      part = path.join(part, segment);
+      const s = await fs.lstat(part, { bigint: true });
+      need(
+        !s.isSymbolicLink() &&
+          s.uid === 0n &&
+          s.gid === 0n &&
+          (s.mode & 0o022n) === 0n &&
+          (await fs.realpath(part)) === part &&
+          (part === account ? s.isFile() && s.nlink === 1n : s.isDirectory())
+      );
+    }
+    const before = await fs.lstat(account, { bigint: true });
+    need(before.size === 16458n);
+    const handle = await fs.open(account, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      need(
+        equal(
+          r3IncidentFileIdentity(before),
+          r3IncidentFileIdentity(await handle.stat({ bigint: true }))
+        )
+      );
+      const bytes = await handle.readFile();
+      const after = await fs.lstat(account, { bigint: true });
+      need(
+        equal(r3IncidentFileIdentity(before), r3IncidentFileIdentity(after)) &&
+          before.mtimeNs === after.mtimeNs &&
+          before.ctimeNs === after.ctimeNs &&
+          sha256Bytes(bytes) === HISTORICAL_IDLE_SHA256
+      );
+    } finally {
+      await handle.close();
+    }
+  };
+  await authenticate();
   const result = await execute("/usr/bin/bash", [account, "check-idle"], {
     shell: false,
     encoding: "utf8",
@@ -269,6 +308,7 @@ async function formalIdle() {
       "/etc/ssh/sshd_config line 150: Deprecated option RSAAuthentication\nreprocess config line 150: Deprecated option RSAAuthentication\n"
     ].includes(result.stderr.replaceAll("\r\n", "\n"))
   );
+  await authenticate();
 }
 
 async function liveChecks(profile) {

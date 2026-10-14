@@ -547,6 +547,7 @@ function locks(value, policy) {
     exact(lock, ["name", "digest", "identity"]);
     need(lock.name === policy.lockNames[index] && lock.digest === policy.lockDigest);
     exact(lock.identity, ["dev", "ino", "uid", "gid", "mode", "nlink", "size"]);
+    if (policy.lockIdentities) need(equal(lock.identity, policy.lockIdentities[lock.name]));
     need(
       Object.values(lock.identity).every(
         (item) => typeof item === "string" && /^(?:0|[1-9][0-9]*)$/u.test(item)
@@ -838,7 +839,8 @@ export async function readApprovedR3IncidentDisposition(
       const after = await store.checkedPath(file);
       need(
         equal(r3IncidentFileIdentity(before), r3IncidentFileIdentity(after)) &&
-          sha256Bytes(bytes) === p.lockDigest
+          sha256Bytes(bytes) === p.lockDigest &&
+          (!p.lockIdentities || equal(r3IncidentFileIdentity(after), p.lockIdentities[name]))
       );
       retiredLocks.push({
         name,

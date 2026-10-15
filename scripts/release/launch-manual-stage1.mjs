@@ -2902,8 +2902,8 @@ export async function launchR3TargetCreate(input, verifiedAdmission) {
       ...binding
     } = request;
     const requestInput = { binding, canonicalBytes: encodeManualJson(request) };
-    const authorization = await session.sign(requestInput);
     await recheckResources();
+    const authorization = await session.sign(requestInput);
     const receipt = await session.consume({ authorization, request: requestInput });
     const execution = await archive.get(receipt.executionRecordDigest, "journal");
     validateContract("manual-operation-record.v3", execution.value);
@@ -4382,16 +4382,27 @@ export async function launchR3TargetCreate(input, verifiedAdmission) {
       // The initial dual-store UNKNOWN remains authoritative on partial writes.
       // Never overwrite an existing original or treat one OBSERVED copy as a
       // complete result. sourceReady is set only after both copies and recheck.
+      let manifestWriteFailure = null;
       if (attemptDigest && !manifestWriteAttempted)
-        await sourceStore("manifest", {
-          status: "SOURCE_MANIFEST_INTERRUPTED_UNKNOWN",
-          operationRef: fixed.spec.operationRef,
-          attemptDigest,
-          observations,
-          generation: generation ?? null,
-          promotionEligible: false
-        });
-      throw Object.assign(new Error(code), { code });
+        try {
+          await sourceStore("manifest", {
+            status: "SOURCE_MANIFEST_INTERRUPTED_UNKNOWN",
+            operationRef: fixed.spec.operationRef,
+            attemptDigest,
+            observations,
+            generation: generation ?? null,
+            promotionEligible: false
+          });
+        } catch (error) {
+          manifestWriteFailure = error;
+        }
+      const diagnostic = r3FailureTracker("H1_CALLER");
+      diagnostic.enter("EXECUTION");
+      throw diagnostic.decorate(
+        Object.assign(new Error(code), { code }),
+        cause,
+        manifestWriteFailure
+      );
     }
   };
   const runLifecycle = async () => {

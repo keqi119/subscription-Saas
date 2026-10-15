@@ -73,3 +73,74 @@ signature/archive and snapshot-admission evidence according to their bindings;
 this document does not transfer old signatures to changed source. Keep the
 held snapshot data job unstarted until its actual source prerequisites pass.
 Do not use another long RC as the first test of these known failure classes.
+
+## Follow-up inspection on October 16 (Beijing)
+
+The signing-order and diagnostic fix merged as PR 363, main commit
+`119c6bc66a2599b0d3adbe532d9787b79975f969`. Main CI `38763756944`
+completed successfully. This validates the code checks, not the failed RC.
+
+A bounded protected read authenticated all 41 original lock files against
+the previous inventory and the fixed destination record: two forward locks,
+37 database target locks and two lifecycle reservation locks. All remain in
+place. Independent post-read observations found the host lock idle, both
+encrypted mounts/mappers closed, the prior owner process absent, and both
+transport key files empty. The lock readback raw SHA-256 is
+`ea8753d696c0f4f4f1673cf91706b720294f3d27346e6b78024caa269ed11fea`.
+
+The legacy incident disposition cannot be copied for this case: it expects
+one UNKNOWN execution, no retained session locks, and unknown remote creation.
+This case has a successful target-create pair, an UNKNOWN session, and a
+signed but unconsumed candidate-use. The proposed exact disposition must
+retain the 39 target/reservation locks and state known creation, unproved
+remote cleanup, and no promotion eligibility. Only the two forward originals
+may be considered for retirement after a separate exact owner approval.
+
+A bounded offline correction reuses the postgres administration connection
+within one resource inspection. Its actual private-function regression changes
+37-target connection opens from 74 to 38 while retaining all 74 fresh credential
+and identity checks and all 148 observation SELECTs. It reduces connection
+setup statements from 222 to 114. These are trace counts, not measured remote
+elapsed-time improvements. Full GitHub/trust checks remain unchanged.
+
+During offline review, synthetic incident fixtures initially missed the real
+authorization envelope (`payload.schemaVersion`) and the different identity
+shape of reservation locks. These are test-fixture defects, not environment
+jitter. Fixtures and assessors must match the production schema, and the exact
+retained graph must be assessed read-only before any signed disposition. An
+extra candidate-use consumption must be rejected even when it appears only
+in the graph and is omitted from a caller-supplied consumption array.
+
+No new candidate, signature, build, or RC is authorized by these checks. No
+source proof, cleanup proof, terminal acknowledgement, or successful R3
+segment may be fabricated from this incomplete operation.
+
+The actual protected graph assessment subsequently passed with the exact
+12 originals and 39 target locks; both forward locks remained active. Output
+SHA-256 is `cc371fd352246edd0d1a7315988d1a90530f27384cbe610bea6c396540e5572f`.
+The subsequent host-protection readback confirmed empty transport key files,
+closed encrypted volumes and absence of the old owner PID; it did not check
+formal transport idleness. A later bounded read-only inspection found
+processes 9934 and 9943, a tmpfs mount, a 55,305-byte duplicate
+`creation.bundle` with the same SHA-256 as the encrypted-volume copy, and
+listeners on ports 55440 and 55441. The disposition Execute public preflight
+therefore stopped before creating its once record. These concrete transport
+remnants require separate reconciliation; neither empty key files nor closed
+encrypted volumes establish formal transport IDLE, and no environment jitter
+is inferred.
+This is a pure graph assessment, not a native historical receipt or cleanup
+proof. The native reader additionally requires the exact incident policy,
+original 233d source/catalog binding, signed disposition and normal destination,
+observation and custody verification.
+
+The real R3 sign/consume path also needs a separate timing gate: `issuedAt`
+precedes context lookup and persistence; consumption repeats request, history
+and context validation before checking the authorization. The mocked ordering
+regression does not establish that this complete path fits 300 seconds. A
+read-only measurement of the production historical path must precede another RC.
+
+On October 16 the user delegated subsequent RAM changes and closure-aligned
+plans without separate per-plan approval. Record that standing authority and
+the concrete plan truthfully, review and pin execution inputs, and retain the
+failure reconciliation and real terminal acknowledgement requirements. This
+changes the approval workflow; it does not convert failed evidence into success.

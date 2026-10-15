@@ -1896,33 +1896,38 @@ export async function launchR3TargetCreate(input, verifiedAdmission) {
       ...plan.targets.map((target) => target.databaseName),
       ...(lifecycle ? plan.reservations.map((target) => target.databaseName) : [])
     ]);
-    let connection, connectedDatabase;
+    let connection, connectedDatabase, postgresConnection;
     const closeConnection = async () => {
       const previous = connection;
       connection = null;
       connectedDatabase = null;
-      await previous?.close();
+      if (previous !== postgresConnection) await previous?.close();
     };
     const connect = async (databaseName) => {
       if (closed || !allowed.has(databaseName)) fail(code);
       if (connectedDatabase !== databaseName) {
         await closeConnection();
         await postgresSecret.recheck();
-        connection = await createPostgresConnector()({
-          credential: {
-            username: "release_provisioner",
-            password: postgresSecret.bytes.toString("ascii"),
-            capabilityProfile: "provision"
-          },
-          target: { hostname: "127.0.0.1", port: 55441, databaseName, tlsMode: "require" },
-          custody: {
-            operationRef: fixed.spec.operationRef,
-            executionRecordDigest: consumption.executionRecordDigest
-          }
-        });
-        await connection.execute("SET statement_timeout = '30s'");
-        await connection.execute("SET lock_timeout = '5s'");
-        await connection.execute("SET search_path = pg_catalog");
+        if (databaseName === "postgres" && postgresConnection) {
+          connection = postgresConnection;
+        } else {
+          connection = await createPostgresConnector()({
+            credential: {
+              username: "release_provisioner",
+              password: postgresSecret.bytes.toString("ascii"),
+              capabilityProfile: "provision"
+            },
+            target: { hostname: "127.0.0.1", port: 55441, databaseName, tlsMode: "require" },
+            custody: {
+              operationRef: fixed.spec.operationRef,
+              executionRecordDigest: consumption.executionRecordDigest
+            }
+          });
+          if (databaseName === "postgres") postgresConnection = connection;
+          await connection.execute("SET statement_timeout = '30s'");
+          await connection.execute("SET lock_timeout = '5s'");
+          await connection.execute("SET search_path = pg_catalog");
+        }
         const rows = await connection.query(pgIdentitySql);
         const observed = rows?.[0]?.identity;
         if (
@@ -1965,7 +1970,13 @@ export async function launchR3TargetCreate(input, verifiedAdmission) {
     try {
       return await work(executeAdmin);
     } finally {
-      await closeConnection();
+      const connections = [...new Set([connection, postgresConnection].filter(Boolean))];
+      connection = null;
+      postgresConnection = null;
+      connectedDatabase = null;
+      const cleanup = await Promise.allSettled(connections.map((client) => client.close()));
+      const failure = cleanup.find((result) => result.status === "rejected");
+      if (failure) throw failure.reason;
     }
   };
   const provisionDatabases = async () => {

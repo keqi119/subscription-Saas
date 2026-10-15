@@ -52,7 +52,8 @@ import { scanDatabaseFrameworkBypasses } from "./node-database-test-runner.mjs";
 import { computeMigrationCatalog, computeRepositoryContract } from "./catalogs.mjs";
 import {
   readApprovedR3IncidentDisposition,
-  matchesR3IncidentDisposition
+  matchesR3IncidentDisposition,
+  isCreatedR3IncidentDisposition
 } from "./manual-r3-incident.mjs";
 
 const STORAGE = "MANUAL_STORAGE_UNVERIFIED";
@@ -3022,7 +3023,8 @@ async function readCompletedR3Context(
     sessionRecordDigest,
     consumptions
   );
-  if (incidentDisposition) {
+  const createdIncident = isCreatedR3IncidentDisposition(incidentDisposition);
+  if (incidentDisposition && !createdIncident) {
     const state = {
       profile,
       profileBytes,
@@ -3090,7 +3092,10 @@ async function readCompletedR3Context(
   };
   const creation = stagePair("target-create", true);
   const consumer = stagePair("snapshot-consumer", false);
-  const candidate = stagePair("candidate-use", current.scope.phase === "source");
+  const candidate = stagePair(
+    "candidate-use",
+    current.scope.phase === "source" && !createdIncident
+  );
   requireThat(
     current.scope.phase !== "source" || current.scope.chain !== "snapshot" || consumer,
     SESSION
@@ -3233,7 +3238,29 @@ async function readCompletedR3Context(
         SESSION
       );
   }
-  await verifier.validateR3Context(graph, slots, consumptions, accumulator);
+  const validated = await verifier.validateR3Context(graph, slots, consumptions, accumulator);
+  if (createdIncident) {
+    requireThat(
+      !consumer &&
+        !candidate &&
+        validated.creationCount === 1 &&
+        validated.consumerCount === 0 &&
+        validated.candidateUseCount === 0 &&
+        validated.historicalCompletion === creationCompletionDigest &&
+        targetLocks.size === 39,
+      SESSION
+    );
+    return {
+      abandoned: true,
+      summary: {
+        operationRef,
+        sessionId,
+        sessionNonce,
+        scope: snapshot(identity.scope),
+        latestExecutionAt: creation.completed.recordedAt
+      }
+    };
+  }
   const cleanupRecord = values.find(
     (value) =>
       value.kind === "cleanup-observation" &&

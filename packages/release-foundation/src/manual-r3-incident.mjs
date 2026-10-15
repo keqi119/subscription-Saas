@@ -368,6 +368,79 @@ export const APPROVED_R3_INCIDENT_B7A1429C = freeze({
   executeNotAfter: "2026-10-15T04:00:00.000Z"
 });
 
+// One exact created-target incident; no general multi-execution allowance.
+export const APPROVED_R3_INCIDENT_728EAFD7 = freeze({
+  allocationDigest: "sha256:556e06f70f446af748b2252e40beae3b7bf0e65cbd208893e1adc52f4cdf33d1",
+  authorizationDigest: "sha256:6594393a2ea8be96bd801b8796fe9840e1c5cc733b75e91f8c518f28360e132d",
+  candidateUseAllocationDigest:
+    "sha256:5f4c055a430f644ae6f74b9322af73ccd8031bab0c27f886e042d5d71d9ad4c3",
+  candidateUseAuthorizationDigest:
+    "sha256:7bd3bbe89f3446ee493985f0c30811af7a7e1acb71c49e470cfea424afc8cf96",
+  candidateUseRequestDigest:
+    "sha256:355e3bcdbcf692ddda9fc422b55db4232e115eb6b0ffc52c008c3e55ce14d6ab",
+  completedExecutionDigest:
+    "sha256:e97f29295277f9603329499c2ce3c4a9daaf5bf141c633527f779b4a69321d22",
+  consumptionDigest: "sha256:f30ecd93a3dafe3700d6e7233ddf80795cc1c80645e57141781fe339a864889d",
+  consumptionSlotName:
+    "49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541-163e1edb-3356-4e29-8e8c-e4354465b7ca.json",
+  destinationDigest: "sha256:7a07a53db8556e9607d9eb6799e60660493a8bdd6b56907d8c20fa9efb049f74",
+  executeNotAfter: "2026-10-17T04:00:00.000Z",
+  github: {
+    completedAt: "2026-10-15T15:04:31Z",
+    conclusion: "cancelled",
+    jobId: "116442664424",
+    repository: "keqi119/subscription-Saas",
+    runAttempt: 1,
+    runId: "38740679900",
+    status: "completed"
+  },
+  incidentKind: "CREATED_TARGET_CANDIDATE_USE_UNCONSUMED",
+  initialExecutionDigest: "sha256:35c5c73434281dbf999a6fd6f87bdc4883d99b070c039954963c60b4acbc41b6",
+  lockDigest: "sha256:518aff556793368909ed5012d280b41ec8accfc99597021de98b8134b299f70e",
+  lockIdentities: {
+    "13d8b7b5c1aaf60b6b2a5b36f861b0dda7df2b80f8feb3013120d190f332130b.json": {
+      dev: "64512",
+      gid: "0",
+      ino: "4147",
+      mode: "33152",
+      nlink: "1",
+      size: "714",
+      uid: "0"
+    },
+    "a52de7e6885d8285e8b9fea11dc44012a5e465c55f18701a176bef30b865386b.json": {
+      dev: "64512",
+      gid: "0",
+      ino: "4146",
+      mode: "33152",
+      nlink: "1",
+      size: "714",
+      uid: "0"
+    }
+  },
+  lockNames: [
+    "13d8b7b5c1aaf60b6b2a5b36f861b0dda7df2b80f8feb3013120d190f332130b.json",
+    "a52de7e6885d8285e8b9fea11dc44012a5e465c55f18701a176bef30b865386b.json"
+  ],
+  lockScope: {
+    buildProofDigest: "sha256:190a632600b9f8a5f338f891d08d6b720c8e146d6c55cd816aad9bf9cd3b364b",
+    chain: "fresh",
+    creationSpecDigest: "sha256:4fbfca50480c855633b4cc884644eaa2a7a349d1d08606e7e36462836c473f39",
+    jobAdmissionDigest: "sha256:10f411ecfdf6c09564cd7ec4b56305fbc2235c7fe76786b1aadfef13104e5556",
+    phase: "source",
+    sourceSha: "233d237227fbcbf5bb03efb068decca63dc6bca7",
+    targetPolicyDigest: "sha256:fb9707e26b2ad5e00d4cd61d88e6835b0aeb3210d01e9c6fbbfb9bc4a47cb8d5"
+  },
+  openingDigest: "sha256:978823449a894e7c1231fb11e9d3f1175505472e0392eb34db09d59c629cc327",
+  operationRef: "728eafd7-f137-4d7f-a0ad-73b2a687e59b",
+  ownerId: "keqi119",
+  profileDigest: "sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541",
+  requestDigest: "sha256:d37709c892cfcc96532e8fcde3c4760c94ec628101de60105606f3c81a435d76",
+  sessionDigest: "sha256:6007ab3d68558018b137760dcb397c0dd834c93a6f39b92177bd6215b5965ec7",
+  sessionId: "9c76295a-3fc2-4316-9382-22eb513bdf9a",
+  proposalDigest: "sha256:39f46f8027885180627f661c7a91c80fac0748d56ae593eb96dcfee28151d8be",
+  approvalDigest: "sha256:fab527a21cda619b7e0a7164a56ceddf6e2f78e87afcb1a9e2e58420afe2685f"
+});
+
 // The approved incident's original source is installed independently of later
 // verifier releases. This binding grants no authority; the historical reader
 // still authenticates every archived input, source file and CI attestation.
@@ -459,6 +532,17 @@ const APPROVED_R3_HISTORICAL_SOURCE_B7A1429C = freeze({
   sourceRoot: "/opt/stage1-r3-candidate-1c8ecfd"
 });
 
+const APPROVED_R3_HISTORICAL_SOURCE_728EAFD7 = freeze({
+  operationRef: "728eafd7-f137-4d7f-a0ad-73b2a687e59b",
+  profileDigest: "sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541",
+  sourceSha: "233d237227fbcbf5bb03efb068decca63dc6bca7",
+  proofRawDigest: "sha256:190a632600b9f8a5f338f891d08d6b720c8e146d6c55cd816aad9bf9cd3b364b",
+  materialRawDigest: "sha256:7316c0fff00814f470d2abfac9437ece2620f06784e403562f4c3046b5f1256d",
+  creationSpecDigest: "sha256:4fbfca50480c855633b4cc884644eaa2a7a349d1d08606e7e36462836c473f39",
+  jobAdmissionDigest: "sha256:10f411ecfdf6c09564cd7ec4b56305fbc2235c7fe76786b1aadfef13104e5556",
+  sourceRoot: "/opt/stage1-r3-candidate-233d237"
+});
+
 const HISTORICAL_DISCOVERY_VERSION = "r3-historical-entrypoints-literal.v1";
 const APPROVED_R3_HISTORICAL_CATALOGS = freeze([
   [
@@ -492,6 +576,10 @@ const APPROVED_R3_HISTORICAL_CATALOGS = freeze([
   [
     APPROVED_R3_HISTORICAL_SOURCE_B7A1429C,
     "sha256:0c5ba9cace38336b6ffb80c4d4d9e9de6a6ca71c91129f5a7a6a2205fca60280"
+  ],
+  [
+    APPROVED_R3_HISTORICAL_SOURCE_728EAFD7,
+    "sha256:1f761f27d1a8ee434f8fac5a8dd826aa47ec1420a2e1fc4923ba45355de0034a"
   ]
 ]);
 
@@ -528,7 +616,8 @@ export function approvedR3HistoricalSourceBinding(input) {
     APPROVED_R3_HISTORICAL_SOURCE_EB5A1850,
     APPROVED_R3_HISTORICAL_SOURCE_C820B449,
     APPROVED_R3_HISTORICAL_SOURCE_7E2DF1BA,
-    APPROVED_R3_HISTORICAL_SOURCE_B7A1429C
+    APPROVED_R3_HISTORICAL_SOURCE_B7A1429C,
+    APPROVED_R3_HISTORICAL_SOURCE_728EAFD7
   ])
     if (Object.entries(input).every(([key, value]) => binding[key] === value))
       return binding.sourceRoot;
@@ -539,6 +628,225 @@ export function r3IncidentFileIdentity(stat) {
   return Object.fromEntries(
     ["dev", "ino", "uid", "gid", "mode", "nlink", "size"].map((key) => [key, String(stat[key])])
   );
+}
+
+const CREATED_TARGET_KIND = "CREATED_TARGET_CANDIDATE_USE_UNCONSUMED";
+
+// Pure assessment only. The approved-policy reader does not call this until an
+// exact owner-approved policy is installed; supplying a policy grants no authority.
+export function assessCreatedTargetR3IncidentGraph({ policy, graph, consumptions, retainedLocks }) {
+  try {
+    need(policy?.incidentKind === CREATED_TARGET_KIND && graph instanceof Map);
+    const original = (digest) => {
+      need(/^sha256:[0-9a-f]{64}$/u.test(digest ?? ""));
+      const item = graph.get(digest);
+      need(
+        item &&
+          Buffer.isBuffer(item.bytes) &&
+          sha256Bytes(item.bytes) === digest &&
+          encodeManualJson(item.value).equals(item.bytes)
+      );
+      return item.value;
+    };
+    const opening = original(policy.openingDigest),
+      finalSession = original(policy.sessionDigest),
+      allocation = original(policy.allocationDigest),
+      request = original(policy.requestDigest),
+      authorization = original(policy.authorizationDigest),
+      consumption = original(policy.consumptionDigest),
+      initial = original(policy.initialExecutionDigest),
+      completed = original(policy.completedExecutionDigest),
+      destination = original(policy.destinationDigest),
+      candidateAllocation = original(policy.candidateUseAllocationDigest),
+      candidateRequest = original(policy.candidateUseRequestDigest),
+      candidateAuthorization = original(policy.candidateUseAuthorizationDigest);
+    const { operationRef, sessionId } = policy;
+    need(
+      opening.kind === "session" &&
+        opening.status === "OPEN" &&
+        opening.sessionId === sessionId &&
+        typeof opening.sessionNonce === "string" &&
+        finalSession.kind === "session" &&
+        finalSession.status === "INTERRUPTED_UNKNOWN" &&
+        finalSession.sessionId === sessionId &&
+        finalSession.sessionNonce === opening.sessionNonce &&
+        finalSession.previousSessionRecordDigest === policy.openingDigest &&
+        Array.isArray(consumptions) &&
+        consumptions.length === 1 &&
+        sha256Canonical(consumptions[0]) === policy.consumptionDigest &&
+        consumption.kind === "consumption" &&
+        consumption.stage === "target-create" &&
+        consumption.operationId === operationRef &&
+        consumption.sessionId === sessionId &&
+        consumption.sessionNonce === opening.sessionNonce &&
+        consumption.sessionRecordDigest === policy.openingDigest &&
+        consumption.requestDigest === policy.requestDigest &&
+        consumption.authorizationDigest === policy.authorizationDigest &&
+        allocation.kind === "attempt-allocation" &&
+        allocation.stage === "target-create" &&
+        typeof allocation.attemptId === "string" &&
+        typeof allocation.runId === "string" &&
+        allocation.operationId === operationRef &&
+        allocation.sessionId === sessionId &&
+        allocation.sessionNonce === opening.sessionNonce &&
+        allocation.sessionRecordDigest === policy.openingDigest &&
+        allocation.predecessorExecutionRecordDigest === null &&
+        request.schemaVersion === "manual-runner-request.v4" &&
+        request.stage === "target-create" &&
+        request.operationId === operationRef &&
+        request.sessionId === sessionId &&
+        request.sessionNonce === opening.sessionNonce &&
+        request.attemptId === allocation.attemptId &&
+        request.runId === allocation.runId &&
+        request.attemptAllocationDigest === policy.allocationDigest &&
+        authorization.payload?.schemaVersion === "manual-launch-authorization.v4" &&
+        authorization.payload?.stage === "target-create" &&
+        authorization.payload.operationId === operationRef &&
+        authorization.payload.sessionId === sessionId &&
+        authorization.payload.sessionNonce === opening.sessionNonce &&
+        authorization.payload.requestDigest === policy.requestDigest &&
+        candidateAllocation.kind === "attempt-allocation" &&
+        candidateAllocation.stage === "candidate-use" &&
+        typeof candidateAllocation.attemptId === "string" &&
+        typeof candidateAllocation.runId === "string" &&
+        candidateAllocation.operationId === operationRef &&
+        candidateAllocation.sessionId === sessionId &&
+        candidateAllocation.sessionNonce === opening.sessionNonce &&
+        candidateAllocation.sessionRecordDigest === policy.openingDigest &&
+        candidateAllocation.predecessorExecutionRecordDigest === policy.completedExecutionDigest &&
+        candidateAllocation.preparationExecutionRecordDigest === policy.completedExecutionDigest &&
+        candidateAllocation.destinationAdmissionDigest === policy.destinationDigest &&
+        candidateRequest.schemaVersion === "manual-runner-request.v5" &&
+        candidateRequest.stage === "candidate-use" &&
+        candidateRequest.operationId === operationRef &&
+        candidateRequest.sessionId === sessionId &&
+        candidateRequest.sessionNonce === opening.sessionNonce &&
+        candidateRequest.attemptId === candidateAllocation.attemptId &&
+        candidateRequest.runId === candidateAllocation.runId &&
+        candidateRequest.preparationExecutionRecordDigest === policy.completedExecutionDigest &&
+        candidateRequest.destinationAdmissionDigest === policy.destinationDigest &&
+        candidateRequest.attemptAllocationDigest === policy.candidateUseAllocationDigest &&
+        candidateAuthorization.payload?.schemaVersion === "manual-launch-authorization.v5" &&
+        candidateAuthorization.payload?.stage === "candidate-use" &&
+        candidateAuthorization.payload.operationId === operationRef &&
+        candidateAuthorization.payload.sessionId === sessionId &&
+        candidateAuthorization.payload.sessionNonce === opening.sessionNonce &&
+        candidateAuthorization.payload.requestDigest === policy.candidateUseRequestDigest
+    );
+    const sessions = [...graph.values()].filter(
+      ({ value }) => value?.kind === "session" && value.sessionId === sessionId
+    );
+    const graphConsumptions = [...graph.entries()].filter(
+      ([, { value }]) => value?.kind === "consumption" && value.sessionId === sessionId
+    );
+    const executions = [...graph.values()].filter(
+      ({ value }) => value?.kind === "execution" && value.sessionId === sessionId
+    );
+    need(
+      sessions.length === 2 &&
+        graphConsumptions.length === 1 &&
+        graphConsumptions[0][0] === policy.consumptionDigest &&
+        executions.length === 2 &&
+        new Set(sessions.map(({ bytes }) => sha256Bytes(bytes))).has(policy.openingDigest) &&
+        new Set(sessions.map(({ bytes }) => sha256Bytes(bytes))).has(policy.sessionDigest)
+    );
+    const executionDigests = new Set(executions.map(({ bytes }) => sha256Bytes(bytes)));
+    need(
+      executionDigests.has(policy.initialExecutionDigest) &&
+        executionDigests.has(policy.completedExecutionDigest) &&
+        initial.kind === "execution" &&
+        initial.stage === "target-create" &&
+        initial.status === "INTERRUPTED_UNKNOWN" &&
+        initial.predecessorExecutionRecordDigest === null &&
+        completed.kind === "execution" &&
+        completed.stage === "target-create" &&
+        completed.status === "SUCCEEDED" &&
+        completed.predecessorExecutionRecordDigest === policy.initialExecutionDigest &&
+        completed.resultDigest === policy.destinationDigest &&
+        [initial, completed].every(
+          (value) =>
+            value.operationId === operationRef &&
+            value.sessionId === sessionId &&
+            value.sessionNonce === opening.sessionNonce &&
+            value.attemptId === request.attemptId &&
+            value.requestDigest === policy.requestDigest &&
+            value.authorizationDigest === policy.authorizationDigest &&
+            value.consumptionRecordDigest === policy.consumptionDigest
+        )
+    );
+    const signedCandidateInputs = [...graph.entries()].filter(
+      ([, { value }]) =>
+        (value?.sessionId === sessionId &&
+          value.stage === "candidate-use" &&
+          (value.kind === "attempt-allocation" ||
+            value.schemaVersion === "manual-runner-request.v5")) ||
+        (value?.payload?.sessionId === sessionId &&
+          value.payload.stage === "candidate-use" &&
+          value.payload.schemaVersion === "manual-launch-authorization.v5")
+    );
+    need(
+      signedCandidateInputs.length === 3 &&
+        equal(
+          signedCandidateInputs.map(([digest]) => digest).sort(),
+          [
+            policy.candidateUseAllocationDigest,
+            policy.candidateUseRequestDigest,
+            policy.candidateUseAuthorizationDigest
+          ].sort()
+        )
+    );
+    const targets = destination.databaseTargetSet?.targetLocks;
+    need(
+      Array.isArray(targets) &&
+        targets.length === 39 &&
+        Array.isArray(retainedLocks) &&
+        Array.isArray(policy.lockNames) &&
+        policy.lockNames.length === 2 &&
+        policy.lockNames.every((name) => !retainedLocks.some((held) => held.name === name))
+    );
+    const current = retainedLocks.filter(
+      ({ value }) => value?.sessionId === sessionId || value?.operationRef === operationRef
+    );
+    need(current.length === 39 && new Set(targets.map((target) => target.lockDigest)).size === 39);
+    const byName = new Map(current.map((held) => [held.name, held]));
+    need(byName.size === 39);
+    for (const target of targets) {
+      need(sha256Canonical(target.identity) === target.lockDigest);
+      const held = byName.get(`${target.lockDigest.slice(7)}.json`);
+      need(held && Buffer.isBuffer(held.bytes) && encodeManualJson(held.value).equals(held.bytes));
+      exact(held.value, [
+        "profileDigest",
+        "sessionId",
+        "sessionNonce",
+        "scope",
+        "pid",
+        "operationRef",
+        "executionRecordDigest",
+        "databaseName",
+        "target"
+      ]);
+      need(
+        held.value.profileDigest === policy.profileDigest &&
+          held.value.sessionId === sessionId &&
+          held.value.sessionNonce === opening.sessionNonce &&
+          equal(held.value.scope, policy.lockScope) &&
+          Number.isSafeInteger(held.value.pid) &&
+          held.value.pid > 1 &&
+          held.value.operationRef === operationRef &&
+          held.value.executionRecordDigest === policy.initialExecutionDigest &&
+          held.value.databaseName === target.databaseName &&
+          equal(held.value.target, target.identity)
+      );
+    }
+    return freeze({
+      targetLockCount: 39,
+      remoteCreationKnown: true,
+      remoteCleanupVerified: false,
+      promotionEligible: false
+    });
+  } catch {
+    fail();
+  }
 }
 
 function locks(value, policy) {
@@ -600,6 +908,7 @@ export function assessR3IncidentIntent({ profile, policy, intentBytes, now }) {
   try {
     need(sha256Canonical(profile) === policy.profileDigest && profile.ownerId === policy.ownerId);
     need(digest(policy.approvalDigest) && digest(policy.proposalDigest));
+    need(policy.incidentKind === undefined || policy.incidentKind === CREATED_TARGET_KIND);
     const intent = signed(intentBytes, profile);
     exact(intent, [
       "schemaVersion",
@@ -618,7 +927,7 @@ export function assessR3IncidentIntent({ profile, policy, intentBytes, now }) {
       intent.schemaVersion === "manual-r3-incident-intent.v1" &&
         intent.policyDigest === sha256Canonical(policy) &&
         intent.decision === "OWNER_ACCEPTED_UNRESOLVED_FAILURE" &&
-        intent.remoteCreationKnown === false &&
+        intent.remoteCreationKnown === (policy.incidentKind === CREATED_TARGET_KIND) &&
         intent.remoteCleanupVerified === false &&
         intent.promotionEligible === false &&
         intent.ownerProcessesAbsent === true &&
@@ -682,7 +991,7 @@ export function assessR3IncidentRecords({
     );
     for (const record of [intent, disposition]) {
       need(
-        record.remoteCreationKnown === false &&
+        record.remoteCreationKnown === (policy.incidentKind === CREATED_TARGET_KIND) &&
           record.remoteCleanupVerified === false &&
           record.promotionEligible === false &&
           record.ownerProcessesAbsent === true &&
@@ -716,14 +1025,18 @@ export function matchesR3IncidentDisposition(receipt, consumed, execution) {
   const policy = receipt && dispositions.get(receipt);
   return Boolean(
     policy &&
+    policy.incidentKind !== CREATED_TARGET_KIND &&
     sha256Canonical(consumed) === policy.consumptionDigest &&
     sha256Canonical(execution) === policy.executionDigest
   );
 }
 
+export function isCreatedR3IncidentDisposition(receipt) {
+  return Boolean(receipt && dispositions.get(receipt)?.incidentKind === CREATED_TARGET_KIND);
+}
+
 export function assertR3IncidentSessionShape(policy, graph) {
   const opening = graph.get(policy.openingDigest)?.value;
-  const execution = graph.get(policy.executionDigest)?.value;
   const sessionRecords = [...graph.entries()].filter(
     ([, item]) => item.value.kind === "session" && item.value.sessionId === policy.sessionId
   );
@@ -731,6 +1044,30 @@ export function assertR3IncidentSessionShape(policy, graph) {
     ([, item]) => item.value.kind === "execution" && item.value.sessionId === policy.sessionId
   );
   need(opening?.kind === "session" && opening.status === "OPEN");
+  if (policy.incidentKind === CREATED_TARGET_KIND) {
+    const initial = graph.get(policy.initialExecutionDigest)?.value;
+    const completed = graph.get(policy.completedExecutionDigest)?.value;
+    need(
+      initial?.kind === "execution" &&
+        initial.stage === "target-create" &&
+        initial.status === "INTERRUPTED_UNKNOWN" &&
+        completed?.kind === "execution" &&
+        completed.stage === "target-create" &&
+        completed.status === "SUCCEEDED" &&
+        completed.predecessorExecutionRecordDigest === policy.initialExecutionDigest &&
+        executions.length === 2 &&
+        executions.some(([digest]) => digest === policy.initialExecutionDigest) &&
+        executions.some(([digest]) => digest === policy.completedExecutionDigest) &&
+        sessionRecords.length === 2 &&
+        sessionRecords.some(([digest]) => digest === policy.openingDigest) &&
+        sessionRecords.some(
+          ([digest, item]) =>
+            digest === policy.sessionDigest && item.value.status === "INTERRUPTED_UNKNOWN"
+        )
+    );
+    return;
+  }
+  const execution = graph.get(policy.executionDigest)?.value;
   need(execution?.kind === "execution" && execution.status === "INTERRUPTED_UNKNOWN");
   need(executions.length === 1 && executions[0][0] === policy.executionDigest);
   if (policy.sessionDigest === null) {
@@ -764,7 +1101,8 @@ export async function readApprovedR3IncidentDisposition(
     APPROVED_R3_INCIDENT_EB5A1850,
     APPROVED_R3_INCIDENT_C820B449,
     APPROVED_R3_INCIDENT_7E2DF1BA,
-    APPROVED_R3_INCIDENT_B7A1429C
+    APPROVED_R3_INCIDENT_B7A1429C,
+    APPROVED_R3_INCIDENT_728EAFD7
   ];
   const matched = policies.filter(
     (policy) =>
@@ -782,20 +1120,38 @@ export async function readApprovedR3IncidentDisposition(
         consumptions.length === 1 &&
         sha256Canonical(consumptions[0]) === p.consumptionDigest
     );
-    const originals = [
-      [p.openingDigest, "journal"],
-      [p.consumptionDigest, "journal"],
-      [p.executionDigest, "journal"],
-      [p.requestDigest, "archive"]
-    ];
-    if (p.sessionDigest !== null) originals.push([p.sessionDigest, "journal"]);
+    const created = p.incidentKind === CREATED_TARGET_KIND;
+    const originals = created
+      ? [
+          [p.openingDigest, "journal"],
+          [p.sessionDigest, "journal"],
+          [p.allocationDigest, "archive"],
+          [p.requestDigest, "archive"],
+          [p.authorizationDigest, "archive"],
+          [p.consumptionDigest, "journal"],
+          [p.initialExecutionDigest, "journal"],
+          [p.completedExecutionDigest, "journal"],
+          [p.destinationDigest, "archive"],
+          [p.candidateUseAllocationDigest, "archive"],
+          [p.candidateUseRequestDigest, "archive"],
+          [p.candidateUseAuthorizationDigest, "archive"]
+        ]
+      : [
+          [p.openingDigest, "journal"],
+          [p.consumptionDigest, "journal"],
+          [p.executionDigest, "journal"],
+          [p.requestDigest, "archive"]
+        ];
+    if (!created && p.sessionDigest !== null) originals.push([p.sessionDigest, "journal"]);
     if (
-      p === APPROVED_R3_INCIDENT_EB5A1850 ||
-      p === APPROVED_R3_INCIDENT_C820B449 ||
-      p === APPROVED_R3_INCIDENT_7E2DF1BA ||
-      p === APPROVED_R3_INCIDENT_B7A1429C
-    ) {
+      !created &&
+      (p === APPROVED_R3_INCIDENT_EB5A1850 ||
+        p === APPROVED_R3_INCIDENT_C820B449 ||
+        p === APPROVED_R3_INCIDENT_7E2DF1BA ||
+        p === APPROVED_R3_INCIDENT_B7A1429C)
+    )
       originals.push([p.allocationDigest, "archive"], [p.authorizationDigest, "archive"]);
+    if (created || originals.some(([digest]) => digest === p.allocationDigest)) {
       const consumptionBytes = graph.get(p.consumptionDigest)?.bytes;
       need(
         consumptionBytes &&
@@ -822,7 +1178,20 @@ export async function readApprovedR3IncidentDisposition(
       );
     }
     assertR3IncidentSessionShape(p, graph);
-    need(retainedLocks.every(({ value }) => value.sessionId !== p.sessionId));
+    if (created) {
+      const assessed = assessCreatedTargetR3IncidentGraph({
+        policy: p,
+        graph,
+        consumptions,
+        retainedLocks
+      });
+      need(
+        assessed.targetLockCount === 39 &&
+          assessed.remoteCreationKnown === true &&
+          assessed.remoteCleanupVerified === false &&
+          assessed.promotionEligible === false
+      );
+    } else need(retainedLocks.every(({ value }) => value.sessionId !== p.sessionId));
     const root = path.join(profile.storage.archiveRoot, "incidents", p.operationRef);
     await store.checkedPath(root);
     need(

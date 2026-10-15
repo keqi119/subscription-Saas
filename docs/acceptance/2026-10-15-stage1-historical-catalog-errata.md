@@ -54,3 +54,35 @@ The failed RC and its once records remain retained. Its replacement approval
 has been used. A new formal run requires the applicable exact candidate/run
 binding; this fix does not authorize replay, fabricate human acknowledgements,
 or establish any of the four R3 CLOSED results or R4 acceptance.
+
+## October 16: 233d manifest/catalog digest confusion
+
+The bounded historical-trust read passed eight prior contexts and stopped on
+the newly retained 233d context before any new build or RC. Its native history
+graph had already passed independently (133 objects, nine groups); that result
+does not authenticate the separate H1/H2 build inputs.
+
+The 233d compatibility entry incorrectly used the raw digest of
+`release/contracts/repository-contract-files.v1.json` (`1f761f27…`) as
+`catalogRawDigest`. That field authenticates the actual historical
+`packages/release-foundation/src/catalogs.mjs`, whose raw SHA-256 is
+`c34beff7b479440cc4390d679fb9073a854b2543f959ac64b4c5174f68823d3b`.
+This is a repeated binding defect, not environment jitter. The existing policy
+test repeated the wrong constant and therefore did not detect it.
+
+The correction changes only that production pin. An exact archive of Git
+commit `233d237227fbcbf5bb03efb068decca63dc6bca7` reproduces
+`CONTRACT_HISTORICAL_CATALOG_CHANGED` with the old pin. With the corrected pin,
+the real historical reader finds 339 contract entries and digest
+`549d0d0591d8ee813b5a811a849eac1be1ff72681ce0d34ad321c01de408b42d`,
+matching both retained build proof and material. All nine historical catalog
+pins were independently compared with their own Git blob bytes. The existing
+233d policy test now also authenticates an exact historical catalog fixture;
+Git attributes preserve its original bytes.
+
+For each new historical entry, derive the pin from the named source file and
+commit, record both paths alongside the digest, and run the actual historical
+reader before a new RC. A schema check or a test repeating the configured
+constant does not satisfy that gate. Preserve the eight passed acquisitions;
+the next protected read targets only 233d. Historical trust timing and the
+complete five-minute sign-to-consume budget remain unverified at this point.
